@@ -36,6 +36,8 @@ pub struct LevelMap {
     pub textures: Vec<Texture>,
     pub objects: Vec<MapObject>,
     pub placements: Vec<Placement>,
+    /// AI paths and boundaries (block 0x05; main maps only on our disc).
+    pub ai_network: Option<crate::aipath::AiNetwork>,
 }
 
 /// One object drawn somewhere: `(map, object)` indexes into `Level::maps`, and its row-vector world matrix.
@@ -83,6 +85,7 @@ impl Level {
             // (bounds match the following object in 6,959 of 7,985 blocks; docs/formats/collision.md).
             let mut pending_coll = None;
             let mut placements = Vec::new();
+            let mut ai_network = None;
             for blk in &mf.blocks {
                 match blk.id {
                     0x2e => pending_coll = Some(crate::collision::Collision::parse(blk.payload(data))?),
@@ -95,10 +98,11 @@ impl Level {
                         objects.push(MapObject { hashcode: p.u32(0)?, name, flags: p.u32(4)?, gfx, collision: pending_coll.take() });
                     }
                     id::MAP_DATA_STATIC => placements = placement::parse(blk.payload(data))?,
+                    0x05 => ai_network = Some(crate::aipath::AiNetwork::parse(blk.payload(data))?),
                     _ => {}
                 }
             }
-            maps.push(LevelMap { entry, kind: e.kind, name: e.name.clone(), textures, objects, placements });
+            maps.push(LevelMap { entry, kind: e.kind, name: e.name.clone(), textures, objects, placements, ai_network });
         }
         let mut by_hash = HashMap::new();
         for (m, map) in maps.iter().enumerate() {

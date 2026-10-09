@@ -47,6 +47,8 @@ pub mod msg {
     pub const ENTER: u8 = 1;
     pub const EXIT: u8 = 2;
     pub const UPDATE: u8 = 3;
+    /// Idle timeout (`SetIdleTimeOut`) and the wait-node message.
+    pub const IDLE_TIMEOUT: u8 = 4;
     pub const ANIM_DONE: u8 = 5;
     pub const TIMER_C: u8 = 0xc;
     pub const FORCED_ATTACK: u8 = 0x1f;
@@ -66,6 +68,12 @@ pub mod anim_state {
     pub const ROLL_RIGHT: u16 = 0x54;
     pub const STEP_LEFT: u16 = 0x5a;
     pub const STEP_RIGHT: u16 = 0x5b;
+    pub const ALERT_IDLE: u16 = 0x21;
+    pub const ALERT_LOOK: u16 = 0x22;
+    pub const ALERT_WALK: u16 = 0x35;
+    pub const ALERT_PATROL_LOOK: u16 = 0x36;
+    pub const WALK: u16 = 0x37;
+    pub const LOOK_AROUND: u16 = 0x4b;
 }
 
 /// Read-only game data the AI consults.
@@ -81,6 +89,8 @@ pub struct Data<'a> {
     /// Skins and skeletons (muzzle position from the posed skeleton).
     pub skins: &'a HashMap<u32, nf_formats::character::Skin>,
     pub skeletons: &'a HashMap<u8, nf_formats::character::Skeleton>,
+    /// AI paths and boundaries (block 0x05).
+    pub nav: &'a crate::nav::Network,
 }
 
 /// Bond as the drones see him.
@@ -190,6 +200,14 @@ pub struct Drone {
     pub attack_frame: u32,
     pub alerted_by_drone: bool,
     pub watching: bool,
+    /// Patrol route (`Drone+0x970`), the last wait node (`+0xBAE`), the idle timeout and a delayed message.
+    pub route: Option<crate::nav::Route>,
+    pub last_wait: Option<u16>,
+    pub idle_timeout: Option<u32>,
+    pub delayed: Option<(u32, u8)>,
+    /// State-machine id (`Drone+0x108`, a creation counter) and the stand-idle hold (`+0x59C`).
+    pub sm_id: u32,
+    pub stand_until: u32,
     /// Trace of (frame, state) changes, for comparisons with PCSX2.
     pub log: Vec<(u32, u8)>,
 }
@@ -220,12 +238,94 @@ impl Drone {
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, started_call: false },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
             shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, attack_frame: 0, alerted_by_drone: false, watching: false,
+            route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
         };
         dr.set_danim(d, start_danim);
         dr
     }
 
     fn prop(&self, d: &Data, id: usize) -> bool { d.props.get(id, &self.props) != 0 }
+
+    /// `NDrone2_FeetPos`: the feet sphere's centre (object y − 1 + r 0.4 with the standing height 1.0).
+    pub fn feet(&self) -> V3 { [self.pos[0], self.pos[1] - 0.6, self.pos[2]] }
+
+    // ---- patrols and idling ------------------------------------------------------------------------------------
+
+    /// `NDrone2_AssignAIPath(mask)`: the nearest node (2D, < 0.3) of a path with `kind & mask` → `InitAIPath`.
+    /// *Deviation*: "in the drone's cel" is replaced by "within 2 units of the feet in height".
+    fn assign_path(&mut self, d: &Data, mask: u32) -> bool {
+        let feet = self.feet();
+        let mut best: Option<(f32, usize, u16)> = None;
+        for (pi, p) in d.nav.paths.iter().enumerate().filter(|(_, p)| p.kind & mask != 0) {
+            for (ni, n) in p.nodes.iter().enumerate() {
+                if (n.pos[1] - feet[1]).abs() > 2.0 { continue; }
+                let dist = crate::nav::dist2d(self.pos, n.pos);
+                if dist < best.map_or(0.3, |b| b.0) { best = Some((dist, pi, ni as u16)) }
+            }
+        }
+        let Some((_, pi, ni)) = best else { return false };
+        self.route = Some(crate::nav::Route::for_path(d.nav, pi, ni));
+        self.last_wait = None;
+        true
+    }
+
+    /// `SetIdleTimeOut(base, n)`: msg 4 after (base + Rand n) seconds.
+    fn set_idle_timeout(&mut self, rng: &mut Rng, frame: u32, base: u32, n: u32) {
+        self.idle_timeout = Some(frame + (base + rng.rand(n)) * 60);
+    }
+
+    /// Requests an anim state unless it is playing or pending, or another call is pending (the "respect" form).
+    /// Calling the state that is already playing zeroes any pending call (`ZeroAnimCall`): [L] a patrolling guard's
+    /// walk request cancels the look-around its wait node asked for in the same tick (work/patrol_trace.tsv: the
+    /// guard walks past node 23 without stopping).
+    fn request_anim(&mut self, d: &Data, anim: u16) {
+        if self.anim.state == anim { self.anim.call = None; return; }
+        if self.anim.call.is_some() || !self.can_do(d, anim) { return; }
+        self.call_anim(anim, 0, 0);
+    }
+
+    /// `SetStandIdleAnim(force)`: in Idle one of 0x24..0x26 (Rand 3) held 5 + Rand 5 seconds; elsewhere 0x24.
+    fn set_stand_idle(&mut self, d: &Data, rng: &mut Rng, frame: u32, force: bool) {
+        if self.state != state::IDLE { self.request_anim(d, anim_state::STAND_IDLE); return; }
+        if !force && frame < self.stand_until { return; }
+        let mut anim = anim_state::STAND_IDLE + rng.rand(3) as u16;
+        if !self.can_do(d, anim) { anim = anim_state::STAND_IDLE }
+        self.stand_until = frame + (5 + rng.rand(5)) * 60;
+        if self.anim.call.is_none() && self.anim.state != anim { self.call_anim(anim, 0, 0) }
+    }
+
+    /// `SetWalkIdleAnim`: in Patrol (SM id + 1) % 3 + 0x37, or 0x37 when the set lacks it.
+    fn walk_anim(&self, d: &Data) -> u16 {
+        let a = ((self.sm_id + 1) % 3) as u16 + anim_state::WALK;
+        if self.can_do(d, a) { a } else { anim_state::WALK }
+    }
+
+    /// `UpdatePatrolRoute` → `NDrone2_FollowRoute` → `AINetwork_FollowRoute`: move target and desired yaw, the walk
+    /// anim, wait nodes (`ReachedDestNode` flag 1: msg 4 a tick later every other lap, alertness < 0.33).
+    fn update_patrol_route(&mut self, d: &Data, _rng: &mut Rng, frame: u32) {
+        let feet = self.feet();
+        let Some(route) = self.route.as_mut() else { self.request_anim(d, anim_state::STAND_IDLE); return };
+        let (code, reached) = route.follow(d.nav, feet);
+        let target = route.target;
+        if let Some(node) = reached {
+            let flags = d.nav.paths[route.path].nodes[node as usize].flags;
+            if flags & 1 != 0 {
+                if self.alert < 0.33 && self.last_wait != Some(node) {
+                    self.last_wait = Some(node);
+                    self.delayed = Some((frame + 1, msg::IDLE_TIMEOUT));
+                } else {
+                    self.last_wait = None;
+                }
+            }
+        }
+        let alerted = self.prop(d, 0x25) && self.alert >= 0.66;
+        match code {
+            crate::nav::follow::MOVING => { let a = if alerted { anim_state::ALERT_WALK } else { self.walk_anim(d) }; self.request_anim(d, a) }
+            crate::nav::follow::NO_PATH => self.request_anim(d, anim_state::STAND_IDLE),
+            _ => { let a = if self.alert >= 0.66 { anim_state::ALERT_IDLE } else { self.walk_anim(d) }; self.request_anim(d, a) }
+        }
+        self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]);
+    }
 
     // ---- animation ---------------------------------------------------------------------------------------------
 
@@ -254,14 +354,22 @@ impl Drone {
         let mut restarted = false;
         // A one-shot danim of the requested state that just finished completes the call.
         let mut finished_wanted = false;
+        let mut wrap_end = None;
         if self.anim.time >= len {
+            // The wrap tick repeats the script's last step (last frame − the one before): [L] aligned per-tick steps of
+            // a live walk cycle (115 ticks, work/patrol_trace.tsv) show the step before the wrap twice.
+            self.anim.time = len.saturating_sub(1);
+            let last = self.root_value(d);
+            self.anim.time = len.saturating_sub(2);
+            wrap_end = self.root_value(d).zip(last).map(|(a, b)| [b[0] - a[0], 0.0, b[2] - a[2]]);
             finished_wanted = self.anim.call.is_some_and(|(w, _, _)| w == self.anim.state && self.anim.started_call);
             let info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
             let next = u16::from_le_bytes([info[10], info[11]]);
             if next != 0 && next != self.anim.danim { self.set_danim(d, next) } else { self.anim.time = 0 }
             restarted = true;
         }
-        self.root_motion(d, restarted || before != (self.anim.script, self.anim.danim));
+        let same = before == (self.anim.script, self.anim.danim);
+        self.root_motion(d, restarted || !same, if same { wrap_end } else { None });
         let (want, next_ai, done_msg) = self.anim.call?;
         // CallFullyComplete: the requested state is playing as a loop (class 2: aim, crouch-aim, idle …), or a one-shot
         // danim of it (a step, a roll, a reload) has played to its end. *Suggested* from the trace (steps last
@@ -286,17 +394,28 @@ impl Drone {
         Some((q, (t.saturating_sub(a) + 1) as u32))
     }
 
-    /// Root motion (`AnimSeqTick` + `AnimFrameResolve`): the root translation's change since the last tick, rotated
-    /// by the object's yaw (`RotMatrix`: world = l.x·(cos y, 0, −sin y) + l.z·(sin y, 0, cos y)) and added to the
-    /// position. No motion on the tick a script starts or wraps. Vertical motion is replaced by the drone's height
-    /// rule (`DroneAnim_PreTransCallback`), so only x/z move here.
-    fn root_motion(&mut self, d: &Data, restarted: bool) {
-        let root = self.script_frame(d).and_then(|(q, f)| d.sequences.get(&q).filter(|s| s.channels.len() >= 3).map(|s| {
+    /// The root translation at the playing script frame.
+    fn root_value(&self, d: &Data) -> Option<V3> {
+        self.script_frame(d).and_then(|(q, f)| d.sequences.get(&q).filter(|s| s.channels.len() >= 3).map(|s| {
             let f = f.clamp(1, s.frames.max(1) as u32);
             [s.value(0, f), s.value(1, f), s.value(2, f)]
-        }));
-        if let (Some(r), Some(prev), false) = (root, self.root_prev, restarted) {
-            let (lx, lz) = (r[0] - prev[0], r[2] - prev[2]);
+        }))
+    }
+
+    /// Root motion (`AnimSeqTick` + `AnimFrameResolve`): the root translation's change since the last tick, rotated
+    /// by the object's yaw (`RotMatrix`: world = l.x·(cos y, 0, −sin y) + l.z·(sin y, 0, cos y)) and added to the
+    /// position. No motion on the tick a new script starts. Vertical motion is replaced by the drone's height rule
+    /// (`DroneAnim_PreTransCallback`), so only x/z move here.
+    fn root_motion(&mut self, d: &Data, restarted: bool, wrap_end: Option<V3>) {
+        let root = self.root_value(d);
+        // A script that wrapped onto itself moves by its first step (`wrap_end`): [L] without it a patrolling guard
+        // fell 2 % behind the live one (work/patrol_trace.tsv).
+        let delta = match (root, self.root_prev, restarted, wrap_end) {
+            (Some(r), Some(prev), false, _) => Some([r[0] - prev[0], r[2] - prev[2]]),
+            (Some(_), Some(_), true, Some(step)) => Some([step[0], step[2]]),
+            _ => None,
+        };
+        if let (Some([lx, lz]), Some(_)) = (delta, root) {
             let (s, c) = (crate::trig::sinf(self.yaw), crate::trig::cosf(self.yaw));
             let step = [lx * c + lz * s, -lx * s + lz * c];
             let to = [self.pos[0] + step[0], self.pos[1], self.pos[2] + step[1]];
@@ -323,6 +442,9 @@ impl Drone {
             self.prev_state = self.state;
             self.state = n;
             self.vision_on = false; // RouteMsgDCV clears 0x4f8 0x10000 on every change
+            // ... and the timers (C/D; the idle timeout too: *suggested*, it is re-armed by every enter that uses it).
+            self.timer_c = None;
+            self.idle_timeout = None;
             self.entered = frame;
             self.log.push((frame, n));
             self.handle(d, rng, frame, n, msg::ENTER);
@@ -335,14 +457,59 @@ impl Drone {
         use state::*;
         match (s, m) {
             (GLOBAL, msg::ENTER) => { self.set_state(if self.prop(d, 0x24) || self.prop(d, 0x25) { INIT_PATROL } else { IDLE }); true }
-            (INIT_PATROL, msg::ENTER) => { self.set_state(IDLE); true } // no AI paths yet: InitPatrol's fallback
+            (INIT_PATROL, msg::ENTER) => {
+                let patrols = (self.prop(d, 0x24) || self.prop(d, 0x25)) && self.assign_path(d, 4);
+                self.set_state(if patrols { PATROL } else { IDLE });
+                true
+            }
             (IDLE | ALERT | PATROL, msg::ENTER) => {
                 self.vision_on = true;
                 self.watching = true;
-                if s == IDLE && self.alert >= 0.66 { self.set_state(ALERT) }
+                match s {
+                    IDLE if self.alert >= 0.66 => self.set_state(ALERT),
+                    IDLE => {
+                        self.set_stand_idle(d, rng, frame, true);
+                        if self.prop(d, 0x46) { self.set_idle_timeout(rng, frame, 45, 5) }
+                    }
+                    ALERT => {
+                        self.request_anim(d, anim_state::ALERT_IDLE);
+                        if self.prop(d, 0x46) { self.set_idle_timeout(rng, frame, 45, 5) }
+                    }
+                    _ => if self.prop(d, 0x46) {
+                        let (base, n) = if self.prop(d, 0x25) && self.alert >= 0.66 { (5, 10) } else { (45, 10) };
+                        self.set_idle_timeout(rng, frame, base, n);
+                    },
+                }
                 true
             }
-            (IDLE | ALERT | PATROL, msg::UPDATE) => { if let Some(n) = self.look_for_opponent(d) { self.set_state(n) } true }
+            (IDLE | ALERT, msg::UPDATE) => {
+                if let Some(n) = self.look_for_opponent(d) { self.set_state(n) }
+                else if s == IDLE { self.set_stand_idle(d, rng, frame, false) } else { self.request_anim(d, anim_state::ALERT_IDLE) }
+                true
+            }
+            (PATROL, msg::UPDATE) => {
+                self.update_patrol_route(d, rng, frame);
+                if let Some(n) = self.look_for_opponent(d) { self.set_state(n) }
+                true
+            }
+            // Idle timeouts (prop 0x46) and wait nodes: look around (`0x4B`, variant Rand 3 — variants not modelled),
+            // then back to the state, which re-arms the timeout.
+            (IDLE | ALERT | PATROL, msg::IDLE_TIMEOUT) => {
+                if self.prop(d, 0x46) {
+                    let alerted = self.alert >= 0.66;
+                    let (anim, back) = match s {
+                        PATROL if self.prop(d, 0x25) && alerted => (anim_state::ALERT_PATROL_LOOK, PATROL),
+                        PATROL => (anim_state::LOOK_AROUND, PATROL),
+                        IDLE if alerted => (anim_state::ALERT_LOOK, IDLE),
+                        IDLE => (anim_state::LOOK_AROUND, IDLE),
+                        _ => (anim_state::ALERT_LOOK, ALERT),
+                    };
+                    let _variant = rng.rand(3);
+                    if self.can_do(d, anim) { self.call_anim(anim, back, 0) }
+                    if s != PATROL { self.set_idle_timeout(rng, frame, 45, 5) }
+                }
+                true
+            }
             // Forced attack (`Drone_Message(0x1F)` → `DroneFunc_DoForcedAttack`): another drone was seen attacking.
             (IDLE | ALERT | PATROL, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
             (ATTACK, msg::ENTER) => {
@@ -750,7 +917,9 @@ pub struct Drones {
 }
 
 impl Drones {
-    pub fn new(list: Vec<Drone>, rng: Rng) -> Drones {
+    pub fn new(mut list: Vec<Drone>, rng: Rng) -> Drones {
+        // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
+        for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; }
         Drones { list, frame: 0, los_cursor: 0, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None }
     }
 
@@ -840,6 +1009,8 @@ impl Drones {
         for (index, dr) in self.list.iter_mut().enumerate() {
             if frame == 1 { dr.send(d, rng, frame, msg::ENTER); dr.entered = frame; dr.log.push((frame, dr.state)); }
             if let Some(t) = dr.timer_c { if frame >= t { dr.timer_c = None; dr.send(d, rng, frame, msg::TIMER_C); } }
+            if let Some(t) = dr.idle_timeout { if frame >= t { dr.idle_timeout = None; dr.send(d, rng, frame, msg::IDLE_TIMEOUT); } }
+            if let Some((t, m)) = dr.delayed { if frame >= t { dr.delayed = None; dr.send(d, rng, frame, m); } }
             if dr.alert < 1.0 && dr.alert > dr.alert_floor { dr.alert -= 1.0 / (60.0 * 50.0); }
             if dr.alert < dr.alert_floor { dr.alert = dr.alert_floor; }
             dr.send(d, rng, frame, msg::UPDATE);

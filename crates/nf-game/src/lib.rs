@@ -3,5 +3,6 @@
 
 pub mod bullet;
 pub mod drone;
+pub mod nav;
 pub mod trig;
 pub mod world;

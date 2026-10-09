@@ -480,3 +480,31 @@ move is a step lasting 100–115 ticks and 1.65 per hit.
   looping danim of that state plays or a one-shot one finishes (*suggested*; matches the 101/113-tick steps).
 - Player damage first used the ELF default difficulty factor (0.75); the live 1.65 per hit showed the per-level
   table (0.6 for 07000005 at difficulty 1).
+
+## 0021 — AI network, patrols (2026-10-08/09)
+
+User: "keep going, add the navigation routes and cover … keep going for the next several hours while I sleep".
+Three research passes (AI network and routing; cover; patrols) condensed into docs/systems/drone-navigation.md and
+docs/systems/drone-cover.md; I read `AIPath_Parse`, `AIPath_Prepare`, `AIPath_BindNodes`, `NDrone2_AssignAIPath` and
+`NDrone2_Move` myself.
+
+**Format**: map block 0x05 (docs/formats/ai-path.md, `aipath.rs`): version 8, named records (paths and boundaries),
+nodes 0x40 / 0x20 bytes, links 16 / 20 bytes. All 210 records on the disc parse to their block's exact length with
+every link in range (golden `ai_paths.tsv`; its first sister run failed because rows were keyed by archive only — the
+key is now archive:map:record). Block 0x19 is keyframe paths for doors, cameras and helicopters, not drones.
+
+**Port**: `nf-game/src/nav.rs`: network build (post heights by a ray up, door / kick / passable walls), move tests,
+bounds tests, node searches, A* with this build's quirks, `OptimiseRoute`, the link creep and route following;
+patrols (`InitPatrol` → `AssignAIPath(4)` → `InitAIPath` → Patrol with the walk anim, wait nodes, idle timeouts),
+idle stand variants and look-arounds.
+
+**Live check** (`goto_level.py 07000005`, `ai_trace.py --near 50.85 28.27 93.63 --frames 2400`): the guard walks
+PatrolPath 1 the whole time without stopping at its wait nodes. Two corrections came from it:
+- the look-around requested at a wait node is cancelled the same tick by the walk request (calling the playing anim
+  state zeroes a pending call);
+- the port fell 2 % behind: it had no motion on the tick the walk script wraps. Aligning per-tick step sizes with the
+  live ones (offset 11 ticks, mean difference 1.3 %) showed the game repeats the last step on the wrap tick; with that
+  the walked distance matches to 0.05 % (23.425 vs 23.413 units). Two wrong tries first: the last frame minus the
+  previous root (no change, the loop's last frame is its first pose shifted) and the first step (too small).
+New test `guard_patrols_like_the_game`: route order and positions within 0.35 units of the live samples (sister: 60
+ticks earlier must be farther). The "gone" drone of WORKLOG 0017 at (50.85, 28.27, 93.63) is this patroller.

@@ -1,5 +1,7 @@
-//! Guard AI against a live PCSX2 trace (WORKLOG 0019, `tools/trace/ai_trace.py`): in 07000005, Bond appearing 6 units
-//! from the guard at (61.34, 99.50) is noticed after 61 ticks and fired at in 3-shot bursts, 4 ticks apart.
+//! Guard AI against live PCSX2 traces (`tools/trace/ai_trace.py`) in 07000005:
+//! - WORKLOG 0019/0020: Bond appearing 6 units from the guard at (61.34, 99.50) is noticed after 61 ticks and fired at
+//!   in 3-shot bursts, 4 ticks apart;
+//! - WORKLOG 0021: the guard at (50.85, 28.27, 93.63) patrols PatrolPath 1 (work/patrol_trace.tsv).
 //! Opt-in: set `NF_ISO` to the disc image.
 
 use nf_formats::anim::Script;
@@ -8,44 +10,79 @@ use nf_formats::{disc, drone, level::Level, levelbin::LevelBin, weapon::WeaponDa
 use nf_game::drone::{Data, Drone, Drones, Player, Rng};
 use std::collections::HashMap;
 
-#[test]
-fn guard_notices_and_fires_like_the_game() {
-    let Some(path) = std::env::var_os("NF_ISO") else { eprintln!("skip: NF_ISO not set"); return };
-    let iso = IsoImage::open(&path).unwrap();
-    let elf = iso.read_file(iso.find("/ACTION.ELF").unwrap()).unwrap();
-    let (tables, props, weapons) = (drone::DroneAnimData::from_action_elf(&elf).unwrap(), drone::PropertyTables::from_action_elf(&elf).unwrap(), WeaponData::from_action_elf(&elf).unwrap());
-    let (entries, bin) = disc::files_bin_entries(&iso).unwrap();
-    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case("07000005.bin")).unwrap();
-    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).unwrap();
-    let level = Level::parse(&data).unwrap();
-    let lb = LevelBin::parse(&data).unwrap();
-    let scripts: HashMap<u32, Script> = lb.entries.iter().filter(|e| e.kind == 5).filter_map(|e| Script::parse(lb.data(&data, e)).ok()).map(|s| (s.hashcode, s)).collect();
-    let world = nf_game::world::CollisionWorld::build(&level, &level.instances(true).0);
-    let sequences = disc::level_sequences(&iso, "07000005.bin").unwrap();
-    let skeletons: HashMap<u8, nf_formats::character::Skeleton> = lb.entries.iter().filter(|e| e.kind == 6).filter_map(|e| nf_formats::character::parse_skeleton(lb.data(&data, e)).ok()).map(|k| (k.id as u8, k)).collect();
-    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: 0x0700_0005, sequences: &sequences, skins: &level.skins, skeletons: &skeletons };
-    // Every drone present at level start (line of sight is scheduled round robin over all of them, as in the game).
-    let m = level.main_map().unwrap();
-    let list: Vec<(u32, Vec<(u32, u32)>)> = level.maps[m].placements.iter().map(|p| (p.flags & 0xff, p.params.clone())).collect();
-    let build = |alert: Option<f32>| {
+/// Everything `Data` borrows, owned.
+struct Level05 {
+    tables: drone::DroneAnimData,
+    props: drone::PropertyTables,
+    weapons: WeaponData,
+    level: Level,
+    scripts: HashMap<u32, Script>,
+    world: nf_game::world::CollisionWorld,
+    sequences: HashMap<u32, nf_formats::anim::Sequence>,
+    skeletons: HashMap<u8, nf_formats::character::Skeleton>,
+    nav: nf_game::nav::Network,
+}
+
+impl Level05 {
+    fn load() -> Option<Level05> {
+        let path = std::env::var_os("NF_ISO")?;
+        let iso = IsoImage::open(&path).unwrap();
+        let elf = iso.read_file(iso.find("/ACTION.ELF").unwrap()).unwrap();
+        let (entries, bin) = disc::files_bin_entries(&iso).unwrap();
+        let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case("07000005.bin")).unwrap();
+        let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).unwrap();
+        let level = Level::parse(&data).unwrap();
+        let lb = LevelBin::parse(&data).unwrap();
+        let scripts = lb.entries.iter().filter(|e| e.kind == 5).filter_map(|e| Script::parse(lb.data(&data, e)).ok()).map(|s| (s.hashcode, s)).collect();
+        let world = nf_game::world::CollisionWorld::build(&level, &level.instances(true).0);
+        let skeletons = lb.entries.iter().filter(|e| e.kind == 6).filter_map(|e| nf_formats::character::parse_skeleton(lb.data(&data, e)).ok()).map(|k| (k.id as u8, k)).collect();
+        let m = level.main_map().unwrap();
+        let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap(), &world, 0x0700_0005);
+        Some(Level05 {
+            tables: drone::DroneAnimData::from_action_elf(&elf).unwrap(),
+            props: drone::PropertyTables::from_action_elf(&elf).unwrap(),
+            weapons: WeaponData::from_action_elf(&elf).unwrap(),
+            sequences: disc::level_sequences(&iso, "07000005.bin").unwrap(),
+            level, scripts, world, skeletons, nav,
+        })
+    }
+
+    fn data(&self) -> Data<'_> {
+        Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: 0x0700_0005,
+            sequences: &self.sequences, skins: &self.level.skins, skeletons: &self.skeletons, nav: &self.nav }
+    }
+
+    /// Every drone present at level start (line of sight is scheduled round robin over all of them, as in the game),
+    /// optionally at a fixed alertness; and the index of the drone placed at `x`.
+    fn drones(&self, alert: Option<f32>, x: f32) -> (Vec<Drone>, usize, Rng) {
+        let d = self.data();
+        let m = self.level.main_map().unwrap();
+        let list: Vec<(u32, Vec<(u32, u32)>)> = self.level.maps[m].placements.iter().map(|p| (p.flags & 0xff, p.params.clone())).collect();
         let mut rng = Rng::new(1);
-        let (mut drones, mut guard) = (Vec::new(), None);
-        for (p, role) in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f).zip(drone::spawn_roles(&list)) {
+        let (mut drones, mut found) = (Vec::new(), None);
+        for (p, role) in self.level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f).zip(drone::spawn_roles(&list)) {
             if matches!(role, drone::SpawnRole::Reinforcement { .. }) { continue; }
             let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
-            let floor = world.floor_below(p.translation, 3.0).unwrap_or(p.translation[1] - 1.0);
-            if (p.translation[0] - 61.342).abs() < 0.01 { guard = Some(drones.len()); }
-            let mut x = Drone::new(&d, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, &mut rng);
-            if let Some(a) = alert { x.alert = a; x.alert_floor = a; }
-            drones.push(x);
+            let floor = self.world.floor_below(p.translation, 3.0).unwrap_or(p.translation[1] - 1.0);
+            if (p.translation[0] - x).abs() < 0.01 { found = Some(drones.len()); }
+            let mut dr = Drone::new(&d, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, &mut rng);
+            if let Some(a) = alert { dr.alert = a; dr.alert_floor = a; }
+            drones.push(dr);
         }
-        (drones, guard.unwrap(), rng)
-    };
-    let (drones, gi, rng) = build(None);
+        (drones, found.unwrap(), rng)
+    }
+}
+
+fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0] } }
+
+#[test]
+fn guard_notices_and_fires_like_the_game() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, gi, rng) = l.drones(None, 61.342);
     assert_eq!(drones.len(), 13, "live count at level start");
     let mut sim = Drones::new(drones, rng);
-    let bond = [67.31, 26.5, 99.47];
-    let player = Player { pos: bond, target: [bond[0], bond[1] + 0.5, bond[2]], eye: [bond[0], bond[1] + 1.0, bond[2]], aim: [-1.0, 0.0, 0.0] };
+    let player = bond_at([67.31, 26.5, 99.47]);
     for _ in 0..400 { sim.tick(&d, &player); }
     let g = &sim.list[gi];
     let attack = g.log.iter().find(|(_, s)| *s == nf_game::drone::state::ATTACK).map(|(f, _)| *f);
@@ -67,9 +104,43 @@ fn guard_notices_and_fires_like_the_game() {
     // The sniper (L96A1, 30 × 0.6) hits for 18, as in the live trace.
     assert!(sim.player_hits.iter().filter(|(_, o, _)| *o != gi).all(|(_, _, h)| (h - 18.0).abs() < 1e-3 || (h - 1.65).abs() < 1e-3 || *h < 18.0));
     // Sister: the same guard already at alertness 1 reacts without the delay, so the comparison above can fail.
-    let (alert_drones, _, alert_rng) = build(Some(1.0));
+    let (alert_drones, _, alert_rng) = l.drones(Some(1.0), 61.342);
     let mut alert_sim = Drones::new(alert_drones, alert_rng);
     for _ in 0..100 { alert_sim.tick(&d, &player); }
     let early = alert_sim.list[gi].log.iter().find(|(_, s)| *s == nf_game::drone::state::ATTACK).map(|(f, _)| *f);
     assert!(early.is_some_and(|f| f < 61), "sister: alertness 1 must react earlier, got {early:?}");
+}
+
+/// Live trace (work/patrol_trace.tsv, Bond standing at his start (104.95, 24.96, 108.83)): the guard walks
+/// PatrolPath 1 from node 20 without stopping (anim state 0x37 throughout); its positions every 300 samples (the trace
+/// starts ~11 ticks after the level).
+#[test]
+fn guard_patrols_like_the_game() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, gi, rng) = l.drones(None, 50.849);
+    let mut sim = Drones::new(drones, rng);
+    let player = bond_at([104.95, 24.96, 108.83]);
+    let route = |s: &Drones| s.list[gi].route.as_ref().map(|r| r.nodes.clone());
+    sim.tick(&d, &player);
+    assert_eq!(sim.list[gi].state, nf_game::drone::state::PATROL);
+    // `InitAIPath` order from node 20 (the first link of a patrol path's start node is skipped).
+    let expect: Vec<u16> = [20, 26, 21, 22, 23, 24, 25, 0].into_iter().chain(1..=19).collect();
+    assert_eq!(route(&sim), Some(expect));
+    let live = [(300, [53.3023, 93.4941]), (600, [56.0890, 93.9130]), (900, [58.8470, 94.1405]), (1200, [61.6508, 94.3452]),
+        (1500, [64.4133, 93.7609]), (1800, [63.7538, 94.2367]), (2100, [61.0325, 94.5154])];
+    let mut at = HashMap::new();
+    for t in 2..=2200 {
+        sim.tick(&d, &player);
+        at.insert(t, sim.list[gi].pos);
+        assert_eq!(sim.list[gi].state, nf_game::drone::state::PATROL, "tick {t}");
+    }
+    for (sample, xz) in live {
+        let p = at[&(sample + 11)];
+        let err = ((p[0] - xz[0]).powi(2) + (p[2] - xz[1]).powi(2)).sqrt();
+        assert!(err < 0.35, "sample {sample}: port ({:.2}, {:.2}) vs live ({:.2}, {:.2}), {err:.2} apart", p[0], p[2], xz[0], xz[1]);
+        // Sister: 60 ticks earlier the guard is measurably elsewhere, so the tolerance can fail.
+        let q = at[&(sample + 11 - 60)];
+        assert!(((q[0] - xz[0]).powi(2) + (q[2] - xz[1]).powi(2)).sqrt() > 0.35, "sister at sample {sample}");
+    }
 }

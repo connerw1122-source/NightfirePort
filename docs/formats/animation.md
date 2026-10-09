@@ -106,8 +106,13 @@ sequence frame is script time − first + 1 (`AnimSeqTick`).
 - `AnimFrameCopy` keeps the root translation of the first evaluated frame in the sequence state (+0x20) and the
   current minus first (+0x30). `AnimSeqTick` (0x1c28d0) stores the root's change since the previous tick as the
   frame's root motion (script flags 0x01000000/0x02000000/0x04000000 zero single components — y for 0x02000000; the
-  decompile of the others is garbled; no motion on the tick a script starts or wraps) and then **zeroes the root
-  bone's translation** in the pose buffer.
+  decompile of the others is garbled; no motion on the tick a script starts) and then **zeroes the root bone's
+  translation** in the pose buffer.
+- **Wrap tick** [L, WORKLOG 0021]: when a looping script wraps onto itself the object still moves, by the script's
+  **last step again** (last frame − the frame before). Per-tick steps of a patrolling guard in PCSX2
+  (work/patrol_trace.tsv, walk script 0x06000262, 115 ticks per cycle) aligned with the port's show the step before
+  the wrap twice; with it the port's walked distance matches the live one to 0.05 % over 2,400 ticks (without it
+  2 % short). How `AnimSeqTick` produces this is not read (U-030).
 - `AnimFrameResolve` (0x1c35f8) blends root motion across playing scripts, rotates it by the object matrix (passing it
   to the object's pre-translation callback first) and adds it to the object position (`obj+0x30`); it stores the
   absolute root height + `sAnimObject+0x60` as the hip height (`sAnimObject+0x5C` = `anim+0xCC`).
@@ -119,9 +124,8 @@ sequence frame is script time − first + 1 (`AnimSeqTick`).
   y = 0 — the sequence floor is y = 0. Bind meshes have the hip at the origin (lowest vertex −1.16). In 07000005 the
   drone placements sit 1.0845 above the rendered floor (10 of 16; others on steps/slopes).
 
-nf-view: the root is zeroed as the game does; horizontal root motion is dropped (no AI or collision yet), and the drone
-object is put `Drone+0xA0` above the highest World triangle below the placement — where the game's collision leaves
-it, feet 0.02 into the floor. Which script a drone plays: docs/systems/drone-animation.md.
+nf-view: the root is zeroed as the game does; horizontal root motion moves the drones through nf-game (rotated by
+the yaw, stopped by collision), and the drone object is put `Drone+0xA0` above the collision floor below it. Which script a drone plays: docs/systems/drone-animation.md.
 
 Open: frame blending (f/f+1); facial morphs; head tracking and aim overrides in `psiBuildMatrixPalette`;
 `sAnimObject+0x60`; opcodes 1 and 4.

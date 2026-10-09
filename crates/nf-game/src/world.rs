@@ -42,6 +42,9 @@ impl CollisionWorld {
 
     pub fn triangle_count(&self) -> usize { self.tris.len() }
 
+    /// No geometry (tests).
+    pub fn empty() -> CollisionWorld { CollisionWorld { tris: Vec::new(), objects: Vec::new() } }
+
     /// First hit along the segment `from → to` as a fraction in [0, 1] (Möller–Trumbore, both faces).
     pub fn segment(&self, from: V3, to: V3) -> Option<f32> {
         let d = sub(to, from);

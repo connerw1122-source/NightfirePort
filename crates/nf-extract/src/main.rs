@@ -44,6 +44,7 @@ fn main() -> Result<()> {
         "skins" => skins(&IsoImage::open(a(1)?)?),
         "datums" => datums(&IsoImage::open(a(1)?)?, a(2)?),
         "block-dump" => block_dump(&IsoImage::open(a(1)?)?, a(2)?, u8::from_str_radix(a(3)?.trim_start_matches("0x"), 16)?, Path::new(a(4)?)),
+        "script-info" => script_info(&IsoImage::open(a(1)?)?, a(2)?, u32::from_str_radix(a(3)?, 16)?),
         "coll-probe" => coll_probe(&IsoImage::open(a(1)?)?, a(2)?),
         "coll-check" => coll_check(&IsoImage::open(a(1)?)?),
         "coll-floor" => coll_floor(&IsoImage::open(a(1)?)?, a(2)?),
@@ -408,8 +409,9 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     let level_id = u32::from_str_radix(&level_name[..8], 16)?;
     let sequences = disc::level_sequences(iso, level_name)?;
     let skeletons: HashMap<u8, nf_formats::character::Skeleton> = lb.entries.iter().filter(|e| e.kind == 6).filter_map(|e| nf_formats::character::parse_skeleton(lb.data(&data, e)).ok()).map(|k| (k.id as u8, k)).collect();
-    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons };
     let m = level.main_map().context("no main map")?;
+    let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, level_id);
+    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons, nav: &nav };
     let list: Vec<(u32, Vec<(u32, u32)>)> = level.maps[m].placements.iter().map(|p| (p.flags & 0xff, p.params.clone())).collect();
     let roles = drone::spawn_roles(&list);
     let mut rng = Rng::new(0x1234_5678);
@@ -429,15 +431,32 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     println!("{} drones; tracing drone {near} at {:?}", sim.list.len(), sim.list[near].pos);
     let mut last_danim = 0;
     let (mut hits, mut misses) = (Vec::new(), 0);
+    // Per drone: path length and ticks without horizontal motion (patrol checks against live traces).
+    let mut walked = vec![(0f32, 0u32); sim.list.len()];
+    let mut steps_out = std::env::var_os("NF_STEPS").map(std::fs::File::create).transpose()?;
     for _ in 0..frames {
+        let before: Vec<[f32; 3]> = sim.list.iter().map(|x| x.pos).collect();
         sim.tick(&d, &player);
+        for (i, x) in sim.list.iter().enumerate() {
+            let step = ((x.pos[0] - before[i][0]).powi(2) + (x.pos[2] - before[i][2]).powi(2)).sqrt();
+            walked[i].0 += step;
+            if step < 1e-6 && x.route.is_some() { walked[i].1 += 1 }
+            if i == 1 { if let Some(f) = steps_out.as_mut() { use std::io::Write; writeln!(f, "{}\t{step}\t{}", sim.frame, x.anim.time)?; } }
+        }
         for ev in &sim.impacts { if let nf_game::bullet::BulletEvent::Player { damage, .. } = ev { hits.push((sim.frame, *damage)); } else { misses += 1; } }
+        if sim.frame % 300 == 0 {
+            for (i, x) in sim.list.iter().enumerate().filter(|(_, x)| x.route.is_some()) {
+                let r = x.route.as_ref().unwrap();
+                println!("frame {:4}: patrol drone {i} state {:#x} at ({:.2}, {:.2}, {:.2}) route node {} (index {}) anim {:#x} danim {} script {:08x} t {}", sim.frame, x.state, x.pos[0], x.pos[1], x.pos[2], r.nodes.get(r.index.max(0) as usize).copied().unwrap_or(0), r.index, x.anim.state, x.anim.danim, x.anim.script.unwrap_or(0), x.anim.time);
+            }
+        }
         let dr = &sim.list[near];
         if dr.anim.danim != last_danim {
             last_danim = dr.anim.danim;
             println!("frame {:4}: danim {} script {:08x} anim state {:#x} class {}", sim.frame, dr.anim.danim, dr.anim.script.unwrap_or(0), dr.anim.state, dr.anim.class);
         }
     }
+    for (i, x) in sim.list.iter().enumerate().filter(|(_, x)| x.route.is_some()) { println!("patrol drone {i}: walked {:.3} units in {frames} ticks, {} ticks without motion", walked[i].0, walked[i].1); }
     let dr = &sim.list[near];
     println!("state changes: {:?}", dr.log.iter().map(|(f, s)| format!("{f}:{s:#x}")).collect::<Vec<_>>());
     println!("shots: {:?}", dr.shots);
@@ -823,6 +842,29 @@ fn block_dump(iso: &IsoImage, level_name: &str, id: u8, out_dir: &Path) -> Resul
             std::fs::write(&out, p)?;
             println!("{} kind {} -> {} ({} bytes)", e.name, e.kind, out.display(), p.len());
             n += 1;
+        }
+    }
+    Ok(())
+}
+
+/// One script's commands, with each op-0 sequence's frame count and root translation at its ends.
+fn script_info(iso: &IsoImage, level_name: &str, hash: u32) -> Result<()> {
+    use nf_formats::{anim::Script, levelbin::LevelBin};
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let lb = LevelBin::parse(&data)?;
+    let s = lb.entries.iter().filter(|e| e.kind == 5).filter_map(|e| Script::parse(lb.data(&data, e)).ok()).find(|s| s.hashcode == hash).context("no such script")?;
+    println!("script {hash:08x}: length {} looping {}", s.length, s.looping);
+    for c in &s.commands { println!("  op {} args {:x?}", c.op, c.args); }
+    let seqs = disc::level_sequences(iso, level_name)?;
+    for (a, b, q) in s.sequences() {
+        if let Some(sq) = seqs.get(&q) {
+            let r = |f: u32| [sq.value(0, f), sq.value(1, f), sq.value(2, f)];
+            println!("  frames {a}..{b} → sequence {q:08x}: {} frames, root first {:?} at {} {:?} last {:?}", sq.frames, r(1), b - a + 1, r((b - a + 1) as u32), r(sq.frames as u32));
+            let path: f32 = (1..sq.frames as u32).map(|f| { let (u, v) = (r(f), r(f + 1)); ((v[0] - u[0]).powi(2) + (v[2] - u[2]).powi(2)).sqrt() }).sum();
+            let wrap = { let (u, v) = (r(sq.frames as u32), r(1)); ((v[0] - u[0]).powi(2) + (v[2] - u[2]).powi(2)).sqrt() };
+            println!("    horizontal root path over the frames {path:.4}, last → first {wrap:.4}");
         }
     }
     Ok(())

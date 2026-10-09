@@ -3,7 +3,7 @@
 Optionally teleports Bond first (writes the player object's position/rotation in emulated RAM). Samples once per
 in-game frame (GameState+0x34) the nearest drone's (or --drone N's) fields listed in FIELDS, plus Bond's position.
 
-Usage: python tools/trace/ai_trace.py [--teleport x y z yaw] [--drone N] [--frames 600] [--out work/ai_trace.tsv]
+Usage: python tools/trace/ai_trace.py [--teleport x y z yaw] [--drone N | --near x y z] [--frames 600] [--out work/ai_trace.tsv]
                                       [--field name:offset:type ...]   (extra Drone fields, type u32/u16/u8/f32/i16)
 """
 import os
@@ -70,6 +70,14 @@ def main():
     ppos = [read(p, player + 0x30 + 4 * k, "f32") for k in range(3)]
     if "--drone" in a:
         d = ds[int(a[a.index("--drone") + 1])]
+    elif "--near" in a:
+        i = a.index("--near")
+        q = [float(v) for v in a[i + 1:i + 4]]
+
+        def dist_q(d):
+            o = p.read32(d + 0xC)
+            return sum((read(p, o + 0x30 + 4 * k, "f32") - q[k]) ** 2 for k in range(3))
+        d = min(ds, key=dist_q)
     else:
         def dist(d):
             o = p.read32(d + 0xC)
