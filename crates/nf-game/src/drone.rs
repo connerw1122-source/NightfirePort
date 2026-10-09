@@ -142,6 +142,8 @@ pub struct Data<'a> {
     /// The level's tuning globals (`ReadTuningVars`) and the hit-box tables (`HumanCollisionBones`).
     pub tuning: &'a nf_formats::tuning::Tuning,
     pub hitboxes: &'a nf_formats::hitbox::CollisionBones,
+    /// AI volumes (placements 0xF5 / 0xF8): Bond's visibility factor.
+    pub volumes: &'a [crate::aivolume::AiVolume],
 }
 
 /// A bullet that hit a drone (HITDATA): the part (bone id), the ray (`+0x30`), the point, damage (`+0x08`), weapon.
@@ -289,6 +291,8 @@ pub struct Drone {
     /// `+0x4FC` alert bits others can see (0x10 attacking, 1 shouted, …; observers get the source's bits << 16),
     /// `+0x524` frame the attack began, `+0x4F8 & 0x20000` already alerted by another drone, `+0x4F8 & 0x2000` may notice.
     pub alert_bits: u32,
+    /// `+0x22C`: Bond's visibility factor from the AI volumes he stands in (`Drone_ProcessOpponents`).
+    pub light: f32,
     pub attack_frame: u32,
     pub alerted_by_drone: bool,
     pub watching: bool,
@@ -426,7 +430,7 @@ impl Drone {
             state: state::GLOBAL, prev_state: 0, next_state: None, entered: 0, timer_c: None,
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0 },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
-            shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, attack_frame: 0, alerted_by_drone: false, watching: false,
+            shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
             switch_channel: param(3) as u8, channel_on: false, placement: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
@@ -2058,6 +2062,9 @@ impl Drone {
             if margin < 0.0 { return 0.0; }
             vis *= crate::trig::sinf(margin / self.half_fov * crate::trig::HALF_PI);
         }
+        // `DroneVision_OpponentVisibility` (0x175af0): × `+0x22C` (the AI-volume factor) unless the drone has alert
+        // bits and full alertness. [L] 07000005 start: Bond stands in a 0.25 shadow volume (WORKLOG 0032).
+        if !(self.alert_bits != 0 && self.alert >= 1.0) && self.light != 1.0 { vis *= self.light; }
         vis.max(0.0)
     }
 
@@ -2291,7 +2298,10 @@ impl Drones {
     pub fn tick(&mut self, d: &Data, player: &Player) {
         self.frame += 1;
         let frame = self.frame;
-        for dr in self.list.iter_mut().filter(|x| x.present) { dr.opponent_info(player); dr.seen = false; }
+        // `Drone_ProcessOpponents` (0x1390c0): Bond's visibility factor from the AI volumes holding him (crouching
+        // ×0.75 is not modelled: the port's Bond does not crouch), then each drone's opponent info.
+        let light = crate::aivolume::visibility_factor(d.volumes, player.pos, false);
+        for dr in self.list.iter_mut().filter(|x| x.present) { dr.light = light; dr.opponent_info(player); dr.seen = false; }
         self.update_player_bullets(d);
         // `Drone_InitComms`: corpses (0x0F, 0x47, 0x48 + 300, 0xBF by the time their state began); beyond 3
         // (`DAT_00298F5C`) the oldest fades fast (`DroneFunc_DeadDrone`).

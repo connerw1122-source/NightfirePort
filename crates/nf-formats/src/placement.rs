@@ -21,12 +21,17 @@ pub struct Placement {
     pub translation: [f32; 3],
     pub rotation: [f32; 3],
     pub params: Vec<(u32, u32)>,
+    /// The words at +0x24..+0x47, raw (`parsemap_create_dynamic_objects` passes +0x34..+0x3C to some creators as a
+    /// scale vector, e.g. `Drone_AIVolume_Create`).
+    pub extra: [u32; 9],
 }
 
 impl Placement {
     pub const CREATE_CEL: u32 = 0x8000;
     pub fn by_hash(&self) -> bool { self.hashcode != u32::MAX }
     pub fn creates_cel(&self) -> bool { self.flags & Self::CREATE_CEL != 0 }
+    /// +0x34..+0x3C as floats.
+    pub fn scale(&self) -> [f32; 3] { [4, 5, 6].map(|k| f32::from_bits(self.extra[k])) }
 }
 
 /// Parses a 0x1A payload; it must end exactly at the last record (true for all 2,230 maps).
@@ -43,6 +48,7 @@ pub fn parse(payload: &[u8]) -> Result<Vec<Placement>> {
         out.push(Placement {
             index: b.u16(p)?, hashcode: b.u32(p + 4)?, flags: b.u32(p + 8)?,
             translation: [f(0x0c)?, f(0x10)?, f(0x14)?], rotation: [f(0x18)?, f(0x1c)?, f(0x20)?], params,
+            extra: { let mut e = [0u32; 9]; for (k, w) in e.iter_mut().enumerate() { *w = b.u32(p + 0x24 + 4 * k)?; } e },
         });
         p += 0x4c + 8 * n;
     }

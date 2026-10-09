@@ -38,6 +38,18 @@ alertness 0 or 1 (property 0x20 → {0, 0, 0.66, 1.0} at 0x2f5cc8, verified); al
   vis = 0.7 − (dist − R)/R, × sin(margin/e4 · π/2) with margin = e4 + 22.5° − |head yaw − yaw to target| (0 outside),
   × player multiplier (AI volume boxes, × 0.75 crouching). Sight constants by class (parameter 14): e8 24 (classes
   1/2/3/4/5: 12/16/40/1000/0), e4 = π/2; on attack e8 = max(e8, fc) and e4 = 0 (all round).
+- AI volumes [M, L] (WORKLOG 0032): placements 0xF5 / 0xF8 → `Drone_AIVolume_Create` (0x1376c0) → `AIBoxList`
+  (0x2706c8; nodes +4 next, +8 object (matrix `obj+0x90`), +0x10 half-extents, +0x20 factor = param 0 × 0.01, +0x24
+  kind from param 1: 0 → 0, 1 → 2, 2 → 1, 4 → 3; +0x26 / +0x28 / +0x2C params 4 / 2 / 3). Half-extents = |(glist max
+  − min)/2| × the placement's scale (+0x34; the glist bounds are the entity params' +0x18 min / +0x24 max). On
+  07000005 (or param 1 = 4) the rotation's z is negated and the position lifted by 1.5 × scale y. The object matrix is
+  Rx·Rz·Ry (row vectors) — fitted to the live matrix, the builder not read. `Drone_ProcessOpponents` (0x1390c0):
+  `+0x22C` = the product of the kind-0 factors of the boxes holding Bond (`Intersect_PointOOBox`), × 0.75 crouching;
+  `OpponentVisibility` multiplies by it unless the drone has alert bits `+0x4FC` and alertness ≥ 1. [L] 07000005:
+  eight `AI_ShadowVolume` boxes (two 0.25, six 0 around the start corner); Bond's start is in a 0.25 one, so a guard
+  44.6 units away at alertness 0.75 does not see him (visibility ≈ 0.24 < 0.7). One more box in the live list
+  (153.75, 17.6, 90.86, factor 0) is not from the main map's placements (U-035). Port: `nf_game::aivolume`
+  (test `ai_volumes_match_the_game` against the snapshot).
 - Line of sight (`DroneVision_ProcessDroneSight`): one drone per tick, round robin, only if vis ≥ 0.7; head to
   target bone (`Drone_View_Bones` cycle 2, 3, 5, …). Counters: seen ticks `+0x270`, unseen `+0x274`.
 - Reaction (`DroneFunc_ReactionTime`): on levels 0x7000002/3/5/9/A `(1 − alert)·0.3·(200 − stat_b8)` ticks

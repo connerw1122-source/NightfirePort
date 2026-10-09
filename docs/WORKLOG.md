@@ -750,8 +750,8 @@ start (104.95, 24.96, 108.83)): the hearing list (head 0x349b0c) held looped amb
 Borrowing the in-use entry 0x1FDDD70 — id 1, weight 75, inner 2, outer 30, 1 unit from the gate guard — the game
 zeroed the weight within the frame and the guard went Idle → Aware (0xA3) with `+0x510` loudness 75.0, `+0x514` share
 0.74999994 (the chopped 75 × 0.01 the port computes), alertness ≈ 0.7497, noise level `+0x43` = 2, then back to Idle.
-A second sound: noise level 3, Suspect (0xA4), then Idle and back to its post (no AlertToPosition). The entry was
-restored each time. `tools/trace/hear_inject.py` does the same from Python (it needs PINE to itself).
+A second sound: noise level 3, Suspect (0xA4), then Idle and back to its post (the polls were seconds apart, so
+states in between — AlertToPosition / SearchArea — may have been missed). The entry was restored each time. `tools/trace/hear_inject.py` does the same from Python (it needs PINE to itself).
 
 **Divergence** (open, U-033): the port's guard, with the same sounds, sees Bond 15 frames into Aware (alertness 0.75
 → sight range 24 × 2.5 = 60 > 44.6) and attacks; live it did not. The guard was drawn live (`obj+0xFC` = 2), so
@@ -760,3 +760,21 @@ MCP bridge held PINE).
 
 **Mistake**: a mistyped decimal address wrote 0 to `0x30D101` (byte 1 of the `ScriptCam` pointer, 0 in the level-start
 snapshot) instead of `IsWarmReset` 0x30D001; the level was reloaded right after. Session state only, nothing persisted.
+
+## 0032 — AI shadow volumes: why the live guard did not see Bond (2026-10-09)
+
+Reading the live guard's vision fields (and correcting two mis-added offsets of my own first reads): `+0xE4` π/2,
+`+0xE8` 24, `+0x1A0` 44.59, `+0x1C4` 1.354, view `+0x380` = body yaw −1.585 (facing away), `+0x22C` 0.24999999,
+`+0x230` 0. `DroneVision_OpponentVisibility` multiplies by `+0x22C`, which `Drone_ProcessOpponents` sets from the
+**AI volumes** Bond stands in (`AIBoxList`). The level-start snapshot holds nine boxes; eight are the main map's
+`AI_ShadowVolume` placements (type 0xF5): two with factor 0.25 and six with 0 around the start corner; Bond's start is
+inside a 0.25 one. The port had no volumes, so its guard saw Bond (0.957 > 0.7) where the game's could not (0.24).
+
+**Port**: `nf_game::aivolume` (`Drone_AIVolume_Create`: factor = param 0 % , kind from param 1, half-extents from the
+glist bounds × placement scale, the 07000005 rule: z rotation negated and y + 1.5 × scale y); `MapObject` now carries
+the entity params' bounds (+0x08 centre, +0x14 radius, +0x18 min, +0x24 max — `AI_ShadowVolume`: ±1.5 × (0..3));
+`Placement::extra` keeps +0x24..+0x47 (`scale()` = +0x34). **Failure**: the first matrix (`RotMatrix` order) matched
+the seven yaw-only boxes but missed the tilted one by 0.25 in a row; a search over Euler orders fits Rx·Rz·Ry to 2e-5.
+Test `ai_volumes_match_the_game` (centres, extents, axes, factors vs the snapshot; Bond's start factor 0.24999999;
+sister: outside every box 1). With it the two-sound scenario no longer makes the guard attack. All tests pass.
+Open: U-035 (the matrix builder, the ninth box), U-033 (Aware's look-around length live).

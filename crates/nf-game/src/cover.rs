@@ -161,7 +161,7 @@ mod tests {
     use super::*;
 
     fn corner(yaw: f32) -> CoverNode {
-        CoverNode::from_placement(&Placement { index: 0, hashcode: u32::MAX, flags: 0xe5, translation: [0.0; 3], rotation: [0.0, yaw, 0.0], params: vec![(3, 46)] }).unwrap()
+        CoverNode::from_placement(&Placement { index: 0, hashcode: u32::MAX, flags: 0xe5, translation: [0.0; 3], rotation: [0.0, yaw, 0.0], params: vec![(3, 46)], extra: [0; 9] }).unwrap()
     }
 
     #[test]

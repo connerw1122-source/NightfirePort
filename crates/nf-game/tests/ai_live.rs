@@ -25,6 +25,7 @@ struct Level05 {
     sfx: nf_formats::sfx::SfxTable,
     tuning: nf_formats::tuning::Tuning,
     hitboxes: nf_formats::hitbox::CollisionBones,
+    volumes: Vec<nf_game::aivolume::AiVolume>,
 }
 
 impl Level05 {
@@ -43,6 +44,7 @@ impl Level05 {
         let m = level.main_map().unwrap();
         let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap(), &world, 0x0700_0005);
         let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
+        let volumes = nf_game::aivolume::build(&level, 0x0700_0005);
         Some(Level05 {
             tables: drone::DroneAnimData::from_action_elf(&elf).unwrap(),
             props: drone::PropertyTables::from_action_elf(&elf).unwrap(),
@@ -51,7 +53,7 @@ impl Level05 {
             tuning: { let mut t = nf_formats::tuning::Tuning::from_action_elf(&elf).unwrap(); nf_game::tuning::read_tuning_vars(&mut t, 0x0700_0005); t },
             hitboxes: nf_formats::hitbox::CollisionBones::from_action_elf(&elf).unwrap(),
             sequences: disc::level_sequences(&iso, "07000005.bin").unwrap(),
-            level, scripts, world, skeletons, nav, covers,
+            level, scripts, world, skeletons, nav, covers, volumes,
         })
     }
 
@@ -60,7 +62,7 @@ impl Level05 {
 
     fn data(&self) -> Data<'_> {
         Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: 0x0700_0005,
-            sequences: &self.sequences, skins: &self.level.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes }
+            sequences: &self.sequences, skins: &self.level.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes }
     }
 
     /// Every drone present at level start (line of sight is scheduled round robin over all of them, as in the game),
@@ -390,4 +392,34 @@ fn bond_kills_guards_with_two_torso_shots() {
     // Sister: over the head, nothing is hit.
     let (sim, i, hits) = run([66.0, 26.5, 99.5], 5, 200, 3.0);
     assert!(hits.is_empty() && sim.list[i].health == 10.0, "sister: {hits:?}");
+}
+
+/// AI volumes against the level-start RAM snapshot (work/ee_start_05.bin, `AIBoxList` 0x2706c8, read in WORKLOG 0032):
+/// centre, half-extents, first axis and factor of the eight shadow volumes; Bond's start lies in the 0.25 one only.
+/// Sister: a point well outside every box gets 1.
+#[test]
+fn ai_volumes_match_the_game() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    // (centre, half, row 0, factor) per box, from the snapshot.
+    let live: [([f32; 3], [f32; 3], [f32; 3], f32); 8] = [
+        ([106.55, 26.26, 104.09], [4.58, 2.84, 11.88], [0.914, 0.0, 0.407], 0.25),
+        ([75.22, 20.41, 87.33], [4.87, 1.84, 11.76], [0.035, 0.015, -0.999], 0.25),
+        ([98.18, 24.81, 106.18], [1.5; 3], [0.906, 0.0, 0.423], 0.0),
+        ([97.0, 24.34, 108.59], [1.5; 3], [0.914, 0.0, 0.407], 0.0),
+        ([98.24, 21.24, 106.2], [1.5; 3], [0.906, 0.0, 0.423], 0.0),
+        ([96.86, 21.54, 108.92], [1.5; 3], [0.906, 0.0, 0.423], 0.0),
+        ([98.21, 18.74, 106.18], [1.5; 3], [0.906, 0.0, 0.423], 0.0),
+        ([97.09, 18.49, 108.72], [1.5; 3], [0.899, 0.0, 0.438], 0.0),
+    ];
+    assert_eq!(l.volumes.len(), 8);
+    let close = |a: f32, b: f32| (a - b).abs() < 0.006;
+    for (v, (c, h, r0, f)) in l.volumes.iter().zip(live) {
+        for k in 0..3 {
+            assert!(close(v.m[3][k], c[k]) && close(v.half[k], h[k]) && close(v.m[0][k], r0[k]), "placement {}: {:?} {:?} vs {c:?} {h:?} {r0:?}", v.placement, v.m, v.half);
+        }
+        assert!(close(v.factor, f) && v.kind == 0);
+    }
+    let start = [104.954, 24.9633, 108.8253];
+    assert_eq!(nf_game::aivolume::visibility_factor(&l.volumes, start, false), 0.24999999);
+    assert_eq!(nf_game::aivolume::visibility_factor(&l.volumes, [0.0, 0.0, 0.0], false), 1.0);
 }

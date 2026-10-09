@@ -18,6 +18,13 @@ pub struct MapObject {
     pub name: String,
     /// Entity params payload +4: the glist flags (`celglist+0x44`, copied to `cel+0x94` by the static parser).
     pub flags: u32,
+    /// Entity params +0x08 centre, +0x14 radius, +0x18 min, +0x24 max: the glist's bounds (`celglist+0x20` / `+0x30`,
+    /// used e.g. by `Drone_AIVolume_Create` for the box size; *measured* on `AI_ShadowVolume`: centre (0, 1.5, 0),
+    /// radius 2.598, min (−1.5, 0, −1.5), max (1.5, 3, 1.5)).
+    pub centre: [f32; 3],
+    pub radius: f32,
+    pub min: [f32; 3],
+    pub max: [f32; 3],
     pub gfx: GfxObject,
     /// Collision geometry in object space (block 0x2E before the object), if any.
     pub collision: Option<crate::collision::Collision>,
@@ -95,7 +102,8 @@ impl Level {
                         let tail = p.tail(0x30, "entity name")?.bytes();
                         let name = String::from_utf8_lossy(&tail[..tail.iter().position(|&c| c == 0).unwrap_or(tail.len())]).into_owned();
                         let gfx = pending.take().ok_or_else(|| crate::buf::FormatError::Invalid("entity params without PS2_GFX".into()))?;
-                        objects.push(MapObject { hashcode: p.u32(0)?, name, flags: p.u32(4)?, gfx, collision: pending_coll.take() });
+                        let v = |o: usize| -> crate::buf::Result<[f32; 3]> { Ok([p.f32(o)?, p.f32(o + 4)?, p.f32(o + 8)?]) };
+                        objects.push(MapObject { hashcode: p.u32(0)?, name, flags: p.u32(4)?, centre: v(8)?, radius: p.f32(0x14)?, min: v(0x18)?, max: v(0x24)?, gfx, collision: pending_coll.take() });
                     }
                     id::MAP_DATA_STATIC => placements = placement::parse(blk.payload(data))?,
                     0x05 => ai_network = Some(crate::aipath::AiNetwork::parse(blk.payload(data))?),

@@ -108,6 +108,7 @@ pub struct Sim {
     pub tuning: nf_formats::tuning::Tuning,
     pub hitboxes: nf_formats::hitbox::CollisionBones,
     pub sfx: Option<nf_formats::sfx::SfxTable>,
+    pub volumes: Vec<nf_game::aivolume::AiVolume>,
     /// Bond's gun (07000005's start: P2K, 7 + 41 rounds).
     pub gun: nf_game::gun::Gun,
 }
@@ -119,7 +120,7 @@ impl Sim {
     pub fn step(&mut self, camera: [f32; 3], look: [f32; 3], trigger: bool, aiming: bool) {
         let floor = self.world.floor_below(camera, 4.0).unwrap_or(camera[1] - 1.6);
         let player = nf_game::drone::Player { pos: [camera[0], floor + 0.4, camera[2]], target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look };
-        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes };
+        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes };
         // `Player_WeaponFiring` → `Player_WeaponInitBullet` from the eye along the view (*deviation*: no auto-aim and
         // no aim-point ray yet); the first-person fire script's sound 0x403 feeds the drones' hearing.
         if let Some(w) = self.weapons.records.get(self.gun.weapon as usize) {
@@ -420,7 +421,8 @@ impl Scene {
             let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, d.level_id);
             let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
             let hitboxes = d.hitboxes.clone()?;
-            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes };
+            let volumes = nf_game::aivolume::build(level, d.level_id);
+            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes };
             let mut rng = nf_game::drone::Rng::new(0x1234_5678);
             // Every drone placement; spawner templates stay absent until a spawner brings them in.
             let list = nf_game::drone::level_drones(&data, level, &mut rng);
@@ -430,7 +432,7 @@ impl Scene {
             let seq_index = by_hash.clone();
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.attach_level(level);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), gun: nf_game::gun::Gun::new(2, 7, 41) })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, gun: nf_game::gun::Gun::new(2, 7, 41) })
         });
         Scene { vertices, indices, materials, textures, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }

@@ -48,6 +48,7 @@ fn main() -> Result<()> {
         "route" => { let f = |i: usize| -> Result<f32> { Ok(a(i)?.parse()?) }; route(&IsoImage::open(a(1)?)?, a(2)?, [f(3)?, f(4)?, f(5)?], [f(6)?, f(7)?, f(8)?]) }
         "covers" => covers(&IsoImage::open(a(1)?)?, a(2)?),
         "triggers" => triggers(&IsoImage::open(a(1)?)?, a(2)?),
+        "placements" => placements(&IsoImage::open(a(1)?)?, a(2)?, u32::from_str_radix(a(3)?, 16)?),
         "sfx" => sfx(&IsoImage::open(a(1)?)?, &args[2..]),
         "coll-probe" => coll_probe(&IsoImage::open(a(1)?)?, a(2)?),
         "coll-check" => coll_check(&IsoImage::open(a(1)?)?),
@@ -438,7 +439,8 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     let mut tuning = nf_formats::tuning::Tuning::from_action_elf(&elf)?;
     nf_game::tuning::read_tuning_vars(&mut tuning, level_id);
     let hitboxes = nf_formats::hitbox::CollisionBones::from_action_elf(&elf)?;
-    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons, nav: &nav, covers: &covers, tuning: &tuning, hitboxes: &hitboxes };
+    let volumes = nf_game::aivolume::build(&level, level_id);
+    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons, nav: &nav, covers: &covers, tuning: &tuning, hitboxes: &hitboxes, volumes: &volumes };
     let mut rng = Rng::new(std::env::var("NF_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(0x1234_5678));
     let drones = nf_game::drone::level_drones(&d, &level, &mut rng);
     let mut sim = Drones::new(drones, rng);
@@ -524,6 +526,28 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     println!("clip {} alert {} seen_ticks {} yaw {:.3} → to opp {:.3}", dr.clip, dr.alert, dr.seen_ticks, dr.yaw, dr.yaw_to_opp);
     println!("bullets: {} hit Bond {:?}, {misses} hit the world; Bond health {:.2}", hits.len(), hits.iter().take(12).collect::<Vec<_>>(), sim.health.health);
     for (i, x) in sim.list.iter().enumerate() { if let Some((f, _)) = x.log.iter().find(|(_, s)| *s == nf_game::drone::state::ATTACK) { println!("drone {i} at ({:.1}, {:.1}) attacked at tick {f}{}", x.pos[0], x.pos[2], if x.alerted_by_drone { " (alerted by another drone)" } else { "" }); } }
+    Ok(())
+}
+
+/// The main map's placements of one type (flags word, hex): translation, rotation, the raw words +0x24..+0x47, the
+/// parameters, and the referenced object's glist boxes.
+fn placements(iso: &IsoImage, level_name: &str, kind: u32) -> Result<()> {
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let level = nf_formats::level::Level::parse(&data)?;
+    let m = level.main_map().context("no main map")?;
+    for (i, p) in level.maps[m].placements.iter().enumerate().filter(|(_, p)| p.flags == kind) {
+        let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() } else { Some((m, p.index as usize)) };
+        let obj = target.and_then(|(om, oi)| level.maps[om].objects.get(oi));
+        println!("placement {i}: t {:?} r {:?} extra {:08x?} scale {:?} params {:?} object {:?}", p.translation, p.rotation, p.extra, p.scale(), p.params, obj.map(|o| &o.name));
+        if let Some(o) = obj {
+            for (k, bx) in o.gfx.boxes.iter().enumerate() { println!("    box {k}: a {:?} b {:?}", bx.a, bx.b); }
+            let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+            for v in o.gfx.leaves.iter().flat_map(|l| &l.batches).flat_map(|b| &b.verts) { for k in 0..3 { lo[k] = lo[k].min(v.pos[k]); hi[k] = hi[k].max(v.pos[k]); } }
+            println!("    gfx verts {lo:?}..{hi:?}; flags {:#x}; collision {:?}", o.flags, o.collision.as_ref().map(|c| c.triangles().len()));
+        }
+    }
     Ok(())
 }
 
