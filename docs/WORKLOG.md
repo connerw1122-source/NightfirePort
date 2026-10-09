@@ -854,3 +854,10 @@ cy·sx + cx·sy·sz), (cx·sy + cy·sx·sz, −cz·sx, cx·cy − sx·sy·sz): t
 written, with the game's sine and FPU arithmetic, replacing the fitted product; `ai_volumes_match_the_game` still
 passes. (The ai_live tests now run out of memory when run in parallel on this machine — RuntimeBroker leak — and pass
 with `--test-threads=1`.)
+
+## 0039 — Captains (2026-10-09)
+
+`NDrone2_DefaultInit` after the mode settings (read): captain `+0x19` by difficulty (property 9 on 1, 5 on 2, 8 on 3)
+for kinds 1 / 2 / 3 / 6 / 7 with their captain skins, health × `DroneCaptain_Mod_Health`, `+0x100` =
+`Mod_BulletDamage`, accuracy × 1 / `Mod_BulletAccuracy` truncated; type 0xC drones lose properties 0x14–0x16. Ported
+(`captain_setup`); the start test asserts what the snapshot shows at difficulty 1 on 07000005: no captains, health 10.

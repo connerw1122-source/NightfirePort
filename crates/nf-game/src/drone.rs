@@ -416,6 +416,8 @@ pub struct Drone {
     pub special_spot: V3,
     pub special_yaw: f32,
     pub stationary: bool,
+    /// A captain (`+0x19`).
+    pub captain: bool,
     /// Drone modes (`behaviour_util_get`: placement parameter 15 = type `+0xC7`, 16 = the normal block's mode `+0xC8`,
     /// 21 = the alert block's `+0xC9`; `NDrone2_GetDTYPENEW` → mode `+0xC5`, alternate mode `+0xC6`), the team `+0x44`,
     /// the alternate (attack) state `+0x5A4`, and the alert block's alertness `+0x504`.
@@ -473,13 +475,39 @@ impl Drone {
             global_flinch: None, bond_aiming: false, cull: false,
             corpse: false, death_pending: false, death_channel: param(12) as u8, special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
-            dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
+            captain: false, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
         };
         dr.init_properties(d, &param);
         dr.type_setup(d);
+        dr.captain_setup(d);
         dr.set_danim(d, start_danim);
         dr
+    }
+
+    /// `NDrone2_DefaultInit` after the mode settings: a captain (`+0x19`) by difficulty — property 9 on 1, 5 on 2, 8 on
+    /// 3 — for kinds 1, 2, 3, 6, 7, each with its captain skin (0x5000038, 0x500002F, 0x5000006, 0x5000093, 0x50000B2);
+    /// health × `DroneCaptain_Mod_Health`, `+0x100` = `Mod_BulletDamage`, accuracy `+0xB4` × 1 / `Mod_BulletAccuracy`
+    /// (truncated). Type 0xC drops properties 0x14–0x16 (kind 9 also gets 0x4C).
+    fn captain_setup(&mut self, d: &Data) {
+        use nf_formats::ps2float::mul;
+        let by_difficulty = match DIFFICULTY { 1 => self.prop(d, 9), 2 => self.prop(d, 5), 3 => self.prop(d, 8), _ => false };
+        if by_difficulty {
+            let skin = match self.kind { 1 => Some(0x0500_0038), 2 => Some(0x0500_002f), 3 => Some(0x0500_0006), 6 => Some(0x0500_0093), 7 => Some(0x0500_00b2), _ => None };
+            if let Some(skin) = skin {
+                self.captain = true;
+                self.skin = skin;
+                let t = d.tuning;
+                self.health = mul(self.health, t.DroneCaptain_Mod_Health);
+                self.max_health = self.health;
+                self.damage_mul = t.DroneCaptain_Mod_BulletDamage;
+                self.accuracy = (self.accuracy as f32 * (1.0 / t.DroneCaptain_Mod_BulletAccuracy)) as u8;
+            }
+        }
+        if self.dtype == 0xc {
+            for p in [0x14, 0x15, 0x16] { d.props.set(p, &mut self.props, 0); }
+            if self.kind == 9 { d.props.set(0x4c, &mut self.props, 1); }
+        }
     }
 
     /// `NDrone2_GetDTYPENEW` (single player): the mode for type `ty` and a block's mode `block` (0 = the base).

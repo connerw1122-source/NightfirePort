@@ -168,6 +168,8 @@ fn level_start_matches_the_game() {
     let sn = sim.list.iter().find(|dr| dr.present && (dr.pos[0] - 62.43).abs() < 0.05).expect("the sniper");
     assert_eq!(sn.props, [0x8100_3c84, 0xac70_0785, 0x4028_0448], "the sniper's first block");
     assert_eq!((sn.state, sn.mode, sn.alt_mode, sn.team, sn.alt_state, sn.second_tag, sn.stationary), (0x29, 2, 0, 1, 0, 0, true));
+    // [L] No captains at difficulty 1 (properties 9 clear on every drone; captains get 20 health and skin 0x500002F).
+    assert!(sim.list.iter().all(|x| !x.captain && x.health == 10.0 && x.max_health == 10.0));
 }
 
 /// Live trace (work/patrol_trace.tsv, Bond standing at his start (104.95, 24.96, 108.83)): the guard walks
