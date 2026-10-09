@@ -21,6 +21,7 @@ pub mod placement;
 pub mod png;
 pub mod ps2float;
 pub mod pss;
+pub mod sfx;
 pub mod sha1;
 pub mod symfile;
 pub mod texture;

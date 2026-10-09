@@ -47,6 +47,24 @@ set 0's entry when the set's is 0; 0x06000000 (both 0) means no animation (`Dron
 - `SetDAnimInternal` starts the danim (state, class, script, speed, follow-on) and `SetHTAnim` blends the old script out
   over the blend frames (`+0x538` until it stops; 30 frames for anims with flag 0x100). `CallHandler` completes a call
   when the requested state plays with class 2 or 9 (class 1 with `+0x57A` clear) and no wait is pending (`+0x578`).
+- Full call cycle [M] (WORKLOG 0029; decomp of `CallAnim` 0x13ab58, `CallHandler` 0x13add0, `CanSetAnimCall` 0x13dbf8,
+  `SetDAnimInternal` 0x13aee8, `CheckForAnimComplete` 0x13dae8, `SetEndAnim`, `InTransition` 0x13e3b0):
+  - `CallAnim(blend, state, variant, next AI state, message)`: a state the set cannot do is replaced (0x22/0x60 → 0x21;
+    0x0B–0x0D, 0x29, 0x2A, 0x3D, 0x4A, 0x4F, 0x52–0x56, 0x5D, 0x5E, 0x61 → 0x0A; 0x0F/0x36 → 0x35; 0x1F/0x62 → 0x1E;
+    0x25–0x27 → 0x24; 0x57 → 0x11 / 0x19 / 0x21; others 0x21; 0x24 when still impossible). The playing state completes
+    at once (`CallFullyComplete`) or, with no completion action, zeroes the call. The same request keeps the running
+    call; otherwise `+0x558..0x567` are rewritten (`+0x55C` = the state playing now) and `+0x57B` cleared.
+  - `SetDAnimInternal`: a danim of the requested state (0x41–0x44, 0x50, 0x6F count as 0x40) or of state 0 sets
+    `+0x57B` and zeroes the request (the completion action `+0x596` / `+0x598` survives). With no script, or for a drone
+    not drawn (`obj+0xFC` = 0) given a flag-4 danim of class 0, 3–7 or 9, the danim ends at once (`SetEndAnim(0x1E)`)
+    and its follow-on starts.
+  - `CallHandler`, every frame: with `+0x57B` set and no blend waited for, classes 2 and 9 complete, class 1 completes
+    unless a non-looping script is still running (`+0x57A`, cleared at its end by `AnimEndCallback` / event 7). Until
+    then the transition is looked up again **every frame** from the state now playing (two-step transitions, e.g.
+    walk → 244 alert idle → 265 look-around), except while a class-5 danim of another state than the call's start plays,
+    or a class-5 0x0C/0x0D/0x29/0x2A plays and 0x0A is wanted.
+  - `SetEndAIState`: the AI state is queued, then the message routed at once (`SendMsgSelf` delay 0 →
+    `RouteMsgDCV`). `InTransition`: the playing class is above 3 and not 8.
 - `Drone_AnimInfo +0x14`: playback speed (1.5 for lean-outs such as 176).
 - [L] work/chase_trace.tsv: UnderCoverInit's call to 0x1A from strafe 0xD (no record → state 0's, blend 30) completes
   31 ticks later; lean-out 176 (51 frames) lasts 35 ticks.

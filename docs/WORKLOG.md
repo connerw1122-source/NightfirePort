@@ -667,3 +667,34 @@ second switch, `+0x135` = 0xA4 read) did not move — mux 270 (placement 270) ru
 newest-first order and rewrites 0xA4 from its inputs. The port does the same (`alarm_pulse_reaches_only_the_drones_
 updated_first`; sister: holding the mux input 0xA1 wakes 66 / 67 and sends 65 / 68 to Attack). This also confirms the
 update order and the fully alert start state.
+
+## 0029 — Hearing; the anim call cycle ported as read (2026-10-09)
+
+**Hearing** (docs/systems/drone-alerts.md): `nf-formats::sfx` reads `SFXOutputData` from ACTION.ELF (1549 entries; P99
+shot id 1 = inner 2, outer 30, weight 75 as researched); `Drones::play_sound` → `HandleSoundAlerts` the next tick
+(sum / loudest, share = 0.01 · loudness, msg 0x14 at most once a second unless louder) → `DroneVision_AlertSound`
+(≤ 50 units from Bond) → HeardNoise / Aware / Suspect / Alert, AlertToPosition, SearchArea. `nf-extract ai-sim` takes
+`NF_SOUND=x,y,z,id,frame` and `NF_DANIM=` (info rows).
+
+**Failure 1**: the shot sent the idle guard at (99.69, 101.58) into Aware, where he stayed for good. Two causes, both
+found in the decomp:
+- `CallHandler` looks the transition up again **every frame** until the requested state plays; the port did it once,
+  so walk → 244 (alert idle, the first step towards 0x22) never went on to look-around 265. Rewrote `call_anim` /
+  `call_handler` / `set_danim` from `CallAnim`, `CallHandler`, `CanSetAnimCall`, `SetDAnimInternal` (`+0x57B` reached
+  flag, `+0x55C` start state, the can't-do replacements, immediate completion of the playing state, `SetEndAIState`
+  order: state queued then message routed), and `InTransition` (class > 3 and ≠ 8, was a guess).
+- The chain's look-arounds use variant 1 (`CallAnim(0, 0x22, 1, …)`), and 265 is class 3 with flag 4: for a drone not
+  drawn, `SetDAnimInternal` ends it at once and starts its follow-on 244 (also when a danim has no script — the start
+  danim 325 now gives way to 329 as in the game). Without that the off-screen guard froze on 265's first frame.
+Also fixed against the decomp: Aware takes msg 0x14 only for Suspect; Suspect's turn-done handler (already turned →
+AlertToPosition; alert idle → short look 0x0B, else AlertToPosition at once); Alert ignores sounds.
+
+All 7 live tests still pass with the new call cycle. New test `shot_sends_a_guard_through_the_noise_chain`
+(HeardNoise → Aware → Idle the frame after the shot; sisters: weightless sound 0x604, Bond 50+ units away). Not
+checked live yet (U-033).
+
+**Test run**: nf-game 8 unit + 8 ai_live + rng/trig live all pass; nf-formats unit tests pass; `disc_golden` passed 10
+of 14 and then aborted on `memory allocation of 13314048 bytes failed` (also single-threaded). Not this change: the
+Windows commit charge was exhausted (≈0.5 GB free virtual memory, a `RuntimeBroker` process holding ≈214 GB private).
+`scripts_match_the_golden_digest` and the three after it are still to be re-run; this change does not touch their
+code (`sfx.rs` is new and only registered in `lib.rs`).

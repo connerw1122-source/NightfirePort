@@ -46,6 +46,15 @@ Callers: CombatNoRoute's timer (both setters, `+0x5A2` unchanged), SearchArea gi
   never resets.
 - AlertToPosition 0x62: walk 0x35 / run 0x1E (route ≥ 10) to the goal; arrived → `+0x5A2`; 6 → 0x5F; others →
   `+0x5A0`. SearchArea 0x65: look around 0x22, 3 s, turn 0x61, anim 0xB, then give up (alertness 0) and go home.
+- Look-arounds in the chain [M] (0x16af20, 0x16b0e0, 0x16b540): Aware, Suspect (prop 0x40, or no prop 0x21) and Alert
+  (prop 0x40) call 0x22 with **variant 1**; Suspect with prop 0x21 calls 0x22 variant 0 → AlertToPosition. Aware takes
+  msg 0x14 only to go to Suspect (share > 0.1). Suspect's turn done (msg 0x23): already turned with prop 0x21 →
+  AlertToPosition; else face the sound, then without prop 0x21 look (variant 1) and go back, with it set `+0x5A2` =
+  SearchArea and take the short look 0x0B → AlertToPosition when in alert idle 0x21, else AlertToPosition at once.
+  Alert has no msg 0x14 case and the global state ignores it.
+- **Port** (WORKLOG 0029): `nf-formats::sfx` reads `SFXOutputData`; `Drones::play_sound` queues a sound for the next
+  tick's `HandleSoundAlerts`; the chain above, AlertToPosition and SearchArea are ported. Not yet checked live (U-033);
+  Bond's gunfire does not make sounds yet (G-026).
 - Drone-to-drone shouts (msgs 0x11, 0x12, 0x13, 0x15, 0x16) are dead code in this build (`ShoutFromOtherDrone`
   returns 0). The alarm (msg 0x1E, every 30 frames while `switch_channels[0x96]`) → Attack.
 

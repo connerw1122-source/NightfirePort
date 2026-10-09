@@ -48,6 +48,7 @@ fn main() -> Result<()> {
         "route" => { let f = |i: usize| -> Result<f32> { Ok(a(i)?.parse()?) }; route(&IsoImage::open(a(1)?)?, a(2)?, [f(3)?, f(4)?, f(5)?], [f(6)?, f(7)?, f(8)?]) }
         "covers" => covers(&IsoImage::open(a(1)?)?, a(2)?),
         "triggers" => triggers(&IsoImage::open(a(1)?)?, a(2)?),
+        "sfx" => sfx(&IsoImage::open(a(1)?)?, &args[2..]),
         "coll-probe" => coll_probe(&IsoImage::open(a(1)?)?, a(2)?),
         "coll-check" => coll_check(&IsoImage::open(a(1)?)?),
         "coll-floor" => coll_floor(&IsoImage::open(a(1)?)?, a(2)?),
@@ -399,6 +400,10 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     use std::collections::HashMap;
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF")?)?;
     let tables = drone::DroneAnimData::from_action_elf(&elf)?;
+    // NF_DANIM=265,244: print those danims' info rows (Drone_AnimInfo, 0x18 bytes) and their state's transition list.
+    for x in std::env::var("NF_DANIM").unwrap_or_default().split(',').filter_map(|v| v.trim().parse::<usize>().ok()) {
+        if let Some(r) = tables.info.get(x) { println!("danim {x}: info {:02x?}", r); }
+    }
     let props = drone::PropertyTables::from_action_elf(&elf)?;
     let weapons = WeaponData::from_action_elf(&elf)?;
     let (entries, bin) = disc::files_bin_entries(iso)?;
@@ -435,7 +440,14 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     // Per drone: path length and ticks without horizontal motion (patrol checks against live traces).
     let mut walked = vec![(0f32, 0u32); sim.list.len()];
     let mut steps_out = std::env::var_os("NF_STEPS").map(std::fs::File::create).transpose()?;
+    // NF_SOUND=x,y,z,id,frame: a sound (SFXOutputData id, hex) made at that frame.
+    let sfx_table = nf_formats::sfx::SfxTable::from_action_elf(&elf)?;
+    let sound: Option<(f32, f32, f32, u32, u32)> = std::env::var("NF_SOUND").ok().and_then(|v| {
+        let p: Vec<&str> = v.split(',').collect();
+        Some((p.first()?.parse().ok()?, p.get(1)?.parse().ok()?, p.get(2)?.parse().ok()?, u32::from_str_radix(p.get(3)?, 16).ok()?, p.get(4)?.parse().ok()?))
+    });
     for _ in 0..frames {
+        if let Some((x, y, z, id, at)) = sound { if sim.frame + 1 == at { sim.play_sound([x, y, z], sfx_table.get(id)); } }
         let before: Vec<[f32; 3]> = sim.list.iter().map(|x| x.pos).collect();
         sim.tick(&d, &player);
         for (i, x) in sim.list.iter().enumerate() {
@@ -960,5 +972,15 @@ fn triggers(iso: &IsoImage, level_name: &str) -> Result<()> {
         println!("placement {:3}: type {:#x} out {:#04x} mask {:#x} list {:x?} lock {:#x} hide {} tris {} box [{:.2}, {:.2}, {:.2}]-[{:.2}, {:.2}, {:.2}]",
             t.placement, t.kind, t.out, t.mask, t.list, t.lock, t.hide, t.tris.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
     }
+    Ok(())
+}
+
+/// `SFXOutputData` hearing entries (inner / outer radius, weight, looped), optionally only the given ids (hex).
+fn sfx(iso: &IsoImage, ids: &[String]) -> Result<()> {
+    let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF")?)?;
+    let t = nf_formats::sfx::SfxTable::from_action_elf(&elf)?;
+    println!("{} entries", t.entries.len());
+    let pick: Vec<usize> = if ids.is_empty() { (0..t.entries.len()).collect() } else { ids.iter().filter_map(|x| usize::from_str_radix(x.trim_start_matches("0x"), 16).ok()).collect() };
+    for i in pick { if let Some(e) = t.entries.get(i) { println!("{i:#05x}: inner {} outer {} weight {} looped {}", e.inner, e.outer, e.weight, e.looped); } }
     Ok(())
 }

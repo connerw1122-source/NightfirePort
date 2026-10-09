@@ -30,6 +30,12 @@ pub mod state {
     pub const NO_OPPONENT: u8 = 0x60;
     pub const DRONE_STUCK: u8 = 0x7f;
     pub const GO_TO_GOAL: u8 = 0x63;
+    pub const ALERT_TO_POSITION: u8 = 0x62;
+    pub const SEARCH_AREA: u8 = 0x65;
+    pub const HEARD_NOISE: u8 = 0xa2;
+    pub const HEARD_NOISE_AWARE: u8 = 0xa3;
+    pub const HEARD_NOISE_SUSPECT: u8 = 0xa4;
+    pub const HEARD_NOISE_ALERT: u8 = 0xa5;
     pub const RUN_FOR_COVER: u8 = 0x8c;
     pub const UNDER_COVER_INIT: u8 = 0x93;
     pub const UNDER_COVER_IDLE: u8 = 0x94;
@@ -63,6 +69,11 @@ pub mod msg {
     pub const UPDATE: u8 = 3;
     /// Idle timeout (`SetIdleTimeOut`) and the wait-node message.
     pub const IDLE_TIMEOUT: u8 = 4;
+    /// A sound was heard (`DroneFunc_HandleSoundAlerts`); a turn finished (HeardNoise*); SearchArea's anim steps.
+    pub const SOUND: u8 = 0x14;
+    pub const TURNED: u8 = 0x23;
+    pub const SEARCH_LOOKED: u8 = 0x24;
+    pub const SEARCH_DONE: u8 = 0x25;
     pub const ANIM_DONE: u8 = 5;
     pub const TIMER_C: u8 = 0xc;
     pub const FORCED_ATTACK: u8 = 0x1f;
@@ -184,7 +195,10 @@ pub struct Animator {
     pub call: Option<(u16, u8, u8)>,
     /// The call's variant (`DroneAnim_CallAnim`'s third argument: consecutive danims of a record, e.g. 0x4B × 3).
     pub variant: u16,
-    pub started_call: bool,
+    /// `+0x57B`: a danim of the called state started (the request itself is spent); `+0x55C`: the state playing when
+    /// the call was made.
+    pub reached: bool,
+    pub call_from: u16,
     /// Frames left of the blend the call waits for (`+0x578` with the blend-out script `+0x538`).
     pub blend_wait: u32,
 }
@@ -296,6 +310,9 @@ pub struct Drone {
     /// Index in `Drones::list` (cover ownership) and the state being entered during an exit message.
     pub index: usize,
     pub exiting_to: u8,
+    /// A message the drone sends itself with no delay (`Drone_SM_SendMsgSelf` → `RouteMsgDCV`), routed after the
+    /// handler that sent it.
+    pub self_msg: Option<u8>,
     /// Cover: node (`+0xBB4`), side (`+0xBB8 & 3`), type (`+0xBBB`), leave flags (`+0xBB8` 4 / 8), the in-cover point
     /// (`+0x830`), the goal point (`+0x710`), `+0x4F8` 0x800 (claimed this run) / 0x1000 (has cover), `+0xCD8` tries.
     pub cover: Option<usize>,
@@ -317,6 +334,20 @@ pub struct Drone {
     pub return_state: u8,
     pub second_channel: u8,
     pub second_tag: u32,
+    /// Hearing (docs/systems/drone-alerts.md): loudness this frame (`+0x510`), its alertness share (`+0x514`), the
+    /// last heard frame and peak (`+0xB38` / `+0xB3C`), the sound's position (`+0xAF0`), the noise level (`+0x43`,
+    /// never reset), "investigating" (`+0x33`), "turned" (`+0x34`), the state and home to return to (`+0x5A0` /
+    /// `+0x5B0`).
+    pub loudness: f32,
+    pub sound_share: f32,
+    pub heard_frame: u32,
+    pub heard_peak: f32,
+    pub sound_pos: V3,
+    pub noise_level: u8,
+    pub investigating: bool,
+    pub turned: bool,
+    pub resume_state: u8,
+    pub home: V3,
     /// Trace of (frame, state) changes, for comparisons with PCSX2.
     pub log: Vec<(u32, u8)>,
 }
@@ -345,14 +376,15 @@ impl Drone {
             los: false, seen: false, ever_seen: false, visibility: 0.0, seen_ticks: 0, unseen_ticks: 0, vision_on: false,
             dist: 0.0, yaw_to_opp: 0.0,
             state: state::GLOBAL, prev_state: 0, next_state: None, entered: 0, timer_c: None,
-            anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, started_call: false, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0 },
+            anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0 },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
             shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
-            switch_channel: param(3) as u8, channel_on: false, placement: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0,
+            switch_channel: param(3) as u8, channel_on: false, placement: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
             cover: None, cover_side: 0, cover_type: 0, cover_leave: 0, cover_point: pos, goal: None, cover_claimed: false, has_cover: false, cover_tries: 0,
             cover_rt: Vec::new(), others: Vec::new(), peers: Vec::new(), return_state: 0, second_channel: param(6) as u8, second_tag: param(8),
+            loudness: 0.0, sound_share: 0.0, heard_frame: 0, heard_peak: 0.0, sound_pos: pos, noise_level: 0, investigating: false, turned: false, resume_state: 0, home: pos,
         };
         dr.init_properties(d, &param);
         dr.set_danim(d, start_danim);
@@ -426,7 +458,7 @@ impl Drone {
     fn request_anim(&mut self, d: &Data, anim: u16) {
         if self.anim.state == anim { self.anim.call = None; return; }
         if self.anim.call.is_some() || !self.can_do(d, anim) { return; }
-        self.call_anim(anim, 0, 0);
+        self.call_anim(d, anim, 0, 0);
     }
 
     /// `SetStandIdleAnim(force)`: in Idle one of 0x24..0x26 (Rand 3) held 5 + Rand 5 seconds; elsewhere 0x24.
@@ -436,7 +468,7 @@ impl Drone {
         let mut anim = anim_state::STAND_IDLE + rng.rand(3) as u16;
         if !self.can_do(d, anim) { anim = anim_state::STAND_IDLE }
         self.stand_until = frame + (5 + rng.rand(5)) * 60;
-        if self.anim.call.is_none() && self.anim.state != anim { self.call_anim(anim, 0, 0) }
+        if self.anim.call.is_none() && self.anim.state != anim { self.call_anim(d, anim, 0, 0) }
     }
 
     /// `SetWalkIdleAnim`: in Patrol (SM id + 1) % 3 + 0x37, or 0x37 when the set lacks it.
@@ -474,41 +506,98 @@ impl Drone {
 
     // ---- animation ---------------------------------------------------------------------------------------------
 
-    /// `DroneAnim_SetDAnimInternal`: start a danim's script for our anim set.
+    /// `DroneAnim_SetDAnimInternal` (0x13aee8): start a danim's script for our anim set. With no script, or for a drone
+    /// that was not drawn (`obj+0xFC` = 0) given a danim with info flag 4 of class 0, 3–7 or 9, the danim ends at once
+    /// (`SetEndAnim(0x1E)`) and its follow-on (`+10`, when not itself) starts instead — e.g. an off-screen guard's
+    /// look-around 265 (class 3, flags 6) goes straight to alert idle 244.
     fn set_danim(&mut self, d: &Data, danim: u16) {
-        let info = d.tables.info.get(danim as usize).copied().unwrap_or([0; 24]);
-        self.anim.danim = danim;
-        self.anim.state = u16::from_le_bytes([info[8], info[9]]);
-        self.anim.class = info[0xc];
-        self.anim.script = d.tables.script_for(danim, self.anim_set);
-        self.anim.time = 0;
-        self.anim.ftime = 0.0;
-        let speed = f32::from_le_bytes([info[0x14], info[0x15], info[0x16], info[0x17]]);
-        self.anim.speed = if speed > 0.0 && speed.is_finite() { speed } else { 1.0 };
-        // A new script has no previous root: no motion until its second tick (a call starting a danim after this
-        // tick's root motion would otherwise move by the old sequence's root minus the new one's).
-        self.root_prev = None;
-    }
-
-    /// `DroneAnim_CallAnim(blend, state, variant, next AI state, completion message)`.
-    /// The same request again keeps a transition that is already running; requesting the playing state with no
-    /// completion action zeroes any pending call (`ZeroAnimCall`).
-    fn call_anim(&mut self, state: u16, next_ai: u8, done_msg: u8) {
-        self.yaw_offset = 0.0; // `DroneAnim_CallAnim`'s yaw-offset argument is 0 except in SetCombatMoveAnim (*suggested*)
-        if let Some((w, _, _)) = self.anim.call {
-            if w == state { self.anim.call = Some((state, next_ai, done_msg)); return; }
+        let mut danim = danim;
+        for _ in 0..8 {
+            let info = d.tables.info.get(danim as usize).copied().unwrap_or([0; 24]);
+            self.anim.danim = danim;
+            self.anim.state = u16::from_le_bytes([info[8], info[9]]);
+            self.anim.class = info[0xc];
+            self.anim.script = d.tables.script_for(danim, self.anim_set);
+            self.anim.time = 0;
+            self.anim.ftime = 0.0;
+            let speed = f32::from_le_bytes([info[0x14], info[0x15], info[0x16], info[0x17]]);
+            self.anim.speed = if speed > 0.0 && speed.is_finite() { speed } else { 1.0 };
+            self.anim.blend_wait = 0;
+            // A danim of the called state (0x41..0x44, 0x50 and 0x6F count as 0x40) or of state 0 marks the call
+            // reached (`+0x57B`) and zeroes the request (`ZeroAnimCall`; the completion action `+0x596`/`+0x598` stays).
+            let want = self.anim.call.filter(|_| !self.anim.reached).map_or(0, |(w, _, _)| match w { 0x41..=0x44 | 0x50 | 0x6f => 0x40, w => w });
+            if self.anim.state == 0 || self.anim.state == want { self.anim.reached = true; }
+            // A new script has no previous root: no motion until its second tick (a call starting a danim after this
+            // tick's root motion would otherwise move by the old sequence's root minus the new one's).
+            self.root_prev = None;
+            let skip = self.anim.script.is_none() || (!self.drawn && info[0] & 4 != 0 && matches!(self.anim.class, 0 | 3..=7 | 9));
+            let next = u16::from_le_bytes([info[10], info[11]]);
+            if !(skip && next != 0 && next != danim) { break; }
+            danim = next;
         }
-        if self.anim.state == state && next_ai == 0 && done_msg == 0 { self.anim.call = None; return; }
-        self.anim.call = Some((state, next_ai, done_msg));
-        self.anim.started_call = false;
-        self.anim.blend_wait = 0;
-        self.anim.variant = 0;
     }
 
-    /// `DroneAnim_CallAnim` with a variant.
-    fn call_anim_variant(&mut self, state: u16, variant: u16, next_ai: u8, done_msg: u8) {
-        self.call_anim(state, next_ai, done_msg);
-        if self.anim.call.is_some() { self.anim.variant = variant; }
+    /// `DroneAnim_CallAnim(blend, state, variant, next AI state, completion message)` (0x13ab58).
+    fn call_anim(&mut self, d: &Data, state: u16, next_ai: u8, done_msg: u8) {
+        self.call_anim_variant(d, state, 0, next_ai, done_msg);
+    }
+
+    /// `DroneAnim_CallAnim` with a variant (consecutive danims of a record, e.g. 0x4B × 3). A state the anim set
+    /// cannot do is replaced (0x22 → 0x21, 0x0B → 0x0A …, else 0x21; 0x24 when even that is missing). The playing
+    /// state completes at once (`CallFullyComplete`: the AI state is queued and the message routed now), or with no
+    /// completion action zeroes the call (`ZeroAnimCall`); the same request again keeps the running call; anything
+    /// else replaces it (`+0x55C` = the state playing now, `+0x57B` cleared).
+    fn call_anim_variant(&mut self, d: &Data, state: u16, variant: u16, next_ai: u8, done_msg: u8) {
+        self.yaw_offset = 0.0; // `DroneAnim_CallAnim`'s yaw-offset argument is 0 except in SetCombatMoveAnim (*suggested*)
+        let mut state = state;
+        if state == 0 || !self.can_do(d, state) {
+            state = match state {
+                0xb | 0xc | 0xd | 0x29 | 0x2a | 0x3d | 0x4a | 0x4f | 0x52..=0x56 | 0x5d | 0x5e | 0x61 => 10,
+                0xf | 0x36 => 0x35,
+                0x1f | 0x62 => 0x1e,
+                0x25..=0x27 => 0x24,
+                0x4c => self.anim.state,
+                0x57 => if self.can_do(d, 0x11) { 0x11 } else if self.can_do(d, 0x19) { 0x19 } else { 0x21 },
+                _ => 0x21,
+            };
+            if !self.can_do(d, state) { state = anim_state::STAND_IDLE; }
+        }
+        if state == self.anim.state {
+            if next_ai == 0 && done_msg == 0 { self.anim.call = None; return; }
+            self.anim.call = None;
+            self.anim.reached = false;
+            self.set_state(next_ai);
+            if done_msg != 0 { self.self_msg = Some(done_msg); }
+            return;
+        }
+        if self.anim.call == Some((state, next_ai, done_msg)) && !self.anim.reached && self.anim.variant == variant { return; }
+        self.anim.call = Some((state, next_ai, done_msg));
+        self.anim.reached = false;
+        self.anim.call_from = self.anim.state;
+        self.anim.variant = variant;
+    }
+
+    /// `DroneAnim_CallHandler` (0x13add0), every frame after the anim tick: once a danim of the requested state started
+    /// (`+0x57B`) and no blend is waited for (`+0x578`), the call completes when that danim's class is 1, 2 or 9;
+    /// until the state is reached the transition is looked up again from the state playing now
+    /// (`DroneAnim_CanSetAnimCall`: not while a class-5 danim of another state than the call's start plays) and set.
+    fn call_handler(&mut self, d: &Data) -> Option<(u8, u8)> {
+        self.anim.blend_wait = self.anim.blend_wait.saturating_sub(1);
+        if self.anim.reached && self.anim.blend_wait == 0 && matches!(self.anim.class, 1 | 2 | 9) {
+            self.anim.reached = false;
+            let (_, next_ai, done_msg) = self.anim.call.take()?;
+            return Some((next_ai, done_msg));
+        }
+        let (want, _, _) = self.anim.call?;
+        if self.anim.reached { return None; }
+        let (cur, class) = (self.anim.state, self.anim.class);
+        if class == 5 && cur != self.anim.call_from { return None; }
+        if matches!(cur, 0xc | 0xd | 0x29 | 0x2a) && want == 10 && class == 5 { return None; }
+        if let Some(t) = d.tables.transition(want, cur, self.anim.variant).filter(|t| t.danim > 0) {
+            self.set_danim(d, t.danim as u16);
+            self.anim.blend_wait = if t.b5 != 0 { t.b4 as u32 } else { 0 };
+        }
+        None
     }
 
     /// Advances the script; at its end continues with the danim's follow-on (`Drone_AnimInfo +10`); handles a pending
@@ -523,16 +612,7 @@ impl Drone {
             let v = f32::from_le_bytes([info[4], info[5], info[6], info[7]]);
             if v != 0.0 && v.is_finite() { self.move_by(d, [crate::trig::sinf(self.yaw) * v, crate::trig::cosf(self.yaw) * v]); }
             self.root_prev = None;
-            let (want, next_ai, done_msg) = self.anim.call?;
-            if self.anim.state == want && matches!(self.anim.class, 2 | 9) { self.anim.call = None; return Some((next_ai, done_msg)); }
-            if !self.anim.started_call {
-                self.anim.started_call = true;
-                if let Some(t) = d.tables.transition(want, self.anim.state, self.anim.variant).filter(|t| t.danim > 0) {
-                    self.set_danim(d, t.danim as u16);
-                    self.anim.blend_wait = if t.b5 != 0 { t.b4 as u32 } else { 0 };
-                }
-            }
-            return None;
+            return self.call_handler(d);
         }
         let before = (self.anim.script, self.anim.danim);
         // Playback speed (`Drone_AnimInfo +0x14`, passed to the script by `SetHTAnim`): [L] lean-out 176 (51 frames at
@@ -541,8 +621,6 @@ impl Drone {
         self.anim.time = self.anim.ftime as u32;
         let len = self.anim.script.and_then(|h| d.scripts.get(&h)).map(|s| s.length as u32).unwrap_or(1);
         let mut restarted = false;
-        // A one-shot danim of the requested state that just finished completes the call.
-        let mut finished_wanted = false;
         let mut wrap_end = None;
         if self.anim.time >= len {
             // The wrap tick repeats the script's last step (last frame − the one before): [L] aligned per-tick steps of
@@ -551,7 +629,6 @@ impl Drone {
             let last = self.root_value(d);
             self.anim.time = len.saturating_sub(2);
             wrap_end = self.root_value(d).zip(last).map(|(a, b)| [b[0] - a[0], 0.0, b[2] - a[2]]);
-            finished_wanted = self.anim.call.is_some_and(|(w, _, _)| w == self.anim.state && self.anim.started_call);
             let info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
             let next = u16::from_le_bytes([info[10], info[11]]);
             if next != 0 && next != self.anim.danim { self.set_danim(d, next) } else {
@@ -562,26 +639,10 @@ impl Drone {
         }
         let same = before == (self.anim.script, self.anim.danim);
         self.root_motion(d, restarted || !same, if same { wrap_end } else { None });
-        let (want, next_ai, done_msg) = self.anim.call?;
-        // `DroneAnim_CallHandler` (0x13add0): complete when the requested state plays with class 2 or 9 (or a one-shot
-        // of it ended: class 1, *suggested*) and the blend the call waits for is over; otherwise start the transition
-        // (`GetDAnimForCall`: blend frames and wait flag from the record). [L] work/chase_trace.tsv: UnderCoverInit
-        // reaches loop 171 at once through state 0's generic record (blend 30, wait) and completes 31 ticks later;
-        // UnderCoverAim's transition 176 (class 5) leads into loop 182 and completes then.
-        self.anim.blend_wait = self.anim.blend_wait.saturating_sub(1);
-        let reached = self.anim.state == want && matches!(self.anim.class, 2 | 9);
-        if (finished_wanted || reached) && self.anim.blend_wait == 0 && (self.anim.started_call || reached) {
-            self.anim.call = None;
-            return Some((next_ai, done_msg));
-        }
-        if !self.anim.started_call {
-            self.anim.started_call = true;
-            if let Some(t) = d.tables.transition(want, self.anim.state, self.anim.variant).filter(|t| t.danim > 0) {
-                self.set_danim(d, t.danim as u16);
-                self.anim.blend_wait = if t.b5 != 0 { t.b4 as u32 } else { 0 };
-            }
-        }
-        None
+        // [L] work/chase_trace.tsv: UnderCoverInit reaches loop 171 at once through state 0's generic record (blend 30,
+        // wait) and completes 31 ticks later; UnderCoverAim's transition 176 (class 5) leads into loop 182 and completes
+        // then.
+        self.call_handler(d)
     }
 
     /// The sequence and frame the playing script shows (opcode-0 command covering the script time).
@@ -629,6 +690,36 @@ impl Drone {
         if probe(self.pos[1]) && probe(self.pos[1] + 0.5) {
             self.pos = to;
             if let Some(f) = d.world.floor_below([to[0], self.pos[1], to[2]], 2.0) { self.pos[1] = f + 1.0; }
+        }
+    }
+
+    // ---- hearing (docs/systems/drone-alerts.md) -------------------------------------------------------------------
+
+    /// `DroneVision_EnemyAlerts(msg 0x14)` (0x177c18) → `DroneVision_AlertSound` (0x177800): saves the return state and
+    /// home the first time, then HeardNoise when the sound's share > 0.2 or alertness > 0.66. Ignored without prop 0x1F,
+    /// more than 50 units from the opponent, or when already attacking.
+    fn enemy_alerts(&mut self, d: &Data, s: u8) -> Option<u8> {
+        if !self.investigating {
+            self.resume_state = s;
+            self.home = self.feet();
+        }
+        if !self.prop(d, 0x1f) || self.dist > 50.0 || self.alert_bits & 0x10 != 0 { return None; }
+        (self.sound_share > 0.2 || self.alert > 0.66).then_some(state::HEARD_NOISE)
+    }
+
+    /// AlertToPosition's move (`MoveToAlertPosition`): run when the route is 10 or longer, else the alert walk;
+    /// arrived → the return state (SearchArea after Suspect); 6 → NoRoute; failure → back to `+0x5A0`.
+    fn alert_to_position_update(&mut self, d: &Data) {
+        match self.move_to_goal(d) {
+            0..=2 => {
+                let far = self.croute.as_ref().is_some_and(|r| r.remaining >= 10.0);
+                if far { self.call_anim(d, anim_state::RUN, 0, 0) }
+                else if !matches!(self.anim.state, anim_state::ALERT_WALK | anim_state::WALK_AIM) { self.call_anim(d, anim_state::ALERT_WALK, 0, 0) }
+            }
+            3 => { let r = if self.return_state != 0 { self.return_state } else { state::SEARCH_AREA }; self.set_state(r) }
+            6 => self.set_state(state::COMBAT_NO_ROUTE),
+            10 => {}
+            _ => { self.investigating = false; let r = if self.resume_state != 0 { self.resume_state } else { self.start_state(d) }; self.set_state(r) }
         }
     }
 
@@ -807,7 +898,7 @@ impl Drone {
         if !n.is_corner() {
             let anim = match mode { 0 | 6 | 1 | 4 => n.idle_anim, 2 => n.aim_anim, 3 => 0x58, _ => return false };
             let anim = if self.can_do(d, anim) { anim } else if anim == 5 { if self.can_do(d, 7) { 7 } else { 0xa } } else { anim };
-            self.call_anim(anim, next, 0);
+            self.call_anim(d, anim, next, 0);
             return true;
         }
         let (types, forced) = self.cover_types(d, &n);
@@ -829,14 +920,14 @@ impl Drone {
                 let anim = cc_anim(self.cover_type, self.cover_side, 5);
                 self.cover_type = new;
                 if anim >= 0x77 || !self.can_do(d, anim) { return false; }
-                self.call_anim(anim, next, 0);
+                self.call_anim(d, anim, next, 0);
                 return true;
             }
             m => m as usize,
         };
         let anim = cc_anim(self.cover_type, self.cover_side, column);
         if anim >= 0x77 || !self.can_do(d, anim) { return false; }
-        self.call_anim(anim, next, 0);
+        self.call_anim(d, anim, next, 0);
         true
     }
 
@@ -857,7 +948,7 @@ impl Drone {
                     }
                     3 => self.set_state(UNDER_COVER_INIT),
                     10 => {}
-                    0xc => self.face_and_aim(),
+                    0xc => self.face_and_aim(d),
                     _ => self.set_state(ATTACK),
                 }
                 true
@@ -938,7 +1029,7 @@ impl Drone {
             (UNDER_COVER_LEAVE_NOW, msg::ENTER) => {
                 self.cover_leave |= 8;
                 self.disown_cover();
-                self.call_anim(anim_state::AIM_STAND, ATTACK, 0);
+                self.call_anim(d, anim_state::AIM_STAND, ATTACK, 0);
                 true
             }
             (UNDER_COVER_LEAVE_NOW, msg::EXIT) => { self.disown_cover(); true }
@@ -954,6 +1045,7 @@ impl Drone {
     /// `Drone_SM_RouteMsgDCV`: deliver, then apply pending changes (exit → enter, repeating).
     fn send(&mut self, d: &Data, rng: &mut Rng, frame: u32, m: u8) {
         if !self.handle(d, rng, frame, self.state, m) { self.handle(d, rng, frame, state::GLOBAL, m); }
+        if let Some(m2) = self.self_msg.take() { self.send(d, rng, frame, m2); }
         let mut guard = 0;
         while let Some(n) = self.next_state.take() {
             self.exiting_to = n;
@@ -967,6 +1059,7 @@ impl Drone {
             self.entered = frame;
             self.log.push((frame, n));
             self.handle(d, rng, frame, n, msg::ENTER);
+            if let Some(m2) = self.self_msg.take() { self.send(d, rng, frame, m2); }
             guard += 1;
             if guard > 16 { break; }
         }
@@ -1039,13 +1132,106 @@ impl Drone {
                         _ => (anim_state::ALERT_LOOK, ALERT),
                     };
                     let variant = if anim == anim_state::LOOK_AROUND { rng.rand(3) as u16 } else { 0 };
-                    if self.can_do(d, anim) { self.call_anim_variant(anim, variant, back, 0) }
+                    if self.can_do(d, anim) { self.call_anim_variant(d, anim, variant, back, 0) }
                     if s != PATROL { self.set_idle_timeout(rng, frame, 45, 5) }
                 }
                 true
             }
             // Forced attack (`Drone_Message(0x1F)` → `DroneFunc_DoForcedAttack`): another drone was seen attacking.
             (IDLE | ALERT | PATROL, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
+            (IDLE | ALERT | PATROL | ALERT_TO_POSITION | SEARCH_AREA | HEARD_NOISE_AWARE, msg::SOUND) => {
+                // Aware (0x16af20): a share above 0.1 → Suspect, else nothing.
+                if s == HEARD_NOISE_AWARE { if self.sound_share > 0.1 { self.set_state(HEARD_NOISE_SUSPECT) } return true; }
+                if matches!(s, ALERT_TO_POSITION | SEARCH_AREA) && self.sound_share > 0.2 { self.set_state(ATTACK); return true; }
+                if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); }
+                true
+            }
+            // The noise chain (`NDrone2_DSTATE_HeardNoise*`).
+            (HEARD_NOISE, msg::ENTER) => { self.investigating = true; self.set_state(HEARD_NOISE_AWARE); true }
+            (HEARD_NOISE_AWARE, msg::ENTER) => {
+                self.investigating = true;
+                if self.noise_level < 2 {
+                    self.noise_level = 2;
+                    self.vision_on = true;
+                    let back = if self.resume_state != 0 { self.resume_state } else { self.start_state(d) };
+                    self.call_anim_variant(d, anim_state::ALERT_LOOK, 1, back, 0);
+                } else { self.set_state(HEARD_NOISE_SUSPECT); }
+                true
+            }
+            (HEARD_NOISE_AWARE | HEARD_NOISE_SUSPECT | HEARD_NOISE_ALERT | ALERT_TO_POSITION | SEARCH_AREA, msg::UPDATE) => {
+                if let Some(n) = self.look_for_opponent(d) { self.set_state(n); return true; }
+                if s == ALERT_TO_POSITION { self.alert_to_position_update(d); }
+                true
+            }
+            (HEARD_NOISE_SUSPECT, msg::ENTER) => {
+                if self.noise_level >= 3 { self.set_state(HEARD_NOISE_ALERT); return true; }
+                self.noise_level = 3;
+                self.investigating = true;
+                self.vision_on = true;
+                let back = if self.resume_state != 0 { self.resume_state } else { self.start_state(d) };
+                if self.prop(d, 0x40) { self.call_anim_variant(d, anim_state::ALERT_LOOK, 1, back, 0); return true; }
+                // `SetSoundAlertRoute`: the goal becomes the sound (radius 2.0).
+                self.goal = Some(self.sound_pos);
+                self.croute = None;
+                if self.turned && self.prop(d, 0x21) { self.set_state(ALERT_TO_POSITION); return true; }
+                let to = atan2_approx(self.sound_pos[0] - self.pos[0], self.sound_pos[2] - self.pos[2]);
+                if angle_difference(self.yaw, to).abs() > 2.356_194_5 {
+                    self.call_anim(d, TURN, 0, msg::TURNED);
+                } else {
+                    self.turned = true;
+                    self.desired_yaw = to;
+                    if self.prop(d, 0x21) { self.return_state = SEARCH_AREA; self.call_anim(d, anim_state::ALERT_LOOK, ALERT_TO_POSITION, 0); }
+                    else { self.call_anim_variant(d, anim_state::ALERT_LOOK, 1, back, 0); }
+                }
+                true
+            }
+            // Suspect's turn finished (msg 0x23, 0x16b0e0): already turned with prop 0x21 → AlertToPosition; else face the
+            // sound; without prop 0x21 look about (variant 1) and go back; with it SearchArea follows AlertToPosition,
+            // reached through the short look (0x0B) when standing in alert idle, else at once.
+            (HEARD_NOISE_SUSPECT, msg::TURNED) => {
+                if self.turned && self.prop(d, 0x21) { self.set_state(ALERT_TO_POSITION); return true; }
+                self.turned = true;
+                self.desired_yaw = atan2_approx(self.sound_pos[0] - self.pos[0], self.sound_pos[2] - self.pos[2]);
+                let back = if self.resume_state != 0 { self.resume_state } else { self.start_state(d) };
+                if !self.prop(d, 0x21) { self.call_anim_variant(d, anim_state::ALERT_LOOK, 1, back, 0); return true; }
+                self.return_state = SEARCH_AREA;
+                if self.anim.state == anim_state::ALERT_IDLE { self.call_anim(d, LOOK_SHORT, ALERT_TO_POSITION, 0) }
+                else { self.set_state(ALERT_TO_POSITION) }
+                true
+            }
+            // Suspect: any further sound → Attack. Alert (0x16b540) has no sound case (the global state's applies).
+            (HEARD_NOISE_SUSPECT, msg::SOUND) => { self.set_state(ATTACK); true }
+            (HEARD_NOISE_ALERT, msg::ENTER) => {
+                self.noise_level = 4;
+                self.investigating = true;
+                self.vision_on = true;
+                if self.prop(d, 0x40) { self.call_anim_variant(d, anim_state::ALERT_LOOK, 1, ATTACK, 0); return true; }
+                self.timer_c = Some(frame + 60);
+                if angle_difference(self.yaw, self.yaw_to_opp).abs() <= 2.356_194_5 {
+                    self.turned = true;
+                    self.desired_yaw = self.yaw_to_opp;
+                    self.call_anim(d, LOOK_SHORT, ATTACK, 0);
+                } else { self.call_anim(d, TURN, 0, msg::TURNED); }
+                true
+            }
+            (HEARD_NOISE_ALERT, msg::TURNED) => { self.turned = true; self.desired_yaw = self.yaw_to_opp; self.call_anim(d, LOOK_SHORT, ATTACK, 0); true }
+            (HEARD_NOISE_ALERT, msg::TIMER_C) => { self.set_state(ATTACK); true }
+            // AlertToPosition 0x62: walk / run to the sound.
+            (ALERT_TO_POSITION, msg::ENTER) => { self.vision_on = true; self.call_anim(d, anim_state::WALK_AIM, 0, 0); self.timer_c = Some(frame + 300); true }
+            (ALERT_TO_POSITION, msg::TIMER_C) => { true }
+            // SearchArea 0x65: look around, turn, look, give up and walk home (`+0x5B0`) through GoToGoalPosition.
+            (SEARCH_AREA, msg::ENTER) => { self.vision_on = true; self.call_anim(d, anim_state::ALERT_LOOK, 0, 0); self.timer_c = Some(frame + 180); true }
+            (SEARCH_AREA, msg::TIMER_C) => { self.call_anim(d, TURN, 0, msg::SEARCH_LOOKED); true }
+            (SEARCH_AREA, msg::SEARCH_LOOKED) => { self.call_anim(d, LOOK_SHORT, 0, msg::SEARCH_DONE); true }
+            (SEARCH_AREA, msg::SEARCH_DONE) => {
+                self.alert = 0.0;
+                self.turned = false;
+                self.return_state = if self.resume_state != 0 { self.resume_state } else { self.start_state(d) };
+                self.goal = Some(self.home);
+                self.croute = None;
+                self.set_state(GO_TO_GOAL);
+                true
+            }
             (ATTACK, msg::ENTER) => {
                 // DroneFunc_FirstAttack → FirstSightState: alertness 1, combat sight; props 0x1B (50 %) / 0x19 pick a
                 // combat move; otherwise AimStand (prop 0x18, in range) or Combat. FirstAttack also clears the second
@@ -1076,7 +1262,7 @@ impl Drone {
             (COMBAT_NO_ROUTE, msg::ENTER) => {
                 self.vision_on = true;
                 self.no_route_odd = false;
-                self.call_anim(anim_state::ALERT_IDLE, 0, 0);
+                self.call_anim(d, anim_state::ALERT_IDLE, 0, 0);
                 self.timer_c = Some(frame + 60);
                 self.croute = None;
                 self.fire(d, rng, frame, true);
@@ -1086,11 +1272,11 @@ impl Drone {
                 self.desired_yaw = self.yaw_to_opp;
                 if !self.seen {
                     match self.choose_combat_move(d, rng) {
-                        0 | AIM_STAND | AIM_CROUCH => self.call_anim(anim_state::ALERT_IDLE, 0, 0),
+                        0 | AIM_STAND | AIM_CROUCH => self.call_anim(d, anim_state::ALERT_IDLE, 0, 0),
                         m => self.set_state(m),
                     }
                 } else {
-                    self.call_anim(anim_state::AIM_STAND, 0, 0);
+                    self.call_anim(d, anim_state::AIM_STAND, 0, 0);
                     self.fire(d, rng, frame, true);
                 }
                 true
@@ -1108,7 +1294,7 @@ impl Drone {
                     if rng.rand(2) != 0 && self.dist < self.engage_range { self.set_state(AIM_STAND); return true; }
                     if self.set_goal_to_closer_position(d) { self.set_state(GO_TO_GOAL); return true; }
                 }
-                self.call_anim(anim_state::ALERT_IDLE, 0, 0);
+                self.call_anim(d, anim_state::ALERT_IDLE, 0, 0);
                 self.timer_c = Some(frame + 60);
                 true
             }
@@ -1121,8 +1307,8 @@ impl Drone {
                     if let Some(n) = self.look_for_opponent(d) { self.set_state(n); return true; }
                 }
                 match self.move_to_goal(d) {
-                    0..=2 => self.call_anim(anim_state::RUN, 0, 0),
-                    9 | 0xc => self.face_and_aim(),
+                    0..=2 => self.call_anim(d, anim_state::RUN, 0, 0),
+                    9 | 0xc => self.face_and_aim(d),
                     10 => {}
                     _ => {
                         if self.prop(d, 0x59) { self.present = false; self.enabled = false; }
@@ -1142,10 +1328,10 @@ impl Drone {
                 self.set_state(if crouch { AIM_CROUCH_FIRE } else { AIM_STAND_FIRE });
                 true
             }
-            (AIM_STAND, msg::ENTER) => { self.call_anim(anim_state::AIM_STAND, 0, msg::ANIM_DONE); self.firing = false; true }
+            (AIM_STAND, msg::ENTER) => { self.call_anim(d, anim_state::AIM_STAND, 0, msg::ANIM_DONE); self.firing = false; true }
             (AIM_STAND, msg::ANIM_DONE) => { self.set_state(if self.unseen_ticks < 16 { AIM_STAND_FIRE } else { COMBAT_NO_SIGHT }); true }
             (AIM_STAND_FIRE, msg::ENTER) => {
-                self.call_anim(anim_state::AIM_STAND, 0, 0);
+                self.call_anim(d, anim_state::AIM_STAND, 0, 0);
                 self.vision_on = true;
                 if self.unseen_ticks < 16 { self.fire(d, rng, frame, true) } else { self.set_state(COMBAT_NO_SIGHT) }
                 true
@@ -1162,14 +1348,14 @@ impl Drone {
             (AIM_STAND_RELOAD | AIM_CROUCH_RELOAD, msg::ENTER) => {
                 self.firing = false;
                 self.clip = self.clip_max;
-                self.call_anim(anim_state::RELOAD, if s == AIM_STAND_RELOAD { AIM_STAND_FIRE } else { AIM_CROUCH_FIRE }, 0);
+                self.call_anim(d, anim_state::RELOAD, if s == AIM_STAND_RELOAD { AIM_STAND_FIRE } else { AIM_CROUCH_FIRE }, 0);
                 true
             }
             (AIM_STAND_RELOAD | AIM_CROUCH_RELOAD, msg::UPDATE) => { self.turn_to_opponent(0.9); true }
             // Crouching: AimCrouch plays the crouch-aim anim and continues in AimCrouchFire.
-            (AIM_CROUCH, msg::ENTER) => { self.call_anim(anim_state::CROUCH_AIM, AIM_CROUCH_FIRE, 0); true }
+            (AIM_CROUCH, msg::ENTER) => { self.call_anim(d, anim_state::CROUCH_AIM, AIM_CROUCH_FIRE, 0); true }
             (AIM_CROUCH, msg::UPDATE) => { self.desired_yaw = self.yaw_to_opp; true }
-            (AIM_CROUCH_FIRE, msg::ENTER) => { self.call_anim(anim_state::CROUCH_AIM, 0, 0); self.vision_on = true; self.fire(d, rng, frame, true); true }
+            (AIM_CROUCH_FIRE, msg::ENTER) => { self.call_anim(d, anim_state::CROUCH_AIM, 0, 0); self.vision_on = true; self.fire(d, rng, frame, true); true }
             (AIM_CROUCH_FIRE, msg::UPDATE) => {
                 self.desired_yaw = self.yaw_to_opp;
                 if self.dist <= 4.0 && self.can_backoff(d) { self.set_state(AIM_BACKOFF); return true; }
@@ -1183,7 +1369,7 @@ impl Drone {
             }
             // Steps: one anim, then back to AimStandFire; no firing while stepping.
             (STEP_AIM_LEFT | STEP_AIM_RIGHT, msg::ENTER) => {
-                self.call_anim(if s == STEP_AIM_LEFT { anim_state::STEP_LEFT } else { anim_state::STEP_RIGHT }, AIM_STAND_FIRE, 0);
+                self.call_anim(d, if s == STEP_AIM_LEFT { anim_state::STEP_LEFT } else { anim_state::STEP_RIGHT }, AIM_STAND_FIRE, 0);
                 self.firing = false;
                 true
             }
@@ -1200,7 +1386,7 @@ impl Drone {
                     STRAFE_DODGE_LEFT => (anim_state::DODGE_LEFT, rng.rand(2) + 2, false),
                     _ => (anim_state::STRAFE_RIGHT, rng.rand(2) + 2, false), // StrafeDodgeRight calls anim 0xD (shipped)
                 };
-                self.call_anim(anim, 0, 0);
+                self.call_anim(d, anim, 0, 0);
                 self.timer_c = Some(frame + secs * 60);
                 if fires { self.fire(d, rng, frame, true) } else { self.firing = false }
                 true
@@ -1216,12 +1402,12 @@ impl Drone {
             }
             (STRAFE_AIM_LEFT | STRAFE_AIM_RIGHT | STRAFE_DODGE_LEFT | STRAFE_DODGE_RIGHT | AIM_BACKOFF, msg::TIMER_C) => { self.set_state(AIM_STAND); true }
             (ROLL_LEFT_CROUCH | ROLL_RIGHT_CROUCH, msg::ENTER) => {
-                self.call_anim(if s == ROLL_LEFT_CROUCH { anim_state::ROLL_LEFT } else { anim_state::ROLL_RIGHT }, AIM_CROUCH_FIRE, 0);
+                self.call_anim(d, if s == ROLL_LEFT_CROUCH { anim_state::ROLL_LEFT } else { anim_state::ROLL_RIGHT }, AIM_CROUCH_FIRE, 0);
                 true
             }
             (ROLL_LEFT_CROUCH | ROLL_RIGHT_CROUCH, msg::UPDATE) => { self.desired_yaw = self.yaw_to_opp; true }
             (AIM_BACKOFF, msg::ENTER) => {
-                self.call_anim(anim_state::BACKOFF, 0, 0);
+                self.call_anim(d, anim_state::BACKOFF, 0, 0);
                 self.timer_c = Some(frame + (rng.rand(4) + 2) * 60);
                 self.fire(d, rng, frame, true);
                 true
@@ -1334,12 +1520,12 @@ impl Drone {
                 if self.cover_available(d, true) { return RUN_FOR_COVER; }
                 if self.seen { return COMBAT_NEW_SIGHTING; }
                 if self.unseen_ticks > 15 { return self.moving_result(d, rng, mv, false); }
-                self.face_and_aim();
+                self.face_and_aim(d);
                 0
             }
             COMBAT_DRONE_AHEAD => {
                 if routed { return COMBAT; }
-                self.face_and_aim();
+                self.face_and_aim(d);
                 0
             }
             AIM_STAND_FIRE => {
@@ -1351,7 +1537,7 @@ impl Drone {
                     let m = self.choose_combat_move(d, rng);
                     if m != 0 { return m; }
                 }
-                self.call_anim(anim_state::AIM_STAND, 0, 0);
+                self.call_anim(d, anim_state::AIM_STAND, 0, 0);
                 0
             }
             _ => {
@@ -1362,7 +1548,7 @@ impl Drone {
                     let m = self.choose_combat_move(d, rng);
                     if m != 0 { return m; }
                 }
-                self.call_anim(anim_state::CROUCH_AIM, 0, 0);
+                self.call_anim(d, anim_state::CROUCH_AIM, 0, 0);
                 0
             }
         }
@@ -1375,10 +1561,10 @@ impl Drone {
             0..=2 => {
                 let remaining = self.croute.as_ref().map_or(0.0, |r| r.remaining);
                 if !out_of_range_state || matches!(d.level, 0x0700_0005 | 0x0700_0006) { self.set_combat_move_anim(d, rng, remaining) }
-                else { self.call_anim(anim_state::RUN, 0, 0) }
+                else { self.call_anim(d, anim_state::RUN, 0, 0) }
                 0
             }
-            3 | 9 | 0xb | 0xc => { self.face_and_aim(); 0 }
+            3 | 9 | 0xb | 0xc => { self.face_and_aim(d); 0 }
             5 => state::DRONE_STUCK,
             10 => 0,
             _ => state::COMBAT_NO_ROUTE,
@@ -1386,14 +1572,14 @@ impl Drone {
     }
 
     /// `NDrone2_SetAngleToObj(opponent)`, then aim (anim 0xA, firing while visible) or look about (0x21).
-    fn face_and_aim(&mut self) {
+    fn face_and_aim(&mut self, d: &Data) {
         self.desired_yaw = self.yaw_to_opp;
-        if self.seen { self.firing = true; self.call_anim(anim_state::AIM_STAND, 0, 0) } else { self.call_anim(anim_state::ALERT_IDLE, 0, 0) }
+        if self.seen { self.firing = true; self.call_anim(d, anim_state::AIM_STAND, 0, 0) } else { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0) }
     }
 
-    /// `DroneAnim_InTransition` (*suggested*: a call's transition danim is playing, not yet its state).
+    /// `DroneAnim_InTransition` (0x13e3b0): the playing danim's class is above 3 and not 8.
     fn in_transition(&self) -> bool {
-        self.anim.call.is_some_and(|(w, _, _)| self.anim.started_call && self.anim.state != w)
+        self.anim.class > 3 && self.anim.class != 8
     }
 
     /// `NDrone2_MoveToObject(radius, opponent, follow)` (0x151618): verify / compute the combat route to the player's
@@ -1442,7 +1628,7 @@ impl Drone {
     /// `DroneMove_NoBunching` (`+0x31C`) are not ported.
     fn set_combat_move_anim(&mut self, d: &Data, rng: &mut Rng, route_dist: f32) {
         use anim_state::*;
-        let Some(route) = self.croute.as_ref() else { self.call_anim(RUN, 0, 0); return };
+        let Some(route) = self.croute.as_ref() else { self.call_anim(d, RUN, 0, 0); return };
         let t = route.target;
         let next = route.next_node_turn(d.nav, self.feet());
         let a = angle_difference(atan2_approx(t[0] - self.pos[0], t[2] - self.pos[2]), self.yaw_to_opp);
@@ -1492,7 +1678,7 @@ impl Drone {
             }
         }
         self.firing = fire;
-        self.call_anim(anim, 0, 0);
+        self.call_anim(d, anim, 0, 0);
         self.yaw_offset = offset;
     }
 
@@ -1663,6 +1849,14 @@ impl Drone {
     fn head(&self) -> V3 { [self.pos[0], self.pos[1] + 0.6, self.pos[2]] }
 }
 
+/// A sound in the hearing list (`Sound_Play3D`: position, inner / outer radius, weight).
+#[derive(Clone, Copy, Debug)]
+pub struct Sound { pub pos: V3, pub inner: f32, pub outer: f32, pub weight: f32 }
+
+/// Anim states of the noise chain: turn (0x61) and a short look (0xB).
+const TURN: u16 = 0x61;
+const LOOK_SHORT: u16 = 0x0b;
+
 /// Stand-in for the renderer's "drawn" (`obj+0xFC`) and `Drone_PositionVisible`: within 60° of Bond's aim (or within
 /// 2 units) and any of five body points in line of sight from his eye (thin occluders hide one ray, not a cel).
 pub fn visible_to(player: &Player, world: &CollisionWorld, pos: V3, head: V3) -> bool {
@@ -1731,6 +1925,8 @@ pub struct Drones {
     pub spawners: Vec<crate::spawners::Spawner>,
     /// Cover nodes' run-time state, `Drone_ProcessCoverNodes`' shared cursor and its frame counter.
     pub cover_rt: Vec<crate::cover::CoverRt>,
+    /// Sounds made since the last frame (`Sound_Play3D`'s list; weights zeroed after the drones heard them).
+    pub sounds: Vec<Sound>,
     cover_cursor: usize,
     cover_counter: i32,
 }
@@ -1740,7 +1936,7 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), cover_cursor: 0, cover_counter: 0 }
+        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0 }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -1764,6 +1960,12 @@ impl Drones {
                 self.spawners.push(sp);
             }
         }
+    }
+
+    /// `Sound_Play3D(id, pos)`: enters a sound for the drones to hear next frame (hearing data from `SFXOutputData`).
+    pub fn play_sound(&mut self, pos: V3, h: nf_formats::sfx::SfxHearing) {
+        if h.looped { return; }
+        self.sounds.push(Sound { pos, inner: h.inner, outer: h.outer, weight: h.weight });
     }
 
     /// Turns a switch channel on (callers and tests).
@@ -1812,6 +2014,34 @@ impl Drones {
                 dr.seen_ticks = 0;
                 dr.unseen_ticks += 1;
                 dr.lost_sight = true;
+            }
+        }
+        // `DroneFunc_HandleSoundAlerts` (every drone, every frame) over the sounds made since the last frame, then
+        // `Sound_ZeroAlertness`: each sound alerts once.
+        let sounds = std::mem::take(&mut self.sounds);
+        if !sounds.is_empty() {
+            for dr in self.list.iter_mut().filter(|x| x.present && x.enabled) {
+                if !dr.prop(d, 0x1f) || dr.state == state::GO_TO_GOAL { continue; }
+                let (mut sum, mut peak, mut loudest) = (0f32, 0f32, None);
+                for snd in &sounds {
+                    let dd = ((snd.pos[0] - dr.pos[0]).powi(2) + (snd.pos[1] - dr.pos[1]).powi(2) + (snd.pos[2] - dr.pos[2]).powi(2)).sqrt();
+                    if snd.weight == 0.0 || dd > snd.outer { continue; }
+                    let c = if dd < snd.inner { snd.weight } else { snd.weight * (snd.outer - dd) / (snd.outer - snd.inner).max(1e-6) };
+                    sum += c;
+                    if c > peak { peak = c; loudest = Some(snd); }
+                }
+                dr.loudness = sum.max(0.0);
+                if dr.loudness <= 0.0 { continue; }
+                dr.sound_share = 0.01 * dr.loudness;
+                dr.alert = (dr.alert + dr.sound_share).min(1.0);
+                if let Some(snd) = loudest {
+                    if frame > dr.heard_frame + 60 || peak > dr.heard_peak {
+                        dr.sound_pos = snd.pos;
+                        dr.heard_frame = frame;
+                        dr.heard_peak = peak;
+                        dr.send(d, &mut self.rng, frame, msg::SOUND);
+                    }
+                }
             }
         }
         // Drones noticing drones that attack (`DroneVision_FindAlertedDrones` → `ConsiderAlerted` →
@@ -1943,8 +2173,9 @@ impl Drones {
             dr.aim_yaw = rotate_to_bearing(dr.aim_yaw, want, 0.2, crate::trig::PI);
             if let Some(b) = dr.handle_firing(d, rng, frame, player, (moving, first_moved), index) { self.bullets.push(b); }
             if let Some((next_ai, done_msg)) = dr.update_anim(d) {
-                if done_msg != 0 { dr.send(d, rng, frame, done_msg); }
-                if next_ai != 0 { dr.set_state(next_ai); dr.send(d, rng, frame, 0); }
+                // `SetEndAIState`: the AI state is queued, then the message routed (which applies the queued state).
+                dr.set_state(next_ai);
+                if done_msg != 0 || next_ai != 0 { dr.send(d, rng, frame, done_msg); }
             }
             // `NDrone2_Collision`: the feet sphere (r 0.4) is pushed out of the AI-network boundaries.
             if dr.enabled && d.nav.bounds {

@@ -22,6 +22,7 @@ struct Level05 {
     skeletons: HashMap<u8, nf_formats::character::Skeleton>,
     nav: nf_game::nav::Network,
     covers: Vec<nf_game::cover::CoverNode>,
+    sfx: nf_formats::sfx::SfxTable,
 }
 
 impl Level05 {
@@ -44,6 +45,7 @@ impl Level05 {
             tables: drone::DroneAnimData::from_action_elf(&elf).unwrap(),
             props: drone::PropertyTables::from_action_elf(&elf).unwrap(),
             weapons: WeaponData::from_action_elf(&elf).unwrap(),
+            sfx: nf_formats::sfx::SfxTable::from_action_elf(&elf).unwrap(),
             sequences: disc::level_sequences(&iso, "07000005.bin").unwrap(),
             level, scripts, world, skeletons, nav, covers,
         })
@@ -304,4 +306,36 @@ fn alarm_pulse_reaches_only_the_drones_updated_first() {
     for _ in 0..60 { held.set_channel(0xa1); held.tick(&d, &bond); }
     let hs = |placement: usize| held.list.iter().find(|x| x.placement == placement).unwrap().state;
     for p in [65, 66, 67, 68] { assert_ne!(hs(p), nf_game::drone::state::WAIT_SWITCH, "sister: drone {p}"); }
+}
+
+/// Hearing (docs/systems/drone-alerts.md, from the decomp; not yet checked live): a P99 shot (`SFXOutputData` 1: inner 2,
+/// outer 30, weight 75) 1 unit from the idle guard at (99.69, 101.58) — out of Bond's sight, Bond within 50 units — sends
+/// him HeardNoise → Aware the next frame; Aware's look-around (0x22 variant 1) ends at once off-screen (class 3, flag 4)
+/// and he goes back to Idle. Sisters: a weightless sound (0x604) and Bond more than 50 units away change nothing.
+#[test]
+fn shot_sends_a_guard_through_the_noise_chain() {
+    use nf_game::drone::state;
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let run = |id: u32, bond: [f32; 3]| {
+        let (drones, i, rng) = l.drones(None, 99.686);
+        let mut sim = l.sim(drones, rng);
+        let bond = bond_at(bond);
+        for _ in 0..99 { sim.tick(&d, &bond); }
+        sim.play_sound([99.0, 26.0, 100.0], l.sfx.get(id));
+        for _ in 0..30 { sim.tick(&d, &bond); }
+        (sim.list[i].log.clone(), sim.list[i].state, sim.list[i].sound_share)
+    };
+    assert_eq!(l.sfx.get(1), nf_formats::sfx::SfxHearing { inner: 2.0, outer: 30.0, weight: 75.0, looped: false });
+    let (log, st, share) = run(1, [99.0, 26.5, 140.0]);
+    let heard: Vec<u8> = log.iter().filter(|(f, _)| *f >= 100).map(|(_, s)| *s).collect();
+    assert_eq!(heard, [state::HEARD_NOISE, state::HEARD_NOISE_AWARE, state::IDLE], "log {log:x?}");
+    assert!(log.iter().any(|&(f, s)| f == 100 && s == state::HEARD_NOISE), "heard the frame after the shot: {log:x?}");
+    assert_eq!(st, state::IDLE);
+    assert!(share > 0.2, "share {share}");
+    // Sisters.
+    let (quiet, _, _) = run(0x604, [99.0, 26.5, 140.0]);
+    assert!(quiet.iter().all(|&(f, _)| f < 100), "sister: weightless sound {quiet:x?}");
+    let (far, _, _) = run(1, [0.0, 26.5, 0.0]);
+    assert!(far.iter().all(|&(f, _)| f < 100), "sister: Bond far away {far:x?}");
 }
