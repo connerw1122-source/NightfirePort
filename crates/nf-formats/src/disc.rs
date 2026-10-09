@@ -86,6 +86,26 @@ pub fn bigf_manifest<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
     Ok(s)
 }
 
+/// The `FileList` index read from the disc's ACTION.ELF, checked against FILES.BIN.
+pub fn files_bin_entries<R: Read + Seek>(iso: &IsoImage<R>) -> Result<(Vec<crate::filelist::FileEntry>, &IsoEntry)> {
+    let action = iso.find("/ACTION.ELF").ok_or_else(|| crate::buf::FormatError::Invalid("no ACTION.ELF".into()))?;
+    let bin = iso.find("/FILES.BIN").ok_or_else(|| crate::buf::FormatError::Invalid("no FILES.BIN".into()))?;
+    let entries = crate::filelist::from_action_elf(&iso.read_file(action)?)?;
+    crate::filelist::validate(&entries, bin.size as u64)?;
+    Ok((entries, bin))
+}
+
+/// `name \t offset \t size \t sha1` for every `FileList` entry (FILES.BIN contents hashed, never stored).
+pub fn files_bin_manifest<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
+    let (entries, bin) = files_bin_entries(iso)?;
+    let mut s = String::from("name\toffset\tsize\tsha1\n");
+    for e in &entries {
+        let h = hash_extent_at(iso, bin.lba as u64 * SECTOR_SIZE as u64 + e.offset as u64, e.size as u64)?;
+        s.push_str(&format!("{}\t{}\t{}\t{h}\n", e.name, e.offset, e.size));
+    }
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

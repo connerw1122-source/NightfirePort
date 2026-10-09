@@ -62,3 +62,19 @@ Numbered entries, newest last. Each says what was done, what was measured, and w
   input.md uses the live values and lists both.
 - Read `psiInput_MapInputs`' second argument as the controller style; it is the player count (style is per player at
   `PlayerSetting`+0xe).
+
+## 0003 — FILES.BIN via FileList (2026-10-08)
+
+**Done**
+- `filelist.rs`: reads `FileList` from ACTION.ELF through its own `.symtab` entry (no hard-coded address), parses
+  118 × 32-byte entries, validates alignment/bounds/overlap. `disc::files_bin_manifest`, CLI `files-manifest` /
+  `files-extract`, golden `golden/files_bin.tsv` and the opt-in test `files_bin_matches_the_golden_manifest` (with
+  sister). All 5 opt-in disc tests and 34 unit tests pass.
+- `.gitattributes` pins LF (git had warned it would convert to CRLF on checkout, which breaks the bash script).
+
+**Measured**
+- Entries are contiguous (0 gaps); 117/118 sizes are 2048-multiples; `psiFileLoad`/`psiFileOpen` pass the table size
+  through as the length (U-006 closed). Docs: docs/formats/files-bin.md.
+
+**Not done**
+- Independent cross-check (G-001) needs the user's approval to download a community extractor.

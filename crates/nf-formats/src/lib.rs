@@ -4,6 +4,7 @@ pub mod bigf;
 pub mod buf;
 pub mod disc;
 pub mod elf;
+pub mod filelist;
 pub mod golden;
 pub mod iso9660;
 pub mod pss;

@@ -2,7 +2,7 @@
 
 | ID | Item | Notes |
 |---|---|---|
-| G-001 | FILES.BIN reader from `FileList` (0x2446a0, 118 × 32) with a golden test, and a cross-check against an independent extractor | NightfireResearch's extractor exists but has no licence (facts only); running it needs the user's OK (download). |
+| G-001 | FILES.BIN: cross-check our 118-entry extraction against an independent extractor (reader + golden done, WORKLOG 0003) | NightfireResearch's extractor exists but has no licence (facts only); running it needs the user's OK (download). |
 | G-002 | BIGF cross-check against a community EA BIG tool | Needs a download; ask the user. |
 | G-003 | Confirm docs/systems/input.md with PCSX2 traces (PINE): pad buffer layout, action values, ramps, `PS2FramesToSkip` | U-010, U-013. |
 | G-004 | Driving input path (DRIVING.ELF `PS2PadDevice`, `InputDevice::DeadZoneChop/Scale` names from DRIVING.SYM are hints only) | U-003. |

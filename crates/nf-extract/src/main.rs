@@ -4,6 +4,8 @@
 //! nf-extract info <iso>                    build identity and sectors no directory entry covers
 //! nf-extract manifest <iso>                path/lba/size/sha1 of every directory entry (TSV, stdout)
 //! nf-extract elfs <iso> <out-dir>          SLUS_205.79, ACTION.ELF and DRIVING.ELF, SHA-1 checked
+//! nf-extract files-manifest <iso>          FILES.BIN entries from ACTION.ELF's FileList (TSV, stdout)
+//! nf-extract files-extract <iso> <out-dir> unpack FILES.BIN by FileList
 //! nf-extract bigf-manifest <iso>           every entry of every BIGF archive (TSV, stdout)
 //! nf-extract bigf-extract <iso> <archive> <out-dir>   unpack one BIGF archive (e.g. /DRIVING/MISC.VIV)
 //! nf-extract symtab <elf>                  an ELF's .symtab as TSV (stdout)
@@ -25,7 +27,9 @@ fn main() -> Result<()> {
         "manifest" => { print!("{}", disc::manifest(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "elfs" => elfs(&IsoImage::open(a(1)?)?, Path::new(a(2)?)),
         "bigf-manifest" => { print!("{}", disc::bigf_manifest(&IsoImage::open(a(1)?)?)?); Ok(()) }
-        "bigf-extract" => bigf_extract(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?)),
+        "files-manifest" => { print!("{}", disc::files_bin_manifest(&IsoImage::open(a(1)?)?)?); Ok(()) }
+        "files-extract" => files_extract(&IsoImage::open(a(1)?)?, Path::new(a(2)?)),
+        "bigf-extract" =>bigf_extract(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?)),
         "symtab" => symtab(Path::new(a(1)?)),
         "drivingsym" => {
             let iso = IsoImage::open(a(1)?)?;
@@ -72,6 +76,17 @@ fn bigf_extract(iso: &IsoImage, archive: &str, out: &Path) -> Result<()> {
         std::fs::write(&path, iso.read_bytes(e.lba as u64 * 2048 + x.offset as u64, x.size as u64)?)?;
     }
     println!("{} entries -> {}", g.entries.len(), out.display());
+    Ok(())
+}
+
+fn files_extract(iso: &IsoImage, out: &Path) -> Result<()> {
+    std::fs::create_dir_all(out)?;
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    for e in &entries {
+        if e.name.contains(['/', '\\']) || e.name.starts_with('.') { bail!("unsafe FileList name {:?}", e.name); }
+        std::fs::write(out.join(&e.name), iso.read_bytes(bin.lba as u64 * 2048 + e.offset as u64, e.size as u64)?)?;
+    }
+    println!("{} files -> {}", entries.len(), out.display());
     Ok(())
 }
 

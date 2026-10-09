@@ -10,7 +10,7 @@ noting the WORKLOG entry here.
 | U-003 | What build does `DRIVING/DRIVING.SYM` describe? 4 % of its in-text addresses fall on function boundaries of our DRIVING.ELF; its `_end` is 0x55cf04 vs 0x4279b4. NightfireResearch also say its offsets are wrong (*sourced*). Can names be transferred by matching function shapes? | Match functions by size/shape (call graph, constants) between the SYM layout and our ELF. | open |
 | U-004 | MISC.VIV's BIGF size field is 0x295c450b, not the file size 0xb456590 (all 22 other archives match). Meaning? | Check the driving loader's BIGF reader in DRIVING.ELF; EA tool docs. | open |
 | U-005 | Meaning of the `L225` + BE u32 2 trailer after the entry table in `.MUS`/`.SPE` BIGFs. | EA BIGF docs; driving loader. | open |
-| U-006 | `FileList` sizes (e.g. `DUTxt.dat` 151,552) look sector-padded; what is the real content length (the file starts with a u32 0x1c45c)? | Read the FILES.BIN loader (`DirFile*` globals) in the decomp. | open |
+| U-006 | ~~Are `FileList` sizes padded?~~ Yes, sector-padded, and the loader passes that size on as the length; inner lengths are per format (docs/formats/files-bin.md). | — | closed (0003) |
 | U-010 | Pad buffer layout: data[4..7] = RX, RY, LX, LY and the button bits (assumed from libpad). | PCSX2 PINE read of `tSlot`+0x124 while pressing known buttons/sticks. | open |
 | U-011 | Names of the 40 `GameActions` (only 0–6 identified by use). | Cross-reference every `Input_Action[f]` call site; menu/options strings. | open |
 | U-012 | Units of `PS2GameCodeTimeW`/`PS2DrawCodeTimeW`/`PS2DrawFrameTimeW` (threshold 262.5 — scanlines?). | Find where they are written (RCNT reads). | open |
