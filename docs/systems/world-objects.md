@@ -37,12 +37,12 @@ is planned after animation and rendering).
   (9 bones, each with one rigid mesh: 020003BD body, 020003C4 / C2 / C3 wheels, 020003BE truck, 020003BF hatch,
   020003B7 windows, 020003C0 / C1 wipers). **The root translation is world space** (frame 1 root = (154.05, 15.80,
   93.95) = part 0's live matrix); frame = t − t0 + 1, clamped. Path: down the valley road, stops at the gatehouse
-  (88.8, 18.9, 101.7) frames 1800–2400, again at (57.9, 26.2, 96.8) 3361–3601, parked (29.9, 36.0, 48.0) from ~5400;
-  deleted at t = 5895 (98 s).
+  (88.8, 18.9, 101.7) frames 1800–2400, again at (57.9, 26.2, 96.8) 3361–3601, parked (29.9, 36.0, 48.0) from ~5400.
+  **Correction (WORKLOG 0058):** not deleted at 5895 — the event at 5890 sets "keep objects", so the truck stays parked
+  on the last frame (docs/systems/script-player.md).
 - Streams 4 / 5: headlight coronas `Corona_2` 0x02000426 on bone 0, local (−0.7338, 1.0187, 1.4450) /
   (0.7836, 0.9992, 1.4383). Streams 6–8: touch triggers (channels 0x70, 0x71 on the bed, 0x5C → ScriptPlayer #38).
-- Port recipe: a character with skin 0x05000005, attachments per `extra` (bone, mesh), pose 0x04000009 at the clock's
-  frame keeping the root translation, billboards for the headlights, hidden from t ≥ 5895.
+- Ported as the general script player (docs/systems/script-player.md, WORKLOG 0058), not as a special case.
 
 ## Searchlights [M]
 

@@ -105,6 +105,9 @@ pub struct Character {
     pub role: drone::SpawnRole,
     /// Highest World triangle below the placement (stand-in for the game's collision floor, docs/systems/drone-animation.md).
     pub floor: Option<f32>,
+    /// A script's animated object (script hash, stream): drawn while the simulation has it, posed with its root in world
+    /// space (docs/systems/script-player.md).
+    pub script: Option<(u32, u8)>,
 }
 
 /// The script a drone starts with (`NDrone2_DefaultInit` → `DroneAnim_SetAnimD`, or placement parameter 1) and the
@@ -324,6 +327,22 @@ impl Sim {
         out
     }
 
+    /// The live animated script object from `src` (script hash, stream) on `skin`: its animation script and frame.
+    pub fn script_anim(&self, src: (u32, u8), skin: u32) -> Option<(u32, f32)> {
+        self.drones.scripts.objects.list.iter().flatten().rev().find_map(|o| match o {
+            nf_game::nis::Obj::Anim { skin: k, script, frame, src: o } if *o == src && *k == skin => Some((*script, *frame)),
+            _ => None,
+        })
+    }
+
+    /// The world matrix of the live script entity `hash` from `src`.
+    pub fn script_entity(&self, src: (u32, u8), hash: u32) -> Option<Mat4> {
+        self.drones.scripts.objects.list.iter().flatten().rev().find_map(|o| match o {
+            nf_game::nis::Obj::Entity { hash: h, matrix, src: o, .. } if *o == src && *h == hash => Some(*matrix),
+            _ => None,
+        })
+    }
+
     /// The game data the simulation consults, borrowed from this Sim.
     pub fn data(&self) -> nf_game::drone::Data<'_> {
         nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models }
@@ -389,6 +408,8 @@ pub struct Attachment {
     pub tracer: Option<usize>,
     /// The character's gun once dropped (`DroneWeap_DropWeapon`): drawn at the pickup's matrix while it lies there.
     pub dropped: bool,
+    /// A script entity (script hash, stream, entity hash): drawn at the simulation object's matrix while it exists.
+    pub script: Option<(u32, u8, u32)>,
 }
 
 /// Viewer switches that change what the game state would be.
@@ -480,11 +501,12 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
     // GS state: each leaf's `DIRECT` writes, inherited by the leaves that send none.
     let (mut alpha, mut test, mut zbuf) = (0x44u64, 0x5001bu64, 0x3100_0000u64);
     for (li, leaf) in obj.gfx.leaves.iter().enumerate() {
-    // World objects draw their leaves in order (a leaf's soft-edged overlay comes after what it covers).
-    let lkey = if matches!(layer, Layer::World) { li as u32 } else { 0 };
+    // World objects draw their leaves and batches in order: a leaf repeats its triangles with blend layers (another
+    // texture weighted by vertex alpha, 0 where it does not show) after the opaque base they cover.
     for &(r, v) in &leaf.gs { match r { 0x42 => alpha = v, 0x47 => test = v, 0x4e => zbuf = v, _ => {} } }
     let draw = Draw::from_gs(pass, fog, alpha, test, zbuf);
-    for b in &leaf.batches {
+    for (bi, b) in leaf.batches.iter().enumerate() {
+        let lkey = if matches!(layer, Layer::World) { (li as u32) << 16 | bi as u32 } else { 0 };
         let key = b.texture.filter(|&t| (t as usize) < level.maps[inst.map].textures.len()).map(|t| (inst.map, t));
         let (vs, is, cv, c) = groups.entry((layer, ikey, lkey, key, draw)).or_default();
         *c = centre;
@@ -634,7 +656,7 @@ impl Scene {
                 Some(StartAnim { script, sequences })
             });
             let role = roles.get(&inst.placement.translation.map(f32::to_bits)).copied().unwrap_or(drone::SpawnRole::Placed);
-            characters.push(Character { matrix: inst.matrix, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: obj.gfx.slot_bones.clone(), start, role, floor: None });
+            characters.push(Character { matrix: inst.matrix, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: obj.gfx.slot_bones.clone(), start, role, floor: None, script: None });
             // The held weapon (`AnimObjectDraw`): weapon_data[w] +0x80 mesh on the datum whose id is +0x50 (0xFF → 0),
             // once per drone (a skin may have several main meshes).
             let key = (inst.placement.translation.map(f32::to_bits), skin_hash);
@@ -650,10 +672,10 @@ impl Scene {
             let character = characters.len() as u32 - 1;
             add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None);
             let local = anim::quat_trans_to_mat(dt.q, dt.t);
-            attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false });
+            attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, script: None });
             // The same gun as a pickup once the drone drops it.
             add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None);
-            attachments.push(Attachment { character, bone: 0, local, flash: None, tracer: None, dropped: true });
+            attachments.push(Attachment { character, bone: 0, local, flash: None, tracer: None, dropped: true, script: None });
             // Its muzzle flash: `DroneWeap_FireWeapon` asks `AnimGetBoneWorldTrans(obj, datum id, 1, …)`, which looks up
             // the datum whose id is id + 1 — the muzzle (07000005: 8 → 9 at x −0.77, 16 → 17 at x −1.18).
             if let Some((fmesh, rgb)) = wd.muzzle_flash(weapon as u8) {
@@ -661,7 +683,7 @@ impl Scene {
                 if let (Some(&(fmap, fobject)), Some(md)) = (level.by_hash.get(&fmesh), muzzle) {
                     let finst = Instance { map: fmap, object: fobject, ..winst };
                     add_instance(level, &finst, Layer::Effect, Some((character, Some(attachments.len() as u32))), &mut groups, None);
-                    attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb), tracer: None, dropped: false });
+                    attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb), tracer: None, dropped: false, script: None });
                 }
             }
         }
@@ -683,7 +705,7 @@ impl Scene {
                         let Some(&(map, object)) = part.and_then(|h| level.by_hash.get(&h)) else { continue };
                         let pinst = Instance { map, object, matrix: ident, placement: placement.clone() };
                         add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None);
-                        attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false });
+                        attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, script: None });
                     }
                     // The muzzle flash (`Player_MuzzleFlash`): mesh `weapon+0x48` on datum 0, colour (+0x56, +0x55, +0x54).
                     let r = &wd.records[2];
@@ -691,10 +713,59 @@ impl Scene {
                     if let (Some(&(fmap, fobject)), Some(dt)) = (level.by_hash.get(&flash), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
                         let finst = Instance { map: fmap, object: fobject, matrix: ident, placement: placement.clone() };
                         add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None);
-                        attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false });
+                        attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, script: None });
                     }
-                    characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None });
+                    characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None, script: None });
                     view_model = Some(ci as usize);
+                }
+            }
+        }
+        // Script objects (docs/systems/script-player.md): every animation and drawn entity the main map's script players
+        // can make; each shows only while the simulation has the object.
+        let mut script_objects = 0;
+        if let Some(m) = level.main_map() {
+            let ident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
+            let placement = level.maps[m].placements.first().cloned().unwrap_or_default();
+            let mut seen = BTreeSet::new();
+            let players: Vec<nf_game::nis::Player> = level.maps[m].placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xd9)
+                .filter_map(|(i, p)| nf_game::nis::Player::from_placement(i, p)).collect();
+            for h in players.iter().flat_map(|p| p.scripts).filter(|&h| h != 0) {
+                let Some(nis) = level.nis.get(&h) else { continue };
+                for (si, st) in nis.streams.iter().enumerate() {
+                    for cmd in st.decode() {
+                        match cmd {
+                            nf_formats::nis::Cmd::Anim { skin: sh, .. } => {
+                                if !seen.insert((h, si, sh)) { continue; }
+                                let (Some(skin), Some(skeleton)) = (level.skins.get(&sh), level.skins.get(&sh).and_then(|k| skeletons.get(&k.skeleton))) else { continue };
+                                let ci = characters.len() as u32;
+                                let mut slot_bones = Vec::new();
+                                for &mh in skin.main.iter().flatten() {
+                                    let Some(&(map, object)) = level.by_hash.get(&mh) else { continue };
+                                    let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
+                                    add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None);
+                                    slot_bones = level.maps[map].objects[object].gfx.slot_bones.clone();
+                                }
+                                for &(bone, part) in &skin.extra {
+                                    let Some(&(map, object)) = part.and_then(|ph| level.by_hash.get(&ph)) else { continue };
+                                    let pinst = Instance { map, object, matrix: ident, placement: placement.clone() };
+                                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None);
+                                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, script: None });
+                                }
+                                characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones, start: None, role: drone::SpawnRole::Placed, floor: None, script: Some((h, si as u8)) });
+                                script_objects += 1;
+                            }
+                            // Triggers, AI volumes and emitters draw nothing (`Script_CreateEntity`).
+                            nf_formats::nis::Cmd::Entity { hash, obj_type, .. } if !matches!(obj_type, 0xea | 0xeb | 0xf5 | 0xf2) => {
+                                if !seen.insert((h, si, hash)) { continue; }
+                                let Some(&(map, object)) = level.by_hash.get(&hash) else { continue };
+                                let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
+                                add_instance(level, &inst, Layer::Character, Some((0, Some(attachments.len() as u32))), &mut groups, None);
+                                attachments.push(Attachment { character: 0, bone: 0, local: ident, flash: None, tracer: None, dropped: false, script: Some((h, si as u8, hash)) });
+                                script_objects += 1;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
             }
         }
@@ -704,7 +775,7 @@ impl Scene {
             for slot in 0..TRACER_SLOTS {
                 let tinst = Instance { map: tmap, object: tobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
                 add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None);
-                attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false });
+                attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false, script: None });
             }
         }
         for (inst, follows_camera) in &sky {
@@ -743,9 +814,8 @@ impl Scene {
         }
         let started = characters.iter().filter(|c| c.start.as_ref().is_some_and(|s| !s.sequences.is_empty())).count();
         let flashes = attachments.iter().filter(|a| a.flash.is_some()).count();
-        let tracers = attachments.iter().filter(|a| a.tracer.is_some()).count();
         let held_back = characters.iter().filter(|c| matches!(c.role, drone::SpawnRole::Reinforcement { .. })).count();
-        let stats = format!("{stats}; {started}/{} characters with their start animation; {} weapons held ({weapons_missing} without mesh or datum), {flashes} with a muzzle flash; {held_back} character meshes held back by spawners (R shows them)", characters.len(), attachments.len() - flashes - tracers);
+        let stats = format!("{stats}; {started}/{} characters with their start animation; {} weapons held ({weapons_missing} without mesh or datum), {flashes} with a muzzle flash; {held_back} character meshes held back by spawners (R shows them); {script_objects} script objects", characters.len(), attachments.iter().filter(|a| a.script.is_none() && a.flash.is_none() && a.tracer.is_none()).count());
         // The guard AI: one drone per main-map drone placement present at level start; characters map to it by
         // placement translation.
         let seqs: HashMap<u32, Sequence> = sequences.values().flatten().map(|s| (s.hashcode, s.clone())).collect();
@@ -823,6 +893,15 @@ impl Scene {
                 let m = nf_formats::placement::object_matrix([0.0, dr.yaw, 0.0], [dr.pos[0], dr.draw_y(hip), dr.pos[2]]);
                 return Some((anim::skin_matrices(&world, &c.skin), world, m));
             }
+            // Script animations: the object's frame, the root kept (the object sits at the origin).
+            if let Some(src) = c.script {
+                let s = self.sim.as_ref()?;
+                let (script, frame) = s.script_anim(src, c.skin.hashcode)?;
+                let (q, f) = nf_game::anim::script_frame(s.scripts.get(&script)?, frame)?;
+                let seq = s.seqs.get(&q).filter(|q| q.skeleton == c.skin.skeleton)?;
+                let world = anim::world_pose(&anim::local_pose(seq, &c.skeleton, &c.skin, f as u32), &c.skin);
+                return Some((anim::skin_matrices(&world, &c.skin), world, c.matrix));
+            }
             let view = (Some(ci) == self.view_model).then_some(()).and(self.sim.as_ref());
             let (i, frame) = match (view, drone_of(ci)) {
                 (Some(s), _) => s.view_frame(c.skin.skeleton)?,
@@ -849,9 +928,12 @@ impl Scene {
         }).collect();
         // Held back: spawner reinforcements and drones disabled while they wait for a switch channel (object flags
         // 0x30, `NDrone2_Enable(0)`); R shows them.
-        let hidden = |c: &Character, ci: usize| !opts.reinforcements && match drone_of(ci) {
-            Some((s, di)) => !s.drones.list[di].present || !s.drones.list[di].enabled,
-            None => matches!(c.role, drone::SpawnRole::Reinforcement { .. }),
+        let hidden = |c: &Character, ci: usize| match c.script {
+            Some(src) => self.sim.as_ref().and_then(|s| s.script_anim(src, c.skin.hashcode)).is_none(),
+            None => !opts.reinforcements && match drone_of(ci) {
+                Some((s, di)) => !s.drones.list[di].present || !s.drones.list[di].enabled,
+                None => matches!(c.role, drone::SpawnRole::Reinforcement { .. }),
+            },
         };
         // A matrix that collapses a mesh to one point: its triangles become degenerate and draw nothing.
         let collapse = |at: &Mat4| -> Mat4 { [[0.0; 4], [0.0; 4], [0.0; 4], [at[3][0], at[3][1], at[3][2], 1.0]] };
@@ -862,6 +944,9 @@ impl Scene {
                 return match b { Some(b) => tracer_matrix(b), None => [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]] };
             }
             let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
+            if let Some((h, si, hash)) = a.script {
+                return self.sim.as_ref().and_then(|s| s.script_entity((h, si), hash)).unwrap_or(far);
+            }
             if a.dropped {
                 let p = drone_of(a.character as usize).and_then(|(s, di)| s.drones.pickups.iter().find(|p| p.from == Some(di)));
                 return p.map_or(far, |p| p.m);

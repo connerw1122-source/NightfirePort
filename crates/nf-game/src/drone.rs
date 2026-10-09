@@ -2850,6 +2850,22 @@ pub struct Drones {
     pub taken: Vec<(u32, crate::pickup::Taken)>,
     cover_cursor: usize,
     cover_counter: i32,
+    /// Script players and the objects their scripts made (docs/systems/script-player.md).
+    pub scripts: crate::nis::Scripts,
+}
+
+/// The script runtime's view of the level data: animation lengths and an animated object's discrete object 0.
+impl crate::nis::World for Data<'_> {
+    fn anim_length(&self, script: u32) -> Option<u16> { self.scripts.get(&script).map(|s| s.length) }
+    fn discrete0(&self, skin: u32, script: u32, frame: f32) -> Option<nf_formats::anim::Mat4> {
+        let sk = self.skins.get(&skin)?;
+        let skel = self.skeletons.get(&sk.skeleton)?;
+        let (q, f) = crate::anim::script_frame(self.scripts.get(&script)?, frame)?;
+        let seq = self.sequences.get(&q)?;
+        // The root keeps its translation: the object sits at the origin and follows it (`Script_AnimStart`).
+        let world = nf_formats::anim::world_pose(&nf_formats::anim::local_pose(seq, skel, sk, f as u32), sk);
+        world.get(sk.extra.first()?.0 as usize).copied()
+    }
 }
 
 impl Drones {
@@ -2858,7 +2874,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -2869,6 +2885,8 @@ impl Drones {
         // Weather: `Env_Create` (placement 0xDF, parameter 0 = drop type) and the `RainBox_Create` volumes (0x32: the
         // glist bounds at the placement translation).
         let ps = &level.maps[m].placements;
+        let lib = level.nis.iter().map(|(&h, n)| (h, std::sync::Arc::new(n.clone()))).collect();
+        self.scripts = crate::nis::Scripts::new(lib, ps);
         if let Some(p) = ps.iter().find(|p| p.flags & 0xff == 0xdf) {
             let kind = p.params.iter().find(|(i, _)| *i == 0).map_or(0, |&(_, v)| v as u8);
             let boxes = level.instances(false).0.iter().filter(|i| i.placement.flags & 0xff == 0x32).map(|i| {
@@ -3228,6 +3246,18 @@ impl Drones {
             .chain(self.list.iter().filter(|x| x.enabled).map(|x| crate::triggers::Toucher { a: [x.pos[0], x.pos[1] - 1.0, x.pos[2]], b: x.head(), r: 0.4, drone: true, skin: x.skin }))
             .collect();
         crate::triggers::calc(d.level, &mut self.triggers, &mut self.channels, &touchers, frame);
+        // Script players (*deviation*: all of them here, not interleaved with the placed objects by list order).
+        self.scripts.tick(&mut self.channels, d, frame);
+        for r in std::mem::take(&mut self.scripts.requests) {
+            if let crate::nis::Request::Sound { id, at: Some(o) } = r {
+                let pos = match self.scripts.objects.list.get(o) {
+                    Some(Some(crate::nis::Obj::Entity { matrix, .. })) => Some([matrix[3][0], matrix[3][1], matrix[3][2]]),
+                    Some(Some(crate::nis::Obj::Anim { skin, script, frame, .. })) => crate::nis::World::discrete0(d, *skin, *script, *frame).map(|m| [m[3][0], m[3][1], m[3][2]]),
+                    _ => None,
+                };
+                if let (Some(pos), Some(t)) = (pos, d.sfx) { self.play_sound(pos, t.get(id)); }
+            }
+        }
         let mut order: Vec<(usize, u8, usize)> = self.list.iter().enumerate().filter(|(_, x)| x.present).map(|(i, x)| (x.placement, 0, i))
             .chain(self.triggers.iter().enumerate().filter(|(_, t)| t.kind != crate::triggers::kind::TOUCH).map(|(j, t)| (t.placement, 1, j)))
             .chain(self.spawners.iter().enumerate().map(|(j, sp)| (sp.placement, 2, j)))

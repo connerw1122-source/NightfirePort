@@ -120,6 +120,30 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
         for inst in level.instances(!all).0 { let o = &level.maps[inst.map].objects[inst.object]; if o.flags & 0xc != 0 { *fl.entry(format!("{} flags {:#x}", o.name.trim(), o.flags)).or_default() += 1; } }
         for (k, n) in fl { eprintln!("flag 4/8: {k} x{n}"); }
         for t in level.maps.iter().flat_map(|m| &m.textures).filter(|t| t.frames > 1) { eprintln!("animated texture {:#010x}: {}x{} {} frames, rate {}", t.hashcode, t.width, t.height, t.frames, t.rate); }
+        let mut va: std::collections::BTreeMap<u8, usize> = Default::default();
+        let mut low: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut pr: std::collections::BTreeMap<(u16, bool), usize> = Default::default();
+        for inst in level.instances(!all).0 {
+            let o = &level.maps[inst.map].objects[inst.object];
+            if o.flags & 1 != 0 { continue; }
+            for l in &o.gfx.leaves { for b in &l.batches { *pr.entry((b.prim, b.verts.iter().any(|v| v.rgba[3] < 0x7c))).or_default() += 1; for v in &b.verts { *va.entry(v.rgba[3]).or_default() += 1; if v.rgba[3] < 0x7c { *low.entry(o.name.trim().to_string()).or_default() += 1; } } } }
+        }
+        eprintln!("list-0 batch prims (prim, has low alpha): {pr:?}");
+        if let Ok(name) = std::env::var("NF_LEAVES") {
+            for inst in level.instances(!all).0 {
+                let o = &level.maps[inst.map].objects[inst.object];
+                if o.name.trim() != name { continue; }
+                for (li, l) in o.gfx.leaves.iter().enumerate() {
+                    for b in &l.batches {
+                        let (lo, hi) = b.verts.iter().fold((255u8, 0u8), |(lo, hi), v| (lo.min(v.rgba[3]), hi.max(v.rgba[3])));
+                        let p0 = b.verts.first().map(|v| v.pos);
+                        eprintln!("leaf {li} gs {:x?} tex {:?} verts {} alpha {lo}..{hi} rgb0 {:?} p0 {p0:?}", l.gs, b.texture, b.verts.len(), b.verts.first().map(|v| v.rgba));
+                    }
+                }
+                break;
+            }
+        }
+        for (k, n) in low.iter().take(40) { eprintln!("low alpha: {k} x{n}"); }
         let anim = level.maps.iter().flat_map(|m| &m.textures).filter(|t| t.frames > 1).count();
         eprintln!("animated textures: {anim}");
     }

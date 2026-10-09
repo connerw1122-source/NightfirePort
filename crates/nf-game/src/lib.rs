@@ -10,6 +10,7 @@ pub mod drone;
 pub mod env;
 pub mod gun;
 pub mod nav;
+pub mod nis;
 pub mod pickup;
 pub mod player;
 pub mod spawners;

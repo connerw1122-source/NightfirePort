@@ -825,3 +825,47 @@ fn leaf_gs_state_matches_the_research() {
     assert!(counts.contains_key(&(0x42, 0x7f_0000_0048)));
 }
 
+
+/// The wine truck (docs/systems/script-player.md): ScriptPlayer #37 plays 0x06000A22 from the first update; its
+/// animated object follows the sequence's root in world space; channel 0x73 at 5412; the script ends at 5895 and the
+/// truck stays parked (event 0xC: keep objects).
+#[test]
+fn wine_truck_drives_and_parks() {
+    use nf_game::nis::{Obj, World};
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, _, rng) = l.drones(None, 61.342);
+    let mut sim = l.sim(drones, rng);
+    assert_eq!(sim.scripts.players.len(), 6);
+    let away = bond_at([0.0, -500.0, 0.0]);
+    let truck = |sim: &Drones| sim.scripts.objects.list.iter().flatten().find_map(|o| match o {
+        Obj::Anim { skin: 0x0500_0005, script, frame, .. } => Some((*script, *frame)),
+        _ => None,
+    });
+    let pos = |sim: &Drones| { let (s, f) = truck(sim).unwrap(); let m = d.discrete0(0x0500_0005, s, f).unwrap(); [m[3][0], m[3][1], m[3][2]] };
+    let mut track = Vec::new();
+    let mut chan_73 = None;
+    for t in 1..=6000u32 {
+        sim.tick(&d, &away);
+        if t <= 3 || t % 100 == 0 { track.push((t, truck(&sim).map(|x| x.1), truck(&sim).map(|_| pos(&sim)))); }
+        if chan_73.is_none() && sim.channels.on(0x73) { chan_73 = Some(t); }
+    }
+    for x in &track { eprintln!("{x:?}"); }
+    // First update: the load's own `Script_Update` starts the animation at frame 1 (clock 0); the snapshot's truck [L].
+    let (_, f1, p1) = track[0];
+    assert_eq!(f1, Some(1.0));
+    let live = [154.0516, 15.7996, 93.9524];
+    let p1 = p1.unwrap();
+    assert!((0..3).all(|k| (p1[k] - live[k]).abs() < 0.05), "{p1:?}");
+    // Parked from the end on: the last frame, at the parking spot near (29.9, 36.0, 48.0).
+    let (_, fe, pe) = *track.last().unwrap();
+    let len = l.scripts[&0x0600_0092].length as f32;
+    assert_eq!(fe, Some(len));
+    let pe = pe.unwrap();
+    assert!((pe[0] - 29.9).abs() < 3.0 && (pe[2] - 48.0).abs() < 3.0, "{pe:?}");
+    assert!(sim.scripts.players[0].deleted, "the player is gone, the truck stays");
+    // Channel 0x73: the event at script clock 5412.
+    assert!(chan_73.is_some_and(|t| (5410..=5416).contains(&t)), "{chan_73:?}");
+    // Sister: before its event the channel is off, and the truck has moved.
+    assert!(chan_73.unwrap() > 1000 && (pe[0] - p1[0]).abs() > 50.0);
+}

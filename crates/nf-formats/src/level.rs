@@ -61,6 +61,8 @@ pub struct Level {
     pub skins: HashMap<u32, crate::character::Skin>,
     /// Entity hashcode → (map, object); first occurrence in archive order.
     pub by_hash: HashMap<u32, (usize, usize)>,
+    /// Level scripts (type-7 entries, docs/formats/nis-script.md) by hashcode; ones `Script_Load` refuses are left out.
+    pub nis: HashMap<u32, crate::nis::Nis>,
 }
 
 /// `AnimPostLoadInit` (ACTION.ELF 0x1be1a8): when skin 0x05000007 is loaded, every skin on skeleton 0 or 1 takes its
@@ -125,7 +127,10 @@ impl Level {
             .map(|e| crate::character::parse_skin(lb.data(archive, e), |id| skeletons.get(&id).copied()).map(|s| (s.hashcode, s)))
             .collect::<Result<_>>()?;
         share_datums(&mut skins);
-        Ok(Level { maps, skins, by_hash })
+        let nis = lb.entries.iter().filter(|e| e.kind == 7)
+            .filter_map(|e| u32::from_str_radix(&e.name, 16).ok().and_then(|h| crate::nis::Nis::parse(h, lb.data(archive, e)).ok()).map(|n| (n.hashcode, n)))
+            .collect();
+        Ok(Level { maps, skins, by_hash, nis })
     }
 
     /// Characters: main-map placements whose parameter 0 is a skin hashcode (prefix 05) found in this archive (`oDrone`,

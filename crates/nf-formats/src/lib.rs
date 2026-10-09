@@ -18,6 +18,7 @@ pub mod iso9660;
 pub mod level;
 pub mod levelbin;
 pub mod map;
+pub mod nis;
 pub mod ps2gfx;
 pub mod placement;
 pub mod png;

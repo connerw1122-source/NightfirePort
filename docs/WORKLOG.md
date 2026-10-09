@@ -1111,3 +1111,36 @@ textures (12×5, 2×3, 2×30, 8×4, 7×10, 3×4, 2×2, 11×1 frames × ticks). n
 only). Unit test `texture_rate_is_ticks_per_frame` (sister: the byte read as ticks disagrees). Debug aids kept:
 `NF_DRAWS=1` prints draw-state groups, list-1 objects, billboard/jitter-flagged objects (none drawn on 07000005: those
 flags belong to dynamic objects) and the animated textures; `NF_HIDE=a,b` drops world objects by name.
+
+## 0058 — Objects subsystem I: script players and the wine truck
+
+Read `Script_Load` / `Run` / `Update` / `Interp` / `GetInterp` / `GetSplineWeights` / `EntityStart` / `CreateEntity` /
+`AnimStart` / `KillStream` / `StreamEnd` / `EventHandler` / `SoundStart` / `Free`, `SP_CreateScriptPlayer` /
+`LoadScript` / `Update` / `Activate` / `Hit` / `Delete` / `UnPause`, `AnimObjectUpdate`, `AnimSeqTick`'s root handling
+and `AnimFrameResolve`'s root delta. Two decomp losses settled in the disassembly: `SP_Update`'s trigger
+(`(hit flags | 4 when activated) & mask`, 0x1dbe20–0x1dbe9c) and `Script_GetInterp`'s last argument for entities
+(`parent == −1`, 0x1d9a7c–0x1d9a98). `FRAME_RATE_MUL` = 1.0 [L]. Specs: docs/formats/nis-script.md,
+docs/systems/script-player.md. The earlier research pass (world-objects.md) had the truck deleted at 5895: the
+script's event 0xC at 5890 sets "keep objects", so it stays parked — corrected.
+
+Code: `nf_formats::nis` (parser, command decoder; `Level.nis`), `nf_game::nis` (players, scripts, objects; run by
+`Drones::tick` after the triggers, *deviation*: not interleaved with the placed objects), nf-view draws a character per
+script animation (skin main meshes + rigid parts) and an attachment per drawn script entity while the simulation has
+the object; `nf-extract nis <iso> <level.bin> [hash]` dumps scripts. Test `wine_truck_drives_and_parks`: 6 players;
+the truck starts at frame 1 on the first update; at tick 3 its part 0 is at (154.05177, 15.799594, 93.95359), the
+snapshot's live object position [L] (frame 1 = (154.05159, 15.799587, 93.9524), also in the snapshot); gatehouse stop
+over 1800–2400 at (88.9, 18.8, 101.7), second stop (57.9, 26.2, 96.8); channel 0x73 at 5412; parked at
+(29.89, 36.05, 47.99) on frame 5896 after the player is deleted (sister: the channel is off before 1000 and the truck
+moved > 50). Not yet: camera / fade / light / sprite commands, the script entities' behaviour (triggers, AI volume),
+corona drawing (G-031).
+
+## 0059 — See-through walls: blend layers
+
+User report: some wall faces transparent. Measured: 822 of 2000 list-0 batches on 07000005 carry vertex alpha below
+0x80 (Room_Road_*, outer walls, gate towers); PRIM is 0x5C (ABE on) for all of them. Each such leaf draws an opaque
+base batch, then the same triangles with another texture weighted by vertex alpha. nf-view merged batches by texture,
+so an overlay could draw before its base: with alpha 0 it wrote depth and no colour, and the base then failed the
+`Less` depth test — a hole showing the fog clear colour. Fix: world batches keep their order within a leaf (one group
+per batch), and the depth test is `LessEqual` (the GS's ZTST GEQUAL on inverted Z passes equal depth). Before/after
+render of the outer-wall corner: flat fog-coloured ledges become stone with the snow layer over it. `NF_LEAVES=<object
+name>` (with `NF_DRAWS=1`) dumps an object's leaves, GS writes, textures and alpha ranges.

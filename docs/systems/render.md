@@ -32,6 +32,10 @@ alpha-list distance fade, environment mapping, dynamic lights / motion blur / br
 - TEST_1: 0x5001B (689 leaves): alpha test passes for As ≥ 1 — **only A = 0 is discarded** (the viewer's 0.5 test is
   wrong); depth GEQUAL. 0x507FD (2 leaves: `Leaf`, `spark leaves`): As > 0x7F.
 - ZBUF_1: ZMSK 0 (write, 570 leaves) / 1 (no write, 150). Blending is always on (PRIM ABE).
+- Blend layers [M, D]: a leaf draws an opaque base batch (vertex alpha 0x80) and then the same triangles again with
+  another texture weighted by vertex alpha (0 where it does not show) — 822 of 2000 list-0 batches on 07000005 (road,
+  outer walls, gate towers). Order within a leaf is the batch order, and the overlay passes the depth test at equal
+  depth (ZTST GEQUAL on the GS's inverted Z = "≤" in the port). WORKLOG 0059.
 - Typical: 463 normal + depth write (rooms); ~130 additive no write (blasts, coronas, moon, searchlights, glows);
   16 normal no write (glass, footprints, beams); 14 normal + write in list 1 (pine trees, skybox, shadows).
 - Draw lists (`View_AddCels` 0x1e6ba0, glist flags): 0x1 → list 1 back to front; 0x2000 → list 2 after `psiClearZ`;

@@ -48,6 +48,7 @@ fn main() -> Result<()> {
         "route" => { let f = |i: usize| -> Result<f32> { Ok(a(i)?.parse()?) }; route(&IsoImage::open(a(1)?)?, a(2)?, [f(3)?, f(4)?, f(5)?], [f(6)?, f(7)?, f(8)?]) }
         "covers" => covers(&IsoImage::open(a(1)?)?, a(2)?),
         "triggers" => triggers(&IsoImage::open(a(1)?)?, a(2)?),
+        "nis" => nis(&IsoImage::open(a(1)?)?, a(2)?, args.get(3).map(|h| u32::from_str_radix(h, 16)).transpose()?),
         "placements" => placements(&IsoImage::open(a(1)?)?, a(2)?, u32::from_str_radix(a(3)?, 16)?),
         "sfx" => sfx(&IsoImage::open(a(1)?)?, &args[2..]),
         "coll-probe" => coll_probe(&IsoImage::open(a(1)?)?, a(2)?),
@@ -938,6 +939,34 @@ fn block_dump(iso: &IsoImage, level_name: &str, id: u8, out_dir: &Path) -> Resul
 }
 
 /// One script's commands, with each op-0 sequence's frame count and root translation at its ends.
+/// Level scripts (type-7 entries, docs/formats/nis-script.md): header, streams (command bytes in hex) and, for one
+/// script, its keys.
+fn nis(iso: &IsoImage, level_name: &str, only: Option<u32>) -> Result<()> {
+    use nf_formats::{levelbin::LevelBin, nis::Nis};
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let lb = LevelBin::parse(&data)?;
+    for e in lb.entries.iter().filter(|e| e.kind == 7) {
+        let h = u32::from_str_radix(&e.name, 16).unwrap_or(0);
+        if only.is_some_and(|o| o != h) { continue; }
+        match Nis::parse(h, lb.data(&data, e)) {
+            Err(err) => println!("{h:08x}: {err}"),
+            Ok(s) => {
+                println!("{h:08x}: camera {} loop {} length {} streams {} keys {}", s.camera, s.loop_start, s.length, s.streams.len(), s.keys.len());
+                for (i, st) in s.streams.iter().enumerate() {
+                    let hex: String = st.commands.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
+                    println!("  stream {i}: keys {}..={} ({} bytes) {hex}", st.first_key, st.last_key, st.commands.len());
+                }
+                if only.is_some() {
+                    for (k, key) in s.keys.iter().enumerate() { println!("  key {k}: t {} pos {:?} q {:?} s {} w24 {:02x?} w28 {}", key.time, key.pos, key.quat, key.scale, key.w24, key.w28); }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn script_info(iso: &IsoImage, level_name: &str, hash: u32) -> Result<()> {
     use nf_formats::{anim::Script, levelbin::LevelBin};
     let (entries, bin) = disc::files_bin_entries(iso)?;
