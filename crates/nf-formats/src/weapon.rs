@@ -11,6 +11,9 @@ pub const RECORD: usize = 0x10c;
 #[derive(Clone, Debug)]
 pub struct WeaponData {
     pub records: Vec<[u8; RECORD]>,
+    /// `ammo_data` (0x2C69B8, 12-byte records) `+0x02`: the most rounds of each ammo type Bond carries
+    /// (docs/systems/pickups.md).
+    pub ammo_cap: Vec<i16>,
 }
 
 impl WeaponData {
@@ -25,7 +28,10 @@ impl WeaponData {
         let mut m = Machine::from_elf(data)?;
         m.call(init, 0, 0, 2_000_000)?;
         let bytes = m.read(table, size as usize)?;
-        Ok(WeaponData { records: bytes.chunks(RECORD).map(|c| c.try_into().unwrap()).collect() })
+        let (ammo, ammo_size) = sym("ammo_data")?;
+        let ammo = m.read(ammo, ammo_size as usize)?;
+        let ammo_cap = ammo.chunks_exact(12).map(|r| i16::from_le_bytes([r[2], r[3]])).collect();
+        Ok(WeaponData { records: bytes.chunks(RECORD).map(|c| c.try_into().unwrap()).collect(), ammo_cap })
     }
 
     /// A character's muzzle flash (`DroneWeap_FireWeapon`): the `+0x4C` mesh (none when 0) and the light colour
@@ -45,5 +51,39 @@ impl WeaponData {
         let b = Buf(r);
         let mesh = b.u32(0x80).ok()?;
         (mesh != 0).then_some((mesh, r[0x50]))
+    }
+
+    fn u16_at(&self, weapon: usize, o: usize) -> u16 {
+        self.records.get(weapon).map_or(0, |r| u16::from_le_bytes([r[o], r[o + 1]]))
+    }
+
+    /// `+0x00`: the record's own id (= index).
+    pub fn id(&self, weapon: usize) -> u16 { self.u16_at(weapon, 0) }
+
+    /// `+0x02`: the base weapon a variant belongs to (drops and ownership use it).
+    pub fn base(&self, weapon: usize) -> u16 { self.u16_at(weapon, 2) }
+
+    /// `+0x05`: shares the base weapon's clip slot when the ammo types agree (`Player_EquipWeapon`).
+    pub fn shares_base_clip(&self, weapon: usize) -> bool { self.records.get(weapon).is_some_and(|r| r[5] != 0) }
+
+    /// `+0x80`: the third-person model (also the pickup's model); 0 = none.
+    pub fn model(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0x80..0x84].try_into().unwrap()))
+    }
+
+    /// `+0x68`: flags (0x10: a pickup fills an empty clip first, `Player_EquipAmmo`).
+    pub fn flags(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0x68..0x6c].try_into().unwrap()))
+    }
+
+    /// `+0x90`: the ammo type (index into `ammo_data` and Bond's carried rounds).
+    pub fn ammo_type(&self, weapon: usize) -> usize { self.records.get(weapon).map_or(0, |r| r[0x90] as usize) }
+
+    /// `+0x92`: the clip size (also what a dropped gun's rounds scale).
+    pub fn clip_size(&self, weapon: usize) -> i16 { self.u16_at(weapon, 0x92) as i16 }
+
+    /// `+0xDC`: the first-person model; `Player_EquipWeapon` refuses a weapon whose model is not loaded.
+    pub fn first_person(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xdc..0xe0].try_into().unwrap()))
     }
 }

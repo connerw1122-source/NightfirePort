@@ -440,7 +440,9 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     nf_game::tuning::read_tuning_vars(&mut tuning, level_id);
     let hitboxes = nf_formats::hitbox::CollisionBones::from_action_elf(&elf)?;
     let volumes = nf_game::aivolume::build(&level, level_id);
-    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons, nav: &nav, covers: &covers, tuning: &tuning, hitboxes: &hitboxes, volumes: &volumes };
+    let sfx_table = nf_formats::sfx::SfxTable::from_action_elf(&elf)?;
+    let models = nf_game::pickup::models(&level);
+    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons, nav: &nav, covers: &covers, tuning: &tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: Some(&sfx_table), models: &models };
     let mut rng = Rng::new(std::env::var("NF_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(0x1234_5678));
     let drones = nf_game::drone::level_drones(&d, &level, &mut rng);
     let mut sim = Drones::new(drones, rng);
@@ -461,7 +463,6 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     let mut walked = vec![(0f32, 0u32); sim.list.len()];
     let mut steps_out = std::env::var_os("NF_STEPS").map(std::fs::File::create).transpose()?;
     // NF_SOUND=x,y,z,id,frame[;x,y,z,id,frame…]: sounds (SFXOutputData id, hex) made at those frames.
-    let sfx_table = nf_formats::sfx::SfxTable::from_action_elf(&elf)?;
     let sounds: Vec<(f32, f32, f32, u32, u32)> = std::env::var("NF_SOUND").unwrap_or_default().split(';').filter_map(|v| {
         let p: Vec<&str> = v.split(',').collect();
         Some((p.first()?.parse().ok()?, p.get(1)?.parse().ok()?, p.get(2)?.parse().ok()?, u32::from_str_radix(p.get(3)?, 16).ok()?, p.get(4)?.parse().ok()?))

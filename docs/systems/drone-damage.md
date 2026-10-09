@@ -61,7 +61,7 @@ Placement parameters (DefaultInit, `param(k)` = `piVar19[0xD + k]`) [M, checked]
 - Death_Anim 0x44 (0x1637f8): enter `obj+0xF0 |= 0x20`; `+0xBD4` → SpecialDeath 0x46; else alert status 3,
   `OnInitDeath`, `+0xCD8` = 1, `LocationDeathAnim(next 0x47)`: Bond aiming and part 4/5 → 0x42 variant 1 when the
   bullet's heading is within 90° of the drone's yaw (shot from behind) else 0; otherwise `+0x3A` = 0, 0x40 variant
-  Rand(4) if the danim's `info+0x10` byte is set. Update: `+0x3B` = 0 or anim set 4 / 9 → `DropWeapon`. Exit or msg
+  Rand(4) if the danim's `info+0x10` byte is set. Update: `+0x3B` = 0 or anim set 4 / 9 → `DropWeapon` (docs/systems/pickups.md). Exit or msg
   0xC with `+0xCD8` → `SetDeathChannel` (0x13e660): `switch_channels[+0x13C]` = 1 (0x63: mission-fail reasons instead).
 - Dead 0x47 (0x163fe8): enter `obj+0xF0 |= 0x20`, `SetAsDead`, timer 0xC at now + 300 (`DAT_00298F58` = 10 ·
   `FRAME_RATE_INT` [L]); prop 0x31 and not a silent kill → `DroneAlertToObject(msg 0x15, corpse)`: a broadcast that

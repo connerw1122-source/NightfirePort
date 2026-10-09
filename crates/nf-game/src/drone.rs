@@ -151,6 +151,10 @@ pub struct Data<'a> {
     pub hitboxes: &'a nf_formats::hitbox::CollisionBones,
     /// AI volumes (placements 0xF5 / 0xF8): Bond's visibility factor.
     pub volumes: &'a [crate::aivolume::AiVolume],
+    /// Hearing data (`SFXOutputData`) for sounds the world makes (pickups); `None`: silent.
+    pub sfx: Option<&'a nf_formats::sfx::SfxTable>,
+    /// Glist bounds of the level's models by hashcode (dropped weapons' size).
+    pub models: &'a HashMap<u32, crate::pickup::Model>,
 }
 
 /// A bullet that hit a drone (HITDATA): the part (bone id), the ray (`+0x30`), the point, damage (`+0x08`), weapon.
@@ -418,6 +422,8 @@ pub struct Drone {
     pub stationary: bool,
     /// A captain (`+0x19`).
     pub captain: bool,
+    /// Pickups this drone made this tick (`DroneWeap_DropWeapon`, `DroneFunc_DropGrenade`), collected by `Drones`.
+    pub drops: Vec<crate::pickup::Pickup>,
     /// Drone modes (`behaviour_util_get`: placement parameter 15 = type `+0xC7`, 16 = the normal block's mode `+0xC8`,
     /// 21 = the alert block's `+0xC9`; `NDrone2_GetDTYPENEW` → mode `+0xC5`, alternate mode `+0xC6`), the team `+0x44`,
     /// the alternate (attack) state `+0x5A4`, and the alert block's alertness `+0x504`.
@@ -475,7 +481,7 @@ impl Drone {
             global_flinch: None, bond_aiming: false, cull: false,
             corpse: false, death_pending: false, death_channel: param(12) as u8, special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
-            captain: false, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
+            captain: false, drops: Vec::new(), dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
         };
         dr.init_properties(d, &param);
@@ -1014,7 +1020,8 @@ impl Drone {
                 self.vision_on = false;
                 self.firing = false;
                 if self.special_death != 0 { self.set_state(SPECIAL_DEATH); return Some(true); }
-                self.death_pending = true; // `OnInitDeath` (death talk, mission-fail props, captain drops: not modelled)
+                self.death_pending = true; // `OnInitDeath` (death talk, mission-fail props: not modelled)
+                self.drop_grenades(d);
                 self.location_death_anim(d, rng, DEAD);
                 true
             }
@@ -1046,9 +1053,13 @@ impl Drone {
             (DEATH_ANIM, msg::EXIT) => { if self.death_pending { self.set_death_channel(); } true }
             (DEATH_ANIM, msg::TIMER_C) => { if self.death_pending { self.set_death_channel(); self.death_pending = false; } true }
             (SPECIAL_DEATH, msg::TIMER_C) => { self.death_pending = true; true }
-            // Update: the weapon drop (`DroneWeap_DropWeapon`, a pickup) is not modelled.
-            (DEATH_ANIM, msg::UPDATE) => true,
+            // Update: the gun drops while the firing flag (`+0x3B`) is clear or the anim set is 4 / 9.
+            (DEATH_ANIM, msg::UPDATE) => {
+                if !self.firing || matches!(self.anim_set, 4 | 9) { self.drop_weapon(d, rng); }
+                true
+            }
             (DEAD, msg::ENTER) => {
+                self.drop_weapon(d, rng); // `NDrone2_SetAsDead`
                 self.corpse = true;
                 self.health = 0.0; // `NDrone2_SetAsDead`
                 self.vision_on = false;
@@ -1090,6 +1101,58 @@ impl Drone {
         let hip = local[0].0[1];
         let obj = nf_formats::placement::object_matrix([0.0, self.yaw, 0.0], [self.pos[0], self.pos[1] - 1.0 + crate::damage::drone_height(hip), self.pos[2]]);
         Some(crate::damage::palette(&mut local, skin, &obj))
+    }
+
+    /// `DroneWeap_DropWeapon` (0x17a2a0, docs/systems/pickups.md): once — the weapon byte (`anim+0x62`) is cleared. At
+    /// the held gun's world matrix (its datum on the posed skeleton; the drone's position when the ray from there to
+    /// the gun hits geometry), the base weapon with (clip · (0.5 or 0.25 + FRand(0.5))) rounds; weapon 0x1A also drops
+    /// its grenade launcher's rounds (0x1B, ammo, hidden).
+    fn drop_weapon(&mut self, d: &Data, rng: &mut Rng) {
+        use nf_formats::ps2float::{add, mul};
+        let w = self.weapon as u8;
+        if (w as i8) < 1 { return; }
+        let w = w as usize;
+        if d.weapons.model(w) == 0 { self.weapon = 0; return; }
+        let mut m = self.weapon_matrix(d);
+        self.weapon = 0;
+        if d.world.segment(self.pos, [m[3][0], m[3][1], m[3][2]]).is_some() { m[3] = [self.pos[0], self.pos[1], self.pos[2], 1.0]; }
+        let n = d.weapons.clip_size(w);
+        let f = add(rng.frand(0.5), if n < 10 { 0.5 } else { 0.25 });
+        let base = d.weapons.base(w);
+        let rounds = mul(n as f32, f) as i32 as i16;
+        self.drops.extend(crate::pickup::Pickup::create_simple(&m, base, rounds, crate::pickup::kind::WEAPON, d.weapons, d.models));
+        if base == 0x1a {
+            let f = add(rng.frand(0.5), 0.25);
+            let rounds = mul(d.weapons.clip_size(0x1b) as f32, f) as i32 as i16;
+            if let Some(mut p) = crate::pickup::Pickup::create_simple(&m, 0x1b, rounds, crate::pickup::kind::AMMO, d.weapons, d.models) {
+                p.hidden = true;
+                self.drops.push(p);
+            }
+        }
+    }
+
+    /// `AnimGetBoneWorldTrans(obj, datum, 0, …)` for the held weapon's datum (`+0x50`, 0xFF → 0): datum · bone world;
+    /// the drone's object matrix when it has no pose or no such datum.
+    fn weapon_matrix(&self, d: &Data) -> nf_formats::anim::Mat4 {
+        let obj = nf_formats::placement::object_matrix([0.0, self.yaw, 0.0], self.pos);
+        let datum = d.weapons.third_person(self.weapon as u8).map_or(0, |(_, id)| if id == 0xff { 0 } else { id as u32 });
+        let (Some(pal), Some(skin)) = (self.palette(d), d.skins.get(&self.skin)) else { return obj };
+        let Some(dt) = skin.datums.iter().find(|x| x.id == datum && x.bone >= 0) else { return obj };
+        let Some(bone) = pal.get(dt.bone as usize) else { return obj };
+        nf_formats::anim::mul(&nf_formats::anim::quat_trans_to_mat(dt.q, dt.t), bone)
+    }
+
+    /// `DroneFunc_OnInitDeath` → `DroneFunc_DropGrenade`: a captain drops grenades at its own matrix — weapon 0x35 with
+    /// 2 on 07000001–08, 0x34 with 1 on 07000009–0B, 11–16, 4A.
+    fn drop_grenades(&mut self, d: &Data) {
+        if !self.captain { return; }
+        let (id, n) = match d.level {
+            0x0700_0001..=0x0700_0008 => (0x35, 2),
+            0x0700_0009..=0x0700_000b | 0x0700_0011..=0x0700_0016 | 0x0700_004a => (0x34, 1),
+            _ => return,
+        };
+        let m = nf_formats::placement::object_matrix([0.0, self.yaw, 0.0], self.pos);
+        self.drops.extend(crate::pickup::Pickup::create_simple(&m, id, n, crate::pickup::kind::WEAPON, d.weapons, d.models));
     }
 
     /// `AnimGetCollData`: the drone's hit boxes now.
@@ -2441,6 +2504,10 @@ pub struct Drones {
     pub aim_offset: [f32; 2],
     pub alarm_sent: bool,
     pub bond_aiming: bool,
+    /// Pickups in the world, Bond's inventory and what he took (tick, what) — docs/systems/pickups.md.
+    pub pickups: Vec<crate::pickup::Pickup>,
+    pub inventory: crate::pickup::Inventory,
+    pub taken: Vec<(u32, crate::pickup::Taken)>,
     cover_cursor: usize,
     cover_counter: i32,
 }
@@ -2450,7 +2517,8 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2] }
+        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -2588,6 +2656,32 @@ impl Drones {
     pub fn play_sound(&mut self, pos: V3, h: nf_formats::sfx::SfxHearing) {
         if h.looped { return; }
         self.sounds.push(Sound { id: h.id, pos, inner: h.inner, outer: h.outer, weight: h.weight });
+    }
+
+    /// `Pickup_Update` for every pickup: the fall, Bond's touch (`Pickup_Handler`; refused pickups stay, and the
+    /// lifetime does not run that tick), the lifetime. Taken: sound 0xF5 at the pickup, deleted (no respawn).
+    /// `hashtable_getitem` of the first-person model stands in as "the level has that skin".
+    fn update_pickups(&mut self, d: &Data, player: &Player, frame: u32) {
+        let alive = self.health.health > 0.0;
+        for k in 0..self.pickups.len() {
+            let p = &mut self.pickups[k];
+            p.fall(d.world);
+            if alive && p.touches(d.world, player.pos, player.target) {
+                let loaded = d.skins.contains_key(&d.weapons.first_person(p.weapon as usize));
+                if let Some(t) = self.inventory.take(d.weapons, p, loaded) {
+                    p.gone = true;
+                    let (at, sound) = ([p.m[3][0], p.m[3][1], p.m[3][2]], p.sound);
+                    self.taken.push((frame, t));
+                    if let (Some(id), Some(sfx)) = (sound, d.sfx) { self.play_sound(at, sfx.get(id)); }
+                }
+                continue;
+            }
+            if p.lifetime != 0 {
+                p.lifetime -= 1;
+                if p.lifetime == 0 { p.gone = true; }
+            }
+        }
+        self.pickups.retain(|p| !p.gone);
     }
 
     /// Turns a switch channel on (callers and tests).
@@ -2780,6 +2874,8 @@ impl Drones {
             .chain(self.spawners.iter().enumerate().map(|(j, sp)| (sp.placement, 2, j)))
             .collect();
         order.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        // Pickups are created at run time, so they head the control list: `Pickup_Update` before the placed objects.
+        self.update_pickups(d, player, frame);
         // Per drone: timers, alertness decay, update message, turning, aim, firing, animation.
         for &(_, what, index) in &order {
             if what == 1 { self.triggers[index].update(&mut self.channels, &touchers, frame); continue; }
@@ -2839,6 +2935,7 @@ impl Drones {
                 if done_msg != 0 || next_ai != 0 { dr.send(d, rng, frame, done_msg); }
             }
             if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
+            for mut p in dr.drops.drain(..) { p.from = Some(index); self.pickups.push(p); }
             // `NDrone2_Collision`: the feet sphere (r 0.4) is pushed out of the AI-network boundaries.
             if dr.enabled && d.nav.bounds {
                 let p = d.nav.push_out(dr.feet(), 0.4);

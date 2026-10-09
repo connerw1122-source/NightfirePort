@@ -861,3 +861,32 @@ with `--test-threads=1`.)
 for kinds 1 / 2 / 3 / 6 / 7 with their captain skins, health × `DroneCaptain_Mod_Health`, `+0x100` =
 `Mod_BulletDamage`, accuracy × 1 / `Mod_BulletAccuracy` truncated; type 0xC drones lose properties 0x14–0x16. Ported
 (`captain_setup`); the start test asserts what the snapshot shows at difficulty 1 on 07000005: no captains, health 10.
+
+## 0040 — Dropped guns and pickups; disc golden re-run (2026-10-09)
+
+**Disc golden**: the four tests the memory leak had aborted (scripts and after) pass; all 14 pass.
+
+**Read** (docs/systems/pickups.md): `DroneWeap_DropWeapon`, `Pickup_CreateSimple` (its stack arguments in the
+disassembly: sound 0xF5, rest 0, respawn 0, lifetime `FRAME_RATE_INT` · 120), `Pickup_Create`, `Pickup_Update`,
+`Pickup_Handler`, `Player_EquipWeapon`, `Player_EquipAmmo`, `Upgrade_Weapon`, `DroneFunc_OnInitDeath`'s captain grenades
+(`a2` = 1 for 0x34 read in the disassembly), `NDrone2_SetAsDead`. **Measured** in the level-start snapshot:
+`FRAME_RATE_INT` 60 (so a drop lasts 7200 ticks; `DAT_00298F58` = 300 was set by `Drone_LevelReset` when it was 30),
+`REC_FRAME_RATE` 1/60, `WldGravity` (0, −9.8, 0); Bond's inventory (type 1: 41; owned 1, 2, 0x4A, 0x4E, 0x50, 0x54; P2K
+clip 7); the guards' weapon byte 0x16 (SG5: clip 30, ammo type 5, cap 90) and the sniper's 0x24; `ammo_data` caps.
+
+**Port**: `nf_game::pickup` (Pickup, Inventory, `Taken`), `Drone::drop_weapon` (on Death_Anim's update while the
+firing flag is clear, and on Dead's enter; one `Rand_FRand` per drop, so the shared RNG advances as the game's does),
+captain grenades, `Drones::update_pickups` ahead of the placed objects (run-time objects head the control list), the
+touch test and the handler for weapon / ammo pickups, the pickup sound into the hearing list. `WeaponData` gains
+`ammo_cap` and record accessors. nf-view draws a dropped gun at its pickup (the held one disappears), takes Bond's
+clip and spare rounds from the inventory, shows the last pickup in the title, and `--pull T1,T2` presses the trigger
+in headless runs. Test `a_dead_guard_drops_its_gun_and_bond_takes_it`: the gate guard dies at tick 130, drops the SG5
+at 131 (18 rounds with this seed), it lands near his feet; 3 units away it stays (sister), walking onto it gives
+Bond the SG5 with a full clip. The other seeded tests still pass (13 / 13 with `--test-threads=1`).
+
+**Failed first**: the rest position as "translation = hit point" put the gun's sphere centre 0.009 under the floor, so
+the line of sight from Bond to it was blocked and he could not take it; the formula as read (hit − ray · |centre y| +
+the creation offset) leaves the centre |centre y| above the floor, and the pickup works.
+
+**Not done** (G-029): weapon switching (Bond keeps the P2K; the SG5's first-person fire sound id is unknown),
+`Player_IsBetterWeapon` auto-switch, level-placed / script pickups, keys, armour, respawning pickups, text messages.

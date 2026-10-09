@@ -1,7 +1,7 @@
 //! `nf-view`: level viewer for 007: Nightfire (PS2), reading the user's own disc image.
 //!
 //! ```text
-//! nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--fire] [--reinforcements] [--shot out.png [--cam x y z yaw pitch]]
+//! nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--fire] [--reinforcements] [--shot out.png [--cam x y z yaw pitch] [--pull T1,T2…]]
 //! ```
 //! `<level>` is a FILES.BIN name (`07000005`, `.bin` optional); without `<iso>` the image path comes from `NF_ISO`.
 //! `--all` also draws dynamic entities at their placement transforms (not only 0x8000 cels). `--shot` renders one
@@ -11,7 +11,8 @@
 //! Space / Ctrl = up / down, Shift = fast, [ / ] = browse sequences ([ from the first returns to the game's start
 //! animations), P = pause, F = firing demo for drones without AI, R = show held-back drones (spawner reinforcements, drones waiting
 //! for a switch), K = turn all switch channels on, F12 = screenshot.
-//! The guard AI (nf-game) runs at 60 Hz with the camera as Bond; `--frame N` runs N ticks before a `--shot`.
+//! The guard AI (nf-game) runs at 60 Hz with the camera as Bond; `--frame N` runs N ticks before a `--shot`, pressing
+//! the trigger on the `--pull` ticks.
 //! (nf-view-shot.png), Esc = release mouse, Esc again = quit.
 
 mod gpu;
@@ -285,7 +286,12 @@ impl ApplicationHandler for App {
                             if let Some(g) = &self.gfx {
                                 let h = &sim.drones.health;
                                 let hit = if h.flash > 0.0 { "  ** HIT **" } else { "" };
-                                g.window.set_title(&format!("nf-view — Bond health {:.0}{}{hit}", h.health, if h.health <= 0.0 { " (dead)" } else { "" }));
+                                // The last pickup message (`Text_AddMsg`, shown 180 ticks).
+                                let msg = sim.drones.taken.last().filter(|(f, _)| sim.drones.frame < f + 180).map_or(String::new(), |(_, t)| match t {
+                                    nf_game::pickup::Taken::Weapon { weapon } => format!("  picked up weapon {weapon:#x}"),
+                                    nf_game::pickup::Taken::Ammo { weapon, rounds } => format!("  picked up {rounds} rounds (weapon {weapon:#x})"),
+                                });
+                                g.window.set_title(&format!("nf-view — Bond health {:.0}{}  P2K {} / {}{hit}{msg}", h.health, if h.health <= 0.0 { " (dead)" } else { "" }, sim.gun.clip, sim.gun.spare));
                             }
                         }
                     }
@@ -337,7 +343,13 @@ fn main() -> Result<()> {
         // Headless: run the game for `--frame` ticks with Bond at the camera, then render.
         let mut scene = scene;
         if let Some(sim) = scene.sim.as_mut() {
-            for _ in 0..time as u32 { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), false, false); }
+            // `--pull 100,130`: the trigger is pressed on those ticks (one tick each).
+            let pulls: Vec<u32> = match args.iter().position(|a| a == "--pull") {
+                Some(i) => args.get(i + 1).context("--pull needs ticks")?.split(',').map(|t| t.parse()).collect::<Result<_, _>>()?,
+                None => Vec::new(),
+            };
+            for t in 1..=time as u32 { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
+            for p in &sim.drones.pickups { eprintln!("pickup: weapon {:#x}, {} rounds at {:?}", p.weapon, p.rounds, &p.m[3][..3]); }
             if let Some(dr) = sim.drones.list.iter().find(|d| !d.shots.is_empty() || d.state != 4) {
                 eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);
             }

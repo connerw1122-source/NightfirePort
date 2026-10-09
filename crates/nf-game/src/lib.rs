@@ -8,6 +8,7 @@ pub mod damage;
 pub mod drone;
 pub mod gun;
 pub mod nav;
+pub mod pickup;
 pub mod spawners;
 pub mod trig;
 pub mod triggers;

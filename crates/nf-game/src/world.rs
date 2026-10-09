@@ -45,6 +45,14 @@ impl CollisionWorld {
     /// No geometry (tests).
     pub fn empty() -> CollisionWorld { CollisionWorld { tris: Vec::new(), objects: Vec::new() } }
 
+    /// One object holding these world-space triangles (tests).
+    pub fn from_triangles(tris: Vec<[V3; 3]>) -> CollisionWorld {
+        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for p in tris.iter().flatten() { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+        let n = tris.len();
+        CollisionWorld { tris, objects: vec![Object { lo, hi, tris: 0..n }] }
+    }
+
     /// First hit along the segment `from → to` as a fraction in [0, 1] (Möller–Trumbore, both faces).
     pub fn segment(&self, from: V3, to: V3) -> Option<f32> {
         let d = sub(to, from);

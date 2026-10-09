@@ -26,6 +26,7 @@ struct Level05 {
     tuning: nf_formats::tuning::Tuning,
     hitboxes: nf_formats::hitbox::CollisionBones,
     volumes: Vec<nf_game::aivolume::AiVolume>,
+    models: std::collections::HashMap<u32, nf_game::pickup::Model>,
 }
 
 impl Level05 {
@@ -53,6 +54,7 @@ impl Level05 {
             tuning: { let mut t = nf_formats::tuning::Tuning::from_action_elf(&elf).unwrap(); nf_game::tuning::read_tuning_vars(&mut t, 0x0700_0005); t },
             hitboxes: nf_formats::hitbox::CollisionBones::from_action_elf(&elf).unwrap(),
             sequences: disc::level_sequences(&iso, "07000005.bin").unwrap(),
+            models: nf_game::pickup::models(&level),
             level, scripts, world, skeletons, nav, covers, volumes,
         })
     }
@@ -62,7 +64,8 @@ impl Level05 {
 
     fn data(&self) -> Data<'_> {
         Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: 0x0700_0005,
-            sequences: &self.sequences, skins: &self.level.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes }
+            sequences: &self.sequences, skins: &self.level.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes,
+            sfx: Some(&self.sfx), models: &self.models }
     }
 
     /// Every drone present at level start (line of sight is scheduled round robin over all of them, as in the game),
@@ -403,6 +406,54 @@ fn bond_kills_guards_with_two_torso_shots() {
     // Sister: over the head, nothing is hit.
     let (sim, i, hits) = run([66.0, 26.5, 99.5], 5, 200, 3.0);
     assert!(hits.is_empty() && sim.list[i].health == 10.0, "sister: {hits:?}");
+}
+
+/// A killed gate guard drops its SG5 (docs/systems/pickups.md): one pickup of the base weapon 0x16 with 30 · (0.25 +
+/// FRand(0.5)) rounds at the gun, falling to the floor; Bond walking onto it owns the SG5 with a full clip. Sister:
+/// nothing drops before the killing shot, and a pickup out of reach stays.
+#[test]
+fn a_dead_guard_drops_its_gun_and_bond_takes_it() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, _, rng) = l.drones(None, 61.342);
+    let i = drones.iter().position(|dr| dr.placement == 5).unwrap();
+    let mut sim = l.sim(drones, rng);
+    let p = bond_at([66.0, 26.5, 99.5]);
+    let mut dropped = None;
+    for f in 1..=400u32 {
+        if f == 100 || f == 130 {
+            let t = sim.list[i].pos;
+            let to = [t[0], t[1] + 0.3, t[2]];
+            let e = p.eye;
+            let n = ((to[0] - e[0]).powi(2) + (to[1] - e[1]).powi(2) + (to[2] - e[2]).powi(2)).sqrt();
+            sim.fire_player(&d, e, [(to[0] - e[0]) / n, (to[1] - e[1]) / n, (to[2] - e[2]) / n], 2, l.sfx.get(0x403));
+        }
+        sim.tick(&d, &p);
+        if f < 130 { assert!(sim.pickups.is_empty(), "sister: nothing drops before the kill (tick {f})"); }
+        if dropped.is_none() && !sim.pickups.is_empty() { dropped = Some(f); }
+    }
+    let feet = sim.list[i].pos[1] - 1.0;
+    assert_eq!(sim.list[i].weapon, 0, "the guard no longer holds a gun");
+    assert_eq!(sim.pickups.len(), 1, "{:?}", sim.pickups);
+    let pk = sim.pickups[0].clone();
+    eprintln!("dropped at tick {dropped:?}: {:?} rounds {} at {:?} state {} (guard feet {feet})", pk.weapon, pk.rounds, pk.m[3], pk.state);
+    assert_eq!((pk.weapon, pk.kind), (0x16, nf_game::pickup::kind::WEAPON));
+    assert!((7..=22).contains(&pk.rounds), "30 · [0.25, 0.75): {}", pk.rounds);
+    assert_eq!(pk.state, 1, "landed");
+    assert!((pk.m[3][1] - feet).abs() < 0.6, "on the floor near the guard's feet: {} vs {feet}", pk.m[3][1]);
+    // Out of reach it stays; walking onto it takes it.
+    let at = [pk.m[3][0], pk.m[3][1] + 0.4, pk.m[3][2]];
+    let near = bond_at([at[0] + 3.0, at[1], at[2]]);
+    for _ in 0..3 { sim.tick(&d, &near); }
+    assert_eq!(sim.pickups.len(), 1, "sister: 3 units away it stays");
+    let fp = l.weapons.first_person(0x16);
+    eprintln!("SG5 first-person {fp:08x} in the level: {}", l.level.skins.contains_key(&fp));
+    let on = bond_at(at);
+    for _ in 0..3 { sim.tick(&d, &on); }
+    assert!(sim.pickups.is_empty(), "taken");
+    assert_eq!(sim.taken.len(), 1);
+    assert!(sim.inventory.owned[0x16] && sim.inventory.clip[0x16] == 30, "SG5 owned with a full clip");
+    assert_eq!(sim.inventory.carried[1], 41, "the P2K's rounds untouched");
 }
 
 /// AI volumes against the level-start RAM snapshot (work/ee_start_05.bin, `AIBoxList` 0x2706c8, read in WORKLOG 0032):
