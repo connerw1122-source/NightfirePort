@@ -16,6 +16,14 @@ pub struct Machine {
     regions: Vec<(u32, Vec<u8>)>,
     r: [u128; 32],
     f: [u32; 32],
+    /// FPU condition flag (c.cond.s → bc1t / bc1f) and the accumulator (adda / madda …).
+    fcc: bool,
+    acc: u32,
+    /// A not-taken "likely" branch skips its delay slot.
+    skip_next: bool,
+    /// VU0 (macro mode): VF registers and ACC, x y z w as f32 bits.
+    vf: [[u32; 4]; 32],
+    vacc: [u32; 4],
     hi: u64,
     lo: u64,
     memset: Option<u32>,
@@ -31,7 +39,7 @@ mod tests {
     fn machine(code: &[u32]) -> Machine {
         let mut img = vec![0u8; 0x100];
         for (i, w) in code.iter().enumerate() { img[4 * i..4 * i + 4].copy_from_slice(&w.to_le_bytes()); }
-        Machine { regions: vec![(0x1000, img), (STACK_TOP - STACK_SIZE, vec![0; STACK_SIZE as usize])], r: [0; 32], f: [0; 32], hi: 0, lo: 0, memset: None, steps: 0 }
+        Machine { regions: vec![(0x1000, img), (STACK_TOP - STACK_SIZE, vec![0; STACK_SIZE as usize])], r: [0; 32], f: [0; 32], fcc: false, acc: 0, skip_next: false, vf: [[0; 4]; 32], vacc: [0; 4], hi: 0, lo: 0, memset: None, steps: 0 }
     }
 
     #[test]
@@ -49,7 +57,7 @@ mod tests {
             0x3c0c_4040, // lui  t4, 0x4040        (3.0f)
             0x448b_0000, // mtc1 t3, f0
             0x448c_0800, // mtc1 t4, f1
-            0x4601_0083, // div.s f2, f0, f1       (1/3, chopped)
+            0x4601_0083, // div.s f2, f0, f1       (1/3)
             0xe522_1088, // swc1 f2, 0x1088(t1)
             0x03e0_0008, // jr   ra
             0x0000_0000, // nop
@@ -59,7 +67,7 @@ mod tests {
         assert_eq!(m.read(0x1080, 4).unwrap(), 0x1234_5678u32.to_le_bytes());
         assert_eq!(m.read(0x1084, 1).unwrap(), [7]);
         let third = f32::from_le_bytes(m.read(0x1088, 4).unwrap().try_into().unwrap());
-        assert_eq!(f32::from_bits(third.to_bits() + 1), 1.0f32 / 3.0, "chopped one ulp below nearest");
+        assert_eq!(third, 1.0f32 / 3.0, "division rounds to nearest");
         // An unimplemented instruction is an error, not a guess.
         let mut bad = machine(&[0x7000_0000, 0x03e0_0008, 0]);
         assert!(bad.call(0x1000, 0, 0, 10).is_err());
@@ -88,7 +96,7 @@ impl Machine {
         let mut r = [0; 32];
         // gp-relative data (small globals such as `SEED_X`) needs `_gp`.
         if let Some(gp) = syms.iter().find(|s| s.name == "_gp") { r[28] = gp.value as u128; }
-        Ok(Machine { regions, r, f: [0; 32], hi: 0, lo: 0, memset, steps: 0 })
+        Ok(Machine { regions, r, f: [0; 32], fcc: false, acc: 0, skip_next: false, vf: [[0; 4]; 32], vacc: [0; 4], hi: 0, lo: 0, memset, steps: 0 })
     }
 
     /// FPU register access (arguments in f12, results in f0).
@@ -144,6 +152,7 @@ impl Machine {
             let w = u32::from_le_bytes(self.read(pc, 4)?.try_into().unwrap());
             let branch = self.step(pc, w)?;
             pc = pc.wrapping_add(4);
+            if std::mem::take(&mut self.skip_next) { pc = pc.wrapping_add(4); continue; }
             if let Some(t) = branch {
                 // Execute the delay slot, then jump.
                 let ds = u32::from_le_bytes(self.read(pc, 4)?.try_into().unwrap());
@@ -173,6 +182,31 @@ impl Machine {
                     self.hi = (p >> 32) as i32 as i64 as u64;
                     self.set(rd, self.lo as u128);
                 }
+                0x04 => self.set(rd, sx32((self.r[rt] as u32) << (self.r[rs] as u32 & 31))),
+                0x06 => self.set(rd, sx32((self.r[rt] as u32) >> (self.r[rs] as u32 & 31))),
+                0x07 => self.set(rd, sx32(((self.r[rt] as u32 as i32) >> (self.r[rs] as u32 & 31)) as u32)),
+                0x09 => { self.set(rd, pc.wrapping_add(8) as u128); return Ok(Some(self.r[rs] as u32)); }
+                0x0a => if self.r[rt] as u64 == 0 { self.set(rd, self.r[rs]) },
+                0x0b => if self.r[rt] as u64 != 0 { self.set(rd, self.r[rs]) },
+                0x10 => self.set(rd, self.hi as u128),
+                0x12 => self.set(rd, self.lo as u128),
+                0x1a => {
+                    let (a, b) = (self.r[rs] as u32 as i32, self.r[rt] as u32 as i32);
+                    if b != 0 { self.lo = a.wrapping_div(b) as i64 as u64; self.hi = a.wrapping_rem(b) as i64 as u64; }
+                }
+                0x1b => {
+                    let (a, b) = (self.r[rs] as u32, self.r[rt] as u32);
+                    if b != 0 { self.lo = (a / b) as i32 as i64 as u64; self.hi = (a % b) as i32 as i64 as u64; }
+                }
+                0x26 => self.set(rd, self.r[rs] ^ self.r[rt]),
+                0x27 => self.set(rd, !(self.r[rs] | self.r[rt]) & u64::MAX as u128),
+                0x2a => self.set(rd, ((self.r[rs] as u64 as i64) < (self.r[rt] as u64 as i64)) as u128),
+                0x2f => self.set(rd, (self.r[rs] as u64).wrapping_sub(self.r[rt] as u64) as u128),
+                0x38 => self.set(rd, ((self.r[rt] as u64) << sa) as u128),
+                0x3a => self.set(rd, ((self.r[rt] as u64) >> sa) as u128),
+                0x3c => self.set(rd, ((self.r[rt] as u64) << (sa + 32)) as u128),
+                0x3e => self.set(rd, ((self.r[rt] as u64) >> (sa + 32)) as u128),
+                0x3f => self.set(rd, ((self.r[rt] as u64 as i64) >> (sa + 32)) as u64 as u128),
                 0x21 => self.set(rd, sx32((self.r[rs] as u32).wrapping_add(self.r[rt] as u32))),
                 0x23 => self.set(rd, sx32((self.r[rs] as u32).wrapping_sub(self.r[rt] as u32))),
                 0x24 => self.set(rd, self.r[rs] & self.r[rt]),
@@ -195,6 +229,17 @@ impl Machine {
                 let neg = (self.r[rs] as u64 as i64) < 0;
                 if neg == (rt == 0) { return Ok(Some(pc.wrapping_add(4).wrapping_add(simm << 2))); }
             }
+            0x06 | 0x07 => {
+                let v = self.r[rs] as u64 as i64;
+                if (v <= 0) == (op == 6) { return Ok(Some(pc.wrapping_add(4).wrapping_add(simm << 2))); }
+            }
+            // beql / bnel: not taken skips the delay slot.
+            0x14 | 0x15 => {
+                let eq = self.r[rs] as u64 == self.r[rt] as u64;
+                if eq == (op == 0x14) { return Ok(Some(pc.wrapping_add(4).wrapping_add(simm << 2))); }
+                self.skip_next = true;
+            }
+            0x0e => self.set(rt, self.r[rs] ^ imm as u128),
             0x09 => self.set(rt, sx32((self.r[rs] as u32).wrapping_add(simm))),
             0x0a => self.set(rt, ((self.r[rs] as u64 as i64) < simm as i32 as i64) as u128),
             0x0b => self.set(rt, ((self.r[rs] as u64) < simm as i32 as i64 as u64) as u128),
@@ -210,22 +255,99 @@ impl Machine {
                     let (fs, ft) = (f32::from_bits(self.f[rd]) as f64, f32::from_bits(self.f[rt]) as f64);
                     let fd = sa as usize;
                     let v = match w & 0x3f {
-                        0x00 => fs + ft,
-                        0x01 => fs - ft,
+                        // add.s / sub.s: no guard bit (`ps2float::add_noguard`), chopped.
+                        0x00 => { self.f[fd] = crate::ps2float::add_noguard(fs as f32, ft as f32, true).to_bits(); return Ok(None); }
+                        0x01 => { self.f[fd] = crate::ps2float::add_noguard(fs as f32, -ft as f32, true).to_bits(); return Ok(None); }
                         0x02 => fs * ft,
-                        0x03 => fs / ft,
+                        // div.s: rounded to nearest — [L] 739 of 750 live `ATAN2_APPROX` results (the rest torn reads)
+                        // fit only with a nearest quotient (WORKLOG 0026).
+                        0x03 => { self.f[fd] = ((fs / ft) as f32).to_bits(); return Ok(None); }
                         0x05 => fs.abs(),
                         0x06 => fs,
                         0x07 => -fs,
                         0x24 => { self.f[fd] = fs.trunc() as i32 as u32; return Ok(None); }
+                        0x04 => fs.abs().sqrt(),
+                        // EE: max.s / min.s.
+                        0x28 => fs.max(ft),
+                        0x29 => fs.min(ft),
+                        // c.f / c.eq / c.lt / c.le (the EE's compares).
+                        0x30 => { self.fcc = false; return Ok(None); }
+                        0x32 => { self.fcc = fs == ft; return Ok(None); }
+                        0x34 => { self.fcc = fs < ft; return Ok(None); }
+                        0x36 => { self.fcc = fs <= ft; return Ok(None); }
+                        // adda.s / suba.s / mula.s: ACC = fs op ft; madd.s / msub.s: fd = ACC ± fs·ft (product chopped
+                        // first, *suggested*); madda.s / msuba.s: ACC ± fs·ft.
+                        0x18 | 0x19 | 0x1a => {
+                            let v = match w & 0x3f { 0x18 => fs + ft, 0x19 => fs - ft, _ => fs * ft };
+                            self.acc = round_to_zero(v).to_bits();
+                            return Ok(None);
+                        }
+                        0x1c | 0x1d | 0x1e | 0x1f => {
+                            let p = round_to_zero(fs * ft) as f64;
+                            let acc = f32::from_bits(self.acc) as f64;
+                            let v = round_to_zero(if w & 1 == 0 { acc + p } else { acc - p }).to_bits();
+                            if w & 0x3f >= 0x1e { self.acc = v } else { self.f[fd] = v }
+                            return Ok(None);
+                        }
                         _ => return unknown(),
                     };
                     self.f[fd] = round_to_zero(v).to_bits();
                 }
                 0x14 if w & 0x3f == 0x20 => self.f[sa as usize] = round_to_zero(self.f[rd] as i32 as f64).to_bits(),
+                // bc1f / bc1t / bc1fl / bc1tl (the "likely" forms skip the delay slot when not taken: not supported).
+                0x08 if rt <= 3 => {
+                    if self.fcc == (rt & 1 == 1) { return Ok(Some(pc.wrapping_add(4).wrapping_add(simm << 2))); }
+                    if rt >= 2 { self.skip_next = true; }
+                }
                 _ => return unknown(),
             },
             0x19 => self.set(rt, (self.r[rs] as u64).wrapping_add(simm as i32 as i64 as u64) as u128),
+            // lqc2 / sqc2 (VU0 registers ↔ memory, 16 bytes).
+            0x36 => {
+                let v = self.ld(base(self) & !15, 16)?;
+                if rt != 0 { for k in 0..4 { self.vf[rt][k] = (v >> (32 * k)) as u32; } }
+            }
+            0x3e => {
+                let a = base(self) & !15;
+                let v = (0..4).fold(0u128, |acc, k| acc | (self.vf[rt][k] as u128) << (32 * k));
+                self.st(a, v, 16)?
+            }
+            // VU0 macro instructions (COP2, co bit): the multiply / multiply-add family, chopping each product and
+            // each sum (the VU rounds toward zero).
+            0x12 if w >> 25 & 1 == 1 => {
+                let dest = (w >> 21 & 15) as usize; // x = 8, y = 4, z = 2, w = 1
+                let (ft, fs, fd) = ((w >> 16 & 31) as usize, (w >> 11 & 31) as usize, (w >> 6 & 31) as usize);
+                let funct = w & 0x3f;
+                let (op2, bc) = if funct >= 0x3c { ((fd as u32) << 2 | (funct & 3), funct & 3) } else { (funct, funct & 3) };
+                let g = |m: &Machine, r: usize, k: usize| f32::from_bits(m.vf[r][k]) as f64;
+                let acc = |m: &Machine, k: usize| f32::from_bits(m.vacc[k]) as f64;
+                let mut out = [0u32; 4];
+                let special2 = funct >= 0x3c;
+                for k in 0..4 {
+                    if dest & (8 >> k) == 0 { continue; }
+                    let (a, b_bc, b) = (g(self, fs, k), g(self, ft, bc as usize), g(self, ft, k));
+                    let prod = |x: f64, y: f64| round_to_zero(x * y) as f64;
+                    let v = match (special2, op2) {
+                        (false, 0x18..=0x1b) => prod(a, b_bc),            // vmulbc
+                        (false, 0x2a) => prod(a, b),                      // vmul
+                        (false, 0x08..=0x0b) => acc(self, k) + prod(a, b_bc), // vmaddbc
+                        (false, 0x29) => acc(self, k) + prod(a, b),       // vmadd
+                        (false, 0x00..=0x03) => a + b_bc,                 // vaddbc
+                        (false, 0x28) => a + b,                           // vadd
+                        (false, 0x2c) => a - b,                           // vsub
+                        (true, 0x18..=0x1b) => prod(a, b_bc),             // vmulabc
+                        (true, 0x2a) => prod(a, b),                       // vmula
+                        (true, 0x08..=0x0b) => acc(self, k) + prod(a, b_bc), // vmaddabc
+                        (true, 0x29) => acc(self, k) + prod(a, b),        // vmadda
+                        _ => return unknown(),
+                    };
+                    out[k] = round_to_zero(v).to_bits();
+                }
+                for k in 0..4 {
+                    if dest & (8 >> k) == 0 { continue; }
+                    if special2 { self.vacc[k] = out[k] } else if fd != 0 { self.vf[fd][k] = out[k] }
+                }
+            }
             0x1a | 0x1b => {
                 let a = base(self);
                 let b = (a & 7) as u32;

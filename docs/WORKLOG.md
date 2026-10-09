@@ -608,3 +608,22 @@ register access) runs the game's two functions over ACTION.ELF from three seed s
 result is bit-identical (`crates/nf-game/tests/rng_live.rs`). The game shares the generator with everything else, so live
 sequences still cannot be replayed; tests pick a seed state whose rolls match the trace (seed 2: the first combat move is
 the step the trace shows — `ChooseCombatMove` read: strafe and step are equally likely for these guards).
+
+## 0026 — Trig bit-exact; the EE FPU's division rounds to nearest (2026-10-09)
+
+`crates/nf-game/tests/trig_live.rs` runs the game's `ATAN2_APPROX`, `PS2Sinf` and `Vec_AngleDifference` in the R5900
+interpreter (now with FPU compares, `bc1t/f(l)`, likely branches, `max/min/sqrt.s`, the accumulator forms, a VU0 macro
+subset — `lqc2/sqc2`, `vmul(a)(bc)`, `vmadd(a)(bc)`, `vadd`, `vsub` — and more integer ops; libm `fmodf` runs as is) and
+compares 3,000 random inputs each with `trig.rs`.
+
+Which arithmetic is right was settled live: with Bond teleported to 150 random spots, PINE read 750 (dx, dz, angle)
+triples from the drones' `+0x1B0` / `+0x1B8` / `+0x1C4`. Of 16 rounding models only one fits 739 of 750 (the other 11
+are off by 2–4,569 ulps: torn reads across separate PINE calls): FPU add/sub **without guard bit, chopped**, multiply
+chopped, **division rounded to nearest**. The interpreter had chopped divisions (my assumption) and is corrected; 60
+consistent samples are now a golden test in `trig.rs` (sister: chopped division fails it). `trig.rs` changes: FPU
+add/sub use the no-guard model (`ATAN2_APPROX`, `PS2Sinf`'s range reduction, `Vec_AngleDifference`, which also only
+calls `fmodf` outside [0, 2π) as the game does); `PS2Sinf`'s VU polynomial keeps the VU's chopped adds. Result: all
+three functions bit-identical to the game code over 3,000 inputs each.
+
+Failed / noted: PINE stopped answering mid-session (PCSX2 responsive; probably a connection left by the research agent
+or by my killed script); restarting PCSX2 through `goto_level.py --launch` fixed it.
