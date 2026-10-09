@@ -47,7 +47,11 @@ These come from the user and `CLAUDE.md`. Breaking them has cost work before.
   - `work/` (6.7 GB): extracted game files, Ghidra projects, decompiles, snapshots, traces;
   - `target/` (build output).
 
-  If you run on the same machine, `work/` is already there. If not, regenerate it (§6).
+  If you run on the same machine, `work/` is already there. Otherwise the user can give you
+  `NightfirePort-research-LOCAL-DO-NOT-PUBLISH.zip`. It holds the decompiles, symbol table, ELFs, EE snapshots and
+  both Ghidra projects; unzip it over the repo so `work/` lands in place. It is copyrighted game material, so it must
+  never be committed or uploaded (the repo is public). The extracted level files (`work/files`, `work/audio`) are
+  rebuilt from the ISO with `nf-extract`; everything else is in §6.
 - **Run the viewer** (the playable build):
 
   ```
