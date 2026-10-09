@@ -123,6 +123,8 @@ pub struct Sim {
     /// The first-person gun's script (`Player_SetWeaponAnimObj`), its time in frames and speed, and the bob phases
     /// (`BL+0x8DC` from the forward speed, `BL+0x8E8` idle time).
     pub view_script: u32,
+    /// The camera is Bond's eye (`step_bond`); with the free camera (`step`) the first-person gun is not drawn.
+    pub first_person: bool,
     /// The tick of Bond's last shot (the first-person flash).
     pub last_shot: Option<u32>,
     pub view_time: f32,
@@ -139,6 +141,7 @@ impl Sim {
     /// `trigger`: the fire button (action 9) held; `aiming`: aim mode (L1).
     pub fn step(&mut self, camera: [f32; 3], look: [f32; 3], trigger: bool, aiming: bool) {
         let floor = self.world.floor_below(camera, 4.0).unwrap_or(camera[1] - 1.6);
+        self.first_person = false;
         self.run([camera[0], floor + 0.4, camera[2]], camera, look, look, trigger, aiming, false);
     }
 
@@ -174,6 +177,7 @@ impl Sim {
         let d = [0, 1, 2].map(|k| look[k] + tx * right[k] + ty * up[k]);
         let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
         let aim = d.map(|v| v / l);
+        self.first_person = true;
         self.run(self.bond.pos, head, look, aim, trigger, aiming, reload);
     }
 
@@ -258,6 +262,11 @@ impl Sim {
                 q.and_then(|q| self.seq_index.get(&q)), c.skin.skeleton));
         }
         out
+    }
+
+    /// The game data the simulation consults, borrowed from this Sim.
+    pub fn data(&self) -> nf_game::drone::Data<'_> {
+        nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models }
     }
 
     /// (sequence index, frame) the first-person gun's script shows.
@@ -650,7 +659,7 @@ impl Scene {
             let bond = nf_game::player::Bond::stand_at(&world, p0, yaw0);
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.attach_level(level);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false })
         });
         Scene { vertices, indices, materials, textures, hud_textures, hud, view_model, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }
@@ -691,6 +700,14 @@ impl Scene {
         // With the AI running (and no sequence browsing), each guard shows its drone's animation, yaw and position.
         let drone_of = |ci: usize| choice.is_none().then(|| self.sim.as_ref().and_then(|s| s.char_drone[ci].map(|di| (s, di)))).flatten();
         let posed: Vec<Option<(Vec<Mat4>, Vec<Mat4>, Mat4)>> = self.characters.iter().enumerate().map(|(ci, c)| {
+            // Drones: the simulation's pose — blended scripts, fractional frames, upper-body aim — the same one the hit
+            // boxes use (`Drone::object_pose`).
+            if let Some((s, di)) = drone_of(ci) {
+                let dr = &s.drones.list[di];
+                let (world, hip) = dr.object_pose(&s.data())?;
+                let m = nf_formats::placement::object_matrix([0.0, dr.yaw, 0.0], [dr.pos[0], dr.draw_y(hip), dr.pos[2]]);
+                return Some((anim::skin_matrices(&world, &c.skin), world, m));
+            }
             let view = (Some(ci) == self.view_model).then_some(()).and(self.sim.as_ref());
             let (i, frame) = match (view, drone_of(ci)) {
                 (Some(s), _) => s.view_frame(c.skin.skeleton)?,
@@ -698,47 +715,21 @@ impl Scene {
                 (None, None) => self.frame_of(c, choice, ticks)?,
             };
             let seq = &self.sequences[&c.skin.skeleton][i];
-            let (mut mats, mut world, hip) = cache.entry((c.skin.hashcode, i, frame)).or_insert_with(|| {
+            let (mats, world, hip) = cache.entry((c.skin.hashcode, i, frame)).or_insert_with(|| {
                 let mut local = anim::local_pose(seq, &c.skeleton, &c.skin, frame);
                 let hip = local[0].0[1];
                 local[0].0 = [0.0; 3];
                 let world = anim::world_pose(&local, &c.skin);
                 (anim::skin_matrices(&world, &c.skin), world, hip)
             }).clone();
-            // Upper-body aim (`AnimObjectAimAt`, bone 2): turn bone 2 and everything below it by the drone's aim yaw
-            // about the model's up axis through bone 2 (*approximation*: the game rotates about the spine axis and
-            // also pitches; G-026).
-            if let Some((s, di)) = drone_of(ci) {
-                let a = s.drones.list[di].aim_yaw;
-                if a.abs() > 1e-4 && world.len() > 2 {
-                    let pivot = world[2][3];
-                    let (sn, cs) = (a.sin(), a.cos());
-                    // Row-vector rotation about +Y by a: (x, z) → (x cos + z sin, −x sin + z cos).
-                    let rot: Mat4 = [[cs, 0.0, -sn, 0.0], [0.0, 1.0, 0.0, 0.0], [sn, 0.0, cs, 0.0], [0.0, 0.0, 0.0, 1.0]];
-                    let below = |b: usize| { let mut p = Some(b); while let Some(x) = p { if x == 2 { return true; } p = c.skin.parent(x); } false };
-                    for b in 0..world.len() {
-                        if !below(b) { continue; }
-                        let mut w = world[b];
-                        for k in 0..3 { w[3][k] -= pivot[k]; }
-                        let mut r = anim::mul(&w, &rot);
-                        for k in 0..3 { r[3][k] += pivot[k]; }
-                        world[b] = r;
-                    }
-                    mats = anim::skin_matrices(&world, &c.skin);
-                }
+            if let Some(s) = view {
+                let g = s.gun_matrix();
+                let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
+                return Some((mats, world, if s.first_person { g } else { far }));
             }
-            if let Some(s) = view { return Some((mats, world, s.gun_matrix())); }
-            let mut m = match drone_of(ci) {
-                Some((s, di)) => { let dr = &s.drones.list[di]; nf_formats::placement::object_matrix([0.0, dr.yaw, 0.0], [dr.pos[0], 0.0, dr.pos[2]]) }
-                None => c.matrix,
-            };
+            let mut m = c.matrix;
             let a0 = drone_height(hip);
-            m[3][1] = match (drone_of(ci), c.floor) {
-                // The simulation keeps the drone on the collision floor (pos.y = floor + 1.0 as Drone+0xA0 starts).
-                (Some((s, di)), _) => s.drones.list[di].draw_y(hip),
-                (None, Some(f)) => f + a0,
-                (None, None) => c.matrix[3][1] + a0 - 1.0,
-            };
+            m[3][1] = match c.floor { Some(f) => f + a0, None => c.matrix[3][1] + a0 - 1.0 };
             Some((mats, world, m))
         }).collect();
         // Held back: spawner reinforcements and drones disabled while they wait for a switch channel (object flags

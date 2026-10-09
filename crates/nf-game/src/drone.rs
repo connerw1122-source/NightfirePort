@@ -247,6 +247,8 @@ pub struct Animator {
     pub held: bool,
     /// The follow-on of a raw script (`DroneAnim_SetScript` `+0x594`), used when no danim plays.
     pub follow_on: u16,
+    /// Scripts still fading out after being replaced (`AnimScriptAppendBlend`), oldest first (docs/systems/anim-engine.md).
+    pub outgoing: Vec<crate::anim::Outgoing>,
 }
 
 #[derive(Clone, Debug)]
@@ -495,7 +497,7 @@ impl Drone {
             los: false, seen: false, ever_seen: false, visibility: 0.0, seen_ticks: 0, unseen_ticks: 0, vision_on: false,
             dist: 0.0, yaw_to_opp: 0.0,
             state: state::GLOBAL, prev_state: 0, next_state: None, entered: 0, timer_c: None,
-            anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0 },
+            anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new() },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
             shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
@@ -516,7 +518,7 @@ impl Drone {
         dr.init_properties(d, &param);
         dr.type_setup(d);
         dr.captain_setup(d);
-        dr.set_danim(d, start_danim);
+        dr.set_danim(d, start_danim, 0);
         dr
     }
 
@@ -721,7 +723,22 @@ impl Drone {
     /// that was not drawn (`obj+0xFC` = 0) given a danim with info flag 4 of class 0, 3–7 or 9, the danim ends at once
     /// (`SetEndAnim(0x1E)`) and its follow-on (`+10`, when not itself) starts instead — e.g. an off-screen guard's
     /// look-around 265 (class 3, flags 6) goes straight to alert idle 244.
-    fn set_danim(&mut self, d: &Data, danim: u16) {
+    /// `DroneAnim_SetHTAnim`'s script switch: no blend (or a drone not animating, `NDrone2_DoAnimation`) →
+    /// `AnimScriptAdd`, every script deleted; else `AnimScriptAppendBlend`: the scripts already fading restart an
+    /// 8-frame fade, the one just replaced fades over `blend` frames.
+    fn begin_blend(&mut self, blend: u16) {
+        if blend == 0 || !self.drawn { self.anim.outgoing.clear(); return; }
+        for o in &mut self.anim.outgoing { o.clock = 8.0; o.length = 8.0; }
+        if let Some(s) = self.anim.script {
+            let looping = !(self.anim.once || self.anim.held);
+            self.anim.outgoing.push(crate::anim::Outgoing { script: s, time: 1.0 + self.anim.ftime, speed: self.anim.speed, looping, clock: blend as f32, length: blend as f32 });
+            if self.anim.outgoing.len() > 31 { self.anim.outgoing.remove(0); }
+        }
+    }
+
+    /// `DroneAnim_SetDAnimInternal(danim, blend, …)`.
+    fn set_danim(&mut self, d: &Data, danim: u16, blend: u16) {
+        self.begin_blend(blend);
         let mut danim = danim;
         for _ in 0..8 {
             let info = d.tables.info.get(danim as usize).copied().unwrap_or([0; 24]);
@@ -754,6 +771,7 @@ impl Drone {
     /// `DroneAnim_SetScript(script, state, follow-on, …, next AI state, message, flags)` (0x13e088): play a script by
     /// hashcode as anim state `state`, class 1, the call already reached with the given completion; flags 0 = one-shot.
     fn play_script(&mut self, hash: u32, state: u16, follow_on: u16, next_ai: u8, done_msg: u8) {
+        self.begin_blend(8); // `SetScript` → `SetHTAnim(…, blend 8)`
         self.anim.danim = 0;
         self.anim.state = state;
         self.anim.class = 1;
@@ -827,7 +845,7 @@ impl Drone {
         if class == 5 && cur != self.anim.call_from { return None; }
         if matches!(cur, 0xc | 0xd | 0x29 | 0x2a) && want == 10 && class == 5 { return None; }
         if let Some(t) = d.tables.transition(want, cur, self.anim.variant).filter(|t| t.danim > 0) {
-            self.set_danim(d, t.danim as u16);
+            self.set_danim(d, t.danim as u16, t.b4 as u16);
             self.anim.blend_wait = if t.b5 != 0 { t.b4 as u32 } else { 0 };
         }
         None
@@ -847,6 +865,8 @@ impl Drone {
             self.root_prev = None;
             return self.call_handler(d);
         }
+        // The fading scripts keep playing (`AnimScriptTick`) while their blend clocks run down (`AnimFrameResolve`).
+        self.anim.outgoing.retain_mut(|o| { let len = d.scripts.get(&o.script).map_or(1.0, |s| s.length as f32); o.tick(len) });
         if self.anim.held { self.root_prev = None; return self.call_handler(d); }
         let before = (self.anim.script, self.anim.danim);
         // Playback speed (`Drone_AnimInfo +0x14`, passed to the script by `SetHTAnim`): [L] lean-out 176 (51 frames at
@@ -875,8 +895,10 @@ impl Drone {
                 // *Deviation (order)*: the game applies it in the next tick's `SnapRotate`, after that tick's control;
                 // applied here at once so a state entered on the call's completion (e.g. Surrendered facing Bond) is
                 // not turned by it afterwards (the order of completion vs snap is not read, U-039).
+                // The follow-on blends over the ending danim's `info+0xE` frames (`+0x584`), 0 for a snapped turn.
+                let end_blend = if self.snap != 0.0 { 0 } else { info[0xe] as u16 };
                 if self.snap != 0.0 { self.desired_yaw += self.snap; self.yaw += self.snap; self.snap = 0.0; }
-                self.set_danim(d, next)
+                self.set_danim(d, next, end_blend)
             }
             else if self.anim.once {
                 // `AnimEndCallback` + `CheckForAnimComplete`: the script stops on its last frame; `+0x57A` clears.
@@ -1158,14 +1180,48 @@ impl Drone {
     /// x/z and yaw, y = feet + hip height − 0.02 as nf-view draws it). *Deviation*: the upper-body aim
     /// (`AnimObjectAimAt`) is not applied.
     pub fn palette(&self, d: &Data) -> Option<Vec<nf_formats::anim::Mat4>> {
-        let (q, f) = self.script_frame(d)?;
-        let seq = d.sequences.get(&q)?;
+        let (world, hip) = self.object_pose(d)?;
+        let obj = nf_formats::placement::object_matrix([0.0, self.yaw, 0.0], [self.pos[0], self.draw_y(hip), self.pos[2]]);
+        Some(world.iter().map(|m| nf_formats::anim::mul(m, &obj)).collect())
+    }
+
+    /// The local pose shown now: the playing script at its fractional time, blended with the scripts fading out
+    /// (docs/systems/anim-engine.md). Root translation kept.
+    pub fn local_pose(&self, d: &Data) -> Option<crate::anim::Pose> {
         let skin = d.skins.get(&self.skin)?;
         let skel = d.skeletons.get(&skin.skeleton)?;
-        let mut local = nf_formats::anim::local_pose(seq, skel, skin, f.clamp(1, seq.frames.max(1) as u32));
-        let hip = local[0].0[1];
-        let obj = nf_formats::placement::object_matrix([0.0, self.yaw, 0.0], [self.pos[0], self.draw_y(hip), self.pos[2]]);
-        Some(crate::damage::palette(&mut local, skin, &obj))
+        let cur = crate::anim::script_pose(d.scripts, d.sequences, skel, skin, self.anim.script?, 1.0 + self.anim.ftime)?;
+        let outs: Vec<(crate::anim::Pose, f32)> = self.anim.outgoing.iter()
+            .filter_map(|o| Some((crate::anim::script_pose(d.scripts, d.sequences, skel, skin, o.script, o.time)?, o.weight()))).collect();
+        Some(crate::anim::blend_playing(cur, &outs))
+    }
+
+    /// Bone matrices in object space (root translation zeroed: `AnimSeqTick` takes it as root motion) with the
+    /// upper-body aim (`AnimObjectAimAt`, bone 2: bone 2 and everything below it turned by the aim yaw about the
+    /// model's up axis through bone 2 — *approximation*: the game rotates about the spine axis and pitches too, G-026),
+    /// and the hip height. Drawing and hit boxes both use it.
+    pub fn object_pose(&self, d: &Data) -> Option<(Vec<nf_formats::anim::Mat4>, f32)> {
+        let skin = d.skins.get(&self.skin)?;
+        let mut local = self.local_pose(d)?;
+        let hip = local.first().map_or(0.0, |r| r.0[1]);
+        if let Some(r) = local.first_mut() { r.0 = [0.0; 3]; }
+        let mut world = nf_formats::anim::world_pose(&local, skin);
+        let a = self.aim_yaw;
+        if a.abs() > 1e-4 && world.len() > 2 {
+            let pivot = world[2][3];
+            let (sn, cs) = (a.sin(), a.cos());
+            let rot: nf_formats::anim::Mat4 = [[cs, 0.0, -sn, 0.0], [0.0, 1.0, 0.0, 0.0], [sn, 0.0, cs, 0.0], [0.0, 0.0, 0.0, 1.0]];
+            let below = |b: usize| { let mut p = Some(b); while let Some(x) = p { if x == 2 { return true; } p = skin.parent(x); } false };
+            for b in 0..world.len() {
+                if !below(b) { continue; }
+                let mut w = world[b];
+                for k in 0..3 { w[3][k] -= pivot[k]; }
+                let mut r = nf_formats::anim::mul(&w, &rot);
+                for k in 0..3 { r[3][k] += pivot[k]; }
+                world[b] = r;
+            }
+        }
+        Some((world, hip))
     }
 
     /// `DroneWeap_DropWeapon` (0x17a2a0, docs/systems/pickups.md): once — the weapon byte (`anim+0x62`) is cleared. At

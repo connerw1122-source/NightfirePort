@@ -1011,3 +1011,16 @@ when a danim ends into its follow-on, `OnEndAnim` turns info flag 0x100 / 0x80 /
 yaw and the desired yaw. [L] danim 0x141 (surrender, 210 frames, root turning 3.10 rad) has flag 0x100. The port
 applies the snap when the danim ends (U-039: the order against the call completion is not read). The surrender
 test now asserts the surrendered guard faces Bond.
+
+## 0049 — Animation blending, fractional frames, one pose for drawing and hit boxes (2026-10-09)
+
+`nf_game::anim` (docs/systems/anim-engine.md): `Quat_Slerp_Acc`-style slerp, `AnimFrameBlend` (no-overshoot lerp +
+slerp), `AnimFrameSet` (fractional frames), a script's pose at its time, and `AnimFrameResolve`'s order (outgoing
+scripts oldest first, each next blended by 1 − the previous weight). Drones: every script switch goes through
+`begin_blend` (`SetHTAnim`: blend 0 or not animating → `AnimScriptAdd` clears; else `AppendBlend`: fading scripts
+restart an 8-frame fade, the replaced one fades over the call's transition blend `+2` (`GetDAnimForCall`), the
+follow-on's `info+0xE` (0 after a snap turn), or 8 for `SetScript`); fading scripts keep playing and lose 1 per tick.
+`Drone::object_pose` (blended local pose, root zeroed, upper-body aim) now feeds both nf-view's skinning and the hit
+boxes (`palette`) — before, the hit boxes used the unaimed integer-frame pose while the mesh was aimed (user report:
+"hitboxes aren't following the animations"). nf-game: all tests pass. Not yet: root-motion blending, anim rotation
+(0x20000) for interrupted turns, script sound / event commands for drones, head tracking.

@@ -2,6 +2,7 @@
 //! game) runs. Rendering lives elsewhere; this crate only advances state.
 
 pub mod aivolume;
+pub mod anim;
 pub mod bullet;
 pub mod cover;
 pub mod damage;
