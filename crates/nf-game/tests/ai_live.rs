@@ -609,3 +609,19 @@ fn bond_stands_and_walks_on_the_level() {
     for _ in 0..30 { b.tick(&l.world, &Input::default()); }
     assert!(b.pos[1] < start[1] + 2.5, "sister: falls {:?}", b.pos);
 }
+
+/// Bond's trigger from the real P2K record [L: `weapon_data` 2]: one shot per pull (`((u16 *)w)[0x14]` = 1) and 8 ticks
+/// between shots (`+0x40` is an integer). Holding the button fires once; sister: the earlier misreading (u32 at +0x28,
+/// float at +0x40) would empty the clip.
+#[test]
+fn p2k_fires_once_per_pull() {
+    use nf_game::gun::{Gun, GunParams};
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let p = GunParams::from_record(&l.weapons.records[2], 0, |h| l.scripts.get(&h).map(|s| s.length as u32));
+    assert_eq!((p.shots_per_pull, p.interval, p.clip), (1, 8.0, 7));
+    let mut g = Gun::new(2, 7, 41);
+    let shots = (0..60).filter(|_| g.update(true, p)).count();
+    assert_eq!(shots, 1, "held for a second: one shot");
+    let wrong = u32::from_le_bytes(l.weapons.records[2][0x28..0x2c].try_into().unwrap());
+    assert!(wrong > 7, "sister: the u32 reading gives {wrong} shots per pull");
+}

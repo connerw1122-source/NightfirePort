@@ -25,9 +25,10 @@ impl GunParams {
         let u32_at = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
         let flags68 = u32_at(0x68);
         GunParams {
-            shots_per_pull: u32_at(0x28 + 4 * mode.min(3)) as i32,
-            interval: f32::from_le_bytes(w[0x40..0x44].try_into().unwrap()),
-            clip: w[0x92] as u32,
+            // `Player_WeaponFiring`: `((u16 *)weapon)[0x14 + mode]` and `(float)(u32)weapon+0x40` (an integer).
+            shots_per_pull: u16::from_le_bytes([w[0x28 + 2 * mode.min(3)], w[0x29 + 2 * mode.min(3)]]) as i32,
+            interval: u32_at(0x40) as f32,
+            clip: u16::from_le_bytes([w[0x92], w[0x93]]) as u32,
             ammo_per_shot: (w[0x91] as u32).max(1),
             reload_ticks: reload_ticks(u32_at(0xa8), u32_at(0xa4), flags68, &script_len),
             one_at_a_time: flags68 & 0x100 != 0,

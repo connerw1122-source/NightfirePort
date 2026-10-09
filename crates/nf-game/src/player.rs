@@ -88,8 +88,9 @@ impl Bond {
         // end it early is not played).
         self.lockout = self.lockout.saturating_sub(1);
         let k = if self.crouched { 0.75 } else { 1.0 };
-        // `Player_Move`: aim mode zeroes turning and forward.
-        let (fwd, turn) = if input.aiming { (0.0, 0.0) } else { (input.forward.clamp(-1.0, 1.0), input.turn) };
+        // `Player_Move`: aim mode zeroes forward (and the pad's turn action, which the caller leaves out of `turn`:
+        // with a mouse the view turns past the aim box's edge, D-002).
+        let (fwd, turn) = if input.aiming { (0.0, input.turn) } else { (input.forward.clamp(-1.0, 1.0), input.turn) };
         let strafe = input.strafe.clamp(-1.0, 1.0);
         let target_f = if fwd > 0.0 { 0.1 * fwd * fwd + 0.005 } else if fwd < 0.0 { -0.075 * fwd * fwd - 0.005 } else { 0.0 };
         let target_s = 0.075 * strafe;

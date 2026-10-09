@@ -932,3 +932,13 @@ stand-in HUD (health, clip pips, spare rounds, hit tint). Tests: unit tests (top
 jump apex ~0.78, falling) and `bond_stands_and_walks_on_the_level`: at the snapshot's start position Bond stays at the
 live height (the floor 1.086 below; live ray 1.0891), walks without falling through and stops at the wall ahead.
 **Deviations**: two-sided triangles (U-037), no first-person gun model yet, no crouch transition animation.
+
+## 0043 — The P2K emptied its clip on one click (2026-10-09)
+
+**Report** (user): left click unloads the whole magazine; aiming only worked in aim mode. **Cause**:
+`GunParams::from_record` read shots-per-pull as a u32 at `+0x28` (65537 for the P2K) and the interval at `+0x40` as a
+float (1e−44): one press fired every tick until the clip was empty. `Player_WeaponFiring` (read) takes
+`((u16 *)weapon)[0x14 + mode]` and `(float)(u32)weapon+0x40`. The unit test had used hand-made parameters, so it
+never saw the record. Fixed; test `p2k_fires_once_per_pull` builds the parameters from the real record (1 per pull,
+8 ticks, clip 7; held for a second → one shot; sister: the u32 reading is > 7). Also: `Bond::tick` dropped the
+mouse turn in aim mode, so the view could not turn past the aim box (D-002); only the forward axis is zeroed now.
