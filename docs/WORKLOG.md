@@ -1030,3 +1030,13 @@ boxes (`palette`) — before, the hit boxes used the unaimed integer-frame pose 
 User report: the arm and gun should follow the auto-aim angle. `Player_SetWeaponAnimObj` / `Player_PositionGun`
 (research pass, docs/systems/player.md): gun angles pitch `cy·π/6`, yaw aspect·`cx·π/6`, pivot (0, −0.2, 0.5) in
 view space. Ported in `Sim::gun_matrix` (rotation order and yaw sign *suggested*); hidden with the free camera.
+
+## 0051 — A danim without a script keeps the previous script (2026-10-09)
+
+User report: a guard killed while surrendered was drawn in the bind pose for seconds before disappearing.
+`DroneAnim_SetDAnimInternal` (read to its end): when the danim's script is 0x06000000 (none for the anim set nor set
+0), or it is skipped for an undrawn drone, it calls `SetEndAnim` (the follow-on) and **not** `SetHTAnim` — the
+previous script keeps playing. The port replaced the script with none. [L] danims 0x40 (death) and 0xBF (corpse hold)
+have no script for the unarmed set 0xC nor set 0, so a surrendered (unarmed) guard had no pose from his death on.
+Ported; test `surrendered_guard_killed_keeps_a_pose` (no tick without a pose from the shot until removal; it failed
+with 687 such ticks before).

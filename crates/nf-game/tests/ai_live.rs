@@ -769,3 +769,41 @@ fn spawned_drones_animate() {
     }
     assert!(bad.is_empty(), "no script: {bad:?}");
 }
+
+/// A guard killed while surrendered (unarmed, anim set 0xC) keeps a pose from the shot until he is gone — no tick
+/// without one (the viewer drew such ticks in the bind pose: the "T-pose before disappearing" report).
+#[test]
+fn surrendered_guard_killed_keeps_a_pose() {
+    use nf_game::drone::{state, Player};
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, _, rng) = l.drones(None, 61.342);
+    let mut sim = l.sim(drones, rng);
+    for _ in 0..10 { sim.tick(&d, &bond_at([0.0, -500.0, 0.0])); }
+    let i = sim.list.iter().position(|dr| dr.placement == 6).unwrap();
+    let g = sim.list[i].pos;
+    let behind = [49.35606, 27.907804, 93.699425];
+    let to = [g[0] - behind[0], 0.0, g[2] - behind[2]];
+    let n = (to[0] * to[0] + to[2] * to[2]).sqrt();
+    let bond = Player { pos: behind, target: [behind[0], behind[1] + 0.5, behind[2]], eye: [behind[0], behind[1] + 1.0, behind[2]], aim: [to[0] / n, 0.0, to[2] / n] };
+    for _ in 0..400 { sim.tick(&d, &bond); }
+    assert_eq!(sim.list[i].state, state::SURRENDERED);
+    let t = sim.list[i].pos;
+    let e = bond.eye;
+    let aim = [t[0], t[1] + 0.3, t[2]];
+    let n = ((aim[0] - e[0]).powi(2) + (aim[1] - e[1]).powi(2) + (aim[2] - e[2]).powi(2)).sqrt();
+    sim.fire_player(&d, e, [(aim[0] - e[0]) / n, (aim[1] - e[1]) / n, (aim[2] - e[2]) / n], 2, l.sfx.get(0x403));
+    let mut missing = Vec::new();
+    for k in 0..900 {
+        sim.tick(&d, &bond);
+        let dr = &sim.list[i];
+        if !dr.present { break; }
+        if dr.object_pose(&d).is_none() {
+            missing.push((k, dr.state, dr.anim.danim, dr.anim.script, dr.anim_set));
+        }
+    }
+    let log: Vec<u8> = sim.list[i].log.iter().map(|&(_, s)| s).collect();
+    eprintln!("log {log:x?}; ticks without a pose: {} first {:x?}", missing.len(), missing.first());
+    assert!(log.contains(&state::DEATH_ANIM), "{log:x?}");
+    assert!(missing.is_empty(), "{} ticks without a pose, first {:x?}", missing.len(), missing.first());
+}

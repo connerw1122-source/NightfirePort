@@ -736,34 +736,42 @@ impl Drone {
         }
     }
 
-    /// `DroneAnim_SetDAnimInternal(danim, blend, …)`.
+    /// `DroneAnim_SetDAnimInternal(danim, blend, …)` (0x13aee8): the danim's state, class and call bookkeeping; then,
+    /// when it has a script for the anim set (or set 0) and is not skipped (an undrawn drone, info flag 4, classes 0 /
+    /// 3–7 / 9), `SetHTAnim` starts it. Otherwise `SetEndAnim` goes to the follow-on — and with none, **the previous
+    /// script keeps playing** (no `SetHTAnim`): e.g. an unarmed guard (anim set 0xC) has no death or corpse script, so
+    /// the last one holds instead of an empty pose.
     fn set_danim(&mut self, d: &Data, danim: u16, blend: u16) {
-        self.begin_blend(blend);
         let mut danim = danim;
         for _ in 0..8 {
             let info = d.tables.info.get(danim as usize).copied().unwrap_or([0; 24]);
             self.anim.danim = danim;
             self.anim.state = u16::from_le_bytes([info[8], info[9]]);
             self.anim.class = info[0xc];
-            self.anim.script = d.tables.script_for(danim, self.anim_set);
-            self.anim.time = 0;
-            self.anim.ftime = 0.0;
-            let speed = f32::from_le_bytes([info[0x14], info[0x15], info[0x16], info[0x17]]);
-            self.anim.speed = if speed > 0.0 && speed.is_finite() { speed } else { 1.0 };
             self.anim.blend_wait = 0;
-            self.anim.once = info[0] & 1 == 0;
-            self.anim.held = false;
             self.anim.follow_on = 0;
             // A danim of the called state (0x41..0x44, 0x50 and 0x6F count as 0x40) or of state 0 marks the call
             // reached (`+0x57B`) and zeroes the request (`ZeroAnimCall`; the completion action `+0x596`/`+0x598` stays).
             let want = self.anim.call.filter(|_| !self.anim.reached).map_or(0, |(w, _, _)| match w { 0x41..=0x44 | 0x50 | 0x6f => 0x40, w => w });
             if self.anim.state == 0 || self.anim.state == want { self.anim.reached = true; }
-            // A new script has no previous root: no motion until its second tick (a call starting a danim after this
-            // tick's root motion would otherwise move by the old sequence's root minus the new one's).
-            self.root_prev = None;
-            let skip = self.anim.script.is_none() || (!self.drawn && info[0] & 4 != 0 && matches!(self.anim.class, 0 | 3..=7 | 9));
+            let script = d.tables.script_for(danim, self.anim_set);
+            let skip = script.is_none() || (!self.drawn && info[0] & 4 != 0 && matches!(self.anim.class, 0 | 3..=7 | 9));
+            if !skip {
+                self.begin_blend(blend);
+                self.anim.script = script;
+                self.anim.time = 0;
+                self.anim.ftime = 0.0;
+                let speed = f32::from_le_bytes([info[0x14], info[0x15], info[0x16], info[0x17]]);
+                self.anim.speed = if speed > 0.0 && speed.is_finite() { speed } else { 1.0 };
+                self.anim.once = info[0] & 1 == 0;
+                self.anim.held = false;
+                // A new script has no previous root: no motion until its second tick (a call starting a danim after
+                // this tick's root motion would otherwise move by the old sequence's root minus the new one's).
+                self.root_prev = None;
+                break;
+            }
             let next = u16::from_le_bytes([info[10], info[11]]);
-            if !(skip && next != 0 && next != danim) { break; }
+            if next == 0 || next == danim { break; }
             danim = next;
         }
     }
