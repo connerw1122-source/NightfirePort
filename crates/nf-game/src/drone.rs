@@ -251,6 +251,8 @@ pub struct Animator {
     pub outgoing: Vec<crate::anim::Outgoing>,
     /// The playing script's start-frame commands ran (`+0x78 & 0x20000000` cleared).
     pub started: bool,
+    /// Event 7 cleared `+0x579`: `DroneAnim_CheckForAnimComplete` ends the one-shot before its last frame.
+    pub early_end: bool,
     /// `OnStartAnim`: a class-6 danim's script cut to 15 frames (`+0xB0`) unless the hit was big (`+0x1C`).
     pub len_cap: Option<u32>,
 }
@@ -508,7 +510,7 @@ impl Drone {
             los: false, seen: false, ever_seen: false, visibility: 0.0, seen_ticks: 0, unseen_ticks: 0, vision_on: false,
             dist: 0.0, yaw_to_opp: 0.0,
             state: state::GLOBAL, prev_state: 0, next_state: None, entered: 0, timer_c: None,
-            anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, len_cap: None },
+            anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
             shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
@@ -697,7 +699,8 @@ impl Drone {
 
     /// `SetWalkIdleAnim`: in Patrol (SM id + 1) % 3 + 0x37, or 0x37 when the set lacks it.
     fn walk_anim(&self, d: &Data) -> u16 {
-        let a = ((self.sm_id + 1) % 3) as u16 + anim_state::WALK;
+        // 07000014 always asks for 0x39.
+        let a = if d.level == 0x0700_0014 { 0x39 } else { ((self.sm_id + 1) % 3) as u16 + anim_state::WALK };
         if self.can_do(d, a) { a } else { anim_state::WALK }
     }
 
@@ -794,6 +797,7 @@ impl Drone {
                 self.anim.once = info[0] & 1 == 0;
                 self.anim.held = false;
                 self.anim.started = false;
+                self.anim.early_end = false;
                 // `DroneAnim_OnStartAnim`: class 6 without a big hit (`+0x1C`) is cut to 15 frames, end blend 5.
                 self.anim.len_cap = (self.anim.class == 6 && !self.big_hit).then_some(15);
                 // `DAnimFunc_Run` (the only `DroneData_AnimFunc` entry): the run danim 0xDC plays at 0.7 on 07000009 / 0A.
@@ -820,6 +824,7 @@ impl Drone {
         self.anim.class = 1;
         self.anim.script = Some(hash);
         self.anim.started = false;
+        self.anim.early_end = false;
         self.anim.len_cap = None;
         self.anim.time = 0;
         self.anim.ftime = 0.0;
@@ -930,7 +935,18 @@ impl Drone {
         self.script_commands(d, prev_t, if wrapped { 1 + self.anim.time - len } else { to }, wrapped);
         let mut restarted = false;
         let mut wrap_end = None;
-        if self.anim.time >= len {
+        let early = self.anim.early_end && self.anim.once && self.anim.time < len;
+        if early {
+            // `CheckForAnimComplete` (0x13dae8): `+0x57A` set and `+0x579` cleared by event 7 → `SetEndAnim` now.
+            self.anim.early_end = false;
+            let info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
+            let next = if self.anim.danim == 0 { self.anim.follow_on } else { u16::from_le_bytes([info[10], info[11]]) };
+            if next != 0 && next != self.anim.danim {
+                let end_blend = if self.anim.len_cap.is_some() { 5 } else { info[0xe] as u16 };
+                self.set_danim(d, next, end_blend);
+                restarted = true;
+            } else { self.anim.once = false; self.anim.held = true; }
+        } else if self.anim.time >= len {
             // The wrap tick repeats the script's last step (last frame − the one before): [L] aligned per-tick steps of
             // a live walk cycle (115 ticks, work/patrol_trace.tsv) show the step before the wrap twice.
             self.anim.time = len.saturating_sub(1);
@@ -996,11 +1012,12 @@ impl Drone {
     }
 
     /// `DroneAnim_EventFunc` (0x13b750): 3 / 4 holster swap, 7 `+0x579` = 0, 0xF `+0x20`, 0x12 `+0x20` and `+0x21`, 0x10
-    /// clears both. Not ported: 1 grenade throw, 2 weapon change, 5 / 10 / 11 close-combat hits, 6 / 0xE messages, 9
+    /// clears both, 7 the early end of a one-shot (`+0x579`). Not ported: 1 grenade throw, 2 weapon change, 5 / 10 / 11 close-combat hits, 6 / 0xE messages, 9
     /// tertiary placement (G-026).
     fn event_func(&mut self, e: u16) {
         match e {
             3 => self.holstered = true,
+            7 => self.anim.early_end = true,
             4 => self.holstered = false,
             0xf => self.event_20 = true,
             0x12 => { self.event_20 = true; self.event_21 = true; }

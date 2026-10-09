@@ -1060,3 +1060,11 @@ in order (each next by 1 − the previous weight), the current step last. `Drone
 (`+0x54C`) goes to `SnapRotate` — the port adds it to the desired yaw and sets the yaw to it at once (U-039) and removes
 it from the fading pose's root. `SnapRotate` sets the yaw to the new desired yaw (it had added to the yaw). All
 nf-game tests (incl. the live-trace patrol / chase timings) still pass.
+
+## 0054 — Early one-shot ends (event 7); walk-idle on 07000014 (2026-10-09)
+
+`DroneAnim_CheckForAnimComplete` (0x13dae8): a one-shot whose event 7 cleared `+0x579` goes to its follow-on (or holds)
+before its last frame; ported. `SetWalkIdleAnim` (0x13cc70): 07000014 asks for 0x39. Read but not ported, recorded
+as G-030: the exact `AnimObjectAimAt` (0x1bfe58: yaw about the spine and pitch so the weapon datum line passes the
+target, clamps ±0.9, smoothing `+0x74`, applied to bone 2's quaternion inside `psiBuildMatrixPalette`; several input
+vectors are stack slots the decompiler lost — needs the disassembly) and `AnimObjectHeadTrack` (bone 5).
