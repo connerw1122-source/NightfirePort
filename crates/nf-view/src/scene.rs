@@ -489,7 +489,12 @@ impl Scene {
                 None => c.matrix,
             };
             let a0 = drone_height(hip);
-            m[3][1] = match c.floor { Some(f) => f + a0, None => c.matrix[3][1] + a0 - 1.0 };
+            m[3][1] = match (drone_of(ci), c.floor) {
+                // The simulation keeps the drone on the collision floor (pos.y = floor + 1.0 as Drone+0xA0 starts).
+                (Some((s, di)), _) => s.drones.list[di].pos[1] - 1.0 + a0,
+                (None, Some(f)) => f + a0,
+                (None, None) => c.matrix[3][1] + a0 - 1.0,
+            };
             Some((mats, world, m))
         }).collect();
         let hidden = |c: &Character| !opts.reinforcements && matches!(c.role, drone::SpawnRole::Reinforcement { .. });
