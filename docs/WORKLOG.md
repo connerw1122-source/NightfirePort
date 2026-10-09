@@ -910,3 +910,25 @@ placement 267 (seed 1) or 7 (seed 32); either guard, killed at his post, falls 8
 with the hip 0.12–0.51 above the ground below (the script was authored for that drop); shot over the head he stays.
 First attempts at the test hit nothing: placement 7 is absent unless the spawner picks it, and the second shot
 missed once the sniper turned to a Bond standing elsewhere. nf-game: all tests pass.
+
+## 0042 — Bond as a player: movement, collision, crosshair, aim mode (2026-10-09)
+
+**Report** (user): guards were hard to hit. The viewer had a free-flying camera, no crosshair and a wider-than-needed
+guess at the view; Bond had no body.
+
+**Read** (two research passes, docs/systems/player.md; re-checked here: `Player_Move`'s constants, the capsule
+offsets in `Player_Collision`, the snapshot's eye 0.7, projection fx 332.62 / fy 388.06 / 60°, the P2K's gun offset,
+`HUDCrossCoords`): movement targets and blending, the 0.55 capsule and its triangle pushes, the floor ray and its 0.1
+band, gravity and jump, crouch, eye and pitch, the aim point through the crosshair, aim mode's cursor box, the
+crosshair sprite (sheet 0x03000026, found in every level archive by `tex-list`). **Correction**: one pass reported
+auto-aim off in the snapshot; `PlayerSetting+1` (0x2a38c9) is 1 — on in the game; the port follows D-001 (off with a
+mouse, T toggles).
+
+**Port**: `nf_game::player::Bond` (movement, capsule depenetration `CollisionWorld::capsule_push`, floor ray
+`segment_hit`, gravity, jump, crouch, fall damage, eye); nf-view walks Bond with WASD / mouse (Space jump, C / Ctrl
+crouch, right mouse aim mode with the D-002 cursor box, N free camera), shoots through the smoothed cursor, and draws
+an overlay pass: the game's red crosshair cell (normal 11 × 11, aim 29 × 29) at (256 (1 + cx), 224 (1 − cy)) and a
+stand-in HUD (health, clip pips, spare rounds, hit tint). Tests: unit tests (top speed 0.1 / tick, walls, a 0.3 step,
+jump apex ~0.78, falling) and `bond_stands_and_walks_on_the_level`: at the snapshot's start position Bond stays at the
+live height (the floor 1.086 below; live ray 1.0891), walks without falling through and stops at the wall ahead.
+**Deviations**: two-sided triangles (U-037), no first-person gun model yet, no crouch transition animation.

@@ -578,3 +578,34 @@ fn auto_aim_snaps_to_a_guard_near_the_crosshair() {
     let far = sim.auto_aim(&d, p.eye, look(0.6), 2);
     assert!(sim.aim_target.is_none() && (far[0] - look(0.6)[0]).abs() > 1e-4, "sister: the offset still eases back, not a new snap");
 }
+
+/// Bond on 07000005's collision (docs/systems/player.md): at the level-start position of the snapshot [L] (104.954,
+/// 24.9633, 108.8253; yaw −2.14675) he stays put — the floor ray finds the ground within the 0.1 band, as live (1.0891
+/// above it). Walking forward for 5 s he stays on the ground (no fall-through), covers ≤ 0.1 per tick and stops at the wall
+/// ~4 units ahead. Sister:
+/// placed 3 units up he falls.
+#[test]
+fn bond_stands_and_walks_on_the_level() {
+    use nf_game::player::{Bond, Input};
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let start = [104.954, 24.9633, 108.8253];
+    let mut b = Bond::new(start, -2.14675);
+    for _ in 0..60 { b.tick(&l.world, &Input::default()); }
+    let floor = l.world.floor_below(start, 3.0).unwrap();
+    eprintln!("rest {:?}, floor {floor}, above {}", b.pos, b.pos[1] - floor);
+    assert!((b.pos[1] - start[1]).abs() < 0.06 && b.grounded, "stays at the live height: {:?}", b.pos);
+    let fwd = Input { forward: 1.0, ..Default::default() };
+    let mut last = b.pos;
+    for t in 0..300 {
+        b.tick(&l.world, &fwd);
+        let step = ((b.pos[0] - last[0]).powi(2) + (b.pos[2] - last[2]).powi(2)).sqrt();
+        assert!(step <= 0.1 + 0.06, "tick {t}: step {step}");
+        last = b.pos;
+        let f = l.world.floor_below([b.pos[0], b.pos[1] + 0.5, b.pos[2]], 5.0);
+        assert!(f.is_some_and(|f| b.pos[1] - f > 0.8 && b.pos[1] - f < 1.4), "tick {t}: on the ground {:?} floor {f:?}", b.pos);
+    }
+    eprintln!("walked to {:?}", b.pos);
+    let mut b = Bond::new([start[0], start[1] + 3.0, start[2]], 0.0);
+    for _ in 0..30 { b.tick(&l.world, &Input::default()); }
+    assert!(b.pos[1] < start[1] + 2.5, "sister: falls {:?}", b.pos);
+}

@@ -16,6 +16,7 @@
 //! (nf-view-shot.png), Esc = release mouse, Esc again = quit.
 
 mod gpu;
+mod hud;
 mod scene;
 
 use anyhow::{bail, Context, Result};
@@ -138,7 +139,7 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let view = target.create_view(&Default::default());
     let depth = gpu::depth_view(&device, w, h);
     let (vp, vp_rot) = cam.view_proj(w as f32 / h as f32);
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot);
+    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, &hud::overlay(scene.sim.as_ref(), w as f32 / h as f32));
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -183,6 +184,12 @@ struct App {
     paused: bool,
     /// R = show held-back drones (reinforcements, drones waiting for a switch), F = make armed drones fire.
     opts: scene::ViewOpts,
+    /// N: the free camera instead of Bond. Keys pressed since the last game tick (jump, crouch), and the mouse turn
+    /// (radians) and look (units of π/2) not yet given to a tick.
+    noclip: bool,
+    just: HashSet<KeyCode>,
+    turn: f32,
+    look: f32,
 }
 
 impl App {
@@ -218,8 +225,14 @@ impl ApplicationHandler for App {
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
         if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
             if self.grabbed {
-                self.cam.yaw -= dx as f32 * MOUSE_SENSITIVITY;
-                self.cam.pitch = (self.cam.pitch - dy as f32 * MOUSE_SENSITIVITY).clamp(-1.55, 1.55);
+                if self.noclip || self.scene.sim.is_none() {
+                    self.cam.yaw -= dx as f32 * MOUSE_SENSITIVITY;
+                    self.cam.pitch = (self.cam.pitch - dy as f32 * MOUSE_SENSITIVITY).clamp(-1.55, 1.55);
+                } else {
+                    // Mouse look (PLAN.md): raw deltas straight into Bond's yaw / pitch at the next tick.
+                    self.turn -= dx as f32 * MOUSE_SENSITIVITY;
+                    self.look -= dy as f32 * MOUSE_SENSITIVITY / std::f32::consts::FRAC_PI_2;
+                }
             }
         }
     }
@@ -255,9 +268,17 @@ impl ApplicationHandler for App {
                     (KeyCode::KeyP, ElementState::Pressed) => self.paused = !self.paused,
                     (KeyCode::KeyR, ElementState::Pressed) => self.opts.reinforcements = !self.opts.reinforcements,
                     (KeyCode::KeyF, ElementState::Pressed) => self.opts.firing = !self.opts.firing,
+                    (KeyCode::KeyN, ElementState::Pressed) => {
+                        self.noclip = !self.noclip;
+                        // Back on foot: Bond where the free camera is.
+                        if !self.noclip { if let Some(sim) = self.scene.sim.as_mut() {
+                            sim.bond = nf_game::player::Bond::stand_at(&sim.world, [self.cam.pos.x, self.cam.pos.y - 0.7, self.cam.pos.z], self.cam.yaw);
+                        } }
+                    }
+                    (KeyCode::KeyT, ElementState::Pressed) => if let Some(sim) = self.scene.sim.as_mut() { sim.auto_aim = !sim.auto_aim },
                     // Turn every switch channel on: drones waiting for one (WaitSwitch) start (triggers are not ported).
                     (KeyCode::KeyK, ElementState::Pressed) => if let Some(sim) = self.scene.sim.as_mut() { for c in 1..=255 { sim.drones.set_channel(c) } },
-                    (_, ElementState::Pressed) => { self.keys.insert(k); }
+                    (_, ElementState::Pressed) => { if !event.repeat { self.just.insert(k); } self.keys.insert(k); }
                     (_, ElementState::Released) => { self.keys.remove(&k); }
                 }
             },
@@ -271,7 +292,7 @@ impl ApplicationHandler for App {
                 for (k, d) in [(KeyCode::KeyW, fwd), (KeyCode::KeyS, -fwd), (KeyCode::KeyD, right), (KeyCode::KeyA, -right), (KeyCode::Space, Vec3::Y), (KeyCode::ControlLeft, -Vec3::Y)] {
                     if self.keys.contains(&k) { mv += d; }
                 }
-                self.cam.pos += mv * speed;
+                if self.noclip || self.scene.sim.is_none() { self.cam.pos += mv * speed; }
                 // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
                 if !self.paused {
                     // Game logic at its fixed 60 Hz, decoupled from the render rate: one AI tick per whole tick of time.
@@ -280,7 +301,25 @@ impl ApplicationHandler for App {
                     let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
                     let look = self.cam.dir().to_array();
                     if let Some(sim) = self.scene.sim.as_mut() {
-                        for _ in before..(self.anim_time as u32).min(before + 8) { sim.step(eye, look, self.trigger, self.aiming); }
+                        for _ in before..(self.anim_time as u32).min(before + 8) {
+                            if self.noclip { sim.step(eye, look, self.trigger, self.aiming); continue; }
+                            // Keys as full-deflection actions: W / S forward (action 2), A / D strafe (action 1, + = left).
+                            let held = |k: KeyCode| if self.keys.contains(&k) { 1.0 } else { 0.0 };
+                            let input = nf_game::player::Input {
+                                forward: held(KeyCode::KeyW) - held(KeyCode::KeyS),
+                                strafe: held(KeyCode::KeyA) - held(KeyCode::KeyD),
+                                turn: std::mem::take(&mut self.turn),
+                                look: std::mem::take(&mut self.look),
+                                jump: self.just.remove(&KeyCode::Space),
+                                crouch: self.just.remove(&KeyCode::KeyC) | self.just.remove(&KeyCode::ControlLeft),
+                                aiming: self.aiming,
+                            };
+                            sim.step_bond(input, self.trigger);
+                        }
+                        if !self.noclip {
+                            let h = sim.bond.head();
+                            self.cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2 };
+                        }
                         // HUD stand-in: Bond's health (`BL+0x894`) and the hit flash (`BL+0x968`) in the title.
                         if before / 30 != self.anim_time as u32 / 30 {
                             if let Some(g) = &self.gfx {
@@ -305,7 +344,7 @@ impl ApplicationHandler for App {
                 let view = frame.texture.create_view(&Default::default());
                 let aspect = g.config.width as f32 / g.config.height as f32;
                 let (vp, vp_rot) = self.cam.view_proj(aspect);
-                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot);
+                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, &hud::overlay(self.scene.sim.as_ref(), aspect));
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
                 g.window.request_redraw();
@@ -357,7 +396,7 @@ fn main() -> Result<()> {
         return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts);
     }
     let event_loop = EventLoop::new()?;
-    let mut app = App { scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts };
+    let mut app = App { scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0 };
     event_loop.run_app(&mut app)?;
     Ok(())
 }

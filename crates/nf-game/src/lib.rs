@@ -9,6 +9,7 @@ pub mod drone;
 pub mod gun;
 pub mod nav;
 pub mod pickup;
+pub mod player;
 pub mod spawners;
 pub mod trig;
 pub mod triggers;

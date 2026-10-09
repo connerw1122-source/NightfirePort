@@ -110,8 +110,16 @@ pub struct Sim {
     pub sfx: Option<nf_formats::sfx::SfxTable>,
     pub volumes: Vec<nf_game::aivolume::AiVolume>,
     pub models: HashMap<u32, nf_game::pickup::Model>,
-    /// Bond's gun (07000005's start: P2K, 7 + 41 rounds) and the auto-aim option (`0x2a38c9`, 1 by default [L]).
+    /// Bond's gun (07000005's start: P2K, 7 + 41 rounds) and the auto-aim option (`PlayerSetting+1` = 1 in the game
+    /// [L]; off by default with a mouse, D-001).
     pub gun: nf_game::gun::Gun,
+    /// Bond on foot (docs/systems/player.md).
+    pub bond: nf_game::player::Bond,
+    /// Aim mode's cursor (`BL+0x118 / +0x11C`) and its smoothed copy (`+0x120 / +0x124`), −1…1 across half the screen.
+    pub cursor: [f32; 2],
+    pub cross: [f32; 2],
+    /// Aim mode (action 0x13, L1 / right mouse) this tick.
+    pub aiming: bool,
     pub auto_aim: bool,
 }
 
@@ -121,7 +129,44 @@ impl Sim {
     /// `trigger`: the fire button (action 9) held; `aiming`: aim mode (L1).
     pub fn step(&mut self, camera: [f32; 3], look: [f32; 3], trigger: bool, aiming: bool) {
         let floor = self.world.floor_below(camera, 4.0).unwrap_or(camera[1] - 1.6);
-        let player = nf_game::drone::Player { pos: [camera[0], floor + 0.4, camera[2]], target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look };
+        self.run([camera[0], floor + 0.4, camera[2]], camera, look, look, trigger, aiming);
+    }
+
+    /// One game tick with Bond walking (`Player_Update`): his input, then the world with him as the player. In aim
+    /// mode the mouse turn and look (`input.turn` radians, `input.look` units of π/2) first move the cursor within the
+    /// aim box (±0.296 across, ±0.4 up) and turn the view only past its edge (D-002); the shot goes through the smoothed
+    /// cursor (`Player_GetAimingPoint`).
+    pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool) {
+        let aiming = input.aiming;
+        if aiming {
+            let want = [self.cursor[0] - input.turn / 0.76966, self.cursor[1] + input.look * std::f32::consts::FRAC_PI_2 / 0.57724];
+            let clamped = [want[0].clamp(-0.296, 0.296), want[1].clamp(-0.4, 0.4)];
+            input.turn = -(want[0] - clamped[0]) * 0.76966;
+            input.look = (want[1] - clamped[1]) * 0.57724 / std::f32::consts::FRAC_PI_2;
+            self.cursor = clamped;
+            for k in 0..2 { self.cross[k] += (self.cursor[k] - self.cross[k]) * 0.5; }
+        } else {
+            // `Player_AutoAim` halves the offsets each tick outside aim mode.
+            self.cursor = [self.cursor[0] * 0.5, self.cursor[1] * 0.5];
+            self.cross = [self.cross[0] * 0.5, self.cross[1] * 0.5];
+        }
+        self.bond.tick(&self.world, &input);
+        if let Some(dmg) = self.bond.fall_damage { self.drones.health.health = (self.drones.health.health - dmg).max(0.0); }
+        let (head, look) = (self.bond.head(), self.bond.look());
+        // The shot's direction through the crosshair: forward + 0.76966 cx · right + 0.57724 cy · up.
+        let (yaw, p) = (self.bond.yaw, self.bond.pitch * std::f32::consts::FRAC_PI_2);
+        let right = [-yaw.cos(), 0.0, yaw.sin()];
+        let up = [-p.sin() * yaw.sin(), p.cos(), -p.sin() * yaw.cos()];
+        let (tx, ty) = (0.76966 * self.cross[0], 0.57724 * self.cross[1]);
+        let d = [0, 1, 2].map(|k| look[k] + tx * right[k] + ty * up[k]);
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let aim = d.map(|v| v / l);
+        self.run(self.bond.pos, head, look, aim, trigger, aiming);
+    }
+
+    fn run(&mut self, pos: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool) {
+        // The drones aim at and look for Bond's chest (`Drone_View_Bones`; one point here, 0.45 under the eye).
+        let player = nf_game::drone::Player { pos, target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look };
         let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models };
         // `Player_WeaponFiring` → `Player_WeaponInitBullet` from the eye along the view (*deviation*: no auto-aim and
         // no aim-point ray yet); the first-person fire script's sound 0x403 feeds the drones' hearing.
@@ -132,7 +177,7 @@ impl Sim {
             let scripts = &self.scripts;
             let params = nf_game::gun::GunParams::from_record(w, 0, |h| scripts.get(&h).map(|s| s.length as u32));
             // Auto-aim (on by default in the game's options) only outside aim mode; in aim mode the offset eases back.
-            let dir = if self.auto_aim && !aiming { self.drones.auto_aim(&d, camera, look, self.gun.weapon) } else { self.drones.aim_target = None; look };
+            let dir = if self.auto_aim && !aiming { self.drones.auto_aim(&d, camera, look, self.gun.weapon) } else { self.drones.aim_target = None; aim };
             if self.gun.update(trigger, params) {
                 let sound = self.sfx.as_ref().map(|t| t.get(0x403)).unwrap_or(nf_formats::sfx::SfxHearing { id: 0x403, inner: 0.0, outer: 0.0, weight: 0.0, looped: false });
                 self.drones.fire_player(&d, camera, dir, self.gun.weapon, sound);
@@ -140,8 +185,17 @@ impl Sim {
         }
         if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
         if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
+        self.aiming = aiming;
         self.drones.bond_aiming = aiming;
         self.drones.tick(&d, &player);
+    }
+
+    /// The crosshair offset (`BL+0x120 / +0x124`: −1…1 across half the screen) from the auto-aim offset angles: tan of the
+    /// angle over the half-screen tangents of the game's projection [L] (0.76966 across, 0.57724 up); a larger yaw
+    /// turns left (+X is screen-left in the object frame), so x flips.
+    pub fn crosshair(&self) -> (f32, f32) {
+        if self.aiming { return (self.cross[0], self.cross[1]); }
+        (-self.drones.aim_offset[0].tan() / 0.76966, self.drones.aim_offset[1].tan() / 0.57724)
     }
 
     /// (sequence index, frame) the drone's playing script shows.
@@ -195,6 +249,8 @@ pub struct Scene {
     pub indices: Vec<u32>,
     pub materials: Vec<Material>,
     pub textures: Vec<TextureImage>,
+    /// The HUD sheet (texture 0x03000026: the crosshairs, `HUD_UpdateCrossHair`), from any map of the archive.
+    pub hud_texture: Option<TextureImage>,
     pub bounds: ([f32; 3], [f32; 3]),
     /// Camera start: the first placement whose object is named "Player1" (translation, yaw), if any.
     pub start: Option<([f32; 3], f32)>,
@@ -410,6 +466,10 @@ impl Scene {
             let pal = t.palette_rgba8();
             TextureImage { key, width: t.width as u32, height: t.height as u32, rgba: t.frame(0).iter().flat_map(|&i| pal[i as usize]).collect() }
         }).collect();
+        let hud_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0026).map(|t| {
+            let pal = t.palette_rgba8();
+            TextureImage { key: (mi, t.index as u32), width: t.width as u32, height: t.height as u32, rgba: t.frame(0).iter().flat_map(|&i| pal[i as usize]).collect() }
+        }));
         let n_seq: usize = sequences.values().map(Vec::len).sum();
         let stats = format!("{} world instances ({hidden} skipped by the cel pass: flag 0x10), {} animated character meshes, {chars_missing} drones with a skin from another archive, {} sky objects, {missing} unresolved, {} triangles, {} materials, {n_seq} sequences",
             instances.len(), characters.len(), sky.len(), indices.len() / 3, materials.len());
@@ -446,11 +506,14 @@ impl Scene {
                 .map(|(i, dr)| (level.maps[m].placements[dr.placement].translation.map(f32::to_bits), i)).collect();
             let char_drone = characters.iter().map(|c| by_pos.get(&[c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]].map(f32::to_bits)).copied()).collect();
             let seq_index = by_hash.clone();
+            // Bond at the "Player1" placement, on the floor below (`Player_StandAtNewPosition`: floor + 1.1).
+            let (p0, yaw0) = start.unwrap_or(([0.0; 3], 0.0));
+            let bond = nf_game::player::Bond::stand_at(&world, p0, yaw0);
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.attach_level(level);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), auto_aim: true })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], aiming: false, auto_aim: false })
         });
-        Scene { vertices, indices, materials, textures, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
+        Scene { vertices, indices, materials, textures, hud_texture, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the
