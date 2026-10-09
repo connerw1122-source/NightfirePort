@@ -44,17 +44,24 @@ pub fn build(level: &Level, level_id: u32) -> Vec<AiVolume> {
     out
 }
 
-/// The created object's matrix (`control_create_object`): row vectors, v' = v · Rx(x) · Rz(z) · Ry(y) + pos —
-/// *measured*: fits the live matrix of the 07000005 volume rotated about all three axes (placement 39) to 2e-5;
-/// `RotMatrix`'s order (used for map placements) misses it by 0.015. The function that builds it is not read (U-035).
+/// The created object's matrix: `control_create_object` without a quaternion → `View_RotTransMatrix` (0x1e5168):
+/// sines from `PS2Sinf3` (cosines as sin(a + π/2), the sum on the FPU), products and sums on the FPU; row vectors
+/// row 0 = (cy·cz, sz, −cz·sy), row 1 = (sx·sy − cx·cy·sz, cx·cz, cy·sx + cx·sy·sz),
+/// row 2 = (cx·sy + cy·sx·sz, −cz·sx, cx·cy − sx·sy·sz) — the order Rx·Rz·Ry, which a fit to the live matrix of the
+/// tilted 07000005 volume had found first (WORKLOG 0032 / 0038).
 pub fn matrix(rot: [f32; 3], pos: V3) -> Mat4 {
-    let r = |axis: usize, a: f32| -> [[f32; 3]; 3] {
-        let (s, c) = a.sin_cos();
-        match axis { 0 => [[1.0, 0.0, 0.0], [0.0, c, s], [0.0, -s, c]], 1 => [[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]], _ => [[c, s, 0.0], [-s, c, 0.0], [0.0, 0.0, 1.0]] }
-    };
-    let mul = |a: [[f32; 3]; 3], b: [[f32; 3]; 3]| -> [[f32; 3]; 3] { std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum())) };
-    let m = mul(mul(r(0, rot[0]), r(2, rot[2])), r(1, rot[1]));
-    [[m[0][0], m[0][1], m[0][2], 0.0], [m[1][0], m[1][1], m[1][2], 0.0], [m[2][0], m[2][1], m[2][2], 0.0], [pos[0], pos[1], pos[2], 1.0]]
+    use crate::trig::{cosf, sinf};
+    use nf_formats::ps2float::{add_noguard, mul};
+    let add = |a: f32, b: f32| add_noguard(a, b, true);
+    let (cx, sx) = (cosf(rot[0]), sinf(rot[0]));
+    let (cy, sy) = (cosf(rot[1]), sinf(rot[1]));
+    let (cz, sz) = (cosf(rot[2]), sinf(rot[2]));
+    [
+        [mul(cy, cz), sz, -mul(cz, sy), 0.0],
+        [add(mul(sx, sy), -mul(mul(cx, cy), sz)), mul(cx, cz), add(mul(cy, sx), mul(mul(cx, sy), sz)), 0.0],
+        [add(mul(cx, sy), mul(mul(cy, sx), sz)), -mul(cz, sx), add(mul(cx, cy), -mul(mul(sx, sy), sz)), 0.0],
+        [pos[0], pos[1], pos[2], 1.0],
+    ]
 }
 
 impl AiVolume {

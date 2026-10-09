@@ -845,3 +845,12 @@ test's burst (60 between the first two shots) and the cover test's first-sight m
 (notice 7, cover 1), as in 0027; the kill test now expects the sniper's own chain (SniperIdle → SniperAim on the first
 hit). nf-game: all 26 tests pass; nf-formats unit tests pass; `disc_golden` aborted on an out-of-memory allocation
 (the RuntimeBroker leak again) and is to be re-run.
+
+## 0038 — The AI volume matrix as the game builds it (2026-10-09)
+
+`control_create_object` (0x1344e0) without a quaternion calls `View_RotTransMatrix` (0x1e5168): `PS2Sinf3` for
+sin / cos (cosines as sin(a + π/2)) and a closed form — rows (cy·cz, sz, −cz·sy), (sx·sy − cx·cy·sz, cx·cz,
+cy·sx + cx·sy·sz), (cx·sy + cy·sx·sz, −cz·sx, cx·cy − sx·sy·sz): the Rx·Rz·Ry order the fit had found. Ported as
+written, with the game's sine and FPU arithmetic, replacing the fitted product; `ai_volumes_match_the_game` still
+passes. (The ai_live tests now run out of memory when run in parallel on this machine — RuntimeBroker leak — and pass
+with `--test-threads=1`.)
