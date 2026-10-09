@@ -1,8 +1,9 @@
 //! `nf-view`: level viewer for 007: Nightfire (PS2), reading the user's own disc image.
 //!
 //! ```text
-//! nf-view <iso> <level.bin> [--all] [--seq K] [--frame F] [--shot out.png [--cam x y z yaw pitch]]
+//! nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--shot out.png [--cam x y z yaw pitch]]
 //! ```
+//! `<level>` is a FILES.BIN name (`07000005`, `.bin` optional); without `<iso>` the image path comes from `NF_ISO`.
 //! `--all` also draws dynamic entities at their placement transforms (not only 0x8000 cels). `--shot` renders one
 //! 1280×720 frame headless to a PNG and exits (used to check output without a window).
 //!
@@ -250,9 +251,18 @@ impl ApplicationHandler for App {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.len() < 2 { bail!("usage: nf-view <iso> <level.bin> [--all] [--shot out.png [--cam x y z yaw pitch]]"); }
+    const USAGE: &str = "usage: nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--shot out.png [--cam x y z yaw pitch]]\n\
+        <level> is a FILES.BIN name such as 07000005 (\".bin\" optional); without <iso> the image path comes from NF_ISO";
+    // Positional arguments are the ones before the first flag.
+    let pos: Vec<&String> = args.iter().take_while(|a| !a.starts_with("--")).collect();
+    let (iso, level) = match pos.as_slice() {
+        [iso, level] => (iso.to_string(), level.to_string()),
+        [level] => (std::env::var("NF_ISO").map_err(|_| anyhow::anyhow!("NF_ISO is not set and no <iso> was given\n{USAGE}"))?, level.to_string()),
+        _ => bail!("{USAGE}"),
+    };
+    let level = if level.to_ascii_lowercase().ends_with(".bin") { level } else { format!("{level}.bin") };
     let all = args.iter().any(|a| a == "--all");
-    let scene = load(&args[0], &args[1], all)?;
+    let scene = load(&iso, &level, all)?;
     let mut cam = start_camera(&scene);
     if let Some(i) = args.iter().position(|a| a == "--cam") {
         let v: Vec<f32> = args[i + 1..i + 6].iter().map(|s| s.parse()).collect::<Result<_, _>>()?;
