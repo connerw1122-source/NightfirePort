@@ -31,7 +31,10 @@ Callers: CombatNoRoute's timer (both setters, `+0x5A2` unchanged), SearchArea gi
 
 - Every `Sound_Play3D` / `Sound_Play` enters a list (0x349b00) with inner / outer radius and weight from `SFXOutputData`
   (0x2c94a0, 0x60D × 0x18: +4 inner, +8 outer, +0xC weight, +0x14 looped → ignored). The player's footsteps and drone
-  impact sounds weigh 0; bullet impacts on surfaces have weights 20–50 by material; shots 50–90 (outer 20–100).
+  impact sounds weigh 0; bullet impacts on surfaces have weights 20–50 by material; shots 50–90 (outer 20–100) —
+  *partly contradicted* (WORKLOG 0030): the SG5's third-person fire sound 0x605 / 0x604 weighs 0; Bond's P2K shot is
+  0x403 (inner 2, outer 40, weight 65) from the first-person fire script. Which sounds are shots needs a per-weapon
+  check (U-034).
 - `Sound_Alertness(pos)` (0x1ddc48): per sound within its outer radius, weight (inside the inner radius) or weight ·
   (outer − d) / (outer − inner); the sum (≥ 0) and the loudest. `Drone_InitComms` zeroes every weight after all drones
   ran: each sound alerts once, the frame after it was made.
@@ -61,8 +64,10 @@ Callers: CombatNoRoute's timer (both setters, `+0x5A2` unchanged), SearchArea gi
 ## Hit reactions [M]
 
 `DroneFunc_HandleImpact(msg, retState, allow)` (0x1469b8): bullets (msg 8) → `NDrone2_BulletImpact`: alertness 1,
-damage = weapon damage × part (head ×100, legs ×0.75, else ×1) × armour (`+0xBB`: helmet 0.5 on the head, combat 0.25,
-jacket 0.5, vest 0.75) × difficulty (1 → 2.0; 0, 2, ≥5 → 1.5; 3–4 → 0.5), only when vulnerable (`Drone+0x14`). Health ≤ 0
+damage = weapon damage × part × armour × difficulty, only when vulnerable (`Drone+0x14`). **Correction** (WORKLOG
+0030): the factors once quoted here (head ×100, Easy 2.0 …) are the ELF statics; `ReadTuningVars` replaces them per level
+(07000005: head ×10, legs ×0.75, Easy 1.5 / Normal 1.0 / Hard 0.8) — see docs/systems/drone-damage.md, which supersedes
+this section. Health ≤ 0
 → Death_Anim 0x44 (→ Dead 0x47; death channel). Otherwise a flinch (anim 0x4C, variant by hit part) when allowed and
 at most one per 2 s for the drone **and** one per 2 s game-wide → state 0x55, then back to the resume state; without a
 flinch the drone goes to retState. Idle / Patrol / Alert / AlertToPosition / SearchArea / HeardNoise* pass (Attack,

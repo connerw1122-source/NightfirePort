@@ -400,6 +400,21 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     use std::collections::HashMap;
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF")?)?;
     let tables = drone::DroneAnimData::from_action_elf(&elf)?;
+    // NF_CANDO=4c,40: per anim state its own danim, transition list and whether each anim set has a script for it.
+    for x in std::env::var("NF_CANDO").unwrap_or_default().split(',').filter_map(|v| u16::from_str_radix(v.trim(), 16).ok()) {
+        if let Some((own, list)) = tables.states.get(x as usize) {
+            let sets: Vec<u16> = (0..12).filter(|&set| tables.script_for(*own, set).is_some()).collect();
+            println!("state {x:#x}: own danim {own} sets with a script {sets:?}; transitions {:?}", list.iter().map(|t| (t.key, t.count, t.danim, t.b4, t.b5)).collect::<Vec<_>>());
+        }
+    }
+    // NF_SCRIPTS=64-79: which anim sets have a script for each of those danims.
+    if let Some((a0, a1)) = std::env::var("NF_SCRIPTS").ok().and_then(|v| { let (a, b) = v.split_once('-')?; Some((a.parse::<u16>().ok()?, b.parse::<u16>().ok()?)) }) {
+        for x in a0..=a1 {
+            let sets: Vec<u16> = (0..27).filter(|&set| tables.tables.get(x as usize).and_then(|r| r.get(set as usize)).is_some_and(|&v| v != 0)).collect();
+            let info = tables.info.get(x as usize).copied().unwrap_or([0; 24]);
+            println!("danim {x}: state {:#x} class {} follow-on {} own-set scripts {sets:?}", u16::from_le_bytes([info[8], info[9]]), info[12], u16::from_le_bytes([info[10], info[11]]));
+        }
+    }
     // NF_DANIM=265,244: print those danims' info rows (Drone_AnimInfo, 0x18 bytes) and their state's transition list.
     for x in std::env::var("NF_DANIM").unwrap_or_default().split(',').filter_map(|v| v.trim().parse::<usize>().ok()) {
         if let Some(r) = tables.info.get(x) { println!("danim {x}: info {:02x?}", r); }
@@ -420,7 +435,10 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     let m = level.main_map().context("no main map")?;
     let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, level_id);
     let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
-    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons, nav: &nav, covers: &covers };
+    let mut tuning = nf_formats::tuning::Tuning::from_action_elf(&elf)?;
+    nf_game::tuning::read_tuning_vars(&mut tuning, level_id);
+    let hitboxes = nf_formats::hitbox::CollisionBones::from_action_elf(&elf)?;
+    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons, nav: &nav, covers: &covers, tuning: &tuning, hitboxes: &hitboxes };
     let mut rng = Rng::new(std::env::var("NF_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(0x1234_5678));
     let drones = nf_game::drone::level_drones(&d, &level, &mut rng);
     let mut sim = Drones::new(drones, rng);
@@ -448,8 +466,25 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     });
     for _ in 0..frames {
         if let Some((x, y, z, id, at)) = sound { if sim.frame + 1 == at { sim.play_sound([x, y, z], sfx_table.get(id)); } }
+        // NF_SHOOT=f1,f2,…: Bond fires his P2K (weapon 2) at those frames from his eye at the traced drone's chest
+        // (feet + NF_SHOOT_Y, default 1.3); NF_AIMING=1 holds aim mode.
+        if std::env::var("NF_SHOOT").unwrap_or_default().split(',').filter_map(|v| v.trim().parse::<u32>().ok()).any(|f| f == sim.frame + 1) {
+            let t = sim.list[near].pos;
+            let y = std::env::var("NF_SHOOT_Y").ok().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.3);
+            let to = [t[0], t[1] - 1.0 + y, t[2]];
+            let e = player.eye;
+            let l = ((to[0] - e[0]).powi(2) + (to[1] - e[1]).powi(2) + (to[2] - e[2]).powi(2)).sqrt();
+            sim.bond_aiming = std::env::var_os("NF_AIMING").is_some();
+            sim.fire_player(&d, e, [(to[0] - e[0]) / l, (to[1] - e[1]) / l, (to[2] - e[2]) / l], 2, sfx_table.get(0x403));
+        }
         let before: Vec<[f32; 3]> = sim.list.iter().map(|x| x.pos).collect();
         sim.tick(&d, &player);
+        for ev in &sim.player_impacts {
+            if let nf_game::drone::PlayerImpact::Drone { drone, part, .. } = ev {
+                let x = &sim.list[*drone];
+                println!("frame {:4}: Bond's bullet hit drone {drone} part {part}: health {:.3} state {:#x}", sim.frame, x.health, x.state);
+            } else { println!("frame {:4}: Bond's bullet hit the world {:?}", sim.frame, ev); }
+        }
         for (i, x) in sim.list.iter().enumerate() {
             let step = ((x.pos[0] - before[i][0]).powi(2) + (x.pos[2] - before[i][2]).powi(2)).sqrt();
             walked[i].0 += step;
@@ -467,7 +502,7 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
         }
         let dr = &sim.list[near];
         if std::env::var_os("NF_TRACE_TICKS").is_some() {
-            println!("tick {:4}: state {:#x} pos ({:.3}, {:.3}, {:.3}) anim {:#x} danim {} t {}", sim.frame, dr.state, dr.pos[0], dr.pos[1], dr.pos[2], dr.anim.state, dr.anim.danim, dr.anim.time);
+            println!("tick {:4}: state {:#x} pos ({:.3}, {:.3}, {:.3}) anim {:#x} danim {} t {} call {:x?} reached {} from {:#x} blend {}", sim.frame, dr.state, dr.pos[0], dr.pos[1], dr.pos[2], dr.anim.state, dr.anim.danim, dr.anim.time, dr.anim.call, dr.anim.reached, dr.anim.call_from, dr.anim.blend_wait);
         }
         if sim.frame % 30 == 0 && !matches!(dr.state, 4 | 5 | 6 | 7) {
             let r = dr.croute.as_ref();
@@ -480,7 +515,7 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
         }
     }
     if std::env::var_os("NF_STATES").is_some() {
-        for x in &sim.list { println!("placement {:3} at ({:.1}, {:.1}) present {} state {:#x} log {:x?}", x.placement, x.pos[0], x.pos[2], x.present, x.state, &x.log[..x.log.len().min(6)]); }
+        for x in &sim.list { println!("placement {:3} at ({:.1}, {:.1}) present {} state {:#x} set {} skin {:08x} health {} death channel {:#x} log {:x?}", x.placement, x.pos[0], x.pos[2], x.present, x.state, x.anim_set, x.skin, x.health, x.death_channel, &x.log[..x.log.len().min(6)]); }
     }
     for (i, _) in sim.list.iter().enumerate().filter(|(_, x)| x.route.is_some()) { println!("patrol drone {i}: walked {:.3} units in {frames} ticks, {} ticks without motion", walked[i].0, walked[i].1); }
     let dr = &sim.list[near];

@@ -670,8 +670,8 @@ update order and the fully alert start state.
 
 ## 0029 — Hearing; the anim call cycle ported as read (2026-10-09)
 
-**Hearing** (docs/systems/drone-alerts.md): `nf-formats::sfx` reads `SFXOutputData` from ACTION.ELF (1549 entries; P99
-shot id 1 = inner 2, outer 30, weight 75 as researched); `Drones::play_sound` → `HandleSoundAlerts` the next tick
+**Hearing** (docs/systems/drone-alerts.md): `nf-formats::sfx` reads `SFXOutputData` from ACTION.ELF (1549 entries; id
+1 = inner 2, outer 30, weight 75 — called a "P99 shot" here at first, which 0030 found unsupported); `Drones::play_sound` → `HandleSoundAlerts` the next tick
 (sum / loudest, share = 0.01 · loudness, msg 0x14 at most once a second unless louder) → `DroneVision_AlertSound`
 (≤ 50 units from Bond) → HeardNoise / Aware / Suspect / Alert, AlertToPosition, SearchArea. `nf-extract ai-sim` takes
 `NF_SOUND=x,y,z,id,frame` and `NF_DANIM=` (info rows).
@@ -697,4 +697,41 @@ checked live yet (U-033).
 of 14 and then aborted on `memory allocation of 13314048 bytes failed` (also single-threaded). Not this change: the
 Windows commit charge was exhausted (≈0.5 GB free virtual memory, a `RuntimeBroker` process holding ≈214 GB private).
 `scripts_match_the_golden_digest` and the three after it are still to be re-run; this change does not touch their
-code (`sfx.rs` is new and only registered in `lib.rs`).
+code (`sfx.rs` is new and only registered in `lib.rs`). (Re-run in 0030: all 14 pass.)
+
+## 0030 — Tuning per level; drone damage, flinch, death and fade; Bond's gun (2026-10-09)
+
+A research pass (subagent) read damage, death and Bond's gunfire; I re-checked the parts the code depends on in the
+decomp (`HitDamage`, `HandleImpact`, `BulletImpact`, `AnimGetCollData`, `Collide_Jointy`, `LocationImpactAnim`,
+`LocationDeathAnim`, Death_Anim / Dead / Fade / FadeFast, `SetDeathChannel`, `DeadDrone`, `CallHandler`) and the
+tuning values in the level-start snapshot. Spec: docs/systems/drone-damage.md.
+
+**Tuning**: `nf-formats::tuning` reads the 65 globals `ReadTuningVars` sets (by symbol); `nf_game::tuning::
+read_tuning_vars` is the per-level switch, generated from the decomp by a script (exact bit patterns). Cross-check: the
+port equals the game's own function run in the R5900 interpreter for all 80 level ids 0x07000000–4F
+(`tests/tuning_live.rs`, sisters: other groups differ). The drone-alerts doc's damage factors were the ELF statics —
+corrected (07000005: head ×10, Easy 1.5).
+
+**Damage**: `damage.rs` — hit boxes from `HumanCollisionBones` (`nf-formats::hitbox`) on the posed skeleton, the ray
+test in list order (first box wins, not the nearest), `HitDamage` with chopped multiplies. Drones: health 10, msg 8
+through each state's `HandleImpact(resume, allow)` (a table read from all DSTATE decomps by a script), `BulletImpact`
+(death, flinch gate 120 ticks per drone and game-wide, resume state), the flinch call 0x4C, BulletImpact 0x55,
+Death_Anim 0x44 (`LocationDeathAnim` 0x40 / 0x42), Dead 0x47 (timer 300), Fade 0x48 / FadeFast 0x49 (alpha −0.6 / −8),
+the dead-drone limit 3, death channels (07000005: 65 / 68 → 0xA4, 3 / 4 → 0x44, 7 / 267 → 0x0A). Corpses don't see,
+fire or hear and are not hit. `Drones::fire_player` / `update_player_bullets`: Bond's bullets (damage, range 50, speed
+5, first step random) against the world and the drones' boxes; the shot's sound 0x403 feeds hearing. `gun.rs`:
+`Player_WeaponFiring` (one shot per press, refire 8, clip 7). nf-view: left mouse fires (once grabbed), right mouse
+holds aim mode.
+
+**Failure 1**: the first hit never flinched — the stamps were 0 and our frame starts at 0, but the game's counter
+(`GameState+0x34`) runs from boot (108153 at a 07000005 start [L], never reset per level), so unset stamps are long
+past: now `Option`. **Observation**: set 5 has scripts for only some flinch variants (64, 69–71, 73, 74, 76–80); the
+others have none, so `SetDAnimInternal` ends them at once and the aim follow-on 50 plays, the call completing after the
+30-tick blend. **Failure 2**: the test picked placement 7 (absent) for the sniper — same x as 267; selection by
+placement now.
+
+**Checks**: the gate guard shot twice from 5 units: 10 → 4.75 → −0.5, Death_Anim at the second hit, Dead when the death
+anim's follow-on (191, class 9) starts, Fade 300 ticks later, gone after the fade. The ledge sniper (267): Attack on the
+first hit, dies on the second (SpecialDeath, played as a normal death — deviation), raises 0x0A. New test
+`bond_kills_guards_with_two_torso_shots` (sister: shots over the head hit nothing). Nothing here is checked live yet
+(U-034). All tests pass (nf-game 11 unit + 9 ai_live + rng / trig / tuning; nf-formats 57 + 14 disc golden).

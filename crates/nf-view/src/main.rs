@@ -97,6 +97,13 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
             Ok(w) => Some(w),
             Err(e) => { eprintln!("weapon_data: {e} — drones drawn unarmed"); None }
         },
+        tuning: {
+            let mut t = nf_formats::tuning::Tuning::from_action_elf(&elf).unwrap_or_default();
+            nf_game::tuning::read_tuning_vars(&mut t, u32::from_str_radix(&archive[..8], 16).unwrap_or(0));
+            t
+        },
+        hitboxes: nf_formats::hitbox::CollisionBones::from_action_elf(&elf).ok(),
+        sfx: nf_formats::sfx::SfxTable::from_action_elf(&elf).ok(),
     };
     let scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));
     eprintln!("{archive} (+ {anim_name}): {}", scene.stats);
@@ -164,6 +171,9 @@ struct App {
     gfx: Option<Gfx>,
     keys: HashSet<KeyCode>,
     grabbed: bool,
+    /// Fire button held (left mouse while grabbed) and aim mode (right mouse held).
+    trigger: bool,
+    aiming: bool,
     last: std::time::Instant,
     /// Animation: `None` = the game's start animations; `Some(k)` = the k-th sequence per skeleton (`[` / `]`);
     /// time in 60 Hz ticks; paused (`P`).
@@ -222,7 +232,11 @@ impl ApplicationHandler for App {
                 g.surface.configure(&g.device, &g.config);
                 g.depth = gpu::depth_view(&g.device, g.config.width, g.config.height);
             },
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => self.grab(true),
+            // Left button: grab the mouse, then fire (action 9) while held; right button held: aim mode (L1).
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+                if !self.grabbed { if state == ElementState::Pressed { self.grab(true) } } else { self.trigger = state == ElementState::Pressed }
+            }
+            WindowEvent::MouseInput { state, button: MouseButton::Right, .. } => self.aiming = state == ElementState::Pressed,
             WindowEvent::KeyboardInput { event, .. } => if let PhysicalKey::Code(k) = event.physical_key {
                 match (k, event.state) {
                     (KeyCode::Escape, ElementState::Pressed) => if self.grabbed { self.grab(false) } else { el.exit() },
@@ -265,7 +279,7 @@ impl ApplicationHandler for App {
                     let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
                     let look = self.cam.dir().to_array();
                     if let Some(sim) = self.scene.sim.as_mut() {
-                        for _ in before..(self.anim_time as u32).min(before + 8) { sim.step(eye, look); }
+                        for _ in before..(self.anim_time as u32).min(before + 8) { sim.step(eye, look, self.trigger, self.aiming); }
                         // HUD stand-in: Bond's health (`BL+0x894`) and the hit flash (`BL+0x968`) in the title.
                         if before / 30 != self.anim_time as u32 / 30 {
                             if let Some(g) = &self.gfx {
@@ -323,7 +337,7 @@ fn main() -> Result<()> {
         // Headless: run the game for `--frame` ticks with Bond at the camera, then render.
         let mut scene = scene;
         if let Some(sim) = scene.sim.as_mut() {
-            for _ in 0..time as u32 { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array()); }
+            for _ in 0..time as u32 { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), false, false); }
             if let Some(dr) = sim.drones.list.iter().find(|d| !d.shots.is_empty() || d.state != 4) {
                 eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);
             }
@@ -331,7 +345,7 @@ fn main() -> Result<()> {
         return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts);
     }
     let event_loop = EventLoop::new()?;
-    let mut app = App { scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts };
+    let mut app = App { scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts };
     event_loop.run_app(&mut app)?;
     Ok(())
 }

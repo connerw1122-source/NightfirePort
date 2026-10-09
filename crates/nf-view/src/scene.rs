@@ -79,6 +79,10 @@ pub struct DroneContext {
     pub level_id: u32,
     pub weapons: Option<nf_formats::weapon::WeaponData>,
     pub props: Option<nf_formats::drone::PropertyTables>,
+    /// The level's tuning (`ReadTuningVars` applied), hit boxes and sound hearing data.
+    pub tuning: nf_formats::tuning::Tuning,
+    pub hitboxes: Option<nf_formats::hitbox::CollisionBones>,
+    pub sfx: Option<nf_formats::sfx::SfxTable>,
 }
 
 /// The running game simulation (nf-game): drones plus the data they consult, and which character mesh shows which
@@ -101,15 +105,31 @@ pub struct Sim {
     pub skeletons: HashMap<u8, Skeleton>,
     pub nav: nf_game::nav::Network,
     pub covers: Vec<nf_game::cover::CoverNode>,
+    pub tuning: nf_formats::tuning::Tuning,
+    pub hitboxes: nf_formats::hitbox::CollisionBones,
+    pub sfx: Option<nf_formats::sfx::SfxTable>,
+    /// Bond's gun (07000005's start: P2K, 7 + 41 rounds).
+    pub gun: nf_game::gun::Gun,
 }
 
 impl Sim {
     /// One game tick with Bond at `camera` (eye): his object position on the collision floor below, aimed at chest
     /// height (stand-in for the game's player object and `Drone_View_Bones`).
-    pub fn step(&mut self, camera: [f32; 3], look: [f32; 3]) {
+    /// `trigger`: the fire button (action 9) held; `aiming`: aim mode (L1).
+    pub fn step(&mut self, camera: [f32; 3], look: [f32; 3], trigger: bool, aiming: bool) {
         let floor = self.world.floor_below(camera, 4.0).unwrap_or(camera[1] - 1.6);
         let player = nf_game::drone::Player { pos: [camera[0], floor + 0.4, camera[2]], target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look };
-        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers };
+        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes };
+        // `Player_WeaponFiring` → `Player_WeaponInitBullet` from the eye along the view (*deviation*: no auto-aim and
+        // no aim-point ray yet); the first-person fire script's sound 0x403 feeds the drones' hearing.
+        if let Some(w) = self.weapons.records.get(self.gun.weapon as usize) {
+            let params = nf_game::gun::GunParams::from_record(w, 0);
+            if self.gun.update(trigger, params) {
+                let sound = self.sfx.as_ref().map(|t| t.get(0x403)).unwrap_or(nf_formats::sfx::SfxHearing { inner: 0.0, outer: 0.0, weight: 0.0, looped: false });
+                self.drones.fire_player(&d, camera, look, self.gun.weapon, sound);
+            }
+        }
+        self.drones.bond_aiming = aiming;
         self.drones.tick(&d, &player);
     }
 
@@ -399,7 +419,8 @@ impl Scene {
             let world = nf_game::world::CollisionWorld::build(level, &level.instances(true).0);
             let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, d.level_id);
             let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
-            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers };
+            let hitboxes = d.hitboxes.clone()?;
+            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes };
             let mut rng = nf_game::drone::Rng::new(0x1234_5678);
             // Every drone placement; spawner templates stay absent until a spawner brings them in.
             let list = nf_game::drone::level_drones(&data, level, &mut rng);
@@ -409,7 +430,7 @@ impl Scene {
             let seq_index = by_hash.clone();
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.attach_level(level);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), gun: nf_game::gun::Gun::new(2, 7, 41) })
         });
         Scene { vertices, indices, materials, textures, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }

@@ -23,6 +23,8 @@ struct Level05 {
     nav: nf_game::nav::Network,
     covers: Vec<nf_game::cover::CoverNode>,
     sfx: nf_formats::sfx::SfxTable,
+    tuning: nf_formats::tuning::Tuning,
+    hitboxes: nf_formats::hitbox::CollisionBones,
 }
 
 impl Level05 {
@@ -46,6 +48,8 @@ impl Level05 {
             props: drone::PropertyTables::from_action_elf(&elf).unwrap(),
             weapons: WeaponData::from_action_elf(&elf).unwrap(),
             sfx: nf_formats::sfx::SfxTable::from_action_elf(&elf).unwrap(),
+            tuning: { let mut t = nf_formats::tuning::Tuning::from_action_elf(&elf).unwrap(); nf_game::tuning::read_tuning_vars(&mut t, 0x0700_0005); t },
+            hitboxes: nf_formats::hitbox::CollisionBones::from_action_elf(&elf).unwrap(),
             sequences: disc::level_sequences(&iso, "07000005.bin").unwrap(),
             level, scripts, world, skeletons, nav, covers,
         })
@@ -56,7 +60,7 @@ impl Level05 {
 
     fn data(&self) -> Data<'_> {
         Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: 0x0700_0005,
-            sequences: &self.sequences, skins: &self.level.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers }
+            sequences: &self.sequences, skins: &self.level.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes }
     }
 
     /// Every drone present at level start (line of sight is scheduled round robin over all of them, as in the game),
@@ -308,8 +312,8 @@ fn alarm_pulse_reaches_only_the_drones_updated_first() {
     for p in [65, 66, 67, 68] { assert_ne!(hs(p), nf_game::drone::state::WAIT_SWITCH, "sister: drone {p}"); }
 }
 
-/// Hearing (docs/systems/drone-alerts.md, from the decomp; not yet checked live): a P99 shot (`SFXOutputData` 1: inner 2,
-/// outer 30, weight 75) 1 unit from the idle guard at (99.69, 101.58) — out of Bond's sight, Bond within 50 units — sends
+/// Hearing (docs/systems/drone-alerts.md, from the decomp; not yet checked live): sound 1 (`SFXOutputData` 1: inner 2,
+/// outer 30, weight 75; which effect it is was not identified) 1 unit from the idle guard at (99.69, 101.58) — out of Bond's sight, Bond within 50 units — sends
 /// him HeardNoise → Aware the next frame; Aware's look-around (0x22 variant 1) ends at once off-screen (class 3, flag 4)
 /// and he goes back to Idle. Sisters: a weightless sound (0x604) and Bond more than 50 units away change nothing.
 #[test]
@@ -338,4 +342,52 @@ fn shot_sends_a_guard_through_the_noise_chain() {
     assert!(quiet.iter().all(|&(f, _)| f < 100), "sister: weightless sound {quiet:x?}");
     let (far, _, _) = run(1, [0.0, 26.5, 0.0]);
     assert!(far.iter().all(|&(f, _)| f < 100), "sister: Bond far away {far:x?}");
+}
+
+/// Bond's P2K against guards (docs/systems/drone-damage.md; from the decomp, not yet checked live): 3.5 per torso hit ×
+/// Easy 1.5 = 5.25, so two hits kill a 10-health guard. The ledge sniper (placement 267, death channel 0x0A) goes to
+/// Attack on the first hit, dies on the second and raises 0x0A when its death anim ends; the gate guard (placement 5) lies
+/// dead from the death anim's end, starts fading 300 ticks later and is gone ~425 ticks after that. Sister: shots
+/// 3 units over the head hit nothing.
+#[test]
+fn bond_kills_guards_with_two_torso_shots() {
+    use nf_game::drone::{state, PlayerImpact};
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    // `placement`: the drone's placement index.
+    let run = |bond: [f32; 3], placement: usize, frames: u32, over: f32| {
+        let (drones, _, rng) = l.drones(None, 61.342);
+        let i = drones.iter().position(|dr| dr.placement == placement).unwrap();
+        let mut sim = l.sim(drones, rng);
+        let p = bond_at(bond);
+        let mut hits = Vec::new();
+        for f in 1..=frames {
+            if f == 100 || f == 130 {
+                let t = sim.list[i].pos;
+                let to = [t[0], t[1] + 0.3 + over, t[2]];
+                let e = p.eye;
+                let n = ((to[0] - e[0]).powi(2) + (to[1] - e[1]).powi(2) + (to[2] - e[2]).powi(2)).sqrt();
+                sim.fire_player(&d, e, [(to[0] - e[0]) / n, (to[1] - e[1]) / n, (to[2] - e[2]) / n], 2, l.sfx.get(0x403));
+            }
+            sim.tick(&d, &p);
+            for ev in &sim.player_impacts { if let PlayerImpact::Drone { drone, part, .. } = ev { if *drone == i { hits.push((f, *part, sim.list[i].health)); } } }
+        }
+        (sim, i, hits)
+    };
+    // The sniper on the ledge.
+    let (sim, i, hits) = run([65.0, 34.4, 88.5], 267, 400, 0.0);
+    assert_eq!(hits, [(100, 4, 4.75), (130, 4, -0.5)], "hits {hits:?}");
+    let log: Vec<u8> = sim.list[i].log.iter().map(|&(_, s)| s).collect();
+    assert!(log.contains(&state::ATTACK) && log.contains(&state::DEATH_ANIM) && log.contains(&state::DEAD), "log {:x?}", sim.list[i].log);
+    assert!(sim.channels.on(0x0a), "death channel 0x0A raised");
+    // The gate guard: dead at the death anim's end, fading 300 ticks later, gone after the fade.
+    let (sim, i, hits) = run([66.0, 26.5, 99.5], 5, 1100, 0.0);
+    assert_eq!(hits.len(), 2);
+    let at = |s: u8| sim.list[i].log.iter().find(|&&(_, x)| x == s).map(|&(f, _)| f);
+    let (dead, fade) = (at(state::DEAD).unwrap(), at(state::FADE).unwrap());
+    assert_eq!(fade - dead, 300);
+    assert!(!sim.list[i].present, "faded out");
+    // Sister: over the head, nothing is hit.
+    let (sim, i, hits) = run([66.0, 26.5, 99.5], 5, 200, 3.0);
+    assert!(hits.is_empty() && sim.list[i].health == 10.0, "sister: {hits:?}");
 }

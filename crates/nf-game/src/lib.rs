@@ -3,9 +3,12 @@
 
 pub mod bullet;
 pub mod cover;
+pub mod damage;
 pub mod drone;
+pub mod gun;
 pub mod nav;
 pub mod spawners;
 pub mod trig;
 pub mod triggers;
+pub mod tuning;
 pub mod world;

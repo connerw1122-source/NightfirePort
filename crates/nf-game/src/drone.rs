@@ -30,6 +30,13 @@ pub mod state {
     pub const NO_OPPONENT: u8 = 0x60;
     pub const DRONE_STUCK: u8 = 0x7f;
     pub const GO_TO_GOAL: u8 = 0x63;
+    /// Hit and death (docs/systems/drone-damage.md).
+    pub const DEATH_ANIM: u8 = 0x44;
+    pub const SPECIAL_DEATH: u8 = 0x46;
+    pub const DEAD: u8 = 0x47;
+    pub const FADE: u8 = 0x48;
+    pub const FADE_FAST: u8 = 0x49;
+    pub const BULLET_IMPACT: u8 = 0x55;
     pub const ALERT_TO_POSITION: u8 = 0x62;
     pub const SEARCH_AREA: u8 = 0x65;
     pub const HEARD_NOISE: u8 = 0xa2;
@@ -79,6 +86,8 @@ pub mod msg {
     pub const FORCED_ATTACK: u8 = 0x1f;
     /// `Drone_Message(0xE)`: enable (WaitSwitch → the drone's start state).
     pub const ENABLE: u8 = 0x0e;
+    /// A bullet hit (`Drone_BulletHit` → msg 8 with the HITDATA).
+    pub const BULLET: u8 = 8;
 }
 
 /// Anim states (`DroneAnimStates` index).
@@ -108,6 +117,9 @@ pub mod anim_state {
     pub const STRAFE_RIGHT_ALT: u16 = 0x2a;
     pub const ROLL_LEFT_ALT: u16 = 0x55;
     pub const ROLL_RIGHT_ALT: u16 = 0x56;
+    pub const IMPACT: u16 = 0x4c;
+    pub const DEATH: u16 = 0x40;
+    pub const DEATH_SHOT: u16 = 0x42;
 }
 
 /// Read-only game data the AI consults.
@@ -127,7 +139,14 @@ pub struct Data<'a> {
     pub nav: &'a crate::nav::Network,
     /// Cover nodes (placements 0xE5 / 0xE6).
     pub covers: &'a [crate::cover::CoverNode],
+    /// The level's tuning globals (`ReadTuningVars`) and the hit-box tables (`HumanCollisionBones`).
+    pub tuning: &'a nf_formats::tuning::Tuning,
+    pub hitboxes: &'a nf_formats::hitbox::CollisionBones,
 }
+
+/// A bullet that hit a drone (HITDATA): the part (bone id), the ray (`+0x30`), the point, damage (`+0x08`), weapon.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hit { pub part: i16, pub ray: V3, pub point: V3, pub damage: f32, pub weapon: u16 }
 
 /// Bond as the drones see him.
 #[derive(Clone, Copy, Debug, Default)]
@@ -348,6 +367,35 @@ pub struct Drone {
     pub turned: bool,
     pub resume_state: u8,
     pub home: V3,
+    /// Damage (`NDrone2_DefaultInit`, docs/systems/drone-damage.md): health `+0xAC` / max `+0xB0`, damage-taken
+    /// multiplier `+0x14C`, damageable `+0x14`, type `+0xD8`, the last damage `+0x150`, head shot `+0x3A`, big hit
+    /// `+0x1C`, the last flinch `+0x540`, the last hit `+0x470`, the state after a flinch `+0x118`, hits taken `+0x1D8`.
+    pub health: f32,
+    pub max_health: f32,
+    pub damage_taken: f32,
+    pub damageable: bool,
+    pub kind: u16,
+    pub last_damage: f32,
+    pub silent_kill: bool,
+    pub big_hit: bool,
+    pub flinch_at: Option<u32>,
+    pub hit: Option<Hit>,
+    pub impact_resume: u8,
+    pub hits_taken: u32,
+    /// Lent by `Drones`: the global last flinch (`DAT_00298FC0`), whether Bond aims (L1, player `anim+0x60` bit 0),
+    /// and whether this drone is the oldest corpse beyond the limit (`DroneFunc_DeadDrone`).
+    pub global_flinch: Option<u32>,
+    pub bond_aiming: bool,
+    pub cull: bool,
+    /// Corpse (`obj+0xF0 & 0x20`: no longer hit or seeing), the death channel to raise (`+0xCD8` pending, `+0x13C`
+    /// = placement parameter 12), the special-death script (`+0xBD4`, parameter 13), alpha (`obj+0x106` / `+0xCFC`).
+    pub corpse: bool,
+    pub death_pending: bool,
+    pub death_channel: u8,
+    pub special_death: u32,
+    pub alpha: f32,
+    /// A switch channel to raise after the drone's update (`SetDeathChannel`).
+    pub raise: Option<u8>,
     /// Trace of (frame, state) changes, for comparisons with PCSX2.
     pub log: Vec<(u32, u8)>,
 }
@@ -385,6 +433,11 @@ impl Drone {
             cover: None, cover_side: 0, cover_type: 0, cover_leave: 0, cover_point: pos, goal: None, cover_claimed: false, has_cover: false, cover_tries: 0,
             cover_rt: Vec::new(), others: Vec::new(), peers: Vec::new(), return_state: 0, second_channel: param(6) as u8, second_tag: param(8),
             loudness: 0.0, sound_share: 0.0, heard_frame: 0, heard_peak: 0.0, sound_pos: pos, noise_level: 0, investigating: false, turned: false, resume_state: 0, home: pos,
+            // `drone_stats[type]+8` is 0 for these guards → 10 (captains, difficulty ≥ 2 only, are not modelled).
+            health: 10.0, max_health: 10.0, damage_taken: 1.0, damageable: !matches!(skin, 0x0500_003b | 0x0500_003c | 0x0500_0053), kind: setup.kind,
+            last_damage: 0.0, silent_kill: false, big_hit: false, flinch_at: None, hit: None, impact_resume: 0, hits_taken: 0,
+            global_flinch: None, bond_aiming: false, cull: false,
+            corpse: false, death_pending: false, death_channel: param(12) as u8, special_death: param(13), alpha: 255.0, raise: None,
         };
         dr.init_properties(d, &param);
         dr.set_danim(d, start_danim);
@@ -691,6 +744,177 @@ impl Drone {
             self.pos = to;
             if let Some(f) = d.world.floor_below([to[0], self.pos[1], to[2]], 2.0) { self.pos[1] = f + 1.0; }
         }
+    }
+
+    // ---- damage and death (docs/systems/drone-damage.md) ---------------------------------------------------------
+
+    /// Each state's `DroneFunc_HandleImpact(msg, resume, allow)` for msg 8: (resume state, 0 = the current one; whether
+    /// a flinch is allowed). `None`: the state ignores bullets.
+    fn impact_args(s: u8) -> Option<(u8, bool)> {
+        use state::*;
+        Some(match s {
+            IDLE | ALERT | PATROL | ALERT_TO_POSITION | SEARCH_AREA | HEARD_NOISE_AWARE | HEARD_NOISE_SUSPECT | HEARD_NOISE_ALERT
+                | RUN_FOR_COVER | UNDER_COVER_INIT | UNDER_COVER_LEAVE_NOW => (ATTACK, false),
+            UNDER_COVER_IDLE | UNDER_COVER_AIM | UNDER_COVER_FIRE | UNDER_COVER_RETURN => (UNDER_COVER_LEAVE_NOW, false),
+            AIM_STAND | AIM_BACKOFF | STEP_AIM_LEFT | STEP_AIM_RIGHT | STRAFE_AIM_LEFT | STRAFE_AIM_RIGHT | STRAFE_DODGE_LEFT
+                | STRAFE_DODGE_RIGHT | ROLL_LEFT_CROUCH | ROLL_RIGHT_CROUCH => (AIM_STAND_FIRE, true),
+            AIM_STAND_FIRE | AIM_CROUCH_FIRE | COMBAT_NO_MOVE | COMBAT_NO_ROUTE => (0, true),
+            AIM_CROUCH | AIM_STAND_RELOAD | AIM_CROUCH_RELOAD | COMBAT_OUT_OF_RANGE | COMBAT_NO_SIGHT | COMBAT_DRONE_AHEAD
+                | GO_TO_GOAL | DRONE_STUCK => (0, false),
+            _ => return None,
+        })
+    }
+
+    /// Msg 8 in state `s`: the BulletImpact state calls `NDrone2_BulletImpact(…, 0, 0)` itself; the others go through
+    /// `DroneFunc_HandleImpact`.
+    fn on_bullet(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8) -> bool {
+        if s == state::BULLET_IMPACT { self.bullet_impact(d, rng, frame, 0, false); return true; }
+        let Some((resume, allow)) = Self::impact_args(s) else { return false };
+        // `DroneFunc_HandleImpact` case 8 (0x1469b8): resume = given or the current state; type 0xC → 0x6E.
+        let valid = |x: u8| x != 0 && !(0x53..=0x55).contains(&x);
+        let u10 = if resume != 0 { resume } else { self.state };
+        let mut p3 = if self.kind == 0xc { 0x6e } else { resume };
+        if valid(u10) { p3 = u10; }
+        if !self.bullet_impact(d, rng, frame, p3, allow) {
+            if valid(u10) { self.impact_resume = u10; }
+            self.set_state(state::BULLET_IMPACT);
+        }
+        true
+    }
+
+    /// `NDrone2_BulletImpact` (0x1461c8): damage; dead → Death_Anim; alive with `allow` and no flinch for 2 s (this
+    /// drone's and the global stamp) → `LocationImpactAnim` and false (the caller enters BulletImpact); else the resume
+    /// state when it is another one.
+    fn bullet_impact(&mut self, d: &Data, rng: &mut Rng, frame: u32, p3: u8, allow: bool) -> bool {
+        let valid = |x: u8| x != 0 && !(0x53..=0x55).contains(&x);
+        let u8_ = if p3 != 0 { p3 } else { self.state };
+        let p3 = if p3 == self.state { 0 } else { p3 };
+        self.do_hit_effects(d);
+        if self.health <= 0.0 { self.set_state(state::DEATH_ANIM); return true; }
+        if allow {
+            self.big_hit = self.last_damage > self.max_health * 0.25 && self.health > self.max_health * 0.333;
+            // The game's frame counter runs from boot (108153 at a 07000005 start [L]), so unset stamps are long past.
+            if self.flinch_at.is_none_or(|f| frame >= f + 120) && self.global_flinch.is_none_or(|f| frame >= f + 120) {
+                if valid(u8_) { self.impact_resume = u8_; }
+                self.location_impact_anim(d, rng);
+                self.global_flinch = Some(frame);
+                self.flinch_at = Some(frame);
+                return false;
+            }
+        }
+        if valid(p3) { self.set_state(p3); }
+        true
+    }
+
+    /// `NDrone2_DoHitEffects` → `NDrone2_HitDamage` with HIT+8 · `+0x14C` (the hit sounds 0x601 / 0x413 weigh 0).
+    fn do_hit_effects(&mut self, d: &Data) {
+        let Some(h) = self.hit else { return };
+        self.hits_taken += 1;
+        let target = crate::damage::Target { damageable: self.damageable, armour: 0, mode: 0, skin: self.skin, kind: self.kind };
+        let r = crate::damage::hit_damage(d.tuning, target, nf_formats::ps2float::mul(h.damage, self.damage_taken), h.part, h.weapon, false, DIFFICULTY, d.level);
+        if r.head { self.silent_kill = true; }
+        self.health -= r.loss;
+        self.last_damage = r.recorded;
+    }
+
+    /// `DroneAnim_LocationImpactAnim` (0x13c8b8): the flinch 0x4C, variant 5 + Rand(8), or by the part hit when Bond
+    /// aims; then the state `+0x118`.
+    fn location_impact_anim(&mut self, d: &Data, rng: &mut Rng) {
+        let v = if !self.bond_aiming { 5 + rng.rand(8) } else {
+            match self.hit.map_or(0, |h| h.part) { 4 | 5 => 5, 0x12..=0x15 => 8, 0x1e | 0x1f | 0x20 | 0x23 => 9, 0x31..=0x33 => 13, 0x35..=0x37 => 12, _ => 6 + rng.rand(2) }
+        };
+        self.call_anim_variant(d, anim_state::IMPACT, v as u16, self.impact_resume, 0);
+    }
+
+    /// `DroneAnim_LocationDeathAnim` (0x13c780): shot in the head or chest while Bond aims → 0x42 (variant 1 when the
+    /// bullet travels the way the drone faces); otherwise 0x40, variant Rand(4) when the playing danim's `info+0x10`
+    /// is set. Then `next`.
+    fn location_death_anim(&mut self, d: &Data, rng: &mut Rng, next: u8) {
+        if let Some(h) = self.hit.filter(|h| self.bond_aiming && matches!(h.part, 4 | 5)) {
+            let a = atan2_approx(h.ray[0], h.ray[2]);
+            let v = if angle_difference(a, self.yaw).abs() <= crate::trig::HALF_PI { 1 } else { 0 };
+            self.call_anim_variant(d, anim_state::DEATH_SHOT, v, next, 0);
+            return;
+        }
+        self.silent_kill = false;
+        let info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
+        let v = if info[0x10] != 0 { rng.rand(4) as u16 } else { 0 };
+        self.call_anim_variant(d, anim_state::DEATH, v, next, 0);
+    }
+
+    /// `DroneFunc_SetDeathChannel` (0x13e660): raise `+0x13C` (0x63 = mission-fail reasons, not modelled).
+    fn set_death_channel(&mut self) {
+        if self.death_channel != 0 && self.death_channel != 0x63 { self.raise = Some(self.death_channel); }
+    }
+
+    /// Death_Anim 0x44, SpecialDeath 0x46, Dead 0x47, Fade 0x48, FadeFast 0x49 (0x1637f8, 0x163fe8, 0x172cd8, 0x172dd8).
+    fn handle_death(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> Option<bool> {
+        use state::*;
+        if !matches!(s, DEATH_ANIM | SPECIAL_DEATH | DEAD | FADE | FADE_FAST) { return None; }
+        Some(match (s, m) {
+            (_, 0) | (_, 10) => true,
+            (DEATH_ANIM | SPECIAL_DEATH, msg::ENTER) => {
+                self.corpse = true;
+                self.vision_on = false;
+                self.firing = false;
+                // `+0xBD4` → SpecialDeath, which plays that script; *deviation*: the port plays the normal death.
+                if s == DEATH_ANIM && self.special_death != 0 { self.set_state(SPECIAL_DEATH); return Some(true); }
+                self.death_pending = true; // `OnInitDeath` (death talk, mission-fail props, captain drops: not modelled)
+                self.location_death_anim(d, rng, DEAD);
+                true
+            }
+            (DEATH_ANIM | SPECIAL_DEATH, msg::EXIT) => { if self.death_pending { self.set_death_channel(); } true }
+            (DEATH_ANIM | SPECIAL_DEATH, msg::TIMER_C) => { if self.death_pending { self.set_death_channel(); self.death_pending = false; } true }
+            // Update: the weapon drop (`DroneWeap_DropWeapon`, a pickup) is not modelled.
+            (DEATH_ANIM | SPECIAL_DEATH, msg::UPDATE) => true,
+            (DEAD, msg::ENTER) => {
+                self.corpse = true;
+                self.health = 0.0; // `NDrone2_SetAsDead`
+                self.vision_on = false;
+                self.firing = false;
+                self.timer_c = Some(frame + 300); // `DAT_00298F58` = 10 · FRAME_RATE_INT
+                // Prop 0x31 and no silent kill: `DroneAlertToObject(msg 0x15, corpse)` — not modelled (G-026).
+                true
+            }
+            (DEAD, msg::UPDATE) => {
+                if !self.drawn { self.present = false; self.enabled = false; return Some(true); }
+                if self.cull { self.set_state(FADE_FAST); }
+                true
+            }
+            (DEAD, msg::TIMER_C) => { self.set_state(FADE); true }
+            (FADE | FADE_FAST, msg::ENTER) => { self.corpse = true; true }
+            (FADE | FADE_FAST, msg::UPDATE) => {
+                // `NDrone2_FadeOut`: 0.6 per tick (8 in FadeFast); gone one tick after reaching 0, or when not drawn.
+                let gone = !self.drawn || {
+                    if self.alpha > 0.0 { self.alpha = (self.alpha - if s == FADE_FAST { 8.0 } else { 0.6 }).max(0.0); false } else { true }
+                };
+                if gone { self.present = false; self.enabled = false; return Some(true); }
+                if s == FADE && self.cull { self.set_state(FADE_FAST); }
+                true
+            }
+            (_, msg::EXIT) => true,
+            _ => false,
+        })
+    }
+
+    /// The bone matrices in world space at the playing script frame (root translation removed; object at the drone's
+    /// x/z and yaw, y = feet + hip height − 0.02 as nf-view draws it). *Deviation*: the upper-body aim
+    /// (`AnimObjectAimAt`) is not applied.
+    pub fn palette(&self, d: &Data) -> Option<Vec<nf_formats::anim::Mat4>> {
+        let (q, f) = self.script_frame(d)?;
+        let seq = d.sequences.get(&q)?;
+        let skin = d.skins.get(&self.skin)?;
+        let skel = d.skeletons.get(&skin.skeleton)?;
+        let mut local = nf_formats::anim::local_pose(seq, skel, skin, f.clamp(1, seq.frames.max(1) as u32));
+        let hip = local[0].0[1];
+        let obj = nf_formats::placement::object_matrix([0.0, self.yaw, 0.0], [self.pos[0], self.pos[1] - 1.0 + crate::damage::drone_height(hip), self.pos[2]]);
+        Some(crate::damage::palette(&mut local, skin, &obj))
+    }
+
+    /// `AnimGetCollData`: the drone's hit boxes now.
+    pub fn hit_boxes(&self, d: &Data) -> Vec<crate::damage::HitBox> {
+        let (Some(pal), Some(skin)) = (self.palette(d), d.skins.get(&self.skin)) else { return Vec::new() };
+        crate::damage::boxes(d.hitboxes.for_skin(self.skin), &pal, skin)
     }
 
     // ---- hearing (docs/systems/drone-alerts.md) -------------------------------------------------------------------
@@ -1067,6 +1291,10 @@ impl Drone {
 
     fn handle(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> bool {
         use state::*;
+        if m == msg::BULLET { return self.on_bullet(d, rng, frame, s); }
+        // BulletImpact 0x55 (0x173098): enter turns vision on; the flinch call ends it (state `+0x118`).
+        if s == BULLET_IMPACT && matches!(m, 0 | msg::ENTER | msg::UPDATE) { if m == msg::ENTER { self.vision_on = true; } return true; }
+        if let Some(r) = self.handle_death(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_cover(d, rng, frame, s, m) { return r; }
         match (s, m) {
             // `NDrone2_DSTATE_Global` enter: a drone with a switch channel that is still off waits (WaitSwitch); else its
@@ -1849,6 +2077,23 @@ impl Drone {
     fn head(&self) -> V3 { [self.pos[0], self.pos[1] + 0.6, self.pos[2]] }
 }
 
+fn seg_point_dist2(a: V3, b: V3, p: V3) -> f32 {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    let l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    let t = if l2 > 0.0 { ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    let q = [a[0] + ab[0] * t - p[0], a[1] + ab[1] * t - p[1], a[2] + ab[2] * t - p[2]];
+    q[0] * q[0] + q[1] * q[1] + q[2] * q[2]
+}
+
+/// One of Bond's bullets (`Player_WeaponInitBullet` → `Bullet_init` / `Bullet_update` with owner = player).
+#[derive(Clone, Debug)]
+pub struct PlayerBullet { pub pos: V3, pub dir: V3, pub speed: f32, pub travelled: f32, pub range: f32, pub damage: f32, pub weapon: u16, pub first: bool, pub dead: bool }
+
+/// What one of Bond's bullets hit: a drone (index, part) or the world, and where.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlayerImpact { Drone { drone: usize, part: i16, at: V3 }, World(V3) }
+
 /// A sound in the hearing list (`Sound_Play3D`: position, inner / outer radius, weight).
 #[derive(Clone, Copy, Debug)]
 pub struct Sound { pub pos: V3, pub inner: f32, pub outer: f32, pub weight: f32 }
@@ -1927,6 +2172,12 @@ pub struct Drones {
     pub cover_rt: Vec<crate::cover::CoverRt>,
     /// Sounds made since the last frame (`Sound_Play3D`'s list; weights zeroed after the drones heard them).
     pub sounds: Vec<Sound>,
+    /// Bond's bullets in flight, what they hit this tick, the global flinch stamp (`DAT_00298FC0`) and whether Bond
+    /// aims (L1).
+    pub player_bullets: Vec<PlayerBullet>,
+    pub player_impacts: Vec<PlayerImpact>,
+    pub last_flinch: Option<u32>,
+    pub bond_aiming: bool,
     cover_cursor: usize,
     cover_counter: i32,
 }
@@ -1936,7 +2187,7 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0 }
+        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -1963,6 +2214,69 @@ impl Drones {
     }
 
     /// `Sound_Play3D(id, pos)`: enters a sound for the drones to hear next frame (hearing data from `SFXOutputData`).
+    /// Bond fires `weapon` from `from` along `dir` (`Player_WeaponInitBullet`: head → aim point): one bullet per pellet
+    /// (`+0x18`) with the record's damage `+0x0C`, range `+0x1C`, speed `+0x20` and spread `+0x24`; and the shot's
+    /// sound (the first-person fire script's, 0x403 for the P2K) for the drones' hearing.
+    pub fn fire_player(&mut self, d: &Data, from: V3, dir: V3, weapon: u8, sound: nf_formats::sfx::SfxHearing) {
+        let Some(w) = d.weapons.records.get(weapon as usize) else { return };
+        let f = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
+        let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
+        for _ in 0..u32::from_le_bytes(w[0x18..0x1c].try_into().unwrap()).clamp(1, 16) {
+            let dir = crate::bullet::spread(dir, f(0x24), flags68, &mut self.rng);
+            self.player_bullets.push(PlayerBullet { pos: from, dir, speed: f(0x20), travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false });
+        }
+        self.play_sound(from, sound);
+    }
+
+    /// Bond's bullets for one tick (`Bullet_update`, `Collide_Update`): the segment of max(step, 1) units against the
+    /// world and every live drone's boxes (`Collide_PickObj` sphere r 1.05 around the hips, then `Collide_Jointy`); the
+    /// nearest wins. A drone hit sends msg 8 (`Drone_BulletHit`).
+    fn update_player_bullets(&mut self, d: &Data) {
+        self.player_impacts.clear();
+        let frame = self.frame;
+        let mut bullets = std::mem::take(&mut self.player_bullets);
+        for b in &mut bullets {
+            if b.dead { continue; }
+            if b.travelled > b.range { b.dead = true; continue; }
+            let mut step = if b.first { (self.rng.frand(0.5) + 0.5) * b.speed } else { b.speed };
+            b.first = false;
+            b.travelled += step;
+            if b.travelled > b.range { step -= b.travelled - b.range; }
+            let l = step.max(1.0);
+            let ray = [b.dir[0] * l, b.dir[1] * l, b.dir[2] * l];
+            let end = [b.pos[0] + ray[0], b.pos[1] + ray[1], b.pos[2] + ray[2]];
+            let tw = d.world.segment(b.pos, end);
+            let mut best: Option<(usize, i16, f32)> = None;
+            for (i, dr) in self.list.iter().enumerate() {
+                if !dr.present || !dr.enabled || dr.corpse { continue; }
+                let c = [dr.pos[0], dr.pos[1], dr.pos[2]];
+                if seg_point_dist2(b.pos, end, c) > 1.05 * 1.05 * 4.0 { continue; }
+                if let Some((part, t)) = crate::damage::first_box_hit(b.pos, ray, &dr.hit_boxes(d)) {
+                    if best.is_none_or(|(_, _, bt)| t < bt) { best = Some((i, part, t)); }
+                }
+            }
+            let at = |t: f32| [b.pos[0] + ray[0] * t, b.pos[1] + ray[1] * t, b.pos[2] + ray[2] * t];
+            match (best, tw) {
+                (Some((i, part, t)), w) if w.is_none_or(|w| t < w) => {
+                    b.dead = true;
+                    let hit = Hit { part, ray, point: at(t), damage: b.damage, weapon: b.weapon };
+                    self.player_impacts.push(PlayerImpact::Drone { drone: i, part, at: hit.point });
+                    let rng = &mut self.rng;
+                    let dr = &mut self.list[i];
+                    dr.hit = Some(hit);
+                    dr.global_flinch = self.last_flinch;
+                    dr.bond_aiming = self.bond_aiming;
+                    dr.send(d, rng, frame, msg::BULLET);
+                    self.last_flinch = dr.global_flinch;
+                }
+                (_, Some(w)) => { b.dead = true; self.player_impacts.push(PlayerImpact::World(at(w))); }
+                _ => b.pos = [b.pos[0] + b.dir[0] * step, b.pos[1] + b.dir[1] * step, b.pos[2] + b.dir[2] * step],
+            }
+        }
+        bullets.retain(|b| !b.dead);
+        self.player_bullets = bullets;
+    }
+
     pub fn play_sound(&mut self, pos: V3, h: nf_formats::sfx::SfxHearing) {
         if h.looped { return; }
         self.sounds.push(Sound { pos, inner: h.inner, outer: h.outer, weight: h.weight });
@@ -1976,6 +2290,17 @@ impl Drones {
         self.frame += 1;
         let frame = self.frame;
         for dr in self.list.iter_mut().filter(|x| x.present) { dr.opponent_info(player); dr.seen = false; }
+        self.update_player_bullets(d);
+        // `Drone_InitComms`: corpses (0x0F, 0x47, 0x48 + 300, 0xBF by the time their state began); beyond 3
+        // (`DAT_00298F5C`) the oldest fades fast (`DroneFunc_DeadDrone`).
+        let mut corpses = 0;
+        let mut oldest: Option<(u32, usize)> = None;
+        for (i, dr) in self.list.iter().enumerate().filter(|(_, x)| x.present) {
+            let key = match dr.state { 0x0f | state::DEAD | 0xbf => dr.entered, state::FADE => dr.entered + 300, _ => continue };
+            corpses += 1;
+            if key < oldest.map_or(frame, |o| o.0) { oldest = Some((key, i)); }
+        }
+        for (i, dr) in self.list.iter_mut().enumerate() { dr.cull = corpses > 3 && oldest.is_some_and(|o| o.1 == i); }
         // `Check_Target` (0x1a7810): every 6 ticks Bond's 50-unit crosshair ray marks the first drone it hits (body
         // cylinder r 0.4, feet to 1.8 up; *deviation*: the game tests the drone's bounding sphere / boxes) for 30 ticks.
         if frame % 6 == 0 {
@@ -1994,7 +2319,7 @@ impl Drones {
             dr.bunched = positions.iter().enumerate().any(|(j, p)| j != i && p.is_some_and(|p| ((p[0] - dr.pos[0]).powi(2) + (p[2] - dr.pos[2]).powi(2)) < 9.0));
         }
         // Visibility every tick for drones with vision on; line of sight for one drone per tick (round robin).
-        for dr in &mut self.list { dr.visibility = if dr.present && (dr.vision_on || dr.alert >= 1.0) { dr.visibility() } else { 0.0 }; if dr.visibility < 0.7 { dr.los = false; } }
+        for dr in &mut self.list { dr.visibility = if dr.present && !dr.corpse && (dr.vision_on || dr.alert >= 1.0) { dr.visibility() } else { 0.0 }; if dr.visibility < 0.7 { dr.los = false; } }
         let ln = self.llist.len();
         for k in 0..ln {
             let slot = (self.los_cursor + 1 + k) % ln.max(1);
@@ -2020,7 +2345,7 @@ impl Drones {
         // `Sound_ZeroAlertness`: each sound alerts once.
         let sounds = std::mem::take(&mut self.sounds);
         if !sounds.is_empty() {
-            for dr in self.list.iter_mut().filter(|x| x.present && x.enabled) {
+            for dr in self.list.iter_mut().filter(|x| x.present && x.enabled && !x.corpse) {
                 if !dr.prop(d, 0x1f) || dr.state == state::GO_TO_GOAL { continue; }
                 let (mut sum, mut peak, mut loudest) = (0f32, 0f32, None);
                 for snd in &sounds {
@@ -2171,12 +2496,13 @@ impl Drones {
             // Upper-body aim (`AnimObjectAimAt`, speed 0.2) toward the opponent while aiming; lower clamp −0.9 only.
             let want = if dr.anim.class == 2 && dr.state != state::IDLE { angle_difference(dr.yaw, dr.yaw_to_opp).max(-0.9) } else { 0.0 };
             dr.aim_yaw = rotate_to_bearing(dr.aim_yaw, want, 0.2, crate::trig::PI);
-            if let Some(b) = dr.handle_firing(d, rng, frame, player, (moving, first_moved), index) { self.bullets.push(b); }
+            if !dr.corpse { if let Some(b) = dr.handle_firing(d, rng, frame, player, (moving, first_moved), index) { self.bullets.push(b); } }
             if let Some((next_ai, done_msg)) = dr.update_anim(d) {
                 // `SetEndAIState`: the AI state is queued, then the message routed (which applies the queued state).
                 dr.set_state(next_ai);
                 if done_msg != 0 || next_ai != 0 { dr.send(d, rng, frame, done_msg); }
             }
+            if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
             // `NDrone2_Collision`: the feet sphere (r 0.4) is pushed out of the AI-network boundaries.
             if dr.enabled && d.nav.bounds {
                 let p = d.nav.push_out(dr.feet(), 0.4);
