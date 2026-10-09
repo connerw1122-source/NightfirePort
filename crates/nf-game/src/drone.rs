@@ -49,6 +49,7 @@ pub mod msg {
     pub const UPDATE: u8 = 3;
     pub const ANIM_DONE: u8 = 5;
     pub const TIMER_C: u8 = 0xc;
+    pub const FORCED_ATTACK: u8 = 0x1f;
 }
 
 /// Anim states (`DroneAnimStates` index).
@@ -183,6 +184,12 @@ pub struct Drone {
     pub wobble: u32,
     pub lost_sight: bool,
     pub damage_mul: f32,
+    /// `+0x4FC` alert bits others can see (0x10 attacking, 1 shouted, …; observers get the source's bits << 16),
+    /// `+0x524` frame the attack began, `+0x4F8 & 0x20000` already alerted by another drone, `+0x4F8 & 0x2000` may notice.
+    pub alert_bits: u32,
+    pub attack_frame: u32,
+    pub alerted_by_drone: bool,
+    pub watching: bool,
     /// Trace of (frame, state) changes, for comparisons with PCSX2.
     pub log: Vec<(u32, u8)>,
 }
@@ -212,7 +219,7 @@ impl Drone {
             state: state::GLOBAL, prev_state: 0, next_state: None, entered: 0, timer_c: None,
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, started_call: false },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
-            shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0,
+            shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, attack_frame: 0, alerted_by_drone: false, watching: false,
         };
         dr.set_danim(d, start_danim);
         dr
@@ -331,14 +338,20 @@ impl Drone {
             (INIT_PATROL, msg::ENTER) => { self.set_state(IDLE); true } // no AI paths yet: InitPatrol's fallback
             (IDLE | ALERT | PATROL, msg::ENTER) => {
                 self.vision_on = true;
+                self.watching = true;
                 if s == IDLE && self.alert >= 0.66 { self.set_state(ALERT) }
                 true
             }
             (IDLE | ALERT | PATROL, msg::UPDATE) => { if let Some(n) = self.look_for_opponent(d) { self.set_state(n) } true }
+            // Forced attack (`Drone_Message(0x1F)` → `DroneFunc_DoForcedAttack`): another drone was seen attacking.
+            (IDLE | ALERT | PATROL, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
             (ATTACK, msg::ENTER) => {
                 // DroneFunc_FirstAttack → FirstSightState: alertness 1, combat sight; props 0x1B (50 %) / 0x19 pick a
                 // combat move; otherwise AimStand (prop 0x18, in range) or Combat.
                 self.alert = 1.0;
+                // FirstAttack: the attack is visible to others (`+0x4FC |= 0x10`, enemy side), shouts with prop 0x33.
+                if self.alert_bits & 0x10 == 0 { self.attack_frame = frame; }
+                self.alert_bits |= 0x10 | if self.prop(d, 0x33) { 1 } else { 0 };
                 self.sight_range = self.sight_range.max(self.combat_range);
                 self.half_fov = 0.0;
                 let first = if self.prop(d, 0x1b) { if rng.rand(2) == 0 { 0 } else { self.choose_combat_move(d, rng) } }
@@ -783,6 +796,36 @@ impl Drones {
                 dr.unseen_ticks += 1;
                 dr.lost_sight = true;
             }
+        }
+        // Drones noticing drones that attack (`DroneVision_FindAlertedDrones` → `ConsiderAlerted` →
+        // `DroneCanSeeDrone`): source attacking ≥ 1 s with visible alert bits; observer watching (Idle/Alert), not yet
+        // alerted, whose props accept the bits (0x10 always; 2 → 0x27, 4 → 0x4F, 1 → 0x28, 8 → 0x26/0x29), within
+        // 50 units, in its view (±e4, ≤ e8, under 2 always) and with head-to-head line of sight. At most 4 per tick.
+        let mut alerts = Vec::new();
+        'pairs: for (oi, o) in self.list.iter().enumerate() {
+            if !o.watching || o.alerted_by_drone || !matches!(o.state, state::IDLE | state::ALERT | state::PATROL) { continue; }
+            for (si, src) in self.list.iter().enumerate() {
+                if si == oi || src.alert_bits == 0 || frame < src.attack_frame + 60 { continue; }
+                let b = src.alert_bits;
+                let accepts = b & 0x10 != 0 || (b & 2 != 0 && o.prop(d, 0x27)) || (b & 4 != 0 && o.prop(d, 0x4f))
+                    || (b & 1 != 0 && o.prop(d, 0x28)) || (b & 8 != 0 && (o.prop(d, 0x26) || o.prop(d, 0x29)));
+                if !accepts { continue; }
+                let (dx, dy, dz) = (src.pos[0] - o.pos[0], src.pos[1] - o.pos[1], src.pos[2] - o.pos[2]);
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                if dist > 50.0 { continue; }
+                let in_view = dist < 2.0 || ((o.half_fov == 0.0 || angle_difference(o.yaw, atan2_approx(dx, dz)).abs() <= o.half_fov) && dist <= o.sight_range);
+                if in_view && d.world.line_of_sight(o.head(), src.head()) {
+                    alerts.push((oi, b));
+                    if alerts.len() > 4 { break 'pairs; }
+                    continue 'pairs;
+                }
+            }
+        }
+        for (oi, b) in alerts {
+            let o = &mut self.list[oi];
+            o.alerted_by_drone = true;
+            o.alert_bits |= b << 16;
+            o.send(d, &mut self.rng, frame, msg::FORCED_ATTACK);
         }
         // Bond's motion (`DroneWeap_DoOpponentTargetting`): moving, and "first moved" for 2 s after he starts.
         let moving = self.prev_player.is_some_and(|q| (q[0] - player.pos[0]).abs() + (q[2] - player.pos[2]).abs() > 1e-4);

@@ -441,6 +441,7 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     println!("shots: {:?}", dr.shots);
     println!("clip {} alert {} seen_ticks {} yaw {:.3} → to opp {:.3}", dr.clip, dr.alert, dr.seen_ticks, dr.yaw, dr.yaw_to_opp);
     println!("bullets: {} hit Bond {:?}, {misses} hit the world; Bond health {:.2}", hits.len(), hits.iter().take(12).collect::<Vec<_>>(), sim.health.health);
+    for (i, x) in sim.list.iter().enumerate() { if let Some((f, _)) = x.log.iter().find(|(_, s)| *s == nf_game::drone::state::ATTACK) { println!("drone {i} at ({:.1}, {:.1}) attacked at tick {f}{}", x.pos[0], x.pos[2], if x.alerted_by_drone { " (alerted by another drone)" } else { "" }); } }
     Ok(())
 }
 

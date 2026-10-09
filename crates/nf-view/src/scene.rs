@@ -455,13 +455,35 @@ impl Scene {
                 None => self.frame_of(c, choice, ticks)?,
             };
             let seq = &self.sequences[&c.skin.skeleton][i];
-            let (mats, world, hip) = cache.entry((c.skin.hashcode, i, frame)).or_insert_with(|| {
+            let (mut mats, mut world, hip) = cache.entry((c.skin.hashcode, i, frame)).or_insert_with(|| {
                 let mut local = anim::local_pose(seq, &c.skeleton, &c.skin, frame);
                 let hip = local[0].0[1];
                 local[0].0 = [0.0; 3];
                 let world = anim::world_pose(&local, &c.skin);
                 (anim::skin_matrices(&world, &c.skin), world, hip)
             }).clone();
+            // Upper-body aim (`AnimObjectAimAt`, bone 2): turn bone 2 and everything below it by the drone's aim yaw
+            // about the model's up axis through bone 2 (*approximation*: the game rotates about the spine axis and
+            // also pitches; G-026).
+            if let Some((s, di)) = drone_of(ci) {
+                let a = s.drones.list[di].aim_yaw;
+                if a.abs() > 1e-4 && world.len() > 2 {
+                    let pivot = world[2][3];
+                    let (sn, cs) = (a.sin(), a.cos());
+                    // Row-vector rotation about +Y by a: (x, z) → (x cos + z sin, −x sin + z cos).
+                    let rot: Mat4 = [[cs, 0.0, -sn, 0.0], [0.0, 1.0, 0.0, 0.0], [sn, 0.0, cs, 0.0], [0.0, 0.0, 0.0, 1.0]];
+                    let below = |b: usize| { let mut p = Some(b); while let Some(x) = p { if x == 2 { return true; } p = c.skin.parent(x); } false };
+                    for b in 0..world.len() {
+                        if !below(b) { continue; }
+                        let mut w = world[b];
+                        for k in 0..3 { w[3][k] -= pivot[k]; }
+                        let mut r = anim::mul(&w, &rot);
+                        for k in 0..3 { r[3][k] += pivot[k]; }
+                        world[b] = r;
+                    }
+                    mats = anim::skin_matrices(&world, &c.skin);
+                }
+            }
             let mut m = match drone_of(ci) {
                 Some((s, di)) => { let dr = &s.drones.list[di]; nf_formats::placement::object_matrix([0.0, dr.yaw, 0.0], [dr.pos[0], 0.0, dr.pos[2]]) }
                 None => c.matrix,
