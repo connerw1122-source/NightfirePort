@@ -1271,3 +1271,25 @@ plays the floor surface's footstep under the guard (alertness 0) and stops event
 not drawn slide without animating (`NDrone2_DoAnimation`), so they make no steps; and one-shots beyond 1.1 × outer
 radius of the listener are culled. Test `patrolling_guards_make_footsteps` (listener beside the courtyard patroller):
 52 steps in 3000 ticks.
+
+## 0068 — Music
+
+Research pass (subagent) on SFX.IRX's stream player and the EE music logic; docs/systems/music.md. Correction: track
+15 (07000005) is `PS2/MUSIC/MFX_0/MFX_1` (MXI index + 1), not a STREAMS entry. Re-read here:
+`DroneFunc_CheckAlarmRaised` (per-channel counters 0 → 1 → +1; 0xA4 posts 2 = 3 while < 60 and returns, 0x37 / 0x61
+post 2 = 1 while < 600) and `NDrone2_SeenAndAttacking` with `MusicVars` (0x2707a0; 07000005: 2 attackers, 2 s
+window, 35 units [L], reset per frame by `Drone_InitComms`).
+
+Code: `nf_formats::music` (MXI, SMF, stereo SSD decoder with history across reads, MapMusic 35 × 76 and MapDroneData
+12 × 16 from ACTION.ELF), `nf_audio::music::Player` (the buffer plan of `UpdateMusicMarkers`; deferred / instant
+jumps; end markers; volume), an Output music queue (32 kHz stereo, played counter, truncation), `nf_game::music`
+(event board, `UpdateMusicalEvents`, `UpdateMFX_01CastleA`, PickRandomCombat / Stealth, the attack gate); events
+from the drones (combat states → gate), the alarm channels, death, cut-scene cameras (`Request::Camera`). nf-view
+loads the track and tables, posts the level-start events and runs the EE logic after each batch (commands one frame
+later, as on the PS2).
+
+Tests: unit — combat on the 12th cumulative alerted frame, stealth on the 163rd calm frame (exactly the spec's
+hysteresis), death → instant 11; the attack gate (two recent attackers, or sight; sister: neither). Opt-in
+`music_live` on MFX_1: no underrun over 30 s from the start section; instant combat 4 reported at once, its data
+14 336 samples ahead; deferred stealth 6 completed after 3.11 s (combat loop bars wider than a lap); end sting 9 stops
+the stream 5.20 s after the request (0.448 s lead + 4.7 s sting). Volume at level start 7700 / 16383 as the spec.

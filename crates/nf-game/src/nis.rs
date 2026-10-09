@@ -39,6 +39,9 @@ pub enum Request {
     PlayerDisable,
     /// `Script_Free` after event 6: `Player_Enable` at this matrix (`None`: where the player is), with `+0xAB6`.
     PlayerEnable { at: Option<Mat4>, mode: u8 },
+    /// A camera stream started (`Script_CameraStart` → `Music_Event(0xB, script)`) or ended (`Script_KillStream` →
+    /// `Music_Event(0xC, script)`).
+    Camera { script: u32, start: bool },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -76,6 +79,8 @@ pub struct Script {
     pub play: u8,
     /// Event 6: where the player comes back (`+0x40`) and `+0xAB6`.
     pub player_at: Option<Mat4>,
+    /// Requests raised where no output list is at hand (`Script_KillStream`), passed on by the next update / free.
+    pending: Vec<Request>,
     pub player_mode: u8,
     streams: Vec<Stream>,
 }
@@ -100,7 +105,7 @@ impl Script {
     pub fn load(nis: Arc<Nis>, matrix: Mat4, scale: f32) -> Script {
         let streams = nis.streams.iter().map(|s| Stream { first_key: s.first_key, last_key: s.last_key, pc: Some(0), parent: -1, ..Default::default() }).collect();
         let flags = if nis.camera { 0x40 } else { 0 };
-        Script { nis, matrix, scale, delay: 0, clock: 0.0, flags, play: 0, streams, player_at: None, player_mode: 0 }
+        Script { nis, matrix, scale, delay: 0, clock: 0.0, flags, play: 0, streams, player_at: None, player_mode: 0, pending: Vec::new() }
     }
 
     /// `Script_Play` (0x1db588).
@@ -124,6 +129,7 @@ impl Script {
         }
         if !self.playing() { return; }
         for i in 0..self.streams.len() { self.run(i, objs, ch, w, frame, out); }
+        out.append(&mut self.pending);
         self.clock += 1.0;
         for s in &mut self.streams { s.clock += 1.0; }
     }
@@ -219,6 +225,7 @@ impl Script {
                                 s.obj = Some(objs.list.len() - 1);
                             }
                             s.kind = 4;
+                            out.push(Request::Camera { script: self.nis.hashcode, start: true });
                             s.first_key = a as u16;
                             s.last_key = (b as u16).wrapping_sub(1);
                             s.flags = if sp != 0 { 2 } else { 0 };
@@ -289,7 +296,7 @@ impl Script {
                 if !keep { objs.list[o] = None; }
             }
             // The camera pops back to the game's.
-            4 => if let Some(o) = s.obj { objs.list[o] = None; },
+            4 => if let Some(o) = s.obj { objs.list[o] = None; self.pending.push(Request::Camera { script: self.nis.hashcode, start: false }); },
             _ => {}
         }
         s.kind = 0;
@@ -299,6 +306,7 @@ impl Script {
     /// `Script_Free`'s stream pass (`Script_Free` 0x1da880).
     pub fn free(&mut self, objs: &mut Objects, out: &mut Vec<Request>) {
         for i in 0..self.streams.len() { self.kill(i, objs); }
+        out.append(&mut self.pending);
         if self.flags & 0x100 != 0 { out.push(Request::PlayerEnable { at: self.player_at, mode: self.player_mode }); }
     }
 

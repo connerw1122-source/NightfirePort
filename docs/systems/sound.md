@@ -15,7 +15,7 @@ the driver's start path (`SFXSetup` budget / stealing / per-id limit, random / s
 `ES_CombineVolumes`, front + phase-inverted rear voices (the rear keyed 500 µs later, WORKLOG 0064), `SFXUpdate` (ends, sequences, loops via cue timers, kill pass,
 active list), `SFXRemove` / `SetPositionAndVelocity`; sources: the first-person gun's script sounds (op 1: shot, reload), Bond's footsteps by floor surface, bullet
 impacts by surface, guard body hits (0x413), guards' gunfire (`weapon_data+0x60`),
-animation-script sounds, pickups, script sounds (moving with their object). Not yet: music (MFX streams, `Music_Event`
+animation-script sounds, pickups, script sounds (moving with their object). Music: docs/systems/music.md. Not yet: (`Music_Event`
 state machine), speech / streamed effects (`STREAMS.BIN`, negative sample refs), casings / fly-bys, reverb / environment / underwater, ducker and fades, precache, pause, the SPU's Gaussian
 interpolation and ADSR (the port mixes linearly and stops at once), the per-weapon op-1 id remaps (other weapons).
 
@@ -299,7 +299,7 @@ Looks up `Snd2Lbl` (0x2d25d8, 0x1E4 × {u32 label|0x80000000 force, u32 sfxId}).
 
 - **MFXINFO.MXI** is read on the IOP only, not by ACTION.ELF [M: no EE references; SFX.IRX SFXInitialiseAudioStreamSystem @0x65d8]. It holds 150 s32 values (`MusicTrackInfo`). `FindMusicTrackNumber(track)` returns `index+1` of the matching value and is used when a stream starts [M SFX.IRX @0x6288/@0x92dc].
   - Local copy (work/audio/MFXINFO.MXI) [L]: `15,16,17,18,19,20,21,22,23,24,36,34,35,25,30,39,-1…`.
-  - So the EE's track 15 for 07000005 becomes **music stream #1**. The file mapping goes through STREAMS.LUT / STREAMS.BIN [S].
+  - So the EE's track 15 for 07000005 becomes **music stream #1**. **Corrected (WORKLOG 0068):** the files are `PS2/MUSIC/MFX_0/MFX_1.{SMF,SSD}` (MXI index + 1); STREAMS.* hold streamed effects only. Music: docs/systems/music.md.
 - **AI note:** `MusicVars` (0x2707a0) is not audio. It is drone-comms tuning taken from MapDroneData (0x24f418); for 07000005 that is {2, 2, 35.0} [L]. NDrone2_SeenAndAttacking posts `Music_Event(2, 5)` once `count ≥ MusicVars` [M].
 - Volumes: options menu `SFXSetVolume(sfx_slider*5)` / `SFXMusicSetVolume(music_slider*5)` (P_CNAVOPTIONS). Loaded from settings in LS_LoadGlobalSettings / Boot_LoadPTPData [M].
 

@@ -2873,6 +2873,11 @@ pub struct Drones {
     pub audio: crate::sound::Sounds,
     /// Map ambient sounds (block 0x28 of the main map).
     pub map_sounds: crate::sound::MapSounds,
+    /// The EE music logic and the drones' attack gate (docs/systems/music.md); the alarm counters of
+    /// `DroneFunc_CheckAlarmRaised` (0x1453a8: channel 0xA4, then 0x37 / 0x61).
+    pub music: crate::music::Music,
+    pub attack_gate: crate::music::AttackGate,
+    alarm_music: [u16; 3],
     /// Script stream sounds: (script, stream) → handle and the object it follows.
     script_sounds: Vec<((u32, u8), crate::sound::Handle, Option<usize>)>,
 }
@@ -2909,7 +2914,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3] }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -3113,6 +3118,24 @@ impl Drones {
     pub fn tick(&mut self, d: &Data, player: &Player) {
         self.frame += 1;
         let frame = self.frame;
+        // Music: `Drone_InitComms` resets the attack gate; `DroneFunc_CheckAlarmRaised` (07000005 / 06) posts event 2 = 3
+        // for the first 58 frames of channel 0xA4, then = 1 for the first 598 of channel 0x37 or 0x61; Bond dead →
+        // event 6 (`Player_CheckForDeath`).
+        self.attack_gate.new_frame();
+        if matches!(d.level, 0x0700_0005 | 0x0700_0006) {
+            // Each counter: 0 → 1 when its channel is on, then + 1 per frame (to 0xFFFF); posts while below the limit.
+            let ch = &self.channels;
+            let mut step = |k: usize, c: u32, limit: u16| -> bool {
+                if !ch.on(c) { return false; }
+                let n = &mut self.alarm_music[k];
+                if *n == 0 { *n = 1; }
+                if n.wrapping_sub(1) < 0xfffe { *n += 1; }
+                *n < limit
+            };
+            if d.level == 0x0700_0005 && step(0, 0xa4, 60) { self.music.event(2, 3); }
+            else if step(1, 0x37, 600) || step(2, 0x61, 600) { self.music.event(2, 1); }
+        }
+        if self.health.health <= 0.0 { self.music.event(6, 1); }
         // `Game_Run`: `Env_Update` (one `Rand_Rand(20000)`, then `UpdateDrops`) before the object handler.
         if let Some((kind, boxes)) = self.env_pending.take() { self.env = Some(crate::env::Drops::new(kind, boxes, d.level, &mut Rng::new(0x5eed_0001))); }
         if let Some(env) = self.env.as_mut() {
@@ -3340,6 +3363,7 @@ impl Drones {
         for r in std::mem::take(&mut self.scripts.requests) {
             match r {
                 crate::nis::Request::PlayerDisable | crate::nis::Request::PlayerEnable { .. } => self.player_events.push(r.clone()),
+                crate::nis::Request::Camera { script, start } => self.music.event(if start { 0xb } else { 0xc }, script),
                 // `Script_SoundStart`: 2-D, or 3-D at the stream's object (its position each frame, `Script_Interp` 5).
                 crate::nis::Request::Sound { id, at, src } => {
                     let h = match at.and_then(|o| obj_pos(&self.scripts, o)) {
@@ -3416,6 +3440,16 @@ impl Drones {
             if dr.alert < 1.0 && dr.alert > dr.alert_floor { dr.alert -= 1.0 / (60.0 * 50.0); }
             if dr.alert < dr.alert_floor { dr.alert = dr.alert_floor; }
             dr.send(d, rng, frame, msg::UPDATE);
+            // `NDrone2_SeenAndAttacking` from the combat states (docs/systems/music.md: the gate posts
+            // `Music_Event(2, 5)`; *suggested*: once per update, the port's states numbered as the game's).
+            if dr.enabled && matches!(dr.state, state::SNIPER_AIM | state::SNIPER_FIRE | state::SNIPER_RELOAD | state::COMBAT | state::COMBAT_NO_MOVE
+                | state::COMBAT_OUT_OF_RANGE | state::COMBAT_NO_SIGHT | state::COMBAT_NO_ROUTE | state::ALERT_TO_POSITION | state::GO_TO_GOAL
+                | state::DRONE_STUCK | state::DRAW_WEAPON | state::AIM_STAND | state::AIM_STAND_FIRE | state::AIM_STAND_RELOAD | state::AIM_BACKOFF
+                | state::AIM_CROUCH | state::AIM_CROUCH_FIRE | state::AIM_CROUCH_RELOAD | state::STEP_AIM_LEFT | state::STEP_AIM_RIGHT
+                | state::STRAFE_AIM_LEFT | state::STRAFE_AIM_RIGHT | state::STRAFE_DODGE_LEFT | state::STRAFE_DODGE_RIGHT | state::ROLL_LEFT_CROUCH
+                | state::ROLL_RIGHT_CROUCH | state::RUN_FOR_COVER | state::UNDER_COVER_INIT | state::UNDER_COVER_IDLE | state::UNDER_COVER_AIM
+                | state::UNDER_COVER_FIRE | state::UNDER_COVER_RETURN | state::UNDER_COVER_LEAVE_NOW | state::UNDER_COVER_TYPE_CHANGE | state::BULLET_IMPACT)
+                && self.attack_gate.seen_and_attacking(index, dr.seen, dr.unseen_ticks, dr.dist) { self.music.event(2, 5); }
             self.used = std::mem::take(&mut dr.links_used);
             self.cover_rt = std::mem::take(&mut dr.cover_rt);
             // NDrone2_Steer: exponential turn toward the desired yaw, 0.1 per tick, with the anim's yaw offset added

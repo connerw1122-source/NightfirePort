@@ -5,6 +5,7 @@
 //! This module is the hardware stand-in: 48 kHz voices resampled to the device rate (linear interpolation —
 //! *deviation*: the SPU interpolates with a 4-point Gaussian filter), summed and clamped.
 
+pub mod music;
 pub mod sfx;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -26,12 +27,27 @@ pub enum Cmd {
     Stop { voice: u32 },
     /// Every voice off.
     StopAll,
+    /// Music (the stream's two SPU voices): append stereo PCM at 32 kHz to the queue.
+    MusicAppend(Vec<[i16; 2]>),
+    /// Drop queued music from absolute music sample `at` on (an instant jump's new data replaces it).
+    MusicTruncate(u64),
+    /// Music gain per channel (0..1).
+    MusicGain(f32),
+    /// Key off the music and empty its queue; the sample counter restarts at 0.
+    MusicStop,
 }
+
+/// The music stream's output rate (MFX streams are 32 kHz).
+pub const MUSIC_RATE: f64 = 32_000.0;
 
 struct Voice { id: u32, pcm: Arc<Pcm>, pos: f64, pitch: u32, left: f32, right: f32, wait: usize }
 
 #[derive(Default)]
-struct Shared { cmds: Vec<Cmd>, ended: Vec<u32>, playing: Vec<u32> }
+struct Shared { cmds: Vec<Cmd>, ended: Vec<u32>, playing: Vec<u32>, music_played: u64 }
+
+/// The music voices: queued stereo samples, the absolute index of the queue's front, the fractional read position.
+#[derive(Default)]
+struct MusicVoice { queue: std::collections::VecDeque<[i16; 2]>, front: u64, frac: f64, gain: f32 }
 
 /// The SPU stand-in: a cpal output stream and its voices.
 pub struct Output {
@@ -54,6 +70,8 @@ impl Output {
         let (rate, channels) = (cfg.sample_rate, cfg.channels as usize);
         let shared = Arc::new(Mutex::new(Shared::default()));
         let mut voices: Vec<Voice> = Vec::new();
+        let mut music = MusicVoice::default();
+        let music_step = MUSIC_RATE / rate as f64;
         let sh = shared.clone();
         let step_scale = SPU_RATE / rate as f64 / 4096.0;
         let mut mix = move |out: &mut [f32]| {
@@ -68,6 +86,10 @@ impl Output {
                         Cmd::Set { voice, pitch, left, right } => if let Some(v) = voices.iter_mut().find(|v| v.id == voice) { (v.pitch, v.left, v.right) = (pitch, left, right); },
                         Cmd::Stop { voice } => voices.retain(|v| v.id != voice),
                         Cmd::StopAll => voices.clear(),
+                        Cmd::MusicAppend(pcm) => music.queue.extend(pcm),
+                        Cmd::MusicTruncate(at) => { let keep = at.saturating_sub(music.front) as usize; music.queue.truncate(keep); }
+                        Cmd::MusicGain(g) => music.gain = g,
+                        Cmd::MusicStop => music = MusicVoice { gain: music.gain, ..Default::default() },
                     }
                 }
             }
@@ -92,10 +114,21 @@ impl Output {
                 }
             }
             voices.retain(|v| !ended.contains(&v.id));
+            // Music: linear resampling 32 kHz → device rate; silence when the queue runs dry.
+            for frame in out.chunks_mut(channels) {
+                let (Some(a), b) = (music.queue.front().copied(), music.queue.get(1).copied()) else { break };
+                let b = b.unwrap_or(a);
+                let f = music.frac as f32;
+                let s = [0, 1].map(|c| (a[c] as f32 + (b[c] as f32 - a[c] as f32) * f) / 32768.0 * music.gain);
+                match channels { 1 => frame[0] += (s[0] + s[1]) * 0.5, _ => { frame[0] += s[0]; frame[1] += s[1]; } }
+                music.frac += music_step;
+                while music.frac >= 1.0 && !music.queue.is_empty() { music.frac -= 1.0; music.queue.pop_front(); music.front += 1; }
+            }
             for x in out.iter_mut() { *x = x.clamp(-1.0, 1.0); }
             let mut s = sh.lock().unwrap();
             s.ended.extend(ended);
             s.playing = voices.iter().map(|v| v.id).collect();
+            s.music_played = music.front;
         };
         let err = |e: cpal::Error| eprintln!("audio: {e}");
         let stream = match format {
@@ -118,6 +151,9 @@ impl Output {
 
     /// Voices that reached their end since the last call (the SPU's end flags).
     pub fn take_ended(&self) -> Vec<u32> { std::mem::take(&mut self.shared.lock().unwrap().ended) }
+
+    /// Music samples played so far (32 kHz, since the last `MusicStop`).
+    pub fn music_played(&self) -> u64 { self.shared.lock().unwrap().music_played }
 
     /// Voices playing at the last mix.
     pub fn playing(&self) -> Vec<u32> { self.shared.lock().unwrap().playing.clone() }

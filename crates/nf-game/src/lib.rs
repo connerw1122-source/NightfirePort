@@ -9,6 +9,7 @@ pub mod damage;
 pub mod drone;
 pub mod env;
 pub mod gun;
+pub mod music;
 pub mod nav;
 pub mod nis;
 pub mod pickup;

@@ -171,6 +171,17 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
         let bank = nf_formats::soundbank::Bank::parse(&f("SHF")?, &f("SFX")?).map_err(|e| eprintln!("sound bank: {e}")).ok()?;
         Some((slot, bank, f("SBF")?))
     })();
+    // Music (`Sound_Ready` → `Music_Event(0, level)`; docs/systems/music.md): the MapMusic / MapDroneData tables, and
+    // the level's track through MFXINFO.MXI to PS2/MUSIC/MFX_<n>.{SMF,SSD}.
+    scene.music_tables = nf_formats::music::tables(&elf).map_err(|e| eprintln!("music tables: {e}")).ok();
+    scene.music_files = (|| {
+        let track = scene.music_tables.as_ref()?.0.iter().find(|m| m.level == level_id && m.track != 0)?.track;
+        let get = |p: &str| iso.find(p).and_then(|e| iso.read_file(e).ok());
+        let n = nf_formats::music::track_file(&get("PS2/MFXINFO.MXI")?, track).ok()??;
+        let smf = nf_formats::music::Smf::parse(&get(&nf_formats::music::music_path(n, "SMF"))?).ok()?;
+        Some((track, smf, get(&nf_formats::music::music_path(n, "SSD"))?))
+    })();
+    if let Some((t, smf, ssd)) = &scene.music_files { eprintln!("music: track {t}, {} sections, {} markers, {:.1} s", smf.starts.len(), smf.markers.len(), ssd.len() as f64 * 7.0 / 8.0 / 32000.0); }
     match &scene.sound_bank { Some((slot, b, _)) => eprintln!("sound bank slot {slot}: {} samples, {} effects", b.samples.len(), b.effects.len()), None => eprintln!("no sound bank") }
     eprintln!("{archive} (+ {anim_name}): {}", scene.stats);
     Ok(scene)
@@ -198,6 +209,16 @@ fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
     // Row 0 of the view matrix: up × forward, the screen-left axis (snapshot: dir (−0.839, 0, −0.545) → (−0.545, 0, 0.839)).
     let norm = { let l = (f[0] * f[0] + f[2] * f[2]).sqrt().max(1e-6); [f[2] / l, 0.0, -f[0] / l] };
     sim.drones.map_sounds.update(&mut sim.drones.audio, pos);
+    // `UpdateMusicalEvents` after the batch: its commands go out with the next frame's batch.
+    let section = s.music.as_ref().map_or(0, |p| p.now_playing);
+    sim.drones.music.update(section);
+    for c in std::mem::take(&mut sim.drones.music.out) {
+        match c {
+            nf_game::music::Cmd::Start { track, section } => s.music_pending.push((0, track, section)),
+            nf_game::music::Cmd::Jump { section, instant } => s.music_pending.push((1, section, instant as i32)),
+            nf_game::music::Cmd::FadeDown { .. } => {}
+        }
+    }
     let driver = &s.driver;
     sim.drones.audio.update(sim.sfx.as_ref(), (pos, norm, [0.0, 1.0, 0.0], f), &|h| driver.is_playing(h));
     let cmds = sim.drones.audio.take_commands();
@@ -562,8 +583,17 @@ fn main() -> Result<()> {
         driver.load_bank(slot, bank, sbf);
         let output = nf_audio::Output::open();
         if output.is_none() { eprintln!("audio: no output device; running silent"); }
-        nf_audio::sfx::Sound { driver, output }
+        let music_files = scene.music_files.take().map(|(t, smf, ssd)| (t, smf, std::sync::Arc::new(ssd)));
+        nf_audio::sfx::Sound { driver, output, music_files, music: None, music_pending: Vec::new() }
     });
+    // The music logic and its level-start events (`Sound_Ready`: `Music_Event(0, level)`, `Music_Event(1, 1)`).
+    if let (Some(sim), Some((mm, vars))) = (scene.sim.as_mut(), scene.music_tables.take()) {
+        sim.drones.attack_gate.vars = vars.iter().find(|v| v.level == sim.level).copied()
+            .or(Some(nf_formats::music::MusicVars { level: sim.level, count: 2, floor: 0, window: 8, distance: 25.0 }));
+        sim.drones.music = nf_game::music::Music::new(mm);
+        sim.drones.music.event(0, sim.level);
+        sim.drones.music.event(1, 1);
+    }
     let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0 };
     event_loop.run_app(&mut app)?;
     Ok(())

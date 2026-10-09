@@ -465,6 +465,11 @@ impl Driver {
 pub struct Sound {
     pub driver: Driver,
     pub output: Option<Output>,
+    /// The level's music: track number, marker file and SSD; the stream player once started; the EE's music
+    /// commands of the last frame (sent with this frame's batch).
+    pub music_files: Option<(i32, nf_formats::music::Smf, std::sync::Arc<Vec<u8>>)>,
+    pub music: Option<crate::music::Player>,
+    pub music_pending: Vec<(i32, i32, i32)>,
 }
 
 impl Sound {
@@ -474,6 +479,18 @@ impl Sound {
         f(&mut self.driver, &mut out);
         let ended = self.output.as_ref().map(|o| o.take_ended()).unwrap_or_default();
         self.driver.update(&mut out, &ended);
+        // The music commands queued last frame (op 0x11 start / 0x13 jump), then `SFXUpdateStreams`.
+        for (kind, a, b) in std::mem::take(&mut self.music_pending) {
+            match kind {
+                0 => if let Some((track, smf, ssd)) = &self.music_files { if *track == a { self.music = Some(crate::music::Player::start(smf.clone(), ssd.clone(), b, &mut out)); } },
+                _ => if let Some(p) = self.music.as_mut() { p.request(a, b != 0); },
+            }
+        }
+        if let Some(p) = self.music.as_mut() {
+            let played = self.output.as_ref().map_or(0, |o| o.music_played());
+            p.update(played, &mut out);
+            out.push(Cmd::MusicGain(p.gain(self.driver.music_master, 100, 10000)));
+        }
         if let Some(o) = &self.output { o.send(out); }
     }
 }
