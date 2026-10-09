@@ -1,0 +1,9 @@
+[package]
+name = "nf-game"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Game simulation for 007: Nightfire (PS2): world collision, drones (guards), fixed 60 Hz logic tick"
+
+[dependencies]
+nf-formats = { path = "../nf-formats" }

@@ -19,6 +19,8 @@ pub struct MapObject {
     /// Entity params payload +4: the glist flags (`celglist+0x44`, copied to `cel+0x94` by the static parser).
     pub flags: u32,
     pub gfx: GfxObject,
+    /// Collision geometry in object space (block 0x2E before the object), if any.
+    pub collision: Option<crate::collision::Collision>,
 }
 
 impl MapObject {
@@ -77,16 +79,20 @@ impl Level {
             let (textures, _short) = texture::textures(data, &mf)?;
             let mut objects = Vec::new();
             let mut pending = None;
+            // A collision block (0x2E) comes before the PS2_GFX / entity params of the object it belongs to
+            // (bounds match the following object in 6,959 of 7,985 blocks; docs/formats/collision.md).
+            let mut pending_coll = None;
             let mut placements = Vec::new();
             for blk in &mf.blocks {
                 match blk.id {
+                    0x2e => pending_coll = Some(crate::collision::Collision::parse(blk.payload(data))?),
                     id::PS2_GFX => pending = Some(GfxObject::parse(&data[blk.offset as usize..][..blk.size as usize])?),
                     id::ENTITY_PARAMS => {
                         let p = crate::buf::Buf(blk.payload(data));
                         let tail = p.tail(0x30, "entity name")?.bytes();
                         let name = String::from_utf8_lossy(&tail[..tail.iter().position(|&c| c == 0).unwrap_or(tail.len())]).into_owned();
                         let gfx = pending.take().ok_or_else(|| crate::buf::FormatError::Invalid("entity params without PS2_GFX".into()))?;
-                        objects.push(MapObject { hashcode: p.u32(0)?, name, flags: p.u32(4)?, gfx });
+                        objects.push(MapObject { hashcode: p.u32(0)?, name, flags: p.u32(4)?, gfx, collision: pending_coll.take() });
                     }
                     id::MAP_DATA_STATIC => placements = placement::parse(blk.payload(data))?,
                     _ => {}

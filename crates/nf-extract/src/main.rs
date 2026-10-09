@@ -43,6 +43,9 @@ fn main() -> Result<()> {
         "seq-digest" => { print!("{}", disc::sequence_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "skins" => skins(&IsoImage::open(a(1)?)?),
         "datums" => datums(&IsoImage::open(a(1)?)?, a(2)?),
+        "coll-probe" => coll_probe(&IsoImage::open(a(1)?)?, a(2)?),
+        "coll-check" => coll_check(&IsoImage::open(a(1)?)?),
+        "coll-floor" => coll_floor(&IsoImage::open(a(1)?)?, a(2)?),
         "seq-roots" => seq_roots(&IsoImage::open(a(1)?)?, a(2)?),
         "scripts" => scripts(&IsoImage::open(a(1)?)?),
         "pose-check" => pose_check(&IsoImage::open(a(1)?)?, a(2)?, a(3)?),
@@ -310,6 +313,134 @@ fn datums(iso: &IsoImage, level_name: &str) -> Result<()> {
     for w in [0x16u8, 0x24] {
         if let Some((mesh, datum)) = wd.third_person(w) {
             println!("weapon {w:#x}: mesh {mesh:08x} {} datum {datum}", if level.by_hash.contains_key(&mesh) { "found" } else { "NOT in by_hash" });
+        }
+    }
+    Ok(())
+}
+
+/// Checks the collision decode on every 0x2E block of the disc: tree indices, leaf vertices inside their box, plane
+/// normals against the triangles' winding, and which neighbouring object's render bounds the collision matches.
+fn coll_check(iso: &IsoImage) -> Result<()> {
+    use nf_formats::{collision::Collision, map::MapFile, ps2gfx::GfxObject};
+    use std::collections::BTreeMap;
+    let mut st: BTreeMap<String, u64> = BTreeMap::new();
+    let mut add = |k: &str, n: u64| *st.entry(k.to_string()).or_default() += n;
+    disc::for_each_map(iso, |_archive, _entry, _e, map| {
+        let mf = MapFile::parse(map)?;
+        // Render bounds of each PS2_GFX in order, and for each collision block the gfx index before/after it.
+        let mut gfx_bounds: Vec<Option<([f32; 3], [f32; 3])>> = Vec::new();
+        let mut colls: Vec<(usize, Collision)> = Vec::new();
+        for blk in &mf.blocks {
+            match blk.id {
+                0x2d => {
+                    let raw = &map[blk.offset as usize..][..blk.size as usize];
+                    let bb = GfxObject::parse(raw).ok().and_then(|g| g.boxes.first().map(|b| (b.a, b.b)));
+                    gfx_bounds.push(bb);
+                }
+                0x2e => match Collision::parse(blk.payload(map)) {
+                    Ok(c) => colls.push((gfx_bounds.len(), c)),
+                    Err(_) => add("parse error", 1),
+                },
+                _ => {}
+            }
+        }
+        for (before, c) in &colls {
+            add("blocks", 1);
+            add(&format!("version {}", c.version), 1);
+            let n = c.boxes.len() as u16;
+            if c.boxes.iter().any(|b| b.children.is_some_and(|(l, r)| l >= n || r >= n)) { add("child index out of range", 1); }
+            let leaf_tris: usize = c.boxes.iter().map(|b| b.tris.len()).sum();
+            add(if leaf_tris == c.tris.len() { "leaves cover all triangles exactly" } else { "leaf triangle count ≠ total" }, 1);
+            for bx in c.boxes.iter().filter(|b| b.children.is_none()) {
+                let base = bx.vblock as usize * 0x20;
+                for t in &c.tris[bx.tris.start as usize..bx.tris.end.min(c.tris.len() as u16) as usize] {
+                    let v = t.v.map(|i| { let w = |k: usize| c.words.get(base + i as usize + k).copied().unwrap_or(0) as f32;
+                        [w(0) * bx.scale + bx.origin[0], w(1) * bx.scale + bx.origin[1], w(2) * bx.scale + bx.origin[2]] });
+                    add("triangles", 1);
+                    let inside = v.iter().all(|p| (0..3).all(|k| p[k] >= bx.min[k] - 0.02 && p[k] <= bx.max[k] + 0.02));
+                    add(if inside { "vertices inside leaf box" } else { "vertex outside leaf box" }, 1);
+                    let pw = |k: usize| c.words.get(base + t.plane as usize + k).copied().unwrap_or(0) as f32 / 16384.0;
+                    let nrm = [pw(0), pw(1), pw(2)];
+                    let (e1, e2) = ([v[1][0] - v[0][0], v[1][1] - v[0][1], v[1][2] - v[0][2]], [v[2][0] - v[0][0], v[2][1] - v[0][1], v[2][2] - v[0][2]]);
+                    let cr = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                    let len = (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
+                    if len < 1e-9 { add("degenerate triangle", 1); continue; }
+                    let dot = (cr[0] * nrm[0] + cr[1] * nrm[1] + cr[2] * nrm[2]) / len;
+                    let nlen = (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt();
+                    add(if (nlen - 1.0).abs() < 0.01 { "plane normal unit length" } else { "plane normal not unit" }, 1);
+                    add(if dot > 0.99 { "normal = +cross(v1−v0, v2−v0)" } else if dot < -0.99 { "normal = −cross" } else { "normal disagrees with winding" }, 1);
+                }
+            }
+            // Pairing: overlap of collision bounds with the object before / after.
+            let (lo, hi) = c.boxes.first().map(|b| (b.min, b.max)).unwrap_or(([0.0; 3], [0.0; 3]));
+            let close = |g: Option<&Option<([f32; 3], [f32; 3])>>| g.and_then(|x| *x).is_some_and(|(a, b)| (0..3).all(|k| (a[k] - lo[k]).abs() < 0.5 && (b[k] - hi[k]).abs() < 0.5));
+            add(&format!("bounds match object before: {}", close(before.checked_sub(1).and_then(|i| gfx_bounds.get(i)))), 1);
+            add(&format!("bounds match object after: {}", close(gfx_bounds.get(*before))), 1);
+        }
+        Ok(())
+    })?;
+    for (k, v) in st { println!("{v}\t{k}"); }
+    Ok(())
+}
+
+/// Collision floor under every drone placement of a level (nf-game's collision world built from cel instances).
+fn coll_floor(iso: &IsoImage, level_name: &str) -> Result<()> {
+    use nf_formats::level::Level;
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let level = Level::parse(&data)?;
+    let (cels, _) = level.instances(true);
+    let t = std::time::Instant::now();
+    let world = nf_game::world::CollisionWorld::build(&level, &cels);
+    println!("{} collision triangles from {} cel instances ({:?})", world.triangle_count(), cels.len(), t.elapsed());
+    let Some(m) = level.main_map() else { return Ok(()) };
+    for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f) {
+        let f = world.floor_below(p.translation, 3.0);
+        println!("drone ({:.3}, {:.3}, {:.3}): collision floor {:?} → placement − floor {:?}", p.translation[0], p.translation[1], p.translation[2], f, f.map(|f| p.translation[1] - f));
+    }
+    Ok(())
+}
+
+/// Raw look at the collision blocks (0x2E) of a level's maps: header, first boxes, first triangle records.
+fn coll_probe(iso: &IsoImage, level_name: &str) -> Result<()> {
+    use nf_formats::{buf::Buf, levelbin::LevelBin, map::MapFile};
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let lb = LevelBin::parse(&data)?;
+    let mut shown = 0;
+    for e in lb.entries.iter().filter(|e| matches!(e.kind, 0 | 1 | 2 | 11)) {
+        let Ok(map) = MapFile::parse(lb.data(&data, e)) else { continue };
+        let raw = lb.data(&data, e);
+        if shown == 0 {
+            let seq: Vec<String> = map.blocks.iter().filter(|b| !matches!(b.id, 0x16 | 0x12)).take(60).map(|b| format!("{:02x}", b.id)).collect();
+            println!("block order of {}: {}", e.name, seq.join(" "));
+        }
+        for blk in map.all(0x2e) {
+            let p = blk.payload(raw);
+            let b = Buf(p);
+            let (ver, nbox, ntri, nvb) = (b.u32(0)?, b.u16(4)?, b.u16(6)?, b.u16(8)?);
+            let base = if ver == 5 { 0x1c } else { 0xc };
+            let boxes = base + nvb as usize * 0x40;
+            let tris = boxes + nbox as usize * 0x30;
+            let rest = tris + ntri as usize * 8;
+            println!("map {} kind {} block size {:#x}: ver {ver} boxes {nbox} tris {ntri} vblocks {nvb} (×0x40 = {:#x}); boxes@{boxes:#x} tris@{tris:#x} end@{rest:#x} payload {:#x}",
+                e.name, e.kind, blk.size, nvb as usize * 0x40, p.len());
+            if shown < 2 {
+                for k in 0..nbox.min(6) as usize {
+                    let o = boxes + 0x30 * k;
+                    let f = |i: usize| b.f32(o + 4 * i).unwrap_or(f32::NAN);
+                    println!("  box {k}: min ({:.2} {:.2} {:.2}) c0 {} c1 {} | max ({:.2} {:.2} {:.2}) +1c {} +1e {} | +20 ({:.4} {:.4} {:.4} {:.6}) +2c {:#x}",
+                        f(0), f(1), f(2), b.i16(o + 0xc)?, b.i16(o + 0xe)?, f(4), f(5), f(6), b.i16(o + 0x1c)?, b.u16(o + 0x1e)?, f(8), f(9), f(10), f(11), b.u32(o + 0x2c)?);
+                }
+                for k in 0..ntri.min(4) as usize {
+                    let o = tris + 8 * k;
+                    println!("  tri {k}: {} {} {} plane {} ", b.u16(o)?, b.u16(o + 2)?, b.u16(o + 4)?, b.u16(o + 6)?);
+                }
+                println!("  vertex block 0 s16: {:?}", (0..24).map(|i| b.i16(base + 2 * i).unwrap_or(0)).collect::<Vec<_>>());
+                shown += 1;
+            }
         }
     }
     Ok(())

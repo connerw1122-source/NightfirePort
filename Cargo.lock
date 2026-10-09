@@ -841,6 +841,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "nf-formats",
+ "nf-game",
 ]
 
 [[package]]
@@ -850,6 +851,13 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "nf-game"
+version = "0.0.1"
+dependencies = [
+ "nf-formats",
 ]
 
 [[package]]

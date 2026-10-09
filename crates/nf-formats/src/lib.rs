@@ -4,6 +4,7 @@ pub mod anim;
 pub mod bigf;
 pub mod buf;
 pub mod character;
+pub mod collision;
 pub mod disc;
 pub mod drone;
 pub mod ee;
