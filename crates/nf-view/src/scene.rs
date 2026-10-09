@@ -95,15 +95,19 @@ pub struct Sim {
     pub char_drone: Vec<Option<usize>>,
     /// Sequence hashcode → (skeleton, index in `Scene::sequences`).
     pub seq_index: HashMap<u32, (u8, usize)>,
+    /// The same sequences by hashcode (root motion in the AI).
+    pub seqs: HashMap<u32, Sequence>,
+    pub skins: HashMap<u32, Skin>,
+    pub skeletons: HashMap<u8, Skeleton>,
 }
 
 impl Sim {
     /// One game tick with Bond at `camera` (eye): his object position on the collision floor below, aimed at chest
     /// height (stand-in for the game's player object and `Drone_View_Bones`).
-    pub fn step(&mut self, camera: [f32; 3]) {
+    pub fn step(&mut self, camera: [f32; 3], look: [f32; 3]) {
         let floor = self.world.floor_below(camera, 4.0).unwrap_or(camera[1] - 1.6);
-        let player = nf_game::drone::Player { pos: [camera[0], floor + 0.4, camera[2]], target: [camera[0], camera[1] - 0.45, camera[2]] };
-        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level };
+        let player = nf_game::drone::Player { pos: [camera[0], floor + 0.4, camera[2]], target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look };
+        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons };
         self.drones.tick(&d, &player);
     }
 
@@ -127,6 +131,8 @@ pub struct Attachment {
     /// `Some(rgb)`: the muzzle flash of `DroneWeap_FireWeapon` (mesh `weapon_data+0x4C`, light colour +0x56/+0x55/+0x54),
     /// drawn only on firing frames; `None`: the weapon itself.
     pub flash: Option<[u8; 3]>,
+    /// `Some(slot)`: a bullet tracer (`GUN_BULLET_TRAIL` 0x02000123) showing bullet `slot` of the simulation.
+    pub tracer: Option<usize>,
 }
 
 /// Viewer switches that change what the game state would be.
@@ -237,6 +243,19 @@ fn muzzle_flash_matrix(datum: &Mat4, seed: u32) -> Mat4 {
     nf_formats::placement::object_matrix(rot, [datum[3][0], datum[3][1], datum[3][2]])
 }
 
+/// Bullet tracer matrix: local +Z along the bullet (`Mat_Align2Dir`), scaled by its speed (one tick of travel).
+fn tracer_matrix(b: &nf_game::bullet::Bullet) -> Mat4 {
+    let d = b.dir;
+    let yaw = d[0].atan2(d[2]);
+    let pitch = -d[1].atan2((d[0] * d[0] + d[2] * d[2]).sqrt());
+    let mut m = nf_formats::placement::object_matrix([pitch, yaw, 0.0], b.pos);
+    for k in 0..3 { m[2][k] *= b.speed; }
+    m
+}
+
+/// Tracer slots (bullets drawn at once).
+const TRACER_SLOTS: usize = 32;
+
 /// The drone's height state after `DroneAnim_PreTransCallback` (0x13b490): `Drone+0xA0` = hip height − 0.02, at least
 /// 0.2 (it starts at 1.0 and keeps its value while the hip height is 0).
 fn drone_height(hip: f32) -> f32 {
@@ -312,7 +331,7 @@ impl Scene {
             let character = characters.len() as u32 - 1;
             add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None);
             let local = anim::quat_trans_to_mat(dt.q, dt.t);
-            attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None });
+            attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None, tracer: None });
             // Its muzzle flash: `DroneWeap_FireWeapon` asks `AnimGetBoneWorldTrans(obj, datum id, 1, …)`, which looks up
             // the datum whose id is id + 1 — the muzzle (07000005: 8 → 9 at x −0.77, 16 → 17 at x −1.18).
             if let Some((fmesh, rgb)) = wd.muzzle_flash(weapon as u8) {
@@ -320,8 +339,17 @@ impl Scene {
                 if let (Some(&(fmap, fobject)), Some(md)) = (level.by_hash.get(&fmesh), muzzle) {
                     let finst = Instance { map: fmap, object: fobject, ..winst };
                     add_instance(level, &finst, Layer::Effect, Some((character, Some(attachments.len() as u32))), &mut groups, None);
-                    attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb) });
+                    attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb), tracer: None });
                 }
+            }
+        }
+        // Bullet tracers: drone bullets draw `GUN_BULLET_TRAIL` (Bullet_update state 0), stretched along their
+        // direction by the speed (Control_GetObjMatrix scale 1, 1, speed); a pool of slots, hidden when unused.
+        if let (Some(_), Some(&(tmap, tobj))) = (drones, level.by_hash.get(&0x0200_0123)) {
+            for slot in 0..TRACER_SLOTS {
+                let tinst = Instance { map: tmap, object: tobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
+                add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None);
+                attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot) });
             }
         }
         for (inst, follows_camera) in &sky {
@@ -358,14 +386,16 @@ impl Scene {
         }
         let started = characters.iter().filter(|c| c.start.as_ref().is_some_and(|s| !s.sequences.is_empty())).count();
         let flashes = attachments.iter().filter(|a| a.flash.is_some()).count();
+        let tracers = attachments.iter().filter(|a| a.tracer.is_some()).count();
         let held_back = characters.iter().filter(|c| matches!(c.role, drone::SpawnRole::Reinforcement { .. })).count();
-        let stats = format!("{stats}; {started}/{} characters with their start animation; {} weapons held ({weapons_missing} without mesh or datum), {flashes} with a muzzle flash; {held_back} character meshes held back by spawners (R shows them)", characters.len(), attachments.len() - flashes);
+        let stats = format!("{stats}; {started}/{} characters with their start animation; {} weapons held ({weapons_missing} without mesh or datum), {flashes} with a muzzle flash; {held_back} character meshes held back by spawners (R shows them)", characters.len(), attachments.len() - flashes - tracers);
         // The guard AI: one drone per main-map drone placement present at level start; characters map to it by
         // placement translation.
+        let seqs: HashMap<u32, Sequence> = sequences.values().flatten().map(|s| (s.hashcode, s.clone())).collect();
         let sim = drones.and_then(|d| Some((d, d.props.clone()?, d.weapons.clone()?))).and_then(|(d, props, weapons)| {
             let m = level.main_map()?;
             let world = nf_game::world::CollisionWorld::build(level, &level.instances(true).0);
-            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id };
+            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons };
             let mut rng = nf_game::drone::Rng::new(0x1234_5678);
             let mut list = Vec::new();
             let mut by_pos: HashMap<[u32; 3], usize> = HashMap::new();
@@ -379,7 +409,7 @@ impl Scene {
             }
             let char_drone = characters.iter().map(|c| by_pos.get(&[c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]].map(f32::to_bits)).copied()).collect();
             let seq_index = by_hash.clone();
-            Some(Sim { drones: nf_game::drone::Drones::new(list, rng), tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index })
+            Some(Sim { drones: nf_game::drone::Drones::new(list, rng), tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone() })
         });
         Scene { vertices, indices, materials, textures, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }
@@ -445,6 +475,10 @@ impl Scene {
         let collapse = |at: &Mat4| -> Mat4 { [[0.0; 4], [0.0; 4], [0.0; 4], [at[3][0], at[3][1], at[3][2], 1.0]] };
         // Attached meshes: datum local · bone world · object (bind world when the character has no animation).
         let attach: Vec<Mat4> = self.attachments.iter().enumerate().map(|(k, a)| {
+            if let Some(slot) = a.tracer {
+                let b = self.sim.as_ref().and_then(|s| s.drones.bullets.get(slot)).filter(|b| b.state == 1);
+                return match b { Some(b) => tracer_matrix(b), None => [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]] };
+            }
             let c = &self.characters[a.character as usize];
             let datum = match &posed[a.character as usize] {
                 Some((_, world, m)) => anim::mul(&anim::mul(&a.local, &world[a.bone]), m),

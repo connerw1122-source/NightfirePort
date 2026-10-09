@@ -260,8 +260,17 @@ impl ApplicationHandler for App {
                     let before = self.anim_time as u32;
                     self.anim_time += dt * 60.0;
                     let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
+                    let look = self.cam.dir().to_array();
                     if let Some(sim) = self.scene.sim.as_mut() {
-                        for _ in before..(self.anim_time as u32).min(before + 8) { sim.step(eye); }
+                        for _ in before..(self.anim_time as u32).min(before + 8) { sim.step(eye, look); }
+                        // HUD stand-in: Bond's health (`BL+0x894`) and the hit flash (`BL+0x968`) in the title.
+                        if before / 30 != self.anim_time as u32 / 30 {
+                            if let Some(g) = &self.gfx {
+                                let h = &sim.drones.health;
+                                let hit = if h.flash > 0.0 { "  ** HIT **" } else { "" };
+                                g.window.set_title(&format!("nf-view — Bond health {:.0}{}{hit}", h.health, if h.health <= 0.0 { " (dead)" } else { "" }));
+                            }
+                        }
                     }
                 }
                 let Some(g) = &mut self.gfx else { return };
@@ -311,7 +320,7 @@ fn main() -> Result<()> {
         // Headless: run the game for `--frame` ticks with Bond at the camera, then render.
         let mut scene = scene;
         if let Some(sim) = scene.sim.as_mut() {
-            for _ in 0..time as u32 { sim.step([cam.pos.x, cam.pos.y, cam.pos.z]); }
+            for _ in 0..time as u32 { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array()); }
             if let Some(dr) = sim.drones.list.iter().find(|d| !d.shots.is_empty() || d.state != 4) {
                 eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);
             }

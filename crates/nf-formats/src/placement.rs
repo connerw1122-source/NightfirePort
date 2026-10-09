@@ -13,7 +13,7 @@
 
 use crate::buf::{invalid, Buf, Result};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Placement {
     pub index: u16,
     pub hashcode: u32,

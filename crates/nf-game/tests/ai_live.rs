@@ -21,7 +21,9 @@ fn guard_notices_and_fires_like_the_game() {
     let lb = LevelBin::parse(&data).unwrap();
     let scripts: HashMap<u32, Script> = lb.entries.iter().filter(|e| e.kind == 5).filter_map(|e| Script::parse(lb.data(&data, e)).ok()).map(|s| (s.hashcode, s)).collect();
     let world = nf_game::world::CollisionWorld::build(&level, &level.instances(true).0);
-    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: 0x0700_0005 };
+    let sequences = disc::level_sequences(&iso, "07000005.bin").unwrap();
+    let skeletons: HashMap<u8, nf_formats::character::Skeleton> = lb.entries.iter().filter(|e| e.kind == 6).filter_map(|e| nf_formats::character::parse_skeleton(lb.data(&data, e)).ok()).map(|k| (k.id as u8, k)).collect();
+    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: 0x0700_0005, sequences: &sequences, skins: &level.skins, skeletons: &skeletons };
     // Every drone present at level start (line of sight is scheduled round robin over all of them, as in the game).
     let m = level.main_map().unwrap();
     let list: Vec<(u32, Vec<(u32, u32)>)> = level.maps[m].placements.iter().map(|p| (p.flags & 0xff, p.params.clone())).collect();
@@ -38,7 +40,7 @@ fn guard_notices_and_fires_like_the_game() {
     let gi = guard.unwrap();
     let mut sim = Drones::new(drones, rng);
     let bond = [67.31, 26.5, 99.47];
-    let player = Player { pos: bond, target: [bond[0], bond[1] + 0.5, bond[2]] };
+    let player = Player { pos: bond, target: [bond[0], bond[1] + 0.5, bond[2]], eye: [bond[0], bond[1] + 1.0, bond[2]], aim: [-1.0, 0.0, 0.0] };
     for _ in 0..400 { sim.tick(&d, &player); }
     let g = &sim.list[gi];
     let attack = g.log.iter().find(|(_, s)| *s == nf_game::drone::state::ATTACK).map(|(f, _)| *f);
@@ -47,6 +49,17 @@ fn guard_notices_and_fires_like_the_game() {
     assert_eq!((g.shots[1] - g.shots[0], g.shots[2] - g.shots[1]), (4, 4), "SG5: weapon_data +0x40 = 4 ticks");
     assert!(g.shots[3] - g.shots[2] >= 4 + 15, "burst delay ≥ 15 + interval");
     assert_eq!(g.clip, 64 - g.shots.len() as i32);
+    // Combat moves (trace work/ai_trace_b.tsv): with Bond's crosshair on him the guard's only move is a step
+    // (prop 0x42): Attack → StepAimLeft/Right, which lasts its animation (live: 101 and 113 ticks), then AimStandFire.
+    let after_attack = g.log.iter().skip_while(|(_, s)| *s != nf_game::drone::state::ATTACK).nth(1).copied();
+    let (step_at, step) = after_attack.unwrap();
+    assert!(matches!(step, 0x73 | 0x74), "first move is a step, got {step:#x}");
+    let step_end = g.log.iter().find(|(f, s)| *f > step_at && *s == nf_game::drone::state::AIM_STAND_FIRE).map(|(f, _)| *f).unwrap();
+    assert!((100..=115).contains(&(step_end - step_at)), "step lasted {} ticks", step_end - step_at);
+    // Damage (live health column): an SG5 hit on Bond costs 2.75 × 0.6 = 1.65 at difficulty 1.
+    let lost = 100.0 - sim.health.health;
+    let per_hit = lost / ((lost / 1.65).round().max(1.0));
+    assert!((per_hit - 1.65).abs() < 1e-3, "damage per hit {per_hit}");
     // Sister: the same guard already at alertness 1 reacts without the delay, so the comparison above can fail.
     let mut alert_sim = Drones::new(sim.list.clone().into_iter().map(|mut x| {
         x.alert = 1.0; x.alert_floor = 1.0; x.state = 0; x.log.clear(); x.shots.clear(); x.ever_seen = false; x.seen_ticks = 0; x.los = false; x

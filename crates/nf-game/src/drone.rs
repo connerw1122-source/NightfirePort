@@ -28,6 +28,18 @@ pub mod state {
     pub const AIM_STAND: u8 = 0x67;
     pub const AIM_STAND_FIRE: u8 = 0x68;
     pub const AIM_STAND_RELOAD: u8 = 0x69;
+    pub const AIM_BACKOFF: u8 = 0x6d;
+    pub const AIM_CROUCH: u8 = 0x6f;
+    pub const AIM_CROUCH_FIRE: u8 = 0x70;
+    pub const AIM_CROUCH_RELOAD: u8 = 0x71;
+    pub const STEP_AIM_LEFT: u8 = 0x73;
+    pub const STEP_AIM_RIGHT: u8 = 0x74;
+    pub const STRAFE_AIM_LEFT: u8 = 0x75;
+    pub const STRAFE_AIM_RIGHT: u8 = 0x76;
+    pub const STRAFE_DODGE_LEFT: u8 = 0x77;
+    pub const STRAFE_DODGE_RIGHT: u8 = 0x78;
+    pub const ROLL_LEFT_CROUCH: u8 = 0x79;
+    pub const ROLL_RIGHT_CROUCH: u8 = 0x7a;
 }
 
 /// Messages (`*(int*)MsgObject`).
@@ -44,6 +56,15 @@ pub mod anim_state {
     pub const AIM_STAND: u16 = 0x0a;
     pub const STAND_IDLE: u16 = 0x24;
     pub const RELOAD: u16 = 0x52;
+    pub const BACKOFF: u16 = 0x04;
+    pub const CROUCH_AIM: u16 = 0x05;
+    pub const STRAFE_LEFT: u16 = 0x0c;
+    pub const STRAFE_RIGHT: u16 = 0x0d;
+    pub const DODGE_LEFT: u16 = 0x29;
+    pub const ROLL_LEFT: u16 = 0x53;
+    pub const ROLL_RIGHT: u16 = 0x54;
+    pub const STEP_LEFT: u16 = 0x5a;
+    pub const STEP_RIGHT: u16 = 0x5b;
 }
 
 /// Read-only game data the AI consults.
@@ -54,6 +75,11 @@ pub struct Data<'a> {
     pub weapons: &'a nf_formats::weapon::WeaponData,
     pub world: &'a CollisionWorld,
     pub level: u32,
+    /// The level's animation sequences by hashcode (root motion).
+    pub sequences: &'a HashMap<u32, nf_formats::anim::Sequence>,
+    /// Skins and skeletons (muzzle position from the posed skeleton).
+    pub skins: &'a HashMap<u32, nf_formats::character::Skin>,
+    pub skeletons: &'a HashMap<u8, nf_formats::character::Skeleton>,
 }
 
 /// Bond as the drones see him.
@@ -63,6 +89,9 @@ pub struct Player {
     pub pos: V3,
     /// The point drones aim at and test sight against (`Drone_View_Bones`: chest / head; one point here).
     pub target: V3,
+    /// Bond's crosshair ray (eye, unit direction) — `Check_Target` (0x1a7810) marks drones it hits as "aimed at".
+    pub eye: V3,
+    pub aim: V3,
 }
 
 /// Deterministic stand-in for `Rand_FRand` (the game's generator state is not modelled).
@@ -74,6 +103,8 @@ impl Rng {
         self.0 ^= self.0 << 13; self.0 ^= self.0 >> 17; self.0 ^= self.0 << 5;
         (self.0 >> 8) as f32 / (1u32 << 24) as f32 * max
     }
+    /// `Rand_Rand(n)`: an integer in [0, n) (0 for n = 0).
+    pub fn rand(&mut self, n: u32) -> u32 { (self.frand(1.0) * n as f32) as u32 % n.max(1) }
 }
 
 /// Animation side of a drone: `DroneAnim_*` over the danim tables, playing scripts.
@@ -142,6 +173,16 @@ pub struct Drone {
     pub clip_max: i32,
     /// Frames of the shots fired (for flashes; the viewer drains it).
     pub shots: Vec<u32>,
+    /// Root translation at the previous tick (root motion).
+    pub root_prev: Option<V3>,
+    /// `+0x2A` Bond's crosshair on this drone (until the given frame) and `+0x17` another drone within 3 units.
+    pub aimed_at: bool,
+    pub aimed_until: u32,
+    pub bunched: bool,
+    /// `obj+0xEC` (Rand 10000 at creation; miss wobble phase), `+0x41` sight lost since the last shot, `+0x100` damage multiplier.
+    pub wobble: u32,
+    pub lost_sight: bool,
+    pub damage_mul: f32,
     /// Trace of (frame, state) changes, for comparisons with PCSX2.
     pub log: Vec<(u32, u8)>,
 }
@@ -171,7 +212,7 @@ impl Drone {
             state: state::GLOBAL, prev_state: 0, next_state: None, entered: 0, timer_c: None,
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, started_call: false },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
-            shots: Vec::new(), log: Vec::new(),
+            shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0,
         };
         dr.set_danim(d, start_danim);
         dr
@@ -200,16 +241,25 @@ impl Drone {
     /// Advances the script; at its end continues with the danim's follow-on (`Drone_AnimInfo +10`); handles a pending
     /// call (`DroneAnim_CallHandler`): start the transition danim, complete when the anim state is reached.
     fn update_anim(&mut self, d: &Data) -> Option<(u8, u8)> {
+        let before = (self.anim.script, self.anim.danim);
         self.anim.time += 1;
         let len = self.anim.script.and_then(|h| d.scripts.get(&h)).map(|s| s.length as u32).unwrap_or(1);
+        let mut restarted = false;
+        // A one-shot danim of the requested state that just finished completes the call.
+        let mut finished_wanted = false;
         if self.anim.time >= len {
+            finished_wanted = self.anim.call.is_some_and(|(w, _, _)| w == self.anim.state && self.anim.started_call);
             let info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
             let next = u16::from_le_bytes([info[10], info[11]]);
             if next != 0 && next != self.anim.danim { self.set_danim(d, next) } else { self.anim.time = 0 }
+            restarted = true;
         }
+        self.root_motion(d, restarted || before != (self.anim.script, self.anim.danim));
         let (want, next_ai, done_msg) = self.anim.call?;
-        // CallFullyComplete when the playing danim's anim state (+0x56A, set as the danim starts) is the requested one.
-        if self.anim.state == want {
+        // CallFullyComplete: the requested state is playing as a loop (class 2: aim, crouch-aim, idle …), or a one-shot
+        // danim of it (a step, a roll, a reload) has played to its end. *Suggested* from the trace (steps last
+        // their animation); `DroneAnim_CallHandler`'s exact test is not read yet.
+        if finished_wanted || (self.anim.state == want && self.anim.class == 2) {
             self.anim.call = None;
             return Some((next_ai, done_msg));
         }
@@ -219,6 +269,38 @@ impl Drone {
             if let Some(da) = danim.filter(|&x| x > 0) { self.set_danim(d, da as u16) }
         }
         None
+    }
+
+    /// The sequence and frame the playing script shows (opcode-0 command covering the script time).
+    pub fn script_frame(&self, d: &Data) -> Option<(u32, u32)> {
+        let script = d.scripts.get(&self.anim.script?)?;
+        let t = (1 + self.anim.time) as u16;
+        let (a, _, q) = script.sequences().find(|(a, b, _)| *a <= t && t <= *b).or_else(|| script.sequences().next())?;
+        Some((q, (t.saturating_sub(a) + 1) as u32))
+    }
+
+    /// Root motion (`AnimSeqTick` + `AnimFrameResolve`): the root translation's change since the last tick, rotated
+    /// by the object's yaw (`RotMatrix`: world = l.x·(cos y, 0, −sin y) + l.z·(sin y, 0, cos y)) and added to the
+    /// position. No motion on the tick a script starts or wraps. Vertical motion is replaced by the drone's height
+    /// rule (`DroneAnim_PreTransCallback`), so only x/z move here.
+    fn root_motion(&mut self, d: &Data, restarted: bool) {
+        let root = self.script_frame(d).and_then(|(q, f)| d.sequences.get(&q).filter(|s| s.channels.len() >= 3).map(|s| {
+            let f = f.clamp(1, s.frames.max(1) as u32);
+            [s.value(0, f), s.value(1, f), s.value(2, f)]
+        }));
+        if let (Some(r), Some(prev), false) = (root, self.root_prev, restarted) {
+            let (lx, lz) = (r[0] - prev[0], r[2] - prev[2]);
+            let (s, c) = (crate::trig::sinf(self.yaw), crate::trig::cosf(self.yaw));
+            let step = [lx * c + lz * s, -lx * s + lz * c];
+            let to = [self.pos[0] + step[0], self.pos[1], self.pos[2] + step[1]];
+            // Walls: the move is cancelled when the body (0.4 above the feet sphere … head) would cross collision.
+            let probe = |y: f32| d.world.line_of_sight([self.pos[0], y, self.pos[2]], [to[0] + step[0].signum() * 0.4 * (step[0].abs() > 1e-6) as i32 as f32, y, to[2] + step[1].signum() * 0.4 * (step[1].abs() > 1e-6) as i32 as f32]);
+            if probe(self.pos[1]) && probe(self.pos[1] + 0.5) {
+                self.pos = to;
+                if let Some(f) = d.world.floor_below([to[0], self.pos[1], to[2]], 2.0) { self.pos[1] = f + 1.0; }
+            }
+        }
+        self.root_prev = root;
     }
 
     // ---- state machine -----------------------------------------------------------------------------------------
@@ -254,11 +336,14 @@ impl Drone {
             }
             (IDLE | ALERT | PATROL, msg::UPDATE) => { if let Some(n) = self.look_for_opponent(d) { self.set_state(n) } true }
             (ATTACK, msg::ENTER) => {
-                // DroneFunc_FirstAttack: alertness 1, combat sight; (first-sight combat moves not ported yet)
+                // DroneFunc_FirstAttack → FirstSightState: alertness 1, combat sight; props 0x1B (50 %) / 0x19 pick a
+                // combat move; otherwise AimStand (prop 0x18, in range) or Combat.
                 self.alert = 1.0;
                 self.sight_range = self.sight_range.max(self.combat_range);
                 self.half_fov = 0.0;
-                self.set_state(if self.prop(d, 0x18) && self.dist < self.engage_range { AIM_STAND } else { COMBAT });
+                let first = if self.prop(d, 0x1b) { if rng.rand(2) == 0 { 0 } else { self.choose_combat_move(d, rng) } }
+                    else if self.prop(d, 0x18) { 0 } else if self.prop(d, 0x19) { self.choose_combat_move(d, rng) } else { 0 };
+                self.set_state(if first != 0 { first } else if self.prop(d, 0x18) && self.dist < self.engage_range { AIM_STAND } else { COMBAT });
                 true
             }
             (COMBAT, msg::ENTER) => { self.alert = 1.0; true }
@@ -266,7 +351,11 @@ impl Drone {
                 if self.unseen_ticks < 16 { self.set_state(COMBAT_NEW_SIGHTING) } else { self.set_state(COMBAT_NO_SIGHT) }
                 true
             }
-            (COMBAT_NEW_SIGHTING, msg::ENTER) => { self.set_state(AIM_STAND_FIRE); true }
+            (COMBAT_NEW_SIGHTING, msg::ENTER) => {
+                let crouch = self.prop(d, 0x11) && self.can_do(d, anim_state::CROUCH_AIM) && self.dist >= 6.0 && rng.rand(2) != 0;
+                self.set_state(if crouch { AIM_CROUCH_FIRE } else { AIM_STAND_FIRE });
+                true
+            }
             (AIM_STAND, msg::ENTER) => { self.call_anim(anim_state::AIM_STAND, 0, msg::ANIM_DONE); self.firing = false; true }
             (AIM_STAND, msg::ANIM_DONE) => { self.set_state(if self.unseen_ticks < 16 { AIM_STAND_FIRE } else { COMBAT_NO_SIGHT }); true }
             (AIM_STAND_FIRE, msg::ENTER) => {
@@ -277,20 +366,89 @@ impl Drone {
             }
             (AIM_STAND_FIRE, msg::UPDATE) => {
                 self.turn_to_opponent(0.524);
+                if self.dist <= 4.0 && self.can_backoff(d) { self.set_state(AIM_BACKOFF); return true; }
                 if self.unseen_ticks >= 16 { self.set_state(COMBAT_NO_SIGHT); return true; }
                 if self.firing && !self.burst_done { return true; }
-                if self.clip < 1 { self.set_state(AIM_STAND_RELOAD); return true; }
+                match self.combat_state(d, rng, frame, AIM_STAND_FIRE) { 0 => self.fire(d, rng, frame, true), n => self.set_state(n) }
+                true
+            }
+            (AIM_STAND_FIRE | AIM_CROUCH_FIRE, msg::TIMER_C) => { self.fire(d, rng, frame, true); true }
+            (AIM_STAND_RELOAD | AIM_CROUCH_RELOAD, msg::ENTER) => {
+                self.firing = false;
+                self.clip = self.clip_max;
+                self.call_anim(anim_state::RELOAD, if s == AIM_STAND_RELOAD { AIM_STAND_FIRE } else { AIM_CROUCH_FIRE }, 0);
+                true
+            }
+            (AIM_STAND_RELOAD | AIM_CROUCH_RELOAD, msg::UPDATE) => { self.turn_to_opponent(0.9); true }
+            // Crouching: AimCrouch plays the crouch-aim anim and continues in AimCrouchFire.
+            (AIM_CROUCH, msg::ENTER) => { self.call_anim(anim_state::CROUCH_AIM, AIM_CROUCH_FIRE, 0); true }
+            (AIM_CROUCH, msg::UPDATE) => { self.desired_yaw = self.yaw_to_opp; true }
+            (AIM_CROUCH_FIRE, msg::ENTER) => { self.call_anim(anim_state::CROUCH_AIM, 0, 0); self.vision_on = true; self.fire(d, rng, frame, true); true }
+            (AIM_CROUCH_FIRE, msg::UPDATE) => {
+                self.desired_yaw = self.yaw_to_opp;
+                if self.dist <= 4.0 && self.can_backoff(d) { self.set_state(AIM_BACKOFF); return true; }
+                if self.firing && !self.burst_done { return true; }
+                if frame < self.entered + 60 { return true; }
+                match self.combat_state(d, rng, frame, AIM_CROUCH_FIRE) {
+                    0 => if self.clip > 0 { self.fire(d, rng, frame, true) } else { self.set_state(AIM_CROUCH_RELOAD) },
+                    n => self.set_state(n),
+                }
+                true
+            }
+            // Steps: one anim, then back to AimStandFire; no firing while stepping.
+            (STEP_AIM_LEFT | STEP_AIM_RIGHT, msg::ENTER) => {
+                self.call_anim(if s == STEP_AIM_LEFT { anim_state::STEP_LEFT } else { anim_state::STEP_RIGHT }, AIM_STAND_FIRE, 0);
+                self.firing = false;
+                true
+            }
+            (STEP_AIM_LEFT | STEP_AIM_RIGHT, msg::UPDATE) => {
+                let a = if s == STEP_AIM_LEFT { anim_state::STEP_LEFT } else { anim_state::STEP_RIGHT };
+                if !self.can_do(d, a) { self.set_state(AIM_STAND_FIRE) } else { self.desired_yaw = self.yaw_to_opp }
+                true
+            }
+            // Strafes fire while moving; dodges do not. Both end on a 2–5 s / 2–3 s timer or when blocked.
+            (STRAFE_AIM_LEFT | STRAFE_AIM_RIGHT | STRAFE_DODGE_LEFT | STRAFE_DODGE_RIGHT, msg::ENTER) => {
+                let (anim, secs, fires) = match s {
+                    STRAFE_AIM_LEFT => (anim_state::STRAFE_LEFT, rng.rand(4) + 2, true),
+                    STRAFE_AIM_RIGHT => (anim_state::STRAFE_RIGHT, rng.rand(4) + 2, true),
+                    STRAFE_DODGE_LEFT => (anim_state::DODGE_LEFT, rng.rand(2) + 2, false),
+                    _ => (anim_state::STRAFE_RIGHT, rng.rand(2) + 2, false), // StrafeDodgeRight calls anim 0xD (shipped)
+                };
+                self.call_anim(anim, 0, 0);
+                self.timer_c = Some(frame + secs * 60);
+                if fires { self.fire(d, rng, frame, true) } else { self.firing = false }
+                true
+            }
+            (STRAFE_AIM_LEFT | STRAFE_AIM_RIGHT | STRAFE_DODGE_LEFT | STRAFE_DODGE_RIGHT, msg::UPDATE) => {
+                self.desired_yaw = self.yaw_to_opp;
+                let left = matches!(s, STRAFE_AIM_LEFT | STRAFE_DODGE_LEFT);
+                let dodge = matches!(s, STRAFE_DODGE_LEFT | STRAFE_DODGE_RIGHT);
+                if self.anim.class == 2 && (!self.can_move(d, if left { 1.0 } else { -1.0 } * if dodge { 3.6 } else { 1.8 }, 0.0) || self.unseen_ticks > 15) {
+                    self.set_state(AIM_STAND);
+                } else if !dodge && self.burst_done { self.fire(d, rng, frame, true) }
+                true
+            }
+            (STRAFE_AIM_LEFT | STRAFE_AIM_RIGHT | STRAFE_DODGE_LEFT | STRAFE_DODGE_RIGHT | AIM_BACKOFF, msg::TIMER_C) => { self.set_state(AIM_STAND); true }
+            (ROLL_LEFT_CROUCH | ROLL_RIGHT_CROUCH, msg::ENTER) => {
+                self.call_anim(if s == ROLL_LEFT_CROUCH { anim_state::ROLL_LEFT } else { anim_state::ROLL_RIGHT }, AIM_CROUCH_FIRE, 0);
+                true
+            }
+            (ROLL_LEFT_CROUCH | ROLL_RIGHT_CROUCH, msg::UPDATE) => { self.desired_yaw = self.yaw_to_opp; true }
+            (AIM_BACKOFF, msg::ENTER) => {
+                self.call_anim(anim_state::BACKOFF, 0, 0);
+                self.timer_c = Some(frame + (rng.rand(4) + 2) * 60);
                 self.fire(d, rng, frame, true);
                 true
             }
-            (AIM_STAND_FIRE, msg::TIMER_C) => { self.fire(d, rng, frame, true); true }
-            (AIM_STAND_RELOAD, msg::ENTER) => {
-                self.firing = false;
-                self.clip = self.clip_max;
-                self.call_anim(anim_state::RELOAD, AIM_STAND_FIRE, 0);
+            (AIM_BACKOFF, msg::UPDATE) => {
+                if !(self.dist <= self.engage_range && self.unseen_ticks < 16 && self.can_backoff(d)) { self.set_state(AIM_STAND); return true; }
+                self.desired_yaw = self.yaw_to_opp;
+                if self.firing && !self.burst_done { return true; }
+                self.fire(d, rng, frame, true);
+                let m = self.choose_combat_move(d, rng);
+                self.set_state(m);
                 true
             }
-            (AIM_STAND_RELOAD, msg::UPDATE) => { self.turn_to_opponent(0.9); true }
             (COMBAT_NO_SIGHT, msg::ENTER) => { self.firing = false; self.call_anim(anim_state::AIM_STAND, 0, 0); true }
             (COMBAT_NO_SIGHT, msg::UPDATE) => { if self.unseen_ticks < 16 { self.set_state(COMBAT_NEW_SIGHTING) } true }
             (NO_OPPONENT, msg::ENTER) => { self.set_state(IDLE); true }
@@ -302,6 +460,85 @@ impl Drone {
     /// `DroneVision_EnemyLookForOpponent` (Attack when seen and the drone may react to the player).
     fn look_for_opponent(&self, d: &Data) -> Option<u8> {
         (self.seen && self.prop(d, 0x3c) && (self.alert >= 0.66 || self.prop(d, 0x51))).then_some(state::ATTACK)
+    }
+
+    /// `DroneAnim_CanDoAnimState`: the anim state's own danim has a script in our anim set (or set 0).
+    fn can_do(&self, d: &Data, anim: u16) -> bool {
+        d.tables.states.get(anim as usize).is_some_and(|(own, _)| d.tables.script_for(*own, self.anim_set).is_some())
+    }
+
+    /// The `NDrone2_Can*` tests: the point `local` (x = left, z = forward) from the feet must be reachable
+    /// (`NDrone2_MoveTest`: |dy| ≤ 4 and not across a boundary). *Deviation*: the game tests AI-network boundaries;
+    /// we require a floor there and no collision between at knee and chest height.
+    fn can_move(&self, d: &Data, x: f32, z: f32) -> bool {
+        let (s, c) = (crate::trig::sinf(self.yaw), crate::trig::cosf(self.yaw));
+        let feet = [self.pos[0], self.pos[1] - 1.0, self.pos[2]];
+        let to = [feet[0] + x * c + z * s, feet[1], feet[2] - x * s + z * c];
+        let Some(floor) = d.world.floor_below([to[0], feet[1] + 2.0, to[2]], 6.0) else { return false };
+        if (floor - feet[1]).abs() > 4.0 { return false; }
+        [0.5, 1.4].iter().all(|&h| d.world.line_of_sight([feet[0], feet[1] + h, feet[2]], [to[0], floor + h, to[2]]))
+    }
+
+    fn can_backoff(&self, d: &Data) -> bool { self.prop(d, 0x06) && self.can_do(d, anim_state::BACKOFF) && self.can_move(d, 0.0, -1.8) }
+
+    /// `NDrone2_ChooseCombatMove` (0x150c18): an option list (dodge, strafe, roll, step, crouch, stand) picked at
+    /// random, each case falling through to the next when it fails; left/right order random.
+    fn choose_combat_move(&mut self, d: &Data, rng: &mut Rng) -> u8 {
+        use state::*;
+        if self.prop(d, 0x40) { return 0; }
+        let (aimed, bunched) = (self.aimed_at, self.bunched);
+        if rng.rand(15) >= 7 && !aimed && !bunched { return 0; }
+        let mut opts = Vec::new();
+        if aimed && self.prop(d, 0x13) && self.can_do(d, anim_state::DODGE_LEFT) { opts.push(1) }
+        if (aimed || bunched) && self.prop(d, 0x41) && self.can_do(d, anim_state::STRAFE_LEFT) { opts.push(2) }
+        if aimed && self.prop(d, 0x2e) && self.can_do(d, anim_state::ROLL_LEFT) { opts.push(3) }
+        if self.prop(d, 0x42) && self.can_do(d, anim_state::STEP_LEFT) { opts.push(4) }
+        if !aimed {
+            if self.prop(d, 0x11) && self.can_do(d, anim_state::CROUCH_AIM) && self.dist >= 6.0 && rng.rand(2) == 0 { opts.push(5) }
+            opts.push(6);
+        }
+        if opts.is_empty() { return 0; }
+        let mut case = opts[rng.rand(opts.len() as u32) as usize];
+        let pair = |me: &Self, rng: &mut Rng, dist: f32, l: u8, r: u8| -> u8 {
+            let order = if rng.rand(2) != 0 { [(l, dist), (r, -dist)] } else { [(r, -dist), (l, dist)] };
+            order.iter().find(|(_, x)| me.can_move(d, *x, 0.0)).map(|(s, _)| *s).unwrap_or(0)
+        };
+        let result = loop {
+            let r = match case {
+                1 if aimed && self.prop(d, 0x13) => pair(self, rng, 3.6, STRAFE_DODGE_LEFT, STRAFE_DODGE_RIGHT),
+                2 if !aimed => { case = 4; continue; }
+                2 if self.prop(d, 0x41) => pair(self, rng, 1.8, STRAFE_AIM_LEFT, STRAFE_AIM_RIGHT),
+                3 if aimed && self.prop(d, 0x2e) && self.can_do(d, anim_state::ROLL_LEFT) => pair(self, rng, 5.2, ROLL_LEFT_CROUCH, ROLL_RIGHT_CROUCH),
+                4 if self.prop(d, 0x42) && self.can_do(d, anim_state::STEP_LEFT) => pair(self, rng, 1.8, STEP_AIM_LEFT, STEP_AIM_RIGHT),
+                5 if self.prop(d, 0x11) && self.can_do(d, anim_state::CROUCH_AIM) && self.dist >= 6.0 && rng.rand(2) == 0 => AIM_CROUCH,
+                6 => break if rng.rand(4) != 0 { AIM_STAND } else { 0 },
+                7.. => break 0,
+                _ => 0,
+            };
+            if r != 0 { break r; }
+            case += 1;
+        };
+        if (result == AIM_STAND && self.state == AIM_STAND_FIRE) || (result == AIM_CROUCH && self.state == AIM_CROUCH_FIRE) || result == self.state { 0 } else { result }
+    }
+
+    /// `DroneFunc_CombatState` (0x148338) for the firing states (no routes or cover in this port).
+    fn combat_state(&mut self, d: &Data, rng: &mut Rng, frame: u32, from: u8) -> u8 {
+        use state::*;
+        if from == AIM_STAND_FIRE && self.clip <= 0 { return AIM_STAND_RELOAD; }
+        if self.unseen_ticks >= 16 { return COMBAT_NO_SIGHT; }
+        if from == AIM_STAND_FIRE {
+            if self.anim.class == 2 && self.anim.state == anim_state::AIM_STAND {
+                let m = self.choose_combat_move(d, rng);
+                if m != 0 { return m; }
+            } else { self.call_anim(anim_state::AIM_STAND, 0, 0); }
+        } else {
+            if frame > self.entered + 120 {
+                let m = self.choose_combat_move(d, rng);
+                if m != 0 { return m; }
+            }
+            self.call_anim(anim_state::CROUCH_AIM, 0, 0);
+        }
+        0
     }
 
     /// `DroneMove_TurnToObj(target, threshold)`: re-aim the desired yaw when off by more than the threshold.
@@ -349,14 +586,16 @@ impl Drone {
     }
 
     /// `DroneWeap_HandleFiring` → `DoFiring` → `FireWeapon`.
-    fn handle_firing(&mut self, d: &Data, rng: &mut Rng, frame: u32) {
-        if !self.firing { return; }
+    fn handle_firing(&mut self, d: &Data, rng: &mut Rng, frame: u32, p: &Player, motion: (bool, bool), owner: usize) -> Option<crate::bullet::Bullet> {
+        if !self.firing { return None; }
         self.burst_done = false;
         let mut more = false;
+        let mut bullet = None;
         if self.burst == 0 { self.next_bullet_time(d, rng, frame, true); }
         if self.unseen_ticks < 0x10 || self.prop(d, 0x17) {
             more = true;
             if self.next_shot <= frame && self.ready_to_fire() {
+                bullet = self.fire_weapon(d, rng, frame, p, motion, owner);
                 self.shots.push(frame);
                 self.last_shot = frame;
                 self.clip -= 1;
@@ -365,6 +604,67 @@ impl Drone {
             }
         }
         if !more { self.burst_done = true; }
+        bullet
+    }
+
+    /// The muzzle (`AnimGetBoneWorldTrans(obj, weapon datum id, 1)` = datum id + 1) in world space, from the posed
+    /// skeleton; falls back to chest height in front of the drone.
+    pub fn muzzle(&self, d: &Data) -> V3 {
+        let posed = (|| {
+            let (q, f) = self.script_frame(d)?;
+            let seq = d.sequences.get(&q)?;
+            let skin = d.skins.get(&self.skin)?;
+            let skel = d.skeletons.get(&skin.skeleton)?;
+            let (_, datum) = d.weapons.third_person(self.weapon as u8)?;
+            let id = if datum == 0xff { 0 } else { datum as u32 } + 1;
+            let dt = skin.datums.iter().find(|x| x.id == id && x.bone >= 0)?;
+            let mut local = nf_formats::anim::local_pose(seq, skel, skin, f.clamp(1, seq.frames.max(1) as u32));
+            local[0].0 = [0.0; 3];
+            let world = nf_formats::anim::world_pose(&local, skin);
+            let obj = nf_formats::placement::object_matrix([0.0, self.yaw, 0.0], self.pos);
+            let m = nf_formats::anim::mul(&nf_formats::anim::mul(&nf_formats::anim::quat_trans_to_mat(dt.q, dt.t), world.get(dt.bone as usize)?), &obj);
+            Some([m[3][0], m[3][1], m[3][2]])
+        })();
+        posed.unwrap_or_else(|| {
+            let (s, c) = (crate::trig::sinf(self.yaw), crate::trig::cosf(self.yaw));
+            [self.pos[0] + s * 0.5, self.pos[1] + 0.4, self.pos[2] + c * 0.5]
+        })
+    }
+
+    /// `DroneWeap_FireWeapon` + `DoBulletAccuracy`: hit roll, the miss wobble, the cone (`Bullet_init`), damage
+    /// (`Drone_ModBulletDamage`: ×2 under 4 units, × `+0x100`).
+    fn fire_weapon(&mut self, d: &Data, rng: &mut Rng, frame: u32, p: &Player, (moving, first_moved): (bool, bool), owner: usize) -> Option<crate::bullet::Bullet> {
+        let w = d.weapons.records.get(self.weapon as usize)?;
+        let f32_at = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
+        // Hit chance: p = 100 − 5·accuracy, ×2 under TooClose (3), ×0.25 first moved, ×0.75 moving, × level
+        // difficulty accuracy (07000005–08: 0.8 / 0.9 / 1.3; difficulty 1 as read live), ×2 again under TooClose.
+        let mut pct = 100.0 - 5.0 * self.accuracy as f32;
+        let close = self.dist < 3.0;
+        if close { pct *= 2.0 }
+        if first_moved { pct *= 0.25 }
+        if moving { pct *= 0.75 }
+        pct *= level_accuracy(d.level, DIFFICULTY);
+        if close { pct *= 2.0 }
+        let mut hit = rng.frand(100.0) < pct;
+        if !close { hit &= self.seen_ticks >= 120 && !self.lost_sight; }
+        if self.dist < 3.0 { hit = true; }
+        self.lost_sight = false;
+        // Miss: deterministic wobble (0.5 sin a, 1.5 sin(a + π/2), 1.5 sin 0.02t), a = 0.01t, t = frame + obj+0xEC,
+        // rotated by the yaw toward the target.
+        let off = if hit { [0.0; 3] } else {
+            let t = (frame + self.wobble) as f32;
+            let a = 0.01 * t;
+            let l = [0.5 * crate::trig::sinf(a), 1.5 * crate::trig::sinf(a + crate::trig::HALF_PI), 1.5 * crate::trig::sinf(0.02 * t)];
+            let (s, c) = (crate::trig::sinf(self.yaw_to_opp), crate::trig::cosf(self.yaw_to_opp));
+            [l[0] * c + l[2] * s, l[1], -l[0] * s + l[2] * c]
+        };
+        let muzzle = self.muzzle(d);
+        let aim = [p.target[0] + off[0] - muzzle[0], p.target[1] + off[1] - muzzle[1], p.target[2] + off[2] - muzzle[2]];
+        let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
+        let dir = crate::bullet::spread(aim, f32_at(0x24), flags68, rng);
+        let mut damage = f32_at(0x0c) * self.damage_mul;
+        if self.dist < 4.0 { damage *= 2.0 }
+        Some(crate::bullet::Bullet { pos: muzzle, dir, speed: f32_at(0x20), travelled: 0.0, range: f32_at(0x1c), damage, owner, state: 0 })
     }
 
     // ---- per tick -----------------------------------------------------------------------------------------------
@@ -402,16 +702,42 @@ impl Drone {
     fn head(&self) -> V3 { [self.pos[0], self.pos[1] + 0.6, self.pos[2]] }
 }
 
+/// Difficulty (`GameState+0x28`); 1 in the user's live sessions.
+pub const DIFFICULTY: u32 = 1;
+
+/// Per-level accuracy factors by difficulty (`ReadTuningVars` 0x1d3a80).
+pub fn level_accuracy(level: u32, difficulty: u32) -> f32 {
+    let (e, n, h) = match level & 0xff {
+        0x01..=0x04 | 0x14..=0x16 => (0.5, 0.7, 1.0),
+        0x05..=0x08 => (0.8, 0.9, 1.3),
+        0x09..=0x0b => (0.8, 1.0, 1.0),
+        0x0c | 0x0d | 0x1b => (0.6, 0.8, 1.2),
+        0x11..=0x13 | 0x4a => (0.7, 0.8, 1.0),
+        0x21..=0x29 | 0x4b | 0x4c => (0.8, 1.0, 1.5),
+        _ => (0.5, 1.0, 2.0),
+    };
+    match difficulty { 1 => e, 3 | 4 => h, _ => n }
+}
+
 /// All drones of a level plus the round-robin line-of-sight cursor.
 pub struct Drones {
     pub list: Vec<Drone>,
     pub frame: u32,
     los_cursor: usize,
     pub rng: Rng,
+    pub bullets: Vec<crate::bullet::Bullet>,
+    pub health: crate::bullet::PlayerHealth,
+    /// Impacts this tick (for effects).
+    pub impacts: Vec<crate::bullet::BulletEvent>,
+    /// Bond's previous position and the tick he started moving (`DoOpponentTargetting` +0x1DC / +0x1DD).
+    prev_player: Option<V3>,
+    moved_since: Option<u32>,
 }
 
 impl Drones {
-    pub fn new(list: Vec<Drone>, rng: Rng) -> Drones { Drones { list, frame: 0, los_cursor: 0, rng } }
+    pub fn new(list: Vec<Drone>, rng: Rng) -> Drones {
+        Drones { list, frame: 0, los_cursor: 0, rng, bullets: Vec::new(), health: Default::default(), impacts: Vec::new(), prev_player: None, moved_since: None }
+    }
 
     /// One 60 Hz game tick: global vision (`DroneVision_ProcessDroneSight`), then each drone's control.
     pub fn tick(&mut self, d: &Data, player: &Player) {
@@ -419,6 +745,23 @@ impl Drones {
         let frame = self.frame;
         let n = self.list.len();
         for dr in &mut self.list { dr.opponent_info(player); dr.seen = false; }
+        // `Check_Target` (0x1a7810): every 6 ticks Bond's 50-unit crosshair ray marks the first drone it hits (body
+        // cylinder r 0.4, feet to 1.8 up; *deviation*: the game tests the drone's bounding sphere / boxes) for 30 ticks.
+        if frame % 6 == 0 {
+            let far = [player.eye[0] + player.aim[0] * 50.0, player.eye[1] + player.aim[1] * 50.0, player.eye[2] + player.aim[2] * 50.0];
+            let wall = d.world.segment(player.eye, far).unwrap_or(1.0);
+            let hit = self.list.iter().enumerate().filter_map(|(i, dr)| {
+                let vol = crate::bullet::PlayerVolume { feet: [dr.pos[0], dr.pos[1] - 1.0, dr.pos[2]], height: 1.8, radius: 0.4 };
+                crate::bullet::segment_cylinder(player.eye, far, &vol).filter(|&t| t < wall).map(|t| (i, t))
+            }).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i);
+            if let Some(i) = hit { self.list[i].aimed_at = true; self.list[i].aimed_until = frame + 30; }
+        }
+        for dr in &mut self.list { if dr.aimed_at && frame >= dr.aimed_until { dr.aimed_at = false; } }
+        // `DroneMove_NoBunching`: another drone within 3 units.
+        let positions: Vec<V3> = self.list.iter().map(|x| x.pos).collect();
+        for (i, dr) in self.list.iter_mut().enumerate() {
+            dr.bunched = positions.iter().enumerate().any(|(j, p)| j != i && ((p[0] - dr.pos[0]).powi(2) + (p[2] - dr.pos[2]).powi(2)) < 9.0);
+        }
         // Visibility every tick for drones with vision on; line of sight for one drone per tick (round robin).
         for dr in &mut self.list { dr.visibility = if dr.vision_on || dr.alert >= 1.0 { dr.visibility() } else { 0.0 }; if dr.visibility < 0.7 { dr.los = false; } }
         for k in 0..n {
@@ -438,11 +781,18 @@ impl Drones {
             } else {
                 dr.seen_ticks = 0;
                 dr.unseen_ticks += 1;
+                dr.lost_sight = true;
             }
         }
+        // Bond's motion (`DroneWeap_DoOpponentTargetting`): moving, and "first moved" for 2 s after he starts.
+        let moving = self.prev_player.is_some_and(|q| (q[0] - player.pos[0]).abs() + (q[2] - player.pos[2]).abs() > 1e-4);
+        if moving && self.moved_since.is_none() { self.moved_since = Some(frame) }
+        if !moving { self.moved_since = None }
+        let first_moved = self.moved_since.is_some_and(|f| frame < f + 120);
+        self.prev_player = Some(player.pos);
         // Per drone: timers, alertness decay, update message, turning, aim, firing, animation.
         let rng = &mut self.rng;
-        for dr in &mut self.list {
+        for (index, dr) in self.list.iter_mut().enumerate() {
             if frame == 1 { dr.send(d, rng, frame, msg::ENTER); dr.entered = frame; dr.log.push((frame, dr.state)); }
             if let Some(t) = dr.timer_c { if frame >= t { dr.timer_c = None; dr.send(d, rng, frame, msg::TIMER_C); } }
             if dr.alert < 1.0 && dr.alert > dr.alert_floor { dr.alert -= 1.0 / (60.0 * 50.0); }
@@ -451,13 +801,25 @@ impl Drones {
             // NDrone2_Steer: exponential turn toward the desired yaw, 0.1 per tick.
             dr.yaw += angle_difference(dr.yaw, dr.desired_yaw) * 0.1;
             // Upper-body aim (`AnimObjectAimAt`, speed 0.2) toward the opponent while aiming; lower clamp −0.9 only.
-            let want = if dr.anim.state == anim_state::AIM_STAND { angle_difference(dr.yaw, dr.yaw_to_opp).max(-0.9) } else { 0.0 };
+            let want = if dr.anim.class == 2 && dr.state != state::IDLE { angle_difference(dr.yaw, dr.yaw_to_opp).max(-0.9) } else { 0.0 };
             dr.aim_yaw = rotate_to_bearing(dr.aim_yaw, want, 0.2, crate::trig::PI);
-            dr.handle_firing(d, rng, frame);
+            if let Some(b) = dr.handle_firing(d, rng, frame, player, (moving, first_moved), index) { self.bullets.push(b); }
             if let Some((next_ai, done_msg)) = dr.update_anim(d) {
                 if done_msg != 0 { dr.send(d, rng, frame, done_msg); }
                 if next_ai != 0 { dr.set_state(next_ai); dr.send(d, rng, frame, 0); }
             }
         }
+        // Bullets: move, collide with the world and Bond (`Bullet_update` + `Collide_Update`), damage
+        // (`Player_HandlePain`); the hit flash fades by 1 per tick (HUD).
+        self.impacts.clear();
+        let vol = crate::bullet::PlayerVolume { feet: [player.pos[0], player.pos[1] - 0.4, player.pos[2]], height: 1.8, radius: 0.25 };
+        for b in &mut self.bullets {
+            if let Some(ev) = b.update(d.world, &vol, &mut self.rng) {
+                if let crate::bullet::BulletEvent::Player { damage, .. } = ev { self.health.pain(damage, DIFFICULTY, d.level); }
+                self.impacts.push(ev);
+            }
+        }
+        self.bullets.retain(|b| b.state < 2);
+        self.health.flash = (self.health.flash - 1.0).max(0.0);
     }
 }

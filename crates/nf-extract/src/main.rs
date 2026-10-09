@@ -404,7 +404,9 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     let (cels, _) = level.instances(true);
     let world = nf_game::world::CollisionWorld::build(&level, &cels);
     let level_id = u32::from_str_radix(&level_name[..8], 16)?;
-    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id };
+    let sequences = disc::level_sequences(iso, level_name)?;
+    let skeletons: HashMap<u8, nf_formats::character::Skeleton> = lb.entries.iter().filter(|e| e.kind == 6).filter_map(|e| nf_formats::character::parse_skeleton(lb.data(&data, e)).ok()).map(|k| (k.id as u8, k)).collect();
+    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons };
     let m = level.main_map().context("no main map")?;
     let list: Vec<(u32, Vec<(u32, u32)>)> = level.maps[m].placements.iter().map(|p| (p.flags & 0xff, p.params.clone())).collect();
     let roles = drone::spawn_roles(&list);
@@ -417,15 +419,17 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
         drones.push(Drone::new(&d, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, &mut rng));
     }
     let mut sim = Drones::new(drones, rng);
-    let player = Player { pos: bond, target: [bond[0], bond[1] + 0.5, bond[2]] };
+    let player = Player { pos: bond, target: [bond[0], bond[1] + 0.5, bond[2]], eye: [bond[0], bond[1] + 1.0, bond[2]], aim: [-1.0, 0.0, 0.0] };
     let near = (0..sim.list.len()).min_by(|&a, &b| {
         let da = |i: usize| { let p = sim.list[i].pos; (p[0] - bond[0]).powi(2) + (p[2] - bond[2]).powi(2) };
         da(a).total_cmp(&da(b))
     }).context("no drones")?;
     println!("{} drones; tracing drone {near} at {:?}", sim.list.len(), sim.list[near].pos);
     let mut last_danim = 0;
+    let (mut hits, mut misses) = (Vec::new(), 0);
     for _ in 0..frames {
         sim.tick(&d, &player);
+        for ev in &sim.impacts { if let nf_game::bullet::BulletEvent::Player { damage, .. } = ev { hits.push((sim.frame, *damage)); } else { misses += 1; } }
         let dr = &sim.list[near];
         if dr.anim.danim != last_danim {
             last_danim = dr.anim.danim;
@@ -436,6 +440,7 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     println!("state changes: {:?}", dr.log.iter().map(|(f, s)| format!("{f}:{s:#x}")).collect::<Vec<_>>());
     println!("shots: {:?}", dr.shots);
     println!("clip {} alert {} seen_ticks {} yaw {:.3} → to opp {:.3}", dr.clip, dr.alert, dr.seen_ticks, dr.yaw, dr.yaw_to_opp);
+    println!("bullets: {} hit Bond {:?}, {misses} hit the world; Bond health {:.2}", hits.len(), hits.iter().take(12).collect::<Vec<_>>(), sim.health.health);
     Ok(())
 }
 

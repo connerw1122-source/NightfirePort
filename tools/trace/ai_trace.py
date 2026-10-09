@@ -19,7 +19,7 @@ DRONE_LIST = 0x298E14
 PLAYERS = 0x2D88E0
 # Drone-relative unless prefixed obj./anim.; offsets measured in WORKLOG 0016–0018 or from the decomp.
 FIELDS = [
-    ("danim", 0x56C, "u16"), ("script", 0x57C, "u32"), ("state_req", 0x558, "u16"), ("anim_state", 0x56A, "u16"),
+    ("sm_state", 0x10C, "u16"), ("danim", 0x56C, "u16"), ("script", 0x57C, "u32"), ("state_req", 0x558, "u16"), ("anim_state", 0x56A, "u16"),
     ("A0", 0xA0, "f32"), ("alert50c", 0x50C, "f32"), ("fire_flag", 0x40, "u8"), ("last_fire", 0xBC8, "u32"),
     ("clip", 0xBBC, "i16"), ("mode", 0xC5, "u8"), ("flags4f8", 0x4F8, "u32"),
     ("obj.x", 0x30, "f32"), ("obj.y", 0x34, "f32"), ("obj.z", 0x38, "f32"), ("obj.yaw", 0x54, "f32"),
@@ -77,7 +77,7 @@ def main():
         d = min(ds, key=dist)
     print(f"level {p.read32(GAMESTATE + 12):08x}, Bond at {ppos}, tracing drone {d:08x} ({len(ds)} drones)")
     with open(out, "w") as f:
-        f.write("frame\t" + "\t".join(n for n, _, _ in fields) + "\tbond.x\tbond.y\tbond.z\n")
+        f.write("frame\t" + "\t".join(n for n, _, _ in fields) + "\tbond.x\tbond.y\tbond.z\tbond.health\n")
         last, n, t0 = None, 0, time.time()
         while n < frames and time.time() - t0 < frames / 30 + 10:
             fr = p.read32(GAMESTATE + 0x34)
@@ -90,6 +90,8 @@ def main():
                 base = obj if name.startswith("obj.") else d
                 row.append(read(p, base + off, typ))
             row += [read(p, player + 0x30 + 4 * k, "f32") for k in range(3)]
+            pd = p.read32(player + 0xE0)
+            row += [read(p, pd + 0x894, "f32") if pd else 0.0]
             f.write("\t".join(f"{v:.4f}" if isinstance(v, float) else (f"{v:x}" if isinstance(v, int) and v > 0xFFFF else str(v)) for v in row) + "\n")
             n += 1
     print(f"{n} frames -> {out}")

@@ -457,3 +457,26 @@ the real shot ticks).
 - The single-drone test noticed at tick 60: line of sight is round robin over all drones; with the level's 13 the
   tick is 61 as in the game.
 - I first had the animation-completion check skip transition danims (a guess); removed — it follows the decomp.
+
+## 0020 — Combat movement and bullets (2026-10-08)
+
+User: "keep going, add the combat movement and bullets". Two more research passes (combat moves; bullets and damage),
+condensed into docs/systems/drone-ai.md "Combat moves" and "Bullets".
+
+**Ground truth**: a second live trace (`work/ai_trace_b.tsv`) with the state number (`Drone+0x10C`) and Bond's health:
+Attack → StepAimRight 101 ticks → AimStandFire → StepAimLeft 113 → … → AimCrouch → AimCrouchFire; every SG5 hit costs
+1.65, sniper hits 18 (another guard joined).
+
+**Port**: `ChooseCombatMove` + first-sight moves + the step / strafe / dodge / roll / crouch / back-off states, crosshair
+("aimed at") and bunching inputs, root motion (sequence root channels, rotated by yaw; walls stop it); bullets
+(`bullet.rs`: hit roll, wobble, cone, flight, world/Bond collision, per-level damage factors, health), muzzle from the
+posed skeleton; nf-view draws tracers and shows Bond's health in the title. Test `ai_live` now also checks the first
+move is a step lasting 100–115 ticks and 1.65 per hit.
+
+**Failed / corrected**
+- First runs picked "stand" instead of a step: my crosshair ray started at +1.4 above Bond's object and passed over
+  the guard's head; +1.0 (his eye height in the trace setup) hits as in the game.
+- Steps ended after one tick: a call completed as soon as the requested anim state started; it now completes when a
+  looping danim of that state plays or a one-shot one finishes (*suggested*; matches the 101/113-tick steps).
+- Player damage first used the ELF default difficulty factor (0.75); the live 1.65 per hit showed the per-level
+  table (0.6 for 07000005 at difficulty 1).

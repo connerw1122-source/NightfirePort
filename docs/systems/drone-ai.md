@@ -48,6 +48,37 @@ alertness 0 or 1 (property 0x20 → {0, 0, 0.66, 1.0} at 0x2f5cc8, verified); al
   visual (`FindAlertedDrones`, 1 s after the source attacks, within 50 units and the observer's view); the shout
   broadcasts are dead code in this build (`ShoutFromOtherDrone` always returns 0).
 
+## Combat moves [M, L] (WORKLOG 0020)
+
+- `NDrone2_ChooseCombatMove` (0x150c18): no move with prop 0x40; "aimed at" = Bond's crosshair on the drone
+  (`Check_Target` every 6 ticks, held 30 → `+0x2A`), "bunched" = another drone within 3 units. Rand(15) ≥ 7 with
+  neither → none. Options (picked at random, each case falling through to the next when it fails, left/right order
+  random): dodge (aimed, prop 0x13; 0x77/0x78), strafe (aimed, prop 0x41; 0x75/0x76), roll (aimed, prop 0x2E;
+  0x79/0x7A), step (prop 0x42; 0x73/0x74), crouch (not aimed, prop 0x11, distance ≥ 6, Rand(2) = 0; 0x6F), stand
+  (not aimed, Rand(4) ≠ 0; 0x67). Final filter: no stand from 0x68, no crouch from 0x70, not the current state.
+- First sight (`FirstSightState`): prop 0x1B → 50 % a combat move; else prop 0x19 → a combat move.
+- From 0x68 (`DroneFunc_CombatState`): reload when the clip is empty; NoSight after 16 unseen ticks; once the aim
+  loop is playing, a combat move. From 0x70: after 2 s in the state.
+- Space checks (`NDrone2_Can*`): local offsets x = left: step / strafe 1.8, dodge 3.6, roll 5.2, back-off z −1.8;
+  the game tests AI-network boundaries (`NDrone2_MoveTest`) — *deviation*: nf-game tests a floor within 4 units and no
+  collision between at knee and chest height.
+- Moves are root motion (`DroneAnim_PreTransCallback` clips it at boundaries); steps end with their animation, strafes
+  and dodges on a 2–5 s / 2–3 s timer; strafes fire while moving.
+- [L] 07000005 guards with Bond aiming at them have only the step: the trace shows Attack → StepAimRight (101 ticks)
+  → AimStandFire (burst) → StepAimLeft (113 ticks) …; later, with the crosshair off, AimCrouch → AimCrouchFire. The
+  port: Attack → step (112 ticks) → burst → step …
+
+## Bullets [M, L]
+
+`DroneWeap_FireWeapon` → `DoBulletAccuracy` (hit roll; misses aim at a deterministic wobble) → `Bullet_init`
+(projectile from the muzzle = weapon datum id + 1; cone ±0.0014·spread) → `Bullet_update` (speed per tick, first step
+(0.5 + FRand 0.5)·speed; collision ray from the old position for max(step, 1) units; dies past the range) →
+`Collide_Update` (nearest hit; Bond via 16 bone boxes — *deviation*: a cylinder r 0.25, 1.8 tall) →
+`Player_HandlePain`: damage `weapon_data+0x0C` × `Drone+0x100` (×2 under 4 units) × the level's player damage factor
+(07000005–08: 0.6 / 0.7 / 1.0 by difficulty), armour first, health from 100. Drone bullets draw `GUN_BULLET_TRAIL`
+(0x02000123) stretched by their speed. [L] each SG5 hit on Bond in 07000005 costs exactly 1.65 (= 2.75 × 0.6); a
+sniper hit 18 (= 30 × 0.6); the traced guard hit with ~37 of 42 shots, the port ~32 of 45.
+
 ## Port status (nf-game, WORKLOG 0019)
 
 Ported: state machine and messages; Global/Idle/InitPatrol(→Idle)/Attack/Combat/NewSighting/AimStand/AimStandFire/

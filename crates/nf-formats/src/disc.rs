@@ -338,6 +338,17 @@ pub fn sequence_digest<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
     Ok(s)
 }
 
+/// A level's animation sequences by hashcode, from its animation archive (`070000NN` → `07F000NN`).
+pub fn level_sequences<R: Read + Seek>(iso: &IsoImage<R>, level: &str) -> Result<std::collections::HashMap<u32, crate::anim::Sequence>> {
+    let (entries, bin) = files_bin_entries(iso)?;
+    let name = format!("{}F{}", &level[..2], &level[3..]);
+    let Some(fe) = entries.iter().find(|e| e.name.eq_ignore_ascii_case(&name)) else { return Ok(Default::default()) };
+    let data = iso.read_bytes(bin.lba as u64 * SECTOR_SIZE as u64 + fe.offset as u64, fe.size as u64)?;
+    let lb = crate::levelbin::LevelBin::parse(&data)?;
+    Ok(lb.entries.iter().filter(|e| e.kind == 4 && e.length >= 0x40)
+        .filter_map(|e| crate::anim::Sequence::parse(lb.data(&data, e)).ok()).map(|s| (s.hashcode, s)).collect())
+}
+
 /// Per archive with animation scripts (type 5): scripts, looping, commands, opcode-0 sequences, how many of those are
 /// in the matching animation archive (`07F…` for `070…`), and a SHA-1 over every parsed script.
 pub fn script_digest<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
