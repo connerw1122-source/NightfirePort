@@ -1261,3 +1261,13 @@ Block 0x28 (`Sound_LoadMapSounds`): u32 count, 32-byte records from +4 (+4 id wi
 `nf_game::sound::MapSounds` = `HandleMapSoundAllocation` (start inside R with custom radii, stop past 1.2 · R²), run
 before the pool update in nf-view. Effect 0x85 (133) is the 2-D stereo bed: two looping samples panned ±100,
 polyphonic. Test `map_ambient_sounds_start_and_stop_by_distance`.
+
+## 0067 — Guards' footsteps
+
+`AnimProcessScriptCmds` (0x1c1b38): the footstep switch (0 toggle, 4 left, 5 right → `ScriptFootstepFoot` /
+`ScriptFootstepType`; 3 = `Sound_StopAllWithId`) is op 4's event field — the EE research note had it under op 2; a
+survey of 07000005's scripts finds no op 2 and walk scripts with op 4 events 4 / 5 (0600025A frames 19 / 57). The port
+plays the floor surface's footstep under the guard (alertness 0) and stops event-3 ids. Faithful consequence: guards
+not drawn slide without animating (`NDrone2_DoAnimation`), so they make no steps; and one-shots beyond 1.1 × outer
+radius of the listener are culled. Test `patrolling_guards_make_footsteps` (listener beside the courtyard patroller):
+52 steps in 3000 ticks.

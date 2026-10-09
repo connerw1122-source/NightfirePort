@@ -16,8 +16,7 @@ the driver's start path (`SFXSetup` budget / stealing / per-id limit, random / s
 active list), `SFXRemove` / `SetPositionAndVelocity`; sources: the first-person gun's script sounds (op 1: shot, reload), Bond's footsteps by floor surface, bullet
 impacts by surface, guard body hits (0x413), guards' gunfire (`weapon_data+0x60`),
 animation-script sounds, pickups, script sounds (moving with their object). Not yet: music (MFX streams, `Music_Event`
-state machine), speech / streamed effects (`STREAMS.BIN`, negative sample refs), drones'
-footsteps (anim op 2 footstep flags), casings / fly-bys, reverb / environment / underwater, ducker and fades, precache, pause, the SPU's Gaussian
+state machine), speech / streamed effects (`STREAMS.BIN`, negative sample refs), casings / fly-bys, reverb / environment / underwater, ducker and fades, precache, pause, the SPU's Gaussian
 interpolation and ADSR (the port mixes linearly and stops at once), the per-weapon op-1 id remaps (other weapons).
 
 ---

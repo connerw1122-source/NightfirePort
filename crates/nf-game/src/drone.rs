@@ -468,6 +468,9 @@ pub struct Drone {
     pub holstered: bool,
     /// Sounds the animation played this tick (`AnimProcessScriptCmds` op 1 → `Sound_Play3D`), for the hearing list.
     pub anim_sounds: Vec<u32>,
+    /// Script footstep this tick (op 4 event 0 / 4 / 5) and sounds to stop (op 4 event 3, `Sound_StopAllWithId`).
+    pub footstep: bool,
+    pub anim_stops: Vec<u32>,
     /// Pickups this drone made this tick (`DroneWeap_DropWeapon`, `DroneFunc_DropGrenade`), collected by `Drones`.
     pub drops: Vec<crate::pickup::Pickup>,
     /// Drone modes (`behaviour_util_get`: placement parameter 15 = type `+0xC7`, 16 = the normal block's mode `+0xC8`,
@@ -527,7 +530,7 @@ impl Drone {
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
             corpse: false, death_pending: false, death_channel: param(12) as u8, special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
-            captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
+            captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
         };
         dr.init_properties(d, &param);
@@ -996,8 +999,10 @@ impl Drone {
 
     /// `AnimProcessScriptCmds` for the playing script over frames (from, to] (from 0 = the start frame; `wrapped`: to the
     /// end and again from 1): op 1 `[frame, sfx]` → a sound at the drone; op 4 `[frame, event, arg]` → event 2 calls
-    /// `DroneAnim_EventFunc(arg)`. Footstep events (0 / 4 / 5: footprints, `Effect_Create`) and the others' effects are
-    /// not ported (effects, G-026).
+    /// `DroneAnim_EventFunc(arg)`; events 0 / 4 / 5 a footstep (toggle / left / right foot: `ScriptFootstepType` →
+    /// `AnimObjectUpdate` → `Effect_Create(floor hit, 0x42 | foot)`: the floor surface's footstep sound; footprints
+    /// not ported), event 3 `Sound_StopAllWithId(arg)` [M `AnimProcessScriptCmds` 0x1c1b38; the walk scripts carry
+    /// events 4 / 5, e.g. 0600025A frames 19 / 57].
     fn script_commands(&mut self, d: &Data, from: u32, to: u32, wrapped: bool) {
         let Some(script) = self.anim.script.and_then(|h| d.scripts.get(&h)) else { return };
         let len = script.length as u32;
@@ -1007,6 +1012,8 @@ impl Drone {
             match (c.op, c.args.as_slice()) {
                 (1, [f, sfx, ..]) if hit(*f as u32) => self.anim_sounds.push(*sfx as u32),
                 (4, [f, 2, arg, ..]) if hit(*f as u32) => events.push(*arg),
+                (4, [f, 0 | 4 | 5, ..]) if hit(*f as u32) => self.footstep = true,
+                (4, [f, 3, id, ..]) if hit(*f as u32) => self.anim_stops.push(*id as u32),
                 _ => {}
             }
         }
@@ -3427,6 +3434,14 @@ impl Drones {
             if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
             // The animation's sounds (`Sound_Play3D` at the drone) enter the hearing list for the next tick.
             let (snd, at) = (std::mem::take(&mut dr.anim_sounds), dr.pos);
+            // The script's footstep: the floor under the drone (alertness 0: not heard by the drones).
+            if std::mem::take(&mut dr.footstep) {
+                let feet = dr.feet();
+                if let (Some(s), Some((t, _, m))) = (d.surfaces, d.world.segment_surface([feet[0], feet[1] + 0.5, feet[2]], [feet[0], feet[1] - 1.0, feet[2]])) {
+                    if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.footstep, m) { self.audio.play3d(id, [feet[0], feet[1] + 0.5 - 1.5 * t, feet[2]], None); }
+                }
+            }
+            for id in std::mem::take(&mut dr.anim_stops) { self.audio.stop_all_with_id(id); }
             if let Some(t) = d.sfx { for id in snd { let h = t.get(id); self.audio.play3d(h.id, at, None); if !h.looped { self.sounds.push(Sound { id: h.id, pos: at, inner: h.inner, outer: h.outer, weight: h.weight }); } } }
             for mut p in dr.drops.drain(..) { p.from = Some(index); self.pickups.push(p); }
             // `NDrone2_Collision`: the feet sphere (r 0.4) is pushed out of the AI-network boundaries.

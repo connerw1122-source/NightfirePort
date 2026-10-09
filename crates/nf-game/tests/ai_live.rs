@@ -994,3 +994,30 @@ fn map_ambient_sounds_start_and_stop_by_distance() {
     let removes2 = snd.take_commands().into_iter().filter(|c| matches!(c, Cmd::Remove { .. })).count();
     assert_eq!(removes + removes2, 1);
 }
+
+/// Guards' footsteps: their walk scripts mark steps (op 4 events 4 / 5); each plays the floor surface's footstep.
+#[test]
+fn patrolling_guards_make_footsteps() {
+    use nf_game::sound::Cmd;
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, _, rng) = l.drones(None, 61.342);
+    let mut sim = l.sim(drones, rng);
+    // Bond at the gate looking into the courtyard: guards he does not see slide without animating (no step events).
+    let away = bond_at([104.954, 25.663 + 0.4, 108.825]);
+    let steps: std::collections::HashSet<u32> = l.surfaces.footstep.iter().filter(|&&v| v != 0xffff).map(|&v| v as u32).collect();
+    let mut n = 0;
+    // The listener at Bond's eye (one-shots beyond 1.1 × their outer radius are not started: `SFXOutputData+0x15`).
+    let lst = ([104.954f32, 26.063 + 0.7, 108.825], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]);
+    for _ in 0..3000 {
+        sim.tick(&d, &away);
+        // The listener walks beside guard 3 (the courtyard patroller Bond sees), so his steps are within range.
+        let g = sim.list[3].pos;
+        let lst = ([g[0] + 1.0, g[1], g[2]], lst.1, lst.2, lst.3);
+        sim.audio.update(Some(&l.sfx), lst, &|_| true);
+        n += sim.audio.take_commands().iter().filter(|c| matches!(c, Cmd::Start { id, .. } if steps.contains(id))).count();
+    }
+    eprintln!("{n} footsteps in 3000 ticks");
+    assert!(n > 10, "{n}");
+}
+
