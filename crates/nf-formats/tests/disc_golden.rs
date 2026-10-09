@@ -197,3 +197,16 @@ fn executables_match_build_identity() {
     assert_eq!(diff_tsv(golden, &tamper(&actual)).len(), 1, "sister: a one-character change must be caught");
     assert_eq!(disc::BOOT_ELF_SHA1, "d5a9bd3ee0e9f1faf519fbd27138a2cdf4e82efe");
 }
+
+/// Every AI path block (map block 0x05) parses to its exact length, with every link inside its record's nodes
+/// (docs/formats/ai-path.md).
+#[test]
+fn ai_paths_match_the_golden_digest() {
+    let Some(iso) = iso() else { eprintln!("skip: NF_ISO not set"); return };
+    let golden = include_str!("../golden/ai_paths.tsv");
+    let actual = disc::ai_path_digest(&iso).unwrap();
+    assert!(actual.lines().skip(1).all(|l| l.split('\t').nth(5) == Some("0")), "links out of range");
+    let d = diff_tsv(golden, &actual);
+    assert!(d.is_empty(), "{} differences:\n{}", d.len(), d.join("\n"));
+    assert_eq!(diff_tsv(golden, &tamper(&actual)).len(), 1, "sister: a one-character change must be caught");
+}

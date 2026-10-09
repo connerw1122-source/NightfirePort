@@ -1,5 +1,6 @@
 //! Readers for the on-disc formats of 007: Nightfire (PS2, NTSC-U SLUS-20579). Build: docs/build-identity.md.
 
+pub mod aipath;
 pub mod anim;
 pub mod bigf;
 pub mod buf;

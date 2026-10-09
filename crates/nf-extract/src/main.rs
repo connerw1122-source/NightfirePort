@@ -43,6 +43,7 @@ fn main() -> Result<()> {
         "seq-digest" => { print!("{}", disc::sequence_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "skins" => skins(&IsoImage::open(a(1)?)?),
         "datums" => datums(&IsoImage::open(a(1)?)?, a(2)?),
+        "block-dump" => block_dump(&IsoImage::open(a(1)?)?, a(2)?, u8::from_str_radix(a(3)?.trim_start_matches("0x"), 16)?, Path::new(a(4)?)),
         "coll-probe" => coll_probe(&IsoImage::open(a(1)?)?, a(2)?),
         "coll-check" => coll_check(&IsoImage::open(a(1)?)?),
         "coll-floor" => coll_floor(&IsoImage::open(a(1)?)?, a(2)?),
@@ -53,6 +54,7 @@ fn main() -> Result<()> {
         "pose-check" => pose_check(&IsoImage::open(a(1)?)?, a(2)?, a(3)?),
         "weapons" => weapons(&IsoImage::open(a(1)?)?, args.get(2).map(String::as_str)),
         "script-digest" => { print!("{}", disc::script_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
+        "ai-path-digest" => { print!("{}", disc::ai_path_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "drone-digest" => { print!("{}", disc::drone_start_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "drones" => drones(&IsoImage::open(a(1)?)?, a(2)?),
         "gfx-skin-words" => gfx_skin_words(&IsoImage::open(a(1)?)?),
@@ -800,6 +802,28 @@ fn symtab(path: &Path) -> Result<()> {
     println!("value\tsize\tkind\tbind\tshndx\tname");
     for s in elf.symbols(&data)?.iter().skip(1) {
         println!("{:08x}\t{}\t{}\t{}\t{}\t{}", s.value, s.size, s.kind(), s.binding(), s.shndx, s.name);
+    }
+    Ok(())
+}
+
+/// Dump one map block's payload (every occurrence, main map first) to `out_dir/<level>_<id>_<n>.bin` for study.
+fn block_dump(iso: &IsoImage, level_name: &str, id: u8, out_dir: &Path) -> Result<()> {
+    use nf_formats::{levelbin::LevelBin, map::MapFile};
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let lb = LevelBin::parse(&data)?;
+    std::fs::create_dir_all(out_dir)?;
+    let mut n = 0;
+    for e in lb.entries.iter().filter(|e| matches!(e.kind, 0 | 1 | 2 | 11)) {
+        let Ok(map) = MapFile::parse(lb.data(&data, e)) else { continue };
+        for blk in map.all(id) {
+            let p = blk.payload(lb.data(&data, e));
+            let out = out_dir.join(format!("{}_{id:02x}_{n}.bin", level_name.trim_end_matches(".bin")));
+            std::fs::write(&out, p)?;
+            println!("{} kind {} -> {} ({} bytes)", e.name, e.kind, out.display(), p.len());
+            n += 1;
+        }
     }
     Ok(())
 }

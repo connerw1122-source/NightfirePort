@@ -385,6 +385,43 @@ pub fn script_digest<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
     Ok(s)
 }
 
+/// Every AI path block (map block 0x05) on the disc, one row per record: `archive:map entry:index`, kind,
+/// node and link count, extra-area length, links whose ends are out of range, name, SHA-1 over (kind, parameters,
+/// extra, node positions and raw words, links). Parsing must consume each block exactly (`AiNetwork::parse`).
+pub fn ai_path_digest<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
+    let (entries, bin) = files_bin_entries(iso)?;
+    let mut s = String::from("record\tkind\tnodes\tlinks\textra\tbad_links\tname\tsha1\n");
+    let mut names: Vec<&crate::filelist::FileEntry> = entries.iter().filter(|e| e.name.to_ascii_lowercase().ends_with(".bin")).collect();
+    names.sort_by(|a, b| a.name.cmp(&b.name));
+    for fe in names {
+        let data = iso.read_bytes(bin.lba as u64 * SECTOR_SIZE as u64 + fe.offset as u64, fe.size as u64)?;
+        let Ok(lb) = crate::levelbin::LevelBin::parse(&data) else { continue };
+        for e in lb.entries.iter().filter(|e| matches!(e.kind, 0 | 1 | 2 | 11)) {
+            let raw = lb.data(&data, e);
+            let Ok(map) = crate::map::MapFile::parse(raw) else { continue };
+            for blk in map.all(0x05) {
+                let net = crate::aipath::AiNetwork::parse(blk.payload(raw))
+                    .map_err(|err| crate::buf::FormatError::Invalid(format!("{} {}: {err}", fe.name, e.name)))?;
+                for (k, p) in net.paths.iter().enumerate() {
+                    let mut h = Sha1::new();
+                    h.update(&p.kind.to_le_bytes());
+                    for v in p.params { h.update(&v.to_le_bytes()); }
+                    h.update(&p.extra);
+                    for n in &p.nodes {
+                        for v in n.pos { h.update(&v.to_le_bytes()); }
+                        for v in &n.raw { h.update(&v.to_le_bytes()); }
+                    }
+                    for l in &p.links { h.update(&l.a.to_le_bytes()); h.update(&l.b.to_le_bytes()); }
+                    let bad = p.links.iter().filter(|l| l.a as usize >= p.nodes.len() || l.b as usize >= p.nodes.len()).count();
+                    s.push_str(&format!("{}:{}:{k}\t{}\t{}\t{}\t{}\t{bad}\t{}\t{}\n", fe.name, e.name, p.kind, p.nodes.len(), p.links.len(), p.extra.len(),
+                        p.name.replace(['\t', '\n'], " ").trim(), hex(&h.finish())));
+                }
+            }
+        }
+    }
+    Ok(s)
+}
+
 /// Per level: drone placements (object type 0x0F in the main map), how many get a start script from
 /// `drone::start_danim` (or placement parameter 1) that exists in the level, and how many of those scripts' first
 /// sequence exists in the animation archive; SHA-1 over (skin, script, sequence) in placement order.
