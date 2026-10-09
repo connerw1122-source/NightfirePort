@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 # Product crates under crates/; dev-only tools under tools/ (product never depends on them).
-members = ["crates/nf-formats", "crates/nf-extract"]
+members = ["crates/nf-formats", "crates/nf-extract", "crates/nf-view"]
 
 [workspace.package]
 version = "0.0.1"

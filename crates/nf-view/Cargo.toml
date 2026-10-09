@@ -1,0 +1,15 @@
+[package]
+name = "nf-view"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Level viewer for 007: Nightfire (PS2) data read from the user's own disc image"
+
+[dependencies]
+nf-formats = { path = "../nf-formats" }
+anyhow.workspace = true
+bytemuck.workspace = true
+winit = "0.30.13"
+wgpu = "30.0.1"
+pollster = "1.0.1"
+glam = "0.34.1"

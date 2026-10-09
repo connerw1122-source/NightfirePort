@@ -224,3 +224,28 @@ The user confirmed gameplay and approved stopping the mcp-pine bridge (node pid 
   it in my header split; their writer turns "/" into "__". Their decoder was never modified.
 - Shell/Python edits of Rust strings hit the `\\` collapse twice more (a `sed` and a Python heredoc silently did not
   match); redone with the editor. CLAUDE.md already forbids it; I must stop trying.
+
+## 0010 — World placement and the first viewer (2026-10-08)
+
+**Done**
+- Read `parsemap_block_map_data_static`, `parseentity_transform_bounding_box`, `RotMatrix`, `Mat_SetTrans`.
+  docs/formats/placement.md; `placement.rs` (records, `object_matrix` with the decomp's exact entries); `level.rs`
+  (archive assembly, index/hash resolution); CLI `level-summary`, `level-export` (world OBJ); golden `levels.tsv` +
+  opt-in test (also asserts every placement resolves). 45 unit + 9 opt-in tests pass.
+- Survey: 23,329 records; every block ends exactly; all index and hashcode references resolve (all 36 levels).
+- With the user's approval added winit 0.30.13, wgpu 30.0.1, pollster 1.0.1, glam 0.34.1 and wrote `nf-view`:
+  world-space buffers per material, GS-modulate shader (vertex colour 0x80 = 1.0), free-fly camera with raw mouse
+  deltas → yaw/pitch, headless `--shot`. `png.rs` moved from nf-extract into nf-formats for screenshots.
+- First render of level 07000001 from the `Player1` start: recognisably correct interior (textures, baked vertex
+  lighting, alpha cut-outs, courtyard through the windows); 331 instances, 57,491 triangles, 199 materials, < 1 s.
+
+**Failed / corrected**
+- The geometry golden from WORKLOG 0009 had been generated before the params-follow-gfx pairing fix, so it failed
+  now; the per-archive counts were identical and only the row hashes (names) changed. Regenerated. (I should have
+  regenerated it right after that fix.)
+- wgpu 30 / glam 0.34 API differences fixed from their sources: `Instance::new(InstanceDescriptor::
+  new_without_display_handle())`, `queue.present(frame)`, `Option` vertex-buffer layouts; glam 0.34 moved camera
+  helpers, so the viewer builds its projection and view matrices explicitly.
+
+**Open**
+- Handedness/yaw vs the game (U-023): needs a comparison with PCSX2.

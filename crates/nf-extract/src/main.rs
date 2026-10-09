@@ -17,11 +17,8 @@
 //! nf-extract drivingsym <iso>              DRIVING/DRIVING.SYM as TSV (stdout)
 //! ```
 
-#[allow(dead_code)]
-mod png;
-
 use anyhow::{bail, Context, Result};
-use nf_formats::{disc, elf::Elf, iso9660::IsoImage, sha1, symfile};
+use nf_formats::{disc, elf::Elf, iso9660::IsoImage, png, sha1, symfile};
 use std::path::Path;
 
 fn main() -> Result<()> {
@@ -41,7 +38,9 @@ fn main() -> Result<()> {
         "tex-export" => tex_export(&IsoImage::open(a(1)?)?, Path::new(a(2)?), args.get(3).map(String::as_str)),
         "gfx-list" => { print!("{}", disc::geometry_entries(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "gfx-digest" => { print!("{}", disc::geometry_digest(&disc::geometry_entries(&IsoImage::open(a(1)?)?)?)); Ok(()) }
-        "gfx-boxes" => gfx_boxes(&IsoImage::open(a(1)?)?),
+        "level-summary" => { print!("{}", disc::level_summary(&IsoImage::open(a(1)?)?)?); Ok(()) }
+        "level-export" =>level_export(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?), args.get(4).is_some_and(|x| x == "all")),
+        "gfx-boxes" =>gfx_boxes(&IsoImage::open(a(1)?)?),
         "gfx-export" =>gfx_export(&IsoImage::open(a(1)?)?, Path::new(a(2)?), args.get(3).map(String::as_str)),
         "bigf-extract" => bigf_extract(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?)),
         "symtab" => symtab(Path::new(a(1)?)),
@@ -156,6 +155,34 @@ fn gfx_export(iso: &IsoImage, out: &Path, only: Option<&str>) -> Result<()> {
         Ok(())
     })?;
     println!("{written} OBJ files -> {}", out.display());
+    Ok(())
+}
+
+/// One world-space OBJ of a level archive's main-map placements (`all`: also dynamic entities), plus statistics.
+fn level_export(iso: &IsoImage, archive: &str, out: &Path, all: bool) -> Result<()> {
+    use nf_formats::{level::Level, placement::transform};
+    use std::fmt::Write as _;
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(archive)).with_context(|| format!("no {archive} in FILES.BIN"))?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let level = Level::parse(&data)?;
+    let (inst, missing) = level.instances(!all);
+    let mut s = String::new();
+    let (mut base, mut tris, mut skinned) = (1usize, 0usize, 0usize);
+    for i in &inst {
+        let obj = &level.maps[i.map].objects[i.object];
+        if obj.gfx.is_skinned() { skinned += 1; }
+        let _ = writeln!(s, "g {}_{}", level.maps[i.map].name, obj.name.replace(' ', "_"));
+        for b in obj.gfx.leaves.iter().flat_map(|l| &l.batches) {
+            for v in &b.verts { let p = transform(&i.matrix, v.pos); let _ = writeln!(s, "v {} {} {}", p[0], p[1], p[2]); }
+            for t in b.triangles() { let [a, b2, c] = t.map(|k| k as usize + base); let _ = writeln!(s, "f {a} {b2} {c}"); tris += 1; }
+            base += b.verts.len();
+        }
+    }
+    std::fs::write(out, s)?;
+    let main = level.main_map().map(|m| level.maps[m].name.clone()).unwrap_or_default();
+    println!("{archive}: {} maps, main map {main}, {} instances ({} skinned, not drawn), {missing} unresolved, {tris} triangles -> {}",
+        level.maps.len(), inst.len(), skinned, out.display());
     Ok(())
 }
 

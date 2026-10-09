@@ -13,4 +13,6 @@
 | G-014 | Read the VU1 microcode (ACTION.ELF `.vutext` 0x241c80, 0x2880 bytes, + DVP overlays) to confirm the batch semantics: signed V4-8 = normal + no-kick flag, UV use (ST·Q?), entry points 0 (clipped) / 2 (unclipped), lighting. Needs a VU disassembler (Ghidra EE extension covers VU? check). | ps2gfx.md confidence "medium" for these. |
 | G-015 | Skinned PS2_GFX objects (582 leaves; G's skin info ≠ 0): REF tags with UNPACK codes whose data the skinning code (`CacheSkin` 0x1112c0, `SkinIt` 0x10bf30) provides at run time. | |
 | G-016 | World assembly: place objects using map static data (block 0x1A, `parsemap_create_dynamic_objects`), cels, portals (0x21). Needed for a level viewer. | |
+| G-017 | Port `PS2Sinf3` (the game's sine approximation) so object matrices are bit-exact. | placement.md. |
+| G-018 | nf-view: per-object GS state (alpha blend/test, CLAMP, filtering from the first CNT's `DIRECT` A+D writes), animated textures, skinned meshes, sky, fog. Currently: alpha test at 0.5, repeat, bilinear. | U-021. |
 | G-011 | ghidra-mcp: `connect_instance` cannot select a second server over UDS on Windows ("no instance matching" while listing it), so ours runs on 8089 instead of RC2's. Report upstream or add a second bridge entry if both projects are needed at once. | WORKLOG 0004. |

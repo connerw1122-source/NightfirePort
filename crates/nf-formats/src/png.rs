@@ -1,12 +1,11 @@
 //! A small PNG writer (no dependencies): CRC-32, Adler-32, and a zlib stream of one fixed-Huffman deflate block
 //! with greedy LZ77 matching (hash chains, 32 KiB window). Enough for exported textures to be a fraction of their
-//! raw size and readable by every PNG decoder.
+//! raw size and readable by every PNG decoder. Copied from RC2Port (`rc2-extract/src/png.rs`).
 //!
 //! Two pixel forms:
-//! * **indexed** (colour type 3, 8-bit): the PS2 textures are 8-bit indices into a 256-entry CLUT, so the PNG keeps
-//!   the indices exactly; `PLTE` holds the CLUT in linear (un-swizzled) order and `tRNS` its alpha scaled
-//!   0x80 → 255. Decoding gives exactly `rc_formats::texture::decode_indexed8`.
-//! * **RGBA** (colour type 6, 8-bit), for images that are not paletted (decoded mip chains).
+//! * **indexed** (colour type 3, 8-bit): palette indices kept exactly; `PLTE`/`tRNS` hold the RGBA palette as given
+//!   (callers convert PS2 alpha first, e.g. `texture::Texture::palette_rgba8`).
+//! * **RGBA** (colour type 6, 8-bit), e.g. viewer screenshots.
 //!
 //! Scanlines use filter 0 (none). The tests decode our own output with an in-test inflater (stored and fixed
 //! blocks) and check every chunk CRC and the Adler-32.

@@ -289,6 +289,25 @@ pub fn geometry_digest(entries_tsv: &str) -> String {
     s
 }
 
+/// Per level archive with a main map: `archive \t maps \t main map \t placements \t cels \t resolved \t unresolved \t
+/// triangles (all placements)`.
+pub fn level_summary<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
+    let (entries, bin) = files_bin_entries(iso)?;
+    let mut s = String::from("archive\tmaps\tmain_map\tplacements\tcels\tresolved\tunresolved\ttriangles\n");
+    for fe in entries.iter().filter(|e| e.name.to_ascii_lowercase().ends_with(".bin")) {
+        let data = iso.read_bytes(bin.lba as u64 * SECTOR_SIZE as u64 + fe.offset as u64, fe.size as u64)?;
+        let level = crate::level::Level::parse(&data)?;
+        let Some(m) = level.main_map() else { continue };
+        let (inst, missing) = level.instances(false);
+        let tris: usize = inst.iter().map(|i| level.maps[i.map].objects[i.object].gfx.leaves.iter()
+            .flat_map(|l| &l.batches).map(|b| b.triangles().len()).sum::<usize>()).sum();
+        let pl = &level.maps[m].placements;
+        s.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{}\t{missing}\t{tris}\n", fe.name, level.maps.len(), level.maps[m].name,
+            pl.len(), pl.iter().filter(|p| p.creates_cel()).count(), inst.len()));
+    }
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
