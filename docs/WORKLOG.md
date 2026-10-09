@@ -1416,3 +1416,49 @@ glare, the spot circles the ground (vision-checked, work/renders/sl_300.png).
 Not ported (G-033): the spot's dynamic light and flicker (renderer work), `Gas_Init` smoke (no particle
 system; its 6 RNG calls per puff are NOT consumed — better a missing draw than a wrong one), the corona
 alpha byte into nf-view's shader, `Control_NextLOD` (no LOD system).
+
+## 0073 — Level coronas ported: static glow quads, no update function at all
+
+HANDOFF §5.1's next object after the searchlights. The re-check first (disassembly of `Corona_Create`
+0x18da00 / `Corona_Update` 0x18da78, the `control_funcs` table read from the ELF, the live snapshot walk
+`scripts/coronas_snapshot.py`), then the port — which turned out to be documentation plus a render hook,
+because the objects never change after create.
+
+Spec corrections to the research pass (world-objects.md rewritten):
+- **`control_funcs[1]` is empty.** `Corona_Create` makes class-1 objects (`sb v1,255(s0)` with v1 = 1,
+  0x18da44), and the dispatch table's entry 1 (0x26f894) is zero: **no update function ever runs**. The
+  research pass had `Corona_Update` as the updater — but its pointer sits in **`control_funcs[69]`**
+  (class 0x45, 0x26fbcc), a *runtime* class: no class-0x45 object exists at level start [L], and no
+  `li 0x45; sb +0xFF` store exists anywhere in ACTION.ELF's text (scanned) — creator unknown (U-042).
+  The 13 live coronas keep their create state forever: alpha 0xFF, scale 1.0, `+0xFA` 0, `+0xF4` 0.
+- **The class byte of `control_init_object` is NOT the object class**: init sets `+0xFC = 2` (the drawn
+  byte, not the class); the class comes from the memset (0) or the creator's explicit store. This un-
+  confused the 275 live class-1 objects (the 13 coronas among snow and script entities).
+- `Corona_Create`'s `+0xF0 = glist+0x44` is `Control_SetGList`'s OR with preserved bits 0x30008000; for
+  these 13 the glist word IS the object's own flags (0x22D Glow2/test1, 0x229 Window_corona), bit 0x1
+  holding → `View_AddObjects` draw list 1, the alpha list, mirrored (−1) distance sort; `+0xDC = 0` (no
+  distance fade); the leaves' own GS blend state draws them.
+- Live [L]: 13/13 matched to placements 14, 15, 16, 55, 260 (`Corona_Glow2`), 231–237 (`Window_corona`,
+  the castle windows), 245 (`Corona_test1`); `obj+0x30` = the placement translation, rotations verbatim.
+
+The port: `crates/nf-game/src/corona.rs` (the type-0xFC placement filter — there is nothing else to
+simulate: no instance, no RNG, no tick); `nf-view` skips 0xFC in the `--all` instance loop (like 0xDE)
+and adds the 13 as World-layer instances at their placement transforms — the existing alpha-list pass
+(object-flags bit 0x1 → pass 3) and each leaf's GS blend state do the glowing. Golden test
+`crates/nf-game/tests/corona_live.rs`: the 13 (placement, name, flags) tuples from the live walk, the
+alpha-list bit, and doors (0xDB) as the discriminator sister.
+
+Environment: the sandbox was recycled — `tools-bin/alsa-prefix` (WORKLOG 0071) re-extracted from the
+Debian `libasound2-dev` .deb; `nfenv.sh` unchanged. One gotcha re-learned: `NF_ISO` must be absolute
+(`cargo test` runs from the crate dir; a relative path fails in `bank_live` with a NotFound unwrap).
+
+Verification (renders, lavapipe): the 13 quads enter the draw as 13 additive (blend 0x48) pass-3
+materials, 26 triangles — exactly +13/+26 over `NF_HIDE=Window_corona,Corona_Glow2,Corona_test1`
+(the corona path now honours NF_HIDE like the instance loop). They glow from the castle's outer
+(+z) side — `--cam 13 41 60 π 0` shows warm lit windows (49,926 differing pixels against the hidden
+render, max delta 440; `work/renders/corona_windows_lit.png`); from the courtyard the wall occludes
+them (ZTST 2 GEQUAL in the game — normal occlusion, the PS2 Z growing toward the viewer). The
+alpha-list distance fade (`min(⌊zb/128⌋,255)/255`, zb ≈ 56k at 34 units) does not attenuate them.
+Leaf state [D]: ALPHA_1 0x7f00000048 (additive), TEST_1 0x5001b (ATE aref 1), ZBUF_1 0x131000000
+(no z-write), verts rgba (178, 172, 147, 128), texture: map texture 1 — 128×128, hashcode
+0xFFFFFFFF, a 16-step gray ramp palette (the radial glow), all alpha 128.

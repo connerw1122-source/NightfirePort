@@ -1,8 +1,9 @@
-# Dynamic objects at level start (07000005): searchlights ported (WORKLOG 0072); the rest not drawn yet
+# Dynamic objects at level start (07000005): searchlights (WORKLOG 0072) and coronas (0073) ported; the rest not drawn yet
 
 Build: ACTION.ELF `e7ffdcb3…`. Tags: [M] decomp, [L] snapshot `work/ee_start_05.bin`, [S] suggested. Source: a
 research pass (subagent, 2026-10-09). **Searchlights re-checked here 2026-10-10** (disassembly of 0x1cb4f8/0x1cb900
-plus the snapshot; corrections below); the rest is the research pass, not yet re-checked.
+plus the snapshot; corrections below); **coronas re-checked 2026-10-10** (disassembly + snapshot + the `control_funcs`
+table); the rest is the research pass, not yet re-checked.
 
 ## Framework [M, L]
 
@@ -28,10 +29,38 @@ plus the snapshot; corrections below); the rest is the research pass, not yet re
 | **Wine truck** (9 rigid parts + 2 headlight coronas) | script `06000A22` (type-7 entry, 1856 bytes) played by ScriptPlayer placement #37 (type 0xD9, p0 = script, p2 = 1) | `SP_CreateScriptPlayer` 0x1db9a8 / `SP_Update` 0x1dbda8 → `Script_AnimStart` 0x1d8f40 |
 | Snow (4096 flakes) | 0xDF `SNOW_gen` ×2 + 0x32 `Effect_Snow_*` ×18 | docs/systems/render.md |
 | Searchlights (7 mounts, 7 heads, 6 beams, 7 coronas, 2 spots) | 0xDE ×29 | `Searchlight_Create` 0x1cb4f8 / `Searchlight_Update` 0x1cb900 — **spec re-checked 2026-10-10, see below** |
-| Coronas | 0xFC ×13 | `Corona_Create` 0x18da00, `Corona_Update` 0x18da78 |
+| ~~Coronas~~ | 0xFC ×13 | `Corona_Create` 0x18da00 — **ported (WORKLOG 0073), see below**; `Corona_Update` 0x18da78 is a different, runtime class (0x45, U-042) |
 | Doors (5), level-exit gates (2) | 0xDB, 0xE8 | `Door_Create` 0x136100 / `Door_Update` 0x1363c8; `Trigger_LoadLevelCreate` 0x1b2950 |
 | Helicopter | 0x2F ×2 (+ ScriptPlayers `06000046` / `06000047`) | `Copter_Create` 0x17d340 / `Copter_Update` 0x17dbb8 |
 | Ladder, zip wire, grapple pulleys, placed pickups | 0x22, 0x3E (rotation z negated), 0x3A, 0xF0 | `Ladder_Create` 0x1966c0, `Wire_Create` 0x1981d8, `Grapple_Create` 0x198298, `Pickup_Create` |
+
+## Coronas [M disassembly + decomp, re-checked 2026-10-10; L snapshot]
+
+Type-0xFC placements dispatch to `Corona_Create` (0x18da00) → `control_create_object(0, &translation, &rotation,
+NULL)` → **class 1** (`obj+0xFF = 1`), `obj+0xD8 = glist`, `obj+0xF0 = glist+0x44 | (old & 0x30008000)
+(`Control_SetGList` 0x134960 — the decompile's `+0xF0 = *(glist+0x44)` drops the preserved-bits OR),
+`build_LinkToRoom`, no instance, **no RNG draw**. `control_funcs[1]` is **empty** (0x26f894, table read from the
+ELF): **no update function ever runs** — the 13 live objects keep their create-time state forever (alpha
+`+0x106 = 0xFF`, scale `+0xE8 = 1.0`, `+0xFA = 0`, `+0xF4 = 0`; the drawn byte `+0xFC` cycles 2→1→0 only
+through the renderer's decrement pass at the tail of `control_movement_object_handler` 0x1336f8, reset to 2
+by `View_AddObjects` when drawn).
+
+Live [L]: 13 objects — `Corona_Glow2` ×5 (placements 14, 15, 16, 55, 260), `Window_corona` ×7 (231–237,
+the castle windows), `Corona_test1` ×1 (245); `obj+0xF0` = 0x22D (Glow2, test1) / 0x229 (Window) — the
+glist's +0x44, which is the object's own flags word. Bit 0x1 → `View_AddObjects` (0x1e62d8) **draw list 1**
+with a mirrored (−1) distance sort key — the alpha list; `+0xDC = 0` so the distance-fade branch is skipped;
+`+0xFA` has neither 0x8 (×50 scale) nor 0x10 (+2000 depth bias); each leaf's own GS blend state draws them.
+
+`Corona_Update` (0x18da78) sits in **`control_funcs[69]`** (class 0x45, pointer read from the table at
+0x26fbcc): a LOS alpha fade (±0x10 per `GameState+52` parity tick, `obj+0xF0 |= 0x2000` while clear) — a
+*runtime* corona class. No class-0x45 object exists at level start and no creator was found in the static
+disassembly (U-042) — the truck's headlight `Corona_2` script entities are class 0 (`Script_CreateEntity`'s
+generic path, no class store). Nothing to port until a 0x45 creator shows up.
+
+**Port status**: `crates/nf-game/src/corona.rs` (the placement filter + the spec) — the objects are static,
+so the "simulation" is the placement transform; `nf-view` adds the 13 as World-layer instances (the alpha
+list via the object-flags bit 0x1, each leaf's GS blend). Golden test `corona_live.rs` (names, flags,
+the alpha-list bit; doors 0xDB as the discriminator).
 
 ## The truck [M, L]
 
@@ -154,7 +183,8 @@ shader, and the bullet child-list path remains the U-041 stand-in.
 ## Open
 
 ScriptPlayer #71 (`06000074`, a Loadable) at the start trigger; whether AnimObject flag 0x8000 selects the absolute
-root; `Corona_Update`'s caller; door opening; copter paths.
+root; door opening; copter paths. ~~`Corona_Update`'s caller~~ answered (WORKLOG 0073): `control_funcs[1]` is empty —
+the 13 level coronas never update; `Corona_Update` belongs to runtime class 0x45 (U-042, no creator found).
 
 Searchlight remainder: the spot's dynamic light and its flicker (illumination is renderer work), smoke
 (`Gas_Init` — needs a particle system; 6 RNG calls per puff measured at 0x1ab060–0x1ab248, not consumed), the

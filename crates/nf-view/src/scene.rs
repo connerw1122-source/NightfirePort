@@ -715,6 +715,9 @@ impl Scene {
             // Searchlight parts are dynamic objects (`Searchlight_Update` moves them every tick): drawn from
             // the simulation below, not from their placements.
             if inst.placement.flags & 0xff == 0xde { continue; }
+            // Level coronas are dynamic objects too (`Corona_Create`, class 1 with no update function): added
+            // below from their placements so the alpha-list pass draws them (docs/systems/world-objects.md).
+            if inst.placement.flags & 0xff == 0xfc { continue; }
             // Debug: `NF_HIDE=name,name` leaves out world objects whose name contains one of them.
             if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && obj.name.contains(n)) { continue; } }
             add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds), None);
@@ -874,6 +877,23 @@ impl Scene {
         }
         for (inst, follows_camera) in &sky {
             add_instance(level, inst, if *follows_camera { Layer::SkyCamera } else { Layer::SkyFixed }, None, &mut groups, None, None);
+        }
+        // Level coronas (`Corona_Create` 0x18da00, placement type 0xFC): class-1 objects with NO update
+        // function — static glow quads at their placement transforms, in every view mode. The glist's +0x44
+        // flags word (bit 0x1: `View_AddObjects` draw list 1, mirrored sort key) is the object's own flags
+        // here, so `Layer::World` puts them in the alpha list with the leaves' own blend state [L 13/13].
+        if let Some(m) = level.main_map() {
+            for pl in nf_game::corona::placements(&level.maps[m].placements) {
+                let p = &level.maps[m].placements[pl];
+                let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                    else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
+                if let Some((map, object)) = target {
+                    // `NF_HIDE` applies here too (the 0xFC skip above leaves these out of the loop's check).
+                    if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
+                    let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
+                    add_instance(level, &inst, Layer::World, None, &mut groups, None, None);
+                }
+            }
         }
         // Searchlight parts (`Searchlight_Create`'s creation order = `part_placements`): each part's object as
         // Character-layer vertices posed by the simulation every tick — the mount and head rotating, the beam
