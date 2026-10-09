@@ -93,7 +93,18 @@ crouch-only corner, else fail; Rand(n) among the candidates. Mode 7 (type change
 candidates as mode 6 (distance > 8 also allows the crouch types); plays column 5 of the old type. Other modes: that
 column. Low nodes: modes 0/6/1/4 play +3, 2 plays +4, 3 plays 0x58.
 
+## Live check [L] (WORKLOG 0023)
+
+work/chase_trace.tsv: the gate guard (61.34, 99.50), Bond 19 units away at (79.86, 22.92, 96.0): Combat (65) →
+OutOfRange (66) → RunForCover (67; strafe 0xC, back-off 0x4, strafe 0xD around the gate pillar) → UnderCoverInit (265,
+stand-cover loop 171) → UnderCoverIdle (296, clip refilled) → UnderCoverAim (394, lean-out 176 at speed 1.5, then loop
+182) → UnderCoverFire (431) at corner node 1 (59.11, 98.69, yaw −90°), position (58.93, 99.45) — 0.28 from the
+computed in-cover point (59.21, 99.49) (U-031). The port matches the sequence, node, UnderCoverInit / Aim durations and
+the end position (0.2); RunForCover is shorter in the port (U-030).
+
 ## 07000005 [M]
+
+18 corner nodes (`nf-extract covers`), all reachable through NavPath A's emitter.
 
 Cover prop 0x30 sits in the alert set (parameters 23–25), which governs after `FirstAttack`. 8 SG5 guards have {0xA,
 0xC, 0xF, 0x30}; the snipers have 0x40 and no 0x30; two guards have an empty alert set. With default nodes they use

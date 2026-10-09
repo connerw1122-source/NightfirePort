@@ -2,6 +2,7 @@
 //! game) runs. Rendering lives elsewhere; this crate only advances state.
 
 pub mod bullet;
+pub mod cover;
 pub mod drone;
 pub mod nav;
 pub mod trig;

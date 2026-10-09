@@ -21,6 +21,7 @@ struct Level05 {
     sequences: HashMap<u32, nf_formats::anim::Sequence>,
     skeletons: HashMap<u8, nf_formats::character::Skeleton>,
     nav: nf_game::nav::Network,
+    covers: Vec<nf_game::cover::CoverNode>,
 }
 
 impl Level05 {
@@ -38,27 +39,31 @@ impl Level05 {
         let skeletons = lb.entries.iter().filter(|e| e.kind == 6).filter_map(|e| nf_formats::character::parse_skeleton(lb.data(&data, e)).ok()).map(|k| (k.id as u8, k)).collect();
         let m = level.main_map().unwrap();
         let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap(), &world, 0x0700_0005);
+        let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
         Some(Level05 {
             tables: drone::DroneAnimData::from_action_elf(&elf).unwrap(),
             props: drone::PropertyTables::from_action_elf(&elf).unwrap(),
             weapons: WeaponData::from_action_elf(&elf).unwrap(),
             sequences: disc::level_sequences(&iso, "07000005.bin").unwrap(),
-            level, scripts, world, skeletons, nav,
+            level, scripts, world, skeletons, nav, covers,
         })
     }
 
     fn data(&self) -> Data<'_> {
         Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: 0x0700_0005,
-            sequences: &self.sequences, skins: &self.level.skins, skeletons: &self.skeletons, nav: &self.nav }
+            sequences: &self.sequences, skins: &self.level.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers }
     }
 
     /// Every drone present at level start (line of sight is scheduled round robin over all of them, as in the game),
     /// optionally at a fixed alertness; and the index of the drone placed at `x`.
-    fn drones(&self, alert: Option<f32>, x: f32) -> (Vec<Drone>, usize, Rng) {
+    fn drones(&self, alert: Option<f32>, x: f32) -> (Vec<Drone>, usize, Rng) { self.drones_seeded(alert, x, 1) }
+
+    /// The same with another seed for the random stand-in (`Rand_*` is not modelled).
+    fn drones_seeded(&self, alert: Option<f32>, x: f32, seed: u32) -> (Vec<Drone>, usize, Rng) {
         let d = self.data();
         let m = self.level.main_map().unwrap();
         let list: Vec<(u32, Vec<(u32, u32)>)> = self.level.maps[m].placements.iter().map(|p| (p.flags & 0xff, p.params.clone())).collect();
-        let mut rng = Rng::new(1);
+        let mut rng = Rng::new(seed);
         let (mut drones, mut found) = (Vec::new(), None);
         for (p, role) in self.level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f).zip(drone::spawn_roles(&list)) {
             if matches!(role, drone::SpawnRole::Reinforcement { .. }) { continue; }
@@ -179,4 +184,32 @@ fn guard_patrols_like_the_game() {
         let q = at[&(sample + 11 - 60)];
         assert!(((q[0] - xz[0]).powi(2) + (q[2] - xz[1]).powi(2)).sqrt() > 0.35, "sister at sample {sample}");
     }
+}
+
+/// Live trace (work/chase_trace.tsv: Bond teleported to (79.62, 22.6, 95.96), settling at (79.86, 22.92, 96.0)): the
+/// gate guard notices him, goes Combat → OutOfRange → RunForCover (0x8C) → UnderCoverInit (31 ticks) → UnderCoverIdle →
+/// UnderCoverAim (37 ticks, lean-out 176 at speed 1.5) → UnderCoverFire behind corner node 1 (59.11, 98.69), ending at
+/// (58.93, 99.45). Seed 4 makes the port's first-sight roll pick no move, as the game did here.
+#[test]
+fn guard_takes_cover_like_the_game() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 4);
+    let mut sim = Drones::new(drones, rng);
+    let player = bond_at([79.86, 22.92, 96.0]);
+    for _ in 0..700 { sim.tick(&d, &player); }
+    let g = &sim.list[gi];
+    let states: Vec<u8> = g.log.iter().map(|(_, s)| *s).filter(|s| *s >= 0x58).collect();
+    assert_eq!(&states[..7], &[0x58, 0x5a, 0x8c, 0x93, 0x94, 0x95, 0x96], "{:x?}", g.log);
+    let at = |s: u8| g.log.iter().find(|(_, x)| *x == s).map(|(f, _)| *f).unwrap();
+    assert!((28..=34).contains(&(at(0x94) - at(0x93))), "UnderCoverInit lasted {} (live 31)", at(0x94) - at(0x93));
+    assert!((32..=40).contains(&(at(0x96) - at(0x95))), "UnderCoverAim lasted {} (live 37)", at(0x96) - at(0x95));
+    assert_eq!(g.cover, Some(1), "corner node 1");
+    let err = ((g.pos[0] - 58.93).powi(2) + (g.pos[2] - 99.45).powi(2)).sqrt();
+    assert!(err < 0.4, "in cover at ({:.2}, {:.2}), {err:.2} from the live position", g.pos[0], g.pos[2]);
+    // Sister: with Bond 6 units away (the first test's setup) the same guard never runs for cover.
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 4);
+    let mut near = Drones::new(drones, rng);
+    for _ in 0..300 { near.tick(&d, &bond_at([67.31, 26.5, 99.47])); }
+    assert!(near.list[gi].log.iter().all(|(_, s)| *s != 0x8c), "sister: cover must depend on the situation");
 }

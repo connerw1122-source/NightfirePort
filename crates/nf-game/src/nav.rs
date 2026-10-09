@@ -119,7 +119,7 @@ impl Network {
     }
 
     /// `AINetwork_BoundsTest` over every wall (one cel).
-    fn bounds_test(&self, a: V3, b: V3, near: bool, want_hit: bool) -> (i32, Option<V3>) {
+    pub fn bounds_test(&self, a: V3, b: V3, near: bool, want_hit: bool) -> (i32, Option<V3>) {
         let mut best: Option<(f32, V3)> = None;
         for w in &self.walls {
             if let Some(i) = intersects(w, a, b) {
@@ -256,6 +256,54 @@ impl Network {
             flags[cur] |= OPEN;
         }
         Err(6)
+    }
+}
+
+impl Network {
+    /// `AINetwork_NodeSearch` (mode 1, limit 625): the first node (nearest first, 2D) reachable from `pos`.
+    pub fn node_from(&self, world: &CollisionWorld, path: usize, pos: V3) -> Option<u16> {
+        for i in self.candidates(path, pos, 625.0) {
+            match self.move_test(world, pos, self.paths[path].nodes[i].pos, false, false).0 {
+                1 => return Some(i as u16),
+                -1 => return None,
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// `AINetwork_EmitPath(limit 255)` (0x158cf8): path distances from `pos` to every node of `path` (a flood from the
+    /// first reachable node, link cost len × (used + 1), the same list quirks as A*), stored as bytes:
+    /// trunc(g × 255 / 256) capped at 254, 0xFF = not reached.
+    pub fn emit(&self, world: &CollisionWorld, path: usize, pos: V3) -> Vec<u8> {
+        let p = &self.paths[path];
+        let n = p.nodes.len();
+        const OPEN: u32 = 0x4000_0000;
+        let (mut flags, mut g) = (vec![0u32; n], vec![255.0f32; n]);
+        let Some(start) = self.node_from(world, path, pos) else { return vec![0xff; n] };
+        let s = start as usize;
+        g[s] = dist2d(pos, p.nodes[s].pos);
+        flags[s] |= OPEN;
+        let mut open = vec![s];
+        while !open.is_empty() {
+            let cur = open.remove(0);
+            flags[cur] &= !OPEN;
+            for &li in &p.adj[cur] {
+                let l = &p.links[li as usize];
+                let nb = if l.a as usize == cur { l.b } else { l.a } as usize;
+                let cost = g[cur] + l.len;
+                if cost > 255.0 { continue; }
+                if flags[nb] & 0xC000_0000 != 0 && g[nb] <= cost { continue; }
+                g[nb] = cost;
+                if flags[nb] & OPEN == 0 {
+                    let at = open.iter().position(|&o| g[o] > cost).unwrap_or(open.len());
+                    open.insert(at, nb);
+                    flags[nb] |= OPEN;
+                }
+            }
+            flags[cur] |= OPEN;
+        }
+        g.iter().map(|&v| if v == 255.0 { 0xff } else { ((v / 256.0).abs() * 255.0).min(254.0) as u8 }).collect()
     }
 }
 

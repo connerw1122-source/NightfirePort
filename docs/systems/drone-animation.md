@@ -38,6 +38,19 @@ set 0's entry when the set's is 0; 0x06000000 (both 0) means no animation (`Dron
    danim 0x7D / 0x32; otherwise **0x11A = 282**, `DroneAnimStates[0x24]`'s own danim: anim state 0x24, stand idle.
    `DroneAnim_SetStandIdleAnim` (0x13ca68) later picks states 0x25–0x27 at random for some modes.
 
+## Calls, blends and speed [M, L] (WORKLOG 0023)
+
+- `DroneAnimStates[s]`: +0 the state's own danim, +8 the transition list: 6-byte records (requested state, 0 = any;
+  variant count; danim; **blend frames**; **wait for the blend**), ending with 0xFF. `GetDAnimForCall` searches the
+  current state's list, else state 0's (generic records: blend 30 with wait, 60 for 0x6F–0x74); a variant below the
+  count is added to the danim.
+- `SetDAnimInternal` starts the danim (state, class, script, speed, follow-on) and `SetHTAnim` blends the old script out
+  over the blend frames (`+0x538` until it stops; 30 frames for anims with flag 0x100). `CallHandler` completes a call
+  when the requested state plays with class 2 or 9 (class 1 with `+0x57A` clear) and no wait is pending (`+0x578`).
+- `Drone_AnimInfo +0x14`: playback speed (1.5 for lean-outs such as 176).
+- [L] work/chase_trace.tsv: UnderCoverInit's call to 0x1A from strafe 0xD (no record → state 0's, blend 30) completes
+  31 ticks later; lean-out 176 (51 frames) lasts 35 ticks.
+
 ## Weapon
 
 `NDrone2_DefaultInit` stores the weapon (parameter 9; 1 when 0, 0 for skin 0x0500001E) in `anim+0x62`; what is drawn

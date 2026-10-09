@@ -100,6 +100,7 @@ pub struct Sim {
     pub skins: HashMap<u32, Skin>,
     pub skeletons: HashMap<u8, Skeleton>,
     pub nav: nf_game::nav::Network,
+    pub covers: Vec<nf_game::cover::CoverNode>,
 }
 
 impl Sim {
@@ -108,7 +109,7 @@ impl Sim {
     pub fn step(&mut self, camera: [f32; 3], look: [f32; 3]) {
         let floor = self.world.floor_below(camera, 4.0).unwrap_or(camera[1] - 1.6);
         let player = nf_game::drone::Player { pos: [camera[0], floor + 0.4, camera[2]], target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look };
-        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav };
+        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers };
         self.drones.tick(&d, &player);
     }
 
@@ -397,7 +398,8 @@ impl Scene {
             let m = level.main_map()?;
             let world = nf_game::world::CollisionWorld::build(level, &level.instances(true).0);
             let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, d.level_id);
-            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav };
+            let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
+            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers };
             let mut rng = nf_game::drone::Rng::new(0x1234_5678);
             let mut list = Vec::new();
             let mut by_pos: HashMap<[u32; 3], usize> = HashMap::new();
@@ -411,7 +413,7 @@ impl Scene {
             }
             let char_drone = characters.iter().map(|c| by_pos.get(&[c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]].map(f32::to_bits)).copied()).collect();
             let seq_index = by_hash.clone();
-            Some(Sim { drones: nf_game::drone::Drones::new(list, rng), tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav })
+            Some(Sim { drones: nf_game::drone::Drones::new(list, rng), tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers })
         });
         Scene { vertices, indices, materials, textures, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }

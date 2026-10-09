@@ -30,6 +30,14 @@ pub mod state {
     pub const NO_OPPONENT: u8 = 0x60;
     pub const DRONE_STUCK: u8 = 0x7f;
     pub const RUN_FOR_COVER: u8 = 0x8c;
+    pub const UNDER_COVER_INIT: u8 = 0x93;
+    pub const UNDER_COVER_IDLE: u8 = 0x94;
+    pub const UNDER_COVER_AIM: u8 = 0x95;
+    pub const UNDER_COVER_FIRE: u8 = 0x96;
+    pub const UNDER_COVER_RETURN: u8 = 0x99;
+    pub const UNDER_COVER_TYPE_CHANGE: u8 = 0x9a;
+    pub const UNDER_COVER_LEAVE: u8 = 0x9b;
+    pub const UNDER_COVER_LEAVE_NOW: u8 = 0x9c;
     pub const AIM_STAND: u8 = 0x67;
     pub const AIM_STAND_FIRE: u8 = 0x68;
     pub const AIM_STAND_RELOAD: u8 = 0x69;
@@ -105,6 +113,8 @@ pub struct Data<'a> {
     pub skeletons: &'a HashMap<u8, nf_formats::character::Skeleton>,
     /// AI paths and boundaries (block 0x05).
     pub nav: &'a crate::nav::Network,
+    /// Cover nodes (placements 0xE5 / 0xE6).
+    pub covers: &'a [crate::cover::CoverNode],
 }
 
 /// Bond as the drones see him.
@@ -148,12 +158,17 @@ pub struct Animator {
     pub script: Option<u32>,
     /// Ticks since the script started (script time = 1 + this).
     pub time: u32,
+    /// Script time with fractions, and the playback speed (`Drone_AnimInfo +0x14`, e.g. 1.5 for lean-out 176).
+    pub ftime: f32,
+    pub speed: f32,
     /// `Drone+0x56A` anim state of the playing danim, `+0x568` its class (2 = aiming).
     pub state: u16,
     pub class: u8,
     /// Pending `DroneAnim_CallAnim`: (anim state, AI state on completion, message on completion).
     pub call: Option<(u16, u8, u8)>,
     pub started_call: bool,
+    /// Frames left of the blend the call waits for (`+0x578` with the blend-out script `+0x538`).
+    pub blend_wait: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -250,6 +265,23 @@ pub struct Drone {
     pub switch_channel: u8,
     pub channel_on: bool,
     pub enabled: bool,
+    /// Index in `Drones::list` (cover ownership) and the state being entered during an exit message.
+    pub index: usize,
+    pub exiting_to: u8,
+    /// Cover: node (`+0xBB4`), side (`+0xBB8 & 3`), type (`+0xBBB`), leave flags (`+0xBB8` 4 / 8), the in-cover point
+    /// (`+0x830`), the goal point (`+0x710`), `+0x4F8` 0x800 (claimed this run) / 0x1000 (has cover), `+0xCD8` tries.
+    pub cover: Option<usize>,
+    pub cover_side: u8,
+    pub cover_type: u8,
+    pub cover_leave: u8,
+    pub cover_point: V3,
+    pub goal: Option<V3>,
+    pub cover_claimed: bool,
+    pub has_cover: bool,
+    pub cover_tries: u32,
+    /// Lent by `Drones::tick`: the cover nodes' run-time state and the enabled drones' positions.
+    pub cover_rt: Vec<crate::cover::CoverRt>,
+    pub others: Vec<Option<V3>>,
     /// Trace of (frame, state) changes, for comparisons with PCSX2.
     pub log: Vec<(u32, u8)>,
 }
@@ -278,12 +310,14 @@ impl Drone {
             los: false, seen: false, ever_seen: false, visibility: 0.0, seen_ticks: 0, unseen_ticks: 0, vision_on: false,
             dist: 0.0, yaw_to_opp: 0.0,
             state: state::GLOBAL, prev_state: 0, next_state: None, entered: 0, timer_c: None,
-            anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, started_call: false },
+            anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, started_call: false, blend_wait: 0, ftime: 0.0, speed: 1.0 },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
             shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
-            switch_channel: param(3) as u8, channel_on: false, enabled: true,
+            switch_channel: param(3) as u8, channel_on: false, enabled: true, index: 0, exiting_to: 0,
+            cover: None, cover_side: 0, cover_type: 0, cover_leave: 0, cover_point: pos, goal: None, cover_claimed: false, has_cover: false, cover_tries: 0,
+            cover_rt: Vec::new(), others: Vec::new(),
         };
         dr.init_properties(d, &param);
         dr.set_danim(d, start_danim);
@@ -408,6 +442,12 @@ impl Drone {
         self.anim.class = info[0xc];
         self.anim.script = d.tables.script_for(danim, self.anim_set);
         self.anim.time = 0;
+        self.anim.ftime = 0.0;
+        let speed = f32::from_le_bytes([info[0x14], info[0x15], info[0x16], info[0x17]]);
+        self.anim.speed = if speed > 0.0 && speed.is_finite() { speed } else { 1.0 };
+        // A new script has no previous root: no motion until its second tick (a call starting a danim after this
+        // tick's root motion would otherwise move by the old sequence's root minus the new one's).
+        self.root_prev = None;
     }
 
     /// `DroneAnim_CallAnim(blend, state, variant, next AI state, completion message)`.
@@ -421,13 +461,17 @@ impl Drone {
         if self.anim.state == state && next_ai == 0 && done_msg == 0 { self.anim.call = None; return; }
         self.anim.call = Some((state, next_ai, done_msg));
         self.anim.started_call = false;
+        self.anim.blend_wait = 0;
     }
 
     /// Advances the script; at its end continues with the danim's follow-on (`Drone_AnimInfo +10`); handles a pending
     /// call (`DroneAnim_CallHandler`): start the transition danim, complete when the anim state is reached.
     fn update_anim(&mut self, d: &Data) -> Option<(u8, u8)> {
         let before = (self.anim.script, self.anim.danim);
-        self.anim.time += 1;
+        // Playback speed (`Drone_AnimInfo +0x14`, passed to the script by `SetHTAnim`): [L] lean-out 176 (51 frames at
+        // 1.5) lasted 35 ticks live (work/chase_trace.tsv).
+        self.anim.ftime += self.anim.speed;
+        self.anim.time = self.anim.ftime as u32;
         let len = self.anim.script.and_then(|h| d.scripts.get(&h)).map(|s| s.length as u32).unwrap_or(1);
         let mut restarted = false;
         // A one-shot danim of the requested state that just finished completes the call.
@@ -443,23 +487,32 @@ impl Drone {
             finished_wanted = self.anim.call.is_some_and(|(w, _, _)| w == self.anim.state && self.anim.started_call);
             let info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
             let next = u16::from_le_bytes([info[10], info[11]]);
-            if next != 0 && next != self.anim.danim { self.set_danim(d, next) } else { self.anim.time = 0 }
+            if next != 0 && next != self.anim.danim { self.set_danim(d, next) } else {
+                self.anim.ftime = (self.anim.ftime - len as f32).max(0.0);
+                self.anim.time = self.anim.ftime as u32;
+            }
             restarted = true;
         }
         let same = before == (self.anim.script, self.anim.danim);
         self.root_motion(d, restarted || !same, if same { wrap_end } else { None });
         let (want, next_ai, done_msg) = self.anim.call?;
-        // CallFullyComplete: the requested state is playing as a loop (class 2: aim, crouch-aim, idle …), or a one-shot
-        // danim of it (a step, a roll, a reload) has played to its end. *Suggested* from the trace (steps last
-        // their animation); `DroneAnim_CallHandler`'s exact test is not read yet.
-        if finished_wanted || (self.anim.state == want && self.anim.class == 2) {
+        // `DroneAnim_CallHandler` (0x13add0): complete when the requested state plays with class 2 or 9 (or a one-shot
+        // of it ended: class 1, *suggested*) and the blend the call waits for is over; otherwise start the transition
+        // (`GetDAnimForCall`: blend frames and wait flag from the record). [L] work/chase_trace.tsv: UnderCoverInit
+        // reaches loop 171 at once through state 0's generic record (blend 30, wait) and completes 31 ticks later;
+        // UnderCoverAim's transition 176 (class 5) leads into loop 182 and completes then.
+        self.anim.blend_wait = self.anim.blend_wait.saturating_sub(1);
+        let reached = self.anim.state == want && matches!(self.anim.class, 2 | 9);
+        if (finished_wanted || reached) && self.anim.blend_wait == 0 && (self.anim.started_call || reached) {
             self.anim.call = None;
             return Some((next_ai, done_msg));
         }
         if !self.anim.started_call {
             self.anim.started_call = true;
-            let danim = d.tables.danim_for_state(want, self.anim.state).or_else(|| d.tables.danim_for_state(want, 0));
-            if let Some(da) = danim.filter(|&x| x > 0) { self.set_danim(d, da as u16) }
+            if let Some(t) = d.tables.transition(want, self.anim.state, 0).filter(|t| t.danim > 0) {
+                self.set_danim(d, t.danim as u16);
+                self.anim.blend_wait = if t.b5 != 0 { t.b4 as u32 } else { 0 };
+            }
         }
         None
     }
@@ -507,6 +560,295 @@ impl Drone {
         self.root_prev = root;
     }
 
+    // ---- cover (docs/systems/drone-cover.md) ---------------------------------------------------------------------
+
+    /// The anim predicates of `NDrone2_CoverNodeOK` / `DroneAnim_CoverAnim` for a corner node: which cover types this
+    /// drone can use there (crouch lean, crouch step, stand lean, stand step) and whether crouching is forced.
+    fn cover_types(&self, d: &Data, n: &crate::cover::CoverNode) -> ([bool; 4], bool) {
+        let p = |id| self.prop(d, id);
+        let lean = p(0xa) || p(0xb) || p(0xd);
+        let crouch_ok = (p(0x10) || p(0xf)) && n.flags & 4 != 0;
+        let stand_ok = n.flags & 8 != 0;
+        let c = n.is_corner();
+        ([crouch_ok && lean && c && n.flags & 0x40 != 0 && self.can_do(d, 0x13),
+          crouch_ok && p(0xc) && c && n.flags & 0x20 != 0 && self.can_do(d, 0x15),
+          lean && stand_ok && c && n.flags & 0x40 != 0 && self.can_do(d, 0x17),
+          p(0xc) && stand_ok && c && n.flags & 0x20 != 0 && self.can_do(d, 0x1b)],
+         p(0x10) || (c && n.flags & 8 == 0))
+    }
+
+    /// `CanUseCornerAsLowCover`: a low node or a crouch-only corner.
+    fn as_low(n: &crate::cover::CoverNode) -> bool { !n.is_corner() || n.flags & 0xc == 4 }
+
+    /// `NDrone2_CoverNodeOK(node, side, needLos)` (0x151d68): the side (1, 2, 3) or 0.
+    fn cover_node_ok(&self, d: &Data, ni: usize, side: u8, need_los: bool) -> u8 {
+        let (Some(n), Some(rt)) = (d.covers.get(ni), self.cover_rt.get(ni)) else { return 0 };
+        let bits = rt.bits;
+        if bits & 0xe == 0 || (need_los && bits & 0x70 == 0) { return 0; }
+        let t = self.target.pos;
+        let dist = ((t[0] - n.pos[0]).powi(2) + (t[1] - n.pos[1]).powi(2) + (t[2] - n.pos[2]).powi(2)).sqrt();
+        if dist < 2.0 || (self.prop(d, 0x44) && dist > 1.5 * self.combat_range) { return 0; }
+        let out = if n.is_corner() {
+            let (types, forced) = self.cover_types(d, n);
+            let any = if forced { types[0] || types[1] } else { types.iter().any(|&x| x) };
+            if !(any || Self::as_low(n)) { return 0; }
+            match side {
+                1 => if bits & 2 != 0 { 1 } else { 0 },
+                2 => if bits & 4 != 0 { 2 } else { 0 },
+                _ => if bits & 2 != 0 { 1 } else if bits & 4 != 0 { 2 } else { 0 },
+            }
+        } else if self.prop(d, 0xf) && bits & 8 != 0 { 3 } else { 0 };
+        if out == 0 { return 0; }
+        if !self.has_cover {
+            let crowded = self.others.iter().enumerate().any(|(j, p)| j != self.index && p.is_some_and(|p| {
+                ((p[0] - n.pos[0]).powi(2) + (p[1] - n.pos[1]).powi(2) + (p[2] - n.pos[2]).powi(2)).sqrt() < 1.5
+            }));
+            if crowded { return 0; }
+        }
+        out
+    }
+
+    /// `NDrone2_DisownCover`.
+    fn disown_cover(&mut self) {
+        if let Some(rt) = self.cover.and_then(|c| self.cover_rt.get_mut(c)) { if rt.owner == Some(self.index) { rt.owner = None } }
+        self.cover = None;
+        self.cover_claimed = false;
+        self.has_cover = false;
+    }
+
+    /// `NDrone2_FindCover(needLos)` (0x152548): the unoccupied node on the drone's network with the smallest path
+    /// distance from its nav node (no farther than the opponent), usable from the drone's side; claims it.
+    fn find_cover(&mut self, d: &Data, need_los: bool) -> bool {
+        let feet = self.feet();
+        let Some(path) = *self.nav_path.get_or_insert_with(|| d.nav.nav_path_for(feet)) else { return false };
+        let Some(from) = d.nav.node_from(d.world, path, feet) else { return false };
+        let mut best: Option<(u8, usize, u8)> = None;
+        for (i, n) in d.covers.iter().enumerate() {
+            if n.path != Some(path) || self.cover_rt.get(i).is_none_or(|r| r.owner.is_some()) { continue; }
+            let dd = n.dist.get(from as usize).copied().unwrap_or(0xff);
+            if dd == 0xff || best.is_some_and(|b| dd >= b.0) || (dd as f32).powi(2) > self.dist * self.dist { continue; }
+            let side = self.cover_node_ok(d, i, 0, need_los);
+            if side != 0 { best = Some((dd, i, side)); }
+        }
+        let Some((_, i, side)) = best else { return false };
+        self.disown_cover();
+        let n = &d.covers[i];
+        let bits = self.cover_rt[i].bits;
+        let Some((goal, _)) = n.position(bits, true) else { return false };
+        self.cover = Some(i);
+        self.croute = None;
+        self.goal = Some(goal);
+        self.cover_rt[i].owner = Some(self.index);
+        self.cover_side = side;
+        self.cover_point = n.position(bits, false).map_or(goal, |p| p.0);
+        self.cover_claimed = true;
+        self.has_cover = true;
+        true
+    }
+
+    /// `NDrone2_CoverAvailable(needLos)` (0x155a38).
+    fn cover_available(&mut self, d: &Data, need_los: bool) -> bool {
+        if !self.prop(d, 0x30) { return false; }
+        if self.cover_claimed { return true; }
+        if self.seen && self.dist < 4.0 { return false; }
+        self.find_cover(d, need_los)
+    }
+
+    /// `NDrone2_MoveToGoalPosition(goal)` (0x1517d8): a route to the goal point (target nodes searched with r = 0),
+    /// kept until invalidated; 3 within 2.0 of the route's end, else follow (0xC blocked, else 0).
+    fn move_to_goal(&mut self, d: &Data) -> u8 {
+        let Some(goal) = self.goal else { return 8 };
+        let feet = self.feet();
+        let path = *self.nav_path.get_or_insert_with(|| d.nav.nav_path_for(feet));
+        if !self.croute.as_ref().is_some_and(|r| r.stamp == u32::MAX) {
+            let nodes = path.map(|p| d.nav.target_nodes(d.world, p, goal, 0.0)).unwrap_or_default();
+            let used: &[u16] = path.and_then(|p| self.links_used.get(p)).map_or(&[], |v| v.as_slice());
+            match crate::nav::Route::to_position(d.nav, d.world, path, feet, goal, &nodes, used) {
+                Ok((_, mut r)) => { r.stamp = u32::MAX; self.croute = Some(r) }
+                Err(code) => { self.croute = None; return code }
+            }
+        }
+        let route = self.croute.as_mut().unwrap();
+        route.remaining = route.distance(d.nav, feet);
+        if route.remaining < 2.0 { return 3; }
+        let (code, _) = route.follow(d.nav, feet);
+        if let Some(used) = self.links_used.get_mut(route.path) { route.mark_used(used) }
+        let t = route.target;
+        self.desired_yaw = atan2_approx(t[0] - self.pos[0], t[2] - self.pos[2]);
+        match code { 3 | 0xc => code, _ => 0 }
+    }
+
+    /// `NDrone2_SlideToPosition(target, rate, y = false)`: x/z toward the point (snapping within 0.01), then the
+    /// drone's height rule puts it back on the floor.
+    fn slide_to(&mut self, d: &Data, to: V3, rate: f32) {
+        let dist = ((to[0] - self.pos[0]).powi(2) + (to[2] - self.pos[2]).powi(2)).sqrt();
+        if dist > 0.01 {
+            self.pos[0] += (to[0] - self.pos[0]) * rate;
+            self.pos[2] += (to[2] - self.pos[2]) * rate;
+        } else {
+            self.pos[0] = to[0];
+            self.pos[2] = to[2];
+        }
+        // Stay on the floor without climbing: only surfaces within 0.3 of the current feet count (the game's
+        // collision pushes the feet sphere; walls next to cover points have sloped faces our probe could climb).
+        if let Some(f) = d.world.floor_below([self.pos[0], self.pos[1] - 0.7, self.pos[2]], 0.6) { self.pos[1] = f + 1.0; }
+    }
+
+    /// `NDrone2_SetAngleToCover`: low node or as-low cover → the opponent; side 1 → node yaw − π/2; side 2 → node yaw.
+    fn set_angle_to_cover(&mut self, d: &Data) {
+        let Some(n) = self.cover.and_then(|c| d.covers.get(c)) else { return };
+        self.desired_yaw = if !n.is_corner() || self.cover_type == crate::cover::kind::AS_LOW { self.yaw_to_opp }
+            else if self.cover_side == 1 { n.yaw - crate::trig::HALF_PI } else { n.yaw };
+    }
+
+    /// `DroneAnim_CoverAnim(mode, next state)` (0x13c078): picks the cover type (mode 6, or 7 = maybe change) and plays
+    /// the `CCModes` column; false when no anim fits.
+    fn cover_anim(&mut self, d: &Data, rng: &mut Rng, mode: u8, next: u8) -> bool {
+        use crate::cover::{cc_anim, kind};
+        let Some(n) = self.cover.and_then(|c| d.covers.get(c)).cloned() else { return false };
+        if !n.is_corner() {
+            let anim = match mode { 0 | 6 | 1 | 4 => n.idle_anim, 2 => n.aim_anim, 3 => 0x58, _ => return false };
+            let anim = if self.can_do(d, anim) { anim } else if anim == 5 { if self.can_do(d, 7) { 7 } else { 0xa } } else { anim };
+            self.call_anim(anim, next, 0);
+            return true;
+        }
+        let (types, forced) = self.cover_types(d, &n);
+        let column = match mode {
+            6 => {
+                self.cover_leave = 0;
+                let c: Vec<u8> = if forced { [kind::CROUCH_LEAN, kind::CROUCH_STEP].into_iter().filter(|&t| types[t as usize]).collect() }
+                    else { [kind::STAND_LEAN, kind::STAND_STEP].into_iter().filter(|&t| types[t as usize]).collect() };
+                self.cover_type = if c.is_empty() { if Self::as_low(&n) { kind::AS_LOW } else { return false } } else { c[rng.rand(c.len() as u32) as usize] };
+                0
+            }
+            7 => {
+                if rng.rand(2) != 0 { return false; }
+                let mut c: Vec<u8> = if forced { [kind::CROUCH_LEAN, kind::CROUCH_STEP].into_iter().filter(|&t| types[t as usize]).collect() }
+                    else { [kind::STAND_LEAN, kind::STAND_STEP].into_iter().filter(|&t| types[t as usize]).collect() };
+                if !forced && self.dist > 8.0 { c.extend([kind::CROUCH_LEAN, kind::CROUCH_STEP].into_iter().filter(|&t| types[t as usize])); }
+                let new = if c.is_empty() { kind::AS_LOW } else { c[rng.rand(c.len() as u32) as usize] };
+                if new == self.cover_type { return false; }
+                let anim = cc_anim(self.cover_type, self.cover_side, 5);
+                self.cover_type = new;
+                if anim >= 0x77 || !self.can_do(d, anim) { return false; }
+                self.call_anim(anim, next, 0);
+                return true;
+            }
+            m => m as usize,
+        };
+        let anim = cc_anim(self.cover_type, self.cover_side, column);
+        if anim >= 0x77 || !self.can_do(d, anim) { return false; }
+        self.call_anim(anim, next, 0);
+        true
+    }
+
+    /// The cover states (0x8C, 0x93–0x9C); `None` when the state is not a cover state.
+    fn handle_cover(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> Option<bool> {
+        use state::*;
+        let in_cover_ok = |me: &Self, los: bool| me.cover.is_some_and(|c| me.cover_node_ok(d, c, me.cover_side, los) != 0);
+        let far_from_goal = |me: &Self| me.goal.is_none_or(|g| ((g[0] - me.pos[0]).powi(2) + (g[2] - me.pos[2]).powi(2)).sqrt() > 1.5);
+        Some(match (s, m) {
+            (RUN_FOR_COVER, msg::ENTER) => { self.vision_on = true; if self.goal.is_none() { self.set_state(ATTACK) } true }
+            (RUN_FOR_COVER, msg::UPDATE) => {
+                if !in_cover_ok(self, false) || (self.seen && self.dist < 4.0) { self.set_state(ATTACK); return Some(true); }
+                match self.move_to_goal(d) {
+                    0 | 2 => {
+                        let remaining = self.croute.as_ref().map_or(0.0, |r| r.remaining);
+                        if remaining < 1.0 { let p = self.cover_point; self.slide_to(d, p, 0.1); }
+                        self.set_combat_move_anim(d, rng, remaining);
+                    }
+                    3 => self.set_state(UNDER_COVER_INIT),
+                    10 => {}
+                    0xc => self.face_and_aim(),
+                    _ => self.set_state(ATTACK),
+                }
+                true
+            }
+            (RUN_FOR_COVER, msg::EXIT) => {
+                if self.exiting_to != UNDER_COVER_INIT { self.disown_cover() }
+                self.cover_claimed = false;
+                true
+            }
+            (UNDER_COVER_INIT, msg::ENTER) => {
+                self.vision_on = true;
+                self.cover_claimed = false;
+                if !self.cover_anim(d, rng, 6, UNDER_COVER_IDLE) { /* as built: the drone then waits here */ }
+                true
+            }
+            (UNDER_COVER_INIT, msg::UPDATE) => { let p = self.cover_point; self.slide_to(d, p, 0.08); self.set_angle_to_cover(d); true }
+            (UNDER_COVER_INIT, msg::EXIT) => { if self.exiting_to != UNDER_COVER_IDLE { self.disown_cover() } true }
+            (UNDER_COVER_IDLE, msg::ENTER) => {
+                self.vision_on = true;
+                self.cover_anim(d, rng, 1, 0);
+                self.clip = self.clip_max;
+                if !self.prop(d, 0x10) { self.timer_c = Some(frame + rng.frand(150.0) as u32); }
+                self.cover_tries = 0;
+                true
+            }
+            (UNDER_COVER_IDLE, msg::UPDATE) => {
+                if self.prop(d, 0x10) {
+                    let bond = self.target.pos;
+                    if self.seen || ((bond[0] - self.pos[0]).powi(2) + (bond[2] - self.pos[2]).powi(2)).sqrt() < 3.0 {
+                        d.props.set(0x10, &mut self.props, 0);
+                        self.set_state(UNDER_COVER_LEAVE_NOW);
+                    }
+                    return Some(true);
+                }
+                let p = self.cover_point;
+                self.slide_to(d, p, 0.08);
+                self.set_angle_to_cover(d);
+                if !in_cover_ok(self, false) || far_from_goal(self) { self.set_state(UNDER_COVER_LEAVE_NOW) }
+                true
+            }
+            (UNDER_COVER_IDLE, msg::TIMER_C) => {
+                if rng.rand(5) == 0 && self.cover_available(d, true) { self.set_state(RUN_FOR_COVER) }
+                else if in_cover_ok(self, true) { self.set_state(UNDER_COVER_AIM) }
+                else if self.cover_available(d, true) { self.set_state(RUN_FOR_COVER) }
+                else {
+                    self.cover_tries += 1;
+                    if self.cover_tries < 3 { self.timer_c = Some(frame + rng.frand(150.0) as u32) } else { self.set_state(ATTACK) }
+                }
+                true
+            }
+            (UNDER_COVER_IDLE, msg::EXIT) => { d.props.set(0x10, &mut self.props, 0); true }
+            (UNDER_COVER_AIM, msg::ENTER) => {
+                if !self.cover_anim(d, rng, 2, UNDER_COVER_FIRE) { self.set_state(UNDER_COVER_LEAVE_NOW) }
+                true
+            }
+            (UNDER_COVER_FIRE, msg::ENTER) => { self.fire(d, rng, frame, true); true }
+            (UNDER_COVER_FIRE, msg::UPDATE) => {
+                if !in_cover_ok(self, true) {
+                    let leans = self.cover.and_then(|c| d.covers.get(c)).is_some_and(|n| n.is_corner())
+                        && matches!(self.cover_type, crate::cover::kind::CROUCH_LEAN | crate::cover::kind::STAND_LEAN);
+                    self.set_state(if leans { UNDER_COVER_RETURN } else { UNDER_COVER_LEAVE_NOW });
+                } else if self.aimed_at && rng.rand(3) == 0 {
+                    self.set_state(UNDER_COVER_RETURN);
+                } else if self.seen && self.burst_done {
+                    self.fire(d, rng, frame, true);
+                }
+                true
+            }
+            (UNDER_COVER_RETURN, msg::ENTER) => { if !self.cover_anim(d, rng, 4, UNDER_COVER_TYPE_CHANGE) { self.set_state(UNDER_COVER_LEAVE) } true }
+            (UNDER_COVER_RETURN, msg::UPDATE) => { if !in_cover_ok(self, false) || far_from_goal(self) { self.cover_leave |= 4 } true }
+            (UNDER_COVER_TYPE_CHANGE, msg::ENTER) => {
+                if self.cover_leave & 4 != 0 { self.set_state(UNDER_COVER_LEAVE_NOW) }
+                else if !in_cover_ok(self, true) && self.cover_available(d, true) { self.set_state(RUN_FOR_COVER) }
+                else if !self.cover_anim(d, rng, 7, UNDER_COVER_IDLE) { self.set_state(UNDER_COVER_IDLE) }
+                true
+            }
+            (UNDER_COVER_LEAVE, msg::ENTER) => { self.set_state(UNDER_COVER_LEAVE_NOW); true }
+            (UNDER_COVER_LEAVE_NOW, msg::ENTER) => {
+                self.cover_leave |= 8;
+                self.disown_cover();
+                self.call_anim(anim_state::AIM_STAND, ATTACK, 0);
+                true
+            }
+            (UNDER_COVER_LEAVE_NOW, msg::EXIT) => { self.disown_cover(); true }
+            (c, msg::ENTER | msg::EXIT | msg::UPDATE) if c == RUN_FOR_COVER || (UNDER_COVER_INIT..=UNDER_COVER_LEAVE_NOW).contains(&c) => true,
+            _ => return None,
+        })
+    }
+
     // ---- state machine -----------------------------------------------------------------------------------------
 
     fn set_state(&mut self, s: u8) { if s != 0 { self.next_state = Some(s) } }
@@ -516,6 +858,7 @@ impl Drone {
         if !self.handle(d, rng, frame, self.state, m) { self.handle(d, rng, frame, state::GLOBAL, m); }
         let mut guard = 0;
         while let Some(n) = self.next_state.take() {
+            self.exiting_to = n;
             self.handle(d, rng, frame, self.state, msg::EXIT);
             self.prev_state = self.state;
             self.state = n;
@@ -533,6 +876,7 @@ impl Drone {
 
     fn handle(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> bool {
         use state::*;
+        if let Some(r) = self.handle_cover(d, rng, frame, s, m) { return r; }
         match (s, m) {
             // `NDrone2_DSTATE_Global` enter: a drone with a switch channel that is still off waits (WaitSwitch); else its
             // start state `+0x5A2` (InitPatrol with props 0x24/0x25, else Idle). Modes 0x1E / 0x17 and start scripts
@@ -650,6 +994,7 @@ impl Drone {
             }
             (COMBAT_NO_ROUTE, msg::TIMER_C) => {
                 self.no_route_odd = !self.no_route_odd;
+                if !self.prop(d, 0x40) && self.cover_available(d, true) { self.set_state(RUN_FOR_COVER); return true; }
                 let next = if self.prop(d, 0x40) { 0 } else if self.no_route_odd {
                     match self.move_to_object(d, 2.0, true) { 0..=2 => COMBAT, 10 => return true, _ => 0 }
                 } else { 0 }; // SetGoalToDroneWithLosToOpponent → GoToGoalPosition: not ported (U-030)
@@ -854,11 +1199,13 @@ impl Drone {
             }
             COMBAT_OUT_OF_RANGE => {
                 if no_move { return COMBAT_NO_MOVE; }
+                if self.cover_available(d, true) { return RUN_FOR_COVER; }
                 if !out_of_range { return COMBAT; }
                 self.moving_result(d, rng, mv, true)
             }
             COMBAT_NO_SIGHT => {
                 if no_move { return COMBAT_NO_MOVE; }
+                if self.cover_available(d, true) { return RUN_FOR_COVER; }
                 if self.seen { return COMBAT_NEW_SIGHTING; }
                 if self.unseen_ticks > 15 { return self.moving_result(d, rng, mv, false); }
                 self.face_and_aim();
@@ -873,6 +1220,7 @@ impl Drone {
                 if self.clip < 1 { return AIM_STAND_RELOAD; }
                 if routed && out_of_range { return COMBAT_OUT_OF_RANGE; }
                 if self.unseen_ticks > 15 { return COMBAT_NO_SIGHT; }
+                if self.cover_available(d, true) { return RUN_FOR_COVER; }
                 if self.anim.class == 2 && self.anim.state == anim_state::AIM_STAND {
                     let m = self.choose_combat_move(d, rng);
                     if m != 0 { return m; }
@@ -883,6 +1231,7 @@ impl Drone {
             _ => {
                 if routed && out_of_range { return COMBAT_OUT_OF_RANGE; }
                 if self.unseen_ticks > 15 { return COMBAT_NO_SIGHT; }
+                if self.cover_available(d, true) { return RUN_FOR_COVER; }
                 if frame > self.entered + 120 {
                     let m = self.choose_combat_move(d, rng);
                     if m != 0 { return m; }
@@ -1219,13 +1568,17 @@ pub struct Drones {
     used: Vec<Vec<u16>>,
     /// `switch_channels` (256 bytes): set by level triggers (not ported yet) or by the caller.
     pub switches: Vec<bool>,
+    /// Cover nodes' run-time state, `Drone_ProcessCoverNodes`' shared cursor and its frame counter.
+    pub cover_rt: Vec<crate::cover::CoverRt>,
+    cover_cursor: usize,
+    cover_counter: i32,
 }
 
 impl Drones {
     pub fn new(mut list: Vec<Drone>, rng: Rng) -> Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
-        for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; }
-        Drones { list, frame: 0, los_cursor: 0, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), switches: vec![false; 256] }
+        for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
+        Drones { list, frame: 0, los_cursor: 0, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), switches: vec![false; 256], cover_rt: Vec::new(), cover_cursor: 0, cover_counter: 0 }
     }
 
     /// One 60 Hz game tick: global vision (`DroneVision_ProcessDroneSight`), then each drone's control.
@@ -1323,12 +1676,27 @@ impl Drones {
             }).collect();
         }
         self.used = d.nav.paths.iter().map(|p| vec![0; p.links.len()]).collect();
+        // `Drone_ProcessCoverNodes` (every 5 frames from the first): for Bond, walk the nodes from the shared cursor
+        // until one casts a line-of-sight ray. *Deviation*: always run (the game only for allocated target slots).
+        if self.cover_rt.len() != d.covers.len() { self.cover_rt = vec![Default::default(); d.covers.len()]; }
+        self.cover_counter -= 2;
+        if self.cover_counter < 1 && !d.covers.is_empty() {
+            self.cover_counter = 10;
+            for _ in 0..d.covers.len() {
+                let i = self.cover_cursor;
+                self.cover_cursor = (self.cover_cursor + 1) % d.covers.len();
+                if d.covers[i].usable(&mut self.cover_rt[i], d.world, &self.switches, d.level, player.pos, player.eye) { break; }
+            }
+        }
+        let positions: Vec<Option<V3>> = self.list.iter().map(|x| x.enabled.then_some(x.pos)).collect();
         // Per drone: timers, alertness decay, update message, turning, aim, firing, animation.
         let rng = &mut self.rng;
         for (index, dr) in self.list.iter_mut().enumerate() {
             if dr.target.stamp != self.target.stamp { dr.target = self.target.clone(); }
             dr.channel_on = self.switches.get(dr.switch_channel as usize).copied().unwrap_or(false);
             dr.links_used = std::mem::take(&mut self.used);
+            dr.cover_rt = std::mem::take(&mut self.cover_rt);
+            dr.others = positions.clone();
             if frame == 1 { dr.send(d, rng, frame, msg::ENTER); dr.entered = frame; dr.log.push((frame, dr.state)); }
             if let Some(t) = dr.timer_c { if frame >= t { dr.timer_c = None; dr.send(d, rng, frame, msg::TIMER_C); } }
             if let Some(t) = dr.idle_timeout { if frame >= t { dr.idle_timeout = None; dr.send(d, rng, frame, msg::IDLE_TIMEOUT); } }
@@ -1337,6 +1705,7 @@ impl Drones {
             if dr.alert < dr.alert_floor { dr.alert = dr.alert_floor; }
             dr.send(d, rng, frame, msg::UPDATE);
             self.used = std::mem::take(&mut dr.links_used);
+            self.cover_rt = std::mem::take(&mut dr.cover_rt);
             // NDrone2_Steer: exponential turn toward the desired yaw, 0.1 per tick, with the anim's yaw offset added
             // around it (`ControlSTANDARD`): the body faces desired − offset.
             let y = dr.yaw + dr.yaw_offset;

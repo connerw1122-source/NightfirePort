@@ -46,6 +46,7 @@ fn main() -> Result<()> {
         "block-dump" => block_dump(&IsoImage::open(a(1)?)?, a(2)?, u8::from_str_radix(a(3)?.trim_start_matches("0x"), 16)?, Path::new(a(4)?)),
         "script-info" => script_info(&IsoImage::open(a(1)?)?, a(2)?, u32::from_str_radix(a(3)?, 16)?),
         "route" => { let f = |i: usize| -> Result<f32> { Ok(a(i)?.parse()?) }; route(&IsoImage::open(a(1)?)?, a(2)?, [f(3)?, f(4)?, f(5)?], [f(6)?, f(7)?, f(8)?]) }
+        "covers" => covers(&IsoImage::open(a(1)?)?, a(2)?),
         "coll-probe" => coll_probe(&IsoImage::open(a(1)?)?, a(2)?),
         "coll-check" => coll_check(&IsoImage::open(a(1)?)?),
         "coll-floor" => coll_floor(&IsoImage::open(a(1)?)?, a(2)?),
@@ -412,10 +413,11 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     let skeletons: HashMap<u8, nf_formats::character::Skeleton> = lb.entries.iter().filter(|e| e.kind == 6).filter_map(|e| nf_formats::character::parse_skeleton(lb.data(&data, e)).ok()).map(|k| (k.id as u8, k)).collect();
     let m = level.main_map().context("no main map")?;
     let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, level_id);
-    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons, nav: &nav };
+    let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
+    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons, nav: &nav, covers: &covers };
     let list: Vec<(u32, Vec<(u32, u32)>)> = level.maps[m].placements.iter().map(|p| (p.flags & 0xff, p.params.clone())).collect();
     let roles = drone::spawn_roles(&list);
-    let mut rng = Rng::new(0x1234_5678);
+    let mut rng = Rng::new(std::env::var("NF_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(0x1234_5678));
     let mut drones = Vec::new();
     for (p, role) in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f).zip(roles) {
         if matches!(role, drone::SpawnRole::Reinforcement { .. }) { continue; }
@@ -452,6 +454,9 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
             }
         }
         let dr = &sim.list[near];
+        if std::env::var_os("NF_TRACE_TICKS").is_some() {
+            println!("tick {:4}: state {:#x} pos ({:.3}, {:.3}, {:.3}) anim {:#x} danim {} t {}", sim.frame, dr.state, dr.pos[0], dr.pos[1], dr.pos[2], dr.anim.state, dr.anim.danim, dr.anim.time);
+        }
         if sim.frame % 30 == 0 && !matches!(dr.state, 4 | 5 | 6 | 7) {
             let r = dr.croute.as_ref();
             println!("frame {:4}: state {:#x} at ({:.2}, {:.2}, {:.2}) yaw {:.2} off {:.2} dist {:.1} anim {:#x} route {:?} target {:?} seen {}", sim.frame, dr.state, dr.pos[0], dr.pos[1], dr.pos[2], dr.yaw, dr.yaw_offset, dr.dist, dr.anim.state,
@@ -892,6 +897,8 @@ fn route(iso: &IsoImage, level_name: &str, from: [f32; 3], to: [f32; 3]) -> Resu
     let path = nav.nav_path_for(from);
     println!("navigation path for the start: {:?}", path.map(|p| (p, &nav.paths[p].name)));
     println!("direct move test: {:?}", nav.move_test(&world, from, to, true, false));
+    println!("  collision LOS at +1: {}, bounds test (near): {:?}, bounds (far): {:?}", world.line_of_sight([from[0], from[1] + 1.0, from[2]], [to[0], to[1] + 1.0, to[2]]),
+        nav.bounds_test(from, to, true, false), nav.bounds_test(from, to, false, false));
     for (pi, p) in nav.paths.iter().enumerate().filter(|(_, p)| p.kind & 0xd == 0) {
         println!("  path {pi} {:?}: target nodes {:?}", p.name, nav.target_nodes(&world, pi, to, 36.0));
         let mut near: Vec<(f32, usize)> = p.nodes.iter().enumerate().map(|(i, n)| (nf_game::nav::dist2d(n.pos, to), i)).collect();
@@ -899,6 +906,16 @@ fn route(iso: &IsoImage, level_name: &str, from: [f32; 3], to: [f32; 3]) -> Resu
         for &(dd, i) in near.iter().take(3) { let q = p.nodes[i].pos; println!("      near node {i}: ({:.2}, {:.2}, {:.2}) 2D {dd:.2}, move test node → target {:?}", q[0], q[1], q[2], nav.move_test(&world, q, to, false, false)); }
     }
     let Some(pi) = path else { return Ok(()) };
+    // Posts near the straight line (2D distance < 0.6) and the post test at r 0.2 / 0.4.
+    for w in &nav.walls {
+        for q in [w.a, w.b] {
+            let (dx, dz) = (to[0] - from[0], to[2] - from[2]);
+            let t = (((q[0] - from[0]) * dx + (q[2] - from[2]) * dz) / (dx * dx + dz * dz)).clamp(0.0, 1.0);
+            let dd = ((from[0] + dx * t - q[0]).powi(2) + (from[2] + dz * t - q[2]).powi(2)).sqrt();
+            if dd < 0.6 { println!("  post ({:.2}, {:.2}, {:.2}) h {:.2} at 2D {dd:.3} from the line (t {t:.2})", q[0], q[1], q[2], w.ha); }
+        }
+    }
+    println!("  post test r 0.2: {}, r 0.4: {}", nav.bounds_node_test(0.2, from, to), nav.bounds_node_test(0.4, from, to));
     let goal = nav.target_nodes(&world, pi, to, 36.0);
     match nf_game::nav::Route::to_position(&nav, &world, Some(pi), from, to, &goal, &[]) {
         Ok((res, r)) => {
@@ -906,6 +923,23 @@ fn route(iso: &IsoImage, level_name: &str, from: [f32; 3], to: [f32; 3]) -> Resu
             for &n in &r.nodes { let q = nav.paths[pi].nodes[n as usize].pos; println!("    node {n}: ({:.2}, {:.2}, {:.2})", q[0], q[1], q[2]); }
         }
         Err(code) => println!("no route: code {code}"),
+    }
+    Ok(())
+}
+
+/// Cover nodes of a level (placements 0xE5 / 0xE6) with their emitter path and reachable node count.
+fn covers(iso: &IsoImage, level_name: &str) -> Result<()> {
+    use nf_formats::level::Level;
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let level = Level::parse(&data)?;
+    let m = level.main_map().context("no main map")?;
+    let world = nf_game::world::CollisionWorld::build(&level, &level.instances(true).0);
+    let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, u32::from_str_radix(&level_name[..8], 16)?);
+    for (i, c) in nf_game::cover::build(&level.maps[m].placements, &nav, &world).iter().enumerate() {
+        println!("cover {i}: kind {} pos ({:.3}, {:.3}, {:.3}) yaw {:.4} flags {:#x} angle {:.3} depth {:.1} offset {:.1} on {:#x} off {:#x} path {:?} reachable {}/{}",
+            c.kind, c.pos[0], c.pos[1], c.pos[2], c.yaw, c.flags, c.angle, c.depth, c.offset, c.on, c.off, c.path, c.dist.iter().filter(|&&x| x != 0xff).count(), c.dist.len());
     }
     Ok(())
 }

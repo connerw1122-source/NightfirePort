@@ -16,6 +16,8 @@ pub const DANIM_STAND_IDLE: u16 = 0x11a;
 
 /// One entry of a state's transition list: requested state `key` → danim.
 #[derive(Clone, Debug, PartialEq)]
+/// A `DroneAnimStates` transition record: requested state (0 = any), variant count, danim, blend frames (`b4`) and
+/// whether the call waits for the blend to end before it completes (`b5`, `Drone+0x578`).
 pub struct Transition { pub key: u8, pub count: u8, pub danim: i16, pub b4: u8, pub b5: u8 }
 
 #[derive(Clone, Debug)]
@@ -83,6 +85,18 @@ impl DroneAnimData {
     pub fn danim_for_state(&self, requested: u16, current: u16) -> Option<i16> {
         let cur = if current as usize >= STATE_COUNT { 0 } else { current as usize };
         self.states[cur].1.iter().find(|t| t.key as u16 == requested || t.key == 0).map(|t| t.danim)
+    }
+
+    /// `DroneAnim_GetDAnimForCall` (0x13db30): the transition for `requested` from `current`'s list, else from state
+    /// 0's list (blend then 8 frames, no wait, unless the state-0 record says otherwise), with the variant added when it
+    /// is below the record's count (`GetDAnimForAnimState`). `None` when neither list has it.
+    pub fn transition(&self, requested: u16, current: u16, variant: u16) -> Option<Transition> {
+        let find = |s: usize| self.states.get(s).and_then(|(_, l)| l.iter().find(|t| t.key as u16 == requested || t.key == 0));
+        let cur = if current as usize >= STATE_COUNT { 0 } else { current as usize };
+        let t = find(cur).or_else(|| find(0))?;
+        let mut t = t.clone();
+        if t.danim > 0 && (variant as u8) < t.count { t.danim += variant as i16 }
+        Some(t)
     }
 
     /// The anim state a danim puts the drone in (`Drone_AnimInfo +8`).

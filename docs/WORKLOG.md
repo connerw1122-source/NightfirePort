@@ -544,3 +544,33 @@ New test `level_start_matches_the_game`: states, enabled flags and all 12 first 
 - My first chase setup put Bond 6 units above the floor (no target nodes: correct "no route"); `nf-extract route` found it.
 - The sister check of the new test first compared against words already changed by the port (captured after
   `Drone::new`); it now takes the placement words.
+
+## 0023 — Cover, anim blends and playback speed (2026-10-09)
+
+Read myself: `AINetwork_EmitPath`, `AINetwork_InitEmitter`, `Drone_CoverCornerNode`, `NDrone2_MoveToGoalPosition`,
+`NDrone2_SlideToPosition`, `AINetwork_SetupGoalPosition`, `AINetwork_CalcRouteToPosition`, `AINetwork_GetRouteDistance`,
+`LinkCreep_Calc`, `DroneAnim_CallHandler`, `DroneAnim_CallFullyComplete`, `DroneAnim_SetDAnimInternal`,
+`DroneAnim_SetHTAnim`, `DroneAnim_GetDAnimForCall`, `DroneAnim_GetDAnimForAnimState`, `NDrone2_DSTATE_RunForCover`.
+
+**Port**: `cover.rs` (nodes from placements 0xE5/0xE6, emitter distance bytes, `IsCoverNodeUsable` bits, positions,
+`CCModes`), `ProcessCoverNodes` in `Drones::tick`, and in the drone `CoverAvailable` / `FindCover` / `CoverNodeOK` /
+claim and disown / `MoveToGoalPosition` / `SlideToPosition` / `SetAngleToCover` / `CoverAnim` and states 0x8C,
+0x93–0x96, 0x99–0x9C; `CombatState` and CombatNoRoute now go to cover. Tools: `nf-extract covers`, `route` prints the
+move-test parts and nearby boundary posts, `ai-sim` takes `NF_SEED` and `NF_TRACE_TICKS`.
+
+**Live check** (work/chase_trace.tsv, WORKLOG 0022): the port now runs the same sequence 0x58 → 0x5A → 0x8C → 0x93 →
+0x94 → 0x95 → 0x96 at the same corner node, ending 0.2 from the live position. Three animation facts came out of it:
+- **Blends** (`GetDAnimForCall`): transition record byte 4 = blend frames, byte 5 = the call waits for the blend
+  (`+0x578` while the blend-out script `+0x538` runs). When the current state has no record, state 0's generic
+  records apply: blend 30 with wait (60 for 0x6F–0x74). UnderCoverInit reaches loop 171 at once that way and completes
+  31 ticks later (port 30). My first guess (a call completes after one play of the danim it started) gave 150.
+- **Playback speed** `Drone_AnimInfo +0x14` (float): lean-out 176 plays its 51 frames at 1.5 → 35 ticks live (port 34).
+- **Stale root** after a call starts a danim: the next tick moved the guard by the old sequence's root minus the new
+  one's (1 unit into the wall, then the floor probe climbed it to y 31.45); `set_danim` now clears the previous root.
+Also: a guard 0.11 from a boundary post (the gate pillar) is blocked on every route segment (as the game's post test
+would); with the port's RNG the guard sometimes sidesteps there first, which the live guard did not.
+
+**Open**: RunForCover lasts 114 ticks in the port vs 198 live: live arrives 0.46 from the approach point, the port
+when its route distance drops under 2.0. `GetRouteDistance` is ported as read, so the live route probably had a second
+node that the port's `OptimiseRoute` trimmed (U-030). New test `guard_takes_cover_like_the_game` (sequence, durations
+±3, node, position; sister: no cover with Bond 6 units away).
