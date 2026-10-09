@@ -86,8 +86,8 @@ fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, 
 fn guard_notices_and_fires_like_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    // Seed 2: the first combat-move roll picks the step (strafe or step are equally likely; the trace shows steps).
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 2);
+    // Seed 7 (re-picked in WORKLOG 0037): the first combat-move roll picks the step (strafe or step are equally likely; the trace shows steps).
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 7);
     let mut sim = l.sim(drones, rng);
     // As in the live session, Bond appears (teleported) after the level has run: 10 ticks with him far away first, so
     // spawner 266's drone is already in the list.
@@ -119,7 +119,7 @@ fn guard_notices_and_fires_like_the_game() {
     // The sniper (L96A1, 30 × 0.6) hits for 18, as in the live trace.
     assert!(sim.player_hits.iter().filter(|(_, o, _)| *o != gi).all(|(_, _, h)| (h - 18.0).abs() < 1e-3 || (h - 1.65).abs() < 1e-3 || *h < 18.0));
     // Sister: the same guard already at alertness 1 reacts without the delay, so the comparison above can fail.
-    let (alert_drones, _, alert_rng) = l.drones_seeded(Some(1.0), 61.342, 2);
+    let (alert_drones, _, alert_rng) = l.drones_seeded(Some(1.0), 61.342, 7);
     let mut alert_sim = l.sim(alert_drones, alert_rng);
     for _ in 0..WARM { alert_sim.tick(&d, &away); }
     for _ in 0..100 { alert_sim.tick(&d, &player); }
@@ -161,6 +161,13 @@ fn level_start_matches_the_game() {
     }
     // Sister: the placement words alone do not match, so the comparison can fail.
     assert!(differs_raw >= 10, "sister: only {differs_raw} drones differ from their placement words");
+    // The sniper spawner 266 brings in (live: placement 7 at (62.20, 104.15); the template is a random pick, both are
+    // mode 2): `+0xC5` 2, `+0xC6` 0, `+0x44` 1, start 0x29 (SniperIdle), `+0x5A4` 0, tag 0, stationary (`+0x4F8 & 0x10`).
+    // Spawned during the first tick, it starts on the next.
+    sim.tick(&d, &bond_at([104.95, 24.96, 108.83]));
+    let sn = sim.list.iter().find(|dr| dr.present && (dr.pos[0] - 62.43).abs() < 0.05).expect("the sniper");
+    assert_eq!(sn.props, [0x8100_3c84, 0xac70_0785, 0x4028_0448], "the sniper's first block");
+    assert_eq!((sn.state, sn.mode, sn.alt_mode, sn.team, sn.alt_state, sn.second_tag, sn.stationary), (0x29, 2, 0, 1, 0, 0, true));
 }
 
 /// Live trace (work/patrol_trace.tsv, Bond standing at his start (104.95, 24.96, 108.83)): the guard walks
@@ -200,12 +207,12 @@ fn guard_patrols_like_the_game() {
 /// Live trace (work/chase_trace.tsv: Bond teleported to (79.62, 22.6, 95.96), settling at (79.86, 22.92, 96.0)): the
 /// gate guard notices him, goes Combat → OutOfRange → RunForCover (0x8C) → UnderCoverInit (31 ticks) → UnderCoverIdle →
 /// UnderCoverAim (37 ticks, lean-out 176 at speed 1.5) → UnderCoverFire behind corner node 1 (59.11, 98.69), firing from
-/// (58.83, 99.32). Seed 3 makes the port's rolls pick no first-sight move and the lean cover type, as the game did here.
+/// (58.83, 99.32). Seed 1 (re-picked in WORKLOG 0037 after the sniper modes moved the shared random stream) makes the port's rolls pick no first-sight move and the lean cover type, as the game did here.
 #[test]
 fn guard_takes_cover_like_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 3);
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 1);
     let mut sim = l.sim(drones, rng);
     let player = bond_at([79.86, 22.92, 96.0]);
     for _ in 0..700 { sim.tick(&d, &player); }
@@ -220,7 +227,7 @@ fn guard_takes_cover_like_the_game() {
     let err = ((g.pos[0] - 58.83).powi(2) + (g.pos[2] - 99.32).powi(2)).sqrt();
     assert!(err < 0.4, "in cover at ({:.2}, {:.2}), {err:.2} from the live position", g.pos[0], g.pos[2]);
     // Sister: with Bond 6 units away (the first test's setup) the same guard never runs for cover.
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 3);
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 1);
     let mut near = l.sim(drones, rng);
     for _ in 0..300 { near.tick(&d, &bond_at([67.31, 26.5, 99.47])); }
     assert!(near.list[gi].log.iter().all(|(_, s)| *s != 0x8c), "sister: cover must depend on the situation");
@@ -380,7 +387,9 @@ fn bond_kills_guards_with_two_torso_shots() {
     let (sim, i, hits) = run([65.0, 34.4, 88.5], 267, 400, 0.0);
     assert_eq!(hits, [(100, 4, 4.75), (130, 4, -0.5)], "hits {hits:?}");
     let log: Vec<u8> = sim.list[i].log.iter().map(|&(_, s)| s).collect();
-    assert!(log.contains(&state::ATTACK) && log.contains(&state::DEATH_ANIM) && log.contains(&state::DEAD), "log {:x?}", sim.list[i].log);
+    // A sniper (mode 2): SniperIdle; the first hit sends it to SniperAim (SniperIdle's `HandleImpact(0x2A, 0)`).
+    assert_eq!(log[0], state::SNIPER_IDLE, "log {:x?}", sim.list[i].log);
+    assert!(log.contains(&state::SNIPER_AIM) && log.contains(&state::DEATH_ANIM) && log.contains(&state::DEAD), "log {:x?}", sim.list[i].log);
     assert!(sim.channels.on(0x0a), "death channel 0x0A raised");
     // The gate guard: dead at the death anim's end, fading 300 ticks later, gone after the fade.
     let (sim, i, hits) = run([66.0, 26.5, 99.5], 5, 1100, 0.0);

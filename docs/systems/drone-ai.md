@@ -30,6 +30,29 @@ AimStandFire (0x68) ⇄ reload (0x69), moves (0x73–0x7A), NoSight (0x5C), OutO
 07000005's guards (`nf-extract drone-props`): all take the NEW behaviour path (parameter 5 = 0x64); normal block
 alertness 0 or 1 (property 0x20 → {0, 0, 0.66, 1.0} at 0x2f5cc8, verified); all have 0x3C and 0x51.
 
+### Drone modes and the sniper [M, L] (WORKLOG 0037)
+
+- `behaviour_util_get` (`DoModeSettingsNEW`): placement parameter 15 = type `+0xC7`, 16 = the normal block's mode
+  `+0xC8`, 17 = its count / size (3 | 0x5B << 16), 18–20 its words; 21 = the alert block's mode `+0xC9`, 22, 23–25.
+- `NDrone2_GetDroneTypeAttackTypeFriend` (0x14cbd8): equal block modes (or tag 0x65) drop the second tag `+0x13A`;
+  mode `+0xC5` = `GetDTYPENEW(type, +0xC8)` (block 0 + property 0x10 → 0x10; types 10–16 special; block 2 → 2 (sniper)
+  or 0x19 at alertness 1, 3 → 7 / 0xE, 4 → 4, 5 → 0x15); alternate mode `+0xC6` (0 without a tag, or without a second
+  switch at full normal alertness); team `+0x44` (types 10, 11, 13, 14 → 3, 12 → 2, else 1). `DroneTypeSettings`
+  (0x29aee8, 85 × 12: start, alternate, init function): the start state (−1 → by mode: 2 → 0x29 / 0x2A, default 6 / 4,
+  …), at alertness 1 the attack versions; the init function (`initDTYPE_Sniper` sets `+0x4F8 & 0x10`, stationary).
+  `+0x5A4` = the alternate mode's (or the mode's) alternate state; without an alternate mode, a second switch or full
+  alert-block alertness maps the start state (4/5/6/8/… → 0x56, 0x29 → 0x2A, …); then a missing tag becomes 100.
+- `FirstAttack` with `+0x5A4` and no second switch: the alternate mode (2 → 0x19 + `initDTYPE_SniperAlert`) and the
+  alternate state.
+- Sniper states: SniperIdle 0x29 (anim 0x0E; look for Bond; alerts; hit → SniperAim, no flinch), SniperAim 0x2A (anim
+  0x0A, sight and combat range 1000; Bond seen → SniperFire), SniperFire 0x2B (fire after a 60-tick timer, then
+  `DroneWeap_Fire` each tick; empty clip → SniperReload; 16 ticks unseen → SniperAim; hit → flinch allowed), SniperReload
+  0x2C (20 ticks, then reload anim 0x52 → SniperFire; the clip refills on exit). [L] 07000005's sniper (spawner 266
+  picks placement 7 or 267 at random — both mode 2, special-death scripts 0x060003DF / 0x06000A1C): mode 2, alternate
+  0, team 1, `+0x5A2` 0x29, `+0x5A4` 0, tag 0, stationary, first block [0x81003C84, 0xAC700785, 0x40280448] — the port
+  matches all of these (`level_start_matches_the_game`). Not modelled: `CanAltAttack` (0x72), `FindElevatorDoor` /
+  `OpenDoor`, the 07000007 property writes in `GetDTYPENEW`.
+
 ## Perception [M, L]
 
 - Opponent in single player: the player (`NDrone2_FindOpponent`); geometry each tick (`Drone_GetOpponentInfo`):

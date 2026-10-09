@@ -172,7 +172,13 @@ pub fn weapon_id(skin: u32, weapon_param: u32) -> u32 {
 /// Behaviour property decoding (`behaviour_util_getProperty` 0x1c7d98): `(words[desc[2id] & 7] & masks[desc[2id+1]])
 /// >> (desc[2id] >> 3)`, tables `bitDescs` (0x2c7250, 2 bytes per id) and `bitMasks` (0x2c7308, pre-shifted u32).
 #[derive(Clone, Debug)]
-pub struct PropertyTables { pub descs: Vec<[u8; 2]>, pub masks: Vec<u32> }
+pub struct PropertyTables { pub descs: Vec<[u8; 2]>, pub masks: Vec<u32>, pub types: Vec<DroneType> }
+
+/// One row of `DroneTypeSettings` (0x29aee8, 85 × 12 bytes), indexed by the drone mode `Drone+0xC5`: +0 start state
+/// (−1 = chosen in code), +2 the alternate (attack) state, +4 an init function — by symbol name here (`initDTYPE_Sniper`
+/// sets the stationary flag `+0x4F8 & 0x10`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DroneType { pub start: i16, pub alt: i16, pub init: Option<String> }
 
 impl PropertyTables {
     pub fn from_action_elf(data: &[u8]) -> Result<PropertyTables> {
@@ -191,9 +197,17 @@ impl PropertyTables {
         let (ma, ms) = sym("bitMasks")?;
         let d = at(da, ds)?;
         let m = at(ma, ms)?;
+        let (ta, ts) = sym("DroneTypeSettings")?;
+        let t = at(ta, ts)?;
+        let types = t.chunks_exact(12).map(|c| {
+            let f = u32::from_le_bytes(c[4..8].try_into().unwrap());
+            let init = (f != 0).then(|| syms.iter().find(|s| s.value == f && s.size > 0).map(|s| s.name.split("__").next().unwrap_or("").to_string())).flatten();
+            DroneType { start: i16::from_le_bytes([c[0], c[1]]), alt: i16::from_le_bytes([c[2], c[3]]), init }
+        }).collect();
         Ok(PropertyTables {
             descs: d.chunks(2).map(|c| [c[0], c[1]]).collect(),
             masks: m.chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect(),
+            types,
         })
     }
 

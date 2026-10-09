@@ -125,7 +125,8 @@ impl Sim {
         // `Player_WeaponFiring` → `Player_WeaponInitBullet` from the eye along the view (*deviation*: no auto-aim and
         // no aim-point ray yet); the first-person fire script's sound 0x403 feeds the drones' hearing.
         if let Some(w) = self.weapons.records.get(self.gun.weapon as usize) {
-            let params = nf_game::gun::GunParams::from_record(w, 0);
+            let scripts = &self.scripts;
+            let params = nf_game::gun::GunParams::from_record(w, 0, |h| scripts.get(&h).map(|s| s.length as u32));
             // Auto-aim (on by default in the game's options) only outside aim mode; in aim mode the offset eases back.
             let dir = if self.auto_aim && !aiming { self.drones.auto_aim(&d, camera, look, self.gun.weapon) } else { self.drones.aim_target = None; look };
             if self.gun.update(trigger, params) {

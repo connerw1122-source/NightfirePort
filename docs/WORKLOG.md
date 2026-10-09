@@ -819,4 +819,29 @@ time 6.0 when flag 0x1000 is set; `Player_SetWeaponAnimObj` case 6 moves the rou
 0x100), then `+0xAC`. P2K (flags 0x1004, reload script 0x06000827, 155 frames): ⌈(155 − 6) / 1.35⌉ = 111 ticks
 (*suggested* ±1, the script player's stop rule unread). `gun::reload_ticks` replaces the 60-tick stand-in. nf-view's
 one-line change to pass the script lengths could not be compiled (rustc fails to map `core`'s metadata while the
-leaking RuntimeBroker holds ~212 GB of commit) and stays uncommitted for now.
+leaking RuntimeBroker holds ~212 GB of commit) and stays uncommitted for now. (Built and committed with 0037.)
+
+## 0037 — One-shot scripts hold; SpecialDeath; drone modes and the sniper (2026-10-09)
+
+**One-shots** (`SetHTAnim`: info flag bit 0 = loop): a one-shot script without a follow-on now stops on its last frame
+(the port looped every script); `+0x57A` (running one-shot) holds class-1 call completion until the end, as
+`CallHandler` / `CheckForAnimComplete` read. Raw scripts by hashcode (`DroneAnim_SetScript`) play as class 1 with a
+follow-on. All live tests still passed.
+
+**SpecialDeath** (0x163c68): the special script plays only at the drone's creation spot (within 1.0, facing within
+90°; 0x0600021F also needs Bond 2+ away), raising the death channel at once, sliding to the spot, then the dead pose
+0xBF and Dead; elsewhere the normal death. Scripts other than 0x0600021F make the drone stationary (`+0x4F8 & 0x10`),
+which the decomp tests together with property 0x40 everywhere — the port's five property-0x40 tests became `stays()`.
+
+**Modes and the sniper**: 07000005's sniper (spawner 266's random pick of placement 7 / 267) started live in SniperIdle
+0x29 while the port started it in Idle. Read `behaviour_util_get` (type / block modes in parameters 15 / 16 / 21),
+`GetDTYPENEW`, `GetDroneTypeAttackTypeFriend`, `DroneTypeSettings` (now read from the ELF with the property tables),
+`FirstAttack`'s alternate state, and SniperIdle / Aim / Fire / Reload; all ported (docs/systems/drone-ai.md "Drone
+modes and the sniper"). The start test now checks the sniper against the snapshot: state 0x29, mode 2, alternate 0,
+team 1, `+0x5A4` 0, tag 0, stationary and its first block word for word — all equal.
+
+**Failure**: the sniper no longer draws Idle's random idle animations, which moved the shared random stream: the notice
+test's burst (60 between the first two shots) and the cover test's first-sight move changed. Seeds re-picked by a scan
+(notice 7, cover 1), as in 0027; the kill test now expects the sniper's own chain (SniperIdle → SniperAim on the first
+hit). nf-game: all 26 tests pass; nf-formats unit tests pass; `disc_golden` aborted on an out-of-memory allocation
+(the RuntimeBroker leak again) and is to be re-run.
