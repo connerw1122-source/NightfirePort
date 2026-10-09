@@ -1040,3 +1040,14 @@ previous script keeps playing. The port replaced the script with none. [L] danim
 have no script for the unarmed set 0xC nor set 0, so a surrendered (unarmed) guard had no pose from his death on.
 Ported; test `surrendered_guard_killed_keeps_a_pose` (no tick without a pose from the shot until removal; it failed
 with 687 such ticks before).
+
+## 0052 — Script commands and events for drones; OnStartAnim; DAnimFunc_Run; muzzle from the shared pose (2026-10-09)
+
+Read `DroneAnim_EventFunc` (0x13b750), `DroneAnim_PlayFiringAnim` (0x13da48), `DroneAnim_OnStartAnim` (0x13e238),
+`DroneAnim_SetScript` (0x13e088), `DroneData_AnimFunc` / `DAStateFunc` tables [L 0x2707e0 / 0x2707f0: one entry each,
+`DAnimFunc_Run` (danim 0xDC at speed 0.7 on 07000009 / 0A) and an empty `DAStateFunc_AimStand`]. Ported: the playing
+script's commands per tick over the frames passed (start frame first, wrap-aware) — op 1 sounds into the hearing list,
+op 4 event 2 into `event_func` (holster swap, `+0x20` / `+0x21` firing flags, `+0x579`); class-6 danims cut to 15
+frames with end blend 5 unless the hit was big; the run speed; the muzzle taken from `palette` (the blended, aimed,
+drawn pose) instead of an unaimed integer-frame pose at the object position. Not ported (G-026): grenade throws,
+close-combat hits, weapon-change / message / tertiary events, footstep effects, `PlayFiringAnim`'s use of the flags.

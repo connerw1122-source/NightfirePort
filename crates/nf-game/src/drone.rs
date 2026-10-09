@@ -249,6 +249,10 @@ pub struct Animator {
     pub follow_on: u16,
     /// Scripts still fading out after being replaced (`AnimScriptAppendBlend`), oldest first (docs/systems/anim-engine.md).
     pub outgoing: Vec<crate::anim::Outgoing>,
+    /// The playing script's start-frame commands ran (`+0x78 & 0x20000000` cleared).
+    pub started: bool,
+    /// `OnStartAnim`: a class-6 danim's script cut to 15 frames (`+0xB0`) unless the hit was big (`+0x1C`).
+    pub len_cap: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -453,6 +457,13 @@ pub struct Drone {
     /// 0x80 → π/2, 0x200 → −π/2), applied to the yaw and the desired yaw by `DroneAnim_SnapRotate` (0x13e198) after
     /// the next control update.
     pub snap: f32,
+    /// `DroneAnim_EventFunc` flags `+0x20` / `+0x21` (events 0xF / 0x12 set, 0x10 clears; `PlayFiringAnim` reads
+    /// `+0x21`), and the holster swap (events 3 / 4: `AnimDatumSetEntity` datum 0x28 / 100 with 0x02000312).
+    pub event_20: bool,
+    pub event_21: bool,
+    pub holstered: bool,
+    /// Sounds the animation played this tick (`AnimProcessScriptCmds` op 1 → `Sound_Play3D`), for the hearing list.
+    pub anim_sounds: Vec<u32>,
     /// Pickups this drone made this tick (`DroneWeap_DropWeapon`, `DroneFunc_DropGrenade`), collected by `Drones`.
     pub drops: Vec<crate::pickup::Pickup>,
     /// Drone modes (`behaviour_util_get`: placement parameter 15 = type `+0xC7`, 16 = the normal block's mode `+0xC8`,
@@ -497,7 +508,7 @@ impl Drone {
             los: false, seen: false, ever_seen: false, visibility: 0.0, seen_ticks: 0, unseen_ticks: 0, vision_on: false,
             dist: 0.0, yaw_to_opp: 0.0,
             state: state::GLOBAL, prev_state: 0, next_state: None, entered: 0, timer_c: None,
-            anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new() },
+            anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
             shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
@@ -512,7 +523,7 @@ impl Drone {
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
             corpse: false, death_pending: false, death_channel: param(12) as u8, special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
-            captain: false, snap: 0.0, drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
+            captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
         };
         dr.init_properties(d, &param);
@@ -765,6 +776,11 @@ impl Drone {
                 self.anim.speed = if speed > 0.0 && speed.is_finite() { speed } else { 1.0 };
                 self.anim.once = info[0] & 1 == 0;
                 self.anim.held = false;
+                self.anim.started = false;
+                // `DroneAnim_OnStartAnim`: class 6 without a big hit (`+0x1C`) is cut to 15 frames, end blend 5.
+                self.anim.len_cap = (self.anim.class == 6 && !self.big_hit).then_some(15);
+                // `DAnimFunc_Run` (the only `DroneData_AnimFunc` entry): the run danim 0xDC plays at 0.7 on 07000009 / 0A.
+                if danim == 0xdc && matches!(d.level, 0x0700_0009 | 0x0700_000a) { self.anim.speed = 0.7; }
                 // A new script has no previous root: no motion until its second tick (a call starting a danim after
                 // this tick's root motion would otherwise move by the old sequence's root minus the new one's).
                 self.root_prev = None;
@@ -784,6 +800,8 @@ impl Drone {
         self.anim.state = state;
         self.anim.class = 1;
         self.anim.script = Some(hash);
+        self.anim.started = false;
+        self.anim.len_cap = None;
         self.anim.time = 0;
         self.anim.ftime = 0.0;
         self.anim.speed = 1.0;
@@ -877,11 +895,20 @@ impl Drone {
         self.anim.outgoing.retain_mut(|o| { let len = d.scripts.get(&o.script).map_or(1.0, |s| s.length as f32); o.tick(len) });
         if self.anim.held { self.root_prev = None; return self.call_handler(d); }
         let before = (self.anim.script, self.anim.danim);
+        // `AnimScriptTick`: a new script runs the commands of its start frame first.
+        if !self.anim.started { self.anim.started = true; self.script_commands(d, 0, 1, false); }
+        let prev_t = 1 + self.anim.time;
         // Playback speed (`Drone_AnimInfo +0x14`, passed to the script by `SetHTAnim`): [L] lean-out 176 (51 frames at
         // 1.5) lasted 35 ticks live (work/chase_trace.tsv).
         self.anim.ftime += self.anim.speed;
         self.anim.time = self.anim.ftime as u32;
         let len = self.anim.script.and_then(|h| d.scripts.get(&h)).map(|s| s.length as u32).unwrap_or(1);
+        let len = self.anim.len_cap.map_or(len, |c| len.min(c));
+        // The commands between last tick's frame and this one's (`AnimProcessScriptCmds`), wrap-aware.
+        let script_before = self.anim.script;
+        let to = (1 + self.anim.time).min(len);
+        let wrapped = self.anim.time >= len && !self.anim.once && script_before.is_some();
+        self.script_commands(d, prev_t, if wrapped { 1 + self.anim.time - len } else { to }, wrapped);
         let mut restarted = false;
         let mut wrap_end = None;
         if self.anim.time >= len {
@@ -904,7 +931,8 @@ impl Drone {
                 // applied here at once so a state entered on the call's completion (e.g. Surrendered facing Bond) is
                 // not turned by it afterwards (the order of completion vs snap is not read, U-039).
                 // The follow-on blends over the ending danim's `info+0xE` frames (`+0x584`), 0 for a snapped turn.
-                let end_blend = if self.snap != 0.0 { 0 } else { info[0xe] as u16 };
+                let mut end_blend = if self.snap != 0.0 { 0 } else { info[0xe] as u16 };
+                if self.anim.len_cap.is_some() { end_blend = 5; }
                 if self.snap != 0.0 { self.desired_yaw += self.snap; self.yaw += self.snap; self.snap = 0.0; }
                 self.set_danim(d, next, end_blend)
             }
@@ -926,6 +954,39 @@ impl Drone {
         // wait) and completes 31 ticks later; UnderCoverAim's transition 176 (class 5) leads into loop 182 and completes
         // then.
         self.call_handler(d)
+    }
+
+    /// `AnimProcessScriptCmds` for the playing script over frames (from, to] (from 0 = the start frame; `wrapped`: to the
+    /// end and again from 1): op 1 `[frame, sfx]` → a sound at the drone; op 4 `[frame, event, arg]` → event 2 calls
+    /// `DroneAnim_EventFunc(arg)`. Footstep events (0 / 4 / 5: footprints, `Effect_Create`) and the others' effects are
+    /// not ported (effects, G-026).
+    fn script_commands(&mut self, d: &Data, from: u32, to: u32, wrapped: bool) {
+        let Some(script) = self.anim.script.and_then(|h| d.scripts.get(&h)) else { return };
+        let len = script.length as u32;
+        let hit = |f: u32| if wrapped { f > from && f <= len || f <= to } else { f > from && f <= to };
+        let mut events = Vec::new();
+        for c in &script.commands {
+            match (c.op, c.args.as_slice()) {
+                (1, [f, sfx, ..]) if hit(*f as u32) => self.anim_sounds.push(*sfx as u32),
+                (4, [f, 2, arg, ..]) if hit(*f as u32) => events.push(*arg),
+                _ => {}
+            }
+        }
+        for e in events { self.event_func(e); }
+    }
+
+    /// `DroneAnim_EventFunc` (0x13b750): 3 / 4 holster swap, 7 `+0x579` = 0, 0xF `+0x20`, 0x12 `+0x20` and `+0x21`, 0x10
+    /// clears both. Not ported: 1 grenade throw, 2 weapon change, 5 / 10 / 11 close-combat hits, 6 / 0xE messages, 9
+    /// tertiary placement (G-026).
+    fn event_func(&mut self, e: u16) {
+        match e {
+            3 => self.holstered = true,
+            4 => self.holstered = false,
+            0xf => self.event_20 = true,
+            0x12 => { self.event_20 = true; self.event_21 = true; }
+            0x10 => { self.event_20 = false; self.event_21 = false; }
+            _ => {}
+        }
     }
 
     /// The sequence and frame the playing script shows (opcode-0 command covering the script time).
@@ -2508,19 +2569,14 @@ impl Drone {
     /// The muzzle (`AnimGetBoneWorldTrans(obj, weapon datum id, 1)` = datum id + 1) in world space, from the posed
     /// skeleton; falls back to chest height in front of the drone.
     pub fn muzzle(&self, d: &Data) -> V3 {
+        // The same posed object the renderer and the hit boxes use (`palette`: blended, aimed, at the drawn height).
         let posed = (|| {
-            let (q, f) = self.script_frame(d)?;
-            let seq = d.sequences.get(&q)?;
             let skin = d.skins.get(&self.skin)?;
-            let skel = d.skeletons.get(&skin.skeleton)?;
             let (_, datum) = d.weapons.third_person(self.weapon as u8)?;
             let id = if datum == 0xff { 0 } else { datum as u32 } + 1;
             let dt = skin.datums.iter().find(|x| x.id == id && x.bone >= 0)?;
-            let mut local = nf_formats::anim::local_pose(seq, skel, skin, f.clamp(1, seq.frames.max(1) as u32));
-            local[0].0 = [0.0; 3];
-            let world = nf_formats::anim::world_pose(&local, skin);
-            let obj = nf_formats::placement::object_matrix([0.0, self.yaw, 0.0], self.pos);
-            let m = nf_formats::anim::mul(&nf_formats::anim::mul(&nf_formats::anim::quat_trans_to_mat(dt.q, dt.t), world.get(dt.bone as usize)?), &obj);
+            let pal = self.palette(d)?;
+            let m = nf_formats::anim::mul(&nf_formats::anim::quat_trans_to_mat(dt.q, dt.t), pal.get(dt.bone as usize)?);
             Some([m[3][0], m[3][1], m[3][2]])
         })();
         posed.unwrap_or_else(|| {
@@ -3154,6 +3210,9 @@ impl Drones {
                 if done_msg != 0 || next_ai != 0 { dr.send(d, rng, frame, done_msg); }
             }
             if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
+            // The animation's sounds (`Sound_Play3D` at the drone) enter the hearing list for the next tick.
+            let (snd, at) = (std::mem::take(&mut dr.anim_sounds), dr.pos);
+            if let Some(t) = d.sfx { for id in snd { let h = t.get(id); if !h.looped { self.sounds.push(Sound { id: h.id, pos: at, inner: h.inner, outer: h.outer, weight: h.weight }); } } }
             for mut p in dr.drops.drain(..) { p.from = Some(index); self.pickups.push(p); }
             // `NDrone2_Collision`: the feet sphere (r 0.4) is pushed out of the AI-network boundaries.
             if dr.enabled && dr.bounded && d.nav.bounds {
