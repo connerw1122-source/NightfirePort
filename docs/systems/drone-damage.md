@@ -64,7 +64,10 @@ Placement parameters (DefaultInit, `param(k)` = `piVar19[0xD + k]`) [M, checked]
   Rand(4) if the danim's `info+0x10` byte is set. Update: `+0x3B` = 0 or anim set 4 / 9 → `DropWeapon`. Exit or msg
   0xC with `+0xCD8` → `SetDeathChannel` (0x13e660): `switch_channels[+0x13C]` = 1 (0x63: mission-fail reasons instead).
 - Dead 0x47 (0x163fe8): enter `obj+0xF0 |= 0x20`, `SetAsDead`, timer 0xC at now + 300 (`DAT_00298F58` = 10 ·
-  `FRAME_RATE_INT` [L]); prop 0x31 and not a silent kill → `DroneAlertToObject(msg 0x15, corpse)`. Update: not drawn →
+  `FRAME_RATE_INT` [L]); prop 0x31 and not a silent kill → `DroneAlertToObject(msg 0x15, corpse)`: a broadcast that
+  single-player states pass to `DroneVision_EnemyAlerts`, whose case 0x15 ends in `ShoutFromOtherDrone` (returns 0) —
+  only the return state / home are saved; SeenDeadBody 0x9E is entered only by the bots' `ReactToDroneAlertMsg`
+  (multiplayer) [M, WORKLOG 0033]. Update: not drawn →
   disabled; `DeadDrone`. Timer 0xC → Fade 0x48.
 - Fade 0x48 / FadeFast 0x49 (`NDrone2_FadeOut`): alpha from `obj+0x106` down 0.6 (8.0 for 0x49) per tick; at 0 or not
   drawn → disabled. `DeadDrone` (0x14a298): `Drone_InitComms` counts drones in 0x0F, 0x47, 0x48, 0xBF (`+0x11C` the

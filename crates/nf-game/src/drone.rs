@@ -86,6 +86,8 @@ pub mod msg {
     pub const FORCED_ATTACK: u8 = 0x1f;
     /// `Drone_Message(0xE)`: enable (WaitSwitch → the drone's start state).
     pub const ENABLE: u8 = 0x0e;
+    /// The alarm (`Drone_InitComms` → `Drone_Message(0, 0x1E)` every 30 frames while `switch_channels[0x96]`).
+    pub const ALARM: u8 = 0x1e;
     /// A bullet hit (`Drone_BulletHit` → msg 8 with the HITDATA).
     pub const BULLET: u8 = 8;
 }
@@ -1371,6 +1373,13 @@ impl Drone {
             }
             // Forced attack (`Drone_Message(0x1F)` → `DroneFunc_DoForcedAttack`): another drone was seen attacking.
             (IDLE | ALERT | PATROL, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
+            // The alarm through `DroneVision_EnemyAlerts` case 0x1E (0x177c18): save the return state and home the first
+            // time, then Attack (`+0x4F8` |= 0x4000000 | 0x40000000; drone modes 9 / 0x12 / 0x1E, not modelled, ignore it).
+            (IDLE | ALERT | PATROL | ALERT_TO_POSITION | SEARCH_AREA | HEARD_NOISE_AWARE | HEARD_NOISE_SUSPECT | HEARD_NOISE_ALERT, msg::ALARM) => {
+                if !self.investigating { self.resume_state = s; self.home = self.feet(); }
+                self.set_state(ATTACK);
+                true
+            }
             (IDLE | ALERT | PATROL | ALERT_TO_POSITION | SEARCH_AREA | HEARD_NOISE_AWARE, msg::SOUND) => {
                 // Aware (0x16af20): a share above 0.1 → Suspect, else nothing.
                 if s == HEARD_NOISE_AWARE { if self.sound_share > 0.1 { self.set_state(HEARD_NOISE_SUSPECT) } return true; }
@@ -2184,6 +2193,9 @@ pub struct Drones {
     pub player_bullets: Vec<PlayerBullet>,
     pub player_impacts: Vec<PlayerImpact>,
     pub last_flinch: Option<u32>,
+    /// The last alarm broadcast (`DAT_0029AA88`) and whether one went out (`DAT_0029AA85`, 07000014 sends only one).
+    pub last_alarm: Option<u32>,
+    pub alarm_sent: bool,
     pub bond_aiming: bool,
     cover_cursor: usize,
     cover_counter: i32,
@@ -2194,7 +2206,7 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false }
+        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, last_alarm: None, alarm_sent: false }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -2394,6 +2406,12 @@ impl Drones {
                     }
                 }
             }
+        }
+        // The alarm: while `switch_channels[0x96]`, every 30 frames (and once only on 07000014) msg 0x1E to every drone.
+        if self.channels.on(0x96) && self.last_alarm.is_none_or(|t| frame > t + 30) && (d.level != 0x0700_0014 || !self.alarm_sent) {
+            self.alarm_sent = true;
+            self.last_alarm = Some(frame);
+            for dr in self.list.iter_mut().filter(|x| x.present && x.enabled) { dr.send(d, &mut self.rng, frame, msg::ALARM); }
         }
         // Drones noticing drones that attack (`DroneVision_FindAlertedDrones` → `ConsiderAlerted` →
         // `DroneCanSeeDrone`): source attacking ≥ 1 s with visible alert bits; observer watching (Idle/Alert), not yet

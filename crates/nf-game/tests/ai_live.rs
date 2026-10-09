@@ -423,3 +423,24 @@ fn ai_volumes_match_the_game() {
     assert_eq!(nf_game::aivolume::visibility_factor(&l.volumes, start, false), 0.24999999);
     assert_eq!(nf_game::aivolume::visibility_factor(&l.volumes, [0.0, 0.0, 0.0], false), 1.0);
 }
+
+/// The alarm (`switch_channels[0x96]`, from the decomp; 07000005 has no trigger for it): msg 0x1E every 30 frames sends
+/// idle and patrolling guards to Attack; WaitSwitch drones ignore it. Sister: without the channel nobody attacks.
+#[test]
+fn alarm_channel_sends_guards_to_attack() {
+    use nf_game::drone::state;
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let run = |alarm: bool| {
+        let (drones, _, rng) = l.drones(None, 61.342);
+        let mut sim = l.sim(drones, rng);
+        if alarm { sim.set_channel(0x96); }
+        let bond = bond_at([0.0, 0.0, 0.0]);
+        for _ in 0..40 { sim.tick(&d, &bond); }
+        sim.list.iter().filter(|x| x.present).map(|x| (x.placement, x.log.iter().any(|&(_, s)| s == state::ATTACK), x.state)).collect::<Vec<_>>()
+    };
+    let with = run(true);
+    for p in [5, 6, 9] { assert!(with.iter().any(|&(q, a, _)| q == p && a), "placement {p}: {with:?}"); }
+    assert!(with.iter().filter(|&&(_, _, s)| s == state::WAIT_SWITCH).all(|&(_, a, _)| !a));
+    assert!(run(false).iter().all(|&(_, a, _)| !a), "sister");
+}

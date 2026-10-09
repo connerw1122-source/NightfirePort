@@ -778,3 +778,17 @@ the seven yaw-only boxes but missed the tilted one by 0.25 in a row; a search ov
 Test `ai_volumes_match_the_game` (centres, extents, axes, factors vs the snapshot; Bond's start factor 0.24999999;
 sister: outside every box 1). With it the two-sound scenario no longer makes the guard attack. All tests pass.
 Open: U-035 (the matrix builder, the ninth box), U-033 (Aware's look-around length live).
+
+## 0033 — Corpse alerts are inert in single player; the alarm (2026-10-09)
+
+**Corpses**: Dead's `DroneAlertToObject(0x15)` broadcasts to every drone; single-player states pass msg 0x15 to
+`DroneVision_EnemyAlerts`, whose case 0x15 calls `ShoutFromOtherDrone` — `return 0` — so only the return state and
+home get saved. SeenDeadBody 0x9E is set only in `NDrone2_ReactToDroneAlertMsg`, called only from the bots'
+`DSTATE_BotGlobal` (multiplayer). Nothing to port; the gap entry is gone.
+
+**Alarm** (`Drone_InitComms`): while `switch_channels[0x96]`, every 30 frames (once on 07000014) `Drone_Message(0,
+0x1E)` → `Drone_SM_BroadcastMsg`; the states that pass 0x1E to `EnemyAlerts` (Idle, Alert, Patrol, AlertToPosition,
+SearchArea, HeardNoise Aware / Suspect / Alert, plus states the port lacks) go to Attack. Ported with test
+`alarm_channel_sends_guards_to_attack` (sister: no channel, no attack). 07000005 has no trigger for 0x96.
+`DroneFunc_CheckAlarmRaised` is music only. Channel 0x97 (a drone with `+0x4F8 & 0x100`, alertness 1, within 30) is
+left as a gap — the flag's setter was not found by a plain search.
