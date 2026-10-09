@@ -7,7 +7,7 @@
 //! +1 u8 ?
 //! +2 u16 width − 1, +4 u16 height − 1
 //! +6 u8 frames  (animated textures: frames stacked one after another)
-//! +7 u8 rate    (the game uses 60 / rate)
+//! +7 u8 rate    frames per second: 1–59 → 60 / rate ticks per frame, else 1 (`psiCreateMapTextures`)
 //! +8 u32 hashcode on disc (0xFFFFFFFF or 03xxxxxx); replaced by the pixel pointer at load
 //! ```
 //! Palette: 16 or 256 entries × RGBA8888, alpha on the PS2 scale (0x80 = opaque; never above 0x80 on our disc).

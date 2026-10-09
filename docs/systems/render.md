@@ -37,7 +37,7 @@ alpha-list distance fade, environment mapping, dynamic lights / motion blur / br
 - Draw lists (`View_AddCels` 0x1e6ba0, glist flags): 0x1 → list 1 back to front; 0x2000 → list 2 after `psiClearZ`;
   else list 0 front to back. Flags 0x8 billboard, 0x4 scale jitter 1.0–1.05 per frame, 0x10 hidden; `cel+0xA3`
   alpha pulse for placement types 0x8018 / 0x8019.
-- Textures: bilinear, no mipmaps (TEX1 0x60); REGION_REPEAT inside the page; MODULATE, TCC 1; animated frame
+- Textures: bilinear, no mipmaps (TEX1 0x60); REGION_REPEAT inside the page; MODULATE, TCC 1; animated frame (ticks per frame = 60 / rate byte for 1–59, else 1)
   (GameState+0x38 / rate) % frames.
 
 ## Lighting [M, L]

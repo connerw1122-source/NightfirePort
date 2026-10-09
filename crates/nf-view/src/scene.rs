@@ -71,7 +71,27 @@ pub struct TextureImage {
     pub key: (usize, u32),
     pub width: u32,
     pub height: u32,
+    /// Frame 0.
     pub rgba: Vec<u8>,
+    /// Animated textures: frames 1.. and the ticks each frame shows (`CacheTexture` 0x11cd58: frame =
+    /// (`GameState+0x38` / rate) % frames, `rate` in ticks (`ticks_per_frame`); the counter gains `VIDEO_FRAME_RATE / FRAME_RATE_INT` = 60 / 60 per game
+    /// tick [M, L]).
+    pub more: Vec<Vec<u8>>,
+    pub rate: u32,
+}
+
+/// `psiCreateMapTextures` (0x11d200): the header's rate byte is frames per second; 1–59 become `60 / rate` ticks per
+/// frame, anything else 1 [M].
+pub fn ticks_per_frame(rate: u8) -> u32 { if (1..60).contains(&rate) { 60 / rate as u32 } else { 1 } }
+
+impl TextureImage {
+    /// Map `mi`'s texture `t`, every frame.
+    pub fn from_texture(mi: usize, t: &nf_formats::texture::Texture) -> TextureImage {
+        let pal = t.palette_rgba8();
+        let rgba = |f: usize| t.frame(f).iter().flat_map(|&i| pal[i as usize]).collect::<Vec<u8>>();
+        TextureImage { key: (mi, t.index as u32), width: t.width as u32, height: t.height as u32, rgba: rgba(0),
+            more: (1..t.frames.max(1) as usize).map(rgba).collect(), rate: ticks_per_frame(t.rate) }
+    }
 }
 
 /// One drawn character mesh: its placement matrix, skin, skeleton and slot → bone list, the animation the game starts
@@ -703,13 +723,10 @@ impl Scene {
         }
         let keys: BTreeSet<(usize, u32)> = materials.iter().filter_map(|m| m.key).collect();
         let textures = keys.into_iter().map(|key| {
-            let t = &level.maps[key.0].textures[key.1 as usize];
-            let pal = t.palette_rgba8();
-            TextureImage { key, width: t.width as u32, height: t.height as u32, rgba: t.frame(0).iter().flat_map(|&i| pal[i as usize]).collect() }
+            TextureImage::from_texture(key.0, &level.maps[key.0].textures[key.1 as usize])
         }).collect();
         let hud_textures = crate::hud::TEXTURES.iter().filter_map(|&h| level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == h).map(|t| {
-            let pal = t.palette_rgba8();
-            (h, TextureImage { key: (mi, t.index as u32), width: t.width as u32, height: t.height as u32, rgba: t.frame(0).iter().flat_map(|&i| pal[i as usize]).collect() })
+            (h, TextureImage::from_texture(mi, t))
         }))).collect();
         let hud = drones.and_then(|d| d.hud.clone());
         let n_seq: usize = sequences.values().map(Vec::len).sum();
@@ -757,8 +774,7 @@ impl Scene {
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {
-            let pal = t.palette_rgba8();
-            TextureImage { key: (mi, t.index as u32), width: t.width as u32, height: t.height as u32, rgba: t.frame(0).iter().flat_map(|&i| pal[i as usize]).collect() }
+            TextureImage::from_texture(mi, t)
         }));
         Scene { snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_model, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }
@@ -917,5 +933,18 @@ impl Scene {
                 })).collect::<Vec<_>>().join("; ")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn texture_rate_is_ticks_per_frame() {
+        // The rates on 07000005: 12 fps → 5 ticks, 17 → 3, 30 → 2, 0 → every tick.
+        assert_eq!([12, 17, 30, 0, 60, 255].map(ticks_per_frame), [5, 3, 2, 1, 1, 1]);
+        // Sister: the old reading (the byte as ticks) disagrees.
+        assert_ne!(ticks_per_frame(12), 12);
     }
 }

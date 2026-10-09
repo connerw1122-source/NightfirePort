@@ -115,6 +115,8 @@ pub struct Renderer {
     vbuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     tex_bgs: Vec<wgpu::BindGroup>,
+    /// Per texture slot: its first bind group, frame count and rate (animated textures).
+    tex_frames: Vec<(usize, u32, u32)>,
     /// Per material: layer, first index, index count (sorted by layer: sky pass first).
     draws: Vec<DrawCall>,
 }
@@ -244,8 +246,13 @@ impl Renderer {
             })
         };
         let mut tex_bgs = vec![make_tex(1, 1, &[255, 255, 255, 255])];
+        let mut tex_frames = vec![(0, 1, 1)];
         let hud_bgs = std::iter::once(make_tex(1, 1, &[255, 255, 255, 255])).chain(scene.hud_textures.iter().map(|(_, t)| make_tex(t.width, t.height, &t.rgba))).collect();
-        for t in &scene.textures { tex_bgs.push(make_tex(t.width, t.height, &t.rgba)); }
+        for t in &scene.textures {
+            tex_frames.push((tex_bgs.len(), 1 + t.more.len() as u32, t.rate));
+            tex_bgs.push(make_tex(t.width, t.height, &t.rgba));
+            for f in &t.more { tex_bgs.push(make_tex(t.width, t.height, f)); }
+        }
         let material_tex: Vec<usize> = scene.materials.iter()
             .map(|m| m.key.and_then(|k| scene.textures.iter().position(|t| t.key == k)).map_or(0, |i| i + 1)).collect();
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.vertices), usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST });
@@ -258,7 +265,7 @@ impl Renderer {
         let snow_pipeline = make_pipeline(Draw { pass: 5, blend: 1, zwrite: false, atest: 0, fog: 0 });
         let snow_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (SNOW_MAX * std::mem::size_of::<crate::scene::Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let snow_bg = match &scene.snow_texture { Some(t) => make_tex(t.width, t.height, &t.rgba), None => make_tex(1, 1, &[255, 255, 255, 255]) };
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_vbuf, hud_bgs, pipelines, fog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, draws }
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_vbuf, hud_bgs, pipelines, fog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, tex_frames, draws }
     }
 
     /// `view_proj`: full camera; `view_proj_rot`: the same without the camera translation.
@@ -271,7 +278,7 @@ impl Renderer {
     /// `hud`: overlay triangles drawn last.
     /// `eye`: the camera position (the per-frame draw sort: list 0 front to back, list 1 back to front by the objects'
     /// squared distance, as `View_AddCels` orders cels).
-    pub fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], eye: [f32; 3], snow: &[crate::scene::Vertex], hud: &HudFrame) -> wgpu::CommandEncoder {
+    pub fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], eye: [f32; 3], ticks: u32, snow: &[crate::scene::Vertex], hud: &HudFrame) -> wgpu::CommandEncoder {
         let ns = snow.len().min(SNOW_MAX);
         if ns > 0 { queue.write_buffer(&self.snow_vbuf, 0, bytemuck::cast_slice(&snow[..ns])); }
         let n = hud.v.len().min(HUD_MAX) / 3 * 3;
@@ -318,7 +325,8 @@ impl Renderer {
                 let uniform = if layer == Layer::SkyCamera { &self.uniform_rot_bg } else { &self.uniform_bg };
                 pass.set_pipeline(&self.pipelines[dc.pipeline].1);
                 pass.set_bind_group(0, uniform, &[]);
-                pass.set_bind_group(1, &self.tex_bgs[dc.tex], &[]);
+                let (first_bg, n, rate) = self.tex_frames[dc.tex];
+                pass.set_bind_group(1, &self.tex_bgs[first_bg + ((ticks / rate) % n) as usize], &[]);
                 pass.draw_indexed(first..first + count, 0, 0..1);
             }
             // `DrawDrops` runs after the fog pass, the alpha list and the shards.

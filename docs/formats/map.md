@@ -50,7 +50,7 @@ Block ids on our disc (*measured* counts / total bytes over 2,230 maps) and thei
 - Block 0x10 holds 12-byte entries, 0x0F 8-byte entries, one per texture; then one 0x16 (pixels) and one 0x12
   (palette) block per texture, in table order. Counts agree in every map.
 - Texture header entry: `+0 u8 flags` (bit 0 = 256 colours / 8 bpp, else 16 / 4 bpp; values 0x00 0x01 0x10 0x11 0x18
-  0x19), `+1 u8 ?`, `+2 u16 width−1`, `+4 u16 height−1`, `+6 u8 frames`, `+7 u8 rate` (game: 60 / rate),
+  0x19), `+1 u8 ?`, `+2 u16 width−1`, `+4 u16 height−1`, `+6 u8 frames`, `+7 u8 rate` (frames per second: 1–59 → `60 / rate` ticks per frame, else 1; frame = (game ticks / that) % frames, `CacheTexture` 0x11cd58 [M]),
   `+8 u32` hashcode on disc (0xFFFFFFFF in 22,550, `03xxxxxx` in 2,532; replaced by the pixel pointer at load).
 - Palette header entry: `+4 u32` texture hashcode (replaced by a palette pointer); the palette block registers the
   texture in the hash table under it.

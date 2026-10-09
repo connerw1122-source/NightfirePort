@@ -1099,3 +1099,15 @@ picked from seed 1 to 2 (aim 34 ticks, live 37; 0.03 from the live cover spot), 
 live flakes as camera-facing quads of texture 0x03000045, colour (63, 63, 63, 127), additive, depth-tested without
 writing, after the alpha list; 0.2 units wide (*suggested*). Unit test `snow_falls_inside_its_box_and_respawns_above_
 the_viewer` (sister: no box → nothing falls).
+
+## 0057 — Animated textures
+
+`CacheTexture` (0x11cd58, read) picks frame `first + (GameState+0x38 / rate) % frames`; `GameFlow_Main` (0x1c98c8)
+adds `VIDEO_FRAME_RATE / FRAME_RATE_INT` to `GameState+0x38` per unpaused frame, both 60 in the snapshot [L], so one per
+tick. `psiCreateMapTextures` (0x11d200) turns the header's rate byte into ticks per frame: `60 / rate` for 1–59, else 1
+— the format notes had it as "60 / rate" without the clamp (map.md, texture.rs corrected). 07000005 has 8 animated
+textures (12×5, 2×3, 2×30, 8×4, 7×10, 3×4, 2×2, 11×1 frames × ticks). nf-view uploads every frame and binds frame
+`(ticks / rate) % frames` per draw; the phase starts at the level start, not the game's boot counter (*deviation*, phase
+only). Unit test `texture_rate_is_ticks_per_frame` (sister: the byte read as ticks disagrees). Debug aids kept:
+`NF_DRAWS=1` prints draw-state groups, list-1 objects, billboard/jitter-flagged objects (none drawn on 07000005: those
+flags belong to dynamic objects) and the animated textures; `NF_HIDE=a,b` drops world objects by name.

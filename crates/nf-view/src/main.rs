@@ -116,6 +116,12 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
         let mut names: std::collections::BTreeMap<String, usize> = Default::default();
         for inst in level.instances(!all).0 { let o = &level.maps[inst.map].objects[inst.object]; if o.flags & 1 != 0 { *names.entry(format!("{} flags {:#x}", o.name.trim(), o.flags)).or_default() += 1; } }
         for (k, n) in names { eprintln!("list 1: {k} x{n}"); }
+        let mut fl: std::collections::BTreeMap<String, usize> = Default::default();
+        for inst in level.instances(!all).0 { let o = &level.maps[inst.map].objects[inst.object]; if o.flags & 0xc != 0 { *fl.entry(format!("{} flags {:#x}", o.name.trim(), o.flags)).or_default() += 1; } }
+        for (k, n) in fl { eprintln!("flag 4/8: {k} x{n}"); }
+        for t in level.maps.iter().flat_map(|m| &m.textures).filter(|t| t.frames > 1) { eprintln!("animated texture {:#010x}: {}x{} {} frames, rate {}", t.hashcode, t.width, t.height, t.frames, t.rate); }
+        let anim = level.maps.iter().flat_map(|m| &m.textures).filter(|t| t.frames > 1).count();
+        eprintln!("animated textures: {anim}");
     }
     eprintln!("{archive} (+ {anim_name}): {}", scene.stats);
     Ok(scene)
@@ -158,7 +164,7 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let depth = gpu::depth_view(&device, w, h);
     let (vp, vp_rot) = cam.view_proj(w as f32 / h as f32);
     let snow = snow_for(scene, cam);
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), &snow, &hud::overlay(scene, w as f32 / h as f32));
+    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, &hud::overlay(scene, w as f32 / h as f32));
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -364,7 +370,7 @@ impl ApplicationHandler for App {
                 let aspect = g.config.width as f32 / g.config.height as f32;
                 let (vp, vp_rot) = self.cam.view_proj(aspect);
                 let snow = snow_for(&self.scene, &self.cam);
-                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, self.cam.pos.to_array(), &snow, &hud::overlay(&self.scene, aspect));
+                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, self.cam.pos.to_array(), self.anim_time as u32, &snow, &hud::overlay(&self.scene, aspect));
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
                 g.window.request_redraw();
