@@ -809,3 +809,14 @@ mode, the nearest drawn living enemy drone whose bone 2 lies within the yaw / pi
 crosshair offset onto it; the offset halves every tick. nf-view: on by default (the game's option byte is 1 [L]), off
 in aim mode (right mouse). **Failure**: the first offset had the wrong sign (the port's `angle_difference(a, b)` is
 b − a) — the test caught it (the bullet went 0.1 rad the other way). Test with a sister (0.6 rad off: no snap).
+
+## 0036 — Bond's reload time (2026-10-09)
+
+`Player_ReloadAmmoType` only moves rounds (argument 0) or checks (1); the time is the first-person animation:
+`Player_WeaponFiring` starts anim state 6 when the clip is empty and rounds remain (trigger held or released), plays
+the start script `weapon+0xA8` if any, else the reload script `+0xA4` at speed 1.35 when flag 0x200 is clear, from
+time 6.0 when flag 0x1000 is set; `Player_SetWeaponAnimObj` case 6 moves the rounds when it stops (one round with flag
+0x100), then `+0xAC`. P2K (flags 0x1004, reload script 0x06000827, 155 frames): ⌈(155 − 6) / 1.35⌉ = 111 ticks
+(*suggested* ±1, the script player's stop rule unread). `gun::reload_ticks` replaces the 60-tick stand-in. nf-view's
+one-line change to pass the script lengths could not be compiled (rustc fails to map `core`'s metadata while the
+leaking RuntimeBroker holds ~212 GB of commit) and stays uncommitted for now.
