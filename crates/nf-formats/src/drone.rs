@@ -155,6 +155,49 @@ pub fn weapon_id(skin: u32, weapon_param: u32) -> u32 {
     if weapon_param != 0 { weapon_param } else if skin == 0x0500_001e { 0 } else { 1 }
 }
 
+/// Behaviour property decoding (`behaviour_util_getProperty` 0x1c7d98): `(words[desc[2id] & 7] & masks[desc[2id+1]])
+/// >> (desc[2id] >> 3)`, tables `bitDescs` (0x2c7250, 2 bytes per id) and `bitMasks` (0x2c7308, pre-shifted u32).
+#[derive(Clone, Debug)]
+pub struct PropertyTables { pub descs: Vec<[u8; 2]>, pub masks: Vec<u32> }
+
+impl PropertyTables {
+    pub fn from_action_elf(data: &[u8]) -> Result<PropertyTables> {
+        let elf = Elf::parse(data)?;
+        let syms = elf.symbols(data)?;
+        let segs = elf.load_segments(data)?;
+        let sym = |n: &str| syms.iter().find(|s| s.name == n).map(|s| (s.value, s.size as usize))
+            .ok_or_else(|| crate::buf::FormatError::Invalid(format!("ACTION.ELF has no symbol {n}")));
+        let at = |addr: u32, len: usize| -> Result<Vec<u8>> {
+            for (va, bytes, _) in &segs {
+                if addr >= *va && (addr - va) as usize + len <= bytes.len() { return Ok(bytes[(addr - va) as usize..][..len].to_vec()); }
+            }
+            invalid(format!("{addr:#x} outside the image"))
+        };
+        let (da, ds) = sym("bitDescs")?;
+        let (ma, ms) = sym("bitMasks")?;
+        let d = at(da, ds)?;
+        let m = at(ma, ms)?;
+        Ok(PropertyTables {
+            descs: d.chunks(2).map(|c| [c[0], c[1]]).collect(),
+            masks: m.chunks(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect(),
+        })
+    }
+
+    pub fn get(&self, id: usize, words: &[u32; 3]) -> u32 {
+        let Some(&[d0, d1]) = self.descs.get(id) else { return 0 };
+        let mask = self.masks.get(d1 as usize).copied().unwrap_or(0);
+        (words[(d0 & 7) as usize % 3] & mask) >> (d0 >> 3)
+    }
+}
+
+/// The two behaviour blocks of a `DoModeSettingsNEW` drone: placement parameters 18..20 (normal) and 23..25 (alert).
+pub fn behaviour_words(param: impl Fn(u32) -> u32) -> ([u32; 3], [u32; 3]) {
+    ([param(18), param(19), param(20)], [param(23), param(24), param(25)])
+}
+
+/// Alertness from property 0x20 (2 bits): the float table at 0x2f5cc8 = {0, 0, 0.66, 1.0} (agent report, to verify).
+pub const ALERTNESS_LEVELS: [f32; 4] = [0.0, 0.0, 0.66, 1.0];
+
 /// How a drone placement appears at level start, given the level's drone spawners (object type 0xF1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SpawnRole {

@@ -868,6 +868,7 @@ dependencies = [
  "bytemuck",
  "glam",
  "nf-formats",
+ "nf-game",
  "pollster",
  "wgpu",
  "winit",

@@ -9,7 +9,8 @@
 //!
 //! Controls: click to capture the mouse; mouse = look (raw deltas → yaw/pitch, no acceleration), WASD = move,
 //! Space / Ctrl = up / down, Shift = fast, [ / ] = browse sequences ([ from the first returns to the game's start
-//! animations), P = pause, F = drones fire (muzzle flashes), R = show spawner-held drones, F12 = screenshot
+//! animations), P = pause, F = firing demo for drones without AI, R = show spawner-held drones, F12 = screenshot.
+//! The guard AI (nf-game) runs at 60 Hz with the camera as Bond; `--frame N` runs N ticks before a `--shot`.
 //! (nf-view-shot.png), Esc = release mouse, Esc again = quit.
 
 mod gpu;
@@ -90,6 +91,7 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
             .filter_map(|e| nf_formats::anim::Script::parse(lb.data(&data, e)).ok()).map(|s| (s.hashcode, s)).collect(),
         level_id: u32::from_str_radix(&archive[..8], 16).unwrap_or(0),
         // weapon_data is built at boot by its static initialiser; run it over the user's ELF (docs/formats/weapon-data.md).
+        props: nf_formats::drone::PropertyTables::from_action_elf(&elf).ok(),
         weapons: match nf_formats::weapon::WeaponData::from_action_elf(&elf) {
             Ok(w) => Some(w),
             Err(e) => { eprintln!("weapon_data: {e} — drones drawn unarmed"); None }
@@ -253,7 +255,15 @@ impl ApplicationHandler for App {
                 }
                 self.cam.pos += mv * speed;
                 // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
-                if !self.paused { self.anim_time += dt * 60.0; }
+                if !self.paused {
+                    // Game logic at its fixed 60 Hz, decoupled from the render rate: one AI tick per whole tick of time.
+                    let before = self.anim_time as u32;
+                    self.anim_time += dt * 60.0;
+                    let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
+                    if let Some(sim) = self.scene.sim.as_mut() {
+                        for _ in before..(self.anim_time as u32).min(before + 8) { sim.step(eye); }
+                    }
+                }
                 let Some(g) = &mut self.gfx else { return };
                 g.renderer.update_vertices(&g.queue, self.scene.char_vertex_start, &posed_vertices(&self.scene, self.choice, self.anim_time, self.opts));
                 let frame = match g.surface.get_current_texture() {
@@ -298,6 +308,14 @@ fn main() -> Result<()> {
     let opts = scene::ViewOpts { reinforcements: args.iter().any(|a| a == "--reinforcements"), firing: args.iter().any(|a| a == "--fire") };
     eprintln!("animation: {}", scene.sequence_label(choice));
     if let Some(i) = args.iter().position(|a| a == "--shot") {
+        // Headless: run the game for `--frame` ticks with Bond at the camera, then render.
+        let mut scene = scene;
+        if let Some(sim) = scene.sim.as_mut() {
+            for _ in 0..time as u32 { sim.step([cam.pos.x, cam.pos.y, cam.pos.z]); }
+            if let Some(dr) = sim.drones.list.iter().find(|d| !d.shots.is_empty() || d.state != 4) {
+                eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);
+            }
+        }
         return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts);
     }
     let event_loop = EventLoop::new()?;

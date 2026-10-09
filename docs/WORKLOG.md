@@ -432,3 +432,28 @@ third argument to the id), random spin, light colour `+0x54..56`. nf-view: `F` f
 - The flash drew its black background: our renderer only alpha-tests; added an additive effect layer.
 - A Python heredoc edit of disc.rs silently failed on `\\t` (CLAUDE.md warns about exactly this); redone with Edit.
 - My first flash-frame loop piped renders into `tail -0`, which killed them; rerun without.
+
+## 0019 — Collision, guard AI first milestone (2026-10-08)
+
+User: "keep going, add the guard AI and firing".
+
+**Research**: four parallel research passes over the decomp (state machine; perception; combat/firing; turning and
+movement) — reports condensed into docs/systems/drone-ai.md with [M]/[S] tags; I spot-checked key facts (alertness
+table, property tables, anim tables, weapon fields) myself.
+
+**Collision** (map block 0x2E): format decoded and checked on all 7,985 blocks (docs/formats/collision.md); nf-game
+`CollisionWorld` (33,048 triangles in 07000005); collision floors explain live drone heights within 0.003.
+
+**Ground truth**: `tools/trace/ai_trace.py` teleports Bond in PCSX2 and records a guard every frame: noticed after 61
+ticks, 3-shot bursts 4 ticks apart, gaps 64 / 51, side-steps between bursts. Live `drone_stats` for the guards' type
+are zero (defaults: accuracy 5, aggression 0, reaction 0) — consistent with 60-tick reaction and D ∈ [37, 60].
+
+**Port** (`crates/nf-game/src/drone.rs`, `trig.rs`): see docs/systems/drone-ai.md "Port status". `nf-extract ai-sim`
+runs a level headless; the opt-in test `ai_live` reproduces tick 61 and the burst cadence (with a sister check).
+nf-view runs the AI at a fixed 60 Hz with the camera as Bond: guards notice, raise their guns and fire (flashes on
+the real shot ticks).
+
+**Failed / corrected**
+- The single-drone test noticed at tick 60: line of sight is round robin over all drones; with the level's 13 the
+  tick is 61 as in the game.
+- I first had the animation-completion check skip transition danims (a guess); removed — it follows the decomp.

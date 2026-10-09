@@ -46,6 +46,8 @@ fn main() -> Result<()> {
         "coll-probe" => coll_probe(&IsoImage::open(a(1)?)?, a(2)?),
         "coll-check" => coll_check(&IsoImage::open(a(1)?)?),
         "coll-floor" => coll_floor(&IsoImage::open(a(1)?)?, a(2)?),
+        "drone-props" => drone_props(&IsoImage::open(a(1)?)?, a(2)?),
+        "ai-sim" => ai_sim(&IsoImage::open(a(1)?)?, a(2)?, [a(3)?.parse()?, a(4)?.parse()?, a(5)?.parse()?], args.get(6).map(|s| s.parse()).transpose()?.unwrap_or(600)),
         "seq-roots" => seq_roots(&IsoImage::open(a(1)?)?, a(2)?),
         "scripts" => scripts(&IsoImage::open(a(1)?)?),
         "pose-check" => pose_check(&IsoImage::open(a(1)?)?, a(2)?, a(3)?),
@@ -380,6 +382,82 @@ fn coll_check(iso: &IsoImage) -> Result<()> {
         Ok(())
     })?;
     for (k, v) in st { println!("{v}\t{k}"); }
+    Ok(())
+}
+
+/// Headless AI run: the level's drones (those present at start) against Bond standing still at a point, for
+/// comparison with `tools/trace/ai_trace.py`. Prints state changes and shots of the drone nearest to Bond.
+fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Result<()> {
+    use nf_formats::{anim::Script, drone, level::Level, levelbin::LevelBin, weapon::WeaponData};
+    use nf_game::drone::{Data, Drone, Drones, Player, Rng};
+    use std::collections::HashMap;
+    let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF")?)?;
+    let tables = drone::DroneAnimData::from_action_elf(&elf)?;
+    let props = drone::PropertyTables::from_action_elf(&elf)?;
+    let weapons = WeaponData::from_action_elf(&elf)?;
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let level = Level::parse(&data)?;
+    let lb = LevelBin::parse(&data)?;
+    let scripts: HashMap<u32, Script> = lb.entries.iter().filter(|e| e.kind == 5).filter_map(|e| Script::parse(lb.data(&data, e)).ok()).map(|s| (s.hashcode, s)).collect();
+    let (cels, _) = level.instances(true);
+    let world = nf_game::world::CollisionWorld::build(&level, &cels);
+    let level_id = u32::from_str_radix(&level_name[..8], 16)?;
+    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id };
+    let m = level.main_map().context("no main map")?;
+    let list: Vec<(u32, Vec<(u32, u32)>)> = level.maps[m].placements.iter().map(|p| (p.flags & 0xff, p.params.clone())).collect();
+    let roles = drone::spawn_roles(&list);
+    let mut rng = Rng::new(0x1234_5678);
+    let mut drones = Vec::new();
+    for (p, role) in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f).zip(roles) {
+        if matches!(role, drone::SpawnRole::Reinforcement { .. }) { continue; }
+        let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
+        let floor = world.floor_below(p.translation, 3.0).unwrap_or(p.translation[1] - 1.0);
+        drones.push(Drone::new(&d, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, &mut rng));
+    }
+    let mut sim = Drones::new(drones, rng);
+    let player = Player { pos: bond, target: [bond[0], bond[1] + 0.5, bond[2]] };
+    let near = (0..sim.list.len()).min_by(|&a, &b| {
+        let da = |i: usize| { let p = sim.list[i].pos; (p[0] - bond[0]).powi(2) + (p[2] - bond[2]).powi(2) };
+        da(a).total_cmp(&da(b))
+    }).context("no drones")?;
+    println!("{} drones; tracing drone {near} at {:?}", sim.list.len(), sim.list[near].pos);
+    let mut last_danim = 0;
+    for _ in 0..frames {
+        sim.tick(&d, &player);
+        let dr = &sim.list[near];
+        if dr.anim.danim != last_danim {
+            last_danim = dr.anim.danim;
+            println!("frame {:4}: danim {} script {:08x} anim state {:#x} class {}", sim.frame, dr.anim.danim, dr.anim.script.unwrap_or(0), dr.anim.state, dr.anim.class);
+        }
+    }
+    let dr = &sim.list[near];
+    println!("state changes: {:?}", dr.log.iter().map(|(f, s)| format!("{f}:{s:#x}")).collect::<Vec<_>>());
+    println!("shots: {:?}", dr.shots);
+    println!("clip {} alert {} seen_ticks {} yaw {:.3} → to opp {:.3}", dr.clip, dr.alert, dr.seen_ticks, dr.yaw, dr.yaw_to_opp);
+    Ok(())
+}
+
+/// Behaviour properties of each drone placement (normal and alert blocks), decoded with the game's own tables.
+fn drone_props(iso: &IsoImage, level_name: &str) -> Result<()> {
+    use nf_formats::{drone, level::Level};
+    let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF")?)?;
+    let t = drone::PropertyTables::from_action_elf(&elf)?;
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let level = Level::parse(&data)?;
+    let Some(m) = level.main_map() else { return Ok(()) };
+    for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f) {
+        let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
+        let (nw, aw) = drone::behaviour_words(param);
+        let set = |w: &[u32; 3]| (0..0x5b).filter(|&id| id != 0x20 && id != 0x30 && id != 0x44 && t.get(id, w) != 0)
+            .map(|id| format!("{id:x}")).collect::<Vec<_>>().join(",");
+        println!("({:.1}, {:.1}, {:.1}) k5 {:#x} ({}) k15 {} k16 {} | normal: alert {} [{}] | alert block: alert {} [{}]",
+            p.translation[0], p.translation[1], p.translation[2], param(5), if param(5) < 0x24 { "OLD" } else { "NEW" }, param(15), param(16),
+            drone::ALERTNESS_LEVELS[t.get(0x20, &nw) as usize & 3], set(&nw), drone::ALERTNESS_LEVELS[t.get(0x20, &aw) as usize & 3], set(&aw));
+    }
     Ok(())
 }
 

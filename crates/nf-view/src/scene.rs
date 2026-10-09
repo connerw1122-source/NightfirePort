@@ -78,6 +78,45 @@ pub struct DroneContext {
     pub scripts: HashMap<u32, Script>,
     pub level_id: u32,
     pub weapons: Option<nf_formats::weapon::WeaponData>,
+    pub props: Option<nf_formats::drone::PropertyTables>,
+}
+
+/// The running game simulation (nf-game): drones plus the data they consult, and which character mesh shows which
+/// drone. Stepped at the game's fixed 60 Hz by the app; `animate` reads it.
+pub struct Sim {
+    pub drones: nf_game::drone::Drones,
+    pub tables: DroneAnimData,
+    pub props: nf_formats::drone::PropertyTables,
+    pub scripts: HashMap<u32, Script>,
+    pub weapons: nf_formats::weapon::WeaponData,
+    pub world: nf_game::world::CollisionWorld,
+    pub level: u32,
+    /// Per character: its drone.
+    pub char_drone: Vec<Option<usize>>,
+    /// Sequence hashcode → (skeleton, index in `Scene::sequences`).
+    pub seq_index: HashMap<u32, (u8, usize)>,
+}
+
+impl Sim {
+    /// One game tick with Bond at `camera` (eye): his object position on the collision floor below, aimed at chest
+    /// height (stand-in for the game's player object and `Drone_View_Bones`).
+    pub fn step(&mut self, camera: [f32; 3]) {
+        let floor = self.world.floor_below(camera, 4.0).unwrap_or(camera[1] - 1.6);
+        let player = nf_game::drone::Player { pos: [camera[0], floor + 0.4, camera[2]], target: [camera[0], camera[1] - 0.45, camera[2]] };
+        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level };
+        self.drones.tick(&d, &player);
+    }
+
+    /// (sequence index, frame) the drone's playing script shows.
+    fn frame_of(&self, drone: usize, skeleton: u8) -> Option<(usize, u32)> {
+        let dr = &self.drones.list[drone];
+        let script = self.scripts.get(&dr.anim.script?)?;
+        let t = (1 + dr.anim.time) as u16;
+        let (a, _, q) = script.sequences().find(|(a, b, _)| *a <= t && t <= *b).or_else(|| script.sequences().next())?;
+        let &(sk, i) = self.seq_index.get(&q).filter(|(sk, _)| *sk == skeleton)?;
+        let _ = sk;
+        Some((i, (t.saturating_sub(a) + 1) as u32))
+    }
 }
 
 /// A rigid mesh hung on a character's datum (`AnimObjectDraw`): world = `QuatTransToMat(q, t)` · bone world.
@@ -127,6 +166,8 @@ pub struct Scene {
     pub sequences: HashMap<u8, Vec<Sequence>>,
     /// Weapons and props hung on character datums; their vertices are Character-layer vertices with `attachment`.
     pub attachments: Vec<Attachment>,
+    /// The guard AI, when the drone context was available.
+    pub sim: Option<Sim>,
 }
 
 type Groups = BTreeMap<(Layer, Option<(usize, u32)>), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>)>;
@@ -319,7 +360,28 @@ impl Scene {
         let flashes = attachments.iter().filter(|a| a.flash.is_some()).count();
         let held_back = characters.iter().filter(|c| matches!(c.role, drone::SpawnRole::Reinforcement { .. })).count();
         let stats = format!("{stats}; {started}/{} characters with their start animation; {} weapons held ({weapons_missing} without mesh or datum), {flashes} with a muzzle flash; {held_back} character meshes held back by spawners (R shows them)", characters.len(), attachments.len() - flashes);
-        Scene { vertices, indices, materials, textures, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments }
+        // The guard AI: one drone per main-map drone placement present at level start; characters map to it by
+        // placement translation.
+        let sim = drones.and_then(|d| Some((d, d.props.clone()?, d.weapons.clone()?))).and_then(|(d, props, weapons)| {
+            let m = level.main_map()?;
+            let world = nf_game::world::CollisionWorld::build(level, &level.instances(true).0);
+            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id };
+            let mut rng = nf_game::drone::Rng::new(0x1234_5678);
+            let mut list = Vec::new();
+            let mut by_pos: HashMap<[u32; 3], usize> = HashMap::new();
+            for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f) {
+                let key = p.translation.map(f32::to_bits);
+                if matches!(roles.get(&key), Some(drone::SpawnRole::Reinforcement { .. })) { continue; }
+                let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
+                let floor = world.floor_below(p.translation, 3.0).unwrap_or(p.translation[1] - 1.0);
+                by_pos.insert(key, list.len());
+                list.push(nf_game::drone::Drone::new(&data, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, &mut rng));
+            }
+            let char_drone = characters.iter().map(|c| by_pos.get(&[c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]].map(f32::to_bits)).copied()).collect();
+            let seq_index = by_hash.clone();
+            Some(Sim { drones: nf_game::drone::Drones::new(list, rng), tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index })
+        });
+        Scene { vertices, indices, materials, textures, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the
@@ -355,8 +417,13 @@ impl Scene {
     /// pre-collision height (placement + 0xA0 − 1.0).
     pub fn animate(&self, choice: Option<usize>, ticks: f32, opts: ViewOpts) -> Vec<[f32; 3]> {
         let mut cache: HashMap<(u32, usize, u32), (Vec<Mat4>, Vec<Mat4>, f32)> = HashMap::new();
-        let posed: Vec<Option<(Vec<Mat4>, Vec<Mat4>, Mat4)>> = self.characters.iter().map(|c| {
-            let (i, frame) = self.frame_of(c, choice, ticks)?;
+        // With the AI running (and no sequence browsing), each guard shows its drone's animation, yaw and position.
+        let drone_of = |ci: usize| choice.is_none().then(|| self.sim.as_ref().and_then(|s| s.char_drone[ci].map(|di| (s, di)))).flatten();
+        let posed: Vec<Option<(Vec<Mat4>, Vec<Mat4>, Mat4)>> = self.characters.iter().enumerate().map(|(ci, c)| {
+            let (i, frame) = match drone_of(ci) {
+                Some((s, di)) => s.frame_of(di, c.skin.skeleton)?,
+                None => self.frame_of(c, choice, ticks)?,
+            };
             let seq = &self.sequences[&c.skin.skeleton][i];
             let (mats, world, hip) = cache.entry((c.skin.hashcode, i, frame)).or_insert_with(|| {
                 let mut local = anim::local_pose(seq, &c.skeleton, &c.skin, frame);
@@ -365,7 +432,10 @@ impl Scene {
                 let world = anim::world_pose(&local, &c.skin);
                 (anim::skin_matrices(&world, &c.skin), world, hip)
             }).clone();
-            let mut m = c.matrix;
+            let mut m = match drone_of(ci) {
+                Some((s, di)) => { let dr = &s.drones.list[di]; nf_formats::placement::object_matrix([0.0, dr.yaw, 0.0], [dr.pos[0], 0.0, dr.pos[2]]) }
+                None => c.matrix,
+            };
             let a0 = drone_height(hip);
             m[3][1] = match c.floor { Some(f) => f + a0, None => c.matrix[3][1] + a0 - 1.0 };
             Some((mats, world, m))
@@ -386,6 +456,14 @@ impl Scene {
             };
             if hidden(c) { return collapse(&datum); }
             if a.flash.is_none() { return datum; }
+            // AI-driven: the flash object lives 2 ticks after each shot (`DroneWeap_FireWeapon`).
+            if let Some((s, di)) = drone_of(a.character as usize) {
+                let now = s.drones.frame;
+                return match s.drones.list[di].shots.iter().rev().find(|&&f| now.saturating_sub(f) < 2) {
+                    Some(&f) => muzzle_flash_matrix(&datum, f ^ (k as u32).wrapping_mul(0x9e37_79b9)),
+                    None => collapse(&datum),
+                };
+            }
             // Firing demo: a shot every 8 ticks, the flash object living 2 ticks (`Drone+0x30` life = 2), staggered
             // per drone. The rate is nf-view's, not the weapon's (G-025).
             let tick = ticks as u32 + 3 * a.character;
