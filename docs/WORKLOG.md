@@ -1252,3 +1252,12 @@ hits over 0.5 damage; Bond's footsteps (`AnimObjectUpdate`: distance gathered to
 0x286; `Effect_Player` plays the floor surface's footstep at the floor point with alertness 0). Test
 `bullets_and_feet_make_surface_sounds`: a P2K bullet into the wall (surface 10) starts impact 0x8 at the hit within
 0.2; the floor at the gate (surface 12) steps 0x7B (sister: surface 0 has none). All suites pass.
+
+## 0066 — Map ambient sounds
+
+Block 0x28 (`Sound_LoadMapSounds`): u32 count, 32-byte records from +4 (+4 id with flag 0x40000000, +8 position,
++0x14 f32, +0x18 radius R, +0x1C inner) [D: 07000005's two records equal the EE snapshot's live nodes 0x40000085
+(36.2, 0, 5.7) R 365.3 / 182.6 and 0x40000174 (28.2, 12.9, 43.0) R 200 / 160]. `LevelMap::sounds`;
+`nf_game::sound::MapSounds` = `HandleMapSoundAllocation` (start inside R with custom radii, stop past 1.2 · R²), run
+before the pool update in nf-view. Effect 0x85 (133) is the 2-D stereo bed: two looping samples panned ±100,
+polyphonic. Test `map_ambient_sounds_start_and_stop_by_distance`.

@@ -964,3 +964,33 @@ fn bullets_and_feet_make_surface_sounds() {
     // Sister: surface 0 (and 22) has no sounds.
     assert_eq!(SurfaceSounds::get(&l.surfaces.impact, 0), None);
 }
+
+/// Map ambient sounds (block 0x28): 07000005 has 0x40000085 (R 365.3, inner 182.6) and 0x40000174 (R 200, inner
+/// 160) [D, as the EE snapshot's live nodes]; each starts inside its radius with its own radii and stops past
+/// 1.2 · R².
+#[test]
+fn map_ambient_sounds_start_and_stop_by_distance() {
+    use nf_game::sound::{Cmd, MapSounds, Sounds};
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let m = l.level.main_map().unwrap();
+    let list = l.level.maps[m].sounds.clone();
+    assert_eq!(list.iter().map(|s| (s.id, s.radius.round(), s.inner.round())).collect::<Vec<_>>(), vec![(0x4000_0085, 365.0, 183.0), (0x4000_0174, 200.0, 160.0)]);
+    let mut ms = MapSounds::new(list.clone());
+    let mut snd = Sounds::default();
+    let lst = |p: [f32; 3]| (p, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+    // At the gate both are within range.
+    let gate = [104.954, 25.663, 108.825];
+    ms.update(&mut snd, gate);
+    snd.update(None, lst(gate), &|_| true);
+    let starts: Vec<(u32, Option<(f32, f32)>)> = snd.take_commands().into_iter().filter_map(|c| match c { Cmd::Start { id, radii, .. } => Some((id, radii)), _ => None }).collect();
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    assert!(starts.iter().any(|s| s.0 == 0x85 && s.1.is_some_and(|r| (r.1 - 365.28).abs() < 0.01)));
+    // Far away: 0x174 (R 200) stops; sister: 0x85 is still inside 1.2·R² at 380 units.
+    let far = [list[1].pos[0] + 230.0, list[1].pos[1], list[1].pos[2]];
+    ms.update(&mut snd, far);
+    snd.update(None, lst(far), &|_| true);
+    let removes = snd.take_commands().into_iter().filter(|c| matches!(c, Cmd::Remove { .. })).count();
+    snd.update(None, lst(far), &|_| true);
+    let removes2 = snd.take_commands().into_iter().filter(|c| matches!(c, Cmd::Remove { .. })).count();
+    assert_eq!(removes + removes2, 1);
+}

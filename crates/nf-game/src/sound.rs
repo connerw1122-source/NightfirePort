@@ -52,6 +52,29 @@ pub const POOL: usize = 256;
 /// `SFXIsSFXPlaying` reports a just-started sound as playing for 5 VBlanks (the request is still in flight) [M].
 pub const START_GRACE: u32 = 5;
 
+/// Map ambient sounds (`HandleMapSoundAllocation` 0x1dd118, run by `Sound_UpdateListeners` before `Sound_UpdateSounds`):
+/// a sound starts when the listener is inside its radius R (`Sound_Play3D(id, pos, 100, R, inner, …, custom 1)`) and
+/// stops when the squared distance exceeds 1.2 · R².
+#[derive(Clone, Debug, Default)]
+pub struct MapSounds { pub list: Vec<nf_formats::level::MapSound>, active: Vec<Option<Handle>> }
+
+impl MapSounds {
+    pub fn new(list: Vec<nf_formats::level::MapSound>) -> MapSounds { let n = list.len(); MapSounds { list, active: vec![None; n] } }
+
+    pub fn update(&mut self, sounds: &mut Sounds, listener: V3) {
+        for (k, m) in self.list.iter().enumerate() {
+            let d2 = (0..3).map(|i| (m.pos[i] - listener[i]).powi(2)).sum::<f32>();
+            match self.active[k] {
+                None => if d2 < m.radius * m.radius {
+                    let custom = (m.inner > 0.0 || m.radius > 0.0).then_some((m.inner, m.radius));
+                    self.active[k] = Some(sounds.play3d(m.id, m.pos, custom));
+                },
+                Some(h) => if m.radius * m.radius * 1.2 < d2 { sounds.stop(h); self.active[k] = None; },
+            }
+        }
+    }
+}
+
 /// `Sound_Ready` (0x1dceb8): the bank hash a level loads (`SFXLoadSoundBank`).
 pub fn level_bank(level: u32) -> Option<u32> {
     Some(match level {
