@@ -28,8 +28,11 @@ pub enum Obj {
 /// A request the script made this tick for the caller to carry out.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
-    /// `Sound_Play` (2-D) or `Sound_Play3D` at object `at` (an index into `Scripts::objects`).
-    Sound { id: u32, at: Option<usize> },
+    /// `Sound_Play` (2-D) or `Sound_Play3D` at object `at` (an index into `Scripts::objects`), from stream `src`
+    /// (script hash, stream): `Script_Interp` case 5 moves it with that object every frame.
+    Sound { id: u32, at: Option<usize>, src: (u32, u8) },
+    /// The stream's sound ends (`Script_SoundEnd` / `Script_KillStream` → `Sound_Stop`).
+    SoundStop { src: (u32, u8) },
     /// An event the port does not carry out yet (type, parameters).
     Event { kind: u8, params: Vec<u32> },
     /// Event 4: `Player_Disable` — the player stops (the script runs a cut-scene).
@@ -196,10 +199,14 @@ impl Script {
                         s.tag = stream as u16;
                         s.kind = 5;
                         let at = self.streams.get(stream).filter(|o| matches!(o.kind, 1 | 2)).and_then(|o| o.obj);
-                        out.push(Request::Sound { id, at: if b[0] == 1 { None } else { at } });
+                        out.push(Request::Sound { id, at: if b[0] == 1 { None } else { at }, src: (self.nis.hashcode, i as u8) });
                         next = pc + 9;
                     }
-                    0x17 => { let s = &mut self.streams[i]; if s.kind == 5 { s.kind = 0; } next = pc + 2; }
+                    0x17 => {
+                        let s = &mut self.streams[i];
+                        if s.kind == 5 { s.kind = 0; out.push(Request::SoundStop { src: (self.nis.hashcode, i as u8) }); }
+                        next = pc + 2;
+                    }
                     0x0d => {
                         // `Script_CameraStart` (0x1d9140): u8 spline, u16 first key, u16 last key; the camera uses keys
                         // first..last − 1. Skipped while flag 0x20 (no cameras).

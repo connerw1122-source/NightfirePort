@@ -13,6 +13,7 @@ pub mod nav;
 pub mod nis;
 pub mod pickup;
 pub mod player;
+pub mod sound;
 pub mod spawners;
 pub mod trig;
 pub mod triggers;

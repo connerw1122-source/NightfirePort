@@ -311,7 +311,7 @@ impl Sim {
                 if self.view_script == rd(0xa4) && self.gun.reloading == 0 { (self.view_script, self.view_time, self.view_speed) = (rd(0xa0), 0.0, 1.0); }
             }
             if fired {
-                let sound = self.sfx.as_ref().map(|t| t.get(0x403)).unwrap_or(nf_formats::sfx::SfxHearing { id: 0x403, inner: 0.0, outer: 0.0, weight: 0.0, looped: false });
+                let sound = self.sfx.as_ref().map(|t| t.get(0x403)).unwrap_or(nf_formats::sfx::SfxHearing { id: 0x403, inner: 0.0, outer: 0.0, weight: 0.0, looped: false, cull: false });
                 self.drones.fire_player(&d, camera, dir, self.gun.weapon, sound);
             }
         }
@@ -477,6 +477,8 @@ pub struct Scene {
     pub view_model: Option<usize>,
     /// The snow flake texture (`DrawDrops`: 0x03000045).
     pub snow_texture: Option<TextureImage>,
+    /// The level's sound bank (`Sound_Ready` → `SFXLoadSoundBank`): slot, bank, ADPCM (set by the loader).
+    pub sound_bank: Option<(usize, nf_formats::soundbank::Bank, Vec<u8>)>,
     /// The level's fog (`psiPreGameRun` 0x11e2e8: colour, `Ps2Far1`; `None` = `FogOn` 0).
     pub fog: Option<([u8; 3], f32)>,
     /// The HUD's textures by hash (docs/systems/hud.md), from any map of the archive, and its tables from ACTION.ELF.
@@ -882,7 +884,7 @@ impl Scene {
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {
             TextureImage::from_texture(mi, t)
         }));
-        Scene { snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_model, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
+        Scene { sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_model, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the

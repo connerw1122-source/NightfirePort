@@ -1,0 +1,538 @@
+//! The IOP sound driver (`SFX.IRX`) for sound effects: `SFXStart3D`, `SFXSetup`, `StartSample`, `SFXUpdate`,
+//! `PS2_SFXCalculate3D`, `ES_CombineVolumes`, `SFXRemove`, `SFXSetPositionAndVelocity`, `SFXSetupListener`.
+//! Spec: docs/systems/sound.md "IOP driver". All arithmetic is the driver's 32-bit integer arithmetic.
+//!
+//! Positions arrive as the EE packs them: world units × 1000, truncated to integers (`SFXStart3D` /
+//! `SFXSetupListener` in ACTION.ELF). The SPU stand-in is [`crate::Output`]: a 3-D sound uses a front voice (left,
+//! right) and a rear voice whose right volume is phase-inverted (`0x7FFF − s`).
+
+use crate::{Cmd, Output, Pcm};
+use nf_formats::soundbank::{Bank, Effect, SubTrack};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+/// `PS2_SquareRoot` (0x10250): 10 Newton steps from 1 with truncating 64-bit division — not converged for large
+/// inputs (√1e6 → 1297), reproduced exactly.
+pub fn ps2_sqrt(n: u32) -> u32 {
+    if n == 0 { return 0; }
+    let (mut x, nn) = (1i64, n as i32 as i64);
+    for _ in 0..10 { x -= (x * x - nn) / (2 * x); }
+    x as u32
+}
+
+/// The driver's random generator (`SFXrnd` 0x2efc): seeds 12341234 / 13123123.
+#[derive(Clone, Debug)]
+pub struct Rnd { s1: i32, s2: i32 }
+
+impl Default for Rnd { fn default() -> Rnd { Rnd { s1: 12_341_234, s2: 13_123_123 } } }
+
+impl Rnd {
+    pub fn rnd(&mut self, n: i32) -> i32 {
+        if n < 1 { return 0; }
+        self.s1 = self.s1.wrapping_add(self.s2);
+        self.s2 = self.s2.wrapping_add(self.s1).wrapping_add(self.s1 >> 31);
+        (((self.s1 as u32) >> 16) % n as u32) as i32
+    }
+    /// `SFXsfrnd`: −1024..1024.
+    pub fn sfrnd(&mut self) -> i32 { self.rnd(0x801) - 0x400 }
+}
+
+type P3 = [i32; 3];
+
+/// One hardware voice pair (`ES_VoiceHandleData` → SPU voices): front, and rear for 3-D sounds.
+#[derive(Clone, Debug)]
+struct Voice { front: u32, rear: Option<u32>, looping: bool, playing: bool, pitch: u32 }
+
+#[derive(Clone, Debug)]
+struct Item {
+    id: u32,
+    counter: i32,
+    vh: [Option<usize>; 10],
+    base_volume: [i32; 10],
+    pitch: [i32; 10],
+    pan: [i32; 10],
+    cue_pos: usize,
+    csw: [i32; 50],
+    cued: Vec<usize>,
+    fx: Arc<Effect>,
+    slot: usize,
+    updated: i32,
+    real_pos: P3,
+    pos: P3,
+    handle: u32,
+    inner: i32,
+    outer: i32,
+    delete: bool,
+    fade_kill: bool,
+    fade_kill_vol: i32,
+    streamed: bool,
+}
+
+/// Bank slot data: the parsed bank, its decoded samples (lazily) and the raw ADPCM.
+struct Slot { bank: Bank, sbf: Vec<u8>, pcm: HashMap<usize, Arc<Pcm>> }
+
+/// The driver state (`SFX.IRX` globals).
+pub struct Driver {
+    slots: HashMap<usize, Slot>,
+    /// Active list, head (index 0) = newest (`NewSFX` pushes at the head). At most 40.
+    items: Vec<Item>,
+    voices: Vec<Option<Voice>>,
+    rnd: Rnd,
+    started: i32,
+    pub mode: i32,
+    pub master: i32,
+    pub music_master: i32,
+    mute_sfx: i32,
+    indoors: i32,
+    underwater: bool,
+    fade: i32,
+    ducker_current: i32,
+    listener_pos: P3,
+    listener_dir: P3,
+    listener_norm: P3,
+    /// The {id, handle} list the EE reads back after each batch (`SFXActiveData`).
+    pub active: Vec<(u32, u32)>,
+}
+
+pub const MAX_ITEMS: usize = 40;
+pub const HW_VOICES: usize = 48;
+/// `ES_VoiceHandleData`: 100 ES handles.
+pub const ES_HANDLES: usize = 100;
+
+/// `IsUnderWaterSFX`: the ids not halved under water (`BonbUnderWaterSFX`).
+const UNDERWATER_EXEMPT: [u32; 23] = [335, 331, 332, 333, 334, 330, 279, 278, 277, 253, 1303, 137, 1492, 1491, 136, 514, 10, 40, 33, 310, 311, 39, 9];
+
+impl Default for Driver { fn default() -> Driver { Driver::new() } }
+
+impl Driver {
+    pub fn new() -> Driver {
+        Driver { slots: HashMap::new(), items: Vec::new(), voices: vec![None; HW_VOICES], rnd: Rnd::default(), started: 0, mode: 1, master: 100,
+            music_master: 70, mute_sfx: 1, indoors: 100, underwater: false, fade: 10000, ducker_current: 100,
+            listener_pos: [0; 3], listener_dir: [0, 1000, 0], listener_norm: [-1000, 0, 0], active: Vec::new() }
+    }
+
+    /// `SFXLoadSoundBank` into `slot` (the index of its hash in `SBINFO.SBI`).
+    pub fn load_bank(&mut self, slot: usize, bank: Bank, sbf: Vec<u8>) { self.slots.insert(slot, Slot { bank, sbf, pcm: HashMap::new() }); }
+
+    /// `SFXSetupListener` (one listener): eye position and the camera's forward and left axes, all × 1000 as the EE
+    /// packs them. `Norm` is the camera matrix's row 0, which points to the screen left.
+    pub fn set_listener(&mut self, pos: [f32; 3], dir: [f32; 3], left: [f32; 3]) {
+        let k = |v: [f32; 3]| v.map(|x| (x * 1000.0) as i32);
+        (self.listener_pos, self.listener_dir, self.listener_norm) = (k(pos), k(dir), k(left));
+    }
+
+    fn pcm(&mut self, slot: usize, k: usize) -> Option<Arc<Pcm>> {
+        let s = self.slots.get_mut(&slot)?;
+        if let Some(p) = s.pcm.get(&k) { return Some(p.clone()); }
+        let (data, loop_start) = s.bank.decode(&s.sbf, k).ok()?;
+        let p = Arc::new(Pcm { data, loop_start });
+        s.pcm.insert(k, p.clone());
+        Some(p)
+    }
+
+    /// `SFXStart3D(id, pos, vel, handle, volume, inner, outer)`; `pos = None` is `SFXStart` (2-D, position zero).
+    /// Radii −1 = the effect's. Returns 0 ok, 1 not found / setup failed, 2 list full.
+    pub fn start(&mut self, out: &mut Vec<Cmd>, id: u32, pos: Option<[f32; 3]>, handle: u32, radii: Option<(i32, i32)>) -> u32 {
+        let mut slots: Vec<usize> = self.slots.keys().copied().collect();
+        slots.sort();
+        let Some((slot, fx)) = slots.into_iter().find_map(|s| self.slots[&s].bank.effect(id).and_then(|b| Effect::parse(b).ok()).map(|e| (s, e))) else { return 1 };
+        // Only streams can be precached; no precache here (`SFXKeyOnFrameDelay` 0).
+        if self.items.len() >= MAX_ITEMS { return 2; }
+        let p = pos.map_or([0; 3], |v| v.map(|x| (x * 1000.0) as i32));
+        let (inner, outer) = radii.unwrap_or((-1, -1));
+        let item = Item {
+            id, counter: 0, vh: [None; 10], base_volume: [0; 10], pitch: [0; 10], pan: [0; 10], cue_pos: 0, csw: [0; 50], cued: Vec::new(),
+            inner: if inner == -1 { fx.inner } else { inner }, outer: if outer == -1 { fx.outer } else { outer }, fx: Arc::new(fx), slot,
+            updated: 0, real_pos: p, pos: p, handle, delete: false, fade_kill: false, fade_kill_vol: 100, streamed: false,
+        };
+        self.items.insert(0, item);
+        if self.setup(out, 0) { 0 } else { 1 }
+    }
+
+    /// `ES_GetDist`: world units (`√(min Σ(Δ/100)²) / 10`).
+    fn dist(&self, it: &Item) -> i32 {
+        let s: i64 = (0..3).map(|k| { let d = (self.listener_pos[k] - it.real_pos[k]) / 100; d as i64 * d as i64 }).sum();
+        ps2_sqrt(s as u32) as i32 / 10
+    }
+
+    /// Other items' live ES handles (`CountAllVoicesActive`).
+    fn count_voices(&self, except: usize) -> i32 {
+        self.items.iter().enumerate().filter(|(i, _)| *i != except).map(|(_, it)| it.vh.iter().flatten().count() as i32).sum()
+    }
+
+    /// `SFXSetup` (0x4220): rejection, budget stealing, the per-id limit, then the sample choice.
+    fn setup(&mut self, out: &mut Vec<Cmd>, i: usize) -> bool {
+        let fx = self.items[i].fx.clone();
+        self.items[i].vh = [None; 10];
+        self.started = self.started.min(2000);
+        self.items[i].delete = false;
+        self.items[i].streamed = false;
+        let budget = 15 - self.started / 400;
+        let n = self.count_voices(i);
+        if fx.tracking == 2 && fx.priority < 100 {
+            let it = &self.items[i];
+            let d = self.dist(it);
+            let mut reject = d > it.outer;
+            if !reject {
+                let r = (it.outer - it.inner).max(1);
+                let v = (100 - ((d - it.inner) * 100) / r).clamp(0, 100);
+                reject = v * fx.priority < (n * budget * 2000) / (budget * budget);
+            }
+            if reject { self.items[i].delete = true; return false; }
+        }
+        if n > budget {
+            let n2 = self.count_voices(i);
+            for _ in 0..(n2 - budget) {
+                let mut best: Option<(i32, usize)> = None;
+                for (k, it) in self.items.iter().enumerate() {
+                    if it.delete || it.streamed || it.fx.tracking == 3 { continue; }
+                    if best.is_none_or(|b| it.fx.priority < b.0) { best = Some((it.fx.priority, k)); }
+                }
+                if let Some((_, k)) = best { self.items[k].delete = true; }
+            }
+            if fx.max_reject != 0 { self.items[i].delete = true; return false; }
+            if self.items[i].delete { return false; }
+        }
+        if fx.max_voices != 0 {
+            let id = self.items[i].id;
+            let same: Vec<usize> = (0..self.items.len()).filter(|&k| k != i && self.items[k].id == id).collect();
+            if same.len() as i32 >= fx.max_voices {
+                if fx.max_reject != 0 { self.items[i].delete = true; return false; }
+                let mut oldest: Option<(i32, usize)> = None;
+                for &k in &same { if oldest.is_none_or(|o| self.items[k].counter > o.0) { oldest = Some((self.items[k].counter, k)); } }
+                if let Some((_, k)) = oldest { self.items[k].delete = true; }
+            }
+        }
+        self.started += 100;
+        self.items[i].cue_pos = 0;
+        if fx.ducker != 0 && (fx.tracking == 0 || fx.tracking == 3) { /* ES_StartDucker: music only (not ported yet) */ }
+        if fx.multi_sample == 0 {
+            let k = self.rnd.rnd(fx.count as i32) as usize;
+            if !self.start_sample(out, i, fx.subs[k], 0) { self.items[i].delete = true; return false; }
+            self.items[i].csw[0] = self.cue_timer(&fx);
+        } else if fx.polyphonic == 0 {
+            let n = fx.count;
+            self.items[i].cue_pos = n;
+            self.items[i].csw[0] = 0;
+            let cued: Vec<usize> = if fx.shuffled == 0 { (0..n).map(|k| n - 1 - k).collect() } else {
+                let (mut used, mut rem, mut v) = ([false; 50], n as i32, Vec::new());
+                for _ in 0..n {
+                    let mut r = self.rnd.rnd(rem);
+                    let mut idx = 0usize;
+                    loop { if r > 0 { idx += 1; } while used[idx] { idx += 1; } let go = r > 0; r -= 1; if !go { break; } }
+                    used[idx] = true;
+                    rem -= 1;
+                    v.push(idx);
+                }
+                v
+            };
+            self.items[i].cued = cued;
+            self.items[i].cue_pos -= 1;
+            let k = self.items[i].cued[self.items[i].cue_pos];
+            self.start_sample(out, i, fx.subs[k], 0);
+            self.items[i].csw[0] = self.cue_timer(&fx);
+        } else {
+            for k in 0..fx.count.min(50) {
+                self.items[i].csw[k] = self.cue_timer(&fx);
+            }
+            self.items[i].cued = (0..fx.count).collect();
+        }
+        true
+    }
+
+    fn cue_timer(&mut self, fx: &Effect) -> i32 { fx.min_delay + self.rnd.rnd(fx.max_delay - fx.min_delay) }
+
+    /// `StartSample` (0x3524): a voice (pair), the randomised pitch / volume / pan, then key on.
+    fn start_sample(&mut self, out: &mut Vec<Cmd>, i: usize, sub: SubTrack, ch: usize) -> bool {
+        let fx = self.items[i].fx.clone();
+        let is3d = fx.tracking != 0;
+        if sub.file < 0 {
+            // A streamed sound (STREAMS.BIN): not ported yet — no voice.
+            self.items[i].streamed = true;
+            return false;
+        }
+        let slot = self.items[i].slot;
+        let Some(hdr) = self.slots.get(&slot).and_then(|s| s.bank.samples.get(sub.file as usize).copied()) else { return false };
+        // ES handles (100) and hardware voices (48; a 3-D sound needs two).
+        let es_used: usize = self.items.iter().map(|it| it.vh.iter().flatten().count()).sum();
+        if es_used >= ES_HANDLES { return false; }
+        let free: Vec<usize> = (0..HW_VOICES).filter(|&v| self.voices[v].is_none()).collect();
+        if free.len() < if is3d { 2 } else { 1 } { return false; }
+        let Some(pcm) = self.pcm(slot, sub.file as usize) else { return false };
+        let base = hdr.pitch as i32;
+        let (r1, r2, r3) = (self.rnd.sfrnd(), self.rnd.sfrnd(), self.rnd.sfrnd());
+        let vol = (sub.volume + ((r2 * sub.volume_rnd) >> 10)).clamp(0, 100);
+        let pitch = base + (base * (sub.pitch + ((r1 * sub.pitch_rnd) >> 10))) / 0x3000;
+        let pan = (sub.pan + ((r3 * sub.pan_rnd) >> 10)).clamp(-100, 100);
+        let it = &mut self.items[i];
+        (it.base_volume[ch], it.pitch[ch], it.pan[ch]) = (vol, pitch, pan);
+        let (front, rear) = (free[0] as u32, is3d.then(|| free[1] as u32));
+        let v = Voice { front, rear, looping: hdr.looped & 1 != 0, playing: true, pitch: pitch.max(0) as u32 };
+        self.voices[front as usize] = Some(v);
+        it.vh[ch] = Some(front as usize);
+        it.pos = it.real_pos;
+        self.get_my_pos(i);
+        let (l, r, b) = self.levels(i, ch);
+        out.push(Cmd::Play { voice: front, pcm: pcm.clone(), pitch: pitch.max(0) as u32, left: l, right: r });
+        if let Some(rv) = rear {
+            self.voices[rv as usize] = Some(Voice { front: rv, rear: None, looping: hdr.looped & 1 != 0, playing: true, pitch: pitch.max(0) as u32 });
+            out.push(Cmd::Play { voice: rv, pcm, pitch: pitch.max(0) as u32, left: b, right: if self.mode == 0 { b } else { -b } });
+        }
+        true
+    }
+
+    /// `ES_GetMyPos`: the effective position (one listener).
+    fn get_my_pos(&mut self, i: usize) {
+        let (lp, ld) = (self.listener_pos, self.listener_dir);
+        let it = &mut self.items[i];
+        match it.fx.tracking {
+            3 => { it.inner = 2; it.outer = 3; it.pos = [lp[0] + ld[0], lp[1] + ld[1], lp[2] + ld[2]]; }
+            1 => {
+                let s: i64 = (0..3).map(|k| { let d = (lp[k] - it.real_pos[k]) / 100; d as i64 * d as i64 }).sum();
+                let d = ps2_sqrt(s as u32) as i32 * 100;
+                it.pos = [0, 1, 2].map(|k| lp[k] + (d * ld[k]) / 1000);
+            }
+            _ => it.pos = it.real_pos,
+        }
+    }
+
+    /// `ES_CombineVolumes` (0x1300) for channel `ch`.
+    fn combine(&self, it: &Item, ch: usize) -> i32 {
+        let fx = &it.fx;
+        let mut v = it.base_volume[ch];
+        if it.id == 0x1d7 || it.id == 0x470 { v = (v * self.music_master) / 100; } else {
+            v = (((v * self.master * self.mute_sfx) / 100) * 100) / 100;
+            if fx.outdoors != 0 { v = (v * self.indoors) / 100; }
+            if self.underwater && !UNDERWATER_EXEMPT.contains(&it.id) { v /= 2; }
+        }
+        v = (((((v * self.fade) / 10000) * it.fade_kill_vol) / 100) * fx.master_volume) / 100;
+        if fx.ducker == 0 { v = (v * (100 - (100 - self.ducker_current) / 3)) / 100; }
+        (v * v) / 100
+    }
+
+    /// `PS2_SFXCalculate3D` (0x1060c) + `PS2_SFXSetup3D` / `Setup2D`: the voice volumes (front left, front right,
+    /// rear), each `GSV(level) / 0x3FFF` as a fraction.
+    fn levels(&self, i: usize, ch: usize) -> (f32, f32, f32) {
+        let it = &self.items[i];
+        let vol = self.combine(it, ch);
+        let gsv = |v: i32| (((v * 0x3fff) / 100).clamp(0, 0x3fff)) as f32 / 0x3fff as f32;
+        match it.fx.tracking {
+            0 => {
+                let pan = it.pan[ch];
+                let (mut l, mut r) = (((-((pan - 100) / 2)) * vol / 100).clamp(0, 100), ((((pan + 100) / 2) * vol) / 100).clamp(0, 100));
+                if self.mode == 0 { l = (l + r) / 2; r = l; }
+                (gsv(l), gsv(r), 0.0)
+            }
+            3 => (gsv(vol / 2), gsv(vol / 2), gsv((vol * 30) / 100)),
+            _ => {
+                let lp = self.listener_pos;
+                let dv = [0, 1, 2].map(|k| it.pos[k] - lp[k]);
+                let mut u = dv.map(|x| x / 100);
+                let s: i64 = u.iter().map(|&x| x as i64 * x as i64).sum();
+                let mut d = ps2_sqrt(s as u32) as i32;
+                d = (d - it.inner * 10).max(0);
+                let rng = ((it.outer - it.inner) * 10).max(10);
+                let a = ((1000 - (d * 1000) / rng).max(0) / 10).min(100);
+                let att = (a * a) / 100;
+                let m = ps2_sqrt(s as u32) as i32;
+                if m != 0 { u = u.map(|x| (x * 1000) / m); }
+                let dot = |a: P3, b: P3| (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / 1000;
+                let n = self.listener_norm;
+                // `PS2_DotProduct` = Σ / 1000: −1000..1000 for these length-1000 vectors.
+                let dl = dot(n, u);
+                let dr = dot(n.map(|x| -x), u);
+                let db = dot(self.listener_dir.map(|x| -x), u);
+                let rear = ((db + 1000) * att) / 2000;
+                let front = 100 - rear;
+                let mut l = ((((dl + 1000) * att) / 2000) * front) / 100;
+                let mut r = ((((dr + 1000) * att) / 2000) * front) / 100;
+                let mut b = (rear * 75) / 100;
+                if self.mode == 0 { let m = (l + r + b) / 3; (l, r, b) = (m, m, m); }
+                (gsv((l.clamp(0, 100) * vol) / 100), gsv((r.clamp(0, 100) * vol) / 100), gsv((b.clamp(0, 100) * vol) / 100))
+            }
+        }
+    }
+
+    /// `SFXSetPositionAndVelocity(pos, vel, handle, id)`: handle 0 / id −1 match everything.
+    pub fn set_position(&mut self, handle: u32, id: Option<u32>, pos: [f32; 3]) {
+        let p = pos.map(|x| (x * 1000.0) as i32);
+        for it in &mut self.items { if (handle == 0 || it.handle == handle) && id.is_none_or(|i| it.id == i) { it.real_pos = p; } }
+    }
+
+    /// `SFXRemove(handle, id)`: marked, killed in the next update's kill pass.
+    pub fn remove(&mut self, handle: u32, id: Option<u32>) {
+        for it in &mut self.items { if (handle == 0 || it.handle == handle) && id.is_none_or(|i| it.id == i) { it.delete = true; } }
+    }
+
+    fn ended(&self, v: Option<usize>) -> bool {
+        match v { None => true, Some(v) => self.voices[v].as_ref().is_none_or(|x| !x.playing && !x.looping) }
+    }
+
+    fn unlock(&mut self, i: usize, ch: usize, out: &mut Vec<Cmd>) {
+        if let Some(v) = self.items[i].vh[ch].take() {
+            if let Some(x) = self.voices[v].take() { if let Some(r) = x.rear { self.voices[r as usize] = None; let _ = out; } }
+        }
+    }
+
+    /// `SFXUpdate` (0x4ee4): once per game frame. `ended`: hardware voices that reached their end flag.
+    pub fn update(&mut self, out: &mut Vec<Cmd>, ended: &[u32]) {
+        for &e in ended { if let Some(Some(v)) = self.voices.get_mut(e as usize) { v.playing = false; } }
+        if self.started > 0 { self.started = self.started * 9 / 10; }
+        for it in &mut self.items { it.updated = 0; }
+        let mut i = 0;
+        while i < self.items.len() {
+            let fx = self.items[i].fx.clone();
+            {
+                let it = &mut self.items[i];
+                if it.fade_kill { it.fade_kill_vol -= 5; if it.fade_kill_vol < 0 { it.fade_kill_vol = 0; it.delete = true; } }
+                it.updated += 1;
+                it.counter += 1;
+            }
+            let mut rerun = false;
+            if fx.multi_sample == 0 {
+                if self.ended(self.items[i].vh[0]) { self.unlock(i, 0, out); rerun = self.ending(out, i); }
+            } else if fx.polyphonic == 0 {
+                if self.ended(self.items[i].vh[0]) {
+                    self.unlock(i, 0, out);
+                    if self.items[i].cue_pos == 0 { rerun = self.ending(out, i); } else {
+                        let c = self.items[i].csw[0];
+                        self.items[i].csw[0] -= 1;
+                        if c < 1 {
+                            self.items[i].cue_pos -= 1;
+                            let k = self.items[i].cued[self.items[i].cue_pos];
+                            self.start_sample(out, i, fx.subs[k], 0);
+                            self.items[i].csw[0] = self.cue_timer(&fx);
+                        }
+                    }
+                }
+            } else {
+                let (mut started, mut busy) = (false, false);
+                for k in 0..fx.count.min(10) {
+                    let c = self.items[i].csw[k];
+                    if c == 0 { let s = fx.subs[self.items[i].cued[k]]; self.start_sample(out, i, s, k); self.items[i].csw[k] = -1; started = true; }
+                    else if c < 1 { if self.ended(self.items[i].vh[k]) { self.unlock(i, k, out); } else { busy = true; } }
+                    else { self.items[i].csw[k] -= 1; busy = true; }
+                }
+                if !started && !busy { rerun = self.ending(out, i); }
+            }
+            // Recompute every live channel's volumes (3-D position, attenuation and globals).
+            self.get_my_pos(i);
+            for ch in 0..10 {
+                let Some(v) = self.items[i].vh[ch] else { continue };
+                let (l, r, b) = self.levels(i, ch);
+                let Some(vx) = self.voices[v].clone() else { continue };
+                out.push(Cmd::Set { voice: vx.front, pitch: vx.pitch, left: l, right: r });
+                if let Some(rv) = vx.rear { out.push(Cmd::Set { voice: rv, pitch: vx.pitch, left: b, right: if self.mode == 0 { b } else { -b } }); }
+            }
+            if !rerun { i += 1; }
+        }
+        // Kill pass: key off and free.
+        let mut k = 0;
+        while k < self.items.len() {
+            if self.items[k].delete {
+                for ch in 0..10 {
+                    if let Some(v) = self.items[k].vh[ch].take() {
+                        if let Some(x) = self.voices[v].take() {
+                            out.push(Cmd::Stop { voice: x.front });
+                            if let Some(r) = x.rear { out.push(Cmd::Stop { voice: r }); self.voices[r as usize] = None; }
+                        }
+                    }
+                }
+                self.items.remove(k);
+            } else { k += 1; }
+        }
+        self.active = self.items.iter().map(|it| (it.id, it.handle)).collect();
+    }
+
+    /// `SFXUpdateEnding` (0x4e20): delete, or for `Loop` re-trigger after the cue delay. True = process again now.
+    fn ending(&mut self, out: &mut Vec<Cmd>, i: usize) -> bool {
+        let fx = self.items[i].fx.clone();
+        if fx.looped == 0 { self.items[i].delete = true; return false; }
+        let c = self.items[i].csw[0];
+        self.items[i].csw[0] -= 1;
+        c < 1 && self.setup(out, i) && self.items[i].updated < 2
+    }
+
+    /// `SFXIsSFXPlaying(handle, −1)`: the handle is in the active data.
+    pub fn is_playing(&self, handle: u32) -> bool { self.active.iter().any(|a| a.1 == handle) }
+
+    /// Live items (tests).
+    pub fn items(&self) -> usize { self.items.len() }
+}
+
+/// The driver plus the sound output, fed by the EE layer's commands once per game tick.
+pub struct Sound {
+    pub driver: Driver,
+    pub output: Option<Output>,
+}
+
+impl Sound {
+    /// Runs one batch: the EE commands, then `SFXUpdate`, and sends the voice changes to the output.
+    pub fn batch(&mut self, f: impl FnOnce(&mut Driver, &mut Vec<Cmd>)) {
+        let mut out = Vec::new();
+        f(&mut self.driver, &mut out);
+        let ended = self.output.as_ref().map(|o| o.take_ended()).unwrap_or_default();
+        self.driver.update(&mut out, &ended);
+        if let Some(o) = &self.output { o.send(out); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sqrt_and_rng_match_the_driver() {
+        // `PS2_SquareRoot`: overshoots by one for small squares, unconverged for large inputs (sqrtsim).
+        assert_eq!([0, 2, 3, 5, 8, 15, 24, 100, 10000, 250_000, 1_000_000, 4_000_000].map(ps2_sqrt), [0, 1, 2, 3, 3, 4, 5, 11, 101, 518, 1297, 4243]);
+        let mut r = Rnd::default();
+        let a = (r.rnd(100), r.rnd(100), r.rnd(0));
+        let mut r2 = Rnd::default();
+        assert_eq!(a, (r2.rnd(100), r2.rnd(100), 0));
+        // Sister: an exact square root would give 1000 for 1e6.
+        assert_ne!(ps2_sqrt(1_000_000), 1000);
+    }
+
+    /// A bank with one sample (two ADPCM frames, end flag) and effect 7: full 3-D, inner 2, outer 30, priority 50, volume 100.
+    fn one_sound_bank() -> (Bank, Vec<u8>) {
+        let mut shf = 1u32.to_le_bytes().to_vec();
+        for w in [0u32, 0, 32, 0x1000, 0, 1, 4, 0, 0] { shf.extend(w.to_le_bytes()); }
+        let mut sbf = vec![0u8; 32];
+        sbf[2..16].fill(0x77);
+        sbf[17] = 1; // end flag on the second frame
+        let mut sfx = 1u32.to_le_bytes().to_vec();
+        sfx.extend(7u32.to_le_bytes());
+        sfx.extend(12u32.to_le_bytes());
+        let mut blk = vec![0u8; 0x44 + 28 * 2];
+        for (o, v) in [(4usize, 2i32), (8, 2), (0xc, 30), (0x14, 50), (0x28, 100), (0x40, 1), (0x44 + 12, 100)] { blk[o..o + 4].copy_from_slice(&v.to_le_bytes()); }
+        sfx.extend(blk);
+        (Bank::parse(&shf, &sfx).unwrap(), sbf)
+    }
+
+    fn front_levels(pos: [f32; 3]) -> (f32, f32) {
+        let mut d = Driver::new();
+        let (b, sbf) = one_sound_bank();
+        d.load_bank(4, b, sbf);
+        // Facing +z; the screen-left axis is +x (up × forward).
+        d.set_listener([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+        let mut out = Vec::new();
+        assert_eq!(d.start(&mut out, 7, Some(pos), 1, None), 0);
+        match out.first() { Some(Cmd::Play { left, right, .. }) => (*left, *right), o => panic!("{o:?}") }
+    }
+
+    #[test]
+    fn a_sound_on_the_left_is_louder_on_the_left_and_fades_with_distance() {
+        let (l, r) = front_levels([5.0, 0.0, 0.0]);
+        assert!(l > r && r >= 0.0, "{l} {r}");
+        let (l2, _) = front_levels([20.0, 0.0, 0.0]);
+        assert!(l2 < l, "{l2} {l}");
+        // Sister: beyond the outer radius the sound is rejected (no voice).
+        let mut d = Driver::new();
+        let (b, sbf) = one_sound_bank();
+        d.load_bank(4, b, sbf);
+        d.set_listener([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+        let mut out = Vec::new();
+        assert_eq!(d.start(&mut out, 7, Some([40.0, 0.0, 0.0]), 1, None), 1);
+        assert!(out.is_empty());
+    }
+}

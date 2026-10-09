@@ -1,0 +1,10 @@
+[package]
+name = "nf-audio"
+description = "Sound output: the SFX driver's voices mixed in software and played through cpal (docs/systems/sound.md)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+cpal = "=0.18.2"
+nf-formats = { path = "../nf-formats" }

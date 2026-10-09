@@ -150,6 +150,18 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
         let anim = level.maps.iter().flat_map(|m| &m.textures).filter(|t| t.frames > 1).count();
         eprintln!("animated textures: {anim}");
     }
+    // The level's sound bank (`Sound_Ready`): its hash's slot in SBINFO.SBI, then SB_<slot>.{SHF,SFX,SBF}.
+    let mut scene = scene;
+    let level_id = u32::from_str_radix(&archive[..8], 16).unwrap_or(0);
+    scene.sound_bank = (|| -> Option<(usize, nf_formats::soundbank::Bank, Vec<u8>)> {
+        let hash = nf_game::sound::level_bank(level_id)?;
+        let get = |p: &str| iso.find(p).and_then(|e| iso.read_file(e).ok());
+        let slot = nf_formats::soundbank::bank_slots(&get("PS2/SBINFO.SBI")?).ok()?.iter().position(|&h| h == hash)?;
+        let f = |ext: &str| get(&nf_formats::soundbank::bank_path("ENGLISH", slot, ext));
+        let bank = nf_formats::soundbank::Bank::parse(&f("SHF")?, &f("SFX")?).map_err(|e| eprintln!("sound bank: {e}")).ok()?;
+        Some((slot, bank, f("SBF")?))
+    })();
+    match &scene.sound_bank { Some((slot, b, _)) => eprintln!("sound bank slot {slot}: {} samples, {} effects", b.samples.len(), b.effects.len()), None => eprintln!("no sound bank") }
     eprintln!("{archive} (+ {anim_name}): {}", scene.stats);
     Ok(scene)
 }
@@ -167,6 +179,27 @@ fn snow_for(scene: &scene::Scene, cam: &Camera) -> Vec<scene::Vertex> {
     let right = f.cross(Vec3::Y).normalize_or_zero();
     let up = right.cross(f).normalize_or_zero();
     sim.snow_quads(right.to_array(), up.to_array())
+}
+
+/// One frame of sound (`Sound_UpdateListeners` → `Sound_UpdateSounds` → the batch → `SFXUpdate`): the listener is
+/// Bond's eye and view (glb_viewer[0]; the cut-scene camera's listener call is dropped by the EE batcher [M]).
+fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
+    let (pos, f) = (sim.bond.head(), sim.bond.look());
+    // Row 0 of the view matrix: up × forward, the screen-left axis (snapshot: dir (−0.839, 0, −0.545) → (−0.545, 0, 0.839)).
+    let norm = { let l = (f[0] * f[0] + f[2] * f[2]).sqrt().max(1e-6); [f[2] / l, 0.0, -f[0] / l] };
+    let driver = &s.driver;
+    sim.drones.audio.update(sim.sfx.as_ref(), (pos, norm, [0.0, 1.0, 0.0], f), &|h| driver.is_playing(h));
+    let cmds = sim.drones.audio.take_commands();
+    s.batch(|drv, out| {
+        for c in cmds {
+            match c {
+                nf_game::sound::Cmd::Listener { pos, norm, dir, .. } => drv.set_listener(pos, dir, norm),
+                nf_game::sound::Cmd::Start { handle, id, pos, radii } => { drv.start(out, id, pos, handle, radii.map(|(i, o)| (i as i32, o as i32))); }
+                nf_game::sound::Cmd::Position { handle, pos } => drv.set_position(handle, None, pos),
+                nf_game::sound::Cmd::Remove { handle } => drv.remove(handle, None),
+            }
+        }
+    });
 }
 
 async fn device(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
@@ -223,6 +256,8 @@ struct Gfx {
 }
 
 struct App {
+    /// The sound driver and output (none without a device or bank).
+    sound: Option<nf_audio::sfx::Sound>,
     scene: scene::Scene,
     cam: Camera,
     gfx: Option<Gfx>,
@@ -384,6 +419,7 @@ impl ApplicationHandler for App {
                                 aiming: self.aiming,
                             };
                             sim.step_bond(input, self.trigger, self.just.remove(&KeyCode::KeyR));
+                            if let Some(s) = self.sound.as_mut() { sound_tick(s, sim); }
                         }
                         if !self.noclip {
                             let h = sim.bond.head();
@@ -508,7 +544,16 @@ fn main() -> Result<()> {
         return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts);
     }
     let event_loop = EventLoop::new()?;
-    let mut app = App { scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0 };
+    // Sound: the level's bank in the driver, the default output device (silent without one).
+    let mut scene = scene;
+    let sound = scene.sound_bank.take().map(|(slot, bank, sbf)| {
+        let mut driver = nf_audio::sfx::Driver::new();
+        driver.load_bank(slot, bank, sbf);
+        let output = nf_audio::Output::open();
+        if output.is_none() { eprintln!("audio: no output device; running silent"); }
+        nf_audio::sfx::Sound { driver, output }
+    });
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0 };
     event_loop.run_app(&mut app)?;
     Ok(())
 }

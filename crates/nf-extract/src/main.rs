@@ -30,6 +30,8 @@ fn main() -> Result<()> {
         "elfs" => elfs(&IsoImage::open(a(1)?)?, Path::new(a(2)?)),
         "bigf-manifest" => { print!("{}", disc::bigf_manifest(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "files-manifest" => { print!("{}", disc::files_bin_manifest(&IsoImage::open(a(1)?)?)?); Ok(()) }
+        // `iso-get <iso> <path on disc> <out file>`: one file off the image.
+        "iso-get" => { let iso = IsoImage::open(a(1)?)?; let e = iso.find(a(2)?).context("no such file on the disc")?; std::fs::write(a(3)?, iso.read_file(e)?)?; Ok(()) }
         "files-extract" => files_extract(&IsoImage::open(a(1)?)?, Path::new(a(2)?)),
         "bin-list" => { print!("{}", disc::level_bin_entries(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "bin-digest" => { print!("{}", disc::level_bin_digest(&disc::level_bin_entries(&IsoImage::open(a(1)?)?)?)); Ok(()) }

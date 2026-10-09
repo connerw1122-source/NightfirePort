@@ -2616,6 +2616,11 @@ impl Drone {
             more = true;
             if self.next_shot <= frame && self.ready_to_fire() {
                 bullet = self.fire_weapon(d, rng, frame, p, motion, owner);
+                // `DroneWeap_FireWeapon`: `Sound_Play3D(weapon_data[w] +0x60, drone)`, skipped for 0x5EF.
+                if let Some(r) = d.weapons.records.get(self.weapon as usize) {
+                    let id = u16::from_le_bytes([r[0x60], r[0x61]]) as u32;
+                    if id != 0x5ef && id != 0 { self.anim_sounds.push(id); }
+                }
                 self.shots.push(frame);
                 self.last_shot = frame;
                 self.clip -= 1;
@@ -2854,6 +2859,11 @@ pub struct Drones {
     pub scripts: crate::nis::Scripts,
     /// Player hand-offs the scripts asked for this tick (`PlayerDisable` / `PlayerEnable`), for the player's owner.
     pub player_events: Vec<crate::nis::Request>,
+    /// The EE sound pool (`DynamicSoundList`, docs/systems/sound.md): what is heard, as opposed to `sounds`, the AI
+    /// hearing list.
+    pub audio: crate::sound::Sounds,
+    /// Script stream sounds: (script, stream) → handle and the object it follows.
+    script_sounds: Vec<((u32, u8), crate::sound::Handle, Option<usize>)>,
 }
 
 /// The script runtime's view of the level data: animation lengths and an animated object's discrete object 0.
@@ -2888,7 +2898,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), audio: Default::default(), script_sounds: Vec::new() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -3037,7 +3047,9 @@ impl Drones {
         [p.cos() * y.sin(), p.sin(), p.cos() * y.cos()]
     }
 
+    /// `Sound_Play3D(id, pos, …)`: heard (the sound pool) and, unless looped, entered in the drones' hearing list.
     pub fn play_sound(&mut self, pos: V3, h: nf_formats::sfx::SfxHearing) {
+        self.audio.play3d(h.id, pos, None);
         if h.looped { return; }
         self.sounds.push(Sound { id: h.id, pos, inner: h.inner, outer: h.outer, weight: h.weight });
     }
@@ -3294,17 +3306,40 @@ impl Drones {
                 }
             }
         }
+        let obj_pos = |s: &crate::nis::Scripts, o: usize| match s.objects.list.get(o) {
+            Some(Some(crate::nis::Obj::Entity { matrix, .. })) => Some([matrix[3][0], matrix[3][1], matrix[3][2]]),
+            Some(Some(crate::nis::Obj::Anim { skin, script, frame, .. })) => crate::nis::World::discrete0(d, *skin, *script, *frame).map(|m| [m[3][0], m[3][1], m[3][2]]),
+            _ => None,
+        };
         for r in std::mem::take(&mut self.scripts.requests) {
-            if matches!(r, crate::nis::Request::PlayerDisable | crate::nis::Request::PlayerEnable { .. }) { self.player_events.push(r.clone()); }
-            if let crate::nis::Request::Sound { id, at: Some(o) } = r {
-                let pos = match self.scripts.objects.list.get(o) {
-                    Some(Some(crate::nis::Obj::Entity { matrix, .. })) => Some([matrix[3][0], matrix[3][1], matrix[3][2]]),
-                    Some(Some(crate::nis::Obj::Anim { skin, script, frame, .. })) => crate::nis::World::discrete0(d, *skin, *script, *frame).map(|m| [m[3][0], m[3][1], m[3][2]]),
-                    _ => None,
-                };
-                if let (Some(pos), Some(t)) = (pos, d.sfx) { self.play_sound(pos, t.get(id)); }
+            match r {
+                crate::nis::Request::PlayerDisable | crate::nis::Request::PlayerEnable { .. } => self.player_events.push(r.clone()),
+                // `Script_SoundStart`: 2-D, or 3-D at the stream's object (its position each frame, `Script_Interp` 5).
+                crate::nis::Request::Sound { id, at, src } => {
+                    let h = match at.and_then(|o| obj_pos(&self.scripts, o)) {
+                        Some(pos) => {
+                            let h = self.audio.play3d(id, pos, None);
+                            if let (Some(t), false) = (d.sfx, d.sfx.is_some_and(|t| t.get(id).looped)) { let e = t.get(id); self.sounds.push(Sound { id, pos, inner: e.inner, outer: e.outer, weight: e.weight }); }
+                            h
+                        }
+                        None => self.audio.play(id),
+                    };
+                    self.script_sounds.retain(|s| s.0 != src);
+                    self.script_sounds.push((src, h, at));
+                }
+                crate::nis::Request::SoundStop { src } => {
+                    for s in self.script_sounds.iter().filter(|s| s.0 == src) { self.audio.stop(s.1); }
+                    self.script_sounds.retain(|s| s.0 != src);
+                }
+                _ => {}
             }
         }
+        for k in 0..self.script_sounds.len() {
+            let (_, h, at) = self.script_sounds[k];
+            if let Some(p) = at.and_then(|o| obj_pos(&self.scripts, o)) { self.audio.set_position(h, p); }
+        }
+        let audio = &self.audio;
+        self.script_sounds.retain(|s| !audio.finished(s.1));
         let mut order: Vec<(usize, u8, usize)> = self.list.iter().enumerate().filter(|(_, x)| x.present).map(|(i, x)| (x.placement, 0, i))
             .chain(self.triggers.iter().enumerate().filter(|(_, t)| t.kind != crate::triggers::kind::TOUCH).map(|(j, t)| (t.placement, 1, j)))
             .chain(self.spawners.iter().enumerate().map(|(j, sp)| (sp.placement, 2, j)))
@@ -3373,7 +3408,7 @@ impl Drones {
             if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
             // The animation's sounds (`Sound_Play3D` at the drone) enter the hearing list for the next tick.
             let (snd, at) = (std::mem::take(&mut dr.anim_sounds), dr.pos);
-            if let Some(t) = d.sfx { for id in snd { let h = t.get(id); if !h.looped { self.sounds.push(Sound { id: h.id, pos: at, inner: h.inner, outer: h.outer, weight: h.weight }); } } }
+            if let Some(t) = d.sfx { for id in snd { let h = t.get(id); self.audio.play3d(h.id, at, None); if !h.looped { self.sounds.push(Sound { id: h.id, pos: at, inner: h.inner, outer: h.outer, weight: h.weight }); } } }
             for mut p in dr.drops.drain(..) { p.from = Some(index); self.pickups.push(p); }
             // `NDrone2_Collision`: the feet sphere (r 0.4) is pushed out of the AI-network boundaries.
             if dr.enabled && dr.bounded && d.nav.bounds {

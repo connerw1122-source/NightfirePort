@@ -1195,3 +1195,31 @@ channel, no events, #38 waiting). Headless run with `--bond 100,26,108`: the scr
 truck; then first person in the bed; riding to the parking spot, Bond stays ~4 units behind the truck root, the offset
 turning with it (+x heading west, +z after the turn south), health 100 throughout. Unit test: `ground_motion` reports
 a 0.5 move (sister: nothing under the ray → `None`).
+
+## 0063 — Sound I: banks, the EE pool, the SFX driver, output
+
+User report: no audio. The audio phase (PLAN 5) had not started. `MODULES/SFX.IRX` (the IOP driver) keeps its symbol
+table and stabs types; imported headless into a separate Ghidra project (`work/ghidra-iop`, MIPS LE 32; the install
+used read-only) and exported (282 functions). Two research subagents wrote the EE-side and driver specs from the
+decompilation; merged into docs/systems/sound.md. Re-checked here: the EE packs positions as `(int)(x · 1000)`
+(`SFXStart3D` / `SFXSetupListener`) [M], so the driver's `Δ/100` works in 0.1-unit steps; `SFXSetMode` stores the EE's
+mode (1 [L]) and every non-zero mode takes the surround path (rear voice phase-inverted) [M]; the listener's `Norm`
+is the camera's row 0 = up × forward (snapshot (−0.545, 0, 0.839) for forward (−0.839, 0, −0.545)) [L].
+
+Formats (docs/formats/sound-bank.md, `nf_formats::soundbank`): SBINFO slots; `.SHF` headers (252 on bank 4: the loop
+flag agrees with the ADPCM repeat flag 252 / 252, offsets sequential, sizes sum to the `.SBF`); `.SFX` index and
+`SFXParameters` + 28-byte sub-tracks (a trailing zero record always follows). 07000005 loads bank hash 5 = slot 4
+(`Sound_Ready`).
+
+Code: crate `nf-audio` (cpal 0.18.2 from the local cargo cache, no download) — `Output` (48 kHz-pitch voices, linear
+resampling, end reporting) and `sfx::Driver` (the driver's start / setup / 3-D / volume / update in its integer
+arithmetic, incl. the unconverged `PS2_SquareRoot` and `SFXrnd`); `nf_game::sound::Sounds` (the 256-node EE pool:
+deferred start, 5-frame grace, per-frame positions, cull flag `SFXOutputData+0x15`); nf-view runs one batch per game
+tick with Bond's eye as the listener (the cut-scene listener call is dropped by the EE batcher [M]). Sources wired:
+Bond's shot, guards' gunfire (`DroneWeap_FireWeapon`: `weapon_data+0x60`, not 0x5EF), animation-script sounds,
+pickups, script sounds (moving with their object, stopped by `0x17`). `nf-extract iso-get` pulls single disc files.
+
+Tests: unit (`ps2_sqrt` values from the driver's behaviour incl. √1e6 → 1297, RNG; a sound on the left louder left and
+fading with distance, rejected beyond the outer radius; the EE pool's deferred start / grace / removal; bank parsing);
+opt-in `bank_live` (all 252 samples decode, 7 looped; 0x403 and 0xF5 start front + rear voices, 0xF5 at 100 units
+rejected). All suites pass; the viewer opens the output device and loads the bank.
