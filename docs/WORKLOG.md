@@ -1365,3 +1365,54 @@ future: build `-p nf-extract` too.
 ISO identity verified the strong way: `disc_golden` (14 tests, incl. the ELF SHA-1s) plus
 `ai_live` 28 / `rng_live` / `trig_live` / `tuning_live` / `bank_live` / `music_live` all pass with
 `NF_ISO` set — 137 green, one thread, on the downloaded image.
+
+## 0072 — Searchlights ported: create/link, sweep, tracking, channels, the parts, breaking
+
+HANDOFF §5.1 / WORKLOG 0070's "code next". `crates/nf-game/src/searchlight.rs` + `searchlight_live.rs` (3
+opt-in tests) + 4 unit tests; nf-view draws the parts from the simulation each frame.
+
+Spec corrections found while implementing (world-objects.md updated):
+- **half/mid is NOT (max−min)·π/360**: the disassembly (0x1cb5c0–0x1cb680) computes
+  `lo/hi = float(min/max(p4,p5)) · 0x3C8EFA36` (two EE-chopped muls; the constant is π/180 + 1 ulp, not
+  π/180), then `mid = (hi+lo)·0.5`, `half = (hi−lo)·0.5` (the halvings are exact). The old formula was
+  last-bit wrong on all seven live heads; the real one reproduces their stored bits 7/7.
+- **The linking walk runs BEFORE the kind-2 branch** (0x1cb79c): the linked spot (016e9020) links while in
+  place and moves below the world afterwards; only the orphan (016e8ec0, created before its head) is never
+  linked. Both link stores are unconditional, so the newest-first cel walk leaves the OLDEST match linked.
+- **The sweep's angles are normalised to (−π, π]** after the add (the framework's matrix build): heads with
+  mid > π (016e03f0, 016e0970) store pitch 2π below the raw sum. Without the wrap, two of the five golden
+  heads cannot be reproduced.
+- **`Mat_Align2Dir`'s cross order pinned** against the live beam matrix 016e0130 (err 0.000000):
+  rows = n(cross(up, z)), n(cross(z, row0)), z = n(dir); up for the BEAM is Bond − head (player +0x30); the
+  HEAD's own matrix is the same function against world up (also pinned, head 016dfe70). G-033's open item
+  closed; what remains is the VU0 MAC's last-ulp rounding (visual-only — the golden asserts ±4 ulp and the
+  mirrored cross order, which is ~2.0 off).
+- The corona: alpha = trunc((dot−0.2)·4·255), scale = (dot−0.2)·16, LOS (viewer = player+0x20) clear →
+  scale ×1.5; the dot's viewer is `Player_GetHeadPos`. All verified against the three drawn coronas' live
+  bits (my first reading of the scale bits was an arithmetic slip — the formulas fit exactly).
+- The state-3 turn-on falls straight into the part updates the same tick (0x1cbd94), and the spot's
+  distance rule arms tracking at dist ≤ 2 with a 900-tick (60·15) lost counter (0x1cbf14–0x1cbfc8).
+
+The port: `Searchlights::create` (placement order, 29 `Rand_Rand(480)` + 2 `Rand_Rand(0)` draws — the
+shared stream, consumed in `attach_level`; the game interleaves these with the other dynamic objects'
+creates, so the port's stream positions differ until all creators are ported) and `Searchlights::update`
+per head, called from `Drones::tick`'s control-list order (with the drones, triggers and spawners by
+placement, newest first). Sounds 0xE5/0xE6 go through `play_sound_handle` (the pool + the hearing list).
+Bullets: the child-list walk (U-041) is a stand-in — this tick's player bullet segments (recorded in
+`update_player_bullets`) against the head's and mount's oriented gfx boxes; on a hit, state 2, the parts
+hide, the light is deleted and the glass sound plays.
+
+The create draws shifted the shared stream: five ai_live seeds re-picked (guard_notices 1, level_start 2,
+bond_kills 2, guard_takes_cover 1, and tower_guards' dynamic search now also requires the kill — its
+`find` only checked presence). `NF_TEST_SEED` (search only) overrides a test's seed; scripts/seed_search.sh
+in the sandbox wraps the loop.
+
+nf-view: the 29 parts leave the static pass (0xde) and join the Character-layer vertex tail tagged with
+their part index; `animate` poses them from `sim.drones.searchlights` (mount/head/beam/spot matrices,
+coronas as camera billboards with their scale — `ViewOpts` carries the camera axes; hidden parts collapse
+below the world). Rendered headless on lavapipe (the sandbox has no GPU): the beams sweep, the coronas
+glare, the spot circles the ground (vision-checked, work/renders/sl_300.png).
+
+Not ported (G-033): the spot's dynamic light and flicker (renderer work), `Gas_Init` smoke (no particle
+system; its 6 RNG calls per puff are NOT consumed — better a missing draw than a wrong one), the corona
+alpha byte into nf-view's shader, `Control_NextLOD` (no LOD system).

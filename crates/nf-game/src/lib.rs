@@ -14,6 +14,7 @@ pub mod nav;
 pub mod nis;
 pub mod pickup;
 pub mod player;
+pub mod searchlight;
 pub mod sound;
 pub mod spawners;
 pub mod trig;

@@ -246,12 +246,23 @@ async fn device(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) 
     Ok((adapter, device, queue))
 }
 
+/// The camera's screen axes for the corona billboards (same basis as the snow quads).
+fn cam_axes(cam: &Camera) -> ([f32; 3], [f32; 3]) {
+    let f = cam.dir();
+    let right = f.cross(Vec3::Y).normalize_or_zero();
+    let up = right.cross(f).normalize_or_zero();
+    (right.to_array(), up.to_array())
+}
+
 /// Renders one frame offscreen and writes it as a PNG.
-fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, opts: scene::ViewOpts) -> Result<()> {
+fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, mut opts: scene::ViewOpts) -> Result<()> {
     let (w, h) = (1280u32, 720u32);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let (_adapter, device, queue) = pollster::block_on(device(&instance, None))?;
     let format = wgpu::TextureFormat::Rgba8Unorm;
+    let (opts_right, opts_up) = cam_axes(cam);
+    opts.right = opts_right;
+    opts.up = opts_up;
     let r = gpu::Renderer::new(&device, &queue, format, scene);
     r.update_vertices(&queue, scene.char_vertex_start, &posed_vertices(scene, choice, time, opts));
     let target = device.create_texture(&wgpu::TextureDescriptor {
@@ -487,6 +498,9 @@ impl ApplicationHandler for App {
                     g.window.request_redraw();
                     return;
                 }
+                let (r, u) = cam_axes(&self.cam);
+                self.opts.right = r;
+                self.opts.up = u;
                 g.renderer.update_vertices(&g.queue, self.scene.char_vertex_start, &posed_vertices(&self.scene, self.choice, self.anim_time, self.opts));
                 let frame = match g.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -547,7 +561,7 @@ fn main() -> Result<()> {
     let num = |flag: &str| -> Result<Option<f32>> { match args.iter().position(|a| a == flag) { Some(i) => Ok(Some(args.get(i + 1).context("missing value")?.parse()?)), None => Ok(None) } };
     let choice = num("--seq")?.map(|k| k as usize);
     let time = num("--frame")?.unwrap_or(0.0);
-    let opts = scene::ViewOpts { reinforcements: args.iter().any(|a| a == "--reinforcements"), firing: args.iter().any(|a| a == "--fire") };
+    let opts = scene::ViewOpts { reinforcements: args.iter().any(|a| a == "--reinforcements"), firing: args.iter().any(|a| a == "--fire"), right: [1.0, 0.0, 0.0], up: [0.0, 1.0, 0.0] };
     eprintln!("animation: {}", scene.sequence_label(choice));
     if let Some(i) = args.iter().position(|a| a == "--shot") {
         // Headless: run the game for `--frame` ticks with Bond at the camera, then render.

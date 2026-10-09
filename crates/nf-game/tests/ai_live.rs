@@ -80,6 +80,8 @@ impl Level05 {
 
     /// The same with another seed for the random stand-in (`Rand_*` is not modelled).
     fn drones_seeded(&self, alert: Option<f32>, x: f32, seed: u32) -> (Vec<Drone>, usize, Rng) {
+        // NF_TEST_SEED (seed search only): overrides the hardcoded seed.
+        let seed = std::env::var("NF_TEST_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(seed);
         let d = self.data();
         let mut rng = Rng::new(seed);
         let mut drones = nf_game::drone::level_drones(&d, &self.level, &mut rng);
@@ -95,9 +97,9 @@ fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, 
 fn guard_notices_and_fires_like_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    // Seed 2 (re-picked in WORKLOG 0069 after the guards' talk rolls joined the RNG; 0037 had 7): the first
-    // combat-move roll picks the step (strafe or step are equally likely; the trace shows steps).
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 2);
+    // Seed 1 (re-picked in WORKLOG 0072 after the searchlight creates joined the RNG; 0069 had 2, 0037 also 7):
+    // the first combat-move roll picks the step (strafe or step are equally likely; the trace shows steps).
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 1);
     let mut sim = l.sim(drones, rng);
     // As in the live session, Bond appears (teleported) after the level has run: 10 ticks with him far away first, so
     // spawner 266's drone is already in the list.
@@ -129,7 +131,7 @@ fn guard_notices_and_fires_like_the_game() {
     // The sniper (L96A1, 30 × 0.6) hits for 18, as in the live trace.
     assert!(sim.player_hits.iter().filter(|(_, o, _)| *o != gi).all(|(_, _, h)| (h - 18.0).abs() < 1e-3 || (h - 1.65).abs() < 1e-3 || *h < 18.0));
     // Sister: the same guard already at alertness 1 reacts without the delay, so the comparison above can fail.
-    let (alert_drones, _, alert_rng) = l.drones_seeded(Some(1.0), 61.342, 2);
+    let (alert_drones, _, alert_rng) = l.drones_seeded(Some(1.0), 61.342, 1);
     let mut alert_sim = l.sim(alert_drones, alert_rng);
     for _ in 0..WARM { alert_sim.tick(&d, &away); }
     for _ in 0..100 { alert_sim.tick(&d, &player); }
@@ -144,7 +146,7 @@ fn guard_notices_and_fires_like_the_game() {
 fn level_start_matches_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    let (drones, _, rng) = l.drones(None, 61.342);
+    let (drones, _, rng) = l.drones_seeded(None, 61.342, 2);
     let m = l.level.main_map().unwrap();
     let placement_words = |x: f32| {
         let p = l.level.maps[m].placements.iter().find(|p| p.flags & 0xff == 0x0f && (p.translation[0] - x).abs() < 0.01).unwrap();
@@ -219,13 +221,14 @@ fn guard_patrols_like_the_game() {
 /// Live trace (work/chase_trace.tsv: Bond teleported to (79.62, 22.6, 95.96), settling at (79.86, 22.92, 96.0)): the
 /// gate guard notices him, goes Combat → OutOfRange → RunForCover (0x8C) → UnderCoverInit (31 ticks) → UnderCoverIdle →
 /// UnderCoverAim (37 ticks, lean-out 176 at speed 1.5) → UnderCoverFire behind corner node 1 (59.11, 98.69), firing from
-/// (58.83, 99.32). Seed 1 (re-picked in WORKLOG 0037 after the sniper modes moved the shared random stream) makes the port's rolls pick no first-sight move and the lean cover type, as the game did here.
+/// (58.83, 99.32). Seed 1 (re-picked in WORKLOG 0072 after the searchlight creates joined the RNG; 0056 had 2,
+/// 0037 before the snow also 1) makes the port's rolls pick no first-sight move and the lean cover type, as the game did here.
 #[test]
 fn guard_takes_cover_like_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    // Seed 2 (re-picked in WORKLOG 0056 after the snow's per-tick `Rand_*` calls shifted the sequence).
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 2);
+    // Seed 1 (re-picked in WORKLOG 0072 after the searchlight creates joined the RNG; 0056 had 2).
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 1);
     let mut sim = l.sim(drones, rng);
     let player = bond_at([79.86, 22.92, 96.0]);
     for _ in 0..700 { sim.tick(&d, &player); }
@@ -240,7 +243,7 @@ fn guard_takes_cover_like_the_game() {
     let err = ((g.pos[0] - 58.83).powi(2) + (g.pos[2] - 99.32).powi(2)).sqrt();
     assert!(err < 0.4, "in cover at ({:.2}, {:.2}), {err:.2} from the live position", g.pos[0], g.pos[2]);
     // Sister: with Bond 6 units away (the first test's setup) the same guard never runs for cover.
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 2);
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 1);
     let mut near = l.sim(drones, rng);
     for _ in 0..300 { near.tick(&d, &bond_at([67.31, 26.5, 99.47])); }
     assert!(near.list[gi].log.iter().all(|(_, s)| *s != 0x8c), "sister: cover must depend on the situation");
@@ -378,7 +381,8 @@ fn bond_kills_guards_with_two_torso_shots() {
     let d = l.data();
     // `placement`: the drone's placement index.
     let run = |bond: [f32; 3], placement: usize, frames: u32, over: f32| {
-        let (drones, _, rng) = l.drones(None, 61.342);
+        // Seed 2 (re-picked in WORKLOG 0072 after the searchlight creates joined the RNG; was 1).
+        let (drones, _, rng) = l.drones_seeded(None, 61.342, 2);
         let i = drones.iter().position(|dr| dr.placement == placement).unwrap();
         let mut sim = l.sim(drones, rng);
         let p = bond_at(bond);
@@ -497,8 +501,17 @@ fn tower_guards_fall_out_of_the_towers() {
         Some((sim, i, track))
     };
     for placement in [267, 7] {
-        let seed = (1..64).find(|&s| { let (dr, _, rng) = l.drones_seeded(None, 61.342, s); let i = dr.iter().position(|x| x.placement == placement).unwrap();
-            let mut sim = l.sim(dr, rng); let away = bond_at([0.0, -500.0, 0.0]); for _ in 0..10 { sim.tick(&d, &away); } sim.list[i].present }).expect("a seed picking it");
+        // The seed must pick this placement for the spawner AND land both shots (the spread draws sit after
+        // the searchlight creates in the shared stream, WORKLOG 0072): presence first, then the run's result.
+        let seed = (1..64).find(|&s| {
+            let (dr, _, rng) = l.drones_seeded(None, 61.342, s);
+            let i = dr.iter().position(|x| x.placement == placement).unwrap();
+            let mut sim = l.sim(dr, rng);
+            let away = bond_at([0.0, -500.0, 0.0]);
+            for _ in 0..10 { sim.tick(&d, &away); }
+            sim.list[i].present && run(placement, s, 0.0).is_some_and(|(sim, i, _)|
+                sim.list[i].log.iter().any(|(_, st)| *st == state::SPECIAL_DEATH))
+        }).expect("a seed picking and killing it");
         let (sim, i, track) = run(placement, seed, 0.0).unwrap();
         let log: Vec<u8> = sim.list[i].log.iter().map(|&(_, s)| s).collect();
         assert!(log.contains(&state::SPECIAL_DEATH) && log.contains(&state::DEAD), "{placement}: log {:x?}", sim.list[i].log);

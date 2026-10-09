@@ -496,6 +496,9 @@ pub struct ViewOpts {
     pub reinforcements: bool,
     /// Make every armed drone fire (muzzle flashes); the game's AI decides this, nf-view has none yet.
     pub firing: bool,
+    /// The camera's screen axes this frame (corona billboards; set by the caller from its camera).
+    pub right: [f32; 3],
+    pub up: [f32; 3],
 }
 
 /// Bind-pose data of one character vertex (same order as the Character-layer vertices).
@@ -507,6 +510,9 @@ pub struct CharVertex {
     pub slots: [u16; 2],
     /// Rigid vertex of an attached mesh (index into `Scene::attachments`) instead of a skinned one.
     pub attachment: Option<u32>,
+    /// A searchlight part's vertex (index into `Sim::drones.searchlights.parts`), posed by the simulation
+    /// each frame (`Searchlight_Update`): the mount/head/beam/spot matrices, coronas as camera billboards.
+    pub searchlight: Option<u16>,
 }
 
 pub struct Scene {
@@ -564,7 +570,7 @@ pub fn fog_for(level: u32) -> Option<([u8; 3], f32)> {
 /// and draw state. The value keeps the object's world centre for the per-frame sort.
 type Groups = BTreeMap<(Layer, [u32; 3], u32, Option<(usize, u32)>, Draw), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3])>;
 
-fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>) {
+fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>, searchlight: Option<u16>) {
     let obj = &level.maps[inst.map].objects[inst.object];
     let mut m = inst.matrix;
     if layer == Layer::SkyCamera { m[3] = [0.0, 0.0, 0.0, 1.0]; }
@@ -604,7 +610,8 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
             }
             let uv = if v.uv.iter().all(|c| c.is_finite()) { v.uv } else { [0.0, 0.0] };
             vs.push(Vertex { pos: p, uv, rgba: v.rgba });
-            if let Some((c, attachment)) = character { cv.push(CharVertex { character: c, pos: v.pos, weight: v.weight, slots: v.slots, attachment }); }
+            if let Some((c, attachment)) = character { cv.push(CharVertex { character: c, pos: v.pos, weight: v.weight, slots: v.slots, attachment, searchlight: None }); }
+            else if let Some(sl) = searchlight { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: Some(sl) }); }
         }
         for t in b.triangles() { is.extend(t.map(|k| base + k as u32)); }
     }
@@ -705,9 +712,12 @@ impl Scene {
         for inst in &instances {
             let obj = &level.maps[inst.map].objects[inst.object];
             if inst.placement.creates_cel() && obj.skipped_by_cel_pass() { hidden += 1; continue; }
+            // Searchlight parts are dynamic objects (`Searchlight_Update` moves them every tick): drawn from
+            // the simulation below, not from their placements.
+            if inst.placement.flags & 0xff == 0xde { continue; }
             // Debug: `NF_HIDE=name,name` leaves out world objects whose name contains one of them.
             if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && obj.name.contains(n)) { continue; } }
-            add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds));
+            add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds), None);
         }
         let mut characters = Vec::new();
         let (mut attachments, mut armed, mut weapons_missing) = (Vec::new(), std::collections::HashSet::new(), 0);
@@ -727,10 +737,10 @@ impl Scene {
             let Some(skin) = level.skins.get(&skin_hash) else { continue };
             let Some(skeleton) = skeletons.get(&skin.skeleton) else { continue };
             if !obj.gfx.is_skinned() || skin.inverse_bind.is_empty() {
-                add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds));
+                add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds), None);
                 continue;
             }
-            add_instance(level, inst, Layer::Character, Some((characters.len() as u32, None)), &mut groups, Some(&mut bounds));
+            add_instance(level, inst, Layer::Character, Some((characters.len() as u32, None)), &mut groups, Some(&mut bounds), None);
             let start = drones.and_then(|d| {
                 let param = |k: u32| inst.placement.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
                 let hash = drone::start_script(&d.tables, param, d.level_id).script()?;
@@ -754,11 +764,11 @@ impl Scene {
             let Some(&(map, object)) = level.by_hash.get(&mesh) else { weapons_missing += 1; continue };
             let winst = Instance { map, object, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: inst.placement.clone() };
             let character = characters.len() as u32 - 1;
-            add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None);
+            add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None);
             let local = anim::quat_trans_to_mat(dt.q, dt.t);
             attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, script: None });
             // The same gun as a pickup once the drone drops it.
-            add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None);
+            add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None);
             attachments.push(Attachment { character, bone: 0, local, flash: None, tracer: None, dropped: true, script: None });
             // Its muzzle flash: `DroneWeap_FireWeapon` asks `AnimGetBoneWorldTrans(obj, datum id, 1, …)`, which looks up
             // the datum whose id is id + 1 — the muzzle (07000005: 8 → 9 at x −0.77, 16 → 17 at x −1.18).
@@ -766,7 +776,7 @@ impl Scene {
                 let muzzle = skin.datums.iter().find(|d| d.id == datum_id + 1 && d.bone >= 0);
                 if let (Some(&(fmap, fobject)), Some(md)) = (level.by_hash.get(&fmesh), muzzle) {
                     let finst = Instance { map: fmap, object: fobject, ..winst };
-                    add_instance(level, &finst, Layer::Effect, Some((character, Some(attachments.len() as u32))), &mut groups, None);
+                    add_instance(level, &finst, Layer::Effect, Some((character, Some(attachments.len() as u32))), &mut groups, None, None);
                     attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb), tracer: None, dropped: false, script: None });
                 }
             }
@@ -784,11 +794,11 @@ impl Scene {
                     let placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
                     let (map, object) = level.by_hash[&sleeve];
                     let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                    add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None);
+                    add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None);
                     for &(bone, part) in &skin.extra {
                         let Some(&(map, object)) = part.and_then(|h| level.by_hash.get(&h)) else { continue };
                         let pinst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                        add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None);
+                        add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None);
                         attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, script: None });
                     }
                     // The muzzle flash (`Player_MuzzleFlash`): mesh `weapon+0x48` on datum 0, colour (+0x56, +0x55, +0x54).
@@ -796,7 +806,7 @@ impl Scene {
                     let flash = u32::from_le_bytes(r[0x48..0x4c].try_into().unwrap());
                     if let (Some(&(fmap, fobject)), Some(dt)) = (level.by_hash.get(&flash), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
                         let finst = Instance { map: fmap, object: fobject, matrix: ident, placement: placement.clone() };
-                        add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None);
+                        add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None);
                         attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, script: None });
                     }
                     characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None, script: None });
@@ -826,13 +836,13 @@ impl Scene {
                                 for &mh in skin.main.iter().flatten() {
                                     let Some(&(map, object)) = level.by_hash.get(&mh) else { continue };
                                     let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                                    add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None);
+                                    add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None);
                                     slot_bones = level.maps[map].objects[object].gfx.slot_bones.clone();
                                 }
                                 for &(bone, part) in &skin.extra {
                                     let Some(&(map, object)) = part.and_then(|ph| level.by_hash.get(&ph)) else { continue };
                                     let pinst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None);
+                                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None);
                                     attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, script: None });
                                 }
                                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones, start: None, role: drone::SpawnRole::Placed, floor: None, script: Some((h, si as u8)) });
@@ -843,7 +853,7 @@ impl Scene {
                                 if !seen.insert((h, si, hash)) { continue; }
                                 let Some(&(map, object)) = level.by_hash.get(&hash) else { continue };
                                 let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                                add_instance(level, &inst, Layer::Character, Some((0, Some(attachments.len() as u32))), &mut groups, None);
+                                add_instance(level, &inst, Layer::Character, Some((0, Some(attachments.len() as u32))), &mut groups, None, None);
                                 attachments.push(Attachment { character: 0, bone: 0, local: ident, flash: None, tracer: None, dropped: false, script: Some((h, si as u8, hash)) });
                                 script_objects += 1;
                             }
@@ -858,12 +868,26 @@ impl Scene {
         if let (Some(_), Some(&(tmap, tobj))) = (drones, level.by_hash.get(&0x0200_0123)) {
             for slot in 0..TRACER_SLOTS {
                 let tinst = Instance { map: tmap, object: tobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
-                add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None);
+                add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None);
                 attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false, script: None });
             }
         }
         for (inst, follows_camera) in &sky {
-            add_instance(level, inst, if *follows_camera { Layer::SkyCamera } else { Layer::SkyFixed }, None, &mut groups, None);
+            add_instance(level, inst, if *follows_camera { Layer::SkyCamera } else { Layer::SkyFixed }, None, &mut groups, None, None);
+        }
+        // Searchlight parts (`Searchlight_Create`'s creation order = `part_placements`): each part's object as
+        // Character-layer vertices posed by the simulation every tick — the mount and head rotating, the beam
+        // cone along the aim, the spot on its ray hit, the corona a camera billboard (docs/systems/world-objects.md).
+        if let Some(m) = level.main_map() {
+            for (pi, pl) in nf_game::searchlight::part_placements(&level.maps[m].placements).into_iter().enumerate() {
+                let p = &level.maps[m].placements[pl];
+                let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                    else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
+                if let Some((map, object)) = target {
+                    let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
+                    add_instance(level, &inst, Layer::Character, None, &mut groups, None, Some(pi as u16));
+                }
+            }
         }
         let (mut vertices, mut indices, mut materials, mut char_verts) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut char_vertex_start = None;
@@ -1072,6 +1096,25 @@ impl Scene {
             muzzle_flash_matrix(&datum, (tick / 8) ^ (k as u32).wrapping_mul(0x9e37_79b9))
         }).collect();
         self.char_verts.iter().map(|v| {
+            // Searchlight parts: the simulation's matrices (`Searchlight_Update`), coronas as camera billboards
+            // with their scale (the alpha byte is not wired to the shader — G-033); hidden parts collapse below
+            // the world like the game's `View_SetDrawInNoViews`.
+            if let Some(sl) = v.searchlight {
+                const FAR: Mat4 = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
+                let Some(s) = self.sim.as_ref() else { return [0.0, -10000.0, 0.0] };
+                let Some(p) = s.drones.searchlights.parts.get(sl as usize) else { return [0.0, -10000.0, 0.0] };
+                if !p.drawn { return transform(&FAR, v.pos); }
+                if p.kind == 4 {
+                    let m: Mat4 = [
+                        [opts.right[0] * p.scale, opts.right[1] * p.scale, opts.right[2] * p.scale, 0.0],
+                        [opts.up[0] * p.scale, opts.up[1] * p.scale, opts.up[2] * p.scale, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [p.pos[0], p.pos[1], p.pos[2], 1.0],
+                    ];
+                    return transform(&m, v.pos);
+                }
+                return transform(&p.matrix, v.pos);
+            }
             if let Some(a) = v.attachment { return transform(&attach[a as usize], v.pos); }
             let c = &self.characters[v.character as usize];
             if hidden(c, v.character as usize) { return [c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]]; }

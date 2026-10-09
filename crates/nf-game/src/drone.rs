@@ -2982,6 +2982,11 @@ pub struct Drones {
     patrol_cooldown: u32,
     /// Script stream sounds: (script, stream) → handle and the object it follows.
     script_sounds: Vec<((u32, u8), crate::sound::Handle, Option<usize>)>,
+    /// The level's searchlights (docs/systems/world-objects.md; created in `attach_level`, updated in `tick`'s
+    /// control-list order with the drones and triggers).
+    pub searchlights: crate::searchlight::Searchlights,
+    /// Bond's bullet segments of this tick (`from`, `to`): the searchlights' break check (U-041 stand-in).
+    bullet_paths: Vec<([f32; 3], [f32; 3])>,
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -3028,7 +3033,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0 }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), bullet_paths: Vec::new() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -3036,6 +3041,15 @@ impl Drones {
     pub fn attach_level(&mut self, level: &nf_formats::level::Level) {
         self.triggers = crate::triggers::build(level);
         let Some(m) = level.main_map() else { return };
+        // Searchlights (`Searchlight_Create`, placement order; every part draws `Rand_Rand(480)`, spots another
+        // `Rand_Rand(0)` — the shared stream, in this order). The game interleaves these draws with the other
+        // dynamic objects' creates by placement index; the port creates drones first (level_drones) and these
+        // here, so absolute stream positions differ until all creators are ported (seeds re-picked, WORKLOG).
+        self.searchlights = crate::searchlight::Searchlights::create(&level.maps[m].placements, &mut self.rng, |p| {
+            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
+                else { level.maps[m].objects.get(p.index as usize) };
+            obj.map_or(([0.0; 3], [0.0; 3]), |o| (o.min, o.max))
+        });
         // Weather: `Env_Create` (placement 0xDF, parameter 0 = drop type) and the `RainBox_Create` volumes (0x32: the
         // glist bounds at the placement translation).
         self.map_sounds = crate::sound::MapSounds::new(level.maps[m].sounds.clone());
@@ -3090,6 +3104,7 @@ impl Drones {
     /// nearest wins. A drone hit sends msg 8 (`Drone_BulletHit`).
     fn update_player_bullets(&mut self, d: &Data) {
         self.player_impacts.clear();
+        self.bullet_paths.clear();
         let frame = self.frame;
         let mut bullets = std::mem::take(&mut self.player_bullets);
         for b in &mut bullets {
@@ -3102,6 +3117,7 @@ impl Drones {
             let l = step.max(1.0);
             let ray = [b.dir[0] * l, b.dir[1] * l, b.dir[2] * l];
             let end = [b.pos[0] + ray[0], b.pos[1] + ray[1], b.pos[2] + ray[2]];
+            self.bullet_paths.push((b.pos, end));
             let tw = d.world.segment(b.pos, end);
             let mut best: Option<(usize, i16, f32)> = None;
             for (i, dr) in self.list.iter().enumerate() {
@@ -3530,6 +3546,7 @@ impl Drones {
         let mut order: Vec<(usize, u8, usize)> = self.list.iter().enumerate().filter(|(_, x)| x.present).map(|(i, x)| (x.placement, 0, i))
             .chain(self.triggers.iter().enumerate().filter(|(_, t)| t.kind != crate::triggers::kind::TOUCH).map(|(j, t)| (t.placement, 1, j)))
             .chain(self.spawners.iter().enumerate().map(|(j, sp)| (sp.placement, 2, j)))
+            .chain(self.searchlights.parts.iter().enumerate().filter(|(_, p)| p.kind == 1).map(|(j, p)| (p.placement, 3, j)))
             .collect();
         order.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         // Pickups are created at run time, so they head the control list: `Pickup_Update` before the placed objects.
@@ -3538,6 +3555,18 @@ impl Drones {
         let mut talk_queue: Vec<(usize, Vec<(usize, bool)>)> = Vec::new();
         for &(_, what, index) in &order {
             if what == 1 { self.triggers[index].update(&mut self.channels, &touchers, frame); continue; }
+            if what == 3 {
+                // `Searchlight_Update` (docs/systems/world-objects.md): channels, sweep/tracking, the parts, the
+                // break check; its `Sound_Play3D` events (0xE5 relay, 0xE6 glass) enter the pool and the hearing list.
+                let evs = self.searchlights.update(d, player, &mut self.channels, index, &self.bullet_paths, &mut self.rng, frame);
+                for (id, pos) in evs {
+                    match d.sfx {
+                        Some(t) => { let h = t.get(id); self.play_sound_handle(pos, h); }
+                        None => { self.audio.play3d(id, pos, None); }
+                    }
+                }
+                continue;
+            }
             if what == 2 {
                 let list = &self.list;
                 let rng = &mut self.rng;

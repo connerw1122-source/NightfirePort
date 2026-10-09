@@ -1,4 +1,4 @@
-# Dynamic objects at level start (07000005): what the port does not draw yet
+# Dynamic objects at level start (07000005): searchlights ported (WORKLOG 0072); the rest not drawn yet
 
 Build: ACTION.ELF `e7ffdcb3…`. Tags: [M] decomp, [L] snapshot `work/ee_start_05.bin`, [S] suggested. Source: a
 research pass (subagent, 2026-10-09). **Searchlights re-checked here 2026-10-10** (disassembly of 0x1cb4f8/0x1cb900
@@ -72,8 +72,10 @@ pos, rot, NULL)`; class byte `obj+0xFF = 0x22`; instance (malloc'd, `obj+0xE0`):
 +0x20..+0x30 obj* by kind   <- filled by the linking loop: instance + 0x20 + kind*4
 +0x34 u8 on-channel         <- p1 (+0x30)   +0x35 u8 off-channel  <- p2 (+0x34)
 +0x36 u8 alarm-channel      <- p3 (+0x38)
-+0x38 f32 half-range (rad)  <- (max(p4,p5) − min(p4,p5)) · π/360   (p4/p5 = u32 degrees, +0x3C/+0x40)
-+0x3C f32 mid (rad)         <- (p4 + p5) · π/360 … precisely ((max·π/180)+(min·π/180))/2, chop-rounded
++0x38 f32 half-range (rad)  <- (hi_rad − lo_rad) · 0.5, with lo/hi = float(min/max(p4,p5)) · 0x3C8EFA36 (EE-chopped
+                                muls; the constant is π/180 + 1 ulp, NOT π/180 — 0x1cb604) — the live heads' bits
+                                reproduce 7/7; the old "(max−min)·π/360" was last-bit wrong on all of them
++0x3C f32 mid (rad)         <- (hi_rad + lo_rad) · 0.5
 obj+0xF4 u16 state          <- 3 if p1 ≠ 0 else 0; obj+0xD8 = glist; obj+0xF0 = glist+0x44
 ```
 
@@ -82,13 +84,14 @@ parts consume another `Rand_Rand(0)` as the light's flicker seed. Both advance t
 (`Rand_Rand` steps Y then X; `Rand_FRand` steps X then Y — 0x1e3738/0x1e3780).
 
 **Linking loop [M + L]**: after `build_LinkToRoom`, walk the cel list (`obj+0x20 → cel+8`, next `+8`): skip self,
-skip `class ≠ 0x22`, skip `Vec_Dist3D > 3.0`; if I am kind 1, link the other into my slot by ITS kind; else if the
-other is kind 1, link me into ITS slot by my kind. If the head's `+0x34` (on-channel) ≠ 0, also
-`View_SetDrawInNoViews` on the newly linked non-mount part (starts dark). **Order consequence [L]**: a spot created
-*before* its head can never link — its own create moves it `−10000` on all axes (below), so the head's later loop
-sees it 17 000 units away. On 07000005 spot `016e8ec0` (courtyard cel) is exactly such an orphan (no light, no ray,
-invisible), while spot `016e9020` was created after its head and links. Portable as-is: create placements in record
-order, link by the rule.
+skip `class ≠ 0x22`, skip `Vec_Dist3D ≥ 3.0`; if I am kind 1, link the other into my slot by ITS kind; else if the
+other is kind 1, link me into ITS slot by my kind. **Both stores are unconditional** — the walk (newest first)
+leaves the OLDEST match linked. If the head's `+0x34` (on-channel) ≠ 0, also `View_SetDrawInNoViews` on the newly
+linked non-mount part (starts dark). **The kind-2 branch (the light node and the −10000 move) runs AFTER the
+walk [M, 0x1cb79c]**: a spot created after its head links while still in place and then moves below the world
+(spot 016e9020); a spot created before its head is moved away by its own create and the later head's walk never
+sees it — spot `016e8ec0` (courtyard) is exactly such an orphan (no light ray, invisible). Portable as-is: create
+placements in record order, link by the rule, then move.
 
 **Kind-2 branch**: allocate a light node (free-list 0x2c74c0, 32 × 0x50; `Mem_Malloc(0xa00, 0x3704)` fills it):
 `+0x3C = 500.0` (radius), `+0x40 = 1.0`, `+0x44..46 = FF FF FF`, `+0x47 = 2` (type), `+0x48 = 1`,
@@ -103,9 +106,12 @@ Kill check (any state): if `+0x35` (off-channel) ≠ 0 and the channel is on →
 clear the links and both channel bytes, `Control_NextLOD`.
 
 - **State 0 (sweep)**: `pitch = PS2Sinf(phase · 2π/480) · half + mid`; `yaw = PS2Sinf(phase · 2π/480 + π/2) · half +
-  rot.y` (cos via the same approximation, checked in the disassembly). `phase += FRAME_RATE_MUL`; the `fmodf(phase,
-  480)` call's result is **discarded** (the store sits in the jal delay slot) — phase grows unbounded; `PS2Sinf`'s
-  internal wrap keeps precision. Verified on the snapshot: head `016dfe70` phase 317 → pitch 0.04712 / yaw 0.62241.
+  rot.y` (cos via the same approximation, checked in the disassembly; the step constant is 0x3C567751, the steer
+  0x3E19999A). `phase += FRAME_RATE_MUL`; the `fmodf(phase, 480)` call's result is **discarded** (the store sits in
+  the jal delay slot) — phase grows unbounded; `PS2Sinf`'s internal wrap keeps precision. The object's angles are
+  then **normalised to (−π, π]** (the framework's matrix build): a head with mid > π stores its pitch 2π below the
+  raw sum (016e03f0: 4.445 stored as −1.838) [L]. Verified on the snapshot: head `016dfe70` phase 317 → pitch
+  0.04712 / yaw 0.62241, bit-exact in the port.
 - **State 1 (tracking Bond)**: `switch_channels[alarm] = 1` held every tick. Targets: `yaw* = atan2f(dx, dz)`,
   `pitch* = −atan2f(dy − 1, √(dx²+dz²))` (player pos − head pos; **libm `atan2f`**, not `ATAN2_APPROX`). Steer
   `angle_difference(cur, target) · 0.15`, clamped to the sweep cone (yaw within `rot.y ± half`, pitch `mid ± half`).
@@ -135,23 +141,22 @@ clear the links and both channel bytes, `Control_NextLOD`.
 channels `DroneFunc_CheckAlarmRaised` posts (docs/systems/music.md); the alarm turns the castle searchlights on.
 While a head tracks Bond it holds its own alarm channel (`p3`).
 
-**Port status**: `trig.rs` already has `sinf`/`cosf`/`angle_difference`/`atan2_approx` bit-exact; still to port:
-`Mat_Align2Dir` (cross order to be pinned against a live beam matrix from the snapshot), libm `atan2f` for tracking
-(the port's `f32::atan2`; last-ulp differences acceptable in a steering loop — verify against the snapshot), the
-light (illumination is renderer work, G-0xx), smoke (`Gas_Init` — no particle system yet), bullets vs. searchlight
-parts, `Control_NextLOD`. Golden vectors for the sweep (5 active heads, bits): `(phase, half, mid, base_yaw) →
-(pitch, yaw)`: `(0x439f0000, 0x3e9c61ab, 0x3e9c61ab, 0x3f490fdb, 0x3d4100a8, 0x3f1f5694)`,
-`(0x43a08000, 0x3f1c61ac, 0x409f2c8d, 0x3f490fdb, 0xbfeb4450, 0x3ef5be04)`,
-`(0x43830000, 0x3f1c61ac, 0x409f2c8d, 0xbf373094, 0xbfbcc698, 0xbfa6d999)`,
-`(0x438a8000, 0x3eb2b8c3, 0x3eb2b8c3, 0x3f25514d, 0x3e432adf, 0x3eab6499)`,
-`(0x41600000, 0x3eb2b8c3, 0x3eb2b8c3, 0xbee85696, 0x3ed0fcf8, 0xbde0cab0)` (phase stored is post-advance; compute
-with phase − 1).
+**Port status**: `crates/nf-game/src/searchlight.rs` (WORKLOG 0072) — create/link (the orphan rule), the RNG
+order, the sweep (bit-exact on the five golden heads), tracking, the off/kill channels with sounds 0xE5/0xE6, the
+spot ray and orientation, `Mat_Align2Dir` (cross order pinned against the live beam matrix: rows =
+n(cross(up, z)), n(cross(z, row0)), z), the head/mount matrices (the framework's align against world up, pinned on
+head 016dfe70), the corona dot/alpha/scale/LOS, mount yaw, breaking (state 2 droop) and the bullet stand-in
+(segments vs the solid parts' boxes). nf-view draws the parts from the simulation each frame; the coronas are
+camera billboards. Still open: the spot's dynamic light (illumination is renderer work), `Gas_Init` smoke (no
+particle system; its RNG draws are not consumed — G-033), the corona's alpha byte is not wired to nf-view's
+shader, and the bullet child-list path remains the U-041 stand-in.
 
 ## Open
 
 ScriptPlayer #71 (`06000074`, a Loadable) at the start trigger; whether AnimObject flag 0x8000 selects the absolute
 root; `Corona_Update`'s caller; door opening; copter paths.
 
-Searchlight remainder: `Mat_Align2Dir` cross order (pin against a live beam matrix), the light's illumination
-(renderer), smoke (`Gas_Init`), bullets vs. the parts, `Control_NextLOD`; the level-exit gates and objectives feed
-music events 3/7/8 (see HANDOFF §5).
+Searchlight remainder: the spot's dynamic light and its flicker (illumination is renderer work), smoke
+(`Gas_Init` — needs a particle system; 6 RNG calls per puff measured at 0x1ab060–0x1ab248, not consumed), the
+corona's alpha byte into nf-view's shader, the bullet child-list path (U-041; the box stand-in is in place). The
+level-exit gates and objectives feed music events 3/7/8 (see HANDOFF §5).
