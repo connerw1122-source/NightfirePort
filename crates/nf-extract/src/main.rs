@@ -39,6 +39,10 @@ fn main() -> Result<()> {
         "tex-list" => { print!("{}", disc::texture_entries(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "tex-digest" => { print!("{}", disc::texture_digest(&disc::texture_entries(&IsoImage::open(a(1)?)?)?)); Ok(()) }
         "tex-export" => tex_export(&IsoImage::open(a(1)?)?, Path::new(a(2)?), args.get(3).map(String::as_str)),
+        "gfx-list" => { print!("{}", disc::geometry_entries(&IsoImage::open(a(1)?)?)?); Ok(()) }
+        "gfx-digest" => { print!("{}", disc::geometry_digest(&disc::geometry_entries(&IsoImage::open(a(1)?)?)?)); Ok(()) }
+        "gfx-boxes" => gfx_boxes(&IsoImage::open(a(1)?)?),
+        "gfx-export" =>gfx_export(&IsoImage::open(a(1)?)?, Path::new(a(2)?), args.get(3).map(String::as_str)),
         "bigf-extract" => bigf_extract(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?)),
         "symtab" => symtab(Path::new(a(1)?)),
         "drivingsym" => {
@@ -121,6 +125,55 @@ fn tex_export(iso: &IsoImage, out: &Path, only: Option<&str>) -> Result<()> {
         Ok(())
     })?;
     println!("{written} PNGs -> {}", out.display());
+    Ok(())
+}
+
+/// Writes `<out>/<archive>/<entry>_<object>.obj` per static PS2_GFX object (positions and UVs printed with Rust's
+/// shortest round-trip f32 formatting, so they parse back to the exact bits; `usemtl tex<N>` per batch).
+fn gfx_export(iso: &IsoImage, out: &Path, only: Option<&str>) -> Result<()> {
+    use std::fmt::Write as _;
+    let mut written = 0usize;
+    disc::for_each_gfx(iso, |archive, entry, n, hash, name, obj| {
+        if only.is_some_and(|p| !archive.starts_with(p)) || obj.leaves.is_empty() { return Ok(()); }
+        let dir = out.join(archive.trim_end_matches(".bin"));
+        std::fs::create_dir_all(&dir)?;
+        let mut s = format!("# {archive} entry {entry} object {n} hashcode {hash:08x} {name}\n");
+        let mut base = 1usize;
+        for (li, leaf) in obj.leaves.iter().enumerate() {
+            for (bi, b) in leaf.batches.iter().enumerate() {
+                let _ = writeln!(s, "g leaf{li}_batch{bi}\nusemtl tex{}", b.texture.map_or(-1, |t| t as i64));
+                for v in &b.verts { let _ = writeln!(s, "v {} {} {}", v.pos[0], v.pos[1], v.pos[2]); }
+                for v in &b.verts { let _ = writeln!(s, "vt {} {}", v.uv[0], v.uv[1]); }
+                for t in b.triangles() {
+                    let [a, b2, c] = t.map(|i| i as usize + base);
+                    let _ = writeln!(s, "f {a}/{a} {b2}/{b2} {c}/{c}");
+                }
+                base += b.verts.len();
+            }
+        }
+        std::fs::write(dir.join(format!("{entry:04}_{n:03}.obj")), s)?;
+        written += 1;
+        Ok(())
+    })?;
+    println!("{written} OBJ files -> {}", out.display());
+    Ok(())
+}
+
+/// Per static leaf box: its two vectors and the decoded vertices' min/max (UNKNOWNS U-019), TSV on stdout.
+fn gfx_boxes(iso: &IsoImage) -> Result<()> {
+    println!("archive\tentry\tobject\tbox\ta\tb\tvmin\tvmax");
+    disc::for_each_gfx(iso, |archive, entry, n, _hash, _name, obj| {
+        for leaf in &obj.leaves {
+            let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+            for v in leaf.batches.iter().flat_map(|b| &b.verts) {
+                for k in 0..3 { lo[k] = lo[k].min(v.pos[k]); hi[k] = hi[k].max(v.pos[k]); }
+            }
+            let bx = &obj.boxes[leaf.box_index];
+            let f = |v: &[f32; 3]| format!("{} {} {}", v[0], v[1], v[2]);
+            println!("{archive}\t{entry}\t{n}\t{}\t{}\t{}\t{}\t{}", leaf.box_index, f(&bx.a), f(&bx.b), f(&lo), f(&hi));
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 

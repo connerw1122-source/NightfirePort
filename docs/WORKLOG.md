@@ -192,3 +192,35 @@ The user confirmed gameplay and approved stopping the mcp-pine bridge (node pid 
 - First comparison run left 385 animated textures unchecked (their writer saves lossy WebP) and 180 "missing" ones:
   their name table spells the folder `Weapons/` once and `weapons/` 64 times, and on NTFS both land in one folder;
   my reverse lookup was case-sensitive. Fixed both in the driver (their decoder untouched).
+
+## 0009 — PS2_GFX static geometry (2026-10-08)
+
+**Done**
+- Read the decomp: `parsemap_block_PS2_GFX`, `parsemap_block_entity_params`, `psiCreateEntityGfx` (offset fix-ups,
+  texture-REF patching), `RecurseAndDrawBoxes` / `DrawThisBox` (glist box tree; DMA CALL + `MSCALF` 2/0).
+- Surveyed every packet: DMA chains of CNT (VIF stream), REF (texture index, zero VIF codes) and RET; skinned
+  objects add REF tags with UNPACK codes filled at run time. Batch layout from the data: GIF tag header, V2-32 UV at
+  B+0xC7, stride-3 V3-32 XYZ / V4-8 RGBA / signed V4-8 (normal + no-kick w), MSCNT.
+- docs/formats/ps2gfx.md; `ps2gfx.rs` replays packets through a VU1-memory model with per-batch freshness checks;
+  `disc::for_each_gfx` / `geometry_entries` / `geometry_digest`; CLI `gfx-list`, `gfx-digest`, `gfx-export` (OBJ),
+  `gfx-boxes`; golden `golden/geometry.tsv` + opt-in test with sister. 40 unit + 8 opt-in tests pass.
+- Checks: box min/max = decoded vertex bounds bit for bit (24,537 leaves; U-019 closed); visual (gun emplacement and
+  mounted gun from three axes); **nightfire-re: 6,227/6,227 unique static objects identical** (triangles and UV
+  corners), the 9,183 shared copies identical by our geometry SHA-1.
+
+**Measured**
+- Box +0x30 equals the decoded triangle count in 16,749 of 17,030 static objects (U-020).
+- 644 leaves have a packet with a setup kick but no vertices.
+
+**Failed / corrected**
+- **Pairing bug:** I first paired each PS2_GFX with the entity-params block *before* it. The cross-check showed every
+  object matching the previous one's name; the decomp (`entity_params` builds the gfx already stored in the cel)
+  shows params *follow* their gfx. Fixed, and the reader now rejects any other order.
+- Box +0x30 is not a vertex count (first hypothesis, 15,410 mismatches); nor the kick count; it is the triangle count
+  for 98 %.
+- Cross-check driver artefacts, each found by inspecting a single object: crashed on stray PNGs in `work/gfx`; UV
+  comparison assumed their `1 − v` was invertible (not for v ≈ 1.7e-16) — now applies their transform to ours;
+  parsed our shortest-f32 decimals as doubles — now via f32; NaN ≠ NaN (U-022); names with a trailing space lost
+  it in my header split; their writer turns "/" into "__". Their decoder was never modified.
+- Shell/Python edits of Rust strings hit the `\\` collapse twice more (a `sed` and a Python heredoc silently did not
+  match); redone with the editor. CLAUDE.md already forbids it; I must stop trying.

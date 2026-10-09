@@ -9,6 +9,7 @@ pub mod golden;
 pub mod iso9660;
 pub mod levelbin;
 pub mod map;
+pub mod ps2gfx;
 pub mod pss;
 pub mod sha1;
 pub mod symfile;

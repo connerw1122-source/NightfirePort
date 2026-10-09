@@ -5,6 +5,7 @@
 //! (Eurocom on-foot engine) or `DRIVING.ELF` (EA driving engine, LBA 1153); both are ordinary root-directory files.
 
 use crate::bigf::Bigf;
+use crate::buf::Buf;
 use crate::iso9660::{IsoEntry, IsoImage, Result, SECTOR_SIZE};
 use crate::sha1::{hex, Sha1};
 use std::io::{Read, Seek};
@@ -196,6 +197,95 @@ pub fn texture_digest(entries_tsv: &str) -> String {
     }
     let mut s = String::from("archive\ttextures\teight_bpp\tshort\trows_sha1\n");
     for (a, (n, e8, short, h)) in per { s.push_str(&format!("{a}\t{n}\t{e8}\t{short}\t{}\n", hex(&h.finish()))); }
+    s
+}
+
+/// Calls `f(archive, entry, object index, entity hashcode, entity name, decoded object)` for every PS2_GFX block,
+/// pairing it with the entity-params block (0x04) that *follows* it in parse order: `parsemap_block_PS2_GFX` stores
+/// the gfx in the current cel, then `parsemap_block_entity_params` builds it (`psiCreateEntityGfx`) and advances to
+/// the next cel (WORKLOG 0009). Every PS2_GFX must be followed by exactly one 0x04 before the next PS2_GFX.
+pub fn for_each_gfx<R: Read + Seek>(iso: &IsoImage<R>,
+    mut f: impl FnMut(&str, usize, usize, u32, &str, &crate::ps2gfx::GfxObject) -> Result<()>) -> Result<()> {
+    use crate::map::{id, MapFile};
+    for_each_map(iso, |archive, entry, _e, map| {
+        let mf = MapFile::parse(map)?;
+        let mut pending: Option<crate::ps2gfx::GfxObject> = None;
+        let mut n = 0usize;
+        for blk in &mf.blocks {
+            match blk.id {
+                id::PS2_GFX => {
+                    if pending.is_some() { return crate::iso9660::bad(format!("{archive} entry {entry}: two PS2_GFX blocks without entity params")); }
+                    let raw = &map[blk.offset as usize..][..blk.size as usize];
+                    pending = Some(crate::ps2gfx::GfxObject::parse(raw)
+                        .map_err(|e| crate::buf::FormatError::Invalid(format!("{archive} entry {entry} object {n}: {e}")))?);
+                }
+                id::ENTITY_PARAMS => {
+                    let Some(obj) = pending.take() else { return crate::iso9660::bad(format!("{archive} entry {entry}: entity params without PS2_GFX")) };
+                    let p = Buf(blk.payload(map));
+                    let hash = p.u32(0)?;
+                    let tail = p.tail(0x30, "entity name")?.bytes();
+                    let name = String::from_utf8_lossy(&tail[..tail.iter().position(|&c| c == 0).unwrap_or(tail.len())]).into_owned();
+                    f(archive, entry, n, hash, &name, &obj)?;
+                    n += 1;
+                }
+                _ => {}
+            }
+        }
+        if pending.is_some() { return crate::iso9660::bad(format!("{archive} entry {entry}: PS2_GFX at the end without entity params")); }
+        Ok(())
+    })
+}
+
+/// One row per PS2_GFX object: counts, the box vertex-count check, and a SHA-1 over the decoded geometry
+/// (per batch: texture, prim, nloop; per vertex: position/uv f32 bits, rgba, normal, w).
+pub fn geometry_entries<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
+    let mut s = String::from("archive\tentry\tobject\thashcode\tname\tskinned\tboxes\tleaves\tbatches\tvertices\ttriangles\tkicks\tsetup_kicks\tbox_count_sum\tgeometry_sha1\n");
+    for_each_gfx(iso, |archive, entry, n, hash, name, obj| {
+        let mut h = Sha1::new();
+        let (mut batches, mut verts, mut tris, mut kicks, mut setup, mut box_vsum) = (0, 0, 0, 0, 0, 0u64);
+        for leaf in &obj.leaves {
+            setup += leaf.setup_kicks;
+            for b in &leaf.batches {
+                batches += 1;
+                verts += b.verts.len();
+                tris += b.triangles().len();
+                kicks += b.verts.iter().filter(|v| v.w == 0).count();
+                h.update(&b.texture.unwrap_or(u32::MAX).to_le_bytes());
+                h.update(&b.prim.to_le_bytes());
+                h.update(&b.nloop.to_le_bytes());
+                for v in &b.verts {
+                    for x in v.pos.iter().chain(&v.uv) { h.update(&x.to_bits().to_le_bytes()); }
+                    h.update(&v.rgba);
+                    h.update(&v.normal.map(|c| c as u8));
+                    h.update(&v.w.to_le_bytes());
+                }
+            }
+            box_vsum += obj.boxes[leaf.box_index].vertex_count as u64;
+        }
+        let leaves = obj.boxes.iter().filter(|b| b.packet != 0).count();
+        s.push_str(&format!("{archive}\t{entry}\t{n}\t{hash:08x}\t{name}\t{}\t{}\t{leaves}\t{batches}\t{verts}\t{tris}\t{kicks}\t{setup}\t{box_vsum}\t{}\n",
+            obj.is_skinned() as u8, obj.boxes.len(), hex(&h.finish())));
+        Ok(())
+    })?;
+    Ok(s)
+}
+
+/// Per archive: `archive \t objects \t skinned \t vertices \t triangles \t rows_sha1`.
+pub fn geometry_digest(entries_tsv: &str) -> String {
+    use std::collections::BTreeMap;
+    let mut per: BTreeMap<&str, (u32, u32, u64, u64, Sha1)> = BTreeMap::new();
+    for line in entries_tsv.lines().skip(1) {
+        let c: Vec<&str> = line.split('\t').collect();
+        let e = per.entry(c[0]).or_insert_with(|| (0, 0, 0, 0, Sha1::new()));
+        e.0 += 1;
+        e.1 += c[5].parse::<u32>().unwrap_or(0);
+        e.2 += c[9].parse::<u64>().unwrap_or(0);
+        e.3 += c[10].parse::<u64>().unwrap_or(0);
+        e.4.update(line.as_bytes());
+        e.4.update(b"\n");
+    }
+    let mut s = String::from("archive\tobjects\tskinned\tvertices\ttriangles\trows_sha1\n");
+    for (a, (n, sk, v, t, h)) in per { s.push_str(&format!("{a}\t{n}\t{sk}\t{v}\t{t}\t{}\n", hex(&h.finish()))); }
     s
 }
 
