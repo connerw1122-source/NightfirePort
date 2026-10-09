@@ -31,15 +31,15 @@ struct Camera { pos: Vec3, yaw: f32, pitch: f32 }
 impl Camera {
     fn dir(&self) -> Vec3 { Vec3::new(self.pitch.cos() * self.yaw.sin(), self.pitch.sin(), self.pitch.cos() * self.yaw.cos()) }
     /// Right-handed view, wgpu clip depth 0..1, 60° vertical field of view (column-major for the shader).
-    fn view_proj(&self, aspect: f32) -> [[f32; 4]; 4] {
+    /// (full view-projection, the same with the eye at the origin for sky objects that follow the viewer).
+    fn view_proj(&self, aspect: f32) -> ([[f32; 4]; 4], [[f32; 4]; 4]) {
         let (near, far, f) = (0.05f32, 4000.0f32, 1.0 / (30f32.to_radians()).tan());
         let proj = Mat4::from_cols_array_2d(&[[f / aspect, 0.0, 0.0, 0.0], [0.0, f, 0.0, 0.0], [0.0, 0.0, far / (near - far), -1.0], [0.0, 0.0, near * far / (near - far), 0.0]]);
         let fw = self.dir().normalize();
         let s = fw.cross(Vec3::Y).normalize();
         let u = s.cross(fw);
-        let e = self.pos;
-        let view = Mat4::from_cols_array_2d(&[[s.x, u.x, -fw.x, 0.0], [s.y, u.y, -fw.y, 0.0], [s.z, u.z, -fw.z, 0.0], [-s.dot(e), -u.dot(e), fw.dot(e), 1.0]]);
-        (proj * view).to_cols_array_2d()
+        let view = |e: Vec3| Mat4::from_cols_array_2d(&[[s.x, u.x, -fw.x, 0.0], [s.y, u.y, -fw.y, 0.0], [s.z, u.z, -fw.z, 0.0], [-s.dot(e), -u.dot(e), fw.dot(e), 1.0]]);
+        ((proj * view(self.pos)).to_cols_array_2d(), (proj * view(Vec3::ZERO)).to_cols_array_2d())
     }
 }
 
@@ -83,7 +83,8 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str) -> Result<()> {
     });
     let view = target.create_view(&Default::default());
     let depth = gpu::depth_view(&device, w, h);
-    let mut enc = r.render(&device, &queue, &view, &depth, cam.view_proj(w as f32 / h as f32));
+    let (vp, vp_rot) = cam.view_proj(w as f32 / h as f32);
+    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot);
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -195,7 +196,8 @@ impl ApplicationHandler for App {
                 };
                 let view = frame.texture.create_view(&Default::default());
                 let aspect = g.config.width as f32 / g.config.height as f32;
-                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, self.cam.view_proj(aspect));
+                let (vp, vp_rot) = self.cam.view_proj(aspect);
+                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot);
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
                 g.window.request_redraw();

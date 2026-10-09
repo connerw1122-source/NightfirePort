@@ -33,14 +33,19 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
 
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
+    sky_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     uniform_bg: wgpu::BindGroup,
+    /// View-projection without the camera translation (sky objects that follow the viewer).
+    uniform_rot: wgpu::Buffer,
+    uniform_rot_bg: wgpu::BindGroup,
     vbuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     /// Per material: its texture bind group index.
     material_tex: Vec<usize>,
     tex_bgs: Vec<wgpu::BindGroup>,
-    draws: Vec<(u32, u32)>,
+    /// Per material: layer, first index, index count (sorted by layer: sky pass first).
+    draws: Vec<(crate::scene::Layer, u32, u32)>,
 }
 
 impl Renderer {
@@ -66,7 +71,8 @@ impl Renderer {
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&ubgl), Some(&tbgl)], immediate_size: 0 });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        // World: depth-tested. Sky pass: painted first in slot order without depth (`View_DrawSky` before the world).
+        let make_pipeline = |depth_write: bool, compare: wgpu::CompareFunction| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("nf-view"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
@@ -79,7 +85,7 @@ impl Renderer {
             },
             primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH, depth_write_enabled: Some(true), depth_compare: Some(wgpu::CompareFunction::Less),
+                format: DEPTH, depth_write_enabled: Some(depth_write), depth_compare: Some(compare),
                 stencil: Default::default(), bias: Default::default(),
             }),
             multisample: Default::default(),
@@ -90,8 +96,15 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let uniform_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &ubgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() }] });
+        let pipeline = make_pipeline(true, wgpu::CompareFunction::Less);
+        let sky_pipeline = make_pipeline(false, wgpu::CompareFunction::Always);
+        let make_uniform = || {
+            let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &ubgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }] });
+            (buf, bg)
+        };
+        let (uniform, uniform_bg) = make_uniform();
+        let (uniform_rot, uniform_rot_bg) = make_uniform();
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat, address_mode_v: wgpu::AddressMode::Repeat,
             mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default()
@@ -117,12 +130,14 @@ impl Renderer {
             .map(|m| m.key.and_then(|k| scene.textures.iter().position(|t| t.key == k)).map_or(0, |i| i + 1)).collect();
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.vertices), usage: wgpu::BufferUsages::VERTEX });
         let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.indices), usage: wgpu::BufferUsages::INDEX });
-        let draws = scene.materials.iter().map(|m| (m.first_index, m.index_count)).collect();
-        Renderer { pipeline, uniform, uniform_bg, vbuf, ibuf, material_tex, tex_bgs, draws }
+        let draws = scene.materials.iter().map(|m| (m.layer, m.first_index, m.index_count)).collect();
+        Renderer { pipeline, sky_pipeline, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, material_tex, tex_bgs, draws }
     }
 
-    pub fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4]) -> wgpu::CommandEncoder {
+    /// `view_proj`: full camera; `view_proj_rot`: the same without the camera translation.
+    pub fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4]) -> wgpu::CommandEncoder {
         queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&view_proj));
+        queue.write_buffer(&self.uniform_rot, 0, bytemuck::cast_slice(&view_proj_rot));
         let mut enc = device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -136,11 +151,17 @@ impl Renderer {
                 }),
                 timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.uniform_bg, &[]);
             pass.set_vertex_buffer(0, self.vbuf.slice(..));
             pass.set_index_buffer(self.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            for (m, &(first, count)) in self.draws.iter().enumerate() {
+            use crate::scene::Layer;
+            for (m, &(layer, first, count)) in self.draws.iter().enumerate() {
+                let (pipeline, uniform) = match layer {
+                    Layer::SkyCamera => (&self.sky_pipeline, &self.uniform_rot_bg),
+                    Layer::SkyFixed => (&self.sky_pipeline, &self.uniform_bg),
+                    Layer::World => (&self.pipeline, &self.uniform_bg),
+                };
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, uniform, &[]);
                 pass.set_bind_group(1, &self.tex_bgs[self.material_tex[m]], &[]);
                 pass.draw_indexed(first..first + count, 0, 0..1);
             }

@@ -114,6 +114,25 @@ impl Level {
         (out, missing)
     }
 
+    /// Sky objects, as `parsemap_create_dynamic_objects` (0x1d04f0) case 0x2A creates them with `View_AddSkyObj`
+    /// (0x1e79a0): main-map placements of object type 0x2A (placement flags & 0xFF); slot = parameter 0, sorted by slot
+    /// (the order `View_DrawSky` 0x1e5ad0 draws them). Lightning variants (parameter 1 ≠ 0) are skipped. The bool is
+    /// glist flag bit 2: drawn centred on the viewer instead of at the placement translation.
+    pub fn sky_instances(&self) -> Vec<(Instance, bool)> {
+        let Some(m) = self.main_map() else { return Vec::new() };
+        let mut out: Vec<(u32, Instance, bool)> = Vec::new();
+        for p in self.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x2a) {
+            let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
+            if param(1) != 0 { continue; }
+            let target = if p.by_hash() { self.by_hash.get(&p.hashcode).copied() } else { Some((m, p.index as usize)) };
+            let Some((map, object)) = target else { continue };
+            let follows_camera = self.maps[map].objects[object].flags & 2 != 0;
+            out.push((param(0), Instance { map, object, matrix: placement::object_matrix(p.rotation, p.translation), placement: p.clone() }, follows_camera));
+        }
+        out.sort_by_key(|(slot, _, _)| *slot);
+        out.into_iter().map(|(_, i, c)| (i, c)).collect()
+    }
+
     /// The main map (loader type 1), if the archive has one.
     pub fn main_map(&self) -> Option<usize> { self.maps.iter().position(|m| m.kind == 1) }
 

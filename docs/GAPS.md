@@ -17,5 +17,5 @@
 | G-016 | World assembly: place objects using map static data (block 0x1A, `parsemap_create_dynamic_objects`), cels, portals (0x21). Needed for a level viewer. | |
 | G-017 | Port `PS2Sinf3` (the game's sine approximation) so object matrices are bit-exact. | placement.md. |
 | G-018 | nf-view: per-object GS state (alpha blend/test, CLAMP, filtering from the first CNT's `DIRECT` A+D writes), animated textures, skinned meshes, sky, fog. Currently: alpha test at 0.5, repeat, bilinear. | U-021. |
-| G-019 | Sky: `View_DrawSky` (0x1e5ad0) draws the sky from its own `GfxList` entries; nf-view currently leaves it out with the other flag-0x10 cels. | U-025. |
+| G-019 | Sky: done in nf-view (type-0x2A placements, slot order, viewer-centred by glist flag bit 2; WORKLOG 0014). Remaining: lightning variants (parameter 1, random flicker), the rotating sky of 0x0700001B, GS blend/fog state of the sky pass. | |
 | G-011 | ghidra-mcp: `connect_instance` cannot select a second server over UDS on Windows ("no instance matching" while listing it), so ours runs on 8089 instead of RC2's. Report upstream or add a second bridge entry if both projects are needed at once. | WORKLOG 0004. |

@@ -42,3 +42,15 @@ A level archive's maps are parsed in archive order; objects are (PS2_GFX, follow
 hashcode resolves to its first occurrence in the archive. Instances = the main map's (loader type 1) placements,
 optionally only the 0x8000 cels. A batch's texture index refers to the texture list of the map its object comes from.
 All 36 level archives resolve every placement (golden `levels.tsv`): 2,531,353 triangles in total.
+
+## Sky objects (WORKLOG 0014)
+
+`parsemap_create_dynamic_objects` (0x1d04f0) switches on the placement's **object type = flags & 0xFF** (0x0F →
+`Drone_Create`, 0x28 sensor, 0x29 switch, 0x2A sky, …); its parameter block puts parameter k at +0x2C + 4k.
+Type 0x2A calls `View_AddSkyObj` (0x1e79a0): slot = parameter 0 (21 slots in `GfxList`, 0x40 bytes each), parameter 1
+≠ 0 = the lightning-flash variant of that slot (shown at random intervals from parameters 2/3), position/rotation from
+the record. `View_DrawSky` (0x1e5ad0) draws the slots in order before the world; glist flag bit 2 = drawn around the
+viewer (skyboxes, moons), otherwise at the stored position (distant silhouettes such as `Sky_Tower*`,
+`Skyline_Buildings`); level 0x0700001B rotates its sky. 74 sky placements on the disc.
+nf-view: sky pass first (slot order, no depth test or write; viewer-centred objects use the view without
+translation), then the world. Lightning variants and the rotating sky are not shown.

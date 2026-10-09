@@ -301,3 +301,14 @@ The user confirmed gameplay and approved stopping the mcp-pine bridge (node pid 
 - My first pass assumed `oDrone` positions might need a height offset; the render shows feet on the floor, but this
   is not verified against the game (U-026).
 - Edits that replaced `"…" => ` with text ending in `=>` (no space) had glued two CLI match arms; fixed with the editor.
+
+## 0014 — Sky pass (2026-10-08)
+
+- Read `View_DrawSky` (0x1e5ad0: 21 `GfxList` slots of 0x40 bytes, glist flag bit 2 = viewer-centred, lightning
+  alternates, rotating sky for 0x0700001B), `View_AddSkyObj` (0x1e79a0) and its caller
+  `parsemap_create_dynamic_objects` (0x1d04f0): the switch is on object type = placement flags & 0xFF; 0x2A = sky,
+  slot = parameter 0, parameter 1 = lightning variant. 74 sky placements on the disc (skyboxes, moons, mountains,
+  silhouettes).
+- `Level::sky_instances`; nf-view layers: sky pass first (no depth, slot order; viewer-centred objects with the
+  view matrix without translation), then the world; sky placements are removed from the `--all` world list.
+- 07000005 now shows the night sky, clouds, mountains and the `Sky_Tower*` roofs.
