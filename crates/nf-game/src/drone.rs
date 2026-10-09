@@ -2096,7 +2096,7 @@ pub enum PlayerImpact { Drone { drone: usize, part: i16, at: V3 }, World(V3) }
 
 /// A sound in the hearing list (`Sound_Play3D`: position, inner / outer radius, weight).
 #[derive(Clone, Copy, Debug)]
-pub struct Sound { pub pos: V3, pub inner: f32, pub outer: f32, pub weight: f32 }
+pub struct Sound { pub id: u32, pub pos: V3, pub inner: f32, pub outer: f32, pub weight: f32 }
 
 /// Anim states of the noise chain: turn (0x61) and a short look (0xB).
 const TURN: u16 = 0x61;
@@ -2277,9 +2277,11 @@ impl Drones {
         self.player_bullets = bullets;
     }
 
+    /// `Sound_Play3D` (0x1dd548) with the table's radii: the sound enters the hearing list for the next tick. Looped
+    /// sounds are never heard (`Sound_Alertness` skips them).
     pub fn play_sound(&mut self, pos: V3, h: nf_formats::sfx::SfxHearing) {
         if h.looped { return; }
-        self.sounds.push(Sound { pos, inner: h.inner, outer: h.outer, weight: h.weight });
+        self.sounds.push(Sound { id: h.id, pos, inner: h.inner, outer: h.outer, weight: h.weight });
     }
 
     /// Turns a switch channel on (callers and tests).
@@ -2347,18 +2349,32 @@ impl Drones {
         if !sounds.is_empty() {
             for dr in self.list.iter_mut().filter(|x| x.present && x.enabled && !x.corpse) {
                 if !dr.prop(d, 0x1f) || dr.state == state::GO_TO_GOAL { continue; }
+                // `Sound_Alertness` (0x1ddc48, read in the disassembly): per sound with weight within the outer radius
+                // (squared distances compared), weight × (1 inside the inner radius, else (outer − d) / (outer − inner)),
+                // summed; id 0x248 counts as weight 10 everywhere inside its outer radius; ids 0x11C / 0x11D are
+                // ignored on 07000009 / 0A. The "peak" is the running maximum of the sum and the loudest sound the one
+                // that raised it. The result is max(sum, 0) as a float.
+                use nf_formats::ps2float::{add_noguard, mul};
                 let (mut sum, mut peak, mut loudest) = (0f32, 0f32, None);
                 for snd in &sounds {
-                    let dd = ((snd.pos[0] - dr.pos[0]).powi(2) + (snd.pos[1] - dr.pos[1]).powi(2) + (snd.pos[2] - dr.pos[2]).powi(2)).sqrt();
-                    if snd.weight == 0.0 || dd > snd.outer { continue; }
-                    let c = if dd < snd.inner { snd.weight } else { snd.weight * (snd.outer - dd) / (snd.outer - snd.inner).max(1e-6) };
-                    sum += c;
-                    if c > peak { peak = c; loudest = Some(snd); }
+                    let (mut inner, mut weight) = (snd.inner, snd.weight);
+                    if weight == 0.0 { continue; }
+                    let dx = [snd.pos[0] - dr.pos[0], snd.pos[1] - dr.pos[1], snd.pos[2] - dr.pos[2]];
+                    let d2 = add_noguard(add_noguard(mul(dx[0], dx[0]), mul(dx[1], dx[1]), true), mul(dx[2], dx[2]), true);
+                    if mul(snd.outer, snd.outer) < d2 { continue; }
+                    let id = snd.id & 0xfffff;
+                    if (0x11c..0x11e).contains(&id) && matches!(d.level, 0x0700_0009 | 0x0700_000a) { continue; }
+                    if id == 0x248 { inner = snd.outer; weight = 10.0; }
+                    let dd = d2.sqrt();
+                    let f = if dd < inner { 1.0 } else { add_noguard(snd.outer, -dd, true) / add_noguard(snd.outer, -inner, true) };
+                    sum = add_noguard(sum, mul(f, weight), true);
+                    if peak < sum { peak = sum; loudest = Some(snd); }
                 }
                 dr.loudness = sum.max(0.0);
                 if dr.loudness <= 0.0 { continue; }
-                dr.sound_share = 0.01 * dr.loudness;
-                dr.alert = (dr.alert + dr.sound_share).min(1.0);
+                // `DroneFunc_HandleSoundAlerts` (0x148a30): share = 0.01 · loudness, added to alertness unclamped.
+                dr.sound_share = mul(dr.loudness, 0.01);
+                dr.alert = add_noguard(dr.alert, dr.sound_share, true);
                 if let Some(snd) = loudest {
                     if frame > dr.heard_frame + 60 || peak > dr.heard_peak {
                         dr.sound_pos = snd.pos;

@@ -8,7 +8,7 @@ use crate::elf::Elf;
 pub const RECORD: usize = 0x18;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SfxHearing { pub inner: f32, pub outer: f32, pub weight: f32, pub looped: bool }
+pub struct SfxHearing { pub id: u32, pub inner: f32, pub outer: f32, pub weight: f32, pub looped: bool }
 
 #[derive(Clone, Debug)]
 pub struct SfxTable { pub entries: Vec<SfxHearing> }
@@ -26,13 +26,14 @@ impl SfxTable {
         let b = Buf(bytes);
         let entries = (0..size / RECORD).map(|k| {
             let o = k * RECORD;
-            Ok(SfxHearing { inner: b.f32(o + 4)?, outer: b.f32(o + 8)?, weight: b.f32(o + 0xc)?, looped: b.u8(o + 0x14)? != 0 })
+            Ok(SfxHearing { id: k as u32, inner: b.f32(o + 4)?, outer: b.f32(o + 8)?, weight: b.f32(o + 0xc)?, looped: b.u8(o + 0x14)? != 0 })
         }).collect::<Result<_>>()?;
         Ok(SfxTable { entries })
     }
 
-    /// The hearing data of a sound as `Sound_Play3D` enters it: ids ≥ 0x60D (and unknown ids) weigh 0.
+    /// The hearing data of a sound as `Sound_Play3D` enters it (low 20 bits of the id): ids ≥ 0x60D get inner 10,
+    /// outer 20 and weight 0.
     pub fn get(&self, id: u32) -> SfxHearing {
-        self.entries.get(id as usize).copied().unwrap_or(SfxHearing { inner: 0.0, outer: 0.0, weight: 0.0, looped: false })
+        self.entries.get((id & 0xfffff) as usize).copied().map(|h| SfxHearing { id, ..h }).unwrap_or(SfxHearing { id, inner: 10.0, outer: 20.0, weight: 0.0, looped: false })
     }
 }

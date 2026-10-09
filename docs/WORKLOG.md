@@ -735,3 +735,28 @@ anim's follow-on (191, class 9) starts, Fade 300 ticks later, gone after the fad
 first hit, dies on the second (SpecialDeath, played as a normal death — deviation), raises 0x0A. New test
 `bond_kills_guards_with_two_torso_shots` (sister: shots over the head hit nothing). Nothing here is checked live yet
 (U-034). All tests pass (nf-game 11 unit + 9 ai_live + rng / trig / tuning; nf-formats 57 + 14 disc golden).
+
+## 0031 — Hearing exact to the disassembly; hearing checked live (2026-10-09)
+
+**Port**: `Sound_Alertness` read in the disassembly (the decomp showed an int cast that is not there: the loudness is
+`max.S(sum, 0)`, a float). Now ported as read: looped sounds never heard; squared distance against outer²; id 0x248 =
+weight 10 everywhere inside its outer radius; ids 0x11C / 0x11D ignored on 07000009 / 0A; the "peak" is the running
+maximum of the cumulative sum (not the loudest single sound); `HandleSoundAlerts` adds the share to alertness
+**unclamped**; chopped PS2 arithmetic. `SfxHearing` carries the id (`Sound_Play3D` keeps the low 20 bits; unknown ids
+get 10 / 20 / weight 0).
+
+**Live check** (PINE through the MCP bridge; 07000005 reloaded by `ResetMap_LevelToLoad` writes, Bond at the level
+start (104.95, 24.96, 108.83)): the hearing list (head 0x349b0c) held looped ambient sounds (0x85, 0x10B, weight 0).
+Borrowing the in-use entry 0x1FDDD70 — id 1, weight 75, inner 2, outer 30, 1 unit from the gate guard — the game
+zeroed the weight within the frame and the guard went Idle → Aware (0xA3) with `+0x510` loudness 75.0, `+0x514` share
+0.74999994 (the chopped 75 × 0.01 the port computes), alertness ≈ 0.7497, noise level `+0x43` = 2, then back to Idle.
+A second sound: noise level 3, Suspect (0xA4), then Idle and back to its post (no AlertToPosition). The entry was
+restored each time. `tools/trace/hear_inject.py` does the same from Python (it needs PINE to itself).
+
+**Divergence** (open, U-033): the port's guard, with the same sounds, sees Bond 15 frames into Aware (alertness 0.75
+→ sight range 24 × 2.5 = 60 > 44.6) and attacks; live it did not. The guard was drawn live (`obj+0xFC` = 2), so
+the look-around would play there. Per-frame live data is needed (the Python tracer could not connect while the
+MCP bridge held PINE).
+
+**Mistake**: a mistyped decimal address wrote 0 to `0x30D101` (byte 1 of the `ScriptCam` pointer, 0 in the level-start
+snapshot) instead of `IsWarmReset` 0x30D001; the level was reloaded right after. Session state only, nothing persisted.

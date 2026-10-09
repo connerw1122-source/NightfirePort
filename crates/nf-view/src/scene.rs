@@ -125,7 +125,7 @@ impl Sim {
         if let Some(w) = self.weapons.records.get(self.gun.weapon as usize) {
             let params = nf_game::gun::GunParams::from_record(w, 0);
             if self.gun.update(trigger, params) {
-                let sound = self.sfx.as_ref().map(|t| t.get(0x403)).unwrap_or(nf_formats::sfx::SfxHearing { inner: 0.0, outer: 0.0, weight: 0.0, looped: false });
+                let sound = self.sfx.as_ref().map(|t| t.get(0x403)).unwrap_or(nf_formats::sfx::SfxHearing { id: 0x403, inner: 0.0, outer: 0.0, weight: 0.0, looped: false });
                 self.drones.fire_player(&d, camera, look, self.gun.weapon, sound);
             }
         }

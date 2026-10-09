@@ -330,7 +330,7 @@ fn shot_sends_a_guard_through_the_noise_chain() {
         for _ in 0..30 { sim.tick(&d, &bond); }
         (sim.list[i].log.clone(), sim.list[i].state, sim.list[i].sound_share)
     };
-    assert_eq!(l.sfx.get(1), nf_formats::sfx::SfxHearing { inner: 2.0, outer: 30.0, weight: 75.0, looped: false });
+    assert_eq!(l.sfx.get(1), nf_formats::sfx::SfxHearing { id: 1, inner: 2.0, outer: 30.0, weight: 75.0, looped: false });
     let (log, st, share) = run(1, [99.0, 26.5, 140.0]);
     let heard: Vec<u8> = log.iter().filter(|(f, _)| *f >= 100).map(|(_, s)| *s).collect();
     assert_eq!(heard, [state::HEARD_NOISE, state::HEARD_NOISE_AWARE, state::IDLE], "log {log:x?}");
