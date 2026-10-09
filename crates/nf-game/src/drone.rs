@@ -740,6 +740,8 @@ pub struct Drones {
     pub rng: Rng,
     pub bullets: Vec<crate::bullet::Bullet>,
     pub health: crate::bullet::PlayerHealth,
+    /// Every hit on Bond: (tick, shooting drone, health lost).
+    pub player_hits: Vec<(u32, usize, f32)>,
     /// Impacts this tick (for effects).
     pub impacts: Vec<crate::bullet::BulletEvent>,
     /// Bond's previous position and the tick he started moving (`DoOpponentTargetting` +0x1DC / +0x1DD).
@@ -749,7 +751,7 @@ pub struct Drones {
 
 impl Drones {
     pub fn new(list: Vec<Drone>, rng: Rng) -> Drones {
-        Drones { list, frame: 0, los_cursor: 0, rng, bullets: Vec::new(), health: Default::default(), impacts: Vec::new(), prev_player: None, moved_since: None }
+        Drones { list, frame: 0, los_cursor: 0, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None }
     }
 
     /// One 60 Hz game tick: global vision (`DroneVision_ProcessDroneSight`), then each drone's control.
@@ -858,7 +860,11 @@ impl Drones {
         let vol = crate::bullet::PlayerVolume { feet: [player.pos[0], player.pos[1] - 0.4, player.pos[2]], height: 1.8, radius: 0.25 };
         for b in &mut self.bullets {
             if let Some(ev) = b.update(d.world, &vol, &mut self.rng) {
-                if let crate::bullet::BulletEvent::Player { damage, .. } = ev { self.health.pain(damage, DIFFICULTY, d.level); }
+                if let crate::bullet::BulletEvent::Player { damage, .. } = ev {
+                    let before = self.health.health;
+                    self.health.pain(damage, DIFFICULTY, d.level);
+                    self.player_hits.push((frame, b.owner, before - self.health.health));
+                }
                 self.impacts.push(ev);
             }
         }
