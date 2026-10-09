@@ -1,0 +1,11 @@
+[package]
+name = "nf-formats"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Readers for the on-disc formats of 007: Nightfire (PS2, NTSC-U SLUS-20579)"
+
+[dependencies]
+thiserror.workspace = true
+bytemuck.workspace = true
+anyhow.workspace = true

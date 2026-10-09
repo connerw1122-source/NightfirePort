@@ -1,0 +1,8 @@
+/target
+/work
+*.iso
+*.ISO
+*.elf
+*.ELF
+*.bin
+*.BIN

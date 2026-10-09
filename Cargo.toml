@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+# Product crates under crates/; dev-only tools under tools/ (product never depends on them).
+members = ["crates/nf-formats", "crates/nf-extract"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+bytemuck = { version = "1", features = ["derive", "min_const_generics", "extern_crate_alloc"] }
+
+[profile.dev]
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
