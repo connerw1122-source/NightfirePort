@@ -278,9 +278,10 @@ impl Sim {
         Some((i, (t.saturating_sub(a) + 1) as u32))
     }
 
-    /// The first-person gun's matrix (`Player_SetWeaponAnimObj` + `Player_PositionGun`): the view axes (left, up,
-    /// forward with pitch), at the eye + the weapon offset `+0xE0` (P2K (0.0283, 0.0755, −0.9026)) + the bob. With the
-    /// crosshair centred the pivot terms cancel. *Deviation*: the turn toward an off-centre crosshair is left out.
+    /// The first-person gun's matrix (`Player_SetWeaponAnimObj` + `Player_PositionGun` 0x1a3b40): the gun turns toward
+    /// the crosshair — pitch `cy·(π/6)`, yaw aspect·`cx·(π/6)` (G+0x50 / +0x54, zoom 1) — about the view-space point
+    /// (0, −0.2, 0.5): position = eye + (offset `+0xE0` + bob + (0, 0.2, −0.5))·R_gun + (0, −0.2, 0.5)·R_view. The
+    /// rotation order (`RotZYX`) and the yaw sign are *suggested*: the gun points along the turned forward.
     pub fn gun_matrix(&self) -> [[f32; 4]; 4] {
         let w = &self.weapons.records[self.gun.weapon as usize];
         let f = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
@@ -290,9 +291,18 @@ impl Sim {
         let left = [y.cos(), 0.0, -y.sin()];
         let up = [-pt.sin() * y.sin(), pt.cos(), -pt.sin() * y.cos()];
         let fwd = self.bond.look();
+        // The gun's axes: forward turned by the crosshair angles (right = −left), then left / up rebuilt.
+        let (cx, cy) = self.crosshair();
+        let (gy, gp) = (4.0 / 3.0 * cx * std::f32::consts::FRAC_PI_6, cy * std::f32::consts::FRAC_PI_6);
+        let gf = [0, 1, 2].map(|k| fwd[k] * gp.cos() * gy.cos() - left[k] * gp.cos() * gy.sin() + up[k] * gp.sin());
+        let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        let norm = |v: [f32; 3]| { let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-9); v.map(|x| x / n) };
+        let gl = norm(cross(up, gf));
+        let gu = cross(gf, gl);
         let h = self.bond.head();
-        let pos = [0, 1, 2].map(|k| h[k] + l[0] * left[k] + l[1] * up[k] + l[2] * fwd[k]);
-        [[left[0], left[1], left[2], 0.0], [up[0], up[1], up[2], 0.0], [fwd[0], fwd[1], fwd[2], 0.0], [pos[0], pos[1], pos[2], 1.0]]
+        let o = [l[0], l[1] + 0.2, l[2] - 0.5];
+        let pos = [0, 1, 2].map(|k| h[k] + o[0] * gl[k] + o[1] * gu[k] + o[2] * gf[k] - 0.2 * up[k] + 0.5 * fwd[k]);
+        [[gl[0], gl[1], gl[2], 0.0], [gu[0], gu[1], gu[2], 0.0], [gf[0], gf[1], gf[2], 0.0], [pos[0], pos[1], pos[2], 1.0]]
     }
 
     /// (sequence index, frame) the drone's playing script shows.

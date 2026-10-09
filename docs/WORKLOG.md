@@ -1024,3 +1024,9 @@ follow-on's `info+0xE` (0 after a snap turn), or 8 for `SetScript`); fading scri
 boxes (`palette`) — before, the hit boxes used the unaimed integer-frame pose while the mesh was aimed (user report:
 "hitboxes aren't following the animations"). nf-game: all tests pass. Not yet: root-motion blending, anim rotation
 (0x20000) for interrupted turns, script sound / event commands for drones, head tracking.
+
+## 0050 — The first-person gun follows the crosshair (2026-10-09)
+
+User report: the arm and gun should follow the auto-aim angle. `Player_SetWeaponAnimObj` / `Player_PositionGun`
+(research pass, docs/systems/player.md): gun angles pitch `cy·π/6`, yaw aspect·`cx·π/6`, pivot (0, −0.2, 0.5) in
+view space. Ported in `Sim::gun_matrix` (rotation order and yaw sign *suggested*); hidden with the free camera.
