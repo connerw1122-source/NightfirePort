@@ -43,7 +43,7 @@ fn main() -> Result<()> {
         "skins" => skins(&IsoImage::open(a(1)?)?),
         "gfx-skin-words" =>gfx_skin_words(&IsoImage::open(a(1)?)?),
         "gfx-boxes" => gfx_boxes(&IsoImage::open(a(1)?)?),
-        "gfx-export" =>gfx_export(&IsoImage::open(a(1)?)?, Path::new(a(2)?), args.get(3).map(String::as_str)),
+        "gfx-export" => gfx_export(&IsoImage::open(a(1)?)?, Path::new(a(2)?), args.get(3).map(String::as_str)),
         "bigf-extract" => bigf_extract(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?)),
         "symtab" => symtab(Path::new(a(1)?)),
         "drivingsym" => {
