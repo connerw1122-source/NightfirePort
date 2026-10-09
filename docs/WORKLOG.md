@@ -105,3 +105,21 @@ venvs; nothing of theirs is copied into the repo (licences: nightfire-re none �
   matching 'NightfirePort'" while listing it as available (UDS selection fails on Windows; the bridge's TCP fallback
   is fixed to 8089). Moved our server to 8089 (G-011).
 - PINE: PCSX2 ini now has `EnablePINE = true` but nothing listens on 28011 until PCSX2 restarts (pending).
+
+## 0005 — First live reads over PINE (2026-10-08)
+
+**Measured**
+- PCSX2 v2.8.2 (portable) answers PINE on 28011. The 32 bytes at `MapAnalogStick` (0x17f958) in RAM equal
+  ACTION.ELF's, so the running build is ours. `pine_get_info` (title/serial/CRC) times out mid-game; U-001's CRC
+  still open.
+- `GameState`+12 = 0x07000001 (first level; `HT_Level_HendersonA` per NightfireResearch, *suggested*).
+- Frame pacing snapshots (0x30c708..): `PS2FramesToSkip` −1 (5×) or 1 (1×), `PS2SkipCount` 0, time words
+  game 0x21–0x33, draw 0x22–0x26, frame 0x0f–0x12. Units are scanlines (timer 0 mode 0x83 set in `main`). U-012
+  closed; U-013 needs continuous sampling (below).
+
+**Failed / blocked**
+- Our own fast sampler (`tools/trace/pine.py`, `frame_pacing.py`) connects but never gets a reply: PCSX2's PINE
+  server serves one client at a time and the MCP bridge (mcp-pine) holds the connection (netstat: one ESTABLISHED
+  client, ours stuck in CLOSE_WAIT). Needs the bridge stopped while sampling (asked the user).
+- `GameCount` advanced only ~1 per MCP call, seconds apart — the emulator was not running gameplay at full speed
+  at the time (paused / menu / unfocused?). Re-measure once confirmed.

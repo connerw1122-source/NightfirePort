@@ -14,6 +14,6 @@ noting the WORKLOG entry here.
 | U-006 | ~~Are `FileList` sizes padded?~~ Yes, sector-padded, and the loader passes that size on as the length; inner lengths are per format (docs/formats/files-bin.md). | — | closed (0003) |
 | U-010 | Pad buffer layout: data[4..7] = RX, RY, LX, LY and the button bits (assumed from libpad). | PCSX2 PINE read of `tSlot`+0x124 while pressing known buttons/sticks. | open |
 | U-011 | Names of the 40 `GameActions` (only 0–6 identified by use). | Cross-reference every `Input_Action[f]` call site; menu/options strings. | open |
-| U-012 | Units of `PS2GameCodeTimeW`/`PS2DrawCodeTimeW`/`PS2DrawFrameTimeW` (threshold 262.5 — scanlines?). | Find where they are written (RCNT reads). | open |
+| U-012 | ~~Units of the frame-time words?~~ EE timer 0 ticks; `main` sets `REG_RCNT0_MODE = 0x83` (CLKS 3 = H-blank, *suggested* register semantics), so scanlines; 262.5 = one NTSC field. Live in level 0x07000001: game ≈ 33–51, draw ≈ 34–38 scanlines (WORKLOG 0005). | — | closed (0005) |
 | U-013 | In real gameplay, how often does the game run at 30 vs 60 Hz (`PS2FramesToSkip` 2 vs 1)? NightfireResearch/press say PS2 is 30 fps (*suggested*, unmeasured). | PINE-sample `PS2FramesToSkip` (0x30c70c) during gameplay in several levels. | open |
 | U-014 | Which `GameState`+12 values are levels (0x07000048 forces 4-player input mapping). | Map against FileList names / NightfireResearch hashcode list. | open |

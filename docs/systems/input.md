@@ -97,8 +97,11 @@ LX/RY beyond ±0.5 (menu navigation); action 38 (0xac) fires when LX < −0.8, R
 ## 6. Frame pacing and the logic tick — `main` 0x109080, `GS_SetRefreshRate` 0x17d2b8 (*measured*)
 
 - `VBlankInt` (0x124088) counts vblanks (`VBlankCount`); `PS2FrameRate` = 60.
-- Each main-loop pass: `PS2FramesToSkip = VBlankCount − GameCount`, clamped to 1..2; if game+draw time exceeds
-  262.5 (units TBD, UNKNOWNS U-012) the skip is forced to 2 for the next 10 passes. Then
+- Each main-loop pass: `PS2FramesToSkip = VBlankCount − GameCount`; while it is negative the loop waits (the update
+  finished early); then it is clamped to 1..2. If game+draw time exceeds 262.5 scanlines (EE timer 0 in H-blank mode,
+  `REG_RCNT0_MODE = 0x83`; one NTSC field) — or the draw alone does — the skip is forced to 2 for the next 10 passes.
+  Live (PINE, level 0x07000001, WORKLOG 0005): snapshots show skip −1 (waiting) or 1, game ≈ 33–51 + draw ≈ 34–38
+  scanlines, i.e. well under one field. Then
   `GS_SetRefreshRate(60 / skip)` sets `FRAME_RATE = 60 or 30`, `FRAME_RATE_MUL = 60 / FRAME_RATE` (1 or 2),
   `REC_FRAME_RATE = 1/FRAME_RATE`, and `GameFlow_Main` runs **one** update.
 - So the game logic is **variable-step**: one update per 1 or 2 vblanks, scaled by `FRAME_RATE_MUL`. During a
