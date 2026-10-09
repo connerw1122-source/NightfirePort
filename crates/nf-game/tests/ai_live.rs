@@ -807,3 +807,32 @@ fn surrendered_guard_killed_keeps_a_pose() {
     assert!(log.contains(&state::DEATH_ANIM), "{log:x?}");
     assert!(missing.is_empty(), "{} ticks without a pose, first {:x?}", missing.len(), missing.first());
 }
+
+/// The leaves' GS state (docs/systems/render.md): the `DIRECT` A+D writes set only ALPHA_1 (0x42), TEST_1 (0x47) and
+/// ZBUF_1 (0x4E); TEST_1 is 0x5001B (alpha ≥ 1 passes) on almost all leaves; additive ALPHA (0x7F_00000048) exists
+/// (glows, coronas). Sister: a register outside the three would fail.
+#[test]
+fn leaf_gs_state_matches_the_research() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let mut counts: std::collections::BTreeMap<(u8, u64), usize> = Default::default();
+    let mut leaves = 0;
+    for m in &l.level.maps { for o in &m.objects { for lf in &o.gfx.leaves { leaves += 1; for &(r, v) in &lf.gs { *counts.entry((r, v)).or_default() += 1; } } } }
+    for ((r, v), n) in &counts { eprintln!("reg {r:#04x} = {v:#x}: {n}"); }
+    eprintln!("{leaves} leaves");
+    assert!(counts.keys().all(|(r, _)| matches!(r, 0x42 | 0x47 | 0x4e)), "only ALPHA_1 / TEST_1 / ZBUF_1");
+    assert!(counts.get(&(0x47, 0x5001b)).copied().unwrap_or(0) > 600);
+    assert!(counts.contains_key(&(0x42, 0x7f_0000_0048)));
+}
+
+#[test]
+#[ignore]
+fn alpha_survey() {
+    let Some(l) = Level05::load() else { return };
+    let mut va: std::collections::BTreeMap<u8, usize> = Default::default();
+    let mut ta: std::collections::BTreeMap<u8, usize> = Default::default();
+    let m = l.level.main_map().unwrap();
+    for o in &l.level.maps[m].objects { for lf in &o.gfx.leaves { for b in &lf.batches { for v in &b.verts { *va.entry(v.rgba[3] & 0xf0).or_default() += 1; } } } }
+    for t in &l.level.maps[m].textures { for c in &t.palette { *ta.entry(c[3] & 0xf0).or_default() += 1; } }
+    eprintln!("vertex alpha (high nibble): {va:?}");
+    eprintln!("palette alpha (high nibble): {ta:?}");
+}

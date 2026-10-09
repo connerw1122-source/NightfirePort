@@ -36,8 +36,31 @@ pub enum Layer {
     Effect,
 }
 
+/// How a material is drawn (docs/systems/render.md): the pass (0 sky before the world, fogged; 1 world list 0;
+/// 2 characters; 3 world list 1 — glist flag 0x1, alpha list, faded; 4 sky after the fog pass; 5 effects), the GS
+/// blend from ALPHA_1 (0 normal (Cs − Cd)·As + Cd, 1 additive Cs·As + Cd, 2 subtractive Cd − Cs·As), depth write
+/// (ZBUF_1 ZMSK clear), the alpha test from TEST_1 (0 none, 1 As ≥ 1, 2 As > 0x7F) and the fog (0 none, 1 depth fog,
+/// 2 alpha fade with distance).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Draw { pub pass: u8, pub blend: u8, pub zwrite: bool, pub atest: u8, pub fog: u8 }
+
+impl Draw {
+    /// From a leaf's GS registers (ALPHA_1, TEST_1, ZBUF_1 as last written).
+    fn from_gs(pass: u8, fog: u8, alpha: u64, test: u64, zbuf: u64) -> Draw {
+        let blend = match alpha & 0xff { 0x48 => 1, 0x42 => 2, _ => 0 };
+        let atest = if test & 1 == 0 { 0 } else {
+            let (atst, aref) = ((test >> 1) & 7, (test >> 4) & 0xff);
+            match atst { 5 if aref <= 1 => 1, 6 | 5 => 2, 0 => 0, _ => 1 }
+        };
+        Draw { pass, blend, zwrite: zbuf >> 32 & 1 == 0, atest, fog }
+    }
+}
+
 pub struct Material {
     pub layer: Layer,
+    pub draw: Draw,
+    /// The object's world centre (draw-order sort).
+    pub centre: [f32; 3],
     /// `(map, texture)`; `None` = untextured.
     pub key: Option<(usize, u32)>,
     pub first_index: u32,
@@ -358,6 +381,8 @@ pub struct Scene {
     pub textures: Vec<TextureImage>,
     /// The first-person gun (`Player_SetWeaponAnim`: `AnimObjectNew(G, weapon+0xDC)`): its character index.
     pub view_model: Option<usize>,
+    /// The level's fog (`psiPreGameRun` 0x11e2e8: colour, `Ps2Far1`; `None` = `FogOn` 0).
+    pub fog: Option<([u8; 3], f32)>,
     /// The HUD's textures by hash (docs/systems/hud.md), from any map of the archive, and its tables from ACTION.ELF.
     pub hud_textures: Vec<(u32, TextureImage)>,
     pub hud: Option<nf_formats::hud::HudTables>,
@@ -377,16 +402,53 @@ pub struct Scene {
     pub sim: Option<Sim>,
 }
 
-type Groups = BTreeMap<(Layer, Option<(usize, u32)>), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>)>;
+/// `psiPreGameRun` (0x11e2e8, read): per level the fog colour and `Ps2Far1`; `FogOn` only on these levels.
+pub fn fog_for(level: u32) -> Option<([u8; 3], f32)> {
+    Some(match level {
+        0x0700_0002 => ([0x24, 0x2e, 0x4c], 9_987_520.0),
+        0x0700_0004 => ([0x11, 0x15, 0x21], 9_379_776.0),
+        0x0700_0005 => ([0x3a, 0x4d, 0x68], 19_118_528.0),
+        0x0700_0006 => ([0x2e, 0x3c, 0x52], 8_059_232.0),
+        0x0700_0008 => ([0x3b, 0x50, 0x69], 13_191_350.0),
+        0x0700_000c => ([0xd1, 0xd5, 0xd6], 20_475_840.0),
+        0x0700_000d => ([0x92, 0x85, 0x69], 19_707_840.0),
+        _ => return None,
+    })
+}
+
+/// Grouped by layer, then (world layers) the object — the game sorts cels per object (`View_AddCels`) — then texture
+/// and draw state. The value keeps the object's world centre for the per-frame sort.
+type Groups = BTreeMap<(Layer, [u32; 3], u32, Option<(usize, u32)>, Draw), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3])>;
 
 fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>) {
     let obj = &level.maps[inst.map].objects[inst.object];
     let mut m = inst.matrix;
     if layer == Layer::SkyCamera { m[3] = [0.0, 0.0, 0.0, 1.0]; }
     let mut bounds = bounds;
-    for b in obj.gfx.leaves.iter().flat_map(|l| &l.batches) {
+    // The pass and fog by layer: sky slots with placement parameter 4 = 1 go before the world (fogged), others after
+    // the fog pass; world objects with glist flag 0x1 are in the alpha list (list 1).
+    let param4 = inst.placement.params.iter().find(|(i, _)| *i == 4).map(|&(_, v)| v).unwrap_or(0);
+    let (pass, fog) = match layer {
+        Layer::SkyCamera | Layer::SkyFixed => if param4 == 1 { (0, 1) } else { (4, 0) },
+        Layer::World => if obj.flags & 1 != 0 { (3, 2) } else { (1, 1) },
+        Layer::Character => (2, 1),
+        Layer::Effect => (5, 0),
+    };
+    // The object's world centre (glist sphere centre through the instance matrix) for the draw-order sort; world layers
+    // keep each object apart.
+    let centre = transform(&inst.matrix, obj.centre);
+    let ikey = if matches!(layer, Layer::World) { centre.map(f32::to_bits) } else { [0; 3] };
+    // GS state: each leaf's `DIRECT` writes, inherited by the leaves that send none.
+    let (mut alpha, mut test, mut zbuf) = (0x44u64, 0x5001bu64, 0x3100_0000u64);
+    for (li, leaf) in obj.gfx.leaves.iter().enumerate() {
+    // World objects draw their leaves in order (a leaf's soft-edged overlay comes after what it covers).
+    let lkey = if matches!(layer, Layer::World) { li as u32 } else { 0 };
+    for &(r, v) in &leaf.gs { match r { 0x42 => alpha = v, 0x47 => test = v, 0x4e => zbuf = v, _ => {} } }
+    let draw = Draw::from_gs(pass, fog, alpha, test, zbuf);
+    for b in &leaf.batches {
         let key = b.texture.filter(|&t| (t as usize) < level.maps[inst.map].textures.len()).map(|t| (inst.map, t));
-        let (vs, is, cv) = groups.entry((layer, key)).or_default();
+        let (vs, is, cv, c) = groups.entry((layer, ikey, lkey, key, draw)).or_default();
+        *c = centre;
         let base = vs.len() as u32;
         for v in &b.verts {
             let p = transform(&m, v.pos);
@@ -400,6 +462,7 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
             if let Some((c, attachment)) = character { cv.push(CharVertex { character: c, pos: v.pos, weight: v.weight, slots: v.slots, attachment }); }
         }
         for t in b.triangles() { is.extend(t.map(|k| base + k as u32)); }
+    }
     }
 }
 
@@ -497,6 +560,8 @@ impl Scene {
         for inst in &instances {
             let obj = &level.maps[inst.map].objects[inst.object];
             if inst.placement.creates_cel() && obj.skipped_by_cel_pass() { hidden += 1; continue; }
+            // Debug: `NF_HIDE=name,name` leaves out world objects whose name contains one of them.
+            if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && obj.name.contains(n)) { continue; } }
             add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds));
         }
         let mut characters = Vec::new();
@@ -608,11 +673,11 @@ impl Scene {
         }
         let (mut vertices, mut indices, mut materials, mut char_verts) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut char_vertex_start = None;
-        for ((layer, key), (vs, is, cv)) in groups {
+        for ((layer, _, _, key, draw), (vs, is, cv, centre)) in groups {
             if is.is_empty() { continue; }
             if matches!(layer, Layer::Character | Layer::Effect) && char_vertex_start.is_none() { char_vertex_start = Some(vertices.len()); }
             let base = vertices.len() as u32;
-            materials.push(Material { layer, key, first_index: indices.len() as u32, index_count: is.len() as u32 });
+            materials.push(Material { layer, draw, centre, key, first_index: indices.len() as u32, index_count: is.len() as u32 });
             indices.extend(is.iter().map(|i| i + base));
             vertices.extend(vs);
             char_verts.extend(cv);
@@ -671,7 +736,8 @@ impl Scene {
             drones.attach_level(level);
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false })
         });
-        Scene { vertices, indices, materials, textures, hud_textures, hud, view_model, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
+        let fog = drones.and_then(|d| fog_for(d.level_id));
+        Scene { vertices, indices, materials, textures, hud_textures, hud, view_model, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the

@@ -1068,3 +1068,20 @@ before its last frame; ported. `SetWalkIdleAnim` (0x13cc70): 07000014 asks for 0
 as G-030: the exact `AnimObjectAimAt` (0x1bfe58: yaw about the spine and pitch so the weapon datum line passes the
 target, clamps ±0.9, smoothing `+0x74`, applied to bone 2's quaternion inside `psiBuildMatrixPalette`; several input
 vectors are stack slots the decompiler lost — needs the disassembly) and `AnimObjectHeadTrack` (bone 5).
+
+## 0055 — Render subsystem I: per-leaf GS state, fog, pass and draw order, output gain (2026-10-09)
+
+Spec: docs/systems/render.md (research pass; the fog table re-read here in `psiPreGameRun` 0x11e2e8, exact).
+**Ported**: `Leaf::gs` decodes each packet's `DIRECT` A+D writes (test `leaf_gs_state_matches_the_research`: over
+07000005 only ALPHA_1 / TEST_1 / ZBUF_1; TEST 0x5001B on 689 leaves, 0x507FD on 2; additive ALPHA on 131, subtractive
+on 2; depth write 570 / 150 — the research counts exactly). nf-view: a `Draw` per material (pass, blend, depth write,
+alpha test, fog) from the inherited leaf state, the glist flag 0x1 (alpha list) and the sky slot's parameter 4;
+pipelines per draw state (shader overrides); the depth fog per pixel with the game's formula (zb = N1 + (F1 − N1)·n·
+(f/d − 1)/(f − n), fog beyond zb < 32767, ⌊zb/256⌋/128), the alpha list's distance fade, the frame cleared to the fog
+colour; the pass order (pre-world sky, list 0, characters, list 1, post-fog sky pinned behind everything, effects);
+draws per object and leaf, list 0 sorted front to back and list 1 back to front each frame (`View_AddCels`); every
+output × 0x91/0x80 (the display copy's gain, linear so equal to scaling the frame). **Failed first**: merging all
+objects by texture blended the soft-edged snow overlays (9,237 vertices with alpha ≈ 0 on 07000005) against whatever
+was drawn before them — usually the cleared background, a pale wash; per-object, per-leaf order fixed it. Not yet:
+snow, environment mapping, billboards / jitter (glist flags 0x8 / 0x4), animated textures, dynamic lights,
+`GlobalBlur`, the bilinear 7/16 display filter.

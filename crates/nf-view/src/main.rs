@@ -109,6 +109,14 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
         hud: nf_formats::hud::HudTables::from_action_elf(&elf).map_err(|e| eprintln!("HUD tables: {e}")).ok(),
     };
     let scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));
+    if std::env::var("NF_DRAWS").is_ok() {
+        let mut c: std::collections::BTreeMap<String, (usize, u32)> = Default::default();
+        for m in &scene.materials { let e = c.entry(format!("{:?} {:?}", m.layer, m.draw)).or_default(); e.0 += 1; e.1 += m.index_count / 3; }
+        for (k, (n, t)) in c { eprintln!("{k}: {n} materials, {t} triangles"); }
+        let mut names: std::collections::BTreeMap<String, usize> = Default::default();
+        for inst in level.instances(!all).0 { let o = &level.maps[inst.map].objects[inst.object]; if o.flags & 1 != 0 { *names.entry(format!("{} flags {:#x}", o.name.trim(), o.flags)).or_default() += 1; } }
+        for (k, n) in names { eprintln!("list 1: {k} x{n}"); }
+    }
     eprintln!("{archive} (+ {anim_name}): {}", scene.stats);
     Ok(scene)
 }
@@ -140,7 +148,7 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let view = target.create_view(&Default::default());
     let depth = gpu::depth_view(&device, w, h);
     let (vp, vp_rot) = cam.view_proj(w as f32 / h as f32);
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, &hud::overlay(scene, w as f32 / h as f32));
+    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), &hud::overlay(scene, w as f32 / h as f32));
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -345,7 +353,7 @@ impl ApplicationHandler for App {
                 let view = frame.texture.create_view(&Default::default());
                 let aspect = g.config.width as f32 / g.config.height as f32;
                 let (vp, vp_rot) = self.cam.view_proj(aspect);
-                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, &hud::overlay(&self.scene, aspect));
+                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, self.cam.pos.to_array(), &hud::overlay(&self.scene, aspect));
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
                 g.window.request_redraw();

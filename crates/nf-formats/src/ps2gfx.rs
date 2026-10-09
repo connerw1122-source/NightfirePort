@@ -77,6 +77,9 @@ pub struct Leaf {
     pub batches: Vec<Batch>,
     /// Kicks whose header was sent without vertex data (the first CNT of every packet).
     pub setup_kicks: u32,
+    /// GS registers the packet's `DIRECT` A+D writes set (register, value) — in 07000005 only ALPHA_1 (0x42), TEST_1
+    /// (0x47) and ZBUF_1 (0x4E) (docs/systems/render.md). Empty: the leaf inherits the previous leaf's state.
+    pub gs: Vec<(u8, u64)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -218,7 +221,7 @@ pub fn decode_packet(block: &[u8], at: usize, skin_src: Option<usize>) -> Result
     let b = Buf(block);
     let mut vu = Vu { mem: vec![[0; 4]; VU1_QWORDS], gen: vec![0; VU1_QWORDS], cur: 1, cl: 1, wl: 1, header: None };
     let mut texture = None;
-    let (mut batches, mut setup_kicks) = (Vec::new(), 0u32);
+    let (mut batches, mut setup_kicks, mut gs) = (Vec::new(), 0u32, Vec::new());
     let mut p = at;
     for _ in 0..1 << 16 {
         let lo = b.u32(p)? as u64 | (b.u32(p + 4)? as u64) << 32;
@@ -232,6 +235,23 @@ pub fn decode_packet(block: &[u8], at: usize, skin_src: Option<usize>) -> Result
                     match pk.cmd {
                         STCYCL => { vu.cl = (pk.imm & 0xff) as u32; vu.wl = (pk.imm >> 8) as u32; }
                         MSCNT | MSCAL | MSCALF => match vu.kick(texture, skin_src.is_some())? { Some(batch) => batches.push(batch), None => setup_kicks += 1 },
+                        // A GIF packet straight to the GS: tag (NLOOP, FLG, NREG, REGS); in PACKED A+D (register 0xE) each
+                        // qword is a 64-bit value and a register number.
+                        crate::vif::DIRECT | crate::vif::DIRECTHL => {
+                            let d = pk.data;
+                            if d.len() >= 16 {
+                                let tag = u64::from_le_bytes(d[0..8].try_into().unwrap());
+                                let regs = u64::from_le_bytes(d[8..16].try_into().unwrap());
+                                let (nloop, flg, nreg) = ((tag & 0x7fff) as usize, (tag >> 58) & 3, ((tag >> 60) & 0xf) as usize);
+                                if flg == 0 && nreg == 1 && regs & 0xf == 0xe {
+                                    for k in 0..nloop {
+                                        let o = 16 + 16 * k;
+                                        if o + 16 > d.len() { break; }
+                                        gs.push((d[o + 8], u64::from_le_bytes(d[o..o + 8].try_into().unwrap())));
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -257,7 +277,7 @@ pub fn decode_packet(block: &[u8], at: usize, skin_src: Option<usize>) -> Result
                 }
                 p += 16;
             }
-            6 => return Ok(Leaf { box_index: 0, batches, setup_kicks }),
+            6 => return Ok(Leaf { box_index: 0, batches, setup_kicks, gs }),
             _ => return invalid(format!("DMA tag id {id} at {p:#x}")),
         }
     }
