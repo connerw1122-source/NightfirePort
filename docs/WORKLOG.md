@@ -981,3 +981,16 @@ per-texture runs (six HUD textures from the level archive) and an additive pass:
 (seven segments coloured by health, the ring) and armour segments; the damage glow (both sides: the hit direction is
 not tracked); "clip-spare" in font 2 with its shadow and the rounds strip over the empty strip. The stand-in bars are
 gone. Not yet: weapon name / fire-mode text and pickup messages (language strings), icons.
+
+## 0047 — Crosshair, reload, HUD anchoring fixes (2026-10-09)
+
+User reports, all fixed: (1) with auto-aim off the crosshair stayed where the last lock left it — the offsets now
+halve every tick regardless (`Player_AutoAim`). (2) / (3) no reload animation and the slide left back: on the last
+round the shot and the reload started in the same tick and the fire script won, so the locked-back last-round fire
+frame held. `Player_WeaponFiring` (read): a reload starts with action 14 (R2) or with the trigger released and no round
+to fire, only while the gun is idle (gun state 0, i.e. the fire script done) — `Gun::update_with(pressed, reload,
+busy)`; the reload script plays (from frame 6 at 1.35), then the idle script. R = reload in nf-view. (4) "guards respawn
+in T-poses": R used to be the debug toggle drawing held-back spawner templates (bind pose); moved to F3 (no unposed
+present drone found headless with every channel on — `--channels` prints any). (5) the damage glow covered only the
+centred 4:3 box: HUD sprites are now anchored (health left, ammo right, crosshair centre, full-screen stretched)
+with 4:3 pixels at the window height.

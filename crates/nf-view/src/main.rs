@@ -9,7 +9,7 @@
 //!
 //! Controls: click to capture the mouse; mouse = look (raw deltas → yaw/pitch, no acceleration), WASD = move,
 //! Space / Ctrl = up / down, Shift = fast, [ / ] = browse sequences ([ from the first returns to the game's start
-//! animations), P = pause, F = firing demo for drones without AI, R = show held-back drones (spawner reinforcements, drones waiting
+//! animations), P = pause, F = firing demo for drones without AI, R = reload, F3 = show held-back drones (spawner reinforcements, drones waiting
 //! for a switch), K = turn all switch channels on, F12 = screenshot.
 //! The guard AI (nf-game) runs at 60 Hz with the camera as Bond; `--frame N` runs N ticks before a `--shot`, pressing
 //! the trigger on the `--pull` ticks.
@@ -183,7 +183,7 @@ struct App {
     choice: Option<usize>,
     anim_time: f32,
     paused: bool,
-    /// R = show held-back drones (reinforcements, drones waiting for a switch), F = make armed drones fire.
+    /// F3 = show held-back drones (reinforcements, drones waiting for a switch), F = make armed drones fire.
     opts: scene::ViewOpts,
     /// N: the free camera instead of Bond. Keys pressed since the last game tick (jump, crouch), and the mouse turn
     /// (radians) and look (units of π/2) not yet given to a tick.
@@ -267,7 +267,7 @@ impl ApplicationHandler for App {
                         if let Some(g) = &self.gfx { g.window.set_title(&format!("nf-view — {}", self.scene.sequence_label(self.choice))); }
                     }
                     (KeyCode::KeyP, ElementState::Pressed) => self.paused = !self.paused,
-                    (KeyCode::KeyR, ElementState::Pressed) => self.opts.reinforcements = !self.opts.reinforcements,
+                    (KeyCode::F3, ElementState::Pressed) => self.opts.reinforcements = !self.opts.reinforcements,
                     (KeyCode::KeyF, ElementState::Pressed) => self.opts.firing = !self.opts.firing,
                     (KeyCode::KeyN, ElementState::Pressed) => {
                         self.noclip = !self.noclip;
@@ -315,7 +315,7 @@ impl ApplicationHandler for App {
                                 crouch: self.just.remove(&KeyCode::KeyC) | self.just.remove(&KeyCode::ControlLeft),
                                 aiming: self.aiming,
                             };
-                            sim.step_bond(input, self.trigger);
+                            sim.step_bond(input, self.trigger, self.just.remove(&KeyCode::KeyR));
                         }
                         if !self.noclip {
                             let h = sim.bond.head();
@@ -390,10 +390,13 @@ fn main() -> Result<()> {
             };
             // Without `--cam`, Bond stands at the start and the camera is his eye (the first-person gun shows).
             let walk = !args.iter().any(|a| a == "--cam");
+            // `--channels`: every switch channel on first (as K).
+            if args.iter().any(|a| a == "--channels") { for c in 1..=255 { sim.drones.set_channel(c) } }
             for t in 1..=time as u32 {
-                if walk { sim.step_bond(Default::default(), pulls.contains(&t)); } else { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
+                if walk { sim.step_bond(Default::default(), pulls.contains(&t), false); } else { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
             }
             if walk { let h = sim.bond.head(); cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2 }; }
+            for u in sim.unposed(&scene.characters) { eprintln!("unposed: {u}"); }
             for p in &sim.drones.pickups { eprintln!("pickup: weapon {:#x}, {} rounds at {:?}", p.weapon, p.rounds, &p.m[3][..3]); }
             if let Some(dr) = sim.drones.list.iter().find(|d| !d.shots.is_empty() || d.state != 4) {
                 eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);

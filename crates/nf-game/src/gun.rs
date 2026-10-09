@@ -53,22 +53,37 @@ impl Gun {
     /// Bond's start on 07000005 (`Player_InitWeapon`): weapon 2 with 7 in the clip and 41 spare [L].
     pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reloading: 0 } }
 
-    /// One tick with the trigger (action 9) `pressed`; true when a shot leaves the gun this tick. A fresh press with the
-    /// timer run out arms `shots_per_pull` shots and sets the timer to 1; the timer falls by `FRAME_RATE_MUL` (1) per
-    /// tick; a shot needs the timer at 0 or below, a shot left in the pull and a round in the clip (`Player_RoundToFire`),
-    /// and sets the timer to max(interval, 1). An empty clip reloads from the spare rounds.
-    pub fn update(&mut self, pressed: bool, p: GunParams) -> bool {
+    /// One tick with the trigger (action 9) `pressed` (no reload key, gun idle).
+    pub fn update(&mut self, pressed: bool, p: GunParams) -> bool { self.update_with(pressed, false, false, p) }
+
+    /// One tick (`Player_WeaponFiring` 0x1a5460): `reload` = action 14 pressed (R2: activate, else reload),
+    /// `busy` = the gun's animation state is not idle (a fire script still playing). A fresh press with the timer run
+    /// out arms `shots_per_pull` shots and sets the timer to 1; the timer falls by `FRAME_RATE_MUL` (1) per tick; a shot
+    /// needs the timer at 0 or below, a shot left in the pull and a round in the clip (`Player_RoundToFire`), and sets
+    /// the timer to max(interval, 1). A reload (`Player_ReloadAmmoType`) starts with the reload key, or with the trigger
+    /// released and no round to fire — only while the gun is idle and there are spare rounds; the rounds move when it
+    /// ends.
+    pub fn update_with(&mut self, pressed: bool, reload: bool, busy: bool, p: GunParams) -> bool {
         if self.reloading > 0 {
             self.reloading -= 1;
             // `Player_ReloadAmmoType(…, 0)`: the missing rounds, or one with flag 0x100.
             if self.reloading == 0 { let n = (p.clip - self.clip).min(self.spare).min(if p.one_at_a_time { 1 } else { u32::MAX }); self.clip += n; self.spare -= n; }
+            self.held = pressed;
+            return false;
+        }
+        let can_reload = !busy && self.spare > 0 && self.clip < p.clip;
+        if can_reload && (reload || (!pressed && self.clip < p.ammo_per_shot)) {
+            self.reloading = p.reload_ticks.max(1);
+            self.pending = 0;
+            self.held = pressed;
+            return false;
         }
         if !pressed { self.pending = 0; }
         if pressed && !self.held && self.timer <= 0.0 { self.pending = p.shots_per_pull; self.timer = 1.0; }
         self.held = pressed;
         self.timer -= 1.0;
         let mut fired = false;
-        if self.timer <= 0.0 && self.reloading == 0 {
+        if self.timer <= 0.0 {
             self.pending -= 1;
             if self.pending >= 0 {
                 if self.clip >= p.ammo_per_shot {
@@ -78,7 +93,6 @@ impl Gun {
                 } else { self.pending = 0; }
             } else { self.pending = 0; }
         }
-        if self.clip < p.ammo_per_shot && self.spare > 0 && self.reloading == 0 { self.reloading = p.reload_ticks.max(1); }
         fired
     }
 }
@@ -105,7 +119,8 @@ mod tests {
         // Sister: an empty clip does not fire, then reloads.
         let mut g = Gun::new(2, 0, 41);
         assert!(!g.update(true, p));
-        for _ in 0..p.reload_ticks { g.update(false, p); }
+        // Released: the reload starts, the rounds move when it ends.
+        for _ in 0..=p.reload_ticks { g.update(false, p); }
         assert_eq!((g.clip, g.spare), (7, 34));
     }
 }

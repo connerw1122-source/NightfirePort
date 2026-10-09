@@ -734,3 +734,32 @@ fn hud_tables_match_the_snapshot() {
     eprintln!("'7-41' width {w1}, gap {}, space {}", h.font.gap, h.font.space);
     assert!(w1 > w2);
 }
+
+/// Drones a spawner brings in (all switch channels on, as nf-view's K) have an animation script once present — a
+/// drone without one is drawn in its bind pose (the "T-pose" reinforcements).
+#[test]
+fn spawned_drones_animate() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, _, rng) = l.drones(None, 61.342);
+    let mut sim = l.sim(drones, rng);
+    let away = bond_at([0.0, -500.0, 0.0]);
+    let before: Vec<bool> = sim.list.iter().map(|x| x.present).collect();
+    for c in 1..=255u8 { sim.set_channel(c); }
+    for _ in 0..600 { sim.tick(&d, &away); }
+    let mut bad = Vec::new();
+    for (i, dr) in sim.list.iter().enumerate() {
+        if dr.present && !before[i] {
+            eprintln!("spawned {i} placement {} state {:#x} anim {:x?}", dr.placement, dr.state, (dr.anim.danim, dr.anim.script, dr.anim.state));
+            if dr.anim.script.is_none() { bad.push(i); continue; }
+            let sc = &l.scripts[&dr.anim.script.unwrap()];
+            let skel = l.level.skins.get(&dr.skin).map(|s| s.skeleton);
+            for (a, b, q) in sc.sequences() {
+                let seq = l.sequences.get(&q);
+                eprintln!("  seq {a}-{b} {q:08x}: {:?} (skin skeleton {skel:?})", seq.map(|x| (x.skeleton, x.frames)));
+                if seq.is_none_or(|x| Some(x.skeleton) != skel) { bad.push(i); }
+            }
+        }
+    }
+    assert!(bad.is_empty(), "no script: {bad:?}");
+}

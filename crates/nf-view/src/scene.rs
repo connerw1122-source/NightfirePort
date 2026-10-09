@@ -139,14 +139,14 @@ impl Sim {
     /// `trigger`: the fire button (action 9) held; `aiming`: aim mode (L1).
     pub fn step(&mut self, camera: [f32; 3], look: [f32; 3], trigger: bool, aiming: bool) {
         let floor = self.world.floor_below(camera, 4.0).unwrap_or(camera[1] - 1.6);
-        self.run([camera[0], floor + 0.4, camera[2]], camera, look, look, trigger, aiming);
+        self.run([camera[0], floor + 0.4, camera[2]], camera, look, look, trigger, aiming, false);
     }
 
     /// One game tick with Bond walking (`Player_Update`): his input, then the world with him as the player. In aim
     /// mode the mouse turn and look (`input.turn` radians, `input.look` units of π/2) first move the cursor within the
     /// aim box (±0.296 across, ±0.4 up) and turn the view only past its edge (pad aim mode; the mouse has none, D-002); the shot goes through the smoothed
     /// cursor (`Player_GetAimingPoint`).
-    pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool) {
+    pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool) {
         let aiming = input.aiming;
         if aiming {
             let want = [self.cursor[0] - input.turn / 0.76966, self.cursor[1] + input.look * std::f32::consts::FRAC_PI_2 / 0.57724];
@@ -174,10 +174,10 @@ impl Sim {
         let d = [0, 1, 2].map(|k| look[k] + tx * right[k] + ty * up[k]);
         let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
         let aim = d.map(|v| v / l);
-        self.run(self.bond.pos, head, look, aim, trigger, aiming);
+        self.run(self.bond.pos, head, look, aim, trigger, aiming, reload);
     }
 
-    fn run(&mut self, pos: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool) {
+    fn run(&mut self, pos: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool, reload: bool) {
         // The drones aim at and look for Bond's chest (`Drone_View_Bones`; one point here, 0.45 under the eye).
         let player = nf_game::drone::Player { pos, target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look };
         let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models };
@@ -190,9 +190,19 @@ impl Sim {
             let scripts = &self.scripts;
             let params = nf_game::gun::GunParams::from_record(w, 0, |h| scripts.get(&h).map(|s| s.length as u32));
             // Auto-aim (on by default in the game's options) only outside aim mode; in aim mode the offset eases back.
-            let dir = if self.auto_aim && !aiming { self.drones.auto_aim(&d, camera, look, self.gun.weapon) } else { self.drones.aim_target = None; aim };
+            // Auto-aim off (or aim mode): no target; the offsets still halve every tick (`Player_AutoAim` 0x1a7c98), so
+            // the crosshair returns to the centre instead of staying where the last lock left it.
+            let dir = if self.auto_aim && !aiming { self.drones.auto_aim(&d, camera, look, self.gun.weapon) } else {
+                self.drones.aim_target = None;
+                self.drones.aim_offset = self.drones.aim_offset.map(|v| v * 0.5);
+                aim
+            };
             let was_reloading = self.gun.reloading > 0;
-            let fired = self.gun.update(trigger, params);
+            let rd0 = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
+            // The gun's animation is busy while a fire script plays (gun state 9; idle = 0).
+            let len_of = |h: u32| self.scripts.get(&h).map_or(0.0, |s| s.length as f32);
+            let busy = (self.view_script == rd0(0xb0) || self.view_script == rd0(0xb4)) && self.view_time < len_of(self.view_script) - 1.0;
+            let fired = self.gun.update_with(trigger, reload, busy, params);
             // The gun's scripts (`weapon+0xA0` idle, `+0xA4` reload at 1.35 from frame 6 with flag 0x1000, `+0xB0` fire,
             // `+0xB4` fire on the last round with flag 0x1000); after a script ends the last frame holds (flag 0x1000:
             // the idle is not re-added) — docs/systems/player.md.
@@ -211,6 +221,8 @@ impl Sim {
                 let len = self.scripts.get(&self.view_script).map_or(0.0, |s| s.length as f32);
                 self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0));
                 if self.view_script == rd(0xa0) && self.view_time >= len - 1.0 { self.view_time = 0.0; }
+                // The reload done (gun state back to 0): the idle script.
+                if self.view_script == rd(0xa4) && self.gun.reloading == 0 { (self.view_script, self.view_time, self.view_speed) = (rd(0xa0), 0.0, 1.0); }
             }
             if fired {
                 let sound = self.sfx.as_ref().map(|t| t.get(0x403)).unwrap_or(nf_formats::sfx::SfxHearing { id: 0x403, inner: 0.0, outer: 0.0, weight: 0.0, looped: false });
@@ -231,6 +243,21 @@ impl Sim {
     pub fn crosshair(&self) -> (f32, f32) {
         if self.aiming { return (self.cross[0], self.cross[1]); }
         (-self.drones.aim_offset[0].tan() / 0.76966, self.drones.aim_offset[1].tan() / 0.57724)
+    }
+
+    /// Characters whose drone is present but whose animation cannot be shown (drawn in the bind pose): (character,
+    /// drone, script, its first sequence, in `seq_index`, that sequence's skeleton vs the mesh's).
+    pub fn unposed(&self, characters: &[Character]) -> Vec<String> {
+        let mut out = Vec::new();
+        for (ci, c) in characters.iter().enumerate() {
+            let Some(di) = self.char_drone.get(ci).copied().flatten() else { continue };
+            let dr = &self.drones.list[di];
+            if !dr.present || self.frame_of(di, c.skin.skeleton).is_some() { continue; }
+            let q = dr.anim.script.and_then(|h| self.scripts.get(&h)).and_then(|s| s.sequences().next().map(|x| x.2));
+            out.push(format!("char {ci} drone {di} (placement {}) state {:#x} script {:x?} seq {:x?} indexed {:?} mesh skeleton {}", dr.placement, dr.state, dr.anim.script, q,
+                q.and_then(|q| self.seq_index.get(&q)), c.skin.skeleton));
+        }
+        out
     }
 
     /// (sequence index, frame) the first-person gun's script shows.
