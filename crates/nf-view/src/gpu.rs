@@ -29,11 +29,17 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
     if (o.a < 0.5) { discard; }
     return vec4<f32>(min(o.rgb, vec3<f32>(1.0)), 1.0);
 }
+@fragment fn fs_add(i: VO) -> @location(0) vec4<f32> {
+    let t = textureSample(tex, samp, i.uv);
+    let o = t * i.c;
+    return vec4<f32>(min(o.rgb, vec3<f32>(1.0)), clamp(o.a, 0.0, 1.0));
+}
 "#;
 
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
+    effect_pipeline: wgpu::RenderPipeline,
     uniform: wgpu::Buffer,
     uniform_bg: wgpu::BindGroup,
     /// View-projection without the camera translation (sky objects that follow the viewer).
@@ -72,7 +78,7 @@ impl Renderer {
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&ubgl), Some(&tbgl)], immediate_size: 0 });
         // World: depth-tested. Sky pass: painted first in slot order without depth (`View_DrawSky` before the world).
-        let make_pipeline = |depth_write: bool, compare: wgpu::CompareFunction| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let make_pipeline = |depth_write: bool, compare: wgpu::CompareFunction, additive: bool| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("nf-view"),
             layout: Some(&layout),
             vertex: wgpu::VertexState {
@@ -90,14 +96,20 @@ impl Renderer {
             }),
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
-                module: &shader, entry_point: Some("fs"), compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                module: &shader, entry_point: Some(if additive { "fs_add" } else { "fs" }), compilation_options: Default::default(),
+                // Effects: GS alpha (Cs − 0)·As + Cd (*suggested*: the usual flash setting; the mesh's own A+D state is
+                // not decoded yet, U-021).
+                targets: &[Some(wgpu::ColorTargetState { format, blend: additive.then_some(wgpu::BlendState {
+                    color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+                    alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+                }), write_mask: wgpu::ColorWrites::ALL })],
             }),
             multiview_mask: None,
             cache: None,
         });
-        let pipeline = make_pipeline(true, wgpu::CompareFunction::Less);
-        let sky_pipeline = make_pipeline(false, wgpu::CompareFunction::Always);
+        let pipeline = make_pipeline(true, wgpu::CompareFunction::Less, false);
+        let sky_pipeline = make_pipeline(false, wgpu::CompareFunction::Always, false);
+        let effect_pipeline = make_pipeline(false, wgpu::CompareFunction::Less, true);
         let make_uniform = || {
             let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &ubgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }] });
@@ -131,7 +143,7 @@ impl Renderer {
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.vertices), usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST });
         let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.indices), usage: wgpu::BufferUsages::INDEX });
         let draws = scene.materials.iter().map(|m| (m.layer, m.first_index, m.index_count)).collect();
-        Renderer { pipeline, sky_pipeline, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, material_tex, tex_bgs, draws }
+        Renderer { pipeline, sky_pipeline, effect_pipeline, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, material_tex, tex_bgs, draws }
     }
 
     /// `view_proj`: full camera; `view_proj_rot`: the same without the camera translation.
@@ -165,6 +177,7 @@ impl Renderer {
                     Layer::SkyCamera => (&self.sky_pipeline, &self.uniform_rot_bg),
                     Layer::SkyFixed => (&self.sky_pipeline, &self.uniform_bg),
                     Layer::World | Layer::Character => (&self.pipeline, &self.uniform_bg),
+                    Layer::Effect => (&self.effect_pipeline, &self.uniform_bg),
                 };
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, uniform, &[]);

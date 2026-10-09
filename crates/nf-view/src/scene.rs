@@ -31,6 +31,9 @@ pub enum Layer {
     World,
     /// Skinned character meshes; vertices rewritten each frame.
     Character,
+    /// Additive effects posed with the characters (muzzle flashes); after Character so the rewritten vertex tail
+    /// stays contiguous.
+    Effect,
 }
 
 pub struct Material {
@@ -56,6 +59,7 @@ pub struct Character {
     pub skeleton: Skeleton,
     pub slot_bones: Vec<u8>,
     pub start: Option<StartAnim>,
+    pub role: drone::SpawnRole,
     /// Highest World triangle below the placement (stand-in for the game's collision floor, docs/systems/drone-animation.md).
     pub floor: Option<f32>,
 }
@@ -81,6 +85,18 @@ pub struct Attachment {
     pub character: u32,
     pub bone: usize,
     pub local: Mat4,
+    /// `Some(rgb)`: the muzzle flash of `DroneWeap_FireWeapon` (mesh `weapon_data+0x4C`, light colour +0x56/+0x55/+0x54),
+    /// drawn only on firing frames; `None`: the weapon itself.
+    pub flash: Option<[u8; 3]>,
+}
+
+/// Viewer switches that change what the game state would be.
+#[derive(Clone, Copy, Default)]
+pub struct ViewOpts {
+    /// Also draw drones a spawner holds back at level start (docs/systems/drone-animation.md "Spawners").
+    pub reinforcements: bool,
+    /// Make every armed drone fire (muzzle flashes); the game's AI decides this, nf-view has none yet.
+    pub firing: bool,
 }
 
 /// Bind-pose data of one character vertex (same order as the Character-layer vertices).
@@ -162,6 +178,24 @@ fn floor_below(vertices: &[Vertex], indices: &[u32], materials: &[Material], p: 
     best
 }
 
+/// `DroneWeap_FireWeapon` (0x178f68): the flash object sits at the weapon datum's world position; its rotation is
+/// the spherical angles of the datum's −x axis (`Vec_Cartesian_2_Spherical`: atan2(y, |xz|), atan2(x, z), length)
+/// plus `Rand_FRand(2π)` on x, `Rand_FRandHalf(0.2) + π/2` on y and `Rand_FRandHalf(0.2)` on z; matrix as for
+/// placements (`RotMatrix`). `seed` stands in for the game's random state.
+fn muzzle_flash_matrix(datum: &Mat4, seed: u32) -> Mat4 {
+    let mut s = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
+    let mut rand = || { s ^= s << 13; s ^= s >> 17; s ^= s << 5; (s >> 8) as f32 / (1u32 << 24) as f32 };
+    let d = [-datum[0][0], -datum[0][1], -datum[0][2]];
+    let horiz = (d[0] * d[0] + d[2] * d[2]).sqrt();
+    let sph = [d[1].atan2(horiz), d[0].atan2(d[2]), (horiz * horiz + d[1] * d[1]).sqrt()];
+    let rot = [
+        sph[0] + rand() * std::f32::consts::TAU,
+        sph[1] + (rand() - 0.5) * 0.2 + std::f32::consts::FRAC_PI_2,
+        sph[2] + (rand() - 0.5) * 0.2,
+    ];
+    nf_formats::placement::object_matrix(rot, [datum[3][0], datum[3][1], datum[3][2]])
+}
+
 /// The drone's height state after `DroneAnim_PreTransCallback` (0x13b490): `Drone+0xA0` = hip height − 0.02, at least
 /// 0.2 (it starts at 1.0 and keeps its value while the hip height is 0).
 fn drone_height(hip: f32) -> f32 {
@@ -192,6 +226,16 @@ impl Scene {
         }
         let mut characters = Vec::new();
         let (mut attachments, mut armed, mut weapons_missing) = (Vec::new(), std::collections::HashSet::new(), 0);
+        // Spawner roles of the main map's drone placements, keyed by translation (docs/systems/drone-animation.md).
+        let roles: HashMap<[u32; 3], drone::SpawnRole> = match level.main_map() {
+            Some(m) => {
+                let ps = &level.maps[m].placements;
+                let list: Vec<(u32, Vec<(u32, u32)>)> = ps.iter().map(|p| (p.flags & 0xff, p.params.clone())).collect();
+                let drones_in_order = ps.iter().filter(|p| p.flags & 0xff == 0x0f);
+                drones_in_order.zip(drone::spawn_roles(&list)).map(|(p, r)| (p.translation.map(f32::to_bits), r)).collect()
+            }
+            None => HashMap::new(),
+        };
         for inst in &char_instances {
             let obj = &level.maps[inst.map].objects[inst.object];
             let skin_hash = inst.placement.params.iter().find(|(i, _)| *i == 0).map(|&(_, v)| v).unwrap_or(0);
@@ -210,7 +254,8 @@ impl Scene {
                     .filter_map(|(a, b, q)| by_hash.get(&q).filter(|(sk, _)| *sk == skin.skeleton).map(|&(_, i)| (a, b, i))).collect();
                 Some(StartAnim { script, sequences })
             });
-            characters.push(Character { matrix: inst.matrix, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: obj.gfx.slot_bones.clone(), start, floor: None });
+            let role = roles.get(&inst.placement.translation.map(f32::to_bits)).copied().unwrap_or(drone::SpawnRole::Placed);
+            characters.push(Character { matrix: inst.matrix, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: obj.gfx.slot_bones.clone(), start, role, floor: None });
             // The held weapon (`AnimObjectDraw`): weapon_data[w] +0x80 mesh on the datum whose id is +0x50 (0xFF → 0),
             // once per drone (a skin may have several main meshes).
             let key = (inst.placement.translation.map(f32::to_bits), skin_hash);
@@ -225,7 +270,18 @@ impl Scene {
             let winst = Instance { map, object, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: inst.placement.clone() };
             let character = characters.len() as u32 - 1;
             add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None);
-            attachments.push(Attachment { character, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t) });
+            let local = anim::quat_trans_to_mat(dt.q, dt.t);
+            attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None });
+            // Its muzzle flash: `DroneWeap_FireWeapon` asks `AnimGetBoneWorldTrans(obj, datum id, 1, …)`, which looks up
+            // the datum whose id is id + 1 — the muzzle (07000005: 8 → 9 at x −0.77, 16 → 17 at x −1.18).
+            if let Some((fmesh, rgb)) = wd.muzzle_flash(weapon as u8) {
+                let muzzle = skin.datums.iter().find(|d| d.id == datum_id + 1 && d.bone >= 0);
+                if let (Some(&(fmap, fobject)), Some(md)) = (level.by_hash.get(&fmesh), muzzle) {
+                    let finst = Instance { map: fmap, object: fobject, ..winst };
+                    add_instance(level, &finst, Layer::Effect, Some((character, Some(attachments.len() as u32))), &mut groups, None);
+                    attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb) });
+                }
+            }
         }
         for (inst, follows_camera) in &sky {
             add_instance(level, inst, if *follows_camera { Layer::SkyCamera } else { Layer::SkyFixed }, None, &mut groups, None);
@@ -234,7 +290,7 @@ impl Scene {
         let mut char_vertex_start = None;
         for ((layer, key), (vs, is, cv)) in groups {
             if is.is_empty() { continue; }
-            if layer == Layer::Character && char_vertex_start.is_none() { char_vertex_start = Some(vertices.len()); }
+            if matches!(layer, Layer::Character | Layer::Effect) && char_vertex_start.is_none() { char_vertex_start = Some(vertices.len()); }
             let base = vertices.len() as u32;
             materials.push(Material { layer, key, first_index: indices.len() as u32, index_count: is.len() as u32 });
             indices.extend(is.iter().map(|i| i + base));
@@ -260,7 +316,9 @@ impl Scene {
             }
         }
         let started = characters.iter().filter(|c| c.start.as_ref().is_some_and(|s| !s.sequences.is_empty())).count();
-        let stats = format!("{stats}; {started}/{} characters with their start animation; {} weapons held ({weapons_missing} without mesh or datum)", characters.len(), attachments.len());
+        let flashes = attachments.iter().filter(|a| a.flash.is_some()).count();
+        let held_back = characters.iter().filter(|c| matches!(c.role, drone::SpawnRole::Reinforcement { .. })).count();
+        let stats = format!("{stats}; {started}/{} characters with their start animation; {} weapons held ({weapons_missing} without mesh or datum), {flashes} with a muzzle flash; {held_back} character meshes held back by spawners (R shows them)", characters.len(), attachments.len() - flashes);
         Scene { vertices, indices, materials, textures, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments }
     }
 
@@ -295,7 +353,7 @@ impl Scene {
     /// floor (`NDrone2_Collision` 0x140e90). nf-view has no collision or AI yet, so drones stay at their placement x/z
     /// (horizontal root motion is dropped) and stand on the World floor below them; without one found they keep the
     /// pre-collision height (placement + 0xA0 − 1.0).
-    pub fn animate(&self, choice: Option<usize>, ticks: f32) -> Vec<[f32; 3]> {
+    pub fn animate(&self, choice: Option<usize>, ticks: f32, opts: ViewOpts) -> Vec<[f32; 3]> {
         let mut cache: HashMap<(u32, usize, u32), (Vec<Mat4>, Vec<Mat4>, f32)> = HashMap::new();
         let posed: Vec<Option<(Vec<Mat4>, Vec<Mat4>, Mat4)>> = self.characters.iter().map(|c| {
             let (i, frame) = self.frame_of(c, choice, ticks)?;
@@ -312,21 +370,32 @@ impl Scene {
             m[3][1] = match c.floor { Some(f) => f + a0, None => c.matrix[3][1] + a0 - 1.0 };
             Some((mats, world, m))
         }).collect();
+        let hidden = |c: &Character| !opts.reinforcements && matches!(c.role, drone::SpawnRole::Reinforcement { .. });
+        // A matrix that collapses a mesh to one point: its triangles become degenerate and draw nothing.
+        let collapse = |at: &Mat4| -> Mat4 { [[0.0; 4], [0.0; 4], [0.0; 4], [at[3][0], at[3][1], at[3][2], 1.0]] };
         // Attached meshes: datum local · bone world · object (bind world when the character has no animation).
-        let attach: Vec<Mat4> = self.attachments.iter().map(|a| {
+        let attach: Vec<Mat4> = self.attachments.iter().enumerate().map(|(k, a)| {
             let c = &self.characters[a.character as usize];
-            match &posed[a.character as usize] {
+            let datum = match &posed[a.character as usize] {
                 Some((_, world, m)) => anim::mul(&anim::mul(&a.local, &world[a.bone]), m),
                 None => {
                     let ib = c.skin.inverse_bind.get(a.bone).map(|b| b.0).unwrap_or([0.0; 3]);
                     let bind = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], ib.map(|v| -v));
                     anim::mul(&anim::mul(&a.local, &bind), &c.matrix)
                 }
-            }
+            };
+            if hidden(c) { return collapse(&datum); }
+            if a.flash.is_none() { return datum; }
+            // Firing demo: a shot every 8 ticks, the flash object living 2 ticks (`Drone+0x30` life = 2), staggered
+            // per drone. The rate is nf-view's, not the weapon's (G-025).
+            let tick = ticks as u32 + 3 * a.character;
+            if !opts.firing || tick % 8 >= 2 { return collapse(&datum); }
+            muzzle_flash_matrix(&datum, (tick / 8) ^ (k as u32).wrapping_mul(0x9e37_79b9))
         }).collect();
         self.char_verts.iter().map(|v| {
             if let Some(a) = v.attachment { return transform(&attach[a as usize], v.pos); }
             let c = &self.characters[v.character as usize];
+            if hidden(c) { return [c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]]; }
             match &posed[v.character as usize] {
                 Some((mats, _, m)) => transform(m, anim::skin_vertex(v.pos, v.weight, v.slots, &c.slot_bones, mats)),
                 None => transform(&c.matrix, v.pos),

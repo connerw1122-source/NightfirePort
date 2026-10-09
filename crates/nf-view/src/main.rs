@@ -1,7 +1,7 @@
 //! `nf-view`: level viewer for 007: Nightfire (PS2), reading the user's own disc image.
 //!
 //! ```text
-//! nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--shot out.png [--cam x y z yaw pitch]]
+//! nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--fire] [--reinforcements] [--shot out.png [--cam x y z yaw pitch]]
 //! ```
 //! `<level>` is a FILES.BIN name (`07000005`, `.bin` optional); without `<iso>` the image path comes from `NF_ISO`.
 //! `--all` also draws dynamic entities at their placement transforms (not only 0x8000 cels). `--shot` renders one
@@ -9,7 +9,7 @@
 //!
 //! Controls: click to capture the mouse; mouse = look (raw deltas → yaw/pitch, no acceleration), WASD = move,
 //! Space / Ctrl = up / down, Shift = fast, [ / ] = browse sequences ([ from the first returns to the game's start
-//! animations), P = pause, F12 = screenshot
+//! animations), P = pause, F = drones fire (muzzle flashes), R = show spawner-held drones, F12 = screenshot
 //! (nf-view-shot.png), Esc = release mouse, Esc again = quit.
 
 mod gpu;
@@ -101,8 +101,8 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
 }
 
 /// The Character-layer vertices posed after `time` 60 Hz ticks: start animations (`None`) or sequence `choice`.
-fn posed_vertices(scene: &scene::Scene, choice: Option<usize>, time: f32) -> Vec<scene::Vertex> {
-    scene.animate(choice, time).into_iter().zip(&scene.vertices[scene.char_vertex_start..])
+fn posed_vertices(scene: &scene::Scene, choice: Option<usize>, time: f32, opts: scene::ViewOpts) -> Vec<scene::Vertex> {
+    scene.animate(choice, time, opts).into_iter().zip(&scene.vertices[scene.char_vertex_start..])
         .map(|(pos, v)| scene::Vertex { pos, ..*v }).collect()
 }
 
@@ -113,13 +113,13 @@ async fn device(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) 
 }
 
 /// Renders one frame offscreen and writes it as a PNG.
-fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32) -> Result<()> {
+fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, opts: scene::ViewOpts) -> Result<()> {
     let (w, h) = (1280u32, 720u32);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let (_adapter, device, queue) = pollster::block_on(device(&instance, None))?;
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let r = gpu::Renderer::new(&device, &queue, format, scene);
-    r.update_vertices(&queue, scene.char_vertex_start, &posed_vertices(scene, choice, time));
+    r.update_vertices(&queue, scene.char_vertex_start, &posed_vertices(scene, choice, time, opts));
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
         dimension: wgpu::TextureDimension::D2, format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
@@ -167,6 +167,8 @@ struct App {
     choice: Option<usize>,
     anim_time: f32,
     paused: bool,
+    /// R = show spawner-held drones, F = make armed drones fire.
+    opts: scene::ViewOpts,
 }
 
 impl App {
@@ -221,7 +223,7 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } => if let PhysicalKey::Code(k) = event.physical_key {
                 match (k, event.state) {
                     (KeyCode::Escape, ElementState::Pressed) => if self.grabbed { self.grab(false) } else { el.exit() },
-                    (KeyCode::F12, ElementState::Pressed) => if let Err(e) = shot(&self.scene, &self.cam, "nf-view-shot.png", self.choice, self.anim_time) { eprintln!("screenshot: {e}") },
+                    (KeyCode::F12, ElementState::Pressed) => if let Err(e) = shot(&self.scene, &self.cam, "nf-view-shot.png", self.choice, self.anim_time, self.opts) { eprintln!("screenshot: {e}") },
                     (KeyCode::BracketRight | KeyCode::BracketLeft, ElementState::Pressed) => {
                         self.choice = match (k == KeyCode::BracketRight, self.choice) {
                             (true, None) => Some(0),
@@ -233,6 +235,8 @@ impl ApplicationHandler for App {
                         if let Some(g) = &self.gfx { g.window.set_title(&format!("nf-view — {}", self.scene.sequence_label(self.choice))); }
                     }
                     (KeyCode::KeyP, ElementState::Pressed) => self.paused = !self.paused,
+                    (KeyCode::KeyR, ElementState::Pressed) => self.opts.reinforcements = !self.opts.reinforcements,
+                    (KeyCode::KeyF, ElementState::Pressed) => self.opts.firing = !self.opts.firing,
                     (_, ElementState::Pressed) => { self.keys.insert(k); }
                     (_, ElementState::Released) => { self.keys.remove(&k); }
                 }
@@ -251,7 +255,7 @@ impl ApplicationHandler for App {
                 // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
                 if !self.paused { self.anim_time += dt * 60.0; }
                 let Some(g) = &mut self.gfx else { return };
-                g.renderer.update_vertices(&g.queue, self.scene.char_vertex_start, &posed_vertices(&self.scene, self.choice, self.anim_time));
+                g.renderer.update_vertices(&g.queue, self.scene.char_vertex_start, &posed_vertices(&self.scene, self.choice, self.anim_time, self.opts));
                 let frame = match g.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
                     _ => { g.surface.configure(&g.device, &g.config); g.window.request_redraw(); return; }
@@ -271,7 +275,7 @@ impl ApplicationHandler for App {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    const USAGE: &str = "usage: nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--shot out.png [--cam x y z yaw pitch]]\n\
+    const USAGE: &str = "usage: nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--fire] [--reinforcements] [--shot out.png [--cam x y z yaw pitch]]\n\
         <level> is a FILES.BIN name such as 07000005 (\".bin\" optional); without <iso> the image path comes from NF_ISO";
     // Positional arguments are the ones before the first flag.
     let pos: Vec<&String> = args.iter().take_while(|a| !a.starts_with("--")).collect();
@@ -291,12 +295,13 @@ fn main() -> Result<()> {
     let num = |flag: &str| -> Result<Option<f32>> { match args.iter().position(|a| a == flag) { Some(i) => Ok(Some(args.get(i + 1).context("missing value")?.parse()?)), None => Ok(None) } };
     let choice = num("--seq")?.map(|k| k as usize);
     let time = num("--frame")?.unwrap_or(0.0);
+    let opts = scene::ViewOpts { reinforcements: args.iter().any(|a| a == "--reinforcements"), firing: args.iter().any(|a| a == "--fire") };
     eprintln!("animation: {}", scene.sequence_label(choice));
     if let Some(i) = args.iter().position(|a| a == "--shot") {
-        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time);
+        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts);
     }
     let event_loop = EventLoop::new()?;
-    let mut app = App { scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false };
+    let mut app = App { scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts };
     event_loop.run_app(&mut app)?;
     Ok(())
 }

@@ -403,7 +403,11 @@ fn drones(iso: &IsoImage, level_name: &str) -> Result<()> {
     let seqs: HashMap<u32, Sequence> = alb.entries.iter().filter(|e| e.kind == 4 && e.length >= 0x40).filter_map(|e| Sequence::parse(alb.data(&anim, e)).ok()).map(|s| (s.hashcode, s)).collect();
     let level_id = u32::from_str_radix(&level_name[..8], 16)?;
     let Some(m) = level.main_map() else { return Ok(()) };
-    println!("index\tskin\tparam1\tparam9\tkind\tset\tdanim\tstate\tscript\tscript_found\tlength\tloop\tsequence\tseq_frames");
+    for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0xf1) {
+        println!("spawner at ({:.3}, {:.3}, {:.3}) params {:?}", p.translation[0], p.translation[1], p.translation[2],
+            p.params.iter().map(|(i, v)| format!("{i}={v:x}")).collect::<Vec<_>>());
+    }
+    println!("params (position)\tskin\tparam1\tparam9\tkind\tset\tdanim\tstate\tscript\tscript_found\tlength\tloop\tsequence\tseq_frames");
     for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f) {
         let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
         let setup = drone::drone_setup(param(0), param(9), level_id);
@@ -415,7 +419,7 @@ fn drones(iso: &IsoImage, level_name: &str) -> Result<()> {
         let script = start.script();
         let s = script.and_then(|h| scripts.get(&h));
         let q = s.and_then(|s| s.sequences().next());
-        println!("{}\t{:08x}\t{:08x}\t{:x}\t{:#x}\t{:#x}\t{:#x}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}", format!("{} ({:.3}, {:.3}, {:.3})", param(2), p.translation[0], p.translation[1], p.translation[2]), param(0), param(1), param(9), setup.kind, set, danim,
+        println!("{}\t{:08x}\t{:08x}\t{:x}\t{:#x}\t{:#x}\t{:#x}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}", format!("{:?} ({:.3}, {:.3}, {:.3})", p.params.iter().map(|(i, v)| format!("{i}={v:x}")).collect::<Vec<_>>(), p.translation[0], p.translation[1], p.translation[2]), param(0), param(1), param(9), setup.kind, set, danim,
             tables.state_of(danim), script.map(|h| format!("{h:08x}{}", if custom { " (param 1)" } else { "" })).unwrap_or("-".into()), s.is_some(),
             s.map(|s| s.length).unwrap_or(0), s.map(|s| s.looping).unwrap_or(false),
             q.map(|q| format!("{:08x}", q.2)).unwrap_or("-".into()), q.and_then(|q| seqs.get(&q.2)).map(|x| x.frames.to_string()).unwrap_or("missing".into()));

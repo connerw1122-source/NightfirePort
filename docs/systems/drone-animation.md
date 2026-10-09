@@ -51,6 +51,27 @@ weapons 0x16 / 0x24 as predicted; the 9 drones not yet updated were on danim 0x1
 placement y 37.085 sat at 37.003 with `Drone+0xA0` = 1.0, i.e. 1.0 above a floor at 36.0005 (feet sphere on the
 floor). Updated drones had `Drone+0xA0` = hip − 0.02 exactly.
 
+## Spawners (which drones exist at level start)
+
+*Measured* from the decomp, confirmed live in three levels (WORKLOG 0018):
+
+- `DroneSpawner_Create` (placement object type 0xF1; needs parameter 0 > 1) registers a spawner for group =
+  parameter 1: max alive = parameter 2 (`+0xA`; 0 → the group size), max total = parameter 3 (`+0xC`, 0 → 32000),
+  start channel = parameter 4 (`+0xE`), stop channel = parameter 5 (`+0x10`), spawn distance = parameter 8 (`+0x18`,
+  0 → 10).
+- Drones join group parameter 4 (`NDrone2_AddToGroup`, `Drone+0x140/+0x144`). `NDrone2_SetupGroups` →
+  `DroneSpawner_Init`: every drone of a group with a spawner becomes a template (its `DIVars`, 0xC0 bytes, copied) and
+  is deleted. With the start channel 0 (or already on) the spawner is active at once and ignores visibility.
+- `DroneSpawner_SpawnDrone` recreates a template at its own placement position — chosen with `Rand_Rand`, and only
+  when the player is beyond the spawn distance and cannot see the spot (unless the spawner ignores visibility).
+
+`drone::spawn_roles` models the level-start result: immediate spawners bring back up to "max alive" templates (we
+take placement order where the game draws at random), the rest are reinforcements. Live counts at start:
+07000005 13 of 16 (the two gate guards wait for channel 0x22; of group 1 one of two is spawned — the one at
+(62.43, 34.58, 104.08) in both sessions), 07000001 15 of 20, 0700000A 0 of 20 (six spawners). All 21 levels:
+`drones.tsv` columns `at_start`, `spawners` (284 of 555 at start, 79 spawners). nf-view hides reinforcements; `R`
+shows them at their spawn positions.
+
 ## On the disc (`nf-extract drones`, golden `drones.tsv`)
 
 555 drones in 21 levels; 550 get a script that exists in their level and whose sequence is in the 07F archive; the 5

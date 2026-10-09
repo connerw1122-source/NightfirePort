@@ -62,6 +62,8 @@ logic, not an emulator wrapper or a static recompiler. Read `docs/PLAN.md` first
   after enabling). Launch from PowerShell with Windows paths (`-statefile "<…\sstates\SLUS-20579 (5B86BB62).resume.p2s>"
   -- "<iso>"`); Git Bash forward-slash paths fail ("does not exist" dialog). Consistent memory snapshots:
   `python tools/trace/snapshot.py 9 work/ee_snapshot.bin` (saves state slot 9 — never the user's slots 1/resume —
-  and extracts EE RAM); then `nf-extract pose-check <iso> <level.bin> work/ee_snapshot.bin`.
+  and extracts EE RAM); then `nf-extract pose-check <iso> <level.bin> work/ee_snapshot.bin`. Load any level without
+  the menus: `python tools/trace/goto_level.py 07000005 [--launch] [--snapshot work/x.bin]` (the game's own
+  `ResetMap_LevelToLoad` path via PINE writes to emulated RAM); `tools/trace/drones_snapshot.py <ee.bin>` lists drones.
 - **Tools:** `cargo run --release -p nf-extract -- <cmd>` (see `crates/nf-extract/src/main.rs`);
   `NF_ISO=<iso> cargo test --release -p nf-formats --test disc_golden`.

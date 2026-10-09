@@ -7,7 +7,8 @@ Opcodes used: 0 Read8, 1 Read16, 2 Read32, 3 Read64 (arg: u32 address). Several 
 send; replies come back in order. Keep batches small: PCSX2 drops replies beyond ~7 in flight (*suggested*,
 mcp-pine docs), so this client sends at most 6 per round trip.
 
-Read-only by design: no write opcodes are implemented.
+Reads are the default. Writes (opcodes 4–7) change the emulated EE memory only — used by goto_level.py to drive the
+game's own level loader; nothing outside PCSX2's RAM is touched.
 """
 import socket
 import struct
@@ -53,6 +54,19 @@ class Pine:
 
     def read32(self, a):
         return self.read_many([(a, 4)])[0]
+
+    def read16(self, a):
+        return self.read_many([(a, 2)])[0]
+
+    def write(self, a, value, width):
+        """Writes `width` (1, 2, 4, 8) bytes of `value` at `a` in EE memory (PINE Write8/16/32/64)."""
+        op = {1: 4, 2: 5, 4: 6, 8: 7}[width]
+        msg = struct.pack("<IBI", 9 + width, op, a) + int(value).to_bytes(width, "little")
+        self.s.sendall(msg)
+        (length,) = struct.unpack("<I", self._recv_exact(4))
+        body = self._recv_exact(length - 4)
+        if body[0] != 0:
+            raise IOError(f"PINE FAIL writing {width} bytes at {a:#x}")
 
     def read_bytes(self, a, n):
         """n bytes from a (4-byte reads; a and n need not be aligned to anything but are read via aligned words)."""

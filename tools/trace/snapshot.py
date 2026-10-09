@@ -27,8 +27,10 @@ def save_state(slot, port=28011):
 
 
 def main():
-    slot = int(sys.argv[1]) if len(sys.argv) > 1 else 9
-    out = sys.argv[2] if len(sys.argv) > 2 else "work/ee_snapshot.bin"
+    take(int(sys.argv[1]) if len(sys.argv) > 1 else 9, sys.argv[2] if len(sys.argv) > 2 else "work/ee_snapshot.bin")
+
+
+def take(slot, out):
     pattern = os.path.join(SSTATES, f"SLUS-20579 (*).{slot:02d}.p2s")
     before = {p: os.path.getmtime(p) for p in glob.glob(pattern)}
     t0 = time.time()

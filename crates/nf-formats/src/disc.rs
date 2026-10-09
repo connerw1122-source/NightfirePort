@@ -383,7 +383,7 @@ pub fn drone_start_digest<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
     let tables = crate::drone::DroneAnimData::from_action_elf(&elf)?;
     let (entries, bin) = files_bin_entries(iso)?;
     let read = |fe: &crate::filelist::FileEntry| iso.read_bytes(bin.lba as u64 * SECTOR_SIZE as u64 + fe.offset as u64, fe.size as u64);
-    let mut s = String::from("level\tdrones\twith_script\twith_sequence\trows_sha1\n");
+    let mut s = String::from("level\tdrones\twith_script\twith_sequence\tat_start\tspawners\trows_sha1\n");
     for fe in entries.iter().filter(|e| e.name.len() == 12 && e.name.starts_with("070") && e.name.to_ascii_lowercase().ends_with(".bin")) {
         let data = read(fe)?;
         let level = crate::level::Level::parse(&data)?;
@@ -399,6 +399,9 @@ pub fn drone_start_digest<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
         let level_id = u32::from_str_radix(&fe.name[..8], 16).unwrap_or(0);
         let (mut n, mut with_script, mut with_seq) = (0u64, 0u64, 0u64);
         let mut h = Sha1::new();
+        let list: Vec<(u32, Vec<(u32, u32)>)> = level.maps[m].placements.iter().map(|p| (p.flags & 0xff, p.params.clone())).collect();
+        let at_start = crate::drone::spawn_roles(&list).iter().filter(|r| !matches!(r, crate::drone::SpawnRole::Reinforcement { .. })).count();
+        let spawners = list.iter().filter(|(t, _)| *t == 0xf1).count();
         for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f) {
             let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
             n += 1;
@@ -409,7 +412,7 @@ pub fn drone_start_digest<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
             with_seq += q.is_some_and(|q| anim_seqs.contains(&q)) as u64;
             for v in [param(0), hash.unwrap_or(0), q.unwrap_or(0)] { h.update(&v.to_le_bytes()); }
         }
-        if n > 0 { s.push_str(&format!("{}\t{n}\t{with_script}\t{with_seq}\t{}\n", fe.name, hex(&h.finish()))); }
+        if n > 0 { s.push_str(&format!("{}\t{n}\t{with_script}\t{with_seq}\t{at_start}\t{spawners}\t{}\n", fe.name, hex(&h.finish()))); }
     }
     Ok(s)
 }

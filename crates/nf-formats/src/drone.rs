@@ -155,6 +155,40 @@ pub fn weapon_id(skin: u32, weapon_param: u32) -> u32 {
     if weapon_param != 0 { weapon_param } else if skin == 0x0500_001e { 0 } else { 1 }
 }
 
+/// How a drone placement appears at level start, given the level's drone spawners (object type 0xF1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpawnRole {
+    /// Created by `Drone_Create` and left in place.
+    Placed,
+    /// A spawner template (`DroneSpawner_Init` copies the drone's setup and deletes it) that an immediate spawner
+    /// brings straight back at its own position. The game picks which templates at random; we take placement order.
+    SpawnedAtStart,
+    /// A spawner template not present at start: spawned later (switch channel, or when another dies), out of sight.
+    Reinforcement { channel: u16 },
+}
+
+/// `(translation, object type, parameters)` of each main-map placement, in order → the role of each drone
+/// placement (type 0x0F), in the same order. Rules (*measured*, docs/systems/drone-animation.md "Spawners"):
+/// `DroneSpawner_Create` needs parameter 0 > 1 and keys the spawner by parameter 1 (group); drones join group
+/// parameter 4 (`NDrone2_AddToGroup`); a group with a spawner becomes templates; a spawner whose start channel
+/// (parameter 4) is 0 spawns up to parameter 2 drones at once (0 = the group size), ignoring visibility.
+pub fn spawn_roles(placements: &[(u32, Vec<(u32, u32)>)]) -> Vec<SpawnRole> {
+    use std::collections::HashMap;
+    let param = |p: &Vec<(u32, u32)>, k: u32| p.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
+    // group → (max alive at once, start channel)
+    let spawners: HashMap<u32, (u32, u32)> = placements.iter().filter(|(t, p)| *t == 0xf1 && param(p, 0) > 1)
+        .map(|(_, p)| (param(p, 1), (param(p, 2), param(p, 4)))).collect();
+    let mut spawned: HashMap<u32, u32> = HashMap::new();
+    let group_size = |g: u32| placements.iter().filter(|(t, p)| *t == 0x0f && param(p, 4) == g).count() as u32;
+    placements.iter().filter(|(t, _)| *t == 0x0f).map(|(_, p)| {
+        let g = param(p, 4);
+        let Some(&(max_alive, channel)) = spawners.get(&g).filter(|_| g != 0) else { return SpawnRole::Placed };
+        let limit = if max_alive == 0 { group_size(g) } else { max_alive };
+        let n = spawned.entry(g).or_default();
+        if channel == 0 && *n < limit { *n += 1; SpawnRole::SpawnedAtStart } else { SpawnRole::Reinforcement { channel: channel as u16 } }
+    }).collect()
+}
+
 /// The danim `NDrone2_DefaultInit` starts a drone with (`DroneAnim_SetAnimD`), and the anim set it uses then.
 /// `mode` = `Drone+0xC5` (the drone mode; modes 2 and 0x19 with set 5 switch to set 0x12).
 pub fn start_danim(setup: DroneSetup, mode: u8) -> (u16, u16) {
@@ -219,6 +253,22 @@ mod tests {
         assert_eq!(drone_setup(0x0500_9999, 0, 0), DroneSetup { kind: 0, anim_set: 0xc });
         assert_eq!(start_danim(DroneSetup { kind: 2, anim_set: 0xc }, 0), (DANIM_STAND_IDLE, 0xc));
         assert_eq!(start_danim(DroneSetup { kind: 0xb, anim_set: 7 }, 0).0, 0x1a5);
+    }
+
+    #[test]
+    fn spawner_groups_become_templates() {
+        // 07000005's shape: spawner A (group 1, one at a time, channel 0), spawner B (group 2, channel 0x22),
+        // two drones in each group, one plain drone.
+        let d = |g: u32| (0x0f, vec![(0, 0x0500_002e), (4, g)]);
+        let s = |group: u32, max: u32, ch: u32| (0xf1, vec![(0, 2), (1, group), (2, max), (4, ch)]);
+        let roles = spawn_roles(&[d(2), d(2), d(0), d(1), s(1, 1, 0), s(2, 0, 0x22), d(1)]);
+        assert_eq!(roles, vec![
+            SpawnRole::Reinforcement { channel: 0x22 }, SpawnRole::Reinforcement { channel: 0x22 }, SpawnRole::Placed,
+            SpawnRole::SpawnedAtStart, SpawnRole::Reinforcement { channel: 0 },
+        ]);
+        // A spawner needs parameter 0 > 1; a group without a spawner stays placed.
+        let roles = spawn_roles(&[d(3), (0xf1, vec![(0, 1), (1, 3)])]);
+        assert_eq!(roles, vec![SpawnRole::Placed]);
     }
 
     #[test]

@@ -406,3 +406,29 @@ guards hold their weapon (Sg5 Commando / white L96A1), shouldered in the idle po
 - My first probe read only the first script of a drone (a dormant one, time 1.0) and suggested drones were frozen;
   walking the script chain found the playing one.
 - `datums` first returned nothing for the guard skins — the sharing in `AnimPostLoadInit` was the missing step.
+
+## 0018 — Levels without menus, spawners, muzzle flash (2026-10-08)
+
+User: "add the muzzle flash and the missing guards. preferably without me having to load the entire game by hand".
+
+**Loading levels automatically**: `GameFlow_Main` runs a state stack (`GameStateStack` 0x2c7398, `StackIndex` u16
+0x30cece); the pause menu's restart calls `ResetMap_LevelToLoad(level, 0, 1)`, which sets `GameState+8` and pushes
+state 3 (`ResetMap_Load`). `tools/trace/goto_level.py` does the same through PINE writes into the emulated RAM
+(added to `pine.py`), waits for the level and snapshots it. 07000005 reloaded in 9.7 s, 07000001 in 11 s, 0700000A in
+~20 s, no input needed. PCSX2 still has to be running (or `--launch` starts it from the resume state).
+
+**Missing guards**: present in the level data but not created at start: `DroneSpawner_Init` turns every drone of a
+group with a spawner into a template and deletes it; spawners bring templates back later (switch channel, distance,
+out of sight). Rule in `drone::spawn_roles`; predicted start counts equal the live ones in all three levels
+(13 / 15 / 0). nf-view hides reinforcements by default; `R` shows them.
+
+**Muzzle flash**: `DroneWeap_FireWeapon` → flash mesh `+0x4C` at datum id + 1 (`AnimGetBoneWorldTrans` adds its
+third argument to the id), random spin, light colour `+0x54..56`. nf-view: `F` fires (viewer rate), additive layer.
+
+56 unit + 13 opt-in tests.
+
+**Failed / corrected**
+- First flash renders sat at the grip: I used the weapon datum itself; the game asks for id + 1 (the muzzle).
+- The flash drew its black background: our renderer only alpha-tests; added an additive effect layer.
+- A Python heredoc edit of disc.rs silently failed on `\\t` (CLAUDE.md warns about exactly this); redone with Edit.
+- My first flash-frame loop piped renders into `tail -0`, which killed them; rerun without.

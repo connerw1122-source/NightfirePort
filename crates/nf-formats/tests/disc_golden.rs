@@ -128,6 +128,9 @@ fn drone_start_animations_match_the_golden_digest() {
     assert_eq!(diff_tsv(golden, &tamper(&actual)).len(), 1, "sister: a one-character change must be caught");
     let sum = |col: usize| actual.lines().skip(1).map(|l| l.split('\t').nth(col).unwrap().parse::<u32>().unwrap()).sum::<u32>();
     assert_eq!((sum(1), sum(2), sum(3)), (555, 550, 550));
+    // Drones present at level start, as counted live in PCSX2 (WORKLOG 0018: tools/trace/goto_level.py snapshots).
+    let at_start = |lvl: &str| actual.lines().find(|l| l.starts_with(lvl)).and_then(|l| l.split('\t').nth(4)).unwrap().to_string();
+    assert_eq!((at_start("07000005"), at_start("07000001"), at_start("0700000a")), ("13".into(), "15".into(), "0".into()));
 }
 
 /// `weapon_data` built by running ACTION.ELF's static initialiser in `ee::Machine`. Cross-check (WORKLOG 0017): equal

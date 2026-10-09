@@ -29,6 +29,20 @@ table in 30,819 of 30,820 bytes. The odd byte is record 1 +0xDC: a skin hashcode
 80 records have a third-person model. 07000005's guards: 0x16 → `02000b44` `Sg5commando_nosight_3rd_LOD0` on datum 8;
 0x24 → `020008ac` `L96a1_white_3rd_LOD0` on datum 16.
 
+## Muzzle flash (`DroneWeap_FireWeapon` 0x178f68)
+
+Per shot: `AnimDatumGetWeaponInfo` → datum id (+0x50) and flash mesh (+0x4C, e.g. `02000261` `Pistol_Muz`; 0 = none,
+as for the sniper rifle 0x24); `AnimGetBoneWorldTrans(obj, id, 1, …)` looks up datum **id + 1** (the function adds
+its third argument to the id) — the muzzle datum (8 → 9 at x −0.77, 16 → 17 at x −1.18 on bone 35). Direction = the
+datum's −x axis. `Light_Create(radius 7.0, 1.0, position, +0x56, +0x55, +0x54)` (0x16: 255, 138, 0 — orange); an effect
+object (type 0x40, `+0xFF` = 0x10) at the position with rotation = spherical angles of the direction
+(`Vec_Cartesian_2_Spherical`: atan2(y, |xz|), atan2(x, z), length) + `Rand_FRand(2π)` / `Rand_FRandHalf(0.2) + π/2` /
+`Rand_FRandHalf(0.2)`, alpha 0xFF, life 2 frames. The player's own flash is `Draw_MuzzleFlash` (+0x48 mesh, scale
+0.9–1.1, alpha between +0x51 and +0x52).
+
+nf-view draws the mesh additively (`F` makes armed drones fire: one shot every 8 ticks, staggered — a viewer rate, not
+the weapon's; no dynamic light yet; the GS blend is *suggested* until the mesh's A+D state is decoded, U-021).
+
 ## Drawing (`AnimObjectDraw` 0x1c4490)
 
 For objects with anim flag bit 1 and datums: `AnimDatumSetEntity(obj, datum id, weapon_data[w].+0x80, 1)` every

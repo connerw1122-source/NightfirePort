@@ -28,6 +28,14 @@ impl WeaponData {
         Ok(WeaponData { records: bytes.chunks(RECORD).map(|c| c.try_into().unwrap()).collect() })
     }
 
+    /// A character's muzzle flash (`DroneWeap_FireWeapon`): the `+0x4C` mesh (none when 0) and the light colour
+    /// `Light_Create` gets, (+0x56, +0x55, +0x54) as (r, g, b).
+    pub fn muzzle_flash(&self, weapon: u8) -> Option<(u32, [u8; 3])> {
+        let r = self.records.get(weapon as usize)?;
+        let mesh = u32::from_le_bytes(r[0x4c..0x50].try_into().unwrap());
+        (mesh != 0).then_some((mesh, [r[0x56], r[0x55], r[0x54]]))
+    }
+
     pub fn bytes(&self) -> Vec<u8> { self.records.iter().flatten().copied().collect() }
 
     /// Third-person model a character holds (`+0x80`, `AnimDatumGetWeaponInfo`), and the skin datum it hangs on
