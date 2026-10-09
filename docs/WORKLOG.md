@@ -1172,3 +1172,26 @@ neither configured nor drawn; `get_current_texture` → `Lost` recreates the sur
 it), `Outdated` reconfigures, other states retry next frame (before: every non-success reconfigured); GPU validation
 errors are logged instead of wgpu's default panic. A panic hook writes the message and backtrace to
 `nf-view-crash.log` in the working directory. Rechecked: the new build passes the same scripted window tests.
+
+## 0062 — The truck's triggers, the gatehouse cut-scene and riding
+
+Script touch triggers (`Script_CreateEntity` 0xEA / 0xEB) join the trigger system: parameters as a placement's
+(`Trigger::from_params`, shared with `triggers::build`), volume = the glist's collision at the entity's matrix every
+tick, removed with the object; new objects head the control list. `Trigger_Hit` reads the object's own hit list, so a
+moving trigger tests where it is [M]. The gatehouse trigger (channel 0x5C, 1882–2312) is a 5 × 5 plate at y 27.05;
+nothing solid under it for 11 units except a wall top at 24.75 at (100, 108), where Bond's capsule (feet + 2.41)
+reaches it: Bond on the wall above the waiting truck starts ScriptPlayer #38 (0x060008C8).
+
+Read `Script_CameraStart` / `End` / `UpdateCamera`, `Camera_CalcViewAngles` (argument = vertical FOV in radians,
+viewer+0x114 = 4/3 [L]), the event handler's 4 / 6 and `Script_Free`'s `Player_Enable`, `Player_FeetOnPoint`,
+`Control_InheritVelocity`. Ported: camera streams (`Obj::Camera`, the viewer's view and field of view follow it),
+`PlayerDisable` / `PlayerEnable` requests (`Drones::player_events`; nf-view stops Bond's input and first-person view,
+then stands him at the matrix), riding (`CollisionWorld::ground_motion` with previous matrices by stable id; Bond
+moves and turns with the object under his feet). nf-view `--bond x,y,z` starts Bond anywhere (headless).
+
+Checked: `truck_gatehouse_trigger_starts_the_next_script` — Bond under the plate sets 0x5C on his first tick there,
+`PlayerDisable` at once, `PlayerEnable` 143 ticks later at (92.254, 19.424, 103.576) (sister: 20 units away — no
+channel, no events, #38 waiting). Headless run with `--bond 100,26,108`: the script camera shows Bond jumping into the
+truck; then first person in the bed; riding to the parking spot, Bond stays ~4 units behind the truck root, the offset
+turning with it (+x heading west, +z after the turn south), health 100 throughout. Unit test: `ground_motion` reports
+a 0.5 move (sister: nothing under the ray → `None`).

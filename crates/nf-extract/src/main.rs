@@ -955,8 +955,7 @@ fn nis(iso: &IsoImage, level_name: &str, only: Option<u32>) -> Result<()> {
             Ok(s) => {
                 println!("{h:08x}: camera {} loop {} length {} streams {} keys {}", s.camera, s.loop_start, s.length, s.streams.len(), s.keys.len());
                 for (i, st) in s.streams.iter().enumerate() {
-                    let hex: String = st.commands.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
-                    println!("  stream {i}: keys {}..={} ({} bytes) {hex}", st.first_key, st.last_key, st.commands.len());
+                    println!("  stream {i}: keys {}..={} ({} bytes) {:x?}", st.first_key, st.last_key, st.commands.len(), st.decode());
                 }
                 if only.is_some() {
                     for (k, key) in s.keys.iter().enumerate() { println!("  key {k}: t {} pos {:?} q {:?} s {} w24 {:02x?} w28 {}", key.time, key.pos, key.quat, key.scale, key.w24, key.w28); }

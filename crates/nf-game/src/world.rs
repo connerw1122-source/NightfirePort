@@ -13,6 +13,22 @@ struct Object {
     tris: std::ops::Range<usize>,
 }
 
+/// The moving set: geometry, each object's id and matrices (last tick, this tick), and the matrices by id from the
+/// last `set_dynamic` (for the next one's "last tick").
+#[derive(Default)]
+struct Moving {
+    geo: Geo,
+    movers: Vec<(u64, Mat4, Mat4)>,
+    last: std::collections::HashMap<u64, Mat4>,
+}
+
+type Mat4 = nf_formats::anim::Mat4;
+
+/// How the ground under a point moved over the last tick (`Control_InheritVelocity` 0x133e88): the translation, the
+/// change of heading (atan2 of the matrix's +Z x / z) and the object's position (the pivot of that turn).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundMotion { pub delta: V3, pub turn: f32, pub pivot: V3 }
+
 #[derive(Default)]
 struct Geo {
     tris: Vec<[V3; 3]>,
@@ -36,9 +52,35 @@ impl Geo {
 /// (`obj+0xD8`) whatever moves it.
 pub struct CollisionWorld {
     stat: Geo,
-    dynamic: std::sync::RwLock<Geo>,
+    dynamic: std::sync::RwLock<Moving>,
     /// Collision triangles (object space) of every hashed glist object, for `set_dynamic`.
     shapes: std::collections::HashMap<u32, Vec<[V3; 3]>>,
+}
+
+/// First hit of `from → to` in one geometry set (fraction).
+fn segment_in(g: &Geo, from: V3, to: V3) -> Option<f32> {
+    let d = sub(to, from);
+    let mut best = None::<f32>;
+    for k in 0..3 { if from[k].min(to[k]).is_nan() { return None; } }
+    for o in &g.objects {
+        if (0..3).any(|k| o.hi[k] < from[k].min(to[k]) || o.lo[k] > from[k].max(to[k])) { continue; }
+        for t in &g.tris[o.tris.clone()] {
+            let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+            let p = cross(d, e2);
+            let det = dot(e1, p);
+            if det.abs() < 1e-12 { continue; }
+            let inv = 1.0 / det;
+            let s = sub(from, t[0]);
+            let u = dot(s, p) * inv;
+            if !(0.0..=1.0).contains(&u) { continue; }
+            let q = cross(s, e1);
+            let v = dot(d, q) * inv;
+            if v < 0.0 || u + v > 1.0 { continue; }
+            let tt = dot(e2, q) * inv;
+            if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b) { best = Some(tt); }
+        }
+    }
+    best
 }
 
 fn sub(a: V3, b: V3) -> V3 { [a[0] - b[0], a[1] - b[1], a[2] - b[2]] }
@@ -70,22 +112,52 @@ impl CollisionWorld {
         CollisionWorld { stat, dynamic: Default::default(), shapes: Default::default() }
     }
 
+    /// Glist object `hash`'s collision triangles in object space.
+    pub fn shape(&self, hash: u32) -> Option<&[[V3; 3]]> { self.shapes.get(&hash).map(Vec::as_slice) }
+
     /// Whether glist object `hash` has collision geometry.
     pub fn has_shape(&self, hash: u32) -> bool { self.shapes.contains_key(&hash) }
 
-    /// Replaces the moving objects: each glist object `hash` at a row-vector world matrix.
-    pub fn set_dynamic(&self, parts: &[(u32, nf_formats::anim::Mat4)]) {
-        let mut g = Geo::default();
-        for (h, m) in parts {
-            if let Some(t) = self.shapes.get(h) { g.push(t.iter().map(|t| t.map(|p| transform(m, p)))); }
+    /// Replaces the moving objects: each `(id, glist hash, row-vector world matrix)`; the id (stable from tick to
+    /// tick) pairs an object with its matrix of the previous call.
+    pub fn set_dynamic(&self, parts: &[(u64, u32, Mat4)]) {
+        let mut d = self.dynamic.write().unwrap();
+        let (mut geo, mut movers, mut last) = (Geo::default(), Vec::new(), std::collections::HashMap::new());
+        for &(id, h, m) in parts {
+            last.insert(id, m);
+            let Some(t) = self.shapes.get(&h) else { continue };
+            let n = geo.objects.len();
+            geo.push(t.iter().map(|t| t.map(|p| transform(&m, p))));
+            if geo.objects.len() > n { movers.push((id, d.last.get(&id).copied().unwrap_or(m), m)); }
         }
-        *self.dynamic.write().unwrap() = g;
+        *d = Moving { geo, movers, last };
     }
+
+    /// When the first collision surface along `from → to` belongs to a moving object, how that object moved over the
+    /// last tick (`Player_FeetOnPoint` 0x194188 → `Control_InheritVelocity`).
+    pub fn ground_motion(&self, from: V3, to: V3) -> Option<GroundMotion> {
+        let stat = self.stat_segment(from, to);
+        let d = self.dynamic.read().unwrap();
+        let mut best: Option<(f32, usize)> = None;
+        for (i, o) in d.geo.objects.iter().enumerate() {
+            let g = Geo { tris: d.geo.tris[o.tris.clone()].to_vec(), objects: vec![Object { lo: o.lo, hi: o.hi, tris: 0..o.tris.len() }] };
+            if let Some(t) = segment_in(&g, from, to) { if best.is_none_or(|b| t < b.0) { best = Some((t, i)); } }
+        }
+        let (t, i) = best?;
+        if stat.is_some_and(|s| s < t) { return None; }
+        let (_, prev, cur) = d.movers[i];
+        let heading = |m: &Mat4| m[2][0].atan2(m[2][2]);
+        let mut turn = heading(&cur) - heading(&prev);
+        if turn > std::f32::consts::PI { turn -= std::f32::consts::TAU; } else if turn < -std::f32::consts::PI { turn += std::f32::consts::TAU; }
+        Some(GroundMotion { delta: [cur[3][0] - prev[3][0], cur[3][1] - prev[3][1], cur[3][2] - prev[3][2]], turn, pivot: [cur[3][0], cur[3][1], cur[3][2]] })
+    }
+
+    fn stat_segment(&self, from: V3, to: V3) -> Option<f32> { segment_in(&self.stat, from, to) }
 
     /// Every triangle of the objects whose box meets `lo`..`hi`, static first.
     fn near(&self, lo: V3, hi: V3, mut f: impl FnMut(&[V3; 3])) {
         let dynamic = self.dynamic.read().unwrap();
-        for g in [&self.stat, &*dynamic] {
+        for g in [&self.stat, &dynamic.geo] {
             for o in &g.objects {
                 if (0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k]) { continue; }
                 for t in &g.tris[o.tris.clone()] { f(t); }
@@ -253,11 +325,16 @@ mod tests {
         let mut w = world(Vec::new());
         w.shapes.insert(7, vec![[[0.0, 0.0, -1.0], [0.0, 1.0, 1.0], [0.0, -1.0, 1.0]]]);
         let at = |x: f32| [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [x, 0.0, 0.0, 1.0]];
-        w.set_dynamic(&[(7, at(5.0))]);
+        w.set_dynamic(&[(1, 7, at(5.0))]);
         assert!((w.segment([0.0, 0.0, 0.3], [10.0, 0.0, 0.3]).unwrap() - 0.5).abs() < 1e-5);
+        // The ground moved 0.5 along x since the last call.
+        w.set_dynamic(&[(1, 7, at(5.5))]);
+        let g = w.ground_motion([0.0, 0.0, 0.3], [10.0, 0.0, 0.3]).unwrap();
+        assert!((g.delta[0] - 0.5).abs() < 1e-6 && g.turn.abs() < 1e-6, "{g:?}");
         // Sister: moved away, the same segment is clear; an unknown glist adds nothing.
-        w.set_dynamic(&[(7, at(50.0)), (8, at(5.0))]);
+        w.set_dynamic(&[(1, 7, at(50.0)), (2, 8, at(5.0))]);
         assert!(w.segment([0.0, 0.0, 0.3], [10.0, 0.0, 0.3]).is_none());
+        assert!(w.ground_motion([0.0, 0.0, 0.3], [10.0, 0.0, 0.3]).is_none());
     }
 
     #[test]

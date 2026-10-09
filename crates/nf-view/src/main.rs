@@ -33,14 +33,17 @@ use winit::window::{CursorGrabMode, Window, WindowId};
 /// Radians per mouse count. Mouse deltas go straight into yaw/pitch (docs/systems/input.md §8).
 const MOUSE_SENSITIVITY: f32 = 0.0025;
 
-struct Camera { pos: Vec3, yaw: f32, pitch: f32 }
+/// The game's vertical field of view in play (60°, docs/systems/player.md).
+const GAME_FOV: f32 = std::f32::consts::FRAC_PI_3;
+
+struct Camera { pos: Vec3, yaw: f32, pitch: f32, fov: f32 }
 
 impl Camera {
     fn dir(&self) -> Vec3 { Vec3::new(self.pitch.cos() * self.yaw.sin(), self.pitch.sin(), self.pitch.cos() * self.yaw.cos()) }
     /// Right-handed view, wgpu clip depth 0..1, 60° vertical field of view (column-major for the shader).
     /// (full view-projection, the same with the eye at the origin for sky objects that follow the viewer).
     fn view_proj(&self, aspect: f32) -> ([[f32; 4]; 4], [[f32; 4]; 4]) {
-        let (near, far, f) = (0.05f32, 4000.0f32, 1.0 / (30f32.to_radians()).tan());
+        let (near, far, f) = (0.05f32, 4000.0f32, 1.0 / (self.fov * 0.5).tan());
         let proj = Mat4::from_cols_array_2d(&[[f / aspect, 0.0, 0.0, 0.0], [0.0, f, 0.0, 0.0], [0.0, 0.0, far / (near - far), -1.0], [0.0, 0.0, near * far / (near - far), 0.0]]);
         let fw = self.dir().normalize();
         let s = fw.cross(Vec3::Y).normalize();
@@ -52,10 +55,10 @@ impl Camera {
 
 fn start_camera(scene: &scene::Scene) -> Camera {
     match scene.start {
-        Some((p, yaw)) => Camera { pos: Vec3::new(p[0], p[1] + 1.6, p[2]), yaw, pitch: 0.0 },
+        Some((p, yaw)) => Camera { pos: Vec3::new(p[0], p[1] + 1.6, p[2]), yaw, pitch: 0.0, fov: GAME_FOV },
         None => {
             let (lo, hi) = scene.bounds;
-            Camera { pos: Vec3::new((lo[0] + hi[0]) / 2.0, hi[1], lo[2]), yaw: 0.0, pitch: -0.4 }
+            Camera { pos: Vec3::new((lo[0] + hi[0]) / 2.0, hi[1], lo[2]), yaw: 0.0, pitch: -0.4, fov: GAME_FOV }
         }
     }
 }
@@ -384,7 +387,9 @@ impl ApplicationHandler for App {
                         }
                         if !self.noclip {
                             let h = sim.bond.head();
-                            self.cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2 };
+                            self.cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV };
+                            // A script's cut-scene camera takes over the view (`Camera_Enable(4)`).
+                            if let Some((p, yaw, pitch, fov)) = sim.script_camera() { self.cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov }; }
                         }
                         // HUD stand-in: Bond's health (`BL+0x894`) and the hit flash (`BL+0x968`) in the title.
                         if before / 30 != self.anim_time as u32 / 30 {
@@ -463,7 +468,7 @@ fn main() -> Result<()> {
     let mut cam = start_camera(&scene);
     if let Some(i) = args.iter().position(|a| a == "--cam") {
         let v: Vec<f32> = args[i + 1..i + 6].iter().map(|s| s.parse()).collect::<Result<_, _>>()?;
-        cam = Camera { pos: Vec3::new(v[0], v[1], v[2]), yaw: v[3], pitch: v[4] };
+        cam = Camera { pos: Vec3::new(v[0], v[1], v[2]), yaw: v[3], pitch: v[4], fov: GAME_FOV };
     }
     let num = |flag: &str| -> Result<Option<f32>> { match args.iter().position(|a| a == flag) { Some(i) => Ok(Some(args.get(i + 1).context("missing value")?.parse()?)), None => Ok(None) } };
     let choice = num("--seq")?.map(|k| k as usize);
@@ -483,10 +488,17 @@ fn main() -> Result<()> {
             let walk = !args.iter().any(|a| a == "--cam");
             // `--channels`: every switch channel on first (as K).
             if args.iter().any(|a| a == "--channels") { for c in 1..=255 { sim.drones.set_channel(c) } }
+            // `--bond x,y,z`: Bond starts exactly there (in the air he falls), instead of the level start.
+            if let Some(i) = args.iter().position(|a| a == "--bond") {
+                let v: Vec<f32> = args.get(i + 1).context("--bond needs x,y,z")?.split(',').map(|t| t.parse()).collect::<Result<_, _>>()?;
+                sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], sim.bond.yaw);
+            }
             for t in 1..=time as u32 {
                 if walk { sim.step_bond(Default::default(), pulls.contains(&t), false); } else { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
             }
-            if walk { let h = sim.bond.head(); cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2 }; }
+            if walk { let h = sim.bond.head(); cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV }; }
+            if walk { if let Some((p, yaw, pitch, fov)) = sim.script_camera() { cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov }; } }
+            eprintln!("Bond at {:?}{}, health {}", sim.bond.pos, if sim.disabled { " (disabled by a script)" } else { "" }, sim.drones.health.health);
             for u in sim.unposed(&scene.characters) { eprintln!("unposed: {u}"); }
             for p in &sim.drones.pickups { eprintln!("pickup: weapon {:#x}, {} rounds at {:?}", p.weapon, p.rounds, &p.m[3][..3]); }
             if let Some(dr) = sim.drones.list.iter().find(|d| !d.shots.is_empty() || d.state != 4) {

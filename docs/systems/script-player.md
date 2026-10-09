@@ -89,7 +89,34 @@ update each tick (WORKLOG 0060).
 
 ## Port status
 
-`nf-game::nis`: the player states, `Script_Update` / `Run` / `Interp` (linear and spline keys), commands 04–0C, 12
-(events 3, 0xC, 0xD, 0xE, 0x11; others recorded), 16 / 17 (sound requests), entity and animation streams. Not yet:
-camera, fade, sprite, light, sub-script, text commands (the stream stops on them), `SP_Hit` bullet / object flags,
-the entity behaviours (triggers, AI volumes, pickups) — the objects are created and moved, nothing reacts to them yet.
+`nf-game::nis`: the player states, `Script_Update` / `Run` / `Interp` (linear and spline keys), commands 04–0F, 12
+(events 3, 4, 6, 0xC, 0xD, 0xE, 0x11; others recorded), 16 / 17 (sound requests), entity, animation and camera streams;
+script touch triggers (0xEA / 0xEB) in the trigger system with volumes following their entity; moving collision and
+riding. Not yet: fade, sprite, light, sub-script, text commands (the stream stops on them), `SP_Hit` bullet / object
+flags, AI volumes and pickups made by scripts, letterbox borders, music events, cut-scene skipping.
+
+## Cameras [M, L]
+
+`Script_CameraStart` (0x1d9140): u8 spline, u16 first key, u16 last key (the camera uses first..last − 1), skipped
+while SCRIPTINFO flag 0x20; pushes the camera states and enables camera 4 (the script's), borders on.
+`Script_Interp` case 4 → `Script_UpdateCamera`: the keys' matrix is the camera's (rows right, up, forward, position:
++Z forward — key 0 of 0x060008C8 points from (83.2, 21.0, 96.2) toward the waiting truck [D]) and
+`Camera_CalcViewAngles(key scale × viewer+0x114)`; `+0x114` = 4/3 [L], and the argument is the vertical field of view
+in radians (gameplay 60° = fy 388.06 on 448 lines), so 0x060008C8's 0.32 is ~24.5°. `Script_CameraEnd` / the stream's
+end pop back to the game camera.
+
+## Player hand-off [M]
+
+Event 4 `Player_Disable`. Event 6 sets flag 0x100 and copies the previous stream's object matrix (or the player's) to
+`+0x40`, p0 to `+0xAB6`; `Script_Free` then calls `Player_Enable(players, +0x40, +0xAB6)`. 0x060008C8 (the gatehouse,
+started by the script trigger on channel 0x5C — a 5 × 5 plate at y 27.05 that Bond touches standing on the wall top at
+24.75 above the waiting truck): disable at once, Bond's jump into the truck (anim 0x06000A24 on skin 0x05000007) under
+the script camera, and after 143 ticks Bond on the bed at (92.254, 19.424, 103.576).
+
+## Riding [M]
+
+`Player_FeetOnPoint` (0x194188) casts cc + 0.6 below the player; when the hit belongs to an object (not types 2, 3, 5,
+0x11, 0x12, 0x1A) `Control_InheritVelocity(player, object)` (0x133e88) adds the object's translation since the last
+tick (`+0x30 − +0x40`) and, when its heading changed, turns the player's offset about the object and his yaw by it.
+The port: `CollisionWorld::ground_motion` (the moving set keeps each object's previous matrix by id) applied to Bond
+before his movement (*suggested* order: the game does it in the collision handler).

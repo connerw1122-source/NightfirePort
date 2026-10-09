@@ -47,6 +47,8 @@ pub enum Cmd {
     Event { kind: u8, params: Vec<u32> },
     Sound { id: u32, flat: bool, has_obj: bool, stream: u8 },
     SoundEnd,
+    Camera { spline: bool, first: u16, last: u16 },
+    CameraEnd,
     /// A command whose handler is not read yet (its length is unknown: decoding stops).
     Unread(u8),
     /// `Script_Run`'s default: a one-byte command.
@@ -90,7 +92,12 @@ impl Stream {
                     (Cmd::Sound { id, flat: b[0] == 1, has_obj: b[1] != 0, stream: b[2] }, 9)
                 }
                 0x17 => (Cmd::SoundEnd, 2),
-                0x0d | 0x0f | 0x13 | 0x14 | 0x15 | 0x18 | 0x1a | 0x1b | 0x1d | 0x1e => { out.push(Cmd::Unread(op)); break; }
+                0x0d => {
+                    let (Some(&sp), Some(a), Some(b)) = (c.get(p + 1), rd(p + 2, 2), rd(p + 4, 2)) else { break };
+                    (Cmd::Camera { spline: sp != 0, first: a as u16, last: b as u16 }, 7)
+                }
+                0x0f => (Cmd::CameraEnd, 2),
+                0x13 | 0x14 | 0x15 | 0x18 | 0x1a | 0x1b | 0x1d | 0x1e => { out.push(Cmd::Unread(op)); break; }
                 _ => (Cmd::Other(op), 1),
             };
             out.push(cmd);

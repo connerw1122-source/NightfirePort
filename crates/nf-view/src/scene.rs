@@ -179,6 +179,8 @@ pub struct Sim {
     /// Aim mode (action 0x13, a pad's L1; not with the mouse, D-002) this tick.
     pub aiming: bool,
     pub auto_aim: bool,
+    /// `Player_Disable` by a script (cut-scene): no input, no first-person view, until `Player_Enable`.
+    pub disabled: bool,
 }
 
 impl Sim {
@@ -196,6 +198,7 @@ impl Sim {
     /// aim box (±0.296 across, ±0.4 up) and turn the view only past its edge (pad aim mode; the mouse has none, D-002); the shot goes through the smoothed
     /// cursor (`Player_GetAimingPoint`).
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool) {
+        let (trigger, reload) = if self.disabled { input = Default::default(); (false, false) } else { (trigger, reload) };
         let aiming = input.aiming;
         if aiming {
             let want = [self.cursor[0] - input.turn / 0.76966, self.cursor[1] + input.look * std::f32::consts::FRAC_PI_2 / 0.57724];
@@ -208,6 +211,15 @@ impl Sim {
             // `Player_AutoAim` halves the offsets each tick outside aim mode.
             self.cursor = [self.cursor[0] * 0.5, self.cursor[1] * 0.5];
             self.cross = [self.cross[0] * 0.5, self.cross[1] * 0.5];
+        }
+        // Riding (`Player_FeetOnPoint` → `Control_InheritVelocity`): standing on a moving object (the truck), Bond moves
+        // and turns with it — the feet ray reaches cc + 0.6 below him (cc 1.0347 [L]).
+        let p = self.bond.pos;
+        if let Some(g) = self.world.ground_motion(p, [p[0], p[1] - 1.6347, p[2]]) {
+            let (sn, cs) = g.turn.sin_cos();
+            let (x, z) = (p[0] + g.delta[0] - g.pivot[0], p[2] + g.delta[2] - g.pivot[2]);
+            self.bond.pos = [g.pivot[0] + x * cs + z * sn, p[1] + g.delta[1], g.pivot[2] - x * sn + z * cs];
+            self.bond.yaw += g.turn;
         }
         self.bond.tick(&self.world, &input);
         // The bob phases: `BL+0x8DC` += the forward speed (`BL+0x28`), `BL+0x8E8` += (π/2) / 60.
@@ -223,8 +235,32 @@ impl Sim {
         let d = [0, 1, 2].map(|k| look[k] + tx * right[k] + ty * up[k]);
         let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
         let aim = d.map(|v| v / l);
-        self.first_person = true;
+        self.first_person = !self.disabled;
         self.run(self.bond.pos, head, look, aim, trigger, aiming, reload);
+        // Script hand-offs (docs/systems/script-player.md): event 4 stops Bond; `Script_Free` after event 6 puts him
+        // back at the script's matrix (on the floor below it), facing its +Z.
+        for e in std::mem::take(&mut self.drones.player_events) {
+            match e {
+                nf_game::nis::Request::PlayerDisable => self.disabled = true,
+                nf_game::nis::Request::PlayerEnable { at, .. } => {
+                    if let Some(m) = at {
+                        self.bond = nf_game::player::Bond::stand_at(&self.world, [m[3][0], m[3][1], m[3][2]], m[2][0].atan2(m[2][2]));
+                    }
+                    self.disabled = false;
+                }
+                _ => {}
+            }
+        }
+        self.first_person = !self.disabled;
+    }
+
+    /// The cut-scene camera, when a script runs one: position, yaw, pitch (from the matrix's +Z) and vertical field of
+    /// view.
+    pub fn script_camera(&self) -> Option<([f32; 3], f32, f32, f32)> {
+        let (m, fov) = self.drones.scripts.camera()?;
+        let f = m[2];
+        let l = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt().max(1e-6);
+        Some(([m[3][0], m[3][1], m[3][2]], f[0].atan2(f[2]), (f[1] / l).clamp(-1.0, 1.0).asin(), fov))
     }
 
     fn run(&mut self, pos: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool, reload: bool) {
@@ -840,7 +876,7 @@ impl Scene {
             let bond = nf_game::player::Bond::stand_at(&world, p0, yaw0);
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.attach_level(level);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, disabled: false })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {

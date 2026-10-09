@@ -34,6 +34,8 @@ pub struct Trigger {
     hi: V3,
     /// TouchOnce removed itself (its channel was on).
     pub gone: bool,
+    /// Made by a script (`Script_CreateEntity` 0xEA / 0xEB): the script object's index; its volume follows the object.
+    pub script: Option<usize>,
 }
 
 /// A body that can touch triggers: capsule axis from `a` to `b`, radius, drone (true) or Bond, drone skin hash.
@@ -115,6 +117,27 @@ fn segment_hits_triangle(a: V3, b: V3, t: &[V3; 3]) -> bool {
 }
 
 impl Trigger {
+    /// A trigger of `kind` from its parameters (placement or script entity: parameter k at `level_tag+0x2C+4k`) and its
+    /// world triangles; `None` for a Touch on channel 0x7D (only live on 0x07001500).
+    pub fn from_params(placement: usize, kind: u8, q: impl Fn(u32) -> u32, tris: Vec<[V3; 3]>) -> Option<Trigger> {
+        let (out_ch, mask, list, lock, hide) = match kind {
+            kind::TOUCH_ONCE => (q(0), q(1), (2..=8).map(&q).collect(), q(7), q(8) != 0),
+            kind::TOUCH => (q(0), q(1), (2..=8).map(&q).collect(), q(6), q(7) != 0),
+            _ => (q(0), q(9), (1..=8).filter(|&k| k != 7).map(&q).collect(), q(10), q(11) != 0),
+        };
+        if matches!(kind, kind::TOUCH | kind::TOUCH_ONCE) && out_ch == 0x7d { return None; }
+        let mut t = Trigger { placement, kind, out: out_ch as u8, mask, list, lock: lock as u8, hide, tris: Vec::new(), lo: [0.0; 3], hi: [0.0; 3], gone: false, script: None };
+        t.set_tris(tris);
+        Some(t)
+    }
+
+    /// New world triangles (a moving trigger).
+    pub fn set_tris(&mut self, tris: Vec<[V3; 3]>) {
+        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for t in &tris { for v in t { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } } }
+        (self.tris, self.lo, self.hi) = (tris, lo, hi);
+    }
+
     /// Whether a capsule touches the trigger's triangles.
     pub fn touched_by(&self, c: &Toucher) -> bool {
         let grow = c.r + 0.1;
@@ -190,20 +213,12 @@ pub fn build(level: &Level) -> Vec<Trigger> {
         let raw = p.flags == 0xdc;
         let shift = raw as u32; // a raw Trigger (0xDC) carries its type in p0 and the rest one later (*suggested*)
         let q = |k: u32| param(k + shift);
-        let (out_ch, mask, list, lock, hide) = match kind {
-            kind::TOUCH_ONCE => (q(0), q(1), (2..=8).map(q).collect(), q(7), q(8) != 0),
-            kind::TOUCH => (q(0), q(1), (2..=8).map(q).collect(), q(6), q(7) != 0),
-            _ => (q(0), q(9), (1..=8).filter(|&k| k != 7).map(q).collect(), q(10), q(11) != 0),
-        };
-        // Touch triggers on channel 0x7D only work on level 0x07001500.
-        if matches!(kind, kind::TOUCH | kind::TOUCH_ONCE) && out_ch == 0x7d { continue; }
         let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() } else if (p.index as usize) < map.objects.len() { Some((m, p.index as usize)) } else { None };
         let mx = object_matrix(p.rotation, p.translation);
         let tris: Vec<[V3; 3]> = target.and_then(|(om, oi)| level.maps[om].objects[oi].collision.as_ref())
             .map(|c| c.triangles().into_iter().map(|t| t.map(|v| transform(&mx, v))).collect()).unwrap_or_default();
-        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-        for t in &tris { for v in t { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } } }
-        out.push(Trigger { placement: i, kind, out: out_ch as u8, mask, list, lock: lock as u8, hide, tris, lo, hi, gone: false });
+        // Touch triggers on channel 0x7D only work on level 0x07001500.
+        if let Some(t) = Trigger::from_params(i, kind, q, tris) { out.push(t); }
     }
     out
 }
@@ -224,7 +239,7 @@ mod tests {
     fn plate(kind: u8, out: u8, mask: u32, list: Vec<u32>) -> Trigger {
         // A 2 × 2 horizontal quad at y = 0 around the origin.
         let (a, b, c, d) = ([-1.0, 0.0, -1.0], [1.0, 0.0, -1.0], [1.0, 0.0, 1.0], [-1.0, 0.0, 1.0]);
-        Trigger { placement: 0, kind, out, mask, list, lock: 0, hide: false, tris: vec![[a, b, c], [a, c, d]], lo: [-1.0, 0.0, -1.0], hi: [1.0, 0.0, 1.0], gone: false }
+        Trigger { placement: 0, kind, out, mask, list, lock: 0, hide: false, tris: vec![[a, b, c], [a, c, d]], lo: [-1.0, 0.0, -1.0], hi: [1.0, 0.0, 1.0], gone: false, script: None }
     }
 
     #[test]

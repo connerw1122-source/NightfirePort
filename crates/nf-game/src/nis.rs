@@ -20,6 +20,9 @@ pub enum Obj {
     /// An animated skin: the animation script and its integer frame (from 1); the object sits at the origin and the
     /// sequence's root carries it (docs/systems/script-player.md).
     Anim { skin: u32, script: u32, frame: f32, src: (u32, u8) },
+    /// A cut-scene camera (`CAM_INFO`, `Script_CameraStart`): its world matrix (rows: right, up, forward, position)
+    /// and vertical field of view in radians (key scale × `+0x114` = 4/3, `Camera_CalcViewAngles`).
+    Camera { matrix: Mat4, fov: f32, src: (u32, u8) },
 }
 
 /// A request the script made this tick for the caller to carry out.
@@ -29,6 +32,10 @@ pub enum Request {
     Sound { id: u32, at: Option<usize> },
     /// An event the port does not carry out yet (type, parameters).
     Event { kind: u8, params: Vec<u32> },
+    /// Event 4: `Player_Disable` — the player stops (the script runs a cut-scene).
+    PlayerDisable,
+    /// `Script_Free` after event 6: `Player_Enable` at this matrix (`None`: where the player is), with `+0xAB6`.
+    PlayerEnable { at: Option<Mat4>, mode: u8 },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -64,6 +71,9 @@ pub struct Script {
     pub flags: u16,
     /// `+0xAB2`: 1 playing, 2 done, 8 looping.
     pub play: u8,
+    /// Event 6: where the player comes back (`+0x40`) and `+0xAB6`.
+    pub player_at: Option<Mat4>,
+    pub player_mode: u8,
     streams: Vec<Stream>,
 }
 
@@ -87,7 +97,7 @@ impl Script {
     pub fn load(nis: Arc<Nis>, matrix: Mat4, scale: f32) -> Script {
         let streams = nis.streams.iter().map(|s| Stream { first_key: s.first_key, last_key: s.last_key, pc: Some(0), parent: -1, ..Default::default() }).collect();
         let flags = if nis.camera { 0x40 } else { 0 };
-        Script { nis, matrix, scale, delay: 0, clock: 0.0, flags, play: 0, streams }
+        Script { nis, matrix, scale, delay: 0, clock: 0.0, flags, play: 0, streams, player_at: None, player_mode: 0 }
     }
 
     /// `Script_Play` (0x1db588).
@@ -176,7 +186,7 @@ impl Script {
                         let (Some(&n), Some(&kind)) = (cmds.get(pc + 1), cmds.get(pc + 2)) else { self.streams[i].pc = None; return };
                         let p: Vec<u32> = (0..n as usize).filter_map(|k| rd(2 + 4 * k, 4)).collect();
                         next = pc + 3 + 4 * n as usize + 1;
-                        self.event(i, kind, p, ch, frame, out);
+                        self.event(i, kind, p, objs, ch, frame, out);
                     }
                     0x16 => {
                         // `Script_SoundStart` (0x1d8820): 2-D when asked or when the object stream has no object.
@@ -190,7 +200,30 @@ impl Script {
                         next = pc + 9;
                     }
                     0x17 => { let s = &mut self.streams[i]; if s.kind == 5 { s.kind = 0; } next = pc + 2; }
-                    0x0d | 0x0f | 0x13 | 0x14 | 0x15 | 0x18 | 0x1a | 0x1b | 0x1d | 0x1e => {
+                    0x0d => {
+                        // `Script_CameraStart` (0x1d9140): u8 spline, u16 first key, u16 last key; the camera uses keys
+                        // first..last − 1. Skipped while flag 0x20 (no cameras).
+                        let (Some(&sp), Some(a), Some(b)) = (cmds.get(pc + 1), rd(1, 2), rd(3, 2)) else { self.streams[i].pc = None; return };
+                        next = pc + 7;
+                        if self.flags & 0x20 == 0 {
+                            let s = &mut self.streams[i];
+                            if s.obj.is_none() {
+                                objs.list.push(Some(Obj::Camera { matrix: IDENT, fov: 1.0, src: (self.nis.hashcode, i as u8) }));
+                                s.obj = Some(objs.list.len() - 1);
+                            }
+                            s.kind = 4;
+                            s.first_key = a as u16;
+                            s.last_key = (b as u16).wrapping_sub(1);
+                            s.flags = if sp != 0 { 2 } else { 0 };
+                            self.interp(i, objs, w);
+                        }
+                    }
+                    0x0f => {
+                        // `Script_CameraEnd`.
+                        if self.streams[i].clock < len || self.play & 8 == 0 { self.kill(i, objs); }
+                        next = pc + 2;
+                    }
+                    0x13 | 0x14 | 0x15 | 0x18 | 0x1a | 0x1b | 0x1d | 0x1e => {
                         // Handlers not read yet: their argument lengths are unknown, so the stream stops here.
                         out.push(Request::Event { kind: 0x80 | op, params: Vec::new() });
                         self.streams[i].pc = None;
@@ -248,6 +281,8 @@ impl Script {
                 let Some(o) = s.obj else { if s.kind == 1 { s.kind = 0; } return };
                 if !keep { objs.list[o] = None; }
             }
+            // The camera pops back to the game's.
+            4 => if let Some(o) = s.obj { objs.list[o] = None; },
             _ => {}
         }
         s.kind = 0;
@@ -255,13 +290,25 @@ impl Script {
     }
 
     /// `Script_Free`'s stream pass (`Script_Free` 0x1da880).
-    pub fn free(&mut self, objs: &mut Objects) { for i in 0..self.streams.len() { self.kill(i, objs); } }
+    pub fn free(&mut self, objs: &mut Objects, out: &mut Vec<Request>) {
+        for i in 0..self.streams.len() { self.kill(i, objs); }
+        if self.flags & 0x100 != 0 { out.push(Request::PlayerEnable { at: self.player_at, mode: self.player_mode }); }
+    }
 
     /// `Script_EventHandler` (0x1d94c0).
-    fn event(&mut self, i: usize, kind: u8, p: Vec<u32>, ch: &mut Channels, frame: u32, out: &mut Vec<Request>) {
+    #[allow(clippy::too_many_arguments)]
+    fn event(&mut self, i: usize, kind: u8, p: Vec<u32>, objs: &Objects, ch: &mut Channels, frame: u32, out: &mut Vec<Request>) {
         let g = |k: usize| p.get(k).copied().unwrap_or(0);
         match kind {
             3 => self.delay = g(0) as i32 - 1,
+            4 => out.push(Request::PlayerDisable),
+            // Where the player comes back: the previous stream's entity (else where he is), applied by `Script_Free`.
+            6 => {
+                self.flags |= 0x100;
+                let prev = i.checked_sub(1).map(|j| &self.streams[j]).filter(|s| matches!(s.kind, 1 | 2)).and_then(|s| s.obj);
+                self.player_at = prev.and_then(|o| match objs.list.get(o) { Some(Some(Obj::Entity { matrix, .. })) => Some(*matrix), _ => None });
+                self.player_mode = g(0) as u8;
+            }
             7 => self.flags |= 0x80,
             0xc => self.flags |= 0x10,
             0xd => if g(0) != 0 { ch.set(g(0), g(1) as u8, frame); },
@@ -293,6 +340,13 @@ impl Script {
                 }
                 m = mul(&m, &self.matrix);
                 if let Some(Some(Obj::Entity { matrix, alpha: a, .. })) = objs.list.get_mut(o) { *matrix = m; *a = alpha; }
+            }
+            4 => {
+                // `Script_Interp` case 4 → `Script_UpdateCamera`: the keys' matrix (the script matrix applied,
+                // *suggested*: the decomp loses that argument) and the field of view.
+                let Some((m, scale, _)) = self.keys(i) else { return };
+                let m = mul(&m, &self.matrix);
+                if let Some(Some(Obj::Camera { matrix, fov, .. })) = objs.list.get_mut(o) { *matrix = m; *fov = scale * (4.0 / 3.0); }
             }
             2 => {
                 let f = s.clock - s.start_clock + s.start_frame;
@@ -465,14 +519,14 @@ impl Player {
             }
             5 => {
                 // `SP_Delete`: both scripts freed (their kept objects stay).
-                for s in self.info.iter_mut().flatten() { s.free(objs); }
+                for s in self.info.iter_mut().flatten() { s.free(objs, out); }
                 self.info = [None, None];
                 self.deleted = true;
             }
             6 if trig => {
                 if let Some(s) = self.info[self.cur].as_mut() { s.delay = 0; }
                 if self.other().is_some() {
-                    if let Some(mut s) = self.info[0].take() { s.free(objs); }
+                    if let Some(mut s) = self.info[0].take() { s.free(objs, out); }
                     self.cur ^= 1;
                     self.load(lib, objs, ch, w, frame, out);
                     self.state = 2;
@@ -500,6 +554,11 @@ impl Scripts {
     pub fn new(lib: HashMap<u32, Arc<Nis>>, placements: &[Placement]) -> Scripts {
         let players = placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xd9).filter_map(|(i, p)| Player::from_placement(i, p)).collect();
         Scripts { lib, players, objects: Objects::default(), requests: Vec::new() }
+    }
+
+    /// The live cut-scene camera (the newest): world matrix and vertical field of view.
+    pub fn camera(&self) -> Option<(Mat4, f32)> {
+        self.objects.list.iter().rev().flatten().find_map(|o| match o { Obj::Camera { matrix, fov, .. } => Some((*matrix, *fov)), _ => None })
     }
 
     pub fn tick(&mut self, ch: &mut Channels, w: &dyn World, frame: u32) {

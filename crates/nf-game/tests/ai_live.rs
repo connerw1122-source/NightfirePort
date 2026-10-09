@@ -878,3 +878,48 @@ fn wine_truck_drives_and_parks() {
     // Sister: before its event the channel is off, and the truck has moved.
     assert!(chan_73.unwrap() > 1000 && (pe[0] - p1[0]).abs() > 50.0);
 }
+
+/// The truck's gatehouse trigger (0x06000A22 stream 8): a touch-once trigger made by the script over 1882–2312 at its
+/// keys' place; Bond inside it sets channel 0x5C, which starts ScriptPlayer #38 (0x060008C8).
+#[test]
+fn truck_gatehouse_trigger_starts_the_next_script() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let run = |bond: Player| {
+        let (drones, _, rng) = l.drones(None, 61.342);
+        let mut sim = l.sim(drones, rng);
+        let away = bond_at([0.0, -500.0, 0.0]);
+        let mut seen = None;
+        let mut events = Vec::new();
+        for t in 1..=2400u32 {
+            sim.tick(&d, if (1890..2300).contains(&t) { &bond } else { &away });
+            if t == 1900 {
+                let tr = sim.triggers.iter().find(|x| x.script.is_some() && x.out == 0x5c).expect("script trigger 0x5C");
+                assert!(!tr.tris.is_empty(), "trigger volume from the glist's collision");
+                let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+                for t in &tr.tris { for v in t { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } } }
+                eprintln!("trigger 0x5C volume {lo:?}..{hi:?}");
+            }
+            if seen.is_none() && sim.channels.on(0x5c) { seen = Some(t); }
+            for e in std::mem::take(&mut sim.player_events) { events.push((t, e)); }
+        }
+        let p38 = sim.scripts.players.iter().find(|p| p.scripts[0] == 0x0600_08c8).unwrap();
+        (seen, p38.state, events)
+    };
+    let (on, state, events) = run(bond_at([98.487, 27.054 - 0.4, 106.358]));
+    eprintln!("inside: channel 0x5C at {on:?}, player #38 state {state}, events {events:?}");
+    assert!(on.is_some_and(|t| t >= 1890) && state != 1 && state != 0);
+    // The cut-scene (0x060008C8): event 4 disables Bond at once; after its 143 ticks `Script_Free` puts him at stream
+    // 3's entity (key 70: (92.254, 19.424, 103.576), on the truck bed).
+    use nf_game::nis::Request;
+    let t0 = on.unwrap();
+    assert!(matches!(events.first(), Some((t, Request::PlayerDisable)) if *t <= t0 + 2), "{events:?}");
+    let back = events.iter().find_map(|(t, e)| match e { Request::PlayerEnable { at: Some(m), .. } => Some((*t, m[3])), _ => None }).expect("enable");
+    assert!((back.0 as i64 - (t0 as i64 + 143)).abs() <= 3, "{back:?}");
+    assert!((back.1[0] - 92.254).abs() < 0.01 && (back.1[1] - 19.424).abs() < 0.01 && (back.1[2] - 103.576).abs() < 0.01, "{back:?}");
+    // Sister: Bond 20 units away never sets it, and #38 keeps waiting.
+    let (off, state, events) = run(bond_at([118.487, 27.054, 106.358]));
+    assert!(events.is_empty());
+    assert!(off.is_none(), "{off:?}");
+    assert!(state == 0 || state == 1, "{state}");
+}

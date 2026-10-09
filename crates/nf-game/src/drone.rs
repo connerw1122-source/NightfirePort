@@ -2852,6 +2852,8 @@ pub struct Drones {
     cover_counter: i32,
     /// Script players and the objects their scripts made (docs/systems/script-player.md).
     pub scripts: crate::nis::Scripts,
+    /// Player hand-offs the scripts asked for this tick (`PlayerDisable` / `PlayerEnable`), for the player's owner.
+    pub player_events: Vec<crate::nis::Request>,
 }
 
 /// The script runtime's view of the level data: animation lengths and an animated object's discrete object 0.
@@ -2886,7 +2888,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -3262,16 +3264,38 @@ impl Drones {
         self.scripts.tick(&mut self.channels, d, frame);
         // Script objects with collision data join the collision world where they now are: animations' discrete
         // parts and drawn entities (`Collide_PickObj`; triggers and AI volumes are not obstacles).
+        // Id: object index · 64 + part (stable while the object lives) for the ride (`ground_motion`).
         let mut parts = Vec::new();
-        for o in self.scripts.objects.list.iter().flatten() {
+        for (oi, o) in self.scripts.objects.list.iter().enumerate() {
+            let id = |k: usize| (oi as u64) << 6 | k as u64;
             match o {
-                crate::nis::Obj::Anim { skin, script, frame, .. } => parts.extend(d.discrete_parts(*skin, *script, *frame)),
-                crate::nis::Obj::Entity { hash, kind, matrix, .. } if !matches!(kind, 0xea | 0xeb | 0xf5 | 0xf2) => parts.push((*hash, *matrix)),
+                Some(crate::nis::Obj::Anim { skin, script, frame, .. }) => parts.extend(d.discrete_parts(*skin, *script, *frame).into_iter().enumerate().map(|(k, (h, m))| (id(k), h, m))),
+                Some(crate::nis::Obj::Entity { hash, kind, matrix, .. }) if !matches!(kind, 0xea | 0xeb | 0xf5 | 0xf2) => parts.push((id(0), *hash, *matrix)),
                 _ => {}
             }
         }
         d.world.set_dynamic(&parts);
+        // Script triggers (`Trigger_TouchOnce` / `Trigger_Touch` made by `Script_CreateEntity`): one per live entity,
+        // its volume the glist's collision at the entity's matrix this tick; gone with the object. New objects head the
+        // control list, so they update before the placed ones (placement index past them all).
+        let live: Vec<(usize, u8, Vec<u32>, u32, nf_formats::anim::Mat4)> = self.scripts.objects.list.iter().enumerate().filter_map(|(i, o)| match o {
+            Some(crate::nis::Obj::Entity { hash, kind, params, matrix, .. }) if matches!(kind, 0xea | 0xeb) => Some((i, *kind, params.clone(), *hash, *matrix)),
+            _ => None,
+        }).collect();
+        self.triggers.retain(|t| t.script.is_none_or(|o| live.iter().any(|l| l.0 == o)));
+        for (o, kind, params, hash, m) in live {
+            let tris: Vec<[V3; 3]> = d.world.shape(hash).map(|s| s.iter().map(|t| t.map(|p| nf_formats::placement::transform(&m, p))).collect()).unwrap_or_default();
+            match self.triggers.iter_mut().find(|t| t.script == Some(o)) {
+                Some(t) => t.set_tris(tris),
+                None => {
+                    let k = if kind == 0xea { crate::triggers::kind::TOUCH_ONCE } else { crate::triggers::kind::TOUCH };
+                    let q = |i: u32| params.get(i as usize).copied().unwrap_or(0);
+                    if let Some(mut t) = crate::triggers::Trigger::from_params(usize::MAX - o, k, q, tris) { t.script = Some(o); self.triggers.push(t); }
+                }
+            }
+        }
         for r in std::mem::take(&mut self.scripts.requests) {
+            if matches!(r, crate::nis::Request::PlayerDisable | crate::nis::Request::PlayerEnable { .. }) { self.player_events.push(r.clone()); }
             if let crate::nis::Request::Sound { id, at: Some(o) } = r {
                 let pos = match self.scripts.objects.list.get(o) {
                     Some(Some(crate::nis::Obj::Entity { matrix, .. })) => Some([matrix[3][0], matrix[3][1], matrix[3][2]]),
