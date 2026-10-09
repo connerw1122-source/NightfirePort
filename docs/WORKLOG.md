@@ -955,4 +955,18 @@ frames), fire 0x06000823 (25), reload 0x06000827 (155) on skeleton 39 (test `fir
 nf-view draws it as a character whose matrix is the view (left, up, forward) at the eye + `weapon+0xE0` + the bob,
 playing fire / reload / idle as the trigger and reload drive them; headless shots without `--cam` show Bond's view.
 The rigid parts hang on their bones with no extra offset (they render in place). Not yet: the muzzle flash and smoke,
-the turn toward an off-centre crosshair, draw / holster, the idle fidget.
+the turn toward an off-centre crosshair, draw / holster, the idle fidget. (The flash came in the next commit: mesh
+`weapon+0x48` on datum 0 for 3 ticks.)
+
+## 0045 — Guards surrender to Bond behind them (2026-10-09)
+
+**Report** (user): sneaking up behind an unaware guard makes him give up his gun and surrender; the port lacked it.
+**Read** (research pass, docs/systems/drone-surrender.md; Surrender_Anim re-read here): there is no disarm button —
+the guard's own first sighting of Bond within 2 units, more than 120° behind it, with Bond armed and facing it within
+45°, at alertness < 0.66 and prop 0x43, turns `FirstAttack` into Surrender_Anim; the gun is dropped as a pickup.
+**Port**: sighting flags, the surrender gate, states 0x3F / 0x40 / 0x41 / 0x66, the unarmed Attack → DrawWeapon →
+weapon 6, Bond's weapon lent to the drones; nf-view hides the gun of an unarmed guard. Test
+`guard_surrenders_to_bond_behind_him` (see the spec). **Failed first**: the test's first spots behind guards were
+inside the gate wall (no floor, no line of sight) and on a spawner template; the test now searches open floor behind a
+guard active after a warm-up. Calling the hands-up anim after `ChangeWeapon(1)` had no script for set 0xC — the game
+calls it first; reordered.

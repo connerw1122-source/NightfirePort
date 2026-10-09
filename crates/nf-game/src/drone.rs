@@ -23,6 +23,11 @@ pub mod state {
     pub const SNIPER_AIM: u8 = 0x2a;
     pub const SNIPER_FIRE: u8 = 0x2b;
     pub const SNIPER_RELOAD: u8 = 0x2c;
+    /// Surrender (docs/systems/drone-surrender.md): hands up, kept up, lowered; then the sidearm is drawn.
+    pub const SURRENDER_ANIM: u8 = 0x3f;
+    pub const SURRENDERED: u8 = 0x40;
+    pub const UNSURRENDER_ANIM: u8 = 0x41;
+    pub const DRAW_WEAPON: u8 = 0x66;
     pub const PATROL: u8 = 0x07;
     pub const ATTACK: u8 = 0x56;
     pub const COMBAT: u8 = 0x58;
@@ -100,6 +105,9 @@ pub mod msg {
 /// Anim states (`DroneAnimStates` index).
 pub mod anim_state {
     pub const AIM_STAND: u16 = 0x0a;
+    /// Hands up (Surrender_Anim) and drawing the sidearm (DrawWeapon).
+    pub const SURRENDER: u16 = 0x5c;
+    pub const DRAW_WEAPON: u16 = 0x46;
     pub const STAND_IDLE: u16 = 0x24;
     pub const RELOAD: u16 = 0x52;
     pub const BACKOFF: u16 = 0x04;
@@ -408,6 +416,17 @@ pub struct Drone {
     pub global_flinch: Option<u32>,
     pub bond_aiming: bool,
     pub cull: bool,
+    /// Lent by `Drones`: Bond holds a gun (`DroneWeap_OpponentHasWeapon` / `NDrone2_ObjectIsArmed`: weapon byte 2–0x46
+    /// or 0x6A–0x71). `+0x1D0`: AngleDiff(Bond's yaw, bearing Bond → drone).
+    pub bond_armed: bool,
+    pub opp_facing: f32,
+    /// Bond's chest (`Player::target`) for this drone's own line-of-sight tests.
+    pub opp_target: V3,
+    /// `+0x4F8` 0x4000000 (a sighting happened), 0x8000000 (it was this drone's own) and 0x2000000 (`FirstAttack`
+    /// done).
+    pub sighted: bool,
+    pub own_sight: bool,
+    pub first_attack_done: bool,
     /// Corpse (`obj+0xF0 & 0x20`: no longer hit or seeing), the death channel to raise (`+0xCD8` pending, `+0x13C`
     /// = placement parameter 12), the special-death script (`+0xBD4`, parameter 13), alpha (`obj+0x106` / `+0xCFC`).
     pub corpse: bool,
@@ -484,7 +503,7 @@ impl Drone {
             // `drone_stats[type]+8` is 0 for these guards → 10 (captains, difficulty ≥ 2 only, are not modelled).
             health: 10.0, max_health: 10.0, damage_taken: 1.0, damageable: !matches!(skin, 0x0500_003b | 0x0500_003c | 0x0500_0053), kind: setup.kind,
             last_damage: 0.0, silent_kill: false, big_hit: false, flinch_at: None, hit: None, impact_resume: 0, hits_taken: 0,
-            global_flinch: None, bond_aiming: false, cull: false,
+            global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
             corpse: false, death_pending: false, death_channel: param(12) as u8, special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
             captain: false, drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
@@ -937,6 +956,10 @@ impl Drone {
             SNIPER_IDLE => (SNIPER_AIM, false),
             SNIPER_AIM => (SNIPER_FIRE, true),
             SNIPER_RELOAD => (SNIPER_FIRE, false),
+            // Surrendered (0x1626a0 / 0x162950): any bullet kills (`HandleImpact(0x44, 0)`); Unsurrender (0x162a70)
+            // `HandleImpact(0, 0)`; DrawWeapon *suggested* the same.
+            SURRENDER_ANIM | SURRENDERED => (DEATH_ANIM, false),
+            UNSURRENDER_ANIM | DRAW_WEAPON => (0, false),
             AIM_CROUCH | AIM_STAND_RELOAD | AIM_CROUCH_RELOAD | COMBAT_OUT_OF_RANGE | COMBAT_NO_SIGHT | COMBAT_DRONE_AHEAD
                 | GO_TO_GOAL | DRONE_STUCK => (0, false),
             _ => return None,
@@ -1706,6 +1729,38 @@ impl Drone {
             }
             (SNIPER_FIRE, msg::EXIT) => { self.firing = false; true }
             // SniperReload: 20 ticks, then the reload anim 0x52 → SniperFire; the clip refills on exit.
+            // Surrender_Anim (0x1626a0): drop the gun, unarmed (`ChangeWeapon(1)`: weapon 1, anim set 0xC), hands up (anim
+            // 0x5C → Surrendered), turned away from Bond; every 15 ticks the "surrendered" alert bit (`+0x4FC |= 4`) that
+            // calm guards seeing him react to (prop 0x4F). The 0x0600021F special death is cancelled.
+            (SURRENDER_ANIM, msg::ENTER) => {
+                // Order as read: the call (with the armed anim set), the drop, then `ChangeWeapon(1)`.
+                self.firing = false;
+                self.call_anim(d, anim_state::SURRENDER, SURRENDERED, 0);
+                self.drop_weapon(d, rng);
+                self.weapon = 1;
+                self.anim_set = 0xc;
+                self.clip = 0;
+                self.timer_c = Some(frame + 15);
+                if self.special_death == 0x0600_021f { self.special_death = 0; self.death_channel = 0; }
+                true
+            }
+            (SURRENDER_ANIM, msg::UPDATE) => { self.desired_yaw = self.yaw_to_opp + crate::trig::PI; true }
+            (SURRENDER_ANIM, msg::TIMER_C) => { self.alert_bits |= 4; self.timer_c = Some(frame + 15); true }
+            // Surrendered (0x162950): faces Bond once; hands up while Bond keeps him covered (`CheckUnsurrender`).
+            (SURRENDERED, msg::ENTER) => { self.desired_yaw = self.yaw_to_opp; true }
+            (SURRENDERED, msg::UPDATE) => { if self.check_unsurrender(d) { self.set_state(UNSURRENDER_ANIM); } true }
+            // Unsurrender_Anim (0x162a70): face Bond, aim-stand anim → Attack (which, unarmed, draws the sidearm).
+            (UNSURRENDER_ANIM, msg::ENTER) => { self.desired_yaw = self.yaw_to_opp; self.call_anim(d, anim_state::AIM_STAND, ATTACK, 0); true }
+            (UNSURRENDER_ANIM, msg::UPDATE) => { self.desired_yaw = self.yaw_to_opp; true }
+            // DrawWeapon (0x166000): anim 0x46 → the return state `+0x5A2` (*suggested* InitPatrol when unset, [L] 6 for
+            // most 07000005 guards); on exit, still unarmed → `ChangeWeapon(6)`: weapon 6, anim set 4, 16 rounds.
+            (DRAW_WEAPON, msg::ENTER) => {
+                let next = if self.return_state != 0 { self.return_state } else { INIT_PATROL };
+                self.call_anim(d, anim_state::DRAW_WEAPON, next, 0);
+                true
+            }
+            (DRAW_WEAPON, msg::UPDATE) => { self.desired_yaw = self.yaw_to_opp; true }
+            (DRAW_WEAPON, msg::EXIT) => { if (self.weapon as u8) <= 1 { self.weapon = 6; self.anim_set = 4; self.clip = 16; } true }
             (SNIPER_RELOAD, msg::ENTER) => { self.vision_on = true; self.stationary = true; self.firing = false; self.timer_c = Some(frame + 20); true }
             (SNIPER_RELOAD, msg::TIMER_C) => { self.call_anim(d, anim_state::RELOAD, SNIPER_FIRE, 0); true }
             (SNIPER_RELOAD, msg::EXIT) => { self.clip = self.clip_max; true }
@@ -1813,7 +1868,30 @@ impl Drone {
                 self.set_state(st);
                 true
             }
+            // `DroneFunc_FirstAttack` (0x148010), once per drone, after its own first sighting: `NDrone2_CheckSurrender` →
+            // alertness 1, `+0x4F8 |= 0x6000000`, `+0x524` = now if unset, sight widened — and Surrender_Anim, without
+            // the shout (`+0x4FC |= 0x10` is skipped).
+            (ATTACK, msg::ENTER) if !self.first_attack_done && self.own_sight && self.check_surrender(d) => {
+                self.first_attack_done = true;
+                self.alert = 1.0;
+                self.second_channel = 0;
+                self.second_tag = 0;
+                if self.attack_frame == 0 { self.attack_frame = frame; }
+                self.sight_range = self.sight_range.max(self.combat_range);
+                self.half_fov = 0.0;
+                self.set_state(SURRENDER_ANIM);
+                true
+            }
+            // Attack without a gun (weapon byte ≤ 1, after a surrender): `DroneFunc_AttackNoWeapon` (0x14af80) → DrawWeapon
+            // (`+0x45` > 1; [L] 10 for every 07000005 guard).
+            (ATTACK, msg::ENTER) if (self.weapon as u8) <= 1 => {
+                self.first_attack_done = true;
+                self.alert = 1.0;
+                self.set_state(DRAW_WEAPON);
+                true
+            }
             (ATTACK, msg::ENTER) => {
+                self.first_attack_done = true;
                 // DroneFunc_FirstAttack → FirstSightState: alertness 1, combat sight; props 0x1B (50 %) / 0x19 pick a
                 // combat move; otherwise AimStand (prop 0x18, in range) or Combat. FirstAttack also clears the second
                 // switch and sets the return state to Attack (`+0x5A2` = 0x56, *suggested* for these guards).
@@ -2009,8 +2087,26 @@ impl Drone {
     }
 
     /// `DroneVision_EnemyLookForOpponent` (Attack when seen and the drone may react to the player).
-    fn look_for_opponent(&self, d: &Data) -> Option<u8> {
-        (self.seen && self.prop(d, 0x3c) && (self.alert >= 0.66 || self.prop(d, 0x51))).then_some(state::ATTACK)
+    /// `DroneVision_EnemyLookForOpponent` (0x177ed0): Attack when Bond is seen (prop 0x3C) and the drone is alert
+    /// (≥ 0.66) or has prop 0x51; the first such sighting marks it as the drone's own (`+0x4F8 |= 0xC000000`).
+    fn look_for_opponent(&mut self, d: &Data) -> Option<u8> {
+        let go = self.seen && self.prop(d, 0x3c) && (self.alert >= 0.66 || self.prop(d, 0x51));
+        if go && !self.sighted { self.sighted = true; self.own_sight = true; }
+        go.then_some(state::ATTACK)
+    }
+
+    /// `NDrone2_CheckSurrender` (0x14a060, inlined in `FirstSightState`): prop 0x43, alertness < 0.66, Bond within
+    /// 2.0, more than 120° off the drone's facing (behind it), in line of sight, armed, and facing the drone within 45°.
+    fn check_surrender(&self, d: &Data) -> bool {
+        self.prop(d, 0x43) && self.alert < 0.66 && self.dist < 2.0 && angle_difference(self.yaw, self.yaw_to_opp).abs() > 2.094_395_2
+            && self.seen && self.bond_armed && self.opp_facing.abs() < std::f32::consts::FRAC_PI_4
+    }
+
+    /// `NDrone2_CheckUnsurrender` (0x14a168): farther than 12, or beyond 2 with Bond unarmed, or Bond not facing the
+    /// drone within 90°, or no line of sight.
+    fn check_unsurrender(&self, d: &Data) -> bool {
+        self.dist > 12.0 || (self.dist > 2.0 && !self.bond_armed) || self.opp_facing.abs() > std::f32::consts::FRAC_PI_2
+            || !d.world.line_of_sight(self.head(), self.opp_target)
     }
 
     /// `DroneAnim_CanDoAnimState`: the anim state's own danim has a script in our anim set (or set 0).
@@ -2398,6 +2494,9 @@ impl Drone {
         let dy = p.pos[1] - self.pos[1];
         self.dist = (dx * dx + dy * dy + dz * dz).sqrt();
         self.yaw_to_opp = atan2_approx(dx, dz);
+        self.opp_target = p.target;
+        let bond_yaw = atan2_approx(p.aim[0], p.aim[2]);
+        self.opp_facing = angle_difference(bond_yaw, atan2_approx(-dx, -dz));
     }
 
     /// `DroneVision_OpponentVisibility` (+0x230): range scaled by alertness, cone with a 22.5° pad.
@@ -2541,6 +2640,8 @@ pub struct Drones {
     pub aim_offset: [f32; 2],
     pub alarm_sent: bool,
     pub bond_aiming: bool,
+    /// Bond's weapon byte (player `anim+0x62`; the P2K = 2).
+    pub bond_weapon: u8,
     /// Pickups in the world, Bond's inventory and what he took (tick, what) — docs/systems/pickups.md.
     pub pickups: Vec<crate::pickup::Pickup>,
     pub inventory: crate::pickup::Inventory,
@@ -2554,7 +2655,7 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
+        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, bond_weapon: 2, last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new() }
     }
 
@@ -2731,7 +2832,8 @@ impl Drones {
         // `Drone_ProcessOpponents` (0x1390c0): Bond's visibility factor from the AI volumes holding him (crouching
         // ×0.75 is not modelled: the port's Bond does not crouch), then each drone's opponent info.
         let light = crate::aivolume::visibility_factor(d.volumes, player.pos, false);
-        for dr in self.list.iter_mut().filter(|x| x.present) { dr.light = light; dr.opponent_info(player); dr.seen = false; }
+        let armed = (2..0x47).contains(&self.bond_weapon) || (0x6a..=0x71).contains(&self.bond_weapon);
+        for dr in self.list.iter_mut().filter(|x| x.present) { dr.light = light; dr.opponent_info(player); dr.seen = false; dr.bond_armed = armed; }
         self.update_player_bullets(d);
         // `Drone_InitComms`: corpses (0x0F, 0x47, 0x48 + 300, 0xBF by the time their state began); beyond 3
         // (`DAT_00298F5C`) the oldest fades fast (`DroneFunc_DeadDrone`).

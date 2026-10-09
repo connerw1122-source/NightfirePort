@@ -219,6 +219,7 @@ impl Sim {
         if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
         self.aiming = aiming;
         self.drones.bond_aiming = aiming;
+        self.drones.bond_weapon = self.gun.weapon;
         self.drones.tick(&d, &player);
     }
 
@@ -739,7 +740,9 @@ impl Scene {
             };
             if hidden(c, a.character as usize) { return collapse(&datum); }
             // Dropped: the drone holds nothing (`anim+0x62` = 0).
-            if drone_of(a.character as usize).is_some_and(|(s, di)| s.drones.list[di].weapon == 0) { return collapse(&datum); }
+            // Unarmed (dropped, or surrendered: `ChangeWeapon(1)`): no gun. *Deviation*: a drawn sidearm (weapon 6) still
+            // shows the original weapon's mesh.
+            if drone_of(a.character as usize).is_some_and(|(s, di)| s.drones.list[di].weapon <= 1) { return collapse(&datum); }
             if a.flash.is_none() { return datum; }
             // Bond's flash: 3 ticks after his shot (`BL+0x938` = 3), along the datum's +Z with a random roll and scale.
             if Some(a.character as usize) == self.view_model {

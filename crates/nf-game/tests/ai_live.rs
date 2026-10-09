@@ -648,3 +648,65 @@ fn first_person_p2k_is_in_the_level() {
         assert!(seqs.iter().all(|x| x.3.is_some_and(|(sk, _)| sk == skin.skeleton)));
     }
 }
+
+/// Surrender (docs/systems/drone-surrender.md): Bond within 2 behind a calm guard (more than 120° off his facing, on
+/// open floor in line of sight), facing him with the P2K. On its own first sighting (Bond within 2: seen whatever the
+/// cone) the guard surrenders instead of attacking — gun dropped as a pickup, unarmed, hands up — and stays so while
+/// covered. Bond walking 15 away → he lowers his hands and draws a sidearm (weapon 6). Sister: Bond in front of him
+/// (inside 120° of his facing) → a normal attack.
+#[test]
+fn guard_surrenders_to_bond_behind_him() {
+    use nf_game::drone::{state, Player};
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let at = |p: [f32; 3], g: [f32; 3]| {
+        let to = [g[0] - p[0], 0.0, g[2] - p[2]];
+        let n = (to[0] * to[0] + to[2] * to[2]).sqrt();
+        Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [to[0] / n, 0.0, to[2] / n] }
+    };
+    // A guard present at the start with alertness 0 and a free spot behind him: (placement, Bond's spot).
+    let warm = || {
+        let (drones, _, rng) = l.drones(None, 61.342);
+        let mut sim = l.sim(drones, rng);
+        for _ in 0..10 { sim.tick(&d, &bond_at([0.0, -500.0, 0.0])); }
+        sim
+    };
+    let spot = |dr: &nf_game::drone::Drone, off: f32| -> Option<[f32; 3]> {
+        [1.5f32, 1.8, 1.2].iter().flat_map(|&r| [0.0f32, 0.3, -0.3, 0.6, -0.6].map(move |da| (r, da))).find_map(|(r, da)| {
+            let a = dr.yaw + off + da;
+            let p = [dr.pos[0] + r * a.sin(), dr.pos[1], dr.pos[2] + r * a.cos()];
+            let f = l.world.floor_below(p, 2.0)?;
+            ((p[1] - f - 1.0).abs() < 0.4 && l.world.line_of_sight([dr.pos[0], dr.pos[1] + 0.6, dr.pos[2]], [p[0], p[1] + 0.5, p[2]])).then_some(p)
+        })
+    };
+    let w = warm();
+    let (placement, behind) = w.list.iter().filter(|dr| dr.present && dr.enabled && dr.alert < 0.66 && matches!(dr.state, state::IDLE | state::PATROL))
+        .find_map(|dr| spot(dr, std::f32::consts::PI).map(|p| (dr.placement, p))).expect("a guard with room behind him");
+    let run = |p: [f32; 3]| {
+        let mut sim = warm();
+        let i = sim.list.iter().position(|dr| dr.placement == placement).unwrap();
+        let bond = at(p, sim.list[i].pos);
+        for _ in 0..600 { sim.tick(&d, &bond); }
+        (sim, i)
+    };
+    let (mut sim, i) = run(behind);
+    let log: Vec<u8> = sim.list[i].log.iter().map(|&(_, s)| s).collect();
+    eprintln!("placement {placement}, Bond at {behind:?}: log {:x?} anim {:x?} set {}", sim.list[i].log, sim.list[i].anim, sim.list[i].anim_set);
+    assert!(log.contains(&state::SURRENDER_ANIM) && sim.list[i].state == state::SURRENDERED, "log {log:x?}");
+    assert_eq!(sim.list[i].weapon, 1, "unarmed");
+    assert!(!sim.pickups.is_empty(), "his gun lies on the ground");
+    // Bond 15 units away: CheckUnsurrender → Unsurrender → Attack (unarmed) → DrawWeapon → weapon 6.
+    let p = [behind[0] + 15.0, behind[1], behind[2]];
+    let away = Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0] };
+    for _ in 0..300 { sim.tick(&l.data(), &away); }
+    let log: Vec<u8> = sim.list[i].log.iter().map(|&(_, s)| s).collect();
+    eprintln!("after: log {log:x?}, weapon {}", sim.list[i].weapon);
+    assert!(log.contains(&state::UNSURRENDER_ANIM) && log.contains(&state::DRAW_WEAPON), "log {log:x?}");
+    assert_eq!(sim.list[i].weapon, 6, "drew weapon 6");
+    // Sister: in front of him he attacks.
+    let dr = w.list.iter().find(|dr| dr.placement == placement).unwrap();
+    let front = spot(dr, 0.0).expect("room in front");
+    let (sim, i) = run(front);
+    let log: Vec<u8> = sim.list[i].log.iter().map(|&(_, s)| s).collect();
+    assert!(!log.contains(&state::SURRENDER_ANIM) && log.contains(&state::ATTACK), "sister: {log:x?}");
+}
