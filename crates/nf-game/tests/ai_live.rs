@@ -27,6 +27,7 @@ struct Level05 {
     hitboxes: nf_formats::hitbox::CollisionBones,
     volumes: Vec<nf_game::aivolume::AiVolume>,
     models: std::collections::HashMap<u32, nf_game::pickup::Model>,
+    hud: nf_formats::hud::HudTables,
 }
 
 impl Level05 {
@@ -55,6 +56,7 @@ impl Level05 {
             hitboxes: nf_formats::hitbox::CollisionBones::from_action_elf(&elf).unwrap(),
             sequences: disc::level_sequences(&iso, "07000005.bin").unwrap(),
             models: nf_game::pickup::models(&level),
+            hud: nf_formats::hud::HudTables::from_action_elf(&elf).unwrap(),
             level, scripts, world, skeletons, nav, covers, volumes,
         })
     }
@@ -709,4 +711,26 @@ fn guard_surrenders_to_bond_behind_him() {
     let (sim, i) = run(front);
     let log: Vec<u8> = sim.list[i].log.iter().map(|&(_, s)| s).collect();
     assert!(!log.contains(&state::SURRENDER_ANIM) && log.contains(&state::ATTACK), "sister: {log:x?}");
+}
+
+/// The HUD tables read from ACTION.ELF match the snapshot [L] (docs/systems/hud.md): `HealthSprInfo` 0 (armour segment:
+/// pane-relative (32, 30), 32 × 32 at (5, 219) of 0x0300007A, layer 19), the ring 15 (layer 9), `AmmoSprInfo` 5 (the
+/// rounds strip of 0x03000128), the P2K's bullet strip (ammo type 1: u 26, w 14, 4 px a round), font 2's '0' (101, 0,
+/// 8 × 12) and '-' (85, 0, 4 × 2, y offset 7). Sister: "7-41" is wider than "7-4".
+#[test]
+fn hud_tables_match_the_snapshot() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let h = &l.hud;
+    let s0 = h.health[0];
+    assert_eq!((s0.x, s0.y, s0.w, s0.h, s0.uv, s0.layer, s0.texture), (32, 30, 32, 32, [5, 219, 32, 32], 19, 0x0300_007a));
+    assert_eq!((h.health[15].layer, h.health[15].uv), (9, [102, 113, 85, 86]));
+    assert_eq!(h.ammo[5].texture, 0x0300_0128);
+    assert_eq!(h.bullets[1], [26.0, 0.0, 14.0, 4.0]);
+    let g = |c: char| h.font.glyphs.iter().find(|g| g.code == c as u16).unwrap();
+    assert_eq!((g('0').u, g('0').v, g('0').w, g('0').h), (101, 0, 8, 12));
+    assert_eq!((g('-').u, g('-').w, g('-').h, g('-').yoff), (85, 4, 2, 7));
+    let (_, w1) = h.font.layout("7-41", 0.0, 0.0);
+    let (_, w2) = h.font.layout("7-4", 0.0, 0.0);
+    eprintln!("'7-41' width {w1}, gap {}, space {}", h.font.gap, h.font.space);
+    assert!(w1 > w2);
 }

@@ -970,3 +970,14 @@ weapon 6, Bond's weapon lent to the drones; nf-view hides the gun of an unarmed 
 inside the gate wall (no floor, no line of sight) and on a spawner template; the test now searches open floor behind a
 guard active after a warm-up. Calling the hands-up anim after `ChangeWeapon(1)` had no script for set 0xC — the game
 calls it first; reordered.
+
+## 0046 — The game's HUD (2026-10-09)
+
+**Report** (user): the UI was not faithful. **Read** (research pass, docs/systems/hud.md): the pane framework,
+`HUD_UpdateHealthPane`, `HUD_UpdateAmmoPane`, the fonts. **Port**: `nf_formats::hud::HudTables` reads `HealthSprInfo`,
+`AmmoSprInfo`, `BulletImg.189` and font 2 (`FONTSerpLight` + glyphs + kern pairs) from ACTION.ELF; test
+`hud_tables_match_the_snapshot` checks them against the snapshot's values. nf-view's overlay draws, layer-sorted with
+per-texture runs (six HUD textures from the level archive) and an additive pass: the crosshair; the health iris
+(seven segments coloured by health, the ring) and armour segments; the damage glow (both sides: the hit direction is
+not tracked); "clip-spare" in font 2 with its shadow and the rounds strip over the empty strip. The stand-in bars are
+gone. Not yet: weapon name / fire-mode text and pickup messages (language strings), icons.

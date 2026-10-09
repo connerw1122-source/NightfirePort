@@ -106,6 +106,7 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
         },
         hitboxes: nf_formats::hitbox::CollisionBones::from_action_elf(&elf).ok(),
         sfx: nf_formats::sfx::SfxTable::from_action_elf(&elf).ok(),
+        hud: nf_formats::hud::HudTables::from_action_elf(&elf).map_err(|e| eprintln!("HUD tables: {e}")).ok(),
     };
     let scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));
     eprintln!("{archive} (+ {anim_name}): {}", scene.stats);
@@ -139,7 +140,7 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let view = target.create_view(&Default::default());
     let depth = gpu::depth_view(&device, w, h);
     let (vp, vp_rot) = cam.view_proj(w as f32 / h as f32);
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, &hud::overlay(scene.sim.as_ref(), w as f32 / h as f32));
+    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, &hud::overlay(scene, w as f32 / h as f32));
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -344,7 +345,7 @@ impl ApplicationHandler for App {
                 let view = frame.texture.create_view(&Default::default());
                 let aspect = g.config.width as f32 / g.config.height as f32;
                 let (vp, vp_rot) = self.cam.view_proj(aspect);
-                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, &hud::overlay(self.scene.sim.as_ref(), aspect));
+                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, &hud::overlay(&self.scene, aspect));
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
                 g.window.request_redraw();

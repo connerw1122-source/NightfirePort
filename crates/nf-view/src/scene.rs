@@ -83,6 +83,8 @@ pub struct DroneContext {
     pub tuning: nf_formats::tuning::Tuning,
     pub hitboxes: Option<nf_formats::hitbox::CollisionBones>,
     pub sfx: Option<nf_formats::sfx::SfxTable>,
+    /// The HUD's sprite tables and font (docs/systems/hud.md).
+    pub hud: Option<nf_formats::hud::HudTables>,
 }
 
 /// The running game simulation (nf-game): drones plus the data they consult, and which character mesh shows which
@@ -310,8 +312,9 @@ pub struct Scene {
     pub textures: Vec<TextureImage>,
     /// The first-person gun (`Player_SetWeaponAnim`: `AnimObjectNew(G, weapon+0xDC)`): its character index.
     pub view_model: Option<usize>,
-    /// The HUD sheet (texture 0x03000026: the crosshairs, `HUD_UpdateCrossHair`), from any map of the archive.
-    pub hud_texture: Option<TextureImage>,
+    /// The HUD's textures by hash (docs/systems/hud.md), from any map of the archive, and its tables from ACTION.ELF.
+    pub hud_textures: Vec<(u32, TextureImage)>,
+    pub hud: Option<nf_formats::hud::HudTables>,
     pub bounds: ([f32; 3], [f32; 3]),
     /// Camera start: the first placement whose object is named "Player1" (translation, yaw), if any.
     pub start: Option<([f32; 3], f32)>,
@@ -574,10 +577,11 @@ impl Scene {
             let pal = t.palette_rgba8();
             TextureImage { key, width: t.width as u32, height: t.height as u32, rgba: t.frame(0).iter().flat_map(|&i| pal[i as usize]).collect() }
         }).collect();
-        let hud_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0026).map(|t| {
+        let hud_textures = crate::hud::TEXTURES.iter().filter_map(|&h| level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == h).map(|t| {
             let pal = t.palette_rgba8();
-            TextureImage { key: (mi, t.index as u32), width: t.width as u32, height: t.height as u32, rgba: t.frame(0).iter().flat_map(|&i| pal[i as usize]).collect() }
-        }));
+            (h, TextureImage { key: (mi, t.index as u32), width: t.width as u32, height: t.height as u32, rgba: t.frame(0).iter().flat_map(|&i| pal[i as usize]).collect() })
+        }))).collect();
+        let hud = drones.and_then(|d| d.hud.clone());
         let n_seq: usize = sequences.values().map(Vec::len).sum();
         let stats = format!("{} world instances ({hidden} skipped by the cel pass: flag 0x10), {} animated character meshes, {chars_missing} drones with a skin from another archive, {} sky objects, {missing} unresolved, {} triangles, {} materials, {n_seq} sequences",
             instances.len(), characters.len(), sky.len(), indices.len() / 3, materials.len());
@@ -621,7 +625,7 @@ impl Scene {
             drones.attach_level(level);
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false })
         });
-        Scene { vertices, indices, materials, textures, hud_texture, view_model, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
+        Scene { vertices, indices, materials, textures, hud_textures, hud, view_model, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the

@@ -61,13 +61,19 @@ struct HO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct HudVertex { pub p: [f32; 2], pub uv: [f32; 2], pub c: [f32; 4] }
 
+/// One frame's overlay: vertices and the runs drawn in order — (texture index into `Scene::hud_textures` + 1, 0 =
+/// none; additive; first vertex; count).
+#[derive(Default)]
+pub struct HudFrame { pub v: Vec<HudVertex>, pub runs: Vec<(usize, bool, u32, u32)> }
+
 /// Most overlay vertices per frame.
 const HUD_MAX: usize = 16384;
 
 pub struct Renderer {
     hud_pipeline: wgpu::RenderPipeline,
+    hud_add_pipeline: wgpu::RenderPipeline,
     hud_vbuf: wgpu::Buffer,
-    hud_bg: wgpu::BindGroup,
+    hud_bgs: Vec<wgpu::BindGroup>,
     pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
     effect_pipeline: wgpu::RenderPipeline,
@@ -140,7 +146,7 @@ impl Renderer {
         });
         let hud_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("nf-view hud"), source: wgpu::ShaderSource::Wgsl(HUD_SHADER.into()) });
         let hud_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&tbgl)], immediate_size: 0 });
-        let hud_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let make_hud = |blend: wgpu::BlendState| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("nf-view hud"),
             layout: Some(&hud_layout),
             vertex: wgpu::VertexState {
@@ -159,10 +165,16 @@ impl Renderer {
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &hud_shader, entry_point: Some("fs"), compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
             }),
             multiview_mask: None,
             cache: None,
+        });
+        // GS ALPHA 0x44 (normal) and 0x48 (Cs·As + Cd: sprite flag 0x100).
+        let hud_pipeline = make_hud(wgpu::BlendState::ALPHA_BLENDING);
+        let hud_add_pipeline = make_hud(wgpu::BlendState {
+            color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+            alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
         });
         let hud_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (HUD_MAX * std::mem::size_of::<HudVertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let pipeline = make_pipeline(true, wgpu::CompareFunction::Less, false);
@@ -195,14 +207,14 @@ impl Renderer {
             })
         };
         let mut tex_bgs = vec![make_tex(1, 1, &[255, 255, 255, 255])];
-        let hud_bg = match &scene.hud_texture { Some(t) => make_tex(t.width, t.height, &t.rgba), None => make_tex(1, 1, &[255, 255, 255, 255]) };
+        let hud_bgs = std::iter::once(make_tex(1, 1, &[255, 255, 255, 255])).chain(scene.hud_textures.iter().map(|(_, t)| make_tex(t.width, t.height, &t.rgba))).collect();
         for t in &scene.textures { tex_bgs.push(make_tex(t.width, t.height, &t.rgba)); }
         let material_tex = scene.materials.iter()
             .map(|m| m.key.and_then(|k| scene.textures.iter().position(|t| t.key == k)).map_or(0, |i| i + 1)).collect();
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.vertices), usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST });
         let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.indices), usage: wgpu::BufferUsages::INDEX });
         let draws = scene.materials.iter().map(|m| (m.layer, m.first_index, m.index_count)).collect();
-        Renderer { hud_pipeline, hud_vbuf, hud_bg, pipeline, sky_pipeline, effect_pipeline, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, material_tex, tex_bgs, draws }
+        Renderer { hud_pipeline, hud_add_pipeline, hud_vbuf, hud_bgs, pipeline, sky_pipeline, effect_pipeline, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, material_tex, tex_bgs, draws }
     }
 
     /// `view_proj`: full camera; `view_proj_rot`: the same without the camera translation.
@@ -213,9 +225,9 @@ impl Renderer {
     }
 
     /// `hud`: overlay triangles drawn last.
-    pub fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], hud: &[HudVertex]) -> wgpu::CommandEncoder {
-        let hud = &hud[..hud.len().min(HUD_MAX) / 3 * 3];
-        if !hud.is_empty() { queue.write_buffer(&self.hud_vbuf, 0, bytemuck::cast_slice(hud)); }
+    pub fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], hud: &HudFrame) -> wgpu::CommandEncoder {
+        let n = hud.v.len().min(HUD_MAX) / 3 * 3;
+        if n > 0 { queue.write_buffer(&self.hud_vbuf, 0, bytemuck::cast_slice(&hud.v[..n])); }
         queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&view_proj));
         queue.write_buffer(&self.uniform_rot, 0, bytemuck::cast_slice(&view_proj_rot));
         let mut enc = device.create_command_encoder(&Default::default());
@@ -246,11 +258,15 @@ impl Renderer {
                 pass.set_bind_group(1, &self.tex_bgs[self.material_tex[m]], &[]);
                 pass.draw_indexed(first..first + count, 0, 0..1);
             }
-            if !hud.is_empty() {
-                pass.set_pipeline(&self.hud_pipeline);
-                pass.set_bind_group(0, &self.hud_bg, &[]);
+            if n > 0 {
                 pass.set_vertex_buffer(0, self.hud_vbuf.slice(..));
-                pass.draw(0..hud.len() as u32, 0..1);
+                for &(tex, additive, first, count) in &hud.runs {
+                    let end = (first + count).min(n as u32);
+                    if first >= end { continue; }
+                    pass.set_pipeline(if additive { &self.hud_add_pipeline } else { &self.hud_pipeline });
+                    pass.set_bind_group(0, &self.hud_bgs[tex.min(self.hud_bgs.len() - 1)], &[]);
+                    pass.draw(first..end, 0..1);
+                }
             }
         }
         enc

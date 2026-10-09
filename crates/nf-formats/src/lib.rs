@@ -13,6 +13,7 @@ pub mod elf;
 pub mod filelist;
 pub mod golden;
 pub mod hitbox;
+pub mod hud;
 pub mod iso9660;
 pub mod level;
 pub mod levelbin;
