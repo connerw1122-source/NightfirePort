@@ -115,7 +115,7 @@ fn guard_notices_and_fires_like_the_game() {
     let mut alert_sim = l.sim(alert_drones, alert_rng);
     for _ in 0..WARM { alert_sim.tick(&d, &away); }
     for _ in 0..100 { alert_sim.tick(&d, &player); }
-    let early = alert_sim.list[gi].log.iter().find(|(_, s)| *s == nf_game::drone::state::ATTACK).map(|(f, _)| *f - WARM);
+    let early = alert_sim.list[gi].log.iter().find(|(_, s)| *s == nf_game::drone::state::ATTACK).map(|(f, _)| f.saturating_sub(WARM));
     assert!(early.is_some_and(|f| f < 59), "sister: alertness 1 must react earlier, got {early:?}");
 }
 
@@ -277,4 +277,31 @@ fn gate_box_wakes_the_guards_like_the_game() {
     assert_eq!(state_of(&sim, 65), (true, nf_game::drone::state::PATROL));
     assert_eq!(state_of(&sim, 68), (true, nf_game::drone::state::PATROL));
     assert!(state_of(&sim, 3).0 && state_of(&sim, 4).0, "spawner 268 brought in the gate guards");
+}
+
+/// Live (WORKLOG 0028): channel 0xA4 set once by PINE. Drones 271 / 272 (waiting for 0xA4, alertness 1) update before
+/// mux 270 (newest first) and go straight into combat; mux 270 then rewrites 0xA4 from its inputs (all off), so drones
+/// 65–68 (waiting for 0x22 / 0xA4, or with 0xA4 as their second switch) never see it and stay in WaitSwitch.
+#[test]
+fn alarm_pulse_reaches_only_the_drones_updated_first() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, _, rng) = l.drones(None, 61.342);
+    let mut sim = l.sim(drones, rng);
+    let bond = bond_at([104.95, 24.96, 108.83]);
+    for _ in 0..10 { sim.tick(&d, &bond); }
+    sim.set_channel(0xa4);
+    for _ in 0..60 { sim.tick(&d, &bond); }
+    let st = |placement: usize| sim.list.iter().find(|x| x.placement == placement).unwrap().state;
+    for p in [271, 272] { assert!(st(p) >= 0x56, "drone {p} attacks, state {:#x}", st(p)); }
+    for p in [65, 66, 67, 68] { assert_eq!(st(p), nf_game::drone::state::WAIT_SWITCH, "drone {p} never saw the pulse"); }
+    assert!(!sim.channels.on(0xa4), "mux 270 rewrote the channel");
+    // Sister: through the mux's input (window plate pair 0xA1 held on), mux 270 itself raises 0xA4, so drones 66 / 67
+    // wake and 65 / 68 take their second switch into Attack.
+    let (drones, _, rng) = l.drones(None, 61.342);
+    let mut held = l.sim(drones, rng);
+    for _ in 0..10 { held.tick(&d, &bond); }
+    for _ in 0..60 { held.set_channel(0xa1); held.tick(&d, &bond); }
+    let hs = |placement: usize| held.list.iter().find(|x| x.placement == placement).unwrap().state;
+    for p in [65, 66, 67, 68] { assert_ne!(hs(p), nf_game::drone::state::WAIT_SWITCH, "sister: drone {p}"); }
 }

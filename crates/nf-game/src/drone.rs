@@ -29,6 +29,7 @@ pub mod state {
     pub const COMBAT_NO_ROUTE: u8 = 0x5f;
     pub const NO_OPPONENT: u8 = 0x60;
     pub const DRONE_STUCK: u8 = 0x7f;
+    pub const GO_TO_GOAL: u8 = 0x63;
     pub const RUN_FOR_COVER: u8 = 0x8c;
     pub const UNDER_COVER_INIT: u8 = 0x93;
     pub const UNDER_COVER_IDLE: u8 = 0x94;
@@ -306,9 +307,16 @@ pub struct Drone {
     pub cover_claimed: bool,
     pub has_cover: bool,
     pub cover_tries: u32,
-    /// Lent by `Drones::tick`: the cover nodes' run-time state and the enabled drones' positions.
+    /// Lent by `Drones::tick`: the cover nodes' run-time state and the enabled drones' positions; the enabled drones in
+    /// list order with whether they see Bond (`SetGoalToDroneWithLosToOpponent`).
     pub cover_rt: Vec<crate::cover::CoverRt>,
     pub others: Vec<Option<V3>>,
+    pub peers: Vec<(usize, V3, bool)>,
+    /// The state `GoToGoalPosition` returns to (`+0x5A2`); the second switch (`+0x135`, parameter 6) and its tag
+    /// (`+0x13A`, parameter 8).
+    pub return_state: u8,
+    pub second_channel: u8,
+    pub second_tag: u32,
     /// Trace of (frame, state) changes, for comparisons with PCSX2.
     pub log: Vec<(u32, u8)>,
 }
@@ -344,7 +352,7 @@ impl Drone {
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
             switch_channel: param(3) as u8, channel_on: false, placement: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0,
             cover: None, cover_side: 0, cover_type: 0, cover_leave: 0, cover_point: pos, goal: None, cover_claimed: false, has_cover: false, cover_tries: 0,
-            cover_rt: Vec::new(), others: Vec::new(),
+            cover_rt: Vec::new(), others: Vec::new(), peers: Vec::new(), return_state: 0, second_channel: param(6) as u8, second_tag: param(8),
         };
         dr.init_properties(d, &param);
         dr.set_danim(d, start_danim);
@@ -354,7 +362,12 @@ impl Drone {
     fn prop(&self, d: &Data, id: usize) -> bool { d.props.get(id, &self.props) != 0 }
 
     /// `Drone+0x5A2`, the state a drone starts in once enabled.
-    fn start_state(&self, d: &Data) -> u8 { if self.prop(d, 0x24) || self.prop(d, 0x25) { state::INIT_PATROL } else { state::IDLE } }
+    /// Idle / Alert / InitPatrol become Attack when the drone is fully alert (`GetDroneTypeAttackTypeFriend`): [L] the
+    /// 0xA4 waiters 271 / 272 (alertness 1) went straight into combat when the channel pulsed (WORKLOG 0028).
+    fn start_state(&self, d: &Data) -> u8 {
+        if self.alert >= 1.0 { return state::ATTACK; }
+        if self.prop(d, 0x24) || self.prop(d, 0x25) { state::INIT_PATROL } else { state::IDLE }
+    }
 
     /// Property writes at creation (first block): `DoModeSettingsNEW` clears 0x1A (sets 0x1A and 0x56 on 07000009/0A,
     /// leaves it on 07000007); `NDrone2_DefaultInit` in single player clears 0x17, and on 07000005/06 gives SG5 guards
@@ -737,6 +750,32 @@ impl Drone {
         match code { 3 | 0xc => code, _ => 0 }
     }
 
+    /// `NDrone2_SetGoalToCloserPosition` (0x155e10): where the straight line to the opponent first meets an AI-network
+    /// wall, if a route there exists and the drone is not already within 2.0 of it.
+    fn set_goal_to_closer_position(&mut self, d: &Data) -> bool {
+        let Some(p) = d.nav.first_wall_hit(self.pos, self.target.pos) else { return false };
+        let (old_goal, old_route) = (self.goal, self.croute.take());
+        self.goal = Some(p);
+        if self.move_to_goal(d) < 3 { return true; }
+        self.goal = old_goal;
+        self.croute = old_route;
+        false
+    }
+
+    /// `NDrone2_SetGoalToDroneWithLosToOpponent` (0x1543f8): the first other drone (list order) that sees the opponent
+    /// and wins Rand(4) == 0 and can be routed to (`MoveToGoalPosition` 0 or 2).
+    fn set_goal_to_drone_with_los(&mut self, d: &Data, rng: &mut Rng) -> bool {
+        for (i, pos, sees) in self.peers.clone() {
+            if i == self.index || !sees || rng.rand(4) != 0 { continue; }
+            let (old_goal, old_route) = (self.goal, self.croute.take());
+            self.goal = Some(pos);
+            if matches!(self.move_to_goal(d), 0 | 2) { return true; }
+            self.goal = old_goal;
+            self.croute = old_route;
+        }
+        false
+    }
+
     /// `NDrone2_SlideToPosition(target, rate, y = false)`: x/z toward the point (snapping within 0.01), then the
     /// drone's height rule puts it back on the floor.
     fn slide_to(&mut self, d: &Data, to: V3, rate: f32) {
@@ -941,6 +980,7 @@ impl Drone {
             // start state `+0x5A2` (InitPatrol with props 0x24/0x25, else Idle). Modes 0x1E / 0x17 and start scripts
             // (PlayScript 3) are not ported.
             (GLOBAL, msg::ENTER) => {
+                self.return_state = self.start_state(d);
                 if self.switch_channel != 0 && !self.channel_on { self.set_state(WAIT_SWITCH); return true; }
                 self.set_state(self.start_state(d));
                 true
@@ -1008,8 +1048,11 @@ impl Drone {
             (IDLE | ALERT | PATROL, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
             (ATTACK, msg::ENTER) => {
                 // DroneFunc_FirstAttack → FirstSightState: alertness 1, combat sight; props 0x1B (50 %) / 0x19 pick a
-                // combat move; otherwise AimStand (prop 0x18, in range) or Combat.
+                // combat move; otherwise AimStand (prop 0x18, in range) or Combat. FirstAttack also clears the second
+                // switch and sets the return state to Attack (`+0x5A2` = 0x56, *suggested* for these guards).
                 self.alert = 1.0;
+                self.second_channel = 0;
+                self.return_state = ATTACK;
                 // FirstAttack: the attack is visible to others (`+0x4FC |= 0x10`, enemy side), shouts with prop 0x33.
                 if self.alert_bits & 0x10 == 0 { self.attack_frame = frame; }
                 self.alert_bits |= 0x10 | if self.prop(d, 0x33) { 1 } else { 0 };
@@ -1032,6 +1075,7 @@ impl Drone {
             // CombatNoRoute: stand, face, fire; every second try to route again or give up (`+0xCD8` alternates).
             (COMBAT_NO_ROUTE, msg::ENTER) => {
                 self.vision_on = true;
+                self.no_route_odd = false;
                 self.call_anim(anim_state::ALERT_IDLE, 0, 0);
                 self.timer_c = Some(frame + 60);
                 self.croute = None;
@@ -1056,12 +1100,35 @@ impl Drone {
                 if !self.prop(d, 0x40) && self.cover_available(d, true) { self.set_state(RUN_FOR_COVER); return true; }
                 let next = if self.prop(d, 0x40) { 0 } else if self.no_route_odd {
                     match self.move_to_object(d, 2.0, true) { 0..=2 => COMBAT, 10 => return true, _ => 0 }
-                } else { 0 }; // SetGoalToDroneWithLosToOpponent → GoToGoalPosition: not ported (U-030)
+                } else if self.set_goal_to_drone_with_los(d, rng) { GO_TO_GOAL } else { 0 };
                 if next != 0 { self.set_state(next); return true; }
-                // Fallback: in range and visible → 50 % AimStand; SetGoalToCloserPosition is not ported.
-                if self.seen && rng.rand(2) == 0 && self.dist < self.engage_range { self.set_state(AIM_STAND); return true; }
+                // Fallback: visible → Rand(2) ≠ 0 and in range → AimStand, else the closer position; not visible → look
+                // about and try again in a second.
+                if self.seen {
+                    if rng.rand(2) != 0 && self.dist < self.engage_range { self.set_state(AIM_STAND); return true; }
+                    if self.set_goal_to_closer_position(d) { self.set_state(GO_TO_GOAL); return true; }
+                }
                 self.call_anim(anim_state::ALERT_IDLE, 0, 0);
                 self.timer_c = Some(frame + 60);
+                true
+            }
+            // GoToGoalPosition 0x63 (`NDrone2_DSTATE_GoToGoalPosition` 0x165640): run to the goal (`+0x710`), looking for
+            // the opponent on the way; blocked → aim or look about; arrived or failed → DeleteMe (prop 0x59) or the
+            // return state `+0x5A2`. Deaf meanwhile (`+0x4F8` 0x400000; hearing is not ported).
+            (GO_TO_GOAL, msg::ENTER) => { self.vision_on = true; true }
+            (GO_TO_GOAL, msg::UPDATE) => {
+                if self.seen && !(self.ever_seen && self.dist >= self.engage_range) {
+                    if let Some(n) = self.look_for_opponent(d) { self.set_state(n); return true; }
+                }
+                match self.move_to_goal(d) {
+                    0..=2 => self.call_anim(anim_state::RUN, 0, 0),
+                    9 | 0xc => self.face_and_aim(),
+                    10 => {}
+                    _ => {
+                        if self.prop(d, 0x59) { self.present = false; self.enabled = false; }
+                        else { let r = if self.return_state != 0 { self.return_state } else { self.start_state(d) }; self.set_state(r); }
+                    }
+                }
                 true
             }
             // DroneStuck: `DAT_00299024` is only ever 0, so the update's escape never fires; the enter goes to NoRoute.
@@ -1810,6 +1877,7 @@ impl Drones {
             }
         }
         let positions: Vec<Option<V3>> = self.list.iter().map(|x| x.enabled.then_some(x.pos)).collect();
+        let peers: Vec<(usize, V3, bool)> = self.llist.iter().map(|&i| (i, self.list[i].pos, self.list[i].seen)).filter(|&(i, _, _)| self.list[i].enabled).collect();
         // `Trigger_Calc`, then every object in the control list (newest first = reverse placement order): triggers and
         // drones interleaved, so a channel a trigger pulses is seen only by the objects updated after it.
         let touchers: Vec<crate::triggers::Toucher> = std::iter::once(crate::triggers::Toucher::player([player.pos[0], player.pos[1] - 0.4, player.pos[2]]))
@@ -1847,6 +1915,16 @@ impl Drones {
             dr.links_used = std::mem::take(&mut self.used);
             dr.cover_rt = std::mem::take(&mut self.cover_rt);
             dr.others = positions.clone();
+            dr.peers = peers.clone();
+            // `NDrone2_PreDroneControl`: the second switch (`+0x135`) with a tag (`+0x13A`): 0xC deletes the drone,
+            // otherwise the alternate type's state (`+0x5A4`; Attack for these guards, *suggested*).
+            if dr.second_channel != 0 && dr.second_tag != 0 && self.channels.on(dr.second_channel as u32) {
+                dr.second_channel = 0;
+                if dr.second_tag == 0xc { dr.present = false; dr.enabled = false; continue; }
+                dr.second_tag = 0;
+                dr.enabled = true;
+                dr.set_state(state::ATTACK);
+            }
             if !dr.started { dr.started = true; dr.send(d, rng, frame, msg::ENTER); dr.entered = frame; dr.log.push((frame, dr.state)); }
             if let Some(t) = dr.timer_c { if frame >= t { dr.timer_c = None; dr.send(d, rng, frame, msg::TIMER_C); } }
             if let Some(t) = dr.idle_timeout { if frame >= t { dr.idle_timeout = None; dr.send(d, rng, frame, msg::IDLE_TIMEOUT); } }

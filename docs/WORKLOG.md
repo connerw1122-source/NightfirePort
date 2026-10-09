@@ -652,3 +652,18 @@ test `gate_box_wakes_the_guards_like_the_game`.
 turn (`DroneVision_ProcessDroneSight` read: visibility pass, one ray per frame from the drone after the last one
 processed, then the counters); that wait depends on which other drones see Bond, so the test now accepts 59–63 (live 61).
 Seeds for the cover / notice tests re-picked after the update-order change (RNG draws moved).
+
+## 0028 — Goal positions, second switch, fully alert start; a pulse checked live (2026-10-09)
+
+**Port** (docs/systems/drone-alerts.md): GoToGoalPosition 0x63 (run to the goal, aim when blocked, back to the return
+state `+0x5A2` or DeleteMe with prop 0x59), `SetGoalToCloserPosition` (the first AI-network wall on the line to Bond,
+`AINetwork_FurthestPosition`) and `SetGoalToDroneWithLosToOpponent` (Rand(4) per seeing drone) in CombatNoRoute's
+timer, which now resets its alternation on enter and takes AimStand on Rand(2) ≠ 0 as read; the second switch
+(`+0x135` / `+0x13A`, `NDrone2_PreDroneControl`); start states 4/5/6 become Attack at alertness 1.
+
+**Live check** (PINE: `switch_channels[0xA4]` set once in a fresh 07000005): drones 271 / 272 (waiting for 0xA4,
+alertness 1) went straight into combat (0x5F / 0x74); drones 66 / 67 (also waiting for 0xA4) and 65 / 68 (0xA4 as their
+second switch, `+0x135` = 0xA4 read) did not move — mux 270 (placement 270) runs after 271 / 272 and before 68…65 in the
+newest-first order and rewrites 0xA4 from its inputs. The port does the same (`alarm_pulse_reaches_only_the_drones_
+updated_first`; sister: holding the mux input 0xA1 wakes 66 / 67 and sends 65 / 68 to Attack). This also confirms the
+update order and the fully alert start state.

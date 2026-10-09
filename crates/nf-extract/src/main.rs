@@ -467,6 +467,9 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
             println!("frame {:4}: danim {} script {:08x} anim state {:#x} class {}", sim.frame, dr.anim.danim, dr.anim.script.unwrap_or(0), dr.anim.state, dr.anim.class);
         }
     }
+    if std::env::var_os("NF_STATES").is_some() {
+        for x in &sim.list { println!("placement {:3} at ({:.1}, {:.1}) present {} state {:#x} log {:x?}", x.placement, x.pos[0], x.pos[2], x.present, x.state, &x.log[..x.log.len().min(6)]); }
+    }
     for (i, _) in sim.list.iter().enumerate().filter(|(_, x)| x.route.is_some()) { println!("patrol drone {i}: walked {:.3} units in {frames} ticks, {} ticks without motion", walked[i].0, walked[i].1); }
     let dr = &sim.list[near];
     println!("state changes: {:?}", dr.log.iter().map(|(f, s)| format!("{f}:{s:#x}")).collect::<Vec<_>>());

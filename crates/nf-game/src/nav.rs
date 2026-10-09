@@ -343,6 +343,21 @@ fn closest_on_segment(a: V3, b: V3, p: V3) -> V3 {
 /// its height − 0.5 (as written). Returns the intersection point.
 fn intersects(w: &Wall, a: V3, b: V3) -> Option<V3> { intersect_adjust(&mut w.clone(), a, b, false) }
 
+impl Network {
+    /// `AINetwork_FurthestPosition(A, B)` (0x15a8d8): the intersection of the segment A→B with any boundary wall (no
+    /// flag filter) nearest to A, at post a's height.
+    pub fn first_wall_hit(&self, a: V3, b: V3) -> Option<V3> {
+        let mut best: Option<(f32, V3)> = None;
+        for w in &self.walls {
+            if let Some(i) = intersects(w, a, b) {
+                let d = ((i[0] - a[0]).powi(2) + (i[2] - a[2]).powi(2)).sqrt();
+                if best.is_none_or(|(bd, _)| d < bd) { best = Some((d, [i[0], w.a[1], i[2]])) }
+            }
+        }
+        best.map(|b| b.1)
+    }
+}
+
 fn intersect_adjust(w: &mut Wall, a: V3, b: V3, adjust: bool) -> Option<V3> {
     let (r, s) = ([b[0] - a[0], b[2] - a[2]], [w.b[0] - w.a[0], w.b[2] - w.a[2]]);
     let den = r[0] * s[1] - r[1] * s[0];
