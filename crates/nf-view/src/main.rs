@@ -208,6 +208,9 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
 
 struct Gfx {
     window: Arc<Window>,
+    instance: wgpu::Instance,
+    /// Minimised (0×0): nothing is configured or drawn until the window has a size again.
+    minimized: bool,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -263,12 +266,14 @@ impl ApplicationHandler for App {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = instance.create_surface(window.clone()).expect("create surface");
         let (adapter, device, queue) = pollster::block_on(device(&instance, Some(&surface))).expect("GPU device");
+        // A GPU validation error is reported, not fatal (wgpu's default handler panics).
+        device.on_uncaptured_error(Arc::new(|e| eprintln!("GPU error: {e}")));
         let size = window.inner_size();
         let config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).expect("surface config");
         surface.configure(&device, &config);
         let depth = gpu::depth_view(&device, config.width, config.height);
         let renderer = gpu::Renderer::new(&device, &queue, config.format, &self.scene);
-        self.gfx = Some(Gfx { window, surface, device, queue, config, depth, renderer });
+        self.gfx = Some(Gfx { window, instance, minimized: size.width == 0 || size.height == 0, surface, device, queue, config, depth, renderer });
     }
 
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
@@ -290,11 +295,23 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(s) => if let Some(g) = &mut self.gfx {
-                g.config.width = s.width.max(1);
-                g.config.height = s.height.max(1);
-                g.surface.configure(&g.device, &g.config);
-                g.depth = gpu::depth_view(&g.device, g.config.width, g.config.height);
+                // Minimised windows report 0×0; a surface cannot be configured at that size.
+                g.minimized = s.width == 0 || s.height == 0;
+                if !g.minimized {
+                    g.config.width = s.width;
+                    g.config.height = s.height;
+                    g.surface.configure(&g.device, &g.config);
+                    g.depth = gpu::depth_view(&g.device, g.config.width, g.config.height);
+                }
+                g.window.request_redraw();
             },
+            // Focus lost (Alt-Tab, a click elsewhere): let the mouse go and drop held keys and the trigger.
+            WindowEvent::Focused(false) => {
+                self.grab(false);
+                self.keys.clear();
+                self.just.clear();
+                self.trigger = false;
+            }
             // Left button: grab the mouse, then fire (action 9) while held.
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 if !self.grabbed { if state == ElementState::Pressed { self.grab(true) } } else { self.trigger = state == ElementState::Pressed }
@@ -385,10 +402,27 @@ impl ApplicationHandler for App {
                     }
                 }
                 let Some(g) = &mut self.gfx else { return };
+                if g.minimized {
+                    // Keep the game ticking at a modest pace without drawing.
+                    std::thread::sleep(std::time::Duration::from_millis(16));
+                    g.window.request_redraw();
+                    return;
+                }
                 g.renderer.update_vertices(&g.queue, self.scene.char_vertex_start, &posed_vertices(&self.scene, self.choice, self.anim_time, self.opts));
                 let frame = match g.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-                    _ => { g.surface.configure(&g.device, &g.config); g.window.request_redraw(); return; }
+                    wgpu::CurrentSurfaceTexture::Outdated => { g.surface.configure(&g.device, &g.config); g.window.request_redraw(); return; }
+                    wgpu::CurrentSurfaceTexture::Lost => {
+                        // Recreate the surface (`Lost` cannot be fixed by configuring the old one).
+                        match g.instance.create_surface(g.window.clone()) {
+                            Ok(sf) => { g.surface = sf; g.surface.configure(&g.device, &g.config); }
+                            Err(e) => eprintln!("surface lost and not recreated: {e}"),
+                        }
+                        g.window.request_redraw();
+                        return;
+                    }
+                    // Timeout, occluded, a validation error: try again next frame.
+                    _ => { g.window.request_redraw(); return; }
                 };
                 let view = frame.texture.create_view(&Default::default());
                 let aspect = g.config.width as f32 / g.config.height as f32;
@@ -405,6 +439,14 @@ impl ApplicationHandler for App {
 }
 
 fn main() -> Result<()> {
+    // A panic also goes to nf-view-crash.log (message, place, backtrace): a crash in a window without a console
+    // leaves a trace.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let text = format!("{info}\n{}\n", std::backtrace::Backtrace::force_capture());
+        let _ = std::fs::write("nf-view-crash.log", &text);
+        default_hook(info);
+    }));
     let args: Vec<String> = std::env::args().skip(1).collect();
     const USAGE: &str = "usage: nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--fire] [--reinforcements] [--shot out.png [--cam x y z yaw pitch]]\n\
         <level> is a FILES.BIN name such as 07000005 (\".bin\" optional); without <iso> the image path comes from NF_ISO";

@@ -1161,3 +1161,14 @@ lacking channels for the skeleton (index panic) — `anim::fits` now guards posi
 Tests: unit `moving_objects_collide_where_they_are` (sister: moved away / unknown glist → clear);
 `wine_truck_drives_and_parks` now casts a ray down at the gatehouse stop at tick 1900: it stops on the truck at
 y 20.58, the road below is 18.83 once the truck has left. All suites pass.
+
+## 0061 — nf-view: focus loss and window-state robustness
+
+User report: tabbing out (right click) crashes the viewer. Not reproduced: the previous build survives scripted
+minimise / restore, focus switches, resize and maximise (`ShowWindow`, `SetForegroundWindow`, `MoveWindow`); the report
+needs real mouse input (cursor grabbed, right click), which was not simulated on the user's desktop. Hardened what
+could fail there: focus loss releases the cursor grab and drops held keys and the trigger; a minimised (0×0) window is
+neither configured nor drawn; `get_current_texture` → `Lost` recreates the surface (configuring the old one cannot fix
+it), `Outdated` reconfigures, other states retry next frame (before: every non-success reconfigured); GPU validation
+errors are logged instead of wgpu's default panic. A panic hook writes the message and backtrace to
+`nf-view-crash.log` in the working directory. Rechecked: the new build passes the same scripted window tests.
