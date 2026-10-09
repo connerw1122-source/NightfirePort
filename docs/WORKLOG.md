@@ -1310,3 +1310,58 @@ the talk functions and `Drones::speech` (gates, per-line global stamps, the dron
 finished state), nf-view loads STREAMS (51 MB) into the driver. Tests: `guards_talk_in_a_fight` (pain 138 on the shot,
 attack bark 177 twice; sister: only type-2 lines), `bank_live` decodes id 175's stream at 7424 bytes / 22 050 Hz. All
 suites pass.
+
+## 0070 — Searchlights: the spec re-read in the disassembly and the snapshot
+
+HANDOFF §5.1, first item, docs first. The research pass's searchlight spec (world-objects.md) was subagent output,
+never re-checked; done here before any code. Tools: a minimal MIPS disassembler over `work/elf/ACTION.ELF` +
+`action-symtab.tsv` (now `tools/crosscheck/mipsdis.py` — the pattern HANDOFF §3 mentions, committed this time) and
+`tools/trace/searchlights_snapshot.py` walking the 29 class-0x22 objects in `work/ee_start_05.bin`.
+
+Corrections to the spec: (1) The create signature is `(a0 &translation, a1 &rotation, a2 placement, a3 glist)` —
+measured at the dispatch in `parsemap_create_dynamic_objects` 0x1d04f0: the dispatcher builds the placement's +0x0C
+and +0x18 vectors on its stack for every `*_Create`; the mangled names' "level_tag*" is the placement record, params
+at +0x2C+4k. The old "base yaw" is the placement's rotation.y. (2) p0 is the part kind — 0 mount, 1 head (the only
+part that updates), 2 spot (carries a dynamic light), 3 beam, 4 corona — not just "controller". (3) yaw =
+`PS2Sinf(phase·2π/480 + π/2)·half + rot.y` (cos via PS2Sinf; both axes share the half-range; pitch centres on mid).
+(4) `fmodf(phase, 480)`'s result is discarded — the store sits in the jal delay slot (0x1cbae0) — so phase grows
+unbounded and PS2Sinf's own wrap keeps precision. (5) Tracking aims `atan2f(dx, dz)` and `−atan2f(dy−1, √(dx²+dz²))`
+— libm atan2f, not `ATAN2_APPROX` (which the spot's normal orientation does use). (6) p1 = on-channel (head starts
+in state 3, dark; the channel re-lights it with sound 0xE5), p2 = off-channel (kills: light deleted, parts flagged
++0xFE|=1, one-shot), p3 = alarm-out, held while tracking. (7) Breaking is the update's child-list walk (obj+0xD0,
+next +4): an entry whose +0x58 object is class 5 with +8 > 0 → state 2: droop (pitch += 0.05/tick to 0.8), smoke
+every 7th frame (`Gas_Init`, `Rand_FRand(2π)` per puff — another shared-RNG consumer), sound 0xE6.
+
+The snapshot confirmed the live layout (instance+0x10 = the placement rotation, part links at +0x20+4·kind, channels
++0x34/35/36, half/mid +0x38/3c) and gave five golden sweep vectors (head 016dfe70: phase 317 → pitch 0.04712 / yaw
+0.62241; bits in the doc). Two heads start dark on channels 97 (0x61) and 164 (0xA4) — the alarm channels
+`DroneFunc_CheckAlarmRaised` posts (music.md): the alarm turns the castle searchlights on.
+
+One puzzle, solved: spot 016e8ec0 links to nothing. `control_link_object_to_cel` (0x1346b8) PREPENDS — cel+8 is the
+newest — so the cel list is reverse creation order; the courtyard spots are created before their heads, and a spot's
+own create moves it −10000, so the later head's loop (same cel, now 17 000 units away) never links it. No special
+case: create placements in record order and the measured rule reproduces the orphan. (Dead end first: same cel true,
+distance 1.485 < 3 — the list direction was the missing fact.)
+
+Docs: world-objects.md searchlight section rewritten ([M]/[L], golden bits); G-033 (port remainder), U-041 (the
+child-list +8 field). Code next: the nf-game searchlight module + tests.
+
+## 0071 — Environment rebuilt on Linux; nf-extract build fix; ISO verified
+
+The port machine is now a Linux sandbox (Debian 13, no root). Rust 1.99.0 via rustup; cpal's alsa-sys
+satisfied from an extracted `libasound2(-dev)` .deb prefix (`work`-external at `tools-bin/alsa-prefix`,
+`scripts/nfenv.sh` wraps PKG_CONFIG_PATH / LIBRARY_PATH / LD_LIBRARY_PATH). The user's disc and the
+full `work/` research tree came from their copyparty server (KOTPT share): ISO 2 439 315 456 bytes,
+`work.7z` 2.8 GB; extracted everything except `work/nfre` (4.4 GB nightfire-re dumps), `work/gfx`,
+`work/uviv` (re-derivable cross-check dumps) and the two Windows venvs — 40 496 files on disk, and the
+7z deleted afterwards for space (re-downloadable).
+
+Build fix: `nf-extract`'s `Data` construction (main.rs drone-trace command) had not been updated for
+the `surfaces` / `voices` fields added with the sound work (WORKLOG 0066–0069) — the HANDOFF test
+command does not build `nf-extract`, so it slipped through. Now `surfaces: None, voices: None`:
+those paths draw no shared RNG (WORKLOG 0069), so the headless traces are unchanged; note for the
+future: build `-p nf-extract` too.
+
+ISO identity verified the strong way: `disc_golden` (14 tests, incl. the ELF SHA-1s) plus
+`ai_live` 28 / `rng_live` / `trig_live` / `tuning_live` / `bank_live` / `music_live` all pass with
+`NF_ISO` set — 137 green, one thread, on the downloaded image.

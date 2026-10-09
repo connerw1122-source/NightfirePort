@@ -446,7 +446,9 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     let volumes = nf_game::aivolume::build(&level, level_id);
     let sfx_table = nf_formats::sfx::SfxTable::from_action_elf(&elf)?;
     let models = nf_game::pickup::models(&level);
-    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons, nav: &nav, covers: &covers, tuning: &tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: Some(&sfx_table), models: &models };
+    // Headless trace: no surface/voice sound tables (their paths draw no RNG — WORKLOG 0069 —
+    // so the shared stream is unaffected; the speech/footstep sounds simply do not play).
+    let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons, nav: &nav, covers: &covers, tuning: &tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: Some(&sfx_table), models: &models, surfaces: None, voices: None };
     let mut rng = Rng::new(std::env::var("NF_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(0x1234_5678));
     let drones = nf_game::drone::level_drones(&d, &level, &mut rng);
     let mut sim = Drones::new(drones, rng);
