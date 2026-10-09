@@ -9,7 +9,8 @@
 //!
 //! Controls: click to capture the mouse; mouse = look (raw deltas → yaw/pitch, no acceleration), WASD = move,
 //! Space / Ctrl = up / down, Shift = fast, [ / ] = browse sequences ([ from the first returns to the game's start
-//! animations), P = pause, F = firing demo for drones without AI, R = show spawner-held drones, F12 = screenshot.
+//! animations), P = pause, F = firing demo for drones without AI, R = show held-back drones (spawner reinforcements, drones waiting
+//! for a switch), K = turn all switch channels on, F12 = screenshot.
 //! The guard AI (nf-game) runs at 60 Hz with the camera as Bond; `--frame N` runs N ticks before a `--shot`.
 //! (nf-view-shot.png), Esc = release mouse, Esc again = quit.
 
@@ -169,7 +170,7 @@ struct App {
     choice: Option<usize>,
     anim_time: f32,
     paused: bool,
-    /// R = show spawner-held drones, F = make armed drones fire.
+    /// R = show held-back drones (reinforcements, drones waiting for a switch), F = make armed drones fire.
     opts: scene::ViewOpts,
 }
 
@@ -239,6 +240,8 @@ impl ApplicationHandler for App {
                     (KeyCode::KeyP, ElementState::Pressed) => self.paused = !self.paused,
                     (KeyCode::KeyR, ElementState::Pressed) => self.opts.reinforcements = !self.opts.reinforcements,
                     (KeyCode::KeyF, ElementState::Pressed) => self.opts.firing = !self.opts.firing,
+                    // Turn every switch channel on: drones waiting for one (WaitSwitch) start (triggers are not ported).
+                    (KeyCode::KeyK, ElementState::Pressed) => if let Some(sim) = self.scene.sim.as_mut() { sim.drones.switches.fill(true) },
                     (_, ElementState::Pressed) => { self.keys.insert(k); }
                     (_, ElementState::Released) => { self.keys.remove(&k); }
                 }

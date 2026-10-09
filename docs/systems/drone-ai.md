@@ -87,9 +87,10 @@ reload/NoSight/NoOpponent; visibility, round-robin line of sight against the col
 upper-body aim angle; animation calls through `DroneAnimStates` / `Drone_AnimInfo` follow-ons. Checked against the
 live trace (`crates/nf-game/tests/ai_live.rs`): Attack at tick 61, 3-shot bursts 4 ticks apart.
 
-Not yet (G-026): first-sight / combat moves (props 0x19, 0x1B; steps, strafes, rolls, crouch, cover — the traced
-guard sidestepped), patrol paths, hearing and noise, drone-to-drone alerts, head tracking and the aim bone in the
-pose, bullets and damage to Bond, AI volumes, the game's random generator.
+Since then: combat moves and bullets (WORKLOG 0020), drone-to-drone alerts and the upper-body aim, patrols and
+routes (0021), combat movement, start-up properties and WaitSwitch (0022): docs/systems/drone-navigation.md. Not yet
+(G-026/27/28): cover, grenades, hearing and noise, head tracking, AI volumes, level triggers (switch channels), drone
+hit reactions and deaths, the game's random generator.
 
 ## Firing [M, L]
 

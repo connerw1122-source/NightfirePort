@@ -111,6 +111,42 @@ fn guard_notices_and_fires_like_the_game() {
     assert!(early.is_some_and(|f| f < 61), "sister: alertness 1 must react earlier, got {early:?}");
 }
 
+/// Level-start snapshot (work/ee_start_05.bin, `drones_snapshot.py`): 8 drones wait for switch channels 0x22 / 0xA4 /
+/// 0x43 (state 1, object flags 0x30), the others are Idle / Patrol; the first behaviour block (`+0x4DC`) holds the
+/// placement words changed by `DoModeSettingsNEW` / `NDrone2_DefaultInit` / Idle.
+#[test]
+fn level_start_matches_the_game() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, _, rng) = l.drones(None, 61.342);
+    let m = l.level.main_map().unwrap();
+    let placement_words = |x: f32| {
+        let p = l.level.maps[m].placements.iter().find(|p| p.flags & 0xff == 0x0f && (p.translation[0] - x).abs() < 0.01).unwrap();
+        drone::behaviour_words(|k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0)).0
+    };
+    let mut sim = Drones::new(drones, rng);
+    sim.tick(&d, &bond_at([104.95, 24.96, 108.83]));
+    // (x, state, first block) from the snapshot; the drone at (62.20, 104.15) (state 0x29) is not compared.
+    let live: [(f32, u8, [u32; 3]); 12] = [
+        (61.341, 4, [0x8212_94c7, 0xecf3_77e5, 0x4029_1670]), (50.850, 7, [0xb012_95c7, 0xdcf3_77a5, 0x4029_14f2]),
+        (150.216, 4, [0x8212_94c7, 0xecf3_77e5, 0x4029_1670]), (99.686, 4, [0x8212_9484, 0xecf3_77e5, 0x4029_1660]),
+        (-31.296, 1, [0x3012_95c7, 0xdcf3_77a5, 0x4029_14f2]), (-33.532, 1, [0xa212_bcc7, 0x8cf3_7077, 0x4029_1670]),
+        (-33.495, 1, [0xa212_bcc7, 0x8cf3_7077, 0x4029_1670]), (-32.767, 1, [0x3012_95c7, 0xdcf3_77a5, 0x4029_14f2]),
+        (41.524, 1, [0xa212_94c7, 0xecf3_77e7, 0x4029_1670]), (46.407, 1, [0xa212_94c7, 0xecf3_77e7, 0x4029_1670]),
+        (32.435, 1, [0xa212_94c7, 0xecf3_77e5, 0x4029_1670]), (27.578, 1, [0xa212_94c7, 0xecf3_77e5, 0x4029_1670]),
+    ];
+    let mut differs_raw = 0;
+    for (x, state, words) in live {
+        let dr = sim.list.iter().find(|dr| (dr.pos[0] - x).abs() < 0.01).unwrap_or_else(|| panic!("no drone at x {x}"));
+        assert_eq!(dr.state, state, "state of the drone at x {x}");
+        assert_eq!(dr.enabled, state != 1, "enabled at x {x}");
+        assert_eq!(dr.props, words, "first behaviour block at x {x}: {:x?} vs {words:x?}", dr.props);
+        differs_raw += (placement_words(x) != words) as u32;
+    }
+    // Sister: the placement words alone do not match, so the comparison can fail.
+    assert!(differs_raw >= 10, "sister: only {differs_raw} drones differ from their placement words");
+}
+
 /// Live trace (work/patrol_trace.tsv, Bond standing at his start (104.95, 24.96, 108.83)): the guard walks
 /// PatrolPath 1 from node 20 without stopping (anim state 0x37 throughout); its positions every 300 samples (the trace
 /// starts ~11 ticks after the level).

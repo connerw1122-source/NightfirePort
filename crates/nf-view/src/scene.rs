@@ -499,7 +499,10 @@ impl Scene {
             };
             Some((mats, world, m))
         }).collect();
-        let hidden = |c: &Character| !opts.reinforcements && matches!(c.role, drone::SpawnRole::Reinforcement { .. });
+        // Held back: spawner reinforcements and drones disabled while they wait for a switch channel (object flags
+        // 0x30, `NDrone2_Enable(0)`); R shows them.
+        let hidden = |c: &Character, ci: usize| !opts.reinforcements
+            && (matches!(c.role, drone::SpawnRole::Reinforcement { .. }) || drone_of(ci).is_some_and(|(s, di)| !s.drones.list[di].enabled));
         // A matrix that collapses a mesh to one point: its triangles become degenerate and draw nothing.
         let collapse = |at: &Mat4| -> Mat4 { [[0.0; 4], [0.0; 4], [0.0; 4], [at[3][0], at[3][1], at[3][2], 1.0]] };
         // Attached meshes: datum local · bone world · object (bind world when the character has no animation).
@@ -517,7 +520,7 @@ impl Scene {
                     anim::mul(&anim::mul(&a.local, &bind), &c.matrix)
                 }
             };
-            if hidden(c) { return collapse(&datum); }
+            if hidden(c, a.character as usize) { return collapse(&datum); }
             if a.flash.is_none() { return datum; }
             // AI-driven: the flash object lives 2 ticks after each shot (`DroneWeap_FireWeapon`).
             if let Some((s, di)) = drone_of(a.character as usize) {
@@ -536,7 +539,7 @@ impl Scene {
         self.char_verts.iter().map(|v| {
             if let Some(a) = v.attachment { return transform(&attach[a as usize], v.pos); }
             let c = &self.characters[v.character as usize];
-            if hidden(c) { return [c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]]; }
+            if hidden(c, v.character as usize) { return [c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]]; }
             match &posed[v.character as usize] {
                 Some((mats, _, m)) => transform(m, anim::skin_vertex(v.pos, v.weight, v.slots, &c.slot_bones, mats)),
                 None => transform(&c.matrix, v.pos),

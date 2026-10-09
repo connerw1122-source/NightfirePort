@@ -452,8 +452,19 @@ impl Route {
         self.target = self.creep.a;
     }
 
+    /// `DroneMove_DistanceToNextRouteNode` and `DroneMove_NextRouteAngle`: the next node's 2D distance and the turn
+    /// there (between feet → node and node → the one after, or the dest); `None` past the last node.
+    pub fn next_node_turn(&self, net: &Network, feet: V3) -> Option<(f32, f32)> {
+        let next = (self.index + 1).max(0) as usize;
+        let n = self.node_pos(net, *[next].iter().find(|&&k| k < self.nodes.len())?);
+        let after = if next + 1 < self.nodes.len() { self.node_pos(net, next + 1) } else { self.dest };
+        let a = crate::trig::atan2_approx(n[0] - feet[0], n[2] - feet[2]);
+        let b = crate::trig::atan2_approx(after[0] - n[0], after[2] - n[2]);
+        Some((dist2d(feet, n), crate::trig::angle_difference(a, b)))
+    }
+
     /// `GetRouteDistance`.
-    fn distance(&self, net: &Network, feet: V3) -> f32 {
+    pub fn distance(&self, net: &Network, feet: V3) -> f32 {
         let next = (self.index + 1).max(0) as usize;
         if next >= self.nodes.len() { return dist2d(feet, self.dest); }
         let p = &net.paths[self.path];

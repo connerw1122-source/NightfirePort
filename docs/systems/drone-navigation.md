@@ -127,7 +127,28 @@ Idle enter: prop 0x1D → `AssignAIPath(8)` → EnemyMission 0x1B (none in 07000
 (0x24 + Rand 3 held 5 + Rand 5 s), idle timeout (45, 5) with prop 0x46 (msg 4 → anim 0x4B variant Rand 3); else
 Alert 0x05 (anim 0x21; msg 4 → 0x22).
 
+## Start-up [M, L]
+
+- `DSTATE_Global` enter: mode 0x1E → 0xC3; a switch channel (`+0x134` = placement parameter 3) that is off →
+  WaitSwitch (1); mode 0x17 → 0x32; a start script → PlayScript (3); else the start state `+0x5A2` (InitPatrol with
+  props 0x24/0x25, else Idle).
+- WaitSwitch: `NDrone2_Enable(0)` (object flags |= 0x30: not drawn; drone flags cleared); msg 3 polls
+  `switch_channels[+0x134]` → `Enable(1)` → the start state; msg 0xE enables at once.
+- [L] 07000005 at level start: 8 of 13 drones wait (channels 0x22, 0xA4, 0x43), 4 are Idle/Patrol, 1 spawner-held.
+- Properties at creation (first block `+0x4DC`, active through `+0x4D8`): `DoModeSettingsNEW` clears 0x1A (sets 0x1A
+  and 0x56 on 07000009/0A; untouched on 07000007); `NDrone2_DefaultInit` (single player) clears 0x17; on 07000005/06
+  SG5 guards (parameter 9 = 0x16) get 0, 1, 6, 0x41, 0x42, lose 0x13 and get engage range 10. [L] matches the
+  level-start snapshot for all 12 compared drones. `FirstAttack` can switch to the second block (`+0x4E8`) when
+  `+0x5A4` ≠ 0; the gate guard did not switch in a live fight.
+
 ## Combat movement states [M]
+
+- `DroneFunc_CombatState` (0x148338) routes to the opponent on every call (`MoveToObject(min(engage, 6), follow =
+  not from 0x68/0x70)`); "routed" = result < 4 or 10. From 0x68/0x70 the out-of-range exit needs a route; from 0x58:
+  prop 0x40 → 0x59, out of range → 0x5A, unseen → 0x5C (> 15 ticks) or 0x5F, else 0x5B; 0x5E faces and aims, routed →
+  0x58. Returns 0 while the anim is in a transition.
+- `NDrone2_MoveToObject` (0x151618): verify / compute the route, 3 when the route distance < `+0x8EC` (2.0), else
+  follow (results < 2 → 0; 2, 3, 0xC kept; others → 0).
 
 - **CombatOutOfRange 0x5A**: msg 3 → `CombatState`: `MoveToObject(min(range, 6), opponent)`; prop 0x40 / `+0x4F8 &
   0x10` → 0x59; cover → 0x8C; in range → 0x58; moving → `SetCombatMoveAnim` (07000005/06) or 0x1E; 3/9/B/C → face

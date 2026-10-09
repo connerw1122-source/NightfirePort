@@ -45,6 +45,7 @@ fn main() -> Result<()> {
         "datums" => datums(&IsoImage::open(a(1)?)?, a(2)?),
         "block-dump" => block_dump(&IsoImage::open(a(1)?)?, a(2)?, u8::from_str_radix(a(3)?.trim_start_matches("0x"), 16)?, Path::new(a(4)?)),
         "script-info" => script_info(&IsoImage::open(a(1)?)?, a(2)?, u32::from_str_radix(a(3)?, 16)?),
+        "route" => { let f = |i: usize| -> Result<f32> { Ok(a(i)?.parse()?) }; route(&IsoImage::open(a(1)?)?, a(2)?, [f(3)?, f(4)?, f(5)?], [f(6)?, f(7)?, f(8)?]) }
         "coll-probe" => coll_probe(&IsoImage::open(a(1)?)?, a(2)?),
         "coll-check" => coll_check(&IsoImage::open(a(1)?)?),
         "coll-floor" => coll_floor(&IsoImage::open(a(1)?)?, a(2)?),
@@ -451,12 +452,17 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
             }
         }
         let dr = &sim.list[near];
+        if sim.frame % 30 == 0 && !matches!(dr.state, 4 | 5 | 6 | 7) {
+            let r = dr.croute.as_ref();
+            println!("frame {:4}: state {:#x} at ({:.2}, {:.2}, {:.2}) yaw {:.2} off {:.2} dist {:.1} anim {:#x} route {:?} target {:?} seen {}", sim.frame, dr.state, dr.pos[0], dr.pos[1], dr.pos[2], dr.yaw, dr.yaw_offset, dr.dist, dr.anim.state,
+                r.map(|r| (r.nodes.len(), r.index)), r.map(|r| r.target.map(|v| (v * 100.0).round() / 100.0)), dr.seen);
+        }
         if dr.anim.danim != last_danim {
             last_danim = dr.anim.danim;
             println!("frame {:4}: danim {} script {:08x} anim state {:#x} class {}", sim.frame, dr.anim.danim, dr.anim.script.unwrap_or(0), dr.anim.state, dr.anim.class);
         }
     }
-    for (i, x) in sim.list.iter().enumerate().filter(|(_, x)| x.route.is_some()) { println!("patrol drone {i}: walked {:.3} units in {frames} ticks, {} ticks without motion", walked[i].0, walked[i].1); }
+    for (i, _) in sim.list.iter().enumerate().filter(|(_, x)| x.route.is_some()) { println!("patrol drone {i}: walked {:.3} units in {frames} ticks, {} ticks without motion", walked[i].0, walked[i].1); }
     let dr = &sim.list[near];
     println!("state changes: {:?}", dr.log.iter().map(|(f, s)| format!("{f}:{s:#x}")).collect::<Vec<_>>());
     println!("shots: {:?}", dr.shots);
@@ -866,6 +872,40 @@ fn script_info(iso: &IsoImage, level_name: &str, hash: u32) -> Result<()> {
             let wrap = { let (u, v) = (r(sq.frames as u32), r(1)); ((v[0] - u[0]).powi(2) + (v[2] - u[2]).powi(2)).sqrt() };
             println!("    horizontal root path over the frames {path:.4}, last → first {wrap:.4}");
         }
+    }
+    Ok(())
+}
+
+/// Route from one point to another through the level's AI network as a drone would (`NDrone2_MoveToObject`).
+fn route(iso: &IsoImage, level_name: &str, from: [f32; 3], to: [f32; 3]) -> Result<()> {
+    use nf_formats::level::Level;
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let level = Level::parse(&data)?;
+    let m = level.main_map().context("no main map")?;
+    let world = nf_game::world::CollisionWorld::build(&level, &level.instances(true).0);
+    let level_id = u32::from_str_radix(&level_name[..8], 16)?;
+    let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().context("no AI network")?, &world, level_id);
+    println!("{} paths, {} walls ({} passable, {} door, {} kick)", nav.paths.len(), nav.walls.len(),
+        nav.walls.iter().filter(|w| w.flags & 0x400 != 0).count(), nav.walls.iter().filter(|w| w.flags & 0x800 != 0).count(), nav.walls.iter().filter(|w| w.flags & 0x1000 != 0).count());
+    let path = nav.nav_path_for(from);
+    println!("navigation path for the start: {:?}", path.map(|p| (p, &nav.paths[p].name)));
+    println!("direct move test: {:?}", nav.move_test(&world, from, to, true, false));
+    for (pi, p) in nav.paths.iter().enumerate().filter(|(_, p)| p.kind & 0xd == 0) {
+        println!("  path {pi} {:?}: target nodes {:?}", p.name, nav.target_nodes(&world, pi, to, 36.0));
+        let mut near: Vec<(f32, usize)> = p.nodes.iter().enumerate().map(|(i, n)| (nf_game::nav::dist2d(n.pos, to), i)).collect();
+        near.sort_by(|x, y| x.0.total_cmp(&y.0));
+        for &(dd, i) in near.iter().take(3) { let q = p.nodes[i].pos; println!("      near node {i}: ({:.2}, {:.2}, {:.2}) 2D {dd:.2}, move test node → target {:?}", q[0], q[1], q[2], nav.move_test(&world, q, to, false, false)); }
+    }
+    let Some(pi) = path else { return Ok(()) };
+    let goal = nav.target_nodes(&world, pi, to, 36.0);
+    match nf_game::nav::Route::to_position(&nav, &world, Some(pi), from, to, &goal, &[]) {
+        Ok((res, r)) => {
+            println!("route result {res}: {} nodes {:?}", r.nodes.len(), r.nodes);
+            for &n in &r.nodes { let q = nav.paths[pi].nodes[n as usize].pos; println!("    node {n}: ({:.2}, {:.2}, {:.2})", q[0], q[1], q[2]); }
+        }
+        Err(code) => println!("no route: code {code}"),
     }
     Ok(())
 }

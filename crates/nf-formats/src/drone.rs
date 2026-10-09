@@ -188,6 +188,14 @@ impl PropertyTables {
         let mask = self.masks.get(d1 as usize).copied().unwrap_or(0);
         (words[(d0 & 7) as usize % 3] & mask) >> (d0 >> 3)
     }
+
+    /// `behaviour_util_setProperty` (0x1c7de8): clear the field's mask, then OR in `value << shift` (unmasked, as built).
+    pub fn set(&self, id: usize, words: &mut [u32; 3], value: u32) {
+        let Some(&[d0, d1]) = self.descs.get(id) else { return };
+        let w = (d0 & 7) as usize % 3;
+        words[w] &= !self.masks.get(d1 as usize).copied().unwrap_or(0);
+        words[w] |= value << (d0 >> 3);
+    }
 }
 
 /// The two behaviour blocks of a `DoModeSettingsNEW` drone: placement parameters 18..20 (normal) and 23..25 (alert).

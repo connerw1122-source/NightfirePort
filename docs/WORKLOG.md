@@ -508,3 +508,39 @@ PatrolPath 1 the whole time without stopping at its wait nodes. Two corrections 
   previous root (no change, the loop's last frame is its first pose shifted) and the first step (too small).
 New test `guard_patrols_like_the_game`: route order and positions within 0.35 units of the live samples (sister: 60
 ticks earlier must be farther). The "gone" drone of WORKLOG 0017 at (50.85, 28.27, 93.63) is this patroller.
+
+## 0022 — Combat movement, start-up properties, waiting drones (2026-10-09)
+
+Read myself: `DroneFunc_CombatState`, `NDrone2_MoveToObject`, `DroneAnim_GetMoveQuad`, `DroneAnim_SetCombatMoveAnim`,
+`NDrone2_DSTATE_RunForCover`, `DroneFunc_FirstAttack`, `DroneFunc_Set2ndBehaviour`, `NDrone2_DoModeSettingsNEW`,
+`behaviour_util_get/getProperty/setProperty`, `NDrone2_DefaultInit` (property part), `DSTATE_Global`, `DSTATE_WaitSwitch`,
+`NDrone2_Enable`.
+
+**Port**: `CombatState` for 0x58/0x5A/0x5C/0x5E/0x68/0x70 (routes to Bond on every call; out of range only with a
+route), `MoveToObject` with the player target node cache (rebuilt when he moves 2.0), `SetCombatMoveAnim` (quads with
+hysteresis, run-aim / walk-aim / back-off / strafe / roll / step, the yaw offset in the steering), CombatNoRoute and
+DroneStuck; `call_anim` no longer restarts a transition when the same call is repeated (a latent bug: AimCrouchFire
+re-called its anim every tick). Tool: `nf-extract route <iso> <level> x y z x y z`.
+
+**Live check 1** (`ai_trace.py --teleport 79.62 22.6 95.96 -1.6 --near 61.34 27.1 99.5`, work/chase_trace.tsv): the
+gate guard goes Combat → OutOfRange → **RunForCover** (0x8C) moving with run-aim 0x8, strafes 0xC/0xD and back-off
+0x4, then UnderCoverInit/Idle/Aim/Fire behind a corner node — cover is next (G-028). The anims showed the guard has
+props 0, 1, 0x41 that its placement words lack.
+
+**Live check 2** (PINE on that drone, then the level-start snapshot work/ee_start_05.bin): the first behaviour block
+`+0x4DC` differs from the placement words by exactly: 0x1A cleared (`DoModeSettingsNEW`), 0x17 cleared (single
+player), and for SG5 guards (parameter 9 = 0x16) on 07000005/06 props 0, 1, 6, 0x41, 0x42 set, 0x13 cleared and the
+engage range `+0xF0` = 10 (`NDrone2_DefaultInit`); 0x1D cleared by Idle (no mission path). The active pointer stayed on
+the first block after a fight, so I removed the switch to the second block I had added at Attack.
+
+**Live check 3** (same snapshot): 8 of the 13 drones are in WaitSwitch (state 1) with object flags 0x30 (hidden) —
+switch channels 0x22, 0xA4, 0x43 from placement parameter 3 — including both PatrolPath (Dr_17) guards. Ported:
+Global enter → WaitSwitch until the channel is on (`Drones::switches`; level triggers are not ported), disabled drones
+take no part in vision, bunching, alerts or the crosshair test; nf-view hides them (R shows, K turns all channels on).
+New test `level_start_matches_the_game`: states, enabled flags and all 12 first blocks equal the snapshot (sister:
+≥ 10 differ from their placement words).
+
+**Failed / corrected**
+- My first chase setup put Bond 6 units above the floor (no target nodes: correct "no route"); `nf-extract route` found it.
+- The sister check of the new test first compared against words already changed by the port (captured after
+  `Drone::new`); it now takes the placement words.
