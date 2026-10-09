@@ -45,13 +45,13 @@ impl Scene {
         let (instances, missing) = level.instances(cels_only);
         let mut groups: BTreeMap<Option<(usize, u32)>, (Vec<Vertex>, Vec<u32>)> = BTreeMap::new();
         let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-        let mut start = None;
+        // The spawn comes from the placement records even when entities are not drawn (Player1 is not a 0x8000 cel).
+        let start = level.instances(false).0.iter()
+            .find(|i| level.maps[i.map].objects[i.object].name.trim() == "Player1")
+            .map(|i| (i.placement.translation, i.placement.rotation[1]));
         let mut skinned = 0;
         for inst in &instances {
             let obj = &level.maps[inst.map].objects[inst.object];
-            if start.is_none() && obj.name.trim() == "Player1" {
-                start = Some((inst.placement.translation, inst.placement.rotation[1]));
-            }
             if obj.gfx.is_skinned() { skinned += 1; }
             for b in obj.gfx.leaves.iter().flat_map(|l| &l.batches) {
                 let key = b.texture.filter(|&t| (t as usize) < level.maps[inst.map].textures.len()).map(|t| (inst.map, t));

@@ -249,3 +249,20 @@ The user confirmed gameplay and approved stopping the mcp-pine bridge (node pid 
 
 **Open**
 - Handedness/yaw vs the game (U-023): needs a comparison with PCSX2.
+
+## 0011 — Mission order; viewer start fix (2026-10-08)
+
+**Failed / corrected**
+- I told the user 07000001 was "the first level" because of its archive number. The user corrected me. The game's
+  own `MissionData` table (0x2a4350, 24 × 40-byte records, docs/formats/mission-data.md) lists 07000005–08 first,
+  then 07000001–04. Archive numbers are not play order; table order is assumed to be play order (U-024).
+- My first attempt to read `MissionData` assumed 24-byte records (the hashcodes lined up by chance); the raw dump
+  shows 40-byte records.
+- nf-view without `--all` started inside the sky: `Player1` is not a 0x8000 cel, so the start fell back to a bounds
+  camera. The start now always comes from the placement records.
+- The user's `cargo run` failed with "could not find Cargo.toml": I had given a command that only works from the
+  repo folder. Now given with `--manifest-path`.
+
+**Measured**
+- 07000005 (first mission in the table): 132 static cels, 43,718 triangles; with dynamic entities 363 instances.
+  Striped panels remain among the static cels (U-025); flare sprites need blending (G-018).
