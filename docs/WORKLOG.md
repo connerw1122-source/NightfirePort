@@ -574,3 +574,25 @@ would); with the port's RNG the guard sometimes sidesteps there first, which the
 when its route distance drops under 2.0. `GetRouteDistance` is ported as read, so the live route probably had a second
 node that the port's `OptimiseRoute` trimmed (U-030). New test `guard_takes_cover_like_the_game` (sequence, durations
 ±3, node, position; sister: no cover with Bond 6 units away).
+
+Follow-ups the same day: `OptimiseRoute` and `GetPosForCornerCover` read and confirmed as ported; from the live start the
+port's route is the 2-node [16, 12] the live path suggests, so the arrival difference is in when the route index
+advances (still U-030). Boundary push-out (`NDrone2_Collision`, r 0.4) added after the viewer showed a guard stuck by
+the gate pillar's post. Call variants (look-around 0x4B × 3).
+
+## 0024 — Drones that are not drawn do not animate (2026-10-09)
+
+Live check: level reloaded, `switch_channels[0x22]` (0x26FC90 + 0x22) set by PINE, `ai_trace.py --near −31.30 37.58
+−37.05` (work/switch_trace.tsv). The Dr_17 guard leaves WaitSwitch and patrols PatrolPath (Dr_17) from node 10 in the
+port's order — but moving **exactly 0.02 per frame with no gait**, twice the speed of the walk's root motion. Frame rate
+was a steady 60 (FRAME_RATE 60, DIV 1, read live). `Drone_Control` (0x139268): when `NDrone2_DoAnimation` is false the
+anim is not updated and the object moves along its yaw by `Drone_AnimInfo +4` (0.02 for walk 392). DoAnimation is false
+for a drone whose object was not drawn (`obj+0xFC` = 0) playing a danim with info flag 4 and no blend. Read live:
+`obj+0xFC` = 2 for the drones around the gate (in Bond's view) and 0 for the rest — including the sniper 9 units in
+front of Bond but 10 below behind the cliff edge, so it is the renderer's cel visibility, not a frustum test.
+
+Port: `Drone::drawn` set by `Drones::tick` from a stand-in (within 60° of Bond's aim and any of five body points in
+line of sight from his eye; one ray was too strict — a pole hid the gate patroller for 200 ticks and broke the patrol
+test). Off-screen walking then matches the live guard within 0.03 for 600 ticks and 0.37 over 1,350. New test
+`switched_guard_patrols_like_the_game` (sister: an observer next to the guard makes it walk with root motion, ending
+more than 2 units from the live sample). `nf-extract ai-sim` takes `NF_SWITCHES`, `NF_AIM_YAW`, `NF_STEPS_DRONE`.

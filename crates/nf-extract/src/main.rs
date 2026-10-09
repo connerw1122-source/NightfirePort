@@ -426,7 +426,11 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
         drones.push(Drone::new(&d, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, &mut rng));
     }
     let mut sim = Drones::new(drones, rng);
-    let player = Player { pos: bond, target: [bond[0], bond[1] + 0.5, bond[2]], eye: [bond[0], bond[1] + 1.0, bond[2]], aim: [-1.0, 0.0, 0.0] };
+    // NF_SWITCHES=22,a4: switch channels on from the start (hex).
+    for c in std::env::var("NF_SWITCHES").unwrap_or_default().split(',').filter_map(|c| u8::from_str_radix(c.trim(), 16).ok()) { sim.switches[c as usize] = true; }
+    // NF_AIM_YAW: Bond's facing (radians; the game's obj+0x54), else −x.
+    let aim = std::env::var("NF_AIM_YAW").ok().and_then(|v| v.parse::<f32>().ok()).map_or([-1.0, 0.0, 0.0], |y| [y.sin(), 0.0, y.cos()]);
+    let player = Player { pos: bond, target: [bond[0], bond[1] + 0.5, bond[2]], eye: [bond[0], bond[1] + 1.0, bond[2]], aim };
     let near = (0..sim.list.len()).min_by(|&a, &b| {
         let da = |i: usize| { let p = sim.list[i].pos; (p[0] - bond[0]).powi(2) + (p[2] - bond[2]).powi(2) };
         da(a).total_cmp(&da(b))
@@ -444,13 +448,15 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
             let step = ((x.pos[0] - before[i][0]).powi(2) + (x.pos[2] - before[i][2]).powi(2)).sqrt();
             walked[i].0 += step;
             if step < 1e-6 && x.route.is_some() { walked[i].1 += 1 }
-            if i == 1 { if let Some(f) = steps_out.as_mut() { use std::io::Write; writeln!(f, "{}\t{step}\t{}", sim.frame, x.anim.time)?; } }
+            if i == std::env::var("NF_STEPS_DRONE").ok().and_then(|v| v.parse().ok()).unwrap_or(1) {
+                if let Some(f) = steps_out.as_mut() { use std::io::Write; writeln!(f, "{}\t{step}\t{}\t{}\t{}", sim.frame, x.anim.time, x.pos[0], x.pos[2])?; }
+            }
         }
         for ev in &sim.impacts { if let nf_game::bullet::BulletEvent::Player { damage, .. } = ev { hits.push((sim.frame, *damage)); } else { misses += 1; } }
-        if sim.frame % 300 == 0 {
+        if sim.frame % 100 == 0 {
             for (i, x) in sim.list.iter().enumerate().filter(|(_, x)| x.route.is_some()) {
                 let r = x.route.as_ref().unwrap();
-                println!("frame {:4}: patrol drone {i} state {:#x} at ({:.2}, {:.2}, {:.2}) route node {} (index {}) anim {:#x} danim {} script {:08x} t {}", sim.frame, x.state, x.pos[0], x.pos[1], x.pos[2], r.nodes.get(r.index.max(0) as usize).copied().unwrap_or(0), r.index, x.anim.state, x.anim.danim, x.anim.script.unwrap_or(0), x.anim.time);
+                println!("frame {:4}: patrol drone {i} state {:#x} at ({:.2}, {:.2}, {:.2}) route node {} (index {}) anim {:#x} danim {} script {:08x} t {} drawn {}", sim.frame, x.state, x.pos[0], x.pos[1], x.pos[2], r.nodes.get(r.index.max(0) as usize).copied().unwrap_or(0), r.index, x.anim.state, x.anim.danim, x.anim.script.unwrap_or(0), x.anim.time, x.drawn);
             }
         }
         let dr = &sim.list[near];

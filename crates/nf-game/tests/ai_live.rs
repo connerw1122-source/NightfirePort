@@ -213,3 +213,42 @@ fn guard_takes_cover_like_the_game() {
     for _ in 0..300 { near.tick(&d, &bond_at([67.31, 26.5, 99.47])); }
     assert!(near.list[gi].log.iter().all(|(_, s)| *s != 0x8c), "sister: cover must depend on the situation");
 }
+
+/// Live trace (work/switch_trace.tsv): right after the level loads, switch channel 0x22 is set by PINE; the Dr_17 guard
+/// at (−31.30, 37.58, −37.05) leaves WaitSwitch and patrols PatrolPath (Dr_17) from node 10. Bond stands at his start
+/// facing yaw −2.147; the guard is not drawn there (`obj+0xFC` = 0) so it does not animate: it slides 0.02 per frame
+/// (walk 392's speed). The trace starts ~10 ticks after the port's tick 0.
+#[test]
+fn switched_guard_patrols_like_the_game() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, gi, rng) = l.drones(None, -31.296);
+    let mut sim = Drones::new(drones, rng);
+    sim.switches[0x22] = true;
+    let y = -2.1467f32;
+    let p = [104.95, 24.96, 108.83];
+    let player = Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [y.sin(), 0.0, y.cos()] };
+    let mut at = Vec::new();
+    for _ in 0..1500 { sim.tick(&d, &player); at.push(sim.list[gi].pos); }
+    assert_eq!(sim.list[gi].state, nf_game::drone::state::PATROL);
+    assert!(!sim.list[gi].drawn);
+    let live = [(150, [-31.55, -35.04]), (300, [-31.62, -32.04]), (450, [-31.57, -29.04]), (600, [-31.49, -26.04]),
+        (750, [-32.01, -24.80]), (900, [-32.49, -27.75]), (1050, [-32.64, -30.74]), (1200, [-32.70, -33.74])];
+    for (sample, xz) in live {
+        let q = at[sample + 10 - 1];
+        let err = ((q[0] - xz[0]).powi(2) + (q[2] - xz[1]).powi(2)).sqrt();
+        assert!(err < 0.3, "sample {sample}: port ({:.2}, {:.2}) vs live ({:.2}, {:.2})", q[0], q[2], xz[0], xz[1]);
+    }
+    // Sister: drawn (animated with the walk's root motion) it would be about half as far along.
+    let (drones, gi, rng) = l.drones(None, -31.296);
+    let mut drawn = Drones::new(drones, rng);
+    drawn.switches[0x22] = true;
+    for _ in 0..610 {
+        // An observer right at the guard: always drawn (within 2 units).
+        let g = drawn.list[gi].pos;
+        drawn.tick(&d, &Player { eye: [g[0], g[1] + 1.0, g[2]], ..player });
+        assert!(drawn.list[gi].drawn);
+    }
+    let q = drawn.list[gi].pos;
+    assert!(((q[0] + 31.49).powi(2) + (q[2] + 26.04).powi(2)).sqrt() > 2.0, "sister: a drawn guard walks slower ({:.2}, {:.2})", q[0], q[2]);
+}

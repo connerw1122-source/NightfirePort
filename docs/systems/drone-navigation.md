@@ -81,6 +81,11 @@ arrival radius +0x8C (2.0), look-ahead +0x90 (2.0; 4.0 when `Drone+0x23`), the l
 
 ## Moving [M]
 
+Drawn or not [M, L] (WORKLOG 0024): a drone whose object was not drawn last frame (`obj+0xFC` = 0, the renderer's cel
+visibility) and whose danim has info flag 4 and no blend does not animate (`NDrone2_DoAnimation` false): it slides along
+its yaw by `Drone_AnimInfo +4` per frame (walk 392: 0.02, twice its root-motion speed). The port approximates "drawn"
+by Bond's view (60°) and line of sight to any of five body points.
+
 Collision with the network: `NDrone2_Collision` pushes the feet sphere (r 0.4) out of boundary walls without flags
 0x1C00 (`GetBoundsPushVectorForSphere`; ported, the push itself *suggested*). Without it a sidestep left a guard 0.11
 from the gate pillar's post and every route segment failed the post test (WORKLOG 0023).

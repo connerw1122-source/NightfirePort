@@ -266,6 +266,9 @@ pub struct Drone {
     /// disabled drones have object flags 0x30 — not drawn — and no vision).
     pub switch_channel: u8,
     pub channel_on: bool,
+    /// Drawn last frame (`obj+0xFC`, set by the renderer's cel visibility; *suggested* stand-in: within 60° of Bond's
+    /// view and in line of sight from his eye), set by `Drones::tick`.
+    pub drawn: bool,
     pub enabled: bool,
     /// Index in `Drones::list` (cover ownership) and the state being entered during an exit message.
     pub index: usize,
@@ -317,7 +320,7 @@ impl Drone {
             shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
-            switch_channel: param(3) as u8, channel_on: false, enabled: true, index: 0, exiting_to: 0,
+            switch_channel: param(3) as u8, channel_on: false, drawn: true, enabled: true, index: 0, exiting_to: 0,
             cover: None, cover_side: 0, cover_type: 0, cover_leave: 0, cover_point: pos, goal: None, cover_claimed: false, has_cover: false, cover_tries: 0,
             cover_rt: Vec::new(), others: Vec::new(),
         };
@@ -476,6 +479,26 @@ impl Drone {
     /// Advances the script; at its end continues with the danim's follow-on (`Drone_AnimInfo +10`); handles a pending
     /// call (`DroneAnim_CallHandler`): start the transition danim, complete when the anim state is reached.
     fn update_anim(&mut self, d: &Data) -> Option<(u8, u8)> {
+        // `Drone_Control` / `NDrone2_DoAnimation` (0x149f88): a drone that was not drawn (`obj+0xFC` = 0) playing a danim
+        // with info flag 4 and no blend does not animate; it slides along its yaw by the danim's speed (`Drone_AnimInfo
+        // +4`, e.g. 0.02 for walk 392). [L] work/switch_trace.tsv: a Dr_17 patroller behind the castle moved exactly
+        // 0.02 per frame with no gait while the drawn patroller near the gate shows the walk's 115-tick gait.
+        let info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
+        if !self.drawn && info[0] & 4 != 0 && self.anim.blend_wait == 0 {
+            let v = f32::from_le_bytes([info[4], info[5], info[6], info[7]]);
+            if v != 0.0 && v.is_finite() { self.move_by(d, [crate::trig::sinf(self.yaw) * v, crate::trig::cosf(self.yaw) * v]); }
+            self.root_prev = None;
+            let (want, next_ai, done_msg) = self.anim.call?;
+            if self.anim.state == want && matches!(self.anim.class, 2 | 9) { self.anim.call = None; return Some((next_ai, done_msg)); }
+            if !self.anim.started_call {
+                self.anim.started_call = true;
+                if let Some(t) = d.tables.transition(want, self.anim.state, self.anim.variant).filter(|t| t.danim > 0) {
+                    self.set_danim(d, t.danim as u16);
+                    self.anim.blend_wait = if t.b5 != 0 { t.b4 as u32 } else { 0 };
+                }
+            }
+            return None;
+        }
         let before = (self.anim.script, self.anim.danim);
         // Playback speed (`Drone_AnimInfo +0x14`, passed to the script by `SetHTAnim`): [L] lean-out 176 (51 frames at
         // 1.5) lasted 35 ticks live (work/chase_trace.tsv).
@@ -558,15 +581,20 @@ impl Drone {
         if let (Some([lx, lz]), Some(_)) = (delta, root) {
             let (s, c) = (crate::trig::sinf(self.yaw), crate::trig::cosf(self.yaw));
             let step = [lx * c + lz * s, -lx * s + lz * c];
-            let to = [self.pos[0] + step[0], self.pos[1], self.pos[2] + step[1]];
-            // Walls: the move is cancelled when the body (0.4 above the feet sphere … head) would cross collision.
-            let probe = |y: f32| d.world.line_of_sight([self.pos[0], y, self.pos[2]], [to[0] + step[0].signum() * 0.4 * (step[0].abs() > 1e-6) as i32 as f32, y, to[2] + step[1].signum() * 0.4 * (step[1].abs() > 1e-6) as i32 as f32]);
-            if probe(self.pos[1]) && probe(self.pos[1] + 0.5) {
-                self.pos = to;
-                if let Some(f) = d.world.floor_below([to[0], self.pos[1], to[2]], 2.0) { self.pos[1] = f + 1.0; }
-            }
+            self.move_by(d, step);
         }
         self.root_prev = root;
+    }
+
+    /// Moves x/z by `step` unless the body (0.4 above the feet sphere … head) would cross collision, then stands on the
+    /// floor below.
+    fn move_by(&mut self, d: &Data, step: [f32; 2]) {
+        let to = [self.pos[0] + step[0], self.pos[1], self.pos[2] + step[1]];
+        let probe = |y: f32| d.world.line_of_sight([self.pos[0], y, self.pos[2]], [to[0] + step[0].signum() * 0.4 * (step[0].abs() > 1e-6) as i32 as f32, y, to[2] + step[1].signum() * 0.4 * (step[1].abs() > 1e-6) as i32 as f32]);
+        if probe(self.pos[1]) && probe(self.pos[1] + 0.5) {
+            self.pos = to;
+            if let Some(f) = d.world.floor_below([to[0], self.pos[1], to[2]], 2.0) { self.pos[1] = f + 1.0; }
+        }
     }
 
     // ---- cover (docs/systems/drone-cover.md) ---------------------------------------------------------------------
@@ -1703,6 +1731,16 @@ impl Drones {
         for (index, dr) in self.list.iter_mut().enumerate() {
             if dr.target.stamp != self.target.stamp { dr.target = self.target.clone(); }
             dr.channel_on = self.switches.get(dr.switch_channel as usize).copied().unwrap_or(false);
+            dr.drawn = dr.enabled && {
+                let v = [dr.pos[0] - player.eye[0], dr.pos[2] - player.eye[2]];
+                let (a, l) = ([player.aim[0], player.aim[2]], (v[0] * v[0] + v[1] * v[1]).sqrt());
+                let al = (a[0] * a[0] + a[1] * a[1]).sqrt();
+                // Any of five body points in sight (thin occluders such as poles hide one ray, not the cel).
+                let side = [-v[1] / l.max(1e-6) * 0.5, v[0] / l.max(1e-6) * 0.5];
+                let pts = [dr.head(), dr.pos, [dr.pos[0] + side[0], dr.pos[1], dr.pos[2] + side[1]],
+                    [dr.pos[0] - side[0], dr.pos[1], dr.pos[2] - side[1]], [dr.pos[0], dr.pos[1] - 0.8, dr.pos[2]]];
+                l < 2.0 || (al > 1e-6 && (v[0] * a[0] + v[1] * a[1]) / (l * al) > 0.5 && pts.iter().any(|&q| d.world.line_of_sight(player.eye, q)))
+            };
             dr.links_used = std::mem::take(&mut self.used);
             dr.cover_rt = std::mem::take(&mut self.cover_rt);
             dr.others = positions.clone();
