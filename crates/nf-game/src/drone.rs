@@ -138,17 +138,32 @@ pub struct PlayerTarget {
     pub nodes: Vec<crate::nav::TargetNodes>,
 }
 
-/// Deterministic stand-in for `Rand_FRand` (the game's generator state is not modelled).
+/// The game's generator (`Rand_Rand` 0x1e3738, `Rand_FRand` 0x1e3780): two 16-bit multiply-with-carry streams, x × 18000
+/// and y × 30903 (`a_318` / `b_319`, read from RAM), state `SEED_X` / `SEED_Y` (0x30d0a0 / 0x30d0a4). The whole game
+/// shares it (particles, sounds …), so a live sequence cannot be reproduced; seeds pick a state.
 #[derive(Clone, Debug)]
-pub struct Rng(u32);
+pub struct Rng { pub x: u32, pub y: u32 }
 impl Rng {
-    pub fn new(seed: u32) -> Rng { Rng(seed | 1) }
+    /// The state of a level-start snapshot of 07000005 (work/ee_start_05.bin), mixed with `seed`.
+    pub fn new(seed: u32) -> Rng { Rng { x: 0x0659_5adb ^ seed.wrapping_mul(0x9e37_79b9), y: 0x208a_5de8 ^ seed } }
+    fn step_x(&mut self) { self.x = 18000u32.wrapping_mul(self.x & 0xffff).wrapping_add(self.x >> 16); }
+    fn step_y(&mut self) { self.y = 30903u32.wrapping_mul(self.y & 0xffff).wrapping_add(self.y >> 16); }
+    /// `Rand_FRand(max)`: x then y step; (x << 16) + (y & 0xFFFF) converted by `cvt.s.w` (truncating; values with the
+    /// top bit set are halved, converted and doubled), × 2⁻³², × max.
     pub fn frand(&mut self, max: f32) -> f32 {
-        self.0 ^= self.0 << 13; self.0 ^= self.0 >> 17; self.0 ^= self.0 << 5;
-        (self.0 >> 8) as f32 / (1u32 << 24) as f32 * max
+        self.step_x();
+        self.step_y();
+        let v = (self.x << 16).wrapping_add(self.y & 0xffff);
+        let cvt = |i: u32| -> f32 { let bits = 32 - i.leading_zeros(); if bits <= 24 { i as f32 } else { let sh = bits - 24; ((i >> sh) << sh) as f32 } };
+        let f = if (v as i32) >= 0 { cvt(v) } else { let h = cvt((v >> 1) | (v & 1)); nf_formats::ps2float::add(h, h) };
+        nf_formats::ps2float::mul(max, nf_formats::ps2float::mul(f, f32::from_bits(0x2f80_0000)))
     }
-    /// `Rand_Rand(n)`: an integer in [0, n) (0 for n = 0).
-    pub fn rand(&mut self, n: u32) -> u32 { (self.frand(1.0) * n as f32) as u32 % n.max(1) }
+    /// `Rand_Rand(n)`: y then x step; ((y & 0xFFFF) × n) >> 16.
+    pub fn rand(&mut self, n: u32) -> u32 {
+        self.step_y();
+        self.step_x();
+        ((self.y & 0xffff).wrapping_mul(n)) >> 16
+    }
 }
 
 /// Animation side of a drone: `DroneAnim_*` over the danim tables, playing scripts.

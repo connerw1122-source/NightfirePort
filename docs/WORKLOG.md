@@ -596,3 +596,15 @@ line of sight from his eye; one ray was too strict — a pole hid the gate patro
 test). Off-screen walking then matches the live guard within 0.03 for 600 ticks and 0.37 over 1,350. New test
 `switched_guard_patrols_like_the_game` (sister: an observer next to the guard makes it walk with root motion, ending
 more than 2 units from the live sample). `nf-extract ai-sim` takes `NF_SWITCHES`, `NF_AIM_YAW`, `NF_STEPS_DRONE`.
+
+## 0025 — The game's random generator (2026-10-09)
+
+`Rand_Rand` (0x1e3738) / `Rand_FRand` (0x1e3780): two 16-bit multiply-with-carry streams, x × 18000 and y × 30903 (the
+multipliers `a_318` / `b_319` read from three RAM snapshots; Marsaglia's constants), state `SEED_X` / `SEED_Y`
+(0x30d0a0 / 0x30d0a4). `Rand_FRand`: (x << 16) + (y & 0xFFFF) through `cvt.s.w` (values with the top bit set are
+halved, converted and doubled — read in the disassembly), × 2⁻³², × max; `Rand_Rand(n)`: ((y & 0xFFFF) × n) >> 16. The
+port's `Rng` replaces the xorshift stand-in. Check: the R5900 interpreter (`ee.rs`, now with `bltz`/`bgez`, `_gp`, FPU
+register access) runs the game's two functions over ACTION.ELF from three seed states for 2,000 calls each; every
+result is bit-identical (`crates/nf-game/tests/rng_live.rs`). The game shares the generator with everything else, so live
+sequences still cannot be replayed; tests pick a seed state whose rolls match the trace (seed 2: the first combat move is
+the step the trace shows — `ChooseCombatMove` read: strafe and step are equally likely for these guards).

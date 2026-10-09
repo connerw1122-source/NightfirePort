@@ -84,7 +84,8 @@ fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, 
 fn guard_notices_and_fires_like_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    let (drones, gi, rng) = l.drones(None, 61.342);
+    // Seed 2: the first combat-move roll picks the step (strafe or step are equally likely; the trace shows steps).
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 2);
     assert_eq!(drones.len(), 13, "live count at level start");
     let mut sim = Drones::new(drones, rng);
     let player = bond_at([67.31, 26.5, 99.47]);
@@ -109,7 +110,7 @@ fn guard_notices_and_fires_like_the_game() {
     // The sniper (L96A1, 30 × 0.6) hits for 18, as in the live trace.
     assert!(sim.player_hits.iter().filter(|(_, o, _)| *o != gi).all(|(_, _, h)| (h - 18.0).abs() < 1e-3 || (h - 1.65).abs() < 1e-3 || *h < 18.0));
     // Sister: the same guard already at alertness 1 reacts without the delay, so the comparison above can fail.
-    let (alert_drones, _, alert_rng) = l.drones(Some(1.0), 61.342);
+    let (alert_drones, _, alert_rng) = l.drones_seeded(Some(1.0), 61.342, 2);
     let mut alert_sim = Drones::new(alert_drones, alert_rng);
     for _ in 0..100 { alert_sim.tick(&d, &player); }
     let early = alert_sim.list[gi].log.iter().find(|(_, s)| *s == nf_game::drone::state::ATTACK).map(|(f, _)| *f);

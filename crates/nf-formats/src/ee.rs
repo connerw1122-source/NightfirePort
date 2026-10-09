@@ -83,9 +83,21 @@ impl Machine {
             regions.push((va, v));
         }
         regions.push((STACK_TOP - STACK_SIZE, vec![0; STACK_SIZE as usize]));
-        let memset = elf.symbols(data)?.iter().find(|s| s.name == "memset").map(|s| s.value);
-        Ok(Machine { regions, r: [0; 32], f: [0; 32], hi: 0, lo: 0, memset, steps: 0 })
+        let syms = elf.symbols(data)?;
+        let memset = syms.iter().find(|s| s.name == "memset").map(|s| s.value);
+        let mut r = [0; 32];
+        // gp-relative data (small globals such as `SEED_X`) needs `_gp`.
+        if let Some(gp) = syms.iter().find(|s| s.name == "_gp") { r[28] = gp.value as u128; }
+        Ok(Machine { regions, r, f: [0; 32], hi: 0, lo: 0, memset, steps: 0 })
     }
+
+    /// FPU register access (arguments in f12, results in f0).
+    pub fn set_fpr(&mut self, i: usize, v: f32) { self.f[i] = v.to_bits(); }
+    pub fn fpr(&self, i: usize) -> f32 { f32::from_bits(self.f[i]) }
+    /// General register (low 32 bits), e.g. v0 = 2.
+    pub fn gpr(&self, i: usize) -> u32 { self.r[i] as u32 }
+    /// Writes bytes into the image.
+    pub fn poke(&mut self, a: u32, bytes: &[u8]) -> Result<()> { self.write(a, bytes) }
 
     fn slot(&self, a: u32, n: usize) -> Result<(usize, usize)> {
         for (i, (va, b)) in self.regions.iter().enumerate() {
@@ -177,6 +189,11 @@ impl Machine {
                 let eq = self.r[rs] as u64 == self.r[rt] as u64;
                 // Not taken: fall through; the delay slot runs as the next instruction (beq/bne are not "likely").
                 if eq == (op == 4) { return Ok(Some(pc.wrapping_add(4).wrapping_add(simm << 2))); }
+            }
+            // REGIMM: bltz / bgez.
+            0x01 if rt <= 1 => {
+                let neg = (self.r[rs] as u64 as i64) < 0;
+                if neg == (rt == 0) { return Ok(Some(pc.wrapping_add(4).wrapping_add(simm << 2))); }
             }
             0x09 => self.set(rt, sx32((self.r[rs] as u32).wrapping_add(simm))),
             0x0a => self.set(rt, ((self.r[rs] as u64 as i64) < simm as i32 as i64) as u128),
