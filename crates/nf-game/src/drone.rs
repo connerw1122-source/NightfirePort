@@ -2407,6 +2407,9 @@ impl Drones {
                 }
             }
         }
+        // `Drone_InitComms` after the vision pass: an enabled (`+0x4F8 & 0x100`, set by DefaultInit / Enable), living
+        // (`& 0x600` clear) drone at alertness ≥ 1 within 30 units of Bond (not team 2) raises `switch_channels[0x97]`.
+        if self.list.iter().any(|x| x.present && x.enabled && !x.corpse && x.alert >= 1.0 && x.dist < 30.0) { self.channels.set(0x97, 1, frame); }
         // The alarm: while `switch_channels[0x96]`, every 30 frames (and once only on 07000014) msg 0x1E to every drone.
         if self.channels.on(0x96) && self.last_alarm.is_none_or(|t| frame > t + 30) && (d.level != 0x0700_0014 || !self.alarm_sent) {
             self.alarm_sent = true;

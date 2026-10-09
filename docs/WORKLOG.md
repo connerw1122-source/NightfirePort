@@ -790,5 +790,6 @@ home get saved. SeenDeadBody 0x9E is set only in `NDrone2_ReactToDroneAlertMsg`,
 0x1E)` → `Drone_SM_BroadcastMsg`; the states that pass 0x1E to `EnemyAlerts` (Idle, Alert, Patrol, AlertToPosition,
 SearchArea, HeardNoise Aware / Suspect / Alert, plus states the port lacks) go to Attack. Ported with test
 `alarm_channel_sends_guards_to_attack` (sister: no channel, no attack). 07000005 has no trigger for 0x96.
-`DroneFunc_CheckAlarmRaised` is music only. Channel 0x97 (a drone with `+0x4F8 & 0x100`, alertness 1, within 30) is
-left as a gap — the flag's setter was not found by a plain search.
+`DroneFunc_CheckAlarmRaised` is music only. Channel 0x97: a search over every OR-mask on `+0x4F8` found 0x100 only
+in `NDrone2_DefaultInit` (| 0x1A0) and `NDrone2_Enable` (| 0x801A0) — the "enabled" flag; dead drones are excluded by
+0x200 (`SetAsDead`). So any enabled living drone at alertness ≥ 1 within 30 units of Bond raises 0x97 — ported.
