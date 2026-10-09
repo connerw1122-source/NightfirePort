@@ -166,6 +166,8 @@ pub struct Animator {
     pub class: u8,
     /// Pending `DroneAnim_CallAnim`: (anim state, AI state on completion, message on completion).
     pub call: Option<(u16, u8, u8)>,
+    /// The call's variant (`DroneAnim_CallAnim`'s third argument: consecutive danims of a record, e.g. 0x4B × 3).
+    pub variant: u16,
     pub started_call: bool,
     /// Frames left of the blend the call waits for (`+0x578` with the blend-out script `+0x538`).
     pub blend_wait: u32,
@@ -310,7 +312,7 @@ impl Drone {
             los: false, seen: false, ever_seen: false, visibility: 0.0, seen_ticks: 0, unseen_ticks: 0, vision_on: false,
             dist: 0.0, yaw_to_opp: 0.0,
             state: state::GLOBAL, prev_state: 0, next_state: None, entered: 0, timer_c: None,
-            anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, started_call: false, blend_wait: 0, ftime: 0.0, speed: 1.0 },
+            anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, started_call: false, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0 },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
             shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
@@ -462,6 +464,13 @@ impl Drone {
         self.anim.call = Some((state, next_ai, done_msg));
         self.anim.started_call = false;
         self.anim.blend_wait = 0;
+        self.anim.variant = 0;
+    }
+
+    /// `DroneAnim_CallAnim` with a variant.
+    fn call_anim_variant(&mut self, state: u16, variant: u16, next_ai: u8, done_msg: u8) {
+        self.call_anim(state, next_ai, done_msg);
+        if self.anim.call.is_some() { self.anim.variant = variant; }
     }
 
     /// Advances the script; at its end continues with the danim's follow-on (`Drone_AnimInfo +10`); handles a pending
@@ -509,7 +518,7 @@ impl Drone {
         }
         if !self.anim.started_call {
             self.anim.started_call = true;
-            if let Some(t) = d.tables.transition(want, self.anim.state, 0).filter(|t| t.danim > 0) {
+            if let Some(t) = d.tables.transition(want, self.anim.state, self.anim.variant).filter(|t| t.danim > 0) {
                 self.set_danim(d, t.danim as u16);
                 self.anim.blend_wait = if t.b5 != 0 { t.b4 as u32 } else { 0 };
             }
@@ -939,8 +948,8 @@ impl Drone {
                         IDLE => (anim_state::LOOK_AROUND, IDLE),
                         _ => (anim_state::ALERT_LOOK, ALERT),
                     };
-                    let _variant = rng.rand(3);
-                    if self.can_do(d, anim) { self.call_anim(anim, back, 0) }
+                    let variant = if anim == anim_state::LOOK_AROUND { rng.rand(3) as u16 } else { 0 };
+                    if self.can_do(d, anim) { self.call_anim_variant(anim, variant, back, 0) }
                     if s != PATROL { self.set_idle_timeout(rng, frame, 45, 5) }
                 }
                 true
