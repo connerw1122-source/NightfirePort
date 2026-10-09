@@ -12,12 +12,12 @@ port's implementation was checked against them and the positions' unit conversio
 Done: banks (load by `Sound_Ready`'s table), the EE pool (deferred start, per-frame positions, grace period, stop),
 the driver's start path (`SFXSetup` budget / stealing / per-id limit, random / sequence / polyphonic choice,
 `StartSample` pitch / volume / pan with the driver's RNG), the 3-D math with the driver's integer `PS2_SquareRoot`,
-`ES_CombineVolumes`, front + phase-inverted rear voices, `SFXUpdate` (ends, sequences, loops via cue timers, kill pass,
-active list), `SFXRemove` / `SetPositionAndVelocity`; sources: Bond's shot, guards' gunfire (`weapon_data+0x60`),
+`ES_CombineVolumes`, front + phase-inverted rear voices (the rear keyed 500 µs later, WORKLOG 0064), `SFXUpdate` (ends, sequences, loops via cue timers, kill pass,
+active list), `SFXRemove` / `SetPositionAndVelocity`; sources: the first-person gun's script sounds (op 1: shot, reload), guards' gunfire (`weapon_data+0x60`),
 animation-script sounds, pickups, script sounds (moving with their object). Not yet: music (MFX streams, `Music_Event`
 state machine), speech / streamed effects (`STREAMS.BIN`, negative sample refs), map ambients (block 0x28), footsteps
 and impacts (`EffectInfo`), reverb / environment / underwater, ducker and fades, precache, pause, the SPU's Gaussian
-interpolation and ADSR (the port mixes linearly and stops at once), the 500 µs rear key-on delay.
+interpolation and ADSR (the port mixes linearly and stops at once), the per-weapon op-1 id remaps (other weapons).
 
 ---
 

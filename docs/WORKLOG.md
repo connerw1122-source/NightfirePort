@@ -1223,3 +1223,16 @@ Tests: unit (`ps2_sqrt` values from the driver's behaviour incl. √1e6 → 1297
 fading with distance, rejected beyond the outer radius; the EE pool's deferred start / grace / removal; bank parsing);
 opt-in `bank_live` (all 252 samples decode, 7 looped; 0x403 and 0xF5 start front + rear voices, 0xF5 at 100 units
 rejected). All suites pass; the viewer opens the output device and loads the bank.
+
+## 0064 — Gun script sounds (reload) and the rear-voice delay
+
+User report: no reload sound; gunshots mostly in the left ear. Both were parts of the specs left out in 0063.
+(1) The first-person gun's sounds come from its animation scripts (`AnimProcessScriptCmds` op 1 when the frame crosses
+cmd[1]): P2K fire scripts 06000823 / 06000824 play 0x403 at frame 1, the reload 06000827 plays 0x40F / 0x40E / 0x411 at
+frames 0x2E / 0x59 / 0x74. nf-view now plays them from the view script's frame crossing (script time + 1), and
+`fire_player` keeps the shot only in the drones' hearing list. Headless check (`NF_SOUNDLOG=1 … --pull 10,40,…,220`):
+seven shots (the last from the empty-clip script), then the auto-reload's three sounds at ticks 243 / 275 / 295 (32
+and 20 ticks apart: frames 46 → 89 → 116 at speed 1.35). (2) `PS2_SendKeyONKeyOff` keys the rear voices 500 µs after
+the front ones (mode ≠ 0). 0063 keyed them together, so the phase-inverted rear right cancelled the same waveform on
+the right (gun: L ≈ 0.8, R ≈ 0.2 of the sample) — a judgement call ("negligible") that was wrong. `Cmd::Play` carries
+the delay; `bank_live` asserts 0 / 0.5 ms for front / rear.

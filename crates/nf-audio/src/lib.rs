@@ -17,8 +17,9 @@ pub struct Pcm { pub data: Vec<i16>, pub loop_start: Option<usize> }
 /// A command to the voices.
 #[derive(Clone, Debug)]
 pub enum Cmd {
-    /// Key on: `voice` (the caller's handle) starts `pcm` at SPU `pitch` (0x1000 = 48 kHz) with volumes 0..1.
-    Play { voice: u32, pcm: Arc<Pcm>, pitch: u32, left: f32, right: f32 },
+    /// Key on: `voice` (the caller's handle) starts `pcm` at SPU `pitch` (0x1000 = 48 kHz) with volumes 0..1, after
+    /// `delay` seconds (the driver keys rear voices on 500 µs after the front ones, `PS2_SendKeyONKeyOff`).
+    Play { voice: u32, pcm: Arc<Pcm>, pitch: u32, left: f32, right: f32, delay: f32 },
     /// New pitch and volumes for a playing voice.
     Set { voice: u32, pitch: u32, left: f32, right: f32 },
     /// Key off (the voice stops at once — *deviation*: no ADSR release).
@@ -27,7 +28,7 @@ pub enum Cmd {
     StopAll,
 }
 
-struct Voice { id: u32, pcm: Arc<Pcm>, pos: f64, pitch: u32, left: f32, right: f32 }
+struct Voice { id: u32, pcm: Arc<Pcm>, pos: f64, pitch: u32, left: f32, right: f32, wait: usize }
 
 #[derive(Default)]
 struct Shared { cmds: Vec<Cmd>, ended: Vec<u32>, playing: Vec<u32> }
@@ -60,9 +61,9 @@ impl Output {
                 let mut s = sh.lock().unwrap();
                 for c in s.cmds.drain(..) {
                     match c {
-                        Cmd::Play { voice, pcm, pitch, left, right } => {
+                        Cmd::Play { voice, pcm, pitch, left, right, delay } => {
                             voices.retain(|v| v.id != voice);
-                            voices.push(Voice { id: voice, pcm, pos: 0.0, pitch, left, right });
+                            voices.push(Voice { id: voice, pcm, pos: 0.0, pitch, left, right, wait: (delay * rate as f32).round() as usize });
                         }
                         Cmd::Set { voice, pitch, left, right } => if let Some(v) = voices.iter_mut().find(|v| v.id == voice) { (v.pitch, v.left, v.right) = (pitch, left, right); },
                         Cmd::Stop { voice } => voices.retain(|v| v.id != voice),
@@ -76,6 +77,7 @@ impl Output {
                 let n = v.pcm.data.len();
                 let step = v.pitch as f64 * step_scale;
                 for frame in out.chunks_mut(channels) {
+                    if v.wait > 0 { v.wait -= 1; continue; }
                     let i = v.pos as usize;
                     if i >= n {
                         match v.pcm.loop_start { Some(l) if l < n => v.pos = l as f64 + (v.pos - n as f64), _ => { ended.push(v.id); break; } }

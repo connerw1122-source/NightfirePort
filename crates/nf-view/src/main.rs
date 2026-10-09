@@ -132,6 +132,15 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
             for l in &o.gfx.leaves { for b in &l.batches { *pr.entry((b.prim, b.verts.iter().any(|v| v.rgba[3] < 0x7c))).or_default() += 1; for v in &b.verts { *va.entry(v.rgba[3]).or_default() += 1; if v.rgba[3] < 0x7c { *low.entry(o.name.trim().to_string()).or_default() += 1; } } } }
         }
         eprintln!("list-0 batch prims (prim, has low alpha): {pr:?}");
+        if let (Some(w), Some(sim)) = (drones.weapons.as_ref(), scene.sim.as_ref()) {
+            let r = &w.records[2];
+            for o in [0xa0usize, 0xa4, 0xa8, 0xac, 0xb0, 0xb4, 0xb8, 0xbc] {
+                let h = u32::from_le_bytes(r[o..o + 4].try_into().unwrap());
+                let Some(sc) = sim.scripts.get(&h) else { continue };
+                let ops: Vec<String> = sc.commands.iter().filter(|c| c.op == 1 || c.op == 2).map(|c| format!("op{} {:x?}", c.op, c.args)).collect();
+                eprintln!("P2K +{o:#x} script {h:08x} len {}: {}", sc.length, ops.join(", "));
+            }
+        }
         if let Ok(name) = std::env::var("NF_LEAVES") {
             for inst in level.instances(!all).0 {
                 let o = &level.maps[inst.map].objects[inst.object];

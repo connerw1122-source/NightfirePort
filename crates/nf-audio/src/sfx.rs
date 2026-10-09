@@ -273,10 +273,11 @@ impl Driver {
         it.pos = it.real_pos;
         self.get_my_pos(i);
         let (l, r, b) = self.levels(i, ch);
-        out.push(Cmd::Play { voice: front, pcm: pcm.clone(), pitch: pitch.max(0) as u32, left: l, right: r });
+        out.push(Cmd::Play { voice: front, pcm: pcm.clone(), pitch: pitch.max(0) as u32, left: l, right: r, delay: 0.0 });
         if let Some(rv) = rear {
             self.voices[rv as usize] = Some(Voice { front: rv, rear: None, looping: hdr.looped & 1 != 0, playing: true, pitch: pitch.max(0) as u32 });
-            out.push(Cmd::Play { voice: rv, pcm, pitch: pitch.max(0) as u32, left: b, right: if self.mode == 0 { b } else { -b } });
+            // Mode ≠ 0: the rear voices are keyed on after `DelayThread(500)` (µs); mode 0 keys them with the front.
+            out.push(Cmd::Play { voice: rv, pcm, pitch: pitch.max(0) as u32, left: b, right: if self.mode == 0 { b } else { -b }, delay: if self.mode == 0 { 0.0 } else { 0.0005 } });
         }
         true
     }

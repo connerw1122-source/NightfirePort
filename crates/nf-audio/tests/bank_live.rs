@@ -30,6 +30,10 @@ fn level_05_bank_plays_through_the_driver() {
     eprintln!("{plays:?}");
     assert_eq!(plays.len(), 4, "two 3-D sounds: front and rear voices each");
     assert!(plays[0].0 > 0.0 && plays[2].0 > plays[2].1, "{plays:?}");
+    // The rear voices start 500 µs after the front ones (mode 1); keyed together they would cancel the right channel
+    // of the same waveform (rear right is phase-inverted).
+    let delays: Vec<f32> = out.iter().filter_map(|c| match c { Cmd::Play { delay, .. } => Some(*delay), _ => None }).collect();
+    assert_eq!(delays, vec![0.0, 0.0005, 0.0, 0.0005]);
     let before = out.len();
     // Sister: out of range → rejected, no voice.
     assert_eq!(d.start(&mut out, 0xf5, Some([100.0, 0.0, 0.0]), 3, None), 1);

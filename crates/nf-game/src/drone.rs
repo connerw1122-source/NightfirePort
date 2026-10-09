@@ -2950,7 +2950,8 @@ impl Drones {
             let dir = crate::bullet::spread(dir, f(0x24), flags68, &mut self.rng);
             self.player_bullets.push(PlayerBullet { pos: from, dir, speed: f(0x20), travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false });
         }
-        self.play_sound(from, sound);
+        // Heard by the drones; the audible shot comes from the gun's fire script (op 1), played by the player's owner.
+        if !sound.looped { self.sounds.push(Sound { id: sound.id, pos: from, inner: sound.inner, outer: sound.outer, weight: sound.weight }); }
     }
 
     /// Bond's bullets for one tick (`Bullet_update`, `Collide_Update`): the segment of max(step, 1) units against the

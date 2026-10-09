@@ -289,6 +289,7 @@ impl Sim {
             let len_of = |h: u32| self.scripts.get(&h).map_or(0.0, |s| s.length as f32);
             let busy = (self.view_script == rd0(0xb0) || self.view_script == rd0(0xb4)) && self.view_time < len_of(self.view_script) - 1.0;
             let fired = self.gun.update_with(trigger, reload, busy, params);
+            let (prev_script, prev_time) = (self.view_script, self.view_time);
             // The gun's scripts (`weapon+0xA0` idle, `+0xA4` reload at 1.35 from frame 6 with flag 0x1000, `+0xB0` fire,
             // `+0xB4` fire on the last round with flag 0x1000); after a script ends the last frame holds (flag 0x1000:
             // the idle is not re-added) — docs/systems/player.md.
@@ -309,6 +310,22 @@ impl Sim {
                 if self.view_script == rd(0xa0) && self.view_time >= len - 1.0 { self.view_time = 0.0; }
                 // The reload done (gun state back to 0): the idle script.
                 if self.view_script == rd(0xa4) && self.gun.reloading == 0 { (self.view_script, self.view_time, self.view_speed) = (rd(0xa0), 0.0, 1.0); }
+            }
+            // The gun scripts' sound commands (`AnimProcessScriptCmds` op 1: `Sound_Play3D(cmd[2], …)` when the
+            // script's frame crosses cmd[1]): the shot (0x403 at frame 1 of the P2K's fire scripts) and the reload's
+            // three sounds (0x40F, 0x40E, 0x411 at frames 0x2E, 0x59, 0x74). Frame = script time + 1.
+            if self.view_script != 0 {
+                let from = if self.view_script != prev_script || (fired && self.view_time == 0.0) { f32::NEG_INFINITY } else { prev_time + 1.0 };
+                let to = self.view_time + 1.0;
+                if let Some(sc) = self.scripts.get(&self.view_script) {
+                    for c in sc.commands.iter().filter(|c| c.op == 1 && c.args.len() >= 2) {
+                        let f = c.args[0] as f32;
+                        if from < f && f <= to {
+                            self.drones.audio.play3d(c.args[1] as u32, camera, None);
+                            if std::env::var_os("NF_SOUNDLOG").is_some() { eprintln!("tick {}: gun script {:08x} frame {f}: sound {:#x}", self.drones.frame, self.view_script, c.args[1]); }
+                        }
+                    }
+                }
             }
             if fired {
                 let sound = self.sfx.as_ref().map(|t| t.get(0x403)).unwrap_or(nf_formats::sfx::SfxHearing { id: 0x403, inner: 0.0, outer: 0.0, weight: 0.0, looped: false, cull: false });
