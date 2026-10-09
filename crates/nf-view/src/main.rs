@@ -109,6 +109,7 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
         },
         hitboxes: nf_formats::hitbox::CollisionBones::from_action_elf(&elf).ok(),
         sfx: nf_formats::sfx::SfxTable::from_action_elf(&elf).ok(),
+        surfaces: nf_formats::sfx::SurfaceSounds::from_action_elf(&elf).map_err(|e| eprintln!("EffectInfo: {e}")).ok(),
         hud: nf_formats::hud::HudTables::from_action_elf(&elf).map_err(|e| eprintln!("HUD tables: {e}")).ok(),
     };
     let scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));

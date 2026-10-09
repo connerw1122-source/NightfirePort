@@ -13,6 +13,30 @@ pub struct SfxHearing { pub id: u32, pub inner: f32, pub outer: f32, pub weight:
 #[derive(Clone, Debug)]
 pub struct SfxTable { pub entries: Vec<SfxHearing> }
 
+/// `EffectInfo` (ACTION.ELF 0x3037c0, 23 × 0x88): per collision surface (`HITDATA+0x50 & 0x3F`) the bullet-impact
+/// (+0x14, `Effect_Bullet`), footstep (+0x16, `Effect_Player`) and body (+0x18) sound ids; 0xFFFF = none.
+#[derive(Clone, Debug, Default)]
+pub struct SurfaceSounds { pub impact: Vec<u16>, pub footstep: Vec<u16>, pub body: Vec<u16> }
+
+impl SurfaceSounds {
+    pub const RECORD: usize = 0x88;
+    pub fn from_action_elf(data: &[u8]) -> Result<SurfaceSounds> {
+        let elf = Elf::parse(data)?;
+        let syms = elf.symbols(data)?;
+        let (addr, size) = syms.iter().find(|s| s.name == "EffectInfo").map(|s| (s.value, s.size as usize))
+            .ok_or_else(|| crate::buf::FormatError::Invalid("ACTION.ELF has no symbol EffectInfo".into()))?;
+        if size % Self::RECORD != 0 { return invalid(format!("EffectInfo size {size:#x}")); }
+        let segs = elf.load_segments(data)?;
+        let bytes = segs.iter().find_map(|(va, b, _)| (addr >= *va && (addr - va) as usize + size <= b.len()).then(|| &b[(addr - va) as usize..][..size]))
+            .ok_or_else(|| crate::buf::FormatError::Invalid("EffectInfo outside the loaded data".into()))?;
+        let b = Buf(bytes);
+        let col = |o: usize| (0..size / Self::RECORD).map(|k| b.u16(k * Self::RECORD + o)).collect::<Result<Vec<_>>>();
+        Ok(SurfaceSounds { impact: col(0x14)?, footstep: col(0x16)?, body: col(0x18)? })
+    }
+    /// The sound of `surface` (a `HITDATA+0x50` byte) in `column`; None for 0xFFFF / out of range.
+    pub fn get(column: &[u16], surface: u8) -> Option<u32> { column.get((surface & 0x3f) as usize).copied().filter(|&v| v != 0xffff).map(|v| v as u32) }
+}
+
 impl SfxTable {
     pub fn from_action_elf(data: &[u8]) -> Result<SfxTable> {
         let elf = Elf::parse(data)?;

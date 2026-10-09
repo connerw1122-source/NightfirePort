@@ -129,6 +129,7 @@ pub struct DroneContext {
     pub tuning: nf_formats::tuning::Tuning,
     pub hitboxes: Option<nf_formats::hitbox::CollisionBones>,
     pub sfx: Option<nf_formats::sfx::SfxTable>,
+    pub surfaces: Option<nf_formats::sfx::SurfaceSounds>,
     /// The HUD's sprite tables and font (docs/systems/hud.md).
     pub hud: Option<nf_formats::hud::HudTables>,
 }
@@ -181,6 +182,9 @@ pub struct Sim {
     pub auto_aim: bool,
     /// `Player_Disable` by a script (cut-scene): no input, no first-person view, until `Player_Enable`.
     pub disabled: bool,
+    /// Surface sounds (`EffectInfo`) and Bond's footstep distance (`BL+0x924`).
+    pub surfaces: Option<nf_formats::sfx::SurfaceSounds>,
+    pub step_dist: f32,
 }
 
 impl Sim {
@@ -221,7 +225,25 @@ impl Sim {
             self.bond.pos = [g.pivot[0] + x * cs + z * sn, p[1] + g.delta[1], g.pivot[2] - x * sn + z * cs];
             self.bond.yaw += g.turn;
         }
+        let before = self.bond.pos;
         self.bond.tick(&self.world, &input);
+        // Footsteps (`AnimObjectUpdate`, player): `BL+0x924` gathers the distance moved; past the stride (1.65,
+        // crouched 0.4125) it wraps (fmod) and a step sounds: crouched 0x286 at Bond, else `Effect_Player` → the floor
+        // surface's footstep (`EffectInfo+0x16`) at the floor point; AI alertness 0 (drones do not hear it).
+        // *Suggested*: the distance is Bond's horizontal movement per tick (`anim+0xD8`).
+        let moved = ((self.bond.pos[0] - before[0]).powi(2) + (self.bond.pos[2] - before[2]).powi(2)).sqrt();
+        if self.bond.grounded && !self.disabled {
+            self.step_dist += moved;
+            let stride = if self.bond.crouched { 0.4125 } else { 1.65 };
+            if self.step_dist > stride {
+                self.step_dist %= stride;
+                let p = self.bond.pos;
+                if self.bond.crouched { self.drones.audio.play3d(0x286, p, None); }
+                else if let (Some(s), Some((t, _, m))) = (self.surfaces.as_ref(), self.world.segment_surface(p, [p[0], p[1] - 1.6347, p[2]])) {
+                    if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.footstep, m) { self.drones.audio.play3d(id, [p[0], p[1] - 1.6347 * t, p[2]], None); }
+                }
+            }
+        }
         // The bob phases: `BL+0x8DC` += the forward speed (`BL+0x28`), `BL+0x8E8` += (π/2) / 60.
         self.bob[0] += self.bond.local[1];
         self.bob[1] += std::f32::consts::FRAC_PI_2 / 60.0;
@@ -266,7 +288,7 @@ impl Sim {
     fn run(&mut self, pos: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool, reload: bool) {
         // The drones aim at and look for Bond's chest (`Drone_View_Bones`; one point here, 0.45 under the eye).
         let player = nf_game::drone::Player { pos, target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look };
-        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models };
+        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models, surfaces: self.surfaces.as_ref() };
         // `Player_WeaponFiring` → `Player_WeaponInitBullet` from the eye along the view (*deviation*: no auto-aim and
         // no aim-point ray yet); the first-person fire script's sound 0x403 feeds the drones' hearing.
         // The gun's clip and spare rounds live in Bond's inventory (BLData `+0x1B8`, `+0x170`), which pickups fill.
@@ -398,7 +420,7 @@ impl Sim {
 
     /// The game data the simulation consults, borrowed from this Sim.
     pub fn data(&self) -> nf_game::drone::Data<'_> {
-        nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models }
+        nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models , surfaces: self.surfaces.as_ref() }
     }
 
     /// (sequence index, frame) the first-person gun's script shows.
@@ -882,7 +904,7 @@ impl Scene {
             let hitboxes = d.hitboxes.clone()?;
             let volumes = nf_game::aivolume::build(level, d.level_id);
             let models = nf_game::pickup::models(level);
-            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: d.sfx.as_ref(), models: &models };
+            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: d.sfx.as_ref(), models: &models, surfaces: d.surfaces.as_ref() };
             let mut rng = nf_game::drone::Rng::new(0x1234_5678);
             // Every drone placement; spawner templates stay absent until a spawner brings them in.
             let list = nf_game::drone::level_drones(&data, level, &mut rng);
@@ -895,7 +917,7 @@ impl Scene {
             let bond = nf_game::player::Bond::stand_at(&world, p0, yaw0);
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.attach_level(level);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, disabled: false })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, disabled: false, surfaces: d.surfaces.clone(), step_dist: 0.0 })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {

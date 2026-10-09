@@ -359,6 +359,7 @@ fn coll_check(iso: &IsoImage) -> Result<()> {
         }
         for (before, c) in &colls {
             add("blocks", 1);
+            for &m in &c.materials { add(&format!("material {:02} (& 0x3f {})", m, m & 0x3f), 1); }
             add(&format!("version {}", c.version), 1);
             let n = c.boxes.len() as u16;
             if c.boxes.iter().any(|b| b.children.is_some_and(|(l, r)| l >= n || r >= n)) { add("child index out of range", 1); }

@@ -37,6 +37,9 @@ pub struct Collision {
     pub tris: Vec<CollTri>,
     /// The vertex-block area as s16 values.
     pub words: Vec<i16>,
+    /// One surface byte per triangle, after the triangles (`parsemap_block_Coll_Data_New` puts its address at the
+    /// geometry's +8; `Intersect_RayGeom` copies `[triangle]` to `HITDATA+0x50`; `& 0x3F` indexes `EffectInfo`).
+    pub materials: Vec<u8>,
 }
 
 impl Collision {
@@ -68,19 +71,25 @@ impl Collision {
             let o = to + 8 * k;
             Ok(CollTri { v: [b.u16(o)?, b.u16(o + 2)?, b.u16(o + 4)?], plane: b.u16(o + 6)? })
         }).collect::<Result<_>>()?;
-        Ok(Collision { version, boxes, tris, words })
+        let mo = to + 8 * ntri;
+        let materials = b.sub(mo, ntri, "collision materials")?.bytes().to_vec();
+        Ok(Collision { version, boxes, tris, words, materials })
     }
 
     /// World-free triangle list: for every leaf, its triangles' three vertices (`s16 · scale + origin`).
-    pub fn triangles(&self) -> Vec<[[f32; 3]; 3]> {
+    pub fn triangles(&self) -> Vec<[[f32; 3]; 3]> { self.triangles_with_material().into_iter().map(|t| t.0).collect() }
+
+    /// [`Collision::triangles`] with each triangle's surface byte.
+    pub fn triangles_with_material(&self) -> Vec<([[f32; 3]; 3], u8)> {
         let mut out = Vec::new();
         for bx in self.boxes.iter().filter(|b| b.children.is_none()) {
             let base = bx.vblock as usize * 0x20;
-            for t in &self.tris[bx.tris.start as usize..bx.tris.end as usize] {
-                out.push(t.v.map(|i| {
+            for (ti, t) in self.tris[bx.tris.start as usize..bx.tris.end as usize].iter().enumerate() {
+                let m = self.materials.get(bx.tris.start as usize + ti).copied().unwrap_or(0);
+                out.push((t.v.map(|i| {
                     let w = |k: usize| self.words.get(base + i as usize + k).copied().unwrap_or(0) as f32;
                     [w(0) * bx.scale + bx.origin[0], w(1) * bx.scale + bx.origin[1], w(2) * bx.scale + bx.origin[2]]
-                }));
+                }), m));
             }
         }
         out

@@ -20,7 +20,14 @@ data at +0x0C (v4) / +0x1C (v5):
     +0x1C u16 leaf: end triangle                    +0x1E u16 leaf: first vertex block
     +0x20 f32 origin[3], f32 scale (2⁻¹⁴ in every sample): vertex = s16 · scale + origin
   triangles: count × 8: u16 v0, v1, v2 (halfword indices into the leaf's vertex blocks), u16 plane (halfword index)
+  materials: count × u8, one surface byte per triangle (WORKLOG 0065)
 ```
+
+The loader (`parsemap_block_Coll_Data_New` 0x1d1810, read in the disassembly — the decompiler drops the stores) keeps
+`+0x0C` vertex blocks, `+0x00` boxes, `+0x04` triangles and `+0x08` = the byte after the triangles: the materials.
+`Intersect_RayGeom` copies `materials[triangle]` to `HITDATA+0x50`; `& 0x3F` indexes `EffectInfo` (23 surfaces:
+footstep / impact / body sounds, decals, gas). Whole disc: all 7,985 blocks have the array; values 0–21, a few with
+flag 0x40 (64, 69, 83) [D].
 
 ## Checks on the whole disc (`nf-extract coll-check`)
 
@@ -41,5 +48,5 @@ In 07000005 the collision floor under each idle drone (feet sphere height `Drone
 explains the live object y within 0.003 (5 drones; `nf-extract coll-floor`, snapshot WORKLOG 0018). nf-game uses the
 collision floor instead of the rendered one.
 
-Open: the plane distance encoding (i32 at the plane's halfword +3, scale unverified); per-triangle material/flags
-(surface type for footsteps, bullet decals) — not found in the 8-byte record, maybe in the plane words.
+Open: the plane distance encoding (i32 at the plane's halfword +3, scale unverified); what flag 0x40 on a material
+means.

@@ -1236,3 +1236,19 @@ and 20 ticks apart: frames 46 → 89 → 116 at speed 1.35). (2) `PS2_SendKeyONK
 the front ones (mode ≠ 0). 0063 keyed them together, so the phase-inverted rear right cancelled the same waveform on
 the right (gun: L ≈ 0.8, R ≈ 0.2 of the sample) — a judgement call ("negligible") that was wrong. `Cmd::Play` carries
 the delay; `bank_live` asserts 0 / 0.5 ms for front / rear.
+
+## 0065 — Collision materials; footsteps and impacts
+
+Footstep and impact sounds depend on the surface (`HITDATA+0x50 & 0x3F` → `EffectInfo`), which collision.md listed as
+not found. `Intersect_RayGeom` reads it from a byte array at the geometry's +8; the disassembly of
+`parsemap_block_Coll_Data_New` (the decompiler loses the stores) shows that array starts right after the triangles:
+one byte per triangle. `Collision::materials`; all 7,985 blocks on the disc carry it, values 0–21 (+ flag 0x40 on
+6,081), all inside `EffectInfo`'s 23 entries (3128 bytes / 0x88) [D]. `CollisionWorld` keeps a material per triangle
+(static and moving) and `segment_surface` returns it. `SurfaceSounds` reads `EffectInfo` +0x14 / +0x16 / +0x18
+(impact, footstep, body) from ACTION.ELF; every id used exists in bank 4 [D].
+
+Sounds: `Effect_Bullet` impact at the hit for Bond's and the guards' bullets; `NDrone2_DoHitEffects` 0x413 for guard
+hits over 0.5 damage; Bond's footsteps (`AnimObjectUpdate`: distance gathered to a 1.65 stride, crouched 0.4125 with
+0x286; `Effect_Player` plays the floor surface's footstep at the floor point with alertness 0). Test
+`bullets_and_feet_make_surface_sounds`: a P2K bullet into the wall (surface 10) starts impact 0x8 at the hit within
+0.2; the floor at the gate (surface 12) steps 0x7B (sister: surface 0 has none). All suites pass.

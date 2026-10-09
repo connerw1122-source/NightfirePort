@@ -163,6 +163,8 @@ pub struct Data<'a> {
     pub sfx: Option<&'a nf_formats::sfx::SfxTable>,
     /// Glist bounds of the level's models by hashcode (dropped weapons' size).
     pub models: &'a HashMap<u32, crate::pickup::Model>,
+    /// Surface sounds (`EffectInfo`): impacts, footsteps; `None`: silent.
+    pub surfaces: Option<&'a nf_formats::sfx::SurfaceSounds>,
 }
 
 /// A bullet that hit a drone (HITDATA): the part (bone id), the ray (`+0x30`), the point, damage (`+0x08`), weapon.
@@ -2987,6 +2989,8 @@ impl Drones {
                     b.dead = true;
                     let hit = Hit { part, ray, point: at(t), damage: b.damage, weapon: b.weapon };
                     self.player_impacts.push(PlayerImpact::Drone { drone: i, part, at: hit.point });
+                    // `NDrone2_DoHitEffects`: damage > 0.5 → 0x413 at the hit (0x601 when HITDATA+0x52 = 5, *not modelled*).
+                    if hit.damage > 0.5 { self.audio.play3d(0x413, hit.point, None); }
                     let rng = &mut self.rng;
                     let dr = &mut self.list[i];
                     dr.hit = Some(hit);
@@ -2995,7 +2999,11 @@ impl Drones {
                     dr.send(d, rng, frame, msg::BULLET);
                     self.last_flinch = dr.global_flinch;
                 }
-                (_, Some(w)) => { b.dead = true; self.player_impacts.push(PlayerImpact::World(at(w))); }
+                (_, Some(w)) => {
+                    b.dead = true;
+                    self.player_impacts.push(PlayerImpact::World(at(w)));
+                    self.impact_sound(d, b.pos, end);
+                }
                 _ => b.pos = [b.pos[0] + b.dir[0] * step, b.pos[1] + b.dir[1] * step, b.pos[2] + b.dir[2] * step],
             }
         }
@@ -3046,6 +3054,13 @@ impl Drones {
         // doubles it back, so a fresh target is aimed at exactly).
         self.aim_offset = [self.aim_offset[0] * 0.5, self.aim_offset[1] * 0.5];
         [p.cos() * y.sin(), p.sin(), p.cos() * y.cos()]
+    }
+
+    /// `Effect_Bullet`: the impact sound of the surface the segment `from → to` hits (`EffectInfo+0x14`), at the hit.
+    fn impact_sound(&mut self, d: &Data, from: V3, to: V3) {
+        let (Some(s), Some((t, _, m))) = (d.surfaces, d.world.segment_surface(from, to)) else { return };
+        let p = [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t, from[2] + (to[2] - from[2]) * t];
+        if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
     }
 
     /// `Sound_Play3D(id, pos, …)`: heard (the sound pool) and, unless looped, entered in the drones' hearing list.
@@ -3423,7 +3438,14 @@ impl Drones {
         self.impacts.clear();
         let vol = crate::bullet::PlayerVolume { feet: [player.pos[0], player.pos[1] - 0.4, player.pos[2]], height: 1.8, radius: 0.25 };
         for b in &mut self.bullets {
+            let (from, dir) = (b.pos, b.dir);
             if let Some(ev) = b.update(d.world, &vol, &mut self.rng) {
+                if let crate::bullet::BulletEvent::World(p) = ev {
+                    let end = [p[0] + dir[0] * 0.1, p[1] + dir[1] * 0.1, p[2] + dir[2] * 0.1];
+                    if let (Some(s), Some((_, _, m))) = (d.surfaces, d.world.segment_surface(from, end)) {
+                        if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
+                    }
+                }
                 if let crate::bullet::BulletEvent::Player { damage, .. } = ev {
                     let before = self.health.health;
                     self.health.pain(damage, DIFFICULTY, d.level);

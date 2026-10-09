@@ -28,6 +28,7 @@ struct Level05 {
     volumes: Vec<nf_game::aivolume::AiVolume>,
     models: std::collections::HashMap<u32, nf_game::pickup::Model>,
     hud: nf_formats::hud::HudTables,
+    surfaces: nf_formats::sfx::SurfaceSounds,
 }
 
 impl Level05 {
@@ -57,6 +58,7 @@ impl Level05 {
             sequences: disc::level_sequences(&iso, "07000005.bin").unwrap(),
             models: nf_game::pickup::models(&level),
             hud: nf_formats::hud::HudTables::from_action_elf(&elf).unwrap(),
+            surfaces: nf_formats::sfx::SurfaceSounds::from_action_elf(&elf).unwrap(),
             level, scripts, world, skeletons, nav, covers, volumes,
         })
     }
@@ -67,7 +69,7 @@ impl Level05 {
     fn data(&self) -> Data<'_> {
         Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: 0x0700_0005,
             sequences: &self.sequences, skins: &self.level.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes,
-            sfx: Some(&self.sfx), models: &self.models }
+            sfx: Some(&self.sfx), models: &self.models, surfaces: Some(&self.surfaces) }
     }
 
     /// Every drone present at level start (line of sight is scheduled round robin over all of them, as in the game),
@@ -922,4 +924,43 @@ fn truck_gatehouse_trigger_starts_the_next_script() {
     assert!(events.is_empty());
     assert!(off.is_none(), "{off:?}");
     assert!(state == 0 || state == 1, "{state}");
+}
+
+/// Surface sounds: collision materials (one byte per triangle after the triangles) index `EffectInfo`; a P2K bullet
+/// into a wall starts that surface's impact sound at the hit (`Effect_Bullet`), and the floor at the gate has a
+/// footstep sound (`Effect_Player`).
+#[test]
+fn bullets_and_feet_make_surface_sounds() {
+    use nf_formats::sfx::SurfaceSounds;
+    use nf_game::sound::Cmd;
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    assert_eq!(l.surfaces.impact.len(), 23);
+    let (drones, _, rng) = l.drones(None, 61.342);
+    let mut sim = l.sim(drones, rng);
+    // Find a wall: from a spot on the open ground, the first horizontal ray that hits within 20 units.
+    let p = [104.954, 25.663, 108.825];
+    let (dir, hit) = (0..16).map(|k| { let a = k as f32 * 0.3927; [a.sin(), 0.0, a.cos()] })
+        .find_map(|dir| d.world.segment_surface(p, [p[0] + dir[0] * 20.0, p[1], p[2] + dir[2] * 20.0]).map(|h| (dir, h))).expect("a wall");
+    let want = SurfaceSounds::get(&l.surfaces.impact, hit.2);
+    eprintln!("wall surface {} → impact {:x?}", hit.2, want);
+    sim.fire_player(&d, p, dir, 2, l.sfx.get(0x403));
+    let away = bond_at([0.0, -500.0, 0.0]);
+    let mut started = Vec::new();
+    for _ in 0..30 {
+        sim.tick(&d, &away);
+        sim.audio.update(Some(&l.sfx), (p, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]), &|_| true);
+        for c in sim.audio.take_commands() { if let Cmd::Start { id, pos, .. } = c { started.push((id, pos)); } }
+    }
+    eprintln!("started {started:?}");
+    let w = want.expect("the wall surface has an impact sound");
+    let at = started.iter().find(|s| s.0 == w).and_then(|s| s.1).expect("impact sound started");
+    let t = hit.0 * 20.0;
+    assert!((0..3).all(|k| (at[k] - (p[k] + dir[k] * t)).abs() < 0.2), "{at:?} vs {t} along {dir:?}");
+    // The floor below: a footstep surface.
+    let floor = d.world.segment_surface(p, [p[0], p[1] - 3.0, p[2]]).expect("floor");
+    eprintln!("floor surface {} → footstep {:x?}", floor.2, SurfaceSounds::get(&l.surfaces.footstep, floor.2));
+    assert!(SurfaceSounds::get(&l.surfaces.footstep, floor.2).is_some());
+    // Sister: surface 0 (and 22) has no sounds.
+    assert_eq!(SurfaceSounds::get(&l.surfaces.impact, 0), None);
 }

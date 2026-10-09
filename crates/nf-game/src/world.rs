@@ -32,16 +32,19 @@ pub struct GroundMotion { pub delta: V3, pub turn: f32, pub pivot: V3 }
 #[derive(Default)]
 struct Geo {
     tris: Vec<[V3; 3]>,
+    /// Each triangle's surface byte (`HITDATA+0x50`; `& 0x3F` indexes `EffectInfo`).
+    mats: Vec<u8>,
     objects: Vec<Object>,
 }
 
 impl Geo {
-    fn push(&mut self, tris: impl IntoIterator<Item = [V3; 3]>) {
+    fn push(&mut self, tris: impl IntoIterator<Item = ([V3; 3], u8)>) {
         let start = self.tris.len();
         let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-        for w in tris {
+        for (w, m) in tris {
             for p in &w { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
             self.tris.push(w);
+            self.mats.push(m);
         }
         if self.tris.len() > start { self.objects.push(Object { lo, hi, tris: start..self.tris.len() }); }
     }
@@ -55,6 +58,7 @@ pub struct CollisionWorld {
     dynamic: std::sync::RwLock<Moving>,
     /// Collision triangles (object space) of every hashed glist object, for `set_dynamic`.
     shapes: std::collections::HashMap<u32, Vec<[V3; 3]>>,
+    shape_mats: std::collections::HashMap<u32, Vec<u8>>,
 }
 
 /// First hit of `from → to` in one geometry set (fraction).
@@ -93,11 +97,13 @@ impl CollisionWorld {
         let mut stat = Geo::default();
         for inst in instances {
             let Some(c) = &level.maps[inst.map].objects[inst.object].collision else { continue };
-            stat.push(c.triangles().into_iter().map(|t| t.map(|p| transform(&inst.matrix, p))));
+            stat.push(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)));
         }
         let shapes = level.by_hash.iter()
             .filter_map(|(&h, &(m, o))| level.maps[m].objects[o].collision.as_ref().map(|c| (h, c.triangles()))).collect();
-        CollisionWorld { stat, dynamic: Default::default(), shapes }
+        let shape_mats = level.by_hash.iter()
+            .filter_map(|(&h, &(m, o))| level.maps[m].objects[o].collision.as_ref().map(|c| (h, c.triangles_with_material().into_iter().map(|t| t.1).collect()))).collect();
+        CollisionWorld { stat, dynamic: Default::default(), shapes, shape_mats }
     }
 
     pub fn triangle_count(&self) -> usize { self.stat.tris.len() }
@@ -108,8 +114,8 @@ impl CollisionWorld {
     /// One object holding these world-space triangles (tests).
     pub fn from_triangles(tris: Vec<[V3; 3]>) -> CollisionWorld {
         let mut stat = Geo::default();
-        stat.push(tris);
-        CollisionWorld { stat, dynamic: Default::default(), shapes: Default::default() }
+        stat.push(tris.into_iter().map(|t| (t, 0)));
+        CollisionWorld { stat, dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default() }
     }
 
     /// Glist object `hash`'s collision triangles in object space.
@@ -127,7 +133,8 @@ impl CollisionWorld {
             last.insert(id, m);
             let Some(t) = self.shapes.get(&h) else { continue };
             let n = geo.objects.len();
-            geo.push(t.iter().map(|t| t.map(|p| transform(&m, p))));
+            let mats = self.shape_mats.get(&h);
+            geo.push(t.iter().enumerate().map(|(k, t)| (t.map(|p| transform(&m, p)), mats.and_then(|v| v.get(k).copied()).unwrap_or(0))));
             if geo.objects.len() > n { movers.push((id, d.last.get(&id).copied().unwrap_or(m), m)); }
         }
         *d = Moving { geo, movers, last };
@@ -140,7 +147,7 @@ impl CollisionWorld {
         let d = self.dynamic.read().unwrap();
         let mut best: Option<(f32, usize)> = None;
         for (i, o) in d.geo.objects.iter().enumerate() {
-            let g = Geo { tris: d.geo.tris[o.tris.clone()].to_vec(), objects: vec![Object { lo: o.lo, hi: o.hi, tris: 0..o.tris.len() }] };
+            let g = Geo { tris: d.geo.tris[o.tris.clone()].to_vec(), mats: d.geo.mats[o.tris.clone()].to_vec(), objects: vec![Object { lo: o.lo, hi: o.hi, tris: 0..o.tris.len() }] };
             if let Some(t) = segment_in(&g, from, to) { if best.is_none_or(|b| t < b.0) { best = Some((t, i)); } }
         }
         let (t, i) = best?;
@@ -155,12 +162,12 @@ impl CollisionWorld {
     fn stat_segment(&self, from: V3, to: V3) -> Option<f32> { segment_in(&self.stat, from, to) }
 
     /// Every triangle of the objects whose box meets `lo`..`hi`, static first.
-    fn near(&self, lo: V3, hi: V3, mut f: impl FnMut(&[V3; 3])) {
+    fn near(&self, lo: V3, hi: V3, mut f: impl FnMut(&[V3; 3], u8)) {
         let dynamic = self.dynamic.read().unwrap();
         for g in [&self.stat, &dynamic.geo] {
             for o in &g.objects {
                 if (0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k]) { continue; }
-                for t in &g.tris[o.tris.clone()] { f(t); }
+                for k in o.tris.clone() { f(&g.tris[k], g.mats[k]); }
             }
         }
     }
@@ -170,7 +177,7 @@ impl CollisionWorld {
         let d = sub(to, from);
         let (mut best, mut lo, mut hi) = (None::<f32>, [0f32; 3], [0f32; 3]);
         for k in 0..3 { lo[k] = from[k].min(to[k]); hi[k] = from[k].max(to[k]); }
-        self.near(lo, hi, |t| {
+        self.near(lo, hi, |t, _| {
             let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
             let p = cross(d, e2);
             let det = dot(e1, p);
@@ -189,11 +196,14 @@ impl CollisionWorld {
     }
 
     /// First hit along `from → to`: the fraction in [0, 1] and the unit normal of the triangle hit (facing `from`).
-    pub fn segment_hit(&self, from: V3, to: V3) -> Option<(f32, V3)> {
+    pub fn segment_hit(&self, from: V3, to: V3) -> Option<(f32, V3)> { self.segment_surface(from, to).map(|h| (h.0, h.1)) }
+
+    /// `segment_hit` with the surface byte of the triangle hit (`Intersect_RayGeom` → `HITDATA+0x50`).
+    pub fn segment_surface(&self, from: V3, to: V3) -> Option<(f32, V3, u8)> {
         let d = sub(to, from);
-        let (mut best, mut lo, mut hi) = (None::<(f32, V3)>, [0f32; 3], [0f32; 3]);
+        let (mut best, mut lo, mut hi) = (None::<(f32, V3, u8)>, [0f32; 3], [0f32; 3]);
         for k in 0..3 { lo[k] = from[k].min(to[k]); hi[k] = from[k].max(to[k]); }
-        self.near(lo, hi, |t| {
+        self.near(lo, hi, |t, mat| {
             let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
             let p = cross(d, e2);
             let det = dot(e1, p);
@@ -210,7 +220,7 @@ impl CollisionWorld {
                 let n = cross(e1, e2);
                 let l = dot(n, n).sqrt().max(1e-12);
                 let n = if dot(n, d) > 0.0 { [-n[0] / l, -n[1] / l, -n[2] / l] } else { [n[0] / l, n[1] / l, n[2] / l] };
-                best = Some((tt, n));
+                best = Some((tt, n, mat));
             }
         });
         best
@@ -231,7 +241,7 @@ impl CollisionWorld {
         let mut lo = [0f32; 3];
         let mut hi = [0f32; 3];
         for k in 0..3 { lo[k] = a[k].min(b[k]) - grow; hi[k] = a[k].max(b[k]) + grow; }
-        self.near(lo, hi, |t| {
+        self.near(lo, hi, |t, _| {
                 let tl = [0, 1, 2].map(|k| t[0][k].min(t[1][k]).min(t[2][k]));
                 let th = [0, 1, 2].map(|k| t[0][k].max(t[1][k]).max(t[2][k]));
                 let (sl, sh) = ([0, 1, 2].map(|k| a[k].min(b[k]) - grow), [0, 1, 2].map(|k| a[k].max(b[k]) + grow));
@@ -315,8 +325,8 @@ mod tests {
 
     fn world(tris: Vec<[V3; 3]>) -> CollisionWorld {
         let n = tris.len();
-        let stat = Geo { tris, objects: vec![Object { lo: [-10.0; 3], hi: [10.0; 3], tris: 0..n }] };
-        CollisionWorld { stat, dynamic: Default::default(), shapes: Default::default() }
+        let stat = Geo { mats: vec![0; n], tris, objects: vec![Object { lo: [-10.0; 3], hi: [10.0; 3], tris: 0..n }] };
+        CollisionWorld { stat, dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default() }
     }
 
     #[test]
