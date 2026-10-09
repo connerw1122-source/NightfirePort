@@ -942,3 +942,17 @@ float (1e−44): one press fired every tick until the clip was empty. `Player_We
 never saw the record. Fixed; test `p2k_fires_once_per_pull` builds the parameters from the real record (1 per pull,
 8 ticks, clip 7; held for a second → one shot; sister: the u32 reading is > 7). Also: `Bond::tick` dropped the
 mouse turn in aim mode, so the view could not turn past the aim box (D-002); only the forward axis is zeroed now.
+
+## 0044 — No mouse aim mode; the first-person P2K (2026-10-09)
+
+**User decision**: the L1 manual-aim cursor is a controller feature; with the mouse it is not used (PLAN.md D-002
+rewritten). Right mouse no longer enters aim mode; the Sim keeps aim mode for a pad.
+
+**First-person gun** (docs/systems/player.md): skin `weapon+0xDC` 0x05000088 (skeleton 39) in 07000005's archive; its
+main mesh 0x02100845 is a sleeve (byte 2 bit 0x10) replaced by `AnimSleeveGetEntity(0)` (0x1c6590, read): the first
+loaded of `SleeveEnts` [L 0x2c6ed8] = 0x020009D0; six rigid gun parts on bones 0x26–0x2B; scripts idle 0x06000825 (2
+frames), fire 0x06000823 (25), reload 0x06000827 (155) on skeleton 39 (test `first_person_p2k_is_in_the_level`).
+nf-view draws it as a character whose matrix is the view (left, up, forward) at the eye + `weapon+0xE0` + the bob,
+playing fire / reload / idle as the trigger and reload drive them; headless shots without `--cam` show Bond's view.
+The rigid parts hang on their bones with no extra offset (they render in place). Not yet: the muzzle flash and smoke,
+the turn toward an off-centre crosshair, draw / holster, the idle fidget.

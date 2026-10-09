@@ -625,3 +625,26 @@ fn p2k_fires_once_per_pull() {
     let wrong = u32::from_le_bytes(l.weapons.records[2][0x28..0x2c].try_into().unwrap());
     assert!(wrong > 7, "sister: the u32 reading gives {wrong} shots per pull");
 }
+
+/// The first-person P2K (docs/systems/player.md "First-person gun"): skin `weapon+0xDC` = 0x05000088 is in 07000005's
+/// archive with drawable meshes, and its idle / fire / reload scripts play sequences of its skeleton.
+#[test]
+fn first_person_p2k_is_in_the_level() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let skin = l.level.skins.get(&0x0500_0088).expect("skin");
+    let meshes: Vec<_> = skin.main.iter().flatten().map(|h| (*h, l.level.by_hash.contains_key(h))).collect();
+    eprintln!("skeleton {} bones {} meshes {meshes:x?} extra {:x?} datums {:?}", skin.skeleton, skin.bones.len(), skin.extra, skin.datums.iter().map(|d| (d.id, d.bone)).collect::<Vec<_>>());
+    // The main mesh is a sleeve (`AnimSleeveGetEntity(BL+0x965 = 0)`: the first of `SleeveEnts` [L] 0x020009D0,
+    // 0x02000900, 0x020001F7, … that is loaded).
+    assert!(meshes.iter().all(|m| nf_formats::character::Skin::is_sleeve(m.0)));
+    let sleeves = [0x0200_09d0u32, 0x0200_0900, 0x0200_01f7, 0x0200_0929, 0x0200_09e6, 0x0200_09ff, 0x0200_0a14, 0x0200_0a13];
+    let sleeve = sleeves.iter().find(|h| l.level.by_hash.contains_key(h));
+    eprintln!("sleeve {sleeve:x?}; gun parts in the level: {:?}", skin.extra.iter().map(|(_, h)| h.is_some_and(|h| l.level.by_hash.contains_key(&h))).collect::<Vec<_>>());
+    assert_eq!(sleeve, Some(&0x0200_09d0));
+    for h in [0x0600_0825u32, 0x0600_0823, 0x0600_0827] {
+        let s = l.scripts.get(&h).expect("script");
+        let seqs: Vec<_> = s.sequences().map(|(a, b, q)| (a, b, q, l.sequences.get(&q).map(|x| (x.skeleton, x.frames)))).collect();
+        eprintln!("script {h:08x} len {} seqs {seqs:x?}", s.length);
+        assert!(seqs.iter().all(|x| x.3.is_some_and(|(sk, _)| sk == skin.skeleton)));
+    }
+}

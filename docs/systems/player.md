@@ -90,4 +90,4 @@ Skin `weapon+0xDC` (P2K 0x05000088); scripts idle 0x06000825, reload 0x06000827,
 ## Port
 
 `nf_game::player` (WORKLOG 0042): movement, capsule, floor ray, gravity, jump, crouch, eye; nf-view drives it with
-WASD / mouse, Space jump, C / Ctrl crouch, right mouse aim mode, T auto-aim, N the free camera,, draws the game's crosshair and a stand-in HUD. Open: U-037.
+WASD / mouse (no mouse aim mode, D-002), Space jump, C / Ctrl crouch, T auto-aim, N the free camera; draws the game's crosshair and a stand-in HUD. Open: U-037.

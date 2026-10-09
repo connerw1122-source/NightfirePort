@@ -173,7 +173,7 @@ struct App {
     gfx: Option<Gfx>,
     keys: HashSet<KeyCode>,
     grabbed: bool,
-    /// Fire button held (left mouse while grabbed) and aim mode (right mouse held).
+    /// Fire button held (left mouse while grabbed) and aim mode (a pad's L1; never set by the mouse, D-002).
     trigger: bool,
     aiming: bool,
     last: std::time::Instant,
@@ -246,11 +246,11 @@ impl ApplicationHandler for App {
                 g.surface.configure(&g.device, &g.config);
                 g.depth = gpu::depth_view(&g.device, g.config.width, g.config.height);
             },
-            // Left button: grab the mouse, then fire (action 9) while held; right button held: aim mode (L1).
+            // Left button: grab the mouse, then fire (action 9) while held.
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 if !self.grabbed { if state == ElementState::Pressed { self.grab(true) } } else { self.trigger = state == ElementState::Pressed }
             }
-            WindowEvent::MouseInput { state, button: MouseButton::Right, .. } => self.aiming = state == ElementState::Pressed,
+            // No manual-aim mode with the mouse (PLAN.md D-002): the mouse aims directly; `aiming` stays for a pad.
             WindowEvent::KeyboardInput { event, .. } => if let PhysicalKey::Code(k) = event.physical_key {
                 match (k, event.state) {
                     (KeyCode::Escape, ElementState::Pressed) => if self.grabbed { self.grab(false) } else { el.exit() },
@@ -387,7 +387,12 @@ fn main() -> Result<()> {
                 Some(i) => args.get(i + 1).context("--pull needs ticks")?.split(',').map(|t| t.parse()).collect::<Result<_, _>>()?,
                 None => Vec::new(),
             };
-            for t in 1..=time as u32 { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
+            // Without `--cam`, Bond stands at the start and the camera is his eye (the first-person gun shows).
+            let walk = !args.iter().any(|a| a == "--cam");
+            for t in 1..=time as u32 {
+                if walk { sim.step_bond(Default::default(), pulls.contains(&t)); } else { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
+            }
+            if walk { let h = sim.bond.head(); cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2 }; }
             for p in &sim.drones.pickups { eprintln!("pickup: weapon {:#x}, {} rounds at {:?}", p.weapon, p.rounds, &p.m[3][..3]); }
             if let Some(dr) = sim.drones.list.iter().find(|d| !d.shots.is_empty() || d.state != 4) {
                 eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);

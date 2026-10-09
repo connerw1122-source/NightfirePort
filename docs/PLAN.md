@@ -58,8 +58,8 @@ tools/              ghidra scripts, cross-check scripts, trace tools (never prod
   no curve, no ramp, optional invert. Bindings in a config file (`config/bindings.toml`), rebindable.
 - **D-001 (deviation):** auto-aim off by default when the mouse is the active aim device; configurable. Controller
   keeps the original difficulty-based behaviour.
-- **D-002 (deviation, to design):** manual-aim mode with a mouse — crosshair moves within the original aim box,
-  view turns 1:1 with mouse beyond the edge (no edge-turn ramp).
+- **D-002 (decision, user 2026-10-09):** no manual-aim mode with a mouse — the mouse aims directly (the L1 cursor box
+  is a controller feature); a controller keeps the original aim mode.
 - Controller play stays bit-faithful; verified against PCSX2 traces (G-003).
 
 ## Timing
