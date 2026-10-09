@@ -123,3 +123,23 @@ venvs; nothing of theirs is copied into the repo (licences: nightfire-re none �
   client, ours stuck in CLOSE_WAIT). Needs the bridge stopped while sampling (asked the user).
 - `GameCount` advanced only ~1 per MCP call, seconds apart — the emulator was not running gameplay at full speed
   at the time (paused / menu / unfocused?). Re-measure once confirmed.
+
+## 0006 — Live pacing and pad traces (2026-10-08)
+
+The user confirmed gameplay and approved stopping the mcp-pine bridge (node pid 38164, the single PINE client).
+
+**Measured (PCSX2 2.8.2, level 0x07000001)**
+- Pacing (`frame_pacing.py`, 15 s, 2,007 samples/s): 819 updates / 829 vblanks; 809 × 1-vblank, 10 × 2-vblank
+  (98.8 % 60 Hz); PCSX2 at 55.3 vblanks/s. U-013 partly answered.
+- Pad (`pad_log.py`, 1,756 change lines while the user pressed every input in a fixed order): stick bytes and all 16
+  button bits as libpad (U-010 closed); style-0 button → action table matches `psiInput_MapInputs`; held buttons
+  show the raw masked bit before the clamp (✕ → 31 = +64.0).
+- Curve path: actions 3/4 recomputed in f32 from RX/RY with `StickCompensation2` + `MapAnalogStick` (table from our
+  ELF): 364/407 exact, 34 explained by a neighbouring sample, 9 torn mid-update reads.
+
+**Failed / corrected**
+- `pine.py` first sent several framed requests per write: PCSX2 answered one and stalled. Now one request at a time
+  (still ~2 kHz for 5 reads per sample).
+- My first pad summary (stable segments) mixed lagged values; replaced by per-sample co-occurrence counts and a
+  formula check that classifies every mismatch.
+- The dead zone cannot be checked from these reads (raw bytes overwritten in place, G-012).

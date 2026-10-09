@@ -14,7 +14,9 @@ import struct
 import time
 
 READ = {1: 0, 2: 1, 4: 2, 8: 3}
-MAX_IN_FLIGHT = 6
+# Measured (WORKLOG 0006): PCSX2 2.8.2 answers the first of several separately-framed requests sent in one write and
+# then stalls, so requests go one at a time.
+MAX_IN_FLIGHT = 1
 
 
 class Pine:

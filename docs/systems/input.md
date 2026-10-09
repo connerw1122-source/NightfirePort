@@ -28,11 +28,11 @@ main (0x109080) loop ─ vblank pacing (§6) ─ GameFlow_Main
   `scePadEnterPressMode`; state 99 = ready.
 - `scePadRead` buffer at slot+0x124. Buttons: `~(data[2]<<8 | data[3])` stored at slot+0x122 (held) and
   slot+0x120 (newly pressed). Analog bytes at slot+0x128..0x12b.
-- Analog-byte → button bit mapping assumed from the standard libpad layout (*suggested*: Sony libpad / ps2sdk
-  `libpad.h`; to verify with a PCSX2 trace, UNKNOWNS U-010):
-  `data[4..7]` = RX, RY, LX, LY → slot+0x128 RX, +0x129 RY, +0x12a LX, +0x12b LY;
-  buttons (game's u16): 0x0100 Select, 0x0200 L3, 0x0400 R3, 0x0800 Start, 0x1000 Up, 0x2000 Right,
-  0x4000 Down, 0x8000 Left, 0x0001 L2, 0x0002 R2, 0x0004 L1, 0x0008 R1, 0x0010 △, 0x0020 ○, 0x0040 ✕, 0x0080 □.
+- Pad layout (*measured*, PCSX2 trace WORKLOG 0006 — the user pressed each input in a known order; matches the
+  standard libpad layout): slot+0x128 RX, +0x129 RY, +0x12a LX, +0x12b LY (0 = left/up, 255 = right/down);
+  buttons (game's u16 at slot+0x122): 0x0100 Select, 0x0200 L3, 0x0400 R3, 0x0800 Start, 0x1000 Up,
+  0x2000 Right, 0x4000 Down, 0x8000 Left, 0x0001 L2, 0x0002 R2, 0x0004 L1, 0x0008 R1, 0x0010 △, 0x0020 ○,
+  0x0040 ✕, 0x0080 □.
 - **Dead zone (linear, per axis):** for each of the 4 bytes, `v = byte − 127`;
   `|v| < 40 → 0`, else `(v ∓ 40) × 1.4597701` (= 127/87, so full deflection stays ≈127); result + 0x7f is written
   to both slot+0x128+i and slot+0x148+i. Per axis, not radial.
@@ -75,6 +75,22 @@ adds L1/R1 as ±1 strafe). Common to all styles: actions 26–31 and 34–35 com
 LX/RY beyond ±0.5 (menu navigation); action 38 (0xac) fires when LX < −0.8, RX > 0.8 and Up are held together.
 `Input_Update` passes `MPSettings`+428 as the player count, or 4 when `GameState`+12 == 0x07000048.
 
+**Style 0 buttons → actions** (*measured* in the decomp and confirmed live, WORKLOG 0006):
+
+| Button | Actions set | | Button | Actions set |
+|---|---|---|---|---|
+| ✕ | 8, 31 (+ 25 for player 0) | | Up | 6 = −1, 11, 26 |
+| ○ | 12, 33 | | Down | 6 = +1, 10, 27 |
+| □ | 14, 32 | | Left | 15, 28 |
+| △ | 7, 34 | | Right | 16, 29 |
+| L1 | 19 | | Select | 13 |
+| R1 | 9 | | Start | 30 (+ 25 for player 0) |
+| L2 | 16 | | L3, R3 | none in style 0 |
+| R2 | 14 | | | |
+
+Live, a held button briefly shows its raw masked bit as the action value (e.g. ✕ → action 31 = +64.0) before the
+clamp at the end of `Input_Update`, exactly as the decomp has it.
+
 ## 4. Stick compensation — `Input_Update` 0x17ee88 (*measured*)
 
 - `StickCompensation2(a, b)` (0x17f798): radial. `m = sqrt(a²+b²)`; if `|m| > 0.0002`:
@@ -87,6 +103,11 @@ LX/RY beyond ±0.5 (menu navigation); action 38 (0xac) fires when LX < −0.8, R
   the other becomes exactly ±1.
 - Application per player: styles 2 and 5: Comp2(3,4), Comp3(0,2). All other styles: Comp2(3,4), Comp2(0,5),
   Comp3(1,2).
+- **Live check** (WORKLOG 0006, `tools/trace/pad_log.py`): recomputing actions 3/4 from the logged RX/RY with this
+  formula in f32 (table read from our ELF) reproduces 364 of 407 samples exactly, 34 more against a stick value from
+  ±3 samples (the stick moved between the two PINE reads), and 9 are torn mid-update reads (one axis 0 or
+  uncompensated). Example: right stick hard left (RX 1) → −0.984 before the curve, −0.980 after (table[125]/255).
+- Not verifiable from the trace: the §2 dead zone, because the game overwrites the raw bytes in place (GAPS G-012).
 
 ## 5. Invert, clamp, hold counters (*measured*)
 
@@ -109,8 +130,10 @@ LX/RY beyond ±0.5 (menu navigation); action 38 (0xac) fires when LX < −0.8, R
 - **Not frame-rate independent:** the turn-speed ramps (§7) advance a fixed amount *per update*, so at 30 Hz a ramp
   takes twice as long in wall-clock time as at 60 Hz, while per-update deltas are multiplied by `FRAME_RATE_MUL`.
   The crosshair smoothing (×0.5 per update, §7) is also per update.
-- How often real hardware runs at 30 vs 60 in gameplay is unknown (UNKNOWNS U-013; measure `PS2FramesToSkip` with
-  PCSX2/PINE). The movie folder is named `MOVIES/30_FPS`.
+- **Live (PCSX2 2.8.2, level 0x07000001, 15 s of gameplay sampled at 2 kHz, WORKLOG 0006):** 819 updates over 829
+  vblanks: 809 one-vblank (60 Hz) and 10 two-vblank (30 Hz) updates, i.e. 98.8 % at 60 Hz. PCSX2 ran at 55.3
+  vblanks/s (~92 % speed). Other levels and real hardware remain open (U-013). The movie folder is named
+  `MOVIES/30_FPS`.
 
 ## 7. Aiming, turning, auto-aim (*measured*)
 
