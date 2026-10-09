@@ -696,6 +696,12 @@ fn guard_surrenders_to_bond_behind_him() {
     eprintln!("placement {placement}, Bond at {behind:?}: log {:x?} anim {:x?} set {}", sim.list[i].log, sim.list[i].anim, sim.list[i].anim_set);
     assert!(log.contains(&state::SURRENDER_ANIM) && sim.list[i].state == state::SURRENDERED, "log {log:x?}");
     assert_eq!(sim.list[i].weapon, 1, "unarmed");
+    // The hands-up transition (danim 0x141, info flag 0x100) turns the body ~π in its root; at its end the yaw snaps by
+    // π (`OnEndAnim` / `SnapRotate`), so in the hands-up loop (no root turn) he faces Bond rather than turning again.
+    let g = &sim.list[i];
+    let bearing = (behind[0] - g.pos[0]).atan2(behind[2] - g.pos[2]);
+    let off = nf_game::trig::angle_difference(g.yaw, bearing).abs();
+    assert!(off < 0.35, "faces Bond after surrendering: off by {off}");
     assert!(!sim.pickups.is_empty(), "his gun lies on the ground");
     // Bond 15 units away: CheckUnsurrender → Unsurrender → Attack (unarmed) → DrawWeapon → weapon 6.
     let p = [behind[0] + 15.0, behind[1], behind[2]];

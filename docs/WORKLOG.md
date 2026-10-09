@@ -994,3 +994,20 @@ in T-poses": R used to be the debug toggle drawing held-back spawner templates (
 present drone found headless with every channel on — `--channels` prints any). (5) the damage glow covered only the
 centred 4:3 box: HUD sprites are now anchored (health left, ammo right, crosshair centre, full-screen stretched)
 with 4:3 pixels at the window height.
+
+## 0048 — Coverage measured; strategy; animation engine read; snap rotation (2026-10-09)
+
+**Coverage** (user asked why so much is unported): of ACTION.ELF's 3038 functions, ~520 are referenced in our code
+or docs (~26 % of the code by size) — many only partly. The work had gone depth-first per behaviour. **User
+decision**: port breadth-first, a whole subsystem at a time (one at a time), animation first, then rendering
+(docs/systems/render.md, researched), objects / scripts (docs/systems/world-objects.md, researched), weapons.
+
+**Read** (docs/systems/anim-engine.md): the script list, add / append-blend / init / end / tick, the commands
+(sequences, sounds, events), blending weights and order, frame interpolation, root motion and anim rotation.
+
+**Snap rotation** (fixes the surrendering guard's 360): `DroneAnim_SetDAnimInternal` keeps the danim's info flags;
+when a danim ends into its follow-on, `OnEndAnim` turns info flag 0x100 / 0x80 / 0x200 into a turn of π / π/2 / −π/2
+(`+0x54C`, no blend) that `DroneAnim_SnapRotate` (called from `Drone_Control` after the control update) adds to the
+yaw and the desired yaw. [L] danim 0x141 (surrender, 210 frames, root turning 3.10 rad) has flag 0x100. The port
+applies the snap when the danim ends (U-039: the order against the call completion is not read). The surrender
+test now asserts the surrendered guard faces Bond.

@@ -447,6 +447,10 @@ pub struct Drone {
     /// `bounded`) are off.
     pub free_root: bool,
     pub bounded: bool,
+    /// `+0x54C`: the turn a finished turning danim leaves (`DroneAnim_OnEndAnim` 0x13e2c0: info flags 0x100 → π,
+    /// 0x80 → π/2, 0x200 → −π/2), applied to the yaw and the desired yaw by `DroneAnim_SnapRotate` (0x13e198) after
+    /// the next control update.
+    pub snap: f32,
     /// Pickups this drone made this tick (`DroneWeap_DropWeapon`, `DroneFunc_DropGrenade`), collected by `Drones`.
     pub drops: Vec<crate::pickup::Pickup>,
     /// Drone modes (`behaviour_util_get`: placement parameter 15 = type `+0xC7`, 16 = the normal block's mode `+0xC8`,
@@ -506,7 +510,7 @@ impl Drone {
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
             corpse: false, death_pending: false, death_channel: param(12) as u8, special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
-            captain: false, drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
+            captain: false, snap: 0.0, drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
         };
         dr.init_properties(d, &param);
@@ -861,7 +865,19 @@ impl Drone {
             wrap_end = self.root_value(d).zip(last).map(|(a, b)| [b[0] - a[0], 0.0, b[2] - a[2]]);
             let info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
             let next = if self.anim.danim == 0 { self.anim.follow_on } else { u16::from_le_bytes([info[10], info[11]]) };
-            if next != 0 && next != self.anim.danim { self.set_danim(d, next) }
+            if next != 0 && next != self.anim.danim {
+                // `SetEndAnim` → `OnEndAnim`: a turning danim leaves its turn for `SnapRotate` (the next danim starts
+                // facing the way the animation ended).
+                let flags = u32::from_le_bytes([info[0], info[1], info[2], info[3]]);
+                if flags & 0x100 != 0 { self.snap = crate::trig::PI; }
+                if flags & 0x80 != 0 { self.snap = crate::trig::HALF_PI; }
+                if flags & 0x200 != 0 { self.snap = -crate::trig::HALF_PI; }
+                // *Deviation (order)*: the game applies it in the next tick's `SnapRotate`, after that tick's control;
+                // applied here at once so a state entered on the call's completion (e.g. Surrendered facing Bond) is
+                // not turned by it afterwards (the order of completion vs snap is not read, U-039).
+                if self.snap != 0.0 { self.desired_yaw += self.snap; self.yaw += self.snap; self.snap = 0.0; }
+                self.set_danim(d, next)
+            }
             else if self.anim.once {
                 // `AnimEndCallback` + `CheckForAnimComplete`: the script stops on its last frame; `+0x57A` clears.
                 self.anim.once = false;
