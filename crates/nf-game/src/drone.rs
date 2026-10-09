@@ -737,12 +737,26 @@ impl Drone {
     /// `DroneAnim_SetHTAnim`'s script switch: no blend (or a drone not animating, `NDrone2_DoAnimation`) →
     /// `AnimScriptAdd`, every script deleted; else `AnimScriptAppendBlend`: the scripts already fading restart an
     /// 8-frame fade, the one just replaced fades over `blend` frames.
-    fn begin_blend(&mut self, blend: u16) {
+    /// `old_turn`: the replaced danim is a 180° turn (info flag 0x100, `+0x574`) not yet at its end — `SetHTAnim` then
+    /// freezes it (speed 0), fades it over 30 frames in anim rotation, and leaves the turn it had made (`+0x54C` = its
+    /// root yaw) for `SnapRotate`: the yaw takes the turn and the fading pose loses it.
+    fn begin_blend(&mut self, d: &Data, blend: u16, old_turn: bool) {
         if blend == 0 || !self.drawn { self.anim.outgoing.clear(); return; }
         for o in &mut self.anim.outgoing { o.clock = 8.0; o.length = 8.0; }
         if let Some(s) = self.anim.script {
             let looping = !(self.anim.once || self.anim.held);
-            self.anim.outgoing.push(crate::anim::Outgoing { script: s, time: 1.0 + self.anim.ftime, speed: self.anim.speed, looping, clock: blend as f32, length: blend as f32 });
+            let mut o = crate::anim::Outgoing { script: s, time: 1.0 + self.anim.ftime, speed: self.anim.speed, looping, clock: blend as f32, length: blend as f32, unyaw: 0.0 };
+            if old_turn {
+                let yaw = self.local_pose(d).and_then(|p| p.first().map(|r| crate::anim::root_yaw(r.1))).unwrap_or(0.0);
+                o.speed = 0.0;
+                o.clock = 30.0;
+                o.length = 30.0;
+                o.unyaw = yaw;
+                // `SnapRotate` (applied at once, as for the end snap; U-039): the yaw = the desired yaw + the turn.
+                self.desired_yaw += yaw;
+                self.yaw = self.desired_yaw;
+            }
+            self.anim.outgoing.push(o);
             if self.anim.outgoing.len() > 31 { self.anim.outgoing.remove(0); }
         }
     }
@@ -753,6 +767,9 @@ impl Drone {
     /// script keeps playing** (no `SetHTAnim`): e.g. an unarmed guard (anim set 0xC) has no death or corpse script, so
     /// the last one holds instead of an empty pose.
     fn set_danim(&mut self, d: &Data, danim: u16, blend: u16) {
+        // The replaced danim: a 180° turn (info flag 0x100) still running.
+        let old_info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
+        let old_turn = self.anim.danim != 0 && old_info[1] & 1 != 0 && self.anim.script.is_some() && !self.anim.held;
         let mut danim = danim;
         for _ in 0..8 {
             let info = d.tables.info.get(danim as usize).copied().unwrap_or([0; 24]);
@@ -768,7 +785,7 @@ impl Drone {
             let script = d.tables.script_for(danim, self.anim_set);
             let skip = script.is_none() || (!self.drawn && info[0] & 4 != 0 && matches!(self.anim.class, 0 | 3..=7 | 9));
             if !skip {
-                self.begin_blend(blend);
+                self.begin_blend(d, blend, old_turn);
                 self.anim.script = script;
                 self.anim.time = 0;
                 self.anim.ftime = 0.0;
@@ -794,8 +811,10 @@ impl Drone {
 
     /// `DroneAnim_SetScript(script, state, follow-on, …, next AI state, message, flags)` (0x13e088): play a script by
     /// hashcode as anim state `state`, class 1, the call already reached with the given completion; flags 0 = one-shot.
-    fn play_script(&mut self, hash: u32, state: u16, follow_on: u16, next_ai: u8, done_msg: u8) {
-        self.begin_blend(8); // `SetScript` → `SetHTAnim(…, blend 8)`
+    fn play_script(&mut self, d: &Data, hash: u32, state: u16, follow_on: u16, next_ai: u8, done_msg: u8) {
+        let old_info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
+        let old_turn = self.anim.danim != 0 && old_info[1] & 1 != 0 && self.anim.script.is_some() && !self.anim.held;
+        self.begin_blend(d, 8, old_turn); // `SetScript` → `SetHTAnim(…, blend 8)`
         self.anim.danim = 0;
         self.anim.state = state;
         self.anim.class = 1;
@@ -933,7 +952,8 @@ impl Drone {
                 // The follow-on blends over the ending danim's `info+0xE` frames (`+0x584`), 0 for a snapped turn.
                 let mut end_blend = if self.snap != 0.0 { 0 } else { info[0xe] as u16 };
                 if self.anim.len_cap.is_some() { end_blend = 5; }
-                if self.snap != 0.0 { self.desired_yaw += self.snap; self.yaw += self.snap; self.snap = 0.0; }
+                // `SnapRotate`: desired += the turn, the yaw = desired.
+                if self.snap != 0.0 { self.desired_yaw += self.snap; self.yaw = self.desired_yaw; self.snap = 0.0; }
                 self.set_danim(d, next, end_blend)
             }
             else if self.anim.once {
@@ -1017,6 +1037,26 @@ impl Drone {
             (Some(r), Some(prev), false, _) => Some([r[0] - prev[0], r[2] - prev[2]]),
             (Some(_), Some(_), true, Some(step)) => Some([step[0], step[2]]),
             _ => None,
+        };
+        // Blending (`AnimFrameResolve`): the fading scripts' root steps this tick mixed in the pose order — each next
+        // step by 1 − the previous weight, the current one last.
+        let delta = if self.anim.outgoing.is_empty() { delta } else {
+            let steps: Vec<([f32; 2], f32)> = self.anim.outgoing.iter().map(|o| {
+                let at = |t: f32| -> Option<V3> {
+                    let (q, f) = crate::anim::script_frame(d.scripts.get(&o.script)?, t)?;
+                    let s = d.sequences.get(&q).filter(|s| s.channels.len() >= 3)?;
+                    let f = (f as u32).clamp(1, s.frames.max(1) as u32);
+                    Some([s.value(0, f), s.value(1, f), s.value(2, f)])
+                };
+                let step = match (at(o.time), at(o.time - o.speed)) { (Some(a), Some(b)) if o.speed != 0.0 && a[0].is_finite() => [a[0] - b[0], a[2] - b[2]], _ => [0.0; 2] };
+                (step, o.weight())
+            }).collect();
+            let mut m = steps[0].0;
+            let mut w = steps[0].1;
+            for (st, wn) in steps.iter().skip(1) { for k in 0..2 { m[k] += (st[k] - m[k]) * (1.0 - w); } w = *wn; }
+            let cur = delta.unwrap_or([0.0; 2]);
+            for k in 0..2 { m[k] += (cur[k] - m[k]) * (1.0 - w); }
+            Some(m)
         };
         if let (Some([lx, lz]), Some(_)) = (delta, root) {
             let (s, c) = (crate::trig::sinf(self.yaw), crate::trig::cosf(self.yaw));
@@ -1190,7 +1230,7 @@ impl Drone {
                     self.pos[1] += crate::damage::drone_height(hip) - 1.0;
                     self.free_root = true;
                     self.bounded = false;
-                    self.play_script(self.special_death, anim_state::DEATH, 0xbf, DEAD, msg::ANIM_DONE);
+                    self.play_script(d, self.special_death, anim_state::DEATH, 0xbf, DEAD, msg::ANIM_DONE);
                     self.timer_c = Some(frame + 60);
                     return Some(true);
                 }
@@ -1261,7 +1301,11 @@ impl Drone {
         let skel = d.skeletons.get(&skin.skeleton)?;
         let cur = crate::anim::script_pose(d.scripts, d.sequences, skel, skin, self.anim.script?, 1.0 + self.anim.ftime)?;
         let outs: Vec<(crate::anim::Pose, f32)> = self.anim.outgoing.iter()
-            .filter_map(|o| Some((crate::anim::script_pose(d.scripts, d.sequences, skel, skin, o.script, o.time)?, o.weight()))).collect();
+            .filter_map(|o| {
+                let mut p = crate::anim::script_pose(d.scripts, d.sequences, skel, skin, o.script, o.time)?;
+                if o.unyaw != 0.0 { if let Some(r) = p.first_mut() { r.1 = crate::anim::unyaw(r.1, o.unyaw); } }
+                Some((p, o.weight()))
+            }).collect();
         Some(crate::anim::blend_playing(cur, &outs))
     }
 

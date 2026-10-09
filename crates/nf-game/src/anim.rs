@@ -79,6 +79,8 @@ pub struct Outgoing {
     pub looping: bool,
     pub clock: f32,
     pub length: f32,
+    /// Root yaw moved into the object (anim rotation, `+0x78 & 0x20000`): removed from this script's root.
+    pub unyaw: f32,
 }
 
 impl Outgoing {
@@ -93,6 +95,24 @@ impl Outgoing {
         self.clock -= 1.0;
         self.clock > 0.0
     }
+}
+
+/// The yaw (about +Y) of a root rotation: its forward (+Z) turned, `atan2(x, z)` (`Mat_GetDir` + `Vec_DirToRot`).
+pub fn root_yaw(q: [f32; 4]) -> f32 {
+    let [x, y, z, w] = q;
+    let f = [2.0 * (x * z + w * y), 1.0 - 2.0 * (x * x + y * y)];
+    f[0].atan2(f[1])
+}
+
+/// Removes `yaw` about +Y from a root rotation (pre-multiplies by the inverse turn).
+pub fn unyaw(q: [f32; 4], yaw: f32) -> [f32; 4] {
+    let (s, c) = ((-yaw * 0.5).sin(), (-yaw * 0.5).cos());
+    let r = [0.0, s, 0.0, c];
+    // r ⊗ q
+    [r[3] * q[0] + r[0] * q[3] + r[1] * q[2] - r[2] * q[1],
+     r[3] * q[1] - r[0] * q[2] + r[1] * q[3] + r[2] * q[0],
+     r[3] * q[2] + r[0] * q[1] - r[1] * q[0] + r[2] * q[3],
+     r[3] * q[3] - r[0] * q[0] - r[1] * q[1] - r[2] * q[2]]
 }
 
 /// `AnimFrameResolve`'s order: the outgoing scripts (oldest first) then the current one; result = first, then for each
@@ -127,7 +147,7 @@ mod tests {
         // Faded out (weight 0): the current pose; no outgoing: the current pose.
         assert_eq!(blend_playing(b.clone(), &[(a, 0.0)])[0].0, b[0].0);
         // An outgoing one-shot holds its last frame while fading over 8 ticks.
-        let mut o = Outgoing { script: 0, time: 9.0, speed: 1.0, looping: false, clock: 8.0, length: 8.0 };
+        let mut o = Outgoing { script: 0, time: 9.0, speed: 1.0, looping: false, clock: 8.0, length: 8.0, unyaw: 0.0 };
         let mut n = 0;
         while o.tick(10.0) { n += 1; }
         assert_eq!((n, o.time), (7, 10.0));

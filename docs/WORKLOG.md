@@ -1051,3 +1051,12 @@ op 4 event 2 into `event_func` (holster swap, `+0x20` / `+0x21` firing flags, `+
 frames with end blend 5 unless the hit was big; the run speed; the muzzle taken from `palette` (the blended, aimed,
 drawn pose) instead of an unaimed integer-frame pose at the object position. Not ported (G-026): grenade throws,
 close-combat hits, weapon-change / message / tertiary events, footstep effects, `PlayFiringAnim`'s use of the flags.
+
+## 0053 — Blended root motion; interrupted turns hand their turn to the yaw (2026-10-09)
+
+`AnimFrameResolve` blends the scripts' root motion like their poses: the fading scripts' steps this tick are mixed
+in order (each next by 1 − the previous weight), the current step last. `DroneAnim_SetHTAnim`: a replaced 180° turn
+(info flag 0x100) not yet at its end is frozen (speed 0), fades over 30 frames in anim rotation, and its root yaw so far
+(`+0x54C`) goes to `SnapRotate` — the port adds it to the desired yaw and sets the yaw to it at once (U-039) and removes
+it from the fading pose's root. `SnapRotate` sets the yaw to the new desired yaw (it had added to the yaw). All
+nf-game tests (incl. the live-trace patrol / chase timings) still pass.
