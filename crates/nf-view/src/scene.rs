@@ -109,8 +109,9 @@ pub struct Sim {
     pub hitboxes: nf_formats::hitbox::CollisionBones,
     pub sfx: Option<nf_formats::sfx::SfxTable>,
     pub volumes: Vec<nf_game::aivolume::AiVolume>,
-    /// Bond's gun (07000005's start: P2K, 7 + 41 rounds).
+    /// Bond's gun (07000005's start: P2K, 7 + 41 rounds) and the auto-aim option (`0x2a38c9`, 1 by default [L]).
     pub gun: nf_game::gun::Gun,
+    pub auto_aim: bool,
 }
 
 impl Sim {
@@ -125,9 +126,11 @@ impl Sim {
         // no aim-point ray yet); the first-person fire script's sound 0x403 feeds the drones' hearing.
         if let Some(w) = self.weapons.records.get(self.gun.weapon as usize) {
             let params = nf_game::gun::GunParams::from_record(w, 0);
+            // Auto-aim (on by default in the game's options) only outside aim mode; in aim mode the offset eases back.
+            let dir = if self.auto_aim && !aiming { self.drones.auto_aim(&d, camera, look, self.gun.weapon) } else { self.drones.aim_target = None; look };
             if self.gun.update(trigger, params) {
                 let sound = self.sfx.as_ref().map(|t| t.get(0x403)).unwrap_or(nf_formats::sfx::SfxHearing { id: 0x403, inner: 0.0, outer: 0.0, weight: 0.0, looped: false });
-                self.drones.fire_player(&d, camera, look, self.gun.weapon, sound);
+                self.drones.fire_player(&d, camera, dir, self.gun.weapon, sound);
             }
         }
         self.drones.bond_aiming = aiming;
@@ -432,7 +435,7 @@ impl Scene {
             let seq_index = by_hash.clone();
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.attach_level(level);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, gun: nf_game::gun::Gun::new(2, 7, 41) })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, gun: nf_game::gun::Gun::new(2, 7, 41), auto_aim: true })
         });
         Scene { vertices, indices, materials, textures, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }

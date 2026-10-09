@@ -801,3 +801,11 @@ and opponent info), `ProcessDroneSight` (visibility, the round-robin line of sig
 drone's own AI-volume factor `+0x52C` — used only when a drone's opponent is a drone), the 0x97 / music pass,
 `NavNodeCache`, then every drone's `HandleSoundAlerts`, `Sound_ZeroAlertness`, the alarm, delayed messages. The port
 ran the sound alerts before the drone-to-drone alerts; now alerts → 0x97 → sounds → alarm, as read. All tests pass.
+
+## 0035 — Bond's auto-aim (2026-10-09)
+
+`Player_AutoAim` / `Check_AutoAim` read and ported (`Drones::auto_aim`; docs/systems/drone-damage.md): outside aim
+mode, the nearest drawn living enemy drone whose bone 2 lies within the yaw / pitch cone and in line of sight snaps the
+crosshair offset onto it; the offset halves every tick. nf-view: on by default (the game's option byte is 1 [L]), off
+in aim mode (right mouse). **Failure**: the first offset had the wrong sign (the port's `angle_difference(a, b)` is
+b − a) — the test caught it (the bullet went 0.1 rad the other way). Test with a sister (0.6 rad off: no snap).

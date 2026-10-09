@@ -2195,6 +2195,10 @@ pub struct Drones {
     pub last_flinch: Option<u32>,
     /// The last alarm broadcast (`DAT_0029AA88`) and whether one went out (`DAT_0029AA85`, 07000014 sends only one).
     pub last_alarm: Option<u32>,
+    /// Auto-aim: the last target (`BL+0x114`) and the crosshair offset as (yaw, pitch) radians (`BL+0x120` / `+0x124`,
+    /// screen units in the game; *approximation*: small angles).
+    pub aim_target: Option<usize>,
+    pub aim_offset: [f32; 2],
     pub alarm_sent: bool,
     pub bond_aiming: bool,
     cover_cursor: usize,
@@ -2206,7 +2210,7 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, last_alarm: None, alarm_sent: false }
+        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2] }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -2298,6 +2302,49 @@ impl Drones {
 
     /// `Sound_Play3D` (0x1dd548) with the table's radii: the sound enters the hearing list for the next tick. Looped
     /// sounds are never heard (`Sound_Alertness` skips them).
+    /// `Player_AutoAim` (0x1a7c98) / `Check_AutoAim` (0x1a73f8), once per tick when auto-aim is on and Bond is not in aim
+    /// mode: the nearest qualifying drone's bone 2 within `Autoaim_Range` (25): drawn, alive, not type 0xB; |yaw to it −
+    /// Bond's yaw| < `Autoaim_Angle_H` · k and |pitch to it − Bond's pitch| < `Autoaim_Angle_V` · k with k = weapon
+    /// `+0x14` / 100 · (1 − d / 25) · the difficulty multiplier (Easy 1.9, Normal 1, Hard 0), ×1.4 (`LockOnMul`) for the
+    /// last target; line of sight from the head. A target snaps the crosshair offset onto it; the offset then halves
+    /// every tick. Returns the direction the next bullet takes (`Player_GetAimingPoint`), given Bond's view `look`.
+    pub fn auto_aim(&mut self, d: &Data, head: V3, look: V3, weapon: u8) -> V3 {
+        let t = d.tuning;
+        let yaw = look[0].atan2(look[2]);
+        let pitch = look[1].clamp(-1.0, 1.0).asin();
+        let wf = d.weapons.records.get(weapon as usize).map_or(100.0, |w| f32::from_le_bytes(w[0x14..0x18].try_into().unwrap()));
+        let diff = match DIFFICULTY { 1 => t.Autoaim_EasyMul, 3 | 4 => t.Autoaim_HardMul, _ => t.Autoaim_NormalMul };
+        let mut best = t.Autoaim_Range;
+        let mut found = None;
+        for (i, dr) in self.list.iter().enumerate() {
+            if !dr.present || !dr.enabled || !dr.drawn || dr.corpse || dr.health <= 0.0 || dr.kind == 0xb { continue; }
+            let Some(p) = dr.palette(d).and_then(|m| m.get(2).map(|r| [r[3][0], r[3][1], r[3][2]])) else { continue };
+            let dv = [p[0] - head[0], p[1] - head[1], p[2] - head[2]];
+            let dist = (dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2]).sqrt();
+            if dist > best || dist <= 0.0 { continue; }
+            let mut k = wf * 0.01 * (1.0 - dist / t.Autoaim_Range) * diff;
+            if matches!(weapon, 0x50 | 0x51) { k = 1.0; }
+            let (mut h, mut v) = (t.Autoaim_Angle_H * k, t.Autoaim_Angle_V * k);
+            if self.aim_target == Some(i) { h *= t.Autoaim_LockOnMul; v *= t.Autoaim_LockOnMul; }
+            if h == 0.0 && v == 0.0 { continue; }
+            let dyaw = angle_difference(yaw, dv[0].atan2(dv[2]));
+            if dyaw.abs() >= h { continue; }
+            let dpitch = angle_difference(pitch, (dv[1] / dist).clamp(-1.0, 1.0).asin());
+            if dpitch.abs() >= v || !d.world.line_of_sight(head, p) { continue; }
+            best = dist;
+            found = Some((i, dyaw, dpitch));
+        }
+        match found {
+            Some((i, dyaw, dpitch)) => { self.aim_target = Some(i); self.aim_offset = [dyaw, dpitch]; }
+            None => { self.aim_target = None; }
+        }
+        let (y, p) = (yaw + self.aim_offset[0], pitch + self.aim_offset[1]);
+        // The offset is halved after use (the game halves it at the end of `Player_AutoAim`; `Player_GetAimingPoint`
+        // doubles it back, so a fresh target is aimed at exactly).
+        self.aim_offset = [self.aim_offset[0] * 0.5, self.aim_offset[1] * 0.5];
+        [p.cos() * y.sin(), p.sin(), p.cos() * y.cos()]
+    }
+
     pub fn play_sound(&mut self, pos: V3, h: nf_formats::sfx::SfxHearing) {
         if h.looped { return; }
         self.sounds.push(Sound { id: h.id, pos, inner: h.inner, outer: h.outer, weight: h.weight });

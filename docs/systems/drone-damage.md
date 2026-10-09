@@ -84,7 +84,11 @@ Placement parameters (DefaultInit, `param(k)` = `piVar19[0xD + k]`) [M, checked]
   speed per frame; dies past 50 units.
 - Auto-aim (`Check_AutoAim`): only when not aiming (L1); drawn, alive enemy drones within 25; cone 0.12·k yaw,
   0.22·k pitch, k = `weapon+0x14`/100 · (1 − d/25) · (Easy 1.9, Normal 1, Hard 0), ×1.4 for the last target; target
-  bone 2; line of sight.
+  bone 2; line of sight. Checked in the decomp (0x1a73f8, 0x1a7c98): the nearest qualifying drone wins (the range
+  shrinks to each accepted distance); a hit sets the crosshair offset `BL+0x120 / +0x124` to the target's screen
+  position and `+0x114` to it; without one `+0x114` = 0; the offsets then halve every tick (weapons 0x50 / 0x51 use
+  k = 1 and scan type-0x51 objects instead). Port: `Drones::auto_aim` keeps the offset as a yaw / pitch angle
+  (*approximation* of the screen offset), test `auto_aim_snaps_to_a_guard_near_the_crosshair`.
 - Gunshot sound: the first-person fire script plays **0x403** (inner 2, outer 40, weight 65) at the gun: guards
   within ~28 units hear it. Silenced variants remap to 2 (weight 0).
 

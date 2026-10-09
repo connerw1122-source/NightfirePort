@@ -444,3 +444,27 @@ fn alarm_channel_sends_guards_to_attack() {
     assert!(with.iter().filter(|&&(_, _, s)| s == state::WAIT_SWITCH).all(|&(_, a, _)| !a));
     assert!(run(false).iter().all(|&(_, a, _)| !a), "sister");
 }
+
+/// Auto-aim (`Check_AutoAim`, from the decomp): Bond 8 units from the gate guard looking 0.05 rad to the side of it gets
+/// the bullet direction snapped onto the guard's bone 2; looking 0.6 rad off (outside 0.12 · k · 1.9) keeps his own
+/// view (sister). The offset halves each tick afterwards.
+#[test]
+fn auto_aim_snaps_to_a_guard_near_the_crosshair() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, i, rng) = l.drones(None, 61.342);
+    let mut sim = l.sim(drones, rng);
+    let p = bond_at([69.3, 26.5, 99.5]);
+    sim.tick(&d, &p);
+    assert!(sim.list[i].drawn);
+    let bone2 = sim.list[i].palette(&d).unwrap()[2][3];
+    let to = [bone2[0] - p.eye[0], bone2[1] - p.eye[1], bone2[2] - p.eye[2]];
+    let yaw = to[0].atan2(to[2]);
+    let look = |off: f32| [(yaw + off).sin(), 0.0, (yaw + off).cos()];
+    let dir = sim.auto_aim(&d, p.eye, look(0.05), 2);
+    let n = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+    for k in 0..3 { assert!((dir[k] - to[k] / n).abs() < 1e-3, "snapped: {dir:?} vs {to:?}"); }
+    assert_eq!(sim.aim_target, Some(i));
+    let far = sim.auto_aim(&d, p.eye, look(0.6), 2);
+    assert!(sim.aim_target.is_none() && (far[0] - look(0.6)[0]).abs() > 1e-4, "sister: the offset still eases back, not a new snap");
+}
