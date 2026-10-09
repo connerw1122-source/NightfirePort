@@ -8,6 +8,9 @@
 //! nf-extract files-extract <iso> <out-dir> unpack FILES.BIN by FileList
 //! nf-extract bin-list <iso>                every entry of every level .bin (TSV, stdout; ~44k rows)
 //! nf-extract bin-digest <iso>              per-archive digest of bin-list (= golden/level_bins.tsv)
+//! nf-extract tex-list <iso>                every map texture with index/palette SHA-1s (TSV, stdout)
+//! nf-extract tex-digest <iso>              per-archive digest of tex-list (= golden/textures.tsv)
+//! nf-extract tex-export <iso> <out> [pfx]  map textures as indexed PNGs (archives starting with pfx)
 //! nf-extract bigf-manifest <iso>           every entry of every BIGF archive (TSV, stdout)
 //! nf-extract bigf-extract <iso> <archive> <out-dir>   unpack one BIGF archive (e.g. /DRIVING/MISC.VIV)
 //! nf-extract symtab <elf>                  an ELF's .symtab as TSV (stdout)
@@ -33,6 +36,9 @@ fn main() -> Result<()> {
         "files-extract" => files_extract(&IsoImage::open(a(1)?)?, Path::new(a(2)?)),
         "bin-list" => { print!("{}", disc::level_bin_entries(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "bin-digest" => { print!("{}", disc::level_bin_digest(&disc::level_bin_entries(&IsoImage::open(a(1)?)?)?)); Ok(()) }
+        "tex-list" => { print!("{}", disc::texture_entries(&IsoImage::open(a(1)?)?)?); Ok(()) }
+        "tex-digest" => { print!("{}", disc::texture_digest(&disc::texture_entries(&IsoImage::open(a(1)?)?)?)); Ok(()) }
+        "tex-export" => tex_export(&IsoImage::open(a(1)?)?, Path::new(a(2)?), args.get(3).map(String::as_str)),
         "bigf-extract" => bigf_extract(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?)),
         "symtab" => symtab(Path::new(a(1)?)),
         "drivingsym" => {
@@ -91,6 +97,30 @@ fn files_extract(iso: &IsoImage, out: &Path) -> Result<()> {
         std::fs::write(out.join(&e.name), iso.read_bytes(bin.lba as u64 * 2048 + e.offset as u64, e.size as u64)?)?;
     }
     println!("{} files -> {}", entries.len(), out.display());
+    Ok(())
+}
+
+/// Writes `<out>/<archive>/<entry>_<tex>[_f<frame>].png` (indexed PNG; alpha via `round(a·255/128)`), optionally only
+/// for archives whose name starts with `only`.
+fn tex_export(iso: &IsoImage, out: &Path, only: Option<&str>) -> Result<()> {
+    let mut written = 0usize;
+    disc::for_each_map(iso, |archive, i, _e, map| {
+        if only.is_some_and(|p| !archive.starts_with(p)) { return Ok(()); }
+        let mf = nf_formats::map::MapFile::parse(map)?;
+        let (texs, _bad) = nf_formats::texture::textures(map, &mf)?;
+        let dir = out.join(archive.trim_end_matches(".bin"));
+        std::fs::create_dir_all(&dir)?;
+        for t in &texs {
+            let (k, pal) = (t.index, t.palette_rgba8());
+            for f in 0..t.frames as usize {
+                let name = if t.frames > 1 { format!("{i:04}_{k:03}_f{f:02}.png") } else { format!("{i:04}_{k:03}.png") };
+                std::fs::write(dir.join(name), png::encode_indexed(t.width as u32, t.height as u32, t.frame(f), &pal))?;
+                written += 1;
+            }
+        }
+        Ok(())
+    })?;
+    println!("{written} PNGs -> {}", out.display());
     Ok(())
 }
 

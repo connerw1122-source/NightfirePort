@@ -144,6 +144,61 @@ pub fn level_bin_digest(entries_tsv: &str) -> String {
     s
 }
 
+/// Calls `f(archive, entry index, entry, entry bytes)` for every map entry (level `.bin` types 0/1/2/11).
+pub fn for_each_map<R: Read + Seek>(iso: &IsoImage<R>, mut f: impl FnMut(&str, usize, &crate::levelbin::BinEntry, &[u8]) -> Result<()>) -> Result<()> {
+    let (entries, bin) = files_bin_entries(iso)?;
+    for fe in entries.iter().filter(|e| e.name.to_ascii_lowercase().ends_with(".bin")) {
+        let data = iso.read_bytes(bin.lba as u64 * SECTOR_SIZE as u64 + fe.offset as u64, fe.size as u64)?;
+        let lb = crate::levelbin::LevelBin::parse(&data)?;
+        for (i, e) in lb.entries.iter().enumerate().filter(|(_, e)| matches!(e.kind, 0 | 1 | 2 | 11)) {
+            f(&fe.name, i, e, lb.data(&data, e))?;
+        }
+    }
+    Ok(())
+}
+
+/// Every map texture: `archive \t entry \t tex \t flags \t w \t h \t frames \t rate \t hashcode \t sha1(indices)
+/// \t sha1(palette, linear order, PS2 alpha)`; textures the header over-states are listed with `short` hashes.
+pub fn texture_entries<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
+    let mut s = String::from("archive\tentry\ttex\tflags\tw\th\tframes\trate\thashcode\tindices_sha1\tpalette_sha1\n");
+    for_each_map(iso, |archive, i, _e, map| {
+        let mf = crate::map::MapFile::parse(map)?;
+        let (texs, bad) = crate::texture::textures(map, &mf)?;
+        let mut t = texs.iter();
+        let n = texs.len() + bad.len();
+        for k in 0..n {
+            if let Some((_, msg)) = bad.iter().find(|(j, _)| *j == k) {
+                s.push_str(&format!("{archive}\t{i}\t{k}\t-\t-\t-\t-\t-\t-\tshort\t{msg}\n"));
+                continue;
+            }
+            let x = t.next().unwrap();
+            let pal: Vec<u8> = x.palette.iter().flatten().copied().collect();
+            s.push_str(&format!("{archive}\t{i}\t{k}\t{:#04x}\t{}\t{}\t{}\t{}\t{:08x}\t{}\t{}\n", x.flags, x.width, x.height,
+                x.frames, x.rate, x.hashcode, hex(&crate::sha1::sha1(&x.indices)), hex(&crate::sha1::sha1(&pal))));
+        }
+        Ok(())
+    })?;
+    Ok(s)
+}
+
+/// Per archive digest of `texture_entries`: `archive \t textures \t 8bpp \t short \t rows_sha1`.
+pub fn texture_digest(entries_tsv: &str) -> String {
+    use std::collections::BTreeMap;
+    let mut per: BTreeMap<&str, (u32, u32, u32, Sha1)> = BTreeMap::new();
+    for line in entries_tsv.lines().skip(1) {
+        let c: Vec<&str> = line.split('\t').collect();
+        let e = per.entry(c[0]).or_insert_with(|| (0, 0, 0, Sha1::new()));
+        e.0 += 1;
+        if c[3] != "-" && u8::from_str_radix(c[3].trim_start_matches("0x"), 16).is_ok_and(|f| f & 1 != 0) { e.1 += 1; }
+        if c[9] == "short" { e.2 += 1; }
+        e.3.update(line.as_bytes());
+        e.3.update(b"\n");
+    }
+    let mut s = String::from("archive\ttextures\teight_bpp\tshort\trows_sha1\n");
+    for (a, (n, e8, short, h)) in per { s.push_str(&format!("{a}\t{n}\t{e8}\t{short}\t{}\n", hex(&h.finish()))); }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

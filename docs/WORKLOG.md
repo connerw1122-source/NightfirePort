@@ -169,3 +169,26 @@ The user confirmed gameplay and approved stopping the mcp-pine bridge (node pid 
 - First cross-check run reported 122 differing archives: my driver turned their `07F00029.bin_extract` folders into
   `07F00029.bin.bin`; keying archives by the first 8 characters fixed it (no reader difference).
 - I summed the entry count as 43,977 in conversation; the type counts total 41,977.
+
+## 0008 — Map block files and textures (2026-10-08)
+
+**Done**
+- `LoaderProcess` (0x1d4880) dispatch read: types 0/1/2/11 → `parsemap_parsemap`; 3/4/5 → `AnimLoadFile`; 6 skeleton;
+  7 script; 8 menu; 12 `LoadableFiles`; 15 icon; 16 woman (level-bin.md updated; U-016 closed).
+- Map block file read from the decomp and measured on all 2,230 map entries (all version 1, offset table, every
+  table ends at 0x1D, all blocks in bounds): docs/formats/map.md, `map.rs`.
+- Textures: header/palette/pixel blocks from the decomp (`psiCreateMapTextures`), `texture.rs`, CLI
+  `tex-list`/`tex-digest`/`tex-export`, golden `golden/textures.tsv`, opt-in test with sister. 37 unit + 7 opt-in tests.
+- Decided by measurement (neighbour smoothness over every texture): 256-colour palettes are CSM1-swizzled; 4 bpp is
+  low-nibble-first.
+- **Cross-check** `tools/crosscheck/nfre_textures.py`: nightfire-re's own handlers + depalettizer, their WebP writer
+  replaced by per-frame PNG: **27,130/27,130 frames pixel-exact**.
+
+**Failed / corrected**
+- My first PS2 smoothness script crashed on the one short texture (0700000d.bin 703/18); now skipped and logged
+  (U-017).
+- The cross-check caught a real bug: `tex-export` numbered textures by position among the decoded ones, so after the
+  short texture the file names in that map were off by one. `Texture` now carries its header `index`.
+- First comparison run left 385 animated textures unchecked (their writer saves lossy WebP) and 180 "missing" ones:
+  their name table spells the folder `Weapons/` once and `weapons/` 64 times, and on NTFS both land in one folder;
+  my reverse lookup was case-sensitive. Fixed both in the driver (their decoder untouched).
