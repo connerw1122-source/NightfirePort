@@ -54,5 +54,11 @@ logic, not an emulator wrapper or a static recompiler. Read `docs/PLAN.md` first
 - **Ghidra:** `C:\Users\Yoda\Desktop\RC2Recomp\tools\ghidra_12.1.4_PUBLIC` (+ ghidra-emotionengine-reloaded),
   JDK `C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot`. Project: `work/ghidra/NightfirePort.gpr`
   (built by `tools/ghidra/build-project.ps1`); decomp export: `work/decomp/<program>/index.tsv`.
+- **Ghidra MCP:** `tools/ghidra/start-ghidra-mcp.ps1` (port 8089; stop RC2's server first), then
+  `connect_instance("NightfirePort")`. Don't run `build-project.ps1` while it holds the project.
+- **Cross-checks:** `tools/crosscheck/iso-7zip.sh`, `nfre_files_bin.py` (nightfire-re venv), `unviv_bigf.py`
+  (unvivtool venv); third-party repos and venvs live in `work/third_party/` (never committed).
+- **PCSX2 (portable):** `C:\Users\Yoda\Downloads\PS2\PCSX2\pcsx2-qt.exe`, PINE slot 28011 (needs a PCSX2 restart
+  after enabling).
 - **Tools:** `cargo run --release -p nf-extract -- <cmd>` (see `crates/nf-extract/src/main.rs`);
   `NF_ISO=<iso> cargo test --release -p nf-formats --test disc_golden`.
