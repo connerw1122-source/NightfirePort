@@ -49,9 +49,10 @@ impl Scene {
         let start = level.instances(false).0.iter()
             .find(|i| level.maps[i.map].objects[i.object].name.trim() == "Player1")
             .map(|i| (i.placement.translation, i.placement.rotation[1]));
-        let mut skinned = 0;
+        let (mut skinned, mut hidden) = (0, 0);
         for inst in &instances {
             let obj = &level.maps[inst.map].objects[inst.object];
+            if inst.placement.creates_cel() && obj.skipped_by_cel_pass() { hidden += 1; continue; }
             if obj.gfx.is_skinned() { skinned += 1; }
             for b in obj.gfx.leaves.iter().flat_map(|l| &l.batches) {
                 let key = b.texture.filter(|&t| (t as usize) < level.maps[inst.map].textures.len()).map(|t| (inst.map, t));
@@ -83,7 +84,7 @@ impl Scene {
             let rgba = t.frame(0).iter().flat_map(|&i| pal[i as usize]).collect();
             textures.push(TextureImage { key, width: t.width as u32, height: t.height as u32, rgba });
         }
-        let stats = format!("{} instances ({skinned} skinned, not drawn yet), {missing} unresolved, {} triangles, {} materials",
+        let stats = format!("{} instances ({hidden} skipped by the cel pass: flag 0x10; {skinned} skinned, not drawn yet), {missing} unresolved, {} triangles, {} materials",
             instances.len(), indices.len() / 3, materials.len());
         Scene { vertices, indices, materials, textures, bounds: (lo, hi), start, stats }
     }

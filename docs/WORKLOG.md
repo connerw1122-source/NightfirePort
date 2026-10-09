@@ -266,3 +266,12 @@ The user confirmed gameplay and approved stopping the mcp-pine bridge (node pid 
 **Measured**
 - 07000005 (first mission in the table): 132 static cels, 43,718 triangles; with dynamic entities 363 instances.
   Striped panels remain among the static cels (U-025); flare sprites need blending (G-018).
+
+## 0012 — Blockers hidden by the game's cel-pass rule (2026-10-08)
+
+- The user confirmed in PCSX2 that the castle is not mirrored (U-023 partly answered).
+- Listed 07000005's static cels: every blocker (`blocker1`, `Blocking_*`, `BlockingPoly*`, `blocker_sk*`) has bit
+  0x10 in the entity-params word at payload +4 (= celglist+0x44 = cel+0x94). `View_AddCels` skips any cel whose glist
+  flags have 0x10. `Room_Sky` has it too and is drawn by `View_DrawSky` instead. Over all levels no second bit
+  separates skies from blockers, so nf-view applies exactly the game's cel rule and leaves the sky for G-019.
+- `MapObject::flags` / `skipped_by_cel_pass`; nf-view hides those cels: 18 in 07000005, striped panels gone.

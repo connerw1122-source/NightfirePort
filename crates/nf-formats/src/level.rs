@@ -16,7 +16,15 @@ use std::collections::HashMap;
 pub struct MapObject {
     pub hashcode: u32,
     pub name: String,
+    /// Entity params payload +4: the glist flags (`celglist+0x44`, copied to `cel+0x94` by the static parser).
+    pub flags: u32,
     pub gfx: GfxObject,
+}
+
+impl MapObject {
+    /// `View_AddCels` (ACTION.ELF 0x1e6ba0) never adds a cel whose glist flags have bit 0x10 to the draw list:
+    /// blocking polygons, and skies (which `View_DrawSky` draws separately, GAPS G-019).
+    pub fn skipped_by_cel_pass(&self) -> bool { self.flags & 0x10 != 0 }
 }
 
 pub struct LevelMap {
@@ -61,7 +69,7 @@ impl Level {
                         let tail = p.tail(0x30, "entity name")?.bytes();
                         let name = String::from_utf8_lossy(&tail[..tail.iter().position(|&c| c == 0).unwrap_or(tail.len())]).into_owned();
                         let gfx = pending.take().ok_or_else(|| crate::buf::FormatError::Invalid("entity params without PS2_GFX".into()))?;
-                        objects.push(MapObject { hashcode: p.u32(0)?, name, gfx });
+                        objects.push(MapObject { hashcode: p.u32(0)?, name, flags: p.u32(4)?, gfx });
                     }
                     id::MAP_DATA_STATIC => placements = placement::parse(blk.payload(data))?,
                     _ => {}
