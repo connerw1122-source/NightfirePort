@@ -308,6 +308,36 @@ pub fn level_summary<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
     Ok(s)
 }
 
+/// Per archive with animation sequences: `archive \t sequences \t frames \t channels \t rows_sha1` over
+/// (hash, frames, skeleton, channel count, every segment's end and coefficient bits) of each sequence, parsed with
+/// `anim::Sequence::parse` (which itself requires exact channel byte lengths and segment sums).
+pub fn sequence_digest<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
+    let (entries, bin) = files_bin_entries(iso)?;
+    let mut s = String::from("archive\tsequences\tframes\tchannels\trows_sha1\n");
+    for fe in entries.iter().filter(|e| e.name.to_ascii_lowercase().ends_with(".bin")) {
+        let data = iso.read_bytes(bin.lba as u64 * SECTOR_SIZE as u64 + fe.offset as u64, fe.size as u64)?;
+        let lb = crate::levelbin::LevelBin::parse(&data)?;
+        let (mut n, mut frames, mut chans) = (0u64, 0u64, 0u64);
+        let mut h = Sha1::new();
+        for e in lb.entries.iter().filter(|e| e.kind == 4 && e.length >= 0x40) {
+            let q = crate::anim::Sequence::parse(lb.data(&data, e))
+                .map_err(|err| crate::buf::FormatError::Invalid(format!("{} {}: {err}", fe.name, e.name)))?;
+            n += 1;
+            frames += q.frames as u64;
+            chans += q.channels.len() as u64;
+            h.update(&q.hashcode.to_le_bytes());
+            h.update(&q.frames.to_le_bytes());
+            h.update(&[q.skeleton]);
+            for ch in &q.channels {
+                h.update(&(ch.len() as u32).to_le_bytes());
+                for seg in ch { h.update(&seg.end.to_le_bytes()); for c in seg.c { h.update(&c.to_bits().to_le_bytes()); } }
+            }
+        }
+        if n > 0 { s.push_str(&format!("{}\t{n}\t{frames}\t{chans}\t{}\n", fe.name, hex(&h.finish()))); }
+    }
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -96,6 +96,16 @@ fn level_assembly_matches_the_golden_summary() {
     assert!(actual.lines().skip(1).all(|l| l.split('\t').nth(6) == Some("0")), "every placement resolves");
 }
 
+#[test]
+fn sequences_match_the_golden_digest() {
+    let Some(iso) = iso() else { eprintln!("skip: NF_ISO not set"); return };
+    let golden = include_str!("../golden/sequences.tsv");
+    let actual = disc::sequence_digest(&iso).unwrap();
+    let d = diff_tsv(golden, &actual);
+    assert!(d.is_empty(), "{} differences:\n{}", d.len(), d.join("\n"));
+    assert_eq!(diff_tsv(golden, &tamper(&actual)).len(), 1, "sister: a one-character change must be caught");
+}
+
 /// Facts about the BIGF headers recorded in docs/formats/bigf.md: the header-size field is the entry-table end
 /// (`.VIV`) or the table end + 8 (`.MUS`/`.SPE`, an `L225` trailer); the LE size field equals the file size except
 /// in MISC.VIV (UNKNOWNS U-004).

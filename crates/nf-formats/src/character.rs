@@ -1,49 +1,64 @@
-//! Characters: skeletons (level `.bin` type 6, `SKELnnnn`) and skins (type 3, hashcode prefix 05), which name the
-//! skinned meshes a character is drawn with. Spec: docs/formats/character.md.
+//! Characters: skeletons (level `.bin` type 6, `SKELnnnn`) and skins (type 3, hashcode prefix 05).
+//! Spec: docs/formats/animation.md, docs/formats/character.md.
 //!
-//! Read in exactly the order `AnimSkeletonProcess` (ACTION.ELF 0x1bd328) and `AnimProcessSkinData` (0x1bd500) do:
-//! ```text
-//! skeleton: +0 u16 skeleton id (index into pSkeletons), +2 u8 bone count, …
-//! skin:     +0 u32 hashcode, +4 f32[3], +0x10 u8 main_count, +0x11 u8 extra_count, +0x12 u8, +0x13 u8 tail_count,
-//!           +0x14 u8 skeleton id, then bone_count bytes,
-//!           if extra_count: extra_count bytes, align 4, extra_count × u32 hashcode (−1 = none),
-//!           if main_count:  align 4, main_count × u32 hashcode (−1 = none; byte 2 bit 0x10 → "sleeve" substitute),
-//!           then per-bone matrices and tail_count × 0x24 bytes (not needed for a bind-pose view).
-//! ```
+//! Read in exactly the order `AnimSkeletonProcess` (ACTION.ELF 0x1bd328) and `AnimProcessSkinData` (0x1bd500) do;
+//! the full skin layout matches the file size (padded to 32) in all 1,217 skins on the disc (WORKLOG 0015).
 
 use crate::buf::{invalid, Buf, Result};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Skeleton { pub id: u16, pub bones: u8 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct Skeleton {
+    pub id: u16,
+    pub bones: u8,
+    /// Bit i: bone i has translation channels in sequences.
+    pub translation_mask: [u32; 3],
+    /// Fixed local translation of bones without translation channels.
+    pub offsets: Vec<[f32; 3]>,
+}
+
+impl Skeleton {
+    pub fn has_translation(&self, bone: usize) -> bool { self.translation_mask[bone / 32] >> (bone % 32) & 1 != 0 }
+    pub fn translated_bones(&self) -> usize { self.translation_mask.iter().map(|m| m.count_ones() as usize).sum() }
+}
 
 pub fn parse_skeleton(data: &[u8]) -> Result<Skeleton> {
     let b = Buf(data);
-    Ok(Skeleton { id: b.u16(0)?, bones: b.u8(2)? })
+    let bones = b.u8(2)?;
+    let offsets = (0..bones as usize).map(|i| Ok([b.f32(0x10 + 12 * i)?, b.f32(0x14 + 12 * i)?, b.f32(0x18 + 12 * i)?])).collect::<Result<_>>()?;
+    Ok(Skeleton { id: b.u16(0)?, bones, translation_mask: [b.u32(4)?, b.u32(8)?, b.u32(12)?], offsets })
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Skin {
     pub hashcode: u32,
+    /// Multiplies animated and skeleton translations.
     pub scale: [f32; 3],
     pub skeleton: u8,
+    /// Per bone: bit 7 = animated, low 7 bits = parent (0x7F = root); parents precede children.
+    pub bones: Vec<u8>,
     /// Meshes the character is drawn with (`skin+4` list). `None` = −1.
     pub main: Vec<Option<u32>>,
-    /// The second list (`skin+8`), with its per-entry bytes.
-    pub extra: Vec<Option<u32>>,
+    /// Rigid parts: (bone, hashcode) (`skin+8` list).
+    pub extra: Vec<(u8, Option<u32>)>,
+    /// Per bone (only when there are skinned meshes): inverse-bind translation and quaternion.
+    pub inverse_bind: Vec<([f32; 3], [f32; 4])>,
 }
 
 impl Skin {
     /// A main entry whose hashcode byte 2 has bit 0x10 is replaced at load by `AnimSleeveGetEntity(0)`.
     pub fn is_sleeve(hash: u32) -> bool { (hash >> 16) & 0x10 != 0 }
+    pub fn parent(&self, bone: usize) -> Option<usize> { match self.bones[bone] & 0x7f { 0x7f => None, p => Some(p as usize) } }
+    pub fn animated(&self, bone: usize) -> bool { self.bones[bone] & 0x80 != 0 }
 }
 
 /// `bone_count(skeleton id)` must give the bone count of that skeleton (from the archive's SKEL entries).
 pub fn parse_skin(data: &[u8], bone_count: impl Fn(u8) -> Option<u8>) -> Result<Skin> {
     let b = Buf(data);
     let (main_count, extra_count, skeleton) = (b.u8(0x10)? as usize, b.u8(0x11)? as usize, b.u8(0x14)?);
-    let Some(bones) = bone_count(skeleton) else { return invalid(format!("skin uses skeleton {skeleton}, which is not loaded")) };
-    let mut p = 0x15 + bones as usize;
-    let list = |p: &mut usize, n: usize| -> Result<Vec<Option<u32>>> {
+    let Some(nb) = bone_count(skeleton) else { return invalid(format!("skin uses skeleton {skeleton}, which is not loaded")) };
+    let bones = b.sub(0x15, nb as usize, "skin bones")?.bytes().to_vec();
+    let mut p = 0x15 + nb as usize;
+    let hashes = |p: &mut usize, n: usize| -> Result<Vec<Option<u32>>> {
         *p = p.next_multiple_of(4);
         let v = (0..n).map(|k| b.u32(*p + 4 * k).map(|h| (h != u32::MAX).then_some(h))).collect::<Result<_>>()?;
         *p += 4 * n;
@@ -51,11 +66,21 @@ pub fn parse_skin(data: &[u8], bone_count: impl Fn(u8) -> Option<u8>) -> Result<
     };
     let mut extra = Vec::new();
     if extra_count != 0 {
+        let extra_bones = b.sub(p, extra_count, "skin part bones")?.bytes().to_vec();
         p += extra_count;
-        extra = list(&mut p, extra_count)?;
+        extra = extra_bones.into_iter().zip(hashes(&mut p, extra_count)?).collect();
     }
-    let main = if main_count != 0 { list(&mut p, main_count)? } else { Vec::new() };
-    Ok(Skin { hashcode: b.u32(0)?, scale: [b.f32(4)?, b.f32(8)?, b.f32(12)?], skeleton, main, extra })
+    let mut main = Vec::new();
+    let mut inverse_bind = Vec::new();
+    if main_count != 0 {
+        main = hashes(&mut p, main_count)?;
+        for i in 0..nb as usize {
+            let o = p + 0x1c * i;
+            let f = |k: usize| b.f32(o + 4 * k);
+            inverse_bind.push(([f(0)?, f(1)?, f(2)?], [f(3)?, f(4)?, f(5)?, f(6)?]));
+        }
+    }
+    Ok(Skin { hashcode: b.u32(0)?, scale: [b.f32(4)?, b.f32(8)?, b.f32(12)?], skeleton, bones, main, extra, inverse_bind })
 }
 
 #[cfg(test)]
@@ -64,23 +89,34 @@ mod tests {
 
     #[test]
     fn parses_a_synthetic_skin_in_loader_order() {
-        // 3 bones, no extra list, one main mesh: 0x15 + 3 = 0x18, already aligned.
-        let mut d = vec![0u8; 0x1c];
+        // 3 bones, no parts, one main mesh at align4(0x18) = 0x18, then 3 × 0x1C inverse-bind records.
+        let mut d = vec![0u8; 0x1c + 3 * 0x1c];
         d[0..4].copy_from_slice(&0x0500_0030u32.to_le_bytes());
         d[4..8].copy_from_slice(&1.0f32.to_le_bytes());
         d[0x10] = 1;
         d[0x14] = 7;
+        d[0x15..0x18].copy_from_slice(&[0xff, 0x80, 0x81]);
         d[0x18..0x1c].copy_from_slice(&0x0200_040du32.to_le_bytes());
+        d[0x1c + 0x1c..0x1c + 0x20].copy_from_slice(&(-0.8f32).to_le_bytes());
         let s = parse_skin(&d, |id| (id == 7).then_some(3)).unwrap();
         assert_eq!((s.skeleton, s.main.clone(), s.extra.len()), (7, vec![Some(0x0200_040d)], 0));
+        assert_eq!((s.parent(0), s.parent(1), s.parent(2), s.animated(0), s.animated(1)), (None, Some(0), Some(1), true, true));
+        assert_eq!(s.inverse_bind.len(), 3);
+        assert_eq!(s.inverse_bind[1].0[0], -0.8);
         assert!(parse_skin(&d, |_| None).is_err(), "skeleton must be known");
-        // With 4 bones the list starts at align4(0x19) = 0x1c: past the data.
-        assert!(parse_skin(&d, |_| Some(4)).is_err());
+        assert!(parse_skin(&d, |_| Some(4)).is_err(), "4 bones push the records past the data");
     }
 
     #[test]
-    fn skeleton_header() {
-        assert_eq!(parse_skeleton(&[2, 0, 22, 0]).unwrap(), Skeleton { id: 2, bones: 22 });
+    fn skeleton_header_and_offsets() {
+        let mut d = vec![0u8; 0x10 + 24];
+        d[0] = 2;
+        d[2] = 2;
+        d[4] = 0b10;
+        d[0x1c..0x20].copy_from_slice(&1.5f32.to_le_bytes());
+        let s = parse_skeleton(&d).unwrap();
+        assert_eq!((s.id, s.bones, s.has_translation(0), s.has_translation(1), s.translated_bones()), (2, 2, false, true, 1));
+        assert_eq!(s.offsets[1], [1.5, 0.0, 0.0]);
         assert!(Skin::is_sleeve(0x0210_0001) && !Skin::is_sleeve(0x0200_040d));
     }
 }

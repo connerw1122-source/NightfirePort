@@ -312,3 +312,33 @@ The user confirmed gameplay and approved stopping the mcp-pine bridge (node pid 
 - `Level::sky_instances`; nf-view layers: sky pass first (no depth, slot order; viewer-centred objects with the
   view matrix without translation), then the world; sky placements are removed from the `--all` world list.
 - 07000005 now shows the night sky, clouds, mountains and the `Sky_Tower*` roofs.
+
+## 0015 — Skeletal animation (2026-10-08)
+
+Facts first came from Raikaru/nightfire-engine `docs/formats.md` (read online, facts only); every one used was
+re-checked on our disc or decomp:
+- **Skins** (all 1,217): bone bytes (bit 7 animated, low 7 parent; parents precede children, one root), parts,
+  meshes, 0x1C-byte inverse binds, 36-byte datums — the computed end padded to 32 equals the file size in every skin.
+  Inverse-bind quaternions are identity as (0,0,0,−1).
+- **Skeletons** (45, ids 0–44, all copies identical): mask + per-bone offsets; offsets × scale equal
+  `inv_bind(parent) − inv_bind(child)` for 59,875 bones within 1e-4 (2,898 within 1e-2, 80 differ).
+- **Sequences** (all 18,244): channel layout read from `AnimFrameCopy` — u32 words whose halves are the segment
+  entries (header word = byte length | first entry), floats per mask bit; every channel consumes exactly its byte
+  length and its segments sum to exactly frames − 1; t = frame − 1 absolute; qz ≥ 2 → w negative.
+  They live in per-level animation archives 07F000NN (LoaderLoad's 0xF nibble).
+- **Vertices**: slot → bone list at skin-info word 3 (every used slot inside it, all 582 objects); weights in [0, 1]
+  (845,738); fully weighted vertices lie a median 0.10–0.16 from their joint → mesh and skeleton share bind space.
+- `Quat_QuatTransToMat` and `psiBuildMatrixPalette` composition read from the decomp.
+
+**Done**: anim.rs (sequences, local/world pose, skinning matrices, two-bone blend), character.rs (full skeletons and
+skins), ps2gfx (vertex weight/slots, slot list); nf-view animates characters on the CPU each frame (`[`/`]` choose the
+sequence, `P` pauses, `--seq`/`--frame` for shots); golden `sequences.tsv` + opt-in test. 50 unit + 10 opt-in tests.
+Renders: walk and turn poses are anatomically coherent across 9 sampled frames / 3 sequences.
+
+**Failed / corrected**
+- Sequence parsing took three attempts: sequential u16 entries (overran), u16 pairs read as two entries each
+  (nonsense frame counts), then the decomp's actual order (halves of u32 words, the first in the header) — exact on
+  all 18,244. All sequences first reported "skeleton not in archive": they are in the 07F archives, not the levels.
+- My identity check on inverse-bind quaternions required w = +1; they are stored as (0,0,0,−1).
+- Sequence 3 of skeleton 0 walks the guard away and into the camera: root motion is in the root's translation
+  channels and the game handles it separately (not yet; G-020).

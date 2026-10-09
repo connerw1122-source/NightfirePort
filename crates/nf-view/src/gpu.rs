@@ -128,13 +128,19 @@ impl Renderer {
         for t in &scene.textures { tex_bgs.push(make_tex(t.width, t.height, &t.rgba)); }
         let material_tex = scene.materials.iter()
             .map(|m| m.key.and_then(|k| scene.textures.iter().position(|t| t.key == k)).map_or(0, |i| i + 1)).collect();
-        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.vertices), usage: wgpu::BufferUsages::VERTEX });
+        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.vertices), usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST });
         let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.indices), usage: wgpu::BufferUsages::INDEX });
         let draws = scene.materials.iter().map(|m| (m.layer, m.first_index, m.index_count)).collect();
         Renderer { pipeline, sky_pipeline, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, material_tex, tex_bgs, draws }
     }
 
     /// `view_proj`: full camera; `view_proj_rot`: the same without the camera translation.
+    /// Rewrites the Character-layer tail of the vertex buffer (starting at vertex `start`).
+    pub fn update_vertices(&self, queue: &wgpu::Queue, start: usize, vertices: &[crate::scene::Vertex]) {
+        if vertices.is_empty() { return; }
+        queue.write_buffer(&self.vbuf, (start * std::mem::size_of::<crate::scene::Vertex>()) as u64, bytemuck::cast_slice(vertices));
+    }
+
     pub fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4]) -> wgpu::CommandEncoder {
         queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&view_proj));
         queue.write_buffer(&self.uniform_rot, 0, bytemuck::cast_slice(&view_proj_rot));
@@ -158,7 +164,7 @@ impl Renderer {
                 let (pipeline, uniform) = match layer {
                     Layer::SkyCamera => (&self.sky_pipeline, &self.uniform_rot_bg),
                     Layer::SkyFixed => (&self.sky_pipeline, &self.uniform_bg),
-                    Layer::World => (&self.pipeline, &self.uniform_bg),
+                    Layer::World | Layer::Character => (&self.pipeline, &self.uniform_bg),
                 };
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, uniform, &[]);

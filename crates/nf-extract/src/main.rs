@@ -40,7 +40,8 @@ fn main() -> Result<()> {
         "gfx-digest" => { print!("{}", disc::geometry_digest(&disc::geometry_entries(&IsoImage::open(a(1)?)?)?)); Ok(()) }
         "level-summary" => { print!("{}", disc::level_summary(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "level-export" => level_export(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?), args.get(4).is_some_and(|x| x == "all")),
-        "skins" => skins(&IsoImage::open(a(1)?)?),
+        "seq-digest" => { print!("{}", disc::sequence_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
+        "skins" =>skins(&IsoImage::open(a(1)?)?),
         "gfx-skin-words" => gfx_skin_words(&IsoImage::open(a(1)?)?),
         "gfx-boxes" => gfx_boxes(&IsoImage::open(a(1)?)?),
         "gfx-export" => gfx_export(&IsoImage::open(a(1)?)?, Path::new(a(2)?), args.get(3).map(String::as_str)),

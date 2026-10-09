@@ -34,6 +34,10 @@ pub struct Vertex {
     pub normal: [i8; 3],
     /// The signed V4-8 stream's w: −1 = no kick (does not close a triangle), 0 = kick.
     pub w: i32,
+    /// Skinned only: weight of the first matrix (source qword 0 w) and the two matrix slots (qword 1 words 0/1, low
+    /// 15 bits); slots index `GfxObject::slot_bones`. Static vertices: 1.0 and [0, 0].
+    pub weight: f32,
+    pub slots: [u16; 2],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -80,8 +84,10 @@ pub struct GfxObject {
     pub boxes: Vec<GlistBox>,
     pub skin_info: u32,
     pub footer_unknown: u32,
-    /// Decoded leaves; empty for skinned objects (not decoded yet, GAPS G-015).
+    /// Decoded leaves (skinned objects: bind pose).
     pub leaves: Vec<Leaf>,
+    /// Skinned objects: matrix slot → skeleton bone (the 0xFF-terminated list at skin-info word 3).
+    pub slot_bones: Vec<u8>,
 }
 
 impl GfxObject {
@@ -91,7 +97,7 @@ impl GfxObject {
     pub fn parse(block: &[u8]) -> Result<GfxObject> {
         let b = Buf(block);
         let footer = b.u32(4)? as usize;
-        if footer == 0x10 { return Ok(GfxObject { boxes: Vec::new(), skin_info: 0, footer_unknown: 0, leaves: Vec::new() }); }
+        if footer == 0x10 { return Ok(GfxObject { boxes: Vec::new(), skin_info: 0, footer_unknown: 0, leaves: Vec::new(), slot_bones: Vec::new() }); }
         let footer = footer & !3;
         let (count, box_off, skin_info, footer_unknown) = (b.u32(footer)? as usize, b.u32(footer + 4)? as usize & !3, b.u32(footer + 8)?, b.u32(footer + 12)?);
         if count > 1 << 16 { return invalid(format!("PS2_GFX: {count} boxes")); }
@@ -116,7 +122,15 @@ impl GfxObject {
                 .map_err(|e| crate::buf::FormatError::Invalid(format!("box {i}: {e}")))?;
             leaves.push(Leaf { box_index: i, ..leaf });
         }
-        Ok(GfxObject { boxes, skin_info, footer_unknown, leaves })
+        let mut slot_bones = Vec::new();
+        if skin_info != 0 {
+            let mut q = b.u32((skin_info as usize & !3) + 12)? as usize & !3;
+            while slot_bones.len() < 256 {
+                match b.u8(q)? { 0xff => break, x => slot_bones.push(x) }
+                q += 1;
+            }
+        }
+        Ok(GfxObject { boxes, skin_info, footer_unknown, leaves, slot_bones })
     }
 }
 
@@ -183,6 +197,8 @@ impl Vu {
                     // Skinned: this slot holds the source's packed skinning qword (normals come from SkinIt at run time).
                     normal: if skinned { [0; 3] } else { [nw[0] as i32 as i8, nw[1] as i32 as i8, nw[2] as i32 as i8] },
                     w,
+                    weight: if skinned { f32::from_bits(xyz[3]) } else { 1.0 },
+                    slots: if skinned { [(nw[0] & 0x7fff) as u16, (nw[1] & 0x7fff) as u16] } else { [0, 0] },
                 });
             }
             // Nothing past the last vertex may be fresh: the unpack counts must equal NLOOP.
@@ -305,7 +321,7 @@ mod tests {
 
     #[test]
     fn strip_triangles_skip_no_kick_vertices_and_alternate_winding() {
-        let v = |w| Vertex { pos: [0.0; 3], uv: [0.0; 2], rgba: [0; 4], normal: [0; 3], w };
+        let v = |w| Vertex { pos: [0.0; 3], uv: [0.0; 2], rgba: [0; 4], normal: [0; 3], w, weight: 1.0, slots: [0, 0] };
         let b = Batch { texture: None, prim: 0x5c, nloop: 6, eop: true, skinned: false, verts: vec![v(-1), v(-1), v(0), v(0), v(-1), v(0)] };
         assert_eq!(b.triangles(), [[0, 1, 2], [2, 1, 3], [4, 3, 5]]);
     }

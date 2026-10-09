@@ -1,13 +1,14 @@
 //! `nf-view`: level viewer for 007: Nightfire (PS2), reading the user's own disc image.
 //!
 //! ```text
-//! nf-view <iso> <level.bin> [--all] [--shot out.png [--cam x y z yaw pitch]]
+//! nf-view <iso> <level.bin> [--all] [--seq K] [--frame F] [--shot out.png [--cam x y z yaw pitch]]
 //! ```
 //! `--all` also draws dynamic entities at their placement transforms (not only 0x8000 cels). `--shot` renders one
 //! 1280×720 frame headless to a PNG and exits (used to check output without a window).
 //!
 //! Controls: click to capture the mouse; mouse = look (raw deltas → yaw/pitch, no acceleration), WASD = move,
-//! Space / Ctrl = up / down, Shift = fast, F12 = screenshot (nf-view-shot.png), Esc = release mouse, Esc again = quit.
+//! Space / Ctrl = up / down, Shift = fast, [ / ] = previous / next animation, P = pause, F12 = screenshot
+//! (nf-view-shot.png), Esc = release mouse, Esc again = quit.
 
 mod gpu;
 mod scene;
@@ -54,14 +55,40 @@ fn start_camera(scene: &scene::Scene) -> Camera {
 }
 
 fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
+    use nf_formats::{anim::Sequence, character, levelbin::LevelBin};
+    use std::collections::HashMap;
     let iso = IsoImage::open(iso)?;
     let (entries, bin) = disc::files_bin_entries(&iso)?;
-    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(archive)).with_context(|| format!("no {archive} in FILES.BIN"))?;
-    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let read = |name: &str| -> Result<Option<Vec<u8>>> {
+        let Some(fe) = entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)) else { return Ok(None) };
+        Ok(Some(iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?))
+    };
+    let data = read(archive)?.with_context(|| format!("no {archive} in FILES.BIN"))?;
     let level = Level::parse(&data)?;
-    let scene = scene::Scene::build(&level, !all);
-    eprintln!("{archive}: {}", scene.stats);
+    let lb = LevelBin::parse(&data)?;
+    let skeletons: HashMap<u8, character::Skeleton> = lb.entries.iter().filter(|e| e.kind == 6)
+        .map(|e| character::parse_skeleton(lb.data(&data, e)).map(|s| (s.id as u8, s)))
+        .collect::<std::result::Result<_, _>>()?;
+    // The level's animations: LoaderLoad rewrites the hashcode's 0x00F00000 nibble to 0xF for loader types 0/3,
+    // so 070000NN.bin's sequences are in 07F000NN.bin (docs/formats/level-bin.md).
+    let anim_name = format!("{}F{}", &archive[..2], &archive[3..]);
+    let mut sequences: HashMap<u8, Vec<Sequence>> = HashMap::new();
+    if let Some(anim) = read(&anim_name)? {
+        let alb = LevelBin::parse(&anim)?;
+        for e in alb.entries.iter().filter(|e| e.kind == 4 && e.length >= 0x40) {
+            let s = Sequence::parse(alb.data(&anim, e))?;
+            sequences.entry(s.skeleton).or_default().push(s);
+        }
+    }
+    let scene = scene::Scene::build(&level, !all, &skeletons, sequences);
+    eprintln!("{archive} (+ {anim_name}): {}", scene.stats);
     Ok(scene)
+}
+
+/// The Character-layer vertices posed at `time` (animation frames) of sequence choice `choice`.
+fn posed_vertices(scene: &scene::Scene, choice: usize, time: f32) -> Vec<scene::Vertex> {
+    scene.animate(choice, time).into_iter().zip(&scene.vertices[scene.char_vertex_start..])
+        .map(|(pos, v)| scene::Vertex { pos, ..*v }).collect()
 }
 
 async fn device(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
@@ -71,12 +98,13 @@ async fn device(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) 
 }
 
 /// Renders one frame offscreen and writes it as a PNG.
-fn shot(scene: &scene::Scene, cam: &Camera, out: &str) -> Result<()> {
+fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: usize, time: f32) -> Result<()> {
     let (w, h) = (1280u32, 720u32);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let (_adapter, device, queue) = pollster::block_on(device(&instance, None))?;
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let r = gpu::Renderer::new(&device, &queue, format, scene);
+    r.update_vertices(&queue, scene.char_vertex_start, &posed_vertices(scene, choice, time));
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
         dimension: wgpu::TextureDimension::D2, format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
@@ -119,6 +147,10 @@ struct App {
     keys: HashSet<KeyCode>,
     grabbed: bool,
     last: std::time::Instant,
+    /// Animation: chosen sequence index per skeleton (`[` / `]`), time in animation frames, paused (`P`).
+    choice: usize,
+    anim_time: f32,
+    paused: bool,
 }
 
 impl App {
@@ -173,7 +205,13 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } => if let PhysicalKey::Code(k) = event.physical_key {
                 match (k, event.state) {
                     (KeyCode::Escape, ElementState::Pressed) => if self.grabbed { self.grab(false) } else { el.exit() },
-                    (KeyCode::F12, ElementState::Pressed) => if let Err(e) = shot(&self.scene, &self.cam, "nf-view-shot.png") { eprintln!("screenshot: {e}") },
+                    (KeyCode::F12, ElementState::Pressed) => if let Err(e) = shot(&self.scene, &self.cam, "nf-view-shot.png", self.choice, self.anim_time) { eprintln!("screenshot: {e}") },
+                    (KeyCode::BracketRight | KeyCode::BracketLeft, ElementState::Pressed) => {
+                        self.choice = if k == KeyCode::BracketRight { self.choice + 1 } else { self.choice.saturating_sub(1) };
+                        self.anim_time = 0.0;
+                        if let Some(g) = &self.gfx { g.window.set_title(&format!("nf-view — {}", self.scene.sequence_label(self.choice))); }
+                    }
+                    (KeyCode::KeyP, ElementState::Pressed) => self.paused = !self.paused,
                     (_, ElementState::Pressed) => { self.keys.insert(k); }
                     (_, ElementState::Released) => { self.keys.remove(&k); }
                 }
@@ -189,7 +227,10 @@ impl ApplicationHandler for App {
                     if self.keys.contains(&k) { mv += d; }
                 }
                 self.cam.pos += mv * speed;
+                // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
+                if !self.paused { self.anim_time += dt * 60.0; }
                 let Some(g) = &mut self.gfx else { return };
+                g.renderer.update_vertices(&g.queue, self.scene.char_vertex_start, &posed_vertices(&self.scene, self.choice, self.anim_time));
                 let frame = match g.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
                     _ => { g.surface.configure(&g.device, &g.config); g.window.request_redraw(); return; }
@@ -217,11 +258,15 @@ fn main() -> Result<()> {
         let v: Vec<f32> = args[i + 1..i + 6].iter().map(|s| s.parse()).collect::<Result<_, _>>()?;
         cam = Camera { pos: Vec3::new(v[0], v[1], v[2]), yaw: v[3], pitch: v[4] };
     }
+    let num = |flag: &str| -> Result<Option<f32>> { match args.iter().position(|a| a == flag) { Some(i) => Ok(Some(args.get(i + 1).context("missing value")?.parse()?)), None => Ok(None) } };
+    let choice = num("--seq")?.unwrap_or(0.0) as usize;
+    let time = num("--frame")?.unwrap_or(0.0);
+    eprintln!("animation: {}", scene.sequence_label(choice));
     if let Some(i) = args.iter().position(|a| a == "--shot") {
-        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?);
+        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time);
     }
     let event_loop = EventLoop::new()?;
-    let mut app = App { scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, last: std::time::Instant::now() };
+    let mut app = App { scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false };
     event_loop.run_app(&mut app)?;
     Ok(())
 }
