@@ -627,3 +627,28 @@ three functions bit-identical to the game code over 3,000 inputs each.
 
 Failed / noted: PINE stopped answering mid-session (PCSX2 responsive; probably a connection left by the research agent
 or by my killed script); restarting PCSX2 through `goto_level.py --launch` fixed it.
+
+## 0027 — Triggers, switch channels, spawners; update order (2026-10-09)
+
+Two research passes (switch channels / triggers / spawners; hearing / alerts / goal positions / hit reactions):
+docs/systems/triggers.md, docs/systems/drone-alerts.md.
+
+**Port**: `triggers.rs` (TouchOnce, Touch, AND, ordered AND, OR, Out; volumes = the trigger model's collision triangles,
+Bond's capsule r 0.55 from feet + 0.55 to + 1.86, drones r 0.4; `Trigger_Calc` with the 07000005 latch 0xA4 → 0x6F),
+`spawners.rs` (`DroneSpawner_Control`: start / stop / kill / done channels, waves, max alive, Rand template choice,
+minimum distance and not visible). `Drones` now runs drones, triggers and spawners in the game's control-list order
+(newest first = reverse placement order), keeps `switch_channels` with set times, and the game's drone list order
+for the line-of-sight round robin (`llist`: load order, spawned drones appended). Every drone placement becomes a
+drone (`level_drones`); spawner templates start absent. `nf-extract triggers` lists a level's triggers; the 07000005
+table matches the research pass exactly (placements, channels, locks, boxes).
+
+**Live check** (PINE, Bond moved through box 21 in 40 steps): 0x23 and 0x22 latch, the Dr_17 guards go Patrol, spawner
+268 brings in both gate guards (13 → 15 drones). Teleporting Bond into the box and standing set nothing — the game
+takes contacts from movement (`Collide_Update`); the port tests positions (deviation, docs/systems/triggers.md). New
+test `gate_box_wakes_the_guards_like_the_game`.
+
+**Reaction time**: `DroneFunc_ReactionTime` read: ((1 − alertness) × 30) × 0.01 × (200 − stat) with chopped multiplies is
+59.999996 → **59** (Rust's nearest rounding gave 60). The live "61" is 59 plus the wait for the guard's first round-robin
+turn (`DroneVision_ProcessDroneSight` read: visibility pass, one ray per frame from the drone after the last one
+processed, then the counters); that wait depends on which other drones see Bond, so the test now accepts 59–63 (live 61).
+Seeds for the cover / notice tests re-picked after the update-order change (RNG draws moved).

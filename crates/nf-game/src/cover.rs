@@ -77,9 +77,9 @@ impl CoverNode {
 
     /// `Drone_IsCoverNodeUsable(t, node)` (0x1386d8) for Bond: rebuilds `rt.bits`; returns whether a line-of-sight ray
     /// was cast (the round robin stops there). `target` = his position, `head` = his eye.
-    pub fn usable(&self, rt: &mut CoverRt, world: &CollisionWorld, switches: &[bool], level: u32, target: V3, head: V3) -> bool {
+    pub fn usable(&self, rt: &mut CoverRt, world: &CollisionWorld, ch: &crate::triggers::Channels, level: u32, target: V3, head: V3) -> bool {
         rt.bits = 0;
-        let sw = |c: u8| switches.get(c as usize).copied().unwrap_or(false);
+        let sw = |c: u8| ch.on(c as u32);
         if (self.on != 0 && !sw(self.on)) || (self.off != 0 && sw(self.off)) { return false; }
         let occupied = rt.owner.is_some();
         let deg = |d: f32| d * PI / 180.0;
@@ -172,13 +172,13 @@ mod tests {
         let w = CollisionWorld::empty();
         let mut rt = CoverRt::default();
         // Bond to the node's +x side (yaw to him π/2 from the node's facing): side 1.
-        assert!(n.usable(&mut rt, &w, &[false; 256], 0x0700_0005, [10.0, 0.0, 0.0], [10.0, 1.5, 0.0]));
+        assert!(n.usable(&mut rt, &w, &Default::default(), 0x0700_0005, [10.0, 0.0, 0.0], [10.0, 1.5, 0.0]));
         assert_eq!(rt.bits & 0xe, 2);
         // Behind the node: side 2.
-        n.usable(&mut rt, &w, &[false; 256], 0x0700_0005, [0.0, 0.0, -10.0], [0.0, 1.5, -10.0]);
+        n.usable(&mut rt, &w, &Default::default(), 0x0700_0005, [0.0, 0.0, -10.0], [0.0, 1.5, -10.0]);
         assert_eq!(rt.bits & 0xe, 4);
         // In front: unusable, no ray.
-        assert!(!n.usable(&mut rt, &w, &[false; 256], 0x0700_0005, [0.0, 0.0, 10.0], [0.0, 1.5, 10.0]));
+        assert!(!n.usable(&mut rt, &w, &Default::default(), 0x0700_0005, [0.0, 0.0, 10.0], [0.0, 1.5, 10.0]));
         assert_eq!(rt.bits, 0x200);
         // Side 2 in-cover point: x = offset 0.8, z = −0.1 in the node's frame.
         let (p, side) = n.position(4, false).unwrap();

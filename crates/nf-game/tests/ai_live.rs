@@ -49,6 +49,9 @@ impl Level05 {
         })
     }
 
+    /// The simulation over these drones with the level's triggers.
+    fn sim(&self, drones: Vec<Drone>, rng: Rng) -> Drones { let mut s = Drones::new(drones, rng); s.attach_level(&self.level); s }
+
     fn data(&self) -> Data<'_> {
         Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: 0x0700_0005,
             sequences: &self.sequences, skins: &self.level.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers }
@@ -61,20 +64,11 @@ impl Level05 {
     /// The same with another seed for the random stand-in (`Rand_*` is not modelled).
     fn drones_seeded(&self, alert: Option<f32>, x: f32, seed: u32) -> (Vec<Drone>, usize, Rng) {
         let d = self.data();
-        let m = self.level.main_map().unwrap();
-        let list: Vec<(u32, Vec<(u32, u32)>)> = self.level.maps[m].placements.iter().map(|p| (p.flags & 0xff, p.params.clone())).collect();
         let mut rng = Rng::new(seed);
-        let (mut drones, mut found) = (Vec::new(), None);
-        for (p, role) in self.level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f).zip(drone::spawn_roles(&list)) {
-            if matches!(role, drone::SpawnRole::Reinforcement { .. }) { continue; }
-            let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
-            let floor = self.world.floor_below(p.translation, 3.0).unwrap_or(p.translation[1] - 1.0);
-            if (p.translation[0] - x).abs() < 0.01 { found = Some(drones.len()); }
-            let mut dr = Drone::new(&d, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, &mut rng);
-            if let Some(a) = alert { dr.alert = a; dr.alert_floor = a; }
-            drones.push(dr);
-        }
-        (drones, found.unwrap(), rng)
+        let mut drones = nf_game::drone::level_drones(&d, &self.level, &mut rng);
+        if let Some(a) = alert { for dr in &mut drones { dr.alert = a; dr.alert_floor = a; } }
+        let found = drones.iter().position(|dr| (dr.pos[0] - x).abs() < 0.01).unwrap();
+        (drones, found, rng)
     }
 }
 
@@ -86,13 +80,20 @@ fn guard_notices_and_fires_like_the_game() {
     let d = l.data();
     // Seed 2: the first combat-move roll picks the step (strafe or step are equally likely; the trace shows steps).
     let (drones, gi, rng) = l.drones_seeded(None, 61.342, 2);
-    assert_eq!(drones.len(), 13, "live count at level start");
-    let mut sim = Drones::new(drones, rng);
+    let mut sim = l.sim(drones, rng);
+    // As in the live session, Bond appears (teleported) after the level has run: 10 ticks with him far away first, so
+    // spawner 266's drone is already in the list.
+    const WARM: u32 = 10;
+    let away = bond_at([0.0, -500.0, 0.0]);
+    for _ in 0..WARM { sim.tick(&d, &away); }
+    assert_eq!(sim.list.iter().filter(|x| x.present).count(), 13, "live count at level start (spawner 266 brought one in)");
     let player = bond_at([67.31, 26.5, 99.47]);
     for _ in 0..400 { sim.tick(&d, &player); }
     let g = &sim.list[gi];
-    let attack = g.log.iter().find(|(_, s)| *s == nf_game::drone::state::ATTACK).map(|(f, _)| *f);
-    assert_eq!(attack, Some(61), "noticed after the game's 61 ticks (reaction time 0.3 × 200 at alertness 0)");
+    let attack = g.log.iter().find(|(_, s)| *s == nf_game::drone::state::ATTACK).map(|(f, _)| *f - WARM);
+    // Reaction time 59 (chopped arithmetic) plus the wait for the guard's first round-robin line-of-sight turn, which
+    // depends on how many other drones see Bond: live 61 (WORKLOG 0019), here 59–63.
+    assert!(attack.is_some_and(|f| (59..=63).contains(&f)), "noticed after {attack:?} ticks (live 61)");
     assert!(g.shots.len() >= 6);
     assert_eq!((g.shots[1] - g.shots[0], g.shots[2] - g.shots[1]), (4, 4), "SG5: weapon_data +0x40 = 4 ticks");
     assert!(g.shots[3] - g.shots[2] >= 4 + 15, "burst delay ≥ 15 + interval");
@@ -111,10 +112,11 @@ fn guard_notices_and_fires_like_the_game() {
     assert!(sim.player_hits.iter().filter(|(_, o, _)| *o != gi).all(|(_, _, h)| (h - 18.0).abs() < 1e-3 || (h - 1.65).abs() < 1e-3 || *h < 18.0));
     // Sister: the same guard already at alertness 1 reacts without the delay, so the comparison above can fail.
     let (alert_drones, _, alert_rng) = l.drones_seeded(Some(1.0), 61.342, 2);
-    let mut alert_sim = Drones::new(alert_drones, alert_rng);
+    let mut alert_sim = l.sim(alert_drones, alert_rng);
+    for _ in 0..WARM { alert_sim.tick(&d, &away); }
     for _ in 0..100 { alert_sim.tick(&d, &player); }
-    let early = alert_sim.list[gi].log.iter().find(|(_, s)| *s == nf_game::drone::state::ATTACK).map(|(f, _)| *f);
-    assert!(early.is_some_and(|f| f < 61), "sister: alertness 1 must react earlier, got {early:?}");
+    let early = alert_sim.list[gi].log.iter().find(|(_, s)| *s == nf_game::drone::state::ATTACK).map(|(f, _)| *f - WARM);
+    assert!(early.is_some_and(|f| f < 59), "sister: alertness 1 must react earlier, got {early:?}");
 }
 
 /// Level-start snapshot (work/ee_start_05.bin, `drones_snapshot.py`): 8 drones wait for switch channels 0x22 / 0xA4 /
@@ -130,7 +132,7 @@ fn level_start_matches_the_game() {
         let p = l.level.maps[m].placements.iter().find(|p| p.flags & 0xff == 0x0f && (p.translation[0] - x).abs() < 0.01).unwrap();
         drone::behaviour_words(|k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0)).0
     };
-    let mut sim = Drones::new(drones, rng);
+    let mut sim = l.sim(drones, rng);
     sim.tick(&d, &bond_at([104.95, 24.96, 108.83]));
     // (x, state, first block) from the snapshot; the drone at (62.20, 104.15) (state 0x29) is not compared.
     let live: [(f32, u8, [u32; 3]); 12] = [
@@ -161,7 +163,7 @@ fn guard_patrols_like_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
     let (drones, gi, rng) = l.drones(None, 50.849);
-    let mut sim = Drones::new(drones, rng);
+    let mut sim = l.sim(drones, rng);
     let player = bond_at([104.95, 24.96, 108.83]);
     let route = |s: &Drones| s.list[gi].route.as_ref().map(|r| r.nodes.clone());
     sim.tick(&d, &player);
@@ -189,14 +191,14 @@ fn guard_patrols_like_the_game() {
 
 /// Live trace (work/chase_trace.tsv: Bond teleported to (79.62, 22.6, 95.96), settling at (79.86, 22.92, 96.0)): the
 /// gate guard notices him, goes Combat → OutOfRange → RunForCover (0x8C) → UnderCoverInit (31 ticks) → UnderCoverIdle →
-/// UnderCoverAim (37 ticks, lean-out 176 at speed 1.5) → UnderCoverFire behind corner node 1 (59.11, 98.69), ending at
-/// (58.93, 99.45). Seed 4 makes the port's first-sight roll pick no move, as the game did here.
+/// UnderCoverAim (37 ticks, lean-out 176 at speed 1.5) → UnderCoverFire behind corner node 1 (59.11, 98.69), firing from
+/// (58.83, 99.32). Seed 3 makes the port's rolls pick no first-sight move and the lean cover type, as the game did here.
 #[test]
 fn guard_takes_cover_like_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 4);
-    let mut sim = Drones::new(drones, rng);
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 3);
+    let mut sim = l.sim(drones, rng);
     let player = bond_at([79.86, 22.92, 96.0]);
     for _ in 0..700 { sim.tick(&d, &player); }
     let g = &sim.list[gi];
@@ -206,11 +208,12 @@ fn guard_takes_cover_like_the_game() {
     assert!((28..=34).contains(&(at(0x94) - at(0x93))), "UnderCoverInit lasted {} (live 31)", at(0x94) - at(0x93));
     assert!((32..=40).contains(&(at(0x96) - at(0x95))), "UnderCoverAim lasted {} (live 37)", at(0x96) - at(0x95));
     assert_eq!(g.cover, Some(1), "corner node 1");
-    let err = ((g.pos[0] - 58.93).powi(2) + (g.pos[2] - 99.45).powi(2)).sqrt();
+    // Live in UnderCoverFire (samples 431–900): (58.83, 99.32).
+    let err = ((g.pos[0] - 58.83).powi(2) + (g.pos[2] - 99.32).powi(2)).sqrt();
     assert!(err < 0.4, "in cover at ({:.2}, {:.2}), {err:.2} from the live position", g.pos[0], g.pos[2]);
     // Sister: with Bond 6 units away (the first test's setup) the same guard never runs for cover.
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 4);
-    let mut near = Drones::new(drones, rng);
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 3);
+    let mut near = l.sim(drones, rng);
     for _ in 0..300 { near.tick(&d, &bond_at([67.31, 26.5, 99.47])); }
     assert!(near.list[gi].log.iter().all(|(_, s)| *s != 0x8c), "sister: cover must depend on the situation");
 }
@@ -224,8 +227,8 @@ fn switched_guard_patrols_like_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
     let (drones, gi, rng) = l.drones(None, -31.296);
-    let mut sim = Drones::new(drones, rng);
-    sim.switches[0x22] = true;
+    let mut sim = l.sim(drones, rng);
+    sim.set_channel(0x22);
     let y = -2.1467f32;
     let p = [104.95, 24.96, 108.83];
     let player = Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [y.sin(), 0.0, y.cos()] };
@@ -242,8 +245,8 @@ fn switched_guard_patrols_like_the_game() {
     }
     // Sister: drawn (animated with the walk's root motion) it would be about half as far along.
     let (drones, gi, rng) = l.drones(None, -31.296);
-    let mut drawn = Drones::new(drones, rng);
-    drawn.switches[0x22] = true;
+    let mut drawn = l.sim(drones, rng);
+    drawn.set_channel(0x22);
     for _ in 0..610 {
         // An observer right at the guard: always drawn (within 2 units).
         let g = drawn.list[gi].pos;
@@ -252,4 +255,26 @@ fn switched_guard_patrols_like_the_game() {
     }
     let q = drawn.list[gi].pos;
     assert!(((q[0] + 31.49).powi(2) + (q[2] + 26.04).powi(2)).sqrt() > 2.0, "sister: a drawn guard walks slower ({:.2}, {:.2})", q[0], q[2]);
+}
+
+/// Live (WORKLOG 0027): Bond walked through TouchOnce box 21 (x 60.1, z 91 → 101): channels 0x23 and (mux 25) 0x22
+/// latched, the two Dr_17 guards (wait channel 0x22) left WaitSwitch for Patrol, and spawner 268 (start 0x22) brought
+/// in both gate guards (placements 3 and 4). (Standing still after a teleport into the box set nothing: the game only
+/// takes contacts from movement; the port tests positions.)
+#[test]
+fn gate_box_wakes_the_guards_like_the_game() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, _, rng) = l.drones(None, 61.342);
+    let mut sim = l.sim(drones, rng);
+    for _ in 0..10 { sim.tick(&d, &bond_at([104.95, 24.96, 108.83])); }
+    let state_of = |s: &Drones, placement: usize| s.list.iter().find(|x| x.placement == placement).map(|x| (x.present, x.state)).unwrap();
+    assert_eq!(state_of(&sim, 65), (true, nf_game::drone::state::WAIT_SWITCH));
+    assert!(!state_of(&sim, 3).0 && !sim.channels.on(0x22), "sister: nothing before Bond enters the box");
+    for i in 0..40 { sim.tick(&d, &bond_at([60.1, 26.6, 91.0 + i as f32 * 0.25])); }
+    for _ in 0..30 { sim.tick(&d, &bond_at([60.1, 26.6, 101.0])); }
+    assert!(sim.channels.on(0x23) && sim.channels.on(0x22));
+    assert_eq!(state_of(&sim, 65), (true, nf_game::drone::state::PATROL));
+    assert_eq!(state_of(&sim, 68), (true, nf_game::drone::state::PATROL));
+    assert!(state_of(&sim, 3).0 && state_of(&sim, 4).0, "spawner 268 brought in the gate guards");
 }

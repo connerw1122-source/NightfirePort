@@ -401,19 +401,15 @@ impl Scene {
             let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
             let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers };
             let mut rng = nf_game::drone::Rng::new(0x1234_5678);
-            let mut list = Vec::new();
-            let mut by_pos: HashMap<[u32; 3], usize> = HashMap::new();
-            for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f) {
-                let key = p.translation.map(f32::to_bits);
-                if matches!(roles.get(&key), Some(drone::SpawnRole::Reinforcement { .. })) { continue; }
-                let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
-                let floor = world.floor_below(p.translation, 3.0).unwrap_or(p.translation[1] - 1.0);
-                by_pos.insert(key, list.len());
-                list.push(nf_game::drone::Drone::new(&data, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, &mut rng));
-            }
+            // Every drone placement; spawner templates stay absent until a spawner brings them in.
+            let list = nf_game::drone::level_drones(&data, level, &mut rng);
+            let by_pos: HashMap<[u32; 3], usize> = list.iter().enumerate()
+                .map(|(i, dr)| (level.maps[m].placements[dr.placement].translation.map(f32::to_bits), i)).collect();
             let char_drone = characters.iter().map(|c| by_pos.get(&[c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]].map(f32::to_bits)).copied()).collect();
             let seq_index = by_hash.clone();
-            Some(Sim { drones: nf_game::drone::Drones::new(list, rng), tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers })
+            let mut drones = nf_game::drone::Drones::new(list, rng);
+            drones.attach_level(level);
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers })
         });
         Scene { vertices, indices, materials, textures, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }
@@ -503,8 +499,10 @@ impl Scene {
         }).collect();
         // Held back: spawner reinforcements and drones disabled while they wait for a switch channel (object flags
         // 0x30, `NDrone2_Enable(0)`); R shows them.
-        let hidden = |c: &Character, ci: usize| !opts.reinforcements
-            && (matches!(c.role, drone::SpawnRole::Reinforcement { .. }) || drone_of(ci).is_some_and(|(s, di)| !s.drones.list[di].enabled));
+        let hidden = |c: &Character, ci: usize| !opts.reinforcements && match drone_of(ci) {
+            Some((s, di)) => !s.drones.list[di].present || !s.drones.list[di].enabled,
+            None => matches!(c.role, drone::SpawnRole::Reinforcement { .. }),
+        };
         // A matrix that collapses a mesh to one point: its triangles become degenerate and draw nothing.
         let collapse = |at: &Mat4| -> Mat4 { [[0.0; 4], [0.0; 4], [0.0; 4], [at[3][0], at[3][1], at[3][2], 1.0]] };
         // Attached meshes: datum local · bone world · object (bind world when the character has no animation).

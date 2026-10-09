@@ -47,6 +47,7 @@ fn main() -> Result<()> {
         "script-info" => script_info(&IsoImage::open(a(1)?)?, a(2)?, u32::from_str_radix(a(3)?, 16)?),
         "route" => { let f = |i: usize| -> Result<f32> { Ok(a(i)?.parse()?) }; route(&IsoImage::open(a(1)?)?, a(2)?, [f(3)?, f(4)?, f(5)?], [f(6)?, f(7)?, f(8)?]) }
         "covers" => covers(&IsoImage::open(a(1)?)?, a(2)?),
+        "triggers" => triggers(&IsoImage::open(a(1)?)?, a(2)?),
         "coll-probe" => coll_probe(&IsoImage::open(a(1)?)?, a(2)?),
         "coll-check" => coll_check(&IsoImage::open(a(1)?)?),
         "coll-floor" => coll_floor(&IsoImage::open(a(1)?)?, a(2)?),
@@ -394,7 +395,7 @@ fn coll_check(iso: &IsoImage) -> Result<()> {
 /// comparison with `tools/trace/ai_trace.py`. Prints state changes and shots of the drone nearest to Bond.
 fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Result<()> {
     use nf_formats::{anim::Script, drone, level::Level, levelbin::LevelBin, weapon::WeaponData};
-    use nf_game::drone::{Data, Drone, Drones, Player, Rng};
+    use nf_game::drone::{Data, Drones, Player, Rng};
     use std::collections::HashMap;
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF")?)?;
     let tables = drone::DroneAnimData::from_action_elf(&elf)?;
@@ -415,19 +416,12 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, level_id);
     let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
     let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons, nav: &nav, covers: &covers };
-    let list: Vec<(u32, Vec<(u32, u32)>)> = level.maps[m].placements.iter().map(|p| (p.flags & 0xff, p.params.clone())).collect();
-    let roles = drone::spawn_roles(&list);
     let mut rng = Rng::new(std::env::var("NF_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(0x1234_5678));
-    let mut drones = Vec::new();
-    for (p, role) in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f).zip(roles) {
-        if matches!(role, drone::SpawnRole::Reinforcement { .. }) { continue; }
-        let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
-        let floor = world.floor_below(p.translation, 3.0).unwrap_or(p.translation[1] - 1.0);
-        drones.push(Drone::new(&d, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, &mut rng));
-    }
+    let drones = nf_game::drone::level_drones(&d, &level, &mut rng);
     let mut sim = Drones::new(drones, rng);
+    sim.attach_level(&level);
     // NF_SWITCHES=22,a4: switch channels on from the start (hex).
-    for c in std::env::var("NF_SWITCHES").unwrap_or_default().split(',').filter_map(|c| u8::from_str_radix(c.trim(), 16).ok()) { sim.switches[c as usize] = true; }
+    for c in std::env::var("NF_SWITCHES").unwrap_or_default().split(',').filter_map(|c| u8::from_str_radix(c.trim(), 16).ok()) { sim.set_channel(c); }
     // NF_AIM_YAW: Bond's facing (radians; the game's obj+0x54), else −x.
     let aim = std::env::var("NF_AIM_YAW").ok().and_then(|v| v.parse::<f32>().ok()).map_or([-1.0, 0.0, 0.0], |y| [y.sin(), 0.0, y.cos()]);
     let player = Player { pos: bond, target: [bond[0], bond[1] + 0.5, bond[2]], eye: [bond[0], bond[1] + 1.0, bond[2]], aim };
@@ -946,6 +940,22 @@ fn covers(iso: &IsoImage, level_name: &str) -> Result<()> {
     for (i, c) in nf_game::cover::build(&level.maps[m].placements, &nav, &world).iter().enumerate() {
         println!("cover {i}: kind {} pos ({:.3}, {:.3}, {:.3}) yaw {:.4} flags {:#x} angle {:.3} depth {:.1} offset {:.1} on {:#x} off {:#x} path {:?} reachable {}/{}",
             c.kind, c.pos[0], c.pos[1], c.pos[2], c.yaw, c.flags, c.angle, c.depth, c.offset, c.on, c.off, c.path, c.dist.iter().filter(|&&x| x != 0xff).count(), c.dist.len());
+    }
+    Ok(())
+}
+
+/// Trigger objects of a level's main map (placements 0xE8, 0xEA–0xEF, 0xDC).
+fn triggers(iso: &IsoImage, level_name: &str) -> Result<()> {
+    use nf_formats::level::Level;
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let level = Level::parse(&data)?;
+    for t in nf_game::triggers::build(&level) {
+        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for tri in &t.tris { for v in tri { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } } }
+        println!("placement {:3}: type {:#x} out {:#04x} mask {:#x} list {:x?} lock {:#x} hide {} tris {} box [{:.2}, {:.2}, {:.2}]-[{:.2}, {:.2}, {:.2}]",
+            t.placement, t.kind, t.out, t.mask, t.list, t.lock, t.hide, t.tris.len(), lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
     }
     Ok(())
 }

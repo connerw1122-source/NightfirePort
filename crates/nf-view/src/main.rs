@@ -241,7 +241,7 @@ impl ApplicationHandler for App {
                     (KeyCode::KeyR, ElementState::Pressed) => self.opts.reinforcements = !self.opts.reinforcements,
                     (KeyCode::KeyF, ElementState::Pressed) => self.opts.firing = !self.opts.firing,
                     // Turn every switch channel on: drones waiting for one (WaitSwitch) start (triggers are not ported).
-                    (KeyCode::KeyK, ElementState::Pressed) => if let Some(sim) = self.scene.sim.as_mut() { sim.drones.switches.fill(true) },
+                    (KeyCode::KeyK, ElementState::Pressed) => if let Some(sim) = self.scene.sim.as_mut() { for c in 1..=255 { sim.drones.set_channel(c) } },
                     (_, ElementState::Pressed) => { self.keys.insert(k); }
                     (_, ElementState::Released) => { self.keys.remove(&k); }
                 }

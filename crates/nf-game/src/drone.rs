@@ -281,6 +281,13 @@ pub struct Drone {
     /// disabled drones have object flags 0x30 — not drawn — and no vision).
     pub switch_channel: u8,
     pub channel_on: bool,
+    /// Position in the main map's placement list (update order: newest first).
+    pub placement: usize,
+    /// Spawner group (placement parameter 4); present in the world (spawner templates are not until spawned); the
+    /// state machine has had its first enter.
+    pub group: u32,
+    pub present: bool,
+    pub started: bool,
     /// Drawn last frame (`obj+0xFC`, set by the renderer's cel visibility; *suggested* stand-in: within 60° of Bond's
     /// view and in line of sight from his eye), set by `Drones::tick`.
     pub drawn: bool,
@@ -335,7 +342,7 @@ impl Drone {
             shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
-            switch_channel: param(3) as u8, channel_on: false, drawn: true, enabled: true, index: 0, exiting_to: 0,
+            switch_channel: param(3) as u8, channel_on: false, placement: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0,
             cover: None, cover_side: 0, cover_type: 0, cover_leave: 0, cover_point: pos, goal: None, cover_claimed: false, has_cover: false, cover_tries: 0,
             cover_rt: Vec::new(), others: Vec::new(),
         };
@@ -1576,11 +1583,41 @@ impl Drone {
     /// `DroneFunc_ReactionTime` (ticks).
     fn reaction_time(&self, level: u32) -> u32 {
         if matches!(level, 0x0700_0002 | 0x0700_0003 | 0x0700_0005 | 0x0700_0009 | 0x0700_000a) {
-            if self.ever_seen || self.alert >= 1.0 { 0 } else { ((1.0 - self.alert) * 30.0 * 0.01 * (200.0 - self.reaction as f32)) as u32 }
+            // ((1 − alertness) × 30) × 0.01 × (200 − stat), each multiply chopped (EE FPU): 59 for these guards
+            // (nearest rounding would give 60).
+            use nf_formats::ps2float::{add_noguard, mul};
+            if self.ever_seen || self.alert >= 1.0 { 0 } else {
+                let k = mul(mul(mul(add_noguard(1.0, -self.alert, true), 30.0), 0.01), add_noguard(200.0, -(self.reaction as f32), true));
+                k as u32
+            }
         } else { 10 }
     }
 
     fn head(&self) -> V3 { [self.pos[0], self.pos[1] + 0.6, self.pos[2]] }
+}
+
+/// Stand-in for the renderer's "drawn" (`obj+0xFC`) and `Drone_PositionVisible`: within 60° of Bond's aim (or within
+/// 2 units) and any of five body points in line of sight from his eye (thin occluders hide one ray, not a cel).
+pub fn visible_to(player: &Player, world: &CollisionWorld, pos: V3, head: V3) -> bool {
+    let v = [pos[0] - player.eye[0], pos[2] - player.eye[2]];
+    let (a, l) = ([player.aim[0], player.aim[2]], (v[0] * v[0] + v[1] * v[1]).sqrt());
+    let al = (a[0] * a[0] + a[1] * a[1]).sqrt();
+    let side = [-v[1] / l.max(1e-6) * 0.5, v[0] / l.max(1e-6) * 0.5];
+    let pts = [head, pos, [pos[0] + side[0], pos[1], pos[2] + side[1]], [pos[0] - side[0], pos[1], pos[2] - side[1]], [pos[0], pos[1] - 0.8, pos[2]]];
+    l < 2.0 || (al > 1e-6 && (v[0] * a[0] + v[1] * a[1]) / (l * al) > 0.5 && pts.iter().any(|&q| world.line_of_sight(player.eye, q)))
+}
+
+/// Every drone placement of the level's main map, in placement order (`Drone_Create`); spawner templates included
+/// (`Drones::attach_level` marks them absent). Positions on the collision floor below the placement.
+pub fn level_drones(d: &Data, level: &nf_formats::level::Level, rng: &mut Rng) -> Vec<Drone> {
+    let Some(m) = level.main_map() else { return Vec::new() };
+    level.maps[m].placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0x0f).map(|(i, p)| {
+        let param = |k: u32| p.params.iter().find(|(j, _)| *j == k).map(|&(_, v)| v).unwrap_or(0);
+        let floor = d.world.floor_below(p.translation, 3.0).unwrap_or(p.translation[1] - 1.0);
+        let mut dr = Drone::new(d, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, rng);
+        dr.placement = i;
+        dr
+    }).collect()
 }
 
 /// Difficulty (`GameState+0x28`); 1 in the user's live sessions.
@@ -1605,6 +1642,9 @@ pub struct Drones {
     pub list: Vec<Drone>,
     pub frame: u32,
     los_cursor: usize,
+    /// The game's drone list (0x298E14, `LList_Add` appends): drones created at load in placement order, spawned ones
+    /// appended — the order of the line-of-sight round robin.
+    pub llist: Vec<usize>,
     pub rng: Rng,
     pub bullets: Vec<crate::bullet::Bullet>,
     pub health: crate::bullet::PlayerHealth,
@@ -1618,8 +1658,10 @@ pub struct Drones {
     /// The player as an AI target and this frame's link used-counts per path.
     pub target: PlayerTarget,
     used: Vec<Vec<u16>>,
-    /// `switch_channels` (256 bytes): set by level triggers (not ported yet) or by the caller.
-    pub switches: Vec<bool>,
+    /// `switch_channels` and the level's trigger objects (docs/systems/triggers.md).
+    pub channels: crate::triggers::Channels,
+    pub triggers: Vec<crate::triggers::Trigger>,
+    pub spawners: Vec<crate::spawners::Spawner>,
     /// Cover nodes' run-time state, `Drone_ProcessCoverNodes`' shared cursor and its frame counter.
     pub cover_rt: Vec<crate::cover::CoverRt>,
     cover_cursor: usize,
@@ -1630,15 +1672,41 @@ impl Drones {
     pub fn new(mut list: Vec<Drone>, rng: Rng) -> Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
-        Drones { list, frame: 0, los_cursor: 0, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), switches: vec![false; 256], cover_rt: Vec::new(), cover_cursor: 0, cover_counter: 0 }
+        let llist = (0..list.len()).collect();
+        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), cover_cursor: 0, cover_counter: 0 }
     }
+
+    /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
+    /// main map's drone placements), which orders the per-frame object updates.
+    pub fn attach_level(&mut self, level: &nf_formats::level::Level) {
+        self.triggers = crate::triggers::build(level);
+        let Some(m) = level.main_map() else { return };
+        for dr in &mut self.list {
+            if let Some(i) = level.maps[m].placements.iter().position(|p| p.flags & 0xff == 0x0f
+                && (p.translation[0] - dr.pos[0]).abs() < 1e-3 && (p.translation[2] - dr.pos[2]).abs() < 1e-3) { dr.placement = i; }
+        }
+        // Spawners: their group's drones become templates, absent until spawned (`DroneSpawner_Init`).
+        self.spawners.clear();
+        for (i, p) in level.maps[m].placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xf1) {
+            let param = |k: u32| p.params.iter().find(|(j, _)| *j == k).map(|&(_, v)| v).unwrap_or(0);
+            if param(0) <= 1 || param(1) == 0 { continue; }
+            let templates: Vec<usize> = self.list.iter().enumerate().filter(|(_, x)| x.group == param(1)).map(|(k, _)| k).collect();
+            if let Some(sp) = crate::spawners::Spawner::new(i, param, templates.clone(), &self.channels) {
+                for &k in &templates { self.list[k].present = false; self.list[k].enabled = false; }
+                self.llist.retain(|i| !templates.contains(i));
+                self.spawners.push(sp);
+            }
+        }
+    }
+
+    /// Turns a switch channel on (callers and tests).
+    pub fn set_channel(&mut self, c: u8) { let f = self.frame; self.channels.set(c as u32, 1, f); }
 
     /// One 60 Hz game tick: global vision (`DroneVision_ProcessDroneSight`), then each drone's control.
     pub fn tick(&mut self, d: &Data, player: &Player) {
         self.frame += 1;
         let frame = self.frame;
-        let n = self.list.len();
-        for dr in &mut self.list { dr.opponent_info(player); dr.seen = false; }
+        for dr in self.list.iter_mut().filter(|x| x.present) { dr.opponent_info(player); dr.seen = false; }
         // `Check_Target` (0x1a7810): every 6 ticks Bond's 50-unit crosshair ray marks the first drone it hits (body
         // cylinder r 0.4, feet to 1.8 up; *deviation*: the game tests the drone's bounding sphere / boxes) for 30 ticks.
         if frame % 6 == 0 {
@@ -1657,13 +1725,14 @@ impl Drones {
             dr.bunched = positions.iter().enumerate().any(|(j, p)| j != i && p.is_some_and(|p| ((p[0] - dr.pos[0]).powi(2) + (p[2] - dr.pos[2]).powi(2)) < 9.0));
         }
         // Visibility every tick for drones with vision on; line of sight for one drone per tick (round robin).
-        for dr in &mut self.list { dr.visibility = if dr.vision_on || dr.alert >= 1.0 { dr.visibility() } else { 0.0 }; if dr.visibility < 0.7 { dr.los = false; } }
-        for k in 0..n {
-            let i = (self.los_cursor + 1 + k) % n.max(1);
-            let dr = &mut self.list[i];
+        for dr in &mut self.list { dr.visibility = if dr.present && (dr.vision_on || dr.alert >= 1.0) { dr.visibility() } else { 0.0 }; if dr.visibility < 0.7 { dr.los = false; } }
+        let ln = self.llist.len();
+        for k in 0..ln {
+            let slot = (self.los_cursor + 1 + k) % ln.max(1);
+            let dr = &mut self.list[self.llist[slot]];
             if dr.visibility >= 0.7 {
                 dr.los = d.world.line_of_sight(dr.head(), player.target);
-                self.los_cursor = i;
+                self.los_cursor = slot;
                 break;
             }
         }
@@ -1737,29 +1806,48 @@ impl Drones {
             for _ in 0..d.covers.len() {
                 let i = self.cover_cursor;
                 self.cover_cursor = (self.cover_cursor + 1) % d.covers.len();
-                if d.covers[i].usable(&mut self.cover_rt[i], d.world, &self.switches, d.level, player.pos, player.eye) { break; }
+                if d.covers[i].usable(&mut self.cover_rt[i], d.world, &self.channels, d.level, player.pos, player.eye) { break; }
             }
         }
         let positions: Vec<Option<V3>> = self.list.iter().map(|x| x.enabled.then_some(x.pos)).collect();
+        // `Trigger_Calc`, then every object in the control list (newest first = reverse placement order): triggers and
+        // drones interleaved, so a channel a trigger pulses is seen only by the objects updated after it.
+        let touchers: Vec<crate::triggers::Toucher> = std::iter::once(crate::triggers::Toucher::player([player.pos[0], player.pos[1] - 0.4, player.pos[2]]))
+            .chain(self.list.iter().filter(|x| x.enabled).map(|x| crate::triggers::Toucher { a: [x.pos[0], x.pos[1] - 1.0, x.pos[2]], b: x.head(), r: 0.4, drone: true, skin: x.skin }))
+            .collect();
+        crate::triggers::calc(d.level, &mut self.triggers, &mut self.channels, &touchers, frame);
+        let mut order: Vec<(usize, u8, usize)> = self.list.iter().enumerate().filter(|(_, x)| x.present).map(|(i, x)| (x.placement, 0, i))
+            .chain(self.triggers.iter().enumerate().filter(|(_, t)| t.kind != crate::triggers::kind::TOUCH).map(|(j, t)| (t.placement, 1, j)))
+            .chain(self.spawners.iter().enumerate().map(|(j, sp)| (sp.placement, 2, j)))
+            .collect();
+        order.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         // Per drone: timers, alertness decay, update message, turning, aim, firing, animation.
-        let rng = &mut self.rng;
-        for (index, dr) in self.list.iter_mut().enumerate() {
+        for &(_, what, index) in &order {
+            if what == 1 { self.triggers[index].update(&mut self.channels, &touchers, frame); continue; }
+            if what == 2 {
+                let list = &self.list;
+                let rng = &mut self.rng;
+                let action = self.spawners[index].update(&mut self.channels, frame, |i| list[i].present,
+                    |i, min| { let q = list[i].pos; let dd = ((q[0] - player.pos[0]).powi(2) + (q[2] - player.pos[2]).powi(2)).sqrt();
+                        dd >= min && !visible_to(player, d.world, q, [q[0], q[1] + 0.6, q[2]]) },
+                    &mut |n| rng.rand(n));
+                match action {
+                    crate::spawners::Action::Spawn(i) => { let dr = &mut self.list[i]; dr.present = true; dr.enabled = true; dr.started = false; self.llist.push(i); }
+                    crate::spawners::Action::Remove(v) => for i in v { self.list[i].present = false; self.list[i].enabled = false; self.llist.retain(|&k| k != i); },
+                    crate::spawners::Action::None => {}
+                }
+                continue;
+            }
+            let rng = &mut self.rng;
+            let dr = &mut self.list[index];
+            if !dr.present { continue; }
             if dr.target.stamp != self.target.stamp { dr.target = self.target.clone(); }
-            dr.channel_on = self.switches.get(dr.switch_channel as usize).copied().unwrap_or(false);
-            dr.drawn = dr.enabled && {
-                let v = [dr.pos[0] - player.eye[0], dr.pos[2] - player.eye[2]];
-                let (a, l) = ([player.aim[0], player.aim[2]], (v[0] * v[0] + v[1] * v[1]).sqrt());
-                let al = (a[0] * a[0] + a[1] * a[1]).sqrt();
-                // Any of five body points in sight (thin occluders such as poles hide one ray, not the cel).
-                let side = [-v[1] / l.max(1e-6) * 0.5, v[0] / l.max(1e-6) * 0.5];
-                let pts = [dr.head(), dr.pos, [dr.pos[0] + side[0], dr.pos[1], dr.pos[2] + side[1]],
-                    [dr.pos[0] - side[0], dr.pos[1], dr.pos[2] - side[1]], [dr.pos[0], dr.pos[1] - 0.8, dr.pos[2]]];
-                l < 2.0 || (al > 1e-6 && (v[0] * a[0] + v[1] * a[1]) / (l * al) > 0.5 && pts.iter().any(|&q| d.world.line_of_sight(player.eye, q)))
-            };
+            dr.channel_on = self.channels.on(dr.switch_channel as u32);
+            dr.drawn = dr.enabled && visible_to(player, d.world, dr.pos, dr.head());
             dr.links_used = std::mem::take(&mut self.used);
             dr.cover_rt = std::mem::take(&mut self.cover_rt);
             dr.others = positions.clone();
-            if frame == 1 { dr.send(d, rng, frame, msg::ENTER); dr.entered = frame; dr.log.push((frame, dr.state)); }
+            if !dr.started { dr.started = true; dr.send(d, rng, frame, msg::ENTER); dr.entered = frame; dr.log.push((frame, dr.state)); }
             if let Some(t) = dr.timer_c { if frame >= t { dr.timer_c = None; dr.send(d, rng, frame, msg::TIMER_C); } }
             if let Some(t) = dr.idle_timeout { if frame >= t { dr.idle_timeout = None; dr.send(d, rng, frame, msg::IDLE_TIMEOUT); } }
             if let Some((t, m)) = dr.delayed { if frame >= t { dr.delayed = None; dr.send(d, rng, frame, m); } }
