@@ -38,6 +38,19 @@ set 0's entry when the set's is 0; 0x06000000 (both 0) means no animation (`Dron
    danim 0x7D / 0x32; otherwise **0x11A = 282**, `DroneAnimStates[0x24]`'s own danim: anim state 0x24, stand idle.
    `DroneAnim_SetStandIdleAnim` (0x13ca68) later picks states 0x25–0x27 at random for some modes.
 
+## Weapon
+
+`NDrone2_DefaultInit` stores the weapon (parameter 9; 1 when 0, 0 for skin 0x0500001E) in `anim+0x62`; what is drawn
+from it: docs/formats/weapon-data.md (`drone::weapon_id`).
+
+## Live check (PCSX2, 07000005, WORKLOG 0017)
+
+13 drones in the list at 0x298e14 (16 placements; the two at the gate z 44.86 and one at (50.85, 28.27, 93.63) were
+gone — all have parameter 2 = 1 ≤ `GameState+0x28` = 1, so not the creation filter; U-029). Types 2, sets 5 / 0x13,
+weapons 0x16 / 0x24 as predicted; the 9 drones not yet updated were on danim 0x11A, script `0600025c`; one at
+placement y 37.085 sat at 37.003 with `Drone+0xA0` = 1.0, i.e. 1.0 above a floor at 36.0005 (feet sphere on the
+floor). Updated drones had `Drone+0xA0` = hip − 0.02 exactly.
+
 ## On the disc (`nf-extract drones`, golden `drones.tsv`)
 
 555 drones in 21 levels; 550 get a script that exists in their level and whose sequence is in the 07F archive; the 5

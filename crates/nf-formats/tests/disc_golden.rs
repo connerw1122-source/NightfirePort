@@ -130,6 +130,23 @@ fn drone_start_animations_match_the_golden_digest() {
     assert_eq!((sum(1), sum(2), sum(3)), (555, 550, 550));
 }
 
+/// `weapon_data` built by running ACTION.ELF's static initialiser in `ee::Machine`. Cross-check (WORKLOG 0017): equal
+/// to PCSX2's live copy in 30,819 of 30,820 bytes; the other is record 1 +0xDC, a skin hashcode the game writes later.
+#[test]
+fn weapon_data_matches_the_golden_digest() {
+    let Some(iso) = iso() else { eprintln!("skip: NF_ISO not set"); return };
+    let elf = iso.read_file(iso.find("/ACTION.ELF").unwrap()).unwrap();
+    let wd = nf_formats::weapon::WeaponData::from_action_elf(&elf).unwrap();
+    let armed = (0..wd.records.len()).filter(|&w| wd.third_person(w as u8).is_some()).count();
+    let actual = format!("records\tsha1\tthird_person\n{}\t{}\t{armed}\n", wd.records.len(), nf_formats::sha1::hex(&nf_formats::sha1::sha1(&wd.bytes())));
+    let golden = "records\tsha1\tthird_person\n115\t2fd48d6d24bbc4f63b8337ded7bd4116d4e3df40\t80\n";
+    let d = diff_tsv(golden, &actual);
+    assert!(d.is_empty(), "{}", d.join("\n"));
+    assert_eq!(diff_tsv(golden, &tamper(&actual)).len(), 1, "sister: a one-character change must be caught");
+    assert_eq!(wd.third_person(0x16), Some((0x0200_0b44, 8)));
+    assert_eq!(wd.third_person(0x24), Some((0x0200_08ac, 16)));
+}
+
 /// Facts about the BIGF headers recorded in docs/formats/bigf.md: the header-size field is the entry-table end
 /// (`.VIV`) or the table end + 8 (`.MUS`/`.SPE`, an `L225` trailer); the LE size field equals the file size except
 /// in MISC.VIV (UNKNOWNS U-004).

@@ -371,3 +371,38 @@ Renders: guards stand on the floor at the 07000005 gate in a weapon-ready idle.
 - I first told the user 605 drones in 22 levels (adding by hand); the digest says 555 in 21.
 - My first `drones` listing treated parameter 1 = 0x06000892 as a script; it only switches the anim set.
 - A floor probe camera inside the gate door rendered a wall; moved.
+
+## 0017 — Live checks in PCSX2, bit-exact posing, held weapons (2026-10-08)
+
+The user asked me to start the game myself and to check the animations. I launched PCSX2 with the resume save state
+(first attempt failed: I passed the ISO with forward slashes from Git Bash — "does not exist" dialog; relaunched with
+Windows paths from PowerShell). The user then loaded 07000005.
+
+**Live drone state** (PINE): types / sets / weapons / start script / `Drone+0xA0` and heights as predicted in 0016
+(docs/systems/drone-animation.md "Live check"); 3 of 16 drones absent (U-029). U-028 answered.
+
+**Consistent snapshots**: `tools/trace/snapshot.py` makes PCSX2 save a state to slot 9 over PINE (opcode 9) and
+extracts `eeMemory.bin`; PINE word reads take several frames for a 45-bone palette. `nf-extract pose-check` compares
+each playing drone's local pose buffer and world palette with ours.
+
+**Animation arithmetic**: first comparison 1e-4 … 2.4e-3 off, growing with frame number. Round-toward-zero in the
+game's order made every channel bit-exact; w stayed 1 ulp off in 30/34 bones; testing 16 variants against the
+snapshot found the no-guard-bit FPU add + nearest sqrt: **714/714 components bit-identical** in three drones
+(docs/formats/animation.md "Arithmetic"). World matrices: ≤ 4.6e-5 (composition order; G-024); one moving drone off by
+a uniform 5.8e-4 (palette built at draw time before it moved).
+
+**Weapons**: `weapon_data` is zero on the disc and built by a 25 KB static initialiser → small R5900 interpreter
+(`ee.rs`) runs it over the user's ELF in 2 ms; equal to the live table in 30,819 / 30,820 bytes (the other is a skin
+hash the game writes). Third-person model `+0x80` hangs on datum id `+0x50`. The guard skins have no such datums on
+disc: `AnimPostLoadInit` gives every skin on skeletons 0/1 the datums of skin 0x05000007 (confirmed in the snapshot:
+shared 60-datum list; 0x0500002F 64). Skin datums now parsed (all 1,217 end exactly at the entry end). nf-view: all 16
+guards hold their weapon (Sg5 Commando / white L96A1), shouldered in the idle pose.
+
+55 unit + 13 opt-in tests.
+
+**Failed / corrected**
+- Python edits of the decomp search left a bare `python -` in a command: it started an interactive REPL that filled a
+  64 MB log until stopped (deleted).
+- My first probe read only the first script of a drone (a dormant one, time 1.0) and suggested drones were frozen;
+  walking the script chain found the playing one.
+- `datums` first returned nothing for the guard skins — the sharing in `AnimPostLoadInit` was the missing step.

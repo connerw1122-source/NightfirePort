@@ -67,11 +67,20 @@ pub struct StartAnim {
     pub sequences: Vec<(u16, u16, usize)>,
 }
 
-/// What the drone setup needs besides the level: ACTION.ELF's tables, the level's scripts, and the level id.
+/// What the drone setup needs besides the level: ACTION.ELF's tables, the level's scripts, the level id, and
+/// `weapon_data` (built by running its static initialiser).
 pub struct DroneContext {
     pub tables: DroneAnimData,
     pub scripts: HashMap<u32, Script>,
     pub level_id: u32,
+    pub weapons: Option<nf_formats::weapon::WeaponData>,
+}
+
+/// A rigid mesh hung on a character's datum (`AnimObjectDraw`): world = `QuatTransToMat(q, t)` · bone world.
+pub struct Attachment {
+    pub character: u32,
+    pub bone: usize,
+    pub local: Mat4,
 }
 
 /// Bind-pose data of one character vertex (same order as the Character-layer vertices).
@@ -81,6 +90,8 @@ pub struct CharVertex {
     pub pos: [f32; 3],
     pub weight: f32,
     pub slots: [u16; 2],
+    /// Rigid vertex of an attached mesh (index into `Scene::attachments`) instead of a skinned one.
+    pub attachment: Option<u32>,
 }
 
 pub struct Scene {
@@ -98,11 +109,13 @@ pub struct Scene {
     pub char_verts: Vec<CharVertex>,
     /// Sequences of the level's animation archive (`07F000NN.bin`), by skeleton id.
     pub sequences: HashMap<u8, Vec<Sequence>>,
+    /// Weapons and props hung on character datums; their vertices are Character-layer vertices with `attachment`.
+    pub attachments: Vec<Attachment>,
 }
 
 type Groups = BTreeMap<(Layer, Option<(usize, u32)>), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>)>;
 
-fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<u32>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>) {
+fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>) {
     let obj = &level.maps[inst.map].objects[inst.object];
     let mut m = inst.matrix;
     if layer == Layer::SkyCamera { m[3] = [0.0, 0.0, 0.0, 1.0]; }
@@ -120,7 +133,7 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
             }
             let uv = if v.uv.iter().all(|c| c.is_finite()) { v.uv } else { [0.0, 0.0] };
             vs.push(Vertex { pos: p, uv, rgba: v.rgba });
-            if let Some(c) = character { cv.push(CharVertex { character: c, pos: v.pos, weight: v.weight, slots: v.slots }); }
+            if let Some((c, attachment)) = character { cv.push(CharVertex { character: c, pos: v.pos, weight: v.weight, slots: v.slots, attachment }); }
         }
         for t in b.triangles() { is.extend(t.map(|k| base + k as u32)); }
     }
@@ -178,6 +191,7 @@ impl Scene {
             add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds));
         }
         let mut characters = Vec::new();
+        let (mut attachments, mut armed, mut weapons_missing) = (Vec::new(), std::collections::HashSet::new(), 0);
         for inst in &char_instances {
             let obj = &level.maps[inst.map].objects[inst.object];
             let skin_hash = inst.placement.params.iter().find(|(i, _)| *i == 0).map(|&(_, v)| v).unwrap_or(0);
@@ -187,7 +201,7 @@ impl Scene {
                 add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds));
                 continue;
             }
-            add_instance(level, inst, Layer::Character, Some(characters.len() as u32), &mut groups, Some(&mut bounds));
+            add_instance(level, inst, Layer::Character, Some((characters.len() as u32, None)), &mut groups, Some(&mut bounds));
             let start = drones.and_then(|d| {
                 let param = |k: u32| inst.placement.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
                 let hash = drone::start_script(&d.tables, param, d.level_id).script()?;
@@ -197,6 +211,21 @@ impl Scene {
                 Some(StartAnim { script, sequences })
             });
             characters.push(Character { matrix: inst.matrix, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: obj.gfx.slot_bones.clone(), start, floor: None });
+            // The held weapon (`AnimObjectDraw`): weapon_data[w] +0x80 mesh on the datum whose id is +0x50 (0xFF → 0),
+            // once per drone (a skin may have several main meshes).
+            let key = (inst.placement.translation.map(f32::to_bits), skin_hash);
+            if !armed.insert(key) { continue; }
+            let Some(wd) = drones.and_then(|d| d.weapons.as_ref()) else { continue };
+            let param9 = inst.placement.params.iter().find(|(i, _)| *i == 9).map(|&(_, v)| v).unwrap_or(0);
+            let weapon = drone::weapon_id(skin_hash, param9);
+            let Some((mesh, datum_id)) = (weapon < 0x73).then(|| wd.third_person(weapon as u8)).flatten() else { continue };
+            let datum_id = if datum_id == 0xff { 0 } else { datum_id as u32 };
+            let Some(dt) = skin.datums.iter().find(|d| d.id == datum_id && d.bone >= 0) else { weapons_missing += 1; continue };
+            let Some(&(map, object)) = level.by_hash.get(&mesh) else { weapons_missing += 1; continue };
+            let winst = Instance { map, object, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: inst.placement.clone() };
+            let character = characters.len() as u32 - 1;
+            add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None);
+            attachments.push(Attachment { character, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t) });
         }
         for (inst, follows_camera) in &sky {
             add_instance(level, inst, if *follows_camera { Layer::SkyCamera } else { Layer::SkyFixed }, None, &mut groups, None);
@@ -231,8 +260,8 @@ impl Scene {
             }
         }
         let started = characters.iter().filter(|c| c.start.as_ref().is_some_and(|s| !s.sequences.is_empty())).count();
-        let stats = format!("{stats}; {started}/{} characters with their start animation", characters.len());
-        Scene { vertices, indices, materials, textures, bounds, start, stats, characters, char_vertex_start, char_verts, sequences }
+        let stats = format!("{stats}; {started}/{} characters with their start animation; {} weapons held ({weapons_missing} without mesh or datum)", characters.len(), attachments.len());
+        Scene { vertices, indices, materials, textures, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the
@@ -267,26 +296,39 @@ impl Scene {
     /// (horizontal root motion is dropped) and stand on the World floor below them; without one found they keep the
     /// pre-collision height (placement + 0xA0 − 1.0).
     pub fn animate(&self, choice: Option<usize>, ticks: f32) -> Vec<[f32; 3]> {
-        let mut cache: HashMap<(u32, usize, u32), (Vec<Mat4>, f32)> = HashMap::new();
-        let posed: Vec<Option<(Vec<Mat4>, Mat4)>> = self.characters.iter().map(|c| {
+        let mut cache: HashMap<(u32, usize, u32), (Vec<Mat4>, Vec<Mat4>, f32)> = HashMap::new();
+        let posed: Vec<Option<(Vec<Mat4>, Vec<Mat4>, Mat4)>> = self.characters.iter().map(|c| {
             let (i, frame) = self.frame_of(c, choice, ticks)?;
             let seq = &self.sequences[&c.skin.skeleton][i];
-            let (mats, hip) = cache.entry((c.skin.hashcode, i, frame)).or_insert_with(|| {
+            let (mats, world, hip) = cache.entry((c.skin.hashcode, i, frame)).or_insert_with(|| {
                 let mut local = anim::local_pose(seq, &c.skeleton, &c.skin, frame);
                 let hip = local[0].0[1];
                 local[0].0 = [0.0; 3];
                 let world = anim::world_pose(&local, &c.skin);
-                (anim::skin_matrices(&world, &c.skin), hip)
+                (anim::skin_matrices(&world, &c.skin), world, hip)
             }).clone();
             let mut m = c.matrix;
             let a0 = drone_height(hip);
             m[3][1] = match c.floor { Some(f) => f + a0, None => c.matrix[3][1] + a0 - 1.0 };
-            Some((mats, m))
+            Some((mats, world, m))
+        }).collect();
+        // Attached meshes: datum local · bone world · object (bind world when the character has no animation).
+        let attach: Vec<Mat4> = self.attachments.iter().map(|a| {
+            let c = &self.characters[a.character as usize];
+            match &posed[a.character as usize] {
+                Some((_, world, m)) => anim::mul(&anim::mul(&a.local, &world[a.bone]), m),
+                None => {
+                    let ib = c.skin.inverse_bind.get(a.bone).map(|b| b.0).unwrap_or([0.0; 3]);
+                    let bind = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], ib.map(|v| -v));
+                    anim::mul(&anim::mul(&a.local, &bind), &c.matrix)
+                }
+            }
         }).collect();
         self.char_verts.iter().map(|v| {
+            if let Some(a) = v.attachment { return transform(&attach[a as usize], v.pos); }
             let c = &self.characters[v.character as usize];
             match &posed[v.character as usize] {
-                Some((mats, m)) => transform(m, anim::skin_vertex(v.pos, v.weight, v.slots, &c.slot_bones, mats)),
+                Some((mats, _, m)) => transform(m, anim::skin_vertex(v.pos, v.weight, v.slots, &c.slot_bones, mats)),
                 None => transform(&c.matrix, v.pos),
             }
         }).collect()

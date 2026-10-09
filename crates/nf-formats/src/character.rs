@@ -42,7 +42,14 @@ pub struct Skin {
     pub extra: Vec<(u8, Option<u32>)>,
     /// Per bone (only when there are skinned meshes): inverse-bind translation and quaternion.
     pub inverse_bind: Vec<([f32; 3], [f32; 4])>,
+    /// Attachment points (`AnimDatum*`): weapons and props hang here.
+    pub datums: Vec<Datum>,
 }
+
+/// 36 bytes: `u32 id, i32 bone (−1 = none), f32 t[3], f32 q[4]` (`AnimObjectDraw` 0x1c4490 builds
+/// `QuatTransToMat(q, t)` and concatenates the bone's world matrix).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Datum { pub id: u32, pub bone: i32, pub t: [f32; 3], pub q: [f32; 4] }
 
 impl Skin {
     /// A main entry whose hashcode byte 2 has bit 0x10 is replaced at load by `AnimSleeveGetEntity(0)`.
@@ -79,8 +86,14 @@ pub fn parse_skin(data: &[u8], bone_count: impl Fn(u8) -> Option<u8>) -> Result<
             let f = |k: usize| b.f32(o + 4 * k);
             inverse_bind.push(([f(0)?, f(1)?, f(2)?], [f(3)?, f(4)?, f(5)?, f(6)?]));
         }
+        p += 0x1c * nb as usize;
     }
-    Ok(Skin { hashcode: b.u32(0)?, scale: [b.f32(4)?, b.f32(8)?, b.f32(12)?], skeleton, bones, main, extra, inverse_bind })
+    let datums = (0..b.u8(0x13)? as usize).map(|k| {
+        let o = p + 36 * k;
+        let f = |i: usize| b.f32(o + 8 + 4 * i);
+        Ok(Datum { id: b.u32(o)?, bone: b.u32(o + 4)? as i32, t: [f(0)?, f(1)?, f(2)?], q: [f(3)?, f(4)?, f(5)?, f(6)?] })
+    }).collect::<Result<_>>()?;
+    Ok(Skin { hashcode: b.u32(0)?, scale: [b.f32(4)?, b.f32(8)?, b.f32(12)?], skeleton, bones, main, extra, inverse_bind, datums })
 }
 
 #[cfg(test)]

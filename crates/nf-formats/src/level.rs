@@ -52,6 +52,21 @@ pub struct Level {
     pub by_hash: HashMap<u32, (usize, usize)>,
 }
 
+/// `AnimPostLoadInit` (ACTION.ELF 0x1be1a8): when skin 0x05000007 is loaded, every skin on skeleton 0 or 1 takes its
+/// datums instead of its own, except 0x0500002F, which gets 0x05000007's followed by its own. Measured live in
+/// 07000005: 0x0500002E and 0x05000030 point at 0x05000007's 60 datums; 0x0500002F has 64 (60 + its 4).
+pub fn share_datums(skins: &mut HashMap<u32, crate::character::Skin>) {
+    let Some(common) = skins.get(&0x0500_0007).map(|s| s.datums.clone()) else { return };
+    for (&hash, skin) in skins.iter_mut() {
+        if skin.skeleton >= 2 { continue; }
+        skin.datums = if hash == 0x0500_002f {
+            common.iter().cloned().chain(skin.datums.iter().cloned()).collect()
+        } else {
+            common.clone()
+        };
+    }
+}
+
 impl Level {
     pub fn parse(archive: &[u8]) -> Result<Level> {
         let lb = LevelBin::parse(archive)?;
@@ -88,9 +103,10 @@ impl Level {
         let skeletons: HashMap<u8, u8> = lb.entries.iter().filter(|e| e.kind == 6)
             .map(|e| crate::character::parse_skeleton(lb.data(archive, e)).map(|s| (s.id as u8, s.bones)))
             .collect::<Result<_>>()?;
-        let skins = lb.entries.iter().filter(|e| e.kind == 3)
+        let mut skins = lb.entries.iter().filter(|e| e.kind == 3)
             .map(|e| crate::character::parse_skin(lb.data(archive, e), |id| skeletons.get(&id).copied()).map(|s| (s.hashcode, s)))
             .collect::<Result<_>>()?;
+        share_datums(&mut skins);
         Ok(Level { maps, skins, by_hash })
     }
 

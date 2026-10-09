@@ -89,6 +89,11 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
         scripts: lb.entries.iter().filter(|e| e.kind == 5)
             .filter_map(|e| nf_formats::anim::Script::parse(lb.data(&data, e)).ok()).map(|s| (s.hashcode, s)).collect(),
         level_id: u32::from_str_radix(&archive[..8], 16).unwrap_or(0),
+        // weapon_data is built at boot by its static initialiser; run it over the user's ELF (docs/formats/weapon-data.md).
+        weapons: match nf_formats::weapon::WeaponData::from_action_elf(&elf) {
+            Ok(w) => Some(w),
+            Err(e) => { eprintln!("weapon_data: {e} — drones drawn unarmed"); None }
+        },
     };
     let scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));
     eprintln!("{archive} (+ {anim_name}): {}", scene.stats);

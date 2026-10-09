@@ -9,6 +9,10 @@ use crate::character::{Skeleton, Skin};
 
 pub type Mat4 = [[f32; 4]; 4];
 
+/// Float evaluation: the game's order with round-toward-zero (EE FPU / VU0 as PCSX2 runs them), or IEEE nearest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arith { Ps2, Nearest }
+
 /// One polynomial segment: valid for integer `t = frame − 1` up to and including `end` (cumulative frame count).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Segment { pub end: u32, pub c: [f32; 6] }
@@ -57,16 +61,32 @@ impl Sequence {
     }
 
     /// Channel value at integer frame `frame` (1-based), as `AnimFrameCopy`: the first segment whose cumulative end
-    /// reaches `t = frame − 1`, evaluated at absolute `t`.
-    pub fn value(&self, channel: usize, frame: u32) -> f32 {
+    /// reaches `t = frame − 1`, evaluated at absolute `t` in the game's order and rounding (`Arith::Ps2`).
+    pub fn value(&self, channel: usize, frame: u32) -> f32 { self.value_with(channel, frame, Arith::Ps2) }
+
+    pub fn value_with(&self, channel: usize, frame: u32, arith: Arith) -> f32 {
         let t = frame.saturating_sub(1);
         let segs = &self.channels[channel];
         let s = segs.iter().find(|s| t <= s.end).unwrap_or(segs.last().unwrap());
         let tf = t as f32;
-        let mut p = 1.0f32;
-        let mut v = 0.0f32;
-        for c in s.c { v += c * p; p *= tf; }
-        v
+        match arith {
+            Arith::Nearest => {
+                let mut p = 1.0f32;
+                let mut v = 0.0f32;
+                for c in s.c { v += c * p; p *= tf; }
+                v
+            }
+            Arith::Ps2 => {
+                // FPU: t, t², …, t⁵ by repeated multiplication (DAT_0031aa04…14); VU0: ACC = c0·1, ACC += ck·tᵏ.
+                use crate::ps2float::{add, mul};
+                let mut pw = [1.0f32; 6];
+                pw[1] = tf;
+                for k in 2..6 { pw[k] = mul(pw[k - 1], tf); }
+                let mut acc = mul(s.c[0], 1.0);
+                for k in 1..6 { acc = add(acc, mul(s.c[k], pw[k])); }
+                acc
+            }
+        }
     }
 }
 
@@ -142,22 +162,36 @@ pub fn transform(m: &Mat4, v: [f32; 3]) -> [f32; 3] {
 /// is set; × skin scale) then qx, qy, qz with w rebuilt from the qz ≥ 2 sign trick. Bones without translation
 /// channels use the skeleton offset × skin scale.
 pub fn local_pose(seq: &Sequence, skel: &Skeleton, skin: &Skin, frame: u32) -> Vec<([f32; 3], [f32; 4])> {
+    local_pose_with(seq, skel, skin, frame, Arith::Ps2)
+}
+
+pub fn local_pose_with(seq: &Sequence, skel: &Skeleton, skin: &Skin, frame: u32, arith: Arith) -> Vec<([f32; 3], [f32; 4])> {
+    use crate::ps2float as pf;
+    // Measured against PCSX2 snapshots (WORKLOG 0017): VU0 squares round toward zero; the FPU sums add without guard
+    // bits and round toward zero; the square root rounds to nearest. With this every component of 102 bone poses in
+    // three drones is bit-identical to the game's.
+    let (mul, add, sub, sqrt): (fn(f32, f32) -> f32, fn(f32, f32) -> f32, fn(f32, f32) -> f32, fn(f32) -> f32) = match arith {
+        Arith::Ps2 => (pf::mul, |a, b| pf::add_noguard(a, b, true), |a, b| pf::add_noguard(a, -b, true), f32::sqrt),
+        Arith::Nearest => (|a, b| a * b, |a, b| a + b, |a, b| a - b, f32::sqrt),
+    };
     let mut ch = 0;
     let mut out = Vec::with_capacity(skel.bones as usize);
     for bone in 0..skel.bones as usize {
         let t = if skel.has_translation(bone) {
-            let t = [0, 1, 2].map(|k| seq.value(ch + k, frame) * skin.scale[k]);
+            let t = [0, 1, 2].map(|k| mul(seq.value_with(ch + k, frame, arith), skin.scale[k]));
             ch += 3;
             t
         } else {
-            [0, 1, 2].map(|k| skel.offsets[bone][k] * skin.scale[k])
+            [0, 1, 2].map(|k| mul(skel.offsets[bone][k], skin.scale[k]))
         };
-        let (x, y, mut z) = (seq.value(ch, frame), seq.value(ch + 1, frame), seq.value(ch + 2, frame));
+        let v = |k: usize| seq.value_with(ch + k, frame, arith);
+        let (x, y, mut z) = (v(0), v(1), v(2));
         ch += 3;
         let negative = z >= 2.0;
-        if negative { z -= 4.0; }
-        let ww = 1.0 - (x * x + y * y + z * z);
-        let w = if ww > 0.0 { if negative { -ww.sqrt() } else { ww.sqrt() } } else { 0.0 };
+        if negative { z = sub(z, 4.0); }
+        // AnimFrameCopy: VU squares, then FPU (x² + y²) + z², 1 − sum, sqrt.
+        let ww = sub(1.0, add(add(mul(x, x), mul(y, y)), mul(z, z)));
+        let w = if ww > 0.0 { if negative { -sqrt(ww) } else { sqrt(ww) } } else { 0.0 };
         out.push((t, [x, y, z, w]));
     }
     out

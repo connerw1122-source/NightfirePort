@@ -25,8 +25,13 @@ size = 0x10 + 12·bones, padded to 32   (measured: holds for the files checked; 
 rigid parts: u8 bone[n_parts], align 4, u32 hash[n_parts]
 skinned meshes: align 4, u32 hash[n_skinned] (byte 2 bit 0x10 = sleeve)
 inverse bind (if n_skinned): per bone f32 t[3], f32 q[4]   (0x1C bytes, as AnimProcessSkinData steps)
-datums: n_datums × 36 bytes
+datums: n_datums × 36 bytes: u32 id, i32 bone (−1 none), f32 t[3], f32 q[4]
 ```
+
+Datums (*measured* on all 1,217 skins: 4,571 datums, bones in range, unit quaternions, and they end exactly at the
+entry's padded end). `AnimPostLoadInit` (0x1be1a8) then replaces the datums of every skin on skeleton 0 or 1 by those
+of skin 0x05000007 (60 datums: hands, weapons slots 0–100); 0x0500002F gets 0x05000007's followed by its own 4
+(confirmed in a PCSX2 snapshot of 07000005). Weapons hang on these: docs/formats/weapon-data.md.
 
 ## Sequence (type 4, prefix 04; 18,244 + 8 empty 32-byte entries; in the 07F…/078… animation archives)
 
@@ -55,6 +60,23 @@ qz < 2, else qz −= 4 and w = −√(…) (*measured*).
   used slot is inside it, all 582 objects). `p' = w·(p·S[slot0]) + (1−w)·(p·S[slot1])` (Raikaru).
 - Playback: frames advance by speed × `FRAME_RATE_MUL` per update (60 Hz → 1 frame per update); `AnimFrameSet` blends
   frame f and f+1 (Raikaru, matches `AnimFrameCopy` evaluating integer frames).
+
+## Arithmetic (bit-exact against the game)
+
+Compared with a PCSX2 snapshot of 07000005 (`tools/trace/snapshot.py` + `nf-extract pose-check`, WORKLOG 0017): three
+drones, three sequences, frames 70 / 85 / 437, 102 animated bones. Evaluating the channels with IEEE round-to-nearest
+in Horner order missed by up to 2.4e-3 (frame 437: t⁵ ≈ 1.6e13). The game's arithmetic, now in
+`anim::local_pose` (`Arith::Ps2`), reproduces **every component bit for bit (714 / 714)**:
+
+- channel: FPU powers t, t² = t·t, …, t⁵ (each rounded toward zero), VU0 `ACC = c0·1; ACC += ck·tᵏ` (k = 1…5, each
+  product and sum rounded toward zero);
+- w: VU0 squares (toward zero), FPU sums `(x² + y²) + z²` and `1 − sum` without guard bits (the operand with the
+  smaller exponent loses the bits beyond one shifted position; then toward zero), square root to nearest. With plain
+  toward-zero sums w matched 15–24 of 34 bones (2–4 with a toward-zero root); with the no-guard rule (PCSX2's
+  `FPU_ADD_SUB`, rule only) all 34 in each drone.
+
+World matrices (ours: matrix products; game: VU0 quaternion products then `Quat_QuatToMat`) agree to 4.6e-5 at world
+coordinates near 100 (1–6 ulps, growing along chains) — G-024.
 
 ## Script (type 5, prefix 06; 18,231, all in level archives)
 

@@ -42,8 +42,11 @@ fn main() -> Result<()> {
         "level-export" => level_export(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?), args.get(4).is_some_and(|x| x == "all")),
         "seq-digest" => { print!("{}", disc::sequence_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "skins" => skins(&IsoImage::open(a(1)?)?),
+        "datums" => datums(&IsoImage::open(a(1)?)?, a(2)?),
         "seq-roots" => seq_roots(&IsoImage::open(a(1)?)?, a(2)?),
         "scripts" => scripts(&IsoImage::open(a(1)?)?),
+        "pose-check" => pose_check(&IsoImage::open(a(1)?)?, a(2)?, a(3)?),
+        "weapons" => weapons(&IsoImage::open(a(1)?)?, args.get(2).map(String::as_str)),
         "script-digest" => { print!("{}", disc::script_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "drone-digest" => { print!("{}", disc::drone_start_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "drones" => drones(&IsoImage::open(a(1)?)?, a(2)?),
@@ -196,6 +199,146 @@ fn level_export(iso: &IsoImage, archive: &str, out: &Path, all: bool) -> Result<
 
 /// Measurement (WORKLOG 0013): every skin (type 3) parsed with its archive's skeletons; how its mesh hashcodes resolve;
 /// which placements carry a skin hashcode in parameter 0 and what their objects are called.
+/// Compares our posing with the game's, from an EE RAM snapshot (`tools/trace/snapshot.py`): for each drone in the
+/// list at 0x298e14 that plays exactly one sequence, the game's local pose buffer (`sAnimObject+0x3C`: translations
+/// then quaternions per bone) and world palette (`sAnimObject+0x48`, 0x40 per bone) against `anim::local_pose` (root
+/// translation zeroed, as `AnimSeqTick`) and `world_pose` under the game's object matrix (`obj+0x90`).
+fn pose_check(iso: &IsoImage, level_name: &str, snapshot: &str) -> Result<()> {
+    use nf_formats::{anim::{self, Sequence}, character, level::Level, levelbin::LevelBin};
+    use std::collections::HashMap;
+    let ram = std::fs::read(snapshot)?;
+    let u32_at = |a: u32| -> u32 { let o = (a & 0x01ff_ffff) as usize; u32::from_le_bytes(ram[o..o + 4].try_into().unwrap()) };
+    let f32_at = |a: u32| f32::from_bits(u32_at(a));
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let read = |name: &str| -> Result<Vec<u8>> {
+        let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)).with_context(|| format!("no {name}"))?;
+        Ok(iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?)
+    };
+    let data = read(level_name)?;
+    let level = Level::parse(&data)?;
+    let lb = LevelBin::parse(&data)?;
+    let skels: HashMap<u8, character::Skeleton> = lb.entries.iter().filter(|e| e.kind == 6)
+        .map(|e| character::parse_skeleton(lb.data(&data, e)).map(|s| (s.id as u8, s))).collect::<std::result::Result<_, _>>()?;
+    let anim_data = read(&format!("{}F{}", &level_name[..2], &level_name[3..]))?;
+    let alb = LevelBin::parse(&anim_data)?;
+    let seqs: HashMap<u32, Sequence> = alb.entries.iter().filter(|e| e.kind == 4 && e.length >= 0x40)
+        .filter_map(|e| Sequence::parse(alb.data(&anim_data, e)).ok()).map(|s| (s.hashcode, s)).collect();
+    println!("level in snapshot: {:08x}", u32_at(0x2a3768 + 12));
+    let (mut worst_local, mut worst_world) = (0f32, 0f32);
+    let mut d = u32_at(0x298e14);
+    let mut n = 0;
+    while d != 0 && n < 128 {
+        n += 1;
+        let (drone, obj) = (d, u32_at(d + 0xc));
+        d = u32_at(d + 4);
+        let anim_ptr = u32_at(obj + 0xdc);
+        let sa = anim_ptr + 0x70;
+        let skin_hash = u32_at(u32_at(anim_ptr + 0x94));
+        let mut scripts = Vec::new();
+        let mut sc = u32_at(anim_ptr + 0x9c);
+        while sc != 0 && scripts.len() < 8 {
+            let seq = u32_at(sc + 0x50);
+            if seq != 0 && u32_at(seq + 0x94) != 0 { scripts.push((u32_at(sc + 0x74), u32_at(seq + 0x94), f32_at(seq + 0x9c))); }
+            sc = u32_at(sc + 0x48);
+        }
+        let label = format!("drone {drone:08x} skin {skin_hash:08x}");
+        let [(script, seq_hash, frame)] = scripts[..] else { println!("{label}: {} playing sequences — skipped (blend)", scripts.len()); continue };
+        let (Some(skin), Some(seq)) = (level.skins.get(&skin_hash), seqs.get(&seq_hash)) else { println!("{label}: skin or sequence {seq_hash:08x} not loaded"); continue };
+        let Some(skel) = skels.get(&skin.skeleton) else { continue };
+        if frame.fract() != 0.0 { println!("{label}: fractional frame {frame} — skipped"); continue; }
+        let nb = skel.bones as usize;
+        // Game local pose: translations (bones × 16 bytes) then quaternions.
+        let buf = u32_at(sa + 0x3c);
+        let mut report = String::new();
+        let mut local = Vec::new();
+        let mut dl = 0f32;
+        for arith in [anim::Arith::Nearest, anim::Arith::Ps2] {
+            let mut l = anim::local_pose_with(seq, skel, skin, frame as u32, arith);
+            l[0].0 = [0.0; 3];
+            let (mut worst, mut exact, mut total) = (0f32, 0, 0);
+            let mut off_by = [0u32; 7]; // tx ty tz qx qy qz qw
+            for (b, (t, q)) in l.iter().enumerate().filter(|(b, _)| skin.animated(*b)) {
+                let vals = (0..3).map(|k| (f32_at(buf + 16 * b as u32 + 4 * k as u32), t[k]))
+                    .chain((0..4).map(|k| (f32_at(buf + 16 * (nb + b) as u32 + 4 * k as u32), q[k])));
+                for (i, (g, o)) in vals.enumerate() {
+                    total += 1;
+                    if g.to_bits() == o.to_bits() { exact += 1 } else { off_by[i] += 1 }
+                    worst = worst.max((g - o).abs());
+                }
+            }
+            report.push_str(&format!(" {arith:?}: max {worst:.2e}, {exact}/{total} bit-exact (differing tx ty tz qx qy qz qw: {off_by:?});"));
+            if arith == anim::Arith::Ps2 { local = l; dl = worst; }
+        }
+        // World: ours × object matrix vs the palette.
+        let objm: anim::Mat4 = std::array::from_fn(|r| std::array::from_fn(|c| f32_at(obj + 0x90 + 16 * r as u32 + 4 * c as u32)));
+        let world = anim::world_pose(&local, skin);
+        let pal = u32_at(sa + 0x48);
+        let mut dw = 0f32;
+        let mut bad = Vec::new();
+        for (b, m) in world.iter().enumerate().filter(|(b, _)| skin.animated(*b)) {
+            let ours = anim::mul(m, &objm);
+            let mut db = 0f32;
+            for r in 0..4 { for c in 0..3 { db = db.max((f32_at(pal + 0x40 * b as u32 + 16 * r as u32 + 4 * c as u32) - ours[r][c]).abs()); } }
+            if db > 1e-5 { bad.push(format!("{b}:{db:.1e}")); }
+            dw = dw.max(db);
+        }
+        let flags = u32_at(sa + 0x58);
+        report.push_str(&format!(" sAnimObject+0x58 {flags:#x} (0x30 head track, 0x180 aim); bones > 1e-5: [{}];", bad.join(" ")));
+        worst_local = worst_local.max(dl);
+        worst_world = worst_world.max(dw);
+        println!("{label}: script {script:08x} sequence {seq_hash:08x} frame {frame}: local{report} world (Ps2 local) max {dw:.2e}");
+    }
+    println!("worst local {worst_local:.2e}, worst world {worst_world:.2e}");
+    Ok(())
+}
+
+/// A level's skins with their datums (id, bone, translation), and whether each weapon's third-person mesh resolves.
+fn datums(iso: &IsoImage, level_name: &str) -> Result<()> {
+    use nf_formats::{level::Level, weapon::WeaponData};
+    let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF")?)?;
+    let wd = WeaponData::from_action_elf(&elf)?;
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let level = Level::parse(&data)?;
+    let mut skins: Vec<_> = level.skins.values().collect();
+    skins.sort_by_key(|s| s.hashcode);
+    for s in skins {
+        let d: Vec<String> = s.datums.iter().map(|d| format!("{}@{}({:.2},{:.2},{:.2})", d.id, d.bone, d.t[0], d.t[1], d.t[2])).collect();
+        println!("skin {:08x}: {}", s.hashcode, d.join(" "));
+    }
+    for w in [0x16u8, 0x24] {
+        if let Some((mesh, datum)) = wd.third_person(w) {
+            println!("weapon {w:#x}: mesh {mesh:08x} {} datum {datum}", if level.by_hash.contains_key(&mesh) { "found" } else { "NOT in by_hash" });
+        }
+    }
+    Ok(())
+}
+
+/// `weapon_data` built by running `_GLOBAL_$I$weapon_data` over ACTION.ELF; with a live dump (PCSX2 memory at
+/// 0x2bf150), the differing bytes per record.
+fn weapons(iso: &IsoImage, live: Option<&str>) -> Result<()> {
+    use nf_formats::weapon::{WeaponData, RECORD};
+    let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF")?)?;
+    let t = std::time::Instant::now();
+    let wd = WeaponData::from_action_elf(&elf)?;
+    println!("{} records built in {:?}; SHA-1 {}", wd.records.len(), t.elapsed(), nf_formats::sha1::hex(&nf_formats::sha1::sha1(&wd.bytes())));
+    for (w, _) in wd.records.iter().enumerate() {
+        if let Some((mesh, datum)) = wd.third_person(w as u8) { println!("weapon {w:#04x}\tthird-person {mesh:08x}\tdatum {datum}"); }
+    }
+    if let Some(path) = live {
+        let live = std::fs::read(path)?;
+        let ours = wd.bytes();
+        let mut total = 0;
+        for (k, (a, b)) in ours.chunks(RECORD).zip(live.chunks(RECORD)).enumerate() {
+            let diff: Vec<usize> = (0..RECORD.min(b.len())).filter(|&i| a[i] != b[i]).collect();
+            if !diff.is_empty() { total += diff.len(); println!("record {k:#04x}: {} bytes differ at {:x?}", diff.len(), &diff[..diff.len().min(12)]); }
+        }
+        println!("live comparison: {total} differing bytes of {}", ours.len().min(live.len()));
+    }
+    Ok(())
+}
+
 /// Every animation script (type 5) on the disc: parse, command bytes within the entry, and whether each opcode-0
 /// sequence exists in the matching animation archive (07F000NN for 070000NN), the archive itself, or nowhere.
 fn scripts(iso: &IsoImage) -> Result<()> {
@@ -272,7 +415,7 @@ fn drones(iso: &IsoImage, level_name: &str) -> Result<()> {
         let script = start.script();
         let s = script.and_then(|h| scripts.get(&h));
         let q = s.and_then(|s| s.sequences().next());
-        println!("{}\t{:08x}\t{:08x}\t{:x}\t{:#x}\t{:#x}\t{:#x}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}", p.index, param(0), param(1), param(9), setup.kind, set, danim,
+        println!("{}\t{:08x}\t{:08x}\t{:x}\t{:#x}\t{:#x}\t{:#x}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}", format!("{} ({:.3}, {:.3}, {:.3})", param(2), p.translation[0], p.translation[1], p.translation[2]), param(0), param(1), param(9), setup.kind, set, danim,
             tables.state_of(danim), script.map(|h| format!("{h:08x}{}", if custom { " (param 1)" } else { "" })).unwrap_or("-".into()), s.is_some(),
             s.map(|s| s.length).unwrap_or(0), s.map(|s| s.looping).unwrap_or(false),
             q.map(|q| format!("{:08x}", q.2)).unwrap_or("-".into()), q.and_then(|q| seqs.get(&q.2)).map(|x| x.frames.to_string()).unwrap_or("missing".into()));
@@ -342,6 +485,22 @@ fn skins(iso: &IsoImage) -> Result<()> {
             match character::parse_skin(lb.data(&data, e), |id| skels.get(&id).copied()) {
                 Ok(s) => {
                     *st.entry("skins parsed".into()).or_default() += 1;
+                    let nb = skels.get(&s.skeleton).copied().unwrap_or(0) as i32;
+                    for dt in &s.datums {
+                        *st.entry("datums".into()).or_default() += 1;
+                        if dt.bone < -1 || dt.bone >= nb { *st.entry("datum bone out of range".into()).or_default() += 1; }
+                        let n2: f32 = dt.q.iter().map(|v| v * v).sum();
+                        if (n2 - 1.0).abs() > 1e-3 { *st.entry("datum quaternion not unit".into()).or_default() += 1; }
+                        *st.entry(format!("datum id {}", dt.id)).or_default() += 1;
+                    }
+                    // Datums are the last field: their end padded to 32 must be the entry size.
+                    let raw = lb.data(&data, e);
+                    let skinned = if s.main.is_empty() { 0 } else { 0x1c * s.bones.len() };
+                    let mut end = 0x15 + s.bones.len();
+                    if !s.extra.is_empty() { end = (end + s.extra.len()).next_multiple_of(4) + 4 * s.extra.len(); }
+                    if !s.main.is_empty() { end = end.next_multiple_of(4) + 4 * s.main.len(); }
+                    end += skinned + 36 * s.datums.len();
+                    *st.entry(if end.next_multiple_of(32) == raw.len() { "datums end at the padded entry end" } else { "datum end ≠ entry end" }.into()).or_default() += 1;
                     for h in s.main.iter().flatten() {
                         let k = match level.by_hash.get(h) {
                             Some(&(m, o)) if level.maps[m].objects[o].gfx.is_skinned() => "main mesh → skinned object",

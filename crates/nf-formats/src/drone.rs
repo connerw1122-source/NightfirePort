@@ -149,6 +149,12 @@ pub fn drone_setup(skin: u32, weapon_param: u32, level: u32) -> DroneSetup {
     DroneSetup { kind, anim_set: set }
 }
 
+/// The weapon `NDrone2_DefaultInit` stores in `sAnimObject` (`anim+0x62`): parameter 9, or 1 (0 for skin
+/// 0x0500001E) when it is 0. Measured live in 07000005: parameter 9 = 0x16 / 0x24 → anim+0x62 = 0x16 / 0x24.
+pub fn weapon_id(skin: u32, weapon_param: u32) -> u32 {
+    if weapon_param != 0 { weapon_param } else if skin == 0x0500_001e { 0 } else { 1 }
+}
+
 /// The danim `NDrone2_DefaultInit` starts a drone with (`DroneAnim_SetAnimD`), and the anim set it uses then.
 /// `mode` = `Drone+0xC5` (the drone mode; modes 2 and 0x19 with set 5 switch to set 0x12).
 pub fn start_danim(setup: DroneSetup, mode: u8) -> (u16, u16) {

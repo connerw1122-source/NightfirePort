@@ -59,6 +59,9 @@ logic, not an emulator wrapper or a static recompiler. Read `docs/PLAN.md` first
 - **Cross-checks:** `tools/crosscheck/iso-7zip.sh`, `nfre_files_bin.py` (nightfire-re venv), `unviv_bigf.py`
   (unvivtool venv); third-party repos and venvs live in `work/third_party/` (never committed).
 - **PCSX2 (portable):** `C:\Users\Yoda\Downloads\PS2\PCSX2\pcsx2-qt.exe`, PINE slot 28011 (needs a PCSX2 restart
-  after enabling).
+  after enabling). Launch from PowerShell with Windows paths (`-statefile "<…\sstates\SLUS-20579 (5B86BB62).resume.p2s>"
+  -- "<iso>"`); Git Bash forward-slash paths fail ("does not exist" dialog). Consistent memory snapshots:
+  `python tools/trace/snapshot.py 9 work/ee_snapshot.bin` (saves state slot 9 — never the user's slots 1/resume —
+  and extracts EE RAM); then `nf-extract pose-check <iso> <level.bin> work/ee_snapshot.bin`.
 - **Tools:** `cargo run --release -p nf-extract -- <cmd>` (see `crates/nf-extract/src/main.rs`);
   `NF_ISO=<iso> cargo test --release -p nf-formats --test disc_golden`.
