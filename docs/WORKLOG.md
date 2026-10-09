@@ -78,3 +78,30 @@ Numbered entries, newest last. Each says what was done, what was measured, and w
 
 **Not done**
 - Independent cross-check (G-001) needs the user's approval to download a community extractor.
+
+## 0004 — Independent cross-checks with community tools; Ghidra MCP (2026-10-08)
+
+The user approved the downloads. Both repos were cloned into `work/third_party/` (git-ignored) and run in their own
+venvs; nothing of theirs is copied into the repo (licences: nightfire-re none → run only; unvivtool GPL-3 → run only).
+
+**Done / measured**
+- `tools/crosscheck/nfre_files_bin.py` drives NightfireResearch `nightfire-re` (commit acd94c2): pycdlib dumps the
+  disc; their PS2 handler reads FileList at their hard-coded offset. **FILES.BIN: 118 files, 0 differences** (name,
+  size, SHA-1). Their tool refuses our image by hash (U-001), so the driver calls the two handlers directly.
+- The same pycdlib dump vs our directory manifest: **177 files, 0 differences** (second independent ISO reader after
+  7-Zip).
+- `tools/crosscheck/unviv_bigf.py` drives `unvivtool` 3.12 (commit 38a63fe, built from source): **all 23 BIGF
+  archives, 1,499 entries, 0 differences** (path, name, offset, size, SHA-1).
+- unvivtool reads MISC.VIV's odd size field big-endian: 0x0b455c29 = file size − 2,407 (U-004 refined).
+- ghidra-mcp: `tools/ghidra/start-ghidra-mcp.ps1` serves `work/ghidra/NightfirePort.gpr`; the registered bridge
+  connects (`connect_instance("NightfirePort")`, TCP 127.0.0.1:8089, 67 tools in default groups).
+
+**Failed / corrected**
+- unvivtool `unviv()` extracted 0 of 152 files from MIS01.VIV: it does not create subdirectories for `data\…` names.
+  Pre-creating them fixed that, then `data\Render\Actors.ssh` landed in the existing `data\render` folder
+  (case-insensitive NTFS). Matching by lower-cased name then failed on MIS3EN.SPE, which really contains two
+  different `garage.asf` entries (U-015). Final driver extracts each entry by 1-based index into its own folder.
+- First ghidra-mcp server on port 8090: `list_instances` showed it, but `connect_instance` reported "no instance
+  matching 'NightfirePort'" while listing it as available (UDS selection fails on Windows; the bridge's TCP fallback
+  is fixed to 8089). Moved our server to 8089 (G-011).
+- PINE: PCSX2 ini now has `EnablePINE = true` but nothing listens on 28011 until PCSX2 restarts (pending).
