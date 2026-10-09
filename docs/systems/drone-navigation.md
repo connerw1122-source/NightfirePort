@@ -81,6 +81,10 @@ arrival radius +0x8C (2.0), look-ahead +0x90 (2.0; 4.0 when `Drone+0x23`), the l
 
 ## Moving [M]
 
+Collision with the network: `NDrone2_Collision` pushes the feet sphere (r 0.4) out of boundary walls without flags
+0x1C00 (`GetBoundsPushVectorForSphere`; ported, the push itself *suggested*). Without it a sidestep left a guard 0.11
+from the gate pillar's post and every route segment failed the post test (WORKLOG 0023).
+
 Translation is root motion; `NDrone2_Steer` turns 0.1 per tick toward `+0x694` (plus the anim yaw offset
 `+0x4C4`: the body faces desired − offset). Obstacle avoidance (drones and the player within 3 units) is not ported
 yet.

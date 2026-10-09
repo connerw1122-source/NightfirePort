@@ -1718,6 +1718,12 @@ impl Drones {
                 if done_msg != 0 { dr.send(d, rng, frame, done_msg); }
                 if next_ai != 0 { dr.set_state(next_ai); dr.send(d, rng, frame, 0); }
             }
+            // `NDrone2_Collision`: the feet sphere (r 0.4) is pushed out of the AI-network boundaries.
+            if dr.enabled && d.nav.bounds {
+                let p = d.nav.push_out(dr.feet(), 0.4);
+                dr.pos[0] = p[0];
+                dr.pos[2] = p[2];
+            }
         }
         // Bullets: move, collide with the world and Bond (`Bullet_update` + `Collide_Update`), damage
         // (`Player_HandlePain`); the hit flash fades by 1 per tick (HUD).

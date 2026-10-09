@@ -106,6 +106,25 @@ impl Network {
         }
     }
 
+    /// `GetBoundsPushVectorForSphere(r, pos, mask 0x1C00)` (drone collision): walls without the mask bits whose closest
+    /// point Q (on the 3D segment) is within r of the feet, with the feet between Q.y − 0.4 and Q.y + height, push the
+    /// feet out horizontally to distance r (the push direction / length is *suggested*: the decomp loses the stores).
+    pub fn push_out(&self, feet: V3, r: f32) -> V3 {
+        let mut p = feet;
+        for w in self.walls.iter().filter(|w| w.flags & 0x1c00 == 0) {
+            let q = closest_on_segment(w.a, w.b, p);
+            let d2 = (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2);
+            let h = w.ha.min(w.hb);
+            if d2 > r * r || p[1] > q[1] + h || p[1] < q[1] - 0.4 { continue; }
+            let (dx, dz) = (p[0] - q[0], p[2] - q[2]);
+            let l = (dx * dx + dz * dz).sqrt();
+            if l < 1e-6 { continue; }
+            p[0] = q[0] + dx / l * r;
+            p[2] = q[2] + dz / l * r;
+        }
+        p
+    }
+
     /// `NDrone2_MoveTest(A, B, …, near)`: 1 passable, 0 blocked, −1 blocked with a hit (only when `want_hit`).
     pub fn move_test(&self, world: &CollisionWorld, a: V3, b: V3, near: bool, want_hit: bool) -> (i32, Option<V3>) {
         let dy = b[1] - a[1];
