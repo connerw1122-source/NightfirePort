@@ -6,6 +6,8 @@
 //! nf-extract elfs <iso> <out-dir>          SLUS_205.79, ACTION.ELF and DRIVING.ELF, SHA-1 checked
 //! nf-extract files-manifest <iso>          FILES.BIN entries from ACTION.ELF's FileList (TSV, stdout)
 //! nf-extract files-extract <iso> <out-dir> unpack FILES.BIN by FileList
+//! nf-extract bin-list <iso>                every entry of every level .bin (TSV, stdout; ~44k rows)
+//! nf-extract bin-digest <iso>              per-archive digest of bin-list (= golden/level_bins.tsv)
 //! nf-extract bigf-manifest <iso>           every entry of every BIGF archive (TSV, stdout)
 //! nf-extract bigf-extract <iso> <archive> <out-dir>   unpack one BIGF archive (e.g. /DRIVING/MISC.VIV)
 //! nf-extract symtab <elf>                  an ELF's .symtab as TSV (stdout)
@@ -29,7 +31,9 @@ fn main() -> Result<()> {
         "bigf-manifest" => { print!("{}", disc::bigf_manifest(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "files-manifest" => { print!("{}", disc::files_bin_manifest(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "files-extract" => files_extract(&IsoImage::open(a(1)?)?, Path::new(a(2)?)),
-        "bigf-extract" =>bigf_extract(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?)),
+        "bin-list" => { print!("{}", disc::level_bin_entries(&IsoImage::open(a(1)?)?)?); Ok(()) }
+        "bin-digest" => { print!("{}", disc::level_bin_digest(&disc::level_bin_entries(&IsoImage::open(a(1)?)?)?)); Ok(()) }
+        "bigf-extract" => bigf_extract(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?)),
         "symtab" => symtab(Path::new(a(1)?)),
         "drivingsym" => {
             let iso = IsoImage::open(a(1)?)?;

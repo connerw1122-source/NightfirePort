@@ -55,6 +55,16 @@ fn files_bin_matches_the_golden_manifest() {
     assert_eq!(diff_tsv(golden, &tamper(&actual)).len(), 1, "sister: a one-character change must be caught");
 }
 
+#[test]
+fn level_bins_match_the_golden_digest() {
+    let Some(iso) = iso() else { eprintln!("skip: NF_ISO not set"); return };
+    let golden = include_str!("../golden/level_bins.tsv");
+    let actual = disc::level_bin_digest(&disc::level_bin_entries(&iso).unwrap());
+    let d = diff_tsv(golden, &actual);
+    assert!(d.is_empty(), "{} differences:\n{}", d.len(), d.join("\n"));
+    assert_eq!(diff_tsv(golden, &tamper(&actual)).len(), 1, "sister: a one-character change must be caught");
+}
+
 /// Facts about the BIGF headers recorded in docs/formats/bigf.md: the header-size field is the entry-table end
 /// (`.VIV`) or the table end + 8 (`.MUS`/`.SPE`, an `L225` trailer); the LE size field equals the file size except
 /// in MISC.VIV (UNKNOWNS U-004).

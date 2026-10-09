@@ -143,3 +143,29 @@ The user confirmed gameplay and approved stopping the mcp-pine bridge (node pid 
 - My first pad summary (stable segments) mixed lagged values; replaced by per-sample co-occurrence counts and a
   formula check that classifies every mismatch.
 - The dead zone cannot be checked from these reads (raw bytes overwritten in place, G-012).
+- The pad logger later exited with `PINE FAIL` when PCSX2 was closed; the log was complete by then.
+
+## 0007 — Level .bin archives (2026-10-08)
+
+**Done**
+- docs/formats/level-bin.md from the decomp (`LoaderLoad` 0x1d4a00 state machine, `psiFileRead` 0x10bdf0) and all
+  99 `.bin` files; `levelbin.rs` (header, directory, entries, loader-exact `DirFileHash`, `validate`);
+  `disc::level_bin_entries` / `level_bin_digest`; CLI `bin-list` / `bin-digest`; golden `golden/level_bins.tsv`
+  (96 archives) and opt-in test `level_bins_match_the_golden_digest` with sister. 35 unit + 6 opt-in tests pass.
+- Cross-check `tools/crosscheck/nfre_level_bins.py` (nightfire-re `extract_bin`): **0 differences** in 96 archives /
+  41,977 entries.
+
+**Measured**
+- `Europacked` (0x30d003) = 0 and never written → no compression on PS2. `MaxFilesToLoad` = 0xFFFFFFFF → one batch.
+- `psiFileRead` reads whole sectors; on our disc `dir_size` is always a multiple of 2048, so the sector-rounded game
+  view and a contiguous reading agree, and every archive ends exactly at the last entry.
+- Type ↔ hashcode prefix is consistent (0/1/2/11 → 01, 3 → 05, 4 → 04 (8 × 00), 5/7 → 06, 8 → 08); type 6 =
+  `SKELnnnn`, 12 = unnamed 32-byte entries, 15 = `007` (once), 16 = `woman`. Three archives (07F00048/500/999) are
+  2048 zero bytes.
+
+**Failed / corrected**
+- An earlier scripted edit had turned `"bigf-extract" => bigf_extract` into `=>bigf_extract`, so my Edit anchor did
+  not match; fixed with the editor.
+- First cross-check run reported 122 differing archives: my driver turned their `07F00029.bin_extract` folders into
+  `07F00029.bin.bin`; keying archives by the first 8 characters fixed it (no reader difference).
+- I summed the entry count as 43,977 in conversation; the type counts total 41,977.

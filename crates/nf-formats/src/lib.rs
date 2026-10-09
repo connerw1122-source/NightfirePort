@@ -7,6 +7,7 @@ pub mod elf;
 pub mod filelist;
 pub mod golden;
 pub mod iso9660;
+pub mod levelbin;
 pub mod pss;
 pub mod sha1;
 pub mod symfile;

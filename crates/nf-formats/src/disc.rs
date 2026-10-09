@@ -106,6 +106,44 @@ pub fn files_bin_manifest<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
     Ok(s)
 }
 
+/// Every entry of every level `.bin` in FILES.BIN: `archive \t index \t type \t name \t offset \t length \t sha1`.
+/// Too large to commit (≈44k rows); `level_bin_digest` condenses it per archive.
+pub fn level_bin_entries<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
+    let (entries, bin) = files_bin_entries(iso)?;
+    let mut s = String::from("archive\tindex\ttype\tname\toffset\tlength\tsha1\n");
+    for f in entries.iter().filter(|f| f.name.to_ascii_lowercase().ends_with(".bin")) {
+        let data = iso.read_bytes(bin.lba as u64 * SECTOR_SIZE as u64 + f.offset as u64, f.size as u64)?;
+        let lb = crate::levelbin::LevelBin::parse(&data)?;
+        lb.validate(data.len())?;
+        for (i, e) in lb.entries.iter().enumerate() {
+            s.push_str(&format!("{}\t{i}\t{}\t{}\t{}\t{}\t{}\n", f.name, e.kind, e.name, e.offset, e.length,
+                hex(&crate::sha1::sha1(lb.data(&data, e)))));
+        }
+    }
+    Ok(s)
+}
+
+/// Per archive: `archive \t entries \t types (type:count,…) \t bytes \t sha1 of its rows in level_bin_entries`.
+pub fn level_bin_digest(entries_tsv: &str) -> String {
+    use std::collections::BTreeMap;
+    let mut per: BTreeMap<&str, (u32, BTreeMap<u32, u32>, u64, Sha1)> = BTreeMap::new();
+    for line in entries_tsv.lines().skip(1) {
+        let c: Vec<&str> = line.split('\t').collect();
+        let e = per.entry(c[0]).or_insert_with(|| (0, BTreeMap::new(), 0, Sha1::new()));
+        e.0 += 1;
+        *e.1.entry(c[2].parse().unwrap_or(u32::MAX)).or_default() += 1;
+        e.2 += c[5].parse::<u64>().unwrap_or(0);
+        e.3.update(line.as_bytes());
+        e.3.update(b"\n");
+    }
+    let mut s = String::from("archive\tentries\ttypes\tbytes\trows_sha1\n");
+    for (a, (n, types, bytes, h)) in per {
+        let t: Vec<String> = types.iter().map(|(k, v)| format!("{k}:{v}")).collect();
+        s.push_str(&format!("{a}\t{n}\t{}\t{bytes}\t{}\n", t.join(","), hex(&h.finish())));
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
