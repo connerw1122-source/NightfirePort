@@ -46,6 +46,8 @@ pub struct Instance {
 
 pub struct Level {
     pub maps: Vec<LevelMap>,
+    /// Character skins (type-3 entries, prefix 05) by hashcode, parsed with this archive's skeletons.
+    pub skins: HashMap<u32, crate::character::Skin>,
     /// Entity hashcode → (map, object); first occurrence in archive order.
     pub by_hash: HashMap<u32, (usize, usize)>,
 }
@@ -83,7 +85,33 @@ impl Level {
                 if obj.hashcode != u32::MAX { by_hash.entry(obj.hashcode).or_insert((m, o)); }
             }
         }
-        Ok(Level { maps, by_hash })
+        let skeletons: HashMap<u8, u8> = lb.entries.iter().filter(|e| e.kind == 6)
+            .map(|e| crate::character::parse_skeleton(lb.data(archive, e)).map(|s| (s.id as u8, s.bones)))
+            .collect::<Result<_>>()?;
+        let skins = lb.entries.iter().filter(|e| e.kind == 3)
+            .map(|e| crate::character::parse_skin(lb.data(archive, e), |id| skeletons.get(&id).copied()).map(|s| (s.hashcode, s)))
+            .collect::<Result<_>>()?;
+        Ok(Level { maps, skins, by_hash })
+    }
+
+    /// Characters: main-map placements whose parameter 0 is a skin hashcode (prefix 05) found in this archive (`oDrone`,
+    /// animated `Tree`s), drawn as the skin's main meshes at the placement transform in bind pose. Sleeve entries
+    /// (substituted at run time) and skins from other archives are skipped; the second value counts placements
+    /// skipped for a missing skin.
+    pub fn character_instances(&self) -> (Vec<Instance>, usize) {
+        let Some(m) = self.main_map() else { return (Vec::new(), 0) };
+        let (mut out, mut missing) = (Vec::new(), 0);
+        for p in &self.maps[m].placements {
+            let Some(&(_, skin)) = p.params.iter().find(|(i, _)| *i == 0) else { continue };
+            if skin >> 24 != 5 { continue; }
+            let Some(s) = self.skins.get(&skin) else { missing += 1; continue };
+            for h in s.main.iter().flatten() {
+                if let Some(&(map, object)) = self.by_hash.get(h) {
+                    out.push(Instance { map, object, matrix: placement::object_matrix(p.rotation, p.translation), placement: p.clone() });
+                }
+            }
+        }
+        (out, missing)
     }
 
     /// The main map (loader type 1), if the archive has one.

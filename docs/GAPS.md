@@ -11,7 +11,9 @@
 | G-007 | Add the OpenGOAL ISC notice for `vag.rs` | Fetch the LICENSE text (read-only web fetch). |
 | G-008 | `pss.rs` and `vag.rs` are RC2-verified only: re-check on `MOVIES/30_FPS/*.PSS` | opt-in NF_ISO test. |
 | G-014 | Read the VU1 microcode (ACTION.ELF `.vutext` 0x241c80, 0x2880 bytes, + DVP overlays) to confirm the batch semantics: signed V4-8 = normal + no-kick flag, UV use (ST·Q?), entry points 0 (clipped) / 2 (unclipped), lighting. Needs a VU disassembler (Ghidra EE extension covers VU? check). | ps2gfx.md confidence "medium" for these. |
-| G-015 | Skinned PS2_GFX objects (582 leaves; G's skin info ≠ 0): REF tags with UNPACK codes whose data the skinning code (`CacheSkin` 0x1112c0, `SkinIt` 0x10bf30) provides at run time. | |
+| G-015 | ~~Skinned PS2_GFX objects~~ decoded in bind pose (WORKLOG 0013, docs/formats/character.md). | done |
+| G-020 | Character posing and animation: skeleton bone data, the skin's per-bone matrices, `SkinIt`'s VU0 microprograms (bone weights in source qw1), sequences (types 4/5) and scripts (7). | Characters are T-pose. |
+| G-021 | Drone skins missing from their archive (33 placements): load the common animation file (`CommonAnimFile`, LoaderLoad type 4) / other archives; sleeve substitutes (`AnimSleeveGetEntity`). | |
 | G-016 | World assembly: place objects using map static data (block 0x1A, `parsemap_create_dynamic_objects`), cels, portals (0x21). Needed for a level viewer. | |
 | G-017 | Port `PS2Sinf3` (the game's sine approximation) so object matrices are bit-exact. | placement.md. |
 | G-018 | nf-view: per-object GS state (alpha blend/test, CLAMP, filtering from the first CNT's `DIRECT` A+D writes), animated textures, skinned meshes, sky, fog. Currently: alpha test at 0.5, repeat, bilinear. | U-021. |

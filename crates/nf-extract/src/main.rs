@@ -39,8 +39,10 @@ fn main() -> Result<()> {
         "gfx-list" => { print!("{}", disc::geometry_entries(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "gfx-digest" => { print!("{}", disc::geometry_digest(&disc::geometry_entries(&IsoImage::open(a(1)?)?)?)); Ok(()) }
         "level-summary" => { print!("{}", disc::level_summary(&IsoImage::open(a(1)?)?)?); Ok(()) }
-        "level-export" =>level_export(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?), args.get(4).is_some_and(|x| x == "all")),
-        "gfx-boxes" =>gfx_boxes(&IsoImage::open(a(1)?)?),
+        "level-export" => level_export(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?), args.get(4).is_some_and(|x| x == "all")),
+        "skins" => skins(&IsoImage::open(a(1)?)?),
+        "gfx-skin-words" =>gfx_skin_words(&IsoImage::open(a(1)?)?),
+        "gfx-boxes" => gfx_boxes(&IsoImage::open(a(1)?)?),
         "gfx-export" =>gfx_export(&IsoImage::open(a(1)?)?, Path::new(a(2)?), args.get(3).map(String::as_str)),
         "bigf-extract" => bigf_extract(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?)),
         "symtab" => symtab(Path::new(a(1)?)),
@@ -183,6 +185,82 @@ fn level_export(iso: &IsoImage, archive: &str, out: &Path, all: bool) -> Result<
     let main = level.main_map().map(|m| level.maps[m].name.clone()).unwrap_or_default();
     println!("{archive}: {} maps, main map {main}, {} instances ({} skinned, not drawn), {missing} unresolved, {tris} triangles -> {}",
         level.maps.len(), inst.len(), skinned, out.display());
+    Ok(())
+}
+
+/// Measurement (WORKLOG 0013): every skin (type 3) parsed with its archive's skeletons; how its mesh hashcodes resolve;
+/// which placements carry a skin hashcode in parameter 0 and what their objects are called.
+fn skins(iso: &IsoImage) -> Result<()> {
+    use nf_formats::{character, level::Level, levelbin::LevelBin};
+    use std::collections::{BTreeMap, HashMap};
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let mut st: BTreeMap<String, u64> = BTreeMap::new();
+    let mut names: BTreeMap<String, u64> = BTreeMap::new();
+    for fe in entries.iter().filter(|e| e.name.to_ascii_lowercase().ends_with(".bin")) {
+        let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+        let lb = LevelBin::parse(&data)?;
+        let skels: HashMap<u8, u8> = lb.entries.iter().filter(|e| e.kind == 6)
+            .map(|e| character::parse_skeleton(lb.data(&data, e))).collect::<std::result::Result<Vec<_>, _>>()?
+            .into_iter().map(|s| (s.id as u8, s.bones)).collect();
+        let level = Level::parse(&data)?;
+        let mut skins = HashMap::new();
+        for e in lb.entries.iter().filter(|e| e.kind == 3) {
+            match character::parse_skin(lb.data(&data, e), |id| skels.get(&id).copied()) {
+                Ok(s) => {
+                    *st.entry("skins parsed".into()).or_default() += 1;
+                    for h in s.main.iter().flatten() {
+                        let k = match level.by_hash.get(h) {
+                            Some(&(m, o)) if level.maps[m].objects[o].gfx.is_skinned() => "main mesh → skinned object",
+                            Some(_) => "main mesh → static object",
+                            None if character::Skin::is_sleeve(*h) => "main mesh → sleeve (substituted)",
+                            None => "main mesh → unresolved",
+                        };
+                        *st.entry(k.into()).or_default() += 1;
+                    }
+                    skins.insert(s.hashcode, s);
+                }
+                Err(err) => { *st.entry(format!("skin parse error: {err}")).or_default() += 1; }
+            }
+        }
+        if let Some(m) = level.main_map() {
+            for p in &level.maps[m].placements {
+                let Some(&(_, v)) = p.params.iter().find(|(i, _)| *i == 0) else { continue };
+                if v >> 24 != 5 { continue; }
+                let name = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(mm, o)| level.maps[mm].objects[o].name.clone()) } else { Some(level.maps[m].objects[p.index as usize].name.clone()) };
+                *names.entry(format!("{} (skin {})", name.unwrap_or_default(), if skins.contains_key(&v) { "found" } else { "missing" })).or_default() += 1;
+            }
+        }
+    }
+    for (k, v) in st { println!("{v}\t{k}"); }
+    println!("--- placements with a skin hashcode in parameter 0:");
+    for (k, v) in names { println!("{v}\t{k}"); }
+    Ok(())
+}
+
+/// Measurement for skinned batches: for each bit of the packed skinning word (vertex slot B+3+3k, w), how often it
+/// is set at strip positions 0–1 vs ≥ 2, and the most common words (WORKLOG 0013).
+fn gfx_skin_words(iso: &IsoImage) -> Result<()> {
+    let mut first = [0u64; 32];
+    let mut rest = [0u64; 32];
+    let (mut n_first, mut n_rest) = (0u64, 0u64);
+    let mut common: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+    disc::for_each_gfx(iso, |_a, _e, _n, _h, _name, obj| {
+        for b in obj.leaves.iter().flat_map(|l| &l.batches).filter(|b| b.skinned) {
+            for (i, v) in b.verts.iter().enumerate() {
+                let w = v.w as u32;
+                *common.entry(w).or_default() += 1;
+                let (bits, n) = if i < 2 { (&mut first, &mut n_first) } else { (&mut rest, &mut n_rest) };
+                *n += 1;
+                for k in 0..32 { if w >> k & 1 != 0 { bits[k] += 1; } }
+            }
+        }
+        Ok(())
+    })?;
+    println!("bit\tset_at_0_1 (of {n_first})\tset_at_2plus (of {n_rest})");
+    for k in 0..32 { if first[k] + rest[k] > 0 { println!("{k}\t{}\t{}", first[k], rest[k]); } }
+    let mut c: Vec<_> = common.into_iter().collect();
+    c.sort_by(|a, b| b.1.cmp(&a.1));
+    for (w, n) in c.iter().take(12) { println!("{w:08x}\t{n}"); }
     Ok(())
 }
 

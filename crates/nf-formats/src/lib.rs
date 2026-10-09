@@ -2,6 +2,7 @@
 
 pub mod bigf;
 pub mod buf;
+pub mod character;
 pub mod disc;
 pub mod elf;
 pub mod filelist;

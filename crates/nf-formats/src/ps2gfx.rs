@@ -43,13 +43,25 @@ pub struct Batch {
     pub prim: u16,
     pub nloop: u16,
     pub eop: bool,
+    /// From a skinned object: positions are the bind-pose source positions, `w` is the raw packed skinning word.
+    pub skinned: bool,
     pub verts: Vec<Vertex>,
 }
 
+/// Skinned vertices: bit 15 of the packed skinning word (source qword 1, word 3) marks "no kick": set on all 51,664
+/// strip-start vertices (positions 0–1) on the disc and on 25 % of the others. The upper half-word is the morph index
+/// `SkinIt` reads (−1 = none). WORKLOG 0013.
+pub const SKIN_NO_KICK: i32 = 0x8000;
+
 impl Batch {
-    /// Strip triangles: vertex i ≥ 2 closes (i−2, i−1, i) unless its w is −1; winding alternates with i's parity.
+    pub fn kicks(&self, i: usize) -> bool {
+        let w = self.verts[i].w;
+        if self.skinned { w & SKIN_NO_KICK == 0 } else { w != -1 }
+    }
+
+    /// Strip triangles: vertex i ≥ 2 closes (i−2, i−1, i) if it kicks; winding alternates with i's parity.
     pub fn triangles(&self) -> Vec<[u16; 3]> {
-        (2..self.verts.len()).filter(|&i| self.verts[i].w != -1)
+        (2..self.verts.len()).filter(|&i| self.kicks(i))
             .map(|i| { let i = i as u16; if i % 2 == 0 { [i - 2, i - 1, i] } else { [i - 1, i - 2, i] } })
             .collect()
     }
@@ -94,13 +106,15 @@ impl GfxObject {
                 unknown_2c: b.u32(o + 0x2c)?, vertex_count: b.u32(o + 0x30)?, flags: b.u32(o + 0x34)?,
             });
         }
+        // Skinned objects: skin info word 0 = offset of the source vertex buffer (2 qwords per vertex: position with
+        // w = 1.0, then packed skinning data). In bind pose (identity bones) `SkinIt`'s output equals its input, and the
+        // REF tags' addresses are byte offsets into that buffer (`CacheSkin` adds the buffer base), WORKLOG 0013.
+        let skin_src = if skin_info != 0 { Some(b.u32(skin_info as usize & !3)? as usize & !3) } else { None };
         let mut leaves = Vec::new();
-        if skin_info == 0 {
-            for (i, bx) in boxes.iter().enumerate().filter(|(_, bx)| bx.packet != 0) {
-                let leaf = decode_packet(block, bx.packet as usize & !3)
-                    .map_err(|e| crate::buf::FormatError::Invalid(format!("box {i}: {e}")))?;
-                leaves.push(Leaf { box_index: i, ..leaf });
-            }
+        for (i, bx) in boxes.iter().enumerate().filter(|(_, bx)| bx.packet != 0) {
+            let leaf = decode_packet(block, bx.packet as usize & !3, skin_src)
+                .map_err(|e| crate::buf::FormatError::Invalid(format!("box {i}: {e}")))?;
+            leaves.push(Leaf { box_index: i, ..leaf });
         }
         Ok(GfxObject { boxes, skin_info, footer_unknown, leaves })
     }
@@ -116,13 +130,14 @@ struct Vu {
 }
 
 impl Vu {
-    fn unpack(&mut self, p: &VifPacket) -> Result<()> {
+    /// `inline`: the unpack came from a CNT payload (only those can carry the batch's GIF-tag header; skin REFs never).
+    fn unpack(&mut self, p: &VifPacket, inline: bool) -> Result<()> {
         if p.imm & 0x8000 != 0 { return invalid("UNPACK with FLG (TOPS-relative) not supported"); }
         if self.wl > self.cl { return invalid("STCYCL fill mode (WL > CL) not supported"); }
         let (comps, bits) = (p.vn() as usize + 1, 32usize >> p.vl());
         if bits == 16 { return invalid("16-bit UNPACK not expected in PS2_GFX"); }
         let n = p.count() as usize;
-        if p.count() == 1 && comps == 4 && bits == 32 { self.header = Some(p.addr() as usize); }
+        if inline && p.count() == 1 && comps == 4 && bits == 32 { self.header = Some(p.addr() as usize); }
         let d = Buf(p.data);
         for k in 0..n {
             let q = p.addr() as usize + (k / self.wl as usize) * self.cl as usize + k % self.wl as usize;
@@ -144,7 +159,7 @@ impl Vu {
     }
 
     /// Ends the current batch; returns it, or `None` for a header-only setup kick.
-    fn kick(&mut self, texture: Option<u32>) -> Result<Option<Batch>> {
+    fn kick(&mut self, texture: Option<u32>, skinned: bool) -> Result<Option<Batch>> {
         let Some(base) = self.header.take() else { return invalid("kick without a GIF tag header") };
         let tag = self.fresh(base)?;
         let lo = tag[0] as u64 | (tag[1] as u64) << 32;
@@ -160,12 +175,13 @@ impl Vu {
             for k in 0..nloop as usize {
                 let (xyz, rgba, nw, uv) = (self.fresh(base + 1 + 3 * k)?, self.fresh(base + 2 + 3 * k)?, self.fresh(base + 3 + 3 * k)?, self.fresh(base + UV_OFFSET + k)?);
                 let w = nw[3] as i32;
-                if w != 0 && w != -1 { return invalid(format!("vertex {k}: signed V4-8 w = {w}")); }
+                if !skinned && w != 0 && w != -1 { return invalid(format!("vertex {k}: signed V4-8 w = {w}")); }
                 verts.push(Vertex {
                     pos: [f32::from_bits(xyz[0]), f32::from_bits(xyz[1]), f32::from_bits(xyz[2])],
                     uv: [f32::from_bits(uv[0]), f32::from_bits(uv[1])],
                     rgba: [rgba[0] as u8, rgba[1] as u8, rgba[2] as u8, rgba[3] as u8],
-                    normal: [nw[0] as i32 as i8, nw[1] as i32 as i8, nw[2] as i32 as i8],
+                    // Skinned: this slot holds the source's packed skinning qword (normals come from SkinIt at run time).
+                    normal: if skinned { [0; 3] } else { [nw[0] as i32 as i8, nw[1] as i32 as i8, nw[2] as i32 as i8] },
                     w,
                 });
             }
@@ -173,15 +189,16 @@ impl Vu {
             if self.gen.get(base + 1 + 3 * nloop as usize).is_some_and(|g| *g == self.cur) && base + 1 + 3 * (nloop as usize) < base + UV_OFFSET {
                 return invalid(format!("more vertex data than NLOOP {nloop}"));
             }
-            Some(Batch { texture, prim, nloop, eop, verts })
+            Some(Batch { texture, prim, nloop, eop, skinned, verts })
         };
         self.cur += 1;
         Ok(out)
     }
 }
 
-/// Replays one leaf packet (offset `at` within the block).
-pub fn decode_packet(block: &[u8], at: usize) -> Result<Leaf> {
+/// Replays one leaf packet (offset `at` within the block). `skin_src`: offset of a skinned object's source vertex
+/// buffer; REF tags with VIF codes then read `qwc` qwords at `skin_src + addr` (addr signed, may be −16).
+pub fn decode_packet(block: &[u8], at: usize, skin_src: Option<usize>) -> Result<Leaf> {
     let b = Buf(block);
     let mut vu = Vu { mem: vec![[0; 4]; VU1_QWORDS], gen: vec![0; VU1_QWORDS], cur: 1, cl: 1, wl: 1, header: None };
     let mut texture = None;
@@ -195,18 +212,33 @@ pub fn decode_packet(block: &[u8], at: usize) -> Result<Leaf> {
             1 => {
                 let stream = b.sub(p + 8, 8 + 16 * qwc, "CNT payload")?.bytes();
                 for pk in parse_vif(stream)? {
-                    if pk.is_unpack() { vu.unpack(&pk)?; continue; }
+                    if pk.is_unpack() { vu.unpack(&pk, true)?; continue; }
                     match pk.cmd {
                         STCYCL => { vu.cl = (pk.imm & 0xff) as u32; vu.wl = (pk.imm >> 8) as u32; }
-                        MSCNT | MSCAL | MSCALF => match vu.kick(texture)? { Some(batch) => batches.push(batch), None => setup_kicks += 1 },
+                        MSCNT | MSCAL | MSCALF => match vu.kick(texture, skin_src.is_some())? { Some(batch) => batches.push(batch), None => setup_kicks += 1 },
                         _ => {}
                     }
                 }
                 p += 16 + 16 * qwc;
             }
-            3 => {
-                if vif.iter().any(|&x| x != 0) { return invalid(format!("REF at {p:#x} carries VIF codes (skinned data)")); }
+            3 if vif.iter().all(|&x| x == 0) => {
                 texture = Some(addr);
+                p += 16;
+            }
+            3 => {
+                let Some(src) = skin_src else { return invalid(format!("REF at {p:#x} carries VIF codes but the object has no skin info")) };
+                let start = src as i64 + addr as i32 as i64;
+                if start < 0 { return invalid(format!("skin REF at {p:#x} reads before the block")); }
+                let data = b.sub(start as usize, 16 * qwc, "skin REF data")?.bytes();
+                let stream = [vif, data].concat();
+                for pk in parse_vif(&stream)? {
+                    if pk.is_unpack() { vu.unpack(&pk, false)?; continue; }
+                    match pk.cmd {
+                        STCYCL => { vu.cl = (pk.imm & 0xff) as u32; vu.wl = (pk.imm >> 8) as u32; }
+                        0 => {}
+                        c => return invalid(format!("skin REF at {p:#x}: unexpected VIF command {c:#x}")),
+                    }
+                }
                 p += 16;
             }
             6 => return Ok(Leaf { box_index: 0, batches, setup_kicks }),
@@ -251,7 +283,7 @@ mod tests {
     #[test]
     fn decodes_a_synthetic_batch() {
         let pk = packet([-1, -1, 0]);
-        let leaf = decode_packet(&pk, 0x10).unwrap();
+        let leaf = decode_packet(&pk, 0x10, None).unwrap();
         assert_eq!(leaf.batches.len(), 1);
         let bt = &leaf.batches[0];
         assert_eq!((bt.texture, bt.nloop, bt.prim, bt.eop), (Some(7), 3, 0x5c, true));
@@ -263,18 +295,18 @@ mod tests {
 
     #[test]
     fn rejects_bad_kick_flags_and_missing_data() {
-        assert!(decode_packet(&packet([-1, 5, 0]), 0x10).is_err(), "w must be 0 or -1");
+        assert!(decode_packet(&packet([-1, 5, 0]), 0x10, None).is_err(), "w must be 0 or -1");
         let mut pk = packet([-1, -1, 0]);
         // Break the UV unpack address: the batch would then read unwritten UV qwords.
         let i = pk.windows(4).position(|x| x == (0x6403_0000u32 | (0x10 + 0xc7)).to_le_bytes()).unwrap();
         pk[i..i + 4].copy_from_slice(&(0x6403_0000u32 | 0x200).to_le_bytes());
-        assert!(decode_packet(&pk, 0x10).is_err());
+        assert!(decode_packet(&pk, 0x10, None).is_err());
     }
 
     #[test]
     fn strip_triangles_skip_no_kick_vertices_and_alternate_winding() {
         let v = |w| Vertex { pos: [0.0; 3], uv: [0.0; 2], rgba: [0; 4], normal: [0; 3], w };
-        let b = Batch { texture: None, prim: 0x5c, nloop: 6, eop: true, verts: vec![v(-1), v(-1), v(0), v(0), v(-1), v(0)] };
+        let b = Batch { texture: None, prim: 0x5c, nloop: 6, eop: true, skinned: false, verts: vec![v(-1), v(-1), v(0), v(0), v(-1), v(0)] };
         assert_eq!(b.triangles(), [[0, 1, 2], [2, 1, 3], [4, 3, 5]]);
     }
 }

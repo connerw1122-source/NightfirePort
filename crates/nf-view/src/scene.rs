@@ -42,7 +42,11 @@ pub struct Scene {
 
 impl Scene {
     pub fn build(level: &Level, cels_only: bool) -> Scene {
-        let (instances, missing) = level.instances(cels_only);
+        let (mut instances, missing) = level.instances(cels_only);
+        // Characters (oDrone placements → skin → skinned meshes, bind pose) are drawn in both modes.
+        let (characters, chars_missing) = level.character_instances();
+        let n_characters = characters.len();
+        instances.extend(characters);
         let mut groups: BTreeMap<Option<(usize, u32)>, (Vec<Vertex>, Vec<u32>)> = BTreeMap::new();
         let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
         // The spawn comes from the placement records even when entities are not drawn (Player1 is not a 0x8000 cel).
@@ -84,7 +88,7 @@ impl Scene {
             let rgba = t.frame(0).iter().flat_map(|&i| pal[i as usize]).collect();
             textures.push(TextureImage { key, width: t.width as u32, height: t.height as u32, rgba });
         }
-        let stats = format!("{} instances ({hidden} skipped by the cel pass: flag 0x10; {skinned} skinned, not drawn yet), {missing} unresolved, {} triangles, {} materials",
+        let stats = format!("{} instances ({hidden} skipped by the cel pass: flag 0x10; {n_characters} character meshes from skins, {chars_missing} drones with a skin from another archive; {skinned} skinned, drawn in bind pose), {missing} unresolved, {} triangles, {} materials",
             instances.len(), indices.len() / 3, materials.len());
         Scene { vertices, indices, materials, textures, bounds: (lo, hi), start, stats }
     }

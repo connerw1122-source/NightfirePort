@@ -275,3 +275,29 @@ The user confirmed gameplay and approved stopping the mcp-pine bridge (node pid 
   flags have 0x10. `Room_Sky` has it too and is drawn by `View_DrawSky` instead. Over all levels no second bit
   separates skies from blockers, so nf-view applies exactly the game's cel rule and leaves the sky for G-019.
 - `MapObject::flags` / `skipped_by_cel_pass`; nf-view hides those cels: 18 in 07000005, striped panels gone.
+
+## 0013 — Characters: skinned meshes in bind pose, skins, drones (2026-10-08)
+
+**Done**
+- Read `CacheSkin`, `SkinIt`, `psiDrawSkinObjectMatrix`, `AnimLoadFile`, `AnimProcessSkinData`, `AnimSkeletonProcess`.
+- ps2gfx.rs: skin REF tags read their data from the source vertex buffer (signed relative address); only inline
+  unpacks may set the batch header; skinned batches keep the raw packed word. All 582 skinned leaves pass every VU
+  freshness check; box min/max = decoded bounds bit for bit in all 582 → model-space bind pose.
+- character.rs (skeletons, skins in loader order), `Level::skins`, `character_instances` (oDrone param 0 → skin →
+  main meshes); nf-view draws them: 16 guards in 07000005, T-pose, feet on the floor.
+- Goldens: geometry.tsv regenerated (per archive object/skinned counts identical; skinned rows now carry geometry:
+  totals 7,154,267 vertices / 4,697,239 triangles). nightfire-re re-run: static objects still 6,227/6,227 identical;
+  the 115 new unmatched are exactly the unique skinned objects (their tool does not export skinned meshes).
+  47 unit + 9 opt-in tests pass.
+
+**Measured**
+- Skinning word bit 15 = no kick (51,664/51,664 strip starts); upper half-word = morph index.
+- 1,217 skins parse; main meshes: 582 → skinned objects, 627 sleeve substitutes. Placements with a skin in
+  parameter 0: 522 oDrone (skin present), 33 oDrone (skin elsewhere), 8 Tree.
+
+**Failed / corrected**
+- Kick bit: I first read the dumped bytes `00 80 ff ff` as the number 0x0080FFFF and used bit 23 — 63,571 triangles
+  from 1.48 M vertices, obviously wrong. The bit histogram showed bit 15 (the word is 0xFFFF8000 little-endian).
+- My first pass assumed `oDrone` positions might need a height offset; the render shows feet on the floor, but this
+  is not verified against the game (U-026).
+- Edits that replaced `"…" => ` with text ending in `=>` (no space) had glued two CLI match arms; fixed with the editor.
