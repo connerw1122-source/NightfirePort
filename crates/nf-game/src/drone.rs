@@ -422,6 +422,12 @@ pub struct Drone {
     pub stationary: bool,
     /// A captain (`+0x19`).
     pub captain: bool,
+    /// `+0x1A`: the special death's free root motion — the whole root translation (vertical too) moves the object,
+    /// which is then the hip (`DroneAnim_PreTransCallback` keeps the vertical part and adds the motion to the slide
+    /// target `+0xBE0`); collision, gravity (`+0x4F8 & 0x20 / 0x80`) and the AI-boundary push-out (`& 0x80000000`,
+    /// `bounded`) are off.
+    pub free_root: bool,
+    pub bounded: bool,
     /// Pickups this drone made this tick (`DroneWeap_DropWeapon`, `DroneFunc_DropGrenade`), collected by `Drones`.
     pub drops: Vec<crate::pickup::Pickup>,
     /// Drone modes (`behaviour_util_get`: placement parameter 15 = type `+0xC7`, 16 = the normal block's mode `+0xC8`,
@@ -481,7 +487,7 @@ impl Drone {
             global_flinch: None, bond_aiming: false, cull: false,
             corpse: false, death_pending: false, death_channel: param(12) as u8, special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
-            captain: false, drops: Vec::new(), dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
+            captain: false, drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
         };
         dr.init_properties(d, &param);
@@ -889,7 +895,17 @@ impl Drone {
         if let (Some([lx, lz]), Some(_)) = (delta, root) {
             let (s, c) = (crate::trig::sinf(self.yaw), crate::trig::cosf(self.yaw));
             let step = [lx * c + lz * s, -lx * s + lz * c];
-            self.move_by(d, step);
+            if self.free_root {
+                // Unblocked, with the vertical change; the slide target moves along.
+                let ly = match (root, self.root_prev, restarted, wrap_end) {
+                    (Some(r), Some(prev), false, _) => r[1] - prev[1],
+                    _ => 0.0,
+                };
+                let m = [step[0], ly, step[1]];
+                for k in 0..3 { self.pos[k] += m[k]; self.special_spot[k] += m[k]; }
+            } else {
+                self.move_by(d, step);
+            }
         }
         self.root_prev = root;
     }
@@ -1039,6 +1055,11 @@ impl Drone {
                 if bond_ok && near && facing {
                     self.set_death_channel();
                     self.death_pending = false;
+                    // The object is the hip from here (feet + `Drone+0xA0`; the port's position is otherwise feet + 1).
+                    let hip = self.root_value(d).map_or(0.0, |r| r[1]);
+                    self.pos[1] += crate::damage::drone_height(hip) - 1.0;
+                    self.free_root = true;
+                    self.bounded = false;
                     self.play_script(self.special_death, anim_state::DEATH, 0xbf, DEAD, msg::ANIM_DONE);
                     self.timer_c = Some(frame + 60);
                     return Some(true);
@@ -1048,7 +1069,12 @@ impl Drone {
                 self.set_state(DEATH_ANIM);
                 true
             }
-            (SPECIAL_DEATH, msg::UPDATE) => { let to = self.special_spot; self.slide_to(d, to, 0.05); true }
+            (SPECIAL_DEATH, msg::UPDATE) => {
+                let to = self.special_spot;
+                if self.free_root { self.slide_free(to, 0.05); } else { self.slide_to(d, to, 0.05); }
+                if !self.firing || matches!(self.anim_set, 4 | 9) { self.drop_weapon(d, rng); }
+                true
+            }
             (SPECIAL_DEATH, msg::ANIM_DONE) => { self.set_state(DEAD); true }
             (DEATH_ANIM, msg::EXIT) => { if self.death_pending { self.set_death_channel(); } true }
             (DEATH_ANIM, msg::TIMER_C) => { if self.death_pending { self.set_death_channel(); self.death_pending = false; } true }
@@ -1099,7 +1125,7 @@ impl Drone {
         let skel = d.skeletons.get(&skin.skeleton)?;
         let mut local = nf_formats::anim::local_pose(seq, skel, skin, f.clamp(1, seq.frames.max(1) as u32));
         let hip = local[0].0[1];
-        let obj = nf_formats::placement::object_matrix([0.0, self.yaw, 0.0], [self.pos[0], self.pos[1] - 1.0 + crate::damage::drone_height(hip), self.pos[2]]);
+        let obj = nf_formats::placement::object_matrix([0.0, self.yaw, 0.0], [self.pos[0], self.draw_y(hip), self.pos[2]]);
         Some(crate::damage::palette(&mut local, skin, &obj))
     }
 
@@ -1153,6 +1179,11 @@ impl Drone {
         };
         let m = nf_formats::placement::object_matrix([0.0, self.yaw, 0.0], self.pos);
         self.drops.extend(crate::pickup::Pickup::create_simple(&m, id, n, crate::pickup::kind::WEAPON, d.weapons, d.models));
+    }
+
+    /// The object's height as drawn (the hip): feet + `Drone+0xA0` from the root height, or the free object itself.
+    pub fn draw_y(&self, hip: f32) -> f32 {
+        if self.free_root { self.pos[1] } else { self.pos[1] - 1.0 + crate::damage::drone_height(hip) }
     }
 
     /// `AnimGetCollData`: the drone's hit boxes now.
@@ -1346,6 +1377,12 @@ impl Drone {
 
     /// `NDrone2_SlideToPosition(target, rate, y = false)`: x/z toward the point (snapping within 0.01), then the
     /// drone's height rule puts it back on the floor.
+    /// `NDrone2_SlideToPosition(to, rate, 1)`: in 3D, no floor (the special death).
+    fn slide_free(&mut self, to: V3, rate: f32) {
+        let dist = ((to[0] - self.pos[0]).powi(2) + (to[1] - self.pos[1]).powi(2) + (to[2] - self.pos[2]).powi(2)).sqrt();
+        if dist > 0.01 { for k in 0..3 { self.pos[k] += (to[k] - self.pos[k]) * rate; } } else { self.pos = to; }
+    }
+
     fn slide_to(&mut self, d: &Data, to: V3, rate: f32) {
         let dist = ((to[0] - self.pos[0]).powi(2) + (to[2] - self.pos[2]).powi(2)).sqrt();
         if dist > 0.01 {
@@ -2937,7 +2974,7 @@ impl Drones {
             if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
             for mut p in dr.drops.drain(..) { p.from = Some(index); self.pickups.push(p); }
             // `NDrone2_Collision`: the feet sphere (r 0.4) is pushed out of the AI-network boundaries.
-            if dr.enabled && d.nav.bounds {
+            if dr.enabled && dr.bounded && d.nav.bounds {
                 let p = d.nav.push_out(dr.feet(), 0.4);
                 dr.pos[0] = p[0];
                 dr.pos[2] = p[2];

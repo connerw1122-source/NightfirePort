@@ -890,3 +890,23 @@ the creation offset) leaves the centre |centre y| above the floor, and the picku
 
 **Not done** (G-029): weapon switching (Bond keeps the P2K; the SG5's first-person fire sound id is unknown),
 `Player_IsBetterWeapon` auto-switch, level-placed / script pickups, keys, armour, respawning pickups, text messages.
+
+## 0041 — Tower guards fall out of the towers (2026-10-09)
+
+**Report** (user): shot in the tower, the guards played the falling animation but stayed at the window.
+
+**Cause**: the port moved every drone by the horizontal root motion only, stopped by collision probes and stood on a
+floor within 2 units; the vertical motion was replaced by the hip-height rule. **Read** (docs/systems/drone-damage.md):
+SpecialDeath's enter clears the AI-boundary, collision and gravity flags and sets `Drone+0x1A`;
+`DroneAnim_PreTransCallback` then keeps the vertical root motion and also moves the slide target `+0xBE0`;
+`AnimFrameResolve` adds the rotated motion to `obj+0x30`; `NDrone2_SlideToPosition(…, 0.05, 1)` slides in 3D. Also read:
+`Drone_CollisionHandler`, `NDrone2_DoGravity`, `NDrone2_DoCollision`, `NDrone2_Collision` (gravity for living drones —
+not ported, G-026).
+
+**Port**: `Drone::free_root` / `bounded`; in SpecialDeath the object becomes the hip (feet + `+0xA0`), takes the full
+root motion unblocked, slides in 3D, skips the boundary push-out; `draw_y` gives the drawn height (nf-view, hit boxes).
+SpecialDeath's update now also drops the weapon (read). Test `tower_guards_fall_out_of_the_towers`: spawner 266 picks
+placement 267 (seed 1) or 7 (seed 32); either guard, killed at his post, falls 8–9.5 units out of the tower and ends
+with the hip 0.12–0.51 above the ground below (the script was authored for that drop); shot over the head he stays.
+First attempts at the test hit nothing: placement 7 is absent unless the spawner picks it, and the second shot
+missed once the sniper turned to a Bond standing elsewhere. nf-game: all tests pass.

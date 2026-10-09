@@ -63,6 +63,19 @@ Placement parameters (DefaultInit, `param(k)` = `piVar19[0xD + k]`) [M, checked]
   bullet's heading is within 90° of the drone's yaw (shot from behind) else 0; otherwise `+0x3A` = 0, 0x40 variant
   Rand(4) if the danim's `info+0x10` byte is set. Update: `+0x3B` = 0 or anim set 4 / 9 → `DropWeapon` (docs/systems/pickups.md). Exit or msg
   0xC with `+0xCD8` → `SetDeathChannel` (0x13e660): `switch_channels[+0x13C]` = 1 (0x63: mission-fail reasons instead).
+- SpecialDeath 0x46 (0x163c68, read): at its spot (`+0xBE0`, within 1.0 in 2D, facing within 90° of `+0xBF4`;
+  script 0x0600021F also needs Bond ≥ 2 away) → `OnInitDeath`, death channel, `+0x4F8 &= ~0x80000000` (no AI-boundary
+  push-out), `& ~0x20` (no collision), `& ~0x80` (no gravity), `+0x1A` = 1, the script as anim state 0x40 (follow-on
+  0xBF, then Dead; 0x0F in mode 5); else the normal death. Update: `NDrone2_SlideToPosition(+0xBE0, 0.05, 3D)` and
+  the weapon drop as in Death_Anim. With `+0x1A`, `DroneAnim_PreTransCallback` keeps the **whole** root motion
+  (vertical too — normally replaced by the change of `+0xA0`) and adds it to `+0xBE0` as well; `AnimFrameResolve` adds
+  it to `obj+0x30`. So the script carries the body out of the tower: 07000005's sniper (placement 267, 0x06000A1C)
+  ends 9.5 lower with the hip 0.51 above the ground below, the other pick (7, 0x060003DF) 8.1 lower, 0.12 above it
+  (port, test `tower_guards_fall_out_of_the_towers`).
+- Gravity / collision otherwise (`Drone_CollisionHandler` 0x140968, `NDrone2_DoGravity` / `DoCollision`): while
+  `+0x4F8 & 0x80` and not dead (`& 0x200`), velocity `+0x480` += `WldGravity` / 60 per tick and position += velocity
+  / 60 unless the feet are on a surface (the hit within 0.2 below the feet sphere, `anim+0x60 & 8`). Not ported: the
+  port stands drones on a floor within 2 units below (G-026).
 - Dead 0x47 (0x163fe8): enter `obj+0xF0 |= 0x20`, `SetAsDead`, timer 0xC at now + 300 (`DAT_00298F58` = 10 ·
   `FRAME_RATE_INT` [L]); prop 0x31 and not a silent kill → `DroneAlertToObject(msg 0x15, corpse)`: a broadcast that
   single-player states pass to `DroneVision_EnemyAlerts`, whose case 0x15 ends in `ShoutFromOtherDrone` (returns 0) —

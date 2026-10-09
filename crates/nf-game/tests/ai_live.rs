@@ -456,6 +456,54 @@ fn a_dead_guard_drops_its_gun_and_bond_takes_it() {
     assert_eq!(sim.inventory.carried[1], 41, "the P2K's rounds untouched");
 }
 
+/// The tower sniper (spawner 266 picks placement 267 or 7 at random; special-death scripts 0x06000A1C / 0x060003DF):
+/// killed at his post he plays the script with free root motion (`Drone+0x1A`, no collision or gravity) and drops out
+/// of the tower to the ground below instead of staying at the window. Sister: shot over the head, he stays.
+#[test]
+fn tower_guards_fall_out_of_the_towers() {
+    use nf_game::drone::state;
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    // (placement, seed) → the run, or None when the spawner picked the other placement.
+    let run = |placement: usize, seed: u32, over: f32| {
+        let (drones, _, rng) = l.drones_seeded(None, 61.342, seed);
+        let i = drones.iter().position(|dr| dr.placement == placement).unwrap();
+        let mut sim = l.sim(drones, rng);
+        let away = bond_at([0.0, -500.0, 0.0]);
+        for _ in 0..10 { sim.tick(&d, &away); }
+        if !sim.list[i].present { return None; }
+        let t = sim.list[i].pos;
+        // As in `bond_kills_guards_with_two_torso_shots`: Bond 2.6 east, shooting at the chest from his eye.
+        let p = bond_at([t[0] + 2.574, t[1] - 0.1, t[2] + 0.03]);
+        let mut track = Vec::new();
+        for f in 1..=700u32 {
+            if f == 100 || f == 130 {
+                let t = sim.list[i].pos;
+                let (e, to) = (p.eye, [t[0], t[1] + 0.3 + over, t[2]]);
+                let n = ((to[0] - e[0]).powi(2) + (to[1] - e[1]).powi(2) + (to[2] - e[2]).powi(2)).sqrt();
+                sim.fire_player(&d, e, [(to[0] - e[0]) / n, (to[1] - e[1]) / n, (to[2] - e[2]) / n], 2, l.sfx.get(0x403));
+            }
+            sim.tick(&d, &p);
+            track.push(sim.list[i].pos);
+        }
+        Some((sim, i, track))
+    };
+    for placement in [267, 7] {
+        let seed = (1..64).find(|&s| { let (dr, _, rng) = l.drones_seeded(None, 61.342, s); let i = dr.iter().position(|x| x.placement == placement).unwrap();
+            let mut sim = l.sim(dr, rng); let away = bond_at([0.0, -500.0, 0.0]); for _ in 0..10 { sim.tick(&d, &away); } sim.list[i].present }).expect("a seed picking it");
+        let (sim, i, track) = run(placement, seed, 0.0).unwrap();
+        let log: Vec<u8> = sim.list[i].log.iter().map(|&(_, s)| s).collect();
+        assert!(log.contains(&state::SPECIAL_DEATH) && log.contains(&state::DEAD), "{placement}: log {:x?}", sim.list[i].log);
+        let (start, end) = (track[0], *track.last().unwrap());
+        let floor = l.world.floor_below([end[0], end[1] + 3.0, end[2]], 10.0).unwrap();
+        eprintln!("{placement} (seed {seed}): from {start:?} to {end:?}, ground {floor}");
+        assert!(end[1] < start[1] - 4.0, "{placement} fell from {start:?} to {end:?}");
+        assert!((0.0..1.2).contains(&(end[1] - floor)), "{placement}: the hip lies just above the ground below ({} vs {floor})", end[1]);
+        let (_, _, track) = run(placement, seed, 3.0).unwrap();
+        assert!((track.last().unwrap()[1] - track[0][1]).abs() < 0.5, "sister: {:?}", track.last());
+    }
+}
+
 /// AI volumes against the level-start RAM snapshot (work/ee_start_05.bin, `AIBoxList` 0x2706c8, read in WORKLOG 0032):
 /// centre, half-extents, first axis and factor of the eight shadow volumes; Bond's start lies in the 0.25 one only.
 /// Sister: a point well outside every box gets 1.
