@@ -121,6 +121,8 @@ pub struct Sim {
     /// The first-person gun's script (`Player_SetWeaponAnimObj`), its time in frames and speed, and the bob phases
     /// (`BL+0x8DC` from the forward speed, `BL+0x8E8` idle time).
     pub view_script: u32,
+    /// The tick of Bond's last shot (the first-person flash).
+    pub last_shot: Option<u32>,
     pub view_time: f32,
     pub view_speed: f32,
     pub bob: [f32; 2],
@@ -195,6 +197,7 @@ impl Sim {
             let rd = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
             let flags = rd(0x68);
             if fired {
+                self.last_shot = Some(self.drones.frame);
                 self.view_script = if flags & 0x1000 != 0 && self.gun.clip < 1 && rd(0xb4) != 0 { rd(0xb4) } else { rd(0xb0) };
                 (self.view_time, self.view_speed) = (0.0, 1.0);
             } else if self.gun.reloading > 0 && !was_reloading {
@@ -377,6 +380,20 @@ fn floor_below(vertices: &[Vertex], indices: &[u32], materials: &[Material], p: 
 /// the spherical angles of the datum's −x axis (`Vec_Cartesian_2_Spherical`: atan2(y, |xz|), atan2(x, z), length)
 /// plus `Rand_FRand(2π)` on x, `Rand_FRandHalf(0.2) + π/2` on y and `Rand_FRandHalf(0.2)` on z; matrix as for
 /// placements (`RotMatrix`). `seed` stands in for the game's random state.
+/// `Draw_MuzzleFlash` for Bond: local +Z along the muzzle datum's +Z, a random roll, scale 0.9 + rand(0.2).
+fn player_flash_matrix(datum: &Mat4, seed: u32) -> Mat4 {
+    let mut s = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
+    let mut rand = || { s ^= s << 13; s ^= s >> 17; s ^= s << 5; (s >> 8) as f32 / (1u32 << 24) as f32 };
+    let n = |v: [f32; 3]| { let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-9); v.map(|x| x / l) };
+    let z = n([datum[2][0], datum[2][1], datum[2][2]]);
+    let (x0, y0) = (n([datum[0][0], datum[0][1], datum[0][2]]), n([datum[1][0], datum[1][1], datum[1][2]]));
+    let (a, sc) = (rand() * std::f32::consts::TAU, 0.9 + rand() * 0.2);
+    let (sa, ca) = (a.sin(), a.cos());
+    let x = [0, 1, 2].map(|k| (x0[k] * ca + y0[k] * sa) * sc);
+    let y = [0, 1, 2].map(|k| (y0[k] * ca - x0[k] * sa) * sc);
+    [[x[0], x[1], x[2], 0.0], [y[0], y[1], y[2], 0.0], [z[0] * sc, z[1] * sc, z[2] * sc, 0.0], [datum[3][0], datum[3][1], datum[3][2], 1.0]]
+}
+
 fn muzzle_flash_matrix(datum: &Mat4, seed: u32) -> Mat4 {
     let mut s = seed.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
     let mut rand = || { s ^= s << 13; s ^= s >> 17; s ^= s << 5; (s >> 8) as f32 / (1u32 << 24) as f32 };
@@ -514,6 +531,14 @@ impl Scene {
                         add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None);
                         attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false });
                     }
+                    // The muzzle flash (`Player_MuzzleFlash`): mesh `weapon+0x48` on datum 0, colour (+0x56, +0x55, +0x54).
+                    let r = &wd.records[2];
+                    let flash = u32::from_le_bytes(r[0x48..0x4c].try_into().unwrap());
+                    if let (Some(&(fmap, fobject)), Some(dt)) = (level.by_hash.get(&flash), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
+                        let finst = Instance { map: fmap, object: fobject, matrix: ident, placement: placement.clone() };
+                        add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None);
+                        attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false });
+                    }
                     characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None });
                     view_model = Some(ci as usize);
                 }
@@ -593,7 +618,7 @@ impl Scene {
             let bond = nf_game::player::Bond::stand_at(&world, p0, yaw0);
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.attach_level(level);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false })
         });
         Scene { vertices, indices, materials, textures, hud_texture, view_model, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }
@@ -716,6 +741,13 @@ impl Scene {
             // Dropped: the drone holds nothing (`anim+0x62` = 0).
             if drone_of(a.character as usize).is_some_and(|(s, di)| s.drones.list[di].weapon == 0) { return collapse(&datum); }
             if a.flash.is_none() { return datum; }
+            // Bond's flash: 3 ticks after his shot (`BL+0x938` = 3), along the datum's +Z with a random roll and scale.
+            if Some(a.character as usize) == self.view_model {
+                return match self.sim.as_ref().and_then(|s| s.last_shot.filter(|&f| s.drones.frame.saturating_sub(f) < 3).map(|f| (s, f))) {
+                    Some((s, f)) => player_flash_matrix(&datum, s.drones.frame ^ f.wrapping_mul(0x9e37_79b9)),
+                    None => collapse(&datum),
+                };
+            }
             // AI-driven: the flash object lives 2 ticks after each shot (`DroneWeap_FireWeapon`).
             if let Some((s, di)) = drone_of(a.character as usize) {
                 let now = s.drones.frame;
