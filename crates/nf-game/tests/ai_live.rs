@@ -845,12 +845,21 @@ fn wine_truck_drives_and_parks() {
     let pos = |sim: &Drones| { let (s, f) = truck(sim).unwrap(); let m = d.discrete0(0x0500_0005, s, f).unwrap(); [m[3][0], m[3][1], m[3][2]] };
     let mut track = Vec::new();
     let mut chan_73 = None;
+    // A vertical ray through the truck where it waits at the gatehouse: its top at 1900, the road once it has gone.
+    let probe = |at: [f32; 3]| d.world.floor_below([at[0], at[1] + 6.0, at[2]], 12.0);
+    let mut gate = None;
     for t in 1..=6000u32 {
         sim.tick(&d, &away);
+        if t == 1900 { let p = pos(&sim); gate = Some((p, probe(p))); }
         if t <= 3 || t % 100 == 0 { track.push((t, truck(&sim).map(|x| x.1), truck(&sim).map(|_| pos(&sim)))); }
         if chan_73.is_none() && sim.channels.on(0x73) { chan_73 = Some(t); }
     }
     for x in &track { eprintln!("{x:?}"); }
+    // The truck is solid (`Collide_PickObj` tests its discrete parts): the ray stops on it, ≥ 1 above its root.
+    let (gp, top) = gate.unwrap();
+    let road = probe(gp);
+    eprintln!("gatehouse ray: on the truck {top:?}, after it left {road:?}");
+    assert!(top.zip(road).is_some_and(|(a, b)| a > b + 1.0), "{top:?} {road:?}");
     // First update: the load's own `Script_Update` starts the animation at frame 1 (clock 0); the snapshot's truck [L].
     let (_, f1, p1) = track[0];
     assert_eq!(f1, Some(1.0));

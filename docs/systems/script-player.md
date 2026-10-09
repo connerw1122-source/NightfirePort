@@ -78,6 +78,15 @@ bones) with anim script 0x06000092 frame = t + 1 for t = 0..5895; the event at 5
 the animation stream ends but the truck stays parked on the last frame. The headlight coronas follow discrete object
 0; the touch triggers set channels 0x70 / 0x71 / 0x5C (0x5C starts ScriptPlayer #38).
 
+## Collision [M, L]
+
+`Collide_PickObj` (0x1eae80) tests every object linked into a cel whose collision data (`obj+0xD8`, `+8`) is set,
+unless its `obj+0xF0` has a bit the test excludes (0x10 / 0x20 / 0x40 / 0x1000 by test flags). The truck's nine
+discrete objects (type 0x3D) all have collision data, are linked into cels and carry flags 0x8880 (windows 0x8A81)
+[L, snapshot 0x137C8A0…]: the whole truck is solid to Bond, bullets and sight lines. The port places the collision
+meshes of script animations' parts and of drawn script entities in `CollisionWorld`'s moving set after the script
+update each tick (WORKLOG 0060).
+
 ## Port status
 
 `nf-game::nis`: the player states, `Script_Update` / `Run` / `Interp` (linear and spline keys), commands 04–0C, 12

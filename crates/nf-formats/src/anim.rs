@@ -161,6 +161,13 @@ pub fn transform(m: &Mat4, v: [f32; 3]) -> [f32; 3] {
 /// Local (translation, quaternion) per bone at an integer frame: per bone tx, ty, tz (only if the skeleton mask bit
 /// is set; × skin scale) then qx, qy, qz with w rebuilt from the qz ≥ 2 sign trick. Bones without translation
 /// channels use the skeleton offset × skin scale.
+/// Whether `seq` has a channel for every value `local_pose` reads on `skel` (3 per translated bone, 3 per rotation);
+/// some sequences on a skeleton id carry fewer.
+pub fn fits(seq: &Sequence, skel: &Skeleton) -> bool {
+    let need: usize = (0..skel.bones as usize).map(|b| if skel.has_translation(b) { 6 } else { 3 }).sum();
+    seq.skeleton == skel.id as u8 && seq.channels.len() >= need
+}
+
 pub fn local_pose(seq: &Sequence, skel: &Skeleton, skin: &Skin, frame: u32) -> Vec<([f32; 3], [f32; 4])> {
     local_pose_with(seq, skel, skin, frame, Arith::Ps2)
 }

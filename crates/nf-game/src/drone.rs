@@ -2858,13 +2858,25 @@ pub struct Drones {
 impl crate::nis::World for Data<'_> {
     fn anim_length(&self, script: u32) -> Option<u16> { self.scripts.get(&script).map(|s| s.length) }
     fn discrete0(&self, skin: u32, script: u32, frame: f32) -> Option<nf_formats::anim::Mat4> {
-        let sk = self.skins.get(&skin)?;
-        let skel = self.skeletons.get(&sk.skeleton)?;
-        let (q, f) = crate::anim::script_frame(self.scripts.get(&script)?, frame)?;
-        let seq = self.sequences.get(&q)?;
-        // The root keeps its translation: the object sits at the origin and follows it (`Script_AnimStart`).
-        let world = nf_formats::anim::world_pose(&nf_formats::anim::local_pose(seq, skel, sk, f as u32), sk);
-        world.get(sk.extra.first()?.0 as usize).copied()
+        self.discrete_parts(skin, script, frame).into_iter().next().map(|p| p.1)
+    }
+}
+
+impl Data<'_> {
+    /// An animated script object's discrete objects (the skin's rigid parts): glist hash and world matrix. The root
+    /// keeps its translation: the object sits at the origin and follows it (`Script_AnimStart`).
+    pub fn discrete_parts(&self, skin: u32, script: u32, frame: f32) -> Vec<(u32, nf_formats::anim::Mat4)> {
+        let pose = || -> Option<Vec<(u32, nf_formats::anim::Mat4)>> {
+            let sk = self.skins.get(&skin)?;
+            let skel = self.skeletons.get(&sk.skeleton)?;
+            let (q, f) = crate::anim::script_frame(self.scripts.get(&script)?, frame)?;
+            let seq = self.sequences.get(&q).filter(|q| nf_formats::anim::fits(q, skel))?;
+            let world = nf_formats::anim::world_pose(&nf_formats::anim::local_pose(seq, skel, sk, f as u32), sk);
+            Some(sk.extra.iter().filter_map(|&(bone, part)| Some((part?, *world.get(bone as usize)?))).collect())
+        };
+        // A sequence without a channel for every bone (cut-scene 0x06000997 on 0x0500002E: its sequence is not this
+        // archive's full set) gives no parts.
+        pose().unwrap_or_default()
     }
 }
 
@@ -3248,6 +3260,17 @@ impl Drones {
         crate::triggers::calc(d.level, &mut self.triggers, &mut self.channels, &touchers, frame);
         // Script players (*deviation*: all of them here, not interleaved with the placed objects by list order).
         self.scripts.tick(&mut self.channels, d, frame);
+        // Script objects with collision data join the collision world where they now are: animations' discrete
+        // parts and drawn entities (`Collide_PickObj`; triggers and AI volumes are not obstacles).
+        let mut parts = Vec::new();
+        for o in self.scripts.objects.list.iter().flatten() {
+            match o {
+                crate::nis::Obj::Anim { skin, script, frame, .. } => parts.extend(d.discrete_parts(*skin, *script, *frame)),
+                crate::nis::Obj::Entity { hash, kind, matrix, .. } if !matches!(kind, 0xea | 0xeb | 0xf5 | 0xf2) => parts.push((*hash, *matrix)),
+                _ => {}
+            }
+        }
+        d.world.set_dynamic(&parts);
         for r in std::mem::take(&mut self.scripts.requests) {
             if let crate::nis::Request::Sound { id, at: Some(o) } = r {
                 let pos = match self.scripts.objects.list.get(o) {

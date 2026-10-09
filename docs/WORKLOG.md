@@ -1144,3 +1144,20 @@ so an overlay could draw before its base: with alpha 0 it wrote depth and no col
 per batch), and the depth test is `LessEqual` (the GS's ZTST GEQUAL on inverted Z passes equal depth). Before/after
 render of the outer-wall corner: flat fog-coloured ledges become stone with the snow layer over it. `NF_LEAVES=<object
 name>` (with `NF_DRAWS=1`) dumps an object's leaves, GS writes, textures and alpha ranges.
+
+## 0060 — Moving collision: the truck is solid
+
+User report: the truck has no hitbox. The port's collision world was static only; the game's `Collide_PickObj`
+(0x1eae80) tests any object linked into a cel with collision data (`obj+0xD8`), moving or not, filtered by `obj+0xF0`
+bits. Snapshot [L]: the truck animation object at 0x137D0F0, its nine discrete objects (type 0x3D) all with collision
+data, linked into cels, flags 0x8880 / 0x8A81 — none excluded. Collision meshes per part: body 2744 triangles, wheels
+168 / 168 / 320, hatch 52, windows 28, wipers 5 / 5, `OBJECT_wine_truck_all` 12.
+
+`CollisionWorld` keeps every hashed glist's object-space collision and a moving set (`set_dynamic`) that all queries
+(segment, segment_hit, capsule_push, line of sight, floors) test after the static geometry. `Drones::tick` places the
+script animations' discrete parts (skin rigid parts at their posed bone matrices) and drawn script entities after the
+script update. Found on the way: with every channel on, cut-scene 0x06000997 animates 0x0500002E with a sequence
+lacking channels for the skeleton (index panic) — `anim::fits` now guards posing in the game and the viewer.
+Tests: unit `moving_objects_collide_where_they_are` (sister: moved away / unknown glist → clear);
+`wine_truck_drives_and_parks` now casts a ray down at the gatehouse stop at tick 1900: it stops on the truck at
+y 20.58, the road below is 18.83 once the truck has left. All suites pass.

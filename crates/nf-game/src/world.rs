@@ -13,9 +13,32 @@ struct Object {
     tris: std::ops::Range<usize>,
 }
 
-pub struct CollisionWorld {
+#[derive(Default)]
+struct Geo {
     tris: Vec<[V3; 3]>,
     objects: Vec<Object>,
+}
+
+impl Geo {
+    fn push(&mut self, tris: impl IntoIterator<Item = [V3; 3]>) {
+        let start = self.tris.len();
+        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+        for w in tris {
+            for p in &w { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
+            self.tris.push(w);
+        }
+        if self.tris.len() > start { self.objects.push(Object { lo, hi, tris: start..self.tris.len() }); }
+    }
+}
+
+/// Static geometry, plus moving objects (script animations' discrete parts: docs/systems/script-player.md) placed each
+/// tick with `set_dynamic` — `Collide_PickObj` (0x1eae80) tests any object linked into a cel with collision data
+/// (`obj+0xD8`) whatever moves it.
+pub struct CollisionWorld {
+    stat: Geo,
+    dynamic: std::sync::RwLock<Geo>,
+    /// Collision triangles (object space) of every hashed glist object, for `set_dynamic`.
+    shapes: std::collections::HashMap<u32, Vec<[V3; 3]>>,
 }
 
 fn sub(a: V3, b: V3) -> V3 { [a[0] - b[0], a[1] - b[1], a[2] - b[2]] }
@@ -25,32 +48,49 @@ fn cross(a: V3, b: V3) -> V3 { [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * 
 impl CollisionWorld {
     /// From the level's instances (as drawn: cel placements; skipped-cel blockers included — they block).
     pub fn build(level: &Level, instances: &[Instance]) -> CollisionWorld {
-        let (mut tris, mut objects) = (Vec::new(), Vec::new());
+        let mut stat = Geo::default();
         for inst in instances {
             let Some(c) = &level.maps[inst.map].objects[inst.object].collision else { continue };
-            let start = tris.len();
-            let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-            for t in c.triangles() {
-                let w = t.map(|p| transform(&inst.matrix, p));
-                for p in &w { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
-                tris.push(w);
-            }
-            if tris.len() > start { objects.push(Object { lo, hi, tris: start..tris.len() }); }
+            stat.push(c.triangles().into_iter().map(|t| t.map(|p| transform(&inst.matrix, p))));
         }
-        CollisionWorld { tris, objects }
+        let shapes = level.by_hash.iter()
+            .filter_map(|(&h, &(m, o))| level.maps[m].objects[o].collision.as_ref().map(|c| (h, c.triangles()))).collect();
+        CollisionWorld { stat, dynamic: Default::default(), shapes }
     }
 
-    pub fn triangle_count(&self) -> usize { self.tris.len() }
+    pub fn triangle_count(&self) -> usize { self.stat.tris.len() }
 
     /// No geometry (tests).
-    pub fn empty() -> CollisionWorld { CollisionWorld { tris: Vec::new(), objects: Vec::new() } }
+    pub fn empty() -> CollisionWorld { Self::from_triangles(Vec::new()) }
 
     /// One object holding these world-space triangles (tests).
     pub fn from_triangles(tris: Vec<[V3; 3]>) -> CollisionWorld {
-        let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-        for p in tris.iter().flatten() { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
-        let n = tris.len();
-        CollisionWorld { tris, objects: vec![Object { lo, hi, tris: 0..n }] }
+        let mut stat = Geo::default();
+        stat.push(tris);
+        CollisionWorld { stat, dynamic: Default::default(), shapes: Default::default() }
+    }
+
+    /// Whether glist object `hash` has collision geometry.
+    pub fn has_shape(&self, hash: u32) -> bool { self.shapes.contains_key(&hash) }
+
+    /// Replaces the moving objects: each glist object `hash` at a row-vector world matrix.
+    pub fn set_dynamic(&self, parts: &[(u32, nf_formats::anim::Mat4)]) {
+        let mut g = Geo::default();
+        for (h, m) in parts {
+            if let Some(t) = self.shapes.get(h) { g.push(t.iter().map(|t| t.map(|p| transform(m, p)))); }
+        }
+        *self.dynamic.write().unwrap() = g;
+    }
+
+    /// Every triangle of the objects whose box meets `lo`..`hi`, static first.
+    fn near(&self, lo: V3, hi: V3, mut f: impl FnMut(&[V3; 3])) {
+        let dynamic = self.dynamic.read().unwrap();
+        for g in [&self.stat, &*dynamic] {
+            for o in &g.objects {
+                if (0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k]) { continue; }
+                for t in &g.tris[o.tris.clone()] { f(t); }
+            }
+        }
     }
 
     /// First hit along the segment `from → to` as a fraction in [0, 1] (Möller–Trumbore, both faces).
@@ -58,24 +98,21 @@ impl CollisionWorld {
         let d = sub(to, from);
         let (mut best, mut lo, mut hi) = (None::<f32>, [0f32; 3], [0f32; 3]);
         for k in 0..3 { lo[k] = from[k].min(to[k]); hi[k] = from[k].max(to[k]); }
-        for o in &self.objects {
-            if (0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k]) { continue; }
-            for t in &self.tris[o.tris.clone()] {
-                let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
-                let p = cross(d, e2);
-                let det = dot(e1, p);
-                if det.abs() < 1e-12 { continue; }
-                let inv = 1.0 / det;
-                let s = sub(from, t[0]);
-                let u = dot(s, p) * inv;
-                if !(0.0..=1.0).contains(&u) { continue; }
-                let q = cross(s, e1);
-                let v = dot(d, q) * inv;
-                if v < 0.0 || u + v > 1.0 { continue; }
-                let tt = dot(e2, q) * inv;
-                if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b) { best = Some(tt); }
-            }
-        }
+        self.near(lo, hi, |t| {
+            let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+            let p = cross(d, e2);
+            let det = dot(e1, p);
+            if det.abs() < 1e-12 { return; }
+            let inv = 1.0 / det;
+            let s = sub(from, t[0]);
+            let u = dot(s, p) * inv;
+            if !(0.0..=1.0).contains(&u) { return; }
+            let q = cross(s, e1);
+            let v = dot(d, q) * inv;
+            if v < 0.0 || u + v > 1.0 { return; }
+            let tt = dot(e2, q) * inv;
+            if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b) { best = Some(tt); }
+        });
         best
     }
 
@@ -84,29 +121,26 @@ impl CollisionWorld {
         let d = sub(to, from);
         let (mut best, mut lo, mut hi) = (None::<(f32, V3)>, [0f32; 3], [0f32; 3]);
         for k in 0..3 { lo[k] = from[k].min(to[k]); hi[k] = from[k].max(to[k]); }
-        for o in &self.objects {
-            if (0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k]) { continue; }
-            for t in &self.tris[o.tris.clone()] {
-                let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
-                let p = cross(d, e2);
-                let det = dot(e1, p);
-                if det.abs() < 1e-12 { continue; }
-                let inv = 1.0 / det;
-                let s = sub(from, t[0]);
-                let u = dot(s, p) * inv;
-                if !(0.0..=1.0).contains(&u) { continue; }
-                let q = cross(s, e1);
-                let v = dot(d, q) * inv;
-                if v < 0.0 || u + v > 1.0 { continue; }
-                let tt = dot(e2, q) * inv;
-                if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b.0) {
-                    let n = cross(e1, e2);
-                    let l = dot(n, n).sqrt().max(1e-12);
-                    let n = if dot(n, d) > 0.0 { [-n[0] / l, -n[1] / l, -n[2] / l] } else { [n[0] / l, n[1] / l, n[2] / l] };
-                    best = Some((tt, n));
-                }
+        self.near(lo, hi, |t| {
+            let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+            let p = cross(d, e2);
+            let det = dot(e1, p);
+            if det.abs() < 1e-12 { return; }
+            let inv = 1.0 / det;
+            let s = sub(from, t[0]);
+            let u = dot(s, p) * inv;
+            if !(0.0..=1.0).contains(&u) { return; }
+            let q = cross(s, e1);
+            let v = dot(d, q) * inv;
+            if v < 0.0 || u + v > 1.0 { return; }
+            let tt = dot(e2, q) * inv;
+            if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b.0) {
+                let n = cross(e1, e2);
+                let l = dot(n, n).sqrt().max(1e-12);
+                let n = if dot(n, d) > 0.0 { [-n[0] / l, -n[1] / l, -n[2] / l] } else { [n[0] / l, n[1] / l, n[2] / l] };
+                best = Some((tt, n));
             }
-        }
+        });
         best
     }
 
@@ -125,16 +159,14 @@ impl CollisionWorld {
         let mut lo = [0f32; 3];
         let mut hi = [0f32; 3];
         for k in 0..3 { lo[k] = a[k].min(b[k]) - grow; hi[k] = a[k].max(b[k]) + grow; }
-        for o in &self.objects {
-            if (0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k]) { continue; }
-            for t in &self.tris[o.tris.clone()] {
+        self.near(lo, hi, |t| {
                 let tl = [0, 1, 2].map(|k| t[0][k].min(t[1][k]).min(t[2][k]));
                 let th = [0, 1, 2].map(|k| t[0][k].max(t[1][k]).max(t[2][k]));
                 let (sl, sh) = ([0, 1, 2].map(|k| a[k].min(b[k]) - grow), [0, 1, 2].map(|k| a[k].max(b[k]) + grow));
-                if (0..3).any(|k| th[k] < sl[k] || tl[k] > sh[k]) { continue; }
+                if (0..3).any(|k| th[k] < sl[k] || tl[k] > sh[k]) { return; }
                 let n = cross(sub(t[1], t[0]), sub(t[2], t[0]));
                 let nl = dot(n, n).sqrt();
-                if nl < 1e-12 { continue; }
+                if nl < 1e-12 { return; }
                 let n = [n[0] / nl, n[1] / nl, n[2] / nl];
                 let ab = sub(b, a);
                 let denom = dot(n, ab);
@@ -149,18 +181,17 @@ impl CollisionWorld {
                 if on_edge { p = closest_on_segment(a, b, q); }
                 let v = sub(p, q);
                 let dist = dot(v, v).sqrt();
-                if dist >= r { continue; }
+                if dist >= r { return; }
                 // The side the capsule is on: along the separation, or (crossing the face) the normal toward the top.
                 let dir = if dist > 1e-6 { [v[0] / dist, v[1] / dist, v[2] / dist] } else if dot(n, sub(a, q)) >= 0.0 { n } else { [-n[0], -n[1], -n[2]] };
                 let push = [dir[0] * (r - dist), dir[1] * (r - dist), dir[2] * (r - dist)];
                 for k in 0..3 { a[k] += push[k]; b[k] += push[k]; total[k] += push[k]; }
                 if n[1].abs() > 0.7 && q[1] < b[1] { walkable = true; }
-            }
-        }
+        });
         (total, walkable)
     }
 
-    /// Clear line between two points (`Collide_LineOfSight` stand-in: static geometry only).
+    /// Clear line between two points (`Collide_LineOfSight` stand-in: collision geometry, moving objects included).
     pub fn line_of_sight(&self, a: V3, b: V3) -> bool { self.segment(a, b).is_none() }
 
     /// Height of the first collision surface straight below `p` within `depth` (starting 0.5 above it).
@@ -212,7 +243,21 @@ mod tests {
 
     fn world(tris: Vec<[V3; 3]>) -> CollisionWorld {
         let n = tris.len();
-        CollisionWorld { tris, objects: vec![Object { lo: [-10.0; 3], hi: [10.0; 3], tris: 0..n }] }
+        let stat = Geo { tris, objects: vec![Object { lo: [-10.0; 3], hi: [10.0; 3], tris: 0..n }] };
+        CollisionWorld { stat, dynamic: Default::default(), shapes: Default::default() }
+    }
+
+    #[test]
+    fn moving_objects_collide_where_they_are() {
+        // One unit triangle in object space as glist 7, placed at x = 5 by the matrix.
+        let mut w = world(Vec::new());
+        w.shapes.insert(7, vec![[[0.0, 0.0, -1.0], [0.0, 1.0, 1.0], [0.0, -1.0, 1.0]]]);
+        let at = |x: f32| [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [x, 0.0, 0.0, 1.0]];
+        w.set_dynamic(&[(7, at(5.0))]);
+        assert!((w.segment([0.0, 0.0, 0.3], [10.0, 0.0, 0.3]).unwrap() - 0.5).abs() < 1e-5);
+        // Sister: moved away, the same segment is clear; an unknown glist adds nothing.
+        w.set_dynamic(&[(7, at(50.0)), (8, at(5.0))]);
+        assert!(w.segment([0.0, 0.0, 0.3], [10.0, 0.0, 0.3]).is_none());
     }
 
     #[test]

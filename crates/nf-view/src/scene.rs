@@ -898,7 +898,7 @@ impl Scene {
                 let s = self.sim.as_ref()?;
                 let (script, frame) = s.script_anim(src, c.skin.hashcode)?;
                 let (q, f) = nf_game::anim::script_frame(s.scripts.get(&script)?, frame)?;
-                let seq = s.seqs.get(&q).filter(|q| q.skeleton == c.skin.skeleton)?;
+                let seq = s.seqs.get(&q).filter(|q| anim::fits(q, &c.skeleton))?;
                 let world = anim::world_pose(&anim::local_pose(seq, &c.skeleton, &c.skin, f as u32), &c.skin);
                 return Some((anim::skin_matrices(&world, &c.skin), world, c.matrix));
             }
