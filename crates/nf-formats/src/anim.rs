@@ -70,6 +70,52 @@ impl Sequence {
     }
 }
 
+/// Animation script (archive entry type 5, prefix 06): what `AnimScriptInit` (0x1c1600) and `AnimProcessScriptData`
+/// (0x1bd3d8) read. `+4` u16 length in frames; `+6` u16: low 9 bits = command count, bit 15 = loop (script flag
+/// 0x80000000, which `AnimScriptEnd` turns into wrap-around); commands from `+8`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Script {
+    pub hashcode: u32,
+    pub length: u16,
+    pub looping: bool,
+    pub commands: Vec<ScriptCommand>,
+}
+
+/// One command: opcode, then its u16 arguments (count = byte 1, + 3 for opcode 0, + 2 for opcodes 1–4).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScriptCommand { pub op: u8, pub args: Vec<u16> }
+
+impl Script {
+    pub fn parse(data: &[u8]) -> Result<Script> {
+        let b = Buf(data);
+        let word = b.u16(6)?;
+        let mut p = 8usize;
+        let mut commands = Vec::new();
+        for _ in 0..word & 0x1ff {
+            let (op, n) = (b.u8(p)?, b.u8(p + 1)? as usize);
+            let units = n + match op { 0 => 3, 1..=4 => 2, _ => 0 };
+            let args = (0..units).map(|k| b.u16(p + 2 + 2 * k)).collect::<Result<_>>()?;
+            commands.push(ScriptCommand { op, args });
+            p += 2 * (units + 1);
+        }
+        Ok(Script { hashcode: b.u32(0)?, length: b.u16(4)?, looping: word & 0x8000 != 0, commands })
+    }
+
+    /// Opcode-0 commands: `(first script frame, last script frame, sequence hashcode)` — `AnimScriptPeekSeq` takes the
+    /// sequence of the first one (`0x04000000 | u16 @ +0xE`).
+    pub fn sequences(&self) -> impl Iterator<Item = (u16, u16, u32)> + '_ {
+        self.commands.iter().filter(|c| c.op == 0).map(|c| (c.args[0], c.args[1], 0x0400_0000 | c.args[2] as u32))
+    }
+
+    /// Script time after `ticks` 60 Hz updates at speed 1 (`AnimScriptTick` + `AnimScriptEnd`): time starts at 1 and
+    /// advances 1 per tick; a looping script subtracts its length once past it (clamped to ≥ 1), others hold the end.
+    pub fn time_at(&self, ticks: f32) -> f32 {
+        let len = self.length.max(1) as f32;
+        let t = 1.0 + ticks.max(0.0);
+        if t <= len { t } else if self.looping { ((t - 1.0) % len + 1.0).max(1.0) } else { len }
+    }
+}
+
 /// `Quat_QuatTransToMat`: (x, y, z, w) and a translation → row-vector matrix.
 pub fn quat_trans_to_mat(q: [f32; 4], t: [f32; 3]) -> Mat4 {
     let [x, y, z, w] = q;
@@ -214,6 +260,24 @@ mod tests {
         ch[0] += 4; // claim 4 more bytes than the segments use
         ch.extend([0; 4]);
         assert!(Sequence::parse(&sequence(5, &[ch])).is_err());
+    }
+
+    #[test]
+    fn script_commands_and_loop_time() {
+        // Header: hash, length 130, word 0x8002 (loop, 2 commands); op 0 (3 args: frames 1..130, sequence 0x0133),
+        // then op 4 with one extra argument (1 + 2 = 3 args).
+        let words: [u16; 12] = [0x01bb, 0x0600, 130, 0x8002, 0x0000, 1, 130, 0x0133, 0x0104, 1, 2, 0x10];
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let s = Script::parse(&bytes).unwrap();
+        assert_eq!((s.hashcode, s.length, s.looping, s.commands.len()), (0x0600_01bb, 130, true, 2));
+        assert_eq!(s.commands[1], ScriptCommand { op: 4, args: vec![1, 2, 0x10] });
+        assert_eq!(s.sequences().collect::<Vec<_>>(), vec![(1, 130, 0x0400_0133)]);
+        // AnimScriptEnd: 1, 2, …, 130, then 131 − 130 = 1.
+        assert_eq!((s.time_at(0.0), s.time_at(129.0), s.time_at(130.0), s.time_at(131.0)), (1.0, 130.0, 1.0, 2.0));
+        let once = Script { looping: false, ..s.clone() };
+        assert_eq!(once.time_at(500.0), 130.0);
+        // A command list longer than the data is an error, not a short read.
+        assert!(Script::parse(&bytes[..20]).is_err());
     }
 
     #[test]

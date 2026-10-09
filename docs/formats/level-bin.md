@@ -48,7 +48,7 @@ retried while the handler returns false (only the map parser can).
 | 2 | 551 | 8 hex | 01 | `parsemap_parsemap(hash, 0)`, `MemType` 0 |
 | 3 | 1,217 | 8 hex | 05 | `AnimLoadFile(hash, 0)` |
 | 4 | 18,252 | 8 hex | 04 (8 × 00) | `AnimLoadFile(hash, 0)` |
-| 5 | 18,231 | 8 hex | 06 | `AnimLoadFile(hash, 0)` |
+| 5 | 18,231 | 8 hex | 06 | `AnimLoadFile(hash, 0)` — animation scripts (animation.md) |
 | 6 | 1,485 | `SKELnnnn` | — | `AnimSkeletonProcess(buf)` |
 | 7 | 468 | 8 hex | 06 | `Script_Load(hash, …, buf, …)` |
 | 8 | 34 | 8 hex | 08 | `MenuManager_Load(hash, buf)` |

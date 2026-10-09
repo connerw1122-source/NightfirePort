@@ -338,6 +338,82 @@ pub fn sequence_digest<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
     Ok(s)
 }
 
+/// Per archive with animation scripts (type 5): scripts, looping, commands, opcode-0 sequences, how many of those are
+/// in the matching animation archive (`07F…` for `070…`), and a SHA-1 over every parsed script.
+pub fn script_digest<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
+    use std::collections::{BTreeMap, HashSet};
+    let (entries, bin) = files_bin_entries(iso)?;
+    let mut archives: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for fe in entries.iter().filter(|e| e.name.to_ascii_lowercase().ends_with(".bin")) {
+        archives.insert(fe.name.clone(), iso.read_bytes(bin.lba as u64 * SECTOR_SIZE as u64 + fe.offset as u64, fe.size as u64)?);
+    }
+    let mut s = String::from("archive\tscripts\tlooping\tcommands\tsequences\tin_anim_archive\trows_sha1\n");
+    for (name, data) in &archives {
+        let lb = crate::levelbin::LevelBin::parse(data)?;
+        let anim_name = format!("{}F{}", &name[..2], &name[3..]);
+        let anim_seqs: HashSet<u32> = match archives.iter().find(|(k, _)| k.eq_ignore_ascii_case(&anim_name)) {
+            Some((_, a)) => { let al = crate::levelbin::LevelBin::parse(a)?; al.entries.iter().filter(|e| e.kind == 4).filter_map(|e| u32::from_str_radix(&e.name, 16).ok()).collect() }
+            None => HashSet::new(),
+        };
+        let (mut n, mut looping, mut cmds, mut seqs, mut found) = (0u64, 0u64, 0u64, 0u64, 0u64);
+        let mut h = Sha1::new();
+        for e in lb.entries.iter().filter(|e| e.kind == 5) {
+            let sc = crate::anim::Script::parse(lb.data(data, e))
+                .map_err(|err| crate::buf::FormatError::Invalid(format!("{name} {}: {err}", e.name)))?;
+            n += 1;
+            looping += sc.looping as u64;
+            cmds += sc.commands.len() as u64;
+            h.update(&sc.hashcode.to_le_bytes());
+            h.update(&sc.length.to_le_bytes());
+            h.update(&[sc.looping as u8]);
+            for c in &sc.commands { h.update(&[c.op, c.args.len() as u8]); for a in &c.args { h.update(&a.to_le_bytes()); } }
+            for (_, _, q) in sc.sequences() { seqs += 1; found += anim_seqs.contains(&q) as u64; }
+        }
+        if n > 0 { s.push_str(&format!("{name}\t{n}\t{looping}\t{cmds}\t{seqs}\t{found}\t{}\n", hex(&h.finish()))); }
+    }
+    Ok(s)
+}
+
+/// Per level: drone placements (object type 0x0F in the main map), how many get a start script from
+/// `drone::start_danim` (or placement parameter 1) that exists in the level, and how many of those scripts' first
+/// sequence exists in the animation archive; SHA-1 over (skin, script, sequence) in placement order.
+pub fn drone_start_digest<R: Read + Seek>(iso: &IsoImage<R>) -> Result<String> {
+    use std::collections::{HashMap, HashSet};
+    let elf = iso.read_file(iso.find("/ACTION.ELF").ok_or_else(|| crate::buf::FormatError::Invalid("no /ACTION.ELF".into()))?)?;
+    let tables = crate::drone::DroneAnimData::from_action_elf(&elf)?;
+    let (entries, bin) = files_bin_entries(iso)?;
+    let read = |fe: &crate::filelist::FileEntry| iso.read_bytes(bin.lba as u64 * SECTOR_SIZE as u64 + fe.offset as u64, fe.size as u64);
+    let mut s = String::from("level\tdrones\twith_script\twith_sequence\trows_sha1\n");
+    for fe in entries.iter().filter(|e| e.name.len() == 12 && e.name.starts_with("070") && e.name.to_ascii_lowercase().ends_with(".bin")) {
+        let data = read(fe)?;
+        let level = crate::level::Level::parse(&data)?;
+        let Some(m) = level.main_map() else { continue };
+        let lb = crate::levelbin::LevelBin::parse(&data)?;
+        let scripts: HashMap<u32, crate::anim::Script> = lb.entries.iter().filter(|e| e.kind == 5)
+            .filter_map(|e| crate::anim::Script::parse(lb.data(&data, e)).ok()).map(|x| (x.hashcode, x)).collect();
+        let anim_name = format!("{}F{}", &fe.name[..2], &fe.name[3..]);
+        let anim_seqs: HashSet<u32> = match entries.iter().find(|e| e.name.eq_ignore_ascii_case(&anim_name)) {
+            Some(a) => { let ad = read(a)?; let al = crate::levelbin::LevelBin::parse(&ad)?; al.entries.iter().filter(|e| e.kind == 4).filter_map(|e| u32::from_str_radix(&e.name, 16).ok()).collect() }
+            None => HashSet::new(),
+        };
+        let level_id = u32::from_str_radix(&fe.name[..8], 16).unwrap_or(0);
+        let (mut n, mut with_script, mut with_seq) = (0u64, 0u64, 0u64);
+        let mut h = Sha1::new();
+        for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f) {
+            let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
+            n += 1;
+            let hash = crate::drone::start_script(&tables, param, level_id).script();
+            let sc = hash.and_then(|x| scripts.get(&x));
+            let q = sc.and_then(|x| x.sequences().next()).map(|x| x.2);
+            with_script += sc.is_some() as u64;
+            with_seq += q.is_some_and(|q| anim_seqs.contains(&q)) as u64;
+            for v in [param(0), hash.unwrap_or(0), q.unwrap_or(0)] { h.update(&v.to_le_bytes()); }
+        }
+        if n > 0 { s.push_str(&format!("{}\t{n}\t{with_script}\t{with_seq}\t{}\n", fe.name, hex(&h.finish()))); }
+    }
+    Ok(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

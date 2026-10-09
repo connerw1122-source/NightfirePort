@@ -8,7 +8,8 @@
 //! 1280×720 frame headless to a PNG and exits (used to check output without a window).
 //!
 //! Controls: click to capture the mouse; mouse = look (raw deltas → yaw/pitch, no acceleration), WASD = move,
-//! Space / Ctrl = up / down, Shift = fast, [ / ] = previous / next animation, P = pause, F12 = screenshot
+//! Space / Ctrl = up / down, Shift = fast, [ / ] = browse sequences ([ from the first returns to the game's start
+//! animations), P = pause, F12 = screenshot
 //! (nf-view-shot.png), Esc = release mouse, Esc again = quit.
 
 mod gpu;
@@ -81,13 +82,21 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
             sequences.entry(s.skeleton).or_default().push(s);
         }
     }
-    let scene = scene::Scene::build(&level, !all, &skeletons, sequences);
+    // Drone start animations: ACTION.ELF's tables (read through its symbols) and the level's scripts (type 5).
+    let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
+    let drones = scene::DroneContext {
+        tables: nf_formats::drone::DroneAnimData::from_action_elf(&elf)?,
+        scripts: lb.entries.iter().filter(|e| e.kind == 5)
+            .filter_map(|e| nf_formats::anim::Script::parse(lb.data(&data, e)).ok()).map(|s| (s.hashcode, s)).collect(),
+        level_id: u32::from_str_radix(&archive[..8], 16).unwrap_or(0),
+    };
+    let scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));
     eprintln!("{archive} (+ {anim_name}): {}", scene.stats);
     Ok(scene)
 }
 
-/// The Character-layer vertices posed at `time` (animation frames) of sequence choice `choice`.
-fn posed_vertices(scene: &scene::Scene, choice: usize, time: f32) -> Vec<scene::Vertex> {
+/// The Character-layer vertices posed after `time` 60 Hz ticks: start animations (`None`) or sequence `choice`.
+fn posed_vertices(scene: &scene::Scene, choice: Option<usize>, time: f32) -> Vec<scene::Vertex> {
     scene.animate(choice, time).into_iter().zip(&scene.vertices[scene.char_vertex_start..])
         .map(|(pos, v)| scene::Vertex { pos, ..*v }).collect()
 }
@@ -99,7 +108,7 @@ async fn device(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) 
 }
 
 /// Renders one frame offscreen and writes it as a PNG.
-fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: usize, time: f32) -> Result<()> {
+fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32) -> Result<()> {
     let (w, h) = (1280u32, 720u32);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let (_adapter, device, queue) = pollster::block_on(device(&instance, None))?;
@@ -148,8 +157,9 @@ struct App {
     keys: HashSet<KeyCode>,
     grabbed: bool,
     last: std::time::Instant,
-    /// Animation: chosen sequence index per skeleton (`[` / `]`), time in animation frames, paused (`P`).
-    choice: usize,
+    /// Animation: `None` = the game's start animations; `Some(k)` = the k-th sequence per skeleton (`[` / `]`);
+    /// time in 60 Hz ticks; paused (`P`).
+    choice: Option<usize>,
     anim_time: f32,
     paused: bool,
 }
@@ -208,7 +218,12 @@ impl ApplicationHandler for App {
                     (KeyCode::Escape, ElementState::Pressed) => if self.grabbed { self.grab(false) } else { el.exit() },
                     (KeyCode::F12, ElementState::Pressed) => if let Err(e) = shot(&self.scene, &self.cam, "nf-view-shot.png", self.choice, self.anim_time) { eprintln!("screenshot: {e}") },
                     (KeyCode::BracketRight | KeyCode::BracketLeft, ElementState::Pressed) => {
-                        self.choice = if k == KeyCode::BracketRight { self.choice + 1 } else { self.choice.saturating_sub(1) };
+                        self.choice = match (k == KeyCode::BracketRight, self.choice) {
+                            (true, None) => Some(0),
+                            (true, Some(n)) => Some(n + 1),
+                            (false, Some(0) | None) => None,
+                            (false, Some(n)) => Some(n - 1),
+                        };
                         self.anim_time = 0.0;
                         if let Some(g) = &self.gfx { g.window.set_title(&format!("nf-view — {}", self.scene.sequence_label(self.choice))); }
                     }
@@ -269,7 +284,7 @@ fn main() -> Result<()> {
         cam = Camera { pos: Vec3::new(v[0], v[1], v[2]), yaw: v[3], pitch: v[4] };
     }
     let num = |flag: &str| -> Result<Option<f32>> { match args.iter().position(|a| a == flag) { Some(i) => Ok(Some(args.get(i + 1).context("missing value")?.parse()?)), None => Ok(None) } };
-    let choice = num("--seq")?.unwrap_or(0.0) as usize;
+    let choice = num("--seq")?.map(|k| k as usize);
     let time = num("--frame")?.unwrap_or(0.0);
     eprintln!("animation: {}", scene.sequence_label(choice));
     if let Some(i) = args.iter().position(|a| a == "--shot") {

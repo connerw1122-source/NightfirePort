@@ -106,6 +106,30 @@ fn sequences_match_the_golden_digest() {
     assert_eq!(diff_tsv(golden, &tamper(&actual)).len(), 1, "sister: a one-character change must be caught");
 }
 
+#[test]
+fn scripts_match_the_golden_digest() {
+    let Some(iso) = iso() else { eprintln!("skip: NF_ISO not set"); return };
+    let golden = include_str!("../golden/scripts.tsv");
+    let actual = disc::script_digest(&iso).unwrap();
+    let d = diff_tsv(golden, &actual);
+    assert!(d.is_empty(), "{} differences:\n{}", d.len(), d.join("\n"));
+    assert_eq!(diff_tsv(golden, &tamper(&actual)).len(), 1, "sister: a one-character change must be caught");
+}
+
+/// Every drone gets a start script and sequence except the five whose parameter 1 is 0x06000892 (anim set 0xF has no
+/// stand idle; docs/systems/drone-animation.md).
+#[test]
+fn drone_start_animations_match_the_golden_digest() {
+    let Some(iso) = iso() else { eprintln!("skip: NF_ISO not set"); return };
+    let golden = include_str!("../golden/drones.tsv");
+    let actual = disc::drone_start_digest(&iso).unwrap();
+    let d = diff_tsv(golden, &actual);
+    assert!(d.is_empty(), "{} differences:\n{}", d.len(), d.join("\n"));
+    assert_eq!(diff_tsv(golden, &tamper(&actual)).len(), 1, "sister: a one-character change must be caught");
+    let sum = |col: usize| actual.lines().skip(1).map(|l| l.split('\t').nth(col).unwrap().parse::<u32>().unwrap()).sum::<u32>();
+    assert_eq!((sum(1), sum(2), sum(3)), (555, 550, 550));
+}
+
 /// Facts about the BIGF headers recorded in docs/formats/bigf.md: the header-size field is the entry-table end
 /// (`.VIV`) or the table end + 8 (`.MUS`/`.SPE`, an `L225` trailer); the LE size field equals the file size except
 /// in MISC.VIV (UNKNOWNS U-004).

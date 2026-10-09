@@ -41,7 +41,12 @@ fn main() -> Result<()> {
         "level-summary" => { print!("{}", disc::level_summary(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "level-export" => level_export(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?), args.get(4).is_some_and(|x| x == "all")),
         "seq-digest" => { print!("{}", disc::sequence_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
-        "skins" =>skins(&IsoImage::open(a(1)?)?),
+        "skins" => skins(&IsoImage::open(a(1)?)?),
+        "seq-roots" => seq_roots(&IsoImage::open(a(1)?)?, a(2)?),
+        "scripts" => scripts(&IsoImage::open(a(1)?)?),
+        "script-digest" => { print!("{}", disc::script_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
+        "drone-digest" => { print!("{}", disc::drone_start_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
+        "drones" => drones(&IsoImage::open(a(1)?)?, a(2)?),
         "gfx-skin-words" => gfx_skin_words(&IsoImage::open(a(1)?)?),
         "gfx-boxes" => gfx_boxes(&IsoImage::open(a(1)?)?),
         "gfx-export" => gfx_export(&IsoImage::open(a(1)?)?, Path::new(a(2)?), args.get(3).map(String::as_str)),
@@ -191,6 +196,134 @@ fn level_export(iso: &IsoImage, archive: &str, out: &Path, all: bool) -> Result<
 
 /// Measurement (WORKLOG 0013): every skin (type 3) parsed with its archive's skeletons; how its mesh hashcodes resolve;
 /// which placements carry a skin hashcode in parameter 0 and what their objects are called.
+/// Every animation script (type 5) on the disc: parse, command bytes within the entry, and whether each opcode-0
+/// sequence exists in the matching animation archive (07F000NN for 070000NN), the archive itself, or nowhere.
+fn scripts(iso: &IsoImage) -> Result<()> {
+    use nf_formats::{anim::Script, levelbin::LevelBin};
+    use std::collections::{BTreeMap, HashSet};
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let mut archives: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for fe in entries.iter().filter(|e| e.name.to_ascii_lowercase().ends_with(".bin")) {
+        archives.insert(fe.name.to_ascii_lowercase(), iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?);
+    }
+    let hashes = |data: &[u8], kind: u8| -> Result<HashSet<u32>> {
+        let lb = LevelBin::parse(data)?;
+        Ok(lb.entries.iter().filter(|e| e.kind == kind).filter_map(|e| u32::from_str_radix(&e.name, 16).ok()).collect())
+    };
+    let mut st: BTreeMap<String, u64> = BTreeMap::new();
+    for (name, data) in &archives {
+        let lb = LevelBin::parse(data)?;
+        let own_seq = hashes(data, 4)?;
+        let anim_name = format!("{}f{}", &name[..2], &name[3..]);
+        let anim_seq = match archives.get(&anim_name) { Some(a) => hashes(a, 4)?, None => HashSet::new() };
+        for e in lb.entries.iter().filter(|e| e.kind == 5) {
+            let d = lb.data(data, e);
+            match Script::parse(d) {
+                Ok(s) => {
+                    *st.entry("scripts parsed".into()).or_default() += 1;
+                    if s.looping { *st.entry("scripts looping".into()).or_default() += 1; }
+                    let used = 8 + s.commands.iter().map(|c| 2 * (c.args.len() + 1)).sum::<usize>();
+                    *st.entry(if used <= d.len() { "commands within entry" } else { "commands overrun entry" }.into()).or_default() += 1;
+                    if s.hashcode != u32::from_str_radix(&e.name, 16).unwrap_or(0) { *st.entry("hash ≠ name".into()).or_default() += 1; }
+                    for c in &s.commands { *st.entry(format!("opcode {}", c.op)).or_default() += 1; }
+                    for (a, b, q) in s.sequences() {
+                        let k = if anim_seq.contains(&q) { "sequence in 07F archive" } else if own_seq.contains(&q) { "sequence in same archive" } else { "sequence not found" };
+                        *st.entry(k.into()).or_default() += 1;
+                        if a < 1 || b > s.length || a > b { *st.entry("op-0 frame range outside the script".into()).or_default() += 1; }
+                    }
+                }
+                Err(err) => { *st.entry(format!("parse error: {err}")).or_default() += 1; }
+            }
+        }
+    }
+    for (k, v) in st { println!("{v}\t{k}"); }
+    Ok(())
+}
+
+/// Each drone placement of a level: skin, parameters 1/9, `drone_setup`, start danim, script and its sequence.
+fn drones(iso: &IsoImage, level_name: &str) -> Result<()> {
+    use nf_formats::{anim::{Script, Sequence}, drone, level::Level, levelbin::LevelBin};
+    use std::collections::HashMap;
+    let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF")?)?;
+    let tables = drone::DroneAnimData::from_action_elf(&elf)?;
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let read = |name: &str| -> Result<Vec<u8>> {
+        let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)).with_context(|| format!("no {name}"))?;
+        Ok(iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?)
+    };
+    let data = read(level_name)?;
+    let level = Level::parse(&data)?;
+    let lb = LevelBin::parse(&data)?;
+    let scripts: HashMap<u32, Script> = lb.entries.iter().filter(|e| e.kind == 5).filter_map(|e| Script::parse(lb.data(&data, e)).ok()).map(|s| (s.hashcode, s)).collect();
+    let anim = read(&format!("{}F{}", &level_name[..2], &level_name[3..]))?;
+    let alb = LevelBin::parse(&anim)?;
+    let seqs: HashMap<u32, Sequence> = alb.entries.iter().filter(|e| e.kind == 4 && e.length >= 0x40).filter_map(|e| Sequence::parse(alb.data(&anim, e)).ok()).map(|s| (s.hashcode, s)).collect();
+    let level_id = u32::from_str_radix(&level_name[..8], 16)?;
+    let Some(m) = level.main_map() else { return Ok(()) };
+    println!("index\tskin\tparam1\tparam9\tkind\tset\tdanim\tstate\tscript\tscript_found\tlength\tloop\tsequence\tseq_frames");
+    for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f) {
+        let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
+        let setup = drone::drone_setup(param(0), param(9), level_id);
+        let start = drone::start_script(&tables, param, level_id);
+        let (danim, set, custom) = match start {
+            drone::StartScript::Table { danim, anim_set, .. } => (danim, anim_set, false),
+            drone::StartScript::Custom(_) => (0, setup.anim_set, true),
+        };
+        let script = start.script();
+        let s = script.and_then(|h| scripts.get(&h));
+        let q = s.and_then(|s| s.sequences().next());
+        println!("{}\t{:08x}\t{:08x}\t{:x}\t{:#x}\t{:#x}\t{:#x}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}", p.index, param(0), param(1), param(9), setup.kind, set, danim,
+            tables.state_of(danim), script.map(|h| format!("{h:08x}{}", if custom { " (param 1)" } else { "" })).unwrap_or("-".into()), s.is_some(),
+            s.map(|s| s.length).unwrap_or(0), s.map(|s| s.looping).unwrap_or(false),
+            q.map(|q| format!("{:08x}", q.2)).unwrap_or("-".into()), q.and_then(|q| seqs.get(&q.2)).map(|x| x.frames.to_string()).unwrap_or("missing".into()));
+    }
+    Ok(())
+}
+
+/// Root-bone translation of every sequence of every skeleton a level's skins use (× the first such skin's scale),
+/// at the first and last frame, next to the bind-pose root (−inverse bind) — the inputs to root motion.
+fn seq_roots(iso: &IsoImage, level_name: &str) -> Result<()> {
+    use nf_formats::{anim::Sequence, character, level::Level, levelbin::LevelBin};
+    use std::collections::BTreeMap;
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let read = |name: &str| -> Result<Vec<u8>> {
+        let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)).with_context(|| format!("no {name}"))?;
+        Ok(iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?)
+    };
+    let data = read(level_name)?;
+    let level = Level::parse(&data)?;
+    let lb = LevelBin::parse(&data)?;
+    let skels: BTreeMap<u8, character::Skeleton> = lb.entries.iter().filter(|e| e.kind == 6)
+        .map(|e| character::parse_skeleton(lb.data(&data, e)).map(|s| (s.id as u8, s))).collect::<std::result::Result<_, _>>()?;
+    let anim = read(&format!("{}F{}", &level_name[..2], &level_name[3..]))?;
+    let alb = LevelBin::parse(&anim)?;
+    let mut skins: Vec<_> = level.skins.values().collect();
+    skins.sort_by_key(|s| s.hashcode);
+    for skin in skins {
+        let Some(sk) = skels.get(&skin.skeleton) else { continue };
+        let ib = skin.inverse_bind.first().map(|b| b.0).unwrap_or_default();
+        // Lowest point of the bind-pose meshes (glist box minima equal the decoded bounds, U-019).
+        let min_y = skin.main.iter().flatten().filter_map(|h| level.by_hash.get(h))
+            .flat_map(|&(m, o)| level.maps[m].objects[o].gfx.boxes.iter().map(|b| b.a[1])).fold(f32::INFINITY, f32::min);
+        println!("skin {:08x} skel {} scale {:?} bind root {:?} skel offset0×scale {:?} root has translation: {} bind mesh min y {min_y}", skin.hashcode, skin.skeleton,
+            skin.scale, ib.map(|v| -v), [0, 1, 2].map(|k| sk.offsets[0][k] * skin.scale[k]), sk.has_translation(0));
+    }
+    for e in alb.entries.iter().filter(|e| e.kind == 4 && e.length >= 0x40) {
+        let s = Sequence::parse(alb.data(&anim, e))?;
+        let Some(sk) = skels.get(&s.skeleton) else { continue };
+        if !sk.has_translation(0) { continue }
+        let at = |f: u32| [0, 1, 2].map(|k| s.value(k, f));
+        let mid = at(s.frames as u32 / 2 + 1);
+        // Lowest joint relative to the root at frame 1, posed with the first level skin of this skeleton.
+        let lowest = level.skins.values().filter(|k| k.skeleton == s.skeleton && s.flags & 8 == 0).min_by_key(|k| k.hashcode).map(|k| {
+            let w = nf_formats::anim::world_pose(&nf_formats::anim::local_pose(&s, sk, k, 1), k);
+            w.iter().enumerate().filter(|(b, _)| k.animated(*b)).map(|(_, m)| m[3][1]).fold(f32::INFINITY, f32::min) - w[0][3][1]
+        });
+        println!("{:08x}\tskel {}\tflags {:02x}\tframes {}\tfirst {:?}\tmid {:?}\tlast {:?}\tlowest joint − root (frame 1) {:?}", s.hashcode, s.skeleton, s.flags, s.frames, at(1), mid, at(s.frames as u32), lowest);
+    }
+    Ok(())
+}
+
 fn skins(iso: &IsoImage) -> Result<()> {
     use nf_formats::{character, level::Level, levelbin::LevelBin};
     use std::collections::{BTreeMap, HashMap};

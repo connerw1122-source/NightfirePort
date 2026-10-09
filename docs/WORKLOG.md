@@ -342,3 +342,32 @@ Renders: walk and turn poses are anatomically coherent across 9 sampled frames /
 - My identity check on inverse-bind quaternions required w = +1; they are stored as (0,0,0,−1).
 - Sequence 3 of skeleton 0 walks the guard away and into the camera: root motion is in the root's translation
   channels and the game handles it separately (not yet; G-020).
+
+## 0016 — Root handling and the drones' own start animations (2026-10-08)
+
+User report: "all of the actors are floating off the ground. they're going through walls because the animation being
+used isnt correct". Both were mine: nf-view drew the root bone's translation (hip ≈ 1.1 above the sequence floor, plus
+horizontal travel) on top of a placement that already sits at hip height, and played an arbitrary k-th sequence.
+
+**Root (decomp)**: `AnimSeqTick` takes the root's per-tick change as root motion and zeroes the root translation;
+`AnimFrameResolve` adds the rotated motion to the object position and keeps the hip height; drones turn the vertical
+part into `Drone+0xA0` = hip − 0.02, and `NDrone2_Collision` rests the feet sphere `0xA0` below the object.
+**Measured**: standing sequences hold the root 1.03–1.15 with the lowest joint 0.03–0.04 above y = 0
+(`nf-extract seq-roots`); 07000005's drone placements are 1.0845 above the rendered floor (`NF_FLOOR_PROBE=1`).
+
+**Start animation (decomp)**: scripts (type 5, `06…`) are what objects play; `NDrone2_DefaultInit` gives type/anim set
+from the skin and weapon parameters and starts danim 0x11A (stand idle) → `Drone_AnimTables` → script → opcode 0 →
+sequence. Script format, root rules: docs/formats/animation.md; the choice: docs/systems/drone-animation.md.
+**Measured**: all 18,231 scripts parse inside their entries; 550 of 555 drones resolve to a script and sequence (the 5
+others have parameter 1 = 0x06000892, anim set 0xF without a stand idle). 07000005: all 16 → `0600025c` → `040001d8`.
+
+**Done**: `drone.rs` (tables from ACTION.ELF's symbols, `drone_setup`, `start_danim`, `start_script`), `anim::Script`
+(+ loop time), nf-view plays each drone's start script by default (`[`/`]` still browse sequences, `[` from the first
+returns), root zeroed, height = floor + `Drone+0xA0`; golden `scripts.tsv`, `drones.tsv` + opt-in tests; nf-view takes
+the ISO from `NF_ISO` and `.bin` is optional (the run command I gave the user lacked the ISO path). 53 unit + 12 opt-in.
+Renders: guards stand on the floor at the 07000005 gate in a weapon-ready idle.
+
+**Failed / corrected**
+- I first told the user 605 drones in 22 levels (adding by hand); the digest says 555 in 21.
+- My first `drones` listing treated parameter 1 = 0x06000892 as a script; it only switches the anim set.
+- A floor probe camera inside the gate door rendered a wall; moved.

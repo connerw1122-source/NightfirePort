@@ -5,6 +5,7 @@ pub mod bigf;
 pub mod buf;
 pub mod character;
 pub mod disc;
+pub mod drone;
 pub mod elf;
 pub mod filelist;
 pub mod golden;

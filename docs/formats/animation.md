@@ -56,5 +56,50 @@ qz < 2, else qz −= 4 and w = −√(…) (*measured*).
 - Playback: frames advance by speed × `FRAME_RATE_MUL` per update (60 Hz → 1 frame per update); `AnimFrameSet` blends
   frame f and f+1 (Raikaru, matches `AnimFrameCopy` evaluating integer frames).
 
-Open: which sequence each drone plays (state machine / `AnimSet_*`, U-027); facial morphs; head tracking and aim
-overrides in `psiBuildMatrixPalette`; root motion.
+## Script (type 5, prefix 06; 18,231, all in level archives)
+
+Objects play scripts, not sequences (`AnimScriptAdd(obj, 0x06……)`). Layout from `AnimScriptInit` (0x1c1600),
+`AnimProcessScriptData` (0x1bd3d8) and `AnimScriptPeekSeq` (0x1c6c10), *measured*:
+
+```
++0x00 u32 hashcode
++0x04 u16 length (script frames)
++0x06 u16 bits 0–8 = command count; bit 15 = script flag 0x80000000 (loop: AnimScriptEnd wraps instead of stopping);
+          bits 9–14 → script +0xB3
++0x08 commands: u8 opcode, u8 n, then (n + 3) u16 for opcode 0, (n + 2) for opcodes 1–4, n otherwise
+```
+
+Opcode 0 plays a sequence: `u16 first script frame, u16 last script frame, u16 sequence low half` (hashcode
+`0x04000000 |` it; `AnimScriptPeekSeq` reads it at +0xE). Opcodes 1 and 4 not decoded (events: footsteps, sounds).
+On the disc (`nf-extract scripts`, golden `scripts.tsv`): every script's commands fit inside its entry; 1,983 loop;
+opcodes 0 / 1 / 4 = 18,296 / 3,698 / 28,285; 18,104 of the 18,296 sequences are in the matching 07F archive (192 are
+elsewhere, G-021); 8 opcode-0 ranges exceed the script length.
+
+Time (`AnimScriptTick` 0x1c2630, `AnimScriptEnd` 0x1c1930): starts at 1, += speed × `FRAME_RATE_MUL` per update;
+past the length a looping script subtracts the length (clamped to ≥ 1), others hold the last frame and end. The
+sequence frame is script time − first + 1 (`AnimSeqTick`).
+
+## Root motion and height (*measured* from the decomp; not yet confirmed live, U-028)
+
+- `AnimFrameCopy` keeps the root translation of the first evaluated frame in the sequence state (+0x20) and the
+  current minus first (+0x30). `AnimSeqTick` (0x1c28d0) stores the root's change since the previous tick as the
+  frame's root motion (script flags 0x01000000/0x02000000/0x04000000 zero single components — y for 0x02000000; the
+  decompile of the others is garbled; no motion on the tick a script starts or wraps) and then **zeroes the root
+  bone's translation** in the pose buffer.
+- `AnimFrameResolve` (0x1c35f8) blends root motion across playing scripts, rotates it by the object matrix (passing it
+  to the object's pre-translation callback first) and adds it to the object position (`obj+0x30`); it stores the
+  absolute root height + `sAnimObject+0x60` as the hip height (`sAnimObject+0x5C` = `anim+0xCC`).
+- `psiBuildMatrixPalette` then places the root bone at the object matrix (`RotTransMat`): the object position is the hip.
+- Drones: `DroneAnim_PreTransCallback` (0x13b490) sets `Drone+0xA0` = hip height − 0.02 (≥ 0.2; starts at 1.0) and
+  replaces the vertical root motion by the change of `Drone+0xA0`; `NDrone2_Collision` (0x140e90) puts the bottom of
+  the feet sphere `Drone+0xA0` below the object, and `NDrone2_FeetPos` = position.y − (hip height − 0.4).
+- Root heights measured (`nf-extract seq-roots`): standing sequences 1.03–1.15 with the lowest joint 0.03–0.04 above
+  y = 0 — the sequence floor is y = 0. Bind meshes have the hip at the origin (lowest vertex −1.16). In 07000005 the
+  drone placements sit 1.0845 above the rendered floor (10 of 16; others on steps/slopes).
+
+nf-view: the root is zeroed as the game does; horizontal root motion is dropped (no AI or collision yet), and the drone
+object is put `Drone+0xA0` above the highest World triangle below the placement — where the game's collision leaves
+it, feet 0.02 into the floor. Which script a drone plays: docs/systems/drone-animation.md.
+
+Open: frame blending (f/f+1); facial morphs; head tracking and aim overrides in `psiBuildMatrixPalette`;
+`sAnimObject+0x60`; opcodes 1 and 4.
