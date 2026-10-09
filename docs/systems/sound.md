@@ -15,7 +15,7 @@ the driver's start path (`SFXSetup` budget / stealing / per-id limit, random / s
 `ES_CombineVolumes`, front + phase-inverted rear voices (the rear keyed 500 µs later, WORKLOG 0064), `SFXUpdate` (ends, sequences, loops via cue timers, kill pass,
 active list), `SFXRemove` / `SetPositionAndVelocity`; sources: the first-person gun's script sounds (op 1: shot, reload), Bond's footsteps by floor surface, bullet
 impacts by surface, guard body hits (0x413), guards' gunfire (`weapon_data+0x60`),
-animation-script sounds, pickups, script sounds (moving with their object). Music: docs/systems/music.md. Not yet: speech / streamed effects (`STREAMS.BIN`, negative sample refs), casings / fly-bys, reverb / environment / underwater, ducker and fades, precache, pause, the SPU's Gaussian
+animation-script sounds, pickups, script sounds (moving with their object). Music: docs/systems/music.md. Speech and streamed effects: docs/systems/speech.md. Not yet: casings / fly-bys, reverb / environment / underwater, ducker and fades, precache, pause, the SPU's Gaussian
 interpolation and ADSR (the port mixes linearly and stops at once), the per-weapon op-1 id remaps (other weapons).
 
 ---

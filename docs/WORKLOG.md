@@ -1293,3 +1293,20 @@ hysteresis), death → instant 11; the attack gate (two recent attackers, or sig
 `music_live` on MFX_1: no underrun over 30 s from the start section; instant combat 4 reported at once, its data
 14 336 samples ahead; deferred stealth 6 completed after 3.11 s (combat loop bars wider than a lap); end sting 9 stops
 the stream 5.20 s after the request (0.448 s lead + 4.7 s sting). Volume at level start 7700 / 16383 as the spec.
+
+## 0069 — Guards' speech; streamed effects
+
+Research pass (subagent) on Drone_SfxInfo, NDrone2_PlaySFX / SpeechSFX and the talk functions, and on STREAMS.LUT /
+.BIN and the IOP stream path; docs/systems/speech.md. Re-read here: `DroneFunc_FirstAttack` (0x148010) and
+`DroneFunc_FirstSightState` (0x147c48) to place the talk rolls in the RNG order — SeenPlayerTalk inside FirstSightState
+before its prop-0x1B `Rand(2)`, AttackTalk in FirstAttack after FirstSightState returned no state (or without a first
+sight). The rolls consume the shared `Rand_*` (AttackTalk Rand(9) then Rand(3); SeenPlayerTalk Rand(3) then Rand(6);
+PatrolTalk Rand(2) every patrol frame while the global cooldown is open), so `guard_notices_and_fires_like_the_game`
+was re-seeded 7 → 2 (as in 0027 / 0037; 12 of 19 seeds reproduce the trace).
+
+Code: `voice_lines` (Drone_SfxInfo 346 × 32), `stream_lut` / `stream_data` (end marker → `end & !0xFF` bytes; entry
+211 = 7424 bytes), the driver's streamed sub-tracks (−1 − FileRef, pitch 0x759, 2 slots, never stolen, 3-D as samples),
+the talk functions and `Drones::speech` (gates, per-line global stamps, the drone's current line `+0x4D0` with its
+finished state), nf-view loads STREAMS (51 MB) into the driver. Tests: `guards_talk_in_a_fight` (pain 138 on the shot,
+attack bark 177 twice; sister: only type-2 lines), `bank_live` decodes id 175's stream at 7424 bytes / 22 050 Hz. All
+suites pass.

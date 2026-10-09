@@ -29,6 +29,7 @@ struct Level05 {
     models: std::collections::HashMap<u32, nf_game::pickup::Model>,
     hud: nf_formats::hud::HudTables,
     surfaces: nf_formats::sfx::SurfaceSounds,
+    voices: Vec<nf_formats::sfx::VoiceLine>,
 }
 
 impl Level05 {
@@ -59,6 +60,7 @@ impl Level05 {
             models: nf_game::pickup::models(&level),
             hud: nf_formats::hud::HudTables::from_action_elf(&elf).unwrap(),
             surfaces: nf_formats::sfx::SurfaceSounds::from_action_elf(&elf).unwrap(),
+            voices: nf_formats::sfx::voice_lines(&elf).unwrap(),
             level, scripts, world, skeletons, nav, covers, volumes,
         })
     }
@@ -69,7 +71,7 @@ impl Level05 {
     fn data(&self) -> Data<'_> {
         Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: 0x0700_0005,
             sequences: &self.sequences, skins: &self.level.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes,
-            sfx: Some(&self.sfx), models: &self.models, surfaces: Some(&self.surfaces) }
+            sfx: Some(&self.sfx), models: &self.models, surfaces: Some(&self.surfaces), voices: Some(&self.voices) }
     }
 
     /// Every drone present at level start (line of sight is scheduled round robin over all of them, as in the game),
@@ -93,8 +95,9 @@ fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, 
 fn guard_notices_and_fires_like_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    // Seed 7 (re-picked in WORKLOG 0037): the first combat-move roll picks the step (strafe or step are equally likely; the trace shows steps).
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 7);
+    // Seed 2 (re-picked in WORKLOG 0069 after the guards' talk rolls joined the RNG; 0037 had 7): the first
+    // combat-move roll picks the step (strafe or step are equally likely; the trace shows steps).
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 2);
     let mut sim = l.sim(drones, rng);
     // As in the live session, Bond appears (teleported) after the level has run: 10 ticks with him far away first, so
     // spawner 266's drone is already in the list.
@@ -126,7 +129,7 @@ fn guard_notices_and_fires_like_the_game() {
     // The sniper (L96A1, 30 × 0.6) hits for 18, as in the live trace.
     assert!(sim.player_hits.iter().filter(|(_, o, _)| *o != gi).all(|(_, _, h)| (h - 18.0).abs() < 1e-3 || (h - 1.65).abs() < 1e-3 || *h < 18.0));
     // Sister: the same guard already at alertness 1 reacts without the delay, so the comparison above can fail.
-    let (alert_drones, _, alert_rng) = l.drones_seeded(Some(1.0), 61.342, 7);
+    let (alert_drones, _, alert_rng) = l.drones_seeded(Some(1.0), 61.342, 2);
     let mut alert_sim = l.sim(alert_drones, alert_rng);
     for _ in 0..WARM { alert_sim.tick(&d, &away); }
     for _ in 0..100 { alert_sim.tick(&d, &player); }
@@ -1021,3 +1024,36 @@ fn patrolling_guards_make_footsteps() {
     assert!(n > 10, "{n}");
 }
 
+
+/// Guards' speech (docs/systems/speech.md): with Bond in view the gate guard attacks; his attack / sighting barks
+/// (Drone_SfxInfo 0x37..0x3F, 0x49..0x4E — streamed ids) and, when shot, pain (0x13 → id 138) start in the pool.
+#[test]
+fn guards_talk_in_a_fight() {
+    use nf_game::sound::Cmd;
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 2);
+    let mut sim = l.sim(drones, rng);
+    let away = bond_at([0.0, -500.0, 0.0]);
+    for _ in 0..10 { sim.tick(&d, &away); }
+    let player = bond_at([67.31, 26.5, 99.47]);
+    let talk: std::collections::HashSet<u32> = (0x37..=0x3f).chain(0x49..=0x4e).chain([0x13, 5]).map(|i| l.voices[i].sfx).collect();
+    let mut heard = Vec::new();
+    for t in 0..1200 {
+        // Shoot the guard once in the chest at tick 300 (pain line).
+        if t == 300 {
+            let g = sim.list[gi].pos;
+            let e = player.eye;
+            let to = [g[0], g[1] + 0.3, g[2]];
+            let n = ((to[0] - e[0]).powi(2) + (to[1] - e[1]).powi(2) + (to[2] - e[2]).powi(2)).sqrt();
+            sim.fire_player(&d, e, [(to[0] - e[0]) / n, (to[1] - e[1]) / n, (to[2] - e[2]) / n], 2, l.sfx.get(0x403));
+        }
+        sim.tick(&d, &player);
+        sim.audio.update(Some(&l.sfx), (player.eye, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]), &|_| false);
+        for c in sim.audio.take_commands() { if let Cmd::Start { id, .. } = c { if talk.contains(&id) { heard.push((t, id)); } } }
+    }
+    eprintln!("talk: {heard:?}");
+    assert!(!heard.is_empty(), "no guard spoke");
+    // Sister: every line is from the type-2 sets (no other voice set on this level).
+    assert!(heard.iter().all(|h| talk.contains(&h.1)));
+}

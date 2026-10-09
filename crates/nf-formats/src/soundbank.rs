@@ -127,6 +127,23 @@ impl Bank {
     }
 }
 
+/// `STREAMS.LUT` (`PS2/<language>/STREAMS/`): 16-byte entries {header offset, header size (136), data offset
+/// (header + 4096), data size} into `STREAMS.BIN`; a bank sub-track with FileRef < 0 plays entry −1 − FileRef.
+pub fn stream_lut(lut: &[u8]) -> Result<Vec<[u32; 4]>> {
+    let b = Buf(lut);
+    (0..b.len() / 16).map(|k| Ok([b.u32(16 * k)?, b.u32(16 * k + 4)?, b.u32(16 * k + 8)?, b.u32(16 * k + 12)?])).collect()
+}
+
+/// A streamed effect's ADPCM in `STREAMS.BIN`: from the data offset, `end & !0xFF` bytes, where `end` is the position
+/// of the header's type-9 marker (the IOP streams no further; the LUT's data size includes stale takes) [M, D].
+pub fn stream_data<'a>(bin: &'a [u8], e: [u32; 4]) -> Result<&'a [u8]> {
+    let h = Buf(bin).sub(e[0] as usize, e[1] as usize, "stream header")?;
+    let (n, mo) = (h.u32(4)? as usize, h.u32(0xc)? as usize);
+    let end = (0..n).filter_map(|k| { let o = mo + 32 * k; (h.i32(o + 8).ok()? == 9).then(|| h.u32(o + 4).ok()).flatten() }).next()
+        .ok_or_else(|| crate::buf::FormatError::Invalid("stream without an end marker".into()))?;
+    Ok(Buf(bin).sub(e[2] as usize, (end & !0xff) as usize, "stream data")?.bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -41,7 +41,7 @@ type P3 = [i32; 3];
 
 /// One hardware voice pair (`ES_VoiceHandleData` → SPU voices): front, and rear for 3-D sounds.
 #[derive(Clone, Debug)]
-struct Voice { front: u32, rear: Option<u32>, looping: bool, playing: bool, pitch: u32 }
+struct Voice { front: u32, rear: Option<u32>, looping: bool, playing: bool, pitch: u32, stream: bool }
 
 #[derive(Clone, Debug)]
 struct Item {
@@ -92,7 +92,15 @@ pub struct Driver {
     listener_norm: P3,
     /// The {id, handle} list the EE reads back after each batch (`SFXActiveData`).
     pub active: Vec<(u32, u32)>,
+    /// Streamed effects: `STREAMS.LUT` and `STREAMS.BIN`, decoded entries.
+    streams: Option<(Vec<[u32; 4]>, Arc<Vec<u8>>)>,
+    stream_pcm: HashMap<usize, Arc<Pcm>>,
 }
+
+/// `Streams[1..2]`: at most two streamed effects at once (slot 0 is the music) [M `SFXInitialiseStream`].
+pub const STREAM_SLOTS: usize = 2;
+/// A streamed effect's base pitch: 22 050 Hz (0x759) [M `StartSample`].
+pub const STREAM_PITCH: i32 = 0x759;
 
 pub const MAX_ITEMS: usize = 40;
 pub const HW_VOICES: usize = 48;
@@ -108,7 +116,19 @@ impl Driver {
     pub fn new() -> Driver {
         Driver { slots: HashMap::new(), items: Vec::new(), voices: vec![None; HW_VOICES], rnd: Rnd::default(), started: 0, mode: 1, master: 100,
             music_master: 70, mute_sfx: 1, indoors: 100, underwater: false, fade: 10000, ducker_current: 100,
-            listener_pos: [0; 3], listener_dir: [0, 1000, 0], listener_norm: [-1000, 0, 0], active: Vec::new() }
+            listener_pos: [0; 3], listener_dir: [0, 1000, 0], listener_norm: [-1000, 0, 0], active: Vec::new(), streams: None, stream_pcm: HashMap::new() }
+    }
+
+    /// `STREAMS.LUT` / `STREAMS.BIN` (`SFXInitialiseAudioStreamSystem`).
+    pub fn load_streams(&mut self, lut: Vec<[u32; 4]>, bin: Arc<Vec<u8>>) { self.streams = Some((lut, bin)); }
+
+    fn stream(&mut self, k: usize) -> Option<Arc<Pcm>> {
+        if let Some(p) = self.stream_pcm.get(&k) { return Some(p.clone()); }
+        let (lut, bin) = self.streams.as_ref()?;
+        let data = nf_formats::soundbank::stream_data(bin, *lut.get(k)?).ok()?;
+        let p = Arc::new(Pcm { data: nf_formats::vag::decode(data), loop_start: None });
+        self.stream_pcm.insert(k, p.clone());
+        Some(p)
     }
 
     /// `SFXLoadSoundBank` into `slot` (the index of its hash in `SBINFO.SBI`).
@@ -246,20 +266,25 @@ impl Driver {
     fn start_sample(&mut self, out: &mut Vec<Cmd>, i: usize, sub: SubTrack, ch: usize) -> bool {
         let fx = self.items[i].fx.clone();
         let is3d = fx.tracking != 0;
-        if sub.file < 0 {
-            // A streamed sound (STREAMS.BIN): not ported yet — no voice.
-            self.items[i].streamed = true;
-            return false;
-        }
         let slot = self.items[i].slot;
-        let Some(hdr) = self.slots.get(&slot).and_then(|s| s.bank.samples.get(sub.file as usize).copied()) else { return false };
+        // A streamed sound (FileRef < 0): `STREAMS.LUT` entry −1 − FileRef, 22 050 Hz, one of two stream slots.
+        let streamed = sub.file < 0;
+        let (base, looped, pcm) = if streamed {
+            self.items[i].streamed = true;
+            let busy = self.items.iter().filter(|it| it.vh.iter().flatten().any(|&v| self.voices[v].as_ref().is_some_and(|x| x.stream))).count();
+            if busy >= STREAM_SLOTS { return false; }
+            let Some(p) = self.stream((-1 - sub.file) as usize) else { return false };
+            (STREAM_PITCH, false, Some(p))
+        } else {
+            let Some(hdr) = self.slots.get(&slot).and_then(|s| s.bank.samples.get(sub.file as usize).copied()) else { return false };
+            (hdr.pitch as i32, hdr.looped & 1 != 0, None)
+        };
         // ES handles (100) and hardware voices (48; a 3-D sound needs two).
         let es_used: usize = self.items.iter().map(|it| it.vh.iter().flatten().count()).sum();
         if es_used >= ES_HANDLES { return false; }
         let free: Vec<usize> = (0..HW_VOICES).filter(|&v| self.voices[v].is_none()).collect();
         if free.len() < if is3d { 2 } else { 1 } { return false; }
-        let Some(pcm) = self.pcm(slot, sub.file as usize) else { return false };
-        let base = hdr.pitch as i32;
+        let Some(pcm) = (match pcm { Some(p) => Some(p), None => self.pcm(slot, sub.file as usize) }) else { return false };
         let (r1, r2, r3) = (self.rnd.sfrnd(), self.rnd.sfrnd(), self.rnd.sfrnd());
         let vol = (sub.volume + ((r2 * sub.volume_rnd) >> 10)).clamp(0, 100);
         let pitch = base + (base * (sub.pitch + ((r1 * sub.pitch_rnd) >> 10))) / 0x3000;
@@ -267,7 +292,7 @@ impl Driver {
         let it = &mut self.items[i];
         (it.base_volume[ch], it.pitch[ch], it.pan[ch]) = (vol, pitch, pan);
         let (front, rear) = (free[0] as u32, is3d.then(|| free[1] as u32));
-        let v = Voice { front, rear, looping: hdr.looped & 1 != 0, playing: true, pitch: pitch.max(0) as u32 };
+        let v = Voice { front, rear, looping: looped, playing: true, pitch: pitch.max(0) as u32, stream: streamed };
         self.voices[front as usize] = Some(v);
         it.vh[ch] = Some(front as usize);
         it.pos = it.real_pos;
@@ -275,7 +300,7 @@ impl Driver {
         let (l, r, b) = self.levels(i, ch);
         out.push(Cmd::Play { voice: front, pcm: pcm.clone(), pitch: pitch.max(0) as u32, left: l, right: r, delay: 0.0 });
         if let Some(rv) = rear {
-            self.voices[rv as usize] = Some(Voice { front: rv, rear: None, looping: hdr.looped & 1 != 0, playing: true, pitch: pitch.max(0) as u32 });
+            self.voices[rv as usize] = Some(Voice { front: rv, rear: None, looping: looped, playing: true, pitch: pitch.max(0) as u32, stream: streamed });
             // Mode ≠ 0: the rear voices are keyed on after `DelayThread(500)` (µs); mode 0 keys them with the front.
             out.push(Cmd::Play { voice: rv, pcm, pitch: pitch.max(0) as u32, left: b, right: if self.mode == 0 { b } else { -b }, delay: if self.mode == 0 { 0.0 } else { 0.0005 } });
         }

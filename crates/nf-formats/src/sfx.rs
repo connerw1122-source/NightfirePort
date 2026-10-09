@@ -13,6 +13,23 @@ pub struct SfxHearing { pub id: u32, pub inner: f32, pub outer: f32, pub weight:
 #[derive(Clone, Debug)]
 pub struct SfxTable { pub entries: Vec<SfxHearing> }
 
+/// `Drone_SfxInfo` (ACTION.ELF 0x2812d0, 346 × 32 bytes): a drone voice line — sound id, facial anim script,
+/// repeat delay in frames (+0x08 last play frame is runtime state, global per entry).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VoiceLine { pub sfx: u32, pub facial: u32, pub repeat: u32 }
+
+pub fn voice_lines(data: &[u8]) -> Result<Vec<VoiceLine>> {
+    let elf = Elf::parse(data)?;
+    let syms = elf.symbols(data)?;
+    let (addr, size) = syms.iter().find(|s| s.name == "Drone_SfxInfo").map(|s| (s.value, s.size as usize))
+        .ok_or_else(|| crate::buf::FormatError::Invalid("ACTION.ELF has no symbol Drone_SfxInfo".into()))?;
+    let segs = elf.load_segments(data)?;
+    let bytes = segs.iter().find_map(|(va, b, _)| (addr >= *va && (addr - va) as usize + size <= b.len()).then(|| &b[(addr - va) as usize..][..size]))
+        .ok_or_else(|| crate::buf::FormatError::Invalid("Drone_SfxInfo outside the loaded data".into()))?;
+    let b = Buf(bytes);
+    (0..size / 32).map(|k| Ok(VoiceLine { sfx: b.u32(32 * k)?, facial: b.u32(32 * k + 4)?, repeat: b.u32(32 * k + 12)? })).collect()
+}
+
 /// `EffectInfo` (ACTION.ELF 0x3037c0, 23 × 0x88): per collision surface (`HITDATA+0x50 & 0x3F`) the bullet-impact
 /// (+0x14, `Effect_Bullet`), footstep (+0x16, `Effect_Player`) and body (+0x18) sound ids; 0xFFFF = none.
 #[derive(Clone, Debug, Default)]

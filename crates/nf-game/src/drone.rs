@@ -165,6 +165,8 @@ pub struct Data<'a> {
     pub models: &'a HashMap<u32, crate::pickup::Model>,
     /// Surface sounds (`EffectInfo`): impacts, footsteps; `None`: silent.
     pub surfaces: Option<&'a nf_formats::sfx::SurfaceSounds>,
+    /// Drone voice lines (`Drone_SfxInfo`); `None`: the drones do not talk.
+    pub voices: Option<&'a [nf_formats::sfx::VoiceLine]>,
 }
 
 /// A bullet that hit a drone (HITDATA): the part (bone id), the ray (`+0x30`), the point, damage (`+0x08`), weapon.
@@ -468,6 +470,18 @@ pub struct Drone {
     pub holstered: bool,
     /// Sounds the animation played this tick (`AnimProcessScriptCmds` op 1 → `Sound_Play3D`), for the hearing list.
     pub anim_sounds: Vec<u32>,
+    /// Speech (docs/systems/speech.md): the voice set (`+0xD8`), the current line's handle and id (`+0x4D0`), whether
+    /// that sound has finished (set before each update), `SpeechSFX` requests of this update (line, force), and the
+    /// patrol-talk cooldown (global `0x298FC4`, lent by `Drones::tick`).
+    pub voice_type: u16,
+    /// `+0x15`: a female voice (the default pain / death lines).
+    pub female: bool,
+    /// The first Attack entry has run (*suggested* stand-in for `+0x4F8 & 0x8000000`, "first sight").
+    pub attack_talked: bool,
+    pub voice: Option<(u32, u32)>,
+    pub voice_finished: bool,
+    pub talks: Vec<(usize, bool)>,
+    pub patrol_cooldown: u32,
     /// Script footstep this tick (op 4 event 0 / 4 / 5) and sounds to stop (op 4 event 3, `Sound_StopAllWithId`).
     pub footstep: bool,
     pub anim_stops: Vec<u32>,
@@ -530,7 +544,7 @@ impl Drone {
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
             corpse: false, death_pending: false, death_channel: param(12) as u8, special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
-            captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
+            captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
         };
         dr.init_properties(d, &param);
@@ -1189,6 +1203,8 @@ impl Drone {
         if r.head { self.silent_kill = true; }
         self.health -= r.loss;
         self.last_damage = r.recorded;
+        // `NDrone2_HitDamage`: a hit that leaves the drone alive → `NDrone2_PainTalk`.
+        if self.health > 0.0 { self.pain_talk(d); }
     }
 
     /// `DroneAnim_LocationImpactAnim` (0x13c8b8): the flinch 0x4C, variant 5 + Rand(8), or by the part hit when Bond
@@ -1198,6 +1214,73 @@ impl Drone {
             match self.hit.map_or(0, |h| h.part) { 4 | 5 => 5, 0x12..=0x15 => 8, 0x1e | 0x1f | 0x20 | 0x23 => 9, 0x31..=0x33 => 13, 0x35..=0x37 => 12, _ => 6 + rng.rand(2) }
         };
         self.call_anim_variant(d, anim_state::IMPACT, v as u16, self.impact_resume, 0);
+    }
+
+    /// The "busy" test of the talk functions: a referenced line still playing; a finished one is dropped.
+    fn voice_busy(&mut self) -> bool {
+        if self.voice.is_some() && !self.voice_finished { return true; }
+        if self.voice_finished { self.voice = None; }
+        false
+    }
+
+    /// The line playing (`+0x4D0`'s node id), for "skip if the same id is the current line".
+    fn current_line(&self) -> Option<u32> { self.voice.map(|v| v.1) }
+
+    fn line_sfx(d: &Data, idx: usize) -> u32 { d.voices.and_then(|v| v.get(idx)).map_or(0, |l| l.sfx) }
+
+    /// `NDrone2_PainTalk` (0x13eeb8): forced, skipped only when the same line is the current one.
+    fn pain_talk(&mut self, d: &Data) {
+        let idx = match self.voice_type { 1 => 0x12, 2 => 0x13, 3 => 0x11, 7 => 0x14, 8 | 10 => 0x18, 9 => 0x15, 0xc => 0x1b, 0x12 | 0x13 => 0x1c, 0x14 => 0x10,
+            0x10 => return, // HitTalkExtra (type 0x10) not modelled
+            _ => if self.female { 0x17 } else { 0xf } };
+        if self.current_line() != Some(Self::line_sfx(d, idx)) { self.talks.push((idx, true)); }
+    }
+
+    /// `NDrone2_DeathTalk` (0x13eff8): forced; the second call of a death sees the first's line and is skipped.
+    fn death_talk(&mut self, d: &Data) {
+        let idx = match self.voice_type { 1 => 4, 2 => 5, 3 => 3, 8 | 10 => 10, 0xc => 0xd, 0x10 => 8, 0x12 | 0x13 => 0xe, 0x14 => 2, 5 | 6 => 1,
+            _ => if self.female { 9 } else { 1 } };
+        if self.current_line() != Some(Self::line_sfx(d, idx)) { self.talks.push((idx, true)); }
+    }
+
+    /// `NDrone2_AttackTalk` (0x13eac0) for the single-player voice sets of these levels: type 2 picks 0x37 + Rand(9)
+    /// then speaks 1 in 3; type 1 0x33 + Rand(4) at 1 in 2 (0xA3 + Rand(8) always on 0x11 / 0x0B / 0x13); type 3 0xAC +
+    /// Rand(7). Others: *not modelled* (level-specific sets).
+    fn attack_talk(&mut self, d: &Data, rng: &mut Rng) {
+        if self.voice_busy() || self.health <= 0.0 { return; }
+        let (odds, idx) = match self.voice_type {
+            1 if matches!(d.level, 0x0700_0011 | 0x0700_000b | 0x0700_0013) => (0, 0xa3 + rng.rand(8) as usize),
+            1 => (2, 0x33 + rng.rand(4) as usize),
+            2 => (3, 0x37 + rng.rand(9) as usize),
+            3 => (0, 0xac + rng.rand(7) as usize),
+            _ => return,
+        };
+        if odds == 0 || rng.rand(odds) == 0 { self.talks.push((idx, false)); }
+    }
+
+    /// `NDrone2_SeenPlayerTalk` (0x13f1d0): 1 in 3, then the level's set (05–08: type 2 0x49 + Rand(6), else 0x21;
+    /// 09 / 0A: 0xC3 + Rand(9); 0x12 / 0x4A: 0xAC + Rand(7); 0x14–0x16 *not modelled*).
+    fn seen_player_talk(&mut self, d: &Data, rng: &mut Rng) {
+        if self.voice_busy() || self.health <= 0.0 { return; }
+        if rng.rand(3) != 0 || self.voice_type == 0x10 { return; }
+        let idx = match d.level {
+            0x0700_0005..=0x0700_0008 => if self.voice_type == 2 { 0x49 + rng.rand(6) as usize } else { 0x21 },
+            0x0700_0009 | 0x0700_000a => 0xc3 + rng.rand(9) as usize,
+            0x0700_0012 | 0x0700_004a => 0xac + rng.rand(7) as usize,
+            _ => return,
+        };
+        self.talks.push((idx, false));
+    }
+
+    /// `NDrone2_PatrolTalk` (0x13e988): every patrol frame while the global cooldown is open: Rand(2) ≠ 0 → cooldown
+    /// 5 s; then only type 3 speaks (0xB3 + Rand(5), cooldown 10 s).
+    fn patrol_talk(&mut self, rng: &mut Rng, frame: u32) {
+        if self.health <= 0.0 || self.voice_busy() || frame < self.patrol_cooldown { return; }
+        if rng.rand(2) != 0 { self.patrol_cooldown = frame + 300; return; }
+        if self.voice_type != 3 { return; }
+        let idx = 0xb3 + rng.rand(5) as usize;
+        self.patrol_cooldown = frame + 600;
+        self.talks.push((idx, false));
     }
 
     /// `DroneAnim_LocationDeathAnim` (0x13c780): shot in the head or chest while Bond aims → 0x42 (variant 1 when the
@@ -1211,6 +1294,7 @@ impl Drone {
             return;
         }
         self.silent_kill = false;
+        self.death_talk(d);
         let info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
         let v = if info[0x10] != 0 { rng.rand(4) as u16 } else { 0 };
         self.call_anim_variant(d, anim_state::DEATH, v, next, 0);
@@ -1232,7 +1316,8 @@ impl Drone {
                 self.vision_on = false;
                 self.firing = false;
                 if self.special_death != 0 { self.set_state(SPECIAL_DEATH); return Some(true); }
-                self.death_pending = true; // `OnInitDeath` (death talk, mission-fail props: not modelled)
+                self.death_pending = true; // `OnInitDeath` (mission-fail props: not modelled)
+                if !self.silent_kill { self.death_talk(d); }
                 self.drop_grenades(d);
                 self.location_death_anim(d, rng, DEAD);
                 true
@@ -1867,6 +1952,7 @@ impl Drone {
                 true
             }
             (PATROL, msg::UPDATE) => {
+                self.patrol_talk(rng, frame);
                 self.update_patrol_route(d, rng, frame);
                 if let Some(n) = self.look_for_opponent(d) { self.set_state(n) }
                 true
@@ -1912,6 +1998,7 @@ impl Drone {
             (SNIPER_IDLE, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
             // SniperAim: anim 0x0A, sight and combat range 1000; Bond in sight (`+0x228 & 4`) → SniperFire.
             (SNIPER_AIM, msg::ENTER) => {
+                self.attack_talk(d, rng);
                 self.vision_on = true;
                 self.stationary = true;
                 self.call_anim(d, anim_state::AIM_STAND, 0, 0);
@@ -1933,6 +2020,7 @@ impl Drone {
             }
             (SNIPER_FIRE, msg::TIMER_C) => { self.firing = true; true }
             (SNIPER_FIRE, msg::UPDATE) => {
+                self.attack_talk(d, rng);
                 self.desired_yaw = self.yaw_to_opp;
                 if self.clip < 1 { self.set_state(SNIPER_RELOAD); }
                 else if self.unseen_ticks >= 0x10 { self.set_state(SNIPER_AIM); }
@@ -2114,8 +2202,15 @@ impl Drone {
                 self.alert_bits |= 0x10 | if self.prop(d, 0x33) { 1 } else { 0 };
                 self.sight_range = self.sight_range.max(self.combat_range);
                 self.half_fov = 0.0;
+                // `FirstSightState` (the drone's own first sight) talks before its prop-0x1B roll; `FirstAttack` talks after
+                // it when it chose no state, or when this is not a first sight (*suggested*: first sight = own sight on the
+                // first attack).
+                let first_sight = self.own_sight && !self.attack_talked;
+                self.attack_talked = true;
+                if first_sight { self.seen_player_talk(d, rng); } else { self.attack_talk(d, rng); }
                 let first = if self.prop(d, 0x1b) { if rng.rand(2) == 0 { 0 } else { self.choose_combat_move(d, rng) } }
                     else if self.prop(d, 0x18) { 0 } else if self.prop(d, 0x19) { self.choose_combat_move(d, rng) } else { 0 };
+                if first_sight && first == 0 { self.attack_talk(d, rng); }
                 // `FirstAttack` may switch to the second behaviour block (`+0x5A4` ≠ 0, not modelled); [L] the 07000005
                 // gate guard still used its first block after a fight (`+0x4D8` = `+0x4DC`, WORKLOG 0021), so no switch.
                 self.set_state(if first != 0 { first } else if self.prop(d, 0x18) && self.dist < self.engage_range { AIM_STAND } else { COMBAT });
@@ -2189,11 +2284,13 @@ impl Drone {
             }
             // DroneStuck: `DAT_00299024` is only ever 0, so the update's escape never fires; the enter goes to NoRoute.
             (DRONE_STUCK, msg::ENTER) => { self.vision_on = true; self.set_state(COMBAT_NO_ROUTE); true }
+            (COMBAT_NO_MOVE, msg::ENTER) => { self.attack_talk(d, rng); true }
             (COMBAT_NO_MOVE, msg::UPDATE) => {
                 if self.unseen_ticks < 16 { self.set_state(COMBAT_NEW_SIGHTING) } else { self.set_state(COMBAT_NO_SIGHT) }
                 true
             }
             (COMBAT_NEW_SIGHTING, msg::ENTER) => {
+                self.seen_player_talk(d, rng);
                 let crouch = self.prop(d, 0x11) && self.can_do(d, anim_state::CROUCH_AIM) && self.dist >= 6.0 && rng.rand(2) != 0;
                 self.set_state(if crouch { AIM_CROUCH_FIRE } else { AIM_STAND_FIRE });
                 true
@@ -2201,6 +2298,8 @@ impl Drone {
             (AIM_STAND, msg::ENTER) => { self.call_anim(d, anim_state::AIM_STAND, 0, msg::ANIM_DONE); self.firing = false; true }
             (AIM_STAND, msg::ANIM_DONE) => { self.set_state(if self.unseen_ticks < 16 { AIM_STAND_FIRE } else { COMBAT_NO_SIGHT }); true }
             (AIM_STAND_FIRE, msg::ENTER) => {
+                // Non-snipers talk (`+0xC5` ≠ 2; `+0x4F8 & 0x10` and prop 0x40 not modelled).
+                if !self.stationary { self.attack_talk(d, rng); }
                 self.call_anim(d, anim_state::AIM_STAND, 0, 0);
                 self.vision_on = true;
                 if self.unseen_ticks < 16 { self.fire(d, rng, frame, true) } else { self.set_state(COMBAT_NO_SIGHT) }
@@ -2878,8 +2977,23 @@ pub struct Drones {
     pub music: crate::music::Music,
     pub attack_gate: crate::music::AttackGate,
     alarm_music: [u16; 3],
+    /// Speech: each line's last play frame (`Drone_SfxInfo+0x08`, global; `None` = never) and the patrol-talk cooldown.
+    voice_last: Vec<Option<u32>>,
+    patrol_cooldown: u32,
     /// Script stream sounds: (script, stream) → handle and the object it follows.
     script_sounds: Vec<((u32, u8), crate::sound::Handle, Option<usize>)>,
+}
+
+/// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
+pub fn voice_type(skin: u32) -> u16 {
+    match skin & 0xffff {
+        0x04 | 0x06 | 0x08 | 0x4c => 3, 0x0e | 0x0f => 0x15, 0x10 | 0x11 | 0x52 => 0x16, 0x12..=0x14 => 0x11,
+        0x15 | 0x20 | 0x22..=0x24 => 0xd, 0x16 | 0x8f | 0xac => 0x14, 0x17 | 0x18 => 0x12, 0x19 | 0x21 => 0xe,
+        0x1b | 0x4f => 9, 0x1e => 0xb, 0x25 => 5, 0x26 | 0x66 => 0x10, 0x2b | 0x2d | 0x34 => 8, 0x2e..=0x30 => 2,
+        0x35 => 0xf, 0x36..=0x3a => 1, 0x3b | 0x3c => 0xc, 0x27..=0x2a | 0x31..=0x33 | 0x53 => 0x17,
+        0x54 | 0x6d | 0x6e | 0x7e => 4, 0x5e => 0x13, 0x78 | 0x94 | 0xba => 0x18, 0x87 | 0x90 | 0x93 => 6,
+        0x8c | 0xb1 | 0xb2 => 7, _ => 0,
+    }
 }
 
 /// The script runtime's view of the level data: animation lengths and an animated object's discrete object 0.
@@ -2914,7 +3028,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3] }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0 }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -3071,6 +3185,25 @@ impl Drones {
         [p.cos() * y.sin(), p.sin(), p.cos() * y.cos()]
     }
 
+    /// `NDrone2_SpeechSFX(idx, force, 0, 0)` → `NDrone2_PlaySFX(2.0, …)` for each request of a drone's update: closed
+    /// for the first 30 frames (`DronePostLoadFrame`), the line's repeat delay (global per line), no direct play for a
+    /// line with a facial anim, a non-forced line refused while one is referenced; the line is stamped, played at the
+    /// drone (`Sound_Play3D`: heard and entered for the AI) and becomes the drone's current line (`+0x4D0`).
+    fn speech(&mut self, d: &Data, index: usize, talks: Vec<(usize, bool)>, frame: u32) {
+        let Some(lines) = d.voices else { return };
+        if self.voice_last.len() < lines.len() { self.voice_last.resize(lines.len(), None); }
+        for (idx, force) in talks {
+            let Some(l) = lines.get(idx).copied() else { continue };
+            if frame < 30 || self.voice_last[idx].is_some_and(|t| frame < t + l.repeat) { continue; }
+            if l.sfx == 0 || l.facial != 0 { continue; }
+            if !force && self.list[index].voice.is_some() { continue; }
+            self.voice_last[idx] = Some(frame);
+            let pos = self.list[index].pos;
+            let h = match d.sfx { Some(t) => self.play_sound_handle(pos, t.get(l.sfx)), None => self.audio.play3d(l.sfx, pos, None) };
+            self.list[index].voice = (h != 0).then_some((h, l.sfx));
+        }
+    }
+
     /// `Effect_Bullet`: the impact sound of the surface the segment `from → to` hits (`EffectInfo+0x14`), at the hit.
     fn impact_sound(&mut self, d: &Data, from: V3, to: V3) {
         let (Some(s), Some((t, _, m))) = (d.surfaces, d.world.segment_surface(from, to)) else { return };
@@ -3079,10 +3212,14 @@ impl Drones {
     }
 
     /// `Sound_Play3D(id, pos, …)`: heard (the sound pool) and, unless looped, entered in the drones' hearing list.
-    pub fn play_sound(&mut self, pos: V3, h: nf_formats::sfx::SfxHearing) {
-        self.audio.play3d(h.id, pos, None);
-        if h.looped { return; }
+    pub fn play_sound(&mut self, pos: V3, h: nf_formats::sfx::SfxHearing) { self.play_sound_handle(pos, h); }
+
+    /// `play_sound`, returning the sound's handle.
+    pub fn play_sound_handle(&mut self, pos: V3, h: nf_formats::sfx::SfxHearing) -> crate::sound::Handle {
+        let handle = self.audio.play3d(h.id, pos, None);
+        if h.looped { return handle; }
         self.sounds.push(Sound { id: h.id, pos, inner: h.inner, outer: h.outer, weight: h.weight });
+        handle
     }
 
     /// `Pickup_Update` for every pickup: the fall, Bond's touch (`Pickup_Handler`; refused pickups stay, and the
@@ -3398,6 +3535,7 @@ impl Drones {
         // Pickups are created at run time, so they head the control list: `Pickup_Update` before the placed objects.
         self.update_pickups(d, player, frame);
         // Per drone: timers, alertness decay, update message, turning, aim, firing, animation.
+        let mut talk_queue: Vec<(usize, Vec<(usize, bool)>)> = Vec::new();
         for &(_, what, index) in &order {
             if what == 1 { self.triggers[index].update(&mut self.channels, &touchers, frame); continue; }
             if what == 2 {
@@ -3433,6 +3571,8 @@ impl Drones {
                 dr.enabled = true;
                 dr.set_state(if dr.alt_state != 0 { dr.alt_state } else { state::ATTACK });
             }
+            dr.voice_finished = dr.voice.is_none_or(|v| self.audio.finished(v.0));
+            dr.patrol_cooldown = self.patrol_cooldown;
             if !dr.started { dr.started = true; dr.send(d, rng, frame, msg::ENTER); dr.entered = frame; dr.log.push((frame, dr.state)); }
             if let Some(t) = dr.timer_c { if frame >= t { dr.timer_c = None; dr.send(d, rng, frame, msg::TIMER_C); } }
             if let Some(t) = dr.idle_timeout { if frame >= t { dr.idle_timeout = None; dr.send(d, rng, frame, msg::IDLE_TIMEOUT); } }
@@ -3450,6 +3590,9 @@ impl Drones {
                 | state::ROLL_RIGHT_CROUCH | state::RUN_FOR_COVER | state::UNDER_COVER_INIT | state::UNDER_COVER_IDLE | state::UNDER_COVER_AIM
                 | state::UNDER_COVER_FIRE | state::UNDER_COVER_RETURN | state::UNDER_COVER_LEAVE_NOW | state::UNDER_COVER_TYPE_CHANGE | state::BULLET_IMPACT)
                 && self.attack_gate.seen_and_attacking(index, dr.seen, dr.unseen_ticks, dr.dist) { self.music.event(2, 5); }
+            self.patrol_cooldown = dr.patrol_cooldown;
+            let talks = std::mem::take(&mut dr.talks);
+            if !talks.is_empty() { talk_queue.push((index, talks)); }
             self.used = std::mem::take(&mut dr.links_used);
             self.cover_rt = std::mem::take(&mut dr.cover_rt);
             // NDrone2_Steer: exponential turn toward the desired yaw, 0.1 per tick, with the anim's yaw offset added
@@ -3485,6 +3628,8 @@ impl Drones {
                 dr.pos[2] = p[2];
             }
         }
+        // The drones' speech requests, in update order (no random draws in `SpeechSFX` / `PlaySFX`).
+        for (index, talks) in talk_queue { self.speech(d, index, talks, frame); }
         // Bullets: move, collide with the world and Bond (`Bullet_update` + `Collide_Update`), damage
         // (`Player_HandlePain`); the hit flash fades by 1 per tick (HUD).
         self.impacts.clear();

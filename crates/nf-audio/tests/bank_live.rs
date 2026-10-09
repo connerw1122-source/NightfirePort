@@ -40,4 +40,14 @@ fn level_05_bank_plays_through_the_driver() {
     assert_eq!(out.len(), before);
     d.update(&mut out, &[]);
     assert!(d.is_playing(1) && d.is_playing(2) && !d.is_playing(3));
+    // A streamed effect: id 175 (a guard's line) plays STREAMS entry 211 — 7490 → 7424 bytes of ADPCM (0.589 s at
+    // 22 050 Hz), pitch 0x759.
+    let lut = nf_formats::soundbank::stream_lut(&get("PS2/ENGLISH/STREAMS/STREAMS.LUT")).unwrap();
+    let bin = get("PS2/ENGLISH/STREAMS/STREAMS.BIN");
+    assert_eq!(nf_formats::soundbank::stream_data(&bin, lut[211]).unwrap().len(), 7424);
+    d.load_streams(lut, std::sync::Arc::new(bin));
+    let mut out = Vec::new();
+    assert_eq!(d.start(&mut out, 175, Some([2.0, 0.0, 0.0]), 9, None), 0);
+    let s = out.iter().find_map(|c| match c { Cmd::Play { pcm, pitch, .. } => Some((pcm.data.len(), *pitch)), _ => None }).unwrap();
+    assert_eq!(s, (7424 / 16 * 28, 0x759));
 }

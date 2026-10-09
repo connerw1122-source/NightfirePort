@@ -110,6 +110,7 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
         hitboxes: nf_formats::hitbox::CollisionBones::from_action_elf(&elf).ok(),
         sfx: nf_formats::sfx::SfxTable::from_action_elf(&elf).ok(),
         surfaces: nf_formats::sfx::SurfaceSounds::from_action_elf(&elf).map_err(|e| eprintln!("EffectInfo: {e}")).ok(),
+        voices: nf_formats::sfx::voice_lines(&elf).map_err(|e| eprintln!("Drone_SfxInfo: {e}")).ok(),
         hud: nf_formats::hud::HudTables::from_action_elf(&elf).map_err(|e| eprintln!("HUD tables: {e}")).ok(),
     };
     let scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));
@@ -170,6 +171,11 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
         let f = |ext: &str| get(&nf_formats::soundbank::bank_path("ENGLISH", slot, ext));
         let bank = nf_formats::soundbank::Bank::parse(&f("SHF")?, &f("SFX")?).map_err(|e| eprintln!("sound bank: {e}")).ok()?;
         Some((slot, bank, f("SBF")?))
+    })();
+    // Streamed effects (guards' speech): STREAMS.LUT / STREAMS.BIN.
+    scene.streams = (|| {
+        let get = |p: &str| iso.find(p).and_then(|e| iso.read_file(e).ok());
+        Some((nf_formats::soundbank::stream_lut(&get("PS2/ENGLISH/STREAMS/STREAMS.LUT")?).ok()?, get("PS2/ENGLISH/STREAMS/STREAMS.BIN")?))
     })();
     // Music (`Sound_Ready` → `Music_Event(0, level)`; docs/systems/music.md): the MapMusic / MapDroneData tables, and
     // the level's track through MFXINFO.MXI to PS2/MUSIC/MFX_<n>.{SMF,SSD}.
@@ -581,6 +587,7 @@ fn main() -> Result<()> {
     let sound = scene.sound_bank.take().map(|(slot, bank, sbf)| {
         let mut driver = nf_audio::sfx::Driver::new();
         driver.load_bank(slot, bank, sbf);
+        if let Some((lut, bin)) = scene.streams.take() { driver.load_streams(lut, std::sync::Arc::new(bin)); }
         let output = nf_audio::Output::open();
         if output.is_none() { eprintln!("audio: no output device; running silent"); }
         let music_files = scene.music_files.take().map(|(t, smf, ssd)| (t, smf, std::sync::Arc::new(ssd)));

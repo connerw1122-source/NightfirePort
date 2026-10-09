@@ -20,7 +20,7 @@ fn castle_music_flows_jumps_and_ends() {
     // The game's level-start volume: 70 · 100 · 99 → 69 → 47 → SPU 7700 / 16383.
     assert!((p.gain(70, 100, 10000) - 7700.0 / 16383.0).abs() < 1e-4);
     let (mut played, mut queued) = (0u64, 0u64);
-    let mut frame = |p: &mut Player, played: &mut u64, queued: &mut u64| {
+    let frame = |p: &mut Player, played: &mut u64, queued: &mut u64| {
         *played = (*played + 533).min(*queued);
         let mut out = Vec::new();
         p.update(*played, &mut out);
