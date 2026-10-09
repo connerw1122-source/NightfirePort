@@ -7,6 +7,7 @@ pub mod bullet;
 pub mod cover;
 pub mod damage;
 pub mod drone;
+pub mod env;
 pub mod gun;
 pub mod nav;
 pub mod pickup;

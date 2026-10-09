@@ -85,6 +85,9 @@ pub struct HudVertex { pub p: [f32; 2], pub uv: [f32; 2], pub c: [f32; 4] }
 #[derive(Default)]
 pub struct HudFrame { pub v: Vec<HudVertex>, pub runs: Vec<(usize, bool, u32, u32)> }
 
+/// Most snow vertices per frame (4096 flakes × 6).
+const SNOW_MAX: usize = 4096 * 6;
+
 /// Most overlay vertices per frame.
 const HUD_MAX: usize = 16384;
 
@@ -98,6 +101,10 @@ pub struct Renderer {
     hud_vbuf: wgpu::Buffer,
     hud_bgs: Vec<wgpu::BindGroup>,
     pipelines: Vec<(Draw, wgpu::RenderPipeline)>,
+    /// Snow: the particle pipeline (additive, depth test, no write), a per-frame vertex buffer and the flake texture.
+    snow_pipeline: wgpu::RenderPipeline,
+    snow_vbuf: wgpu::Buffer,
+    snow_bg: wgpu::BindGroup,
     /// The level's fog (`psiPreGameRun`): colour 0-255, `Ps2Far1`.
     fog: Option<([u8; 3], f32)>,
     uniform: wgpu::Buffer,
@@ -248,7 +255,10 @@ impl Renderer {
         let draws: Vec<DrawCall> = scene.materials.iter().zip(&material_tex)
             .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre }).collect();
         let fog = scene.fog;
-        Renderer { hud_pipeline, hud_add_pipeline, hud_vbuf, hud_bgs, pipelines, fog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, draws }
+        let snow_pipeline = make_pipeline(Draw { pass: 5, blend: 1, zwrite: false, atest: 0, fog: 0 });
+        let snow_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (SNOW_MAX * std::mem::size_of::<crate::scene::Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let snow_bg = match &scene.snow_texture { Some(t) => make_tex(t.width, t.height, &t.rgba), None => make_tex(1, 1, &[255, 255, 255, 255]) };
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_vbuf, hud_bgs, pipelines, fog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, draws }
     }
 
     /// `view_proj`: full camera; `view_proj_rot`: the same without the camera translation.
@@ -261,7 +271,9 @@ impl Renderer {
     /// `hud`: overlay triangles drawn last.
     /// `eye`: the camera position (the per-frame draw sort: list 0 front to back, list 1 back to front by the objects'
     /// squared distance, as `View_AddCels` orders cels).
-    pub fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], eye: [f32; 3], hud: &HudFrame) -> wgpu::CommandEncoder {
+    pub fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], eye: [f32; 3], snow: &[crate::scene::Vertex], hud: &HudFrame) -> wgpu::CommandEncoder {
+        let ns = snow.len().min(SNOW_MAX);
+        if ns > 0 { queue.write_buffer(&self.snow_vbuf, 0, bytemuck::cast_slice(&snow[..ns])); }
         let n = hud.v.len().min(HUD_MAX) / 3 * 3;
         if n > 0 { queue.write_buffer(&self.hud_vbuf, 0, bytemuck::cast_slice(&hud.v[..n])); }
         // Fog constants: N1 = `Ps2Near1` 8, n = `Ps2Near2` 0.1, f = `Ps2Far2` 2^24 [L]; F1 per level.
@@ -308,6 +320,14 @@ impl Renderer {
                 pass.set_bind_group(0, uniform, &[]);
                 pass.set_bind_group(1, &self.tex_bgs[dc.tex], &[]);
                 pass.draw_indexed(first..first + count, 0, 0..1);
+            }
+            // `DrawDrops` runs after the fog pass, the alpha list and the shards.
+            if ns > 0 {
+                pass.set_pipeline(&self.snow_pipeline);
+                pass.set_bind_group(0, &self.uniform_bg, &[]);
+                pass.set_bind_group(1, &self.snow_bg, &[]);
+                pass.set_vertex_buffer(0, self.snow_vbuf.slice(..));
+                pass.draw(0..ns as u32, 0..1);
             }
             if n > 0 {
                 pass.set_vertex_buffer(0, self.hud_vbuf.slice(..));

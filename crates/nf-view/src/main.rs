@@ -127,6 +127,15 @@ fn posed_vertices(scene: &scene::Scene, choice: Option<usize>, time: f32, opts: 
         .map(|(pos, v)| scene::Vertex { pos, ..*v }).collect()
 }
 
+/// The snow quads facing the camera.
+fn snow_for(scene: &scene::Scene, cam: &Camera) -> Vec<scene::Vertex> {
+    let Some(sim) = scene.sim.as_ref() else { return Vec::new() };
+    let f = cam.dir();
+    let right = f.cross(Vec3::Y).normalize_or_zero();
+    let up = right.cross(f).normalize_or_zero();
+    sim.snow_quads(right.to_array(), up.to_array())
+}
+
 async fn device(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) -> Result<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
     let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: surface, ..Default::default() }).await?;
     let (device, queue) = adapter.request_device(&Default::default()).await?;
@@ -148,7 +157,8 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let view = target.create_view(&Default::default());
     let depth = gpu::depth_view(&device, w, h);
     let (vp, vp_rot) = cam.view_proj(w as f32 / h as f32);
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), &hud::overlay(scene, w as f32 / h as f32));
+    let snow = snow_for(scene, cam);
+    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), &snow, &hud::overlay(scene, w as f32 / h as f32));
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -353,7 +363,8 @@ impl ApplicationHandler for App {
                 let view = frame.texture.create_view(&Default::default());
                 let aspect = g.config.width as f32 / g.config.height as f32;
                 let (vp, vp_rot) = self.cam.view_proj(aspect);
-                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, self.cam.pos.to_array(), &hud::overlay(&self.scene, aspect));
+                let snow = snow_for(&self.scene, &self.cam);
+                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, self.cam.pos.to_array(), &snow, &hud::overlay(&self.scene, aspect));
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
                 g.window.request_redraw();

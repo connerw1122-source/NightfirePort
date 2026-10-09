@@ -2839,6 +2839,11 @@ pub struct Drones {
     pub bond_aiming: bool,
     /// Bond's weapon byte (player `anim+0x62`; the P2K = 2).
     pub bond_weapon: u8,
+    /// Weather (`DrawSnow`: a `SNOW_gen` placement, type 0xDF): the drop type and volumes from the level, built at the
+    /// first tick; the generator of the first-frame fill (before the snapshot point, so not the shared one).
+    pub env: Option<crate::env::Drops>,
+    env_pending: Option<(u8, Vec<crate::env::RainBox>)>,
+    fill_rng: Rng,
     /// Pickups in the world, Bond's inventory and what he took (tick, what) — docs/systems/pickups.md.
     pub pickups: Vec<crate::pickup::Pickup>,
     pub inventory: crate::pickup::Inventory,
@@ -2852,7 +2857,7 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, bond_weapon: 2, last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
+        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new() }
     }
 
@@ -2861,6 +2866,18 @@ impl Drones {
     pub fn attach_level(&mut self, level: &nf_formats::level::Level) {
         self.triggers = crate::triggers::build(level);
         let Some(m) = level.main_map() else { return };
+        // Weather: `Env_Create` (placement 0xDF, parameter 0 = drop type) and the `RainBox_Create` volumes (0x32: the
+        // glist bounds at the placement translation).
+        let ps = &level.maps[m].placements;
+        if let Some(p) = ps.iter().find(|p| p.flags & 0xff == 0xdf) {
+            let kind = p.params.iter().find(|(i, _)| *i == 0).map_or(0, |&(_, v)| v as u8);
+            let boxes = level.instances(false).0.iter().filter(|i| i.placement.flags & 0xff == 0x32).map(|i| {
+                let o = &level.maps[i.map].objects[i.object];
+                let t = i.placement.translation;
+                crate::env::RainBox { min: [o.min[0] + t[0], o.min[1] + t[1], o.min[2] + t[2]], max: [o.max[0] + t[0], o.max[1] + t[1], o.max[2] + t[2]] }
+            }).collect();
+            self.env_pending = Some((kind, boxes));
+        }
         for dr in &mut self.list {
             if let Some(i) = level.maps[m].placements.iter().position(|p| p.flags & 0xff == 0x0f
                 && (p.translation[0] - dr.pos[0]).abs() < 1e-3 && (p.translation[2] - dr.pos[2]).abs() < 1e-3) { dr.placement = i; }
@@ -3026,6 +3043,12 @@ impl Drones {
     pub fn tick(&mut self, d: &Data, player: &Player) {
         self.frame += 1;
         let frame = self.frame;
+        // `Game_Run`: `Env_Update` (one `Rand_Rand(20000)`, then `UpdateDrops`) before the object handler.
+        if let Some((kind, boxes)) = self.env_pending.take() { self.env = Some(crate::env::Drops::new(kind, boxes, d.level, &mut Rng::new(0x5eed_0001))); }
+        if let Some(env) = self.env.as_mut() {
+            self.rng.rand(20000);
+            env.update(&mut self.rng, &mut self.fill_rng, player.eye, atan2_approx(player.aim[0], player.aim[2]));
+        }
         // `Drone_ProcessOpponents` (0x1390c0): Bond's visibility factor from the AI volumes holding him (crouching
         // ×0.75 is not modelled: the port's Bond does not crouch), then each drone's opponent info.
         let light = crate::aivolume::visibility_factor(d.volumes, player.pos, false);

@@ -1085,3 +1085,17 @@ objects by texture blended the soft-edged snow overlays (9,237 vertices with alp
 was drawn before them — usually the cleared background, a pale wash; per-object, per-leaf order fixed it. Not yet:
 snow, environment mapping, billboards / jitter (glist flags 0x8 / 0x4), animated textures, dynamic lights,
 `GlobalBlur`, the bilinear 7/16 display filter.
+
+## 0056 — Render subsystem II: snow (2026-10-09)
+
+Read `InitDrops`, `UpdateDrops`, `AddDrop`, `RainBox_Clip`, `Env_Update`, `Game_Run` (docs/systems/render.md "Snow").
+`nf_game::env::Drops` ports the drops: the velocity table, the wind's random walk, the cube 7.5 ahead of the eye, the
+volumes (placements 0x32, glist bounds + translation) clipped to it, up to 21 respawns a tick only inside active boxes,
+kill heights. **They draw from the shared `Rand_*`** (`Env_Update`'s `Rand_Rand(20000)`, 2 wind `FRand`s, 3 per respawn)
+before the object handler (`Game_Run`), so `Drones::tick` runs them first. The velocity table and the first-frame
+fill happen before the level-start snapshot the port starts from, so they use a separate generator (*deviation*:
+their values are not the game's). The shifted sequence broke one seeded test: `guard_takes_cover_like_the_game` re-
+picked from seed 1 to 2 (aim 34 ticks, live 37; 0.03 from the live cover spot), as in 0027 / 0037. nf-view draws the
+live flakes as camera-facing quads of texture 0x03000045, colour (63, 63, 63, 127), additive, depth-tested without
+writing, after the alpha list; 0.2 units wide (*suggested*). Unit test `snow_falls_inside_its_box_and_respawns_above_
+the_viewer` (sister: no box → nothing falls).
