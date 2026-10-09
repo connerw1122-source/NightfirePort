@@ -536,8 +536,11 @@ fn placements(iso: &IsoImage, level_name: &str, kind: u32) -> Result<()> {
     let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
     let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
     let level = nf_formats::level::Level::parse(&data)?;
-    let m = level.main_map().context("no main map")?;
+    let main = level.main_map().context("no main map")?;
+    for m in 0..level.maps.len() {
+    if m != main && std::env::var_os("NF_ALL_MAPS").is_none() { continue; }
     for (i, p) in level.maps[m].placements.iter().enumerate().filter(|(_, p)| p.flags == kind) {
+        if m != main { print!("map {m} "); }
         let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() } else { Some((m, p.index as usize)) };
         let obj = target.and_then(|(om, oi)| level.maps[om].objects.get(oi));
         println!("placement {i}: t {:?} r {:?} extra {:08x?} scale {:?} params {:?} object {:?}", p.translation, p.rotation, p.extra, p.scale(), p.params, obj.map(|o| &o.name));
@@ -547,6 +550,7 @@ fn placements(iso: &IsoImage, level_name: &str, kind: u32) -> Result<()> {
             for v in o.gfx.leaves.iter().flat_map(|l| &l.batches).flat_map(|b| &b.verts) { for k in 0..3 { lo[k] = lo[k].min(v.pos[k]); hi[k] = hi[k].max(v.pos[k]); } }
             println!("    gfx verts {lo:?}..{hi:?}; flags {:#x}; collision {:?}", o.flags, o.collision.as_ref().map(|c| c.triangles().len()));
         }
+    }
     }
     Ok(())
 }
