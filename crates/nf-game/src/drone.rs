@@ -2365,6 +2365,41 @@ impl Drones {
                 dr.lost_sight = true;
             }
         }
+        // `Drone_InitComms` order: `ProcessDroneSight` (vision, line of sight, `FindAlertedDrones`), the 0x97 check, then
+        // every drone's `HandleSoundAlerts`, `Sound_ZeroAlertness`, the alarm.
+        // Drones noticing drones that attack (`DroneVision_FindAlertedDrones` → `ConsiderAlerted` →
+        // `DroneCanSeeDrone`): source attacking ≥ 1 s with visible alert bits; observer watching (Idle/Alert), not yet
+        // alerted, whose props accept the bits (0x10 always; 2 → 0x27, 4 → 0x4F, 1 → 0x28, 8 → 0x26/0x29), within
+        // 50 units, in its view (±e4, ≤ e8, under 2 always) and with head-to-head line of sight. At most 4 per tick.
+        let mut alerts = Vec::new();
+        'pairs: for (oi, o) in self.list.iter().enumerate() {
+            if !o.watching || o.alerted_by_drone || !matches!(o.state, state::IDLE | state::ALERT | state::PATROL) { continue; }
+            for (si, src) in self.list.iter().enumerate() {
+                if si == oi || !src.enabled || src.alert_bits == 0 || frame < src.attack_frame + 60 { continue; }
+                let b = src.alert_bits;
+                let accepts = b & 0x10 != 0 || (b & 2 != 0 && o.prop(d, 0x27)) || (b & 4 != 0 && o.prop(d, 0x4f))
+                    || (b & 1 != 0 && o.prop(d, 0x28)) || (b & 8 != 0 && (o.prop(d, 0x26) || o.prop(d, 0x29)));
+                if !accepts { continue; }
+                let (dx, dy, dz) = (src.pos[0] - o.pos[0], src.pos[1] - o.pos[1], src.pos[2] - o.pos[2]);
+                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                if dist > 50.0 { continue; }
+                let in_view = dist < 2.0 || ((o.half_fov == 0.0 || angle_difference(o.yaw, atan2_approx(dx, dz)).abs() <= o.half_fov) && dist <= o.sight_range);
+                if in_view && d.world.line_of_sight(o.head(), src.head()) {
+                    alerts.push((oi, b));
+                    if alerts.len() > 4 { break 'pairs; }
+                    continue 'pairs;
+                }
+            }
+        }
+        for (oi, b) in alerts {
+            let o = &mut self.list[oi];
+            o.alerted_by_drone = true;
+            o.alert_bits |= b << 16;
+            o.send(d, &mut self.rng, frame, msg::FORCED_ATTACK);
+        }
+        // `Drone_InitComms` after the vision pass: an enabled (`+0x4F8 & 0x100`, set by DefaultInit / Enable), living
+        // (`& 0x600` clear) drone at alertness ≥ 1 within 30 units of Bond (not team 2) raises `switch_channels[0x97]`.
+        if self.list.iter().any(|x| x.present && x.enabled && !x.corpse && x.alert >= 1.0 && x.dist < 30.0) { self.channels.set(0x97, 1, frame); }
         // `DroneFunc_HandleSoundAlerts` (every drone, every frame) over the sounds made since the last frame, then
         // `Sound_ZeroAlertness`: each sound alerts once.
         let sounds = std::mem::take(&mut self.sounds);
@@ -2407,44 +2442,11 @@ impl Drones {
                 }
             }
         }
-        // `Drone_InitComms` after the vision pass: an enabled (`+0x4F8 & 0x100`, set by DefaultInit / Enable), living
-        // (`& 0x600` clear) drone at alertness ≥ 1 within 30 units of Bond (not team 2) raises `switch_channels[0x97]`.
-        if self.list.iter().any(|x| x.present && x.enabled && !x.corpse && x.alert >= 1.0 && x.dist < 30.0) { self.channels.set(0x97, 1, frame); }
         // The alarm: while `switch_channels[0x96]`, every 30 frames (and once only on 07000014) msg 0x1E to every drone.
         if self.channels.on(0x96) && self.last_alarm.is_none_or(|t| frame > t + 30) && (d.level != 0x0700_0014 || !self.alarm_sent) {
             self.alarm_sent = true;
             self.last_alarm = Some(frame);
             for dr in self.list.iter_mut().filter(|x| x.present && x.enabled) { dr.send(d, &mut self.rng, frame, msg::ALARM); }
-        }
-        // Drones noticing drones that attack (`DroneVision_FindAlertedDrones` → `ConsiderAlerted` →
-        // `DroneCanSeeDrone`): source attacking ≥ 1 s with visible alert bits; observer watching (Idle/Alert), not yet
-        // alerted, whose props accept the bits (0x10 always; 2 → 0x27, 4 → 0x4F, 1 → 0x28, 8 → 0x26/0x29), within
-        // 50 units, in its view (±e4, ≤ e8, under 2 always) and with head-to-head line of sight. At most 4 per tick.
-        let mut alerts = Vec::new();
-        'pairs: for (oi, o) in self.list.iter().enumerate() {
-            if !o.watching || o.alerted_by_drone || !matches!(o.state, state::IDLE | state::ALERT | state::PATROL) { continue; }
-            for (si, src) in self.list.iter().enumerate() {
-                if si == oi || !src.enabled || src.alert_bits == 0 || frame < src.attack_frame + 60 { continue; }
-                let b = src.alert_bits;
-                let accepts = b & 0x10 != 0 || (b & 2 != 0 && o.prop(d, 0x27)) || (b & 4 != 0 && o.prop(d, 0x4f))
-                    || (b & 1 != 0 && o.prop(d, 0x28)) || (b & 8 != 0 && (o.prop(d, 0x26) || o.prop(d, 0x29)));
-                if !accepts { continue; }
-                let (dx, dy, dz) = (src.pos[0] - o.pos[0], src.pos[1] - o.pos[1], src.pos[2] - o.pos[2]);
-                let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                if dist > 50.0 { continue; }
-                let in_view = dist < 2.0 || ((o.half_fov == 0.0 || angle_difference(o.yaw, atan2_approx(dx, dz)).abs() <= o.half_fov) && dist <= o.sight_range);
-                if in_view && d.world.line_of_sight(o.head(), src.head()) {
-                    alerts.push((oi, b));
-                    if alerts.len() > 4 { break 'pairs; }
-                    continue 'pairs;
-                }
-            }
-        }
-        for (oi, b) in alerts {
-            let o = &mut self.list[oi];
-            o.alerted_by_drone = true;
-            o.alert_bits |= b << 16;
-            o.send(d, &mut self.rng, frame, msg::FORCED_ATTACK);
         }
         // Bond's motion (`DroneWeap_DoOpponentTargetting`): moving, and "first moved" for 2 s after he starts.
         let moving = self.prev_player.is_some_and(|q| (q[0] - player.pos[0]).abs() + (q[2] - player.pos[2]).abs() > 1e-4);

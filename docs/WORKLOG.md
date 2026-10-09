@@ -793,3 +793,11 @@ SearchArea, HeardNoise Aware / Suspect / Alert, plus states the port lacks) go t
 `DroneFunc_CheckAlarmRaised` is music only. Channel 0x97: a search over every OR-mask on `+0x4F8` found 0x100 only
 in `NDrone2_DefaultInit` (| 0x1A0) and `NDrone2_Enable` (| 0x801A0) — the "enabled" flag; dead drones are excluded by
 0x200 (`SetAsDead`). So any enabled living drone at alertness ≥ 1 within 30 units of Bond raises 0x97 — ported.
+
+## 0034 — `Drone_InitComms` order (2026-10-09)
+
+Read the order: link flags / aware points / target slots, `ProcessCoverNodes`, `ProcessOpponents` (AI-volume factor
+and opponent info), `ProcessDroneSight` (visibility, the round-robin line of sight, `FindAlertedDrones`, and each
+drone's own AI-volume factor `+0x52C` — used only when a drone's opponent is a drone), the 0x97 / music pass,
+`NavNodeCache`, then every drone's `HandleSoundAlerts`, `Sound_ZeroAlertness`, the alarm, delayed messages. The port
+ran the sound alerts before the drone-to-drone alerts; now alerts → 0x97 → sounds → alarm, as read. All tests pass.
