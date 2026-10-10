@@ -202,6 +202,11 @@ pub struct Sim {
     pub surfaces: Option<nf_formats::sfx::SurfaceSounds>,
     pub voices: Option<Vec<nf_formats::sfx::VoiceLine>>,
     pub step_dist: f32,
+    /// The level's zip wires / creep ledges (placement type 0x3A, `Wire_Create` 0x1981d8). When Bond is near
+    /// one, the creep substate posts `Music_Event(0xD, 1)` (docs/systems/music.md event 0xD).
+    pub wires: Vec<nf_game::wire::Wire>,
+    /// Whether Bond is currently on a wire (creeping) — posts music event 0xD each tick.
+    pub creeping: bool,
 }
 
 impl Sim {
@@ -297,6 +302,14 @@ impl Sim {
         let aim = d.map(|v| v / l);
         self.first_person = !self.disabled;
         self.run(self.bond.pos, head, look, aim, trigger, aiming, reload, use_key);
+        // Wire / creep (`Player_Creep` 0x1969d0, `Player_Wire` 0x197658): when Bond is near a wire, the creep
+        // substate posts `Music_Event(0xD, 1)` every tick — the music jumps to section 2 (stealth) or 6 (combat).
+        // *Deviation*: the full creep movement (Bond sliding along the wire, the third-person camera, the
+        // animation) is not ported; only the music event is posted when Bond is within the grab zone (1.5 units).
+        self.creeping = self.wires.iter().any(|w| w.near(self.bond.pos, 1.5));
+        if self.creeping {
+            self.drones.music.event(0xd, 1);
+        }
         // Script hand-offs (docs/systems/script-player.md): event 4 stops Bond; `Script_Free` after event 6 puts him
         // back at the script's matrix (on the floor below it), facing its +Z.
         for e in std::mem::take(&mut self.drones.player_events) {
@@ -662,10 +675,9 @@ pub struct Scene {
     pub materials: Vec<Material>,
     pub textures: Vec<TextureImage>,
     /// The first-person gun (`Player_SetWeaponAnim`: `AnimObjectNew(G, weapon+0xDC)`): one character per owned
-    /// weapon id, built at scene build time. `view_model` is the currently active one (updated each frame in
-    /// `animate` from `sim.gun.weapon`).
+    /// weapon id, built at scene build time. The active one is selected each frame in `animate` from
+    /// `sim.gun.weapon`.
     pub view_models: HashMap<u8, usize>,
-    pub view_model: Option<usize>,
     /// The snow flake texture (`DrawDrops`: 0x03000045).
     pub snow_texture: Option<TextureImage>,
     /// Streamed effects: `STREAMS.LUT` entries and `STREAMS.BIN` (set by the loader).
@@ -932,7 +944,7 @@ impl Scene {
             }
         }
         // The first-person gun models: one character per owned weapon with a first-person skin (`weapon_data+0xDC`),
-        // drawn with a sleeve mesh and rigid parts on their bones. The active one (`view_model`) is selected each frame
+        // drawn with a sleeve mesh and rigid parts on their bones. The active one is selected each frame
         // in `animate` from `sim.gun.weapon`. The P2K (weapon 2) is always first; others follow the owned list [M].
         let mut view_models: HashMap<u8, usize> = HashMap::new();
         if let Some(wd) = drones.and_then(|d| d.weapons.as_ref()) {
@@ -969,7 +981,6 @@ impl Scene {
                 view_models.insert(wid, ci as usize);
             }
         }
-        let view_model = view_models.get(&2).copied();
         // Script objects (docs/systems/script-player.md): every animation and drawn entity the main map's script players
         // can make; each shows only while the simulation has the object.
         let mut script_objects = 0;
@@ -1134,13 +1145,22 @@ impl Scene {
             let bond = nf_game::player::Bond::stand_at(&world, p0, yaw0);
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.attach_level(level);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0 })
+            // Wires (`Wire_Create` 0x1981d8, placement type 0x3A): the level's zip wires / creep ledges.
+            let wires: Vec<nf_game::wire::Wire> = level.maps[m].placements.iter()
+                .filter(|p| p.flags & 0xff == 0x3a)
+                .map(|p| {
+                    // The wire's length: the glist model's extent (the bounds centre X on 07000005's wire
+                    // is 4.039 [L]). Without the glist at build time, use 4.0 as the default.
+                    nf_game::wire::Wire::create(p, 4.0)
+                })
+                .collect();
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {
             TextureImage::from_texture(mi, t)
         }));
-        Scene { streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, view_model, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
+        Scene { streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the

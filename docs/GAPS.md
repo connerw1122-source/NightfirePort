@@ -7,7 +7,7 @@
 | G-013 | The mcp-pine bridge was stopped (it holds PCSX2's single PINE connection); restart Claude Code to get the PINE MCP tools back. `tools/trace/pine.py` replaces it for sampling. | WORKLOG 0006. |
 | G-004 | Driving input path (DRIVING.ELF `PS2PadDevice`, `InputDevice::DeadZoneChop/Scale` names from DRIVING.SYM are hints only) | U-003. |
 | G-005 | Generate the full style × action mapping table for all 8 controller styles mechanically from `psiInput_MapInputs` | |
-| G-006 | `Check_AutoAim`, lock-on (`Autoaim_LockOnMul`), difficulty multipliers, `Player_ClearAimInertia` | input.md §7. |
+| G-006 | ~~`Check_AutoAim`, lock-on (`Autoaim_LockOnMul`), difficulty multipliers~~ done (`Drones::auto_aim` in drone.rs, WORKLOG 0042): scans drones' bone 2 within `Autoaim_Range`, the cone `weapon+0x14 · 0.01 · (1−d/range) · difficulty_mul` (Easy 1.9 / Normal 1.0 / Hard 0.0), ×1.4 lock-on, LOS, the ×0.5 offset decay. Off by default with a mouse (D-001), T toggles. `Player_ClearAimInertia` is a no-op (it zeroes `+0x128/+0x12C`; the port's offsets decay naturally). | input.md §7. |
 | G-007 | Add the OpenGOAL ISC notice for `vag.rs` | Fetch the LICENSE text (read-only web fetch). |
 | G-008 | `pss.rs` and `vag.rs` are RC2-verified only: re-check on `MOVIES/30_FPS/*.PSS` | opt-in NF_ISO test. |
 | G-014 | Read the VU1 microcode (ACTION.ELF `.vutext` 0x241c80, 0x2880 bytes, + DVP overlays) to confirm the batch semantics: signed V4-8 = normal + no-kick flag, UV use (ST·Q?), entry points 0 (clipped) / 2 (unclipped), lighting. Needs a VU disassembler (Ghidra EE extension covers VU? check). | ps2gfx.md confidence "medium" for these. |
