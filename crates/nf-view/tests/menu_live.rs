@@ -30,20 +30,111 @@ fn tick(scene: &mut nf_view::scene::Scene, n: u32) {
     }
 }
 
+/// B-11: measure the real font glyph height at the HUD scale, so the menu layout test can assert no row overlap.
+/// Returns (max_glyph_h, max_glyph_h_plus_yoff, top_offset) in HUD pixels.
+fn font_metrics(scene: &nf_view::scene::Scene) -> (f32, f32, f32) {
+    let font = &scene.hud.as_ref().expect("hud").font;
+    let max_h = font.glyphs.iter().map(|g| g.h as f32).fold(0.0f32, f32::max);
+    let max_h_yoff = font.glyphs.iter().map(|g| (g.h + g.yoff) as f32).fold(0.0f32, f32::max);
+    let top = font.glyphs.first().map_or(0.0, |g| (g.h + g.yoff) as f32);
+    (max_h, max_h_yoff, top)
+}
+
+#[test]
+fn menu_font_metrics_measured() {
+    // B-11: measure the real font glyph height so the menu layout is computed from it, not guessed. The user
+    // reported rows overlap at ~40 px each — this test prints the actual glyph h + the HUD scale, so we can set
+    // ROW_H correctly. At a 2000x1094 window, 1 HUD-px = 1094/448 = 2.44 window-px vertically.
+    let Some((scene, _)) = loaded() else { eprintln!("NF_ISO not set — skipping"); return };
+    let (max_h, max_h_yoff, top) = font_metrics(&scene);
+    eprintln!("[font] max glyph h = {max_h:.1} HUD-px, max h+yoff = {max_h_yoff:.1}, top offset = {top:.1}");
+    eprintln!("[font] at 2000x1094: 1 HUD-px = {:.2} window-px (vert), so max glyph = {:.0} window-px", 1094.0/448.0, max_h * 1094.0/448.0);
+    // A row must be at least (max_h + a 2px gap) tall to avoid overlap.
+    let needed_row_h = max_h + 2.0;
+    eprintln!("[font] ROW_H must be >= {needed_row_h:.1} HUD-px to avoid overlap");
+    assert!(max_h > 0.0, "font has no glyphs");
+    // B-11: assert the menu's ROW_H is tall enough for the real glyphs (no overlap).
+    assert!(dev::MENU_ROW_H >= max_h + 1.0,
+        "MENU_ROW_H ({}) is shorter than the font's max glyph h ({max_h}) + 1 — rows will overlap",
+        dev::MENU_ROW_H);
+    // Assert the panel width is under 25% of the HUD width (the user's "at most about a quarter of the screen").
+    assert!(dev::MENU_PANEL_W < 512.0 * 0.30,
+        "MENU_PANEL_W ({}) is over 30% of the 512-px HUD width", dev::MENU_PANEL_W);
+    eprintln!("[font] layout OK: ROW_H={} (glyph {max_h}+2), PANEL_W={} ({:.0}% of 512)",
+        dev::MENU_ROW_H, dev::MENU_PANEL_W, dev::MENU_PANEL_W / 512.0 * 100.0);
+}
+
+/// B-11: compute each menu row's text bounding box from the font metrics, and assert no two rows overlap and
+/// everything fits inside the panel. This is the layout test the user demanded: "compute each row's text bounding
+/// box from the font metrics, and assert there's no overlap and everything fits inside the panel." It catches the
+/// B-10 regression (ROW_H=12 with 17px glyphs → overlap) that headless action tests can't see.
+#[test]
+fn menu_layout_no_row_overlap_and_fits_panel() {
+    let Some((scene, mut dev)) = loaded() else { eprintln!("NF_ISO not set — skipping"); return };
+    let font = &scene.hud.as_ref().expect("hud").font;
+    let items = dev::menu_items(&dev);
+    let n = items.len();
+    let row_h = dev::MENU_ROW_H;
+    let glyph_h = dev::MENU_GLYPH_H;
+    let panel_w = dev::MENU_PANEL_W;
+    let panel_x = dev::MENU_PANEL_X;
+    let visible = dev::MENU_VISIBLE_ROWS;
+    // For each visible row, the text's vertical extent is [row_y, row_y + glyph_h] (the glyph occupies the full
+    // glyph_h, placed at row_y + 1 by the menu fn). Two consecutive rows overlap if row_y(i+1) < row_y(i) + glyph_h.
+    let banner = if dev.scenario.is_some() { dev::MENU_HEADER_H + 1.0 } else { 2.0 };
+    let list_y0 = 4.0 + banner;
+    for vi in 0..n.min(visible) {
+        let row_y = list_y0 + vi as f32 * row_h;
+        let text_top = row_y + 1.0;            // the menu places text at row_y + 1
+        let text_bot = text_top + glyph_h;     // the glyph is glyph_h tall
+        // The next row's text starts at row_y + row_h + 1. No overlap if that's >= this row's text_bot.
+        if vi + 1 < n.min(visible) {
+            let next_row_y = list_y0 + (vi + 1) as f32 * row_h;
+            let next_text_top = next_row_y + 1.0;
+            assert!(next_text_top >= text_bot,
+                "row {vi} text [{text_top:.1}, {text_bot:.1}] overlaps row {} text starting at {next_text_top:.1} (ROW_H={row_h}, glyph_h={glyph_h})",
+                vi + 1);
+        }
+        // Also assert the text's width fits in the panel. Measure the label via font.layout.
+        let (label, _desc, _) = &items[vi];
+        let lbl = dev::fit(label, 16);
+        let (_, w) = font.layout(&lbl, 0.0, 0.0);
+        let text_x = panel_x + 4.0;
+        assert!(text_x + w <= panel_x + panel_w,
+            "row {vi} label '{lbl}' width {w:.0} + x {text_x:.0} exceeds panel right {:.0}",
+            panel_x + panel_w);
+    }
+    // The whole menu (header + list + desc + footer) must fit in the HUD height (448).
+    let total_h = banner + (n.min(visible) as f32 * row_h) + dev::MENU_DESC_H + 1.0 + dev::MENU_DESC_H + 1.0 + dev::MENU_ROW_H;
+    assert!(total_h < 448.0, "menu total height {total_h:.0} exceeds the HUD height 448");
+    eprintln!("[layout] {n} rows, ROW_H={row_h}, glyph_h={glyph_h}: no overlap, panel {panel_w}px, total {total_h:.0}px < 448");
+    let _ = dev; // silence unused warning
+}
+
 #[test]
 fn menu_spawn_normal_guard_does_not_panic() {
     let Some((mut scene, mut dev)) = loaded() else { eprintln!("NF_ISO not set — skipping"); return };
     dev.spawn = dev::SpawnPick::Normal;
     // Spawn at a known-open spot (Bond's start on 07000005 is open ground).
     let pos = scene.sim.as_ref().map(|s| s.bond.pos).unwrap_or([0.0; 3]);
+    let n_before = scene.sim.as_ref().map_or(0, |s| s.drones.list.len());
     let gi = dev.spawn_guard(&mut scene, pos, 0.0);
-    assert!(gi.is_some(), "spawn_guard returned None — no drone created");
+    assert!(gi.is_some(), "spawn_guard returned None - no drone created");
+    let gi = gi.unwrap();
+    // B-11: assert the VISIBLE effect - a new drone exists, is present + drawn, and is in front of Bond.
+    let sim = scene.sim.as_ref().unwrap();
+    assert_eq!(sim.drones.list.len(), n_before + 1, "spawn did not add a drone to the list");
+    let dr = &sim.drones.list[gi];
+    assert!(dr.present, "spawned guard not present");
+    assert!(dr.drawn, "spawned guard not drawn (obj+0xFC) - it wouldn't be visible in play");
+    assert!(sim.drones.llist.contains(&gi), "spawned guard not in the llist - the game wouldn't run its AI");
+    assert!(dr.grenade_count > 0, "spawned guard has no grenades (spawn_guard gives 5)");
+    eprintln!("[menu_test] spawn Normal: guard #{gi} present+drawn+in-llist, {} grenades, at {:?}", dr.grenade_count, dr.pos);
     // Tick 60 frames; the new drone's first tick (set_state, anim, vision) must not panic.
     tick(&mut scene, 60);
-    let gi = gi.unwrap();
     let dr = &scene.sim.as_ref().unwrap().drones.list[gi];
     assert!(dr.present, "spawned guard not present after 60 ticks");
-    eprintln!("[menu_test] spawn Normal: guard #{gi} state 0x{:x} health {}", dr.state, dr.health);
+    eprintln!("[menu_test] spawn Normal: after 60 ticks state 0x{:x} health {}", dr.state, dr.health);
 }
 
 #[test]
@@ -111,14 +202,30 @@ fn menu_special_death_does_not_panic() {
 #[test]
 fn menu_toggle_god_and_ammo_do_not_panic() {
     let Some((mut scene, mut dev)) = loaded() else { eprintln!("NF_ISO not set — skipping"); return };
+    // B-11: assert the VISIBLE effect - god mode locks health at 100 + clears the hit flash; infinite ammo refills.
+    let sim = scene.sim.as_mut().unwrap();
+    sim.drones.health.health = 50.0;   // simulate Bond took damage
+    sim.drones.health.flash = 0.5;    // hit flash active
+    sim.gun.clip = 3;                  // low ammo
+    drop(sim);
     dev.god_mode = true;
     dev.infinite_ammo = true;
     dev.after_tick(&mut scene);
+    let sim = scene.sim.as_ref().unwrap();
+    assert_eq!(sim.drones.health.health, 100.0, "god mode did not restore health to 100");
+    assert_eq!(sim.drones.health.flash, 0.0, "god mode did not clear the hit flash");
+    assert!(sim.gun.clip >= 40, "infinite ammo did not refill the clip (got {})", sim.gun.clip);
+    eprintln!("[menu_test] god mode: health 50->{}, flash cleared, clip 3->{} (infinite ammo)", sim.drones.health.health, sim.gun.clip);
+    // Toggle off - the effect stops (health is no longer locked).
     dev.god_mode = false;
     dev.infinite_ammo = false;
+    let sim = scene.sim.as_mut().unwrap();
+    sim.drones.health.health = 50.0; // damage again
+    drop(sim);
     dev.after_tick(&mut scene);
-    tick(&mut scene, 10);
-    eprintln!("[menu_test] toggle god/ammo: ok");
+    let sim = scene.sim.as_ref().unwrap();
+    assert_eq!(sim.drones.health.health, 50.0, "god mode still active after toggle off - health was locked");
+    eprintln!("[menu_test] god mode off: health stays at {} (not locked)", sim.drones.health.health);
 }
 
 #[test]

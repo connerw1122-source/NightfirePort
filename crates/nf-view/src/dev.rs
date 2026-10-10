@@ -183,7 +183,7 @@ pub fn hud(dev: &Dev, scene: &Scene, aspect: f32, view_proj: [[f32; 4]; 4]) -> H
 
 /// Menu text for the game's bitmap font: ASCII only (the font has no glyphs for dashes or arrows), clipped to `n`
 /// characters on a char boundary with ".." when cut.
-fn fit(s: &str, n: usize) -> String {
+pub fn fit(s: &str, n: usize) -> String {
     let a: String = s.chars().map(|c| match c { '—' | '–' => '-', '→' => '>', c if c.is_ascii() => c, _ => '?' }).collect();
     if a.len() > n { format!("{}..", &a[..n.saturating_sub(2)]) } else { a }
 }
@@ -232,17 +232,29 @@ fn ai_overlay(h: &mut Hud, scene: &Scene, view_proj: [[f32; 4]; 4]) {
     }
 }
 
+/// B-11: the menu's layout constants, derived from the measured font glyph height (17 HUD-px). Pub so the layout
+/// test can assert no row overlap + the panel fits under 25% of the screen width, without duplicating magic numbers.
+pub const MENU_GLYPH_H: f32 = 17.0;
+pub const MENU_ROW_H: f32 = MENU_GLYPH_H + 2.0; // 19 HUD-px — label + gap, no overlap
+pub const MENU_PANEL_X: f32 = 4.0;
+pub const MENU_PANEL_W: f32 = 150.0;           // ~29% of 512 HUD-px -> ~21% of a 2000px window
+pub const MENU_VISIBLE_ROWS: usize = 7;
+pub const MENU_HEADER_H: f32 = MENU_GLYPH_H + 2.0;
+pub const MENU_DESC_H: f32 = MENU_GLYPH_H + 2.0;
+
 fn menu(h: &mut Hud, dev: &Dev, scene: &Scene) {
     let Some(t) = scene.hud.as_ref() else { return };
     let font = &t.font;
     let items = menu_items(dev);
-    // B-10: compact panel. <30% of the 512-px HUD width = ~150 px wide, top-left, semi-transparent, small readable
-    // native-font text, ~8 visible rows with scrolling (the selected row is always visible).
-    const PANEL_X: f32 = 4.0;
-    const PANEL_W: f32 = 150.0; // ~29% of 512
-    const ROW_H: f32 = 12.0;   // native font height + small gap
-    const VISIBLE_ROWS: usize = 8;
-    const HEADER_H: f32 = 14.0;
+    // B-11: layout from the REAL font metrics (17 HUD-px glyphs — measured by `menu_font_metrics_measured`).
+    // The old ROW_H=12 caused rows to overlap at ~40 window-px each (the user's screenshot).
+    const GLYPH_H: f32 = MENU_GLYPH_H;
+    const ROW_H: f32 = MENU_ROW_H;
+    const PANEL_X: f32 = MENU_PANEL_X;
+    const PANEL_W: f32 = MENU_PANEL_W;
+    const VISIBLE_ROWS: usize = MENU_VISIBLE_ROWS;
+    const HEADER_H: f32 = MENU_HEADER_H;
+    const DESC_H: f32 = MENU_DESC_H;
     let n = items.len();
     // The scroll window: keep `menu_sel` within [top, top + VISIBLE_ROWS).
     let top = if n <= VISIBLE_ROWS { 0 } else {
@@ -251,81 +263,80 @@ fn menu(h: &mut Hud, dev: &Dev, scene: &Scene) {
         else { dev.menu_sel - VISIBLE_ROWS / 2 }
     };
     let visible_end = (top + VISIBLE_ROWS).min(n);
-    // The scenario banner (1 line, above the list).
     let mut y = 4.0;
+    // The scenario banner (1 line, above the list).
     if let Some(s) = dev.scenario {
         let (label, _) = scenario(s).unwrap_or(("(unknown)", scenarios::door_anti_crush));
         h.quad(Anchor::Left, 70, 0x0300_0003, 0, PANEL_X, y, PANEL_W, HEADER_H, [0.0; 4], (false, false), [0.0, 0.0, 0.2, 0.85]);
-        // Truncate the scenario label to fit the narrow panel.
-        let mut lbl = format!("{s}: {label}");
-        let lbl = fit(&lbl, 24);
-        h.text(Anchor::Left, font, 69, &lbl, PANEL_X + 2.0, y + 3.0, false, [1.0, 1.0, 0.4, 1.0], true);
+        let lbl = fit(&format!("{s}: {label}"), 22);
+        h.text(Anchor::Left, font, 69, &lbl, PANEL_X + 2.0, y + 1.0, false, [1.0, 1.0, 0.4, 1.0], true);
         y += HEADER_H + 1.0;
     } else {
         y += 2.0;
     }
-    // The list background (one panel for all visible rows, cheaper than per-row).
+    // The list background (one panel for all visible rows).
     let list_h = (visible_end - top) as f32 * ROW_H;
     h.quad(Anchor::Left, 70, 0x0300_0003, 0, PANEL_X, y, PANEL_W, list_h, [0.0; 4], (false, false), [0.0, 0.0, 0.0, 0.7]);
-    // The visible rows.
+    // The visible rows - label only (no per-row description; it would overlap the 17px-tall label).
     for vi in top..visible_end {
-        let (label, desc, _) = &items[vi];
+        let (label, _desc, _) = &items[vi];
         let sel = vi == dev.menu_sel;
         let row_y = y + (vi - top) as f32 * ROW_H;
         if sel {
             h.quad(Anchor::Left, 71, 0x0300_0003, 0, PANEL_X, row_y, PANEL_W, ROW_H, [0.0; 4], (false, false), [0.0, 0.25, 0.0, 0.9]);
             h.quad(Anchor::Left, 72, 0x0300_0003, 0, PANEL_X, row_y, 2.0, ROW_H, [0.0; 4], (false, false), [1.0, 1.0, 0.0, 0.9]);
         }
-        // Label: truncate to fit ~18 chars at native size in 150 px.
-        let lbl = fit(label, 20);
-        h.text(Anchor::Left, font, 69, &lbl, PANEL_X + 4.0, row_y + 2.0, false, if sel { [1.0, 1.0, 0.4, 1.0] } else { [0.95, 0.95, 0.95, 1.0] }, sel);
-        // Description only on the selected row (saves space; the panel is narrow).
-        if sel {
-            let d = fit(desc, 22);
-            h.text(Anchor::Left, font, 68, &d, PANEL_X + 4.0, row_y + 7.0, false, [0.7, 0.85, 0.7, 1.0], false);
-        }
+        let lbl = fit(label, 16);
+        h.text(Anchor::Left, font, 69, &lbl, PANEL_X + 4.0, row_y + 1.0, false, if sel { [1.0, 1.0, 0.4, 1.0] } else { [0.95, 0.95, 0.95, 1.0] }, sel);
     }
     y += list_h + 1.0;
+    // The selected row's full description (one line, below the list - no overlap with labels).
+    if let Some((_, desc, _)) = items.get(dev.menu_sel) {
+        let d = fit(desc, 22);
+        h.quad(Anchor::Left, 70, 0x0300_0003, 0, PANEL_X, y, PANEL_W, DESC_H, [0.0; 4], (false, false), [0.05, 0.05, 0.05, 0.85]);
+        h.text(Anchor::Left, font, 69, &d, PANEL_X + 2.0, y + 1.0, false, [0.75, 0.9, 0.75, 1.0], false);
+        y += DESC_H + 1.0;
+    }
     // Scroll indicator if there are more rows than visible.
     if n > VISIBLE_ROWS {
         let more_above = top > 0;
         let more_below = visible_end < n;
-        let ind = format!("{}{}/{}{}", if more_above { "^ " } else { "  " }, dev.menu_sel + 1, n, if more_below { " v" } else { "" });
-        h.text(Anchor::Left, font, 69, &ind, PANEL_X + PANEL_W - 40.0, y, false, [0.6, 0.6, 0.6, 1.0], false);
-        y += 12.0;
+        let ind = format!("{} {}/{} {}", if more_above { "^" } else { " " }, dev.menu_sel + 1, n, if more_below { "v" } else { "" });
+        h.text(Anchor::Left, font, 69, &ind, PANEL_X + PANEL_W - 36.0, y, false, [0.6, 0.6, 0.6, 1.0], false);
+        y += ROW_H;
     }
     // The result message (last action's outcome), ~3 s.
     if dev.result_timer > 0 {
         if let Some(msg) = &dev.result_msg {
-            let m = fit(msg, 28);
-            h.quad(Anchor::Left, 70, 0x0300_0003, 0, PANEL_X, y, PANEL_W, 12.0, [0.0; 4], (false, false), [0.15, 0.0, 0.15, 0.9]);
-            h.text(Anchor::Left, font, 69, &m, PANEL_X + 2.0, y + 2.0, false, [1.0, 0.9, 1.0, 1.0], true);
-            y += 13.0;
+            let m = fit(msg, 22);
+            h.quad(Anchor::Left, 70, 0x0300_0003, 0, PANEL_X, y, PANEL_W, DESC_H, [0.0; 4], (false, false), [0.15, 0.0, 0.15, 0.9]);
+            h.text(Anchor::Left, font, 69, &m, PANEL_X + 2.0, y + 1.0, false, [1.0, 0.9, 1.0, 1.0], true);
+            y += DESC_H + 1.0;
         }
     }
-    // Footer hint (compact).
-    h.text(Anchor::Left, font, 69, "Up/Dn Enter click  F2 close", PANEL_X, y, false, [0.55, 0.55, 0.55, 1.0], false);
+    // Footer hint (compact, ASCII).
+    h.text(Anchor::Left, font, 69, "up/dn ent click F2", PANEL_X, y, false, [0.55, 0.55, 0.55, 1.0], false);
 }
 
 /// The menu items: (label, one-line description of what to watch for, action). B-9: descriptions added so each
 /// action is self-explanatory — the user no longer has to guess what "force: impulse" does.
-fn menu_items(dev: &Dev) -> Vec<(&'static str, &'static str, MenuAction)> {
+pub fn menu_items(dev: &Dev) -> Vec<(&'static str, &'static str, MenuAction)> {
     let mut v: Vec<(&'static str, &'static str, MenuAction)> = vec![
-        ("F2: close menu", "close this menu and return to play", MenuAction::Close),
-        ("spawn: Normal guard", "a mode-0 guard appears at the crosshair — it should see you and shoot", MenuAction::Spawn(SpawnPick::Normal)),
-        ("spawn: Sniper", "a sniper (anim 0x13) — it should pop up, fire, duck (state 0x97)", MenuAction::Spawn(SpawnPick::Sniper)),
-        ("spawn: Ambush", "an ambush guard (mode 0x10) — crouches behind cover, attacks when close", MenuAction::Spawn(SpawnPick::Ambush)),
-        ("force: throw grenade now", "nearest guard lobs a grenade — watch the arc + explosion (F1)", MenuAction::ForceGrenade),
-        ("force: impulse (hop up)", "nearest guard hops forward — tests the collision handler", MenuAction::Impulse),
-        ("force: SpecialDeath (fall)", "nearest guard plays a death anim + falls — ragdoll-ish", MenuAction::SpecialDeath),
+        ("F2: close", "close this menu and return to play", MenuAction::Close),
+        ("spawn: Normal", "a mode-0 guard appears at the crosshair - it should see you and shoot", MenuAction::Spawn(SpawnPick::Normal)),
+        ("spawn: Sniper", "a sniper (anim 0x13) - pop up, fire, duck (state 0x97)", MenuAction::Spawn(SpawnPick::Sniper)),
+        ("spawn: Ambush", "an ambush guard (mode 0x10) - crouches, attacks when close", MenuAction::Spawn(SpawnPick::Ambush)),
+        ("force: grenade", "nearest guard lobs a grenade - watch the arc + explosion (F1)", MenuAction::ForceGrenade),
+        ("force: impulse", "nearest guard hops forward - tests the collision handler", MenuAction::Impulse),
+        ("force: death", "nearest guard plays a death anim + falls", MenuAction::SpecialDeath),
     ];
-    v.push(if dev.god_mode { ("god mode: ON", "Bond takes no damage — toggle off to test death", MenuAction::ToggleGod) } else { ("god mode: OFF", "Bond takes no damage when ON — toggle to test death", MenuAction::ToggleGod) });
-    v.push(if dev.infinite_ammo { ("infinite ammo: ON", "clip refills each tick — toggle off to test reloads", MenuAction::ToggleAmmo) } else { ("infinite ammo: OFF", "clip refills each tick when ON — toggle to test reloads", MenuAction::ToggleAmmo) });
-    v.push(("teleport: save spot", "save Bond's current spot — restore later", MenuAction::SaveSpot));
-    v.push(("teleport: restore spot", "return Bond to the saved spot", MenuAction::RestoreSpot));
+    v.push(if dev.god_mode { ("god: ON", "Bond takes no damage - toggle off to test death", MenuAction::ToggleGod) } else { ("god: OFF", "Bond takes no damage when ON - toggle to test death", MenuAction::ToggleGod) });
+    v.push(if dev.infinite_ammo { ("ammo: ON", "clip refills each tick - toggle off to test reloads", MenuAction::ToggleAmmo) } else { ("ammo: OFF", "clip refills each tick when ON - toggle to test reloads", MenuAction::ToggleAmmo) });
+    v.push(("teleport: save", "save Bond's current spot - restore later", MenuAction::SaveSpot));
+    v.push(("teleport: load", "return Bond to the saved spot", MenuAction::RestoreSpot));
     v.push(("time: 1x", "normal speed (60 Hz)", MenuAction::TimeScale(1.0)));
-    v.push(("time: 0.25x", "quarter speed — watch AI frame-by-frame", MenuAction::TimeScale(0.25)));
-    v.push(("time: pause (Step=F11)", "freeze the sim; F11 advances one tick", MenuAction::TimeScale(0.0)));
+    v.push(("time: 0.25x", "quarter speed - watch AI frame-by-frame", MenuAction::TimeScale(0.25)));
+    v.push(("time: pause", "freeze the sim; F11 advances one tick", MenuAction::TimeScale(0.0)));
     v
 }
 
@@ -343,17 +354,20 @@ pub fn menu_hit(dev: &Dev, mouse_x: f32, mouse_y: f32, aspect: f32) -> Option<us
     let x1 = -1.0 + (4.0 + 150.0) * s;
     if mouse_x < x0 || mouse_x > x1 { return None; }
     let n = menu_items(dev).len();
-    let visible_rows = 8usize;
-    let top = if n <= visible_rows { 0 } else {
-        if dev.menu_sel < visible_rows / 2 { 0 }
-        else if dev.menu_sel >= n - visible_rows / 2 { n - visible_rows }
-        else { dev.menu_sel - visible_rows / 2 }
+    // B-11: match the menu fn's layout (ROW_H=19, VISIBLE_ROWS=7, HEADER_H=19).
+    const ROW_H: f32 = 19.0;
+    const VISIBLE_ROWS: usize = 7;
+    const HEADER_H: f32 = 19.0;
+    let top = if n <= VISIBLE_ROWS { 0 } else {
+        if dev.menu_sel < VISIBLE_ROWS / 2 { 0 }
+        else if dev.menu_sel >= n - VISIBLE_ROWS / 2 { n - VISIBLE_ROWS }
+        else { dev.menu_sel - VISIBLE_ROWS / 2 }
     };
-    let visible_end = (top + visible_rows).min(n);
-    let banner = if dev.scenario.is_some() { 14.0 + 1.0 } else { 2.0 };
+    let visible_end = (top + VISIBLE_ROWS).min(n);
+    let banner = if dev.scenario.is_some() { HEADER_H + 1.0 } else { 2.0 };
     for vi in top..visible_end {
-        let y_top = 4.0 + banner + (vi - top) as f32 * 12.0;
-        let y_bot = y_top + 12.0;
+        let y_top = 4.0 + banner + (vi - top) as f32 * ROW_H;
+        let y_bot = y_top + ROW_H;
         let ndc_top = 1.0 - y_top / 224.0;
         let ndc_bot = 1.0 - y_bot / 224.0;
         if mouse_y >= ndc_bot && mouse_y <= ndc_top { return Some(vi); }
@@ -525,6 +539,7 @@ pub fn scenario(name: &str) -> Option<(&'static str, fn(&mut Scene))> {
         "ambush" => ("Ambush (0x37/0x38)", scenarios::ambush),
         "guard-falls-off-ledge" => ("Guard falls off a ledge", scenarios::guard_falls_off_ledge),
         "door-anti-crush" => ("Door anti-crush", scenarios::door_anti_crush),
+        "cutscene-ai-pause" => ("Cut-scene AI pause (guards don't fire)", scenarios::cutscene_ai_pause),
         "ghostly-white" => ("Ghostly white (clear colour check)", scenarios::ghostly_white),
         "door-textures" => ("Door texture state", scenarios::door_textures),
         "invisible-walls" => ("Invisible walls (NF_COLL)", scenarios::invisible_walls),
@@ -545,7 +560,7 @@ pub fn scenario(name: &str) -> Option<(&'static str, fn(&mut Scene))> {
 /// tests pass (see `scenario()` comment).
 pub const SCENARIOS: &[&str] = &[
     "ambush", "guard-falls-off-ledge",
-    "door-anti-crush",
+    "door-anti-crush", "cutscene-ai-pause",
     "ghostly-white", "door-textures", "invisible-walls", "level-exit",
     "weapon-switch", "sg5-pickup", "wire-music", "autoaim", "sniper-scope", "shotgun-reload",
 ];
@@ -890,6 +905,21 @@ mod scenarios {
             } else {
                 eprintln!("[scenario] door-anti-crush: Bond near a door. Open it (E), then stand in the doorway -- it should reverse (anti-crush, sound 284). Watch the door.");
             }
+        }
+    }
+    /// B-11: cutscene-ai-pause. Places Bond at the nearest TouchOnce (0xEA) trigger zone's centre — the gatehouse
+    /// cut-scene trigger near the castle gate on 07000005 — so the user can verify guards do NOT fire during the
+    /// cut-scene (the B-10/B-11 fix: `Drones::paused` skips the per-drone update while `Sim::disabled`). The
+    /// cut-scene should start within ~1 s, run ~15-20 s, then hand control back (PlayerEnable). An active guard is
+    /// placed nearby so the user can see it stands still during the cut-scene.
+    pub fn cutscene_ai_pause(scene: &mut Scene) {
+        // B-11: the gatehouse cut-scene on 07000005 is triggered by walking into a zone (no 0xEA TouchOnce trigger
+        // exists — the kinds are 1/2/0xa). Place Bond at the level start and walk forward; the cut-scene fires
+        // within ~20 s of walking (the 2be51e5 commit confirmed this headless). The user walks from here.
+        if let Some(sim) = scene.sim.as_mut() {
+            // Bond stays at the level start; the user walks forward to trigger the gatehouse cut-scene.
+            eprintln!("[scenario] cutscene-ai-pause: Bond at the level start ({:.1}, {:.1}, {:.1}). Walk forward toward the castle gate. The gatehouse cut-scene fires within ~20 s. Guards must NOT fire during it (the AI is paused via Drones::paused). Control returns after the cut-scene.",
+                sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2]);
         }
     }
     #[allow(dead_code)] // B-8: removed from registry until its test passes

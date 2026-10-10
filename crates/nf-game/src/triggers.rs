@@ -151,6 +151,13 @@ impl Trigger {
         (self.tris, self.lo, self.hi) = (tris, lo, hi);
     }
 
+    /// The trigger's bounding-box centre (for scenario placement — put Bond at a TouchOnce trigger's centre to
+    /// fire it). B-11: pub so nf-view's cutscene-ai-pause scenario + its regression test can find the gatehouse.
+    pub fn centre(&self) -> V3 {
+        if self.tris.is_empty() { return [0.0; 3]; }
+        [(self.lo[0] + self.hi[0]) * 0.5, (self.lo[1] + self.hi[1]) * 0.5, (self.lo[2] + self.hi[2]) * 0.5]
+    }
+
     /// Whether a capsule touches the trigger's triangles.
     pub fn touched_by(&self, c: &Toucher) -> bool {
         let grow = c.r + 0.1;

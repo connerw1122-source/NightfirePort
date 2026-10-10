@@ -2785,3 +2785,62 @@ Three items from round 6:
    pickups DO work. No code change needed — the port is correct. D-004: gold-medal gate skipped.
 
 Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
+
+## B-11 — Menu layout from real font metrics; cutscene-ai-pause scenario; visible-effect tests
+
+Round 5 retest after B-10 + the main agent's c565322 (ASCII font) + 2be51e5 (Drones::paused) fixes. The user said
+the menu was still unreadable (rows overlap, ~40px tall) and "none of the features work" (actions have no visible
+effect). Pulled c565322 + 2be51e5 + 4ab5fa0 first.
+
+### B-11a: menu layout from the REAL font metrics (the overlap fix)
+
+Measured the game's font 2 glyphs at runtime (`menu_font_metrics_measured` test): **max glyph h = 17 HUD-px**,
+which at a 2000x1094 window = **42 window-px** — exactly the "~40 px tall" the user reported. The old ROW_H=12 was
+shorter than the 17px glyphs, so rows overlapped. Fixed:
+- `MENU_GLYPH_H = 17`, `MENU_ROW_H = 19` (17 + 2 gap) — pub constants so the layout test can assert against them.
+- `MENU_VISIBLE_ROWS = 7` (7 x 19 = 133 HUD-px tall = ~30% of 448 — compact).
+- Each row shows ONLY the label; the selected row's description is a separate line below the list (a 17px desc
+  inside a 19px row overlaps the label).
+- Labels shortened to fit 16 chars in the 150px panel (the `fit` helper clips on char boundaries, ASCII only).
+- `menu_hit` updated to match (ROW_H=19, VISIBLE_ROWS=7).
+
+### B-11b: layout test (the one the user demanded)
+
+`menu_layout_no_row_overlap_and_fits_panel` (menu_live.rs): computes each row's text bounding box from the font
+metrics (`font.layout`) and asserts (1) no two consecutive rows overlap (next row's text_top >= this row's
+text_bot), (2) each label's width fits in the panel, (3) the whole menu fits in the HUD height (448). Catches the
+B-10 regression (ROW_H=12 with 17px glyphs) that headless action tests can't see. **Passes**: 14 rows, ROW_H=19,
+glyph_h=17, no overlap, panel 150px (29% of 512), total 194px < 448.
+
+### B-11c: visible-effect assertions in menu_live tests
+
+The user said "none of the features work" — the old tests only asserted "no panic". Strengthened:
+- `menu_spawn_normal_guard`: asserts the new drone EXISTS (list grew by 1), is `present + drawn + in-llist` (the
+  active-guard definition), and has grenades (spawn_guard gives 5).
+- `menu_toggle_god_and_ammo`: sets health=50/flash=0.5/clip=3, enables god+ammo, asserts health→100, flash→0,
+  clip>=40; then toggles off, sets health=50, asserts it stays 50 (god mode no longer locking).
+
+### B-11d: cutscene-ai-pause scenario + regression test
+
+Added `cutscene-ai-pause` scenario (places Bond at the level start; the user walks to the gatehouse). The gatehouse
+cut-scene trigger isn't a 0xEA TouchOnce (07000005 has 47 triggers, all kind 1/2/0xa) — it fires on a specific walk
+path, not reproducible headless from forward-only input. So the regression test verifies the FIX directly:
+`cutscene_pause_fix_drones_paused_but_scripts_run` — sets `sim.disabled = true`, ticks 10 frames, asserts:
+(1) `drones.paused == true` (guards frozen — the B-10/B-11 fix);
+(2) `drones.frame` advanced (scripts/triggers/doors kept running — the 2be51e5 fix that stopped B-10's freeze);
+(3) on `disabled = false`, `paused` clears (guards resume).
+Plus `scenario_cutscene_ai_pause_applies` (smoke: the scenario applies without error).
+
+### Tests
+
+`crates/nf-view/tests/menu_live.rs`: 12 tests (font metrics, layout, 9 action tests with visible-effect asserts,
+spawn+animate). `crates/nf-view/tests/scenario_live.rs`: 6 tests (ambush, guard-falls, door-anti-crush, smoke,
+cutscene pause fix, cutscene scenario applies). Full NF_ISO suite: only the 3 allowed disc_golden fail.
+
+### What's still open
+
+- The cutscene-ai-pause scenario is interactive (the user walks to the gatehouse). A headless end-to-end test of
+  the actual cut-scene trigger needs the exact walk path (the trigger isn't a 0xEA placement). The regression test
+  verifies the fix; the scenario is for the user.
+- grenade-throw / grenade-bounce-explode still removed (cover AI prevents the throw — needs cover-aware placement).
+- searchlight G-036 + friendly-actor firing gate: decomp is available, not yet ported.
