@@ -2117,7 +2117,14 @@ impl Drone {
 
     // ---- state machine -----------------------------------------------------------------------------------------
 
-    fn set_state(&mut self, s: u8) { if s != 0 { self.next_state = Some(s) } }
+    fn set_state(&mut self, s: u8) {
+        if s != 0 {
+            if std::env::var_os("NF_AILOG").is_some() {
+                eprintln!("[ailog] guard {} state {:#x} -> {:#x}", self.index, self.state, s);
+            }
+            self.next_state = Some(s);
+        }
+    }
 
     /// `Drone_SM_RouteMsgDCV`: deliver, then apply pending changes (exit → enter, repeating).
     pub fn send(&mut self, d: &Data, rng: &mut Rng, frame: u32, m: u8) {
@@ -2657,8 +2664,17 @@ impl Drone {
     /// Friendly drones (`+0x44 == 3`, team 3: civilians, hostages, allies — dtype 10/0xb/0xd/0xe) never attack:
     /// the game returns 0 before the sight check [M 0x177ed0:31-38].
     fn look_for_opponent(&mut self, d: &Data) -> Option<u8> {
-        if self.team == 3 { return None; }
+        if self.team == 3 {
+            if std::env::var_os("NF_AILOG").is_some() {
+                eprintln!("[ailog] guard {} look_for_opponent: team 3 — no opponent", self.index);
+            }
+            return None;
+        }
         let go = self.seen && self.prop(d, 0x3c) && (self.alert >= 0.66 || self.prop(d, 0x51));
+        if std::env::var_os("NF_AILOG").is_some() {
+            eprintln!("[ailog] guard {} look_for_opponent: seen={} prop_3c={} alert={:.2} prop_51={} -> {}",
+                self.index, self.seen, self.prop(d, 0x3c), self.alert, self.prop(d, 0x51), if go { "ATTACK" } else { "none" });
+        }
         if go && !self.sighted { self.sighted = true; self.own_sight = true; }
         go.then_some(state::ATTACK)
     }
@@ -3697,7 +3713,13 @@ impl Drones {
             if dr.los {
                 dr.seen_ticks += 1;
                 dr.unseen_ticks = 0;
-                if dr.seen_ticks >= dr.reaction_time(d.level) { dr.seen = true; dr.ever_seen = true; }
+                if dr.seen_ticks >= dr.reaction_time(d.level) {
+                    if !dr.seen && std::env::var_os("NF_AILOG").is_some() {
+                        eprintln!("[ailog] guard {} SEEN! (seen_ticks={} >= reaction_time={}, dist={:.1}, state={:#x})",
+                            dr.index, dr.seen_ticks, dr.reaction_time(d.level), dr.dist, dr.state);
+                    }
+                    dr.seen = true; dr.ever_seen = true;
+                }
             } else {
                 dr.seen_ticks = 0;
                 dr.unseen_ticks += 1;

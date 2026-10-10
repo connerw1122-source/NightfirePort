@@ -2262,3 +2262,48 @@ What the player sees:
   Release → both return to normal.
 
 Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
+
+## B-3 — Merge scenario registries; spiral-search LOS placement; NF_AILOG state transitions
+
+Three fixes for the user's report that `nf-view 07000002 --dev --scenario grenade-throw` printed
+"unknown scenario" and nothing happened.
+
+### B-3a/b: Merged the two scenario systems into one
+
+`apply_scenario` (main.rs, 6 scenarios: weapon-switch, sg5-pickup, wire-music, autoaim,
+sniper-scope, shotgun-reload) is deleted. All 6 are now in `dev.rs::mod scenarios` alongside
+the original 13, for a single registry of **19 scenarios**. The "unknown scenario" error
+now uses `dev::SCENARIOS.join(", ")` so all names are listed.
+
+### B-3c: Spiral-search scenario placement
+
+`place_bond_near_guard` and `place_bond_near_grenade_guard` now search 24 angles at 15°
+intervals at the requested distance, checking collision floor and line of sight from Bond's
+eye to the guard's head. If no spot works for any guard, prints an ERROR and returns None
+(the scenario does not start). Previously the placement was a single direction with only a
+WARNING on no LOS.
+
+### B-3d: NF_AILOG state transition logging
+
+Added `NF_AILOG=1` logging at three key points:
+- **`set_state`** — logs every state transition: `guard N state 0x.. -> 0x..`
+- **`tick` sight pass** — logs when `seen` flips to true: `guard N SEEN! (seen_ticks=..)`
+- **`look_for_opponent`** — logs the predicate inputs and result: `seen=.. prop_3c=.. alert=.. -> ATTACK/none`
+
+This means the user can now see the FULL chain: Bond enters sight → `seen` flips →
+`look_for_opponent` evaluates → `set_state(ATTACK)` → `set_state(COMBAT)` →
+`set_state(AIM_STAND_FIRE)` → `[ailog] guard N AIM_STAND_FIRE: dist=.. grenades=.. rng_roll=..`
+
+If the guard is stuck (e.g. mode 7 → state 0x85), `set_state` logs nothing (no transitions)
+and `look_for_opponent` never fires — the absence of `[ailog]` lines itself is the diagnosis.
+
+### Research finding: no level has combat grenade guards
+
+Subagent research confirmed: on 07000002, placement 464 is mode 7 (state 0x85, stationary)
+and placement 466 is mode 5 (Hostage, team 3). On 07000009/0a, guards are dtype 0xd →
+mode 9 (HostageKiller, team 3). **No level ships grenades on a normal combat guard** (mode 0,
+team 1, start state 4). The unforced test gives grenades to a mode-0 guard via the param-24
+path (the same `NDrone2_DefaultInit` logic that reads placement param 24).
+
+NF_ISO=Nightfire-onfoot.iso cargo test -p nf-game --test ai_live --test grenade_live
+= 34 passed, 0 failed.
