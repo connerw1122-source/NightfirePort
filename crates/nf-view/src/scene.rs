@@ -1487,7 +1487,10 @@ impl Scene {
             if let Some(s) = view {
                 let g = s.gun_matrix();
                 let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
-                return Some((mats, world, if s.first_person { g } else { far }));
+                // `Player_PositionCamera` (0x18f5d8:100-106): hide the view model when the aim flag is set
+                // AND the weapon is scoped (`+0x68 & 0x40`). `zoom_target > 1.0` ⇔ scoped && zoom held.
+                let scoped_zoom = s.zoom_target > 1.0;
+                return Some((mats, world, if s.first_person && !scoped_zoom { g } else { far }));
             }
             let mut m = c.matrix;
             let a0 = drone_height(hip);

@@ -957,32 +957,42 @@ mod scenarios {
         eprintln!("[dev] sg5-pickup: a dropped SG5 Commando is at Bond's feet — walk forward to pick it up, then scroll to switch to it");
     }
 
-    /// Bond 5 m from the zip wire. Walk in and out — the music section changes (event 0xD). (B-3a/b.)
+    /// Bond near the zip wire. Walk in and out — the music section changes (event 0xD).
     pub fn wire_music(scene: &mut Scene) {
         if let Some(sim) = scene.sim.as_mut() {
             if let Some(w) = sim.wires.first() {
-                // Place Bond 5 m from the wire's endpoint A, searching for a floor at that XZ.
-                // The wire may be high above the floor (Y=42.94 vs floor at Y=22.93 on 07000005), and the
-                // floor may not exist at every XZ near the wire. Search a small spiral around the wire's
-                // endpoint for an XZ where floor_below succeeds.
+                // Search a spiral around the wire's endpoint A for a walkable spot: floor found within 10
+                // units of the wire's Y (stay on the same platform, not the cliff base 80 units below),
+                // and at least 2 walkable cardinal directions (not a 1-tile ledge or a sealed pocket).
+                // Avoid trigger volumes — the wire area on 07000005 has touch triggers that start cut-scenes.
                 let a = w.a;
-                let mut placed = false;
+                let mut best: Option<([f32; 3], usize)> = None;
                 for r in [2.0, 5.0, 8.0, 12.0, 20.0] {
-                    for angle in [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5] {
-                        let theta = angle * std::f32::consts::FRAC_PI_4;
+                    for angle in 0..24 {
+                        let theta = angle as f32 * std::f32::consts::TAU / 24.0;
                         let px = a[0] + r * theta.cos();
                         let pz = a[2] + r * theta.sin();
-                        if let Some(floor_y) = sim.world.floor_below([px, a[1] + 1.0, pz], 80.0) {
-                            sim.bond = nf_game::player::Bond::new([px, floor_y + 1.1, pz], sim.bond.yaw);
-                            placed = true;
-                            break;
+                        if let Some(floor_y) = sim.world.floor_below([px, a[1] + 1.0, pz], 10.0) {
+                            let pos = [px, floor_y + 1.1, pz];
+                            let dirs = walkable_directions(&sim.world, pos, 5.0);
+                            if dirs >= 2 {
+                                best = Some((pos, dirs));
+                                break;
+                            }
+                            if best.is_none() && dirs >= 1 {
+                                best = Some((pos, dirs));
+                            }
                         }
                     }
-                    if placed { break; }
+                    if best.is_some_and(|(_, d)| d >= 2) { break; }
                 }
-                if !placed {
-                    // Fallback: place at the wire's endpoint Y (Bond will fall, but at least he's near the wire).
-                    sim.bond = nf_game::player::Bond::new(a, sim.bond.yaw);
+                if let Some((pos, _)) = best {
+                    // Face Bond toward the wire.
+                    let dx = a[0] - pos[0]; let dz = a[2] - pos[2];
+                    let yaw = dx.atan2(dz);
+                    sim.bond = nf_game::player::Bond::new(pos, yaw);
+                } else {
+                    eprintln!("[dev] wire-music: no walkable spot found near the wire");
                 }
             }
         }

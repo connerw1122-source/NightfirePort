@@ -2761,3 +2761,27 @@ Full NF_ISO suite: only the 3 allowed `disc_golden` tests fail (slim ISO).
 - **friendly-actor firing gate**: the decomp is now available to port the llist/enabled gate.
 - **grenade explosion sound 0x4A7**: the user heard the bounce but not the explosion. The sound IS played
   (drone.rs:4165, `audio.play3d(0x4a7, pos)`); needs investigation of the SFX bank entry / listener cull.
+
+## C-15 — Round 6 fixes: hide weapon while zoomed, wire-music walkable placement, pickup type 6 confirmed
+
+Three items from round 6:
+
+1. **Sniper rifle stays visible while zooming:** The game's `Player_PositionCamera` (0x18f5d8:100-106) hides
+   the view model when the aim flag is set AND the weapon is scoped (`+0x68 & 0x40`) — via
+   `View_SetDrawInNoViews(view_model)`. The hide is immediate (no interpolation), every tick the aim flag
+   is set. Fix: in `animate`, gate the view model draw on `!scoped_zoom` where `scoped_zoom = s.zoom_target
+   > 1.0` (which ⇔ scoped && zoom held). Using `zoom_target` (not `zoom`) matches the game's immediate
+   hide [M 0x18f5d8:100-106].
+
+2. **Wire-music scenario spawns Bond in a trigger / falls:** The 80-unit `floor_below` depth reached the
+   cliff base (Y=-45), not the wire's platform. No `walkable_directions` check was done. Fix: reduce
+   `floor_below` depth to 10 (stay on the same platform), require `walkable_directions >= 2` (not a ledge
+   or sealed pocket), and face Bond toward the wire.
+
+3. **Pickup type 6 (Raptor):** Re-verified against `Pickup_Handler` (0x18e650) — case 6 is indeed
+   consume-only (`PlrStat_LogBondBonus`, no weapon/ammo) [M 0x18e650:234-236]. The 07000001 Raptor
+   placements are: 2× type 6 (Bond bonus, give nothing) + 2× type 1 (ammo, give 20 rounds). The user's
+   claim that "weapon pickups give ammo if owned" applies to type 0 (WEAPON), not type 6. The type-1 ammo
+   pickups DO work. No code change needed — the port is correct. D-004: gold-medal gate skipped.
+
+Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
