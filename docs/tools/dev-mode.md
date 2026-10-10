@@ -23,9 +23,11 @@ The scenarios (level 07000005 "Paris Prelude / Mayhew A"):
 
 ## Coordination
 
-Another session may add `--dev` too. If `--dev` is already on origin when you pull, extend the `apply_scenario`
-function and this document instead of duplicating it. The scenarios are matched by name in `main.rs ::
-apply_scenario`; a new scenario is one `match` arm.
+Another session may add `--dev` too. If `--dev` is already on origin when you pull, extend `dev::scenario` /
+`dev::SCENARIOS` in `crates/nf-view/src/dev.rs` (and the `mod scenarios` block at the bottom of that file) instead
+of duplicating it. The scenarios are matched by name in `dev::scenario`; a new scenario is one `match` arm plus
+one `&str` in `SCENARIOS` plus one `pub fn` in `mod scenarios`. (B-3a/b: the older `apply_scenario` in `main.rs`
+was merged into `dev::scenario` — there is now exactly one scenario registry.)
 # Dev mode (nf-view `--dev`)
 
 In-game test tooling, gated behind `--dev` so normal play is unchanged. Tools only call into existing systems or set

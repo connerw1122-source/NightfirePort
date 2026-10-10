@@ -791,15 +791,16 @@ fn main() -> Result<()> {
     // Sound: the level's bank in the driver, the default output device (silent without one).
     let mut scene = scene;
     let sound = build_sound(&mut scene);
-    // `--dev --scenario <name>`: place Bond and set up the world for a specific feature test.
-    // The HEAD's `apply_scenario` (weapon-switch / sg5-pickup / wire-music / autoaim) + this agent's `dev::scenario`
-    // (grenade-throw / sniper-cover / ambush / guard-falls-off-ledge / searchlight / door / bullet-flyby / friendly).
+    // `--dev --scenario <name>`: place Bond and set up the world for a specific feature test. (B-3a/b: the two
+    // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev::default())), notex, nofog, iso, pending_level: None, all };
     if dev {
-        if let Some(name) = &scenario {
-            if let Some(sim) = app.scene.sim.as_mut() { apply_scenario(sim, name); }
-            if let (Some(d), Some(n)) = (app.dev.as_deref_mut(), scenario.as_ref()) {
-                if let Some((_, f)) = dev::scenario(n) { f(&mut app.scene); d.scenario = Some(leak_str(n)); }
+        if let (Some(d), Some(n)) = (app.dev.as_deref_mut(), scenario.as_ref()) {
+            if let Some((_, f)) = dev::scenario(n) {
+                f(&mut app.scene);
+                d.scenario = Some(leak_str(n));
+            } else {
+                eprintln!("[dev] unknown scenario '{n}'. Available: {}", dev::SCENARIOS.join(", "));
             }
         }
     }
@@ -809,89 +810,3 @@ fn main() -> Result<()> {
 
 /// Leak a `String` to a `&'static str` (the scenario name lives for the program's life).
 fn leak_str(s: &str) -> &'static str { Box::leak(s.to_string().into_boxed_str()) }
-
-/// `--dev --scenario <name>`: places Bond and sets up the world for a feature test. Never changes game logic
-/// or the order of RNG calls — only Bond's position, the inventory, or a spawned pickup. Each scenario prints
-/// one line saying what to check. See `docs/tools/dev-mode.md`.
-fn apply_scenario(sim: &mut scene::Sim, name: &str) {
-    let wi = sim.weapons.records.len();
-    match name {
-        "weapon-switch" => {
-            // Bond at the level start with the full owned arsenal: P2K (2), SG5 (0x16), sniper (0x24), gadgets.
-            // The SG5 and sniper are given owned + ammo so the weapon cycle finds them.
-            if wi > 0x16 { sim.drones.inventory.owned[0x16] = true; sim.drones.inventory.clip[0x16] = 30; sim.drones.inventory.carried[5] = 60; }
-            if wi > 0x24 { sim.drones.inventory.owned[0x24] = true; sim.drones.inventory.clip[0x24] = 5; sim.drones.inventory.carried[7] = 25; }
-            eprintln!("[dev] weapon-switch: scroll the mouse wheel (or 1-3) to cycle WEAPONS (P2K/SG5/sniper). Gadgets are disabled (not ported yet). Watch the holster/draw animation and listen for the sounds. Set NF_SOUNDLOG=1 to see each animation id.");
-        }
-        "sg5-pickup" => {
-            // A dropped SG5 at Bond's feet. Walk forward to pick it up.
-            if wi > 0x16 {
-                let p = sim.bond.pos;
-                let m: [[f32; 4]; 4] = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [p[0] + 1.0, p[1], p[2] + 1.5, 1.0]];
-                if let Some(mut pickup) = nf_game::pickup::Pickup::create_simple(&m, 0x16, 12, nf_game::pickup::kind::WEAPON, &sim.weapons, &sim.models) {
-                    pickup.state = 1; // already on the floor
-                    sim.drones.pickups.push(pickup);
-                }
-            }
-            eprintln!("[dev] sg5-pickup: a dropped SG5 Commando is at Bond's feet — walk forward to pick it up, then scroll to switch to it");
-        }
-        "wire-music" => {
-            // Bond 5 m from the zip wire. Walk in and out — the music section changes (event 0xD).
-            if let Some(w) = sim.wires.first() {
-                let c = w.closest_point(sim.bond.pos);
-                // Place Bond 5 m from the wire's closest point, on the floor.
-                let dir = [sim.bond.pos[0] - c[0], 0.0, sim.bond.pos[2] - c[2]];
-                let l = (dir[0] * dir[0] + dir[2] * dir[2]).sqrt().max(1e-6);
-                let p = [c[0] + 5.0 * dir[0] / l, c[1], c[2] + 5.0 * dir[2] / l];
-                sim.bond = nf_game::player::Bond::stand_at(&sim.world, p, sim.bond.yaw);
-            }
-            eprintln!("[dev] wire-music: Bond is 5 m from the zip wire — walk toward it; when close the music changes to the stealth section, walk away and it returns");
-        }
-        "autoaim" => {
-            // A guard in view. T toggles auto-aim — the crosshair snaps to the guard.
-            sim.auto_aim = false; // off by default (D-001)
-            // Find the nearest alive guard and face Bond toward it.
-            if let Some((i, dr)) = sim.drones.list.iter().enumerate().filter(|(_, d)| d.present && d.health > 0.0).min_by_key(|(_, d)| {
-                let dx = d.pos[0] - sim.bond.pos[0]; let dz = d.pos[2] - sim.bond.pos[2];
-                (dx * dx + dz * dz) as u64
-            }) {
-                let dx = dr.pos[0] - sim.bond.pos[0]; let dz = dr.pos[2] - sim.bond.pos[2];
-                sim.bond.yaw = dx.atan2(dz);
-                eprintln!("[dev] autoaim: guard #{i} is in view — press T to toggle auto-aim (the crosshair snaps to the guard when on)");
-            } else {
-                eprintln!("[dev] autoaim: no guard found — press T to toggle auto-aim");
-            }
-        }
-        "sniper-scope" => {
-            // Give Bond the sniper (0x24) and select it. Hold right mouse to zoom.
-            if wi > 0x24 {
-                sim.drones.inventory.owned[0x24] = true;
-                sim.drones.inventory.clip[0x24] = 5;
-                sim.drones.inventory.carried[7] = 25;
-                sim.gun.weapon = 0x24;
-                sim.gun.switch_request = 0x24;
-                sim.view_script = sim.weapons.idle_script(0x24);
-                sim.view_time = 0.0;
-                sim.view_speed = 1.0;
-            }
-            eprintln!("[dev] sniper-scope: Bond has the sniper rifle. Hold RIGHT MOUSE to zoom — the FOV narrows and the sensitivity drops. Release to return to normal.");
-        }
-        "shotgun-reload" => {
-            // Give Bond the shotgun (0x1c) with an empty clip and spare ammo. Press R to reload.
-            if wi > 0x1c {
-                sim.drones.inventory.owned[0x1c] = true;
-                sim.drones.inventory.clip[0x1c] = 0; // empty clip
-                sim.drones.inventory.carried[sim.weapons.ammo_type(0x1c)] = 30; // spare ammo
-                sim.gun.weapon = 0x1c;
-                sim.gun.switch_request = 0x1c;
-                sim.view_script = sim.weapons.idle_script(0x1c);
-                sim.view_time = 0.0;
-                sim.view_speed = 1.0;
-            }
-            eprintln!("[dev] shotgun-reload: Bond has the shotgun (0x1c) with an empty clip. Press R to reload — one shell at a time (the shell-by-shell loop). Hold the trigger to interrupt.");
-        }
-        _ => {
-            eprintln!("[dev] unknown scenario '{name}'. Available: weapon-switch, sg5-pickup, wire-music, autoaim, sniper-scope, shotgun-reload. See docs/tools/dev-mode.md.");
-        }
-    }
-}

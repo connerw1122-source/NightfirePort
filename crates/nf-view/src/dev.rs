@@ -354,6 +354,9 @@ pub fn state_name(s: u8) -> &'static str {
 // ---- named scenarios -----------------------------------------------------------------------------------------
 
 /// The named scenarios. Each places Bond and the guards and returns the instruction text the user should see.
+/// (B-3a/b: the five scenarios that used to live in `main.rs::apply_scenario` — weapon-switch / sg5-pickup /
+/// wire-music / autoaim / sniper-scope — are merged into this single registry so `--scenario` only has one source
+/// of truth.)
 pub fn scenario(name: &str) -> Option<(&'static str, fn(&mut Scene))> {
     let (n, f): (&'static str, fn(&mut Scene)) = match name {
         "grenade-throw" => ("Grenade throw", scenarios::grenade_throw),
@@ -369,6 +372,12 @@ pub fn scenario(name: &str) -> Option<(&'static str, fn(&mut Scene))> {
         "door-textures" => ("Door texture state", scenarios::door_textures),
         "invisible-walls" => ("Invisible walls (NF_COLL)", scenarios::invisible_walls),
         "level-exit" => ("Level exit trigger", scenarios::level_exit),
+        "weapon-switch" => ("Weapon switch (P2K/SG5/sniper)", scenarios::weapon_switch),
+        "sg5-pickup" => ("SG5 pickup", scenarios::sg5_pickup),
+        "wire-music" => ("Wire music (event 0xD)", scenarios::wire_music),
+        "autoaim" => ("Auto-aim (T)", scenarios::autoaim),
+        "sniper-scope" => ("Sniper scope (right mouse)", scenarios::sniper_scope),
+        "shotgun-reload" => ("Shotgun reload (R, shell-by-shell)", scenarios::shotgun_reload),
         _ => return None,
     };
     Some((n, f))
@@ -379,67 +388,115 @@ pub const SCENARIOS: &[&str] = &[
     "grenade-throw", "grenade-bounce-explode", "sniper-cover", "ambush", "guard-falls-off-ledge",
     "searchlight-tracks-bond", "door-anti-crush", "bullet-flyby", "friendly-actor",
     "ghostly-white", "door-textures", "invisible-walls", "level-exit",
+    "weapon-switch", "sg5-pickup", "wire-music", "autoaim", "sniper-scope", "shotgun-reload",
 ];
 
 mod scenarios {
     use super::*;
     use nf_game::player::Bond;
 
-    /// Place Bond near the first present guard, on walkable floor, at `dist` units in +z.
-    /// Prints Bond's position, the guard's placement and position, and the distance.
-    /// Returns the guard's drone index, or None if no present guard was found.
+    /// Find a spot for Bond near `guard_pos` at distance `dist` (clamped to [2, 30]) with a clear line of sight to
+    /// the guard. Spiral search: 24 angles at 15° intervals (0°..345°), trying the requested distance first then
+    /// fall-back distances in [8, 20] m. Each candidate must have a collision floor within 4 m of the guard's y and
+    /// a clear LOS from Bond's eye (pos.y + 1.0) to the guard's head (pos.y + 1.5). Returns (bond_pos, yaw) where yaw
+    /// faces Bond toward the guard. (B-3a/b.)
+    fn spiral_search_for_spot(world: &nf_game::world::CollisionWorld, guard_pos: [f32; 3], dist: f32) -> Option<([f32; 3], f32)> {
+        // The requested distance first (it carries the scenario's intent — close for door scenarios, far for sniper
+        // scenarios), then fall-back distances in the 8-20 m grenade-throw band so the search always tries that
+        // range even when the requested distance is outside it.
+        let mut distances: Vec<f32> = vec![dist.clamp(2.0, 30.0)];
+        for d in [8.0_f32, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0] {
+            if (d - dist).abs() > 0.5 { distances.push(d); }
+        }
+        let guard_head = [guard_pos[0], guard_pos[1] + 1.5, guard_pos[2]];
+        for &d in &distances {
+            for k in 0..24u32 {
+                // 0° = +z (the original placement direction); angle increases counter-clockwise.
+                let angle = std::f32::consts::TAU * k as f32 / 24.0;
+                let cx = guard_pos[0] + d * angle.sin();
+                let cz = guard_pos[2] + d * angle.cos();
+                // Floor below the candidate, starting 0.5 above the guard's y so floors on the guard's level win.
+                let floor_y = world.floor_below([cx, guard_pos[1], cz], 4.0)?;
+                // Reject spots whose floor is far above or below the guard (a different level / a pit).
+                if (floor_y - guard_pos[1]).abs() > 3.0 { continue; }
+                let bond_pos = [cx, floor_y + 1.0, cz];
+                let bond_eye = [bond_pos[0], bond_pos[1] + 1.0, bond_pos[2]];
+                if !world.line_of_sight(bond_eye, guard_head) { continue; }
+                let dx = guard_pos[0] - bond_pos[0];
+                let dz = guard_pos[2] - bond_pos[2];
+                let yaw = dx.atan2(dz);
+                return Some((bond_pos, yaw));
+            }
+        }
+        None
+    }
+
+    /// Place Bond near a present guard, at `dist` units in +z if that spot has LOS to the guard; otherwise a spiral
+    /// search at 24 angles × multiple distances in [8, 20] m. Iterates over ALL present guards (the first one with a
+    /// valid spot wins). Returns the chosen guard's drone index, or None if no spot worked for any guard. (B-3a/b.)
     fn place_bond_near_guard(scene: &mut Scene, dist: f32) -> Option<usize> {
         let sim = scene.sim.as_mut()?;
-        let gi = sim.drones.list.iter().position(|x| x.present)?;
-        let g = sim.drones.list[gi].pos;
-        let floor_y = sim.world.floor_below([g[0], g[1], g[2] + dist], 4.0)
-            .map(|f| f + 1.0)
-            .unwrap_or(g[1]);
-        let bond_pos = [g[0], floor_y, g[2] + dist];
+        let candidates: Vec<(usize, [f32; 3])> = sim.drones.list.iter().enumerate()
+            .filter(|(_, x)| x.present)
+            .map(|(i, x)| (i, x.pos))
+            .collect();
+        if candidates.is_empty() {
+            eprintln!("[scenario] ERROR: no present guard on this level.");
+            return None;
+        }
+        let mut found: Option<(usize, [f32; 3], [f32; 3], f32)> = None;
+        for (gi, g) in &candidates {
+            if let Some((bond_pos, yaw)) = spiral_search_for_spot(&sim.world, *g, dist) {
+                found = Some((*gi, *g, bond_pos, yaw));
+                break;
+            }
+        }
+        let Some((gi, g, bond_pos, yaw)) = found else {
+            eprintln!("[scenario] ERROR: no valid placement for any guard (no LOS or no floor at 8-20 m, 24 directions). The scenario will not start.");
+            return None;
+        };
         let d = ((bond_pos[0] - g[0]).powi(2) + (bond_pos[1] - g[1]).powi(2) + (bond_pos[2] - g[2]).powi(2)).sqrt();
-        sim.bond = Bond::stand_at(&sim.world, bond_pos, std::f32::consts::PI);
-        eprintln!("[scenario] Bond at ({:.1}, {:.1}, {:.1}), guard #{} at ({:.1}, {:.1}, {:.1}), distance {:.1} m",
-            bond_pos[0], bond_pos[1], bond_pos[2], gi, g[0], g[1], g[2], d);
-        let bond_eye = [bond_pos[0], bond_pos[1] + 1.0, bond_pos[2]];
-        let guard_head = [g[0], g[1] + 1.5, g[2]];
-        if !sim.world.line_of_sight(bond_eye, guard_head) {
-            eprintln!("[scenario] WARNING: no line of sight from Bond to the guard.");
-        }
-        if d > 20.0 {
-            eprintln!("[scenario] WARNING: Bond is {:.1} m from the guard -- too far for grenade throw (needs 8-20 m).", d);
-        }
+        sim.bond = Bond::stand_at(&sim.world, bond_pos, yaw);
+        eprintln!("[scenario] Bond at ({:.1}, {:.1}, {:.1}) facing yaw {:.0}°, guard #{} at ({:.1}, {:.1}, {:.1}), distance {:.1} m",
+            bond_pos[0], bond_pos[1], bond_pos[2], yaw.to_degrees(), gi, g[0], g[1], g[2], d);
         Some(gi)
     }
 
-    /// Place Bond near a guard that carries grenades. On 07000005, no guard has grenades.
+    /// Place Bond near a guard that carries grenades. Same spiral search as `place_bond_near_guard` but iterates only
+    /// over grenade-carrying guards. On levels with no grenade guard (e.g. 07000005), prints the levels that have them
+    /// and returns None. (B-3a/b.)
     fn place_bond_near_grenade_guard(scene: &mut Scene, dist: f32) -> Option<usize> {
         let sim = scene.sim.as_mut()?;
-        let gi = sim.drones.list.iter().position(|x| x.present && x.grenade_count > 0);
-        if gi.is_none() {
+        let candidates: Vec<(usize, [f32; 3])> = sim.drones.list.iter().enumerate()
+            .filter(|(_, x)| x.present && x.grenade_count > 0)
+            .map(|(i, x)| (i, x.pos))
+            .collect();
+        if candidates.is_empty() {
             eprintln!("[scenario] ERROR: no guard on this level carries grenades (param 24 = 0).");
             eprintln!("[scenario] Grenade-carrying guards are on levels 07000002, 07000003, 07000009, 0700000a.");
             eprintln!("[scenario] Run: nf-view <iso> 07000002 --dev --scenario grenade-throw");
             return None;
         }
-        let gi = gi.unwrap();
-        let g = sim.drones.list[gi].pos;
-        let floor_y = sim.world.floor_below([g[0], g[1], g[2] + dist], 4.0)
-            .map(|f| f + 1.0)
-            .unwrap_or(g[1]);
-        let bond_pos = [g[0], floor_y, g[2] + dist];
+        let mut found: Option<(usize, [f32; 3], [f32; 3], f32)> = None;
+        for (gi, g) in &candidates {
+            if let Some((bond_pos, yaw)) = spiral_search_for_spot(&sim.world, *g, dist) {
+                found = Some((*gi, *g, bond_pos, yaw));
+                break;
+            }
+        }
+        let Some((gi, g, bond_pos, yaw)) = found else {
+            eprintln!("[scenario] ERROR: no valid placement for any grenade guard (no LOS or no floor at 8-20 m, 24 directions). The scenario will not start.");
+            return None;
+        };
         let d = ((bond_pos[0] - g[0]).powi(2) + (bond_pos[1] - g[1]).powi(2) + (bond_pos[2] - g[2]).powi(2)).sqrt();
-        sim.bond = Bond::stand_at(&sim.world, bond_pos, std::f32::consts::PI);
-        eprintln!("[scenario] Bond at ({:.1}, {:.1}, {:.1}), grenade guard #{} at ({:.1}, {:.1}, {:.1}), distance {:.1} m",
-            bond_pos[0], bond_pos[1], bond_pos[2], gi, g[0], g[1], g[2], d);
-        eprintln!("[scenario] Guard has {} grenades (weapon {:#x}).", sim.drones.list[gi].grenade_count, sim.drones.list[gi].grenade_weapon);
-        let bond_eye = [bond_pos[0], bond_pos[1] + 1.0, bond_pos[2]];
-        let guard_head = [g[0], g[1] + 1.5, g[2]];
-        if !sim.world.line_of_sight(bond_eye, guard_head) {
-            eprintln!("[scenario] WARNING: no line of sight from Bond to the guard.");
-        }
-        if d < 8.0 || d > 20.0 {
-            eprintln!("[scenario] WARNING: Bond is {:.1} m from the guard -- grenade throw needs 8-20 m.", d);
-        }
+        let (grenade_count, grenade_weapon) = {
+            let dr = &sim.drones.list[gi];
+            (dr.grenade_count, dr.grenade_weapon)
+        };
+        sim.bond = Bond::stand_at(&sim.world, bond_pos, yaw);
+        eprintln!("[scenario] Bond at ({:.1}, {:.1}, {:.1}) facing yaw {:.0}°, grenade guard #{} at ({:.1}, {:.1}, {:.1}), distance {:.1} m",
+            bond_pos[0], bond_pos[1], bond_pos[2], yaw.to_degrees(), gi, g[0], g[1], g[2], d);
+        eprintln!("[scenario] Guard has {} grenades (weapon {:#x}).", grenade_count, grenade_weapon);
         Some(gi)
     }
 
@@ -529,5 +586,109 @@ mod scenarios {
     pub fn level_exit(scene: &mut Scene) {
         let _ = place_bond_near_guard(scene, 2.0);
         eprintln!("[scenario] level-exit: Bond near the guard. When he touches the 0xE8 trigger, Music_Event(3,1) fires and the next level loads.");
+    }
+
+    // ---- the five scenarios merged from main.rs::apply_scenario (B-3a/b) ------------------------------------
+    // Bodies are ported whole; only `sim.foo` is replaced with `if let Some(sim) = scene.sim.as_mut() { sim.foo }`
+    // so they take `&mut Scene` like the other scenarios.
+
+    /// Bond at the level start with the full owned arsenal: P2K (2), SG5 (0x16), sniper (0x24), gadgets. The SG5 and
+    /// sniper are given owned + ammo so the weapon cycle finds them. (B-3a/b.)
+    pub fn weapon_switch(scene: &mut Scene) {
+        if let Some(sim) = scene.sim.as_mut() {
+            let wi = sim.weapons.records.len();
+            // The SG5 and sniper are given owned + ammo so the weapon cycle finds them.
+            if wi > 0x16 { sim.drones.inventory.owned[0x16] = true; sim.drones.inventory.clip[0x16] = 30; sim.drones.inventory.carried[5] = 60; }
+            if wi > 0x24 { sim.drones.inventory.owned[0x24] = true; sim.drones.inventory.clip[0x24] = 5; sim.drones.inventory.carried[7] = 25; }
+        }
+        eprintln!("[dev] weapon-switch: scroll the mouse wheel (or 1-3) to cycle WEAPONS (P2K/SG5/sniper). Gadgets are disabled (not ported yet). Watch the holster/draw animation and listen for the sounds. Set NF_SOUNDLOG=1 to see each animation id.");
+    }
+
+    /// A dropped SG5 at Bond's feet. Walk forward to pick it up. (B-3a/b.)
+    pub fn sg5_pickup(scene: &mut Scene) {
+        if let Some(sim) = scene.sim.as_mut() {
+            let wi = sim.weapons.records.len();
+            if wi > 0x16 {
+                let p = sim.bond.pos;
+                let m: [[f32; 4]; 4] = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [p[0] + 1.0, p[1], p[2] + 1.5, 1.0]];
+                if let Some(mut pickup) = nf_game::pickup::Pickup::create_simple(&m, 0x16, 12, nf_game::pickup::kind::WEAPON, &sim.weapons, &sim.models) {
+                    pickup.state = 1; // already on the floor
+                    sim.drones.pickups.push(pickup);
+                }
+            }
+        }
+        eprintln!("[dev] sg5-pickup: a dropped SG5 Commando is at Bond's feet — walk forward to pick it up, then scroll to switch to it");
+    }
+
+    /// Bond 5 m from the zip wire. Walk in and out — the music section changes (event 0xD). (B-3a/b.)
+    pub fn wire_music(scene: &mut Scene) {
+        if let Some(sim) = scene.sim.as_mut() {
+            if let Some(w) = sim.wires.first() {
+                let c = w.closest_point(sim.bond.pos);
+                // Place Bond 5 m from the wire's closest point, on the floor.
+                let dir = [sim.bond.pos[0] - c[0], 0.0, sim.bond.pos[2] - c[2]];
+                let l = (dir[0] * dir[0] + dir[2] * dir[2]).sqrt().max(1e-6);
+                let p = [c[0] + 5.0 * dir[0] / l, c[1], c[2] + 5.0 * dir[2] / l];
+                sim.bond = nf_game::player::Bond::stand_at(&sim.world, p, sim.bond.yaw);
+            }
+        }
+        eprintln!("[dev] wire-music: Bond is 5 m from the zip wire — walk toward it; when close the music changes to the stealth section, walk away and it returns");
+    }
+
+    /// A guard in view. T toggles auto-aim — the crosshair snaps to the guard. (B-3a/b.)
+    pub fn autoaim(scene: &mut Scene) {
+        if let Some(sim) = scene.sim.as_mut() {
+            sim.auto_aim = false; // off by default (D-001)
+            // Find the nearest alive guard and face Bond toward it.
+            if let Some((i, dr)) = sim.drones.list.iter().enumerate().filter(|(_, d)| d.present && d.health > 0.0).min_by_key(|(_, d)| {
+                let dx = d.pos[0] - sim.bond.pos[0]; let dz = d.pos[2] - sim.bond.pos[2];
+                (dx * dx + dz * dz) as u64
+            }) {
+                let dx = dr.pos[0] - sim.bond.pos[0]; let dz = dr.pos[2] - sim.bond.pos[2];
+                sim.bond.yaw = dx.atan2(dz);
+                eprintln!("[dev] autoaim: guard #{i} is in view — press T to toggle auto-aim (the crosshair snaps to the guard when on)");
+            } else {
+                eprintln!("[dev] autoaim: no guard found — press T to toggle auto-aim");
+            }
+            return;
+        }
+        eprintln!("[dev] autoaim: no sim available.");
+    }
+
+    /// Give Bond the sniper (0x24) and select it. Hold right mouse to zoom. (B-3a/b.)
+    pub fn sniper_scope(scene: &mut Scene) {
+        if let Some(sim) = scene.sim.as_mut() {
+            let wi = sim.weapons.records.len();
+            if wi > 0x24 {
+                sim.drones.inventory.owned[0x24] = true;
+                sim.drones.inventory.clip[0x24] = 5;
+                sim.drones.inventory.carried[7] = 25;
+                sim.gun.weapon = 0x24;
+                sim.gun.switch_request = 0x24;
+                sim.view_script = sim.weapons.idle_script(0x24);
+                sim.view_time = 0.0;
+                sim.view_speed = 1.0;
+            }
+        }
+        eprintln!("[dev] sniper-scope: Bond has the sniper rifle. Hold RIGHT MOUSE to zoom — the FOV narrows and the sensitivity drops. Release to return to normal.");
+    }
+
+    /// Give Bond the shotgun (0x1c) with an empty clip and spare ammo. Press R to reload — one shell at a time
+    /// (the shell-by-shell loop). Hold the trigger to interrupt. (B-3a/b: ported from C-9's apply_scenario arm.)
+    pub fn shotgun_reload(scene: &mut Scene) {
+        if let Some(sim) = scene.sim.as_mut() {
+            let wi = sim.weapons.records.len();
+            if wi > 0x1c {
+                sim.drones.inventory.owned[0x1c] = true;
+                sim.drones.inventory.clip[0x1c] = 0; // empty clip
+                sim.drones.inventory.carried[sim.weapons.ammo_type(0x1c)] = 30; // spare ammo
+                sim.gun.weapon = 0x1c;
+                sim.gun.switch_request = 0x1c;
+                sim.view_script = sim.weapons.idle_script(0x1c);
+                sim.view_time = 0.0;
+                sim.view_speed = 1.0;
+            }
+        }
+        eprintln!("[dev] shotgun-reload: Bond has the shotgun (0x1c) with an empty clip. Press R to reload — one shell at a time (the shell-by-shell loop). Hold the trigger to interrupt.");
     }
 }
