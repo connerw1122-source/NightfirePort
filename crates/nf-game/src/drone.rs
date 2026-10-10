@@ -3310,6 +3310,8 @@ pub struct Drones {
     /// Script players and the objects their scripts made (docs/systems/script-player.md).
     pub scripts: crate::nis::Scripts,
     /// Player hand-offs the scripts asked for this tick (`PlayerDisable` / `PlayerEnable`), for the player's owner.
+    /// Drones skip their update this tick (a cut-scene is running: `ScriptCam` set).
+    pub paused: bool,
     pub player_events: Vec<crate::nis::Request>,
     /// The EE sound pool (`DynamicSoundList`, docs/systems/sound.md): what is heard, as opposed to `sounds`, the AI
     /// hearing list.
@@ -3380,7 +3382,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), paused: false, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -4013,6 +4015,9 @@ impl Drones {
                 }
                 continue;
             }
+            // A cut-scene (ScriptCam / player disabled) stops the drones only: `Game_Run` skips their update while the
+            // script players, triggers and doors above keep running, so the cut-scene can finish (B-10 skipped all).
+            if self.paused { continue; }
             let rng = &mut self.rng;
             let dr = &mut self.list[index];
             if !dr.present { continue; }

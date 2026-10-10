@@ -667,8 +667,8 @@ impl Sim {
         // mirrors as `self.disabled` via events 4/6), the object handler is skipped entirely — drones do NOT tick,
         // so guards don't fire or move during cut-scenes. Without this gate the user was shot throughout the
         // bridge cut-scene (a real game bug in normal play, not just a scenario issue).
-        if !self.disabled { self.drones.tick(&d, &player); }
-        else { self.drones.frame += 1; } // the frame counter still advances (music/sound timing), but no AI.
+        self.drones.paused = self.disabled;
+        self.drones.tick(&d, &player);
     }
 
     /// The crosshair offset (`BL+0x120 / +0x124`: −1…1 across half the screen) from the auto-aim offset angles: tan of the
