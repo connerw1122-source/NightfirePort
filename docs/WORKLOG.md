@@ -2205,3 +2205,34 @@ spawn pickups, with a sister assertion that id=0xFFFF is refused.
 loop script), bug 4 (scope overlay — needs the GlobalBlur/renderer path). These are STANDINs.
 
 Tests: `weapon_switch_live.rs` and `pickup_live.rs` pass. NF_ISO suite: only disc_golden fails.
+
+## B-2 — Fix grenade throw decision: vision_on in combat states; unforced test passes
+
+The user reported guards never throw grenades in play. Root cause: `vision_on` was not set to
+`true` on ENTER for the combat-move states (StepAimLeft/Right 0x73/0x74, StrafeAim* 0x75/0x76,
+StrafeDodge* 0x77/0x78, RollLeft/RightCrouch 0x79/0x7a, AimBackoff 0x6d). The game's decomp
+sets `+0x4F8 |= 0x10000` in every one of these states' ENTER. Without it, `visibility` is 0
+during combat moves, the guard never gets `los=true`, and `seen` never fires — so the guard
+never reaches `AIM_STAND_FIRE` and `combat_state` never runs.
+
+Fix: added `self.vision_on = true` to the ENTER of:
+- StepAimLeft/Right (0x167590:14)
+- StrafeAimLeft/Right (0x1677b0)
+- StrafeDodgeLeft/Right (0x167b50)
+- RollLeft/RightCrouch (0x167e90)
+- AimBackoff (0x166b98)
+
+Also added `NF_AILOG=1` logging in `combat_state` for AIM_STAND_FIRE and AIM_CROUCH_FIRE:
+prints guard index, state, distance, LOS, grenade count, anim class, can_do_0x49, and the
+RNG roll — so the user can see exactly which condition fails.
+
+Unforced test: `guard_decides_to_throw_grenade_unforced` on 07000002. Finds a normal combat
+guard (mode 0, team 1), gives it 3 stun grenades (the way param 24 would in DefaultInit),
+scans 4 directions for a position with clear LOS, enables all switch channels, runs 1800
+ticks (30 s). The guard sees Bond (tick ~60), enters AIM_STAND_FIRE (tick ~120), decides to
+throw (tick ~180), enters GRENADE_THROW (0x2d). Sister: Bond at 30 m → no throw.
+
+The `visibility()` method was made `pub` so the test can log it.
+
+NF_ISO=Nightfire-onfoot.iso cargo test -p nf-game --test ai_live --test grenade_live
+= 34 passed, 0 failed.

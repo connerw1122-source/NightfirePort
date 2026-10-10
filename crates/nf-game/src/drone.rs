@@ -2554,7 +2554,13 @@ impl Drone {
                 self.turn_to_opponent(0.524);
                 if self.dist <= 4.0 && self.can_backoff(d) { self.set_state(AIM_BACKOFF); return true; }
                 if self.unseen_ticks >= 16 { self.set_state(COMBAT_NO_SIGHT); return true; }
-                if self.firing && !self.burst_done { return true; }
+                if self.firing && !self.burst_done {
+                    if std::env::var_os("NF_AILOG").is_some() && self.grenade_count > 0 {
+                        eprintln!("[ailog] guard {} AIM_STAND_FIRE UPDATE: firing={} burst_done={} -- combat_state skipped (mid-burst)",
+                            self.index, self.firing, self.burst_done);
+                    }
+                    return true;
+                }
                 match self.combat_state(d, rng, frame, AIM_STAND_FIRE) { 0 => self.fire(d, rng, frame, true), n => self.set_state(n) }
                 true
             }
@@ -2583,6 +2589,7 @@ impl Drone {
             }
             // Steps: one anim, then back to AimStandFire; no firing while stepping.
             (STEP_AIM_LEFT | STEP_AIM_RIGHT, msg::ENTER) => {
+                self.vision_on = true; // `+0x4F8 |= 0x10000` (decomp 0x167590:14)
                 self.call_anim(d, if s == STEP_AIM_LEFT { anim_state::STEP_LEFT } else { anim_state::STEP_RIGHT }, AIM_STAND_FIRE, 0);
                 self.firing = false;
                 true
@@ -2594,6 +2601,7 @@ impl Drone {
             }
             // Strafes fire while moving; dodges do not. Both end on a 2–5 s / 2–3 s timer or when blocked.
             (STRAFE_AIM_LEFT | STRAFE_AIM_RIGHT | STRAFE_DODGE_LEFT | STRAFE_DODGE_RIGHT, msg::ENTER) => {
+                self.vision_on = true; // `+0x4F8 |= 0x10000` (decomp 0x1677b0 etc.)
                 let (anim, secs, fires) = match s {
                     STRAFE_AIM_LEFT => (anim_state::STRAFE_LEFT, rng.rand(4) + 2, true),
                     STRAFE_AIM_RIGHT => (anim_state::STRAFE_RIGHT, rng.rand(4) + 2, true),
@@ -2616,11 +2624,13 @@ impl Drone {
             }
             (STRAFE_AIM_LEFT | STRAFE_AIM_RIGHT | STRAFE_DODGE_LEFT | STRAFE_DODGE_RIGHT | AIM_BACKOFF, msg::TIMER_C) => { self.set_state(AIM_STAND); true }
             (ROLL_LEFT_CROUCH | ROLL_RIGHT_CROUCH, msg::ENTER) => {
+                self.vision_on = true; // `+0x4F8 |= 0x10000` (decomp 0x167e90 etc.)
                 self.call_anim(d, if s == ROLL_LEFT_CROUCH { anim_state::ROLL_LEFT } else { anim_state::ROLL_RIGHT }, AIM_CROUCH_FIRE, 0);
                 true
             }
             (ROLL_LEFT_CROUCH | ROLL_RIGHT_CROUCH, msg::UPDATE) => { self.desired_yaw = self.yaw_to_opp; true }
             (AIM_BACKOFF, msg::ENTER) => {
+                self.vision_on = true; // `+0x4F8 |= 0x10000` (decomp 0x166b98)
                 self.call_anim(d, anim_state::BACKOFF, 0, 0);
                 self.timer_c = Some(frame + (rng.rand(4) + 2) * 60);
                 self.fire(d, rng, frame, true);
@@ -2767,11 +2777,17 @@ impl Drone {
                 if self.clip < 1 { return AIM_STAND_RELOAD; }
                 if routed && out_of_range { return COMBAT_OUT_OF_RANGE; }
                 if self.unseen_ticks > 15 { return COMBAT_NO_SIGHT; }
-                if self.cover_available(d, true) { return RUN_FOR_COVER; }
-                // `DroneWeap_CanThrowGrenade`: the drone has grenades, 50 % roll, dist 8–20, the throw anim is in the
-                // set, and the playing danim is the aim-stand class (anim class 2, type 0xA → `+0x568 & 0xFFFF00FF ==
-                // 0xA0002`).
-                if self.anim.class == 2 && self.can_throw_grenade(d, rng) { return GRENADE_THROW; }
+                let cover = self.cover_available(d, true);
+                if cover { return RUN_FOR_COVER; }
+                // `DroneWeap_CanThrowGrenade` — the decomp checks `+0x568 & 0xFFFF00FF == 0xA0002`
+                // (anim class 2, type 0xA = AIM_STAND). Our port checks `anim.class == 2`.
+                let can_throw = self.anim.class == 2 && self.grenade_count > 0 && self.dist >= 8.0 && self.dist <= 20.0;
+                if std::env::var_os("NF_AILOG").is_some() && can_throw {
+                    let roll = { let mut r = rng.clone(); r.rand(2) };
+                    eprintln!("[ailog] guard {} AIM_STAND_FIRE: dist {:.1} cover={} grenades={} gw={:#x} anim.class={} anim.state={:#x} can_do_0x49={} rng_roll={}",
+                        self.index, self.dist, cover, self.grenade_count, self.grenade_weapon, self.anim.class, self.anim.state, self.can_do(d, anim_state::GRENADE_THROW), roll);
+                }
+                if can_throw && self.can_throw_grenade(d, rng) { return GRENADE_THROW; }
                 if self.anim.class == 2 && self.anim.state == anim_state::AIM_STAND {
                     let m = self.choose_combat_move(d, rng);
                     if m != 0 { return m; }
@@ -2782,7 +2798,14 @@ impl Drone {
             _ => {
                 if routed && out_of_range { return COMBAT_OUT_OF_RANGE; }
                 if self.unseen_ticks > 15 { return COMBAT_NO_SIGHT; }
-                if self.cover_available(d, true) { return RUN_FOR_COVER; }
+                let cover = self.cover_available(d, true);
+                if cover { return RUN_FOR_COVER; }
+                let can_throw = self.grenade_count > 0 && self.dist >= 8.0 && self.dist <= 20.0;
+                if std::env::var_os("NF_AILOG").is_some() && can_throw {
+                    let roll = { let mut r = rng.clone(); r.rand(2) };
+                    eprintln!("[ailog] guard {} AIM_CROUCH_FIRE: dist {:.1} cover={} grenades={} gw={:#x} anim.class={} can_do_0x49={} rng_roll={}",
+                        self.index, self.dist, cover, self.grenade_count, self.grenade_weapon, self.anim.class, self.can_do(d, anim_state::GRENADE_THROW), roll);
+                }
                 if self.can_throw_grenade(d, rng) { return GRENADE_THROW; }
                 if frame > self.entered + 120 {
                     let m = self.choose_combat_move(d, rng);
@@ -3108,7 +3131,7 @@ impl Drone {
     }
 
     /// `DroneVision_OpponentVisibility` (+0x230): range scaled by alertness, cone with a 22.5° pad.
-    fn visibility(&self) -> f32 {
+    pub fn visibility(&self) -> f32 {
         if self.dist < 2.0 && self.sight_range > 0.0 { return 1.0; }
         let r = self.sight_range * (2.0 * self.alert + 1.0);
         if r <= 0.0 { return 0.0; }

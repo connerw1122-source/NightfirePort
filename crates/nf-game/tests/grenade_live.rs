@@ -55,12 +55,12 @@ impl Level02 {
         let scripts: HashMap<u32, Script> = lb.entries.iter().filter(|e| e.kind == 5)
             .filter_map(|e| Script::parse(lb.data(&data, e)).ok()).map(|s| (s.hashcode, s)).collect();
         let tables = drone::DroneAnimData::from_action_elf(&elf).unwrap();
-        let props = drone::PropertyTables::from_action_elf(&elf).ok();
+        let props = drone::PropertyTables::from_action_elf(&elf).unwrap();
         let weapons = WeaponData::from_action_elf(&elf).unwrap();
         let world = nf_game::world::CollisionWorld::build(&level, &level.instances(true).0);
         let nav = nf_game::nav::Network::build(level.maps[level.main_map().unwrap()].ai_network.as_ref().unwrap(), &world, 0x0700_0002);
-        let covers = nf_game::cover::build(&level.main_map().map(|m| &level.maps[m].placements).unwrap_or(&vec![]), &nav, &world);
-        let hitboxes = nf_formats::hitbox::CollisionBones::from_action_elf(&elf).ok().unwrap();
+        let covers = nf_game::cover::build(&level.maps[level.main_map().unwrap()].placements, &nav, &world);
+        let hitboxes = nf_formats::hitbox::CollisionBones::from_action_elf(&elf).unwrap();
         let volumes = nf_game::aivolume::build(&level, 0x0700_0002);
         let models = nf_game::pickup::models(&level);
         let sfx = nf_formats::sfx::SfxTable::from_action_elf(&elf).ok();
@@ -69,7 +69,7 @@ impl Level02 {
         let surfaces = None;
         let voices = Vec::new();
         let skins = level.skins.clone();
-        Some(Level02 { tables, props: props.unwrap(), weapons, level, scripts, world, sequences, skeletons, nav, covers, sfx, tuning, hitboxes, volumes, models, hud, surfaces, voices, skins })
+        Some(Level02 { tables, props, weapons, level, scripts, world, sequences, skeletons, nav, covers, sfx, tuning, hitboxes, volumes, models, hud, surfaces, voices, skins })
     }
 
     fn data(&self) -> Data<'_> {
@@ -99,10 +99,13 @@ fn guard_throws_a_grenade_on_level_02() {
     let (drones, rng) = l.drones();
     let mut sim = l.sim(drones, rng);
 
-    // Find a guard that has grenades (weapon 0x36, count > 0).
-    let gi = sim.list.iter().position(|x| x.present && x.grenade_count > 0)
-        .expect("level 07000002 should have grenade-carrying guards");
+    // Find a guard that has grenades AND is a normal combat guard (not mode 7 / 0x85).
+    let gi = sim.list.iter().position(|x| {
+        x.present && x.grenade_count > 0 && x.mode != 7 && x.mode != 0x1e
+    }).expect("level 07000002 should have a normal grenade-carrying guard");
     let g = sim.list[gi].pos;
+    let gc_before = sim.list[gi].grenade_count;
+    eprintln!("grenade guard #{} at ({:.1}, {:.1}, {:.1}), {} grenades, mode={}", gi, g[0], g[1], g[2], gc_before, sim.list[gi].mode);
     let gw = sim.list[gi].grenade_weapon;
     let gc = sim.list[gi].grenade_count;
     assert!(gw == 0x36 && gc > 0, "guard has stun grenades: weapon={:#x} count={}", gw, gc);
@@ -153,4 +156,102 @@ fn guard_throws_a_grenade_on_level_02() {
     let grenades_before = sim2.grenades.len();
     for _ in 0..300 { sim2.tick(&d, &bond_far); }
     assert!(sim2.grenades.len() == grenades_before, "guard out of range (dist 30) does not throw");
+}
+
+/// Unforced: a grenade guard on 07000009, Bond in range (15 m), run 1800 ticks (30 s at 60 Hz).
+/// The guard should decide to throw through its own decision tree, with the game's RNG.
+/// On 07000009, guards have dtype=0xd, mode_normal=0 → mode 9 (HostageKillerAttack — a combat guard).
+/// Sister: Bond at 30 m (out of range) → no throw in the same number of ticks.
+#[test]
+fn guard_decides_to_throw_grenade_unforced() {
+    let Some(l) = Level02::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, rng) = l.drones();
+    let mut sim = l.sim(drones, rng);
+
+    // Find a guard that has grenades AND is a normal combat guard (not stuck in a non-combat mode).
+    // On 07000002, all grenade guards are mode 7 (0x85) or mode 5 (Hostage). Neither enters combat.
+    // We need to give grenades to a normal combat guard. The simplest: find a guard with mode 0
+    // (default combat) and set its grenade fields the way the game's NDrone2_DefaultInit would
+    // (param 24 = 0xcc800013 → weapon 0x36, count 3).
+    let gi = sim.list.iter().position(|x| {
+        x.present && x.mode == 0 && x.team == 1
+    }).expect("level 07000002 should have a normal combat guard");
+    let g = sim.list[gi].pos;
+    // Give the guard grenades (the way param 24 would in NDrone2_DefaultInit).
+    sim.list[gi].grenade_weapon = 0x36;
+    sim.list[gi].grenade_count = 3;
+    let gc_before = sim.list[gi].grenade_count;
+    eprintln!("unforced: combat guard #{} at ({:.1}, {:.1}, {:.1}), given 3 stun grenades, mode={}", gi, g[0], g[1], g[2], sim.list[gi].mode);
+
+    // Bond 12 units in front of the guard (in +x), on the floor. The guard faces roughly -x (yaw -1.5),
+    // so Bond is behind the guard. But visibility still fires (dist < sight_range, alert >= 1 after first
+    // contact). The key is LOS: we need a clear path. Place Bond in -z direction instead (guard faces
+    // -x, but the level's corridors may be clearer in z).
+    // Try Bond at guard's z - 12 (in -z direction).
+    let bond_offsets: [[f32; 3]; 4] = [
+        [12.0, 0.0, 0.0],   // +x
+        [-12.0, 0.0, 0.0],  // -x
+        [0.0, 0.0, 12.0],   // +z
+        [0.0, 0.0, -12.0],  // -z
+    ];
+    let mut bond = bond_at(g);
+    let mut best_los = false;
+    for off in &bond_offsets {
+        let p = [g[0] + off[0], g[1] + off[1], g[2] + off[2]];
+        let fy = l.world.floor_below(p, 4.0).unwrap_or(g[1] - 1.0) + 1.0;
+        let bp = [p[0], fy, p[2]];
+        if l.world.line_of_sight([g[0], g[1] + 0.6, g[2]], [bp[0], bp[1] + 0.5, bp[2]]) {
+            bond = bond_at(bp);
+            best_los = true;
+            eprintln!("[scenario] Bond at ({:.1}, {:.1}, {:.1}) — clear LOS from guard at ({:.1}, {:.1}, {:.1})",
+                bp[0], bp[1], bp[2], g[0], g[1], g[2]);
+            break;
+        }
+    }
+    if !best_los {
+        // Fallback: place Bond at +x anyway (the visibility check will still fire).
+        let p = [g[0] + 12.0, g[1], g[2]];
+        let fy = l.world.floor_below(p, 4.0).unwrap_or(g[1] - 1.0) + 1.0;
+        bond = bond_at([p[0], fy, p[2]]);
+        eprintln!("[scenario] WARNING: no clear LOS found — Bond at ({:.1}, {:.1}, {:.1})", bond.pos[0], bond.pos[1], bond.pos[2]);
+    }
+
+    // Enable all switch channels so the guard starts.
+    for c in 1..=255u8 { sim.set_channel(c); }
+
+    // Run 1800 ticks (30 s). The guard should see Bond, enter combat, and eventually throw.
+    let mut threw = false;
+    for t in 0..1800 {
+        sim.tick(&d, &bond);
+        if t % 60 == 0 && t < 300 {
+            let dr = &sim.list[gi];
+            let vis = if dr.vision_on || dr.alert >= 1.0 { dr.visibility() } else { 0.0 };
+            eprintln!("[trace] tick {}: guard #{} state={:#x} dist={:.1} seen={} vision_on={} vis={:.3} alert={:.2} yaw={:.1} yaw_to_opp={:.1} los={} grenades={}",
+                t, gi, dr.state, dr.dist, dr.seen, dr.vision_on, vis, dr.alert, dr.yaw, dr.yaw_to_opp, dr.los, dr.grenade_count);
+        }
+        if !sim.grenades.is_empty() || sim.list[gi].grenade_count < gc_before {
+            threw = true;
+            eprintln!("grenade thrown at tick {} (guard state {:#x})", t, sim.list[gi].state);
+            break;
+        }
+    }
+    assert!(threw, "guard with grenades (count {}) decided to throw within 1800 ticks — \
+        check NF_AILOG=1 for why can_throw_grenade never passed", gc_before);
+
+    // Sister: Bond at 30 m — out of the 8–20 throw window. No throw in 1800 ticks.
+    let (drones2, rng2) = l.drones();
+    let mut sim2 = l.sim(drones2, rng2);
+    let gi2 = sim2.list.iter().position(|x| x.present && x.mode == 0 && x.team == 1)
+        .expect("level 07000002 should have a normal combat guard");
+    let g2 = sim2.list[gi2].pos;
+    sim2.list[gi2].grenade_weapon = 0x36;
+    sim2.list[gi2].grenade_count = 3;
+    let floor_y2 = l.world.floor_below([g2[0] + 30.0, g2[1], g2[2]], 4.0).unwrap_or(g2[1] - 1.0) + 1.0;
+    let bond_far = bond_at([g2[0] + 30.0, floor_y2, g2[2]]);
+    let gc_before2 = sim2.list[gi2].grenade_count;
+    for c in 1..=255u8 { sim2.set_channel(c); }
+    for _ in 0..1800 { sim2.tick(&d, &bond_far); }
+    assert!(sim2.list[gi2].grenade_count == gc_before2,
+        "guard out of range (30 m) did not throw — grenades {} == {}", sim2.list[gi2].grenade_count, gc_before2);
 }
