@@ -76,6 +76,17 @@ impl WeaponData {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0x68..0x6c].try_into().unwrap()))
     }
 
+    /// `+0x6C`: bullet-type flags. Bit `0x40000` = the weapon's bullets play a fly-by (whiz) sound in
+    /// `Bullet_DoTrails` [M drone-damage.md "Bullets": SG5 `+0x6C` = 0x40050 → bit set]. The trigger logic and RNG
+    /// call order live in the (not-yet-accessible) `Bullet_DoTrails` decompile; the accessor is ported so the fly-by
+    /// can be wired once that decompile is available (GAPS G-032a).
+    pub fn bullet_flags(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap()))
+    }
+
+    /// `+0x6C & 0x40000`: whether this weapon's bullets emit a fly-by sound [M].
+    pub fn flyby(&self, weapon: usize) -> bool { self.bullet_flags(weapon) & 0x40_000 != 0 }
+
     /// `+0x90`: the ammo type (index into `ammo_data` and Bond's carried rounds).
     pub fn ammo_type(&self, weapon: usize) -> usize { self.records.get(weapon).map_or(0, |r| r[0x90] as usize) }
 
@@ -85,5 +96,30 @@ impl WeaponData {
     /// `+0xDC`: the first-person model; `Player_EquipWeapon` refuses a weapon whose model is not loaded.
     pub fn first_person(&self, weapon: usize) -> u32 {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xdc..0xe0].try_into().unwrap()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn weapon_with_bullet_flags(flags: u32) -> WeaponData {
+        let mut r = [0u8; RECORD];
+        r[0x6c..0x70].copy_from_slice(&flags.to_le_bytes());
+        WeaponData { records: vec![r], ammo_cap: Vec::new() }
+    }
+
+    /// `+0x6C & 0x40000` = the fly-by bit. Sister: a weapon without the bit (e.g. 0x50) does not fly-by.
+    #[test]
+    fn flyby_bit_is_0x40000() {
+        // SG5: `+0x6C` = 0x40050 → bit set [M drone-damage.md].
+        let sg5 = weapon_with_bullet_flags(0x40050);
+        assert!(sg5.flyby(0));
+        assert_eq!(sg5.bullet_flags(0), 0x40050);
+        // Sister: 0x50 (no 0x40000) → no fly-by.
+        let no_flyby = weapon_with_bullet_flags(0x50);
+        assert!(!no_flyby.flyby(0));
+        // Sister: out-of-range weapon → false (safe default).
+        assert!(!sg5.flyby(99));
     }
 }

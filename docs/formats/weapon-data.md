@@ -23,6 +23,7 @@ table in 30,819 of 30,820 bytes. The odd byte is record 1 +0xDC: a skin hashcode
 | +0x02 | u16 | base weapon (variants point at the plain one, e.g. 0x17 → 0x16) | records 0x15–0x2B |
 | +0x4C | u32 | hashcode passed out by `AnimDatumGetWeaponInfo` (often 0x02000261) | decomp |
 | +0x50 | u8 | datum id the third-person model hangs on (0xFF = none → id 0 when drawn) | `AnimObjectDraw` |
+| +0x6C | u32 | bullet-type flags; bit `0x40000` = the weapon's bullets play a fly-by (whiz) sound in `Bullet_DoTrails` | drone-damage.md "Bullets" (SG5 `0x40050`); accessor `bullet_flags`/`flyby` |
 | +0x7C | u32 | first-person (Bond) model hashcode | `Player_WeaponFiring` |
 | +0x80 | u32 | third-person model hashcode (`…_3rd_LOD0` map objects in the level archives) | `AnimObjectDraw` |
 

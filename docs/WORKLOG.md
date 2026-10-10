@@ -1512,3 +1512,54 @@ runtime `libasound.so.2` copied in because the dev deb only ships the symlink) a
 
 Next (§5.1): the helicopter (`Copter_Create` 0x17d340), then the level-exit trigger + objectives (the 0xE8
 gates both load 0x07000066).
+
+## 0075 — Audio: ducker, fades, reverb/environment, SPU ADSR + 4-tap interpolation
+
+Area: the audio remainder (G-032), `crates/nf-audio` and `nf-game/src/sound.rs` / `music.rs`. Built and tested on
+Linux (stable 1.99; ALSA via a local `alsa.pc` + `libasound.so` symlink, no sudo). All 155 tests pass (4 new).
+
+What the player hears now (and what isn't done):
+- **Music ducks under gunfire.** `ES_StartDucker`/`ES_UpdateDucker` (SFX.IRX 0x83c8/0x8438) ported: a sound with
+  `Ducker != 0` (TrackingType 0/3) starts a duck; `DuckerCurrentVolume` creeps toward the target at s/6 (within the
+  duration) then s/15 (past it), with the sign-fixup for sub-zero steps; the music gain is `master·duck·base·fade`
+  (the live `DuckerCurrentVolume` and `FadeMusicVolume`, no longer the hardcoded 100/10000). The SFX get 1/3 of the
+  duck (the `100 - (100-DuckerCurrentVolume)/3` term). `NisQuitten` → `ES_StopDucker` (fast recovery).
+- **Fades.** `SFXFadeUpdate`/`SFXFadeDown`/`SFXFadeUp` (0xf8c, RPC cmds 6/7): a 2 s linear fade (10000 at 5/ms),
+  `FadeMusicVolume` tracks it when `fade_music` is set; fade-up starts from 0. The end-sting (`Music_Event` 6/7 →
+  `Cmd::FadeDown`) now actually fades the audio (was a no-op in `sound_tick`).
+- **Reverb / environment.** `SFXSetEnvironment` (RPC 0x1D) + `SFXUpdateEnvironment` (0xe60): the underwater flag
+  (reverb == -0x6768), the reverb target clamp, the ±16/−4 reverb envelope, the ±4 indoors volume, the `EVOL` depth
+  (r·80/100·0x3FFF) sent to the output. The output runs a stereo comb-filter reverb at that depth; voices with
+  `ReverbSend != 0` (SFXParameters+0x00) are routed through it. *The cel/room system that supplies the `room env`
+  value is not ported (G-016), so `set_environment(0, 0)` is called for now — no reverb/underwater until that lands.*
+- **SPU ADSR release.** ADSR1=0x000F, ADSR2=0x1FC0 (sound.md §3.4): instant attack, max sustain (DR=0 → no decay),
+  fastest linear release. Key-off now begins a ~4 ms linear release tail instead of cutting hard (the old
+  "*deviation*: no ADSR release"). RELEASE_SAMPLES = 192 (≈4 ms at 48 kHz); the exact SPU rate-table step count is
+  pending a disc cross-check (G-032d).
+- **4-tap interpolation.** The mixer now reads x[-1]..x[2] and applies a 4-tap kernel (replacing the 2-tap linear
+  "*deviation*"). *Catmull-Rom stand-in for the SPU's exact Gaussian coefficient table* (G-032d, deferred — the
+  table is not in the committed docs and the decompile is not accessible in this environment).
+- **Bullet fly-bys (G-032a): deferred.** The `+0x6C & 0x40000` flag accessor (`weapon_data.bullet_flags`/`flyby`) and
+  the fly-by sound id 0x1dc (sound.md:330) are ported, but the `Bullet_DoTrails` trigger logic + RNG call order are
+  in `work/decomp/ACTION.ELF/Bullet_DoTrails_*.c` (not accessible here). Not guessing the RNG order — it is shared
+  (`Rand_*`) and would break seeded tests.
+- **Music events 3/7/8 (objectives): hooks confirmed.** `Music::update` reads e[7] (on_fail) and `castle_a` reads
+  e[3]||e[8] (end_combat/end_calm), both → jump + `Cmd::FadeDown`. The objectives session only needs to call
+  `drones.music.event(3|7|8, value)`.
+
+Evidence: all from `docs/systems/sound.md` (measured by prior agents from `work/decomp/SFX.IRX` + the disc): the
+gp-relative globals (§0), the SFXUpdate step-2 order (§6), `ES_CombineVolumes` (§5.5), `SFXFadeUpdate`/ducker/
+environment (§5.5), `StartSample`'s ADSR1/ADSR2 (§3.4). The Gaussian table and `PS2_SetupReverb` preset are [S]
+(nocash PSX-SPX structure; the exact fixed-point coefficients need `work/decomp` — G-032d). Disc cross-checks
+(`NF_ISO` golden comparisons of the envelope/interpolation output) are deferred: the ISO and `work/` are not
+available in this environment (the copyparty share requires a password the user has not provided; verified via curl,
+wget and a real headless browser — all return the login page).
+
+Tests (each with a sister assertion): `fade_down_reaches_zero_in_two_seconds_and_tracks_music` (mid-fade + clamp +
+fade-up-from-0 + fade_music-off leaves music full); `ducker_creeps_toward_target_then_recovers` (slow phase +
+recovery + no-ducker stays 100); `environment_envelope_and_underwater` (underwater flag + target clamp + +16 rise +
+−4 fall + indoors 50/100); `flyby_bit_is_0x40000` (SG5 0x40050 set, 0x50 clear, out-of-range false). `cargo test
+--workspace` = 155 passed, 0 failed.
+
+No `Rand_*` calls added (the ducker/reverb/fade use the IOP's `SFXrnd` only where the spec does — none here — and
+the EE `Rand_*` is untouched), so seeded tests are unaffected.

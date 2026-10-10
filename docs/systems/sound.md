@@ -15,8 +15,15 @@ the driver's start path (`SFXSetup` budget / stealing / per-id limit, random / s
 `ES_CombineVolumes`, front + phase-inverted rear voices (the rear keyed 500 µs later, WORKLOG 0064), `SFXUpdate` (ends, sequences, loops via cue timers, kill pass,
 active list), `SFXRemove` / `SetPositionAndVelocity`; sources: the first-person gun's script sounds (op 1: shot, reload), Bond's footsteps by floor surface, bullet
 impacts by surface, guard body hits (0x413), guards' gunfire (`weapon_data+0x60`),
-animation-script sounds, pickups, script sounds (moving with their object). Music: docs/systems/music.md. Speech and streamed effects: docs/systems/speech.md. Not yet: casings / fly-bys, reverb / environment / underwater, ducker and fades, precache, pause, the SPU's Gaussian
-interpolation and ADSR (the port mixes linearly and stops at once), the per-weapon op-1 id remaps (other weapons).
+animation-script sounds, pickups, script sounds (moving with their object). Music: docs/systems/music.md. Speech and streamed effects: docs/systems/speech.md. Not yet: casings / fly-bys (the `Bullet_DoTrails` trigger + RNG order need the decompile,
+GAPS G-032a), the cel/room-driven `SFXSetEnvironment` value (G-016), the exact SPU2 Gaussian coefficient table and
+`PS2_SetupReverb` preset (GAPS G-032d, disc cross-checks deferred), precache, pause in cut-scenes, the per-weapon
+op-1 id remaps (other weapons). **Now ported (WORKLOG 0075):** the ducker (`ES_StartDucker`/`ES_UpdateDucker`, music +
+the SFX 1/3-duck), fades (`SFXFadeUpdate`/`SFXFadeDown`/`SFXFadeUp`, the 2 s linear fade with `FadeMusicVolume`),
+reverb/environment (`SFXSetEnvironment`/`SFXUpdateEnvironment`, the ±16/−4 reverb envelope, the underwater flag, the
+indoors volume, the `EVOL` depth sent to the output's comb-filter reverb), the SPU ADSR release (ADSR1=0x000F,
+ADSR2=0x1FC0 → instant attack, max sustain, fastest linear release) and 4-tap interpolation (Catmull-Rom stand-in for
+the SPU's 4-point Gaussian, pending the exact table).
 
 ---
 

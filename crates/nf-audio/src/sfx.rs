@@ -83,10 +83,41 @@ pub struct Driver {
     pub master: i32,
     pub music_master: i32,
     mute_sfx: i32,
+    /// `SFXIndoorsVolume` (current), moves ±4/frame toward `indoors_target` (`SFXUpdateEnvironment`@e60) [M].
     indoors: i32,
+    /// `SFXNewIndoorsVolume` (target): 50 indoors, 100 outdoors [M `SFXSetEnvironment`].
+    indoors_target: i32,
+    /// `SFXReverb` (current, 0..100), moves +16/−4 per frame toward `reverb_target` [M].
+    reverb: i32,
+    /// `SFXNewReverb` (target, 0..100) [M].
+    reverb_target: i32,
+    /// `SFXUnderWater` (0/1) [M].
     underwater: bool,
+    /// `FadeVolume` (0..10000), the SFX class fade [M `SFXFadeUpdate`@f8c].
     fade: i32,
+    /// `FadeMusicVolume` (0..10000), copied from `FadeVolume` when `fade_music` is set [M].
+    fade_music_volume: i32,
+    /// `FadeStatus`: 0 inactive, 1 fade-down, 2 fade-up [M].
+    fade_status: i32,
+    /// `FadeRate` (init 30) — the dead `10000/(status*rate)` term is overwritten; kept for fidelity [M].
+    fade_rate: i32,
+    /// `FadeMusic` (init 1): copy `FadeVolume`→`FadeMusicVolume` while fading [M].
+    fade_music: i32,
+    /// `FadeStartTimer` (ms at fade start) [M].
+    fade_start: i32,
+    /// `DuckerCurrentVolume` (0..100) [M]. Music ducks to this; SFX get 1/3 of the duck.
     ducker_current: i32,
+    /// `DuckerVolume` (target) [M `ES_StartDucker`@83c8].
+    ducker_volume: i32,
+    /// `DuckerDuration` (ms) [M].
+    ducker_duration: i32,
+    /// `DuckerStartTime` (ms) [M].
+    ducker_start: i32,
+    /// `SFXTimerValue`*100 → ms; advances ~17 ms per SFXUpdate (the port's fixed 60 Hz; the IOP's TimerThread ticks
+    /// every 100 000 µs, so the original quantises to 100 ms — the audible 2 s fade is preserved) [M + S quantisation].
+    timer_ms: i32,
+    /// `NisQuitten`: when set, `ES_StopDucker` runs (Duration=0 → fast recovery) [M sound.md §6 step 2].
+    nis_quitten: bool,
     listener_pos: P3,
     listener_dir: P3,
     listener_norm: P3,
@@ -107,6 +138,11 @@ pub const HW_VOICES: usize = 48;
 /// `ES_VoiceHandleData`: 100 ES handles.
 pub const ES_HANDLES: usize = 100;
 
+/// The port's fixed logic rate (59.94/60 Hz, docs/PLAN.md "Timing"); the IOP's `TimerThread` ticks every 100 000 µs,
+/// so the original quantises `psiSFXGetTimer()` to 100 ms. We advance ~17 ms/frame — the 2 s fade/duck durations hold
+/// (10000/5 = 2000 ms) [M sound.md §6; S 100 ms quantisation].
+pub const FRAME_MS: i32 = 17;
+
 /// `IsUnderWaterSFX`: the ids not halved under water (`BonbUnderWaterSFX`).
 const UNDERWATER_EXEMPT: [u32; 23] = [335, 331, 332, 333, 334, 330, 279, 278, 277, 253, 1303, 137, 1492, 1491, 136, 514, 10, 40, 33, 310, 311, 39, 9];
 
@@ -115,7 +151,9 @@ impl Default for Driver { fn default() -> Driver { Driver::new() } }
 impl Driver {
     pub fn new() -> Driver {
         Driver { slots: HashMap::new(), items: Vec::new(), voices: vec![None; HW_VOICES], rnd: Rnd::default(), started: 0, mode: 1, master: 100,
-            music_master: 70, mute_sfx: 1, indoors: 100, underwater: false, fade: 10000, ducker_current: 100,
+            music_master: 70, mute_sfx: 1, indoors: 100, indoors_target: 100, reverb: 0, reverb_target: 0, underwater: false,
+            fade: 10000, fade_music_volume: 10000, fade_status: 0, fade_rate: 30, fade_music: 1, fade_start: 0,
+            ducker_current: 100, ducker_volume: 100, ducker_duration: 1, ducker_start: 0, timer_ms: 0, nis_quitten: false,
             listener_pos: [0; 3], listener_dir: [0, 1000, 0], listener_norm: [-1000, 0, 0], active: Vec::new(), streams: None, stream_pcm: HashMap::new() }
     }
 
@@ -225,7 +263,7 @@ impl Driver {
         }
         self.started += 100;
         self.items[i].cue_pos = 0;
-        if fx.ducker != 0 && (fx.tracking == 0 || fx.tracking == 3) { /* ES_StartDucker: music only (not ported yet) */ }
+        if fx.ducker != 0 && (fx.tracking == 0 || fx.tracking == 3) { self.start_ducker(100 - fx.ducker as i32, fx.ducker_length); }
         if fx.multi_sample == 0 {
             let k = self.rnd.rnd(fx.count as i32) as usize;
             if !self.start_sample(out, i, fx.subs[k], 0) { self.items[i].delete = true; return false; }
@@ -298,11 +336,13 @@ impl Driver {
         it.pos = it.real_pos;
         self.get_my_pos(i);
         let (l, r, b) = self.levels(i, ch);
-        out.push(Cmd::Play { voice: front, pcm: pcm.clone(), pitch: pitch.max(0) as u32, left: l, right: r, delay: 0.0 });
+        // `ReverbSend` (SFXParameters+0x00): non-zero at key-on sets the voice's reverb-send bit (VMIXEL/VMIXER) [M].
+        let reverb = fx.reverb_send != 0;
+        out.push(Cmd::Play { voice: front, pcm: pcm.clone(), pitch: pitch.max(0) as u32, left: l, right: r, delay: 0.0, reverb });
         if let Some(rv) = rear {
             self.voices[rv as usize] = Some(Voice { front: rv, rear: None, looping: looped, playing: true, pitch: pitch.max(0) as u32, stream: streamed });
             // Mode ≠ 0: the rear voices are keyed on after `DelayThread(500)` (µs); mode 0 keys them with the front.
-            out.push(Cmd::Play { voice: rv, pcm, pitch: pitch.max(0) as u32, left: b, right: if self.mode == 0 { b } else { -b }, delay: if self.mode == 0 { 0.0 } else { 0.0005 } });
+            out.push(Cmd::Play { voice: rv, pcm, pitch: pitch.max(0) as u32, left: b, right: if self.mode == 0 { b } else { -b }, delay: if self.mode == 0 { 0.0 } else { 0.0005 }, reverb });
         }
         true
     }
@@ -400,10 +440,97 @@ impl Driver {
         }
     }
 
+    /// `SFXSetEnvironment(reverb, indoors)` (RPC cmd 0x1D; called by `Sound_UpdateListeners`@1dce10 [M]).
+    /// `reverb == -0x6768` (-26472) → underwater on, target 0; else target = clamp(reverb, 0, 100).
+    /// `indoors != 0` → `SFXNewIndoorsVolume = 50`, else 100.
+    pub fn set_environment(&mut self, reverb: i32, indoors: i32) {
+        if reverb == -0x6768 { self.underwater = true; self.reverb_target = 0; }
+        else { self.underwater = false; self.reverb_target = reverb.clamp(0, 100); }
+        self.indoors_target = if indoors != 0 { 50 } else { 100 };
+    }
+
+    /// `SFXFadeDown(fadeMusic)` (RPC cmd 6): start a fade-down. `music` copies `FadeVolume`→`FadeMusicVolume` [M].
+    pub fn fade_down(&mut self, music: bool) {
+        self.fade_status = 1;
+        self.fade_start = self.timer_ms;
+        self.fade_music = music as i32;
+    }
+
+    /// `SFXFadeUp(fadeMusic)` (RPC cmd 7): fade-up always starts from 0 [M].
+    pub fn fade_up(&mut self, music: bool) {
+        self.fade = 0;
+        self.fade_status = 2;
+        self.fade_start = self.timer_ms;
+        self.fade_music = music as i32;
+    }
+
+    /// `ES_StartDucker(target, len)` (0x83c8): StartTime = now, Duration = len, DuckerVolume = target [M].
+    fn start_ducker(&mut self, target: i32, len: i32) {
+        self.ducker_start = self.timer_ms;
+        self.ducker_duration = len;
+        self.ducker_volume = target;
+    }
+
+    /// `ES_StopDucker` (on `NisQuitten`): Duration = 0, so `passed` is true and the duck recovers fast [M].
+    fn stop_ducker(&mut self) { self.ducker_duration = 0; self.ducker_start = self.timer_ms; }
+
+    /// Sets the `NisQuitten` flag (a cut-scene is quitting); `ES_StopDucker` runs next `SFXUpdate` [M].
+    pub fn set_nis_quitten(&mut self, on: bool) { self.nis_quitten = on; }
+
+    /// `SFXUpdateEnvironment` (0xe60): `SFXReverb` moves toward `reverb_target` by at most +16 (rising) / −4 (falling)
+    /// per frame; `SFXIndoorsVolume` moves ±4. Returns the new reverb depth 0..1 (EVOL = r·80/100·0x3FFF) [M].
+    fn update_environment(&mut self) -> f32 {
+        if self.reverb < self.reverb_target { self.reverb = (self.reverb + 16).min(self.reverb_target); }
+        else if self.reverb > self.reverb_target { self.reverb = (self.reverb - 4).max(self.reverb_target); }
+        if self.indoors < self.indoors_target { self.indoors = (self.indoors + 4).min(self.indoors_target); }
+        else if self.indoors > self.indoors_target { self.indoors = (self.indoors - 4).max(self.indoors_target); }
+        // `psiSetReverb`: EVOL = (((r*80)/100)*0x3FFF)/100 → 0..0x3FFF; the 80 % ceiling is the game's max send depth [M].
+        let evol = ((self.reverb * 80) / 100 * 0x3fff) / 100;
+        evol as f32 / 0x3fff as f32
+    }
+
+    /// `ES_UpdateDucker` (0x8438): once per `SFXUpdate` [M].
+    fn update_ducker(&mut self) {
+        let now = self.timer_ms;
+        // `passed = (now-StartTime >= -0x40000000) && (now-StartTime > Duration)`: the first term guards against
+        // wrap (a huge negative means StartTime is in the future); with i32 ms this is always satisfied post-start.
+        let elapsed = now.wrapping_sub(self.ducker_start);
+        let passed = elapsed >= -0x4000_0000 && elapsed > self.ducker_duration;
+        let s = (self.ducker_volume - self.ducker_current) * 1024;
+        if s != 0 {
+            // `s = (passed ? s/15 : s/6) >> 10`, then if 0 take the sign (so a tiny step still creeps) [M].
+            let div = if passed { 15 } else { 6 };
+            let mut step = (s / div) >> 10;
+            if step == 0 { step = if s > 0 { 1 } else { -1 }; }
+            self.ducker_current += step;
+        }
+        if passed { self.ducker_volume = 100; }
+    }
+
+    /// `SFXFadeUpdate` (0xf8c): when `FadeStatus != 0`, `FadeVolume = 10000 - 5*(t-t0)` (down) or `5*(t-t0)` (up),
+    /// clamped 0..10000; at the limit `FadeStatus = 0` (a 2 s fade). `FadeMusic` copies into `FadeMusicVolume` [M].
+    fn fade_update(&mut self) {
+        if self.fade_status == 0 { return; }
+        let t = self.timer_ms - self.fade_start;
+        let v = if self.fade_status == 1 { 10000 - 5 * t } else { 5 * t };
+        if v <= 0 { self.fade = 0; self.fade_status = 0; }
+        else if v >= 10000 { self.fade = 10000; self.fade_status = 0; }
+        else { self.fade = v; }
+        if self.fade_music != 0 { self.fade_music_volume = self.fade; }
+    }
+
     /// `SFXUpdate` (0x4ee4): once per game frame. `ended`: hardware voices that reached their end flag.
-    pub fn update(&mut self, out: &mut Vec<Cmd>, ended: &[u32]) {
+    /// Returns the reverb depth 0..1 (`EVOL`) the output should apply this frame [M §6 step 2].
+    pub fn update(&mut self, out: &mut Vec<Cmd>, ended: &[u32]) -> f32 {
         for &e in ended { if let Some(Some(v)) = self.voices.get_mut(e as usize) { v.playing = false; } }
         if self.started > 0 { self.started = self.started * 9 / 10; }
+        // §6 step 2: `SFXUpdateEnvironment; ES_UpdateDucker; SFXFadeUpdate; if NisQuitten: ES_StopDucker` [M].
+        // The timer advances ~17 ms/frame (the port's fixed 60 Hz; the IOP quantises to 100 ms — the 2 s fade holds).
+        self.timer_ms = self.timer_ms.wrapping_add(FRAME_MS);
+        let reverb_depth = self.update_environment();
+        self.update_ducker();
+        self.fade_update();
+        if self.nis_quitten { self.stop_ducker(); }
         for it in &mut self.items { it.updated = 0; }
         let mut i = 0;
         while i < self.items.len() {
@@ -468,6 +595,7 @@ impl Driver {
             } else { k += 1; }
         }
         self.active = self.items.iter().map(|it| (it.id, it.handle)).collect();
+        reverb_depth
     }
 
     /// `SFXUpdateEnding` (0x4e20): delete, or for `Loop` re-trigger after the cue delay. True = process again now.
@@ -503,7 +631,9 @@ impl Sound {
         let mut out = Vec::new();
         f(&mut self.driver, &mut out);
         let ended = self.output.as_ref().map(|o| o.take_ended()).unwrap_or_default();
-        self.driver.update(&mut out, &ended);
+        let reverb_depth = self.driver.update(&mut out, &ended);
+        // `PS2_SetupReverb`'s EVOL depth (the reverb send level), written to the output [M sound.md §5.5].
+        out.push(Cmd::Reverb { depth: reverb_depth });
         // The music commands queued last frame (op 0x11 start / 0x13 jump), then `SFXUpdateStreams`.
         for (kind, a, b) in std::mem::take(&mut self.music_pending) {
             match kind {
@@ -514,7 +644,8 @@ impl Sound {
         if let Some(p) = self.music.as_mut() {
             let played = self.output.as_ref().map_or(0, |o| o.music_played());
             p.update(played, &mut out);
-            out.push(Cmd::MusicGain(p.gain(self.driver.music_master, 100, 10000)));
+            // `ES_MusicSetVolume`: music ducks to `DuckerCurrentVolume` and fades with `FadeMusicVolume` [M §5.5].
+            out.push(Cmd::MusicGain(p.gain(self.driver.music_master, self.driver.ducker_current, self.driver.fade_music_volume)));
         }
         if let Some(o) = &self.output { o.send(out); }
     }
@@ -577,5 +708,80 @@ mod tests {
         let mut out = Vec::new();
         assert_eq!(d.start(&mut out, 7, Some([40.0, 0.0, 0.0]), 1, None), 1);
         assert!(out.is_empty());
+    }
+
+    /// `SFXFadeUpdate` (0xf8c): a fade-down reaches 0 after ~2 s (≈120 frames at 60 Hz) and clears `FadeStatus`;
+    /// the music volume tracks it when `fade_music` is set. Sister: with `fade_music` off, music stays full.
+    #[test]
+    fn fade_down_reaches_zero_in_two_seconds_and_tracks_music() {
+        let mut d = Driver::new();
+        d.fade_down(true);
+        assert_eq!(d.fade_status, 1);
+        // 100 frames (< 2 s): still fading, not yet 0.
+        for _ in 0..100 { d.update(&mut Vec::new(), &[]); }
+        assert!(d.fade > 0 && d.fade < 10000, "mid-fade: {}", d.fade);
+        assert_eq!(d.fade_music_volume, d.fade, "music tracks the SFX fade");
+        // Past 2 s: clamped to 0, status cleared.
+        for _ in 0..40 { d.update(&mut Vec::new(), &[]); }
+        assert_eq!(d.fade, 0);
+        assert_eq!(d.fade_status, 0);
+        // Sister: fade-up starts from 0 and reaches 10000.
+        d.fade_up(false);
+        assert_eq!(d.fade, 0, "fade-up starts from 0");
+        for _ in 0..200 { d.update(&mut Vec::new(), &[]); }
+        assert_eq!(d.fade, 10000);
+        assert_eq!(d.fade_music_volume, 0, "music not touched when fade_music is off");
+    }
+
+    /// `ES_StartDucker` / `ES_UpdateDucker` (0x83c8/0x8438): `DuckerCurrentVolume` creeps toward the target while
+    /// within the duration (rate s/6), then fast (s/15) once passed; at 100 it stops. Sister: a sound with no ducker
+    /// flag never starts one.
+    #[test]
+    fn ducker_creeps_toward_target_then_recovers() {
+        let mut d = Driver::new();
+        // target = 100 - ducker(80) = 20; duration 0 ms → passed immediately → fast recovery toward 100, but the
+        // target is 20 first, then 100 once passed. Use a positive duration so the slow phase runs.
+        d.start_ducker(20, 1000);
+        assert_eq!(d.ducker_volume, 20);
+        // Within the 1000 ms duration: slow phase (s/6) toward 20 — ducker_current drops below 100.
+        for _ in 0..5 { d.update(&mut Vec::new(), &[]); }
+        assert!(d.ducker_current < 100, "ducked: {}", d.ducker_current);
+        assert!(d.ducker_current > 20, "not yet at target: {}", d.ducker_current);
+        // Past the duration: DuckerVolume becomes 100 and it recovers back up.
+        for _ in 0..200 { d.update(&mut Vec::new(), &[]); }
+        assert_eq!(d.ducker_volume, 100);
+        assert!(d.ducker_current > 20, "recovering: {}", d.ducker_current);
+        // Sister: without a ducker, ducker_current stays at 100 (full music volume).
+        let mut d2 = Driver::new();
+        for _ in 0..50 { d2.update(&mut Vec::new(), &[]); }
+        assert_eq!(d2.ducker_current, 100);
+    }
+
+    /// `SFXSetEnvironment` (0x1D) + `SFXUpdateEnvironment` (0xe60): the underwater flag, the reverb target clamp,
+    /// the ±16/−4 envelope, and the indoors volume. Sister: reverb falls slower than it rises.
+    #[test]
+    fn environment_envelope_and_underwater() {
+        let mut d = Driver::new();
+        // Underwater: reverb == -0x6768 → underwater on, target 0.
+        d.set_environment(-0x6768, 1);
+        assert!(d.underwater);
+        assert_eq!(d.reverb_target, 0);
+        assert_eq!(d.indoors_target, 50, "indoors → 50");
+        // A normal reverb target of 90.
+        d.set_environment(90, 0);
+        assert!(!d.underwater);
+        assert_eq!(d.reverb_target, 90);
+        assert_eq!(d.indoors_target, 100, "outdoors → 100");
+        // Rising at +16/frame from 0: after 3 frames, 48 (not yet 90).
+        for _ in 0..3 { d.update(&mut Vec::new(), &[]); }
+        assert_eq!(d.reverb, 48, "rising +16: {}", d.reverb);
+        // Sister: falling is at −4/frame (slower). Drop the target to 0 and check it falls by 4 in one frame.
+        d.set_environment(0, 0);
+        let before = d.reverb;
+        d.update(&mut Vec::new(), &[]);
+        assert_eq!(d.reverb, before - 4, "falling −4");
+        // Out-of-range reverb is clamped.
+        d.set_environment(500, 0);
+        assert_eq!(d.reverb_target, 100);
     }
 }

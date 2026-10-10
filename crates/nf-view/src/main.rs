@@ -218,25 +218,31 @@ fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
     // `UpdateMusicalEvents` after the batch: its commands go out with the next frame's batch.
     let section = s.music.as_ref().map_or(0, |p| p.now_playing);
     sim.drones.music.update(section);
+    let mut fade_down = None;
     for c in std::mem::take(&mut sim.drones.music.out) {
         match c {
             nf_game::music::Cmd::Start { track, section } => s.music_pending.push((0, track, section)),
             nf_game::music::Cmd::Jump { section, instant } => s.music_pending.push((1, section, instant as i32)),
-            nf_game::music::Cmd::FadeDown { .. } => {}
+            nf_game::music::Cmd::FadeDown { music } => fade_down = Some(music),
         }
     }
     let driver = &s.driver;
     sim.drones.audio.update(sim.sfx.as_ref(), (pos, norm, [0.0, 1.0, 0.0], f), &|h| driver.is_playing(h));
     let cmds = sim.drones.audio.take_commands();
     s.batch(|drv, out| {
+        // `Sound_UpdateListeners`→`SFXSetEnvironment(room env, underwater)` [M sound.md §0]. The cel/room system that
+        // supplies `room env` is not yet ported (G-016); default to no reverb / no underwater until it is.
+        drv.set_environment(0, 0);
         for c in cmds {
             match c {
-                nf_game::sound::Cmd::Listener { pos, norm, dir, .. } => drv.set_listener(pos, dir, norm),
+                nf_game::sound::Cmd::Listener { pos, norm, dir, .. } => { drv.set_listener(pos, dir, norm); }
                 nf_game::sound::Cmd::Start { handle, id, pos, radii } => { drv.start(out, id, pos, handle, radii.map(|(i, o)| (i as i32, o as i32))); }
                 nf_game::sound::Cmd::Position { handle, pos } => drv.set_position(handle, None, pos),
                 nf_game::sound::Cmd::Remove { handle } => drv.remove(handle, None),
             }
         }
+        // `SFXFadeDown(fadeMusic)` (the music end-sting / level-transition fade) [M sound.md §5.5].
+        if let Some(music) = fade_down { drv.fade_down(music); }
     });
 }
 
