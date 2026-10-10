@@ -876,8 +876,22 @@ fn apply_scenario(sim: &mut scene::Sim, name: &str) {
             }
             eprintln!("[dev] sniper-scope: Bond has the sniper rifle. Hold RIGHT MOUSE to zoom — the FOV narrows and the sensitivity drops. Release to return to normal.");
         }
+        "shotgun-reload" => {
+            // Give Bond the shotgun (0x1c) with an empty clip and spare ammo. Press R to reload.
+            if wi > 0x1c {
+                sim.drones.inventory.owned[0x1c] = true;
+                sim.drones.inventory.clip[0x1c] = 0; // empty clip
+                sim.drones.inventory.carried[sim.weapons.ammo_type(0x1c)] = 30; // spare ammo
+                sim.gun.weapon = 0x1c;
+                sim.gun.switch_request = 0x1c;
+                sim.view_script = sim.weapons.idle_script(0x1c);
+                sim.view_time = 0.0;
+                sim.view_speed = 1.0;
+            }
+            eprintln!("[dev] shotgun-reload: Bond has the shotgun (0x1c) with an empty clip. Press R to reload — one shell at a time (the shell-by-shell loop). Hold the trigger to interrupt.");
+        }
         _ => {
-            eprintln!("[dev] unknown scenario '{name}'. Available: weapon-switch, sg5-pickup, wire-music, autoaim, sniper-scope. See docs/tools/dev-mode.md.");
+            eprintln!("[dev] unknown scenario '{name}'. Available: weapon-switch, sg5-pickup, wire-music, autoaim, sniper-scope, shotgun-reload. See docs/tools/dev-mode.md.");
         }
     }
 }

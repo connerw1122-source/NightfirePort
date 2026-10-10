@@ -152,6 +152,12 @@ impl WeaponData {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xa8..0xac].try_into().unwrap()))
     }
 
+    /// `+0xAC`: the reload-end script hashcode (the pump-finish / reload-end animation played after the
+    /// shell-by-shell loop completes, or when the loop is interrupted by firing) [M Player_SetWeaponAnimObj case 6/7].
+    pub fn reload_end_script(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xac..0xb0].try_into().unwrap()))
+    }
+
     /// `+0xB0`: the fire script hashcode.
     pub fn fire_script(&self, weapon: usize) -> u32 {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xb0..0xb4].try_into().unwrap()))

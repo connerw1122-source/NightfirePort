@@ -165,5 +165,21 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
         h.quad(Anchor::Right, rounds.layer as i32, 0x0300_0128, false, x, bottom - clip * hpr, bw * k, clip * hpr, [bu, (clip_size - clip) * hpr + bv, bw, clip * hpr], (false, false), gs(rounds.colour >> 8, rounds.colour & 0xff));
         h.quad(Anchor::Right, empty.layer as i32, 0x0300_0128, false, x, bottom - clip_size * hpr, bw * k, clip_size * hpr, [bu, bv, bw, clip_size * hpr], (false, false), gs(empty.colour >> 8, empty.colour & 0xff));
     }
+    // Scope overlay: when zoomed (scoped weapon, zoom > 1.0), draw a black border (vignette) around the screen
+    // leaving a circular view in the center. The game uses a HUD sprite (the SightPane); the port draws 4 black
+    // quads forming a border with a rectangular hole (the simplest approximation without a custom shader).
+    if s.zoom > 1.01 {
+        let alpha = ((s.zoom - 1.0) * 255.0 / (s.zoom_target - 1.0).max(0.01)).min(255.0) as u32;
+        let hole_w = SW * 0.62; // the visible rectangle's width (approximates the scope circle)
+        let hole_h = SH * 0.62;
+        let x0 = (SW - hole_w) * 0.5;
+        let y0 = (SH - hole_h) * 0.5;
+        let black = gs(0x000000, alpha);
+        // top, bottom, left, right
+        h.quad(Anchor::Stretch, 60, 0, false, 0.0, 0.0, SW, y0, [0.0, 0.0, 0.0, 0.0], (false, false), black);
+        h.quad(Anchor::Stretch, 60, 0, false, 0.0, y0 + hole_h, SW, SH - (y0 + hole_h), [0.0, 0.0, 0.0, 0.0], (false, false), black);
+        h.quad(Anchor::Stretch, 60, 0, false, 0.0, y0, x0, hole_h, [0.0, 0.0, 0.0, 0.0], (false, false), black);
+        h.quad(Anchor::Stretch, 60, 0, false, x0 + hole_w, y0, SW - (x0 + hole_w), hole_h, [0.0, 0.0, 0.0, 0.0], (false, false), black);
+    }
     h.finish()
 }

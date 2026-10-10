@@ -12,8 +12,11 @@ pub struct Gun {
     pub timer: f32,
     pub pending: i32,
     held: bool,
-    /// Ticks until a reload finishes.
-    pub reloading: u32,
+    /// `anim+0xF4` reload states: 0 = idle, 5 = reload start (+0xA8), 6 = shell loop (+0xA4, one shell),
+    /// 7 = reload end (+0xAC). The view-script block in `Sim::run` drives these [M Player_SetWeaponAnimObj].
+    pub reload_state: u8,
+    /// Ticks remaining in the current reload script (5/6/7). When it hits 0, the state transitions.
+    pub reload_ticks: u32,
     /// `anim+0x63`: the switch-request weapon id (set by `Player_WeaponChange`, consumed by
     /// `Player_SetWeaponAnimObj`). When it differs from `weapon`, the holster/draw cycle runs.
     pub switch_request: u8,
@@ -126,6 +129,52 @@ impl Gun {
 
     /// Whether a weapon switch is in progress (the holster/draw cycle).
     pub fn switching(&self) -> bool { self.switch_state != 0 }
+
+    /// Whether a reload is in progress (states 5/6/7).
+    pub fn reloading(&self) -> bool { self.reload_state != 0 }
+
+    /// Advance the reload state machine one tick. Called by `Sim::run` after advancing the view script.
+    /// `trigger_held` = the fire button is currently held (firing interrupt). `p` = the weapon params.
+    /// Returns the new reload state (for the view-script block to pick the right script).
+    pub fn reload_tick(&mut self, trigger_held: bool, p: GunParams) -> u8 {
+        if self.reload_state == 0 { return 0; }
+        if self.reload_ticks > 0 { self.reload_ticks -= 1; }
+        if self.reload_ticks > 0 { return self.reload_state; }
+        // The current script has finished. Transition.
+        match self.reload_state {
+            5 => {
+                // Reload start done → queue +0xA4, go to state 6 [M case 5].
+                self.reload_state = 6;
+                self.reload_ticks = p.reload_loop_ticks.max(1);
+            }
+            6 => {
+                // Shell loop: commit one shell [M case 6: Player_ReloadAmmoType(_, 0)].
+                let n = if p.one_at_a_time { 1 } else { (p.clip - self.clip).min(self.spare) };
+                let n = n.min(self.spare);
+                self.clip += n;
+                self.spare -= n;
+                // Probe: more ammo to load? [M case 6: Player_ReloadAmmoType(_, 1)]
+                let more = self.spare > 0 && self.clip < p.clip;
+                if more && !trigger_held {
+                    // Continue the loop: queue +0xA4 again [M case 6].
+                    self.reload_ticks = p.reload_loop_ticks.max(1);
+                } else {
+                    // Stop: clip full, no spare, or trigger held (fire interrupt). Queue +0xAC, go to state 7.
+                    self.reload_state = 7;
+                    self.reload_ticks = p.reload_end_ticks.max(1);
+                }
+            }
+            7 => {
+                // Reload end done → go to idle [M case 7]. Clear the trigger action.
+                self.reload_state = 0;
+                self.reload_ticks = 0;
+                self.held = false; // Input_ClearAction(9)
+                self.pending = 0;
+            }
+            _ => {}
+        }
+        self.reload_state
+    }
 }
 
 /// The cycle mode: weapons (1..0x47) or gadgets (0x4A..0x5E) [M `Player_WeaponChange` 0x1a6f80].
@@ -150,21 +199,40 @@ impl CycleMode {
 
 /// The fields of a `weapon_data` record the trigger uses.
 #[derive(Clone, Copy, Debug)]
-pub struct GunParams { pub shots_per_pull: i32, pub interval: f32, pub clip: u32, pub ammo_per_shot: u32, pub reload_ticks: u32, pub one_at_a_time: bool }
+pub struct GunParams {
+    pub shots_per_pull: i32,
+    pub interval: f32,
+    pub clip: u32,
+    pub ammo_per_shot: u32,
+    pub reload_ticks: u32,       // legacy: total reload time for non-shotgun weapons
+    pub one_at_a_time: bool,
+    pub reload_start_ticks: u32, // state 5: +0xA8 script length (0 if no start script)
+    pub reload_loop_ticks: u32,  // state 6: +0xA4 script length per shell
+    pub reload_end_ticks: u32,   // state 7: +0xAC script length
+}
 
 impl GunParams {
     /// `script_len(hash)`: the length of a first-person script (frames), for the reload time.
     pub fn from_record(w: &[u8], mode: usize, script_len: impl Fn(u32) -> Option<u32>) -> GunParams {
         let u32_at = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
         let flags68 = u32_at(0x68);
+        let len_of = |h: u32| -> u32 {
+            if h == 0 { return 0; }
+            script_len(h).unwrap_or(60)
+        };
+        let start_h = u32_at(0xa8);
+        let reload_h = u32_at(0xa4);
+        let end_h = u32_at(0xac);
         GunParams {
-            // `Player_WeaponFiring`: `((u16 *)weapon)[0x14 + mode]` and `(float)(u32)weapon+0x40` (an integer).
             shots_per_pull: u16::from_le_bytes([w[0x28 + 2 * mode.min(3)], w[0x29 + 2 * mode.min(3)]]) as i32,
             interval: u32_at(0x40) as f32,
             clip: u16::from_le_bytes([w[0x92], w[0x93]]) as u32,
             ammo_per_shot: (w[0x91] as u32).max(1),
-            reload_ticks: reload_ticks(u32_at(0xa8), u32_at(0xa4), flags68, &script_len),
+            reload_ticks: reload_ticks(start_h, reload_h, flags68, &script_len),
             one_at_a_time: flags68 & 0x100 != 0,
+            reload_start_ticks: len_of(start_h),
+            reload_loop_ticks: len_of(reload_h),
+            reload_end_ticks: len_of(end_h),
         }
     }
 }
@@ -184,7 +252,7 @@ pub fn reload_ticks(start: u32, reload: u32, flags68: u32, script_len: &impl Fn(
 
 impl Gun {
     /// Bond's start on 07000005 (`Player_InitWeapon`): weapon 2 with 7 in the clip and 41 spare [L].
-    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reloading: 0, switch_request: weapon, saved_weapon: weapon, prev_weapon: 0, prev_gadget: 0, switch_state: 0 } }
+    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reload_state: 0, reload_ticks: 0, switch_request: weapon, saved_weapon: weapon, prev_weapon: 0, prev_gadget: 0, switch_state: 0 } }
 
     /// One tick with the trigger (action 9) `pressed` (no reload key, gun idle).
     pub fn update(&mut self, pressed: bool, p: GunParams) -> bool { self.update_with(pressed, false, false, p) }
@@ -193,20 +261,25 @@ impl Gun {
     /// `busy` = the gun's animation state is not idle (a fire script still playing). A fresh press with the timer run
     /// out arms `shots_per_pull` shots and sets the timer to 1; the timer falls by `FRAME_RATE_MUL` (1) per tick; a shot
     /// needs the timer at 0 or below, a shot left in the pull and a round in the clip (`Player_RoundToFire`), and sets
-    /// the timer to max(interval, 1). A reload (`Player_ReloadAmmoType`) starts with the reload key, or with the trigger
-    /// released and no round to fire — only while the gun is idle and there are spare rounds; the rounds move when it
-    /// ends.
+    /// the timer to max(interval, 1). A reload starts with the reload key, or with the trigger released and no round to
+    /// fire — only while the gun is idle and there are spare rounds.
+    ///
+    /// The reload state machine (cases 5/6/7 of `Player_SetWeaponAnimObj`): state 5 (reload start, +0xA8) → state 6
+    /// (shell loop, +0xA4, one shell per iteration) → state 7 (reload end, +0xAC) → state 0 (idle). For one-at-a-time
+    /// weapons (flag 0x100), each state-6 iteration loads 1 shell. Firing interrupts: if the trigger is held when a
+    /// shell's +0xA4 finishes, the reload aborts to state 7 (+0xAC). The `Sim::run` method in nf-view drives the
+    /// view scripts and calls `reload_tick` to advance the state machine.
     pub fn update_with(&mut self, pressed: bool, reload: bool, busy: bool, p: GunParams) -> bool {
-        if self.reloading > 0 {
-            self.reloading -= 1;
-            // `Player_ReloadAmmoType(…, 0)`: the missing rounds, or one with flag 0x100.
-            if self.reloading == 0 { let n = (p.clip - self.clip).min(self.spare).min(if p.one_at_a_time { 1 } else { u32::MAX }); self.clip += n; self.spare -= n; }
+        // If a reload is in progress, the Sim::run method drives it via reload_tick. Here we just block firing.
+        if self.reload_state != 0 {
             self.held = pressed;
             return false;
         }
         let can_reload = !busy && self.spare > 0 && self.clip < p.clip;
         if can_reload && (reload || (!pressed && self.clip < p.ammo_per_shot)) {
-            self.reloading = p.reload_ticks.max(1);
+            // Start the reload. `Player_WeaponFiring` sets anim+0xF4 = 5 if +0xA8 (reload_start) exists, else 6.
+            self.reload_state = if p.reload_start_ticks > 0 { 5 } else { 6 };
+            self.reload_ticks = if p.reload_start_ticks > 0 { p.reload_start_ticks } else { p.reload_loop_ticks };
             self.pending = 0;
             self.held = pressed;
             return false;
@@ -236,7 +309,7 @@ mod tests {
 
     #[test]
     fn one_shot_per_press_at_most_every_interval() {
-        let p = GunParams { shots_per_pull: 1, interval: 8.0, clip: 7, ammo_per_shot: 1, reload_ticks: reload_ticks(0, 0x0600_0827, 0x1004, &|_| Some(155)), one_at_a_time: false };
+        let p = GunParams { shots_per_pull: 1, interval: 8.0, clip: 7, ammo_per_shot: 1, reload_ticks: reload_ticks(0, 0x0600_0827, 0x1004, &|_| Some(155)), one_at_a_time: false, reload_start_ticks: 0, reload_loop_ticks: 111, reload_end_ticks: 0 };
         assert_eq!(p.reload_ticks, 111);
         let mut g = Gun::new(2, 7, 41);
         // Holding the trigger fires once.
@@ -252,8 +325,16 @@ mod tests {
         // Sister: an empty clip does not fire, then reloads.
         let mut g = Gun::new(2, 0, 41);
         assert!(!g.update(true, p));
-        // Released: the reload starts, the rounds move when it ends.
-        for _ in 0..=p.reload_ticks { g.update(false, p); }
+        // Released: the reload starts (state 6, no start script for the P2K).
+        assert!(!g.update(false, p));  // trigger released + empty clip → reload starts
+        assert_eq!(g.reload_state, 6); // state 6 (shell loop)
+        // Run the reload loop: each tick calls reload_tick. The P2K (not one-at-a-time) loads all rounds in one shell.
+        for _ in 0..p.reload_loop_ticks { g.reload_tick(false, p); }
+        // After the loop: clip is full (7), spare is 34.
+        // The P2K has no +0xAC (reload_end), so reload_end_ticks=0 but reload_tick uses .max(1) → 1 tick.
+        g.reload_tick(false, p); // enters state 7 (reload_ticks = max(0,1) = 1)
+        g.reload_tick(false, p); // state 7 done (ticks=0) → state 0
+        assert_eq!(g.reload_state, 0); // → state 0 (idle)
         assert_eq!((g.clip, g.spare), (7, 34));
     }
 

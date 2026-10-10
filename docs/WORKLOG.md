@@ -2232,3 +2232,33 @@ the game: from hands, scroll → fists (view model present), scroll → P2K. The
 
 What the player sees: from any state, scroll → fists (the fists model shows), scroll → P2K. No more
 invisible weapons or stuck states.
+
+## C-9 — Shotgun shell-by-shell reload + scope overlay
+
+Item 2 (shotgun reload): ported `Player_SetWeaponAnimObj` cases 5/6/7 (the reload state machine) + the +0xAC
+reload-end script. The `Gun` struct now has `reload_state` (0/5/6/7) and `reload_ticks` instead of the single
+`reloading` countdown. The flow: state 5 (reload start, +0xA8) → state 6 (shell loop, +0xA4, one shell per
+iteration) → state 7 (reload end, +0xAC) → state 0 (idle). For one-at-a-time weapons (flag 0x100), each state-6
+iteration commits 1 shell via `Player_ReloadAmmoType(_, 0)`, then probes for more. The loop continues while
+there's spare ammo AND the trigger is not held. Firing interrupts: if the trigger is held when a shell's +0xA4
+finishes, the reload aborts to state 7 (+0xAC). After state 7, the trigger action is cleared (must re-press
+to fire). `Gun::reload_tick(trigger_held, params)` advances the state machine each tick; `Sim::run` calls it
+and drives the view scripts (5 → +0xA8, 6 → +0xA4, 7 → +0xAC, 0 → +0xA0). Dev scenario: `shotgun-reload`.
+
+`WeaponData::reload_end_script` (+0xAC) added. `GunParams` extended with `reload_start_ticks`,
+`reload_loop_ticks`, `reload_end_ticks`.
+
+Item 3 (scope overlay): the game's `GlobalBlur` is a screen-blur transition (not the vignette). The actual
+scope overlay is a HUD sprite (the SightPane). The port draws 4 black border quads (a rectangular vignette)
+when `zoom > 1.01`, with alpha proportional to the zoom progress. This is a **STANDIN** — the game uses a
+textured sprite with a circular cutout, not a rectangular border. The rectangular border is the simplest
+approximation without a custom fragment shader. The scope border appears when zooming with a scoped weapon
+(right mouse held).
+
+What the player sees:
+- Shotgun: press R → the reload start animation plays, then one shell loads at a time (the +0xA4 loop), then
+  the reload end animation plays. The loop continues until the clip is full or the trigger is held (interrupt).
+- Scope: hold right mouse → the FOV narrows AND a black border appears around the screen (the scope vignette).
+  Release → both return to normal.
+
+Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.

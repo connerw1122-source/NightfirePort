@@ -564,7 +564,7 @@ impl Sim {
                 self.drones.aim_offset = self.drones.aim_offset.map(|v| v * 0.5);
                 aim
             };
-            let was_reloading = self.gun.reloading > 0;
+            let was_reloading = self.gun.reload_state;
             let rd0 = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
             // The gun's animation is busy while a fire script plays (gun state 9; idle = 0).
             let len_of = |h: u32| self.scripts.get(&h).map_or(0.0, |s| s.length as f32);
@@ -572,27 +572,34 @@ impl Sim {
             // Block the trigger and reload while the holster/draw cycle plays.
             let (trigger, reload) = if can_fire { (trigger, reload) } else { (false, false) };
             let fired = self.gun.update_with(trigger, reload, busy, params);
+            // Advance the reload state machine [M Player_SetWeaponAnimObj cases 5/6/7].
+            let new_reload_state = self.gun.reload_tick(trigger, params);
             let (prev_script, prev_time) = (self.view_script, self.view_time);
-            // The gun's scripts (`weapon+0xA0` idle, `+0xA4` reload at 1.35 from frame 6 with flag 0x1000, `+0xB0` fire,
-            // `+0xB4` fire on the last round with flag 0x1000); after a script ends the last frame holds (flag 0x1000:
-            // the idle is not re-added) — docs/systems/player.md.
             let rd = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
             let flags = rd(0x68);
             if fired {
                 self.last_shot = Some(self.drones.frame);
                 self.view_script = if flags & 0x1000 != 0 && self.gun.clip < 1 && rd(0xb4) != 0 { rd(0xb4) } else { rd(0xb0) };
                 (self.view_time, self.view_speed) = (0.0, 1.0);
-            } else if self.gun.reloading > 0 && !was_reloading {
-                self.view_script = rd(0xa4);
-                (self.view_time, self.view_speed) = (if flags & 0x1000 != 0 { 6.0 } else { 0.0 }, if rd(0xa8) == 0 && flags & 0x200 == 0 { 1.35 } else { 1.0 });
+            } else if self.gun.reload_state != 0 && was_reloading == 0 {
+                // Reload just started: set the view script based on the state (5 → +0xA8, 6 → +0xA4) [M case 5/6].
+                self.view_script = if self.gun.reload_state == 5 { rd(0xa8) } else { rd(0xa4) };
+                (self.view_time, self.view_speed) = (0.0, 1.0);
+            } else if self.gun.reload_state != was_reloading {
+                // Reload state changed: update the view script.
+                match self.gun.reload_state {
+                    5 => { self.view_script = rd(0xa8); (self.view_time, self.view_speed) = (0.0, 1.0); }
+                    6 => { self.view_script = rd(0xa4); (self.view_time, self.view_speed) = (0.0, 1.0); }
+                    7 => { self.view_script = rd(0xac); (self.view_time, self.view_speed) = (0.0, 1.0); }
+                    0 => { self.view_script = rd(0xa0); (self.view_time, self.view_speed) = (0.0, 1.0); }
+                    _ => {}
+                }
             } else if self.view_script == 0 {
                 (self.view_script, self.view_time, self.view_speed) = (rd(0xa0), 0.0, 1.0);
             } else {
                 let len = self.scripts.get(&self.view_script).map_or(0.0, |s| s.length as f32);
                 self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0));
                 if self.view_script == rd(0xa0) && self.view_time >= len - 1.0 { self.view_time = 0.0; }
-                // The reload done (gun state back to 0): the idle script.
-                if self.view_script == rd(0xa4) && self.gun.reloading == 0 { (self.view_script, self.view_time, self.view_speed) = (rd(0xa0), 0.0, 1.0); }
             }
             // The gun scripts' sound commands (`AnimProcessScriptCmds` op 1: `Sound_Play3D(cmd[2], …)` when the
             // script's frame crosses cmd[1]): the shot (0x403 at frame 1 of the P2K's fire scripts) and the reload's
