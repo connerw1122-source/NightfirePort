@@ -19,6 +19,7 @@ The scenarios (level 07000005 "Paris Prelude / Mayhew A"):
 | `sg5-pickup` | Spawns a dropped SG5 Commando (12 rounds) on the floor 1.5 m in front of Bond. | Walk forward to pick it up — the pickup sound plays, the SG5 enters the inventory. Scroll to switch to it. |
 | `wire-music` | Places Bond 5 m from the zip wire (at the castle's outer wall, (−23.5, 34.5, 6.3)). | Walk toward the wire. When Bond is within 1.5 m the music changes to the stealth section (section 2, or 6 if guards are attacking). Walk away and it returns to section 20. |
 | `autoaim` | Faces Bond toward the nearest alive guard; auto-aim is off (D-001). | Press T to toggle auto-aim. When on, the crosshair snaps to the guard's bone 2. When off, the mouse aims directly. |
+| `sniper-scope` | Gives Bond the sniper rifle (0x24) and selects it. | Hold **right mouse** to zoom — the FOV narrows (divided by the zoom factor) and the mouse sensitivity drops. Release to return to normal. The scope overlay is not yet ported (the view zooms but no black vignette). |
 
 ## Coordination
 

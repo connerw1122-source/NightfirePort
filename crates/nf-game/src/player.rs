@@ -34,6 +34,8 @@ pub struct Input {
     pub gadget_cycle: i8,
     /// `Some(id)`: switch directly to weapon `id` (a number key).
     pub switch_to: Option<u8>,
+    /// Right mouse held: zoom the scope (`Player_Zoom` 0x1a1a70, mouse-first like the game's aim button).
+    pub zoom: bool,
 }
 
 #[derive(Clone, Debug)]

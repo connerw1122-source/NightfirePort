@@ -196,6 +196,11 @@ pub struct Sim {
     /// Aim mode (action 0x13, a pad's L1; not with the mouse, D-002) this tick.
     pub aiming: bool,
     pub auto_aim: bool,
+    /// `BLData+0x8D0`: the current zoom factor (1.0 = no zoom, up to `weapon_data+0x88`). The FOV is divided
+    /// by this. `Player_Zoom` (0x1a1a70) interpolates it toward `zoom_target` (`+0x8D4`).
+    pub zoom: f32,
+    /// `BLData+0x8D4`: the target zoom factor. Right mouse (mouse-first) zooms in; releasing returns to 1.0.
+    pub zoom_target: f32,
     /// `Player_Disable` by a script (cut-scene): no input, no first-person view, until `Player_Enable`.
     pub disabled: bool,
     /// Surface sounds (`EffectInfo`) and Bond's footstep distance (`BL+0x924`).
@@ -334,6 +339,20 @@ impl Sim {
         let aim = d.map(|v| v / l);
         self.first_person = !self.disabled;
         self.run(self.bond.pos, head, look, aim, trigger, aiming, reload, use_key);
+        // `Player_Zoom` (0x1a1a70): the scope zoom. Right mouse (mouse-first) zooms in; releasing returns to 1.0.
+        // The zoom interpolates toward the target at the game's rate (1.025× per tick zooming in, 1.15× out).
+        // The FOV is divided by the zoom factor. Scoped weapons only (`weapon_data+0x68 & 0x40`).
+        let scoped = self.weapons.records.get(self.gun.weapon as usize).is_some_and(|w| u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap()) & 0x40 != 0);
+        let max_zoom = self.weapons.zoom(self.gun.weapon as usize);
+        if scoped {
+            if input.zoom { self.zoom_target = max_zoom; } else { self.zoom_target = 1.0; }
+        } else {
+            self.zoom_target = 1.0;
+        }
+        // Interpolate zoom toward target [M 0x1a1a70 lines 22-39].
+        let rate = if self.zoom < self.zoom_target { 1.0 / (1.0 + 0.025) } else { 1.0 + 0.15 };
+        self.zoom = self.zoom + (self.zoom_target - self.zoom) * (1.0 - 1.0 / rate);
+        self.zoom = self.zoom.clamp(1.0, max_zoom.max(1.0));
         // Wire / creep (`Player_Creep` 0x1969d0, `Player_Wire` 0x197658): when Bond is near a wire, the creep
         // substate posts `Music_Event(0xD, 1)` every tick — the music jumps to section 2 (stealth) or 6 (combat).
         // *Deviation*: the full creep movement (Bond sliding along the wire, the third-person camera, the
@@ -1286,7 +1305,7 @@ impl Scene {
                     nf_game::wire::Wire::create(p, 4.0)
                 })
                 .collect();
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {

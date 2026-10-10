@@ -363,6 +363,8 @@ struct App {
     weapon_cycle: i8,
     gadget_cycle: i8,
     weapon_switch_to: Option<u8>,
+    /// Right mouse held: scope zoom (`Player_Zoom`).
+    zoom: bool,
     /// Dev mode (WORKLOG 0083): `None` when `--dev` is off.
     dev: Option<Box<dev::Dev>>,
     /// Debug render overrides (Bug 1): `--no-tex` ignores textures (isolate vertex colour), `--no-fog` skips fog.
@@ -451,8 +453,11 @@ impl ApplicationHandler for App {
                     self.cam.pitch = (self.cam.pitch - dy as f32 * MOUSE_SENSITIVITY).clamp(-1.55, 1.55);
                 } else {
                     // Mouse look (PLAN.md): raw deltas straight into Bond's yaw / pitch at the next tick.
-                    self.turn -= dx as f32 * MOUSE_SENSITIVITY;
-                    self.look -= dy as f32 * MOUSE_SENSITIVITY / std::f32::consts::FRAC_PI_2;
+                    // When scoped, the sensitivity is divided by the zoom factor (the scope zooms the view,
+                    // so the same mouse delta should turn less) [M Player_Zoom: the zoom affects the view].
+                    let zoom = self.scene.sim.as_ref().map_or(1.0, |s| s.zoom);
+                    self.turn -= dx as f32 * MOUSE_SENSITIVITY / zoom;
+                    self.look -= dy as f32 * MOUSE_SENSITIVITY / zoom / std::f32::consts::FRAC_PI_2;
                 }
             }
         }
@@ -492,6 +497,10 @@ impl ApplicationHandler for App {
                 if self.dev.as_deref().is_some_and(|d| d.menu) {
                     if state == ElementState::Pressed { self.dev_menu_click(); }
                 } else if !self.grabbed { if state == ElementState::Pressed { self.grab(true) } } else { self.trigger = state == ElementState::Pressed }
+            }
+            // Right button: scope zoom (mouse-first, like the game's aim button). Held = zoomed in.
+            WindowEvent::MouseInput { state, button: MouseButton::Right, .. } => {
+                if self.grabbed { self.zoom = state == ElementState::Pressed; }
             }
             // Cursor moves: track the NDC position for the dev menu's click hit-test (when the menu is open).
             WindowEvent::CursorMoved { position, .. } => if let (Some(g), Some(d)) = (&self.gfx, self.dev.as_deref_mut()) {
@@ -615,6 +624,7 @@ impl ApplicationHandler for App {
                                 weapon_cycle: std::mem::take(&mut self.weapon_cycle),
                                 gadget_cycle: std::mem::take(&mut self.gadget_cycle),
                                 switch_to: self.weapon_switch_to.take(),
+                                zoom: self.zoom,
                             };
                             sim.step_bond(input, self.trigger, self.just.remove(&KeyCode::KeyR), self.just.remove(&KeyCode::KeyE));
                             if let Some(s) = self.sound.as_mut() { sound_tick(s, sim); }
@@ -629,7 +639,7 @@ impl ApplicationHandler for App {
                         }
                         if !self.noclip {
                             let h = sim.bond.head();
-                            self.cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV };
+                            self.cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV / sim.zoom };
                             // A script's cut-scene camera takes over the view (`Camera_Enable(4)`).
                             if let Some((p, yaw, pitch, fov)) = sim.script_camera() { self.cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov }; }
                         }
@@ -778,7 +788,7 @@ fn main() -> Result<()> {
     // `--dev --scenario <name>`: place Bond and set up the world for a specific feature test.
     // The HEAD's `apply_scenario` (weapon-switch / sg5-pickup / wire-music / autoaim) + this agent's `dev::scenario`
     // (grenade-throw / sniper-cover / ambush / guard-falls-off-ledge / searchlight / door / bullet-flyby / friendly).
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, dev: dev.then(|| Box::new(dev::Dev::default())), notex, nofog, iso, pending_level: None, all };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev::default())), notex, nofog, iso, pending_level: None, all };
     if dev {
         if let Some(name) = &scenario {
             if let Some(sim) = app.scene.sim.as_mut() { apply_scenario(sim, name); }
@@ -846,8 +856,22 @@ fn apply_scenario(sim: &mut scene::Sim, name: &str) {
                 eprintln!("[dev] autoaim: no guard found — press T to toggle auto-aim");
             }
         }
+        "sniper-scope" => {
+            // Give Bond the sniper (0x24) and select it. Hold right mouse to zoom.
+            if wi > 0x24 {
+                sim.drones.inventory.owned[0x24] = true;
+                sim.drones.inventory.clip[0x24] = 5;
+                sim.drones.inventory.carried[7] = 25;
+                sim.gun.weapon = 0x24;
+                sim.gun.switch_request = 0x24;
+                sim.view_script = sim.weapons.idle_script(0x24);
+                sim.view_time = 0.0;
+                sim.view_speed = 1.0;
+            }
+            eprintln!("[dev] sniper-scope: Bond has the sniper rifle. Hold RIGHT MOUSE to zoom — the FOV narrows and the sensitivity drops. Release to return to normal.");
+        }
         _ => {
-            eprintln!("[dev] unknown scenario '{name}'. Available: weapon-switch, sg5-pickup, wire-music, autoaim. See docs/tools/dev-mode.md.");
+            eprintln!("[dev] unknown scenario '{name}'. Available: weapon-switch, sg5-pickup, wire-music, autoaim, sniper-scope. See docs/tools/dev-mode.md.");
         }
     }
 }

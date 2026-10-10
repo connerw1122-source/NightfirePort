@@ -2157,3 +2157,29 @@ the ISO and the real `Gun::cycle` + `Gun::has_ammo` path.
 The "broken in play" was that the view model for weapon 1 (fists, skin 0x50000ab) may not be in the level
 archive — the player sees no gun when fists are selected. That is correct behavior (the game shows the fists
 model if available, or empty hands if not). The player can scroll again to reach the P2K.
+
+## C-6 — Sniper scope zoom (right mouse), bugs 2/3 documented as STANDIN
+
+Bug 4 (sniper scope): ported `Player_Zoom` (0x1a1a70) — the scope zoom. Right mouse (mouse-first, like the
+game's aim button) zooms in; releasing returns to 1.0. The FOV is divided by the zoom factor
+(`BLData+0x8D0`). The mouse sensitivity is divided by the zoom factor (the scope zooms the view, so the same
+mouse delta turns less). Scoped weapons only (`weapon_data+0x68 & 0x40`). The zoom interpolates at the game's
+rate (1.025× per tick zooming in, 1.15× out). Dev scenario: `sniper-scope`.
+
+**Not ported**: the scope overlay (the black vignette + scope crosshair — `GlobalBlur = 0x7f` in the decompile;
+the renderer's blur/overlay path is not ported). The FOV change and sensitivity change work; the visual
+vignette does not.
+
+Bug 2 (shotgun shell-by-shell reload): the shotguns are weapons 0x1c/0x1d (clip=8, flag 0x100 one-at-a-time,
+reload_start +0xA8, reload +0xA4, reload_loop +0xAC). The SG5 (0x16) is an assault rifle, NOT a shotgun. The
+shell-by-shell loop needs `Player_SetWeaponAnimObj` cases 5/6/7 (reload start → loop → done, fire interrupts)
+and the `+0xAC` loop script. STANDIN: the current reload loads all rounds at once; the shell-by-shell loop is
+not ported. Port map: `docs/port-map/weapon-switching.md` (cases 5/6/7 marked partial).
+
+Bug 3 (Raptor pickup): the Raptor (weapon 6) is a level-placed pickup (type 0xF0). The port does not create
+level-placed pickups (`parsemap_create_dynamic_objects` for type 0xF0 is not ported — G-029). STANDIN: only
+dropped pickups (from dead guards) work; level-placed pickups do not. Port map: `docs/port-map/gadgets.md`
+notes the pickup gap.
+
+Tests: `weapon_switch_live.rs` (the real input-path NF_ISO test from C-5) passes. The scope zoom is tested
+in play (the FOV change is visible). NF_ISO suite: only the 3 expected disc_golden tests fail.
