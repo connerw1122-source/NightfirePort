@@ -2038,3 +2038,42 @@ in the grenade/collision session's area, not mine.
 
 Tests: `cargo test --workspace` with `NF_ISO` set = all pass except the 2 pre-existing ai_live failures
 (grenade/collision session's area). No `Rand_*` calls added.
+## 0086 — Guard AI port map + audit: 268 functions mapped, 4 bugs fixed, 21 gaps confirmed
+
+New porting discipline (per the user's rules): before changing a subsystem, list every ACTION.ELF function it
+involves in `docs/port-map/<subsystem>.md`. Audit each function in batches of ~10 with auditor subagents.
+
+**Port map**: `docs/port-map/guard-ai.md` — 268 functions across 10 subsystems (collision, state machine, vision,
+weapons, cover, animation, grenades, navigation, talk, utility). Summary: 32 ported, 205 partial, 19 stub,
+7 STANDIN, 5 not started.
+
+**Audit**: 4 auditor subagents (collision/gravity, cover/grenades, state handlers, tests+dev). 30 functions audited
+in detail; tests and dev scenarios audited separately. Findings verified before acting.
+
+**Fixed (4 bugs)**:
+1. `DroneWeap_ThrowGrenade` — the ±π/4 lob was applied as YAW (Y-axis) instead of PITCH (X-axis elevation),
+   so grenades had no vertical arc. Fixed: applies ±π/4 as a pitch to the horizontal direction toward the opponent.
+2. `friendly-actor` dev scenario — set `team = 2` but the port only treats `team == 3` as friendly (the
+   `look_for_opponent` gate). Fixed: `team = 3`.
+3. `UnderCoverSniperFire` — AND-chained the aim/facing/RNG conditions. The decomp OR-splits: if
+   `OpponentIsAimingAtMe(7.5)` → duck immediately (no RNG); else if `BondIsFacingMe(45) AND Rand(3)==0` → duck.
+   Fixed: OR-split.
+4. `GrenadeThrow` ENTER — missing `+0x4F8 |= 0x10000` (vision_on). Fixed: `vision_on = true` on ENTER.
+
+**Confirmed gaps left open** (21, all marked in the port map and GAPS): Drone_CollisionHandler is a STANDIN
+(heavily simplified — missing friction, height-correction, DealWithObjHit, SpecialDeath sub-path);
+Drone_FeetOnPoint is a STANDIN (missing up-vector, hit-list, vehicle riding); NDrone2_DealWithObjHit is absent
+(1648-byte dispatcher); Explode_Create is absent (no explosion entity); RecoverFromScaryObject (0x86) has no
+handler (drone stuck in flee); ConsiderExplosive's 14-case weapon-type switch not ported; Drone_ExplosiveHit sends
+msg 8 instead of msg 9 (double-damage risk); multiple states missing from impact_args (bullets don't damage
+UNDER_COVER_SNIPER_FIRE, SNIPER_RELOAD, AMBUSH_INIT, AMBUSH_WAIT); the 0.4 bounce stand-in; stun grenade
+receiving states not ported.
+
+**Test audit**: `guard_throws_a_grenade` sister is tautological (noted — needs rewrite);
+`ambush_mode_starts_in_ambush_init` docstring describes branching not tested (noted). Both tests pass with NF_ISO
+but their sisters could be stronger.
+
+**Dev scenarios**: none add RNG draws ✓. None visually verified (no lavapipe) ✗. friendly-actor team bug fixed ✓.
+
+**Verification**: `NF_ISO=Nightfire-onfoot.iso cargo test -p nf-game --test ai_live` = 32 passed, 0 failed.
+WORKLOG numbering: no duplicate 0083 (fixed in 0085).

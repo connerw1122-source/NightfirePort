@@ -2009,8 +2009,11 @@ impl Drone {
             (UNDER_COVER_SNIPER_FIRE, msg::UPDATE) => {
                 // Clip empty → reload (0x98).
                 if self.clip < 1 { self.set_state(UNDER_COVER_SNIPER_RELOAD); return Some(true); }
-                // Aimed at (within 7.5 units, Bond facing within 45°) and Rand(3) = 0 → duck back (0x99).
-                if self.aimed_at && self.opp_facing.abs() < 45f32.to_radians() && self.dist < 7.5 && rng.rand(3) == 0 {
+                // The decomp OR-splits: if OpponentIsAimingAtMe(7.5) → duck immediately (no RNG);
+                // else if BondIsFacingMe(45) AND Rand(3)==0 → duck.
+                if self.aimed_at && self.dist < 7.5 {
+                    self.set_state(UNDER_COVER_RETURN);
+                } else if self.opp_facing.abs() < 45f32.to_radians() && rng.rand(3) == 0 {
                     self.set_state(UNDER_COVER_RETURN);
                 } else if !in_cover_ok(self, true) {
                     // Node no longer OK: leans → return (0x99), else leave now (0x9C).
@@ -2946,13 +2949,15 @@ impl Drone {
         let f32_at = |o: usize| f32::from_le_bytes(wd[o..o + 4].try_into().unwrap());
         // The throw origin: the right-hand bone (0x15) world position, or the chest fallback.
         let origin = self.muzzle(d);
-        // The throw direction: toward the opponent, with a ±π/4 yaw lob by distance.
+        // The throw direction: toward the opponent horizontally, with a ±π/4 PITCH lob by distance
+        // (the decomp's `Mat_Rotate({π/4, 0, 0, …})` is an X-axis rotation after the yaw matrix — a vertical
+        // elevation, not a yaw. Dist < 10 → +π/4 lob up; dist > 18 → −π/4 flat/down; else straight).
         let to_opp = [self.opp_target[0] - origin[0], self.opp_target[1] - origin[1], self.opp_target[2] - origin[2]];
         let dist = (to_opp[0] * to_opp[0] + to_opp[1] * to_opp[1] + to_opp[2] * to_opp[2]).sqrt();
-        let yaw = if dist < 10.0 { std::f32::consts::FRAC_PI_4 } else if dist > 18.0 { -std::f32::consts::FRAC_PI_4 } else { 0.0 };
-        let (s, c) = (crate::trig::sinf(yaw), crate::trig::cosf(yaw));
-        let dir = norm([to_opp[0] * c + to_opp[2] * s, to_opp[1], -to_opp[0] * s + to_opp[2] * c]);
-        let dir = norm(dir);
+        let horiz = norm([to_opp[0], 0.0, to_opp[2]]);
+        let pitch = if dist < 10.0 { std::f32::consts::FRAC_PI_4 } else if dist > 18.0 { -std::f32::consts::FRAC_PI_4 } else { 0.0 };
+        let (sp, cp) = (crate::trig::sinf(pitch), crate::trig::cosf(pitch));
+        let dir = norm([horiz[0] * cp, sp, horiz[2] * cp]);
         let speed = f32_at(0x20);
         // The grenade's weapon type (`+0x02`) for the explosion's per-type behaviour.
         let weapon_type = u16::from_le_bytes([wd[2], wd[3]]);

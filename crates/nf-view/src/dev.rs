@@ -443,6 +443,7 @@ mod scenarios {
     pub fn level_exit(scene: &mut Scene) {
         place_bond_near_gate(scene, 2.0);
         eprintln!("[scenario] level-exit: Bond near the gate exit. When he touches the 0xE8 trigger, Music_Event(3,1) fires (the end-sting), the console prints 'level: exit trigger fired', and the next level loads. Walk forward to trigger the transition.");
+        eprintln!("[scenario] friendly-actor: the guard is on team 2 (friendly). It should not attack Bond — walk up to it. F1 shows the state stays Idle/Patrol.");
     }
 
     fn place_bond_near_gate(scene: &mut Scene, dist: f32) {
