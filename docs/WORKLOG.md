@@ -1965,3 +1965,76 @@ pre-existing (grenade/collision, another session's area).
 What the player sees: scroll the mouse wheel → weapons only holster/draw quickly (the correct +0xC4 holster
 script at 1.25x, not the idle-alert inspection). Press G → gadgets cycle. Weapons play 0x283 holster + 0x282
 draw; gadgets play 0x280 holster + 0x281 draw. Set NF_SOUNDLOG=1 to see each animation id logged.
+
+## 0079 — Port maps + audit + 5 level-bug fixes
+
+New porting discipline (from the user): port maps for every subsystem, audited in batches of ~10 by independent
+auditor subagents. This entry covers the audio (0075–0076) and levels (0077–0078) port maps and their audit.
+
+**Port maps written:** `docs/port-map/audio.md` (88 functions: 63 ported, 8 partial, 8 standin, 17 not-started)
+and `docs/port-map/levels.md` (52 functions: 35 ported, 7 partial, 4 standin, 6 not-started).
+
+**Audit:** 10 function-batch auditors + 1 test auditor, all read-only. They read the decompile and the Rust,
+listed every branch/constant/call/RNG/store, and reported gaps. Key findings and fixes:
+
+**Bug 1 (ghostly white):** The non-fogged-level clear colour was `(0.05, 0.06, 0.08)` (arbitrary dark blue-gray)
+instead of the game's squeeze-gray (`SqueezeColourOut` 0x91 × GAIN, `CreateSqueezeFrame` 0x11b140:16). Fixed:
+the clear now uses `0x91/255 × GAIN` for non-fogged levels. The fog factor clamp (0078) was already correct.
+Auditor G-2.1 confirmed this was the gap.
+
+**Bug 2 (door textures):** `Door_SetState`'s channel-mirror used the NEW state's in-motion bits instead of the
+OLD state's (game at `0x135618:26` reads `+0xf4 & 0xc` BEFORE writing the new state at `:30`). The channel went
+off one transition early. Fixed: now checks `old & 0xc`. Auditor AUD-L3 confirmed.
+
+**Bug 3 (invisible walls):** The `NF_COLL=1` diagnostic and `C` key overlay (0078) are functional. Added a
+`--scenario invisible-walls` dev scenario. Auditor noted the diagnostic over-reports intentional blocking
+polygons (glist flag 0x10) — these are by-design invisible blockers, not bugs.
+
+**Bug 4 (friendly NPC fights Bond):** The `friendly-actor` dev scenario set `team = 2` (MP bot) instead of
+`team = 3` (friendly). The port's only friendly gate (`look_for_opponent` at `drone.rs:2633`) checks
+`team == 3` — team 2 drones still attack. This was the direct cause. Fixed: `team = 3`. Auditor AUD-L4
+confirmed `NDrone2_GetDroneTypeAttackTypeFriend` (0x14cbd8) assigns team 3 to dtype 10/0xb/0xd/0xe.
+
+**Bug 5 (level transition):** `Music_Event(3, 1)` (the end-sting) was never emitted on level exit — the game
+calls it at `Trigger_Activate` 0x1b2318:109. Fixed: the LOAD_LEVEL caller now posts `music.event(3, 1)` when
+the exit fires. `GS_PauseGame(1)` and `GameFlow_PushState` are deferred (the GameState stack is a STANDIN).
+Auditor AUD-L1 confirmed.
+
+**Dev scenarios added:** `ghostly-white`, `door-textures`, `invisible-walls`, `level-exit` (plus the existing
+`friendly-actor`). Run with `nf-view <iso> <level> --dev --scenario <name>`.
+
+**Test fixes:** 2 ai_live tests (`guard_gravity_and_collision_spheres`, `guard_throws_a_grenade_when_in_range`)
+panicked at `find(|x| x.placement == 0).unwrap()` — another session's work changed the drone creation order.
+The upstream (from the pull) already fixed these using the `gi` index from the `drones()` helper. The tests
+still fail on the y-position assertion (the guard's y is 27 instead of 99.5) — this is a pre-existing failure
+in the grenade/collision session's area, not mine.
+
+**Lower-severity gaps marked in the port maps (not fixed, tracked in GAPS):**
+- `ES_CombineVolumes`: music-class missing `MusicVolume` multiplier (G-A2-1).
+- `SFXUpdate`: NisQuitten → per-item `fade_kill_active` trigger missing (G-A2-5).
+- `SFXUpdate`: per-item `paused` flag and `ES_HandleNisPauseSfx` missing (G-A2-6).
+- `fade_up`: extra `self.fade = 0` store not in the game (G-A3-7b).
+- `fade_down`/`fade_up`: missing restart guards (G-A3-6a/7a).
+- `stop_ducker`: extra `ducker_start = timer_ms` store (G-A3-2).
+- `UpdateMFX_01CastleA`: missing level 0x07000006 FadeDown skip (G-A5).
+- `NDrone2_SeenAndAttacking`: missing PowerStation 0x700000c special-case (G-A5).
+- `NDrone2_PlaySFX`: missing RNG pitch draw and per-line volume multipliers (G-A5).
+- `AnimScriptPeekSfx`: entirely not ported (G-A5).
+- `Bullet_DoTrails`: only the 0x40000 fly-by block ported; smoke/swoosh/flash-bang/satchel blocks deferred.
+- `CreateSqueezeFrame`: not marked `STANDIN` in source (only `[L 0x91]`); `ScreenBlur`/`PS2Filter==2` not ported.
+- `Collide_PickObj`: STANDIN bit (`+0xFD & 2`) not implemented; no self-skip/skip-list/collision-mask/class filter.
+- `Door_ReactToHit`: proxy-list stand-in (U-041); closing→opening reversal has extra guard; no immediate re-pose.
+- `Trigger_Activate`: `GS_PauseGame(1)`, `GameFlow_PushState`, `Player_RamSave` not ported.
+- `ResetMap_LevelCode2Img`: not ported (no level-code switch, no RNG draws).
+- `ResetMap_Load`: `LoadState_270` state machine absent; cut-scene script lookup not ported.
+
+**Port-map corrections (auditor-identified inaccuracies):**
+- `ResetMap_LevelToLoad`: "ported" → "partial" (trigger wiring ported, function not).
+- `ResetMap_LevelCode2Img`: "ported" → "not-started" (no Rust code implements the switch).
+- `ResetMap_Load`: "ported" → "partial" (synchronous load, no state machine).
+- `Trigger_Activate`: "ported" → "partial" (Music_Event(3,1) now added; GS_PauseGame/PushState/RamSave not).
+- `GameFlow_Main`: "standin … STANDIN in main.rs" → the `STANDIN` marker is not in the source (only the
+  behavioural characterisation is accurate).
+
+Tests: `cargo test --workspace` with `NF_ISO` set = all pass except the 2 pre-existing ai_live failures
+(grenade/collision session's area). No `Rand_*` calls added.

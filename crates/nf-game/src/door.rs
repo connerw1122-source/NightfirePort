@@ -303,7 +303,9 @@ impl Doors {
         if new & 8 != 0 && old & 8 == 0 && so != 0xffff { sounds.push((so, pos)); }
         if new & 0x10 != 0 && old & 0x10 == 0 && sc != 0xffff { sounds.push((sc, pos)); }
         if ch != 0 {
-            let moving = (new & 0xc) != 0;
+            // `Door_SetState` (0x135618:26): the channel mirrors the OLD state's "in motion" bits (0xc), timestamped
+            // every motion transition. The game reads `+0xf4 & 0xc` BEFORE writing the new state [M].
+            let moving = (old & 0xc) != 0;
             channels.v[ch as usize] = moving as u8;
             if moving { channels.time[ch as usize] = frame; }
         }

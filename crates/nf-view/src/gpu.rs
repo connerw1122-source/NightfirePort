@@ -317,7 +317,11 @@ impl Renderer {
             queue.write_buffer(m, 0, bytemuck::cast_slice(&u));
         }
         // The frame starts as fog (what the fog pass covers where nothing was drawn: zb 0).
-        let clear = if fog_on > 0.0 { wgpu::Color { r: (fog_rgb[0] * GAIN) as f64, g: (fog_rgb[1] * GAIN) as f64, b: (fog_rgb[2] * GAIN) as f64, a: 1.0 } } else { wgpu::Color { r: 0.05, g: 0.06, b: 0.08, a: 1.0 } };
+        // Non-fogged levels: the game clears to `SqueezeColourOut` (gray 0x91 = 145 on the 0x80=1.0 scale, ×GAIN at
+        // display). The port applies GAIN in the shader, so the clear is the unscaled squeeze-gray: 145/255 ≈ 0.569
+        // per channel. [M CreateSqueezeFrame 0x11b140:16, SqueezeColourIn 0x91].
+        let squeeze_gray = (0x91 as f32) / 255.0 * GAIN; // 0.91/0x80 × GAIN, clamped to [0,1] by min at display
+        let clear = if fog_on > 0.0 { wgpu::Color { r: (fog_rgb[0] * GAIN) as f64, g: (fog_rgb[1] * GAIN) as f64, b: (fog_rgb[2] * GAIN) as f64, a: 1.0 } } else { wgpu::Color { r: squeeze_gray as f64, g: squeeze_gray as f64, b: squeeze_gray as f64, a: 1.0 } };
         let mut enc = device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {

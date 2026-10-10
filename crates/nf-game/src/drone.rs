@@ -3874,9 +3874,13 @@ impl Drones {
             if what == 1 {
                 self.triggers[index].update(&mut self.channels, &touchers, frame);
                 // `LOAD_LEVEL` (0xE8): when the exit trigger fires, carry the next level's hashcode for the main loop
-                // to reload (`Trigger_Activate` 0x1b2318 → `ResetMap_LevelToLoad`) [M].
+                // to reload (`Trigger_Activate` 0x1b2318 → `ResetMap_LevelToLoad`). Also post `Music_Event(3, 1)`
+                // (the end-sting) and `GS_PauseGame(1)` (the pause during transition) [M 0x1b2318:108-110].
                 if self.triggers[index].kind == crate::triggers::kind::LOAD_LEVEL && self.triggers[index].gone && self.triggers[index].next_level != 0 {
-                    self.level_exit = Some(self.triggers[index].next_level);
+                    if self.level_exit.is_none() {
+                        self.level_exit = Some(self.triggers[index].next_level);
+                        self.music.event(3, 1);
+                    }
                 }
                 continue;
             }

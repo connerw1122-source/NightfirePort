@@ -364,7 +364,11 @@ pub fn scenario(name: &str) -> Option<(&'static str, fn(&mut Scene))> {
         "searchlight-tracks-bond" => ("Searchlight tracks Bond", scenarios::searchlight_tracks_bond),
         "door-anti-crush" => ("Door anti-crush", scenarios::door_anti_crush),
         "bullet-flyby" => ("Bullet fly-by", scenarios::bullet_flyby),
-        "friendly-actor" => ("Friendly actor", scenarios::friendly_actor),
+        "friendly-actor" => ("Friendly actor (team 3)", scenarios::friendly_actor),
+        "ghostly-white" => ("Ghostly white (clear colour check)", scenarios::ghostly_white),
+        "door-textures" => ("Door texture state", scenarios::door_textures),
+        "invisible-walls" => ("Invisible walls (NF_COLL)", scenarios::invisible_walls),
+        "level-exit" => ("Level exit trigger", scenarios::level_exit),
         _ => return None,
     };
     Some((n, f))
@@ -374,6 +378,7 @@ pub fn scenario(name: &str) -> Option<(&'static str, fn(&mut Scene))> {
 pub const SCENARIOS: &[&str] = &[
     "grenade-throw", "grenade-bounce-explode", "sniper-cover", "ambush", "guard-falls-off-ledge",
     "searchlight-tracks-bond", "door-anti-crush", "bullet-flyby", "friendly-actor",
+    "ghostly-white", "door-textures", "invisible-walls", "level-exit",
 ];
 
 mod scenarios {
@@ -420,8 +425,24 @@ mod scenarios {
     }
     pub fn friendly_actor(scene: &mut Scene) {
         place_bond_near_gate(scene, 6.0);
-        if let Some(sim) = scene.sim.as_mut() { if let Some(i) = sim.drones.list.iter().position(|x| x.present) { sim.drones.list[i].team = 2; } }
-        eprintln!("[scenario] friendly-actor: the guard is on team 2 (friendly). It should not attack Bond — walk up to it. F1 shows the state stays Idle/Patrol.");
+        if let Some(sim) = scene.sim.as_mut() { if let Some(i) = sim.drones.list.iter().position(|x| x.present) { sim.drones.list[i].team = 3; } }
+        eprintln!("[scenario] friendly-actor: the guard is on team 3 (friendly — dtype 10/0xb/0xd/0xe per NDrone2_GetDroneTypeAttackTypeFriend 0x14cbd8). DroneVision_EnemyLookForOpponent (0x177ed0) returns 0 for team 3, so it should not attack Bond — walk up to it. F1 shows the state stays Idle/Patrol.");
+    }
+    pub fn ghostly_white(scene: &mut Scene) {
+        place_bond_near_gate(scene, 10.0);
+        eprintln!("[scenario] ghostly-white: the non-fogged clear colour is now the game's squeeze-gray (SqueezeColourOut 0x91 × GAIN, CreateSqueezeFrame 0x11b140). Toggle --no-fog and --no-tex to isolate fog/texture/vertex colour. The console prints 'render: N of M materials have no texture' if any untextured batches exist.");
+    }
+    pub fn door_textures(scene: &mut Scene) {
+        place_bond_near_gate(scene, 3.0);
+        eprintln!("[scenario] door-textures: Bond near a door. The Door_SetState channel-mirror now uses the OLD state (0x135618:26), not the new. Open the door (E): the open-channel should stay on during OPEN→CLOSING (not go off early). Watch the door's texture as it opens/closes — if it's wrong, run NF_LEAVES=<door_name> to inspect its leaves.");
+    }
+    pub fn invisible_walls(scene: &mut Scene) {
+        place_bond_near_gate(scene, 10.0);
+        eprintln!("[scenario] invisible-walls: Bond near the gate. Press C to name what you're touching. Run with NF_COLL=1 to see the build-time scan of collision-only objects (invisible walls). The console lists each by name, position and triangle count.");
+    }
+    pub fn level_exit(scene: &mut Scene) {
+        place_bond_near_gate(scene, 2.0);
+        eprintln!("[scenario] level-exit: Bond near the gate exit. When he touches the 0xE8 trigger, Music_Event(3,1) fires (the end-sting), the console prints 'level: exit trigger fired', and the next level loads. Walk forward to trigger the transition.");
     }
 
     fn place_bond_near_gate(scene: &mut Scene, dist: f32) {
