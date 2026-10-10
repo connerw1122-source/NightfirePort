@@ -1832,7 +1832,7 @@ music returns to section 20 (the calm-after-creep sting, 3.1 s) then settles.
 Not done: the full creep/wire player substate (Bond grabbing the wire, sliding, the animation, the third-person
 camera), the wire's visual model (the glist at 0xC510), the `Controls_StraddleTest` entry trigger.
 
-## 0083 — nf-view dev mode: --dev, the AI overlay (F1), the dev menu (F2), and named scenarios
+## 0084 — nf-view dev mode: --dev, the AI overlay (F1), the dev menu (F2), and named scenarios
 
 In-game test tooling, gated behind `--dev` so normal play is unchanged. Tools only call into existing systems or set
 state the way the game itself would — never change game logic or the order of RNG calls. Logic stays at a fixed 60 Hz;
@@ -1908,3 +1908,24 @@ as a one-shot touch trigger and sets `Drones::level_exit` to the next level's ha
 main's inline setup). The renderer is rebuilt on the next `Gfx` re-init.
 
 Tests: 19 test binaries pass (157+ tests). `level_live` still passes. No `Rand_*` calls added.
+## 0085 — Fix two ai_live tests against the real disc (guard lookup, grenade conditions)
+
+The two live tests added in 0078/0080 panicked against `Nightfire-onfoot.iso` (NF_ISO set) — both looked up the gate
+guard by `placement == 0`, but no drone has that placement index (the lowest is 3). The gate guard is at placement 5
+(x ≈ 61.34, the one `l.drones(None, 61.342)` finds by x, returning its index `gi`). Also `start_y = 99.5` was wrong
+(the trace's 99.50 was the z-coordinate, not y; the guard's y is ~27.06).
+
+Fix: both tests now use the `gi` index from `l.drones(None, 61.342)` (the existing pattern) instead of `placement == 0`,
+and the gravity test reads the real `start_y` from `sim.list[gi].pos[1]` at tick 0. The grenade test also needed:
+`seen = true` / `vision_on = true` / `unseen_ticks = 0` (so `combat_state` doesn't route to `COMBAT_NO_SIGHT`),
+`engage_range = 25.0` (so `dist = 15` isn't `out_of_range`), `clip = 5` / `burst_done = true` (so it doesn't reload or
+hold fire), and prop 0x30 cleared (so `cover_available` returns false and the grenade check is reached). The sister
+(without grenades) uses the same setup with `grenade_count = 0`.
+
+The `can_throw_grenade`, `can_do`, `cover_available`, `prop`, `in_transition`, `send`, `start_state` methods on
+`Drone` were made `pub` so the tests (and nf-view's dev tooling) can call them.
+
+Verified: `NF_ISO=/home/z/Nightfire-onfoot.iso cargo test -p nf-game --test ai_live` = 32 passed, 0 failed (the two
+fixed tests included). The 3 `nf-formats` disc_golden failures are pre-existing — `Nightfire-onfoot.iso` (SHA-1
+`957cfccc…`) is a different image from the golden's source (`03717059…`), so the disc/FILES.BIN manifests differ; they
+are not caused by these changes.

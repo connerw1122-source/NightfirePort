@@ -662,7 +662,7 @@ impl Drone {
         if self.alt_state != 0 && self.second_tag == 0 { self.second_tag = 100; }
     }
 
-    fn prop(&self, d: &Data, id: usize) -> bool { d.props.get(id, &self.props) != 0 }
+    pub fn prop(&self, d: &Data, id: usize) -> bool { d.props.get(id, &self.props) != 0 }
 
     /// "Stays put": `+0x4F8 & 0x10` or property 0x40, tested together throughout the decomp (`DroneFunc_CombatState`,
     /// `ChooseCombatMove`, CombatNoRoute, AimStandFire, HeardNoiseSuspect / Alert, …).
@@ -1727,7 +1727,7 @@ impl Drone {
     }
 
     /// `NDrone2_CoverAvailable(needLos)` (0x155a38).
-    fn cover_available(&mut self, d: &Data, need_los: bool) -> bool {
+    pub fn cover_available(&mut self, d: &Data, need_los: bool) -> bool {
         if !self.prop(d, 0x30) { return false; }
         if self.cover_claimed { return true; }
         if self.seen && self.dist < 4.0 { return false; }
@@ -2651,7 +2651,7 @@ impl Drone {
     }
 
     /// `DroneAnim_CanDoAnimState`: the anim state's own danim has a script in our anim set (or set 0).
-    fn can_do(&self, d: &Data, anim: u16) -> bool {
+    pub fn can_do(&self, d: &Data, anim: u16) -> bool {
         d.tables.states.get(anim as usize).is_some_and(|(own, _)| d.tables.script_for(*own, self.anim_set).is_some())
     }
 
@@ -2801,7 +2801,7 @@ impl Drone {
     }
 
     /// `DroneAnim_InTransition` (0x13e3b0): the playing danim's class is above 3 and not 8.
-    fn in_transition(&self) -> bool {
+    pub fn in_transition(&self) -> bool {
         self.anim.class > 3 && self.anim.class != 8
     }
 
@@ -2925,7 +2925,7 @@ impl Drone {
 
     /// `DroneWeap_CanThrowGrenade` (0x17a798): the drone has grenades (`+0xBCC` / `+0xBCE` ≠ 0), `Rand(2) == 0` (50 %),
     /// an opponent exists, `8.0 ≤ dist ≤ 20.0`, and the throw anim (0x49) is in the drone's anim set.
-    fn can_throw_grenade(&self, d: &Data, rng: &mut Rng) -> bool {
+    pub fn can_throw_grenade(&self, d: &Data, rng: &mut Rng) -> bool {
         if self.grenade_weapon == 0 || self.grenade_count <= 0 { return false; }
         if rng.rand(2) != 0 { return false; }
         if self.dist < 8.0 || self.dist > 20.0 { return false; }
