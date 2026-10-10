@@ -25,7 +25,7 @@ use nf_formats::{disc, iso9660::IsoImage, level::Level};
 use std::collections::HashSet;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
-use winit::event::{DeviceEvent, ElementState, MouseButton, WindowEvent};
+use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
@@ -335,6 +335,10 @@ struct App {
     just: HashSet<KeyCode>,
     turn: f32,
     look: f32,
+    /// Pending weapon switch: ±1 for next/prev (mouse wheel), or `Some(id)` for a direct selection (number keys).
+    /// Consumed by the next game tick.
+    weapon_switch: i8,
+    weapon_switch_to: Option<u8>,
 }
 
 impl App {
@@ -380,6 +384,13 @@ impl ApplicationHandler for App {
                     self.turn -= dx as f32 * MOUSE_SENSITIVITY;
                     self.look -= dy as f32 * MOUSE_SENSITIVITY / std::f32::consts::FRAC_PI_2;
                 }
+            }
+        }
+        // Mouse wheel: weapon switching (next/prev). Up = next (+1), down = prev (−1).
+        if let DeviceEvent::MouseWheel { delta: MouseScrollDelta::LineDelta(_x, y) } = event {
+            if self.grabbed && !self.noclip {
+                if y > 0.0 { self.weapon_switch = 1; }
+                else if y < 0.0 { self.weapon_switch = -1; }
             }
         }
     }
@@ -435,6 +446,17 @@ impl ApplicationHandler for App {
                         } }
                     }
                     (KeyCode::KeyT, ElementState::Pressed) => if let Some(sim) = self.scene.sim.as_mut() { sim.auto_aim = !sim.auto_aim },
+                    // Weapon switching: number keys 1–9 select directly, Q = prev, E (when not use) = next.
+                    // The mapping: 1 = P2K (weapon 2), 2 = SG5 Commando (0x16), 3 = sniper (0x24), etc. The exact
+                    // slot mapping follows the game's weapon order (selectable weapons with `weapon_data+0x04 == 1`).
+                    (KeyCode::Digit1, ElementState::Pressed) => if self.grabbed { self.weapon_switch_to = Some(2) },
+                    (KeyCode::Digit2, ElementState::Pressed) => if self.grabbed { self.weapon_switch_to = Some(0x16) },
+                    (KeyCode::Digit3, ElementState::Pressed) => if self.grabbed { self.weapon_switch_to = Some(0x24) },
+                    (KeyCode::Digit4, ElementState::Pressed) => if self.grabbed { self.weapon_switch_to = Some(0x4a) },
+                    (KeyCode::Digit5, ElementState::Pressed) => if self.grabbed { self.weapon_switch_to = Some(0x4e) },
+                    (KeyCode::Digit6, ElementState::Pressed) => if self.grabbed { self.weapon_switch_to = Some(0x50) },
+                    (KeyCode::Digit7, ElementState::Pressed) => if self.grabbed { self.weapon_switch_to = Some(0x54) },
+                    (KeyCode::KeyQ, ElementState::Pressed) => if self.grabbed && !self.noclip { self.weapon_switch = -1 },
                     // Turn every switch channel on: drones waiting for one (WaitSwitch) start (triggers are not ported).
                     (KeyCode::KeyK, ElementState::Pressed) => if let Some(sim) = self.scene.sim.as_mut() { for c in 1..=255 { sim.drones.set_channel(c) } },
                     (_, ElementState::Pressed) => { if !event.repeat { self.just.insert(k); } self.keys.insert(k); }
@@ -472,6 +494,8 @@ impl ApplicationHandler for App {
                                 jump: self.just.remove(&KeyCode::Space),
                                 crouch: self.just.remove(&KeyCode::KeyC) | self.just.remove(&KeyCode::ControlLeft),
                                 aiming: self.aiming,
+                                switch: std::mem::take(&mut self.weapon_switch),
+                                switch_to: self.weapon_switch_to.take(),
                             };
                             sim.step_bond(input, self.trigger, self.just.remove(&KeyCode::KeyR), self.just.remove(&KeyCode::KeyE));
                             if let Some(s) = self.sound.as_mut() { sound_tick(s, sim); }
@@ -621,7 +645,7 @@ fn main() -> Result<()> {
         sim.drones.music.event(0, sim.level);
         sim.drones.music.event(1, 1);
     }
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0 };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_switch: 0, weapon_switch_to: None };
     event_loop.run_app(&mut app)?;
     Ok(())
 }

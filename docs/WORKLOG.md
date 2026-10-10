@@ -1625,6 +1625,7 @@ the survey confirms every level's placement types are the same set the test leve
 and scripts load through the same code paths. Visual diffing against PCSX2 is pending a GPU environment. No level-
 specific hacks: the only code change is the LOAD_LEVEL trigger arm (ported from the decompile, not approximated).
 
+
 ## 0078 — Drone gravity and collision spheres: Drone_CollisionHandler ported
 
 G-026 (part). The on-foot engine's per-tick collision driver is `Drone_CollisionHandler` (0x140968), called from the
@@ -1742,4 +1743,91 @@ What the player sees: a guard 8–20 units away may lob a grenade (anim 0x49) �
 world (sound 0x51C), and explodes on impact or after the 3.5-s fuse (sound 0x4A7), damaging Bond and nearby guards
 with a linear falloff. Not done: the per-material bounce coefficient table at `0x3037dc` (a 0.4 stand-in), the explosion
 script 0x6000052's visual (debris, the flash), the `RecoverFromScaryObject` (0x86) flee route (the guard runs from the
-grenade — G-026), stun grenades' receiving states, ricochets.
+grenade — G-026), stun grenades' receiving states, ricochets.)
+
+
+## 0081 — Weapon switching: mouse wheel, number keys, the holster/draw cycle, the op-1 sound remap
+
+G-029 (weapon switching for Bond). The first of the player-remainder items (§5.4): the other weapons in 07000005
+and the game's switch animation.
+
+Research: `Player_WeaponChange` 0x1a6f80 (the next/prev cycle: iterates 1..0x72, `weapon_data+0x04 == 1`,
+`BLData+0x1BA` owned, `Player_WeaponHasAmmo`; sets `anim+0x63` the switch request, saves `anim+0x64` the
+previous for toggle-back); `Player_SetWeaponAnimObj` 0x1a2e38 (the view-script state machine: state 0 idle → 1
+holster `weapon+0xCC` sound 0x280/0x283 → 2 holster done, swap `anim+0x62 = anim+0x63`, write old clip/spare,
+read new → 3 draw `weapon+0xD0` sound 0x281/0x282 → 4 draw done → 0 idle; firing and reload blocked while
+switching); `Player_IsBetterWeapon` 0x1a6eb0 (the `BestWeapon` table for auto-switch on pickup — not yet ported);
+`Check_AutoAim` 0x1a73f8 and `Player_AutoAim` 0x1a7c98 (the auto-aim — G-006, confirmed already ported);
+`Player_Creep` 0x1969d0 and `Player_Wire` 0x197658 (creep/wire, music event 0xD). `docs/systems/sound.md` §7
+line 313: the per-weapon op-1 id remap (1→2 w7/9, 0x403→2 w3/5, 0xFA→0x1FB w0x14, 0x106→0x284 w0x1E..0x23,
+0x1E1→0x602 w0x10, 4→0x604 w0x16/0x17).
+
+Port:
+- `nf_game::gun::Gun` — `switch_request` (`anim+0x63`), `prev_weapon` (`BLData+0x930`), `switch_state`
+  (`anim+0xF4`); `Gun::next_weapon(dir, owned, has_ammo, selectable)` iterates ±1 wrapping 1..0x72 skipping
+  unowned, unselectable (`weapon_data+0x04 ≠ 1`), and empty weapons. Test: the cycle skips unowned, unselectable
+  and empty; wraps; and returns None when nothing has ammo (the sister).
+- `nf_game::player::Input` — `switch: i8` (±1, mouse wheel / Q), `switch_to: Option<u8>` (number keys).
+- `nf_view::scene::Sim::step_bond` — sets `gun.switch_request` from the input when idle (state 0).
+- `nf_view::scene::Sim::run` — the holster/draw state machine: state 0→1 starts the holster script
+  (`weapon+0xCC`, sound 0x280 for weapons / 0x283 for gadgets id > 0x4A); state 1 done swaps the weapon byte,
+  writes the old clip/spare to the inventory, reads the new, starts the draw (`weapon+0xD0`, sound 0x281/0x282);
+  state 3 done returns to idle (`weapon+0xA0`). Trigger and reload blocked while switching. The op-1 sound id
+  remap (`remap_op1_sound`) replaces the script's fire sound based on the weapon. The hearing sound id is
+  remapped too (so drones hear the correct weapon).
+- `nf_view::scene::Scene` — `view_models: HashMap<u8, usize>` (one character per weapon with a first-person
+  skin in the level, built at scene build time); `animate` selects the active view model from `sim.gun.weapon`.
+  `gun_matrix` already reads the view offset from the current weapon's record.
+- `nf_view::main` — mouse wheel (up = next, down = prev), number keys 1–7 (P2K, SG5, sniper, gadgets), Q = prev.
+- `nf_formats::weapon::WeaponData` — accessors: `selectable` (+0x04), `holster_script` (+0xCC), `draw_script`
+  (+0xD0), `idle_script` (+0xA0), `fire_script` (+0xB0), `fire_last_script` (+0xB4), `reload_script` (+0xA4),
+  `reload_start_script` (+0xA8), `view_offset` (+0xE0), `zoom` (+0x88), `autoaim_accuracy` (+0x14),
+  `fp_flash_mesh` (+0x48), `fire_sound` (+0x60), `name_label` (+0x38).
+
+Tests: `gun::tests::next_weapon_skips_unowned_unselectable_and_empty` (the cycle, wrapping, the empty skip, the
+None sister). All nf-game tests green.
+
+What the player sees: mouse wheel up/down or 1–7 switches weapons — the current gun holsters (plays the put-away
+sound and animation), then the new gun draws (play the draw sound and animation), and the first-person model
+changes. Non-P2K weapons play their own fire sound (the op-1 remap) instead of the P2K's 0x403. The SG5 Commando
+(weapon 0x16, dropped by guards) and the sniper (0x24) are the main pickups on 07000005.
+
+Not done yet: the auto-switch on pickup (`Player_IsBetterWeapon`), the toggle-back key, the weapon name HUD
+label, gadgets' special effects. The ISO is not downloaded (disk: 7.8 GB free, ISO ~4 GB — will fetch the slim
+ISO for visual verification).
+
+## 0082 — Wire / creep: the wire object, proximity detection, music event 0xD
+
+G-029 (creeping and the wire, music event 0xD). The level 07000005 has one zip wire (placement type 0x3A,
+`Wire_Create` 0x1981d8) at (−23.5, 34.5, 6.3) [L ee_start_05.bin: one object class 0x2C in the DynamicObjList
+at 0x16dc400, WIREINFO (0xC510, 0x016D, 0, 0), glist bounds centre X = 4.039 = the wire's length].
+
+Research: `Wire_Create` 0x1981d8 (negates z-rotation, creates a type-8 control object, class 0x2C, stores
+`placement.extra[2..6]` as 4 u16 in WIREINFO `+0xE0`, `Controls_StraddleTest`); `Player_Creep` 0x1969d0 (the
+creep substate: `Music_Event(0xD, 1)` at the top, the wire's endpoints from `obj+0x80/+0x88`, the closest point
+on the line, the left/right input → anim scripts 0x600046c–0x6000475, the exit to walk state); `Player_Wire`
+0x197658 (the zipline substate: `Music_Event(0xD, 1)`, the slide with `+0x8CC` speed building up to 100,
+anim scripts 0x60000b4–0x60005ee, the jump-off on action 7). `docs/systems/music.md` event 0xD (line 438, 545,
+575): `Music_Event(0xD, 1)` → section 6 if in combat, 2 if not (instant); when creep stops, section 20.
+
+Port: `nf_game::wire` — `Wire::create(placement, length)` builds the two endpoints (the placement's translation
+and translation + (length − 0.5) · cos/sin(yaw + π/2), as `Vec_Spherical_2_Cartesian` does in `Player_Creep`);
+`Wire::near(pos, r)` the proximity test (closest point on the segment, squared distance < r²). Test: the closest
+point, the near test, and the endpoint-clamp sister. `nf_view::scene::Sim` — `wires: Vec<Wire>` built from 0x3A
+placements at scene build time; `step_bond` checks proximity (1.5-unit grab zone) and posts
+`Music_Event(0xD, 1)` each tick while Bond is near a wire. The music system's `castle_a` updater already handles
+event 0xD (section 6 or 2, the instant jump).
+
+*Deviation*: the full creep movement (Bond sliding along the wire, the third-person camera, the creep animation,
+the exit-on-reach-end) is not ported — only the music event fires when Bond walks within 1.5 units of the wire.
+The wire's length defaults to 4.0 (the one wire on 07000005 measures 4.039 [L]); reading it from the glist at
+build time is a future refinement.
+
+Tests: `wire::tests::closest_point_and_near`; all nf-game unit tests + the golden tests green.
+
+What the player hears: when Bond walks near the zip wire (at the castle's outer wall, (−23.5, 34.5, 6.3)), the
+music changes to the stealth section (section 2, or section 6 if guards are attacking). When he walks away, the
+music returns to section 20 (the calm-after-creep sting, 3.1 s) then settles.
+
+Not done: the full creep/wire player substate (Bond grabbing the wire, sliding, the animation, the third-person
+camera), the wire's visual model (the glist at 0xC510), the `Controls_StraddleTest` entry trigger.

@@ -1,5 +1,6 @@
 //! Bond's trigger (`Player_WeaponFiring` 0x1a5460, called from `Player_Update`): shots per pull, the refire interval
-//! and the clip. Spec: docs/systems/drone-damage.md "Bond's gunfire".
+//! and the clip, plus the weapon-switch state machine (`Player_WeaponChange` 0x1a6f80 → `Player_SetWeaponAnimObj`
+//! 0x1a2e38). Spec: docs/systems/player.md "Aim and bullets" + docs/systems/pickups.md "Bond's inventory".
 
 /// The trigger state of the selected weapon: clip (`BLData+0x1B8 + w·0xC`), spare rounds of its ammo type
 /// (`BLData+0x170`), the refire timer (`+0x92C`), the shots left in this pull (`+0x936`).
@@ -13,6 +14,39 @@ pub struct Gun {
     held: bool,
     /// Ticks until a reload finishes.
     pub reloading: u32,
+    /// `anim+0x63`: the switch-request weapon id (set by `Player_WeaponChange`, consumed by
+    /// `Player_SetWeaponAnimObj`). When it differs from `weapon`, the holster/draw cycle runs.
+    pub switch_request: u8,
+    /// `BLData+0x930`: the previous weapon (for the toggle-back / `Last Weapon` key).
+    pub prev_weapon: u8,
+    /// `BLData+0x959` / `anim+0xF4`: the view-script state machine's phase.
+    /// 0 = idle, 1 = holstering, 2 = holster-done (swap), 3 = drawing, 4 = draw-done.
+    pub switch_state: u8,
+}
+
+impl Gun {
+    /// `Player_WeaponChange` (0x1a6f80, `param_3` = 2 — the next/prev direction): step through owned,
+    /// selectable weapons with ammo, starting from `weapon + dir`, wrapping 1..=0x72.
+    /// Returns the weapon id to switch to, or `None` if none found [M].
+    pub fn next_weapon(&self, dir: i8, owned: &[bool], has_ammo: impl Fn(u8) -> bool, selectable: impl Fn(u8) -> bool) -> Option<u8> {
+        let dir = dir.signum() as i32;
+        if dir == 0 { return None; }
+        let mut w = self.weapon as i32;
+        for _ in 0..0x72 {
+            w += dir;
+            if w < 1 { w = 0x72; }
+            if w > 0x72 { w = 1; }
+            let wu = w as u8;
+            if !owned.get(w as usize).copied().unwrap_or(false) { continue; }
+            if !selectable(wu) { continue; }
+            if !has_ammo(wu) { continue; }
+            return Some(wu);
+        }
+        None
+    }
+
+    /// Whether a weapon switch is in progress (the holster/draw cycle).
+    pub fn switching(&self) -> bool { self.switch_state != 0 }
 }
 
 /// The fields of a `weapon_data` record the trigger uses.
@@ -51,7 +85,7 @@ pub fn reload_ticks(start: u32, reload: u32, flags68: u32, script_len: &impl Fn(
 
 impl Gun {
     /// Bond's start on 07000005 (`Player_InitWeapon`): weapon 2 with 7 in the clip and 41 spare [L].
-    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reloading: 0 } }
+    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reloading: 0, switch_request: weapon, prev_weapon: weapon, switch_state: 0 } }
 
     /// One tick with the trigger (action 9) `pressed` (no reload key, gun idle).
     pub fn update(&mut self, pressed: bool, p: GunParams) -> bool { self.update_with(pressed, false, false, p) }
@@ -122,5 +156,26 @@ mod tests {
         // Released: the reload starts, the rounds move when it ends.
         for _ in 0..=p.reload_ticks { g.update(false, p); }
         assert_eq!((g.clip, g.spare), (7, 34));
+    }
+
+    #[test]
+    fn next_weapon_skips_unowned_unselectable_and_empty() {
+        // Three weapons: 2 (P2K, owned, has ammo), 0x16 (SG5, owned, has ammo), 0x24 (sniper, owned, no ammo).
+        let owned = vec![false; 0x73];
+        let mut owned = owned;
+        owned[2] = true; owned[0x16] = true; owned[0x24] = true;
+        let selectable = |w: u8| w == 2 || w == 0x16 || w == 0x24;
+        let has_ammo = |w: u8| w == 2 || w == 0x16; // 0x24 has no ammo
+        let g = Gun::new(2, 7, 41);
+        // Next from P2K → SG5 (0x16).
+        assert_eq!(g.next_weapon(1, &owned, has_ammo, selectable), Some(0x16));
+        // Next from SG5 → wraps to P2K (0x24 skipped: no ammo).
+        let g2 = Gun::new(0x16, 30, 60);
+        assert_eq!(g2.next_weapon(1, &owned, has_ammo, selectable), Some(2));
+        // Prev from P2K → wraps to SG5 (0x24 skipped).
+        assert_eq!(g.next_weapon(-1, &owned, has_ammo, selectable), Some(0x16));
+        // Sister: with no ammo at all, next_weapon returns None.
+        let no_ammo = |_w: u8| false;
+        assert_eq!(g.next_weapon(1, &owned, no_ammo, selectable), None);
     }
 }

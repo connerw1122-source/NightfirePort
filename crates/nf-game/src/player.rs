@@ -15,8 +15,24 @@ const GRAVITY: f32 = -9.8;
 /// One tick of player input as game actions: `forward` (action 2), `strafe` (action 1; + = left), `turn` (radians
 /// to add to the yaw this tick, mouse or ramped pad), `look` (pitch delta in units of π/2), the jump (7) and crouch (8)
 /// presses, aim mode (0x13).
+///
+/// Weapon switching [M Player_WeaponChange 0x1a6f80]: `switch` = ±1 for next/prev (mouse wheel / Q-E), `switch_to` =
+/// `Some(id)` for a direct selection (number keys). Both are consumed in `Sim::run` where the switch request
+/// (`anim+0x63`) is set and the holster/draw animation cycle of `Player_SetWeaponAnimObj` (0x1a2e38) plays.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct Input { pub forward: f32, pub strafe: f32, pub turn: f32, pub look: f32, pub jump: bool, pub crouch: bool, pub aiming: bool }
+pub struct Input {
+    pub forward: f32,
+    pub strafe: f32,
+    pub turn: f32,
+    pub look: f32,
+    pub jump: bool,
+    pub crouch: bool,
+    pub aiming: bool,
+    /// ±1: next/prev weapon (`Player_WeaponChange` with `param_3 ≠ 0,1`).
+    pub switch: i8,
+    /// `Some(id)`: switch directly to weapon `id` (a number key).
+    pub switch_to: Option<u8>,
+}
 
 #[derive(Clone, Debug)]
 pub struct Bond {

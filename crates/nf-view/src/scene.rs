@@ -14,6 +14,21 @@ use nf_formats::level::{Instance, Level};
 use nf_formats::placement::transform;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+/// Per-weapon op-1 sound id remap (docs/systems/sound.md §7 line 313): the first-person gun's animation script
+/// emits a sound id that the game replaces based on the player's weapon (`+0xDC → +0x62`). The P2K (weapon 2) has no
+/// remap — 0x403 plays as-is. Other weapons' fire sounds are remapped so they do not all sound like the P2K [M].
+fn remap_op1_sound(id: u32, weapon: u8) -> u32 {
+    match (id, weapon) {
+        (1, 7) | (1, 9) => 2,
+        (0x403, 3) | (0x403, 5) => 2,
+        (0xfa, 0x14) => 0x1fb,
+        (0x106, 0x1e..=0x23) => 0x284,
+        (0x1e1, 0x10) => 0x602,
+        (4, 0x16) | (4, 0x17) => 0x604,
+        _ => id,
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
@@ -206,6 +221,27 @@ impl Sim {
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
         let (trigger, reload) = if self.disabled { input = Default::default(); (false, false) } else { (trigger, reload) };
         let aiming = input.aiming;
+        // Weapon switching (`Player_WeaponChange` 0x1a6f80): only when idle (not firing/reloading/holstering). The
+        // switch request (`anim+0x63`) is set here; the holster/draw cycle runs in `run` (`Player_SetWeaponAnimObj`).
+        if self.gun.switch_state == 0 {
+            if let Some(id) = input.switch_to {
+                if id != self.gun.weapon && self.drones.inventory.owned.get(id as usize).copied().unwrap_or(false)
+                    && self.weapons.first_person(id as usize) != 0 {
+                    self.gun.switch_request = id;
+                }
+            } else if input.switch != 0 {
+                let owned = &self.drones.inventory.owned;
+                let weapons = &self.weapons;
+                let inv = &self.drones.inventory;
+                let has_ammo = |w: u8| {
+                    let t = weapons.ammo_type(w as usize);
+                    inv.carried.get(t).copied().unwrap_or(0) > 0 || inv.clip.get(w as usize).copied().unwrap_or(0) > 0
+                };
+                if let Some(id) = self.gun.next_weapon(input.switch, owned, has_ammo, |w| weapons.selectable(w)) {
+                    self.gun.switch_request = id;
+                }
+            }
+        }
         if aiming {
             let want = [self.cursor[0] - input.turn / 0.76966, self.cursor[1] + input.look * std::f32::consts::FRAC_PI_2 / 0.57724];
             let clamped = [want[0].clamp(-0.296, 0.296), want[1].clamp(-0.4, 0.4)];
@@ -296,6 +332,88 @@ impl Sim {
         // The gun's clip and spare rounds live in Bond's inventory (BLData `+0x1B8`, `+0x170`), which pickups fill.
         let (wi, t) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
         if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(wi), self.drones.inventory.carried.get(t)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
+
+        // Weapon switch state machine (`Player_SetWeaponAnimObj` 0x1a2e38): the holster/draw cycle.
+        // State 0 (idle): a switch request starts the holster. State 1 (holstering): the holster script plays; when
+        // done, swap the weapon byte and start the draw. State 3 (drawing): the draw script plays; when done, back to idle.
+        // While switching, the trigger and reload are blocked (the game's state 1/3 checks `AnimScriptIsStopped`).
+        let mut switching = self.gun.switch_state != 0;
+        // State 0 → 1: a switch request starts the holster (`Player_SetWeaponAnimObj` case 0 → case 1).
+        if self.gun.switch_state == 0 && self.gun.switch_request != self.gun.weapon {
+            let holster = self.weapons.holster_script(self.gun.weapon as usize);
+            if holster != 0 {
+                self.view_script = holster;
+                (self.view_time, self.view_speed) = (0.0, 1.0);
+                self.gun.switch_state = 1;
+                switching = true;
+                // Sound 0x280 (weapon) or 0x283 (gadget, id > 0x4A) [M 0x1a2e38 line 227-230].
+                let s = if self.gun.weapon > 0x4a { 0x283 } else { 0x280 };
+                self.drones.audio.play(s);
+            } else {
+                // No holster script: swap instantly (the game's state 0 → 3 path when +0xCC == 0).
+                if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
+                if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
+                self.gun.prev_weapon = self.gun.weapon;
+                self.gun.weapon = self.gun.switch_request;
+                let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
+                if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
+                let draw = self.weapons.draw_script(nwi);
+                if draw != 0 {
+                    self.view_script = draw;
+                    (self.view_time, self.view_speed) = (0.0, 1.0);
+                    self.gun.switch_state = 3;
+                    switching = true;
+                    let s = if self.gun.weapon > 0x4a { 0x282 } else { 0x281 };
+                    self.drones.audio.play(s);
+                } else {
+                    self.view_script = self.weapons.idle_script(nwi);
+                    (self.view_time, self.view_speed) = (0.0, 1.0);
+                }
+            }
+        }
+        if switching {
+            let cur = self.gun.weapon as usize;
+            let len_of = |h: u32| self.scripts.get(&h).map_or(0.0, |s| s.length as f32);
+            match self.gun.switch_state {
+                1 => {
+                    // Holstering: wait for the holster script to finish.
+                    let holster = self.weapons.holster_script(cur);
+                    if holster == 0 || self.view_time >= len_of(holster).max(1.0) - 1.0 {
+                        // Holster done: write the current weapon's clip/spare back, swap, read the new weapon's.
+                        if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
+                        if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
+                        self.gun.prev_weapon = self.gun.weapon;
+                        self.gun.weapon = self.gun.switch_request;
+                        let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
+                        if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
+                        // Start the draw script.
+                        let draw = self.weapons.draw_script(nwi);
+                        self.view_script = draw;
+                        (self.view_time, self.view_speed) = (0.0, 1.0);
+                        self.gun.switch_state = 3;
+                        // Sound 0x281 (weapon) or 0x282 (gadget, id > 0x4A) [M 0x1a2e38 line 291-295].
+                        let s = if self.gun.weapon > 0x4a { 0x282 } else { 0x281 };
+                        self.drones.audio.play(s);
+                    }
+                }
+                3 => {
+                    // Drawing: wait for the draw script to finish.
+                    let draw = self.weapons.draw_script(self.gun.weapon as usize);
+                    if draw == 0 || self.view_time >= len_of(draw).max(1.0) - 1.0 {
+                        // Draw done: back to idle.
+                        self.view_script = self.weapons.idle_script(self.gun.weapon as usize);
+                        (self.view_time, self.view_speed) = (0.0, 1.0);
+                        self.gun.switch_state = 0;
+                    }
+                }
+                _ => {}
+            }
+            // Advance the view script while switching.
+            let len = len_of(self.view_script);
+            self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0));
+        }
+
+        let can_fire = !switching;
         if let Some(w) = self.weapons.records.get(self.gun.weapon as usize) {
             let scripts = &self.scripts;
             let params = nf_game::gun::GunParams::from_record(w, 0, |h| scripts.get(&h).map(|s| s.length as u32));
@@ -312,6 +430,8 @@ impl Sim {
             // The gun's animation is busy while a fire script plays (gun state 9; idle = 0).
             let len_of = |h: u32| self.scripts.get(&h).map_or(0.0, |s| s.length as f32);
             let busy = (self.view_script == rd0(0xb0) || self.view_script == rd0(0xb4)) && self.view_time < len_of(self.view_script) - 1.0;
+            // Block the trigger and reload while the holster/draw cycle plays.
+            let (trigger, reload) = if can_fire { (trigger, reload) } else { (false, false) };
             let fired = self.gun.update_with(trigger, reload, busy, params);
             let (prev_script, prev_time) = (self.view_script, self.view_time);
             // The gun's scripts (`weapon+0xA0` idle, `+0xA4` reload at 1.35 from frame 6 with flag 0x1000, `+0xB0` fire,
@@ -338,21 +458,35 @@ impl Sim {
             // The gun scripts' sound commands (`AnimProcessScriptCmds` op 1: `Sound_Play3D(cmd[2], …)` when the
             // script's frame crosses cmd[1]): the shot (0x403 at frame 1 of the P2K's fire scripts) and the reload's
             // three sounds (0x40F, 0x40E, 0x411 at frames 0x2E, 0x59, 0x74). Frame = script time + 1.
+            // Per-weapon op-1 id remap (docs/systems/sound.md §7): the script's id is replaced based on the weapon.
             if self.view_script != 0 {
                 let from = if self.view_script != prev_script || (fired && self.view_time == 0.0) { f32::NEG_INFINITY } else { prev_time + 1.0 };
                 let to = self.view_time + 1.0;
+                let wid = self.gun.weapon;
                 if let Some(sc) = self.scripts.get(&self.view_script) {
                     for c in sc.commands.iter().filter(|c| c.op == 1 && c.args.len() >= 2) {
                         let f = c.args[0] as f32;
                         if from < f && f <= to {
-                            self.drones.audio.play3d(c.args[1] as u32, camera, None);
-                            if std::env::var_os("NF_SOUNDLOG").is_some() { eprintln!("tick {}: gun script {:08x} frame {f}: sound {:#x}", self.drones.frame, self.view_script, c.args[1]); }
+                            let id = remap_op1_sound(c.args[1] as u32, wid);
+                            self.drones.audio.play3d(id, camera, None);
+                            if std::env::var_os("NF_SOUNDLOG").is_some() { eprintln!("tick {}: gun script {:08x} frame {f}: sound {:#x} (remapped from {:#x} for weapon {:#x})", self.drones.frame, self.view_script, id, c.args[1], wid); }
                         }
                     }
                 }
             }
             if fired {
-                let sound = self.sfx.as_ref().map(|t| t.get(0x403)).unwrap_or(nf_formats::sfx::SfxHearing { id: 0x403, inner: 0.0, outer: 0.0, weight: 0.0, looped: false, cull: false });
+                // The hearing sound: the P2K's 0x403 by default, or the remapped op-1 id for other weapons.
+                // The drones' hearing list uses the sfx table's entry for this id.
+                let hearing_id = match self.gun.weapon {
+                    7 | 9 => 2,
+                    3 | 5 => 2,
+                    0x14 => 0x1fb,
+                    0x1e..=0x23 => 0x284,
+                    0x10 => 0x602,
+                    0x16 | 0x17 => 0x604,
+                    _ => 0x403,
+                };
+                let sound = self.sfx.as_ref().map(|t| t.get(hearing_id)).unwrap_or(nf_formats::sfx::SfxHearing { id: hearing_id, inner: 0.0, outer: 0.0, weight: 0.0, looped: false, cull: false });
                 self.drones.fire_player(&d, camera, dir, self.gun.weapon, sound);
             }
         }
@@ -527,7 +661,10 @@ pub struct Scene {
     pub indices: Vec<u32>,
     pub materials: Vec<Material>,
     pub textures: Vec<TextureImage>,
-    /// The first-person gun (`Player_SetWeaponAnim`: `AnimObjectNew(G, weapon+0xDC)`): its character index.
+    /// The first-person gun (`Player_SetWeaponAnim`: `AnimObjectNew(G, weapon+0xDC)`): one character per owned
+    /// weapon id, built at scene build time. `view_model` is the currently active one (updated each frame in
+    /// `animate` from `sim.gun.weapon`).
+    pub view_models: HashMap<u8, usize>,
     pub view_model: Option<usize>,
     /// The snow flake texture (`DrawDrops`: 0x03000045).
     pub snow_texture: Option<TextureImage>,
@@ -794,39 +931,45 @@ impl Scene {
                 }
             }
         }
-        // The first-person P2K: skin `weapon_data[2]+0xDC` (0x05000088) drawn with its main mesh — a sleeve, replaced by
-        // `AnimSleeveGetEntity(BL+0x965 = 0)`: the first loaded of `SleeveEnts` [L] — and its rigid parts on their bones.
-        let mut view_model = None;
+        // The first-person gun models: one character per owned weapon with a first-person skin (`weapon_data+0xDC`),
+        // drawn with a sleeve mesh and rigid parts on their bones. The active one (`view_model`) is selected each frame
+        // in `animate` from `sim.gun.weapon`. The P2K (weapon 2) is always first; others follow the owned list [M].
+        let mut view_models: HashMap<u8, usize> = HashMap::new();
         if let Some(wd) = drones.and_then(|d| d.weapons.as_ref()) {
-            let fp = wd.first_person(2);
             const SLEEVES: [u32; 8] = [0x0200_09d0, 0x0200_0900, 0x0200_01f7, 0x0200_0929, 0x0200_09e6, 0x0200_09ff, 0x0200_0a14, 0x0200_0a13];
-            if let (Some(skin), Some(&sleeve)) = (level.skins.get(&fp), SLEEVES.iter().find(|h| level.by_hash.contains_key(h))) {
-                if let Some(skeleton) = skeletons.get(&skin.skeleton) {
-                    let ci = characters.len() as u32;
-                    let ident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
-                    let placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
-                    let (map, object) = level.by_hash[&sleeve];
-                    let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                    add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None);
-                    for &(bone, part) in &skin.extra {
-                        let Some(&(map, object)) = part.and_then(|h| level.by_hash.get(&h)) else { continue };
-                        let pinst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                        add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None);
-                        attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, script: None });
-                    }
-                    // The muzzle flash (`Player_MuzzleFlash`): mesh `weapon+0x48` on datum 0, colour (+0x56, +0x55, +0x54).
-                    let r = &wd.records[2];
-                    let flash = u32::from_le_bytes(r[0x48..0x4c].try_into().unwrap());
-                    if let (Some(&(fmap, fobject)), Some(dt)) = (level.by_hash.get(&flash), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
-                        let finst = Instance { map: fmap, object: fobject, matrix: ident, placement: placement.clone() };
-                        add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None);
-                        attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, script: None });
-                    }
-                    characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None, script: None });
-                    view_model = Some(ci as usize);
+            // Build a view model for each weapon with a first-person skin present in the level. The P2K (weapon 2)
+            // is always first; others follow the weapon_data order.
+            for wid in 1..=0x72u8 {
+                let fp = wd.first_person(wid as usize);
+                if fp == 0 { continue; }
+                let Some(skin) = level.skins.get(&fp) else { continue };
+                let Some(&sleeve) = SLEEVES.iter().find(|h| level.by_hash.contains_key(h)) else { continue };
+                let Some(skeleton) = skeletons.get(&skin.skeleton) else { continue };
+                let ci = characters.len() as u32;
+                let ident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
+                let placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
+                let (map, object) = level.by_hash[&sleeve];
+                let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
+                add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None);
+                for &(bone, part) in &skin.extra {
+                    let Some(&(pmap, pobject)) = part.and_then(|h| level.by_hash.get(&h)) else { continue };
+                    let pinst = Instance { map: pmap, object: pobject, matrix: ident, placement: placement.clone() };
+                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None);
+                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, script: None });
                 }
+                // The muzzle flash (`Player_MuzzleFlash`): mesh `weapon+0x48` on datum 0, colour (+0x56, +0x55, +0x54).
+                let r = &wd.records[wid as usize];
+                let flash = u32::from_le_bytes(r[0x48..0x4c].try_into().unwrap());
+                if let (Some(&(fmap, fobject)), Some(dt)) = (level.by_hash.get(&flash), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
+                    let finst = Instance { map: fmap, object: fobject, matrix: ident, placement: placement.clone() };
+                    add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None);
+                    attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, script: None });
+                }
+                characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None, script: None });
+                view_models.insert(wid, ci as usize);
             }
         }
+        let view_model = view_models.get(&2).copied();
         // Script objects (docs/systems/script-player.md): every animation and drawn entity the main map's script players
         // can make; each shows only while the simulation has the object.
         let mut script_objects = 0;
@@ -997,7 +1140,7 @@ impl Scene {
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {
             TextureImage::from_texture(mi, t)
         }));
-        Scene { streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_model, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
+        Scene { streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, view_model, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the
@@ -1053,7 +1196,7 @@ impl Scene {
                 let world = anim::world_pose(&anim::local_pose(seq, &c.skeleton, &c.skin, f as u32), &c.skin);
                 return Some((anim::skin_matrices(&world, &c.skin), world, c.matrix));
             }
-            let view = (Some(ci) == self.view_model).then_some(()).and(self.sim.as_ref());
+            let view = self.sim.as_ref().and_then(|s| self.view_models.get(&s.gun.weapon).filter(|&&v| v == ci)).and(self.sim.as_ref());
             let (i, frame) = match (view, drone_of(ci)) {
                 (Some(s), _) => s.view_frame(c.skin.skeleton)?,
                 (None, Some((s, di))) => s.frame_of(di, c.skin.skeleton)?,
@@ -1118,7 +1261,7 @@ impl Scene {
             if drone_of(a.character as usize).is_some_and(|(s, di)| s.drones.list[di].weapon <= 1) { return collapse(&datum); }
             if a.flash.is_none() { return datum; }
             // Bond's flash: 3 ticks after his shot (`BL+0x938` = 3), along the datum's +Z with a random roll and scale.
-            if Some(a.character as usize) == self.view_model {
+            if self.sim.as_ref().and_then(|s| self.view_models.get(&s.gun.weapon)) == Some(&(a.character as usize)) {
                 return match self.sim.as_ref().and_then(|s| s.last_shot.filter(|&f| s.drones.frame.saturating_sub(f) < 3).map(|f| (s, f))) {
                     Some((s, f)) => player_flash_matrix(&datum, s.drones.frame ^ f.wrapping_mul(0x9e37_79b9)),
                     None => collapse(&datum),

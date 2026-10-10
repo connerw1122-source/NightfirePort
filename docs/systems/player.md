@@ -80,14 +80,39 @@ aspect 4/3, near 0.1.
 (0x2bec48: 1 = aim 29 × 29 at (1, 2), 2 = normal 11 × 11 at (10, 11), 3 = friendly 14 × 13 at (31, 1)), centred at
 (256 (1 + cx), 224 (1 − cy)), red 0xFF0000 at alpha 0x7F; hidden for scoped weapons and the third-person camera.
 
-## First-person gun [M, L] (not ported yet)
+## First-person gun [M, L]
 
 Skin `weapon+0xDC` (P2K 0x05000088); scripts idle 0x06000825, reload 0x06000827, fire 0x06000823, fire-last
 0x06000824, draw 0x0600082B, holster 0x0600082A; offset `weapon+0xE0` (0.0283, 0.0755, −0.9026) + bob +
 (0, 0.2, −0.5), pivoting about (0, −0.2, 0.5) in view space toward the crosshair; muzzle flash mesh `weapon+0x48`
 (0x020001F6) for 3 ticks, light radius 7, colour (255, 138, 0).
 
+## Weapon switching [M Player_WeaponChange 0x1a6f80, Player_SetWeaponAnimObj 0x1a2e38]
+
+- `Player_WeaponChange(obj, dir, mode)`: iterates weapons 1..0x72 from `weapon + dir`, wrapping. A weapon is
+  selectable when `weapon_data[w]+0x04 == 1`, `BLData+0x1BA + w·0xC` (owned) is non-zero, and
+  `Player_WeaponHasAmmo(BLData, w)` is non-zero. Sets `anim+0x63` (the switch request); `anim+0x64` saves the
+  previous weapon for toggle-back.
+- `Player_SetWeaponAnimObj` state machine (`anim+0xF4`): state 0 (idle) sees `anim+0x63 ≠ anim+0x62` → starts the
+  holster (`weapon+0xCC`, sound 0x280 for weapons / 0x283 for gadgets id > 0x4A). State 1 (holstering): when the
+  script stops, swaps `anim+0x62 = anim+0x63`, writes the old clip/spare back, reads the new, starts the draw
+  (`weapon+0xD0`, sound 0x281 / 0x282). State 3 (drawing): when stopped, returns to idle (`weapon+0xA0`).
+  Firing and reload are blocked while switching.
+- Sounds: 0x280 holster (weapon), 0x281 draw (weapon), 0x282 draw (gadget), 0x283 holster (gadget), 0x1DB the
+  change click. Per-weapon op-1 fire-sound id remap (docs/systems/sound.md §7): the script's id is replaced by
+  the weapon's (1→2 for w7/9, 0x403→2 for w3/5, 0xFA→0x1FB for w0x14, 0x106→0x284 for w0x1E..0x23,
+  0x1E1→0x602 for w0x10, 4→0x604 for w0x16/0x17).
+
 ## Port
 
 `nf_game::player` (WORKLOG 0042): movement, capsule, floor ray, gravity, jump, crouch, eye; nf-view drives it with
 WASD / mouse (no mouse aim mode, D-002), Space jump, C / Ctrl crouch, T auto-aim, N the free camera; draws the game's crosshair and HUD (docs/systems/hud.md). Open: U-037.
+
+`nf_game::gun` (WORKLOG 0078): the trigger + weapon switching — `Gun::next_weapon` iterates owned, selectable
+weapons with ammo (±1, wrapping 1..0x72). nf-view's `Sim::run` runs the holster/draw state machine
+(`Player_SetWeaponAnimObj`): state 0→1 (holster, sound 0x280/0x283) → swap weapon byte → 3 (draw, sound
+0x281/0x282) → 0 (idle). The trigger and reload are blocked while switching. The view model: one character per
+weapon with a first-person skin (`Scene::view_models`); `animate` selects the active one from `sim.gun.weapon`.
+The op-1 sound id remap is ported (`remap_op1_sound`). Controls: mouse wheel = next/prev, 1–7 = direct select,
+Q = prev. Open: the auto-switch on pickup (`Player_IsBetterWeapon`), the toggle-back key, the weapon name HUD
+label.

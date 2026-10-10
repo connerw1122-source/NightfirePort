@@ -97,6 +97,82 @@ impl WeaponData {
     pub fn first_person(&self, weapon: usize) -> u32 {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xdc..0xe0].try_into().unwrap()))
     }
+
+    /// `+0x04`: the selectable flag (1 = the weapon appears in the switch cycle, `Player_WeaponChange` 0x1a6f80
+    /// line 179 checks `weapon_data[w*0x10c + 4] == 1`). Gadgets and non-weapons have 0 [M].
+    pub fn selectable(&self, weapon: u8) -> bool {
+        self.records.get(weapon as usize).is_some_and(|r| r[4] == 1)
+    }
+
+    /// `+0x14`: the auto-aim accuracy percentage (0..100), used by `Check_AutoAim` as
+    /// `weapon_data[w]+0x14 * 0.01 * (1 - dist/range) * difficulty_mul` [M 0x1a73f8].
+    pub fn autoaim_accuracy(&self, weapon: usize) -> f32 {
+        self.records.get(weapon).map_or(0.0, |r| u16::from_le_bytes([r[0x14], r[0x15]]) as f32)
+    }
+
+    /// `+0x88`: the zoom factor (1 = no zoom, `Player_SetWeaponAnimObj` state 4 sets `BL+0x8D4`).
+    pub fn zoom(&self, weapon: usize) -> f32 {
+        self.records.get(weapon).map_or(1.0, |r| f32::from_le_bytes(r[0x88..0x8c].try_into().unwrap()))
+    }
+
+    /// `+0xA0`: the idle script hashcode (the first-person gun's idle loop).
+    pub fn idle_script(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xa0..0xa4].try_into().unwrap()))
+    }
+
+    /// `+0xA4`: the reload script hashcode.
+    pub fn reload_script(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xa4..0xa8].try_into().unwrap()))
+    }
+
+    /// `+0xA8`: the reload-start script hashcode (plays before the reload).
+    pub fn reload_start_script(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xa8..0xac].try_into().unwrap()))
+    }
+
+    /// `+0xB0`: the fire script hashcode.
+    pub fn fire_script(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xb0..0xb4].try_into().unwrap()))
+    }
+
+    /// `+0xB4`: the fire-on-last-round script hashcode.
+    pub fn fire_last_script(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xb4..0xb8].try_into().unwrap()))
+    }
+
+    /// `+0xCC`: the holster (put-away) script hashcode (`Player_SetWeaponAnimObj` state 0→1).
+    pub fn holster_script(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xcc..0xd0].try_into().unwrap()))
+    }
+
+    /// `+0xD0`: the draw script hashcode (`Player_SetWeaponAnimObj` state 2→3).
+    pub fn draw_script(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xd0..0xd4].try_into().unwrap()))
+    }
+
+    /// `+0xE0/+0xE4/+0xE8`: the first-person gun offset (x, y, z) in view space (`Player_PositionGun`).
+    pub fn view_offset(&self, weapon: usize) -> [f32; 3] {
+        self.records.get(weapon).map_or([0.0; 3], |r| [
+            f32::from_le_bytes(r[0xe0..0xe4].try_into().unwrap()),
+            f32::from_le_bytes(r[0xe4..0xe8].try_into().unwrap()),
+            f32::from_le_bytes(r[0xe8..0xec].try_into().unwrap()),
+        ])
+    }
+
+    /// `+0x48`: the first-person muzzle flash mesh (`Draw_MuzzleFlash`).
+    pub fn fp_flash_mesh(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0x48..0x4c].try_into().unwrap()))
+    }
+
+    /// `+0x60`: the drone fire sound id (per `docs/systems/sound.md` §7).
+    pub fn fire_sound(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0x60..0x64].try_into().unwrap()))
+    }
+
+    /// `+0x38`: the weapon name label hashcode (for the HUD / pickup message).
+    pub fn name_label(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0x38..0x3c].try_into().unwrap()))
+    }
 }
 
 #[cfg(test)]
