@@ -2451,35 +2451,62 @@ session that exposed the bug.
   own `Drones`, diverging from the viewer's activation — the user's diagnosis of why "passing" tests don't work in play).
 - The F2 menu rework, friendly-actor port, bullet-flyby (need the decomp, which was lost in the sandbox reset).
 
-## A-9 — Door auto-close fix, level-end research, TWEAK proof
+## C-12 — Four round-3 playtest fixes: fists melee, scope SightPane, Raptor LOS, wire placement
 
-**Door auto-close fix:** The timer was resetting to 0 every 360 ticks even when Bond was standing near the door
-(blocked). Fix: only increment `open_timer` when not blocked — Bond standing nearby pauses the countdown rather
-than resetting it. This matches "360 quiet ticks" [M Door_Update 0x1363c8:111-153].
+Four bugs found by the user in round 3 of playtesting, all fixed:
 
-**Level-end research (07000005):** Exhaustive analysis found:
-- Two 0xE8 LOAD_LEVEL triggers (placements 112 & 118), both with `next_level = 0x07000006`6.
-- Both have `lock = 0` (param 10 doesn't exist) → the game's `Trigger_Update` case 10 checks
-  `if (lock != 0) && (switch_channels[lock] != 0)` → FALSE → the triggers NEVER fire.
-- No NIS script on 07000005 fires event 0x12 (LoadLevel).
-- The truck script (0x06000A22) fires only events 0x0D (channel 0x73=1) and 0x0C (keep objects).
-- The gatehouse cut-scene (0x060008C8) fires events 4, 6, Camera, Anim, Entity — no 0x12.
-- The parking cut-scene (0x06000994) fires events 4, 5, 6, 7, 0xB, Sound — no 0x12.
+1. **fists punch once, then never again:** `Gun::update_with` checked and decremented the clip for ALL weapons,
+   including melee (ammo_type == 0). The game's `Player_RoundToFire` (0x1a18e0) skips the clip check/decrement
+   for ammo_type == 0 — melee weapons always have a round to fire. Fix: added `ammo_type` to `GunParams`
+   (from `w[0x90]`); skip the clip check/decrement when `ammo_type == 0` (gun.rs:299-300). Fists now fire
+   repeatedly (release and re-press the trigger, matching the game's `Input_Action(_,9,4)` fresh-press check).
 
-**Conclusion:** The 0xE8 triggers have `lock = 0` and never fire. No script fires event 0x12. The level-end
-mechanism is NOT in the data I've found. Need to ask the user what happens visually when the truck parks:
-- Does the screen fade to black?
-- Does a "mission complete" screen appear?
-- Does the next level load directly?
+2. **scope: no visual / wrong visual:** The `ndc_quad` approach used the font texture (0x03000003) which is
+   mostly transparent at UV (0,0) — the scope quads were nearly invisible. Fix: ported the game's real
+   SightPane HUD sprite. Added textures 0x03000034 (the scope overlay, 256×256) and 0x03000002 (the solid
+   fill for the side strips, 32×32) to `hud::TEXTURES`. Draw 3 quads matching the game's sprites: the scope
+   texture centered at (32, 0, 448, 448) with UV 0..511, plus left/right strips at (0, 0, 33, 448) and
+   (479, 0, 33, 448). All colour 0xffffff at full alpha, non-additive. Driven by `s.zoom > 1.01` (matching
+   `HUD_UpdateCrossHair`'s pane[6] toggle) [D 07000005.bin entries 71 + 56, M 0x19e6d0].
 
-This will determine whether it's a GameFlow state transition (not ported), a script-driven cut-scene that
-loads a level, or a mechanism I haven't found.
+3. **Raptor on 07000001 still can't be picked up:** `Pickup::create_placed` called `Pickup::create` which
+   lowers the matrix Y by `radius - |centre.y|` (for DROPPED pickups that fall to the floor). Level-placed
+   pickups are already at the correct height — lowering puts the sphere centre BELOW the floor, causing the
+   LOS test in `touches` to fail (the ray from Bond's chest to the pickup hits the floor). Fix: build the
+   matrix directly from the placement translation, bypassing `create`'s lowering (pickup.rs:91-107).
 
-**TWEAK colour proof (from A-8 research, confirmed):**
-- GS result: texel 200 × vertex 0x80 × ambient 0x50 → (200×128×80/256)/128 = 62.5 → ×GAIN 1.133 → 70.8/255 = 0.278
-- Port result (no TWEAK): texel 200/255 × (0x80/255 × 255/128) = 0.784 × 1.0 = 0.784 → ×GAIN → 0.888
-- Port with TWEAK: 0.784 × (0x50/0x80) = 0.784 × 0.625 = 0.49 → ×GAIN → 0.555 → matches GS 0.278? No.
-- Actually: tweak = (tint × ambient) >> 8 = (255 × 80) >> 8 = 79. Normalised: 79/255 = 0.310.
-- Port with TWEAK: 0.784 × 0.310 = 0.243 → ×GAIN → 0.275 → matches GS 0.278. ✓
+4. **wire-music: Bond on the wire's mount:** The spiral search started at r=0.0, which tests the wire's
+   exact XZ. `floor_below` found the wire's mount (Y=43.65), not the walkable ground (Y=36.93). Fix: start
+   the spiral at r=2.0 (dev.rs:633), skipping the wire's exact position.
 
-Tests: 190 pass with NF_ISO set. No Rand_* calls added.
+Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
+
+## C-12 — Four round-3 playtest fixes: fists melee, scope SightPane, Raptor LOS, wire placement
+
+Four bugs found by the user in round 3 of playtesting, all fixed:
+
+1. **fists punch once, then never again:** `Gun::update_with` checked and decremented the clip for ALL weapons,
+   including melee (ammo_type == 0). The game's `Player_RoundToFire` (0x1a18e0) skips the clip check/decrement
+   for ammo_type == 0 — melee weapons always have a round to fire. Fix: added `ammo_type` to `GunParams`
+   (from `w[0x90]`); skip the clip check/decrement when `ammo_type == 0` (gun.rs:299-300). Fists now fire
+   repeatedly (release and re-press the trigger, matching the game's `Input_Action(_,9,4)` fresh-press check).
+
+2. **scope: no visual / wrong visual:** The `ndc_quad` approach used the font texture (0x03000003) which is
+   mostly transparent at UV (0,0) — the scope quads were nearly invisible. Fix: ported the game's real
+   SightPane HUD sprite. Added textures 0x03000034 (the scope overlay, 256×256) and 0x03000002 (the solid
+   fill for the side strips, 32×32) to `hud::TEXTURES`. Draw 3 quads matching the game's sprites: the scope
+   texture centered at (32, 0, 448, 448) with UV 0..511, plus left/right strips at (0, 0, 33, 448) and
+   (479, 0, 33, 448). All colour 0xffffff at full alpha, non-additive. Driven by `s.zoom > 1.01` (matching
+   `HUD_UpdateCrossHair`'s pane[6] toggle) [D 07000005.bin entries 71 + 56, M 0x19e6d0].
+
+3. **Raptor on 07000001 still can't be picked up:** `Pickup::create_placed` called `Pickup::create` which
+   lowers the matrix Y by `radius - |centre.y|` (for DROPPED pickups that fall to the floor). Level-placed
+   pickups are already at the correct height — lowering puts the sphere centre BELOW the floor, causing the
+   LOS test in `touches` to fail (the ray from Bond's chest to the pickup hits the floor). Fix: build the
+   matrix directly from the placement translation, bypassing `create`'s lowering (pickup.rs:91-107).
+
+4. **wire-music: Bond on the wire's mount:** The spiral search started at r=0.0, which tests the wire's
+   exact XZ. `floor_below` found the wire's mount (Y=43.65), not the walkable ground (Y=36.93). Fix: start
+   the spiral at r=2.0 (dev.rs:633), skipping the wire's exact position.
+
+Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.

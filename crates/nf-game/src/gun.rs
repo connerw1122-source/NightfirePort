@@ -209,6 +209,7 @@ pub struct GunParams {
     pub reload_start_ticks: u32, // state 5: +0xA8 script length (0 if no start script)
     pub reload_loop_ticks: u32,  // state 6: +0xA4 script length per shell
     pub reload_end_ticks: u32,   // state 7: +0xAC script length
+    pub ammo_type: u8,           // +0x90: 0 = melee (unlimited, no clip check), 1+ = ranged
 }
 
 impl GunParams {
@@ -233,6 +234,7 @@ impl GunParams {
             reload_start_ticks: len_of(start_h),
             reload_loop_ticks: len_of(reload_h),
             reload_end_ticks: len_of(end_h),
+            ammo_type: w[0x90],
         }
     }
 }
@@ -292,8 +294,10 @@ impl Gun {
         if self.timer <= 0.0 {
             self.pending -= 1;
             if self.pending >= 0 {
-                if self.clip >= p.ammo_per_shot {
-                    self.clip -= p.ammo_per_shot;
+                // `Player_RoundToFire` (0x1a18e0): for ammo_type == 0 (melee), always round to fire and
+                // don't touch the clip [M]. For ranged weapons, check and decrement the clip.
+                if p.ammo_type == 0 || self.clip >= p.ammo_per_shot {
+                    if p.ammo_type != 0 { self.clip -= p.ammo_per_shot; }
                     self.timer = p.interval.max(1.0);
                     fired = true;
                 } else { self.pending = 0; }
@@ -309,7 +313,7 @@ mod tests {
 
     #[test]
     fn one_shot_per_press_at_most_every_interval() {
-        let p = GunParams { shots_per_pull: 1, interval: 8.0, clip: 7, ammo_per_shot: 1, reload_ticks: reload_ticks(0, 0x0600_0827, 0x1004, &|_| Some(155)), one_at_a_time: false, reload_start_ticks: 0, reload_loop_ticks: 111, reload_end_ticks: 0 };
+        let p = GunParams { shots_per_pull: 1, interval: 8.0, clip: 7, ammo_per_shot: 1, reload_ticks: reload_ticks(0, 0x0600_0827, 0x1004, &|_| Some(155)), one_at_a_time: false, reload_start_ticks: 0, reload_loop_ticks: 111, reload_end_ticks: 0, ammo_type: 1 };
         assert_eq!(p.reload_ticks, 111);
         let mut g = Gun::new(2, 7, 41);
         // Holding the trigger fires once.

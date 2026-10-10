@@ -88,12 +88,19 @@ impl Pickup {
     pub fn create_placed(translation: V3, rotation: [f32; 3], type_: u16, id: u16, rounds: i16, switch_channel: u16, sound: u16, respawn: u32, lifetime: u8, model: u32, bounds: Model, w: &WeaponData) -> Option<Pickup> {
         if id == 0xFFFF { return None; }
         if model == 0 { return None; }
+        // Build the matrix directly from the placement translation — do NOT call `create` which lowers the
+        // Y by `radius - |centre.y|` (that's for DROPPED pickups that fall to the floor; level-placed
+        // pickups are already at the correct height). Lowering puts the sphere centre below the floor,
+        // causing the LOS test in `touches` to fail [bug fix C-12].
         let m = nf_formats::placement::object_matrix(rotation, translation);
-        let mut p = Pickup::create(&m, id, rounds, type_, model, bounds);
-        p.state = 1;
-        p.sound = if sound == 0xFFFF { None } else { Some(sound as u32) };
+        let p = Pickup {
+            kind: type_, weapon: id, rounds, model, bounds, m,
+            start: translation, vel: [0.0; 3], state: 1, lifetime: 0,
+            sound: if sound == 0xFFFF { None } else { Some(sound as u32) },
+            hidden: false, gone: false, from: None,
+        };
+        let mut p = p;
         p.lifetime = if lifetime == 0 { 0 } else { lifetime as u16 * 60 };
-        // For weapon pickups (type 0) with rounds=0, use the clip size (a full clip).
         if type_ == kind::WEAPON && p.rounds == 0 {
             p.rounds = w.clip_size(id as usize);
         }

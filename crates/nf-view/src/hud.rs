@@ -11,9 +11,13 @@ const SW: f32 = 512.0;
 const SH: f32 = 448.0;
 
 /// HUD textures the overlay uses (indices + 1 in `HudFrame` runs).
-pub const TEXTURES: [u32; 6] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003];
+pub const TEXTURES: [u32; 8] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002];
 const CROSS_TEX: u32 = 0x0300_0026;
 const FONT_TEX: u32 = 0x0300_0003;
+/// SightPane textures [D 07000005.bin entries 71 + 56]: 0x03000034 = the scope overlay (256×256, the circular
+/// vignette + crosshair reticle), 0x03000002 = the solid fill for the left/right letterbox strips (32×32 RGBA).
+const SCOPE_TEX: u32 = 0x0300_0034;
+const SCOPE_STRIP_TEX: u32 = 0x0300_0002;
 
 /// `HUDCrossCoords` (0x2bec48, u, v, w, h) [L]: 1 = aim mode, 2 = normal, 3 = friendly.
 const CROSS: [[i16; 4]; 4] = [[0, 0, 0, 0], [1, 2, 29, 29], [10, 11, 11, 11], [31, 1, 14, 13]];
@@ -178,21 +182,20 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
         h.quad(Anchor::Right, rounds.layer as i32, 0x0300_0128, false, x, bottom - clip * hpr, bw * k, clip * hpr, [bu, (clip_size - clip) * hpr + bv, bw, clip * hpr], (false, false), gs(rounds.colour >> 8, rounds.colour & 0xff));
         h.quad(Anchor::Right, empty.layer as i32, 0x0300_0128, false, x, bottom - clip_size * hpr, bw * k, clip_size * hpr, [bu, bv, bw, clip_size * hpr], (false, false), gs(empty.colour >> 8, empty.colour & 0xff));
     }
-    // Scope overlay: when zoomed (scoped weapon, zoom > 1.0), draw a black border (vignette) around the screen.
-    // Uses ndc_quad (raw NDC vertices with the font texture) because quad() drops tex=0 quads (the hashcode
-    // lookup fails). The game uses a HUD sprite (the SightPane); this is a STANDIN (rectangular, not circular).
+    // Scope overlay (the SightPane, `HUD_UpdateCrossHair` 0x19e6d0 pane[6]): 3 sprites at layer 39 [D].
+    // Sprite 0: the scope texture (0x03000034, 256×256) centered at x=32, y=0, w=448, h=448, UV 0..511.
+    // Sprite 1: left strip (0x03000002, 32×32) at x=0, y=0, w=33, h=448.
+    // Sprite 2: right strip (0x03000002) at x=479, y=0, w=33, h=448.
+    // All colour 0x7f7f7fff (white at full alpha on the GS scale), non-additive alpha blend.
+    // Visibility: shown when the player is aiming with a scoped weapon (`HUD_UpdateCrossHair` toggles pane[6]+0x24).
     if s.zoom > 1.01 {
-        let alpha = ((s.zoom - 1.0) * 255.0 / (s.zoom_target - 1.0).max(0.01)).min(255.0) / 255.0;
-        let hole = 0.31; // half-size of the visible rectangle (NDC, -1..1)
-        let black = [0.0, 0.0, 0.0, alpha];
-        // top strip: y from -1 to -hole
-        h.ndc_quad(60, ndc_rect(-1.0, -1.0, 1.0, -hole), black);
-        // bottom strip: y from hole to 1
-        h.ndc_quad(60, ndc_rect(-1.0, hole, 1.0, 1.0), black);
-        // left strip: x from -1 to -hole, y from -hole to hole
-        h.ndc_quad(60, ndc_rect(-1.0, -hole, -hole, hole), black);
-        // right strip: x from hole to 1, y from -hole to hole
-        h.ndc_quad(60, ndc_rect(hole, -hole, 1.0, hole), black);
+        let scope_col = gs(0xffffff, 0xff);
+        // Center scope texture (the circular vignette + crosshair reticle)
+        h.quad(Anchor::Stretch, 39, SCOPE_TEX, false, 32.0, 0.0, 448.0, 448.0, [0.0, 0.0, 511.0, 511.0], (false, false), scope_col);
+        // Left strip (solid fill)
+        h.quad(Anchor::Stretch, 39, SCOPE_STRIP_TEX, false, 0.0, 0.0, 33.0, 448.0, [0.0, 0.0, 0.0, 0.0], (false, false), scope_col);
+        // Right strip (solid fill)
+        h.quad(Anchor::Stretch, 39, SCOPE_STRIP_TEX, false, 479.0, 0.0, 33.0, 448.0, [0.0, 0.0, 0.0, 0.0], (false, false), scope_col);
     }
     h.finish()
 }

@@ -630,7 +630,7 @@ mod scenarios {
                 // endpoint for an XZ where floor_below succeeds.
                 let a = w.a;
                 let mut placed = false;
-                for r in [0.0, 2.0, 5.0, 8.0, 12.0, 20.0] {
+                for r in [2.0, 5.0, 8.0, 12.0, 20.0] {
                     for angle in [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5] {
                         let theta = angle * std::f32::consts::FRAC_PI_4;
                         let px = a[0] + r * theta.cos();
