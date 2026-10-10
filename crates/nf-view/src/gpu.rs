@@ -87,9 +87,9 @@ struct HO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
 pub struct HudVertex { pub p: [f32; 2], pub uv: [f32; 2], pub c: [f32; 4] }
 
 /// One frame's overlay: vertices and the runs drawn in order — (texture index into `Scene::hud_textures` + 1, 0 =
-/// none; additive; first vertex; count).
+/// none; blend mode; first vertex; count). Blend: 0 = normal, 1 = additive, 2 = subtractive.
 #[derive(Default)]
-pub struct HudFrame { pub v: Vec<HudVertex>, pub runs: Vec<(usize, bool, u32, u32)> }
+pub struct HudFrame { pub v: Vec<HudVertex>, pub runs: Vec<(usize, u8, u32, u32)> }
 
 impl HudFrame {
     /// Append another frame's vertices and runs (the dev overlay, WORKLOG 0081).
@@ -115,6 +115,7 @@ struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: us
 pub struct Renderer {
     hud_pipeline: wgpu::RenderPipeline,
     hud_add_pipeline: wgpu::RenderPipeline,
+    hud_sub_pipeline: wgpu::RenderPipeline,
     hud_vbuf: wgpu::Buffer,
     hud_bgs: Vec<wgpu::BindGroup>,
     pipelines: Vec<(Draw, wgpu::RenderPipeline)>,
@@ -231,10 +232,14 @@ impl Renderer {
             multiview_mask: None,
             cache: None,
         });
-        // GS ALPHA 0x44 (normal) and 0x48 (Cs·As + Cd: sprite flag 0x100).
+        // GS ALPHA 0x44 (normal), 0x48 (Cs·As + Cd: sprite flag 0x100), and 0x42 (Cd - Cs·As: sprite flag 0x200, subtractive).
         let hud_pipeline = make_hud(wgpu::BlendState::ALPHA_BLENDING);
         let hud_add_pipeline = make_hud(wgpu::BlendState {
             color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+            alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+        });
+        let hud_sub_pipeline = make_hud(wgpu::BlendState {
+            color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::ReverseSubtract },
             alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
         });
         let hud_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (HUD_MAX * std::mem::size_of::<HudVertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -297,7 +302,7 @@ impl Renderer {
         let snow_pipeline = make_pipeline(Draw { pass: 5, blend: 1, zwrite: false, atest: 0, fog: 0 });
         let snow_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (SNOW_MAX * std::mem::size_of::<crate::scene::Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let snow_bg = match &scene.snow_texture { Some(t) => make_tex(t.width, t.height, &t.rgba), None => make_tex(1, 1, &[255, 255, 255, 255]) };
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, tex_frames, draws }
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, tex_frames, draws }
     }
 
     /// `view_proj`: full camera; `view_proj_rot`: the same without the camera translation.
@@ -371,10 +376,10 @@ impl Renderer {
             }
             if n > 0 {
                 pass.set_vertex_buffer(0, self.hud_vbuf.slice(..));
-                for &(tex, additive, first, count) in &hud.runs {
+                for &(tex, blend, first, count) in &hud.runs {
                     let end = (first + count).min(n as u32);
                     if first >= end { continue; }
-                    pass.set_pipeline(if additive { &self.hud_add_pipeline } else { &self.hud_pipeline });
+                    pass.set_pipeline(match blend { 1 => &self.hud_add_pipeline, 2 => &self.hud_sub_pipeline, _ => &self.hud_pipeline });
                     pass.set_bind_group(0, &self.hud_bgs[tex.min(self.hud_bgs.len() - 1)], &[]);
                     pass.draw(first..end, 0..1);
                 }

@@ -3623,7 +3623,7 @@ impl Drones {
         for k in 0..self.pickups.len() {
             let p = &mut self.pickups[k];
             p.fall(d.world);
-            if alive && p.touches(d.world, player.pos, player.target) {
+            if alive && p.touches(d.world, player.pos, player.pos) {
                 let loaded = d.skins.contains_key(&d.weapons.first_person(p.weapon as usize));
                 if let Some(t) = self.inventory.take(d.weapons, p, loaded) {
                     p.gone = true;

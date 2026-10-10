@@ -17,6 +17,9 @@ pub struct Gun {
     pub reload_state: u8,
     /// Ticks remaining in the current reload script (5/6/7). When it hits 0, the state transitions.
     pub reload_ticks: u32,
+    /// Set by `reload_tick` when the shell loop continues (state 6 stays 6 but the +0xA4 script must replay
+    /// from frame 0 for the next shell). The view-script block in `Sim::run` checks this to re-queue +0xA4.
+    pub reload_loop_restarted: bool,
     /// `anim+0x63`: the switch-request weapon id (set by `Player_WeaponChange`, consumed by
     /// `Player_SetWeaponAnimObj`). When it differs from `weapon`, the holster/draw cycle runs.
     pub switch_request: u8,
@@ -133,10 +136,15 @@ impl Gun {
     /// Whether a reload is in progress (states 5/6/7).
     pub fn reloading(&self) -> bool { self.reload_state != 0 }
 
+    /// Whether the view script needs to be restarted this tick (the shell loop continued — the +0xA4 script
+    /// must replay from frame 0 for the next shell, matching `AnimScriptAdd(+0xA4)` in case 6 [M 0x1a2e38]).
+    pub fn reload_loop_restarted(&self) -> bool { self.reload_state == 6 && self.reload_ticks == 0 }
+
     /// Advance the reload state machine one tick. Called by `Sim::run` after advancing the view script.
     /// `trigger_held` = the fire button is currently held (firing interrupt). `p` = the weapon params.
     /// Returns the new reload state (for the view-script block to pick the right script).
     pub fn reload_tick(&mut self, trigger_held: bool, p: GunParams) -> u8 {
+        self.reload_loop_restarted = false;
         if self.reload_state == 0 { return 0; }
         if self.reload_ticks > 0 { self.reload_ticks -= 1; }
         if self.reload_ticks > 0 { return self.reload_state; }
@@ -156,7 +164,9 @@ impl Gun {
                 // Probe: more ammo to load? [M case 6: Player_ReloadAmmoType(_, 1)]
                 let more = self.spare > 0 && self.clip < p.clip;
                 if more && !trigger_held {
-                    // Continue the loop: queue +0xA4 again [M case 6].
+                    // Continue the loop: queue +0xA4 again [M case 6]. Set the flag so Sim::run restarts the
+                    // view script from frame 0 (matching `AnimScriptAdd(+0xA4)` in the game's case 6).
+                    self.reload_loop_restarted = true;
                     self.reload_ticks = p.reload_loop_ticks.max(1);
                 } else {
                     // Stop: clip full, no spare, or trigger held (fire interrupt). Queue +0xAC, go to state 7.
@@ -254,7 +264,7 @@ pub fn reload_ticks(start: u32, reload: u32, flags68: u32, script_len: &impl Fn(
 
 impl Gun {
     /// Bond's start on 07000005 (`Player_InitWeapon`): weapon 2 with 7 in the clip and 41 spare [L].
-    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reload_state: 0, reload_ticks: 0, switch_request: weapon, saved_weapon: weapon, prev_weapon: 0, prev_gadget: 0, switch_state: 0 } }
+    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reload_state: 0, reload_ticks: 0, reload_loop_restarted: false, switch_request: weapon, saved_weapon: weapon, prev_weapon: 0, prev_gadget: 0, switch_state: 0 } }
 
     /// One tick with the trigger (action 9) `pressed` (no reload key, gun idle).
     pub fn update(&mut self, pressed: bool, p: GunParams) -> bool { self.update_with(pressed, false, false, p) }

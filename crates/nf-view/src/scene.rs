@@ -588,6 +588,11 @@ impl Sim {
                 // Reload just started: set the view script based on the state (5 → +0xA8, 6 → +0xA4) [M case 5/6].
                 self.view_script = if self.gun.reload_state == 5 { rd(0xa8) } else { rd(0xa4) };
                 (self.view_time, self.view_speed) = (0.0, 1.0);
+            } else if self.gun.reload_loop_restarted {
+                // The shell loop continued: restart +0xA4 from frame 0 (matching `AnimScriptAdd(+0xA4)` in
+                // the game's case 6) [M 0x1a2e38].
+                self.view_script = rd(0xa4);
+                (self.view_time, self.view_speed) = (0.0, 1.0);
             } else if self.gun.reload_state != was_reloading {
                 // Reload state changed: update the view script.
                 match self.gun.reload_state {
@@ -1232,6 +1237,19 @@ impl Scene {
                 if let Some((map, object)) = target {
                     // `NF_HIDE` applies here too (the 0xFC skip above leaves these out of the loop's check).
                     if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
+                    let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
+                    add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None);
+                }
+            }
+        }
+        // Wire visuals (`Wire_Create` 0x1981d8, placement type 0x3A): the wire's visual mesh is the placement's
+        // object (the celglist), like coronas. The wire placement is a dynamic entity (no 0x8000 CREATE_CEL),
+        // so it's filtered from the main instance loop; re-add it here [M 0x1981d8].
+        if let Some(m) = level.main_map() {
+            for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x3a) {
+                let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                    else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
+                if let Some((map, object)) = target {
                     let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                     add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None);
                 }
