@@ -629,7 +629,10 @@ mod scenarios {
                 let dir = [sim.bond.pos[0] - c[0], 0.0, sim.bond.pos[2] - c[2]];
                 let l = (dir[0] * dir[0] + dir[2] * dir[2]).sqrt().max(1e-6);
                 let p = [c[0] + 5.0 * dir[0] / l, c[1], c[2] + 5.0 * dir[2] / l];
-                sim.bond = nf_game::player::Bond::stand_at(&sim.world, p, sim.bond.yaw);
+                // The wire may be high above the floor (e.g. Y=42.94 vs floor at Y=22.93 on 07000005).
+                // Bond::stand_at searches only 10 units down; search 50 to find the floor.
+                let y = sim.world.floor_below([p[0], p[1] + 1.0, p[2]], 50.0).map_or(p[1], |f| f + 1.1);
+                sim.bond = nf_game::player::Bond::new([p[0], y, p[2]], sim.bond.yaw);
             }
         }
         eprintln!("[dev] wire-music: Bond is 5 m from the zip wire — walk toward it; when close the music changes to the stealth section, walk away and it returns");
@@ -673,22 +676,25 @@ mod scenarios {
         eprintln!("[dev] sniper-scope: Bond has the sniper rifle. Hold RIGHT MOUSE to zoom — the FOV narrows and the sensitivity drops. Release to return to normal.");
     }
 
-    /// Give Bond the shotgun (0x1c) with an empty clip and spare ammo. Press R to reload — one shell at a time
-    /// (the shell-by-shell loop). Hold the trigger to interrupt. (B-3a/b: ported from C-9's apply_scenario arm.)
+    /// Give Bond the SG5 Commando (0x16) with an empty clip and spare ammo. Press R to reload.
+    /// The SG5 is in 07000005's level archive (its FP skin 0x050000c0 is present). The actual shotguns
+    /// (0x1c/0x1d) are not in 07000005's archive, so they can't be tested here. The SG5 loads all rounds
+    /// at once (not shell-by-shell); the shell-by-shell loop can only be tested on a level that has the
+    /// shotgun's FP skin.
     pub fn shotgun_reload(scene: &mut Scene) {
         if let Some(sim) = scene.sim.as_mut() {
             let wi = sim.weapons.records.len();
-            if wi > 0x1c {
-                sim.drones.inventory.owned[0x1c] = true;
-                sim.drones.inventory.clip[0x1c] = 0; // empty clip
-                sim.drones.inventory.carried[sim.weapons.ammo_type(0x1c)] = 30; // spare ammo
-                sim.gun.weapon = 0x1c;
-                sim.gun.switch_request = 0x1c;
-                sim.view_script = sim.weapons.idle_script(0x1c);
+            if wi > 0x16 {
+                sim.drones.inventory.owned[0x16] = true;
+                sim.drones.inventory.clip[0x16] = 0; // empty clip
+                sim.drones.inventory.carried[sim.weapons.ammo_type(0x16)] = 60; // spare ammo
+                sim.gun.weapon = 0x16;
+                sim.gun.switch_request = 0x16;
+                sim.view_script = sim.weapons.idle_script(0x16);
                 sim.view_time = 0.0;
                 sim.view_speed = 1.0;
             }
         }
-        eprintln!("[dev] shotgun-reload: Bond has the shotgun (0x1c) with an empty clip. Press R to reload — one shell at a time (the shell-by-shell loop). Hold the trigger to interrupt.");
+        eprintln!("[dev] shotgun-reload: Bond has the SG5 Commando (0x16) with an empty clip. Press R to reload (loads all rounds at once — the shell-by-shell loop needs a shotgun 0x1c which is not in this level's archive).");
     }
 }

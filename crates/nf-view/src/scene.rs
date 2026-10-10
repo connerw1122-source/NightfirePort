@@ -363,7 +363,10 @@ impl Sim {
             self.zoom_target = 1.0;
         }
         // Interpolate zoom toward target [M 0x1a1a70 lines 22-39].
-        let rate = if self.zoom < self.zoom_target { 1.0 / (1.0 + 0.025) } else { 1.0 + 0.15 };
+        // `Player_Zoom` (0x1a1a70): zoom in at 1.025×/tick, zoom out at 1.15×/tick [M lines 22-39].
+        // The game's BLData+0x8D4 is the inverse (decreases as zoom increases); the port's `zoom` is the FOV
+        // divisor (increases as zoom increases), so the interpolation factor is the complement.
+        let rate = if self.zoom < self.zoom_target { 1.0 + 0.025 } else { 1.0 + 0.15 };
         self.zoom = self.zoom + (self.zoom_target - self.zoom) * (1.0 - 1.0 / rate);
         self.zoom = self.zoom.clamp(1.0, max_zoom.max(1.0));
         // Wire / creep (`Player_Creep` 0x1969d0, `Player_Wire` 0x197658): when Bond is near a wire, the creep
@@ -636,8 +639,13 @@ impl Sim {
                 self.drones.fire_player(&d, camera, dir, self.gun.weapon, sound);
             }
         }
-        if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
-        if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
+        // Write the gun's clip/spare back to the inventory. Recompute wi/t from the CURRENT weapon (not the
+        // stale ones from line 410) — the switch state machine may have swapped the weapon mid-tick, and the
+        // swap paths already wrote the OLD weapon's values back. Using stale wi/t here corrupts the old
+        // weapon's ammo with the new weapon's values [bug fix C-10].
+        let (cur_wi, cur_t) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
+        if let Some(c) = self.drones.inventory.clip.get_mut(cur_wi) { *c = self.gun.clip as i16; }
+        if let Some(n) = self.drones.inventory.carried.get_mut(cur_t) { *n = self.gun.spare as i16; }
         self.aiming = aiming;
         self.drones.bond_aiming = aiming;
         self.drones.bond_weapon = self.gun.weapon;
@@ -1326,20 +1334,24 @@ impl Scene {
                 })
                 .collect();
             // Level-placed pickups (`Pickup_Create` 0x18dda0 via `parsemap_create_dynamic_objects` type 0xF0):
-            // the placement's extra words give the type, id, switch channel, sound, respawn and lifetime [M 0x1d04f0].
+            // the placement's PARAMS array gives the type, id, rounds, switch, sound, respawn and label [M 0x1d04f0
+            // line 459-462: reads from the param buffer at +0x2c..+0x38, NOT the placement's extra words].
             // The model comes from the placement's object (the celglist), not from weapon_data.
             let pickup_models = nf_game::pickup::models(level);
             let placed_pickups: Vec<nf_game::pickup::Pickup> = level.maps[m].placements.iter()
                 .filter(|p| p.flags & 0xff == 0xf0)
                 .filter_map(|p| {
-                    let type_ = p.extra[2] as u16;
-                    let id = p.extra[3] as u16;
-                    let switch_sound = p.extra[4];
-                    let switch_channel = (switch_sound & 0xFFFF) as u16;
-                    let sound = (switch_sound >> 16) as u16;
-                    let respawn_lifetime = p.extra[5];
-                    let respawn = respawn_lifetime & 0xFFFF;
-                    let lifetime = ((respawn_lifetime >> 16) & 0xFF) as u8;
+                    // `parsemap_block_map_data_dynamic` collects the placement's params into a stack buffer;
+                    // `parsemap_create_dynamic_objects` case 0xf0 reads from that buffer. The params are
+                    // (index, value) pairs; the values hold the pickup metadata [M 0x1d1b68/0x1d04f0].
+                    let param = |idx: usize| -> u32 { p.params.get(idx).map(|(_, v)| *v).unwrap_or(0) };
+                    let type_ = param(0) as u16;
+                    let id = param(1) as u16;
+                    let rounds = param(2) as i16;
+                    let switch_channel = param(3) as u16;
+                    let sound = param(4) as u16;
+                    let respawn = param(5) & 0xFFFF;
+                    let lifetime = 0u8; // always 0 for level-placed pickups (rest=1 in the game)
                     // The model: the placement's object hashcode (the celglist passed to Pickup_Create).
                     let (model, bounds) = if p.by_hash() {
                         let h = p.hashcode;
@@ -1351,7 +1363,7 @@ impl Scene {
                         let obj = &level.maps[m].objects[p.index as usize];
                         pickup_models.get(&obj.hashcode).map(|&bm| (obj.hashcode, bm))
                     } else { None }?;
-                    nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, switch_channel, sound, respawn, lifetime, model, bounds, &weapons)
+                    nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn, lifetime, model, bounds, &weapons)
                 })
                 .collect();
             drones.pickups.extend(placed_pickups);

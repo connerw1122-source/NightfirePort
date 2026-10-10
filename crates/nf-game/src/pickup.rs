@@ -82,19 +82,17 @@ impl Pickup {
     /// the placement's extra words give the type, id, switch channel, sound, respawn and lifetime. The pickup
     /// starts at rest (state 1, on the floor). The model comes from the placement's celglist (the placement's
     /// object), NOT from `weapon_data[id]+0x80` — the glist is passed as `param_4` to `Pickup_Create` [M 0x1d04f0].
-    pub fn create_placed(translation: V3, rotation: [f32; 3], type_: u16, id: u16, switch_channel: u16, sound: u16, respawn: u32, lifetime: u8, model: u32, bounds: Model, w: &WeaponData) -> Option<Pickup> {
+    pub fn create_placed(translation: V3, rotation: [f32; 3], type_: u16, id: u16, rounds: i16, switch_channel: u16, sound: u16, respawn: u32, lifetime: u8, model: u32, bounds: Model, w: &WeaponData) -> Option<Pickup> {
         if id == 0xFFFF { return None; }
         if model == 0 { return None; }
         let m = nf_formats::placement::object_matrix(rotation, translation);
-        let mut p = Pickup::create(&m, id, 0, type_, model, bounds);
+        let mut p = Pickup::create(&m, id, rounds, type_, model, bounds);
         p.state = 1;
         p.sound = if sound == 0xFFFF { None } else { Some(sound as u32) };
         p.lifetime = if lifetime == 0 { 0 } else { lifetime as u16 * 60 };
-        if type_ == kind::WEAPON {
+        // For weapon pickups (type 0) with rounds=0, use the clip size (a full clip).
+        if type_ == kind::WEAPON && p.rounds == 0 {
             p.rounds = w.clip_size(id as usize);
-        }
-        if type_ == kind::AMMO {
-            p.rounds = w.clip_size(id as usize).max(1);
         }
         Some(p)
     }

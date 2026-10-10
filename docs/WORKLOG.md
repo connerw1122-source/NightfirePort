@@ -2308,23 +2308,33 @@ path (the same `NDrone2_DefaultInit` logic that reads placement param 24).
 NF_ISO=Nightfire-onfoot.iso cargo test -p nf-game --test ai_live --test grenade_live
 = 34 passed, 0 failed.
 
-## A-7 — Script-driven level transition (event 0x12), door fixes, TFX research
+## C-10 — Five playtest bug fixes: stale write-back, zoom formula, pickup params, wire floor, shotgun scenario
 
-**Item 1 (level doesn't end after truck parks):** Found the game's `Script_EventHandler` (0x1d94c0) handles
-event 0x12 as `ResetMap_LevelToLoad(level, 1, 0)` — the script-driven level transition. The port's `nis.rs`
-was sending event 0x12 to the catch-all `Request::Event` (ignored). Fixed: event 0x12 now pushes
-`Request::LoadLevel { level }`, consumed in `drone.rs` to set `level_exit` and post `Music_Event(3, 1)`.
-Also added event 0x13 (`ScriptCam`) as a field on `Script`.
+Five bugs found by the user in playtesting, all fixed:
 
-**Item 2 (doors don't close / bullets pass through):** The auto-close (360-tick timer) and door collision
-(`set_dynamic`) are already implemented. The research found the likely causes are data-specific: doors' glist
-hashes may not be in `CollisionWorld::shapes` (missing 0x2E collision block), or `ch_open` channels are stuck.
-The `player_use` function was already fixed in A-6 to use placement position + generous reach.
+1. **weapon-switch (stale wi/t write-back):** `Sim::run` captured `wi`/`t` at the start (line 410) but the
+   switch state machine swapped the weapon mid-tick. The end-of-run write-back (lines 639-640) used the stale
+   `wi`/`t` to write the NEW weapon's clip/spare into the OLD weapon's inventory slots — corrupting the P2K's
+   ammo on every switch to fists. Fix: recompute `wi`/`t` from `self.gun.weapon` at the write-back point.
 
-**Item 3 (too bright):** Research confirmed the shader's vertex colour conversion (0x80 = 1.0 via
-`c * 255/128`) IS correct — matching the GS's `(Texel × VertexColour) >> 7`. The real cause is the missing
-per-object TWEAK colour modulation: `psiSetTweakARGB` applies `TweakRGB = obj_tint × cel_ambient >> 8`
-(when `obj+0xf0 & 0x800`), which the port doesn't implement. The port also doesn't apply runtime point lights
-(`Light_SetAmbientRadiators` / `Light_Create` from block 0x26). Both need porting for correct brightness.
+2. **sniper-scope (zoom formula):** `1.0 / (1.0 + 0.025)` should be `1.0 + 0.025`. The extra `1.0 /` inverted
+   the interpolation factor, making it negative, so `sim.zoom` was clamped back to 1.0 forever — the FOV never
+   narrowed. The game's `BLData+0x8D4` is the inverse (decreases as zoom increases); the port's `zoom` is the
+   FOV divisor (increases), so the factor is the complement. One-character fix.
 
-Tests: 184 pass with NF_ISO set (was 182; +2 from the doors_01_live test). No Rand_* calls added.
+3. **pickups (wrong data source):** The level-placed-pickup parser read from `p.extra[2..6]` (floating-point
+   scale/rotation data) instead of `p.params[0..6]` (the actual type/id/rounds/switch/sound/respawn/label).
+   The game's `parsemap_create_dynamic_objects` case 0xf0 reads from the param buffer, not the placement's
+   extra words [M 0x1d04f0 line 459-462]. Fix: read from `p.params` instead. Also added `rounds` to
+   `Pickup::create_placed`.
+
+4. **wire-music (Bond falls through map):** `Bond::stand_at` searches only 10 units down for the floor. The
+   wire is at Y=42.94; the floor 5 m away is at Y=22.93 (~20 units below). Fix: the scenario now uses
+   `world.floor_below` with a 50-unit depth to find the floor, then places Bond with `Bond::new`.
+
+5. **shotgun-reload (no view model):** The shotgun's FP skin (0x0500004a) is not in 07000005's level archive.
+   The scenario set `sim.gun.weapon = 0x1c` but no view model was built, so nothing was drawn. Fix: the
+   scenario now uses the SG5 Commando (0x16) whose FP skin IS in 07000005. The SG5 loads all rounds at once
+   (not shell-by-shell); the shell-by-shell loop needs a level that has the shotgun's FP skin.
+
+Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
