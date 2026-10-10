@@ -181,6 +181,13 @@ pub fn hud(dev: &Dev, scene: &Scene, aspect: f32, view_proj: [[f32; 4]; 4]) -> H
     h.finish()
 }
 
+/// Menu text for the game's bitmap font: ASCII only (the font has no glyphs for dashes or arrows), clipped to `n`
+/// characters on a char boundary with ".." when cut.
+fn fit(s: &str, n: usize) -> String {
+    let a: String = s.chars().map(|c| match c { '—' | '–' => '-', '→' => '>', c if c.is_ascii() => c, _ => '?' }).collect();
+    if a.len() > n { format!("{}..", &a[..n.saturating_sub(2)]) } else { a }
+}
+
 /// Project a world point to NDC screen coordinates (−1..1, y up).
 fn project(world: [f32; 3], vp: [[f32; 4]; 4]) -> [f32; 2] {
     let (x, y, z) = (world[0], world[1], world[2]);
@@ -251,7 +258,7 @@ fn menu(h: &mut Hud, dev: &Dev, scene: &Scene) {
         h.quad(Anchor::Left, 70, 0x0300_0003, 0, PANEL_X, y, PANEL_W, HEADER_H, [0.0; 4], (false, false), [0.0, 0.0, 0.2, 0.85]);
         // Truncate the scenario label to fit the narrow panel.
         let mut lbl = format!("{s}: {label}");
-        if lbl.len() > 24 { lbl.truncate(23); lbl.push('…'); }
+        let lbl = fit(&lbl, 24);
         h.text(Anchor::Left, font, 69, &lbl, PANEL_X + 2.0, y + 3.0, false, [1.0, 1.0, 0.4, 1.0], true);
         y += HEADER_H + 1.0;
     } else {
@@ -270,13 +277,11 @@ fn menu(h: &mut Hud, dev: &Dev, scene: &Scene) {
             h.quad(Anchor::Left, 72, 0x0300_0003, 0, PANEL_X, row_y, 2.0, ROW_H, [0.0; 4], (false, false), [1.0, 1.0, 0.0, 0.9]);
         }
         // Label: truncate to fit ~18 chars at native size in 150 px.
-        let mut lbl: String = label.chars().take(20).collect();
-        if label.len() > 20 { lbl.push('…'); }
+        let lbl = fit(label, 20);
         h.text(Anchor::Left, font, 69, &lbl, PANEL_X + 4.0, row_y + 2.0, false, if sel { [1.0, 1.0, 0.4, 1.0] } else { [0.95, 0.95, 0.95, 1.0] }, sel);
         // Description only on the selected row (saves space; the panel is narrow).
         if sel {
-            let mut d = desc.to_string();
-            if d.len() > 22 { d.truncate(21); d.push('…'); }
+            let d = fit(desc, 22);
             h.text(Anchor::Left, font, 68, &d, PANEL_X + 4.0, row_y + 7.0, false, [0.7, 0.85, 0.7, 1.0], false);
         }
     }
@@ -285,22 +290,21 @@ fn menu(h: &mut Hud, dev: &Dev, scene: &Scene) {
     if n > VISIBLE_ROWS {
         let more_above = top > 0;
         let more_below = visible_end < n;
-        let ind = format!("{}{}/{}{}", if more_above { "▲ " } else { "  " }, dev.menu_sel + 1, n, if more_below { " ▼" } else { "" });
+        let ind = format!("{}{}/{}{}", if more_above { "^ " } else { "  " }, dev.menu_sel + 1, n, if more_below { " v" } else { "" });
         h.text(Anchor::Left, font, 69, &ind, PANEL_X + PANEL_W - 40.0, y, false, [0.6, 0.6, 0.6, 1.0], false);
         y += 12.0;
     }
     // The result message (last action's outcome), ~3 s.
     if dev.result_timer > 0 {
         if let Some(msg) = &dev.result_msg {
-            let mut m = msg.clone();
-            if m.len() > 28 { m.truncate(27); m.push('…'); }
+            let m = fit(msg, 28);
             h.quad(Anchor::Left, 70, 0x0300_0003, 0, PANEL_X, y, PANEL_W, 12.0, [0.0; 4], (false, false), [0.15, 0.0, 0.15, 0.9]);
             h.text(Anchor::Left, font, 69, &m, PANEL_X + 2.0, y + 2.0, false, [1.0, 0.9, 1.0, 1.0], true);
             y += 13.0;
         }
     }
     // Footer hint (compact).
-    h.text(Anchor::Left, font, 69, "↑↓ Ent click  F2 close", PANEL_X, y, false, [0.55, 0.55, 0.55, 1.0], false);
+    h.text(Anchor::Left, font, 69, "Up/Dn Enter click  F2 close", PANEL_X, y, false, [0.55, 0.55, 0.55, 1.0], false);
 }
 
 /// The menu items: (label, one-line description of what to watch for, action). B-9: descriptions added so each
