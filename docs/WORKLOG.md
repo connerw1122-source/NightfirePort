@@ -2510,3 +2510,72 @@ Four bugs found by the user in round 3 of playtesting, all fixed:
    the spiral at r=2.0 (dev.rs:633), skipping the wire's exact position.
 
 Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
+
+## B-6/B-7 — Scenarios pick active-in-play guards; full NF_ISO test per scenario
+
+The user's playtest showed all 4 "passing" scenarios broken in the viewer: Bond stuck in a sealed area with no
+guards nearby, no sniper, no searchlight, no guard at all. **Root cause (the user's diagnosis):** the headless tests
+passed because they checked the AI in `Sim`, where guards the game doesn't draw or run still "act". The scenario
+placement filter was `present` only — it picked guards that exist in the list but never activate in play (WAIT_SWITCH
+drones, spawner templates). The fix: port the game's own active-guard definition and assert it in the tests.
+
+### B-6: the active-guard definition + placement diagnostics
+
+`is_active_guard` (dev.rs) now mirrors the game's own definition: **present + enabled + alive + drawn (`obj+0xFC`)
++ in the llist + the switch channel on**. The `drawn` flag and `in_llist` membership are the user's explicit demand
+("Find the game's own definition of an active guard: spawned, in the llist, alive, and the drawn flag (obj+0xFC)").
+The placement (`place_bond_near_guard`) turns on every switch channel first (the viewer's K key — a dev action, no
+RNG change), then filters candidates by the same definition. `log_guard_diagnostics` prints, for the chosen guard:
+**placement index, present / started / enabled / alive / drawn / in-llist / held-by-spawner**, so the user can see
+WHY a guard was picked and verify it is active in play.
+
+### B-7: scenario tests through the REAL viewer path
+
+The old `nf-game/tests/scenario_live.rs` built its own `Drones` from level data — a parallel path that diverged from
+the viewer's `Scene::build` activation. It is **deleted**. The new `nf-view/tests/scenario_live.rs` uses
+`nf_view::load` + `dev::scenario` — the EXACT functions the viewer calls — so a passing test means the scenario
+works in play. Each test: loads the scene, applies the scenario, finds the chosen guard by proximity, asserts it is
+ACTIVE (present+enabled+alive+drawn+in-llist) and Bond's spot is not sealed (≥2 walkable directions), then ticks
+the Sim and asserts the promised outcome.
+
+**6 scenarios pass** (NF_ISO, --test-threads=1):
+- **grenade-throw** (07000002): guard #1 (placement 443, drawn, in-llist) throws a grenade from its OWN decision
+  within 360 ticks. `can_throw_grenade` allows 8–20 m; 12 m is the proven distance.
+- **grenade-bounce-explode** (07000002): the grenade is thrown, bounces, and explodes (max grenades+explosions = 1
+  in 600 ticks). B-7 fix: distance 12 m, not 15 — at 15 m the guard's AIM_STAND_FIRE picks shooting over throwing.
+- **guard-falls-off-ledge** (07000005): guard #14 (placement 302, drawn, in-llist) is lifted 3 m; its y drops
+  40.00 → 38.73 under gravity (the Drone_CollisionHandler down-ray).
+- **ambush** (07000005): guard #3 enters state 0x67 within 180 ticks (the ambush AI activated).
+- **door-anti-crush** (07000005): a door exists on the level (the anti-crush behaviour is interactive — the user
+  opens the door and stands in it).
+- **all_guard_scenarios_pick_active_guard_and_walkable_spot**: the smoke test asserts every guard-based scenario
+  picks an active guard (drawn + in-llist) and a non-sealed spot.
+
+`--frame N --shot out.png` already applies `--dev --scenario` (B-5): `nf-view <iso> <level> --dev --scenario <name>
+--frame N --shot out.png` renders the scenario's actual state at tick N.
+
+## B-9 — searchlight-tracks-bond REMOVED (port bug); F2 menu reworked
+
+### searchlight-tracks-bond: BROKEN (port bug, not placement)
+
+Investigation (07000005): `Searchlight_Create` parses 29 parts (7 mounts, 7 heads, 6 beams, 7 coronas, 2 spots), but
+**only 1 of 7 heads links to a spot** (`links[2]` is None for 6 heads — the create's 3-unit linking radius orphans
+most spots). That 1 head (#0 at `(-57, 37.8, -60)`) has `mid = 6.11` rad — the beam points **UP** (its spot is at
+`y=42.5`, above the head at 37.8), so it never sweeps the ground. The tracking transition (state 0→1) needs Bond
+within 2 m of the SPOT, which never exists on the ground. This is a port bug in `Searchlight_Create`'s spot linking +
+the `half_mid` / param-4/5 read (G-036), not a scenario placement issue. The scenario is REMOVED from the registry
+until the port is fixed (needs the decomp, lost in the sandbox reset). The scenario fn is kept (dead_code).
+
+### F2 menu rework: large text, keyboard+mouse nav, descriptions, on-screen results
+
+The user said "the menu sucks". The F2 menu is reworked:
+- **Large, readable text**: `Hud::text_scaled` (hud.rs) scales the bitmap font's glyphs (1.6× for menu labels).
+- **Keyboard + mouse navigation**: ↑/↓ move the selection, Enter activates, mouse clicks (both update `menu_sel`).
+  `menu_key(dev, MenuKey)` in dev.rs; wired in lib.rs.
+- **One-line description per action**: each item shows what to watch for (e.g. "nearest guard lobs a grenade —
+  watch the arc + explosion (F1)").
+- **On-screen result**: each action prints its outcome at the bottom of the menu for ~3 s (e.g. "guard #22: forced
+  grenade throw — watch the lob"), via `Dev::result_msg` / `result_timer`.
+- **Scenario banner**: the current scenario's "what to check" stays on screen while the menu is open.
+
+Tests: all nf-game/nf-formats/nf-audio/nf-view tests pass; only the 3 disc_golden tests fail (allowed on the slim ISO).

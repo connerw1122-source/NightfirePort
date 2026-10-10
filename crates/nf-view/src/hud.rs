@@ -78,16 +78,32 @@ impl Hud<'_> {
     /// Font 2 text with its top-left pen at (x, y − cap) (`FE 02`: right-aligned → x − width), colour `c`; flag 0x20:
     /// a black copy at (+1, +1) first.
     pub(crate) fn text(&mut self, anchor: Anchor, font: &nf_formats::hud::Font, layer: i32, s: &str, x: f32, y: f32, right: bool, c: [f32; 4], shadow: bool) {
-        let (_, width) = font.layout(s, 0.0, y);
+        self.text_scaled(anchor, font, layer, s, x, y, right, c, shadow, 1.0);
+    }
+
+    /// Scaled font 2 text (B-9: for the dev menu's large, readable text). Each glyph's w/h and the horizontal
+    /// advance are multiplied by `scale` (1.0 = native ~10 px; 2.0 = ~20 px); the row's y is unchanged so callers
+    /// space rows to fit the taller glyphs. The shadow offset scales too.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn text_scaled(&mut self, anchor: Anchor, font: &nf_formats::hud::Font, layer: i32, s: &str, x: f32, y: f32, right: bool, c: [f32; 4], shadow: bool, scale: f32) {
+        if scale <= 0.0 || c[3] <= 0.0 { return; }
+        let (placed, native_w) = font.layout(s, 0.0, y);
+        let width = native_w * scale;
         let x0 = if right { x - width } else { x };
-        let (placed, _) = font.layout(s, x0, y);
-        for (dx, col) in shadow.then_some((1.0, gs(0, 0xff))).into_iter().chain(std::iter::once((0.0, c))) {
+        let sh = 1.5 * scale;
+        for (dx, col) in shadow.then_some((sh, gs(0, 0xff))).into_iter().chain(std::iter::once((0.0, c))) {
             for p in &placed {
                 let g = &font.glyphs[p.glyph];
-                self.quad(anchor, layer, FONT_TEX, false, p.x + dx, p.y + dx, g.w as f32, g.h as f32, [g.u as f32, g.v as f32, g.w as f32, g.h as f32], (false, false), col);
+                // p.x is the native absolute x (from a layout at 0); scale the offset from x0.
+                let gx = x0 + p.x * scale + dx;
+                let gw = g.w as f32 * scale;
+                let gh = g.h as f32 * scale;
+                self.quad(anchor, layer, FONT_TEX, false, gx, p.y + dx, gw, gh, [g.u as f32, g.v as f32, g.w as f32, g.h as f32], (false, false), col);
             }
         }
     }
+
+
 
     pub(crate) fn finish(mut self) -> HudFrame {
         self.quads.sort_by(|a, b| b.layer.cmp(&a.layer));

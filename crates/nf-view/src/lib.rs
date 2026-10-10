@@ -415,31 +415,53 @@ impl App {
             Some(d) => (d.mouse, d.spawn),
         };
         let Some(idx) = dev::menu_hit(self.dev.as_deref().unwrap(), mouse.0, mouse.1, aspect) else { return };
+        // B-9: a click also moves the keyboard selection to the clicked row.
+        if let Some(d) = self.dev.as_deref_mut() { d.menu_sel = idx; }
         let Some(action) = dev::menu_action(self.dev.as_deref().unwrap(), idx) else { return };
-        match action {
-            dev::MenuAction::Close => { if let Some(d) = self.dev.as_deref_mut() { d.menu = false; } }
+        let _ = spawn_pick;
+        self.apply_menu_action(action);
+    }
+
+    /// B-9: apply a dev-menu action and set the on-screen result message. Shared by mouse-click and keyboard
+    /// (Enter) so both produce the same feedback. The result stays ~3 s (180 ticks).
+    fn apply_menu_action(&mut self, action: dev::MenuAction) {
+        let result = match action {
+            dev::MenuAction::Close => { if let Some(d) = self.dev.as_deref_mut() { d.menu = false; } "menu closed".to_string() }
             dev::MenuAction::Spawn(pick) => {
-                // Spawn at the crosshair (the camera's aim point 5 m ahead, or the floor hit).
                 let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
                 let dir = self.cam.dir().to_array();
                 let hit = self.scene.sim.as_ref().and_then(|s| s.world.segment(eye, [eye[0] + dir[0] * 30.0, eye[1] + dir[1] * 30.0, eye[2] + dir[2] * 30.0]));
                 let pos = hit.map_or([eye[0] + dir[0] * 5.0, eye[1], eye[2] + dir[2] * 5.0], |t| [eye[0] + (dir[0] * 30.0) * t, eye[1] + (dir[1] * 30.0) * t, eye[2] + (dir[2] * 30.0) * t]);
                 if let Some(d) = self.dev.as_deref_mut() { d.spawn = pick; }
-                if let Some(d) = self.dev.as_deref() { d.spawn_guard(&mut self.scene, pos, self.cam.yaw); }
+                let gi = self.dev.as_deref().and_then(|d| d.spawn_guard(&mut self.scene, pos, self.cam.yaw));
+                let kind = match pick { dev::SpawnPick::Normal => "normal", dev::SpawnPick::Sniper => "sniper", dev::SpawnPick::Ambush => "ambush" };
+                match gi { Some(gi) => format!("guard #{gi}: spawned ({kind}) at ({:.1},{:.1},{:.1})", pos[0], pos[1], pos[2]), None => format!("spawn failed ({kind}) — no free slot or no sim") }
             }
-            dev::MenuAction::ForceGrenade => { let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos); if let Some(d) = self.dev.as_deref_mut() { d.force_grenade(&mut self.scene, bond); } }
-            dev::MenuAction::Impulse => { let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos); if let Some(d) = self.dev.as_deref_mut() { d.impulse_guard(&mut self.scene, bond); } }
-            dev::MenuAction::SpecialDeath => { let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos); if let Some(d) = self.dev.as_deref_mut() { d.special_death(&mut self.scene, bond); } }
-            dev::MenuAction::ToggleGod => { if let Some(d) = self.dev.as_deref_mut() { d.god_mode = !d.god_mode; } }
-            dev::MenuAction::ToggleAmmo => { if let Some(d) = self.dev.as_deref_mut() { d.infinite_ammo = !d.infinite_ammo; } }
-            dev::MenuAction::SaveSpot => { let p = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos); if let Some(d) = self.dev.as_deref_mut() { d.saved_spot = Some(p); } }
+            dev::MenuAction::ForceGrenade => {
+                let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos);
+                let gi = self.dev.as_deref_mut().and_then(|d| { d.force_grenade(&mut self.scene, bond); d.forced.last().copied() });
+                match gi { Some(gi) => format!("guard #{gi}: forced grenade throw — watch the lob"), None => "no guard within 30 m to force".to_string() }
+            }
+            dev::MenuAction::Impulse => {
+                let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos);
+                let gi = self.dev.as_deref_mut().and_then(|d| { d.impulse_guard(&mut self.scene, bond); d.forced.last().copied() });
+                match gi { Some(gi) => format!("guard #{gi}: impulse applied — watch the hop"), None => "no guard within 30 m to impulse".to_string() }
+            }
+            dev::MenuAction::SpecialDeath => {
+                let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos);
+                let gi = self.dev.as_deref_mut().and_then(|d| { d.special_death(&mut self.scene, bond); d.forced.last().copied() });
+                match gi { Some(gi) => format!("guard #{gi}: SpecialDeath triggered — watch the fall"), None => "no guard within 30 m".to_string() }
+            }
+            dev::MenuAction::ToggleGod => { let on = self.dev.as_deref_mut().map_or(false, |d| { d.god_mode = !d.god_mode; d.god_mode }); format!("god mode: {}", if on { "ON" } else { "OFF" }) }
+            dev::MenuAction::ToggleAmmo => { let on = self.dev.as_deref_mut().map_or(false, |d| { d.infinite_ammo = !d.infinite_ammo; d.infinite_ammo }); format!("infinite ammo: {}", if on { "ON" } else { "OFF" }) }
+            dev::MenuAction::SaveSpot => { let p = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos); if let Some(d) = self.dev.as_deref_mut() { d.saved_spot = Some(p); } format!("spot saved at ({:.1},{:.1},{:.1})", p[0], p[1], p[2]) }
             dev::MenuAction::RestoreSpot => {
                 let spot = self.dev.as_deref().and_then(|d| d.saved_spot);
-                if let Some(p) = spot { if let Some(d) = self.dev.as_deref() { d.teleport(&mut self.scene, p, self.cam.yaw); } }
+                match spot { Some(p) => { if let Some(d) = self.dev.as_deref() { d.teleport(&mut self.scene, p, self.cam.yaw); } format!("restored to ({:.1},{:.1},{:.1})", p[0], p[1], p[2]) }, None => "no saved spot — use 'save spot' first".to_string() }
             }
-            dev::MenuAction::TimeScale(s) => { if let Some(d) = self.dev.as_deref_mut() { d.time_scale = s; } }
-        }
-        let _ = spawn_pick;
+            dev::MenuAction::TimeScale(s) => { if let Some(d) = self.dev.as_deref_mut() { d.time_scale = s; } format!("time scale: {}", if s == 0.0 { "paused (F11=step)" } else if s == 1.0 { "1×" } else { "0.25×" }) }
+        };
+        if let Some(d) = self.dev.as_deref_mut() { d.result_msg = Some(result); d.result_timer = 180; }
     }
 }
 
@@ -543,6 +565,14 @@ impl ApplicationHandler for App {
                     // Dev mode keys (WORKLOG 0081): F1 = AI overlay, F2 = dev menu, F11 = step one tick (when paused).
                     (KeyCode::F1, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { d.overlay = !d.overlay; },
                     (KeyCode::F2, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { d.menu = !d.menu; if d.menu { self.grab(false); } },
+                    // B-9: keyboard nav for the dev menu. ↑/↓ move, Enter activates the selected row.
+                    (KeyCode::ArrowUp, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.menu { dev::menu_key(d, dev::MenuKey::Up); } },
+                    (KeyCode::ArrowDown, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.menu { dev::menu_key(d, dev::MenuKey::Down); } },
+                    (KeyCode::Enter, ElementState::Pressed) => {
+                        if let Some(d) = self.dev.as_deref_mut() {
+                            if d.menu { if let Some(a) = dev::menu_key(d, dev::MenuKey::Activate) { drop(d); self.apply_menu_action(a); } }
+                        }
+                    }
                     (KeyCode::F11, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.time_scale <= 0.0 { d.step = true; } },
                     (KeyCode::F3, ElementState::Pressed) => self.opts.reinforcements = !self.opts.reinforcements,
                     (KeyCode::KeyF, ElementState::Pressed) => self.opts.firing = !self.opts.firing,
