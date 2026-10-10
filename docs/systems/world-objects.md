@@ -30,7 +30,8 @@ table); the rest is the research pass, not yet re-checked.
 | Snow (4096 flakes) | 0xDF `SNOW_gen` ×2 + 0x32 `Effect_Snow_*` ×18 | docs/systems/render.md |
 | Searchlights (7 mounts, 7 heads, 6 beams, 7 coronas, 2 spots) | 0xDE ×29 | `Searchlight_Create` 0x1cb4f8 / `Searchlight_Update` 0x1cb900 — **spec re-checked 2026-10-10, see below** |
 | ~~Coronas~~ | 0xFC ×13 | `Corona_Create` 0x18da00 — **ported (WORKLOG 0073), see below**; `Corona_Update` 0x18da78 is a different, runtime class (0x45, U-042) |
-| Doors (5), level-exit gates (2) | 0xDB, 0xE8 | `Door_Create` 0x136100 / `Door_Update` 0x1363c8; `Trigger_LoadLevelCreate` 0x1b2950 |
+| ~~Doors (5)~~ | 0xDB | `Door_Create` 0x136100 … `Doors_Calc` 0x135fe0 — **ported (WORKLOG 0074), see below** |
+| Level-exit gates (2) | 0xE8 | `Trigger_LoadLevelCreate` 0x1b2950 → `Trigger_Create` (both point at level 0x07000066; part of the exit-trigger task) |
 | Helicopter | 0x2F ×2 (+ ScriptPlayers `06000046` / `06000047`) | `Copter_Create` 0x17d340 / `Copter_Update` 0x17dbb8 |
 | Ladder, zip wire, grapple pulleys, placed pickups | 0x22, 0x3E (rotation z negated), 0x3A, 0xF0 | `Ladder_Create` 0x1966c0, `Wire_Create` 0x1981d8, `Grapple_Create` 0x198298, `Pickup_Create` |
 
@@ -61,6 +62,63 @@ generic path, no class store). Nothing to port until a 0x45 creator shows up.
 so the "simulation" is the placement transform; `nf-view` adds the 13 as World-layer instances (the alpha
 list via the object-flags bit 0x1, each leaf's GS blend). Golden test `corona_live.rs` (names, flags,
 the alpha-list bit; doors 0xDB as the discriminator).
+
+## Doors [M disassembly + decomp, re-checked 2026-10-10; L snapshot]
+
+Type-0xDB placements dispatch to `Door_Create` (0x136100): `control_create_object(0x80, …)` → **class 0x1C**
+(`obj+0xFF`), the 0x80-byte DOORINFO instance at `obj+0xE0`. The creators do NOT see the file record:
+`parsemap_block_map_data_dynamic` (0x1d1b68) builds a 0xB0-byte runtime record on its stack — memset, then the
+record's **+0x40 (u16, key/path count) → +0x02, +0x42 (u16, rate) → +0x04, `m_paths[record+0x44]` (u32) →
++0x08** (disassembly; `m_paths` = one pointer per 0x19 block, `parsemap_block_path_data` 0x1d24d0 — the
+level's 0x19 payloads in parse order, `Level::path_blocks`), and parameter k at +0x2C + 4k.
+
+DOORINFO (offsets from the instance): +0x08 the object, +0x0C the anim (a 0x19 key list; 0 = none), +0x10 the
+swing door's inverse closed pose, +0x50 pos01 (0..1; a swing door's closed = 0.5), +0x54 speed, +0x58 dir,
++0x5C swing sign, +0x60/62/64 the entering-8 / entering-0x10 / hit sounds, +0x66 ch_open, +0x68 ch_lock,
++0x6A group, +0x6C the 2-tick activation timer, +0x6E frames (the count − 1), +0x70 flags (bit 0 spline else
+keyframe, bit 4 busy, bit 5 keep-open), +0x72 the auto-close timer, +0x74 msg latch, +0x76 approach side,
++0x77 locked. Parameters: 0 kind (0 swing, 1–2 slide), 1 group, 2 ch_open, 3 ch_lock, 4 straddle (portal link,
+`obj+0xFD bit 3`), 5/6/7 the sounds, 8|9 the flags (bit 2 = starts open), 10 approach, 11 locked.
+
+**Keys**: 28 bytes each — `f32[3]` position at +0, quaternion (x, y, z, w) at +0xC [M `Spline_Interp` 0x1e1858
+`list + 0x1c·k`; L]. `Door_UNLocked`'s (block 3): three identical positions (57.7526, 26.0004, 89.3115) with
+quats (0, −0.3827, 0, −0.9239) / (0, +0.3827, 0, −0.9239) / (0, +0.9239, 0, −0.3827) — open A, **closed**,
+open B. `Spline_Interp` returns at once on a NULL framelist: **the 4 locked doors (no anim) never visually
+move** — their state machine runs invisibly when channel 200 unlocks them.
+
+**States** (`obj+0xF4`): 2 closed, 4 open, 8 opening, 0x10 closing. `Door_Interp` (0x135738) poses at pos01,
+advances `pos01 += speed·dir` (FRAME_RATE_MUL 1.0 during play [L]), snaps: swing — closing reaches 0.5 →
+CLOSED, opening leaves [0,1] → clamp + OPEN; slide — below 0 → CLOSED at 0, above 1 → OPEN at 1; then re-poses
+(always spline mode). The create-time speed is 1/rate with rate 0 → **1/30** (`FRAME_RATE` still reads 30 at
+load; 60 during play [L]); `Door_SetupSwing` re-quantises a swing door to whole ticks —
+`0.5 / (int)(0.5 / 2s)` = 1/14 [L] — so a swing opens in exactly 7 ticks, and sets the swing sign from
+`dot(row2(pose at key 0), row0(closed pose))` (−1 here [L]).
+
+`Door_Activate` (0x135be0, from the disassembly): locked (ch_lock off and not closed) → the hit sound only;
+the approach side (one-shot, the activator's offset along the door's facing); swing — closed or closing swings
+**away from the activator's side** (`dir = sign((inv_closed·activator).z)·swing`, state 8), open or opening
+closes toward 0.5 unless the activator stands in the swing path (the ±0.3 margin against the object radius);
+slide — a plain reverse. `Door_Update` (0x1363c8): ch_open on opens, off closes at once (no timer); the lock
+channel's **rising edge** unlocks for good (ch_lock cleared, the game also shows label 0x2000003); an open door
+without the keep-open flag closes after `FRAME_RATE_INT·6` = 360 quiet ticks (the proximity test
+`dist² < (r1+r2)²·2` over classes 2/3/0x12). `Door_ReactToHit` (0x135980): a moving door that meets an actor
+reverses (the anti-crush; `f = local.z·swing` negated past half travel, ±0.0002) — the port stands the proxy
+scan in for the same sphere test. `Doors_Calc` (0x135fe0) at the control pass's end: a group's members copy the
+first non-busy door's dir/pos01/state/timer and re-pose; every busy marker clears.
+
+`Player_Activate` (0x1a5170): the use key casts a radius-1 sphere one unit ahead of the head; every class-0x1C
+hit activates (the port: the door bounding spheres; walls do not stop the game's list either).
+
+Live [L]: 5 doors — `Door_Locked_3` ×1 (152) and `Door_Locked_4` ×3 (154–156), sliders (type 2) with lock
+channel 200, sounds none/none/320, no anim; `Door_UNLocked` ×1 (153), the swing door with 3 keys, sounds
+285/284/320, flags 3 (spline interp). All start closed.
+
+**Port status**: `crates/nf-game/src/door.rs` (the state machines, interp, channels, sounds, the use key) +
+`nf-view` posed Character-layer instances at `obj+0x90` (the draw honours `NF_HIDE` for A/B) + collision via
+`set_dynamic` (the object's own collision mesh, at most one tick behind the visual) + the E key in nf-view.
+Golden `doors_live.rs` (kinds, channels, sounds, flags, the 1/14 speed, the swing sign, the keys, the closed
+matrix against the live `obj+0x90` words). Not ported: portal links, the text labels, the exact proxy-list
+path (G-035).
 
 ## The truck [M, L]
 

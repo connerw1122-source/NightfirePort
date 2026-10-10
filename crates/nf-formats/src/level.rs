@@ -47,6 +47,10 @@ pub struct LevelMap {
     pub ai_network: Option<crate::aipath::AiNetwork>,
     /// Map ambient sounds (block 0x28).
     pub sounds: Vec<MapSound>,
+    /// Key-list blocks (block 0x19), payloads in parse order. `parsemap_block_path_data` (0x1d24d0) stores one
+    /// pointer per block into the global `m_paths` table (0x2ed828); a placement's record +0x44 indexes it (door
+    /// anims, AI paths; docs/formats/map.md).
+    pub path_data: Vec<Vec<u8>>,
 }
 
 /// One object drawn somewhere: `(map, object)` indexes into `Level::maps`, and its row-vector world matrix.
@@ -116,6 +120,7 @@ impl Level {
             let mut placements = Vec::new();
             let mut ai_network = None;
             let mut sounds = Vec::new();
+            let mut path_data = Vec::new();
             for blk in &mf.blocks {
                 match blk.id {
                     0x2e => pending_coll = Some(crate::collision::Collision::parse(blk.payload(data))?),
@@ -131,10 +136,11 @@ impl Level {
                     id::MAP_DATA_STATIC => placements = placement::parse(blk.payload(data))?,
                     0x05 => ai_network = Some(crate::aipath::AiNetwork::parse(blk.payload(data))?),
                     0x28 => sounds = MapSound::parse_block(blk.payload(data))?,
+                    0x19 => path_data.push(blk.payload(data).to_vec()),
                     _ => {}
                 }
             }
-            maps.push(LevelMap { entry, kind: e.kind, name: e.name.clone(), textures, objects, placements, ai_network, sounds });
+            maps.push(LevelMap { entry, kind: e.kind, name: e.name.clone(), textures, objects, placements, ai_network, sounds, path_data });
         }
         let mut by_hash = HashMap::new();
         for (m, map) in maps.iter().enumerate() {
@@ -196,6 +202,14 @@ impl Level {
 
     /// The main map (loader type 1), if the archive has one.
     pub fn main_map(&self) -> Option<usize> { self.maps.iter().position(|m| m.kind == 1) }
+
+    /// Every 0x19 key-list payload of the archive, in level-bin entry and block (parse) order — the game's
+    /// `m_paths` table: `parsemap_block_path_data` appends one pointer per block while the maps parse
+    /// (`parsemap_parsenextblock` 0x1d12e8). A door placement's record +0x44 indexes this list (07000005: 7
+    /// blocks, index 3 = `Door_UNLocked`'s 3 keys, verified against `work/ee_start_05.bin`'s DOORINFO+0xC).
+    pub fn path_blocks(&self) -> Vec<&[u8]> {
+        self.maps.iter().flat_map(|m| m.path_data.iter().map(Vec::as_slice)).collect()
+    }
 
     /// The main map's placements resolved to objects. `cels_only`: only records with the 0x8000 create-cel flag
     /// (what `parsemap_block_map_data_static` places itself); otherwise also the dynamic entities at their record

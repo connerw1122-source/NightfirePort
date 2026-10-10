@@ -1462,3 +1462,53 @@ alpha-list distance fade (`min(⌊zb/128⌋,255)/255`, zb ≈ 56k at 34 units) d
 Leaf state [D]: ALPHA_1 0x7f00000048 (additive), TEST_1 0x5001b (ATE aref 1), ZBUF_1 0x131000000
 (no z-write), verts rgba (178, 172, 147, 128), texture: map texture 1 — 128×128, hashcode
 0xFFFFFFFF, a 16-step gray ramp palette (the radial glow), all alpha 128.
+
+## 0074 — Doors ported: swing/slide state machines, the E key, solid and drawn
+
+The next §5.1 system. Research first (the same discipline as 0072): `Door_Create` 0x136100,
+`Door_SetupSwing` 0x135440, `Door_SetState` 0x135618, `Door_Interp` 0x135738, `Door_ReactToHit` 0x135980,
+`Door_Activate` 0x135be0 (the decompile tangles its branch nesting — ported from the disassembly),
+`Door_DoMsg` 0x135f18, `Doors_Calc` 0x135fe0, `Door_Update` 0x1363c8; `KeyFrame_Interp` 0x1e1140 and
+`Spline_Interp` 0x1e1858 (NULL framelist returns; 28-byte keys — pos + quat; Catmull-Rom position in the
+game's op order; the slerp with `PS2Sinf` and the 0.01 dot cutoff; the quat→matrix with translation in row 3
+— the same layout as the port's Mat4, pinned against the live `obj+0x90` words 3f3504f5/bf3504f0/426702ac).
+
+Key finds: the creators do not see the file record — `parsemap_block_map_data_dynamic` (0x1d1b68) rebuilds it
+on the stack with the record's +0x40/+0x42 (count, rate) at +0x02/+0x04 and `m_paths[record+0x44]` (the
+level's 0x19 key-list blocks, one pointer each per `parsemap_block_path_data` 0x1d24d0) at +0x08 — verified
+end-to-end: block-dump 0x19 of 07000005 gives 7 payloads, block 3 (84 bytes = 3×28) is exactly the
+`m_paths[3]` = 0x009d1404 the live DOORINFO+0xC points at. The create-time `FRAME_RATE` is still 30 (the
+locked doors' speed measures 1/30 although the global reads 60 during play); `Door_SetupSwing`'s whole-tick
+re-quantisation `0.5/(int)(0.5/2s)` turns 1/30 into the measured 1/14 (7 ticks a swing). The 4 locked doors
+have NO anim (frames 0xFFFF, `Spline_Interp` no-ops): channel 200 unlocking them is an invisible state
+change; what raises 200 is unknown (U-044). The swing sign: `dot(row2(key-0 pose), row0(closed))` → −1, live.
+
+Port: `crates/nf-game/src/door.rs` — `Doors::create` (placement order, no RNG), `update` in the control-list
+order (`Door_Update`: ch_open on/off, the lock edge, the 360-tick auto-close with the `(r1+r2)²·2` proximity
+test over player + drones, `Door_Interp`, `Door_ReactToHit`'s anti-crush — the proxy scan stood in by the
+same sphere test, as U-041's precedent), `activate` (from the disassembly), `calc` (`Doors_Calc` group sync),
+`player_use` (`Player_Activate`'s sphere one unit ahead of the head) wired to the E key through
+`Sim::step_bond`. Sounds through the sfx table as usual (285 open, 284 close, 320 the locked thud). nf-view:
+0xDB leaves the static instance loop (like 0xDE/0xFC) and the 5 draw as posed Character-layer vertices at
+`obj+0x90` each frame (`NF_HIDE` honoured for A/B); collision joins `set_dynamic` with the object's own
+collision mesh (id bit 40 + index), at most one tick behind the visual. `nf-formats`: `LevelMap::path_data`
+(0x19 payloads) and `Level::path_blocks()`.
+
+Tests: 8 unit tests in door.rs (slerp ends, Catmull-Rom midpoint, the keyframe clamp, the whole-tick speed,
+swing-opens-away + auto-close + sounds, the locked thud + edge unlock + its sister, group sync); golden
+`doors_live.rs` (the 5 doors' live create state — kinds, channels, sounds, flags, speeds 1/30 and 1/14,
+pos01 0.5, swing −1, frames, the 3 keys' pos+quat, the closed matrix vs the live words; block 2's path list
+and extra[7]/[8] as the discriminator sisters). All nf-game 33 green.
+
+Verification (renders, lavapipe): the door draws — an 8-angle A/B sweep around `Door_UNLocked`
+(`scripts/door_sweep.sh`-style, 2.5 units out) differs by 1.8k–44k half-res samples at 6 of 8 angles (the two
+zero angles are the slab edge-on); `work/renders/door_closed.png` is the angle-2 view. The opening swing
+itself is unit-tested (7 ticks to OPEN, away from the activator's side; the auto-close after 360) — the
+headless shot cannot press E, so the motion is for the user to see in play.
+
+Environment: the sandbox was recycled again — `tools-bin/alsa-prefix` re-extracted (libasound2-dev, the
+runtime `libasound.so.2` copied in because the dev deb only ships the symlink) and lavapipe added
+(mesa-vulkan-drivers; `VK_ICD_FILENAMES` in `scripts/nfenv.sh`).
+
+Next (§5.1): the helicopter (`Copter_Create` 0x17d340), then the level-exit trigger + objectives (the 0xE8
+gates both load 0x07000066).

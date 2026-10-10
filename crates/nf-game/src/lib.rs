@@ -7,6 +7,7 @@ pub mod bullet;
 pub mod corona;
 pub mod cover;
 pub mod damage;
+pub mod door;
 pub mod drone;
 pub mod env;
 pub mod gun;

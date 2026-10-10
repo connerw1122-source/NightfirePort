@@ -2985,6 +2985,9 @@ pub struct Drones {
     /// The level's searchlights (docs/systems/world-objects.md; created in `attach_level`, updated in `tick`'s
     /// control-list order with the drones and triggers).
     pub searchlights: crate::searchlight::Searchlights,
+    /// The level's doors (docs/systems/world-objects.md "Doors"); created in `attach_level`, updated in `tick`'s
+    /// control-list order (`Door_Update`), the group sync (`Doors_Calc`) at the pass's end.
+    pub doors: crate::door::Doors,
     /// Bond's bullet segments of this tick (`from`, `to`): the searchlights' break check (U-041 stand-in).
     bullet_paths: Vec<([f32; 3], [f32; 3])>,
 }
@@ -3033,7 +3036,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), bullet_paths: Vec::new() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -3050,6 +3053,15 @@ impl Drones {
                 else { level.maps[m].objects.get(p.index as usize) };
             obj.map_or(([0.0; 3], [0.0; 3]), |o| (o.min, o.max))
         });
+        // Doors (`Door_Create`, placement order — no RNG draw). The anim comes from the level's 0x19 key-list
+        // blocks (`m_paths`), the sphere from the placement object's own gfx sphere (`Control_BuildWorldSph`).
+        let path_blocks = level.path_blocks();
+        self.doors = crate::door::Doors::create(&level.maps[m].placements, &path_blocks, |p| {
+            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
+                else { level.maps[m].objects.get(p.index as usize) };
+            obj.map(|o| (o.hashcode, o.centre, o.radius))
+        });
+        self.doors.create_channels(&mut self.channels, self.frame);
         // Weather: `Env_Create` (placement 0xDF, parameter 0 = drop type) and the `RainBox_Create` volumes (0x32: the
         // glist bounds at the placement translation).
         self.map_sounds = crate::sound::MapSounds::new(level.maps[m].sounds.clone());
@@ -3236,6 +3248,19 @@ impl Drones {
         if h.looped { return handle; }
         self.sounds.push(Sound { id: h.id, pos, inner: h.inner, outer: h.outer, weight: h.weight });
         handle
+    }
+
+    /// `Player_Activate`'s door part (0x1a5310): the use key at Bond's head, one unit ahead — `Door_Activate`
+    /// for every door the sphere meets (`docs/systems/world-objects.md` "Doors"). The other classes the game's
+    /// switch handles (triggers 0x1D, locks 0x3A, cars 0x28 …) are other systems'.
+    pub fn player_use_doors(&mut self, d: &Data, head: V3, look: V3, frame: u32) {
+        let (evs, _hits) = self.doors.player_use(head, look, &mut self.channels, frame);
+        for (id, pos) in evs {
+            match d.sfx {
+                Some(t) => { let h = t.get(id as u32); self.play_sound_handle(pos, h); }
+                None => { self.audio.play3d(id as u32, pos, None); }
+            }
+        }
     }
 
     /// `Pickup_Update` for every pickup: the fall, Bond's touch (`Pickup_Handler`; refused pickups stay, and the
@@ -3488,6 +3513,11 @@ impl Drones {
                 _ => {}
             }
         }
+        // Doors are solid through their object's collision mesh at `obj+0x90` (`Collide_PickObj` walks the
+        // cel-linked objects whatever moves them); the pose this tick's `Door_Update` writes lands in the next
+        // call — at most one tick (4 cm) behind the visual. Id: high bit 40 + the door index.
+        parts.extend(self.doors.list.iter().enumerate().filter(|(_, x)| x.glist != 0)
+            .map(|(k, x)| (0x100_0000_0000 | k as u64, x.glist, x.matrix)));
         d.world.set_dynamic(&parts);
         // Script triggers (`Trigger_TouchOnce` / `Trigger_Touch` made by `Script_CreateEntity`): one per live entity,
         // its volume the glist's collision at the entity's matrix this tick; gone with the object. New objects head the
@@ -3547,6 +3577,7 @@ impl Drones {
             .chain(self.triggers.iter().enumerate().filter(|(_, t)| t.kind != crate::triggers::kind::TOUCH).map(|(j, t)| (t.placement, 1, j)))
             .chain(self.spawners.iter().enumerate().map(|(j, sp)| (sp.placement, 2, j)))
             .chain(self.searchlights.parts.iter().enumerate().filter(|(_, p)| p.kind == 1).map(|(j, p)| (p.placement, 3, j)))
+            .chain(self.doors.list.iter().enumerate().map(|(j, d)| (d.placement, 4, j)))
             .collect();
         order.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         // Pickups are created at run time, so they head the control list: `Pickup_Update` before the placed objects.
@@ -3555,6 +3586,22 @@ impl Drones {
         let mut talk_queue: Vec<(usize, Vec<(usize, bool)>)> = Vec::new();
         for &(_, what, index) in &order {
             if what == 1 { self.triggers[index].update(&mut self.channels, &touchers, frame); continue; }
+            if what == 4 {
+                // `Door_Update` (docs/systems/world-objects.md "Doors"): channels, the auto-close timer, the
+                // anim; its sounds (open 285 / close 284 / the locked 320 thud on 07000005) enter the pool.
+                // Actors: the player first (`glb_players`, the activator of every auto-activation), then the
+                // drones — the game scans classes 2 / 3 / 0x12 by bounding sphere.
+                let actors: Vec<([f32; 3], f32)> = std::iter::once((player.pos, 0.4))
+                    .chain(self.list.iter().filter(|x| x.present && !x.corpse).map(|x| (x.pos, 0.4))).collect();
+                let evs = self.doors.update(index, &mut self.channels, &actors, frame);
+                for (id, pos) in evs {
+                    match d.sfx {
+                        Some(t) => { let h = t.get(id as u32); self.play_sound_handle(pos, h); }
+                        None => { self.audio.play3d(id as u32, pos, None); }
+                    }
+                }
+                continue;
+            }
             if what == 3 {
                 // `Searchlight_Update` (docs/systems/world-objects.md): channels, sweep/tracking, the parts, the
                 // break check; its `Sound_Play3D` events (0xE5 relay, 0xE6 glass) enter the pool and the hearing list.
@@ -3659,6 +3706,10 @@ impl Drones {
         }
         // The drones' speech requests, in update order (no random draws in `SpeechSFX` / `PlaySFX`).
         for (index, talks) in talk_queue { self.speech(d, index, talks, frame); }
+        // `Doors_Calc` — the control pass's last act (0x1336f8's tail): the door groups sync, the busy markers
+        // clear; `switch_channels_prev` snapshots for the next tick's lock-edge test.
+        self.doors.calc();
+        self.doors.end_tick(&self.channels);
         // Bullets: move, collide with the world and Bond (`Bullet_update` + `Collide_Update`), damage
         // (`Player_HandlePain`); the hit flash fades by 1 per tick (HUD).
         self.impacts.clear();

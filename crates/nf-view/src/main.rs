@@ -13,7 +13,7 @@
 //! for a switch), K = turn all switch channels on, F12 = screenshot.
 //! The guard AI (nf-game) runs at 60 Hz with the camera as Bond; `--frame N` runs N ticks before a `--shot`, pressing
 //! the trigger on the `--pull` ticks.
-//! (nf-view-shot.png), Esc = release mouse, Esc again = quit.
+//! (nf-view-shot.png), E = use (doors), Esc = release mouse, Esc again = quit.
 
 mod gpu;
 mod hud;
@@ -467,7 +467,7 @@ impl ApplicationHandler for App {
                                 crouch: self.just.remove(&KeyCode::KeyC) | self.just.remove(&KeyCode::ControlLeft),
                                 aiming: self.aiming,
                             };
-                            sim.step_bond(input, self.trigger, self.just.remove(&KeyCode::KeyR));
+                            sim.step_bond(input, self.trigger, self.just.remove(&KeyCode::KeyR), self.just.remove(&KeyCode::KeyE));
                             if let Some(s) = self.sound.as_mut() { sound_tick(s, sim); }
                         }
                         if !self.noclip {
@@ -582,7 +582,7 @@ fn main() -> Result<()> {
                 sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], sim.bond.yaw);
             }
             for t in 1..=time as u32 {
-                if walk { sim.step_bond(Default::default(), pulls.contains(&t), false); } else { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
+                if walk { sim.step_bond(Default::default(), pulls.contains(&t), false, false); } else { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
             }
             if walk { let h = sim.bond.head(); cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV }; }
             if walk { if let Some((p, yaw, pitch, fov)) = sim.script_camera() { cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov }; } }

@@ -6,3 +6,8 @@
 *.ELF
 *.bin
 *.BIN
+# The sandbox's audio/Vulkan prefix and env wrapper (WORKLOG 0071/0074): extracted .deb binaries,
+# re-derivable, machine-specific.
+/tools-bin
+/scripts
+/nf-view-crash.log
