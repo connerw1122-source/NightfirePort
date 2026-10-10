@@ -109,6 +109,19 @@ impl Hud<'_> {
     }
 }
 
+/// Build 6 NDC vertices (two triangles) for a rectangle from (x0,y0) to (x1,y1).
+fn ndc_rect(x0: f32, y0: f32, x1: f32, y1: f32) -> [crate::gpu::HudVertex; 6] {
+    use crate::gpu::HudVertex;
+    [
+        HudVertex { p: [x0, y0], uv: [0.0, 0.0], c: [0.0; 4] },
+        HudVertex { p: [x1, y0], uv: [0.0, 0.0], c: [0.0; 4] },
+        HudVertex { p: [x1, y1], uv: [0.0, 0.0], c: [0.0; 4] },
+        HudVertex { p: [x0, y0], uv: [0.0, 0.0], c: [0.0; 4] },
+        HudVertex { p: [x1, y1], uv: [0.0, 0.0], c: [0.0; 4] },
+        HudVertex { p: [x0, y1], uv: [0.0, 0.0], c: [0.0; 4] },
+    ]
+}
+
 /// The frame's overlay.
 pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     let mut h = Hud { quads: Vec::new(), aspect, textures: &scene.hud_textures };
@@ -165,21 +178,21 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
         h.quad(Anchor::Right, rounds.layer as i32, 0x0300_0128, false, x, bottom - clip * hpr, bw * k, clip * hpr, [bu, (clip_size - clip) * hpr + bv, bw, clip * hpr], (false, false), gs(rounds.colour >> 8, rounds.colour & 0xff));
         h.quad(Anchor::Right, empty.layer as i32, 0x0300_0128, false, x, bottom - clip_size * hpr, bw * k, clip_size * hpr, [bu, bv, bw, clip_size * hpr], (false, false), gs(empty.colour >> 8, empty.colour & 0xff));
     }
-    // Scope overlay: when zoomed (scoped weapon, zoom > 1.0), draw a black border (vignette) around the screen
-    // leaving a circular view in the center. The game uses a HUD sprite (the SightPane); the port draws 4 black
-    // quads forming a border with a rectangular hole (the simplest approximation without a custom shader).
+    // Scope overlay: when zoomed (scoped weapon, zoom > 1.0), draw a black border (vignette) around the screen.
+    // Uses ndc_quad (raw NDC vertices with the font texture) because quad() drops tex=0 quads (the hashcode
+    // lookup fails). The game uses a HUD sprite (the SightPane); this is a STANDIN (rectangular, not circular).
     if s.zoom > 1.01 {
-        let alpha = ((s.zoom - 1.0) * 255.0 / (s.zoom_target - 1.0).max(0.01)).min(255.0) as u32;
-        let hole_w = SW * 0.62; // the visible rectangle's width (approximates the scope circle)
-        let hole_h = SH * 0.62;
-        let x0 = (SW - hole_w) * 0.5;
-        let y0 = (SH - hole_h) * 0.5;
-        let black = gs(0x000000, alpha);
-        // top, bottom, left, right
-        h.quad(Anchor::Stretch, 60, 0, false, 0.0, 0.0, SW, y0, [0.0, 0.0, 0.0, 0.0], (false, false), black);
-        h.quad(Anchor::Stretch, 60, 0, false, 0.0, y0 + hole_h, SW, SH - (y0 + hole_h), [0.0, 0.0, 0.0, 0.0], (false, false), black);
-        h.quad(Anchor::Stretch, 60, 0, false, 0.0, y0, x0, hole_h, [0.0, 0.0, 0.0, 0.0], (false, false), black);
-        h.quad(Anchor::Stretch, 60, 0, false, x0 + hole_w, y0, SW - (x0 + hole_w), hole_h, [0.0, 0.0, 0.0, 0.0], (false, false), black);
+        let alpha = ((s.zoom - 1.0) * 255.0 / (s.zoom_target - 1.0).max(0.01)).min(255.0) / 255.0;
+        let hole = 0.31; // half-size of the visible rectangle (NDC, -1..1)
+        let black = [0.0, 0.0, 0.0, alpha];
+        // top strip: y from -1 to -hole
+        h.ndc_quad(60, ndc_rect(-1.0, -1.0, 1.0, -hole), black);
+        // bottom strip: y from hole to 1
+        h.ndc_quad(60, ndc_rect(-1.0, hole, 1.0, 1.0), black);
+        // left strip: x from -1 to -hole, y from -hole to hole
+        h.ndc_quad(60, ndc_rect(-1.0, -hole, -hole, hole), black);
+        // right strip: x from hole to 1, y from -hole to hole
+        h.ndc_quad(60, ndc_rect(hole, -hole, 1.0, hole), black);
     }
     h.finish()
 }

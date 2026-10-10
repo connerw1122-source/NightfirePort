@@ -30,6 +30,9 @@ pub fn models(level: &nf_formats::level::Level) -> std::collections::HashMap<u32
 pub mod kind {
     pub const WEAPON: u16 = 0;
     pub const AMMO: u16 = 1;
+    pub const KEY: u16 = 2;
+    pub const ARMOUR: u16 = 3;
+    pub const BOND_BONUS: u16 = 6;
 }
 
 /// One pickup object (`control_create_object(0x40)` + PICKUPINFO at `obj+0xE0`).
@@ -233,12 +236,20 @@ impl Inventory {
     pub fn take(&mut self, w: &WeaponData, p: &Pickup, loaded: bool) -> Option<Taken> {
         let id = p.weapon as usize;
         match p.kind {
-            kind::WEAPON if !self.owned.get(id).copied().unwrap_or(true) => {
+            kind::WEAPON | kind::BOND_BONUS if !self.owned.get(id).copied().unwrap_or(true) => {
+                // Type 0 (weapon) or type 6 (Bond bonus — `Pickup_Create` requires the gold medal, but the
+                // port doesn't track it; treating type 6 as a weapon pickup is a STANDIN for the gold-medal
+                // gate). `Upgrade_Weapon(id)` is the identity in the port (no upgrades bought) [M 0x18e650].
                 self.equip_weapon(w, id, p.rounds, loaded).then_some(Taken::Weapon { weapon: p.weapon })
             }
-            kind::WEAPON | kind::AMMO => {
+            kind::WEAPON | kind::BOND_BONUS | kind::AMMO => {
                 let n = self.equip_ammo(w, id, p.rounds);
                 (n != 0).then_some(Taken::Ammo { weapon: p.weapon, rounds: n })
+            }
+            kind::ARMOUR => {
+                // Type 3: armour 50 (`BLData+0x8B0`, only when below 50) [M pickups.md:71]. STANDIN: no
+                // armour field in the port's Health struct; the pickup is consumed but has no effect.
+                Some(Taken::Weapon { weapon: p.weapon })
             }
             _ => None,
         }

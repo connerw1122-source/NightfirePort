@@ -624,18 +624,32 @@ mod scenarios {
     pub fn wire_music(scene: &mut Scene) {
         if let Some(sim) = scene.sim.as_mut() {
             if let Some(w) = sim.wires.first() {
-                let c = w.closest_point(sim.bond.pos);
-                // Place Bond 5 m from the wire's closest point, on the floor.
-                let dir = [sim.bond.pos[0] - c[0], 0.0, sim.bond.pos[2] - c[2]];
-                let l = (dir[0] * dir[0] + dir[2] * dir[2]).sqrt().max(1e-6);
-                let p = [c[0] + 5.0 * dir[0] / l, c[1], c[2] + 5.0 * dir[2] / l];
-                // The wire may be high above the floor (e.g. Y=42.94 vs floor at Y=22.93 on 07000005).
-                // Bond::stand_at searches only 10 units down; search 50 to find the floor.
-                let y = sim.world.floor_below([p[0], p[1] + 1.0, p[2]], 50.0).map_or(p[1], |f| f + 1.1);
-                sim.bond = nf_game::player::Bond::new([p[0], y, p[2]], sim.bond.yaw);
+                // Place Bond 5 m from the wire's endpoint A, searching for a floor at that XZ.
+                // The wire may be high above the floor (Y=42.94 vs floor at Y=22.93 on 07000005), and the
+                // floor may not exist at every XZ near the wire. Search a small spiral around the wire's
+                // endpoint for an XZ where floor_below succeeds.
+                let a = w.a;
+                let mut placed = false;
+                for r in [0.0, 2.0, 5.0, 8.0, 12.0, 20.0] {
+                    for angle in [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5] {
+                        let theta = angle * std::f32::consts::FRAC_PI_4;
+                        let px = a[0] + r * theta.cos();
+                        let pz = a[2] + r * theta.sin();
+                        if let Some(floor_y) = sim.world.floor_below([px, a[1] + 1.0, pz], 80.0) {
+                            sim.bond = nf_game::player::Bond::new([px, floor_y + 1.1, pz], sim.bond.yaw);
+                            placed = true;
+                            break;
+                        }
+                    }
+                    if placed { break; }
+                }
+                if !placed {
+                    // Fallback: place at the wire's endpoint Y (Bond will fall, but at least he's near the wire).
+                    sim.bond = nf_game::player::Bond::new(a, sim.bond.yaw);
+                }
             }
         }
-        eprintln!("[dev] wire-music: Bond is 5 m from the zip wire — walk toward it; when close the music changes to the stealth section, walk away and it returns");
+        eprintln!("[dev] wire-music: Bond is near the zip wire — walk toward it; when close the music changes to the stealth section, walk away and it returns");
     }
 
     /// A guard in view. T toggles auto-aim — the crosshair snaps to the guard. (B-3a/b.)

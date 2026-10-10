@@ -602,7 +602,10 @@ impl Sim {
             } else {
                 let len = self.scripts.get(&self.view_script).map_or(0.0, |s| s.length as f32);
                 self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0));
-                if self.view_script == rd(0xa0) && self.view_time >= len - 1.0 { self.view_time = 0.0; }
+                // Gate the idle-loop reset on switch_state == 0 — fists has draw_script == idle_script
+                // (both 0x6000485), so without this gate the reset fires during state 3 (drawing), zeroing
+                // view_time before the state-3→0 check can succeed, leaving switch_state stuck at 3 forever.
+                if self.gun.switch_state == 0 && self.view_script == rd(0xa0) && self.view_time >= len - 1.0 { self.view_time = 0.0; }
             }
             // The gun scripts' sound commands (`AnimProcessScriptCmds` op 1: `Sound_Play3D(cmd[2], …)` when the
             // script's frame crosses cmd[1]): the shot (0x403 at frame 1 of the P2K's fire scripts) and the reload's

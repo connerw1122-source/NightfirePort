@@ -2339,34 +2339,58 @@ Five bugs found by the user in playtesting, all fixed:
 
 Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
 
-## A-8 — Level transition fix, door collision fix, TWEAK research
+## C-11 — Four playtest bug fixes: idle-reset, scope visual, Raptor type 6, wire floor
 
-**Item 1 (truck level transition):** The A-7 event 0x12 port was correct code but never fires on 07000005 —
-no NIS script on that level emits event kind 0x12. The truck script fires only events 0x0D (tick 5412, sets
-channel 0x73) and 0x0C (tick 5890, keep objects). The real level-end mechanism is the **0xE8 LOAD_LEVEL trigger**
-at the castle door. The bug was in `Trigger::from_params`: it read `next_level` from param 0x20 (which doesn't
-exist as a placement param — the 0x20 is a byte offset in the game's trigger extension data, not a param index)
-and treated param 0 (the level hashcode) as a switch channel. Fixed: `next_level = q(0)` (the level hashcode),
-`out_ch = 0` (LOAD_LEVEL doesn't set a switch channel). Bond walking to the castle door now fires the trigger
-and the level transitions.
+Four bugs found by the user in round 2 of playtesting, all fixed:
 
-**Item 2a (doors never close):** The auto-close (360-tick timer) is already implemented and works. On 07000001,
-3 of 5 doors auto-close after 6 seconds. The other 2 (gallery_secretdoor) have `flags & 0x20` (keep_open) —
-by design they never auto-close. No fix needed.
+1. **weapon-switch (stuck in state 3):** The idle-loop reset (`if view_script == idle_script &&
+   view_time >= len-1 { view_time = 0 }`) fired during state 3 (drawing) for fists, because fists has
+   `draw_script == idle_script` (both 0x6000485, length 2). The reset zeroed `view_time` before the state-3→0
+   check could succeed, leaving `switch_state` stuck at 3 forever — the player couldn't fire or scroll away.
+   Fix: gate the idle-loop reset on `switch_state == 0` (scene.rs:608). The idle loop only wraps in case 4
+   (draw-done → idle), not case 3 (drawing) [M Player_SetWeaponAnimObj].
 
-**Item 2b (bullets through doors):** 4 of 5 doors on 07000001 have `hashcode == u32::MAX` (anonymous by-index
-objects). `CollisionWorld::build` only indexed shapes by hashcode, skipping MAX — so doors had no collision.
-Fixed: also index shapes by synthetic key `0x80000000 | (map << 16) | object` for anonymous objects. `Doors::create`
-returns this synthetic key when the hashcode is MAX. Bullets now hit all 5 doors.
+2. **sniper-scope (no visual):** The scope overlay's 4 black border quads used `quad()` with `tex: 0`, but
+   `quad()` looks up the tex hashcode in `scene.hud_textures` and drops quads whose hashcode doesn't match.
+   `tex: 0` matches nothing, so all 4 quads were silently dropped. Fix: use `ndc_quad()` instead (which uses
+   the font texture for solid-colour quads). Added `ndc_rect()` helper (hud.rs:113-123).
 
-**Item 3 (too bright):** Research confirmed the shader is correct (0x80 = 1.0). The real cause is the missing
-per-object TWEAK colour (`psiSetTweakARGB`): `tweak_RGB = (tint × cel_ambient) >> 8` when `flags & 0x800`,
-applied as a per-object multiplier on vertex colour before texel modulation. Default cel ambient is (0x50,0x50,0x50)
-= 31%, so walls render 3.2× too bright without it. Proof: a wall with texel 200, vertex 0x80, ambient 0x50 →
-GS result = 70/255 = 0.275; port result = 226/255 = 0.888. With TWEAK applied: port matches GS exactly (0.275).
-Not ported yet — needs shader uniform + per-object data (tracked as open gap).
+3. **Raptor on 07000001 (can't pick up):** The Raptor placements on 07000001 are type 6 (Bond bonus), not
+   type 0 (weapon). `take()` didn't handle type 6 — it fell to `_ => None`. Fix: treat type 6 as a weapon
+   pickup (the game's `Pickup_Create` requires the gold medal for type 6, but the port doesn't track it —
+   STANDIN for the gold-medal gate). Also added type 3 (armour) as a no-op STANDIN. Added `kind::BOND_BONUS`
+   and `kind::ARMOUR` constants.
 
-Added `NF_SCRIPTLOG=1` and `NF_DOORLOG=1` diagnostics. Added `Request::LoadLevel` to nis.rs (for script-driven
-transitions on levels that do fire event 0x12). Added `script_cam` field for event 0x13.
+4. **wire-music (Bond falls through map):** The scenario placed Bond 5 m from the wire's closest point toward
+   Bond's start, but that XZ had no floor within 50 units directly below. Fix: search a spiral around the
+   wire's endpoint A for an XZ where `floor_below` succeeds (80-unit depth), then place Bond there.
 
-Tests: 186 pass with NF_ISO set. No Rand_* calls added.
+Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
+
+## C-11 — Four playtest bug fixes: idle-reset, scope visual, Raptor type 6, wire floor
+
+Four bugs found by the user in round 2 of playtesting, all fixed:
+
+1. **weapon-switch (stuck in state 3):** The idle-loop reset (`if view_script == idle_script &&
+   view_time >= len-1 { view_time = 0 }`) fired during state 3 (drawing) for fists, because fists has
+   `draw_script == idle_script` (both 0x6000485, length 2). The reset zeroed `view_time` before the state-3→0
+   check could succeed, leaving `switch_state` stuck at 3 forever — the player couldn't fire or scroll away.
+   Fix: gate the idle-loop reset on `switch_state == 0` (scene.rs:608). The idle loop only wraps in case 4
+   (draw-done → idle), not case 3 (drawing) [M Player_SetWeaponAnimObj].
+
+2. **sniper-scope (no visual):** The scope overlay's 4 black border quads used `quad()` with `tex: 0`, but
+   `quad()` looks up the tex hashcode in `scene.hud_textures` and drops quads whose hashcode doesn't match.
+   `tex: 0` matches nothing, so all 4 quads were silently dropped. Fix: use `ndc_quad()` instead (which uses
+   the font texture for solid-colour quads). Added `ndc_rect()` helper (hud.rs:113-123).
+
+3. **Raptor on 07000001 (can't pick up):** The Raptor placements on 07000001 are type 6 (Bond bonus), not
+   type 0 (weapon). `take()` didn't handle type 6 — it fell to `_ => None`. Fix: treat type 6 as a weapon
+   pickup (the game's `Pickup_Create` requires the gold medal for type 6, but the port doesn't track it —
+   STANDIN for the gold-medal gate). Also added type 3 (armour) as a no-op STANDIN. Added `kind::BOND_BONUS`
+   and `kind::ARMOUR` constants.
+
+4. **wire-music (Bond falls through map):** The scenario placed Bond 5 m from the wire's closest point toward
+   Bond's start, but that XZ had no floor within 50 units directly below. Fix: search a spiral around the
+   wire's endpoint A for an XZ where `floor_below` succeeds (80-unit depth), then place Bond there.
+
+Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
