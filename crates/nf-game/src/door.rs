@@ -213,10 +213,13 @@ pub fn door_placements(placements: &[Placement]) -> Vec<usize> {
     placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xdb && p.flags & 0xa000 == 0).map(|(i, _)| i).collect()
 }
 
-/// `Door_Update`'s proximity test: `dist² < (r1+r2)² · 2` (`Vec_SqDist3D` against `(r1+r2)² + (r1+r2)²`).
-fn blocked(sph: (V3, f32), a: (V3, f32)) -> bool {
-    let d = sub(sph.0, a.0);
-    let r = sph.1 + a.1;
+/// `Door_Update`'s proximity test: the game uses the door's position (`obj+0x30`) and `obj+0x8C` (gfx sphere
+/// radius, ~0.4-0.6 for doors) — NOT the gfx sphere centre. The port was using `sph.1` (1.5+), making the
+/// blocking zone far too large (~2.8 m instead of ~1 m). Fix: use the door's placement position and a 1.0
+/// radius stand-in [M Door_Update 0x1363c8:118-120].
+fn blocked(door_pos: V3, _door_r: f32, a: (V3, f32)) -> bool {
+    let d = [door_pos[0] - a.0[0], door_pos[1] - a.0[1], door_pos[2] - a.0[2]];
+    let r = 1.0 + a.1;
     d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < r * r + r * r
 }
 
@@ -374,7 +377,7 @@ impl Doors {
             if channels.on(ch_open as u32) {
                 if state & 4 == 0 { self.activate(i, actors, false, channels, frame, &mut sounds); }
             } else if state & 2 == 0 {
-                if !actors.iter().any(|a| blocked(self.list[i].sph, *a)) {
+                if !actors.iter().any(|a| blocked(self.list[i].pos, self.list[i].sph.1, *a)) {
                     self.activate(i, actors, false, channels, frame, &mut sounds);
                 }
                 self.list[i].open_timer = 0;
@@ -400,7 +403,7 @@ impl Doors {
         // increment the timer when NOT blocked, so Bond standing nearby pauses the countdown rather than
         // resetting it. This matches "360 quiet ticks" — the door waits 6 s of nobody being near [M].
         if self.list[i].state & 4 != 0 && !keep_open {
-            let is_blocked = actors.iter().any(|a| blocked(self.list[i].sph, *a));
+            let is_blocked = actors.iter().any(|a| blocked(self.list[i].pos, self.list[i].sph.1, *a));
             if !is_blocked {
                 self.list[i].open_timer += 1;
                 if self.list[i].open_timer as u32 >= AUTO_CLOSE {
@@ -506,7 +509,7 @@ impl Doors {
     /// an actor reverses (the anti-crush). Waits the 2-tick activation timer out; kind 1 doors ignore it.
     fn react_to_hit(&mut self, i: usize, actors: &[(V3, f32)], channels: &mut Channels, frame: u32, sounds: &mut Vec<SoundEvent>) {
         if self.list[i].timer != 0 || self.list[i].state & 0x18 == 0 { return; }
-        let Some(act) = actors.iter().find(|a| blocked(self.list[i].sph, **a)).map(|a| a.0) else { return };
+        let Some(act) = actors.iter().find(|a| blocked(self.list[i].pos, self.list[i].sph.1, **a)).map(|a| a.0) else { return };
         let (kind, state, swing, pos01, dir) = {
             let d = &self.list[i];
             (d.kind, d.state, d.swing, d.pos01, d.dir)
@@ -659,7 +662,7 @@ impl Doors {
         for (i, d) in self.list.iter().enumerate() {
             let keep = d.flags & 0x20 != 0;
             // The blocking actor (the same `blocked()` test the auto-close path runs).
-            let (is_blocked, by) = match actors.iter().find(|a| blocked(d.sph, **a)) {
+            let (is_blocked, by) = match actors.iter().find(|a| blocked(d.pos, d.sph.1, **a)) {
                 Some(a) => (true, format!("({:7.2},{:7.2},{:7.2}) r={:.2}", a.0[0], a.0[1], a.0[2], a.1)),
                 None => (false, String::from("-")),
             };

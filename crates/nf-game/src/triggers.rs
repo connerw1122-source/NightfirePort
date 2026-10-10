@@ -36,9 +36,13 @@ pub struct Trigger {
     pub gone: bool,
     /// Made by a script (`Script_CreateEntity` 0xEA / 0xEB): the script object's index; its volume follows the object.
     pub script: Option<usize>,
-    /// `LOAD_LEVEL` (0xE8): the next level's hashcode (placement parameter 0x20), requested when Bond touches it
-    /// (`Trigger_Activate` 0x1b2318 → `ResetMap_LevelToLoad` 0x1d3800) [M].
+    /// `LOAD_LEVEL` (0xE8): the next level's hashcode (placement param 0). `Trigger_Activate` (0x1b2318:111)
+    /// calls `ResetMap_LevelToLoad(next_level, 1, 0)` [M].
     pub next_level: u32,
+    /// `LOAD_LEVEL` gate channel: `Trigger_Update` case 10 (0x1b1a78:163) fires `Trigger_Activate` only when
+    /// `switch_channels[gate]` is non-zero. The gate is `DOORINFO+0x28` = original `param[2]` of the placement
+    /// (verified against MIPS disassembly: `lhu v1,56(s1); sh v1,40(s0)`) [M].
+    pub gate: u8,
 }
 
 /// A body that can touch triggers: capsule axis from `a` to `b`, radius, drone (true) or Bond, drone skin hash.
@@ -123,22 +127,19 @@ impl Trigger {
     /// A trigger of `kind` from its parameters (placement or script entity: parameter k at `level_tag+0x2C+4k`) and its
     /// world triangles; `None` for a Touch on channel 0x7D (only live on 0x07001500).
     pub fn from_params(placement: usize, kind: u8, q: impl Fn(u32) -> u32, tris: Vec<[V3; 3]>) -> Option<Trigger> {
-        let (out_ch, mask, list, lock, hide, next_level) = match kind {
-            kind::TOUCH_ONCE => (q(0), q(1), (2..=8).map(&q).collect(), q(7), q(8) != 0, 0),
-            kind::TOUCH => (q(0), q(1), (2..=8).map(&q).collect(), q(6), q(7) != 0, 0),
-            // `LOAD_LEVEL` (0xE8): `Trigger_Activate` (0x1b2318:111) calls `ResetMap_LevelToLoad(*(int*)(trigger+0x20), 1, 0)`.
-            // In the game, `trigger+0x20` is the trigger's extension data field at byte offset +0x20, which
-            // `Trigger_LoadLevelCreate` (0x1d1b68) fills from **placement param 0** — the next level's hashcode
-            // (e.g. 0x07000006 on 07000001's exit, 0x07000066 on 07000005's castle door). The port's `q(k)` reads
-            // placement param k; so `q(0)` IS the level hashcode. The old code read `q(0x20)` (which doesn't exist
-            // as a placement param) and treated `q(0)` as a switch channel — both wrong. Fix: `next_level = q(0)`,
-            // `out_ch = 0` (the LOAD_LEVEL trigger doesn't set a switch channel; it calls `ResetMap_LevelToLoad` directly)
-            // [M 0x1b2318:108-111, 0x1d1b68:95-96].
-            kind::LOAD_LEVEL => (0, q(9), (1..=8).filter(|&k| k != 7).map(&q).collect(), q(10), q(11) != 0, q(0)),
-            _ => (q(0), q(9), (1..=8).filter(|&k| k != 7).map(&q).collect(), q(10), q(11) != 0, 0),
+        let (out_ch, mask, list, lock, hide, next_level, gate) = match kind {
+            kind::TOUCH_ONCE => (q(0), q(1), (2..=8).map(&q).collect(), q(7), q(8) != 0, 0, 0),
+            kind::TOUCH => (q(0), q(1), (2..=8).map(&q).collect(), q(6), q(7) != 0, 0, 0),
+            // `LOAD_LEVEL` (0xE8): `Trigger_Update` case 10 fires when `switch_channels[gate]` is non-zero —
+            // NO touch check. `next_level` = param 0. `gate` = param 2 (the gate channel; set by the gatehouse
+            // cut-scene's event 0x11). `out` = 0, `lock` = param 10.
+            // [M Trigger_Update 0x1b1a78:162-166, Trigger_LoadLevelCreate 0x1b2950, Trigger_Create 0x1b1720
+            // — verified against MIPS: DOORINFO+0x28 = orig param[2]].
+            kind::LOAD_LEVEL => (0, q(9), (1..=8).filter(|&k| k != 7).map(&q).collect(), q(10), q(11) != 0, q(0), q(2) as u8),
+            _ => (q(0), q(9), (1..=8).filter(|&k| k != 7).map(&q).collect(), q(10), q(11) != 0, 0, 0),
         };
         if matches!(kind, kind::TOUCH | kind::TOUCH_ONCE) && out_ch == 0x7d { return None; }
-        let mut t = Trigger { placement, kind, out: out_ch as u8, mask, list, lock: lock as u8, hide, tris: Vec::new(), lo: [0.0; 3], hi: [0.0; 3], gone: false, script: None, next_level };
+        let mut t = Trigger { placement, kind, out: out_ch as u8, mask, list, lock: lock as u8, hide, tris: Vec::new(), lo: [0.0; 3], hi: [0.0; 3], gone: false, script: None, next_level, gate };
         t.set_tris(tris);
         Some(t)
     }
@@ -208,12 +209,12 @@ impl Trigger {
                 let v = ch.v.get(self.out as usize).copied().unwrap_or(0);
                 for &t in &self.list { if t != 0 { ch.set(t, v, frame); } }
             }
-            // `LOAD_LEVEL` (0xE8): a one-shot touch trigger that sets its switch channel when Bond enters the volume,
-            // then signals the next-level request (`Trigger_Activate` → `ResetMap_LevelToLoad`). The caller reads
-            // `next_level` after `update` to drive the transition [M 0x1b2318].
+            // `LOAD_LEVEL` (0xE8): `Trigger_Update` case 10 fires when `switch_channels[gate]` is non-zero —
+            // NO touch check. The gate is set by a script event (the gatehouse cut-scene's event 0x11 sets
+            // ch(0x1D), which is placement 118's gate on 07000005) [M 0x1b1a78:162-166].
             kind::LOAD_LEVEL => {
-                if self.gone { return; }
-                if self.hit(touchers) { ch.set(self.out as u32, 1, frame); self.gone = true; }
+                if self.gone || self.gate == 0 { return; }
+                if ch.on(self.gate as u32) { self.gone = true; }
             }
             _ => {}
         }
@@ -258,7 +259,7 @@ mod tests {
     fn plate(kind: u8, out: u8, mask: u32, list: Vec<u32>) -> Trigger {
         // A 2 × 2 horizontal quad at y = 0 around the origin.
         let (a, b, c, d) = ([-1.0, 0.0, -1.0], [1.0, 0.0, -1.0], [1.0, 0.0, 1.0], [-1.0, 0.0, 1.0]);
-        Trigger { placement: 0, kind, out, mask, list, lock: 0, hide: false, tris: vec![[a, b, c], [a, c, d]], lo: [-1.0, 0.0, -1.0], hi: [1.0, 0.0, 1.0], gone: false, script: None, next_level: 0 }
+        Trigger { placement: 0, kind, out, mask, list, lock: 0, hide: false, tris: vec![[a, b, c], [a, c, d]], lo: [-1.0, 0.0, -1.0], hi: [1.0, 0.0, 1.0], gone: false, script: None, next_level: 0, gate: 0 }
     }
 
     #[test]
@@ -284,23 +285,24 @@ mod tests {
         assert!(drone_plate.hit(&[Toucher { drone: true, ..on[0] }]));
     }
 
-    /// `LOAD_LEVEL` (0xE8): Bond touching the exit volume sets the switch channel once and latches `gone`; the
-    /// `next_level` hashcode is carried for `ResetMap_LevelToLoad`. Sister: a Bond standing away never triggers it.
+    /// `LOAD_LEVEL` (0xE8): `Trigger_Update` case 10 fires when `switch_channels[gate]` is non-zero — no touch check.
+    /// The gate is set by a script event. When the gate is on, the trigger latches `gone` and the caller reads
+    /// `next_level`. Sister: gate off → never fires.
     #[test]
-    fn load_level_trigger_fires_once_and_carries_next_level() {
+    fn load_level_trigger_fires_on_gate_channel() {
         let mut ch = Channels::default();
-        let mut exit = Trigger { kind: kind::LOAD_LEVEL, out: 0x40, next_level: 0x0700_0006, ..plate(kind::LOAD_LEVEL, 0x40, 8, vec![]) };
-        let away = [Toucher::player([5.0, 0.0, 5.0])];
-        let on = [Toucher::player([0.5, -0.3, 0.0])];
-        // Sister: away → nothing.
-        exit.update(&mut ch, &away, 1);
-        assert!(!ch.on(0x40) && !exit.gone);
-        // On → fires once, latches.
-        exit.update(&mut ch, &on, 2);
-        assert!(ch.on(0x40) && exit.gone);
+        let mut exit = Trigger { kind: kind::LOAD_LEVEL, gate: 0x1D, next_level: 0x0700_0006, ..plate(kind::LOAD_LEVEL, 0, 8, vec![]) };
+        let touchers: [Toucher; 0] = [];
+        // Sister: gate off → nothing.
+        exit.update(&mut ch, &touchers, 1);
+        assert!(!exit.gone);
+        // Gate on → fires, latches.
+        ch.set(0x1D, 1, 1);
+        exit.update(&mut ch, &touchers, 2);
+        assert!(exit.gone);
         assert_eq!(exit.next_level, 0x0700_0006, "carries the next level hashcode");
-        // Stays gone (no re-fire).
-        exit.update(&mut ch, &on, 3);
+        // Stays gone.
+        exit.update(&mut ch, &touchers, 3);
         assert!(exit.gone);
     }
 }
