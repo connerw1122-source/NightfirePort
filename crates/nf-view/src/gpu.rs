@@ -85,6 +85,17 @@ pub struct HudVertex { pub p: [f32; 2], pub uv: [f32; 2], pub c: [f32; 4] }
 #[derive(Default)]
 pub struct HudFrame { pub v: Vec<HudVertex>, pub runs: Vec<(usize, bool, u32, u32)> }
 
+impl HudFrame {
+    /// Append another frame's vertices and runs (the dev overlay, WORKLOG 0081).
+    pub fn append(&mut self, other: &HudFrame) {
+        let offset = self.v.len() as u32;
+        self.v.extend_from_slice(&other.v);
+        for &(tex, add, first, count) in &other.runs {
+            self.runs.push((tex, add, first + offset, count));
+        }
+    }
+}
+
 /// Most snow vertices per frame (4096 flakes × 6).
 const SNOW_MAX: usize = 4096 * 6;
 

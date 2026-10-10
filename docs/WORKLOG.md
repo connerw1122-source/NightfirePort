@@ -1831,3 +1831,42 @@ music returns to section 20 (the calm-after-creep sting, 3.1 s) then settles.
 
 Not done: the full creep/wire player substate (Bond grabbing the wire, sliding, the animation, the third-person
 camera), the wire's visual model (the glist at 0xC510), the `Controls_StraddleTest` entry trigger.
+
+## 0083 — nf-view dev mode: --dev, the AI overlay (F1), the dev menu (F2), and named scenarios
+
+In-game test tooling, gated behind `--dev` so normal play is unchanged. Tools only call into existing systems or set
+state the way the game itself would — never change game logic or the order of RNG calls. Logic stays at a fixed 60 Hz;
+the time scale changes the number of ticks run per render frame, not the tick rate. New doc `docs/tools/dev-mode.md`.
+
+- **`--dev`** turns on the F1 / F2 / F11 keys and prints the list. `--scenario <name>` places Bond and the guards.
+- **F1 — the AI overlay**: each guard within 30 m shows its state name (e.g. `Sniper_PopUp`, `Ambush`, `GrenadeThrow`,
+  `RecoverFromScary`), health, alertness, distance, active timers (tC / tD), grenade count; a green line to its target
+  or cover point. Live grenades draw their arc (orange, along velocity) and explosion radius (red circle); the blast
+  flashes a yellow circle.
+- **F2 — the dev menu** (mouse-clickable when open; the mouse is released): spawn a guard at the crosshair (Normal /
+  Sniper / Ambush), force the nearest guard to throw a grenade now (sets `GRENADE_THROW` + `pending_grenade`), give the
+  nearest guard an impulse or a SpecialDeath (the falling-off-ledge test), god mode, infinite ammo, teleport
+  (save/restore spot), and the time scale (1× / 0.25× / pause; F11 steps one tick).
+- **Scenarios** (`--scenario <name>`): `grenade-throw`, `grenade-bounce-explode`, `sniper-cover`, `ambush`,
+  `guard-falls-off-ledge`, `searchlight-tracks-bond`, `door-anti-crush`, `bullet-flyby`, `friendly-actor`. Each places
+  Bond and the guards and prints what to check; the user should see the named behaviour in under a minute.
+
+Port: new `crates/nf-view/src/dev.rs` (`Dev`, the overlay, the menu, the scenarios, the `state_name` table). The HUD's
+`Hud` / `Anchor` / `Quad` / `quad` / `text` / `finish` made `pub(crate)`; a new `ndc_quad` for the world-space lines
+and circles (project world → NDC, push a thin quad through the font texture). `HudFrame::append` merges the dev overlay
+into the game's HUD. `App` gains a `dev: Option<Box<Dev>>` field; the tick loop uses `Dev::tick_count` (the time scale ×
+elapsed ticks, capped at 8, plus a one-shot step); `Dev::after_tick` applies god mode / infinite ammo (the game's own
+fields). F1/F2/F11 key handlers; the mouse click hit-tests the menu items when the menu is open.
+
+The spawn uses the game's own `Drone::new` + `present`/`enabled`/`llist.push` (the same as `Action::Spawn`). The force
+/ impulse / SpecialDeath set the same fields the state machine would. God mode and infinite ammo set the same fields
+`Player_HandlePain` and `Player_WeaponFiring` read. No RNG calls added; no game logic changed.
+
+Environment: the ALSA dev prefix (`tools-bin/alsa-prefix`) re-extracted from the `libasound2-dev` .deb (the runtime
+`libasound.so.2` symlinked in) so `nf-audio`/`nf-view` build. `nf-view` builds clean; `nf-game` 83 + `nf-formats` 75
+tests green. Visual verification (the `--shot` path) needs a Vulkan ICD (lavapipe) not present in this sandbox; the
+build and the scenario setup are exercised, the render path is the same `Scene::build` the test level uses.
+
+What the player sees: with `--dev`, F1 shows every guard's state and the grenade arcs; F2 is a clickable menu to spawn
+guards, force a grenade throw, knock a guard off a ledge, or go god mode; `--scenario <name>` drops you into a one-
+minute test of a specific ported system.

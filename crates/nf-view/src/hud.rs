@@ -21,16 +21,16 @@ const CROSS: [[i16; 4]; 4] = [[0, 0, 0, 0], [1, 2, 29, 29], [10, 11, 11, 11], [3
 const HEALTH_AT: (f32, f32) = (16.0, 337.0);
 const AMMO_AT: (f32, f32) = (496.0, 394.0);
 
-struct Quad { layer: i32, tex: usize, add: bool, v: [HudVertex; 6] }
+pub(crate) struct Quad { pub(crate) layer: i32, pub(crate) tex: usize, pub(crate) add: bool, pub(crate) v: [HudVertex; 6] }
 
 /// How a sprite keeps its place in a window wider (or narrower) than the game's 4:3 screen: pixels keep the 4:3
 /// shape, and each element holds to the edge it belongs to — the health pane left, the ammo pane right, the crosshair
 /// centred; full-screen sprites (the damage glow) stretch over the whole window. *Port design* (the PS2 screen was 4:3
 /// or a 16:9 stretch of the same 512 × 448 space).
 #[derive(Clone, Copy, PartialEq)]
-enum Anchor { Left, Centre, Right, Stretch }
+pub(crate) enum Anchor { Left, Centre, Right, Stretch }
 
-struct Hud<'a> { quads: Vec<Quad>, aspect: f32, textures: &'a [(u32, crate::scene::TextureImage)] }
+pub(crate) struct Hud<'a> { pub(crate) quads: Vec<Quad>, pub(crate) aspect: f32, pub(crate) textures: &'a [(u32, crate::scene::TextureImage)] }
 
 /// A colour 0xRRGGBB on the GS scale (0x80 = 1.0) with an alpha byte (drawn as A >> 1, 0x80 = opaque).
 fn gs(rgb: u32, a: u32) -> [f32; 4] {
@@ -38,7 +38,7 @@ fn gs(rgb: u32, a: u32) -> [f32; 4] {
 }
 
 impl Hud<'_> {
-    fn ndc(&self, anchor: Anchor, x: f32, y: f32) -> [f32; 2] {
+    pub(crate) fn ndc(&self, anchor: Anchor, x: f32, y: f32) -> [f32; 2] {
         // One screen pixel in NDC across, keeping the 4:3 pixel shape at the window's height.
         let s = 2.0 / SW * (4.0 / 3.0) / self.aspect.max(1e-3);
         let nx = match anchor {
@@ -52,7 +52,7 @@ impl Hud<'_> {
 
     /// A textured quad at (x, y) w × h (screen pixels) showing texels (u, v, du, dv) of `tex`; `flip` = (U, V).
     #[allow(clippy::too_many_arguments)]
-    fn quad(&mut self, anchor: Anchor, layer: i32, tex: u32, add: bool, x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], flip: (bool, bool), c: [f32; 4]) {
+    pub(crate) fn quad(&mut self, anchor: Anchor, layer: i32, tex: u32, add: bool, x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], flip: (bool, bool), c: [f32; 4]) {
         if w <= 0.0 || h <= 0.0 || c[3] <= 0.0 { return; }
         let Some(ti) = self.textures.iter().position(|(hh, _)| *hh == tex) else { return };
         let (tw, th) = (self.textures[ti].1.width as f32, self.textures[ti].1.height as f32);
@@ -73,7 +73,7 @@ impl Hud<'_> {
 
     /// Font 2 text with its top-left pen at (x, y − cap) (`FE 02`: right-aligned → x − width), colour `c`; flag 0x20:
     /// a black copy at (+1, +1) first.
-    fn text(&mut self, anchor: Anchor, font: &nf_formats::hud::Font, layer: i32, s: &str, x: f32, y: f32, right: bool, c: [f32; 4], shadow: bool) {
+    pub(crate) fn text(&mut self, anchor: Anchor, font: &nf_formats::hud::Font, layer: i32, s: &str, x: f32, y: f32, right: bool, c: [f32; 4], shadow: bool) {
         let (_, width) = font.layout(s, 0.0, y);
         let x0 = if right { x - width } else { x };
         let (placed, _) = font.layout(s, x0, y);
@@ -85,7 +85,7 @@ impl Hud<'_> {
         }
     }
 
-    fn finish(mut self) -> HudFrame {
+    pub(crate) fn finish(mut self) -> HudFrame {
         self.quads.sort_by(|a, b| b.layer.cmp(&a.layer));
         let mut f = HudFrame::default();
         for q in self.quads {
@@ -97,6 +97,15 @@ impl Hud<'_> {
             }
         }
         f
+    }
+
+    /// Push raw NDC vertices (two triangles) as a coloured quad with the font texture (degenerate UV). For the dev
+    /// overlay's world-space lines and circles (WORKLOG 0081).
+    pub(crate) fn ndc_quad(&mut self, layer: i32, v: [HudVertex; 6], c: [f32; 4]) {
+        let Some(ti) = self.textures.iter().position(|(hh, _)| *hh == 0x0300_0003) else { return };
+        let mut qv = v;
+        for q in qv.iter_mut() { if q.uv == [0.0, 0.0] { q.uv = [0.0, 0.0]; } q.c = c; }
+        self.quads.push(Quad { layer, tex: ti + 1, add: false, v: qv });
     }
 }
 

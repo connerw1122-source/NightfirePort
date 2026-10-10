@@ -16,6 +16,7 @@
 //! (nf-view-shot.png), E = use (doors), Esc = release mouse, Esc again = quit.
 
 mod gpu;
+mod dev;
 mod hud;
 mod scene;
 
@@ -339,6 +340,8 @@ struct App {
     /// Consumed by the next game tick.
     weapon_switch: i8,
     weapon_switch_to: Option<u8>,
+    /// Dev mode (WORKLOG 0083): `None` when `--dev` is off.
+    dev: Option<Box<dev::Dev>>,
 }
 
 impl App {
@@ -353,6 +356,41 @@ impl App {
             g.window.set_cursor_visible(true);
             self.grabbed = false;
         }
+    }
+
+    /// A click on the dev menu (F2 open): hit-test the mouse against the menu items and apply the action (WORKLOG 0081).
+    fn dev_menu_click(&mut self) {
+        let aspect = self.gfx.as_ref().map_or(1.0, |g| g.config.width as f32 / g.config.height as f32);
+        let (mouse, spawn_pick) = match self.dev.as_deref_mut() {
+            None => return,
+            Some(d) => (d.mouse, d.spawn),
+        };
+        let Some(idx) = dev::menu_hit(self.dev.as_deref().unwrap(), mouse.0, mouse.1, aspect) else { return };
+        let Some(action) = dev::menu_action(self.dev.as_deref().unwrap(), idx) else { return };
+        match action {
+            dev::MenuAction::Close => { if let Some(d) = self.dev.as_deref_mut() { d.menu = false; } }
+            dev::MenuAction::Spawn(pick) => {
+                // Spawn at the crosshair (the camera's aim point 5 m ahead, or the floor hit).
+                let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
+                let dir = self.cam.dir().to_array();
+                let hit = self.scene.sim.as_ref().and_then(|s| s.world.segment(eye, [eye[0] + dir[0] * 30.0, eye[1] + dir[1] * 30.0, eye[2] + dir[2] * 30.0]));
+                let pos = hit.map_or([eye[0] + dir[0] * 5.0, eye[1], eye[2] + dir[2] * 5.0], |t| [eye[0] + (dir[0] * 30.0) * t, eye[1] + (dir[1] * 30.0) * t, eye[2] + (dir[2] * 30.0) * t]);
+                if let Some(d) = self.dev.as_deref_mut() { d.spawn = pick; }
+                if let Some(d) = self.dev.as_deref() { d.spawn_guard(&mut self.scene, pos, self.cam.yaw); }
+            }
+            dev::MenuAction::ForceGrenade => { let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos); if let Some(d) = self.dev.as_deref_mut() { d.force_grenade(&mut self.scene, bond); } }
+            dev::MenuAction::Impulse => { let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos); if let Some(d) = self.dev.as_deref_mut() { d.impulse_guard(&mut self.scene, bond); } }
+            dev::MenuAction::SpecialDeath => { let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos); if let Some(d) = self.dev.as_deref_mut() { d.special_death(&mut self.scene, bond); } }
+            dev::MenuAction::ToggleGod => { if let Some(d) = self.dev.as_deref_mut() { d.god_mode = !d.god_mode; } }
+            dev::MenuAction::ToggleAmmo => { if let Some(d) = self.dev.as_deref_mut() { d.infinite_ammo = !d.infinite_ammo; } }
+            dev::MenuAction::SaveSpot => { let p = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos); if let Some(d) = self.dev.as_deref_mut() { d.saved_spot = Some(p); } }
+            dev::MenuAction::RestoreSpot => {
+                let spot = self.dev.as_deref().and_then(|d| d.saved_spot);
+                if let Some(p) = spot { if let Some(d) = self.dev.as_deref() { d.teleport(&mut self.scene, p, self.cam.yaw); } }
+            }
+            dev::MenuAction::TimeScale(s) => { if let Some(d) = self.dev.as_deref_mut() { d.time_scale = s; } }
+        }
+        let _ = spawn_pick;
     }
 }
 
@@ -416,10 +454,20 @@ impl ApplicationHandler for App {
                 self.just.clear();
                 self.trigger = false;
             }
-            // Left button: grab the mouse, then fire (action 9) while held.
+            // Left button: grab the mouse, then fire (action 9) while held. With the dev menu open (F2), a left click
+            // selects a menu item instead (WORKLOG 0081).
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
-                if !self.grabbed { if state == ElementState::Pressed { self.grab(true) } } else { self.trigger = state == ElementState::Pressed }
+                if self.dev.as_deref().is_some_and(|d| d.menu) {
+                    if state == ElementState::Pressed { self.dev_menu_click(); }
+                } else if !self.grabbed { if state == ElementState::Pressed { self.grab(true) } } else { self.trigger = state == ElementState::Pressed }
             }
+            // Cursor moves: track the NDC position for the dev menu's click hit-test (when the menu is open).
+            WindowEvent::CursorMoved { position, .. } => if let (Some(g), Some(d)) = (&self.gfx, self.dev.as_deref_mut()) {
+                if d.menu {
+                    let (w, h) = (g.config.width as f32, g.config.height as f32);
+                    d.mouse = ((position.x as f32 / w) * 2.0 - 1.0, 1.0 - (position.y as f32 / h) * 2.0);
+                }
+            },
             // No manual-aim mode with the mouse (PLAN.md D-002): the mouse aims directly; `aiming` stays for a pad.
             WindowEvent::KeyboardInput { event, .. } => if let PhysicalKey::Code(k) = event.physical_key {
                 match (k, event.state) {
@@ -436,6 +484,10 @@ impl ApplicationHandler for App {
                         if let Some(g) = &self.gfx { g.window.set_title(&format!("nf-view — {}", self.scene.sequence_label(self.choice))); }
                     }
                     (KeyCode::KeyP, ElementState::Pressed) => self.paused = !self.paused,
+                    // Dev mode keys (WORKLOG 0081): F1 = AI overlay, F2 = dev menu, F11 = step one tick (when paused).
+                    (KeyCode::F1, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { d.overlay = !d.overlay; },
+                    (KeyCode::F2, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { d.menu = !d.menu; if d.menu { self.grab(false); } },
+                    (KeyCode::F11, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.time_scale <= 0.0 { d.step = true; } },
                     (KeyCode::F3, ElementState::Pressed) => self.opts.reinforcements = !self.opts.reinforcements,
                     (KeyCode::KeyF, ElementState::Pressed) => self.opts.firing = !self.opts.firing,
                     (KeyCode::KeyN, ElementState::Pressed) => {
@@ -477,12 +529,15 @@ impl ApplicationHandler for App {
                 // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
                 if !self.paused {
                     // Game logic at its fixed 60 Hz, decoupled from the render rate: one AI tick per whole tick of time.
+                    // Dev mode's time scale changes the number of ticks run (WORKLOG 0081), not the tick rate.
                     let before = self.anim_time as u32;
                     self.anim_time += dt * 60.0;
+                    let elapsed = (self.anim_time as u32).saturating_sub(before).min(8);
+                    let n_ticks = self.dev.as_deref_mut().map_or(elapsed, |d| d.tick_count(elapsed));
                     let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
                     let look = self.cam.dir().to_array();
                     if let Some(sim) = self.scene.sim.as_mut() {
-                        for _ in before..(self.anim_time as u32).min(before + 8) {
+                        for _ in 0..n_ticks {
                             if self.noclip { sim.step(eye, look, self.trigger, self.aiming); continue; }
                             // Keys as full-deflection actions: W / S forward (action 2), A / D strafe (action 1, + = left).
                             let held = |k: KeyCode| if self.keys.contains(&k) { 1.0 } else { 0.0 };
@@ -500,6 +555,8 @@ impl ApplicationHandler for App {
                             sim.step_bond(input, self.trigger, self.just.remove(&KeyCode::KeyR), self.just.remove(&KeyCode::KeyE));
                             if let Some(s) = self.sound.as_mut() { sound_tick(s, sim); }
                         }
+                        // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
+                        // (Moved below the sim borrow — see the end of this block.)
                         if !self.noclip {
                             let h = sim.bond.head();
                             self.cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV };
@@ -520,6 +577,8 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                    // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
+                    if let Some(d) = self.dev.as_deref_mut() { d.after_tick(&mut self.scene); }
                 }
                 let Some(g) = &mut self.gfx else { return };
                 if g.minimized {
@@ -551,7 +610,9 @@ impl ApplicationHandler for App {
                 let aspect = g.config.width as f32 / g.config.height as f32;
                 let (vp, vp_rot) = self.cam.view_proj(aspect);
                 let snow = snow_for(&self.scene, &self.cam);
-                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, self.cam.pos.to_array(), self.anim_time as u32, &snow, &hud::overlay(&self.scene, aspect));
+                let mut hud = hud::overlay(&self.scene, aspect);
+                if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }
+                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, self.cam.pos.to_array(), self.anim_time as u32, &snow, &hud);
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
                 g.window.request_redraw();
@@ -594,6 +655,15 @@ fn main() -> Result<()> {
     let num = |flag: &str| -> Result<Option<f32>> { match args.iter().position(|a| a == flag) { Some(i) => Ok(Some(args.get(i + 1).context("missing value")?.parse()?)), None => Ok(None) } };
     let choice = num("--seq")?.map(|k| k as usize);
     let time = num("--frame")?.unwrap_or(0.0);
+    if dev {
+        eprintln!("dev mode ON — F1: AI overlay  F2: dev menu  F11: step one tick (when paused)");
+        if let Some(ref n) = scenario {
+            match dev::scenario(n) {
+                Some((label, _)) => eprintln!("scenario: {n} — {label}"),
+                None => { eprintln!("unknown scenario: {n}\nscenarios: {}", dev::SCENARIOS.join(", ")); }
+            }
+        }
+    }
     let opts = scene::ViewOpts { reinforcements: args.iter().any(|a| a == "--reinforcements"), firing: args.iter().any(|a| a == "--fire"), right: [1.0, 0.0, 0.0], up: [0.0, 1.0, 0.0] };
     eprintln!("animation: {}", scene.sequence_label(choice));
     if let Some(i) = args.iter().position(|a| a == "--shot") {
@@ -649,18 +719,23 @@ fn main() -> Result<()> {
         sim.drones.music.event(1, 1);
     }
     // `--dev --scenario <name>`: place Bond and set up the world for a specific feature test.
-    // Never changes game logic or RNG call order — only sets Bond's position, the inventory, or spawns a pickup.
+    // The HEAD's `apply_scenario` (weapon-switch / sg5-pickup / wire-music / autoaim) + this agent's `dev::scenario`
+    // (grenade-throw / sniper-cover / ambush / guard-falls-off-ledge / searchlight / door / bullet-flyby / friendly).
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_switch: 0, weapon_switch_to: None, dev: dev.then(|| Box::new(dev::Dev::default())) };
     if dev {
         if let Some(name) = &scenario {
-            if let Some(sim) = scene.sim.as_mut() {
-                apply_scenario(sim, name);
+            if let Some(sim) = app.scene.sim.as_mut() { apply_scenario(sim, name); }
+            if let (Some(d), Some(n)) = (app.dev.as_deref_mut(), scenario.as_ref()) {
+                if let Some((_, f)) = dev::scenario(n) { f(&mut app.scene); d.scenario = Some(leak_str(n)); }
             }
         }
     }
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_switch: 0, weapon_switch_to: None };
     event_loop.run_app(&mut app)?;
     Ok(())
 }
+
+/// Leak a `String` to a `&'static str` (the scenario name lives for the program's life).
+fn leak_str(s: &str) -> &'static str { Box::leak(s.to_string().into_boxed_str()) }
 
 /// `--dev --scenario <name>`: places Bond and sets up the world for a feature test. Never changes game logic
 /// or the order of RNG calls — only Bond's position, the inventory, or a spawned pickup. Each scenario prints

@@ -2946,7 +2946,7 @@ impl Drone {
         // The throw direction: toward the opponent, with a ±π/4 yaw lob by distance.
         let to_opp = [self.opp_target[0] - origin[0], self.opp_target[1] - origin[1], self.opp_target[2] - origin[2]];
         let dist = (to_opp[0] * to_opp[0] + to_opp[1] * to_opp[1] + to_opp[2] * to_opp[2]).sqrt();
-        let yaw = if dist < 10.0 { crate::trig::HALF_PI / 2.0 } else if dist > 18.0 { -crate::trig::HALF_PI / 2.0 } else { 0.0 };
+        let yaw = if dist < 10.0 { std::f32::consts::FRAC_PI_4 } else if dist > 18.0 { -std::f32::consts::FRAC_PI_4 } else { 0.0 };
         let (s, c) = (crate::trig::sinf(yaw), crate::trig::cosf(yaw));
         let dir = norm([to_opp[0] * c + to_opp[2] * s, to_opp[1], -to_opp[0] * s + to_opp[2] * c]);
         let dir = norm(dir);
