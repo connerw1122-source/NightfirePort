@@ -22,7 +22,7 @@ pub struct Wire {
 }
 
 impl Wire {
-    /// `Wire_Create` (0x1981d8): creates a wire from a placement (type 0x3A). The placement's translation is
+    /// `Wire_Create` (0x1981d8): creates a wire from a placement (type 0x3E). The placement's translation is
     /// one endpoint; the other is `translation + direction · length`, where the direction is the placement's
     /// yaw + π/2 (the wire runs perpendicular to the facing direction) and the length is the glist model's
     /// extent. The z-rotation is negated (like ladders) [M].

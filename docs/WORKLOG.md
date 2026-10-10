@@ -2610,3 +2610,29 @@ Four bugs found by the user in round 4 of playtesting, all fixed:
    resolves the placement's object and calls `add_instance` for the wire's mesh.
 
 Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
+
+## C-14 — Round 5 fixes: scope threshold, Raptor type 6 consume-only, wire 0x3E not 0x3A
+
+Three bugs found by the user in round 5 of playtesting, all fixed:
+
+1. **scope overlay doesn't disappear quickly enough:** The overlay showed when `s.zoom > 1.01` (the
+   interpolated value), so it took ~40 ticks to disappear after releasing right click. The game's
+   `HUD_UpdateCrossHair` (0x19e6d0) toggles the SightPane off the aim flag `*(player+0x60) & 1`, which
+   drops instantly when the button is released. Fix: drive visibility off `s.zoom_target > 1.0` (the button
+   state) instead of `s.zoom > 1.01` (the interpolated value) [M 0x19e6d0:27].
+
+2. **Raptor on 07000001 — first picks up, none of the others do:** The port treated type 6 (Bond bonus) as
+   a weapon pickup — the first Raptor equipped the weapon (success), but subsequent ones fell to the ammo
+   arm with `rounds == 0` (refused). The game's `Pickup_Handler` case 6 just calls `PlrStat_LogBondBonus`
+   and shows a message — no weapon or ammo is given [M 0x18e650:234-236]. Fix: type 6 now consumes the
+   pickup (disappears) but gives nothing, matching the game. D-004: the gold-medal gate is skipped. The ammo
+   pickups (type 1, id 6) still work normally.
+
+3. **wire identification — 0x3A is a grapple point, not the zip wire:** The port treated placement type
+   0x3A as the zip wire. Per `parsemap_create_dynamic_objects` (0x1d04f0), **0x3A is `Grapple_Create`**
+   (the Q-Claw grapple point, class 0x51) and **0x3E is `Wire_Create`** (the zip wire, class 0x2C, with
+   z-rotation negated) [M 0x1d04f0:237-242, 250-255]. Fix: changed all `0x3a` to `0x3e` in scene.rs (wire
+   visual injection + wire simulation objects) and wire.rs (doc comment). The `wire-music` scenario now
+   targets the real zip wire placement(s), not the grapple point.
+
+Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.

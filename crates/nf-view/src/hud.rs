@@ -207,7 +207,11 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     // Sprite 2: right strip (0x03000002) at x=479, w=33, h=448. Flag 0x0200 = subtractive.
     // All colour 0x7f7f7fff (white on the GS 0x80=1.0 scale), subtractive blend (Cd - Cs·As/128).
     // Subtractive: white texture → framebuffer darkened to black (scope frame); black texture → unchanged (clear centre).
-    if s.zoom > 1.01 {
+    // Drive visibility off zoom_target (the button state), not the interpolated zoom value — the game's
+    // HUD_UpdateCrossHair (0x19e6d0) toggles the SightPane off the aim flag `*(player+0x60) & 1`, which
+    // drops the instant the button is released. Using the interpolated zoom would delay the overlay's
+    // disappearance by ~40 ticks (the zoom-out interpolation time).
+    if s.zoom_target > 1.0 {
         let scope_col = gs(0x7f7f7f, 0xff);
         // 4 tiles of the scope texture, mirrored per quadrant to form one full circle [M 0x1e5290].
         h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2,  32.0,   0.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (false, false), scope_col);

@@ -238,20 +238,25 @@ impl Inventory {
         self.carried[t].wrapping_sub(filled.wrapping_add(old))
     }
 
-    /// `Pickup_Handler` for Bond, types 0 / 1: a weapon he lacks (`+0x1BA` of the id) is equipped, otherwise its rounds
-    /// are taken as ammo. `None`: refused, the pickup stays.
+    /// `Pickup_Handler` for Bond. Types 0/1: a weapon he lacks is equipped, otherwise its rounds are taken
+    /// as ammo. Type 6 (Bond bonus): the game just logs a stat and shows a message — no weapon or ammo is
+    /// given [M Pickup_Handler 0x18e650 case 6 lines 234-236]. The port consumes the pickup (so it
+    /// disappears) but gives nothing. D-004: the gold-medal gate is skipped.
     pub fn take(&mut self, w: &WeaponData, p: &Pickup, loaded: bool) -> Option<Taken> {
         let id = p.weapon as usize;
         match p.kind {
-            kind::WEAPON | kind::BOND_BONUS if !self.owned.get(id).copied().unwrap_or(true) => {
-                // Type 0 (weapon) or type 6 (Bond bonus — `Pickup_Create` requires the gold medal, but the
-                // port doesn't track it; treating type 6 as a weapon pickup is a STANDIN for the gold-medal
-                // gate). `Upgrade_Weapon(id)` is the identity in the port (no upgrades bought) [M 0x18e650].
+            kind::WEAPON if !self.owned.get(id).copied().unwrap_or(true) => {
                 self.equip_weapon(w, id, p.rounds, loaded).then_some(Taken::Weapon { weapon: p.weapon })
             }
-            kind::WEAPON | kind::BOND_BONUS | kind::AMMO => {
+            kind::WEAPON | kind::AMMO => {
                 let n = self.equip_ammo(w, id, p.rounds);
                 (n != 0).then_some(Taken::Ammo { weapon: p.weapon, rounds: n })
+            }
+            kind::BOND_BONUS => {
+                // Type 6: the game's `Pickup_Handler` case 6 calls `PlrStat_LogBondBonus` and shows a
+                // message — no weapon or ammo. D-004: the gold-medal gate (`Pickup_Create` line 93) is
+                // skipped. The pickup is consumed (disappears) but gives nothing [M 0x18e650:234-236].
+                Some(Taken::Weapon { weapon: p.weapon })
             }
             kind::ARMOUR => {
                 // Type 3: armour 50 (`BLData+0x8B0`, only when below 50) [M pickups.md:71]. STANDIN: no

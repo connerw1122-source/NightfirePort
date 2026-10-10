@@ -207,7 +207,7 @@ pub struct Sim {
     pub surfaces: Option<nf_formats::sfx::SurfaceSounds>,
     pub voices: Option<Vec<nf_formats::sfx::VoiceLine>>,
     pub step_dist: f32,
-    /// The level's zip wires / creep ledges (placement type 0x3A, `Wire_Create` 0x1981d8). When Bond is near
+    /// The level's zip wires / creep ledges (placement type 0x3E, `Wire_Create` 0x1981d8). When Bond is near
     /// one, the creep substate posts `Music_Event(0xD, 1)` (docs/systems/music.md event 0xD).
     pub wires: Vec<nf_game::wire::Wire>,
     /// Whether Bond is currently on a wire (creeping) — posts music event 0xD each tick.
@@ -1242,11 +1242,11 @@ impl Scene {
                 }
             }
         }
-        // Wire visuals (`Wire_Create` 0x1981d8, placement type 0x3A): the wire's visual mesh is the placement's
+        // Wire visuals (`Wire_Create` 0x1981d8, placement type 0x3E): the wire's visual mesh is the placement's
         // object (the celglist), like coronas. The wire placement is a dynamic entity (no 0x8000 CREATE_CEL),
         // so it's filtered from the main instance loop; re-add it here [M 0x1981d8].
         if let Some(m) = level.main_map() {
-            for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x3a) {
+            for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x3e) {
                 let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 if let Some((map, object)) = target {
@@ -1345,9 +1345,9 @@ impl Scene {
             let bond = nf_game::player::Bond::stand_at(&world, p0, yaw0);
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.attach_level(level);
-            // Wires (`Wire_Create` 0x1981d8, placement type 0x3A): the level's zip wires / creep ledges.
+            // Wires (`Wire_Create` 0x1981d8, placement type 0x3E): the level's zip wires / creep ledges.
             let wires: Vec<nf_game::wire::Wire> = level.maps[m].placements.iter()
-                .filter(|p| p.flags & 0xff == 0x3a)
+                .filter(|p| p.flags & 0xff == 0x3e)
                 .map(|p| {
                     // The wire's length: the glist model's extent (the bounds centre X on 07000005's wire
                     // is 4.039 [L]). Without the glist at build time, use 4.0 as the default.
