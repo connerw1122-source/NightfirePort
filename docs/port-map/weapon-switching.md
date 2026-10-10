@@ -66,10 +66,11 @@ Addresses are this build's (ACTION.ELF `e7ffdcb3…`). Tags: [M] decompile, [D] 
 
 ## Counts
 
-- **Ported**: 4 (`Player_WeaponFiring`, `Player_EquipWeapon`, `Player_EquipAmmo`, the trigger + inventory)
+- **Ported**: 7 (`Player_WeaponFiring`, `Player_EquipWeapon`, `Player_EquipAmmo`, `Player_WeaponHasAmmo`,
+  `Player_GetBestWeapon`, `Player_WeaponNone`, `Player_WeaponChange` toggle-back)
 - **Partial**: 4 (`Player_Weapon`, `Player_WeaponChange`, `Player_WeaponSelect`, `Player_SetWeaponAnimObj`)
 - **Stub**: 0
-- **Not started**: 4 (`Player_IsBetterWeapon`, `Player_WeaponHasAmmo`, `Player_GetBestWeapon`, `Player_WeaponNone`)
+- **Not started**: 1 (`Player_IsBetterWeapon` — the auto-switch on pickup)
 
 ## STANDINs (audit-confirmed gaps)
 

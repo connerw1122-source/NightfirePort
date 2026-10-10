@@ -77,9 +77,11 @@ pub struct Leaf {
     pub batches: Vec<Batch>,
     /// Kicks whose header was sent without vertex data (the first CNT of every packet).
     pub setup_kicks: u32,
-    /// GS registers the packet's `DIRECT` A+D writes set (register, value) — in 07000005 only ALPHA_1 (0x42), TEST_1
-    /// (0x47) and ZBUF_1 (0x4E) (docs/systems/render.md). Empty: the leaf inherits the previous leaf's state.
-    pub gs: Vec<(u8, u64)>,
+    /// GS registers the packet's `DIRECT` A+D writes set: (register, value, batch_index) — the batch index is
+    /// the first batch this write's state applies to (the GS applies each DIRECT immediately, so a write between
+    /// batch 2 and batch 3 affects batch 3 onward). In 07000005 only ALPHA_1 (0x42), TEST_1 (0x47) and ZBUF_1
+    /// (0x4E) are written (docs/systems/render.md). Empty: the leaf inherits the previous leaf's state.
+    pub gs: Vec<(u8, u64, usize)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -247,7 +249,7 @@ pub fn decode_packet(block: &[u8], at: usize, skin_src: Option<usize>) -> Result
                                     for k in 0..nloop {
                                         let o = 16 + 16 * k;
                                         if o + 16 > d.len() { break; }
-                                        gs.push((d[o + 8], u64::from_le_bytes(d[o..o + 8].try_into().unwrap())));
+                                        gs.push((d[o + 8], u64::from_le_bytes(d[o..o + 8].try_into().unwrap()), batches.len()));
                                     }
                                 }
                             }

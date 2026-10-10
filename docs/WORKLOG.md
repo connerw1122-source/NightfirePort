@@ -1966,6 +1966,7 @@ What the player sees: scroll the mouse wheel → weapons only holster/draw quick
 script at 1.25x, not the idle-alert inspection). Press G → gadgets cycle. Weapons play 0x283 holster + 0x282
 draw; gadgets play 0x280 holster + 0x281 draw. Set NF_SOUNDLOG=1 to see each animation id logged.
 
+
 ## 0079 — Port maps + audit + 5 level-bug fixes
 
 New porting discipline (from the user): port maps for every subsystem, audited in batches of ~10 by independent
@@ -2076,4 +2077,49 @@ but their sisters could be stronger.
 **Dev scenarios**: none add RNG draws ✓. None visually verified (no lavapipe) ✗. friendly-actor team bug fixed ✓.
 
 **Verification**: `NF_ISO=Nightfire-onfoot.iso cargo test -p nf-game --test ai_live` = 32 passed, 0 failed.
-WORKLOG numbering: no duplicate 0083 (fixed in 0085).
+WORKLOG numbering: no duplicate 0083 (fixed in 0085).## C-4 — Hands recovery, the sniper transparency, gadgets removed, audit fixes
+
+Three user-reported bugs:
+
+1. **"If the selection ever goes to hands, you can never switch back to a weapon."** Ported `Player_WeaponNone`
+   (0x1a9858), `Player_GetBestWeapon` (0x1a9680), `Player_WeaponHasAmmo` (0x1a16c0), and the last-weapon
+   toggle-back from `Player_WeaponChange` (0x1a6f80 lines 66-141). When the cycle finds nothing, `go_to_hands`
+   runs, then `get_best_weapon` scans the `BestWeapon` table (0x2bede0, 18 u16 — verified against the snapshot
+   [L]) for the first owned+has-ammo weapon. The toggle-back: cycling weapons from a gadget jumps to the last
+   weapon (`prev_weapon`); cycling gadgets from a weapon jumps to the last gadget (`prev_gadget`). Tests:
+   `hands_recovers_to_best_weapon`, `get_best_weapon_uses_base_weapon_lookup`, `toggle_back_from_gadget_to_weapon`.
+
+2. **"The sniper rifle's first-person model is transparent."** The root cause: `add_instance` applied each
+   leaf's **final** GS state (ALPHA/TEST/ZBUF) to **all** batches, but the GS applies DIRECT writes
+   immediately at their packet position. The sniper's Case mesh has 3 leaves where the trailing 1-2 batches
+   switch to additive blend (a chrome reflection) — the old code made the entire leaf additive, so the gun
+   body was transparent. Fix: `ps2gfx.rs` `decode_packet` now records the batch index for each DIRECT write
+   (`gs: Vec<(u8, u64, usize)>`); `scene.rs` `add_instance` applies DIRECT writes **per-batch** (a `while`
+   loop consumes writes whose batch index ≤ the current batch). The state carries across leaves (the
+   `alpha/test/zbuf` are outside the leaf loop; trailing writes are applied after each leaf's last batch).
+
+3. **"Gadgets are buggy and none actually work."** Identified the gadgets from the ELF strings + decomp:
+   0x4A/0x4C = Q-Claw (grapple, `Player_SSGrapple` 0x192860), 0x4E/0x4F = Q-Decryptor (`Player_SSScanMode`
+   0x193098), 0x50 = Q-Laser (`Player_LaserPointer` 0x1a65d8), 0x54 = Laser Watch (scoped). Each is a full
+   player substate (500-1000 lines of decompiled code) that is not ported. Per the user's instruction ("if
+   you can't finish one, remove it from selection rather than ship it broken"), gadgets are removed from the
+   selection cycle: the G key and number keys 4-7 are disabled. Port map: `docs/port-map/gadgets.md` (0
+   ported, 8 not started).
+
+**Audit (audit-c4):** 3 confirmed bugs found and fixed:
+- `go_to_hands` was writing the old weapon to `switch_request` (triggering an unwanted switch-back) instead
+  of `0x47` (no switch). Fixed: added `saved_weapon` field (`anim+0x64`) for the toggle-back, `switch_request
+  = 0x47`.
+- `has_ammo` was missing the `ammo_type == 0` → true branch (melee/unlimited weapons like fists/hands/gadgets
+  were reported as having no ammo). Fixed.
+- `get_best_weapon` was using the BestWeapon entries directly as weapon ids, skipping the
+  `weapon_data[entry*0x10c+2]` base-weapon lookup. Fixed: added `base_of` closure; 3 of 18 entries (0x15→0x14,
+  0x32→0x33, 0x18→0x19) were checking the wrong id. Test: `get_best_weapon_uses_base_weapon_lookup`.
+
+Port map counts: 7 ported, 4 partial, 0 stub, 1 not started. 10 STANDINs documented (the last-weapon
+toggle-back is now ported; the `+0x1BC` variant-slot and `0x20000` ground-pickup scan remain STANDINs).
+Gadgets port map: 0 ported, 8 not started.
+
+Tests: all nf-game unit tests green (49+32+...). NF_ISO suite: only the 3 expected disc_golden tests fail
+(slim ISO offsets). The GS state fix also fixes world objects with mid-leaf state switches (glass,
+footprints, beams) that were mis-rendered for the same reason.

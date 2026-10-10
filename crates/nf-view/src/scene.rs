@@ -230,27 +230,54 @@ impl Sim {
         // switch request (`anim+0x63`) is set here; the holster/draw cycle runs in `run` (`Player_SetWeaponAnimObj`).
         // The weapon/gadget split: mouse wheel / Q cycles weapons (mode=0, 1..0x47); G cycles gadgets (mode=1,
         // 0x4A..0x5E); number keys select directly [M disassembly 0x1a707c].
+        // The toggle-back: if cycling weapons from a gadget, jump to the last weapon; if cycling gadgets from a
+        // weapon, jump to the last gadget [M 0x1a6f80 lines 66-121].
+        // If the cycle finds nothing, `Player_WeaponNone` (0x1a9858) → hands (id 0x47), then `Player_GetBestWeapon`
+        // (0x1a9680) scans the BestWeapon table for the first owned+has-ammo weapon.
         if self.gun.switch_state == 0 {
-            let owned = &self.drones.inventory.owned;
+            let owned = self.drones.inventory.owned.clone();
+            let carried = self.drones.inventory.carried.clone();
+            let clip = self.drones.inventory.clip.clone();
             let weapons = &self.weapons;
-            let inv = &self.drones.inventory;
-            let has_ammo = |w: u8| {
-                let t = weapons.ammo_type(w as usize);
-                inv.carried.get(t).copied().unwrap_or(0) > 0 || inv.clip.get(w as usize).copied().unwrap_or(0) > 0
-            };
+            let ammo_type_of = |w: u8| weapons.ammo_type(w as usize);
+            let flags_of = |w: u8| weapons.flags(w as usize);
+            let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, ammo_type_of, flags_of);
             let selectable = |w: u8| weapons.selectable(w);
             let target = if let Some(id) = input.switch_to {
                 if id != self.gun.weapon && owned.get(id as usize).copied().unwrap_or(false)
                     && weapons.first_person(id as usize) != 0 { Some(id) } else { None }
             } else if input.weapon_cycle != 0 {
-                self.gun.cycle(input.weapon_cycle, nf_game::gun::CycleMode::Weapons, owned, has_ammo, selectable)
+                // Toggle-back first (mode=0: from a gadget, jump to the last weapon).
+                self.gun.toggle_back(nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable)
+                    .or_else(|| self.gun.cycle(input.weapon_cycle, nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable))
             } else if input.gadget_cycle != 0 {
-                self.gun.cycle(input.gadget_cycle, nf_game::gun::CycleMode::Gadgets, owned, has_ammo, selectable)
+                // Toggle-back first (mode=1: from a weapon, jump to the last gadget).
+                self.gun.toggle_back(nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable)
+                    .or_else(|| self.gun.cycle(input.gadget_cycle, nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable))
             } else { None };
             if let Some(id) = target {
+                // Update prev_weapon/prev_gadget [M 0x1a6f80 lines 134-141]: if current is a weapon, save to
+                // prev_weapon; if current is a gadget, save to prev_gadget. Special: 0x55 ('U') saves as 0x54 ('T').
+                let cur = self.gun.weapon;
+                if cur >= 1 && cur <= 0x47 { self.gun.prev_weapon = cur; }
+                if cur >= 0x4a && cur <= 0x5e { self.gun.prev_gadget = if cur == 0x55 { 0x54 } else { cur }; }
                 self.gun.switch_request = id;
                 if std::env::var_os("NF_SOUNDLOG").is_some() {
                     eprintln!("[weapon-switch] tick {}: requesting switch from {:#x} to {:#x}", self.drones.frame, self.gun.weapon, id);
+                }
+            } else if input.weapon_cycle != 0 || input.gadget_cycle != 0 {
+                // The cycle found nothing: go to hands, then try GetBestWeapon [M Player_WeaponNone + Player_GetBestWeapon].
+                const BEST_WEAPON: [u16; 18] = [0x42, 0x32, 0x1a, 0x18, 0x1c, 0x16, 0x15, 0x08, 0x10, 0x0e, 0x0d, 0x0c, 0x12, 0x06, 0x04, 0x02, 0x0a, 0x01];
+                self.gun.go_to_hands();
+                let base_of = |w: u8| self.weapons.base(w as usize) as u8;
+                if let Some(id) = self.gun.get_best_weapon(&BEST_WEAPON, base_of, &owned, has_ammo) {
+                    let cur = self.gun.weapon;
+                    if cur >= 1 && cur <= 0x47 { self.gun.prev_weapon = cur; }
+                    if cur >= 0x4a && cur <= 0x5e { self.gun.prev_gadget = if cur == 0x55 { 0x54 } else { cur }; }
+                    self.gun.switch_request = id;
+                    if std::env::var_os("NF_SOUNDLOG").is_some() {
+                        eprintln!("[weapon-switch] tick {}: hands → GetBestWeapon → {:#x}", self.drones.frame, id);
+                    }
                 }
             }
         }
@@ -816,14 +843,21 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
     // keep each object apart.
     let centre = transform(&inst.matrix, obj.centre);
     let ikey = if matches!(layer, Layer::World) { centre.map(f32::to_bits) } else { [0; 3] };
-    // GS state: each leaf's `DIRECT` writes, inherited by the leaves that send none.
+    // GS state: each leaf's `DIRECT` writes, inherited by the leaves that send none. The GS applies each DIRECT
+    // write immediately at its position in the packet, so a write between batch 2 and batch 3 affects batch 3
+    // onward — we apply the writes per-batch, not per-leaf (the old per-leaf approach made the sniper's gun body
+    // transparent because the leaf's final state was additive for the trailing reflection batches).
     let (mut alpha, mut test, mut zbuf) = (0x44u64, 0x5001bu64, 0x3100_0000u64);
     for (li, leaf) in obj.gfx.leaves.iter().enumerate() {
-    // World objects draw their leaves and batches in order: a leaf repeats its triangles with blend layers (another
-    // texture weighted by vertex alpha, 0 where it does not show) after the opaque base they cover.
-    for &(r, v) in &leaf.gs { match r { 0x42 => alpha = v, 0x47 => test = v, 0x4e => zbuf = v, _ => {} } }
-    let draw = Draw::from_gs(pass, fog, alpha, test, zbuf);
+    let mut gs_idx = 0usize;
     for (bi, b) in leaf.batches.iter().enumerate() {
+        // Apply DIRECT writes that take effect before/at this batch.
+        while gs_idx < leaf.gs.len() && leaf.gs[gs_idx].2 <= bi {
+            let (r, v, _) = leaf.gs[gs_idx];
+            match r { 0x42 => alpha = v, 0x47 => test = v, 0x4e => zbuf = v, _ => {} }
+            gs_idx += 1;
+        }
+        let draw = Draw::from_gs(pass, fog, alpha, test, zbuf);
         let lkey = if matches!(layer, Layer::World) { (li as u32) << 16 | bi as u32 } else { 0 };
         let key = b.texture.filter(|&t| (t as usize) < level.maps[inst.map].textures.len()).map(|t| (inst.map, t));
         let (vs, is, cv, c) = groups.entry((layer, ikey, lkey, key, draw)).or_default();
@@ -843,6 +877,12 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
             else if let Some(dr) = door { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: None, door: Some(dr) }); }
         }
         for t in b.triangles() { is.extend(t.map(|k| base + k as u32)); }
+    }
+    // Apply trailing DIRECT writes (after the leaf's last batch) so the state carries to the next leaf.
+    while gs_idx < leaf.gs.len() {
+        let (r, v, _) = leaf.gs[gs_idx];
+        match r { 0x42 => alpha = v, 0x47 => test = v, 0x4e => zbuf = v, _ => {} }
+        gs_idx += 1;
     }
     }
 }

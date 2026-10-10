@@ -17,10 +17,14 @@ pub struct Gun {
     /// `anim+0x63`: the switch-request weapon id (set by `Player_WeaponChange`, consumed by
     /// `Player_SetWeaponAnimObj`). When it differs from `weapon`, the holster/draw cycle runs.
     pub switch_request: u8,
-    /// `BLData+0x930`: the previous weapon (for the toggle-back / `Last Weapon` key).
+    /// `anim+0x64`: the saved weapon id (set by `Player_WeaponNone` for the toggle-back from hands) [M 0x1a9858].
+    pub saved_weapon: u8,
+    /// `BLData+0x930`: the last weapon (for the toggle-back when cycling from a gadget to a weapon) [M 0x1a6f80].
     pub prev_weapon: u8,
+    /// `BLData+0x932`: the last gadget (for the toggle-back when cycling from a weapon to a gadget) [M 0x1a6f80].
+    pub prev_gadget: u8,
     /// `BLData+0x959` / `anim+0xF4`: the view-script state machine's phase.
-    /// 0 = idle, 1 = holstering, 2 = holster-done (swap), 3 = drawing, 4 = draw-done.
+    /// 0 = idle, 1 = holstering, 2 = holster-done (swap), 3 = drawing, 4 = draw-done, 8 = variant-swap.
     pub switch_state: u8,
 }
 
@@ -45,6 +49,79 @@ impl Gun {
             return Some(wu);
         }
         None
+    }
+
+    /// `Player_WeaponChange` toggle-back path [M 0x1a6f80 lines 66-121]. When cycling weapons (mode=0) from a
+    /// gadget, if `prev_weapon` (+0x930) is set and has ammo, switch directly to it. When cycling gadgets
+    /// (mode=1) from a weapon, if `prev_gadget` (+0x932) is set and has ammo, switch to it. Returns the toggle
+    /// target, or `None` if no toggle applies (fall through to the cycle).
+    pub fn toggle_back(&self, mode: CycleMode, owned: &[bool], has_ammo: impl Fn(u8) -> bool, selectable: impl Fn(u8) -> bool) -> Option<u8> {
+        let cur = self.weapon;
+        match mode {
+            CycleMode::Weapons => {
+                // mode=0: if current is a gadget (0x4A..0x5E) and prev_weapon is set and has ammo → toggle to it.
+                if cur >= 0x4a && cur <= 0x5e && self.prev_weapon != 0 {
+                    let w = self.prev_weapon;
+                    if owned.get(w as usize).copied().unwrap_or(false) && selectable(w) && has_ammo(w) {
+                        return Some(w);
+                    }
+                }
+            }
+            CycleMode::Gadgets => {
+                // mode=1: if current is a weapon (1..0x47) and prev_gadget is set and has ammo → toggle to it.
+                if cur >= 1 && cur <= 0x47 && self.prev_gadget != 0 {
+                    let w = self.prev_gadget;
+                    if owned.get(w as usize).copied().unwrap_or(false) && selectable(w) && has_ammo(w) {
+                        return Some(w);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// `Player_WeaponHasAmmo` (0x1a16c0): whether the player has ammo for weapon `w` — carried rounds of its
+    /// ammo type, or rounds in the clip (`Player_AmmoInGun`), or (for `ammo_type == 0`) always true (melee /
+    /// unlimited weapons), or (for flag 0x20000 weapons) a matching ammo pickup on the ground. Weapon 0x45
+    /// (a grenade type) checks `BLData+0x4F4` against `weapon_data+0x48CE` [M].
+    /// *Deviation*: the 0x20000 ground-pickup scan is a STANDIN (returns false; the pickup list is not in Gun).
+    pub fn has_ammo(w: u8, carried: &[i16], clip: &[i16], ammo_type: impl Fn(u8) -> usize, flags: impl Fn(u8) -> u32) -> bool {
+        if w == 0x45 {
+            // Grenade type: `weapon_data._18638_2_` (offset 0x48CE) <= `BLData+0x4F4`. STANDIN: always true if owned.
+            return true;
+        }
+        let t = ammo_type(w);
+        if carried.get(t).copied().unwrap_or(0) != 0 { return true; }
+        // `Player_AmmoInGun`: rounds in the clip.
+        if clip.get(w as usize).copied().unwrap_or(0) != 0 { return true; }
+        // `ammo_type == 0`: melee / unlimited weapons (fists, hands, gadgets) always have ammo [M 0x1a16c0].
+        if t == 0 { return true; }
+        // Flag 0x20000: check the ground for a matching ammo pickup. STANDIN: not ported (no object list in Gun).
+        false
+    }
+
+    /// `Player_GetBestWeapon` (0x1a9680): scans the `BestWeapon` table (0x2bede0, 18 u16) for the first owned,
+    /// has-ammo weapon. Each BestWeapon entry is a `weapon_data` index; the real weapon id is
+    /// `weapon_data[entry*0x10c+2]` (the base weapon). The per-player `+0x1BC` variant-slot adjustment is a
+    /// STANDIN (not ported — the Inventory has no `+0x1BC` field) [M].
+    pub fn get_best_weapon(&self, best: &[u16], base_of: impl Fn(u8) -> u8, owned: &[bool], has_ammo: impl Fn(u8) -> bool) -> Option<u8> {
+        for &w in best {
+            let real = base_of(w as u8);
+            if owned.get(real as usize).copied().unwrap_or(false) && has_ammo(real) {
+                return Some(real);
+            }
+        }
+        None
+    }
+
+    /// `Player_WeaponNone` (0x1a9858): Bond goes to "hands" (no weapon, weapon id 0x47). Saves the current weapon
+    /// to `saved_weapon` (`anim+0x64`, for the toggle-back), sets `weapon = 0x47`, `switch_request = 0x47` (no
+    /// switch triggered), stops the view script [M].
+    pub fn go_to_hands(&mut self) {
+        self.saved_weapon = self.weapon; // `anim+0x64 = anim+0x62` (save for toggle-back)
+        self.weapon = 0x47;
+        self.switch_request = 0x47; // `anim+0x63 = 0x47` — no switch triggered
+        self.switch_state = 0;
     }
 
     /// Whether a weapon switch is in progress (the holster/draw cycle).
@@ -107,7 +184,7 @@ pub fn reload_ticks(start: u32, reload: u32, flags68: u32, script_len: &impl Fn(
 
 impl Gun {
     /// Bond's start on 07000005 (`Player_InitWeapon`): weapon 2 with 7 in the clip and 41 spare [L].
-    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reloading: 0, switch_request: weapon, prev_weapon: weapon, switch_state: 0 } }
+    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reloading: 0, switch_request: weapon, saved_weapon: weapon, prev_weapon: 0, prev_gadget: 0, switch_state: 0 } }
 
     /// One tick with the trigger (action 9) `pressed` (no reload key, gun idle).
     pub fn update(&mut self, pressed: bool, p: GunParams) -> bool { self.update_with(pressed, false, false, p) }
@@ -231,5 +308,67 @@ mod tests {
         assert!(0x48 > CycleMode::Weapons.bounds().1);
         // Sister: a gadget at 0x5F is NOT in the gadget range (0x5F > 0x5E).
         assert!(0x5f > CycleMode::Gadgets.bounds().1);
+    }
+
+    /// `Player_WeaponNone` (0x1a9858) + `Player_GetBestWeapon` (0x1a9680): when Bond is at hands (id 0x47),
+    /// `GetBestWeapon` scans the `BestWeapon` table for the first owned+has-ammo weapon and returns it [M].
+    #[test]
+    fn hands_recovers_to_best_weapon() {
+        const BEST_WEAPON: [u16; 18] = [0x42, 0x32, 0x1a, 0x18, 0x1c, 0x16, 0x15, 0x08, 0x10, 0x0e, 0x0d, 0x0c, 0x12, 0x06, 0x04, 0x02, 0x0a, 0x01];
+        let owned = vec![false; 0x73];
+        let mut owned = owned;
+        // Bond owns only the P2K (2) with ammo.
+        owned[2] = true;
+        let has_ammo = |w: u8| w == 2;
+        let base_of = |w: u8| w; // identity: BestWeapon entries are weapon_data indices; base(id) = id for the P2K
+        let mut g = Gun::new(0x47, 0, 0); // hands
+        // GetBestWeapon finds the P2K.
+        assert_eq!(g.get_best_weapon(&BEST_WEAPON, base_of, &owned, has_ammo), Some(2));
+        // Go to hands saves the current weapon to saved_weapon (anim+0x64), sets weapon=0x47, switch_request=0x47.
+        g.weapon = 2;
+        g.go_to_hands();
+        assert_eq!(g.weapon, 0x47); // hands
+        assert_eq!(g.switch_request, 0x47); // no switch triggered [M 0x1a9858]
+        assert_eq!(g.saved_weapon, 2); // saved for toggle-back (anim+0x64)
+        // Sister: if nothing is owned, GetBestWeapon returns None.
+        let empty = vec![false; 0x73];
+        assert_eq!(g.get_best_weapon(&BEST_WEAPON, base_of, &empty, has_ammo), None);
+    }
+
+    /// `Player_GetBestWeapon` looks up the real weapon id via `weapon_data[entry*0x10c+2]` (the base weapon).
+    /// BestWeapon entry 0x15 has base 0x14; entry 0x32 has base 0x33; entry 0x18 has base 0x19 [M 0x1a9680].
+    #[test]
+    fn get_best_weapon_uses_base_weapon_lookup() {
+        const BEST_WEAPON: [u16; 18] = [0x42, 0x32, 0x1a, 0x18, 0x1c, 0x16, 0x15, 0x08, 0x10, 0x0e, 0x0d, 0x0c, 0x12, 0x06, 0x04, 0x02, 0x0a, 0x01];
+        // Only weapon 0x14 (the base of BestWeapon entry 0x15) is owned with ammo.
+        let owned = vec![false; 0x73];
+        let mut owned = owned;
+        owned[0x14] = true;
+        let has_ammo = |w: u8| w == 0x14;
+        // base_of: entry 0x15 → base 0x14 (the variant points at its base).
+        let base_of = |w: u8| if w == 0x15 { 0x14 } else { w };
+        let g = Gun::new(0x47, 0, 0);
+        // GetBestWeapon should find 0x14 (the base of entry 0x15), not 0x15 itself.
+        assert_eq!(g.get_best_weapon(&BEST_WEAPON, base_of, &owned, has_ammo), Some(0x14));
+        // Sister: if base_of is identity (wrong), 0x15 is checked instead and not owned → None.
+        let identity = |w: u8| w;
+        assert_eq!(g.get_best_weapon(&BEST_WEAPON, identity, &owned, has_ammo), None);
+    }
+
+    /// The toggle-back: cycling weapons from a gadget jumps to the last weapon [M 0x1a6f80 lines 93-121].
+    #[test]
+    fn toggle_back_from_gadget_to_weapon() {
+        let owned = vec![true; 0x73];
+        let has_ammo = |_w: u8| true;
+        let selectable = |_w: u8| true;
+        let mut g = Gun::new(0x4a, 1, 1); // a gadget
+        g.prev_weapon = 2; // last weapon was the P2K
+        // Cycling weapons from a gadget → toggle to the P2K (not the cycle).
+        assert_eq!(g.toggle_back(CycleMode::Weapons, &owned, has_ammo, selectable), Some(2));
+        // Sister: cycling gadgets from a gadget → no toggle (None).
+        assert_eq!(g.toggle_back(CycleMode::Gadgets, &owned, has_ammo, selectable), None);
+        // Sister: prev_weapon = 0 → no toggle.
+        g.prev_weapon = 0;
+        assert_eq!(g.toggle_back(CycleMode::Weapons, &owned, has_ammo, selectable), None);
     }
 }

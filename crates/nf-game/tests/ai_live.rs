@@ -835,7 +835,7 @@ fn leaf_gs_state_matches_the_research() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let mut counts: std::collections::BTreeMap<(u8, u64), usize> = Default::default();
     let mut leaves = 0;
-    for m in &l.level.maps { for o in &m.objects { for lf in &o.gfx.leaves { leaves += 1; for &(r, v) in &lf.gs { *counts.entry((r, v)).or_default() += 1; } } } }
+    for m in &l.level.maps { for o in &m.objects { for lf in &o.gfx.leaves { leaves += 1; for &(r, v, _) in &lf.gs { *counts.entry((r, v)).or_default() += 1; } } } }
     for ((r, v), n) in &counts { eprintln!("reg {r:#04x} = {v:#x}: {n}"); }
     eprintln!("{leaves} leaves");
     assert!(counts.keys().all(|(r, _)| matches!(r, 0x42 | 0x47 | 0x4e)), "only ALPHA_1 / TEST_1 / ZBUF_1");
