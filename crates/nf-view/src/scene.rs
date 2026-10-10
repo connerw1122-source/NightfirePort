@@ -706,6 +706,9 @@ pub struct Scene {
     pub attachments: Vec<Attachment>,
     /// The guard AI, when the drone context was available.
     pub sim: Option<Sim>,
+    /// Bug 3 diagnostic: objects with collision, for the "name what I'm touching" overlay (`C` key). Each entry is
+    /// the object's name and its world-space AABB (lo, hi), built from the instance matrix + the object's bounds.
+    pub colliders: Vec<(String, [f32; 3], [f32; 3])>,
 }
 
 /// `psiPreGameRun` (0x11e2e8, read): per level the fog colour and `Ps2Far1`; `FogOn` only on these levels.
@@ -866,9 +869,27 @@ impl Scene {
             .find(|i| level.maps[i.map].objects[i.object].name.trim() == "Player1")
             .map(|i| (i.placement.translation, i.placement.rotation[1]));
         let mut hidden = 0;
+        // Bug 3 diagnostic (`NF_COLL=1`): log objects that have collision but are not drawn — the "invisible walls".
+        // An object is an invisible wall if it has collision triangles but: it's skipped by the cel pass (flag 0x10),
+        // it's a door/searchlight/corona that the static pass skips (drawn elsewhere — but if those paths also skip
+        // it, it's invisible), or its gfx leaves are all empty (no visible mesh). The user can then check the named
+        // object against PCSX2 to see if the game hides, destroys or never creates it.
+        let coll_debug = std::env::var_os("NF_COLL").is_some();
+        let mut invisible = 0;
         for inst in &instances {
             let obj = &level.maps[inst.map].objects[inst.object];
-            if inst.placement.creates_cel() && obj.skipped_by_cel_pass() { hidden += 1; continue; }
+            let has_coll = obj.collision.is_some();
+            let has_mesh = obj.gfx.leaves.iter().any(|l| !l.batches.is_empty());
+            let skipped = inst.placement.creates_cel() && obj.skipped_by_cel_pass();
+            if skipped { hidden += 1; }
+            // An invisible wall: collision but no visible mesh, or skipped by the cel pass while not a door/searchlight/corona.
+            if has_coll && coll_debug && (!has_mesh || (skipped && !matches!(inst.placement.flags & 0xff, 0xdb | 0xde | 0xfc))) {
+                let n_tris = obj.collision.as_ref().map(|c| c.triangles().len()).unwrap_or(0);
+                eprintln!("coll: invisible wall \"{}\" (map {} obj {}): {} tris, flags {:#x}, has_mesh={has_mesh}, skipped={skipped} at {:?}",
+                    obj.name.trim(), inst.map, inst.object, n_tris, obj.flags, inst.placement.translation);
+                invisible += 1;
+            }
+            if skipped { continue; }
             // Searchlight parts are dynamic objects (`Searchlight_Update` moves them every tick): drawn from
             // the simulation below, not from their placements.
             if inst.placement.flags & 0xff == 0xde { continue; }
@@ -1098,6 +1119,10 @@ impl Scene {
             char_verts.extend(cv);
         }
         let keys: BTreeSet<(usize, u32)> = materials.iter().filter_map(|m| m.key).collect();
+        // Bug 1 diagnostic: how many world materials have no texture (render as the white fallback). A high count on a
+        // non-07000005 level would explain "ghostly white": texture × white vertex × GAIN → white.
+        let untextured = materials.iter().filter(|m| m.key.is_none()).count();
+        if untextured > 0 { eprintln!("render: {untextured} of {} materials have no texture (white fallback)", materials.len()); }
         let textures = keys.into_iter().map(|key| {
             TextureImage::from_texture(key.0, &level.maps[key.0].textures[key.1 as usize])
         }).collect();
@@ -1160,7 +1185,16 @@ impl Scene {
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {
             TextureImage::from_texture(mi, t)
         }));
-        Scene { streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim }
+        // Bug 3: build the collider name index for the "name what I'm touching" debug overlay (`C` key).
+        let colliders: Vec<(String, [f32; 3], [f32; 3])> = instances.iter()
+            .filter(|i| level.maps[i.map].objects[i.object].collision.is_some())
+            .map(|i| {
+                let obj = &level.maps[i.map].objects[i.object];
+                let lo = transform(&i.matrix, obj.min);
+                let hi = transform(&i.matrix, obj.max);
+                (obj.name.trim().to_string(), [lo[0].min(hi[0]), lo[1].min(hi[1]), lo[2].min(hi[2])], [lo[0].max(hi[0]), lo[1].max(hi[1]), lo[2].max(hi[2])])
+            }).collect();
+        Scene { streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the

@@ -1870,3 +1870,41 @@ build and the scenario setup are exercised, the render path is the same `Scene::
 What the player sees: with `--dev`, F1 shows every guard's state and the grenade arcs; F2 is a clickable menu to spawn
 guards, force a grenade throw, knock a guard off a ledge, or go god mode; `--scenario <name>` drops you into a one-
 minute test of a specific ported system.
+
+## 0078 — Level fidelity: fog clamp, debug overlays, friendly NPCs, level transition
+
+Five bugs reported on levels outside 07000005. Each addressed by porting the game's actual code path, not with
+level-specific hacks.
+
+**Bug 1 (ghostly white):** added `--no-fog` and `--no-tex` debug flags to isolate fog vs texture vs vertex colour.
+The shader's fog factor `floor(zb/256)/128` was unclamped — clamped to [0,1] (a small zb could collapse the frame
+to the fog colour; 0700000c's near-white fog (0xd1,0xd5,0xd6) was the worst case). Added an untextured-material count
+diagnostic (eprintln at build time). The fog table (`fog_for`) matches the game's `psiPreGameRun` (0x11e2e8) exactly
+(7 fogged levels + default no-fog) — confirmed by reading the decompile.
+
+**Bug 2 (door/window textures):** audited the texture+leaf picking for objects leaving the static pass (0xDB doors,
+0xDE searchlights, 0xFC coronas). No hard-coded indices or 07000005 assumptions found — all use the same
+`add_instance` path as walls (`b.texture` from the glist REF tag, leaf GS inherited). The existing `NF_LEAVES=<name>`
+diagnostic can inspect any door's leaves. The door's whole glist is drawn every frame (only the matrix changes);
+if a door glist has state-dependent leaves, the user can identify them with `NF_LEAVES`.
+
+**Bug 3 (invisible walls):** added `NF_COLL=1` diagnostic that logs every object with collision but no visible mesh
+(hidden flag 0x10, empty gfx leaves, or skipped by the cel pass). Added the `C` key in the live view that logs the
+name of the object Bond is touching (AABB containment). The `Scene::colliders` field stores per-instance (name, lo, hi)
+for the overlay.
+
+**Bug 4 (friendly NPC fights Bond):** the `team` field was computed (`drone.rs:609`, matching
+`NDrone2_GetDroneTypeAttackTypeFriend` 0x14cbd8) but never read. Ported the two gate sites from the decompile:
+- `look_for_opponent` (drone.rs:2404): `if self.team == 3 { return None; }` — `DroneVision_EnemyLookForOpponent`
+  (0x177ed0:31-38) returns 0 for friendly drones (team 3: dtype 10/0xb/0xd/0xe — civilians, hostages, allies).
+- The attack-gate caller (drone.rs:3672): `&& dr.team == 1` — `NDrone2_SeenAndAttacking` (0x145150:13) gates on
+  `+0x44 == 1` (enemy). Friendly drones never fire the music attack gate.
+Friendly fire is NOT filtered in the game's damage code (the game prevents friendly fire at the AI decision layer,
+not the bullet layer) — so no damage changes needed.
+
+**Bug 5 (level transition):** the `LOAD_LEVEL` (0xE8) trigger was parsed but had no `update` arm (0077). Now it fires
+as a one-shot touch trigger and sets `Drones::level_exit` to the next level's hashcode (param 0x20). The main loop's
+`RedrawRequested` handler checks `pending_level` and reloads the scene via `load` + `build_sound` (extracted from
+main's inline setup). The renderer is rebuilt on the next `Gfx` re-init.
+
+Tests: 19 test binaries pass (157+ tests). `level_live` still passes. No `Rand_*` calls added.

@@ -22,6 +22,8 @@ override AREF: f32 = 0.0;
 override AGREATER: f32 = 0.0;
 override FOG: f32 = 0.0;
 override FAR: f32 = 0.0;
+override NOTEX: f32 = 0.0;  // debug: 1.0 = ignore the texture sample (treat as solid white) to isolate vertex colour
+override NOFOG: f32 = 0.0;   // debug: 1.0 = skip the fog pass entirely
 // fog: rgb + enabled; fogk: N1, (F1 − N1)·n/(f − n), f, gain.
 struct U { vp: mat4x4<f32>, fog: vec4<f32>, fogk: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
@@ -38,15 +40,19 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
     return o;
 }
 @fragment fn fs(i: VO) -> @location(0) vec4<f32> {
-    let t = textureSample(tex, samp, i.uv);
+    let s = textureSample(tex, samp, i.uv);
+    let t = select(s, vec4<f32>(1.0, 1.0, 1.0, 1.0), NOTEX > 0.5);
     let o = t * i.c;
     if (AGREATER > 0.5) { if (o.a <= AREF) { discard; } } else if (o.a < AREF) { discard; }
     var rgb = min(o.rgb, vec3<f32>(1.0));
     var a = clamp(o.a, 0.0, 1.0);
-    if (FOG > 0.5 && u.fog.w > 0.5) {
+    if (FOG > 0.5 && u.fog.w > 0.5 && NOFOG < 0.5) {
         let zb = u.fogk.x + u.fogk.y * (u.fogk.z / max(i.d, 0.001) - 1.0);
         if (FOG < 1.5) {
-            if (zb < 32767.0) { rgb = u.fog.rgb + (rgb - u.fog.rgb) * (floor(zb / 256.0) / 128.0); }
+            // The GS's fog factor is fixed-point and wraps; clamp to [0,1] so a small zb can't collapse the frame to
+            // the fog colour (the "ghostly white" symptom on levels with a bright fog, e.g. 0700000c) [M render.md].
+            let f = clamp(floor(zb / 256.0) / 128.0, 0.0, 1.0);
+            if (zb < 32767.0) { rgb = u.fog.rgb + (rgb - u.fog.rgb) * f; }
         } else {
             a = a * min(floor(zb / 128.0), 255.0) / 255.0;
         }
@@ -118,6 +124,9 @@ pub struct Renderer {
     snow_bg: wgpu::BindGroup,
     /// The level's fog (`psiPreGameRun`): colour 0-255, `Ps2Far1`.
     fog: Option<([u8; 3], f32)>,
+    /// Debug overrides (Bug 1): `notex` ignores texture samples (solid white), `nofog` skips the fog pass.
+    notex: bool,
+    nofog: bool,
     uniform: wgpu::Buffer,
     uniform_bg: wgpu::BindGroup,
     /// View-projection without the camera translation (sky objects that follow the viewer).
@@ -133,7 +142,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, scene: &Scene) -> Renderer {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, scene: &Scene, notex: bool, nofog: bool) -> Renderer {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("nf-view"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
         let ubgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
@@ -169,7 +178,8 @@ impl Renderer {
             };
             // As >= 1 (TEST 0x5001B) -> a >= 1/128; As > 0x7F (0x507FD) -> a > 127/128.
             let (aref, greater) = match d.atest { 1 => (1.0 / 128.0, 0.0), 2 => (127.0 / 128.0, 1.0), _ => (0.0, 0.0) };
-            let constants = [("AREF", aref), ("AGREATER", greater), ("FOG", d.fog as f64), ("FAR", if d.pass == 4 { 1.0 } else { 0.0 })];
+            let constants = [("AREF", aref), ("AGREATER", greater), ("FOG", d.fog as f64), ("FAR", if d.pass == 4 { 1.0 } else { 0.0 }),
+                ("NOTEX", if notex { 1.0 } else { 0.0 }), ("NOFOG", if nofog { 1.0 } else { 0.0 })];
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("nf-view"),
                 layout: Some(&layout),
@@ -276,7 +286,7 @@ impl Renderer {
         let snow_pipeline = make_pipeline(Draw { pass: 5, blend: 1, zwrite: false, atest: 0, fog: 0 });
         let snow_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (SNOW_MAX * std::mem::size_of::<crate::scene::Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let snow_bg = match &scene.snow_texture { Some(t) => make_tex(t.width, t.height, &t.rgba), None => make_tex(1, 1, &[255, 255, 255, 255]) };
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_vbuf, hud_bgs, pipelines, fog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, tex_frames, draws }
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, tex_frames, draws }
     }
 
     /// `view_proj`: full camera; `view_proj_rot`: the same without the camera translation.

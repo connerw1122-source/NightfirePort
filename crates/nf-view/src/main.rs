@@ -64,6 +64,28 @@ fn start_camera(scene: &scene::Scene) -> Camera {
     }
 }
 
+/// Builds the sound driver + output from the scene's bank/music, and wires the music logic. The scene's bank,
+/// music and tables are consumed (taken out) — the same path `main` uses at startup [M].
+fn build_sound(scene: &mut scene::Scene) -> Option<nf_audio::sfx::Sound> {
+    let sound = scene.sound_bank.take().map(|(slot, bank, sbf)| {
+        let mut driver = nf_audio::sfx::Driver::new();
+        driver.load_bank(slot, bank, sbf);
+        if let Some((lut, bin)) = scene.streams.take() { driver.load_streams(lut, std::sync::Arc::new(bin)); }
+        let output = nf_audio::Output::open();
+        if output.is_none() { eprintln!("audio: no output device; running silent"); }
+        let music_files = scene.music_files.take().map(|(t, smf, ssd)| (t, smf, std::sync::Arc::new(ssd)));
+        nf_audio::sfx::Sound { driver, output, music_files, music: None, music_pending: Vec::new() }
+    });
+    if let (Some(sim), Some((mm, vars))) = (scene.sim.as_mut(), scene.music_tables.take()) {
+        sim.drones.attack_gate.vars = vars.iter().find(|v| v.level == sim.level).copied()
+            .or(Some(nf_formats::music::MusicVars { level: sim.level, count: 2, floor: 0, window: 8, distance: 25.0 }));
+        sim.drones.music = nf_game::music::Music::new(mm);
+        sim.drones.music.event(0, sim.level);
+        sim.drones.music.event(1, 1);
+    }
+    sound
+}
+
 fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
     use nf_formats::{anim::Sequence, character, levelbin::LevelBin};
     use std::collections::HashMap;
@@ -262,7 +284,7 @@ fn cam_axes(cam: &Camera) -> ([f32; 3], [f32; 3]) {
 }
 
 /// Renders one frame offscreen and writes it as a PNG.
-fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, mut opts: scene::ViewOpts) -> Result<()> {
+fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, mut opts: scene::ViewOpts, notex: bool, nofog: bool) -> Result<()> {
     let (w, h) = (1280u32, 720u32);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let (_adapter, device, queue) = pollster::block_on(device(&instance, None))?;
@@ -270,7 +292,7 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let (opts_right, opts_up) = cam_axes(cam);
     opts.right = opts_right;
     opts.up = opts_up;
-    let r = gpu::Renderer::new(&device, &queue, format, scene);
+    let r = gpu::Renderer::new(&device, &queue, format, scene, notex, nofog);
     r.update_vertices(&queue, scene.char_vertex_start, &posed_vertices(scene, choice, time, opts));
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
@@ -342,6 +364,15 @@ struct App {
     weapon_switch_to: Option<u8>,
     /// Dev mode (WORKLOG 0083): `None` when `--dev` is off.
     dev: Option<Box<dev::Dev>>,
+    /// Debug render overrides (Bug 1): `--no-tex` ignores textures (isolate vertex colour), `--no-fog` skips fog.
+    notex: bool,
+    nofog: bool,
+    /// The ISO path (for level transitions: `LOAD_LEVEL` → reload the next archive).
+    iso: String,
+    /// A pending level transition: the next level's hashcode, set by `LOAD_LEVEL`; consumed by the main loop.
+    pending_level: Option<u32>,
+    /// The `--all` flag (draw dynamic entities at their placements, not only 0x8000 cels) — reused on level reload.
+    all: bool,
 }
 
 impl App {
@@ -407,7 +438,7 @@ impl ApplicationHandler for App {
         let config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).expect("surface config");
         surface.configure(&device, &config);
         let depth = gpu::depth_view(&device, config.width, config.height);
-        let renderer = gpu::Renderer::new(&device, &queue, config.format, &self.scene);
+        let renderer = gpu::Renderer::new(&device, &queue, config.format, &self.scene, self.notex, self.nofog);
         self.gfx = Some(Gfx { window, instance, minimized: size.width == 0 || size.height == 0, surface, device, queue, config, depth, renderer });
     }
 
@@ -472,7 +503,7 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. } => if let PhysicalKey::Code(k) = event.physical_key {
                 match (k, event.state) {
                     (KeyCode::Escape, ElementState::Pressed) => if self.grabbed { self.grab(false) } else { el.exit() },
-                    (KeyCode::F12, ElementState::Pressed) => if let Err(e) = shot(&self.scene, &self.cam, "nf-view-shot.png", self.choice, self.anim_time, self.opts) { eprintln!("screenshot: {e}") },
+                    (KeyCode::F12, ElementState::Pressed) => if let Err(e) = shot(&self.scene, &self.cam, "nf-view-shot.png", self.choice, self.anim_time, self.opts, self.notex, self.nofog) { eprintln!("screenshot: {e}") },
                     (KeyCode::BracketRight | KeyCode::BracketLeft, ElementState::Pressed) => {
                         self.choice = match (k == KeyCode::BracketRight, self.choice) {
                             (true, None) => Some(0),
@@ -511,11 +542,39 @@ impl ApplicationHandler for App {
                     (KeyCode::KeyQ, ElementState::Pressed) => if self.grabbed && !self.noclip { self.weapon_switch = -1 },
                     // Turn every switch channel on: drones waiting for one (WaitSwitch) start (triggers are not ported).
                     (KeyCode::KeyK, ElementState::Pressed) => if let Some(sim) = self.scene.sim.as_mut() { for c in 1..=255 { sim.drones.set_channel(c) } },
+                    // Bug 3: log the name of the object Bond is touching (its AABB contains his feet).
+                    (KeyCode::KeyC, ElementState::Pressed) => {
+                        let p = if let Some(sim) = self.scene.sim.as_ref() { sim.bond.pos } else { [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z] };
+                        let mut hits: Vec<&str> = self.scene.colliders.iter()
+                            .filter(|(_, lo, hi)| p[0] >= lo[0] - 0.5 && p[0] <= hi[0] + 0.5 && p[2] >= lo[2] - 0.5 && p[2] <= hi[2] + 0.5 && p[1] >= lo[1] - 2.0 && p[1] <= hi[1] + 0.5)
+                            .map(|(n, _, _)| n.as_str()).collect();
+                        hits.sort(); hits.dedup();
+                        eprintln!("coll: at {:?} touching: {}", p, if hits.is_empty() { "(nothing in range)".to_string() } else { hits.join(", ") });
+                    }
                     (_, ElementState::Pressed) => { if !event.repeat { self.just.insert(k); } self.keys.insert(k); }
                     (_, ElementState::Released) => { self.keys.remove(&k); }
                 }
             },
             WindowEvent::RedrawRequested => {
+                // Bug 5: level transition. A `LOAD_LEVEL` (0xE8) trigger set `pending_level`; reload the scene
+                // with the next archive (`ResetMap_LevelToLoad` 0x1d3800). The renderer is rebuilt on the next
+                // `Gfx` re-init (the old surface is dropped with the old scene).
+                if let Some(next) = self.pending_level.take() {
+                    let name = format!("{next:08x}.bin");
+                    eprintln!("level: loading {name}");
+                    match load(&self.iso, &name, self.all) {
+                        Ok(mut scene) => {
+                            self.sound = build_sound(&mut scene);
+                            if let Some(start) = scene.start { self.cam = Camera { pos: Vec3::new(start.0[0], start.0[1] + 1.6, start.0[2]), yaw: start.1, pitch: 0.0, fov: GAME_FOV }; }
+                            self.scene = scene;
+                            self.anim_time = 0.0;
+                            // Force a Gfx re-init (the old GPU resources are dropped with the old scene).
+                            self.gfx = None;
+                            eprintln!("level: loaded {name}");
+                        }
+                        Err(e) => eprintln!("level: failed to load {name}: {e}"),
+                    }
+                }
                 let dt = self.last.elapsed().as_secs_f32().min(0.1);
                 self.last = std::time::Instant::now();
                 let speed = if self.keys.contains(&KeyCode::ShiftLeft) { 40.0 } else { 8.0 } * dt;
@@ -557,6 +616,12 @@ impl ApplicationHandler for App {
                         }
                         // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
                         // (Moved below the sim borrow — see the end of this block.)
+                        // Bug 5: level transition. When a `LOAD_LEVEL` (0xE8) trigger fires, the sim sets
+                        // `drones.level_exit` to the next level's hashcode. Reload the scene with that archive.
+                        if let Some(next) = sim.drones.level_exit.take() {
+                            eprintln!("level: exit trigger fired → loading {next:08x}");
+                            self.pending_level = Some(next);
+                        }
                         if !self.noclip {
                             let h = sim.bond.head();
                             self.cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV };
@@ -632,9 +697,10 @@ fn main() -> Result<()> {
         default_hook(info);
     }));
     let args: Vec<String> = std::env::args().skip(1).collect();
-    const USAGE: &str = "usage: nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--fire] [--reinforcements] [--dev --scenario <name>] [--shot out.png [--cam x y z yaw pitch]]\n\
+    const USAGE: &str = "usage: nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--fire] [--reinforcements] [--dev --scenario <name>] [--no-fog] [--no-tex] [--shot out.png [--cam x y z yaw pitch]]\n\
         <level> is a FILES.BIN name such as 07000005 (\".bin\" optional); without <iso> the image path comes from NF_ISO\n\
-        --dev --scenario <name>: place Bond for a feature test (weapon-switch, sg5-pickup, wire-music, autoaim)";
+        --dev --scenario <name>: place Bond for a feature test (weapon-switch, sg5-pickup, wire-music, autoaim)\n\
+        --no-fog: skip the fog screen pass (isolate vertex colour/texture). --no-tex: ignore texture samples (solid white, isolate lighting/fog).";
     // Positional arguments are the ones before the first flag.
     let pos: Vec<&String> = args.iter().take_while(|a| !a.starts_with("--")).collect();
     let (iso, level) = match pos.as_slice() {
@@ -655,6 +721,8 @@ fn main() -> Result<()> {
     let num = |flag: &str| -> Result<Option<f32>> { match args.iter().position(|a| a == flag) { Some(i) => Ok(Some(args.get(i + 1).context("missing value")?.parse()?)), None => Ok(None) } };
     let choice = num("--seq")?.map(|k| k as usize);
     let time = num("--frame")?.unwrap_or(0.0);
+    let notex = args.iter().any(|a| a == "--no-tex");
+    let nofog = args.iter().any(|a| a == "--no-fog");
     if dev {
         eprintln!("dev mode ON — F1: AI overlay  F2: dev menu  F11: step one tick (when paused)");
         if let Some(ref n) = scenario {
@@ -696,32 +764,16 @@ fn main() -> Result<()> {
                 eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);
             }
         }
-        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts);
+        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts, notex, nofog);
     }
     let event_loop = EventLoop::new()?;
     // Sound: the level's bank in the driver, the default output device (silent without one).
     let mut scene = scene;
-    let sound = scene.sound_bank.take().map(|(slot, bank, sbf)| {
-        let mut driver = nf_audio::sfx::Driver::new();
-        driver.load_bank(slot, bank, sbf);
-        if let Some((lut, bin)) = scene.streams.take() { driver.load_streams(lut, std::sync::Arc::new(bin)); }
-        let output = nf_audio::Output::open();
-        if output.is_none() { eprintln!("audio: no output device; running silent"); }
-        let music_files = scene.music_files.take().map(|(t, smf, ssd)| (t, smf, std::sync::Arc::new(ssd)));
-        nf_audio::sfx::Sound { driver, output, music_files, music: None, music_pending: Vec::new() }
-    });
-    // The music logic and its level-start events (`Sound_Ready`: `Music_Event(0, level)`, `Music_Event(1, 1)`).
-    if let (Some(sim), Some((mm, vars))) = (scene.sim.as_mut(), scene.music_tables.take()) {
-        sim.drones.attack_gate.vars = vars.iter().find(|v| v.level == sim.level).copied()
-            .or(Some(nf_formats::music::MusicVars { level: sim.level, count: 2, floor: 0, window: 8, distance: 25.0 }));
-        sim.drones.music = nf_game::music::Music::new(mm);
-        sim.drones.music.event(0, sim.level);
-        sim.drones.music.event(1, 1);
-    }
+    let sound = build_sound(&mut scene);
     // `--dev --scenario <name>`: place Bond and set up the world for a specific feature test.
     // The HEAD's `apply_scenario` (weapon-switch / sg5-pickup / wire-music / autoaim) + this agent's `dev::scenario`
     // (grenade-throw / sniper-cover / ambush / guard-falls-off-ledge / searchlight / door / bullet-flyby / friendly).
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_switch: 0, weapon_switch_to: None, dev: dev.then(|| Box::new(dev::Dev::default())) };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_switch: 0, weapon_switch_to: None, dev: dev.then(|| Box::new(dev::Dev::default())), notex, nofog, iso, pending_level: None, all };
     if dev {
         if let Some(name) = &scenario {
             if let Some(sim) = app.scene.sim.as_mut() { apply_scenario(sim, name); }
