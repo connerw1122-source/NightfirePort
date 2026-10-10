@@ -20,6 +20,8 @@ pub struct Bullet {
     pub owner: usize,
     /// State 0 (first tick: step (0.5 + FRand 0.5) · speed), 1 flying, 2 dead.
     pub state: u8,
+    /// `weapon_data+0x6C & 0x40000`: the weapon's bullets play a fly-by (whiz) sound in `Bullet_DoTrails` [M].
+    pub flyby: bool,
 }
 
 /// What a bullet did this tick.
@@ -27,6 +29,10 @@ pub struct Bullet {
 pub enum BulletEvent {
     World(V3),
     Player { damage: f32, at: V3 },
+    /// `Bullet_DoTrails` fly-by (sound id 0x1dc): a bullet whizzed past the viewer. Played at the closest point on
+    /// the bullet's line to the camera, only for weapons with `+0x6C & 0x40000`, in single player, when the bullet's
+    /// owner is not the player, within 3 units, on a 1-in-5 `Rand_Rand(5)` roll [M `Bullet_DoTrails`@0x12d890].
+    FlyBy(V3),
 }
 
 /// Bond's hit volume: an upright cylinder from his feet to above his eye (*deviation*: the game tests 16 boxes on
@@ -69,7 +75,8 @@ pub fn segment_cylinder(a: V3, b: V3, v: &PlayerVolume) -> Option<f32> {
 impl Bullet {
     /// One tick (`Bullet_update` + collision): the hit test covers the segment from the current position along the
     /// direction for max(step, 1) units; the nearest of world and Bond wins; ranged-out bullets die.
-    pub fn update(&mut self, world: &CollisionWorld, player: &PlayerVolume, rng: &mut crate::drone::Rng) -> Option<BulletEvent> {
+    /// `viewer`: the camera eye (`glb_viewer + 0xc0`), for the `Bullet_DoTrails` fly-by test [M].
+    pub fn update(&mut self, world: &CollisionWorld, player: &PlayerVolume, viewer: V3, rng: &mut crate::drone::Rng) -> Option<BulletEvent> {
         if self.state >= 2 { return None; }
         if self.travelled > self.range { self.state = 2; return None; }
         let mut step = if self.state == 0 { (rng.frand(0.5) + 0.5) * self.speed } else { self.speed };
@@ -88,9 +95,29 @@ impl Bullet {
             _ => None,
         };
         if ev.is_some() { self.state = 2; return ev; }
+        let old = self.pos;
         self.pos = [self.pos[0] + self.dir[0] * step, self.pos[1] + self.dir[1] * step, self.pos[2] + self.dir[2] * step];
+        // `Bullet_DoTrails` (0x12d890): the fly-by whiz. Only weapons with `+0x6C & 0x40000`, single player (the port is
+        // single-player only), and not the player's own bullet (all Bullets are drone-fired here). The closest point on
+        // the bullet's path this tick to the viewer; if within 3 units (SqDist < 9), a 1-in-5 `Rand_Rand(5)` roll plays
+        // sound 0x1dc at that point [M]. RNG order: `Rand_FRand` (above) → `Rand_Rand(5)` (here), matching the game.
+        if self.flyby {
+            let cp = closest_point_on_segment(old, self.pos, viewer);
+            let d2 = (cp[0] - viewer[0]).powi(2) + (cp[1] - viewer[1]).powi(2) + (cp[2] - viewer[2]).powi(2);
+            if d2 < 9.0 && rng.rand(5) == 0 { return Some(BulletEvent::FlyBy(cp)); }
+        }
         None
     }
+}
+
+/// `vecutil_calculate_closest_point_on_line` (0x1df7e0): the closest point on segment `a→b` to `p`, clamped to [0,1].
+/// Returns the point (the game also returns the parametric t, but only the point is used by DoTrails).
+fn closest_point_on_segment(a: V3, b: V3, p: V3) -> V3 {
+    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    if len2 < 1e-20 { return a; }
+    let t = (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1] + (p[2] - a[2]) * d[2]) / len2).clamp(0.0, 1.0);
+    [a[0] + d[0] * t, a[1] + d[1] * t, a[2] + d[2] * t]
 }
 
 /// Bond's health and armour (`BL+0x894`, `+0x8B0`; single player starts at 100 / 0) and the hit flash (`BL+0x968`).
@@ -135,5 +162,42 @@ mod tests {
         h.pain(2.75, 1, 0x0700_0005);
         assert!((h.health - (100.0 - 1.65)).abs() < 1e-4, "live: 1.65 per SG5 hit");
         assert!((h.flash - 1.65 * 21.333).abs() < 1e-3);
+    }
+
+    /// `Bullet_DoTrails` fly-by (0x12d890): a bullet passing within 3 units of the viewer on a 1-in-5 roll plays
+    /// sound 0x1dc. Sister: a bullet with `flyby=false` never produces a FlyBy, and one too far never does.
+    #[test]
+    fn flyby_plays_within_three_units_on_one_in_five() {
+        let world = CollisionWorld::empty();
+        // A clean world (no collision) so the bullet flies past.
+        let vol = PlayerVolume { feet: [100.0, 0.0, 100.0], height: 1.8, radius: 0.25 };
+        // Viewer at the origin; bullet flies along +z, 2 units to the side (within 3).
+        let mut b = Bullet { pos: [0.0, 1.0, -50.0], dir: [0.0, 0.0, 1.0], speed: 15.0, travelled: 0.0, range: 200.0,
+            damage: 0.0, owner: 1, state: 0, flyby: true };
+        let mut rng = crate::drone::Rng::new(0);
+        // The bullet flies many ticks past the viewer; the 1-in-5 roll should eventually fire.
+        let mut fired = false;
+        for _ in 0..60 {
+            if let Some(BulletEvent::FlyBy(_)) = b.update(&world, &vol, [0.0; 3], &mut rng) { fired = true; break; }
+        }
+        assert!(fired, "a fly-by bullet within 3 units should fire on the 1-in-5 roll within 60 ticks");
+        // Sister: a bullet without the fly-by flag never fires.
+        let mut b2 = Bullet { pos: [0.0, 1.0, -50.0], dir: [0.0, 0.0, 1.0], speed: 15.0, travelled: 0.0, range: 200.0,
+            damage: 0.0, owner: 1, state: 0, flyby: false };
+        let mut rng2 = crate::drone::Rng::new(0);
+        let mut fired2 = false;
+        for _ in 0..60 {
+            if let Some(BulletEvent::FlyBy(_)) = b2.update(&world, &vol, [0.0; 3], &mut rng2) { fired2 = true; break; }
+        }
+        assert!(!fired2, "no fly-by flag → no FlyBy event");
+        // Sister: a bullet 10 units away (SqDist 100 > 9) never fires even with the flag.
+        let mut b3 = Bullet { pos: [10.0, 1.0, -50.0], dir: [0.0, 0.0, 1.0], speed: 15.0, travelled: 0.0, range: 200.0,
+            damage: 0.0, owner: 1, state: 0, flyby: true };
+        let mut rng3 = crate::drone::Rng::new(0);
+        let mut fired3 = false;
+        for _ in 0..60 {
+            if let Some(BulletEvent::FlyBy(_)) = b3.update(&world, &vol, [0.0; 3], &mut rng3) { fired3 = true; break; }
+        }
+        assert!(!fired3, "beyond 3 units → no fly-by");
     }
 }

@@ -15,15 +15,7 @@ the driver's start path (`SFXSetup` budget / stealing / per-id limit, random / s
 `ES_CombineVolumes`, front + phase-inverted rear voices (the rear keyed 500 µs later, WORKLOG 0064), `SFXUpdate` (ends, sequences, loops via cue timers, kill pass,
 active list), `SFXRemove` / `SetPositionAndVelocity`; sources: the first-person gun's script sounds (op 1: shot, reload), Bond's footsteps by floor surface, bullet
 impacts by surface, guard body hits (0x413), guards' gunfire (`weapon_data+0x60`),
-animation-script sounds, pickups, script sounds (moving with their object). Music: docs/systems/music.md. Speech and streamed effects: docs/systems/speech.md. Not yet: casings / fly-bys (the `Bullet_DoTrails` trigger + RNG order need the decompile,
-GAPS G-032a), the cel/room-driven `SFXSetEnvironment` value (G-016), the exact SPU2 Gaussian coefficient table and
-`PS2_SetupReverb` preset (GAPS G-032d, disc cross-checks deferred), precache, pause in cut-scenes, the per-weapon
-op-1 id remaps (other weapons). **Now ported (WORKLOG 0075):** the ducker (`ES_StartDucker`/`ES_UpdateDucker`, music +
-the SFX 1/3-duck), fades (`SFXFadeUpdate`/`SFXFadeDown`/`SFXFadeUp`, the 2 s linear fade with `FadeMusicVolume`),
-reverb/environment (`SFXSetEnvironment`/`SFXUpdateEnvironment`, the ±16/−4 reverb envelope, the underwater flag, the
-indoors volume, the `EVOL` depth sent to the output's comb-filter reverb), the SPU ADSR release (ADSR1=0x000F,
-ADSR2=0x1FC0 → instant attack, max sustain, fastest linear release) and 4-tap interpolation (Catmull-Rom stand-in for
-the SPU's 4-point Gaussian, pending the exact table).
+animation-script sounds, pickups, script sounds (moving with their object). Music: docs/systems/music.md. Speech and streamed effects: docs/systems/speech.md. Not yet: casings, the 0x601 body-hit variant (`HITDATA+0x52` = 5), drone foley (`Drone_SfxInfo`, `NDrone2_PlaySFX`), the cel/room-driven `SFXSetEnvironment` value (G-016), the exact SPU2 Gaussian coefficient table (hardware; currently Catmull-Rom 4-tap), precache, pause in cut-scenes, the per-weapon op-1 id remaps (other weapons). **Now ported (WORKLOG 0075–0076):** the ducker, fades, reverb/environment, the SPU ADSR release and 4-tap interpolation (0075), and bullet fly-bys (0076: `Bullet_DoTrails`'s `+0x6C & 0x40000` check, the closest-point-to-viewer test, the `Rand_Rand(5)` 1-in-5 roll, sound 0x1dc — confirmed against the decompile at `0x12d890`).
 
 ---
 

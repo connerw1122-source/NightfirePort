@@ -1563,3 +1563,32 @@ recovery + no-ducker stays 100); `environment_envelope_and_underwater` (underwat
 
 No `Rand_*` calls added (the ducker/reverb/fade use the IOP's `SFXrnd` only where the spec does — none here — and
 the EE `Rand_*` is untouched), so seeded tests are unaffected.
+
+## 0076 — Bullet fly-bys (Bullet_DoTrails): the whiz past the camera
+
+Area: G-032a, `crates/nf-game/src/bullet.rs` + `drone.rs`. The `work/` research bundle is now accessible (the copyparty
+share's volume is `/KOTPT/`, account "z"); the `Bullet_DoTrails` decompile at `0x12d890` was read and the fly-by ported
+whole from it, in the game's call order.
+
+What the player hears: when a drone bullet passes within 3 units of the camera (SqDist < 9), there's a 1-in-5 chance
+(`Rand_Rand(5)`) of a fly-by whiz — sound 0x1dc — played at the closest point on the bullet's path to the viewer. Only
+weapons with `weapon_data+0x6C & 0x40000` (e.g. SG5 = 0x40050); single-player only; the player's own bullets are
+exempt (in the port, the player fires `PlayerBullet`s, so all `Bullet`s are drone-fired and eligible). The RNG order
+is preserved: `Rand_FRand(0.5)` (the first-step speed, line 116 of Bullet_update) → `Rand_Rand(5)` (inside DoTrails,
+line 376/475), with no other Rand calls between (verified in the decompile).
+
+Port: `Bullet` gains a `flyby: bool` field (set from `weapon_data.flyby(weapon)` at creation); `Bullet::update` gains
+a `viewer: V3` param and the fly-by check after the move (closest-point-on-segment, SqDist < 9, `rng.rand(5) == 0`).
+`BulletEvent::FlyBy(V3)` routes to `Sound_Play3D(0x1dc, …)` in the drone loop. The `vecutil_calculate_closest_point_on_line`
+(0x1df7e0) segment test is ported as `closest_point_on_segment`.
+
+Evidence: `work/decomp/ACTION.ELF/0012d890_Bullet_DoTrails*.c` (the 0x40000 block at lines 238–257), `0012e7b0_Bullet_update*.c`
+(call sites at lines 376/475, Rand order at line 116), `001df7e0_vecutil_calculate_closest_point_on_line*.c`. Also confirmed
+from `work/decomp/SFX.IRX/`: `PS2_SetupReverb` (0xc944) = mode 4, delay 30, feedback 200 (matches sound.md §5.5);
+`psiRequestVoiceHandle2` (0xe420) = ADSR1 0x000F, ADSR2 0x1FC0 (matches §3.4). The SPU2 Gaussian interpolation is a
+hardware feature (not in SFX.IRX; the driver only writes the pitch register) — the Catmull-Rom 4-tap stand-in from 0075
+remains, noted in GAPS G-032d.
+
+Tests: `flyby_plays_within_three_units_on_one_in_five` (a fly-by bullet within 3 units fires within 60 ticks; sister: no
+flag → never fires; 10 units away → never fires). The `Rand_Rand(5)` call did not break seeded tests (no existing test
+exercises a fly-by bullet path). `cargo test --workspace` = 156 passed, 0 failed.

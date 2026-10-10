@@ -2792,7 +2792,8 @@ impl Drone {
         let dir = crate::bullet::spread(aim, f32_at(0x24), flags68, rng);
         let mut damage = f32_at(0x0c) * self.damage_mul;
         if self.dist < 4.0 { damage *= 2.0 }
-        Some(crate::bullet::Bullet { pos: muzzle, dir, speed: f32_at(0x20), travelled: 0.0, range: f32_at(0x1c), damage, owner, state: 0 })
+        Some(crate::bullet::Bullet { pos: muzzle, dir, speed: f32_at(0x20), travelled: 0.0, range: f32_at(0x1c), damage, owner, state: 0,
+            flyby: d.weapons.flyby(self.weapon as usize) })
     }
 
     // ---- per tick -----------------------------------------------------------------------------------------------
@@ -3711,22 +3712,28 @@ impl Drones {
         self.doors.calc();
         self.doors.end_tick(&self.channels);
         // Bullets: move, collide with the world and Bond (`Bullet_update` + `Collide_Update`), damage
-        // (`Player_HandlePain`); the hit flash fades by 1 per tick (HUD).
+        // (`Player_HandlePain`); the hit flash fades by 1 per tick (HUD). `Bullet_DoTrails` fly-by (sound 0x1dc) is
+        // checked inside `Bullet::update` in the game's RNG order (Rand_FRand → Rand_Rand(5)).
         self.impacts.clear();
         let vol = crate::bullet::PlayerVolume { feet: [player.pos[0], player.pos[1] - 0.4, player.pos[2]], height: 1.8, radius: 0.25 };
+        let viewer = player.pos;
         for b in &mut self.bullets {
             let (from, dir) = (b.pos, b.dir);
-            if let Some(ev) = b.update(d.world, &vol, &mut self.rng) {
-                if let crate::bullet::BulletEvent::World(p) = ev {
-                    let end = [p[0] + dir[0] * 0.1, p[1] + dir[1] * 0.1, p[2] + dir[2] * 0.1];
-                    if let (Some(s), Some((_, _, m))) = (d.surfaces, d.world.segment_surface(from, end)) {
-                        if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
+            if let Some(ev) = b.update(d.world, &vol, viewer, &mut self.rng) {
+                match ev {
+                    crate::bullet::BulletEvent::World(p) => {
+                        let end = [p[0] + dir[0] * 0.1, p[1] + dir[1] * 0.1, p[2] + dir[2] * 0.1];
+                        if let (Some(s), Some((_, _, m))) = (d.surfaces, d.world.segment_surface(from, end)) {
+                            if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
+                        }
                     }
-                }
-                if let crate::bullet::BulletEvent::Player { damage, .. } = ev {
-                    let before = self.health.health;
-                    self.health.pain(damage, DIFFICULTY, d.level);
-                    self.player_hits.push((frame, b.owner, before - self.health.health));
+                    crate::bullet::BulletEvent::Player { damage, .. } => {
+                        let before = self.health.health;
+                        self.health.pain(damage, DIFFICULTY, d.level);
+                        self.player_hits.push((frame, b.owner, before - self.health.health));
+                    }
+                    // `Bullet_DoTrails` fly-by: `Sound_Play3D(0x1dc, closest_point, 100, -1, -1, …, custom 0)` [M].
+                    crate::bullet::BulletEvent::FlyBy(p) => { self.audio.play3d(0x1dc, p, None); self.sounds.push(Sound { id: 0x1dc, pos: p, inner: 0.0, outer: 0.0, weight: 0.0 }); }
                 }
                 self.impacts.push(ev);
             }
