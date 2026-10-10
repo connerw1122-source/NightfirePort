@@ -303,17 +303,23 @@ impl Sim {
             self.cursor = [self.cursor[0] * 0.5, self.cursor[1] * 0.5];
             self.cross = [self.cross[0] * 0.5, self.cross[1] * 0.5];
         }
-        // Riding (`Player_FeetOnPoint` → `Control_InheritVelocity`): standing on a moving object (the truck), Bond moves
-        // and turns with it — the feet ray reaches cc + 0.6 below him (cc 1.0347 [L]).
-        let p = self.bond.pos;
-        if let Some(g) = self.world.ground_motion(p, [p[0], p[1] - 1.6347, p[2]]) {
-            let (sn, cs) = g.turn.sin_cos();
-            let (x, z) = (p[0] + g.delta[0] - g.pivot[0], p[2] + g.delta[2] - g.pivot[2]);
-            self.bond.pos = [g.pivot[0] + x * cs + z * sn, p[1] + g.delta[1], g.pivot[2] - x * sn + z * cs];
-            self.bond.yaw += g.turn;
+        // Riding (`Player_FeetOnPoint` → `Control_InheritVelocity` 0x133e88): standing on a moving object (the truck),
+        // Bond moves and turns with it — the feet ray reaches cc + 0.6 below him (cc 1.0347 [L]). In the game this runs
+        // inside `Player_CollisionHandler` (0x1949a8), which early-returns when `BLData+0x94a == 0` (disabled by a
+        // script cut-scene). So riding does NOT run while Bond is disabled — the cut-scene's `Script_Free` →
+        // `Player_Enable` places Bond directly. The A-5 change (running riding unconditionally) caused Bond to bounce
+        // against the truck during the cut-scene. Fix: gate on `!self.disabled` [M 0x1949a8:24].
+        if !self.disabled {
+            let p = self.bond.pos;
+            if let Some(g) = self.world.ground_motion(p, [p[0], p[1] - 1.6347, p[2]]) {
+                let (sn, cs) = g.turn.sin_cos();
+                let (x, z) = (p[0] + g.delta[0] - g.pivot[0], p[2] + g.delta[2] - g.pivot[2]);
+                self.bond.pos = [g.pivot[0] + x * cs + z * sn, p[1] + g.delta[1], g.pivot[2] - x * sn + z * cs];
+                self.bond.yaw += g.turn;
+            }
         }
         let before = self.bond.pos;
-        self.bond.tick(&self.world, &input);
+        if !self.disabled { self.bond.tick(&self.world, &input); }
         // Footsteps (`AnimObjectUpdate`, player): `BL+0x924` gathers the distance moved; past the stride (1.65,
         // crouched 0.4125) it wraps (fmod) and a step sounds: crouched 0x286 at Bond, else `Effect_Player` → the floor
         // surface's footstep (`EffectInfo+0x16`) at the floor point; AI alertness 0 (drones do not hear it).

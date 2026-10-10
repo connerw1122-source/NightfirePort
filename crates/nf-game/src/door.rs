@@ -564,14 +564,20 @@ impl Doors {
     /// activates every door it meets (the game walks the whole hit list; walls do not stop it). `head` is also
     /// the activator's position for the side tests.
     pub fn player_use(&mut self, head: V3, look: V3, channels: &mut Channels, frame: u32) -> (Vec<SoundEvent>, usize) {
+        // `Player_Activate` (0x1a5170): Bond's head + forward × 1.0, tested as a `Collide_SphereIntersect(1.0, ...)`
+        // against every cel-linked object. Doors (type 0x1C) call `Door_Activate(obj, player, 1)`. The port uses the
+        // door's placement position + a generous distance check (the door's bounding sphere may be 0 if the glist
+        // sphere wasn't read) [M 0x1a5170:100-108,128].
         let mut sounds = Vec::new();
-        let centre = [head[0] + look[0], head[1] + look[1], head[2] + look[2]];
+        let use_point = [head[0] + look[0], head[1] + look[1], head[2] + look[2]];
         let mut hits = 0;
         for i in 0..self.list.len() {
-            let sph = self.list[i].sph;
-            let d = sub(centre, sph.0);
-            let r = 1.0 + sph.1;
-            if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < r * r {
+            let pos = self.list[i].pos;
+            let d = [use_point[0] - pos[0], use_point[1] - pos[1], use_point[2] - pos[2]];
+            // The game uses a 1.0-radius sphere at the use point against the door's collision mesh.
+            // Stand-in: distance to the door's placement position < 2.5 (covers the door's extent + use radius).
+            let d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            if d2 < 6.25 { // 2.5² = generous reach
                 self.activate(i, &[(head, 0.0)], true, channels, frame, &mut sounds);
                 hits += 1;
             }
