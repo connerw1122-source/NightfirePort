@@ -78,6 +78,27 @@ impl Pickup {
         Some(Pickup::create(m, w.id(id as usize), rounds, kind, model, bounds))
     }
 
+    /// `Pickup_Create` (0x18dda0) for a level-placed pickup (type 0xF0, `parsemap_create_dynamic_objects`):
+    /// the placement's extra words give the type, id, switch channel, sound, respawn and lifetime. The pickup
+    /// starts at rest (state 1, on the floor). The model comes from the placement's celglist (the placement's
+    /// object), NOT from `weapon_data[id]+0x80` — the glist is passed as `param_4` to `Pickup_Create` [M 0x1d04f0].
+    pub fn create_placed(translation: V3, rotation: [f32; 3], type_: u16, id: u16, switch_channel: u16, sound: u16, respawn: u32, lifetime: u8, model: u32, bounds: Model, w: &WeaponData) -> Option<Pickup> {
+        if id == 0xFFFF { return None; }
+        if model == 0 { return None; }
+        let m = nf_formats::placement::object_matrix(rotation, translation);
+        let mut p = Pickup::create(&m, id, 0, type_, model, bounds);
+        p.state = 1;
+        p.sound = if sound == 0xFFFF { None } else { Some(sound as u32) };
+        p.lifetime = if lifetime == 0 { 0 } else { lifetime as u16 * 60 };
+        if type_ == kind::WEAPON {
+            p.rounds = w.clip_size(id as usize);
+        }
+        if type_ == kind::AMMO {
+            p.rounds = w.clip_size(id as usize).max(1);
+        }
+        Some(p)
+    }
+
     /// `Pickup_Create` for a dropped pickup: upright with the matrix's heading (`Mat_Align2Up(M, +Y, Mat_GetDir(M))`,
     /// the direction taken as row 2 — *suggested*), lowered by radius − |centre y|, falling. *Deviations*: the
     /// fall ray starts at the given translation (`build_PointOnFloor`'s result is not read) and the sphere push-out

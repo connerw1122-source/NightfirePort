@@ -14,11 +14,12 @@ fn weapon_data() -> Option<WeaponData> {
 }
 
 #[test]
-fn scroll_from_hands_cycles_through_fists_to_the_p2k() {
+fn scroll_from_hands_finds_a_visible_weapon() {
     let Some(wd) = weapon_data() else { eprintln!("skip: NF_ISO not set"); return };
     // Bond at hands (weapon 0x47). Weapon 1 (fists) and weapon 2 (P2K) are both owned with ammo.
-    // The game's cycle does NOT check the first-person model — it cycles through ALL owned, selectable,
-    // has-ammo weapons. From hands, the first scroll goes to weapon 1 (fists), the second to weapon 2 (P2K).
+    // D-003: the cycle in Sim::step_bond filters by has_view_model (the skin must be in the level archive).
+    // Gun::cycle itself does NOT filter (that's the Sim's job). This test verifies Gun::cycle finds weapon 1
+    // (fists) — the Sim-level D-003 filter is what skips it in play.
     let mut owned = vec![false; 0x73];
     owned[1] = true;   // fists
     owned[2] = true;   // P2K
@@ -29,17 +30,17 @@ fn scroll_from_hands_cycles_through_fists_to_the_p2k() {
     let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, |w| wd.ammo_type(w as usize), |w| wd.flags(w as usize));
     let selectable = |w: u8| wd.selectable(w);
 
-    // From hands (0x47), cycle +1 → weapon 1 (fists). The game does this too.
+    // Gun::cycle (without the D-003 filter) finds weapon 1 (fists) from hands.
     let g = nf_game::gun::Gun::new(0x47, 0, 0);
     assert_eq!(g.cycle(1, nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable), Some(1),
-        "scroll from hands finds fists (weapon 1) first — the game cycles through all owned weapons");
+        "Gun::cycle finds fists (weapon 1) — the Sim's D-003 filter is what skips it in play");
 
-    // From fists (1), cycle +1 → weapon 2 (P2K). The player can scroll again to reach the P2K.
+    // From fists (1), Gun::cycle finds the P2K (2).
     let g2 = nf_game::gun::Gun::new(1, 1, 0);
     assert_eq!(g2.cycle(1, nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable), Some(2),
-        "scroll from fists finds the P2K (weapon 2)");
+        "Gun::cycle from fists finds the P2K (weapon 2)");
 
-    // Sister: from the P2K (2), cycle +1 wraps past 0x47 (hands, not owned) back to 1 (fists).
+    // Sister: from the P2K (2), cycle +1 wraps to fists (1).
     let g3 = nf_game::gun::Gun::new(2, 7, 41);
     assert_eq!(g3.cycle(1, nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable), Some(1),
         "scroll from the P2K wraps to fists");
