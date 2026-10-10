@@ -1666,3 +1666,39 @@ a drop) now falls to the ground below instead of hovering 2 units under the ledg
 feet-sphere radius variations (0.55 / 0.3), `DroneInit_Collision`'s create-time floor snap, the `DealWithObjHit` per-
 hit dispatch (water ripples, doors, breakables, explosions, players — the explosion hit path comes with the grenades
 commit next).
+
+## 0079 — Remaining cover states: sniper 0x97/0x98, ambush 0x37/0x38, ConsiderExplosive
+
+G-028. The cover system's remaining states from `docs/systems/drone-cover.md`. Research first (same discipline):
+`NDrone2_DSTATE_UnderCoverSniperFire` 0x16a610, `NDrone2_DSTATE_UnderCoverSniperReload` 0x16a8b0,
+`NDrone2_DSTATE_AmbushInit` 0x172960, `NDrone2_DSTATE_AmbushWait` 0x161560, `NDrone2_FindAmbushCover` 0x152958,
+`DroneFunc_ConsiderExplosive` 0x1431c0, and the `UnderCoverFire` ENTER branch (0x16a3e0).
+
+Key finds: `UnderCoverFire` ENTER branches to 0x97 when the drone's anim set `+0xDA == 0x13` (sniper) AND
+`level < 0x0700000E` (the test level 07000005 qualifies — `GameState._12_4_ + 0xf8fffff4 < 2`). State 0x97: timer C at
++`FRAME_RATE_INT` (1 s) fires, timer D at +`FRAME_RATE_INT × 6` (6 s) returns to 0x99; clip empty → 0x98 (reload anim
+0x52, refill `+0xBBC = +0xBBE`, back to 0x97). `OpponentIsAimingAtMe(7.5)` + `BondIsFacingMe(45)` + `Rand(3) == 0` →
+duck to 0x99. Ambush mode 0x10 (`NDrone2_init_DMODE_Ambush`) sets `+0x5A2 = 0x37`; `FindAmbushCover` is `FindCover`
+restricted to nodes within **2.0 units** of the drone (the scan radius) — claims the closest whose anim predicates
+pass → 0x93; without one, `CallAnim(0, 0x11, …)` (crouch) → 0x38, which waits until the opponent is visible or within
+3.0 → 0x56. `ConsiderExplosive` (msg 0x21): stores `+0x330` (pos) / `+0x350` (run distance: 12.0 frag / 5.0 stun / 10.0
+mine) and routes to `RecoverFromScaryObject` (0x86); the flee route update is G-026.
+
+Port: `crates/nf-game/src/drone.rs` — state constants `UNDER_COVER_SNIPER_FIRE` (0x97),
+`UNDER_COVER_SNIPER_RELOAD` (0x98), `AMBUSH_INIT` (0x37), `AMBUSH_WAIT` (0x38); msg constants `TIMER_D` (0xD) and
+`EXPLOSIVE` (0x21); `timer_d` field (`Drone+0xCD0`), `explosive_pos` / `explosive_run_dist` (`+0x330` / `+0x350`);
+`find_ambush_cover` (the 2.0-unit scan), `consider_explosive` (msg 0x21 → 0x86); the four states in `handle_cover`
+with the sniper branch from `UnderCoverFire` ENTER; timer D dispatched in `Drones::tick`. The ambush mode's start
+state (mode 0x10 → 0x37) was already mapped in `start_state`. `send` and `start_state` made `pub` for the live tests.
+
+Tests: 2 live in ai_live.rs — `sniper_cover_branches_to_sniper_fire_state` (a sniper-anim-set drone in 0x96 branches
+to 0x97 on ENTER; sister: a non-sniper stays in 0x96) and `ambush_mode_starts_in_ambush_init` (mode 0x10 → start 0x37;
+sister: mode 0 does not). All nf-game 80 green (was 77; +3: the 2 live + the existing collision tests). No Rand calls
+added (the `Rand(3)` in the sniper duck is the game's own, already consumed by the existing `rand` field).
+
+What the player sees: a sniper guard in cover on 07000005 now pops up to fire once a second (timer C), ducks back after
+6 s (timer D) or when Bond aims at him, and reloads (0x98) when empty — instead of the generic 0x96 fire loop. An
+ambush guard (mode 0x10) crouches behind the nearest cover within 2 m and waits; if Bond gets within 3 m or is seen,
+he attacks. A guard near a grenade (msg 0x21) flees to 0x86 (the flee route itself is G-026). Not done: the
+`RecoverFromScaryObject` (0x86) flee route update (the run-away path), `ValidateCoverAnim`'s 5→7/10 fallback, the
+`+0x538` blend-timing check for non-call anims.

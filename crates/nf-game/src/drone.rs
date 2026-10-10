@@ -62,6 +62,14 @@ pub mod state {
     pub const UNDER_COVER_TYPE_CHANGE: u8 = 0x9a;
     pub const UNDER_COVER_LEAVE: u8 = 0x9b;
     pub const UNDER_COVER_LEAVE_NOW: u8 = 0x9c;
+    /// Sniper cover (docs/systems/drone-cover.md): `UnderCoverFire` ENTER branches to 0x97 when the drone's anim set
+    /// is 0x13 (sniper) and the level is before 0x0700000E. 0x98 is the reload.
+    pub const UNDER_COVER_SNIPER_FIRE: u8 = 0x97;
+    pub const UNDER_COVER_SNIPER_RELOAD: u8 = 0x98;
+    /// Ambush (drone mode 0x10, `NDrone2_init_DMODE_Ambush`): 0x37 finds an ambush cover node within 2.0 → 0x93, else
+    /// crouches and waits (0x38) until the opponent is visible or within 3 → 0x56.
+    pub const AMBUSH_INIT: u8 = 0x37;
+    pub const AMBUSH_WAIT: u8 = 0x38;
     pub const AIM_STAND: u8 = 0x67;
     pub const AIM_STAND_FIRE: u8 = 0x68;
     pub const AIM_STAND_RELOAD: u8 = 0x69;
@@ -93,6 +101,11 @@ pub mod msg {
     pub const SEARCH_DONE: u8 = 0x25;
     pub const ANIM_DONE: u8 = 5;
     pub const TIMER_C: u8 = 0xc;
+    /// Timer D (the sniper cover's 6-s return timer; `*(int*)(Drone+0xCD0)`).
+    pub const TIMER_D: u8 = 0xd;
+    /// An explosive (grenade / mine) landed near the drone (`DroneFunc_ConsiderExplosive`, msg 0x21): the cover and
+    /// combat states route it to flee (state 0x86, `RecoverFromScaryObject`).
+    pub const EXPLOSIVE: u8 = 0x21;
     pub const FORCED_ATTACK: u8 = 0x1f;
     /// `Drone_Message(0xE)`: enable (WaitSwitch → the drone's start state).
     pub const ENABLE: u8 = 0x0e;
@@ -304,6 +317,12 @@ pub struct Drone {
     pub next_state: Option<u8>,
     pub entered: u32,
     pub timer_c: Option<u32>,
+    /// Timer D (`Drone+0xCD0`): the sniper cover's 6-s return-to-cover timer.
+    pub timer_d: Option<u32>,
+    /// `Drone+0x330`: an explosive's position (set by `DroneFunc_ConsiderExplosive` on msg 0x21), and the run distance
+    /// (`+0x350`: 5.0 stun, 8.0 mine, 12.0 frag) for `RecoverFromScaryObject` (0x86).
+    pub explosive_pos: V3,
+    pub explosive_run_dist: f32,
     pub anim: Animator,
     // Firing (`+0x3B` firing, `+0x3C` burst done, `+0xBC0` burst, `+0xBC4` next shot, `+0xBC8` last shot, clip).
     pub firing: bool,
@@ -535,7 +554,8 @@ impl Drone {
             accuracy: 5, aggression: 0, reaction: 0,
             los: false, seen: false, ever_seen: false, visibility: 0.0, seen_ticks: 0, unseen_ticks: 0, vision_on: false,
             dist: 0.0, yaw_to_opp: 0.0,
-            state: state::GLOBAL, prev_state: 0, next_state: None, entered: 0, timer_c: None,
+            state: state::GLOBAL, prev_state: 0, next_state: None, entered: 0, timer_c: None, timer_d: None,
+            explosive_pos: pos, explosive_run_dist: 0.0,
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
             shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
@@ -639,7 +659,7 @@ impl Drone {
     /// The mode's start state from `DroneTypeSettings`, or for −1 by mode (2 → SniperIdle, or SniperAim when fully
     /// alert; 4 → 8, 7 → 0x85, 0x10 → 0x37, 0x13 → 0x30, 0x16 → 0x31, 0x18 → 0x36; else InitPatrol with property
     /// 0x24 / 0x25, Idle without); then, at alertness 1, the attack versions.
-    fn start_state(&self, d: &Data) -> u8 {
+    pub fn start_state(&self, d: &Data) -> u8 {
         let t = d.props.types.get(self.mode as usize).map_or(-1, |t| t.start);
         let s: u16 = if t >= 0 { t as u16 } else {
             match self.mode {
@@ -1644,6 +1664,49 @@ impl Drone {
         true
     }
 
+    /// `NDrone2_FindAmbushCover` (0x152958): the unoccupied cover node within **2.0 units** of the drone (the ambush
+    /// mode's scan radius) whose anim predicates pass; claims it the same way `find_cover` does. Returns false when no
+    /// node is close enough. The ambush mode (drone type 0x10) uses this instead of the network-distance search.
+    fn find_ambush_cover(&mut self, d: &Data, need_los: bool) -> bool {
+        let mut best: Option<(f32, usize, u8)> = None;
+        for (i, n) in d.covers.iter().enumerate() {
+            if self.cover_rt.get(i).is_none_or(|r| r.owner.is_some()) { continue; }
+            let dd = ((n.pos[0] - self.pos[0]).powi(2) + (n.pos[1] - self.pos[1]).powi(2) + (n.pos[2] - self.pos[2]).powi(2)).sqrt();
+            if dd > 2.0 || best.is_some_and(|b| dd >= b.0) { continue; }
+            let side = self.cover_node_ok(d, i, 0, need_los);
+            if side != 0 { best = Some((dd, i, side)); }
+        }
+        let Some((_, i, side)) = best else { return false };
+        self.disown_cover();
+        let n = &d.covers[i];
+        let bits = self.cover_rt[i].bits;
+        let Some((goal, _)) = n.position(bits, true) else { return false };
+        self.cover = Some(i);
+        self.croute = None;
+        self.goal = Some(goal);
+        self.cover_rt[i].owner = Some(self.index);
+        self.cover_side = side;
+        self.cover_point = n.position(bits, false).map_or(goal, |p| p.0);
+        self.cover_claimed = true;
+        self.has_cover = true;
+        true
+    }
+
+    /// `DroneFunc_ConsiderExplosive` (0x1431c0, msg 0x21): an explosive landed near the drone. Stores its position
+    /// (`+0x330`), the run distance (`+0x350`: 12.0 frag / 5.0 stun / 10.0 mine — here the caller passes the type's
+    /// distance), and routes to `RecoverFromScaryObject` (0x86). The port marks `explosive_pos` / `explosive_run_dist`
+    /// and sets the state; the full flee route (state 0x86's update) is not yet ported (G-026).
+    fn consider_explosive(&mut self, d: &Data, pos: V3, resume: u8, run_dist: f32) {
+        if !self.prop(d, 0x34) && !self.prop(d, 0x3a) && !self.prop(d, 0x3b) { return; }
+        // The game skips the flee when the drone is already in an explosive-aware state (0x28/0x2D/0x2E–0x4C, etc.).
+        if matches!(self.state, 0x28 | 0x2d | 0x2e..=0x4c | 0x52..=0x56 | 0x62..=0x88) && self.state != 0x86 { return; }
+        self.explosive_pos = pos;
+        self.explosive_run_dist = run_dist;
+        let _ = resume;
+        // RecoverFromScaryObject (0x86) — the port sets it; its update (run away from the explosive) is G-026.
+        self.set_state(0x86);
+    }
+
     /// `NDrone2_CoverAvailable(needLos)` (0x155a38).
     fn cover_available(&mut self, d: &Data, need_los: bool) -> bool {
         if !self.prop(d, 0x30) { return false; }
@@ -1892,7 +1955,14 @@ impl Drone {
                 if !self.cover_anim(d, rng, 2, UNDER_COVER_FIRE) { self.set_state(UNDER_COVER_LEAVE_NOW) }
                 true
             }
-            (UNDER_COVER_FIRE, msg::ENTER) => { self.fire(d, rng, frame, true); true }
+            (UNDER_COVER_FIRE, msg::ENTER) => {
+                // `NDrone2_DSTATE_UnderCoverFire` case 1 (0x16a3e0): if the drone's anim set is 0x13 (sniper) AND the
+                // level is before 0x0700000E, branch to the sniper-fire state (0x97) instead of firing at once. On
+                // later levels the sniper fires through `UnderCoverFire` directly.
+                if self.anim_set == 0x13 && d.level < 0x0700_000e { self.set_state(UNDER_COVER_SNIPER_FIRE); return Some(true); }
+                self.fire(d, rng, frame, true);
+                true
+            }
             (UNDER_COVER_FIRE, msg::UPDATE) => {
                 if !in_cover_ok(self, true) {
                     let leans = self.cover.and_then(|c| d.covers.get(c)).is_some_and(|n| n.is_corner())
@@ -1905,6 +1975,64 @@ impl Drone {
                 }
                 true
             }
+            (UNDER_COVER_FIRE, msg::EXPLOSIVE) => { self.consider_explosive(d, self.explosive_pos, UNDER_COVER_LEAVE_NOW, 12.0); true }
+            // `NDrone2_DSTATE_UnderCoverSniperFire` (0x16a610): fires on timer C (1 s), returns on timer D (6 s),
+            // reloads (0x98) when the clip empties. `+0x2E` = the node is not low (corner); `OpponentIsAimingAtMe(7.5)`
+            // + `BondIsFacingMe(45)` + Rand(3) = 0 → duck back (0x99).
+            (UNDER_COVER_SNIPER_FIRE, msg::ENTER) => {
+                self.vision_on = true;
+                self.cover_claimed = false;
+                // `+0x2E` = node.kind != 1 (corner, not low); timer C at +1 s, timer D at +6 s.
+                self.timer_c = Some(frame + 60);
+                self.timer_d = Some(frame + 60 * 6);
+                true
+            }
+            (UNDER_COVER_SNIPER_FIRE, msg::UPDATE) => {
+                // Clip empty → reload (0x98).
+                if self.clip < 1 { self.set_state(UNDER_COVER_SNIPER_RELOAD); return Some(true); }
+                // Aimed at (within 7.5 units, Bond facing within 45°) and Rand(3) = 0 → duck back (0x99).
+                if self.aimed_at && self.opp_facing.abs() < 45f32.to_radians() && self.dist < 7.5 && rng.rand(3) == 0 {
+                    self.set_state(UNDER_COVER_RETURN);
+                } else if !in_cover_ok(self, true) {
+                    // Node no longer OK: leans → return (0x99), else leave now (0x9C).
+                    let leans = self.cover.and_then(|c| d.covers.get(c)).is_some_and(|n| n.is_corner())
+                        && matches!(self.cover_type, crate::cover::kind::CROUCH_LEAN | crate::cover::kind::STAND_LEAN);
+                    self.set_state(if leans { UNDER_COVER_RETURN } else { UNDER_COVER_LEAVE_NOW });
+                }
+                true
+            }
+            (UNDER_COVER_SNIPER_FIRE, msg::TIMER_C) => { self.fire(d, rng, frame, true); true }
+            (UNDER_COVER_SNIPER_FIRE, msg::TIMER_D) => { self.set_state(UNDER_COVER_RETURN); true }
+            (UNDER_COVER_SNIPER_FIRE, msg::EXPLOSIVE) => { self.consider_explosive(d, self.explosive_pos, UNDER_COVER_LEAVE_NOW, 12.0); true }
+            // `NDrone2_DSTATE_UnderCoverSniperReload` (0x16a8b0): the reload anim (0x52), then back to 0x97. Refills
+            // the clip from the spare (`+0xBBC = +0xBBE`).
+            (UNDER_COVER_SNIPER_RELOAD, msg::ENTER) => {
+                self.vision_on = true;
+                self.cover_claimed = false;
+                self.call_anim(d, anim_state::RELOAD, UNDER_COVER_SNIPER_FIRE, 0);
+                self.clip = self.clip_max;
+                true
+            }
+            (UNDER_COVER_SNIPER_RELOAD, msg::EXPLOSIVE) => { self.consider_explosive(d, self.explosive_pos, 0, 12.0); true }
+            // `NDrone2_DSTATE_AmbushInit` (0x17 2960): find an ambush cover within 2.0 → 0x93; else crouch (0x11) and
+            // wait (0x38).
+            (AMBUSH_INIT, msg::ENTER) => {
+                self.vision_on = true;
+                if self.find_ambush_cover(d, true) { self.set_state(UNDER_COVER_INIT); }
+                else { self.call_anim(d, anim_state::CROUCH_AIM, 0, 0); self.set_state(AMBUSH_WAIT); }
+                true
+            }
+            (AMBUSH_INIT, msg::UPDATE) => { true }
+            // `NDrone2_DSTATE_AmbushWait` (0x161560): crouched; on the opponent visible or within 3 → 0x56 (Attack).
+            (AMBUSH_WAIT, msg::ENTER) => { self.vision_on = true; self.cover_claimed = false; true }
+            (AMBUSH_WAIT, msg::UPDATE) => {
+                let bond = self.target.pos;
+                let d2 = ((bond[0] - self.pos[0]).powi(2) + (bond[2] - self.pos[2]).powi(2)).sqrt();
+                if self.seen || d2 < 3.0 { d.props.set(0x10, &mut self.props, 0); self.set_state(ATTACK); }
+                true
+            }
+            (AMBUSH_WAIT, msg::EXIT) => { d.props.set(0x10, &mut self.props, 0); true }
+            (AMBUSH_WAIT, msg::EXPLOSIVE) => { self.consider_explosive(d, self.explosive_pos, ATTACK, 12.0); true }
             (UNDER_COVER_RETURN, msg::ENTER) => { if !self.cover_anim(d, rng, 4, UNDER_COVER_TYPE_CHANGE) { self.set_state(UNDER_COVER_LEAVE) } true }
             (UNDER_COVER_RETURN, msg::UPDATE) => { if !in_cover_ok(self, false) || far_from_goal(self) { self.cover_leave |= 4 } true }
             (UNDER_COVER_TYPE_CHANGE, msg::ENTER) => {
@@ -1921,7 +2049,8 @@ impl Drone {
                 true
             }
             (UNDER_COVER_LEAVE_NOW, msg::EXIT) => { self.disown_cover(); true }
-            (c, msg::ENTER | msg::EXIT | msg::UPDATE) if c == RUN_FOR_COVER || (UNDER_COVER_INIT..=UNDER_COVER_LEAVE_NOW).contains(&c) => true,
+            (c, msg::ENTER | msg::EXIT | msg::UPDATE) if c == RUN_FOR_COVER || (UNDER_COVER_INIT..=UNDER_COVER_LEAVE_NOW).contains(&c)
+                || c == AMBUSH_INIT || c == AMBUSH_WAIT => true,
             _ => return None,
         })
     }
@@ -1931,7 +2060,7 @@ impl Drone {
     fn set_state(&mut self, s: u8) { if s != 0 { self.next_state = Some(s) } }
 
     /// `Drone_SM_RouteMsgDCV`: deliver, then apply pending changes (exit → enter, repeating).
-    fn send(&mut self, d: &Data, rng: &mut Rng, frame: u32, m: u8) {
+    pub fn send(&mut self, d: &Data, rng: &mut Rng, frame: u32, m: u8) {
         if !self.handle(d, rng, frame, self.state, m) { self.handle(d, rng, frame, state::GLOBAL, m); }
         if let Some(m2) = self.self_msg.take() { self.send(d, rng, frame, m2); }
         let mut guard = 0;
@@ -3707,6 +3836,7 @@ impl Drones {
             dr.patrol_cooldown = self.patrol_cooldown;
             if !dr.started { dr.started = true; dr.send(d, rng, frame, msg::ENTER); dr.entered = frame; dr.log.push((frame, dr.state)); }
             if let Some(t) = dr.timer_c { if frame >= t { dr.timer_c = None; dr.send(d, rng, frame, msg::TIMER_C); } }
+            if let Some(t) = dr.timer_d { if frame >= t { dr.timer_d = None; dr.send(d, rng, frame, msg::TIMER_D); } }
             if let Some(t) = dr.idle_timeout { if frame >= t { dr.idle_timeout = None; dr.send(d, rng, frame, msg::IDLE_TIMEOUT); } }
             if let Some((t, m)) = dr.delayed { if frame >= t { dr.delayed = None; dr.send(d, rng, frame, m); } }
             if dr.alert < 1.0 && dr.alert > dr.alert_floor { dr.alert -= 1.0 / (60.0 * 50.0); }
@@ -3814,7 +3944,8 @@ mod tests {
             props: [0; 3], alert_props: None, sight_range: 0.0, half_fov: 0.0, engage_range: 0.0, combat_range: 0.0,
             accuracy: 0, aggression: 0, reaction: 0, los: false, seen: false, ever_seen: false, visibility: 0.0,
             seen_ticks: 0, unseen_ticks: 0, vision_on: false, dist: 0.0, yaw_to_opp: 0.0,
-            state: 0, prev_state: 0, next_state: None, entered: 0, timer_c: None,
+            state: 0, prev_state: 0, next_state: None, entered: 0, timer_c: None, timer_d: None,
+            explosive_pos: pos, explosive_run_dist: 0.0,
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip: 0, clip_max: 0, shots: Vec::new(),
             log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: 0, lost_sight: false,

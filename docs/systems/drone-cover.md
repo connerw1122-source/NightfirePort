@@ -102,6 +102,23 @@ stand-cover loop 171) → UnderCoverIdle (296, clip refilled) → UnderCoverAim 
 computed in-cover point (59.21, 99.49) (U-031). The port matches the sequence, node, UnderCoverInit / Aim durations and
 the end position (0.2); RunForCover is shorter in the port (U-030).
 
+## Sniper cover (0x97/0x98) [M] (WORKLOG 0079)
+
+`UnderCoverFire` ENTER (0x16a3e0) branches to `UnderCoverSniperFire` (0x97) when the drone's anim set `+0xDA == 0x13`
+(sniper) AND `level < 0x0700000E` (the test level 07000005 qualifies). On later levels the sniper fires through
+`UnderCoverFire` directly. State 0x97: timer C at +1 s (fires), timer D at +6 s (returns to 0x99); clip empty → 0x98
+(reload anim 0x52, refill `+0xBBC = +0xBBE`, back to 0x97). `OpponentIsAimingAtMe(7.5)` + `BondIsFacingMe(45)` +
+`Rand(3) == 0` → duck to 0x99. Ported in `drone.rs::handle_cover`.
+
+## Ambush (0x37/0x38) [M] (WORKLOG 0079)
+
+Drone mode 0x10 (`NDrone2_init_DMODE_Ambush`) sets the start state `+0x5A2 = 0x37` (AmbushInit). `NDrone2_FindAmbushCover`
+(0x152958): the unoccupied cover node within **2.0 units** of the drone whose anim predicates pass; claims it the same
+way `FindCover` does → 0x93 (UnderCoverInit). Without one: `CallAnim(0, 0x11, 0, 0, …)` (crouch) → 0x38 (AmbushWait),
+which waits until the opponent is visible (`+0x228 & 4`) or within 3.0 → 0x56 (Attack). Ported in `drone.rs::find_ambush_cover`
+and `handle_cover`. `DroneFunc_ConsiderExplosive` (msg 0x21): an explosive landed near the drone → stores `+0x330` /
+`+0x350` and routes to `RecoverFromScaryObject` (0x86); the flee route update is G-026.
+
 ## 07000005 [M]
 
 18 corner nodes (`nf-extract covers`), all reachable through NavPath A's emitter.

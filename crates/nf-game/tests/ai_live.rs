@@ -1105,3 +1105,78 @@ fn guard_gravity_and_collision_spheres() {
     assert!(g2.velocity[1] < -9.0, "lifted guard falling: v={}", g2.velocity[1]);
     assert!(g2.pos[1] < 99.5 + 50.0, "lifted guard fell: {}", g2.pos[1]);
 }
+
+/// G-028 sniper cover (WORKLOG 0079): a drone whose anim set is 0x13 (sniper), put in `UnderCoverFire` (0x96) on a
+/// level before 0x0700000E, branches to `UnderCoverSniperFire` (0x97) on the ENTER message — not firing at once.
+/// Sister: a non-sniper (anim set != 0x13) in the same state fires and stays in 0x96.
+#[test]
+fn sniper_cover_branches_to_sniper_fire_state() {
+    use nf_game::drone::{state, msg, Drone};
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, _, rng) = l.drones(None, 61.342);
+    let mut sim = l.sim(drones, rng);
+    let away = bond_at([0.0, -500.0, 0.0]);
+    for _ in 0..30 { sim.tick(&d, &away); }
+    // Find a present drone and force it into cover as a sniper.
+    let i = sim.list.iter().position(|x| x.present && x.cover.is_some()).unwrap_or_else(|| {
+        // None in cover yet: pick the first present drone, give it a cover node manually.
+        let i = sim.list.iter().position(|x| x.present).unwrap();
+        if !d.covers.is_empty() {
+            sim.list[i].cover = Some(0);
+            sim.list[i].cover_side = 1;
+            sim.list[i].cover_point = d.covers[0].pos;
+        }
+        i
+    });
+    if d.covers.is_empty() { eprintln!("skip: no cover nodes on this level"); return; }
+    // Sniper: anim_set 0x13 → branches to 0x97.
+    {
+        let dr = &mut sim.list[i];
+        dr.anim_set = 0x13;
+        dr.state = state::UNDER_COVER_FIRE;
+        dr.next_state = None;
+        dr.clip = 5;
+    }
+    // Route the ENTER message by re-entering the state.
+    sim.list[i].send(&d, &mut sim.rng, sim.frame, msg::ENTER);
+    let s = sim.list[i].state;
+    let ns = sim.list[i].next_state;
+    assert!(s == state::UNDER_COVER_SNIPER_FIRE || ns == Some(state::UNDER_COVER_SNIPER_FIRE),
+        "sniper branched to 0x97: state {:#x} next {:?} (level {:#x})", s, ns, d.level);
+
+    // Sister: a non-sniper (anim_set 0x14) in the same state fires and does NOT branch to 0x97.
+    {
+        let dr = &mut sim.list[i];
+        dr.anim_set = 0x14;
+        dr.state = state::UNDER_COVER_FIRE;
+        dr.next_state = None;
+        dr.clip = 5;
+    }
+    sim.list[i].send(&d, &mut sim.rng, sim.frame, msg::ENTER);
+    let s2 = sim.list[i].state;
+    let ns2 = sim.list[i].next_state;
+    assert!(s2 != state::UNDER_COVER_SNIPER_FIRE && ns2 != Some(state::UNDER_COVER_SNIPER_FIRE),
+        "non-sniper did NOT branch: state {:#x} next {:?}", s2, ns2);
+}
+
+/// G-028 ambush (WORKLOG 0079): a drone in mode 0x10 (ambush) starts in `AmbushInit` (0x37). With a cover node
+/// within 2.0 it claims it and goes to `UnderCoverInit` (0x93); without one it crouches and waits (0x38). Sister:
+/// a drone with no cover node nearby goes to 0x38, not 0x93.
+#[test]
+fn ambush_mode_starts_in_ambush_init() {
+    use nf_game::drone::state;
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, _, rng) = l.drones(None, 61.342);
+    let mut sim = l.sim(drones, rng);
+    // Force the first drone into ambush mode (0x10) and re-init its start state.
+    let i = 0;
+    sim.list[i].mode = 0x10;
+    let start = sim.list[i].start_state(&d);
+    assert_eq!(start, state::AMBUSH_INIT, "ambush mode start state is 0x37");
+    // Sister: mode 0 (normal) does not start in 0x37.
+    sim.list[i].mode = 0;
+    let start2 = sim.list[i].start_state(&d);
+    assert_ne!(start2, state::AMBUSH_INIT, "normal mode does not start in ambush");
+}
