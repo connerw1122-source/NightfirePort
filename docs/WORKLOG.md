@@ -2307,3 +2307,24 @@ path (the same `NDrone2_DefaultInit` logic that reads placement param 24).
 
 NF_ISO=Nightfire-onfoot.iso cargo test -p nf-game --test ai_live --test grenade_live
 = 34 passed, 0 failed.
+
+## A-7 — Script-driven level transition (event 0x12), door fixes, TFX research
+
+**Item 1 (level doesn't end after truck parks):** Found the game's `Script_EventHandler` (0x1d94c0) handles
+event 0x12 as `ResetMap_LevelToLoad(level, 1, 0)` — the script-driven level transition. The port's `nis.rs`
+was sending event 0x12 to the catch-all `Request::Event` (ignored). Fixed: event 0x12 now pushes
+`Request::LoadLevel { level }`, consumed in `drone.rs` to set `level_exit` and post `Music_Event(3, 1)`.
+Also added event 0x13 (`ScriptCam`) as a field on `Script`.
+
+**Item 2 (doors don't close / bullets pass through):** The auto-close (360-tick timer) and door collision
+(`set_dynamic`) are already implemented. The research found the likely causes are data-specific: doors' glist
+hashes may not be in `CollisionWorld::shapes` (missing 0x2E collision block), or `ch_open` channels are stuck.
+The `player_use` function was already fixed in A-6 to use placement position + generous reach.
+
+**Item 3 (too bright):** Research confirmed the shader's vertex colour conversion (0x80 = 1.0 via
+`c * 255/128`) IS correct — matching the GS's `(Texel × VertexColour) >> 7`. The real cause is the missing
+per-object TWEAK colour modulation: `psiSetTweakARGB` applies `TweakRGB = obj_tint × cel_ambient >> 8`
+(when `obj+0xf0 & 0x800`), which the port doesn't implement. The port also doesn't apply runtime point lights
+(`Light_SetAmbientRadiators` / `Light_Create` from block 0x26). Both need porting for correct brightness.
+
+Tests: 184 pass with NF_ISO set (was 182; +2 from the doors_01_live test). No Rand_* calls added.

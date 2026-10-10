@@ -39,6 +39,9 @@ pub enum Request {
     PlayerDisable,
     /// `Script_Free` after event 6: `Player_Enable` at this matrix (`None`: where the player is), with `+0xAB6`.
     PlayerEnable { at: Option<Mat4>, mode: u8 },
+    /// Event 0x12: `ResetMap_LevelToLoad(level, 1, 0)` — the script-driven level transition (the truck parking at
+    /// the end of 07000005 fires this) [M Script_EventHandler 0x1d94c0:189-199].
+    LoadLevel { level: u32 },
     /// A camera stream started (`Script_CameraStart` → `Music_Event(0xB, script)`) or ended (`Script_KillStream` →
     /// `Music_Event(0xC, script)`).
     Camera { script: u32, start: bool },
@@ -75,6 +78,8 @@ pub struct Script {
     pub clock: f32,
     /// `+0xAA8`: 0x10 keep objects, 0x20, 0x40 camera, 0x80, 0x100.
     pub flags: u16,
+    /// `+0x98` ScriptCam (event 0x13): a script camera is active.
+    pub script_cam: bool,
     /// `+0xAB2`: 1 playing, 2 done, 8 looping.
     pub play: u8,
     /// Event 6: where the player comes back (`+0x40`) and `+0xAB6`.
@@ -105,7 +110,7 @@ impl Script {
     pub fn load(nis: Arc<Nis>, matrix: Mat4, scale: f32) -> Script {
         let streams = nis.streams.iter().map(|s| Stream { first_key: s.first_key, last_key: s.last_key, pc: Some(0), parent: -1, ..Default::default() }).collect();
         let flags = if nis.camera { 0x40 } else { 0 };
-        Script { nis, matrix, scale, delay: 0, clock: 0.0, flags, play: 0, streams, player_at: None, player_mode: 0, pending: Vec::new() }
+        Script { nis, matrix, scale, delay: 0, clock: 0.0, flags, script_cam: false, play: 0, streams, player_at: None, player_mode: 0, pending: Vec::new() }
     }
 
     /// `Script_Play` (0x1db588).
@@ -333,6 +338,11 @@ impl Script {
                 let (c, v) = if ch.on(g(0)) { (g(1), g(3)) } else { (g(2), g(3)) };
                 if c != 0 { ch.set(c, v as u8, frame); }
             }
+            // Event 0x12: `ResetMap_LevelToLoad(level, 1, 0)` — the script-driven level transition (e.g. the truck
+            // parking at the end of 07000005) [M Script_EventHandler 0x1d94c0:189-199]. `g(0)` is the next level's
+            // hashcode; `Player_RamSave` is skipped (no memory card in the port).
+            0x12 => out.push(Request::LoadLevel { level: g(0) }),
+            0x13 => self.script_cam = true,
             _ => out.push(Request::Event { kind, params: p }),
         }
     }

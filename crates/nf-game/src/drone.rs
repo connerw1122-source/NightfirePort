@@ -3914,6 +3914,14 @@ impl Drones {
                     for s in self.script_sounds.iter().filter(|s| s.0 == src) { self.audio.stop(s.1); }
                     self.script_sounds.retain(|s| s.0 != src);
                 }
+                // Event 0x12: the script-driven level transition (e.g. the truck parking at the end of 07000005).
+                // Set `level_exit` so the main loop reloads the next level [M Script_EventHandler 0x1d94c0:189-199].
+                crate::nis::Request::LoadLevel { level } => {
+                    if self.level_exit.is_none() {
+                        self.level_exit = Some(level);
+                        self.music.event(3, 1);
+                    }
+                }
                 _ => {}
             }
         }
