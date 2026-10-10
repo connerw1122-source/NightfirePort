@@ -1070,3 +1070,38 @@ fn guards_talk_in_a_fight() {
     // Sister: every line is from the type-2 sets (no other voice set on this level).
     assert!(heard.iter().all(|h| talk.contains(&h.1)));
 }
+
+/// `Drone_CollisionHandler` (WORKLOG 0078): a guard on the ground stays on the ground (the down-ray snaps the feet to
+/// the floor each tick, velocity zero); a guard whose feet are off every surface falls under gravity. The test level's
+/// guard at the gate (61.34, 99.50) stands on the courtyard floor — after 60 ticks he is within 0.05 of his start y.
+/// Sister: a guard moved 50 units up (off every roof) falls — his y drops below the start.
+#[test]
+fn guard_gravity_and_collision_spheres() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, _, rng) = l.drones(None, 61.342);
+    let mut sim = l.sim(drones, rng);
+    let away = bond_at([0.0, -500.0, 0.0]);
+    for _ in 0..60 { sim.tick(&d, &away); }
+    // The gate guard (placement 0, the first drone) is on the courtyard floor: his y stays within 0.05 of the start.
+    let g = sim.list.iter().find(|x| x.placement == 0).unwrap();
+    let start_y = 99.5; // [L] work/chase_trace.tsv: the gate guard at (61.34, 99.50)
+    assert!((g.pos[1] - start_y).abs() < 0.5, "gate guard y drifted: {} (start {})", g.pos[1], start_y);
+    assert!(g.on_surface, "gate guard on the floor");
+    assert!(!g.in_air, "gate guard not in the air");
+    assert!(g.velocity[1].abs() < 1e-6, "gate guard velocity zero on the ground");
+
+    // Sister: a guard lifted 50 units straight up (off every roof) falls — his y drops below the lifted start.
+    let (drones2, _, rng2) = l.drones(None, 61.342);
+    let mut sim2 = l.sim(drones2, rng2);
+    {
+        let g = sim2.list.iter_mut().find(|x| x.placement == 0).unwrap();
+        g.pos[1] += 50.0; // lift off every surface
+    }
+    for _ in 0..60 { sim2.tick(&d, &away); }
+    let g2 = sim2.list.iter().find(|x| x.placement == 0).unwrap();
+    assert!(g2.in_air, "lifted guard in the air");
+    assert!(!g2.on_surface, "lifted guard not on a surface");
+    assert!(g2.velocity[1] < -9.0, "lifted guard falling: v={}", g2.velocity[1]);
+    assert!(g2.pos[1] < 99.5 + 50.0, "lifted guard fell: {}", g2.pos[1]);
+}

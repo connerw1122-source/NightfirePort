@@ -501,6 +501,13 @@ pub struct Drone {
     pub alpha: f32,
     /// A switch channel to raise after the drone's update (`SetDeathChannel`).
     pub raise: Option<u8>,
+    /// `Drone+0x480`: per-tick velocity; gravity accumulates here and `pos += velocity · REC_FRAME_RATE` (`Drone_CollisionHandler`
+    /// 0x140968, WORKLOG 0078). Zero on the ground; the down-ray (`Drone_FeetOnPoint`) sets the on-surface flag.
+    pub velocity: V3,
+    /// `Drone+0x4F8 & 0x4000`: in-air this tick (the down-ray missed a walkable surface within 0.2 below the feet).
+    pub in_air: bool,
+    /// `anim+0x60 & 8`: feet on a walkable surface this tick (`Drone_FeetOnPoint`).
+    pub on_surface: bool,
     /// Trace of (frame, state) changes, for comparisons with PCSX2.
     pub log: Vec<(u32, u8)>,
 }
@@ -545,6 +552,7 @@ impl Drone {
             corpse: false, death_pending: false, death_channel: param(12) as u8, special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
+            velocity: [0.0; 3], in_air: false, on_surface: true,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
         };
         dr.init_properties(d, &param);
@@ -1116,14 +1124,14 @@ impl Drone {
         self.root_prev = root;
     }
 
-    /// Moves x/z by `step` unless the body (0.4 above the feet sphere … head) would cross collision, then stands on the
-    /// floor below.
+    /// Moves x/z by `step` unless the body (0.4 above the feet sphere … head) would cross collision, then leaves the
+    /// height to `collision_handler` (the game's `Drone_CollisionHandler` down-ray; WORKLOG 0078). The earlier
+    /// `floor_below(2.0)` stand-in is gone — a guard dying at a ledge now falls.
     fn move_by(&mut self, d: &Data, step: [f32; 2]) {
         let to = [self.pos[0] + step[0], self.pos[1], self.pos[2] + step[1]];
         let probe = |y: f32| d.world.line_of_sight([self.pos[0], y, self.pos[2]], [to[0] + step[0].signum() * 0.4 * (step[0].abs() > 1e-6) as i32 as f32, y, to[2] + step[1].signum() * 0.4 * (step[1].abs() > 1e-6) as i32 as f32]);
         if probe(self.pos[1]) && probe(self.pos[1] + 0.5) {
             self.pos = to;
-            if let Some(f) = d.world.floor_below([to[0], self.pos[1], to[2]], 2.0) { self.pos[1] = f + 1.0; }
         }
     }
 
@@ -1702,7 +1710,7 @@ impl Drone {
         if dist > 0.01 { for k in 0..3 { self.pos[k] += (to[k] - self.pos[k]) * rate; } } else { self.pos = to; }
     }
 
-    fn slide_to(&mut self, d: &Data, to: V3, rate: f32) {
+    fn slide_to(&mut self, _d: &Data, to: V3, rate: f32) {
         let dist = ((to[0] - self.pos[0]).powi(2) + (to[2] - self.pos[2]).powi(2)).sqrt();
         if dist > 0.01 {
             self.pos[0] += (to[0] - self.pos[0]) * rate;
@@ -1711,10 +1719,57 @@ impl Drone {
             self.pos[0] = to[0];
             self.pos[2] = to[2];
         }
-        // Stay on the floor without climbing: only surfaces within 0.3 of the current feet count (the game's
-        // collision pushes the feet sphere; walls next to cover points have sloped faces our probe could climb).
-        if let Some(f) = d.world.floor_below([self.pos[0], self.pos[1] - 0.7, self.pos[2]], 0.6) { self.pos[1] = f + 1.0; }
+        // The height is set by `collision_handler`'s down-ray (WORKLOG 0078); the old `floor_below(0.6)` probe
+        // could climb sloped walls next to cover points.
     }
+
+    /// `Drone_FeetOnPoint` (0x140660): a down-ray from `pos` to `pos + up·−(hip+0.6)` with collision mask 0xC (walkable +
+    /// solid). When the hit's y is within 0.2 below the feet (`pos.y − hip`), the drone is on the surface: sets
+    /// `on_surface` and returns the floor height (the game sets `anim+0x60 & 8`). `None` when the ray misses (in air).
+    fn feet_on_point(&self, world: &CollisionWorld) -> Option<f32> {
+        let hip = self.hip();
+        let from = [self.pos[0], self.pos[1], self.pos[2]];
+        let to = [self.pos[0], self.pos[1] - (hip + 0.6), self.pos[2]];
+        let hit = world.segment(from, to)?;
+        let floor = from[1] + (to[1] - from[1]) * hit;
+        let feet_y = self.pos[1] - hip;
+        if floor >= feet_y - 0.2 { Some(floor) } else { None }
+    }
+
+    /// `Drone_CollisionHandler` (0x140968): the per-tick collision + gravity driver. Clears the in-air flag, runs the
+    /// down-ray (`feet_on_point`), and when off the surface accumulates `WldGravity · REC_FRAME_RATE` into `velocity`
+    /// and steps `pos += velocity · REC_FRAME_RATE`. On the surface the velocity is zeroed and `pos.y` snaps to
+    /// `floor + hip` (the port's ground convention: `pos.y = floor + 1.0`, feet at `pos.y − 0.6`). The `free_root` path
+    /// (SpecialDeath) bypasses this; `bounded = false` (the AI-boundary push-out flag) also skips it. [M] constants:
+    /// WldGravity (0,−9.8,0), REC_FRAME_RATE 1/60, hip+0.6 ray, 0.2 on-surface.
+    pub fn collision_handler(&mut self, world: &CollisionWorld) {
+        if self.free_root || self.corpse || !self.bounded { return; }
+        // `+0x4F8 & 0x4000` cleared at the top.
+        self.in_air = false;
+        // `NDrone2_DoCollision` / `NDrone2_DoGravity` predicates: alive, & 0x20 (collision) / & 0x80 (gravity), not
+        // in a death state. The port's `bounded` flag stands for `& 0x20`; gravity always runs when bounded.
+        let on_surface = self.feet_on_point(world);
+        self.on_surface = on_surface.is_some();
+        if let Some(floor) = on_surface {
+            // Snap the feet to the floor and zero the velocity (the game sets `anim+0x60 & 8`).
+            self.pos[1] = floor + self.hip();
+            self.velocity = [0.0; 3];
+        } else {
+            self.in_air = true;
+            // `velocity += WldGravity · REC_FRAME_RATE` (gravity per tick²).
+            self.velocity[1] += -9.8 * (1.0 / 60.0);
+        }
+        // `pos += velocity · REC_FRAME_RATE` (the game applies this whether or not on the surface — on the surface
+        // velocity is zero, so it's a no-op there).
+        let r = 1.0 / 60.0;
+        self.pos[0] += self.velocity[0] * r;
+        self.pos[1] += self.velocity[1] * r;
+        self.pos[2] += self.velocity[2] * r;
+    }
+
+    /// `Drone+0xA0`: the hip height (the offset from `pos` to the feet). Default 1.0; the port's ground convention is
+    /// `pos.y = floor + hip` and `feet() = pos − 0.6` (the 0.6 is the port's own feet offset, not the game's).
+    fn hip(&self) -> f32 { 1.0 }
 
     /// `NDrone2_SetAngleToCover`: low node or as-low cover → the opponent; side 1 → node yaw − π/2; side 2 → node yaw.
     fn set_angle_to_cover(&mut self, d: &Data) {
@@ -3698,6 +3753,9 @@ impl Drones {
             for id in std::mem::take(&mut dr.anim_stops) { self.audio.stop_all_with_id(id); }
             if let Some(t) = d.sfx { for id in snd { let h = t.get(id); self.audio.play3d(h.id, at, None); if !h.looped { self.sounds.push(Sound { id: h.id, pos: at, inner: h.inner, outer: h.outer, weight: h.weight }); } } }
             for mut p in dr.drops.drain(..) { p.from = Some(index); self.pickups.push(p); }
+            // `Drone_CollisionHandler` (0x140968, WORKLOG 0078): the feet-sphere down-ray + gravity, before the
+            // AI-boundary push-out (the game's `AINetwork_GetBoundsPushVectorForSphere` runs last in the handler).
+            dr.collision_handler(d.world);
             // `NDrone2_Collision`: the feet sphere (r 0.4) is pushed out of the AI-network boundaries.
             if dr.enabled && dr.bounded && d.nav.bounds {
                 let p = d.nav.push_out(dr.feet(), 0.4);
@@ -3740,5 +3798,108 @@ impl Drones {
         }
         self.bullets.retain(|b| b.state < 2);
         self.health.flash = (self.health.flash - 1.0).max(0.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::CollisionWorld;
+
+    /// A drone with only the collision-relevant fields set (pos, velocity, bounded, free_root, corpse), for the
+    /// gravity / down-ray tests. The hip height is the default 1.0 (`Drone::hip`).
+    fn drone_at(pos: V3) -> Drone {
+        let dr = Drone {
+            skin: 0, anim_set: 0, weapon: 0, pos, yaw: 0.0, desired_yaw: 0.0, aim_yaw: 0.0, alert: 0.0, alert_floor: 0.0,
+            props: [0; 3], alert_props: None, sight_range: 0.0, half_fov: 0.0, engage_range: 0.0, combat_range: 0.0,
+            accuracy: 0, aggression: 0, reaction: 0, los: false, seen: false, ever_seen: false, visibility: 0.0,
+            seen_ticks: 0, unseen_ticks: 0, vision_on: false, dist: 0.0, yaw_to_opp: 0.0,
+            state: 0, prev_state: 0, next_state: None, entered: 0, timer_c: None,
+            anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
+            firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip: 0, clip_max: 0, shots: Vec::new(),
+            log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: 0, lost_sight: false,
+            damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
+            route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
+            croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
+            switch_channel: 0, channel_on: false, placement: 0, group: 0, present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
+            cover: None, cover_side: 0, cover_type: 0, cover_leave: 0, cover_point: pos, goal: None, cover_claimed: false, has_cover: false, cover_tries: 0,
+            cover_rt: Vec::new(), others: Vec::new(), peers: Vec::new(), return_state: 0, second_channel: 0, second_tag: 0,
+            loudness: 0.0, sound_share: 0.0, heard_frame: 0, heard_peak: 0.0, sound_pos: pos, noise_level: 0, investigating: false, turned: false, resume_state: 0, home: pos,
+            health: 10.0, max_health: 10.0, damage_taken: 1.0, damageable: true, kind: 0,
+            last_damage: 0.0, silent_kill: false, big_hit: false, flinch_at: None, hit: None, impact_resume: 0, hits_taken: 0,
+            global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
+            corpse: false, death_pending: false, death_channel: 0, special_death: 0, special_spot: pos, special_yaw: 0.0,
+            stationary: false, alpha: 255.0, raise: None,
+            velocity: [0.0; 3], in_air: false, on_surface: true,
+            captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(),
+            voice_type: 0, female: false, attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(),
+            free_root: false, bounded: true, dtype: 0, mode_normal: 0, mode_alert: 0, mode: 0, alt_mode: 0, team: 1, alt_state: 0, alert_block: 0.0,
+        };
+        dr
+    }
+
+    /// A floor quad at y = 0 (two triangles).
+    fn floor_world() -> CollisionWorld {
+        CollisionWorld::from_triangles(vec![
+            [[-5.0, 0.0, -5.0], [5.0, 0.0, -5.0], [5.0, 0.0, 5.0]],
+            [[-5.0, 0.0, -5.0], [5.0, 0.0, 5.0], [-5.0, 0.0, 5.0]],
+        ])
+    }
+
+    #[test]
+    fn drone_stands_on_the_floor() {
+        // A drone whose feet (pos.y − hip 1.0) are 0.1 above the floor at y=0 is on the surface: the down-ray hits
+        // within 0.2 below the feet, velocity zeroes and pos snaps to floor + hip = 1.0.
+        let w = floor_world();
+        let mut dr = drone_at([0.0, 1.1, 0.0]);
+        dr.collision_handler(&w);
+        assert!((dr.pos[1] - 1.0).abs() < 1e-5, "snaps to floor+hip: {}", dr.pos[1]);
+        assert!(dr.on_surface && !dr.in_air);
+        assert!(dr.velocity[1].abs() < 1e-9);
+    }
+
+    #[test]
+    fn drone_falls_under_gravity_off_a_ledge() {
+        // No floor: the down-ray misses, gravity accumulates and the drone falls. After N ticks the velocity is
+        // −9.8/60 · N and pos.y drops by velocity · 1/60 each tick (the WORKLOG 0041 gap — a guard dying at a ledge).
+        let w = CollisionWorld::empty();
+        let mut dr = drone_at([0.0, 5.0, 0.0]);
+        for _ in 0..30 { dr.collision_handler(&w); }
+        assert!(dr.in_air && !dr.on_surface, "still in the air");
+        // velocity after 30 ticks = −9.8/60 · 30 = −4.9; pos dropped by sum of v·dt ≈ −2.45.
+        assert!((dr.velocity[1] - (-9.8 / 60.0 * 30.0)).abs() < 1e-5, "v: {}", dr.velocity[1]);
+        assert!(dr.pos[1] < 5.0, "fell: {}", dr.pos[1]);
+    }
+
+    #[test]
+    fn free_root_bypasses_gravity() {
+        // SpecialDeath's free root motion: the handler returns at once; velocity stays zero, pos unchanged.
+        let w = CollisionWorld::empty();
+        let mut dr = drone_at([0.0, 5.0, 0.0]);
+        dr.free_root = true;
+        dr.collision_handler(&w);
+        assert!((dr.pos[1] - 5.0).abs() < 1e-9 && dr.velocity[1].abs() < 1e-9);
+    }
+
+    #[test]
+    fn drone_just_below_the_floor_snap_threshold_is_in_air() {
+        // The on-surface test: hit within 0.2 below the feet. A drone 0.3 above the floor (feet at −0.3 rel. to a
+        // floor at hip−0.6 ray end) — construct a floor at y = 0.4 so the feet (pos.y − 1.0 = −0.6) are 1.0 above it:
+        // on surface. Then move the floor down to y = −0.5: feet at 0.5, floor at −0.5 → gap 1.0 > 0.2 → in air.
+        let w = CollisionWorld::from_triangles(vec![
+            [[-5.0, -0.5, -5.0], [5.0, -0.5, -5.0], [5.0, -0.5, 5.0]],
+            [[-5.0, -0.5, -5.0], [5.0, -0.5, 5.0], [-5.0, -0.5, 5.0]],
+        ]);
+        let mut dr = drone_at([0.0, 0.5, 0.0]); // feet at −0.5, floor at −0.5 → exactly on it
+        dr.collision_handler(&w);
+        assert!(dr.on_surface, "on the floor");
+        // Sister: floor 1.0 below the feet → in air (the 0.2 threshold fails).
+        let w2 = CollisionWorld::from_triangles(vec![
+            [[-5.0, -1.5, -5.0], [5.0, -1.5, -5.0], [5.0, -1.5, 5.0]],
+            [[-5.0, -1.5, -5.0], [5.0, -1.5, 5.0], [-5.0, -1.5, 5.0]],
+        ]);
+        let mut dr2 = drone_at([0.0, 0.5, 0.0]); // feet at −0.5, floor at −1.5 → gap 1.0 > 0.2
+        dr2.collision_handler(&w2);
+        assert!(dr2.in_air && !dr2.on_surface, "in the air");
     }
 }

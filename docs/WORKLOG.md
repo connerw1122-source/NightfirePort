@@ -1624,3 +1624,45 @@ the survey confirms every level's placement types are the same set the test leve
 0x20 doors, 0xfc coronas, 0xde/0xdb searchlights, 0xd9 script players, 0xe8 exit) — so the renderer, collision, guards
 and scripts load through the same code paths. Visual diffing against PCSX2 is pending a GPU environment. No level-
 specific hacks: the only code change is the LOAD_LEVEL trigger arm (ported from the decompile, not approximated).
+
+## 0078 — Drone gravity and collision spheres: Drone_CollisionHandler ported
+
+G-026 (part). The on-foot engine's per-tick collision driver is `Drone_CollisionHandler` (0x140968), called from the
+control-list pass after the state machine. The port ran a floor-probe stand-in (`floor_below` within 2.0 / 0.6 of the
+feet) inside `move_by` / `slide_to`; a guard dying at a ledge edge would not fall (WORKLOG 0041's gap). This ports the
+game's own path so the guard falls.
+
+Research first (the same discipline as 0072/0074): `Drone_CollisionHandler` 0x140968, `Drone_FeetOnPoint` 0x140660,
+`NDrone2_DoCollision` 0x149ec8, `NDrone2_DoGravity` 0x141e58, `NDrone2_Collision` 0x140e90,
+`DroneFunc_NearPlayerCollision` 0x14b190, `DroneInit_Collision` 0x14b1e8, `DroneFunc_ClampPosToCollisionCylinder`
+0x1499d0. New doc: `docs/systems/drone-collision.md` (fields, constants, the handler's order, the predicates).
+
+Key finds: `WldGravity` is `(0, −9.8, 0)` (VECTOR at 0x2d8890, [L] pickups.md/player.md); `REC_FRAME_RATE` = 1/60
+(0x30d0cc). The down-ray (`Drone_FeetOnPoint`) runs from `pos` to `pos + up·−(hip+0.6)` with mask 0xC (walkable +
+solid); the on-surface test is the hit's y within **0.2 below the feet** (`pos.y − hip`). When on the surface the game
+zeros the velocity (the `+0x480` field) and sets `anim+0x60 & 8`; when off it accumulates `velocity += WldGravity ·
+REC_FRAME_RATE` then `pos += velocity · REC_FRAME_RATE`. The feet-sphere radius is 0.4 (0.55 in state 0xC, 0.3 in
+crouch mode 0x17); the AI-boundary push-out (`AINetwork_GetBoundsPushVectorForSphere`, r 0.4) runs last in the handler.
+`DroneFunc_NearPlayerCollision` (a guard within 2.0 of Bond) skips the full sphere test. The `free_root` path
+(SpecialDeath) bypasses the handler: the root motion moves the object in 3D and the gravity/collision flags
+(`& 0x20 / 0x80`, `bounded`) are off.
+
+Port: `crates/nf-game/src/drone.rs` — a `velocity` field (`Drone+0x480`), `in_air` / `on_surface` flags
+(`+0x4F8 & 0x4000` / `anim+0x60 & 8`), `feet_on_point` (the down-ray), `collision_handler` (the per-tick driver),
+called from `Drones::tick` after the state machine and before the AI-boundary push-out (the game's order). `move_by`
+and `slide_to` no longer probe the floor — the handler puts the drone back on the ground. The port's ground convention
+is `pos.y = floor + hip` (hip 1.0), feet at `pos.y − 0.6` (the port's own offset, unchanged so the existing live
+traces still match).
+
+Tests: 4 unit tests in drone.rs (stands on the floor + velocity zeroes; falls under gravity off a ledge — the
+WORKLOG 0041 gap; `free_root` bypasses; the 0.2 on-surface threshold's sister — on the floor vs. 1.0 below = in air);
+live `guard_gravity_and_collision_spheres` in ai_live.rs (the gate guard at (61.34, 99.50) stays on the courtyard
+floor, velocity zero, `on_surface`; sister: a guard lifted 50 units falls, `in_air`, v < −9.0). All nf-game 77 green.
+
+What the player sees: a guard knocked off a ledge (a grenade, a shotgun blast, a SpecialDeath's free root ending over
+a drop) now falls to the ground below instead of hovering 2 units under the ledge. Guards on flat ground are unchanged
+(the down-ray snaps them to the same floor the old probe did). Not done: the per-material bounce/coefficient table at
+`0x3037dc` (the `bVar2` extension in `Drone_FeetOnPoint` — the walkable/solid mask 0xC is enough for the floor), the
+feet-sphere radius variations (0.55 / 0.3), `DroneInit_Collision`'s create-time floor snap, the `DealWithObjHit` per-
+hit dispatch (water ripples, doors, breakables, explosions, players — the explosion hit path comes with the grenades
+commit next).
