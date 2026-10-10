@@ -32,7 +32,9 @@ impl Gun {
     /// `Player_WeaponChange` (0x1a6f80): the weapon cycle (`param_3` = 0, bounds 1..0x47) or the gadget cycle
     /// (`param_3` = 1, bounds 0x4A..0x5E) [M disassembly 0x1a707c: `li s6,73` for mode=1; 0x1a7084: `li v1,95`
     /// for mode=1's high bound; 0x1a7120 for mode=0's bounds]. Steps through owned, selectable, has-ammo
-    /// entries starting from `weapon + dir`, wrapping within the range. Returns the id to switch to, or `None`.
+    /// entries starting from `weapon + dir`, wrapping within the range. The game does NOT check the first-person
+    /// model here (that's `Player_WeaponSelect`'s job); weapon 1 (fists) is a valid cycle target.
+    /// Returns the id to switch to, or `None`.
     pub fn cycle(&self, dir: i8, mode: CycleMode, owned: &[bool], has_ammo: impl Fn(u8) -> bool, selectable: impl Fn(u8) -> bool) -> Option<u8> {
         let dir = dir.signum() as i32;
         if dir == 0 { return None; }
@@ -59,7 +61,6 @@ impl Gun {
         let cur = self.weapon;
         match mode {
             CycleMode::Weapons => {
-                // mode=0: if current is a gadget (0x4A..0x5E) and prev_weapon is set and has ammo → toggle to it.
                 if cur >= 0x4a && cur <= 0x5e && self.prev_weapon != 0 {
                     let w = self.prev_weapon;
                     if owned.get(w as usize).copied().unwrap_or(false) && selectable(w) && has_ammo(w) {
@@ -68,7 +69,6 @@ impl Gun {
                 }
             }
             CycleMode::Gadgets => {
-                // mode=1: if current is a weapon (1..0x47) and prev_gadget is set and has ammo → toggle to it.
                 if cur >= 1 && cur <= 0x47 && self.prev_gadget != 0 {
                     let w = self.prev_gadget;
                     if owned.get(w as usize).copied().unwrap_or(false) && selectable(w) && has_ammo(w) {

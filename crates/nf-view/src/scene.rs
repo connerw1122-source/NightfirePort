@@ -247,11 +247,9 @@ impl Sim {
                 if id != self.gun.weapon && owned.get(id as usize).copied().unwrap_or(false)
                     && weapons.first_person(id as usize) != 0 { Some(id) } else { None }
             } else if input.weapon_cycle != 0 {
-                // Toggle-back first (mode=0: from a gadget, jump to the last weapon).
                 self.gun.toggle_back(nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable)
                     .or_else(|| self.gun.cycle(input.weapon_cycle, nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable))
             } else if input.gadget_cycle != 0 {
-                // Toggle-back first (mode=1: from a weapon, jump to the last gadget).
                 self.gun.toggle_back(nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable)
                     .or_else(|| self.gun.cycle(input.gadget_cycle, nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable))
             } else { None };

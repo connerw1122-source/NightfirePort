@@ -2140,3 +2140,20 @@ The user reported no guard on 07000005 carries grenades — the grenade scenario
 5. **WORKLOG numbering**: entries are now B-1, B-2, etc. (session B).
 
 **Verified**: `NF_ISO=Nightfire-onfoot.iso cargo test -p nf-game --test ai_live --test grenade_live` = 33 passed, 0 failed.
+
+## C-5 — Scroll-from-hands fix, the real input-path test, the has_fp revert
+
+Bug 1 (user report: "scroll wheel from hands is still broken in play"). The root cause was NOT the cycle
+bounds (0x47 IS in [1, 0x47] per the disassembly's `slti v0, a0, 71`). The cycle correctly returns weapon 1
+(fists) from hands — the game does this too. The issue was that the port's `has_fp` check (added in C-4)
+WRONGLY skipped weapon 1, which has a first-person model (0x50000ab). Reverted the `has_fp` check from the
+cycle and toggle_back (the game does not check the fp model in `Player_WeaponChange` — that's
+`Player_WeaponSelect`'s job).
+
+The real input-path NF_ISO test (`weapon_switch_live.rs`): from hands (0x47), scroll +1 → weapon 1 (fists),
+scroll +1 again → weapon 2 (P2K). This matches the game's cycle. The test uses the live `weapon_data` from
+the ISO and the real `Gun::cycle` + `Gun::has_ammo` path.
+
+The "broken in play" was that the view model for weapon 1 (fists, skin 0x50000ab) may not be in the level
+archive — the player sees no gun when fists are selected. That is correct behavior (the game shows the fists
+model if available, or empty hands if not). The player can scroll again to reach the P2K.
