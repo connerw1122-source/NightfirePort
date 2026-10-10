@@ -78,6 +78,8 @@ fn main() -> Result<()> {
             Ok(())
         }
         "level-survey" => level_survey(&IsoImage::open(a(1)?)?),
+        "level-mesh-audit" => level_mesh_audit(&IsoImage::open(a(1)?)?, a(2)?),
+        "char-textures" => char_textures(&IsoImage::open(a(1)?)?, a(2)?),
         other => bail!("unknown command {other:?} (see the module doc)"),
     }
 }
@@ -1126,5 +1128,275 @@ fn level_survey(iso: &IsoImage) -> Result<()> {
         println!("{lvl_id:08x}\t{name}\t{}\t{n_maps}\t{}\t{n_obj}\t{n_place}\t{drones}\t{n_coll}\t{n_scripts}\t{n_skins}\t{n_tex}\t{}\t{}\t{ok}\t{err}",
             fe.size, if main { "yes" } else { "no" }, pt.join(","), on.join(","));
     }
+    Ok(())
+}
+
+/// `level-mesh-audit <iso> <level.bin>`: reproduces `Scene::build`'s instance-skip logic in `nf-view/src/scene.rs`
+/// and reports per-instance what survives and what is dropped, plus per-object mesh/flag stats. TSV on stdout.
+/// Used to compare 07000001 vs 07000005 ("missing wall/roof meshes" investigation).
+fn level_mesh_audit(iso: &IsoImage, level_name: &str) -> Result<()> {
+    use nf_formats::level::Level;
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let lvl = Level::parse(&data)?;
+    let m = lvl.main_map().context("no main map")?;
+    let map = &lvl.maps[m];
+
+    // Section 1: every main-map placement, its object, its draw decision.
+    println!("section\tplacement_idx\tflags\ttype\tcreates_cel\tby_hash\tindex\tobject_name\thashcode\tglist_flags\tleaf_count\tnonempty_leaves\tbatch_count\ttotal_verts\tskip_reason");
+    let (instances, _missing) = lvl.instances(true);
+    let mut kept = 0usize; let mut skipped_cel = 0usize; let mut skipped_dynamic = 0usize;
+    let mut skipped_empty_mesh = 0usize; let mut unresolved = 0usize;
+    for (pi, p) in map.placements.iter().enumerate() {
+        let ptype = p.flags & 0xff;
+        let creates_cel = p.creates_cel();
+        let target = if p.by_hash() { lvl.by_hash.get(&p.hashcode).copied() }
+            else if (p.index as usize) < map.objects.len() { Some((m, p.index as usize)) } else { None };
+        let (obj_name, hashcode, glist_flags, leaf_count, nonempty_leaves, batch_count, total_verts) = match target {
+            Some((om, oi)) => {
+                let o = &lvl.maps[om].objects[oi];
+                let leaves = &o.gfx.leaves;
+                let nonempty = leaves.iter().filter(|l| !l.batches.is_empty()).count();
+                let batches = leaves.iter().map(|l| l.batches.len()).sum::<usize>();
+                let verts = leaves.iter().flat_map(|l| &l.batches).map(|b| b.verts.len()).sum::<usize>();
+                (o.name.trim().to_string(), o.hashcode, o.flags, leaves.len(), nonempty, batches, verts)
+            }
+            None => ("<unresolved>".into(), 0, 0, 0, 0, 0, 0),
+        };
+        let skip_reason = if target.is_none() { unresolved += 1; "unresolved".to_string() }
+            else if !creates_cel { "not_cel (dynamic-only placement)".to_string() }
+            else {
+                let o = &lvl.maps[target.unwrap().0].objects[target.unwrap().1];
+                if o.skipped_by_cel_pass() {
+                    skipped_cel += 1;
+                    if matches!(ptype, 0xdb | 0xde | 0xfc) {
+                        "cel_pass_skip_but_dynamic".to_string()
+                    } else {
+                        format!("cel_pass_skip (glist flag 0x10) glist_flags={:#x}", o.flags)
+                    }
+                } else if matches!(ptype, 0xdb) { skipped_dynamic += 1; "dynamic: door 0xdb".to_string() }
+                else if matches!(ptype, 0xde) { skipped_dynamic += 1; "dynamic: searchlight 0xde".to_string() }
+                else if matches!(ptype, 0xfc) { skipped_dynamic += 1; "dynamic: corona 0xfc".to_string() }
+                else if matches!(ptype, 0x2a) { skipped_dynamic += 1; "dynamic: sky 0x2a".to_string() }
+                else if obj_name != "<unresolved>" && batch_count == 0 {
+                    skipped_empty_mesh += 1; format!("empty_mesh (leaves={leaf_count} nonempty=0 batches=0) glist_flags={:#x}", o.flags)
+                } else { kept += 1; "kept".to_string() }
+            };
+        let creates_cel_str = if creates_cel { "yes" } else { "no" };
+        let by_hash_str = if p.by_hash() { "yes" } else { "no" };
+        let flags_hex = format!("{:#010x}", p.flags);
+        let ptype_hex = format!("{:#04x}", ptype);
+        println!("1\t{pi}\t{flags_hex}\t{ptype_hex}\t{creates_cel_str}\t{by_hash_str}\t{}\t{obj_name}\t{hashcode:#010x}\t{glist_flags:#x}\t{leaf_count}\t{nonempty_leaves}\t{batch_count}\t{total_verts}\t{skip_reason}",
+            p.index);
+    }
+    eprintln!("---");
+    eprintln!("placements: {}", map.placements.len());
+    eprintln!("  kept (World pass):           {kept}");
+    eprintln!("  skipped by cel pass (0x10):  {skipped_cel}");
+    eprintln!("  skipped dynamic (0xdb/0xde/0xfc/0x2a): {skipped_dynamic}");
+    eprintln!("  skipped empty mesh:          {skipped_empty_mesh}");
+    eprintln!("  unresolved (no target obj):  {unresolved}");
+    eprintln!("  not creates_cel (dynamic only): {}", map.placements.iter().filter(|p| !p.creates_cel()).count());
+    eprintln!("  scene.rs build instances(true) returned: {}", instances.len());
+
+    // Section 2: per-object histogram for the main map — every object's leaf/batch/flag stats.
+    println!("section\tobject_idx\tobject_name\thashcode\tglist_flags\tleaf_count\tnonempty_leaves\tbatch_count\ttotal_verts\thas_collision");
+    let mut empty_objects = 0usize;
+    let mut skip_flag_objects = 0usize;
+    let mut alpha_list_objects = 0usize;
+    for (oi, o) in map.objects.iter().enumerate() {
+        let leaves = &o.gfx.leaves;
+        let nonempty = leaves.iter().filter(|l| !l.batches.is_empty()).count();
+        let batches = leaves.iter().map(|l| l.batches.len()).sum::<usize>();
+        let verts = leaves.iter().flat_map(|l| &l.batches).map(|b| b.verts.len()).sum::<usize>();
+        if batches == 0 { empty_objects += 1; }
+        if o.skipped_by_cel_pass() { skip_flag_objects += 1; }
+        if o.flags & 1 != 0 { alpha_list_objects += 1; }
+        let coll = if o.collision.is_some() { "yes" } else { "no" };
+        println!("2\t{oi}\t{}\t{:#010x}\t{:#x}\t{}\t{nonempty}\t{batches}\t{verts}\t{coll}",
+            o.name.trim(), o.hashcode, o.flags, leaves.len());
+    }
+    eprintln!("---");
+    eprintln!("main-map objects: {}", map.objects.len());
+    eprintln!("  objects with empty leaves (no batches): {empty_objects}");
+    eprintln!("  objects with glist flag 0x10 (skipped_by_cel_pass): {skip_flag_objects}");
+    eprintln!("  objects with glist flag 0x01 (alpha list): {alpha_list_objects}");
+
+    // Section 3: which map-block IDs appear in the main map, and which fall through `_ => {}` in level.rs:124-142.
+    // We have to re-parse the map data to get the block list (LevelMap drops it).
+    let lb = nf_formats::levelbin::LevelBin::parse(&data)?;
+    let me = &lb.entries[m];
+    let map_data = lb.data(&data, me);
+    let mf = nf_formats::map::MapFile::parse(map_data)?;
+    println!("section\tblock_id\tblock_offset\tblock_size\thandled_in_level_rs");
+    let mut block_id_counts: std::collections::BTreeMap<u8, usize> = Default::default();
+    for blk in &mf.blocks {
+        *block_id_counts.entry(blk.id).or_default() += 1;
+        let handled = match blk.id {
+            0x2e | nf_formats::map::id::PS2_GFX | nf_formats::map::id::ENTITY_PARAMS
+                | nf_formats::map::id::MAP_DATA_STATIC | 0x05 | 0x28 | 0x19 => "yes",
+            _ => "no (falls through to _ => {})",
+        };
+        println!("3\t{:#04x}\t{}\t{}\t{handled}", blk.id, blk.offset, blk.size);
+    }
+    eprintln!("---");
+    eprintln!("main-map block IDs (count): ");
+    for (id, n) in &block_id_counts {
+        let handled = match *id {
+            0x2e | nf_formats::map::id::PS2_GFX | nf_formats::map::id::ENTITY_PARAMS
+                | nf_formats::map::id::MAP_DATA_STATIC | 0x05 | 0x28 | 0x19 => "handled",
+            _ => "DROPPED",
+        };
+        eprintln!("  {:#04x}: {}  [{handled}]", id, n);
+    }
+    Ok(())
+}
+
+/// `char-textures <iso> <level.bin>`: per character placement (skin hashcode in parameter 0) of a level, dumps every
+/// main mesh / rigid part / first-person sleeve and resolves each batch's texture index against the map the mesh was
+/// loaded from. Reveals out-of-range texture indices (the white-fallback symptom) and missing skins / meshes.
+fn char_textures(iso: &IsoImage, level_name: &str) -> Result<()> {
+    use nf_formats::level::Level;
+    use std::collections::HashMap;
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let read = |name: &str| -> Result<Vec<u8>> {
+        let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)).with_context(|| format!("no {name}"))?;
+        Ok(iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?)
+    };
+    let data = read(level_name)?;
+    let level = Level::parse(&data)?;
+    let Some(m) = level.main_map() else { bail!("no main map"); };
+
+    // Reverse-index map entries by hashcode → list of (map, object) so we can see ALL maps that declare a hashcode.
+    let mut by_hash_all: HashMap<u32, Vec<(usize, usize)>> = HashMap::new();
+    for (mi, map) in level.maps.iter().enumerate() {
+        for (oi, obj) in map.objects.iter().enumerate() {
+            if obj.hashcode != u32::MAX { by_hash_all.entry(obj.hashcode).or_default().push((mi, oi)); }
+        }
+    }
+
+    let mut chars = 0u32;
+    let mut total_batches = 0u32;
+    let mut total_unresolved = 0u32;
+    let mut total_oor = 0u32;
+    let mut total_no_tex_ref = 0u32;
+    let mut total_world_fallback = 0u32;
+
+    println!("=== per-placement characters (skin hashcode in param 0) ===");
+    for p in &level.maps[m].placements {
+        if p.flags & 0xff != 0x0f { continue; }
+        let skin_hash = p.params.iter().find(|(i, _)| *i == 0).map(|&(_, v)| v).unwrap_or(0);
+        if skin_hash >> 24 != 5 { continue; }
+        chars += 1;
+        let Some(skin) = level.skins.get(&skin_hash) else {
+            println!("\tplacement @ {:?}: skin {:08x} NOT IN level.skins (G-021: another archive)", p.translation, skin_hash);
+            continue;
+        };
+        let inv_empty = skin.inverse_bind.is_empty();
+        println!("\tplacement @ {:?}: skin {:08x} (skel {}): {} main, {} extra, inverse_bind empty={}",
+            p.translation, skin_hash, skin.skeleton, skin.main.len(), skin.extra.len(), inv_empty);
+        for (mi, mh) in skin.main.iter().enumerate() {
+            let Some(mh) = mh else { continue };
+            let hits = by_hash_all.get(&mh).cloned().unwrap_or_default();
+            let first = level.by_hash.get(&mh).copied();
+            println!("\t\tmain[{}] mesh {:08x}: by_hash_first={:?}, all_occurrences={:?} ({} maps declare this hashcode)",
+                mi, mh, first, hits, hits.len());
+            if hits.is_empty() { continue; }
+            let (map_idx, obj_idx) = first.unwrap();
+            let obj = &level.maps[map_idx].objects[obj_idx];
+            let n_tex = level.maps[map_idx].textures.len();
+            let skinned = obj.gfx.is_skinned();
+            let world_fallback = !skinned || inv_empty;
+            if world_fallback { total_world_fallback += 1; }
+            println!("\t\t\tmap {} ({}) obj {} \"{}\": {} textures, skinned={}, world_fallback={}",
+                map_idx, level.maps[map_idx].name, obj_idx, obj.name.trim(), n_tex, skinned, world_fallback);
+            for (li, leaf) in obj.gfx.leaves.iter().enumerate() {
+                let gs_summary: Vec<String> = leaf.gs.iter().map(|(r, v, _)| format!("{:#x}={:#x}", r, v)).collect();
+                println!("\t\t\t\tleaf {}: gs=[{}] ({} batches)", li, gs_summary.join(","), leaf.batches.len());
+                for (bi, b) in leaf.batches.iter().enumerate() {
+                    total_batches += 1;
+                    let tex_str = match b.texture {
+                        None => { total_no_tex_ref += 1; "None (no REF tag → untextured)".to_string() }
+                        Some(t) => {
+                            if (t as usize) >= n_tex { total_oor += 1; format!("Some({}) OUT OF RANGE (map has {} textures)", t, n_tex) }
+                            else { format!("Some({}) OK", t) }
+                        }
+                    };
+                    println!("\t\t\t\t  batch {}: verts={} skinned={} tex={}", bi, b.verts.len(), b.skinned, tex_str);
+                }
+            }
+            // Count how many of the OTHER maps declaring this hashcode have textures of the same count.
+            for &(om, oo) in &hits {
+                if (om, oo) == (map_idx, obj_idx) { continue; }
+                let o = &level.maps[om].objects[oo];
+                println!("\t\t\talso in map {} ({}) obj {} \"{}\": {} textures, skinned={}",
+                    om, level.maps[om].name, oo, o.name.trim(), level.maps[om].textures.len(), o.gfx.is_skinned());
+            }
+        }
+        for (ei, (bone, part)) in skin.extra.iter().enumerate() {
+            let Some(part) = part else { continue };
+            let first = level.by_hash.get(part).copied();
+            let n_tex = first.map(|(mm, _)| level.maps[mm].textures.len());
+            println!("\t\textra[{}] bone {} part {:08x}: by_hash_first={:?} (textures in that map: {:?})",
+                ei, bone, part, first, n_tex);
+        }
+    }
+
+    // First-person gun sleeves (SleeveEnts_324 + scene.rs SLEEVES constant).
+    const SLEEVES: [u32; 8] = [0x0200_09d0, 0x0200_0900, 0x0200_01f7, 0x0200_0929, 0x0200_09e6, 0x0200_09ff, 0x0200_0a14, 0x0200_0a13];
+    println!("=== first-person gun sleeves (Bond's hand/gun) ===");
+    for &h in &SLEEVES {
+        if let Some(&(mm, oo)) = level.by_hash.get(&h) {
+            let o = &level.maps[mm].objects[oo];
+            let n_tex = level.maps[mm].textures.len();
+            let mut unresolved = 0;
+            let mut oor = 0;
+            let mut nb = 0;
+            for leaf in &o.gfx.leaves {
+                for b in &leaf.batches {
+                    nb += 1;
+                    match b.texture {
+                        None => unresolved += 1,
+                        Some(t) if (t as usize) >= n_tex => oor += 1,
+                        _ => {}
+                    }
+                }
+            }
+            total_unresolved += unresolved;
+            total_oor += oor;
+            total_batches += nb;
+            println!("\tsleeve {:08x} → map {} ({}) obj {} \"{}\": {} textures, {} batches, no_tex_ref={}, out_of_range={}",
+                h, mm, level.maps[mm].name, oo, o.name.trim(), n_tex, nb, unresolved, oor);
+        } else {
+            println!("\tsleeve {:08x}: NOT FOUND in any map of this archive", h);
+        }
+    }
+
+    println!("=== summary ===");
+    println!("character placements: {}", chars);
+    println!("total batches across character + sleeve meshes: {}", total_batches);
+    println!("  batches with no texture REF:    {} (white fallback)", total_no_tex_ref);
+    println!("  batches with out-of-range tex:  {} (white fallback)", total_oor);
+    println!("  character meshes drawn as World layer (not Character): {} (because !is_skinned || inverse_bind empty)", total_world_fallback);
+
+    // Show every map that declares a skin hashcode's main mesh, with its texture count, to see if there are duplicate
+    // main-mesh hashcodes in maps with DIFFERENT texture counts.
+    println!("=== duplicate main-mesh hashcodes across maps (texture count mismatch would explain oor) ===");
+    let mut dupes = 0;
+    for skin in level.skins.values() {
+        for &mh in skin.main.iter().flatten() {
+            let hits = by_hash_all.get(&mh).cloned().unwrap_or_default();
+            if hits.len() < 2 { continue; }
+            dupes += 1;
+            let counts: Vec<usize> = hits.iter().map(|&(mm, oo)| {
+                let o = &level.maps[mm].objects[oo];
+                if o.gfx.is_skinned() { level.maps[mm].textures.len() } else { usize::MAX }
+            }).collect();
+            println!("\tskin {:08x} main mesh {:08x}: {} occurrences, texture counts {:?}",
+                skin.hashcode, mh, hits.len(), counts);
+        }
+    }
+    if dupes == 0 { println!("\t(no duplicate main-mesh hashcodes)"); }
     Ok(())
 }

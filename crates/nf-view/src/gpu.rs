@@ -276,6 +276,17 @@ impl Renderer {
         }
         let material_tex: Vec<usize> = scene.materials.iter()
             .map(|m| m.key.and_then(|k| scene.textures.iter().position(|t| t.key == k)).map_or(0, |i| i + 1)).collect();
+        // Bug A-2a diagnostic: log every material that falls back to the 1×1 white texture (index 0), so the user
+        // can tell whether the "white-translucent character" symptom on a level is the texture fallback (key=None or
+        // missing TextureImage) or a blend-mode mismatch (alpha & 0xff == 0x48 = additive — see scene.rs).
+        if std::env::var_os("NF_TEX_TRACE").is_some() {
+            for (m, &t) in scene.materials.iter().zip(&material_tex) {
+                if t == 0 {
+                    eprintln!("gpu: WHITE FALLBACK material: L={:?} pass={} blend={} atest={} key={:?} (first_index={} count={})",
+                        m.layer, m.draw.pass, m.draw.blend, m.draw.atest, m.key, m.first_index, m.index_count);
+                }
+            }
+        }
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.vertices), usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST });
         let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.indices), usage: wgpu::BufferUsages::INDEX });
         // Draw order (docs/systems/render.md): sky before the world, list 0, characters, list 1 (alpha), sky after the fog
@@ -317,11 +328,7 @@ impl Renderer {
             queue.write_buffer(m, 0, bytemuck::cast_slice(&u));
         }
         // The frame starts as fog (what the fog pass covers where nothing was drawn: zb 0).
-        // Non-fogged levels: the game clears to `SqueezeColourOut` (gray 0x91 = 145 on the 0x80=1.0 scale, ×GAIN at
-        // display). The port applies GAIN in the shader, so the clear is the unscaled squeeze-gray: 145/255 ≈ 0.569
-        // per channel. [M CreateSqueezeFrame 0x11b140:16, SqueezeColourIn 0x91].
-        let squeeze_gray = (0x91 as f32) / 255.0 * GAIN; // 0.91/0x80 × GAIN, clamped to [0,1] by min at display
-        let clear = if fog_on > 0.0 { wgpu::Color { r: (fog_rgb[0] * GAIN) as f64, g: (fog_rgb[1] * GAIN) as f64, b: (fog_rgb[2] * GAIN) as f64, a: 1.0 } } else { wgpu::Color { r: squeeze_gray as f64, g: squeeze_gray as f64, b: squeeze_gray as f64, a: 1.0 } };
+        let clear = if fog_on > 0.0 { wgpu::Color { r: (fog_rgb[0] * GAIN) as f64, g: (fog_rgb[1] * GAIN) as f64, b: (fog_rgb[2] * GAIN) as f64, a: 1.0 } } else { wgpu::Color { r: 0.05, g: 0.06, b: 0.08, a: 1.0 } };
         let mut enc = device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {

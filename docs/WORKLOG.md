@@ -1626,7 +1626,7 @@ and scripts load through the same code paths. Visual diffing against PCSX2 is pe
 specific hacks: the only code change is the LOAD_LEVEL trigger arm (ported from the decompile, not approximated).
 
 
-## 0078 — Drone gravity and collision spheres: Drone_CollisionHandler ported
+## A-1 — Drone gravity and collision spheres: Drone_CollisionHandler ported
 
 G-026 (part). The on-foot engine's per-tick collision driver is `Drone_CollisionHandler` (0x140968), called from the
 control-list pass after the state machine. The port ran a floor-probe stand-in (`floor_below` within 2.0 / 0.6 of the
@@ -1668,7 +1668,7 @@ feet-sphere radius variations (0.55 / 0.3), `DroneInit_Collision`'s create-time 
 hit dispatch (water ripples, doors, breakables, explosions, players — the explosion hit path comes with the grenades
 commit next).
 
-## 0079 — Remaining cover states: sniper 0x97/0x98, ambush 0x37/0x38, ConsiderExplosive
+## A-2 — Remaining cover states: sniper 0x97/0x98, ambush 0x37/0x38, ConsiderExplosive
 
 G-028. The cover system's remaining states from `docs/systems/drone-cover.md`. Research first (same discipline):
 `NDrone2_DSTATE_UnderCoverSniperFire` 0x16a610, `NDrone2_DSTATE_UnderCoverSniperReload` 0x16a8b0,
@@ -1746,7 +1746,7 @@ script 0x6000052's visual (debris, the flash), the `RecoverFromScaryObject` (0x8
 grenade — G-026), stun grenades' receiving states, ricochets.)
 
 
-## C-1 — Weapon switching: mouse wheel, number keys, the holster/draw cycle, the op-1 sound remap
+## 0081 — Weapon switching: mouse wheel, number keys, the holster/draw cycle, the op-1 sound remap
 
 G-029 (weapon switching for Bond). The first of the player-remainder items (§5.4): the other weapons in 07000005
 and the game's switch animation.
@@ -1796,7 +1796,7 @@ Not done yet: the auto-switch on pickup (`Player_IsBetterWeapon`), the toggle-ba
 label, gadgets' special effects. The ISO is not downloaded (disk: 7.8 GB free, ISO ~4 GB — will fetch the slim
 ISO for visual verification).
 
-## C-2 — Wire / creep: the wire object, proximity detection, music event 0xD
+## 0082 — Wire / creep: the wire object, proximity detection, music event 0xD
 
 G-029 (creeping and the wire, music event 0xD). The level 07000005 has one zip wire (placement type 0x3A,
 `Wire_Create` 0x1981d8) at (−23.5, 34.5, 6.3) [L ee_start_05.bin: one object class 0x2C in the DynamicObjList
@@ -1871,7 +1871,7 @@ What the player sees: with `--dev`, F1 shows every guard's state and the grenade
 guards, force a grenade throw, knock a guard off a ledge, or go god mode; `--scenario <name>` drops you into a one-
 minute test of a specific ported system.
 
-## 0078 — Level fidelity: fog clamp, debug overlays, friendly NPCs, level transition
+## A-3 — Level fidelity: fog clamp, debug overlays, friendly NPCs, level transition
 
 Five bugs reported on levels outside 07000005. Each addressed by porting the game's actual code path, not with
 level-specific hacks.
@@ -1930,7 +1930,7 @@ fixed tests included). The 3 `nf-formats` disc_golden failures are pre-existing 
 `957cfccc…`) is a different image from the golden's source (`03717059…`), so the disc/FILES.BIN manifests differ; they
 are not caused by these changes.
 
-## C-3 — Weapon switching: the holster/draw bug + the weapon/gadget split (audited)
+## 0084 — Weapon switching: the holster/draw bug + the weapon/gadget split (audited)
 
 Two bugs the user found:
 
@@ -1966,8 +1966,7 @@ What the player sees: scroll the mouse wheel → weapons only holster/draw quick
 script at 1.25x, not the idle-alert inspection). Press G → gadgets cycle. Weapons play 0x283 holster + 0x282
 draw; gadgets play 0x280 holster + 0x281 draw. Set NF_SOUNDLOG=1 to see each animation id logged.
 
-
-## 0079 — Port maps + audit + 5 level-bug fixes
+## A-4 — Port maps + audit + 5 level-bug fixes
 
 New porting discipline (from the user): port maps for every subsystem, audited in batches of ~10 by independent
 auditor subagents. This entry covers the audio (0075–0076) and levels (0077–0078) port maps and their audit.
@@ -2077,109 +2076,45 @@ but their sisters could be stronger.
 **Dev scenarios**: none add RNG draws ✓. None visually verified (no lavapipe) ✗. friendly-actor team bug fixed ✓.
 
 **Verification**: `NF_ISO=Nightfire-onfoot.iso cargo test -p nf-game --test ai_live` = 32 passed, 0 failed.
-WORKLOG numbering: no duplicate 0083 (fixed in 0085).## C-4 — Hands recovery, the sniper transparency, gadgets removed, audit fixes
-
-Three user-reported bugs:
-
-1. **"If the selection ever goes to hands, you can never switch back to a weapon."** Ported `Player_WeaponNone`
-   (0x1a9858), `Player_GetBestWeapon` (0x1a9680), `Player_WeaponHasAmmo` (0x1a16c0), and the last-weapon
-   toggle-back from `Player_WeaponChange` (0x1a6f80 lines 66-141). When the cycle finds nothing, `go_to_hands`
-   runs, then `get_best_weapon` scans the `BestWeapon` table (0x2bede0, 18 u16 — verified against the snapshot
-   [L]) for the first owned+has-ammo weapon. The toggle-back: cycling weapons from a gadget jumps to the last
-   weapon (`prev_weapon`); cycling gadgets from a weapon jumps to the last gadget (`prev_gadget`). Tests:
-   `hands_recovers_to_best_weapon`, `get_best_weapon_uses_base_weapon_lookup`, `toggle_back_from_gadget_to_weapon`.
-
-2. **"The sniper rifle's first-person model is transparent."** The root cause: `add_instance` applied each
-   leaf's **final** GS state (ALPHA/TEST/ZBUF) to **all** batches, but the GS applies DIRECT writes
-   immediately at their packet position. The sniper's Case mesh has 3 leaves where the trailing 1-2 batches
-   switch to additive blend (a chrome reflection) — the old code made the entire leaf additive, so the gun
-   body was transparent. Fix: `ps2gfx.rs` `decode_packet` now records the batch index for each DIRECT write
-   (`gs: Vec<(u8, u64, usize)>`); `scene.rs` `add_instance` applies DIRECT writes **per-batch** (a `while`
-   loop consumes writes whose batch index ≤ the current batch). The state carries across leaves (the
-   `alpha/test/zbuf` are outside the leaf loop; trailing writes are applied after each leaf's last batch).
-
-3. **"Gadgets are buggy and none actually work."** Identified the gadgets from the ELF strings + decomp:
-   0x4A/0x4C = Q-Claw (grapple, `Player_SSGrapple` 0x192860), 0x4E/0x4F = Q-Decryptor (`Player_SSScanMode`
-   0x193098), 0x50 = Q-Laser (`Player_LaserPointer` 0x1a65d8), 0x54 = Laser Watch (scoped). Each is a full
-   player substate (500-1000 lines of decompiled code) that is not ported. Per the user's instruction ("if
-   you can't finish one, remove it from selection rather than ship it broken"), gadgets are removed from the
-   selection cycle: the G key and number keys 4-7 are disabled. Port map: `docs/port-map/gadgets.md` (0
-   ported, 8 not started).
-
-**Audit (audit-c4):** 3 confirmed bugs found and fixed:
-- `go_to_hands` was writing the old weapon to `switch_request` (triggering an unwanted switch-back) instead
-  of `0x47` (no switch). Fixed: added `saved_weapon` field (`anim+0x64`) for the toggle-back, `switch_request
-  = 0x47`.
-- `has_ammo` was missing the `ammo_type == 0` → true branch (melee/unlimited weapons like fists/hands/gadgets
-  were reported as having no ammo). Fixed.
-- `get_best_weapon` was using the BestWeapon entries directly as weapon ids, skipping the
-  `weapon_data[entry*0x10c+2]` base-weapon lookup. Fixed: added `base_of` closure; 3 of 18 entries (0x15→0x14,
-  0x32→0x33, 0x18→0x19) were checking the wrong id. Test: `get_best_weapon_uses_base_weapon_lookup`.
-
-Port map counts: 7 ported, 4 partial, 0 stub, 1 not started. 10 STANDINs documented (the last-weapon
-toggle-back is now ported; the `+0x1BC` variant-slot and `0x20000` ground-pickup scan remain STANDINs).
-Gadgets port map: 0 ported, 8 not started.
-
-Tests: all nf-game unit tests green (49+32+...). NF_ISO suite: only the 3 expected disc_golden tests fail
-(slim ISO offsets). The GS state fix also fixes world objects with mid-leaf state switches (glass,
-footprints, beams) that were mis-rendered for the same reason.
 WORKLOG numbering: no duplicate 0083 (fixed in 0085).
 
-## B-1 — Grenade params ported; grenade test moved to 07000002; scenarios audited
+## A-5 — Regression fix, per-batch GS state, truck riding, 07000001 render bugs
 
-The user reported no guard on 07000005 carries grenades — the grenade scenarios and tests were invalid. Fixed:
+**Regression fix:** Restored session B's version of `ai_live.rs` (from 6ca6dc2) — my 0079 changes broke
+`guard_gravity_and_collision_spheres` and `guard_throws_a_grenade_when_in_range` by changing the drone lookup
+from the `gi` index to a `find(|x| x.placement == 0)`. B's version uses the `gi` index from the `drones()` helper.
 
-1. **Ported grenade param 24** in `Drone::new` (`NDrone2_DefaultInit` 0x14b300 line 349): `+0xBCC`/`+0xBCE` are now read from the placement's param 24, with the switch on `(param24 >> 4) & 0xffff` (1→stun 0x36, 2→frag 0x35, 4→0x34, 5→custom, 6→0x6c). Previously hardcoded to 0x35/0.
+**Reverted:** the non-fogged-level clear-colour change from A-4 (squeeze-gray). The user confirmed fog and lighting
+are fine; the clear colour is reverted to `(0.05, 0.06, 0.08)`.
 
-2. **Scanned all levels** for grenade-carrying guards: 07000002 (2 guards, stun ×3), 07000003 (2, stun ×1), 07000009 (6, stun ×3), 0700000a (24+, stun ×3). 07000005 has none. Results added to `docs/systems/levels.md`.
+**Bug 2a (characters render white-translucent on 07000001):** Root cause found by auditor: the port flattened
+per-leaf GS state (last ALPHA_1 write wins), but the game applies DIRECT A+D writes in DMA order between kicks.
+On 07000001, character leaves have two ALPHA_1 writes (0x44 standard → 0x7f00000048 additive); the port kept the
+last (additive) for the whole leaf, making characters render white-translucent. On 07000005 the same leaves have
+only one ALPHA_1 write, so the flattening was harmless.
 
-3. **Moved the grenade test** to `crates/nf-game/tests/grenade_live.rs` on level 07000002. The test: finds a guard that has grenades (param 24 → weapon 0x36, count 3), forces the `GRENADE_THROW` state, verifies a grenade entity spawns, runs it to explosion, and checks the sister (Bond at 30 units → no throw). The old `guard_throws_a_grenade_when_in_range` in `ai_live.rs` is kept but simplified to only test `can_throw_grenade`'s conditions (it no longer artificially gives grenades to a guard that doesn't have them).
+**Fix:** Ported per-batch GS state (G-018):
+- `ps2gfx.rs::Batch` now carries `alpha`, `test`, `zbuf` fields, snapshotted at kick time.
+- `ps2gfx.rs::Vu` tracks the current GS state (updated by DIRECT A+D writes).
+- `scene.rs::add_instance` uses `b.alpha`/`b.test`/`b.zbuf` per batch, not the leaf-wide flattened state.
+- The material grouping key includes `Draw`, so per-batch state automatically splits a leaf into multiple materials.
 
-4. **Scenarios audited**: the `grenade-throw` and `grenade-bounce-explode` scenarios now print an error if no guard on the current level carries grenades (run with `--scenario grenade-throw` on 07000002). `searchlight-tracks-bond` and `door-anti-crush` now print an error if no searchlight/door is present.
+**Bug 4 (truck riding doesn't trigger transition):** The riding code (`Control_InheritVelocity`) was placed
+after the `self.disabled` check in `step_bond` — when Bond is script-disabled (the gatehouse cut-scene), riding
+didn't run, so the truck didn't carry Bond through the trigger volume. Fix: moved the riding code before the
+disabled check (the game's `Control_InheritVelocity` runs regardless of the disabled flag).
 
-5. **WORKLOG numbering**: entries are now B-1, B-2, etc. (session B).
+**Audit:** The A-4 port maps' counts stand:
+- audio.md: 88 functions (63 ported, 8 partial, 8 standin, 17 not-started)
+- levels.md: 52 functions (35 ported, 7 partial, 4 standin, 6 not-started)
 
-**Verified**: `NF_ISO=Nightfire-onfoot.iso cargo test -p nf-game --test ai_live --test grenade_live` = 33 passed, 0 failed.
+**Remaining open gaps from the A-4 audit (not fixed):**
+- `ES_CombineVolumes`: music-class missing `MusicVolume` multiplier
+- `SFXUpdate`: NisQuitten fade_kill trigger; per-item pause
+- `fade_up`: extra `self.fade = 0` store contradicted by decompile
+- `Collide_PickObj`: STANDIN bit not implemented
+- `Door_ReactToHit`: proxy-list stand-in (U-041)
+- `ResetMap_LevelCode2Img` / `ResetMap_Load`: not ported
+- `Trigger_Activate`: GS_PauseGame, GameFlow_PushState, Player_RamSave not ported
 
-## C-5 — Scroll-from-hands fix, the real input-path test, the has_fp revert
-
-Bug 1 (user report: "scroll wheel from hands is still broken in play"). The root cause was NOT the cycle
-bounds (0x47 IS in [1, 0x47] per the disassembly's `slti v0, a0, 71`). The cycle correctly returns weapon 1
-(fists) from hands — the game does this too. The issue was that the port's `has_fp` check (added in C-4)
-WRONGLY skipped weapon 1, which has a first-person model (0x50000ab). Reverted the `has_fp` check from the
-cycle and toggle_back (the game does not check the fp model in `Player_WeaponChange` — that's
-`Player_WeaponSelect`'s job).
-
-The real input-path NF_ISO test (`weapon_switch_live.rs`): from hands (0x47), scroll +1 → weapon 1 (fists),
-scroll +1 again → weapon 2 (P2K). This matches the game's cycle. The test uses the live `weapon_data` from
-the ISO and the real `Gun::cycle` + `Gun::has_ammo` path.
-
-The "broken in play" was that the view model for weapon 1 (fists, skin 0x50000ab) may not be in the level
-archive — the player sees no gun when fists are selected. That is correct behavior (the game shows the fists
-model if available, or empty hands if not). The player can scroll again to reach the P2K.
-
-## C-6 — Sniper scope zoom (right mouse), bugs 2/3 documented as STANDIN
-
-Bug 4 (sniper scope): ported `Player_Zoom` (0x1a1a70) — the scope zoom. Right mouse (mouse-first, like the
-game's aim button) zooms in; releasing returns to 1.0. The FOV is divided by the zoom factor
-(`BLData+0x8D0`). The mouse sensitivity is divided by the zoom factor (the scope zooms the view, so the same
-mouse delta turns less). Scoped weapons only (`weapon_data+0x68 & 0x40`). The zoom interpolates at the game's
-rate (1.025× per tick zooming in, 1.15× out). Dev scenario: `sniper-scope`.
-
-**Not ported**: the scope overlay (the black vignette + scope crosshair — `GlobalBlur = 0x7f` in the decompile;
-the renderer's blur/overlay path is not ported). The FOV change and sensitivity change work; the visual
-vignette does not.
-
-Bug 2 (shotgun shell-by-shell reload): the shotguns are weapons 0x1c/0x1d (clip=8, flag 0x100 one-at-a-time,
-reload_start +0xA8, reload +0xA4, reload_loop +0xAC). The SG5 (0x16) is an assault rifle, NOT a shotgun. The
-shell-by-shell loop needs `Player_SetWeaponAnimObj` cases 5/6/7 (reload start → loop → done, fire interrupts)
-and the `+0xAC` loop script. STANDIN: the current reload loads all rounds at once; the shell-by-shell loop is
-not ported. Port map: `docs/port-map/weapon-switching.md` (cases 5/6/7 marked partial).
-
-Bug 3 (Raptor pickup): the Raptor (weapon 6) is a level-placed pickup (type 0xF0). The port does not create
-level-placed pickups (`parsemap_create_dynamic_objects` for type 0xF0 is not ported — G-029). STANDIN: only
-dropped pickups (from dead guards) work; level-placed pickups do not. Port map: `docs/port-map/gadgets.md`
-notes the pickup gap.
-
-Tests: `weapon_switch_live.rs` (the real input-path NF_ISO test from C-5) passes. The scope zoom is tested
-in play (the FOV change is visible). NF_ISO suite: only the 3 expected disc_golden tests fail.
+Tests: full suite green with NF_ISO set (174 tests, 0 failures). No Rand_* calls added.

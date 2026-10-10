@@ -50,6 +50,12 @@ pub struct Batch {
     /// From a skinned object: positions are the bind-pose source positions, `w` is the raw packed skinning word.
     pub skinned: bool,
     pub verts: Vec<Vertex>,
+    /// The GS register state in effect at the kick: ALPHA_1 (0x42), TEST_1 (0x47), ZBUF_1 (0x4e). The GS applies
+    /// DIRECT A+D writes in DMA order, so a leaf with two ALPHA_1 writes has different blend modes per batch group.
+    /// The port snapshots these at kick time so each batch carries its own state [M G-018 fix].
+    pub alpha: u64,
+    pub test: u64,
+    pub zbuf: u64,
 }
 
 /// Skinned vertices: bit 15 of the packed skinning word (source qword 1, word 3) marks "no kick": set on all 51,664
@@ -77,10 +83,8 @@ pub struct Leaf {
     pub batches: Vec<Batch>,
     /// Kicks whose header was sent without vertex data (the first CNT of every packet).
     pub setup_kicks: u32,
-    /// GS registers the packet's `DIRECT` A+D writes set: (register, value, batch_index) — the batch index is
-    /// the first batch this write's state applies to (the GS applies each DIRECT immediately, so a write between
-    /// batch 2 and batch 3 affects batch 3 onward). In 07000005 only ALPHA_1 (0x42), TEST_1 (0x47) and ZBUF_1
-    /// (0x4E) are written (docs/systems/render.md). Empty: the leaf inherits the previous leaf's state.
+    /// GS registers the packet's `DIRECT` A+D writes set (register, value) — in 07000005 only ALPHA_1 (0x42), TEST_1
+    /// (0x47) and ZBUF_1 (0x4E) (docs/systems/render.md). Empty: the leaf inherits the previous leaf's state.
     pub gs: Vec<(u8, u64, usize)>,
 }
 
@@ -146,6 +150,11 @@ struct Vu {
     cl: u32,
     wl: u32,
     header: Option<usize>,
+    /// The GS register state: ALPHA_1 (0x42), TEST_1 (0x47), ZBUF_1 (0x4e). Updated by DIRECT A+D writes,
+    /// snapshotted at kick time into each Batch [M G-018 fix].
+    alpha: u64,
+    test: u64,
+    zbuf: u64,
 }
 
 impl Vu {
@@ -210,7 +219,7 @@ impl Vu {
             if self.gen.get(base + 1 + 3 * nloop as usize).is_some_and(|g| *g == self.cur) && base + 1 + 3 * (nloop as usize) < base + UV_OFFSET {
                 return invalid(format!("more vertex data than NLOOP {nloop}"));
             }
-            Some(Batch { texture, prim, nloop, eop, skinned, verts })
+            Some(Batch { texture, prim, nloop, eop, skinned, verts, alpha: self.alpha, test: self.test, zbuf: self.zbuf })
         };
         self.cur += 1;
         Ok(out)
@@ -221,7 +230,7 @@ impl Vu {
 /// buffer; REF tags with VIF codes then read `qwc` qwords at `skin_src + addr` (addr signed, may be −16).
 pub fn decode_packet(block: &[u8], at: usize, skin_src: Option<usize>) -> Result<Leaf> {
     let b = Buf(block);
-    let mut vu = Vu { mem: vec![[0; 4]; VU1_QWORDS], gen: vec![0; VU1_QWORDS], cur: 1, cl: 1, wl: 1, header: None };
+    let mut vu = Vu { mem: vec![[0; 4]; VU1_QWORDS], gen: vec![0; VU1_QWORDS], cur: 1, cl: 1, wl: 1, header: None, alpha: 0x44, test: 0x5001b, zbuf: 0x3100_0000 };
     let mut texture = None;
     let (mut batches, mut setup_kicks, mut gs) = (Vec::new(), 0u32, Vec::new());
     let mut p = at;
@@ -249,7 +258,11 @@ pub fn decode_packet(block: &[u8], at: usize, skin_src: Option<usize>) -> Result
                                     for k in 0..nloop {
                                         let o = 16 + 16 * k;
                                         if o + 16 > d.len() { break; }
-                                        gs.push((d[o + 8], u64::from_le_bytes(d[o..o + 8].try_into().unwrap()), batches.len()));
+                                        let reg = d[o + 8];
+                                        let val = u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
+                                        gs.push((reg, val, batches.len()));
+                                        // Track the GS state that affects blend/test/depth so each batch can snapshot it [M G-018].
+                                        match reg { 0x42 => vu.alpha = val, 0x47 => vu.test = val, 0x4e => vu.zbuf = val, _ => {} }
                                     }
                                 }
                             }
@@ -344,7 +357,7 @@ mod tests {
     #[test]
     fn strip_triangles_skip_no_kick_vertices_and_alternate_winding() {
         let v = |w| Vertex { pos: [0.0; 3], uv: [0.0; 2], rgba: [0; 4], normal: [0; 3], w, weight: 1.0, slots: [0, 0] };
-        let b = Batch { texture: None, prim: 0x5c, nloop: 6, eop: true, skinned: false, verts: vec![v(-1), v(-1), v(0), v(0), v(-1), v(0)] };
+        let b = Batch { texture: None, prim: 0x5c, nloop: 6, eop: true, skinned: false, verts: vec![v(-1), v(-1), v(0), v(0), v(-1), v(0)], alpha: 0x44, test: 0x5001b, zbuf: 0x3100_0000 };
         assert_eq!(b.triangles(), [[0, 1, 2], [2, 1, 3], [4, 3, 5]]);
     }
 }

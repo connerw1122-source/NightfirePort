@@ -196,11 +196,6 @@ pub struct Sim {
     /// Aim mode (action 0x13, a pad's L1; not with the mouse, D-002) this tick.
     pub aiming: bool,
     pub auto_aim: bool,
-    /// `BLData+0x8D0`: the current zoom factor (1.0 = no zoom, up to `weapon_data+0x88`). The FOV is divided
-    /// by this. `Player_Zoom` (0x1a1a70) interpolates it toward `zoom_target` (`+0x8D4`).
-    pub zoom: f32,
-    /// `BLData+0x8D4`: the target zoom factor. Right mouse (mouse-first) zooms in; releasing returns to 1.0.
-    pub zoom_target: f32,
     /// `Player_Disable` by a script (cut-scene): no input, no first-person view, until `Player_Enable`.
     pub disabled: bool,
     /// Surface sounds (`EffectInfo`) and Bond's footstep distance (`BL+0x924`).
@@ -212,6 +207,8 @@ pub struct Sim {
     pub wires: Vec<nf_game::wire::Wire>,
     /// Whether Bond is currently on a wire (creeping) — posts music event 0xD each tick.
     pub creeping: bool,
+    /// Scope zoom factor (`Player_Zoom`): 1.0 = normal, >1 = zoomed in (reduces mouse sensitivity).
+    pub zoom: f32,
 }
 
 impl Sim {
@@ -231,56 +228,42 @@ impl Sim {
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
         let (trigger, reload) = if self.disabled { input = Default::default(); (false, false) } else { (trigger, reload) };
         let aiming = input.aiming;
+        // Riding (`Player_FeetOnPoint` → `Control_InheritVelocity`): standing on a moving object (the truck), Bond moves
+        // and turns with it — the feet ray reaches cc + 0.6 below him (cc 1.0347 [L]). This runs even when Bond is
+        // script-disabled (the game's `Control_InheritVelocity` is independent of the disabled flag): the truck carries
+        // Bond through the gatehouse trigger [M].
+        let p = self.bond.pos;
+        if let Some(g) = self.world.ground_motion(p, [p[0], p[1] - 1.6347, p[2]]) {
+            let (sn, cs) = g.turn.sin_cos();
+            let (x, z) = (p[0] + g.delta[0] - g.pivot[0], p[2] + g.delta[2] - g.pivot[2]);
+            self.bond.pos = [g.pivot[0] + x * cs + z * sn, p[1] + g.delta[1], g.pivot[2] - x * sn + z * cs];
+            self.bond.yaw += g.turn;
+        }
         // Weapon switching (`Player_WeaponChange` 0x1a6f80): only when idle (not firing/reloading/holstering). The
         // switch request (`anim+0x63`) is set here; the holster/draw cycle runs in `run` (`Player_SetWeaponAnimObj`).
         // The weapon/gadget split: mouse wheel / Q cycles weapons (mode=0, 1..0x47); G cycles gadgets (mode=1,
         // 0x4A..0x5E); number keys select directly [M disassembly 0x1a707c].
-        // The toggle-back: if cycling weapons from a gadget, jump to the last weapon; if cycling gadgets from a
-        // weapon, jump to the last gadget [M 0x1a6f80 lines 66-121].
-        // If the cycle finds nothing, `Player_WeaponNone` (0x1a9858) → hands (id 0x47), then `Player_GetBestWeapon`
-        // (0x1a9680) scans the BestWeapon table for the first owned+has-ammo weapon.
         if self.gun.switch_state == 0 {
-            let owned = self.drones.inventory.owned.clone();
-            let carried = self.drones.inventory.carried.clone();
-            let clip = self.drones.inventory.clip.clone();
+            let owned = &self.drones.inventory.owned;
             let weapons = &self.weapons;
-            let ammo_type_of = |w: u8| weapons.ammo_type(w as usize);
-            let flags_of = |w: u8| weapons.flags(w as usize);
-            let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, ammo_type_of, flags_of);
+            let inv = &self.drones.inventory;
+            let has_ammo = |w: u8| {
+                let t = weapons.ammo_type(w as usize);
+                inv.carried.get(t).copied().unwrap_or(0) > 0 || inv.clip.get(w as usize).copied().unwrap_or(0) > 0
+            };
             let selectable = |w: u8| weapons.selectable(w);
             let target = if let Some(id) = input.switch_to {
                 if id != self.gun.weapon && owned.get(id as usize).copied().unwrap_or(false)
                     && weapons.first_person(id as usize) != 0 { Some(id) } else { None }
             } else if input.weapon_cycle != 0 {
-                self.gun.toggle_back(nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable)
-                    .or_else(|| self.gun.cycle(input.weapon_cycle, nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable))
+                self.gun.cycle(input.weapon_cycle, nf_game::gun::CycleMode::Weapons, owned, has_ammo, selectable)
             } else if input.gadget_cycle != 0 {
-                self.gun.toggle_back(nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable)
-                    .or_else(|| self.gun.cycle(input.gadget_cycle, nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable))
+                self.gun.cycle(input.gadget_cycle, nf_game::gun::CycleMode::Gadgets, owned, has_ammo, selectable)
             } else { None };
             if let Some(id) = target {
-                // Update prev_weapon/prev_gadget [M 0x1a6f80 lines 134-141]: if current is a weapon, save to
-                // prev_weapon; if current is a gadget, save to prev_gadget. Special: 0x55 ('U') saves as 0x54 ('T').
-                let cur = self.gun.weapon;
-                if cur >= 1 && cur <= 0x47 { self.gun.prev_weapon = cur; }
-                if cur >= 0x4a && cur <= 0x5e { self.gun.prev_gadget = if cur == 0x55 { 0x54 } else { cur }; }
                 self.gun.switch_request = id;
                 if std::env::var_os("NF_SOUNDLOG").is_some() {
                     eprintln!("[weapon-switch] tick {}: requesting switch from {:#x} to {:#x}", self.drones.frame, self.gun.weapon, id);
-                }
-            } else if input.weapon_cycle != 0 || input.gadget_cycle != 0 {
-                // The cycle found nothing: go to hands, then try GetBestWeapon [M Player_WeaponNone + Player_GetBestWeapon].
-                const BEST_WEAPON: [u16; 18] = [0x42, 0x32, 0x1a, 0x18, 0x1c, 0x16, 0x15, 0x08, 0x10, 0x0e, 0x0d, 0x0c, 0x12, 0x06, 0x04, 0x02, 0x0a, 0x01];
-                self.gun.go_to_hands();
-                let base_of = |w: u8| self.weapons.base(w as usize) as u8;
-                if let Some(id) = self.gun.get_best_weapon(&BEST_WEAPON, base_of, &owned, has_ammo) {
-                    let cur = self.gun.weapon;
-                    if cur >= 1 && cur <= 0x47 { self.gun.prev_weapon = cur; }
-                    if cur >= 0x4a && cur <= 0x5e { self.gun.prev_gadget = if cur == 0x55 { 0x54 } else { cur }; }
-                    self.gun.switch_request = id;
-                    if std::env::var_os("NF_SOUNDLOG").is_some() {
-                        eprintln!("[weapon-switch] tick {}: hands → GetBestWeapon → {:#x}", self.drones.frame, id);
-                    }
                 }
             }
         }
@@ -339,20 +322,6 @@ impl Sim {
         let aim = d.map(|v| v / l);
         self.first_person = !self.disabled;
         self.run(self.bond.pos, head, look, aim, trigger, aiming, reload, use_key);
-        // `Player_Zoom` (0x1a1a70): the scope zoom. Right mouse (mouse-first) zooms in; releasing returns to 1.0.
-        // The zoom interpolates toward the target at the game's rate (1.025× per tick zooming in, 1.15× out).
-        // The FOV is divided by the zoom factor. Scoped weapons only (`weapon_data+0x68 & 0x40`).
-        let scoped = self.weapons.records.get(self.gun.weapon as usize).is_some_and(|w| u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap()) & 0x40 != 0);
-        let max_zoom = self.weapons.zoom(self.gun.weapon as usize);
-        if scoped {
-            if input.zoom { self.zoom_target = max_zoom; } else { self.zoom_target = 1.0; }
-        } else {
-            self.zoom_target = 1.0;
-        }
-        // Interpolate zoom toward target [M 0x1a1a70 lines 22-39].
-        let rate = if self.zoom < self.zoom_target { 1.0 / (1.0 + 0.025) } else { 1.0 + 0.15 };
-        self.zoom = self.zoom + (self.zoom_target - self.zoom) * (1.0 - 1.0 / rate);
-        self.zoom = self.zoom.clamp(1.0, max_zoom.max(1.0));
         // Wire / creep (`Player_Creep` 0x1969d0, `Player_Wire` 0x197658): when Bond is near a wire, the creep
         // substate posts `Music_Event(0xD, 1)` every tick — the music jumps to section 2 (stealth) or 6 (combat).
         // *Deviation*: the full creep movement (Bond sliding along the wire, the third-person camera, the
@@ -860,23 +829,25 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
     // keep each object apart.
     let centre = transform(&inst.matrix, obj.centre);
     let ikey = if matches!(layer, Layer::World) { centre.map(f32::to_bits) } else { [0; 3] };
-    // GS state: each leaf's `DIRECT` writes, inherited by the leaves that send none. The GS applies each DIRECT
-    // write immediately at its position in the packet, so a write between batch 2 and batch 3 affects batch 3
-    // onward — we apply the writes per-batch, not per-leaf (the old per-leaf approach made the sniper's gun body
-    // transparent because the leaf's final state was additive for the trailing reflection batches).
+    // GS state: inherited across leaves (a leaf without DIRECT writes keeps the previous leaf's state).
     let (mut alpha, mut test, mut zbuf) = (0x44u64, 0x5001bu64, 0x3100_0000u64);
     for (li, leaf) in obj.gfx.leaves.iter().enumerate() {
-    let mut gs_idx = 0usize;
+    // World objects draw their leaves and batches in order: a leaf repeats its triangles with blend layers (another
+    // texture weighted by vertex alpha, 0 where it does not show) after the opaque base they cover.
+    // Per-batch GS state: the game applies DIRECT A+D writes in DMA order between kicks, so each batch carries its
+    // own ALPHA_1/TEST_1/ZBUF_1. The port snapshots these at kick time in ps2gfx.rs::Batch [M G-018 fix].
+    for &(r, v, _) in &leaf.gs { match r { 0x42 => alpha = v, 0x47 => test = v, 0x4e => zbuf = v, _ => {} } }
+    let trace = matches!(layer, Layer::Character | Layer::Effect) && std::env::var_os("NF_TEX_TRACE").is_some();
     for (bi, b) in leaf.batches.iter().enumerate() {
-        // Apply DIRECT writes that take effect before/at this batch.
-        while gs_idx < leaf.gs.len() && leaf.gs[gs_idx].2 <= bi {
-            let (r, v, _) = leaf.gs[gs_idx];
-            match r { 0x42 => alpha = v, 0x47 => test = v, 0x4e => zbuf = v, _ => {} }
-            gs_idx += 1;
-        }
-        let draw = Draw::from_gs(pass, fog, alpha, test, zbuf);
         let lkey = if matches!(layer, Layer::World) { (li as u32) << 16 | bi as u32 } else { 0 };
         let key = b.texture.filter(|&t| (t as usize) < level.maps[inst.map].textures.len()).map(|t| (inst.map, t));
+        // Use the per-batch GS state (snapshotted at kick time), not the leaf-wide flattened state [M G-018 fix].
+        let draw = Draw::from_gs(pass, fog, b.alpha, b.test, b.zbuf);
+        if trace {
+            let blend_name = match b.alpha & 0xff { 0x48 => "ADDITIVE", 0x42 => "SUBTRACTIVE", 0x44 => "STANDARD", _ => "OTHER" };
+            eprintln!("tex-trace: L{:?} map{} obj\"{}\" leaf{} batch{}: tex={:?} key={:?}; blend={:#x} [{}] zw={}",
+                layer, inst.map, obj.name.trim(), li, bi, b.texture, key, b.alpha, blend_name, b.zbuf >> 32 & 1 == 0);
+        }
         let (vs, is, cv, c) = groups.entry((layer, ikey, lkey, key, draw)).or_default();
         *c = centre;
         let base = vs.len() as u32;
@@ -894,12 +865,6 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
             else if let Some(dr) = door { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: None, door: Some(dr) }); }
         }
         for t in b.triangles() { is.extend(t.map(|k| base + k as u32)); }
-    }
-    // Apply trailing DIRECT writes (after the leaf's last batch) so the state carries to the next leaf.
-    while gs_idx < leaf.gs.len() {
-        let (r, v, _) = leaf.gs[gs_idx];
-        match r { 0x42 => alpha = v, 0x47 => test = v, 0x4e => zbuf = v, _ => {} }
-        gs_idx += 1;
     }
     }
 }
@@ -1305,7 +1270,7 @@ impl Scene {
                     nf_game::wire::Wire::create(p, 4.0)
                 })
                 .collect();
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, zoom: 1.0 })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {

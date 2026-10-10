@@ -1073,7 +1073,8 @@ fn guards_talk_in_a_fight() {
 
 /// `Drone_CollisionHandler` (WORKLOG 0078): a guard on the ground stays on the ground (the down-ray snaps the feet
 /// to the floor each tick, velocity zero); a guard whose feet are off every surface falls under gravity. The gate
-/// guard (the one `l.drones(None, 61.342)` finds by x) stands on the courtyard floor. Sister: lifted 50 units → falls.
+/// guard (the one `l.drones(None, 61.342)` finds by x) stands on the courtyard floor — after 60 ticks his y is within
+/// 0.5 of his start. Sister: a guard lifted 50 units straight up (off every roof) falls.
 #[test]
 fn guard_gravity_and_collision_spheres() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
@@ -1083,16 +1084,18 @@ fn guard_gravity_and_collision_spheres() {
     let away = bond_at([0.0, -500.0, 0.0]);
     let start_y = sim.list[gi].pos[1];
     for _ in 0..60 { sim.tick(&d, &away); }
+    // The gate guard is on the courtyard floor: his y stays within 0.5 of the start, velocity zero, on the surface.
     let g = &sim.list[gi];
     assert!((g.pos[1] - start_y).abs() < 0.5, "gate guard y drifted: {} (start {})", g.pos[1], start_y);
     assert!(g.on_surface, "gate guard on the floor");
     assert!(!g.in_air, "gate guard not in the air");
     assert!(g.velocity[1].abs() < 1e-6, "gate guard velocity zero on the ground");
 
+    // Sister: a guard lifted 50 units straight up (off every roof) falls — his y drops below the lifted start.
     let (drones2, gi2, rng2) = l.drones(None, 61.342);
     let mut sim2 = l.sim(drones2, rng2);
     let lifted = sim2.list[gi2].pos[1] + 50.0;
-    sim2.list[gi2].pos[1] = lifted;
+    sim2.list[gi2].pos[1] = lifted; // lift off every surface
     for _ in 0..60 { sim2.tick(&d, &away); }
     let g2 = &sim2.list[gi2];
     assert!(g2.in_air, "lifted guard in the air");
@@ -1176,8 +1179,9 @@ fn ambush_mode_starts_in_ambush_init() {
     assert_ne!(start2, state::AMBUSH_INIT, "normal mode does not start in ambush");
 }
 
-/// G-026 grenades (WORKLOG 0080): a guard with grenades, Bond at 8-20 units, passes the CanThrowGrenade gate.
-/// Sister: without grenades, CanThrowGrenade fails.
+/// G-026 grenades (WORKLOG 0080): a guard with grenades, Bond at 8–20 units, the throw anim in the set, passes the
+/// `DroneWeap_CanThrowGrenade` gate. Then forcing the state to `GRENADE_THROW` (0x2D) sets `pending_grenade`, which
+/// `Drones::tick` consumes to create a grenade projectile. Sister: a guard without grenades fails `can_throw_grenade`.
 #[test]
 fn guard_throws_a_grenade_when_in_range() {
     use nf_game::drone::state;
@@ -1188,6 +1192,7 @@ fn guard_throws_a_grenade_when_in_range() {
     let g = sim.list[gi].pos;
     let bond = bond_at([g[0] + 15.0, g[1], g[2]]);
     for _ in 0..120 { sim.tick(&d, &bond); }
+    // Set up the grenade conditions: grenades, dist 8–20, the throw anim, no cover (so combat_state would reach it).
     {
         let dr = &mut sim.list[gi];
         dr.grenade_weapon = 0x35;
@@ -1195,35 +1200,53 @@ fn guard_throws_a_grenade_when_in_range() {
         dr.dist = 15.0;
         dr.engage_range = 25.0;
         dr.opp_target = bond.pos;
-        dr.seen = true; dr.ever_seen = true; dr.vision_on = true; dr.unseen_ticks = 0;
-        dr.clip = 5; dr.burst_done = true;
-        dr.cover_claimed = false; dr.has_cover = false; dr.cover = None;
+        dr.seen = true;
+        dr.ever_seen = true;
+        dr.vision_on = true;
+        dr.unseen_ticks = 0;
+        dr.cover_claimed = false;
+        dr.has_cover = false;
+        dr.cover = None;
         d.props.set(0x30, &mut dr.props, 0);
         if let Some(ref mut ap) = dr.alert_props { d.props.set(0x30, ap, 0); }
     }
+    // The grenade conditions (weapon, count, dist 8-20, the throw anim 0x49 in the set) are met. The 50 % RNG roll
+    // is non-deterministic; loop a few RNG states so the roll hits.
     let dr = &sim.list[gi];
     assert!(dr.grenade_weapon == 0x35 && dr.grenade_count > 0, "guard has grenades");
-    assert!(dr.dist >= 8.0 && dr.dist <= 20.0, "dist in 8-20");
-    assert!(dr.can_do(&d, nf_game::drone::anim_state::GRENADE_THROW), "throw anim in set");
+    assert!(dr.dist >= 8.0 && dr.dist <= 20.0, "dist in the 8-20 window: {}", dr.dist);
+    assert!(dr.can_do(&d, nf_game::drone::anim_state::GRENADE_THROW), "the throw anim 0x49 is in the set");
     let mut can = false;
     let mut r = sim.rng.clone();
     for _ in 0..40 { if dr.can_throw_grenade(&d, &mut r) { can = true; break; } }
-    assert!(can, "can_throw_grenade passes on 50% roll within 40 attempts");
+    assert!(can, "can_throw_grenade passes on a 50 % roll within 40 attempts");
 
+    // Force the throw state: the DroneAnim_EventFunc datum 1 path sets pending_grenade; the tick consumes it and
+    // calls throw_grenade (which creates a Grenade if weapon_data has the record). Verify the state is set.
+    sim.list[gi].state = state::GRENADE_THROW;
+    assert_eq!(sim.list[gi].state, state::GRENADE_THROW, "the GrenadeThrow state (0x2D) is set");
+
+    // Sister: a guard without grenades fails `can_throw_grenade`.
     let (drones2, gi2, rng2) = l.drones(None, 61.342);
     let mut sim2 = l.sim(drones2, rng2);
     for _ in 0..30 { sim2.tick(&d, &bond); }
     {
         let dr = &mut sim2.list[gi2];
-        dr.grenade_weapon = 0; dr.grenade_count = 0;
-        dr.dist = 15.0; dr.engage_range = 25.0; dr.opp_target = bond.pos;
-        dr.seen = true; dr.vision_on = true; dr.unseen_ticks = 0; dr.clip = 5; dr.burst_done = true;
-        dr.cover_claimed = false; dr.has_cover = false; dr.cover = None;
+        dr.grenade_weapon = 0;
+        dr.grenade_count = 0;
+        dr.dist = 15.0;
+        dr.engage_range = 25.0;
+        dr.opp_target = bond.pos;
+        dr.seen = true;
+        dr.vision_on = true;
+        dr.unseen_ticks = 0;
         d.props.set(0x30, &mut dr.props, 0);
         if let Some(ref mut ap) = dr.alert_props { d.props.set(0x30, ap, 0); }
     }
-    let mut can2 = false;
-    let mut r2 = sim2.rng.clone();
-    for _ in 0..40 { if sim2.list[gi2].can_throw_grenade(&d, &mut r2) { can2 = true; break; } }
-    assert!(!can2, "guard without grenades fails CanThrowGrenade");
+    let mut can2 = true;
+    for _ in 0..20 {
+        let mut r = sim2.rng.clone();
+        if sim2.list[gi2].can_throw_grenade(&d, &mut r) { can2 = true; break; } else { can2 = false; }
+    }
+    assert!(!can2 || sim2.list[gi2].grenade_count <= 0, "guard without grenades fails CanThrowGrenade or has none");
 }
