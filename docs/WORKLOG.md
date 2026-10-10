@@ -2450,3 +2450,36 @@ session that exposed the bug.
 - Moving the scenario headless tests to the nf-view real path (the current `nf-game/tests/scenario_live.rs` builds its
   own `Drones`, diverging from the viewer's activation — the user's diagnosis of why "passing" tests don't work in play).
 - The F2 menu rework, friendly-actor port, bullet-flyby (need the decomp, which was lost in the sandbox reset).
+
+## A-9 — Door auto-close fix, level-end research, TWEAK proof
+
+**Door auto-close fix:** The timer was resetting to 0 every 360 ticks even when Bond was standing near the door
+(blocked). Fix: only increment `open_timer` when not blocked — Bond standing nearby pauses the countdown rather
+than resetting it. This matches "360 quiet ticks" [M Door_Update 0x1363c8:111-153].
+
+**Level-end research (07000005):** Exhaustive analysis found:
+- Two 0xE8 LOAD_LEVEL triggers (placements 112 & 118), both with `next_level = 0x07000006`6.
+- Both have `lock = 0` (param 10 doesn't exist) → the game's `Trigger_Update` case 10 checks
+  `if (lock != 0) && (switch_channels[lock] != 0)` → FALSE → the triggers NEVER fire.
+- No NIS script on 07000005 fires event 0x12 (LoadLevel).
+- The truck script (0x06000A22) fires only events 0x0D (channel 0x73=1) and 0x0C (keep objects).
+- The gatehouse cut-scene (0x060008C8) fires events 4, 6, Camera, Anim, Entity — no 0x12.
+- The parking cut-scene (0x06000994) fires events 4, 5, 6, 7, 0xB, Sound — no 0x12.
+
+**Conclusion:** The 0xE8 triggers have `lock = 0` and never fire. No script fires event 0x12. The level-end
+mechanism is NOT in the data I've found. Need to ask the user what happens visually when the truck parks:
+- Does the screen fade to black?
+- Does a "mission complete" screen appear?
+- Does the next level load directly?
+
+This will determine whether it's a GameFlow state transition (not ported), a script-driven cut-scene that
+loads a level, or a mechanism I haven't found.
+
+**TWEAK colour proof (from A-8 research, confirmed):**
+- GS result: texel 200 × vertex 0x80 × ambient 0x50 → (200×128×80/256)/128 = 62.5 → ×GAIN 1.133 → 70.8/255 = 0.278
+- Port result (no TWEAK): texel 200/255 × (0x80/255 × 255/128) = 0.784 × 1.0 = 0.784 → ×GAIN → 0.888
+- Port with TWEAK: 0.784 × (0x50/0x80) = 0.784 × 0.625 = 0.49 → ×GAIN → 0.555 → matches GS 0.278? No.
+- Actually: tweak = (tint × ambient) >> 8 = (255 × 80) >> 8 = 79. Normalised: 79/255 = 0.310.
+- Port with TWEAK: 0.784 × 0.310 = 0.243 → ×GAIN → 0.275 → matches GS 0.278. ✓
+
+Tests: 190 pass with NF_ISO set. No Rand_* calls added.

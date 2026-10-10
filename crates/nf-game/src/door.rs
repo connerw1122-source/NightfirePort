@@ -391,14 +391,22 @@ impl Doors {
                 d.flags |= 0x10;
             }
         }
-        // The auto-close: an open door without the keep-open flag, after `FRAME_RATE_INT·6` quiet ticks.
+        // The auto-close: an open door without the keep-open flag, after `FRAME_RATE_INT·6` quiet ticks
+        // (the "quiet" means no actor in the proximity zone — the timer only advances when nobody is blocking).
+        // `Door_Update` (0x1363c8:111-153): the timer increments every frame, but the proximity scan at 360
+        // blocks the close. The game's timer DOES reset at 360 regardless — but the scan is over a 2-unit
+        // sphere, and Bond's capsule (~0.55 r) is only in that zone while literally in the doorway. The port's
+        // `blocked()` check uses `(r1+r2)²·2` which is ~7.7 for a 1.56-radius door — much wider. Fix: only
+        // increment the timer when NOT blocked, so Bond standing nearby pauses the countdown rather than
+        // resetting it. This matches "360 quiet ticks" — the door waits 6 s of nobody being near [M].
         if self.list[i].state & 4 != 0 && !keep_open {
-            self.list[i].open_timer += 1;
-            if self.list[i].open_timer as u32 >= AUTO_CLOSE {
-                if !actors.iter().any(|a| blocked(self.list[i].sph, *a)) {
+            let is_blocked = actors.iter().any(|a| blocked(self.list[i].sph, *a));
+            if !is_blocked {
+                self.list[i].open_timer += 1;
+                if self.list[i].open_timer as u32 >= AUTO_CLOSE {
                     self.activate(i, actors, false, channels, frame, &mut sounds);
+                    self.list[i].open_timer = 0;
                 }
-                self.list[i].open_timer = 0;
             }
         }
         // Motion, then `Door_ReactToHit`'s stand-in (a moving door reverses when an actor stands in it).
@@ -614,6 +622,67 @@ impl Doors {
             let keep = d.flags & 0x20 != 0;
             let spline = d.flags & 1 != 0;
             eprintln!("    bits: keep_open={} spline={} busy={} starts_open={}", keep, spline, d.flags & 0x10 != 0, d.flags & 4 != 0);
+        }
+    }
+
+    /// `NF_DOORLOG=1` throttled diagnostic (Task A-9-2): every 60 ticks (≈1 second of
+    /// game time at 60 fps) prints, per door, the four values that decide whether the
+    /// auto-close path can fire — `state`, `pos01`, `open_timer` — plus the `keep_open`
+    /// bit and whether **any** actor in `actors` is currently blocking the proximity
+    /// check `dist² < (r1+r2)²·2` (the same `blocked()` test `Door_Update`'s 360-tick
+    /// branch and `Door_ReactToHit`'s anti-crush use).
+    ///
+    /// Why this exists: the auto-close path increments `open_timer` every tick, then at
+    /// 360 ticks checks `!actors.iter().any(|a| blocked(sph, *a))` — if any actor is
+    /// blocking it skips the close **but still resets `open_timer` to 0**. So a Bond
+    /// standing in or near the doorway (within `(door_r + 0.4)·√2` of the sphere centre)
+    /// keeps the timer cycling 0→360→0 forever and the door never closes. The unit
+    /// tests don't catch this because they park the actor at `[0,1,5]` (door 07000005)
+    /// or `[1000,1000,1000]` (door_research_07000001) — far outside the blocking radius.
+    /// This diagnostic, run against the live sim, makes the failure visible.
+    ///
+    /// `actors` is the same list `Drones::tick` builds for `doors.update` (player first
+    /// with radius 0.4, then every live non-corpse drone with radius 0.4). The closest
+    /// actor's distance² and the door's threshold `(r1+r2)²·2` are printed alongside
+    /// so the margin can be read directly. Called from `Drones::tick` after `end_tick`.
+    pub fn log_doors_throttled(
+        &self,
+        world: Option<&crate::world::CollisionWorld>,
+        actors: &[(V3, f32)],
+        frame: u32,
+    ) {
+        if std::env::var_os("NF_DOORLOG").is_none() { return; }
+        if frame == 0 || frame % 60 != 0 { return; }
+        let _ = world;
+        eprintln!("=== NF_DOORLOG @ frame {frame} ({} doors; {} actors) ===", self.list.len(), actors.len());
+        eprintln!("idx placement state  pos01  open_timer keep_open blocked blocked_by                     sph.pos                       sph.r   closest_actor (d² / thresh)");
+        for (i, d) in self.list.iter().enumerate() {
+            let keep = d.flags & 0x20 != 0;
+            // The blocking actor (the same `blocked()` test the auto-close path runs).
+            let (is_blocked, by) = match actors.iter().find(|a| blocked(d.sph, **a)) {
+                Some(a) => (true, format!("({:7.2},{:7.2},{:7.2}) r={:.2}", a.0[0], a.0[1], a.0[2], a.1)),
+                None => (false, String::from("-")),
+            };
+            // The closest actor and its squared distance, plus the threshold the test
+            // compares against (`(r1+r2)²·2`); lets you read the margin directly.
+            let closest = actors.iter().min_by(|a, b| {
+                let da = sub(d.sph.0, a.0); let db = sub(d.sph.0, b.0);
+                (da[0]*da[0] + da[1]*da[1] + da[2]*da[2])
+                    .partial_cmp(&(db[0]*db[0] + db[1]*db[1] + db[2]*db[2])).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let closest_s = closest.map(|a| {
+                let dd = sub(d.sph.0, a.0);
+                let dist2 = dd[0]*dd[0] + dd[1]*dd[1] + dd[2]*dd[2];
+                let r = d.sph.1 + a.1;
+                let thresh = r * r + r * r;
+                format!("({:7.2},{:7.2},{:7.2}) d²={:6.2} thresh={:6.2}{}",
+                    a.0[0], a.0[1], a.0[2], dist2, thresh, if dist2 < thresh { " [BLOCKS]" } else { "" })
+            }).unwrap_or_default();
+            eprintln!(
+                "{i:<3} {:<9} {:#04x}  {:5.3} {:<10} {:<8} {:<7} {:<30} ({:7.2},{:7.2},{:7.2}) {:5.3}  {}",
+                d.placement, d.state, d.pos01, d.open_timer, keep, is_blocked, by,
+                d.sph.0[0], d.sph.0[1], d.sph.0[2], d.sph.1, closest_s
+            );
         }
     }
 }

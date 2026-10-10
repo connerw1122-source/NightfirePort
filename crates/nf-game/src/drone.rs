@@ -3951,6 +3951,14 @@ impl Drones {
         order.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         // Pickups are created at run time, so they head the control list: `Pickup_Update` before the placed objects.
         self.update_pickups(d, player, frame);
+        // The actor list `Door_Update`'s proximity test (`dist² < (r1+r2)²·2` over classes
+        // 2/3/0x12) sees: the player first (`glb_players`, the activator of every auto-
+        // activation) with radius 0.4, then every live non-corpse drone with radius 0.4.
+        // Built once per tick — Task A-9-2: the throttled `log_doors_throttled` diagnostic
+        // below uses the same list so its `blocked` column matches what `doors.update` saw.
+        let actors: Vec<([f32; 3], f32)> = std::iter::once((player.pos, 0.4))
+            .chain(self.list.iter().filter(|x| x.present && !x.corpse).map(|x| (x.pos, 0.4)))
+            .collect();
         // Per drone: timers, alertness decay, update message, turning, aim, firing, animation.
         let mut talk_queue: Vec<(usize, Vec<(usize, bool)>)> = Vec::new();
         for &(_, what, index) in &order {
@@ -3970,10 +3978,6 @@ impl Drones {
             if what == 4 {
                 // `Door_Update` (docs/systems/world-objects.md "Doors"): channels, the auto-close timer, the
                 // anim; its sounds (open 285 / close 284 / the locked 320 thud on 07000005) enter the pool.
-                // Actors: the player first (`glb_players`, the activator of every auto-activation), then the
-                // drones — the game scans classes 2 / 3 / 0x12 by bounding sphere.
-                let actors: Vec<([f32; 3], f32)> = std::iter::once((player.pos, 0.4))
-                    .chain(self.list.iter().filter(|x| x.present && !x.corpse).map(|x| (x.pos, 0.4))).collect();
                 let evs = self.doors.update(index, &mut self.channels, &actors, frame);
                 for (id, pos) in evs {
                     match d.sfx {
@@ -4108,6 +4112,14 @@ impl Drones {
         // whether the glist is in the collision world's `shapes` table (else bullets pass through),
         // state, pos01, open_timer, bounding sphere.
         self.doors.log_doors(Some(d.world));
+        // `NF_DOORLOG=1` throttled (every 60 ticks) door dump (Task A-9-2): the four values
+        // that decide whether the auto-close path can fire — state, pos01, open_timer —
+        // plus the keep_open bit and whether any actor in `actors` blocks the proximity
+        // check (`dist² < (r1+r2)²·2`). `actors` is the same list `doors.update` saw this
+        // tick (player + live drones), so the `blocked` column matches the live decision.
+        // Use this to see why a door stays OPEN in play: the unit tests park Bond far
+        // outside the blocking radius, but in play Bond typically stands inside it.
+        self.doors.log_doors_throttled(Some(d.world), &actors, frame);
         // Bullets: move, collide with the world and Bond (`Bullet_update` + `Collide_Update`), damage
         // (`Player_HandlePain`); the hit flash fades by 1 per tick (HUD). `Bullet_DoTrails` fly-by (sound 0x1dc) is
         // checked inside `Bullet::update` in the game's RNG order (Rand_FRand → Rand_Rand(5)).

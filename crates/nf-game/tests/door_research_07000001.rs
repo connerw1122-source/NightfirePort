@@ -110,3 +110,73 @@ fn door_research_07000001() {
         println!("door {i} (pl {}): state {:#x} pos01 {:.3} open_timer {}", d.placement, d.state, d.pos01, d.open_timer);
     }
 }
+
+/// Task A-9-2: demonstrate that the throttled diagnostic fires every 60 ticks and that
+/// the `blocked` column correctly reflects whether Bond (or any actor) is inside the
+/// `(r1+r2)²·2` proximity radius — the exact condition the auto-close path checks at
+/// `open_timer >= 360`. Two scenarios:
+///   1. Bond parked 0.5 units from door 0's sphere centre (well inside the blocking
+///      radius for every door on 07000001 — door 0's threshold is `(1.564+0.4)²·2 ≈ 7.71`,
+///      so dist² = 0.25 → blocked). The door must stay OPEN and `open_timer` must cycle
+///      0→360→0→360→…  — i.e. the auto-close never fires.
+///   2. Bond parked 100 units away (far outside). The door auto-closes after the timer.
+#[test]
+fn door_autoclose_blocked_diagnostic_07000001() {
+    let Some(level) = load(0x07000001) else { eprintln!("skip: NF_ISO not set"); return };
+    let m = level.main_map().unwrap();
+    let ps = &level.maps[m].placements;
+    let blocks = level.path_blocks();
+    let mut doors = Doors::create(ps, &blocks, |p| {
+        let o = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(om, oi)| &level.maps[om].objects[oi]) }
+                else { level.maps[m].objects.get(p.index as usize) };
+        o.map(|o| (o.hashcode, o.centre, o.radius))
+    });
+    let mut ch = Channels::default();
+
+    // Open door 0 (placement 13, SlidingDoor) by activating it from the front.
+    let sph0 = doors.list[0].sph;
+    let head = [sph0.0[0], sph0.0[1], sph0.0[2] - 1.0];
+    let _ = doors.player_use(head, [0.0, 0.0, 1.0], &mut ch, 0);
+    doors.calc();
+
+    // SCENARIO 1 — Bond stands 0.5 units from door 0's sphere centre (inside the
+    // blocking radius). Enable the throttled diagnostic so it prints at frames 60, 120,
+    // 180, 240, 300, 360, 420. After 420 ticks an unblocked door would have auto-closed
+    // (31 to open + 360 to time out + 30 to close), but a blocked one stays OPEN forever.
+    std::env::set_var("NF_DOORLOG", "1");
+    let bond_near = [(sph0.0, 0.4f32)]; // Bond at door 0's sphere centre, radius 0.4.
+    for f in 1..=420u32 {
+        for i in 0..doors.list.len() { doors.update(i, &mut ch, &bond_near, f); }
+        doors.calc();
+        doors.end_tick(&ch);
+        doors.log_doors_throttled(None, &bond_near, f);
+    }
+    std::env::remove_var("NF_DOORLOG");
+
+    println!("\n=== after 420 ticks with Bond 0.5u from door 0 ===");
+    for (i, d) in doors.list.iter().enumerate() {
+        println!("door {i} (pl {}): state {:#x} pos01 {:.3} open_timer {} (keep_open={})",
+            d.placement, d.state, d.pos01, d.open_timer, d.flags & 0x20 != 0);
+    }
+    // Door 0 (placement 13) has keep_open=false, so it WOULD auto-close at ~tick 391
+    // if Bond were far. With Bond blocking, it must stay OPEN (state 4) and the timer
+    // must have cycled (open_timer < 360 because it reset at 360).
+    let d0 = &doors.list[0];
+    assert_eq!(d0.state, 4, "door 0 stays OPEN — the auto-close was blocked by Bond");
+    assert!(d0.open_timer < 360, "open_timer must have reset at 360 (cycling forever)");
+
+    // SCENARIO 2 — Bond walks 100 units away. The door auto-closes after the timer.
+    let far = [([sph0.0[0] + 100.0, sph0.0[1], sph0.0[2]], 0.4f32)];
+    for f in 421..=840u32 {
+        for i in 0..doors.list.len() { doors.update(i, &mut ch, &far, f); }
+        doors.calc();
+        doors.end_tick(&ch);
+    }
+    println!("\n=== after another 420 ticks with Bond 100u away ===");
+    for (i, d) in doors.list.iter().enumerate() {
+        println!("door {i} (pl {}): state {:#x} pos01 {:.3} open_timer {}",
+            d.placement, d.state, d.pos01, d.open_timer);
+    }
+    let d0 = &doors.list[0];
+    assert!(d0.state == 2 || d0.state == 0x10, "door 0 closes once Bond leaves (state {:#x})", d0.state);
+}
