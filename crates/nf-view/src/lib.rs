@@ -475,7 +475,11 @@ impl ApplicationHandler for App {
         // A GPU validation error is reported, not fatal (wgpu's default handler panics).
         device.on_uncaptured_error(Arc::new(|e| eprintln!("GPU error: {e}")));
         let size = window.inner_size();
-        let config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).expect("surface config");
+        let mut config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).expect("surface config");
+        // The GS writes its colours straight to the framebuffer (no gamma step), and the shaders output those values as
+        // they are — like the headless `--shot` path's Rgba8Unorm. An sRGB surface would encode them again and wash the
+        // picture out, so use the plain (non-sRGB) variant of the surface's format.
+        config.format = config.format.remove_srgb_suffix();
         surface.configure(&device, &config);
         let depth = gpu::depth_view(&device, config.width, config.height);
         let renderer = gpu::Renderer::new(&device, &queue, config.format, &self.scene, self.notex, self.nofog);
