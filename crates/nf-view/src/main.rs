@@ -358,9 +358,10 @@ struct App {
     just: HashSet<KeyCode>,
     turn: f32,
     look: f32,
-    /// Pending weapon switch: ±1 for next/prev (mouse wheel), or `Some(id)` for a direct selection (number keys).
-    /// Consumed by the next game tick.
-    weapon_switch: i8,
+    /// Pending weapon/gadget cycle: ±1 for next/prev (mouse wheel = weapons, G = gadgets), or `Some(id)` for a
+    /// direct selection (number keys). Consumed by the next game tick.
+    weapon_cycle: i8,
+    gadget_cycle: i8,
     weapon_switch_to: Option<u8>,
     /// Dev mode (WORKLOG 0083): `None` when `--dev` is off.
     dev: Option<Box<dev::Dev>>,
@@ -458,8 +459,8 @@ impl ApplicationHandler for App {
         // Mouse wheel: weapon switching (next/prev). Up = next (+1), down = prev (−1).
         if let DeviceEvent::MouseWheel { delta: MouseScrollDelta::LineDelta(_x, y) } = event {
             if self.grabbed && !self.noclip {
-                if y > 0.0 { self.weapon_switch = 1; }
-                else if y < 0.0 { self.weapon_switch = -1; }
+                if y > 0.0 { self.weapon_cycle = 1; }
+                else if y < 0.0 { self.weapon_cycle = -1; }
             }
         }
     }
@@ -539,7 +540,8 @@ impl ApplicationHandler for App {
                     (KeyCode::Digit5, ElementState::Pressed) => if self.grabbed { self.weapon_switch_to = Some(0x4e) },
                     (KeyCode::Digit6, ElementState::Pressed) => if self.grabbed { self.weapon_switch_to = Some(0x50) },
                     (KeyCode::Digit7, ElementState::Pressed) => if self.grabbed { self.weapon_switch_to = Some(0x54) },
-                    (KeyCode::KeyQ, ElementState::Pressed) => if self.grabbed && !self.noclip { self.weapon_switch = -1 },
+                    (KeyCode::KeyQ, ElementState::Pressed) => if self.grabbed && !self.noclip { self.weapon_cycle = -1 },
+                    (KeyCode::KeyG, ElementState::Pressed) => if self.grabbed && !self.noclip { self.gadget_cycle = 1 },
                     // Turn every switch channel on: drones waiting for one (WaitSwitch) start (triggers are not ported).
                     (KeyCode::KeyK, ElementState::Pressed) => if let Some(sim) = self.scene.sim.as_mut() { for c in 1..=255 { sim.drones.set_channel(c) } },
                     // Bug 3: log the name of the object Bond is touching (its AABB contains his feet).
@@ -608,7 +610,8 @@ impl ApplicationHandler for App {
                                 jump: self.just.remove(&KeyCode::Space),
                                 crouch: self.just.remove(&KeyCode::KeyC) | self.just.remove(&KeyCode::ControlLeft),
                                 aiming: self.aiming,
-                                switch: std::mem::take(&mut self.weapon_switch),
+                                weapon_cycle: std::mem::take(&mut self.weapon_cycle),
+                                gadget_cycle: std::mem::take(&mut self.gadget_cycle),
                                 switch_to: self.weapon_switch_to.take(),
                             };
                             sim.step_bond(input, self.trigger, self.just.remove(&KeyCode::KeyR), self.just.remove(&KeyCode::KeyE));
@@ -773,7 +776,7 @@ fn main() -> Result<()> {
     // `--dev --scenario <name>`: place Bond and set up the world for a specific feature test.
     // The HEAD's `apply_scenario` (weapon-switch / sg5-pickup / wire-music / autoaim) + this agent's `dev::scenario`
     // (grenade-throw / sniper-cover / ambush / guard-falls-off-ledge / searchlight / door / bullet-flyby / friendly).
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_switch: 0, weapon_switch_to: None, dev: dev.then(|| Box::new(dev::Dev::default())), notex, nofog, iso, pending_level: None, all };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, dev: dev.then(|| Box::new(dev::Dev::default())), notex, nofog, iso, pending_level: None, all };
     if dev {
         if let Some(name) = &scenario {
             if let Some(sim) = app.scene.sim.as_mut() { apply_scenario(sim, name); }
@@ -797,10 +800,10 @@ fn apply_scenario(sim: &mut scene::Sim, name: &str) {
     match name {
         "weapon-switch" => {
             // Bond at the level start with the full owned arsenal: P2K (2), SG5 (0x16), sniper (0x24), gadgets.
-            // The SG5 and sniper are given owned + ammo so the switch cycle finds them.
+            // The SG5 and sniper are given owned + ammo so the weapon cycle finds them.
             if wi > 0x16 { sim.drones.inventory.owned[0x16] = true; sim.drones.inventory.clip[0x16] = 30; sim.drones.inventory.carried[5] = 60; }
             if wi > 0x24 { sim.drones.inventory.owned[0x24] = true; sim.drones.inventory.clip[0x24] = 5; sim.drones.inventory.carried[7] = 25; }
-            eprintln!("[dev] weapon-switch: scroll the mouse wheel (or 1-7) to switch weapons — watch the holster/draw animation and listen for the sounds");
+            eprintln!("[dev] weapon-switch: scroll the mouse wheel (or 1-3) to cycle WEAPONS (P2K/SG5/sniper); press G to cycle GADGETS. Watch the holster/draw animation and listen for the sounds. Set NF_SOUNDLOG=1 to see each animation id.");
         }
         "sg5-pickup" => {
             // A dropped SG5 at Bond's feet. Walk forward to pick it up.

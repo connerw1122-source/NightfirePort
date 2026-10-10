@@ -1929,3 +1929,39 @@ Verified: `NF_ISO=/home/z/Nightfire-onfoot.iso cargo test -p nf-game --test ai_l
 fixed tests included). The 3 `nf-formats` disc_golden failures are pre-existing — `Nightfire-onfoot.iso` (SHA-1
 `957cfccc…`) is a different image from the golden's source (`03717059…`), so the disc/FILES.BIN manifests differ; they
 are not caused by these changes.
+
+## 0084 — Weapon switching: the holster/draw bug + the weapon/gadget split (audited)
+
+Two bugs the user found:
+
+1. **Inspection animation instead of a quick holster.** Re-derived the holster and draw animation ids from
+   the **disassembly** (not the decompile): holster = `weapon+0xC4` (not +0xCC; +0xCC is the idle-alert flag),
+   draw = `weapon+0xC0` (not +0xD0; +0xD0 is the idle-alert raise script). Disassembly evidence:
+   0x1a36c0 `lw v1,196(s1)` (196=0xC4 holster), 0x1a3828 `lw a1,192(s1)` (192=0xC0 draw), 0x1a2d90
+   `lw a1,200(v0)` (200=0xC8 variant-swap). Also added the variant-swap path (`Player_WeaponSelect`
+   0x1a2cc0: same base + same FP model → +0xC8 at 1.3x, state 8) and the correct 1.25x speed for holster/draw.
+   NF_SOUNDLOG=1 now logs every animation id the switch plays.
+
+2. **Gadgets mixed into the weapon cycle.** Ported the game's weapon/gadget split from `Player_WeaponChange`
+   0x1a6f80: mode=0 → weapons (1..0x47), mode=1 → gadgets (0x4A..0x5E) [M disassembly 0x1a707c: `li s6,73`
+   (0x49) and `li v1,95` (0x5F) for gadgets; `slti v0,a0,71` (0x47) for weapons]. Mouse wheel / Q cycles
+   weapons only; G cycles gadgets; number keys select directly. `Gun::cycle(dir, CycleMode, ...)` replaces
+   `Gun::next_weapon`.
+
+**Audit bug (found by the auditor, not the user):** the holster/draw sound selection was **inverted**. The
+disassembly shows: gadgets (0x4A..0x5E) get 0x280 holster / 0x281 draw; weapons get 0x282 draw / 0x283 holster
+[0x1a3704: `addiu v0,v0,-74; sltiu v0,v0,21`]. The port had it backwards. Fixed.
+
+Port map: `docs/port-map/weapon-switching.md` — every function, address, and field. Counts: 4 ported, 4
+partial, 0 stub, 4 not started. 10 STANDINs documented (the last-weapon toggle, +0x1BC skip-ahead, 0x1DB click,
+the idle-alert sub-state machine, +0xD8 holster variant, zoom reset, cases 0xa/0xb/0xc/0xf/0x10, the gadget
+auto-swap, the post-switch position blend).
+
+Tests: `cycle_bounds_match_the_disassembly` pins the exact disc values (1,0x47)/(0x4A,0x5E) from the
+disassembly. `cycle_weapons_and_gadgets_are_separate` verifies the split. All nf-game tests green.
+NF_ISO=… cargo test: only the 3 expected disc_golden tests fail (slim ISO offsets); the 2 ai_live failures are
+pre-existing (grenade/collision, another session's area).
+
+What the player sees: scroll the mouse wheel → weapons only holster/draw quickly (the correct +0xC4 holster
+script at 1.25x, not the idle-alert inspection). Press G → gadgets cycle. Weapons play 0x283 holster + 0x282
+draw; gadgets play 0x280 holster + 0x281 draw. Set NF_SOUNDLOG=1 to see each animation id logged.

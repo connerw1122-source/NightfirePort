@@ -94,14 +94,15 @@ Skin `weapon+0xDC` (P2K 0x05000088); scripts idle 0x06000825, reload 0x06000827,
   `Player_WeaponHasAmmo(BLData, w)` is non-zero. Sets `anim+0x63` (the switch request); `anim+0x64` saves the
   previous weapon for toggle-back.
 - `Player_SetWeaponAnimObj` state machine (`anim+0xF4`): state 0 (idle) sees `anim+0x63 ≠ anim+0x62` → starts the
-  holster (`weapon+0xCC`, sound 0x280 for weapons / 0x283 for gadgets id > 0x4A). State 1 (holstering): when the
+  holster (`weapon+0xC4`, sound 0x280 for gadgets / 0x283 for weapons). State 1 (holstering): when the
   script stops, swaps `anim+0x62 = anim+0x63`, writes the old clip/spare back, reads the new, starts the draw
-  (`weapon+0xD0`, sound 0x281 / 0x282). State 3 (drawing): when stopped, returns to idle (`weapon+0xA0`).
+  (`weapon+0xC0`, sound 0x281 / 0x282). State 3 (drawing): when stopped, returns to idle (`weapon+0xA0`).
   Firing and reload are blocked while switching.
-- Sounds: 0x280 holster (weapon), 0x281 draw (weapon), 0x282 draw (gadget), 0x283 holster (gadget), 0x1DB the
-  change click. Per-weapon op-1 fire-sound id remap (docs/systems/sound.md §7): the script's id is replaced by
-  the weapon's (1→2 for w7/9, 0x403→2 for w3/5, 0xFA→0x1FB for w0x14, 0x106→0x284 for w0x1E..0x23,
-  0x1E1→0x602 for w0x10, 4→0x604 for w0x16/0x17).
+- Sounds: 0x280 holster (gadget, id 0x4A..0x5E), 0x281 draw (gadget), 0x282 draw (weapon), 0x283 holster (weapon),
+  0x1DB the change click. The gadget/weapon test is `id - 0x4A < 0x15` (i.e. id ∈ [0x4A, 0x5E]) [M disassembly
+  0x1a3704: `addiu v0,v0,-74; sltiu v0,v0,21`]. Per-weapon op-1 fire-sound id remap (docs/systems/sound.md §7):
+  the script's id is replaced by the weapon's (1→2 for w7/9, 0x403→2 for w3/5, 0xFA→0x1FB for w0x14,
+  0x106→0x284 for w0x1E..0x23, 0x1E1→0x602 for w0x10, 4→0x604 for w0x16/0x17).
 
 ## Port
 

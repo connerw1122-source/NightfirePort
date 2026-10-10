@@ -15,7 +15,7 @@ The scenarios (level 07000005 "Paris Prelude / Mayhew A"):
 
 | Scenario | What it does | What to check |
 |---|---|---|
-| `weapon-switch` | Gives Bond the SG5 Commando (0x16) and the sniper (0x24) with ammo, in addition to the P2K and gadgets. | Scroll the mouse wheel (or press 1–7) to switch weapons. Watch the holster/draw animation and listen for the sounds (0x280 holster, 0x281 draw for weapons; 0x282/0x283 for gadgets). Non-P2K weapons play their own fire sound. |
+| `weapon-switch` | Gives Bond the SG5 Commando (0x16) and the sniper (0x24) with ammo, in addition to the P2K and gadgets. | Scroll the mouse wheel (or press 1–3) to cycle **weapons** (P2K/SG5/sniper); press G to cycle **gadgets**. Watch the holster/draw animation and listen for the sounds (0x280 holster + 0x281 draw for gadgets; 0x282 draw + 0x283 holster for weapons). Set `NF_SOUNDLOG=1` to see each animation id logged. |
 | `sg5-pickup` | Spawns a dropped SG5 Commando (12 rounds) on the floor 1.5 m in front of Bond. | Walk forward to pick it up — the pickup sound plays, the SG5 enters the inventory. Scroll to switch to it. |
 | `wire-music` | Places Bond 5 m from the zip wire (at the castle's outer wall, (−23.5, 34.5, 6.3)). | Walk toward the wire. When Bond is within 1.5 m the music changes to the stealth section (section 2, or 6 if guards are attacking). Walk away and it returns to section 20. |
 | `autoaim` | Faces Bond toward the nearest alive guard; auto-aim is off (D-001). | Press T to toggle auto-aim. When on, the crosshair snaps to the guard's bone 2. When off, the mouse aims directly. |

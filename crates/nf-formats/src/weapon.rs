@@ -140,14 +140,44 @@ impl WeaponData {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xb4..0xb8].try_into().unwrap()))
     }
 
-    /// `+0xCC`: the holster (put-away) script hashcode (`Player_SetWeaponAnimObj` state 0→1).
+    /// `+0xC4`: the holster (put-away) script hashcode (`Player_SetWeaponAnimObj` case 1, played at 1.25x)
+    /// [M disassembly 0x1a36c0: `lw v1,196(s1)`; `Player_WeaponSelect` 0x1a2cc0 line 33 checks `+0xC4 == 0`].
     pub fn holster_script(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xc4..0xc8].try_into().unwrap()))
+    }
+
+    /// `+0xC0`: the draw script hashcode (`Player_SetWeaponAnimObj` case 3, played at 1.25x)
+    /// [M disassembly 0x1a3828: `lw a1,192(s1)`].
+    pub fn draw_script(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xc0..0xc4].try_into().unwrap()))
+    }
+
+    /// `+0xC8`: the variant-swap script hashcode (same-base weapon swap, `Player_WeaponSelect` 0x1a2cc0 line 24,
+    /// played at 1.3x, state 8) [M].
+    pub fn variant_swap_script(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xc8..0xcc].try_into().unwrap()))
+    }
+
+    /// `+0xCC`: the idle-alert flag (non-zero = the weapon has idle-alert behavior; case 0 of
+    /// `Player_SetWeaponAnimObj` checks it) [M]. Not a script hashcode.
+    pub fn idle_alert_flag(&self, weapon: usize) -> u32 {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xcc..0xd0].try_into().unwrap()))
     }
 
-    /// `+0xD0`: the draw script hashcode (`Player_SetWeaponAnimObj` state 2→3).
-    pub fn draw_script(&self, weapon: usize) -> u32 {
+    /// `+0xD0`: the idle-alert raise script (played when a target appears while idle, case 0 sub-state 0) [M].
+    pub fn idle_alert_raise_script(&self, weapon: usize) -> u32 {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xd0..0xd4].try_into().unwrap()))
+    }
+
+    /// `+0xD4`: the idle-alert lower script (case 0 sub-state 3) [M].
+    pub fn idle_alert_lower_script(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xd4..0xd8].try_into().unwrap()))
+    }
+
+    /// `+0xD8`: the holster variant flag (case 1: if non-zero, `AnimScriptAdd` instead of `AnimScriptAddSpeed`)
+    /// [M disassembly 0x1a36d4: `lw a1,216(s1)`].
+    pub fn holster_variant_flag(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xd8..0xdc].try_into().unwrap()))
     }
 
     /// `+0xE0/+0xE4/+0xE8`: the first-person gun offset (x, y, z) in view space (`Player_PositionGun`).

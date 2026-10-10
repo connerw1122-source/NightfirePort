@@ -16,9 +16,9 @@ const GRAVITY: f32 = -9.8;
 /// to add to the yaw this tick, mouse or ramped pad), `look` (pitch delta in units of π/2), the jump (7) and crouch (8)
 /// presses, aim mode (0x13).
 ///
-/// Weapon switching [M Player_WeaponChange 0x1a6f80]: `switch` = ±1 for next/prev (mouse wheel / Q-E), `switch_to` =
-/// `Some(id)` for a direct selection (number keys). Both are consumed in `Sim::run` where the switch request
-/// (`anim+0x63`) is set and the holster/draw animation cycle of `Player_SetWeaponAnimObj` (0x1a2e38) plays.
+/// Weapon switching [M Player_WeaponChange 0x1a6f80]: `weapon_cycle` = ±1 for next/prev weapon (mouse wheel / Q),
+/// `gadget_cycle` = ±1 for next/prev gadget (G), `switch_to` = `Some(id)` for a direct selection (number keys).
+/// The weapon/gadget split follows the game's own mode 0 (weapons 1..0x47) / mode 1 (gadgets 0x4A..0x5E).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Input {
     pub forward: f32,
@@ -28,8 +28,10 @@ pub struct Input {
     pub jump: bool,
     pub crouch: bool,
     pub aiming: bool,
-    /// ±1: next/prev weapon (`Player_WeaponChange` with `param_3 ≠ 0,1`).
-    pub switch: i8,
+    /// ±1: next/prev weapon (`Player_WeaponChange` mode=0, bounds 1..0x47).
+    pub weapon_cycle: i8,
+    /// ±1: next/prev gadget (`Player_WeaponChange` mode=1, bounds 0x4A..0x5E).
+    pub gadget_cycle: i8,
     /// `Some(id)`: switch directly to weapon `id` (a number key).
     pub switch_to: Option<u8>,
 }

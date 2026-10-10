@@ -228,22 +228,29 @@ impl Sim {
         let aiming = input.aiming;
         // Weapon switching (`Player_WeaponChange` 0x1a6f80): only when idle (not firing/reloading/holstering). The
         // switch request (`anim+0x63`) is set here; the holster/draw cycle runs in `run` (`Player_SetWeaponAnimObj`).
+        // The weapon/gadget split: mouse wheel / Q cycles weapons (mode=0, 1..0x47); G cycles gadgets (mode=1,
+        // 0x4A..0x5E); number keys select directly [M disassembly 0x1a707c].
         if self.gun.switch_state == 0 {
-            if let Some(id) = input.switch_to {
-                if id != self.gun.weapon && self.drones.inventory.owned.get(id as usize).copied().unwrap_or(false)
-                    && self.weapons.first_person(id as usize) != 0 {
-                    self.gun.switch_request = id;
-                }
-            } else if input.switch != 0 {
-                let owned = &self.drones.inventory.owned;
-                let weapons = &self.weapons;
-                let inv = &self.drones.inventory;
-                let has_ammo = |w: u8| {
-                    let t = weapons.ammo_type(w as usize);
-                    inv.carried.get(t).copied().unwrap_or(0) > 0 || inv.clip.get(w as usize).copied().unwrap_or(0) > 0
-                };
-                if let Some(id) = self.gun.next_weapon(input.switch, owned, has_ammo, |w| weapons.selectable(w)) {
-                    self.gun.switch_request = id;
+            let owned = &self.drones.inventory.owned;
+            let weapons = &self.weapons;
+            let inv = &self.drones.inventory;
+            let has_ammo = |w: u8| {
+                let t = weapons.ammo_type(w as usize);
+                inv.carried.get(t).copied().unwrap_or(0) > 0 || inv.clip.get(w as usize).copied().unwrap_or(0) > 0
+            };
+            let selectable = |w: u8| weapons.selectable(w);
+            let target = if let Some(id) = input.switch_to {
+                if id != self.gun.weapon && owned.get(id as usize).copied().unwrap_or(false)
+                    && weapons.first_person(id as usize) != 0 { Some(id) } else { None }
+            } else if input.weapon_cycle != 0 {
+                self.gun.cycle(input.weapon_cycle, nf_game::gun::CycleMode::Weapons, owned, has_ammo, selectable)
+            } else if input.gadget_cycle != 0 {
+                self.gun.cycle(input.gadget_cycle, nf_game::gun::CycleMode::Gadgets, owned, has_ammo, selectable)
+            } else { None };
+            if let Some(id) = target {
+                self.gun.switch_request = id;
+                if std::env::var_os("NF_SOUNDLOG").is_some() {
+                    eprintln!("[weapon-switch] tick {}: requesting switch from {:#x} to {:#x}", self.drones.frame, self.gun.weapon, id);
                 }
             }
         }
@@ -346,41 +353,84 @@ impl Sim {
         let (wi, t) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
         if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(wi), self.drones.inventory.carried.get(t)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
 
-        // Weapon switch state machine (`Player_SetWeaponAnimObj` 0x1a2e38): the holster/draw cycle.
+        // Weapon switch state machine (`Player_SetWeaponAnimObj` 0x1a2e38 + `Player_WeaponSelect` 0x1a2cc0):
+        // the holster/draw cycle. The holster script is `weapon+0xC4` (played at 1.25x), the draw script is
+        // `weapon+0xC0` (1.25x), the variant-swap script is `weapon+0xC8` (1.3x for same-base swaps) [M disassembly].
         // State 0 (idle): a switch request starts the holster. State 1 (holstering): the holster script plays; when
         // done, swap the weapon byte and start the draw. State 3 (drawing): the draw script plays; when done, back to idle.
+        // State 8 (variant swap): the variant-swap script plays; when done, back to idle.
         // While switching, the trigger and reload are blocked (the game's state 1/3 checks `AnimScriptIsStopped`).
+        let log_switch = std::env::var_os("NF_SOUNDLOG").is_some();
         let mut switching = self.gun.switch_state != 0;
-        // State 0 → 1: a switch request starts the holster (`Player_SetWeaponAnimObj` case 0 → case 1).
+        // State 0 → 1/3/8: a switch request starts the holster (`Player_WeaponSelect` 0x1a2cc0).
         if self.gun.switch_state == 0 && self.gun.switch_request != self.gun.weapon {
-            let holster = self.weapons.holster_script(self.gun.weapon as usize);
-            if holster != 0 {
-                self.view_script = holster;
-                (self.view_time, self.view_speed) = (0.0, 1.0);
-                self.gun.switch_state = 1;
-                switching = true;
-                // Sound 0x280 (weapon) or 0x283 (gadget, id > 0x4A) [M 0x1a2e38 line 227-230].
-                let s = if self.gun.weapon > 0x4a { 0x283 } else { 0x280 };
-                self.drones.audio.play(s);
-            } else {
-                // No holster script: swap instantly (the game's state 0 → 3 path when +0xCC == 0).
-                if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
-                if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
-                self.gun.prev_weapon = self.gun.weapon;
-                self.gun.weapon = self.gun.switch_request;
-                let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
-                if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
-                let draw = self.weapons.draw_script(nwi);
-                if draw != 0 {
-                    self.view_script = draw;
-                    (self.view_time, self.view_speed) = (0.0, 1.0);
-                    self.gun.switch_state = 3;
+            let cur_id = self.gun.weapon;
+            let req_id = self.gun.switch_request;
+            let cur_base = self.weapons.base(cur_id as usize);
+            let req_base = self.weapons.base(req_id as usize);
+            // `Player_WeaponSelect` variant-swap path: same base weapon AND same first-person model → play +0xC8
+            // at 1.3x, state 8 (a fast swap without holster/draw) [M 0x1a2cc0 lines 13-29].
+            if cur_base == req_base && self.weapons.first_person(cur_id as usize) == self.weapons.first_person(req_id as usize) {
+                let variant = self.weapons.variant_swap_script(req_id as usize);
+                if variant != 0 {
+                    if log_switch { eprintln!("[weapon-switch] tick {}: state 0→8 variant-swap {:08x} (weapon {:#x}→{:#x}, same base {:#x})", self.drones.frame, variant, cur_id, req_id, cur_base); }
+                    self.view_script = variant;
+                    (self.view_time, self.view_speed) = (0.0, 1.3);
+                    self.gun.switch_state = 8;
                     switching = true;
-                    let s = if self.gun.weapon > 0x4a { 0x282 } else { 0x281 };
-                    self.drones.audio.play(s);
+                    // Swap the weapon byte now (the variant-swap doesn't holster).
+                    if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
+                    if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
+                    self.gun.prev_weapon = self.gun.weapon;
+                    self.gun.weapon = self.gun.switch_request;
+                    let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
+                    if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
                 } else {
+                    // Same base but no variant script: instant swap to idle.
+                    if log_switch { eprintln!("[weapon-switch] tick {}: instant variant swap (no script) {:#x}→{:#x}", self.drones.frame, cur_id, req_id); }
+                    if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
+                    if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
+                    self.gun.prev_weapon = self.gun.weapon;
+                    self.gun.weapon = self.gun.switch_request;
+                    let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
+                    if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
                     self.view_script = self.weapons.idle_script(nwi);
                     (self.view_time, self.view_speed) = (0.0, 1.0);
+                }
+            } else {
+                // Different base: holster → draw. `Player_WeaponSelect` checks +0xC4 (holster) [M 0x1a2cc0 line 33].
+                let holster = self.weapons.holster_script(cur_id as usize);
+                if holster != 0 {
+                    if log_switch { eprintln!("[weapon-switch] tick {}: state 0→1 holster {:08x} (weapon {:#x})", self.drones.frame, holster, cur_id); }
+                    self.view_script = holster;
+                    (self.view_time, self.view_speed) = (0.0, 1.25);
+                    self.gun.switch_state = 1;
+                    switching = true;
+                    // Sound 0x280 (weapon) or 0x283 (gadget, id > 0x4A) [M 0x1a2e38 case 1].
+                    let s = if cur_id >= 0x4a && cur_id <= 0x5e { 0x280 } else { 0x283 };  // gadgets 0x280, weapons 0x283 [M disasm 0x1a3704]
+                    self.drones.audio.play(s);
+                } else {
+                    // No holster script: swap instantly, go to draw (state 3) [M 0x1a2cc0 line 34-35].
+                    if log_switch { eprintln!("[weapon-switch] tick {}: instant swap (no holster) {:#x}→{:#x}", self.drones.frame, cur_id, req_id); }
+                    if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
+                    if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
+                    self.gun.prev_weapon = self.gun.weapon;
+                    self.gun.weapon = self.gun.switch_request;
+                    let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
+                    if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
+                    let draw = self.weapons.draw_script(nwi);
+                    if draw != 0 {
+                        if log_switch { eprintln!("[weapon-switch] tick {}: state 0→3 draw {:08x} (weapon {:#x})", self.drones.frame, draw, req_id); }
+                        self.view_script = draw;
+                        (self.view_time, self.view_speed) = (0.0, 1.25);
+                        self.gun.switch_state = 3;
+                        switching = true;
+                        let s = if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { 0x281 } else { 0x282 };  // gadgets 0x281, weapons 0x282 [M disasm 0x1a385c]
+                        self.drones.audio.play(s);
+                    } else {
+                        self.view_script = self.weapons.idle_script(nwi);
+                        (self.view_time, self.view_speed) = (0.0, 1.0);
+                    }
                 }
             }
         }
@@ -389,7 +439,7 @@ impl Sim {
             let len_of = |h: u32| self.scripts.get(&h).map_or(0.0, |s| s.length as f32);
             match self.gun.switch_state {
                 1 => {
-                    // Holstering: wait for the holster script to finish.
+                    // Holstering: wait for the holster script (+0xC4) to finish [M case 1].
                     let holster = self.weapons.holster_script(cur);
                     if holster == 0 || self.view_time >= len_of(holster).max(1.0) - 1.0 {
                         // Holster done: write the current weapon's clip/spare back, swap, read the new weapon's.
@@ -399,21 +449,40 @@ impl Sim {
                         self.gun.weapon = self.gun.switch_request;
                         let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
                         if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
-                        // Start the draw script.
+                        // Start the draw script (+0xC0) at 1.25x [M case 2 → case 3].
                         let draw = self.weapons.draw_script(nwi);
-                        self.view_script = draw;
-                        (self.view_time, self.view_speed) = (0.0, 1.0);
-                        self.gun.switch_state = 3;
-                        // Sound 0x281 (weapon) or 0x282 (gadget, id > 0x4A) [M 0x1a2e38 line 291-295].
-                        let s = if self.gun.weapon > 0x4a { 0x282 } else { 0x281 };
+                        if draw != 0 {
+                            if log_switch { eprintln!("[weapon-switch] tick {}: state 1→3 draw {:08x} (weapon {:#x})", self.drones.frame, draw, self.gun.weapon); }
+                            self.view_script = draw;
+                            (self.view_time, self.view_speed) = (0.0, 1.25);
+                            self.gun.switch_state = 3;
+                        } else {
+                            if log_switch { eprintln!("[weapon-switch] tick {}: state 1→0 idle (no draw script) {:#x}", self.drones.frame, self.gun.weapon); }
+                            self.view_script = self.weapons.idle_script(nwi);
+                            (self.view_time, self.view_speed) = (0.0, 1.0);
+                            self.gun.switch_state = 0;
+                        }
+                        // Sound 0x281 (weapon) or 0x282 (gadget, id > 0x4A) [M 0x1a2e38 case 3].
+                        let s = if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { 0x281 } else { 0x282 };  // gadgets 0x281, weapons 0x282 [M disasm 0x1a385c]
                         self.drones.audio.play(s);
                     }
                 }
+                8 => {
+                    // Variant swap: wait for +0xC8 to finish [M case 8].
+                    let variant = self.weapons.variant_swap_script(cur);
+                    if variant == 0 || self.view_time >= len_of(variant).max(1.0) - 1.0 {
+                        if log_switch { eprintln!("[weapon-switch] tick {}: state 8→0 idle (variant done) {:#x}", self.drones.frame, self.gun.weapon); }
+                        self.view_script = self.weapons.idle_script(cur);
+                        (self.view_time, self.view_speed) = (0.0, 1.0);
+                        self.gun.switch_state = 0;
+                    }
+                }
                 3 => {
-                    // Drawing: wait for the draw script to finish.
+                    // Drawing: wait for the draw script (+0xC0) to finish [M case 3].
                     let draw = self.weapons.draw_script(self.gun.weapon as usize);
                     if draw == 0 || self.view_time >= len_of(draw).max(1.0) - 1.0 {
-                        // Draw done: back to idle.
+                        // Draw done: back to idle [M case 4].
+                        if log_switch { eprintln!("[weapon-switch] tick {}: state 3→0 idle (draw done) {:#x}", self.drones.frame, self.gun.weapon); }
                         self.view_script = self.weapons.idle_script(self.gun.weapon as usize);
                         (self.view_time, self.view_speed) = (0.0, 1.0);
                         self.gun.switch_state = 0;

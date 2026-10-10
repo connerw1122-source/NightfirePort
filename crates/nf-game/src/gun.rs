@@ -25,17 +25,19 @@ pub struct Gun {
 }
 
 impl Gun {
-    /// `Player_WeaponChange` (0x1a6f80, `param_3` = 2 — the next/prev direction): step through owned,
-    /// selectable weapons with ammo, starting from `weapon + dir`, wrapping 1..=0x72.
-    /// Returns the weapon id to switch to, or `None` if none found [M].
-    pub fn next_weapon(&self, dir: i8, owned: &[bool], has_ammo: impl Fn(u8) -> bool, selectable: impl Fn(u8) -> bool) -> Option<u8> {
+    /// `Player_WeaponChange` (0x1a6f80): the weapon cycle (`param_3` = 0, bounds 1..0x47) or the gadget cycle
+    /// (`param_3` = 1, bounds 0x4A..0x5E) [M disassembly 0x1a707c: `li s6,73` for mode=1; 0x1a7084: `li v1,95`
+    /// for mode=1's high bound; 0x1a7120 for mode=0's bounds]. Steps through owned, selectable, has-ammo
+    /// entries starting from `weapon + dir`, wrapping within the range. Returns the id to switch to, or `None`.
+    pub fn cycle(&self, dir: i8, mode: CycleMode, owned: &[bool], has_ammo: impl Fn(u8) -> bool, selectable: impl Fn(u8) -> bool) -> Option<u8> {
         let dir = dir.signum() as i32;
         if dir == 0 { return None; }
+        let (lo, hi) = mode.bounds();
         let mut w = self.weapon as i32;
-        for _ in 0..0x72 {
+        for _ in 0..(hi - lo + 1) {
             w += dir;
-            if w < 1 { w = 0x72; }
-            if w > 0x72 { w = 1; }
+            if w > hi { w = lo; }
+            if w < lo { w = hi; }
             let wu = w as u8;
             if !owned.get(w as usize).copied().unwrap_or(false) { continue; }
             if !selectable(wu) { continue; }
@@ -47,6 +49,26 @@ impl Gun {
 
     /// Whether a weapon switch is in progress (the holster/draw cycle).
     pub fn switching(&self) -> bool { self.switch_state != 0 }
+}
+
+/// The cycle mode: weapons (1..0x47) or gadgets (0x4A..0x5E) [M `Player_WeaponChange` 0x1a6f80].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CycleMode {
+    /// `param_3` = 0: cycle weapons (ids 1..0x47). Triggered by L2/R2 or Left/Right on the d-pad.
+    Weapons,
+    /// `param_3` = 1: cycle gadgets (ids 0x4A..0x5E). Triggered by Up/Down on the d-pad.
+    Gadgets,
+}
+
+impl CycleMode {
+    /// The cycle bounds [M disassembly: `slti v0,a0,71` (0x47) for weapons; `li s6,73`/`li v1,95` (0x49/0x5F)
+    /// for gadgets, wrapping 0x4A..0x5E].
+    pub fn bounds(&self) -> (i32, i32) {
+        match self {
+            CycleMode::Weapons => (1, 0x47),
+            CycleMode::Gadgets => (0x4a, 0x5e),
+        }
+    }
 }
 
 /// The fields of a `weapon_data` record the trigger uses.
@@ -159,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn next_weapon_skips_unowned_unselectable_and_empty() {
+    fn cycle_skips_unowned_unselectable_and_empty() {
         // Three weapons: 2 (P2K, owned, has ammo), 0x16 (SG5, owned, has ammo), 0x24 (sniper, owned, no ammo).
         let owned = vec![false; 0x73];
         let mut owned = owned;
@@ -168,14 +190,46 @@ mod tests {
         let has_ammo = |w: u8| w == 2 || w == 0x16; // 0x24 has no ammo
         let g = Gun::new(2, 7, 41);
         // Next from P2K → SG5 (0x16).
-        assert_eq!(g.next_weapon(1, &owned, has_ammo, selectable), Some(0x16));
+        assert_eq!(g.cycle(1, CycleMode::Weapons, &owned, has_ammo, selectable), Some(0x16));
         // Next from SG5 → wraps to P2K (0x24 skipped: no ammo).
         let g2 = Gun::new(0x16, 30, 60);
-        assert_eq!(g2.next_weapon(1, &owned, has_ammo, selectable), Some(2));
+        assert_eq!(g2.cycle(1, CycleMode::Weapons, &owned, has_ammo, selectable), Some(2));
         // Prev from P2K → wraps to SG5 (0x24 skipped).
-        assert_eq!(g.next_weapon(-1, &owned, has_ammo, selectable), Some(0x16));
-        // Sister: with no ammo at all, next_weapon returns None.
+        assert_eq!(g.cycle(-1, CycleMode::Weapons, &owned, has_ammo, selectable), Some(0x16));
+        // Sister: with no ammo at all, cycle returns None.
         let no_ammo = |_w: u8| false;
-        assert_eq!(g.next_weapon(1, &owned, no_ammo, selectable), None);
+        assert_eq!(g.cycle(1, CycleMode::Weapons, &owned, no_ammo, selectable), None);
+    }
+
+    #[test]
+    fn cycle_weapons_and_gadgets_are_separate() {
+        // Weapons: 2 (owned, ammo). Gadgets: 0x4A (owned, ammo), 0x50 (owned, ammo).
+        let owned = vec![false; 0x73];
+        let mut owned = owned;
+        owned[2] = true; owned[0x4a] = true; owned[0x50] = true;
+        let selectable = |w: u8| w == 2 || w == 0x4a || w == 0x50;
+        let has_ammo = |_w: u8| true;
+        let g = Gun::new(2, 7, 41);
+        // Weapon cycle from P2K (2) → wraps to 2 (only weapon).
+        assert_eq!(g.cycle(1, CycleMode::Weapons, &owned, has_ammo, selectable), Some(2));
+        // Gadget cycle from P2K (2, a weapon) → starts at 2, steps to 0x4A (first gadget).
+        assert_eq!(g.cycle(1, CycleMode::Gadgets, &owned, has_ammo, selectable), Some(0x4a));
+        // Gadget cycle from 0x4A → 0x50.
+        let g2 = Gun::new(0x4a, 1, 1);
+        assert_eq!(g2.cycle(1, CycleMode::Gadgets, &owned, has_ammo, selectable), Some(0x50));
+        // Sister: weapon cycle from a gadget (0x4A) → wraps to 2 (first weapon).
+        assert_eq!(g2.cycle(1, CycleMode::Weapons, &owned, has_ammo, selectable), Some(2));
+    }
+
+    /// The cycle bounds are pinned to the game's disassembly values [M disassembly 0x1a707c/0x1a7084:
+    /// `li s6,73` (0x49) and `li v1,95` (0x5F) for gadgets; `slti v0,a0,71` (0x47) for weapons].
+    #[test]
+    fn cycle_bounds_match_the_disassembly() {
+        assert_eq!(CycleMode::Weapons.bounds(), (1, 0x47));
+        assert_eq!(CycleMode::Gadgets.bounds(), (0x4a, 0x5e));
+        // Sister: a weapon at 0x48 is NOT in the weapon range (0x48 > 0x47) — it would be skipped.
+        assert!(0x48 > CycleMode::Weapons.bounds().1);
+        // Sister: a gadget at 0x5F is NOT in the gadget range (0x5F > 0x5E).
+        assert!(0x5f > CycleMode::Gadgets.bounds().1);
     }
 }
