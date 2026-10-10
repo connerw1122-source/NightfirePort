@@ -1111,7 +1111,7 @@ fn guard_gravity_and_collision_spheres() {
 /// Sister: a non-sniper (anim set != 0x13) in the same state fires and stays in 0x96.
 #[test]
 fn sniper_cover_branches_to_sniper_fire_state() {
-    use nf_game::drone::{state, msg, Drone};
+    use nf_game::drone::{state, msg};
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
     let (drones, _, rng) = l.drones(None, 61.342);
@@ -1179,4 +1179,64 @@ fn ambush_mode_starts_in_ambush_init() {
     sim.list[i].mode = 0;
     let start2 = sim.list[i].start_state(&d);
     assert_ne!(start2, state::AMBUSH_INIT, "normal mode does not start in ambush");
+}
+
+/// G-026 grenades (WORKLOG 0080): a guard with grenades (`+0xBCC`/`+0xBCE` set), Bond at 8–20 units in the aim-stand
+/// anim, passes the `DroneWeap_CanThrowGrenade` gate (50 % RNG, dist 8–20, throw anim in the set) and enters the
+/// GrenadeThrow state (0x2D). Sister: a guard without grenades never enters 0x2D.
+#[test]
+fn guard_throws_a_grenade_when_in_range() {
+    use nf_game::drone::state;
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, _, rng) = l.drones(None, 61.342);
+    let mut sim = l.sim(drones, rng);
+    // Bond 15 units in front of the gate guard, in view.
+    let g = sim.list.iter().find(|x| x.placement == 0).unwrap().pos;
+    let bond = bond_at([g[0] + 15.0, g[1], g[2]]);
+    for _ in 0..120 { sim.tick(&d, &bond); }
+    // Give the first drone grenades and put it in the aim-stand-fire state with Bond at the right distance.
+    let i = sim.list.iter().position(|x| x.present).unwrap();
+    {
+        let dr = &mut sim.list[i];
+        dr.grenade_weapon = 0x35;
+        dr.grenade_count = 5;
+        dr.state = state::AIM_STAND_FIRE;
+        dr.next_state = None;
+        dr.anim.class = 2;
+        dr.anim.state = nf_game::drone::anim_state::AIM_STAND;
+        // Set the distance to 15 (within the 8–20 window).
+        dr.dist = 15.0;
+        dr.opp_target = bond.pos;
+    }
+    // Tick — the combat_state should route to GRENADE_THROW on the 50 % roll. Run a few ticks to let it decide.
+    let mut threw = false;
+    for _ in 0..60 {
+        sim.tick(&d, &bond);
+        if sim.list[i].state == state::GRENADE_THROW { threw = true; break; }
+    }
+    assert!(threw, "guard with grenades entered GrenadeThrow (0x2D)");
+
+    // Sister: a guard without grenades never enters 0x2D.
+    let (drones2, _, rng2) = l.drones(None, 61.342);
+    let mut sim2 = l.sim(drones2, rng2);
+    for _ in 0..30 { sim2.tick(&d, &bond); }
+    let j = sim2.list.iter().position(|x| x.present).unwrap();
+    {
+        let dr = &mut sim2.list[j];
+        dr.grenade_weapon = 0;
+        dr.grenade_count = 0;
+        dr.state = state::AIM_STAND_FIRE;
+        dr.next_state = None;
+        dr.anim.class = 2;
+        dr.anim.state = nf_game::drone::anim_state::AIM_STAND;
+        dr.dist = 15.0;
+        dr.opp_target = bond.pos;
+    }
+    let mut threw2 = false;
+    for _ in 0..60 {
+        sim2.tick(&d, &bond);
+        if sim2.list[j].state == state::GRENADE_THROW { threw2 = true; break; }
+    }
+    assert!(!threw2, "guard without grenades never enters GrenadeThrow");
 }

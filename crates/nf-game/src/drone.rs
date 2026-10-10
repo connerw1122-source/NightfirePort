@@ -70,6 +70,9 @@ pub mod state {
     /// crouches and waits (0x38) until the opponent is visible or within 3 → 0x56.
     pub const AMBUSH_INIT: u8 = 0x37;
     pub const AMBUSH_WAIT: u8 = 0x38;
+    /// Grenade throw (`NDrone2_DSTATE_GrenadeThrow` 0x2D): the throw anim (0x49) → on event 1, `DroneWeap_ThrowGrenade`
+    /// → back to Attack (0x56).
+    pub const GRENADE_THROW: u8 = 0x2d;
     pub const AIM_STAND: u8 = 0x67;
     pub const AIM_STAND_FIRE: u8 = 0x68;
     pub const AIM_STAND_RELOAD: u8 = 0x69;
@@ -140,6 +143,8 @@ pub mod anim_state {
     pub const LOOK_AROUND: u16 = 0x4b;
     pub const RUN: u16 = 0x1e;
     pub const RUN_AIM: u16 = 0x08;
+    /// The grenade-throw anim state (`DroneWeap_CanThrowGrenade`'s `DroneAnim_CanDoAnimState(0x49, 0)`).
+    pub const GRENADE_THROW: u16 = 0x49;
     pub const WALK_AIM: u16 = 0x0f;
     pub const STRAFE_LEFT_ALT: u16 = 0x29;
     pub const STRAFE_RIGHT_ALT: u16 = 0x2a;
@@ -332,6 +337,12 @@ pub struct Drone {
     pub last_shot: u32,
     pub clip: i32,
     pub clip_max: i32,
+    /// `Drone+0xBCC`: the grenade weapon index (0x35 frag, 0x36 stun) and `+0xBCE` the count (decremented on throw).
+    pub grenade_weapon: u16,
+    pub grenade_count: i16,
+    /// Set by `DroneAnim_EventFunc` datum 1 (the grenade-throw anim's release frame); `Drones::tick` calls
+    /// `throw_grenade` and clears it.
+    pub pending_grenade: bool,
     /// Frames of the shots fired (for flashes; the viewer drains it).
     pub shots: Vec<u32>,
     /// Root translation at the previous tick (root motion).
@@ -531,6 +542,9 @@ pub struct Drone {
     pub log: Vec<(u32, u8)>,
 }
 
+/// Normalise a vector (the grenade throw direction helper).
+fn norm(v: V3) -> V3 { let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(); if l > 0.0 { [v[0] / l, v[1] / l, v[2] / l] } else { v } }
+
 impl Drone {
     /// From a placement (parameters by index) after `NDrone2_DefaultInit` / `DoModeSettingsNEW`.
     pub fn new(d: &Data, pos: V3, yaw: f32, param: impl Fn(u32) -> u32, rng: &mut Rng) -> Drone {
@@ -558,6 +572,7 @@ impl Drone {
             explosive_pos: pos, explosive_run_dist: 0.0,
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
+            grenade_weapon: 0x35, grenade_count: 0, pending_grenade: false,
             shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
@@ -1063,13 +1078,17 @@ impl Drone {
     }
 
     /// `DroneAnim_EventFunc` (0x13b750): 3 / 4 holster swap, 7 `+0x579` = 0, 0xF `+0x20`, 0x12 `+0x20` and `+0x21`, 0x10
-    /// clears both, 7 the early end of a one-shot (`+0x579`). Not ported: 1 grenade throw, 2 weapon change, 5 / 10 / 11 close-combat hits, 6 / 0xE messages, 9
-    /// tertiary placement (G-026).
+    /// clears both, 1 the grenade-throw release (sets `pending_grenade` → `Drones::tick` calls `throw_grenade`), 7 the
+    /// early end of a one-shot (`+0x579`). Not ported: 2 weapon change, 5 / 10 / 11 close-combat hits, 6 / 0xE
+    /// messages, 9 tertiary placement (G-026).
     fn event_func(&mut self, e: u16) {
         match e {
             3 => self.holstered = true,
             7 => self.anim.early_end = true,
             4 => self.holstered = false,
+            // `DroneAnim_EventFunc` datum 1: the grenade-throw anim's release frame → `DroneWeap_ThrowGrenade`
+            // (the actual throw is deferred to `Drones::tick` so it can borrow `Data` and the RNG).
+            1 => self.pending_grenade = true,
             0xf => self.event_20 = true,
             0x12 => { self.event_20 = true; self.event_21 = true; }
             0x10 => { self.event_20 = false; self.event_21 = false; }
@@ -2055,6 +2074,30 @@ impl Drone {
         })
     }
 
+    /// `NDrone2_DSTATE_GrenadeThrow` (0x2D, 0x173480): the throw state. ENTER sets `+0x4F8 |= 0x10000`, alert 1, and
+    /// plays the throw anim (0x49) → on event 1 (`DroneAnim_EventFunc` datum 1, which sets `pending_grenade`), the
+    /// tick loop calls `throw_grenade`. UPDATE: `SeenAndAttacking`, `SetAngleToObj`. The anim's completion routes to
+    /// 0x56 (Attack). msg 0x21: `ConsiderExplosive`; msg 8: `HandleImpact(0, 0)`.
+    fn handle_grenade_throw(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> Option<bool> {
+        use state::*;
+        if s != GRENADE_THROW { return None; }
+        Some(match m {
+            msg::ENTER => {
+                self.vision_on = true;
+                self.call_anim(d, anim_state::GRENADE_THROW, ATTACK, 0);
+                true
+            }
+            msg::UPDATE => {
+                // `NDrone2_SeenAndAttacking` + `SetAngleToObj`: face the opponent.
+                self.desired_yaw = self.yaw_to_opp;
+                true
+            }
+            msg::EXPLOSIVE => { self.consider_explosive(d, self.explosive_pos, 0, 12.0); true }
+            msg::BULLET => { self.on_bullet(d, rng, frame, s); true }
+            _ => true,
+        })
+    }
+
     // ---- state machine -----------------------------------------------------------------------------------------
 
     fn set_state(&mut self, s: u8) { if s != 0 { self.next_state = Some(s) } }
@@ -2089,6 +2132,7 @@ impl Drone {
         if s == BULLET_IMPACT && matches!(m, 0 | msg::ENTER | msg::UPDATE) { if m == msg::ENTER { self.vision_on = true; } return true; }
         if let Some(r) = self.handle_death(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_cover(d, rng, frame, s, m) { return r; }
+        if let Some(r) = self.handle_grenade_throw(d, rng, frame, s, m) { return r; }
         match (s, m) {
             // `NDrone2_DSTATE_Global` enter: a drone with a switch channel that is still off waits (WaitSwitch); else its
             // start state `+0x5A2` (InitPatrol with props 0x24/0x25, else Idle). Modes 0x1E / 0x17 and start scripts
@@ -2664,7 +2708,7 @@ impl Drone {
 
     /// `DroneFunc_CombatState` (0x148338): the combat decision for 0x58 / 0x5A / 0x5C / 0x5E / 0x68 / 0x70. Every
     /// call routes to the opponent first (`MoveToObject` with radius min(engage range, 6); following the route except
-    /// from the firing states). Cover (0x8C) and grenades are not ported yet.
+    /// from the firing states). Cover (0x8C) ported (WORKLOG 0023); grenades (0x2D) ported (WORKLOG 0080).
     fn combat_state(&mut self, d: &Data, rng: &mut Rng, frame: u32, from: u8) -> u8 {
         use state::*;
         if self.in_transition() { return 0; }
@@ -2704,6 +2748,10 @@ impl Drone {
                 if routed && out_of_range { return COMBAT_OUT_OF_RANGE; }
                 if self.unseen_ticks > 15 { return COMBAT_NO_SIGHT; }
                 if self.cover_available(d, true) { return RUN_FOR_COVER; }
+                // `DroneWeap_CanThrowGrenade`: the drone has grenades, 50 % roll, dist 8–20, the throw anim is in the
+                // set, and the playing danim is the aim-stand class (anim class 2, type 0xA → `+0x568 & 0xFFFF00FF ==
+                // 0xA0002`).
+                if self.anim.class == 2 && self.can_throw_grenade(d, rng) { return GRENADE_THROW; }
                 if self.anim.class == 2 && self.anim.state == anim_state::AIM_STAND {
                     let m = self.choose_combat_move(d, rng);
                     if m != 0 { return m; }
@@ -2715,6 +2763,7 @@ impl Drone {
                 if routed && out_of_range { return COMBAT_OUT_OF_RANGE; }
                 if self.unseen_ticks > 15 { return COMBAT_NO_SIGHT; }
                 if self.cover_available(d, true) { return RUN_FOR_COVER; }
+                if self.can_throw_grenade(d, rng) { return GRENADE_THROW; }
                 if frame > self.entered + 120 {
                     let m = self.choose_combat_move(d, rng);
                     if m != 0 { return m; }
@@ -2869,6 +2918,48 @@ impl Drone {
         if c && !self.firing { self.next_bullet_time(d, rng, frame, true); }
         self.firing = true;
         self.burst_done = false;
+    }
+
+    /// `DroneWeap_CanThrowGrenade` (0x17a798): the drone has grenades (`+0xBCC` / `+0xBCE` ≠ 0), `Rand(2) == 0` (50 %),
+    /// an opponent exists, `8.0 ≤ dist ≤ 20.0`, and the throw anim (0x49) is in the drone's anim set.
+    fn can_throw_grenade(&self, d: &Data, rng: &mut Rng) -> bool {
+        if self.grenade_weapon == 0 || self.grenade_count <= 0 { return false; }
+        if rng.rand(2) != 0 { return false; }
+        if self.dist < 8.0 || self.dist > 20.0 { return false; }
+        self.can_do(d, anim_state::GRENADE_THROW)
+    }
+
+    /// `DroneWeap_ThrowGrenade` (0x179558): decrements `+0xBCE`, picks the grenade weapon (mode 0xD sniper → 1/3 chance
+    /// of stun 0x36, else frag 0x35), computes the throw direction from the right-hand bone (0x15) with a ±π/4 yaw lob
+    /// (dist < 10 → +π/4 lob; dist > 18 → −π/4 flat), and creates a `Grenade` projectile. The muzzle falls back to the
+    /// drone's chest if the skeleton's bone 0x15 is not posed.
+    fn throw_grenade(&mut self, d: &Data, rng: &mut Rng, owner: usize) -> Option<crate::grenade::Grenade> {
+        let w = self.grenade_weapon;
+        if self.grenade_count > 0 { self.grenade_count -= 1; }
+        // Mode 0xD (sniper): 1/3 chance of stun (0x36), else frag (0x35).
+        let gw = if self.mode == 0xd && rng.rand(3) == 0 { 0x36 } else { w };
+        if gw == 0 { return None; }
+        let wd = d.weapons.records.get(gw as usize)?;
+        let f32_at = |o: usize| f32::from_le_bytes(wd[o..o + 4].try_into().unwrap());
+        // The throw origin: the right-hand bone (0x15) world position, or the chest fallback.
+        let origin = self.muzzle(d);
+        // The throw direction: toward the opponent, with a ±π/4 yaw lob by distance.
+        let to_opp = [self.opp_target[0] - origin[0], self.opp_target[1] - origin[1], self.opp_target[2] - origin[2]];
+        let dist = (to_opp[0] * to_opp[0] + to_opp[1] * to_opp[1] + to_opp[2] * to_opp[2]).sqrt();
+        let yaw = if dist < 10.0 { crate::trig::HALF_PI / 2.0 } else if dist > 18.0 { -crate::trig::HALF_PI / 2.0 } else { 0.0 };
+        let (s, c) = (crate::trig::sinf(yaw), crate::trig::cosf(yaw));
+        let dir = norm([to_opp[0] * c + to_opp[2] * s, to_opp[1], -to_opp[0] * s + to_opp[2] * c]);
+        let dir = norm(dir);
+        let speed = f32_at(0x20);
+        // The grenade's weapon type (`+0x02`) for the explosion's per-type behaviour.
+        let weapon_type = u16::from_le_bytes([wd[2], wd[3]]);
+        let damage = f32_at(0x0c);
+        let radius = f32_at(0x08);
+        let range = f32_at(0x1c).max(210.0);
+        Some(crate::grenade::Grenade {
+            pos: origin, velocity: [dir[0] * speed, dir[1] * speed, dir[2] * speed], speed,
+            travelled: 0.0, range, damage, radius, weapon_type, owner, state: 0, bounces: 0,
+        })
     }
 
     /// `DroneWeap_BurstDelay` (frames).
@@ -3103,6 +3194,10 @@ pub struct Drones {
     pub llist: Vec<usize>,
     pub rng: Rng,
     pub bullets: Vec<crate::bullet::Bullet>,
+    /// Grenades in flight (`Bullet_init` with a gravity-affected weapon; WORKLOG 0080).
+    pub grenades: Vec<crate::grenade::Grenade>,
+    /// Explosions this tick: (pos, radius, damage, owner, weapon_type) for the sound + camera shake.
+    pub explosions: Vec<(V3, f32, f32, usize, u16)>,
     pub health: crate::bullet::PlayerHealth,
     /// Every hit on Bond: (tick, shooting drone, health lost).
     pub player_hits: Vec<(u32, usize, f32)>,
@@ -3220,7 +3315,7 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
+        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new() }
     }
 
@@ -3870,6 +3965,14 @@ impl Drones {
                 dr.set_state(next_ai);
                 if done_msg != 0 || next_ai != 0 { dr.send(d, rng, frame, done_msg); }
             }
+            // `DroneAnim_EventFunc` datum 1 (the grenade-throw release): `DroneWeap_ThrowGrenade` creates a
+            // projectile (WORKLOG 0080). The throw sound 0x5EF enters the pool.
+            if std::mem::take(&mut dr.pending_grenade) {
+                if let Some(g) = dr.throw_grenade(d, rng, index) {
+                    if let Some(t) = d.sfx { let h = t.get(0x5ef); self.audio.play3d(h.id, g.pos, None); }
+                    self.grenades.push(g);
+                }
+            }
             if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
             // The animation's sounds (`Sound_Play3D` at the drone) enter the hearing list for the next tick.
             let (snd, at) = (std::mem::take(&mut dr.anim_sounds), dr.pos);
@@ -3927,6 +4030,47 @@ impl Drones {
             }
         }
         self.bullets.retain(|b| b.state < 2);
+        // Grenades (`Bullet_update` + `Bullet_CollisionHandler`, WORKLOG 0080): move under gravity, bounce off the
+        // world, explode on impact or after the fuse. The explosion (`Explode_Propagate`) damages drones (msg 9 →
+        // `Drone_ExplosiveHit`) and Bond (`Player_Hurt`); the sound 0x51C for a bounce, the explosion script 0x6000052
+        // (sound id 0x4A7 for the blast) enter the pool.
+        self.explosions.clear();
+        for g in &mut self.grenades {
+            while let Some(ev) = g.update(d.world, &mut self.rng) {
+                match ev {
+                    crate::grenade::GrenadeEvent::Bounce(p) => {
+                        if let Some(t) = d.sfx { let h = t.get(0x51c); self.audio.play3d(h.id, p, None); }
+                        break;
+                    }
+                    crate::grenade::GrenadeEvent::Explode { pos, radius, damage, owner, weapon_type } => {
+                        // The blast sound 0x4A7 (the game's `Sound_Play3D(0x4a7, …)` in `Bullet_CollisionHandler`).
+                        if let Some(t) = d.sfx { let h = t.get(0x4a7); self.audio.play3d(h.id, pos, None); }
+                        // `Explode_Propagate`: the drones' positions + Bond, linear falloff.
+                        let drones: Vec<(usize, V3)> = self.list.iter().enumerate()
+                            .filter(|(_, x)| x.present && !x.corpse).map(|(i, x)| (i, x.pos)).collect();
+                        let hits = crate::grenade::explode_propagate(pos, radius, damage, &drones, player.pos, 1.8);
+                        // Bond: `Player_Hurt` (the difficulty factor is applied in `explode_propagate`).
+                        if hits.player > 0.0 {
+                            let before = self.health.health;
+                            self.health.pain(hits.player, DIFFICULTY, d.level);
+                            self.player_hits.push((frame, owner, before - self.health.health));
+                        }
+                        // Drones: `Drone_ExplosiveHit` → msg 9 (the port routes through `on_bullet` as an impact).
+                        for (di, ddmg) in hits.drones {
+                            if let Some(dr) = self.list.get_mut(di) {
+                                dr.last_damage = ddmg;
+                                dr.health -= ddmg * dr.damage_taken;
+                                if dr.health <= 0.0 { dr.health = 0.0; dr.set_state(state::DEATH_ANIM); }
+                                else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
+                            }
+                        }
+                        self.explosions.push((pos, radius, damage, owner, weapon_type));
+                        break;
+                    }
+                }
+            }
+        }
+        self.grenades.retain(|g| g.state < 2);
         self.health.flash = (self.health.flash - 1.0).max(0.0);
     }
 }
@@ -3947,7 +4091,8 @@ mod tests {
             state: 0, prev_state: 0, next_state: None, entered: 0, timer_c: None, timer_d: None,
             explosive_pos: pos, explosive_run_dist: 0.0,
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
-            firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip: 0, clip_max: 0, shots: Vec::new(),
+            firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip: 0, clip_max: 0,
+            grenade_weapon: 0x35, grenade_count: 0, pending_grenade: false, shots: Vec::new(),
             log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: 0, lost_sight: false,
             damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,

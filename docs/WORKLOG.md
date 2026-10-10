@@ -1702,3 +1702,44 @@ ambush guard (mode 0x10) crouches behind the nearest cover within 2 m and waits;
 he attacks. A guard near a grenade (msg 0x21) flees to 0x86 (the flee route itself is G-026). Not done: the
 `RecoverFromScaryObject` (0x86) flee route update (the run-away path), `ValidateCoverAnim`'s 5→7/10 fallback, the
 `+0x538` blend-timing check for non-call anims.
+
+## 0080 — Grenades: the throw, the arc, the bounce, the explosion and sound
+
+G-026 (the grenades part). The on-foot engine has no separate grenade entity — grenades are bullets (`obj+0xFF = 5`)
+with `weapon_data+0x6C & 0x8` (gravity), `+0x70 & 0x4` (explode on impact) and `+0x70 & 0x100` (bounce). This ports
+the throw decision, the throw state (0x2D), the projectile physics and the explosion.
+
+Research first (same discipline): `NDrone2_DSTATE_GrenadeThrow` 0x173480, `DroneWeap_ThrowGrenade` 0x179558,
+`DroneWeap_CanThrowGrenade` 0x17a798, `Bullet_init` 0x12c5a0, `Bullet_update` 0x12e7b0,
+`Bullet_CollisionHandler` 0x12ce80, `Explode_Create` 0x17cbd0, `Explode_Propagate` 0x17c518,
+`Drone_ExplosiveHit` 0x13aab8, `Bullet_handle_object_destruction` 0x12cd98.
+
+Key finds: the throw decision (`CanThrowGrenade`) gates on `+0xBCC ≠ 0` (grenade weapon), `+0xBCE ≠ 0` (count),
+`Rand(2) == 0` (50 %), an opponent, `8.0 ≤ dist ≤ 20.0`, and `DroneAnim_CanDoAnimState(0x49, 0)` (the throw anim).
+The throw (`ThrowGrenade`) reads bone 0x15 (right hand) for the origin, applies a ±π/4 yaw lob by distance (< 10 →
++π/4 lob; > 18 → −π/4 flat), mode 0xD sniper 1/3 chance of stun (0x36) over frag (0x35). The projectile's gravity is
+`velocity += WldGravity · REC_FRAME_RATE²`, `pos += velocity · REC_FRAME_RATE`. The bounce (`Bullet_CollisionHandler`):
+reflect by the surface normal, × the per-material coefficient at `0x3037dc + material·0x88`, max 20 bounces; sound
+0x51C. The explosion (`Explode_Propagate`): sphere intersect of `radius` (`weapon+0x08`), `damage = amount · (1 −
+dist / radius)` (min 0.0002), drones take `Drone_ExplosiveHit` (msg 9), Bond takes `Player_Hurt`; sound 0x4A7; the
+explosion script 0x6000052. The fuse (`+0x3F`) is 210 ticks (3.5 s), 420 for type 0x37.
+
+Port: new `crates/nf-game/src/grenade.rs` — `Grenade` (pos, velocity, speed, fuse `travelled`/`range`, damage, radius,
+weapon_type, bounces), `GrenadeEvent` (Bounce / Explode), `explode_propagate` (the linear falloff sphere). The throw
+state `GRENADE_THROW` (0x2D), `can_throw_grenade` / `throw_grenade` on `Drone`, the `DroneAnim_EventFunc` datum 1
+(sets `pending_grenade` → `Drones::tick` calls `throw_grenade`), the grenade decision in `combat_state` (between
+cover and `choose_combat_move`, for both `AIM_STAND_FIRE` and `AIM_CROUCH_FIRE`). `Drones` gains `grenades` /
+`explosions` fields; the tick loop updates grenades, plays bounce (0x51C) and blast (0x4A7) sounds, applies the
+explosion's damage to drones (`Drone_ExplosiveHit` → msg 9 / death) and Bond (`Player_Hurt`).
+
+Tests: 3 unit in grenade.rs (the arc + bounce, the max-bounce explosion, the linear falloff with a sister beyond the
+radius); live `guard_throws_a_grenade_when_in_range` in ai_live.rs (a guard with grenades at dist 15 enters 0x2D;
+sister: without grenades never does). All nf-game 83 green (was 80; +3 grenade unit + 1 live). RNG: `throw_grenade`
+adds `Rand(3)` for the sniper stun roll and `can_throw_grenade` adds `Rand(2)` — both run only in the grenade path,
+so seeded tests that don't reach a grenade throw are unaffected.
+
+What the player sees: a guard 8–20 units away may lob a grenade (anim 0x49) — it arcs under gravity, bounces off the
+world (sound 0x51C), and explodes on impact or after the 3.5-s fuse (sound 0x4A7), damaging Bond and nearby guards
+with a linear falloff. Not done: the per-material bounce coefficient table at `0x3037dc` (a 0.4 stand-in), the explosion
+script 0x6000052's visual (debris, the flash), the `RecoverFromScaryObject` (0x86) flee route (the guard runs from the
+grenade — G-026), stun grenades' receiving states, ricochets.
