@@ -1592,3 +1592,35 @@ remains, noted in GAPS G-032d.
 Tests: `flyby_plays_within_three_units_on_one_in_five` (a fly-by bullet within 3 units fires within 60 ticks; sister: no
 flag → never fires; 10 units away → never fires). The `Rand_Rand(5)` call did not break seeded tests (no existing test
 exercises a fly-by bullet path). `cargo test --workspace` = 156 passed, 0 failed.
+
+## 0077 — Levels survey, level flow (exit trigger), and the level-select arg
+
+Area: getting the port to run more of the game than 07000005. `crates/nf-extract` (new `level-survey` command),
+`crates/nf-game/src/triggers.rs` (the 0xE8 exit trigger), `crates/nf-game/tests/level_live.rs` (opt-in NF_ISO),
+`docs/systems/levels.md` (new).
+
+Survey (Task 1): `nf-extract level-survey <iso>` loads every `0700xxxx.bin` in FILES.BIN through the same
+`Level::parse` path nf-view uses, and reports — for each — the maps, objects, placements, drones, collision, scripts,
+skins and textures counts, the placement-type histogram, the object-name histogram, and any parse error. Result:
+**all 36 on-foot level archives parse successfully** (no format gaps blocking the survey). Every story code 01–1b
+also runs its game logic headless (`ai-sim`): the collision world builds, drones spawn and step their AI state
+machines, and the bullet/player-damage path runs. Written to `docs/systems/levels.md` with the full table.
+
+Level flow (Task 3): the 0xE8 end-of-level trigger (`Trigger_Activate` 0x1b2318 → `ResetMap_LevelToLoad` 0x1d3800)
+was parsed as `kind::LOAD_LEVEL` but had no `update` arm — it never fired. Ported: it now acts as a one-shot touch
+trigger (sets its switch channel when Bond enters the volume, latches `gone`), and carries the next level's hashcode
+(placement param 0x20) in a new `Trigger::next_level` field for the caller to drive `ResetMap_LevelToLoad`. The
+level-select argument was already present (`nf-view <iso> <level>`; `<level>` is a FILES.BIN name like `07000006`),
+so any of the 36 levels can be loaded by name.
+
+Level tests (Task 2): `crates/nf-game/tests/level_live.rs` (opt-in `NF_ISO`) loads each of the 20 story levels and
+checks its main-map drone / object / placement counts against the disc values from the survey. Sister assertion: a
+level's counts differ from another's (so a wrong table would fail). `cargo test --workspace` = 157 passed (was 156;
++1 `load_level_trigger_fires_once_and_carries_next_level`, +1 `every_story_level_loads_with_expected_counts`).
+
+Not done (honest): the next level after 07000005 was not *visually* verified to render, because this environment has
+no Vulkan ICD (lavapipe) — `nf-view --shot` needs one. The render path is the same `Scene::build` 07000005 uses and
+the survey confirms every level's placement types are the same set the test level exercises (0x0f drones, 0x19 paths,
+0x20 doors, 0xfc coronas, 0xde/0xdb searchlights, 0xd9 script players, 0xe8 exit) — so the renderer, collision, guards
+and scripts load through the same code paths. Visual diffing against PCSX2 is pending a GPU environment. No level-
+specific hacks: the only code change is the LOAD_LEVEL trigger arm (ported from the decompile, not approximated).

@@ -77,6 +77,7 @@ fn main() -> Result<()> {
             for s in symfile::parse(&iso.read_file(e)?)? { println!("{:08x}\t{}", s.addr, s.name); }
             Ok(())
         }
+        "level-survey" => level_survey(&IsoImage::open(a(1)?)?),
         other => bail!("unknown command {other:?} (see the module doc)"),
     }
 }
@@ -1079,5 +1080,51 @@ fn sfx(iso: &IsoImage, ids: &[String]) -> Result<()> {
     println!("{} entries", t.entries.len());
     let pick: Vec<usize> = if ids.is_empty() { (0..t.entries.len()).collect() } else { ids.iter().filter_map(|x| usize::from_str_radix(x.trim_start_matches("0x"), 16).ok()).collect() };
     for i in pick { if let Some(e) = t.entries.get(i) { println!("{i:#05x}: inner {} outer {} weight {} looped {}", e.inner, e.outer, e.weight, e.looped); } }
+    Ok(())
+}
+
+/// `level-survey`: loads every FILES.BIN level via the same `Level::parse` path nf-view uses, and reports — for each
+/// level — the maps, objects, placements, drones, collision, scripts, skins and textures counts, the placement-type
+/// histogram, the object-name histogram, and any parse error. Output is TSV on stdout. Used to write docs/systems/levels.md [M].
+fn level_survey(iso: &IsoImage) -> Result<()> {
+    use nf_formats::level::Level;
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    println!("level\tname\tsize\tmaps\tmain\tobjects\tplacements\tdrones\tcollision\tscripts\tskins\ttextures\tplacement_types\tobject_names\tparse_ok\tparse_error");
+    for fe in &entries {
+        let name = &fe.name;
+        if !name.ends_with(".bin") { continue; }
+        // The on-foot levels: 0700xxxx (07 = level hashcode prefix); packs/animations are 07F0/0780/0790/07A0.
+        if !name.starts_with("0700") { continue; }
+        let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+        let lvl_id = u32::from_str_radix(&name[..8], 16).unwrap_or(0);
+        let res = Level::parse(&data);
+        let (ok, err) = match &res { Ok(_) => ("ok", String::new()), Err(e) => ("ERR", format!("{e}")) };
+        let (n_maps, main, n_obj, n_place, n_coll, n_scripts, n_skins, n_tex, place_types, obj_names) = match &res {
+            Ok(lvl) => {
+                let main = lvl.main_map();
+                let (n_obj, n_place, n_coll, n_scripts, n_tex, place_types, obj_names) = match main {
+                    Some(m) => {
+                        let map = &lvl.maps[m];
+                        let mut pt = std::collections::BTreeMap::<u32, usize>::new();
+                        let mut on = std::collections::BTreeMap::<String, usize>::new();
+                        for p in &map.placements { *pt.entry(p.flags & 0xff).or_default() += 1; }
+                        for o in &map.objects { *on.entry(o.name.trim().to_string()).or_default() += 1; }
+                        (map.objects.len(), map.placements.len(),
+                         map.objects.iter().filter(|o| o.collision.is_some()).count(),
+                         map.placements.iter().filter(|p| p.flags == 0x07).count(),
+                         map.textures.len(), pt, on)
+                    }
+                    None => (0, 0, 0, 0, 0, std::collections::BTreeMap::new(), std::collections::BTreeMap::new()),
+                };
+                (lvl.maps.len(), main.is_some(), n_obj, n_place, n_coll, n_scripts, lvl.skins.len(), n_tex, place_types, obj_names)
+            }
+            Err(_) => (0, false, 0, 0, 0, 0, 0, 0, std::collections::BTreeMap::new(), std::collections::BTreeMap::new()),
+        };
+        let drones = match &res { Ok(lvl) => main.then(|| lvl.maps.iter().flat_map(|m| m.placements.iter().filter(|p| p.flags & 0xff == 0x0f)).count()).unwrap_or(0), Err(_) => 0 };
+        let pt: Vec<String> = place_types.iter().map(|(k, v)| format!("{k:#04x}:{v}")).collect();
+        let on: Vec<String> = obj_names.iter().map(|(k, v)| format!("{k}:{v}")).collect();
+        println!("{lvl_id:08x}\t{name}\t{}\t{n_maps}\t{}\t{n_obj}\t{n_place}\t{drones}\t{n_coll}\t{n_scripts}\t{n_skins}\t{n_tex}\t{}\t{}\t{ok}\t{err}",
+            fe.size, if main { "yes" } else { "no" }, pt.join(","), on.join(","));
+    }
     Ok(())
 }
