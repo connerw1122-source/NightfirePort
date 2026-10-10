@@ -114,3 +114,57 @@ Each places Bond and the guards and prints what to check. The user should see th
 - It does not add a new tick rate. The simulation is always 60 Hz; the time scale only changes how many ticks run per
   render frame.
 - It is off by default. `nf-view` without `--dev` is unchanged.
+
+## Input record / replay (`--record` / `--replay`) — B-5
+
+Every other session kept shipping "fixes" that failed in the user's play because nobody could reproduce what the
+user did. `nf-view` now records and replays the exact input stream the Sim consumes, so a bug the user sees can be
+captured as a file and replayed bit-for-bit (headless, no GPU) in a test.
+
+### Recording
+
+```
+nf-view <iso> 07000005 --dev --scenario weapon-switch --record tests/replays/bug.nfr
+```
+
+- Saves a header (level, scenario, nf-view git hash, starting RNG state) followed by every logic tick's input —
+  keys, mouse buttons, wheel steps, mouse-look deltas — in the exact form `Sim::step_bond` consumes.
+- Recording costs nothing when it is off (`--record` absent ⇒ no work per tick).
+- Esc-Esc to stop and write the file. A panic does NOT flush (a partial file would be useless).
+
+### Replay
+
+```
+nf-view <iso> 07000005 --replay tests/replays/bug.nfr
+```
+
+- The level and scenario come from the recording's header (you do not pass `--scenario` again).
+- The recorded inputs drive the Sim exactly as recorded; the keyboard/mouse are ignored. Watch the session play back.
+- When the recording ends, the sim pauses on the last frame.
+
+### Headless replay (for tests)
+
+`nf_view::replay::replay_headless(&mut scene, &replay)` runs the recording through the real `Sim` (no GPU, no window)
+and returns the state at each tick (`TickState`: Bond pos/yaw/pitch, weapon, clip, spare, RNG x/y, frame). This is
+how tests reproduce a user's session and assert on the result.
+
+### Determinism
+
+`crates/nf-view/tests/replay_live.rs` (NF_ISO opt-in):
+- `replay_is_deterministic_two_runs_identical` — builds a 60-tick recording from a fixed input sequence, replays it
+  twice from two fresh scene loads, and asserts the Bond position / weapon / ammo / RNG state are IDENTICAL at every
+  tick. If it diverges, the test prints the first divergent tick + the differing fields.
+- `replay_file_format_round_trips` — serialise → bytes → re-parse, and the re-parsed recording replays to the same
+  states (the format is lossless).
+- `replay_commit_sample_file` — writes a sample recording to `tests/replays/` (inputs only — never game bytes).
+
+Replay files (`*.nfr`) hold input only; they are safe to commit and share. The magic is `NFREPLAY` (v1).
+
+### How to report a bug with a recording
+
+```
+nf-view <iso> 07000002 --dev --scenario grenade-throw --record tests/replays/grenade-bug.nfr
+# (play until the bug shows; Esc-Esc)
+# then hand the session the file path; the determinism test replays it headless:
+NF_ISO=<iso> cargo test -p nf-view --test replay_live -- replay_commit_sample_file --nocapture
+```

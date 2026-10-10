@@ -2394,3 +2394,59 @@ Four bugs found by the user in round 2 of playtesting, all fixed:
    wire's endpoint A for an XZ where `floor_below` succeeds (80-unit depth), then place Bond there.
 
 Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
+
+## B-5 — Input record / replay (TOP PRIORITY)
+
+The other sessions kept shipping "fixes" that failed in the user's play because nobody could reproduce what the
+user did. Built input record/replay so a bug the user sees can be captured as a file and replayed bit-for-bit
+(headless, no GPU) in a test. This is the foundation A and C can use to reproduce user reports.
+
+### What was built
+
+- `crates/nf-view/src/replay.rs` — the recording format, `Recorder`, `Replay`, `TickInput`, `TickState`, and
+  `replay_headless`. The format (magic `NFREPLAY` v1) stores a header (level, scenario, nf-view git hash, starting
+  RNG `SEED_X`/`SEED_Y`, Bond pose + weapon) followed by every logic tick's input in the EXACT form `Sim::step_bond`
+  consumes (`Input` + trigger/reload/use_key). Replay files are inputs only — never game bytes — safe to commit.
+- `nf-view` converted to lib+bin: `lib.rs` (the old `main.rs`, with `fn main` → `pub fn run`, `fn load` → `pub fn
+  load`) + a thin `main.rs` (`fn main() { nf_view::run() }`). This lets headless tests in `crates/nf-view/tests/`
+  drive the real `Sim` through the same `load` + `Scene::build` path the window uses — not a parallel re-implementation.
+- `--record <file>` / `--replay <file>` wired into `run()`. Recording costs nothing when off (`Option<Recorder>`,
+  the `None` branch does no work). On `--replay`, the level + scenario come from the recording's header; the tick
+  loop reads the next input from the file instead of the keyboard. Esc-Esc flushes the recording on a clean exit.
+- `crates/nf-view/tests/replay_live.rs` (NF_ISO opt-in): three tests.
+  - `replay_is_deterministic_two_runs_identical` — builds a 60-tick recording (W held 30 ticks, trigger 30..40,
+    S held 40..60, reload at 45), replays it TWICE from two fresh `load`s, asserts the Bond position / weapon /
+    ammo / RNG state are IDENTICAL at every tick. **PASSES** — the Sim is deterministic for the same input sequence
+    (no frame-rate dependence, no wall-clock time, no HashMap ordering issue). On divergence it prints the first
+    divergent tick + the differing fields.
+  - `replay_file_format_round_trips` — serialise → bytes → re-parse, replays to the same states. **PASSES** (lossless).
+  - `replay_commit_sample_file` — writes `tests/replays/sample-07000005-60tick.nfr` (1367 bytes, inputs only).
+    **PASSES**.
+- `docs/tools/dev-mode.md` documents the commands and how to report a bug with a recording.
+
+### Also done in this edit (B-6 partial): `--frame N --shot out.png` now applies `--dev --scenario`
+
+The headless `--shot` path previously ignored `--scenario` (Bond stayed at the level start). It now applies the
+scenario's placement before the tick loop, so `nf-view <iso> <level> --dev --scenario <name> --frame N --shot
+out.png` renders the scenario's actual state at tick N. This lets the user's main agent (which has a GPU) check
+each scenario visually before the user plays it.
+
+### Measured
+
+`NF_ISO=Nightfire-onfoot.iso cargo test --offline -p nf-view --test replay_live -- --nocapture` = 3 passed, 0 failed.
+The 60-tick recording advances the RNG (state differs start→end) and moves Bond, so the determinism test is not
+trivially passing.
+
+### What this enables
+
+Sessions A and C can now ask the user (or the main agent) to run:
+`nf-view <iso> <level> [--dev --scenario X] --record tests/replays/<name>.nfr`
+then commit the `.nfr` and replay it headless in a test that asserts on the Sim state — reproducing the exact
+session that exposed the bug.
+
+### Not done (next: B-6 onwards)
+
+- The scenario active-guard filter (present + started + enabled + alive + in-llist + drawn) + placement diagnostics.
+- Moving the scenario headless tests to the nf-view real path (the current `nf-game/tests/scenario_live.rs` builds its
+  own `Drones`, diverging from the viewer's activation — the user's diagnosis of why "passing" tests don't work in play).
+- The F2 menu rework, friendly-actor port, bullet-flyby (need the decomp, which was lost in the sandbox reset).
