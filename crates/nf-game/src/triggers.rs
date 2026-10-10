@@ -30,8 +30,8 @@ pub struct Trigger {
     pub lock: u8,
     pub hide: bool,
     pub tris: Vec<[V3; 3]>,
-    lo: V3,
-    hi: V3,
+    pub lo: V3,
+    pub hi: V3,
     /// TouchOnce removed itself (its channel was on).
     pub gone: bool,
     /// Made by a script (`Script_CreateEntity` 0xEA / 0xEB): the script object's index; its volume follows the object.
@@ -43,6 +43,13 @@ pub struct Trigger {
     /// `switch_channels[gate]` is non-zero. The gate is `DOORINFO+0x28` = original `param[2]` of the placement
     /// (verified against MIPS disassembly: `lhu v1,56(s1); sh v1,40(s0)`) [M].
     pub gate: u8,
+    /// `LOAD_LEVEL` key gate (`Trigger_Activate` 0x1b2318:76-90): param 1 — if non-zero and the channel is off,
+    /// the trigger is locked (the fallback channel is set, no level load). [M]
+    pub key_gate: u8,
+    /// `LOAD_LEVEL` success channel (`Trigger_Activate` 0x1b2318:100-105): param 4 — set on a successful load. [M]
+    pub success: u8,
+    /// `LOAD_LEVEL` fallback channel (`Trigger_Activate` 0x1b2318:92-98): param 3 — set when the key gate blocks. [M]
+    pub fallback: u8,
 }
 
 /// A body that can touch triggers: capsule axis from `a` to `b`, radius, drone (true) or Bond, drone skin hash.
@@ -65,6 +72,11 @@ impl Channels {
     pub fn set(&mut self, c: u32, value: u8, frame: u32) {
         if c == 0 || c > 255 { return; }
         if value != 0 && self.v[c as usize] == 0 { self.time[c as usize] = frame; }
+        // NF_LEVELLOG=1: every switch-channel write that turns a channel on (rising edge), with the frame
+        // and the new value. Lets the user trace e.g. ch 0x1D being set by the EndLevel script's event 0x11.
+        if std::env::var("NF_LEVELLOG").is_ok_and(|v| v == "1") && value != 0 && self.v[c as usize] == 0 {
+            eprintln!("[levellog] frame {} channel 0x{:02x} = {}", frame, c, value);
+        }
         self.v[c as usize] = value;
     }
 }
@@ -127,19 +139,18 @@ impl Trigger {
     /// A trigger of `kind` from its parameters (placement or script entity: parameter k at `level_tag+0x2C+4k`) and its
     /// world triangles; `None` for a Touch on channel 0x7D (only live on 0x07001500).
     pub fn from_params(placement: usize, kind: u8, q: impl Fn(u32) -> u32, tris: Vec<[V3; 3]>) -> Option<Trigger> {
-        let (out_ch, mask, list, lock, hide, next_level, gate) = match kind {
-            kind::TOUCH_ONCE => (q(0), q(1), (2..=8).map(&q).collect(), q(7), q(8) != 0, 0, 0),
-            kind::TOUCH => (q(0), q(1), (2..=8).map(&q).collect(), q(6), q(7) != 0, 0, 0),
+        let (out_ch, mask, list, lock, hide, next_level, gate, key_gate, success, fallback) = match kind {
+            kind::TOUCH_ONCE => (q(0), q(1), (2..=8).map(&q).collect(), q(7), q(8) != 0, 0, 0, 0, 0, 0),
+            kind::TOUCH => (q(0), q(1), (2..=8).map(&q).collect(), q(6), q(7) != 0, 0, 0, 0, 0, 0),
             // `LOAD_LEVEL` (0xE8): `Trigger_Update` case 10 fires when `switch_channels[gate]` is non-zero —
-            // NO touch check. `next_level` = param 0. `gate` = param 2 (the gate channel; set by the gatehouse
-            // cut-scene's event 0x11). `out` = 0, `lock` = param 10.
-            // [M Trigger_Update 0x1b1a78:162-166, Trigger_LoadLevelCreate 0x1b2950, Trigger_Create 0x1b1720
-            // — verified against MIPS: DOORINFO+0x28 = orig param[2]].
-            kind::LOAD_LEVEL => (0, q(9), (1..=8).filter(|&k| k != 7).map(&q).collect(), q(10), q(11) != 0, q(0), q(2) as u8),
-            _ => (q(0), q(9), (1..=8).filter(|&k| k != 7).map(&q).collect(), q(10), q(11) != 0, 0, 0),
+            // NO touch check. `next_level` = param 0. `gate` = param 2 (the gate channel; set by the EndLevel
+            // script's event 0x11 on 07000005). `key_gate` = param 1, `success` = param 4, `fallback` = param 3.
+            // [M Trigger_Update 0x1b1a78:162-166, Trigger_Activate 0x1b2318:64-111].
+            kind::LOAD_LEVEL => (0, q(9), (1..=8).filter(|&k| k != 7).map(&q).collect(), q(10), q(11) != 0, q(0), q(2) as u8, q(1) as u8, q(4) as u8, q(3) as u8),
+            _ => (q(0), q(9), (1..=8).filter(|&k| k != 7).map(&q).collect(), q(10), q(11) != 0, 0, 0, 0, 0, 0),
         };
         if matches!(kind, kind::TOUCH | kind::TOUCH_ONCE) && out_ch == 0x7d { return None; }
-        let mut t = Trigger { placement, kind, out: out_ch as u8, mask, list, lock: lock as u8, hide, tris: Vec::new(), lo: [0.0; 3], hi: [0.0; 3], gone: false, script: None, next_level, gate };
+        let mut t = Trigger { placement, kind, out: out_ch as u8, mask, list, lock: lock as u8, hide, tris: Vec::new(), lo: [0.0; 3], hi: [0.0; 3], gone: false, script: None, next_level, gate, key_gate, success, fallback };
         t.set_tris(tris);
         Some(t)
     }
@@ -189,6 +200,32 @@ impl Trigger {
                 })
             }
             m => (m & 8 != 0 && player) || (m & 0x10 != 0 && !drones.is_empty()),
+        }
+    }
+
+    /// `Trigger_Activate` (0x1b2318): fires the trigger immediately from `Player_Activate`'s E-key path (routes
+    /// b and c on 07000005 — the on-foot gate door and the zip-wire exit). Returns the channel writes to apply
+    /// and `Some(next_level)` if a level load is requested. Does NOT mutate — the caller applies the writes
+    /// (avoids the `&mut self.triggers[i]` + `&mut self.channels` aliasing). [M 0x1b2318:34-111].
+    pub fn activate_request(&self, ch: &Channels) -> (Vec<(u8, u8)>, Option<u32>) {
+        match self.kind {
+            kind::LOAD_LEVEL => {
+                // Cancel channels 0x60–0x63 [M 0x1b2318:64-75]: if any is on, abort (an alarm blocks the exit).
+                if (0x60..=0x63).any(|c| ch.on(c)) { return (Vec::new(), None); }
+                // Key gate [M 0x1b2318:76-90]: if non-zero and off, the trigger is locked.
+                if self.key_gate != 0 && !ch.on(self.key_gate as u32) {
+                    if self.fallback != 0 { return (vec![(self.fallback, 1)], None); }
+                    return (Vec::new(), None);
+                }
+                // Success channel [M 0x1b2318:100-105].
+                let mut sets = Vec::new();
+                if self.success != 0 { sets.push((self.success, 1)); }
+                (sets, Some(self.next_level))
+            }
+            kind::TOUCH_ONCE => {
+                if !self.gone { (vec![(self.out, 1)], None) } else { (Vec::new(), None) }
+            }
+            _ => (Vec::new(), None),
         }
     }
 
@@ -266,7 +303,7 @@ mod tests {
     fn plate(kind: u8, out: u8, mask: u32, list: Vec<u32>) -> Trigger {
         // A 2 × 2 horizontal quad at y = 0 around the origin.
         let (a, b, c, d) = ([-1.0, 0.0, -1.0], [1.0, 0.0, -1.0], [1.0, 0.0, 1.0], [-1.0, 0.0, 1.0]);
-        Trigger { placement: 0, kind, out, mask, list, lock: 0, hide: false, tris: vec![[a, b, c], [a, c, d]], lo: [-1.0, 0.0, -1.0], hi: [1.0, 0.0, 1.0], gone: false, script: None, next_level: 0, gate: 0 }
+        Trigger { placement: 0, kind, out, mask, list, lock: 0, hide: false, tris: vec![[a, b, c], [a, c, d]], lo: [-1.0, 0.0, -1.0], hi: [1.0, 0.0, 1.0], gone: false, script: None, next_level: 0, gate: 0, key_gate: 0, success: 0, fallback: 0 }
     }
 
     #[test]
@@ -311,5 +348,24 @@ mod tests {
         // Stays gone.
         exit.update(&mut ch, &touchers, 3);
         assert!(exit.gone);
+    }
+
+    /// `Trigger_Activate` (the E-key path, routes b/c on 07000005): pressing E on a LOAD_LEVEL trigger fires it
+    /// immediately — no gate channel needed. Sets the success channel and requests the level load. Sister:
+    /// a key-gated trigger with the key off → no load (the fallback channel is set instead). [M 0x1b2318].
+    #[test]
+    fn trigger_activate_fires_on_e_key_path() {
+        let ch = Channels::default();
+        let exit = Trigger { kind: kind::LOAD_LEVEL, next_level: 0x0700_0066, success: 0x1F, fallback: 0x1E, key_gate: 0, gate: 0x1D, ..plate(kind::LOAD_LEVEL, 0, 8, vec![]) };
+        let (sets, next) = exit.activate_request(&ch);
+        assert_eq!(next, Some(0x0700_0066), "requests the next level");
+        assert!(sets.contains(&(0x1F, 1)), "sets the success channel");
+        // Sister: key gate on and off → no load, fallback set.
+        let mut ch2 = Channels::default();
+        ch2.set(0x10, 0, 0); // key gate channel 0x10 stays off
+        let locked = Trigger { kind: kind::LOAD_LEVEL, next_level: 0x0700_0066, success: 0x1F, fallback: 0x1E, key_gate: 0x10, gate: 0, ..plate(kind::LOAD_LEVEL, 0, 8, vec![]) };
+        let (sets2, next2) = locked.activate_request(&ch2);
+        assert_eq!(next2, None, "locked trigger does not load");
+        assert!(sets2.contains(&(0x1E, 1)), "sets the fallback channel");
     }
 }

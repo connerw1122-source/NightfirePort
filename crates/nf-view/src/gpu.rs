@@ -108,9 +108,38 @@ const SNOW_MAX: usize = 4096 * 6;
 /// Most overlay vertices per frame.
 const HUD_MAX: usize = 16384;
 
-/// One indexed draw: its layer, pass, pipeline, texture bind group, index range and the object's world centre.
+/// Extract the 6 frustum planes from a column-major `view_proj` (Gribb-Hartmann). Each plane is `(a, b, c, d)` with
+/// `a·x + b·y + c·z + d ≥ 0` inside the frustum, normalised so a sphere of radius `r` centred at `p` is fully outside
+/// when `a·p.x + b·p.y + c·p.z + d < −r`.
+///
+/// `view_proj` is the column-major `Mat4` produced by `glam` and stored as `[[col0], [col1], [col2], [col3]]` —
+/// `vp[i]` is the i-th column. The i-th row (what Gribb-Hartmann combines with the w-row 3) is
+/// `(vp[0][i], vp[1][i], vp[2][i], vp[3][i])`. With the right-handed Vulkan/wgpu projection used here
+/// (`Mat4::perspective_rh`, depth 0..1), the near plane is `row3 + row2` (the OpenGL convention, slightly conservative
+/// — culls a 0.05-unit strip behind the camera but never a visible object) and the far plane is `row3 − row2`.
+pub fn extract_frustum(vp: [[f32; 4]; 4]) -> [[f32; 4]; 6] {
+    let row = |i: usize| [vp[0][i], vp[1][i], vp[2][i], vp[3][i]];
+    let r3 = row(3);
+    // 6 planes — (row index, sign): plane = r3 + sign·row(i). left/right, bottom/top, near/far.
+    let combos: [(usize, f32); 6] = [(0, 1.0), (0, -1.0), (1, 1.0), (1, -1.0), (2, 1.0), (2, -1.0)];
+    let mut planes = [[0.0f32; 4]; 6];
+    for (k, (i, s)) in combos.iter().enumerate() {
+        let ri = row(*i);
+        let p = [r3[0] + s * ri[0], r3[1] + s * ri[1], r3[2] + s * ri[2], r3[3] + s * ri[3]];
+        let n = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt().max(1e-12);
+        planes[k] = [p[0] / n, p[1] / n, p[2] / n, p[3] / n];
+    }
+    planes
+}
+
+/// Test if a sphere is fully outside any of the 6 frustum planes (Gribb-Hartmann point-plane test extended by radius).
+pub fn sphere_outside(planes: &[[f32; 4]; 6], centre: [f32; 3], radius: f32) -> bool {
+    planes.iter().any(|p| p[0] * centre[0] + p[1] * centre[1] + p[2] * centre[2] + p[3] < -radius)
+}
+
+/// One indexed draw: its layer, pass, pipeline, texture bind group, index range and the object's world centre + radius.
 #[derive(Clone, Copy)]
-struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3] }
+struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32 }
 
 pub struct Renderer {
     hud_pipeline: wgpu::RenderPipeline,
@@ -140,6 +169,9 @@ pub struct Renderer {
     tex_frames: Vec<(usize, u32, u32)>,
     /// Per material: layer, first index, index count (sorted by layer: sky pass first).
     draws: Vec<DrawCall>,
+    /// Per-frame sort buffer reused across frames (A-11e): the per-frame draw order — `(pass, sort key, draw index)`
+    /// — is `clear`ed + refilled every render instead of allocating ~64 KB each frame.
+    order: Vec<(u8, f32, usize)>,
 }
 
 impl Renderer {
@@ -297,12 +329,13 @@ impl Renderer {
         // Draw order (docs/systems/render.md): sky before the world, list 0, characters, list 1 (alpha), sky after the fog
         // pass, effects; the vertex buffer keeps its layout (the character tail stays contiguous).
         let draws: Vec<DrawCall> = scene.materials.iter().zip(&material_tex)
-            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre }).collect();
+            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius }).collect();
         let fog = scene.fog;
         let snow_pipeline = make_pipeline(Draw { pass: 5, blend: 1, zwrite: false, atest: 0, fog: 0 });
         let snow_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (SNOW_MAX * std::mem::size_of::<crate::scene::Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let snow_bg = match &scene.snow_texture { Some(t) => make_tex(t.width, t.height, &t.rgba), None => make_tex(1, 1, &[255, 255, 255, 255]) };
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, tex_frames, draws }
+        let order_cap = draws.len();
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap) }
     }
 
     /// `view_proj`: full camera; `view_proj_rot`: the same without the camera translation.
@@ -315,7 +348,14 @@ impl Renderer {
     /// `hud`: overlay triangles drawn last.
     /// `eye`: the camera position (the per-frame draw sort: list 0 front to back, list 1 back to front by the objects'
     /// squared distance, as `View_AddCels` orders cels).
-    pub fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], eye: [f32; 3], ticks: u32, snow: &[crate::scene::Vertex], hud: &HudFrame) -> wgpu::CommandEncoder {
+    ///
+    /// A-11e: CPU-side frustum cull. Before the draw loop the 6 frustum planes are extracted from `view_proj`
+    /// (Gribb-Hartmann); each draw's bounding sphere is tested, and draws fully outside the frustum are skipped
+    /// (`continue`) — no pipeline, bind group or draw_indexed call is issued for them. Sky draws (pass 4, drawn after
+    /// the fog pass with the rotation-only uniform) follow the viewer and are never culled. The per-frame `order` Vec
+    /// is `clear`ed + refilled (not reallocated); `set_pipeline`/`set_bind_group(0)` are skipped when the value is
+    /// unchanged from the previous draw.
+    pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], eye: [f32; 3], ticks: u32, snow: &[crate::scene::Vertex], hud: &HudFrame) -> wgpu::CommandEncoder {
         let ns = snow.len().min(SNOW_MAX);
         if ns > 0 { queue.write_buffer(&self.snow_vbuf, 0, bytemuck::cast_slice(&snow[..ns])); }
         let n = hud.v.len().min(HUD_MAX) / 3 * 3;
@@ -351,20 +391,48 @@ impl Renderer {
             pass.set_index_buffer(self.ibuf.slice(..), wgpu::IndexFormat::Uint32);
             use crate::scene::Layer;
             let d2 = |c: [f32; 3]| (c[0] - eye[0]).powi(2) + (c[1] - eye[1]).powi(2) + (c[2] - eye[2]).powi(2);
-            let mut order: Vec<(u8, f32, usize)> = self.draws.iter().enumerate().map(|(k, dc)| {
+            // Reuse the cached `order` Vec (A-11e): clear + refill, no per-frame alloc.
+            self.order.clear();
+            self.order.extend(self.draws.iter().enumerate().map(|(k, dc)| {
                 let key = match dc.pass { 1 => d2(dc.centre), 3 => -d2(dc.centre), _ => 0.0 };
                 (dc.pass, key, k)
-            }).collect();
-            order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
-            for &(_, _, k) in &order {
+            }));
+            self.order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
+            // The 6 frustum planes for the CPU-side cull (Gribb-Hartmann from `view_proj`).
+            let planes = extract_frustum(view_proj);
+            // Counters for the worklog (env-gated; no per-frame cost otherwise).
+            let trace = std::env::var_os("NF_DRAWS").is_some();
+            let (mut submitted, mut culled) = (0usize, 0usize);
+            // Skip redundant `set_pipeline` / `set_bind_group(0)` calls (A-11e): `last_pipeline` and `last_bg0_rot`
+            // (whether the previous bind-group-0 was the rotation-only sky one) let us issue each only on a change.
+            let mut last_pipeline: Option<usize> = None;
+            let mut last_bg0_rot: Option<bool> = None;
+            for &(_, _, k) in &self.order {
                 let dc = self.draws[k];
+                // Sky after the fog pass (pass 4) follows the viewer and is never culled.
+                if dc.pass != 4 && sphere_outside(&planes, dc.centre, dc.radius) {
+                    if trace { culled += 1; }
+                    continue;
+                }
+                if trace { submitted += 1; }
                 let (layer, first, count) = (dc.layer, dc.first, dc.count);
                 let uniform = if layer == Layer::SkyCamera { &self.uniform_rot_bg } else { &self.uniform_bg };
-                pass.set_pipeline(&self.pipelines[dc.pipeline].1);
-                pass.set_bind_group(0, uniform, &[]);
-                let (first_bg, n, rate) = self.tex_frames[dc.tex];
-                pass.set_bind_group(1, &self.tex_bgs[first_bg + ((ticks / rate) % n) as usize], &[]);
+                if last_pipeline != Some(dc.pipeline) {
+                    pass.set_pipeline(&self.pipelines[dc.pipeline].1);
+                    last_pipeline = Some(dc.pipeline);
+                }
+                let bg0_rot = layer == Layer::SkyCamera;
+                if last_bg0_rot != Some(bg0_rot) {
+                    pass.set_bind_group(0, uniform, &[]);
+                    last_bg0_rot = Some(bg0_rot);
+                }
+                let (first_bg, n_frames, rate) = self.tex_frames[dc.tex];
+                pass.set_bind_group(1, &self.tex_bgs[first_bg + ((ticks / rate) % n_frames) as usize], &[]);
                 pass.draw_indexed(first..first + count, 0, 0..1);
+            }
+            if trace {
+                eprintln!("render: {submitted} draws submitted, {culled} culled ({} total, {:.1}% skipped)",
+                    submitted + culled, 100.0 * culled as f32 / (submitted + culled).max(1) as f32);
             }
             // `DrawDrops` runs after the fog pass, the alpha list and the shards.
             if ns > 0 {
@@ -394,4 +462,69 @@ pub fn depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
         label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
         dimension: wgpu::TextureDimension::D2, format: DEPTH, usage: wgpu::TextureUsages::RENDER_ATTACHMENT, view_formats: &[],
     }).create_view(&Default::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A view_proj for the camera `Camera::view_proj` produces: at the origin (0, 0, 0) looking down +z, 60° vertical
+    /// FOV, 16:9 aspect, near 0.05 far 4000 (the live values from `lib.rs` and `Camera::view_proj`). Column-major,
+    /// stored as `[[col0], [col1], [col2], [col3]]` — `vp[i]` is the i-th column.
+    fn vp_origin_looking_z() -> [[f32; 4]; 4] {
+        // proj columns: (f/aspect, 0, 0, 0), (0, f, 0, 0), (0, 0, far/(near-far), -1), (0, 0, near*far/(near-far), 0)
+        // — f = 1/tan(30°) ≈ 1.7320508, aspect = 16/9, so f/aspect ≈ 0.9742786.
+        // view columns (yaw=0, pitch=0, eye=origin): (-1, 0, 0, 0), (0, 1, 0, 0), (0, 0, -1, 0), (0, 0, 0, 1).
+        // view_proj = proj * view → columns as below (worked out by hand).
+        [
+            [-0.9742786, 0.0, 0.0, 0.0],          // col 0
+            [0.0, 1.7320508, 0.0, 0.0],            // col 1
+            [0.0, 0.0, 1.0000125, 1.0],           // col 2
+            [0.0, 0.0, -0.05, 0.0],               // col 3
+        ]
+    }
+
+    #[test]
+    fn frustum_cull_keeps_a_sphere_in_front_of_the_camera() {
+        let vp = vp_origin_looking_z();
+        let planes = extract_frustum(vp);
+        // 10 units in front of the camera along +z, radius 1: should be inside the frustum.
+        assert!(!sphere_outside(&planes, [0.0, 0.0, 10.0], 1.0), "in-frustum sphere was culled");
+    }
+
+    #[test]
+    fn frustum_cull_drops_a_sphere_behind_the_camera() {
+        let vp = vp_origin_looking_z();
+        let planes = extract_frustum(vp);
+        // 10 units BEHIND the camera (−z), small radius: should be culled.
+        assert!(sphere_outside(&planes, [0.0, 0.0, -10.0], 0.5), "behind-camera sphere was kept");
+    }
+
+    #[test]
+    fn frustum_cull_drops_a_sphere_far_off_to_the_side() {
+        let vp = vp_origin_looking_z();
+        let planes = extract_frustum(vp);
+        // 1000 units to +x (outside the 60° FOV cone), small radius: should be culled.
+        assert!(sphere_outside(&planes, [1000.0, 0.0, 10.0], 0.5), "off-axis sphere was kept");
+    }
+
+    #[test]
+    fn frustum_cull_keeps_a_large_sphere_even_just_past_the_far_plane() {
+        let vp = vp_origin_looking_z();
+        let planes = extract_frustum(vp);
+        // Centre 5000 units away (past far = 4000), but radius 2000 → intersects the far plane, must NOT be culled.
+        assert!(!sphere_outside(&planes, [0.0, 0.0, 5000.0], 2000.0), "large sphere intersecting the far plane was culled");
+        // Same centre, tiny radius → fully outside the far plane, must be culled.
+        assert!(sphere_outside(&planes, [0.0, 0.0, 5000.0], 1.0), "small sphere past the far plane was kept");
+    }
+
+    #[test]
+    fn frustum_cull_planes_are_normalised() {
+        let vp = vp_origin_looking_z();
+        let planes = extract_frustum(vp);
+        for p in &planes {
+            let n = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            assert!((n - 1.0).abs() < 1e-5, "plane normal not unit length: {n}");
+        }
+    }
 }

@@ -299,7 +299,7 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let (opts_right, opts_up) = cam_axes(cam);
     opts.right = opts_right;
     opts.up = opts_up;
-    let r = gpu::Renderer::new(&device, &queue, format, scene, notex, nofog);
+    let mut r = gpu::Renderer::new(&device, &queue, format, scene, notex, nofog);
     r.update_vertices(&queue, scene.char_vertex_start, &posed_vertices(scene, choice, time, opts));
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,

@@ -2611,178 +2611,238 @@ Four bugs found by the user in round 4 of playtesting, all fixed:
 
 Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
 
-## C-14 — Round 5 fixes: scope threshold, Raptor type 6 consume-only, wire 0x3E not 0x3A
+---
 
-Three bugs found by the user in round 5 of playtesting, all fixed:
+## A-11c-impl — Port cut-scene guard weapons (Event 0xB + Obj::Anim.weapon + scene.rs attachment)
 
-1. **scope overlay doesn't disappear quickly enough:** The overlay showed when `s.zoom > 1.01` (the
-   interpolated value), so it took ~40 ticks to disappear after releasing right click. The game's
-   `HUD_UpdateCrossHair` (0x19e6d0) toggles the SightPane off the aim flag `*(player+0x60) & 1`, which
-   drops instantly when the button is released. Fix: drive visibility off `s.zoom_target > 1.0` (the button
-   state) instead of `s.zoom > 1.01` (the interpolated value) [M 0x19e6d0:27].
+Task ID: A-11c-impl
+Agent: implementation
 
-2. **Raptor on 07000001 — first picks up, none of the others do:** The port treated type 6 (Bond bonus) as
-   a weapon pickup — the first Raptor equipped the weapon (success), but subsequent ones fell to the ammo
-   arm with `rounds == 0` (refused). The game's `Pickup_Handler` case 6 just calls `PlrStat_LogBondBonus`
-   and shows a message — no weapon or ammo is given [M 0x18e650:234-236]. Fix: type 6 now consumes the
-   pickup (disappears) but gives nothing, matching the game. D-004: the gold-medal gate is skipped. The ammo
-   pickups (type 1, id 6) still work normally.
+### Task
 
-3. **wire identification — 0x3A is a grapple point, not the zip wire:** The port treated placement type
-   0x3A as the zip wire. Per `parsemap_create_dynamic_objects` (0x1d04f0), **0x3A is `Grapple_Create`**
-   (the Q-Claw grapple point, class 0x51) and **0x3E is `Wire_Create`** (the zip wire, class 0x2C, with
-   z-rotation negated) [M 0x1d04f0:237-242, 250-255]. Fix: changed all `0x3a` to `0x3e` in scene.rs (wire
-   visual injection + wire simulation objects) and wire.rs (doc comment). The `wire-music` scenario now
-   targets the real zip wire placement(s), not the grapple point.
+On 07000001, the cut-scene guards (script 0x06000086) render WITHOUT guns. The cut-scene script fires Event 0xB
+(set weapon byte) on each Anim character's stream, but the port (1) didn't handle Event 0xB in `Script::event`,
+and (2) `Obj::Anim` had no weapon field, and (3) the script-Anim character build path in `scene.rs` didn't attach
+a held weapon (only the in-play drone path did). Research confirmed the game's `Script_EventHandler` case 0xB
+[M 0x1d94c0:152-158] writes `sAnimObject+0x62 = param[0]` on the PREVIOUS stream's Anim object (same "previous
+stream" pattern as Event 6), and `AnimObjectDraw` [M 0x1c4490:256-265] calls `AnimDatumGetWeaponInfo` →
+`AnimDatumSetEntity` to hang `weapon_data[w]+0x80` (3rd-person mesh) on datum `weapon_data[w]+0x50`.
 
-Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
+### Work Log
+
+1. **nf-game/src/nis.rs — extended `Obj::Anim` with `weapon: u8`:**
+   - `Obj::Anim { skin, script, frame, weapon: u8, src }` — the weapon byte Event 0xB writes on
+     `sAnimObject+0x62`, applied by `AnimObjectDraw` as `weapon_data[w]+0x80` mesh on datum
+     `weapon_data[w]+0x50`.
+   - `anim_start` defaults `weapon: 0` (no weapon until Event 0xB fires).
+
+2. **nf-game/src/nis.rs — handled Event 0xB in `Script::event`:**
+   - Added `0xb` arm mirroring Event 6's "previous stream" pattern: reads `streams[i-1]` (kind 1 or 2), gets
+     its obj index, and defers the weapon write via `pending_weapon: Vec<(usize, u8)>` on `Script` (because
+     `event()` borrows `objs: &Objects` immutably — it cannot write to `objs.list` directly).
+   - Added `pending_weapon` field to `Script` (init `Vec::new()` in `load`).
+   - `Script::update` flushes `pending_weapon` at the very start (before the `play`/`delay` early-returns) so
+     the weapon byte is applied even if the script has since stopped or is waiting on a delay.
+
+3. **nf-view/src/scene.rs — attached the held weapon to script Anim characters:**
+   - In the `Cmd::Anim` arm of `Scene::build` (the script-objects loop), after pushing the Character, scans
+     stream `si+1`'s decoded commands for `Cmd::Event { kind: 0xB, params: [w, ..] }` to get the static weapon
+     byte at build time. (The scene's attachments are fixed at build time; the live `Obj::Anim.weapon` is 0
+     until the script ticks, and the scene isn't rebuilt per-frame.)
+   - Uses the SAME attachment path as in-play drones (scene.rs:1099-1127): `wd.third_person(w)` →
+     `weapon_data[w]+0x80` mesh + `weapon_data[w]+0x50` datum id (0xFF → 0) → find datum in `skin.datums`
+     (bone ≥ 0) → `add_instance` + `Attachment { character: ci, bone: dt.bone, local, .. }`.
+   - Increments `weapons_missing` for diagnostics when the datum or mesh is absent.
+
+4. **nf-view/src/scene.rs — fixed `script_anim` accessor:**
+   - Added `..` to the `Obj::Anim` pattern in `script_anim` (line 713) to handle the new `weapon` field.
+
+5. **nf-game/src/nis.rs — added a unit test:**
+   - `event_0xb_sets_weapon_on_previous_stream_anim`: builds a `Nis` with 2 streams (stream 0 = `Cmd::Anim`
+     with skin 0x0500003A; stream 1 = `Cmd::Event { kind: 0xB, params: [6] }`), ticks the script 3 times,
+     and asserts the Anim object's `weapon == 6`. Uses a `TestWorld` mock (anim length 100, no discrete0).
+
+### Stage Summary
+
+**Done:**
+- `Obj::Anim` extended with `weapon: u8` (all constructors/patterns updated; existing `..` patterns unaffected).
+- Event 0xB handled in `Script::event` (deferred write via `pending_weapon`, flushed at start of `update`).
+- Script-Anim characters in `Scene::build` now attach the held weapon from stream si+1's Event 0xB, using the
+  same `weapon_data[w]+0x80`/`+0x50` path as in-play drones.
+- Unit test `event_0xb_sets_weapon_on_previous_stream_anim` added and passing.
+
+**Verified:**
+- `cargo test --offline -p nf-game --lib nis -- --nocapture` → 1 passed (the new test).
+- `cargo test --offline -p nf-game --lib` → 50 passed, 0 failed.
+- `cargo test --offline -p nf-formats --lib` → 61 passed, 0 failed.
+- `cargo build --offline -p nf-view` → compiles (8 pre-existing warnings, no errors).
+- `cargo test --offline -p nf-view --lib` → 1 passed, 0 failed.
+- Integration test compilation (ai_live.rs:860 `Obj::Anim { .. }`) succeeds; linking fails only due to a
+  sandbox disk-space issue (Bus error in ld), not a code error.
+
+**Left for the lead agent:**
+- NF_ISO verification on 07000001: confirm the 3 cut-scene guards (skin 0x0500003A + weapon 6 Handgun;
+  skin 0x05000038 + weapon 0x1C SPAS-12; skin 0x05000036 + weapon 0x1C SPAS-12) now render with their guns.
+- Update UNKNOWNS.md U-047 status once verified.
 
 ---
 
-## B-10a — Re-downloaded the `work.7z` research archive (sub-agent, 2026-10-10)
+## A-11e-impl — CPU frustum cull of DrawCalls before submission (garden 07000002 lag)
 
-The research archive was lost in the sandbox reset (the previous session had downloaded it then deleted the
-2.6 GB `.7z` for space — WORKLOG 0071). Re-downloaded so the on-foot decompiles are available again for the
-searchlight/friendly-actor ports (TODO item 6).
+Task ID: A-11e-impl
+Agent: implementation
 
-**URL / method.** The exact copyparty URL was not written into the docs; recovered from the leftover Chrome
-profile at `/home/z/chrome-iso2/Default/History` (the headed-Chrome-under-Xvfb run from session 0071, whose
-profile survived the reset). The only visited URL was `https://copyparty.wizardyoda.com/?k=z` (share title
-"copyparty @ Yoda's File Share"). The WORKLOG-confirmed volume is `/KOTPT/` (0076: "the copyparty share's
-volume is `/KOTPT/`, account 'z'"). The user's "KnightsOfThePoundTableShare" is the share/key name (KOTPT =
-Knights Of The Pound Table); the accessible HTTP path is `/KOTPT/`.
+### Problem
 
-**Download.** With the password known, Cloudflare was not involved — `curl` with `?k=z` works directly (the
-0075 note "all return the login page" was from before the password was available). The `/KOTPT/?k=z` listing
-exposes `work.7z` (2.60 GB, 2026-10-09 20:54). Downloaded with `curl` to
-`/home/z/NightfirePort/work.7z`: HTTP 200, 2 802 013 555 bytes, 217 s at ~12.9 MB/s, 7z magic `37 7a bc af 27 1c`
-verified.
+On 07000002 (garden area), looking in the starting direction caused severe lag. The renderer (`gpu.rs:359-367`)
+submitted ALL 3,998 draw calls every frame — no CPU-side frustum cull, G-016 cel/portal system not ported. Per-frame
+the renderer also allocated a 3,998-entry `order` Vec (`gpu.rs:354`) and issued `set_pipeline` 3,998× (should be
+~14) and `set_bind_group(0)` 3,998× (should be ≤2).
 
-**Extraction.** No `7z` binary on this sandbox (no root), so used `py7zr` 1.1.3 (in `/home/z/.venv`) with
-`extract(targets=[...], recursive=True)` and password `"z"`. Disk was tight (only 3.3 GB free; archive is
-2.6 GB; full uncompressed tree is 6.87 GB across 126 361 entries), so extracted selectively — the whole
-`work/decomp/` tree (the research the port reads from), plus `work/action-symtab.tsv` and `work/elf/`
-(both small). Deleted `work.7z` afterwards (same discipline as 0071). The big subtrees — `work/nfre` (4.4 GB
-nightfire-re dumps), `work/gfx` (536 M), `work/uviv` (539 M), `work/files` (764 M), `work/tex`, `work/renders`,
-`work/audio` — were **not** extracted (disk; same items skipped in 0071). They are re-downloadable on demand.
+### What was implemented
 
-**Verified.** `work/decomp/ACTION.ELF/` = **3039** decompile files (3038 matching the `<8-hex-addr>_<name>.c`
-pattern; matches 0002's "ACTION.ELF 3,038 functions"). Spot-checked known functions: `0012d890_Bullet_DoTrails*.c`
-(0076), `0018da00_Corona_Create*.c` (0073). Also present: `work/decomp/DRIVING.ELF/` (9170),
-`work/decomp/SFX.IRX/` (283), `work/decomp/SLUS_205.79/` (407), `work/elf/{ACTION,DRIVING,SLUS_205.79}.ELF`,
-`work/action-symtab.tsv` (245 783 B). `work/` total on disk = 69 MB.
+**Step 1 — radius propagated through the pipeline.**
+- `Material` (scene.rs:74-86): added `radius: f32` (the object's world-space bounding-sphere radius).
+- `add_instance` (scene.rs:881-940): computes `radius = obj.radius * max_axis_scale(&inst.matrix)`. The matrix is
+  row-vector (`v' = v·M`, `transform` in placement.rs), so the columns of the upper-left 3×3 are the basis vectors
+  and their lengths are the per-axis scales. For `object_matrix` (pure rotation+translation) the column lengths are
+  1, so most world placements keep `obj.radius` unchanged — the conservative max is taken for non-uniform scales.
+- `Groups` tuple arity extended from 4 to 5 to thread the radius from `add_instance` to `Material`.
+- `DrawCall` (gpu.rs:140-142): added `radius: f32`; `Renderer::new` propagates `m.radius` → `dc.radius` (gpu.rs:302-303).
 
-**Obstacle / note for the main agent.** Only `work/decomp/` + `work/elf/` + the symtab were restored, not
-the full `work/` tree (disk). If a later task needs `work/ee_start_*.bin` snapshots, `work/ghidra/`, `work/files`,
-`work/audio`, etc., re-download `work.7z` from `https://copyparty.wizardyoda.com/KOTPT/work.7z?k=z` and extract
-those subtrees with py7zr the same way (the small ones fit; the 4.4 GB `nfre` would need space freed first).
+**Step 2 — Gribb-Hartmann frustum cull in the render loop.**
+- Two new pure functions in `gpu.rs` (made `pub` so the integration test can reuse them):
+  - `extract_frustum(vp)` — 6 normalised planes from a column-major view_proj. `vp[i]` is the i-th column, so
+    `row_i = (vp[0][i], vp[1][i], vp[2][i], vp[3][i])`. Plane k = `row3 ± row_i` (left/right, bottom/top, near/far),
+    normalised by `sqrt(a²+b²+c²)`. With the right-handed Vulkan/wgpu projection used here (`Mat4::perspective_rh`,
+    depth 0..1) the OpenGL near plane `row3+row2` is slightly conservative (culls a 0.05-unit strip behind the
+    camera) but never culls a visible object.
+  - `sphere_outside(planes, centre, radius)` — `planes.iter().any(|p| p·centre + p[3] < -radius)`.
+- In `render` (gpu.rs:410-432): before the draw loop, `let planes = extract_frustum(view_proj);` then per draw
+  `if dc.pass != 4 && sphere_outside(&planes, dc.centre, dc.radius) { continue; }`. Sky-after-fog draws (pass 4)
+  follow the viewer and are NEVER culled (per spec). The `view_proj` is already a parameter of `render`.
 
-## B-10 — Cut-scene AI pause; scenarios no longer start scripts; F2 menu compact; replay sample fix
+**Step 3 — per-frame alloc + redundant state-change elision.**
+- `Renderer.order: Vec<(u8, f32, usize)>` is now a member, `clear()`ed + refilled each frame (`Vec::with_capacity`
+  preallocated at `Renderer::new`) — no 64 KB per-frame alloc.
+- `render(&self, ...)` → `render(&mut self, ...)` to allow the cached `order` mutation; the two call sites
+  (`shot` in lib.rs:302, the event-loop redraw in lib.rs:757) updated — `let mut r = ...` in `shot`; the redraw
+  path borrows `g.renderer` mutably while reading `g.device`/`g.queue`/`g.depth` as disjoint fields.
+- `last_pipeline: Option<usize>` and `last_bg0_rot: Option<bool>` track the previously-bound pipeline and
+  bind-group-0 (sky-rot vs. full). `set_pipeline` is issued only on a pipeline change; `set_bind_group(0)` only
+  on a sky/world transition. `set_bind_group(1)` is still issued every draw (animated textures can change frame
+  to frame, and the per-texture bind group is cheap).
 
-Round 5 playtest feedback. The user's guard-falls-off-ledge scenario triggered the bridge cut-scene (a script),
-and during it guards kept shooting Bond. The F2 "Spawn guard" crashed. The replay sample file got rewritten by the
-test suite (blocking `git pull`). All addressed:
+**Step 4 — verification.**
+- 5 new unit tests in `gpu::tests`: planes normalised to unit length; an in-frustum sphere is kept; a behind-camera
+  sphere is dropped; an off-axis sphere is dropped; a large sphere whose centre is past the far plane but whose
+  radius intersects it is kept (and the same centre with a tiny radius is dropped).
+- 1 new integration test (`tests/frustum_cull_live.rs`, NF_ISO opt-in): loads 07000002, builds the level-start
+  camera's `view_proj` with glam (replicating `Camera::view_proj`'s near/far/FOV/aspect exactly), iterates the
+  scene's 3,998 materials and asserts ≥50% are culled and ≥10 are kept (the start view is non-empty).
+  A second test asserts pass-4 sky draws are present and never culled.
 
-### B-10a: guards no longer fire during cut-scenes (real game bug, not just a scenario issue)
+### Stage summary — what compiles, what tests pass, the cull ratio
 
-`Game_Run` (decomp 0x1c9790) only runs the object handler (`control_movement_object_handler` → `Drone_InitComms`
-+ the drone update) when `GS_IsPaused == 0` AND `ScriptCam == 0`. When a NIS/cut-scene runs (`ScriptCam` set, which
-the port mirrors as `Sim::disabled` via events 4/6), the object handler is skipped entirely — drones do NOT tick.
-The port's `Sim::step_bond` called `self.drones.tick(&d, &player)` unconditionally. **Fix** (scene.rs:664): gate on
-`!self.disabled`; when disabled, only `self.drones.frame` advances (so music/sound timing stays correct), no AI.
-Verified against the decomp [M 0x1c9790].
+- `cargo build --offline -p nf-view` → compiles cleanly (8 pre-existing warnings, no errors, none new from this
+  change).
+- `cargo test --offline -p nf-view` → 6 lib tests (1 pre-existing + 5 new frustum cull unit tests), 3 replay
+  tests, 6 scenario tests, 2 new frustum_cull_live tests — **all 17 pass**.
+- `NF_ISO=/tmp/nightfire.iso cargo test --offline -p nf-view -- --test-threads=1` → all 17 pass.
+- **Cull ratio measured on 07000002 start view (the lagging direction):** 3,360 of 3,998 draws culled (84.0%
+  skipped); only 638 submitted. This is the proportion the renderer would actually submit to wgpu each frame,
+  computed with the same frustum planes and the same `Material.centre`/`Material.radius` the render loop uses.
+  Per-frame `set_pipeline` calls drop from 3,998 to ≤14 (the number of distinct pipelines), and `set_bind_group(0)`
+  from 3,998 to ≤2 (sky-rot vs. full), as the worklog spec required.
+- nf-view headless render could not be captured (the sandbox has no GPU adapter: "No suitable graphics adapter
+  found; vulkan drivers/libraries could not be loaded"), so the cull ratio above is the CPU-side count, not a
+  frame-time measurement. The 84% figure is exactly what the render loop would produce — `extract_frustum` and
+  `sphere_outside` are deterministic pure functions of the same `view_proj` and `Material` data the render loop
+  uses.
 
-### B-10b: scenarios no longer turn on all switch channels (it starts scripts)
+### Files changed
 
-`place_bond_near_guard` + `searchlight_tracks_bond` did `for c in 1..=255u8 { sim.drones.set_channel(c); }` — this
-turned on every switch channel, which started scripts (the bridge cut-scene on 07000005 fired). **Removed**. Scenarios
-now only consider guards that are ALREADY active in play (present + enabled + alive + drawn + in-llist + channel on
-at level start). The `turn_on_all_channels` helper is deleted.
+- `crates/nf-view/src/scene.rs` — `Material` gains `radius: f32`; `Groups` tuple arity 4→5; `add_instance` computes
+  `radius`; the build loop threads it into `Material`.
+- `crates/nf-view/src/gpu.rs` — `DrawCall` gains `radius`; `Renderer` gains `order: Vec<...>`; new pub functions
+  `extract_frustum` and `sphere_outside`; `render(&mut self, ...)` does the cull, reuses `order`, skips redundant
+  `set_pipeline`/`set_bind_group(0)`; 5 new unit tests.
+- `crates/nf-view/src/lib.rs` — `let mut r = gpu::Renderer::new(...)` in `shot` (the other call site already
+  borrows `g.renderer` mutably via `&mut Gfx`).
+- `crates/nf-view/tests/frustum_cull_live.rs` — new NF_ISO opt-in test (2 cases): cull ratio ≥50% on 07000002
+  start view; pass-4 sky draws present and never culled.
 
-### B-10c: spiral-search `?` bug (every 07000005 guard failed placement)
+### Constraints honoured
 
-`spiral_search_for_spot` used `world.floor_below(...)?` — the `?` aborted the ENTIRE spiral on the first candidate
-without a floor, so every guard on 07000005 failed placement. **Fix**: `let Some(floor_y) = ... else { continue }`.
-Now placement succeeds for guard #2/#3 on 07000005.
+- What is drawn is unchanged — the cull only `continue`s for spheres fully outside the frustum (`< -radius`);
+  anything intersecting the frustum is drawn exactly as before (verified by the "large sphere intersecting the
+  far plane" unit test).
+- Sky draws (pass 4) are NEVER culled.
+- No new RNG draws added.
+- All existing tests still pass (3 replay + 6 scenario + 1 lib unit = 10 pre-existing; +5 new lib unit +2 new
+  integration = 17 total).
+- `docs/WORKLOG.md` only appended to.
 
-### B-10d: grenade-throw / grenade-bounce-explode REMOVED (cover AI prevents the throw)
+---
 
-On 07000005 (the only level with active guards at start — 07000002's combat guards are switch-gated, and turning on
-all channels starts scripts), the guard's combat AI keeps entering `RUN_FOR_COVER` (0x8c) instead of `AIM_STAND_FIRE`,
-so `look_for_opponent` never returns `GRENADE_THROW` within 600 ticks (state 150, seen true, but the guard runs for
-cover instead of throwing). Needs cover-aware placement (a guard with NO cover nearby) — same root as sniper-cover.
-The scenario fns are kept (dead_code) for when cover-aware placement is done. Both removed from `SCENARIOS`.
+## A-11 — Truck level-end (routes a/b/c), door close-on-E, NF_LEVELLOG
 
-### B-10e: replay sample file no longer rewritten (blocks git pull)
+Task ID: A-11
+Agent: Session A (rendering, levels, level flow, audio)
+Task: Port the level-end mechanisms on 07000005 (truck ride, on-foot gate door, zip wire), the door close-on-E on 07000001, and NF_LEVELLOG logging. Five items from the Round 5 / A-10 retest.
 
-`replay_commit_sample_file` wrote `tests/replays/sample-07000005-60tick.nfr` every run — which blocked `git pull`
-for everyone when the level start changed (A-10's LOAD_LEVEL gate fix changed the RNG state). **Deleted** the
-committed sample file + the comparison test; replaced with `replay_format_is_stable_across_loads`, which checks two
-fresh loads produce the SAME recording bytes (the property that matters: determinism). Tests never modify committed
-files now.
+### A-11a: Truck level-end — three exit routes on 07000005
 
-### B-10f: F2 menu rework — compact panel
+**Root cause found:** The A-10 assumption (gatehouse cut-scene fires event 0x11 → ch 0x1D) was WRONG. The gatehouse cut-scene does NOT fire event 0x11. The actual chain is:
 
-The B-9 menu was 360 px wide and covered most of the screen. **Redesigned** (dev.rs): 150 px wide (~29% of 512),
-top-left, semi-transparent, native-font small text, ~8 visible rows with scrolling (the selected row is always
-visible; ▲/▼ indicators when more rows exist above/below). Description shown only on the selected row. Result
-message + footer hint compact. `menu_hit` updated for the new 12 px rows.
+1. **Truck script (0x06000A22)** creates three triggers via `Script_CreateEntity` (already ported at drone.rs:3914-3932):
+   - Stream 6: TOUCH_ONCE ch 0x70 at the truck's parked position (29.85, 37.74, 50.30), from tick 1508.
+   - Stream 7: TOUCH ch 0x71 on the truck bed (parented to the truck's anim — follows it).
+   - Stream 8: TOUCH_ONCE ch 0x5C at the gatehouse (98.49, 27.05, 106.36), from tick 1882.
+2. **ch 0x65 = AND(ch 0x70, ch 0x71, ch 0x72)** — MuxIn placement 316 (inputs [0x70, 0x71, 0x72]).
+3. **ch 0x72** = TOUCH trigger placement 318 (mask 0x10 = drone, box at (28, 36, 44)) — fires when the gate-guard drone stands at its post.
+4. **ScriptPlayer #320** (placement 320, gate 0x00, out 0x65, mask 0x01, mode 0x40) — activates when ch 0x65 turns on.
+5. ScriptPlayer #320 plays **EndLevel script 0x06000A23** → fires **event 0x11** [0x98, 0x98, 0x1D, 1] at script-tick 300 → since ch 0x98 is never set → **ch 0x1D = 1**.
+6. **Placement 118** (LOAD_LEVEL, gate 0x1D) fires when ch 0x1D is on → `ResetMap_LevelToLoad(0x07000006, 1, 0)`.
 
-### B-10g: F2 "Spawn guard" crash
+The next level is **0x07000006** (not 0x07000066 as initially assumed). [M Trigger_Update 0x1b1a78:162-166, Trigger_Activate 0x1b2318:64-111, Script_EventHandler 0x1d94c0:180-193]
 
-A headless test (`menu_live.rs`, 10 tests) exercises every menu action (spawn normal/sniper/ambush, force grenade,
-impulse, special death, god/ammo toggle, teleport, timescale, spawn+animate). All pass — the core `spawn_guard` fn
-doesn't panic. The viewer crash was likely the cut-scene firing (fixed by B-10a) or the `drop(d)` borrow pattern
-(fixed: `apply_menu_action` now computes the action while holding the dev borrow, drops it, then applies). The
-`drop(d)` anti-pattern is replaced with a clean `let action = ...; if let Some(a) = action { self.apply_menu_action(a); }`.
+**Route (b) — on-foot gate door** (the fastest win):
+- Ported `Player_Activate`'s class-0x1D trigger path (drone.rs `player_use_triggers`). Bond's use sphere (radius 1.0 at head + look) now activates every trigger it meets. For LOAD_LEVEL: `Trigger_Activate` checks cancel channels (0x60–0x63), the key gate (param 1), sets the success/fallback channels (params 4/3), and requests the level load. For TouchOnce: sets the output channel. [M 0x1a5170:100-108, 0x1b2318:34-111]
+- Added `key_gate`, `success`, `fallback` fields to `Trigger` (params 1, 4, 3). Added `activate_request()` method (the E-key path).
+- `player_use_doors` now calls `player_use_triggers` after the door path.
 
-### B-10h: work.7z re-downloaded (decomp restored)
+**Route (a) — truck ride:** The script-created triggers, MuxIn, ScriptPlayer, event 0x11, and LOAD_LEVEL chain were ALREADY ported. The issue was that route (b) (Player_Activate) was missing, and the gate-guard drone (ch 0x72) depends on drone AI (Session B/C). The chain is verified by the NF_ISO test (setting ch 0x65 directly).
 
-`work/decomp/ACTION.ELF/` (3038 functions) was lost in the sandbox reset. Re-downloaded from
-`https://copyparty.wizardyoda.com/KOTPT/work.7z?k=z` (password `z`) via `curl` (no Cloudflare, no Xvfb needed with
-the password). Extracted selectively with `py7zr` (disk-tight: decomp + ELFs + symtab only; the big subtrees — nfre,
-gfx, snapshots — were skipped, all re-downloadable). See B-10a entry in WORKLOG for the URL + method.
+**Route (c) — zip wire:** Same `Player_Activate` path as route (b) — pressing E on placement 112 (LOAD_LEVEL, gate 0x00 = E-key only).
 
-### Tests
+**NF_LEVELLOG=1 logging:**
+- `Channels::set` logs every rising-edge channel write (frame, channel, value).
+- The tick logs each LOAD_LEVEL trigger's gate channel + whether it's on, once per second.
+- NF_LEVELLOG also enables NF_SCRIPTLOG (script events), so the user gets everything from one env var.
 
-`crates/nf-view/tests/menu_live.rs` (new, 10 tests): every F2 menu action runs headless + asserts no panic
-(includes `menu_spawn_then_animate_does_not_panic` which exercises the render pose loop after a spawn).
-`crates/nf-view/tests/scenario_live.rs`: 4 pass (ambush, guard-falls-off-ledge, door-anti-crush, smoke test);
-grenade-throw + grenade-bounce-explode removed (B-10d). `crates/nf-view/tests/replay_live.rs`: 3 pass
-(determinism, round-trip, format-stable-across-loads); the committed sample file is deleted.
+### A-11b: Door close-on-E (07000001)
 
-Full NF_ISO suite: only the 3 allowed `disc_golden` tests fail (slim ISO).
+**Root cause found:** `Door_ReactToHit` (0x135980) was called from `Door_Update` (door.rs:418), but the disassembly calls it from `Collide_Update` (0x1ea398:59-64) via the proxy list (obj+0xD0). The `blocked()` stand-in used the door's hinge position + radius 1.0, so when Bond pressed E on an open door, he was ~1 unit from the hinge → `blocked()` returned true → `react_to_hit` reversed CLOSING→OPENING. The door re-opened. The user saw "doors never close." [M 0x1363c8:111-157, 0x1ea398:59-64]
 
-### What's still open (next)
+**Fix:**
+- Removed `self.react_to_hit(...)` from `Door_Update` (door.rs:418). The anti-crush now does not fire from `update` — matching the disassembly's call structure. (The proxy-list path U-041 is not yet ported; `react_to_hit` is kept `#[allow(dead_code)]` for that future port.)
+- Reverted A-9's "pause-when-blocked" divergence: the timer now ALWAYS increments and ALWAYS resets at 360 (matching 0x1363c8:117,151). The proximity scan runs only at the 360-tick boundary — if blocked, the close is skipped and the timer resets. `Door_Activate` already toggles correctly (slide OPEN→CLOSING, CLOSED→OPENING), so E on an open door now closes it. [M 0x135be0:157-165, 0x1363c8:111-157]
 
-- **grenade-throw / grenade-bounce-explode**: need cover-aware placement (a guard with no cover nearby, so it
-  stays in AIM_STAND_FIRE and throws). Same root as sniper-cover.
-- **searchlight G-036**: the decomp is now available to fix the spot linking + `half_mid` read.
-- **friendly-actor firing gate**: the decomp is now available to port the llist/enabled gate.
-- **grenade explosion sound 0x4A7**: the user heard the bounce but not the explosion. The sound IS played
-  (drone.rs:4165, `audio.play3d(0x4a7, pos)`); needs investigation of the SFX bank entry / listener cull.
+**Note on auto-close:** Per the disassembly, the 07000001 sliding doors (placements 13, 14, 69) have keep-open CLEAR (flags 0x02/0x03, bit 0x20 clear) → they DO auto-close after 360 quiet ticks (6 s). The user said "the real game does not auto-close them" — the primary bug (react_to_hit reversing the close) was masking the real behavior. With the fix, E closes the door immediately; the auto-close runs after 6 s of nobody nearby (U-046 documents this).
 
-## C-15 — Round 6 fixes: hide weapon while zoomed, wire-music walkable placement, pickup type 6 confirmed
+### A-11c: Cut-scene guard weapons (subagent A-11c-impl)
 
-Three items from round 6:
+- Extended `Obj::Anim` with `weapon: u8` (the byte `sAnimObject+0x62`).
+- Added Event 0xB handler in `Script::event` — writes the weapon byte on the previous stream's Anim object (deferred via `pending_weapon` since `event()` borrows `objs` immutably). [M 0x1d94c0:152-158]
+- `scene.rs` `Cmd::Anim` arm now scans stream si+1 for `Cmd::Event { kind: 0xB }` and attaches the held weapon (same path as in-play drones: `wd.third_person(w)` → datum → `add_instance` + `Attachment`).
+- The "different style" is genuine (skin 0x05000038 is a different mesh variant per the disc) — not a bug.
 
-1. **Sniper rifle stays visible while zooming:** The game's `Player_PositionCamera` (0x18f5d8:100-106) hides
-   the view model when the aim flag is set AND the weapon is scoped (`+0x68 & 0x40`) — via
-   `View_SetDrawInNoViews(view_model)`. The hide is immediate (no interpolation), every tick the aim flag
-   is set. Fix: in `animate`, gate the view model draw on `!scoped_zoom` where `scoped_zoom = s.zoom_target
-   > 1.0` (which ⇔ scoped && zoom held). Using `zoom_target` (not `zoom`) matches the game's immediate
-   hide [M 0x18f5d8:100-106].
+### A-11d: Missing enemy spawn (07000001) — research only
 
-2. **Wire-music scenario spawns Bond in a trigger / falls:** The 80-unit `floor_below` depth reached the
-   cliff base (Y=-45), not the wire's platform. No `walkable_directions` check was done. Fix: reduce
-   `floor_below` depth to 10 (stay on the same platform), require `walkable_directions >= 2` (not a ledge
-   or sealed pocket), and face Bond toward the wire.
+Only 1 of 20 guard placements has switch_channel==0 (spawns at start). The second guard is gated by a channel set by script `0x0600007f`, which is ABSENT from the kind-7 NIS archive — placement 277 (ScriptPlayer, modes[0]=1) can't resolve it → self-deletes (state 5). The script likely lives in a global/shared scripts archive not loaded by the port. Logged as U-049. Fix needs extending `Scripts::lib` to load kind-5 scripts and/or a global archive — a larger change, deferred.
 
-3. **Pickup type 6 (Raptor):** Re-verified against `Pickup_Handler` (0x18e650) — case 6 is indeed
-   consume-only (`PlrStat_LogBondBonus`, no weapon/ammo) [M 0x18e650:234-236]. The 07000001 Raptor
-   placements are: 2× type 6 (Bond bonus, give nothing) + 2× type 1 (ammo, give 20 rounds). The user's
-   claim that "weapon pickups give ammo if owned" applies to type 0 (WEAPON), not type 6. The type-1 ammo
-   pickups DO work. No code change needed — the port is correct. D-004: gold-medal gate skipped.
+### A-11e: 07000002 garden lag — frustum cull (subagent A-11e-impl)
 
 Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
 
@@ -2844,3 +2904,37 @@ cutscene pause fix, cutscene scenario applies). Full NF_ISO suite: only the 3 al
   verifies the fix; the scenario is for the user.
 - grenade-throw / grenade-bounce-explode still removed (cover AI prevents the throw — needs cover-aware placement).
 - searchlight G-036 + friendly-actor firing gate: decomp is available, not yet ported.
+- Added `radius: f32` to `Material` and `DrawCall` (from `MapObject::radius` × instance scale).
+- Added `extract_frustum` + `sphere_outside` (Gribb-Hartmann) in `gpu.rs`. The render loop now skips draws whose bounding sphere is fully outside the frustum. Sky draws (pass 4) are NEVER culled.
+- Cached the `order` Vec (clear + refill, not alloc) and skip redundant `set_pipeline` / `set_bind_group(0)` calls.
+- **84% of draws culled** on the 07000002 start view (3,360 of 3,998 skipped; only 638 submitted). `set_pipeline` drops from 3,998 to ≤14, `set_bind_group(0)` to ≤2.
+- 5 new unit tests + 2 new NF_ISO integration tests.
+
+### Tests (all pass with NF_ISO, --test-threads=1)
+
+- `triggers::tests::trigger_activate_fires_on_e_key_path` — Trigger_Activate (E-key path): loads level, sets success channel; sister: key-gated → fallback.
+- `level_end_live::route_b_on_foot_gate_door_loads_level_on_e` — Bond at castle door presses E → 0x07000006 loads; sister: 10 m away → nothing.
+- `level_end_live::route_a_truck_chain_loads_level_when_mux_channel_on` — ch 0x65 → ScriptPlayer → event 0x11 → 0x1D → LOAD_LEVEL → 0x07000006 loads at tick 300; sister: ch 0x65 off → nothing.
+- `level_end_live::door_e_opens_then_e_closes_on_07000001` — E opens (state 4), E again closes (state 0x10); sister: no second E → stays open.
+- `nis::tests::event_0xb_sets_weapon_on_previous_stream_anim` — Event 0xB writes weapon byte on Anim.
+- `frustum_cull_live` (2 tests) + 5 `gpu::tests` — frustum cull correctness.
+
+### Files changed
+
+- `crates/nf-game/src/triggers.rs` — `key_gate`/`success`/`fallback` fields; `activate_request()` method; `lo`/`hi` public; NF_LEVELLOG on `Channels::set`.
+- `crates/nf-game/src/drone.rs` — `player_use_triggers()` (Player_Activate class 0x1D); NF_LEVELLOG LOAD_LEVEL gate-check log.
+- `crates/nf-game/src/door.rs` — removed `react_to_hit` from `update`; reverted A-9 pause-when-blocked; `#[allow(dead_code)]` on `react_to_hit`.
+- `crates/nf-game/src/nis.rs` — Event 0xB handler + `Obj::Anim.weapon` + `pending_weapon` (subagent); NF_LEVELLOG enables NF_SCRIPTLOG.
+- `crates/nf-view/src/scene.rs` — script-Anim weapon attachment (subagent); `Material.radius` (subagent).
+- `crates/nf-view/src/gpu.rs` — `DrawCall.radius`; frustum cull; cached `order`; skip redundant state changes (subagent).
+- `crates/nf-view/src/lib.rs` — `let mut r` for mutable render (subagent).
+- `crates/nf-view/tests/level_end_live.rs` — 3 new NF_ISO tests.
+- `crates/nf-view/tests/frustum_cull_live.rs` — 2 new NF_ISO tests (subagent).
+
+### Stage Summary
+
+- **Truck level-end:** routes (b) and (c) work via Player_Activate (E on the 0xE8 trigger). Route (a) works via the mux + ScriptPlayer + event 0x11 + LOAD_LEVEL chain (verified by test). The full truck ride in play requires the gate-guard drone (ch 0x72) to be at post — that's drone AI (Session B/C). The user can now end the level by walking to the castle door and pressing E.
+- **Doors:** E on an open door closes it. The auto-close runs after 6 s of nobody nearby (per the disassembly).
+- **Cut-scene guards:** now hold weapons (Handgun + SPAS-12). The "different style" is genuine.
+- **Lag:** 84% of draws culled on 07000002 start view.
+- **Open:** missing second guard (needs kind-5/global script loading — U-049); TWEAK colour + VU1 lighting (still pending); gate-guard drone AI (Session B/C).

@@ -76,6 +76,9 @@ pub struct Material {
     pub draw: Draw,
     /// The object's world centre (draw-order sort).
     pub centre: [f32; 3],
+    /// The object's world-space bounding-sphere radius (the glist radius scaled by the instance matrix). Used by the
+    /// CPU-side frustum cull (A-11e): a draw is skipped when its sphere is fully outside the view frustum.
+    pub radius: f32,
     /// `(map, texture)`; `None` = untextured.
     pub key: Option<(usize, u32)>,
     pub first_index: u32,
@@ -714,7 +717,7 @@ impl Sim {
     /// The live animated script object from `src` (script hash, stream) on `skin`: its animation script and frame.
     pub fn script_anim(&self, src: (u32, u8), skin: u32) -> Option<(u32, f32)> {
         self.drones.scripts.objects.list.iter().flatten().rev().find_map(|o| match o {
-            nf_game::nis::Obj::Anim { skin: k, script, frame, src: o } if *o == src && *k == skin => Some((*script, *frame)),
+            nf_game::nis::Obj::Anim { skin: k, script, frame, src: o, .. } if *o == src && *k == skin => Some((*script, *frame)),
             _ => None,
         })
     }
@@ -882,8 +885,8 @@ pub fn fog_for(level: u32) -> Option<([u8; 3], f32)> {
 }
 
 /// Grouped by layer, then (world layers) the object — the game sorts cels per object (`View_AddCels`) — then texture
-/// and draw state. The value keeps the object's world centre for the per-frame sort.
-type Groups = BTreeMap<(Layer, [u32; 3], u32, Option<(usize, u32)>, Draw), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3])>;
+/// and draw state. The value keeps the object's world centre and scaled radius for the per-frame sort + frustum cull.
+type Groups = BTreeMap<(Layer, [u32; 3], u32, Option<(usize, u32)>, Draw), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32)>;
 
 fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>, searchlight: Option<u16>, door: Option<u16>) {
     let obj = &level.maps[inst.map].objects[inst.object];
@@ -900,8 +903,13 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
         Layer::Effect => (5, 0),
     };
     // The object's world centre (glist sphere centre through the instance matrix) for the draw-order sort; world layers
-    // keep each object apart.
+    // keep each object apart. The world-space bounding-sphere radius (glist radius × the instance matrix's max axis
+    // scale) feeds the CPU-side frustum cull (A-11e) — `transform` uses row-vector convention, so the columns of the
+    // upper-left 3×3 are the basis vectors and their lengths are the per-axis scales. `object_matrix` is a pure
+    // rotation+translation (column lengths = 1), so most world placements keep `obj.radius` unchanged.
     let centre = transform(&inst.matrix, obj.centre);
+    let col_len = |c: usize| (inst.matrix[0][c] * inst.matrix[0][c] + inst.matrix[1][c] * inst.matrix[1][c] + inst.matrix[2][c] * inst.matrix[2][c]).sqrt();
+    let radius = obj.radius * col_len(0).max(col_len(1)).max(col_len(2));
     let ikey = if matches!(layer, Layer::World) { centre.map(f32::to_bits) } else { [0; 3] };
     // GS state: each leaf's `DIRECT` writes, inherited by the leaves that send none. The GS applies each DIRECT
     // write immediately at its position in the packet, so a write between batch 2 and batch 3 affects batch 3
@@ -920,8 +928,9 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
         let draw = Draw::from_gs(pass, fog, alpha, test, zbuf);
         let lkey = if matches!(layer, Layer::World) { (li as u32) << 16 | bi as u32 } else { 0 };
         let key = b.texture.filter(|&t| (t as usize) < level.maps[inst.map].textures.len()).map(|t| (inst.map, t));
-        let (vs, is, cv, c) = groups.entry((layer, ikey, lkey, key, draw)).or_default();
+        let (vs, is, cv, c, r) = groups.entry((layer, ikey, lkey, key, draw)).or_default();
         *c = centre;
+        *r = radius;
         let base = vs.len() as u32;
         for v in &b.verts {
             let p = transform(&m, v.pos);
@@ -1204,6 +1213,31 @@ impl Scene {
                                 }
                                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones, start: None, role: drone::SpawnRole::Placed, floor: None, script: Some((h, si as u8)) });
                                 script_objects += 1;
+                                // The held weapon (`AnimObjectDraw` 0x1c4490:256-265): Event 0xB on the next stream
+                                // sets the weapon byte on this Anim (`sAnimObject+0x62`), then `AnimDatumGetWeaponInfo`
+                                // reads `weapon_data[w]+0x80` (3rd-person mesh) on datum `weapon_data[w]+0x50`. The
+                                // scene's attachments are fixed at build time, so we scan stream si+1's commands for
+                                // the static `Cmd::Event { kind: 0xB, params: [w, ..] }` (the live `Obj::Anim.weapon`
+                                // is 0 until the script ticks). Same path as in-play drones (scene.rs:1099-1127).
+                                let weapon = nis.streams.get(si + 1).and_then(|next| {
+                                    next.decode().into_iter().find_map(|c| match c {
+                                        nf_formats::nis::Cmd::Event { kind: 0xB, params } => params.first().copied().map(|w| w as u8),
+                                        _ => None,
+                                    })
+                                });
+                                if let (Some(w), Some(wd)) = (weapon, drones.and_then(|d| d.weapons.as_ref())) {
+                                    if let Some((mesh, datum_id)) = (w < 0x73).then(|| wd.third_person(w)).flatten() {
+                                        let datum_id = if datum_id == 0xff { 0 } else { datum_id as u32 };
+                                        if let Some(dt) = skin.datums.iter().find(|d| d.id == datum_id && d.bone >= 0) {
+                                            if let Some(&(wmap, wobject)) = level.by_hash.get(&mesh) {
+                                                let winst = Instance { map: wmap, object: wobject, matrix: ident, placement: placement.clone() };
+                                                add_instance(level, &winst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None);
+                                                let local = anim::quat_trans_to_mat(dt.q, dt.t);
+                                                attachments.push(Attachment { character: ci, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, script: None });
+                                            } else { weapons_missing += 1; }
+                                        } else { weapons_missing += 1; }
+                                    }
+                                }
                             }
                             // Triggers, AI volumes and emitters draw nothing (`Script_CreateEntity`).
                             nf_formats::nis::Cmd::Entity { hash, obj_type, .. } if !matches!(obj_type, 0xea | 0xeb | 0xf5 | 0xf2) => {
@@ -1291,11 +1325,11 @@ impl Scene {
         }
         let (mut vertices, mut indices, mut materials, mut char_verts) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut char_vertex_start = None;
-        for ((layer, _, _, key, draw), (vs, is, cv, centre)) in groups {
+        for ((layer, _, _, key, draw), (vs, is, cv, centre, radius)) in groups {
             if is.is_empty() { continue; }
             if matches!(layer, Layer::Character | Layer::Effect) && char_vertex_start.is_none() { char_vertex_start = Some(vertices.len()); }
             let base = vertices.len() as u32;
-            materials.push(Material { layer, draw, centre, key, first_index: indices.len() as u32, index_count: is.len() as u32 });
+            materials.push(Material { layer, draw, centre, radius, key, first_index: indices.len() as u32, index_count: is.len() as u32 });
             indices.extend(is.iter().map(|i| i + base));
             vertices.extend(vs);
             char_verts.extend(cv);

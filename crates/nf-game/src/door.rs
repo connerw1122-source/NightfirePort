@@ -395,27 +395,27 @@ impl Doors {
             }
         }
         // The auto-close: an open door without the keep-open flag, after `FRAME_RATE_INT·6` quiet ticks
-        // (the "quiet" means no actor in the proximity zone — the timer only advances when nobody is blocking).
-        // `Door_Update` (0x1363c8:111-153): the timer increments every frame, but the proximity scan at 360
-        // blocks the close. The game's timer DOES reset at 360 regardless — but the scan is over a 2-unit
-        // sphere, and Bond's capsule (~0.55 r) is only in that zone while literally in the doorway. The port's
-        // `blocked()` check uses `(r1+r2)²·2` which is ~7.7 for a 1.56-radius door — much wider. Fix: only
-        // increment the timer when NOT blocked, so Bond standing nearby pauses the countdown rather than
-        // resetting it. This matches "360 quiet ticks" — the door waits 6 s of nobody being near [M].
+        // (the proximity scan at 360 — if an actor is in the zone, the close is skipped and the timer resets).
+        // `Door_Update` (0x1363c8:111-157): the timer ALWAYS increments; at 360 the proximity scan runs, and
+        // if nobody is blocking, `Door_Activate` closes it. The timer ALWAYS resets to 0 at 360 (whether or
+        // not the close fired). The game's proximity test uses `obj+0x80` (gfx sphere centre) and `obj+0x8C`
+        // (gfx radius ~0.4–0.6 for doors); the port uses the door's placement position + 1.0 stand-in [M].
         if self.list[i].state & 4 != 0 && !keep_open {
-            let is_blocked = actors.iter().any(|a| blocked(self.list[i].pos, self.list[i].sph.1, *a));
-            if !is_blocked {
-                self.list[i].open_timer += 1;
-                if self.list[i].open_timer as u32 >= AUTO_CLOSE {
+            self.list[i].open_timer = self.list[i].open_timer.wrapping_add(1);
+            if self.list[i].open_timer as u32 >= AUTO_CLOSE {
+                if !actors.iter().any(|a| blocked(self.list[i].pos, self.list[i].sph.1, *a)) {
                     self.activate(i, actors, false, channels, frame, &mut sounds);
-                    self.list[i].open_timer = 0;
                 }
+                self.list[i].open_timer = 0;
             }
         }
-        // Motion, then `Door_ReactToHit`'s stand-in (a moving door reverses when an actor stands in it).
+        // Motion. `Door_ReactToHit` (0x135980) is the COLLIDE function (control_funcs[0x1C*0xC+4]), called
+        // from `Collide_Update` (0x1ea398:59-64) via the proxy list (obj+0xD0) — NOT from `Door_Update`.
+        // The port's proxy-list path (U-041) is not ported; until then, the anti-crush does not fire from
+        // `update` — matching the disassembly's call structure. (A-11b: removed the `react_to_hit` call that
+        // was reversing CLOSING→OPENING when Bond stood near the hinge, preventing the close.)
         if self.list[i].state & 0x18 != 0 {
             self.interp(i, true, channels, frame, &mut sounds);
-            self.react_to_hit(i, actors, channels, frame, &mut sounds);
         }
         let d = &self.list[i];
         if d.group != 0 && (d.group as usize) < self.group_states.len() {
@@ -507,6 +507,9 @@ impl Doors {
 
     /// `Door_ReactToHit` [M 0x135980], the proxy scan stood in for by the sphere test: a moving door that meets
     /// an actor reverses (the anti-crush). Waits the 2-tick activation timer out; kind 1 doors ignore it.
+    /// NOT called from `Door_Update` (A-11b) — the game calls this from `Collide_Update` via the proxy list
+    /// (obj+0xD0). Kept for the future proxy-list port (U-041); currently unused.
+    #[allow(dead_code)]
     fn react_to_hit(&mut self, i: usize, actors: &[(V3, f32)], channels: &mut Channels, frame: u32, sounds: &mut Vec<SoundEvent>) {
         if self.list[i].timer != 0 || self.list[i].state & 0x18 == 0 { return; }
         let Some(act) = actors.iter().find(|a| blocked(self.list[i].pos, self.list[i].sph.1, **a)).map(|a| a.0) else { return };

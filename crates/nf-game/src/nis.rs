@@ -18,8 +18,10 @@ pub enum Obj {
     /// A glist entity: hash, `Script_CreateEntity` object type, its parameters, world matrix (scaled), key alpha.
     Entity { hash: u32, kind: u8, params: Vec<u32>, matrix: Mat4, alpha: f32, src: (u32, u8) },
     /// An animated skin: the animation script and its integer frame (from 1); the object sits at the origin and the
-    /// sequence's root carries it (docs/systems/script-player.md).
-    Anim { skin: u32, script: u32, frame: f32, src: (u32, u8) },
+    /// sequence's root carries it (docs/systems/script-player.md). `weapon` is the byte Event 0xB writes on
+    /// `sAnimObject+0x62` (`Script_EventHandler` 0x1d94c0:152-158) — the held weapon's `weapon_data` index, applied
+    /// by `AnimObjectDraw` (0x1c4490:256-265) as `weapon_data[w]+0x80` mesh on datum `weapon_data[w]+0x50`.
+    Anim { skin: u32, script: u32, frame: f32, weapon: u8, src: (u32, u8) },
     /// A cut-scene camera (`CAM_INFO`, `Script_CameraStart`): its world matrix (rows: right, up, forward, position)
     /// and vertical field of view in radians (key scale × `+0x114` = 4/3, `Camera_CalcViewAngles`).
     Camera { matrix: Mat4, fov: f32, src: (u32, u8) },
@@ -88,6 +90,9 @@ pub struct Script {
     pub player_at: Option<Mat4>,
     /// Requests raised where no output list is at hand (`Script_KillStream`), passed on by the next update / free.
     pending: Vec<Request>,
+    /// Event 0xB writes the weapon byte on the previous stream's Anim object, but `event()` borrows `objs`
+    /// immutably (`&Objects`). The write is deferred to the next `update()` pass: `(obj index, weapon)`.
+    pending_weapon: Vec<(usize, u8)>,
     pub player_mode: u8,
     streams: Vec<Stream>,
     /// The owning `Player`'s placement index (for `NF_SCRIPTLOG`); 0 until `Player::load` sets it.
@@ -114,7 +119,7 @@ impl Script {
     pub fn load(nis: Arc<Nis>, matrix: Mat4, scale: f32) -> Script {
         let streams = nis.streams.iter().map(|s| Stream { first_key: s.first_key, last_key: s.last_key, pc: Some(0), parent: -1, ..Default::default() }).collect();
         let flags = if nis.camera { 0x40 } else { 0 };
-        Script { nis, matrix, scale, delay: 0, clock: 0.0, flags, script_cam: false, play: 0, streams, player_at: None, player_mode: 0, pending: Vec::new(), player: 0 }
+        Script { nis, matrix, scale, delay: 0, clock: 0.0, flags, script_cam: false, play: 0, streams, player_at: None, player_mode: 0, pending: Vec::new(), pending_weapon: Vec::new(), player: 0 }
     }
 
     /// `Script_Play` (0x1db588).
@@ -131,6 +136,13 @@ impl Script {
 
     /// `Script_Update` (0x1da998): every stream's `Script_Run`, then the clocks advance one tick.
     pub fn update(&mut self, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>) {
+        // Flush Event 0xB's deferred weapon writes before any early-return: even if the script has since stopped
+        // or is waiting on a delay, the Anim object's weapon byte must reflect the event the script already fired.
+        if !self.pending_weapon.is_empty() {
+            for (o, wp) in self.pending_weapon.drain(..) {
+                if let Some(Some(Obj::Anim { weapon, .. })) = objs.list.get_mut(o) { *weapon = wp; }
+            }
+        }
         if self.play & 1 == 0 { return; }
         if self.delay != 0 {
             if self.delay > 0 { self.delay -= 1; }
@@ -286,7 +298,7 @@ impl Script {
         let len = w.anim_length(script).unwrap_or(1).max(1) as f32;
         let f = start as f32;
         let frame = if f < 1.0 || len < f { if f < 1.0 { 1.0 } else { len } } else { f };
-        objs.list.push(Some(Obj::Anim { skin, script, frame, src: (self.nis.hashcode, i as u8) }));
+        objs.list.push(Some(Obj::Anim { skin, script, frame, weapon: 0, src: (self.nis.hashcode, i as u8) }));
         let s = &mut self.streams[i];
         s.obj = Some(objs.list.len() - 1);
         s.kind = 2;
@@ -322,11 +334,11 @@ impl Script {
     /// `Script_EventHandler` (0x1d94c0).
     #[allow(clippy::too_many_arguments)]
     fn event(&mut self, i: usize, kind: u8, p: Vec<u32>, objs: &Objects, ch: &mut Channels, frame: u32, out: &mut Vec<Request>) {
-        // NF_SCRIPTLOG=1: every script event (op 0x12) fired — tick (script clock), game frame, owning ScriptPlayer's
-        // placement index, script hashcode, stream, event kind, params. Lets the user see e.g. that 07000005's truck
-        // script fires only events 0xC and 0xD (not 0x12) — the level transition is the placement-0xE8 trigger, not
-        // a script event (docs/systems/script-player.md "The truck on 07000005").
-        if std::env::var("NF_SCRIPTLOG").is_ok_and(|v| v == "1") {
+        // NF_SCRIPTLOG=1 (or NF_LEVELLOG=1): every script event (op 0x12) fired — tick (script clock), game frame,
+        // owning ScriptPlayer's placement index, script hashcode, stream, event kind, params. Lets the user see
+        // e.g. that 07000005's EndLevel script (0x06000A23) fires event 0x11 → ch 0x1D, or that the truck script
+        // (0x06000A22) fires only events 0xC and 0xD (not 0x12) [M Script_EventHandler 0x1d94c0].
+        if std::env::var("NF_SCRIPTLOG").is_ok_and(|v| v == "1") || std::env::var("NF_LEVELLOG").is_ok_and(|v| v == "1") {
             eprintln!("[scriptlog] tick {} frame {} player #{} hash {:08x} stream {} kind 0x{:02x} params {:x?}", self.clock as u32, frame, self.player, self.nis.hashcode, i, kind, p);
         }
         let g = |k: usize| p.get(k).copied().unwrap_or(0);
@@ -341,6 +353,14 @@ impl Script {
                 self.player_mode = g(0) as u8;
             }
             7 => self.flags |= 0x80,
+            // Event 0xB: `Script_EventHandler` case 0xB [M 0x1d94c0:152-158] writes `sAnimObject+0x62 = param[0]` (the
+            // weapon byte) on the PREVIOUS stream's Anim object — the same "previous stream" pattern as Event 6.
+            // `event()` borrows `objs: &Objects` immutably, so the write is deferred to the next `update()` pass.
+            0xb => {
+                let w = g(0) as u8;
+                let prev = i.checked_sub(1).map(|j| &self.streams[j]).filter(|s| matches!(s.kind, 1 | 2)).and_then(|s| s.obj);
+                if let Some(o) = prev { self.pending_weapon.push((o, w)); }
+            }
             0xc => self.flags |= 0x10,
             0xd => if g(0) != 0 { ch.set(g(0), g(1) as u8, frame); },
             0xe => self.streams[i].flags |= 1,
@@ -601,5 +621,65 @@ impl Scripts {
     pub fn tick(&mut self, ch: &mut Channels, w: &dyn World, frame: u32) {
         self.requests.clear();
         for p in &mut self.players { p.update(&self.lib, &mut self.objects, ch, w, frame, &mut self.requests); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nf_formats::nis::{Nis, Stream as NisStream};
+
+    /// A no-op `World` for tests: animation length 100, no discrete object 0.
+    struct TestWorld;
+    impl World for TestWorld {
+        fn anim_length(&self, _script: u32) -> Option<u16> { Some(100) }
+        fn discrete0(&self, _skin: u32, _script: u32, _frame: f32) -> Option<Mat4> { None }
+    }
+
+    /// Event 0xB (`Script_EventHandler` 0x1d94c0:152-158) writes the weapon byte on the PREVIOUS stream's Anim
+    /// object — the same "previous stream" pattern as Event 6. Since `event()` borrows `objs` immutably, the
+    /// write is deferred to the next `update()` pass via `pending_weapon`.
+    #[test]
+    fn event_0xb_sets_weapon_on_previous_stream_anim() {
+        // Stream 0: Cmd::Anim { script: 0x06000001, skin: 0x0500003A, start: 1 } (op 0x0a, 14 bytes).
+        let anim_cmd = {
+            let mut v = vec![0x0a];
+            v.extend(0x0600_0001u32.to_le_bytes()); // script
+            v.extend(0x0500_003au32.to_le_bytes()); // skin
+            v.extend(1u32.to_le_bytes());            // start
+            v.push(0);                               // padding (command is 14 bytes)
+            v
+        };
+        // Stream 1: Cmd::Event { kind: 0xB, params: [6] } (op 0x12, 8 bytes: op + n + kind + param[0] + pad).
+        let event_cmd = {
+            let mut v = vec![0x12, 0x01, 0x0b];
+            v.extend(6u32.to_le_bytes()); // param[0] = weapon byte 6 (Handgun)
+            v.push(0);                     // padding (command is 8 bytes)
+            v
+        };
+        let nis = Arc::new(Nis {
+            hashcode: 0x0600_0086,
+            camera: false,
+            loop_start: 0,
+            length: 100,
+            streams: vec![
+                NisStream { first_key: 0, last_key: 0, commands: anim_cmd },
+                NisStream { first_key: 0, last_key: 0, commands: event_cmd },
+            ],
+            keys: Vec::new(),
+        });
+        let mut script = Script::load(nis, IDENT, 1.0);
+        script.start(false);
+        let mut objs = Objects::default();
+        let mut ch = Channels::default();
+        let mut out = Vec::new();
+        let world = TestWorld;
+        // Tick 1: stream 0 creates the Anim (weapon=0); stream 1 fires Event 0xB → pending_weapon.
+        // Tick 2: update() flushes pending_weapon → Anim.weapon = 6.
+        for frame in 0..3 {
+            script.update(&mut objs, &mut ch, &world, frame, &mut out);
+        }
+        let weapon = objs.list.iter().flatten().find_map(|o| match o { Obj::Anim { weapon, .. } => Some(*weapon), _ => None });
+        assert_eq!(weapon, Some(6), "Event 0xB should set the Anim's weapon byte to 6 (Handgun)");
     }
 }

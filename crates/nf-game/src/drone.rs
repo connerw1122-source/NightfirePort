@@ -3604,15 +3604,49 @@ impl Drones {
         handle
     }
 
-    /// `Player_Activate`'s door part (0x1a5310): the use key at Bond's head, one unit ahead — `Door_Activate`
-    /// for every door the sphere meets (`docs/systems/world-objects.md` "Doors"). The other classes the game's
-    /// switch handles (triggers 0x1D, locks 0x3A, cars 0x28 …) are other systems'.
+    /// `Player_Activate` (0x1a5170): Bond's use sphere (radius 1.0 at head + 1 unit forward) activates every
+    /// cel-linked object it meets. The door part calls `Door_Activate` (0x1a5310); the trigger part (class 0x1D)
+    /// calls `Trigger_Activate` (0x1b2318) — routes b and c on 07000005 (the on-foot gate door and the zip-wire
+    /// exit). The port's `player_use_doors` handled only doors; this adds the trigger path so pressing E on a
+    /// LOAD_LEVEL or TouchOnce trigger fires it immediately [M 0x1a5170:100-108,128, 0x1b2318:34-111].
     pub fn player_use_doors(&mut self, d: &Data, head: V3, look: V3, frame: u32) {
         let (evs, _hits) = self.doors.player_use(head, look, &mut self.channels, frame);
         for (id, pos) in evs {
             match d.sfx {
                 Some(t) => { let h = t.get(id as u32); self.play_sound_handle(pos, h); }
                 None => { self.audio.play3d(id as u32, pos, None); }
+            }
+        }
+        // `Player_Activate`'s class-0x1D trigger path: for every trigger within the use sphere, call
+        // `Trigger_Activate` — for LOAD_LEVEL, request the level load; for TouchOnce, set the output channel.
+        self.player_use_triggers(head, look, frame);
+    }
+
+    /// The class-0x1D trigger half of `Player_Activate` (0x1a5170:134-137). Bond's use sphere (radius 1.0 at
+    /// head + look) activates every trigger whose volume it meets. For LOAD_LEVEL: `Trigger_Activate` checks
+    /// cancel channels (0x60–0x63), the key gate, sets the success/fallback channels, and requests the level
+    /// load. For TouchOnce: sets the output channel. [M 0x1a5170:100-108, 0x1b2318:34-111].
+    fn player_use_triggers(&mut self, head: V3, look: V3, frame: u32) {
+        let use_point = [head[0] + look[0], head[1] + look[1], head[2] + look[2]];
+        let r = 1.0;
+        // Collect trigger indices whose bounding box meets the use sphere (stand-in for the game's
+        // `Collide_SphereIntersect(1.0, ...)` against the trigger's collision mesh).
+        let hits: Vec<usize> = (0..self.triggers.len()).filter(|&i| {
+            let t = &self.triggers[i];
+            !(0..3).any(|k| use_point[k] + r < t.lo[k] || use_point[k] - r > t.hi[k])
+        }).collect();
+        for i in hits {
+            let (sets, next) = self.triggers[i].activate_request(&self.channels);
+            for (c, v) in &sets { self.channels.set(*c as u32, *v, frame); }
+            if let Some(next) = next {
+                if self.level_exit.is_none() {
+                    self.level_exit = Some(next);
+                    self.music.event(3, 1);
+                    self.triggers[i].gone = true;
+                }
+            } else if !sets.is_empty() {
+                // TouchOnce: latch gone so it doesn't fire again.
+                if self.triggers[i].kind == crate::triggers::kind::TOUCH_ONCE { self.triggers[i].gone = true; }
             }
         }
     }
@@ -3974,6 +4008,17 @@ impl Drones {
                         self.level_exit = Some(self.triggers[index].next_level);
                         self.music.event(3, 1);
                     }
+                }
+                // NF_LEVELLOG=1: once per second, log each LOAD_LEVEL trigger's gate channel, whether the gate
+                // is on, and whether the trigger has fired. Lets the user see why the level doesn't end —
+                // e.g. ch 0x1D is off because the EndLevel script never ran.
+                if std::env::var("NF_LEVELLOG").is_ok_and(|v| v == "1")
+                    && self.triggers[index].kind == crate::triggers::kind::LOAD_LEVEL
+                    && frame % 60 == 0
+                {
+                    let t = &self.triggers[index];
+                    let gate_on = t.gate != 0 && self.channels.on(t.gate as u32);
+                    eprintln!("[levellog] frame {} LOAD_LEVEL placement {} next {:08x} gate 0x{:02x}={} gone={}", frame, t.placement, t.next_level, t.gate, if gate_on { "ON" } else { "off" }, t.gone);
                 }
                 continue;
             }

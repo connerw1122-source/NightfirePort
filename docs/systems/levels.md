@@ -94,13 +94,31 @@ MPC video). Listed here for completeness; **not ported** (PLAN §5 phase 4, "don
 
 ## 4. Level flow (story transitions)
 
-`Trigger_Activate` (0x1b2318): the 0xE8 end-of-level trigger calls `ResetMap_LevelToLoad(param_0x20, 1, 0)` — the next
-level's hashcode is the trigger placement's parameter 0x20 [M]. `GameFlow_PushState(0x43960000, 7, 0xff)` then runs the
+`Trigger_Activate` (0x1b2318): the 0xE8 end-of-level trigger calls `ResetMap_LevelToLoad(next_level, 1, 0)` — the next
+level's hashcode is the trigger placement's parameter 0 [M]. `GameFlow_PushState(0x43960000, 7, 0xff)` then runs the
 load screen (`ResetMap_GenLoadScreen` 0x1d5de0) and `ResetMap_Load` (0x1d6360) loads the next archive.
 
 Port (0077): `nf-game::trig` builds the exit triggers; nf-view's level argument (`<level>` on the command line, or the
 `NF_LEVEL` env var) selects the level. The end-of-level transition is wired through `Music_Event(3, 1)` (the end sting)
 → `SFXFadeDown` (0075) → the next level's hashcode, mirroring the game's `ResetMap_LevelToLoad` path.
+
+### 07000005 — three exit routes (A-11)
+
+The wine truck level has three ways to progress to 07000006, all of which must end the level:
+
+| Route | Mechanism | Position | Condition |
+|---|---|---|---|
+| (a) Truck ride | Truck script creates TOUCH_ONCE ch 0x70 (parked pos) + TOUCH ch 0x71 (truck bed, follows truck) → gate-guard drone at (28, 37, 44) touches ch 0x72 → MuxIn ch 0x65 = AND(0x70, 0x71, 0x72) → ScriptPlayer #320 (out 0x65) plays EndLevel script 0x06000A23 → event 0x11 at tick 300 → ch 0x1D = 1 → placement 118 (LOAD_LEVEL, gate 0x1D) fires | Truck bed + gate guard at (28, 37, 44) | Bond on truck + guard at post |
+| (b) On-foot gate door | Press E on placement 118 (0xE8 LOAD_LEVEL) → `Player_Activate` → `Trigger_Activate` → level loads | Castle door ~(30, 38.8, 38.2) | Bond at door, presses E |
+| (c) Zip wire / around left | Press E on placement 112 (0xE8 LOAD_LEVEL, gate 0x00 = E-key only) → same `Player_Activate` path | (37.25, 50.1, -68.4) | Bond at zip-wire exit, presses E |
+
+All three converge on `ResetMap_LevelToLoad(0x07000006, 1, 0)`. Routes (b) and (c) use `Player_Activate` (the E key),
+which calls `Trigger_Activate` for class-0x1D objects [M 0x1a5170:134-137]. Route (a) uses the gate-channel path
+(`Trigger_Update` case 10, set by the EndLevel script's event 0x11).
+
+`NF_LEVELLOG=1` traces: script events, switch-channel writes (rising edge), and each LOAD_LEVEL trigger's gate check
+(once per second). Lets the user see why the level doesn't end — e.g. ch 0x1D is off because the EndLevel script
+never ran (ch 0x65 never fired because the gate-guard drone wasn't at post).
 
 ## 5. Open items
 
