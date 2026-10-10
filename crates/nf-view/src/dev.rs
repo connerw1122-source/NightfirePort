@@ -385,71 +385,149 @@ mod scenarios {
     use super::*;
     use nf_game::player::Bond;
 
-    pub fn grenade_throw(scene: &mut Scene) {
-        place_bond_near_gate(scene, 12.0);
-        if let Some(sim) = scene.sim.as_mut() { if let Some(i) = sim.drones.list.iter().position(|x| x.present) { sim.drones.list[i].grenade_weapon = 0x35; sim.drones.list[i].grenade_count = 5; } }
-        eprintln!("[scenario] grenade-throw: Bond 12 m from the gate guard. The guard has grenades. Watch for the lob (anim 0x49) within ~10 s; F1 shows the state.");
-    }
-    pub fn grenade_bounce_explode(scene: &mut Scene) {
-        place_bond_near_gate(scene, 15.0);
-        if let Some(sim) = scene.sim.as_mut() { if let Some(i) = sim.drones.list.iter().position(|x| x.present) { sim.drones.list[i].grenade_weapon = 0x35; sim.drones.list[i].grenade_count = 5; } }
-        eprintln!("[scenario] grenade-bounce-explode: Bond 15 m away. The grenade should arc, bounce (sound 0x51C) and explode (sound 0x4A7). F1 shows the arc + explosion radius.");
-    }
-    pub fn sniper_cover(scene: &mut Scene) {
-        place_bond_near_gate(scene, 18.0);
-        if let Some(sim) = scene.sim.as_mut() { if let Some(i) = sim.drones.list.iter().position(|x| x.present) { sim.drones.list[i].anim_set = 0x13; } }
-        eprintln!("[scenario] sniper-cover: the guard's anim set is 0x13 (sniper). When it reaches cover it should pop up once a second (state 0x97), duck after 6 s (0x99), reload when empty (0x98). F1 shows the state.");
-    }
-    pub fn ambush(scene: &mut Scene) {
-        place_bond_near_gate(scene, 8.0);
-        if let Some(sim) = scene.sim.as_mut() { if let Some(i) = sim.drones.list.iter().position(|x| x.present) { sim.drones.list[i].mode = 0x10; sim.drones.list[i].alert = 1.0; } }
-        eprintln!("[scenario] ambush: the guard is in mode 0x10 (ambush). It should crouch behind cover (state 0x37 → 0x38) and attack when Bond is within 3 m (0x56). F1 shows the state.");
-    }
-    pub fn guard_falls_off_ledge(scene: &mut Scene) {
-        place_bond_near_gate(scene, 20.0);
-        if let Some(sim) = scene.sim.as_mut() { if let Some(i) = sim.drones.list.iter().position(|x| x.present) { sim.drones.list[i].pos[1] += 3.0; sim.drones.list[i].velocity[1] = 0.0; } }
-        eprintln!("[scenario] guard-falls-off-ledge: the guard is lifted 3 m. It should fall under gravity (the Drone_CollisionHandler down-ray) and land on the floor. F1 shows in_air / on_surface.");
-    }
-    pub fn searchlight_tracks_bond(scene: &mut Scene) {
-        place_bond_near_gate(scene, 10.0);
-        eprintln!("[scenario] searchlight-tracks-bond: Bond near the gate. A searchlight should sweep and, when it sees Bond, track him (sound 0xE5 relay). Watch the beam.");
-    }
-    pub fn door_anti_crush(scene: &mut Scene) {
-        place_bond_near_gate(scene, 5.0);
-        eprintln!("[scenario] door-anti-crush: Bond near a door. Open it (E), then stand in the doorway — it should reverse (anti-crush, sound 284). Watch the door.");
-    }
-    pub fn bullet_flyby(scene: &mut Scene) {
-        place_bond_near_gate(scene, 14.0);
-        if let Some(sim) = scene.sim.as_mut() { for dr in sim.drones.list.iter_mut().filter(|x| x.present) { dr.accuracy = 0; } }
-        eprintln!("[scenario] bullet-flyby: a guard fires at Bond from 14 m. A near miss should play the fly-by whiz (0x1dc) when the bullet passes within 3 units. Strafe to make misses pass close.");
-    }
-    pub fn friendly_actor(scene: &mut Scene) {
-        place_bond_near_gate(scene, 6.0);
-        if let Some(sim) = scene.sim.as_mut() { if let Some(i) = sim.drones.list.iter().position(|x| x.present) { sim.drones.list[i].team = 3; } }
-        eprintln!("[scenario] friendly-actor: the guard is on team 3 (friendly — dtype 10/0xb/0xd/0xe per NDrone2_GetDroneTypeAttackTypeFriend 0x14cbd8). DroneVision_EnemyLookForOpponent (0x177ed0) returns 0 for team 3, so it should not attack Bond — walk up to it. F1 shows the state stays Idle/Patrol.");
-    }
-    pub fn ghostly_white(scene: &mut Scene) {
-        place_bond_near_gate(scene, 10.0);
-        eprintln!("[scenario] ghostly-white: the non-fogged clear colour is now the game's squeeze-gray (SqueezeColourOut 0x91 × GAIN, CreateSqueezeFrame 0x11b140). Toggle --no-fog and --no-tex to isolate fog/texture/vertex colour. The console prints 'render: N of M materials have no texture' if any untextured batches exist.");
-    }
-    pub fn door_textures(scene: &mut Scene) {
-        place_bond_near_gate(scene, 3.0);
-        eprintln!("[scenario] door-textures: Bond near a door. The Door_SetState channel-mirror now uses the OLD state (0x135618:26), not the new. Open the door (E): the open-channel should stay on during OPEN→CLOSING (not go off early). Watch the door's texture as it opens/closes — if it's wrong, run NF_LEAVES=<door_name> to inspect its leaves.");
-    }
-    pub fn invisible_walls(scene: &mut Scene) {
-        place_bond_near_gate(scene, 10.0);
-        eprintln!("[scenario] invisible-walls: Bond near the gate. Press C to name what you're touching. Run with NF_COLL=1 to see the build-time scan of collision-only objects (invisible walls). The console lists each by name, position and triangle count.");
-    }
-    pub fn level_exit(scene: &mut Scene) {
-        place_bond_near_gate(scene, 2.0);
-        eprintln!("[scenario] level-exit: Bond near the gate exit. When he touches the 0xE8 trigger, Music_Event(3,1) fires (the end-sting), the console prints 'level: exit trigger fired', and the next level loads. Walk forward to trigger the transition.");
-        eprintln!("[scenario] friendly-actor: the guard is on team 2 (friendly). It should not attack Bond — walk up to it. F1 shows the state stays Idle/Patrol.");
+    /// Place Bond near the first present guard, on walkable floor, at `dist` units in +z.
+    /// Prints Bond's position, the guard's placement and position, and the distance.
+    /// Returns the guard's drone index, or None if no present guard was found.
+    fn place_bond_near_guard(scene: &mut Scene, dist: f32) -> Option<usize> {
+        let sim = scene.sim.as_mut()?;
+        let gi = sim.drones.list.iter().position(|x| x.present)?;
+        let g = sim.drones.list[gi].pos;
+        let floor_y = sim.world.floor_below([g[0], g[1], g[2] + dist], 4.0)
+            .map(|f| f + 1.0)
+            .unwrap_or(g[1]);
+        let bond_pos = [g[0], floor_y, g[2] + dist];
+        let d = ((bond_pos[0] - g[0]).powi(2) + (bond_pos[1] - g[1]).powi(2) + (bond_pos[2] - g[2]).powi(2)).sqrt();
+        sim.bond = Bond::stand_at(&sim.world, bond_pos, std::f32::consts::PI);
+        eprintln!("[scenario] Bond at ({:.1}, {:.1}, {:.1}), guard #{} at ({:.1}, {:.1}, {:.1}), distance {:.1} m",
+            bond_pos[0], bond_pos[1], bond_pos[2], gi, g[0], g[1], g[2], d);
+        let bond_eye = [bond_pos[0], bond_pos[1] + 1.0, bond_pos[2]];
+        let guard_head = [g[0], g[1] + 1.5, g[2]];
+        if !sim.world.line_of_sight(bond_eye, guard_head) {
+            eprintln!("[scenario] WARNING: no line of sight from Bond to the guard.");
+        }
+        if d > 20.0 {
+            eprintln!("[scenario] WARNING: Bond is {:.1} m from the guard -- too far for grenade throw (needs 8-20 m).", d);
+        }
+        Some(gi)
     }
 
-    fn place_bond_near_gate(scene: &mut Scene, dist: f32) {
-        if let Some(sim) = scene.sim.as_mut() {
-            let g = sim.drones.list.iter().find(|x| x.present).map(|x| x.pos).unwrap_or([0.0, 0.0, 0.0]);
-            sim.bond = Bond::stand_at(&sim.world, [g[0] + dist, g[1], g[2]], std::f32::consts::PI);
+    /// Place Bond near a guard that carries grenades. On 07000005, no guard has grenades.
+    fn place_bond_near_grenade_guard(scene: &mut Scene, dist: f32) -> Option<usize> {
+        let sim = scene.sim.as_mut()?;
+        let gi = sim.drones.list.iter().position(|x| x.present && x.grenade_count > 0);
+        if gi.is_none() {
+            eprintln!("[scenario] ERROR: no guard on this level carries grenades (param 24 = 0).");
+            eprintln!("[scenario] Grenade-carrying guards are on levels 07000002, 07000003, 07000009, 0700000a.");
+            eprintln!("[scenario] Run: nf-view <iso> 07000002 --dev --scenario grenade-throw");
+            return None;
         }
+        let gi = gi.unwrap();
+        let g = sim.drones.list[gi].pos;
+        let floor_y = sim.world.floor_below([g[0], g[1], g[2] + dist], 4.0)
+            .map(|f| f + 1.0)
+            .unwrap_or(g[1]);
+        let bond_pos = [g[0], floor_y, g[2] + dist];
+        let d = ((bond_pos[0] - g[0]).powi(2) + (bond_pos[1] - g[1]).powi(2) + (bond_pos[2] - g[2]).powi(2)).sqrt();
+        sim.bond = Bond::stand_at(&sim.world, bond_pos, std::f32::consts::PI);
+        eprintln!("[scenario] Bond at ({:.1}, {:.1}, {:.1}), grenade guard #{} at ({:.1}, {:.1}, {:.1}), distance {:.1} m",
+            bond_pos[0], bond_pos[1], bond_pos[2], gi, g[0], g[1], g[2], d);
+        eprintln!("[scenario] Guard has {} grenades (weapon {:#x}).", sim.drones.list[gi].grenade_count, sim.drones.list[gi].grenade_weapon);
+        let bond_eye = [bond_pos[0], bond_pos[1] + 1.0, bond_pos[2]];
+        let guard_head = [g[0], g[1] + 1.5, g[2]];
+        if !sim.world.line_of_sight(bond_eye, guard_head) {
+            eprintln!("[scenario] WARNING: no line of sight from Bond to the guard.");
+        }
+        if d < 8.0 || d > 20.0 {
+            eprintln!("[scenario] WARNING: Bond is {:.1} m from the guard -- grenade throw needs 8-20 m.", d);
+        }
+        Some(gi)
+    }
+
+    pub fn grenade_throw(scene: &mut Scene) {
+        let gi = place_bond_near_grenade_guard(scene, 12.0);
+        if gi.is_some() {
+            eprintln!("[scenario] grenade-throw: Bond 12 m from a guard with stun grenades. Watch for the lob (anim 0x49) within ~10 s; F1 shows the state.");
+        }
+    }
+    pub fn grenade_bounce_explode(scene: &mut Scene) {
+        let gi = place_bond_near_grenade_guard(scene, 15.0);
+        if gi.is_some() {
+            eprintln!("[scenario] grenade-bounce-explode: Bond 15 m away. The grenade should arc, bounce (sound 0x51C) and explode (sound 0x4A7). F1 shows the arc + explosion radius.");
+        }
+    }
+    pub fn sniper_cover(scene: &mut Scene) {
+        let gi = place_bond_near_guard(scene, 18.0);
+        if gi.is_some() {
+            if let Some(sim) = scene.sim.as_mut() { sim.drones.list[gi.unwrap()].anim_set = 0x13; }
+            eprintln!("[scenario] sniper-cover: the guard's anim set is 0x13 (sniper). When it reaches cover it should pop up once a second (state 0x97), duck after 6 s (0x99), reload when empty (0x98). F1 shows the state.");
+        }
+    }
+    pub fn ambush(scene: &mut Scene) {
+        let gi = place_bond_near_guard(scene, 8.0);
+        if gi.is_some() {
+            if let Some(sim) = scene.sim.as_mut() { sim.drones.list[gi.unwrap()].mode = 0x10; sim.drones.list[gi.unwrap()].alert = 1.0; }
+            eprintln!("[scenario] ambush: the guard is in mode 0x10 (ambush). It should crouch behind cover (state 0x37 -> 0x38) and attack when Bond is within 3 m (0x56). F1 shows the state.");
+        }
+    }
+    pub fn guard_falls_off_ledge(scene: &mut Scene) {
+        let gi = place_bond_near_guard(scene, 20.0);
+        if gi.is_some() {
+            if let Some(sim) = scene.sim.as_mut() { sim.drones.list[gi.unwrap()].pos[1] += 3.0; sim.drones.list[gi.unwrap()].velocity[1] = 0.0; }
+            eprintln!("[scenario] guard-falls-off-ledge: the guard is lifted 3 m. It should fall under gravity (the Drone_CollisionHandler down-ray) and land on the floor. F1 shows in_air / on_surface.");
+        }
+    }
+    pub fn searchlight_tracks_bond(scene: &mut Scene) {
+        let gi = place_bond_near_guard(scene, 10.0);
+        if gi.is_some() {
+            let has_searchlight = scene.sim.as_ref().is_some_and(|s| !s.drones.searchlights.parts.is_empty());
+            if !has_searchlight {
+                eprintln!("[scenario] ERROR: no searchlights on this level. Searchlights are on 07000005 (WORKLOG 0072).");
+                eprintln!("[scenario] Run: nf-view <iso> 07000005 --dev --scenario searchlight-tracks-bond");
+            } else {
+                eprintln!("[scenario] searchlight-tracks-bond: Bond near a guard. A searchlight should sweep and, when it sees Bond, track him (sound 0xE5 relay). Watch the beam.");
+            }
+        }
+    }
+    pub fn door_anti_crush(scene: &mut Scene) {
+        let gi = place_bond_near_guard(scene, 5.0);
+        if gi.is_some() {
+            let has_doors = scene.sim.as_ref().is_some_and(|s| s.drones.doors.list.iter().any(|d| d.glist != 0));
+            if !has_doors {
+                eprintln!("[scenario] ERROR: no doors on this level. Doors are on 07000005 (WORKLOG 0074).");
+                eprintln!("[scenario] Run: nf-view <iso> 07000005 --dev --scenario door-anti-crush");
+            } else {
+                eprintln!("[scenario] door-anti-crush: Bond near a door. Open it (E), then stand in the doorway -- it should reverse (anti-crush, sound 284). Watch the door.");
+            }
+        }
+    }
+    pub fn bullet_flyby(scene: &mut Scene) {
+        let gi = place_bond_near_guard(scene, 14.0);
+        if gi.is_some() {
+            if let Some(sim) = scene.sim.as_mut() { for dr in sim.drones.list.iter_mut().filter(|x| x.present) { dr.accuracy = 0; } }
+            eprintln!("[scenario] bullet-flyby: a guard fires at Bond from 14 m. A near miss should play the fly-by whiz (0x1dc) when the bullet passes within 3 units. Strafe to make misses pass close.");
+        }
+    }
+    pub fn friendly_actor(scene: &mut Scene) {
+        let gi = place_bond_near_guard(scene, 6.0);
+        if gi.is_some() {
+            if let Some(sim) = scene.sim.as_mut() { sim.drones.list[gi.unwrap()].team = 3; }
+            eprintln!("[scenario] friendly-actor: the guard is on team 3 (friendly). DroneVision_EnemyLookForOpponent (0x177ed0) returns 0 for team 3, so it should not attack Bond -- walk up to it. F1 shows the state stays Idle/Patrol.");
+        }
+    }
+    pub fn ghostly_white(scene: &mut Scene) {
+        let _ = place_bond_near_guard(scene, 10.0);
+        eprintln!("[scenario] ghostly-white: the non-fogged clear colour is now the game's squeeze-gray. Toggle --no-fog and --no-tex to isolate fog/texture/vertex colour.");
+    }
+    pub fn door_textures(scene: &mut Scene) {
+        let _ = place_bond_near_guard(scene, 3.0);
+        eprintln!("[scenario] door-textures: Bond near a door. Open it (E) and watch the door's texture as it opens/closes.");
+    }
+    pub fn invisible_walls(scene: &mut Scene) {
+        let _ = place_bond_near_guard(scene, 10.0);
+        eprintln!("[scenario] invisible-walls: Bond near the guard. Press C to name what you're touching. Run with NF_COLL=1 to see collision-only objects.");
+    }
+    pub fn level_exit(scene: &mut Scene) {
+        let _ = place_bond_near_guard(scene, 2.0);
+        eprintln!("[scenario] level-exit: Bond near the guard. When he touches the 0xE8 trigger, Music_Event(3,1) fires and the next level loads.");
     }
 }
