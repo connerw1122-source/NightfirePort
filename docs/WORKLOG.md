@@ -1746,7 +1746,7 @@ script 0x6000052's visual (debris, the flash), the `RecoverFromScaryObject` (0x8
 grenade — G-026), stun grenades' receiving states, ricochets.)
 
 
-## 0081 — Weapon switching: mouse wheel, number keys, the holster/draw cycle, the op-1 sound remap
+## C-1 — Weapon switching: mouse wheel, number keys, the holster/draw cycle, the op-1 sound remap
 
 G-029 (weapon switching for Bond). The first of the player-remainder items (§5.4): the other weapons in 07000005
 and the game's switch animation.
@@ -1796,7 +1796,7 @@ Not done yet: the auto-switch on pickup (`Player_IsBetterWeapon`), the toggle-ba
 label, gadgets' special effects. The ISO is not downloaded (disk: 7.8 GB free, ISO ~4 GB — will fetch the slim
 ISO for visual verification).
 
-## 0082 — Wire / creep: the wire object, proximity detection, music event 0xD
+## C-2 — Wire / creep: the wire object, proximity detection, music event 0xD
 
 G-029 (creeping and the wire, music event 0xD). The level 07000005 has one zip wire (placement type 0x3A,
 `Wire_Create` 0x1981d8) at (−23.5, 34.5, 6.3) [L ee_start_05.bin: one object class 0x2C in the DynamicObjList
@@ -1930,7 +1930,7 @@ fixed tests included). The 3 `nf-formats` disc_golden failures are pre-existing 
 `957cfccc…`) is a different image from the golden's source (`03717059…`), so the disc/FILES.BIN manifests differ; they
 are not caused by these changes.
 
-## 0084 — Weapon switching: the holster/draw bug + the weapon/gadget split (audited)
+## C-3 — Weapon switching: the holster/draw bug + the weapon/gadget split (audited)
 
 Two bugs the user found:
 
