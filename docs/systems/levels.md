@@ -112,3 +112,20 @@ Port (0077): `nf-game::trig` builds the exit triggers; nf-view's level argument 
 - **Rendering verification**: headless `--shot` needs a Vulkan ICD (lavapipe); this environment lacks one. The render
   path is the same `Scene::build` 07000005 uses, so levels load through it; visual diffing against PCSX2 is pending a
   GPU environment (U-0xx to add).
+
+## Grenade-carrying guards (WORKLOG B-1)
+
+`NF_ISO=<iso> cargo test -p nf-game --test grenade_scan` — scans every level's drone placements for param 24 (the
+`NDrone2_DefaultInit` grenade field `piVar19[0x18]`). The high 16 bits (after `>> 4`) select the grenade type (1=stun
+0x36, 2=frag 0x35, 4=0x34, 5=custom, 6=0x6C); the low nibble is the count.
+
+| Level | Guards with grenades | Weapon | Count |
+|---|---|---|---|
+| 07000002 | 2 (placements 464, 466) | 0x36 (stun) | 3 each |
+| 07000003 | 2 (placements 388, 389) | 0x36 (stun) | 1 each |
+| 07000009 | 6 (placements 62, 64, 65, 66, 250, 261) | 0x36 (stun) | 3 each |
+| 0700000a | 24+ (many placements) | 0x36 (stun) | 3 each |
+
+**07000005 (the test level) has no grenade-carrying guards.** The grenade scenarios and tests must run on 07000002 or
+another level where guards actually have grenades. The port's `Drone::new` now reads param 24 to set `+0xBCC`/`+0xBCE`
+(previously hardcoded to 0x35/0).

@@ -561,6 +561,20 @@ impl Drone {
         let f0 = f0_base + rng.frand(f0_rand);
         let fc = match param(14) { 3 => fc_add + rng.frand(6.0), 4 => 1000.0, _ => f0 + fc_add + rng.frand(f0_rand) };
         let clip = match weapon { 0x16 | 0x18..=0x1b => 0x40, 0x1e | 0x1f | 0x24 | 0x25 => 5, _ => 0x40 };
+        // `NDrone2_DefaultInit` (0x14b300 line 349): `+0xBCC` and `+0xBCE` from param 24's raw value.
+        // `uVar4 = piVar19[0x18]`; `*(short*)(+0xbcc) = (short)(uVar4 >> 4)`; `*(ushort*)(+0xbce) = *(ushort*)(piVar19+0x18) & 0xf`.
+        // Then a switch on `(uVar4 >> 4) & 0xffff`: 1→0x36(stun), 2→0x35(frag), 4→0x34, 5→count+0x3a, 6→0x6c count=1; default→0,0.
+        let p24 = param(24);
+        let gw_sel = ((p24 >> 4) & 0xffff) as u16;
+        let gc_raw = (p24 & 0xf) as u16;
+        let (grenade_weapon, grenade_count) = match gw_sel {
+            1 => (0x36u16, gc_raw as i16),
+            2 => (0x35u16, gc_raw as i16),
+            4 => (0x34u16, gc_raw as i16),
+            5 => ((gc_raw.wrapping_add(0x3a)) as u16, 1i16),
+            6 => (0x6cu16, 1i16),
+            _ => (0u16, 0i16),
+        };
         let mut dr = Drone {
             skin, anim_set, weapon, pos, yaw, desired_yaw: yaw, aim_yaw: 0.0, alert, alert_floor: alert, props: normal, alert_props,
             sight_range: e8, half_fov: crate::trig::HALF_PI, engage_range: f0, combat_range: fc,
@@ -572,7 +586,7 @@ impl Drone {
             explosive_pos: pos, explosive_run_dist: 0.0,
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
-            grenade_weapon: 0x35, grenade_count: 0, pending_grenade: false,
+            grenade_weapon, grenade_count, pending_grenade: false,
             shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),

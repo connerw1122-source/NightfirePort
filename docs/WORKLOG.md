@@ -2123,3 +2123,20 @@ Gadgets port map: 0 ported, 8 not started.
 Tests: all nf-game unit tests green (49+32+...). NF_ISO suite: only the 3 expected disc_golden tests fail
 (slim ISO offsets). The GS state fix also fixes world objects with mid-leaf state switches (glass,
 footprints, beams) that were mis-rendered for the same reason.
+WORKLOG numbering: no duplicate 0083 (fixed in 0085).
+
+## B-1 — Grenade params ported; grenade test moved to 07000002; scenarios audited
+
+The user reported no guard on 07000005 carries grenades — the grenade scenarios and tests were invalid. Fixed:
+
+1. **Ported grenade param 24** in `Drone::new` (`NDrone2_DefaultInit` 0x14b300 line 349): `+0xBCC`/`+0xBCE` are now read from the placement's param 24, with the switch on `(param24 >> 4) & 0xffff` (1→stun 0x36, 2→frag 0x35, 4→0x34, 5→custom, 6→0x6c). Previously hardcoded to 0x35/0.
+
+2. **Scanned all levels** for grenade-carrying guards: 07000002 (2 guards, stun ×3), 07000003 (2, stun ×1), 07000009 (6, stun ×3), 0700000a (24+, stun ×3). 07000005 has none. Results added to `docs/systems/levels.md`.
+
+3. **Moved the grenade test** to `crates/nf-game/tests/grenade_live.rs` on level 07000002. The test: finds a guard that has grenades (param 24 → weapon 0x36, count 3), forces the `GRENADE_THROW` state, verifies a grenade entity spawns, runs it to explosion, and checks the sister (Bond at 30 units → no throw). The old `guard_throws_a_grenade_when_in_range` in `ai_live.rs` is kept but simplified to only test `can_throw_grenade`'s conditions (it no longer artificially gives grenades to a guard that doesn't have them).
+
+4. **Scenarios audited**: the `grenade-throw` and `grenade-bounce-explode` scenarios now print an error if no guard on the current level carries grenades (run with `--scenario grenade-throw` on 07000002). `searchlight-tracks-bond` and `door-anti-crush` now print an error if no searchlight/door is present.
+
+5. **WORKLOG numbering**: entries are now B-1, B-2, etc. (session B).
+
+**Verified**: `NF_ISO=Nightfire-onfoot.iso cargo test -p nf-game --test ai_live --test grenade_live` = 33 passed, 0 failed.
