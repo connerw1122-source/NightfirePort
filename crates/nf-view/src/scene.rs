@@ -247,29 +247,23 @@ impl Sim {
             let carried = self.drones.inventory.carried.clone();
             let clip = self.drones.inventory.clip.clone();
             let weapons = &self.weapons;
-            let view_model_ids = self.view_model_ids.clone();
             let ammo_type_of = |w: u8| weapons.ammo_type(w as usize);
             let flags_of = |w: u8| weapons.flags(w as usize);
             let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, ammo_type_of, flags_of);
             let selectable = |w: u8| weapons.selectable(w);
-            // D-003 (deviation): the cycle skips weapons whose view model is not in the current level's
-            // archive. The game loads all weapon skins; the port only has the ones in the level .bin.
-            // Without this, the cycle can land on fists (weapon 1) whose skin (0x50000ab) is not in
-            // 07000005, leaving the player with no visible weapon.
-            let has_view_model = |w: u8| view_model_ids.contains(&w);
+            // D-003 REMOVED: the root cause was the missing `Player_Init` override of weapon_data[1]+0xDC
+            // (the fists skin). With the override applied in main.rs, the fists skin (0x050000ab) is found
+            // in the level archive, the view model is built, and the cycle can land on fists — matching the
+            // game. The `has_view_model` filter is no longer needed.
             let target = if let Some(id) = input.switch_to {
                 if id != self.gun.weapon && owned.get(id as usize).copied().unwrap_or(false)
-                    && has_view_model(id) { Some(id) } else { None }
+                    && weapons.first_person(id as usize) != 0 { Some(id) } else { None }
             } else if input.weapon_cycle != 0 {
                 self.gun.toggle_back(nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable)
-                    .filter(|&w| has_view_model(w))
-                    .or_else(|| self.gun.cycle(input.weapon_cycle, nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable)
-                        .filter(|&w| has_view_model(w)))
+                    .or_else(|| self.gun.cycle(input.weapon_cycle, nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable))
             } else if input.gadget_cycle != 0 {
                 self.gun.toggle_back(nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable)
-                    .filter(|&w| has_view_model(w))
-                    .or_else(|| self.gun.cycle(input.gadget_cycle, nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable)
-                        .filter(|&w| has_view_model(w)))
+                    .or_else(|| self.gun.cycle(input.gadget_cycle, nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable))
             } else { None };
             if let Some(id) = target {
                 // Update prev_weapon/prev_gadget [M 0x1a6f80 lines 134-141]: if current is a weapon, save to
@@ -282,13 +276,11 @@ impl Sim {
                     eprintln!("[weapon-switch] tick {}: requesting switch from {:#x} to {:#x}", self.drones.frame, self.gun.weapon, id);
                 }
             } else if input.weapon_cycle != 0 || input.gadget_cycle != 0 {
-                // The cycle found nothing (all candidates filtered by has_view_model): go to hands, then try
-                // GetBestWeapon [M Player_WeaponNone + Player_GetBestWeapon]. D-003: filter by has_view_model too.
+                // The cycle found nothing: go to hands, then try GetBestWeapon [M Player_WeaponNone + Player_GetBestWeapon].
                 const BEST_WEAPON: [u16; 18] = [0x42, 0x32, 0x1a, 0x18, 0x1c, 0x16, 0x15, 0x08, 0x10, 0x0e, 0x0d, 0x0c, 0x12, 0x06, 0x04, 0x02, 0x0a, 0x01];
                 self.gun.go_to_hands();
                 let base_of = |w: u8| self.weapons.base(w as usize) as u8;
-                let has_ammo_and_view = |w: u8| has_ammo(w) && has_view_model(w);
-                if let Some(id) = self.gun.get_best_weapon(&BEST_WEAPON, base_of, &owned, has_ammo_and_view) {
+                if let Some(id) = self.gun.get_best_weapon(&BEST_WEAPON, base_of, &owned, has_ammo) {
                     let cur = self.gun.weapon;
                     if cur >= 1 && cur <= 0x47 { self.gun.prev_weapon = cur; }
                     if cur >= 0x4a && cur <= 0x5e { self.gun.prev_gadget = if cur == 0x55 { 0x54 } else { cur }; }

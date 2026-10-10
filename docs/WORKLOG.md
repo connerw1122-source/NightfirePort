@@ -2206,33 +2206,29 @@ loop script), bug 4 (scope overlay — needs the GlobalBlur/renderer path). Thes
 
 Tests: `weapon_switch_live.rs` and `pickup_live.rs` pass. NF_ISO suite: only disc_golden fails.
 
-## B-2 — Fix grenade throw decision: vision_on in combat states; unforced test passes
+## C-8 — Fists view model: ported Player_Init's PunchSkin override, removed D-003
 
-The user reported guards never throw grenades in play. Root cause: `vision_on` was not set to
-`true` on ENTER for the combat-move states (StepAimLeft/Right 0x73/0x74, StrafeAim* 0x75/0x76,
-StrafeDodge* 0x77/0x78, RollLeft/RightCrouch 0x79/0x7a, AimBackoff 0x6d). The game's decomp
-sets `+0x4F8 |= 0x10000` in every one of these states' ENTER. Without it, `visibility` is 0
-during combat moves, the guard never gets `los=true`, and `seen` never fires — so the guard
-never reaches `AIM_STAND_FIRE` and `combat_state` never runs.
+Item 1 (fists): the root cause was NOT a missing external archive — the fists skin (0x050000ab) IS in
+07000005.bin (entry 102). The bug was that `Player_Init` (0x1910f8 lines 83-113) overrides
+`weapon_data[1]+0xDC` (the fists first-person skin) at level start with a level-specific value from the
+`PunchSkin.204` table at vaddr 0x2b9430 (4 u32 hashcodes: [0x050000ab, 0x05000099, 0x0500003d, 0x050000a1]).
+The static initialiser sets `weapon_data[1]+0xDC = 0x0500003d`; `Player_Init` overrides it to `0x050000ab`
+for 07000005 (the default level group). The port's `WeaponData::from_action_elf` returned the static value
+without the override, so it looked up `0x0500003d` (not in 07000005.bin) instead of `0x050000ab` (which IS
+in 07000005.bin).
 
-Fix: added `self.vision_on = true` to the ENTER of:
-- StepAimLeft/Right (0x167590:14)
-- StrafeAimLeft/Right (0x1677b0)
-- StrafeDodgeLeft/Right (0x167b50)
-- RollLeft/RightCrouch (0x167e90)
-- AimBackoff (0x166b98)
+Ported: `WeaponData::apply_player_init_override(level_id)` mirrors `Player_Init`'s switch:
+- 0x07000001..0x07000004 → index 1 (0x05000099, tuxedo levels)
+- 0x07000007..0x07000008 → index 2 (0x0500003d, stealth suit levels)
+- 0x0700001b → index 3 (0x050000a1, snowsuit level)
+- all other levels → index 0 (0x050000ab, default)
+Also sets `weapon_data[0x37]+0x05 = 1` (shares_base_clip for the variant) [M].
 
-Also added `NF_AILOG=1` logging in `combat_state` for AIM_STAND_FIRE and AIM_CROUCH_FIRE:
-prints guard index, state, distance, LOS, grenade count, anim class, can_do_0x49, and the
-RNG roll — so the user can see exactly which condition fails.
+Called in `main.rs` after `WeaponData::from_action_elf`, before `Scene::build`.
 
-Unforced test: `guard_decides_to_throw_grenade_unforced` on 07000002. Finds a normal combat
-guard (mode 0, team 1), gives it 3 stun grenades (the way param 24 would in DefaultInit),
-scans 4 directions for a position with clear LOS, enables all switch channels, runs 1800
-ticks (30 s). The guard sees Bond (tick ~60), enters AIM_STAND_FIRE (tick ~120), decides to
-throw (tick ~180), enters GRENADE_THROW (0x2d). Sister: Bond at 30 m → no throw.
+D-003 REMOVED: the `has_view_model` filter in `Sim::step_bond` is no longer needed. The cycle now matches
+the game: from hands, scroll → fists (view model present), scroll → P2K. The `view_model_ids` field is kept
+(it may be useful for other purposes) but the D-003 filter is gone.
 
-The `visibility()` method was made `pub` so the test can log it.
-
-NF_ISO=Nightfire-onfoot.iso cargo test -p nf-game --test ai_live --test grenade_live
-= 34 passed, 0 failed.
+What the player sees: from any state, scroll → fists (the fists model shows), scroll → P2K. No more
+invisible weapons or stuck states.

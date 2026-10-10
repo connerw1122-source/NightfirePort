@@ -98,6 +98,28 @@ impl WeaponData {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xdc..0xe0].try_into().unwrap()))
     }
 
+    /// `Player_Init` (0x1910f8 lines 83-113): overrides `weapon_data[1]+0xDC` (the fists skin) with a
+    /// level-specific value from the `PunchSkin.204` table at vaddr 0x2b9430 (4 u32 hashcodes). The static
+    /// initialiser sets `weapon_data[1]+0xDC = 0x0500003d`; `Player_Init` overrides it per level [M].
+    /// Also sets `weapon_data[0x37]+0x05 = 1` (shares_base_clip for the variant).
+    pub fn apply_player_init_override(&mut self, level_id: u32) {
+        // PunchSkin.204 [L ee_start_05.bin @ 0x2b9430]: [0x050000ab, 0x05000099, 0x0500003d, 0x050000a1].
+        const PUNCH_SKIN: [u32; 4] = [0x0500_00ab, 0x0500_0099, 0x0500_003d, 0x0500_00a1];
+        let idx = match level_id {
+            0x0700_0001..=0x0700_0004 => 1,
+            0x0700_0007..=0x0700_0008 => 2,
+            0x0700_001b => 3,
+            _ => 0,
+        };
+        if self.records.len() > 1 {
+            self.records[1][0xdc..0xe0].copy_from_slice(&PUNCH_SKIN[idx].to_le_bytes());
+        }
+        // `weapon_data[0x37]+0x05 = 1` (shares_base_clip for the variant) [M Player_Init].
+        if self.records.len() > 0x37 {
+            self.records[0x37][5] = 1;
+        }
+    }
+
     /// `+0x04`: the selectable flag (1 = the weapon appears in the switch cycle, `Player_WeaponChange` 0x1a6f80
     /// line 179 checks `weapon_data[w*0x10c + 4] == 1`). Gadgets and non-weapons have 0 [M].
     pub fn selectable(&self, weapon: u8) -> bool {

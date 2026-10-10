@@ -122,7 +122,13 @@ fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
         // weapon_data is built at boot by its static initialiser; run it over the user's ELF (docs/formats/weapon-data.md).
         props: nf_formats::drone::PropertyTables::from_action_elf(&elf).ok(),
         weapons: match nf_formats::weapon::WeaponData::from_action_elf(&elf) {
-            Ok(w) => Some(w),
+            Ok(mut w) => {
+                // `Player_Init` (0x1910f8): overrides weapon_data[1]+0xDC (the fists skin) with a level-specific
+                // value from PunchSkin.204 [M]. Without this, the port looks up the static value (0x0500003d)
+                // instead of the level-specific one (0x050000ab on 07000005), and the fists view model is missing.
+                w.apply_player_init_override(u32::from_str_radix(&archive[..8], 16).unwrap_or(0));
+                Some(w)
+            }
             Err(e) => { eprintln!("weapon_data: {e} — drones drawn unarmed"); None }
         },
         tuning: {
