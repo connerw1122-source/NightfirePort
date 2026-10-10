@@ -386,7 +386,7 @@ pub fn scenario(name: &str) -> Option<(&'static str, fn(&mut Scene))> {
 /// The list of scenario names (for `--dev` start and `--help`).
 pub const SCENARIOS: &[&str] = &[
     "grenade-throw", "grenade-bounce-explode", "sniper-cover", "ambush", "guard-falls-off-ledge",
-    "searchlight-tracks-bond", "door-anti-crush", "bullet-flyby", "friendly-actor",
+    "searchlight-tracks-bond", "door-anti-crush", "friendly-actor",
     "ghostly-white", "door-textures", "invisible-walls", "level-exit",
     "weapon-switch", "sg5-pickup", "wire-music", "autoaim", "sniper-scope", "shotgun-reload",
 ];
