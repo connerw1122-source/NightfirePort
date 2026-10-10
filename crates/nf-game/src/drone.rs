@@ -3403,7 +3403,15 @@ impl Drones {
         self.doors = crate::door::Doors::create(&level.maps[m].placements, &path_blocks, |p| {
             let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
                 else { level.maps[m].objects.get(p.index as usize) };
-            obj.map(|o| (o.hashcode, o.centre, o.radius))
+            obj.map(|o| {
+                // When the object's hashcode is u32::MAX (anonymous by-index door), use the synthetic key
+                // (0x80000000 | (map << 16) | object) that `CollisionWorld::build` indexes it under [S].
+                let glist = if o.hashcode == u32::MAX {
+                    let map_idx = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(mm, _)| mm).unwrap_or(m) } else { m };
+                    0x8000_0000 | ((map_idx as u32) << 16) | p.index as u32
+                } else { o.hashcode };
+                (glist, o.centre, o.radius)
+            })
         });
         self.doors.create_channels(&mut self.channels, self.frame);
         // Weather: `Env_Create` (placement 0xDF, parameter 0 = drop type) and the `RainBox_Create` volumes (0x32: the
@@ -3914,8 +3922,11 @@ impl Drones {
                     for s in self.script_sounds.iter().filter(|s| s.0 == src) { self.audio.stop(s.1); }
                     self.script_sounds.retain(|s| s.0 != src);
                 }
-                // Event 0x12: the script-driven level transition (e.g. the truck parking at the end of 07000005).
-                // Set `level_exit` so the main loop reloads the next level [M Script_EventHandler 0x1d94c0:189-199].
+                // Event 0x12: the script-driven level transition. No NIS script on 07000005 fires kind 0x12 (the truck
+                // script 0x06000A22 fires only 0xC and 0xD) — the actual level exit on 07000005 is the placement-0xE8
+                // trigger at the castle door (see the LOAD_LEVEL arm below). This arm is the script-event path for
+                // levels that do fire 0x12. Set `level_exit` so the main loop reloads the next level
+                // [M Script_EventHandler 0x1d94c0:189-199].
                 crate::nis::Request::LoadLevel { level } => {
                     if self.level_exit.is_none() {
                         self.level_exit = Some(level);
@@ -4093,6 +4104,10 @@ impl Drones {
         // clear; `switch_channels_prev` snapshots for the next tick's lock-edge test.
         self.doors.calc();
         self.doors.end_tick(&self.channels);
+        // `NF_DOORLOG=1` per-tick door dump (Task A-8-2): placement, kind, channels, flags, glist,
+        // whether the glist is in the collision world's `shapes` table (else bullets pass through),
+        // state, pos01, open_timer, bounding sphere.
+        self.doors.log_doors(Some(d.world));
         // Bullets: move, collide with the world and Bond (`Bullet_update` + `Collide_Update`), damage
         // (`Player_HandlePain`); the hit flash fades by 1 per tick (HUD). `Bullet_DoTrails` fly-by (sound 0x1dc) is
         // checked inside `Bullet::update` in the game's RNG order (Rand_FRand → Rand_Rand(5)).

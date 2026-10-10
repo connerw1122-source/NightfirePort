@@ -4,6 +4,7 @@
 
 use nf_formats::level::{Instance, Level};
 use nf_formats::placement::transform;
+use std::collections::HashMap;
 
 pub type V3 = [f32; 3];
 
@@ -99,10 +100,29 @@ impl CollisionWorld {
             let Some(c) = &level.maps[inst.map].objects[inst.object].collision else { continue };
             stat.push(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)));
         }
-        let shapes = level.by_hash.iter()
-            .filter_map(|(&h, &(m, o))| level.maps[m].objects[o].collision.as_ref().map(|c| (h, c.triangles()))).collect();
-        let shape_mats = level.by_hash.iter()
-            .filter_map(|(&h, &(m, o))| level.maps[m].objects[o].collision.as_ref().map(|c| (h, c.triangles_with_material().into_iter().map(|t| t.1).collect()))).collect();
+        // Index collision shapes by hashcode, AND by (map,object) packed into a synthetic key for objects whose
+        // hashcode is u32::MAX (anonymous objects — e.g. 4/5 doors on 07000001 have hashcode=MAX, so the hashcode
+        // lookup fails and bullets pass through). The synthetic key is 0x80000000 | (map << 16) | object [S].
+        let mut shapes: HashMap<u32, Vec<[V3; 3]>> = HashMap::new();
+        let mut shape_mats: HashMap<u32, Vec<u8>> = HashMap::new();
+        for (&h, &(m, o)) in &level.by_hash {
+            if let Some(c) = level.maps[m].objects[o].collision.as_ref() {
+                shapes.insert(h, c.triangles());
+                shape_mats.insert(h, c.triangles_with_material().into_iter().map(|t| t.1).collect());
+            }
+        }
+        // Also index by (map, object) for anonymous objects (hashcode == MAX) — doors placed by-index [S].
+        for (m, map) in level.maps.iter().enumerate() {
+            for (o, obj) in map.objects.iter().enumerate() {
+                if obj.hashcode == u32::MAX {
+                    if let Some(c) = obj.collision.as_ref() {
+                        let key = 0x8000_0000 | ((m as u32) << 16) | o as u32;
+                        shapes.insert(key, c.triangles());
+                        shape_mats.insert(key, c.triangles_with_material().into_iter().map(|t| t.1).collect());
+                    }
+                }
+            }
+        }
         CollisionWorld { stat, dynamic: Default::default(), shapes, shape_mats }
     }
 

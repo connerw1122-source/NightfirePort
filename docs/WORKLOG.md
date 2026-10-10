@@ -2338,30 +2338,35 @@ Five bugs found by the user in playtesting, all fixed:
    (not shell-by-shell); the shell-by-shell loop needs a level that has the shotgun's FP skin.
 
 Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
-## B-4 — Scenario headless tests; 4 pass, 2 removed
 
-Created `crates/nf-game/tests/scenario_live.rs` with headless NF_ISO tests for every scenario. Each test runs the
-scenario's setup through the real Sim and asserts the promised outcome, plus `assert_bond_walkable` (Bond stands
-on collision floor and can walk 5 m in some direction).
+## A-8 — Level transition fix, door collision fix, TWEAK research
 
-### Passing (4):
-- **grenade_throw**: guard throws a grenade at tick ~293 from its own decision. Sister: Bond at 30 m → no throw.
-- **sniper_cover**: sniper guard (anim_set 0x13) reaches pop-up state 0x97 at tick ~626.
-- **searchlight_tracks_bond**: a searchlight tracks Bond at tick 0.
-- **guard_falls_off_ledge**: guard falls from y=37 to y=39.5 at tick 18.
+**Item 1 (truck level transition):** The A-7 event 0x12 port was correct code but never fires on 07000005 —
+no NIS script on that level emits event kind 0x12. The truck script fires only events 0x0D (tick 5412, sets
+channel 0x73) and 0x0C (tick 5890, keep objects). The real level-end mechanism is the **0xE8 LOAD_LEVEL trigger**
+at the castle door. The bug was in `Trigger::from_params`: it read `next_level` from param 0x20 (which doesn't
+exist as a placement param — the 0x20 is a byte offset in the game's trigger extension data, not a param index)
+and treated param 0 (the level hashcode) as a switch channel. Fixed: `next_level = q(0)` (the level hashcode),
+`out_ch = 0` (LOAD_LEVEL doesn't set a switch channel). Bond walking to the castle door now fires the trigger
+and the level transitions.
 
-### Removed (2, marked #[ignore] + removed from SCENARIOS):
-- **bullet_flyby**: no FlyBy event in 1200 ticks. The fly-by requires a near miss, which is probabilistic.
-  The guard's accuracy=0 gives 100% hit at close range; the miss wobble doesn't produce a bullet within 3 units
-  of the viewer. STANDIN: needs the exact fly-by probability from the decomp.
-- **friendly_actor**: other guards shoot Bond despite `sim.llist.retain(|&i| i == gi)`. The tick loop's
-  `for dr in &mut self.list` iterates ALL drones, not just the llist — a guard outside the llist still fires.
-  STANDIN: needs the tick loop to filter on the llist or `enabled` flag.
+**Item 2a (doors never close):** The auto-close (360-tick timer) is already implemented and works. On 07000001,
+3 of 5 doors auto-close after 6 seconds. The other 2 (gallery_secretdoor) have `flags & 0x20` (keep_open) —
+by design they never auto-close. No fix needed.
 
-### Key fix: `find_spot_near_any_guard`
-The scenario tests use `find_spot_near_any_guard` which iterates ALL present guards and searches 24 angles × 8
-distances for a spot with walkable floor + LOS. This replaces the old `place_bond_near_guard` which only tried
-the first guard (which was often in an enclosed area on 07000005).
+**Item 2b (bullets through doors):** 4 of 5 doors on 07000001 have `hashcode == u32::MAX` (anonymous by-index
+objects). `CollisionWorld::build` only indexed shapes by hashcode, skipping MAX — so doors had no collision.
+Fixed: also index shapes by synthetic key `0x80000000 | (map << 16) | object` for anonymous objects. `Doors::create`
+returns this synthetic key when the hashcode is MAX. Bullets now hit all 5 doors.
 
-NF_ISO=Nightfire-onfoot.iso cargo test -p nf-game --test ai_live --test grenade_live --test scenario_live
--- --test-threads=1 = 38 passed, 0 failed, 2 ignored.
+**Item 3 (too bright):** Research confirmed the shader is correct (0x80 = 1.0). The real cause is the missing
+per-object TWEAK colour (`psiSetTweakARGB`): `tweak_RGB = (tint × cel_ambient) >> 8` when `flags & 0x800`,
+applied as a per-object multiplier on vertex colour before texel modulation. Default cel ambient is (0x50,0x50,0x50)
+= 31%, so walls render 3.2× too bright without it. Proof: a wall with texel 200, vertex 0x80, ambient 0x50 →
+GS result = 70/255 = 0.275; port result = 226/255 = 0.888. With TWEAK applied: port matches GS exactly (0.275).
+Not ported yet — needs shader uniform + per-object data (tracked as open gap).
+
+Added `NF_SCRIPTLOG=1` and `NF_DOORLOG=1` diagnostics. Added `Request::LoadLevel` to nis.rs (for script-driven
+transitions on levels that do fire event 0x12). Added `script_cam` field for event 0x13.
+
+Tests: 186 pass with NF_ISO set. No Rand_* calls added.

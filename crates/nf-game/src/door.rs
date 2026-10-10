@@ -589,6 +589,33 @@ impl Doors {
     pub fn end_tick(&mut self, channels: &Channels) {
         for (k, c) in self.prev_channels.iter_mut().enumerate() { *c = channels.v.get(k).copied().unwrap_or(0); }
     }
+
+    /// `NF_DOORLOG=1` per-tick diagnostic (Task A-8-2): for every door, prints placement, kind,
+    /// ch_open, ch_lock, flags (with the keep-open and spline bits decoded), the glist hash, whether
+    /// that hash is registered in the collision world's `shapes` table (the bullet-collision check —
+    /// `0xffffffff` means the placement's object hashcode is `u32::MAX` and the door has no collision),
+    /// the current state, `pos01`, the auto-close `open_timer`, and the bounding sphere.
+    ///
+    /// `world` is the collision world built by `CollisionWorld::build` (so `has_shape` can be tested);
+    /// pass `None` to skip the `in_shapes` column. Called from `Drones::tick` after `end_tick`.
+    pub fn log_doors(&self, world: Option<&crate::world::CollisionWorld>) {
+        if std::env::var_os("NF_DOORLOG").is_none() { return; }
+        eprintln!("=== NF_DOORLOG frame: {} doors ===", self.list.len());
+        eprintln!("idx placement kind grp ch_open ch_lock flags     appr locked glist        in_shapes state  pos01  open_timer sph.pos                      sph.r");
+        for (i, d) in self.list.iter().enumerate() {
+            let in_shapes = world.map_or(false, |w| w.has_shape(d.glist));
+            eprintln!(
+                "{i:<3} {:<9} {:<4} {:<3} {:<7} {:<7} {:#06x} {:<4} {:<6} {:#010x} {:<9} {:#04x}  {:5.3} {:<10} ({:7.2},{:7.2},{:7.2}) {:5.3}",
+                d.placement, d.kind, d.group, d.ch_open, d.ch_lock, d.flags,
+                d.approach, d.locked_flag, d.glist, in_shapes,
+                d.state, d.pos01, d.open_timer,
+                d.sph.0[0], d.sph.0[1], d.sph.0[2], d.sph.1
+            );
+            let keep = d.flags & 0x20 != 0;
+            let spline = d.flags & 1 != 0;
+            eprintln!("    bits: keep_open={} spline={} busy={} starts_open={}", keep, spline, d.flags & 0x10 != 0, d.flags & 4 != 0);
+        }
+    }
 }
 
 #[cfg(test)]

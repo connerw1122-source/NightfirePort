@@ -90,10 +90,15 @@ update each tick (WORKLOG 0060).
 ## Port status
 
 `nf-game::nis`: the player states, `Script_Update` / `Run` / `Interp` (linear and spline keys), commands 04–0F, 12
-(events 3, 4, 6, 0xC, 0xD, 0xE, 0x11; others recorded), 16 / 17 (sound requests), entity, animation and camera streams;
+(events 3, 4, 6, 0xC, 0xD, 0xE, 0x11, 0x12; others recorded), 16 / 17 (sound requests), entity, animation and camera streams;
 script touch triggers (0xEA / 0xEB) in the trigger system with volumes following their entity; moving collision and
 riding. Not yet: fade, sprite, light, sub-script, text commands (the stream stops on them), `SP_Hit` bullet / object
 flags, AI volumes and pickups made by scripts, letterbox borders, music events, cut-scene skipping.
+
+**Event 0x12 (LoadLevel)**: ported (`Request::LoadLevel` → `Drones::level_exit` → `main.rs::pending_level`). No NIS
+script on 07000005 fires kind 0x12 — the truck script 0x06000A22 fires only 0xC (keep objects, tick 5890) and 0xD
+(channel 0x73 = 1, tick 5412). The level transition on 07000005 is the placement-0xE8 trigger at the castle door, not
+a script event. Set `NF_SCRIPTLOG=1` to log every script event fired (tick, frame, player #, hash, stream, kind, params).
 
 ## Cameras [M, L]
 

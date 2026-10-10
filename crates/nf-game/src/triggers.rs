@@ -126,8 +126,15 @@ impl Trigger {
         let (out_ch, mask, list, lock, hide, next_level) = match kind {
             kind::TOUCH_ONCE => (q(0), q(1), (2..=8).map(&q).collect(), q(7), q(8) != 0, 0),
             kind::TOUCH => (q(0), q(1), (2..=8).map(&q).collect(), q(6), q(7) != 0, 0),
-            // `LOAD_LEVEL` (0xE8): out = p0 (the switch channel it sets), next_level = p0x20 (the next level hashcode).
-            kind::LOAD_LEVEL => (q(0), q(9), (1..=8).filter(|&k| k != 7).map(&q).collect(), q(10), q(11) != 0, q(0x20)),
+            // `LOAD_LEVEL` (0xE8): `Trigger_Activate` (0x1b2318:111) calls `ResetMap_LevelToLoad(*(int*)(trigger+0x20), 1, 0)`.
+            // In the game, `trigger+0x20` is the trigger's extension data field at byte offset +0x20, which
+            // `Trigger_LoadLevelCreate` (0x1d1b68) fills from **placement param 0** — the next level's hashcode
+            // (e.g. 0x07000006 on 07000001's exit, 0x07000066 on 07000005's castle door). The port's `q(k)` reads
+            // placement param k; so `q(0)` IS the level hashcode. The old code read `q(0x20)` (which doesn't exist
+            // as a placement param) and treated `q(0)` as a switch channel — both wrong. Fix: `next_level = q(0)`,
+            // `out_ch = 0` (the LOAD_LEVEL trigger doesn't set a switch channel; it calls `ResetMap_LevelToLoad` directly)
+            // [M 0x1b2318:108-111, 0x1d1b68:95-96].
+            kind::LOAD_LEVEL => (0, q(9), (1..=8).filter(|&k| k != 7).map(&q).collect(), q(10), q(11) != 0, q(0)),
             _ => (q(0), q(9), (1..=8).filter(|&k| k != 7).map(&q).collect(), q(10), q(11) != 0, 0),
         };
         if matches!(kind, kind::TOUCH | kind::TOUCH_ONCE) && out_ch == 0x7d { return None; }

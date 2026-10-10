@@ -39,8 +39,10 @@ pub enum Request {
     PlayerDisable,
     /// `Script_Free` after event 6: `Player_Enable` at this matrix (`None`: where the player is), with `+0xAB6`.
     PlayerEnable { at: Option<Mat4>, mode: u8 },
-    /// Event 0x12: `ResetMap_LevelToLoad(level, 1, 0)` — the script-driven level transition (the truck parking at
-    /// the end of 07000005 fires this) [M Script_EventHandler 0x1d94c0:189-199].
+    /// Event 0x12: `ResetMap_LevelToLoad(level, 1, 0)` — the script-driven level transition
+    /// [M Script_EventHandler 0x1d94c0:189-199]. Note: no NIS script on 07000005 fires kind 0x12 — the truck script
+    /// (0x06000A22) fires only 0xC (keep objects, tick 5890) and 0xD (channel 0x73 = 1, tick 5412). The actual level
+    /// transition on 07000005 is the placement-0xE8 trigger at the castle door (Bond walks to it after the truck parks).
     LoadLevel { level: u32 },
     /// A camera stream started (`Script_CameraStart` → `Music_Event(0xB, script)`) or ended (`Script_KillStream` →
     /// `Music_Event(0xC, script)`).
@@ -88,6 +90,8 @@ pub struct Script {
     pending: Vec<Request>,
     pub player_mode: u8,
     streams: Vec<Stream>,
+    /// The owning `Player`'s placement index (for `NF_SCRIPTLOG`); 0 until `Player::load` sets it.
+    pub player: usize,
 }
 
 /// The port's object store for scripts: indices stay valid; `None` = deleted.
@@ -110,7 +114,7 @@ impl Script {
     pub fn load(nis: Arc<Nis>, matrix: Mat4, scale: f32) -> Script {
         let streams = nis.streams.iter().map(|s| Stream { first_key: s.first_key, last_key: s.last_key, pc: Some(0), parent: -1, ..Default::default() }).collect();
         let flags = if nis.camera { 0x40 } else { 0 };
-        Script { nis, matrix, scale, delay: 0, clock: 0.0, flags, script_cam: false, play: 0, streams, player_at: None, player_mode: 0, pending: Vec::new() }
+        Script { nis, matrix, scale, delay: 0, clock: 0.0, flags, script_cam: false, play: 0, streams, player_at: None, player_mode: 0, pending: Vec::new(), player: 0 }
     }
 
     /// `Script_Play` (0x1db588).
@@ -318,6 +322,13 @@ impl Script {
     /// `Script_EventHandler` (0x1d94c0).
     #[allow(clippy::too_many_arguments)]
     fn event(&mut self, i: usize, kind: u8, p: Vec<u32>, objs: &Objects, ch: &mut Channels, frame: u32, out: &mut Vec<Request>) {
+        // NF_SCRIPTLOG=1: every script event (op 0x12) fired — tick (script clock), game frame, owning ScriptPlayer's
+        // placement index, script hashcode, stream, event kind, params. Lets the user see e.g. that 07000005's truck
+        // script fires only events 0xC and 0xD (not 0x12) — the level transition is the placement-0xE8 trigger, not
+        // a script event (docs/systems/script-player.md "The truck on 07000005").
+        if std::env::var("NF_SCRIPTLOG").is_ok_and(|v| v == "1") {
+            eprintln!("[scriptlog] tick {} frame {} player #{} hash {:08x} stream {} kind 0x{:02x} params {:x?}", self.clock as u32, frame, self.player, self.nis.hashcode, i, kind, p);
+        }
         let g = |k: usize| p.get(k).copied().unwrap_or(0);
         match kind {
             3 => self.delay = g(0) as i32 - 1,
@@ -483,6 +494,7 @@ impl Player {
         }
         let mode = self.modes[cur];
         let s = self.info[cur].as_mut().unwrap();
+        s.player = self.placement; // for NF_SCRIPTLOG
         match mode {
             1 => { s.start(false); self.state = 2; }
             8 => { s.start(true); self.state = 6; }
