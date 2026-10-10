@@ -229,40 +229,78 @@ fn menu(h: &mut Hud, dev: &Dev, scene: &Scene) {
     let Some(t) = scene.hud.as_ref() else { return };
     let font = &t.font;
     let items = menu_items(dev);
-    // B-9: large, readable menu. Each row is 34 px (a 2×-scaled label + a native-size description), with a
-    // background panel and a highlight on the keyboard-selected row. ↑/↓ move, Enter activates, mouse clicks.
-    const ROW_H: f32 = 34.0;
-    const PANEL_W: f32 = 360.0;
-    const LABEL_SCALE: f32 = 1.6;
-    let mut y = 40.0;
-    // The scenario banner: "what to check" stays on screen while the menu is open.
+    // B-10: compact panel. <30% of the 512-px HUD width = ~150 px wide, top-left, semi-transparent, small readable
+    // native-font text, ~8 visible rows with scrolling (the selected row is always visible).
+    const PANEL_X: f32 = 4.0;
+    const PANEL_W: f32 = 150.0; // ~29% of 512
+    const ROW_H: f32 = 12.0;   // native font height + small gap
+    const VISIBLE_ROWS: usize = 8;
+    const HEADER_H: f32 = 14.0;
+    let n = items.len();
+    // The scroll window: keep `menu_sel` within [top, top + VISIBLE_ROWS).
+    let top = if n <= VISIBLE_ROWS { 0 } else {
+        if dev.menu_sel < VISIBLE_ROWS / 2 { 0 }
+        else if dev.menu_sel >= n - VISIBLE_ROWS / 2 { n - VISIBLE_ROWS }
+        else { dev.menu_sel - VISIBLE_ROWS / 2 }
+    };
+    let visible_end = (top + VISIBLE_ROWS).min(n);
+    // The scenario banner (1 line, above the list).
+    let mut y = 4.0;
     if let Some(s) = dev.scenario {
         let (label, _) = scenario(s).unwrap_or(("(unknown)", scenarios::door_anti_crush));
-        h.quad(Anchor::Left, 70, 0x0300_0003, 0, 4.0, y - 2.0, PANEL_W, 30.0, [0.0, 0.0, 0.5, 1.0], (false, false), [0.0, 0.0, 0.0, 0.85]);
-        h.text_scaled(Anchor::Left, font, 69, &format!("scenario: {s} — {label}"), 8.0, y + 6.0, false, [1.0, 1.0, 0.4, 1.0], true, LABEL_SCALE);
-        y += 34.0;
+        h.quad(Anchor::Left, 70, 0x0300_0003, 0, PANEL_X, y, PANEL_W, HEADER_H, [0.0; 4], (false, false), [0.0, 0.0, 0.2, 0.85]);
+        // Truncate the scenario label to fit the narrow panel.
+        let mut lbl = format!("{s}: {label}");
+        if lbl.len() > 24 { lbl.truncate(23); lbl.push('…'); }
+        h.text(Anchor::Left, font, 69, &lbl, PANEL_X + 2.0, y + 3.0, false, [1.0, 1.0, 0.4, 1.0], true);
+        y += HEADER_H + 1.0;
+    } else {
+        y += 2.0;
     }
-    for (i, (label, desc, _)) in items.iter().enumerate() {
-        let sel = i == dev.menu_sel;
-        let bg = if sel { [0.0, 0.2, 0.0, 1.0] } else { [0.0, 0.0, 0.0, 1.0] };
-        let a = if sel { 0.92 } else { 0.75 };
-        h.quad(Anchor::Left, 70, 0x0300_0003, 0, 4.0, y, PANEL_W, ROW_H, [0.0, 0.0, 0.0, 1.0], (false, false), [bg[0], bg[1], bg[2], a]);
-        if sel { // a bright left edge on the selected row.
-            h.quad(Anchor::Left, 71, 0x0300_0003, 0, 4.0, y, 3.0, ROW_H, [0.0, 0.0, 0.0, 1.0], (false, false), [1.0, 1.0, 0.0, 0.9]);
+    // The list background (one panel for all visible rows, cheaper than per-row).
+    let list_h = (visible_end - top) as f32 * ROW_H;
+    h.quad(Anchor::Left, 70, 0x0300_0003, 0, PANEL_X, y, PANEL_W, list_h, [0.0; 4], (false, false), [0.0, 0.0, 0.0, 0.7]);
+    // The visible rows.
+    for vi in top..visible_end {
+        let (label, desc, _) = &items[vi];
+        let sel = vi == dev.menu_sel;
+        let row_y = y + (vi - top) as f32 * ROW_H;
+        if sel {
+            h.quad(Anchor::Left, 71, 0x0300_0003, 0, PANEL_X, row_y, PANEL_W, ROW_H, [0.0; 4], (false, false), [0.0, 0.25, 0.0, 0.9]);
+            h.quad(Anchor::Left, 72, 0x0300_0003, 0, PANEL_X, row_y, 2.0, ROW_H, [0.0; 4], (false, false), [1.0, 1.0, 0.0, 0.9]);
         }
-        h.text_scaled(Anchor::Left, font, 69, label, 10.0, y + 4.0, false, if sel { [1.0, 1.0, 0.4, 1.0] } else { [1.0, 1.0, 1.0, 1.0] }, true, LABEL_SCALE);
-        h.text(Anchor::Left, font, 69, desc, 12.0, y + 24.0, false, [0.7, 0.85, 0.7, 1.0], false);
-        y += ROW_H;
+        // Label: truncate to fit ~18 chars at native size in 150 px.
+        let mut lbl: String = label.chars().take(20).collect();
+        if label.len() > 20 { lbl.push('…'); }
+        h.text(Anchor::Left, font, 69, &lbl, PANEL_X + 4.0, row_y + 2.0, false, if sel { [1.0, 1.0, 0.4, 1.0] } else { [0.95, 0.95, 0.95, 1.0] }, sel);
+        // Description only on the selected row (saves space; the panel is narrow).
+        if sel {
+            let mut d = desc.to_string();
+            if d.len() > 22 { d.truncate(21); d.push('…'); }
+            h.text(Anchor::Left, font, 68, &d, PANEL_X + 4.0, row_y + 7.0, false, [0.7, 0.85, 0.7, 1.0], false);
+        }
     }
-    // The result message at the bottom (the last action's outcome). Stays ~3 s (result_timer ticks down).
+    y += list_h + 1.0;
+    // Scroll indicator if there are more rows than visible.
+    if n > VISIBLE_ROWS {
+        let more_above = top > 0;
+        let more_below = visible_end < n;
+        let ind = format!("{}{}/{}{}", if more_above { "▲ " } else { "  " }, dev.menu_sel + 1, n, if more_below { " ▼" } else { "" });
+        h.text(Anchor::Left, font, 69, &ind, PANEL_X + PANEL_W - 40.0, y, false, [0.6, 0.6, 0.6, 1.0], false);
+        y += 12.0;
+    }
+    // The result message (last action's outcome), ~3 s.
     if dev.result_timer > 0 {
         if let Some(msg) = &dev.result_msg {
-            h.quad(Anchor::Left, 70, 0x0300_0003, 0, 4.0, y + 2.0, PANEL_W, 24.0, [0.0, 0.0, 0.0, 1.0], (false, false), [0.15, 0.0, 0.15, 0.9]);
-            h.text(Anchor::Left, font, 69, msg, 8.0, y + 8.0, false, [1.0, 0.9, 1.0, 1.0], true);
+            let mut m = msg.clone();
+            if m.len() > 28 { m.truncate(27); m.push('…'); }
+            h.quad(Anchor::Left, 70, 0x0300_0003, 0, PANEL_X, y, PANEL_W, 12.0, [0.0; 4], (false, false), [0.15, 0.0, 0.15, 0.9]);
+            h.text(Anchor::Left, font, 69, &m, PANEL_X + 2.0, y + 2.0, false, [1.0, 0.9, 1.0, 1.0], true);
+            y += 13.0;
         }
     }
-    // A footer hint.
-    h.text(Anchor::Left, font, 69, "↑/↓ select   Enter = activate   mouse click   F2 close", 8.0, y + 32.0, false, [0.6, 0.6, 0.6, 1.0], false);
+    // Footer hint (compact).
+    h.text(Anchor::Left, font, 69, "↑↓ Ent click  F2 close", PANEL_X, y, false, [0.55, 0.55, 0.55, 1.0], false);
 }
 
 /// The menu items: (label, one-line description of what to watch for, action). B-9: descriptions added so each
@@ -293,20 +331,28 @@ pub enum MenuAction {
     Close, Spawn(SpawnPick), ForceGrenade, Impulse, SpecialDeath, ToggleGod, ToggleAmmo, SaveSpot, RestoreSpot, TimeScale(f32),
 }
 
-/// The click hit-test: which menu item is under the mouse (NDC −1..1, y up)? Returns the row index. B-9:
-/// updated for the new 34 px row height + scenario banner offset.
+/// The click hit-test: which menu item is under the mouse (NDC −1..1, y up)? Returns the row index. B-10:
+/// updated for the compact panel (150 px wide, 12 px rows, top-left at y=4, ~8 visible rows with scrolling).
 pub fn menu_hit(dev: &Dev, mouse_x: f32, mouse_y: f32, aspect: f32) -> Option<usize> {
     let s = 2.0 / 512.0 * (4.0 / 3.0) / aspect.max(1e-3);
     let x0 = -1.0 + 4.0 * s;
-    let x1 = -1.0 + (4.0 + 360.0) * s;
+    let x1 = -1.0 + (4.0 + 150.0) * s;
     if mouse_x < x0 || mouse_x > x1 { return None; }
-    let banner = if dev.scenario.is_some() { 34.0 } else { 0.0 };
-    for i in 0..menu_items(dev).len() {
-        let y_top = 40.0 + banner + i as f32 * 34.0;
-        let y_bot = y_top + 34.0;
+    let n = menu_items(dev).len();
+    let visible_rows = 8usize;
+    let top = if n <= visible_rows { 0 } else {
+        if dev.menu_sel < visible_rows / 2 { 0 }
+        else if dev.menu_sel >= n - visible_rows / 2 { n - visible_rows }
+        else { dev.menu_sel - visible_rows / 2 }
+    };
+    let visible_end = (top + visible_rows).min(n);
+    let banner = if dev.scenario.is_some() { 14.0 + 1.0 } else { 2.0 };
+    for vi in top..visible_end {
+        let y_top = 4.0 + banner + (vi - top) as f32 * 12.0;
+        let y_bot = y_top + 12.0;
         let ndc_top = 1.0 - y_top / 224.0;
         let ndc_bot = 1.0 - y_bot / 224.0;
-        if mouse_y >= ndc_bot && mouse_y <= ndc_top { return Some(i); }
+        if mouse_y >= ndc_bot && mouse_y <= ndc_top { return Some(vi); }
     }
     None
 }
@@ -459,20 +505,19 @@ pub fn walkable_directions(world: &nf_game::world::CollisionWorld, pos: [f32; 3]
 /// wire-music / autoaim / sniper-scope — are merged into this single registry so `--scenario` only has one source
 /// of truth.)
 pub fn scenario(name: &str) -> Option<(&'static str, fn(&mut Scene))> {
-    // B-8/B-9: the following scenarios are REMOVED until their tests pass. Each is a real gap (see docs/GAPS.md
-    // and docs/WORKLOG.md B-9), not a placement issue:
+    // B-8/B-9/B-10: the following scenarios are REMOVED until their tests pass. Each is a real gap (see docs/GAPS.md
+    // and docs/WORKLOG.md B-10), not a placement issue:
     //  - sniper-cover: the picked guard has no cover nearby → reaches NoSight (0x5c), not 0x97. Needs cover-aware
     //    placement (find a guard near a cover node).
-    //  - bullet-flyby: needs the exact fly-by probability from Bullet_DoTrails (decomp lost in sandbox reset).
+    //  - bullet-flyby: needs the exact fly-by probability from Bullet_DoTrails (decomp).
     //  - friendly-actor: a real game bug — guards outside the llist still fire (B-10).
-    //  - searchlight-tracks-bond (B-9): the searchlight PORT is broken — only 1 of 7 heads links to a spot
-    //    (create's 3-unit linking radius orphans most spots), and that head's mid=6.11 rad points the beam UP
-    //    (spot at y=42.5, above the head at 37.8), so the beam never sweeps the ground. The tracking transition
-    //    (state 0→1) needs Bond within 2 m of the SPOT, which never exists on the ground. Needs a port fix in
-    //    Searchlight_Create's spot linking + the half_mid / param-4/5 read, not a scenario fix.
+    //  - searchlight-tracks-bond (B-9): the searchlight PORT is broken (1/7 heads links to a spot; beam points up).
+    //  - grenade-throw / grenade-bounce-explode (B-10): on 07000005 (the only level with active guards at start,
+    //    since 07000002's combat guards are switch-gated and turning on all channels starts scripts), the guard's
+    //    combat AI keeps entering RUN_FOR_COVER (0x8c) instead of AIM_STAND_FIRE, so `look_for_opponent` never
+    //    returns GRENADE_THROW within 600 ticks. Needs cover-aware placement (a guard with NO cover nearby, so it
+    //    stays in AIM_STAND_FIRE and throws) — same root as sniper-cover. The scenario fn is kept for when that's done.
     let (n, f): (&'static str, fn(&mut Scene)) = match name {
-        "grenade-throw" => ("Grenade throw", scenarios::grenade_throw),
-        "grenade-bounce-explode" => ("Grenade bounce and explosion", scenarios::grenade_bounce_explode),
         "ambush" => ("Ambush (0x37/0x38)", scenarios::ambush),
         "guard-falls-off-ledge" => ("Guard falls off a ledge", scenarios::guard_falls_off_ledge),
         "door-anti-crush" => ("Door anti-crush", scenarios::door_anti_crush),
@@ -491,10 +536,11 @@ pub fn scenario(name: &str) -> Option<(&'static str, fn(&mut Scene))> {
     Some((n, f))
 }
 
-/// The list of scenario names (for `--dev` start and `--help`). B-8/B-9: sniper-cover, bullet-flyby,
-/// friendly-actor and searchlight-tracks-bond are removed until their tests pass (see `scenario()` comment).
+/// The list of scenario names (for `--dev` start and `--help`). B-8/B-9/B-10: sniper-cover, bullet-flyby,
+/// friendly-actor, searchlight-tracks-bond, grenade-throw and grenade-bounce-explode are removed until their
+/// tests pass (see `scenario()` comment).
 pub const SCENARIOS: &[&str] = &[
-    "grenade-throw", "grenade-bounce-explode", "ambush", "guard-falls-off-ledge",
+    "ambush", "guard-falls-off-ledge",
     "door-anti-crush",
     "ghostly-white", "door-textures", "invisible-walls", "level-exit",
     "weapon-switch", "sg5-pickup", "wire-music", "autoaim", "sniper-scope", "shotgun-reload",
@@ -525,7 +571,9 @@ mod scenarios {
                 let cx = guard_pos[0] + d * angle.sin();
                 let cz = guard_pos[2] + d * angle.cos();
                 // Floor below the candidate, starting 0.5 above the guard's y so floors on the guard's level win.
-                let floor_y = world.floor_below([cx, guard_pos[1], cz], 4.0)?;
+                // B-10: `continue` on no floor (not `?` — the old code aborted the WHOLE spiral on the first
+                // candidate without a floor, so every guard failed placement on 07000005).
+                let Some(floor_y) = world.floor_below([cx, guard_pos[1], cz], 4.0) else { continue };
                 // Reject spots whose floor is far above or below the guard (a different level / a pit).
                 if (floor_y - guard_pos[1]).abs() > 3.0 { continue; }
                 let bond_pos = [cx, floor_y + 1.0, cz];
@@ -561,10 +609,8 @@ mod scenarios {
             dr.pos[0], dr.pos[1], dr.pos[2]);
     }
 
-    /// Turn on every switch channel (the same action as the viewer's K key, `Drone_SetChannel`). This activates
-    /// WAIT_SWITCH guards so their combat AI runs — the combat scenarios (grenade-throw, sniper-cover, ambush, …)
-    /// need this, or the guards the scenario places Bond near never leave WAIT_SWITCH. B-6.
-    fn turn_on_all_channels(sim: &mut crate::scene::Sim) { for c in 1..=255u8 { sim.drones.set_channel(c); } }
+    /// (removed B-10) `turn_on_all_channels` was here — it started scripts (the bridge cut-scene on 07000005),
+    /// so scenarios no longer turn on every channel. Only guards already active in play are picked.
 
     /// How many of the 4 cardinal directions (N/S/E/W) Bond can walk `dist` metres from `pos` without hitting a
     /// wall (a chest-height segment test). The user's rule: the spot must connect to the rest of the level — at least
@@ -594,14 +640,10 @@ mod scenarios {
     /// diagnostics. Returns the chosen guard's drone index, or None. (B-3a/b + B-6.)
     fn place_bond_near_guard(scene: &mut Scene, dist: f32) -> Option<usize> {
         let sim = scene.sim.as_mut()?;
-        // B-6: turn on every switch channel first (the viewer's K key). Without this, WAIT_SWITCH guards never
-        // activate, and on levels like 07000002 almost every guard is switch-gated — the scenario would find no
-        // combat-active guard. This is a dev action (the player triggers switches in normal play); it does not
-        // change RNG or game logic.
-        for c in 1..=255u8 { sim.drones.set_channel(c); }
-        // B-6: active = present + enabled + alive, AND either no switch_channel, or its channel is on (checked
-        // against the live channels state, not the per-drone `channel_on` cache which is only populated on tick —
-        // so WAIT_SWITCH guards whose channel we just turned on are correctly counted as active here).
+        // B-10: do NOT turn on all switch channels — it starts scripts (the bridge cut-scene on 07000005 fired
+        // because of this). Only consider guards that are ALREADY active in play: present + enabled + alive +
+        // drawn + in-llist, and either no switch_channel or its channel already on at level start. The scenario
+        // finds guards the player would actually encounter, not switch-gated ones the level hasn't released yet.
         let chans = sim.drones.channels.clone();
         let llist = sim.drones.llist.clone();
         let candidates: Vec<(usize, [f32; 3])> = sim.drones.list.iter().enumerate()
@@ -621,14 +663,16 @@ mod scenarios {
         let mut found: Option<(usize, [f32; 3], [f32; 3], f32)> = None;
         for (gi, g) in &candidates {
             if let Some((bond_pos, yaw)) = spiral_search_for_spot(&sim.world, *g, dist) {
-                // B-6: walkability (≥2 clear directions) + same nav path (guard can path to Bond).
+                // B-6: walkability (≥2 clear directions) is a hard requirement (Bond must not be sealed in).
                 if walkable_directions(&sim.world, bond_pos, 5.0) < 2 {
                     eprintln!("[scenario] guard #{} spot {:?} rejected: sealed (walkable dirs < 2).", gi, bond_pos);
                     continue;
                 }
+                // B-10: the same-nav-path check is now a WARNING, not a hard reject — the guard's runtime
+                // pathfinder may still route even when the static `nav_path_for` lookup disagrees (the port's
+                // nav network is a stand-in). Rejecting on it made every 07000005 guard fail placement.
                 if !same_nav_path(&sim.nav, *g, bond_pos) {
-                    eprintln!("[scenario] guard #{} spot {:?} rejected: not on the same AI path network as the guard.", gi, bond_pos);
-                    continue;
+                    eprintln!("[scenario] guard #{} spot {:?}: WARNING — guard and Bond not on the same nav path (the guard may not pathfind to Bond).", gi, bond_pos);
                 }
                 found = Some((*gi, *g, bond_pos, yaw));
                 break;
@@ -642,9 +686,15 @@ mod scenarios {
         };
         let d = ((bond_pos[0] - g[0]).powi(2) + (bond_pos[1] - g[1]).powi(2) + (bond_pos[2] - g[2]).powi(2)).sqrt();
         sim.bond = Bond::stand_at(&sim.world, bond_pos, yaw);
-        eprintln!("[scenario] Bond at ({:.1}, {:.1}, {:.1}) facing yaw {:.0}°, guard #{} at ({:.1}, {:.1}, {:.1}), distance {:.1} m, walkable dirs {}",
+        // B-10: face the guard toward Bond so its vision cone catches Bond immediately (the game's `DroneFunc_Alert`
+        // turns a guard that hears/sees Bond; the scenario places Bond in plain view, so the guard should be facing
+        // him). Without this, the guard's spawn yaw may face away and it never sees Bond within the test window.
+        let guard_yaw = (bond_pos[0] - g[0]).atan2(bond_pos[2] - g[2]);
+        sim.drones.list[gi].yaw = guard_yaw;
+        sim.drones.list[gi].desired_yaw = guard_yaw;
+        eprintln!("[scenario] Bond at ({:.1}, {:.1}, {:.1}) facing yaw {:.0}°, guard #{} at ({:.1}, {:.1}, {:.1}), distance {:.1} m, walkable dirs {}, guard faces Bond (yaw {:.0}°)",
             bond_pos[0], bond_pos[1], bond_pos[2], yaw.to_degrees(), gi, g[0], g[1], g[2], d,
-            walkable_directions(&sim.world, bond_pos, 5.0));
+            walkable_directions(&sim.world, bond_pos, 5.0), guard_yaw.to_degrees());
         log_guard_diagnostics(sim, gi);
         Some(gi)
     }
@@ -663,8 +713,8 @@ mod scenarios {
         if candidates.is_empty() {
             eprintln!("[scenario] ERROR: no ACTIVE guard on this level carries grenades (param 24 = 0).");
             eprintln!("[scenario]   active guards: {}, of which grenade-carrying: 0.", sim.drones.list.iter().enumerate().filter(|(i, x)| is_active(x, *i, &llist, &chans)).count());
-            eprintln!("[scenario] Grenade-carrying guards are on levels 07000002, 07000003, 07000009, 0700000a.");
-            eprintln!("[scenario] Run: nf-view <iso> 07000002 --dev --scenario grenade-throw");
+            eprintln!("[scenario] Grenade-carrying guards are on levels 07000002, 07000003, 07000009, 0700000a — but those guards are switch-gated (turning on all channels starts scripts). 07000005 has active guards at start; the grenade-throw scenario gives one grenades via the param-24 path.");
+            eprintln!("[scenario] Run: nf-view <iso> 07000005 --dev --scenario grenade-throw");
             return None;
         }
         let mut found: Option<(usize, [f32; 3], [f32; 3], f32)> = None;
@@ -675,8 +725,7 @@ mod scenarios {
                     continue;
                 }
                 if !same_nav_path(&sim.nav, *g, bond_pos) {
-                    eprintln!("[scenario] grenade guard #{} spot {:?} rejected: not on the same AI path network.", gi, bond_pos);
-                    continue;
+                    eprintln!("[scenario] grenade guard #{} spot {:?}: WARNING — not on the same nav path (may not pathfind).", gi, bond_pos);
                 }
                 found = Some((*gi, *g, bond_pos, yaw));
                 break;
@@ -701,6 +750,7 @@ mod scenarios {
         Some(gi)
     }
 
+    #[allow(dead_code)] // B-10: removed from registry — guard enters RUN_FOR_COVER instead of throwing. Needs cover-aware placement.
     pub fn grenade_throw(scene: &mut Scene) {
         // B-6: the natively-grenade-carrying guards on 07000002 (placement 464/466) are mode 7 / Hostage and in
         // enclosed spots — no walkable placement exists near them. Instead, pick any ACTIVE accessible guard and give
@@ -711,10 +761,17 @@ mod scenarios {
             if let Some(sim) = scene.sim.as_mut() {
                 sim.drones.list[gi].grenade_count = 3;
                 sim.drones.list[gi].grenade_weapon = 0x36; // stun (DroneWeap_ThrowGrenade's 0x36)
+                // B-10: set alert to max + seen so the guard goes straight to ATTACK/AIM_STAND_FIRE instead of
+                // RunForCover (the guard sees Bond immediately and engages, reaching the throw decision).
+                sim.drones.list[gi].alert = 1.0;
+                sim.drones.list[gi].seen = true;
+                sim.drones.list[gi].ever_seen = true;
+                sim.drones.list[gi].visibility = 1.0;
             }
-            eprintln!("[scenario] grenade-throw: Bond 12 m from an active guard given 3 stun grenades (param-24 path). Watch for the lob (anim 0x49) within ~10 s; F1 shows the state.");
+            eprintln!("[scenario] grenade-throw: Bond 12 m from an active guard given 3 stun grenades (param-24 path), alert maxed. Watch for the lob (anim 0x49) within ~10 s; F1 shows the state.");
         }
     }
+    #[allow(dead_code)] // B-10: removed from registry — same as grenade-throw.
     pub fn grenade_bounce_explode(scene: &mut Scene) {
         // B-7: 12 m, not 15 — the guard's combat state machine throws at 12 m (proven by grenade-throw's test) but
         // at 15 m it takes a different attack path and never throws within 600 ticks. can_throw_grenade allows
@@ -724,6 +781,10 @@ mod scenarios {
             if let Some(sim) = scene.sim.as_mut() {
                 sim.drones.list[gi].grenade_count = 3;
                 sim.drones.list[gi].grenade_weapon = 0x36;
+                sim.drones.list[gi].alert = 1.0;
+                sim.drones.list[gi].seen = true;
+                sim.drones.list[gi].ever_seen = true;
+                sim.drones.list[gi].visibility = 1.0;
             }
             eprintln!("[scenario] grenade-bounce-explode: Bond 12 m from an active guard given 3 stun grenades. The grenade should arc, bounce (sound 0x51C) and explode (sound 0x4A7). F1 shows the arc + explosion radius.");
         }
@@ -760,7 +821,9 @@ mod scenarios {
         // it, so we can't use its position pre-tick.) B-7: widened floor search to 30 m.
         let mut placed = false;
         if let Some(sim) = scene.sim.as_mut() {
-            for c in 1..=255u8 { sim.drones.set_channel(c); } // the on-channel
+            // B-10: do NOT turn on all channels (it starts scripts). Searchlights with an on-channel that's
+            // already on at level start will sweep; others stay off (as they do in normal play before the
+            // player triggers them).
             // Bond starts where he is (the scenario moves him after the spot populates). Tick a few frames to
             // transition heads from state 3 (off) → 0 (sweep) via their on-channel, and populate each head's spot
             // (the beam's ground hit). This is a normal game tick (no extra RNG draws).

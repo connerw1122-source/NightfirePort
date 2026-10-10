@@ -661,7 +661,14 @@ impl Sim {
         // open, swing or thud locked (docs/systems/world-objects.md "Doors"); the player object updates before
         // the control list's doors, so they see the activation this same tick.
         if use_key { self.drones.player_use_doors(&d, camera, look, self.drones.frame); }
-        self.drones.tick(&d, &player);
+        // B-10: gate the drone tick on `!self.disabled` — the game's `Game_Run` (0x1c9790) only runs the object
+        // handler (`control_movement_object_handler` → `Drone_InitComms` + the drone update) when
+        // `GS_IsPaused == 0` AND `ScriptCam == 0`. When a NIS/cut-scene runs (ScriptCam set, which the port
+        // mirrors as `self.disabled` via events 4/6), the object handler is skipped entirely — drones do NOT tick,
+        // so guards don't fire or move during cut-scenes. Without this gate the user was shot throughout the
+        // bridge cut-scene (a real game bug in normal play, not just a scenario issue).
+        if !self.disabled { self.drones.tick(&d, &player); }
+        else { self.drones.frame += 1; } // the frame counter still advances (music/sound timing), but no AI.
     }
 
     /// The crosshair offset (`BL+0x120 / +0x124`: −1…1 across half the screen) from the auto-aim offset angles: tan of the

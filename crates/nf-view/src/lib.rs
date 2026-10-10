@@ -569,9 +569,11 @@ impl ApplicationHandler for App {
                     (KeyCode::ArrowUp, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.menu { dev::menu_key(d, dev::MenuKey::Up); } },
                     (KeyCode::ArrowDown, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.menu { dev::menu_key(d, dev::MenuKey::Down); } },
                     (KeyCode::Enter, ElementState::Pressed) => {
-                        if let Some(d) = self.dev.as_deref_mut() {
-                            if d.menu { if let Some(a) = dev::menu_key(d, dev::MenuKey::Activate) { drop(d); self.apply_menu_action(a); } }
-                        }
+                        // B-9: keyboard nav. Compute the action while holding the dev borrow, drop it, then apply.
+                        let action = self.dev.as_deref_mut().and_then(|d| {
+                            if d.menu { dev::menu_key(d, dev::MenuKey::Activate) } else { None }
+                        });
+                        if let Some(a) = action { self.apply_menu_action(a); }
                     }
                     (KeyCode::F11, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.time_scale <= 0.0 { d.step = true; } },
                     (KeyCode::F3, ElementState::Pressed) => self.opts.reinforcements = !self.opts.reinforcements,

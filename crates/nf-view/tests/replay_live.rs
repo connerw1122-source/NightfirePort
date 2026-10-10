@@ -106,15 +106,25 @@ fn replay_file_format_round_trips() {
 }
 
 #[test]
-fn replay_commit_sample_file() {
-    // Generates a committed sample replay under tests/replays/ (inputs only — no game bytes) so the format has a
-    // real, inspectable artefact. This test writes the file when NF_ISO is set; CI without the disc skips it. The
-    // file is .gitignored from game bytes but the replay format is inputs-only, so committing it is fine.
-    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping sample generation"); return };
+fn replay_format_is_stable_across_loads() {
+    // B-10: the old `replay_commit_sample_file` compared produced bytes against a frozen committed file — but the
+    // level start (RNG state, Bond pose) can change between commits (e.g. A-10's LOAD_LEVEL gate fix), making the
+    // frozen file a maintenance burden that blocked `git pull`. This test instead checks the property that matters:
+    // two fresh loads produce the SAME recording bytes (the format + level start are deterministic for a given
+    // binary). If this fails, the level load itself became non-deterministic — a real bug.
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let ticks = sample_ticks();
-    let scene = nf_view::load(&iso, LEVEL, false).expect("load scene");
-    let replay = Replay::from_scene_and_ticks(&scene, LEVEL, None, false, ticks).expect("build");
-    let out = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/replays/sample-07000005-60tick.nfr");
-    replay.save(out).expect("save sample replay");
-    eprintln!("wrote sample replay: {out} ({} ticks, {} bytes)", replay.tick_count(), replay.to_bytes().len());
+    let scene_a = nf_view::load(&iso, LEVEL, false).expect("load A");
+    let replay_a = Replay::from_scene_and_ticks(&scene_a, LEVEL, None, false, ticks.clone()).expect("build A");
+    let bytes_a = replay_a.to_bytes();
+    let scene_b = nf_view::load(&iso, LEVEL, false).expect("load B");
+    let replay_b = Replay::from_scene_and_ticks(&scene_b, LEVEL, None, false, ticks).expect("build B");
+    let bytes_b = replay_b.to_bytes();
+    assert_eq!(bytes_a.len(), bytes_b.len(), "two loads produced different recording lengths — the level load is non-deterministic");
+    if bytes_a != bytes_b {
+        let pos = bytes_a.iter().zip(bytes_b.iter()).position(|(a, b)| a != b).unwrap_or(bytes_a.len());
+        panic!("two loads produced different recording bytes (first diff at {pos}) — the 07000005 level start is non-deterministic");
+    }
+    eprintln!("replay format stable across loads: {} bytes, {} ticks ✓", bytes_a.len(), replay_a.tick_count());
 }
+

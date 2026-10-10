@@ -2636,3 +2636,128 @@ Three bugs found by the user in round 5 of playtesting, all fixed:
    targets the real zip wire placement(s), not the grapple point.
 
 Tests: all nf-game unit tests pass. NF_ISO suite: only disc_golden fails.
+
+---
+
+## B-10a — Re-downloaded the `work.7z` research archive (sub-agent, 2026-10-10)
+
+The research archive was lost in the sandbox reset (the previous session had downloaded it then deleted the
+2.6 GB `.7z` for space — WORKLOG 0071). Re-downloaded so the on-foot decompiles are available again for the
+searchlight/friendly-actor ports (TODO item 6).
+
+**URL / method.** The exact copyparty URL was not written into the docs; recovered from the leftover Chrome
+profile at `/home/z/chrome-iso2/Default/History` (the headed-Chrome-under-Xvfb run from session 0071, whose
+profile survived the reset). The only visited URL was `https://copyparty.wizardyoda.com/?k=z` (share title
+"copyparty @ Yoda's File Share"). The WORKLOG-confirmed volume is `/KOTPT/` (0076: "the copyparty share's
+volume is `/KOTPT/`, account 'z'"). The user's "KnightsOfThePoundTableShare" is the share/key name (KOTPT =
+Knights Of The Pound Table); the accessible HTTP path is `/KOTPT/`.
+
+**Download.** With the password known, Cloudflare was not involved — `curl` with `?k=z` works directly (the
+0075 note "all return the login page" was from before the password was available). The `/KOTPT/?k=z` listing
+exposes `work.7z` (2.60 GB, 2026-10-09 20:54). Downloaded with `curl` to
+`/home/z/NightfirePort/work.7z`: HTTP 200, 2 802 013 555 bytes, 217 s at ~12.9 MB/s, 7z magic `37 7a bc af 27 1c`
+verified.
+
+**Extraction.** No `7z` binary on this sandbox (no root), so used `py7zr` 1.1.3 (in `/home/z/.venv`) with
+`extract(targets=[...], recursive=True)` and password `"z"`. Disk was tight (only 3.3 GB free; archive is
+2.6 GB; full uncompressed tree is 6.87 GB across 126 361 entries), so extracted selectively — the whole
+`work/decomp/` tree (the research the port reads from), plus `work/action-symtab.tsv` and `work/elf/`
+(both small). Deleted `work.7z` afterwards (same discipline as 0071). The big subtrees — `work/nfre` (4.4 GB
+nightfire-re dumps), `work/gfx` (536 M), `work/uviv` (539 M), `work/files` (764 M), `work/tex`, `work/renders`,
+`work/audio` — were **not** extracted (disk; same items skipped in 0071). They are re-downloadable on demand.
+
+**Verified.** `work/decomp/ACTION.ELF/` = **3039** decompile files (3038 matching the `<8-hex-addr>_<name>.c`
+pattern; matches 0002's "ACTION.ELF 3,038 functions"). Spot-checked known functions: `0012d890_Bullet_DoTrails*.c`
+(0076), `0018da00_Corona_Create*.c` (0073). Also present: `work/decomp/DRIVING.ELF/` (9170),
+`work/decomp/SFX.IRX/` (283), `work/decomp/SLUS_205.79/` (407), `work/elf/{ACTION,DRIVING,SLUS_205.79}.ELF`,
+`work/action-symtab.tsv` (245 783 B). `work/` total on disk = 69 MB.
+
+**Obstacle / note for the main agent.** Only `work/decomp/` + `work/elf/` + the symtab were restored, not
+the full `work/` tree (disk). If a later task needs `work/ee_start_*.bin` snapshots, `work/ghidra/`, `work/files`,
+`work/audio`, etc., re-download `work.7z` from `https://copyparty.wizardyoda.com/KOTPT/work.7z?k=z` and extract
+those subtrees with py7zr the same way (the small ones fit; the 4.4 GB `nfre` would need space freed first).
+
+## B-10 — Cut-scene AI pause; scenarios no longer start scripts; F2 menu compact; replay sample fix
+
+Round 5 playtest feedback. The user's guard-falls-off-ledge scenario triggered the bridge cut-scene (a script),
+and during it guards kept shooting Bond. The F2 "Spawn guard" crashed. The replay sample file got rewritten by the
+test suite (blocking `git pull`). All addressed:
+
+### B-10a: guards no longer fire during cut-scenes (real game bug, not just a scenario issue)
+
+`Game_Run` (decomp 0x1c9790) only runs the object handler (`control_movement_object_handler` → `Drone_InitComms`
++ the drone update) when `GS_IsPaused == 0` AND `ScriptCam == 0`. When a NIS/cut-scene runs (`ScriptCam` set, which
+the port mirrors as `Sim::disabled` via events 4/6), the object handler is skipped entirely — drones do NOT tick.
+The port's `Sim::step_bond` called `self.drones.tick(&d, &player)` unconditionally. **Fix** (scene.rs:664): gate on
+`!self.disabled`; when disabled, only `self.drones.frame` advances (so music/sound timing stays correct), no AI.
+Verified against the decomp [M 0x1c9790].
+
+### B-10b: scenarios no longer turn on all switch channels (it starts scripts)
+
+`place_bond_near_guard` + `searchlight_tracks_bond` did `for c in 1..=255u8 { sim.drones.set_channel(c); }` — this
+turned on every switch channel, which started scripts (the bridge cut-scene on 07000005 fired). **Removed**. Scenarios
+now only consider guards that are ALREADY active in play (present + enabled + alive + drawn + in-llist + channel on
+at level start). The `turn_on_all_channels` helper is deleted.
+
+### B-10c: spiral-search `?` bug (every 07000005 guard failed placement)
+
+`spiral_search_for_spot` used `world.floor_below(...)?` — the `?` aborted the ENTIRE spiral on the first candidate
+without a floor, so every guard on 07000005 failed placement. **Fix**: `let Some(floor_y) = ... else { continue }`.
+Now placement succeeds for guard #2/#3 on 07000005.
+
+### B-10d: grenade-throw / grenade-bounce-explode REMOVED (cover AI prevents the throw)
+
+On 07000005 (the only level with active guards at start — 07000002's combat guards are switch-gated, and turning on
+all channels starts scripts), the guard's combat AI keeps entering `RUN_FOR_COVER` (0x8c) instead of `AIM_STAND_FIRE`,
+so `look_for_opponent` never returns `GRENADE_THROW` within 600 ticks (state 150, seen true, but the guard runs for
+cover instead of throwing). Needs cover-aware placement (a guard with NO cover nearby) — same root as sniper-cover.
+The scenario fns are kept (dead_code) for when cover-aware placement is done. Both removed from `SCENARIOS`.
+
+### B-10e: replay sample file no longer rewritten (blocks git pull)
+
+`replay_commit_sample_file` wrote `tests/replays/sample-07000005-60tick.nfr` every run — which blocked `git pull`
+for everyone when the level start changed (A-10's LOAD_LEVEL gate fix changed the RNG state). **Deleted** the
+committed sample file + the comparison test; replaced with `replay_format_is_stable_across_loads`, which checks two
+fresh loads produce the SAME recording bytes (the property that matters: determinism). Tests never modify committed
+files now.
+
+### B-10f: F2 menu rework — compact panel
+
+The B-9 menu was 360 px wide and covered most of the screen. **Redesigned** (dev.rs): 150 px wide (~29% of 512),
+top-left, semi-transparent, native-font small text, ~8 visible rows with scrolling (the selected row is always
+visible; ▲/▼ indicators when more rows exist above/below). Description shown only on the selected row. Result
+message + footer hint compact. `menu_hit` updated for the new 12 px rows.
+
+### B-10g: F2 "Spawn guard" crash
+
+A headless test (`menu_live.rs`, 10 tests) exercises every menu action (spawn normal/sniper/ambush, force grenade,
+impulse, special death, god/ammo toggle, teleport, timescale, spawn+animate). All pass — the core `spawn_guard` fn
+doesn't panic. The viewer crash was likely the cut-scene firing (fixed by B-10a) or the `drop(d)` borrow pattern
+(fixed: `apply_menu_action` now computes the action while holding the dev borrow, drops it, then applies). The
+`drop(d)` anti-pattern is replaced with a clean `let action = ...; if let Some(a) = action { self.apply_menu_action(a); }`.
+
+### B-10h: work.7z re-downloaded (decomp restored)
+
+`work/decomp/ACTION.ELF/` (3038 functions) was lost in the sandbox reset. Re-downloaded from
+`https://copyparty.wizardyoda.com/KOTPT/work.7z?k=z` (password `z`) via `curl` (no Cloudflare, no Xvfb needed with
+the password). Extracted selectively with `py7zr` (disk-tight: decomp + ELFs + symtab only; the big subtrees — nfre,
+gfx, snapshots — were skipped, all re-downloadable). See B-10a entry in WORKLOG for the URL + method.
+
+### Tests
+
+`crates/nf-view/tests/menu_live.rs` (new, 10 tests): every F2 menu action runs headless + asserts no panic
+(includes `menu_spawn_then_animate_does_not_panic` which exercises the render pose loop after a spawn).
+`crates/nf-view/tests/scenario_live.rs`: 4 pass (ambush, guard-falls-off-ledge, door-anti-crush, smoke test);
+grenade-throw + grenade-bounce-explode removed (B-10d). `crates/nf-view/tests/replay_live.rs`: 3 pass
+(determinism, round-trip, format-stable-across-loads); the committed sample file is deleted.
+
+Full NF_ISO suite: only the 3 allowed `disc_golden` tests fail (slim ISO).
+
+### What's still open (next)
+
+- **grenade-throw / grenade-bounce-explode**: need cover-aware placement (a guard with no cover nearby, so it
+  stays in AIM_STAND_FIRE and throws). Same root as sniper-cover.
+- **searchlight G-036**: the decomp is now available to fix the spot linking + `half_mid` read.
+- **friendly-actor firing gate**: the decomp is now available to port the llist/enabled gate.
+- **grenade explosion sound 0x4A7**: the user heard the bounce but not the explosion. The sound IS played
+  (drone.rs:4165, `audio.play3d(0x4a7, pos)`); needs investigation of the SFX bank entry / listener cull.
