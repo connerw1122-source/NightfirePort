@@ -3913,6 +3913,7 @@ impl Drones {
         let alive = self.health.health > 0.0;
         for k in 0..self.pickups.len() {
             let p = &mut self.pickups[k];
+            if p.gone { continue; }
             p.fall(d.world);
             // The distance test runs from the player's position (+0x30) but the LOS from his world-sphere
             // centre (+0x80) — two different points [M 0x18e148:203-214 + L]. Port-check §1: the old call
@@ -3943,7 +3944,14 @@ impl Drones {
                 if p.lifetime == 0 { p.gone = true; }
             }
         }
-        self.pickups.retain(|p| !p.gone);
+        // fix-objects: taken/expired pickups STAY as tombstones (`gone`). The renderer draws placed
+        // pickup slot `k` with build-time placed_pickups[k]'s mesh and poses it at
+        // `self.pickups[k].m` (scene.rs `add_instance` + the pickup pose step); `View_DrawObjectGlist`
+        // (0x1e6780) draws each pickup object's OWN glist at its OWN matrix — the game never reorders
+        // a live pickup under a drawn instance. The old `self.pickups.retain(|p| !p.gone)` shifted
+        // every later slot by one on the first take, so meshes were drawn at other pickups' and
+        // drops' matrices (the user's "007 model at the armour spot" / "wrong model at the drop").
+        // Every consumer already filters `gone`/`hidden`.
     }
 
     /// Turns a switch channel on (callers and tests).

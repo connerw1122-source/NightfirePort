@@ -1405,18 +1405,22 @@ impl Scene {
                     let sound = param(4) as u16;
                     let respawn = param(5) & 0xFFFF;
                     let lifetime = 0u8; // always 0 for level-placed pickups (rest=1 in the game)
-                    // The model: the placement's object hashcode (the celglist passed to Pickup_Create).
-                    let (model, bounds) = if p.by_hash() {
-                        let h = p.hashcode;
-                        level.by_hash.get(&h).and_then(|&(om, oi)| {
-                            let obj = &level.maps[om].objects[oi];
-                            hoist_models.get(&obj.hashcode).map(|&m| (obj.hashcode, m))
-                        })
-                    } else if (p.index as usize) < level.maps[mm].objects.len() {
-                        let obj = &level.maps[mm].objects[p.index as usize];
-                        hoist_models.get(&obj.hashcode).map(|&bm| (obj.hashcode, bm))
-                    } else { None }?;
-                    nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn, lifetime, model, bounds, &placed_weapons)
+                    // The model: the placement's object (the celglist passed to Pickup_Create, [M]
+                    // 0x1d04f0:459-462). fix-objects: keep the RESOLVED object — the game draws the
+                    // glist pointer, not a hashcode re-lookup, and an object with hashcode 0xFFFFFFFF
+                    // (07000005's `oOBJECT_AmmoPickUp_9mm` [D]) has no by-hash entry, so the old
+                    // `model`-hash fallback left those pickups undrawn. The bounds are the object's
+                    // own (the glist's), not the first hashcode match's.
+                    let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                        else if (p.index as usize) < level.maps[mm].objects.len() { Some((mm, p.index as usize)) } else { None };
+                    let (model, bounds, obj) = target.and_then(|(om, oi)| {
+                        let obj_ = &level.maps[om].objects[oi];
+                        hoist_models.get(&obj_.hashcode).map(|&m| (obj_.hashcode,
+                            nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, (om, oi)))
+                    })?;
+                    let mut p2 = nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn, lifetime, model, bounds, &placed_weapons)?;
+                    p2.obj = Some(obj);
+                    Some(p2)
                 })
                 .collect();
 
@@ -1724,7 +1728,12 @@ impl Scene {
             // instance at all and was invisible while fully takeable.
             for (pi, p) in placed_pickups.iter().enumerate() {
                 if p.gone || p.hidden { continue; }
-                let Some(&(om, oi)) = level.by_hash.get(&p.model) else { continue };
+                // fix-objects: draw the RESOLVED object (`Pickup.obj` — the game draws obj+0xD8, the
+                // celglist handed to `Pickup_Create`, not a hashcode re-lookup). The by-hash fallback
+                // stays for pickups built without an object (tests) but cannot show an object whose
+                // own hashcode is 0xFFFFFFFF (07000005's `oOBJECT_AmmoPickUp_9mm` [D]).
+                let target = p.obj.or_else(|| level.by_hash.get(&p.model).copied());
+                let Some((om, oi)) = target else { continue };
                 let inst = Instance { map: om, object: oi, matrix: p.m, placement: level.maps[om].placements.first().cloned().unwrap_or_default() };
                 add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, None, Some(pi as u16), [1.0; 3], &room_cels);
             }
@@ -1842,18 +1851,23 @@ impl Scene {
                     let sound = param(4) as u16;
                     let respawn = param(5) & 0xFFFF;
                     let lifetime = 0u8; // always 0 for level-placed pickups (rest=1 in the game)
-                    // The model: the placement's object hashcode (the celglist passed to Pickup_Create).
-                    let (model, bounds) = if p.by_hash() {
-                        let h = p.hashcode;
-                        level.by_hash.get(&h).and_then(|&(om, oi)| {
-                            let obj = &level.maps[om].objects[oi];
-                            pickup_models.get(&obj.hashcode).map(|&m| (obj.hashcode, m))
-                        })
-                    } else if (p.index as usize) < level.maps[m].objects.len() {
-                        let obj = &level.maps[m].objects[p.index as usize];
-                        pickup_models.get(&obj.hashcode).map(|&bm| (obj.hashcode, bm))
-                    } else { None }?;
-                    nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn, lifetime, model, bounds, &weapons)
+                    // The model: the placement's object (the celglist passed to Pickup_Create, [M]
+                    // 0x1d04f0:459-462). fix-objects: keep the RESOLVED object — the game draws the
+                    // glist pointer, not a hashcode re-lookup, and an object with hashcode 0xFFFFFFFF
+                    // (07000005's `oOBJECT_AmmoPickUp_9mm` [D]) has no by-hash entry, so the old
+                    // `model`-hash fallback left those pickups undrawn. The bounds are the object's
+                    // own (the glist's), not the first hashcode match's.
+                    let m_map = m;
+                    let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                        else if (p.index as usize) < level.maps[m_map].objects.len() { Some((m_map, p.index as usize)) } else { None };
+                    let (model, bounds, obj) = target.and_then(|(om, oi)| {
+                        let obj_ = &level.maps[om].objects[oi];
+                        pickup_models.get(&obj_.hashcode).map(|&m| (obj_.hashcode,
+                            nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, (om, oi)))
+                    })?;
+                    let mut p2 = nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn, lifetime, model, bounds, &weapons)?;
+                    p2.obj = Some(obj);
+                    Some(p2)
                 })
                 .collect();
             drones.pickups.extend(placed_pickups);
@@ -1985,7 +1999,10 @@ impl Scene {
                 return self.sim.as_ref().and_then(|s| s.script_entity((h, si), hash)).unwrap_or(far);
             }
             if a.dropped {
-                let p = drone_of(a.character as usize).and_then(|(s, di)| s.drones.pickups.iter().find(|p| p.from == Some(di) && !p.hidden));
+                // fix-objects: `!p.gone` — a TAKEN drop stays in the list as a tombstone (drone.rs
+                // `update_pickups` keeps the Vec indices stable for the draw slots) and must not be
+                // drawn; the game deleted the object (`Pickup_Handler` 0x18e650:338-348).
+                let p = drone_of(a.character as usize).and_then(|(s, di)| s.drones.pickups.iter().find(|p| p.from == Some(di) && !p.hidden && !p.gone));
                 return p.map_or(far, |p| p.m);
             }
             let c = &self.characters[a.character as usize];
@@ -2135,8 +2152,9 @@ impl Scene {
                         if a.dropped {
                             // The dropped gun is a pickup object (`DroneWeap_DropWeapon` → `Pickup_Create`
                             // 0x18dda0, the same forced 0x840): the ambient dim at its drop matrix.
+                            // fix-objects: `!p.gone` — taken drops stay as tombstones (see the pose step).
                             return match s.char_drone.get(a.character as usize).copied().flatten()
-                                .and_then(|di| s.drones.pickups.iter().find(|p| p.from == Some(di) && !p.hidden)) {
+                                .and_then(|di| s.drones.pickups.iter().find(|p| p.from == Some(di) && !p.hidden && !p.gone)) {
                                 Some(p) if tintable(p) => amb_at(s, &p.m),
                                 _ => one(),
                             };
