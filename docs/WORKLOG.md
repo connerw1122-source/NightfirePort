@@ -3574,3 +3574,70 @@ dtypenew 7/9/0x17-0x19 (0x169e58 case 8) while the port routes explosive hits th
   message builds the name from `+0x24` [M 0x18e650:246]) while the remapped id drives the owned-check/equip.
 - The audit also flagged that `prime()`'s mask ≠ 0 gate is a deliberate deviation (the game loads mask-0
   SPs at create too) — documented in pickup-port-check §8/§9 and the code comment.
+## fix-drone2 — the guard bugs still failing in play (user playtest at 75fbad4)
+
+**Bug 1 — 07000001: no guard ever threw a stun grenade. Conclusion: the port already matches the game; no code change.**
+The two param-11 carriers [D 07000001.bin, A3-verified]: guard A skin 0x05000036 at (−30.058, 10.308, 13.443),
+param 11 = 0x13 → 3× stun (0x36), switch channel 0x26 (TOUCH plates 311/312); guard B skin 0x0500003A at
+(6.950, 6.424, 2.200), param 11 = 0x11 → 1× stun, switch channel 5. What blocks the throw — "the state
+they're in", both game-accurate [M]:
+- Guard A: DTYPE 2 (param 15) × normal block mode 2 (param 16) → `NDrone2_GetDTYPENEW` 0x14c938 case 2 →
+  dtypenew 2 = sniper (alertness +0x50C < 1 at creation; `GetDroneTypeAttackTypeFriend` 0x14cbd8 runs only
+  from `DoModeSettingsNEW` 0x14c600 — no runtime re-typing). The sniper states (SniperIdle/Aim/Fire/Reload
+  0x15fab0/0x15fc18/0x15fd88/0x15ff80) never call `DroneWeap_CanThrowGrenade` and never enter the combat
+  family: its only caller is `DroneFunc_CombatState` 0x148338, cases 0x10 (state 0x68, gated on
+  `(+0x568 & 0xFFFF00FF) == 0xA0002`) and 0x18 (state 0x70, ungated — audit). Sniper exits: reload 0x2c,
+  aim 0x2a, and melee 0x72 (`NDrone2_CanAltAttack` 0x1549e0, dist ≤ 1.5 — **not ported**, noted as a gap).
+- Guard B: dtypenew 0 — a normal combat guard that WOULD throw (`dtype_of` matches GetDTYPENEW), but he
+  waits on channel 5 and **nothing on the disc ever raises channel 5**: no trigger outputs it (all 11
+  outs listed in the test), the NIS scripts' only event-0xD writes ch 0x0e, no pickup's +0x28 is 5, no
+  death channel is 5 [D]. [L work/ee_start_07000001.bin] every drone starts disabled (obj+0xF0 0x8b0).
+The headless repro (this session's first test run, shown failing: "no guard reached GRENADE_THROW; last
+states [0x2c, 0x1]") + NF_AILOG (can_throw_grenade now logs every evaluation) reproduce exactly this:
+guard A cycles SNIPER_FIRE/SNIPER_RELOAD and never evaluates the throw; guard B never leaves WaitSwitch.
+`grenade_live.rs` (unchanged) keeps proving the throw machinery itself green. Locked by
+`stun_grenade_live.rs::stun_grenade_guards_match_the_game_on_07000001`.
+
+**Bug 2 — 07000002 bathhouse: the frozen "guard next to a civilian". Conclusion: the port matches the atlas; no code change.**
+07000002 has no spawners [D], so nothing is "held". 24 of 25 drones wait on switch channels raised by
+TOUCH_ONCE plates (ch 0x15: plates 341/383 — 383 is the ground-floor plate beside the civilian; ch 0x17:
+plates 342/343/424 — the trio around the ally 0x05000034 at (−45.5, 5.8, 12.2)); the civilian (0x0500004F,
+DTYPE 0xC, no channel) is the only skinned character live at start and runs his dtypenew state (0x1c).
+After the first ticks every waiter is in WaitSwitch with enabled=false, drawn=false — the fix-core rule —
+and wakes into its start state when the plate channel fires (verified for 0x15 by walking Bond over the
+real plates and for 0x17 by firing the channel): `bathhouse_live.rs::bathhouse_guards_wake_when_their_plates_fire`
+(green). What the user's screenshot shows could not be reproduced in the port's data path: no mechanism
+leaves a 07000002 guard drawn-and-frozen (a pre-fix-core build or the deliberate R "reinforcements view"
+are the remaining explanations). What I could NOT verify: nf-view's actual render (no GPU in the sandbox).
+
+**Bug 3 — 07000005: the ledge cut-scene left of the castle gate is missing its guards. FIXED (one line).**
+The cut-scene is SP 298's NIS 0x06000994 (camera, 1400 ticks), started by TOUCH plate 301 (out 0x43,
+lock 0xb3) at (24–26, 31–33, 71–72) — the ledge left of the gate [D]. Streams 1/3 carry the guards
+(skins 0x05000030/0x0500002E) and stream 14 Bond (0x05000007). Root cause [M]: the guards' danim
+scripts 0x06000996/0x06000997 each hold TWO overlapping opcode-0 commands — a 22-channel face track
+(frames 1..1500) and the 222-channel body track (frames 1..1401) [C3, C4-verified]. The game starts
+every op-0 command whose window the script time enters (`AnimProcessScriptCmds` 0x1c1b38 → `AnimSeqSet`,
+in command order) and the palette lets the later-started track own the shared bones. The port's
+`script_frame` (nf-game/src/anim.rs) picked the FIRST covering command — the 22-channel face track —
+which cannot pose the 73-bone skeleton (`fits` false), so the view's pose chain returned None and both
+guards drew nothing while Bond (single-sequence script 0x06000995) showed fine. Fix: `script_frame` now
+returns the LAST covering op-0 command (shared-file change, minimal). Fail-before:
+`ledge_live.rs::the_guard_anim_scripts_resolve_to_sequences_that_fit_their_skeletons` (failed pre-fix:
+"sequence 040007fa must fit skin 05000030's skeleton"), green after; sister inside the same test pins
+the single-sequence drone start scripts (060002f2) to their only sequence. Also:
+`the_ledge_cutscene_creates_its_guard_characters` (the sim creates and animates all three cut-scene
+characters — that part already worked).
+
+**Also this session**
+- `nf-extract` ai_sim's `Player` init gained `sph` (fix-player added the field; nf-extract no longer
+  compiled) — shared-file fix, one line.
+- NF_AILOG: `DroneWeap_CanThrowGrenade` (drone.rs) logs every evaluation's inputs; the AIM_STAND_FIRE
+  gate logs its inputs whenever the guard holds grenades (replaces the old can_throw-only log).
+
+**Shared files touched**: `nf-extract/src/main.rs` (sph), `nf-game/src/anim.rs` (script_frame — this is
+the bug-3 fix itself; noted because anim.rs is outside this task's drone/spawners/nis list).
+
+**Could not verify, and why**: nf-view rendering end-to-end (no GPU); the user's bug-2 screenshot
+mechanism (nothing in the port's data path draws a frozen 07000002 guard); guard B's channel 5 writer —
+if the game ever raises it, it is not via triggers, NIS events, pickups or death channels on this disc.
+Sniper melee (`NDrone2_CanAltAttack` → state 0x72) remains unported (pre-existing gap, docs flagged it).
