@@ -3574,3 +3574,73 @@ dtypenew 7/9/0x17-0x19 (0x169e58 case 8) while the port routes explosive hits th
   message builds the name from `+0x24` [M 0x18e650:246]) while the remapped id drives the owned-check/equip.
 - The audit also flagged that `prime()`'s mask ≠ 0 gate is a deliberate deviation (the game loads mask-0
   SPs at create too) — documented in pickup-port-check §8/§9 and the code comment.
+
+## 0087 — fix-render: the 0x800 TWEAK/ambient multiply (characters/guns too bright), HUD cut-scene gate
+
+Task: the user's "characters and guns too bright while the world is right" (master 75fbad4), plus the
+HUD-visible-in-cut-scenes report; decals if the budget allowed. Branch `s/fix-render`. Sources of
+truth: `docs/atlas/gs-leaf.md`, `docs/atlas/render-port-check.md` §1, `docs/atlas/cel.md`.
+
+**Root cause (already documented by atlas-5)** [M 0x1e5888 + 0x1cb178]: the game dims every
+`obj+0xF0 & 0x800` object by `tint × obj+0x100..0x102 >> 8` (the VU1 `TAmbient` term), with the
+ambient bytes snapped to the object's cel's ambient; the port never applied the multiply.
+
+**What was ported** (files: `crates/nf-view/src/{scene,lib}.rs`; gpu.rs unchanged — the multiply
+lives on the vertex bytes, the same carrier the game's VU1 matrix uses):
+- `parse_room_cels` (scene.rs): the main map's cel placements with low-16 flags 0xc023/0xc047 become
+  `Cel`s — ambient triple 1 = placement params 0/1/2 low bytes (all zero → 0x3c), triple 2 = params
+  6/7/8 (0xc047), zone = param 5, bbox = the glist min/max. Pinned by disassembly:
+  `parsemap_block_map_data_static` 0x1d1998 builds a 0xb0 stack record whose +0x2c+4k slot is
+  placement param k (the params store base is sp+0x2c, the record passed to
+  `parseentity_fixup_entity` is sp), and `parseentity_fixup_entity` 0x1d00c0 reads the ambient bytes
+  at record+0x2c/0x30/0x34, the zone at +0x40 (0xc047) and the second triple at +0x44/+0x48/+0x4c.
+  The bbox is copied raw (record+0x20, 0x20 bytes → cel+0x40) — only the centre at cel+0x80 gets the
+  placement transform (`parseentity_transform_bounding_box` 0x1d0fb0) — and the record itself is
+  `parsemap_block_entity_params` 0x1d1508's payload+8 mapping (centre/radius/min/max), so the port's
+  `MapObject.min/max` are the cel bbox.
+- `find_cel` (0x1c8cb0's walk over the flags-0x40000 room cels, inclusive bbox, cap 0x40). [L]
+  ee_start_05.bin: 137 runtime cels, exactly 19 with 0x40000; ee_start_07000001.bin: 120/11 — the
+  port parses 19 and 11. Multi-cel overlaps: the smallest-volume cel wins (*deviation*; the game
+  raycasts up/down — no per-cel object lists to raycast against).
+- `Sim::ramp_char_ambient` per tick (the last step of `run`, where
+  `control_movement_object_handler` 0x1336f8 calls it in the game): snap once from the 0xff,ff,ff
+  sentinel (`control_init_object` 0x134630 / `control_link_object_to_cel` 0x1346b8), then
+  `clr_step` = `ClrStep` 0x1e8a48 disassembled — `(target−cur)·0.1`, min ±1 byte. The 0x10000
+  doubled targets (night vision) are unreachable in the port (no goggles). View models follow
+  Bond's sphere, drone-backed characters their drone, script characters their live entity matrix.
+- The multiply: `Scene::posed_vertices` multiplies the Character-layer tail's rgba by
+  `(tint × ambient) >> 8 / 255` per character (white tint — `Script_SetColour` is not ported; the
+  0x7f/0/0 tint of `Player_InitWeapon` 0x1a7ef8 belongs to the laser-dot object 0x2000132, not the
+  view model); static non-cel World instances with glist flags & 0x800 (flagged pickups/props) get
+  the same multiply snapped at build; world-cel geometry stays byte-identical (the game's
+  `View_DrawCelGlist` 0x1e6538 forces the white tweak). Muzzle flashes/tracers/dropped guns keep 1.0.
+- The HUD gate: `nf_view::overlay_for` returns an empty overlay while a script camera runs —
+  `Script_CameraStart` 0x1d9140 → `Camera_Enable` 0x1b9920 clears `viewer+0x2a` and `Game_Draw`
+  0x1e6f50 skips the whole sprite pass; [D ee_start_07000001.bin] the opening cut-scene has
+  viewer[0]/[5] +0x2a = 0 with `ScriptCam`@0x30d100 ≠ 0. All HUD elements hide together in the game;
+  the letterbox bars are not ported (G-031).
+
+**Tests** (`crates/nf-view/tests/character_lighting_live.rs`, all NF_ISO, all failed before the fix
+— the pre-fix port returned multiplier 1.0 for every character):
+- guard + view model = (57,70,86)/255 on 07000005 [L ee_start_05.bin], sister: ≠ 1.0 and ≠ the first
+  cel's (27,40,56) [L cel.md] — a naive "level ambient" port fails;
+- view model = (40,30,26)/255 [L Bond's cel 0x191c860] and all three drone triples (60,60,60),
+  (45,30,30), (80,80,70) [L] hit on 07000001; sisters: no guard at 1.0, room-cel parse = 11;
+- world-cel geometry vertex-identical to the source object bytes; sister: 19 room cels [L] and one
+  carries (57,70,86);
+- the HUD overlay draws before the cut-scene, empties while the script camera is live on 07000001
+  (channels armed like the viewer's K key), sister pins the gate to the camera.
+
+**Not done / left open**
+- Bullet decals → documented with all functions and offsets in GAPS G-041 (budget).
+- The 07000002 bathhouse-civilian skin-texel check → GAPS G-042 (budget; the TWEAK fix covers the
+  reported over-bright cause).
+- Unverified this pass: `bTweakBrightness`'s reader (still suspected in hand-written VU1); the
+  second-triple semantics for 0xc023 cels (the port reuses triple 1 — no observed level sets their
+  zone channel); whether dropped-pickup objects carry 0x800 (kept at 1.0).
+- Shared-file touches (minimal, noted per the rules): `lib.rs` — `posed_vertices` now delegates to
+  `Scene::posed_vertices`, `overlay_for` (new, pub), its two call sites.
+
+**Full suite**: NF_ISO=<iso> cargo test --offline --release -j2 -p nf-game -p nf-formats -p nf-audio
+-p nf-view -- --test-threads=1 — see the commit; only the 3 pre-existing `disc_golden` failures
+(slim-ISO mismatch) are allowed.
