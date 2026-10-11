@@ -3056,3 +3056,64 @@ The frustum cull was disabled by default in ade4779 after the truck/HUD/doors va
 - **Truck route (a):** the gate-guard chain is verified — Bond walking through the gatehouse sets ch 0x22, the spawner spawns the guard, and the level ends. In play, the guard's patrol AI (Session B/C) needs to keep it at the post.
 - **Door auto-close:** the disassembly says the 07000001 sliding doors DO auto-close after 6 s. I will not remove it. The user should test: press E on placement 13, walk 3+ m away, wait 7 s. If it doesn't close, we have a build mismatch.
 - **Brightness:** NOT an A-11 regression. The character brightness is the pre-existing TWEAK/VU1 gap.
+
+## atlas-1 — the structure atlas begins: object/control list entry and the Drone
+
+Branch `s/atlas-1` (from master 5d0d1c5). Docs only, no Rust changes. Sandbox session; the
+`work/` research tree was re-fetched for this session (decomp/ACTION.ELF 3039 fns,
+action-symtab.tsv, ee_start_05.bin; the share's volume path is deliberately not recorded here —
+the bare path from the task notes 403s). ACTION.ELF pulled from the slim ISO; SHA-1 `e7ffdcb3…` verified before use.
+
+Delivered: `docs/atlas/README.md` (format + tags), `docs/atlas/object.md` (the 0x110-byte
+`obj_tag` header, the three lists, `control_funcs` decoded — all 85 classes with fn@addr, the
+`control_movement_object_handler` 0x1336f8 update order, the full placement-type → creator
+dispatch from 0x1d04f0), `docs/atlas/drone.md` (NDrone2 0xD20 instance: DIVars at `Drone+0xC00`,
+param map, field table, the `+0x4F8` flag word, present/started/enabled/in-llist game-side), and
+`docs/atlas/drone-port-check.md` (141 unique offsets audited).
+
+Findings that matter:
+
+1. **The port reads grenades from the wrong placement word.** `NDrone2_DefaultInit` 0x14b300
+   takes the DIVars = `Drone+0xC00`; params start at `piVar19[13]` (`Drone+0xC34` = the 33-word
+   copy of `placement+0x2C`, verified by disassembly of `Drone_Create` 0x136be0). The grenade
+   raw value is `piVar19[0x18]` = **param 11**, not param 24 (0x18 hex was misread as decimal
+   24). The port's decode switch itself matches (1→0x36, 2→0x35, 4→0x34, 5→count+0x3A count 1,
+   6→0x6C count 1). Silent on 07000005 (params[11] = 0 everywhere [L]); wrong on any level with
+   grenade carriers.
+2. **`Drone+0xCD8` is the Disabled-state resume state** (`NDrone2_DSTATE_Disabled` 0x172440
+   passes it to `Drone_SM_SetState`), not "death channel pending" nor "CombatNoRoute
+   alternation" as the port comments say.
+3. **`Drone+0xD8` is the voice set** (u16, from the model-id switch); the damage docs' "type
+   +0xD8" conflates it with dtypenew `+0xC5`/DTYPE `+0xC7`. And `obj+0xD8` (glist ptr) is a
+   third, different field.
+4. **`obj+0xEC` (Rand 10000 wobble) is overwritten later** — live [L] value 0x1A677 > 10000 on
+   every 07000005 drone; the writer is unidentified (U-item worthy).
+5. **List head ground truth by disassembly**: `control_first_object` 0x134300 loads
+   0x2705b4 = head+0x14 — the decompiler's `DynamicObjList._20_4_` display is skewed by its
+   global typing. First/last at head+0x14/+0x18, prepend via `control_add_object_to_list`
+   0x134698 (next obj+0x14, prev obj+0x18); ForcedList 0x270590 uses obj+0x00/+0x04 (why
+   creation zeroes the first two words); drone LList 0x298e14 = {first, last, u16 count, u16
+   size} with instance+0x00/+0x04 links, `LList_Add` 0x1cca28 appends.
+6. **Sphere**: `Control_BuildWorldSph` 0x133070 — prev sphere at +0x70..+0x7F, world centre
+   +0x80, radius +0x8C = glist+0x1C·|scale| (flags2&0x100 keeps the old radius; flags2&0x8
+   takes the local sphere from `*(obj+0xDC)` = the AnimObject, whose +0x110..0x113 are the four
+   LOD fade bytes `View_AddObjects` writes).
+7. **`NDrone2_Enable` 0x149dd0**: disabled = `obj+0xF0 |= 0x30` + `Drone+0x4F8` &= ~0x1801A0;
+   enabled = the reverse + `Drone+0x4F8 |= 0x801A0`. The port's `enabled` (obj flags 0x30) is
+   confirmed; [L] 07000005 shows exactly the four enabled drones with `& 0x30 == 0` and the
+   0x80000 bit set.
+8. Snapshot checks [L] (13 drones, 523 objects, DynamicObjCount 0x30ca98 = 523): sniper
+   obj 0x01382bc0 — `+0xC5` = 2, `+0x5A2` = 0x29 mirrored to `obj+0xF4`, `+0x4F8` =
+   0x0019A1F2 (stationary bit), back-refs `Drone+0xC`/`+0xC00` = obj, params[3] = `+0x134`,
+   params[4] = `+0x144`, params[0] = `+0xE0` all equal; channel-waiters disabled per above
+   with collapsed 0-radius spheres; state-machine ids 1..13 newest-first.
+
+Not verified this pass (carried in drone-port-check.md as UNVERIFIED, grep evidence only): the
+vision cluster (+0x228/0x22C/0x230/0x270/0x274), the hearing cluster (+0x510/0x514/0xAF0/0xB38/
+0xB3C/0x33/0x34/0x43), the anim-call cluster (+0x568..0x57B, +0x54C), cover (+0xBB4/0xBB8/0xBBB/
+0x830/0x710), routes (+0x970/0x860 port semantics vs `AIRoute` internals), +0x1A0/+0x1C4
+opponent geometry, +0x150/+0x470/+0x1D8 damage history, +0xCD0 timer D. These restate
+docs/systems/drone-*.md claims written from the same decomp; re-measure on contact.
+Subagent dispatch failed on infrastructure errors, so the audit was done in-session by one
+agent — an independent re-audit of the MISMATCH items (especially grenade param 11) is worth a
+follow-up pass.
