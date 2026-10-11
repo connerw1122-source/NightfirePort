@@ -266,10 +266,23 @@ impl Script {
                         next = pc + 2;
                     }
                     0x13 | 0x14 | 0x15 | 0x18 | 0x1a | 0x1b | 0x1d | 0x1e => {
-                        // Handlers not read yet: their argument lengths are unknown, so the stream stops here.
+                        // The game has handlers for every one of these (`Script_Run` 0x1d8548:80-118 dispatches
+                        // 0x13 FadeStart, 0x14/0x15 sprite start/end, 0x18/0x1A light start/end, 0x1B/0x1D
+                        // nested-subscript start/end, 0x1E text start) and each handler consumes its arguments
+                        // from the pc; `Script_Run` then adds the opcode's byte and the common +1 (line 120).
+                        // Argument BYTES, counted from the handlers' BIN_Get calls [M: FadeStart 001db3d0 1×
+                        // GetFloat = 4; SpriteStart 001d9300 5×GetWord + GetDWord = 14; SpriteEnd/LightEnd/
+                        // SubScriptEnd 001db3b0/001db298/001db148 no reads = 0; LightStart 001db1b0 3×
+                        // GetByte = 3; SubScriptStart 001db050 GetDWord + 2×GetByte = 6; TextStart 001db2b8
+                        // GetDWord + GetWord = 6] — the atlas's "N reads" column mixed call counts with bytes
+                        // and was corrected. The port does not model sprites, lights, subtitles, nested
+                        // scripts or the fade (view/audio-side objects), so the command is consumed and the
+                        // stream CONTINUES — the old placeholder halted the stream from the opcode onward
+                        // (port-check §5).
+                        let arg = match op { 0x13 => 4, 0x14 => 14, 0x15 | 0x1a | 0x1d => 0, 0x18 => 3, 0x1b => 6, 0x1e => 6, _ => 0 };
+                        if cmds.len() < pc + 2 + arg { self.streams[i].pc = None; return; }
                         out.push(Request::Event { kind: 0x80 | op, params: Vec::new() });
-                        self.streams[i].pc = None;
-                        return;
+                        next = pc + 2 + arg;
                     }
                     // `Script_Run`'s default: a one-byte command.
                     _ => {}
@@ -354,7 +367,14 @@ impl Script {
         }
         let g = |k: usize| p.get(k).copied().unwrap_or(0);
         match kind {
-            3 => self.delay = g(0) as i32 - 1,
+            3 => {
+                // `SCRIPTINFO+0x9C = p0 − 1` (the delay), then every stream's object gets
+                // `Vec_Copy2(obj+0xC0 → obj+0x30, obj+0x40)` — the position snapped to its matrix before the
+                // pause [M 0x1d94c0:98-117, port-check §6]. The port's streams hold no separate position:
+                // `Obj::Entity.matrix` IS the animated matrix, so the sync's invariant (position == matrix
+                // while paused) holds by construction.
+                self.delay = g(0) as i32 - 1
+            }
             4 => out.push(Request::PlayerDisable),
             // Where the player comes back: the previous stream's entity (else where he is), applied by `Script_Free`.
             6 => {
@@ -517,6 +537,24 @@ impl Player {
 
     fn other(&self) -> Option<u32> { Some(self.scripts[self.cur ^ 1]).filter(|&h| h != 0) }
 
+    /// `SP_CreateScriptPlayer@0x1db9a8:81-86`'s load beat: mode A ∉ {0, 1} loads the script immediately and
+    /// `SP_LoadScript@0x1dbc08:41-55`'s mode dispatch leaves it **primed in state 1 after having run once**
+    /// (mode 64's arm is play+update+stop; mode 8 plays looping and leaves state 6) [M]. The game does this
+    /// during the level load; the port runs it once at the start of the first `Scripts::tick` [L ee_start_05.bin:
+    /// the 07000005 EndLevel SP (script 0x6000A23, mode 64) is primed in state 1 with its clock at 2.0 at level
+    /// start, and the disabled looping pair (modes 8, mask 0) already plays].
+    fn prime(&mut self, lib: &HashMap<u32, Arc<Nis>>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>) {
+        // Mask 0 (state 6) SPs also load at create in the game — the disabled looping pair on 07000005
+        // (0x16ddb40, modes 8,8, mask 0) is loaded and playing behind its `+0x36` freeze [L]. The port has
+        // no disabled byte (port-check §9), so priming those would set a frozen-in-the-game script running;
+        // only mask ≠ 0 SPs are primed (the live EndLevel case: mask 1, mode 64, state 1, clock 2.0 [L]).
+        if self.mask == 0 { return; }
+        if self.state != 0 && self.state != 6 { return; }
+        let m = self.modes[0];
+        if m == 0 || m == 1 { return; }
+        self.load(lib, objs, ch, w, frame, out);
+    }
+
     /// `SP_LoadScript` (0x1dbc08).
     fn load(&mut self, lib: &HashMap<u32, Arc<Nis>>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>) {
         let cur = self.cur;
@@ -619,13 +657,16 @@ pub struct Scripts {
     pub objects: Objects,
     /// Requests of the last tick (sounds, events not carried out).
     pub requests: Vec<Request>,
+    /// The create-time load beat (`SP_CreateScriptPlayer`'s immediate `SP_LoadScript` for mode A ∉ {0, 1})
+    /// runs once at the first tick — the game does it during the level load [M 0x1db9a8:81-86].
+    primed: bool,
 }
 
 impl Scripts {
     /// The scripts (`lib`) and the players placed on the main map.
     pub fn new(lib: HashMap<u32, Arc<Nis>>, placements: &[Placement]) -> Scripts {
         let players = placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xd9).filter_map(|(i, p)| Player::from_placement(i, p)).collect();
-        Scripts { lib, players, objects: Objects::default(), requests: Vec::new() }
+        Scripts { lib, players, objects: Objects::default(), requests: Vec::new(), primed: false }
     }
 
     /// The live cut-scene camera (the newest): world matrix and vertical field of view.
@@ -635,6 +676,12 @@ impl Scripts {
 
     pub fn tick(&mut self, ch: &mut Channels, w: &dyn World, frame: u32) {
         self.requests.clear();
+        if !self.primed {
+            self.primed = true;
+            let mut out = std::mem::take(&mut self.requests);
+            for p in &mut self.players { p.prime(&self.lib, &mut self.objects, ch, w, frame, &mut out); }
+            self.requests = out;
+        }
         for p in &mut self.players { p.update(&self.lib, &mut self.objects, ch, w, frame, &mut self.requests); }
     }
 }
@@ -696,5 +743,55 @@ mod tests {
         }
         let weapon = objs.list.iter().flatten().find_map(|o| match o { Obj::Anim { weapon, .. } => Some(*weapon), _ => None });
         assert_eq!(weapon, Some(6), "Event 0xB should set the Anim's weapon byte to 6 (Handgun)");
+    }
+
+    /// The eight unhandled opcodes (0x13 fade, 0x14/0x15 sprite, 0x18/0x1A light, 0x1B/0x1D subscript,
+    /// 0x1E text) consume their arguments and the stream CONTINUES — the game has handlers for all of them
+    /// (`Script_Run` 0x1d8548:80-118) [M; port-check §5]. Before the fix the stream halted (`pc = None`) and
+    /// everything after the opcode never ran.
+    #[test]
+    fn sprite_fade_light_text_opcodes_do_not_halt_the_stream() {
+        // Op 0x13 (fade, 4 arg bytes: a float) + op 0x14 (sprite, 14 arg bytes) + op 0x1E (text, 6 arg
+        // bytes), then a real event 0xD (channel 0x33 = 1) and a stream end. The old code froze on 0x13.
+        // Every command is op + args + 1 trailing byte (`Script_Run` 0x1d8548:120 adds 1 after the handler).
+        let mut cmds = vec![0x13, 1, 2, 3, 4, 0];
+        cmds.extend([0x14]);
+        cmds.extend(0..14);                      // op + 14 args
+        cmds.push(0);                            // sprite pad
+        cmds.extend([0x1e, 7, 8, 9, 10, 11, 12, 0]); // op + 6 args + pad
+        cmds.extend([0x12, 0x02, 0x0d]);         // event: n=2, kind 0xD (channel set)
+        cmds.extend(0x33u32.to_le_bytes());      // p0 = channel
+        cmds.extend(1u32.to_le_bytes());         // p1 = value
+        cmds.push(0);                            // event pad
+        cmds.extend([0x04, 0xff, 0xff]);         // stream end, held past the length
+        let nis = Arc::new(Nis {
+            hashcode: 0x0600_0099,
+            camera: false,
+            loop_start: 0,
+            length: 100,
+            streams: vec![NisStream { first_key: 0, last_key: 0, commands: cmds }],
+            keys: Vec::new(),
+        });
+        let mut script = Script::load(nis, IDENT, 1.0);
+        script.start(false);
+        let mut objs = Objects::default();
+        let mut ch = Channels::default();
+        let mut out = Vec::new();
+        script.update(&mut objs, &mut ch, &TestWorld, 1, &mut out);
+        assert!(ch.on(0x33), "the event after the fade/sprite/text ops must have fired (the stream must not halt)");
+        // Sister: a command truncated inside its args halts the stream (no read past the end).
+        let bad = Arc::new(Nis {
+            hashcode: 0x0600_009a,
+            camera: false,
+            loop_start: 0,
+            length: 100,
+            streams: vec![NisStream { first_key: 0, last_key: 0, commands: vec![0x14, 1, 2] }],
+            keys: Vec::new(),
+        });
+        let mut s2 = Script::load(bad, IDENT, 1.0);
+        s2.start(false);
+        let mut out2 = Vec::new();
+        s2.update(&mut objs, &mut ch, &TestWorld, 1, &mut out2);
+        assert_eq!(s2.streams[0].pc, None, "sister: a command truncated past the blob halts that stream (no read past the end)");
     }
 }

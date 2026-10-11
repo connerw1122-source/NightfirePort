@@ -720,6 +720,8 @@ impl ApplicationHandler for App {
                                 let msg = sim.drones.taken.last().filter(|(f, _)| sim.drones.frame < f + 180).map_or(String::new(), |(_, t)| match t {
                                     nf_game::pickup::Taken::Weapon { weapon } => format!("  picked up weapon {weapon:#x}"),
                                     nf_game::pickup::Taken::Ammo { weapon, rounds } => format!("  picked up {rounds} rounds (weapon {weapon:#x})"),
+                                    nf_game::pickup::Taken::Key { id } => format!("  picked up key {id}"), // 0x2000010 [M 0x18e650:285-289]
+                                    nf_game::pickup::Taken::Armour => "  picked up armour".to_string(),   // 0x200000F [M 0x18e650:290-294]
                                 });
                                 g.window.set_title(&format!("nf-view — Bond health {:.0}{}  P2K {} / {}{hit}{msg}", h.health, if h.health <= 0.0 { " (dead)" } else { "" }, sim.gun.clip, sim.gun.spare));
                             }

@@ -128,8 +128,11 @@ impl WeaponData {
 
     /// `+0x14`: the auto-aim accuracy percentage (0..100), used by `Check_AutoAim` as
     /// `weapon_data[w]+0x14 * 0.01 * (1 - dist/range) * difficulty_mul` [M 0x1a73f8].
+    /// **f32, not u16** [M 0x1a73f8:148 + L ee_start_05.bin: 0x42c80000 (= 100.0) for the P2K,
+    /// 0x42700000 (= 60.0) for the SG5]. The low 2 bytes of every one of these floats are 0x0000, so
+    /// reading u16 here returned 0.0 for every weapon and the auto-aim cone was always zero-width.
     pub fn autoaim_accuracy(&self, weapon: usize) -> f32 {
-        self.records.get(weapon).map_or(0.0, |r| u16::from_le_bytes([r[0x14], r[0x15]]) as f32)
+        self.records.get(weapon).map_or(0.0, |r| f32::from_le_bytes(r[0x14..0x18].try_into().unwrap()))
     }
 
     /// `+0x88`: the zoom factor (1 = no zoom, `Player_SetWeaponAnimObj` state 4 sets `BL+0x8D4`).

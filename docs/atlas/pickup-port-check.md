@@ -6,6 +6,18 @@ Every place `crates/nf-game/src/{pickup,nis}.rs` (and their two call sites, `dro
 
 Tags: `[M]` measured in the decompile, `[L]` snapshot-verified, `[S]` suggested. No Rust code was changed.
 
+**Update (fix-player, s/fix-player):** §1 (take-ray origin), §2 (keys), §3 (param indices) and §4
+(`Upgrade_Weapon`) are fixed, with tests that failed before the fix. §5 is fixed for the stream halt (the
+opcodes now consume their arguments and the stream continues; sprites/lights/text/subscripts/fade are still
+not modelled — view/audio-side objects the port does not have). §8 is fixed for mask ≠ 0 (the live EndLevel
+case); mask-0 SPs still do not load at create because §9's disabled byte is unmodelled and priming them would
+set the frozen-in-the-game looping pair running. §6 is resolved as implicit (the port's streams hold no
+separate position — `Obj::Entity.matrix` IS the animated matrix, so the sync's invariant holds by
+construction; commented at the event-3 arm). §12's `Music_Event(0xB/0xC)` was already handled
+(`drone.rs` maps `Request::Camera` to `music.event`). §7, §9, §10, §11 remain open — each needs a
+subsystem the port does not have yet (breakables/MP coder bots/cam2mode; the `+0x36` setter; the object
+proxy lists and an external `SP_Activate` path; `GameFlow` load states and the skip input).
+
 ---
 
 ## Confirmed disagreements (real bugs)
@@ -36,6 +48,15 @@ tick, falling drops included — pickup.md "Untouchable-pickup conditions".)
 **Fix**: pass the player's sphere centre (what `obj+0x80` holds: the capsule's `Control_BuildWorldSph` centre)
 as the third argument.
 
+**FIXED** (s/fix-player): `Bond::sphere_centre()` (player.rs) ports the player branch of
+`Control_BuildWorldSph` 0x133070 — the local centre at `M_CONTROL+0x80 = (−0.1347, −0.1267, 0.2402)`, r
+1.0576 `[L ee_start_05.bin 0x16cb8a0+0x80/0x8C]`, through the yaw matrix; it reproduces the snapshot's
+`obj+0x80` (104.826, 24.837, 108.582) to <2e-3 [L]. `drone::Player` gained a `sph` field, `scene.rs` passes
+`bond.sphere_centre()`, and `drone.rs::update_pickups` calls `p.touches(d.world, player.pos, player.sph)`
+— distance from the position, LOS from the sphere centre [M 0x18e148:203-214]. Tests:
+`sphere_centre_matches_the_game_snapshot` (player.rs) and `the_take_ray_origin_decides_the_take`
+(pickup.rs, with a wall only the sphere-centre ray clears).
+
 ### 2. Kind 2 (key) is never taken — no `Player_EquipKey` equivalent `[M]`
 
 **The game**: `Pickup_Handler@0x18e650:217-219` → `Player_EquipKey(BLData, id)` sets `BLData+0x70C+id = 1`
@@ -48,6 +69,11 @@ pickup is never consumed and no key flag exists.
 | file:line | game | port | severity |
 |---|---|---|---|
 | `pickup.rs:266` | key always taken, `BLData+0x70C+id = 1` | `None` — stays forever | **gap** (no kind-2 pickups on 07000005/01 `[L]`; blocks key-gated levels) |
+
+**FIXED** (s/fix-player): `Inventory` gained `keys: Vec<bool>` (`BLData+0x70C+id`), `take` has a `kind::KEY`
+arm that always takes and sets the flag [M 0x1a97a0:7], and `Pickup` carries `switch_channel` (+0x28) so the
+take flips it (`switch_channels[+0x28] = 1` + time stamp [M 0x18e650:330-333]) — which the port also never
+did for any kind. `Taken::Key { id }` for the 0x2000010 message. Unit test `a_key_is_always_taken_and_sets_its_flag`.
 
 ### 3. Placement params read by position, game scatters them by index `[M]`
 
@@ -67,6 +93,9 @@ skipped index shifts every later field (e.g. a switch channel landing in the rou
 
 **Fix**: look up the pair by its index, as `nis.rs:491` already does.
 
+**FIXED** (s/fix-player): the placement closure looks up `p.params.iter().find(|(i, _)| *i == idx)` —
+by index, absent index reads 0 [M 0x1d04f0:457-462].
+
 ### 4. `Upgrade_Weapon` remap missing — a drop can hand over the wrong weapon id `[M]`
 
 **The game**: every human-path pickup id goes through `Upgrade_Weapon` (`Pickup_Handler@0x18e650:142-144`):
@@ -80,6 +109,13 @@ divergence for any level placing weapon 10.
 | file:line | game | port | severity |
 |---|---|---|---|
 | `pickup.rs:246` | id → `Upgrade_Weapon(id)` | raw id | **gap** (low until upgrades exist; id 10 case is live) |
+
+**FIXED** (s/fix-player): `Inventory::upgrade_weapon(id, upgrades, clock)` ports 0x1a8f30 (6 via
+`UpgradedHandguns[Upgrades]`, 0x1E/0x24/0x43/0x4A/0x4E/0x56 via their tables, **10 → 0xC while
+`GameState[0x52]` ≠ 0** [M]; 0x54's weapon_data zoom mutation noted unmodelled). The tables' slot 0 = the
+base ids and `Upgrades` = 0 `[L ee_start_05.bin 0x2bee08..0x2beeaf]`; the port passes `upgrades = 0` (no
+shop) and the tick count as the clock. `take` remaps the id before the owned-check/equip/message [M
+0x18e650:142-144]. Unit test `pickup_ids_go_through_upgrade_weapon`.
 
 ---
 

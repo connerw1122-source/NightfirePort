@@ -201,6 +201,10 @@ pub struct Player {
     /// Bond's crosshair ray (eye, unit direction) — `Check_Target` (0x1a7810) marks drones it hits as "aimed at".
     pub eye: V3,
     pub aim: V3,
+    /// The player's world-sphere centre (`obj+0x80`, `Control_BuildWorldSph` 0x133070): the LOS origin of the
+    /// pickup take test [M 0x18e148:212-214]. `Bond::sphere_centre()` in the viewer; `pos` as the stand-in
+    /// default (the pre-fix behaviour) for callers that have no body model.
+    pub sph: V3,
 }
 
 /// The player as an AI target (`DAT_00298fd0`): his position when the nodes were found, the frame (`+0x54`), and per
@@ -3705,10 +3709,18 @@ impl Drones {
         for k in 0..self.pickups.len() {
             let p = &mut self.pickups[k];
             p.fall(d.world);
-            if alive && p.touches(d.world, player.pos, player.pos) {
+            // The distance test runs from the player's position (+0x30) but the LOS from his world-sphere
+            // centre (+0x80) — two different points [M 0x18e148:203-214 + L]. Port-check §1: the old call
+            // passed `player.pos` for both, so the take-ray origin differed from the game's by construction.
+            if alive && p.touches(d.world, player.pos, player.sph) {
                 let loaded = d.skins.contains_key(&d.weapons.first_person(p.weapon as usize));
-                if let Some(t) = self.inventory.take(d.weapons, p, loaded) {
+                // `Pickup_Handler`: the armour case writes `BLData+0x8B0`; the clock is `GameState+0x52`
+                // (the 10 → 0xC remap gate) — the port's tick count stands in for it.
+                let clock = frame;
+                if let Some(t) = self.inventory.take(d.weapons, p, loaded, &mut self.health.armour, clock) {
                     p.gone = true;
+                    // `if (+0x28) switch_channels[+0x28] = 1` (+ time stamp) [M 0x18e650:330-333].
+                    if p.switch_channel != 0 { self.channels.set(p.switch_channel as u32, 1, frame); }
                     let (at, sound) = ([p.m[3][0], p.m[3][1], p.m[3][2]], p.sound);
                     self.taken.push((frame, t));
                     if let (Some(id), Some(sfx)) = (sound, d.sfx) { self.play_sound(at, sfx.get(id)); }

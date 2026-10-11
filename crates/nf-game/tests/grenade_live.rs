@@ -88,7 +88,7 @@ impl Level02 {
     fn sim(&self, drones: Vec<Drone>, rng: Rng) -> Drones { let mut s = Drones::new(drones, rng); s.attach_level(&self.level); s }
 }
 
-fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0] } }
+fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0], ..Default::default() } }
 
 /// On 07000002 (whose own placements grant no grenades — param 11 = 0 everywhere), a guard given the grenade
 /// fields the way `NDrone2_DefaultInit` decodes them (raw 0x13: `(0x13 >> 4) & 0xffff` = 1 → stun 0x36, count 3)

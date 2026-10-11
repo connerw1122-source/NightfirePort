@@ -88,6 +88,22 @@ impl Bond {
     /// `Player_GetHeadPos`: the eye.
     pub fn head(&self) -> V3 { [self.pos[0], self.pos[1] + self.eye - self.crouch_drop, self.pos[2]] }
 
+    /// The player's world-sphere centre (`obj+0x80`, `Control_BuildWorldSph` 0x133070): the local sphere
+    /// centre at `M_CONTROL+0x80` through the object matrix — `world = x·row0 + y·row1 + z·row2 + row3`,
+    /// i.e. the yaw-rotated local offset added to the position [M 0x133070:33-44; the player takes the
+    /// `obj+0xFA & 8` branch which reads M_CONTROL (obj+0xDC), radius `M_CONTROL+0x8C · |obj+0xE8|`].
+    /// `M_CONTROL+0x80 = (−0.1347, −0.1267, 0.2402)` local, radius 1.0576 at the 07000005 start `[L]
+    /// ee_start_05.bin M_CONTROL 0x16cb8a0+0x80/0x8C`; the computed centre (104.826, 24.837, 108.582)
+    /// matches the player object's `+0x80` there `[L] 0x16cefe0+0x80`.
+    pub fn sphere_centre(&self) -> V3 {
+        // [L] M_CONTROL+0x80 (ee_start_05.bin, player 0 standing).
+        const LOCAL: V3 = [-0.1347, -0.1267, 0.2402];
+        let (s, c) = self.yaw.sin_cos();
+        // The object matrix rows [cos,0,−sin / 0,1,0 / sin,0,cos] (+ translation = pos), as read live
+        // [L 0x16cefe0+0x90..0xc8] and matching `Bond::look`'s convention.
+        [self.pos[0] + LOCAL[0] * c + LOCAL[2] * s, self.pos[1] + LOCAL[1], self.pos[2] - LOCAL[0] * s + LOCAL[2] * c]
+    }
+
     /// The view direction (pitch applied to the forward axis).
     pub fn look(&self) -> V3 {
         let p = self.pitch * std::f32::consts::FRAC_PI_2;
@@ -180,6 +196,26 @@ impl Bond {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Bond::sphere_centre` vs the live 07000005 start [L ee_start_05.bin]: player obj 0x16cefe0, pos
+    /// (104.954, 24.963, 108.825), yaw from the matrix (cos −0.5446, sin 0.8387 → forward (0.8387, 0,
+    /// −0.5446)), `obj+0x80` = (104.826, 24.837, 108.582). `Control_BuildWorldSph` 0x133070 takes the
+    /// centre from `M_CONTROL+0x80` through the object matrix [M].
+    #[test]
+    fn sphere_centre_matches_the_game_snapshot() {
+        // yaw: sin = −0.8387, cos = −0.5446 — forward = Bond::look() = (sin, 0, cos) = matrix row 2 [L]
+        // (rows [cos,0,−sin / 0,1,0 / sin,0,cos] read at 0x16cefe0+0x90..0xc8).
+        let yaw = (-0.8387f32).atan2(-0.5446);
+        let b = Bond::new([104.954, 24.963, 108.825], yaw);
+        assert!((b.look()[0] - (-0.8387)).abs() < 1e-3 && (b.look()[2] - (-0.5446)).abs() < 1e-3, "forward matches the matrix row 2");
+        let c = b.sphere_centre();
+        for (k, want) in [(0, 104.826), (1, 24.837), (2, 108.582)] {
+            assert!((c[k] - want).abs() < 2e-3, "axis {k}: got {} want {want}", c[k]);
+        }
+        // Sister: a different yaw moves the centre (the offset rotates with the body).
+        let b2 = Bond::new([104.954, 24.963, 108.825], yaw + std::f32::consts::FRAC_PI_2);
+        assert!((b2.sphere_centre()[0] - c[0]).abs() > 0.05, "the centre rotates with yaw");
+    }
 
     fn room() -> CollisionWorld {
         let q = |a: V3, b: V3, c: V3, d: V3| [[a, b, c], [a, c, d]];
