@@ -88,6 +88,14 @@ fn build_sound(scene: &mut scene::Scene) -> Option<nf_audio::sfx::Sound> {
 }
 
 pub fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
+    load_with_carry(iso, archive, all, None)
+}
+
+/// `load` with the level-transition carry-over (fix-level2). `Some(save)` = a warm transition:
+/// `Player_Start` (0x190fd0) picks the type-0x24 start whose gate channel the previous level's exit
+/// wrote, and `Player_InitWeapon` (0x1a7ef8) runs the per-level loadout switch over `Player_RamLoad`
+/// (0x1957a8). `None` = a cold load (the game's boot path; `Player_RamLoad`'s whole body is skipped).
+pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>) -> Result<scene::Scene> {
     use nf_formats::{anim::Sequence, character, levelbin::LevelBin};
     use std::collections::HashMap;
     let iso = IsoImage::open(iso)?;
@@ -220,7 +228,64 @@ pub fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
     if let Some((t, smf, ssd)) = &scene.music_files { eprintln!("music: track {t}, {} sections, {} markers, {:.1} s", smf.starts.len(), smf.markers.len(), ssd.len() as f64 * 7.0 / 8.0 / 32000.0); }
     match &scene.sound_bank { Some((slot, b, _)) => eprintln!("sound bank slot {slot}: {} samples, {} effects", b.samples.len(), b.effects.len()), None => eprintln!("no sound bank") }
     eprintln!("{archive} (+ {anim_name}): {}", scene.stats);
+    // ── Player_Start (0x190fd0) + Player_InitWeapon (0x1a7ef8) ─────────────────────────────────────
+    // The game registers every type-0x24 placement as a player start in placement order (param 0 = the
+    // gate switch channel, `Player_AddNewStartPos` 0x195c00), picks the first whose gate is 0 or on with
+    // the channels as the previous level's exit left them (they survive the warm reset,
+    // `Init_SwitchChannels` runs only when `IsWarmReset == 0` [M 0x1d5080]), then runs the per-level
+    // loadout switch. The port used to stand Bond at the first "Player1" placement with the [L] 07000005
+    // loadout at EVERY level (playtest F1/F2/F4).
+    if let Some(sim) = scene.sim.as_mut() {
+        let starts: Vec<nf_game::player::LevelStart> = level_starts(&level);
+        if !starts.is_empty() {
+            // The gate scan reads the carried channels on a warm transition (the save mirrors the live
+            // globals — `Player_RamSave` snapshots them at the exit [M 0x195670:13-15]).
+            let scan: nf_game::triggers::Channels = match save {
+                Some(s) => nf_game::triggers::Channels { v: s.channels.clone(), time: s.ch_time.clone() },
+                None => nf_game::triggers::Channels::default(),
+            };
+            if let Some(i) = nf_game::player::pick_start(&starts, &scan) {
+                let s = starts[i];
+                if let Some((old, _)) = scene.start { eprintln!("start: default {:?} → start {} gate {:#x} at {:?}", old, i, s.gate, s.pos); }
+                // `Player_Init(0, pos, rot, params)` creates the player object at the entry; the port
+                // stands him on the floor below (the level start convention, `Bond::stand_at`).
+                sim.bond = nf_game::player::Bond::stand_at(&sim.world, s.pos, s.yaw);
+                scene.start = Some((s.pos, s.yaw));
+            }
+        } else if let Some((pos, yaw)) = scene.start {
+            // No type-0x24 starts parsed: keep the "Player1" stand-in.
+            sim.bond = nf_game::player::Bond::stand_at(&sim.world, pos, yaw);
+        }
+        // `Player_CheckWeaponsLoaded`'s model check (0x1a97c8): the hashtable holds the level's loaded
+        // skins; the port's equivalent is the level skin table [M — the fp model hash is a skin hash].
+        let loaded: Vec<bool> = (0..0x72u32)
+            .map(|w| sim.skins.contains_key(&sim.weapons.first_person(w as usize))).collect();
+        let loaded = |w: u8| loaded.get(w as usize).copied().unwrap_or(false);
+        let req = nf_game::player::init_level_loadout(level_id, save, &mut sim.drones.health,
+            &mut sim.drones.inventory, &mut sim.drones.channels, &sim.weapons, loaded);
+        // The switch request is the game's `M_CONTROL+0x63`; the draw machine holsters and draws it
+        // (`Player_WeaponSelect` 0x1a2cc0). 0x47 (none) draws nothing.
+        sim.gun.switch_request = req;
+        eprintln!("loadout: level {level_id:08x} switch request {req} ({} owned weapons, health {:.0}, armour {:.0})",
+            sim.drones.inventory.owned.iter().filter(|&&o| o).count(), sim.drones.health.health, sim.drones.health.armour);
+    }
     Ok(scene)
+}
+
+/// The level's player starts: the main map's type-0x24 placements in placement order, with the gate
+/// (parameter 0) [M `parsemap_create_dynamic_objects` 0x1d04f0 case 0x24 → `Player_AddNewStartPos`
+/// 0x195c00 → `Player_Start` 0x190fd0]. Yaw = the placement's rotation[1], the same convention the
+/// "Player1" stand-in uses (scene.rs).
+fn level_starts(level: &Level) -> Vec<nf_game::player::LevelStart> {
+    let Some(m) = level.main_map() else { return Vec::new() };
+    level.maps[m].placements.iter()
+        .filter(|p| p.flags & 0xff == 0x24)
+        .map(|p| nf_game::player::LevelStart {
+            pos: p.translation,
+            yaw: p.rotation[1],
+            gate: p.params.iter().find(|(i, _)| *i == 0).map_or(0, |&(_, v)| v as u16),
+        })
+        .collect()
 }
 
 /// The level archive for a hashcode, `LoaderLoad` (0x1d4a00) style [M]: `sprintf("%s%8.8x.bin", …,
@@ -410,6 +475,10 @@ struct App {
     /// `replay_idx == replay_ticks.len()` ⇒ the recording ended (the sim pauses).
     replay: Option<replay::Replay>,
     replay_idx: usize,
+    /// The party weapon lock's rising-edge memory (`switch_channels_prev[0x48]`, `Player_Weapon`
+    /// 0x1a24c8:247): the previous tick's channel state. Reset on every level load — the game's `_prev`
+    /// is restored from the RamSave, whose value for the lock channel is 0 in every pre-party level.
+    prev_lock_ch: bool,
 }
 
 impl App {
@@ -642,9 +711,14 @@ impl ApplicationHandler for App {
                 // Bug 5: level transition. A `LOAD_LEVEL` (0xE8) trigger set `pending_level`; reload the scene
                 // with the next archive (`ResetMap_LevelToLoad` 0x1d3800 → `LoaderLoad` 0x1d4a00).
                 if let Some(next) = self.pending_level.take() {
+                    // `Trigger_Activate`'s exit order: the success/fallback channel write (already applied in
+                    // the sim), then `Player_RamSave` [M 0x1b2318:97-116] — capture the old sim now, before
+                    // the scene swap drops it (fix-level2 F2).
+                    let save = self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
+                        &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels));
                     let name = level_archive_name(next);
-                    eprintln!("level: loading {name}");
-                    match load(&self.iso, &name, self.all) {
+                    eprintln!("level: loading {name} ({})", if save.is_some() { "warm" } else { "cold" });
+                    match load_with_carry(&self.iso, &name, self.all, save.as_ref()) {
                         Ok(mut scene) => {
                             self.sound = build_sound(&mut scene);
                             if let Some(start) = scene.start { self.cam = Camera { pos: Vec3::new(start.0[0], start.0[1] + 1.6, start.0[2]), yaw: start.1, pitch: 0.0, fov: GAME_FOV }; }
@@ -662,6 +736,9 @@ impl ApplicationHandler for App {
                         }
                         Err(e) => eprintln!("level: failed to load {name}: {e}"),
                     }
+                    // The lock channel's edge memory starts clean on the new level (the game's `_prev`
+                    // comes back from the RamSave; 0x48 has no writer before the party).
+                    self.prev_lock_ch = false;
                 }
                 let dt = self.last.elapsed().as_secs_f32().min(0.1);
                 self.last = std::time::Instant::now();
@@ -689,7 +766,7 @@ impl ApplicationHandler for App {
                             // B-5 record/replay: when `--replay` is set, the input comes from the recording, not the
                             // keyboard. The recorded tick drives `step_bond` exactly as it did when recorded; the user
                             // can only watch (Esc to quit). When the recording ends, the sim pauses.
-                            let (input, trigger, reload, use_key) = if let Some(rp) = &self.replay {
+                            let (mut input, trigger, reload, use_key) = if let Some(rp) = &self.replay {
                                 if self.replay_idx < rp.ticks.len() {
                                     let t = rp.ticks[self.replay_idx];
                                     self.replay_idx += 1;
@@ -716,9 +793,21 @@ impl ApplicationHandler for App {
                                 };
                                 (input, self.trigger, self.just.remove(&KeyCode::KeyR), self.just.remove(&KeyCode::KeyE))
                             };
+                            // The party weapon lock (`Player_Weapon` 0x1a24c8:242-275): on 07000007 with
+                            // ch 0x48 off the cycle actions cannot leave the fists (fix-level2 F4).
+                            nf_game::player::weapon_lock_input(sim.level, sim.drones.channels.on(nf_game::player::WEAPON_LOCK_CHANNEL), &mut input);
                             // B-5 record: capture the exact input passed to step_bond, before the call.
                             if let Some(r) = &mut self.recorder { r.push(replay::TickInput::from_parts(&input, trigger, reload, use_key)); }
                             sim.step_bond(input, trigger, reload, use_key);
+                            // The lock's rising edge auto-draws the handgun (`Upgrade_Weapon(6)` = 2 [L])
+                            // [M 0x1a24c8:247-250]. `prev` = last tick's channel (the game's
+                            // `switch_channels_prev` semantics).
+                            let on = sim.drones.channels.on(nf_game::player::WEAPON_LOCK_CHANNEL);
+                            if nf_game::player::weapon_lock_auto_draw(sim.level, on, self.prev_lock_ch) {
+                                eprintln!("[weapon-lock] ch 0x48 rising edge: switch request → 2 (P2K)");
+                                sim.gun.switch_request = 2;
+                            }
+                            self.prev_lock_ch = on;
                             if let Some(s) = self.sound.as_mut() { sound_tick(s, sim); }
                         }
                         // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
@@ -905,7 +994,7 @@ pub fn run() -> Result<()> {
     let sound = build_sound(&mut scene);
     // `--dev --scenario <name>`: place Bond and set up the world for a specific feature test. (B-3a/b: the two
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev::default())), notex, nofog, iso, pending_level: None, all, recorder: None, replay: None, replay_idx: 0 };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev::default())), notex, nofog, iso, pending_level: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false };
     if dev {
         if let (Some(d), Some(n)) = (app.dev.as_deref_mut(), scenario.as_ref()) {
             if let Some((_, f)) = dev::scenario(n) {

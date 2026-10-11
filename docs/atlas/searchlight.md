@@ -24,7 +24,7 @@ placement's param 0 selects which part of a light it is. All parts share one 64-
 | 0 | `level_tag+0x2C` (`lhu` @0x1cb554) | u16 | inst+0x00 | kind (table above) |
 | 1 | `+0x30` (`lbu` @0x1cb5a0) | u8 | inst+0x34 | on/off switch channel; nonzero → `obj+0xF4 = 3` (starts off) (@0x1cb688–0x1cb69c) |
 | 2 | `+0x34` (`lbu` @0x1cb5a8) | u8 | inst+0x35 | kill switch: raised ⇒ state 3, one-shot (`obj+0xFE |= 1`), light never re-lights (Update 0x1cb954–0x1cba14) |
-| 3 | `+0x38` (`lbu` @0x1cb5b0) | u8 | inst+0x36 | stored, read by Update's entry gate (state 3 at entry) — exact effect unverified |
+| 3 | `+0x38` (`lbu` @0x1cb5b0) | u8 | inst+0x36 | **the alarm channel**: while the head tracks (state 1), `switch_channels[inst+0x36] = 1` every tick (Update state-1 entry, ~0x1cbf58 [M — pinned by fix-drone3; was "exact effect unverified"]). 07000006's four gate lights carry alarm channel 55 and the gatehouse guards wait on it |
 | 4 | `+0x3C` (`lw` @0x1cb5bc) | **s32 degrees** | inst+0x38/0x3C via half/mid | sweep bound |
 | 5 | `+0x40` (`lw` @0x1cb5b8) | **s32 degrees** | inst+0x38/0x3C via half/mid | sweep bound |
 

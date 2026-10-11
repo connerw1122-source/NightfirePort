@@ -1,8 +1,13 @@
 //! Bond on foot: `Player_Update` (0x193600) with `Player_Move` (0x191dd0), `Player_HandleJump` (0x1916b0),
 //! `Player_Collision` (0x194df0), `Player_CollisionHandler` (0x1949a8) and the eye of `Player_PositionCamera`.
 //! Spec: docs/systems/player.md.
+//!
+//! Level carry-over and spawn (fix-level2): `Player_RamSave` (0x195670) / `Player_RamLoad` (0x1957a8),
+//! the `player_start` table (`Player_AddNewStartPos` 0x195c00, `Player_Start` 0x190fd0) and the per-level
+//! loadout switch of `Player_InitWeapon` (0x1a7ef8) with `Player_Weapon`'s party weapon lock (0x1a24c8).
 
 use crate::ladder::Ladder;
+use crate::triggers::Channels;
 use crate::world::{CollisionWorld, V3};
 
 /// `AnimObj+0xCC` [L]: the root height above the feet (07000005, skin 0x05000007).
@@ -519,6 +524,212 @@ fn wrap_pi(d: f32) -> f32 {
     if d >= std::f32::consts::PI { d -= std::f32::consts::TAU; }
     if d < -std::f32::consts::PI { d += std::f32::consts::TAU; }
     d
+}
+
+// ── Level carry-over and spawn (fix-level2) ────────────────────────────────────────────────────────
+
+/// `Player_RamSave` (0x195670) → the global `RamSave` (0x2b9440, 0xD50 bytes) [M]. The port carries the
+/// fields the port models; the game also saves `PlrMissionStats` (0x38), `SSysItems` (0x28) and
+/// `BondMoments` (0x14) — none of which the port has (WORKLOG fix-level2).
+#[derive(Clone, Debug, Default)]
+pub struct RamSave {
+    /// `RamSave+0x5FC ← BLData+0x894` [M 0x195670:16].
+    pub health: f32,
+    /// `RamSave+0x600 ← BLData+0x8B0` [M 0x195670:17].
+    pub armour: f32,
+    /// `RamSave+0xA18 ← M_CONTROL+0x63` (the switch-request byte) [M 0x195670:18-19].
+    pub weapon: u8,
+    /// `RamSave+0x038 ← BLData+0x170`, 0x42 = 33 s16 spare-ammo rounds [M 0x195670:6].
+    pub carried: Vec<i16>,
+    /// `RamSave+0x07C ← BLData+0x1B4`, 114 weapon entries × 12 B: clip s16 at +4, owned u8 at +6
+    /// [M 0x195670:7; atlas player.md].
+    pub clip: Vec<i16>,
+    pub owned: Vec<bool>,
+    /// `RamSave+0xA1A ← BLData+0x70C`, 0x33 key-ring bytes [M 0x195670:8].
+    pub keys: Vec<bool>,
+    /// `RamSave+0xA4D ← switch_channels`, 0x100 [M 0x195670:13].
+    pub channels: Vec<u8>,
+    /// `RamSave+0x604 ← switch_channels_time`, 0x400 [M 0x195670:12]. The game also saves `_hold` and
+    /// `_prev` (0x2b9f8d/0x2ba08d); the port models no hold array and keeps `_prev` per-consumer
+    /// (trigger-port-check #10) [M gap noted in the WORKLOG].
+    pub ch_time: Vec<u32>,
+}
+
+impl RamSave {
+    /// The save `Trigger_Activate` makes on the way out of a level, after the success/fallback channel
+    /// write [M 0x1b2318:97-116].
+    pub fn capture(health: &crate::bullet::PlayerHealth, weapon: u8, inv: &crate::pickup::Inventory, ch: &Channels) -> RamSave {
+        RamSave {
+            health: health.health,
+            armour: health.armour,
+            weapon,
+            carried: inv.carried.clone(),
+            clip: inv.clip.clone(),
+            owned: inv.owned.clone(),
+            keys: inv.keys.clone(),
+            channels: ch.v.clone(),
+            ch_time: ch.time.clone(),
+        }
+    }
+
+    /// `Player_RamLoad` (0x1957a8), `IsWarmReset != 0` arm [M]: the whole body is gated on the warm flag,
+    /// so a cold load (`save = None`) restores nothing. Restores health (`Player_SetHealth`), armour
+    /// (+0x8B0), the saved weapon id (+0x934) and the four channel arrays. The `boost` argument (the death
+    /// retry's health floor, `P_ENDMISSION_Handler` 0x216618) is not ported — the port has no death-retry
+    /// reload path (WORKLOG fix-level2).
+    pub fn restore(&self, health: &mut crate::bullet::PlayerHealth, inv: &mut crate::pickup::Inventory, ch: &mut Channels) -> u8 {
+        health.health = self.health;
+        health.armour = self.armour;
+        let fit = |dst: &mut Vec<i16>, src: &[i16]| { dst.resize(src.len(), 0); dst.copy_from_slice(src); };
+        fit(&mut inv.carried, &self.carried);
+        fit(&mut inv.clip, &self.clip);
+        inv.owned.resize(self.owned.len(), false);
+        for (d, &s) in inv.owned.iter_mut().zip(&self.owned) { *d = s; }
+        inv.keys.resize(self.keys.len(), false);
+        for (d, &s) in inv.keys.iter_mut().zip(&self.keys) { *d = s; }
+        ch.v.resize(256, 0);
+        ch.v.copy_from_slice(&self.channels);
+        ch.time.resize(256, 0);
+        ch.time.copy_from_slice(&self.ch_time);
+        self.weapon
+    }
+}
+
+/// One registered player start (`player_start` entry, 0xE0 bytes): position, yaw, and the gate switch
+/// channel — placement type 0x24's parameter 0 [M `parsemap_create_dynamic_objects` 0x1d04f0 case 0x24 →
+/// `Player_AddNewStartPos` 0x195c00: param block +0x2C lands at entry+0x50].
+#[derive(Clone, Copy, Debug)]
+pub struct LevelStart { pub pos: V3, pub yaw: f32, pub gate: u16 }
+
+/// `Player_Start` (0x190fd0) [M]: pass 1 — the first entry with kind 1 whose gate is 0 or whose channel is
+/// on; pass 2 (fallback) — the first kind-1 entry (the game zeroes its gate so a later `Player_Start` in
+/// the same level cannot re-pick it; the port runs one `Player_Start` per load). Index order = placement
+/// order [M 0x195c00 appends]. Returns the entry index, or None with no entries.
+pub fn pick_start(starts: &[LevelStart], ch: &Channels) -> Option<usize> {
+    if let Some(i) = starts.iter().position(|s| s.gate == 0 || ch.on(s.gate as u32)) { return Some(i); }
+    starts.iter().position(|_| true)
+}
+
+/// `Player_InitAmmoWeapons` (0x1a17f8) with the boot flag `DAT_002a373c == 0`: carried = 0, clip = 0,
+/// owned = false for every weapon [M :20-45]. The [L] boot snapshot proves this arm ran: owned after
+/// `Player_InitWeapon` = exactly the equip set {1, 2, 0x4A, 0x4E, 0x50, 0x54} — the +0x04 byte is 1 on
+/// every probed weapon, so the non-zero arm (owned = +0x04) would have owned 23 (ee_start_05.bin;
+/// WORKLOG fix-level2). `Player_CheckWeaponsLoaded` (0x1a97c8) can only revoke owned — a no-op from
+/// all-false. The equip calls that follow carry the `loaded` refusal of `Player_EquipWeapon`
+/// [M 0x1a8a58:20].
+pub fn init_ammo_weapons(inv: &mut crate::pickup::Inventory, w: &nf_formats::weapon::WeaponData, loaded: impl Fn(u8) -> bool) {
+    for c in inv.carried.iter_mut() { *c = 0; }
+    for id in 0..inv.clip.len().min(0x72) {
+        inv.clip[id] = 0;
+        inv.owned[id] = false;
+    }
+    let _ = (w, loaded);
+}
+
+/// `Player_EquipWeapon` is `Inventory::equip_weapon` [M 0x1a8a58]; the game looks the model up in the
+/// hashtable and refuses when missing — the port's `loaded` closure stands in.
+fn equip(inv: &mut crate::pickup::Inventory, w: &nf_formats::weapon::WeaponData, id: u16, rounds: i16, loaded: impl Fn(u8) -> bool) {
+    inv.equip_weapon(w, id as usize, rounds, loaded(id as u8));
+}
+
+/// `Player_InitWeapon` (0x1a7ef8) — the per-level loadout switch on `GameState+0x0C`, the part the
+/// campaign's first mission walks through. `save = Some(…)` = a warm transition (`IsWarmReset != 0`, the
+/// only way a `LOAD_LEVEL`/script-event-0x12 transition loads [M 0x1d3800, 0x1b24cc]); `None` = cold
+/// (`Player_RamLoad`'s whole body is skipped [M 0x1957a8:9]).
+///
+/// Returns the switch request the game writes to `M_CONTROL+0x63` (the draw machine then holsters and
+/// draws it). Cases [M 0x1a7ef8:148-317]:
+/// - 0x0700005 (fresh, and the fallback of 06): P2K 48 rounds, taser 999, laser 0, watch 0, + the common
+///   tail; request = `Upgrade_Weapon(6)` = 2 [L UpgradedHandguns 0x2bee08 = [2,4,6,8], Upgrades 0].
+/// - 0x0700006: `Player_RamLoad`; request = the saved weapon; if the P2K is not owned → the fresh 05 case.
+/// - 0x0700007: `Player_RamLoad`, `Player_InitAmmoWeapons`, armour = 0, P2K 48 / taser 999 / laser 0 /
+///   watch 0, request = **1 (fists)** — the party disguise.
+/// - 0x0700008: `Player_RamLoad`; request = the saved weapon; if the P2K is not owned → the 07 case.
+/// - default (levels outside the switch, e.g. 07000001): the [L] 07000005 start loadout
+///   (`Inventory::level_start`), request = 2.
+///
+/// Common tail [M 0x1a7ef8:318-325]: equip laser 0x4E 999, equip fists 1 with 0 rounds, re-save. The
+/// "current weapon's ammo type unowned → request 1" check (:321-324) and the final `Player_RamSave` are
+/// the caller's (the port re-captures at the next exit).
+pub fn init_level_loadout(
+    level: u32,
+    save: Option<&RamSave>,
+    health: &mut crate::bullet::PlayerHealth,
+    inv: &mut crate::pickup::Inventory,
+    ch: &mut Channels,
+    w: &nf_formats::weapon::WeaponData,
+    loaded: impl Fn(u8) -> bool + Copy,
+) -> u8 {
+    // `Upgrade_Weapon(6)` (0x1a8f30 case 6 → `UpgradedHandguns[Upgrades]`, slot 0 = 2 [L]).
+    const HANDGUN: u16 = 2;
+    let mut req = HANDGUN as u8;
+    // `Player_RamLoad` (0x1957a8): the saved health/armour/weapon/inventory/channels.
+    let saved_weapon = save.map(|s| s.restore(health, inv, ch)).unwrap_or(0);
+    let p2k_owned = |inv: &crate::pickup::Inventory| inv.owned.get(HANDGUN as usize).copied().unwrap_or(false);
+    let fresh_05 = |inv: &mut crate::pickup::Inventory, health: &mut crate::bullet::PlayerHealth| {
+        init_ammo_weapons(inv, w, loaded);
+        equip(inv, w, HANDGUN, 0x30, loaded);
+        equip(inv, w, 0x4a, 999, loaded);
+        equip(inv, w, 0x50, 0, loaded);
+        equip(inv, w, 0x54, 0, loaded);
+        let _ = health;
+    };
+    let party = |inv: &mut crate::pickup::Inventory, health: &mut crate::bullet::PlayerHealth| {
+        init_ammo_weapons(inv, w, loaded);
+        *armour_in(health) = 0.0;
+        equip(inv, w, HANDGUN, 0x30, loaded);
+        equip(inv, w, 0x4a, 999, loaded);
+        equip(inv, w, 0x50, 0, loaded);
+        equip(inv, w, 0x54, 0, loaded);
+    };
+    match level {
+        0x0700_0005 => fresh_05(inv, health),
+        0x0700_0006 => {
+            req = saved_weapon;
+            if !p2k_owned(inv) { fresh_05(inv, health); req = HANDGUN as u8; }
+        }
+        0x0700_0007 => { party(inv, health); req = 1; }
+        0x0700_0008 => {
+            req = saved_weapon;
+            if !p2k_owned(inv) { party(inv, health); req = 1; }
+        }
+        _ => { *inv = crate::pickup::Inventory::level_start(inv.clip.len(), inv.carried.len()); req = HANDGUN as u8; }
+    }
+    // Common tail [M 0x1a7ef8:318-319].
+    equip(inv, w, 0x4e, 999, loaded);
+    equip(inv, w, 1, 0, loaded);
+    req
+}
+
+/// The armour lives in `PlayerHealth` next to health; a tiny accessor keeps `party`'s closure signature
+/// flat (the game writes `BLData+0x8B0` [M 0x1a7ef8:180]).
+fn armour_in(h: &mut crate::bullet::PlayerHealth) -> &mut f32 { &mut h.armour }
+
+/// The party weapon lock (`Player_Weapon` 0x1a24c8:242-275) [M]: on 0x07000007 with switch channel 0x48
+/// OFF (`if (switch_channels[0x48] == '\0') bVar4 = false`), the weapon-cycle actions route to
+/// `Player_WeaponChange(±1, mode 2)` — the fists-only cycle. The port zeroes the cycle request (the
+/// mode-2 cycle from fists re-picks fists and plays the empty-switch click 0x1DB — no switch, sound
+/// aside) and, as the only way a player could otherwise reach a gun, refuses direct selections that are
+/// not the fists [S: the number-key path's lock is not verified in the decompile; the observable game
+/// behaviour is "no weapons at the party"].
+pub const WEAPON_LOCK_LEVEL: u32 = 0x0700_0007;
+/// The re-arm channel: TouchOnce placements 411/412 on 07000007 write it [D nf-extract triggers];
+/// `Trigger_Activate` case 1 latches it [M 0x1b2318:41-49].
+pub const WEAPON_LOCK_CHANNEL: u32 = 0x48;
+
+pub fn weapon_lock_input(level: u32, ch48_on: bool, input: &mut Input) {
+    // [M 0x1a24c8:243-246]: `if (GameState == 0x7000007) { if (switch_channels[0x48] == 0) bVar4 = false; }`
+    // — the lock is active while the channel is OFF.
+    if level == WEAPON_LOCK_LEVEL && !ch48_on {
+        input.weapon_cycle = 0;
+        if input.switch_to.is_some_and(|w| w != 1) { input.switch_to = None; }
+    }
+}
+
+/// `Player_Weapon`'s rising-edge re-arm [M 0x1a24c8:247-250]: channel 0x48 on while `switch_channels_prev`
+/// still reads off → the switch request becomes `Upgrade_Weapon(6)` = 2 (the P2K auto-draws).
+pub fn weapon_lock_auto_draw(level: u32, on: bool, prev: bool) -> bool {
+    level == WEAPON_LOCK_LEVEL && on && !prev
 }
 
 #[cfg(test)]
