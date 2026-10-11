@@ -11,9 +11,16 @@ after the atlas; a `+0xNNN` that does not exist here is a bug.
 | `object.md` | the object/control list entry (`obj_tag`, 0x110-byte header) and the list machinery |
 | `drone.md` | the Drone (`NDrone2` instance, 0xD20 bytes) |
 | `drone-port-check.md` | every `+0xNNN` `crates/nf-game/src/drone.rs` mentions, checked against the atlas |
+| `player.md` | BLData, the player object, M_CONTROL, PlayerSetting, ammo/inventory arrays |
+| `weapon-data.md` | weapon_data (0x10C-byte records) |
+| `player-port-check.md` | every disagreeing `+0xNNN` in `gun.rs`/`pickup.rs`/`player.rs`/`scene.rs`/`weapon.rs` |
+| `trigger.md` | the trigger (`control_create_object` ext, 0x40 bytes, class 0x1D) — struct 5 |
+| `door.md` | the door (DOORINFO ext, 0x80 bytes, class 0x1C) and the auto-close question — struct 6 |
+| `channels.md` | the switch channels (five global arrays + the object-side channel fields) — struct 9 |
+| `trigger-port-check.md` | every disagreement of `crates/nf-game/src/{triggers,door}.rs` with structs 5/6/9 |
 
-Planned next (plan v2 §2 order): `BLData`/player, `weapon_data`, trigger ext, door, pickup,
-script player, switch channels, searchlight, wire/grapple, cel/room, GS leaf state.
+Planned next (plan v2 §2 order): pickup, script player, searchlight, wire/grapple, cel/room,
+GS leaf state.
 
 ## Format (per struct)
 
@@ -82,6 +89,10 @@ Each struct's page has:
 | [player.md](player.md) | BLData, obj_tag (player), M_CONTROL, PlayerSetting, ammo_data, inventory/ammo arrays | the per-player runtime block, the player object, the aim flag, the per-player settings, the ammo and weapon-entry arrays with their indexing |
 | [weapon-data.md](weapon-data.md) | weapon_data (0x10C-byte records) | the weapon definition table: every field, the animation scripts, the flags, the Player_Init overrides, and the weapon id table |
 | [player-port-check.md](player-port-check.md) | — | every `+0xNNN` in the Rust port (`gun.rs`, `pickup.rs`, `player.rs`, `scene.rs`, `weapon.rs`) whose meaning or offset disagrees with the atlas |
+| [trigger.md](trigger.md) | the trigger ext (class 0x1D) | field table, the per-type create wrappers and their param maps, Trigger_Update's cases with fire conditions, Trigger_Activate per kind, Trigger_Calc/Hit, snapshot-checked 07000005 instances |
+| [door.md](door.md) | the door ext (class 0x1C) | field table, the obj+0xF4 state register, the ext+0x70 flag bits, the full auto-close predicate with addresses, Door_Activate/SetState/Interp/ReactToHit, group sync, snapshot + disc checks for 07000001 |
+| [channels.md](channels.md) | switch channels (struct 9) | the five arrays, Init, frame order, every writer, every reader, and the complete 07000005 channel table with setter/reader placements |
+| [trigger-port-check.md](trigger-port-check.md) | — | every disagreement of `triggers.rs` and `door.rs` with structs 5/6/9 |
 
 ## How to use the atlas
 
