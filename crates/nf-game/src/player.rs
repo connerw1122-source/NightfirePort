@@ -6,6 +6,7 @@
 //! the `player_start` table (`Player_AddNewStartPos` 0x195c00, `Player_Start` 0x190fd0) and the per-level
 //! loadout switch of `Player_InitWeapon` (0x1a7ef8) with `Player_Weapon`'s party weapon lock (0x1a24c8).
 
+use crate::ladder::Ladder;
 use crate::triggers::Channels;
 use crate::world::{CollisionWorld, V3};
 
@@ -16,6 +17,33 @@ pub const RADIUS: f32 = 0.55;
 /// `BL+0x908` on land.
 pub const EYE: f32 = 0.7;
 const GRAVITY: f32 = -9.8;
+
+/// `obj+0xF6` substates, from the `Player_Update` 0x193600 dispatch [M switch @0x193958; the jump table
+/// reads obj+0xF6 and its cases call Player_SSWalk 0x192310 (0), Player_Climb 0x196310 (1),
+/// Player_SSGrapple 0x192860 (2), the inline swim (3), Player_SSCrouch 0x1924c0 (4), Player_SSScanMode
+/// 0x193098 (5), Player_Wire 0x197658 (6), Player_Creep 0x1969d0 (7), Player_ZeroG 0x192ab0 (8/9), the
+/// scripted-cam countdown (10), Player_Zipline 0x197f50 (0xF)]. This session ports 1 and 3.
+pub const SS_WALK: u8 = 0;
+pub const SS_CLIMB: u8 = 1;
+pub const SS_SWIM: u8 = 3;
+
+/// The per-tick ladder/water context the Sim hands `Bond::tick_ctx` (the game reads the ladder through
+/// `BLData+0x884` and the water surface through the player's cel, `obj+0x20 → cel+0x90`).
+pub struct LadderCtx<'a> {
+    /// The level's ladder objects (class 0x2D), in placement order.
+    pub ladders: &'a [Ladder],
+    /// `cel+0x90` for the cel Bond is in (`Player_InWater` 0x195e50 reads `*(obj+0x20)+0x90`;
+    /// `build_alloc_cel` 0x1c93f8 defaults it to −500.0 = no water; `parseentity_fixup_entity` 0x1d00c0
+    /// sets it to the entity's bbox max y for flag word 0xC023). `None` = no water cel / below −400.
+    pub water: Option<f32>,
+    /// Whether Bond holds the descend control this tick [S — the game's vertical swim input is not
+    /// resolved in this pass; see docs/atlas/ladder.md "Not verified"].
+    pub sink: bool,
+}
+
+impl Default for LadderCtx<'_> {
+    fn default() -> Self { LadderCtx { ladders: &[], water: None, sink: false } }
+}
 
 /// One tick of player input as game actions: `forward` (action 2), `strafe` (action 1; + = left), `turn` (radians
 /// to add to the yaw this tick, mouse or ramped pad), `look` (pitch delta in units of π/2), the jump (7) and crouch (8)
@@ -75,13 +103,47 @@ pub struct Bond {
     pub head_bump: bool,
     /// Damage from the last landing (`Player_HandlePain` type 6), for the caller to apply.
     pub fall_damage: Option<f32>,
+    /// `obj+0xF6`: the substate id ([M Player_Update 0x193600 dispatch]; 0 walk, 1 climb, 3 swim here).
+    pub substate: u8,
+    /// `BL+0x884`: the ladder being climbed (an index into `LadderCtx::ladders`).
+    pub ladder: Option<usize>,
+    /// `BL+0x8A0` / `BL+0x8A4`: the climb's top/bottom dismount thresholds
+    /// (`centre.y + radius + 0.85` / `centre.y − radius + 1.0` [M Player_CollLadder 0x196118,
+    /// recomputed per tick in Player_Climb 0x196310]).
+    pub climb_top: f32,
+    pub climb_bottom: f32,
+    /// `BL+0x951`: the regrab lockout in ticks (`Player_Climb` sets `(u8)FRAME_RATE` = 60 on every
+    /// dismount; `Player_Update` 0x193840 decrements it; `Player_CollLadder` refuses grabs while set) [M].
+    pub regrab: u8,
+    /// `BL+0x94D`: the move-mode byte (1 = climbing) [M CollLadder sets 1 on grab].
+    pub mode: u8,
+    /// `BL+0x942`: the saved substate (the dispatch's case 10 restores it; the wire/creep/climb drops
+    /// write it) [M]. The climb writes its own id, matching the game.
+    pub saved_sub: u16,
+    /// `BL+0x8C0`: the air meter, 0..100 (`Player_MonitorAir` 0x191a70: −5/s with the head below the
+    /// surface, +20/s above, drown damage 0.5 (type 7) every 30 ticks below 1.0) [M].
+    pub air: f32,
+    /// Drown damage from this tick's `Player_MonitorAir`, for the caller to apply.
+    pub drown_damage: Option<f32>,
+    /// True while the head is below the water surface (`Player_MonitorAir`'s +0x8C8 bit 0x10 path).
+    pub underwater: bool,
+    /// `BL+0x8C4`: the underwater fade 0..1 (`Player_MonitorAir`: →1 under, →0 surfaced), for the renderer.
+    pub water_fade: f32,
+    /// The drown-damage tick accumulator (the game uses `GameState % 30` [M 0x191a70:136-140]).
+    air_tick: u32,
+    /// `BL+0x18` → the climb's one-tick local-forward push (`+0.6` top / `−0.05` action [M Player_Climb]),
+    /// consumed by the next tick's movement (the game writes the wish `+0x18` after `Player_Move` and the
+    /// next tick's move integrates it).
+    push_fwd: f32,
 }
 
 impl Bond {
     /// Standing at `pos` (`Player_StandAtNewPosition`: the floor point + 1.1) facing `yaw`.
     pub fn new(pos: V3, yaw: f32) -> Bond {
         Bond { pos, yaw, pitch: 0.0, local: [0.0; 2], vel: [0.0; 3], grounded: true, floor_ny: 1.0, grounded_history: 8, jump: 0, land_delay: 0,
-            crouched: false, lockout: 0, crouch_drop: 0.0, eye: EYE, fall_timer: 0, head_bump: false, fall_damage: None }
+            crouched: false, lockout: 0, crouch_drop: 0.0, eye: EYE, fall_timer: 0, head_bump: false, fall_damage: None,
+            substate: SS_WALK, ladder: None, climb_top: 0.0, climb_bottom: 0.0, regrab: 0, mode: 0, saved_sub: 0, air: 100.0, drown_damage: None, underwater: false,
+            water_fade: 0.0, air_tick: 0, push_fwd: 0.0 }
     }
 
     /// On the floor below `p` (within 10 units), as a level start places him.
@@ -121,8 +183,258 @@ impl Bond {
         ([self.pos[0], self.pos[1] + a, self.pos[2]], [self.pos[0], self.pos[1] + b, self.pos[2]])
     }
 
-    /// One 60 Hz tick.
+    /// One 60 Hz tick (no ladders/water context — the pre-ladder signature, still used by the unit tests).
     pub fn tick(&mut self, world: &CollisionWorld, input: &Input) {
+        self.tick_ctx(world, &LadderCtx::default(), input);
+    }
+
+    /// One 60 Hz tick with the ladder/water context: `Player_Update` 0x193600 — the regrab decay
+    /// ([M 0x193840-0x19384c], the `obj+0xF4 == 1` branch that also zeroes BLData+0x10/+0x30 every tick),
+    /// the substate dispatch ([M switch @0x193958]), then `Player_MonitorAir` 0x191a70 [M — it runs after
+    /// every substate, before the collision pass].
+    pub fn tick_ctx(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
+        self.regrab = self.regrab.saturating_sub(1);
+        self.fall_damage = None;
+        self.drown_damage = None;
+        match self.substate {
+            SS_CLIMB => self.climb_tick(world, ctx, input),
+            SS_SWIM => self.swim_tick(world, ctx, input),
+            _ => self.walk_tick(world, ctx, input),
+        }
+        self.monitor_air(ctx);
+    }
+
+    /// `Player_SSWalk` 0x192310 / `Player_SSCrouch` 0x1924c0 (the walk/crouch substates share this body in
+    /// the port; the game splits them). `Player_SSWalk`'s FIRST statement is the water check
+    /// [M 0x192310:29-32 `if (Player_InWater()) return;`] — walking into water enters the swim substate
+    /// instead of the walk tick. The ladder grab runs last: the game's `Player_CollisionHandler`
+    /// 0x1949a8 follows the substate update and `Player_DealWithObjHit` 0x194458 dispatches hit class
+    /// 0x2D to `Player_CollLadder` 0x196118.
+    fn walk_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
+        if self.enter_water(ctx) { return; }
+        self.physics_tick(world, input, false);
+        self.ladder_grab(ctx);
+    }
+
+    /// `Player_Update` case 3 [M 0x193958 case 3]: `Player_Move(1.0, …)` — the walk physics with the
+    /// multiplier 1.0 — then the inline swim tail: with a cel, Bond's y-velocity is clamped so he cannot
+    /// rise above `cel+0x90 − 0.3`, and he leaves the water when grounded and `cel+0x90 <= pos.y − 0.3`
+    /// (`BLData+0x130 = 2`, `ChangeSubState(0)`). `Player_Collision` 0x194df0 applies **no gravity** while
+    /// Bond's y is below the water surface [M the default case jumps past `WldGravity` to the substate
+    /// capsule switch when `cel+0x90 > obj+0x34`].
+    fn swim_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
+        self.physics_tick(world, input, true);
+        let Some(w) = ctx.water else { self.substate = SS_WALK; return };
+        if self.grounded && w <= self.pos[1] - 0.3 {
+            // Leave the water [M case 3: `(AnimObj+0x60 & 8) && cel+0x90 <= pos.y − 0.3` → substate 0].
+            self.substate = SS_WALK;
+            self.ladder = None;
+            return;
+        }
+        // Vertical swim [S — the game's vertical swim input is not resolved in this pass; enter/leave,
+        // the surface clamp and drowning are [M]]. Jump rises, crouch sinks. This is the ONLY vertical
+        // integration this tick (the physics pass skipped the y velocity for swimming).
+        self.vel[1] = if input.jump { 2.4 } else if input.crouch || ctx.sink { -2.4 } else { 0.0 };
+        // The surface clamp [M]: `pos.y < surface − 0.3` → `vel.y = min(vel.y, surface − 0.3 − pos.y)`
+        // (world-up); else any upward velocity is zeroed.
+        if self.pos[1] < w - 0.3 {
+            self.vel[1] = self.vel[1].min((w - 0.3 - self.pos[1]) * 60.0);
+        } else if self.vel[1] > 0.0 {
+            self.vel[1] = 0.0;
+        }
+        self.pos[1] += self.vel[1] / 60.0;
+        // The grab scan runs from the swim substate too — `Player_CollLadder` excludes only substates 1
+        // and 2, and `Player_CollisionHandler`'s grab dispatch follows every substate update [M 0x196118].
+        self.ladder_grab(ctx);
+    }
+
+    /// `Player_CollLadder` 0x196118, fed by the `Player_DealWithObjHit` 0x194458 class-0x2D dispatch over
+    /// the level's ladder objects. Guards [M 0x196118:16-17]: substate ∉ {1, 2}, regrab `+0x951 == 0`,
+    /// health `+0x894 > 0` (the port keeps health in the Sim's `drones.health` — a dead Bond gets no input,
+    /// so the health guard is enforced by the caller). Conditions [M]: `|AngleDiff(ladder.yaw, yaw)| > π/2`,
+    /// then the y window: `bottom = cy − r + 1.0 < pos.y ≤ clamped ≤ top = cy + r + 0.85` with `pos.y`
+    /// raised to `bottom + 0.02` first. On grab: snap to `centre + fwd(yaw)·0.5`, zero the horizontal
+    /// velocity (`obj+0x50/+0x58 = 0`), mode `+0x94D = 1`, `+0x130 = 2`, `ChangeSubState(1)`,
+    /// `Player_WeaponNone` (the Sim holsters to fists), `BLData+0x884 = ladder`.
+    fn ladder_grab(&mut self, ctx: &LadderCtx) {
+        if self.substate != SS_WALK || self.regrab != 0 { return; }
+        for (i, lad) in ctx.ladders.iter().enumerate() {
+            if !lad.capsule_hits(self.pos, RADIUS) { continue; }
+            let diff = wrap_pi(lad.yaw - self.yaw); // Vec_AngleDifference(player, ladder) [M 0x1e2b78]
+            if diff.abs() <= std::f32::consts::FRAC_PI_2 { continue; }
+            let (top, bottom) = (lad.top(), lad.bottom());
+            self.climb_top = top;
+            self.climb_bottom = bottom;
+            self.pos[1] = self.pos[1].max(bottom + 0.02);
+            if !(bottom < self.pos[1] && self.pos[1] < top) { continue; }
+            let (s, c) = lad.yaw.sin_cos();
+            self.pos[0] = lad.centre[0] + s * 0.5;
+            self.pos[2] = lad.centre[2] + c * 0.5;
+            self.vel[0] = 0.0;
+            self.vel[2] = 0.0;
+            self.mode = 1;
+            self.substate = SS_CLIMB;
+            self.ladder = Some(i);
+            break;
+        }
+    }
+
+    /// `Player_Climb` 0x196310 (substate 1) [M]. Order: the yaw clamp+ease toward `ladder.yaw + π`;
+    /// `Player_Move(0, …)` (no input movement — the local axes decay); `Vec_Zero(BLData+0x50)` (the world
+    /// velocity zeroes every climb tick); the ladder carry `pos += ladder(+0xC0) − ladder(+0x40)` (zero for
+    /// the port's static ladders); the input/height logic:
+    /// - action (7) pressed with `forward < 0.05` → dismount, `+0x18 −= 0.05` (a slight backward push);
+    /// - `pos.y > top` → `+0x18 += 0.6` (a forward lunge onto the platform), dismount;
+    /// - `pos.y >= bottom` → climb: `fwd = forward`; a hit above (`AnimObj 0x20`) zeroes an up-push;
+    ///   `!(hit below && fwd < 0)` → `+0x14 += fwd·0.02` (0.02 units/tick = 1.2 u/s at full push), stay;
+    ///   else dismount;
+    /// - `pos.y < bottom` → dismount.
+    /// Every dismount: `regrab = (u8)FRAME_RATE` (60), `+0x942 = substate`, the anim carry cleared, and
+    /// `ChangeSubState(0)` through the shared tail.
+    fn climb_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
+        let li = match self.ladder {
+            Some(li) if ctx.ladders.get(li).is_some() => li,
+            _ => { self.substate = SS_WALK; self.ladder = None; self.physics_tick(world, input, false); return; }
+        };
+        let lad = &ctx.ladders[li];
+        // The yaw clamp+ease [M 0x196310:18-33]: target = ladder.yaw + π (facing the ladder). The ease
+        // uses the PRE-clamp diff (the game overshoots the clamp on the clamp tick — audit #4).
+        let target = lad.yaw + std::f32::consts::PI;
+        let diff0 = wrap_pi(target - self.yaw);
+        let mut diff = diff0;
+        if diff > std::f32::consts::FRAC_PI_2 { self.yaw = target - std::f32::consts::FRAC_PI_2; diff = std::f32::consts::FRAC_PI_2; }
+        if diff < -std::f32::consts::FRAC_PI_2 { self.yaw = target + std::f32::consts::FRAC_PI_2; diff = -std::f32::consts::FRAC_PI_2; }
+        // The ease runs while the AnimObj flag bit 0 is clear — the port always eases [S: the bit-0
+        // condition is not resolvable this pass; the ease is 0.2 of the remaining angle per tick].
+        self.yaw += diff0 * 0.2;
+        // No walk movement; the local axes decay toward 0 (Player_Move's smoothing with target 0) [M].
+        self.local[0] *= 0.8;
+        self.local[1] *= 0.8;
+        self.vel = [0.0; 3]; // Vec_Zero(BLData+0x50) [M]
+        // The ladder carry [M the +0xC0/−0x40 pair]: static ladders → 0 (no moving-ladder code found).
+        // Input: action pressed (jump) with no forward → the action dismount [M 0x196310:45-48, 88-96].
+        let fwd_raw = if input.aiming { 0.0 } else { input.forward.clamp(-1.0, 1.0) };
+        let action = input.jump;
+        let mut dismount_push = 0.0f32; // the +0x18 (local forward) one-tick push
+        if action && fwd_raw < 0.05 {
+            self.push_fwd = -0.05;
+            dismount_push = -0.05;
+            self.dismount();
+        } else {
+            // Recompute the thresholds every tick [M 0x196310:49-53].
+            self.climb_top = lad.top();
+            self.climb_bottom = lad.bottom();
+            if self.climb_top < self.pos[1] {
+                // Above the top: the +0.6 forward lunge [M 0x196310:54-62], consumed next tick.
+                self.push_fwd = 0.6;
+                dismount_push = 0.6;
+                self.dismount();
+            } else if self.climb_bottom <= self.pos[1] {
+                // Mid-ladder: climb [M 0x196310:63-78].
+                let mut fwd = fwd_raw;
+                // A hit above (AnimObj flag 0x20 — the port's head_bump) blocks an up-push [M].
+                if self.head_bump && fwd > 0.0 { fwd = 0.0; }
+                // A hit below (flag 8) with a down-push dismounts [M]; the port reads the floor under
+                // Bond's feet within 1.2 units as "hit below" [S — the game's hit comes from the
+                // CollisionHandler's climb scan; see docs/atlas/ladder.md].
+                let floor_below = world.floor_below(self.pos, 1.2).is_some();
+                if !floor_below || fwd >= 0.0 {
+                    self.vel[1] = fwd * 0.02 * 60.0; // +0x14 += fwd·0.02 per tick → 1.2·fwd u/s
+                    self.physics_tick_climb(world);
+                    return;
+                }
+                self.dismount();
+            } else {
+                // Below the bottom: dismount [M 0x196310:79-86].
+                self.dismount();
+            }
+        }
+        // The climb tick still runs the collision pass [M — Player_Collision/Handler run for substate 1;
+        // the CollisionHandler's climb branch scans the hit list for the ladder and sets the 0x20/8 flags].
+        self.physics_tick_climb(world);
+        let _ = dismount_push; // the push is stored at the dismount sites below
+    }
+
+    /// The climb dismount common path [M 0x196310 dismount branches]: `regrab = (u8)FRAME_RATE`,
+    /// `+0x942 = substate`, `+0x14 = 0`, the anim carry (`AnimObj+0xDC = 0`), `ChangeSubState(0)` (the
+    /// port stores the substate directly; the game's dispatch case 10 path is the scripted-cam restore,
+    /// not this). `+0x94D` (the mode byte) is NOT touched by the game's dismount — the next grab sets it.
+    fn dismount(&mut self) {
+        self.regrab = 60;
+        self.saved_sub = SS_CLIMB as u16;
+        self.substate = SS_WALK;
+        self.ladder = None;
+        self.local[1] = 0.0; // the dismounts write BLData+0x14 = 0 [M]
+    }
+
+    /// The collision pass for the climb substate: the capsule push and the floor ray (the game runs
+    /// `Player_Collision` 0x194df0 + `Player_CollisionHandler` 0x1949a8 for every substate), without the
+    /// walk-only bookkeeping (jump/land/fall timers).
+    fn physics_tick_climb(&mut self, world: &CollisionWorld) {
+        // The climb velocity integrates first (the game's wish plumbing lands it in the position before
+        // the collision pass).
+        for k in 0..3 { self.pos[k] += self.vel[k] / 60.0; }
+        let (a, b) = self.capsule();
+        let (push, walkable) = world.capsule_push(a, b, RADIUS);
+        self.head_bump = push[1] < -1e-4;
+        for k in 0..3 { self.pos[k] += push[k]; }
+        let ray = ROOT_HEIGHT + 0.6;
+        let floor = world.segment_hit(self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
+        self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= ROOT_HEIGHT);
+        if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
+    }
+
+    /// `Player_InWater` 0x195e50 [M]: with a water cel and `pos.y − 0.3 < surface`, enter the swim
+    /// substate — `ChangeSubState(3)`, `+0x94C = 0`, `+0x130 = 2`, `+0x14 = 0`, `regrab = (u8)(DIV·5) = 5`,
+    /// `obj+0x50/+0x58 = 0`, the per-tick deltas cleared. Returns whether Bond is swimming (substate 3).
+    fn enter_water(&mut self, ctx: &LadderCtx) -> bool {
+        let Some(w) = ctx.water else { return false };
+        if self.pos[1] - 0.3 >= w { return false; }
+        if self.substate != SS_SWIM {
+            self.substate = SS_SWIM;
+            self.jump = 0;        // +0x94C = 0 [M]
+            self.local[1] = 0.0;  // +0x14 = 0 [M]
+            self.regrab = 5;      // (u8)(FRAME_RATE_DIV·5) [M]
+            self.vel[0] = 0.0;    // obj+0x50 = 0 [M]
+            self.vel[2] = 0.0;    // obj+0x58 = 0 [M]
+            self.mode = 0;
+            self.ladder = None;
+        }
+        true
+    }
+
+    /// `Player_MonitorAir` 0x191a70 [M], run after every substate: the head (the port uses the eye [S])
+    /// against `cel+0x90`: below the surface the air `+0x8C0` drains at 5/s from 100 and the underwater
+    /// fade `+0x8C4` rises; above it (any cel — the −500 default is far below every head) the air refills
+    /// at 20/s. At `air < 1.0` every 30 ticks (`GameState % (FRAME_RATE·0.5) == 0`):
+    /// `Player_HandlePain(0x40000000 = 2.0, type 7)` [M 0x191a70:136-143, disasm 0x191d9c] — the drown
+    /// damage the caller applies. The breath loop sounds (0x60c surfaced / the underwater loop on
+    /// `+0x89C`) and the HUD air pane are not ported this pass.
+    fn monitor_air(&mut self, ctx: &LadderCtx) {
+        // The game's refill branch runs for ANY cel (including the −500 default) when the head is above
+        // `cel+0x90` [M 0x191a70:98-111] — air refills on dry land too.
+        let surface = ctx.water.unwrap_or(-500.0);
+        let head = self.head()[1];
+        self.underwater = head < surface && surface > -400.0;
+        self.water_fade = if self.underwater { (self.water_fade + (1.0 - self.water_fade) / 60.0).min(1.0) }
+            else { (self.water_fade - self.water_fade / 120.0).max(0.0) };
+        if self.underwater {
+            self.air -= 5.0 / 60.0;
+            if self.air < 1.0 {
+                self.air_tick += 1;
+                if self.air_tick >= 30 { self.air_tick = 0; self.drown_damage = Some(2.0); }
+            }
+        } else {
+            self.air = (self.air + 20.0 / 60.0).min(100.0);
+            self.air_tick = 0;
+        }
+        self.air = self.air.clamp(0.0, 100.0);
+    }
+
+    /// One 60 Hz physics tick (the port's `Player_Move` + `Player_Collision` walk body). `swimming`
+    /// selects the swim-substate differences: no `Player_HandleJump` (case 3 doesn't call it [M]) and no
+    /// gravity (`Player_Collision`'s water path skips `WldGravity` [M]).
+    fn physics_tick(&mut self, world: &CollisionWorld, input: &Input, swimming: bool) {
         let prev = self.pos;
         self.fall_damage = None;
         // `Player_SSWalk` / `Player_SSCrouch`: the lockout runs down (*deviation*: the transition animation that may
@@ -141,10 +453,11 @@ impl Bond {
             if target.abs() <= 0.0002 && v.abs() < 0.01 { v = 0.0; }
             v.clamp(-0.1, 0.1)
         };
-        let (vs, vf) = (axis(self.local[0], target_s) * k, axis(self.local[1], target_f) * k);
-        // `Player_HandleJump`: crouch (toggle) and jump.
+        let (vs, vf0) = (axis(self.local[0], target_s) * k, axis(self.local[1], target_f) * k);
+        // `Player_HandleJump`: crouch (toggle) and jump. Case 3 (swim) doesn't call it [M].
         let headroom = |w: &CollisionWorld| w.line_of_sight(self.pos, [prev[0], prev[1] + 0.95, prev[2]]);
-        if !self.crouched && self.jump == 0 && input.crouch && self.lockout == 0 {
+        if swimming {
+        } else if !self.crouched && self.jump == 0 && input.crouch && self.lockout == 0 {
             self.crouched = true;
             self.lockout = 60;
         } else if self.crouched && (input.crouch || input.jump) && self.lockout == 0 && !self.head_bump && headroom(world) {
@@ -156,7 +469,10 @@ impl Bond {
             self.land_delay = 4;
             self.grounded = false;
         }
-        // The matrix turns first, then the position moves along the new axes.
+        // The matrix turns first, then the position moves along the new axes. The climb's one-tick
+        // local-forward push (Player_Climb's ±0x18 write) rides along once.
+        let vf = vf0 + self.push_fwd;
+        self.push_fwd = 0.0;
         self.yaw += turn;
         self.pitch = (self.pitch + input.look).clamp(-1.0, 1.0);
         let (s, c) = (self.yaw.sin(), self.yaw.cos());
@@ -164,13 +480,16 @@ impl Bond {
         self.pos[2] += -s * vs + c * vf;
         self.local = [vs / k, vf / k];
         // `Player_Collision`: gravity unless standing on a gentle floor (jumping keeps the velocity).
-        if !self.grounded || self.floor_ny < 0.5 {
+        // The water path skips `WldGravity` entirely [M 0x194df0 default case]. The vertical velocity
+        // integration is also the swim tail's job alone (it clamps first) — skip it here when swimming.
+        if swimming {
+        } else if !self.grounded || self.floor_ny < 0.5 {
             self.vel[1] += GRAVITY / 60.0;
         } else if self.jump != 1 {
             self.vel = [0.0; 3];
         }
         self.vel[1] = self.vel[1].clamp(-45.0, 45.0);
-        for k in 0..3 { self.pos[k] += self.vel[k] / 60.0; }
+        for k in 0..3 { if !(swimming && k == 1) { self.pos[k] += self.vel[k] / 60.0; } }
         // `Player_CollisionHandler`: the floor ray first, then the capsule's push.
         let (a, b) = self.capsule();
         let (push, walkable) = world.capsule_push(a, b, RADIUS);
@@ -182,7 +501,8 @@ impl Bond {
         for k in 0..3 { self.pos[k] += push[k]; }
         self.grounded_history = (self.grounded_history >> 1) | if self.grounded { 8 } else { 0 };
         // Fall damage: ticks falling with no ground for 4 ticks; on landing, over 60 → (timer − 60) if ≥ 10.
-        if self.grounded_history == 0 && self.vel[1] < 0.0 { self.fall_timer += 1; }
+        if swimming {
+        } else if self.grounded_history == 0 && self.vel[1] < 0.0 { self.fall_timer += 1; }
         else if self.grounded {
             if self.fall_timer > 60 && self.fall_timer - 60 >= 10 { self.fall_damage = Some((self.fall_timer - 60) as f32); }
             self.fall_timer = 0;
@@ -196,6 +516,14 @@ impl Bond {
         self.crouch_drop = if self.crouched { (self.crouch_drop + 0.0225).min(0.45) } else { (self.crouch_drop - 0.0225).max(0.0) };
         self.eye += (EYE - self.eye) * 0.1;
     }
+}
+
+/// `Vec_AngleDifference` 0x1e2b78 [M]: `wrap(b − a)` into (−π, π].
+fn wrap_pi(d: f32) -> f32 {
+    let mut d = d % std::f32::consts::TAU;
+    if d >= std::f32::consts::PI { d -= std::f32::consts::TAU; }
+    if d < -std::f32::consts::PI { d += std::f32::consts::TAU; }
+    d
 }
 
 // ── Level carry-over and spawn (fix-level2) ────────────────────────────────────────────────────────

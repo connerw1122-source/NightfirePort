@@ -228,6 +228,8 @@ pub struct Sim {
     pub wires: Vec<nf_game::wire::Wire>,
     /// Whether Bond is currently on a wire (creeping) — posts music event 0xD each tick.
     pub creeping: bool,
+    /// The level's ladders (placement type 0x22, `Ladder_Create` 0x1966c0, class 0x2D) — fix-ladder.
+    pub ladders: Vec<nf_game::ladder::Ladder>,
     /// The set of weapon ids that have a view model built in `Scene::view_models` (D-003: the cycle skips
     /// weapons not in this set, because their skin is not in the level archive).
     pub view_model_ids: std::collections::HashSet<u8>,
@@ -304,6 +306,8 @@ pub fn mul_bytes(a: [u8; 3]) -> [f32; 3] {
 /// for exactly these two flag words). See `Cel`. The room half of `parse_cel_graph` — the two MUST
 /// agree; `Scene::cels` and the portal walk's `room_to_cell` are built in one pass.
 pub fn parse_room_cels(level: &Level) -> Vec<Cel> {
+    // The room half of parse_cel_graph (fix-perf-level): one pass builds Scene::cels and the portal
+    // graph so the two cannot diverge.
     parse_cel_graph(level).0
 }
 
@@ -324,6 +328,12 @@ pub struct Cel {
     /// `cel+0xa2`: the switch-channel index whose byte value shifts the ambient read by that many bytes
     /// (`base = cel + switch_channels[cel+0xa2]`, `Lights_CalcAmbientLight` 0x1cb178).
     pub zone: u8,
+    /// `cel+0x90`: the water surface [M fix-ladder]. `build_alloc_cel` 0x1c93f8 sets it to −500.0 (no
+    /// water); `parseentity_fixup_entity` 0x1d00c0 sets `cel+0x90 = cel+0x54` for flag word 0xC023 —
+    /// `cel+0x54` is the glist bbox max y (`amemcpy(cel+0x40, glist+0x20, 0x20)` 0x1d1998 copies the bbox
+    /// to cel+0x40..0x5F) — and to −500.0 for 0xC047. `Player_InWater` 0x195e50 and the swim substate
+    /// clamp read it, and `Player_Collision` skips gravity below it.
+    pub water: f32,
 }
 
 /// The runtime cel graph for the portal visibility walk (fix-perf-level, G-016's portal half).
@@ -419,7 +429,8 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
                             let b = [param(6), param(7), param(8)];
                             if b == [0, 0, 0] { a0 } else { b }
                         } else { a0 };
-                        rooms.push(Cel { min: o.min, max: o.max, ambient: [a0, a1], zone: if flags16 == 0xc047 { param(5) } else { 0 } });
+                        rooms.push(Cel { min: o.min, max: o.max, ambient: [a0, a1], zone: if flags16 == 0xc047 { param(5) } else { 0 },
+                            water: if flags16 == 0xc023 { o.max[1] } else { -500.0 } });
                         room_to_cell.push(Some(idx));
                     }
                 }
@@ -661,13 +672,15 @@ impl Sim {
         // script playing) [M the state switch maps 9 → case 8: return] — the port approximates state 9 with its
         // fire-script gate (fix-player2: this is the half of the grenade bug that wedged the weapon after a
         // failed throw: the game plays the 26-frame throw script and blocks switching until it ends).
+        // The refused set is {1, 3, 5, 6, 7, 8, 9, 0xb, 0xd, 0xe, 0xf, 0x10} — the reload states 5/6/7 are in
+        // it: a reload always completes before a switch can start [M 0x1a6f80:33-47; fix-player3].
         let fire_busy = self.weapons.records.get(self.gun.weapon as usize).is_some_and(|w| {
             let rd = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
             let len = |h: u32| self.scripts.get(&h).map_or(0.0, |s| s.length as f32);
             let (fs, fl) = (rd(0xb0), rd(0xb4));
             (self.view_script == fs || (fl != 0 && self.view_script == fl)) && self.view_time < len(self.view_script) - 1.0
         });
-        if self.gun.switch_state == 0 && !fire_busy {
+        if self.gun.switch_state == 0 && self.gun.reload_state == 0 && !fire_busy {
             let owned = self.drones.inventory.owned.clone();
             let carried = self.drones.inventory.carried.clone();
             let clip = self.drones.inventory.clip.clone();
@@ -744,7 +757,26 @@ impl Sim {
             }
         }
         let before = self.bond.pos;
-        if !self.disabled { self.bond.tick(&self.world, &input); }
+        // `Player_Update` 0x193600 with the ladder/water context (fix-ladder): the level's ladders
+        // (BLData+0x884) and the water surface of the cel Bond is in (cel+0x90; −500 = none, and a cel
+        // whose top is far below Bond is no water either). The sink control is unused in play (the
+        // viewer's input has no bind; the crouch key sinks in the Sim path below).
+        if !self.disabled {
+            let water = self.cel_at(self.bond.pos).map(|i| self.cels[i].water).filter(|w| *w > -400.0);
+            let sink = input.crouch;
+            let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, water, sink };
+            let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
+            self.bond.tick_ctx(&self.world, &ctx, &input);
+            // `Player_WeaponNone` 0x1a9858 runs in `Player_CollLadder` on the grab [M 0x196118] — the
+            // port holsters to fists through the same switch path the viewer's weapon cycle uses.
+            if !was_climbing && self.bond.substate == nf_game::player::SS_CLIMB && self.gun.switch_state == 0 && self.gun.weapon != 0x47 {
+                self.gun.switch_request = 0x47;
+            }
+            // `Player_MonitorAir` 0x191a70's drown damage: `Player_HandlePain(0.5, type 7)` [M 0x191a70:136-143].
+            if let Some(dmg) = self.bond.drown_damage {
+                self.drones.health.health = (self.drones.health.health - dmg).max(0.0);
+            }
+        }
         // Footsteps (`AnimObjectUpdate`, player): `BL+0x924` gathers the distance moved; past the stride (1.65,
         // crouched 0.4125) it wraps (fmod) and a step sounds: crouched 0x286 at Bond, else `Effect_Player` → the floor
         // surface's footstep (`EffectInfo+0x16`) at the floor point; AI alertness 0 (drones do not hear it).
@@ -850,7 +882,9 @@ impl Sim {
         let log_switch = std::env::var_os("NF_SOUNDLOG").is_some();
         let mut switching = self.gun.switch_state != 0;
         // State 0 → 1/3/8: a switch request starts the holster (`Player_WeaponSelect` 0x1a2cc0).
-        if self.gun.switch_state == 0 && self.gun.switch_request != self.gun.weapon {
+        // The reload states block it here too (the game's refused view-state set {1,3,5,6,7,8,9,0xb,
+        // 0xd..0x10} covers 5/6/7): a pending request simply waits for the reload to finish [M 0x1a6f80:33-47].
+        if self.gun.switch_state == 0 && self.gun.reload_state == 0 && self.gun.switch_request != self.gun.weapon {
             let cur_id = self.gun.weapon;
             let req_id = self.gun.switch_request;
             let cur_base = self.weapons.base(cur_id as usize);
@@ -1015,9 +1049,17 @@ impl Sim {
                 self.view_script = if flags & 0x1000 != 0 && self.gun.clip < 1 && rd(0xb4) != 0 { rd(0xb4) } else { rd(0xb0) };
                 (self.view_time, self.view_speed) = (0.0, 1.0);
             } else if self.gun.reload_state != 0 && was_reloading == 0 {
-                // Reload just started: set the view script based on the state (5 → +0xA8, 6 → +0xA4) [M case 5/6].
-                self.view_script = if self.gun.reload_state == 5 { rd(0xa8) } else { rd(0xa4) };
-                (self.view_time, self.view_speed) = (0.0, 1.0);
+                // Reload just started [M Player_WeaponFiring's shared tail 0x1a6250-0x1a631c]: state 6
+                // queues +0xA4 at 1.35× (`AnimScriptAddSpeed`, disasm 0x1a62d0), starting at frame 6 for
+                // flag-0x1000 weapons (AnimListBuild +0x90 = 6.0; the port's script frames are time+1, so
+                // view_time 5.0). State 5 (a +0xA8 start script) plays at 1.0 [M 0x1a6260-0x1a626c].
+                if self.gun.reload_state == 5 {
+                    self.view_script = rd(0xa8);
+                    (self.view_time, self.view_speed) = (0.0, 1.0);
+                } else {
+                    self.view_script = rd(0xa4);
+                    (self.view_time, self.view_speed) = (if flags & 0x1000 != 0 { 5.0 } else { 0.0 }, 1.35);
+                }
             } else if self.gun.reload_loop_restarted {
                 // The shell loop continued: restart +0xA4 from frame 0 (matching `AnimScriptAdd(+0xA4)` in
                 // the game's case 6) [M 0x1a2e38].
@@ -1094,10 +1136,14 @@ impl Sim {
                     // is 5000.0 [L ee_start_07000001.bin, audit fix-player2 claim 8]). The port's
                     // `Grenade.range` doubles as the tick fuse.
                     let fuse = if u32::from_le_bytes(w[0x70..0x74].try_into().unwrap()) & 0x10000 != 0 { 300.0 } else { 210.0 };
+                    // The blast damage: `Explode_Create`'s damage arg is the hardcoded 100
+                    // [M disasm 0x12cd98/0x12ce18: `addiu $t2, $zero, 0x64` → Explode_Propagate's amount via
+                    // EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15); radius = $f12 =
+                    // weapon_data+0x08]. +0x0C is the damage multiplier (weapon-data.md), not the amount.
                     self.drones.grenades.push(nf_game::grenade::Grenade {
                         pos: camera,
                         velocity: [sdir[0] * speed, sdir[1] * speed, sdir[2] * speed],
-                        speed, travelled: 0.0, range: fuse, damage: f32_at(0x0c), radius: f32_at(0x08),
+                        speed, travelled: 0.0, range: fuse, damage: 100.0, radius: f32_at(0x08),
                         weapon_type: u16::from_le_bytes([w[2], w[3]]), owner: usize::MAX, state: 0, bounces: 0,
                     });
                 } else {
@@ -1280,6 +1326,17 @@ impl Sim {
         let _ = sk;
         Some((i, (t.saturating_sub(a) + 1) as u32))
     }
+}
+
+/// `FlashMod` (Check_Target 0x1a7810:95-97, the pickup/armour glow driver): a 1 Hz sine shimmer in
+/// [0.5, 1.0] — `((sin(2π·t + π/2) + 1)·0.5 + 1)·0.5` with t = the game time in seconds
+/// (GameState+0x76 = psiGetTimeIn100ths, written each main-loop pass 0x1c98c8:84; the phase is
+/// time100 · 0.01 s). Brightest at phase 0 (level start + whole seconds). The port feeds it its tick
+/// count (time100 = frame · 100/60, so the phase is frame/60) — render-side only, no sim state.
+pub fn flash_mod(frame: u32) -> f32 {
+    let t = frame as f32 / 60.0;
+    let s = (t * std::f32::consts::TAU + std::f32::consts::FRAC_PI_2).sin();
+    ((s + 1.0) * 0.5 + 1.0) * 0.5
 }
 
 /// A rigid mesh hung on a character's datum (`AnimObjectDraw`): world = `QuatTransToMat(q, t)` · bone world.
@@ -2000,6 +2057,10 @@ impl Scene {
             let bond = nf_game::player::Bond::stand_at(&world, p0, yaw0);
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.attach_level(level);
+            // Ladders (`Ladder_Create` 0x1966c0, placement type 0x22, class 0x2D): fix-ladder. The world
+            // sphere comes from the placement's object glist bounds, like the game's
+            // `Control_BuildWorldSph` 0x133070.
+            let ladders = nf_game::ladder::all(level);
             // Wires (`Wire_Create` 0x1981d8, placement type 0x3E): the level's zip wires / creep ledges.
             let wires: Vec<nf_game::wire::Wire> = level.maps[m].placements.iter()
                 .filter(|p| p.flags & 0xff == 0x3e)
@@ -2045,7 +2106,7 @@ impl Scene {
                 })
                 .collect();
             drones.pickups.extend(placed_pickups);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0) })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0) })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {
@@ -2298,6 +2359,20 @@ impl Scene {
                     pickup_mult.entry(pk).or_insert_with(|| {
                         match s.drones.pickups.get(pk as usize) {
                             Some(p) if tintable(p) => amb_at(s, &p.m),
+                            // Armour glow (fix-player3): kind 3 carries the 0x80000 "close-up flash" flag
+                            // (`Pickup_Create` 0x18dda0:145-151) — `View_SetupRenderModes_Tweak`
+                            // (0x1e5888:22-44) multiplies its tint by `FlashMod` while the viewer's camera
+                            // (viewer+0xC0) is within 4.0 units of the pickup's world-sphere centre
+                            // (obj+0x80, squared distance < 16.0) and the options byte DAT_002a38d4 is set
+                            // (1 at level start [L]). The port's camera is Bond's eye (first person, as in
+                            // play); no corona, no additive pass — the pulse rides the same vertex-colour
+                            // multiply as the ambient dim.
+                            Some(p) if p.kind == nf_game::pickup::kind::ARMOUR => {
+                                let c = p.centre();
+                                let e = s.bond.head();
+                                let d2 = (c[0] - e[0]).powi(2) + (c[1] - e[1]).powi(2) + (c[2] - e[2]).powi(2);
+                                if d2 < 16.0 { [flash_mod(s.drones.frame); 3] } else { one() }
+                            }
                             _ => one(),
                         }
                     });

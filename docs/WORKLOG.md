@@ -4062,6 +4062,190 @@ their fix (except the party-level counter test, which pins measured numbers) and
 nf-audio -p nf-view -- --test-threads=1` — see the commit; only the 3 allowed slim-ISO disc_golden
 failures.
 
+## 0089 — fix-ladder: the ladder system (Ladder_Create/Player_CollLadder/Player_Climb) and the swim substate (Player_InWater + case 3 + Player_MonitorAir)
+
+Task: the user's 07000002 report — Bond starts in an underground bunker and can't get out (the exit is a
+ladder; ladders weren't implemented), and the level's water is walk-on-top instead of swimmable. Branch
+`s/fix-ladder` from master 4b199d0. Files: new `crates/nf-game/src/ladder.rs`,
+`crates/nf-game/src/player.rs` (the substate functions only), `crates/nf-view/src/scene.rs` (placement
+wiring + the tick context), new `crates/nf-view/tests/fix_ladder_live.rs`, docs (`atlas/ladder.md`,
+`atlas/wire-grapple.md` correction, `systems/levels.md`), `lib.rs` (one `pub mod ladder;` line).
+
+**Research (before any code).** The substate machinery was already documented (wire-grapple.md: substate 1
+= Player_Climb 0x196310, hit class 0x2D → CollLadder) but unported — grep found no ladder/climb code in
+crates/. Ported whole from the decompile:
+- `Ladder_Create` 0x1966c0 [M disasm]: placement type 0x22 → control_create_object(4) (instance 4 bytes:
+  inst+0=0, inst+2=placement param 1, unread), class 0x2D; rotation passed through UNMODIFIED — the
+  wire-grapple atlas's "rot.z is negated … as for ladders" note was wrong (corrected there).
+- `Player_CollLadder` 0x196118 [M]: walk into the ladder attaches (not use-key driven): |AngleDiff
+  (player, ladder) | > π/2 (Vec_AngleDifference 0x1e2b78 = wrap(b−a)), y window bottom=cy−r+1.0 /
+  top=cy+r+0.85 (raised to bottom+0.02 first), snap to centre+fwd(yaw)·0.5, ChangeSubState(1),
+  WeaponNone, regrab/mode/+0x130/+0x884.
+- `Player_Climb` 0x196310 [M]: yaw clamp+ease toward ladder.yaw+π (ease uses the pre-clamp diff),
+  Player_Move(0) (no walk), BLData+0x50 zeroed, the climb 0.02·fwd units/tick (FRAME_RATE_MUL=1
+  [L 0x30d0d8]) = 1.2 u/s; top dismount +0.6 local-forward push, action (7) dismount −0.05, bottom
+  dismount; every dismount regrab=60, +0x942=substate, +0x14=0. The BLData+0x10..0x1F wish vector is
+  ZEROED EVERY TICK by Player_Update (obj+0xF4==1 branch [M disasm 0x193830-0x19383c: Vec_Zero(s2+16),
+  Vec_Zero(s2+48)]) — so the +0x14 climb delta and the ±0x18 pushes are one-tick displacements (the
+  port consumes them as `vel`/`push_fwd` the same way).
+- Swim [M]: cel+0x90 = the water surface (build_alloc_cel 0x1c93f8 defaults −500.0;
+  parseentity_fixup_entity 0x1d00c0 sets it to the entity bbox max y — cel+0x54 — for flag word 0xC023,
+  −500.0 for 0xC047; the bbox is the glist copy at 0x1d1998 amemcpy(cel+0x40, glist+0x20, 0x20)).
+  Player_InWater 0x195e50 is Player_SSWalk's FIRST statement (y−0.3 < surface → ChangeSubState(3) — case
+  3 in the Player_Update dispatch is the swim, not only riding); case 3 = Player_Move(1.0) + the
+  surface−0.3 up-velocity clamp + the grounded exit; Player_Collision 0x194df0 applies NO gravity below
+  the surface. Player_MonitorAir 0x191a70: air −5/s under (from 100), +20/s over ANY cel, drown
+  Player_HandlePain(0x40000000 = 2.0, type 7) every 30 ticks below 1.0 (the 2.0 was caught by the audit;
+  0x40000000 is 2.0f, not 0.5f).
+
+**Disc data** [D]: 4 ladders on 07000002 (the bunker exit ≈(−26.9, 2.3, 42.2), world top 5.96), water
+surfaces 3.76–4.34 on 5 cels; 9 more levels carry ladders and 07000016 one water cel — the full table is
+in docs/systems/levels.md (new §"Ladders and water, per level", from the sweep test).
+
+**Reproduce-first.** `prefix_bond_cannot_leave_the_bunker` (run on stashed master, not committed):
+Bond placed at the bunker ladder's face, 900 forward ticks → y 1.051 → 1.097: "SYMTOM REPRODUCED ON
+MASTER". The committed tests assert the fixed behaviour through `nf_view::load` + `Sim::step_bond` (the
+viewer's own play path):
+- `ladder_walk_into_it_climbs_to_the_garden_and_walks_away`: walk into the ladder → substate 1 → reaches
+  the garden (y > 5.2), dismounts to walk, walks away, net climb > 2. Sister: the climb's height gain.
+- `walk_into_water_enters_the_swim_substate`: a grid search finds deep water inside a 0xC023 cel box
+  (the moat cel's box starts at −0.73), Bond placed there → substate 3, y−0.3 < surface. Sister: dry
+  bunker start never swims.
+- `ladder_and_water_counts_per_level`: the per-level sweep (docs table); sister: 07000002 ≥ 4 ladders.
+
+**Audit (independent subagent, claims + decompile).** All 15 decompile claims CONFIRMED (2 with
+corrections), and it caught 4 port bugs, all fixed: (1) double vertical integration in swim (physics
+integrated the stale vel[1], then swim_tick integrated again) — the swim y integration now happens once,
+after the clamp; (2) air never refilled on land (the game's refill branch runs for the −500 default cel
+too); (3) drown damage 0.5 → 2.0 (0x40000000); (4) the ladder grab was unreachable from the swim
+substate (the game excludes only substates 1/2) — swim_tick now runs the grab scan. Also adopted: the
+dismount writes +0x14=0 and does NOT clear +0x94D.
+
+**Deviations, tagged [S] in docs/atlas/ladder.md**: the grab hit-shape is the ladder's axis column (the
+game's per-object HITTEST shape isn't recoverable this pass); the climb-yaw ease always runs (AnimObj
+flag bit 0 unresolved); the climb "hit below" flag 8 is the port's floor ray (the game uses the
+CollisionHandler's hit list); vertical swim controls are jump/crouch (the game's dive input unresolved);
+the head bone is the eye; climb anims / the underwater fade visual / the air HUD / breath sounds are not
+ported (fields exposed: `water_fade`, `underwater`).
+
+**Verified**: `cargo test --release -p nf-game --lib` 65/65; the full suite
+`NF_ISO=<iso> cargo test --offline --release -j2 -p nf-game -p nf-formats -p nf-audio -p nf-view --
+--test-threads=1` (see the commit message for the counts; only the 3 allowed slim-ISO disc_golden
+failures). Determinism: no RNG draws added (the ladder/water paths consume none in the game [M grep of
+the six touched decomp files]); fixed 60 Hz; no wall-clock or HashMap order in Sim.
+
+## fix-player3 — the player follow-ups (user playtest at afc60ed): reload-from-empty, mid-reload switch, the thrown grenade, the armour glow, drop/crosshair pins
+
+Branch `s/fix-player3` from master 4b199d0 (which already carried the merged fix-render2). Every fix has
+a headless NF_ISO test in `crates/nf-view/tests/fix_player3_live.rs` driving the real input path
+(`nf_view::load` + `Sim::step_bond`), shown failing on the pre-fix build (git stash of the four source
+files) and green after.
+
+**3. Reload from empty plays wrong — FIXED (gun.rs + scene.rs).** The reload key and auto-reload
+branches of `Player_WeaponFiring` (0x1a5460:395-498) share one script tail: the +0xA4 loop queues at
+**1.35×** (`AnimScriptAddSpeed`, disasm 0x1a62d0 — the decompiler dropped the hash), **starting at
+frame 6** for flag-0x1000 weapons (AnimListBuild +0x90 = 6.0, disasm 0x1a6300-31c), with tick count
+ceil((len−6)/1.35). The port played +0xA4 at 1.0 from frame 0 and never used its own computed
+`reload_ticks`. Retail scan [L ee_start_05.bin]: the P2K (flags68 0x1004) and Raptor (0x100C) both
+reload this way; only SPAS-12 0x1c/0x1d has +0xA8 (state 5) or +0xAC. Also ported: a non-shell weapon
+(flags68 & 0x100 == 0) goes STRAIGHT from state 6 to idle — LAB_001a3678 (0x1a3678-0x1a369c) plays
++0xA0, sets state 0, `Input_ClearAction(9)`; the port's spurious state-7 hop (with +0xAC = 0 → one
+tick of view_script 0) is gone (shell weapons keep the +0xAC path). Branch B (auto-reload) zeroes the
+refire timer [M 0x1a6244] and its trigger condition is the fire EDGE ("not newly pressed", disasm
+0x1a61d0), not "released" — so holding the trigger still auto-reloads, as in the game (the take and
+the auto-reload land on the same tick in the repro). Test:
+`reload_from_empty_plays_the_1_35x_loop_and_lands_on_idle` (pre-fix: speed 1.0).
+
+**4. Switching mid-reload breaks shooting — FIXED (scene.rs).** `Player_WeaponChange`
+(0x1a6f80:33-47) refuses every switch while the view state is in {1,3,5,6,7,8,9,0xb,0xd..0x10} — the
+reload states 5/6/7 are in the refused set: a request during a reload is DROPPED (nothing written) and
+the holster can only start once the reload completed. The port set `switch_request` whenever
+`switch_state == 0 && !fire_busy` — no reload check — and the holster started mid-reload, stomping the
+view script and wedging the fire path. Fix: the step_bond gate and run()'s holster start both require
+`reload_state == 0` (a pending request now waits, as the game's ungated +0x63 writers do). Test:
+`switching_mid_reload_is_refused_and_firing_recovers` (pre-fix: the request was set mid-reload; the
+"start reload → switch → switch back → fire" flow now fires).
+
+**5. The thrown grenade — FIXED (grenade.rs + one line in drone.rs, both shared files — minimal).**
+Three root causes [M]:
+- the flight: `Bullet_update`'s movement tail (0x12f040-0x12f058) moves `pos += fVar16 · velocity`
+  with fVar16 = speed · FRAME_RATE_MUL (= 1 at the fixed 60 Hz) and velocity the per-tick displacement
+  (unit direction · speed, re-normalised after the gravity add, `Vec_NormaliseLen` storing the length
+  into BU+0xF8). The port moved `pos += velocity · REC_FRAME_RATE` — 60× too slow: the grenade
+  crawled at ~0.17 u/s (repro: max horizontal distance 0.58 units) and the fuse expired at Bond's feet
+  ("the throw doesn't really happen, no explosion").
+- the fuse: `Bullet_init` (0x12c5a0:103,196-223) hardcodes BU+0xFC = 210 (300 with +0x70 & 0x10000,
+  420 for the mine 0x37); `weapon_data+0x1C` (5000) is the max-travelled range — a SILENT state-4
+  death [M Bullet_update case 1], not the fuse. The guard throw passed `f32_at(0x1c).max(210.0)` = 5000
+  (the fix-player2 audit's noted deviation) — guard grenades never fuse-exploded.
+- the blast damage: `Explode_Create`'s damage arg is the hardcoded 100, not weapon_data+0x0C (the
+  damage MULTIPLIER, 0.0 for the frag 0x35) [M disasm 0x12cd98/0x12ce18: `addiu $t2,$zero,0x64` →
+  EXPLODEINFO+0x28 → `Explode_Propagate`'s amount via `Explode_CollisionHandler` 0x17cde0:13-15;
+  radius = $f12 = weapon_data+0x08 = 10.0 [L]]. With damage 0.0 the port's explosion damaged nobody.
+Also the first tick now steps (0.5 + FRand(0.5)) · speed [M 0x12e7c0] (the draw was already there, the
+step was discarded). Tests: `thrown_grenade_flies_and_explodes_with_sound_and_damage` (pre-fix: 0.58
+units, no explosion observed) + fix_player2's grenade test updated to track the grenade through its
+life (it now flies AND explodes inside that test's 80-tick window — game-accurate).
+
+**2. Armour glow — ported (scene.rs).** Kind-3 armour carries the 0x80000 flag [M `Pickup_Create`
+0x18dda0:145-146]; `View_SetupRenderModes_Tweak` (0x1e5888:22-44) multiplies its tint by `FlashMod`
+while the viewer's camera (viewer+0xC0) is within 4.0 units of the pickup's world-sphere centre
+(squared distance < 16.0) and option byte DAT_002a38d4 is set (1 at level start [L both snapshots]).
+`FlashMod` (Check_Target 0x1a7810:95-97) is a 1 Hz sine shimmer in [0.5, 1.0] off GameState+0x76
+(psiGetTimeIn100ths); the port feeds it its tick count (phase = frame/60 s) — render-side only. No
+corona, no additive pass: the pulse rides the same vertex-colour multiply as the ambient dim (the
+port's camera is Bond's eye, first person as in play). `nf_view::scene::flash_mod(frame)` is pub.
+Test: `armour_glow_pulses_when_bond_is_close` (frame 45 → FlashMod exactly 0.75; near = tint × 0.75,
+far = 1.0; pre-fix: near == far == 1.0).
+
+**1. Guard death drops — NO REPRO, the port already matches the game (pin test added).**
+`DroneWeap_DropWeapon` (0x17a2a0) creates exactly ONE visible pickup — the base weapon, kind 0
+(disasm 0x17a404-08: `$a3 = 0`); the only second pickup is the 0x1A twin (kind 1, id 0x1B,
+clip·(FRand(0.5)+0.25), disasm 0x17a428-84) which the game hides immediately (`obj+0xF0 |= 0x10`).
+All Pickup_CreateSimple/Create callers scanned: no death path creates a VISIBLE kind-1 pickup
+(0x14b158 kind 0; 0x17a2a0 kinds 0 + 1-hidden; 0x190810 MP-only, same pattern; `Pickup_CreateFromSet`
+0x18f1b0's visible small twin is the MP spawn-set, not a death drop). Hidden = not drawn [M
+`View_AddObjects` 0x1e62d8:33 `(flags & 0x8010) == 0`; `View_AddForcedObjects` 0x1e5fb8:85-89] and
+still takeable [M `Pickup_Update` 0x18e148:202-220 has no 0x10 check] — the PS2 behaviour the user
+remembers as "only the gun drops; picking it up gives the weapon or the ammo". The port's drop path,
+hidden flag and draws already matched (scene.rs honours `hidden` at every draw site). Pinned by
+`death_drops_match_the_game_exactly` (one visible kind-0 base-id drop; the 0x1A twin hidden).
+
+**6. The civilian no-shoot "block" — the code has none (pin test + addresses).** BLData+0x133
+(crosshair state) is written by `Check_Target` (0x1a7810:101-204: +0x132 clear/mark, +0x133 = 2/3) and
+read ONLY by `HUD_UpdateCrossHair` (0x19e6d0:69 — display) and cleared in `Player_InitWeapon`
+(0x1a7ef8:50). The fire chain (`Player_WeaponFiring` 0x1a5460 → `Player_RoundToFire` 0x1a18e0 →
+`Bullet_init` 0x12c5a0) never reads +0x133/+0x132/+0x44; the +0x880 readers (0x1a5460:531-581) gate
+the gadget weapons 0x56-0x58 on an aimed-at object within weapon range — not a civilian block.
+`Check_Target`'s only caller is `Player_AutoAim` (0x1a7c98:117). Unless the user's memory outranks the
+decompile, the PS2 game fires at civilians (they are excluded from auto-aim LOCK instead — already
+ported). Pinned by `firing_at_a_marked_civilian_is_not_blocked` (crosshair state 3 AND the shot
+fires). A PCSX2 trigger-pull trace is the resolver if the user still sees a block.
+
+**7. Fists knock-out — NOT DONE (evidence gathered, no code).** [L ee_start_05.bin record 1] the
+fists are ammo_type 0, clip 1, range +0x1C = 1.75, damage 5.0, speed 1.0, +0x6C = 0x800: the punch is
+a short-range bullet. The game's KO state is `NDrone2_DSTATE_KnockedOut_Anim` 0x172a30 — one of the
+twelve `DroneWeap_DropWeapon` death callers (a KO'd guard drops his gun [M]) — but its dispatcher is
+the state function table (no C cross-references), so "who sends a drone to KO on a weapon-1 hit" needs
+a state-table/damage-handler pass that did not fit this session. The port currently applies the fists'
+5.0 damage as a normal hit.
+
+**8/9/10 (drawn-but-dead 07000002/06 drones, the 07000005 torso twist, the searchlight alarm) — NOT
+DONE.** The two research subagents for these hit their deadlines twice (the second delivered only the
+Check_Target/FlashMod material reused above). Nothing was changed in drone.rs beyond the one fuse line
+and scene.rs's pickup/weapon parts; fix-drone3's drone.rs work is untouched.
+
+**Shared-file touches (minimal, per the task rules)**: `crates/nf-game/src/grenade.rs` (the flight
+integrator + fuse doc — item 5's core, also used by the guard path), `crates/nf-game/src/drone.rs`
+(throw_grenade's fuse: 3 lines) and `crates/nf-view/tests/fix_player2_live.rs` (the grenade test's
+assertion window — the corrected flight makes the grenade explode inside it). fix-player2's scene.rs
+pickup branch and the fix-render2 multiplier survive unchanged.
+
+**Verification**: the 4 repro tests failing pre-fix (stash) / green post-fix; 2 pin tests green both
+ways; the full suite result below in the commit. No subagent audit this session (both auditor slots
+went to the timed-out research agents) — the claims above carry their decompile/disasm/snapshot
+addresses for the next audit pass.
+
 ## fix-render3 — what fix-render2 didn't reach (jitter regression, 07000007 view lag, cel cull, G-041)
 
 The task's lighting bullets (cut-scene characters, dropped guns / placed pickups, the truck) were
@@ -4291,3 +4475,72 @@ Not verified / not reached:
   twist, the 07000006 stationary guards, the searchlight spotted→alarm path — not reached (out of
   budget; drone.rs is fix-drone3's file this round). No evidence gathered, nothing ported — the
   items stay with their owner sessions.
+## fix-dev — dev tools for long playtests (skip cut-scenes, reliable infinite ammo, HUD clamp, no reload, level select)
+
+Branch `s/fix-dev`. Files: `crates/nf-game/src/nis.rs` (the script-player skip), `crates/nf-view/src/{dev,hud,lib}.rs`,
+tests `crates/nf-view/tests/dev_tools_live.rs` (new) + `menu_live.rs` (the ammo assertion updated to the fixed
+behaviour), docs `docs/tools/dev-mode.md` + `docs/atlas/script-player.md`.
+
+### What was done
+
+- **Cut-scene skip (any key), ported from the game** [M]: `SP_Update` state 2 checks `Input_Action(-1, 0x19, 1)`
+  (0x1dbda8:129-141) and calls `Script_FFwd(cur, 1)` (0x1dac78) unless `Script_IsDeathNIS(script A)` (0x1dae60:
+  0x6000952/0x600098a/0x6000991 refuse). `Script_FFwd` needs the camera-active flag (`+0xAB5` bit 4, set by op 0xD
+  `Script_CameraStart`, cleared by `Script_CameraEnd` 0x1db348 — the port's op handlers now maintain it): first press
+  arms the fade (`fade_len = min(length − clock, 45)`, `play |= 0x10`, `fade_clock = FRAME_RATE_MUL`,
+  `Music_Event(5, hash)`; `Camera_SetFade` and the kind-2 datum snap flag 0x40000 are view-side, not modelled);
+  event 0x10 scripts kill their camera stream instead. `Script_Update` (0x1da998:19-110)'s do-while — re-run the
+  streams while `fade_clock > fade_len` and still playing — IS the fast-forward: the rest of the cut-scene (events,
+  channel sets, `LoadLevel`) runs inside that one tick, then the final block fades back in and clears the latch.
+  `Script_Interp` (0x1d9a08:146,205) freezes kinds 2/4 while the freeze flag (bit 5) is set. The viewer maps any key
+  press except Esc/F1/F2/F11/F12 to `Scripts::skip_request` while `Scripts::cutscene_playing()`. A non-looping script
+  finishes within `length` passes (op 6 fires at clock ≥ length); the loop is additionally bounded at
+  `2·length + 256` passes (a guard: the game's own loop would spin forever on a looping script, which the data
+  never skips).
+- **Infinite ammo made reliable (the user's "isn't always reliable")**: the refill wrote only `gun.clip`/`gun.spare`
+  — transient copies `Sim::run` re-reads from the INVENTORY (`BL+0x170`/`+0x1B8`) every tick — so the store kept
+  emptying while the HUD showed a full clip. `Dev::after_tick` now tops every clip slot to its weapon's
+  `weapon_data+0x92` clip size and every ammo type's carried rounds to 200: other ammo types, weapon switches, the
+  level carry-over, and Bond's grenades (the 0x45 belt's clip slot [M gun.rs:100-106]) all covered.
+- **HUD ammo strip clamp** (`hud::strip_clip`, fix-dev T3): a clip above its size (only reachable via the dev tools;
+  pickups/reloads cap it [M pickup.rs]) drew `clip · hpr` tall — the user's stacked/garbled icons. The strip now
+  draws at most `clip_size · hpr`; the "clip-spare" text keeps the real numbers.
+- **No reload** (F2): the current weapon's clip is topped to its clip size each tick.
+- **Level select** (F2, fix-dev T5; B-12 had not added one): `level: 070000xx` rows for the 34 level archives on the
+  disc (`nf-extract files-manifest`), feeding `pending_level` — the same warm transition a level exit takes.
+- Reproduce-first: each fix has a test that failed before it (`dev_infinite_ammo_survives_sustained_fire`,
+  `dev_no_reload_keeps_clip_full`, `dev_skip_ends_the_gatehouse_cutscene`, `hud_ammo_strip_clamped`), with sister
+  assertions (`sister_infinite_ammo_off_still_runs_out`, the phase-A "still playing" checks). The skip also has a
+  synthetic unit test in nis.rs covering the death-NIS refusal. Full suite green except the 3 allowed slim-ISO
+  `disc_golden` failures (bigf_header/bigf_tables/directory_tree).
+
+### What could not be verified, and why
+
+- The skip's `Camera_SetFade` picture (the fade-out/fade-in) is view-side; the port has no camera-fade renderer, so
+  the visual fade is not verifiable headless — the state machine and end effects are.
+- The gatehouse cut-scene was NOT driven by walking: B-12's `cutscene-ai-pause` spot (100, 28, 108) does not reach
+  the plate TOUCH_ONCE (trig5: volume x 104.5..107.4 at y 24.4065; Bond lands at y 25.9 and walks over it at feet
+  y 25.0 — 0.59 above the plane, outside the 0.55 toucher radius), and script 0x6000074 is not in the level's
+  script lib (it streams from disc in the game; `isLoadable`). The test instead activates the level's own
+  camera cut-scene SPs (0x60008C8 via ch 92, 0x6000994 via ch 67) the way the game's chains would (as K does), then
+  mashes the skip through the exact field the viewer's key handler writes. The cutscene-ai-pause scenario's spot is
+  stale — its own doc claim ("fires within ~1 s") does not reproduce at that position.
+- Music_Event(5, hash) (the skip's music pulse) rides the uncarried `Request::Event` — the port's music runtime has
+  no consumer for it yet (the same status as the other uncarried events).
+
+### C2-class first dump (07000002, throwaway probe, numbers only)
+
+`nf_view::load("07000002.bin")` + 300 idle ticks; every present drone with present/started/enabled/in-llist/held/
+drawn/corpse/team/mode/dtype/channel (25 present, none spawner-held, none corpses):
+
+- #0–#20: team 1, dtype 0x2, `enabled=0 drawn=0`, in-llist, switch channels 21/23/24/25/129/8 — the switch-gated
+  combat guards, correctly invisible + disabled until their channels fire.
+- #21: **team 2, mode 0xC, dtype 0xC, ch 0, enabled=1 drawn=1 in-llist, state 0x1C** at (−24.3, 1.0, 31.9) — the
+  only DRAWN non-team-1 drone at the start; a non-hostile-class character the port draws like a guard (the C2
+  candidate: "drawn, never attacks, can't be damaged" — the port's damage/target path keys off team != 1).
+- #22–#24: team 3, modes 0x7/0x5, dtype 0xe, ch 22/23/25, `enabled=0 drawn=0` — the fix-drone3 mission-state
+  characters (civilian guard, civilians), correctly dormant at start.
+
+Not done (sandbox time): what the game does with a team-2/mode-0xC drone (its real behaviour to port), the
+07000005 patrol torso-twist clamp, the 07000006 stationary-guard class, and the searchlight spotted→alarm path —
+each needs the same load-and-walk dump driven to the reported spots.

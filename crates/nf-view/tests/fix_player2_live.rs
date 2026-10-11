@@ -79,12 +79,16 @@ fn grenade_throw_spawns_at_the_release_frame_and_the_gun_recovers() {
     // a 26-frame animation whose release frame spawns the grenade.
     sim.step_bond(Default::default(), true, false, false);
     let bullets_at_press = sim.drones.player_bullets.len();
-    for _ in 0..80 { sim.step_bond(Default::default(), false, false, false); }
+    // fix-player3: the grenade FLIES now (Bullet_update's per-tick displacement) and explodes on the
+    // fuse — track it through its life instead of expecting it to still be in flight after 80 ticks.
+    let mut g_seen: Option<nf_game::grenade::Grenade> = None;
+    for _ in 0..80 {
+        sim.step_bond(Default::default(), false, false, false);
+        if g_seen.is_none() { g_seen = sim.drones.grenades.first().cloned(); }
+    }
     assert_eq!(bullets_at_press, sim.drones.player_bullets.len(),
         "no hitscan bullet on a grenade's fire press (the press only winds up)");
-    assert_eq!(sim.drones.grenades.len(), 1,
-        "the grenade spawns at the release frame (fire_anim_len 26 [M 0x1a2e38 case 9; Player_SetFiringAnim 0x1a3c70])");
-    let g = &sim.drones.grenades[0];
+    let g = g_seen.expect("the grenade spawns at the release frame (fire_anim_len 26 [M 0x1a2e38 case 9])");
     assert_eq!(g.weapon_type, 0x35);
     assert!((g.speed - 0.167).abs() < 1e-3, "speed = weapon_data+0x20 [L ee_start_07000001.bin record 0x35]: {}", g.speed);
     assert!(g.range >= 200.0, "the 210-tick fuse [M Bullet_init 0x12c5a0:192-233]: {}", g.range);
