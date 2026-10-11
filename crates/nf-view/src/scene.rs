@@ -1322,6 +1322,21 @@ impl Scene {
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                 add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, Some(di as u16));
             }
+            // LOAD_LEVEL triggers (0xE8): the placement carries a visible mesh (e.g. 07000005's `Door_Gate8` —
+            // the castle gate door — and the route-c zip-wire exit `Locked_Door_Top_I`). In the real game
+            // `Trigger_LoadLevelCreate` (0x1b2950) → `Trigger_Create` (0x1b1720) calls `control_create_object`
+            // which attaches the glist to `obj+0xF0`, so the trigger entity IS drawn. The port's `instances()`
+            // skips these placements (no 0x8000 CREATE_CEL bit), so without this loop the castle gate door is
+            // invisible in play — the user sees "nothing to interact with" at the gate. Draw them here as
+            // static World-layer meshes at their placement transform (they don't animate) [M 0x1b2950, 0x1b1720].
+            for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0xe8) {
+                let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                    else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
+                let Some((map, object)) = target else { continue };
+                if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
+                let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
+                add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None);
+            }
         }
         let (mut vertices, mut indices, mut materials, mut char_verts) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut char_vertex_start = None;

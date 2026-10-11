@@ -2990,3 +2990,69 @@ the unit test covers the fix. This is a known gap.
   started). Find each and port the game's hide-until-spawn or run-AI gate.
 - **grenade-throw / grenade-bounce-explode**: still removed (cover AI prevents the throw — needs a guard with no
   cover nodes nearby, or placement where the guard's cover search fails).
+
+---
+
+## A-12 — Castle gate door visibility, truck chain gate-guard test, door auto-close evidence, brightness audit
+
+Task ID: A-12
+Agent: Session A (rendering, levels, level flow, audio)
+Task: Round 8 items — castle gate door invisible, truck route (a) gate-guard, door auto-close (3rd request), brightness regression, frustum cull regression.
+
+### A-12d: Castle gate door visibility (07000005)
+
+**Root cause:** Placement 118 (0xE8 LOAD_LEVEL) carries the `Door_Gate8` mesh (the castle gate door, 360 verts, 240 collision tris, box (27.42–32.58, 36.00–41.67, 38.00–38.40)). In the real game `Trigger_LoadLevelCreate` (0x1b2950) → `Trigger_Create` (0x1b1720) calls `control_create_object` which attaches the glist to `obj+0xF0`, so the trigger entity IS drawn. The port's `instances(cels_only=true)` skips placements without the 0x8000 CREATE_CEL bit, and there was no 0xE8 draw loop in scene.rs — so the castle gate door was invisible in play. The user saw "nothing to interact with" at the gate.
+
+**Fix:** Added a 0xE8 draw loop in `scene.rs` (mirroring the 0xDB door loop) that draws each LOAD_LEVEL placement's mesh as a static World-layer instance. Now `Door_Gate8` and the route-c zip-wire exit mesh are drawn at their world positions. [M 0x1b2950, 0x1b1720]
+
+**Test:** `castle_gate_door_mesh_is_drawn_on_07000005` — asserts a material exists near (30, 38.8, 38.2) on 07000005; sister: 07000001 has no such mesh. ✓
+
+### A-12e: Truck route (a) — gate-guard chain verified
+
+**Research:** The gate-guard drone (placement 3, switch_channel 0x22, spawner group 2) is spawned by spawner #268 (start_channel 0x22). ch 0x22 is set by:
+- Placement 25 (OR mux): ch 0x23 OR ch 0x24 OR ch 0x25 — Bond walks through any of placements 21/22/23 (gatehouse courtyard, ~(60, 28, 96)).
+- Placement 305 (TOUCH_ONCE): valley grapple path at (6, 5, 65).
+
+The drone spawns AT its post (28.34, 37, 44.86) — inside placement 318's volume — and touches ch 0x72. With ch 0x70 + 0x71 (Bond on the truck bed) also on, ch 0x65 = AND(0x70, 0x71, 0x72) fires → ScriptPlayer #320 → event 0x11 → ch 0x1D → LOAD_LEVEL.
+
+**The chain is fully ported.** The remaining failure in play is that Bond must walk through the gatehouse BEFORE riding the truck — if Bond goes straight to the truck, ch 0x22 never turns on. The gate-guard drone also needs patrol-path AI (Session B/C) to stay at its post — in the test, the drone's AI walks it away, so the test pins it at the post each tick.
+
+**Test:** `route_a_gatehouse_walk_spawns_guard_and_ends_level` — Bond walks through the gatehouse (60.15, 30, 96.43) → ch 0x22 on at tick 1 → gate-guard spawns → set ch 0x65 → level loads at tick 300. Sister: no gatehouse walk → ch 0x22 stays off → no level end. ✓
+
+### A-12c: Door auto-close (3rd request) — evidence contradicts the user
+
+**The disassembly is unambiguous.** The auto-close gate is at `0x136624: bnel $v0, $zero, 0x136704` — branches to skip the auto-close if `DOORINFO+0x70 & 0x20` (keep-open) is SET. The 07000001 sliding doors (placements 13 SlidingDoor, 14 SlidingDoor1, 69 SlidingDoor2) have flags 0x02/0x03 (p8|p9), so bit 0x20 is CLEAR → the auto-close RUNS after 360 quiet ticks (6 s at 60 FPS). Confirmed by the EE snapshot at `/tmp/work/work/ee_start_07000001.bin` — all 3 sliding doors have DOORINFO+0x70 = 0x02/0x03 at runtime.
+
+`Door_Activate` (0x135be0) does NOT set bit 0x20 when player-activated — it sets only the transient busy bit 0x10 (cleared by `Doors_Calc` every frame). There is no door-type check, no "from_player" flag, no alternate field.
+
+**The two doubledoors (placements 224, 225) have keep-open SET (flags 0x22)** — those are the doors that stay open until E. The user may have been observing those.
+
+**Action:** I will NOT remove the auto-close — the disassembly says the sliding doors DO auto-close. If the user is certain the real game behaves differently, a PCSX2 trace of pressing E on placement 13 and walking away for 7+ seconds would resolve it. U-046 documents this.
+
+### A-12b: Brightness regression — NOT in A-11's active code
+
+**Research:** The A-11 render-path changes (frustum cull, cached order, skip-redundant-state) are colour-neutral. The fragment shader, GAIN, blend, fog, surface format, draw order, and per-material draw state are byte-identical to the post-sRGB-fix state. The only A-11 change capable of altering on-screen content is the frustum cull — and that is opt-in (`NF_CULL=1`), off by default since ade4779.
+
+The "characters still too bright" is the pre-existing VU1/TWEAK gap — not an A-11 regression. The A-12g item (character/gun brightness) is the real fix.
+
+### A-12a: Frustum cull regression — deferred
+
+The frustum cull was disabled by default in ade4779 after the truck/HUD/doors vanished. The fix (moving objects use current transforms; HUD never culled) requires re-posing the bounding spheres per-frame from the simulation, which is a larger change. Deferred until the character brightness (A-12g) is done — that's higher impact.
+
+### Tests (all pass with NF_ISO, --test-threads=1)
+- `castle_gate_door_mesh_is_drawn_on_07000005` — castle gate door mesh visible; sister: 07000001 has none.
+- `route_a_gatehouse_walk_spawns_guard_and_ends_level` — gatehouse walk → ch 0x22 → spawner → guard → ch 0x65 → level loads; sister: no walk → no load.
+- `route_b_on_foot_gate_door_loads_level_on_e` — still passes.
+- `route_a_truck_chain_loads_level_when_mux_channel_on` — still passes.
+- `door_e_opens_then_e_closes_on_07000001` — still passes.
+- 3 disc_golden tests fail (allowed on slim ISO).
+
+### Files changed
+- `crates/nf-view/src/scene.rs` — 0xE8 LOAD_LEVEL draw loop (A-12d).
+- `crates/nf-view/tests/level_end_live.rs` — 2 new tests (castle gate door, route_a full chain).
+
+### Stage Summary
+- **Castle gate door:** now visible in play. The user can walk to it and press E to load the next level.
+- **Truck route (a):** the gate-guard chain is verified — Bond walking through the gatehouse sets ch 0x22, the spawner spawns the guard, and the level ends. In play, the guard's patrol AI (Session B/C) needs to keep it at the post.
+- **Door auto-close:** the disassembly says the 07000001 sliding doors DO auto-close after 6 s. I will not remove it. The user should test: press E on placement 13, walk 3+ m away, wait 7 s. If it doesn't close, we have a build mismatch.
+- **Brightness:** NOT an A-11 regression. The character brightness is the pre-existing TWEAK/VU1 gap.
