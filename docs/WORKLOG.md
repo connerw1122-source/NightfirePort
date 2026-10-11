@@ -3178,3 +3178,29 @@ docs/systems/drone-*.md claims written from the same decomp; re-measure on conta
 Subagent dispatch failed on infrastructure errors, so the audit was done in-session by one
 agent — an independent re-audit of the MISMATCH items (especially grenade param 11) is worth a
 follow-up pass.
+## core-map — Port map for the core game loop (plan v2 §4 step 1)
+
+Task ID: core-map (branch `s/core-map`)
+Agent: sandbox session (core-map)
+Task: write `docs/port-map/core-loop.md` — Game_Run and everything it calls per frame down to the object handlers,
+the pause/ScriptCam gating, the control-list walk, triggers, switch channels, script players and the level flow,
+plus the "Top 10 divergences" section explaining the three known playtest symptoms. Doc-only: no Rust changed.
+
+Work Log:
+- Read PLAN-v2, CLAUDE.md, HANDOFF.md, the WORKLOG tail (A-12/B-12), docs/systems/{triggers,script-player,world-objects,levels}.md, and the existing port-map format (guard-ai.md).
+- Fetched the research into `work/` (git-ignored): work.7z → decomp/ACTION.ELF (3039 files), action-symtab.tsv, ee_start_05/07000001.bin, ee_snapshot.bin; Nightfire-onfoot.iso.7z → the slim ISO (the task text's URL path 403'd; the working share path was already recorded in an earlier WORKLOG entry).
+- Read the decompiles for the whole frame path: Game_Run 0x1c9790, GS_IsPaused/GS_PauseGame 0x17d1e8/0x17d178, control_movement_object_handler 0x1336f8, Drone_InitComms 0x139520, Drone_Control 0x139268, NDrone2_PreDroneControl 0x148db0, Drone_EnableAll 0x1383e8, Player_Disable/Update 0x195f70/0x193600, Trigger_Create 0x1b1720 + all seven wrappers (0x1b2950/0x1b2aa8/0x1b2b88/0x1b2c68/0x1b2d38/0x1b2e08/0x1b2ed8), Trigger_Update 0x1b1a78, Trigger_Hit 0x1b1fc8, Trigger_Activate 0x1b2318, Trigger_Calc 0x1b1900, Door_Update/Interp/Calc 0x1363c8/0x135738/0x135fe0, SP_CreateScriptPlayer/SP_Update/SP_LoadScript 0x1db9a8/0x1dbda8/0x1dbc08, Script_Update/Run/Interp/EventHandler/Play/Free 0x1da998/0x1d8548/0x1d9a08/0x1d94c0/0x1db588/0x1da880, Init_SwitchChannels 0x134310, Switch_Update/Activate 0x1adea8/0x1b02a8, ResetMap_LevelToLoad/Load/GameInit 0x1d3800/0x1d6360/0x1d5080, GameFlow_GetState/PushState/PopState 0x1c9e80/0x1c9f38/0x1c9eb0, parsemap_create_dynamic_objects 0x1d04f0 (the full placement-type → creator map).
+- Read the live control_funcs table (85 × 12 bytes) from ee_start_05.bin@0x26f890 and matched every non-empty class to the symtab; read GameState fields and switch_channels/_time from both snapshots.
+- Mapped the Rust side: lib.rs tick loop + pending_level, scene.rs step_bond/run/paused, drone.rs tick ordering, triggers.rs, nis.rs, door.rs, spawners.rs, env.rs.
+- Wrote docs/port-map/core-loop.md: §0 frame gate, §1 Game_Run table, §2 object handler (incl. prev/hold snapshots and the moved-pass clone), §3 triggers (creation wrapper table + per-frame table + add/remove), §4 switch channels, §5 script players, §6 level flow, §7 Top 10 divergences, §8 audit record, appendix call tree.
+- Ran four auditor subagents (AUDIT-A Game_Run/gating, AUDIT-B triggers, AUDIT-C script players + level flow, AUDIT-D walk/doors/channels). Every core claim reproduced; the audits forced corrections into the doc (addresses 0x1b1510/0x1b09f0/0x134698/0x2C7398, Searchlight class 0x22, SEQ_AND lower-bound-only window, lock-path hide polarity, case-0xD 30.0 push, moved pass ×2, Doors_Calc last-writer-wins, Door_SetState timestamp, SP_CreateScriptPlayer's mask-0+mode-∉{0,1} state, Script_Interp cases 6/7 read, intro table = 14 codes, drones-before-triggers tie-break) — all applied before commit.
+
+What I could not verify:
+- The disc-side placement parameter values behind divergence 6 (p7..p11 of 07000005's muxes): no Rust toolchain in this sandbox, so `nf-extract placements` could not run; the wrapper decompile mapping is measured, the level data reading is not. A one-line check on the main machine settles it.
+- AUDIT-C first ran into its context deadline and was resumed; its report is complete (10/10 claims) but the level-flow items (ResetMap_Load phase table) were verified from the decompile by one agent only, without a second pass.
+
+Stage Summary:
+- Deliverable: docs/port-map/core-loop.md (the port map + Top 10 divergences + audit record), branch s/core-map.
+- Headline finding for the integrator: the game's cut-scene drone freeze is event 5 (`Drone_EnableAll(0)` → `NPCGlobals = 0`), NOT ScriptCam; ScriptCam never gates `control_movement_object_handler` [M 0x1c9790:30-35]. The port's `Drones::paused = self.disabled` (scene.rs:673, drone.rs:4065) is coarser than the game and event 5 has no nis.rs handler — the correct shape is to port event 5/7 and drop Drones::paused. The scene.rs:667-672 comment claiming "GS_IsPaused == 0 AND ScriptCam == 0" is wrong and should be corrected when that code is next touched.
+- Second headline: the door auto-close blocking zone — the game tests the door's LIVE world sphere (rebuilt every moved frame), the port tests the fixed placement position with a hardcoded 1.0 radius (door.rs:220) — the likely mechanics behind the 07000001 "auto-close" report (the 6 s timer itself is real, A-12c).
+- New U-candidates (not filed, for the main agent to triage): SEQ_AND window predicate + timestamp policy; mux wrapper slot shift; TouchOnce glist-0x10 delete; Trigger_Hit type-1/2 gate + mask&1; SP_CreateScriptPlayer mask-0 create-load; switch_channels_prev snapshot timing; spawner-drone list position.
