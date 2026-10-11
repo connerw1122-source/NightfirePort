@@ -3117,3 +3117,73 @@ docs/systems/drone-*.md claims written from the same decomp; re-measure on conta
 Subagent dispatch failed on infrastructure errors, so the audit was done in-session by one
 agent — an independent re-audit of the MISMATCH items (especially grenade param 11) is worth a
 follow-up pass.
+
+## atlas-5 — the searchlight, wire/grapple, cel/room and GS leaf state; the character-brightness root cause
+
+Task ID: atlas-5. Branch `s/atlas-5` (from `s/atlas-1`, which is master 5d0d1c5 + the atlas-1 docs
+commit — the atlas format README lives there; merging atlas-1 first makes this a fast-forward).
+Docs only, no Rust changes. The `work/` research tree was already on disk from the atlas-1 session
+(decomp/ACTION.ELF 3039 fns, action-symtab.tsv, ee_start_05.bin, slim ISO); nothing re-downloaded.
+
+Delivered: `docs/atlas/searchlight.md`, `docs/atlas/wire-grapple.md`, `docs/atlas/cel.md`,
+`docs/atlas/gs-leaf.md`, `docs/atlas/render-port-check.md` (disagreements vs nf-view scene.rs/gpu.rs
+and nf-game searchlight.rs, plus the wire.rs data errors); README files table updated; G-036
+re-diagnosed.
+
+Method: four parallel research agents (one per struct), then in-session verification of the
+load-bearing claims before writing: the Searchlight_Update angle stores (`swc1 0x50($s3)` @0x1cba98
+with sin·half+mid, `swc1 0x54($s3)` @0x1cbacc), the wire create param stores (@0x198224–0x19824c,
+inst 8 bytes), the `Lights_CalcAmbientLight` decomp (cel+0x9a/9c/9e via `switch_channels[cel+0xa2]`,
+rate 0.1), `View_SetupRenderModes_Tweak`'s 0x800 branch (tint×ambient>>8), and — after the audit
+disputed it — a full disassembly of `Vec_Spherical_2_Cartesian` 0x1e3948 plus the tracking and
+transition regions (final: out = (r·sin(0x54)·cos(0x50), −r·sin(0x50), r·cos(0x54)·cos(0x50)));
+snapshot re-reads (TweakRGBA 0x30d714 = 0, head inst 016e96b0, wire inst 016dc510 =
+`00 00 02 00 00 00 00 00`, cel ambient `1b/28/38`, obj tint bytes, class-0x22 recount = 29).
+
+Findings that change decisions:
+
+1. **G-036 CLOSED as a misdiagnosis — found by the audit.** The first research pass concluded the
+   port's sweep channels were swapped (mid → pitch) and drafted a fix; the audit step (in-session
+   disassembly of `Vec_Spherical_2_Cartesian` 0x1e3948 + the tracking region, then an independent
+   audit agent) falsified that: the game's `obj+0x50` is a **polar/depression angle** (beam
+   y = −r·sin(obj+0x50)) with centre mid, `obj+0x54` the azimuth with centre inst+0x14, and the
+   port's `sweep()`/tracking/clamps/`spherical(r, yaw, −pitch)` reproduce the game's values and
+   direction operation for operation (its pitch/yaw names just map to obj+0x50/obj+0x54). The π/2
+   constant 0x3FC90FDB in the azimuth sine matches the port's HALF_PI (an earlier "1.2450" reading
+   was a float-decode error). The 3-unit link rule also matches, and the original snapshot shows 1/7
+   heads linked at start — the port is faithful there too. The 0→1 arm test is spot-only in the game
+   as well (links[2] == 0 skips the block @0x1cbdb0). What genuinely remains: **late spot creation**
+   (2 of 7 spots exist at snapshot; their create-walks would backfill the remaining heads —
+   spawner/script mechanism unverified), the state-2 decay store offset, and the fmodf addend K.
+   `searchlight-tracks-bond` can be reconsidered once late spots are settled.
+2. **The brightness bug root cause (gs-leaf.md).** The game dims every `obj+0xF0 & 0x800` object
+   (characters, view models) by `tint × obj+0x100..0x102 ambient >> 8` — the VU1 lighting-matrix
+   ambient term (`TAmbient` 0x2650d0 via `sceVu0LightColorMatrix`); `Lights_CalcAmbientLight` pins
+   that ambient to the level's cel ambient (07000005: RGB 57/70/86 ≈ 22–34 % albedo [L]). The port
+   emits vertex colours verbatim (scene.rs:943) and its only colour op is the 0x80→1.0 rescale
+   (gpu.rs:39) — so characters/guns render at ~100 % where the game renders 22–34 %. The world is
+   right because the game's world-cel path forces the white tweak (no ambient term at all).
+3. **Wire/grapple demystified.** Placement types 0x3E/0x3A are NOT object classes: wire = class
+   0x2C (8-byte instance: +0x00 = param1 wire type 0/2, +0x06 = param3 switch channel), grapple
+   point = class 0x51 (0-byte instance, anchor = obj+0x30). No endpoint params — lines derive from
+   the world sphere (radius−2.0 grab / −0.5 travel) at grab time. Player substate word = obj+0xF6
+   (`Player_ChangeSubState` 0x190630): 6 = `Player_Wire` (hand-over-hand), 0xF = `Player_Zipline`
+   (type 2), 2 = `Player_SSGrapple` (phase 1 extend/2 hang/4 detach; rope object from
+   `Player_InitGrapple`, glist 0x2000138, unit-length stretched to hand distance). No RNG anywhere
+   in the family. wire.rs's field mapping is wrong (channel/glist swapped; "creep substate" comment
+   wrong — wires enter substate 6, creep-walls 7).
+4. **Cel/room.** cel_tag 0xb0 (build_alloc_cel 0x1c93f8); ambient R/G/B = cel+0x9a/0x9c/0x9e (even
+   bytes only; a second odd-byte triple exists that lighting ignores), read through
+   `base = cel + switch_channels[cel+0xa2]`; consumers: Lights_CalcAmbientLight (rate 0.1, gate
+   obj+0xF0 & 0x800) and the snap-on-link in the three link helpers. Portals: map block 0x21 →
+   `parsemap_block_portal_data` 0x1d15f8, 68-byte records (4 corner VECTORs, celA/celB u16 indices,
+   flags) → runtime `portal_tag` 0xa0 with twins, cel+0x28 list; `Cel_ObjectLeftCel` raycasts the
+   move against the portal quads for the cel change; `build_LinkToRoom`'s 2nd arg is a straddle-test
+   bool, not a room id. 178 cels on 07000005 [L; delta 0x37A0 = 178·0x50, corrected by the audit].
+
+Could not verify this pass (carried in the docs' "Not verified" sections): the state-0 pitch
+formula's exact multiplier operand and the fmodf addend K; the game-side normalisation store of
+obj+0x50/0x54; what creates the late spots (needs a trace or the loader/spawner path); View_AddCels'
+portal-graph traversal location; the odd-byte ambient triple; TweakRGBA's +2 DMA words;
+bCharacterLight/bTweakBrightness readers (suspected VU1 asm); the AnimObjectDraw stale-tweak path
+for 0x800 celglists; wire params 0/2 meaning; FRAME_RATE's runtime value.

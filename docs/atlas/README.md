@@ -11,9 +11,14 @@ after the atlas; a `+0xNNN` that does not exist here is a bug.
 | `object.md` | the object/control list entry (`obj_tag`, 0x110-byte header) and the list machinery |
 | `drone.md` | the Drone (`NDrone2` instance, 0xD20 bytes) |
 | `drone-port-check.md` | every `+0xNNN` `crates/nf-game/src/drone.rs` mentions, checked against the atlas |
+| `searchlight.md` | the searchlight family (class 0x22 parts, 0x40-byte instance; params 4/5, spot linking, G-036) |
+| `wire-grapple.md` | the wire (type 0x3E → class 0x2C) and grapple (0x3A → 0x51), the player substates, `Player_SSGrapple` |
+| `cel.md` | the cel/room (`cel_tag` 0xb0, ambient +0x9a/9c/9e, portals block 0x21, object→cel links) |
+| `gs-leaf.md` | the per-object GS/lighting state (obj+0x100..0x106, TweakRGBA, the 0x800 path) and the character-brightness root cause |
+| `render-port-check.md` | the disagreements with `nf-view` scene.rs/gpu.rs and `nf-game` searchlight.rs (and wire.rs data) |
 
 Planned next (plan v2 §2 order): `BLData`/player, `weapon_data`, trigger ext, door, pickup,
-script player, switch channels, searchlight, wire/grapple, cel/room, GS leaf state.
+script player, switch channels.
 
 ## Format (per struct)
 
