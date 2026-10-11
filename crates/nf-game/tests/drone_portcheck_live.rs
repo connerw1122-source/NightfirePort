@@ -86,7 +86,7 @@ impl Fixture {
     }
 }
 
-fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0] } }
+fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0], sph: p } }
 
 /// The documented grenade decode (drone.md param-11 row, `NDrone2_DefaultInit` 0x14b300 lines 348-376):
 /// weapon = switch on `(raw >> 4) & 0xffff` (1 → 0x36, 2 → 0x35, 4 → 0x34, 5 → count+0x3A, 6 → 0x6C, else 0),
