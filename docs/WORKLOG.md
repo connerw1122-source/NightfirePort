@@ -3648,3 +3648,13 @@ already corrected this; the 0x07000066 in U-048's first sentence is the stale va
   parked truck (his feet y in the game) or the obj+0xD0 contact writer's decompile.
 - 07000001 in play: the mission layer's ch 0xB write and the NPC's walk to the plate (AI) are unported;
   the mechanism test above is the harness for that session.
+
+**Independent audit (general-purpose subagent, 7 claims): all VERIFIED, none refuted.** The auditor
+re-measured: the pre-fix `self.gfx = None` (git show) and the in-place renderer swap; LoaderLoad's
+`& 0xff0fffff` + the 0x7000006 → 0x7100006 remap + golden 07000006.bin present / 07000066.bin absent;
+the EE snapshot bytes at 0x16e2460/0x16e25c0 (out = 06 00 00 07, type 0xA — next level 0x07000006 [L]);
+the 07000001 placements 18/180 via the port's own parser plus the passing chain test; the NPC ext at
+0x01910EF0 (+0xE0 = 0x0500004F, +0x134 = 0xB, +0x136 = 0, +0x10C = 1) against drone.md's field table;
+the truck-script entity parents (stream 6 None, stream 7 Some(1)); and the level_end_live routes.
+Bookkeeping notes only (test-name substrings). Full suite on the branch: 243 passed, 3 failed — the
+3 allowed slim-ISO disc_golden tests (bigf_header_fields / bigf_tables / directory_tree).
