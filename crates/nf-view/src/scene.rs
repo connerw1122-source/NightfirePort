@@ -1237,9 +1237,6 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
             if let Some((c, attachment)) = character { cv.push(CharVertex { character: c, pos: v.pos, weight: v.weight, slots: v.slots, attachment, searchlight: None, door: None, pickup: None }); }
             else if let Some(sl) = searchlight { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: Some(sl), door: None, pickup: None }); }
             else if let Some(dr) = door { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: None, door: Some(dr), pickup: None }); }
-            // fix-render2: the merge d589c76 dropped this branch (fix-player2 eb1564b had it), so placed-pickup
-            // vertices entered the Character tail without a CharVertex — the vertex↔CharVertex zip in
-            // `posed_vertices` misaligned and the pickups never posed.
             else if let Some(pk) = pickup { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: None, door: None, pickup: Some(pk) }); }
         }
         for t in b.triangles() { is.extend(t.map(|k| base + k as u32)); }
