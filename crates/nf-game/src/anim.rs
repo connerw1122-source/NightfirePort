@@ -39,10 +39,13 @@ pub fn blend(a: &mut Pose, b: &Pose, t: f32) {
 }
 
 /// The sequence and fractional frame a script shows at script time `time` (from 1): the opcode-0 command covering
-/// ⌊time⌋, frame = time − first + 1 (`AnimSeqSet` / `AnimSeqTick`); the last command past the end.
+/// ⌊time⌋, frame = time − first + 1 (`AnimSeqSet` / `AnimSeqTick`); the last command past the end. When several
+/// opcode-0 windows cover the time (e.g. the 07000005 cut-scene scripts pair a 22-channel face track with the
+/// 222-channel body track), `AnimProcessScriptCmds` (0x1c1b38) starts **each** as a playing anim in command order
+/// and the palette lets the later-started one own the shared bones — so the **last** covering command wins.
 pub fn script_frame(script: &Script, time: f32) -> Option<(u32, f32)> {
     let t = time.floor().max(1.0) as u16;
-    let (a, _, q) = script.sequences().find(|(a, b, _)| *a <= t && t <= *b).or_else(|| script.sequences().last())?;
+    let (a, _, q) = script.sequences().filter(|(a, b, _)| *a <= t && t <= *b).last().or_else(|| script.sequences().last())?;
     Some((q, (time - a as f32 + 1.0).max(1.0)))
 }
 

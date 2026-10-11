@@ -223,6 +223,13 @@ pub fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
     Ok(scene)
 }
 
+/// The level archive for a hashcode, `LoaderLoad` (0x1d4a00) style [M]: `sprintf("%s%8.8x.bin", …,
+/// code & 0xff0fffff | …)` — the loader type's nibble (0x00F00000) is masked OFF for the level itself
+/// (loader type 1; type 0/3 force 0xF00000 for the anim archives). `ResetMap_LevelToLoad` (0x1d3800)
+/// stores e.g. 0x07100006 for a `LOAD_LEVEL` to 0x07000006 (param_3 == 0 remap), and the level load
+/// then masks it back to 07000006.bin.
+pub fn level_archive_name(code: u32) -> String { format!("{:08x}.bin", code & 0xff0f_ffff) }
+
 /// The Character-layer vertices posed after `time` 60 Hz ticks: start animations (`None`) or sequence `choice`.
 /// (`Scene::posed_vertices` also applies the per-character ambient multiplier — the 0x800 TWEAK dim.)
 fn posed_vertices(scene: &scene::Scene, choice: Option<usize>, time: f32, opts: scene::ViewOpts) -> Vec<scene::Vertex> {
@@ -633,10 +640,9 @@ impl ApplicationHandler for App {
             },
             WindowEvent::RedrawRequested => {
                 // Bug 5: level transition. A `LOAD_LEVEL` (0xE8) trigger set `pending_level`; reload the scene
-                // with the next archive (`ResetMap_LevelToLoad` 0x1d3800). The renderer is rebuilt on the next
-                // `Gfx` re-init (the old surface is dropped with the old scene).
+                // with the next archive (`ResetMap_LevelToLoad` 0x1d3800 → `LoaderLoad` 0x1d4a00).
                 if let Some(next) = self.pending_level.take() {
-                    let name = format!("{next:08x}.bin");
+                    let name = level_archive_name(next);
                     eprintln!("level: loading {name}");
                     match load(&self.iso, &name, self.all) {
                         Ok(mut scene) => {
@@ -644,8 +650,14 @@ impl ApplicationHandler for App {
                             if let Some(start) = scene.start { self.cam = Camera { pos: Vec3::new(start.0[0], start.0[1] + 1.6, start.0[2]), yaw: start.1, pitch: 0.0, fov: GAME_FOV }; }
                             self.scene = scene;
                             self.anim_time = 0.0;
-                            // Force a Gfx re-init (the old GPU resources are dropped with the old scene).
-                            self.gfx = None;
+                            // The renderer holds the old scene's GPU resources (textures, buffers): rebuild it
+                            // IN PLACE — the window and surface must survive the level change (the game's window
+                            // does not close). Dropping `Gfx` here closed the window and nothing recreated it
+                            // (winit's `resumed` only runs at startup), so the process sat on a headless event
+                            // loop with the audio still playing (the user's report).
+                            if let Some(g) = &mut self.gfx {
+                                g.renderer = gpu::Renderer::new(&g.device, &g.queue, g.config.format, &self.scene, self.notex, self.nofog);
+                            }
                             eprintln!("level: loaded {name}");
                         }
                         Err(e) => eprintln!("level: failed to load {name}: {e}"),
