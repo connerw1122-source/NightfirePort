@@ -89,12 +89,15 @@ impl Gun {
     /// `Player_WeaponHasAmmo` (0x1a16c0): whether the player has ammo for weapon `w` — carried rounds of its
     /// ammo type, or rounds in the clip (`Player_AmmoInGun`), or (for `ammo_type == 0`) always true (melee /
     /// unlimited weapons), or (for flag 0x20000 weapons) a matching ammo pickup on the ground. Weapon 0x45
-    /// (a grenade type) checks `BLData+0x4F4` against `weapon_data+0x48CE` [M].
+    /// (the grenade-belt pseudo-weapon) checks `(i16)weapon_data[0x45].clip_size (100, = +0x48CE) <=
+    /// BLData+0x4F4` — and `+0x4F4` is not a separate field: it is `clip[0x45]` (`0x1B8 + 0x45·0xC`), the
+    /// carried grenade count [M 0x1a16c0:14-15; player.md "`+0x4F4` is NOT a separate field"].
     /// *Deviation*: the 0x20000 ground-pickup scan is a STANDIN (returns false; the pickup list is not in Gun).
-    pub fn has_ammo(w: u8, carried: &[i16], clip: &[i16], ammo_type: impl Fn(u8) -> usize, flags: impl Fn(u8) -> u32) -> bool {
+    pub fn has_ammo(w: u8, carried: &[i16], clip: &[i16], ammo_type: impl Fn(u8) -> usize, _flags: impl Fn(u8) -> u32) -> bool {
         if w == 0x45 {
-            // Grenade type: `weapon_data._18638_2_` (offset 0x48CE) <= `BLData+0x4F4`. STANDIN: always true if owned.
-            return true;
+            // `(short)weapon_data._18638_2_ (= weapon_data[0x45].clip_size = 100) <= *(short*)(BL+0x4F4)`
+            // [M 0x1a16c0:14-15]; G-029 previously stood in with `true`.
+            return 100i16 <= clip.get(0x45usize).copied().unwrap_or(0);
         }
         let t = ammo_type(w);
         if carried.get(t).copied().unwrap_or(0) != 0 { return true; }
@@ -108,8 +111,8 @@ impl Gun {
 
     /// `Player_GetBestWeapon` (0x1a9680): scans the `BestWeapon` table (0x2bede0, 18 u16) for the first owned,
     /// has-ammo weapon. Each BestWeapon entry is a `weapon_data` index; the real weapon id is
-    /// `weapon_data[entry*0x10c+2]` (the base weapon). The per-player `+0x1BC` variant-slot adjustment is a
-    /// STANDIN (not ported — the Inventory has no `+0x1BC` field) [M].
+    /// `weapon_data[entry*0x10c+2]` (the base weapon). The per-player entry `+0x1BC` is tail padding / unused
+    /// [M player.md "(reserved)"] — the old "variant-slot adjustment" reading was wrong; nothing to port.
     pub fn get_best_weapon(&self, best: &[u16], base_of: impl Fn(u8) -> u8, owned: &[bool], has_ammo: impl Fn(u8) -> bool) -> Option<u8> {
         for &w in best {
             let real = base_of(w as u8);
@@ -465,5 +468,21 @@ mod tests {
         // Sister: prev_weapon = 0 → no toggle.
         g.prev_weapon = 0;
         assert_eq!(g.toggle_back(CycleMode::Weapons, &owned, has_ammo, selectable), None);
+    }
+
+    /// Weapon 0x45's has-ammo is the game's literal comparison `weapon_data[0x45].clip_size (100) <=
+    /// clip[0x45]` [M 0x1a16c0:14-15] — `+0x4F4` is `clip[0x45]`, the carried grenade count.
+    #[test]
+    fn grenade_belt_weapon_0x45_follows_the_carried_count() {
+        let mut clip = vec![0i16; 0x73];
+        let carried = [0i16; 34];
+        let ammo_type = |_w: u8| 0usize;
+        let flags = |_w: u8| 0u32;
+        assert!(!Gun::has_ammo(0x45, &carried, &clip, ammo_type, flags), "count < 100: no ammo");
+        clip[0x45] = 100;
+        assert!(Gun::has_ammo(0x45, &carried, &clip, ammo_type, flags), "count ≥ 100 [M]");
+        // Sister: other weapons ignore clip[0x45] entirely.
+        clip[0x45] = 0;
+        assert!(Gun::has_ammo(1, &carried, &clip, |_w| 0usize, flags), "ammo_type 0 = melee: always true");
     }
 }

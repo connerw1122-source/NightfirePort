@@ -6,6 +6,11 @@ Every `+0xNNN` offset in `crates/nf-game/src/{gun,pickup,player}.rs`, `crates/nf
 
 Tags: `[M]` confirmed in the decompile, `[L]` snapshot-verified, `[S]` suggested.
 
+**Update (fix-player, s/fix-player):** entries 1–5 below are fixed (each with a test that failed before
+the fix); 6–7 remain open gaps. Entry 3's code claim was stale — the port's `PlayerHealth`
+(`bullet.rs:125`) already has `armour: f32` and `pain()` absorbs it; the live gap was the pickup path,
+which never wrote it and never refused at ≥ 50.
+
 ---
 
 ## Confirmed disagreements (real bugs / stand-ins)
@@ -25,6 +30,11 @@ the port's `autoaim_accuracy` always returns **0.0** for every weapon. This is a
 is always zero-width. The decompile is the source of truth `[M]`.
 
 **Fix**: read `+0x14` as `f32::from_le_bytes(r[0x14..0x18])`.
+
+**FIXED** (s/fix-player): `weapon.rs::autoaim_accuracy` now reads the f32. NF_ISO test
+`crates/nf-formats/tests/weapon_live.rs::autoaim_accuracy_is_the_f32_at_plus_0x14` asserts 100.0 / 60.0
+against the ELF off the disc [L] and pins the old u16 read as always 0; unit tests assert it. (The sim
+path, `drone.rs::auto_aim`, already read +0x14 as f32 — only the accessor was wrong.)
 
 | file:line | offset | atlas | port | severity |
 |---|---|---|---|---|
@@ -49,6 +59,9 @@ implies `+0x4F4` is a dedicated grenade-count field, which is wrong — it's jus
 `weapon_data[0x45].clip_size` (= `+0x48CE` = 100)". No code change needed (the STANDIN bypasses it), but the
 misleading comment should be corrected.
 
+**FIXED** (s/fix-player): comment corrected, and the STANDIN itself removed — `gun.rs::has_ammo(0x45)`
+implements the literal `100 <= clip[0x45]` comparison [M 0x1a16c0:14-15] (see entry 5).
+
 | file:line | offset | atlas | port | severity |
 |---|---|---|---|---|
 | `gun.rs:92,96` | `+0x4F4` | alias of `clip[0x45]` | implied separate field | **misleading comment** (STANDIN hides it) |
@@ -70,6 +83,12 @@ port's struct. Armor pickups have no effect on damage taken.
 
 **Fix**: add `armor: f32` to the `Health` struct and port `Player_HandlePain`'s armor-decrement path.
 
+**FIXED** (s/fix-player): the struct part was already done elsewhere — `PlayerHealth` (`bullet.rs:125`)
+has `armour: f32` and `pain()` absorbs damage into it. The missing half was the pickup: `Inventory::take`
+now takes `&mut f32` armour and implements the game's case 3 — refused while ≥ 50.0 (the pickup stays),
+else hard-set 50.0 [M 0x18e650:220-225] — instead of consuming and giving nothing. Unit test
+`armour_fills_to_50_and_refuses_when_full`.
+
 | file:line | offset | atlas | port | severity |
 |---|---|---|---|---|
 | `pickup.rs:262` | `+0x8B0` | f32 armor (in BLData) | referenced but no field in `Health` struct | **gap** — armor has no gameplay effect |
@@ -86,6 +105,8 @@ The per-player +0x1BC variant-slot adjustment is a STANDIN (not ported — the I
 ```
 The port correctly identifies it as unported, but the comment calls it a "variant-slot adjustment" — the atlas
 shows it's just tail padding. The STANDIN is harmless (the field is unused), but the comment mischaracterizes it.
+
+**FIXED** (s/fix-player): comment corrected to "tail padding / unused" (no code change).
 
 | file:line | offset | atlas | port | severity |
 |---|---|---|---|---|
@@ -104,6 +125,10 @@ weapon_data._18638_2_ (offset 0x48CE) <= BLData+0x4F4. STANDIN: always true if o
 ```
 The STANDIN bypasses the check — Bond can always throw grenades regardless of carried count. This is a known gap
 (G-029 in `docs/GAPS.md`).
+
+**FIXED** (s/fix-player): `gun.rs::has_ammo(0x45)` returns `100i16 <= clip[0x45]` — the game's literal
+comparison (the comparison direction is as the decompiler prints it: `(short)clip_size <= *(short*)(BL+0x4F4)`)
+[M 0x1a16c0:14-15]. Unit test `grenade_belt_weapon_0x45_follows_the_carried_count`.
 
 | file:line | offset | atlas | port | severity |
 |---|---|---|---|---|

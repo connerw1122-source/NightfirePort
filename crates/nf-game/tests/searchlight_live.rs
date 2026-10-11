@@ -64,7 +64,7 @@ impl Level05 {
     }
 }
 
-fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0] } }
+fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0], ..Default::default() } }
 
 /// The parts created exactly as `attach_level` does (the level's object boxes for the bullet stand-in).
 fn parts(l: &Level05, rng: &mut Rng) -> Searchlights {

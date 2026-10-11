@@ -86,7 +86,7 @@ impl Level02 {
     fn sim(&self, drones: Vec<Drone>, rng: Rng) -> Drones { let mut s = Drones::new(drones, rng); s.attach_level(&self.level); s }
 }
 
-fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0] } }
+fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0], ..Default::default() } }
 
 /// On 07000002, guards at placements 464 and 466 carry stun grenades (weapon 0x36, count 3 from param 24).
 /// When Bond is within 8–20 units, the guard should throw: the throw anim plays, a grenade entity spawns,

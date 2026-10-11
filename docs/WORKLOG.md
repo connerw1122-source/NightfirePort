@@ -3363,3 +3363,89 @@ obj+0x50/0x54 (the convention itself is settled — see finding 1); what creates
 portal-graph traversal location; the odd-byte ambient triple; TweakRGBA's +2 DMA words;
 bCharacterLight/bTweakBrightness readers (suspected VU1 asm); the AnimObjectDraw stale-tweak path
 for 0x800 celglists; wire params 0/2 meaning; FRAME_RATE's runtime value.
+
+## fix-player — player/weapon/pickup fixes against the atlas (player-port-check 1–5, pickup-port-check 1–5/8)
+
+**Done**
+- player-port-check §1 (the only outright bug): `weapon_data+0x14` is an f32 auto-aim accuracy
+  (`Check_AutoAim` 0x1a73f8:148); `WeaponData::autoaim_accuracy` read it as u16 (always 0.0 — the low
+  2 bytes of every one of these floats are 0x0000). Fixed to `f32::from_le_bytes`. The sim path
+  (`drone.rs::auto_aim`) already read the f32; only the accessor was wrong.
+- player-port-check §2/§4 (comments): `+0x4F4` documented as the `clip[0x45]` alias (grenade-belt count),
+  `+0x1BC` as tail padding; the "grenade count check" STANDIN was removed while there — `has_ammo(0x45)`
+  now implements the game's literal `100 <= clip[0x45]` [M 0x1a16c0:14-15] (G-029).
+- player-port-check §3 (armour): the doc's code claim was stale — `PlayerHealth` already has `armour` and
+  `pain()` absorbs it. The live gap was the pickup path: `Inventory::take` now takes the taker's armour and
+  implements case 3 — refused while ≥ 50.0, else hard-set 50.0 [M 0x18e650:220-225] — instead of consuming
+  and giving nothing (the "sound but no armour" symptom). `Taken::Armour` for the 0x200000F message.
+- pickup-port-check §1 (the take-ray origin, the Raptor-drop candidate): `Bond::sphere_centre()` ports the
+  player branch of `Control_BuildWorldSph` 0x133070 — the local centre `M_CONTROL+0x80 = (−0.1347, −0.1267,
+  0.2402)` [L 0x16cb8a0], yaw-rotated; matches the snapshot `obj+0x80` (104.826, 24.837, 108.582) [L] to
+  <2e-3. `drone::Player` gained `sph`; `update_pickups` now runs the distance test from `player.pos` and the
+  LOS from `player.sph` [M 0x18e148:203-214].
+- pickup-port-check §2 (keys): `Inventory.keys` (`BLData+0x70C+id`, `Player_EquipKey` 0x1a97a0), a `kind::KEY`
+  arm that never refuses [M 0x18e650:217-219], and `Pickup.switch_channel` (+0x28) with the take-time channel
+  set [M 0x18e650:330-333] — the port had dropped the channel entirely. `Taken::Key { id }` (0x2000010).
+- pickup-port-check §3: pickup placement params looked up by **index**, not position [M 0x1d04f0:457-462].
+- pickup-port-check §4 (`Upgrade_Weapon` 0x1a8f30): ported with the live tables (slot 0 = base id, `Upgrades`
+  = 0 [L 0x2bee08..]) and the 10 → 0xC clock gate [M]; `take` remaps before the owned-check/equip/message.
+- pickup-port-check §5: the eight stream opcodes (0x13/0x14/0x15/0x18/0x1A/0x1B/0x1D/0x1E) consume their
+  arguments and the stream continues instead of halting (`Script_Run` 0x1d8548:80-118 + line 120's +1);
+  sprites/lights/text/subscripts/fade are still not modelled (view/audio-side).
+- pickup-port-check §8 (create-time load): mode A ∉ {0,1} and mask ≠ 0 primes the script at the first tick
+  (state 1 after one run / state 6 for mode 8) [M 0x1db9a8:81-86, 0x1dbc08:41-55; L: EndLevel SP 0x16d3650
+  primed at clock 2.0]. Mask-0 SPs are not primed — see "could not verify".
+- Docs: both port-checks updated in place ("FIXED (s/fix-player)" per entry).
+
+**Shared files touched (minimal, other sessions may own them)**
+- `drone.rs`: the take loop is where the §1 bug lives (the port-check says so); changes there are the take
+  call (origin + armour + clock + channel flip) and the `Player.sph` field. `scene.rs`: the placement-param
+  fix (§3) lives in `Scene::build` and the `run()` signature grew `sph`. `lib.rs`: two HUD message arms for
+  the new `Taken` variants. `ai_live.rs`/`grenade_live.rs`/`searchlight_live.rs`: `sph: p` added to their
+  `Player` constructions so the take test keeps its pre-fix geometry (the live drop test pins the sister).
+- `nf-audio`/`nf-view` build env: the sandbox has no ALSA headers; `libasound2-dev` was extracted to a user
+  prefix (PKG_CONFIG_PATH) — sandbox-only, nothing in the repo.
+
+**Tests** (all new tests failed before their fix — shown failing first, then green)
+- `weapon_live.rs::autoaim_accuracy_is_the_f32_at_plus_0x14` (NF_ISO): 100.0/60.0 off the disc ELF [L],
+  sister pins the u16 read as always 0.
+- `sphere_centre_matches_the_game_snapshot` (player.rs, snapshot values [L]).
+- `the_take_ray_origin_decides_the_take` (pickup.rs): a wall only the sphere-centre ray clears.
+- `a_key_is_always_taken_and_sets_its_flag`, `armour_fills_to_50_and_refuses_when_full`,
+  `pickup_ids_go_through_upgrade_weapon` (pickup.rs).
+- `grenade_belt_weapon_0x45_follows_the_carried_count` (gun.rs).
+- `sprite_fade_light_text_opcodes_do_not_halt_the_stream` (nis.rs) + its truncated-command sister.
+- Full suite: `NF_ISO=… cargo test --offline --release -j2 -p nf-game -p nf-formats -p nf-audio -p nf-view
+  -- --test-threads=1` — everything passes except the 3 `disc_golden` tests (the allowed slim-ISO set).
+
+**Could not verify, and why**
+- The two user symptoms "picked-up sniper rifle can't fire" and "grenade can't be thrown, and trying breaks
+  shooting" are **not explained by anything I could verify in the atlas or the decompile**. Checked against
+  the live snapshot: the sniper (0x24) has a non-zero fp_model (0x05000043), fire_anim_len 0 (the game spawns
+  the bullet immediately), shots_per_pull[0..3] = [1,1,1,1]; the weapon-entry +0x1BB (the game's
+  shots_per_pull index) is 0 for every owned weapon [L], so the port's mode-0 read matches. The grenade
+  weapons' fire paths (0x35 fire_anim_len 26, 0x45 the belt pseudo-weapon) are not modelled deeply enough in
+  the port to confirm a mechanism. Reproducing either needs a PCSX2 trace (no PCSX2 in this sandbox) or a
+  failing port-side repro; I left them unfixed rather than guess. The armour and second-Raptor symptoms are
+  explained and fixed (above).
+- §9's `+0x36` disabled byte: what SETS it at level start (07000005 SP 0x16ddb40 has it set [L]) is not in
+  the code studied (SP_Activate/SP_Disable path unported), so per-SP values cannot be derived from
+  placements; left unmodelled and mask-0 SPs unprimed so the game's frozen looper does not start running.
+- §7/§10/§11 need subsystems the port does not have (breakables, MP coder bots, Player_Cam2Mode, the object
+  proxy lists, GameFlow load states, the skip input) — left as documented gaps.
+- `Upgrade_Weapon` case 0x54 mutates `weapon_data[0x54/0x55]+0x88` (zoom 8.0/16.0 by `DAT_002beeaa`); the
+  port has no mutable weapon_data at take time and the shop flag is unknown — noted in the code comment,
+  id unchanged.
+
+**Independent audit (general-purpose subagent, 12 claims) and what it caught**
+- 11 of 12 claims verified against the decompile + snapshot (touch test origin/points, BuildWorldSph branch
+  and values, Handler cases incl. the raw +0x24 in the message, Upgrade_Weapon + tables, EquipKey,
+  WeaponHasAmmo(0x45), SP_Create/SP_LoadScript, parsemap param indices, shots_per_pull indexing, the Rust
+  diff). One **refuted**: the eight stream-opcode argument counts. The atlas's "N reads" column mixes
+  BIN_Get call counts with bytes — true argument bytes [M, counted from the handlers]: 0x13 FadeStart 4
+  (one GetFloat), 0x14 SpriteStart 14 (5 Word + DWord), 0x15/0x1A/0x1D end ops 0, 0x18 LightStart 3,
+  0x1B SubScriptStart 6, 0x1E TextStart 6. nis.rs's table and its test were re-derived and script-player.md's
+  table corrected. Also taken from the audit: `Taken` now carries the RAW pickup id for display (the game's
+  message builds the name from `+0x24` [M 0x18e650:246]) while the remapped id drives the owned-check/equip.
+- The audit also flagged that `prime()`'s mask ≠ 0 gate is a deliberate deviation (the game loads mask-0
+  SPs at create too) — documented in pickup-port-check §8/§9 and the code comment.

@@ -53,6 +53,8 @@ pub struct Pickup {
     pub state: u8,
     /// `+0x2E`: ticks left (0 = forever).
     pub lifetime: u16,
+    /// `+0x28`: the switch channel set to 1 when taken (`Pickup_Handler` 0x18e650:330-333). 0 = none.
+    pub switch_channel: u16,
     /// `+0x2A`: the sound when taken.
     pub sound: Option<u32>,
     /// `obj+0xF0 & 0x10` (U-036).
@@ -65,7 +67,14 @@ pub struct Pickup {
 
 /// What Bond took.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Taken { Weapon { weapon: u16 }, Ammo { weapon: u16, rounds: i16 } }
+pub enum Taken {
+    Weapon { weapon: u16 },
+    Ammo { weapon: u16, rounds: i16 },
+    /// Kind 2 (`Player_EquipKey` 0x1a97a0: `BLData+0x70C+id = 1`; message 0x2000010) [M].
+    Key { id: u16 },
+    /// Kind 3: `BLData+0x8B0 = 50.0`, `+0x8BC = 1.0`; message 0x200000F, sound 0x141 [M 0x18e650:220-225].
+    Armour,
+}
 
 fn trans(m: &Mat4) -> V3 { [m[3][0], m[3][1], m[3][2]] }
 
@@ -79,13 +88,14 @@ impl Pickup {
         let model = w.model(id as usize);
         let bounds = *models.get(&model)?;
         Some(Pickup::create(m, w.id(id as usize), rounds, kind, model, bounds))
+        // (drops carry no switch channel: `Pickup_CreateSimple` passes 0 [M 0x18f348])
     }
 
     /// `Pickup_Create` (0x18dda0) for a level-placed pickup (type 0xF0, `parsemap_create_dynamic_objects`):
     /// the placement's extra words give the type, id, switch channel, sound, respawn and lifetime. The pickup
     /// starts at rest (state 1, on the floor). The model comes from the placement's celglist (the placement's
     /// object), NOT from `weapon_data[id]+0x80` — the glist is passed as `param_4` to `Pickup_Create` [M 0x1d04f0].
-    pub fn create_placed(translation: V3, rotation: [f32; 3], type_: u16, id: u16, rounds: i16, switch_channel: u16, sound: u16, respawn: u32, lifetime: u8, model: u32, bounds: Model, w: &WeaponData) -> Option<Pickup> {
+    pub fn create_placed(translation: V3, rotation: [f32; 3], type_: u16, id: u16, rounds: i16, switch_channel: u16, sound: u16, _respawn: u32, lifetime: u8, model: u32, bounds: Model, w: &WeaponData) -> Option<Pickup> {
         if id == 0xFFFF { return None; }
         if model == 0 { return None; }
         // Build the matrix directly from the placement translation — do NOT call `create` which lowers the
@@ -96,6 +106,7 @@ impl Pickup {
         let p = Pickup {
             kind: type_, weapon: id, rounds, model, bounds, m,
             start: translation, vel: [0.0; 3], state: 1, lifetime: 0,
+            switch_channel,
             sound: if sound == 0xFFFF { None } else { Some(sound as u32) },
             hidden: false, gone: false, from: None,
         };
@@ -120,7 +131,7 @@ impl Pickup {
         let x = [z[2], 0.0, -z[0]];
         let y = t[1] - (bounds.radius - bounds.centre[1].abs());
         let m = [[x[0], x[1], x[2], 0.0], [0.0, 1.0, 0.0, 0.0], [z[0], z[1], z[2], 0.0], [t[0], y, t[2], 1.0]];
-        Pickup { kind, weapon, rounds, model, bounds, m, start: t, vel: [0.0; 3], state: 0, lifetime: DROP_LIFETIME, sound: Some(SOUND), hidden: false, gone: false, from: None }
+        Pickup { kind, weapon, rounds, model, bounds, m, start: t, vel: [0.0; 3], state: 0, lifetime: DROP_LIFETIME, switch_channel: 0, sound: Some(SOUND), hidden: false, gone: false, from: None }
     }
 
     /// The world sphere centre (`obj+0x80`, `Control_BuildWorldSph`): the glist centre through the matrix.
@@ -153,7 +164,10 @@ impl Pickup {
     }
 
     /// `Pickup_Update`'s touch test for Bond: alive, the sphere centre within radius + 1.1 of his position (squared
-    /// distances), and a clear line from his sphere centre (`obj+0x80`; here `body`, *suggested*) to the pickup's.
+    /// distances), and a clear line from his world-sphere centre (`obj+0x80`) to the pickup's [M 0x18e148:203-214
+    /// + L: the distance test uses the player's position (+0x30), the LOS test the player's world-sphere centre
+    /// (+0x80) — two different points]. `pos` = the player position, `body` = the player's sphere centre
+    /// (`Bond::sphere_centre`).
     pub fn touches(&self, world: &CollisionWorld, pos: V3, body: V3) -> bool {
         let c = self.centre();
         let r = self.bounds.radius + 1.1;
@@ -170,11 +184,14 @@ pub struct Inventory {
     /// `+0x1B8 + 0xC·w`: rounds in weapon w's clip; `+0x1BA`: owned.
     pub clip: Vec<i16>,
     pub owned: Vec<bool>,
+    /// `+0x70C + id`: key flags (`Player_EquipKey` 0x1a97a0 writes 1; never read back in the code
+    /// studied — the switch channels carry the effect) [M]. Indexed by the pickup's key id.
+    pub keys: Vec<bool>,
 }
 
 impl Inventory {
     pub fn empty(weapons: usize, ammo_types: usize) -> Inventory {
-        Inventory { carried: vec![0; ammo_types], clip: vec![0; weapons], owned: vec![false; weapons] }
+        Inventory { carried: vec![0; ammo_types], clip: vec![0; weapons], owned: vec![false; weapons], keys: vec![false; 0x100] }
     }
 
     /// Bond on 07000005 at the level start [L] (`Player_InitWeapon` is not read): weapons 1, 2 (P2K, 7 loaded),
@@ -238,12 +255,53 @@ impl Inventory {
         self.carried[t].wrapping_sub(filled.wrapping_add(old))
     }
 
-    /// `Pickup_Handler` for Bond. Types 0/1: a weapon he lacks is equipped, otherwise its rounds are taken
-    /// as ammo. Type 6 (Bond bonus): the game just logs a stat and shows a message — no weapon or ammo is
-    /// given [M Pickup_Handler 0x18e650 case 6 lines 234-236]. The port consumes the pickup (so it
-    /// disappears) but gives nothing. D-004: the gold-medal gate is skipped.
-    pub fn take(&mut self, w: &WeaponData, p: &Pickup, loaded: bool) -> Option<Taken> {
-        let id = p.weapon as usize;
+    /// `Upgrade_Weapon` (0x1a8f30): the pickup id remap every human-path pickup goes through
+    /// (`Pickup_Handler` 0x18e650:142-144). 6 → `UpgradedHandguns[Upgrades]`, 0x1E/0x24/0x43/0x4A/0x4E/0x56
+    /// via their tables, **10 → 0xC when `GameState[0x52]` is non-zero** (the game clock — always, in play)
+    /// [M]. 0x54 mutates the Laser Watch records' zoom (8.0 / 16.0) instead of remapping [M 0x1a8f30:43-51].
+    /// The tables' slot 0 holds the base id and `Upgrades` = 0 without the upgrade shop [L ee_start_05.bin:
+    /// UpgradedHandguns 0x2bee08 = [2,4,6,8], Snipers 0x2bee28 = [0x1e,0x20,0x22,0x22], SilencedSnipers
+    /// 0x2bee38 = [0x24,0x26,0x28,0x28], DartGuns 0x2bee68 = [0x43,0x44,0x44,0x44], Tasers 0x2bee48 =
+    /// [0x4a,0x4c,0x4c,0x4c], Lasers 0x2bee18 = [0x4e,0x4f,0x4f,0x4f], PDAs 0x2bee58 = [0x56,0x57,0x57,0x57],
+    /// Upgrades 0x2beea8 = 0].
+    pub fn upgrade_weapon(id: u16, upgrades: usize, state_clock: u32) -> u16 {
+        // Table slot `upgrades`; only slot 0 is live without the upgrade shop.
+        const HANDGUNS: [u16; 4] = [2, 4, 6, 8];
+        const SNIPERS: [u16; 4] = [0x1e, 0x20, 0x22, 0x22];
+        const SILENCED_SNIPERS: [u16; 4] = [0x24, 0x26, 0x28, 0x28];
+        const DART_GUNS: [u16; 4] = [0x43, 0x44, 0x44, 0x44];
+        const TASERS: [u16; 4] = [0x4a, 0x4c, 0x4c, 0x4c];
+        const LASERS: [u16; 4] = [0x4e, 0x4f, 0x4f, 0x4f];
+        const PDAS: [u16; 4] = [0x56, 0x57, 0x57, 0x57];
+        let t = |tab: &[u16; 4]| tab[upgrades.min(3)];
+        match id {
+            6 => t(&HANDGUNS),
+            10 if state_clock != 0 => 0xC,
+            0x1e => t(&SNIPERS),
+            0x24 => t(&SILENCED_SNIPERS),
+            0x43 => t(&DART_GUNS),
+            0x4a => t(&TASERS),
+            0x4e => t(&LASERS),
+            0x56 => t(&PDAS),
+            // 0x54 (Laser Watch): writes weapon_data[0x54/0x55]+0x88 (zoom) = 8.0 / 16.0 [M 0x1a8f30:43-51];
+            // the id itself is unchanged, and the port has no shop flag (`DAT_002beeaa`) — 8.0 is the
+            // un-upgraded value [L ee_start_05.bin record 0x54 +0x88]. Not modelled: the port has no
+            // mutable weapon_data at take time.
+            _ => id,
+        }
+    }
+
+    /// `Pickup_Handler` (0x18e650) for Bond. `armour` = `BLData+0x8B0` (the taker's armour, written on the
+    /// armour case); `clock` = `GameState+0x52` (the game clock, for the 10 → 0xC remap). Types 0/1: a weapon
+    /// he lacks is equipped, otherwise its rounds are taken as ammo. Type 2 (key): `Player_EquipKey`, never
+    /// refuses [M :217-219]. Type 3 (armour): refused while the armour is ≥ 50.0, else hard-set 50.0 [M
+    /// :220-225]. Type 6 (Bond bonus): the game just logs a stat and shows a message — no weapon or ammo
+    /// [M :234-236]. D-004: the gold-medal gate is skipped. The remapped id drives the owned-check and the
+    /// equip [M 0x18e650:142-144]; the message builds the weapon name from the RAW `+0x24` [M :246], so the
+    /// returned `Taken` carries `p.weapon` for display.
+    pub fn take(&mut self, w: &WeaponData, p: &Pickup, loaded: bool, armour: &mut f32, clock: u32) -> Option<Taken> {
+        // The remapped id decides the owned-check and the equip; the display id stays raw [M 0x18e650:142-144, :246].
+        let id = Self::upgrade_weapon(p.weapon, 0, clock) as usize;
         match p.kind {
             kind::WEAPON if !self.owned.get(id).copied().unwrap_or(true) => {
                 self.equip_weapon(w, id, p.rounds, loaded).then_some(Taken::Weapon { weapon: p.weapon })
@@ -252,15 +310,24 @@ impl Inventory {
                 let n = self.equip_ammo(w, id, p.rounds);
                 (n != 0).then_some(Taken::Ammo { weapon: p.weapon, rounds: n })
             }
+            kind::KEY => {
+                // `Player_EquipKey` (0x1a97a0): `BLData+0x70C+id = 1`; the key never refuses, so the pickup
+                // is always consumed [M 0x18e650:217-219]. `id` is the key index (`+0x24`).
+                if let Some(k) = self.keys.get_mut(p.weapon as usize) { *k = true; }
+                Some(Taken::Key { id: p.weapon })
+            }
+            kind::ARMOUR => {
+                // Type 3: refused while `BLData+0x8B0 >= 50.0` (the pickup stays); else `+0x8B0 = 50.0`,
+                // `+0x8BC = 1.0` — hardcoded 50, `+0x26` is not read [M 0x18e650:220-225]. (+0x8BC, the
+                // HUD flash fraction, is not modelled.)
+                if *armour >= 50.0 { return None; }
+                *armour = 50.0;
+                Some(Taken::Armour)
+            }
             kind::BOND_BONUS => {
                 // Type 6: the game's `Pickup_Handler` case 6 calls `PlrStat_LogBondBonus` and shows a
                 // message — no weapon or ammo. D-004: the gold-medal gate (`Pickup_Create` line 93) is
                 // skipped. The pickup is consumed (disappears) but gives nothing [M 0x18e650:234-236].
-                Some(Taken::Weapon { weapon: p.weapon })
-            }
-            kind::ARMOUR => {
-                // Type 3: armour 50 (`BLData+0x8B0`, only when below 50) [M pickups.md:71]. STANDIN: no
-                // armour field in the port's Health struct; the pickup is consumed but has no effect.
                 Some(Taken::Weapon { weapon: p.weapon })
             }
             _ => None,
@@ -304,8 +371,83 @@ mod tests {
         assert!(!Inventory::level_start(0x73, 34).equip_weapon(&w, 0x16, 12, false), "first-person model not loaded");
         // Sister: the P2K is owned at the start, so its drop is ammo.
         let p = Pickup::create(&[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0; 4]], 2, 5, kind::WEAPON, 0, Model { centre: [0.0; 3], radius: 0.5 });
-        assert_eq!(inv.take(&w, &p, true), Some(Taken::Ammo { weapon: 2, rounds: 5 }));
+        let mut armour = 0.0;
+        assert_eq!(inv.take(&w, &p, true, &mut armour, 1), Some(Taken::Ammo { weapon: 2, rounds: 5 }));
         assert_eq!(inv.carried[1], 46);
+        assert_eq!(armour, 0.0, "a weapon take does not touch the armour");
+    }
+
+    /// `Upgrade_Weapon` (0x1a8f30) with the live tables [L ee_start_05.bin 0x2bee08..]: id 6 → 2 with no
+    /// upgrades; 10 → 0xC once the game clock runs (GameState+0x52 ≠ 0); 0x24 → 0x24 (slot 0); the clock
+    /// gate: 10 stays 10 only while the clock is 0 [M 0x1a8f30:18-22].
+    #[test]
+    fn pickup_ids_go_through_upgrade_weapon() {
+        assert_eq!(Inventory::upgrade_weapon(6, 0, 100), 2, "UpgradedHandguns[0] = 2 [L]");
+        assert_eq!(Inventory::upgrade_weapon(0x24, 0, 100), 0x24, "UpgradedSilencedSnipers[0] = 0x24 [L]");
+        assert_eq!(Inventory::upgrade_weapon(0x1e, 0, 100), 0x1e, "UpgradedSnipers[0] = 0x1e [L]");
+        assert_eq!(Inventory::upgrade_weapon(10, 0, 0), 10, "clock 0: 10 is not remapped [M]");
+        assert_eq!(Inventory::upgrade_weapon(10, 0, 1), 0xC, "clock running: 10 → 0xC [M]");
+        assert_eq!(Inventory::upgrade_weapon(0x35, 0, 100), 0x35, "other ids unchanged");
+        // Sister: an upgrade level shifts the table (the shop path).
+        assert_eq!(Inventory::upgrade_weapon(6, 2, 100), 6, "UpgradedHandguns[2] = 6 [L]");
+    }
+
+    /// A kind-2 pickup is always taken: `Player_EquipKey` (0x1a97a0) sets `BLData+0x70C+id = 1` and
+    /// `Pickup_Handler` case 2 never refuses [M 0x18e650:217-219].
+    #[test]
+    fn a_key_is_always_taken_and_sets_its_flag() {
+        let w = table();
+        let mut inv = Inventory::level_start(0x73, 34);
+        let p = Pickup::create(&[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0; 4]], 7, 0, kind::KEY, 0, Model { centre: [0.0; 3], radius: 0.5 });
+        let mut armour = 0.0;
+        assert_eq!(inv.take(&w, &p, false, &mut armour, 1), Some(Taken::Key { id: 7 }), "never refused");
+        assert!(inv.keys[7], "BLData+0x70C+7 = 1");
+        assert!(!inv.keys[6], "sister: other keys untouched");
+        // A second take of the same key still succeeds (no owned-check on keys).
+        assert_eq!(inv.take(&w, &p, false, &mut armour, 1), Some(Taken::Key { id: 7 }));
+    }
+
+    /// Kind 3: refused while the armour is ≥ 50.0 (the pickup stays), else `BLData+0x8B0 = 50.0` hardcoded
+    /// — the pickup's rounds are not read [M 0x18e650:220-225].
+    #[test]
+    fn armour_fills_to_50_and_refuses_when_full() {
+        let w = table();
+        let mut inv = Inventory::level_start(0x73, 34);
+        let p = Pickup::create(&[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0; 4]], 6, 40, kind::ARMOUR, 0, Model { centre: [0.0; 3], radius: 0.5 });
+        let mut armour = 30.0;
+        assert_eq!(inv.take(&w, &p, true, &mut armour, 1), Some(Taken::Armour));
+        assert_eq!(armour, 50.0, "hard-set 50.0, not +rounds");
+        // Full: refused → the pickup stays (None).
+        assert_eq!(inv.take(&w, &p, true, &mut armour, 1), None, "≥ 50 refuses");
+        assert_eq!(armour, 50.0);
+    }
+
+    /// The take ray's ORIGIN is the caller's third argument — `Pickup_Update` passes the player's
+    /// world-sphere centre (`obj+0x80`), not his feet position [M 0x18e148:212-214]. A low shelf between
+    /// the two: a ray from the sphere centre clears it, a ray from the feet does not — the origin decides
+    /// the take, which is the port's second-Raptor divergence (port-check §1).
+    #[test]
+    fn the_take_ray_origin_decides_the_take() {
+        let q = |a: V3, b: V3, c: V3, d: V3| [[a, b, c], [a, c, d]];
+        let mut t = Vec::new();
+        t.extend(q([-9.0, 0.0, -9.0], [9.0, 0.0, -9.0], [9.0, 0.0, 9.0], [-9.0, 0.0, 9.0]));
+        // A 0.5-high wall at z = 0 between the player (z = −0.6) and the pickup (z = +0.7).
+        t.extend(q([-9.0, 0.0, 0.0], [-9.0, 0.5, 0.0], [9.0, 0.5, 0.0], [9.0, 0.0, 0.0]));
+        let w = CollisionWorld::from_triangles(t);
+        // centre y 0.05: the pickup rests with its sphere centre 0.05 above the floor (as the live pickups
+        // do) — a centre exactly ON the floor plane would end the take ray on the floor triangle.
+        let mut p = Pickup::create(&[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 1.0, 0.7, 1.0]], 2, 5, kind::WEAPON, 0, Model { centre: [0.0, 0.05, 0.0], radius: 0.5 });
+        let mut ticks = 0;
+        while p.state == 0 && ticks < 600 { p.fall(&w); ticks += 1; }
+        assert_eq!(p.state, 1);
+        // The player's position is within radius + 1.1; only the LOS origin differs. The ray to the resting
+        // centre (0, 0.05, 0.7) crosses the wall plane at 46% of its length: an origin at y 0.6 passes under
+        // the wall top (y 0.35 there), one at y 1.2 clears it (y 0.67).
+        let pos = [0.0, 0.0, -0.6];
+        let c = p.centre();
+        assert!((c[2] - 0.7).abs() < 1e-4 && (c[1] - 0.05).abs() < 1e-4, "resting |centre y| above the floor: {:?}", c);
+        assert!(p.touches(&w, pos, [0.0, 1.2, -0.6]), "ray from above the wall top: taken");
+        assert!(!p.touches(&w, pos, [0.0, 0.6, -0.6]), "sister: ray from below the wall top is blocked");
     }
 
     #[test]

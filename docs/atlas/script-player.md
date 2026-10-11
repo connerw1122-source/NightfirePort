@@ -142,17 +142,23 @@ Runs SSTREAM[`+0xAB3`] `:14`; interps while `clock ≤ length` `:18-22`; then ex
 | 0xD | `Script_CameraStart` (0x1d9140): u8 spline, u16 first, u16 last; CAM_INFO 0x50 {+0x40 out matrix, +0x44 first, +0x46 last, +0x48 2\|4}; `Camera_PushStates`, enable camera 4, +0xAB5 \|= 0x10, `Music_Event(0xB, hash)`, letterbox sprites on; skipped entirely (args still consumed) while flags & 0x20 | 5 |
 | 0xF | `Script_CameraEnd` (0x1db348) | 1 |
 | 0x12 | `Script_EventHandler` (0x1d94c0) | u8 n, u8 event, n×u32 |
-| 0x13 | `Script_FadeStart` (0x1db3d0) | 0 (no args read) |
-| 0x14 | `Script_SpriteStart` (0x1d9300) | 6 reads |
-| 0x15 | `Script_SpriteEnd` (0x1db3b0) | 1 |
+| 0x13 | `Script_FadeStart` (0x1db3d0): one `BIN_GetFloat` (the fade length) | 4 |
+| 0x14 | `Script_SpriteStart` (0x1d9300): 5 × `BIN_GetWord` + `BIN_GetDWord` | 14 |
+| 0x15 | `Script_SpriteEnd` (0x1db3b0) | 0 |
 | 0x16 | `Script_SoundStart` (0x1d8820); kind 5, the handle field holds the sound id; `Script_Interp` case 5 re-aims it at stream `tag`'s object every frame | 3 reads |
 | 0x17 | `Script_SoundEnd` (0x1daf60) → `Sound_Stop` | 1 |
-| 0x18 | `Script_LightStart` (0x1db1b0) | 3 reads |
-| 0x1A | `Script_LightEnd` (0x1db298) | 1 |
-| 0x1B | `Script_SubScriptStart` (0x1db050): a nested SCRIPTINFO in the handle; killed by `Script_KillStream` case 7 → `Script_Free` | 3 reads |
-| 0x1D | `Script_SubScriptEnd` (0x1db148) | 1 |
-| 0x1E | `Script_TextStart` (0x1db2b8) | 2 reads |
+| 0x18 | `Script_LightStart` (0x1db1b0): 3 × `BIN_GetByte` | 3 |
+| 0x1A | `Script_LightEnd` (0x1db298) | 0 |
+| 0x1B | `Script_SubScriptStart` (0x1db050): `BIN_GetDWord` + 2 × `BIN_GetByte`; a nested SCRIPTINFO in the handle; killed by `Script_KillStream` case 7 → `Script_Free` | 6 |
+| 0x1D | `Script_SubScriptEnd` (0x1db148) | 0 |
+| 0x1E | `Script_TextStart` (0x1db2b8): `BIN_GetDWord` + `BIN_GetWord` | 6 |
 | other | no-op, pc += 1 | 0 |
+
+The args column is argument **bytes** (BIN_GetByte = 1, Word = 2, DWord/Float = 4); each command's total
+footprint is op + args + 1 trailing byte (`Script_Run` 0x1d8548:120 adds 1 after the handler). This column
+was corrected by fix-player: it previously mixed BIN_Get call counts with bytes (0x13 said "0 (no args
+read)" while its handler reads a float; 0x14 said "6 reads" for 5 Word + 1 DWord calls), which made the
+port mis-parse real scripts — see pickup-port-check §5.
 
 `Script_StreamEnd`: wait := u16; if `clock ≤ end` and `clock < length` → **pc −= 3** (re-held on the end command)
 `[M 0x1db420:10-16]`; else if looping (play & 8): wait = 0, pc = cmd_base (+0x18), script clock = loop_start

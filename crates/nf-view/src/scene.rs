@@ -227,7 +227,8 @@ impl Sim {
     pub fn step(&mut self, camera: [f32; 3], look: [f32; 3], trigger: bool, aiming: bool) {
         let floor = self.world.floor_below(camera, 4.0).unwrap_or(camera[1] - 1.6);
         self.first_person = false;
-        self.run([camera[0], floor + 0.4, camera[2]], camera, look, look, trigger, aiming, false, false);
+        let ground = [camera[0], floor + 0.4, camera[2]];
+        self.run(ground, ground, camera, look, look, trigger, aiming, false, false);
     }
 
     /// One game tick with Bond walking (`Player_Update`): his input, then the world with him as the player. In aim
@@ -354,7 +355,9 @@ impl Sim {
         let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
         let aim = d.map(|v| v / l);
         self.first_person = !self.disabled;
-        self.run(self.bond.pos, head, look, aim, trigger, aiming, reload, use_key);
+        // The pickup take test's LOS origin: the player's world-sphere centre (`obj+0x80`), not his position
+        // [M 0x18e148:212-214] — `Bond::sphere_centre` ports `Control_BuildWorldSph`'s player branch.
+        self.run(self.bond.pos, self.bond.sphere_centre(), head, look, aim, trigger, aiming, reload, use_key);
         // `Player_Zoom` (0x1a1a70): the scope zoom. Right mouse (mouse-first) zooms in; releasing returns to 1.0.
         // The zoom interpolates toward the target at the game's rate (1.025× per tick zooming in, 1.15× out).
         // The FOV is divided by the zoom factor. Scoped weapons only (`weapon_data+0x68 & 0x40`).
@@ -406,9 +409,9 @@ impl Sim {
         Some(([m[3][0], m[3][1], m[3][2]], f[0].atan2(f[2]), (f[1] / l).clamp(-1.0, 1.0).asin(), fov))
     }
 
-    fn run(&mut self, pos: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool, reload: bool, use_key: bool) {
+    fn run(&mut self, pos: [f32; 3], sph: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool, reload: bool, use_key: bool) {
         // The drones aim at and look for Bond's chest (`Drone_View_Bones`; one point here, 0.45 under the eye).
-        let player = nf_game::drone::Player { pos, target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look };
+        let player = nf_game::drone::Player { pos, target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look, sph };
         let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models, surfaces: self.surfaces.as_ref(), voices: self.voices.as_deref() };
         // `Player_WeaponFiring` → `Player_WeaponInitBullet` from the eye along the view (*deviation*: no auto-aim and
         // no aim-point ray yet); the first-person fire script's sound 0x403 feeds the drones' hearing.
@@ -1420,8 +1423,10 @@ impl Scene {
                 .filter_map(|p| {
                     // `parsemap_block_map_data_dynamic` collects the placement's params into a stack buffer;
                     // `parsemap_create_dynamic_objects` case 0xf0 reads from that buffer. The params are
-                    // (index, value) pairs; the values hold the pickup metadata [M 0x1d1b68/0x1d04f0].
-                    let param = |idx: usize| -> u32 { p.params.get(idx).map(|(_, v)| *v).unwrap_or(0) };
+                    // (index, value) pairs and parameter k lives at `level_tag+0x2C+4k` — looked up by
+                    // INDEX, not by position [M 0x1d04f0:457-462; pickup-port-check §3]. An absent index
+                    // reads 0.
+                    let param = |idx: u32| -> u32 { p.params.iter().find(|(i, _)| *i == idx).map(|(_, v)| *v).unwrap_or(0) };
                     let type_ = param(0) as u16;
                     let id = param(1) as u16;
                     let rounds = param(2) as i16;
