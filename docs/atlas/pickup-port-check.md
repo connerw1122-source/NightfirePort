@@ -14,22 +14,24 @@ Tags: `[M]` measured in the decompile, `[L]` snapshot-verified, `[S]` suggested.
 
 **The game**: `Pickup_Update@0x18e148:203-214` — squared distance from the pickup's world sphere (`obj+0x80`) to
 the player's **position** (`obj+0x30`), but `Collide_LineOfSight` runs from the player's **world-sphere centre**
-(`obj+0x80`) to the pickup's `obj+0x80`, mask 0x721. On 07000005 those differ: sphere centre y = position y −
-0.12 (player obj 0x16cefe0: pos (104.95, 24.96, 108.83), sphere (104.83, 24.84, 108.58)) `[L]` — the ray leaves
-from chest height.
+(`obj+0x80`) to the pickup's `obj+0x80`, mask 0x721. On 07000005 the two points differ: sphere centre =
+position − (0.12, 0.12, 0.25) (player obj 0x16cefe0: pos (104.95, 24.96, 108.83), sphere (104.83, 24.84,
+108.58)) `[L]` — the port's LOS ray starts at a different point than the game's, by construction.
 
 **The port**: `drone.rs:3662` — `p.touches(d.world, player.pos, player.pos)`: both the distance point and the
 LOS origin are `player.pos` (feet). `pickup.rs:157-162` runs `world.line_of_sight(body, c)` from that point.
 
-A floor-level pickup's centre is ~|glist centre y| above the floor; a ray from the feet to it grazes the floor
-mesh of uneven ground and `line_of_sight` fails. Walking away and back changes the approach geometry, the ray
-clears, the pickup becomes takeable — exactly the reported "second dropped Raptor sometimes can't be picked up
-until they walk away and back". (The game has no other latch: two overlapping drops are tested independently
-every tick, falling drops included — pickup.md "Untouchable-pickup conditions".)
+A floor-level pickup's centre is only ~|glist centre y| above the floor, so the take ray is shallow; whether it
+clears the floor mesh depends on the exact origin. The game's origin is a different, fixed point (the build-world
+sphere centre), so its accept/reject geometry differs from the port's wherever the floor is uneven — the kind of
+difference that flips on approach direction, i.e. "works after walking away and back". That the reported
+second-Raptor symptom is *this* effect is a hypothesis to confirm by replay, not a measured cause; the two-point
+difference itself is measured. (The game has no other latch: two overlapping drops are tested independently every
+tick, falling drops included — pickup.md "Untouchable-pickup conditions".)
 
 | file:line | game | port | severity |
 |---|---|---|---|
-| `drone.rs:3662` (+ `pickup.rs:157`) | LOS from player `obj+0x80` | LOS from `player.pos` | **bug** — matches the playtest symptom |
+| `drone.rs:3662` (+ `pickup.rs:157`) | LOS from player `obj+0x80` | LOS from `player.pos` | **bug** — take-ray origin differs from the game's; suspected cause of the playtest symptom |
 
 **Fix**: pass the player's sphere centre (what `obj+0x80` holds: the capsule's `Control_BuildWorldSph` centre)
 as the third argument.
@@ -53,16 +55,17 @@ pickup is never consumed and no key flag exists.
 kind/id/rounds/switch from +0x2C/+0x30/+0x34/+0x38 (`parsemap_create_dynamic_objects@0x1d04f0:457-462`), and
 `SP_CreateScriptPlayer` reads p0–p10 the same way. An absent index reads 0.
 
-**The port**: `scene.rs:1433` (`param(idx)` = `p.params.get(idx)` = the idx-th **pair**) and
-`nis.rs:491` (`g(k)` likewise). `nf-formats/src/placement.rs`'s own test record carries params `[(0,7),(5,9)]` —
-indices are not guaranteed contiguous, so any placement with a skipped index shifts every later field (e.g. a
-pickup whose switch channel lands in the rounds slot).
+**The port**: `scene.rs:1424` (the pickup placement closure: `p.params.get(idx).map(|(_, v)| *v)` — the pair's
+index is discarded, the value taken by **position**; used :1425-1430). `nis.rs:491`'s `g(k)` is already
+index-based (`params.iter().find(|x| x.0 == k)`) and is fine. `nf-formats/src/placement.rs`'s own test record
+carries params `[(0,7),(5,9)]` (:98) — indices are not guaranteed contiguous, so any pickup placement with a
+skipped index shifts every later field (e.g. a switch channel landing in the rounds slot).
 
 | file:line | game | port | severity |
 |---|---|---|---|
-| `scene.rs:1433`, `nis.rs:491` | value of param **index** k at base+0x2C+4k | value of the k-th pair | **risk** — wrong whenever indices are sparse; the two snapshot levels' pickups/SPs happen to parse correctly |
+| `scene.rs:1424-1430` | value of param **index** k at base+0x2C+4k | value of the k-th pair | **risk** — wrong whenever a pickup placement's indices are sparse; the two snapshot levels' pickups happen to parse correctly |
 
-**Fix**: look up the pair by its index (`params.iter().find(|(i, _)| *i == k)`).
+**Fix**: look up the pair by its index, as `nis.rs:491` already does.
 
 ### 4. `Upgrade_Weapon` remap missing — a drop can hand over the wrong weapon id `[M]`
 

@@ -55,8 +55,8 @@ leave state 1 or 2). Mode 0 keeps state 0/6 with nothing loaded.
 
 Per tick `[M]`: return if +0x36 (disabled) or the gate channel is off `[:57-62]`; `Script_Update(current
 SCRIPTINFO)` `[:64]`; trigger bits uVar6 `[:66-81]`: bit 1 (0x1) = out channel on (via `SP_Hit`), bits from
-`SP_Hit` (below) when countdown == 0, bit 4 (0x4) = activation latch (`+0x2C`, cleared after the read); countdown
-decrements `[:75-77]`. `bVar4 = (bits & mask) != 0`.
+`SP_Hit` (below) when countdown == 0, bit 4 (0x4) = activation latch (`+0x2C`, only while the countdown is 0,
+cleared after the read); countdown decrements `[:75-77]`. `bVar4 = (bits & mask) != 0`.
 
 | state | on trigger (`bVar4`) | otherwise | out-channel write (only when triggered) |
 |---|---|---|---|

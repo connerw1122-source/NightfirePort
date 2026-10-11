@@ -3056,3 +3056,70 @@ The frustum cull was disabled by default in ade4779 after the truck/HUD/doors va
 - **Truck route (a):** the gate-guard chain is verified — Bond walking through the gatehouse sets ch 0x22, the spawner spawns the guard, and the level ends. In play, the guard's patrol AI (Session B/C) needs to keep it at the post.
 - **Door auto-close:** the disassembly says the 07000001 sliding doors DO auto-close after 6 s. I will not remove it. The user should test: press E on placement 13, walk 3+ m away, wait 7 s. If it doesn't close, we have a build mismatch.
 - **Brightness:** NOT an A-11 regression. The character brightness is the pre-existing TWEAK/VU1 gap.
+
+## atlas-4 — Pickup + script-player struct atlas (pickup.md, script-player.md, pickup-port-check.md)
+
+Branch `s/atlas-4` (from master 5d0d1c5). Docs-only: no Rust was changed. Format per `docs/atlas/README.md`
+(on `s/atlas-2`; not yet on master — this branch adds only the three pages, no README, to avoid a merge conflict).
+
+**Researched (all claims tagged [M] fn@addr:line / [L] snapshot addr+value):**
+- `Pickup_Create` (0x18dda0) — all 13 args mapped to PICKUPINFO fields (0x40 bytes at `obj+0xE0` — the arg to
+  `control_create_object` is the info SIZE); every kind case (0/1/2/3/5/6, 7–11 = MP `Pickup_CreateFromSet`,
+  double clip, 0x1A→0x1B second drop); gold-medal gate for kind 6; glist flags incl. **`obj+0xF0 & 0x10` =
+  hidden — U-036 retagged [S]→[M]** (set by `Pickup_Handler`:345, cleared by the respawn timeout).
+- `Pickup_Update` (0x18e148) — fall (ray from `obj+0x40`, mask 0x50D, rest on `HIT+0x30·(−|centre y|)+info+0x10`),
+  state 0/1/2, spin (+0x38, type 6/MP), and the **take test**: distance from player `+0x30` < (radius `+0x8C`
+  +1.1)², **LOS from player `+0x80`** to pickup `+0x80` (mask 0x721), gates `+0xF4==1`/class≠0x12; falling
+  pickups are takable; no cooldown/latch; lifetime +0x2E.
+- `Pickup_Handler` (0x18e650) — every kind: owned check `BLData+id·0xC+0x1BA`, owned→`Player_EquipAmmo`, kind 2
+  `Player_EquipKey` (`BLData+0x70C+id=1`), armour refused ≥50 then hard 50.0/+0x8BC=1.0, kind 6 bonus = stat
+  only; `Upgrade_Weapon` id remap; take-time channel set; take-time sound overrides (0xF5/0x141/0x14C);
+  consumption by +0x2C (0 delete / 0xFFFF stay / else hide+respawn).
+- `DroneWeap_DropWeapon` (0x17a2a0) — drop gets type 0, id = `weapon_data[w]+0x02` (base), rounds =
+  clip·(FRand(0.5)+0.5 if clip<10 else +0.25) — one `Rand_FRand(0.5)` per drop, two for 0x1A; wall ray 0x125;
+  `anim+0x62=0`.
+- Script players: `SP_CreateScriptPlayer` (0x1db9a8) p0–p10 → SCRIPTPLAYER_tag (0x3C) fully mapped; `SP_Update`
+  (0x1dbda8) states 0–7 + trigger bits + out-channel rule; `SP_Hit` bits 1/2/8/0x10; `SP_Activate`/`SP_UnPause`;
+  SCRIPTINFO (0xAC0, `Mem_Malloc(0xAC0)`) and SSTREAM (0x28, at +0xA8+0x28k) field tables from `Script_Load`
+  (0x1d8248); `Script_Run` full opcode table; **`Script_EventHandler` (0x1d94c0) all 17 event ids** incl. the
+  previous-stream rule (SSTREAM[k−1], kind 1/2) and events 5/8/9/0xA/0xF the port doesn't run; end-of-script
+  (`Script_StreamEnd` pc−3 hold, loop rewind to cmd_base/+0xAAE; `Script_Free` drone re-enable 0x80, player
+  handback 0x100, ScriptCam clear); object handles (`Script_CreateEntity` class-based reuse, obj_type map incl.
+  script pickups 0xF0).
+- EE snapshots (`ee_start_05.bin` = 07000005, `ee_start_07000001.bin` = 07000001, walked `DynamicObjList`
+  @0x2705A0+0x14): 4+4 pickups (ammo id 6 ×30/×20 snd 0x13F/0xF5; armour id 6/0x47 ×50 snd 0xFFFF/0x141, one on
+  channel 13; sphere radii 0.20/0.37/0.48; spin 0; state 1) and 8 script players — truck 0x6000A22 mode 1 →
+  state 2 playing (SI play 0x1, len 5895, 22 streams, anim stream kind 2 + parented entity), EndLevel 0x6000A23
+  mode 64 → preloaded + primed (state 1, SI clock 2.0), a disabled-at-start looper (+0x36 = 1), mode-0/mask-1
+  waiters, a mask-0 mode-8/8 looping pair (state 6); player0 `+0xF4 = 1`, LOS origin = sphere centre (0.12/0.12/0.25
+  off the position).
+
+**Port-check findings** (docs/atlas/pickup-port-check.md; nothing fixed — docs only):
+1. `drone.rs:3662` passes `player.pos` as BOTH the distance point and the LOS origin; the game distances from
+   `+0x30` but sight-checks from `+0x80` — the only game-side latch-free mechanism that can make a takeable drop
+   flip on approach direction; suspected cause of the "second dropped Raptor" symptom (hypothesis, to confirm by
+   trace replay).
+2. Keys (kind 2) never taken in `Inventory::take` (`_ => None`); game always consumes + equips.
+3. `scene.rs:1424` reads pickup placement params by PAIR POSITION; the game scatters them BY INDEX
+   (`level_tag+0x2C+4k`) — wrong for sparse param lists (`nis.rs:491` is already index-based and correct).
+4. `Upgrade_Weapon` remap missing (incl. the unconditional 10→0xC when `GameState[0x52]` set).
+5–12. nis.rs: eight stream opcodes (0x13/0x14/0x15/0x18/0x1A/0x1B/0x1D/0x1E) halt the stream where the game has
+   handlers; event 3 missing the per-stream position sync; events 5/8/9/0xA/0xF unported; no create-time
+   `SP_LoadScript` for modes ∉ {0,1} (the EndLevel SP's load-tick beat); no disabled byte (+0x36, live on
+   07000005); no SP_Hit mask bits 2/8/0x10 and no `SP_Activate` mask&1 gate; no loading-screen beat (isLoadable →
+   GameFlow_PushState) and no cut-scene skip (`Input_Action` 0x19 → `Script_FFwd`); camera start/end missing
+   `Music_Event(0xB/0xC)`, letterbox, camera stack (ScriptCam is a hash in the game, a bool in the port).
+
+**Audit:** an independent auditor reproduced 16 of 17 sampled claim groups verbatim from the decompile and
+re-ran the snapshot walk (its copy at `nf-work/snap_audit.py`). Fixes from the audit: LOS-origin direction
+(sphere centre is 0.12 BELOW the position, not above — "chest height" inference dropped), the SP_Activate
+countdown==0 gate, and port-check §3 (nis.rs:491 already index-based — claim narrowed to scene.rs:1424).
+
+**Could not verify (and why):**
+- The five decompiler-dropped stack args of `Pickup_Create` (sound/rest/respawn/lifetime/label) at the
+  `Pickup_CreateSimple` and parsemap 0xF0 call sites — no disassembler/ELF in this sandbox; cited to the
+  field-writing lines instead, and the sound/lifetime values cross-checked against the [L] snapshots
+  (0x13F/0xF5/0x141/0xFFFF; lifetime 0). The rest arg for placed pickups is [S] (state 1 in the snapshots).
+- `Pickup_CreateFromSet`'s `PickupMatrix` contents (MP modes) — disc data not parsed here.
+- Whether the exact Raptor symptom is the LOS-origin difference — needs a PCSX2 trace (`01-raptor` in plan v2 §3).
+- `UpgradedHandguns[0]` etc. table contents (upgrade tables live in data not parsed here).

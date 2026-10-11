@@ -182,14 +182,15 @@ next at obj+0x14 — 523 objects; classes match `control_funcs`):
 
 | obj | EE addr | fields read | value | meaning |
 |---|---|---|---|---|
-| 0x16d2760 | info 0x16d2870 | +0x22 / +0x24 / +0x26 / +0x2A / +0x20 | 1 / 6 / 30 / 0x13F / 1 | ammo, handgun clips ×30, sound 0x13F, resting |
+| 0x16d2760 | info 0x16d2870 | +0x22 / +0x24 / +0x26 / +0x2A / +0x20 | 1 / 6 / 30 / 0x13F / 1 | ammo, handgun clips ×30, sound 0x13F, resting (an identical copy at obj 0x16d28c0) |
 | 0x16d2760 | obj | +0x80 / +0x8C / +0x30 | (48.07, 49.06, −59.26) / 0.20 / (48.06, 49.00, −59.25) | world sphere vs position |
-| 0x16d2a20 | info 0x16d2b30 | +0x22 / +0x24 / +0x26 / +0x2A / +0x38 | 3 / 6 / 50 / 0xFFFF / 0 | armour, 50, no sound, no spin |
+| 0x16d2a20 | info 0x16d2b30 | +0x22 / +0x24 / +0x26 / +0x2A / +0x38 | 3 / 6 / 50 / 0xFFFF / 0 | armour, 50, no sound, no spin (identical copy at obj 0x16d82e0) |
 | 0x16d2a20 | obj | +0xF0 / +0xFF | 0x80060 / 0x2F | armour flag bits, class |
 | 07000001 0x18fc120 | info 0x18fc230 | +0x22 / +0x24 / +0x28 / +0x2A | 3 / 0x47 / 13 / 0x141 | armour on a switch channel (13) |
 
 Player (touch-test side): `glb_players[0]` obj 0x16cefe0: `+0xF4 = 1` (alive gate), class 3, sphere centre
-(104.83, 24.84, 108.58) r 1.06 — **the LOS origin (+0x80) sits ~0.12 above the position (+0x30)** `[L]`.
+(104.83, 24.84, 108.58) r 1.06 — **the LOS origin (+0x80) sits 0.12 below the position (+0x30)** and 0.12/0.25
+off in x/z `[L]`.
 
 ## Untouchable-pickup conditions (game side)
 
