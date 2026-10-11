@@ -351,7 +351,11 @@ pub struct Drone {
     pub aimed_at: bool,
     pub aimed_until: u32,
     pub bunched: bool,
-    /// `obj+0xEC` (Rand 10000 at creation; miss wobble phase), `+0x41` sight lost since the last shot, `+0x100` damage multiplier.
+    /// The port's copy of the `Rand_Rand(10000)` draw `Drone_Create` 0x136be0 stores to `obj+0xEC`, used as the
+    /// miss-wobble phase (`t = frame + obj+0xEC`). The game's live `obj+0xEC` is **rewritten after creation** by an
+    /// unidentified writer ([L] 0x1A677 > 10000 on every 07000005 drone — drone-port-check.md #4), so the port keeps
+    /// its creation-time value; the live field's later meaning is an open item. `+0x41` sight lost since the last
+    /// shot, `+0x100` damage multiplier.
     pub wobble: u32,
     pub lost_sight: bool,
     pub damage_mul: f32,
@@ -445,8 +449,10 @@ pub struct Drone {
     pub resume_state: u8,
     pub home: V3,
     /// Damage (`NDrone2_DefaultInit`, docs/systems/drone-damage.md): health `+0xAC` / max `+0xB0`, damage-taken
-    /// multiplier `+0x14C`, damageable `+0x14`, type `+0xD8`, the last damage `+0x150`, head shot `+0x3A`, big hit
-    /// `+0x1C`, the last flinch `+0x540`, the last hit `+0x470`, the state after a flinch `+0x118`, hits taken `+0x1D8`.
+    /// multiplier `+0x14C`, damageable `+0x14`, **voice set `+0xD8`** (the model-id switch in DefaultInit; NOT the
+    /// damage docs' "type", which is dtypenew `+0xC5` / DTYPE `+0xC7` — drone-port-check.md #3; obj+0xD8 is the glist
+    /// pointer, a third field), the last damage `+0x150`, head shot `+0x3A`, big hit `+0x1C`, the last flinch
+    /// `+0x540`, the last hit `+0x470`, the state after a flinch `+0x118`, hits taken `+0x1D8`.
     pub health: f32,
     pub max_health: f32,
     pub damage_taken: f32,
@@ -475,8 +481,11 @@ pub struct Drone {
     pub sighted: bool,
     pub own_sight: bool,
     pub first_attack_done: bool,
-    /// Corpse (`obj+0xF0 & 0x20`: no longer hit or seeing), the death channel to raise (`+0xCD8` pending, `+0x13C`
-    /// = placement parameter 12), the special-death script (`+0xBD4`, parameter 13), alpha (`obj+0x106` / `+0xCFC`).
+    /// Corpse (`obj+0xF0 & 0x20`: no longer hit or seeing), the death channel to raise (`+0xCD8` pending — confirmed
+    /// in the re-check: `NDrone2_DSTATE_Death_Anim` 0x1637f8 sets `+0xCD8 = 1` at enter and raises `+0x13C` on
+    /// exit/timer while set; `+0x13C` = placement parameter 12), the special-death script (`+0xBD4`, parameter 13),
+    /// alpha (`obj+0x106` / `+0xCFC`). Note `+0xCD8` is a shared scratch word: the Disabled state reads it as a resume
+    /// state id (0x172440), UnderCoverIdle as a tries count (0x169e58) — drone-port-check.md #2.
     pub corpse: bool,
     pub death_pending: bool,
     pub death_channel: u8,
@@ -567,13 +576,17 @@ impl Drone {
         let f0 = f0_base + rng.frand(f0_rand);
         let fc = match param(14) { 3 => fc_add + rng.frand(6.0), 4 => 1000.0, _ => f0 + fc_add + rng.frand(f0_rand) };
         let clip = match weapon { 0x16 | 0x18..=0x1b => 0x40, 0x1e | 0x1f | 0x24 | 0x25 => 5, _ => 0x40 };
-        // `NDrone2_DefaultInit` (0x14b300 line 349): `+0xBCC` and `+0xBCE` from param 24's raw value.
-        // `uVar4 = piVar19[0x18]`; `*(short*)(+0xbcc) = (short)(uVar4 >> 4)`; `*(ushort*)(+0xbce) = *(ushort*)(piVar19+0x18) & 0xf`.
-        // Then a switch on `(uVar4 >> 4) & 0xffff`: 1→0x36(stun), 2→0x35(frag), 4→0x34, 5→count+0x3a, 6→0x6c count=1; default→0,0.
-        let p24 = param(24);
-        let gw_sel = ((p24 >> 4) & 0xffff) as u16;
-        let gc_raw = (p24 & 0xf) as u16;
-        let (grenade_weapon, grenade_count) = match gw_sel {
+        // `NDrone2_DefaultInit` (0x14b300 lines 348-376): `+0xBCC` and `+0xBCE` come from **param 11** —
+        // `uVar4 = piVar19[0x18]`, and params start at `piVar19[13]` (`Drone_Create` 0x136be0 copies
+        // `placement+0x2C`, 0x84 bytes, to `Drone+0xC34` = `piVar19[13]`), so `piVar19[0x18]` = params[11] =
+        // `placement+0x2C+44` (drone-port-check.md #1: the old `param(24)` read the alert block's middle word).
+        // `*(short*)(+0xbcc) = (short)(uVar4 >> 4)`; `*(ushort*)(+0xbce) = raw & 0xf`; switch on `(raw >> 4) & 0xffff`:
+        // 1→0x36(stun), 2→0x35(frag), 4→0x34, 5→count+0x3a, 6→0x6c count=1; default→0,0.
+        // On 0x7000014 a weapon in (0x34, 0x37) clamps to 0x34 (0x14b300 lines 374-376; drone.md param-11 row).
+        let p11 = param(11);
+        let gw_sel = ((p11 >> 4) & 0xffff) as u16;
+        let gc_raw = (p11 & 0xf) as u16;
+        let (mut grenade_weapon, grenade_count) = match gw_sel {
             1 => (0x36u16, gc_raw as i16),
             2 => (0x35u16, gc_raw as i16),
             4 => (0x34u16, gc_raw as i16),
@@ -581,6 +594,7 @@ impl Drone {
             6 => (0x6cu16, 1i16),
             _ => (0u16, 0i16),
         };
+        if d.level == 0x0700_0014 && (0x34..0x37).contains(&grenade_weapon) { grenade_weapon = 0x34; }
         let mut dr = Drone {
             skin, anim_set, weapon, pos, yaw, desired_yaw: yaw, aim_yaw: 0.0, alert, alert_floor: alert, props: normal, alert_props,
             sight_range: e8, half_fov: crate::trig::HALF_PI, engage_range: f0, combat_range: fc,
@@ -1984,8 +1998,12 @@ impl Drone {
                 else if in_cover_ok(self, true) { self.set_state(UNDER_COVER_AIM) }
                 else if self.cover_available(d, true) { self.set_state(RUN_FOR_COVER) }
                 else {
+                    // `NDrone2_DSTATE_UnderCoverIdle` case 0xC (0x169e58): the tries count `+0xCD8` is read, then
+                    // incremented, and the **old** value gates the re-arm — < 3 → timer C again (Rand_FRand(150)),
+                    // else Attack. Three retries, the attack on the fourth timer tick.
+                    let tries = self.cover_tries;
                     self.cover_tries += 1;
-                    if self.cover_tries < 3 { self.timer_c = Some(frame + rng.frand(150.0) as u32) } else { self.set_state(ATTACK) }
+                    if tries < 3 { self.timer_c = Some(frame + rng.frand(150.0) as u32) } else { self.set_state(ATTACK) }
                 }
                 true
             }
@@ -2505,11 +2523,18 @@ impl Drone {
                 true
             }
             (COMBAT_NO_ROUTE, msg::TIMER_C) => {
-                self.no_route_odd = !self.no_route_odd;
-                if !self.stays(d) && self.cover_available(d, true) { self.set_state(RUN_FOR_COVER); return true; }
-                let next = if self.stays(d) { 0 } else if self.no_route_odd {
-                    match self.move_to_object(d, 2.0, true) { 0..=2 => COMBAT, 10 => return true, _ => 0 }
-                } else if self.set_goal_to_drone_with_los(d, rng) { GO_TO_GOAL } else { 0 };
+                // `NDrone2_DSTATE_CombatNoRoute` case 0xC (0x164c08): when not stationary and no prop 0x40, cover
+                // first (→ RunForCover); only when that fails does `+0xCD8` toggle and alternate — odd →
+                // MoveToObject (0..2 → Combat), even → SetGoalToDroneWithLos (→ GoToGoal). Stationary/0x40 drones
+                // skip straight to the fallback without toggling (drone-port-check.md #2 re-check).
+                let next = if self.stays(d) { 0 }
+                    else if self.cover_available(d, true) { RUN_FOR_COVER }
+                    else {
+                        self.no_route_odd = !self.no_route_odd;
+                        if self.no_route_odd {
+                            match self.move_to_object(d, 2.0, true) { 0..=2 => COMBAT, 10 => return true, _ => 0 }
+                        } else if self.set_goal_to_drone_with_los(d, rng) { GO_TO_GOAL } else { 0 }
+                    };
                 if next != 0 { self.set_state(next); return true; }
                 // Fallback: visible → Rand(2) ≠ 0 and in range → AimStand, else the closer position; not visible → look
                 // about and try again in a second.
@@ -3455,7 +3480,10 @@ impl Drones {
             if param(0) <= 1 || param(1) == 0 { continue; }
             let templates: Vec<usize> = self.list.iter().enumerate().filter(|(_, x)| x.group == param(1)).map(|(k, _)| k).collect();
             if let Some(sp) = crate::spawners::Spawner::new(i, param, templates.clone(), &self.channels) {
-                for &k in &templates { self.list[k].present = false; self.list[k].enabled = false; }
+                // A template has no object until `DroneSpawner_SpawnDrone` 0x137cb0 runs `NDrone2_CreateObj`
+                // (drone.md "present / started / enabled / in-llist"): no object → no `obj+0xFC`, so the port's
+                // `drawn` stand-in is false while held (and stays false until the spawn tick refreshes it).
+                for &k in &templates { self.list[k].present = false; self.list[k].enabled = false; self.list[k].drawn = false; }
                 self.llist.retain(|i| !templates.contains(i));
                 self.spawners.push(sp);
             }
@@ -3552,7 +3580,12 @@ impl Drones {
         let mut best = t.Autoaim_Range;
         let mut found = None;
         for (i, dr) in self.list.iter().enumerate() {
-            if !dr.present || !dr.enabled || !dr.drawn || dr.corpse || dr.health <= 0.0 || dr.kind == 0xb { continue; }
+            // `Check_AutoAim` (0x1a73f8): skip drawn==0 (`obj+0xFC`), dead (`+0xAC <= 0`), voice set 0xB (`+0xD8`),
+            // the Disabled state (`obj+0xF4 == 1`, covered by `enabled`), and — single player — **every non-enemy
+            // team** (`+0x44 != 1` → skip; the MP build checks `MP_areObjectsOnSameTeam` instead, not modelled).
+            // This keeps Bond's crosshair off allies, hostages and civilians (drone.md `+0x44`: 1 = enemies,
+            // 10/11/13/14 → 3 friends, 12 → 2 bots) — the 07000002 "shootable civilians" report.
+            if !dr.present || !dr.enabled || !dr.drawn || dr.corpse || dr.health <= 0.0 || dr.kind == 0xb || dr.team != 1 { continue; }
             let Some(p) = dr.palette(d).and_then(|m| m.get(2).map(|r| [r[3][0], r[3][1], r[3][2]])) else { continue };
             let dv = [p[0] - head[0], p[1] - head[1], p[2] - head[2]];
             let dist = (dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2]).sqrt();

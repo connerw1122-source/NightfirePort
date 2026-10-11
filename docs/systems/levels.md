@@ -131,19 +131,30 @@ never ran (ch 0x65 never fired because the gate-guard drone wasn't at post).
   path is the same `Scene::build` 07000005 uses, so levels load through it; visual diffing against PCSX2 is pending a
   GPU environment (U-0xx to add).
 
-## Grenade-carrying guards (WORKLOG B-1)
+## Grenade-carrying guards (WORKLOG B-1; corrected by fix-drone)
 
-`NF_ISO=<iso> cargo test -p nf-game --test grenade_scan` — scans every level's drone placements for param 24 (the
-`NDrone2_DefaultInit` grenade field `piVar19[0x18]`). The high 16 bits (after `>> 4`) select the grenade type (1=stun
-0x36, 2=frag 0x35, 4=0x34, 5=custom, 6=0x6C); the low nibble is the count.
+`NDrone2_DefaultInit` 0x14b300 takes the grenade word from **placement param 11**
+(`piVar19[0x18]`, params start at `piVar19[13]` — drone-port-check.md #1). The original B-1 scan
+read **param 24** (the alert block's middle word), so its table documented the wrong word; the
+corrected scan (`NF_ISO=<iso> cargo test -p nf-game --test drone_portcheck_live grenade_fields`,
+plus the full `placements … f` sweep behind it) finds 75 carriers on 9 levels:
 
-| Level | Guards with grenades | Weapon | Count |
-|---|---|---|---|
-| 07000002 | 2 (placements 464, 466) | 0x36 (stun) | 3 each |
-| 07000003 | 2 (placements 388, 389) | 0x36 (stun) | 1 each |
-| 07000009 | 6 (placements 62, 64, 65, 66, 250, 261) | 0x36 (stun) | 3 each |
-| 0700000a | 24+ (many placements) | 0x36 (stun) | 3 each |
+| Level | Guards with grenades | Param 11 (raw) | Weapon | Count |
+|---|---|---|---|---|
+| 07000001 | 2 | 0x13 | 0x36 (stun) | 3 |
+| 07000003 | 1 | 0x13 | 0x36 (stun) | 3 |
+| 07000004 | 1 | 0x26 | 0x35 (frag) | 6 |
+| 07000011 | 6 | 0x21/0x36/0x41 | 0x35 / 0x34 | 1/6/1 |
+| 07000012 | 11 | 0x11/0x21/0x43/0x51… | 0x36 / 0x35 / 0x34 / 0x3B | … |
+| 07000013 | 2 | 0x21/0x23 | 0x35 | 1/3 |
+| 07000014 | 24 | 0x11/0x22/0x23… | clamped to 0x34 (0x14b300 lines 374-376) | … |
+| 07000015 | 20 | 0x11/0x23/0x43… | 0x36 / 0x34 | … |
+| 07000016 | 8 | 0x11/0x43… | 0x36 / 0x34 | … |
 
-**07000005 (the test level) has no grenade-carrying guards.** The grenade scenarios and tests must run on 07000002 or
-another level where guards actually have grenades. The port's `Drone::new` now reads param 24 to set `+0xBCC`/`+0xBCE`
-(previously hardcoded to 0x35/0).
+07000002, 07000005, 07000009 and 0700000a carry **none** — the B-1 table's "carriers" there were
+param-24 artifacts. On 0x7000014 a decoded weapon in (0x34, 0x37) clamps to 0x34.
+
+**07000005 (the test level) has no grenade-carrying guards.** The grenade scenarios and tests must run on a level where
+guards actually have grenades, or set the grenade fields the way `NDrone2_DefaultInit` decodes param 11 (grenade_live
+uses raw 0x13 → 0x36 × 3). The port's `Drone::new` reads **param 11** to set `+0xBCC`/`+0xBCE` (fix-drone; it
+previously read param 24, which decodes to no grenades on every level).

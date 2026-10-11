@@ -3421,3 +3421,71 @@ user-space pkg-config shim over the system libasound.so.2.
   cooldown (no text system) — unchanged stand-ins.
 - Not independently audited under time pressure: the NIS request plumbing for DroneEnable (a subagent audit of the
   trigger/door rewrites ran afterwards; see the s/fix-core report).
+## fix-drone — the guard code against the atlas (drone-port-check.md + drone.md, object.md)
+
+Branch `s/fix-drone` (from master 60c08d2). Source of truth: `docs/atlas/drone-port-check.md`
+(`docs/atlas/drone.md`, `docs/atlas/object.md`). Files: `crates/nf-game/src/drone.rs` (not
+`Drones::tick`'s control-list loop / channel code), `crates/nf-game/src/spawners.rs` (no
+disagreement found — untouched); plus the test premise fix in `grenade_live.rs` and the new
+`drone_portcheck_live.rs` (both noted in the report). Environment: the task URLs 403'd; fetched
+from the share's current `/KOTPT/` layout (same host, no credentials); the alsa dev prefix
+(`tools-bin/alsa-prefix`) re-extracted from the Debian `libasound2t64/libasound2-dev` 1.2.14-1+deb13u1
+.debs — 1.2.16.1-2 links `sqrtf@GLIBC_2.43`, beyond this sandbox's glibc.
+
+What was fixed (each with its fail-before NF_ISO test in `drone_portcheck_live.rs`, shown failing
+on the pre-fix code via `git stash`, passing after):
+
+1. **Grenades are param 11, not param 24** (port-check #1; `NDrone2_DefaultInit` 0x14b300 lines
+   348-376, `piVar19[0x18]` with params at `piVar19[13]`, `Drone_Create` 0x136be0 copying
+   `placement+0x2C` → `Drone+0xC34` [M disasm]). `Drone::new` reads `param(11)` now, plus the
+   0x7000014 clamp (0x14b300 lines 374-376; real 0x35 carriers exist on that level). This is the
+   user's "guards never throw grenades in play": the old read granted **zero** grenades on every
+   level (param 24 is the alert block's middle word and decodes to none anywhere). Disc scan
+   (FILES.BIN sha 4b9b14c2…, all 47 on-foot level bins): 75 carriers on 9 levels (01 ×2 stun,
+   03 ×1 stun, 04 ×1 frag 6, 11 ×6, 12 ×11, 13 ×2, 14 ×24 clamped, 15 ×20, 16 ×8);
+   07000002/05/09/0a have none. `docs/systems/levels.md`'s B-1 table corrected.
+2. **CombatNoRoute's `+0xCD8` toggle order** (port-check #2 re-check): 0x164c08 case 0xC toggles
+   `+0xCD8 = ~+0xCD8` only on the not-stationary / no-prop-0x40 / cover-unavailable branch; the
+   port toggled on every TIMER_C. Moved into the branch; test `combat_no_route_toggle_follows_0x164c08`.
+3. **UnderCoverIdle's tries count gates on the old value** (`NDrone2_DSTATE_UnderCoverIdle`
+   0x169e58 case 0xC): read `+0xCD8`, increment, re-arm timer C while old < 3, else Attack. The
+   port incremented first (attack on the 3rd tick instead of the 4th). Test
+   `under_cover_idle_retries_three_times`.
+4. **Auto-aim targets enemies only in single player** (`Check_AutoAim` 0x1a73f8: `obj+0xFC` drawn,
+   health, voice set `+0xD8 != 0xB`, state `obj+0xF4 != 1`, and — SP — `Drone+0x44 != 1` → skip;
+   MP uses `MP_areObjectsOnSameTeam`, not modelled): the port's `auto_aim` lacked the team gate, so
+   Bond's crosshair snapped onto allies/civilians — the user's "shootable hostages and civilians on
+   07000002" (07000002's skin 0x0500004F civilian is DTYPE 0xC → team 2, and the three skin
+   0x05000034 allies are DTYPE 0xE → team 3, per drone.md +0x44 [M DoModeSettingsNEW]).
+   Test `auto_aim_skips_non_enemies_on_07000002` (locks a team-1 guard as the sister, then must
+   refuse the team-2 civilian at the same spot).
+5. **Spawner templates are not drawn** (drone.md "present / started / enabled / in-llist": a
+   template has no object until `DroneSpawner_SpawnDrone` 0x137cb0 creates it, so no `obj+0xFC`):
+   `attach_level` now clears `drawn` too. Part of the user's "guards drawn but invincible with no
+   AI (inactive or held by a spawner)" — the inactive/channel-waiter half was already right in the
+   port (enabled=false → not drawn, not hit-able, no vision, per the [L] snapshot values); nf-view's
+   R-toggle ("reinforcements view") deliberately draws held-back guards and is the remaining way to
+   see them. Test `spawner_templates_are_not_drawn_on_07000005`.
+6. **Comments per the audit**: `wobble` no longer claims the live `obj+0xEC` holds the wobble phase
+   (port-check #4 — the game's field is rewritten after creation; open item stands); the damage
+   field doc says **voice set +0xD8** (not "type"; dtypenew +0xC5 / DTYPE +0xC7 are different
+   fields — port-check #3; every `kind` reader re-verified: `HandleImpact` 0x1469b8 case 8
+   `+0xD8 == 0xC → 0x6E`, `GetDTYPENEW` 0x14c938 `+0xD8 == 0xC/0xF`, `NDrone2_HitDamage` 0x145558
+   `+0xD8 == 0x10` on 0x7000014); the `death_pending` comment records the confirmed `+0xCD8`
+   reading (0x1637f8 sets it at enter, raises `+0x13C` on exit/timer while set). The port-check
+   entries are marked FIXED / RE-CHECKED with these findings.
+
+Verified: every fix's fail-before run (all 5 port-check tests fail on the stashed pre-fix code,
+pass after; `grenade_live` 2/2 after its premise fix). Full suite: `NF_ISO=<abs> cargo test
+--offline --release -j2 --no-fail-fast -p nf-game -p nf-formats -p nf-audio -p nf-view --
+--test-threads=1` = 32 test binaries, 221 passed, 4 failed — the 3 known slim-ISO disc_golden
+failures (bigf_header_fields / bigf_tables / directory_tree) plus grenade_live, which ran before
+its sister fix landed and passes 2/2 standalone afterwards; effective tally 223 passed, 3 failed
+(only the expected disc_golden three).
+
+Could not verify / out of scope: the Disabled state's `+0xCD8` resume read is not modelled (the
+port's WaitSwitch wake recomputes `start_state`; equivalent while the word is never written, which
+holds for every ported state); UnderCoverIdle's msg-9 (explosion) impact allows a flinch for
+dtypenew 7/9/0x17-0x19 (0x169e58 case 8) while the port routes explosive hits through msg 8
+(allow=false) — a msg-9 mapping question that belongs to the grenade/fix-core session; the
+`obj+0xEC` live-field writer; spawners.rs needed no change (no disagreement listed or found).
