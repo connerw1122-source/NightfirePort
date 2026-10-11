@@ -21,6 +21,8 @@ after the atlas; a `+0xNNN` that does not exist here is a bug.
 
 Planned next (plan v2 §2 order): pickup, script player, searchlight, wire/grapple, cel/room,
 GS leaf state.
+Planned next (plan v2 §2 order): trigger ext, door, switch channels, searchlight, wire/grapple,
+cel/room, GS leaf state (pickup and the script player are in `pickup.md` / `script-player.md`).
 
 ## Format (per struct)
 
@@ -93,6 +95,9 @@ Each struct's page has:
 | [door.md](door.md) | the door ext (class 0x1C) | field table, the obj+0xF4 state register, the ext+0x70 flag bits, the full auto-close predicate with addresses, Door_Activate/SetState/Interp/ReactToHit, group sync, snapshot + disc checks for 07000001 |
 | [channels.md](channels.md) | switch channels (struct 9) | the five arrays, Init, frame order, every writer, every reader, and the complete 07000005 channel table with setter/reader placements |
 | [trigger-port-check.md](trigger-port-check.md) | — | every disagreement of `triggers.rs` and `door.rs` with structs 5/6/9 |
+| [pickup.md](pickup.md) | PICKUPINFO (0x40, obj class 0x2F) | the pickup block: fields, `Pickup_Create` args, every kind case, the drop paths, `Pickup_Update` fall/spin/touch, `Pickup_Handler` give/refuse rules, the take test and snapshot checks |
+| [script-player.md](script-player.md) | SCRIPTPLAYER_tag (0x3C), SCRIPTINFO (0xAC0), SSTREAM (0x28) | the 0xD9 placement params p0–p10, the SP_Update state machine, the stream command set, all 17 `Script_EventHandler` event ids, end-of-script and object handles |
+| [pickup-port-check.md](pickup-port-check.md) | — | disagreements of `crates/nf-game/src/{pickup,nis}.rs` (and their call sites) with the pickup/script-player atlas, incl. the take-test LOS origin |
 
 ## How to use the atlas
 
