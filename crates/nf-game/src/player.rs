@@ -335,6 +335,16 @@ pub fn init_level_loadout(
     // `Upgrade_Weapon(6)` (0x1a8f30 case 6 → `UpgradedHandguns[Upgrades]`, slot 0 = 2 [L]).
     const HANDGUN: u16 = 2;
     let mut req = HANDGUN as u8;
+    // A cold load (`save = None`, `IsWarmReset == 0`) skips `Player_RamLoad`'s whole body [M
+    // 0x1957a8:9], so the inventory `Player_InitWeapon` reads behind it is the game's boot state —
+    // the one `Player_InitAmmoWeapons` (0x1a17f8) zeroed (the [L] boot snapshot proves the zero arm
+    // ran: owned = exactly the equip set, WORKLOG fix-level2). fix-perf-level: the port's Sim used to
+    // carry the viewer's legacy default (P2K 7/41, `Gun::new(2,7,41)` + the sim's built-in owned
+    // flags), so case 0x7000006/8's `p2k_owned` read TRUE on a cold load and the request became the
+    // uninitialized saved weapon 0 — the draw machine holstered into weapon 0 and Bond stood unarmed
+    // (nf-view 07000006 --frame 30: "switch request 0", the user's no-weapon report). Clear first on
+    // a cold load; cases 5/7 and the default re-clear or replace anyway, so only 6/8 change.
+    if save.is_none() { init_ammo_weapons(inv, w, loaded); }
     // `Player_RamLoad` (0x1957a8): the saved health/armour/weapon/inventory/channels.
     let saved_weapon = save.map(|s| s.restore(health, inv, ch)).unwrap_or(0);
     let p2k_owned = |inv: &crate::pickup::Inventory| inv.owned.get(HANDGUN as usize).copied().unwrap_or(false);

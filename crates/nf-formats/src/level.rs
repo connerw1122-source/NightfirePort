@@ -36,6 +36,47 @@ impl MapObject {
     pub fn skipped_by_cel_pass(&self) -> bool { self.flags & 0x10 != 0 }
 }
 
+/// One map-block-0x21 portal record (`parsemap_block_portal_data` 0x1d15f8, docs/atlas/cel.md
+/// §Portals): count = u32 at the payload start, records at +4, **stride 56** — four corner VECTORs
+/// (+0x00..0x2f, the door/portal quad), +0x30 u16 `celA`, +0x32 u16 `celB` (indices into the level
+/// parse's 0x50-byte pCelList record array — the main map's cel placements in placement order),
+/// +0x34 u16 flags, +0x36 u16 pad. *Measured* [D]: 07000006's main-map block is 2468 bytes with count
+/// 44 — (2468−4)/44 = 56.0 exactly; cel.md's earlier "stride 68" read is corrected here (its own
+/// audit note flagged the number as re-measure-on-contact). The parser builds the forward plane from
+/// the corners in order and the reversed plane from them backwards; the runtime node attached to
+/// celB (dest celA) carries the forward plane with side flag `(flags & 2) == 0`, the node attached
+/// to celA (dest celB) the reversed plane with side flag `(flags & 1) ^ 1` — both sides walkable
+/// only when both flag bits are clear. *Measured* [D] on 07000006: every record's flags word is 0.
+#[derive(Clone, Debug)]
+pub struct PortalQuad {
+    pub corners: [[f32; 3]; 4],
+    pub cel_a: u16,
+    pub cel_b: u16,
+    pub flags: u16,
+}
+
+impl PortalQuad {
+    pub fn parse_block(payload: &[u8]) -> crate::buf::Result<Vec<PortalQuad>> {
+        let b = crate::buf::Buf(payload);
+        let n = b.u32(0)? as usize;
+        let mut out = Vec::new();
+        for k in 0..n {
+            let o = 4 + 56 * k;
+            let mut corners = [[0.0f32; 3]; 4];
+            for (c, corner) in corners.iter_mut().enumerate() {
+                *corner = [b.f32(o + 12 * c)?, b.f32(o + 12 * c + 4)?, b.f32(o + 12 * c + 8)?];
+            }
+            out.push(PortalQuad {
+                corners,
+                cel_a: b.u16(o + 0x30)?,
+                cel_b: b.u16(o + 0x32)?,
+                flags: b.u16(o + 0x34)?,
+            });
+        }
+        Ok(out)
+    }
+}
+
 pub struct LevelMap {
     pub entry: usize,
     pub kind: u8,
@@ -51,6 +92,8 @@ pub struct LevelMap {
     /// pointer per block into the global `m_paths` table (0x2ed828); a placement's record +0x44 indexes it (door
     /// anims, AI paths; docs/formats/map.md).
     pub path_data: Vec<Vec<u8>>,
+    /// Portal records (block 0x21; main map). `parsemap_block_portal_data` 0x1d15f8.
+    pub portals: Vec<PortalQuad>,
 }
 
 /// One object drawn somewhere: `(map, object)` indexes into `Level::maps`, and its row-vector world matrix.
@@ -121,6 +164,7 @@ impl Level {
             let mut ai_network = None;
             let mut sounds = Vec::new();
             let mut path_data = Vec::new();
+            let mut portals = Vec::new();
             for blk in &mf.blocks {
                 match blk.id {
                     0x2e => pending_coll = Some(crate::collision::Collision::parse(blk.payload(data))?),
@@ -137,10 +181,11 @@ impl Level {
                     0x05 => ai_network = Some(crate::aipath::AiNetwork::parse(blk.payload(data))?),
                     0x28 => sounds = MapSound::parse_block(blk.payload(data))?,
                     0x19 => path_data.push(blk.payload(data).to_vec()),
+                    id::PORTAL_DATA => portals.extend(PortalQuad::parse_block(blk.payload(data))?),
                     _ => {}
                 }
             }
-            maps.push(LevelMap { entry, kind: e.kind, name: e.name.clone(), textures, objects, placements, ai_network, sounds, path_data });
+            maps.push(LevelMap { entry, kind: e.kind, name: e.name.clone(), textures, objects, placements, ai_network, sounds, path_data, portals });
         }
         let mut by_hash = HashMap::new();
         for (m, map) in maps.iter().enumerate() {

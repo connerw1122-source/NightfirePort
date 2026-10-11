@@ -91,6 +91,9 @@ pub fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
     load_with_carry(iso, archive, all, None)
 }
 
+/// The sim catch-up cap (`NF_MAXTICKS`, default 4) — see the frame loop.
+static MAX_TICKS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
 /// `load` with the level-transition carry-over (fix-level2). `Some(save)` = a warm transition:
 /// `Player_Start` (0x190fd0) picks the type-0x24 start whose gate channel the previous level's exit
 /// wrote, and `Player_InitWeapon` (0x1a7ef8) runs the per-level loadout switch over `Player_RamLoad`
@@ -756,7 +759,15 @@ impl ApplicationHandler for App {
                     // Dev mode's time scale changes the number of ticks run (WORKLOG 0081), not the tick rate.
                     let before = self.anim_time as u32;
                     self.anim_time += dt * 60.0;
-                    let elapsed = (self.anim_time as u32).saturating_sub(before).min(8);
+                    // fix-perf-level: the catch-up cap. A slow render frame must not burst a spiral of
+                    // ticks — on 07000006 a tick costs ~4.1 ms, so the old 8-tick cap let the sim
+                    // burst 33 ms behind one frame (the jitter fix-render3 measured). The game itself
+                    // has no catch-up: under load it slows down. Capped ticks are DROPPED, not
+                    // deferred — logic stays fixed-60 Hz and deterministic (the tick count depends
+                    // only on frame times, never on their content). `NF_MAXTICKS` retunes it.
+                    let max_ticks = *MAX_TICKS.get_or_init(|| std::env::var("NF_MAXTICKS").ok()
+                        .and_then(|v| v.parse::<u32>().ok()).filter(|v| *v > 0).unwrap_or(4));
+                    let elapsed = (self.anim_time as u32).saturating_sub(before).min(max_ticks);
                     let n_ticks = self.dev.as_deref_mut().map_or(elapsed, |d| d.tick_count(elapsed));
                     let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
                     let look = self.cam.dir().to_array();

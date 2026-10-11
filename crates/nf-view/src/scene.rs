@@ -301,31 +301,10 @@ pub fn mul_bytes(a: [u8; 3]) -> [f32; 3] {
 
 /// The level's room cels: the main map's cel placements whose low 16 flag bits are 0xc023/0xc047
 /// (`parseentity_fixup_entity` 0x1d00c0 fills the runtime cel's ambient/zone from the placement's params
-/// for exactly these two flag words). See `Cel`.
+/// for exactly these two flag words). See `Cel`. The room half of `parse_cel_graph` — the two MUST
+/// agree; `Scene::cels` and the portal walk's `room_to_cell` are built in one pass.
 pub fn parse_room_cels(level: &Level) -> Vec<Cel> {
-    let Some(m) = level.main_map() else { return Vec::new() };
-    let mut out = Vec::new();
-    for p in &level.maps[m].placements {
-        if !p.creates_cel() { continue; }
-        let flags16 = (p.flags & 0xffff) as u16;
-        if !matches!(flags16, 0xc023 | 0xc047) { continue; }
-        let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v as u8).unwrap_or(0);
-        let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
-            else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
-        let Some((om, oi)) = obj else { continue };
-        let o = &level.maps[om].objects[oi];
-        // Ambient triple 1: params 0/1/2; all zero → the 0x3c default [M 0x1d00c0]. Triple 2 (the +1-byte
-        // shifted read): params 6/7/8 on a 0xc047 cel; a 0xc023 cel never writes +0x9b/0x9d/0x9f, so the
-        // shifted read keeps the first triple (the zone channel for those cels is never observed set).
-        let mut a0 = [param(0), param(1), param(2)];
-        if a0 == [0, 0, 0] { a0 = [0x3c; 3]; }
-        let a1 = if flags16 == 0xc047 {
-            let b = [param(6), param(7), param(8)];
-            if b == [0, 0, 0] { a0 } else { b }
-        } else { a0 };
-        out.push(Cel { min: o.min, max: o.max, ambient: [a0, a1], zone: if flags16 == 0xc047 { param(5) } else { 0 } });
-    }
-    out
+    parse_cel_graph(level).0
 }
 
 /// A parsed room cel — the ambient-light source for 0x800 objects (`docs/atlas/cel.md`, `gs-leaf.md`).
@@ -345,6 +324,239 @@ pub struct Cel {
     /// `cel+0xa2`: the switch-channel index whose byte value shifts the ambient read by that many bytes
     /// (`base = cel + switch_channels[cel+0xa2]`, `Lights_CalcAmbientLight` 0x1cb178).
     pub zone: u8,
+}
+
+/// The runtime cel graph for the portal visibility walk (fix-perf-level, G-016's portal half).
+///
+/// `cells` = the level parse's pCelList record array stand-in [M cel.md]: one node per main-map
+/// placement that creates a cel (`flags & 0x8000`), in placement order, with the object's glist bbox
+/// (the box `build_FindCel` 0x1c8cb0 tests). `portals` = map block 0x21 with each endpoint remapped
+/// into `cells` (the game matches `runtime_cel+0x38 == pCelList + idx*0x50` [M 0x1d15f8]; a portal
+/// whose endpoint placement has no resolvable object is dropped). `room_to_cell` maps the port's room
+/// cel index (a `parse_room_cels` / `Scene::cels` index) to its `cells` index.
+#[derive(Clone)]
+pub struct CelGraph {
+    pub cells: Vec<CelNode>,
+    pub portals: Vec<PortalEdge>,
+    pub room_to_cell: Vec<Option<usize>>,
+    /// Portal records dropped because an endpoint cel placement did not resolve.
+    pub dropped_portals: usize,
+}
+
+#[derive(Clone, Copy)]
+pub struct CelNode { pub min: [f32; 3], pub max: [f32; 3] }
+
+/// One block-0x21 portal as two half-edges: `corners` in file order, the FORWARD plane built
+/// `Plane_PlaneEq(plane, ref = corner 0, corner 1, corner 2)` [M 0x1d15f8] — its normal points into
+/// celA, so the runtime node attached to celB (dest celA) carries it [M 0x1c8928] and the node
+/// attached to celA carries its reverse. Side flags per record [M 0x1d15f8]: the celB node walks
+/// while `(flags & 2) == 0`, the celA node while `(flags & 1) == 0`.
+#[derive(Clone, Copy)]
+pub struct PortalEdge {
+    pub corners: [[f32; 3]; 4],
+    pub n_fwd: [f32; 3],
+    pub d_fwd: f32,
+    pub cel_a: usize,
+    pub cel_b: usize,
+    pub flags: u16,
+}
+
+/// `Plane_PlaneEq` (0x1df8d0) [M]: n = normalize(cross(v1 − r, v2 − v1)), d = −dot(n, r); the zero
+/// vector when the points are collinear (the game stores the zero plane and the walk's dot test then
+/// never passes — the same effect here). Value form: `dot(n, p) + d`, zero on the plane.
+pub fn plane_eq(r: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> [f32; 4] {
+    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let e = sub(v2, v1);
+    let cr = cross(sub(v1, r), e);
+    let len = (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
+    if len == 0.0 { return [0.0; 4]; }
+    let n = [cr[0] / len, cr[1] / len, cr[2] / len];
+    [n[0], n[1], n[2], -(n[0] * r[0] + n[1] * r[1] + n[2] * r[2])]
+}
+
+/// The level's cel graph, built alongside `parse_room_cels` (which is this function's room half —
+/// the two MUST agree; `Scene::cels` is `.0`).
+/// The level's cel graph, built alongside `parse_room_cels` (which is this function's room half —
+/// the two MUST agree; `Scene::cels` is `.0`).
+///
+/// `cells` spans the WHOLE parse in archive order — the game's pCelList record array is parse-wide
+/// (parsemap_block_map_data_static appends one 0x50-byte record per cel placement as each map is
+/// parsed, sub-maps first, main map last), and the main map's portal block indexes THAT array.
+/// *Measured* [D]: 07000002's main-map portal records point past the main map's own cel placements
+/// (22 of 37 endpoints) — they address sub-map cels too.
+/// The level's cel graph, built alongside `parse_room_cels` (which is this function's room half —
+/// the two MUST agree; `Scene::cels` is `.0`).
+///
+/// The pCelList record index: `parsemap_block_map_data_static` (0x1d1998) addresses the record as
+/// `pCelList + placement.index * 0x50` for by-index placements (the by-hash path goes through the
+/// entity hashtable, untraced — those records are unreachable here and the portals naming them are
+/// counted in `dropped_portals`). Records the port cannot resolve are the *sparse* remainder of the
+/// game's array; only the named ones exist as nodes.
+pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
+    let main = level.main_map();
+    let mut cells: Vec<CelNode> = Vec::new();
+    let mut rooms: Vec<Cel> = Vec::new();
+    let mut room_to_cell: Vec<Option<usize>> = Vec::new();
+    let mut cell_of_record: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+    for (mi, map) in level.maps.iter().enumerate() {
+        for p in &map.placements {
+            if !p.creates_cel() { continue; }
+            let flags16 = (p.flags & 0xffff) as u16;
+            let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v as u8).unwrap_or(0);
+            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                else if (p.index as usize) < map.objects.len() { Some((mi, p.index as usize)) } else { None };
+            let is_main = Some(mi) == main;
+            let idx = cells.len();
+            match obj {
+                Some((om, oi)) => {
+                    let o = &level.maps[om].objects[oi];
+                    cells.push(CelNode { min: o.min, max: o.max });
+                    if is_main && matches!(flags16, 0xc023 | 0xc047) {
+                        let mut a0 = [param(0), param(1), param(2)];
+                        if a0 == [0, 0, 0] { a0 = [0x3c; 3]; }
+                        let a1 = if flags16 == 0xc047 {
+                            let b = [param(6), param(7), param(8)];
+                            if b == [0, 0, 0] { a0 } else { b }
+                        } else { a0 };
+                        rooms.push(Cel { min: o.min, max: o.max, ambient: [a0, a1], zone: if flags16 == 0xc047 { param(5) } else { 0 } });
+                        room_to_cell.push(Some(idx));
+                    }
+                }
+                None => { cells.push(CelNode { min: [0.0; 3], max: [0.0; 3] }); }
+            }
+            // The record address is `pCelList + index*0x50` [M 0x1d1998] — by-index placements only.
+            if !p.by_hash() { cell_of_record.insert(p.index as usize, idx); }
+        }
+    }
+    let mut portals = Vec::new();
+    let mut dropped = 0usize;
+    for map in &level.maps {
+        for q in &map.portals {
+            let (Some(a), Some(b)) = (cell_of_record.get(&(q.cel_a as usize)).copied(), cell_of_record.get(&(q.cel_b as usize)).copied()) else {
+                dropped += 1;
+                continue;
+            };
+            // Forward plane: Plane_PlaneEq(plane, ref = c0, v1 = c1, v2 = c2) [M 0x1d15f8 — the
+            // parse calls it over the corner array in order, then over the reversed copy for the
+            // B side].
+            let pl = plane_eq(q.corners[0], q.corners[1], q.corners[2]);
+            portals.push(PortalEdge { corners: q.corners, n_fwd: [pl[0], pl[1], pl[2]], d_fwd: pl[3], cel_a: a, cel_b: b, flags: q.flags });
+        }
+    }
+    (rooms, CelGraph { cells, portals, room_to_cell, dropped_portals: dropped })
+}
+
+/// One `ClipPortalWithPlane` (0x1e7fa0) pass: Sutherland–Hodgman keeping `value >= 0`, with the game's
+/// compaction (a vertex is kept only when its successor is farther than √1e-7). `None` = every vertex
+/// inside (the game's return 0 — the polygon passes through unchanged), `Some(v)` = the clipped
+/// polygon (possibly empty = fully outside).
+fn clip_positive(poly: &[[f32; 3]], plane: [f32; 4]) -> Option<Vec<[f32; 3]>> {
+    let val = |p: &[f32; 3]| plane[0] * p[0] + plane[1] * p[1] + plane[2] * p[2] + plane[3];
+    if !poly.iter().any(|p| val(p) < 0.0) { return None; }
+    let n = poly.len();
+    let mut out = Vec::with_capacity(n + 2);
+    for i in 0..n {
+        let (cur, nxt) = (poly[i], poly[(i + 1) % n]);
+        let (cin, nin) = (val(&cur) >= 0.0, val(&nxt) >= 0.0);
+        let denom = plane[0] * (cur[0] - nxt[0]) + plane[1] * (cur[1] - nxt[1]) + plane[2] * (cur[2] - nxt[2]);
+        match (cin, nin) {
+            (true, true) => out.push(nxt),
+            (true, false) => {
+                if denom != 0.0 {
+                    let t = -val(&nxt) / denom;
+                    out.push([nxt[0] + t * (cur[0] - nxt[0]), nxt[1] + t * (cur[1] - nxt[1]), nxt[2] + t * (cur[2] - nxt[2])]);
+                }
+            }
+            (false, true) => {
+                if denom != 0.0 {
+                    let t = -val(&nxt) / denom;
+                    out.push([nxt[0] + t * (cur[0] - nxt[0]), nxt[1] + t * (cur[1] - nxt[1]), nxt[2] + t * (cur[2] - nxt[2])]);
+                }
+                out.push(nxt);
+            }
+            (false, false) => {}
+        }
+    }
+    // The game's compaction: keep vertex i only when its (wrapped) successor differs by more than
+    // √1e-7 (Vec_SqDist3D over the out buffer, 0x1e82e0's copy-back loop).
+    let n = out.len();
+    let mut comp = Vec::with_capacity(n);
+    for i in 0..n {
+        let nx = if i + 1 != n { i + 1 } else { 0 };
+        let d = [out[i][0] - out[nx][0], out[i][1] - out[nx][1], out[i][2] - out[nx][2]];
+        if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 1e-7 { comp.push(out[i]); }
+    }
+    Some(comp)
+}
+
+/// The game's portal visibility walk (`Vision_Portal_Recurse` 0x1e86e8 → `Vision_Recurse` 0x1e82e0),
+/// producing the per-`cells`-index visibility the renderer gates static World draws with (the
+/// `View_AddCels` GfxList set: only portal-visited cels are added).
+///
+/// `depth0`: the 5-plane view pyramid — `Vision_Calculate_View_Fustrum` (0x1e7df8) builds the eye's
+/// four side planes plus the near plane at depth 0; the port passes the frame frustum's first five
+/// Gribb-Hartmann planes (the same five faces; convention inside ≥ 0, the clip's keep side).
+/// Returns None when the walk cannot run (no graph, the eye's room cel unmapped) — the caller keeps
+/// its previous cull. Deviation: the game skips a portal whose linked door `Door_IsClosed` (0x1367b0)
+/// [M 0x1e82e0:51]; the port has no per-portal door link yet, so every portal is treated open —
+/// conservative (it can only keep cels visible, never hide them).
+pub fn portal_visible_cels(graph: &CelGraph, eye_room: usize, eye: [f32; 3], depth0: &[[f32; 4]; 5]) -> Option<Vec<bool>> {
+    let start = graph.room_to_cell.get(eye_room).copied().flatten()?;
+    let mut visible = vec![false; graph.cells.len()];
+    let mut visited = vec![false; graph.cells.len()];
+    let mut planes: Vec<Vec<[f32; 4]>> = vec![Vec::new(); 48];
+    planes[0] = depth0.to_vec();
+    let mut budget = 0usize;
+    // `Vision_Recurse` [M 0x1e82e0]: the recursion budget (VisionRecurseCount > 100) and the depth cap
+    // (45) are the game's own guards; VisCelCount caps at 0x40 cels.
+    fn recurse(
+        graph: &CelGraph, eye: [f32; 3], cell: usize, depth: usize,
+        visible: &mut Vec<bool>, visited: &mut Vec<bool>, planes: &mut Vec<Vec<[f32; 4]>>, budget: &mut usize,
+    ) {
+        *budget += 1;
+        if *budget > 100 || depth > 45 { return; }
+        let n0 = planes[depth].len();
+        for p in &graph.portals {
+            let (side_open, dest, fwd) = if cell == p.cel_a {
+                ((p.flags & 1) == 0, p.cel_b, false)
+            } else if cell == p.cel_b {
+                ((p.flags & 2) == 0, p.cel_a, true)
+            } else { continue };
+            if !side_open { continue; }
+            // The side's plane: the node attached to celB carries the forward plane, the celA node
+            // its reverse [M 0x1c8928 / 0x1d15f8]. `Vision_Recurse` processes a portal only when the
+            // eye is on its negative side [M 0x1e82e0:50].
+            let (n, d) = if fwd { (p.n_fwd, p.d_fwd) } else { ([-p.n_fwd[0], -p.n_fwd[1], -p.n_fwd[2]], -p.d_fwd) };
+            if n[0] * eye[0] + n[1] * eye[1] + n[2] * eye[2] + d >= 0.0 { continue; }
+            // The quad as the runtime node stores it: forward corners on the celB node, reversed
+            // (c3,c2,c1,c0) on the celA node [M 0x1c8928's amemcpy sources].
+            let mut poly: Vec<[f32; 3]> = if fwd { p.corners.to_vec() } else { vec![p.corners[3], p.corners[2], p.corners[1], p.corners[0]] };
+            for k in 0..n0 {
+                match clip_positive(&poly, planes[depth][k]) {
+                    None => {}
+                    Some(clipped) => { poly = clipped; }
+                }
+                if poly.is_empty() { break; }
+            }
+            if poly.is_empty() { continue; }
+            if !visited[dest] { visited[dest] = true; visible[dest] = true; }
+            if poly.len() >= 3 {
+                // The next depth's planes: one per clipped-polygon edge, ref = the eye (ViewPoints[0]
+                // [M 0x1e82e0:146]), plus the portal's own plane last [M 0x1e82e0:151-155].
+                let m = poly.len();
+                let mut next: Vec<[f32; 4]> = (0..m).map(|i| plane_eq(eye, poly[i], poly[(i + 1) % m])).collect();
+                next.push([n[0], n[1], n[2], d]);
+                planes[depth + 1] = next;
+                recurse(graph, eye, dest, depth + 1, visible, visited, planes, budget);
+                if *budget > 100 { return; }
+            }
+        }
+    }
+    visited[start] = true;
+    visible[start] = true;
+    recurse(graph, eye, start, 0, &mut visible, &mut visited, &mut planes, &mut budget);
+    Some(visible)
 }
 
 /// `Lights_CalcAmbientLight` (0x1cb178): the object's ambient RGB steps toward its cel's ambient through
@@ -1123,6 +1335,9 @@ pub struct Scene {
     /// The level's room cels (`parse_room_cels`), kept for the static-draw cel cull
     /// (`View_AddCels` 0x1e6ba0 frustum-tests each cel's bbox; `cel_sphere`/`cel_index_at`).
     pub cels: Vec<Cel>,
+    /// The runtime cel graph + portals (map block 0x21) — `portal_visible_cels`' input (fix-perf-level,
+    /// G-016's portal half). `.room_to_cell` maps a `cels` index into `cells`.
+    pub cel_graph: CelGraph,
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     pub materials: Vec<Material>,
@@ -1401,7 +1616,7 @@ impl Scene {
         // The level's room cels (see `Cel`): parsed before the draw so the static 0x800 world objects can snap
         // to their cel's ambient exactly as the game's link does at level start (`build_LinkToRoom` 0x1c9680 →
         // the snap in `control_link_object_to_cel` 0x1346b8; channels are all 0 here, so triple 1 reads).
-        let room_cels = parse_room_cels(level);
+        let (room_cels, cel_graph) = parse_cel_graph(level);
         let sim_cels = room_cels.clone();
         // Bug 3 diagnostic (`NF_COLL=1`): log objects that have collision but are not drawn — the "invisible walls".
         // An object is an invisible wall if it has collision triangles but: it's skipped by the cel pass (flag 0x10),
@@ -1853,7 +2068,7 @@ impl Scene {
         }
         let models_0x800: HashMap<u32, bool> = level.maps.iter()
             .flat_map(|m| m.objects.iter().map(|o| (o.hashcode, o.flags & 0x800 != 0))).collect();
-        Scene { cels: room_cels, streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800 }
+        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800 }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the
