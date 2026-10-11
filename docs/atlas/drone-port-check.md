@@ -12,7 +12,7 @@ evidence stands until re-checked). Bases: `obj` = the 0x110-byte object header (
 
 ## Mismatches — fix these in the port (or the atlas, if the port is right)
 
-### 1. Grenades are param 11, the port reads param 24 (drone.rs:564-566)
+### 1. Grenades are param 11, the port reads param 24 (drone.rs:564-566) — **FIXED (fix-drone)**
 
 The port comment says: "`NDrone2_DefaultInit` (0x14b300 line 349): `+0xBCC` and `+0xBCE` from
 param 24's raw value. `uVar4 = piVar19[0x18]`". The hex index was read as decimal: `0x18` = 24,
@@ -25,35 +25,50 @@ word (for 07000005 guards: `0xECF377E5`/`0xAC700787`, [L] `Drone+0xC94`) — ins
 word. The decoded switch itself is right in the port (1→0x36 stun, 2→0x35 frag, 4→0x34,
 5→`(raw&0xF)+0x3A` count 1, 6→0x6C count 1, default 0/0 — all match `NDrone2_DefaultInit`
 0x14b300), and in 07000005 both words decode to "no grenades" (params[11] = 0 everywhere [L]),
-so the bug is silent on the test level. Any level whose guards carry grenades will misread.
+so the bug was silent on the test level — but it also granted **no** grenades anywhere: the old
+`param(24)` decodes to none on every level, which is why guards never threw grenades in play.
+The disc scan (fix-drone): 75 carriers on 9 levels — 07000001 ×2, 03 ×1, 04 ×1, 11 ×6, 12 ×11,
+13 ×2, 14 ×24, 15 ×20, 16 ×8 (docs/systems/levels.md table updated); 07000002's own placements
+carry none. Fix applied: `param(24)` → `param(11)`, same decode, plus the 0x7000014 clamp
+(0x14b300 lines 374-376: a weapon in (0x34, 0x37) → 0x34; real 0x35 carriers exist there).
+Fail-before tests: `crates/nf-game/tests/drone_portcheck_live.rs`.
 
-Fix: `let p11 = param(11);` in `drone.rs` (`p24` → `p11`), same decode.
-
-### 2. `Drone+0xCD8` is the disabled-drone resume state, not "death channel pending" (drone.rs:375, 472)
+### 2. `Drone+0xCD8` is the disabled-drone resume state, not "death channel pending" (drone.rs:375, 472) — **RE-CHECKED (fix-drone): shared scratch word; the port's three readings verify**
 
 `NDrone2_DSTATE_Disabled` 0x172440: on its update message it calls
 `Drone_SM_SetState(..., *(u32*)(Drone+0xCD8), 0)` — `+0xCD8` holds the **state id to resume into
-when the channel releases the drone**. The port's "CombatNoRoute alternation" (drone.rs:375) and
-"death channel to raise (+0xCD8 pending)" (drone.rs:472) do not match that read. The alternation
-and death-channel stories may involve other fields; re-check both before porting the Disabled
-state's neighbours.
+when the channel releases the drone** (a fourth user; for the common states the word is never
+written, so that resume target stays 0). The re-check against the decomp confirmed the port's
+other readings: **CombatNoRoute alternation** — `NDrone2_DSTATE_CombatNoRoute` 0x164c08 case 0xC
+toggles `+0xCD8 = ~+0xCD8` on the not-stationary / no-prop-0x40 / cover-unavailable branch and
+branches on the result (the fix session also moved the port's toggle into that branch — the old
+code toggled on every TIMER_C, diverging from 0x164c08); **cover tries** —
+`NDrone2_DSTATE_UnderCoverIdle` 0x169e58 case 0xC reads `+0xCD8`, increments it, and re-arms
+timer C while the **old** value is < 3 (the port incremented before testing: attack on the 3rd
+tick instead of the 4th — fixed); **death pending** — `NDrone2_DSTATE_Death_Anim` 0x1637f8 sets
+`+0xCD8 = 1` at enter and raises the death channel on exit/timer-C while set, so the port's
+`death_pending` comment was right.
 
-### 3. `+0xD8` is the voice set; the damage docs' "type +0xD8" is a different field
+### 3. `+0xD8` is the voice set; the damage docs' "type +0xD8" is a different field — **FIXED (fix-drone, comment)**
 
 `NDrone2_DefaultInit` writes the **voice set** at `Drone+0xD8` (u16, from the model-id switch;
 [L] 07000005 guards = 2) and the voice variant at `+0xDA`. The damage-side "type" is `+0xC5`
 (dtypenew) / `+0xC7` (DTYPE). drone.rs:503 correctly says "the voice set (+0xD8)"; drone.rs:442's
 damage comment "type `+0xD8`" should read the dtypenew/DTYPE pair. Also keep `obj+0xD8` (glist
-pointer, object header) distinct from both.
+pointer, object header) distinct from both. (Fixed: the `kind` field doc now says voice set and
+names the dtypenew/DTYPE pair; every `kind` reader verified against the decomp — `HandleImpact`
+0x1469b8 case 8 `+0xD8 == 0xC → 0x6E`, `GetDTYPENEW` 0x14c938 `+0xD8 == 0xC/0xF`, the captain
+skin switch, `NDrone2_HitDamage` 0x145558 `+0xD8 == 0x10` on 0x7000014.)
 
-### 4. `obj+0xEC` (wobble) is rewritten after creation (drone.rs:354)
+### 4. `obj+0xEC` (wobble) is rewritten after creation (drone.rs:354) — **FIXED (fix-drone, comment)**
 
 `Drone_Create` 0x136be0 sets `obj+0xEC = Rand_Rand(10000)` [disasm], but the [L] live value is
 `0x0001A677` (> 10000) on every 07000005 drone — some later writer reuses the word (unidentified;
 `control_init_object` inits it to `GameState[52]`, a frame count, which 0x1A677 resembles). The
 port keeps its own copy of the Rand draw, so behaviour matches at creation time, but the port
 comment should not claim the live field holds the wobble phase. Open item: find the writer that
-overwrites `obj+0xEC`.
+overwrites `obj+0xEC`. (Fixed: the `wobble` field doc now states the port keeps the creation-time
+draw and the live field is rewritten.)
 
 ## Systematic findings
 

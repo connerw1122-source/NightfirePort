@@ -1,5 +1,7 @@
-//! Grenade tests on level 07000002 (the level where guards carry stun grenades, weapon 0x36 × 3 — param 24).
-//! Opt-in: set `NF_ISO` to the disc image. See docs/systems/levels.md "Grenade-carrying guards".
+//! Grenade tests on level 07000002 (the throw mechanics; the guards get their grenades set the way
+//! `NDrone2_DefaultInit` decodes placement param 11 — drone-port-check.md #1 fixed the param index; 07000002's
+//! own placements carry none). Opt-in: set `NF_ISO` to the disc image. See docs/systems/levels.md
+//! "Grenade-carrying guards".
 
 use nf_formats::anim::Script;
 use nf_formats::iso9660::IsoImage;
@@ -88,9 +90,10 @@ impl Level02 {
 
 fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0] } }
 
-/// On 07000002, guards at placements 464 and 466 carry stun grenades (weapon 0x36, count 3 from param 24).
-/// When Bond is within 8–20 units, the guard should throw: the throw anim plays, a grenade entity spawns,
-/// flies under gravity, bounces off the world, and explodes. Sister: Bond out of range (dist > 20) → no throw.
+/// On 07000002 (whose own placements grant no grenades — param 11 = 0 everywhere), a guard given the grenade
+/// fields the way `NDrone2_DefaultInit` decodes them (raw 0x13: `(0x13 >> 4) & 0xffff` = 1 → stun 0x36, count 3)
+/// and put within 8–20 units should throw: the throw anim plays, a grenade entity spawns, flies under gravity,
+/// bounces off the world, and explodes. Sister: Bond out of range (dist > 20) → no throw.
 #[test]
 fn guard_throws_a_grenade_on_level_02() {
     use nf_game::drone::state;
@@ -99,13 +102,14 @@ fn guard_throws_a_grenade_on_level_02() {
     let (drones, rng) = l.drones();
     let mut sim = l.sim(drones, rng);
 
-    // Find a guard that has grenades AND is a normal combat guard (not mode 7 / 0x85).
+    // A present normal combat guard (not mode 7 / 0x1e); 07000002's placements carry no grenades
+    // (param 11 = 0), so the fields are set the way `NDrone2_DefaultInit` decodes a 0x13 word.
     let gi = sim.list.iter().position(|x| {
-        x.present && x.grenade_count > 0 && x.mode != 7 && x.mode != 0x1e
-    }).expect("level 07000002 should have a normal grenade-carrying guard");
+        x.present && x.mode != 7 && x.mode != 0x1e && !x.corpse
+    }).expect("level 07000002 should have a normal combat guard");
     let g = sim.list[gi].pos;
-    let gc_before = sim.list[gi].grenade_count;
-    eprintln!("grenade guard #{} at ({:.1}, {:.1}, {:.1}), {} grenades, mode={}", gi, g[0], g[1], g[2], gc_before, sim.list[gi].mode);
+    sim.list[gi].grenade_weapon = 0x36; // (0x13 >> 4) & 0xffff == 1 → stun 0x36
+    sim.list[gi].grenade_count = 3;     // 0x13 & 0xf == 3
     let gw = sim.list[gi].grenade_weapon;
     let gc = sim.list[gi].grenade_count;
     assert!(gw == 0x36 && gc > 0, "guard has stun grenades: weapon={:#x} count={}", gw, gc);
@@ -149,7 +153,9 @@ fn guard_throws_a_grenade_on_level_02() {
     // Sister: Bond out of range (dist > 20) — the guard should NOT throw.
     let (drones2, rng2) = l.drones();
     let mut sim2 = l.sim(drones2, rng2);
-    let gi2 = sim2.list.iter().position(|x| x.present && x.grenade_count > 0).unwrap();
+    let gi2 = sim2.list.iter().position(|x| x.present && x.mode != 7 && x.mode != 0x1e && !x.corpse).unwrap();
+    sim2.list[gi2].grenade_weapon = 0x36; // param 11 raw 0x13 → stun 0x36 × 3
+    sim2.list[gi2].grenade_count = 3;
     let g2 = sim2.list[gi2].pos;
     let bond_far = bond_at([g2[0] + 30.0, g2[1], g2[2]]); // 30 units — outside the 8–20 window
     for _ in 0..300 { sim2.tick(&d, &bond_far); }
@@ -169,16 +175,13 @@ fn guard_decides_to_throw_grenade_unforced() {
     let (drones, rng) = l.drones();
     let mut sim = l.sim(drones, rng);
 
-    // Find a guard that has grenades AND is a normal combat guard (not stuck in a non-combat mode).
-    // On 07000002, all grenade guards are mode 7 (0x85) or mode 5 (Hostage). Neither enters combat.
-    // We need to give grenades to a normal combat guard. The simplest: find a guard with mode 0
-    // (default combat) and set its grenade fields the way the game's NDrone2_DefaultInit would
-    // (param 24 = 0xcc800013 → weapon 0x36, count 3).
+    // Find a present normal combat guard. On 07000002 no placement carries grenades (param 11 = 0), so the
+    // guard's grenade fields are set the way `NDrone2_DefaultInit` decodes param 11 (raw 0x13 → 0x36 × 3).
     let gi = sim.list.iter().position(|x| {
         x.present && x.mode == 0 && x.team == 1
     }).expect("level 07000002 should have a normal combat guard");
     let g = sim.list[gi].pos;
-    // Give the guard grenades (the way param 24 would in NDrone2_DefaultInit).
+    // Give the guard grenades (the way param 11 decodes in `NDrone2_DefaultInit`).
     sim.list[gi].grenade_weapon = 0x36;
     sim.list[gi].grenade_count = 3;
     let gc_before = sim.list[gi].grenade_count;

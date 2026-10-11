@@ -71,7 +71,7 @@ snapshot `work/ee_start_05.bin` [L]. Port: `crates/nf-game/src/drone.rs`. Compan
 | +0x3E | u8 | | from the AnimObject's +0x62 byte: <28 → 0, 28..29 → 1, ≥30 → 0 | DefaultInit | | [M] |
 | +0x41 | u8 | sight lost | port claim ("sight lost since the last shot") [S] | | firing | [S] |
 | +0x43 | u8 | noise level | loudest noise level, never reset (port claim) [S] | | hearing | [S] |
-| +0x44 | u8 | team | 1 = enemies; types 10/11/13/14 → 3, 12 → 2 (DoModeSettingsNEW per docs/systems/drone-ai.md); 1 also triggers `PlrStat_LogEnemySpawned` | DefaultInit (via DoModeSettings), DefaultInit tail | spawn stat | [M] |
+| +0x44 | u8 | team | 1 = enemies; types 10/11/13/14 → 3, 12 → 2 (DoModeSettingsNEW per docs/systems/drone-ai.md); 1 also triggers `PlrStat_LogEnemySpawned`. `Check_AutoAim` 0x1a73f8 skips every drone with `+0x44 != 1` in single player (the MP build checks `MP_areObjectsOnSameTeam`) — fix-drone added the gate to the port's `auto_aim` | DefaultInit (via DoModeSettings), DefaultInit tail | spawn stat, auto-aim | [M] |
 | +0x45 | char | | params[10] byte | DefaultInit | | [M] |
 | +0xA0 | f32 | hip height | 1.0 default; per-model overrides visible live ([L] 1.14806 / 1.15059 on two 07000005 drones — set by the per-model path, exact fn not chased) | DefaultInit 1.0 | position (feet→hip) | [M,L] |
 | +0xA4 | f32 | | 1.0 at init | DefaultInit | | [M] |
