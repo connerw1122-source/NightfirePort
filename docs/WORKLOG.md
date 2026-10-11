@@ -2991,6 +2991,67 @@ the unit test covers the fix. This is a known gap.
 - **grenade-throw / grenade-bounce-explode**: still removed (cover AI prevents the throw — needs a guard with no
   cover nodes nearby, or placement where the guard's cover search fails).
 
+## atlas-2 — player + weapon_data struct atlas
+
+**Task**: write `docs/atlas/player.md`, `docs/atlas/weapon-data.md`, and `docs/atlas/player-port-check.md` from
+the decompile + EE snapshot, listing every struct field the port touches with its offset, type, meaning, writers,
+readers, and tag. Numbers and names only — no game bytes.
+
+### What was done
+
+- **BLData** (`docs/atlas/player.md`): the per-player runtime block (0x970 bytes, allocated as the tail of a 0xA80
+  `obj_tag` by `control_create_object(0x970,...)` in `Player_Init`@`0x1910f8`). Documented 40+ fields with
+  writers/readers (fn@addr) and snapshot verification (`glb_players[0]` → obj_tag @ `0x016cefe0` → BLData @
+  `0x016cf0f0`). Key clusters: velocity (0x10..0x60), collision/floor (0x110..0x740), weapon-entry array
+  (0x1B4 + w·0xC, 0xC-byte entries), health/zoom/view-state (0x740..0x970). Confirmed `+0x4F4` is an alias of
+  `clip[0x45]` (not a separate field).
+- **obj_tag** (player object header 0x000..0x110): +0x30 (pos), +0x54 (yaw), +0x90 (matrix), +0xDC (→M_CONTROL),
+  +0xE0 (→BLData), +0xF6 (subState).
+- **M_CONTROL** (the control/input struct): the **aim flag** at `+0x60` (u16 bitmask; bit 0x1 = aiming, 0x8 = jump
+  pending, 0x20 = touched above). `M_CONTROL = *(obj_tag+0xDC)`. Verified in snapshot: `0x016cb8a0 + 0x60 = 0x0008`.
+- **PlayerSetting** (`0x002a38c8`, 1376 bytes = 4 players × 0x158): the per-player save settings. `+0x01` = autoAim
+  (verified = 1 in snapshot). The port only references `+0x01`.
+- **ammo_data** (`0x002c69b8`, 12-byte records): `+0x02` = cap (s16). Verified caps: pistol 70, SMG 90, sniper 30.
+- **weapon_data** (`docs/atlas/weapon-data.md`): the 0x10C-byte records (115 × 0x10C @ `0x002bf150`). Documented
+  every field the port reads: +0x02 (base), +0x04 (selectable), +0x14 (autoaim_accuracy, f32 — see port-check),
+  +0x40 (fire_rate), +0x68 (flags), +0x6C (bullet_flags), +0x80 (tp_model), +0x88 (zoom), +0x90 (ammo_type),
+  +0xA0..+0xD8 (the 13 animation script hashcodes), +0xDC (fp_model), +0xE0/+0xE4/+0xE8 (view offsets). Full
+  weapon id table (115 records, 40 selectable weapons, 14 selectable gadgets) with name hashcodes, ammo types,
+  clip sizes, flags. Player_Init PunchSkin override (record 1 +0xDC + record 0x37 +0x05). The `+0x48CE` grenade
+  check = record 0x45 +0x92 (clip_size 100).
+- **player-port-check.md**: every `+0xNNN` in `gun.rs`, `pickup.rs`, `player.rs`, `scene.rs`, `weapon.rs` whose
+  meaning or offset disagrees with the atlas. Found 1 real bug and 4 gaps/stand-ins:
+  1. **BUG**: `weapon_data +0x14` is `f32` (0..100), but the Rust reads it as `u16` (always 0 — the low 2 bytes
+     of the float are `0x0000`). Auto-aim never triggers.
+  2. `BLData +0x8B0` (armor) — referenced by pickup.rs but not in the port's `Health` struct. Armor has no effect.
+  3. `weapon_data +0x48CE` — STANDIN always true (grenade count check bypassed).
+  4. `M_CONTROL +0x60` (aim flag) — not referenced; port uses own `Sim::aiming` bool.
+  5. `PlayerSetting +0x02`..`+0x0A` — per-player control settings not ported.
+
+### How verified
+
+- **3 parallel subagents**: BLData research, weapon_data research, Rust offset catalog. Each read the decompile
+  (`work/decomp/ACTION.ELF/`) and the snapshot (`work/ee_start_05.bin`, file offset = EE address) directly.
+- **Independent audit** (4th subagent): verified 9 high-value claims against the decompile + snapshot.
+  **All 9 CONFIRMED, 0 refuted.** The pointer arithmetic (`0x4F4`, `0x48CE`, `0x002bf37c`, `0x002bf338`), struct
+  reasoning (obj+0xE0 → obj+0x110), type assignments (f32 at +0x14, u16 at M_CONTROL+0x60), and snapshot readings
+  (BestWeapon, PunchSkin, M_CONTROL+0x60 = 0x0008) are all reproducible.
+- The `+0x14` port bug was confirmed: `weapon.rs:132` reads `u16::from_le_bytes([r[0x14], r[0x15]])` — the P2K's
+  `0x42c80000` float yields u16 `0x0000`, so `autoaim_accuracy` always returns 0.0.
+
+### What's left
+
+- **No code changes** in this task (per the task brief). The `+0x14` bug and the armor gap are documented in
+  `player-port-check.md` for session C (player/weapons) to fix.
+- The atlas format (`docs/atlas/README.md`) is established for future struct entries (obj_tag full layout,
+  HITDATA, Drone, etc.).
+- `PlayerSetting +0x02`..`+0x0A` (per-player control settings) need the `C_CNCONTROLS_Handler` decompile to decode.
+- M_CONTROL full layout (beyond `+0x60`) is out of scope but worth a separate entry if the input port needs it.
+
+### Branch
+
+`s/atlas-2`. No game bytes committed. No private URLs/tokens/credentials written anywhere.
+
 ---
 
 ## A-12 — Castle gate door visibility, truck chain gate-guard test, door auto-close evidence, brightness audit
