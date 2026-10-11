@@ -4380,3 +4380,73 @@ Could not verify / left open (evidence recorded, no guessing):
   applied in load() [M], verified for 07000007 by the party test (gun.weapon reaches 1).
 - Not run: a real PCSX2 trace of a transition (no emulator in the sandbox); the window/renderer path is
   unchanged by this task.
+
+## fix-dev — dev tools for long playtests (skip cut-scenes, reliable infinite ammo, HUD clamp, no reload, level select)
+
+Branch `s/fix-dev`. Files: `crates/nf-game/src/nis.rs` (the script-player skip), `crates/nf-view/src/{dev,hud,lib}.rs`,
+tests `crates/nf-view/tests/dev_tools_live.rs` (new) + `menu_live.rs` (the ammo assertion updated to the fixed
+behaviour), docs `docs/tools/dev-mode.md` + `docs/atlas/script-player.md`.
+
+### What was done
+
+- **Cut-scene skip (any key), ported from the game** [M]: `SP_Update` state 2 checks `Input_Action(-1, 0x19, 1)`
+  (0x1dbda8:129-141) and calls `Script_FFwd(cur, 1)` (0x1dac78) unless `Script_IsDeathNIS(script A)` (0x1dae60:
+  0x6000952/0x600098a/0x6000991 refuse). `Script_FFwd` needs the camera-active flag (`+0xAB5` bit 4, set by op 0xD
+  `Script_CameraStart`, cleared by `Script_CameraEnd` 0x1db348 — the port's op handlers now maintain it): first press
+  arms the fade (`fade_len = min(length − clock, 45)`, `play |= 0x10`, `fade_clock = FRAME_RATE_MUL`,
+  `Music_Event(5, hash)`; `Camera_SetFade` and the kind-2 datum snap flag 0x40000 are view-side, not modelled);
+  event 0x10 scripts kill their camera stream instead. `Script_Update` (0x1da998:19-110)'s do-while — re-run the
+  streams while `fade_clock > fade_len` and still playing — IS the fast-forward: the rest of the cut-scene (events,
+  channel sets, `LoadLevel`) runs inside that one tick, then the final block fades back in and clears the latch.
+  `Script_Interp` (0x1d9a08:146,205) freezes kinds 2/4 while the freeze flag (bit 5) is set. The viewer maps any key
+  press except Esc/F1/F2/F11/F12 to `Scripts::skip_request` while `Scripts::cutscene_playing()`. A non-looping script
+  finishes within `length` passes (op 6 fires at clock ≥ length); the loop is additionally bounded at
+  `2·length + 256` passes (a guard: the game's own loop would spin forever on a looping script, which the data
+  never skips).
+- **Infinite ammo made reliable (the user's "isn't always reliable")**: the refill wrote only `gun.clip`/`gun.spare`
+  — transient copies `Sim::run` re-reads from the INVENTORY (`BL+0x170`/`+0x1B8`) every tick — so the store kept
+  emptying while the HUD showed a full clip. `Dev::after_tick` now tops every clip slot to its weapon's
+  `weapon_data+0x92` clip size and every ammo type's carried rounds to 200: other ammo types, weapon switches, the
+  level carry-over, and Bond's grenades (the 0x45 belt's clip slot [M gun.rs:100-106]) all covered.
+- **HUD ammo strip clamp** (`hud::strip_clip`, fix-dev T3): a clip above its size (only reachable via the dev tools;
+  pickups/reloads cap it [M pickup.rs]) drew `clip · hpr` tall — the user's stacked/garbled icons. The strip now
+  draws at most `clip_size · hpr`; the "clip-spare" text keeps the real numbers.
+- **No reload** (F2): the current weapon's clip is topped to its clip size each tick.
+- **Level select** (F2, fix-dev T5; B-12 had not added one): `level: 070000xx` rows for the 34 level archives on the
+  disc (`nf-extract files-manifest`), feeding `pending_level` — the same warm transition a level exit takes.
+- Reproduce-first: each fix has a test that failed before it (`dev_infinite_ammo_survives_sustained_fire`,
+  `dev_no_reload_keeps_clip_full`, `dev_skip_ends_the_gatehouse_cutscene`, `hud_ammo_strip_clamped`), with sister
+  assertions (`sister_infinite_ammo_off_still_runs_out`, the phase-A "still playing" checks). The skip also has a
+  synthetic unit test in nis.rs covering the death-NIS refusal. Full suite green except the 3 allowed slim-ISO
+  `disc_golden` failures (bigf_header/bigf_tables/directory_tree).
+
+### What could not be verified, and why
+
+- The skip's `Camera_SetFade` picture (the fade-out/fade-in) is view-side; the port has no camera-fade renderer, so
+  the visual fade is not verifiable headless — the state machine and end effects are.
+- The gatehouse cut-scene was NOT driven by walking: B-12's `cutscene-ai-pause` spot (100, 28, 108) does not reach
+  the plate TOUCH_ONCE (trig5: volume x 104.5..107.4 at y 24.4065; Bond lands at y 25.9 and walks over it at feet
+  y 25.0 — 0.59 above the plane, outside the 0.55 toucher radius), and script 0x6000074 is not in the level's
+  script lib (it streams from disc in the game; `isLoadable`). The test instead activates the level's own
+  camera cut-scene SPs (0x60008C8 via ch 92, 0x6000994 via ch 67) the way the game's chains would (as K does), then
+  mashes the skip through the exact field the viewer's key handler writes. The cutscene-ai-pause scenario's spot is
+  stale — its own doc claim ("fires within ~1 s") does not reproduce at that position.
+- Music_Event(5, hash) (the skip's music pulse) rides the uncarried `Request::Event` — the port's music runtime has
+  no consumer for it yet (the same status as the other uncarried events).
+
+### C2-class first dump (07000002, throwaway probe, numbers only)
+
+`nf_view::load("07000002.bin")` + 300 idle ticks; every present drone with present/started/enabled/in-llist/held/
+drawn/corpse/team/mode/dtype/channel (25 present, none spawner-held, none corpses):
+
+- #0–#20: team 1, dtype 0x2, `enabled=0 drawn=0`, in-llist, switch channels 21/23/24/25/129/8 — the switch-gated
+  combat guards, correctly invisible + disabled until their channels fire.
+- #21: **team 2, mode 0xC, dtype 0xC, ch 0, enabled=1 drawn=1 in-llist, state 0x1C** at (−24.3, 1.0, 31.9) — the
+  only DRAWN non-team-1 drone at the start; a non-hostile-class character the port draws like a guard (the C2
+  candidate: "drawn, never attacks, can't be damaged" — the port's damage/target path keys off team != 1).
+- #22–#24: team 3, modes 0x7/0x5, dtype 0xe, ch 22/23/25, `enabled=0 drawn=0` — the fix-drone3 mission-state
+  characters (civilian guard, civilians), correctly dormant at start.
+
+Not done (sandbox time): what the game does with a team-2/mode-0xC drone (its real behaviour to port), the
+07000005 patrol torso-twist clamp, the 07000006 stationary-guard class, and the searchlight spotted→alarm path —
+each needs the same load-and-walk dump driven to the reported spots.

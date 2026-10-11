@@ -242,3 +242,17 @@ script clock, tags = 1 (clock 0 + 1 at creation), parents 0xFF except the parent
 
 `crates/nf-game/src/nis.rs` models this subsystem; the disagreement list lives in
 [../atlas/pickup-port-check.md](pickup-port-check.md) (same file covers `pickup.rs`).
+
+**The skip is ported (fix-dev)** [M]: `SP_Update` state 2 reads the skip action (`Input_Action(-1, 0x19, 1)`
+0x1dbda8:129-141) and calls `Script_FFwd(cur, 1)` (0x1dac78) unless `Script_IsDeathNIS(script A)` (0x1dae60).
+`Script_FFwd` needs the camera-active flag (`+0xAB5` bit 4 — `Script_CameraStart` 0x1d9140 sets it,
+`Script_CameraEnd` 0x1db348 clears it): on the first press it arms the fade (`+0xAB4 = min(length − clock, 45)`,
+`play |= 0x10`, `+0xA4 = FRAME_RATE_MUL`, `Music_Event(5, hash)`, `Camera_SetFade(...)` view-side) or, with event
+0x10 set, kills the camera stream; the kind-2 streams' dataums get `+0xC8 |= 0x40000` (view-side snap flag, not
+modelled). `Script_Update` (0x1da998:19-110)'s do-while is the fast-forward itself: while
+`fade_clock > fade_len` and `Script_IsPlaying`, it re-runs every stream and advances the clocks — the rest of the
+cut-scene (events included) runs inside that one call; a death NIS breaks out at `length − 20`. The final block
+fades back in and clears the skip latch. `Script_Interp` (0x1d9a08:146,205) freezes kinds 2/4 while `+0xAB5` bit 5.
+Port fields: `Script.fade_clock` / `fade_len` / `fade_flags`, `Scripts::skip_request` (the viewer's key handler
+sets it while `Scripts::cutscene_playing()`), tests in `nis.rs` (`skip_fast_forwards_a_camera_script_but_not_a_death_nis`)
+and `nf-view/tests/dev_tools_live.rs` (`dev_skip_ends_the_gatehouse_cutscene`).

@@ -220,6 +220,8 @@ fn menu_toggle_god_and_ammo_do_not_panic() {
     sim.drones.health.health = 50.0;   // simulate Bond took damage
     sim.drones.health.flash = 0.5;    // hit flash active
     sim.gun.clip = 3;                  // low ammo
+    let wi = sim.gun.weapon as usize;
+    if let Some(c) = sim.drones.inventory.clip.get_mut(wi) { *c = 3; } // the store, too (fix-dev: the refill writes the inventory)
     drop(sim);
     dev.god_mode = true;
     dev.infinite_ammo = true;
@@ -227,7 +229,14 @@ fn menu_toggle_god_and_ammo_do_not_panic() {
     let sim = scene.sim.as_ref().unwrap();
     assert_eq!(sim.drones.health.health, 100.0, "god mode did not restore health to 100");
     assert_eq!(sim.drones.health.flash, 0.0, "god mode did not clear the hit flash");
-    assert!(sim.gun.clip >= 40, "infinite ammo did not refill the clip (got {})", sim.gun.clip);
+    let cs = sim.weapons.clip_size(wi);
+    // fix-dev: the refill tops the INVENTORY (the game's own store) to the weapon's clip size, and the
+    // gun's HUD copy follows — the old gun-only refill (clip >= 40) was overwritten by the next tick's
+    // inventory read, which is why ammo still ran out (the user's "isn't always reliable").
+    assert!(sim.gun.clip >= 3, "infinite ammo did not refill the clip (got {})", sim.gun.clip);
+    assert_eq!(sim.drones.inventory.clip[wi], cs, "infinite ammo did not top the inventory's clip slot to the clip size ({})", cs);
+    assert!(sim.gun.clip >= cs.max(0) as u32, "the gun's HUD copy ({}) is below the topped clip size ({})", sim.gun.clip, cs);
+    // Toggle off - the effect stops (health is no longer locked).
     eprintln!("[menu_test] god mode: health 50->{}, flash cleared, clip 3->{} (infinite ammo)", sim.drones.health.health, sim.gun.clip);
     // Toggle off - the effect stops (health is no longer locked).
     dev.god_mode = false;

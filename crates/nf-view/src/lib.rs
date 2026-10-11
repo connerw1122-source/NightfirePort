@@ -11,6 +11,8 @@
 //! Space / Ctrl = up / down, Shift = fast, [ / ] = browse sequences ([ from the first returns to the game's start
 //! animations), P = pause, F = firing demo for drones without AI, R = reload, F3 = show held-back drones (spawner reinforcements, drones waiting
 //! for a switch), K = turn all switch channels on, F12 = screenshot.
+//! Any other key skips a cut-scene while one is playing (the game's own skip: `SP_Update` state 2's
+//! `Input_Action(-1, 0x19)` → `Script_FFwd` [M 0x1dbda8:129-141]; a death cut-scene can't be skipped).
 //! The guard AI (nf-game) runs at 60 Hz with the camera as Bond; `--frame N` runs N ticks before a `--shot`, pressing
 //! the trigger on the `--pull` ticks.
 //! (nf-view-shot.png), E = use (doors), Esc = release mouse, Esc again = quit.
@@ -542,12 +544,16 @@ impl App {
             }
             dev::MenuAction::ToggleGod => { let on = self.dev.as_deref_mut().map_or(false, |d| { d.god_mode = !d.god_mode; d.god_mode }); format!("god mode: {}", if on { "ON" } else { "OFF" }) }
             dev::MenuAction::ToggleAmmo => { let on = self.dev.as_deref_mut().map_or(false, |d| { d.infinite_ammo = !d.infinite_ammo; d.infinite_ammo }); format!("infinite ammo: {}", if on { "ON" } else { "OFF" }) }
+            dev::MenuAction::ToggleNoReload => { let on = self.dev.as_deref_mut().map_or(false, |d| { d.no_reload = !d.no_reload; d.no_reload }); format!("no reload: {}", if on { "ON" } else { "OFF" }) }
             dev::MenuAction::SaveSpot => { let p = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos); if let Some(d) = self.dev.as_deref_mut() { d.saved_spot = Some(p); } format!("spot saved at ({:.1},{:.1},{:.1})", p[0], p[1], p[2]) }
             dev::MenuAction::RestoreSpot => {
                 let spot = self.dev.as_deref().and_then(|d| d.saved_spot);
                 match spot { Some(p) => { if let Some(d) = self.dev.as_deref() { d.teleport(&mut self.scene, p, self.cam.yaw); } format!("restored to ({:.1},{:.1},{:.1})", p[0], p[1], p[2]) }, None => "no saved spot — use 'save spot' first".to_string() }
             }
             dev::MenuAction::TimeScale(s) => { if let Some(d) = self.dev.as_deref_mut() { d.time_scale = s; } format!("time scale: {}", if s == 0.0 { "paused (F11=step)" } else if s == 1.0 { "1×" } else { "0.25×" }) }
+            // The level-select jump (fix-dev T5): the same path a level exit takes — a warm load with the
+            // carry-over (`pending_level` consumed at the top of RedrawRequested, lib.rs).
+            dev::MenuAction::Level(id) => { self.pending_level = Some(id); format!("loading {} ..", level_archive_name(id)) }
         };
         if let Some(d) = self.dev.as_deref_mut() { d.result_msg = Some(result); d.result_timer = 180; }
     }
@@ -640,6 +646,16 @@ impl ApplicationHandler for App {
             },
             // No manual-aim mode with the mouse (PLAN.md D-002): the mouse aims directly; `aiming` stays for a pad.
             WindowEvent::KeyboardInput { event, .. } => if let PhysicalKey::Code(k) = event.physical_key {
+                // fix-dev T1: skip cut-scenes with any key. The game's own skip is `Input_Action(-1, 0x19, 1)`
+                // read in `SP_Update` state 2 → `Script_FFwd(cur, 1)` unless the script is a death NIS
+                // [M SP_Update 0x1dbda8:129-141, Script_FFwd 0x1dac78]. The port's skip request is consumed by
+                // the script players at the next tick (`Scripts::skip_request`); the viewer's dedicated keys
+                // (Esc, F1, F2, F11, F12) keep their own functions and do not skip.
+                if event.state == ElementState::Pressed && !event.repeat
+                    && !matches!(k, KeyCode::Escape | KeyCode::F1 | KeyCode::F2 | KeyCode::F11 | KeyCode::F12)
+                    && self.scene.sim.as_ref().is_some_and(|s| s.drones.scripts.cutscene_playing()) {
+                    if let Some(sim) = self.scene.sim.as_mut() { sim.drones.scripts.skip_request = true; }
+                }
                 match (k, event.state) {
                     (KeyCode::Escape, ElementState::Pressed) => if self.grabbed { self.grab(false) } else { el.exit() },
                     (KeyCode::F12, ElementState::Pressed) => if let Err(e) = shot(&self.scene, &self.cam, "nf-view-shot.png", self.choice, self.anim_time, self.opts, self.notex, self.nofog) { eprintln!("screenshot: {e}") },
