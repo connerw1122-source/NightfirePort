@@ -2991,6 +2991,67 @@ the unit test covers the fix. This is a known gap.
 - **grenade-throw / grenade-bounce-explode**: still removed (cover AI prevents the throw — needs a guard with no
   cover nodes nearby, or placement where the guard's cover search fails).
 
+## atlas-2 — player + weapon_data struct atlas
+
+**Task**: write `docs/atlas/player.md`, `docs/atlas/weapon-data.md`, and `docs/atlas/player-port-check.md` from
+the decompile + EE snapshot, listing every struct field the port touches with its offset, type, meaning, writers,
+readers, and tag. Numbers and names only — no game bytes.
+
+### What was done
+
+- **BLData** (`docs/atlas/player.md`): the per-player runtime block (0x970 bytes, allocated as the tail of a 0xA80
+  `obj_tag` by `control_create_object(0x970,...)` in `Player_Init`@`0x1910f8`). Documented 40+ fields with
+  writers/readers (fn@addr) and snapshot verification (`glb_players[0]` → obj_tag @ `0x016cefe0` → BLData @
+  `0x016cf0f0`). Key clusters: velocity (0x10..0x60), collision/floor (0x110..0x740), weapon-entry array
+  (0x1B4 + w·0xC, 0xC-byte entries), health/zoom/view-state (0x740..0x970). Confirmed `+0x4F4` is an alias of
+  `clip[0x45]` (not a separate field).
+- **obj_tag** (player object header 0x000..0x110): +0x30 (pos), +0x54 (yaw), +0x90 (matrix), +0xDC (→M_CONTROL),
+  +0xE0 (→BLData), +0xF6 (subState).
+- **M_CONTROL** (the control/input struct): the **aim flag** at `+0x60` (u16 bitmask; bit 0x1 = aiming, 0x8 = jump
+  pending, 0x20 = touched above). `M_CONTROL = *(obj_tag+0xDC)`. Verified in snapshot: `0x016cb8a0 + 0x60 = 0x0008`.
+- **PlayerSetting** (`0x002a38c8`, 1376 bytes = 4 players × 0x158): the per-player save settings. `+0x01` = autoAim
+  (verified = 1 in snapshot). The port only references `+0x01`.
+- **ammo_data** (`0x002c69b8`, 12-byte records): `+0x02` = cap (s16). Verified caps: pistol 70, SMG 90, sniper 30.
+- **weapon_data** (`docs/atlas/weapon-data.md`): the 0x10C-byte records (115 × 0x10C @ `0x002bf150`). Documented
+  every field the port reads: +0x02 (base), +0x04 (selectable), +0x14 (autoaim_accuracy, f32 — see port-check),
+  +0x40 (fire_rate), +0x68 (flags), +0x6C (bullet_flags), +0x80 (tp_model), +0x88 (zoom), +0x90 (ammo_type),
+  +0xA0..+0xD8 (the 13 animation script hashcodes), +0xDC (fp_model), +0xE0/+0xE4/+0xE8 (view offsets). Full
+  weapon id table (115 records, 40 selectable weapons, 14 selectable gadgets) with name hashcodes, ammo types,
+  clip sizes, flags. Player_Init PunchSkin override (record 1 +0xDC + record 0x37 +0x05). The `+0x48CE` grenade
+  check = record 0x45 +0x92 (clip_size 100).
+- **player-port-check.md**: every `+0xNNN` in `gun.rs`, `pickup.rs`, `player.rs`, `scene.rs`, `weapon.rs` whose
+  meaning or offset disagrees with the atlas. Found 1 real bug and 4 gaps/stand-ins:
+  1. **BUG**: `weapon_data +0x14` is `f32` (0..100), but the Rust reads it as `u16` (always 0 — the low 2 bytes
+     of the float are `0x0000`). Auto-aim never triggers.
+  2. `BLData +0x8B0` (armor) — referenced by pickup.rs but not in the port's `Health` struct. Armor has no effect.
+  3. `weapon_data +0x48CE` — STANDIN always true (grenade count check bypassed).
+  4. `M_CONTROL +0x60` (aim flag) — not referenced; port uses own `Sim::aiming` bool.
+  5. `PlayerSetting +0x02`..`+0x0A` — per-player control settings not ported.
+
+### How verified
+
+- **3 parallel subagents**: BLData research, weapon_data research, Rust offset catalog. Each read the decompile
+  (`work/decomp/ACTION.ELF/`) and the snapshot (`work/ee_start_05.bin`, file offset = EE address) directly.
+- **Independent audit** (4th subagent): verified 9 high-value claims against the decompile + snapshot.
+  **All 9 CONFIRMED, 0 refuted.** The pointer arithmetic (`0x4F4`, `0x48CE`, `0x002bf37c`, `0x002bf338`), struct
+  reasoning (obj+0xE0 → obj+0x110), type assignments (f32 at +0x14, u16 at M_CONTROL+0x60), and snapshot readings
+  (BestWeapon, PunchSkin, M_CONTROL+0x60 = 0x0008) are all reproducible.
+- The `+0x14` port bug was confirmed: `weapon.rs:132` reads `u16::from_le_bytes([r[0x14], r[0x15]])` — the P2K's
+  `0x42c80000` float yields u16 `0x0000`, so `autoaim_accuracy` always returns 0.0.
+
+### What's left
+
+- **No code changes** in this task (per the task brief). The `+0x14` bug and the armor gap are documented in
+  `player-port-check.md` for session C (player/weapons) to fix.
+- The atlas format (`docs/atlas/README.md`) is established for future struct entries (obj_tag full layout,
+  HITDATA, Drone, etc.).
+- `PlayerSetting +0x02`..`+0x0A` (per-player control settings) need the `C_CNCONTROLS_Handler` decompile to decode.
+- M_CONTROL full layout (beyond `+0x60`) is out of scope but worth a separate entry if the input port needs it.
+
+### Branch
+
+`s/atlas-2`. No game bytes committed. No private URLs/tokens/credentials written anywhere.
+
 ---
 
 ## A-12 — Castle gate door visibility, truck chain gate-guard test, door auto-close evidence, brightness audit
@@ -3057,10 +3118,97 @@ The frustum cull was disabled by default in ade4779 after the truck/HUD/doors va
 - **Door auto-close:** the disassembly says the 07000001 sliding doors DO auto-close after 6 s. I will not remove it. The user should test: press E on placement 13, walk 3+ m away, wait 7 s. If it doesn't close, we have a build mismatch.
 - **Brightness:** NOT an A-11 regression. The character brightness is the pre-existing TWEAK/VU1 gap.
 
+## atlas-1 — the structure atlas begins: object/control list entry and the Drone
+
+Branch `s/atlas-1` (from master 5d0d1c5). Docs only, no Rust changes. Sandbox session; the
+`work/` research tree was re-fetched for this session (decomp/ACTION.ELF 3039 fns,
+action-symtab.tsv, ee_start_05.bin; the share's volume path is deliberately not recorded here —
+the bare path from the task notes 403s). ACTION.ELF pulled from the slim ISO; SHA-1 `e7ffdcb3…` verified before use.
+
+Delivered: `docs/atlas/README.md` (format + tags), `docs/atlas/object.md` (the 0x110-byte
+`obj_tag` header, the three lists, `control_funcs` decoded — all 85 classes with fn@addr, the
+`control_movement_object_handler` 0x1336f8 update order, the full placement-type → creator
+dispatch from 0x1d04f0), `docs/atlas/drone.md` (NDrone2 0xD20 instance: DIVars at `Drone+0xC00`,
+param map, field table, the `+0x4F8` flag word, present/started/enabled/in-llist game-side), and
+`docs/atlas/drone-port-check.md` (141 unique offsets audited).
+
+Findings that matter:
+
+1. **The port reads grenades from the wrong placement word.** `NDrone2_DefaultInit` 0x14b300
+   takes the DIVars = `Drone+0xC00`; params start at `piVar19[13]` (`Drone+0xC34` = the 33-word
+   copy of `placement+0x2C`, verified by disassembly of `Drone_Create` 0x136be0). The grenade
+   raw value is `piVar19[0x18]` = **param 11**, not param 24 (0x18 hex was misread as decimal
+   24). The port's decode switch itself matches (1→0x36, 2→0x35, 4→0x34, 5→count+0x3A count 1,
+   6→0x6C count 1). Silent on 07000005 (params[11] = 0 everywhere [L]); wrong on any level with
+   grenade carriers.
+2. **`Drone+0xCD8` is the Disabled-state resume state** (`NDrone2_DSTATE_Disabled` 0x172440
+   passes it to `Drone_SM_SetState`), not "death channel pending" nor "CombatNoRoute
+   alternation" as the port comments say.
+3. **`Drone+0xD8` is the voice set** (u16, from the model-id switch); the damage docs' "type
+   +0xD8" conflates it with dtypenew `+0xC5`/DTYPE `+0xC7`. And `obj+0xD8` (glist ptr) is a
+   third, different field.
+4. **`obj+0xEC` (Rand 10000 wobble) is overwritten later** — live [L] value 0x1A677 > 10000 on
+   every 07000005 drone; the writer is unidentified (U-item worthy).
+5. **List head ground truth by disassembly**: `control_first_object` 0x134300 loads
+   0x2705b4 = head+0x14 — the decompiler's `DynamicObjList._20_4_` display is skewed by its
+   global typing. First/last at head+0x14/+0x18, prepend via `control_add_object_to_list`
+   0x134698 (next obj+0x14, prev obj+0x18); ForcedList 0x270590 uses obj+0x00/+0x04 (why
+   creation zeroes the first two words); drone LList 0x298e14 = {first, last, u16 count, u16
+   size} with instance+0x00/+0x04 links, `LList_Add` 0x1cca28 appends.
+6. **Sphere**: `Control_BuildWorldSph` 0x133070 — prev sphere at +0x70..+0x7F, world centre
+   +0x80, radius +0x8C = glist+0x1C·|scale| (flags2&0x100 keeps the old radius; flags2&0x8
+   takes the local sphere from `*(obj+0xDC)` = the AnimObject, whose +0x110..0x113 are the four
+   LOD fade bytes `View_AddObjects` writes).
+7. **`NDrone2_Enable` 0x149dd0**: disabled = `obj+0xF0 |= 0x30` + `Drone+0x4F8` &= ~0x1801A0;
+   enabled = the reverse + `Drone+0x4F8 |= 0x801A0`. The port's `enabled` (obj flags 0x30) is
+   confirmed; [L] 07000005 shows exactly the four enabled drones with `& 0x30 == 0` and the
+   0x80000 bit set.
+8. Snapshot checks [L] (13 drones, 523 objects, DynamicObjCount 0x30ca98 = 523): sniper
+   obj 0x01382bc0 — `+0xC5` = 2, `+0x5A2` = 0x29 mirrored to `obj+0xF4`, `+0x4F8` =
+   0x0019A1F2 (stationary bit), back-refs `Drone+0xC`/`+0xC00` = obj, params[3] = `+0x134`,
+   params[4] = `+0x144`, params[0] = `+0xE0` all equal; channel-waiters disabled per above
+   with collapsed 0-radius spheres; state-machine ids 1..13 newest-first.
+
+Not verified this pass (carried in drone-port-check.md as UNVERIFIED, grep evidence only): the
+vision cluster (+0x228/0x22C/0x230/0x270/0x274), the hearing cluster (+0x510/0x514/0xAF0/0xB38/
+0xB3C/0x33/0x34/0x43), the anim-call cluster (+0x568..0x57B, +0x54C), cover (+0xBB4/0xBB8/0xBBB/
+0x830/0x710), routes (+0x970/0x860 port semantics vs `AIRoute` internals), +0x1A0/+0x1C4
+opponent geometry, +0x150/+0x470/+0x1D8 damage history, +0xCD0 timer D. These restate
+docs/systems/drone-*.md claims written from the same decomp; re-measure on contact.
+Subagent dispatch failed on infrastructure errors, so the audit was done in-session by one
+agent — an independent re-audit of the MISMATCH items (especially grenade param 11) is worth a
+follow-up pass.
+## core-map — Port map for the core game loop (plan v2 §4 step 1)
+
+Task ID: core-map (branch `s/core-map`)
+Agent: sandbox session (core-map)
+Task: write `docs/port-map/core-loop.md` — Game_Run and everything it calls per frame down to the object handlers,
+the pause/ScriptCam gating, the control-list walk, triggers, switch channels, script players and the level flow,
+plus the "Top 10 divergences" section explaining the three known playtest symptoms. Doc-only: no Rust changed.
+
+Work Log:
+- Read PLAN-v2, CLAUDE.md, HANDOFF.md, the WORKLOG tail (A-12/B-12), docs/systems/{triggers,script-player,world-objects,levels}.md, and the existing port-map format (guard-ai.md).
+- Fetched the research into `work/` (git-ignored): work.7z → decomp/ACTION.ELF (3039 files), action-symtab.tsv, ee_start_05/07000001.bin, ee_snapshot.bin; Nightfire-onfoot.iso.7z → the slim ISO (the task text's URL path 403'd; the working share path was already recorded in an earlier WORKLOG entry).
+- Read the decompiles for the whole frame path: Game_Run 0x1c9790, GS_IsPaused/GS_PauseGame 0x17d1e8/0x17d178, control_movement_object_handler 0x1336f8, Drone_InitComms 0x139520, Drone_Control 0x139268, NDrone2_PreDroneControl 0x148db0, Drone_EnableAll 0x1383e8, Player_Disable/Update 0x195f70/0x193600, Trigger_Create 0x1b1720 + all seven wrappers (0x1b2950/0x1b2aa8/0x1b2b88/0x1b2c68/0x1b2d38/0x1b2e08/0x1b2ed8), Trigger_Update 0x1b1a78, Trigger_Hit 0x1b1fc8, Trigger_Activate 0x1b2318, Trigger_Calc 0x1b1900, Door_Update/Interp/Calc 0x1363c8/0x135738/0x135fe0, SP_CreateScriptPlayer/SP_Update/SP_LoadScript 0x1db9a8/0x1dbda8/0x1dbc08, Script_Update/Run/Interp/EventHandler/Play/Free 0x1da998/0x1d8548/0x1d9a08/0x1d94c0/0x1db588/0x1da880, Init_SwitchChannels 0x134310, Switch_Update/Activate 0x1adea8/0x1b02a8, ResetMap_LevelToLoad/Load/GameInit 0x1d3800/0x1d6360/0x1d5080, GameFlow_GetState/PushState/PopState 0x1c9e80/0x1c9f38/0x1c9eb0, parsemap_create_dynamic_objects 0x1d04f0 (the full placement-type → creator map).
+- Read the live control_funcs table (85 × 12 bytes) from ee_start_05.bin@0x26f890 and matched every non-empty class to the symtab; read GameState fields and switch_channels/_time from both snapshots.
+- Mapped the Rust side: lib.rs tick loop + pending_level, scene.rs step_bond/run/paused, drone.rs tick ordering, triggers.rs, nis.rs, door.rs, spawners.rs, env.rs.
+- Wrote docs/port-map/core-loop.md: §0 frame gate, §1 Game_Run table, §2 object handler (incl. prev/hold snapshots and the moved-pass clone), §3 triggers (creation wrapper table + per-frame table + add/remove), §4 switch channels, §5 script players, §6 level flow, §7 Top 10 divergences, §8 audit record, appendix call tree.
+- Ran four auditor subagents (AUDIT-A Game_Run/gating, AUDIT-B triggers, AUDIT-C script players + level flow, AUDIT-D walk/doors/channels). Every core claim reproduced; the audits forced corrections into the doc (addresses 0x1b1510/0x1b09f0/0x134698/0x2C7398, Searchlight class 0x22, SEQ_AND lower-bound-only window, lock-path hide polarity, case-0xD 30.0 push, moved pass ×2, Doors_Calc last-writer-wins, Door_SetState timestamp, SP_CreateScriptPlayer's mask-0+mode-∉{0,1} state, Script_Interp cases 6/7 read, intro table = 14 codes, drones-before-triggers tie-break) — all applied before commit.
+
+What I could not verify:
+- The disc-side placement parameter values behind divergence 6 (p7..p11 of 07000005's muxes): no Rust toolchain in this sandbox, so `nf-extract placements` could not run; the wrapper decompile mapping is measured, the level data reading is not. A one-line check on the main machine settles it.
+- AUDIT-C first ran into its context deadline and was resumed; its report is complete (10/10 claims) but the level-flow items (ResetMap_Load phase table) were verified from the decompile by one agent only, without a second pass.
+
+Stage Summary:
+- Deliverable: docs/port-map/core-loop.md (the port map + Top 10 divergences + audit record), branch s/core-map.
+- Headline finding for the integrator: the game's cut-scene drone freeze is event 5 (`Drone_EnableAll(0)` → `NPCGlobals = 0`), NOT ScriptCam; ScriptCam never gates `control_movement_object_handler` [M 0x1c9790:30-35]. The port's `Drones::paused = self.disabled` (scene.rs:673, drone.rs:4065) is coarser than the game and event 5 has no nis.rs handler — the correct shape is to port event 5/7 and drop Drones::paused. The scene.rs:667-672 comment claiming "GS_IsPaused == 0 AND ScriptCam == 0" is wrong and should be corrected when that code is next touched.
+- Second headline: the door auto-close blocking zone — the game tests the door's LIVE world sphere (rebuilt every moved frame), the port tests the fixed placement position with a hardcoded 1.0 radius (door.rs:220) — the likely mechanics behind the 07000001 "auto-close" report (the 6 s timer itself is real, A-12c).
+- New U-candidates (not filed, for the main agent to triage): SEQ_AND window predicate + timestamp policy; mux wrapper slot shift; TouchOnce glist-0x10 delete; Trigger_Hit type-1/2 gate + mask&1; SP_CreateScriptPlayer mask-0 create-load; switch_channels_prev snapshot timing; spawner-drone list position.
 ## atlas-4 — Pickup + script-player struct atlas (pickup.md, script-player.md, pickup-port-check.md)
 
 Branch `s/atlas-4` (from master 5d0d1c5). Docs-only: no Rust was changed. Format per `docs/atlas/README.md`
-(on `s/atlas-2`; not yet on master — this branch adds only the three pages, no README, to avoid a merge conflict).
+(landed on master from `s/atlas-2` while this session ran — this branch adds only the three pages, plus
+three Index rows).
 
 **Researched (all claims tagged [M] fn@addr:line / [L] snapshot addr+value):**
 - `Pickup_Create` (0x18dda0) — all 13 args mapped to PICKUPINFO fields (0x40 bytes at `obj+0xE0` — the arg to
