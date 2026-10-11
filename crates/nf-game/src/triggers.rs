@@ -259,7 +259,20 @@ impl Trigger {
                 }
             }
             kind::TOUCH_ONCE => {
-                if !self.gone { (vec![(self.out, 1)], None) } else { (Vec::new(), None) }
+                // `Trigger_Activate` (0x1b2318:38-49) type-1 arm: begins with the `mask & 4` gate — a
+                // trigger whose mask lacks bit 4 is NOT player-activatable (07000005's plunge/death
+                // triggers are mask 8: pressing E near one must never fire it — playtest F5). The port
+                // used to fire them from the use-key path. Then the out write (skipped when out = 0,
+                // :41-44) — the glist-0x10 self-delete latch is the caller's (`gone`, set by
+                // player_use_triggers like the game's `obj+0xFE |= 1`).
+                if self.mask & 4 == 0 { return (Vec::new(), None); }
+                if !self.gone && self.out != 0 { (vec![(self.out, 1)], None) } else { (Vec::new(), None) }
+            }
+            kind::TOUCH => {
+                // `Trigger_Activate` (0x1b2318:23-33) type-2 arm: the same `mask & 4` gate, then the out
+                // write with out != 0 required.
+                if self.mask & 4 == 0 || self.out == 0 { return (Vec::new(), None); }
+                (vec![(self.out, 1)], None)
             }
             _ => (Vec::new(), None),
         }
