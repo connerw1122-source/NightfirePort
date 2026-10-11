@@ -400,6 +400,9 @@ impl Renderer {
             self.order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
             // The 6 frustum planes for the CPU-side cull (Gribb-Hartmann from `view_proj`).
             let planes = extract_frustum(view_proj);
+            // Off by default: the draw spheres are wrong for moving objects (the truck, doors) and the HUD, which
+            // vanished by view direction (user playtest after A-11). NF_CULL=1 turns it on for testing.
+            let cull = std::env::var_os("NF_CULL").is_some();
             // Counters for the worklog (env-gated; no per-frame cost otherwise).
             let trace = std::env::var_os("NF_DRAWS").is_some();
             let (mut submitted, mut culled) = (0usize, 0usize);
@@ -410,7 +413,7 @@ impl Renderer {
             for &(_, _, k) in &self.order {
                 let dc = self.draws[k];
                 // Sky after the fog pass (pass 4) follows the viewer and is never culled.
-                if dc.pass != 4 && sphere_outside(&planes, dc.centre, dc.radius) {
+                if cull && dc.pass != 4 && sphere_outside(&planes, dc.centre, dc.radius) {
                     if trace { culled += 1; }
                     continue;
                 }
