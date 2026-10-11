@@ -93,6 +93,11 @@ Objects play scripts, not sequences (`AnimScriptAdd(obj, 0x06……)`). Layout f
 
 Opcode 0 plays a sequence: `u16 first script frame, u16 last script frame, u16 sequence low half` (hashcode
 `0x04000000 |` it; `AnimScriptPeekSeq` reads it at +0xE). Opcodes 1 and 4 not decoded (events: footsteps, sounds).
+Several opcode-0 windows may overlap; `AnimProcessScriptCmds` (0x1c1b38) then starts each as its own playing
+animation (in command order, `AnimSeqSet`), and the palette lets the later-started one own the shared bones —
+e.g. the 07000005 cut-scene scripts (06000996/06000997) pair a 22-channel face track (frames 1..1500) with the
+222-channel body track (frames 1..1401). The port's `script_frame` therefore resolves to the LAST covering
+command (fix-drone2).
 On the disc (`nf-extract scripts`, golden `scripts.tsv`): every script's commands fit inside its entry; 1,983 loop;
 opcodes 0 / 1 / 4 = 18,296 / 3,698 / 28,285; 18,104 of the 18,296 sequences are in the matching 07F archive (192 are
 elsewhere, G-021); 8 opcode-0 ranges exceed the script length.

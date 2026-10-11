@@ -139,6 +139,13 @@ read **param 24** (the alert block's middle word), so its table documented the w
 corrected scan (`NF_ISO=<iso> cargo test -p nf-game --test drone_portcheck_live grenade_fields`,
 plus the full `placements … f` sweep behind it) finds 75 carriers on 9 levels:
 
+Having the grenade word does not mean the guard ever throws (fix-drone2, WORKLOG): 07000001's
+two carriers are structurally blocked by the game itself — the 0x13 carrier at (−30.1, 10.3, 13.4)
+is dtypenew 2 (sniper; `GetDTYPENEW` 0x14c938 case 2) and the sniper states never call
+`DroneWeap_CanThrowGrenade` (its only caller is `DroneFunc_CombatState` 0x148338, states 0x68/0x70),
+and the 0x11 carrier at (7.0, 6.4, 2.2) waits on switch channel 5, which nothing on the disc ever
+raises (no trigger, no NIS event, no pickup, no death channel).
+
 | Level | Guards with grenades | Param 11 (raw) | Weapon | Count |
 |---|---|---|---|---|
 | 07000001 | 2 | 0x13 | 0x36 (stun) | 3 |

@@ -95,6 +95,24 @@ per frame, doubling under the 0x10000 flag), and multiply it (times the tint) in
 colour or a per-instance uniform for Character/view-model draws only. World geometry must stay
 untouched — the game's world-cel path forces the white tweak.
 
+**FIXED (s/fix-render)**: the port now applies exactly this shape. `Sim` carries per-character
+`obj+0x100..0x102` state (init 0xff,ff,ff), snapped/ramped per tick by `Sim::ramp_char_ambient`
+(`clr_step` = `ClrStep` 0x1e8a48 disassembled: `(target−cur)·0.1`, min ±1), toward
+`Sim::ambient_at` = the room-cel ambient through `cel + switch_channels[cel+0xa2]`
+(`parse_room_cels` parses the 0xc023/0xc047 cel placements' params 0/1/2 + zone param 5 +
+second triple params 6/7/8, all-zero → 0x3c; bbox = the glist min/max — `parseentity_fixup_entity`
+0x1d00c0 + `parsemap_block_map_data_static` 0x1d1998 disassembled: the placement param table lands
+at stack+0x2c = record+0x2c). `Scene::posed_vertices` multiplies the Character-layer tail's rgba
+by `(tint × ambient) >> 8 / 255` per character; static non-cel World 0x800 instances (flagged
+pickups/props) get the same multiply snapped at build. World-cel geometry stays at 1.0. Tests:
+`crates/nf-view/tests/character_lighting_live.rs` (guard + view model = (57,70,86)/255 on
+07000005 [L], view model (40,30,26)/255 + the three drone triples on 07000001 [L], world-cel
+vertices byte-identical, 19/11 room cels [L]). Port deviations: the 0x10000 night-vision doubling
+is unreachable (no goggles yet); multi-cel overlaps take the smallest bbox instead of the game's
+raycast; muzzle flashes/tracers/dropped guns keep multiplier 1.0; `Script_SetColour` tints are not
+ported (the 0x7f/0/0 tint at `Player_InitWeapon` 0x1a7ef8 belongs to the laser-dot object
+0x2000132, not the view model).
+
 ## Snapshot check [L] (work/ee_start_05.bin)
 
 | addr | raw | meaning |

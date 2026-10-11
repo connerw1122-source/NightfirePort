@@ -2833,10 +2833,9 @@ impl Drone {
                 // `DroneWeap_CanThrowGrenade` — the decomp checks `+0x568 & 0xFFFF00FF == 0xA0002`
                 // (anim class 2, type 0xA = AIM_STAND). Our port checks `anim.class == 2`.
                 let can_throw = self.anim.class == 2 && self.grenade_count > 0 && self.dist >= 8.0 && self.dist <= 20.0;
-                if std::env::var_os("NF_AILOG").is_some() && can_throw {
-                    let roll = { let mut r = rng.clone(); r.rand(2) };
-                    eprintln!("[ailog] guard {} AIM_STAND_FIRE: dist {:.1} cover={} grenades={} gw={:#x} anim.class={} anim.state={:#x} can_do_0x49={} rng_roll={}",
-                        self.index, self.dist, cover, self.grenade_count, self.grenade_weapon, self.anim.class, self.anim.state, self.can_do(d, anim_state::GRENADE_THROW), roll);
+                if std::env::var_os("NF_AILOG").is_some() && self.grenade_count > 0 {
+                    eprintln!("[ai:gate] guard {} AIM_STAND_FIRE gate: anim={}.{} dist {:.1} unseen {} cover {} clip {} grenades {}x{:#x} can_throw={}",
+                        self.index, self.anim.class, self.anim.state, self.dist, self.unseen_ticks, cover, self.clip, self.grenade_count, self.grenade_weapon, can_throw);
                 }
                 if can_throw && self.can_throw_grenade(d, rng) { return GRENADE_THROW; }
                 if self.anim.class == 2 && self.anim.state == anim_state::AIM_STAND {
@@ -3016,11 +3015,22 @@ impl Drone {
 
     /// `DroneWeap_CanThrowGrenade` (0x17a798): the drone has grenades (`+0xBCC` / `+0xBCE` ≠ 0), `Rand(2) == 0` (50 %),
     /// an opponent exists, `8.0 ≤ dist ≤ 20.0`, and the throw anim (0x49) is in the drone's anim set.
+    /// `NF_AILOG` logs every evaluation's inputs (the user's fix-drone2 ask).
     pub fn can_throw_grenade(&self, d: &Data, rng: &mut Rng) -> bool {
-        if self.grenade_weapon == 0 || self.grenade_count <= 0 { return false; }
-        if rng.rand(2) != 0 { return false; }
-        if self.dist < 8.0 || self.dist > 20.0 { return false; }
-        self.can_do(d, anim_state::GRENADE_THROW)
+        let log = std::env::var_os("NF_AILOG").is_some();
+        if self.grenade_weapon == 0 || self.grenade_count <= 0 {
+            if log { eprintln!("[ai:ctg] guard {} weapon={} count={} -> none", self.index, self.grenade_weapon, self.grenade_count); }
+            return false;
+        }
+        let roll = rng.rand(2);
+        let dist_ok = self.dist >= 8.0 && self.dist <= 20.0;
+        let cando = self.can_do(d, anim_state::GRENADE_THROW);
+        let ok = roll == 0 && dist_ok && cando;
+        if log {
+            eprintln!("[ai:ctg] guard {} weapon={:#x} count={} dist={:.1} roll={} dist_ok={} can_do_0x49={} state={:#x} anim={}.{} -> {}",
+                self.index, self.grenade_weapon, self.grenade_count, self.dist, roll, dist_ok, cando, self.state, self.anim.class, self.anim.state, ok);
+        }
+        ok
     }
 
     /// `DroneWeap_ThrowGrenade` (0x179558): decrements `+0xBCE`, picks the grenade weapon (mode 0xD sniper → 1/3 chance

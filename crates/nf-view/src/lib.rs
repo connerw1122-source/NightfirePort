@@ -223,10 +223,17 @@ pub fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
     Ok(scene)
 }
 
+/// The level archive for a hashcode, `LoaderLoad` (0x1d4a00) style [M]: `sprintf("%s%8.8x.bin", …,
+/// code & 0xff0fffff | …)` — the loader type's nibble (0x00F00000) is masked OFF for the level itself
+/// (loader type 1; type 0/3 force 0xF00000 for the anim archives). `ResetMap_LevelToLoad` (0x1d3800)
+/// stores e.g. 0x07100006 for a `LOAD_LEVEL` to 0x07000006 (param_3 == 0 remap), and the level load
+/// then masks it back to 07000006.bin.
+pub fn level_archive_name(code: u32) -> String { format!("{:08x}.bin", code & 0xff0f_ffff) }
+
 /// The Character-layer vertices posed after `time` 60 Hz ticks: start animations (`None`) or sequence `choice`.
+/// (`Scene::posed_vertices` also applies the per-character ambient multiplier — the 0x800 TWEAK dim.)
 fn posed_vertices(scene: &scene::Scene, choice: Option<usize>, time: f32, opts: scene::ViewOpts) -> Vec<scene::Vertex> {
-    scene.animate(choice, time, opts).into_iter().zip(&scene.vertices[scene.char_vertex_start..])
-        .map(|(pos, v)| scene::Vertex { pos, ..*v }).collect()
+    scene.posed_vertices(choice, time, opts)
 }
 
 /// The snow quads facing the camera.
@@ -282,6 +289,18 @@ async fn device(instance: &wgpu::Instance, surface: Option<&wgpu::Surface<'_>>) 
     Ok((adapter, device, queue))
 }
 
+/// The screen-space HUD overlay. The game hides the whole sprite pass while a script camera runs:
+/// `Script_CameraStart` (0x1d9140) → `Camera_Enable` (0x1b9920) clears `viewer+0x2a` (the sprite-draw flag)
+/// for every gameplay viewer, and `Game_Draw` (0x1e6f50) skips `Sprite_BuildList`/`View_DrawSprites` when it
+/// is clear — health iris, ammo, crosshair, radar, messages and the damage glow (`psiFadeView`, in the same
+/// gated block) all disappear together. Snapshot-verified: the 07000001 opening cut-scene has viewer[0]/[5]
+/// +0x2a = 0 while `ScriptCam`@0x30d100 is non-zero [L ee_start_07000001.bin]. The port's condition is the
+/// one it already drives the cut-scene camera from: a live script camera object.
+pub fn overlay_for(scene: &scene::Scene, aspect: f32) -> gpu::HudFrame {
+    let cutscene = scene.sim.as_ref().is_some_and(|s| s.script_camera().is_some());
+    if cutscene { gpu::HudFrame::default() } else { hud::overlay(scene, aspect) }
+}
+
 /// The camera's screen axes for the corona billboards (same basis as the snow quads).
 fn cam_axes(cam: &Camera) -> ([f32; 3], [f32; 3]) {
     let f = cam.dir();
@@ -309,7 +328,7 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let depth = gpu::depth_view(&device, w, h);
     let (vp, vp_rot) = cam.view_proj(w as f32 / h as f32);
     let snow = snow_for(scene, cam);
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, &hud::overlay(scene, w as f32 / h as f32));
+    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, &overlay_for(scene, w as f32 / h as f32));
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -621,10 +640,9 @@ impl ApplicationHandler for App {
             },
             WindowEvent::RedrawRequested => {
                 // Bug 5: level transition. A `LOAD_LEVEL` (0xE8) trigger set `pending_level`; reload the scene
-                // with the next archive (`ResetMap_LevelToLoad` 0x1d3800). The renderer is rebuilt on the next
-                // `Gfx` re-init (the old surface is dropped with the old scene).
+                // with the next archive (`ResetMap_LevelToLoad` 0x1d3800 → `LoaderLoad` 0x1d4a00).
                 if let Some(next) = self.pending_level.take() {
-                    let name = format!("{next:08x}.bin");
+                    let name = level_archive_name(next);
                     eprintln!("level: loading {name}");
                     match load(&self.iso, &name, self.all) {
                         Ok(mut scene) => {
@@ -632,8 +650,14 @@ impl ApplicationHandler for App {
                             if let Some(start) = scene.start { self.cam = Camera { pos: Vec3::new(start.0[0], start.0[1] + 1.6, start.0[2]), yaw: start.1, pitch: 0.0, fov: GAME_FOV }; }
                             self.scene = scene;
                             self.anim_time = 0.0;
-                            // Force a Gfx re-init (the old GPU resources are dropped with the old scene).
-                            self.gfx = None;
+                            // The renderer holds the old scene's GPU resources (textures, buffers): rebuild it
+                            // IN PLACE — the window and surface must survive the level change (the game's window
+                            // does not close). Dropping `Gfx` here closed the window and nothing recreated it
+                            // (winit's `resumed` only runs at startup), so the process sat on a headless event
+                            // loop with the audio still playing (the user's report).
+                            if let Some(g) = &mut self.gfx {
+                                g.renderer = gpu::Renderer::new(&g.device, &g.queue, g.config.format, &self.scene, self.notex, self.nofog);
+                            }
                             eprintln!("level: loaded {name}");
                         }
                         Err(e) => eprintln!("level: failed to load {name}: {e}"),
@@ -760,7 +784,7 @@ impl ApplicationHandler for App {
                 let aspect = g.config.width as f32 / g.config.height as f32;
                 let (vp, vp_rot) = self.cam.view_proj(aspect);
                 let snow = snow_for(&self.scene, &self.cam);
-                let mut hud = hud::overlay(&self.scene, aspect);
+                let mut hud = overlay_for(&self.scene, aspect);
                 if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }
                 let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, self.cam.pos.to_array(), self.anim_time as u32, &snow, &hud);
                 g.queue.submit([enc.finish()]);
