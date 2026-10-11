@@ -99,7 +99,7 @@ fn door_research_07000001() {
     }
     doors.calc();
     // Tick N times with no actor nearby — far away.
-    let far_actor = [([1000.0, 1000.0, 1000.0], 0.4f32)];
+    let far_actor = [([1000.0, 1000.0, 1000.0], 0.4f32, false)];
     for f in 1..=400u32 {
         for i in 0..doors.list.len() { doors.update(i, &mut ch, &far_actor, f); }
         doors.calc();
@@ -144,7 +144,7 @@ fn door_autoclose_blocked_diagnostic_07000001() {
     // 180, 240, 300, 360, 420. After 420 ticks an unblocked door would have auto-closed
     // (31 to open + 360 to time out + 30 to close), but a blocked one stays OPEN forever.
     std::env::set_var("NF_DOORLOG", "1");
-    let bond_near = [(sph0.0, 0.4f32)]; // Bond at door 0's sphere centre, radius 0.4.
+    let bond_near = [(sph0.0, 0.4f32, false)]; // Bond at door 0's sphere centre, radius 0.4.
     for f in 1..=420u32 {
         for i in 0..doors.list.len() { doors.update(i, &mut ch, &bond_near, f); }
         doors.calc();
@@ -166,7 +166,7 @@ fn door_autoclose_blocked_diagnostic_07000001() {
     assert!(d0.open_timer < 360, "open_timer must have reset at 360 (cycling forever)");
 
     // SCENARIO 2 — Bond walks 100 units away. The door auto-closes after the timer.
-    let far = [([sph0.0[0] + 100.0, sph0.0[1], sph0.0[2]], 0.4f32)];
+    let far = [([sph0.0[0] + 100.0, sph0.0[1], sph0.0[2]], 0.4f32, false)];
     for f in 421..=840u32 {
         for i in 0..doors.list.len() { doors.update(i, &mut ch, &far, f); }
         doors.calc();

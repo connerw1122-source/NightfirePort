@@ -664,13 +664,14 @@ impl Sim {
         // open, swing or thud locked (docs/systems/world-objects.md "Doors"); the player object updates before
         // the control list's doors, so they see the activation this same tick.
         if use_key { self.drones.player_use_doors(&d, camera, look, self.drones.frame); }
-        // B-10: gate the drone tick on `!self.disabled` — the game's `Game_Run` (0x1c9790) only runs the object
-        // handler (`control_movement_object_handler` → `Drone_InitComms` + the drone update) when
-        // `GS_IsPaused == 0` AND `ScriptCam == 0`. When a NIS/cut-scene runs (ScriptCam set, which the port
-        // mirrors as `self.disabled` via events 4/6), the object handler is skipped entirely — drones do NOT tick,
-        // so guards don't fire or move during cut-scenes. Without this gate the user was shot throughout the
-        // bridge cut-scene (a real game bug in normal play, not just a scenario issue).
-        self.drones.paused = self.disabled;
+        // The object handler (`control_movement_object_handler`) runs whenever `GS_IsPaused(-1) == 0` — ScriptCam
+        // plays NO role [M Game_Run 0x1c9790:30-35]: `ScriptCam` only picks `Text_Update2Line` vs `Text_Update`
+        // (line 17) and the paused branch's `Light_Update`. The port therefore does NOT gate the drone tick on
+        // `Sim::disabled`. A cut-scene freezes the guards only when its own script fires event 5
+        // (`Drone_EnableAll(0)` → `NPCGlobals = 0` [M 0x1d94c0 case 5, 0x1383e8]), undone by `Script_Free`'s
+        // 0x80 flag (event 7) [M 0x1da880:41-43] — ported as `Drones::npc_enabled` (core-loop §7 items 1-2).
+        // (The B-10 symptom was the opposite gating bug: freezing the whole tick stopped Trigger_Calc +
+        // SP_Update, so PlayerEnable never arrived.)
         self.drones.tick(&d, &player);
     }
 

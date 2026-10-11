@@ -60,7 +60,7 @@ fn doors_on_07000001_now_match_their_placements() {
     for f in 1..=5 {
         for i in 0..doors.list.len() {
             let sph = doors.list[i].sph;
-            doors.update(i, &mut ch, &[(sph.0, 0.5f32)], f);
+            doors.update(i, &mut ch, &[(sph.0, 0.5f32, false)], f);
         }
         doors.calc();
     }

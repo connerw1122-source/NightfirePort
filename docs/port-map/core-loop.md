@@ -264,14 +264,20 @@ guards frozen only by accident of the port's coarser gate. The B-10 symptom ("cu
 skipped") was the *opposite* gating bug: freezing the whole tick stopped `Trigger_Calc` + `SP_Update`, so
 `PlayerEnable` never arrived; the fix moved the freeze inside the drone loop, which restored scripts/triggers/doors
 but froze drones game-wide. **The correct shape is: port event 5/7 (`Drone_EnableAll`) as the drone gate and drop
-`Drones::paused`.**
+`Drones::paused`.** — **FIXED (s/fix-core)**: `Drones::npc_enabled` (NPCGlobals) replaces `Drones::paused`; event 5 →
+`Request::DroneEnable{on:false}`, `Script::free` → `DroneEnable{on:true}` on flag 0x80 [M 0x1d94c0 case 5,
+0x1da880:41-43, 0x1383e8]; `DroneSpawner_Control`'s gate [M 0x137e68:21] and the `Drone_InitComms` shared passes'
+gate [M 0x139520:124] are ported too (ProcessOpponents, ProcessDroneSight+FindAlertedDrones, 0x97, sound alerts,
+0x96 alarm, CheckAlarmRaised, target/cover rebuilds). The hearing list drains during a freeze so re-enabling
+doesn't burst stale alerts.
 
 **2. The scene.rs comment that justifies `Drones::paused` misreads `Game_Run`.** `scene.rs:667-672` says the game
 runs the object handler only when `GS_IsPaused == 0` **and `ScriptCam == 0`**. The decomp gates it on
 `GS_IsPaused(-1) == 0` alone [M 0x1c9790:30-35]; `ScriptCam` picks `Text_Update2Line` vs `Text_Update` (line 17)
 and the else-branch's `Light_Update` (and — with `psiMovieFinished` — the 2Line text choice). Any future work keyed to that comment (e.g. "skip Sim when a camera is up")
 would re-introduce the B-10 freeze. Fix: correct the comment when touching this code (doc-only task, so it stands
-here).
+here). — **FIXED (s/fix-core)**: `scene.rs` no longer sets any paused flag from `Sim::disabled` and the comment now
+states the `GS_IsPaused`-only gate [M 0x1c9790:30-35].
 
 **3. The pause byte does not exist; the port cannot distinguish "pause menu" from "level transition" from
 "cut-scene".** Game: one byte `GameState[0x50]` stops the whole object handler while menus/mission screens run
@@ -300,7 +306,8 @@ pulsed earlier in the same frame. Port: `Doors::end_tick` snapshots after the wh
 same pulse is only visible to the *next* tick — and if it lasted exactly one tick, the edge never appears.
 Effect: a 1-tick lock-channel pulse (script event 0xD writing 1 then a trigger clearing it) fails to unlock doors
 in the port; `Player_Weapon`'s `ch[0x48]` prev read (0x1a24c8:247) has no port counterpart yet. Fix shape: snapshot
-the channels right after `triggers::calc` in `Drones::tick` and feed `doors.update` from it.
+the channels right after `triggers::calc` in `Drones::tick` and feed `doors.update` from it. — **FIXED
+(s/fix-core)**: `Doors::end_tick` is called right after `triggers::calc`, before the walk.
 
 **6. Mux (0xEC/0xED/0xEE/0xEF) parameters read from the wrong slots, and the SEQ_AND window is the wrong
 predicate — 7-input muxes, any mux with a non-zero p8/p9/p10, and all SEQ_AND chains misbehave.** Game: the mux wrappers shift every param down by one (out p0 → slot 1, inputs = raw
@@ -315,14 +322,25 @@ within 4 frames *after* the previous one, while the game's predicate is `time[pr
 0x1b1a78:135-136] — no upper bound at all (and the game re-stamps times on every non-zero write, the port only on
 rising edges): a correct-order SEQ_AND chain with a >4-frame gap works in the game and never fires in the port.
 Fix shape: correct `from_params`'s `_` arm, make the mux loops stop at the first zero, and use the game's
-window predicate.
+window predicate. — **FIXED (s/fix-core)**: `from_params`'s mux arm reads mask q(8), list q(1..=7), lock q(9),
+hide q(11); LOAD_LEVEL's mask is the hard 0xE [M 0x1b2950]; AND/OR scan the input prefix (zero slot ends the list;
+empty AND writes 1 [M 0x1b1cbc]); SEQ_AND's window is `time[prev]−4 <= time[cur]` [M 0x1b1e04]; `Channels::set`
+re-stamps on every nonzero write. **Slot-mapping correction (s/fix-core audit)**: the table above mis-traced the
+wrapper's loop bound — it writes slot[k] = p(k−1) for k = 2..7 only (`while (uVar3 < 8)`, 0x1b2c68), so slot 8
+keeps raw p8 and slots 9-11 are untouched; `Trigger_Create` copies 7 inputs from slots 2..8 [M 0x1b1720]. The mux
+inputs are therefore raw **p1..p6 + p8** (p7 is overwritten and lost), mask = **p9** (default 2 when 0
+[0x1b1720:80-84]), lock = **p10**, hide = **p11** — consistent with the untouched-slot LL row below. Truck chain (MuxIn): **not affected** — 07000005's muxes read ≤ 4 inputs with
+p7..p11 = 0 [D], so the old slot bugs were invisible there; `level_end_live`'s route-a chain test passes
+before and after (5 passed).
 
 **7. Script touch triggers don't age: TouchOnce deletes itself without the glist 0x10 check.** Game: `Trigger_Update`
 case 1 deletes the trigger only when its glist flags carry 0x10 [M 0x1b1a78:74-77,119-123]; the channel write is an
 OR (`ch[out] |= hit`) and case 1 **falls through into case 2** every frame while the channel is off [M
 0x1b1a78:73-88]. Port: `triggers.rs:236-238` deletes unconditionally and ORs via `set` — equivalent while the
 channel only feeds OR-style consumers, wrong the moment a mux ANDs that channel with others *and* the plate is
-re-touchable. Low probability on current levels [D], cheap to fix with `from_params`'s missing glist-flag read.
+re-touchable. Low probability on current levels [D], cheap to fix with `from_params`'s missing glist-flag read. — **FIXED
+(s/fix-core)**: `Trigger.glist_0x10` models the check (live data: every TouchOnce carries the bit [L]);
+case 3's Bond-moment delete (out 0x65-0x6E) uses it too.
 
 **8. The level-intro cut-scenes never play (the `SP_Create` intro-script path is unported).** Game:
 `ResetMap_Load` phase 0 loads the movie archive (0x710000xx) and creates a ScriptPlayer for the level's intro NIS
@@ -330,7 +348,9 @@ from a 14-entry movie-code → hash table (0x7100001→0x0600095A, 0x7100005→0
 …) [M 0x1d6360:39-99]; levels whose code is not in the table get no intro in the game either. Port: `lib.rs:90` builds
 the level archive directly and never creates the intro player. Effect: starting a level begins gameplay
 immediately where the game plays the intro fly-by — users see "missing intro", and the `GameState._16_4_` movie
-code machinery (`GetLevelToLoadFromMovieCode`) has no counterpart.
+code machinery (`GetLevelToLoadFromMovieCode`) has no counterpart. — **NOT FIXED in s/fix-core**: the intro
+ScriptPlayer is created in `nf-view/src/lib.rs`'s build path, which this task's file scope (triggers/nis/drone.rs +
+scene.rs's drone-gate lines) does not cover.
 
 **9. Runtime-spawned objects update at the wrong end of the control list.** Game: `control_add_object_to_list`
 prepends, so spawner drones and script-created objects update **before** every placement object (they see this
@@ -341,7 +361,10 @@ explicit first pass (`drone.rs:3989`), script trigger volumes are re-created eac
 **spawner-spawned drones** ride their *template placement's* index and script *entities* have no list position at
 all. Effect: ordering-sensitive chains — a gate guard spawning onto a TouchOnce plate the same frame, or a script
 entity's channel feeding a placement mux in the same tick — resolve one tick late. The A-12e truck-chain test
-passes because its chain spans multiple ticks [M test]; a one-tick chain would not.
+passes because its chain spans multiple ticks [M test]; a one-tick chain would not. — **PARTLY FIXED (s/fix-core)**:
+spawner drones now carry `spawn_seq`/`spawn_frame` — newest-first ordering [M 0x134698 prepend] and the spawn-tick
+skip (the game's walk cursor is already past the head when the spawner runs). Script entities still have no list
+position (their triggers get `usize::MAX - o`; the entities' channel writes ride `Scripts::tick`, before the walk).
 
 **10. The truck-ride level end (route a) fails in play for three stacked reasons — all outside the core loop's
 correctness.** The chain is: truck script touch triggers 0x70 (parked) + 0x71 (bed, follows the truck) [D
@@ -353,7 +376,9 @@ the guard [M placements; A-12e]; (ii) the guard's patrol AI (guard-ai port map, 
 plate — the tests pin it [S; A-12e]; (iii) divergence 1 freezes the guard during any cut-scene that runs while it
 still needs to touch — and the toucher list only carries `enabled` drones (`drone.rs:3892-3894`). None of these is a core-loop bug: the port's `Trigger_Calc`/mux/SP/LOAD_LEVEL path verifiably
 fires the chain when the inputs hold (A-12e test `route_a_gatehouse_walk_spawns_guard_and_ends_level`). What the
-core loop owes this symptom: divergence 1 (drone gating) and 9 (same-tick ordering).
+core loop owes this symptom: divergence 1 (drone gating) and 9 (same-tick ordering) — both addressed in s/fix-core;
+the route-a test still passes (5 passed in `level_end_live`), i.e. the mux/LL fixes neither blocked nor unblocked
+the chain (07000005's muxes read ≤ 4 inputs, p7..p11 = 0 [D]).
 
 ## Appendix: the per-frame call tree (addresses)
 

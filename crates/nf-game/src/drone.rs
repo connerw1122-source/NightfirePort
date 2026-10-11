@@ -388,6 +388,12 @@ pub struct Drone {
     pub channel_on: bool,
     /// Position in the main map's placement list (update order: newest first).
     pub placement: usize,
+    /// `control_add_object_to_list` (0x134698) prepend bookkeeping: 0 = a placement object (list position from
+    /// `placement`); n > 0 = the n-th runtime spawn (list head, newest first) [M core-loop §7 item 9].
+    pub spawn_seq: u32,
+    /// The tick the drone spawned (`DroneSpawner_Control` runs mid-walk, so the game's cursor has already passed
+    /// the head — a fresh spawn's first update is the NEXT tick).
+    pub spawn_frame: u32,
     /// Spawner group (placement parameter 4); present in the world (spawner templates are not until spawned); the
     /// state machine has had its first enter.
     pub group: u32,
@@ -590,7 +596,7 @@ impl Drone {
             shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
-            switch_channel: param(3) as u8, channel_on: false, placement: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
+            switch_channel: param(3) as u8, channel_on: false, placement: 0, spawn_seq: 0, spawn_frame: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
             cover: None, cover_side: 0, cover_type: 0, cover_leave: 0, cover_point: pos, goal: None, cover_claimed: false, has_cover: false, cover_tries: 0,
             cover_rt: Vec::new(), others: Vec::new(), peers: Vec::new(), return_state: 0, second_channel: param(6) as u8, second_tag: param(8),
             loudness: 0.0, sound_share: 0.0, heard_frame: 0, heard_peak: 0.0, sound_pos: pos, noise_level: 0, investigating: false, turned: false, resume_state: 0, home: pos,
@@ -3309,9 +3315,16 @@ pub struct Drones {
     cover_counter: i32,
     /// Script players and the objects their scripts made (docs/systems/script-player.md).
     pub scripts: crate::nis::Scripts,
+    /// Monotonic counter for `control_add_object_to_list`'s prepend order: each spawner spawn gets the next seq;
+    /// a spawned drone's sort key is `usize::MAX - seq`, so the newest spawn updates first (core-loop §7 item 9).
+    spawn_counter: u32,
     /// Player hand-offs the scripts asked for this tick (`PlayerDisable` / `PlayerEnable`), for the player's owner.
-    /// Drones skip their update this tick (a cut-scene is running: `ScriptCam` set).
-    pub paused: bool,
+    /// The game's drone-freeze gate (`NPCGlobals`, `Drone_EnableAll` 0x1383e8): `Drone_Control` (0x139268:39-42),
+    /// `DroneSpawner_Control` (0x137e68:21), `Drone_CollisionHandler` (0x140968:62) and `Drone_InitComms`' shared
+    /// passes (0x139520:124) all skip while it is clear. Set by script event 5, restored by `Script_Free`'s 0x80
+    /// flag (event 7) [M]; a cut-scene WITHOUT event 5 keeps its guards live — the port's `Sim::disabled` must NOT
+    /// touch this (core-loop port map §7 items 1-2).
+    pub npc_enabled: bool,
     pub player_events: Vec<crate::nis::Request>,
     /// The EE sound pool (`DynamicSoundList`, docs/systems/sound.md): what is heard, as opposed to `sounds`, the AI
     /// hearing list.
@@ -3382,7 +3395,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), paused: false, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -3686,9 +3699,11 @@ impl Drones {
         let frame = self.frame;
         // Music: `Drone_InitComms` resets the attack gate; `DroneFunc_CheckAlarmRaised` (07000005 / 06) posts event 2 = 3
         // for the first 58 frames of channel 0xA4, then = 1 for the first 598 of channel 0x37 or 0x61; Bond dead →
-        // event 6 (`Player_CheckForDeath`).
+        // event 6 (`Player_CheckForDeath`, a player-side call — runs during cut-scenes, not gated).
         self.attack_gate.new_frame();
-        if matches!(d.level, 0x0700_0005 | 0x0700_0006) {
+        // CheckAlarmRaised sits inside `Drone_InitComms`' `NPCGlobals != 0` block [M 0x139520:124-284]: a cut-scene
+        // that disabled the drones (event 5) also mutes the alarm music.
+        if self.npc_enabled && matches!(d.level, 0x0700_0005 | 0x0700_0006) {
             // Each counter: 0 → 1 when its channel is on, then + 1 per frame (to 0xFFFF); posts while below the limit.
             let ch = &self.channels;
             let mut step = |k: usize, c: u32, limit: u16| -> bool {
@@ -3709,10 +3724,13 @@ impl Drones {
             env.update(&mut self.rng, &mut self.fill_rng, player.eye, atan2_approx(player.aim[0], player.aim[2]));
         }
         // `Drone_ProcessOpponents` (0x1390c0): Bond's visibility factor from the AI volumes holding him (crouching
-        // ×0.75 is not modelled: the port's Bond does not crouch), then each drone's opponent info.
-        let light = crate::aivolume::visibility_factor(d.volumes, player.pos, false);
-        let armed = (2..0x47).contains(&self.bond_weapon) || (0x6a..=0x71).contains(&self.bond_weapon);
-        for dr in self.list.iter_mut().filter(|x| x.present) { dr.light = light; dr.opponent_info(player); dr.seen = false; dr.bond_armed = armed; }
+        // ×0.75 is not modelled: the port's Bond does not crouch), then each drone's opponent info. Inside
+        // `Drone_InitComms`' `NPCGlobals != 0` block [M 0x139520:124-284] — frozen drones keep their last state.
+        if self.npc_enabled {
+            let light = crate::aivolume::visibility_factor(d.volumes, player.pos, false);
+            let armed = (2..0x47).contains(&self.bond_weapon) || (0x6a..=0x71).contains(&self.bond_weapon);
+            for dr in self.list.iter_mut().filter(|x| x.present) { dr.light = light; dr.opponent_info(player); dr.seen = false; dr.bond_armed = armed; }
+        }
         self.update_player_bullets(d);
         // `Drone_InitComms`: corpses (0x0F, 0x47, 0x48 + 300, 0xBF by the time their state began); beyond 3
         // (`DAT_00298F5C`) the oldest fades fast (`DroneFunc_DeadDrone`).
@@ -3741,6 +3759,12 @@ impl Drones {
         for (i, dr) in self.list.iter_mut().enumerate() {
             dr.bunched = positions.iter().enumerate().any(|(j, p)| j != i && p.is_some_and(|p| ((p[0] - dr.pos[0]).powi(2) + (p[2] - dr.pos[2]).powi(2)) < 9.0));
         }
+        // The hearing list is drained BEFORE the gate so sounds made during a freeze don't burst out on re-enable.
+        let sounds = std::mem::take(&mut self.sounds);
+        // `Drone_InitComms`' shared passes — `ProcessDroneSight`, `FindAlertedDrones`, the 0x97 check,
+        // `HandleSoundAlerts`/`Sound_ZeroAlertness` and the ch 0x96 alarm rebroadcast — sit inside the
+        // `NPCGlobals != 0` block [M 0x139520:124-284]: a cut-scene that fired event 5 freezes all of these.
+        if self.npc_enabled {
         // Visibility every tick for drones with vision on; line of sight for one drone per tick (round robin).
         for dr in &mut self.list { dr.visibility = if dr.present && !dr.corpse && (dr.vision_on || dr.alert >= 1.0) { dr.visibility() } else { 0.0 }; if dr.visibility < 0.7 { dr.los = false; } }
         let ln = self.llist.len();
@@ -3804,10 +3828,11 @@ impl Drones {
         }
         // `Drone_InitComms` after the vision pass: an enabled (`+0x4F8 & 0x100`, set by DefaultInit / Enable), living
         // (`& 0x600` clear) drone at alertness ≥ 1 within 30 units of Bond (not team 2) raises `switch_channels[0x97]`.
-        if self.list.iter().any(|x| x.present && x.enabled && !x.corpse && x.alert >= 1.0 && x.dist < 30.0) { self.channels.set(0x97, 1, frame); }
+        // Direct `.v` write: `Drone_InitComms` stamps NO timestamp on 0x97/0x98 [M 0x139520:198-201 — their snapshot
+        // time cells still hold the Init seed]; `Channels::set` stamps like the game's trigger/script writers.
+        if self.list.iter().any(|x| x.present && x.enabled && !x.corpse && x.alert >= 1.0 && x.dist < 30.0) { self.channels.v[0x97] = 1; }
         // `DroneFunc_HandleSoundAlerts` (every drone, every frame) over the sounds made since the last frame, then
         // `Sound_ZeroAlertness`: each sound alerts once.
-        let sounds = std::mem::take(&mut self.sounds);
         if !sounds.is_empty() {
             for dr in self.list.iter_mut().filter(|x| x.present && x.enabled && !x.corpse) {
                 if !dr.prop(d, 0x1f) || dr.state == state::GO_TO_GOAL { continue; }
@@ -3853,6 +3878,7 @@ impl Drones {
             self.last_alarm = Some(frame);
             for dr in self.list.iter_mut().filter(|x| x.present && x.enabled) { dr.send(d, &mut self.rng, frame, msg::ALARM); }
         }
+        } // end `NPCGlobals` shared-pass block
         // Bond's motion (`DroneWeap_DoOpponentTargetting`): moving, and "first moved" for 2 s after he starts.
         let moving = self.prev_player.is_some_and(|q| (q[0] - player.pos[0]).abs() + (q[2] - player.pos[2]).abs() > 1e-4);
         if moving && self.moved_since.is_none() { self.moved_since = Some(frame) }
@@ -3861,10 +3887,11 @@ impl Drones {
         self.prev_player = Some(player.pos);
         // `NDrone2_NavNodeCache` / `BuildAITarget`: the player's goal nodes per navigation path, rebuilt when he has
         // moved 2.0 or more (search radius 6 = min(engage range, 6) for these guards); `AINetwork_ClearLinkFlags`.
-        let moved = self.target.stamp == 0 || {
+        // Target rebuild + the cover-node walk are `Drone_InitComms` shared passes — gated on `NPCGlobals` [M 0x139520].
+        let moved = self.npc_enabled && (self.target.stamp == 0 || {
             let q = self.target.pos;
             (q[0] - player.pos[0]).powi(2) + (q[1] - player.pos[1]).powi(2) + (q[2] - player.pos[2]).powi(2) >= 4.0
-        };
+        });
         if moved {
             self.target.pos = player.pos;
             self.target.stamp = frame;
@@ -3875,14 +3902,16 @@ impl Drones {
         self.used = d.nav.paths.iter().map(|p| vec![0; p.links.len()]).collect();
         // `Drone_ProcessCoverNodes` (every 5 frames from the first): for Bond, walk the nodes from the shared cursor
         // until one casts a line-of-sight ray. *Deviation*: always run (the game only for allocated target slots).
-        if self.cover_rt.len() != d.covers.len() { self.cover_rt = vec![Default::default(); d.covers.len()]; }
-        self.cover_counter -= 2;
-        if self.cover_counter < 1 && !d.covers.is_empty() {
-            self.cover_counter = 10;
-            for _ in 0..d.covers.len() {
-                let i = self.cover_cursor;
-                self.cover_cursor = (self.cover_cursor + 1) % d.covers.len();
-                if d.covers[i].usable(&mut self.cover_rt[i], d.world, &self.channels, d.level, player.pos, player.eye) { break; }
+        if self.npc_enabled {
+            if self.cover_rt.len() != d.covers.len() { self.cover_rt = vec![Default::default(); d.covers.len()]; }
+            self.cover_counter -= 2;
+            if self.cover_counter < 1 && !d.covers.is_empty() {
+                self.cover_counter = 10;
+                for _ in 0..d.covers.len() {
+                    let i = self.cover_cursor;
+                    self.cover_cursor = (self.cover_cursor + 1) % d.covers.len();
+                    if d.covers[i].usable(&mut self.cover_rt[i], d.world, &self.channels, d.level, player.pos, player.eye) { break; }
+                }
             }
         }
         let positions: Vec<Option<V3>> = self.list.iter().map(|x| x.enabled.then_some(x.pos)).collect();
@@ -3893,6 +3922,12 @@ impl Drones {
             .chain(self.list.iter().filter(|x| x.enabled).map(|x| crate::triggers::Toucher { a: [x.pos[0], x.pos[1] - 1.0, x.pos[2]], b: x.head(), r: 0.4, drone: true, skin: x.skin }))
             .collect();
         crate::triggers::calc(d.level, &mut self.triggers, &mut self.channels, &touchers, frame);
+        // `switch_channels_prev` is snapshotted right after `Trigger_Calc`, BEFORE the object walk [M 0x1336f8:52-53
+        // — `prev ← hold; hold ← channels` at 0x1337cc/0x1337dc] — so `Door_Update`'s lock rising edge
+        // (`prev == 0 && now != 0`, 0x136550-0x136608) sees a channel a trigger or script pulsed earlier this
+        // frame (core-loop §7 item 5). It used to snapshot at the END of the tick, so a 1-tick lock pulse was
+        // invisible to the edge test.
+        self.doors.end_tick(&self.channels);
         // Script players (*deviation*: all of them here, not interleaved with the placed objects by list order).
         self.scripts.tick(&mut self.channels, d, frame);
         // Script objects with collision data join the collision world where they now are: animations' discrete
@@ -3940,6 +3975,8 @@ impl Drones {
         for r in std::mem::take(&mut self.scripts.requests) {
             match r {
                 crate::nis::Request::PlayerDisable | crate::nis::Request::PlayerEnable { .. } => self.player_events.push(r.clone()),
+                // Events 5 / 7: the game's own drone gate (`Drone_EnableAll` → `NPCGlobals`) [M 0x1383e8].
+                crate::nis::Request::DroneEnable { on } => self.npc_enabled = on,
                 crate::nis::Request::Camera { script, start } => self.music.event(if start { 0xb } else { 0xc }, script),
                 // `Script_SoundStart`: 2-D, or 3-D at the stream's object (its position each frame, `Script_Interp` 5).
                 crate::nis::Request::Sound { id, at, src } => {
@@ -3978,7 +4015,7 @@ impl Drones {
         }
         let audio = &self.audio;
         self.script_sounds.retain(|s| !audio.finished(s.1));
-        let mut order: Vec<(usize, u8, usize)> = self.list.iter().enumerate().filter(|(_, x)| x.present).map(|(i, x)| (x.placement, 0, i))
+        let mut order: Vec<(usize, u8, usize)> = self.list.iter().enumerate().filter(|(_, x)| x.present).map(|(i, x)| (if x.spawn_seq != 0 { usize::MAX - x.spawn_seq as usize } else { x.placement }, 0, i))
             .chain(self.triggers.iter().enumerate().filter(|(_, t)| t.kind != crate::triggers::kind::TOUCH).map(|(j, t)| (t.placement, 1, j)))
             .chain(self.spawners.iter().enumerate().map(|(j, sp)| (sp.placement, 2, j)))
             .chain(self.searchlights.parts.iter().enumerate().filter(|(_, p)| p.kind == 1).map(|(j, p)| (p.placement, 3, j)))
@@ -3988,12 +4025,14 @@ impl Drones {
         // Pickups are created at run time, so they head the control list: `Pickup_Update` before the placed objects.
         self.update_pickups(d, player, frame);
         // The actor list `Door_Update`'s proximity test (`dist² < (r1+r2)²·2` over classes
-        // 2/3/0x12) sees: the player first (`glb_players`, the activator of every auto-
-        // activation) with radius 0.4, then every live non-corpse drone with radius 0.4.
-        // Built once per tick — Task A-9-2: the throttled `log_doors_throttled` diagnostic
-        // below uses the same list so its `blocked` column matches what `doors.update` saw.
-        let actors: Vec<([f32; 3], f32)> = std::iter::once((player.pos, 0.4))
-            .chain(self.list.iter().filter(|x| x.present && !x.corpse).map(|x| (x.pos, 0.4)))
+        // 2/3/0x12, skipping `obj+0xF0 & 0x10` candidates [M 0x136678-0x136684]) sees: the player
+        // first (`glb_players`, the activator of every auto-activation) with radius 0.4, then every
+        // live non-corpse drone with radius 0.4. The third field is the `obj+0xF0 & 0x10` skip bit:
+        // modelled CLEAR for both — the 07000005 player reads 0x880 [L ee_start_05.bin]; the drones'
+        // 07000005 value is not in the snapshots and the bit's writer is unported (door-port-check #2:
+        // on 07000001 both are SET [L], which the port cannot reproduce yet).
+        let actors: Vec<crate::door::DoorActor> = std::iter::once((player.pos, 0.4, false))
+            .chain(self.list.iter().filter(|x| x.present && !x.corpse).map(|x| (x.pos, 0.4, false)))
             .collect();
         // Per drone: timers, alertness decay, update message, turning, aim, firing, animation.
         let mut talk_queue: Vec<(usize, Vec<(usize, bool)>)> = Vec::new();
@@ -4047,6 +4086,9 @@ impl Drones {
                 continue;
             }
             if what == 2 {
+                // `DroneSpawner_Control` returns immediately while the drones are disabled (`NPCGlobals == 0`,
+                // [M 0x137e68:21-22]) — a cut-scene with event 5 also freezes spawners.
+                if !self.npc_enabled { continue; }
                 let list = &self.list;
                 let rng = &mut self.rng;
                 let action = self.spawners[index].update(&mut self.channels, frame, |i| list[i].present,
@@ -4054,18 +4096,33 @@ impl Drones {
                         dd >= min && !visible_to(player, d.world, q, [q[0], q[1] + 0.6, q[2]]) },
                     &mut |n| rng.rand(n));
                 match action {
-                    crate::spawners::Action::Spawn(i) => { let dr = &mut self.list[i]; dr.present = true; dr.enabled = true; dr.started = false; self.llist.push(i); }
+                    crate::spawners::Action::Spawn(i) => {
+                        let dr = &mut self.list[i];
+                        dr.present = true; dr.enabled = true; dr.started = false;
+                        // `control_add_object_to_list` prepends [M 0x134698]: a drone spawned this frame updates
+                        // before every placement object from its NEXT frame on, and NOT in the frame it spawned
+                        // (the walk's cursor is already past the list head when the spawner runs) — core-loop §7
+                        // item 9. `spawn_seq` orders the newest first; `spawn_frame` skips the spawn tick.
+                        self.spawn_counter += 1;
+                        dr.spawn_seq = self.spawn_counter;
+                        dr.spawn_frame = frame;
+                        self.llist.push(i);
+                    }
                     crate::spawners::Action::Remove(v) => for i in v { self.list[i].present = false; self.list[i].enabled = false; self.llist.retain(|&k| k != i); },
                     crate::spawners::Action::None => {}
                 }
                 continue;
             }
-            // A cut-scene (ScriptCam / player disabled) stops the drones only: `Game_Run` skips their update while the
-            // script players, triggers and doors above keep running, so the cut-scene can finish (B-10 skipped all).
-            if self.paused { continue; }
+            // A cut-scene stops the drones only when the game itself says so: `Drone_Control` returns while
+            // `NPCGlobals == 0` (script event 5 → `Drone_EnableAll(0)`, undone by `Script_Free`'s 0x80 flag)
+            // [M 0x139268:39-42, 0x1d94c0 case 5, 0x1da880:41-43]. `control_movement_object_handler` itself runs
+            // whenever `GS_IsPaused == 0` — ScriptCam plays no role [M 0x1c9790:30-35] — so scripts, triggers and
+            // doors above keep running either way (the B-10 lesson).
+            if !self.npc_enabled { continue; }
             let rng = &mut self.rng;
             let dr = &mut self.list[index];
             if !dr.present { continue; }
+            if dr.spawn_frame == frame { continue; }   // spawned this tick: the game's walk already passed it
             if dr.target.stamp != self.target.stamp { dr.target = self.target.clone(); }
             dr.channel_on = self.channels.on(dr.switch_channel as u32);
             dr.drawn = dr.enabled && visible_to(player, d.world, dr.pos, dr.head());
@@ -4155,9 +4212,8 @@ impl Drones {
         // The drones' speech requests, in update order (no random draws in `SpeechSFX` / `PlaySFX`).
         for (index, talks) in talk_queue { self.speech(d, index, talks, frame); }
         // `Doors_Calc` — the control pass's last act (0x1336f8's tail): the door groups sync, the busy markers
-        // clear; `switch_channels_prev` snapshots for the next tick's lock-edge test.
+        // clear. (`switch_channels_prev` is snapshotted after `Trigger_Calc`, at the top of the tick — see above.)
         self.doors.calc();
-        self.doors.end_tick(&self.channels);
         // `NF_DOORLOG=1` per-tick door dump (Task A-8-2): placement, kind, channels, flags, glist,
         // whether the glist is in the collision world's `shapes` table (else bullets pass through),
         // state, pos01, open_timer, bounding sphere.
@@ -4265,7 +4321,7 @@ mod tests {
             damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
-            switch_channel: 0, channel_on: false, placement: 0, group: 0, present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
+            switch_channel: 0, channel_on: false, placement: 0, spawn_seq: 0, spawn_frame: 0, group: 0, present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
             cover: None, cover_side: 0, cover_type: 0, cover_leave: 0, cover_point: pos, goal: None, cover_claimed: false, has_cover: false, cover_tries: 0,
             cover_rt: Vec::new(), others: Vec::new(), peers: Vec::new(), return_state: 0, second_channel: 0, second_tag: 0,
             loudness: 0.0, sound_share: 0.0, heard_frame: 0, heard_peak: 0.0, sound_pos: pos, noise_level: 0, investigating: false, turned: false, resume_state: 0, home: pos,

@@ -29,6 +29,14 @@ pub struct Trigger {
     pub list: Vec<u32>,
     pub lock: u8,
     pub hide: bool,
+    /// `obj+0xF0 & 0x10` — the glist flag `Trigger_Update` requires before it deletes a finished TouchOnce
+    /// (0x1b1d78-0x1b1d90) or a Bond-moment AND (out 0x65-0x6E, 0x1b1da0). `Trigger_Create` sets `obj+0xF0` from
+    /// the object's glist [M 0x1b1720]; the port does not read glist+0x44 yet — live data: every TouchOnce on
+    /// 07000005 carries the bit [L, trigger-port-check #6] — so the flag is modelled as set.
+    pub glist_0x10: bool,
+    /// `ext+0x2E` (`mask & 1`'s base channel, `Trigger_Hit` 0x1b1fc8:63-68): the filter list's 5th entry — for the
+    /// Touch families that is param 6 (the same param the lock reads; both live at ext+0x24/+0x2E from slot p6).
+    pub filter_gate: u8,
     pub tris: Vec<[V3; 3]>,
     pub lo: V3,
     pub hi: V3,
@@ -71,7 +79,10 @@ impl Channels {
     pub fn on(&self, c: u32) -> bool { c != 0 && self.v.get(c as usize).is_some_and(|&x| x != 0) }
     pub fn set(&mut self, c: u32, value: u8, frame: u32) {
         if c == 0 || c > 255 { return; }
-        if value != 0 && self.v[c as usize] == 0 { self.time[c as usize] = frame; }
+        // The game stamps `switch_channels_time` on EVERY nonzero write in its trigger and script paths
+        // [M 0x1b1a78:87,107,188-189 — the type-2 OR, the AND write, the Out copy; Script_EventHandler 0xD],
+        // not only on the rising edge (trigger-port-check #4): a re-set channel refreshes its SEQ_AND window.
+        if value != 0 { self.time[c as usize] = frame; }
         // NF_LEVELLOG=1: every switch-channel write that turns a channel on (rising edge), with the frame
         // and the new value. Lets the user trace e.g. ch 0x1D being set by the EndLevel script's event 0x11.
         if std::env::var("NF_LEVELLOG").is_ok_and(|v| v == "1") && value != 0 && self.v[c as usize] == 0 {
@@ -137,20 +148,34 @@ fn segment_hits_triangle(a: V3, b: V3, t: &[V3; 3]) -> bool {
 
 impl Trigger {
     /// A trigger of `kind` from its parameters (placement or script entity: parameter k at `level_tag+0x2C+4k`) and its
-    /// world triangles; `None` for a Touch on channel 0x7D (only live on 0x07001500).
+    /// world triangles; `None` for a Touch on channel 0x7D (only live on 0x07001500). The wrapper families shift the
+    /// slots differently [M 0x1d04f0 dispatch; core-loop port map §3.1]: the Touch wrappers keep slots 2-7 in place
+    /// (0x1b2aa8/0x1b2b88), the mux wrappers shift every param down by one (out p0 → slot 1, inputs = raw p1..p7,
+    /// mask = raw p8, lock = raw p9, hide = raw p10 — 0x1b2c68/0x1b2e08/0x1b2d38 loops), and `Trigger_LoadLevelCreate`
+    /// (0x1b2950, disasm) forces mask = 0xE and maps key/gate/fallback/success into the input slots.
     pub fn from_params(placement: usize, kind: u8, q: impl Fn(u32) -> u32, tris: Vec<[V3; 3]>) -> Option<Trigger> {
-        let (out_ch, mask, list, lock, hide, next_level, gate, key_gate, success, fallback) = match kind {
+        let (out_ch, mask, list, lock, hide, next_level, gate, key_gate, success, fallback): (u32, u32, Vec<u32>, u32, bool, u32, u8, u8, u8, u8) = match kind {
             kind::TOUCH_ONCE => (q(0), q(1), (2..=8).map(&q).collect(), q(7), q(8) != 0, 0, 0, 0, 0, 0),
             kind::TOUCH => (q(0), q(1), (2..=8).map(&q).collect(), q(6), q(7) != 0, 0, 0, 0, 0, 0),
             // `LOAD_LEVEL` (0xE8): `Trigger_Update` case 10 fires when `switch_channels[gate]` is non-zero —
             // NO touch check. `next_level` = param 0. `gate` = param 2 (the gate channel; set by the EndLevel
             // script's event 0x11 on 07000005). `key_gate` = param 1, `success` = param 4, `fallback` = param 3.
-            // [M Trigger_Update 0x1b1a78:162-166, Trigger_Activate 0x1b2318:64-111].
-            kind::LOAD_LEVEL => (0, q(9), (1..=8).filter(|&k| k != 7).map(&q).collect(), q(10), q(11) != 0, q(0), q(2) as u8, q(1) as u8, q(4) as u8, q(3) as u8),
-            _ => (q(0), q(9), (1..=8).filter(|&k| k != 7).map(&q).collect(), q(10), q(11) != 0, 0, 0, 0, 0, 0),
+            // The wrapper hard-sets mask 0xE (`addiu t0,zero,14` @0x1b299c → tag+0x50) [M]. Only the input slots
+            // p1 (key) and p2 (gate) are read back by `Trigger_Activate` (+0x26/+0x28) — the list keeps p1..p4.
+            // [M Trigger_Update 0x1b1a78:162-166, Trigger_Activate 0x1b2318:64-111, 0x1b2950].
+            kind::LOAD_LEVEL => (0, 0xE, (1..=4).map(&q).collect(), q(10), q(11) != 0, q(0), q(2) as u8, q(1) as u8, q(4) as u8, q(3) as u8),
+            // The mux family (0xEC AND / 0xED SEQ_AND / 0xEE Out / 0xEF OR): the wrapper backs the params up and
+            // writes slot[k] = p(k-1) for k = 2..7 ONLY — the loop bound is `while (uVar3 < 8)` [M 0x1b2c68], so
+            // slot 8 keeps raw p8 and slots 9-11 are never touched. `Trigger_Create` copies 7 input ushorts from
+            // slots 2..8 into ext+0x26..0x32 (ext+0x34 stays 0) and reads mask/lock/hide from slots 9/10/11
+            // [M 0x1b1720:80-91 — the audit's correction of the port-map's "p1..p7 / p8 / p9 / p10" table].
+            _ => (q(0), q(9), (1..=6).map(&q).chain(std::iter::once(q(8))).collect(), q(10), q(11) != 0, 0, 0, 0, 0, 0),
         };
+        // `Trigger_Create` defaults a zero mask to 2 (class-5 contacts) [M 0x1b1720:80-84].
+        let mask = if mask == 0 { 2 } else { mask };
         if matches!(kind, kind::TOUCH | kind::TOUCH_ONCE) && out_ch == 0x7d { return None; }
-        let mut t = Trigger { placement, kind, out: out_ch as u8, mask, list, lock: lock as u8, hide, tris: Vec::new(), lo: [0.0; 3], hi: [0.0; 3], gone: false, script: None, next_level, gate, key_gate, success, fallback };
+        let filter_gate = if matches!(kind, kind::TOUCH | kind::TOUCH_ONCE) { list.get(4).copied().unwrap_or(0) as u8 } else { 0 };
+        let mut t = Trigger { placement, kind, out: out_ch as u8, mask, list, lock: lock as u8, hide, glist_0x10: true, filter_gate, tris: Vec::new(), lo: [0.0; 3], hi: [0.0; 3], gone: false, script: None, next_level, gate, key_gate, success, fallback };
         t.set_tris(tris);
         Some(t)
     }
@@ -181,26 +206,33 @@ impl Trigger {
         })
     }
 
-    /// `Trigger_Hit` (0x1B1FC8) for a Touch / TouchOnce trigger.
-    fn hit(&self, touchers: &[Toucher]) -> bool {
-        let touching: Vec<&Toucher> = touchers.iter().filter(|c| self.touched_by(c)).collect();
-        let player = touching.iter().any(|c| !c.drone);
-        let drones: Vec<&&Toucher> = touching.iter().filter(|c| c.drone).collect();
-        match self.mask {
-            8 => player,
-            0x10 => !drones.is_empty(),
-            0x18 => {
-                if !(player || !drones.is_empty()) { return false; }
-                let filters: Vec<u32> = self.list.iter().copied().filter(|&v| v != 0).collect();
-                if filters.is_empty() { return true; }
-                filters.iter().any(|&f| match f {
-                    0xb => !drones.is_empty(),
+    /// `Trigger_Hit` (0x1B1FC8) for a Touch / TouchOnce trigger. The 0x18 branch is an AND-chain [M 0x1b1fc8:56-123]:
+    /// the base is 1, or `ch[ext+0x2E]` when `mask & 1`; every nonzero filter entry must then pass (0xB needs a drone
+    /// contact, 0xE the player, anything else a drone whose skin hash matches the entry's low 16 bits). An empty
+    /// filter list returns the base alone.
+    fn hit(&self, ch: &Channels, touchers: &[Toucher]) -> bool {
+        let player = touchers.iter().any(|c| !c.drone && self.touched_by(c));
+        let drone_touch = touchers.iter().any(|c| c.drone && self.touched_by(c));
+        let m = self.mask;
+        // The filter branch runs only for types 1/2 with mask & 0x18 and a player/drone contact [M 0x1b1fc8:56].
+        if m & 0x18 != 0 && (player || drone_touch) {
+            if m == 8 { return player; }
+            if m == 0x10 && !drone_touch { return false; }
+            // Base: 1, or the ext+0x2E channel when mask bit 0 is set [M 0x1b1fc8:63-68].
+            let mut acc = if m & 1 != 0 { ch.on(self.filter_gate as u32) } else { true };
+            for &f in self.list.iter().take_while(|&&f| f != 0) {
+                let ok = match f & 0xffff {
+                    0xb => drone_touch,
                     0xe => player,
-                    h => drones.iter().any(|c| c.skin & 0xffff == h & 0xffff),
-                })
+                    h => touchers.iter().any(|c| c.drone && self.touched_by(c) && c.skin & 0xffff == h),
+                };
+                acc = acc && ok;
             }
-            m => (m & 8 != 0 && player) || (m & 0x10 != 0 && !drones.is_empty()),
+            return acc;
         }
+        // mask & 2 (class-5 object contacts, 0x1b1fc8:124-159): the port has no object touchers — contacts bit 1
+        // never sets (documented stand-in, trigger-port-check #11).
+        (m & 8 != 0 && player) || (m & 0x10 != 0 && drone_touch)
     }
 
     /// `Trigger_Activate` (0x1b2318): fires the trigger immediately from `Player_Activate`'s E-key path (routes
@@ -210,17 +242,21 @@ impl Trigger {
     pub fn activate_request(&self, ch: &Channels) -> (Vec<(u8, u8)>, Option<u32>) {
         match self.kind {
             kind::LOAD_LEVEL => {
-                // Cancel channels 0x60–0x63 [M 0x1b2318:64-75]: if any is on, abort (an alarm blocks the exit).
+                // Cancel channels 0x60–0x63 (99, 0x62, 0x61, 0x60) [M 0x1b2318:64-75]: if any is on, abort (an
+                // alarm blocks the exit).
                 if (0x60..=0x63).any(|c| ch.on(c)) { return (Vec::new(), None); }
-                // Key gate [M 0x1b2318:76-90]: if non-zero and off, the trigger is locked.
-                if self.key_gate != 0 && !ch.on(self.key_gate as u32) {
-                    if self.fallback != 0 { return (vec![(self.fallback, 1)], None); }
-                    return (Vec::new(), None);
+                // Key gate [M 0x1b2318:76-90]: if non-zero and off, the trigger is locked — locked message (label
+                // 0x2000021) + ext+0x3C cooldown (no text system in the port), NO channel write, NO load.
+                if self.key_gate != 0 && !ch.on(self.key_gate as u32) { return (Vec::new(), None); }
+                // Auto channel [M 0x1b2318:96-108]: gate (+0x28) on → the success write (+0x2C); gate off →
+                // the fallback write (+0x2A) — and BOTH branches fall through to the level load @0x1b24b8.
+                if self.gate != 0 && ch.on(self.gate as u32) {
+                    let sets = if self.success != 0 { vec![(self.success, 1)] } else { Vec::new() };
+                    (sets, Some(self.next_level))
+                } else {
+                    let sets = if self.fallback != 0 { vec![(self.fallback, 1)] } else { Vec::new() };
+                    (sets, Some(self.next_level))
                 }
-                // Success channel [M 0x1b2318:100-105].
-                let mut sets = Vec::new();
-                if self.success != 0 { sets.push((self.success, 1)); }
-                (sets, Some(self.next_level))
             }
             kind::TOUCH_ONCE => {
                 if !self.gone { (vec![(self.out, 1)], None) } else { (Vec::new(), None) }
@@ -229,36 +265,65 @@ impl Trigger {
         }
     }
 
-    /// `Trigger_Update` (0x1B1A78) for every type except Touch (run in `calc`).
+    /// `Trigger_Update` (0x1B1A78) for every type except Touch (run in `calc`). The mux input scan walks the slots
+    /// as a PREFIX — a zero slot ends the list (a mid-list 0 hides everything after it) [M 0x1b1a78 case 3/4/0xC
+    /// loops: `while input[k] != 0`].
     pub fn update(&mut self, ch: &mut Channels, touchers: &[Toucher], frame: u32) {
         if self.gone || (self.lock != 0 && ch.on(self.lock as u32)) { return; }
         match self.kind {
             kind::TOUCH_ONCE => {
-                if ch.on(self.out as u32) { self.gone = true; return; }
-                if self.hit(touchers) { ch.set(self.out as u32, 1, frame); }
+                // Case 1: channel already on → delete only when the glist carries 0x10 [M 0x1b1d78-0x1b1d90];
+                // otherwise it FALLS THROUGH into case 2 every frame while the channel is off.
+                if ch.on(self.out as u32) {
+                    if self.glist_0x10 { self.gone = true; }
+                    return;
+                }
+                if self.hit(ch, touchers) { ch.set(self.out as u32, 1, frame); }
             }
             kind::AND | kind::OR => {
-                let inputs: Vec<u32> = self.list.iter().copied().filter(|&c| c != 0).collect();
-                let v = if self.kind == kind::AND { !inputs.is_empty() && inputs.iter().all(|&c| ch.on(c)) } else { inputs.iter().any(|&c| ch.on(c)) };
-                ch.set(self.out as u32, v as u8, frame);
+                // Case 3 / 0xC: the accumulator starts at 1 for the AND (an empty/zero prefix writes 1 —
+                // 0x1b1cbc `addiu a3,zero,1`) and at 0 for the OR; a zero input slot ends the scan.
+                let mut acc = self.kind == kind::AND;
+                for &c in self.list.iter().take_while(|&&c| c != 0) {
+                    let on = ch.on(c);
+                    acc = if self.kind == kind::AND { acc && on } else { acc || on };
+                }
+                ch.set(self.out as u32, acc as u8, frame);
+                // The Bond-moment self-delete: out 0x65-0x6E, result on, glist 0x10 [M 0x1b1da0-0x1b1da8].
+                if acc && (0x65..=0x6e).contains(&self.out) && self.glist_0x10 { self.gone = true; }
             }
             kind::SEQ_AND => {
-                // Ordered AND: each input set no more than 4 frames after the previous one.
-                let inputs: Vec<u32> = self.list.iter().copied().filter(|&c| c != 0).collect();
-                let ok = !inputs.is_empty() && inputs.iter().all(|&c| ch.on(c))
-                    && inputs.windows(2).all(|w| { let (a, b) = (ch.time[w[0] as usize], ch.time[w[1] as usize]); b >= a && b - a <= 4 });
-                ch.set(self.out as u32, ok as u8, frame);
+                // Case 4: first input read directly (an empty list reads ch[0] = off → writes 0); every later
+                // input must be on AND satisfy `time[prev] − 4 <= time[cur]` — the current stamp may be up to 4
+                // frames OLDER than the previous one's, with no upper bound [M 0x1b1e04-0x1b1e1c].
+                let mut it = self.list.iter().take_while(|&&c| c != 0);
+                let mut acc = it.next().is_some_and(|&c| ch.on(c));
+                let mut prev = self.list.first().copied().unwrap_or(0);
+                for &c in it {
+                    if !ch.on(c) { acc = false; break; }
+                    let (a, b) = (ch.time[prev as usize] as i64, ch.time[c as usize] as i64);
+                    if a - 4 > b { acc = false; break; }
+                    prev = c;
+                }
+                ch.set(self.out as u32, acc as u8, frame);
+                if acc && (0x65..=0x6e).contains(&self.out) && self.glist_0x10 { self.gone = true; }
             }
             kind::OUT => {
                 let v = ch.v.get(self.out as usize).copied().unwrap_or(0);
                 for &t in &self.list { if t != 0 { ch.set(t, v, frame); } }
             }
             // `LOAD_LEVEL` (0xE8): `Trigger_Update` case 10 fires when `switch_channels[gate]` is non-zero —
-            // NO touch check. The gate is set by a script event (the gatehouse cut-scene's event 0x11 sets
-            // ch(0x1D), which is placement 118's gate on 07000005) [M 0x1b1a78:162-166].
+            // NO touch check [M 0x1b1a78:162-166] — and then runs the FULL `Trigger_Activate` [M 0x1b2318]:
+            // the cancel channels, the key gate (locked → no write, no load), the success write, and the
+            // type←99 latch (`gone`). The level-load side effects (Music_Event(3,1), `GS_PauseGame`,
+            // `ResetMap_LevelToLoad`) are carried by `gone` — `drone.rs`'s LOAD_LEVEL arm posts them.
             kind::LOAD_LEVEL => {
                 if self.gone || self.gate == 0 { return; }
-                if ch.on(self.gate as u32) { self.gone = true; }
+                if !ch.on(self.gate as u32) { return; }
+                if (0x60..=0x63).any(|c| ch.on(c)) { return; }
+                if self.key_gate != 0 && !ch.on(self.key_gate as u32) { return; }
+                if self.success != 0 { ch.set(self.success as u32, 1, frame); }
+                self.gone = true;
             }
             _ => {}
         }
@@ -292,7 +357,7 @@ pub fn calc(level: u32, triggers: &mut [Trigger], ch: &mut Channels, touchers: &
     if level == 0x0700_0005 && ch.on(0xa4) { ch.set(0x6f, 1, frame); }
     if level == 0x0700_000b && ch.on(0x34) { ch.set(0x2d, 1, frame); }
     for t in triggers.iter().filter(|t| t.kind == kind::TOUCH) { ch.set(t.out as u32, 0, frame); }
-    let hits: Vec<u8> = triggers.iter().filter(|t| t.kind == kind::TOUCH && !(t.lock != 0 && ch.on(t.lock as u32)) && t.hit(touchers)).map(|t| t.out).collect();
+    let hits: Vec<u8> = triggers.iter().filter(|t| t.kind == kind::TOUCH && !(t.lock != 0 && ch.on(t.lock as u32)) && t.hit(ch, touchers)).map(|t| t.out).collect();
     for out in hits { ch.set(out as u32, 1, frame); }
 }
 
@@ -303,7 +368,7 @@ mod tests {
     fn plate(kind: u8, out: u8, mask: u32, list: Vec<u32>) -> Trigger {
         // A 2 × 2 horizontal quad at y = 0 around the origin.
         let (a, b, c, d) = ([-1.0, 0.0, -1.0], [1.0, 0.0, -1.0], [1.0, 0.0, 1.0], [-1.0, 0.0, 1.0]);
-        Trigger { placement: 0, kind, out, mask, list, lock: 0, hide: false, tris: vec![[a, b, c], [a, c, d]], lo: [-1.0, 0.0, -1.0], hi: [1.0, 0.0, 1.0], gone: false, script: None, next_level: 0, gate: 0, key_gate: 0, success: 0, fallback: 0 }
+        Trigger { placement: 0, kind, out, mask, list, lock: 0, hide: false, glist_0x10: true, filter_gate: 0, tris: vec![[a, b, c], [a, c, d]], lo: [-1.0, 0.0, -1.0], hi: [1.0, 0.0, 1.0], gone: false, script: None, next_level: 0, gate: 0, key_gate: 0, success: 0, fallback: 0 }
     }
 
     #[test]
@@ -325,8 +390,8 @@ mod tests {
         assert!(ch.on(0x22) && once.gone);
         // A drone-only plate ignores Bond.
         let drone_plate = plate(kind::TOUCH_ONCE, 0x30, 0x10, vec![]);
-        assert!(!drone_plate.hit(&on));
-        assert!(drone_plate.hit(&[Toucher { drone: true, ..on[0] }]));
+        assert!(!drone_plate.hit(&ch, &on));
+        assert!(drone_plate.hit(&ch, &[Toucher { drone: true, ..on[0] }]));
     }
 
     /// `LOAD_LEVEL` (0xE8): `Trigger_Update` case 10 fires when `switch_channels[gate]` is non-zero — no touch check.
@@ -351,21 +416,144 @@ mod tests {
     }
 
     /// `Trigger_Activate` (the E-key path, routes b/c on 07000005): pressing E on a LOAD_LEVEL trigger fires it
-    /// immediately — no gate channel needed. Sets the success channel and requests the level load. Sister:
-    /// a key-gated trigger with the key off → no load (the fallback channel is set instead). [M 0x1b2318].
+    /// immediately — no gate channel needed. Gate on → the success channel; gate OFF → the fallback channel AND
+    /// the level still loads (both branches fall through to the load @0x1b24b8) [M 0x1b2318:96-111]. Sister: a
+    /// key-gated trigger with the key off → NO write and NO load (locked message + cooldown, 0x1b2318:76-90).
     #[test]
     fn trigger_activate_fires_on_e_key_path() {
         let ch = Channels::default();
-        let exit = Trigger { kind: kind::LOAD_LEVEL, next_level: 0x0700_0066, success: 0x1F, fallback: 0x1E, key_gate: 0, gate: 0x1D, ..plate(kind::LOAD_LEVEL, 0, 8, vec![]) };
+        let exit = Trigger { kind: kind::LOAD_LEVEL, next_level: 0x0700_0066, success: 0x1F, fallback: 0x1E, key_gate: 0, gate: 0, ..plate(kind::LOAD_LEVEL, 0, 8, vec![]) };
+        // Gate 0 = the auto channel is off → the fallback write AND the load [M 0x1b2318:96-108].
         let (sets, next) = exit.activate_request(&ch);
         assert_eq!(next, Some(0x0700_0066), "requests the next level");
+        assert_eq!(sets, vec![(0x1E, 1)], "the gate-off fallback write");
+        // Gate off (and key gate clear) → the fallback write AND the load still happen [M 0x1b2318:105-108].
+        let gated = Trigger { gate: 0x10, ..exit.clone() };
+        let (sets, next) = gated.activate_request(&ch);
+        assert_eq!(next, Some(0x0700_0066), "the gate-off fallback branch STILL loads");
+        assert!(sets.contains(&(0x1E, 1)), "sets the fallback channel");
+        // Gate on → the success channel.
+        let mut ch_on = Channels::default();
+        ch_on.set(0x10, 1, 1);
+        let (sets, next) = gated.activate_request(&ch_on);
+        assert_eq!(next, Some(0x0700_0066));
         assert!(sets.contains(&(0x1F, 1)), "sets the success channel");
-        // Sister: key gate on and off → no load, fallback set.
-        let mut ch2 = Channels::default();
-        ch2.set(0x10, 0, 0); // key gate channel 0x10 stays off
+        // Sister: key gate on and off → no write, no load (the game shows the locked message instead).
+        let ch2 = Channels::default();
         let locked = Trigger { kind: kind::LOAD_LEVEL, next_level: 0x0700_0066, success: 0x1F, fallback: 0x1E, key_gate: 0x10, gate: 0, ..plate(kind::LOAD_LEVEL, 0, 8, vec![]) };
         let (sets2, next2) = locked.activate_request(&ch2);
         assert_eq!(next2, None, "locked trigger does not load");
-        assert!(sets2.contains(&(0x1E, 1)), "sets the fallback channel");
+        assert!(sets2.is_empty(), "the locked path writes NO channel (0x1b2318 returns at :90)");
+        // Sister: an alarm channel (0x60-0x63) blocks the exit entirely.
+        let mut ch3 = Channels::default();
+        ch3.set(0x61, 1, 1);
+        let (sets3, next3) = locked.activate_request(&ch3);
+        assert_eq!(next3, None, "an alarm blocks the level load");
+        assert!(sets3.is_empty());
+    }
+
+    /// The mux wrappers write slot[k] = p(k-1) for k = 2..7 only [M 0x1b2c68 loop bound `while (uVar3 < 8)`],
+    /// and `Trigger_Create` copies 7 inputs from slots 2..8 [M 0x1b1720]: mux inputs = raw p1..p6 + raw p8 (p7 is
+    /// overwritten and lost), mask = p9 with the default-2 fallback [M 0x1b1720:80-84], lock = p10, hide = p11.
+    #[test]
+    fn mux_params_read_the_shifted_slots() {
+        let q = |k: u32| 0x10 + k; // param k reads as 0x10+k so each slot is distinguishable
+        let t = Trigger::from_params(0, kind::AND, q, Vec::new()).unwrap();
+        assert_eq!(t.out, 0x10, "out = p0");
+        assert_eq!(t.list, vec![0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x18], "inputs = p1..p6, p8 (p7 lost to the wrapper)");
+        assert_eq!(t.mask, 0x19, "mask = p9");
+        assert_eq!(t.lock, 0x1a, "lock = p10");
+        assert!(t.hide, "hide = p11 (0x1b != 0)");
+        // Sister: a zero mask reads as the game's default 2 [M 0x1b1720:80-84].
+        let t = Trigger::from_params(0, kind::AND, |_| 0, Vec::new()).unwrap();
+        assert_eq!(t.mask, 2, "Trigger_Create defaults a zero mask to 2");
+        // LOAD_LEVEL keeps its own mapping and the hard 0xE mask [M 0x1b2950: addiu t0,zero,14 → tag+0x50].
+        let t = Trigger::from_params(0, kind::LOAD_LEVEL, q, Vec::new()).unwrap();
+        assert_eq!(t.mask, 0xE, "Trigger_LoadLevelCreate forces mask 0xE");
+        assert_eq!(t.next_level, 0x10, "next level = p0");
+    }
+
+    /// Case 3 [M 0x1b1a78:91-103]: the AND accumulator starts at 1 — an empty input list writes 1 — and the scan
+    /// is a prefix: a zero input slot ends it (a deliberate 0 mid-list hides the inputs after it). Sister: the OR
+    /// starts at 0.
+    #[test]
+    fn and_accumulator_starts_1_and_scans_the_prefix() {
+        let mut ch = Channels::default();
+        ch.set(0x20, 1, 1);
+        // Empty list → AND writes 1 (the port used to write 0).
+        let mut empty = plate(kind::AND, 0x21, 0, vec![]);
+        empty.update(&mut ch, &[], 2);
+        assert!(ch.on(0x21), "an empty MuxIn latches its output ON (0x1b1cbc)");
+        // Mid-list zero: inputs after it are invisible to the scan.
+        ch.set(0x22, 1, 3);
+        let mut mid = Trigger { kind: kind::AND, out: 0x23, list: vec![0x20, 0, 0x22], ..plate(kind::AND, 0, 0, vec![]) };
+        mid.update(&mut ch, &[], 4);
+        assert!(ch.on(0x23), "AND stops at the zero slot: only the prefix matters");
+        // The same list on an OR: the zero slot also ends the scan (0x22 ignored).
+        let mut orm = Trigger { kind: kind::OR, out: 0x24, list: vec![0, 0x22], ..plate(kind::OR, 0, 0, vec![]) };
+        orm.update(&mut ch, &[], 5);
+        assert!(!ch.on(0x24), "OR over an all-zero prefix writes 0");
+    }
+
+    /// Case 4's window predicate is `time[prev] − 4 <= time[cur]` [M 0x1b1e04-0x1b1e1c] — the current input may be
+    /// up to 4 frames OLDER than the previous one and there is NO upper bound. The port's old test
+    /// (`b >= a && b - a <= 4`) rejected the >4-frame gaps the game accepts.
+    #[test]
+    fn seq_and_window_is_lower_bound_only() {
+        let mut ch = Channels::default();
+        // A 100-frame gap between input 1 and input 2: the game fires, the old port never did.
+        ch.set(0x30, 1, 10);
+        ch.set(0x31, 1, 110);
+        let mut seq = Trigger { kind: kind::SEQ_AND, out: 0x32, list: vec![0x30, 0x31], ..plate(kind::SEQ_AND, 0, 0, vec![]) };
+        seq.update(&mut ch, &[], 111);
+        assert!(ch.on(0x32), "no upper bound on the SEQ_AND window");
+        // Up to 4 frames of skew the other way is also accepted (cur older than prev).
+        let mut ch = Channels::default();
+        ch.set(0x30, 1, 50);
+        ch.set(0x31, 1, 47); // 4 frames older: 50-4 <= 47
+        let mut seq = Trigger { kind: kind::SEQ_AND, out: 0x32, list: vec![0x30, 0x31], ..plate(kind::SEQ_AND, 0, 0, vec![]) };
+        seq.update(&mut ch, &[], 51);
+        assert!(ch.on(0x32), "the current input may be up to 4 frames older");
+        // Sister: more than 4 frames of skew the other way fails.
+        let mut ch = Channels::default();
+        ch.set(0x30, 1, 50);
+        ch.set(0x31, 1, 45); // 5 frames older: 50-4 > 45
+        let mut seq = Trigger { kind: kind::SEQ_AND, out: 0x32, list: vec![0x30, 0x31], ..plate(kind::SEQ_AND, 0, 0, vec![]) };
+        seq.update(&mut ch, &[], 51);
+        assert!(!ch.on(0x32));
+    }
+
+    /// `Channels::set` stamps `time` on EVERY nonzero write (the game's trigger and script paths re-stamp;
+    /// 0x1b1a78:87,107, trigger-port-check #4) — a re-set channel refreshes its SEQ_AND window.
+    #[test]
+    fn channels_restamp_on_every_nonzero_write() {
+        let mut ch = Channels::default();
+        ch.set(0x40, 1, 10);
+        assert_eq!(ch.time[0x40], 10);
+        ch.set(0x40, 1, 77); // same value, still nonzero: the stamp refreshes
+        assert_eq!(ch.time[0x40], 77, "every nonzero write re-stamps");
+        ch.set(0x40, 0, 90);
+        assert_eq!(ch.time[0x40], 77, "a zero write does not stamp");
+    }
+
+    /// Case 1 deletes the TouchOnce only when the glist flags carry 0x10 [M 0x1b1d78-0x1b1d90]; without the bit
+    /// the trigger stays live (and case 1 keeps falling through into case 2 while the channel is off).
+    #[test]
+    fn touch_once_delete_needs_the_glist_flag() {
+        let mut ch = Channels::default();
+        let on = [Toucher::player([0.5, -0.3, 0.0])];
+        let away = [Toucher::player([5.0, 0.0, 5.0])];
+        // Latch via touch, leave, then re-arm the channel externally: with the flag the plate deletes itself.
+        let mut t = plate(kind::TOUCH_ONCE, 0x50, 8, vec![]);
+        t.update(&mut ch, &on, 1);
+        assert!(ch.on(0x50));
+        t.update(&mut ch, &away, 2);
+        assert!(t.gone, "glist 0x10 set: the TouchOnce deletes itself");
+        // Without the glist bit the delete is refused (the port models every TouchOnce with the bit — live data).
+        let mut ch2 = Channels::default();
+        ch2.set(0x50, 1, 1);
+        let mut keep = Trigger { glist_0x10: false, ..plate(kind::TOUCH_ONCE, 0x50, 8, vec![]) };
+        keep.update(&mut ch2, &away, 2);
+        assert!(!keep.gone, "no glist 0x10: the trigger survives");
     }
 }

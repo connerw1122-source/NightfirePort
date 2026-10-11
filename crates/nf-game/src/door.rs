@@ -155,7 +155,8 @@ pub struct Door {
     pub straddle: bool,
     /// `+0x60` (p5): entering state 8. `+0x62` (p6): entering 0x10. `+0x64` (p7): the locked/hit feedback.
     pub snd_open: u16, pub snd_close: u16, pub snd_hit: u16,
-    /// `+0x70` (p8|p9): bit 0 spline (else keyframe) interpolation, bit 4 the busy marker, bit 5 keep open.
+    /// `+0x70` (p8|p9): bit 0 spline (else keyframe) interpolation, bit 2 "starts open" (+ open channel forced on
+    /// at create, `Door_Create` :96-99), bit 4 the busy marker, bit 5 keep open.
     pub flags: u16,
     /// `+0x76` (p10): 1 = activate from the front only, 2 = from behind only (one-shot; 0 = either side).
     pub approach: u8,
@@ -181,6 +182,10 @@ pub struct Door {
     pub matrix: Mat4, pub inv_closed: Mat4,
     /// `obj+0x30` (the sound position `obj+0xC0` is the same point) and the sphere `obj+0x80/+0x8C`.
     pub pos: V3, pub sph: (V3, f32),
+    /// The gfx sphere centre in the placement's local frame — transformed by the LIVE `matrix` each tick it gives
+    /// `obj+0x80` (the moved pass rebuilds the world sphere after `Door_Interp` sets `obj+0xFA & 0x20` [M
+    /// 0x135738:28, 0x1336f8:209]), so the auto-close blocking zone follows the open door leaf.
+    pub sph_centre: V3,
     /// The object's hashcode (the drawn mesh and the collision shape).
     pub glist: u32,
 }
@@ -213,14 +218,26 @@ pub fn door_placements(placements: &[Placement]) -> Vec<usize> {
     placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xdb && p.flags & 0xa000 == 0).map(|(i, _)| i).collect()
 }
 
-/// `Door_Update`'s proximity test: the game uses the door's position (`obj+0x30`) and `obj+0x8C` (gfx sphere
-/// radius, ~0.4-0.6 for doors) — NOT the gfx sphere centre. The port was using `sph.1` (1.5+), making the
-/// blocking zone far too large (~2.8 m instead of ~1 m). Fix: use the door's placement position and a 1.0
-/// radius stand-in [M Door_Update 0x1363c8:118-120].
-fn blocked(door_pos: V3, _door_r: f32, a: (V3, f32)) -> bool {
-    let d = [door_pos[0] - a.0[0], door_pos[1] - a.0[1], door_pos[2] - a.0[2]];
-    let r = 1.0 + a.1;
+/// `Door_Update`'s proximity test [M 0x1363c8:52-68, 121-137]: `Vec_SqDist3D(door obj+0x80, actor obj+0x80) <
+/// 2·(r_door + r_actor)²` with the `obj+0x8C` radii. `obj+0x80` is the door's LIVE world sphere (rebuilt by the
+/// moved pass after every `Door_Interp`), so a slide door's blocking zone follows the open leaf — the port used to
+/// test the fixed placement position with a 1.0 stand-in radius, which closed doors the game leaves open
+/// (core-loop §7 item 4 / door-port-check #1).
+fn blocked(door: (V3, f32), a: (V3, f32)) -> bool {
+    let d = [door.0[0] - a.0[0], door.0[1] - a.0[1], door.0[2] - a.0[2]];
+    let r = door.1 + a.1;
     d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < r * r + r * r
+}
+
+/// A body the door's proximity scans see: position, bounding radius, and whether its `obj+0xF0` flags carry bit
+/// 0x10 — the scan skips such objects entirely [M 0x136678-0x136684; the 07000001 player (0x890) and drones
+/// (0x8B0) have it set [L], the 07000005 player (0x880) does not [L]. The writer of that bit is not ported, so
+/// the port models it as clear (the 07000005 evidence; door-port-check #2).
+pub type DoorActor = (V3, f32, bool);
+
+/// The scan's candidates: every actor the `obj+0xF0 & 0x10` filter lets through [M 0x136678-0x136684].
+fn visible_actors(actors: &[DoorActor]) -> impl Iterator<Item = (V3, f32)> + '_ {
+    actors.iter().filter(|a| !a.2).map(|a| (a.0, a.1))
 }
 
 /// A sound `Door_SetState` / `Door_Activate` asks for: id and position.
@@ -264,7 +281,7 @@ impl Doors {
                 pos01: 0.0, speed: if rate != 0 { 1.0 / rate as f32 } else { 1.0 / CREATE_FRAME_RATE },
                 dir: 0.0, swing: 0.0, timer: 0, open_timer: 0, msg_shown: false,
                 matrix: m, inv_closed: [[0.0; 4]; 4],
-                pos: p.translation, sph: (transform(&m, centre), radius), glist,
+                pos: p.translation, sph: (transform(&m, centre), radius), sph_centre: centre, glist,
             };
             if d.kind == 0 {
                 // `Door_SetupSwing`: the swing covers half the range, so the speed re-quantises to whole ticks
@@ -360,14 +377,18 @@ impl Doors {
     }
 
     /// `Door_Update` for one door, in the control list's order. `actors`: the objects the proximity tests see —
-    /// the game scans classes 2 (the player), 3 and 0x12 (drones) by bounding sphere; **`actors[0]` is the
-    /// activator** (`glb_players` in every call the port makes). Returns the sounds to play this tick.
+    /// the game scans classes 2 (the player), 3 and 0x12 (drones) by bounding sphere, skipping every candidate
+    /// whose `obj+0xF0` carries 0x10 [M 0x136678-0x136684]; **`actors[0]` is the activator** (`glb_players` in
+    /// every call the port makes). Returns the sounds to play this tick.
     pub fn update(
-        &mut self, i: usize, channels: &mut Channels, actors: &[(V3, f32)], frame: u32,
+        &mut self, i: usize, channels: &mut Channels, actors: &[DoorActor], frame: u32,
     ) -> Vec<SoundEvent> {
         let mut sounds = Vec::new();
         if self.list[i].timer != 0 { self.list[i].timer -= 1; }
         if self.list[i].flags & 0x10 != 0 { return sounds; }   // busy: `Door_Activate`'s marker, cleared by `calc`
+        // The live `obj+0x80` sphere: the pose matrix from the LAST interp (the game's moved pass rebuilds the
+        // sphere after the walk — one tick behind the visual, matching this read order) [M 0x1336f8:209].
+        let door_sph = (transform(&self.list[i].matrix, self.list[i].sph_centre), self.list[i].sph.1);
         // The open channel: on opens (unless already open); off and not closed: close at once, timer reset.
         let (state, ch_open, ch_lock, keep_open) = {
             let d = &self.list[i];
@@ -377,7 +398,7 @@ impl Doors {
             if channels.on(ch_open as u32) {
                 if state & 4 == 0 { self.activate(i, actors, false, channels, frame, &mut sounds); }
             } else if state & 2 == 0 {
-                if !actors.iter().any(|a| blocked(self.list[i].pos, self.list[i].sph.1, *a)) {
+                if !visible_actors(actors).any(|a| blocked(door_sph, a)) {
                     self.activate(i, actors, false, channels, frame, &mut sounds);
                 }
                 self.list[i].open_timer = 0;
@@ -395,15 +416,14 @@ impl Doors {
             }
         }
         // The auto-close: an open door without the keep-open flag, after `FRAME_RATE_INT·6` quiet ticks
-        // (the proximity scan at 360 — if an actor is in the zone, the close is skipped and the timer resets).
-        // `Door_Update` (0x1363c8:111-157): the timer ALWAYS increments; at 360 the proximity scan runs, and
-        // if nobody is blocking, `Door_Activate` closes it. The timer ALWAYS resets to 0 at 360 (whether or
-        // not the close fired). The game's proximity test uses `obj+0x80` (gfx sphere centre) and `obj+0x8C`
-        // (gfx radius ~0.4–0.6 for doors); the port uses the door's placement position + 1.0 stand-in [M].
+        // [M 0x13660c-0x136700]. The timer ALWAYS increments while open; at 360 the proximity scan runs (skipping
+        // `obj+0xF0 & 0x10` candidates), and if nobody is blocking, `Door_Activate` closes it. The timer ALWAYS
+        // resets to 0 at 360 (whether or not the close fired). The scan centres on the LIVE `obj+0x80` sphere with
+        // the real `obj+0x8C` radius — the open leaf, not the frame (core-loop §7 item 4).
         if self.list[i].state & 4 != 0 && !keep_open {
             self.list[i].open_timer = self.list[i].open_timer.wrapping_add(1);
             if self.list[i].open_timer as u32 >= AUTO_CLOSE {
-                if !actors.iter().any(|a| blocked(self.list[i].pos, self.list[i].sph.1, *a)) {
+                if !visible_actors(actors).any(|a| blocked(door_sph, a)) {
                     self.activate(i, actors, false, channels, frame, &mut sounds);
                 }
                 self.list[i].open_timer = 0;
@@ -426,7 +446,7 @@ impl Doors {
 
     /// `Door_Activate` [M: disassembly 0x135be0–0x135f14]. `from_player` honours the locked flag.
     pub fn activate(
-        &mut self, i: usize, actors: &[(V3, f32)], from_player: bool, channels: &mut Channels, frame: u32,
+        &mut self, i: usize, actors: &[DoorActor], from_player: bool, channels: &mut Channels, frame: u32,
         sounds: &mut Vec<SoundEvent>,
     ) -> bool {
         let _ = frame;
@@ -497,7 +517,7 @@ impl Doors {
     }
 
     /// The swing door's `side·swing` opening: `dir = sign((inv_closed · activator).z) · swing`, state 8.
-    fn swing_from_side(&mut self, i: usize, actors: &[(V3, f32)], channels: &mut Channels, frame: u32, sounds: &mut Vec<SoundEvent>) {
+    fn swing_from_side(&mut self, i: usize, actors: &[DoorActor], channels: &mut Channels, frame: u32, sounds: &mut Vec<SoundEvent>) {
         let act = actors.first().map_or(self.list[i].pos, |a| a.0);
         let local = transform(&self.list[i].inv_closed, act);
         let side = if local[2] < 0.0 { -1.0 } else { 1.0 };
@@ -510,9 +530,9 @@ impl Doors {
     /// NOT called from `Door_Update` (A-11b) — the game calls this from `Collide_Update` via the proxy list
     /// (obj+0xD0). Kept for the future proxy-list port (U-041); currently unused.
     #[allow(dead_code)]
-    fn react_to_hit(&mut self, i: usize, actors: &[(V3, f32)], channels: &mut Channels, frame: u32, sounds: &mut Vec<SoundEvent>) {
+    fn react_to_hit(&mut self, i: usize, actors: &[DoorActor], channels: &mut Channels, frame: u32, sounds: &mut Vec<SoundEvent>) {
         if self.list[i].timer != 0 || self.list[i].state & 0x18 == 0 { return; }
-        let Some(act) = actors.iter().find(|a| blocked(self.list[i].pos, self.list[i].sph.1, **a)).map(|a| a.0) else { return };
+        let Some(act) = visible_actors(actors).find(|a| blocked((self.list[i].pos, self.list[i].sph.1), *a)).map(|a| a.0) else { return };
         let (kind, state, swing, pos01, dir) = {
             let d = &self.list[i];
             (d.kind, d.state, d.swing, d.pos01, d.dir)
@@ -592,14 +612,17 @@ impl Doors {
             // Stand-in: distance to the door's placement position < 2.5 (covers the door's extent + use radius).
             let d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
             if d2 < 6.25 { // 2.5² = generous reach
-                self.activate(i, &[(head, 0.0)], true, channels, frame, &mut sounds);
+                self.activate(i, &[(head, 0.0, false)], true, channels, frame, &mut sounds);
                 hits += 1;
             }
         }
         (sounds, hits)
     }
 
-    /// Snapshot the channels for the next tick's lock-edge test (`switch_channels_prev`).
+    /// Snapshot the channels for this tick's lock-edge test (`switch_channels_prev`). The game copies
+    /// `prev ← hold; hold ← channels` right after `Trigger_Calc`, BEFORE the object walk [M 0x1336f8:52-53,
+    /// 0x1337cc/0x1337dc] — `Drones::tick` calls this at that exact point, so `Door_Update`'s rising edge sees a
+    /// channel pulsed earlier in the same frame (core-loop §7 item 5).
     pub fn end_tick(&mut self, channels: &Channels) {
         for (k, c) in self.prev_channels.iter_mut().enumerate() { *c = channels.v.get(k).copied().unwrap_or(0); }
     }
@@ -654,7 +677,7 @@ impl Doors {
     pub fn log_doors_throttled(
         &self,
         world: Option<&crate::world::CollisionWorld>,
-        actors: &[(V3, f32)],
+        actors: &[DoorActor],
         frame: u32,
     ) {
         if std::env::var_os("NF_DOORLOG").is_none() { return; }
@@ -664,15 +687,16 @@ impl Doors {
         eprintln!("idx placement state  pos01  open_timer keep_open blocked blocked_by                     sph.pos                       sph.r   closest_actor (d² / thresh)");
         for (i, d) in self.list.iter().enumerate() {
             let keep = d.flags & 0x20 != 0;
-            // The blocking actor (the same `blocked()` test the auto-close path runs).
-            let (is_blocked, by) = match actors.iter().find(|a| blocked(d.pos, d.sph.1, **a)) {
+            // The live blocking sphere and the same `blocked()` test the auto-close path runs.
+            let live = (transform(&d.matrix, d.sph_centre), d.sph.1);
+            let (is_blocked, by) = match visible_actors(actors).find(|a| blocked(live, *a)) {
                 Some(a) => (true, format!("({:7.2},{:7.2},{:7.2}) r={:.2}", a.0[0], a.0[1], a.0[2], a.1)),
                 None => (false, String::from("-")),
             };
             // The closest actor and its squared distance, plus the threshold the test
             // compares against (`(r1+r2)²·2`); lets you read the margin directly.
-            let closest = actors.iter().min_by(|a, b| {
-                let da = sub(d.sph.0, a.0); let db = sub(d.sph.0, b.0);
+            let closest = visible_actors(actors).min_by(|a, b| {
+                let da = sub(live.0, a.0); let db = sub(live.0, b.0);
                 (da[0]*da[0] + da[1]*da[1] + da[2]*da[2])
                     .partial_cmp(&(db[0]*db[0] + db[1]*db[1] + db[2]*db[2])).unwrap_or(std::cmp::Ordering::Equal)
             });
@@ -764,7 +788,7 @@ mod tests {
             dir: 0.0, swing: -1.0, timer: 0, open_timer: 0, msg_shown: false,
             matrix: quat_matrix([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0]),
             inv_closed: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
-            pos: [0.0, 0.0, 0.0], sph: ([0.0, 1.1, 0.0], 1.28), glist: 7,
+            pos: [0.0, 0.0, 0.0], sph: ([0.0, 1.1, 0.0], 1.28), sph_centre: [0.0, 1.1, 0.0], glist: 7,
         });
         doors
     }
@@ -775,7 +799,7 @@ mod tests {
         let mut ch = channels();
         let mut sounds = Vec::new();
         // A player in front (+Z) of the closed door at the origin: it swings to the −dir side (away).
-        let actors = [([0.0, 1.0, 2.0], 0.4f32)];
+        let actors = [([0.0, 1.0, 2.0], 0.4f32, false)];
         assert!(doors.activate(0, &actors, true, &mut ch, 0, &mut sounds));
         let d = &doors.list[0];
         assert_eq!(d.state, OPENING);
@@ -786,12 +810,12 @@ mod tests {
         // stays where he was: near enough that the opening door's anti-crush sees him (local.z = 2, past the
         // margin), far enough that his sphere (r = 0.4) does not block the door's (r = 1.28).
         doors.calc();
-        let near = [([0.0, 1.0, 2.0], 0.4f32)];
+        let near = [([0.0, 1.0, 2.0], 0.4f32, false)];
         for _ in 0..8 { sounds.extend(doors.update(0, &mut ch, &near, 0)); doors.calc(); }
         assert_eq!(doors.list[0].state, OPEN, "reached the swung end");
         // Sister: the timer branch needs the state, not this run — an open door with nobody near (the player
         // walked off) closes after the 360-tick timer (`FRAME_RATE_INT·6`) from whenever it reached OPEN.
-        let far = [([0.0, 1.0, 5.0], 0.4f32)];
+        let far = [([0.0, 1.0, 5.0], 0.4f32, false)];
         let mut guard = 0;
         while doors.list[0].state == OPEN && guard < 600 { sounds.extend(doors.update(0, &mut ch, &far, 0)); doors.calc(); guard += 1; }
         assert_eq!(doors.list[0].state, CLOSING, "the 6-second timer closed it (after {guard} ticks)");
@@ -808,7 +832,7 @@ mod tests {
             keys: None, frames: 0xffff, state: CLOSED, pos01: 0.0, speed: 1.0 / 30.0,
             dir: 0.0, swing: 0.0, timer: 0, open_timer: 0, msg_shown: false,
             matrix: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
-            inv_closed: [[0.0; 4]; 4], pos: [10.0, 0.0, 0.0], sph: ([10.0, 1.1, 0.0], 1.28), glist: 8,
+            inv_closed: [[0.0; 4]; 4], pos: [10.0, 0.0, 0.0], sph: ([10.0, 1.1, 0.0], 1.28), sph_centre: [10.0, 1.1, 0.0], glist: 8,
         });
         let mut ch = channels();
         let mut sounds = Vec::new();
@@ -839,7 +863,7 @@ mod tests {
                 keys: None, frames: 0xffff, state: CLOSED, pos01: 0.0, speed: 1.0 / 30.0,
                 dir: 0.0, swing: 0.0, timer: 0, open_timer: 0, msg_shown: false,
                 matrix: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
-                inv_closed: [[0.0; 4]; 4], pos: [k as f32, 0.0, 0.0], sph: ([k as f32, 1.1, 0.0], 1.28), glist: 9,
+                inv_closed: [[0.0; 4]; 4], pos: [k as f32, 0.0, 0.0], sph: ([k as f32, 1.1, 0.0], 1.28), sph_centre: [k as f32, 1.1, 0.0], glist: 9,
             });
         }
         let mut ch = channels();

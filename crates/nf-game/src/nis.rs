@@ -49,6 +49,12 @@ pub enum Request {
     /// A camera stream started (`Script_CameraStart` → `Music_Event(0xB, script)`) or ended (`Script_KillStream` →
     /// `Music_Event(0xC, script)`).
     Camera { script: u32, start: bool },
+    /// Event 5 / `Script_Free`'s 0x80 flag: `Drone_EnableAll(on, hash)` — the game's own drone-freeze gate
+    /// (`NPCGlobals = on`). Event 5 disables (mid-cut-scene); `Script_Free` re-enables when the script set flag 0x80
+    /// (event 7) [M Script_EventHandler 0x1d94c0 case 5, Script_Free 0x1da880:41-43, Drone_EnableAll 0x1383e8].
+    /// The two hash-specific enable extras (0x600001b → msg 10 + Music_Event(0xf), 0x600002e → msg 0xe walk) are
+    /// not ported — neither script is live on the ported levels.
+    DroneEnable { on: bool },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -80,7 +86,8 @@ pub struct Script {
     pub scale: f32,
     pub delay: i32,
     pub clock: f32,
-    /// `+0xAA8`: 0x10 keep objects, 0x20, 0x40 camera, 0x80, 0x100.
+    /// `+0xAA8`: 0x10 keep objects, 0x20, 0x40 camera, 0x80 re-enable drones on free (`Drone_EnableAll(1, hash)`,
+    /// set by event 7), 0x100 player return.
     pub flags: u16,
     /// `+0x98` ScriptCam (event 0x13): a script camera is active.
     pub script_cam: bool,
@@ -328,10 +335,14 @@ impl Script {
     pub fn free(&mut self, objs: &mut Objects, out: &mut Vec<Request>) {
         for i in 0..self.streams.len() { self.kill(i, objs); }
         out.append(&mut self.pending);
+        // Flag 0x80 → `Drone_EnableAll(1, hash)` [M Script_Free 0x1da880:41-43]: the cut-scene's guards come back
+        // when the script that froze them (event 5 → `NPCGlobals = 0`) is freed and asked for it (event 7).
+        if self.flags & 0x80 != 0 { out.push(Request::DroneEnable { on: true }); }
         if self.flags & 0x100 != 0 { out.push(Request::PlayerEnable { at: self.player_at, mode: self.player_mode }); }
     }
 
-    /// `Script_EventHandler` (0x1d94c0).
+    /// `Script_EventHandler` (0x1d94c0). Events 3/4/5/6/7/8/9/0xB/0xC/0xD/0xE/0x10/0x11/0x12/0x13 measured there;
+    /// event 5 (`Drone_EnableAll(0, hash)`) and event 7 (flag 0x80) are the drone-freeze pair.
     #[allow(clippy::too_many_arguments)]
     fn event(&mut self, i: usize, kind: u8, p: Vec<u32>, objs: &Objects, ch: &mut Channels, frame: u32, out: &mut Vec<Request>) {
         // NF_SCRIPTLOG=1 (or NF_LEVELLOG=1): every script event (op 0x12) fired — tick (script clock), game frame,
@@ -352,6 +363,10 @@ impl Script {
                 self.player_at = prev.and_then(|o| match objs.list.get(o) { Some(Some(Obj::Entity { matrix, .. })) => Some(*matrix), _ => None });
                 self.player_mode = g(0) as u8;
             }
+            // Event 5: `Drone_EnableAll(0, +0x98 hash)` → `NPCGlobals = 0` — the game's ONLY scripted drone freeze
+            // [M Script_EventHandler 0x1d94c0 case 5, Drone_EnableAll 0x1383e8]. Every other cut-scene keeps the
+            // guards live (Drone_Control is gated on `NPCGlobals != 0` [0x139268:39-42], not on ScriptCam).
+            5 => out.push(Request::DroneEnable { on: false }),
             7 => self.flags |= 0x80,
             // Event 0xB: `Script_EventHandler` case 0xB [M 0x1d94c0:152-158] writes `sAnimObject+0x62 = param[0]` (the
             // weapon byte) on the PREVIOUS stream's Anim object — the same "previous stream" pattern as Event 6.

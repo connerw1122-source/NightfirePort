@@ -3363,3 +3363,61 @@ obj+0x50/0x54 (the convention itself is settled — see finding 1); what creates
 portal-graph traversal location; the odd-byte ambient triple; TweakRGBA's +2 DMA words;
 bCharacterLight/bTweakBrightness readers (suspected VU1 asm); the AnimObjectDraw stale-tweak path
 for 0x800 celglists; wire params 0/2 meaning; FRAME_RATE's runtime value.
+
+## fix-core — the core-loop divergences (port-map §7, in rank order)
+
+Branch `s/fix-core` (merged nothing; based on master @ 60c08d2). Scope: `crates/nf-game/src/{triggers,nis,drone,door}.rs`,
+`crates/nf-view/src/scene.rs` (drone-gate lines), tests, and the doc annotations. No game bytes committed.
+
+**Done**
+1. **Drone gate (items 1-2).** `Drones::paused` removed → `Drones::npc_enabled` (NPCGlobals). Event 5 →
+   `Request::DroneEnable{on:false}`; `Script::free` emits `DroneEnable{on:true}` on flag 0x80 (event 7)
+   [M 0x1d94c0 case 5 / case 7, 0x1da880:41-43, 0x1383e8 — Drone_EnableAll(0/hash) sets NPCGlobals=0/1].
+   The per-drone walk, spawners [M 0x137e68:21] and the InitComms shared passes (ProcessOpponents, ProcessDroneSight
+   + FindAlertedDrones, 0x97, HandleSoundAlerts, 0x96 alarm rebroadcast, CheckAlarmRaised, target/cover rebuilds)
+   gate on it [M 0x139268:39-42, 0x139520:124-284]. The hearing list drains before the gate (no stale-alert burst).
+   The 0x97/0x98 write became a direct `.v` store: Drone_InitComms stamps no timestamp there [M 0x139520:198-201,
+   channels.md]. scene.rs no longer gates anything on `Sim::disabled`; its comment now states the
+   `GS_IsPaused`-only gate [M 0x1c9790:30-35] (ScriptCam only picks the text path).
+2. **switch_channels_prev (item 5).** `Doors::end_tick` called right after `triggers::calc`, before the walk
+   [M 0x1336f8:52-53 — prev←hold, hold←channels at 0x1337cc/0x1337dc].
+3. **Mux slots + SEQ_AND (item 6).** `from_params`'s mux arm: mask q(8), list q(1..=7), lock q(9), hide q(10)
+   [M 0x1b2c68 loop]; LL mask hard 0xE [M 0x1b2950 disasm `addiu t0,zero,14`]. AND/OR scan the input prefix —
+   zero slot ends the list; empty AND writes 1 [M 0x1b1a78 case 3/0xC, 0x1b1cbc]; SEQ_AND window
+   `time[prev]−4 <= time[cur]`, no upper bound [M 0x1b1e04-0x1b1e1c]; `Channels::set` re-stamps on every nonzero
+   write [M 0x1b1a78:87,107,188-189].
+4. **Trigger_Activate paths (trigger-port-check #1/2/6/7/8).** hit() is the AND-chain with the mask&1 base
+   (ext+0x2E) and skin-hash matching [M 0x1b1fc8:56-123]; TouchOnce delete + Bond-moment delete need the glist 0x10
+   flag [M 0x1b1d78-0x1b1d90 — modelled true per live data]; case 10 runs the full Trigger_Activate: cancel
+   channels 0x60-0x63, key gate (no write/no load), success write, type←99 [M 0x1b2318]; activate_request:
+   key-gate blocked → NO write + NO load; gate off → fallback write AND the load [M 0x1b2318:76-111].
+5. **Doors (item 4 / door-port-check #1/2/5/6).** `blocked()` uses the live obj+0x80 sphere (sph_centre × current
+   matrix) with the real obj+0x8C radius [M 0x1363c8:52-68,121-137, 0x135738:28, 0x1336f8:209]; the scans skip
+   `obj+0xF0 & 0x10` candidates [M 0x136678-0x136684] — modelled CLEAR (writer unported; 07000001's SET values [L]
+   not reproducible yet); flags comment 0x04; prev snapshot point (above).
+6. **Spawn ordering (item 9, partly).** `spawn_seq`/`spawn_frame`: newest-first keys and the spawn-tick skip
+   [M 0x134698 prepend — a mid-walk spawn's first update is the next tick]. Script entities' positions unchanged.
+
+**Truck chain (MuxIn) evidence**: the mux/LL fixes neither block nor unblock the 07000005 route-a level end — its
+muxes read ≤ 4 inputs with p7..p11 = 0 [D], so the slot shift was invisible there. `level_end_live` (5 tests,
+incl. `route_a_gatehouse_walk_spawns_guard_and_ends_level`) passes before and after the change.
+
+**Tests**: new unit tests — mux slots, AND-empty-writes-1 + prefix scan, SEQ_AND lower-bound window, set()
+re-stamp, TouchOnce glist flag, Trigger_Activate key-gate/cancel/gate-off paths; regression tests updated to the
+game's gate (`cutscene_pause_fix_drones_paused_but_scripts_run`, `scenario_cutscene_ai_pause_end_to_end` — the
+latter still SKIPs headless: the gatehouse cut-scene does not fire from (100,26,108) in the test harness, a
+pre-existing gap). Full suite: `NF_ISO=<slim iso> cargo test --offline --release -j2 … --test-threads=1` —
+everything green except the 3 disc_golden manifest tests (the slim ISO's file offsets differ; SHA-1s match —
+the allowed failures). Rust had to be installed in the sandbox (rustup 1.99.0); cpal's alsa-sys built against a
+user-space pkg-config shim over the system libasound.so.2.
+
+**Not verified / remaining**
+- Item 8 (level-intro ScriptPlayer, `ResetMap_Load`'s movie-code table 0x1d6360) — outside this task's file scope
+  (nf-view/lib.rs). Item 10's AI-side causes (patrol walk-off, ch 0x22 walk) are guard-ai work.
+- The `obj+0xF0 & 0x10` writer (player 0x880/0x890, drones 0x8B0 [L]) — unported, so the scan filter is a no-op
+  until someone finds the writer; 07000001's auto-close cannot become "unconditional" yet.
+- Door_ReactToHit's collide-stage hook (U-041), Channels hold/RamSave persistence, the 0x7D Touch level gate,
+  mask&2 class-5 contacts, Touch/TouchOnce E-key mask&4-activated check, and the LL locked message/ext+0x3C
+  cooldown (no text system) — unchanged stand-ins.
+- Not independently audited under time pressure: the NIS request plumbing for DroneEnable (a subagent audit of the
+  trigger/door rewrites ran afterwards; see the s/fix-core report).
