@@ -890,6 +890,13 @@ pub fn run() -> Result<()> {
             }
         }
     }
+    // `--bond x,y,z` in the window too (it only applied to the headless `--frame` path): Bond starts exactly there.
+    if let Some(i) = args.iter().position(|a| a == "--bond") {
+        if let (Some(v), Some(sim)) = (args.get(i + 1), app.scene.sim.as_mut()) {
+            let v: Vec<f32> = v.split(',').filter_map(|t| t.parse().ok()).collect();
+            if v.len() == 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], sim.bond.yaw); }
+        }
+    }
     // B-5: start the recorder AFTER the scenario is applied (so the header captures the post-scenario starting state:
     // Bond near a guard, the RNG seed, etc.). On replay, the same starting state is reproduced.
     if let Some(path) = record_path {
