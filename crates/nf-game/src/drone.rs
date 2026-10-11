@@ -3717,7 +3717,13 @@ impl Drones {
                 // `Pickup_Handler`: the armour case writes `BLData+0x8B0`; the clock is `GameState+0x52`
                 // (the 10 → 0xC remap gate) — the port's tick count stands in for it.
                 let clock = frame;
-                if let Some(t) = self.inventory.take(d.weapons, p, loaded, &mut self.health.armour, clock) {
+                let res = self.inventory.take(d.weapons, p, loaded, &mut self.health.armour, clock);
+                // `NF_PICKUPLOG=1`: the take result and why (fix-player2's drop diagnostics; shared file —
+                // one env-gated line only).
+                if std::env::var_os("NF_PICKUPLOG").is_some() {
+                    eprintln!("[take] tick {} weapon {:#x} kind {} rounds {} loaded {} → {:?}", frame, p.weapon, p.kind, p.rounds, loaded, res);
+                }
+                if let Some(t) = res {
                     p.gone = true;
                     // `if (+0x28) switch_channels[+0x28] = 1` (+ time stamp) [M 0x18e650:330-333].
                     if p.switch_channel != 0 { self.channels.set(p.switch_channel as u32, 1, frame); }

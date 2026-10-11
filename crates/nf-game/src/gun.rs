@@ -32,6 +32,14 @@ pub struct Gun {
     /// `BLData+0x959` / `anim+0xF4`: the view-script state machine's phase.
     /// 0 = idle, 1 = holstering, 2 = holster-done (swap), 3 = drawing, 4 = draw-done, 8 = variant-swap.
     pub switch_state: u8,
+    /// View-anim state 9 (`anim+0xF4 = 9`): a fire script is playing (`Player_SetFiringAnim` 0x1a3c70:52
+    /// writes the state before the script is queued). While it holds, `Player_WeaponChange` refuses every
+    /// switch and the trigger can only refire through the state-9 gate [M 0x1a6f80:33-47, 0x1a5460:631-648].
+    pub fire_state: bool,
+    /// `BLData+0x95C`: the bullet-spawned latch. Cleared when a pull starts; set when the round spawns —
+    /// on the press tick for `fire_anim_len == 0` weapons [M 0x1a5460:688-690], else at the release frame
+    /// (`fire_anim_len <= script frame`, `Player_SetWeaponAnimObj` case 9 0x1a2e38:416-420).
+    pub latch: bool,
 }
 
 impl Gun {
@@ -223,6 +231,9 @@ pub struct GunParams {
     pub reload_loop_ticks: u32,  // state 6: +0xA4 script length per shell
     pub reload_end_ticks: u32,   // state 7: +0xAC script length
     pub ammo_type: u8,           // +0x90: 0 = melee (unlimited, no clip check), 1+ = ranged
+    /// `+0x44`: the fire script's release frame — the tick the round spawns (`Player_SetWeaponAnimObj`
+    /// case 9 0x1a2e38:416-420; `fire_anim_len == 0` spawns on the press tick [M 0x1a5460:688-690]).
+    pub fire_anim_len: u32,
 }
 
 impl GunParams {
@@ -248,6 +259,7 @@ impl GunParams {
             reload_loop_ticks: len_of(reload_h),
             reload_end_ticks: len_of(end_h),
             ammo_type: w[0x90],
+            fire_anim_len: u32_at(0x44),
         }
     }
 }
@@ -267,7 +279,7 @@ pub fn reload_ticks(start: u32, reload: u32, flags68: u32, script_len: &impl Fn(
 
 impl Gun {
     /// Bond's start on 07000005 (`Player_InitWeapon`): weapon 2 with 7 in the clip and 41 spare [L].
-    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reload_state: 0, reload_ticks: 0, reload_loop_restarted: false, switch_request: weapon, saved_weapon: weapon, prev_weapon: 0, prev_gadget: 0, switch_state: 0 } }
+    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reload_state: 0, reload_ticks: 0, reload_loop_restarted: false, switch_request: weapon, saved_weapon: weapon, prev_weapon: 0, prev_gadget: 0, switch_state: 0, fire_state: false, latch: false } }
 
     /// One tick with the trigger (action 9) `pressed` (no reload key, gun idle).
     pub fn update(&mut self, pressed: bool, p: GunParams) -> bool { self.update_with(pressed, false, false, p) }
@@ -312,12 +324,28 @@ impl Gun {
                 if p.ammo_type == 0 || self.clip >= p.ammo_per_shot {
                     if p.ammo_type != 0 { self.clip -= p.ammo_per_shot; }
                     self.timer = p.interval.max(1.0);
+                    // `Player_SetFiringAnim` (0x1a3c70:50-54) enters view state 9 and queues the fire script;
+                    // the spawn latch follows `fire_anim_len` [M 0x1a5460:688-693].
+                    self.fire_state = true;
+                    self.latch = p.fire_anim_len == 0;
                     fired = true;
                 } else { self.pending = 0; }
             } else { self.pending = 0; }
         }
         fired
     }
+
+    /// The release frame (`Player_SetWeaponAnimObj` case 9, 0x1a2e38:416-420): the fire script's current
+    /// frame has reached `fire_anim_len` (+0x44) and the round has not spawned yet (+0x95C). `frame` is the
+    /// script time in frames (the game reads `script+0x90` after `AnimListBuild`; the port's script sounds
+    /// use the same `time + 1` frame convention). Only for `fire_anim_len > 0` weapons — the others spawn
+    /// on the press tick (latched there) [M 0x1a5460:688-690].
+    pub fn release_frame_reached(&self, frame: f32, fire_anim_len: u32) -> bool {
+        fire_anim_len > 0 && self.fire_state && !self.latch && frame + 1.0 >= fire_anim_len as f32
+    }
+
+    /// The fire script ended: state 9 → 0, the idle script re-queued [M 0x1a2e38 case 9:449-456].
+    pub fn end_fire_state(&mut self) { self.fire_state = false; self.latch = false; }
 }
 
 #[cfg(test)]
@@ -326,7 +354,7 @@ mod tests {
 
     #[test]
     fn one_shot_per_press_at_most_every_interval() {
-        let p = GunParams { shots_per_pull: 1, interval: 8.0, clip: 7, ammo_per_shot: 1, reload_ticks: reload_ticks(0, 0x0600_0827, 0x1004, &|_| Some(155)), one_at_a_time: false, reload_start_ticks: 0, reload_loop_ticks: 111, reload_end_ticks: 0, ammo_type: 1 };
+        let p = GunParams { shots_per_pull: 1, interval: 8.0, clip: 7, ammo_per_shot: 1, reload_ticks: reload_ticks(0, 0x0600_0827, 0x1004, &|_| Some(155)), one_at_a_time: false, reload_start_ticks: 0, reload_loop_ticks: 111, reload_end_ticks: 0, ammo_type: 1, fire_anim_len: 0 };
         assert_eq!(p.reload_ticks, 111);
         let mut g = Gun::new(2, 7, 41);
         // Holding the trigger fires once.

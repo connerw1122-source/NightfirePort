@@ -3574,3 +3574,91 @@ dtypenew 7/9/0x17-0x19 (0x169e58 case 8) while the port routes explosive hits th
   message builds the name from `+0x24` [M 0x18e650:246]) while the remapped id drives the owned-check/equip.
 - The audit also flagged that `prime()`'s mask ≠ 0 gate is a deliberate deviation (the game loads mask-0
   SPs at create too) — documented in pickup-port-check §8/§9 and the code comment.
+
+## fix-player2 — the player bugs still failing in play (input-driven repro first)
+
+Branch s/fix-player2 (from master 75fbad4). Every fix has a headless NF_ISO test in
+`crates/nf-view/tests/fix_player2_live.rs` that drives the real path (`nf_view::load` + `Sim::step_bond`)
+and failed before its fix (all five shown failing on the pre-fix build, then green after).
+
+**1. The grenade throw (weapon 0x35) — "press fire does nothing, then no weapon shoots."**
+Root cause, two halves [M, decompile + audit fix-player2 claims 1-4]:
+- The port spawned every round on the press tick. The game's throw is data: view state 9
+  (`Player_SetFiringAnim` 0x1a3c70:52), the fire script queued, and the round spawns when the script's
+  frame reaches `fire_anim_len` (+0x44 = 26 for 0x35 [L ee_start_07000001.bin]) with the +0x95C latch
+  clear (`Player_SetWeaponAnimObj` case 9, 0x1a2e38:410-419); `fire_anim_len == 0` weapons spawn on the
+  press tick (0x1a5460:688-693). The port's press-tick spawn fired a hitscan bullet with the grenade
+  record instead of winding up.
+- The refire timer: 0x35's fire_rate (+0x40) is 900 ticks [L]. `Player_SetWeaponAnimObj` case 4 zeroes
+  BLData+0x92C when the draw finishes (0x1a2e38:316) — the port never reset it, so after the failed throw
+  every weapon inherited the ~15 s timer. Also `Player_WeaponChange` (0x1a6f80:33-47) refuses all
+  switching during view state 9 — ported as the fire-script gate in `Sim::step_bond`.
+Fix (gun.rs + scene.rs): `Gun.fire_state`/`Gun.latch` (+0x95C semantics), `GunParams.fire_anim_len`,
+the release-frame spawn, the fire-script-end → idle re-queue (case 9:449-456), the case-4 timer reset,
+the state-9 switch block. The grenade itself spawns through `Bullet_init`'s contract: three spread draws
+in the game's RNG order (0x12c5a0:166-184), speed +0x20, gravity via `+0x6C & 0x8`, silent spawn
+(param_7 = 0xffff) — the throw sound is the fire script's op-1 command. *Deviations*: spawn origin is the
+eye (the game uses midpoint(head, view-model bone 0) — no view bones in the port); the port's
+`Grenade.range` doubles as the tick fuse, which the audit pinned to Bullet_init's hardcoded BU+0xFC =
+210 (300 with +0x70 & 0x10000), NOT weapon_data+0x1C (0x35's is 5000.0 — the guard path in drone.rs
+passes +0x1C into the same field and will explode late by fuse; out of this task's files, noted).
+Test: `grenade_throw_spawns_at_the_release_frame_and_the_gun_recovers` + sisters (no hitscan on press,
+idle script restored, P2K fires afterwards).
+
+**2. Raptor drops unreliable.** The take-test log (`NF_PICKUPLOG=1`, in `Pickup::touches` + one env-gated
+result line in `Drones::update_pickups` — the latter is the task's one minimal shared-file touch in
+drone.rs) caught it live: a resting 07000001 guard drop (weapon 0xe) sits with its sphere centre ON the
+floor (model centre y ≈ 0), so the take ray ends ON the floor triangle; the port's `segment` counts
+t = 1.0 as a hit → `line_of_sight` false → the drop could never be taken. The game takes floor-resting
+drops, so its `Collide_LineOfSight` (0x1edf50 → `Collide_RayIntersect` 0x1ec690) does not fail on the
+endpoint contact. Fix (pickup.rs): the take test treats a hit at the ray's end (t ≥ 1 − 1e-4) as clear.
+*Could not verify*: RayIntersect's exact t range (the wrapper decompile is one call; disassembly needed).
+Also ported `Pickup_Update`'s fall-ray start: from the previous tick's translation (obj+0x40 follows
+obj+0x30 through the movement pass 0x1336f8:212-231), not the fixed spawn point [M 0x18e148:110-114].
+The audit's detail corrections (the ray is lowered by the glist +0x24 centre y, the copy gate is
+obj+0xFA & 0x20) are recorded; the port's `models()` reads the glist +0x10 centre for both the take
+sphere and the fall rest — a ≤ 0.07 unit rest-height divergence on the armour, noted, not fixed (the
++0x24 centre lives in the same map-object parse as the min/max bounds; nf-formats is out of scope).
+Test: `raptor_drops_are_all_taken_when_walked_over` — kills a 07000001 guard through the input path,
+walks onto every drop, asserts every drop taken (before the fix the drop logged `los false` forever).
+
+**3. The invisible armour.** The port built placed pickups into the sim only — no drawn instance
+anywhere (the only pickup draw hook was the drone-dropped-gun attachment). The game draws the pickup's
+own object (`View_DrawObjectGlist` 0x1e6780:43-44 draws obj+0xD8 at obj+0x90); kind 3 is placed-only
+(no drop path creates it [M 0x18dda0]), which is why only the armour vanished. Fix (scene.rs): placed
+pickups are instanced like doors — Character-layer vertices (`CharVertex.pickup`) posed every frame at
+`p.m`, collapsed when taken/hidden; the dropped-gun pose also honours `p.hidden` (the 0x1B twin drop
+spawns hidden-but-takeable [M 0x17a2a0:111]). Test: `the_placed_armour_pickup_is_drawn` + gone sister.
+
+**4. The civilian "no" crosshair.** Ported `Check_Target` (0x1a7810, every 6th frame): Bond's 50-unit
+view ray; a hit drone with `BLData+0x44 != 1` (the port's `team != 1`) sets the crosshair state to 3
+(BLData+0x133) [M :136-139, 181-182], rendered by `HUD_UpdateCrossHair` (0x19e6d0) from `HUDCrossCoords`
+state 3 [L 0x2bec48] — the red "no" mark (hud.rs). Aim mode forces cell 1 for non-scope weapons
+[0x19e6d0:106-112]. **The decompile has NO trigger block for non-enemy targets** — the fire chain
+(0x1a5460 → 0x1a18e0 → 0x12c5a0) never reads +0x133/+0x132/+0x44; the original fires at civilians (they
+are excluded from auto-aim lock instead, which the port already did in `auto_aim`). The task asked for a
+fire block; the evidence says the block does not exist — ported the crosshair + the existing no-lock-on
+and left the trigger alone. *Not modelled*: the weapon-id gate (:152-179 — fists/grenades/dart gun
+always show the normal mark) and the +0x2A/+0x2C4 target marking (the port's aimed_at marking covers the
+AI arm). Test: `aiming_at_a_non_enemy_shows_the_no_crosshair` (07000001 has no civilian at start — the
+test marks a guard non-enemy, the game's own test field, and asserts state 3 vs the enemy/sky arms).
+
+**5. The sniper rifle.** The take gate is `Player_EquipWeapon`'s first-person-model check (0x1a8a58:20,
+`hashtable_getitem(+0xDC)`); the port stands it in with the level's skin map. On the slim ISO's
+07000001 the sniper's fp skin 0x05000043 is absent (byte-scan [L]; the P2K's 0x05000088 is present),
+so the take was refused there — 07000005's archive has both [L]. With the take reachable (07000005),
+the fire path had no per-weapon gate left: `the_sniper_fires_after_pickup` takes, equips and fires the
+0x24 through the input path. If the user's full-ISO play still refuses the pickup on 07000001, the
+NF_PICKUPLOG take line will say so directly.
+
+**Verification**: the five repro tests (shown failing pre-fix); the full suite
+`NF_ISO=… cargo test --offline --release -j2 -p nf-game -p nf-formats -p nf-audio -p nf-view --
+--test-threads=1` (result recorded below in the commit); an independent audit subagent (8 claims: 7
+verified against the decompile, claim 8 partially refuted — the 0x35 fuse finding above — and the fix
+updated accordingly).
+
+**Could not verify / left open**: `Collide_RayIntersect`'s endpoint t range (above); the op-1 script
+sound's `Rand_Rand(500)` draw (AnimProcessScriptCmds case 1) is not ported — adding it shifts every
+seeded RNG stream and needs the established re-picking pass; the crosshair weapon-id gate; the +0x24
+fall-rest centre; the guard-grenade fuse (drone.rs, other session's file). No PCSX2 trace replay was
+possible in this sandbox.

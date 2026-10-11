@@ -215,3 +215,26 @@ Listed here so the audit is complete — these are NOT disagreements.
 **Real bugs**: 1 (the `+0x14` type mismatch breaks auto-aim).
 **Gaps (stand-ins)**: 3, 5, 6, 7.
 **Misleading comments**: 2, 4 (no code change needed, but the comments should be corrected to match the atlas).
+
+---
+
+## fix-player2 (s/fix-player2) — the playtest bugs behind entries 5/6 and the grenade throw
+
+- **The grenade throw** (the mechanism behind entry 5's old STANDIN): ported whole — view state 9
+  (`Player_SetFiringAnim` 0x1a3c70:52), the release-frame spawn at `fire_anim_len` (+0x44) with the
+  +0x95C latch (`Player_SetWeaponAnimObj` case 9 0x1a2e38:410-419; press-tick spawn for
+  `fire_anim_len == 0` [M 0x1a5460:688-693]), the case-4 refire-timer reset (0x1a2e38:316), the
+  state-9 switch block (`Player_WeaponChange` 0x1a6f80:33-47) and the fire-script-end idle re-queue
+  (case 9:449-456). FIXED — `grenade_throw_spawns_at_the_release_frame_and_the_gun_recovers`.
+- **Entry 6 (M_CONTROL+0x60 aim flag)**: still not modelled (the port keeps `Sim::aiming`); unchanged.
+- **Check_Target (0x1a7810) / crosshair state (BLData+0x133)**: ported for the non-enemy "no" mark
+  (state 3, `HUDCrossCoords` state 3 [L 0x2bec48]; `HUD_UpdateCrossHair` 0x19e6d0) — including the
+  finding that the decompile has **no trigger block** for non-enemy targets (the fire chain never reads
+  +0x133; civilians are excluded from auto-aim lock instead [M 0x1a73f8:84]). FIXED (crosshair half).
+  Not modelled: the weapon-id gate (0x1a7810:152-179) and the +0x2A/+0x2C4 marking (the port's
+  aimed_at marking covers the AI arm).
+- **The sniper (0x24)**: the take gate is the fp-model check (0x1a8a58:20); the port's stand-in (the
+  level skin map) refuses on archives without 0x05000043 (slim 07000001 [L] byte-scan) and passes on
+  07000005 [L]; with the take reachable the fire path has no per-weapon gate
+  (`the_sniper_fires_after_pickup`). The game loads fp models into a global hashtable the port does not
+  model — left as the documented stand-in.

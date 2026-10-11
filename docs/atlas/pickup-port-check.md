@@ -195,3 +195,24 @@ clocks (script = loop_start, stream = loop_start − 1); drop rounds formula and
 (two for 0x1A); `Pickup_CreateSimple` id rules; kind 0 owned→ammo branch; kind 6 bonus giving nothing; armour
 50.0 hard-set; take-time channel set; respawn/lifetime semantics; pickups takeable while falling; lifetime not
 decremented on a touch tick.
+
+---
+
+## fix-player2 (s/fix-player2) — the drop/take and drawn-instance findings
+
+- **§1 follow-up (the real "never picks up")**: a resting drop whose model centre y ≈ 0 (live: the
+  07000001 weapon-0xe drop [L, NF_PICKUPLOG log]) ends the take ray ON the floor triangle; the port's
+  `segment` counted t = 1.0 as a hit and refused it forever. The game takes floor-resting drops, so
+  `Collide_LineOfSight` (0x1edf50) does not fail on the endpoint contact — the take test now treats an
+  end-of-ray contact as clear. *Unverified*: `Collide_RayIntersect` (0x1ec690) 's exact t range.
+- **Fall-ray start**: from the previous tick's translation (obj+0x40 follows obj+0x30 through the
+  movement pass 0x1336f8:212-231), not the fixed spawn point [M 0x18e148:110-114]. Audit corrections:
+  the ray is lowered by the glist **+0x24** centre y and the copy gate is obj+0xFA & **0x20** — the
+  port's `models()` reads the glist +0x10 centre for both the take sphere and the rest (≤ 0.07 unit
+  rest-height divergence on the armour; nf-formats out of scope, noted).
+- **Placed pickups are drawn** (`View_DrawObjectGlist` 0x1e6780 draws obj+0xD8 at obj+0x90): instanced
+  like doors, collapsed when taken/hidden; the dropped-gun pose honours `p.hidden` (the 0x1B twin drop
+  spawns hidden-but-takeable [M 0x17a2a0:111]). FIXED — the invisible armour (kind 3 is placed-only,
+  0x18dda0: no drop path creates it).
+- **NF_PICKUPLOG=1**: every take test (position, centre, distance vs radius+1.1, LOS) and the take
+  result with the `loaded` gate value.
