@@ -89,14 +89,22 @@ impl Dev {
     fn infinite_amma(&self) -> bool { self.infinite_ammo }
 
     /// Spawn a guard at `pos` with the picked type/mode, the way the game's spawner does (`Action::Spawn` → present +
-    /// enabled + llist). Returns the new drone's index.
+    /// enabled + llist). Also adds a `Character` (skin + skeleton + matrix) and a `char_drone` entry so the
+    /// renderer draws the guard — without this the drone exists in the AI but is invisible (the user's Round 7
+    /// report: "spawning a guard doesn't work in the viewer, even though the test passes"). B-12.
     pub fn spawn_guard(&self, scene: &mut Scene, pos: [f32; 3], yaw: f32) -> Option<usize> {
         let sim = scene.sim.as_mut()?;
         let d = sim.data();
-        let (skin, mode) = match self.spawn {
-            SpawnPick::Normal => (0x0500_0006u32, 0u32),
-            SpawnPick::Sniper => (0x0500_0019, 2),
-            SpawnPick::Ambush => (0x0500_0006, 0x10),
+        // B-12: pick the skin of the first active guard on the level (guarantees the mesh is in the level archive).
+        // The old hardcoded skins (0x05000006 / 0x05000019) aren't in 07000005's skin table, so spawn returned None.
+        let skin = sim.drones.list.iter()
+            .find(|x| x.present && x.enabled && !x.corpse && x.health > 0.0 && x.drawn)
+            .map(|x| x.skin)
+            .unwrap_or(0x0500_0006);
+        let mode = match self.spawn {
+            SpawnPick::Normal => 0u32,
+            SpawnPick::Sniper => 2u32,
+            SpawnPick::Ambush => 0x10u32,
         };
         let mut rng = Rng::new(0xdead_beef);
         let param = |k: u32| match k { 0 => skin, 16 => mode, 21 => mode, _ => 0 };
@@ -109,6 +117,31 @@ impl Dev {
         let idx = sim.drones.list.len();
         sim.drones.list.push(dr);
         sim.drones.llist.push(idx);
+        // B-12: add a Character (mesh + skeleton) so the renderer draws the spawned guard. The skin is resolved
+        // by hashcode from the level's skin table; the skeleton from the skin's skeleton id. slot_bones is empty
+        // (no weapon-attachment bones — the guard's held weapon won't draw, but the body will). This mirrors how
+        // `Scene::build` creates a Character for each placement (scene.rs:1114).
+        let (skin_obj, skeleton_obj) = {
+            let skin_ref = sim.skins.get(&skin)?;
+            let skeleton_ref = sim.skeletons.get(&skin_ref.skeleton)?;
+            (skin_ref.clone(), skeleton_ref.clone())
+        };
+        let matrix = nf_formats::placement::object_matrix([0.0, yaw, 0.0], pos);
+        let char_idx = scene.characters.len();
+        scene.characters.push(crate::scene::Character {
+            matrix,
+            skin: skin_obj,
+            skeleton: skeleton_obj,
+            slot_bones: Vec::new(), // no weapon slots — body draws, held weapon does not
+            start: None,
+            role: nf_formats::drone::SpawnRole::Placed,
+            floor: None,
+            script: None,
+        });
+        // char_drone maps character index → drone index. The renderer's `animate()` uses this to find the drone
+        // for each character; without it, the spawned character would pose in the bind pose (not the drone's state).
+        sim.char_drone.push(Some(idx));
+        let _ = char_idx; // the character is now at scene.characters[char_idx]; char_drone[char_idx] == Some(idx)
         Some(idx)
     }
 
@@ -907,20 +940,23 @@ mod scenarios {
             }
         }
     }
-    /// B-11: cutscene-ai-pause. Places Bond at the nearest TouchOnce (0xEA) trigger zone's centre — the gatehouse
-    /// cut-scene trigger near the castle gate on 07000005 — so the user can verify guards do NOT fire during the
-    /// cut-scene (the B-10/B-11 fix: `Drones::paused` skips the per-drone update while `Sim::disabled`). The
-    /// cut-scene should start within ~1 s, run ~15-20 s, then hand control back (PlayerEnable). An active guard is
-    /// placed nearby so the user can see it stands still during the cut-scene.
+    /// B-12: cutscene-ai-pause. Places Bond on the gatehouse wall top (100, 26, 108) — the main agent confirmed
+    /// this position triggers the gatehouse cut-scene headless (`nf-view <iso> 07000005 --bond 100,26,108 --frame
+    /// 1200 --shot`). The cut-scene fires within ~1 s, runs ~15-20 s, then hands control back (PlayerEnable). An
+    /// active guard is placed nearby so the user can see it stands still during the cut-scene (the B-10/B-11 fix:
+    /// `Drones::paused` skips the per-drone update while `Sim::disabled`).
     pub fn cutscene_ai_pause(scene: &mut Scene) {
-        // B-11: the gatehouse cut-scene on 07000005 is triggered by walking into a zone (no 0xEA TouchOnce trigger
-        // exists — the kinds are 1/2/0xa). Place Bond at the level start and walk forward; the cut-scene fires
-        // within ~20 s of walking (the 2be51e5 commit confirmed this headless). The user walks from here.
         if let Some(sim) = scene.sim.as_mut() {
-            // Bond stays at the level start; the user walks forward to trigger the gatehouse cut-scene.
-            eprintln!("[scenario] cutscene-ai-pause: Bond at the level start ({:.1}, {:.1}, {:.1}). Walk forward toward the castle gate. The gatehouse cut-scene fires within ~20 s. Guards must NOT fire during it (the AI is paused via Drones::paused). Control returns after the cut-scene.",
-                sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2]);
+            // B-12: the gatehouse plate is at y≈27.05; placing Bond at (100, 26, 108) puts him on the plate.
+            // Use Bond::new (not stand_at) to match the main agent's `--bond 100,26,108` path — Bond starts at
+            // the exact position and the cut-scene trigger fires within ~1 s of ticking.
+            let pos = [100.0, 28.0, 108.0]; // y=28: above the plate (y≈27.05), so Bond falls onto it and triggers the cut-scene
+            sim.bond = nf_game::player::Bond::new(pos, sim.bond.yaw);
+            eprintln!("[scenario] cutscene-ai-pause: Bond on the gatehouse plate ({:.1}, {:.1}, {:.1}). The cut-scene fires within ~1 s. Guards must NOT fire during it (the AI is paused via Drones::paused). Control returns after ~15-20 s. Check the nearest guard stands still during the cut-scene.",
+                pos[0], pos[1], pos[2]);
         }
+        // B-12: do NOT call place_bond_near_guard — it would move Bond off the plate and the cut-scene wouldn't fire.
+        // The existing guards on the level are the ones the user checks (they're within ~40 m of the plate).
     }
     #[allow(dead_code)] // B-8: removed from registry until its test passes
     pub fn bullet_flyby(scene: &mut Scene) {

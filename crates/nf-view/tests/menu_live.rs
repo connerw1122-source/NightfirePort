@@ -114,22 +114,35 @@ fn menu_layout_no_row_overlap_and_fits_panel() {
 #[test]
 fn menu_spawn_normal_guard_does_not_panic() {
     let Some((mut scene, mut dev)) = loaded() else { eprintln!("NF_ISO not set — skipping"); return };
+    // Diagnostic: print available skins on 07000005.
+    if let Some(sim) = scene.sim.as_ref() {
+        let skins: Vec<u32> = sim.skins.keys().copied().collect();
+        eprintln!("[diag] {} skins on 07000005: {:x?}", skins.len(), &skins[..skins.len().min(20)]);
+    }
     dev.spawn = dev::SpawnPick::Normal;
     // Spawn at a known-open spot (Bond's start on 07000005 is open ground).
     let pos = scene.sim.as_ref().map(|s| s.bond.pos).unwrap_or([0.0; 3]);
-    let n_before = scene.sim.as_ref().map_or(0, |s| s.drones.list.len());
+    let n_drones_before = scene.sim.as_ref().map_or(0, |s| s.drones.list.len());
+    let n_chars_before = scene.characters.len();
+    let n_char_drone_before = scene.sim.as_ref().map_or(0, |s| s.char_drone.len());
     let gi = dev.spawn_guard(&mut scene, pos, 0.0);
     assert!(gi.is_some(), "spawn_guard returned None - no drone created");
     let gi = gi.unwrap();
-    // B-11: assert the VISIBLE effect - a new drone exists, is present + drawn, and is in front of Bond.
+    // B-11/B-12: assert the VISIBLE effect - a new drone exists, is present + drawn, in the llist, AND has a
+    // Character (mesh + skeleton) + char_drone entry so the renderer draws it (the Round 7 bug: the drone existed
+    // in the AI but was invisible because no Character was added).
     let sim = scene.sim.as_ref().unwrap();
-    assert_eq!(sim.drones.list.len(), n_before + 1, "spawn did not add a drone to the list");
+    assert_eq!(sim.drones.list.len(), n_drones_before + 1, "spawn did not add a drone to the list");
     let dr = &sim.drones.list[gi];
     assert!(dr.present, "spawned guard not present");
     assert!(dr.drawn, "spawned guard not drawn (obj+0xFC) - it wouldn't be visible in play");
     assert!(sim.drones.llist.contains(&gi), "spawned guard not in the llist - the game wouldn't run its AI");
     assert!(dr.grenade_count > 0, "spawned guard has no grenades (spawn_guard gives 5)");
-    eprintln!("[menu_test] spawn Normal: guard #{gi} present+drawn+in-llist, {} grenades, at {:?}", dr.grenade_count, dr.pos);
+    // B-12: the Character + char_drone (the renderer's link from character to drone).
+    assert_eq!(scene.characters.len(), n_chars_before + 1, "spawn did not add a Character (mesh) - the guard would be invisible");
+    assert_eq!(sim.char_drone.len(), n_char_drone_before + 1, "spawn did not add a char_drone entry - the renderer can't link the character to the drone");
+    assert_eq!(sim.char_drone.last().copied().flatten(), Some(gi), "char_drone entry does not point to the spawned drone");
+    eprintln!("[menu_test] spawn Normal: guard #{gi} present+drawn+in-llist, {} grenades, Character+char_drone added, at {:?}", dr.grenade_count, dr.pos);
     // Tick 60 frames; the new drone's first tick (set_state, anim, vision) must not panic.
     tick(&mut scene, 60);
     let dr = &scene.sim.as_ref().unwrap().drones.list[gi];
