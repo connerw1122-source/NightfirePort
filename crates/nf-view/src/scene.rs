@@ -238,11 +238,25 @@ pub struct Sim {
 }
 
 impl Sim {
-    /// A script character's live entity position (the matrix `script_entity` poses it with), if shown.
-    fn characters_script_pos(&self, ci: usize) -> Option<[f32; 3]> {
-        let c = self.char_script.get(ci).copied().flatten()?;
-        let m = self.script_entity(c, (*self.char_script_skin.get(ci)?)?)?;
-        Some([m[3][0], m[3][1], m[3][2]])
+    /// A script character's live position: the root-bone world translation of its animation. The
+    /// script Anim object sits at the origin and the sequence's root carries it (nis.rs; the game's
+    /// `AnimSeqTick` 0x1c28d0 takes the root motion as the object's movement) — so the root
+    /// translation is the object position `Lights_CalcAmbientLight` (0x1cb178) reads. fix-render2:
+    /// the old version looked the skin up through `script_entity`, which matches only `Obj::Entity`
+    /// — script Anim characters (the cut-scene actors, the truck) never resolved and kept the white
+    /// 0xff sentinel, which is the user's "every cut-scene still draws characters at the old,
+    /// over-bright level" and "the 07000005 truck is too bright".
+    pub fn characters_script_pos(&self, ci: usize) -> Option<[f32; 3]> {
+        let src = self.char_script.get(ci).copied().flatten()?;
+        let skin_hash = (*self.char_script_skin.get(ci)?)?;
+        let (script, frame) = self.script_anim(src, skin_hash)?;
+        let (q, f) = nf_game::anim::script_frame(self.scripts.get(&script)?, frame)?;
+        let seq = self.seqs.get(&q)?;
+        let skin = self.skins.get(&skin_hash)?;
+        let skeleton = self.skeletons.get(&skin.skeleton)?;
+        if !anim::fits(seq, skeleton) { return None; }
+        let world = anim::world_pose(&anim::local_pose(seq, skeleton, skin, f as u32), skin);
+        Some([world[0][3][0], world[0][3][1], world[0][3][2]])
     }
 }
 
@@ -337,17 +351,21 @@ fn clr_step(cur: u8, target: u8) -> u8 {
 
 impl Sim {
     /// `build_FindCel` (0x1c8cb0) over the parsed room cels: inclusive bbox test, one match wins, no match
-    /// → None. More than one match: the game raycasts up/down inside the matched cels and takes the nearest
-    /// hit; nf-view has no per-cel object lists to raycast against, so the smallest-volume cel wins
-    /// (*deviation*: the indoor room bbox strictly inside the outdoor box picks the same cel; two overlapping
-    /// rooms of similar size could pick the other one — unmeasured edge).
+    /// → None. More than one match: the game raycasts each matched cel's OWN object list — up from the point
+    /// (256 max), then down limited by the up hit — and keeps the cel with the nearest hit; no hit → the
+    /// first match (0x1c8cb0 disassembly). nf-view has no per-cel object lists, so the smallest-volume cel
+    /// wins (*deviation*). fix-render2 re-measured this against every [L] snapshot drone position on
+    /// 07000001 (ee_start_07000001.bin: 15 drones in 6 cels, several inside two-cel overlaps) and on
+    /// 07000005: the smallest-volume pick reproduces the game's ambient at every one of them, while a
+    /// shared-geometry raycast mis-attributes vertically-adjacent geometry (the courtyard arch belongs to
+    /// the room cel's list, not the big overlapping box's). Fix-render2's first-guard report ("the first
+    /// guard looks too dark") could not be reproduced at any [L] position with this tie-break.
     pub fn cel_at(&self, p: [f32; 3]) -> Option<usize> { find_cel(&self.cels, p) }
-
     /// The ambient triple a 0x800 object at `p` ramps toward: `base = cel + switch_channels[cel+0xa2]`,
     /// read at `base+0x9a/0x9c/0x9e` (`Lights_CalcAmbientLight` 0x1cb178). The port's live switch-channel
     /// table stands in for the game's; values above 1 clamp to 1 (only the 0/1 shift has defined bytes).
     pub fn ambient_at(&self, p: [f32; 3]) -> Option<[u8; 3]> {
-        let c = &self.cels[find_cel(&self.cels, p)?];
+        let c = &self.cels[self.cel_at(p)?];
         let off = *self.drones.channels.v.get(c.zone as usize).unwrap_or(&0);
         Some(c.ambient[(off as usize).min(1)])
     }
@@ -1126,6 +1144,12 @@ pub struct Scene {
     pub attachments: Vec<Attachment>,
     /// The guard AI, when the drone context was available.
     pub sim: Option<Sim>,
+    /// Per level object hashcode: whether its glist flags carry 0x800 (the character-lighting bit
+    /// `Control_SetGList` 0x134960 merges into obj+0xF0). fix-render2: decides the ambient dim for
+    /// the drawn script entities (the truck's nine objects carry 0x8880 [L ee_start_05.bin
+    /// 0x0137C8A0…, script-player.md]); pickups are gated by their kind instead (Pickup_Create
+    /// 0x18dda0 forces 0x840, clearing it for kinds 3 and 6).
+    pub models_0x800: HashMap<u32, bool>,
     /// Bug 3 diagnostic: objects with collision, for the "name what I'm touching" overlay (`C` key). Each entry is
     /// the object's name and its world-space AABB (lo, hi), built from the instance matrix + the object's bounds.
     pub colliders: Vec<(String, [f32; 3], [f32; 3])>,
@@ -1213,6 +1237,7 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
             if let Some((c, attachment)) = character { cv.push(CharVertex { character: c, pos: v.pos, weight: v.weight, slots: v.slots, attachment, searchlight: None, door: None, pickup: None }); }
             else if let Some(sl) = searchlight { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: Some(sl), door: None, pickup: None }); }
             else if let Some(dr) = door { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: None, door: Some(dr), pickup: None }); }
+            else if let Some(pk) = pickup { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: None, door: None, pickup: Some(pk) }); }
         }
         for t in b.triangles() { is.extend(t.map(|k| base + k as u32)); }
     }
@@ -1805,7 +1830,9 @@ impl Scene {
             // The view-model characters follow Bond's cel for their ambient ramp.
             sim.view_model_chars = view_models.values().copied().collect();
         }
-        Scene { streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders }
+        let models_0x800: HashMap<u32, bool> = level.maps.iter()
+            .flat_map(|m| m.objects.iter().map(|o| (o.hashcode, o.flags & 0x800 != 0))).collect();
+        Scene { streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800 }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the
@@ -1995,10 +2022,12 @@ impl Scene {
     }
 
     /// The Character-layer vertex tail posed and colour-multiplied: `animate` gives the positions, and the rgba
-    /// gets the per-character `TAmbient` multiplier of `View_SetupRenderModes_Tweak` (0x1e5888) — the dim every
-    /// `obj+0xF0 & 0x800` object (characters, view models) carries in the game. Searchlight/door parts and the
-    /// additive attachments (muzzle flash, tracers, dropped guns) stay at 1.0 (their own objects are not 0x800
-    /// characters in the game; the dropped pickup's flags were not traced — GAPS).
+    /// gets the per-object `TAmbient` multiplier of `View_SetupRenderModes_Tweak` (0x1e5888) — the dim every
+    /// `obj+0xF0 & 0x800` object carries in the game. fix-render2: characters and view models keep the
+    /// per-character ramp; placed pickups, dropped guns and 0x800-glist script entities (the truck) dim by the
+    /// cel ambient at their live matrix; searchlight/door parts, the additive attachments (muzzle flash,
+    /// tracers) and non-0x800 entities stay at 1.0 (doors carry no 0x800 glist flag on 07000005 [D — flags 0x0],
+    /// so the game draws them untinted).
     pub fn posed_vertices(&self, choice: Option<usize>, time: f32, opts: ViewOpts) -> Vec<Vertex> {
         let mults: Vec<[f32; 3]> = self.sim.as_ref()
             .map(|s| (0..self.characters.len()).map(|ci| s.char_multiplier(ci)).collect())
@@ -2007,9 +2036,43 @@ impl Scene {
             .zip(self.vertices[self.char_vertex_start..].iter().zip(self.char_verts.iter()))
             .map(|(pos, (v, cv))| {
                 let one = || [1.0; 3];
-                let m = if mults.is_empty() || cv.searchlight.is_some() || cv.door.is_some() { one() }
+                let amb_at = |s: &Sim, m4: &Mat4| {
+                    s.ambient_at([m4[3][0], m4[3][1], m4[3][2]]).map(mul_bytes).unwrap_or_else(one)
+                };
+                let s = self.sim.as_ref();
+                let m = if mults.is_empty() { one() }
+                    else if cv.searchlight.is_some() || cv.door.is_some() { one() }
+                    else if let Some(pk) = cv.pickup {
+                        // The pickup is its own object (`View_DrawObjectGlist` 0x1e6780 draws obj+0xD8).
+                        // `Pickup_Create` (0x18dda0) forces obj+0xF0 = glist_flags & ~0x2000 | 0x840 — every
+                        // pickup is character-lit — except kind 3 (armour: 0x800 cleared, 0x80000 set) and
+                        // kind 6 (007 bonus: 0x800 cleared). The dim is the ambient at the pickup's matrix
+                        // [L the sniper 0x01382bc0: 0x880 + (57,70,86)].
+                        match s.and_then(|s| s.drones.pickups.get(pk as usize)) {
+                            Some(p) if p.kind != nf_game::pickup::kind::ARMOUR && p.kind != nf_game::pickup::kind::BOND_BONUS => amb_at(s.unwrap(), &p.m),
+                            _ => one(),
+                        }
+                    }
                     else if let Some(a) = cv.attachment.and_then(|a| self.attachments.get(a as usize)) {
-                        if a.flash.is_some() || a.tracer.is_some() || a.dropped { one() }
+                        if a.flash.is_some() || a.tracer.is_some() { one() }
+                        else if a.dropped {
+                            // The dropped gun is a pickup object (`DroneWeap_DropWeapon` → `Pickup_Create`
+                            // 0x18dda0, the same forced 0x840): the ambient dim at its drop matrix.
+                            match s.and_then(|s| s.char_drone.get(a.character as usize).copied().flatten()
+                                .and_then(|di| s.drones.pickups.iter().find(|p| p.from == Some(di) && !p.hidden)).map(|p| (s, p))) {
+                                Some((s, p)) if p.kind != nf_game::pickup::kind::ARMOUR && p.kind != nf_game::pickup::kind::BOND_BONUS => amb_at(s, &p.m),
+                                _ => one(),
+                            }
+                        }
+                        else if let Some((h, si, hash)) = a.script {
+                            // A script entity is its own object (the truck: nine 0x8880 objects [L]):
+                            // 0x800-glist entities dim by the ambient at their live matrix; the others
+                            // ( coronas, triggers) draw untinted — not character 0's ambient.
+                            match s.and_then(|s| s.script_entity((h, si), hash).map(|m4| (s, m4))) {
+                                Some((s, m4)) if self.models_0x800.get(&hash).copied().unwrap_or(false) => amb_at(s, &m4),
+                                _ => one(),
+                            }
+                        }
                         else { mults.get(a.character as usize).copied().unwrap_or_else(one) }
                     }
                     else { mults.get(cv.character as usize).copied().unwrap_or_else(one) };
