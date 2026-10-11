@@ -4061,3 +4061,51 @@ their fix (except the party-level counter test, which pins measured numbers) and
 **Full suite**: `NF_ISO=<iso> cargo test --offline --release -j2 -p nf-game -p nf-formats -p
 nf-audio -p nf-view -- --test-threads=1` — see the commit; only the 3 allowed slim-ISO disc_golden
 failures.
+
+## fix-render3 — what fix-render2 didn't reach (jitter regression, 07000007 view lag, cel cull, G-041)
+
+The task's lighting bullets (cut-scene characters, dropped guns / placed pickups, the truck) were
+already fixed by fix-render2 (WORKLOG 0088, on master; tests in render2_live.rs re-run green in this
+suite) — the first-guard item stays as fix-render2 left it (not reproduced at any [L] position; needs
+a PCSX2 trace of the walking guard).
+
+**The 07000006 frame jitter — measured, mechanism identified.** Headless timings on 07000006 through
+the real path: `step_bond` **4.1 ms/tick**, `animate` **5.8 ms/frame**, `posed_vertices` **14.4
+ms/frame** (76 characters, 379 k character vertices), `ramp_char_ambient` 0.0036 ms/tick (negligible).
+The viewer runs 1–8 sim ticks per render frame (fixed 60 Hz logic decoupled from the display rate), so
+the sim alone bursts 4–33 ms per frame — a variable per-frame cost that presents as jitter. The sim
+tick cost is the dominant term and predates fix-render2's merge (fix-drone3's party-civilian AI runs
+in the same ticks; the render-side additions were measured at ≈1 ms). fix-render3's render-side cut:
+the fix-render2 ambient multipliers for pickups / dropped guns / script entities were computed inside
+the per-vertex closure (per-vertex `find_cel` scans + pickup scans); they now run once per distinct
+key per frame (a `Sim::ambient_lookups` counter pins it: **2 lookups per posed_vertices pass** on
+07000005 where the truck's nine 0x8880 parts previously triggered thousands). posed_vertices: 14.4 →
+**13.2 ms/frame**. What remains on 07000006 is the per-tick AI cost and the irreducible 379 k-vertex
+pose+copy — a main-agent-level item (pose caching between ticks, or the AI tick budget).
+
+**The 07000007 view-direction lag — measured, the honest finding.** From the start camera: looking
+forward submits 4526 World draws (fix-render2's number — all 32 room cels' bboxes genuinely intersect
+that frustum), looking away 64 (the sphere cull drops 97 %+), left 1379, right 148, down 593. The
+direction dependence is the frustum itself; the start view's cost is front-facing geometry, so the
+lever is OCCLUSION, not frustum refinement.
+
+**The cel visibility cull (G-016, the decompile-visible half).** Every static World draw now carries
+its room cel (`Material.cel` = `build_FindCel` 0x1c8cb0 over the placement's world centre — the same
+lookup `build_LinkToRoom` 0x1c9680 uses to link the game's objects), and the renderer frustum-tests
+each room cel's bbox per frame as an 8-corner box test (`box_outside` — the port's reading of
+`View_AddCels` 0x1e6ba0's `Vision_InView` frustum/bbox test) and skips attributed draws in invisible
+cels. `NF_NOCELCULL` disables; NF_DRAWS counts the cel-culled draws separately. Measured: attribution
+4438/4438 on 07000006, 3820/3820 on 07000002, 4861/4869 on 07000007; the test relieves nothing on
+today's three problem views (pinned in render3_live.rs) — the portal-graph traversal that would cut
+the start view needs map block 0x21 (the pCelList record adjacency), which `nf-formats` does not
+expose and this task's file set does not include, and the game's own traversal evidence is open
+(cel.md's caveat). G-016 stays open with the measured numbers.
+
+**Not reached (out of budget, unchanged from GAPS):** G-041 bullet decals (the measurement is complete
+in GAPS; the port shape is specified — a new effects module + a 200-entry FIFO in the Sim), R2 (the
+decal/shadow depth rule), O5 (searchlight beam/corona), G-042 (the bathhouse skin-texel histogram —
+needs the skin's texture identified on the disc).
+
+**Tests**: `crates/nf-view/tests/render3_live.rs` — 3 NF_ISO tests (the 07 direction-dependence pin,
+the 06/02 attribution + eye-cel vanish guard, the per-key lookup budget), shown failing against the
+pre-attribution code (first run: attribution 0, no relief) and green after.
