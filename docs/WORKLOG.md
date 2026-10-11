@@ -3574,6 +3574,164 @@ dtypenew 7/9/0x17-0x19 (0x169e58 case 8) while the port routes explosive hits th
   message builds the name from `+0x24` [M 0x18e650:246]) while the remapped id drives the owned-check/equip.
 - The audit also flagged that `prime()`'s mask ≠ 0 gate is a deliberate deviation (the game loads mask-0
   SPs at create too) — documented in pickup-port-check §8/§9 and the code comment.
+
+## fix-player2 — the player bugs still failing in play (input-driven repro first)
+
+Branch s/fix-player2 (from master 75fbad4). Every fix has a headless NF_ISO test in
+`crates/nf-view/tests/fix_player2_live.rs` that drives the real path (`nf_view::load` + `Sim::step_bond`)
+and failed before its fix (all five shown failing on the pre-fix build, then green after).
+
+**1. The grenade throw (weapon 0x35) — "press fire does nothing, then no weapon shoots."**
+Root cause, two halves [M, decompile + audit fix-player2 claims 1-4]:
+- The port spawned every round on the press tick. The game's throw is data: view state 9
+  (`Player_SetFiringAnim` 0x1a3c70:52), the fire script queued, and the round spawns when the script's
+  frame reaches `fire_anim_len` (+0x44 = 26 for 0x35 [L ee_start_07000001.bin]) with the +0x95C latch
+  clear (`Player_SetWeaponAnimObj` case 9, 0x1a2e38:410-419); `fire_anim_len == 0` weapons spawn on the
+  press tick (0x1a5460:688-693). The port's press-tick spawn fired a hitscan bullet with the grenade
+  record instead of winding up.
+- The refire timer: 0x35's fire_rate (+0x40) is 900 ticks [L]. `Player_SetWeaponAnimObj` case 4 zeroes
+  BLData+0x92C when the draw finishes (0x1a2e38:316) — the port never reset it, so after the failed throw
+  every weapon inherited the ~15 s timer. Also `Player_WeaponChange` (0x1a6f80:33-47) refuses all
+  switching during view state 9 — ported as the fire-script gate in `Sim::step_bond`.
+Fix (gun.rs + scene.rs): `Gun.fire_state`/`Gun.latch` (+0x95C semantics), `GunParams.fire_anim_len`,
+the release-frame spawn, the fire-script-end → idle re-queue (case 9:449-456), the case-4 timer reset,
+the state-9 switch block. The grenade itself spawns through `Bullet_init`'s contract: three spread draws
+in the game's RNG order (0x12c5a0:166-184), speed +0x20, gravity via `+0x6C & 0x8`, silent spawn
+(param_7 = 0xffff) — the throw sound is the fire script's op-1 command. *Deviations*: spawn origin is the
+eye (the game uses midpoint(head, view-model bone 0) — no view bones in the port); the port's
+`Grenade.range` doubles as the tick fuse, which the audit pinned to Bullet_init's hardcoded BU+0xFC =
+210 (300 with +0x70 & 0x10000), NOT weapon_data+0x1C (0x35's is 5000.0 — the guard path in drone.rs
+passes +0x1C into the same field and will explode late by fuse; out of this task's files, noted).
+Test: `grenade_throw_spawns_at_the_release_frame_and_the_gun_recovers` + sisters (no hitscan on press,
+idle script restored, P2K fires afterwards).
+
+**2. Raptor drops unreliable.** The take-test log (`NF_PICKUPLOG=1`, in `Pickup::touches` + one env-gated
+result line in `Drones::update_pickups` — the latter is the task's one minimal shared-file touch in
+drone.rs) caught it live: a resting 07000001 guard drop (weapon 0xe) sits with its sphere centre ON the
+floor (model centre y ≈ 0), so the take ray ends ON the floor triangle; the port's `segment` counts
+t = 1.0 as a hit → `line_of_sight` false → the drop could never be taken. The game takes floor-resting
+drops, so its `Collide_LineOfSight` (0x1edf50 → `Collide_RayIntersect` 0x1ec690) does not fail on the
+endpoint contact. Fix (pickup.rs): the take test treats a hit at the ray's end (t ≥ 1 − 1e-4) as clear.
+*Could not verify*: RayIntersect's exact t range (the wrapper decompile is one call; disassembly needed).
+Also ported `Pickup_Update`'s fall-ray start: from the previous tick's translation (obj+0x40 follows
+obj+0x30 through the movement pass 0x1336f8:212-231), not the fixed spawn point [M 0x18e148:110-114].
+The audit's detail corrections (the ray is lowered by the glist +0x24 centre y, the copy gate is
+obj+0xFA & 0x20) are recorded; the port's `models()` reads the glist +0x10 centre for both the take
+sphere and the fall rest — a ≤ 0.07 unit rest-height divergence on the armour, noted, not fixed (the
++0x24 centre lives in the same map-object parse as the min/max bounds; nf-formats is out of scope).
+Test: `raptor_drops_are_all_taken_when_walked_over` — kills a 07000001 guard through the input path,
+walks onto every drop, asserts every drop taken (before the fix the drop logged `los false` forever).
+
+**3. The invisible armour.** The port built placed pickups into the sim only — no drawn instance
+anywhere (the only pickup draw hook was the drone-dropped-gun attachment). The game draws the pickup's
+own object (`View_DrawObjectGlist` 0x1e6780:43-44 draws obj+0xD8 at obj+0x90); kind 3 is placed-only
+(no drop path creates it [M 0x18dda0]), which is why only the armour vanished. Fix (scene.rs): placed
+pickups are instanced like doors — Character-layer vertices (`CharVertex.pickup`) posed every frame at
+`p.m`, collapsed when taken/hidden; the dropped-gun pose also honours `p.hidden` (the 0x1B twin drop
+spawns hidden-but-takeable [M 0x17a2a0:111]). Test: `the_placed_armour_pickup_is_drawn` + gone sister.
+
+**4. The civilian "no" crosshair.** Ported `Check_Target` (0x1a7810, every 6th frame): Bond's 50-unit
+view ray; a hit drone with `BLData+0x44 != 1` (the port's `team != 1`) sets the crosshair state to 3
+(BLData+0x133) [M :136-139, 181-182], rendered by `HUD_UpdateCrossHair` (0x19e6d0) from `HUDCrossCoords`
+state 3 [L 0x2bec48] — the red "no" mark (hud.rs). Aim mode forces cell 1 for non-scope weapons
+[0x19e6d0:106-112]. **The decompile has NO trigger block for non-enemy targets** — the fire chain
+(0x1a5460 → 0x1a18e0 → 0x12c5a0) never reads +0x133/+0x132/+0x44; the original fires at civilians (they
+are excluded from auto-aim lock instead, which the port already did in `auto_aim`). The task asked for a
+fire block; the evidence says the block does not exist — ported the crosshair + the existing no-lock-on
+and left the trigger alone. *Not modelled*: the weapon-id gate (:152-179 — fists/grenades/dart gun
+always show the normal mark) and the +0x2A/+0x2C4 target marking (the port's aimed_at marking covers the
+AI arm). Test: `aiming_at_a_non_enemy_shows_the_no_crosshair` (07000001 has no civilian at start — the
+test marks a guard non-enemy, the game's own test field, and asserts state 3 vs the enemy/sky arms).
+
+**5. The sniper rifle.** The take gate is `Player_EquipWeapon`'s first-person-model check (0x1a8a58:20,
+`hashtable_getitem(+0xDC)`); the port stands it in with the level's skin map. On the slim ISO's
+07000001 the sniper's fp skin 0x05000043 is absent (byte-scan [L]; the P2K's 0x05000088 is present),
+so the take was refused there — 07000005's archive has both [L]. With the take reachable (07000005),
+the fire path had no per-weapon gate left: `the_sniper_fires_after_pickup` takes, equips and fires the
+0x24 through the input path. If the user's full-ISO play still refuses the pickup on 07000001, the
+NF_PICKUPLOG take line will say so directly.
+
+**Verification**: the five repro tests (shown failing pre-fix); the full suite
+`NF_ISO=… cargo test --offline --release -j2 -p nf-game -p nf-formats -p nf-audio -p nf-view --
+--test-threads=1` (result recorded below in the commit); an independent audit subagent (8 claims: 7
+verified against the decompile, claim 8 partially refuted — the 0x35 fuse finding above — and the fix
+updated accordingly).
+
+**Could not verify / left open**: `Collide_RayIntersect`'s endpoint t range (above); the op-1 script
+sound's `Rand_Rand(500)` draw (AnimProcessScriptCmds case 1) is not ported — adding it shifts every
+seeded RNG stream and needs the established re-picking pass; the crosshair weapon-id gate; the +0x24
+fall-rest centre; the guard-grenade fuse (drone.rs, other session's file). No PCSX2 trace replay was
+possible in this sandbox.
+## 0087 — fix-render: the 0x800 TWEAK/ambient multiply (characters/guns too bright), HUD cut-scene gate
+
+Task: the user's "characters and guns too bright while the world is right" (master 75fbad4), plus the
+HUD-visible-in-cut-scenes report; decals if the budget allowed. Branch `s/fix-render`. Sources of
+truth: `docs/atlas/gs-leaf.md`, `docs/atlas/render-port-check.md` §1, `docs/atlas/cel.md`.
+
+**Root cause (already documented by atlas-5)** [M 0x1e5888 + 0x1cb178]: the game dims every
+`obj+0xF0 & 0x800` object by `tint × obj+0x100..0x102 >> 8` (the VU1 `TAmbient` term), with the
+ambient bytes snapped to the object's cel's ambient; the port never applied the multiply.
+
+**What was ported** (files: `crates/nf-view/src/{scene,lib}.rs`; gpu.rs unchanged — the multiply
+lives on the vertex bytes, the same carrier the game's VU1 matrix uses):
+- `parse_room_cels` (scene.rs): the main map's cel placements with low-16 flags 0xc023/0xc047 become
+  `Cel`s — ambient triple 1 = placement params 0/1/2 low bytes (all zero → 0x3c), triple 2 = params
+  6/7/8 (0xc047), zone = param 5, bbox = the glist min/max. Pinned by disassembly:
+  `parsemap_block_map_data_static` 0x1d1998 builds a 0xb0 stack record whose +0x2c+4k slot is
+  placement param k (the params store base is sp+0x2c, the record passed to
+  `parseentity_fixup_entity` is sp), and `parseentity_fixup_entity` 0x1d00c0 reads the ambient bytes
+  at record+0x2c/0x30/0x34, the zone at +0x40 (0xc047) and the second triple at +0x44/+0x48/+0x4c.
+  The bbox is copied raw (record+0x20, 0x20 bytes → cel+0x40) — only the centre at cel+0x80 gets the
+  placement transform (`parseentity_transform_bounding_box` 0x1d0fb0) — and the record itself is
+  `parsemap_block_entity_params` 0x1d1508's payload+8 mapping (centre/radius/min/max), so the port's
+  `MapObject.min/max` are the cel bbox.
+- `find_cel` (0x1c8cb0's walk over the flags-0x40000 room cels, inclusive bbox, cap 0x40). [L]
+  ee_start_05.bin: 137 runtime cels, exactly 19 with 0x40000; ee_start_07000001.bin: 120/11 — the
+  port parses 19 and 11. Multi-cel overlaps: the smallest-volume cel wins (*deviation*; the game
+  raycasts up/down — no per-cel object lists to raycast against).
+- `Sim::ramp_char_ambient` per tick (the last step of `run`, where
+  `control_movement_object_handler` 0x1336f8 calls it in the game): snap once from the 0xff,ff,ff
+  sentinel (`control_init_object` 0x134630 / `control_link_object_to_cel` 0x1346b8), then
+  `clr_step` = `ClrStep` 0x1e8a48 disassembled — `(target−cur)·0.1`, min ±1 byte. The 0x10000
+  doubled targets (night vision) are unreachable in the port (no goggles). View models follow
+  Bond's sphere, drone-backed characters their drone, script characters their live entity matrix.
+- The multiply: `Scene::posed_vertices` multiplies the Character-layer tail's rgba by
+  `(tint × ambient) >> 8 / 255` per character (white tint — `Script_SetColour` is not ported; the
+  0x7f/0/0 tint of `Player_InitWeapon` 0x1a7ef8 belongs to the laser-dot object 0x2000132, not the
+  view model); static non-cel World instances with glist flags & 0x800 (flagged pickups/props) get
+  the same multiply snapped at build; world-cel geometry stays byte-identical (the game's
+  `View_DrawCelGlist` 0x1e6538 forces the white tweak). Muzzle flashes/tracers/dropped guns keep 1.0.
+- The HUD gate: `nf_view::overlay_for` returns an empty overlay while a script camera runs —
+  `Script_CameraStart` 0x1d9140 → `Camera_Enable` 0x1b9920 clears `viewer+0x2a` and `Game_Draw`
+  0x1e6f50 skips the whole sprite pass; [D ee_start_07000001.bin] the opening cut-scene has
+  viewer[0]/[5] +0x2a = 0 with `ScriptCam`@0x30d100 ≠ 0. All HUD elements hide together in the game;
+  the letterbox bars are not ported (G-031).
+
+**Tests** (`crates/nf-view/tests/character_lighting_live.rs`, all NF_ISO, all failed before the fix
+— the pre-fix port returned multiplier 1.0 for every character):
+- guard + view model = (57,70,86)/255 on 07000005 [L ee_start_05.bin], sister: ≠ 1.0 and ≠ the first
+  cel's (27,40,56) [L cel.md] — a naive "level ambient" port fails;
+- view model = (40,30,26)/255 [L Bond's cel 0x191c860] and all three drone triples (60,60,60),
+  (45,30,30), (80,80,70) [L] hit on 07000001; sisters: no guard at 1.0, room-cel parse = 11;
+- world-cel geometry vertex-identical to the source object bytes; sister: 19 room cels [L] and one
+  carries (57,70,86);
+- the HUD overlay draws before the cut-scene, empties while the script camera is live on 07000001
+  (channels armed like the viewer's K key), sister pins the gate to the camera.
+
+**Not done / left open**
+- Bullet decals → documented with all functions and offsets in GAPS G-041 (budget).
+- The 07000002 bathhouse-civilian skin-texel check → GAPS G-042 (budget; the TWEAK fix covers the
+  reported over-bright cause).
+- Unverified this pass: `bTweakBrightness`'s reader (still suspected in hand-written VU1); the
+  second-triple semantics for 0xc023 cels (the port reuses triple 1 — no observed level sets their
+  zone channel); whether dropped-pickup objects carry 0x800 (kept at 1.0).
+- Shared-file touches (minimal, noted per the rules): `lib.rs` — `posed_vertices` now delegates to
+  `Scene::posed_vertices`, `overlay_for` (new, pub), its two call sites.
+
+**Full suite**: NF_ISO=<iso> cargo test --offline --release -j2 -p nf-game -p nf-formats -p nf-audio
+-p nf-view -- --test-threads=1 — see the commit; only the 3 pre-existing `disc_golden` failures
+(slim-ISO mismatch) are allowed.
+
 ## fix-drone2 — the guard bugs still failing in play (user playtest at 75fbad4)
 
 **Bug 1 — 07000001: no guard ever threw a stun grenade. Conclusion: the port already matches the game; no code change.**
@@ -3726,6 +3884,183 @@ the truck-script entity parents (stream 6 None, stream 7 Some(1)); and the level
 Bookkeeping notes only (test-name substrings). Full suite on the branch: 243 passed, 3 failed — the
 3 allowed slim-ISO disc_golden tests (bigf_header_fields / bigf_tables / directory_tree).
 
+## fix-drone3 — the character follow-ups from the multi-level playtest (07000006/07, the 07000002 stragglers)
+
+Branch s/fix-drone3 (from master d589c76). Every fix has an NF_ISO test in `crates/nf-view/tests/fix_drone3_live.rs`
+shown failing on the pre-fix master (state ids are raw hex in the file so it compiles — and fails — both ways), plus a
+sister assertion. The dump harness is `crates/nf-view/tests/dump_drone3.rs` (the task's "dump every drawn drone that is
+not hittable or not running AI" run: 07000002/04/05/06/07, present/started/enabled/drawn/held/team/mode/dtypenew/
+state/channel/skin/pos).
+
+**Root cause for the whole "drawn but frozen / turning without walking" family [M]**: `NDrone2_StateFuncs`
+(0x29b300, read from the ELF with work/trace/statefuncs.py) maps the mission states the port had NO handler for:
+0x32-0x35 TruckDriver* (0x160bd0/0x160d98/0x160ed0/0x161030), 0x2e/0x2f PartyGirl* (0x1728c0/0x160140), 0x30/0x31
+CivilianGuard/CivilianDoorGuard (0x1603a8/0x160648), 0x10-0x14 Civilian* (0x172730/0x15d118/0x15d3a0/0x15d520/
+0x15d610), 0x1c HostageIdle (0x15ce60). The `DroneTypeSettings` table (0x29aee8, work/trace/typetable.py) routes
+characters into them: mode 0x12 (PartyGirlInit) start 0x2e, 0x17 (the driver) 0x32, 0x13 (CivilianGuard) 0x30,
+0xC (the 07000002 civilian) 0x1c. Ported as a handler block in drone.rs (this task's file).
+
+**C1 — the 07000006 friendly driver. FIXED.** [D placement / dump] the driver is skin 0x05000035, and DefaultInit
+0x14b300 case 0x5000035 writes dtypenew 0x17 directly (voice 0xF) — mode 0x17 starts TruckDriverInit 0x32 [M table].
+The port now runs his states: the script-less branch of ENTER (`+0x554` is the truck NIS the port does not run)
+goes straight to TruckDriverIdle 0x34 [M 0x160bd0 case 1 else], whose NearArmedBond(8.0) scares him to
+CivilianScared → CivilianHiding [M 0x160ed0 case 3]. Fail-before: the driver sat in 0x32 forever. The torso half is
+below. What the port does NOT model: the scripted branch (danim 0x11a via SetScript, the `+0x4F8` 0x20/0x80 bit
+clears — the driver stands on the truck bed under gravity in the port; the test pins his height), and BondTalk
+(level voice sets).
+
+**The torso twist / "spine flipped" patrol guard (07000005) / "rotate to follow Bond unrealistically". FIXED (gate +
+clamp).** Two game gates the port lacked [M AnimObjectAimAt 0x1bfe58 via psiBuildMatrixPalette 0x111498]:
+(1) the aim flag `(anim+0x58 & 0x180)` — the aim/fire states request it; the port aimed EVERY drone whose danim
+class was 2 and state ≠ IDLE — the dump proves the ch-waiters (enabled=false, drawn=false) carried aim_yaw −0.9..2.7;
+(2) `AnimDatumGetWeaponInfo < 0` returns — no weapon datum out, no torso aim. And the clamp: the game sets its
+give-up flag 0x4000 beyond ±0.9 (0x3f666666) on BOTH sides [M 0x1c0368]; the port clamped only the negative side
+(`.max(-0.9)`), so a guard with Bond behind-right wound his chest to ±π — the user's "spine flipped" patroller.
+Fix: `Drone::aims_torso()` (aim/fire state family + a drawn weapon 2..0x46/0x6a..0x71, not holstered) and
+`clamp(-0.9, 0.9)`. The exact 0x80 setter was not pinned (disassembly pass not affordable) — the state list is the
+stand-in and is tagged *suggested* in the code. Fail-before: the 07000005 patroller's aim_yaw 1.94 with Bond behind.
+
+**C3 — the party level (07000007). FIXED.** [D dump] the guests are dtype 10, skins 0x20/22/23/24 (DefaultInit's
+female list) and 0x13/0x19 (male). GetDTYPENEW 0x14c938 case 10/0xb: below full alertness FEMALE (+0x15) → mode 0x12
+(PartyGirlInit), others → 9 (CivilianInit) — the port had the non-damageable test here, now the female flag [M].
+PartyGirl (0x160140): AssignAIPath(4), armed person within 10 (0x41200000) → CivilianScared 0x12 → CivilianHiding
+0x13 [M 0x15d3a0/0x15d520]; the Civilian family (AssignAIPath(4)/patrol-walk 0x37, scare radii 10 on 0x07000007
+else 20 [+0xCF8]) and CivilianPatrol (UpdatePatrolRoute — the port's existing patrol walker) give the "NPCs only
+turn, never walk" their walk. CivilianGuard (0x1603a8) — the unarmed bouncers (dtypenew 0x13 via the 07000007
+branch of GetDTYPENEW): stand idle/look-around, armed person within 20 (0x41a00000) or armed Bond in sight →
+Attack 0x56; EXIT sets team 1 [M case 2]. HostageIdle 0x1c stands the hostages (the 07000002 civilian) — its
+near-armed-DRONE hide transition (0xe) is not ported (no armed-peer scan in the port), noted. Fail-before: a guest
+stuck in 0x10; the bouncer never left 0x30.
+
+**C2 — 07000006 guards that "can't be shot and just stand there". ROOT-CAUSED (data), partially fixed.** The dump:
+the gatehouse guards (d11, d23-25, d27) wait on switch channel **55** — and the four gate searchlights carry
+**alarm channel 55** (placement param 3). They are the searchlight-spotted response: the lights start OFF
+(on-channels 64/63/61/62 [D placements]), a trigger lights them, and while a head TRACKS Bond it raises
+`switch_channels[inst+0x36] = 1` every tick [M Searchlight_Update state-1 entry ~0x1cbf58]. That pins the atlas's
+"param 3 — exact effect unverified" as the alarm channel (docs/atlas/searchlight.md updated). The alarm path was
+already ported (searchlight.rs state 1); the new end-to-end test lights the head, walks Bond into the beam, and
+asserts state 1 → ch 55 → the ch-55 guards wake through WaitSwitch. What I could NOT reproduce: a guard drawn,
+frozen AND unshootable in the port's data path — disabled waiters are drawn=false [M the `dr.enabled &&` gate],
+and hittable requires enabled [M update_player_bullets]. The mission-state port above removes the remaining
+frozen-and-drawn classes (the driver, guests, bouncers, civilians). The 07000002 bathhouse guard next to the
+civilian woman remains unexplained headless: the dump shows the ch-0x15/0x17 waiters drawn=false and the civilian
+(0x4F, dtypenew 12 → HostageIdle 0x1c) drawn and standing — now running HostageIdle's stand idle. If the user's
+sighting is the civilian himself, the "can't be damaged" half is NOT the port's bullet path (present+enabled
+drones are hittable regardless of team [M], and the game's DealWithObjHit 0x13fff0 lets a class-3 shooter's
+bullets react on any drone). Not verified: nf-view's actual render (no GPU).
+
+**O2 — the helipad armour on 07000006. Already fixed by fix-player2; verified.** fix-player2's placed-pickup
+instancing is level-generic; `the_helipad_armour_pickup_is_drawn_on_07000006` pins the kind-3 pickup's drawn
+instance at obj+0x90 on this level too (green on the pre-fix master as well — i.e. fix-player2's fix covers it).
+
+**The searchlight alarm** — see C2 above; atlas param-3 row updated; test added. The port's beam/gain/clamps were
+already atlas-5-verified.
+
+**Shared files touched**: none outside the task list (drone.rs + the two new test files + the atlas row). The
+`female` change in `dtype_of` case 10/11 alters which MODE female dtype-10/11 drones get (0x12 vs 9) — the game's
+own logic [M GetDTYPENEW], but any golden that depended on the old mode may need re-picking (none failed).
+
+**Could not verify / left open**
+- nf-view rendering end-to-end (no GPU): the torso gate's visual result, the driver on the truck bed, the guests
+  walking — all verified in the sim only.
+- The 07000002 bathhouse "drawn, never attacks, can't be damaged" guard: no mechanism in the port's data path
+  produces drawn+frozen+unhittable (dump + code reading); the mission-state port covers every drawn-but-idle class
+  the levels place. Needs the user's next playtest to confirm or a screenshot.
+- CivilianDoorGuard 0x31 (start 0x31 via mode 0x16, 07000007 prop 0x4b) — not ported (no 07000006/07 placement
+  uses it per the dumps: every dtypenew-19/22 guard runs 0x30-family starts); noted for the next pass.
+- The searchlight's "drone alert, music event" beyond ch 55: the port's drones hear the raised channel through
+  WaitSwitch; a separate music event wired to ch 55 would come from the level's script/music-trigger layer (none
+  read this session).
+- The aim-flag 0x80 setter (disassembly) — the aims_torso state list is the stand-in.
+
+**Independent audit**: not yet run (sandbox time); the claims above carry their addresses so the next pass can
+audit them against work/decomp + the two dump scripts (work/trace/statefuncs.py, work/trace/typetable.py —
+research-only, git-ignored like all of work/).
+
+## 0088 — fix-render2: the merged lighting's follow-ups (cut-scene chars, pickups, truck, merge regression), the safe World cull
+
+Task: the user's check of fix-render's lighting (merged) plus the playtest 2026-10-11 rendering
+follow-ups. Branch `s/fix-render2` from master d589c76. Files: `crates/nf-view/src/{scene,gpu}.rs`
+(scene.rs is the only shared-file touch; lib.rs/hud.rs untouched).
+
+**The merge regression (found first).** The merge d589c76 ("combine add_instance: their 0x800 mult +
+my pickup slot") dropped fix-player2's pickup branch in `add_instance` — `pickup: Some(pk)` was
+never pushed as a CharVertex, so placed-pickup vertices entered the Character tail without one, the
+vertex↔CharVertex zip in `posed_vertices` misaligned, and every draw group after the first pickup
+posed wrongly while the pickups never posed. Restored (fix-player2 eb1564b scene.rs:1039 is the
+line the merge lost). Test: `placed_pickup_charvertices_survived_the_merge` (failed pre-fix:
+0 pickup CharVertices, counts unequal).
+
+**Cut-scene characters over-bright (user check 1).** Root cause: `Sim::characters_script_pos`
+resolved script characters through `script_entity`, which matches only `Obj::Entity` — script Anim
+characters (Obj::Anim) never got an ambient target and kept the 0xff sentinel → multiplier 1.0.
+Fixed: the position is now the live Anim's root-bone world translation (`script_anim` →
+`script_frame` → `local_pose`/`world_pose`; the Anim object sits at the origin and the sequence's
+root carries it — nis.rs, `AnimSeqTick` 0x1c28d0). [L ee_start_07000001.bin] the opening cut-scene's
+script-created character objects (0x018f5790 flags 0x890, 0x018f6a30/0x018f6b90 flags 0x860) all
+read ambient (40,30,26) — cel 0x191c860, the courtyard. Test:
+`cutscene_script_characters_dim_to_their_cel_ambient` (failed pre-fix: sentinel 1.0).
+
+**The truck (user check 3).** The truck is the script Anim object of skin 0x05000005 (nine rigid
+parts [D script-player.md]); its nine game objects carry obj+0xF0 = 0x8880 with ambient (57,70,86)
+[L ee_start_05.bin 0x0137C8A0…]. The same Anim-position fix dims it. Test:
+`the_truck_takes_the_0x800_ambient` (failed pre-fix).
+
+**Dropped weapons and placed pickups (user check 2).** `Pickup_Create` (0x18dda0) FORCES
+`obj+0xF0 = glist_flags & ~0x2000 | 0x840` — every pickup is character-lit — EXCEPT kind 3 (armour:
+0x800 cleared, 0x80000 set) and kind 6 (007 bonus: 0x800 cleared) [M decompile :137-151]. The port's
+placed-pickup and dropped-gun vertices now dim by the cel ambient at the pickup's live matrix, gated
+by that kind rule (NOT the mesh's glist flags — the slim ISO's one placed pickup, model 0200092a, is
+kind 6 and correctly stays untinted). Tests: `placed_pickups_follow_the_pickup_create_gate` (pins
+the kind-6 exemption), `dropped_guns_dim_to_the_cel_ambient` (kills a 07000001 guard through the
+input path and asserts the drop's drawn multiplier equals the ambient bytes; failed pre-fix at 1.0).
+
+**The first guard too dark (user check 4).** Not reproduced at the evidence points: [L
+ee_start_07000001.bin] all 15 drones' (position → ambient) pairs are reproduced by the port's snap
+under the smallest-volume cel tie-break (`the_first_guard_snaps_to_the_game_ambient`, drone 0 at
+(−4.92, 6.34, −0.09) → (20,20,20) cel 0x191f0e0 INCLUDED — the game's own value). `build_FindCel`
+(0x1c8cb0 disassembly) raycasts each matched cel's own object list (up 256 max, down limited by the
+up hit, nearest wins, else first match); the port has no per-cel object lists — a shared-geometry
+raycast with bbox attribution was tried and mis-attributed vertically-adjacent geometry (drone 1 in
+the two-cel courtyard overlap read (20,20,20) where the game reads (40,30,26)), so the
+smallest-volume tie-break stays, with the disassembly documented in `Sim::cel_at`. Left open: the
+user's symptom may live in a guard walking through an overlap the snapshot does not cover — needs a
+PCSX2 trace of that guard's walk.
+
+**R3 doors.** The evidence REFUTES the tint hypothesis: the 07000005 door models' glist flags are 0x0
+[D] and `Door_Create` (0x136100) only calls `Control_SetGList` — the game never dims doors through
+the 0x800 path. The port's doors stay 1.0, which matches the game. Pinned negatively by
+`doors_carry_no_0x800_and_stay_untinted` (any future tint fix must re-measure first). (Also: the
+pre-fix code tinted doors/searchlight parts with character 0's multiplier through the
+`mults.get(cv.character)` fall-through — restored the explicit 1.0 branches.)
+
+**Performance (user check 5 / R4).** The renderer submitted every material every frame (the cull was
+off by default after A-11's vanish bug: "the truck and the HUD vanished by view direction"). fix: the
+default cull now scopes to the static World layer only — its spheres are exact (placement-matrix
+transform of the glist sphere, built once); everything posed per frame (Character/Effect: doors,
+pickups, the truck, searchlight parts, flashes, tracers) and the sky are exempt, and the HUD draws
+from its own buffer. NF_CULL still enables the full test cull. Measured from the level-start cameras
+(headless, `party_levels_cull_the_static_bulk_from_the_start_view`): 07000006 — 1040 of 4438 World
+draws submitted (77 % skipped; 4651 materials total); 07000007 — 4526 of 4869 still inside the
+frustum spheres: its start view faces the whole interior, so the sphere cull cannot relieve it; the
+next lever is the portal cull (G-016), not a sphere-tuning fix. GPU time itself is not measurable in
+this sandbox (no GPU); the draw-count relief is the CPU/headless proxy the task asked for
+(NF_DRAWS=1 prints the live counters).
+
+**Not done this session** (each with its reason)
+- Bullet decals (playtest): already GAPS G-041 from fix-render (budget); nothing new measured.
+- The 07000002 bathhouse civilian's skin texels (playtest): GAPS G-042; the TWEAK fix covers the
+  reported over-bright cause. NOTE: master now carries `crates/nf-game/tests/bathhouse_live.rs`
+  (fix-drone2's merge) for that level's AI.
+- R2 (snow and a railing's shadow through the floor), O5 (searchlight beam/corona): not started —
+  budget went to the merge regression + the lighting follow-ups; both stay in GAPS.
+- HUD in cut-scenes: ALREADY FIXED by fix-render (render-port-check §1.6, `hud_hides_while_a_script_camera_runs`) — skipped per the task.
+
+**Tests**: `crates/nf-view/tests/render2_live.rs` — 8 tests, all NF_ISO, all shown failing before
+their fix (except the party-level counter test, which pins measured numbers) and green after.
+**Full suite**: `NF_ISO=<iso> cargo test --offline --release -j2 -p nf-game -p nf-formats -p
+nf-audio -p nf-view -- --test-threads=1` — see the commit; only the 3 allowed slim-ISO disc_golden
+failures.
 ## fix-level2 — carry-over between levels and per-level rules (playtest 2026-10-11 F1/F2/F4/F5)
 
 Research (general-purpose subagents, then re-verified in the decomp by me):

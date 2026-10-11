@@ -140,10 +140,13 @@ impl Pickup {
         [0, 1, 2].map(|k| c[0] * m[0][k] + c[1] * m[1][k] + c[2] * m[2][k] + m[3][k])
     }
 
-    /// `Pickup_Update`'s fall (state 0): velocity += gravity · (1/60)², translation += velocity; the ray from the start
-    /// to the translation lowered by |centre y| finds the floor; once the translation is below the hit, the pickup
-    /// rests at hit + `HIT+0x30` · (−|centre y|) + info `+0x10` (translation − sphere centre, fixed at creation), so its
-    /// sphere centre sits |centre y| above the hit. *Suggested*: `HIT+0x30` taken as the unit ray (U-036).
+    /// `Pickup_Update`'s fall (state 0): velocity += gravity · (1/60)², translation += velocity; the ray runs
+    /// from the PREVIOUS tick's translation (obj+0x40: the movement pass copies last tick's `obj+0x30` there,
+    /// which for pickups — flags2 0x44 — is the previous `obj+0xC0` translation [M 0x18e148:110-114 +
+    /// 0x1336f8:212-231, fix-player2]) to the translation lowered by |centre y| finds the floor; once the
+    /// translation is below the hit, the pickup rests at hit + `HIT+0x30` · (−|centre y|) + info `+0x10`
+    /// (translation − sphere centre, fixed at creation), so its sphere centre sits |centre y| above the hit.
+    /// *Suggested*: `HIT+0x30` taken as the unit ray (U-036).
     pub fn fall(&mut self, world: &CollisionWorld) {
         if self.state != 0 { return; }
         self.vel[1] += GRAVITY;
@@ -161,6 +164,8 @@ impl Pickup {
                 self.state = 1;
             }
         }
+        // The next tick's sweep starts here (the game's `obj+0x40` follows the translation each tick).
+        self.start = trans(&self.m);
     }
 
     /// `Pickup_Update`'s touch test for Bond: alive, the sphere centre within radius + 1.1 of his position (squared
@@ -172,7 +177,22 @@ impl Pickup {
         let c = self.centre();
         let r = self.bounds.radius + 1.1;
         let d2 = (c[0] - pos[0]).powi(2) + (c[1] - pos[1]).powi(2) + (c[2] - pos[2]).powi(2);
-        d2 < r * r && world.line_of_sight(body, c)
+        // The LOS ray from the player's world-sphere centre to the pickup's centre. A resting pickup whose
+        // model centre y ≈ 0 (live: the 07000001 guard drop of weapon 0xe rests with its centre ON the
+        // floor [L, fix_player2_live take-test log]) ends the ray ON the floor triangle; the port's
+        // `segment` counts t = 1.0 as a hit, which refused every such drop forever (the "some drops never
+        // pick up" playtest symptom). The game takes floor-resting drops, so its `Collide_LineOfSight`
+        // (0x1edf50 → `Collide_RayIntersect` 0x1ec690) does not fail on the endpoint contact — the port
+        // treats a hit at the ray's end (t ≈ 1) as clear. *Unverified*: RayIntersect's exact t range (the
+        // wrapper decompile is one call; WORKLOG fix-player2 records it).
+        let los = world.segment(body, c).map_or(true, |t| t >= 1.0 - 1e-4);
+        // `NF_PICKUPLOG=1`: every take test — Bond's position, the pickup centre, the distance against
+        // radius + 1.1, the LOS ray, and the state (fix-player2's drop diagnostics).
+        if std::env::var_os("NF_PICKUPLOG").is_some() {
+            eprintln!("[take-test] weapon {:#x} kind {} state {}: bond ({:.3}, {:.3}, {:.3}) centre ({:.3}, {:.3}, {:.3}) dist {:.3} vs r {:.3} los {}",
+                self.weapon, self.kind, self.state, pos[0], pos[1], pos[2], c[0], c[1], c[2], d2.sqrt(), r, los);
+        }
+        d2 < r * r && los
     }
 }
 

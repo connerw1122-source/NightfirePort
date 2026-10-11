@@ -146,9 +146,15 @@ fn ndc_rect(x0: f32, y0: f32, x1: f32, y1: f32) -> [crate::gpu::HudVertex; 6] {
 pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     let mut h = Hud { quads: Vec::new(), aspect, textures: &scene.hud_textures };
     let sim = scene.sim.as_ref();
-    // Crosshair: (W/2 · (1 + cx), H/2 · (1 − cy)) from the smoothed offset; cell 1 in aim mode, else 2; red, layer 49.
+    // Crosshair: (W/2 · (1 + cx), H/2 · (1 − cy)) from the smoothed offset; the cell from
+    // `Check_Target`'s state (BLData+0x133): 2 normal, 3 = the red "no" mark on a non-enemy target
+    // [M 0x1a7810:181-182 + HUD_UpdateCrossHair 0x19e6d0:69-79]; in aim mode non-scope weapons force
+    // cell 1 [M 0x19e6d0:106-112]. Red, layer 49.
     let (cx, cy, aiming) = sim.map_or((0.0, 0.0, false), |s| { let (x, y) = s.crosshair(); (x, y, s.aiming) });
-    let [u, v, w, hh] = CROSS[if aiming { 1 } else { 2 }].map(|k| k as f32);
+    let state = sim.map_or(2, |s| s.crosshair_state());
+    let scoped = sim.map_or(false, |s| s.weapons.records.get(s.gun.weapon as usize).is_some_and(|w| u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap()) & 0x40 != 0));
+    let cell = if aiming && !scoped { 1 } else { state };
+    let [u, v, w, hh] = CROSS[cell.min(3) as usize].map(|k| k as f32);
     h.quad(Anchor::Centre, 49, CROSS_TEX, 0, SW / 2.0 * (1.0 + cx) - w / 2.0, SH / 2.0 * (1.0 - cy) - hh / 2.0, w, hh, [u, v, w, hh], (false, false), gs(0xff0000, 0xff));
     let (Some(s), Some(t)) = (sim, scene.hud.as_ref()) else { return h.finish() };
     let frame = s.drones.frame;

@@ -400,9 +400,17 @@ impl Renderer {
             self.order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
             // The 6 frustum planes for the CPU-side cull (Gribb-Hartmann from `view_proj`).
             let planes = extract_frustum(view_proj);
-            // Off by default: the draw spheres are wrong for moving objects (the truck, doors) and the HUD, which
-            // vanished by view direction (user playtest after A-11). NF_CULL=1 turns it on for testing.
-            let cull = std::env::var_os("NF_CULL").is_some();
+            // fix-render2: the World draws' bounding spheres are exact — static geometry through the
+            // placement matrix (scene.rs add_instance) — so they cull always. Everything posed per
+            // frame keeps its build-time centre (doors swinging, pickups, the truck, searchlight
+            // parts, muzzle flashes, tracers — the Character/Effect layers) and the sky follows the
+            // viewer, so those only cull under the NF_CULL test override. The HUD draws from its own
+            // buffer below and is never in this list. This was A-11's vanish bug: the full cull made
+            // the truck and the HUD disappear by view direction (user playtest); scoping the cull to
+            // the static World layer keeps every moving thing drawn while still skipping the bulk —
+            // 07000006's start view submits ~4k draws unculled (render2_live counts them).
+            let test_cull = std::env::var_os("NF_CULL").is_some();
+            let cull = |dc: &DrawCall| test_cull || dc.layer == Layer::World;
             // Counters for the worklog (env-gated; no per-frame cost otherwise).
             let trace = std::env::var_os("NF_DRAWS").is_some();
             let (mut submitted, mut culled) = (0usize, 0usize);
@@ -413,7 +421,7 @@ impl Renderer {
             for &(_, _, k) in &self.order {
                 let dc = self.draws[k];
                 // Sky after the fog pass (pass 4) follows the viewer and is never culled.
-                if cull && dc.pass != 4 && sphere_outside(&planes, dc.centre, dc.radius) {
+                if cull(&dc) && dc.pass != 4 && sphere_outside(&planes, dc.centre, dc.radius) {
                     if trace { culled += 1; }
                     continue;
                 }

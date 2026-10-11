@@ -8,7 +8,7 @@ Rust line numbers refer to master 5d0d1c5.
 
 ## 1. The brightness bug — characters and view models too bright (scene.rs, gpu.rs)
 
-### 1.1 MISMATCH — no per-object ambient multiply for 0x800 objects (scene.rs:943, gpu.rs:39)
+### 1.1 FIXED (s/fix-render) — per-object ambient multiply for 0x800 objects (scene.rs, gpu.rs)
 
 Game [M 0x1e5888 (View_SetupRenderModes_Tweak) + 0x1cb178 (Lights_CalcAmbientLight)]:
 
@@ -19,17 +19,16 @@ with obj+0xF0 & 0x800:
 ```
 
 `Lights_CalcAmbientLight` pins obj+0x100..0x102 to the level's ambient colour (07000005:
-RGB 0x39/0x46/0x56 ≈ 22–34 % albedo [L]). Port: `scene.rs:943` pushes leaf/skin vertex colours
-verbatim for world and `Layer::Character` alike; `gpu.rs:39` `o.c = c * (255.0/128.0)` is the only
-colour op in the shader. **Net: characters and the first-person gun render at ~100 % albedo where
-the game renders them at 22–34 %.** This is the exact cause of the user's report ("characters and
-guns are too bright while the world is right"); the world is right because the game's world-cel
-path forces the white tweak (`View_DrawCelGlist` 0x1e6538:57 → TweakRGBA = 0) and the port matches
-that by doing nothing.
+RGB 0x39/0x46/0x56 ≈ 22–34 % albedo [L]). Port (pre-fix): `scene.rs` pushed leaf/skin vertex colours
+verbatim for world and `Layer::Character` alike; `gpu.rs:39` `o.c = c * (255.0/128.0)` was the only
+colour op in the shader. **Net: characters and the first-person gun rendered at ~100 % albedo where
+the game renders them at 22–34 %.** This was the exact cause of the user's report ("characters and
+guns are too bright while the world is right").
 
-Fix shape: per Character/view-model instance ambient RGB (stepped toward the level ambient at rate
-0.1, doubling under obj+0xF0 & 0x10000), multiplied with the tint into the vertex colour or a
-per-instance uniform, for Character-layer and view-model draws only. Details: gs-leaf.md.
+Fixed on s/fix-render: per-character ambient state snapped/ramped toward the room-cel ambient
+(`cel + switch_channels[cel+0xa2]`), multiplied into the Character-layer tail and flagged non-cel
+world instances; world-cel geometry untouched. Full notes + deviations in gs-leaf.md "FIXED".
+Tests: `crates/nf-view/tests/character_lighting_live.rs` (all four NF_ISO tests green).
 
 ### 1.2 OK-with-note — the display gain is not the bug (gpu.rs:18,39)
 
@@ -59,6 +58,21 @@ The port applies leaf `DIRECT` A+D writes per batch (alpha 0x42 / test 0x47 / zb
 trailing writes carried to the next leaf) — consistent with the game's "each DIRECT write applies at
 its packet position" semantics documented in ps2gfx.md/render.md. No disagreement found this pass;
 the sniper-gun transparency regression it mentions is not contradicted by the decomp reading.
+
+### 1.6 FIXED (s/fix-render) — the HUD hid during cut-scenes (lib.rs `overlay_for`)
+
+Game [M]: `Script_CameraStart` 0x1d9140 → `Camera_Enable` 0x1b9920 clears `viewer+0x2a` (the
+sprite-draw flag) on the gameplay viewers, and `Game_Draw` 0x1e6f50 skips the whole
+`Sprite_BuildList`/`View_DrawSprites` pass while it is clear — health iris, ammo, crosshair, radar,
+messages AND the damage glow (`psiFadeView`, in the same gated block) disappear together. The
+letterbox `Borders` sprites come up at the same time. Port (pre-fix): `hud::overlay` drew
+unconditionally. Fixed: `nf_view::overlay_for` returns an empty overlay while `Sim::script_camera()`
+is live (the same condition that already drives the port's cut-scene camera). [D
+ee_start_07000001.bin]: the opening cut-scene has `ScriptCam`@0x30d100 = 0x6000087, viewer[0]/[5]
++0x29/+0x2a = 0/0, while the idle snapshots (05, 0a) keep 1/1. Test:
+`character_lighting_live.rs::hud_hides_while_a_script_camera_runs` (channels armed like the viewer's
+K key, the cut-scene runs, the overlay empties while the camera is live). Not ported: the letterbox
+bars (G-031's sprite work).
 
 ## 2. searchlight.rs (G-036 follow-up — corrected by the atlas-5 audit)
 
