@@ -3061,7 +3061,15 @@ impl Drone {
         let weapon_type = u16::from_le_bytes([wd[2], wd[3]]);
         let damage = f32_at(0x0c);
         let radius = f32_at(0x08);
-        let range = f32_at(0x1c).max(210.0);
+        // The fuse is BU+0xFC: 210 ticks, 300 with +0x70 & 0x10000, 420 for the mine 0x37
+        // (`Bullet_init` 0x12c5a0:103,196-223). `weapon_data+0x1C` (5000) is the max-travelled range — a
+        // SILENT state-4 death, not the fuse [M Bullet_update case 1 0x12e848]. fix-player3: the old
+        // `f32_at(0x1c).max(210.0)` passed 5000, so guard grenades never fuse-exploded (they only died at rest).
+        let range = if u32::from_le_bytes(wd[0x70..0x74].try_into().unwrap()) & 0x10000 != 0 { 300.0 } else { 210.0 };
+        // The blast damage is the hardcoded 100 of the `Explode_Create` call, not +0x0C (the damage
+        // multiplier) [M disasm 0x12cd98/0x12ce18: `addiu $t2, $zero, 0x64` → EXPLODEINFO+0x28 →
+        // `Explode_Propagate`'s amount (Explode_CollisionHandler 0x17cde0:13-15); radius = weapon_data+0x08].
+        let damage = 100.0f32;
         Some(crate::grenade::Grenade {
             pos: origin, velocity: [dir[0] * speed, dir[1] * speed, dir[2] * speed], speed,
             travelled: 0.0, range, damage, radius, weapon_type, owner, state: 0, bounces: 0,

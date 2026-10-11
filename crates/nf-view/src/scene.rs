@@ -437,13 +437,15 @@ impl Sim {
         // script playing) [M the state switch maps 9 → case 8: return] — the port approximates state 9 with its
         // fire-script gate (fix-player2: this is the half of the grenade bug that wedged the weapon after a
         // failed throw: the game plays the 26-frame throw script and blocks switching until it ends).
+        // The refused set is {1, 3, 5, 6, 7, 8, 9, 0xb, 0xd, 0xe, 0xf, 0x10} — the reload states 5/6/7 are in
+        // it: a reload always completes before a switch can start [M 0x1a6f80:33-47; fix-player3].
         let fire_busy = self.weapons.records.get(self.gun.weapon as usize).is_some_and(|w| {
             let rd = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
             let len = |h: u32| self.scripts.get(&h).map_or(0.0, |s| s.length as f32);
             let (fs, fl) = (rd(0xb0), rd(0xb4));
             (self.view_script == fs || (fl != 0 && self.view_script == fl)) && self.view_time < len(self.view_script) - 1.0
         });
-        if self.gun.switch_state == 0 && !fire_busy {
+        if self.gun.switch_state == 0 && self.gun.reload_state == 0 && !fire_busy {
             let owned = self.drones.inventory.owned.clone();
             let carried = self.drones.inventory.carried.clone();
             let clip = self.drones.inventory.clip.clone();
@@ -626,7 +628,9 @@ impl Sim {
         let log_switch = std::env::var_os("NF_SOUNDLOG").is_some();
         let mut switching = self.gun.switch_state != 0;
         // State 0 → 1/3/8: a switch request starts the holster (`Player_WeaponSelect` 0x1a2cc0).
-        if self.gun.switch_state == 0 && self.gun.switch_request != self.gun.weapon {
+        // The reload states block it here too (the game's refused view-state set {1,3,5,6,7,8,9,0xb,
+        // 0xd..0x10} covers 5/6/7): a pending request simply waits for the reload to finish [M 0x1a6f80:33-47].
+        if self.gun.switch_state == 0 && self.gun.reload_state == 0 && self.gun.switch_request != self.gun.weapon {
             let cur_id = self.gun.weapon;
             let req_id = self.gun.switch_request;
             let cur_base = self.weapons.base(cur_id as usize);
@@ -791,9 +795,17 @@ impl Sim {
                 self.view_script = if flags & 0x1000 != 0 && self.gun.clip < 1 && rd(0xb4) != 0 { rd(0xb4) } else { rd(0xb0) };
                 (self.view_time, self.view_speed) = (0.0, 1.0);
             } else if self.gun.reload_state != 0 && was_reloading == 0 {
-                // Reload just started: set the view script based on the state (5 → +0xA8, 6 → +0xA4) [M case 5/6].
-                self.view_script = if self.gun.reload_state == 5 { rd(0xa8) } else { rd(0xa4) };
-                (self.view_time, self.view_speed) = (0.0, 1.0);
+                // Reload just started [M Player_WeaponFiring's shared tail 0x1a6250-0x1a631c]: state 6
+                // queues +0xA4 at 1.35× (`AnimScriptAddSpeed`, disasm 0x1a62d0), starting at frame 6 for
+                // flag-0x1000 weapons (AnimListBuild +0x90 = 6.0; the port's script frames are time+1, so
+                // view_time 5.0). State 5 (a +0xA8 start script) plays at 1.0 [M 0x1a6260-0x1a626c].
+                if self.gun.reload_state == 5 {
+                    self.view_script = rd(0xa8);
+                    (self.view_time, self.view_speed) = (0.0, 1.0);
+                } else {
+                    self.view_script = rd(0xa4);
+                    (self.view_time, self.view_speed) = (if flags & 0x1000 != 0 { 5.0 } else { 0.0 }, 1.35);
+                }
             } else if self.gun.reload_loop_restarted {
                 // The shell loop continued: restart +0xA4 from frame 0 (matching `AnimScriptAdd(+0xA4)` in
                 // the game's case 6) [M 0x1a2e38].
@@ -870,10 +882,14 @@ impl Sim {
                     // is 5000.0 [L ee_start_07000001.bin, audit fix-player2 claim 8]). The port's
                     // `Grenade.range` doubles as the tick fuse.
                     let fuse = if u32::from_le_bytes(w[0x70..0x74].try_into().unwrap()) & 0x10000 != 0 { 300.0 } else { 210.0 };
+                    // The blast damage: `Explode_Create`'s damage arg is the hardcoded 100
+                    // [M disasm 0x12cd98/0x12ce18: `addiu $t2, $zero, 0x64` → Explode_Propagate's amount via
+                    // EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15); radius = $f12 =
+                    // weapon_data+0x08]. +0x0C is the damage multiplier (weapon-data.md), not the amount.
                     self.drones.grenades.push(nf_game::grenade::Grenade {
                         pos: camera,
                         velocity: [sdir[0] * speed, sdir[1] * speed, sdir[2] * speed],
-                        speed, travelled: 0.0, range: fuse, damage: f32_at(0x0c), radius: f32_at(0x08),
+                        speed, travelled: 0.0, range: fuse, damage: 100.0, radius: f32_at(0x08),
                         weapon_type: u16::from_le_bytes([w[2], w[3]]), owner: usize::MAX, state: 0, bounces: 0,
                     });
                 } else {
@@ -1056,6 +1072,17 @@ impl Sim {
         let _ = sk;
         Some((i, (t.saturating_sub(a) + 1) as u32))
     }
+}
+
+/// `FlashMod` (Check_Target 0x1a7810:95-97, the pickup/armour glow driver): a 1 Hz sine shimmer in
+/// [0.5, 1.0] — `((sin(2π·t + π/2) + 1)·0.5 + 1)·0.5` with t = the game time in seconds
+/// (GameState+0x76 = psiGetTimeIn100ths, written each main-loop pass 0x1c98c8:84; the phase is
+/// time100 · 0.01 s). Brightest at phase 0 (level start + whole seconds). The port feeds it its tick
+/// count (time100 = frame · 100/60, so the phase is frame/60) — render-side only, no sim state.
+pub fn flash_mod(frame: u32) -> f32 {
+    let t = frame as f32 / 60.0;
+    let s = (t * std::f32::consts::TAU + std::f32::consts::FRAC_PI_2).sin();
+    ((s + 1.0) * 0.5 + 1.0) * 0.5
 }
 
 /// A rigid mesh hung on a character's datum (`AnimObjectDraw`): world = `QuatTransToMat(q, t)` · bone world.
@@ -2050,6 +2077,20 @@ impl Scene {
                         // [L the sniper 0x01382bc0: 0x880 + (57,70,86)].
                         match s.and_then(|s| s.drones.pickups.get(pk as usize)) {
                             Some(p) if p.kind != nf_game::pickup::kind::ARMOUR && p.kind != nf_game::pickup::kind::BOND_BONUS => amb_at(s.unwrap(), &p.m),
+                            // Armour glow (fix-player3): kind 3 carries the 0x80000 "close-up flash" flag
+                            // (`Pickup_Create` 0x18dda0:145-151) — `View_SetupRenderModes_Tweak` (0x1e5888:22-44)
+                            // multiplies its tint by `FlashMod` while the viewer's camera (viewer+0xC0) is
+                            // within 4.0 units of the pickup's world-sphere centre (obj+0x80, squared distance
+                            // < 16.0) and the options byte DAT_002a38d4 is set (1 at level start [L]). The
+                            // port's camera is Bond's eye (first person, as in play); no corona, no additive
+                            // pass — the pulse rides the same vertex-colour multiply.
+                            Some(p) if p.kind == nf_game::pickup::kind::ARMOUR => {
+                                let s = s.unwrap();
+                                let c = p.centre();
+                                let e = s.bond.head();
+                                let d2 = (c[0] - e[0]).powi(2) + (c[1] - e[1]).powi(2) + (c[2] - e[2]).powi(2);
+                                if d2 < 16.0 { [flash_mod(s.drones.frame); 3] } else { one() }
+                            }
                             _ => one(),
                         }
                     }
