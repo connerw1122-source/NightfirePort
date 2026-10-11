@@ -3574,3 +3574,77 @@ dtypenew 7/9/0x17-0x19 (0x169e58 case 8) while the port routes explosive hits th
   message builds the name from `+0x24` [M 0x18e650:246]) while the remapped id drives the owned-check/equip.
 - The audit also flagged that `prime()`'s mask ≠ 0 gate is a deliberate deviation (the game loads mask-0
   SPs at create too) — documented in pickup-port-check §8/§9 and the code comment.
+
+## fix-level — level transitions and level-end exits (07000005 → 07000006, 07000001 → 07000002)
+
+**Bug 1 — the window disappeared during the level transition while audio kept playing (07000005 castle
+door / truck end → reload). FIXED.**
+- Root cause [M port code]: `nf-view`'s `RedrawRequested` reload path called `load()` for the next
+  archive and then set `self.gfx = None` ("force a Gfx re-init"). winit's `ApplicationHandler::resumed`
+  — the only place `Gfx` was ever created — runs at event-loop start-up, not when `gfx` becomes `None`,
+  so after the reload the `Arc<Window>` was dropped (the window closed) and the app sat on a headless
+  event loop: the sim kept ticking and `self.sound` (the NEW level's bank — `Output` owns the cpal
+  stream, so the old level's audio stopped on the reload) kept playing. Exactly the user's report.
+- Fix (crates/nf-view/src/lib.rs): the renderer is rebuilt **in place** (`gpu::Renderer::new` with the
+  new scene on the existing device/queue/surface/window); `Gfx` is never dropped. The reload error path
+  already kept `Gfx`. Not headless-verifiable (no GPU/window in the sandbox) — verified by code reading
+  and left for the user's playtest.
+- Fidelity fix in the same path [M LoaderLoad 0x1d4a00]: the archive name is now
+  `level_archive_name(code) = format!("{:08x}.bin", code & 0xff0f_ffff)` — the game masks the loader
+  nibble OFF before `sprintf("%8.8x.bin")`; `ResetMap_LevelToLoad` (0x1d3800, param_3 == 0) remaps
+  0x07000006 → 0x07100006 into GameState+8 and the load masks it back. For today's levels both forms
+  agree (the trigger's out value carries the raw code [L trigger.md ext+0x20 = 0x07000006]); the mask
+  pins the game's behaviour for any code that carries the 0x00100000 bit.
+- Tests (crates/nf-view/tests/level_reload_live.rs, new file): `level_archive_name_masks_the_loader_nibble`
+  (fails against the pre-fix inline `format!("{next:08x}.bin")` for the remapped 0x07100006) and
+  `reload_after_load_level_exit_loads_07000006` (drives the route-a chain to `level_exit`, then runs the
+  viewer's reload step: `07000006.bin` parses, builds a sim, `sim.level == 0x07000006`; sister: the
+  unmasked `07100006.bin` is not a FILES.BIN name and must fail).
+
+**Bug 2 — the 07000005 truck ride does not end the level. DIAGNOSED, NOT FIXED (evidence recorded).**
+Reproduced headless with the real input path (`truck_ride_to_the_castle_ends_the_level`, `#[ignore]`d
+with the diagnosis): Bond at the gatehouse plate → the cut-scene hands him onto the truck (t≈2100) →
+the ride works (bond carried 92,20,104 → 29.9,38.4,52.0, parked with Bond in the back) → ch 0x71 (the
+truck-bed touch, parented to the truck) is on for the whole ride → ch 0x22 fires on the way through the
+gatehouse (t≈3700) → the gate guard spawns and stands at his post, ch 0x72 on (t≈3700). The chain stops
+at **ch 0x70** (the parked-position TouchOnce, player mask 0x8, script 0x06000A22 stream 6, entity
+0x0200047F — NOT parented to the truck [D]): its plate is a flat quad at y = 37.7418 spanning
+(28.80..30.87, 48.38..52.18), and the port's riding Bond parks with feet at y = 38.376 — the 0.55-radius
+touch capsule ([M Player_Collision 0x194DF0: 0x3f0ccccd = 0.55]; axis points feet−0.4+0.55 and up) misses
+the plate by ≈0.24 m. In the game the plate lies at bed-floor height (parked truck root 36.05 + the bed
+hull bottom ≈1.69 ≈ 37.74 [D]), so the game's Bond stands on it and the touch fires. Fixing this needs
+either the game's collide-stage contact geometry for triggers (the writer of `obj+0xD0`, untraced) or
+the port's bed stand height (`drone.rs` — a shared file this task must not retune without game
+evidence). Everything else in the chain (mux 316, SP #320, EndLevel event 0x11 → ch 0x1D, LOAD_LEVEL
+118 → 0x07000006) is verified working by the existing level_end_live tests.
+
+**Bug 3 — the 07000001 level-end door does nothing on E. FOUND + mechanism verified; the gap is the
+un-ported mission layer, not the exit code.**
+- The disc's ONLY exit on 07000001 [D placements]: **Touch #180** (0xEB, out 0x10, mask 0x18, filters
+  [0xE = the player, 0x0500004F = a drone skin], lock 0x63) at (−33.1, 2.9, 14.5) — 44 collision tris,
+  the port builds it with its volume — and **LOAD_LEVEL #18** (0xE8, next 0x07000002, gate 0x10, key 0)
+  at (−33.2, 1.7, 17.1) whose target object is "Load Point" (flags 0x30, **no collision** — so neither
+  the game's E-path (`Player_Activate` 0x1a5170 finds objects only via `Collide_SphereIntersect` on
+  collision, decomp read this session) nor the port's can ever E-activate it; it is not an E door).
+  The chain: Bond AND a skin-0x0500004F NPC in the plate volume → ch 0x10 pulses → LL #18 fires →
+  07000002 (the campaign's next level [D mission-data.md]).
+- The NPC (drone placement 161, skin 0x0500004F) starts **disabled waiting on ch 0xB** [L
+  ee_start_07000001: +0x134 = 0xB, +0x136 = 0, state +0x10C = 1 = Disabled, start state 0x1C]. No
+  writer for ch 0xB exists on the disc (placements of every trigger family + every type-5 and type-7
+  script scanned) — the enable comes from the game's mission layer, which the port does not have.
+- `level_end_07000001_needs_bond_and_the_0x4f_npc_on_the_plate`: Bond alone on the plate → no ch 0x10,
+  no exit (sister); with ch 0xB set (the game's enable state) and both actors on the plate →
+  `level_exit = Some(0x07000002)` at the next tick. The port's Touch AND-chain, lock, calc clear and
+  LOAD_LEVEL gate all behave exactly as the atlas says.
+
+**Next level code fact (corrects the task brief and U-048's headline)**: the level after 07000005 is
+**0x07000006** (archive 07000006.bin, 13.6 MB [D golden/files_bin.tsv]), not 0x07000066 — WORKLOG A-11a
+already corrected this; the 0x07000066 in U-048's first sentence is the stale value (there is no
+07000066.bin on the disc).
+
+**Could not verify / left open**
+- The window fix needs a user playtest (no GPU here).
+- Bug 2's fix (ride height or trigger contact geometry) — needs a PCSX2 trace of Bond standing on the
+  parked truck (his feet y in the game) or the obj+0xD0 contact writer's decompile.
+- 07000001 in play: the mission layer's ch 0xB write and the NPC's walk to the plate (AI) are unported;
+  the mechanism test above is the harness for that session.
