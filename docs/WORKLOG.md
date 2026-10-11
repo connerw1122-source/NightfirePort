@@ -3883,3 +3883,88 @@ the 07000001 placements 18/180 via the port's own parser plus the passing chain 
 the truck-script entity parents (stream 6 None, stream 7 Some(1)); and the level_end_live routes.
 Bookkeeping notes only (test-name substrings). Full suite on the branch: 243 passed, 3 failed — the
 3 allowed slim-ISO disc_golden tests (bigf_header_fields / bigf_tables / directory_tree).
+
+## 0088 — fix-render2: the merged lighting's follow-ups (cut-scene chars, pickups, truck, merge regression), the safe World cull
+
+Task: the user's check of fix-render's lighting (merged) plus the playtest 2026-10-11 rendering
+follow-ups. Branch `s/fix-render2` from master d589c76. Files: `crates/nf-view/src/{scene,gpu}.rs`
+(scene.rs is the only shared-file touch; lib.rs/hud.rs untouched).
+
+**The merge regression (found first).** The merge d589c76 ("combine add_instance: their 0x800 mult +
+my pickup slot") dropped fix-player2's pickup branch in `add_instance` — `pickup: Some(pk)` was
+never pushed as a CharVertex, so placed-pickup vertices entered the Character tail without one, the
+vertex↔CharVertex zip in `posed_vertices` misaligned, and every draw group after the first pickup
+posed wrongly while the pickups never posed. Restored (fix-player2 eb1564b scene.rs:1039 is the
+line the merge lost). Test: `placed_pickup_charvertices_survived_the_merge` (failed pre-fix:
+0 pickup CharVertices, counts unequal).
+
+**Cut-scene characters over-bright (user check 1).** Root cause: `Sim::characters_script_pos`
+resolved script characters through `script_entity`, which matches only `Obj::Entity` — script Anim
+characters (Obj::Anim) never got an ambient target and kept the 0xff sentinel → multiplier 1.0.
+Fixed: the position is now the live Anim's root-bone world translation (`script_anim` →
+`script_frame` → `local_pose`/`world_pose`; the Anim object sits at the origin and the sequence's
+root carries it — nis.rs, `AnimSeqTick` 0x1c28d0). [L ee_start_07000001.bin] the opening cut-scene's
+script-created character objects (0x018f5790 flags 0x890, 0x018f6a30/0x018f6b90 flags 0x860) all
+read ambient (40,30,26) — cel 0x191c860, the courtyard. Test:
+`cutscene_script_characters_dim_to_their_cel_ambient` (failed pre-fix: sentinel 1.0).
+
+**The truck (user check 3).** The truck is the script Anim object of skin 0x05000005 (nine rigid
+parts [D script-player.md]); its nine game objects carry obj+0xF0 = 0x8880 with ambient (57,70,86)
+[L ee_start_05.bin 0x0137C8A0…]. The same Anim-position fix dims it. Test:
+`the_truck_takes_the_0x800_ambient` (failed pre-fix).
+
+**Dropped weapons and placed pickups (user check 2).** `Pickup_Create` (0x18dda0) FORCES
+`obj+0xF0 = glist_flags & ~0x2000 | 0x840` — every pickup is character-lit — EXCEPT kind 3 (armour:
+0x800 cleared, 0x80000 set) and kind 6 (007 bonus: 0x800 cleared) [M decompile :137-151]. The port's
+placed-pickup and dropped-gun vertices now dim by the cel ambient at the pickup's live matrix, gated
+by that kind rule (NOT the mesh's glist flags — the slim ISO's one placed pickup, model 0200092a, is
+kind 6 and correctly stays untinted). Tests: `placed_pickups_follow_the_pickup_create_gate` (pins
+the kind-6 exemption), `dropped_guns_dim_to_the_cel_ambient` (kills a 07000001 guard through the
+input path and asserts the drop's drawn multiplier equals the ambient bytes; failed pre-fix at 1.0).
+
+**The first guard too dark (user check 4).** Not reproduced at the evidence points: [L
+ee_start_07000001.bin] all 15 drones' (position → ambient) pairs are reproduced by the port's snap
+under the smallest-volume cel tie-break (`the_first_guard_snaps_to_the_game_ambient`, drone 0 at
+(−4.92, 6.34, −0.09) → (20,20,20) cel 0x191f0e0 INCLUDED — the game's own value). `build_FindCel`
+(0x1c8cb0 disassembly) raycasts each matched cel's own object list (up 256 max, down limited by the
+up hit, nearest wins, else first match); the port has no per-cel object lists — a shared-geometry
+raycast with bbox attribution was tried and mis-attributed vertically-adjacent geometry (drone 1 in
+the two-cel courtyard overlap read (20,20,20) where the game reads (40,30,26)), so the
+smallest-volume tie-break stays, with the disassembly documented in `Sim::cel_at`. Left open: the
+user's symptom may live in a guard walking through an overlap the snapshot does not cover — needs a
+PCSX2 trace of that guard's walk.
+
+**R3 doors.** The evidence REFUTES the tint hypothesis: the 07000005 door models' glist flags are 0x0
+[D] and `Door_Create` (0x136100) only calls `Control_SetGList` — the game never dims doors through
+the 0x800 path. The port's doors stay 1.0, which matches the game. Pinned negatively by
+`doors_carry_no_0x800_and_stay_untinted` (any future tint fix must re-measure first). (Also: the
+pre-fix code tinted doors/searchlight parts with character 0's multiplier through the
+`mults.get(cv.character)` fall-through — restored the explicit 1.0 branches.)
+
+**Performance (user check 5 / R4).** The renderer submitted every material every frame (the cull was
+off by default after A-11's vanish bug: "the truck and the HUD vanished by view direction"). fix: the
+default cull now scopes to the static World layer only — its spheres are exact (placement-matrix
+transform of the glist sphere, built once); everything posed per frame (Character/Effect: doors,
+pickups, the truck, searchlight parts, flashes, tracers) and the sky are exempt, and the HUD draws
+from its own buffer. NF_CULL still enables the full test cull. Measured from the level-start cameras
+(headless, `party_levels_cull_the_static_bulk_from_the_start_view`): 07000006 — 1040 of 4438 World
+draws submitted (77 % skipped; 4651 materials total); 07000007 — 4526 of 4869 still inside the
+frustum spheres: its start view faces the whole interior, so the sphere cull cannot relieve it; the
+next lever is the portal cull (G-016), not a sphere-tuning fix. GPU time itself is not measurable in
+this sandbox (no GPU); the draw-count relief is the CPU/headless proxy the task asked for
+(NF_DRAWS=1 prints the live counters).
+
+**Not done this session** (each with its reason)
+- Bullet decals (playtest): already GAPS G-041 from fix-render (budget); nothing new measured.
+- The 07000002 bathhouse civilian's skin texels (playtest): GAPS G-042; the TWEAK fix covers the
+  reported over-bright cause. NOTE: master now carries `crates/nf-game/tests/bathhouse_live.rs`
+  (fix-drone2's merge) for that level's AI.
+- R2 (snow and a railing's shadow through the floor), O5 (searchlight beam/corona): not started —
+  budget went to the merge regression + the lighting follow-ups; both stay in GAPS.
+- HUD in cut-scenes: ALREADY FIXED by fix-render (render-port-check §1.6, `hud_hides_while_a_script_camera_runs`) — skipped per the task.
+
+**Tests**: `crates/nf-view/tests/render2_live.rs` — 8 tests, all NF_ISO, all shown failing before
+their fix (except the party-level counter test, which pins measured numbers) and green after.
+**Full suite**: `NF_ISO=<iso> cargo test --offline --release -j2 -p nf-game -p nf-formats -p
+nf-audio -p nf-view -- --test-threads=1` — see the commit; only the 3 allowed slim-ISO disc_golden
+failures.
