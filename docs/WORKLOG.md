@@ -3725,3 +3725,91 @@ the 07000001 placements 18/180 via the port's own parser plus the passing chain 
 the truck-script entity parents (stream 6 None, stream 7 Some(1)); and the level_end_live routes.
 Bookkeeping notes only (test-name substrings). Full suite on the branch: 243 passed, 3 failed — the
 3 allowed slim-ISO disc_golden tests (bigf_header_fields / bigf_tables / directory_tree).
+
+## fix-level2 — carry-over between levels and per-level rules (playtest 2026-10-11 F1/F2/F4/F5)
+
+Research (general-purpose subagents, then re-verified in the decomp by me):
+- The spawn point: `parsemap_create_dynamic_objects` (0x1d04f0) case 0x24 appends a `player_start`
+  entry per placement (0xE0 bytes; pos, rot, kind 1, the 0xB0 param block) [M 0x195c00]; param 0 lands
+  at entry+0x50 = the GATE switch channel. `Player_Start` (0x190fd0) is a two-pass scan: first kind-1
+  entry whose gate is 0 or whose channel is on, else the first kind-1 entry [M]. The gate is written by
+  the previous level's exit: `Trigger_Activate` (0x1b2318:91-107) writes the success channel (ext+0x2C)
+  when the auto channel (ext+0x28) is on, else the fallback (ext+0x2A) — BOTH before the load.
+  `Init_SwitchChannels` runs only when `IsWarmReset == 0` [M 0x1d5080], so the channel globals survive
+  the warm transition into the start scan. [D] 07000005's exit #118 (gate 0x1D, success 0x1D, fallback
+  0x1F) → 07000006's starts: 496 gate 0x1D (the truck-ride spawn), 510 gate 0x1F, 511 gate 0x1E — the
+  castle-door route (gate off → fallback 0x1F) must spawn at 510, the truck route (ch 0x1D already on →
+  success 0x1D) at 496. That is playtest F1's "entry matching the route".
+- The carry-over: `Player_RamSave` (0x195670) → global RamSave 0x2b9440: BL+0x170 (0x42 spare ammo),
+  BL+0x1B4 (0x558 weapon entries), BL+0x70C (0x33 key ring), SSys/PlrMissionStats/BondMoments,
+  switch_channels{_time,_hold,_prev}, health BL+0x894, armour BL+0x8B0, weapon M_CONTROL+0x63 [M].
+  `Player_RamLoad` (0x1957a8) is entirely gated on `IsWarmReset` and restores them; it runs inside
+  `Player_InitWeapon`'s (0x1a7ef8) per-level switch on GameState+0x0C: case 0x7000006 = RamLoad +
+  request = BL+0x934, falling back to the fresh-0x7000005 loadout when `Upgrade_Weapon(6)` (the P2K,
+  2 [L UpgradedHandguns 0x2bee08 = [2,4,6,8], Upgrades 0]) is unowned; case 0x7000007 = RamLoad +
+  InitAmmoWeapons + armour 0 + equips (P2K 0x30 rds, 0x4a 999, 0x50 0, 0x54 0) + request 1 (FISTS);
+  case 0x7000008 = RamLoad + request = saved, fallback into case 7 [M].
+- The party weapon lock: `Player_Weapon` (0x1a24c8:242-275): on 0x7000007 with ch 0x48 OFF the cycle
+  routes to `Player_WeaponChange(±1, mode 2)` (fists-only + click 0x1DB); ch 0x48 on with
+  `switch_channels_prev[0x48]` off → the request becomes `Upgrade_Weapon(6)` [M]. ch 0x48 is written by
+  TouchOnce placements 411/412 on 07000007 [D]. The party is 07000007 (the dressing script at the end of
+  07000006 loads 07000007 [D nf-extract nis]) — the playtest's "party level 07000006" is off by one.
+- The death cut-scene: the plunge/death NIS is LEVEL DATA — plunge TouchOnce triggers (out 0xBE on
+  07000005, 0x7C on 07000008; mask 8) → ScriptPlayer (0x06000952 / 0x06000991, mask bit 1) [D]. There is
+  NO death NIS in the player death path (Player_CheckForDeath 0x190810 sets ch 0x5E + Music_Event(6,1)
+  only [M]). The E-path must never fire them: `Trigger_Activate` begins its type-1/2/0xD arms with
+  `if ((mask & 4) == 0) return;` [M 0x1b2318:23-57]. The port's `activate_request` lacked the gate.
+
+Fixes (commit "fix-level2: carry-over, per-exit spawn, party weapon lock, plunge use-key gate"):
+- triggers.rs: the mask&4 gate in `activate_request`'s TOUCH_ONCE/TOUCH arms + the `gone` (type-99)
+  guard on the LOAD_LEVEL E-path (audit finding).
+- player.rs (new, carry-over/spawn section): `RamSave` (capture/restore — the port-modelled subset of
+  0x195670), `LevelStart` + `pick_start` (0x190fd0), `init_ammo_weapons` (0x1a17f8), `init_level_loadout`
+  (0x1a7ef8 cases 0x7000005/6/7/8 + default → `Inventory::level_start`, common tail), the weapon lock
+  (`weapon_lock_input` / `weapon_lock_auto_draw`, 0x1a24c8:242-275).
+- nf-view lib.rs: `load_with_carry` — the reload captures RamSave at the exit, parses the type-0x24
+  starts (gate = param 0, yaw = rotation[1], the "Player1" convention), runs the two-pass pick with the
+  carried channels, re-stands Bond, runs the per-level loadout and sets the switch request; the lock
+  gates the input each tick and the ch-0x48 rising edge auto-draws the P2K (App.prev_lock_ch).
+
+Tests (crates/nf-view/tests/level_carry_live.rs, 8, all NF_ISO, all driving load_with_carry/step_bond):
+plunge_trigger_ignores_the_use_key (F5), castle_door_route_spawns_at_the_matched_entry (F1, the user's
+symptom) + truck_route_spawns_at_the_truck_entry (sister), warm_transition_carries_health_armour_weapons_
+ammo (F2) + cold_load_starts_fresh (sister), cold_07000005_loadout_matches_the_snapshot (the [L] anchor),
+party_level_starts_unarmed_and_locked (F4), use_key_still_activates_gated_triggers_and_load_level
+(regression). Pre-fix demonstration: with the four fixes toggled out (mask&4 → false, pick_start → first
+entry, init_level_loadout → default case, lock disabled) exactly the four bug tests FAIL and their
+sisters still pass; toggles restored (git diff clean against the commit).
+
+Independent audit (general-purpose subagent): 5/5 C-side claims VERIFIED with exact lines; findings
+folded in: the LOAD_LEVEL `gone` guard (fixed); the rest recorded below.
+
+Could not verify / left open (evidence recorded, no guessing):
+- The walk-in graze: Bond's touch capsule (Toucher::player, the trigger-port-check stand-in) can contact
+  the plunge volumes whose meshes top out at cliff-path height — e.g. near the 07000005 wire the port's
+  walking capsule reaches the volume (reproduced headless once via the walk-in path during development).
+  The game does not fire there; the real gate is the collide-stage contact semantics (which shape of the
+  player the trigger contacts use), untraced. The E-path — the user's reported symptom — is fixed and
+  tested; the walk-in needs the Trigger_Hit contact pipeline (trigger-port-check owner).
+- The SP state-0 gate (SP_Update 0x1dbda8:84-98: Bond health > 0 && Mission_Status ∈ {0,1}) is not
+  ported — nis.rs has no health/mission access on its update path without touching files this task does
+  not own.
+- `DAT_002a373c` (InitAmmoWeapons' boot flag) is the all-weapons cheat [M, audit: C_CHCHWEAP 0x215dc8
+  sets it]; the [L] boot snapshot (DAT = 0, IsWarmReset = 0, owned = exactly the equip set) proves the
+  zero arm ran. Unexplained remain the [L] clip=1 readings on unowned 0x33/0x4c/0x4f — no writer in the
+  cold-boot path produces them (the audit checked EquipAmmo/WeaponInitBullet/ReloadAmmoType — all
+  current-weapon or shared-clip paths); the equality test skips those three entries.
+- The game saves `_prev`/`_hold` channel arrays in the RamSave; the port models neither (trigger-port-
+  check #10), so `prev_lock_ch` resets to false on load instead of seeding from the save — the audit
+  notes a spurious rising edge would be possible on a warm re-entry into 07000007 with ch 0x48 already
+  on in the save; no back-edge into 07000007 exists in the data.
+- The save-timing: the game RamSaves synchronously inside Trigger_Activate then GS_PauseGame freezes the
+  sim; the port captures at the next redraw, so the exit frame's remaining ticks can still move the
+  Touch channels (the Calc clear) before the capture. Same end state for the tested routes; noted.
+- The port's locked-cycle stand-in zeroes the cycle request instead of running `Player_WeaponChange
+  mode 2` (same observable outcome minus the 0x1DB click); the number-key lock is [S] (the decompile's
+  quick-select arm is not 0x48-gated but resolves to fists from the fists state).
+- The initial-weapon draw needs the fists view model per level — `Player_Init`'s PunchSkin override is
+  applied in load() [M], verified for 07000007 by the party test (gun.weapon reaches 1).
+- Not run: a real PCSX2 trace of a transition (no emulator in the sandbox); the window/renderer path is
+  unchanged by this task.

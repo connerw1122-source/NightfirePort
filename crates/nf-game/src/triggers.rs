@@ -242,6 +242,9 @@ impl Trigger {
     pub fn activate_request(&self, ch: &Channels) -> (Vec<(u8, u8)>, Option<u32>) {
         match self.kind {
             kind::LOAD_LEVEL => {
+                // The game latches `ext+0x38 = 99` (type 99 = dead) after the load request [M
+                // 0x1b2318:113], so the E-path can never re-fire a spent exit either (`gone`).
+                if self.gone { return (Vec::new(), None); }
                 // Cancel channels 0x60–0x63 (99, 0x62, 0x61, 0x60) [M 0x1b2318:64-75]: if any is on, abort (an
                 // alarm blocks the exit).
                 if (0x60..=0x63).any(|c| ch.on(c)) { return (Vec::new(), None); }
