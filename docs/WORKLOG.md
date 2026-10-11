@@ -3968,3 +3968,75 @@ their fix (except the party-level counter test, which pins measured numbers) and
 **Full suite**: `NF_ISO=<iso> cargo test --offline --release -j2 -p nf-game -p nf-formats -p
 nf-audio -p nf-view -- --test-threads=1` — see the commit; only the 3 allowed slim-ISO disc_golden
 failures.
+
+## 0089 — fix-ladder: the ladder system (Ladder_Create/Player_CollLadder/Player_Climb) and the swim substate (Player_InWater + case 3 + Player_MonitorAir)
+
+Task: the user's 07000002 report — Bond starts in an underground bunker and can't get out (the exit is a
+ladder; ladders weren't implemented), and the level's water is walk-on-top instead of swimmable. Branch
+`s/fix-ladder` from master 4b199d0. Files: new `crates/nf-game/src/ladder.rs`,
+`crates/nf-game/src/player.rs` (the substate functions only), `crates/nf-view/src/scene.rs` (placement
+wiring + the tick context), new `crates/nf-view/tests/fix_ladder_live.rs`, docs (`atlas/ladder.md`,
+`atlas/wire-grapple.md` correction, `systems/levels.md`), `lib.rs` (one `pub mod ladder;` line).
+
+**Research (before any code).** The substate machinery was already documented (wire-grapple.md: substate 1
+= Player_Climb 0x196310, hit class 0x2D → CollLadder) but unported — grep found no ladder/climb code in
+crates/. Ported whole from the decompile:
+- `Ladder_Create` 0x1966c0 [M disasm]: placement type 0x22 → control_create_object(4) (instance 4 bytes:
+  inst+0=0, inst+2=placement param 1, unread), class 0x2D; rotation passed through UNMODIFIED — the
+  wire-grapple atlas's "rot.z is negated … as for ladders" note was wrong (corrected there).
+- `Player_CollLadder` 0x196118 [M]: walk into the ladder attaches (not use-key driven): |AngleDiff
+  (player, ladder) | > π/2 (Vec_AngleDifference 0x1e2b78 = wrap(b−a)), y window bottom=cy−r+1.0 /
+  top=cy+r+0.85 (raised to bottom+0.02 first), snap to centre+fwd(yaw)·0.5, ChangeSubState(1),
+  WeaponNone, regrab/mode/+0x130/+0x884.
+- `Player_Climb` 0x196310 [M]: yaw clamp+ease toward ladder.yaw+π (ease uses the pre-clamp diff),
+  Player_Move(0) (no walk), BLData+0x50 zeroed, the climb 0.02·fwd units/tick (FRAME_RATE_MUL=1
+  [L 0x30d0d8]) = 1.2 u/s; top dismount +0.6 local-forward push, action (7) dismount −0.05, bottom
+  dismount; every dismount regrab=60, +0x942=substate, +0x14=0. The BLData+0x10..0x1F wish vector is
+  ZEROED EVERY TICK by Player_Update (obj+0xF4==1 branch [M disasm 0x193830-0x19383c: Vec_Zero(s2+16),
+  Vec_Zero(s2+48)]) — so the +0x14 climb delta and the ±0x18 pushes are one-tick displacements (the
+  port consumes them as `vel`/`push_fwd` the same way).
+- Swim [M]: cel+0x90 = the water surface (build_alloc_cel 0x1c93f8 defaults −500.0;
+  parseentity_fixup_entity 0x1d00c0 sets it to the entity bbox max y — cel+0x54 — for flag word 0xC023,
+  −500.0 for 0xC047; the bbox is the glist copy at 0x1d1998 amemcpy(cel+0x40, glist+0x20, 0x20)).
+  Player_InWater 0x195e50 is Player_SSWalk's FIRST statement (y−0.3 < surface → ChangeSubState(3) — case
+  3 in the Player_Update dispatch is the swim, not only riding); case 3 = Player_Move(1.0) + the
+  surface−0.3 up-velocity clamp + the grounded exit; Player_Collision 0x194df0 applies NO gravity below
+  the surface. Player_MonitorAir 0x191a70: air −5/s under (from 100), +20/s over ANY cel, drown
+  Player_HandlePain(0x40000000 = 2.0, type 7) every 30 ticks below 1.0 (the 2.0 was caught by the audit;
+  0x40000000 is 2.0f, not 0.5f).
+
+**Disc data** [D]: 4 ladders on 07000002 (the bunker exit ≈(−26.9, 2.3, 42.2), world top 5.96), water
+surfaces 3.76–4.34 on 5 cels; 9 more levels carry ladders and 07000016 one water cel — the full table is
+in docs/systems/levels.md (new §"Ladders and water, per level", from the sweep test).
+
+**Reproduce-first.** `prefix_bond_cannot_leave_the_bunker` (run on stashed master, not committed):
+Bond placed at the bunker ladder's face, 900 forward ticks → y 1.051 → 1.097: "SYMTOM REPRODUCED ON
+MASTER". The committed tests assert the fixed behaviour through `nf_view::load` + `Sim::step_bond` (the
+viewer's own play path):
+- `ladder_walk_into_it_climbs_to_the_garden_and_walks_away`: walk into the ladder → substate 1 → reaches
+  the garden (y > 5.2), dismounts to walk, walks away, net climb > 2. Sister: the climb's height gain.
+- `walk_into_water_enters_the_swim_substate`: a grid search finds deep water inside a 0xC023 cel box
+  (the moat cel's box starts at −0.73), Bond placed there → substate 3, y−0.3 < surface. Sister: dry
+  bunker start never swims.
+- `ladder_and_water_counts_per_level`: the per-level sweep (docs table); sister: 07000002 ≥ 4 ladders.
+
+**Audit (independent subagent, claims + decompile).** All 15 decompile claims CONFIRMED (2 with
+corrections), and it caught 4 port bugs, all fixed: (1) double vertical integration in swim (physics
+integrated the stale vel[1], then swim_tick integrated again) — the swim y integration now happens once,
+after the clamp; (2) air never refilled on land (the game's refill branch runs for the −500 default cel
+too); (3) drown damage 0.5 → 2.0 (0x40000000); (4) the ladder grab was unreachable from the swim
+substate (the game excludes only substates 1/2) — swim_tick now runs the grab scan. Also adopted: the
+dismount writes +0x14=0 and does NOT clear +0x94D.
+
+**Deviations, tagged [S] in docs/atlas/ladder.md**: the grab hit-shape is the ladder's axis column (the
+game's per-object HITTEST shape isn't recoverable this pass); the climb-yaw ease always runs (AnimObj
+flag bit 0 unresolved); the climb "hit below" flag 8 is the port's floor ray (the game uses the
+CollisionHandler's hit list); vertical swim controls are jump/crouch (the game's dive input unresolved);
+the head bone is the eye; climb anims / the underwater fade visual / the air HUD / breath sounds are not
+ported (fields exposed: `water_fade`, `underwater`).
+
+**Verified**: `cargo test --release -p nf-game --lib` 65/65; the full suite
+`NF_ISO=<iso> cargo test --offline --release -j2 -p nf-game -p nf-formats -p nf-audio -p nf-view --
+--test-threads=1` (see the commit message for the counts; only the 3 allowed slim-ISO disc_golden
+failures). Determinism: no RNG draws added (the ladder/water paths consume none in the game [M grep of
+the six touched decomp files]); fixed 60 Hz; no wall-clock or HashMap order in Sim.

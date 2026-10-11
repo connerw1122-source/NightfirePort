@@ -12,6 +12,7 @@ pub mod drone;
 pub mod env;
 pub mod gun;
 pub mod grenade;
+pub mod ladder;
 pub mod music;
 pub mod nav;
 pub mod nis;

@@ -222,6 +222,8 @@ pub struct Sim {
     pub wires: Vec<nf_game::wire::Wire>,
     /// Whether Bond is currently on a wire (creeping) — posts music event 0xD each tick.
     pub creeping: bool,
+    /// The level's ladders (placement type 0x22, `Ladder_Create` 0x1966c0, class 0x2D) — fix-ladder.
+    pub ladders: Vec<nf_game::ladder::Ladder>,
     /// The set of weapon ids that have a view model built in `Scene::view_models` (D-003: the cycle skips
     /// weapons not in this set, because their skin is not in the level archive).
     pub view_model_ids: std::collections::HashSet<u8>,
@@ -315,7 +317,8 @@ pub fn parse_room_cels(level: &Level) -> Vec<Cel> {
             let b = [param(6), param(7), param(8)];
             if b == [0, 0, 0] { a0 } else { b }
         } else { a0 };
-        out.push(Cel { min: o.min, max: o.max, ambient: [a0, a1], zone: if flags16 == 0xc047 { param(5) } else { 0 } });
+        out.push(Cel { min: o.min, max: o.max, ambient: [a0, a1], zone: if flags16 == 0xc047 { param(5) } else { 0 },
+            water: if flags16 == 0xc023 { o.max[1] } else { -500.0 } });
     }
     out
 }
@@ -336,6 +339,12 @@ pub struct Cel {
     /// `cel+0xa2`: the switch-channel index whose byte value shifts the ambient read by that many bytes
     /// (`base = cel + switch_channels[cel+0xa2]`, `Lights_CalcAmbientLight` 0x1cb178).
     pub zone: u8,
+    /// `cel+0x90`: the water surface [M fix-ladder]. `build_alloc_cel` 0x1c93f8 sets it to −500.0 (no
+    /// water); `parseentity_fixup_entity` 0x1d00c0 sets `cel+0x90 = cel+0x54` for flag word 0xC023 —
+    /// `cel+0x54` is the glist bbox max y (`amemcpy(cel+0x40, glist+0x20, 0x20)` 0x1d1998 copies the bbox
+    /// to cel+0x40..0x5F) — and to −500.0 for 0xC047. `Player_InWater` 0x195e50 and the swim substate
+    /// clamp read it, and `Player_Collision` skips gravity below it.
+    pub water: f32,
 }
 
 /// `Lights_CalcAmbientLight` (0x1cb178): the object's ambient RGB steps toward its cel's ambient through
@@ -520,7 +529,26 @@ impl Sim {
             }
         }
         let before = self.bond.pos;
-        if !self.disabled { self.bond.tick(&self.world, &input); }
+        // `Player_Update` 0x193600 with the ladder/water context (fix-ladder): the level's ladders
+        // (BLData+0x884) and the water surface of the cel Bond is in (cel+0x90; −500 = none, and a cel
+        // whose top is far below Bond is no water either). The sink control is unused in play (the
+        // viewer's input has no bind; the crouch key sinks in the Sim path below).
+        if !self.disabled {
+            let water = self.cel_at(self.bond.pos).map(|i| self.cels[i].water).filter(|w| *w > -400.0);
+            let sink = input.crouch;
+            let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, water, sink };
+            let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
+            self.bond.tick_ctx(&self.world, &ctx, &input);
+            // `Player_WeaponNone` 0x1a9858 runs in `Player_CollLadder` on the grab [M 0x196118] — the
+            // port holsters to fists through the same switch path the viewer's weapon cycle uses.
+            if !was_climbing && self.bond.substate == nf_game::player::SS_CLIMB && self.gun.switch_state == 0 && self.gun.weapon != 0x47 {
+                self.gun.switch_request = 0x47;
+            }
+            // `Player_MonitorAir` 0x191a70's drown damage: `Player_HandlePain(0.5, type 7)` [M 0x191a70:136-143].
+            if let Some(dmg) = self.bond.drown_damage {
+                self.drones.health.health = (self.drones.health.health - dmg).max(0.0);
+            }
+        }
         // Footsteps (`AnimObjectUpdate`, player): `BL+0x924` gathers the distance moved; past the stride (1.65,
         // crouched 0.4125) it wraps (fmod) and a step sounds: crouched 0x286 at Bond, else `Effect_Player` → the floor
         // surface's footstep (`EffectInfo+0x16`) at the floor point; AI alertness 0 (drones do not hear it).
@@ -1764,6 +1792,10 @@ impl Scene {
             let bond = nf_game::player::Bond::stand_at(&world, p0, yaw0);
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.attach_level(level);
+            // Ladders (`Ladder_Create` 0x1966c0, placement type 0x22, class 0x2D): fix-ladder. The world
+            // sphere comes from the placement's object glist bounds, like the game's
+            // `Control_BuildWorldSph` 0x133070.
+            let ladders = nf_game::ladder::all(level);
             // Wires (`Wire_Create` 0x1981d8, placement type 0x3E): the level's zip wires / creep ledges.
             let wires: Vec<nf_game::wire::Wire> = level.maps[m].placements.iter()
                 .filter(|p| p.flags & 0xff == 0x3e)
@@ -1809,7 +1841,7 @@ impl Scene {
                 })
                 .collect();
             drones.pickups.extend(placed_pickups);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: room_cels, char_ambient, view_model_chars: Vec::new() })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: room_cels, char_ambient, view_model_chars: Vec::new() })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {
