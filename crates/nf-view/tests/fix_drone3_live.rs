@@ -22,6 +22,9 @@ fn tick_idle(sim: &mut nf_view::scene::Sim, n: u32) {
 /// Stand Bond at `at` with the P2K (armed) and look at `to`.
 fn stand_armed_at(sim: &mut nf_view::scene::Sim, at: [f32; 3], to: [f32; 3]) {
     sim.bond = nf_game::player::Bond::stand_at(&sim.world, at, 0.0);
+    // Armed: the P2K in hand. 07000007 now starts Bond on the fists (fix-level2's F4 party weapon lock), so the test
+    // must draw the gun itself; the drones read `Sim::gun.weapon` as `bond_weapon` each tick.
+    sim.gun.weapon = 2;
     let e = sim.bond.head();
     let d = [to[0] - e[0], to[1] - e[1], to[2] - e[2]];
     sim.bond.yaw = d[0].atan2(d[2]);
