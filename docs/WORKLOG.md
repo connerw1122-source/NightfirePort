@@ -4361,3 +4361,20 @@ behaviour), docs `docs/tools/dev-mode.md` + `docs/atlas/script-player.md`.
   stale — its own doc claim ("fires within ~1 s") does not reproduce at that position.
 - Music_Event(5, hash) (the skip's music pulse) rides the uncarried `Request::Event` — the port's music runtime has
   no consumer for it yet (the same status as the other uncarried events).
+
+### C2-class first dump (07000002, throwaway probe, numbers only)
+
+`nf_view::load("07000002.bin")` + 300 idle ticks; every present drone with present/started/enabled/in-llist/held/
+drawn/corpse/team/mode/dtype/channel (25 present, none spawner-held, none corpses):
+
+- #0–#20: team 1, dtype 0x2, `enabled=0 drawn=0`, in-llist, switch channels 21/23/24/25/129/8 — the switch-gated
+  combat guards, correctly invisible + disabled until their channels fire.
+- #21: **team 2, mode 0xC, dtype 0xC, ch 0, enabled=1 drawn=1 in-llist, state 0x1C** at (−24.3, 1.0, 31.9) — the
+  only DRAWN non-team-1 drone at the start; a non-hostile-class character the port draws like a guard (the C2
+  candidate: "drawn, never attacks, can't be damaged" — the port's damage/target path keys off team != 1).
+- #22–#24: team 3, modes 0x7/0x5, dtype 0xe, ch 22/23/25, `enabled=0 drawn=0` — the fix-drone3 mission-state
+  characters (civilian guard, civilians), correctly dormant at start.
+
+Not done (sandbox time): what the game does with a team-2/mode-0xC drone (its real behaviour to port), the
+07000005 patrol torso-twist clamp, the 07000006 stationary-guard class, and the searchlight spotted→alarm path —
+each needs the same load-and-walk dump driven to the reported spots.
