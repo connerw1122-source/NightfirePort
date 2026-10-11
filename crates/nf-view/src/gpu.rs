@@ -133,13 +133,27 @@ pub fn extract_frustum(vp: [[f32; 4]; 4]) -> [[f32; 4]; 6] {
 }
 
 /// Test if a sphere is fully outside any of the 6 frustum planes (Gribb-Hartmann point-plane test extended by radius).
+/// `Vision_InView`'s shape as the port reads it: a box (a cel's `cel+0x40..0x58` min/max bbox) is
+/// outside the view when all eight corners lie outside the SAME frustum plane (the standard
+/// p-vertex test). `View_AddCels` (0x1e6ba0) frustum/bbox-tests each cel per viewer [M].
+pub fn box_outside(planes: &[[f32; 4]; 6], min: [f32; 3], max: [f32; 3]) -> bool {
+    for pl in planes {
+        // The p-vertex: the corner most along the plane normal; if even that is outside, the whole box is.
+        let px = if pl[0] >= 0.0 { max[0] } else { min[0] };
+        let py = if pl[1] >= 0.0 { max[1] } else { min[1] };
+        let pz = if pl[2] >= 0.0 { max[2] } else { min[2] };
+        if pl[0] * px + pl[1] * py + pl[2] * pz + pl[3] < 0.0 { return true; }
+    }
+    false
+}
+
 pub fn sphere_outside(planes: &[[f32; 4]; 6], centre: [f32; 3], radius: f32) -> bool {
     planes.iter().any(|p| p[0] * centre[0] + p[1] * centre[1] + p[2] * centre[2] + p[3] < -radius)
 }
 
 /// One indexed draw: its layer, pass, pipeline, texture bind group, index range and the object's world centre + radius.
 #[derive(Clone, Copy)]
-struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32 }
+struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16> }
 
 pub struct Renderer {
     hud_pipeline: wgpu::RenderPipeline,
@@ -172,6 +186,10 @@ pub struct Renderer {
     /// Per-frame sort buffer reused across frames (A-11e): the per-frame draw order — `(pass, sort key, draw index)`
     /// — is `clear`ed + refilled every render instead of allocating ~64 KB each frame.
     order: Vec<(u8, f32, usize)>,
+    /// The room cels' frustum-test spheres (`Scene::cel_sphere`), built once: `View_AddCels`
+    /// (0x1e6ba0) frustum-tests each cel's bbox per viewer; fix-render3 skips a static World draw
+    /// whose cel fails the same test. `NF_NOCELCULL` disables.
+    cel_boxes: Vec<([f32; 3], [f32; 3])>,
 }
 
 impl Renderer {
@@ -329,13 +347,14 @@ impl Renderer {
         // Draw order (docs/systems/render.md): sky before the world, list 0, characters, list 1 (alpha), sky after the fog
         // pass, effects; the vertex buffer keeps its layout (the character tail stays contiguous).
         let draws: Vec<DrawCall> = scene.materials.iter().zip(&material_tex)
-            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius }).collect();
+            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel }).collect();
         let fog = scene.fog;
         let snow_pipeline = make_pipeline(Draw { pass: 5, blend: 1, zwrite: false, atest: 0, fog: 0 });
         let snow_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (SNOW_MAX * std::mem::size_of::<crate::scene::Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let snow_bg = match &scene.snow_texture { Some(t) => make_tex(t.width, t.height, &t.rgba), None => make_tex(1, 1, &[255, 255, 255, 255]) };
         let order_cap = draws.len();
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap) }
+        let cel_boxes = scene.cels.iter().map(|c| (c.min, c.max)).collect();
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes }
     }
 
     /// `view_proj`: full camera; `view_proj_rot`: the same without the camera translation.
@@ -414,6 +433,15 @@ impl Renderer {
             // Counters for the worklog (env-gated; no per-frame cost otherwise).
             let trace = std::env::var_os("NF_DRAWS").is_some();
             let (mut submitted, mut culled) = (0usize, 0usize);
+            // fix-render3: the room-cel visibility test (`View_AddCels` 0x1e6ba0's `Vision_InView`
+            // per cel bbox). Computed once per frame — ~200 sphere tests; a World draw whose cel is
+            // out is skipped before the pipeline/bind work. The eye's own cel always passes (its
+            // bbox contains the eye, so its sphere can never be outside the frustum).
+            let cel_cull = std::env::var_os("NF_NOCELCULL").is_none();
+            let cel_visible: Vec<bool> = if cel_cull {
+                self.cel_boxes.iter().map(|&(min, max)| !box_outside(&planes, min, max)).collect()
+            } else { Vec::new() };
+            let mut cel_culled = 0usize;
             // Skip redundant `set_pipeline` / `set_bind_group(0)` calls (A-11e): `last_pipeline` and `last_bg0_rot`
             // (whether the previous bind-group-0 was the rotation-only sky one) let us issue each only on a change.
             let mut last_pipeline: Option<usize> = None;
@@ -423,6 +451,10 @@ impl Renderer {
                 // Sky after the fog pass (pass 4) follows the viewer and is never culled.
                 if cull(&dc) && dc.pass != 4 && sphere_outside(&planes, dc.centre, dc.radius) {
                     if trace { culled += 1; }
+                    continue;
+                }
+                if cel_cull && dc.layer == Layer::World && dc.cel.is_some_and(|c| !cel_visible[c as usize]) {
+                    if trace { cel_culled += 1; }
                     continue;
                 }
                 if trace { submitted += 1; }
@@ -442,8 +474,8 @@ impl Renderer {
                 pass.draw_indexed(first..first + count, 0, 0..1);
             }
             if trace {
-                eprintln!("render: {submitted} draws submitted, {culled} culled ({} total, {:.1}% skipped)",
-                    submitted + culled, 100.0 * culled as f32 / (submitted + culled).max(1) as f32);
+                eprintln!("render: {submitted} draws submitted, {culled} frustum-culled, {cel_culled} cel-culled ({} total, {:.1}% skipped)",
+                    submitted + culled + cel_culled, 100.0 * (culled + cel_culled) as f32 / (submitted + culled + cel_culled).max(1) as f32);
             }
             // `DrawDrops` runs after the fog pass, the alpha list and the shards.
             if ns > 0 {

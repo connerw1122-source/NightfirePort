@@ -79,6 +79,12 @@ pub struct Material {
     /// The object's world-space bounding-sphere radius (the glist radius scaled by the instance matrix). Used by the
     /// CPU-side frustum cull (A-11e): a draw is skipped when its sphere is fully outside the view frustum.
     pub radius: f32,
+    /// The room cel this static draw sits in — `build_FindCel` (0x1c8cb0) over the placement's world
+    /// centre, the same lookup `build_LinkToRoom` (0x1c9680) uses to link the game's objects to their
+    /// cel. `None` = no room cel contains it (outdoor/uncel'd geometry — never cel-culled).
+    /// `View_AddCels` (0x1e6ba0) frustum-tests each cel's bbox (`Vision_InView`); fix-render3 skips a
+    /// World draw whose cel fails that test.
+    pub cel: Option<u16>,
     /// `(map, texture)`; `None` = untextured.
     pub key: Option<(usize, u32)>,
     pub first_index: u32,
@@ -235,6 +241,8 @@ pub struct Sim {
     /// The scene character indices of the first-person view models (`Scene::view_models` values) — they follow
     /// Bond's cel instead of a drone's.
     pub view_model_chars: Vec<usize>,
+    /// fix-render3: the `ambient_at` call counter (a test guard for the posed-vertices hoist).
+    pub ambient_lookups: std::cell::Cell<usize>,
 }
 
 impl Sim {
@@ -328,6 +336,7 @@ pub fn parse_room_cels(level: &Level) -> Vec<Cel> {
 /// params 6/7/8 (0xc047 only), the lighting zone = param 5 (0xc047 only). The bbox is the object's glist
 /// min/max copied raw into `cel+0x40..0x60` (`parsemap_block_map_data_static` 0x1d1998 + the
 /// `parsemap_block_entity_params` 0x1d1508 record map) — the same box `build_FindCel` (0x1c8cb0) tests.
+#[derive(Clone)]
 pub struct Cel {
     pub min: [f32; 3],
     pub max: [f32; 3],
@@ -365,6 +374,9 @@ impl Sim {
     /// read at `base+0x9a/0x9c/0x9e` (`Lights_CalcAmbientLight` 0x1cb178). The port's live switch-channel
     /// table stands in for the game's; values above 1 clamp to 1 (only the 0/1 shift has defined bytes).
     pub fn ambient_at(&self, p: [f32; 3]) -> Option<[u8; 3]> {
+        // fix-render3: a test-visible counter for the posed-vertices hoist (the per-vertex version
+        // ran this through every pickup/attachment vertex; the hoisted one runs it once per key).
+        self.ambient_lookups.set(self.ambient_lookups.get() + 1);
         let c = &self.cels[self.cel_at(p)?];
         let off = *self.drones.channels.v.get(c.zone as usize).unwrap_or(&0);
         Some(c.ambient[(off as usize).min(1)])
@@ -1135,6 +1147,9 @@ pub struct CharVertex {
 }
 
 pub struct Scene {
+    /// The level's room cels (`parse_room_cels`), kept for the static-draw cel cull
+    /// (`View_AddCels` 0x1e6ba0 frustum-tests each cel's bbox; `cel_sphere`/`cel_index_at`).
+    pub cels: Vec<Cel>,
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
     pub materials: Vec<Material>,
@@ -1198,9 +1213,9 @@ pub fn fog_for(level: u32) -> Option<([u8; 3], f32)> {
 
 /// Grouped by layer, then (world layers) the object — the game sorts cels per object (`View_AddCels`) — then texture
 /// and draw state. The value keeps the object's world centre and scaled radius for the per-frame sort + frustum cull.
-type Groups = BTreeMap<(Layer, [u32; 3], u32, Option<(usize, u32)>, Draw), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32)>;
+type Groups = BTreeMap<(Layer, [u32; 3], u32, Option<(usize, u32)>, Draw), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32, Option<u16>)>;
 
-fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>, searchlight: Option<u16>, door: Option<u16>, pickup: Option<u16>, mult: [f32; 3]) {
+fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>, searchlight: Option<u16>, door: Option<u16>, pickup: Option<u16>, mult: [f32; 3], cels: &[Cel]) {
     let obj = &level.maps[inst.map].objects[inst.object];
     let mut m = inst.matrix;
     if layer == Layer::SkyCamera { m[3] = [0.0, 0.0, 0.0, 1.0]; }
@@ -1240,7 +1255,12 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
         let draw = Draw::from_gs(pass, fog, alpha, test, zbuf);
         let lkey = if matches!(layer, Layer::World) { (li as u32) << 16 | bi as u32 } else { 0 };
         let key = b.texture.filter(|&t| (t as usize) < level.maps[inst.map].textures.len()).map(|t| (inst.map, t));
-        let (vs, is, cv, c, r) = groups.entry((layer, ikey, lkey, key, draw)).or_default();
+        // fix-render3: the room cel for the static World layer (build_LinkToRoom 0x1c9680 →
+        // build_FindCel 0x1c8cb0 on the object's world centre; View_AddCels 0x1e6ba0 frustum-tests
+        // each cel's bbox per viewer). Everything posed per frame keeps None.
+        let cel = if layer == Layer::World { find_cel(cels, centre).map(|i| i as u16) } else { None };
+        let (vs, is, cv, c, r, gcel) = groups.entry((layer, ikey, lkey, key, draw)).or_default();
+        *gcel = cel;
         *c = centre;
         *r = radius;
         let base = vs.len() as u32;
@@ -1409,6 +1429,7 @@ impl Scene {
         // to their cel's ambient exactly as the game's link does at level start (`build_LinkToRoom` 0x1c9680 →
         // the snap in `control_link_object_to_cel` 0x1346b8; channels are all 0 here, so triple 1 reads).
         let room_cels = parse_room_cels(level);
+        let sim_cels = room_cels.clone();
         // Bug 3 diagnostic (`NF_COLL=1`): log objects that have collision but are not drawn — the "invisible walls".
         // An object is an invisible wall if it has collision triangles but: it's skipped by the cel pass (flag 0x10),
         // it's a door/searchlight/corona that the static pass skips (drawn elsewhere — but if those paths also skip
@@ -1448,7 +1469,7 @@ impl Scene {
                 let p = transform(&inst.matrix, obj.centre);
                 mul_bytes(cel_ambient(&room_cels, p, 0).unwrap_or([0xff; 3]))
             } else { [1.0; 3] };
-            add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds), None, None, None, mult);
+            add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds), None, None, None, mult, &room_cels);
         }
         let mut characters = Vec::new();
         let (mut attachments, mut armed, mut weapons_missing) = (Vec::new(), std::collections::HashSet::new(), 0);
@@ -1471,10 +1492,10 @@ impl Scene {
                 add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds), None, None, None, if obj.flags & 0x800 != 0 {
                     // A non-skinned character object drawn through the World layer: the same 0x800 dim.
                     mul_bytes(cel_ambient(&room_cels, transform(&inst.matrix, obj.centre), 0).unwrap_or([0xff; 3]))
-                } else { [1.0; 3] });
+                } else { [1.0; 3] }, &room_cels);
                 continue;
             }
-            add_instance(level, inst, Layer::Character, Some((characters.len() as u32, None)), &mut groups, Some(&mut bounds), None, None, None, [1.0; 3]);
+            add_instance(level, inst, Layer::Character, Some((characters.len() as u32, None)), &mut groups, Some(&mut bounds), None, None, None, [1.0; 3], &room_cels);
             let start = drones.and_then(|d| {
                 let param = |k: u32| inst.placement.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
                 let hash = drone::start_script(&d.tables, param, d.level_id).script()?;
@@ -1498,11 +1519,11 @@ impl Scene {
             let Some(&(map, object)) = level.by_hash.get(&mesh) else { weapons_missing += 1; continue };
             let winst = Instance { map, object, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: inst.placement.clone() };
             let character = characters.len() as u32 - 1;
-            add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3]);
+            add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels);
             let local = anim::quat_trans_to_mat(dt.q, dt.t);
             attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, script: None });
             // The same gun as a pickup once the drone drops it.
-            add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3]);
+            add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels);
             attachments.push(Attachment { character, bone: 0, local, flash: None, tracer: None, dropped: true, script: None });
             // Its muzzle flash: `DroneWeap_FireWeapon` asks `AnimGetBoneWorldTrans(obj, datum id, 1, …)`, which looks up
             // the datum whose id is id + 1 — the muzzle (07000005: 8 → 9 at x −0.77, 16 → 17 at x −1.18).
@@ -1510,7 +1531,7 @@ impl Scene {
                 let muzzle = skin.datums.iter().find(|d| d.id == datum_id + 1 && d.bone >= 0);
                 if let (Some(&(fmap, fobject)), Some(md)) = (level.by_hash.get(&fmesh), muzzle) {
                     let finst = Instance { map: fmap, object: fobject, ..winst };
-                    add_instance(level, &finst, Layer::Effect, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3]);
+                    add_instance(level, &finst, Layer::Effect, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels);
                     attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb), tracer: None, dropped: false, script: None });
                 }
             }
@@ -1534,11 +1555,11 @@ impl Scene {
                 let placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
                 let (map, object) = level.by_hash[&sleeve];
                 let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None, None, [1.0; 3]);
+                add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None, None, [1.0; 3], &room_cels);
                 for &(bone, part) in &skin.extra {
                     let Some(&(pmap, pobject)) = part.and_then(|h| level.by_hash.get(&h)) else { continue };
                     let pinst = Instance { map: pmap, object: pobject, matrix: ident, placement: placement.clone() };
-                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3]);
+                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels);
                     attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, script: None });
                 }
                 // The muzzle flash (`Player_MuzzleFlash`): mesh `weapon+0x48` on datum 0, colour (+0x56, +0x55, +0x54).
@@ -1546,7 +1567,7 @@ impl Scene {
                 let flash = u32::from_le_bytes(r[0x48..0x4c].try_into().unwrap());
                 if let (Some(&(fmap, fobject)), Some(dt)) = (level.by_hash.get(&flash), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
                     let finst = Instance { map: fmap, object: fobject, matrix: ident, placement: placement.clone() };
-                    add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3]);
+                    add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels);
                     attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, script: None });
                 }
                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None, script: None });
@@ -1575,13 +1596,13 @@ impl Scene {
                                 for &mh in skin.main.iter().flatten() {
                                     let Some(&(map, object)) = level.by_hash.get(&mh) else { continue };
                                     let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                                    add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None, None, [1.0; 3]);
+                                    add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None, None, [1.0; 3], &room_cels);
                                     slot_bones = level.maps[map].objects[object].gfx.slot_bones.clone();
                                 }
                                 for &(bone, part) in &skin.extra {
                                     let Some(&(map, object)) = part.and_then(|ph| level.by_hash.get(&ph)) else { continue };
                                     let pinst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3]);
+                                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels);
                                     attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, script: None });
                                 }
                                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones, start: None, role: drone::SpawnRole::Placed, floor: None, script: Some((h, si as u8)) });
@@ -1604,7 +1625,7 @@ impl Scene {
                                         if let Some(dt) = skin.datums.iter().find(|d| d.id == datum_id && d.bone >= 0) {
                                             if let Some(&(wmap, wobject)) = level.by_hash.get(&mesh) {
                                                 let winst = Instance { map: wmap, object: wobject, matrix: ident, placement: placement.clone() };
-                                                add_instance(level, &winst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3]);
+                                                add_instance(level, &winst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels);
                                                 let local = anim::quat_trans_to_mat(dt.q, dt.t);
                                                 attachments.push(Attachment { character: ci, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, script: None });
                                             } else { weapons_missing += 1; }
@@ -1617,7 +1638,7 @@ impl Scene {
                                 if !seen.insert((h, si, hash)) { continue; }
                                 let Some(&(map, object)) = level.by_hash.get(&hash) else { continue };
                                 let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                                add_instance(level, &inst, Layer::Character, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3]);
+                                add_instance(level, &inst, Layer::Character, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels);
                                 attachments.push(Attachment { character: 0, bone: 0, local: ident, flash: None, tracer: None, dropped: false, script: Some((h, si as u8, hash)) });
                                 script_objects += 1;
                             }
@@ -1632,12 +1653,12 @@ impl Scene {
         if let (Some(_), Some(&(tmap, tobj))) = (drones, level.by_hash.get(&0x0200_0123)) {
             for slot in 0..TRACER_SLOTS {
                 let tinst = Instance { map: tmap, object: tobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
-                add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3]);
+                add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels);
                 attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false, script: None });
             }
         }
         for (inst, follows_camera) in &sky {
-            add_instance(level, inst, if *follows_camera { Layer::SkyCamera } else { Layer::SkyFixed }, None, &mut groups, None, None, None, None, [1.0; 3]);
+            add_instance(level, inst, if *follows_camera { Layer::SkyCamera } else { Layer::SkyFixed }, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels);
         }
         // Level coronas (`Corona_Create` 0x18da00, placement type 0xFC): class-1 objects with NO update
         // function — static glow quads at their placement transforms, in every view mode. The glist's +0x44
@@ -1652,7 +1673,7 @@ impl Scene {
                     // `NF_HIDE` applies here too (the 0xFC skip above leaves these out of the loop's check).
                     if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
                     let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
-                    add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3]);
+                    add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels);
                 }
             }
         }
@@ -1665,7 +1686,7 @@ impl Scene {
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 if let Some((map, object)) = target {
                     let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
-                    add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3]);
+                    add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels);
                 }
             }
         }
@@ -1679,7 +1700,7 @@ impl Scene {
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 if let Some((map, object)) = target {
                     let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
-                    add_instance(level, &inst, Layer::Character, None, &mut groups, None, Some(pi as u16), None, None, [1.0; 3]);
+                    add_instance(level, &inst, Layer::Character, None, &mut groups, None, Some(pi as u16), None, None, [1.0; 3], &room_cels);
                 }
             }
             // Doors (`Door_Create`'s creation order = `door_placements`): each door's object as Character-layer
@@ -1693,7 +1714,7 @@ impl Scene {
                 // `NF_HIDE` leaves the door out of the draw (the A/B check; the simulation still runs it).
                 if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
-                add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, Some(di as u16), None, [1.0; 3]);
+                add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, Some(di as u16), None, [1.0; 3], &room_cels);
             }
             // Level-placed pickups (`Pickup_Create` 0x18dda0): `View_DrawObjectGlist` 0x1e6780 draws
             // `obj+0xD8` at `obj+0x90` — the same object carries the glist the renderer draws [M], so the
@@ -1705,7 +1726,7 @@ impl Scene {
                 if p.gone || p.hidden { continue; }
                 let Some(&(om, oi)) = level.by_hash.get(&p.model) else { continue };
                 let inst = Instance { map: om, object: oi, matrix: p.m, placement: level.maps[om].placements.first().cloned().unwrap_or_default() };
-                add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, None, Some(pi as u16), [1.0; 3]);
+                add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, None, Some(pi as u16), [1.0; 3], &room_cels);
             }
             // LOAD_LEVEL triggers (0xE8): the placement carries a visible mesh (e.g. 07000005's `Door_Gate8` —
             // the castle gate door — and the route-c zip-wire exit `Locked_Door_Top_I`). In the real game
@@ -1720,16 +1741,16 @@ impl Scene {
                 let Some((map, object)) = target else { continue };
                 if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
-                add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3]);
+                add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels);
             }
         }
         let (mut vertices, mut indices, mut materials, mut char_verts) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut char_vertex_start = None;
-        for ((layer, _, _, key, draw), (vs, is, cv, centre, radius)) in groups {
+        for ((layer, _, _, key, draw), (vs, is, cv, centre, radius, cel)) in groups {
             if is.is_empty() { continue; }
             if matches!(layer, Layer::Character | Layer::Effect) && char_vertex_start.is_none() { char_vertex_start = Some(vertices.len()); }
             let base = vertices.len() as u32;
-            materials.push(Material { layer, draw, centre, radius, key, first_index: indices.len() as u32, index_count: is.len() as u32 });
+            materials.push(Material { layer, draw, centre, radius, cel, key, first_index: indices.len() as u32, index_count: is.len() as u32 });
             indices.extend(is.iter().map(|i| i + base));
             vertices.extend(vs);
             char_verts.extend(cv);
@@ -1836,7 +1857,7 @@ impl Scene {
                 })
                 .collect();
             drones.pickups.extend(placed_pickups);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: room_cels, char_ambient, view_model_chars: Vec::new() })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0) })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {
@@ -1859,7 +1880,7 @@ impl Scene {
         }
         let models_0x800: HashMap<u32, bool> = level.maps.iter()
             .flat_map(|m| m.objects.iter().map(|o| (o.hashcode, o.flags & 0x800 != 0))).collect();
-        Scene { streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800 }
+        Scene { cels: room_cels, streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800 }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the
@@ -2055,37 +2076,49 @@ impl Scene {
     /// cel ambient at their live matrix; searchlight/door parts, the additive attachments (muzzle flash,
     /// tracers) and non-0x800 entities stay at 1.0 (doors carry no 0x800 glist flag on 07000005 [D — flags 0x0],
     /// so the game draws them untinted).
+    /// The cel's frustum-test sphere (the bbox centre + half-diagonal): the shape `Vision_InView`
+    /// guards in `View_AddCels` (0x1e6ba0) — the game tests each cel's bbox per viewer.
+    pub fn cel_sphere(&self, i: usize) -> Option<([f32; 3], f32)> {
+        let c = self.cels.get(i)?;
+        let centre = [0, 1, 2].map(|k| (c.min[k] + c.max[k]) * 0.5);
+        let r = [0, 1, 2].map(|k| (c.max[k] - c.min[k]) * 0.5);
+        Some((centre, (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt()))
+    }
+    /// `build_FindCel` (0x1c8cb0) over the Scene's room cels — the same lookup the ambient code and
+    /// the World-draw attribution use.
+    pub fn cel_index_at(&self, p: [f32; 3]) -> Option<usize> { find_cel(&self.cels, p) }
+
     pub fn posed_vertices(&self, choice: Option<usize>, time: f32, opts: ViewOpts) -> Vec<Vertex> {
         let mults: Vec<[f32; 3]> = self.sim.as_ref()
             .map(|s| (0..self.characters.len()).map(|ci| s.char_multiplier(ci)).collect())
             .unwrap_or_default();
-        self.animate(choice, time, opts).into_iter()
-            .zip(self.vertices[self.char_vertex_start..].iter().zip(self.char_verts.iter()))
-            .map(|(pos, (v, cv))| {
-                let one = || [1.0; 3];
-                let amb_at = |s: &Sim, m4: &Mat4| {
-                    s.ambient_at([m4[3][0], m4[3][1], m4[3][2]]).map(mul_bytes).unwrap_or_else(one)
-                };
-                let s = self.sim.as_ref();
-                let m = if mults.is_empty() { one() }
-                    else if cv.searchlight.is_some() || cv.door.is_some() { one() }
-                    else if let Some(pk) = cv.pickup {
-                        // The pickup is its own object (`View_DrawObjectGlist` 0x1e6780 draws obj+0xD8).
-                        // `Pickup_Create` (0x18dda0) forces obj+0xF0 = glist_flags & ~0x2000 | 0x840 — every
-                        // pickup is character-lit — except kind 3 (armour: 0x800 cleared, 0x80000 set) and
-                        // kind 6 (007 bonus: 0x800 cleared). The dim is the ambient at the pickup's matrix
-                        // [L the sniper 0x01382bc0: 0x880 + (57,70,86)].
-                        match s.and_then(|s| s.drones.pickups.get(pk as usize)) {
-                            Some(p) if p.kind != nf_game::pickup::kind::ARMOUR && p.kind != nf_game::pickup::kind::BOND_BONUS => amb_at(s.unwrap(), &p.m),
+        // fix-render3 (the 07000006 frame jitter): fix-render2 computed the pickup / dropped-gun /
+        // script-entity ambient multipliers INSIDE the per-vertex closure — every vertex of a dimmed
+        // character re-ran `find_cel` (a linear cel scan) and, for drops, a linear `pickups` scan.
+        // The multiplier depends only on the pickup / attachment key, so it is computed once per
+        // distinct key per frame and the vertex loop does a hash hit.
+        let one = || [1.0; 3];
+        let amb_at = |s: &Sim, m4: &Mat4| {
+            s.ambient_at([m4[3][0], m4[3][1], m4[3][2]]).map(mul_bytes).unwrap_or_else(one)
+        };
+        let tintable = |p: &nf_game::pickup::Pickup| p.kind != nf_game::pickup::kind::ARMOUR && p.kind != nf_game::pickup::kind::BOND_BONUS;
+        let mut pickup_mult: std::collections::HashMap<u16, [f32; 3]> = std::collections::HashMap::new();
+        let mut attach_mult: std::collections::HashMap<u32, [f32; 3]> = std::collections::HashMap::new();
+        if let Some(s) = self.sim.as_ref() {
+            for cv in &self.char_verts {
+                if let Some(pk) = cv.pickup {
+                    pickup_mult.entry(pk).or_insert_with(|| {
+                        match s.drones.pickups.get(pk as usize) {
+                            Some(p) if tintable(p) => amb_at(s, &p.m),
                             // Armour glow (fix-player3): kind 3 carries the 0x80000 "close-up flash" flag
-                            // (`Pickup_Create` 0x18dda0:145-151) — `View_SetupRenderModes_Tweak` (0x1e5888:22-44)
-                            // multiplies its tint by `FlashMod` while the viewer's camera (viewer+0xC0) is
-                            // within 4.0 units of the pickup's world-sphere centre (obj+0x80, squared distance
-                            // < 16.0) and the options byte DAT_002a38d4 is set (1 at level start [L]). The
-                            // port's camera is Bond's eye (first person, as in play); no corona, no additive
-                            // pass — the pulse rides the same vertex-colour multiply.
+                            // (`Pickup_Create` 0x18dda0:145-151) — `View_SetupRenderModes_Tweak`
+                            // (0x1e5888:22-44) multiplies its tint by `FlashMod` while the viewer's camera
+                            // (viewer+0xC0) is within 4.0 units of the pickup's world-sphere centre
+                            // (obj+0x80, squared distance < 16.0) and the options byte DAT_002a38d4 is set
+                            // (1 at level start [L]). The port's camera is Bond's eye (first person, as in
+                            // play); no corona, no additive pass — the pulse rides the same vertex-colour
+                            // multiply as the ambient dim.
                             Some(p) if p.kind == nf_game::pickup::kind::ARMOUR => {
-                                let s = s.unwrap();
                                 let c = p.centre();
                                 let e = s.bond.head();
                                 let d2 = (c[0] - e[0]).powi(2) + (c[1] - e[1]).powi(2) + (c[2] - e[2]).powi(2);
@@ -2093,28 +2126,51 @@ impl Scene {
                             }
                             _ => one(),
                         }
-                    }
-                    else if let Some(a) = cv.attachment.and_then(|a| self.attachments.get(a as usize)) {
-                        if a.flash.is_some() || a.tracer.is_some() { one() }
-                        else if a.dropped {
+                    });
+                }
+                if let Some(ai) = cv.attachment {
+                    attach_mult.entry(ai).or_insert_with(|| {
+                        let Some(a) = self.attachments.get(ai as usize) else { return one() };
+                        if a.flash.is_some() || a.tracer.is_some() { return one(); }
+                        if a.dropped {
                             // The dropped gun is a pickup object (`DroneWeap_DropWeapon` → `Pickup_Create`
                             // 0x18dda0, the same forced 0x840): the ambient dim at its drop matrix.
-                            match s.and_then(|s| s.char_drone.get(a.character as usize).copied().flatten()
-                                .and_then(|di| s.drones.pickups.iter().find(|p| p.from == Some(di) && !p.hidden)).map(|p| (s, p))) {
-                                Some((s, p)) if p.kind != nf_game::pickup::kind::ARMOUR && p.kind != nf_game::pickup::kind::BOND_BONUS => amb_at(s, &p.m),
+                            return match s.char_drone.get(a.character as usize).copied().flatten()
+                                .and_then(|di| s.drones.pickups.iter().find(|p| p.from == Some(di) && !p.hidden)) {
+                                Some(p) if tintable(p) => amb_at(s, &p.m),
                                 _ => one(),
-                            }
+                            };
                         }
-                        else if let Some((h, si, hash)) = a.script {
+                        if let Some((h, si, hash)) = a.script {
                             // A script entity is its own object (the truck: nine 0x8880 objects [L]):
                             // 0x800-glist entities dim by the ambient at their live matrix; the others
-                            // ( coronas, triggers) draw untinted — not character 0's ambient.
-                            match s.and_then(|s| s.script_entity((h, si), hash).map(|m4| (s, m4))) {
-                                Some((s, m4)) if self.models_0x800.get(&hash).copied().unwrap_or(false) => amb_at(s, &m4),
+                            // (coronas, triggers) draw untinted — not character 0's ambient.
+                            return match s.script_entity((h, si), hash).map(|m4| amb_at(s, &m4)) {
+                                Some(m) if self.models_0x800.get(&hash).copied().unwrap_or(false) => m,
                                 _ => one(),
-                            }
+                            };
                         }
-                        else { mults.get(a.character as usize).copied().unwrap_or_else(one) }
+                        mults.get(a.character as usize).copied().unwrap_or_else(one)
+                    });
+                }
+            }
+        }
+        self.animate(choice, time, opts).into_iter()
+            .zip(self.vertices[self.char_vertex_start..].iter().zip(self.char_verts.iter()))
+            .map(|(pos, (v, cv))| {
+                let m = if mults.is_empty() { one() }
+                    else if cv.searchlight.is_some() || cv.door.is_some() { one() }
+                    else if let Some(pk) = cv.pickup {
+                        // The pickup is its own object (`View_DrawObjectGlist` 0x1e6780 draws obj+0xD8);
+                        // `Pickup_Create` (0x18dda0) forces obj+0xF0 = glist_flags & ~0x2000 | 0x840 — every
+                        // pickup is character-lit — except kind 3 (armour) and kind 6 (007 bonus). fix-render3:
+                        // the multiplier is precomputed per distinct pickup above (was per vertex).
+                        pickup_mult.get(&pk).copied().unwrap_or_else(one)
+                    }
+                    else if let Some(ai) = cv.attachment {
+                        // fix-render3: precomputed per distinct attachment above (flash/tracer → 1.0,
+                        // dropped → its pickup's dim, script entity → the 0x800 dim, else the owner's).
+                        attach_mult.get(&ai).copied().unwrap_or_else(one)
                     }
                     else { mults.get(cv.character as usize).copied().unwrap_or_else(one) };
                 let rgba = if m == [1.0; 3] { v.rgba } else {

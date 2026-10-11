@@ -73,6 +73,25 @@ pub mod state {
     /// Grenade throw (`NDrone2_DSTATE_GrenadeThrow` 0x2D): the throw anim (0x49) → on event 1, `DroneWeap_ThrowGrenade`
     /// → back to Attack (0x56).
     pub const GRENADE_THROW: u8 = 0x2d;
+    /// The mission-state family (`NDrone2_StateFuncs` 0x29b300; docs/WORKLOG fix-drone3): civilians and scripted
+    /// characters. CivilianInit 0x10, Civilian 0x11, CivilianScared 0x12, CivilianHiding 0x13, CivilianPatrol 0x14
+    /// (0x172730 / 0x15d118 / 0x15d3a0 / 0x15d520 / 0x15d610); PartyGirlInit 0x2e, PartyGirl 0x2f (0x1728c0 / 0x160140);
+    /// CivilianGuard 0x30, CivilianDoorGuard 0x31 (0x1603a8 / 0x160648); the truck driver 0x32..0x35
+    /// (0x160bd0 / 0x160d98 / 0x160ed0 / 0x161030); HostageIdle 0x1c (0x15ce60).
+    pub const CIVILIAN_INIT: u8 = 0x10;
+    pub const CIVILIAN: u8 = 0x11;
+    pub const CIVILIAN_SCARED: u8 = 0x12;
+    pub const CIVILIAN_HIDING: u8 = 0x13;
+    pub const CIVILIAN_PATROL: u8 = 0x14;
+    pub const HOSTAGE_IDLE: u8 = 0x1c;
+    pub const PARTY_GIRL_INIT: u8 = 0x2e;
+    pub const PARTY_GIRL: u8 = 0x2f;
+    pub const CIVILIAN_GUARD: u8 = 0x30;
+    pub const CIVILIAN_DOOR_GUARD: u8 = 0x31;
+    pub const TRUCK_DRIVER_INIT: u8 = 0x32;
+    pub const TRUCK_DRIVER_INIT_ALERT: u8 = 0x33;
+    pub const TRUCK_DRIVER_IDLE: u8 = 0x34;
+    pub const TRUCK_DRIVER_MISSION: u8 = 0x35;
     pub const AIM_STAND: u8 = 0x67;
     pub const AIM_STAND_FIRE: u8 = 0x68;
     pub const AIM_STAND_RELOAD: u8 = 0x69;
@@ -153,6 +172,8 @@ pub mod anim_state {
     pub const IMPACT: u16 = 0x4c;
     pub const DEATH: u16 = 0x40;
     pub const DEATH_SHOT: u16 = 0x42;
+    /// CivilianHiding's cower (`NDrone2_DSTATE_CivilianHiding` 0x15d520 ENTER: `CallAnim(0x19)`).
+    pub const COWER: u16 = 0x19;
 }
 
 /// Read-only game data the AI consults.
@@ -547,6 +568,8 @@ pub struct Drone {
     pub team: u8,
     pub alt_state: u8,
     pub alert_block: f32,
+    /// `Drone+0xCF8`: the armed-person radius that scares a Civilian (0x15d118 ENTER: 10 on 07000007, else 20).
+    pub scared_radius: f32,
     pub alpha: f32,
     /// A switch channel to raise after the drone's update (`SetDeathChannel`).
     pub raise: Option<u8>,
@@ -624,7 +647,7 @@ impl Drone {
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
             corpse: false, death_pending: false, death_channel: param(12) as u8, special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
-            captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0,
+            captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0,
             velocity: [0.0; 3], in_air: false, on_surface: true,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
         };
@@ -666,7 +689,9 @@ impl Drone {
         let lvl7 = d.level == 0x0700_0007;
         match ty {
             0..=9 if lvl7 && block == 0 => return if self.prop(d, 0x4b) { 0x16 } else { 0x13 },
-            10 | 11 if block == 0 => return if self.alert < 1.0 { if self.damageable { 9 } else { 0x12 } } else { 10 },
+            // GetDTYPENEW 0x14c938 case 10/0xb: below full alertness a FEMALE (+0x15) becomes mode 0x12
+            // (PartyGirlInit), any other 9 (CivilianInit) — the port had the non-damageable test here.
+            10 | 11 if block == 0 => return if self.alert < 1.0 { if self.female { 0x12 } else { 9 } } else { 10 },
             0xc if block == 0 => return if self.kind == 0xc { 0x11 } else { 0xc },
             0xd if block == 0 => return if self.kind == 0xf { 0x17 } else if self.alert < 1.0 { 9 } else { 10 },
             0xe if block == 0 => return if self.prop(d, 0x4e) { 5 } else if self.alert >= 1.0 { 10 } else { 9 },
@@ -1243,6 +1268,12 @@ impl Drone {
     fn on_bullet(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8) -> bool {
         if s == state::BULLET_IMPACT { self.bullet_impact(d, rng, frame, 0, false); return true; }
         let Some((resume, allow)) = Self::impact_args(s) else { return false };
+        self.on_bullet_resume(d, rng, frame, resume, allow)
+    }
+
+    /// `DroneFunc_HandleImpact` case 8 with the state's own resume/allow (the mission states pass their own:
+    /// TruckDriverInit 0x160bd0 case 8 → `HandleImpact(0x33, 0)`, the civilians → their scared state, …).
+    fn on_bullet_resume(&mut self, d: &Data, rng: &mut Rng, frame: u32, resume: u8, allow: bool) -> bool {
         // `DroneFunc_HandleImpact` case 8 (0x1469b8): resume = given or the current state; type 0xC → 0x6E.
         let valid = |x: u8| x != 0 && !(0x53..=0x55).contains(&x);
         let u10 = if resume != 0 { resume } else { self.state };
@@ -1253,6 +1284,26 @@ impl Drone {
             self.set_state(state::BULLET_IMPACT);
         }
         true
+    }
+
+    /// The upper-body aim gate. The game's `AnimObjectAimAt` (0x1bfe58, from `psiBuildMatrixPalette` 0x111498)
+    /// runs only while the anim object carries the 0x180 aim flag — requested by the aim/fire states — and returns
+    /// at once when the drone has no weapon datum out (`AnimDatumGetWeaponInfo < 0`). The port: the aim/fire state
+    /// family with a drawn weapon (holstered or unarmed = no torso aim). The exact 0x80 setter was not pinned this
+    /// session (the state list is the stand-in; *suggested* for the list, *measured* for the weapon gate).
+    fn aims_torso(&self) -> bool {
+        use state::*;
+        if self.holstered { return false; }
+        if !((2..=0x46).contains(&self.weapon) || (0x6a..=0x71).contains(&self.weapon)) { return false; }
+        matches!(self.state, SNIPER_AIM | SNIPER_FIRE | COMBAT | COMBAT_NO_MOVE | COMBAT_OUT_OF_RANGE | COMBAT_NO_SIGHT
+            | COMBAT_NO_ROUTE | COMBAT_DRONE_AHEAD | AIM_STAND | AIM_STAND_FIRE | AIM_STAND_RELOAD | AIM_BACKOFF
+            | AIM_CROUCH | AIM_CROUCH_FIRE | AIM_CROUCH_RELOAD | STEP_AIM_LEFT | STEP_AIM_RIGHT | STRAFE_AIM_LEFT | STRAFE_AIM_RIGHT)
+    }
+
+    /// `NDrone2_NearArmedBond` / `NDrone2_NearArmedPerson(dist)`: an armed person within `dist`. The port tests
+    /// Bond only (`bond_armed`, the per-tick opponent distance) [*suggested*: the game's person scan was not read].
+    fn near_armed_person(&self, dist: f32) -> bool {
+        self.bond_armed && self.dist <= dist
     }
 
     /// `NDrone2_BulletImpact` (0x1461c8): damage; dead → Death_Anim; alive with `allow` and no flinch for 2 s (this
@@ -2688,6 +2739,142 @@ impl Drone {
                 true
             }
             (NO_OPPONENT, msg::ENTER) => { self.set_state(IDLE); true }
+            // ---- the mission-state family (docs/WORKLOG fix-drone3). The `NDrone2_StateFuncs` table 0x29b300 maps
+            // state 0x32 → `NDrone2_DSTATE_TruckDriverInit` 0x160bd0, 0x33 → InitAlert 0x160d98, 0x34 → Idle 0x160ed0,
+            // 0x2e/0x2f → PartyGirlInit 0x1728c0 / PartyGirl 0x160140, 0x30 → CivilianGuard 0x1603a8, 0x10..0x14 →
+            // CivilianInit 0x172730 / Civilian 0x15d118 / CivilianScared 0x15d3a0 / CivilianHiding 0x15d520 /
+            // CivilianPatrol 0x15d610, 0x1c → HostageIdle 0x15ce60. Before this block the port had NO handler for
+            // any of them: the playtest's guests, driver, hostage-side NPCs and civilians stood frozen (turning only).
+            // TruckDriverInit (0x160bd0) ENTER: prop 0x1d → AssignAIPath(8) then cleared; the port has no `+0x554`
+            // script link (the truck NIS), so the game's script-less branch applies — straight to TruckDriverIdle
+            // (case 1 else). The scripted branch (danim 0x11a via SetScript, the `+0x4F8` bit clears) is not modelled:
+            // the driver stands on the truck bed under gravity here. The sound/bullet arms keep the game's routing
+            // for the transient state (0x33 / HandleImpact(0x33, 0)).
+            (TRUCK_DRIVER_INIT, msg::ENTER) => {
+                if self.prop(d, 0x1d) { self.assign_path(d, 8); d.props.set(0x1d, &mut self.props, 0); }
+                self.set_state(TRUCK_DRIVER_IDLE);
+                true
+            }
+            (TRUCK_DRIVER_INIT, msg::SOUND | msg::ALARM) => { self.set_state(TRUCK_DRIVER_INIT_ALERT); true } // 0x11/0x12/0x13/0x16/0x1e → 0x33
+            (TRUCK_DRIVER_INIT, msg::BULLET) => self.on_bullet_resume(d, rng, frame, TRUCK_DRIVER_INIT_ALERT, false), // HandleImpact(0x33, 0)
+            // TruckDriverInitAlert (0x160d98): anim done → CivilianScared (0x12); bullets/noise HandleImpact(0, …).
+            (TRUCK_DRIVER_INIT_ALERT, msg::ANIM_DONE) => { self.set_state(CIVILIAN_SCARED); true }
+            (TRUCK_DRIVER_INIT_ALERT, msg::BULLET) => self.on_bullet_resume(d, rng, frame, 0, false),
+            (TRUCK_DRIVER_INIT_ALERT, msg::SOUND) => self.on_bullet_resume(d, rng, frame, 0, true),
+            // TruckDriverIdle (0x160ed0): stand idle; armed Bond within 8 (0x40c00000) → CivilianScared (`|= 0x8000000`).
+            (TRUCK_DRIVER_IDLE, msg::ENTER) => { self.vision_on = true; self.set_stand_idle(d, rng, frame, true); true }
+            (TRUCK_DRIVER_IDLE, msg::UPDATE) => {
+                if self.near_armed_person(8.0) { self.sighted = true; self.set_state(CIVILIAN_SCARED); }
+                true
+            }
+            (TRUCK_DRIVER_IDLE, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
+            (TRUCK_DRIVER_IDLE, msg::SOUND | msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
+            (TRUCK_DRIVER_IDLE, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
+            // PartyGirlInit (0x1728c0): prop 0x1d → AssignAIPath(8); the port runs no NIS script link, so always
+            // PartyGirl (0x2f) — the game's script branch (0x16 CivilianMission) is not ported.
+            (PARTY_GIRL_INIT, msg::ENTER) => { self.set_state(PARTY_GIRL); true }
+            // PartyGirl (0x160140) ENTER: AssignAIPath(4) (patrol paths) + vision on; UPDATE: armed person within
+            // 10 (0x41200000) → CivilianScared, else stand idle (SetStandIdleAnim(1)); the BondTalk idle lines are
+            // level voice sets, not ported.
+            (PARTY_GIRL, msg::ENTER) => { self.assign_path(d, 4); self.vision_on = true; true }
+            (PARTY_GIRL, msg::UPDATE) => {
+                if self.near_armed_person(10.0) {
+                    self.sighted = true;
+                    self.set_state(CIVILIAN_SCARED);
+                } else if self.route.is_some() {
+                    self.update_patrol_route(d, rng, frame);
+                } else {
+                    self.set_stand_idle(d, rng, frame, true);
+                }
+                true
+            }
+            (PARTY_GIRL, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
+            (PARTY_GIRL, msg::SOUND | msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
+            (PARTY_GIRL, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
+            // CivilianGuard (0x1603a8): stands a post — look-around (0x21) at alert ≥ 0.66, stand idle (0x24) below;
+            // armed person within 20 (0x41a00000) or armed Bond in sight (`+0x228 & 4`) → Attack (0x56);
+            // EXIT sets team 1 (case 2: `+0x44 = 1`).
+            (CIVILIAN_GUARD, msg::ENTER) => {
+                self.vision_on = true;
+                self.return_state = ATTACK; // `+0x5A2 = 0x56`
+                if self.alert >= 0.66 { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0) } else { self.call_anim(d, anim_state::STAND_IDLE, 0, 0) }
+                true
+            }
+            (CIVILIAN_GUARD, msg::EXIT) => { self.team = 1; true }
+            (CIVILIAN_GUARD, msg::UPDATE) => {
+                if self.near_armed_person(20.0) || (self.bond_armed && self.seen) {
+                    self.sighted = true;
+                    self.set_state(ATTACK);
+                }
+                true
+            }
+            (CIVILIAN_GUARD, msg::BULLET) => self.on_bullet_resume(d, rng, frame, ATTACK, false),
+            (CIVILIAN_GUARD, msg::SOUND | msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
+            (CIVILIAN_GUARD, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
+            // CivilianInit (0x172730): prop 0x1d → AssignAIPath(8) then clear; AssignAIPath(4); route →
+            // CivilianPatrol (0x14), none → Civilian (0x11). (The voice-0xD → 0x2f and script → 0x16 branches are
+            // the mission/NIS paths the port does not run.)
+            (CIVILIAN_INIT, msg::ENTER) => {
+                if self.prop(d, 0x1d) { self.assign_path(d, 8); d.props.set(0x1d, &mut self.props, 0); }
+                if self.assign_path(d, 4) { self.set_state(CIVILIAN_PATROL) } else { self.set_state(CIVILIAN) }
+                true
+            }
+            // CivilianPatrol (0x15d610): walk the patrol path (`CallAnim(0x37)`); armed person within 6 (0x40c00000)
+            // → CivilianScared (the voice-0x10 team switch and the female scream 0x48 are not ported).
+            (CIVILIAN_PATROL, msg::ENTER) => {
+                self.vision_on = true;
+                self.request_anim(d, anim_state::WALK);
+                true
+            }
+            (CIVILIAN_PATROL, msg::UPDATE) => {
+                self.update_patrol_route(d, rng, frame);
+                if self.near_armed_person(6.0) { self.sighted = true; self.set_state(CIVILIAN_SCARED); }
+                true
+            }
+            (CIVILIAN_PATROL, msg::BULLET) => self.on_bullet_resume(d, rng, frame, ATTACK, false), // HandleImpact(0x56, 0)
+            (CIVILIAN_PATROL, msg::SOUND | msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
+            (CIVILIAN_PATROL, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
+            // Civilian (0x15d118) ENTER: stand idle; the scare radius `+0xCF8` = 10 on 07000007, else 20.
+            // UPDATE: armed person within it → CivilianScared.
+            (CIVILIAN, msg::ENTER) => {
+                self.vision_on = true;
+                self.scared_radius = if d.level == 0x0700_0007 { 10.0 } else { 20.0 };
+                self.set_stand_idle(d, rng, frame, true);
+                true
+            }
+            (CIVILIAN, msg::UPDATE) => {
+                if self.near_armed_person(self.scared_radius) { self.sighted = true; self.set_state(CIVILIAN_SCARED); }
+                true
+            }
+            (CIVILIAN, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
+            (CIVILIAN, msg::SOUND | msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
+            (CIVILIAN, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
+            // CivilianScared (0x15d3a0) ENTER: vision on, alert 2 (`Drone_AlertStatusSet(2)`), the scared talk, then
+            // CivilianHiding (0x13) — the game's alt-mode 7 run-to-point (0x64) has no node data in the port.
+            (CIVILIAN_SCARED, msg::ENTER) => {
+                self.vision_on = true;
+                self.alert = 1.0;
+                self.pain_talk(d); // the closest port line: the hurt/scared voice of the set
+                self.set_state(CIVILIAN_HIDING);
+                true
+            }
+            (CIVILIAN_SCARED, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
+            // CivilianHiding (0x15d520) ENTER: alert 2, cower anim 0x19.
+            (CIVILIAN_HIDING, msg::ENTER) => {
+                self.vision_on = true;
+                self.alert = 1.0;
+                self.call_anim(d, anim_state::COWER, 0, 0);
+                true
+            }
+            (CIVILIAN_HIDING, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
+            // HostageIdle (0x15ce60) ENTER: stand idle, alert 0; UPDATE: an armed drone within 20 → HostageHide
+            // (0xe — not ported; the hostages stay here). Bullets HandleImpact(0xe, …) — resume 0 keeps the state.
+            (HOSTAGE_IDLE, msg::ENTER) => {
+                self.alert = 0.0;
+                self.call_anim(d, anim_state::STAND_IDLE, 0, 0);
+                true
+            }
+            (HOSTAGE_IDLE, msg::BULLET) => self.on_bullet_resume(d, rng, frame, 0, false),
             (_, msg::ENTER | msg::EXIT | msg::UPDATE) => true,
             _ => false,
         }
@@ -4238,8 +4425,12 @@ impl Drones {
             // around it (`ControlSTANDARD`): the body faces desired − offset.
             let y = dr.yaw + dr.yaw_offset;
             dr.yaw = y + angle_difference(y, dr.desired_yaw) * 0.1 - dr.yaw_offset;
-            // Upper-body aim (`AnimObjectAimAt`, speed 0.2) toward the opponent while aiming; lower clamp −0.9 only.
-            let want = if dr.anim.class == 2 && dr.state != state::IDLE { angle_difference(dr.yaw, dr.yaw_to_opp).max(-0.9) } else { 0.0 };
+            // Upper-body aim (`AnimObjectAimAt` 0x1bfe58 via `psiBuildMatrixPalette` 0x111498: the 0x180 aim flag +
+            // the weapon gate — `AnimDatumGetWeaponInfo < 0` returns). The port aims only in the game's aim/fire
+            // states with a weapon in hand, and clamps the target to ±0.9 (0x3f666666) on BOTH sides — the game sets
+            // its give-up flag 0x4000 beyond either bound (0x1c0368), the old port clamped only the negative side,
+            // which let the torso wind all the way around (the playtest's "spine flipped" patrol look).
+            let want = if dr.anim.class == 2 && dr.aims_torso() { angle_difference(dr.yaw, dr.yaw_to_opp).clamp(-0.9, 0.9) } else { 0.0 };
             dr.aim_yaw = rotate_to_bearing(dr.aim_yaw, want, 0.2, crate::trig::PI);
             if !dr.corpse { if let Some(b) = dr.handle_firing(d, rng, frame, player, (moving, first_moved), index) { self.bullets.push(b); } }
             if let Some((next_ai, done_msg)) = dr.update_anim(d) {
@@ -4402,7 +4593,7 @@ mod tests {
             velocity: [0.0; 3], in_air: false, on_surface: true,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(),
             voice_type: 0, female: false, attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(),
-            free_root: false, bounded: true, dtype: 0, mode_normal: 0, mode_alert: 0, mode: 0, alt_mode: 0, team: 1, alt_state: 0, alert_block: 0.0,
+            free_root: false, bounded: true, dtype: 0, mode_normal: 0, mode_alert: 0, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0, alert_block: 0.0,
         };
         dr
     }
