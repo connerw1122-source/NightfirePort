@@ -29,6 +29,9 @@ pub struct Dev {
     pub god_mode: bool,
     /// Infinite ammo: the gun's clip is refilled each tick.
     pub infinite_ammo: bool,
+    /// No reload: the current weapon's clip is topped to its `weapon_data` clip size each tick, so it never
+    /// empties and the game never reloads.
+    pub no_reload: bool,
     /// The spawn-guard submenu's current selection (type/mode).
     pub spawn: SpawnPick,
     /// "Forced" markers for the overlay: drones whose next decision was forced this tick (cleared next frame).
@@ -53,7 +56,7 @@ pub enum SpawnPick { Normal, Sniper, Ambush }
 
 impl Default for Dev {
     fn default() -> Self {
-        Dev { overlay: false, menu: false, time_scale: 1.0, step: false, god_mode: false, infinite_ammo: false, spawn: SpawnPick::Normal, forced: Vec::new(), saved_spot: None, mouse: (0.0, 0.0), scenario: None, menu_sel: 0, result_msg: None, result_timer: 0 }
+        Dev { overlay: false, menu: false, time_scale: 1.0, step: false, god_mode: false, infinite_ammo: false, no_reload: false, spawn: SpawnPick::Normal, forced: Vec::new(), saved_spot: None, mouse: (0.0, 0.0), scenario: None, menu_sel: 0, result_msg: None, result_timer: 0 }
     }
 }
 
@@ -66,7 +69,18 @@ impl Dev {
         n.min(8)
     }
 
-    /// Apply god mode / infinite ammo after a tick (the game's own state, set the way the game sets it).
+    /// Apply god mode / infinite ammo / no reload after a tick (the game's own state, set the way the game
+    /// sets it).
+    ///
+    /// Infinite ammo writes the INVENTORY — the game's own ammo store (`BL+0x170` rounds carried per type,
+    /// `BL+0x1B8` rounds in each weapon's clip), which `Sim::run` reads into `gun.clip`/`gun.spare` at the top
+    /// of every tick and writes back at its end (scene.rs; the C-10 fix). The old refill only topped the gun's
+    /// transient copies, so the next tick re-read the drained inventory: the gun stopped firing while the HUD
+    /// still showed a full clip (the user's "infinite ammo isn't always reliable" — and it broke hardest for
+    /// other ammo types, after a weapon switch, and across a level carry-over, exactly the cases where the
+    /// drained slot differs from the current weapon's). Refilling every slot covers all of them, plus Bond's
+    /// grenades (the 0x45 belt pseudo-weapon's clip slot, `weapon_data[0x45].clip_size` 100 [M gun.rs]).
+    /// No reload tops only the current weapon's clip to its `weapon_data+0x92` size.
     pub fn after_tick(&mut self, scene: &mut Scene) {
         if self.god_mode {
             if let Some(sim) = scene.sim.as_mut() {
@@ -75,18 +89,31 @@ impl Dev {
                 sim.drones.health.flash = 0.0;
             }
         }
-        if self.infinite_amma() {
+        if self.infinite_ammo || self.no_reload {
             if let Some(sim) = scene.sim.as_mut() {
-                sim.gun.clip = sim.gun.clip.max(40);
-                sim.gun.spare = 200;
+                if self.infinite_ammo {
+                    for (w, c) in sim.drones.inventory.clip.iter_mut().enumerate() {
+                        *c = (*c).max(sim.weapons.clip_size(w));
+                    }
+                    for n in sim.drones.inventory.carried.iter_mut() { *n = (*n).max(200); }
+                }
+                let wi = sim.gun.weapon as usize;
+                let cs = sim.weapons.clip_size(wi);
+                if self.no_reload && cs > 0 {
+                    if let Some(c) = sim.drones.inventory.clip.get_mut(wi) { *c = (*c).max(cs); }
+                }
+                // Keep the gun's HUD copies in step with the refilled inventory (the HUD and the title read
+                // `gun.clip`/`gun.spare`; `Sim::run` re-reads them from the inventory next tick anyway).
+                if let (Some(&c), Some(&n)) = (sim.drones.inventory.clip.get(wi), sim.drones.inventory.carried.get(sim.weapons.ammo_type(wi))) {
+                    sim.gun.clip = sim.gun.clip.max(c.max(0) as u32);
+                    sim.gun.spare = sim.gun.spare.max(n.max(0) as u32);
+                }
             }
         }
         self.forced.clear();
         // B-9: the result message fades after ~3 s (180 ticks).
         if self.result_timer > 0 { self.result_timer -= 1; if self.result_timer == 0 { self.result_msg = None; } }
     }
-
-    fn infinite_amma(&self) -> bool { self.infinite_ammo }
 
     /// Spawn a guard at `pos` with the picked type/mode, the way the game's spawner does (`Action::Spawn` → present +
     /// enabled + llist). Also adds a `Character` (skin + skeleton + matrix) and a `char_drone` entry so the
@@ -365,18 +392,43 @@ pub fn menu_items(dev: &Dev) -> Vec<(&'static str, &'static str, MenuAction)> {
     ];
     v.push(if dev.god_mode { ("god: ON", "Bond takes no damage - toggle off to test death", MenuAction::ToggleGod) } else { ("god: OFF", "Bond takes no damage when ON - toggle to test death", MenuAction::ToggleGod) });
     v.push(if dev.infinite_ammo { ("ammo: ON", "clip refills each tick - toggle off to test reloads", MenuAction::ToggleAmmo) } else { ("ammo: OFF", "clip refills each tick when ON - toggle to test reloads", MenuAction::ToggleAmmo) });
+    v.push(if dev.no_reload { ("reload: OFF", "the clip never empties (no reload needed) - toggle to test reloads", MenuAction::ToggleNoReload) } else { ("reload: ON", "the clip never empties while OFF is shown - toggle to test reloads", MenuAction::ToggleNoReload) });
     v.push(("teleport: save", "save Bond's current spot - restore later", MenuAction::SaveSpot));
     v.push(("teleport: load", "return Bond to the saved spot", MenuAction::RestoreSpot));
     v.push(("time: 1x", "normal speed (60 Hz)", MenuAction::TimeScale(1.0)));
     v.push(("time: 0.25x", "quarter speed - watch AI frame-by-frame", MenuAction::TimeScale(0.25)));
     v.push(("time: pause", "freeze the sim; F11 advances one tick", MenuAction::TimeScale(0.0)));
+    // The level-select list (fix-dev T5): one row per level archive on the disc, in archive order. Activating
+    // one jumps there through the level-transition path (warm load with the carry-over).
+    for (i, &id) in LEVELS.iter().enumerate() { v.push((LEVEL_LABELS[i], "jump to this level (carries health/weapons)", MenuAction::Level(id))); }
     v
 }
+
+/// The level-select list (fix-dev T5): the level archives on the user's disc (`FILES.BIN` manifest), in
+/// archive order. Jumping feeds `pending_level` — the same warm-transition path a level exit uses.
+pub const LEVELS: &[u32] = &[
+    0x0700_0001, 0x0700_0002, 0x0700_0003, 0x0700_0004, 0x0700_0005, 0x0700_0006, 0x0700_0007, 0x0700_0008,
+    0x0700_0009, 0x0700_000a, 0x0700_000b, 0x0700_000c, 0x0700_000d, 0x0700_0011, 0x0700_0012, 0x0700_0013,
+    0x0700_0014, 0x0700_0015, 0x0700_0016, 0x0700_001b, 0x0700_0023, 0x0700_0024, 0x0700_0025, 0x0700_0026,
+    0x0700_0027, 0x0700_0028, 0x0700_0029, 0x0700_0041, 0x0700_0043, 0x0700_0046, 0x0700_0048, 0x0700_0049,
+    0x0700_004a, 0x0700_004b,
+];
+
+/// One label per `LEVELS` entry (static: the menu rows are built every frame and must not allocate).
+pub const LEVEL_LABELS: &[&str] = &[
+    "level: 07000001", "level: 07000002", "level: 07000003", "level: 07000004", "level: 07000005",
+    "level: 07000006", "level: 07000007", "level: 07000008", "level: 07000009", "level: 0700000a",
+    "level: 0700000b", "level: 0700000c", "level: 0700000d", "level: 07000011", "level: 07000012",
+    "level: 07000013", "level: 07000014", "level: 07000015", "level: 07000016", "level: 0700001b",
+    "level: 07000023", "level: 07000024", "level: 07000025", "level: 07000026", "level: 07000027",
+    "level: 07000028", "level: 07000029", "level: 07000041", "level: 07000043", "level: 07000046",
+    "level: 07000048", "level: 07000049", "level: 0700004a", "level: 0700004b",
+];
 
 /// A menu item's action.
 #[derive(Clone, Copy)]
 pub enum MenuAction {
-    Close, Spawn(SpawnPick), ForceGrenade, Impulse, SpecialDeath, ToggleGod, ToggleAmmo, SaveSpot, RestoreSpot, TimeScale(f32),
+    Close, Spawn(SpawnPick), ForceGrenade, Impulse, SpecialDeath, ToggleGod, ToggleAmmo, ToggleNoReload, SaveSpot, RestoreSpot, TimeScale(f32), Level(u32),
 }
 
 /// The click hit-test: which menu item is under the mouse (NDC −1..1, y up)? Returns the row index. B-10:
