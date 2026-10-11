@@ -167,22 +167,31 @@ impl Gun {
                 self.reload_ticks = p.reload_loop_ticks.max(1);
             }
             6 => {
-                // Shell loop: commit one shell [M case 6: Player_ReloadAmmoType(_, 0)].
+                // The +0xA4 script stopped: the rounds move [M case 6: Player_ReloadAmmoType(_, 0)].
                 let n = if p.one_at_a_time { 1 } else { (p.clip - self.clip).min(self.spare) };
                 let n = n.min(self.spare);
                 self.clip += n;
                 self.spare -= n;
-                // Probe: more ammo to load? [M case 6: Player_ReloadAmmoType(_, 1)]
-                let more = self.spare > 0 && self.clip < p.clip;
-                if more && !trigger_held {
-                    // Continue the loop: queue +0xA4 again [M case 6]. Set the flag so Sim::run restarts the
-                    // view script from frame 0 (matching `AnimScriptAdd(+0xA4)` in the game's case 6).
-                    self.reload_loop_restarted = true;
-                    self.reload_ticks = p.reload_loop_ticks.max(1);
+                if p.one_at_a_time {
+                    // Shell weapons (flags68 & 0x100): probe for more shells [M case 6:
+                    // Player_ReloadAmmoType(_, 1)]. More and no fresh fire press → queue +0xA4 again,
+                    // stay 6 (disasm 0x1a3620); none or a fire press → queue +0xAC, state 7.
+                    let more = self.spare > 0 && self.clip < p.clip;
+                    if more && !trigger_held {
+                        self.reload_loop_restarted = true;
+                        self.reload_ticks = p.reload_loop_ticks.max(1);
+                    } else {
+                        self.reload_state = 7;
+                        self.reload_ticks = p.reload_end_ticks.max(1);
+                    }
                 } else {
-                    // Stop: clip full, no spare, or trigger held (fire interrupt). Queue +0xAC, go to state 7.
-                    self.reload_state = 7;
-                    self.reload_ticks = p.reload_end_ticks.max(1);
+                    // Non-shell weapons: straight to idle — case 6 falls to LAB_001a3678: the +0xA0 idle
+                    // script, state 0, Input_ClearAction(9); +0xAC is never played (retail scan [L
+                    // ee_start_05.bin]: only SPAS-12 0x1c/0x1d has +0xAC) [M 0x1a3678-0x1a369c].
+                    self.reload_state = 0;
+                    self.reload_ticks = 0;
+                    self.held = false; // Input_ClearAction(9)
+                    self.pending = 0;
                 }
             }
             7 => {
@@ -303,10 +312,21 @@ impl Gun {
             return false;
         }
         let can_reload = !busy && self.spare > 0 && self.clip < p.clip;
-        if can_reload && (reload || (!pressed && self.clip < p.ammo_per_shot)) {
-            // Start the reload. `Player_WeaponFiring` sets anim+0xF4 = 5 if +0xA8 (reload_start) exists, else 6.
+        // Branch A: the reload key (action 14). Branch B: the auto-reload — the game's condition is
+        // "the fire key is NOT newly pressed this frame" (`Input_Action(player, 9, 1) == 0`, an edge test
+        // [M 0x1a5460:442-445 disasm 0x1a61d0]), so holding the trigger still reloads; only a fresh press
+        // diverts to the fire path. Branch B also zeroes the refire timer (`BLData+0x92C = 0`, 0x1a6244);
+        // branch A leaves it (disasm 0x1a5f50-0x1a5f84 — no +0x92C store).
+        let auto_reload = !pressed || self.held; // ¬(pressed && !held): not a fresh fire press
+        if can_reload && (reload || (auto_reload && self.clip < p.ammo_per_shot)) {
+            if !reload { self.timer = 0.0; } // branch B: `BLData+0x92C = 0` [M 0x1a6244]
+            // `Player_WeaponFiring` sets anim+0xF4 = 6 and queues +0xA4 at 1.35× — from frame 6 for
+            // flag-0x1000 weapons (AnimListBuild +0x90 = 6.0, disasm 0x1a6300-0x1a631c) — whose tick
+            // count is ceil((len − 6)/1.35): `p.reload_ticks` [M shared tail 0x1a6250-0x1a631c].
+            // With a +0xA8 start script it sets state 5 instead and queues +0xA8 at 1.0 [M 0x1a6260-0x1a626c];
+            // case 5 then queues +0xA4 at 1.0 for the full length (0x1a2e38 case 5).
             self.reload_state = if p.reload_start_ticks > 0 { 5 } else { 6 };
-            self.reload_ticks = if p.reload_start_ticks > 0 { p.reload_start_ticks } else { p.reload_loop_ticks };
+            self.reload_ticks = if p.reload_start_ticks > 0 { p.reload_start_ticks.max(1) } else { p.reload_ticks.max(1) };
             self.pending = 0;
             self.held = pressed;
             return false;
@@ -373,13 +393,10 @@ mod tests {
         // Released: the reload starts (state 6, no start script for the P2K).
         assert!(!g.update(false, p));  // trigger released + empty clip → reload starts
         assert_eq!(g.reload_state, 6); // state 6 (shell loop)
-        // Run the reload loop: each tick calls reload_tick. The P2K (not one-at-a-time) loads all rounds in one shell.
-        for _ in 0..p.reload_loop_ticks { g.reload_tick(false, p); }
-        // After the loop: clip is full (7), spare is 34.
-        // The P2K has no +0xAC (reload_end), so reload_end_ticks=0 but reload_tick uses .max(1) → 1 tick.
-        g.reload_tick(false, p); // enters state 7 (reload_ticks = max(0,1) = 1)
-        g.reload_tick(false, p); // state 7 done (ticks=0) → state 0
-        assert_eq!(g.reload_state, 0); // → state 0 (idle)
+        // Run the reload: the P2K (non-shell) reloads all rounds when the +0xA4 script stops and goes
+        // straight to idle — LAB_001a3678 plays +0xA0 and sets state 0; +0xAC is never queued [M].
+        for _ in 0..p.reload_ticks { g.reload_tick(false, p); }
+        assert_eq!(g.reload_state, 0); // → state 0 (idle) directly, no state 7 hop
         assert_eq!((g.clip, g.spare), (7, 34));
     }
 
