@@ -63,6 +63,13 @@ pub struct Pickup {
     pub gone: bool,
     /// The drone that dropped it (index into `Drones::list`), for drawing.
     pub from: Option<usize>,
+    /// The object the renderer draws (`obj+0xD8` = the celglist handed to `Pickup_Create`, [M]
+    /// 0x1d04f0:459-462 passes the placement's object; `Pickup_CreateSimple` 0x18f348:45 the
+    /// `weapon_data[id]+0x80` glist): (map, object) into the level archive for placed pickups,
+    /// `None` for drops (the renderer falls back to the `model` hashcode). The game draws the glist
+    /// pointer, not a hashcode re-lookup — an object with hashcode 0xFFFFFFFF (07000005's
+    /// `oOBJECT_AmmoPickUp_9mm` [D]) has no by-hash entry and would never be drawn.
+    pub obj: Option<(usize, usize)>,
 }
 
 /// What Bond took.
@@ -74,6 +81,12 @@ pub enum Taken {
     Key { id: u16 },
     /// Kind 3: `BLData+0x8B0 = 50.0`, `+0x8BC = 1.0`; message 0x200000F, sound 0x141 [M 0x18e650:220-225].
     Armour,
+    /// Kind 6 (Bond bonus): `PlrStat_LogBondBonus()` only in the take-effect switch [M 0x18e650:234-236];
+    /// the shared tail still runs — message 0x200004A, and `+0x2A` is overwritten with sound 0x14C at take
+    /// time (`Pickup_Handler` :319-321 writes the per-kind sounds 0xF5/0x141/0x14C before `Sound_Play3D`).
+    /// fix-objects: the port consumed the bonus silently — no sound, no log (the 0x200004A HUD message
+    /// has no port path yet).
+    Bonus,
 }
 
 fn trans(m: &Mat4) -> V3 { [m[3][0], m[3][1], m[3][2]] }
@@ -108,7 +121,7 @@ impl Pickup {
             start: translation, vel: [0.0; 3], state: 1, lifetime: 0,
             switch_channel,
             sound: if sound == 0xFFFF { None } else { Some(sound as u32) },
-            hidden: false, gone: false, from: None,
+            hidden: false, gone: false, from: None, obj: None,
         };
         let mut p = p;
         p.lifetime = if lifetime == 0 { 0 } else { lifetime as u16 * 60 };
@@ -131,7 +144,7 @@ impl Pickup {
         let x = [z[2], 0.0, -z[0]];
         let y = t[1] - (bounds.radius - bounds.centre[1].abs());
         let m = [[x[0], x[1], x[2], 0.0], [0.0, 1.0, 0.0, 0.0], [z[0], z[1], z[2], 0.0], [t[0], y, t[2], 1.0]];
-        Pickup { kind, weapon, rounds, model, bounds, m, start: t, vel: [0.0; 3], state: 0, lifetime: DROP_LIFETIME, switch_channel: 0, sound: Some(SOUND), hidden: false, gone: false, from: None }
+        Pickup { kind, weapon, rounds, model, bounds, m, start: t, vel: [0.0; 3], state: 0, lifetime: DROP_LIFETIME, switch_channel: 0, sound: Some(SOUND), hidden: false, gone: false, from: None, obj: None }
     }
 
     /// The world sphere centre (`obj+0x80`, `Control_BuildWorldSph`): the glist centre through the matrix.
@@ -347,8 +360,9 @@ impl Inventory {
             kind::BOND_BONUS => {
                 // Type 6: the game's `Pickup_Handler` case 6 calls `PlrStat_LogBondBonus` and shows a
                 // message — no weapon or ammo. D-004: the gold-medal gate (`Pickup_Create` line 93) is
-                // skipped. The pickup is consumed (disappears) but gives nothing [M 0x18e650:234-236].
-                Some(Taken::Weapon { weapon: p.weapon })
+                // skipped. The pickup is consumed [M 0x18e650:234-236]. fix-objects: reported as
+                // `Bonus` so the caller plays the take-time sound 0x14C instead of staying silent.
+                Some(Taken::Bonus)
             }
             _ => None,
         }

@@ -3913,6 +3913,7 @@ impl Drones {
         let alive = self.health.health > 0.0;
         for k in 0..self.pickups.len() {
             let p = &mut self.pickups[k];
+            if p.gone { continue; }
             p.fall(d.world);
             // The distance test runs from the player's position (+0x30) but the LOS from his world-sphere
             // centre (+0x80) — two different points [M 0x18e148:203-214 + L]. Port-check §1: the old call
@@ -3932,7 +3933,16 @@ impl Drones {
                     p.gone = true;
                     // `if (+0x28) switch_channels[+0x28] = 1` (+ time stamp) [M 0x18e650:330-333].
                     if p.switch_channel != 0 { self.channels.set(p.switch_channel as u32, 1, frame); }
-                    let (at, sound) = ([p.m[3][0], p.m[3][1], p.m[3][2]], p.sound);
+                    // `Pickup_Handler` overwrites `+0x2A` with the per-kind sound at take time —
+                    // 0xF5 weapon/ammo, 0x141 armour, 0x14C Bond bonus (:290,300,319-321) — before
+                    // `Sound_Play3D` (:334-337). A placed bonus's create sound is 0xFFFF (none); the
+                    // take still plays 0x14C [M]. fix-objects: kind 6 was silent.
+                    let take_sound = match t {
+                        crate::pickup::Taken::Bonus => Some(0x14C),
+                        crate::pickup::Taken::Armour => Some(0x141),
+                        _ => p.sound,
+                    };
+                    let (at, sound) = ([p.m[3][0], p.m[3][1], p.m[3][2]], take_sound);
                     self.taken.push((frame, t));
                     if let (Some(id), Some(sfx)) = (sound, d.sfx) { self.play_sound(at, sfx.get(id)); }
                 }
@@ -3943,7 +3953,14 @@ impl Drones {
                 if p.lifetime == 0 { p.gone = true; }
             }
         }
-        self.pickups.retain(|p| !p.gone);
+        // fix-objects: taken/expired pickups STAY as tombstones (`gone`). The renderer draws placed
+        // pickup slot `k` with build-time placed_pickups[k]'s mesh and poses it at
+        // `self.pickups[k].m` (scene.rs `add_instance` + the pickup pose step); `View_DrawObjectGlist`
+        // (0x1e6780) draws each pickup object's OWN glist at its OWN matrix — the game never reorders
+        // a live pickup under a drawn instance. The old `self.pickups.retain(|p| !p.gone)` shifted
+        // every later slot by one on the first take, so meshes were drawn at other pickups' and
+        // drops' matrices (the user's "007 model at the armour spot" / "wrong model at the drop").
+        // Every consumer already filters `gone`/`hidden`.
     }
 
     /// Turns a switch channel on (callers and tests).
