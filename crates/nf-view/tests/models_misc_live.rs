@@ -244,3 +244,69 @@ fn sha1_lines(lines: &[String]) -> String {
     for l in lines { h.update(l.as_bytes()); h.update(b"\n"); }
     nf_formats::sha1::hex(&h.finish())
 }
+
+/// The smoke puffs (`Gas_Init` 0x1aacc8 / `gases_smoke` 0x1ab2d0) through the real input path: firing
+/// spawns a puff at the muzzle with the game's parameters (`Player_MuzzleFlash` 0x1a4298:91-103 —
+/// scale 0.05→0.1, mesh 0x2000039, type 7, rgba 0x48403080), it fades and dies. The scene draws every
+/// live puff as a billboarded `smoke_1_dust` quad. Fail-first: pre-fix, `drones.gas` did not exist.
+#[test]
+fn firing_spawns_a_muzzle_smoke_puff_that_fades_and_dies() {
+    use nf_game::player::{Bond, Input};
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000001.bin", false).expect("load 07000001");
+    let sim = scene.sim.as_mut().unwrap();
+    sim.bond = Bond::new([100.0, 26.0, 108.0], sim.bond.yaw);
+    sim.disabled = false; // the level's opening cut-scene disables input; the test stands Bond outside it
+    // Fire one shot (the input path: the trigger through step_bond, pulsed like the fire-rate allows).
+    let spawn_y = sim.bond.pos[1];
+    let mut g0 = None;
+    for t in 0..40 {
+        sim.step_bond(Default::default(), t % 9 == 0, false, false);
+        if let Some(g) = sim.drones.gas.puffs.first() { g0 = Some(g.clone()); break; }
+    }
+    let g0 = g0.expect("firing never spawned the muzzle smoke puff");
+    // By capture time the pool ticked once (the update runs at the next tick head), so the scale is
+    // 0.05 + one growth tick of (0.1−0.05)/8 = 0.00625.
+    assert!(g0.scale >= 0.05 && g0.scale < 0.0563, "the game's start scale 0.05 [M 0x1a4298], got {}", g0.scale);
+    assert_eq!(g0.kind, 7, "the game's type 7 [M 0x1a4298]");
+    // The rgba started at 0x48403080 and faded one tick (rate = start/life: r −9, a −16).
+    assert!((56.0..=72.0).contains(&g0.rgba[0]) && (112.0..=128.0).contains(&g0.rgba[3]),
+        "the game's rgba 0x48403080 fading out, got {:?}", g0.rgba);
+    // The spawn y is the eye at spawn time (pos + 1.5) minus the aim drop; Bond keeps settling after
+    // the shot, so compare against the pre-fire pos with a unit window.
+    assert!((g0.pos[1] - (spawn_y + 1.45)).abs() < 1.0, "the puff sits at the muzzle height, got {} vs {}", g0.pos[1], spawn_y + 1.45);
+    // It fades and dies (8 ticks [S], the decomp drops the game's life arg).
+    let mut ticks = 0;
+    while !sim.drones.gas.puffs.is_empty() {
+        sim.step_bond(Input::default(), false, false, false);
+        ticks += 1;
+        assert!(ticks < 20, "the puff outlived its life");
+    }
+    assert_eq!(ticks, 7, "life 8, one tick spent before capture: gone after 7 more");
+    // The sister: not firing spawns nothing (the puff count stays 0).
+    for _ in 0..30 { sim.step_bond(Input::default(), false, false, false); }
+    assert!(sim.drones.gas.puffs.is_empty(), "no smoke without a shot");
+}
+
+/// The broken searchlight's smoke (`Searchlight_Update` 0x1cb900 state 2, every 7th frame at obj+0x30,
+/// scale 0.05→0.25): break a head and tick — a puff every 7th tick while broken.
+#[test]
+fn a_broken_searchlight_smokes_every_seventh_tick() {
+    use nf_game::player::{Bond, Input};
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
+    let sim = scene.sim.as_mut().unwrap();
+    sim.bond = Bond::new([100.0, 26.0, 108.0], sim.bond.yaw);
+    let head = sim.drones.searchlights.parts.iter().position(|p| p.kind == 1).expect("a searchlight head");
+    sim.drones.searchlights.parts[head].state = 2;
+    sim.drones.searchlights.parts[head].drawn = true;
+    let mut spawns = 0;
+    for t in 0..70u32 {
+        sim.step_bond(Input::default(), false, false, false);
+        if let Some(g) = sim.drones.gas.puffs.last() {
+            if (g.scale - 0.05).abs() < 1e-6 { spawns += 1; }
+        }
+        let _ = t;
+    }
+    assert_eq!(spawns, 10, "70 ticks at one puff per 7 = 10");
+}
