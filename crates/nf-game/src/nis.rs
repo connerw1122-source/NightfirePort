@@ -766,6 +766,16 @@ impl Scripts {
         Scripts { lib, players, objects: Objects::default(), requests: Vec::new(), primed: false, skip_request: false }
     }
 
+    /// A synthetic one-shot player (fix-objects2): mode 1 (plays once from spawn), no gate, no
+    /// trigger — the game's hidden `SP_Create` inside `Copter_Create` 0x17d340 plays the copter's
+    /// flight script the same way once its gate channel opens [M 0x1dbc08's mode dispatch].
+    pub fn spawn_once(&mut self, placement: usize, script: u32, matrix: Mat4) {
+        self.players.push(Player {
+            placement, scripts: [script, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0,
+            scale: 1.0, matrix, cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
+        });
+    }
+
     /// Any script player playing a non-looping script right now — the game's skip window (`SP_Update` state 2
     /// with `Script_IsPlaying`). The viewer's key handler asks this before mapping a key press to the skip.
     pub fn cutscene_playing(&self) -> bool {

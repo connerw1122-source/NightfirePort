@@ -1,6 +1,10 @@
 //! Game simulation for 007: Nightfire (PS2), ported from ACTION.ELF: the fixed-tick world the viewer (and later the
 //! game) runs. Rendering lives elsewhere; this crate only advances state.
 
+// Two match arms for the same (state, message) leave the second dead: a merge once renamed the guard's
+// GoToGoalPosition (0x63) arms to the ally's 0x28, freezing guards on their way to a goal, and only this lint saw it.
+#![deny(unreachable_patterns)]
+
 pub mod aivolume;
 pub mod prof;
 pub mod ally;
@@ -16,6 +20,8 @@ pub mod gun;
 pub mod grenade;
 pub mod ladder;
 pub mod fusebox;
+pub mod copter;
+pub mod lock;
 pub mod ss;
 pub mod mission;
 pub mod music;

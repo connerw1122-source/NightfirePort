@@ -88,6 +88,15 @@ impl Geo {
 /// (`obj+0xD8`) whatever moves it.
 pub struct CollisionWorld {
     stat: Geo,
+    /// Objects whose glist flags carry 0x1000 (the "BlockingPoly_PlayerMissile" family): the game's
+    /// `Collide_Pick` (0x1eb320 disasm 0x1eb480-0x1eb49c) skips collision nodes whose cel flags word
+    /// (cel+0x94 = the glist flags) has bit 0x1000 when the query's HITTEST+0x98 carries bit 0x20 —
+    /// the actor-movement queries — while ray/sight queries (flags 0x18 et al) still hit them. On
+    /// 07000008 these objects are a bullet cage over the whole map (a lid at y 52.8, a floor at
+    /// y −40 and two walls over the station walkway) that must not block Bond on foot [D level data;
+    /// the level is playable in the game across that wall]. They stay solid to `segment` (bullets,
+    /// sight, the floor rays).
+    missile: Geo,
     dynamic: std::sync::RwLock<Moving>,
     /// Collision triangles (object space) of every hashed glist object, for `set_dynamic`.
     shapes: std::collections::HashMap<u32, Vec<[V3; 3]>>,
@@ -162,8 +171,15 @@ impl CollisionWorld {
     /// From the level's instances (as drawn: cel placements; skipped-cel blockers included — they block).
     pub fn build(level: &Level, instances: &[Instance]) -> CollisionWorld {
         let mut stat = Geo::default();
+        let mut missile = Geo::default();
         for inst in instances {
             let Some(c) = &level.maps[inst.map].objects[inst.object].collision else { continue };
+            // The 0x1000-flagged objects (the player-missile cage) never block the actor capsule [M
+            // Collide_Pick 0x1eb320 — the cel flags 0x1000 skip for queries with HITTEST+0x98 bit 0x20].
+            if level.maps[inst.map].objects[inst.object].flags & 0x1000 != 0 {
+                missile.push(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)));
+                continue;
+            }
             stat.push(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)));
         }
         // Index collision shapes by hashcode, AND by (map,object) packed into a synthetic key for objects whose
@@ -190,7 +206,8 @@ impl CollisionWorld {
             }
         }
         stat.chunk(16);
-        CollisionWorld { stat, dynamic: Default::default(), shapes, shape_mats }
+        missile.chunk(16);
+        CollisionWorld { stat, missile, dynamic: Default::default(), shapes, shape_mats }
     }
 
     pub fn triangle_count(&self) -> usize { self.stat.tris.len() }
@@ -202,7 +219,7 @@ impl CollisionWorld {
     pub fn from_triangles(tris: Vec<[V3; 3]>) -> CollisionWorld {
         let mut stat = Geo::default();
         stat.push(tris.into_iter().map(|t| (t, 0)));
-        CollisionWorld { stat, dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default() }
+        CollisionWorld { stat, missile: Geo::default(), dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default() }
     }
 
     /// Glist object `hash`'s collision triangles in object space.
@@ -252,8 +269,19 @@ impl CollisionWorld {
     /// Every triangle whose object's bounds the segment `from → to` passes through (`near` for segments).
     fn near_seg(&self, from: V3, to: V3, mut f: impl FnMut(&[V3; 3], u8)) {
         let dynamic = self.dynamic.read().unwrap();
-        for g in [&self.stat, &dynamic.geo] {
+        for g in [&self.stat, &self.missile, &dynamic.geo] {
             for o in along(g, from, to) {
+                for k in o.tris.clone() { f(&g.tris[k], g.mats[k]); }
+            }
+        }
+    }
+
+    /// The actor-capsule neighbourhood: static geometry MINUS the 0x1000 missile cage (the game's
+    /// actor queries skip those nodes [M Collide_Pick 0x1eb320:0x1eb480-0x1eb49c]), dynamic objects included.
+    fn near_actor(&self, lo: V3, hi: V3, mut f: impl FnMut(&[V3; 3], u8)) {
+        let dynamic = self.dynamic.read().unwrap();
+        for g in [&self.stat, &dynamic.geo] {
+            for o in overlapping(g, lo, hi) {
                 for k in o.tris.clone() { f(&g.tris[k], g.mats[k]); }
             }
         }
@@ -261,7 +289,7 @@ impl CollisionWorld {
 
     fn near(&self, lo: V3, hi: V3, mut f: impl FnMut(&[V3; 3], u8)) {
         let dynamic = self.dynamic.read().unwrap();
-        for g in [&self.stat, &dynamic.geo] {
+        for g in [&self.stat, &self.missile, &dynamic.geo] {
             for o in overlapping(g, lo, hi) {
                 for k in o.tris.clone() { f(&g.tris[k], g.mats[k]); }
             }
@@ -337,7 +365,7 @@ impl CollisionWorld {
         let mut lo = [0f32; 3];
         let mut hi = [0f32; 3];
         for k in 0..3 { lo[k] = a[k].min(b[k]) - grow; hi[k] = a[k].max(b[k]) + grow; }
-        self.near(lo, hi, |t, _| {
+        self.near_actor(lo, hi, |t, _| {
                 let tl = [0, 1, 2].map(|k| t[0][k].min(t[1][k]).min(t[2][k]));
                 let th = [0, 1, 2].map(|k| t[0][k].max(t[1][k]).max(t[2][k]));
                 let (sl, sh) = ([0, 1, 2].map(|k| a[k].min(b[k]) - grow), [0, 1, 2].map(|k| a[k].max(b[k]) + grow));
@@ -422,7 +450,7 @@ mod tests {
     fn world(tris: Vec<[V3; 3]>) -> CollisionWorld {
         let n = tris.len();
         let stat = Geo { mats: vec![0; n], tris, objects: vec![Object { lo: [-10.0; 3], hi: [10.0; 3], tris: 0..n }], groups: Vec::new() };
-        CollisionWorld { stat, dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default() }
+        CollisionWorld { stat, missile: Geo::default(), dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default() }
     }
 
     #[test]
