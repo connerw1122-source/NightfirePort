@@ -33,10 +33,6 @@ Files: `crates/nf-game/src/{wire,player}.rs` and the player substate dispatch. S
 claimed-by: sandbox2 at 2026-10-12T04:04Z
 
 ---
-## Report (done, 2026-10-12T05:47Z)
-
-
----
 ## Report (done, 2026-10-12T05:48Z)
 
 # fix-wire — the cable crossing (07000005's wire, and 07000002's)
