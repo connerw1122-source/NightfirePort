@@ -47,3 +47,6 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 - **Update the doc entry** to say it's fixed, with your commit.
 
 **Branch:** `s/fields-player`.
+
+---
+claimed-by: sandbox2 at 2026-10-12T16:37Z
