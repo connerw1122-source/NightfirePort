@@ -101,9 +101,13 @@ fn the_facility_chain_runs_to_the_delta_sector_exit() {
     for _ in 0..10 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
     assert!(scene.sim.as_ref().unwrap().drones.channels.on(0x8c), "AND #391 [0x87, 0x88] raises 0x8C [D]");
 
-    // The live-wire hurt: cutting fusebox #385's group-1 wire costs 5.0 [M 0x1adfe8 Player_Hurt].
-    // (Both boxes' cuts above ran; Bond's health is below 100 by the live-wire 5.0 of the second cut.)
-    assert!(scene.sim.as_ref().unwrap().drones.health.health < 100.0, "the live wire hurts 5.0 [M 0x1adfe8]");
+    // The live-wire hurt: the game hurts on a group-1 wire death ONLY while +0x56 (param 2) == 0
+    // [M 0x1adfe8:99-101 `if (*(short *)(iVar1 + 0x56) == 0) Player_Hurt(0x40a00000,…)`]. Every
+    // fusebox on 07000014 carries param 2 non-zero (placements 291/383/385/833/919 → 225/113/216/
+    // 224/112 [D, fields_live.rs census]), so cutting the live wire here NEVER hurts — the old
+    // "the live wire costs 5.0" reading was the inverted polarity docs/fields/fusebox.md fixed.
+    assert_eq!(scene.sim.as_ref().unwrap().drones.health.health, 100.0,
+        "no live-wire hurt with +0x56 configured [M 0x1adfe8:99-101]");
 
     // Stage 4: the server-room escape — the touch again, now with 0x8C on → 0x09 → SP #407 (0x06000848)
     // → ch 0x4A.

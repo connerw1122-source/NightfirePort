@@ -54,6 +54,12 @@ port relies on.
 NF_ISO tests live in `crates/nf-game/tests/fields_live.rs`; unit tests in `fusebox.rs` /
 `useobj.rs`.
 
+The fusebox fix also exposed a test that had **codified the old misreading**:
+`crates/nf-view/tests/walk_07000014_live.rs:106` asserted "the live wire hurts 5.0" — it failed
+against the corrected polarity and its assertion is updated to the game's actual behavior (no
+hurt with +0x56 configured; all five of the level's fuseboxes carry param 2 non-zero). This is
+exactly the README's motivating failure mode: a test passing on a wrong reading.
+
 ## How it was verified
 
 - Every claimed reading cites decompile file:line in its doc row; scaling rules (Ghidra's
