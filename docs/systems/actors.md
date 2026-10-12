@@ -170,6 +170,17 @@ covers the AI-side chain (Lead → Hide → Lead).
   LeadBondCombat cover-run (FindRunToPoint) is not ported (the cover nodes are the fight's business).
 - **Not ported**: the Hostage chain 0x08–0x0F beyond the standing idle (no hostiles take hostages on the
   ported levels' completion paths), the UnderCover chain 0x93–0x9C (07000007's party guards — they fight
-  through the ordinary combat there), the Abseil 0x8E–0x92, the Astronaut 0xBD–0xC1, the Ninja melee chain
-  0xA6–0xB3 (no dtype-13 actor turns hostile on the completion paths), KikoMission 0x19/0x1A,
-  ElevatorJumper 0x8D, FailMission 0xB5, DeleteMe 0xB4.
+  through the ordinary combat there), the Abseil 0x8E–0x92, the Astronaut 0xBD–0xC1, ElevatorJumper 0x8D.
+- **Ported (fix-finale-blockers)** — `crates/nf-game/src/kiko.rs` holds the addresses: the **Ninja chain
+  entry** 0xa6 → NinjaAttack 0xa7 (0x16b990's blind-cheat branch is the only stand) with the distance
+  bands 0xa8/0xa9/0xaa/0xb2 (0x16bb50; alert 1.0; the melee/throwing-star anims are not modelled — the
+  bands advance and re-dispatch) — 07000004's assassin (dtype 0xf → 0xd [M 0x14c938 case 0xf]) and
+  07000016's chaser run it; **KikoMission 0x19 / KikoMissionRun 0x1a** (0x15df28/0x15e0d8) with
+  StandBlind 0x18 (0x172870) and RunToAlarm 0x89 (0x1736f8 — the none-found arm is the one the port's
+  completion paths hit), entered from CivilianMission 0x15d860's voice-0x13 branch (no disc placement
+  reaches it — documented); **EnemyRunToPoint 0x85** (0x168910 — the return state 0x56, on
+  07000011/12/13/41 with the player unseen → Idle/Alert [M :32-36]; the port has no 0xe9 AI-point
+  registry, so FindRunToPoint's none-found arm is the proven stand for the mode-7 drones);
+  **DeleteMe 0xb4** (0x173f00 — the soft removal). Also fix-finale-blockers: Death_Anim raises the
+  death channel on its first UPDATE (0x1637f8 case 2), not the anim's end, and the explosion kill
+  flushes the pending transition (a same-tick UPDATE re-dispatch used to clobber it).
