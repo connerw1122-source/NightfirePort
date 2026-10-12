@@ -230,12 +230,16 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     let ammo_type = rec[0x90] as usize;
     let clip_size = u16::from_le_bytes([rec[0x92], rec[0x93]]) as f32;
     let flags68 = u32::from_le_bytes(rec[0x68..0x6c].try_into().unwrap());
-    if flags68 & 0x20 == 0 {
+    // `BL+0x95E` running (a weapon switch): the game clears the ammo text (sprite +0x20 = 0) and takes the rounds
+    // strip off-screen (layer +0x38 = 0xFF); only the weapon name shows [M HUD_UpdateAmmoPane 0x19a7f0:176-189,
+    // :248-273, :276-300]. The user's PCSX2 play agrees: name alone on a switch, then ammo + fire mode.
+    let switching = s.hud.weapon_label_timer > 0;
+    if flags68 & 0x20 == 0 && !switching {
         let sp = &t.ammo[0];
         let txt = if matches!(ammo_type, 0x14 | 0x1a | 0x1f) { format!("{}", (s.gun.clip as f32 * 100.0 / clip_size.max(1.0)) as i32) } else { format!("{}-{}", s.gun.clip, s.gun.spare) };
         h.text(Anchor::Right, &t.font, sp.layer as i32, &txt, AMMO_AT.0 + sp.x as f32, AMMO_AT.1 + sp.y as f32, true, gs(sp.colour >> 8, sp.colour & 0xff), sp.flags & 0x20 != 0);
     }
-    if let Some(&[bu, bv, bw, hpr]) = t.bullets.get(ammo_type) {
+    if let (false, Some(&[bu, bv, bw, hpr])) = (switching, t.bullets.get(ammo_type)) {
         let k = if clip_size > 87.0 { 16.0 } else { 1.0 };
         let (x, bottom) = (AMMO_AT.0 - bw * k, AMMO_AT.1);
         // fix-dev T3: the dev tools can push the clip past its size (infinite ammo / no reload) — the strip
@@ -245,49 +249,42 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
         h.quad(Anchor::Right, rounds.layer as i32, 0x0300_0128, 0, x, bottom - clip * hpr, bw * k, clip * hpr, [bu, (clip_size - clip) * hpr + bv, bw, clip * hpr], (false, false), gs(rounds.colour >> 8, rounds.colour & 0xff));
         h.quad(Anchor::Right, empty.layer as i32, 0x0300_0128, 0, x, bottom - clip_size * hpr, bw * k, clip_size * hpr, [bu, bv, bw, clip_size * hpr], (false, false), gs(empty.colour >> 8, empty.colour & 0xff));
     }
-    // The fire-mode / weapon-name labels (sprites 1 / 2, both at pane (0,38) → (496, 432), layer 28,
-    // colour 0x7D6D59 with the black shadow): the fire-mode label = `Txt_BindLabel(weapon+0x30 + mode*4)`
-    // (the port always fires mode 0 — the belt mode byte `BL+0x1BB + w*0xC` has no switching path yet),
-    // the name = `Txt_BindLabel(weapon+0x38)`. While `BL+0x95E` runs (60 ticks after a weapon whose
-    // record's +2 word changed — `Sim::hud_tick`) the fire-mode label is bright (0xFF) and the name dim
-    // (0x1C); at rest the reverse [M HUD_UpdateAmmoPane 0x19a7f0:206-235]. Both drawn — the dim one is
-    // the template's faint ghost. Alignment: the name's template flag 0x1000 = right-aligned; the
-    // fire-mode's template has no 0x1000, but a left pen at x=496 would clip off the 512-wide screen, so
-    // both are drawn right-aligned [S — check against a PCSX2 frame].
-    {
-        let label_alpha = |bright: bool| (if bright { 0xFF } else { 0x1C }) as u32;
-        let (mode_bright, name_bright) = if s.hud.weapon_label_timer > 0 { (true, false) } else { (false, true) };
-        if let (Some(lang), Some(sp)) = (s.lang.as_ref(), t.ammo.get(1)) {
-            let fid = s.weapons.fire_mode_label(wi, 0);
-            if let Some(txt) = lang.bind(fid).filter(|t| !t.is_empty()) {
-                h.text(Anchor::Right, &t.font, sp.layer as i32, txt, AMMO_AT.0 + sp.x as f32, AMMO_AT.1 + sp.y as f32, true, gs(sp.colour >> 8, label_alpha(mode_bright)), true);
-            }
-        }
-        if let (Some(lang), Some(sp)) = (s.lang.as_ref(), t.ammo.get(2)) {
-            let nid = s.weapons.name_label(wi);
-            if nid != u32::MAX && nid != 0 {
-                if let Some(txt) = lang.bind(nid).filter(|t| !t.is_empty()) {
-                    h.text(Anchor::Right, &t.font, sp.layer as i32, txt, AMMO_AT.0 + sp.x as f32, AMMO_AT.1 + sp.y as f32, true, gs(sp.colour >> 8, label_alpha(name_bright)), true);
-                }
+    // The fire-mode / weapon-name labels (sprites 1 / 2, both at pane (0,38) → (496, 432), colour 0x7D6D59 with
+    // the black shadow). Sprite +0x38 is the draw LAYER, not alpha: 0x1C = layer 28 (drawn), 0xFF = not drawn.
+    // While `BL+0x95E` runs the name is on layer 28 and the fire mode is hidden; at rest the reverse
+    // [M HUD_UpdateAmmoPane 0x19a7f0:218-226]. The fire-mode label = `Txt_BindLabel(weapon+0x30 + mode*4)` (the
+    // port always fires mode 0: no switching path yet), the name = `Txt_BindLabel(weapon+0x38)`. Both right-
+    // aligned at x = 496 (PCSX2: "Semi" under "7-6" at the right edge).
+    if let Some(lang) = s.lang.as_ref() {
+        let (idx, id) = if switching { (2, s.weapons.name_label(wi)) } else { (1, s.weapons.fire_mode_label(wi, 0)) };
+        if let (Some(sp), true) = (t.ammo.get(idx), id != u32::MAX && id != 0) {
+            if let Some(txt) = lang.bind(id).filter(|t| !t.is_empty()) {
+                h.text(Anchor::Right, &t.font, sp.layer as i32, txt, AMMO_AT.0 + sp.x as f32, AMMO_AT.1 + sp.y as f32, true, gs(sp.colour >> 8, 0xff), true);
             }
         }
     }
-    // The pickup message bar (pane 21, `Text_AddMsg` 0x1b0c30 + `HUD_UpdateStatusPane` 0x19c310): a
-    // 256×26 bar at (128, 364) from tex 0x0300007A with the text centred at (256, 380) in font 2,
-    // colour 0x7D6D59; the bar opens in one frame when a message arrives, the text fades over the last
-    // 15 ticks of its 180 (alpha = time·17), then the bar closes at 16 px per tick, re-centred
-    // [M 0x19c310; hud.md; the runtime template `PickupStatusSprInfo` is BSS — its layers here are
-    // [S] 32 (bar) / 31 (text), between the ammo text (28) and the crosshair (49)].
+    // The pickup message bar (pane 21, `Text_AddMsg` 0x1b0c30 + `HUD_UpdateStatusPane` 0x19c310): three sprites
+    // copied into `PickupStatusSprInfo` from 0x2FC460 (stride 0x30) [L ee_start_05.bin; M static init 0x1a0058]:
+    // the middle is a 1-texel column of the HUD sheet 0x0300007A (u 190, v 0..56) stretched to 256×26 at
+    // (128, 364), the left / right caps are 5-texel columns (u 185 / 191) placed against its ends
+    // [M 0x19c310:340-346]; all colour 0x7F7F7F, alpha 0x8D, layer 30. The text is centred at (256, 380) in
+    // font 2, colour 0x7D6D59, fading over the last 15 ticks of its 180 (alpha = time·17); then the bar closes
+    // 16 px per tick around its centre.
     {
         let (bw, bh, bx, by) = (256.0f32, 26.0f32, 128.0f32, 364.0f32);
+        let bar = |h: &mut Hud, w: f32| {
+            let x = bx + (bw - w) / 2.0;
+            let c = gs(0x7f7f7f, 0x8d);
+            h.quad(Anchor::Left, 30, 0x0300_007a, 0, x, by, w, bh, [190.0, 0.0, 1.0, 56.0], (false, false), c);
+            h.quad(Anchor::Left, 30, 0x0300_007a, 0, x - 5.0, by, 5.0, bh, [185.0, 0.0, 5.0, 56.0], (false, false), c);
+            h.quad(Anchor::Left, 30, 0x0300_007a, 0, x + w, by, 5.0, bh, [191.0, 0.0, 5.0, 56.0], (false, false), c);
+        };
         if let Some(msg) = s.hud.msgs.front() {
             let a = (msg.time * 17.0).min(255.0) as u32;
-            h.quad(Anchor::Left, 32, 0x0300_007a, 0, bx, by, bw, bh, [0.0, 0.0, bw, bh], (false, false), gs(0x7f7f7f, a));
-            h.text(Anchor::Centre, &t.font, 31, &msg.text, SW / 2.0, 380.0, false, gs(0x7d6d59, a), true);
+            bar(&mut h, bw);
+            h.text(Anchor::Centre, &t.font, 29, &msg.text, SW / 2.0, 380.0, false, gs(0x7d6d59, a), true);
         } else if s.hud.bar_close > 0.0 {
-            // State 4: the bar shrinks 16 px per tick around its centre.
-            let w = s.hud.bar_close;
-            h.quad(Anchor::Left, 32, 0x0300_007a, 0, bx + (bw - w) / 2.0, by, w, bh, [0.0, 0.0, w, bh], (false, false), gs(0x7f7f7f, 0xff));
+            bar(&mut h, s.hud.bar_close);
         }
     }
     // The air/oxygen pane (pane 5, `HUD_UpdateAirPane` 0x1a11c8, `AirSprInfo` 0x2bd490): shown while
@@ -312,19 +309,18 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
             }
         }
     }
-    // The crouch icon (health pane sprite 19, tex 0x03000173 at pane (320,−300) → (336, 37), layer −1,
-    // w/h 0 = the texture's size): shown while Bond crouches (player mode 4), then the post-stand icon
-    // 0x03000174 holds 60 ticks and fades over the last 30 (alpha = timer·255/30); hidden at rest
-    // [M HUD_UpdateHealthPane 0x19b9c8:305-328].
+    // The crouch icon (health pane sprite 19): while crouched (player mode 4) tex 0x03000173; after standing
+    // 0x03000174 for 60 ticks, alpha 0xFF then fading over the last 30 (alpha = timer·255/30). The game writes
+    // the sprite's screen position (+0x24 / +0x26) as 0x30, 0x30 on every crouch, overriding the template's
+    // (320, −300), and +0x38 = 0x1D is the LAYER (29), not alpha [M HUD_UpdateHealthPane 0x19b9c8:305-328].
+    // Drawn at the texture's size centred on (48, 48) [S: the centring; the user's PCSX2 play puts it top left].
     {
         let (crouched, timer) = (s.bond.crouched, s.hud.crouch_icon_timer);
         if crouched || timer > 0 {
-            let sp = &t.health[19];
-            let (tex, a) = if crouched { (0x0300_0173u32, 0x1Du32) }
-                else if timer >= 30 { (0x0300_0174u32, 0x1Du32) }
+            let (tex, a) = if crouched || timer >= 30 { (if crouched { 0x0300_0173u32 } else { 0x0300_0174u32 }, 0xFFu32) }
                 else { (0x0300_0174u32, (timer as u32 * 255 / 30).max(1)) };
             let (tw, th) = h.tex_dims(tex);
-            h.quad(Anchor::Left, sp.layer as i32, tex, 0, HEALTH_AT.0 + sp.x as f32, HEALTH_AT.1 + sp.y as f32, tw, th, [0.0, 0.0, tw, th], (false, false), gs(0x7f7f7f, a));
+            h.quad(Anchor::Left, 29, tex, 0, 48.0 - tw / 2.0, 48.0 - th / 2.0, tw, th, [0.0, 0.0, tw, th], (false, false), gs(0x7f7f7f, a));
         }
     }
     // Scope overlay (the SightPane, `HUD_UpdateCrossHair` 0x19e6d0 pane[6]): 3 sprites at layer 39 [D].

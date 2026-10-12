@@ -5098,3 +5098,21 @@ paths: the take→message test uses whatever placed pickup takes; the label test
   (the player) damage any team (`bVar3 = true`, decompile :182-185); the team test is only for class-2 shooters.
   The correction is in `docs/reports/fix-hud.md` and the claimed fix-npcs task.
 - Full suite: 348 passed, 0 failed (full ISO).
+
+## main-4: HUD fixes from the user's fix-hud playtest (2026-10-11)
+
+- **Weapon labels:** sprite +0x38 is the draw LAYER (0x1C drawn, 0xFF hidden), not alpha. While `BL+0x95E` runs only
+  the name shows; the ammo text (+0x20 = 0) and the rounds strip (layer 0xFF) are hidden. At rest: ammo + fire mode
+  [M HUD_UpdateAmmoPane 0x19a7f0:176-189, 218-226, 248-300]. Matches the user's PCSX2 play.
+- **Pickup bar:** the bar is three columns of the HUD sheet 0x0300007A (u 190 stretched to 256×26, caps u 185 / 191,
+  5 wide, colour 0x7F7F7F, alpha 0x8D), from 0x2FC460 with stride 0x30 [L ee_start_05.bin; M static init
+  0x1a0058, HUD_UpdateStatusPane 0x19c310:340-346]. fix-hud drew the sheet's top-left 256×26 corner (the health
+  arcs and the 007 coin: the user's "weird symbols"). The bar now spans x 123–389, against PCSX2's 123–388.
+- **Crouch icon:** the game writes the sprite's screen position as (48, 48) on every crouch, overriding the
+  template's (320, −300); the alpha is 0xFF (0x1D is the layer) [M HUD_UpdateHealthPane 0x19b9c8:305-328].
+  Centring on (48, 48) is [S].
+- **Hit glow:** when neither view axis reaches 0.5 (a shot from straight ahead, e.g. the 07000005 sniper) the
+  game sets 0xC (both sides) [M Player_DealWithObjHit 0x194458:202]; the port set 0, so no glow.
+- Tests: `crates/nf-view/tests/hud_playtest_live.rs` (4, with sisters). Full suite: 352 passed, 0 failed.
+- Open: the truck ride's voice lines (queued to fix-audio2); whether some ammo pickups are really kind 6
+  (the "007 Bonus collected" message): asked the user for the spot.
