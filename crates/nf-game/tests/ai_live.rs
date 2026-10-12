@@ -462,7 +462,8 @@ fn a_dead_guard_drops_its_gun_and_bond_takes_it() {
     eprintln!("SG5 first-person {fp:08x} in the level: {}", l.level.skins.contains_key(&fp));
     let on = bond_at(at);
     for _ in 0..3 { sim.tick(&d, &on); }
-    assert!(sim.pickups.is_empty(), "taken");
+    // fix-objects: a taken pickup stays in the list as a tombstone (`gone`), keeping the draw slots stable.
+    assert!(sim.pickups.iter().all(|p| p.gone), "taken");
     assert_eq!(sim.taken.len(), 1);
     assert!(sim.inventory.owned[0x16] && sim.inventory.clip[0x16] == 30, "SG5 owned with a full clip");
     assert_eq!(sim.inventory.carried[1], 41, "the P2K's rounds untouched");

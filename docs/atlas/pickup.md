@@ -215,3 +215,39 @@ tests (above), the LOS from the **player sphere centre** (not the feet), radius 
 while falling, refusal leaves the pickup untouched, and the single `Rand_FRand` per drop deciding rounds
 (clip 30 → 30·(0.25..0.75) = 7..22 rounds — a low roll is a legal refuse when the ammo type is capped).
 `docs/atlas/pickup-port-check.md` §1 pins the port-side divergence that matches the symptom.
+
+## Port status (fix-objects): the drawn model and the kind come from one source now
+
+Three port divergences matched the user's reports (master 0a2fcc4, screenshots on 07000001: a gold
+"007" mesh at an armour spot, a wrong mesh at a guard drop, extra visible objects at corpses):
+
+1. **The draw-slot desync.** `Drones::update_pickups` ended with `self.pickups.retain(|p| !p.gone)`,
+   but the renderer draws placed pickup slot `k` with build-time `placed_pickups[k]`'s mesh and poses
+   it at `Sim::drones.pickups[k].m` (`View_DrawObjectGlist` 0x1e6780 draws each pickup object's OWN
+   glist at its OWN matrix [M] — the game never reorders a live pickup under a drawn instance). The
+   first take shifted every later slot by one: meshes were drawn at other pickups' and at drops'
+   matrices. Fixed: taken/expired pickups stay as `gone` tombstones; every consumer filters them.
+2. **The hashcode re-lookup.** For a placed pickup the game draws the celglist handed to
+   `Pickup_Create` (param_4 from `parsemap_create_dynamic_objects` 0x1d04f0:459-462 [M]) — a pointer,
+   not a hashcode. The port re-looked the mesh up by the resolved object's own hashcode, and an
+   object with hashcode 0xFFFFFFFF (07000005's `oOBJECT_AmmoPickUp_9mm`, the kind-1/9mm piles at
+   (48.06, 49.00, −59.25) seen live in `ee_start_05.bin` [L]) has no by-hash entry, so those pickups
+   were created, takeable, and never drawn. Fixed: `Pickup.obj` carries (map, object) and the draw
+   uses it; the bounds are the object's own glist bounds, not the first hashcode match's.
+3. **Taken drops stayed drawn.** The dropped-gun attachment search (`p.from == Some(di)`) did not
+   exclude `gone`, so a tombstoned drop kept the gun visible after taking. Fixed with `!p.gone`.
+
+Tests: `crates/nf-view/tests/fix_objects_live.rs` — slot identity after a take (fails on master:
+index out of bounds / len shift), kind↔model for every placed pickup on 07000001 + 07000005 (fails
+on master: `kind-1 pickup draws <unresolved 0xffffffff>`), the four 07000001 piles against their
+disc kinds/ids/rounds/meshes, the death-dump (one visible drop; placed slots unmoved), and the
+afc60ed guard (dynamic-vertex tail pairs 1:1 with `char_verts`; every placed pickup, door and
+searchlight slot has vertices).
+
+## PCSX2 trace check (tests/traces/01-raptor.trace, 2026-10-11) [L]
+
+User play on 07000001 (god + infinite ammo; inventory logged as change events):
+
+- t = 6.0 s: weapon **0x0E** becomes owned with clip 9 — the first Raptor drop gives the weapon. (The port's pickups call the Raptor weapon 6; 0x0E is what the game equips — check `Upgrade_Weapon` 0x1a8f30 / the base-id mapping.)
+- Every later Raptor drop gave ammo type 3 (spare BLData+0x170+3·2): +6 (19.8 s), +7 (71.0 s), +7 (74.3 s), +5 (76.3 s). Every drop the user walked over was taken.
+- Other takes in the run: weapon 0x12 (clip 32) at +17.6 s, 0x1C (clip 8, shotgun) at +50.6 s, 0x35 (count 1, frag) at +52.9 s; ammo types 1 (+20, +9), 9 (+6, +5), 23 (+1), 2 (+16, +11).

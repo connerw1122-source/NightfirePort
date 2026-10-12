@@ -4381,6 +4381,48 @@ Could not verify / left open (evidence recorded, no guessing):
 - Not run: a real PCSX2 trace of a transition (no emulator in the sandbox); the window/renderer path is
   unchanged by this task.
 
+## fix-objects — the pickup draw desyncs, the invisible placed pickups, the silent 007 bonus
+
+User reports (master 0a2fcc4): a spinning gold "007" mesh where an armour pickup belongs and at a
+guard drop (07000001 screenshots); every dead guard dropping several objects; two placed piles
+swapped (ammo acts as armour, armour as ammo); the bonus pickup doing nothing on take.
+
+**What was done** (branch s/fix-objects, commits 50977ef + ce50193):
+
+1. **The draw-slot desync (the top-priority symptom).** `Drones::update_pickups` ended with
+   `self.pickups.retain(|p| !p.gone)`, but the renderer draws placed pickup slot `k` with build-time
+   `placed_pickups[k]`'s mesh posed at `Sim::drones.pickups[k].m` (`View_DrawObjectGlist` 0x1e6780
+   draws each pickup object's own glist at its own matrix [M]). The first take/expiry shifted every
+   later slot by one, so meshes were drawn at other pickups' and drops' matrices. Fixed: taken/expired
+   pickups stay as `gone` tombstones; every consumer filters `gone`/`hidden` (the two dropped-gun
+   attachment searches gained `!p.gone`).
+2. **The invisible placed pickups (the O2 class).** The game draws the celglist handed to
+   `Pickup_Create` ([M] 0x1d04f0:459-462 → 0x18dda0:134; `View_DrawObjectGlist` reads obj+0xD8), a
+   pointer, not a hashcode. The port re-looked the mesh up by the resolved object's own hashcode;
+   07000005's `oOBJECT_AmmoPickUp_9mm` objects have hashcode 0xFFFFFFFF [D], no by-hash entry, so
+   those pickups were created, takeable, never drawn. `Pickup.obj` now carries (map, object); the
+   draw uses it; the touch-test bounds are the object's own glist bounds.
+3. **The silent 007 bonus.** `Pickup_Handler` overwrites the pickup sound per kind at take time
+   (0xF5/0x141/0x14C, 0x18e650:290,300,319-321) and kind 6 runs `PlrStat_LogBondBonus` (:234-236).
+   The port consumed the bonus silently. `Taken::Bonus` now flows; the caller plays 0x14C (armour
+   takes 0x141) and the window-title notice shows (no HUD text path exists yet).
+4. The four 07000001 piles were verified against their disc placements ([D] nf-extract placements f0):
+   kinds/ids/rounds/meshes all correct in the port now (the old extra[2]/extra[3] param misread was
+   already fixed by the param(index) map; the tests pin it).
+
+**Evidence**: tests in crates/nf-view/tests/fix_objects_live.rs — all five failed on master
+(out-of-bounds shift; `kind-1 pickup draws <unresolved 0xffffffff>`; missing CharVertex records for
+slot 3), all pass now. fix_player2/3, scenario, pickup_live, rng_live, weapon_switch_live re-run green.
+Independent audit (subagent, decompile-only): 6/6 claims VERIFIED (case 0xf0 arg map, the glist
+pointer draw path, `hashtable_hashcode_to_celglist(0xFFFFFFFF) == 0` at 001ca798:12-14, kind 3/6
+creates, the take conditions, the handler tail); no unfiltered `Drones.pickups` consumer left.
+
+**Not reached (2-hour sandbox)**: O1 (07000006 placed-pickup filter), O3 (breakable glass), O4
+(wire-cut box), F3 (the tuxedo skin-swap in nis.rs), the 07000002 next-area door draw, the gondola
+invisible wall, the rocket-launcher pickup gate, the red-headband guard skin. Nothing was changed
+for them: each needs its own decompile pass and a failing repro test first. The full NF_ISO suite
+was not run end-to-end (time); the touched crates' pickup/player/scenario/rng/weapon tests were.
+
 ## fix-perf-level — portal visibility walk (G-016's portal half), cold-start loadout, the tick cap
 
 The task's top priorities were the 07000007 draw cost (the user's "lag direction is awful": 4526
@@ -4545,6 +4587,77 @@ Not done (sandbox time): what the game does with a team-2/mode-0xC drone (its re
 07000005 patrol torso-twist clamp, the 07000006 stationary-guard class, and the searchlight spotted→alarm path —
 each needs the same load-and-walk dump driven to the reported spots.
 
+## fix-drone4 — the party guests never walk (user retest), plus the C2 evidence pass
+
+Branch s/fix-drone4 (from origin/master 94ca4c3). Repro + fix tests: `crates/nf-view/tests/fix_drone4_live.rs`;
+the dump harnesses: `crates/nf-view/tests/dump_drone4.rs` (07000002/06 C2) and the throwaway `probe_drone4.rs`
+(nav + guest dump, git-ignored? no — committed, it is the evidence record).
+
+**The 07000007 guests "no longer T-pose but don't move or walk at all" — ROOT-CAUSED and FIXED (two bugs).**
+
+[D level + probe] 07000007 has NO kind-4 (patrol) paths at all: 8 paths — two kind 0x2, six kind 0x8. So
+`AssignAIPath(4)` can never succeed on this level — the fix-drone3 reading ("CivilianPatrol walks them") had
+nothing to walk. The real walker is **CivilianMission (0x16, 0x15d860)**: every dtype-10 guest carries prop 0x1D
+(probe: prop1d 1 for all 35), the kind-8 paths sit exactly under guest placements (g08 0.017 from path-2 node 0;
+g20/g21 on paths 5/4 node 0), and CivilianInit 0x172730 / PartyGirlInit 0x1728c0 ENTER route prop-0x1D drones with
+a mask-8 route into 0x16 [M 0x172730:29-39; 0x1728c0:17-22]. CivilianMission ENTER calls the walk danim 0x37 [M
+0x15d860:19-21], UPDATE does the scare check then FollowRoute [M 0x15d860 case 3; UpdateMissionRoute 0x154a80 is
+`NDrone2_FollowRoute` — the port's `Route::follow`]. `+0x9f2` (read as a "script link" in fix-drone3) is the route
+NODE COUNT that `NDrone2_InitAIPath` fills [M 0x153720] — the mask-8 branch is the mission-path gate.
+
+Port fix (drone.rs): state `CIVILIAN_MISSION 0x16` ported (ENTER walk; UPDATE scare → voice-0x10 team-1 Attack /
+CivilianScared, route follow → arrived clears prop 0x1D → Civilian, blocked → look-around/stand); CivilianInit
+ENTER matches the game (voice 0xd → PartyGirl; prop 0x1d + mask-8 route → 0x16; else the prop clears and mask-4);
+PartyGirlInit ENTER likewise; PartyGirl ENTER now matches 0x160140 (voice 0x12 → Civilian; AssignAIPath(4), route →
+CivilianPatrol — PartyGirl herself never patrols [M 0x160140 case 3: scare else SetStandIdleAnim(1)+BondTalk];
+the port's patrol-from-PartyGirl-UPDATE deviation removed). BondTalk (0x1446b0 — the head-track + speech lines
+when unarmed Bond is within 3 on 07000007) stays unported (fix-drone3's note stands); its `Rand_Rand` draws are
+therefore also not drawn — the guests walk, they just don't chat yet.
+
+**Bug 2 — `Route::for_path` collapsed every open chain** [M InitAIPath 0x153720]: on a node without exactly two
+links the port re-appended the SAME node and kept walking, so a mission path's endpoint chain (path 2: 5 nodes
+spanning 18 units, node 0 has one link) built a one-node route that "arrives" instantly — the trace: g08 got a
+route at t0 and sat in Civilian by t20 having moved 0.16. The game's kind-8 branch leaves by the single link of a
+1-link FIRST node and STOPS the build at the first later ≠2-link node. Fixed in nav.rs `for_path` (1-link first
+node follows its link; later ≠2-link node ends the chain; the non-kind-8 reading is *suggested* — the ported
+levels' kind-4 patrols are 2-link loops, so patrol behaviour is unchanged, pinned by the 07000005 sister test).
+
+**Verified** [M tests, NF_ISO]: `a_party_guest_walks_her_mission_route` — the ch-0 guest on a kind-8 node reaches
+0x16 with danim 0x37 at tick 60, holds a ≥4-node route (the collapse regression), and covers > 2.0 units in ticks
+300-600 (pre-fix: state 0x2f/0x11, route None, 0.04 units — the user's symptom). `the_07000005_patrol_still_walks_
+after_the_route_fix` — the patrol regression gate. The fix-drone3 suite (5 tests) still passes post-fix.
+
+**The C2-class evidence pass (07000002 bathhouse, 07000006) — dump recorded, root cause NOT found this session.**
+`dump_drone4.rs` runs the real viewer path: 07000002 start shows the ch-21/23 guards (d00/d01/d03/d06, dtypenew 2)
+drawn but state 0x0/started=false at tick 2 — by tick 122 they are in WaitSwitch (fix-dev's dump agrees: enabled=0
+drawn=0 until their channels fire) and the only drawn drone at the bathhouse is the civilian woman d21 (skin
+0x0500004F, team 2, mode 12, HostageIdle class). Raising ch 21 headless did NOT re-draw them at Bond's spot. The
+headless `drawn` flag is the port's visibility bookkeeping, so this dump cannot separate "the game's guard is a
+different drone" from "the port's drawn flag lies" — the user's screenshot shows a GUARD next to the woman that
+the port's start dump does not contain. NOT FIXED; the next pass needs the ch-21 wake driven through the real
+plate positions (walk Bond over plates 341/383 [D]) and a damage check on the woken guard.
+
+**Not done this session** (each with its reason):
+- The searchlight alarm SOUND/music event on 07000006 (the channel path works — fix-drone3's test wakes the
+  ch-55 guards): the sound/music half needs Searchlight_Update's sound call identified in the decompile; no time.
+- The party level-start weapon lock timing (no armed frame on warm load) + the bouncer/male-guest permanent
+  aggro: not started.
+- The 07000006 driver's hide-spot (crouching on the crate stack): not started.
+- The 07000005 patrol torso re-check: fix-drone3's clamp fix is still in and the sister test passes; no new
+  evidence this session.
+
+Files: `crates/nf-game/src/drone.rs` (the mission-state block), `crates/nf-game/src/nav.rs` (for_path — shared
+file, minimal change, noted), the two new test files + the probe. Determinism: no new RNG draws (BondTalk's
+draws are inside the unported function); the walk call is fixed-anim.
+
+## main-1: performance — collision ray bounds, GPU skinning, render interpolation (2026-10-11)
+
+- **Sim (`NF_PROFILE=1`, new `nf_game::prof`):** 07000007's tick was 15.4 ms, 12 of it the per-drone `drawn` ray (`visible_to`): static collision had only per-object boxes and the party's rooms are single objects of thousands of triangles. Static geometry is now split into 16-triangle runs, grouped 32 at a time; segment queries slab-test both levels. Identical hits (full suite). Tick: 07000007 15.4 → 1.7 ms, 07000006 1.8 → 0.46 ms.
+- **GPU skinning (G-043):** `Scene::frame_state` (the matrices `animate` built) and `colour_mults` were split out; `skin_layout` gives each Character-layer vertex two palette indices, a weight and a colour slot, and `skin_palette` builds one frame's matrices (per character: object + skin·object per bone; attachments, searchlight parts, doors, pickups) and colours. The vertex shader blends `w·P[a]p + (1−w)·P[b]p`. `gpu_skin_live.rs` proves it equals `animate`/`posed_vertices` on 05/06/07 (max error 1.5e-5, colours exact) with a sister test. Per-frame CPU: posed vertices ≈ 16 ms + 4.6 ms upload → palette 1.5 ms.
+- **Render interpolation / high refresh:** logic stays fixed at 60 Hz; frames draw between the last two ticks (camera and palette lerp, snapping jumps > 4 units). Vsync at the display rate by default; `--fps N` caps with vsync off. `NF_NOINTERP` disables the blend.
+- **Portal walk** (`fix-perf-level`) made opt-in (`NF_PORTAL=1`): it hid all of 07000006 between the truck and the courtyard.
+
+
 ---
 
 ## fix-cutscenes — the loadable cut-scene packs (`isLoadable` / `LoadableLoad`), the party Drake scene and the gondola intro
@@ -4613,3 +4726,4 @@ script-player.md.
 
 **Verification:** the 3 symptom tests + priming control pass; full suite green on the slim ISO except the 3
 allowed disc_golden failures (nf-formats 74 tests, nf-audio 7, nf-game 133, nf-view 106 — 0 failures).
+

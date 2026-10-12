@@ -266,3 +266,14 @@ docs/atlas/trigger-port-check.md.
   the structure above [M-partial].
 - Whether any code changes obj+0xF0 bit 0x10 on the player at runtime (the scan-visibility bit) —
   measured at level start only [L].
+
+## PCSX2 trace check (tests/traces/01-doors.trace, 2026-10-11) — U-046 resolved [L]
+
+User play on 07000001 with `tools/trace/trace_record.py` (door state obj+0xF4 and quiet timer ext+0x72 per frame):
+
+- Door 1 (ext 0x01fbcd90): opening 17.4 s → open 17.9 s; the quiet timer advanced only while Bond was clear of the door (242 at 34.0 s while he stood near it), reached 360, closing at 36.0 s, closed 36.4 s.
+- Door 2: open 34.5 s; Bond walked away; closing at 40.5 s — exactly 360 ticks after opening.
+- Door 3: open 43.0 s → closing 61.0 s. Door 2 re-opened at 44.2 s with Bond ~18 m away (a drone opened it).
+- The two gallery secret doors (flags 0x22) never moved; their timers stayed 0.
+
+**The sliding doors auto-close in the real game** (the 6 s quiet rule with the proximity pause), so the port's auto-close is correct; the earlier playtest recollection that they don't was mistaken.
