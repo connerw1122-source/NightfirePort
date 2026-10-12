@@ -26,6 +26,8 @@ channel taken from the wrong record, a team gate the decompile contradicts). Eac
    reading is right. If the game rewrites the field every frame, give the input that drives it instead (the
    sprite.md lesson). Put these in a "Live checks" section at the end of each doc.
 
+6. **Ask for the live census.** The main agent can now record, in the running game, every instruction that reads or writes a field (`tools/trace/gdbwatch.py <start> <end> read|write|readwrite --seconds N`; worked example in `docs/fields/sprite.md`: `+0x38`'s three accessors). For each field the port relies on, give the census to run: how to find a live instance (the pointer chain from a global), the byte range, the access type, the game situation (the level and what the player does), and the accessor functions your static pass expects. A census that finds an accessor you didn't list means the static pass missed a reader; that's the point of it.
+
 **Output:** `docs/fields/<struct>.md` per struct, in the format of `docs/fields/sprite.md` (offset, type, meaning,
 proof with every reader/writer cited), and the coverage table in `docs/fields/README.md` updated with your structs.
 No game bytes in the docs: offsets, values you read, names and addresses only.
