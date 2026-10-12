@@ -276,3 +276,7 @@ Read from `work/ee_start_05.bin` at `0x002c69b8`:
   `C_CNCONTROLS_Handler` / `P_CNCONTROLS_Handler` decompile to decode. `[M]` (reader only, meaning unclear)
 - **M_CONTROL full layout**: only `+0x60` (the aim flag u16) is documented here; the rest of the M_CONTROL struct
   (input state, button buffers) is out of scope for the player atlas but worth a separate entry if the port needs it.
+
+## PCSX2 trace check: firing at civilians (tests/traces/02-civilian.trace, 2026-10-11) [L]
+
+User play on 07000002 with real ammo (god mode only), aiming at a civilian under the red no-shoot crosshair and pulling the trigger several times, then one shot at a wall. The P2K's clip (BLData+0x1B8 + 2·0xC) fell on every pull: 7→6 (6.2 s), 6→5 (7.2 s), reload, then 7→5→4→3→2→0 (14.2–16.1 s), reload, 7→6 (19.6 s). **The trigger is not blocked by the red mark** — it gates the auto-aim lock only, as the code reading (`Check_Target` state 3 read only by the HUD) said. Caveat: the trace does not record the crosshair state, so it shows the shots fired while the user aimed at the civilian, not the mark at each pull.
