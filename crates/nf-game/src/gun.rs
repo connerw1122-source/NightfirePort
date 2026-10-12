@@ -40,6 +40,10 @@ pub struct Gun {
     /// on the press tick for `fire_anim_len == 0` weapons [M 0x1a5460:688-690], else at the release frame
     /// (`fire_anim_len <= script frame`, `Player_SetWeaponAnimObj` case 9 0x1a2e38:416-420).
     pub latch: bool,
+    /// `BLData+0x958`: the fire-script alternation toggle. `Player_SetFiringAnim` (0x1a3c70:40-49) flips it
+    /// per shot for flag-0x40000 weapons and picks +0xB0 / +0xB4 by its parity (the game reuses the same byte
+    /// for the flag-0x1000 reload's frame-6 toggle, which the port's reload math covers separately).
+    pub alt_fire_toggle: u8,
 }
 
 impl Gun {
@@ -288,7 +292,7 @@ pub fn reload_ticks(start: u32, reload: u32, flags68: u32, script_len: &impl Fn(
 
 impl Gun {
     /// Bond's start on 07000005 (`Player_InitWeapon`): weapon 2 with 7 in the clip and 41 spare [L].
-    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reload_state: 0, reload_ticks: 0, reload_loop_restarted: false, switch_request: weapon, saved_weapon: weapon, prev_weapon: 0, prev_gadget: 0, switch_state: 0, fire_state: false, latch: false } }
+    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reload_state: 0, reload_ticks: 0, reload_loop_restarted: false, switch_request: weapon, saved_weapon: weapon, prev_weapon: 0, prev_gadget: 0, switch_state: 0, fire_state: false, latch: false, alt_fire_toggle: 0 } }
 
     /// One tick with the trigger (action 9) `pressed` (no reload key, gun idle).
     pub fn update(&mut self, pressed: bool, p: GunParams) -> bool { self.update_with(pressed, false, false, p) }
@@ -366,6 +370,30 @@ impl Gun {
 
     /// The fire script ended: state 9 → 0, the idle script re-queued [M 0x1a2e38 case 9:449-456].
     pub fn end_fire_state(&mut self) { self.fire_state = false; self.latch = false; }
+
+    /// `Player_SetFiringAnim` (0x1a3c70): which first-person fire script this shot queues, in the game's
+    /// order —
+    /// 1. flag 0x1000 (reload-anim-from-6) or base weapon 0x11: the LAST round (`clip < 1`, read after the
+    ///    shot's decrement) plays the fire-last script +0xB4 [M 0x1a3c70:25-33];
+    /// 2. flag 0x80000 (the fists, +0x68 = 0x880A2 [L ee_start_05.bin record 1]): one `Rand(100)` draw per
+    ///    shot; > 50 plays +0xB4 — the left/right punch alternation [M 0x1a3c70:34-36];
+    /// 3. the fallback is the fire script +0xB0 [M 0x1a3c70:37-39];
+    /// 4. flag 0x40000 overrides both: the `BLData+0x958` toggle flips per shot and picks +0xB0 / +0xB4 by
+    ///    parity [M 0x1a3c70:40-49].
+    /// Returns the script hashcode (0 when the weapon has neither script — the caller leaves the view alone).
+    pub fn firing_anim_script(&mut self, flags68: u32, base: u16, clip: u32, fire: u32, fire_last: u32, rng: &mut crate::drone::Rng) -> u32 {
+        let mut script = 0u32;
+        if flags68 & 0x1000 != 0 || base == 0x11 {
+            if clip < 1 { script = fire_last; }
+        }
+        if flags68 & 0x80000 != 0 && rng.rand(100) > 50 { script = fire_last; }
+        if script == 0 { script = fire; }
+        if flags68 & 0x40000 != 0 {
+            self.alt_fire_toggle = 1 - self.alt_fire_toggle; // `'\x01' - +0x958` [M 0x1a3c70:41-42]
+            script = if self.alt_fire_toggle == 0 { fire } else { fire_last };
+        }
+        script
+    }
 }
 
 #[cfg(test)]

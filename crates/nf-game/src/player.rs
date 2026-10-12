@@ -8,6 +8,7 @@
 
 use crate::ladder::Ladder;
 use crate::triggers::Channels;
+use crate::wire::{Wire, WireAnims};
 use crate::world::{CollisionWorld, V3};
 
 /// `AnimObj+0xCC` [L]: the root height above the feet (07000005, skin 0x05000007), the STANDING value.
@@ -30,16 +31,25 @@ const GRAVITY: f32 = -9.8;
 /// reads obj+0xF6 and its cases call Player_SSWalk 0x192310 (0), Player_Climb 0x196310 (1),
 /// Player_SSGrapple 0x192860 (2), the inline swim (3), Player_SSCrouch 0x1924c0 (4), Player_SSScanMode
 /// 0x193098 (5), Player_Wire 0x197658 (6), Player_Creep 0x1969d0 (7), Player_ZeroG 0x192ab0 (8/9), the
-/// scripted-cam countdown (10), Player_Zipline 0x197f50 (0xF)]. This session ports 1 and 3.
+/// scripted-cam countdown (10), Player_Zipline 0x197f50 (0xF)]. This session ports 1, 3, 6 and 0xF.
 pub const SS_WALK: u8 = 0;
 pub const SS_CLIMB: u8 = 1;
 pub const SS_SWIM: u8 = 3;
+/// `Player_Wire` 0x197658 — the hand-over-hand wire crossing (wire type 0) [M dispatch case 6].
+pub const SS_WIRE: u8 = 6;
+/// `Player_Zipline` 0x197f50 — the zipline ride (wire type 2) [M dispatch case 0xF].
+pub const SS_ZIPLINE: u8 = 0xf;
 
-/// The per-tick ladder/water context the Sim hands `Bond::tick_ctx` (the game reads the ladder through
-/// `BLData+0x884` and the water surface through the player's cel, `obj+0x20 → cel+0x90`).
+/// The per-tick ladder/wire/water context the Sim hands `Bond::tick_ctx` (the game reads the ladder and
+/// the wire through `BLData+0x884` and the water surface through the player's cel, `obj+0x20 → cel+0x90`).
 pub struct LadderCtx<'a> {
     /// The level's ladder objects (class 0x2D), in placement order.
     pub ladders: &'a [Ladder],
+    /// The level's wire objects (class 0x2C), in placement order (`Wire::all`).
+    pub wires: &'a [Wire],
+    /// The wire anims' root tracks (`wire::WireAnims`); `None` = no anim data (the anims hold their
+    /// start pose — no root motion; the clamp still holds Bond on the wire).
+    pub wire_anims: Option<&'a WireAnims>,
     /// `cel+0x90` for the cel Bond is in (`Player_InWater` 0x195e50 reads `*(obj+0x20)+0x90`;
     /// `build_alloc_cel` 0x1c93f8 defaults it to −500.0 = no water; `parseentity_fixup_entity` 0x1d00c0
     /// sets it to the entity's bbox max y for flag word 0xC023). `None` = no water cel / below −400.
@@ -50,7 +60,7 @@ pub struct LadderCtx<'a> {
 }
 
 impl Default for LadderCtx<'_> {
-    fn default() -> Self { LadderCtx { ladders: &[], water: None, sink: false } }
+    fn default() -> Self { LadderCtx { ladders: &[], wires: &[], wire_anims: None, water: None, sink: false } }
 }
 
 /// One tick of player input as game actions: `forward` (action 2), `strafe` (action 1; + = left), `turn` (radians
@@ -147,6 +157,32 @@ pub struct Bond {
     /// consumed by the next tick's movement (the game writes the wish `+0x18` after `Player_Move` and the
     /// next tick's move integrates it).
     push_fwd: f32,
+    /// `BLData+0x884` narrowed to the wires: the wire being ridden (an index into `LadderCtx::wires`).
+    /// The game stores the object pointer; the port indexes the ctx slice like `ladder` [M CollWire
+    /// 0x197628 writes +0x884 = the wire object].
+    pub wire: Option<usize>,
+    /// `BLData+0x8CC`: the wire auto-drop timer — `+= 100/(FRAME_RATE·30)` per tick (paused in the grab
+    /// pose, mode 0xC); past 100 the wire drops him [M Player_Wire 0x197748-0x1977a8].
+    pub auto_drop: f32,
+    /// `oldhash` — the hashcode of the wire anim playing on Bond's AnimObject (the grab pose 0x060005e5,
+    /// the idle pair 0x060005ec/ed, the turn pair 0x060005ee/ea, the move pair 0x060000b4/b5, the
+    /// zipline 0x06000095/96/94) [M Player_Wire's oldhash tree]. 0 = none.
+    pub wire_anim: u32,
+    /// The anim's script time in frames (`AnimScriptAdd` starts at 1; `AnimScriptIsStopped` = past the
+    /// script's length for these non-looping scripts [D all seven scripts carry looping = false]).
+    pub wire_anim_time: f32,
+    /// The playing wire anim's rate (`AnimScript+0x98`): 1.0 for the grab pose, ±1.2 for everything
+    /// `Player_Wire` itself adds (the tail at 0x197ec4 sets ±1.2; a fresh script's rate is 0 → +1.2 [S —
+    /// the negative branch's trigger is not resolved]).
+    pub wire_anim_rate: f32,
+    /// The camera mode the grab/drop paths set (`Player_SetCamMode`: 0xB on the wire, 0 on foot) [M
+    /// CollWire 0x1975f8, Player_Wire 0x1978a8]. The renderer can adopt it; the headless sim only
+    /// records it.
+    pub cam_mode: u16,
+    /// `BLData+0x18`: the fall-speed accumulator — the zipline ride adds FRAME_RATE_MUL·0.15 per tick
+    /// and the creep drop 0.05 [M Player_Zipline 0x198054, Player_Creep; the game's `Player_Move`
+    /// applies it [S — the atlas's BLData table]].
+    pub fall_speed: f32,
 }
 
 impl Bond {
@@ -155,7 +191,7 @@ impl Bond {
         Bond { pos, yaw, pitch: 0.0, local: [0.0; 2], vel: [0.0; 3], grounded: true, floor_ny: 1.0, grounded_history: 8, jump: 0, land_delay: 0,
             crouched: false, lockout: 0, cc: ROOT_HEIGHT, crouch_drop: 0.0, eye: EYE, fall_timer: 0, head_bump: false, fall_damage: None,
             substate: SS_WALK, ladder: None, climb_top: 0.0, climb_bottom: 0.0, regrab: 0, mode: 0, saved_sub: 0, air: 100.0, drown_damage: None, underwater: false,
-            water_fade: 0.0, air_tick: 0, push_fwd: 0.0 }
+            water_fade: 0.0, air_tick: 0, push_fwd: 0.0, wire: None, auto_drop: 0.0, wire_anim: 0, wire_anim_time: 0.0, wire_anim_rate: 1.0, cam_mode: 0, fall_speed: 0.0 }
     }
 
     /// On the floor below `p` (within 10 units), as a level start places him.
@@ -196,6 +232,10 @@ impl Bond {
         ([self.pos[0], self.pos[1] + a, self.pos[2]], [self.pos[0], self.pos[1] + b, self.pos[2]])
     }
 
+    /// The capsule ends for the current stance, public for the Sim's wire grab scan (the game's
+    /// `Player_Collision` 0x194df0 builds the same segment as the HITTEST).
+    pub fn capsule_seg(&self) -> (V3, V3) { self.capsule() }
+
     /// One 60 Hz tick (no ladders/water context — the pre-ladder signature, still used by the unit tests).
     pub fn tick(&mut self, world: &CollisionWorld, input: &Input) {
         self.tick_ctx(world, &LadderCtx::default(), input);
@@ -212,6 +252,8 @@ impl Bond {
         match self.substate {
             SS_CLIMB => self.climb_tick(world, ctx, input),
             SS_SWIM => self.swim_tick(world, ctx, input),
+            SS_WIRE => self.wire_tick(world, ctx, input),
+            SS_ZIPLINE => self.zipline_tick(world, ctx, input),
             _ => self.walk_tick(world, ctx, input),
         }
         self.monitor_air(ctx);
@@ -406,6 +448,270 @@ impl Bond {
         if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
     }
 
+    /// `Player_ClearInertia` 0x195e08 [M]: the four velocity triples (`BLData+0x10/+0x20/+0x30/+0x40`)
+    /// zero. The port models +0x10 as `vel` and +0x14's push as `push_fwd`; `local` is +0x28's pair.
+    fn clear_inertia(&mut self) {
+        self.vel = [0.0; 3];
+        self.local = [0.0; 2];
+        self.push_fwd = 0.0;
+    }
+
+    /// `Player_CollWire` 0x197130 — the grab. Guards [M 0x19716c-0x1971a8]: the regrab lockout
+    /// `+0x951 == 0`, health `+0x894 > 0` (the caller checks — the port keeps health in the Sim, like
+    /// the ladder grab), wire type ≠ 1, and the substate ≠ the type's target (6 for type 0, 0xF for
+    /// type 2). Builds the grab segment (`radius − 2.0` at the object's pitch), the closest point to
+    /// Bond; a zipline refuses grabs within half the segment of the LOWER end. Then `Player_ClearInertia`,
+    /// `ChangeSubState(6 or 0xF)`, mode `+0x94D` = 6 (type 0 → 0xC, the grab pose, with anim
+    /// 0x060005e5; type 2 → anim 0x06000095), `+0x130 = 2` (the port does not model +0x130), the
+    /// auto-drop timer zeroed, the yaw = the nearer of `wire.yaw ± π/2` to Bond's old yaw (type 2 picks
+    /// by the segment's slope instead), the hang offset 1.0207 (type 0) / 1.17363 (type 2) below the
+    /// closest point, the velocity slots zeroed, `Player_WeaponNone` (the Sim holsters — the caller),
+    /// `SetCamMode(0xB)`, and the hand-reach correction: `pos −= R(yaw)·(root(0x060005e5 @last) −
+    /// root(@0))` with x −= 0.082 [M 0x1974b8-0x197538, disasm 0x1975b0-0x197618; the track values come
+    /// from `WireAnims`]. The caller has already resolved `wi` (the collision dispatch, the jump grab
+    /// or the use key).
+    pub fn grab_wire(&mut self, wi: usize, ctx: &LadderCtx) {
+        let Some(w) = ctx.wires.get(wi) else { return };
+        if self.regrab != 0 { return; }
+        if w.wire_type == 1 { return; }
+        let target = if w.wire_type == 2 { SS_ZIPLINE } else { SS_WIRE };
+        if self.substate == target { return; }
+        let (a, b) = w.grab_segment();
+        if w.wire_type == 2 {
+            // A zipline refuses grabs within half the segment of the lower end [M 0x197260-0x19728c:
+            // `if (Dist3D(pos, lower) < Dist3D(A, B) · 0.5) return`].
+            let low = if a[1] < b[1] { a } else { b };
+            if dist3_sq(self.pos, low) < 0.25 * dist3_sq(a, b) { return; }
+        }
+        let closest = Wire::closest_point(a, b, self.pos);
+        self.clear_inertia();
+        self.substate = target;
+        self.wire = Some(wi);
+        self.auto_drop = 0.0;
+        // The yaw: the nearer of wire.yaw ± π/2 to Bond's old yaw [M 0x1973f8-0x197430; type 2 flips by
+        // the slope — both live wires are type 0 [D placements probe]].
+        let old = self.yaw;
+        let mut new_yaw = w.yaw - std::f32::consts::FRAC_PI_2;
+        if wrap_pi(new_yaw - old).abs() > std::f32::consts::FRAC_PI_2 { new_yaw += std::f32::consts::PI; }
+        self.yaw = new_yaw;
+        self.pos = [closest[0], closest[1], closest[2]];
+        if w.wire_type == 2 {
+            self.mode = 6;
+            self.pos[1] -= 1.17363;
+            self.wire_anim = 0x0600_0095;
+        } else {
+            self.mode = 0xC;
+            self.pos[1] -= 1.0207;
+            self.wire_anim = 0x0600_05e5;
+        }
+        self.wire_anim_time = 1.0;
+        self.wire_anim_rate = 1.0;
+        self.cam_mode = 0xB;
+        // The hand-reach correction [M 0x1974b8-0x197538]: delta = root(last) − root(0) of the grab
+        // anim's sequence, x −= 0.082, rotated into world by the NEW yaw and subtracted. The rotation's
+        // exact MMI signs are reconstructed [S — disasm 0x1975b0-0x197618]; the magnitude ~0.46 along
+        // the facing (the reach), erased by the grab anim's own root motion as it plays.
+        if let Some(t) = ctx.wire_anims.and_then(|wa| wa.tracks.get(&0x0600_05e5)) {
+            let e = t.at(t.frames as f32);
+            let s = t.at(1.0);
+            let (dx, dy, dz) = (e[0] - s[0] - 0.082, e[1] - s[1], e[2] - s[2]);
+            let (sin, cos) = self.yaw.sin_cos();
+            // world = R(yaw)·local (the game's row-vector convention), negated (pos −= …).
+            self.pos[0] -= dx * cos + dz * sin;
+            self.pos[1] -= dy;
+            self.pos[2] -= -dx * sin + dz * cos;
+        }
+    }
+
+    /// The wire anim state machine helper: advances the playing anim by `rate` frames, applies its root
+    /// motion rotated by Bond's yaw (`AnimSeqTick`/`AnimFrameResolve`; the same convention as the
+    /// drones' `root_motion`: world = l.x·(cos y, 0, −sin y) + l.z·(sin y, 0, cos y)), and reports
+    /// whether the anim has reached its end (`AnimScriptIsStopped` — these scripts never loop [D]).
+    /// Missing track or no anim data = instantly stopped with no motion [S fallback].
+    fn wire_anim_advance(&mut self, ctx: &LadderCtx) -> bool {
+        if self.wire_anim == 0 { return true; }
+        let Some(track) = ctx.wire_anims.and_then(|wa| wa.tracks.get(&self.wire_anim)) else {
+            return true;
+        };
+        let len = track.frames as f32;
+        if self.wire_anim_time >= len { return true; }
+        let prev = self.wire_anim_time.max(1.0);
+        let next = (self.wire_anim_time + self.wire_anim_rate).min(len);
+        let (a, b) = (track.at(prev), track.at(next));
+        let (dx, dy, dz) = (b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+        let (sin, cos) = self.yaw.sin_cos();
+        self.pos[0] += dx * cos + dz * sin;
+        self.pos[1] += dy;
+        self.pos[2] += -dx * sin + dz * cos;
+        self.wire_anim_time = next;
+        self.wire_anim_time >= len
+    }
+
+    /// Adds a wire anim (`AnimScriptAdd` + the sway the decompile applies per add): snaps Bond onto
+    /// `closest` at hang height with the ±0.0542 hand sway (perpendicular to the facing: the shift is
+    /// `±0.0542·(cos yaw, −sin yaw)` [M the PS2Sinf2(−yaw+π/2, −yaw) pairs; the per-add signs follow
+    /// the decompile's tree]) and sets `oldhash`/time/rate.
+    fn wire_anim_add(&mut self, hash: u32, rate: f32, sway_sign: f32, closest: V3, hang: f32) {
+        let (sin, cos) = self.yaw.sin_cos();
+        self.pos[0] = closest[0] + sway_sign * 0.0542 * cos;
+        self.pos[1] = closest[1] - hang;
+        self.pos[2] = closest[2] - sway_sign * 0.0542 * sin;
+        self.wire_anim = hash;
+        self.wire_anim_time = 1.0;
+        self.wire_anim_rate = rate;
+    }
+
+    /// `Player_Wire` 0x197658 (substate 6) — the hand-over-hand crossing, ported in the decompile's
+    /// order. `Music_Event(0xD, 1)` every tick and the switch-channel writes are the Sim's (they cannot
+    /// reach `Bond`), keyed off the substate.
+    fn wire_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
+        let wi = match self.wire {
+            Some(wi) if ctx.wires.get(wi).is_some() => wi,
+            _ => { self.substate = SS_WALK; self.wire = None; self.physics_tick(world, input, false); return; }
+        };
+        let wire = ctx.wires[wi].clone();
+        let hang = 1.0207f32;
+        // 1. `Vec_Zero(BLData+0x50)` — the world velocity zeroes every tick; the anim root motion moves
+        //    Bond instead [M 0x197668].
+        self.vel = [0.0; 3];
+        // 2. The travel segment (radius − 0.5, pitch forced 0) [M 0x1976dc-0x197730]. Bond's x/z snaps
+        //    to an end when he is beyond it, then the closest point recomputes.
+        let (a, b) = wire.travel_segment();
+        let seg2 = dist2_sq(a, b);
+        let d_a_pre = dist2_sq(a, self.pos);
+        let d_b_pre = dist2_sq(b, self.pos);
+        if seg2 < d_a_pre { self.pos[0] = b[0]; self.pos[2] = b[2]; }
+        if seg2 < d_b_pre { self.pos[0] = a[0]; self.pos[2] = a[2]; }
+        let closest = Wire::closest_point(a, b, self.pos);
+        let d_a = dist2_sq(a, self.pos);
+        let d_b = dist2_sq(b, self.pos);
+        // 3. The auto-drop timer [M 0x197748-0x197754]: paused while the grab pose (mode 0xC) plays;
+        //    100/(FRAME_RATE·30) per tick at the fixed 60 Hz = 1800 ticks to the drop.
+        if self.mode != 0xC { self.auto_drop += 100.0 / (60.0 * 30.0); }
+        // 4. The drop paths [M 0x197758-0x197834]: the action press (jump, action 7) or the timer past
+        //    100 — `+0x942 = substate`, `ChangeSubState(0)`, `SetCamMode(0)`, the timer zeroed,
+        //    `+0x951 = 0x1E` (the 30-frame regrab lockout), `AnimObj[99] = AnimObj[100]` (the Sim's
+        //    re-equip carry) and the channel 0 (the Sim).
+        if input.jump || self.auto_drop > 100.0 {
+            self.saved_sub = SS_WIRE as u16;
+            self.substate = SS_WALK;
+            self.cam_mode = 0;
+            self.auto_drop = 0.0;
+            self.regrab = 0x1e;
+            self.wire = None;
+            self.wire_anim = 0;
+            return;
+        }
+        // 5. The strafe axis (`Input_Actionf(slot, 1, 1)`) [M 0x1977c0-0x197834]: mode 7 for positive
+        //    (toward B), 8 for negative (toward A), 6 idle — zeroed within 0.5² of the travelled-to end
+        //    or past the far one.
+        let mut strafe = input.strafe.clamp(-1.0, 1.0);
+        if (strafe < 0.0 && (d_a <= 0.5 || seg2 < d_b_pre)) || (strafe > 0.0 && (d_b <= 0.5 || seg2 < d_a_pre)) {
+            strafe = 0.0;
+        }
+        let next_mode = if strafe > 0.0 { 7u8 } else if strafe < 0.0 { 8 } else { 6 };
+        // 6. The anim machine. The playback (root motion) runs first: while the current anim plays,
+        //    the branches below early-return exactly like the decompile (`AnimScriptIsStopped` gates).
+        let stopped = self.wire_anim_advance(ctx);
+        if self.mode == 0xC && !stopped {
+            // The grab pose still playing: wait (the timer is paused above) [M 0x197838-0x197860].
+            return;
+        }
+        if self.mode == 6 && next_mode == 6 {
+            if !stopped { return; }
+            // The idle pair alternates [M 0x197870-0x1978d0]: after the grab pose / 5ec / b4 / 5ee the
+            // next idle is 5ec, otherwise 5ed. The idle adds return early — no rate change (1.0).
+            let hash = if matches!(self.wire_anim, 0x0600_05e5 | 0x0600_05ec | 0x0600_00b4 | 0x0600_05ee) {
+                0x0600_05ec
+            } else {
+                0x0600_05ed
+            };
+            let sign = if hash == 0x0600_05ec { 1.0 } else { -1.0 };
+            self.wire_anim_add(hash, 1.0, sign, closest, hang);
+            return;
+        }
+        // The move/turn tree [M 0x1978e0-0x1979d0] — only once the current anim stopped (mode ≠ 6).
+        if !stopped { return; }
+        if next_mode >= 7 {
+            let target = if next_mode == 7 { wire.yaw + 3.0 * std::f32::consts::FRAC_PI_2 } else { wire.yaw + std::f32::consts::FRAC_PI_2 };
+            let diff = wrap_pi(target - self.yaw);
+            if diff.abs() <= 0.0002 || matches!(self.wire_anim, 0x0600_05ee | 0x0600_05ea) {
+                // Facing along the wire: the move pair alternates (b4 after b5/5ed, else b5).
+                self.yaw = target;
+                let (hash, sign) = if self.wire_anim == 0x0600_00b5 || self.wire_anim == 0x0600_05ed {
+                    (0x0600_00b4, -1.0)
+                } else {
+                    (0x0600_00b5, 1.0)
+                };
+                self.wire_anim_add(hash, 1.2, sign, closest, hang);
+            } else if self.wire_anim == 0x0600_00b5 || self.wire_anim == 0x0600_05ed {
+                self.wire_anim_add(0x0600_05ea, 1.2, -1.0, closest, hang);
+            } else {
+                self.wire_anim_add(0x0600_05ee, 1.2, 1.0, closest, hang);
+            }
+        } else if matches!(self.mode, 7 | 8) && matches!(self.wire_anim, 0x0600_05ee | 0x0600_05ea) {
+            // A turn just finished and the input is gone: the yaw fix-up lands on the opposite facing
+            // and the mode byte takes 0xA ("turn") before settling to idle next tick [M 0x1979d8-0x197a30].
+            let d = wrap_pi(self.yaw - (wire.yaw + std::f32::consts::FRAC_PI_2));
+            let base = if d.abs() < 0.0002 { wire.yaw + std::f32::consts::PI } else { wire.yaw };
+            self.yaw = base + std::f32::consts::FRAC_PI_2;
+            self.mode = 0xA;
+            return;
+        }
+        self.mode = next_mode;
+    }
+
+    /// `Player_Zipline` 0x197f50 (substate 0xF, wire type 2) [M]. Mode 9 = the arrival pose: when its
+    /// anim stops → `+0x942 = substate`, `ChangeSubState(0)`, `SetCamMode(0)`, regrab = (u8)FRAME_RATE
+    /// (60), `AnimObj[99] = [100]` (the Sim's carry) and the channel 0. Otherwise: the ride anim
+    /// 0x06000096 re-added whenever stopped, the FULL-radius pitch segment, Bond's y lifted 1.17363 for
+    /// the lower-end test — within 1.0 of it → mode 9 + anim 0x06000094 — then pos = the closest point
+    /// at `closest.y − 1.17363` and the fall-speed accumulator `BLData+0x18 += FRAME_RATE_MUL·0.15`
+    /// (the port integrates it as a downward velocity: the game's `Player_Move` applies +0x18 [S — the
+    /// atlas's BLData table]; the clamp projects the fall onto the line, so Bond slides down a sloped
+    /// zipline and accelerates).
+    fn zipline_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, _input: &Input) {
+        let wi = match self.wire {
+            Some(wi) if ctx.wires.get(wi).is_some() => wi,
+            _ => { self.substate = SS_WALK; self.wire = None; self.physics_tick(world, _input, false); return; }
+        };
+        let wire = ctx.wires[wi].clone();
+        if self.mode == 9 {
+            if self.wire_anim_advance(ctx) {
+                self.saved_sub = SS_ZIPLINE as u16;
+                self.substate = SS_WALK;
+                self.cam_mode = 0;
+                self.regrab = 60;
+                self.wire = None;
+                self.wire_anim = 0;
+            }
+            return;
+        }
+        if self.wire_anim_advance(ctx) && self.wire_anim != 0x0600_0094 {
+            self.wire_anim_add(0x0600_0096, 1.0, 0.0, self.pos, 0.0);
+        }
+        let (a, b) = wire.zipline_segment();
+        // The lower-end test runs on the LIFTED position (the decompile lifts Bond's y onto the wire
+        // first [M 0x197ff8: `pos.y += 1.17363`], checks `Dist3D(pos, lower) < 1.0`, and only then
+        // re-projects and hangs him back 1.17363 below the line).
+        let lifted = [self.pos[0], self.pos[1] + 1.17363, self.pos[2]];
+        let low = if a[1] < b[1] { a } else { b };
+        if dist3_sq(lifted, low) < 1.0 {
+            self.mode = 9;
+            self.wire_anim_add(0x0600_0094, 1.0, 0.0, self.pos, 0.0);
+            return;
+        }
+        // The fall-speed accumulator `BLData+0x18` [M 0x19804c-0x198054: += FRAME_RATE_MUL·0.15 per
+        // tick; the game's `Player_Move` applies it [S — the atlas's BLData table]]. The port applies it
+        // as this tick's downward velocity; the clamp below projects the fall onto the line, so Bond
+        // slides down a sloped zipline and accelerates.
+        self.fall_speed += 0.15;
+        self.pos[1] -= self.fall_speed / 60.0;
+        let lifted = [self.pos[0], self.pos[1] + 1.17363, self.pos[2]];
+        let closest = Wire::closest_point(a, b, lifted);
+        self.pos = [closest[0], closest[1] - 1.17363, closest[2]];
+    }
+
     /// `Player_InWater` 0x195e50 [M]: with a water cel and `pos.y − 0.3 < surface`, enter the swim
     /// substate — `ChangeSubState(3)`, `+0x94C = 0`, `+0x130 = 2`, `+0x14 = 0`, `regrab = (u8)(DIV·5) = 5`,
     /// `obj+0x50/+0x58 = 0`, the per-tick deltas cleared. Returns whether Bond is swimming (substate 3).
@@ -548,6 +854,18 @@ fn wrap_pi(d: f32) -> f32 {
     if d >= std::f32::consts::PI { d -= std::f32::consts::TAU; }
     if d < -std::f32::consts::PI { d += std::f32::consts::TAU; }
     d
+}
+
+/// `Vec_SqDist2D` 0x1e2ef8 [M]: the x/z squared distance (the wire clamp is 2D).
+fn dist2_sq(a: V3, b: V3) -> f32 {
+    let (dx, dz) = (a[0] - b[0], a[2] - b[2]);
+    dx * dx + dz * dz
+}
+
+/// `Vec_Dist3D` squared [M 0x1e2e58's pattern].
+fn dist3_sq(a: V3, b: V3) -> f32 {
+    let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
 }
 
 // ── Level carry-over and spawn (fix-level2) ────────────────────────────────────────────────────────
@@ -778,7 +1096,7 @@ mod tests {
     fn climb_look_turns_within_the_ladder_window_and_pitch_is_free() {
         let world = CollisionWorld::from_triangles(Vec::new());
         let lad = Ladder { centre: [10.0, 3.0, 20.0], radius: 2.0, yaw: 0.0, channel: 0 };
-        let ctx = LadderCtx { ladders: &[lad.clone()], water: None, sink: false };
+        let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: None, sink: false };
         let mut b = Bond::new([10.0, 3.0, 20.0 + 0.5], lad.yaw + std::f32::consts::PI);
         b.substate = SS_CLIMB;
         b.ladder = Some(0);

@@ -22,7 +22,14 @@ WORKLOG 0019) and spot-checked by me; live PCSX2 traces (`tools/trace/ai_trace.p
 ## Start-up and the path to attack [M]
 
 Global (enter) → WaitSwitch (1) / PlayScript (3) / `Drone+0x5A2` = Idle (4), or InitPatrol (6) with props 0x24/0x25
-(no path → Idle). Idle/Alert/Patrol on msg 3 call `DroneVision_EnemyLookForOpponent`, which returns Attack (0x56) when
+(no path → Idle). WaitSwitch ENTER calls `NDrone2_Enable(0)` [M 0x15b960:14-17 → 0x149dd0:8-15: `obj+0xF0 |= 0x10|0x20`
+(not drawn, not picked — Collide_PickObj 0x1eae80:26-30, View_AddObjects 0x1e62d8:33), `+0x4F8 &= ~0x1801A0` (no anim/AI)] —
+**a ch-waiter is an invisible statue until its channel fires** (its UPDATE polls the live channel, 0x15b960:21-37; the
+wake re-enables and starts 0x32/3/`+0x5A2`). A level NIS freezes every drone the same way: `Drone_EnableAll(0)` walks the
+llist calling `NDrone2_Enable(0)` per drone and clears `NPCGlobals` [M 0x1383e8:13-23]; `Script_Free`'s 0x80 flag
+re-enables all EXCEPT state-1 drones [M 0x1da880:41-43, 0x1383e8:14], and `Drone_CollisionHandler` returns while
+`NPCGlobals == 0` — frozen drones take no damage [M 0x140968:62]. Idle/Alert/Patrol on msg 3 call
+`DroneVision_EnemyLookForOpponent`, which returns Attack (0x56) when
 the opponent is visible (`+0x228 & 4`) and prop 0x3C is set and (alertness ≥ 0.66 or prop 0x51). Attack →
 `FirstAttack` (alertness 1.0) → AimStand (0x67, prop 0x18, in range) or Combat (0x58) → CombatNewSighting (0x5B) →
 AimStandFire (0x68) ⇄ reload (0x69), moves (0x73–0x7A), NoSight (0x5C), OutOfRange (0x5A), NoOpponent (0x60).

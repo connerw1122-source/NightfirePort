@@ -229,11 +229,17 @@ pub struct Sim {
     pub surfaces: Option<nf_formats::sfx::SurfaceSounds>,
     pub voices: Option<Vec<nf_formats::sfx::VoiceLine>>,
     pub step_dist: f32,
-    /// The level's zip wires / creep ledges (placement type 0x3E, `Wire_Create` 0x1981d8). When Bond is near
-    /// one, the creep substate posts `Music_Event(0xD, 1)` (docs/systems/music.md event 0xD).
+    /// The level's zip wires (placement type 0x3E, `Wire_Create` 0x1981d8). Bond grabs one by walking
+    /// into its world sphere (fix-wire: the real grab + crossing live in `nf_game::player`).
     pub wires: Vec<nf_game::wire::Wire>,
-    /// Whether Bond is currently on a wire (creeping) — posts music event 0xD each tick.
+    /// Whether Bond is currently on a wire (substate 6/0xF) — the music event 0xD source.
     pub creeping: bool,
+    /// The wire anims' root tracks, resolved from the level archive's kind-5 scripts + the anim
+    /// archive's sequences (fix-wire).
+    pub wire_anims: nf_game::wire::WireAnims,
+    /// The wire switch channel currently held on (0 = none) — set 1 while Bond rides, 0 on drop
+    /// [M Player_Wire 0x1976bc/0x1978c4].
+    pub wire_channel: u16,
     /// The level's ladders (placement type 0x22, `Ladder_Create` 0x1966c0, class 0x2D) — fix-ladder.
     pub ladders: Vec<nf_game::ladder::Ladder>,
     /// The set of weapon ids that have a view model built in `Scene::view_models` (D-003: the cycle skips
@@ -809,13 +815,32 @@ impl Sim {
         if !self.disabled {
             let water = self.cel_at(self.bond.pos).map(|i| self.cels[i].water).filter(|w| *w > -400.0);
             let sink = input.crouch;
-            let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, water, sink };
+            let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink };
+            // The wire grab scan [M Player_DealWithObjHit 0x194458: the collision pass's class-0x2C hit
+            // dispatches to Player_CollWire 0x197130; Player_HandleJump 0x1916b0 adds the jump-grab (the
+            // nearest class-0x2C scan, 0x1916b0:118-147)]. The game's hit test for a dynamic object is
+            // its world sphere vs the player's swept segment (Collide_PickObj 0x1eae80's version-0x200
+            // branch); the port scans the level's wires with the capsule segment while Bond walks. The
+            // use key runs the same scan [S — the PC action key; the game's jump/action button drives
+            // HandleJump's jump-grab, whose icon context (+0x95F == 3) is not ported]. Health guard [M
+            // CollWire refuses at +0x894 <= 0].
+            if self.bond.substate == nf_game::player::SS_WALK && self.bond.regrab == 0 && self.drones.health.health > 0.0 {
+                let (ca, cb) = self.bond.capsule_seg();
+                if let Some(wi) = self.wires.iter().position(|w| w.sphere_hits(ca, cb)) {
+                    self.bond.grab_wire(wi, &ctx);
+                }
+            }
+            let was_on_wire = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
             let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
             self.bond.tick_ctx(&self.world, &ctx, &input);
             // `Player_WeaponNone` 0x1a9858 runs in `Player_CollLadder` on the grab [M 0x196118]: the
             // current weapon id is SAVED to `anim+0x64` (the port's `saved_weapon`), the class becomes
             // 'G' (0x47) immediately (no holster cycle — `anim+0xF4 = 0`), the aim bit clears.
             if !was_climbing && self.bond.substate == nf_game::player::SS_CLIMB && self.gun.weapon != 0x47 {
+                self.gun.go_to_hands();
+            }
+            // `Player_WeaponNone` 0x1a9858 also runs in `Player_CollWire` on the grab [M 0x1974e4].
+            if !was_on_wire && matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE) && self.gun.weapon != 0x47 {
                 self.gun.go_to_hands();
             }
             // The dismount carry [M Player_Climb 0x196310:99-102]: `if (AnimObj+0x62 == 'G')
@@ -825,6 +850,27 @@ impl Sim {
             if was_climbing && self.bond.substate == nf_game::player::SS_WALK && self.gun.weapon == 0x47
                 && self.gun.saved_weapon != 0x47 && self.gun.saved_weapon != self.gun.weapon {
                 self.gun.switch_request = self.gun.saved_weapon;
+            }
+            // The wire drops write `AnimObj[99] = AnimObj[100]` [M Player_Wire 0x1978bc, Player_Zipline
+            // 0x19808c] — the same re-equip carry the climb dismount uses.
+            if was_on_wire && self.bond.substate == nf_game::player::SS_WALK && self.gun.weapon == 0x47
+                && self.gun.saved_weapon != 0x47 && self.gun.saved_weapon != self.gun.weapon {
+                self.gun.switch_request = self.gun.saved_weapon;
+            }
+            // `Player_Wire`'s per-tick effects outside Bond [M 0x1976b4-0x1976d4]: `Music_Event(0xD, 1)`
+            // every tick on the wire (the music jumps to the stealth section) and the wire's switch
+            // channel set 1 while Bond is on it, 0 on drop.
+            let on_wire = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
+            self.creeping = on_wire;
+            if on_wire {
+                self.drones.music.event(0xd, 1);
+                if let Some(ch) = self.bond.wire.and_then(|wi| self.wires.get(wi)).map(|w| w.channel).filter(|c| *c != 0) {
+                    self.drones.channels.set(ch as u32, 1, self.drones.frame);
+                    self.wire_channel = ch;
+                }
+            } else if self.wire_channel != 0 {
+                self.drones.channels.set(self.wire_channel as u32, 0, self.drones.frame);
+                self.wire_channel = 0;
             }
             // `Player_MonitorAir` 0x191a70's drown damage: `Player_HandlePain(0.5, type 7)` [M 0x191a70:136-143].
             if let Some(dmg) = self.bond.drown_damage {
@@ -891,14 +937,9 @@ impl Sim {
         let rate = if self.zoom < self.zoom_target { 1.0 + 0.025 } else { 1.0 + 0.15 };
         self.zoom = self.zoom + (self.zoom_target - self.zoom) * (1.0 - 1.0 / rate);
         self.zoom = self.zoom.clamp(1.0, max_zoom.max(1.0));
-        // Wire / creep (`Player_Creep` 0x1969d0, `Player_Wire` 0x197658): when Bond is near a wire, the creep
-        // substate posts `Music_Event(0xD, 1)` every tick — the music jumps to section 2 (stealth) or 6 (combat).
-        // *Deviation*: the full creep movement (Bond sliding along the wire, the third-person camera, the
-        // animation) is not ported; only the music event is posted when Bond is within the grab zone (1.5 units).
-        self.creeping = self.wires.iter().any(|w| w.near(self.bond.pos, 1.5));
-        if self.creeping {
-            self.drones.music.event(0xd, 1);
-        }
+        // Wire / creep: the music event moved up with the substate effects (fix-wire) — the substate is
+        // now the only source (the old proximity hack is gone).
+        let _ = &self.wires;
         // Script hand-offs (docs/systems/script-player.md): event 4 stops Bond; `Script_Free` after event 6 puts him
         // back at the script's matrix (on the floor below it), facing its +Z.
         for e in std::mem::take(&mut self.drones.player_events) {
@@ -1116,8 +1157,15 @@ impl Sim {
             let flags = rd(0x68);
             let fire_anim_len = rd(0x44);
             if fired {
-                self.view_script = if flags & 0x1000 != 0 && self.gun.clip < 1 && rd(0xb4) != 0 { rd(0xb4) } else { rd(0xb0) };
-                (self.view_time, self.view_speed) = (0.0, 1.0);
+                // `Player_SetFiringAnim` (0x1a3c70), via `Gun::firing_anim_script`: the last-round pick
+                // (flag 0x1000 / base 0x11), the fists' Rand(100) left/right alternation (flag 0x80000)
+                // and the 0x40000 toggle. The game only queues when the fp model and the script exist
+                // (0x1a3c70:51-54); with no script the view stays as it was.
+                let script = self.gun.firing_anim_script(flags, u16::from_le_bytes([w[2], w[3]]), self.gun.clip, rd(0xb0), rd(0xb4), &mut self.drones.rng);
+                if script != 0 {
+                    self.view_script = script;
+                    (self.view_time, self.view_speed) = (0.0, 1.0);
+                }
             } else if self.gun.reload_state != 0 && was_reloading == 0 {
                 // Reload just started [M Player_WeaponFiring's shared tail 0x1a6250-0x1a631c]: state 6
                 // queues +0xA4 at 1.35× (`AnimScriptAddSpeed`, disasm 0x1a62d0), starting at frame 6 for
@@ -2306,15 +2354,21 @@ impl Scene {
             // sphere comes from the placement's object glist bounds, like the game's
             // `Control_BuildWorldSph` 0x133070.
             let ladders = nf_game::ladder::all(level);
-            // Wires (`Wire_Create` 0x1981d8, placement type 0x3E): the level's zip wires / creep ledges.
-            let wires: Vec<nf_game::wire::Wire> = level.maps[m].placements.iter()
-                .filter(|p| p.flags & 0xff == 0x3e)
-                .map(|p| {
-                    // The wire's length: the glist model's extent (the bounds centre X on 07000005's wire
-                    // is 4.039 [L]). Without the glist at build time, use 4.0 as the default.
-                    nf_game::wire::Wire::create(p, 4.0)
-                })
-                .collect();
+            // Wires (`Wire_Create` 0x1981d8, placement type 0x3E): the level's zip wires, resolved
+            // against their map objects like the ladders (fix-wire: the world sphere replaces the
+            // hardcoded 4.0 length; the endpoints derive at grab time per the atlas).
+            let wires = nf_game::wire::all(level);
+            // The wire anims' root tracks: the level archive's kind-5 scripts (the player body anims)
+            // resolved to their sequences [D 07000005: 0x060005e5 101 frames → 0x04000536, the move pair
+            // 0x060000b4/b5 → 0x04000034/35 travelling 0.7637/0.7106 per cycle].
+            let mut wire_anims = nf_game::wire::WireAnims::default();
+            for h in [0x0600_05e5u32, 0x0600_05ec, 0x0600_05ed, 0x0600_05ee, 0x0600_05ea, 0x0600_00b4, 0x0600_00b5, 0x0600_0095, 0x0600_0096, 0x0600_0094] {
+                if let Some(sc) = d.scripts.get(&h) {
+                    for (_a, _b, q) in sc.sequences() {
+                        if let Some(s) = seqs.get(&q) { wire_anims.tracks.insert(h, nf_game::wire::RootTrack::of(s)); break; }
+                    }
+                }
+            }
             // Level-placed pickups (`Pickup_Create` 0x18dda0 via `parsemap_create_dynamic_objects` type 0xF0):
             // the placement's PARAMS array gives the type, id, rounds, switch, sound, respawn and label [M 0x1d04f0
             // line 459-462: reads from the param buffer at +0x2c..+0x38, NOT the placement's extra words].
@@ -2356,7 +2410,7 @@ impl Scene {
                 })
                 .collect();
             drones.pickups.extend(placed_pickups);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default() })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default() })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {

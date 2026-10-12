@@ -172,14 +172,19 @@ fn the_searchlight_beam_arms_raises_the_alarm_channel_and_wakes_its_guards() {
     assert!(!waiters.is_empty(), "07000006 places guards waiting on the searchlight alarm channel 55");
     // Raise the light's on-channel the way a trigger would, then stand Bond in the beam: the spot's ray
     // repositions it every tick, and the arm test is spot-pos vs Bond ≤ 2.0 [M 0x1cbf14-0x1cbf54] — so walk
-    // Bond onto wherever the spot is each tick (the game's "standing in the beam").
+    // Bond onto wherever the spot is each tick (the game's "standing in the beam"). The chase caps his
+    // rise at +3 over his start: climbing onto the lit courtyard (the spot's floor is ~2.8 up from the
+    // sunken approach) is wanted, but with the player-pick sphere in the spot ray (fix-npcs,
+    // Collide_PickObj 0x1eae80) the spot rides his sphere once the beam is on him — an uncapped chase
+    // would walk him up into the sky.
     sim.drones.channels.set(64, 1, sim.drones.frame);
     let head_pos = sim.drones.searchlights.parts[0].pos;
     stand_armed_at(sim, [head_pos[0] + 8.0, head_pos[1] - 9.0, head_pos[2] + 2.0], head_pos);
+    let foot_y = sim.bond.pos[1];
     let mut lit = false; let mut alarmed = false; let mut woke = false;
     for _ in 0..600 {
         let spot = sim.drones.searchlights.parts.iter().find(|p| p.kind == 2 && p.pos[0] > -9000.0).map(|p| p.pos);
-        if let Some(sp) = spot { stand_armed_at(sim, [sp[0], sp[1] + 0.4, sp[2]], sp); }
+        if let Some(sp) = spot { stand_armed_at(sim, [sp[0], (sp[1] + 0.4).min(foot_y + 3.0), sp[2]], sp); }
         sim.step_bond(Default::default(), false, false, false);
         let sl = &sim.drones.searchlights.parts[0];
         if sl.state == 0 || sl.state == 1 { lit = true; }

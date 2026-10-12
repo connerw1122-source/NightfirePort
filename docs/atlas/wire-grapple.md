@@ -35,6 +35,13 @@ world sphere (`obj+0x80..0x8C`, centre + radius) and the placement yaw [M]:
 - zipline ride (`Player_Zipline`): full radius, pitch = `rot.z` (sloped ziplines);
 - creep (`Player_Creep`, the 0x2B creep-wall cousin): full radius, pitch 0.
 
+Axis note (fix-wire disassembly): `Vec_Spherical_2_Cartesian` 0x1e3948 computes
+`(r·sin θ·cos p, r·sin p, r·cos θ·cos p)` of the yaw ARG — its internal `+π/2` builds the cos term — and
+the wire call sites add π/2 to obj+0x54 before the call. With 07000005's yaw −1.5708 the wire runs along
+**Z** (endpoints z 6.26 ± 2.04 grab / ± 3.54 travel at x −23.4855); the earlier "endpoints ≈
+(−19.95…−27.03, 34.47, 6.26)" X-span in the snapshot check below used a cos/sin-swapped reading and was
+wrong [M disasm 0x1e3948 + the `searchlight::spherical` port verified against the live beam matrix].
+
 ## Grapple point (class 0x51) — `Grapple_Create` @0x198298 [M disasm 0x198298–0x1982ec]
 
 `control_create_object(0, …)` — **instance size 0**; no placement params read at all. The anchor is
@@ -181,18 +188,24 @@ Note: the only class-0x3E object in the snapshot (0x0137b950) is an AI volume �
 rows of `control_funcs` (delete slot 0x13a1d0) belong to that class, not to wires; likewise 0x3A's
 row (Lock_Update 0x1ae3d8) belongs to locks. No class-0x2C update exists.
 
-## Port corrections (crates/nf-game/src/wire.rs) — for the next session
+## Port corrections (crates/nf-game/src/wire.rs) — FIXED by fix-wire (2026-10-11)
 
-- `channel` is documented as `placement.extra[2]` — actually **inst+0x06 = param 3**; the claimed
-  glist-hashcode param (`extra[3]` = 0xC510) is really **inst+0x00 = the wire type** [M disasm;
-  L inst bytes above]. The live object holds `00 00 02 00 00 00 00 00`, not 0x016D/0xC510.
-- Endpoints: the port derives them from the placement translation + glist extent; the game derives
-  them from the **world sphere radius−2.0 (grab) / −0.5 (travel)** along yaw+π/2 at grab time, with
-  zipline pitch from rot.z [M].
-- Missing entirely: wire type 2 (zipline, substate 0xF), the substate split (the port's comment
-  "enters the creep substate" is wrong — wires enter 6, creep-walls 7), the auto-drop timer
-  (+0x8CC), regrab lockout (+0x951), hang offsets 1.0207/1.17363, the per-tick (not proximity-gated)
-  `Music_Event(0xD, 1)`, `Controls_StraddleTest` ForcedList membership.
+- ~~`channel` is documented as `placement.extra[2]`~~ — **fixed**: inst+0x06 = param 3, and inst+0x00 =
+  the wire type (param 1); the live object holds `00 00 02 00 00 00 00 00` [M disasm; L inst bytes above].
+- ~~Endpoints from the placement translation + glist extent~~ — **fixed**: the port derives the grab /
+  travel / zipline segments from the world sphere (centre + radius through the yaw-only matrix) exactly
+  as above, at grab time.
+- ~~Missing entirely: wire type 2, the substate split, the auto-drop timer, regrab lockout, hang offsets,
+  the per-tick `Music_Event(0xD, 1)`, `Controls_StraddleTest` ForcedList membership~~ — **fixed**:
+  `Player_CollWire` + `Player_Wire` + `Player_Zipline` are ported whole into `crates/nf-game/src/player.rs`
+  (substates 6 and 0xF; wires enter 6, creep-walls 7); the auto-drop timer (+0x8CC), the regrab lockout
+  (+0x951 = 0x1E on drop, 60 on the zipline), the hang offsets 1.0207/1.17363 and the per-tick music
+  event are in. The grab anims' root motion drives the crossing (tracks sampled from the level archive's
+  kind-5 scripts + the anim archive's sequences; the move pair travels 0.7637/0.7106 per cycle at the
+  ±1.2 rate [D measured]). `Controls_StraddleTest`'s ForcedList membership is still not modelled (it
+  affects cel straddling for the renderer, not the gameplay path). Tests: `crates/nf-view/tests/
+  wire_live.rs` (the 07000005 crossing, the 07000002 sister wire, a synthetic zipline) and
+  `crates/nf-view/tests/wire_repro.rs` (the pre-fix symptom).
 
 ## Not verified this pass
 

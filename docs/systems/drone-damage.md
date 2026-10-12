@@ -87,6 +87,39 @@ Placement parameters (DefaultInit, `param(k)` = `piVar19[0xD + k]`) [M, checked]
   state's start, + 300 for 0x48); more than 3 (`DAT_00298F5C`) → the oldest goes FadeFast.
 - 07000005 [L]: two guards fire death channel 0xA4 (the WaitSwitch drones' channel); the sniper 0x0A.
 
+## The punch (weapon 1) and the knock-out [M, ported fix-player4]
+
+- The route: a player bullet's weapon decides the message in `NDrone2_DealWithObjHit` case 5 (0x13fff0:269-306) —
+  **1 (fists), 0x4B, 0x4D → msg 6 (punch)**; 0x4A, 0x4C → msg 7 (taser); 0x43/0x44 → msg 0x19; everything else
+  `Drone_BulletHit` (msg 8). Both punch and bullet paths bump the hit count `+0x1D8` and stamp the last hit `+0x2B4`.
+- `DroneFunc_HandleImpact` case 6 (0x1469b8:34-57): `allow` = 0 → `NDrone2_PunchImpact(…, resume, 0)` directly;
+  `allow` ≠ 0 → state 0x53 `NDrone2_DSTATE_PunchImpact` (0x172ee0), whose ENTER replays the punch with `allow` = 1.
+  The per-state (resume, allow) is the SAME as msg 8's for every state that carries a case 6 (46 states scanned in
+  the decomps, 2026-10-12; the mission states' own pairs included).
+- `NDrone2_PunchImpact` (0x145f28): the resume (p3, or the current state when p3 = 0) is stamped into `+0x118` if
+  valid (not 0x53–0x55) BEFORE the damage; `DoHitEffects` → `NDrone2_HitDamage` applies the fists' 5.0 (+0x0C [L
+  ee_start_05.bin record 1]) with the usual part multipliers — a head punch reads as a torso (0x145558:25-30, parts
+  5 with weapons 1/0x4A–0x4D → 1). At health ≤ 0 the drone enters **state 0x42 `NDrone2_DSTATE_KnockedOut_Anim`**
+  (mode 0x1E, the bot-punch mode, goes to 0xF2 instead — bots are not ported). Alive: `PainTalk`, then with
+  `allow` the stagger `CallAnim(0, 0x51, 0, +0x118)` + both flinch stamps; without `allow` the resume state is
+  entered — for the common (0x56, 0) pairs this is what turns a punched idle guard hostile at once.
+- `KnockedOut_Anim` 0x42 (0x172a30, disasm): ENTER — `obj+0xF0 |= 0x20` (corpse), alert status 3, **health = 0**,
+  `CallAnim(0, 0x50, 0, next 0x47)` (the fall), `Drone+0x4F8 |= 0x1000000` (the KO flag), `DroneWeap_DropWeapon`
+  (the gun drops at once — the same one-visible-kind-0 drop as death), and `PlrStat_LogEnemyDisabled` when
+  `+0x44 == 1`. EXIT — `SetDeathChannel` on every level EXCEPT {0x07000009, 0x0700000A} (`sltiu v0, level +
+  0xf8fffff7, 2` at 0x172b14 is UNSIGNED; 07000005's 0xfffffffc passes). Cases 8/9 → Death_Anim 0x44; no OnInitDeath
+  anywhere in the path — no death talk, no grenade drop.
+- **A KO'd guard is not a kill**: the KO flag makes `DroneFunc_OnInitDeath` (0x145bd0:22,57-59) and
+  `NDrone2_LogDroneDeath` (0x14ab00) skip `PlrStat_LogEnemyDispatched`; the KO enter logged
+  `PlrStat_LogEnemyDisabled` instead (separate mission-stat counters, DAT_002bcc2c vs DAT_002bcc30). The body
+  behaves like a corpse from the KO on: bullets skip it (`obj+0xF0 & 0x20`), and when anim 0x50 ends the state
+  goes to Dead 0x47 → Fade 0x48 like any death. He does not get back up.
+- `NDrone2_DSTATE_Knocked_Out` 0x43 (0x172b48): update/impacts → 0x44. No C code sets it (state table only).
+- Player side: `Player_SetFiringAnim` (0x1a3c70) picks the view script — flag 0x80000 weapons (the fists, +0x68 =
+  0x880A2 [L]) draw `Rand(100)` per shot and play the +0xB4 script (0x060006DD vs 0x060006DE [L]) on > 50: the
+  left/right punch alternation, one shared-RNG draw per punch. Flag 0x40000 weapons instead flip the `BLData+0x958`
+  toggle and alternate strictly (the fists do not carry 0x40000).
+
 ## Bond's gunfire [M]
 
 - Start weapon on 07000005 (`Player_InitWeapon`): weapon 2 (P2K), clip 7, 41 spare [L]. Record [L]: damage 3.5,
@@ -109,3 +142,8 @@ Placement parameters (DefaultInit, `param(k)` = `piVar19[0xD + k]`) [M, checked]
 
 Ported (WORKLOG 0030): tuning, hit boxes, damage, the per-state impact table, flinch, death, corpse, fade, death
 channels, Bond's bullets and trigger, the shot sound for hearing. Not checked live (U-034); gaps in G-026.
+Ported (fix-player4): the punch hit path (weapon 1 → msg 6), `NDrone2_PunchImpact`, the KO state machine 0x42/0x43/0x53
+with the drop and the disabled/dispatched stats, and `Player_SetFiringAnim`'s script pick including the fists'
+Rand(100) alternation (tests `fix_player4_live.rs`, driven through `nf_view::load` + `Sim::step_bond`). Not ported:
+the taser msg 7 route (Q-Claw 0x4A/0x4C), the bot-punch mode 0x1E → 0xF2 branch, `DroneFunc_SendHurtMessage`'s hurt
+broadcast (matching the port's bullet path), and the level-7/9-A mission-fail reasons in the punch.

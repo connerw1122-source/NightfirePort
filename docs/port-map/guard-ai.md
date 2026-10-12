@@ -73,7 +73,7 @@ single-player guard AI on the test level 07000005.
 | 0x14b190 | `DroneFunc_NearPlayerCollision` | stub | — | Always returns false in the port (no player-proximity short-circuit on the full sphere test). |
 | 0x14b1e8 | `DroneInit_Collision` | stub | — | The create-time floor snap is not ported; the port stands drones on the rendered floor at level load. |
 | 0x1499d0 | `DroneFunc_ClampPosToCollisionCylinder` | not started | — | The clamp-into-cylinder adjustment for slide moves is not ported. |
-| 0x13fff0 | `NDrone2_DealWithObjHit` | **STANDIN** | — | The per-hit dispatch (water ripples, doors, breakables, explosions, players) is not ported. The explosion hit path is reached separately from `Explode_Propagate` in `grenade.rs`. |
+| 0x13fff0 | `NDrone2_DealWithObjHit` | **STANDIN** (case 5 partial) | `drone.rs::update_player_bullets` | The per-hit dispatch (water ripples, doors, breakables, explosions, vehicle riding) is not ported; the explosion hit path is reached separately from `Explode_Propagate` in `grenade.rs`. The PLAYER-hit arm (case 5's weapon → msg 6/7/8 pick) is ported — see the row below. |
 
 ## 2. State machine dispatch
 
@@ -176,7 +176,7 @@ the old state, then msg 1 (enter) to the new one, repeating while enters keep ch
 | 0x148338 | `DroneFunc_CombatState` | partial | `drone.rs::combat_state` | Every call routes to the opponent; from 0x58 the 0x59/0x5A/0x5C/0x5F branches; from 0x68 reload/NoSight/combat move; from 0x70 2-s timer. |
 | 0x148a30 | `DroneFunc_HandleSoundAlerts` | partial | `drone.rs::Drones::tick` (sound loop) | `share = 0.01·loudness`; loudest sound → msg 0x14 at most once a second. The id 0x248 weight-10 override and the 0x11C/0x11D 09/0A skip are ported. |
 | 0x148c60 | `DroneFunc_DoForcedAttack` | stub | `drone.rs::handle(*, msg::FORCED_ATTACK)` | Always → Attack. |
-| 0x1469b8 | `DroneFunc_HandleImpact` | partial | `drone.rs::on_bullet`/`bullet_impact` | The per-state impact table (Idle/Alert/Patrol/AlertToPosition/SearchArea/HeardNoise*/RunForCover/UnderCoverInit/LeaveNow → 0x56; UnderCover Idle/Aim/Fire/Return → 0x9C; AimStand/AimBackoff/Step/Strafe/Dodge/Roll → 0x68 with `allow=1`; etc.) is ported. |
+| 0x1469b8 | `DroneFunc_HandleImpact` | partial | `drone.rs::on_bullet`/`on_punch`/`bullet_impact`/`punch_impact` | The per-state impact table (Idle/Alert/Patrol/AlertToPosition/SearchArea/HeardNoise*/RunForCover/UnderCoverInit/LeaveNow → 0x56; UnderCover Idle/Aim/Fire/Return → 0x9C; AimStand/AimBackoff/Step/Strafe/Dodge/Roll → 0x68 with `allow=1`; etc.) is ported. Case 6 (the punch, msg 6) shares the table — msg 6's (resume, allow) equals msg 8's in every state that has the case (46-state scan, fix-player4) — and routes to `NDrone2_PunchImpact` instead of `NDrone2_BulletImpact`. |
 | 0x14ac60 | `DroneFunc_ReactionTime` | partial | `drone.rs::reaction_time` | `(1 − alert)·0.3·(200 − stat_b8)` on 0x7000002/3/5/9/A, else 10. [L] 07000005: 60 ticks. |
 | 0x14a298 | `DroneFunc_DeadDrone` | partial | `drone.rs::Drones::tick` (corpse cull) | Counts 0x0F/0x47/0x48(+300)/0xBF; the oldest goes FadeFast beyond 3 (`DAT_00298F5C`). |
 | 0x14af80 | `DroneFunc_AttackNoWeapon` | stub | `drone.rs::handle(ATTACK, ENTER)` | → DrawWeapon when unarmed. |
@@ -230,7 +230,12 @@ the old state, then msg 1 (enter) to the new one, repeating while enters keep ch
 | 0x179558 | `DroneWeap_ThrowGrenade` | partial | `drone.rs::throw_grenade` | Decrements `+0xBCE`; ±π/4 yaw lob by distance; mode 0xD sniper 1/3 chance of stun (0x36) over frag (0x35); bone 0x15 origin. |
 | 0x17a870 | `DroneWeap_ManageBurstCount` | partial | `drone.rs::next_bullet_time` | Burst count from `weapon_data+0x2C`; burst counter `+0xBBC`. |
 | 0x17a8c0 | `DroneWeap_Fire` | partial | `drone.rs::fire` | `Bullet_init` with the muzzle direction; the per-shot `Rand` calls run. |
-| 0x1789c0 | `DroneWeap_CloseCombatImpact` | not started | — | Close-combat hit (punch) — not ported. |
+| 0x1789c0 | `DroneWeap_CloseCombatImpact` | not started | — | Close-combat hit (punch) — not ported. (The PLAYER punch is ported: it is a bullet, not this function — `NDrone2_DealWithObjHit` case 5 routes weapon 1 to msg 6.) |
+| 0x13fff0 | `NDrone2_DealWithObjHit` case 5 | partial | `drone.rs::update_player_bullets` | The player-shooter arm only: the weapon picks the message — 1/0x4B/0x4D → msg 6 (punch), 0x4A/0x4C → msg 7 (taser, not ported), else `Drone_BulletHit` msg 8 [M 0x13fff0:269-306]. The rest of the dispatcher (water ripples, doors, breakables, explosions, vehicle riding) is still absent. |
+| 0x145f28 | `NDrone2_PunchImpact` | ported | `drone.rs::punch_impact` | The resume stamped into +0x118 before the damage; health ≤ 0 → KnockedOut_Anim 0x42 (mode 0x1E → 0xF2, bots not ported); alive: PainTalk, then the 0x51 stagger + flinch stamps with allow, else the resume state. SendHurtMessage and the level-7/9-A mission-fail reasons not modelled. |
+| 0x172a30 | `NDrone2_DSTATE_KnockedOut_Anim` | ported | `drone.rs::handle_knockout` | ENTER: corpse flag, health 0, CallAnim(0x50 → 0x47), KO flag +0x1000000, DropWeapon, PlrStat_LogEnemyDisabled. EXIT: the death channel except on {0x07000009, 0x0700000A} (`sltiu`, unsigned). Cases 8/9 → 0x44. |
+| 0x172b48 | `NDrone2_DSTATE_Knocked_Out` | ported | `drone.rs::handle_knockout` | Update/impacts → 0x44. Never set by C code (state table only). |
+| 0x172ee0 | `NDrone2_DSTATE_PunchImpact` | ported | `drone.rs::handle_knockout` | ENTER replays the punch with allow = 1 (the stagger); update faces the opponent; msg 6/8 → HandleImpact(0, 0). |
 
 ### Bullets
 
@@ -483,7 +488,7 @@ by the developer before acting.
 | 0x140e90 NDrone2_Collision | Missing: radii 0.55/0.3, bone transforms, offset writes | STANDIN |
 | 0x149ec8 NDrone2_DoCollision | Predicate collapsed to `bounded` bool — per-tick conditions (voice type, drawn, near-player) not evaluated | STANDIN |
 | 0x141e58 NDrone2_DoGravity | Same predicate collapse as DoCollision | STANDIN |
-| 0x13fff0 NDrone2_DealWithObjHit | Entire 1648-byte dispatcher absent (water ripples, gas grenades, vehicle riding, owner tracking) | not started |
+| 0x13fff0 NDrone2_DealWithObjHit | The dispatcher is absent except the player-hit arm: case 5's weapon → msg 6 (punch) / msg 7 (taser) / msg 8 routing is ported (fix-player4). Still missing: water ripples, gas grenades, vehicle riding, owner tracking | partial |
 | 0x14b1e8 DroneInit_Collision | Absent — drones never snap to floor at spawn | not started |
 | 0x1499d0 DroneFunc_ClampPosToCollisionCylinder | Absent | not started |
 | 0x14b190 DroneFunc_NearPlayerCollision | Absent (MP-only) | not started |

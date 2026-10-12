@@ -102,7 +102,8 @@ Every field the port reads (cross-checked against the decompile) plus others ver
 | 0x2000 | gas/smoke puff on muzzle flash | `Player_MuzzleFlash`@`0x1a4298`:92 | `[M]` |
 | 0x8000 | aim-mode weapon | `Player_WeaponFiring`@`0x1a5460`:633 | `[M]` |
 | 0x10000 | fire-on-trigger hold | `Player_WeaponFiring`@`0x1a5460`:429 | `[M]` |
-| 0x40000 | alternate muzzle datum (bone 4) | `Player_MuzzleFlash`@`0x1a4298`:70 | `[M]` |
+| 0x40000 | alternate fire scripts (+0xB0/+0xB4 by the `BLData+0x958` toggle) and alternate muzzle datum (bone 4) | `Player_SetFiringAnim`@`0x1a3c70`:40-49; `Player_MuzzleFlash`@`0x1a4298`:70 | `[M]` |
+| 0x80000 | random fire-script pick: one `Rand(100)` per shot, > 50 plays +0xB4 (the fists' left/right punch) | `Player_SetFiringAnim`@`0x1a3c70`:34-36 | `[M]` |
 
 ### `+0x6C` flag bits
 
