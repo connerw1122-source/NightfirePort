@@ -20,6 +20,7 @@ pub mod gun;
 pub mod grenade;
 pub mod ladder;
 pub mod kiko;
+pub mod light;
 pub mod fusebox;
 pub mod gas;
 pub mod copter;
