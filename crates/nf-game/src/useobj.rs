@@ -192,7 +192,10 @@ impl UseObjects {
             if sp.deleted || sp.mask & 4 == 0 { continue; }
             if sp.gate != 0 && !ch.on(sp.gate as u32) { continue; }
             if sp.mask & 1 != 0 && !ch.on(sp.out as u32) { continue; }
-            let m = sp.matrix;
+            // The SP object's LIVE matrix (Script_Interp 0x1d9a08 keys obj+0x90 from stream 0 every
+            // frame — the elevator cab / the keyboard move with their scripts); the use sphere reads
+            // it, not the placement transform [M SP_Activate 0x1dc338 via the object sphere].
+            let m = sp.live_matrix;
             if near([m[3][0], m[3][1], m[3][2]]) {
                 sp.activated = true;
                 used = true;
