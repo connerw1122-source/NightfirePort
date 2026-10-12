@@ -46,6 +46,17 @@ pub mod state {
     pub const DEAD: u8 = 0x47;
     pub const FADE: u8 = 0x48;
     pub const FADE_FAST: u8 = 0x49;
+    /// `NDrone2_DSTATE_KnockedOut_Anim` (0x172a30): the non-lethal knock-out. ENTER plays anim 0x50
+    /// (the fall) with follow-on 0x47, drops the weapon, zeroes health and raises the KO flag
+    /// (+0x4F8 & 0x1000000); EXIT raises the death channel on every level except {0x07000009,
+    /// 0x0700000A} [M disasm 0x172b14 `sltiu`]. Entered only from `NDrone2_PunchImpact` (0x145f28).
+    pub const KNOCKED_OUT_ANIM: u8 = 0x42;
+    /// `NDrone2_DSTATE_Knocked_Out` (0x172b48): update/impact → Death_Anim. Never set by any C code
+    /// (only the state table) — ported for completeness, not reachable in single player.
+    pub const KNOCKED_OUT: u8 = 0x43;
+    /// `NDrone2_DSTATE_PunchImpact` (0x172ee0): the msg-6 ENTER state (HandleImpact case 6 with
+    /// allow = 1) — ENTER replays `NDrone2_PunchImpact(…, resume 0, allow 1)` (the stagger anim).
+    pub const PUNCH_IMPACT: u8 = 0x53;
     pub const BULLET_IMPACT: u8 = 0x55;
     pub const ALERT_TO_POSITION: u8 = 0x62;
     pub const SEARCH_AREA: u8 = 0x65;
@@ -138,6 +149,9 @@ pub mod msg {
     pub const ALARM: u8 = 0x1e;
     /// A bullet hit (`Drone_BulletHit` → msg 8 with the HITDATA).
     pub const BULLET: u8 = 8;
+    /// A punch hit (`NDrone2_DealWithObjHit` 0x13fff0 case 5 → msg 6 with the HITDATA): weapon 1
+    /// (fists), 0x4B and 0x4D route here instead of msg 8; 0x4A / 0x4C are the taser (msg 7, not ported).
+    pub const PUNCH: u8 = 6;
 }
 
 /// Anim states (`DroneAnimStates` index).
@@ -175,6 +189,10 @@ pub mod anim_state {
     pub const IMPACT: u16 = 0x4c;
     pub const DEATH: u16 = 0x40;
     pub const DEATH_SHOT: u16 = 0x42;
+    /// The knock-out fall (`KnockedOut_Anim` ENTER: `CallAnim(0, 0x50, 0, next 0x47)` [M 0x172aa0-aa8]).
+    pub const KNOCKED_OUT_FALL: u16 = 0x50;
+    /// The punch stagger (`NDrone2_PunchImpact` 0x145f28:89-94: `CallAnim(0, 0x51, 0, resume)`).
+    pub const PUNCHED: u16 = 0x51;
     /// CivilianHiding's cower (`NDrone2_DSTATE_CivilianHiding` 0x15d520 ENTER: `CallAnim(0x19)`).
     pub const COWER: u16 = 0x19;
 }
@@ -585,6 +603,13 @@ pub struct Drone {
     pub on_surface: bool,
     /// Trace of (frame, state) changes, for comparisons with PCSX2.
     pub log: Vec<(u32, u8)>,
+    /// `Drone+0x4F8 & 0x1000000`: knocked out (`KnockedOut_Anim` ENTER [M 0x172ab0-c4]). Makes
+    /// `OnInitDeath` / `LogDroneDeath` skip `PlrStat_LogEnemyDispatched` [M 0x145bd0:22,57-59].
+    pub knocked_out: bool,
+    /// `PlrStat_LogEnemyDisabled` ran for this drone (the KO enter, team 1 [M 0x172ac8-dc]).
+    pub disabled_logged: bool,
+    /// `PlrStat_LogEnemyDispatched` ran (a death without the KO flag — `OnInitDeath` 0x145bd0:57-59).
+    pub dispatched_logged: bool,
 }
 
 /// Normalise a vector (the grenade throw direction helper).
@@ -637,7 +662,7 @@ impl Drone {
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
             grenade_weapon, grenade_count, pending_grenade: false,
-            shots: Vec::new(), log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
+            shots: Vec::new(), log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
             switch_channel: param(3) as u8, channel_on: false, placement: 0, spawn_seq: 0, spawn_frame: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
@@ -1287,9 +1312,48 @@ impl Drone {
     /// Msg 8 in state `s`: the BulletImpact state calls `NDrone2_BulletImpact(…, 0, 0)` itself; the others go through
     /// `DroneFunc_HandleImpact`.
     fn on_bullet(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8) -> bool {
-        if s == state::BULLET_IMPACT { self.bullet_impact(d, rng, frame, 0, false); return true; }
+        self.on_impact(d, rng, frame, s, false)
+    }
+
+    /// Msg 6 in state `s` (the punch). The per-state `HandleImpact` arguments are the SAME as msg 8's for every state
+    /// that handles the punch (a scan of all 250 DSTATE decomps, 2026-10-12: 46 states carry case 6, each with the
+    /// resume/allow of its case 8) — only the impact handler differs (`NDrone2_PunchImpact` vs `NDrone2_BulletImpact`).
+    /// The mission states pass their own pairs, mirroring the port's msg-8 arms 1:1.
+    fn on_punch(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8) -> bool {
+        use state::*;
+        // The per-state resume/allow for the mission states (msg 6 == msg 8 [M DSTATE scan]).
+        let (resume, allow) = match s {
+            TRUCK_DRIVER_INIT => (TRUCK_DRIVER_INIT_ALERT, false), // 0x160bd0 case 6: HandleImpact(0x33, 0)
+            TRUCK_DRIVER_INIT_ALERT => (0, false),
+            TRUCK_DRIVER_IDLE | PARTY_GIRL | CIVILIAN_MISSION | CIVILIAN | CIVILIAN_SCARED | CIVILIAN_HIDING => (CIVILIAN_SCARED, false),
+            CIVILIAN_GUARD | CIVILIAN_PATROL => (ATTACK, false),
+            HOSTAGE_IDLE => (0, false),
+            _ => return self.on_impact(d, rng, frame, s, true),
+        };
+        self.on_punch_resume(d, rng, frame, resume, allow)
+    }
+
+    /// The shared msg-8/msg-6 path for the states that use the shared `impact_args` table. Msg 8 in the BulletImpact
+    /// state calls `NDrone2_BulletImpact(…, 0, 0)` itself (0x173098); msg 6 has no case in that DSTATE and is dropped
+    /// (unhandled → GLOBAL → dropped). `KnockedOut_Anim` (0x172a30 case 8/9) routes any bullet to Death_Anim — it
+    /// arrives only via a scripted Message, since the bullet scan skips corpses.
+    fn on_impact(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, punch: bool) -> bool {
+        if s == state::KNOCKED_OUT_ANIM || s == state::KNOCKED_OUT {
+            // KnockedOut_Anim case 8/9 and Knocked_Out case 8/9 → Death_Anim (0x172a30 / 0x172b48); msg 6
+            // has no case there (KnockedOut_Anim) and is dropped. These arrive only via a scripted Message —
+            // the bullet scan skips corpses.
+            if punch { return false; }
+            self.set_state(state::DEATH_ANIM);
+            return true;
+        }
+        if s == state::PUNCH_IMPACT {
+            // DSTATE_PunchImpact (0x172ee0): msg 6/8 → HandleImpact(0, 0) — the punch replays without the
+            // stagger (allow 0), the bullet takes the normal BulletImpact route with resume 0.
+            return if punch { self.punch_impact(d, rng, frame, 0, false) } else { self.on_bullet_resume(d, rng, frame, 0, false) };
+        }
+        if !punch && s == state::BULLET_IMPACT { self.bullet_impact(d, rng, frame, 0, false); return true; }
         let Some((resume, allow)) = Self::impact_args(s) else { return false };
-        self.on_bullet_resume(d, rng, frame, resume, allow)
+        if punch { self.on_punch_resume(d, rng, frame, resume, allow) } else { self.on_bullet_resume(d, rng, frame, resume, allow) }
     }
 
     /// `DroneFunc_HandleImpact` case 8 with the state's own resume/allow (the mission states pass their own:
@@ -1304,6 +1368,52 @@ impl Drone {
             if valid(u10) { self.impact_resume = u10; }
             self.set_state(state::BULLET_IMPACT);
         }
+        true
+    }
+
+    /// `DroneFunc_HandleImpact` case 6 (0x1469b8:34-57): allow = 0 → `NDrone2_PunchImpact(…, resume, 0)` directly;
+    /// allow ≠ 0 → state 0x53 `PunchImpact` (its ENTER replays the punch with allow = 1 → the stagger anim),
+    /// with the resume stamped into +0x118 first (0x1469b8:40-53).
+    fn on_punch_resume(&mut self, d: &Data, rng: &mut Rng, frame: u32, resume: u8, allow: bool) -> bool {
+        if allow {
+            let u10 = if resume != 0 { resume } else { self.state };
+            if u10 != 0 && !(0x53..=0x55).contains(&u10) { self.impact_resume = u10; }
+            self.set_state(state::PUNCH_IMPACT); // the HITDATA rides `self.hit` (the port's stand-in for the state param)
+        } else {
+            self.punch_impact(d, rng, frame, resume, false);
+        }
+        true
+    }
+
+    /// `NDrone2_PunchImpact` (0x145f28). The punch damage runs through `DoHitEffects` like a bullet; at health ≤ 0 the
+    /// drone enters state 0x42 `KnockedOut_Anim` (mode 0x1E, the bot-punch mode, would go to 0xF2 — bots are not
+    /// ported). Alive with `allow`: the stagger anim 0x51 with follow-on `+0x118` and both flinch stamps; otherwise
+    /// the resume state (for the common (ATTACK, false) pairs this is what turns a punched guard hostile at once).
+    /// `DroneFunc_SendHurtMessage` (the hurt broadcast, prop 0x32) and the level-7/9-A mission-fail reasons are not
+    /// modelled, matching the port's `bullet_impact`.
+    fn punch_impact(&mut self, d: &Data, _rng: &mut Rng, frame: u32, p3: u8, allow: bool) -> bool {
+        let valid = |x: u8| x != 0 && !(0x53..=0x55).contains(&x);
+        // 0x145f28:23-42: the value STAMPED into +0x118 is p3 (or the current state when p3 == 0) if valid;
+        // the state finally ENTERED is p3 (or 0 when it equals the current state) if valid — two different
+        // values (a punch while already in the resume state re-stamps but enters nothing).
+        let stored = if p3 != 0 { p3 } else { self.state };
+        if valid(stored) { self.impact_resume = stored; }
+        let setv = if p3 == self.state { 0 } else { p3 };
+        self.do_hit_effects(d);
+        if self.health <= 0.0 {
+            // 0x145f28:60-84: enemy or not, mode != 0x1E → 0x42 (the KO); 0x1E → 0xF2 (bots, not ported).
+            self.set_state(state::KNOCKED_OUT_ANIM);
+            return true;
+        }
+        self.pain_talk(d);
+        if allow {
+            // `CallAnim(0, 0x51, 0, *(Drone+0x118), 0, 0)` + both flinch stamps (0x145f28:89-94).
+            self.call_anim(d, anim_state::PUNCHED, self.impact_resume, 0);
+            self.global_flinch = Some(frame);
+            self.flinch_at = Some(frame);
+            return true;
+        }
+        if valid(setv) { self.set_state(setv); }
         true
     }
 
@@ -1474,6 +1584,10 @@ impl Drone {
                 self.firing = false;
                 if self.special_death != 0 { self.set_state(SPECIAL_DEATH); return Some(true); }
                 self.death_pending = true; // `OnInitDeath` (mission-fail props: not modelled)
+                // `OnInitDeath` 0x145bd0:57-59: the player's kill is logged as dispatched UNLESS the KO flag
+                // (+0x4F8 & 0x1000000) is set — the KO already logged EnemyDisabled instead [*suggested*: the
+                // game also requires the last hit (+0x2B4) to be the player, which in SP it always is].
+                if self.team == 1 && !self.knocked_out { self.dispatched_logged = true; }
                 if !self.silent_kill { self.death_talk(d); }
                 self.drop_grenades(d);
                 self.location_death_anim(d, rng, DEAD);
@@ -1550,6 +1664,48 @@ impl Drone {
             }
             (_, msg::EXIT) => true,
             _ => false,
+        })
+    }
+
+    /// KnockedOut_Anim 0x42, Knocked_Out 0x43, PunchImpact 0x53 (0x172a30, 0x172b48, 0x172ee0).
+    fn handle_knockout(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> Option<bool> {
+        use state::*;
+        if !matches!(s, KNOCKED_OUT_ANIM | KNOCKED_OUT | PUNCH_IMPACT) { return None; }
+        Some(match (s, m) {
+            // ENTER (0x172a30 disasm): obj+0xF0 |= 0x20 (corpse), alert status 3 (not modelled — the port's
+            // `bullet_impact` skips AlertStatusSet too), health = 0, `CallAnim(0, 0x50, 0, next 0x47)`,
+            // Drone+0x4F8 |= 0x1000000, `DroneWeap_DropWeapon`, and `PlrStat_LogEnemyDisabled` for enemies.
+            // Unlike Death_Anim there is NO OnInitDeath here: no death talk, no grenade drop, no dispatched log.
+            (KNOCKED_OUT_ANIM, msg::ENTER) => {
+                self.corpse = true;
+                self.vision_on = false;
+                self.firing = false;
+                self.health = 0.0; // [M 0x172a88 `sw zero, 0xac(s1)`]
+                self.knocked_out = true; // [M 0x172ab0-c4 `| 0x1000000` on +0x4F8]
+                self.call_anim(d, anim_state::KNOCKED_OUT_FALL, DEAD, 0); // [M 0x172aa0-aa8 CallAnim(0, 0x50, 0, 0x47)]
+                self.drop_weapon(d, rng); // [M 0x172ac0 jal DroneWeap_DropWeapon]
+                if self.team == 1 { self.disabled_logged = true; } // [M 0x172ac8-dc +0x44 == 1 → PlrStat_LogEnemyDisabled]
+                true
+            }
+            // EXIT (0x172b00-28): the death channel on every level EXCEPT {0x07000009, 0x0700000A} —
+            // `sltiu v0, level + 0xf8fffff7, 2` at 0x172b14 is UNSIGNED, so 07000005 (difference 0xfffffffc)
+            // passes. Fires when the fall anim completes (0x42 → 0x47).
+            (KNOCKED_OUT_ANIM, msg::EXIT) => {
+                if !matches!(d.level, 0x0700_0009 | 0x0700_000a) { self.set_death_channel(); }
+                true
+            }
+            // Update / msgs 0, 3, 10: handled, no-op (0x172a30 cases 0/3/10).
+            (KNOCKED_OUT_ANIM, _) => true,
+            // Knocked_Out 0x43 (0x172b48): no ENTER arm; update (case 0) and impacts (8/9) → Death_Anim.
+            (KNOCKED_OUT, msg::UPDATE) => { self.set_state(DEATH_ANIM); true }
+            (KNOCKED_OUT, _) => true,
+            // PunchImpact 0x53 (0x172ee0): ENTER sets +0x4F8 |= 0x10000 (flag not modelled) and replays
+            // `NDrone2_PunchImpact(…, resume 0, allow 1)`; update (case 3) is `NDrone2_SeenAndAttacking`
+            // (face the opponent, like the grenade-throw state).
+            (PUNCH_IMPACT, msg::ENTER) => { self.punch_impact(d, rng, frame, 0, true); true }
+            (PUNCH_IMPACT, msg::UPDATE) => { self.desired_yaw = self.yaw_to_opp; true }
+            (PUNCH_IMPACT, _) => true,
+            _ => true,
         })
     }
 
@@ -2252,9 +2408,11 @@ impl Drone {
     fn handle(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> bool {
         use state::*;
         if m == msg::BULLET { return self.on_bullet(d, rng, frame, s); }
+        if m == msg::PUNCH { return self.on_punch(d, rng, frame, s); }
         // BulletImpact 0x55 (0x173098): enter turns vision on; the flinch call ends it (state `+0x118`).
         if s == BULLET_IMPACT && matches!(m, 0 | msg::ENTER | msg::UPDATE) { if m == msg::ENTER { self.vision_on = true; } return true; }
         if let Some(r) = self.handle_death(d, rng, frame, s, m) { return r; }
+        if let Some(r) = self.handle_knockout(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_cover(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_grenade_throw(d, rng, frame, s, m) { return r; }
         match (s, m) {
@@ -3822,7 +3980,12 @@ impl Drones {
                     dr.hit = Some(hit);
                     dr.global_flinch = self.last_flinch;
                     dr.bond_aiming = self.bond_aiming;
-                    dr.send(d, rng, frame, msg::BULLET);
+                    // `NDrone2_DealWithObjHit` case 5 (0x13fff0:269-306): the SHOOTER is the player, so the
+                    // weapon decides the message — 1 (fists), 0x4B, 0x4D → msg 6 (punch); 0x4A / 0x4C →
+                    // msg 7 (taser, not ported — the Q-Claw's grapple state); anything else msg 8
+                    // (`Drone_BulletHit`). Both paths bump +0x1D8 and stamp +0x2B4 (last hit by) first.
+                    let m = if matches!(b.weapon, 1 | 0x4b | 0x4d) { msg::PUNCH } else { msg::BULLET };
+                    dr.send(d, rng, frame, m);
                     self.last_flinch = dr.global_flinch;
                 }
                 (_, Some(w)) => {
@@ -4684,7 +4847,7 @@ mod tests {
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip: 0, clip_max: 0,
             grenade_weapon: 0x35, grenade_count: 0, pending_grenade: false, shots: Vec::new(),
-            log: Vec::new(), root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: 0, lost_sight: false,
+            log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: 0, lost_sight: false,
             damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),

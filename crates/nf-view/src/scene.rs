@@ -1157,8 +1157,15 @@ impl Sim {
             let flags = rd(0x68);
             let fire_anim_len = rd(0x44);
             if fired {
-                self.view_script = if flags & 0x1000 != 0 && self.gun.clip < 1 && rd(0xb4) != 0 { rd(0xb4) } else { rd(0xb0) };
-                (self.view_time, self.view_speed) = (0.0, 1.0);
+                // `Player_SetFiringAnim` (0x1a3c70), via `Gun::firing_anim_script`: the last-round pick
+                // (flag 0x1000 / base 0x11), the fists' Rand(100) left/right alternation (flag 0x80000)
+                // and the 0x40000 toggle. The game only queues when the fp model and the script exist
+                // (0x1a3c70:51-54); with no script the view stays as it was.
+                let script = self.gun.firing_anim_script(flags, u16::from_le_bytes([w[2], w[3]]), self.gun.clip, rd(0xb0), rd(0xb4), &mut self.drones.rng);
+                if script != 0 {
+                    self.view_script = script;
+                    (self.view_time, self.view_speed) = (0.0, 1.0);
+                }
             } else if self.gun.reload_state != 0 && was_reloading == 0 {
                 // Reload just started [M Player_WeaponFiring's shared tail 0x1a6250-0x1a631c]: state 6
                 // queues +0xA4 at 1.35× (`AnimScriptAddSpeed`, disasm 0x1a62d0), starting at frame 6 for
