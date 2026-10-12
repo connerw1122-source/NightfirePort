@@ -104,3 +104,34 @@ fn the_elevator_shaft_touch_ends_the_level_to_0700004a() {
     let scene2 = nf_view::load(&iso, &next, false).expect("0700004A must load after the exit");
     assert_eq!(scene2.sim.as_ref().expect("sim").level, 0x0700_004a);
 }
+
+/// The SimpleScript swap (map-tower2's named 07000012 item): at rest each animated 0xE2 sits at key 0
+/// (the closed/covering pose [D, the level's 0x19 blocks]); pressing the lift call button (TouchOnce
+/// #702, mask 4, out 0x59 [D]) raises ch 0x59 and `SS_Update`'s playhead runs the doors to their other
+/// key — `lft_LIFTDOOR1/2` slide 0.86 apart, the screens swap [M SS_Update 0x1a9948 + KeyFrame_Interp
+/// 0x1e1140; the port's ss.rs tick].
+#[test]
+fn the_lift_call_button_swaps_the_simple_scripts() {
+    let iso = iso();
+    let mut scene = nf_view::load(&iso, "07000012.bin", false).expect("load");
+    let sim = scene.sim.as_mut().unwrap();
+    assert!(free(sim));
+    let door1 = sim.drones.sss.list.iter().position(|s| s.placement == 677).expect("lft_LIFTDOOR1 (#677) is an animated SS [D]");
+    let at_rest = sim.drones.sss.list[door1].matrix[3][0];
+    assert!((at_rest - 2.206).abs() < 0.02, "at rest the door leaf sits at key 0 (x ≈ 2.206 [D]), got {at_rest}");
+    assert!(!sim.drones.channels.on(0x59), "ch 0x59 off at rest");
+    // Press E at the call button #702 (−1.80…−1.30, 8.07…8.34, y 0.86…0.91) [D].
+    sim.bond.pos = [-1.55, 0.5, 7.2];
+    sim.bond.yaw = 0.0;
+    let mut ch59 = false;
+    for _ in 0..8 { sim.step_bond(Input::default(), false, false, true); if sim.drones.channels.on(0x59) { ch59 = true; break; } }
+    assert!(ch59, "the call button writes ch 0x59 [D]");
+    // The playhead runs to the last key: the leaf ends at x ≈ 3.070 [D block 15 key 1].
+    let mut opened = false;
+    for _ in 0..200 {
+        sim.step_bond(Input::default(), false, false, false);
+        let x = sim.drones.sss.list[door1].matrix[3][0];
+        if (x - 3.070).abs() < 0.05 { opened = true; break; }
+    }
+    assert!(opened, "the door leaf animates to key 1 (x ≈ 3.070 [D]) once ch 0x59 is on");
+}

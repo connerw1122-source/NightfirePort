@@ -275,7 +275,12 @@ impl Level {
             // (`SS_Activate` 0x1a9ea8) and `SS_Update` 0x1a9948 plays its keys [M]. 07000006's barrel trap
             // (`Script_Barrelroll` / `Script_Barrelleg`) was missing. The game creates one only when its animation's
             // key count (`level_tag+2`) is non-zero; the port doesn't read that header, so every 0xE2 with a model draws [S].
-            out.extend(self.instances(false).0.into_iter().filter(|i| matches!(i.placement.flags & 0xff, 0x20 | 0xe2) && !i.placement.creates_cel()));
+            // The animated ones (key count non-zero — `SS_Create` 0x1a9c58 creates them and
+            // `SS_Update` 0x1a9948 poses them every frame) are drawn by the ss pass instead
+            // (map-tower2: the 07000012 lift screens/shutters/doors swap on their channel).
+            out.extend(self.instances(false).0.into_iter().filter(|i| matches!(i.placement.flags & 0xff, 0x20 | 0xe2)
+                && !i.placement.creates_cel()
+                && !(i.placement.flags & 0xff == 0xe2 && i.placement.extra[7] & 0xffff != 0)));
         }
         (out, missing)
     }

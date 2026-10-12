@@ -17,12 +17,23 @@ fn simplescript_props_are_in_the_scene() {
     let Ok(iso) = std::env::var("NF_ISO") else { eprintln!("NF_ISO not set — skipping"); return };
     let lv = level(&iso, "07000006.bin");
     let name = |i: &nf_formats::level::Instance| lv.maps[i.map].objects[i.object].name.trim().to_string();
-    let scene: Vec<String> = lv.scene_instances(true).0.iter().filter(|i| i.placement.flags & 0xff == 0xe2).map(name).collect();
-    eprintln!("[ss] 07000006 0xE2 in the scene: {scene:?}");
-    assert!(scene.iter().filter(|n| n.starts_with("Script_Barrelroll")).count() >= 3, "the three trap barrels are drawn");
-    assert!(scene.iter().any(|n| n.starts_with("Script_Barrelleg")), "and their sawhorse legs");
-    // Sister: the cel-only pass alone (the old scene) has none of them.
-    assert!(!lv.instances(true).0.iter().any(|i| i.placement.flags & 0xff == 0xe2), "0xE2 never creates a cel");
+    // map-tower2: the ANIMATED 0xE2s (key count non-zero — `SS_Create` 0x1a9c58) moved from the
+    // static scene pass to the posed ss pass (`SS_Update` 0x1a9948's KeyFrame_Interp at key 0 at
+    // rest); the key-less ones stay static (the game creates nothing for them [S]).
+    let statics: Vec<String> = lv.scene_instances(true).0.iter().filter(|i| i.placement.flags & 0xff == 0xe2).map(name).collect();
+    let pb: Vec<&[u8]> = lv.path_blocks();
+    let ss = nf_game::ss::SsList::create(&lv.maps[lv.main_map().unwrap()].placements, &pb);
+    let ss_names: Vec<String> = ss.list.iter().map(|s| {
+        let p = &lv.maps[lv.main_map().unwrap()].placements[s.placement];
+        let obj = if p.by_hash() { lv.by_hash.get(&p.hashcode).copied() } else { Some((lv.main_map().unwrap(), p.index as usize)) };
+        obj.and_then(|(m, o)| lv.maps[m].objects.get(o)).map(|o| o.name.trim().to_string()).unwrap_or_default()
+    }).collect();
+    eprintln!("[ss] 07000006 animated 0xE2 (posed pass): {ss_names:?}");
+    eprintln!("[ss] 07000006 key-less 0xE2 (static pass): {statics:?}");
+    assert!(ss_names.iter().filter(|n| n.starts_with("Script_Barrelroll")).count() >= 3, "the three trap barrels are drawn (posed)");
+    assert!(ss_names.iter().any(|n| n.starts_with("Script_Barrelleg")), "and their sawhorse legs");
+    // Sister: none of the animated ones remains in the static pass (no double draw).
+    assert!(!statics.iter().any(|n| n.starts_with("Script_Barrelroll")), "the animated barrels left the static pass");
 }
 
 /// Survey (prints only): every level's 0xE2 objects, to spot any that should stay hidden at rest.

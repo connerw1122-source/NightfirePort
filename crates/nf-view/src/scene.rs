@@ -2346,6 +2346,23 @@ impl Scene {
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                 add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, Some(di as u16), None, [1.0; 3], &room_cels);
             }
+            // SimpleScripts (`SS_Create` 0x1a9c58 / `SS_Update` 0x1a9948, map-tower2): the animated 0xE2
+            // placements (key count non-zero) ride the door slot space — their vertices pose from
+            // `door_base + n_doors + k`, the SS list's matrices, every tick. At rest each sits at key 0
+            // (= its placement transform [D]); the switch channel swaps it to the other key (the
+            // 07000012 lift screens, shutters and lift doors).
+            let n_doors = nf_game::door::door_placements(&level.maps[m].placements).len();
+            // The same construction the sim's `Drones::attach_level` runs, so the slot order matches
+            // the matrix upload's `sss.list` order (deterministic: placement order, same filter).
+            let ss_list = nf_game::ss::SsList::create(&level.maps[m].placements, &level.path_blocks());
+            for (si, ss) in ss_list.list.iter().enumerate() {
+                let p = &level.maps[m].placements[ss.placement];
+                let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                    else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
+                let Some((map, object)) = target else { continue };
+                let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
+                add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, Some((n_doors + si) as u16), None, [1.0; 3], &room_cels);
+            }
             // Level-placed pickups (`Pickup_Create` 0x18dda0): `View_DrawObjectGlist` 0x1e6780 draws
             // `obj+0xD8` at `obj+0x90` — the same object carries the glist the renderer draws [M], so the
             // port draws them the way it draws doors: Character-layer vertices posed by the simulation every
@@ -2849,7 +2866,12 @@ impl Scene {
                 };
             }
             for k in 0..(l.pick_base - l.door_base) as usize {
-                p[l.door_base as usize + k] = s.drones.doors.list.get(k).map_or(FAR, |d| d.matrix);
+                // The door region also holds the SimpleScripts' matrices (map-tower2): the ss vertices
+                // index `n_doors + k`, and `pick_base − door_base` = max door-or-ss index + 1.
+                p[l.door_base as usize + k] = match s.drones.doors.list.get(k) {
+                    Some(d) => d.matrix,
+                    None => s.drones.sss.list.get(k - s.drones.doors.list.len()).map_or(FAR, |q| q.matrix),
+                };
             }
             for k in 0..(l.n_mats - l.pick_base) as usize {
                 p[l.pick_base as usize + k] = s.drones.pickups.get(k).filter(|q| !q.gone && !q.hidden).map_or(FAR, |q| q.m);

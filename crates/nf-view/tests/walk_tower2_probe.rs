@@ -74,3 +74,54 @@ fn kind5_script_ops() {
         println!("  (no channel writes in the rest)");
     }
 }
+
+/// 07000014 stage-1 debug: the vent touch → OR → SP #276 → ch 0x47.
+#[test]
+fn probe_14_vent_chain() {
+    let iso = iso();
+    let mut scene = nf_view::load(&iso, "07000014.bin", false).expect("load");
+    let sim = scene.sim.as_mut().unwrap();
+    for _ in 0..200 { sim.step_bond(Input::default(), false, false, false); }
+    sim.bond.pos = [40.7, 2.6, 39.0];
+    for t in 0..600u32 {
+        sim.step_bond(Input::default(), false, false, false);
+        if t % 100 == 99 {
+            let on: Vec<String> = [0xd9u32, 0x7e, 0x47, 0x0e, 0xda].iter().map(|&c| format!("{c:02x}={}", sim.drones.channels.on(c) as u8)).collect();
+            eprintln!("[t{t}] bond {:?} {}", sim.bond.pos, on.join(" "));
+        }
+        if sim.drones.channels.on(0x47) { eprintln!("[t{t}] ch47 ON"); break; }
+    }
+    // Is SP #276 present and what state is it in?
+    let sps: Vec<String> = sim.drones.scripts.players.iter().map(|p| format!("#{} scripts {:08x}/{:08x} out {} gate {} state {}", p.placement, p.scripts[0], p.scripts[1], p.out, p.gate, p.state)).collect();
+    eprintln!("SPs: {}", sps.join(", "));
+}
+
+/// 07000014 fusebox debug: where the boxes landed.
+#[test]
+fn probe_14_fuseboxes() {
+    let iso = iso();
+    let mut scene = nf_view::load(&iso, "07000014.bin", false).expect("load");
+    let sim = scene.sim.as_mut().unwrap();
+    for fb in &sim.drones.fuseboxes {
+        eprintln!("[fb] placement {} pos {:?} ch {:?}", fb.placement, fb.pos, fb.ch);
+    }
+    eprintln!("count {}", sim.drones.fuseboxes.len());
+}
+
+/// 07000014 fusebox E-debug: one press at box #383.
+#[test]
+fn probe_14_fusebox_use() {
+    let iso = iso();
+    let mut scene = nf_view::load(&iso, "07000014.bin", false).expect("load");
+    let sim = scene.sim.as_mut().unwrap();
+    for _ in 0..100 { sim.step_bond(Input::default(), false, false, false); }
+    let pos = sim.drones.fuseboxes[1].pos;
+    sim.bond.pos = [pos[0] + 0.6, pos[1] - 1.2, pos[2]];
+    sim.bond.yaw = -std::f32::consts::FRAC_PI_2;
+    for t in 0..8 {
+        sim.step_bond(Input::default(), false, false, true);
+        let head = sim.bond.head(); let look = sim.bond.look();
+        eprintln!("[t{t}] bond {:?} head {:?} look {:?} opened {} wires {:?} health {:.1}",
+            sim.bond.pos, head, look, sim.drones.fuseboxes[1].opened, sim.drones.fuseboxes[1].wires, sim.drones.health.health);
+    }
+}
