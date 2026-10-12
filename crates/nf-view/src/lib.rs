@@ -114,7 +114,13 @@ fn build_sound(scene: &mut scene::Scene) -> Option<nf_audio::sfx::Sound> {
 }
 
 pub fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
-    load_with_carry(iso, archive, all, None)
+    load_impl(iso, archive, all, None, false)
+}
+
+/// `--dev`: the same load with the dev view-model merge (folded 190-fix-dev2). Normal play never
+/// passes `dev = true`, so no extra archive is opened without the flag.
+pub fn load_dev(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
+    load_impl(iso, archive, all, None, true)
 }
 
 /// The sim catch-up cap (`NF_MAXTICKS`, default 4) — see the frame loop.
@@ -125,9 +131,18 @@ static MAX_TICKS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 /// wrote, and `Player_InitWeapon` (0x1a7ef8) runs the per-level loadout switch over `Player_RamLoad`
 /// (0x1957a8). `None` = a cold load (the game's boot path; `Player_RamLoad`'s whole body is skipped).
 pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>) -> Result<scene::Scene> {
+    load_impl(iso, archive, all, save, false)
+}
+
+/// `--dev` level transition: the carry-over load with the dev view-model merge.
+pub fn load_with_carry_dev(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>) -> Result<scene::Scene> {
+    load_impl(iso, archive, all, save, true)
+}
+
+fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool) -> Result<scene::Scene> {
     use nf_formats::{anim::Sequence, character, levelbin::LevelBin};
     use std::collections::HashMap;
-    let iso = IsoImage::open(iso)?;
+    let iso = IsoImage::open(iso_path)?;
     let (entries, bin) = disc::files_bin_entries(&iso)?;
     let read = |name: &str| -> Result<Option<Vec<u8>>> {
         let Some(fe) = entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)) else { return Ok(None) };
@@ -135,6 +150,19 @@ pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_gam
     };
     let data = read(archive)?.with_context(|| format!("no {archive} in FILES.BIN"))?;
     let mut level = Level::parse(&data)?;
+    // ── The session object table (`models-weapons-items`) ───────────────────────────────────────────
+    // `hashtable_delete_hashtype` is called from the loadable-pack path ONLY (`LoadableLoad`
+    // 0x1d69e8 / `LoadableReload` 0x1d6ab0 — the cut-scene packs) in all of ACTION.ELF [M decompile
+    // grep]: the map-object hashtable accumulates every archive loaded in the session, so a level's
+    // weapon-model meshes resolve even when its own archive doesn't hold them. Measured [D]: Tower-2's
+    // guards (07000011-13) carry weapons 0x10/0x1c/0x1d/0x1a, whose muzzle-flash meshes 0x02000261 /
+    // 0x0200044a and the SMG's held mesh 0x0200025c are on NO archive from 07000011 on — the game
+    // resolves them through the session table filled by the earlier story archives. The story order is
+    // the case order of `ResetMap_LevelCode2Img` (0x1d5258): the level codes ascend in mission order
+    // [docs/systems/levels.md §1], so the session before a level is exactly the archives with smaller
+    // codes. The port merges every weapon-model hash the level archive misses from the latest earlier
+    // story archive that holds it. Appending maps never shifts an existing (map, object) index, and
+    // `by_hash` is first-wins, so every local resolution is unchanged.
     let lb = LevelBin::parse(&data)?;
     let mut skeletons: HashMap<u8, character::Skeleton> = lb.entries.iter().filter(|e| e.kind == 6)
         .map(|e| character::parse_skeleton(lb.data(&data, e)).map(|s| (s.id as u8, s)))
@@ -150,6 +178,19 @@ pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_gam
             sequences.entry(s.skeleton).or_default().push(s);
         }
     }
+    merge_weapon_models(&iso, &read, &archive[..8], &mut level)?;
+
+    // The dev view models (folded 190-fix-dev2): each level archive ships only its own weapons'
+    // first-person skins (+0xDC), so the dev panel's "no 1st-person model here" covers most weapons.
+    // With `--dev` the missing FP skins (and their textures, skeletons, sequences and the weapons'
+    // anim scripts) merge from their holding archives — the same session-table mechanism the
+    // weapon-model merge mirrors — and `Scene::build` then gives every weapon a view model. Dev
+    // mode only: normal play loads no extra archive for skins.
+    let mut level_scripts: HashMap<u32, nf_formats::anim::Script> = HashMap::new();
+    if dev {
+        merge_dev_view_models(&iso, &read, &archive[..8], &mut level, &mut skeletons, &mut sequences, &mut level_scripts)?;
+    }
+
 
     // G-021 (models-characters): drone placements whose skin (placement param 0) is not in their
     // level's archive — 33 of them on 2 levels [D scan]. TWO mechanisms, read off the decompile:
@@ -309,8 +350,14 @@ pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_gam
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
     let drones = scene::DroneContext {
         tables: nf_formats::drone::DroneAnimData::from_action_elf(&elf)?,
-        scripts: lb.entries.iter().filter(|e| e.kind == 5)
-            .filter_map(|e| nf_formats::anim::Script::parse(lb.data(&data, e)).ok()).map(|s| (s.hashcode, s)).collect(),
+        scripts: {
+            let mut sc: HashMap<u32, nf_formats::anim::Script> = lb.entries.iter().filter(|e| e.kind == 5)
+                .filter_map(|e| nf_formats::anim::Script::parse(lb.data(&data, e)).ok()).map(|x| (x.hashcode, x)).collect();
+            // The dev view-model merge's foreign anim scripts (the merged FP skins' idle/fire/reload)
+            // join the level's own; a hash the level has stays local.
+            for (h, x) in level_scripts { sc.entry(h).or_insert(x); }
+            sc
+        },
         level_id: u32::from_str_radix(&archive[..8], 16).unwrap_or(0),
         // weapon_data is built at boot by its static initialiser; run it over the user's ELF (docs/formats/weapon-data.md).
         props: nf_formats::drone::PropertyTables::from_action_elf(&elf).ok(),
@@ -469,6 +516,174 @@ pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_gam
             sim.drones.inventory.owned.iter().filter(|&&o| o).count(), sim.drones.health.health, sim.drones.health.armour);
     }
     Ok(scene)
+}
+
+/// The level's player starts: the main map's type-0x24 placements in placement order, with the gate
+/// (parameter 0) [M `parsemap_create_dynamic_objects` 0x1d04f0 case 0x24 → `Player_AddNewStartPos`
+/// 0x195c00 → `Player_Start` 0x190fd0]. Yaw = the placement's rotation[1], the same convention the
+/// The story order (`ResetMap_LevelCode2Img` 0x1d5258's case order — docs/systems/levels.md §1: the
+/// level codes ascend in mission order), the session the game accumulates before each level.
+const STORY_ORDER: [u32; 20] = [0x0700_0001, 0x0700_0002, 0x0700_0003, 0x0700_0004, 0x0700_0005, 0x0700_0006,
+    0x0700_0007, 0x0700_0008, 0x0700_0009, 0x0700_000a, 0x0700_000b, 0x0700_000c, 0x0700_000d, 0x0700_0011,
+    0x0700_0012, 0x0700_0013, 0x0700_0014, 0x0700_0015, 0x0700_0016, 0x0700_001b];
+
+/// The view-model sleeve meshes (`Scene::build`'s SLEEVES — `AnimSleeveGetEntity(0)`'s per-level set).
+const SLEEVES: [u32; 8] = [0x0200_09d0, 0x0200_0900, 0x0200_01f7, 0x0200_0929, 0x0200_09e6, 0x0200_09ff, 0x0200_0a14, 0x0200_0a13];
+
+/// The weapon-model hashes the level archive misses and the session can supply (`merge_weapon_models`).
+fn wanted_weapon_models(level: &Level, wd: &nf_formats::weapon::WeaponData) -> Vec<u32> {
+    let mut needed: Vec<u32> = Vec::new();
+    let mut want = |h: u32, needed: &mut Vec<u32>| {
+        if h != 0 && h != u32::MAX && !level.by_hash.contains_key(&h) && !needed.contains(&h) { needed.push(h); }
+    };
+    for r in &wd.records {
+        for off in [0x80usize, 0x4c, 0x5c] {
+            want(u32::from_le_bytes(r[off..off + 4].try_into().unwrap()), &mut needed);
+        }
+    }
+    for h in SLEEVES { want(h, &mut needed); }
+    needed
+}
+
+/// Moves the foreign maps that hold any of `hashes` into `level` (appended; `by_hash` first-wins, so a
+/// hash the level resolves locally keeps its (map, object)). Returns how many maps moved.
+fn take_maps_holding(level: &mut Level, foreign: Level, hashes: &[u32]) -> usize {
+    let mut take: std::collections::HashSet<usize> = Default::default();
+    for (mi, m) in foreign.maps.iter().enumerate() {
+        if m.objects.iter().any(|o| hashes.contains(&o.hashcode)) { take.insert(mi); }
+    }
+    if take.is_empty() { return 0; }
+    let base = level.maps.len();
+    let mut moved = 0;
+    for (mi, m) in foreign.maps.into_iter().enumerate() {
+        if !take.contains(&mi) { continue; }
+        let idx = base + moved;
+        for (oi, o) in m.objects.iter().enumerate() {
+            level.by_hash.entry(o.hashcode).or_insert((idx, oi));
+        }
+        level.maps.push(m);
+        moved += 1;
+    }
+    moved
+}
+
+/// The session object table (`models-weapons-items`, see the caller's comment): every weapon-model mesh
+/// (`weapon_data` +0x80 held guns, +0x4C muzzle flashes, +0x5C projectile bodies, and the view-model
+/// sleeves) the level archive misses is merged from the latest earlier story archive that holds it.
+fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
+    read: &impl Fn(&str) -> Result<Option<Vec<u8>>>, prefix: &str, level: &mut Level) -> Result<()> {
+    let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
+    let Ok(wd) = nf_formats::weapon::WeaponData::from_action_elf(&elf) else { return Ok(()) };
+    let level_id = u32::from_str_radix(prefix, 16).unwrap_or(0);
+    let mut needed = wanted_weapon_models(level, &wd);
+    if needed.is_empty() { return Ok(()); }
+    for code in STORY_ORDER.iter().rev().filter(|&&c| c < level_id) {
+        if needed.is_empty() { break; }
+        let name = format!("{code:08x}.bin");
+        let fd = match read(&name) { Ok(Some(d)) => d, _ => continue };
+        let Ok(foreign) = Level::parse(&fd) else { continue };
+        let moved = take_maps_holding(level, foreign, &needed);
+        if moved > 0 {
+            needed.retain(|h| !level.by_hash.contains_key(h));
+            eprintln!("session mesh merge: {moved} map(s) from {name} ({} weapon-model hashes still missing)", needed.len());
+        }
+    }
+    Ok(())
+}
+
+/// The dev view models (folded 190-fix-dev2): index every archive's type-3 skins (skin hash → archive),
+/// then merge every selectable weapon's first-person skin (+0xDC) that the level archive lacks — its
+/// meshes (the skin's `extra` rigid parts and the level's sleeve), its skeleton, its 07F sequences and
+/// the weapons' kind-5 anim scripts. `Scene::build` then gives every weapon a view model. Dev only.
+fn merge_dev_view_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
+    read: &impl Fn(&str) -> Result<Option<Vec<u8>>>, _prefix: &str, level: &mut Level,
+    skeletons: &mut std::collections::HashMap<u8, nf_formats::character::Skeleton>,
+    sequences: &mut std::collections::HashMap<u8, Vec<nf_formats::anim::Sequence>>,
+    scripts: &mut std::collections::HashMap<u32, nf_formats::anim::Script>) -> Result<()> {
+    let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
+    let Ok(wd) = nf_formats::weapon::WeaponData::from_action_elf(&elf) else { return Ok(()) };
+    // skin hash → archive (the first archive on the disc that holds it).
+    static SKIN_ARCHIVES: std::sync::OnceLock<std::collections::HashMap<u32, String>> = std::sync::OnceLock::new();
+    let index = SKIN_ARCHIVES.get_or_init(|| {
+        let mut map = std::collections::HashMap::new();
+        let Ok((entries, bin)) = disc::files_bin_entries(iso) else { return map };
+        for e in entries.iter().filter(|e| e.name.len() == 12 && e.name.ends_with(".bin")) {
+            let Ok(d) = iso.read_bytes(bin.lba as u64 * 2048 + e.offset as u64, e.size as u64) else { continue };
+            let Ok(l) = nf_formats::levelbin::LevelBin::parse(&d) else { continue };
+            for pe in l.entries.iter().filter(|pe| pe.kind == 3) {
+                let raw = l.data(&d, pe);
+                if raw.len() < 4 { continue; }
+                let h = u32::from_le_bytes(raw[0..4].try_into().unwrap());
+                if (h & 0xff00_0000) == 0x0500_0000 { map.entry(h).or_insert_with(|| e.name.clone()); }
+            }
+        }
+        map
+    });
+    // The weapons' FP skins the level lacks + the four fists skins (`Player_Init` overrides record 1
+    // per level; the merged set covers whichever the level asks for).
+    const PUNCH_SKINS: [u32; 4] = [0x0500_00ab, 0x0500_0099, 0x0500_003d, 0x0500_00a1];
+    let mut wanted: Vec<u32> = Vec::new();
+    for w in 1..0x73usize {
+        let fp = wd.first_person(w);
+        if fp != 0 && !level.skins.contains_key(&fp) && !wanted.contains(&fp) { wanted.push(fp); }
+    }
+    for &p in &PUNCH_SKINS { if !level.skins.contains_key(&p) && !wanted.contains(&p) { wanted.push(p); } }
+    let mut merged: Vec<String> = Vec::new();
+    for skin in wanted.iter() {
+        let Some(archive_name) = index.get(skin) else {
+            eprintln!("dev view models: skin {skin:08x} is on no archive of the disc"); continue;
+        };
+        if merged.contains(archive_name) { continue; }
+        merged.push(archive_name.clone());
+        let fd = match read(archive_name) { Ok(Some(d)) => d, _ => continue };
+        let Ok(mut foreign) = Level::parse(&fd) else { continue };
+        // The skins the level lacks join the session table (the game's skin table accumulates the
+        // same way [M AnimLoadFile 0x1d8248]); first-wins keeps the level's own.
+        let mut new_skins = 0usize;
+        for (h, sk) in foreign.skins.clone() {
+            if level.skins.contains_key(&h) { continue; }
+            level.skins.insert(h, sk);
+            new_skins += 1;
+        }
+        // The foreign maps that hold the merged skins' meshes and the sleeves.
+        let mut hashes = wanted_weapon_models(level, &wd);
+        for (h, sk) in foreign.skins.iter() {
+            if !level.skins.contains_key(h) { continue; }
+            for mh in sk.main.iter().flatten() { hashes.push(*mh); }
+            for (_, ph) in sk.extra.iter() { if let Some(x) = ph { hashes.push(*x); } }
+        }
+        // The foreign skeletons the level lacks; the merged skins' skeletons mark the sequence
+        // buckets the view models will look up.
+        let flb = nf_formats::levelbin::LevelBin::parse(&fd)?;
+        let mut fp_skeletons: std::collections::HashSet<u8> = Default::default();
+        for e in flb.entries.iter().filter(|e| e.kind == 6) {
+            let sk = nf_formats::character::parse_skeleton(flb.data(&fd, e))?;
+            if skeletons.contains_key(&(sk.id as u8)) { continue; }
+            skeletons.insert(sk.id as u8, sk);
+        }
+        for h in wanted.iter() { if let Some(sk) = level.skins.get(h) { fp_skeletons.insert(sk.skeleton); } }
+        // The foreign 07F sequences: a NEW skeleton gets its own bucket (no gameplay data touched);
+        // a skeleton the view models use appends — dev only (the port's per-skeleton lists are
+        // order-sensitive gameplay data for DRONES, which the FP hands skeleton never carries).
+        let anim_name = format!("{}F{}", &archive_name[..2], &archive_name[3..]);
+        if let Some(anim) = read(&anim_name)? {
+            let alb = nf_formats::levelbin::LevelBin::parse(&anim)?;
+            let mut appended = 0usize;
+            for pe in alb.entries.iter().filter(|pe| pe.kind == 4 && pe.length >= 0x40) {
+                let s = nf_formats::anim::Sequence::parse(alb.data(&anim, pe))?;
+                if fp_skeletons.contains(&s.skeleton) { sequences.entry(s.skeleton).or_default().push(s); appended += 1; }
+            }
+            if appended > 0 { eprintln!("dev view models: {appended} sequences from {anim_name}"); }
+        }
+        // The foreign kind-5 anim scripts (the weapons' idle/fire/reload hashes) — missing hashes only.
+        let mut new_scripts = 0usize;
+        for e in flb.entries.iter().filter(|e| e.kind == 5) {
+            if let Ok(sc) = nf_formats::anim::Script::parse(flb.data(&fd, e)) { if scripts.insert(sc.hashcode, sc).is_none() { new_scripts += 1; } }
+        }
+        let moved = take_maps_holding(level, foreign, &hashes);
+        eprintln!("dev view models: merged {archive_name} for skin {skin:08x} ({new_skins} skins, {new_scripts} scripts, {moved} maps)");
+    }
+    Ok(())
 }
 
 /// The level's player starts: the main map's type-0x24 placements in placement order, with the gate
@@ -1014,7 +1229,8 @@ impl ApplicationHandler for App {
                         .with_mission(&sim.drones.mission));
                     let name = level_archive_name(next);
                     eprintln!("level: loading {name} ({})", if save.is_some() { "warm" } else { "cold" });
-                    match load_with_carry(&self.iso, &name, self.all, save.as_ref()) {
+                    let load = if self.dev.is_some() { load_with_carry_dev } else { load_with_carry };
+                    match load(&self.iso, &name, self.all, save.as_ref()) {
                         Ok(mut scene) => {
                             self.sound = build_sound(&mut scene);
                             if let Some(start) = scene.start { self.cam = Camera { pos: Vec3::new(start.0[0], start.0[1] + 1.6, start.0[2]), yaw: start.1, pitch: 0.0, fov: GAME_FOV }; }
@@ -1259,7 +1475,7 @@ pub fn run() -> Result<()> {
         }
         None => (level.clone(), level.clone()),
     };
-    let scene = load(&iso, &level, all)?;
+    let scene = if dev { load_dev(&iso, &level, all)? } else { load(&iso, &level, all)? };
     let mut cam = start_camera(&scene);
     if let Some(i) = args.iter().position(|a| a == "--cam") {
         let v: Vec<f32> = args[i + 1..i + 6].iter().map(|s| s.parse()).collect::<Result<_, _>>()?;

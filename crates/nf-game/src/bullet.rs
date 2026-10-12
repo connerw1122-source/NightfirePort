@@ -20,6 +20,9 @@ pub struct Bullet {
     pub owner: usize,
     /// State 0 (first tick: step (0.5 + FRand 0.5) · speed), 1 flying, 2 dead.
     pub state: u8,
+    /// The weapon that fired it (`Drone+0x62` when the drone fired; the mesh `weapon_data[w]+0x5C` is the
+    /// drawn projectile, `Bullet_update` disasm 0x12e8f0 [M]). 0 = none/unknown (hitscan).
+    pub weapon: u16,
     /// `weapon_data+0x6C & 0x40000`: the weapon's bullets play a fly-by (whiz) sound in `Bullet_DoTrails` [M].
     pub flyby: bool,
 }
@@ -213,7 +216,7 @@ mod tests {
         let vol = PlayerVolume { feet: [100.0, 0.0, 100.0], height: 1.8, radius: 0.25 };
         // Viewer at the origin; bullet flies along +z, 2 units to the side (within 3).
         let mut b = Bullet { pos: [0.0, 1.0, -50.0], dir: [0.0, 0.0, 1.0], speed: 15.0, travelled: 0.0, range: 200.0,
-            damage: 0.0, owner: 1, state: 0, flyby: true };
+            damage: 0.0, owner: 1, state: 0, weapon: 0x06, flyby: true };
         let mut rng = crate::drone::Rng::new(0);
         // The bullet flies many ticks past the viewer; the 1-in-5 roll should eventually fire.
         let mut fired = false;
@@ -223,7 +226,7 @@ mod tests {
         assert!(fired, "a fly-by bullet within 3 units should fire on the 1-in-5 roll within 60 ticks");
         // Sister: a bullet without the fly-by flag never fires.
         let mut b2 = Bullet { pos: [0.0, 1.0, -50.0], dir: [0.0, 0.0, 1.0], speed: 15.0, travelled: 0.0, range: 200.0,
-            damage: 0.0, owner: 1, state: 0, flyby: false };
+            damage: 0.0, owner: 1, state: 0, weapon: 0x06, flyby: false };
         let mut rng2 = crate::drone::Rng::new(0);
         let mut fired2 = false;
         for _ in 0..60 {
@@ -232,7 +235,7 @@ mod tests {
         assert!(!fired2, "no fly-by flag → no FlyBy event");
         // Sister: a bullet 10 units away (SqDist 100 > 9) never fires even with the flag.
         let mut b3 = Bullet { pos: [10.0, 1.0, -50.0], dir: [0.0, 0.0, 1.0], speed: 15.0, travelled: 0.0, range: 200.0,
-            damage: 0.0, owner: 1, state: 0, flyby: true };
+            damage: 0.0, owner: 1, state: 0, weapon: 0x06, flyby: true };
         let mut rng3 = crate::drone::Rng::new(0);
         let mut fired3 = false;
         for _ in 0..60 {

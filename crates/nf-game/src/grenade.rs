@@ -31,6 +31,10 @@ pub struct Grenade {
     pub radius: f32,
     /// The weapon's type id (`weapon_data+0x02`): 0x35 frag, 0x36 stun, 0x37 mine.
     pub weapon_type: u16,
+    /// The drawn mesh (`weapon_data[w]+0x5C` of the weapon the throw used, `Bullet_update` state 0's
+    /// `hashtable_set_object_to_entity_gfx(obj, weapon+0x5C)` disasm 0x12e8f0-0x12e900 [M]; 0 = none). The
+    /// renderer poses it at the flight matrix every tick (`View_SetDrawInAllViews` in the game).
+    pub mesh: u32,
     pub owner: usize,
     /// `BU+0xF4` state: 0 first tick, 1 flying, 2 dead (exploded).
     pub state: u8,
@@ -183,7 +187,7 @@ mod tests {
         // fuse expires.
         let mut g = Grenade {
             pos: [0.0, 2.0, 0.0], velocity: [5.0, -5.0, 0.0], speed: 7.0, travelled: 0.0, range: 210.0,
-            damage: 50.0, radius: 4.0, weapon_type: 0x35, owner: 0, state: 0, bounces: 0,
+            damage: 50.0, radius: 4.0, weapon_type: 0x35, mesh: 0x0200_0726, owner: 0, state: 0, bounces: 0,
         };
         let mut rng = Rng::new(0);
         let mut bounced = false;
@@ -205,7 +209,7 @@ mod tests {
         // ticks to bring it down, so the old 5-tick "one short" premise no longer explodes.)
         let mut g = Grenade {
             pos: [0.0, 0.5, 0.0], velocity: [0.0, -30.0, 0.0], speed: 30.0, travelled: 0.0, range: 200.0,
-            damage: 50.0, radius: 4.0, weapon_type: 0x35, owner: 0, state: 0, bounces: BOUNCE_MAX,
+            damage: 50.0, radius: 4.0, weapon_type: 0x35, mesh: 0x0200_0726, owner: 0, state: 0, bounces: BOUNCE_MAX,
         };
         let mut rng = Rng::new(0);
         let mut exploded = false;
@@ -216,7 +220,7 @@ mod tests {
         // Sister: one bounce short it bounces instead (bounces 19 → 20, still flying).
         let mut g = Grenade {
             pos: [0.0, 10.0, 0.0], velocity: [0.0, -30.0, 0.0], speed: 30.0, travelled: 0.0, range: 200.0,
-            damage: 50.0, radius: 4.0, weapon_type: 0x35, owner: 0, state: 0, bounces: BOUNCE_MAX - 1,
+            damage: 50.0, radius: 4.0, weapon_type: 0x35, mesh: 0x0200_0726, owner: 0, state: 0, bounces: BOUNCE_MAX - 1,
         };
         if let Some(ev) = g.update(&w, &mut rng) { assert!(matches!(ev, GrenadeEvent::Bounce(_)), "one short: a bounce, got {ev:?}"); }
         else { assert!(g.bounces == BOUNCE_MAX, "the bounce counted"); }
