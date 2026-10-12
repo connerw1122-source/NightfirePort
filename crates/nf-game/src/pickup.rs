@@ -389,7 +389,7 @@ mod tests {
         let mut ammo_cap = vec![0i16; 34];
         ammo_cap[1] = 70;
         ammo_cap[5] = 90;
-        WeaponData { records, ammo_cap }
+        WeaponData { records, ammo_cap, ammo_raw: Vec::new() }
     }
 
     #[test]

@@ -103,8 +103,12 @@ not be asserted before the timer test's 60-tick expiry path — it is covered.
 
 ## Suite and leftovers
 
-The full NF_ISO suite ran on this branch (see the commit message for the exact counts); only the 3
-allowed disc_golden failures remain on the slim ISO. Not done: the four root-cause fixes above, the
+The full NF_ISO suite ran on this branch (`cargo test --offline --release -j2 --no-fail-fast -p nf-game
+-p nf-formats -p nf-audio -p nf-view -- --test-threads=1`): **334 passed, 3 failed — exactly the 3
+allowed disc_golden tests** (bigf_header_fields_behave_as_documented,
+bigf_tables_match_the_golden_manifest, directory_tree_matches_the_golden_manifest; the slim ISO's
+missing metadata). All four crates' unit and live tests pass, including fix_drone4_live /
+probe_drone4 (the guests walk) and the render suites. Not done: the four root-cause fixes above, the
 objective/status message callers, the gadget icon area, the fire-mode label's alignment check against a
 PCSX2 frame (the template has the fire-mode LEFT-aligned at x=496, which would clip off-screen — the
 port draws both labels right-aligned), and hud.md's corrections (the "open 16 px/tick" note is wrong —

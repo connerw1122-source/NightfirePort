@@ -259,7 +259,7 @@ mod tests {
     fn weapon_with_bullet_flags(flags: u32) -> WeaponData {
         let mut r = [0u8; RECORD];
         r[0x6c..0x70].copy_from_slice(&flags.to_le_bytes());
-        WeaponData { records: vec![r], ammo_cap: Vec::new() }
+        WeaponData { records: vec![r], ammo_cap: Vec::new(), ammo_raw: Vec::new() }
     }
 
     /// `+0x6C & 0x40000` = the fly-by bit. Sister: a weapon without the bit (e.g. 0x50) does not fly-by.
