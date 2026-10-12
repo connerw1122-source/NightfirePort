@@ -5784,3 +5784,77 @@ frame counter) differs from the port's per-level counter — cadence matches, ph
 **Full suite** (this task, slim ISO, `--test-threads=1`, run crate-by-crate after the background
 runner was OOM-killed twice): nf-formats 11 passed + the 3 allowed `disc_golden` failures;
 nf-audio 7 passed; nf-game 133 passed; nf-view 207 passed / 0 failed across 58 binaries.
+
+## fix-finale-blockers — the finale missions complete: 07000016's chaser, 0700001b's Drake, 0700004a's lift, the unported start states (2026-10-12)
+
+**Done**
+- **07000016 (Kiko's defeat, ch 0x90)** — the port now completes the final mission. New
+  `crates/nf-game/src/kiko.rs` (the addresses and tags) + additive state arms in `drone.rs`:
+  KikoMission 0x19 (0x15df28), KikoMissionRun 0x1a (0x15e0d8), StandBlind 0x18 (0x172870),
+  RunToAlarm 0x89 (0x1736f8), the Ninja chain 0xa6→0xa7→0xa8/0xa9/0xaa/0xb2 (0x16b990/0x16bb50 and
+  the band states), EnemyRunToPoint 0x85 (0x168910) and DeleteMe 0xb4 (0x173f00). The chaser is
+  placement #261 (skin 0x0500001e, dtype 0xf → the ninja chain; the #294–297 pit squad share the
+  skin but carry death channels 23..26). Her defeat raise is a documented stand-in: ch 0x90 has no
+  writer in the level's triggers, its 300+ scripts (incl. the 07800016/07900016/07A00016 packs —
+  event 0x0D and the conditional 0x11 swept), the SP outs, any drone's param 12, or the decompile's
+  full `switch_channels`-writer enumeration (103 files) [D+M scans]; kiko.rs documents it. The spawn
+  chain is the game's own: ch 0x81 → SP #262's pack cinema 0x06000631 → ch 185 → SP #272's
+  0x0600090a → ch 240/242 → spawners #257/#293 [D] — the test fires only the unproven head (ch
+  0x81). Her death → ch 0x90 → AND #271 → ch 100 → MissionState 6 → 0x7300017 [M 0x182c60:111-112].
+- **0700001b (Drake's defeat)** — no stand-in: Drake is drone #186 (skin 0x050000ba, death channel
+  param 12 = 14 = 0x0e [D]); ch 0x0e spawns him (spawner #187, trigger 10) and enables him (his
+  wait-switch, param 3 = 10), and `NDrone2_DSTATE_SpaceDrake` 0x16dee0 reads it. SP #198
+  ("ScriptPlayer_Pause", out 0x0e, mask 1 [D]) plays the defeat NIS 0x06000a20, whose event-11
+  stream writes ch 0x0b at t600 and ch 0x64 = **100** at t720 [D decode; Script_EventHandler
+  0x1d94c0 case 0x11] — the mission end bypasses the monitor's AND, so the unproven console
+  objective (ch 0x09) does not block it. The level ends into 0x0730001b [M 0x182c60:114-116].
+- **0700004a (the lift)** — the lift IS script SP #42 "SCRIPTPLAYER_Lift" (mode 1) playing NIS
+  0x06000571: its entity 0x20005b4 descends 150 units over 4950 ticks [D keys], ch 0x40 fires at
+  t1610 (unlocking the −52 doors [D #110/111]). Two port bugs fixed: (1) `Script_Update` blocked
+  forever on a NEGATIVE delay — event 3's `p0 − 1` with p0 = 0 (the script's t1611 event) froze the
+  lift at ~t1611; the game only decrements a POSITIVE delay and runs the streams otherwise
+  [M 0x1da998:17-18,112-114]; (2) the lobby arrival: no writer of ch 0x4a exists anywhere [D scans
+  of the 42 maps' triggers/scripts/SPs; the kind list has no lift/SS/car object] — the port writes
+  it when the lift script ends (the SP state-2 completion in `nis.rs`, keyed to 0x0700004a +
+  0x06000571) [S, documented]. Known gap: the shaft doors' auto-open on the lift's approach is not
+  ported (a rider is scraped off around −52; the test re-seats Bond along the script's key line).
+- **The unported start states** — 0xb4 DeleteMe despawns (07000007's mode-21 party placement),
+  0x85 EnemyRunToPoint resolves per 0x168910:32-36 (return state 0x56; on 07000011/12/13/41 with
+  the player unseen → Idle/Alert — the port has no 0xe9 AI-point registry, so the none-found arm is
+  the proven stand; the sweep levels' gate-waiters stay in WaitSwitch 0x01 as in the game), and
+  07000004's assassin runs the ninja chain at alert 1.0 (dtype 0xf → 0xd → 0xa6/0xa7, alert remap
+  [M 0x14c938/0x14cbd8]).
+- **Two cross-cutting death fixes** [M]: Death_Anim raises the death channel on its first UPDATE
+  while `+0xCD8` is set (0x1637f8 case 2) — not on the anim's end (a drone whose death danim never
+  completes — Drake — never raised); and the explosion kill flushes the pending transition
+  immediately (the game's damage messages run inside the state router; the port's sat outside, so a
+  same-tick UPDATE re-dispatch — the ninja band router — clobbered the death).
+- Tests: `crates/nf-view/tests/fix_finale_live.rs` (4 tests, NF_ISO) — the 07000016 chain+kill,
+  0700001b's Drake, 0700004a's ride+arrival, the three start states, each with sisters (a non-chaser
+  death never raises 0x90; ch 0x0b waits for the NIS's t600; ch 0x4a waits for the script's end).
+  All 4 fail on the pre-fix code (verified by stashing the fix), all pass after.
+
+**Measured**
+- 0700001b's intro: SP #147 plays the 0780001b pack cinema 0x0600085c (2000 ticks) — event 5
+  (drones off) + event 4 (player off) at t0, event 7 (drones on) at t1995, ch 0xbf at t1999 [D];
+  the sweep's "11 never-enabled drones" were waiting on it.
+- 07000016's skins: 0x0500005e is NOT only Drake — the VIP #287 (dtype 12) stands at the silo
+  (sw_ch 0x50 = SP #347's out) and the drone-props voice mapping (skin 0x5e → voice 0x13
+  [M 0x14b300]) is what KikoMission's CivilianMission entry tests.
+- The 0700001b console hypothesis (Monitor camera channels) does NOT hold: no Monitor (0x30) or
+  Sensor (0x28) placements with channels on any of its 42 maps [D]; the NIS console entities
+  (0x060007c0/c1, stream class 0x26) are plain objects [M Script_CreateEntity 0x1d8968's dispatch
+  has no 0x26 case — disassembly-checked]; AND #139's inputs 21/22/27 are the SpaceMissiles'
+  per-missile channels [D #129/131/136 p6], written by the missile state machine's flight path
+  [M 0x1aa118 state 3] behind the launch order ch 19 = AND(0xc1, 0xc2) [D #202], whose writers are
+  not on the disc data.
+- `Monitor_Activate` 0x1b0058 / `Monitor_Update` 0x1afcc8 (the E camera-console family) documented
+  for the record: E on a class-0x38 object → a Sensor (CameraList = the Sensor list, 0x1b0868)
+  camera view; while viewed the sensor's data+0x5c channel is written [M].
+
+**Failed / corrected**
+- The first ninja implementation lost kills: the explosion kill's pending DEATH_ANIM transition was
+  clobbered by the same-tick ninja UPDATE re-dispatch (health 0, state back to 0xa8) — fixed by
+  flushing the transition (the game's damage messages run inside the router [M 0x175778]).
+- `Script_Update`'s negative-delay block (above) also froze every other script that fires event 3
+  with p0 = 0.

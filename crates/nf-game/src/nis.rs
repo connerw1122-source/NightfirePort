@@ -126,6 +126,8 @@ pub struct Objects {
 pub trait World {
     fn anim_length(&self, script: u32) -> Option<u16>;
     fn discrete0(&self, skin: u32, script: u32, frame: f32) -> Option<Mat4>;
+    /// The running level (fix-finale-blockers: the 0700004a lift stand-in keys on it).
+    fn level(&self) -> u32 { 0 }
 }
 
 const IDENT: Mat4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
@@ -198,10 +200,11 @@ impl Script {
             }
         }
         if self.play & 1 == 0 { return; }
-        if self.delay != 0 {
-            if self.delay > 0 { self.delay -= 1; }
-            return;
-        }
+        // `Script_Update` 0x1da998:17-18,112-114: the streams run while the delay is 0; only a
+        // POSITIVE delay decrements and skips the tick — a negative one (event 3's `p0 − 1` with
+        // p0 = 0, the lift script's 0x06000571 t1611 [D]) runs like 0 in the game. The port
+        // blocked on it forever, so the lift never finished (fix-finale-blockers).
+        if self.delay > 0 { self.delay -= 1; return; }
         if !self.playing() { return; }
         // The game's loop guard is only `Script_IsPlaying`; a looping script (play & 8) would spin forever, and
         // the data never skips one — bound the iterations (a guard, not a behaviour change: a non-looping script
@@ -702,6 +705,14 @@ impl Player {
                     }
                 }
                 if !self.info[self.cur].as_ref().is_some_and(Script::playing) {
+                    // fix-finale-blockers [S, docs/levels/0700004a.md §6]: the Tower-2 lift — the
+                    // 0x06000571 script's last key parks the platform entity 150 units down at the
+                    // lobby. The game's own ch-0x4a writer ("the lift's lobby arrival") is not in
+                    // the data the port reaches (no mux, trigger, script event or SP writes it —
+                    // the scans), so the port completes the objective at the lift script's end.
+                    if w.level() == 0x0700_004a && self.scripts[self.cur] == 0x0600_0571 {
+                        ch.set(0x4a, 1, frame);
+                    }
                     if self.stay { self.state = 5; } else {
                         if self.other().is_some() { self.cur ^= 1; self.load(lib, objs, ch, w, frame, out); }
                         self.state = 3;
