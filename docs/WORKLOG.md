@@ -5120,3 +5120,19 @@ paths: the take→message test uses whatever placed pickup takes; the label test
   centre, so on a 16:9 window the bar sat left and the text ran right. Both are centre-anchored now, and the text
   is centred on (256, 380) by its laid-out width. `hud_playtest_live` adds a 16:9 test (bar 0.000 / text 0.002
   NDC). Full suite: 353 passed.
+
+## main-5: R2, the navy holes in the walls (2026-10-11)
+
+- Found from the user's F12 screenshots (nf-shots 002/003/005 on 07000007) and reproduced headless at the logged
+  spots. The navy was the clear colour: holes in the walls, not dark decals.
+- **Cause:** the baked shadow decals (`hall_shadow*`, `banistershadows*`, the shadows behind the paintings) share
+  the walls' list-0 draw state (pass 1, normal blend, zwrite, TEST 0x5001B). The front-to-back sort drew a decal,
+  whose centre is nearer than the big wall's, BEFORE the wall it lies on. Its depth write, even where its alpha
+  is near 0, rejected the wall. Which one won depended on the camera position, so it showed only up close.
+- **Fix:** list-0 draws with an alpha-shaped texture (`gpu::alpha_shaped`: more than 1/4 of the texels below half
+  the peak alpha) draw after the opaque ones of their pass. The game draws room cels before the objects on them
+  (`View_DrawCelGlist` 0x1e6538, then `View_DrawObjList` 0x1e69a0) [M]; the texture test stands in for that
+  split [S]. 249 of 4,811 list-0 World draws on 07000007 move.
+- Rendered after: soft banister shadows on the stair wall, soft shadows behind the paintings; the 05 start view
+  is unchanged. Test: `decal_order_live.rs`. Full suite: 354 passed.
+- Also: `--bond` takes a 5th value (pitch), and F12 / the panel's screenshot logs it.

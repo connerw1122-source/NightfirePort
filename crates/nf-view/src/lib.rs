@@ -629,7 +629,7 @@ impl App {
     /// B-9: apply a dev-menu action and set the on-screen result message. Shared by mouse-click and keyboard
     /// (Enter) so both produce the same feedback. The result stays ~3 s (180 ticks).
     /// Apply the dev panel's queued commands and keep its catalog current (every 30 frames, and on level change).
-    /// A numbered screenshot plus its spot: `nf-shots/NNN-<level>.png` and `.txt` holding the `--bond x,y,z,yaw` and
+    /// A numbered screenshot plus its spot: `nf-shots/NNN-<level>.png` and `.txt` holding the `--bond x,y,z,yaw,pitch` and
     /// level to re-render the view headless (F12 and the panel's "Screenshot + log spot").
     fn spot_shot(&mut self) -> String {
         let dir = std::path::Path::new("nf-shots");
@@ -637,7 +637,7 @@ impl App {
         let level = self.scene.sim.as_ref().map_or(0, |s| s.level);
         let n = (1..10000).find(|n| !dir.join(format!("{n:03}-{level:08x}.png")).exists()).unwrap_or(0);
         let png = dir.join(format!("{n:03}-{level:08x}.png"));
-        let spot = self.scene.sim.as_ref().map(|s| (s.bond.pos, s.bond.yaw)).map(|(p, y)| format!("--bond {:.2},{:.2},{:.2},{:.3}", p[0], p[1], p[2], y))
+        let spot = self.scene.sim.as_ref().map(|s| (s.bond.pos, s.bond.yaw, s.bond.pitch)).map(|(p, y, pt)| format!("--bond {:.2},{:.2},{:.2},{:.3},{:.3}", p[0], p[1], p[2], y, pt))
             .unwrap_or_else(|| { let p = self.cam.pos; format!("camera {:.2},{:.2},{:.2}", p.x, p.y, p.z) });
         let line = format!("{level:08x} {spot} frame {}", self.anim_time as u32);
         let _ = std::fs::write(png.with_extension("txt"), format!("{line}\n"));
@@ -1189,7 +1189,7 @@ pub fn run() -> Result<()> {
             // `--bond x,y,z`: Bond starts exactly there (in the air he falls), instead of the level start.
             if let Some(i) = args.iter().position(|a| a == "--bond") {
                 let v: Vec<f32> = args.get(i + 1).context("--bond needs x,y,z")?.split(',').map(|t| t.parse()).collect::<Result<_, _>>()?;
-                sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw));
+                sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); if let Some(&pt) = v.get(4) { sim.bond.pitch = pt; }
             }
             // `--skip-cutscenes`: hold the game's own skip while a script camera runs (`Script_FFwd` 0x1dac78), for image pairs.
             let skip_cuts = args.iter().any(|a| a == "--skip-cutscenes");
@@ -1202,7 +1202,7 @@ pub fn run() -> Result<()> {
             if skip_cuts {
                 if let Some(i) = args.iter().position(|a| a == "--bond") {
                     let v: Vec<f32> = args.get(i + 1).map(|s| s.split(',').filter_map(|t| t.parse().ok()).collect()).unwrap_or_default();
-                    if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); sim.step_bond(Default::default(), false, false, false); }
+                    if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); if let Some(&pt) = v.get(4) { sim.bond.pitch = pt; } sim.step_bond(Default::default(), false, false, false); }
                 }
             }
             if walk { let h = sim.bond.head(); cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV }; }
@@ -1246,7 +1246,7 @@ pub fn run() -> Result<()> {
     if let Some(i) = args.iter().position(|a| a == "--bond") {
         if let (Some(v), Some(sim)) = (args.get(i + 1), app.scene.sim.as_mut()) {
             let v: Vec<f32> = v.split(',').filter_map(|t| t.parse().ok()).collect();
-            if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); }
+            if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); if let Some(&pt) = v.get(4) { sim.bond.pitch = pt; } }
         }
     }
     // B-5: start the recorder AFTER the scenario is applied (so the header captures the post-scenario starting state:

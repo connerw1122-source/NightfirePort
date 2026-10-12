@@ -176,9 +176,17 @@ pub fn sphere_outside(planes: &[[f32; 4]; 6], centre: [f32; 3], radius: f32) -> 
     planes.iter().any(|p| p[0] * centre[0] + p[1] * centre[1] + p[2] * centre[2] + p[3] < -radius)
 }
 
+/// An alpha-shaped texture: more than a quarter of its texels are below half its peak alpha (the shadow decals'
+/// textures keep their shape in alpha; wall textures are uniformly opaque). Drawn after the opaque list-0 draws.
+pub fn alpha_shaped(rgba: &[u8]) -> bool {
+    let peak = rgba.chunks_exact(4).map(|p| p[3]).max().unwrap_or(0) as u32;
+    let n = rgba.len() / 4;
+    peak > 0 && rgba.chunks_exact(4).filter(|p| (p[3] as u32) * 2 < peak).count() * 4 > n
+}
+
 /// One indexed draw: its layer, pass, pipeline, texture bind group, index range and the object's world centre + radius.
 #[derive(Clone, Copy)]
-struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16> }
+struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16>, late: bool }
 
 pub struct Renderer {
     hud_pipeline: wgpu::RenderPipeline,
@@ -402,8 +410,16 @@ impl Renderer {
         let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.indices), usage: wgpu::BufferUsages::INDEX });
         // Draw order (docs/systems/render.md): sky before the world, list 0, characters, list 1 (alpha), sky after the fog
         // pass, effects; the vertex buffer keeps its layout (the character tail stays contiguous).
+        // Alpha-shaped textures (most texels well below the texture's peak alpha: the baked shadow decals such as
+        // 07000007's `hall_shadows` / `banistershadows`, cut-outs). In list 0 they share the walls' exact draw state,
+        // and the front-to-back sort drew a decal (its centre nearer than the big wall's) BEFORE the wall it lies on:
+        // its depth write, even where its alpha is near 0, then rejected the wall — holes showing the clear colour
+        // (the user's navy blocks, R2). The game draws the room cels before the objects on them (`View_DrawCelGlist`
+        // 0x1e6538, then `View_DrawObjList` 0x1e69a0) [M]; the port has no cel/object split per draw, so it draws
+        // the alpha-shaped list-0 draws after the opaque ones [S: the texture test stands in for "object on a cel"].
+        let shaped: Vec<bool> = std::iter::once(false).chain(scene.textures.iter().map(|t| alpha_shaped(&t.rgba))).collect();
         let draws: Vec<DrawCall> = scene.materials.iter().zip(&material_tex)
-            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel }).collect();
+            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel, late: m.draw.pass == 1 && shaped.get(tex).copied().unwrap_or(false) }).collect();
         let fog = scene.fog;
         let snow_pipeline = make_pipeline(Draw { pass: 5, blend: 1, zwrite: false, atest: 0, fog: 0 });
         let snow_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (SNOW_MAX * std::mem::size_of::<crate::scene::Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -500,7 +516,8 @@ impl Renderer {
             self.order.clear();
             self.order.extend(self.draws.iter().enumerate().map(|(k, dc)| {
                 let key = match dc.pass { 1 => d2(dc.centre), 3 => -d2(dc.centre), _ => 0.0 };
-                (dc.pass, key, k)
+                // Sort group: pass × 2, + 1 for the alpha-shaped list-0 draws (after the opaque ones of their pass).
+                (dc.pass * 2 + dc.late as u8, key, k)
             }));
             self.order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
             // The 6 frustum planes for the CPU-side cull (Gribb-Hartmann from `view_proj`).
