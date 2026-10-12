@@ -35,11 +35,7 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 claimed-by: sandbox2 at 2026-10-12T11:31Z
 
 ---
-## Report (done, 2026-10-12T13:12Z)
-
-
----
-## Report (fix-pickups-trace)
+## Report (fix-pickups-trace, done 2026-10-12T13:12Z)
 
 # fix-pickups-trace — the Raptor drops, against the real game's trace
 
