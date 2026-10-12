@@ -114,3 +114,44 @@ fn probe_dump_texture() {
     let a: Vec<u8> = t.rgba.chunks(4).flat_map(|p| [p[3], p[3], p[3], 255]).collect();
     std::fs::write(format!("{out}-alpha.png"), nf_formats::png::encode_rgba(t.width, t.height, &a)).unwrap();
 }
+
+/// Every vertex of material `NF_PROBE_MAT` on `NF_PROBE_LEVEL`: position, uv, rgba, normal. Opt-in via NF_ISO.
+#[test]
+fn probe_material_vertices() {
+    let Some(iso_path) = iso() else { return };
+    let Ok(mi) = std::env::var("NF_PROBE_MAT") else { return };
+    let archive_env = std::env::var("NF_PROBE_LEVEL").unwrap_or_else(|_| "07000006.bin".into());
+    let scene = nf_view::load(&iso_path, &archive_env, false).expect("load");
+    for mi in mi.split(',').map(|v| v.parse::<usize>().unwrap()) {
+        let m = &scene.materials[mi];
+        let tris = &scene.indices[m.first_index as usize..(m.first_index + m.index_count) as usize];
+        let mut seen = std::collections::BTreeSet::new();
+        eprintln!("material {mi}: {} indices, draw {:?}, tex {:?}", tris.len(), m.draw, m.key);
+        for &i in tris {
+            if !seen.insert(i) { continue }
+            let v = &scene.vertices[i as usize];
+            eprintln!("  v{i} pos ({:.2},{:.2},{:.2}) uv ({:.3},{:.3}) rgba {:?} n {:?}", v.pos[0], v.pos[1], v.pos[2], v.uv[0], v.uv[1], v.rgba, v.nrm);
+        }
+    }
+}
+
+/// Every placement within 6 units of `NF_PROBE_AT` on `NF_PROBE_LEVEL` (all types, cel or not), with its type
+/// (flags & 0xff), object name and whether the cel-only scene pass keeps it. Opt-in via NF_ISO.
+#[test]
+fn probe_placements_near_a_point() {
+    let Some(iso_path) = iso() else { return };
+    let Ok(at) = std::env::var("NF_PROBE_AT") else { return };
+    let p: Vec<f32> = at.split(',').map(|v| v.parse().unwrap()).collect();
+    let archive_env = std::env::var("NF_PROBE_LEVEL").unwrap_or_else(|_| "07000006.bin".into());
+    let level = parse_level(&iso_path, &archive_env);
+    let kept: std::collections::HashSet<(usize, usize, [u32; 3])> = level.scene_instances(true).0.iter()
+        .map(|i| (i.map, i.object, i.placement.translation.map(f32::to_bits))).collect();
+    for i in level.instances(false).0 {
+        let t = i.placement.translation;
+        let d = ((t[0] - p[0]).powi(2) + (t[1] - p[1]).powi(2) + (t[2] - p[2]).powi(2)).sqrt();
+        if d > 6.0 { continue }
+        let o = &level.maps[i.map].objects[i.object];
+        let k = kept.contains(&(i.map, i.object, t.map(f32::to_bits)));
+        eprintln!("type {:#04x} flags {:#x} at ({:.1},{:.1},{:.1}) \"{}\" scene-pass {}", i.placement.flags & 0xff, i.placement.flags, t[0], t[1], t[2], o.name.trim(), if k { "kept" } else { "SKIPPED" });
+    }
+}

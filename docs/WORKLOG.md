@@ -5136,3 +5136,21 @@ paths: the take→message test uses whatever placed pickup takes; the label test
 - Rendered after: soft banister shadows on the stair wall, soft shadows behind the paintings; the 05 start view
   is unchanged. Test: `decal_order_live.rs`. Full suite: 354 passed.
 - Also: `--bond` takes a 5th value (pitch), and F12 / the panel's screenshot logs it.
+
+## main-6: the user's F12 screenshots, round 2 (2026-10-11)
+
+- **07000007 window (nf-shots 007/008):** a lit room box floats in the snow outside. PCSX2 (user screenshot) shows
+  only mountains, so it's the portal walk being off. With `NF_PORTAL=1` the box goes, but two partygoers inside
+  that hidden room stay drawn (the walk culls World draws only). Queued to fix-portal.
+- **07000006 canopy (nf-shot 002):** the "pale sheet" is the alcove's own shade geometry (`Object_Canopy` m776/777,
+  tex 48:22 dark, vertex alpha 128 at the top down to 32). The port draws the same gradient as PCSX2 (sampled: near-black
+  at the top, a 25% tint at the bottom); no change.
+- **07000006 missing barrel trap:** PCSX2 shows barrels on sawhorses by the canopy; the port had none. They are
+  0xE2 placements = `SS_Create` 0x1a9c58 (SimpleScript, class 0x25, drawn and room-linked at load, static
+  until `SS_Activate`) [M], which the scene pass skipped. `scene_instances` now includes 0xE2 (with the 0x20
+  breakables). The survey adds lamps, scrolls, pictures, lift doors, grilles and shutters on 13 levels. Gate [S]: the
+  game skips an SS whose `level_tag+2` key count is 0, which the port can't read. Animation and collision are
+  queued to fix-explosions. Test `simplescript_live.rs`.
+- Tools: `tools/trace/cheats.py` (god mode + infinite ammo in PCSX2); `NF_SKIP_MAT`; probe_render4 gains
+  draws-near-a-point, placements-near-a-point, texture dump and material vertices.
+- Full suite: 360 passed.
