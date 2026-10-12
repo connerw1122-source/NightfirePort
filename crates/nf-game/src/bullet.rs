@@ -171,6 +171,10 @@ impl PlayerHealth {
             if ax >= 0.5 || ay >= 0.5 {
                 if ay < ax { self.dir_bits = if vx < 0.0 { 0x4 } else { 0x8 }; }
                 else { self.dir_bits = if vy < 0.0 { 0x1 } else { 0x2 }; }
+            } else {
+                // Neither axis reaches 0.5 (a shot from straight ahead or behind, e.g. the 07000005 sniper):
+                // both sides glow [M 0x194458:202 `bVar8 = 0xc`]. The port left 0 here: no glow at all.
+                self.dir_bits = 0xC;
             }
         }
         self.pain(damage, difficulty, level);

@@ -5099,6 +5099,61 @@ paths: the take→message test uses whatever placed pickup takes; the label test
   The correction is in `docs/reports/fix-hud.md` and the claimed fix-npcs task.
 - Full suite: 348 passed, 0 failed (full ISO).
 
+## main-4: HUD fixes from the user's fix-hud playtest (2026-10-11)
+
+- **Weapon labels:** sprite +0x38 is the draw LAYER (0x1C drawn, 0xFF hidden), not alpha. While `BL+0x95E` runs only
+  the name shows; the ammo text (+0x20 = 0) and the rounds strip (layer 0xFF) are hidden. At rest: ammo + fire mode
+  [M HUD_UpdateAmmoPane 0x19a7f0:176-189, 218-226, 248-300]. Matches the user's PCSX2 play.
+- **Pickup bar:** the bar is three columns of the HUD sheet 0x0300007A (u 190 stretched to 256×26, caps u 185 / 191,
+  5 wide, colour 0x7F7F7F, alpha 0x8D), from 0x2FC460 with stride 0x30 [L ee_start_05.bin; M static init
+  0x1a0058, HUD_UpdateStatusPane 0x19c310:340-346]. fix-hud drew the sheet's top-left 256×26 corner (the health
+  arcs and the 007 coin: the user's "weird symbols"). The bar now spans x 123–389, against PCSX2's 123–388.
+- **Crouch icon:** the game writes the sprite's screen position as (48, 48) on every crouch, overriding the
+  template's (320, −300); the alpha is 0xFF (0x1D is the layer) [M HUD_UpdateHealthPane 0x19b9c8:305-328].
+  Centring on (48, 48) is [S].
+- **Hit glow:** when neither view axis reaches 0.5 (a shot from straight ahead, e.g. the 07000005 sniper) the
+  game sets 0xC (both sides) [M Player_DealWithObjHit 0x194458:202]; the port set 0, so no glow.
+- Tests: `crates/nf-view/tests/hud_playtest_live.rs` (4, with sisters). Full suite: 352 passed, 0 failed.
+- Open: the truck ride's voice lines (queued to fix-audio2); whether some ammo pickups are really kind 6
+  (the "007 Bonus collected" message): asked the user for the spot.
+- main-4 follow-up (user playtest, widescreen): the pickup bar was Left-anchored and its text started AT the
+  centre, so on a 16:9 window the bar sat left and the text ran right. Both are centre-anchored now, and the text
+  is centred on (256, 380) by its laid-out width. `hud_playtest_live` adds a 16:9 test (bar 0.000 / text 0.002
+  NDC). Full suite: 353 passed.
+
+## main-5: R2, the navy holes in the walls (2026-10-11)
+
+- Found from the user's F12 screenshots (nf-shots 002/003/005 on 07000007) and reproduced headless at the logged
+  spots. The navy was the clear colour: holes in the walls, not dark decals.
+- **Cause:** the baked shadow decals (`hall_shadow*`, `banistershadows*`, the shadows behind the paintings) share
+  the walls' list-0 draw state (pass 1, normal blend, zwrite, TEST 0x5001B). The front-to-back sort drew a decal,
+  whose centre is nearer than the big wall's, BEFORE the wall it lies on. Its depth write, even where its alpha
+  is near 0, rejected the wall. Which one won depended on the camera position, so it showed only up close.
+- **Fix:** list-0 draws with an alpha-shaped texture (`gpu::alpha_shaped`: more than 1/4 of the texels below half
+  the peak alpha) draw after the opaque ones of their pass. The game draws room cels before the objects on them
+  (`View_DrawCelGlist` 0x1e6538, then `View_DrawObjList` 0x1e69a0) [M]; the texture test stands in for that
+  split [S]. 249 of 4,811 list-0 World draws on 07000007 move.
+- Rendered after: soft banister shadows on the stair wall, soft shadows behind the paintings; the 05 start view
+  is unchanged. Test: `decal_order_live.rs`. Full suite: 354 passed.
+- Also: `--bond` takes a 5th value (pitch), and F12 / the panel's screenshot logs it.
+
+## main-6: the user's F12 screenshots, round 2 (2026-10-11)
+
+- **07000007 window (nf-shots 007/008):** a lit room box floats in the snow outside. PCSX2 (user screenshot) shows
+  only mountains, so it's the portal walk being off. With `NF_PORTAL=1` the box goes, but two partygoers inside
+  that hidden room stay drawn (the walk culls World draws only). Queued to fix-portal.
+- **07000006 canopy (nf-shot 002):** the "pale sheet" is the alcove's own shade geometry (`Object_Canopy` m776/777,
+  tex 48:22 dark, vertex alpha 128 at the top down to 32). The port draws the same gradient as PCSX2 (sampled: near-black
+  at the top, a 25% tint at the bottom); no change.
+- **07000006 missing barrel trap:** PCSX2 shows barrels on sawhorses by the canopy; the port had none. They are
+  0xE2 placements = `SS_Create` 0x1a9c58 (SimpleScript, class 0x25, drawn and room-linked at load, static
+  until `SS_Activate`) [M], which the scene pass skipped. `scene_instances` now includes 0xE2 (with the 0x20
+  breakables). The survey adds lamps, scrolls, pictures, lift doors, grilles and shutters on 13 levels. Gate [S]: the
+  game skips an SS whose `level_tag+2` key count is 0, which the port can't read. Animation and collision are
+  queued to fix-explosions. Test `simplescript_live.rs`.
+- Tools: `tools/trace/cheats.py` (god mode + infinite ammo in PCSX2); `NF_SKIP_MAT`; probe_render4 gains
+  draws-near-a-point, placements-near-a-point, texture dump and material vertices.
+- Full suite: 360 passed.
 ## 0091 — fix-wire: the cable crossing (Player_CollWire + Player_Wire + Player_Zipline)
 
 The user's report: at the cable left of the castle gate (07000005), pressing E plays the falling-to-death

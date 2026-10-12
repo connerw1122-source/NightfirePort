@@ -629,6 +629,24 @@ impl App {
     /// B-9: apply a dev-menu action and set the on-screen result message. Shared by mouse-click and keyboard
     /// (Enter) so both produce the same feedback. The result stays ~3 s (180 ticks).
     /// Apply the dev panel's queued commands and keep its catalog current (every 30 frames, and on level change).
+    /// A numbered screenshot plus its spot: `nf-shots/NNN-<level>.png` and `.txt` holding the `--bond x,y,z,yaw,pitch` and
+    /// level to re-render the view headless (F12 and the panel's "Screenshot + log spot").
+    fn spot_shot(&mut self) -> String {
+        let dir = std::path::Path::new("nf-shots");
+        if let Err(e) = std::fs::create_dir_all(dir) { return format!("screenshot: {e}"); }
+        let level = self.scene.sim.as_ref().map_or(0, |s| s.level);
+        let n = (1..10000).find(|n| !dir.join(format!("{n:03}-{level:08x}.png")).exists()).unwrap_or(0);
+        let png = dir.join(format!("{n:03}-{level:08x}.png"));
+        let spot = self.scene.sim.as_ref().map(|s| (s.bond.pos, s.bond.yaw, s.bond.pitch)).map(|(p, y, pt)| format!("--bond {:.2},{:.2},{:.2},{:.3},{:.3}", p[0], p[1], p[2], y, pt))
+            .unwrap_or_else(|| { let p = self.cam.pos; format!("camera {:.2},{:.2},{:.2}", p.x, p.y, p.z) });
+        let line = format!("{level:08x} {spot} frame {}", self.anim_time as u32);
+        let _ = std::fs::write(png.with_extension("txt"), format!("{line}\n"));
+        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog) {
+            Ok(()) => format!("saved {} ({line})", png.display()),
+            Err(e) => format!("screenshot failed: {e} ({line})"),
+        }
+    }
+
     fn poll_panel(&mut self) {
         let Some(h) = self.panel.clone() else { return };
         let queued: Vec<String> = h.lock().map(|mut g| std::mem::take(&mut g.queue)).unwrap_or_default();
@@ -638,6 +656,7 @@ impl App {
             let what = q.iter().find(|(k, _)| k == "do").map(|(_, v)| v.clone()).unwrap_or_default();
             let status = match what.as_str() {
                 "god" => match self.dev.as_deref_mut() { Some(d) => { d.god_mode = !d.god_mode; format!("god mode {}", if d.god_mode { "on" } else { "off" }) } None => "no dev mode".into() },
+                "shot" => self.spot_shot(),
                 "ammo" => match self.dev.as_deref_mut() { Some(d) => { d.infinite_ammo = !d.infinite_ammo; format!("infinite ammo {}", if d.infinite_ammo { "on" } else { "off" }) } None => "no dev mode".into() },
                 _ => {
                     let (status, switch) = panel::apply(&mut self.scene, &q);
@@ -803,7 +822,7 @@ impl ApplicationHandler for App {
                 }
                 match (k, event.state) {
                     (KeyCode::Escape, ElementState::Pressed) => if self.grabbed { self.grab(false) } else { el.exit() },
-                    (KeyCode::F12, ElementState::Pressed) => if let Err(e) = shot(&self.scene, &self.cam, "nf-view-shot.png", self.choice, self.anim_time, self.opts, self.notex, self.nofog) { eprintln!("screenshot: {e}") },
+                    (KeyCode::F12, ElementState::Pressed) => { let m = self.spot_shot(); eprintln!("[spot] {m}"); }
                     (KeyCode::BracketRight | KeyCode::BracketLeft, ElementState::Pressed) => {
                         self.choice = match (k == KeyCode::BracketRight, self.choice) {
                             (true, None) => Some(0),
@@ -1170,7 +1189,7 @@ pub fn run() -> Result<()> {
             // `--bond x,y,z`: Bond starts exactly there (in the air he falls), instead of the level start.
             if let Some(i) = args.iter().position(|a| a == "--bond") {
                 let v: Vec<f32> = args.get(i + 1).context("--bond needs x,y,z")?.split(',').map(|t| t.parse()).collect::<Result<_, _>>()?;
-                sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw));
+                sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); if let Some(&pt) = v.get(4) { sim.bond.pitch = pt; }
             }
             // `--skip-cutscenes`: hold the game's own skip while a script camera runs (`Script_FFwd` 0x1dac78), for image pairs.
             let skip_cuts = args.iter().any(|a| a == "--skip-cutscenes");
@@ -1183,7 +1202,7 @@ pub fn run() -> Result<()> {
             if skip_cuts {
                 if let Some(i) = args.iter().position(|a| a == "--bond") {
                     let v: Vec<f32> = args.get(i + 1).map(|s| s.split(',').filter_map(|t| t.parse().ok()).collect()).unwrap_or_default();
-                    if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); sim.step_bond(Default::default(), false, false, false); }
+                    if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); if let Some(&pt) = v.get(4) { sim.bond.pitch = pt; } sim.step_bond(Default::default(), false, false, false); }
                 }
             }
             if walk { let h = sim.bond.head(); cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV }; }
@@ -1227,7 +1246,7 @@ pub fn run() -> Result<()> {
     if let Some(i) = args.iter().position(|a| a == "--bond") {
         if let (Some(v), Some(sim)) = (args.get(i + 1), app.scene.sim.as_mut()) {
             let v: Vec<f32> = v.split(',').filter_map(|t| t.parse().ok()).collect();
-            if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); }
+            if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); if let Some(&pt) = v.get(4) { sim.bond.pitch = pt; } }
         }
     }
     // B-5: start the recorder AFTER the scenario is applied (so the header captures the post-scenario starting state:

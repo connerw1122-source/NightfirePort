@@ -87,7 +87,8 @@ input[type=search] { width:100%; margin-bottom:6px; }
 <button class="big" onclick="cmd('do=arena')">Arena mode (clear level)</button>
 <button class="big" onclick="cmd('do=clear_npcs')">Remove spawned NPCs</button>
 <button class="big" onclick="cmd('do=god')">God mode</button>
-<button class="big" onclick="cmd('do=ammo')">Infinite ammo</button></header>
+<button class="big" onclick="cmd('do=ammo')">Infinite ammo</button>
+<button class="big" onclick="cmd('do=shot')">Screenshot + log spot</button></header>
 <main>
 <section><h2>NPCs (spawn in front of Bond)</h2>
 <div class="dim" style="margin-bottom:6px">Mode: <select id="mode"><option value="">level default</option><option value="0">normal</option><option value="2">sniper</option><option value="16">ambush</option></select></div>

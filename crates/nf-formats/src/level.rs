@@ -270,7 +270,12 @@ impl Level {
     pub fn scene_instances(&self, cels_only: bool) -> (Vec<Instance>, usize) {
         let (mut out, missing) = self.instances(cels_only);
         if cels_only {
-            out.extend(self.instances(false).0.into_iter().filter(|i| i.placement.flags & 0xff == 0x20 && !i.placement.creates_cel()));
+            // 0xE2 = `SS_Create` 0x1a9c58 ("SimpleScript"): a placed object (class 0x25) with its own glist, drawn
+            // (`obj+0xFA |= 0x44`) and room-linked at load; it sits at its placement until a channel activates it
+            // (`SS_Activate` 0x1a9ea8) and `SS_Update` 0x1a9948 plays its keys [M]. 07000006's barrel trap
+            // (`Script_Barrelroll` / `Script_Barrelleg`) was missing. The game creates one only when its animation's
+            // key count (`level_tag+2`) is non-zero; the port doesn't read that header, so every 0xE2 with a model draws [S].
+            out.extend(self.instances(false).0.into_iter().filter(|i| matches!(i.placement.flags & 0xff, 0x20 | 0xe2) && !i.placement.creates_cel()));
         }
         (out, missing)
     }
