@@ -4544,3 +4544,72 @@ drawn/corpse/team/mode/dtype/channel (25 present, none spawner-held, none corpse
 Not done (sandbox time): what the game does with a team-2/mode-0xC drone (its real behaviour to port), the
 07000005 patrol torso-twist clamp, the 07000006 stationary-guard class, and the searchlight spotted→alarm path —
 each needs the same load-and-walk dump driven to the reported spots.
+
+---
+
+## fix-cutscenes — the loadable cut-scene packs (`isLoadable` / `LoadableLoad`), the party Drake scene and the gondola intro
+
+Area: the script players' streaming arm (`SP_LoadScript` 0x1dbc08 → `isLoadable` 0x1d69a0 → `LoadableLoad`
+0x1d69e8 → `LoaderLoad` 0x1d4a00 case 0), the level-start path (`nf_view::load_with_carry`). Branch
+`s/fix-cutscenes`. Playtest items: the 07000007 party cut-scene where Bond first sees Drake, and the
+07000008 (gondola) cut-scene that should start almost immediately; plus the survey of every level-start and
+intro cut-scene (docs/systems/levels.md §5).
+
+**Root cause [M]:** the two cut-scenes' scripts are not in their level archives. Each level's type-0xC
+entries register (script hash, flag) pairs (`LoaderProcess` 0x1d4880 case 0xC: u32 at +0, u8 flag at +4,
+one record per entry), and `LoadableLoad(hash, flag)` builds the pack file name from the CURRENT LEVEL's id
+with the (flag+7) nibble at bits 20-23: flag 1 → `078000NN.bin`, 2 → `079000NN.bin`, 3 → `07A000NN.bin`
+[measured on the disc: 07000007's (0x06000072, 2)/(0x06000073, 1) → 07900007/07800007, which contain exactly
+those kind-7 scripts plus their kind-4 sequences; the same holds for 01/02/08/09/0b/0d/11/13/14/16/1b/4a].
+The port's script lib held only the level archive's kind-7 entries, so the mode-0 ScriptPlayers hit
+`Player::load`'s missing-script arm (state 5, deleted) on their first trigger and the cut-scene never
+played. The party chain: TouchOnce #356 (box 92.9–98.0, 49.0–53.8, −79.8–−78.9) → ch 0x15 → SP #419 plays
+0x06000072 (the 3000-tick fly-through with the camera sweep and every guest animated — the Drake reveal);
+TouchOnce #412 → ch 0x48 → SP #420 plays 0x06000073 (the control-taking scene, 3 × event 4/5/6/7). The
+gondola chain: Bond spawns at (139.5, 50.5, −76.4), TouchOnce #237 ~3.5 m away → ch 0x49 → SP #294 plays
+0x06000077 (3880 ticks) — "starts almost immediately".
+
+**Reproduce before fix [NF_ISO, shown failing]:** `crates/nf-view/tests/fix_cutscenes_live.rs` — 3 symptom
+tests drive the real path (`nf_view::load` → `step_bond` into the trigger triangles → ch → SP) and failed
+before the fix ("SP deleted itself on its trigger — the pack script was missing"); the 4th (the 07000007
+urn SP #312, mode 64, mask 2) is the priming control and passed.
+
+**Fix:** `load_with_carry` reads the type-0xC records and merges each pack's kind-7 scripts into
+`level.nis` (the lib `Scripts::new` reads) and its kind-4 sequences into the animation set — mirroring
+`parsemap_parsemap` (LoaderProcess case 2 walks the entries). Two measured subtleties:
+- **Pack sequences never join the level's per-skeleton list.** The game DELETES the animation hashtable
+  before streaming a pack (`LoadableLoad`'s `hashtable_delete_hashtype(0x4000000)`) — the cut-scene's
+  sequences replace the cache while it plays. The port's per-skeleton list is order-sensitive gameplay
+  data (`frame_of`'s `k % len` idle cycle, the skeleton-filtered `seq_index` drone lookups): appending to
+  it changed guard animations and broke 07000001's `dropped_guns_dim_to_the_cel_ambient` ("the guard
+  died"). Pack sequences go under the sentinel skeleton key `0x80 | skeleton`, which still reaches the
+  by-hash map (`Scene::seqs`) that `Script_AnimStart` resolution reads.
+- **The level-start intros now play like the game's.** 07000001's SP #277 (mode 1, pack 07800001) and
+  07000002's #400 (pack 07800002) play at load — verified against the game's own snapshot [L
+  ee_start_07000001.bin: SP 0x18fbf70 = state 2, play 0x1, clock 42, length 2120, script 0x06000087].
+  The intros fire event 4 (Bond disabled) and event 0xD (07000001: ch 0xB, which releases its waiters and
+  brings an arrival in), so four test files (fix_player2/3_live, fix_ladder_live, render2_live's
+  dropped_guns) now skip the intro the way the game lets the player (hold the skip action,
+  `Scripts::skip_request` → `Script_FFwd`) before running their scenarios. Test-only adaptations for the
+  corrected post-intro world: the raptor-drop take loop approaches each drop from the four cardinal
+  offsets (a walking player takes a drop from the open side), drops whose column has no walkable floor at
+  or above them are logged and exempted (the ch-0xB arrival's drop lands under the courtyard slope), and
+  the crosshair sister tries the next enemy when the first is occluded.
+
+**Survey (docs/systems/levels.md §5):** every cut-scene ScriptPlayer on the 20 story levels + the wrappers —
+loadable-pack scenes (§5.1, all playable now), archive-resident mode-1 level-start scenes (§5.2, already
+played), mode-64 preloads (§5.3), and the intros (§5.4): `ResetMap_Load` 0x1d6360 creates one ScriptPlayer
+per level from the movie-code table only when the SUBTITLES option is on (`DAT_002a37c8`), and all 14
+scripts in `07000500.bin` are single op-0x1E text streams — subtitle timings for the intro MOVIE, which the
+port does not play (no PSS player). 07000005's #71 (0x06000074) has no loadable record and no pack on the
+disc — the real game cannot stream it either.
+
+**Not done (left):** `SP_Hit` proxy trigger bits (0x2 bullet / 8 / 0x10) — 07000007's urn break (mask 2,
+primed) still waits on them; the `GameFlow_PushState(12.0, 0xD, 0xFF)` streaming loading screen; the C2-class
+viewer dump on 07000002, the 07000005 torso-twist / 07000006 stationary-guard and searchlight-alarm items —
+drone.rs/searchlight.rs are outside this task's file list. The pack's kind-4 sequence merge is eager (level
+load) where the game streams lazily at first use — same content, no RNG-order impact; noted in
+script-player.md.
+
+**Verification:** the 3 symptom tests + priming control pass; full suite green on the slim ISO except the 3
+allowed disc_golden failures (nf-formats 74 tests, nf-audio 7, nf-game 133, nf-view 106 — 0 failures).

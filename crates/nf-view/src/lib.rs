@@ -110,7 +110,7 @@ pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_gam
         Ok(Some(iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?))
     };
     let data = read(archive)?.with_context(|| format!("no {archive} in FILES.BIN"))?;
-    let level = Level::parse(&data)?;
+    let mut level = Level::parse(&data)?;
     let lb = LevelBin::parse(&data)?;
     let skeletons: HashMap<u8, character::Skeleton> = lb.entries.iter().filter(|e| e.kind == 6)
         .map(|e| character::parse_skeleton(lb.data(&data, e)).map(|s| (s.id as u8, s)))
@@ -125,6 +125,49 @@ pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_gam
             let s = Sequence::parse(alb.data(&anim, e))?;
             sequences.entry(s.skeleton).or_default().push(s);
         }
+    }
+    // The loadable cut-scene packs (fix-cutscenes): `SP_LoadScript` (0x1dbc08) checks `isLoadable(hash)`
+    // (0x1d69a0 — the table filled by `LoaderProcess` 0x1d4880 case 0xC from the level archive's type-0xC
+    // entries, one record per entry: u32 script hashcode at +0, u8 flag at +4) and, when it hits, streams the
+    // pack file named with the CURRENT LEVEL's id and the (flag+7) nibble at bits 20-23 (`LoadableLoad`
+    // 0x1d69e8: `GameState+0xC & 0xff0fffff | ((flag+7) << 20)`; `LoaderLoad` 0x1d4a00 case 0 sprintf's that
+    // into "%08x.bin"; flag 1 → nibble 8, flag 2 → nibble 9, flag 3 → nibble A). Measured on the disc
+    // [D]: 07000007's records (0x06000072, 2) and (0x06000073, 1) → 07900007.bin / 07800007.bin, which hold
+    // exactly those type-7 scripts plus their kind-4 sequences; 07000008's (0x06000077, 1) / (0x06000078, 2)
+    // → 07800008.bin / 07900008.bin likewise. These scripts exist nowhere else — the party's Drake fly-through
+    // (0x06000072), the party's hand-back cut-scene (0x06000073) and the gondola level's intro (0x06000077)
+    // are pack-only. Without the packs the port's ScriptPlayers hit the missing-script arm of `Player::load`
+    // (state 5, deleted) on their first trigger and the cut-scene never plays (the user's playtest). The
+    // pack's kind-7 entries go into `level.nis` (the same lib `Scripts::new` reads) and kind-4 into
+    // `sequences`, mirroring `parsemap_parsemap` (LoaderProcess case 2 → the map parser walks the entries:
+    // kind 7 → `Script_Load`, kinds 3/4/5 → `AnimLoadFile`).
+    let level_id = u32::from_str_radix(&archive[..8], 16).unwrap_or(0);
+    for e in lb.entries.iter().filter(|e| e.kind == 0xC) {
+        let r = lb.data(&data, e);
+        if r.len() < 5 { continue; }
+        let (hash, flag) = (u32::from_le_bytes([r[0], r[1], r[2], r[3]]), r[4]);
+        if flag == 0 || flag > 3 { continue; }
+        let pack_name = format!("{:08x}.bin", (level_id & 0xff0f_ffff) | ((flag as u32 + 7) << 20));
+        let Some(pack) = read(&pack_name)? else { eprintln!("loadable pack {pack_name} not on the disc (script {hash:08x})"); continue };
+        let plb = LevelBin::parse(&pack)?;
+        for pe in plb.entries.iter() {
+            match pe.kind {
+                7 => { let h = pe.hash(); match nf_formats::nis::Nis::parse(h, plb.data(&pack, pe)) { Ok(n) => { level.nis.insert(h, n); }, Err(err) => eprintln!("pack {pack_name} script {h:08x}: {err}") } }
+                // Pack sequences go under `0x80 | skeleton` — a key no skin's skeleton ever uses. The game
+                // DELETES the animation hashtable before streaming a pack (`LoadableLoad` 0x1d69e8's
+                // `hashtable_delete_hashtype(0x4000000)`, then `AnimLoadFile` for the pack's kind-4 entries):
+                // the cut-scene's sequences REPLACE the cache while it plays and never join the level's
+                // per-skeleton sequence list. In the port that list is order-sensitive gameplay data —
+                // `frame_of`'s `k % len` idle cycle and the skeleton-filtered `seq_index` drone lookups —
+                // and appending to it changed guards' animations and broke live tests (07000001's
+                // `dropped_guns_dim_to_the_cel_ambient` "the guard died"). The sentinel key still reaches
+                // the by-hash map `Scene::seqs` (built by flattening every bucket), which is the only thing
+                // a cut-scene's `Script_AnimStart` resolution reads (`script_frame`'s hash → `seqs.get`).
+                4 if pe.length >= 0x40 => { let s = Sequence::parse(plb.data(&pack, pe))?; sequences.entry(s.skeleton | 0x80).or_default().push(s); }
+                _ => {}
+            }
+        }
+        eprintln!("loadable pack {pack_name}: {} scripts, {} sequences (for {hash:08x})", plb.entries.iter().filter(|e| e.kind == 7).count(), plb.entries.iter().filter(|e| e.kind == 4).count());
     }
     // Drone start animations: ACTION.ELF's tables (read through its symbols) and the level's scripts (type 5).
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
