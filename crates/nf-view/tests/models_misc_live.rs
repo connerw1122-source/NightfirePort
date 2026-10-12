@@ -310,3 +310,66 @@ fn a_broken_searchlight_smokes_every_seventh_tick() {
     }
     assert_eq!(spawns, 10, "70 ticks at one puff per 7 = 10");
 }
+
+/// The explosion visual (`Explode_Create` 0x17cbd0): a grenade blast spawns the one-shot 0x6000052
+/// script player scaled by radius·0.06666667, and its `Blast_frame_N`/`Blast_radius_ball` entity
+/// streams resolve to real glist meshes in the scene's script-entity attachments.
+#[test]
+fn a_grenade_blast_plays_the_explosion_script_entities() {
+    use nf_game::player::{Bond, Input};
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000001.bin", false).expect("load 07000001");
+    // The script's entity hashes resolve in the level (the blast meshes are level-map objects).
+    {
+        let sim = scene.sim.as_ref().unwrap();
+        let level = parse_level(&iso, "07000001.bin");
+        let nis = level.nis.get(&0x0600_0052).expect("07000001 carries the explosion script");
+        let entities: Vec<u32> = nis.streams.iter().flat_map(|st| st.decode()).filter_map(|c| match c {
+            nf_formats::nis::Cmd::Entity { hash, obj_type, .. } if !matches!(obj_type, 0xea | 0xeb | 0xf5 | 0xf2) => Some(hash),
+            _ => None,
+        }).collect();
+        assert!(entities.len() >= 30, "the blast script spawns its entities, got {}", entities.len());
+        let missing: Vec<u32> = entities.iter().filter(|h| !level.by_hash.contains_key(h)).copied().collect();
+        assert!(missing.is_empty(), "unresolved blast meshes: {missing:02x?}");
+    }
+    // Through the real input path: throw a grenade, wait for the blast, the script player runs and
+    // `script_entity` answers for its entities.
+    let sim = scene.sim.as_mut().unwrap();
+    sim.bond = Bond::new([100.0, 26.0, 108.0], sim.bond.yaw);
+    sim.disabled = false;
+    for _ in 0..5 { sim.step_bond(Input::default(), false, false, false); }
+    // Own a frag (0x35) and switch to it (fix-player3's pickup route).
+    let id = 0x35usize;
+    let model = sim.weapons.model(id);
+    let bounds = *sim.models.get(&model).unwrap_or(&nf_game::pickup::Model { centre: [0.0, 0.05, 0.0], radius: 0.3 });
+    let p = nf_game::pickup::Pickup::create_placed(sim.bond.pos, [0.0; 3], nf_game::pickup::kind::WEAPON, id as u16, 1, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons).expect("grenade pickup builds");
+    sim.drones.pickups.push(p);
+    for _ in 0..5 { sim.step_bond(Input::default(), false, false, false); }
+    // The blast through the real explosion path: a frag in flight with a 10-tick fuse (the sim's own
+    // Grenade — the same struct the input-driven throw fills; fix_player3_live's thrown_grenade test
+    // covers the throw itself). The explosion tick pushes drones.explosions AND plays the script.
+    let at = [sim.bond.pos[0] + 2.0, sim.bond.pos[1] + 1.5, sim.bond.pos[2]];
+    sim.drones.grenades.push(nf_game::grenade::Grenade {
+        pos: at, velocity: [0.05, 0.0, 0.0], speed: 0.05, travelled: 0.0, range: 10.0,
+        damage: 100.0, radius: 5.0, weapon_type: 0x35, owner: usize::MAX, state: 0, bounces: 0,
+    });
+    let mut blasted = false;
+    for _ in 0..40 { sim.step_bond(Input::default(), false, false, false); if !sim.drones.explosions.is_empty() { blasted = true; break; } }
+    assert!(blasted, "the grenade never exploded");
+    // The one-shot player is in the scripts list with the blast scale.
+    let now = sim.drones.scripts.players.iter().filter(|p| p.scripts[0] == 0x0600_0052).count();
+    assert!(now >= 1, "the explosion script player missing");
+    // The blast entities spawn over the script's 165 ticks (one Blast_frame per tick from its stream's
+    // start); tick into the fireball, then the scene's attachment machinery answers for one.
+    for _ in 0..20 { sim.step_bond(Input::default(), false, false, false); }
+    let live: Vec<(u8, u32)> = sim.drones.scripts.objects.list.iter().flatten()
+        .filter_map(|o| match o { nf_game::nis::Obj::Entity { hash, src: (h, si), .. } if *h == 0x0600_0052 => Some((*si, *hash)), _ => None })
+        .collect();
+    eprintln!("live blast entities: {}", live.iter().map(|(si, h)| format!("{si}:{h:08x}")).collect::<Vec<_>>().join(" "));
+    // The blast family: clouds 0x0200021a, bursts 0x0200021e, Blast_frame_N 0x020003d7..0x020003e8,
+    // sparks 0x0200042d, the big fireball 0x020006a7 [D 07000001's script decode].
+    let blast_family = |h: u32| (0x0200_03d7..=0x0200_03e8).contains(&h) || matches!(h, 0x0200_021a | 0x0200_021e | 0x0200_042d | 0x0200_06a7);
+    assert!(live.iter().any(|&(_, h)| blast_family(h)), "no blast mesh live; live = {live:02x?}");
+    let any = live.iter().any(|&(si, h)| sim.script_entity((0x0600_0052, si), h).is_some());
+    assert!(any, "no live blast entity matrix from the script-entity path");
+}

@@ -2288,7 +2288,14 @@ impl Scene {
             let mut seen = BTreeSet::new();
             let players: Vec<nf_game::nis::Player> = level.maps[m].placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xd9)
                 .filter_map(|(i, p)| nf_game::nis::Player::from_placement(i, p)).collect();
-            for h in players.iter().flat_map(|p| p.scripts).filter(|&h| h != 0) {
+            // The explosion script (`Explode_Create` 0x17cbd0 Script_Loads 0x6000052 on every disc caller
+            // [M 0x12cd98/0x12ce80/0x17ffa0/0x180498/0x1c350-calls]): the sim spawns it per blast
+            // (`Drones`' grenade explode), so its entity streams need attachments exactly like a placed
+            // player's. 0x6000027/0x600004F (Destroy_Smash's types) stay unported — the port's destroyables
+            // don't explode yet.
+            let hashes: Vec<u32> = players.iter().flat_map(|p| p.scripts).filter(|&h| h != 0)
+                .chain(std::iter::once(0x0600_0052)).collect();
+            for h in hashes {
                 let Some(nis) = level.nis.get(&h) else { continue };
                 for (si, st) in nis.streams.iter().enumerate() {
                     for cmd in st.decode() {

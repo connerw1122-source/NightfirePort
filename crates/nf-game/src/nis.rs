@@ -781,9 +781,16 @@ impl Scripts {
     /// trigger — the game's hidden `SP_Create` inside `Copter_Create` 0x17d340 plays the copter's
     /// flight script the same way once its gate channel opens [M 0x1dbc08's mode dispatch].
     pub fn spawn_once(&mut self, placement: usize, script: u32, matrix: Mat4) {
+        self.spawn_once_scaled(placement, script, matrix, 1.0);
+    }
+
+    /// `spawn_once` with the script scale: `Explode_Create` (0x17cbd0:106) plays the explosion script
+    /// with scale = radius·0.06666667 — the port's `Player.scale` multiplies the key translations and
+    /// key scales [M nis.rs keys/interp], the same object field the game's script player carries.
+    pub fn spawn_once_scaled(&mut self, placement: usize, script: u32, matrix: Mat4, scale: f32) {
         self.players.push(Player {
             placement, scripts: [script, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0,
-            scale: 1.0, matrix, cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
+            scale, matrix, cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
         });
     }
 

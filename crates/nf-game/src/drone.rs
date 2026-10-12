@@ -5206,6 +5206,14 @@ impl Drones {
                                 else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
                             }
                         }
+                        // The explosion visual: `Explode_Create` 0x17cbd0 Script_Loads the effect script
+                        // (0x6000052 for every disc caller of the bullet path [M 0x12cd98]) at the blast,
+                        // aligned to it, scale = radius·0.06666667 [M 0x17cbd0:84-106]. The port plays it
+                        // as a one-shot script player; its entity streams draw through the scene's
+                        // script-entity attachments. Missing from the level's lib → the player no-ops.
+                        let mut bm = [[0.0f32; 4]; 4];
+                        bm[0][0] = 1.0; bm[1][1] = 1.0; bm[2][2] = 1.0; bm[3] = [pos[0], pos[1], pos[2], 1.0];
+                        self.scripts.spawn_once_scaled(usize::MAX, 0x0600_0052, bm, radius * 0.0666_6667);
                         self.explosions.push((pos, radius, damage, owner, weapon_type));
                         break;
                     }
