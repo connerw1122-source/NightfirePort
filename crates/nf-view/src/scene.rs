@@ -35,6 +35,9 @@ pub struct Vertex {
     pub pos: [f32; 3],
     pub uv: [f32; 2],
     pub rgba: [u8; 4],
+    /// The vertex normal (snorm, xyz + 0): world space for static World geometry, object/bone space for
+    /// everything the palette poses (the shader rotates those). Used by the dynamic lights (fix-lighting).
+    pub nrm: [i8; 4],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -203,6 +206,9 @@ pub struct Sim {
     pub first_person: bool,
     /// The tick of Bond's last shot (the first-person flash).
     pub last_shot: Option<u32>,
+    /// Bond fired during the latest `step_bond` (the muzzle light's one tick; `last_shot` is stamped before the
+    /// drone tick advances the frame, so it cannot say this alone).
+    pub shot_tick: bool,
     pub view_time: f32,
     pub view_speed: f32,
     pub bob: [f32; 2],
@@ -660,6 +666,7 @@ impl Sim {
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
         nf_game::prof::tick();
         let _prof = nf_game::prof::scope("step_bond (total)");
+        self.shot_tick = false;
         let (trigger, reload) = if self.disabled { input = Default::default(); (false, false) } else { (trigger, reload) };
         let aiming = input.aiming;
         // Weapon switching (`Player_WeaponChange` 0x1a6f80): only when idle (not firing/reloading/holstering). The
@@ -769,28 +776,46 @@ impl Sim {
             let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, water, sink };
             let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
             self.bond.tick_ctx(&self.world, &ctx, &input);
-            // `Player_WeaponNone` 0x1a9858 runs in `Player_CollLadder` on the grab [M 0x196118] — the
-            // port holsters to fists through the same switch path the viewer's weapon cycle uses.
-            if !was_climbing && self.bond.substate == nf_game::player::SS_CLIMB && self.gun.switch_state == 0 && self.gun.weapon != 0x47 {
-                self.gun.switch_request = 0x47;
+            // `Player_WeaponNone` 0x1a9858 runs in `Player_CollLadder` on the grab [M 0x196118]: the
+            // current weapon id is SAVED to `anim+0x64` (the port's `saved_weapon`), the class becomes
+            // 'G' (0x47) immediately (no holster cycle — `anim+0xF4 = 0`), the aim bit clears.
+            if !was_climbing && self.bond.substate == nf_game::player::SS_CLIMB && self.gun.weapon != 0x47 {
+                self.gun.go_to_hands();
+            }
+            // The dismount carry [M Player_Climb 0x196310:99-102]: `if (AnimObj+0x62 == 'G')
+            // AnimObj[99] = AnimObj[100]` — the selected id becomes the saved weapon, and
+            // `Player_SetWeaponAnimObj`'s idle path re-runs `Player_WeaponSelect` [M 0x1a2e38:197-201]:
+            // the saved weapon is re-equipped on dismount (fix-ladder2: Bond stayed on hands).
+            if was_climbing && self.bond.substate == nf_game::player::SS_WALK && self.gun.weapon == 0x47
+                && self.gun.saved_weapon != 0x47 && self.gun.saved_weapon != self.gun.weapon {
+                self.gun.switch_request = self.gun.saved_weapon;
             }
             // `Player_MonitorAir` 0x191a70's drown damage: `Player_HandlePain(0.5, type 7)` [M 0x191a70:136-143].
             if let Some(dmg) = self.bond.drown_damage {
                 self.drones.health.health = (self.drones.health.health - dmg).max(0.0);
             }
         }
-        // Footsteps (`AnimObjectUpdate`, player): `BL+0x924` gathers the distance moved; past the stride (1.65,
-        // crouched 0.4125) it wraps (fmod) and a step sounds: crouched 0x286 at Bond, else `Effect_Player` → the floor
-        // surface's footstep (`EffectInfo+0x16`) at the floor point; AI alertness 0 (drones do not hear it).
-        // *Suggested*: the distance is Bond's horizontal movement per tick (`anim+0xD8`).
-        let moved = ((self.bond.pos[0] - before[0]).powi(2) + (self.bond.pos[2] - before[2]).powi(2)).sqrt();
+        // Footsteps (`AnimObjectUpdate` 0x1befd8:163-198 [M], player): `BL+0x924` gathers the distance
+        // moved (`+= |anim+0xD8|`); past the stride it wraps (fmod) and a step sounds. The stride is
+        // 1.65 — EXCEPT while the CLIMB substate (1) runs, where it is 0.4125 and the step is the fixed
+        // `Sound_Play3D(0x286)` at Bond (the rung sound); every other step is `Effect_Create(…, foot|0x42)`
+        // → the floor surface's footstep (`EffectInfo+0x16`) at the floor point, AI alertness 0
+        // (`Sound_SetAlertness(0)` [M]). fix-ladder2: the port had the 0.4125/0x286 pair on CROUCH — the
+        // user's "rapid footsteps on metal" while crouch-walking. The game's crouch steps run the normal
+        // 1.65 surface path; the crouch anim's smaller per-tick displacement slows them naturally.
+        // *Suggested*: the distance is Bond's movement per tick (horizontal; 3D while climbing, where the
+        // game's `anim+0xD8` follows the climbing anim up the rungs).
+        let (dx, dy, dz) = (self.bond.pos[0] - before[0], self.bond.pos[1] - before[1], self.bond.pos[2] - before[2]);
+        let moved_h = (dx * dx + dz * dz).sqrt();
+        let climbing = self.bond.substate == nf_game::player::SS_CLIMB;
+        let moved = if climbing { (moved_h * moved_h + dy * dy).sqrt() } else { moved_h };
         if self.bond.grounded && !self.disabled {
             self.step_dist += moved;
-            let stride = if self.bond.crouched { 0.4125 } else { 1.65 };
+            let stride = if climbing { 0.4125 } else { 1.65 };
             if self.step_dist > stride {
                 self.step_dist %= stride;
                 let p = self.bond.pos;
-                if self.bond.crouched { self.drones.audio.play3d(0x286, p, None); }
+                if climbing { self.drones.audio.play3d(0x286, p, None); }
                 else if let (Some(s), Some((t, _, m))) = (self.surfaces.as_ref(), self.world.segment_surface(p, [p[0], p[1] - 1.6347, p[2]])) {
                     if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.footstep, m) { self.drones.audio.play3d(id, [p[0], p[1] - 1.6347 * t, p[2]], None); }
                 }
@@ -1039,7 +1064,14 @@ impl Sim {
             let len_of = |h: u32| self.scripts.get(&h).map_or(0.0, |s| s.length as f32);
             let busy = (self.view_script == rd0(0xb0) || self.view_script == rd0(0xb4)) && self.view_time < len_of(self.view_script) - 1.0;
             // Block the trigger and reload while the holster/draw cycle plays.
-            let (trigger, reload) = if can_fire { (trigger, reload) } else { (false, false) };
+            // The hands class 'G' (0x47) cannot fire: its record carries no fire scripts (+0xB0/+0xB4 = 0
+            // [D probe_ladder2]; also no idle +0xA0) and the round spawn runs from the state-9 fire-script
+            // release path — `Player_SetFiringAnim` 0x1a3c70 queues the script, case 9 0x1a2e38:416-420
+            // spawns on its release frame; the press-tick spawn for +0x44 == 0 sits behind that call
+            // [M 0x1a5460:681-690]. Fists (0x01) keeps its fire script 0x060006de [D] — punching is
+            // unaffected (fix-ladder2: the hands state fired once).
+            let has_fire_script = rd0(0xb0) != 0 || rd0(0xb4) != 0;
+            let (trigger, reload) = if can_fire && has_fire_script { (trigger, reload) } else { (false, reload) };
             let fired = self.gun.update_with(trigger, reload, busy, params);
             // Advance the reload state machine [M Player_SetWeaponAnimObj cases 5/6/7].
             let new_reload_state = self.gun.reload_tick(trigger, params);
@@ -1150,6 +1182,7 @@ impl Sim {
                     });
                 } else {
                     self.last_shot = Some(self.drones.frame);
+                    self.shot_tick = true;
                     // The hearing sound: the P2K's 0x403 by default, or the remapped op-1 id for other weapons.
                     // The drones' hearing list uses the sfx table's entry for this id.
                     let hearing_id = match self.gun.weapon {
@@ -1254,7 +1287,7 @@ impl Sim {
         let mut out = Vec::with_capacity(env.drops.len() * 6);
         for (p, &alive) in env.drops.iter().zip(&env.alive) {
             if !alive { continue; }
-            let c = |sr: f32, su: f32, uv: [f32; 2]| Vertex { pos: [p[0] + r[0] * sr + u[0] * su, p[1] + r[1] * sr + u[1] * su, p[2] + r[2] * sr + u[2] * su], uv, rgba: [63, 63, 63, 127] };
+            let c = |sr: f32, su: f32, uv: [f32; 2]| Vertex { pos: [p[0] + r[0] * sr + u[0] * su, p[1] + r[1] * sr + u[1] * su, p[2] + r[2] * sr + u[2] * su], uv, rgba: [63, 63, 63, 127], nrm: [0; 4] };
             let (a, b, cc, d) = (c(-1.0, -1.0, [0.0, 1.0]), c(1.0, -1.0, [1.0, 1.0]), c(1.0, 1.0, [1.0, 0.0]), c(-1.0, 1.0, [0.0, 0.0]));
             out.extend_from_slice(&[a, b, cc, a, cc, d]);
         }
@@ -1458,6 +1491,10 @@ pub struct Scene {
     pub attachments: Vec<Attachment>,
     /// The guard AI, when the drone context was available.
     pub sim: Option<Sim>,
+    /// How many ladder (0x22) placements got a World-layer instance (fix-ladder2's draw sweep).
+    /// The game draws each ladder exactly once through the dynamic-object path [M View_DrawObjList
+    /// 0x1e69a0 → View_DrawObjectGlist 0x1e6780]; 0 means the ladders are invisible.
+    pub ladders_drawn: usize,
     /// Per level object hashcode: whether its glist flags carry 0x800 (the character-lighting bit
     /// `Control_SetGList` 0x134960 merges into obj+0xF0). fix-render2: decides the ambient dim for
     /// the drawn script entities (the truck's nine objects carry 0x8880 [L ee_start_05.bin
@@ -1552,7 +1589,14 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
                 let rgb = [0, 1, 2].map(|k| ((v.rgba[k] as f32 * mult[k]).round() as i32).clamp(0, 255) as u8);
                 [rgb[0], rgb[1], rgb[2], v.rgba[3]]
             };
-            vs.push(Vertex { pos: p, uv, rgba });
+            // The normal: posed vertices keep the mesh's own (the shader rotates it with the palette); static
+            // World vertices get it in world space through the instance matrix here.
+            let posed = character.is_some() || searchlight.is_some() || door.is_some() || pickup.is_some();
+            let n0 = v.normal.map(|c| c as f32);
+            let n = if posed { n0 } else { [0, 1, 2].map(|k| n0[0] * m[0][k] + n0[1] * m[1][k] + n0[2] * m[2][k]) };
+            let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            let nrm = if nl > 1e-6 { [(n[0] / nl * 127.0) as i8, (n[1] / nl * 127.0) as i8, (n[2] / nl * 127.0) as i8, 0] } else { [0; 4] };
+            vs.push(Vertex { pos: p, uv, rgba, nrm });
             if let Some((c, attachment)) = character { cv.push(CharVertex { character: c, pos: v.pos, weight: v.weight, slots: v.slots, attachment, searchlight: None, door: None, pickup: None }); }
             else if let Some(sl) = searchlight { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: Some(sl), door: None, pickup: None }); }
             else if let Some(dr) = door { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: None, door: Some(dr), pickup: None }); }
@@ -1648,9 +1692,14 @@ impl Scene {
     pub fn build(level: &Level, cels_only: bool, skeletons: &HashMap<u8, Skeleton>, sequences: HashMap<u8, Vec<Sequence>>, drones: Option<&DroneContext>) -> Scene {
         let by_hash: HashMap<u32, (u8, usize)> = sequences.iter()
             .flat_map(|(&sk, v)| v.iter().enumerate().map(move |(i, s)| (s.hashcode, (sk, i)))).collect();
-        let (mut instances, missing) = level.instances(cels_only);
+        let (mut instances, missing) = level.scene_instances(cels_only);
         // Sky objects are drawn by the sky pass only (with --all they would also appear as dynamic entities).
-        instances.retain(|i| i.placement.flags & 0xff != 0x2a);
+        // Ladders (0x22) are dynamic objects too (`parsemap_create_dynamic_objects` 0x1d04f0 case 0x22):
+        // their placements never carry the 0x8000 CREATE_CEL flag [M 0x1d1998 vs 0x1d1b68 — the static and
+        // dynamic paths are mutually exclusive per placement], so they must not ride the instance loop;
+        // the ladder sweep below draws them exactly once (fix-ladder2: the ladders were invisible because
+        // `instances(cels_only=true)` skips every placement without 0x8000).
+        instances.retain(|i| !matches!(i.placement.flags & 0xff, 0x2a | 0x22));
         let (mut char_instances, chars_missing) = level.character_instances();
         // Dev NPC pool (the external dev panel's "spawn NPC"): for the first drone placement of each skin, NPC_POOL
         // hidden copies of all its meshes, far below the world. They are ordinary characters with their held weapon,
@@ -1729,6 +1778,7 @@ impl Scene {
             .find(|i| level.maps[i.map].objects[i.object].name.trim() == "Player1")
             .map(|i| (i.placement.translation, i.placement.rotation[1]));
         let mut hidden = 0;
+        let mut ladders_drawn = 0usize; // the sweep below counts the drawn ladder instances (fix-ladder2)
         // The level's room cels (see `Cel`): parsed before the draw so the static 0x800 world objects can snap
         // to their cel's ambient exactly as the game's link does at level start (`build_LinkToRoom` 0x1c9680 →
         // the snap in `control_link_object_to_cel` 0x1346b8; channels are all 0 here, so triple 1 reads).
@@ -2004,6 +2054,28 @@ impl Scene {
                 }
             }
         }
+        // Ladder visuals (`Ladder_Create` 0x1966c0, placement type 0x22, class 0x2D): the drawn mesh is the
+        // placement's resolved object — `Ladder_Create` stores it at `obj+0xD8` (direct store 0x19671c, no
+        // `Control_SetGList`), and the generic dynamic-object draw `View_DrawObjList` 0x1e69a0 →
+        // `View_DrawObjectGlist` 0x1e6780 renders `obj+0xD8` at `obj+0x90` — the placement transform
+        // `control_create_object` 0x1344e0 built (`View_RotTransMatrix` 0x1e5168). Class 0x2D has no update
+        // function (docs/atlas/object.md control_funcs), so `obj+0x90` never changes: a static World-layer
+        // mesh at the placement transform is the game's draw exactly. No ambient dim: `Ladder_Create` never
+        // calls `Control_SetGList`, so `obj+0xF0 & 0x800` is clear and `View_SetupRenderModes_Tweak`
+        // 0x1e5888 takes the white-tweak branch [M]. A ladder whose sphere straddles cels is drawn by
+        // `View_AddForcedObjects` 0x1e5fb8 instead of the per-cel path — still exactly once [M
+        // Controls_StraddleTest 0x134778].
+        if let Some(m) = level.main_map() {
+            for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x22) {
+                let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                    else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
+                if let Some((map, object)) = target {
+                    let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
+                    add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels);
+                    ladders_drawn += 1;
+                }
+            }
+        }
         // Searchlight parts (`Searchlight_Create`'s creation order = `part_placements`): each part's object as
         // Character-layer vertices posed by the simulation every tick — the mount and head rotating, the beam
         // cone along the aim, the spot on its ray hit, the corona a camera billboard (docs/systems/world-objects.md).
@@ -2107,6 +2179,8 @@ impl Scene {
         let seqs: HashMap<u32, Sequence> = sequences.values().flatten().map(|s| (s.hashcode, s.clone())).collect();
         let mut sim = drones.and_then(|d| Some((d, d.props.clone()?, d.weapons.clone()?))).and_then(|(d, props, weapons)| {
             let m = level.main_map()?;
+            // Breakables (type 0x20) are drawn but not solid yet: their collision rules (glass that sight and bullets
+            // pass or break) come with the Break_Create port.
             let world = nf_game::world::CollisionWorld::build(level, &level.instances(true).0);
             let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, d.level_id);
             let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
@@ -2185,7 +2259,7 @@ impl Scene {
                 })
                 .collect();
             drones.pickups.extend(placed_pickups);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0) })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0) })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {
@@ -2208,7 +2282,7 @@ impl Scene {
         }
         let models_0x800: HashMap<u32, bool> = level.maps.iter()
             .flat_map(|m| m.objects.iter().map(|o| (o.hashcode, o.flags & 0x800 != 0))).collect();
-        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool }
+        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the
@@ -2470,6 +2544,27 @@ impl Scene {
         (SkinLayout { char_base, attach_base, sl_base, door_base, pick_base, n_mats, col_att, col_pick, col_one }, attrs)
     }
 
+    /// The muzzle-flash light of Bond's shot this tick, packed for the shader (position, 1/r², colour × intensity,
+    /// active). `Player_MuzzleFlash` (0x1a4298, disassembly 0x1a4370-0x1a43a8) creates it on every shot:
+    /// `Light_Create(radius = weapon+0x58, intensity 2.0, the view model's datum 0, rgb = +0x56/+0x55/+0x54,
+    /// channel 0, life 0, kind 1, …)`. Life 0 → +0x20 = 1, so `Light_Update` deletes it on the next tick: one
+    /// tick of light per shot. Not ported here: `Light_Create`'s `Rand_Rand(0)` draw and the `Gas_Init` smoke
+    /// (game-RNG draws on every shot; fix-lighting). Render-side only: the simulation is unchanged.
+    pub fn dyn_light(&self, time: f32, opts: ViewOpts) -> [f32; 8] {
+        let Some(s) = self.sim.as_ref() else { return [0.0; 8] };
+        if !s.shot_tick { return [0.0; 8]; }
+        let w = s.gun.weapon as usize;
+        let Some(rec) = s.weapons.records.get(w) else { return [0.0; 8] };
+        let radius = f32::from_le_bytes([rec[0x58], rec[0x59], rec[0x5a], rec[0x5b]]);
+        if !(radius > 0.0) { return [0.0; 8]; }
+        let Some(&vm) = self.view_models.get(&s.gun.weapon) else { return [0.0; 8] };
+        let fs = self.frame_state(None, time, opts);
+        let Some(k) = self.attachments.iter().position(|a| a.character as usize == vm && a.flash.is_some()) else { return [0.0; 8] };
+        let at = fs.attach[k][3];
+        let i = 2.0 / 255.0;
+        [at[0], at[1], at[2], 1.0 / (radius * radius), rec[0x56] as f32 * i, rec[0x55] as f32 * i, rec[0x54] as f32 * i, 1.0]
+    }
+
     /// One frame's palette and colour table for `skin_layout` (the GPU replacement for `posed_vertices`).
     pub fn skin_palette(&self, l: &SkinLayout, choice: Option<usize>, time: f32, opts: ViewOpts) -> (Vec<Mat4>, Vec<[f32; 4]>) {
         const FAR: Mat4 = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
@@ -2628,7 +2723,7 @@ impl Scene {
                     let rgb = [0, 1, 2].map(|k| ((v.rgba[k] as f32 * m[k]).round() as i32).clamp(0, 255) as u8);
                     [rgb[0], rgb[1], rgb[2], v.rgba[3]]
                 };
-                Vertex { pos, uv: v.uv, rgba }
+                Vertex { pos, uv: v.uv, rgba, nrm: v.nrm }
             }).collect()
     }
 

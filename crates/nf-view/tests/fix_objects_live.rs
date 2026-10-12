@@ -13,7 +13,20 @@
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
 fn load(iso: &str, level: &str) -> nf_view::scene::Scene {
-    nf_view::load(iso, level, false).expect("load")
+    let mut scene = nf_view::load(iso, level, false).expect("load");
+    // fix-cutscenes: 07000001/07000002 now play their level-start intro (Bond disabled, drones frozen). Skip it
+    // the game's way (hold the skip: `Script_FFwd` 0x1dac78), as fix_player2_live does, so the tests start in control.
+    let intro: &[u32] = match level { "07000001.bin" => &[0x0600_0087], "07000002.bin" => &[0x0600_0084], _ => &[] };
+    if !intro.is_empty() {
+        for t in 0..600u32 {
+            let sim = scene.sim.as_mut().unwrap();
+            let pending = sim.drones.scripts.players.iter().any(|p| intro.contains(&p.scripts[0]) && (matches!(p.state, 1 | 2 | 7) || p.info[p.cur].as_ref().is_some_and(|s| s.play & 1 != 0)));
+            if t >= 2 && !pending && !sim.disabled { break; }
+            sim.drones.scripts.skip_request = true;
+            sim.step_bond(Default::default(), false, false, false);
+        }
+    }
+    scene
 }
 
 fn tick_idle(sim: &mut nf_view::scene::Sim, n: u32) {

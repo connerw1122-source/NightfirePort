@@ -211,6 +211,20 @@ fn placed_pickups_follow_the_pickup_create_gate() {
 fn dropped_guns_dim_to_the_cel_ambient() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = nf_view::load(&iso, "07000001.bin", false).expect("load");
+    // fix-cutscenes: the mode-1 ScriptPlayer #277 (0x06000087, pack 07800001.bin) plays at load like the
+    // game's (state 2 clock 42 [L ee_start_07000001.bin]); before the fix the SP deleted itself. Skip it
+    // the way the game lets the player — hold the skip action until control returns — so the guard fight
+    // below runs with Bond in control, as it did before the packs were ported.
+    {
+        let pending = |sim: &scene::Sim| sim.drones.scripts.players.iter().any(|p| p.scripts[0] == 0x0600_0087 && (matches!(p.state, 1 | 2 | 7) || p.info[p.cur].as_ref().is_some_and(|s| s.play & 1 != 0)));
+        for t in 0..600u32 {
+            let sim = scene.sim.as_mut().unwrap();
+            if t >= 2 && !pending(sim) && !sim.disabled { break; }
+            sim.drones.scripts.skip_request = true;
+            sim.step_bond(Default::default(), false, false, false);
+        }
+    }
+    assert!(!scene.sim.as_ref().unwrap().disabled, "07000001's level-start cut-scene never handed control back");
     {
         let sim = scene.sim.as_mut().unwrap();
         // Kill an armed guard with the P2K (the fix-player2 harness: two torso hits at Easy).

@@ -208,8 +208,10 @@ impl Vu {
                     pos: [f32::from_bits(xyz[0]), f32::from_bits(xyz[1]), f32::from_bits(xyz[2])],
                     uv: [f32::from_bits(uv[0]), f32::from_bits(uv[1])],
                     rgba: [rgba[0] as u8, rgba[1] as u8, rgba[2] as u8, rgba[3] as u8],
-                    // Skinned: this slot holds the source's packed skinning qword (normals come from SkinIt at run time).
-                    normal: if skinned { [0; 3] } else { [nw[0] as i32 as i8, nw[1] as i32 as i8, nw[2] as i32 as i8] },
+                    // Skinned: the packed skinning qword. Words 0..2 each carry a normal component in their high 16 bits
+                    // (signed, unit normal x 64 — measured: |n| = 63.7..64.2 over a 07000005 guard) and the bone slot
+                    // and flags in the low bits; word 3 is w. Stored at the same i8 scale as world normals (x 2, ~±127).
+                    normal: if skinned { [0, 1, 2].map(|k| ((nw[k] as i32 >> 16) * 2).clamp(-127, 127) as i8) } else { [nw[0] as i32 as i8, nw[1] as i32 as i8, nw[2] as i32 as i8] },
                     w,
                     weight: if skinned { f32::from_bits(xyz[3]) } else { 1.0 },
                     slots: if skinned { [(nw[0] & 0x7fff) as u16, (nw[1] & 0x7fff) as u16] } else { [0, 0] },

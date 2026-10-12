@@ -317,9 +317,18 @@ impl Bond {
         let mut diff = diff0;
         if diff > std::f32::consts::FRAC_PI_2 { self.yaw = target - std::f32::consts::FRAC_PI_2; diff = std::f32::consts::FRAC_PI_2; }
         if diff < -std::f32::consts::FRAC_PI_2 { self.yaw = target + std::f32::consts::FRAC_PI_2; diff = -std::f32::consts::FRAC_PI_2; }
-        // The ease runs while the AnimObj flag bit 0 is clear — the port always eases [S: the bit-0
-        // condition is not resolvable this pass; the ease is 0.2 of the remaining angle per tick].
-        self.yaw += diff0 * 0.2;
+        // The ease runs while the AnimObj flag bit 0 is clear — bit 0 is the AIMING flag, managed by
+        // `Player_Weapon`/`Player_Aiming` and cleared by `Player_WeaponNone` on the grab [M 0x1a9858:18-19
+        // `&= 0xfffe`; 0x1a24c8:45-62] — so the ease pauses while the aim key is held (fix-ladder2).
+        if !input.aiming { self.yaw += diff0 * 0.2; }
+        // The look during the climb (fix-ladder2) [M 0x196310 + 0x193600 + 0x1a1d28/0x1a92e8]: the turn
+        // channel (`bd+0x34`) still integrates into the yaw after `Player_Climb` — `Player_Update`'s
+        // `bd+0x30..0x3F` → `obj+0x50..0x5F` integration — and the next tick's clamp above pulls it back
+        // into the ±90° window; the pitch offset (`BL+0x8A8`) takes the stick like on foot:
+        // `Player_Aiming` runs for every substate ≤ 7 (climb = 1 passes its early-out [M 0x1a1d28:21-30])
+        // and `Player_ViewClamping` clamps ±1.0 [M 0x1a92e8:9-16].
+        self.yaw += input.turn;
+        self.pitch = (self.pitch + input.look).clamp(-1.0, 1.0);
         // No walk movement; the local axes decay toward 0 (Player_Move's smoothing with target 0) [M].
         self.local[0] *= 0.8;
         self.local[1] *= 0.8;
@@ -760,6 +769,43 @@ pub fn weapon_lock_auto_draw(level: u32, on: bool, prev: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// fix-ladder2: the climb look [M Player_Climb 0x196310 + Player_Update 0x193600 + ViewClamping
+    /// 0x1a92e8]. The turn input moves the yaw inside the eased ±90° window around `ladder.yaw + π`,
+    /// and the pitch offset takes the stick (free, clamped ±1). Before the fix neither input reached
+    /// the climb substate.
+    #[test]
+    fn climb_look_turns_within_the_ladder_window_and_pitch_is_free() {
+        let world = CollisionWorld::from_triangles(Vec::new());
+        let lad = Ladder { centre: [10.0, 3.0, 20.0], radius: 2.0, yaw: 0.0, channel: 0 };
+        let ctx = LadderCtx { ladders: &[lad.clone()], water: None, sink: false };
+        let mut b = Bond::new([10.0, 3.0, 20.0 + 0.5], lad.yaw + std::f32::consts::PI);
+        b.substate = SS_CLIMB;
+        b.ladder = Some(0);
+        b.climb_top = lad.top();
+        b.climb_bottom = lad.bottom();
+        // Turn left 0.05 rad/tick for a second: the yaw leaves the facing but stays within ±90°.
+        let turn = Input { turn: 0.05, ..Default::default() };
+        for _ in 0..60 { b.tick_ctx(&world, &ctx, &turn); }
+        let target = lad.yaw + std::f32::consts::PI;
+        let dev = wrap_pi(target - b.yaw).abs();
+        // The equilibrium under a held turn is turn/0.2 (the ease opposes the turn [M 0x196310]) — 0.25.
+        assert!(dev > 0.1, "the turn input never moved the yaw during the climb (deviation {dev}) — the camera is stuck");
+        assert!(dev <= std::f32::consts::FRAC_PI_2 + 1e-3, "the yaw left the ±90° ladder window: {dev}");
+        // Pitch: free, clamped ±1 [M ViewClamping 0x1a92e8].
+        let look = Input { look: 0.05, ..Default::default() };
+        for _ in 0..60 { b.tick_ctx(&world, &ctx, &look); }
+        assert!(b.pitch > 0.3, "the pitch offset did not move during the climb ({})", b.pitch);
+        for _ in 0..240 { b.tick_ctx(&world, &ctx, &look); }
+        assert!(b.pitch <= 1.0 + 1e-4 && b.pitch >= -1.0 - 1e-4, "the pitch offset passed the ViewClamping clamp: {}", b.pitch);
+        // Sister: without turn input the eased yaw converges to the ladder facing (the pre-existing ease).
+        let mut b2 = Bond::new([10.0, 3.0, 20.0 + 0.5], lad.yaw + std::f32::consts::PI + 0.8);
+        b2.substate = SS_CLIMB; b2.ladder = Some(0);
+        b2.climb_top = lad.top(); b2.climb_bottom = lad.bottom();
+        let idle = Input::default();
+        for _ in 0..120 { b2.tick_ctx(&world, &ctx, &idle); }
+        assert!(wrap_pi(target - b2.yaw).abs() < 0.1, "the ease no longer converges to the ladder facing");
+    }
 
     /// `Bond::sphere_centre` vs the live 07000005 start [L ee_start_05.bin]: player obj 0x16cefe0, pos
     /// (104.954, 24.963, 108.825), yaw from the matrix (cos −0.5446, sin 0.8387 → forward (0.8387, 0,
