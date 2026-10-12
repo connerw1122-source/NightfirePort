@@ -108,6 +108,21 @@ pub mod state {
     pub const ALLY_LEAD_WAIT: u8 = 0x20;
     /// `NDrone2_DSTATE_AllyLeadDone` (0x15f2e8): the route is walked — stand at the goal.
     pub const ALLY_LEAD_DONE: u8 = 0x23;
+    /// `NDrone2_DSTATE_AllyLeadPlayerInWay` (0x15ea28): Bond blocks the lead route (fix-actors).
+    pub const PLAYER_IN_WAY: u8 = 0x1e;
+    /// `NDrone2_DSTATE_AllyLeadHide` (0x15ec08): cower while a hostile fights nearby (fix-actors).
+    pub const LEAD_HIDE: u8 = 0x1f;
+    /// `NDrone2_DSTATE_AllyLeadMissionWait` (0x15efc8): the route's wait-channel node (fix-actors).
+    pub const LEAD_MISSION_WAIT: u8 = 0x21;
+    /// `NDrone2_DSTATE_AllyLeadBondCombat` (0x15f120): hold while Bond fights nearby (fix-actors).
+    pub const LEAD_BOND_COMBAT: u8 = 0x22;
+    /// `NDrone2_DSTATE_AllyFollowInit` (0x15f3c8) / Follow (0x15f4e0) / FollowWait (0x15f6a0) /
+    /// FollowDone (0x15f858) and `AllyGoToGoalPosition` (0x15f938) (fix-actors).
+    pub const FOLLOW_INIT: u8 = 0x24;
+    pub const FOLLOW: u8 = 0x25;
+    pub const FOLLOW_WAIT: u8 = 0x26;
+    pub const FOLLOW_DONE: u8 = 0x27;
+    pub const GO_TO_GOAL_ALLY: u8 = 0x28;
     pub const PARTY_GIRL_INIT: u8 = 0x2e;
     pub const PARTY_GIRL: u8 = 0x2f;
     pub const CIVILIAN_GUARD: u8 = 0x30;
@@ -547,6 +562,22 @@ pub struct Drone {
     pub corpse: bool,
     pub death_pending: bool,
     pub death_channel: u8,
+    /// The last hit on this drone came from the player (a bullet, a punch or an owned explosion) —
+    /// `Drone+0x2B4` (last-hit-by) is the player [M `DroneFunc_OnInitDeath` 0x145bd0 reads it; the port
+    /// tracks the two bullet paths separately, so a flag stands in] (fix-actors).
+    pub hit_by_player: bool,
+    /// The pending `OnInitDeath` fail verdict, drained by the tick (fix-actors).
+    pub fail_reason: Option<crate::ally::FailReason>,
+    /// AllyLeadMissionWait's channel (obj+0x12C, the placement's param 6; 0 → 0x99) [M 0x15efc8], and
+    /// the tick's read of it (fix-actors).
+    pub wait_channel: u16,
+    pub wait_channel_on: bool,
+    /// The last `update_mission_route` report was BLOCKED/NO_PATH (fix-actors; Lead's PlayerInWay entry).
+    pub route_blocked: bool,
+    /// The distance to the nearest started, alive, team-1 drone (the "armed drone" of
+    /// `NDrone2_NearArmedDrone` 0x15ea28's calls — the port snapshots positions, so the team/started
+    /// filter runs where the snapshot is built; f32::MAX = none) (fix-actors).
+    pub armed_peer_dist: f32,
     pub special_death: u32,
     /// The spot a special death plays at (`+0xBE0`: the object's position at creation; `+0xBF4`: its yaw) and the
     /// stationary flag (`+0x4F8 & 0x10`: set at creation for special-death scripts other than 0x0600021F; blocks combat
@@ -685,7 +716,7 @@ impl Drone {
             health: 10.0, max_health: 10.0, damage_taken: 1.0, damageable: !matches!(skin, 0x0500_003b | 0x0500_003c | 0x0500_0053), kind: setup.kind,
             last_damage: 0.0, silent_kill: false, big_hit: false, flinch_at: None, hit: None, impact_resume: 0, hits_taken: 0,
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
-            corpse: false, death_pending: false, death_channel: param(12) as u8, special_death: param(13), special_spot: pos, special_yaw: yaw,
+            corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false, death_channel: param(12) as u8, special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0,
             velocity: [0.0; 3], in_air: false, on_surface: true,
@@ -907,10 +938,11 @@ impl Drone {
         match code {
             crate::nav::follow::ARRIVED => { self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); true }
             crate::nav::follow::BLOCKED | crate::nav::follow::NO_PATH => {
+                self.route_blocked = true;
                 if self.alert >= 0.66 { self.request_anim(d, anim_state::ALERT_IDLE) } else { self.set_stand_idle(d, _rng, _frame, false) }
                 false
             }
-            _ => { self.request_anim(d, self.walk_anim(d)); self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); false }
+            _ => { self.route_blocked = false; self.request_anim(d, self.walk_anim(d)); self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); false }
         }
     }
 
@@ -1595,7 +1627,13 @@ impl Drone {
                 self.vision_on = false;
                 self.firing = false;
                 if self.special_death != 0 { self.set_state(SPECIAL_DEATH); return Some(true); }
-                self.death_pending = true; // `OnInitDeath` (mission-fail props: not modelled)
+                self.death_pending = true;
+                // `DroneFunc_OnInitDeath` 0x145bd0's mission-fail half (fix-actors): the protected-actor
+                // props 0x53/0x54 — team 1 dies → "Cover Lost" (ch 99), team 2/3 → "Killed Civilians"
+                // (ch 0x60); the monitor's standing hooks turn the channels into the fail [M 0x1827d8].
+                if let Some(r) = crate::ally::on_init_death(self.team, self.prop(d, 0x53), self.prop(d, 0x54), self.hit_by_player) {
+                    self.fail_reason = Some(r); // drained by the tick, next to `raise` (fix-actors)
+                }
                 // `OnInitDeath` 0x145bd0:57-59: the player's kill is logged as dispatched UNLESS the KO flag
                 // (+0x4F8 & 0x1000000) is set — the KO already logged EnemyDisabled instead [*suggested*: the
                 // game also requires the last hit (+0x2B4) to be the player, which in SP it always is].
@@ -2795,8 +2833,8 @@ impl Drone {
             // GoToGoalPosition 0x63 (`NDrone2_DSTATE_GoToGoalPosition` 0x165640): run to the goal (`+0x710`), looking for
             // the opponent on the way; blocked → aim or look about; arrived or failed → DeleteMe (prop 0x59) or the
             // return state `+0x5A2`. Deaf meanwhile (`+0x4F8` 0x400000; hearing is not ported).
-            (GO_TO_GOAL, msg::ENTER) => { self.vision_on = true; true }
-            (GO_TO_GOAL, msg::UPDATE) => {
+            (GO_TO_GOAL_ALLY, msg::ENTER) => { self.vision_on = true; true }
+            (GO_TO_GOAL_ALLY, msg::UPDATE) => {
                 if self.seen && !(self.ever_seen && self.dist >= self.engage_range) {
                     if let Some(n) = self.look_for_opponent(d) { self.set_state(n); return true; }
                 }
@@ -3134,6 +3172,11 @@ impl Drone {
             (ALLY_LEAD, msg::UPDATE) => {
                 // The route first: done → AllyLeadDone [M 0x15e698 case 3, FollowRoute branch 3].
                 if self.update_mission_route(d, rng, frame) { self.set_state(ALLY_LEAD_DONE); return true; }
+                // An armed, started hostile within 10 → LeadHide (the cower) [M 0x15e698's armed-drone
+                // branch + 0x15ec08; the port's armed_peer_dist snapshot].
+                if self.armed_peer_dist <= 10.0 { self.set_state(LEAD_HIDE); return true; }
+                // Bond blocking the route → PlayerInWay [M 0x15ea28's entry; the port's route_blocked].
+                if self.route_blocked && self.dist <= 3.0 { self.set_state(PLAYER_IN_WAY); return true; }
                 // Bond far behind → wait for him [M 0x15e698 case 3: the path-distance rules of
                 // ObjectMissionPathDistance — the port's straight-line stand-in uses 12 units; the
                 // game's close-Bond wait also needs BondWithinAngle(0.52) (the "assure him" stance),
@@ -3146,6 +3189,73 @@ impl Drone {
                 // Resume the lead once Bond is back in the escort band (the game's path-distance
                 // resume 0x15eda8 case 3 → 0x1d; hysteresis against the 12-unit entry).
                 if self.dist <= 10.0 { self.set_state(ALLY_LEAD); }
+                true
+            }
+            // ---- the AllyLead sub-states (fix-actors; 038's brief) ---------------------------------
+            // Lead's UPDATE dispatches them [M 0x15e698 case 3 + the sub-state entries]: an armed,
+            // started hostile within 10 (0x41200000) cowers the escort in LeadHide; Bond blocking the
+            // route (the port's `route_blocked`, set by `update_mission_route`, with Bond within 3)
+            // parks him in PlayerInWay.
+            (PLAYER_IN_WAY, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15ea28 case 1: 0x21]
+            (PLAYER_IN_WAY, msg::UPDATE) => {
+                // No armed drone within 10 and Bond out of the way band → Lead [M 0x15ea28 case 3;
+                // the 1.06-rad facing check is the game's nudge-aside, the port resumes on distance —
+                // *suggested*, documented in docs/systems/actors.md].
+                if self.armed_peer_dist > 10.0 && self.dist > 3.0 { self.set_state(ALLY_LEAD); }
+                true
+            }
+            (LEAD_HIDE, msg::ENTER) => { self.call_anim(d, anim_state::COWER, 0, 0); true } // [M 0x15ec08 case 1: 0x19]
+            (LEAD_HIDE, msg::UPDATE) => {
+                // No armed drone within 14 (0x41600000) → latch and return to Lead in 2 ticks
+                // [M 0x15ec08 case 3: +0xCD8 = 1, timer C = now + 2·FRAME_RATE_INT].
+                if self.armed_peer_dist > 14.0 && self.timer_c.is_none() {
+                    self.timer_c = Some(frame + 2);
+                }
+                true
+            }
+            (LEAD_HIDE, msg::TIMER_C) => { self.set_state(ALLY_LEAD); true }
+            // AllyLeadMissionWait 0x21 (0x15efc8): the route's wait-channel node parks the escort until
+            // the channel fires. The port's route nodes carry no channels — the state is reachable
+            // through the forced-state path only [*suggested*; documented].
+            (LEAD_MISSION_WAIT, msg::ENTER) => {
+                self.wait_channel = if self.second_channel != 0 { self.second_channel as u16 } else { 0x99 }; // [M 0x15efc8 case 1]
+                self.call_anim(d, anim_state::ALERT_IDLE, 0, 0);
+                true
+            }
+            (LEAD_MISSION_WAIT, msg::UPDATE) => {
+                if self.wait_channel_on { self.set_state(ALLY_LEAD); } // [M 0x15efc8 case 3]
+                true
+            }
+            // AllyLeadBondCombat 0x22 (0x15f120): Bond is fighting near the escort — hold the alert
+            // idle until the fight moves away, then Lead. The game's ObjectMissionPathDistance(5.0)
+            // route check is the port's armed-peer + distance band [*suggested*; documented].
+            (LEAD_BOND_COMBAT, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15f120 case 1: 0x21]
+            (LEAD_BOND_COMBAT, msg::UPDATE) => {
+                if self.armed_peer_dist > 10.0 { self.set_state(ALLY_LEAD); }
+                true
+            }
+            // ---- the AllyFollow chain (0x24–0x27, 0x15f3c8/0x15f4e0/0x15f6a0/0x15f858) -------------
+            (FOLLOW_INIT, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15f3c8 case 1: 0x21]
+            (FOLLOW_INIT, msg::UPDATE) => {
+                // Bond visible (+0x228 & 4 — the port's `seen`) → AllyFollow [M 0x15f3c8 case 3].
+                if self.seen { self.set_state(FOLLOW); }
+                true
+            }
+            (FOLLOW, msg::ENTER) => { self.call_anim(d, self.walk_anim(d), 0, 0); true }
+            (FOLLOW, msg::UPDATE) => {
+                // Follow the mission band: beyond 8 walk at Bond, inside it stand (the game walks the
+                // route toward Bond's node; the port's band is *suggested*, documented).
+                if self.dist > 8.0 { self.desired_yaw = self.yaw_to_opp; self.request_anim(d, self.walk_anim(d)); }
+                else { self.set_stand_idle(d, rng, frame, false); }
+                true
+            }
+            (FOLLOW_WAIT, msg::UPDATE) => { if self.dist <= 6.0 { self.set_state(FOLLOW); } true }
+            (FOLLOW_DONE, msg::ENTER) => { self.set_stand_idle(d, rng, frame, true); true } // [M 0x15f858]
+            // AllyGoToGoalPosition 0x28 (0x15f938): walk to the saved goal, then Lead (the escort's
+            // only user) [*suggested*: the goal = the route's last node].
+            (GO_TO_GOAL_ALLY, msg::ENTER) => { self.call_anim(d, self.walk_anim(d), 0, 0); true }
+            (GO_TO_GOAL_ALLY, msg::UPDATE) => {
+                if self.update_mission_route(d, rng, frame) { self.set_state(ALLY_LEAD); }
                 true
             }
             (ALLY_LEAD_DONE, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15f2e8 case 1: 0x21]
@@ -4048,6 +4158,7 @@ impl Drones {
                     if hit.damage > 0.5 { self.audio.play3d(0x413, hit.point, None); }
                     let rng = &mut self.rng;
                     let dr = &mut self.list[i];
+                    dr.hit_by_player = true; // +0x2B4 = the player [M 0x145bd0; fix-actors]
                     dr.hit = Some(hit);
                     dr.global_flinch = self.last_flinch;
                     dr.bond_aiming = self.bond_aiming;
@@ -4494,6 +4605,15 @@ impl Drones {
             }
         }
         let positions: Vec<Option<V3>> = self.list.iter().map(|x| x.enabled.then_some(x.pos)).collect();
+        // The armed-peer distances for `NDrone2_NearArmedDrone`'s calls (fix-actors): the nearest
+        // started, alive, team-1 drone (positions only here; the per-drone team/started filter runs
+        // on the same list before the mutable borrow below).
+        let armed_peer_dist: Vec<f32> = self.list.iter().enumerate().map(|(i, dr)| {
+            self.list.iter().enumerate()
+                .filter(|&(j, o)| j != i && o.team == 1 && o.started && !o.corpse && o.enabled)
+                .map(|(_, o)| ((o.pos[0] - dr.pos[0]).powi(2) + (o.pos[1] - dr.pos[1]).powi(2) + (o.pos[2] - dr.pos[2]).powi(2)).sqrt())
+                .fold(f32::MAX, f32::min)
+        }).collect();
         let peers: Vec<(usize, V3, bool)> = self.llist.iter().map(|&i| (i, self.list[i].pos, self.list[i].seen)).filter(|&(i, _, _)| self.list[i].enabled).collect();
         // `Trigger_Calc`, then every object in the control list (newest first = reverse placement order): triggers and
         // drones interleaved, so a channel a trigger pulses is seen only by the objects updated after it.
@@ -4717,12 +4837,16 @@ impl Drones {
             if dr.spawn_frame == frame { continue; }   // spawned this tick: the game's walk already passed it
             if dr.target.stamp != self.target.stamp { dr.target = self.target.clone(); }
             dr.channel_on = self.channels.on(dr.switch_channel as u32);
+            dr.wait_channel_on = dr.wait_channel != 0 && self.channels.on(dr.wait_channel as u32);
             { let _p = crate::prof::scope("drone: visible_to (drawn ray)"); dr.drawn = dr.enabled && visible_to(player, d.world, dr.pos, dr.head()); }
             dr.links_used = std::mem::take(&mut self.used);
             dr.cover_rt = std::mem::take(&mut self.cover_rt);
             let _pc = crate::prof::scope("drone: clones + misc");
             dr.others = positions.clone();
             dr.peers = peers.clone();
+            // `NDrone2_NearArmedDrone`'s scan (fix-actors): the nearest started, alive, hostile peer.
+            // (The snapshot list was taken before the mutable borrow; the armed/started filter rides it.)
+            dr.armed_peer_dist = armed_peer_dist[index];
             // `NDrone2_PreDroneControl`: the second switch (`+0x135`) with a tag (`+0x13A`): 0xC deletes the drone,
             // otherwise the alternate type's state (`+0x5A4`; Attack for these guards, *suggested*).
             if dr.second_channel != 0 && dr.second_tag != 0 && self.channels.on(dr.second_channel as u32) {
@@ -4786,6 +4910,16 @@ impl Drones {
                 }
             }
             if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
+            // `DroneFunc_OnInitDeath`'s verdict: the FailLabel event + the fail channel [M 0x13e560
+            // applied per 0x145bd0's reasons; fix-actors]. The monitor's standing hooks (ch 0x60/0x61
+            // → the label + ch 99) take it from here [M 0x1827d8:98-107].
+            if let Some(r) = dr.fail_reason.take() {
+                if r.label != 0 {
+                    self.mission.fail_label = r.label;
+                    self.mission_events.push(crate::mission::Event::FailLabel(r.label));
+                }
+                if r.channel != 0 { self.channels.set(r.channel as u32, 1, frame); }
+            }
             // The animation's sounds (`Sound_Play3D` at the drone) enter the hearing list for the next tick.
             let (snd, at) = (std::mem::take(&mut dr.anim_sounds), dr.pos);
             // The script's footstep: the floor under the drone (alertness 0: not heard by the drones).
@@ -4889,6 +5023,9 @@ impl Drones {
                         for (di, ddmg) in hits.drones {
                             if let Some(dr) = self.list.get_mut(di) {
                                 dr.last_damage = ddmg;
+                                // The owner's grenade: usize::MAX = the player's throw [M +0x2B4 = the
+                                // thrower; fix-actors].
+                                if owner == usize::MAX { dr.hit_by_player = true; }
                                 dr.health -= ddmg * dr.damage_taken;
                                 if dr.health <= 0.0 { dr.health = 0.0; dr.set_state(state::DEATH_ANIM); }
                                 else { dr.send(d, &mut self.rng, frame, msg::BULLET); }

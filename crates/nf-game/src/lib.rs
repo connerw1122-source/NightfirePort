@@ -3,6 +3,7 @@
 
 pub mod aivolume;
 pub mod prof;
+pub mod ally;
 pub mod anim;
 pub mod bullet;
 pub mod corona;
