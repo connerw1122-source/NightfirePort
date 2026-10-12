@@ -32,6 +32,9 @@ pub mod kind {
     pub const AMMO: u16 = 1;
     pub const KEY: u16 = 2;
     pub const ARMOUR: u16 = 3;
+    /// `Pickup_Handler` 0x18e650's case 4: consumed, no take effect (the message text comes from
+    /// the pickup's own +0x34 label) — 0700000b's OBJECT_Parachute (#280) is one [M + D].
+    pub const TEXT: u16 = 4;
     pub const BOND_BONUS: u16 = 6;
 }
 
@@ -357,11 +360,14 @@ impl Inventory {
                 *armour = 50.0;
                 Some(Taken::Armour)
             }
-            kind::BOND_BONUS => {
+            kind::BOND_BONUS | kind::TEXT => {
                 // Type 6: the game's `Pickup_Handler` case 6 calls `PlrStat_LogBondBonus` and shows a
                 // message — no weapon or ammo. D-004: the gold-medal gate (`Pickup_Create` line 93) is
                 // skipped. The pickup is consumed [M 0x18e650:234-236]. fix-objects: reported as
                 // `Bonus` so the caller plays the take-time sound 0x14C instead of staying silent.
+                // Type 4 (map-tower): case 4 falls into the same consumed-with-no-effect tail
+                // [M 0x18e650:227-236 — case 4 → default: break]; the parachute must be consumable
+                // or its +0x28 channel (0700000b's obj11 chain) never fires.
                 Some(Taken::Bonus)
             }
             _ => None,
