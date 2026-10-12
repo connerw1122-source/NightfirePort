@@ -292,6 +292,66 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
             bar(&mut h, s.hud.bar_close);
         }
     }
+    // The objective banner (pane 3, `MsgObjectiveStatusPane` 0x319710 + `ObjectiveStatusSprInfo`
+    // 0x319608 [L ee_start_05.bin], `HUD_UpdateStatusPane` 0x19c310): the middle is a 1-texel column
+    // of the HUD sheet 0x0300007A (u 190, v 0..56) stretched to 480×56 at (16, 0), the caps 5-texel
+    // columns (u 185 / 191) against its ends; all colour 0x7F7F7F, alpha 0x8D, layer 30. The main
+    // text is left-aligned at (128, 40) (fmt 0x30cdb0's align 2; the pickup/mission texts use align 1
+    // = centre) in colour 0x7D6D59 with the shadow; the status label above it at (128, 20) rebinds
+    // per display: 0x2000051 "NEW OBJECTIVE" while the current message is not "OBJECTIVE COMPLETE",
+    // else 0x2000053 [M 0x19c310:127-144]. Alpha = time·17 over the last 15 ticks; the banner closes
+    // 16 px per tick around its centre (the pane's slide 0x10 [M 0x1a1070]).
+    {
+        let (bw, bh, bx, by) = (480.0f32, 56.0f32, 16.0f32, 0.0f32);
+        let bar = |h: &mut Hud, w: f32| {
+            let x = bx + (bw - w) / 2.0;
+            let c = gs(0x7f7f7f, 0x8d);
+            h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x, by, w, bh, [190.0, 0.0, 1.0, 56.0], (false, false), c);
+            h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x - 5.0, by, 5.0, bh, [185.0, 0.0, 5.0, 56.0], (false, false), c);
+            h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x + w, by, 5.0, bh, [191.0, 0.0, 5.0, 56.0], (false, false), c);
+        };
+        if let Some(msg) = s.hud.objective_msgs.front() {
+            let a = (msg.time * 17.0).min(255.0) as u32;
+            bar(&mut h, bw);
+            if let Some(lang) = s.lang.as_ref() {
+                if let Some(st) = lang.bind(msg.status) {
+                    h.text(Anchor::Left, &t.font, 29, st, 128.0, 20.0, false, gs(0x7d6d59, a), true);
+                }
+            }
+            h.text(Anchor::Left, &t.font, 29, &msg.text, 128.0, 40.0, false, gs(0x7d6d59, a), true);
+        } else if s.hud.objective_close > 0.0 {
+            bar(&mut h, s.hud.objective_close);
+        }
+    }
+    // The mission banner (pane 2, `MsgMissionStatusPane` 0x2bd538 + `MissionStatusSprInfo` 0x319580
+    // [L], `HUD_CreateMissionStatusPane` 0x1a1028 sets its TXTMSG type 3 and the 0x20 slide): the
+    // middle is uv(198,0) 1×103 stretched to 512×103 at (0, 156), no caps [L SprInfo — only 3
+    // sprites]; the main text ("Mission Complete" / "Mission Fail", type 3 from `Mission_Update`)
+    // centred at (256, 42) (fmt 0x30cdb8, align 1); the fail reason (`FailLabel`, rebound per
+    // display [M 0x19c310:171-173]) at (256, 64) in fmt 0x30cce0 (align 2, as the objective's).
+    // It flashes 0x785A14FF while a type-2 message is up [M 0x19c310:209]. Closes 32 px per tick.
+    {
+        let (bw, bh, bx, by) = (512.0f32, 103.0f32, 0.0f32, 156.0f32);
+        let bar = |h: &mut Hud, hgt: f32| {
+            let y = by + (bh - hgt) / 2.0;
+            h.quad(Anchor::Centre, 30, 0x0300_007a, 0, bx, y, bw, hgt, [198.0, 0.0, 1.0, 103.0], (false, false), gs(0x7f7f7f, 0x8d));
+        };
+        if let Some(msg) = s.hud.mission_msgs.front() {
+            let a = (msg.time * 17.0).min(255.0) as u32;
+            bar(&mut h, bh);
+            h.text(Anchor::Centre, &t.font, 29, &msg.text, SW / 2.0, 42.0 + by, true, gs(0x7d6d59, a), true);
+            if let (Some(lang), true) = (s.lang.as_ref(), s.hud.fail_label != 0) {
+                if let Some(fl) = lang.bind(s.hud.fail_label) {
+                    // The flash while an objective notice is up [M 0x19c310:209 0x785a14ff].
+                    let flash = !s.hud.objective_msgs.is_empty() && frame % 30 < 15;
+                    let (c, al) = if flash { (0x785a14, a) } else { (0x7d6d59, a) };
+                    h.text(Anchor::Centre, &t.font, 29, fl, SW / 2.0, 64.0 + by, true, gs(c, al), true);
+                }
+            }
+        } else if s.hud.mission_close > 0.0 {
+            bar(&mut h, s.hud.mission_close);
+        }
+    }
     // The air/oxygen pane (pane 5, `HUD_UpdateAirPane` 0x1a11c8, `AirSprInfo` 0x2bd490): shown while
     // Bond swims (the game enables it in player modes 3/6 — `Player_MonitorAir` 0x191a70:50); the fill
     // bar's width is `air·2 + 28` of the 256-wide track, its colour 0x68D6B1 fully submerged (mode 6) /
