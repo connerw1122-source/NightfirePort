@@ -46,6 +46,8 @@ fn give_weapon_and_arena() {
     for _ in 0..60 { sim.step_bond(Default::default(), false, false, false); }
     assert!(sim.drones.list.iter().all(|d| !d.present), "arena: no NPCs left");
     assert!(sim.drones.pickups.iter().all(|p| p.gone), "arena: no pickups left");
+    for _ in 0..600 { sim.step_bond(Default::default(), false, false, false); }
+    assert!(sim.drones.level_exit.is_none(), "arena must not fire the level exit (a gone LOAD_LEVEL trigger means fired)");
     // Sister: an unknown command is reported, not applied.
     let (status, _) = panel::apply(&mut scene, &q("do=nonsense"));
     assert!(status.contains("unknown"));

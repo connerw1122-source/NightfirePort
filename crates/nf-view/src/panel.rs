@@ -93,6 +93,7 @@ input[type=search] { width:100%; margin-bottom:6px; }
 <div class="dim" style="margin-bottom:6px">Mode: <select id="mode"><option value="">level default</option><option value="0">normal</option><option value="2">sniper</option><option value="16">ambush</option></select></div>
 <div id="npcs"></div></section>
 <section><h2>Weapons (give to Bond)</h2><input type="search" id="wf" placeholder="filter…" oninput="draw()"><div id="weapons"></div></section>
+<section><h2>Gadgets</h2><div class="dim" style="margin-bottom:6px">Gadgets aren't ported yet: giving one only puts it in the inventory.</div><div id="gadgets"></div></section>
 <section><h2>Consumables</h2><div id="cons"></div></section>
 </main>
 <script>
@@ -110,10 +111,11 @@ function draw() {
   if (!cat.npcs.length) n.append(el('<div class="dim">no NPC types on this level</div>'));
   const f = document.getElementById('wf').value.toLowerCase();
   const w = document.getElementById('weapons'); w.innerHTML = '';
+  const g = document.getElementById('gadgets'); g.innerHTML = '';
   for (const x of cat.weapons) {
     const label = `0x${x.id.toString(16).padStart(2,'0')} ${x.name}`;
     if (f && !label.toLowerCase().includes(f)) continue;
-    w.append(el(`<div class="row"><span class="name">${label}</span><span class="dim">clip ${x.clip}${x.fp ? '' : ' · no 1st-person model here'}</span><button onclick="cmd('do=weapon&id=${x.id}')">Give</button><button onclick="cmd('do=ammo_for&id=${x.id}')">+Ammo</button></div>`));
+    (x.gadget ? g : w).append(el(`<div class="row"><span class="name">${label}${x.sel ? '' : ' <span class=dim>(variant)</span>'}</span><span class="dim">clip ${x.clip}${x.fp ? '' : ' · no 1st-person model here'}</span><button onclick="cmd('do=weapon&id=${x.id}')">Give</button><button onclick="cmd('do=ammo_for&id=${x.id}')">+Ammo</button></div>`));
   }
   const c = document.getElementById('cons'); c.innerHTML = '';
   for (const [label, q] of [['Full health', 'do=health'], ['Full armour', 'do=armour'], ['Frag grenades ×5', 'do=weapon&id=53&rounds=5'], ['Stun grenades ×5', 'do=weapon&id=54&rounds=5'], ['Ammo for every owned weapon', 'do=ammo_all']])
@@ -147,11 +149,14 @@ pub fn catalog(scene: &crate::scene::Scene) -> String {
     let wd = &sim.weapons;
     let mut weapons = Vec::new();
     for id in 1..0x72u8 {
-        if !wd.selectable(id) || id == 0x47 { continue; }
+        // Every record with a model or rounds (variants included); 0x47 is "no weapon".
+        if id == 0x47 || (wd.model(id as usize) == 0 && wd.clip_size(id as usize) <= 0) { continue; }
         let clip = wd.clip_size(id as usize);
         let name = weapon_name(id);
         let name = if name.is_empty() { format!("weapon {id:#04x}") } else { name.to_string() };
-        weapons.push(format!("{{\"id\":{id},\"name\":\"{}\",\"clip\":{clip},\"fp\":{}}}", js(&name), scene.view_models.contains_key(&id)));
+        // Gadgets are ids 0x48 and up (`Player_WeaponChange`: weapons cycle 1..0x47, gadgets 0x4A..0x5E).
+        let gadget = id >= 0x48;
+        weapons.push(format!("{{\"id\":{id},\"name\":\"{}\",\"clip\":{clip},\"fp\":{},\"gadget\":{gadget},\"sel\":{}}}", js(&name), scene.view_models.contains_key(&id), wd.selectable(id)));
     }
     let mut skins: Vec<u32> = Vec::new();
     for s in &scene.npc_pool { if !skins.contains(&s.skin) { skins.push(s.skin); } }
@@ -214,7 +219,11 @@ pub fn apply(scene: &mut crate::scene::Scene, q: &[(String, String)]) -> (String
             let mut n = 0;
             for dr in sim.drones.list.iter_mut() { if dr.present { n += 1; } dr.present = false; dr.enabled = false; }
             for p in sim.drones.pickups.iter_mut() { p.gone = true; }
-            for t in sim.drones.triggers.iter_mut() { t.gone = true; }
+            // Triggers: deleted, except level exits — a gone LOAD_LEVEL trigger means "fired" and would end the level.
+            // Those are disarmed instead (gate 0 never fires, `Trigger_Update` case 10).
+            for t in sim.drones.triggers.iter_mut() {
+                if t.kind == nf_game::triggers::kind::LOAD_LEVEL { t.gate = 0; } else { t.gone = true; }
+            }
             // Spawners would bring guards straight back: give them nothing to spawn.
             for sp in sim.drones.spawners.iter_mut() { sp.templates.clear(); sp.used.clear(); sp.max_alive = 0; }
             for c in sim.char_drone.iter_mut() { *c = None; }
