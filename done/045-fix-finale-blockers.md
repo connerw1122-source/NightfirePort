@@ -49,3 +49,6 @@ claimed-by: sandbox2 at 2026-10-12T13:05Z
 ---
 ## Report (done, 2026-10-12T16:36Z)
 
+
+### Result (one line)
+The finale missions complete: 07000016's chaser defeat (kiko.rs; the ch-0x90 writer is a documented stand-in), 0700001b's Drake defeat (ch 0x0e → the defeat NIS writes ch 0x0b + ch 100 — no stand-in), 0700004a's lift ride (the negative-delay Script_Update fix; the ch-0x4a arrival is a documented stand-in), the 0x85/0xa7/0xb4 start states ported or proven idle-equivalent, Death_Anim raises the death channel per 0x1637f8 case 2, and the 02/03/08 gate writers are bounded by the full switch_channels-writer enumeration. Tests: fix_finale_live (4, each failing pre-fix), full suite green except the 3 allowed disc_golden.
