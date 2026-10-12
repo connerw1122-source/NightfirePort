@@ -243,3 +243,11 @@ on master: `kind-1 pickup draws <unresolved 0xffffffff>`), the four 07000001 pil
 disc kinds/ids/rounds/meshes, the death-dump (one visible drop; placed slots unmoved), and the
 afc60ed guard (dynamic-vertex tail pairs 1:1 with `char_verts`; every placed pickup, door and
 searchlight slot has vertices).
+
+## PCSX2 trace check (tests/traces/01-raptor.trace, 2026-10-11) [L]
+
+User play on 07000001 (god + infinite ammo; inventory logged as change events):
+
+- t = 6.0 s: weapon **0x0E** becomes owned with clip 9 — the first Raptor drop gives the weapon. (The port's pickups call the Raptor weapon 6; 0x0E is what the game equips — check `Upgrade_Weapon` 0x1a8f30 / the base-id mapping.)
+- Every later Raptor drop gave ammo type 3 (spare BLData+0x170+3·2): +6 (19.8 s), +7 (71.0 s), +7 (74.3 s), +5 (76.3 s). Every drop the user walked over was taken.
+- Other takes in the run: weapon 0x12 (clip 32) at +17.6 s, 0x1C (clip 8, shotgun) at +50.6 s, 0x35 (count 1, frag) at +52.9 s; ammo types 1 (+20, +9), 9 (+6, +5), 23 (+1), 2 (+16, +11).

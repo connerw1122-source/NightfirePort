@@ -1415,7 +1415,32 @@ pub struct CharVertex {
     pub pickup: Option<u16>,
 }
 
+/// Per-vertex GPU skinning data (`Scene::skin_layout`); world vertices carry `a = u32::MAX` (static).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct SkinAttr { pub a: u32, pub b: u32, pub w: f32, pub col: u32 }
+
+/// The palette / colour-table layout of `Scene::skin_layout`.
+pub struct SkinLayout { pub char_base: Vec<u32>, pub attach_base: u32, pub sl_base: u32, pub door_base: u32, pub pick_base: u32, pub n_mats: u32, pub col_att: u32, pub col_pick: u32, pub col_one: u32 }
+
+/// One frame's pose state (`Scene::frame_state`).
+pub struct FrameState {
+    pub posed: Vec<Option<(Vec<Mat4>, Vec<Mat4>, Mat4)>>,
+    pub attach: Vec<Mat4>,
+    pub hidden: Vec<bool>,
+}
+
+/// Dev-panel NPC pool size per skin.
+pub const NPC_POOL: usize = 3;
+
+/// One hidden pool NPC (`Scene::npc_pool`): its skin, the placement parameters it was copied from, and the
+/// characters (meshes) that draw it.
+#[derive(Clone)]
+pub struct NpcSlot { pub key: [u32; 3], pub skin: u32, pub params: Vec<(u32, u32)>, pub chars: Vec<usize> }
+
 pub struct Scene {
+    /// Hidden NPC copies the dev panel can bring to life (`dev::spawn_npc`).
+    pub npc_pool: Vec<NpcSlot>,
     /// The level's room cels (`parse_room_cels`), kept for the static-draw cel cull
     /// (`View_AddCels` 0x1e6ba0 frustum-tests each cel's bbox; `cel_sphere`/`cel_index_at`).
     pub cels: Vec<Cel>,
@@ -1660,7 +1685,35 @@ impl Scene {
         // the ladder sweep below draws them exactly once (fix-ladder2: the ladders were invisible because
         // `instances(cels_only=true)` skips every placement without 0x8000).
         instances.retain(|i| !matches!(i.placement.flags & 0xff, 0x2a | 0x22));
-        let (char_instances, chars_missing) = level.character_instances();
+        let (mut char_instances, chars_missing) = level.character_instances();
+        // Dev NPC pool (the external dev panel's "spawn NPC"): for the first drone placement of each skin, NPC_POOL
+        // hidden copies of all its meshes, far below the world. They are ordinary characters with their held weapon,
+        // so a spawned drone is drawn exactly like a placed one once `Sim::char_drone` points them at it.
+        let pool_sentinel = |t: [f32; 3]| t[1] <= -999_000.0;
+        {
+            let mut first: Vec<(u32, [u32; 3])> = Vec::new();
+            for inst in &char_instances {
+                if inst.placement.flags & 0xff != 0x0f { continue; }
+                let skin = inst.placement.params.iter().find(|(i, _)| *i == 0).map_or(0, |&(_, v)| v);
+                if skin == 0 || !level.skins.contains_key(&skin) || first.iter().any(|(s, _)| *s == skin) { continue; }
+                first.push((skin, inst.placement.translation.map(f32::to_bits)));
+            }
+            let mut extra = Vec::new();
+            for (slot, (_, t)) in first.iter().enumerate() {
+                for k in 0..NPC_POOL {
+                    let tr = [-1.0e6 - (slot * NPC_POOL + k) as f32, -1.0e6, -1.0e6];
+                    for inst in char_instances.iter().filter(|i| i.placement.translation.map(f32::to_bits) == *t) {
+                        let mut placement = inst.placement.clone();
+                        placement.translation = tr;
+                        let mut matrix = inst.matrix;
+                        matrix[3] = [tr[0], tr[1], tr[2], 1.0];
+                        extra.push(Instance { map: inst.map, object: inst.object, matrix, placement });
+                    }
+                }
+            }
+            char_instances.extend(extra);
+        }
+        let mut npc_pool: Vec<NpcSlot> = Vec::new();
         let sky = level.sky_instances();
         let mut groups: Groups = BTreeMap::new();
         let mut bounds = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
@@ -1790,7 +1843,17 @@ impl Scene {
                     .filter_map(|(a, b, q)| by_hash.get(&q).filter(|(sk, _)| *sk == skin.skeleton).map(|&(_, i)| (a, b, i))).collect();
                 Some(StartAnim { script, sequences })
             });
-            let role = roles.get(&inst.placement.translation.map(f32::to_bits)).copied().unwrap_or(drone::SpawnRole::Placed);
+            let pooled = pool_sentinel(inst.placement.translation);
+            let role = if pooled { drone::SpawnRole::Reinforcement { channel: 0 } } else {
+                roles.get(&inst.placement.translation.map(f32::to_bits)).copied().unwrap_or(drone::SpawnRole::Placed)
+            };
+            if pooled {
+                let ci = characters.len();
+                match npc_pool.iter_mut().find(|n| n.key == inst.placement.translation.map(f32::to_bits)) {
+                    Some(n) => n.chars.push(ci),
+                    None => npc_pool.push(NpcSlot { key: inst.placement.translation.map(f32::to_bits), skin: skin_hash, params: inst.placement.params.clone(), chars: vec![ci] }),
+                }
+            }
             characters.push(Character { matrix: inst.matrix, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: obj.gfx.slot_bones.clone(), start, role, floor: None, script: None });
             // The held weapon (`AnimObjectDraw`): weapon_data[w] +0x80 mesh on the datum whose id is +0x50 (0xFF → 0),
             // once per drone (a skin may have several main meshes).
@@ -2202,7 +2265,7 @@ impl Scene {
         }
         let models_0x800: HashMap<u32, bool> = level.maps.iter()
             .flat_map(|m| m.objects.iter().map(|o| (o.hashcode, o.flags & 0x800 != 0))).collect();
-        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, ladders_drawn }
+        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the
@@ -2236,7 +2299,10 @@ impl Scene {
     /// floor (`NDrone2_Collision` 0x140e90). nf-view has no collision or AI yet, so drones stay at their placement x/z
     /// (horizontal root motion is dropped) and stand on the World floor below them; without one found they keep the
     /// pre-collision height (placement + 0xA0 − 1.0).
-    pub fn animate(&self, choice: Option<usize>, ticks: f32, opts: ViewOpts) -> Vec<[f32; 3]> {
+    /// The per-frame matrices shared by the CPU pose (`animate`) and the GPU palette (`skin_palette`): each
+    /// character's skin matrices, bone world matrices and object matrix (None = unposed), every attachment's
+    /// matrix, and which characters are hidden (collapsed to their object origin).
+    pub fn frame_state(&self, choice: Option<usize>, ticks: f32, opts: ViewOpts) -> FrameState {
         let mut cache: HashMap<(u32, usize, u32), (Vec<Mat4>, Vec<Mat4>, f32)> = HashMap::new();
         // With the AI running (and no sequence browsing), each guard shows its drone's animation, yaw and position.
         let drone_of = |ci: usize| choice.is_none().then(|| self.sim.as_ref().and_then(|s| s.char_drone[ci].map(|di| (s, di)))).flatten();
@@ -2349,6 +2415,13 @@ impl Scene {
             if !opts.firing || tick % 8 >= 2 { return collapse(&datum); }
             muzzle_flash_matrix(&datum, (tick / 8) ^ (k as u32).wrapping_mul(0x9e37_79b9))
         }).collect();
+        let hidden: Vec<bool> = self.characters.iter().enumerate().map(|(ci, c)| hidden(c, ci)).collect();
+        FrameState { posed, attach, hidden }
+    }
+
+    pub fn animate(&self, choice: Option<usize>, ticks: f32, opts: ViewOpts) -> Vec<[f32; 3]> {
+        let FrameState { posed, attach, hidden } = self.frame_state(choice, ticks, opts);
+        let hidden = |_: &Character, ci: usize| hidden[ci];
         self.char_verts.iter().map(|v| {
             // Searchlight parts: the simulation's matrices (`Searchlight_Update`), coronas as camera billboards
             // with their scale (the alpha byte is not wired to the shader — G-033); hidden parts collapse below
@@ -2413,7 +2486,110 @@ impl Scene {
     /// the World-draw attribution use.
     pub fn cel_index_at(&self, p: [f32; 3]) -> Option<usize> { find_cel(&self.cels, p) }
 
-    pub fn posed_vertices(&self, choice: Option<usize>, time: f32, opts: ViewOpts) -> Vec<Vertex> {
+    /// The GPU skinning layout (G-043): each Character-layer vertex's two palette matrices, blend weight and
+    /// colour slot, plus the palette and colour-table sizes. The palette holds, in order: per character its
+    /// object matrix then one matrix per skeleton bone (skin · object), then the attachments, searchlight
+    /// parts, doors and placed pickups. The colour table: characters, attachments, pickups, then 1.0. The
+    /// shader computes `w·(P[a]·p) + (1−w)·(P[b]·p)`, which equals the CPU path's `transform(m, skin_vertex(..))`
+    /// because the blend weights sum to 1.
+    pub fn skin_layout(&self) -> (SkinLayout, Vec<SkinAttr>) {
+        let mut char_base = Vec::with_capacity(self.characters.len());
+        let mut n = 0u32;
+        for c in &self.characters { char_base.push(n); n += 1 + c.skeleton.bones as u32; }
+        let max_of = |f: &dyn Fn(&CharVertex) -> Option<u32>| self.char_verts.iter().filter_map(|v| f(v)).max().map_or(0, |m| m + 1);
+        let n_sl = max_of(&|v| v.searchlight.map(u32::from));
+        let n_door = max_of(&|v| v.door.map(u32::from));
+        let n_pick = max_of(&|v| v.pickup.map(u32::from));
+        let n_att = self.attachments.len() as u32;
+        let attach_base = n;
+        let sl_base = attach_base + n_att;
+        let door_base = sl_base + n_sl;
+        let pick_base = door_base + n_door;
+        let n_mats = pick_base + n_pick;
+        let nc = self.characters.len() as u32;
+        let (col_att, col_pick) = (nc, nc + n_att);
+        let col_one = col_pick + n_pick;
+        let attrs = self.char_verts.iter().map(|v| {
+            let one = |m: u32, col: u32| SkinAttr { a: m, b: m, w: 1.0, col };
+            if let Some(sl) = v.searchlight { return one(sl_base + sl as u32, col_one); }
+            if let Some(pk) = v.pickup { return one(pick_base + pk as u32, col_pick + pk as u32); }
+            if let Some(dr) = v.door { return one(door_base + dr as u32, col_one); }
+            if let Some(a) = v.attachment { return one(attach_base + a, col_att + a); }
+            let c = &self.characters[v.character as usize];
+            let base = char_base[v.character as usize];
+            let bone = |s: u16| c.slot_bones.get(s as usize).filter(|&&b| (b as u32) < c.skeleton.bones as u32).map(|&b| base + 1 + b as u32);
+            match (bone(v.slots[0]), bone(v.slots[1])) {
+                (Some(a), Some(b)) => SkinAttr { a, b, w: v.weight, col: v.character },
+                (Some(a), None) => one(a, v.character),
+                _ => one(base, v.character),
+            }
+        }).collect();
+        (SkinLayout { char_base, attach_base, sl_base, door_base, pick_base, n_mats, col_att, col_pick, col_one }, attrs)
+    }
+
+    /// One frame's palette and colour table for `skin_layout` (the GPU replacement for `posed_vertices`).
+    pub fn skin_palette(&self, l: &SkinLayout, choice: Option<usize>, time: f32, opts: ViewOpts) -> (Vec<Mat4>, Vec<[f32; 4]>) {
+        const FAR: Mat4 = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
+        let fs = self.frame_state(choice, time, opts);
+        let collapse = |at: &Mat4| -> Mat4 { [[0.0; 4], [0.0; 4], [0.0; 4], [at[3][0], at[3][1], at[3][2], 1.0]] };
+        let mut p = vec![FAR; l.n_mats as usize];
+        for (ci, c) in self.characters.iter().enumerate() {
+            let base = l.char_base[ci] as usize;
+            let nb = c.skeleton.bones as usize;
+            if fs.hidden[ci] { for k in 0..=nb { p[base + k] = collapse(&c.matrix); } continue; }
+            match &fs.posed[ci] {
+                Some((mats, _, m)) => {
+                    p[base] = *m;
+                    for b in 0..nb { p[base + 1 + b] = mats.get(b).map_or(*m, |s| anim::mul(s, m)); }
+                }
+                None => for k in 0..=nb { p[base + k] = c.matrix; },
+            }
+        }
+        for (a, m) in fs.attach.iter().enumerate() { p[l.attach_base as usize + a] = *m; }
+        if let Some(s) = self.sim.as_ref() {
+            for k in 0..(l.door_base - l.sl_base) as usize {
+                p[l.sl_base as usize + k] = match s.drones.searchlights.parts.get(k) {
+                    Some(sp) if !sp.drawn => FAR,
+                    Some(sp) if sp.kind == 4 => [
+                        [opts.right[0] * sp.scale, opts.right[1] * sp.scale, opts.right[2] * sp.scale, 0.0],
+                        [opts.up[0] * sp.scale, opts.up[1] * sp.scale, opts.up[2] * sp.scale, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [sp.pos[0], sp.pos[1], sp.pos[2], 1.0],
+                    ],
+                    Some(sp) => sp.matrix,
+                    None => FAR,
+                };
+            }
+            for k in 0..(l.pick_base - l.door_base) as usize {
+                p[l.door_base as usize + k] = s.drones.doors.list.get(k).map_or(FAR, |d| d.matrix);
+            }
+            for k in 0..(l.n_mats - l.pick_base) as usize {
+                p[l.pick_base as usize + k] = s.drones.pickups.get(k).filter(|q| !q.gone && !q.hidden).map_or(FAR, |q| q.m);
+            }
+        }
+        let (mults, pickup_mult, attach_mult) = self.colour_mults();
+        let mut cols = vec![[1.0f32; 4]; l.col_one as usize + 1];
+        let has = !mults.is_empty();
+        let rgb = |m: [f32; 3]| [m[0], m[1], m[2], 1.0];
+        if has {
+            for (ci, m) in mults.iter().enumerate() { cols[ci] = rgb(*m); }
+            for (a, m) in &attach_mult { if let Some(c) = cols.get_mut((l.col_att + a) as usize) { *c = rgb(*m); } }
+            for (pk, m) in &pickup_mult { if let Some(c) = cols.get_mut((l.col_pick + *pk as u32) as usize) { *c = rgb(*m); } }
+        }
+        // Attachments without an entry fall back to their owner's multiplier, as `posed_vertices` does.
+        if has {
+            for (a, at) in self.attachments.iter().enumerate() {
+                if !attach_mult.contains_key(&(a as u32)) {
+                    cols[(l.col_att as usize) + a] = rgb(mults.get(at.character as usize).copied().unwrap_or([1.0; 3]));
+                }
+            }
+        }
+        (p, cols)
+    }
+
+    /// The per-object colour multipliers of one frame (`View_SetupRenderModes_Tweak`'s TAmbient): per character,
+    /// per placed pickup and per attachment. Shared by the CPU path (`posed_vertices`) and the GPU palette.
+    pub fn colour_mults(&self) -> (Vec<[f32; 3]>, std::collections::HashMap<u16, [f32; 3]>, std::collections::HashMap<u32, [f32; 3]>) {
         let mults: Vec<[f32; 3]> = self.sim.as_ref()
             .map(|s| (0..self.characters.len()).map(|ci| s.char_multiplier(ci)).collect())
             .unwrap_or_default();
@@ -2481,6 +2657,12 @@ impl Scene {
                 }
             }
         }
+        (mults, pickup_mult, attach_mult)
+    }
+
+    pub fn posed_vertices(&self, choice: Option<usize>, time: f32, opts: ViewOpts) -> Vec<Vertex> {
+        let (mults, pickup_mult, attach_mult) = self.colour_mults();
+        let one = || [1.0f32; 3];
         self.animate(choice, time, opts).into_iter()
             .zip(self.vertices[self.char_vertex_start..].iter().zip(self.char_verts.iter()))
             .map(|(pos, (v, cv))| {

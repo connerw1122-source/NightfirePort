@@ -95,6 +95,19 @@ script touch triggers (0xEA / 0xEB) in the trigger system with volumes following
 riding. Not yet: fade, sprite, light, sub-script, text commands (the stream stops on them), `SP_Hit` bullet / object
 flags, AI volumes and pickups made by scripts, letterbox borders, music events, cut-scene skipping.
 
+**The loadable cut-scene packs are ported (fix-cutscenes)** [M]: `SP_LoadScript`'s `isLoadable` arm
+(0x1dbc08 → 0x1d69a0 → 0x1d69e8 → `LoaderLoad` 0x1d4a00) streams the pack named with the level id's (flag+7)
+nibble (flag 1 → `078000NN.bin`, 2 → `079000NN.bin`, 3 → `07A000NN.bin`) from the level archive's type-0xC
+records (`LoaderProcess` 0x1d4880 case 0xC: u32 hash + u8 flag at +4). The port reads those records in
+`nf_view::load_with_carry` and merges the pack's kind-7 scripts into the script lib and kind-4 sequences into
+the animation set at level load (the game streams lazily on first use; the port loads eagerly — same content,
+no RNG order impact). `docs/systems/levels.md` §5 lists every loadable cut-scene per level: the party's
+Drake fly-through (0x06000072), the party hand-back (0x06000073) and the gondola intro (0x06000077) were the
+user's two broken cut-scenes; live tests in `crates/nf-view/tests/fix_cutscenes_live.rs` drive Bond into the
+real trigger volumes (`step_bond` → TouchOnce → ch → SP) and fail on the pre-fix code. Still unported: the
+`SP_Hit` proxy bits (07000007's urn break, mask 2) and the `GameFlow_PushState(12.0, 0xD, 0xFF)` streaming
+loading screen (`SP_Update` state 0's `isLoadable` arm — the port loads eagerly, no screen).
+
 **Event 0x12 (LoadLevel)**: ported (`Request::LoadLevel` → `Drones::level_exit` → `main.rs::pending_level`). No NIS
 script on 07000005 fires kind 0x12 — the truck script 0x06000A22 fires only 0xC (keep objects, tick 5890) and 0xD
 (channel 0x73 = 1, tick 5412). The level transition on 07000005 is the placement-0xE8 trigger at the castle door, not

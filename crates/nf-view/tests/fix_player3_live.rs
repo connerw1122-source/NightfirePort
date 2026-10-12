@@ -15,7 +15,35 @@ use nf_game::player::Input;
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
 fn load(iso: &str, level: &str) -> nf_view::scene::Scene {
-    nf_view::load(iso, level, false).expect("load")
+    let mut scene = nf_view::load(iso, level, false).expect("load");
+    // The levels whose mode-1 intro takes control (event 4): 07000001's SP #277 plays 0x06000087 and
+    // 07000002's #400 plays 0x06000084 (docs/systems/levels.md §5.1). Skip it like the game's own skip
+    // (hold the skip action — `Script_FFwd` 0x1dac78) so the tests run with Bond in control, as they did
+    // before the loadable packs were ported (the SP used to delete itself — the pack script was missing).
+    let intro: &[u32] = match level {
+        "07000001.bin" => &[0x0600_0087],
+        "07000002.bin" => &[0x0600_0084],
+        _ => &[],
+    };
+    skip_active_cutscene(&mut scene, intro);
+    scene
+}
+
+/// Skips the named level-start cut-scenes the way the game lets the player: hold the skip action
+/// (`Scripts::skip_request` → `Script_FFwd` 0x1dac78) until the script is done. The catch-up runs the
+/// remaining commands, so the channels and the player hand-back still apply; drones stay frozen the
+/// whole scene (event 5), so afterwards the world is at its level-start state. A no-op when `intros`
+/// is empty.
+fn skip_active_cutscene(scene: &mut nf_view::scene::Scene, intros: &[u32]) {
+    if intros.is_empty() { return; }
+    let pending = |sim: &nf_view::scene::Sim| sim.drones.scripts.players.iter().any(|p| intros.contains(&p.scripts[0]) && (matches!(p.state, 1 | 2 | 7) || p.info[p.cur].as_ref().is_some_and(|s| s.play & 1 != 0)));
+    for t in 0..600u32 {
+        let sim = scene.sim.as_mut().unwrap();
+        if t >= 2 && !pending(sim) && !sim.disabled { break; }
+        sim.drones.scripts.skip_request = true;
+        sim.step_bond(Default::default(), false, false, false);
+    }
+    assert!(!scene.sim.as_ref().unwrap().disabled, "the level-start cut-scene never handed control back");
 }
 
 /// Point Bond's view at `to` from his eye (setup helper; `turn` stays 0 so the aim holds).
