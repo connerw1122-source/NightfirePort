@@ -65,3 +65,7 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox2 at 2026-10-12T07:30Z
+
+---
+## Report (done, 2026-10-12T10:04Z)
+
