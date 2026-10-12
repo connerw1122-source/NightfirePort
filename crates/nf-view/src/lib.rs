@@ -457,6 +457,7 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     opts.up = opts_up;
     let mut r = gpu::Renderer::new(&device, &queue, format, scene, notex, nofog);
     r.update_skin(&queue, scene, choice, time, opts);
+    r.light = scene.dyn_light(time, opts);
     // `NF_BENCH=N`: time the per-frame CPU side N times (posing + vertex build, and the upload) for profiling.
     if let Some(n) = std::env::var("NF_BENCH").ok().and_then(|v| v.parse::<u32>().ok()) {
         let t0 = std::time::Instant::now();
@@ -1051,6 +1052,7 @@ impl ApplicationHandler for App {
                 let snow = snow_for(&self.scene, &draw_cam);
                 let mut hud = overlay_for(&self.scene, aspect);
                 if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }
+                g.renderer.light = self.scene.dyn_light(self.anim_time, self.opts);
                 let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud);
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
