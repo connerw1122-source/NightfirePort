@@ -5993,3 +5993,54 @@ failures (full-disc manifest/bigf goldens).
   flushing the transition (the game's damage messages run inside the router [M 0x175778]).
 - `Script_Update`'s negative-delay block (above) also froze every other script that fires event 3
   with p0 = 0.
+## 044y-fields-actors — the field map for the actor structs: every field, every reader, with proof
+
+Branch `s/044y-fields-actors` (from origin/master a99dd44). The proof levels live in docs/fields/README.md; the
+method is sprite.md's. Five structs mapped by static pass (greps over work/decomp/ACTION.ELF + the four EE
+snapshots), each with every reader/writer cited and the disagreements written down:
+
+- **docs/fields/drone.md** — `Drone_tag` (obj+0x110, 0xD20 bytes; `obj+0xE0` points at it, obj+0xE0 is NOT a
+  separate SM-info pointer): the full `+0x4F8` bit census (534 unique statements over 244 files, every bit named
+  with its setters/clearers/testers — the port's "in-air 0x4000" bit has NO setter anywhere; 0x800 is "cover node
+  assigned", not a run claim; 0x10000 is "state wants sight-processing"); +0x2B0 is the hostage↔killer PARTNER
+  pointer (not the opponent); the alertness block is +0x500 base / **+0x50C live** / +0x504 alt-profile resting —
+  the brief's "+0x504 alertness" and the port's old comment were wrong (the port's `alert` field was already the
+  live one); +0x5A2 (start/return, ~40 readers) vs +0x5A4 (one-shot alt) pinned; +0x19 is the captain flag; +0xAC
+  health lives on the DRONE (the HostageKiller +0x2B0→obj+0xE0→drone+0xAC chain).
+- **docs/fields/drone-statemachine.md** — `DCVars_tag` (0x10 bytes: obj, drone, obj+0x20 copy, SMI*), the
+  `StateMachineInfo_tag` embedded at Drone+0x108 (instance u16 counter at 0x299090 [L], current/prev/queued state
+  slots +0x04/+0x08/+0x0C, impact resume +0x10, entered frame +0x14, pending byte +0x18, channel arg +0x24, fn
+  ptr +0x28 → 0x175778), and the message protocol (20 ids pinned, msg+0x04 = a state filter that DROPS).
+- **docs/fields/dronetype-tables.md** — `DroneTypeSettings` 0x29aee8 (85×12: start → +0x5A2, alt → +0x5A4, init
+  fn +4, control fn +8; rows 0/3/11/20/26 start −1; rows 30..84 the MP-bot identity block) and
+  `NDrone2_StateFuncs` 0x29b300 (250 entries, all resolved to named decompiles; 88 have port constants, all
+  matching; actors.md's row-3 "0x56" was wrong).
+- **docs/fields/animobject.md** — `AnimObject` (obj+0xDC, 0x120 bytes from AnimObjectNew 0x1be910; Ghidra's
+  `sAnimObject_tag` is the +0x70 sub-block): +0x62 held weapon / +0x63 queued / +0x64 previous, the per-viewer
+  LOD fade bytes +0x110..0x113 (character ALPHA is obj+0x103..0x106 — a different thing, flagged), +0xC8 flag
+  word, head/aim blocks. No port mismatches.
+- **docs/fields/hitdata-spawner-ally.md** — `HITDATA_tag` (0x60: damage +8, dist +0xC, normal +0x10, tangent
+  +0x20, direction +0x30, point +0x40, material +0x50, part +0x52, cel +0x54, obj +0x58) with the full
+  bullet→drone trace; the spawner block (params 0-8 pinned [L ee_start_05]) — p7's arm-vs-kill reading
+  DISAGREES with fix-actors' playtest conclusion; the offsets agree, the semantics get a decisive live check in
+  the doc. The ally/mission-fail fields (+0x854 route, +0x9F2, +0x12C wait word, props 0x53/0x54 behind +0x4D8
+  via behaviour_util_getProperty 0x1c7d98).
+
+**Port fixes** (each with a fail-first test; the doc entries carry the addresses):
+- `ally.rs on_init_death` rewritten corner-exact to OnInitDeath 0x145bd0: prop-0x54 + non-drone kill re-checks
+  prop 0x53 (unset → NO fail), prop 0x53 + drone killer → reason 2/1, the KO check opens the team-1 arm only
+  (caller passes `knocked_out`). Test `oninitdeath_corners_match_the_decompile` (failed first);
+  fix_actors_live's 4 NF_ISO tests still green.
+- Every state change clears BOTH message timers and resets the hit-effect multiplier +0x14C to 1.0 [M-dis
+  0x17207c-88] — the port left timer D armed across transitions. Test `fields_actors_live::a_state_change_
+  clears_both_message_timers` (failed first).
+- `AllyLeadMissionWait` latches the wait channel from `Drone+0x12C` (new `mission_wait_channel` field; 0 →
+  0x99) [M 0x15efc8:17-20], not from the second channel +0x135.
+- Comment/exposition fixes: the alertness block (+0x500/+0x50C/+0x504), in-air 0x4000 (no setter — the port's
+  flag is its own model), cover 0x800/0x1000, HostageIdle 0x0d vs AllyLeadInit 0x1c, EXPLOSIVE's 0x86/0x88
+  names, GoToGoal's return slot +0x5A2, MissionWait's channel word.
+
+Full suite: NF_ISO release run over nf-game/nf-formats/nf-audio/nf-view, only the 3 allowed disc_golden failures.
+Live pass owed to the main agent: the per-doc "Live checks for the main agent" sections (fieldprobe/gdbwatch
+recipes), notably the decisive spawner-p7 check (07000005 ch 0x43 after ch 0x22) and the +0x4F8 0x1/0x4000
+missing-setter censuses.
