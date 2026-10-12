@@ -4954,3 +4954,18 @@ Files: `crates/nf-view/src/scene.rs` (the ladder sweep + `ladders_drawn`, the we
 fire gate, the footstep fix), `crates/nf-game/src/player.rs` (the climb look + its unit test),
 `crates/nf-game/src/gun.rs` untouched (go_to_hands already matched `Player_WeaponNone`). Determinism:
 no new RNG draws; no wall-clock; the fixed 60 Hz tick path unchanged.
+
+## main-2: the muzzle-flash light, render side (2026-10-11)
+
+- `Player_MuzzleFlash` 0x1a4298 → `Light_Create` (disasm 0x1a4370–0x1a43a8) [M]: radius = weapon_data+0x58,
+  intensity 2.0, rgb = +0x56/+0x55/+0x54, life 0 (so `Light_Update` deletes it next tick: one tick per shot).
+  Ported render-side: `Scene::dyn_light` → the shader's `lp`/`lc` uniform; `Vertex::nrm` carries normals (World
+  rotated to world space, posed ones rotated by the palette in the shader).
+- The shading is STANDIN: `lc × 0.25 × N·L × (1 − d²/r²)²`, tuned by eye; the VU1 formula is unread (fix-lighting).
+- Failed first: keying the light on `last_shot == drones.frame`. The shot is stamped before the drone tick
+  advances the frame, so the light was never on. The first "lit" 07000005 shot only showed the flash sprite,
+  and its brightness gain was the sprite. Fixed with `Sim::shot_tick`, caught by `lighting_live`.
+- Failed second: a zero normal fell back to N·L = 1, so the radar, the snow and the sprites lit full orange. Zero
+  normals are now unlit.
+- Not ported: the `Rand_Rand(0)` in `Light_Create` and the `Gas_Init` smoke `Rand_FRand` (sim RNG order), guard
+  muzzle lights, level lights.

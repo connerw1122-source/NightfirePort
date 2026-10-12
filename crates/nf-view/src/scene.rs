@@ -35,6 +35,9 @@ pub struct Vertex {
     pub pos: [f32; 3],
     pub uv: [f32; 2],
     pub rgba: [u8; 4],
+    /// The vertex normal (snorm, xyz + 0): world space for static World geometry, object/bone space for
+    /// everything the palette poses (the shader rotates those). Used by the dynamic lights (fix-lighting).
+    pub nrm: [i8; 4],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -203,6 +206,9 @@ pub struct Sim {
     pub first_person: bool,
     /// The tick of Bond's last shot (the first-person flash).
     pub last_shot: Option<u32>,
+    /// Bond fired during the latest `step_bond` (the muzzle light's one tick; `last_shot` is stamped before the
+    /// drone tick advances the frame, so it cannot say this alone).
+    pub shot_tick: bool,
     pub view_time: f32,
     pub view_speed: f32,
     pub bob: [f32; 2],
@@ -660,6 +666,7 @@ impl Sim {
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
         nf_game::prof::tick();
         let _prof = nf_game::prof::scope("step_bond (total)");
+        self.shot_tick = false;
         let (trigger, reload) = if self.disabled { input = Default::default(); (false, false) } else { (trigger, reload) };
         let aiming = input.aiming;
         // Weapon switching (`Player_WeaponChange` 0x1a6f80): only when idle (not firing/reloading/holstering). The
@@ -1175,6 +1182,7 @@ impl Sim {
                     });
                 } else {
                     self.last_shot = Some(self.drones.frame);
+                    self.shot_tick = true;
                     // The hearing sound: the P2K's 0x403 by default, or the remapped op-1 id for other weapons.
                     // The drones' hearing list uses the sfx table's entry for this id.
                     let hearing_id = match self.gun.weapon {
@@ -1279,7 +1287,7 @@ impl Sim {
         let mut out = Vec::with_capacity(env.drops.len() * 6);
         for (p, &alive) in env.drops.iter().zip(&env.alive) {
             if !alive { continue; }
-            let c = |sr: f32, su: f32, uv: [f32; 2]| Vertex { pos: [p[0] + r[0] * sr + u[0] * su, p[1] + r[1] * sr + u[1] * su, p[2] + r[2] * sr + u[2] * su], uv, rgba: [63, 63, 63, 127] };
+            let c = |sr: f32, su: f32, uv: [f32; 2]| Vertex { pos: [p[0] + r[0] * sr + u[0] * su, p[1] + r[1] * sr + u[1] * su, p[2] + r[2] * sr + u[2] * su], uv, rgba: [63, 63, 63, 127], nrm: [0; 4] };
             let (a, b, cc, d) = (c(-1.0, -1.0, [0.0, 1.0]), c(1.0, -1.0, [1.0, 1.0]), c(1.0, 1.0, [1.0, 0.0]), c(-1.0, 1.0, [0.0, 0.0]));
             out.extend_from_slice(&[a, b, cc, a, cc, d]);
         }
@@ -1581,7 +1589,14 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
                 let rgb = [0, 1, 2].map(|k| ((v.rgba[k] as f32 * mult[k]).round() as i32).clamp(0, 255) as u8);
                 [rgb[0], rgb[1], rgb[2], v.rgba[3]]
             };
-            vs.push(Vertex { pos: p, uv, rgba });
+            // The normal: posed vertices keep the mesh's own (the shader rotates it with the palette); static
+            // World vertices get it in world space through the instance matrix here.
+            let posed = character.is_some() || searchlight.is_some() || door.is_some() || pickup.is_some();
+            let n0 = v.normal.map(|c| c as f32);
+            let n = if posed { n0 } else { [0, 1, 2].map(|k| n0[0] * m[0][k] + n0[1] * m[1][k] + n0[2] * m[2][k]) };
+            let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            let nrm = if nl > 1e-6 { [(n[0] / nl * 127.0) as i8, (n[1] / nl * 127.0) as i8, (n[2] / nl * 127.0) as i8, 0] } else { [0; 4] };
+            vs.push(Vertex { pos: p, uv, rgba, nrm });
             if let Some((c, attachment)) = character { cv.push(CharVertex { character: c, pos: v.pos, weight: v.weight, slots: v.slots, attachment, searchlight: None, door: None, pickup: None }); }
             else if let Some(sl) = searchlight { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: Some(sl), door: None, pickup: None }); }
             else if let Some(dr) = door { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: None, door: Some(dr), pickup: None }); }
@@ -2244,7 +2259,7 @@ impl Scene {
                 })
                 .collect();
             drones.pickups.extend(placed_pickups);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0) })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0) })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {
@@ -2529,6 +2544,27 @@ impl Scene {
         (SkinLayout { char_base, attach_base, sl_base, door_base, pick_base, n_mats, col_att, col_pick, col_one }, attrs)
     }
 
+    /// The muzzle-flash light of Bond's shot this tick, packed for the shader (position, 1/r², colour × intensity,
+    /// active). `Player_MuzzleFlash` (0x1a4298, disassembly 0x1a4370-0x1a43a8) creates it on every shot:
+    /// `Light_Create(radius = weapon+0x58, intensity 2.0, the view model's datum 0, rgb = +0x56/+0x55/+0x54,
+    /// channel 0, life 0, kind 1, …)`. Life 0 → +0x20 = 1, so `Light_Update` deletes it on the next tick: one
+    /// tick of light per shot. Not ported here: `Light_Create`'s `Rand_Rand(0)` draw and the `Gas_Init` smoke
+    /// (game-RNG draws on every shot; fix-lighting). Render-side only: the simulation is unchanged.
+    pub fn dyn_light(&self, time: f32, opts: ViewOpts) -> [f32; 8] {
+        let Some(s) = self.sim.as_ref() else { return [0.0; 8] };
+        if !s.shot_tick { return [0.0; 8]; }
+        let w = s.gun.weapon as usize;
+        let Some(rec) = s.weapons.records.get(w) else { return [0.0; 8] };
+        let radius = f32::from_le_bytes([rec[0x58], rec[0x59], rec[0x5a], rec[0x5b]]);
+        if !(radius > 0.0) { return [0.0; 8]; }
+        let Some(&vm) = self.view_models.get(&s.gun.weapon) else { return [0.0; 8] };
+        let fs = self.frame_state(None, time, opts);
+        let Some(k) = self.attachments.iter().position(|a| a.character as usize == vm && a.flash.is_some()) else { return [0.0; 8] };
+        let at = fs.attach[k][3];
+        let i = 2.0 / 255.0;
+        [at[0], at[1], at[2], 1.0 / (radius * radius), rec[0x56] as f32 * i, rec[0x55] as f32 * i, rec[0x54] as f32 * i, 1.0]
+    }
+
     /// One frame's palette and colour table for `skin_layout` (the GPU replacement for `posed_vertices`).
     pub fn skin_palette(&self, l: &SkinLayout, choice: Option<usize>, time: f32, opts: ViewOpts) -> (Vec<Mat4>, Vec<[f32; 4]>) {
         const FAR: Mat4 = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
@@ -2687,7 +2723,7 @@ impl Scene {
                     let rgb = [0, 1, 2].map(|k| ((v.rgba[k] as f32 * m[k]).round() as i32).clamp(0, 255) as u8);
                     [rgb[0], rgb[1], rgb[2], v.rgba[3]]
                 };
-                Vertex { pos, uv: v.uv, rgba }
+                Vertex { pos, uv: v.uv, rgba, nrm: v.nrm }
             }).collect()
     }
 

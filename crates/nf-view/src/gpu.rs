@@ -25,7 +25,8 @@ override FAR: f32 = 0.0;
 override NOTEX: f32 = 0.0;  // debug: 1.0 = ignore the texture sample (treat as solid white) to isolate vertex colour
 override NOFOG: f32 = 0.0;   // debug: 1.0 = skip the fog pass entirely
 // fog: rgb + enabled; fogk: N1, (F1 − N1)·n/(f − n), f, gain.
-struct U { vp: mat4x4<f32>, fog: vec4<f32>, fogk: vec4<f32> };
+// lp: the dynamic light's position + 1/r^2; lc: its colour x intensity + active (fix-lighting: the muzzle light).
+struct U { vp: mat4x4<f32>, fog: vec4<f32>, fogk: vec4<f32>, lp: vec4<f32>, lc: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
 // G-043 GPU skinning: the frame's matrix palette and colour table (`Scene::skin_palette`).
 @group(0) @binding(1) var<storage, read> pal: array<mat4x4<f32>>;
@@ -34,7 +35,7 @@ struct U { vp: mat4x4<f32>, fog: vec4<f32>, fogk: vec4<f32> };
 @group(1) @binding(1) var samp: sampler;
 struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @location(1) c: vec4<f32>, @location(2) d: f32 };
 @vertex fn vs(@location(0) p0: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) c0: vec4<f32>,
-              @location(3) sa: vec2<u32>, @location(4) sw: f32, @location(5) sc: u32) -> VO {
+              @location(3) sa: vec2<u32>, @location(4) sw: f32, @location(5) sc: u32, @location(6) n0: vec4<f32>) -> VO {
     var o: VO;
     var p = p0;
     var c = c0;
@@ -43,6 +44,18 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
         let q = vec4<f32>(p0, 1.0);
         p = sw * (pal[sa.x] * q).xyz + (1.0 - sw) * (pal[sa.y] * q).xyz;
         c = vec4<f32>(c0.rgb * cols[sc].rgb, c0.a);
+    }
+    // The dynamic light (`Light_Create` + `psiLight_SetLights` 0x10e588: position, colour x intensity, 1/r^2).
+    // STANDIN: the VU1 microcode's per-vertex formula is not disassembled yet; this is N.L x (1 - d^2/r^2).
+    if (u.lc.w > 0.5 && FAR < 0.5) {
+        var n = n0.xyz;
+        if (sa.x != 0xffffffffu) { n = sw * (pal[sa.x] * vec4<f32>(n0.xyz, 0.0)).xyz + (1.0 - sw) * (pal[sa.y] * vec4<f32>(n0.xyz, 0.0)).xyz; }
+        let d = u.lp.xyz - p;
+        let att = max(0.0, 1.0 - dot(d, d) * u.lp.w);
+        // No normal (sprites, snow, the radar, the flash itself): unlit. The 0.25 and the squared falloff are tuned by
+        // eye against PCSX2 (STANDIN until the microcode is read): the raw colour x 2.0 saturates everything in range.
+        let ndl = select(max(0.0, dot(normalize(n), normalize(d))), 0.0, dot(n, n) < 1e-6);
+        c = vec4<f32>(c.rgb + u.lc.rgb * (0.25 * ndl * att * att), c.a);
     }
     o.p = u.vp * vec4<f32>(p, 1.0);
     o.d = o.p.w;
@@ -194,6 +207,8 @@ pub struct Renderer {
     pal_buf: wgpu::Buffer,
     col_buf: wgpu::Buffer,
     pub skin_layout: crate::scene::SkinLayout,
+    /// The dynamic light for this frame: position, 1/r^2, colour x intensity, active (see the shader's `lp`/`lc`).
+    pub light: [f32; 8],
     ibuf: wgpu::Buffer,
     tex_bgs: Vec<wgpu::BindGroup>,
     /// Per texture slot: its first bind group, frame count and rate (animated textures).
@@ -263,7 +278,7 @@ impl Renderer {
                     buffers: &[Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<crate::scene::Vertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Unorm8x4],
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Unorm8x4, 6 => Snorm8x4],
                     }), Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<crate::scene::SkinAttr>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
@@ -328,7 +343,7 @@ impl Renderer {
         let pal_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("palette"), size: (skin_layout.n_mats.max(1) as u64) * 64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let col_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("colours"), size: (skin_layout.col_one as u64 + 1) * 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let make_uniform = || {
-            let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 96, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 128, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &ubgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: pal_buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: col_buf.as_entire_binding() }] });
             (buf, bg)
         };
@@ -396,7 +411,7 @@ impl Renderer {
         let order_cap = draws.len();
         let cel_boxes = scene.cels.iter().map(|c| (c.min, c.max)).collect();
         let cel_graph = scene.cel_graph.clone();
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph }
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, light: [0.0; 8], ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph }
     }
 
     /// `build_FindCel` (0x1c8cb0) over the room cels' boxes for the walk's start cell: the inclusive
@@ -454,10 +469,11 @@ impl Renderer {
             None => ([0.0; 3], 0.0, 0.0),
         };
         let extra = [fog_rgb[0], fog_rgb[1], fog_rgb[2], fog_on, 8.0, k, 16_777_216.0, GAIN];
-        let mut u = [0f32; 24];
+        let mut u = [0f32; 32];
         for (m, vp) in [(&self.uniform, view_proj), (&self.uniform_rot, view_proj_rot)] {
             for r in 0..4 { for c in 0..4 { u[r * 4 + c] = vp[r][c]; } }
-            u[16..].copy_from_slice(&extra);
+            u[16..24].copy_from_slice(&extra);
+            u[24..32].copy_from_slice(&self.light);
             queue.write_buffer(m, 0, bytemuck::cast_slice(&u));
         }
         // The frame starts as fog (what the fog pass covers where nothing was drawn: zb 0).
