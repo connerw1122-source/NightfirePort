@@ -5353,3 +5353,43 @@ punches → 0x53 stagger → 0x42, no 0x44 in the state log, health 0, disabled 
 drop; sister: a P2K shot guard logs dispatched, not disabled) and `the_punch_fire_script_alternates_left_and_right`
 (10 punches in the air; every pick predicted from a clone of the shared RNG taken before the press; both scripts
 play, 5/5 on the level seed). Full suite in the commit.
+
+## 0092 — map-castle: the castle missions 07000001–04 mapped and walkthrough-tested
+
+The mission-objective system came out of ACTION.ELF's data [M]: the per-arc objective tables
+(Castle_Exterior 0x2a3e28 … the castle arc's lists at 0x2a3eb8/0x2a3ed0/0x2a3f18/0x2a3f60), the mission
+table at 0x2a4354 (basemap 0x0700001 = the castle arc, 4 stages = the 4 levels), `Mission_Init` 0x182270
+(clears the watch channels at arc start), `Mission_MonitorObjectives` 0x1827d8 (an objective completes
+when its watch channel turns on; all done → **switch_channels[100 = 0x64]**; ch 0x60/0x61 →
+switch_channels[0x63] = failed), `Mission_Update` 0x182c60 (0x64 → the mission-complete flow; on
+07000004 it loads **0x7300004**, the next arc's driving level — which is why 07000004 has NO 0xE8 exit).
+
+The castle arc's channel map [M tables + D placements/scripts]:
+- 07000001: 1 objective watching 0x47; the exit (0xE8 #18, gate 0x10) needs the Touch #180 AND-chain
+  (Bond + the skin-0x4F contact, mask 0x18/filter 0x4F). **The ch 0xB mystery solved**: the level-start
+  pack script 0x06000087 writes ch 0xB in stream 8 (the intro cut-scene) — it enables the contact (drone
+  #161, wait channel param 3 = 0xB) and 5 more drones. The contact's death raises ch 0x60 (drone param
+  12) = the mission-fail channel. The port already runs all of this (fix-cutscenes' pack scripts);
+  `walk_07000001_live` drives it end to end: intro → ch 0xB → the plate → ch 0x10 → the exit →
+  07000002 loads.
+- 07000002: 3 objectives (0x48/0x4B/0x4D); the exit #206's E-key path has the KEY GATE ch 0x4C
+  [M Trigger_Activate 0x1b2318:76-90 — refused with the Txt_BindLabel(0x2000021) message]. No disc
+  writer for 0x4C/0x48/0x4B/0x4D exists (scripts, triggers, drone death channels, pickups, doors, locks
+  all scanned — the un-ported mission/dialogue layer owns them; 031-fix-mission). The gate mechanics are
+  tested both ways in `walk_07000002_live`.
+- 07000003: 3 objectives (0x4E/0x51/0x53); the exit #451's key gate = ch 0x52, same refusal path;
+  `walk_07000003_live` both ways.
+- 07000004: 1 objective watching 0x54 = the target's death channel (drone #1, skin 0x0500001e, param 12);
+  the intro SP #3 freezes the AI (event 5) and disables Bond (event 4), writes ch 0x38, which starts the
+  story scene SP #2 (0x06000082) — its stream-9 event writes ch 0x53 and its stream-8 event 7 sets the
+  Script_Free 0x80 flag, whose end re-enables the AI [M Script_Free 0x1da880:41-43]. The port settles it
+  by ~tick 1600. The target's death → ch 0x54 → OUT trigger #46 copies it to ch 0x64 (mission complete)
+  → (unported mission layer) → 0x7300004. `walk_07000004_live` asserts the death → 0x54 → 0x64 chain and
+  the alive sister.
+
+Test-fire notes for future sessions: the P2K bullet vs the skin-0x4F contact lands on his hit boxes but
+the civilian-class damage application drops it (the C2/015-fix-npcs gap); the tests use the game's own
+grenade path instead. Script-disabled Bond swallows the trigger (the disabled gate); the intro hand-off
+(PlayerEnable) relocates Bond — teleport AFTER `disabled` clears.
+
+Suite: 374 passed / 3 failed (the 3 disc_golden slim-ISO failures) after merging master.
