@@ -716,7 +716,11 @@ impl Drone {
             health: 10.0, max_health: 10.0, damage_taken: 1.0, damageable: !matches!(skin, 0x0500_003b | 0x0500_003c | 0x0500_0053), kind: setup.kind,
             last_damage: 0.0, silent_kill: false, big_hit: false, flinch_at: None, hit: None, impact_resume: 0, hits_taken: 0,
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
-            corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false, death_channel: param(12) as u8, special_death: param(13), special_spot: pos, special_yaw: yaw,
+            corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false,
+            // fix-finale-blockers: 07000016's chaser (skin 0x0500001e, dtype 0xf, no placement death
+            // channel [D]) carries 0x90 at init — the defeat stand-in documented in kiko.rs [S].
+            death_channel: crate::kiko::chaser_death_channel(d.level, skin, param(15) as u8, param(12) as u8),
+            special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0,
             velocity: [0.0; 3], in_air: false, on_surface: true,
@@ -1682,8 +1686,12 @@ impl Drone {
             (DEATH_ANIM, msg::TIMER_C) => { if self.death_pending { self.set_death_channel(); self.death_pending = false; } true }
             (SPECIAL_DEATH, msg::TIMER_C) => { self.death_pending = true; true }
             // Update: the gun drops while the firing flag (`+0x3B`) is clear or the anim set is 4 / 9.
+            // Death_Anim's msg-2 raises the death channel every update while `+0xCD8` is set — NOT on
+            // the anim's end [M 0x1637f8 case 2: `if (+0xcd8 != 0) SetDeathChannel()`] — the fix
+            // that lets a drone whose death danim never completes (0700001b's Drake) still raise it.
             (DEATH_ANIM, msg::UPDATE) => {
                 if !self.firing || matches!(self.anim_set, 4 | 9) { self.drop_weapon(d, rng); }
+                if self.death_pending { self.set_death_channel(); }
                 true
             }
             (DEAD, msg::ENTER) => {
@@ -3068,7 +3076,10 @@ impl Drone {
             // FollowRoute — arrived → the prop clears → Civilian; blocked (creep 9/0xc) → look-around at
             // alert ≥ 0.66 else stand idle; else keep walking [M 0x15d860 case 3; UpdateMissionRoute 0x154a80].
             (CIVILIAN_MISSION, msg::ENTER) => {
-                if self.voice_type == 0x13 { self.set_state(HOSTAGE_IDLE); return true; } // 0x19 stand-in (a standing state)
+                // CivilianMission 0x15d860 case 1: voice 0x13 → KikoMission 0x19 (the port's skin
+                // mapping: skin 0x5e → 0x13 [M 0x14b300]); unreached by the disc's placements
+                // (kiko.rs) but ported for fidelity. fix-finale-blockers replaced the 0x0d stand-in.
+                if self.voice_type == 0x13 { self.set_state(crate::kiko::KIKO_MISSION); return true; }
                 self.call_anim(d, anim_state::WALK, 0, 0);
                 true
             }
@@ -3263,6 +3274,67 @@ impl Drone {
                 true
             }
             (ALLY_LEAD_DONE, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15f2e8 case 1: 0x21]
+            // ---- fix-finale-blockers (crates/nf-game/src/kiko.rs has the addresses and the tags) ----
+            // NinjaStand 0xa6 (0x16b990) ENTER: the eyes datum then SetState(0xa7) — the BLIND_DRONES
+            // cheat is not modelled, so the fall-through is the only arm.
+            (0xa6, msg::ENTER) => { self.set_state(crate::kiko::NINJA_ATTACK); true }
+            // NinjaAttack 0xa7 (0x16bb50): alert 1.0, the distance bands; UPDATE re-routes each tick.
+            (crate::kiko::NINJA_ATTACK, msg::ENTER) => {
+                self.vision_on = true;
+                self.alert = 1.0;
+                self.set_state(crate::kiko::ninja_band(self.dist));
+                true
+            }
+            (crate::kiko::NINJA_ATTACK, msg::UPDATE) => { if self.next_state.is_none() { self.set_state(crate::kiko::ninja_band(self.dist)); } true }
+            // The bands 0xa8/0xa9/0xaa (0x16bfc0/0x16c248/0x16c650): advance, then re-dispatch
+            // through 0xa7 (the melee/throwing-star anims need the ninja set — not modelled [S]).
+            (crate::kiko::NINJA_LONG_RANGE | crate::kiko::NINJA_MID_RANGE | crate::kiko::NINJA_SHORT_RANGE, msg::ENTER) => {
+                self.call_anim(d, self.walk_anim(d), 0, 0);
+                true
+            }
+            (crate::kiko::NINJA_LONG_RANGE | crate::kiko::NINJA_MID_RANGE | crate::kiko::NINJA_SHORT_RANGE, msg::UPDATE) => {
+                if self.next_state.is_none() { self.set_state(crate::kiko::NINJA_ATTACK); }
+                true
+            }
+            // StandFire 0xb2 (0x16d5b8): hold at the melee band and re-dispatch.
+            (crate::kiko::NINJA_STAND_FIRE, msg::ENTER) => { self.call_anim(d, anim_state::AIM_STAND, 0, 0); true }
+            (crate::kiko::NINJA_STAND_FIRE, msg::UPDATE) => { if self.next_state.is_none() { self.set_state(crate::kiko::NINJA_ATTACK); } true }
+            // KikoMission 0x19 (0x15df28): the route chase — done → prop 0x1d clear → StandBlind.
+            // Its sound-class msgs are ignored on 0x07000016 (case 0x11..0x1f `return 1`).
+            (crate::kiko::KIKO_MISSION, msg::ENTER) => { self.vision_on = true; self.call_anim(d, 0x34, 0, 0); true }
+            (crate::kiko::KIKO_MISSION, msg::UPDATE) => {
+                if self.update_mission_route(d, rng, frame) {
+                    d.props.set(0x1d, &mut self.props, 0);
+                    self.set_state(crate::kiko::STAND_BLIND);
+                }
+                true
+            }
+            (crate::kiko::KIKO_MISSION, msg::SOUND | msg::ALARM | 0x11 | 0x12 | 0x15 | 0x16 | 0x1f) => d.level == 0x0700_0016,
+            // KikoMissionRun 0x1a (0x15e0d8): route done → RunToAlarm.
+            (crate::kiko::KIKO_MISSION_RUN, msg::ENTER) => { self.vision_on = true; self.call_anim(d, 0x1e, 0, 0); true }
+            (crate::kiko::KIKO_MISSION_RUN, msg::UPDATE) => {
+                if self.update_mission_route(d, rng, frame) { self.set_state(crate::kiko::RUN_TO_ALARM); }
+                true
+            }
+            // StandBlind 0x18 (0x172870): the stand anim only.
+            (crate::kiko::STAND_BLIND, msg::ENTER) => { self.call_anim(d, anim_state::STAND_IDLE, 0, 0); true }
+            // RunToAlarm 0x89 (0x1736f8): no alarm point reachable on the ported paths → Idle (the
+            // none-found arm; the port has no alarm-point registry [S]).
+            (crate::kiko::RUN_TO_ALARM, msg::ENTER) => { self.vision_on = true; self.set_state(IDLE); true }
+            // EnemyRunToPoint 0x85 (0x168910): the return state 0x56, on 11/12/13/41 with the player
+            // not yet seen → 4/5; FindRunToPoint's none-found arm (no AI-point registry in the port,
+            // the sweep levels' mode-7 drones provably stand [M 0x168910:32-36]).
+            (crate::kiko::ENEMY_RUN_TO_POINT, msg::ENTER) => {
+                self.vision_on = true;
+                let mut ret = ATTACK;
+                if matches!(d.level, 0x0700_0011 | 0x0700_0012 | 0x0700_0013 | 0x0700_0041) && !self.ever_seen {
+                    ret = if self.alert < 0.66 { IDLE } else { ALERT };
+                }
+                self.set_state(ret);
+                true
+            }
+            // DeleteMe 0xb4 (0x173f00): the soft removal (NDrone2_Enable(0) + obj+0xfe |= 1).
+            (crate::kiko::DELETE_ME, msg::ENTER) => { self.present = false; self.enabled = false; true }
             (_, msg::ENTER | msg::EXIT | msg::UPDATE) => true,
             _ => false,
         }
@@ -4018,6 +4090,7 @@ pub fn voice_type(skin: u32) -> u16 {
 /// The script runtime's view of the level data: animation lengths and an animated object's discrete object 0.
 impl crate::nis::World for Data<'_> {
     fn anim_length(&self, script: u32) -> Option<u16> { self.scripts.get(&script).map(|s| s.length) }
+    fn level(&self) -> u32 { self.level }
     fn discrete0(&self, skin: u32, script: u32, frame: f32) -> Option<nf_formats::anim::Mat4> {
         self.discrete_parts(skin, script, frame).into_iter().next().map(|p| p.1)
     }
