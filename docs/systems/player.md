@@ -36,6 +36,14 @@ and not jumping → vertical velocity 0. The camera (`Player_PositionCamera`) la
 
 - Radius 0.55. Standing: top A = pos + 0.275 up, bottom B = pos + (0.55 − cc) up. Crouched: A = pos + (0.65 − cc),
   B = pos + (0.45 − cc) (`Player_Collision`, checked: 0.55, `0.1 − (cc − 0.55)`, `0.45 − cc`).
+- **cc is dynamic** (fix-truck): `obj+0xCC = obj+0x3C` every tick ([M] `Player_Update` 0x193600:449,
+  `Player_CollisionHandler` 0x1949a8:182) — the stance's root height above the feet. The stance/anim writes
+  `obj+0x3C` (`Player_StandAtNewPosition` 0x190d88 takes it from the placement vec4's W; `Player_Enable`
+  0x195498 copies the free script's matrix translation row — including its W — onto obj+0x30..0x3C when a
+  cut-scene hands Bond back). Standing 1.0347183 [L]; the crouched ride parks at floor + 0.607 in the
+  05-truck trace, i.e. cc ≈ 0.556 after the 0.051 rest offset — the port models the two stances as
+  `ROOT_HEIGHT` / `CROUCH_ROOT_HEIGHT` = 0.55 [L trace-derived, ≈ the capsule radius]. The port's
+  capsule/floor-ray code reads `Bond::cc`; the crouch toggle swaps it.
 - `Intersect_CylGeom` (0x109da0): triangle by triangle, the segment point meeting the plane (clamped), the triangle's
   closest point to it (re-taken on edges), closer than r → pushed out by r − d; each push moves the capsule before the
   next triangle; a walkable face (normal y > 0.7) touched below B marks "standing". No explicit step-up: low edges

@@ -195,31 +195,33 @@ fn probe_07000005_truck_script_entities() {
 /// Bond in the back. The level must end (ch 0x70+0x71+0x72 → mux 0x65 → SP #320 → 0x1D → LOAD_LEVEL 118
 /// → 0x07000006). Traces the chain every 100 ticks.
 ///
-/// DIAGNOSED (fix-level, not fixed — see WORKLOG): the ride and every link up to the last one work —
-/// the cut-scene hands Bond onto the truck (t≈2100), ch 0x71 (truck-bed touch, parented to the truck)
-/// is on for the whole ride, ch 0x22 fires on the way through the gatehouse (t≈3700), the gate guard
-/// spawns and stands at his post so ch 0x72 turns on (t≈3700). The level still doesn't end because
-/// **ch 0x70 (the parked-position TouchOnce, player-mask 0x8) never fires**: its plate is a flat quad
-/// at y = 37.7418 [D script stream 6, hash 0x0200047F — NOT parented to the truck], and the port's
-/// riding Bond parks with his capsule axis at y ≥ feet−0.4+0.55+0.15 ≈ 38.53, i.e. the 0.55-radius
-/// touch capsule ([M Player_Collision 0x194DF0: 0x3f0ccccd = 0.55]) misses the plate by ≈0.24 m.
-/// In the game the plate lies exactly at the bed-floor height (truck root at the park 36.05 + bed
-/// hull bottom ≈1.69 ≈ 37.74), so the game's Bond stands ON it — the port's truck collision/ride
-/// keeps him ≈0.6 higher. Fixing it needs either the game's collide-stage contact geometry for
-/// triggers (the writer of obj+0xD0, untraced) or the port's bed stand height (drone.rs — a shared
-/// file this task must not retune without game evidence). `#[ignore]`d so the suite stays green;
-/// run with `cargo test … truck_ride -- --ignored --nocapture` to re-trace.
+/// FIXED (fix-truck): two things were wrong. (1) The harness gap — the test assigned `sim.bond.pos`
+/// on the level-start Bond, while the viewer's `--bond` path (which does trigger the gatehouse
+/// cut-scene) replaces the whole Bond with `Bond::new` at the spot; `Bond::new` is the setup the game
+/// matches (a clean standing Bond), so the test now uses it. (2) The ride parks Bond 0.49 m too high
+/// (the port's fixed standing capsule vs the game's stance-driven `obj+0xCC = obj+0x3C` [M
+/// Player_Update 0x193600:449]) so the ch 0x70 plate at y 37.7418 [D script stream 6 key 8] never
+/// fired — the trace's ride is CROUCHED (park pos−floor 0.607 vs the standing 1.086), and the port
+/// now models the crouched capsule height (CROUCH_ROOT_HEIGHT, crates/nf-game/src/player.rs), which
+/// parks Bond at 37.93 and lets the touch reach the plate. The test crouches Bond as the hand-off
+/// re-enables him, like the trace's play. `fix_truck_live.rs` holds the full chain + park assertions.
 #[test]
-#[ignore = "diagnosed: ch 0x70's parked plate misses the port's riding Bond by ~0.24 m (bed stand height) — see doc comment"]
 fn truck_ride_to_the_castle_ends_the_level() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
     let sim = scene.sim.as_mut().unwrap();
     // Bond at the gatehouse plate (98.49, 27.05, 106.36 [D U-048]); the cut-scene hands him onto the truck.
-    sim.bond.pos = [100.0, 26.0, 108.0];
-    sim.bond.yaw = 0.0;
+    // The viewer's `--bond 100,26,108` setup path (nf-view lib.rs): a fresh Bond exactly there.
+    sim.bond = nf_game::player::Bond::new([100.0, 26.0, 108.0], sim.bond.yaw);
+    let mut prev_dis = sim.disabled;
+    let mut crouch = false;
+    let mut input = nf_game::player::Input::default();
     for t in 1..=6000u32 {
-        sim.step_bond(Default::default(), false, false, false);
+        // Crouch as the ride begins (the hand-off re-enables Bond on the truck bed).
+        if !sim.disabled && prev_dis && sim.bond.pos[0] < 95.0 { crouch = true; }
+        prev_dis = sim.disabled;
+        if crouch && !sim.bond.crouched { input.crouch = true; crouch = false; } else { input.crouch = false; }
+        sim.step_bond(input, false, false, false);
         if t % 100 == 0 || t < 10 {
             eprintln!("[ride] t{t} bond ({:.1},{:.1},{:.1}) 0x22:{} 0x70:{} 0x71:{} 0x72:{} 0x65:{} 0x1D:{} exit {:?}",
                 sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2],

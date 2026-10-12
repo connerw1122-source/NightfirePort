@@ -10,8 +10,16 @@ use crate::ladder::Ladder;
 use crate::triggers::Channels;
 use crate::world::{CollisionWorld, V3};
 
-/// `AnimObj+0xCC` [L]: the root height above the feet (07000005, skin 0x05000007).
+/// `AnimObj+0xCC` [L]: the root height above the feet (07000005, skin 0x05000007), the STANDING value.
 pub const ROOT_HEIGHT: f32 = 1.0347183;
+/// The CROUCHED stance's root height [L, derived from the PCSX2 trace 05-truck]: riding the truck bed
+/// crouched, Bond parks with obj+0x30 = 37.887 over the bed floor 37.280 — pos−floor 0.607, i.e. cc
+/// 0.556 after the standing rest offset (0.051: standing live 1.086 with cc 1.0347) — ≈ the capsule
+/// radius 0.55 [M 0x194df0: 0x3f0ccccd]. The game's cc follows the pose (`obj+0xCC = obj+0x3C` every
+/// tick [M Player_Update 0x193600:449, Player_CollisionHandler 0x1949a8:182]; the anim/stance writes
+/// `obj+0x3C` — `Player_StandAtNewPosition` 0x190d88 takes it from the placement vec4's W); the port
+/// models the two stances as constants.
+pub const CROUCH_ROOT_HEIGHT: f32 = 0.55;
 /// Capsule radius (`HITTEST+0x8C`).
 pub const RADIUS: f32 = 0.55;
 /// `BL+0x908` on land.
@@ -94,6 +102,10 @@ pub struct Bond {
     /// Substate 4 and the stand / crouch lockout `BL+0x960`.
     pub crouched: bool,
     pub lockout: u32,
+    /// `obj+0xCC` (= `obj+0x3C` [M Player_Update 0x193600:449]): the current stance's root height
+    /// above the feet. The capsule ends and the floor ray hang off this, so a crouched Bond is a
+    /// shorter capsule resting closer to his feet (the truck ride parks him at floor + 0.607).
+    pub cc: f32,
     /// `BL+0x90C` (eye drop when crouched) and `BL+0x908`.
     pub crouch_drop: f32,
     pub eye: f32,
@@ -141,7 +153,7 @@ impl Bond {
     /// Standing at `pos` (`Player_StandAtNewPosition`: the floor point + 1.1) facing `yaw`.
     pub fn new(pos: V3, yaw: f32) -> Bond {
         Bond { pos, yaw, pitch: 0.0, local: [0.0; 2], vel: [0.0; 3], grounded: true, floor_ny: 1.0, grounded_history: 8, jump: 0, land_delay: 0,
-            crouched: false, lockout: 0, crouch_drop: 0.0, eye: EYE, fall_timer: 0, head_bump: false, fall_damage: None,
+            crouched: false, lockout: 0, cc: ROOT_HEIGHT, crouch_drop: 0.0, eye: EYE, fall_timer: 0, head_bump: false, fall_damage: None,
             substate: SS_WALK, ladder: None, climb_top: 0.0, climb_bottom: 0.0, regrab: 0, mode: 0, saved_sub: 0, air: 100.0, drown_damage: None, underwater: false,
             water_fade: 0.0, air_tick: 0, push_fwd: 0.0 }
     }
@@ -177,9 +189,10 @@ impl Bond {
         [p.cos() * self.yaw.sin(), p.sin(), p.cos() * self.yaw.cos()]
     }
 
-    /// The capsule ends (top A, bottom B) for the current stance.
+    /// The capsule ends (top A, bottom B) for the current stance, off the dynamic root height `cc`
+    /// (`Player_Collision` 0x194df0: standing `0.275` / `0.55 − cc`; crouched `0.65 − cc` / `0.45 − cc`).
     fn capsule(&self) -> (V3, V3) {
-        let (a, b) = if self.crouched { (0.65 - ROOT_HEIGHT, 0.45 - ROOT_HEIGHT) } else { (0.275, 0.55 - ROOT_HEIGHT) };
+        let (a, b) = if self.crouched { (0.65 - self.cc, 0.45 - self.cc) } else { (0.275, 0.55 - self.cc) };
         ([self.pos[0], self.pos[1] + a, self.pos[2]], [self.pos[0], self.pos[1] + b, self.pos[2]])
     }
 
@@ -378,9 +391,9 @@ impl Bond {
         let (push, walkable) = world.capsule_push(a, b, RADIUS);
         self.head_bump = push[1] < -1e-4;
         for k in 0..3 { self.pos[k] += push[k]; }
-        let ray = ROOT_HEIGHT + 0.6;
+        let ray = self.cc + 0.6;
         let floor = world.segment_hit(self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
-        self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= ROOT_HEIGHT);
+        self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
         if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
     }
 
@@ -459,9 +472,11 @@ impl Bond {
         if swimming {
         } else if !self.crouched && self.jump == 0 && input.crouch && self.lockout == 0 {
             self.crouched = true;
+            self.cc = CROUCH_ROOT_HEIGHT;
             self.lockout = 60;
         } else if self.crouched && (input.crouch || input.jump) && self.lockout == 0 && !self.head_bump && headroom(world) {
             self.crouched = false;
+            self.cc = ROOT_HEIGHT;
             self.lockout = 60;
         } else if !self.crouched && self.jump == 0 && input.jump && self.grounded_history != 0 && !self.head_bump && headroom(world) {
             self.vel = [0.0, -GRAVITY * 0.4, 0.0];
@@ -493,9 +508,9 @@ impl Bond {
         // `Player_CollisionHandler`: the floor ray first, then the capsule's push.
         let (a, b) = self.capsule();
         let (push, walkable) = world.capsule_push(a, b, RADIUS);
-        let ray = ROOT_HEIGHT + 0.6;
+        let ray = self.cc + 0.6;
         let floor = world.segment_hit(self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
-        self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= ROOT_HEIGHT);
+        self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
         if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
         self.head_bump = push[1] < -1e-4;
         for k in 0..3 { self.pos[k] += push[k]; }
