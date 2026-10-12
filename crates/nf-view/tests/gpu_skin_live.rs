@@ -67,3 +67,29 @@ fn sister_a_wrong_palette_is_caught() {
     let g = apply(&pal, &attrs[i], scene.char_verts[i].pos);
     assert!((g[1] - cpu[i][1]).abs() > 0.5, "a shifted palette must move the vertex");
 }
+
+/// fix-lighting groundwork: skinned vertices decode a unit normal (high 16 bits of skinning words 0..2, x 64).
+#[test]
+fn skinned_normals_are_unit_length() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let img = nf_formats::iso9660::IsoImage::open(&iso).expect("iso");
+    let (entries, bin) = nf_formats::disc::files_bin_entries(&img).expect("FILES.BIN");
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case("07000005.bin")).expect("archive");
+    let data = img.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).expect("read");
+    let level = nf_formats::level::Level::parse(&data).expect("parse");
+    let mut n = 0usize;
+    let mut bad = 0usize;
+    for map in &level.maps {
+        for o in &map.objects {
+            if !o.gfx.is_skinned() { continue; }
+            for leaf in &o.gfx.leaves { for b in &leaf.batches { if !b.skinned { continue; } for v in &b.verts {
+                let l = v.normal.iter().map(|&c| (c as f32 / 128.0).powi(2)).sum::<f32>().sqrt();
+                n += 1;
+                if !(0.9..1.1).contains(&l) { bad += 1; }
+            } } }
+        }
+    }
+    eprintln!("{n} skinned vertices, {bad} with a non-unit normal");
+    assert!(n > 1000);
+    assert!(bad * 100 < n, "more than 1% of skinned normals are not unit length");
+}
