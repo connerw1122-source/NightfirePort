@@ -4380,3 +4380,66 @@ Could not verify / left open (evidence recorded, no guessing):
   applied in load() [M], verified for 07000007 by the party test (gun.weapon reaches 1).
 - Not run: a real PCSX2 trace of a transition (no emulator in the sandbox); the window/renderer path is
   unchanged by this task.
+
+## fix-drone4 — the party guests never walk (user retest), plus the C2 evidence pass
+
+Branch s/fix-drone4 (from origin/master 94ca4c3). Repro + fix tests: `crates/nf-view/tests/fix_drone4_live.rs`;
+the dump harnesses: `crates/nf-view/tests/dump_drone4.rs` (07000002/06 C2) and the throwaway `probe_drone4.rs`
+(nav + guest dump, git-ignored? no — committed, it is the evidence record).
+
+**The 07000007 guests "no longer T-pose but don't move or walk at all" — ROOT-CAUSED and FIXED (two bugs).**
+
+[D level + probe] 07000007 has NO kind-4 (patrol) paths at all: 8 paths — two kind 0x2, six kind 0x8. So
+`AssignAIPath(4)` can never succeed on this level — the fix-drone3 reading ("CivilianPatrol walks them") had
+nothing to walk. The real walker is **CivilianMission (0x16, 0x15d860)**: every dtype-10 guest carries prop 0x1D
+(probe: prop1d 1 for all 35), the kind-8 paths sit exactly under guest placements (g08 0.017 from path-2 node 0;
+g20/g21 on paths 5/4 node 0), and CivilianInit 0x172730 / PartyGirlInit 0x1728c0 ENTER route prop-0x1D drones with
+a mask-8 route into 0x16 [M 0x172730:29-39; 0x1728c0:17-22]. CivilianMission ENTER calls the walk danim 0x37 [M
+0x15d860:19-21], UPDATE does the scare check then FollowRoute [M 0x15d860 case 3; UpdateMissionRoute 0x154a80 is
+`NDrone2_FollowRoute` — the port's `Route::follow`]. `+0x9f2` (read as a "script link" in fix-drone3) is the route
+NODE COUNT that `NDrone2_InitAIPath` fills [M 0x153720] — the mask-8 branch is the mission-path gate.
+
+Port fix (drone.rs): state `CIVILIAN_MISSION 0x16` ported (ENTER walk; UPDATE scare → voice-0x10 team-1 Attack /
+CivilianScared, route follow → arrived clears prop 0x1D → Civilian, blocked → look-around/stand); CivilianInit
+ENTER matches the game (voice 0xd → PartyGirl; prop 0x1d + mask-8 route → 0x16; else the prop clears and mask-4);
+PartyGirlInit ENTER likewise; PartyGirl ENTER now matches 0x160140 (voice 0x12 → Civilian; AssignAIPath(4), route →
+CivilianPatrol — PartyGirl herself never patrols [M 0x160140 case 3: scare else SetStandIdleAnim(1)+BondTalk];
+the port's patrol-from-PartyGirl-UPDATE deviation removed). BondTalk (0x1446b0 — the head-track + speech lines
+when unarmed Bond is within 3 on 07000007) stays unported (fix-drone3's note stands); its `Rand_Rand` draws are
+therefore also not drawn — the guests walk, they just don't chat yet.
+
+**Bug 2 — `Route::for_path` collapsed every open chain** [M InitAIPath 0x153720]: on a node without exactly two
+links the port re-appended the SAME node and kept walking, so a mission path's endpoint chain (path 2: 5 nodes
+spanning 18 units, node 0 has one link) built a one-node route that "arrives" instantly — the trace: g08 got a
+route at t0 and sat in Civilian by t20 having moved 0.16. The game's kind-8 branch leaves by the single link of a
+1-link FIRST node and STOPS the build at the first later ≠2-link node. Fixed in nav.rs `for_path` (1-link first
+node follows its link; later ≠2-link node ends the chain; the non-kind-8 reading is *suggested* — the ported
+levels' kind-4 patrols are 2-link loops, so patrol behaviour is unchanged, pinned by the 07000005 sister test).
+
+**Verified** [M tests, NF_ISO]: `a_party_guest_walks_her_mission_route` — the ch-0 guest on a kind-8 node reaches
+0x16 with danim 0x37 at tick 60, holds a ≥4-node route (the collapse regression), and covers > 2.0 units in ticks
+300-600 (pre-fix: state 0x2f/0x11, route None, 0.04 units — the user's symptom). `the_07000005_patrol_still_walks_
+after_the_route_fix` — the patrol regression gate. The fix-drone3 suite (5 tests) still passes post-fix.
+
+**The C2-class evidence pass (07000002 bathhouse, 07000006) — dump recorded, root cause NOT found this session.**
+`dump_drone4.rs` runs the real viewer path: 07000002 start shows the ch-21/23 guards (d00/d01/d03/d06, dtypenew 2)
+drawn but state 0x0/started=false at tick 2 — by tick 122 they are in WaitSwitch (fix-dev's dump agrees: enabled=0
+drawn=0 until their channels fire) and the only drawn drone at the bathhouse is the civilian woman d21 (skin
+0x0500004F, team 2, mode 12, HostageIdle class). Raising ch 21 headless did NOT re-draw them at Bond's spot. The
+headless `drawn` flag is the port's visibility bookkeeping, so this dump cannot separate "the game's guard is a
+different drone" from "the port's drawn flag lies" — the user's screenshot shows a GUARD next to the woman that
+the port's start dump does not contain. NOT FIXED; the next pass needs the ch-21 wake driven through the real
+plate positions (walk Bond over plates 341/383 [D]) and a damage check on the woken guard.
+
+**Not done this session** (each with its reason):
+- The searchlight alarm SOUND/music event on 07000006 (the channel path works — fix-drone3's test wakes the
+  ch-55 guards): the sound/music half needs Searchlight_Update's sound call identified in the decompile; no time.
+- The party level-start weapon lock timing (no armed frame on warm load) + the bouncer/male-guest permanent
+  aggro: not started.
+- The 07000006 driver's hide-spot (crouching on the crate stack): not started.
+- The 07000005 patrol torso re-check: fix-drone3's clamp fix is still in and the sister test passes; no new
+  evidence this session.
+
+Files: `crates/nf-game/src/drone.rs` (the mission-state block), `crates/nf-game/src/nav.rs` (for_path — shared
+file, minimal change, noted), the two new test files + the probe. Determinism: no new RNG draws (BondTalk's
+draws are inside the unported function); the walk call is fixed-anim.
