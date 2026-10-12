@@ -5242,3 +5242,70 @@ now clears).
 
 Determinism: no new RNG draws on the shared path (the freeze mirror and the bullet gate add none; the test's
 `fire_player` call consumes the sim RNG exactly as a real shot does); the fixed 60 Hz tick path unchanged.
+## 0091 — fix-wire: the cable crossing (Player_CollWire + Player_Wire + Player_Zipline)
+
+The user's report: at the cable left of the castle gate (07000005), pressing E plays the falling-to-death
+animation instead of the hand-over-hand crossing. Root cause: the port had NO wire gameplay at all — the
+old `wire.rs` derived endpoints from "translation + glist extent" with misnamed params (`channel` = param 2,
+`glist` = param 3), and the only wire code was a proximity hack that posted `Music_Event(0xD, 1)` when Bond
+walked within 1.5 units of a wire (scene.rs `creeping`). Walking at the cable did nothing; the spot is over
+the chasm, so Bond fell (tests/wire_repro.rs: substate stayed 0, y 33.37 → 32.18 in 30 ticks).
+
+What was ported (crates/nf-game/src/wire.rs, crates/nf-game/src/player.rs, minimal scene.rs/dev.rs plumbing):
+
+- `Wire` rebuilt from the atlas: instance bytes = params 1/0/2/3 at inst+0x00/02/04/06 (type, param0,
+  param2, switch channel — the old field names were shifted); endpoints derive at grab/ride time from the
+  world sphere (centre + radius from the placement's object bounds through the yaw-only matrix — the live
+  07000005 sphere centre/radius match the snapshot [L ee_start_05 016dc430]); grab segment radius − 2.0 at
+  obj+0x58 pitch [M CollWire 0x1971f8], travel radius − 0.5 pitch 0 [M Player_Wire 0x1976f8], zipline full
+  radius at pitch [M Player_Zipline 0x197ff0]. `Wire::all` resolves placements against their map objects
+  like `ladder::all` (the hardcoded 4.0 length is gone).
+- Segment direction pinned by disassembly: `Vec_Spherical_2_Cartesian` 0x1e3948 computes
+  (r·sin θ·cos p, r·sin p, r·cos θ·cos p) of the yaw ARG (its internal `+π/2` builds the cos), and the wire
+  call sites add π/2 to obj+0x54 before the call [M 0x1971f8]. With 07000005's yaw −1.5708 the wire runs
+  along Z — the atlas's "endpoints ≈ (−19.95…−27.03, …)" X-span used a cos/sin-swapped reading; corrected
+  in the atlas.
+- `Player_CollWire` 0x197130: the grab guards (regrab, type ≠ 1, substate ≠ target, zipline lower-end
+  refusal), ClearInertia, substate 6/0xF by type, mode 0xC + anim 0x060005e5 (type 0) / 0x06000095 (type 2),
+  hang offsets 1.0207 / 1.17363, the yaw = the nearer of wire.yaw ± π/2, the hand-reach correction from the
+  grab anim's root delta (x − 0.082, rotated — signs reconstructed from the MMI disasm [S]), cam mode 0xB.
+- `Player_Wire` 0x197658 (substate 6) whole: the travel-segment endpoint snap (SqDist2D), the auto-drop
+  timer (+100/(60·30) per tick, paused in the grab pose, drop past 100), the drop path (jump press →
+  saved_sub, cam 0, regrab 0x1E, AnimObj[99]=[100] via the Sim's re-equip carry), the strafe-axis move
+  modes 7/8 with the end-zeroing band (within 0.5² of the travelled-to end or past the far one), the idle
+  pair 0x060005ec/ed, the turn pair 0x060005ee/ea and the move pair 0x060000b4/b5 with the decompile's
+  oldhash alternation and the ±0.0542 sway (perpendicular to the facing), the per-add clamp onto the line
+  at closest.y − 1.0207, and the anim root motion (the tracks sampled from the level archive's kind-5
+  scripts + the anim archive's sequences; the move pair travels 0.7637/0.7106 per cycle at the ±1.2 rate
+  [D measured]). No fall check while attached [M — the decompile has none].
+- `Player_Zipline` 0x197f50 (substate 0xF): the ride anim 0x06000096 re-added while stopped, the lower-end
+  arrival test on the LIFTED y (the decompile lifts Bond onto the wire first [M 0x197ff8]), mode 9 +
+  0x06000094 then the walk-substate dismount with regrab 60, the fall-speed accumulator (+0.15/tick) as
+  the downward velocity the clamp projects onto the line [S — the game's Player_Move applies BLData+0x18;
+  no live zipline exists on the two levels to check against].
+- The grab scan in the Sim: the level's wires tested with the capsule vs the world sphere every walking
+  tick (the game's object hit test is the swept segment vs the sphere, Collide_PickObj 0x1eae80's
+  version-0x200 branch [M]) plus on the use key [S — the PC action key; the game's jump-grab needs the
+  icon context +0x95F == 3 which is not ported]. `Player_WeaponNone` on grab, the re-equip carry on drop,
+  `Music_Event(0xD, 1)` every on-wire tick and the wire switch channel 1/0 now come from the substate
+  (the proximity hack is gone). dev.rs's wire-music scenario updated for the new Wire fields.
+
+Evidence: tests/wire_live.rs — 07000005: E grabs (substate 6, hang 34.4676 − 1.0207), the idle control leg
+holds the end, the strafe crossing travels 4.6+ units to the far end alive (health 100 the whole way), the
+at-rest clamp holds the line, the action press dismounts with regrab 0x1E and Bond stays alive; 07000002:
+the same chain across its offset-centre 11.5-radius wire (the centre rotation pinned); the zipline unit
+test rides a synthetic sloped wire downhill to the lower end and dismounts (regrab 60) with the lower-end
+grab-refusal sister. Full suite 352 passed / 3 failed (the 3 disc_golden slim-ISO failures).
+
+Not verified / left open:
+- The zipline has no live level to test against (both wires are type 0); the ride is decompile-faithful,
+  the fall-speed consumer [S].
+- The third-person wire camera: `cam_mode` 0xB is recorded on Bond but the viewer stays first-person —
+  the renderer work is out of this task's scope.
+- The jump-grab's icon context (+0x95F == 3) and the PC use-key binding are [S]; the collision grab (walk
+  into the sphere) is the [M] path and is what the tests exercise.
+- The hand-reach correction's exact MMI sign order [S]; its magnitude (~0.46 along the facing) is erased
+  by the grab anim's own root motion.
+- The 07000002 wire's ends sit inside trigger volumes (a touch trigger at the B end starts a cut-scene
+  that disables Bond mid-ride) — the test grabs mid-wire; the real game presumably starts its own script
+  there, which is the script layer's business.

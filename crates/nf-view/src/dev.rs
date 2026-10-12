@@ -1083,7 +1083,7 @@ mod scenarios {
                 // units of the wire's Y (stay on the same platform, not the cliff base 80 units below),
                 // and at least 2 walkable cardinal directions (not a 1-tile ledge or a sealed pocket).
                 // Avoid trigger volumes — the wire area on 07000005 has touch triggers that start cut-scenes.
-                let a = w.a;
+                let (a, _) = w.grab_segment();
                 let mut best: Option<([f32; 3], usize)> = None;
                 for r in [2.0, 5.0, 8.0, 12.0, 20.0] {
                     for angle in 0..24 {
