@@ -5400,3 +5400,64 @@ success (every part's channel on 07000001 → ch 100 → "Mission Complete" → 
 AND is unsatisfied one channel short), and the end-to-end escort exit. Docs: docs/systems/mission.md
 (new, the API), docs/systems/levels.md §7 (all 55 objectives per level), docs/formats/mission-data.md
 (U-024 closed).
+## map-tower2 — the second tower missions 07000011–07000014 mapped, walkthrough-tested and made completable
+
+Branch `s/map-tower2` (origin/master d91f5bd + the fix-mission mission layer cherry-picked — the task's
+"build on mission.rs" instruction; the WORKLOG merge conflict resolved keeping both entries). Playtest
+reference: docs/playtests/2026-10-11.md. Docs: docs/levels/07000011.md … 07000014.md (new). Tests:
+`crates/nf-view/tests/walk_070000{11,12,13,14}_live.rs` + `walk_tower2_probe.rs` (the live state probe and
+the kind-5 script scanner), all driven through `nf_view::load(_with_carry)` + `Sim::step_bond`.
+
+**The mission chain.** Mission 0x07000011 = 07000011 → 07000012 → **0700004A** (part 2, the lobby connector
+[L c0700004a.rs]) → 07000013; the objectives' channels fire one level late by design ("Gain access to lower
+office floor" 0x48 ← TouchOnce #679 on 07000012; "Escape through the elevator shaft" 0x4D ← TouchOnce #277 on
+0700004A; "Gain access to lobby" 0x4A ← TouchOnce #153 on 07000013) [D, every writer hunted per level and the
+misses documented]. Mission 0x07000014 = 07000014 alone (5 objectives, ch 0x47/0x48/0x4A/0x54/0xCE), ending in
+07000015.
+
+**Fix 1 — the mission globals ride the RamSave** (walkthrough 07000013 failed pre-fix: "Gain access to
+lobby" never completed). The game keeps `MissionState`/`BaseMap`/`ThisOrderNum`/`FailLabel` and the
+per-objective states in `.data` across `ResetMap_LevelToLoad` — `Mission_Init` 0x182270 only resets the
+current and future parts in place [M 0x182270:68-129]. The port re-creates `Mission` per load, so previous
+parts' states reset to the `.data` defaults and the success AND could never see them. `RamSave` now carries a
+`MissionSave` (the LS_MakeMission/LS_LoadMission 0x1cd720/0x1cd880 payload shape) and `Drones` restores it
+after the `Mission_Init` latch [M]. Shared files: player.rs (+field +builder), drone.rs (+field +3 lines),
+lib.rs (+2 lines).
+
+**Fix 2 — the fuseboxes** (walkthrough 07000014 failed pre-fix: the sabotage chain 0x87+0x88 → AND #391 →
+0x8C had no writer). `FuseBox_Create` 0x1b0448 (0x31 + script hash; params 1–4 = the two wire groups'
+channel words), `FuseBox_Register` 0x1b0970, `FuseBox_Update` 0x1adfe8 ported in `fusebox.rs` (new): the
+group scan, both channel words written when a group empties, and the **live-wire 5.0 hurt** through the same
+`Player_Hurt` → `pain_generic` path the explosions use [M 0x1adfe8 `Player_Hurt(0x40a00000)`]. Stand-in,
+noted: the wires are one abstract wire per group cut with E after the lid press (`Player_Activate` 0x1a5170
+reaches the box's class-0 SP first); the SP-entity bullet path is not ported. The level's five boxes are
+mapped in docs/levels/07000014.md §5 (the completion path needs #383 + #385).
+
+**Fix 3 — the SimpleScript open/closed swap** (the driver's named 07000012 item). The disc evidence: every
+animated 0xE2 pair member's key 0 equals its placement transform, and the pairs are complementary — at rest
+the closed/covering member sits in place while the open/parked member rests away; the trigger channel
+(p3 — 0x58 shutters/screens, 0x59 lift) runs each member to its other key [D, the level's 0x19 blocks 12–20
+decoded key by key]. `SS_Create` 0x1a9c58 creates an object only when the record's key count
+(`extra[7] & 0xffff`) is non-zero; `SS_Update` 0x1a9948 poses it every frame via `KeyFrame_Interp` 0x1e1140.
+Ported as `ss.rs` (new): key 0 at rest, the playhead runs toward the last key while the channel is on and
+back while off (rate = `extra[7] >> 16`, 0 → the default 75). The animated 0xE2s left the static scene pass
+(level.rs, 3 lines) and draw posed through the door slot space in scene.rs (the vertices index
+`door_base + n_doors + k`; the upload fills the region from `drones.sss.list`). The E-call-buttons #699/#702
+(out 0x58/0x59) drive the swap; verified by `walk_07000012_live::the_lift_call_button_swaps_the_simple_scripts`
+(the leaf at x 2.206 → 3.070 [D block 15]). The key-less 0xE2s keep the old static draw (the game creates
+nothing for them [S — the barrel-trap note]). simplescript_live's assertion follows the posed pass.
+
+**The walkthroughs** (each level doc carries the full chain):
+- 07000011: the cold start at #146 → the spawn touch 0x7E → the stairwell down → E at the Load Point #158 →
+  07000012. The atrium fall is the scripted death (the y-42 plates #314–318 → SP #313 → 0x0600098A event 0xD
+  [0x62,1] → the restart) — already ported, now pinned by a test.
+- 07000012: the spawn touch completes 07000011's objective (the late AND); the override console #731 (E, out
+  0x49; the E arm has no lock read — [M 0x1b2318], the test documents the lock's real polarity); the shaft
+  touch #683 holds 0x1F → the gated exit #669 → 0700004A.
+- 07000013: the warm chain arrives with 0x48/0x49/0x4D on; the spawn fires 0x4A; the front entrance (#156 →
+  0x50, then the ch-0x64 touches) completes the mission → `LevelToEndTo` 0x07300013; the gate exit #72
+  requests the driving interlude on E (ch 0x4E has no writer — dead auto-fire data [D]).
+- 07000014: the five stages (vent 0x47 → Kiko 0x48 → the sabotage 0x8C → the room escape 0x4A → Rook 0x54 →
+  the exit 0xCE + 07000015), the exit's key gate locked until Rook falls (the sister test).
+
+**Full suite**: green except the 3 allowed `disc_golden` failures on the slim ISO.
