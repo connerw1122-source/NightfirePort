@@ -1648,7 +1648,7 @@ impl Scene {
     pub fn build(level: &Level, cels_only: bool, skeletons: &HashMap<u8, Skeleton>, sequences: HashMap<u8, Vec<Sequence>>, drones: Option<&DroneContext>) -> Scene {
         let by_hash: HashMap<u32, (u8, usize)> = sequences.iter()
             .flat_map(|(&sk, v)| v.iter().enumerate().map(move |(i, s)| (s.hashcode, (sk, i)))).collect();
-        let (mut instances, missing) = level.instances(cels_only);
+        let (mut instances, missing) = level.scene_instances(cels_only);
         // Sky objects are drawn by the sky pass only (with --all they would also appear as dynamic entities).
         instances.retain(|i| i.placement.flags & 0xff != 0x2a);
         let (mut char_instances, chars_missing) = level.character_instances();
@@ -2107,6 +2107,8 @@ impl Scene {
         let seqs: HashMap<u32, Sequence> = sequences.values().flatten().map(|s| (s.hashcode, s.clone())).collect();
         let mut sim = drones.and_then(|d| Some((d, d.props.clone()?, d.weapons.clone()?))).and_then(|(d, props, weapons)| {
             let m = level.main_map()?;
+            // Breakables (type 0x20) are drawn but not solid yet: their collision rules (glass that sight and bullets
+            // pass or break) come with the Break_Create port.
             let world = nf_game::world::CollisionWorld::build(level, &level.instances(true).0);
             let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, d.level_id);
             let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);

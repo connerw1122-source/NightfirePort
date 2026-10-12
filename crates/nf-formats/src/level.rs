@@ -263,6 +263,18 @@ impl Level {
     /// The main map's placements resolved to objects. `cels_only`: only records with the 0x8000 create-cel flag
     /// (what `parsemap_block_map_data_static` places itself); otherwise also the dynamic entities at their record
     /// transforms. Unresolvable records are skipped and counted in the second value.
+    /// The static scene: `instances(cels_only)` plus, when `cels_only`, the breakables (placement type 0x20,
+    /// `parsemap_create_dynamic_objects` 0x1d04f0 case 0x20 → `Break_Create`): vases, plates, glass panes. They carry
+    /// no create-cel flag, so the cel pass skipped them and every breakable prop was missing. Drawn in their
+    /// unbroken state (the port does not make them solid yet); breaking them is not ported yet.
+    pub fn scene_instances(&self, cels_only: bool) -> (Vec<Instance>, usize) {
+        let (mut out, missing) = self.instances(cels_only);
+        if cels_only {
+            out.extend(self.instances(false).0.into_iter().filter(|i| i.placement.flags & 0xff == 0x20 && !i.placement.creates_cel()));
+        }
+        (out, missing)
+    }
+
     pub fn instances(&self, cels_only: bool) -> (Vec<Instance>, usize) {
         let Some(m) = self.main_map() else { return (Vec::new(), 0) };
         let mut out = Vec::new();

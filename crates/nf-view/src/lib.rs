@@ -1156,10 +1156,21 @@ pub fn run() -> Result<()> {
             // `--bond x,y,z`: Bond starts exactly there (in the air he falls), instead of the level start.
             if let Some(i) = args.iter().position(|a| a == "--bond") {
                 let v: Vec<f32> = args.get(i + 1).context("--bond needs x,y,z")?.split(',').map(|t| t.parse()).collect::<Result<_, _>>()?;
-                sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], sim.bond.yaw);
+                sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw));
             }
+            // `--skip-cutscenes`: hold the game's own skip while a script camera runs (`Script_FFwd` 0x1dac78), for image pairs.
+            let skip_cuts = args.iter().any(|a| a == "--skip-cutscenes");
             for t in 1..=time as u32 {
+                if skip_cuts && sim.disabled { sim.drones.scripts.skip_request = true; }
                 if walk { sim.step_bond(Default::default(), pulls.contains(&t), false, false); } else { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
+            }
+            // With `--skip-cutscenes`, a skipped cut-scene's hand-back moves Bond: put him back on the `--bond` spot (and
+            // let one tick settle) so the image pair matches the real game's placement.
+            if skip_cuts {
+                if let Some(i) = args.iter().position(|a| a == "--bond") {
+                    let v: Vec<f32> = args.get(i + 1).map(|s| s.split(',').filter_map(|t| t.parse().ok()).collect()).unwrap_or_default();
+                    if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); sim.step_bond(Default::default(), false, false, false); }
+                }
             }
             if walk { let h = sim.bond.head(); cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV }; }
             if walk { if let Some((p, yaw, pitch, fov)) = sim.script_camera() { cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov }; } }
@@ -1202,7 +1213,7 @@ pub fn run() -> Result<()> {
     if let Some(i) = args.iter().position(|a| a == "--bond") {
         if let (Some(v), Some(sim)) = (args.get(i + 1), app.scene.sim.as_mut()) {
             let v: Vec<f32> = v.split(',').filter_map(|t| t.parse().ok()).collect();
-            if v.len() == 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], sim.bond.yaw); }
+            if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); }
         }
     }
     // B-5: start the recorder AFTER the scenario is applied (so the header captures the post-scenario starting state:
