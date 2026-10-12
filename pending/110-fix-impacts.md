@@ -15,7 +15,7 @@ The user's PCSX2 comparison: guns eject shells, and bullets leave marks and puff
    - the pool size and eviction;
    - the landing sound.
 
-   `prompt_fix-audio2` also lists casing sounds. If master already has them when you start, reuse them; otherwise you own the trigger and fix-audio2 owns only the sample choice. Bond's casings come from the first-person view model, so they need the view-model space-to-world transform the flash uses (`Scene::frame_state` attach matrices).
+   The `fix-audio2` task (170) also lists casing sounds. If master already has them when you start, reuse them; otherwise you own the trigger and fix-audio2 owns only the sample choice. Bond's casings come from the first-person view model, so they need the view-model space-to-world transform the flash uses (`Scene::frame_state` attach matrices).
 3. **Impact dust and sparks:** `Debris_Create` (0x1aaa00, HITDATA + HEINFO per material), `Debris_CreateEx` (0x1ac808), `Debris_Update` (0x1aac00), `Debris_Create_Loop` (0x1ed548), `Particles_Create` (0x1cf478) / `Particles_Update` (0x1cf528), and `Gas_Init` (0x1aacc8) for puffs. Port them per material (stone dust, metal sparks, wood chips, glass, snow), with the counts, velocities, lifetimes and RNG draws.
 4. **Ricochets:** `Effect_RicochetProb` (0x1cf290, material × weapon → probability; an RNG draw). Port it with its sound, and the bullet's continuation if the game has one.
 5. **Bullet trails:** `Bullet_trail_effect_smoke` (0x12cba8) and `Bullet_DoTrails` (0x12d890). Port them if the weapons we have use them (rockets and tracers); otherwise note which weapons do.

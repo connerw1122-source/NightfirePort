@@ -7,7 +7,7 @@ Read `docs/playtests/2026-10-11.md` first: it's the user's multi-level playtest,
 - **G-032d:** the exact SPU2 Gaussian interpolation table (currently Catmull-Rom).
 - The cel/room-driven `SFXSetEnvironment` (reverb per room, now that cels and portals exist).
 - The speech remainder (`docs/systems/speech.md`).
-- Bullet casings, the 0x601 body-hit variant, drone foley (`NDrone2_PlaySFX`, and its RNG pitch draw in game order), sound precache, and pausing sounds during cut-scenes.
+- Bullet casing sounds (the `fix-impacts` task, 110, ports the casings and owns the landing-sound trigger if it lands first; you own the sample choice), the 0x601 body-hit variant, drone foley (`NDrone2_PlaySFX`, and its RNG pitch draw in game order), sound precache, and pausing sounds during cut-scenes.
 - Music events from systems ported since (objectives, exits, room triggers).
 
 Each one with a test against the decompile's values.
