@@ -77,12 +77,15 @@ pub mod state {
     /// characters. CivilianInit 0x10, Civilian 0x11, CivilianScared 0x12, CivilianHiding 0x13, CivilianPatrol 0x14
     /// (0x172730 / 0x15d118 / 0x15d3a0 / 0x15d520 / 0x15d610); PartyGirlInit 0x2e, PartyGirl 0x2f (0x1728c0 / 0x160140);
     /// CivilianGuard 0x30, CivilianDoorGuard 0x31 (0x1603a8 / 0x160648); the truck driver 0x32..0x35
-    /// (0x160bd0 / 0x160d98 / 0x160ed0 / 0x161030); HostageIdle 0x1c (0x15ce60).
+    /// (0x160bd0 / 0x160d98 / 0x160ed0 / 0x161030); HostageIdle 0x1c (0x15ce60). CivilianMission 0x16
+    /// (0x15d860) — the prop-0x1D characters WITH a kind-8 (mission) route: the party's walkers
+    /// [M table entry 0x16 → 0x15d860, read from the EE snapshot].
     pub const CIVILIAN_INIT: u8 = 0x10;
     pub const CIVILIAN: u8 = 0x11;
     pub const CIVILIAN_SCARED: u8 = 0x12;
     pub const CIVILIAN_HIDING: u8 = 0x13;
     pub const CIVILIAN_PATROL: u8 = 0x14;
+    pub const CIVILIAN_MISSION: u8 = 0x16;
     pub const HOSTAGE_IDLE: u8 = 0x1c;
     pub const PARTY_GIRL_INIT: u8 = 0x2e;
     pub const PARTY_GIRL: u8 = 0x2f;
@@ -854,6 +857,24 @@ impl Drone {
             _ => { let a = if self.alert >= 0.66 { anim_state::ALERT_IDLE } else { self.walk_anim(d) }; self.request_anim(d, a) }
         }
         self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]);
+    }
+
+    /// CivilianMission's route half (`UpdateMissionRoute` 0x154a80 = `NDrone2_FollowRoute`): the walk anim on
+    /// MOVING, look-around/stand when the creep is blocked (the game's route creep byte 9/0xc — the port's
+    /// BLOCKED code), and `true` once the route ARRIVED (the caller clears prop 0x1D and falls to Civilian).
+    fn update_mission_route(&mut self, d: &Data, _rng: &mut Rng, _frame: u32) -> bool {
+        let feet = self.feet();
+        let Some(route) = self.route.as_mut() else { self.request_anim(d, anim_state::STAND_IDLE); return false };
+        let (code, _reached) = route.follow(d.nav, feet);
+        let target = route.target;
+        match code {
+            crate::nav::follow::ARRIVED => { self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); true }
+            crate::nav::follow::BLOCKED | crate::nav::follow::NO_PATH => {
+                if self.alert >= 0.66 { self.request_anim(d, anim_state::ALERT_IDLE) } else { self.set_stand_idle(d, _rng, _frame, false) }
+                false
+            }
+            _ => { self.request_anim(d, self.walk_anim(d)); self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); false }
+        }
     }
 
     // ---- animation ---------------------------------------------------------------------------------------------
@@ -2770,19 +2791,30 @@ impl Drone {
             (TRUCK_DRIVER_IDLE, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
             (TRUCK_DRIVER_IDLE, msg::SOUND | msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
             (TRUCK_DRIVER_IDLE, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
-            // PartyGirlInit (0x1728c0): prop 0x1d → AssignAIPath(8); the port runs no NIS script link, so always
-            // PartyGirl (0x2f) — the game's script branch (0x16 CivilianMission) is not ported.
-            (PARTY_GIRL_INIT, msg::ENTER) => { self.set_state(PARTY_GIRL); true }
-            // PartyGirl (0x160140) ENTER: AssignAIPath(4) (patrol paths) + vision on; UPDATE: armed person within
-            // 10 (0x41200000) → CivilianScared, else stand idle (SetStandIdleAnim(1)); the BondTalk idle lines are
-            // level voice sets, not ported.
-            (PARTY_GIRL, msg::ENTER) => { self.assign_path(d, 4); self.vision_on = true; true }
+            // PartyGirlInit (0x1728c0) ENTER: prop 0x1d → AssignAIPath(8) — with a route → CivilianMission
+            // (0x16, the walkers); else the prop clears and PartyGirl (0x2f) [M 0x1728c0:17-25]. The game's NIS
+            // script link (`+0x9f2` there is the route count — InitAIPath 0x153720 fills it) makes the mask-8
+            // check the mission-path check; the port's route slot is the same gate.
+            (PARTY_GIRL_INIT, msg::ENTER) => {
+                if self.prop(d, 0x1d) && self.assign_path(d, 8) { self.set_state(CIVILIAN_MISSION); return true; }
+                d.props.set(0x1d, &mut self.props, 0);
+                self.set_state(PARTY_GIRL);
+                true
+            }
+            // PartyGirl (0x160140) ENTER: voice 0x12 → Civilian; else AssignAIPath(4) — with a route →
+            // CivilianPatrol (0x14), without → stay [M 0x160140:16-35]; UPDATE: armed person within 10
+            // (0x41200000) → CivilianScared, else stand idle (SetStandIdleAnim(1)) — PartyGirl never patrols
+            // herself [M 0x160140 case 3]. The BondTalk idle lines are level voice sets, not ported.
+            (PARTY_GIRL, msg::ENTER) => {
+                if self.voice_type == 0x12 { self.set_state(CIVILIAN); return true; }
+                self.vision_on = true;
+                if self.assign_path(d, 4) { self.set_state(CIVILIAN_PATROL); }
+                true
+            }
             (PARTY_GIRL, msg::UPDATE) => {
                 if self.near_armed_person(10.0) {
                     self.sighted = true;
                     self.set_state(CIVILIAN_SCARED);
-                } else if self.route.is_some() {
-                    self.update_patrol_route(d, rng, frame);
                 } else {
                     self.set_stand_idle(d, rng, frame, true);
                 }
@@ -2811,14 +2843,44 @@ impl Drone {
             (CIVILIAN_GUARD, msg::BULLET) => self.on_bullet_resume(d, rng, frame, ATTACK, false),
             (CIVILIAN_GUARD, msg::SOUND | msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
             (CIVILIAN_GUARD, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
-            // CivilianInit (0x172730): prop 0x1d → AssignAIPath(8) then clear; AssignAIPath(4); route →
-            // CivilianPatrol (0x14), none → Civilian (0x11). (The voice-0xD → 0x2f and script → 0x16 branches are
-            // the mission/NIS paths the port does not run.)
+            // CivilianInit (0x172730) ENTER: voice 0xd → PartyGirl; prop 0x1d → AssignAIPath(8) — with a route →
+            // CivilianMission (0x16); else the prop clears, AssignAIPath(4): route → CivilianPatrol (0x14),
+            // none → Civilian (0x11) [M 0x172730:15-45].
             (CIVILIAN_INIT, msg::ENTER) => {
-                if self.prop(d, 0x1d) { self.assign_path(d, 8); d.props.set(0x1d, &mut self.props, 0); }
+                if self.voice_type == 0xd { self.set_state(PARTY_GIRL); return true; }
+                if self.prop(d, 0x1d) && self.assign_path(d, 8) { self.set_state(CIVILIAN_MISSION); return true; }
+                d.props.set(0x1d, &mut self.props, 0);
                 if self.assign_path(d, 4) { self.set_state(CIVILIAN_PATROL) } else { self.set_state(CIVILIAN) }
                 true
             }
+            // CivilianMission (0x15d860): the prop-0x1D characters with a kind-8 route — the party's walkers.
+            // ENTER: voice 0x13 → KikoMission (0x19, not ported — no such voice on the ported levels); else the
+            // ready flags + CallAnim(0x37) (the walk) + the BondTalk bookkeeping clear [M 0x15d860:16-27].
+            // UPDATE: armed person within 10 → (voice 0x10: team 1 + Attack; else) CivilianScared; else
+            // FollowRoute — arrived → the prop clears → Civilian; blocked (creep 9/0xc) → look-around at
+            // alert ≥ 0.66 else stand idle; else keep walking [M 0x15d860 case 3; UpdateMissionRoute 0x154a80].
+            (CIVILIAN_MISSION, msg::ENTER) => {
+                if self.voice_type == 0x13 { self.set_state(HOSTAGE_IDLE); return true; } // 0x19 stand-in
+                self.call_anim(d, anim_state::WALK, 0, 0);
+                true
+            }
+            (CIVILIAN_MISSION, msg::UPDATE) => {
+                if self.near_armed_person(10.0) {
+                    self.sighted = true;
+                    if self.voice_type == 0x10 { self.team = 1; self.set_state(ATTACK); }
+                    else { self.set_state(CIVILIAN_SCARED); }
+                } else if self.route.is_some() {
+                    let arrived = self.update_mission_route(d, rng, frame);
+                    if arrived { d.props.set(0x1d, &mut self.props, 0); self.set_state(CIVILIAN); }
+                } else {
+                    d.props.set(0x1d, &mut self.props, 0);
+                    self.set_state(CIVILIAN);
+                }
+                true
+            }
+            (CIVILIAN_MISSION, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
+            (CIVILIAN_MISSION, msg::SOUND | msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
+            (CIVILIAN_MISSION, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
             // CivilianPatrol (0x15d610): walk the patrol path (`CallAnim(0x37)`); armed person within 6 (0x40c00000)
             // → CivilianScared (the voice-0x10 team switch and the female scream 0x48 are not ported).
             (CIVILIAN_PATROL, msg::ENTER) => {

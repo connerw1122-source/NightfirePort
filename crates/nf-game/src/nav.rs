@@ -433,6 +433,11 @@ impl Route {
     /// `NDrone2_InitAIPath` from `first`: the node list follows the links (a 2-link node leaves by the link not
     /// leading back; the first node of a kind-4 path without 0x10 leaves by its second link; others re-append
     /// themselves) until it holds the path's node count. Mode 2 for patrol paths, else 1.
+    /// Mission routes (kind & 8, the CivilianMission / prop-0x1D class) walk an OPEN chain: a 1-link FIRST node
+    /// leaves by its single link, and the walk STOPS at the first later node without two links [M InitAIPath
+    /// 0x153720: the `path+8 & 8` branch — `(cVar1 == 1) && (count == 1)` leaves by the one link, any other
+    /// ≠2-link node jumps to the build-done label]. Re-appending the node there (the old behaviour) collapsed
+    /// every endpoint chain to one node — the guests "arrived" where they stood.
     pub fn for_path(net: &Network, path: usize, first: u16) -> Route {
         let p = &net.paths[path];
         let mut nodes = vec![first];
@@ -447,10 +452,17 @@ impl Route {
                     adj.iter().copied().find(|&li| { let l = &p.links[li as usize]; let o = if l.a == cur { l.b } else { l.a }; Some(o) != prev })
                 };
                 if let Some(li) = pick { let l = &p.links[li as usize]; next = Some((if l.a == cur { l.b } else { l.a }, li)); }
+            } else if adj.len() == 1 && nodes.len() == 1 {
+                let li = adj[0];
+                let l = &p.links[li as usize];
+                next = Some((if l.a == cur { l.b } else { l.a }, li));
             }
             match next {
                 Some((o, li)) => { prev = Some(cur); cur = o; nodes.push(o); links.push(li); }
-                None => nodes.push(cur),
+                // ≠2 links past the first node: the chain ends here (the game's build-done jump). *suggested*
+                // for the non-kind-8 reading — the ported levels' kind-4 patrols are 2-link loops, so this only
+                // changes the mission chains the fix targets.
+                None => break,
             }
         }
         let mode = if p.kind & 4 != 0 { RouteMode::Loop } else { RouteMode::OneWayEnd };
