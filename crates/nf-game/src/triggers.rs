@@ -62,11 +62,12 @@ pub struct Trigger {
 
 /// A body that can touch triggers: capsule axis from `a` to `b`, radius, drone (true) or Bond, drone skin hash.
 #[derive(Clone, Copy, Debug)]
-pub struct Toucher { pub a: V3, pub b: V3, pub r: f32, pub drone: bool, pub skin: u32 }
+/// `contain`: whether the volume-containment contact (see `Trigger::touched_by`) applies to this toucher.
+pub struct Toucher { pub a: V3, pub b: V3, pub r: f32, pub drone: bool, pub skin: u32, pub contain: bool }
 
 impl Toucher {
     /// Bond in the normal stance (`Player_Collision` 0x194DF0, hip height 1.035 read live).
-    pub fn player(feet: V3) -> Toucher { Toucher { a: [feet[0], feet[1] + 0.55, feet[2]], b: [feet[0], feet[1] + 1.86, feet[2]], r: 0.55, drone: false, skin: 0 } }
+    pub fn player(feet: V3) -> Toucher { Toucher { a: [feet[0], feet[1] + 0.55, feet[2]], b: [feet[0], feet[1] + 1.86, feet[2]], r: 0.55, drone: false, skin: 0, contain: true } }
 }
 
 /// The channel table (`switch_channels`) with the frame each channel was last set (`switch_channels_time`).
@@ -208,7 +209,11 @@ impl Trigger {
         if (0..3).any(|k| hi[k] < self.lo[k] || lo[k] > self.hi[k]) { return false; }
         // Containment: both capsule ends inside the trigger's own bounds (the bounding-sphere
         // contact the game's collision pass registers).
-        if (0..3).all(|k| c.a[k] >= self.lo[k] && c.a[k] <= self.hi[k])
+        // Not for Bond hanging on a wire / zipline: there the bounds of the chasm's plunge volume enclose him, and
+        // the containment contact fired the falling-to-death cut-scene the moment he grabbed the 07000005 cable
+        // (ch 0xBE, merge of map-mayhew over fix-wire). In the game the crossing has no fall or death path at all
+        // [M Player_Wire 0x197658]. [S]: the game's exact contact rule for a hanging Bond isn't read yet.
+        if c.contain && (0..3).all(|k| c.a[k] >= self.lo[k] && c.a[k] <= self.hi[k])
             && (0..3).all(|k| c.b[k] >= self.lo[k] && c.b[k] <= self.hi[k]) {
             return true;
         }

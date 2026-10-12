@@ -257,6 +257,8 @@ pub struct Player {
     /// pickup take test [M 0x18e148:212-214]. `Bond::sphere_centre()` in the viewer; `pos` as the stand-in
     /// default (the pre-fix behaviour) for callers that have no body model.
     pub sph: V3,
+    /// Bond hangs on a wire or zipline (substate 6 / 0xF): no volume-containment trigger contacts (triggers.rs).
+    pub hanging: bool,
 }
 
 /// The player as an AI target (`DAT_00298fd0`): his position when the nodes were found, the frame (`+0x54`), and per
@@ -4485,8 +4487,8 @@ impl Drones {
         let peers: Vec<(usize, V3, bool)> = self.llist.iter().map(|&i| (i, self.list[i].pos, self.list[i].seen)).filter(|&(i, _, _)| self.list[i].enabled).collect();
         // `Trigger_Calc`, then every object in the control list (newest first = reverse placement order): triggers and
         // drones interleaved, so a channel a trigger pulses is seen only by the objects updated after it.
-        let touchers: Vec<crate::triggers::Toucher> = std::iter::once(crate::triggers::Toucher::player([player.pos[0], player.pos[1] - 0.4, player.pos[2]]))
-            .chain(self.list.iter().filter(|x| x.enabled).map(|x| crate::triggers::Toucher { a: [x.pos[0], x.pos[1] - 1.0, x.pos[2]], b: x.head(), r: 0.4, drone: true, skin: x.skin }))
+        let touchers: Vec<crate::triggers::Toucher> = std::iter::once(crate::triggers::Toucher { contain: !player.hanging, ..crate::triggers::Toucher::player([player.pos[0], player.pos[1] - 0.4, player.pos[2]]) })
+            .chain(self.list.iter().filter(|x| x.enabled).map(|x| crate::triggers::Toucher { a: [x.pos[0], x.pos[1] - 1.0, x.pos[2]], b: x.head(), r: 0.4, drone: true, skin: x.skin, contain: true }))
             .collect();
         drop(prof_pre);
         { let _p = crate::prof::scope("drones: Trigger_Calc"); crate::triggers::calc(d.level, &mut self.triggers, &mut self.channels, &touchers, frame); }
