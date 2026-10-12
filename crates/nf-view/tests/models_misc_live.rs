@@ -349,9 +349,10 @@ fn a_grenade_blast_plays_the_explosion_script_entities() {
     // Grenade — the same struct the input-driven throw fills; fix_player3_live's thrown_grenade test
     // covers the throw itself). The explosion tick pushes drones.explosions AND plays the script.
     let at = [sim.bond.pos[0] + 2.0, sim.bond.pos[1] + 1.5, sim.bond.pos[2]];
+    let mesh = sim.weapons.model(0x35);
     sim.drones.grenades.push(nf_game::grenade::Grenade {
         pos: at, velocity: [0.05, 0.0, 0.0], speed: 0.05, travelled: 0.0, range: 10.0,
-        damage: 100.0, radius: 5.0, weapon_type: 0x35, owner: usize::MAX, state: 0, bounces: 0,
+        damage: 100.0, radius: 5.0, weapon_type: 0x35, owner: usize::MAX, state: 0, bounces: 0, mesh,
     });
     let mut blasted = false;
     for _ in 0..40 { sim.step_bond(Input::default(), false, false, false); if !sim.drones.explosions.is_empty() { blasted = true; break; } }
