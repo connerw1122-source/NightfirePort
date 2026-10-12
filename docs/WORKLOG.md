@@ -6041,3 +6041,17 @@ failures (full-disc manifest/bigf goldens).
   flushing the transition (the game's damage messages run inside the router [M 0x175778]).
 - `Script_Update`'s negative-delay block (above) also froze every other script that fires event 3
   with p0 = 0.
+
+## fields-world (2026-10-12, branch s/fields-world)
+
+The field map for the world object structs: obj_tag (generic header), level_tag (placement params),
+and the per-type instances — trigger, door, pickup, switch, SS, fusebox, script player + entities,
+searchlight, corona, CamSubject, Destroy, ladder, wire, the mission objective record (0x18) +
+OBJ_STATE, glist (celglist_tag), leaf/colour bytes. docs/fields/<struct>.md ×18, coverage table in
+docs/fields/README.md. Method: creator decode → every reader grepped (scaling rules in
+tools/fields/RECIPE.md; scanner tools/fields/param_offsets.py) → [L] snapshot spot checks → port
+cross-check. Port fixes (fail-first tests, NF_ISO where the disc settles it): fusebox live-wire
+hurt polarity (+0x56 == 0) + the +0x5C group-0 clear (fusebox.rs); switch inhibit-gate polarity +
+the busy one-shot latch (useobj.rs); the raw-0DC trigger param shift removed (triggers.rs — 3 live
+0xDC placements on 0700000c). All five 07000014 fuseboxes carry param 2 non-zero, so the old port
+hurt on every live-wire cut. Live checks + census requests in each doc for the main agent.
