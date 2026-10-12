@@ -3852,6 +3852,9 @@ pub struct Drones {
     /// The level's searchlights (docs/systems/world-objects.md; created in `attach_level`, updated in `tick`'s
     /// control-list order with the drones and triggers).
     pub searchlights: crate::searchlight::Searchlights,
+    /// The use objects (map-tower): the Q-Worm PCs (0x35) and switches (0x29) of
+    /// `Player_Activate` 0x1a5170 — crate::useobj.
+    pub useobjs: crate::useobj::UseObjects,
     /// The level's doors (docs/systems/world-objects.md "Doors"); created in `attach_level`, updated in `tick`'s
     /// control-list order (`Door_Update`), the group sync (`Doors_Calc`) at the pass's end.
     pub doors: crate::door::Doors,
@@ -3867,6 +3870,8 @@ pub struct Drones {
     /// The mission layer's events this tick (`Text_AddMsg` types 2/3, the FailLabel writes, the
     /// level-end/reset decisions) — drained by the view each tick.
     pub mission_events: Vec<crate::mission::Event>,
+    /// The weapon of each `bullet_paths` entry, in order (crate::useobj's 0x58 install check).
+    bullet_path_weapons: Vec<u16>,
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -3913,7 +3918,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_inited: false, mission_events: Vec::new() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), useobjs: Default::default(), doors: Default::default(), bullet_paths: Vec::new(), bullet_path_weapons: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_inited: false, mission_events: Vec::new() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -3924,6 +3929,9 @@ impl Drones {
         // Destroy_Create 0x12c318 — the game creates them in placement order in
         // parsemap_create_dynamic_objects 0x1d04f0].
         self.props = crate::props::Props::create(level);
+        // The Q-Worm PCs (0x35) and switches (0x29) of `Player_Activate` 0x1a5170 (map-tower;
+        // `parsemap_create_dynamic_objects` 0x1d04f0 cases 0x35/0x29, crate::useobj).
+        self.useobjs = crate::useobj::UseObjects::create(&level.maps[level.main_map().unwrap_or(0)].placements);
         let Some(m) = level.main_map() else { return };
         // Searchlights (`Searchlight_Create`, placement order; every part draws `Rand_Rand(480)`, spots another
         // `Rand_Rand(0)` — the shared stream, in this order). The game interleaves these draws with the other
@@ -4009,6 +4017,7 @@ impl Drones {
     fn update_player_bullets(&mut self, d: &Data) {
         self.player_impacts.clear();
         self.bullet_paths.clear();
+        self.bullet_path_weapons.clear();
         let frame = self.frame;
         let mut bullets = std::mem::take(&mut self.player_bullets);
         for b in &mut bullets {
@@ -4025,6 +4034,7 @@ impl Drones {
             // The photograph targets and breakable doors see the bullet this tick (the game's
             // collision pass registers the contact; the prop's update walks it — crate::props).
             self.props.bullet_hit(b.pos, end, b.weapon, b.damage, &mut self.channels, frame);
+            self.bullet_path_weapons.push(b.weapon);
             let tw = d.world.segment(b.pos, end);
             let mut best: Option<(usize, i16, f32)> = None;
             for (i, dr) in self.list.iter().enumerate() {
@@ -4174,6 +4184,11 @@ impl Drones {
         // `Player_Activate`'s class-0x1D trigger path: for every trigger within the use sphere, call
         // `Trigger_Activate` — for LOAD_LEVEL, request the level load; for TouchOnce, set the output channel.
         self.player_use_triggers(head, look, frame);
+        // `Player_Activate`'s remaining classes the Tower levels need (map-tower): the mask-4
+        // ScriptPlayers (`SP_Activate` 0x1dc338 — the elevator, the security keyboard), the
+        // switches (0x29, `Switch_Activate` 0x1b02a8) and the Q-Worm PCs (0x35,
+        // `PCQWorm_Activate` 0x1b0840) — crate::useobj.
+        self.useobjs.player_activate(&mut self.scripts, &mut self.channels, head, look, frame);
     }
 
     /// The class-0x1D trigger half of `Player_Activate` (0x1a5170:134-137). Bond's use sphere (radius 1.0 at
@@ -4265,6 +4280,10 @@ impl Drones {
     /// Turns a switch channel on (callers and tests).
     pub fn set_channel(&mut self, c: u8) { let f = self.frame; self.channels.set(c as u32, 1, f); }
 
+    /// This tick's player-bullet segments (`from`, `to`) and their weapon ids — the same data the
+    /// PC install check reads (crate::useobj; the game's class-5 contact list [M 0x1aee20]).
+    pub fn bullet_paths(&self) -> (&[(V3, V3)], &[u16]) { (&self.bullet_paths, &self.bullet_path_weapons) }
+
     /// One 60 Hz game tick: global vision (`DroneVision_ProcessDroneSight`), then each drone's control.
     pub fn tick(&mut self, d: &Data, player: &Player) {
         let _prof_all = crate::prof::scope("drones.tick (total)");
@@ -4311,6 +4330,12 @@ impl Drones {
             for dr in self.list.iter_mut().filter(|x| x.present) { dr.light = light; dr.opponent_info(player); dr.seen = false; dr.bond_armed = armed; }
         }
         self.update_player_bullets(d);
+        // The use objects' per-tick halves (`PCQWorm_Update` 0x1aee20's bullet install +
+        // `Switch_Update` 0x1adea8's value/auto-return; map-tower, crate::useobj). The bullet
+        // segments are this tick's paths — the game reads the class-5 contact list the same pass.
+        let (paths, weapons) = self.bullet_paths();
+        let shots: Vec<(V3, V3, u16)> = paths.iter().zip(weapons).map(|(&(a, b), &w)| (a, b, w)).collect();
+        self.useobjs.tick(&shots, &mut self.channels, frame);
         // `Drone_InitComms`: corpses (0x0F, 0x47, 0x48 + 300, 0xBF by the time their state began); beyond 3
         // (`DAT_00298F5C`) the oldest fades fast (`DroneFunc_DeadDrone`).
         let mut corpses = 0;

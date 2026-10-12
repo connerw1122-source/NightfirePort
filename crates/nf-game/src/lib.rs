@@ -27,5 +27,6 @@ pub mod spawners;
 pub mod trig;
 pub mod triggers;
 pub mod tuning;
+pub mod useobj;
 pub mod wire;
 pub mod world;
