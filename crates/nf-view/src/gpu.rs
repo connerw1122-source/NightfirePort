@@ -565,7 +565,11 @@ impl Renderer {
             // (whether the previous bind-group-0 was the rotation-only sky one) let us issue each only on a change.
             let mut last_pipeline: Option<usize> = None;
             let mut last_bg0_rot: Option<bool> = None;
+            // Debug: `NF_SKIP_MAT=i,j,..` skips those material indices (bisecting a wrong-looking surface).
+            static SKIP: std::sync::OnceLock<Vec<usize>> = std::sync::OnceLock::new();
+            let skip = SKIP.get_or_init(|| std::env::var("NF_SKIP_MAT").map(|v| v.split(',').filter_map(|t| t.trim().parse().ok()).collect()).unwrap_or_default());
             for &(_, _, k) in &self.order {
+                if skip.contains(&k) { continue; }
                 let dc = self.draws[k];
                 // Sky after the fog pass (pass 4) follows the viewer and is never culled.
                 if cull(&dc) && dc.pass != 4 && sphere_outside(&planes, dc.centre, dc.radius) {
