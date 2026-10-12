@@ -21,6 +21,7 @@ disagreement between readers is written in the row; it's never resolved silently
 
 `tools/trace/fieldprobe.py` (PINE; PCSX2 running with the level loaded, nobody playing, no other PINE client):
 `dump`, `find`, `ptrs`, `watch`, `poke ... --shot` (pins the value during the screenshot, then restores it), `diff`, `shot`.
+Every reader and writer, measured live: `tools/trace/gdbwatch.py` with the GDB-server PCSX2 (docs/tools/pcsx2-gdb.md).
 Lessons so far:
 - **Fields the game recomputes every frame can't be poked directly.** Poke their input instead. The HUD sprite layer
   (`+0x38`) is rewritten by `HUD_UpdateAmmoPane` each frame; poking the switch timer `BL+0x95E` that drives it works.

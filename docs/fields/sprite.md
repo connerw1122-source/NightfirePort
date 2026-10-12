@@ -27,7 +27,7 @@ L-read: obj 016cefe0, BL 016cf0f0, HUD 016c8630].
 | +0x24 / +0x26 | s16 | screen x / y (written at run time; overrides the template's position: the crouch icon gets 0x30, 0x30) | [M1 0x19b9c8:309-310, 0x19a7f0:255-262] |
 | +0x2C / +0x2E | s16 | width / height | [M1 0x19a7f0:263-266] |
 | +0x30 / +0x32 / +0x34 / +0x36 | s16 | u / v / uw / vh (texels) | [M1 0x19a7f0:264-269] |
-| +0x38 | u8 | **the draw layer; 0xFF = not drawn.** Not alpha (a worker read it as alpha: the inverted weapon labels of 2026-10-11) | [M1 0x19a7f0:218-226, 0x19a088:31,51] [L-read: "Semi" 0x1c shown, "Wolfram PP7" 0xff hidden, matching the screen] **[L-verified]**: driving the switch timer makes the game set the name's `+0x38` to 0x1c and the fire mode's to 0xff, and the screen shows "Wolfram PP7" alone |
+| +0x38 | u8 | **the draw layer; 0xFF = not drawn.** **Live census** (gdbwatch, 4 s of play on 07000005, readwrite): `Sprite_BuildList+0x94` (reader, 325 hits: the sprite renderer's draw list), `HUD_Update+0xc4` (66, writer), `HUD_UpdateAmmoPane+0x43c` (65, writer); no other instruction touched it. **[M*] + [L-verified]**. Not alpha (a worker read it as alpha: the inverted weapon labels of 2026-10-11) | [M1 0x19a7f0:218-226, 0x19a088:31,51] [L-read: "Semi" 0x1c shown, "Wolfram PP7" 0xff hidden, matching the screen] **[L-verified]**: driving the switch timer makes the game set the name's `+0x38` to 0x1c and the fire mode's to 0xff, and the screen shows "Wolfram PP7" alone |
 
 ## The inputs that drive the ammo pane
 
