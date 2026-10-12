@@ -32,17 +32,17 @@ wiki.nightfire.dev, CC BY 4.0 — facts with attribution).
 | 07000011 | `UpdateMFX_HT_Level_Tower2A` | 44 | 195 | 319 | 37 | 157 | ok | ok | ³ |
 | 07000012 | `UpdateMFX_HT_Level_Tower2B` | 39 | 612 | 792 | 32 | 569 | ok | ok | ³ |
 | 07000013 | `UpdateMFX_HT_Level_Tower2C` | 42 | 77 | 173 | 12 | 69 | ok | ok | ³ |
-| 07000014 | `UpdateMFX_HT_Level_Tower2Elevator` | 55 | 340 | 1034 | 61 | 273 | ok | ok | ³ |
+| 07000014 | `UpdateMFX_HT_Level_EvilBase` | 55 | 340 | 1034 | 61 | 273 | ok | ok | ³ |
 | 07000015 | `UpdateMFX_HT_Level_EvilBase` | 55 | 181 | 638 | 20 | 173 | ok | ok | ³ |
 | 07000016 | `UpdateMFX_HT_Level_EvilSilo` | 64 | 189 | 360 | 20 | 170 | ok | ok | ³ |
 | 0700001b | `UpdateMFX_HT_Level_SpaceStationD` | 27 | 181 | 304 | 20 | 89 | ok | ok | ³ |
-| 07000041 | (a story level; `0x41` code) | 100 | 94 | 120 | 1 | 81 | ok | ok | ³ |
+| 07000041 | (a scripted interlude wrapper — the space-station approach; no music-switch case [M 0x114e70]) | 100 | 94 | 120 | 1 | 81 | ok | ok | ³ |
 | 07000043 | (cut-scene / wrapper) | 78 | 2 | 2 | 1 | 2 | ok | ok | ³ |
 | 07000046 | (cut-scene / wrapper) | 93 | 26 | 75 | 1 | 25 | ok | ok | ³ |
 | 07000048 | (cut-scene / wrapper) | 5 | 1 | 1 | 0 | 1 | ok | ok | ³ |
 | 07000049 | (cut-scene / wrapper) | 71 | 2 | 2 | 1 | 2 | ok | ok | ³ |
-| 0700004a | (a story level; `0x4a` code) | 42 | 72 | 294 | 38 | 66 | ok | ok | ³ |
-| 0700004b | (a story level; `0x4b` code) | 110 | 113 | 225 | 1 | 108 | ok | ok | ³ |
+| 0700004a | `UpdateMFX_HT_Level_Tower2Elevator` (the Tower-2 mission, part 2 [L]) | 42 | 72 | 294 | 38 | 66 | ok | ok | ³ |
+| 0700004b | (a multiplayer arena — the loading-image switch groups it with 0x07000021-29/4c [M 0x1d5258:369-386]; not a story level) | 110 | 113 | 225 | 1 | 108 | ok | ok | ³ |
 
 ¹ "Game logic ok" = `nf-extract ai-sim <iso> <level>` runs 5+ ticks without panic: the collision world builds, drones
 spawn and step their AI state machines, and the bullet/player-damage path runs (WORKLOG 0077). Verified for all
@@ -90,7 +90,7 @@ MPC video). Listed here for completeness; **not ported** (PLAN §5 phase 4, "don
 
 - `07000023`, `07000024`, `07000025`, `07000026`, `07000027`, `07000028`, `07000029` — the driving mission archives
   (110 maps each; the high map count is the EA road-network sharding).
-- `0700004b` — listed in both; the survey shows 110 maps, consistent with a driving level.
+- `0700004b` — listed in both; the survey shows 110 maps. map-finale: the loading-image switch groups it with the multiplayer codes and the parsed level has no campaign start/triggers/drones — an on-foot multiplayer arena, not a story level [M 0x1d5258:369-386, D survey].
 
 ## 4. Level flow (story transitions)
 

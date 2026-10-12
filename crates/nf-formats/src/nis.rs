@@ -51,6 +51,14 @@ pub enum Cmd {
     CameraEnd,
     /// A command whose handler is not read yet (its length is unknown: decoding stops).
     Unread(u8),
+    /// A command the port does not act on yet, decoded past (op + its `Script_Run` byte length):
+    /// 0x13 fade (f32), 0x14 sprite (5×u16 + u32), 0x15 sprite end, 0x18 light (3 bytes), 0x1a light
+    /// end, 0x1d sub-script end, 0x1e text (u32 + u16) [M 0x1d8548 cases 0x13-0x1e].
+    Skip { op: u8 },
+    /// `Script_SubScriptStart` 0x1db050 (op 0x1b): a sub-script of this script — 7 bytes { op,
+    /// hash u32, stream u8, mode u8 }; the sub-script (a NIS of the same archive) starts playing on
+    /// `stream` when the command ticks (the port records it for the walkthrough traces).
+    SubScript { hash: u32, stream: u8, mode: u8 },
     /// `Script_Run`'s default: a one-byte command.
     Other(u8),
 }
@@ -97,7 +105,17 @@ impl Stream {
                     (Cmd::Camera { spline: sp != 0, first: a as u16, last: b as u16 }, 7)
                 }
                 0x0f => (Cmd::CameraEnd, 2),
-                0x13 | 0x14 | 0x15 | 0x18 | 0x1a | 0x1b | 0x1d | 0x1e => { out.push(Cmd::Unread(op)); break; }
+                0x13 => (Cmd::Skip { op }, 5),
+                0x14 => (Cmd::Skip { op }, 15),
+                0x15 => (Cmd::Skip { op }, 2),
+                0x18 => (Cmd::Skip { op }, 4),
+                0x1a => (Cmd::Skip { op }, 2),
+                0x1b => {
+                    let (Some(hash), Some(b)) = (rd(p + 1, 4), c.get(p + 5..p + 7)) else { break };
+                    (Cmd::SubScript { hash, stream: b[0], mode: b[1] }, 7)
+                }
+                0x1d => (Cmd::Skip { op }, 2),
+                0x1e => (Cmd::Skip { op }, 7),
                 _ => (Cmd::Other(op), 1),
             };
             out.push(cmd);
