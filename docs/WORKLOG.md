@@ -5723,3 +5723,64 @@ Findings:
 Full suite: 82 test binaries ok; the only failures are the 3 permitted slim-ISO `disc_golden`.
 No product-code changes were needed — the sweep found no crash (the task's fix budget went to
 the writer analysis and the tables).
+## fix-pickups-trace — the Raptor drops match the real game's 01-raptor trace; the dev infinite-ammo refill no longer refuses every later drop
+
+**Repro first** (`crates/nf-view/tests/fix_pickups_trace_live.rs`, NF_ISO, real path `nf_view::load` +
+`Sim::step_bond`; shown failing by stashing the dev.rs fix — panic "drop 7 (weapon 0xe) is taken —
+the user's symptom", with `NF_PICKUPLOG=1` showing `[take] weapon 0xe kind 0 rounds 6 → None` every
+tick after the first take landed):
+
+- **The user's bug**: with the play cheats (god + infinite ammo — the trace session's setup) the
+  first Raptor drop equips but every later drop refuses forever. Cause [M dev.rs after_tick]: the
+  dev refill wrote `carried[i] = max(carried[i], 200)` — above every ammo cap (type 3 caps at 36
+  [D ammo_data]) — so `Player_EquipAmmo`'s cap check (0x1a8d18, ported in pickup.rs) refused every
+  owned-weapon drop; and it topped **unowned** clips to their clip size, so the first take's
+  `Player_EquipWeapon` (0x1a8a58) saw `old = clip[0xE] = 9` and pushed the whole drop's rounds into
+  the spare instead of none.
+- **The game's cheat shape** (what the trace session actually ran): the recorder tool
+  (tools/trace/trace_record.py --ammo / cheats.py) tops each **owned** weapon's clip (BL+0x1B8+w·0xC)
+  and each spare type (BL+0x170+a·2) back to the **most seen this run**, every 30 frames, resetting
+  on a BLData change. Spares never exceed a take → no cap refuses (trace spare type 3: 0→6→13→20→25
+  vs cap 36, every drop taken); an unowned gun's clip stays 0 → the first take adds no spare (trace:
+  no type-3 event at 6.0 s).
+
+**Fix** (crates/nf-view/src/dev.rs, `Dev::after_tick`): the infinite-ammo branch now ports the
+recorder's cheat exactly — every 30th tick (`sim.drones.frame % 30`), owned weapons' clips and all
+spare types topped to `best_*` (max-seen, only moves up), tables reset when `Sim::level` changes
+(the tool's BLData-change reset); the `carried.max(200)` line is gone. God's armour write corrected
+100.0 → 50.0 (cheats.py `F50`; the trace's armour column reads 50.0 throughout). Fields
+`best_level/best_clip/best_spare` are pub (tests build `Dev` literals).
+
+**The 0x0E chain, all measured** (docs/atlas/pickup.md "PCSX2 trace check — Resolved"):
+weapon 0x0E = "Raptor Magnum" [D USATxt label 0x0500002D], base 0x0E, ammo type 3, clip 9,
+flags68 0x1000 [D ACTION.ELF weapon_data, cross-checked PCSX2]; the 07000001 guards carry it via
+placement param 9 = 0xE [D 07000001.bin]; the drop id = `weapon_data[w]+0x02` = 0xE [M
+DroneWeap_DropWeapon 0x17a2a0:96-98]; `Upgrade_Weapon(0xE) = 0xE` [M 0x1a8f30 — not in the tables];
+drop rounds = `9 · (Rand_FRand(0.5) + 0.5)` truncated = 4..8 (the clip < 10 branch [M :88-98], one
+draw per drop, the 0x1A twin's draw after :103). **The port already matched all of it** — the old
+WORKLOG "Raptor (weapon 6, flags68 0x100C)" naming was wrong (6 = Wolfram P2K, type 2, clip 16;
+the Raptor is 0xE, flags68 0x1000). Test 1 pins it: first drop → `Taken::Weapon{0xE}`, owned,
+clip 9, spare type 3 still 0, HUD message binds "Raptor Magnum" (name_label of the raw id, [M
+0x18e650:246]).
+
+**Tests** (fix_pickups_trace_live.rs, 2): the first-take chain above; and under god + infinite
+ammo 5 Raptor guards killed through the fire path (a switch-gated one enables via its own
+`switch_channel` — the stand-in for the walking that turns the level's channels on) with every
+drop taken: takes = Weapon{0xE} then Ammo{0xE, 6/7/4/7} — all in 4..8, spare = the sum only,
+nothing left on the floor. Test-harness notes: kills re-aim every tick and walk an 8-direction ×
+2-radius LOS spot ring (alerted guards run; a fixed south spot is walled for guards 14/15).
+
+**Shared-file edits** (kept minimal): `dev_tools_live.rs` — the "every clip slot topped" assertion
+now filters to OWNED weapons (the recorder cheat leaves unowned slots 0; the switch cycle only
+offers owned weapons); `menu_live.rs` — the god/ammo toggle test seeds the best-seen tables at the
+full clip before draining (the recorder semantics; the old drain-then-refill order had nothing
+seeded).
+
+Not modelled (unchanged): the trace's non-owned clip creep (0x33/0x45/0x4C/0x4F creeping toward
+100 in the `weap` log) — neither cheat tool writes those (both gate on the owned byte), so the
+writer is elsewhere in the game; out of scope here. The tool's 30-frame phase (the game's global
+frame counter) differs from the port's per-level counter — cadence matches, phase is unobservable.
+
+**Full suite** (this task, slim ISO, `--test-threads=1`, run crate-by-crate after the background
+runner was OOM-killed twice): nf-formats 11 passed + the 3 allowed `disc_golden` failures;
+nf-audio 7 passed; nf-game 133 passed; nf-view 207 passed / 0 failed across 58 binaries.

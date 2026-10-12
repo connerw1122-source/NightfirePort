@@ -251,3 +251,33 @@ User play on 07000001 (god + infinite ammo; inventory logged as change events):
 - t = 6.0 s: weapon **0x0E** becomes owned with clip 9 — the first Raptor drop gives the weapon. (The port's pickups call the Raptor weapon 6; 0x0E is what the game equips — check `Upgrade_Weapon` 0x1a8f30 / the base-id mapping.)
 - Every later Raptor drop gave ammo type 3 (spare BLData+0x170+3·2): +6 (19.8 s), +7 (71.0 s), +7 (74.3 s), +5 (76.3 s). Every drop the user walked over was taken.
 - Other takes in the run: weapon 0x12 (clip 32) at +17.6 s, 0x1C (clip 8, shotgun) at +50.6 s, 0x35 (count 1, frag) at +52.9 s; ammo types 1 (+20, +9), 9 (+6, +5), 23 (+1), 2 (+16, +11).
+
+**Resolved (fix-pickups-trace, s/fix-pickups-trace).** The chain, all measured:
+
+- The "Raptor" is **weapon 0x0E**, not 6: `weapon_data[0x0E]` = base 0x0E, selectable, flags68 0x1000,
+  **ammo type 3** (+0x90, ".357 Magnum rounds", cap 36), **clip 9** (+0x92), name label +0x38 =
+  0x0500002D = **"Raptor Magnum"** [D USATxt.dat]. Weapon 6 is the **Wolfram P2K** (type 2, clip 16,
+  label 0x05000036) — the old WORKLOG "Raptor (0x100C)" naming was wrong. The guards' weapon byte
+  comes from the placement's param 9 = **0xE** [D 07000001.bin; 5 guards, skins 0x36/39/3a] via
+  `NDrone2_DefaultInit` → `anim+0x62`.
+- The drop id is `weapon_data[w]+0x02` = 0x0E (self-base) [M DroneWeap_DropWeapon 0x17a2a0:96-98];
+  `Upgrade_Weapon(0x0E)` = 0x0E [M 0x1a8f30 — id not in any remap table], so the take equips 0x0E:
+  not owned → `Player_EquipWeapon` gives clip = 9 [D +0x92] and carries only the rounds beyond it
+  (a drop's rounds ≤ 8 → **no spare type-3 event**, exactly the trace's first take).
+- The later drops are ammo type 3 with rounds = `clip_size(0xE) = 9 · (Rand_FRand(0.5) + 0.5)`
+  truncated = **4..8** — the clip < 10 factor branch [M 0x17a2a0:88-98], one `Rand_FRand` per drop
+  drawn before `Pickup_CreateSimple` (the 0x1A twin's draw comes after, :103). All four trace deltas
+  (+6/+7/+7/+5) sit in that window.
+- The "infinite ammo" of that session was the **recorder's cheat** (tools/trace/trace_record.py
+  --ammo / cheats.py): every 30 frames each **owned** weapon's clip and each spare type topped back
+  to the **most seen this run** (reset on BLData change). Spares therefore never exceed a take, so
+  no ammo cap refuses (type 3: 0→6→13→20→25 against cap 36), and an unowned gun's clip stays 0.
+  The port's dev-mode refill wrote `carried.max(200)` (above every cap → `Player_EquipAmmo` refused
+  every later drop — "some later drops can't be picked up") and topped unowned clips (the first
+  take then leaked the drop's rounds into the spare). Ported to the recorder's shape in
+  `nf-view/src/dev.rs` (`Dev::after_tick`); god's armour write corrected to 50.0 (cheats.py F50;
+  the trace's armour column).
+- Tests: `crates/nf-view/tests/fix_pickups_trace_live.rs` — the first Raptor drop = weapon 0x0E,
+  clip 9, no spare leak, HUD "Raptor Magnum" (no cheats); under god + infinite ammo every later
+  drop is taken, each rounds ∈ 4..8, the spare = the sum of the takes only (fails on the pre-fix
+  port at the first refused drop, shown by stashing the dev.rs fix).

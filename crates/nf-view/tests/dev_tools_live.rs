@@ -84,12 +84,15 @@ fn dev_infinite_ammo_survives_sustained_fire() {
     assert!(clip > 0, "infinite ammo ran out: the current weapon's clip slot is empty after 120 pulls (got {clip})");
     assert!(carried > 0, "infinite ammo ran out: the weapon's carried spare is empty (got {carried})");
     assert!(sim.gun.clip > 0, "the gun's clip is empty with infinite ammo on");
-    // The refill must cover the whole store, not just the current weapon: every clip slot whose weapon has a
-    // clip size stays topped (a weapon switch mid-fight must not land on an empty gun). Slots for weapons with
-    // no clip (the fists, weapon 0) or no record on this level stay as they are.
+    // The refill must cover the whole store, not just the current weapon: every OWNED clip slot stays
+    // topped (a weapon switch mid-fight must not land on an empty gun — the switch cycle only offers
+    // owned weapons). fix-pickups-trace: the refill is the recorder's `--ammo` cheat (tools/trace/
+    // trace_record.py): owned clips and all spares topped back to the most seen this run — unowned
+    // slots stay 0, as the trace's first Raptor take requires (clip 0→9, no spare leak).
     let empty_clips: Vec<usize> = sim.drones.inventory.clip.iter().enumerate()
-        .filter(|(i, &c)| c <= 0 && sim.weapons.clip_size(*i) > 0).map(|(i, _)| i).collect();
-    assert!(empty_clips.is_empty(), "infinite ammo left clip slots empty: {empty_clips:?} (a switch to them would find no ammo)");
+        .filter(|(i, &c)| c <= 0 && sim.weapons.clip_size(*i) > 0 && sim.drones.inventory.owned.get(*i).copied().unwrap_or(false))
+        .map(|(i, _)| i).collect();
+    assert!(empty_clips.is_empty(), "infinite ammo left owned clip slots empty: {empty_clips:?} (a switch to them would find no ammo)");
 }
 
 /// Sister assertion: with infinite ammo OFF the same fire drains the store (the test can fail).

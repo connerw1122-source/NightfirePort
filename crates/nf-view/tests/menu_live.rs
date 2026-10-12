@@ -219,12 +219,18 @@ fn menu_toggle_god_and_ammo_do_not_panic() {
     let sim = scene.sim.as_mut().unwrap();
     sim.drones.health.health = 50.0;   // simulate Bond took damage
     sim.drones.health.flash = 0.5;    // hit flash active
-    sim.gun.clip = 3;                  // low ammo
     let wi = sim.gun.weapon as usize;
-    if let Some(c) = sim.drones.inventory.clip.get_mut(wi) { *c = 3; } // the store, too (fix-dev: the refill writes the inventory)
     drop(sim);
     dev.god_mode = true;
     dev.infinite_ammo = true;
+    // fix-pickups-trace: the refill is the recorder's `--ammo` cheat — each OWNED weapon's clip and each
+    // spare type tops back to the most seen this run. Seed the best the way play does (the cheat sees the
+    // full clip first), then drain, then top back up.
+    dev.after_tick(&mut scene);
+    let sim = scene.sim.as_mut().unwrap();
+    sim.gun.clip = 3;                  // low ammo
+    if let Some(c) = sim.drones.inventory.clip.get_mut(wi) { *c = 3; } // the store, too (fix-dev: the refill writes the inventory)
+    drop(sim);
     dev.after_tick(&mut scene);
     let sim = scene.sim.as_ref().unwrap();
     assert_eq!(sim.drones.health.health, 100.0, "god mode did not restore health to 100");
