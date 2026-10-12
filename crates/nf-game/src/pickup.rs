@@ -32,9 +32,12 @@ pub mod kind {
     pub const AMMO: u16 = 1;
     pub const KEY: u16 = 2;
     pub const ARMOUR: u16 = 3;
-    /// `Pickup_Handler` 0x18e650's case 4: consumed, no take effect (the message text comes from
-    /// the pickup's own +0x34 label) — 0700000b's OBJECT_Parachute (#280) is one [M + D].
+    /// `Pickup_Handler` 0x18e650's case 4: consumed, no take effect; binds `PICKUPINFO+0x34`'s label text
+    /// when non-zero [M]. Examples: 0700000b's `OBJECT_Parachute` (#280, the channel at +0x28) and 07000008's
+    /// `oBriefcase_closed` (#290, the guidance chip, ch 0x4A; label 0, so no message) [D]. Two names from two
+    /// merged tasks (map-tower: TEXT, fix-objects2: LABEL); the same kind.
     pub const TEXT: u16 = 4;
+    pub const LABEL: u16 = TEXT;
     pub const BOND_BONUS: u16 = 6;
 }
 
@@ -90,6 +93,9 @@ pub enum Taken {
     /// fix-objects: the port consumed the bonus silently — no sound, no log (the 0x200004A HUD message
     /// has no port path yet).
     Bonus,
+    /// Kind 4, the label/item pickup (the guidance-chip briefcase): consumed, no per-kind sound
+    /// override [M 0x18e650 case 4 — `lVar20 = Txt_BindLabel(+0x34)` only].
+    Label,
 }
 
 fn trans(m: &Mat4) -> V3 { [m[3][0], m[3][1], m[3][2]] }
@@ -352,6 +358,11 @@ impl Inventory {
                 if let Some(k) = self.keys.get_mut(p.weapon as usize) { *k = true; }
                 Some(Taken::Key { id: p.weapon })
             }
+            kind::LABEL => {
+                // Case 4 [M 0x18e650]: `Txt_BindLabel(+0x34)` when the label word is non-zero (the
+                // port has no HUD text path; the briefcase's label is 0), then always consumed.
+                Some(Taken::Label)
+            }
             kind::ARMOUR => {
                 // Type 3: refused while `BLData+0x8B0 >= 50.0` (the pickup stays); else `+0x8B0 = 50.0`,
                 // `+0x8BC = 1.0` — hardcoded 50, `+0x26` is not read [M 0x18e650:220-225]. (+0x8BC, the
@@ -360,14 +371,11 @@ impl Inventory {
                 *armour = 50.0;
                 Some(Taken::Armour)
             }
-            kind::BOND_BONUS | kind::TEXT => {
+            kind::BOND_BONUS => {
                 // Type 6: the game's `Pickup_Handler` case 6 calls `PlrStat_LogBondBonus` and shows a
                 // message — no weapon or ammo. D-004: the gold-medal gate (`Pickup_Create` line 93) is
                 // skipped. The pickup is consumed [M 0x18e650:234-236]. fix-objects: reported as
                 // `Bonus` so the caller plays the take-time sound 0x14C instead of staying silent.
-                // Type 4 (map-tower): case 4 falls into the same consumed-with-no-effect tail
-                // [M 0x18e650:227-236 — case 4 → default: break]; the parachute must be consumable
-                // or its +0x28 channel (0700000b's obj11 chain) never fires.
                 Some(Taken::Bonus)
             }
             _ => None,

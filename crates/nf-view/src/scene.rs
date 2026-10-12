@@ -1404,6 +1404,9 @@ impl Sim {
                 nf_game::pickup::Taken::Key { .. } => lang.bind(0x200_0010).unwrap_or("").to_string(),
                 nf_game::pickup::Taken::Armour => lang.bind(0x200_000F).unwrap_or("").to_string(),
                 nf_game::pickup::Taken::Bonus => lang.bind(0x200_004A).unwrap_or("").to_string(),
+                // Case 4 [M 0x18e650]: the pickup's own label (PICKUPINFO+0x34); the port's pickups
+                // do not carry it, and the only kind-4 pickup on the disc data so far labels 0.
+                nf_game::pickup::Taken::Label => String::new(),
             };
             if !text.is_empty() { new_msgs.push_back(Msg::new(text, 180.0)); }
         }
