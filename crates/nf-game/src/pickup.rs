@@ -81,6 +81,12 @@ pub enum Taken {
     Key { id: u16 },
     /// Kind 3: `BLData+0x8B0 = 50.0`, `+0x8BC = 1.0`; message 0x200000F, sound 0x141 [M 0x18e650:220-225].
     Armour,
+    /// Kind 6 (Bond bonus): `PlrStat_LogBondBonus()` only in the take-effect switch [M 0x18e650:234-236];
+    /// the shared tail still runs — message 0x200004A, and `+0x2A` is overwritten with sound 0x14C at take
+    /// time (`Pickup_Handler` :319-321 writes the per-kind sounds 0xF5/0x141/0x14C before `Sound_Play3D`).
+    /// fix-objects: the port consumed the bonus silently — no sound, no log (the 0x200004A HUD message
+    /// has no port path yet).
+    Bonus,
 }
 
 fn trans(m: &Mat4) -> V3 { [m[3][0], m[3][1], m[3][2]] }
@@ -354,8 +360,9 @@ impl Inventory {
             kind::BOND_BONUS => {
                 // Type 6: the game's `Pickup_Handler` case 6 calls `PlrStat_LogBondBonus` and shows a
                 // message — no weapon or ammo. D-004: the gold-medal gate (`Pickup_Create` line 93) is
-                // skipped. The pickup is consumed (disappears) but gives nothing [M 0x18e650:234-236].
-                Some(Taken::Weapon { weapon: p.weapon })
+                // skipped. The pickup is consumed [M 0x18e650:234-236]. fix-objects: reported as
+                // `Bonus` so the caller plays the take-time sound 0x14C instead of staying silent.
+                Some(Taken::Bonus)
             }
             _ => None,
         }

@@ -3933,7 +3933,16 @@ impl Drones {
                     p.gone = true;
                     // `if (+0x28) switch_channels[+0x28] = 1` (+ time stamp) [M 0x18e650:330-333].
                     if p.switch_channel != 0 { self.channels.set(p.switch_channel as u32, 1, frame); }
-                    let (at, sound) = ([p.m[3][0], p.m[3][1], p.m[3][2]], p.sound);
+                    // `Pickup_Handler` overwrites `+0x2A` with the per-kind sound at take time —
+                    // 0xF5 weapon/ammo, 0x141 armour, 0x14C Bond bonus (:290,300,319-321) — before
+                    // `Sound_Play3D` (:334-337). A placed bonus's create sound is 0xFFFF (none); the
+                    // take still plays 0x14C [M]. fix-objects: kind 6 was silent.
+                    let take_sound = match t {
+                        crate::pickup::Taken::Bonus => Some(0x14C),
+                        crate::pickup::Taken::Armour => Some(0x141),
+                        _ => p.sound,
+                    };
+                    let (at, sound) = ([p.m[3][0], p.m[3][1], p.m[3][2]], take_sound);
                     self.taken.push((frame, t));
                     if let (Some(id), Some(sfx)) = (sound, d.sfx) { self.play_sound(at, sfx.get(id)); }
                 }

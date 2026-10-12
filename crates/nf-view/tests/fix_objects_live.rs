@@ -239,6 +239,36 @@ fn a_death_draws_its_drop_and_nothing_else_moved() {
     assert_eq!(drawn_drops, 1, "one visible drop at the corpse: {:?}",
         drops.iter().map(|p| (p.kind, p.weapon, p.hidden, p.gone)).collect::<Vec<_>>());
 }
+
+/// ── 6: the 007 bonus take ────────────────────────────────────────────────────────────────────────
+/// "The 007 bonus item appears (good), but picking it up does nothing." The game's take runs
+/// `PlrStat_LogBondBonus()` and the shared tail: message 0x200004A and sound 0x14C — `Pickup_Handler`
+/// overwrites the pickup's sound with the per-kind 0x14C before `Sound_Play3D` [M 0x18e650:319-321,
+/// :234-236]; a placed bonus's create sound is 0xFFFF (none). The port consumed the bonus silently.
+#[test]
+fn taking_the_007_bonus_logs_and_plays_the_take_sound() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000001.bin");
+    let sim = scene.sim.as_mut().unwrap();
+    tick_idle(sim, 2);
+    // The bonus pile at (−13.24, 5.63, 10.35) [D placement 315, kind 6 id 6, sound param 65535].
+    let close = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2) < 0.25;
+    let k = sim.drones.pickups.iter().position(|p| p.kind == nf_game::pickup::kind::BOND_BONUS
+        && close([p.m[3][0], p.m[3][1], p.m[3][2]], [-13.243799, 5.629803, 10.35467]))
+        .expect("the placed 007 bonus");
+    assert_eq!(sim.drones.pickups[k].sound, None, "the bonus is placed with sound 0xFFFF [D]");
+    let at = sim.drones.pickups[k].m[3];
+    let floor = sim.world.floor_below([at[0], at[1] + 1.0, at[2]], 3.0).unwrap_or(at[1]);
+    sim.bond = nf_game::player::Bond::stand_at(&sim.world, [at[0], floor + 0.5, at[2]], 0.0);
+    let mut what = None;
+    for _ in 0..120 {
+        sim.step_bond(Default::default(), false, false, false);
+        if let Some((_, t)) = sim.drones.taken.first() { what = Some(*t); break; }
+    }
+    assert_eq!(what, Some(nf_game::pickup::Taken::Bonus), "the take is a logged Bonus, not a silent consume");
+    assert!(sim.drones.pickups[k].gone, "the bonus pickup is consumed");
+}
+
 fn level_archive(iso: &str, level: &str) -> nf_formats::level::Level {
     use nf_formats::{disc, iso9660::IsoImage, level::Level};
     let image = IsoImage::open(iso).unwrap();
