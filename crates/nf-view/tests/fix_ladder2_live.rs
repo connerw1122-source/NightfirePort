@@ -76,6 +76,15 @@ fn camera_looks_during_the_climb() {
     let mut sim = load(&iso);
     let (_, lad) = grab_nearest_ladder(&mut sim);
     assert!(sim.bond.substate == nf_game::player::SS_CLIMB);
+    // The level-start NIS (fix-cutscenes) holds `disabled` for ~1540 ticks and the game ignores input
+    // during it — wait it out before driving the look (the fwd input keeps the climb running).
+    let fwd = nf_game::player::Input { forward: 1.0, ..Default::default() };
+    for _ in 0..3000 {
+        if !sim.disabled { break; }
+        sim.step_bond(fwd, false, false, false);
+        assert!(sim.bond.substate == nf_game::player::SS_CLIMB, "the climb did not survive the intro NIS");
+    }
+    assert!(!sim.disabled, "the intro NIS never released Bond");
     let target = lad.yaw + std::f32::consts::PI;
     let facing = (wrap_pi(target - sim.bond.yaw)).abs();
     // Turn hard left for a second: the yaw must leave the ladder-facing direction but stay inside the
