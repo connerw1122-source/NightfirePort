@@ -6,6 +6,10 @@ spot with `nf-view <iso> <level> --bond x,y,z,yaw --frame N --shot out.png` and 
 
 Usage: python -I tools/trace/pcsx2_shot.py <out.png> --pos x y z yaw [--wait frames]
 The level must already be loaded (tools/trace/goto_level.py). Nothing is stored but the PNG you ask for.
+
+Limit: the game collides Bond against his current cel (room). Teleporting into another room leaves that link
+stale and he falls through the floor (07000001 gallery test). Use spots in the room Bond is already in, or walk
+him there first, until the player's cel field is found and written too.
 """
 import os
 import struct
