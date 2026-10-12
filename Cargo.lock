@@ -953,6 +953,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "glam",
+ "naga",
  "nf-audio",
  "nf-formats",
  "nf-game",

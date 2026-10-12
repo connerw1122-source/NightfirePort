@@ -5735,3 +5735,8 @@ path) was caught by `lighting_live` and fixed by moving the update to Game_Run's
 - `Lights_CalcAmbientLight`'s per-character ambient bytes (obj+0x100) beyond what fix-render
   already applies; the character flags gating (0x80/0x100) is approximated per draw [S].
 - The `TweakRGBA` +2 microcode entry (the TWEAK-colour program variant).
+
+**Verification follow-up (same session):** the WGSL is parse- and validate-tested offline with naga
+(`shader_tests::the_shaders_parse_and_validate` — the sandbox has no GPU adapter, so the shader had
+never compiled here). Full suite after the re-baselines: 430 passed, only the 3 slim-ISO
+`disc_golden` failures (the task's allowance). The report is `docs/reports/fix-lighting.md`.

@@ -17,8 +17,6 @@ pub const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// One uniform slot: vp (64 B) + fog/fogk/lp0/lp1/lc0/lc1 (6 × 16 B) = 160 B, padded to the
 /// 256-byte dynamic-offset alignment (fix-lighting).
 const UNIFORM_SLOT: usize = 256;
-/// The uniform's float count inside one slot (40 used, 24 pad).
-const UNIFORM_FLOATS: usize = 40;
 
 /// `SqueezeColourIn` / 0x80 [L 0x91].
 pub const GAIN: f32 = 145.0 / 128.0;
@@ -740,6 +738,21 @@ mod tests {
         for p in &planes {
             let n = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
             assert!((n - 1.0).abs() < 1e-5, "plane normal not unit length: {n}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod shader_tests {
+    /// The WGSL must parse and validate offline (the sandbox has no GPU adapter; the main agent's
+    /// picture checks run elsewhere). fix-lighting touched the main shader's uniform struct and
+    /// light block — a syntax or validation error would break every draw at Renderer::new.
+    #[test]
+    fn the_shaders_parse_and_validate() {
+        for (name, src) in [("main", super::SHADER), ("hud", super::HUD_SHADER)] {
+            let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("{name} WGSL parse: {e}"));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+                .validate(&module).unwrap_or_else(|e| panic!("{name} WGSL validate: {e}"));
         }
     }
 }
