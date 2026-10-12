@@ -22,6 +22,7 @@ pub mod dev;
 pub mod hud;
 pub mod scene;
 pub mod replay;
+pub mod panel;
 
 use anyhow::{bail, Context, Result};
 use glam::{Mat4, Vec3};
@@ -500,6 +501,10 @@ struct App {
     weapon_cycle: i8,
     gadget_cycle: i8,
     weapon_switch_to: Option<u8>,
+    /// The external dev panel (http://127.0.0.1:7007, `--dev`) and the level its catalog describes.
+    panel: Option<panel::Handle>,
+    panel_level: u32,
+    panel_frames: u32,
     /// Right mouse held: scope zoom (`Player_Zoom`).
     zoom: bool,
     /// Dev mode (WORKLOG 0083): `None` when `--dev` is off.
@@ -567,6 +572,35 @@ impl App {
 
     /// B-9: apply a dev-menu action and set the on-screen result message. Shared by mouse-click and keyboard
     /// (Enter) so both produce the same feedback. The result stays ~3 s (180 ticks).
+    /// Apply the dev panel's queued commands and keep its catalog current (every 30 frames, and on level change).
+    fn poll_panel(&mut self) {
+        let Some(h) = self.panel.clone() else { return };
+        let queued: Vec<String> = h.lock().map(|mut g| std::mem::take(&mut g.queue)).unwrap_or_default();
+        let mut changed = !queued.is_empty();
+        for q in queued {
+            let q = panel::query(&q);
+            let what = q.iter().find(|(k, _)| k == "do").map(|(_, v)| v.clone()).unwrap_or_default();
+            let status = match what.as_str() {
+                "god" => match self.dev.as_deref_mut() { Some(d) => { d.god_mode = !d.god_mode; format!("god mode {}", if d.god_mode { "on" } else { "off" }) } None => "no dev mode".into() },
+                "ammo" => match self.dev.as_deref_mut() { Some(d) => { d.infinite_ammo = !d.infinite_ammo; format!("infinite ammo {}", if d.infinite_ammo { "on" } else { "off" }) } None => "no dev mode".into() },
+                _ => {
+                    let (status, switch) = panel::apply(&mut self.scene, &q);
+                    if let Some(w) = switch { self.weapon_switch_to = Some(w); }
+                    status
+                }
+            };
+            eprintln!("[panel] {status}");
+            if let Ok(mut g) = h.lock() { g.status = status; }
+        }
+        let level = self.scene.sim.as_ref().map_or(0, |s| s.level);
+        self.panel_frames += 1;
+        if changed || level != self.panel_level || self.panel_frames % 30 == 0 {
+            changed = true;
+            self.panel_level = level;
+        }
+        if changed { let c = panel::catalog(&self.scene); if let Ok(mut g) = h.lock() { g.catalog = c; } }
+    }
+
     fn apply_menu_action(&mut self, action: dev::MenuAction) {
         let result = match action {
             dev::MenuAction::Close => { if let Some(d) = self.dev.as_deref_mut() { d.menu = false; } "menu closed".to_string() }
@@ -823,6 +857,7 @@ impl ApplicationHandler for App {
                 if self.noclip || self.scene.sim.is_none() { self.cam.pos += mv * speed; }
                 // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
                 self.ticked = false;
+                self.poll_panel();
                 if !self.paused {
                     // Game logic at its fixed 60 Hz, decoupled from the render rate: one AI tick per whole tick of time.
                     // Dev mode's time scale changes the number of ticks run (WORKLOG 0081), not the tick rate.
@@ -1100,8 +1135,17 @@ pub fn run() -> Result<()> {
     let sound = build_sound(&mut scene);
     // `--dev --scenario <name>`: place Bond and set up the world for a specific feature test. (B-3a/b: the two
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now() };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0 };
     if dev {
+        app.panel = panel::start();
+        match &app.panel {
+            Some(_) => eprintln!("dev panel: open http://127.0.0.1:{} in a browser (beside the game window)", panel::PORT),
+            None => eprintln!("dev panel: port {} busy (another nf-view?) — panel not started", panel::PORT),
+        }
+        if args.iter().any(|a| a == "--arena") {
+            let (status, _) = panel::apply(&mut app.scene, &[("do".to_string(), "arena".to_string())]);
+            eprintln!("[arena] {status}");
+        }
         if let (Some(d), Some(n)) = (app.dev.as_deref_mut(), scenario.as_ref()) {
             if let Some((_, f)) = dev::scenario(n) {
                 f(&mut app.scene);

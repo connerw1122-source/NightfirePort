@@ -198,3 +198,16 @@ nf-view <iso> 07000002 --dev --scenario grenade-throw --record tests/replays/gre
 # then hand the session the file path; the determinism test replays it headless:
 NF_ISO=<iso> cargo test -p nf-view --test replay_live -- replay_commit_sample_file --nocapture
 ```
+
+## External dev panel (`--dev`)
+
+`nf-view <iso> <level> --dev` also serves a dev panel at **http://127.0.0.1:7007**: open it in any browser and keep it beside the game window. It lists what the loaded level can spawn and refreshes every second (and on level change):
+
+- **NPCs:** every character type on the level. Each has a hidden pool of `NPC_POOL` (3) copies built at load (`Scene::npc_pool`), complete with held weapon. "Spawn" brings one to life 4 m in front of Bond, facing him, with a fresh drone (no switch-channel wait, no spawner group; optional mode override: normal, sniper, ambush). "Remove spawned NPCs" returns them to the pool.
+- **Weapons:** every selectable `weapon_data` id. "Give" equips it through `Inventory::equip_weapon` with a full clip plus 3 clips of spare and switches to it; "+Ammo" adds 3 clips. "no 1st-person model here" means the level archive has no view model for it, so it is held but not drawn.
+- **Consumables:** full health, full armour, frag and stun grenades, ammo for every owned weapon.
+- **Header:** arena mode, remove spawned NPCs, god mode and infinite ammo toggles.
+
+**Arena mode** (the panel button, or `--arena` on the command line) is the test level: it removes every NPC, pickup and trigger from the loaded level and disables its spawners, leaving the geometry, so you can spawn exactly what you want to test. Example: `nf-view <iso> 07000005 --dev --arena`.
+
+The panel uses only the standard library (one listener thread; `src/panel.rs`), adds no RNG draws to the game's stream (spawns use their own RNG), and does nothing without `--dev`.

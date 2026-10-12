@@ -1405,7 +1405,17 @@ pub struct FrameState {
     pub hidden: Vec<bool>,
 }
 
+/// Dev-panel NPC pool size per skin.
+pub const NPC_POOL: usize = 3;
+
+/// One hidden pool NPC (`Scene::npc_pool`): its skin, the placement parameters it was copied from, and the
+/// characters (meshes) that draw it.
+#[derive(Clone)]
+pub struct NpcSlot { pub key: [u32; 3], pub skin: u32, pub params: Vec<(u32, u32)>, pub chars: Vec<usize> }
+
 pub struct Scene {
+    /// Hidden NPC copies the dev panel can bring to life (`dev::spawn_npc`).
+    pub npc_pool: Vec<NpcSlot>,
     /// The level's room cels (`parse_room_cels`), kept for the static-draw cel cull
     /// (`View_AddCels` 0x1e6ba0 frustum-tests each cel's bbox; `cel_sphere`/`cel_index_at`).
     pub cels: Vec<Cel>,
@@ -1641,7 +1651,35 @@ impl Scene {
         let (mut instances, missing) = level.instances(cels_only);
         // Sky objects are drawn by the sky pass only (with --all they would also appear as dynamic entities).
         instances.retain(|i| i.placement.flags & 0xff != 0x2a);
-        let (char_instances, chars_missing) = level.character_instances();
+        let (mut char_instances, chars_missing) = level.character_instances();
+        // Dev NPC pool (the external dev panel's "spawn NPC"): for the first drone placement of each skin, NPC_POOL
+        // hidden copies of all its meshes, far below the world. They are ordinary characters with their held weapon,
+        // so a spawned drone is drawn exactly like a placed one once `Sim::char_drone` points them at it.
+        let pool_sentinel = |t: [f32; 3]| t[1] <= -999_000.0;
+        {
+            let mut first: Vec<(u32, [u32; 3])> = Vec::new();
+            for inst in &char_instances {
+                if inst.placement.flags & 0xff != 0x0f { continue; }
+                let skin = inst.placement.params.iter().find(|(i, _)| *i == 0).map_or(0, |&(_, v)| v);
+                if skin == 0 || !level.skins.contains_key(&skin) || first.iter().any(|(s, _)| *s == skin) { continue; }
+                first.push((skin, inst.placement.translation.map(f32::to_bits)));
+            }
+            let mut extra = Vec::new();
+            for (slot, (_, t)) in first.iter().enumerate() {
+                for k in 0..NPC_POOL {
+                    let tr = [-1.0e6 - (slot * NPC_POOL + k) as f32, -1.0e6, -1.0e6];
+                    for inst in char_instances.iter().filter(|i| i.placement.translation.map(f32::to_bits) == *t) {
+                        let mut placement = inst.placement.clone();
+                        placement.translation = tr;
+                        let mut matrix = inst.matrix;
+                        matrix[3] = [tr[0], tr[1], tr[2], 1.0];
+                        extra.push(Instance { map: inst.map, object: inst.object, matrix, placement });
+                    }
+                }
+            }
+            char_instances.extend(extra);
+        }
+        let mut npc_pool: Vec<NpcSlot> = Vec::new();
         let sky = level.sky_instances();
         let mut groups: Groups = BTreeMap::new();
         let mut bounds = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
@@ -1770,7 +1808,17 @@ impl Scene {
                     .filter_map(|(a, b, q)| by_hash.get(&q).filter(|(sk, _)| *sk == skin.skeleton).map(|&(_, i)| (a, b, i))).collect();
                 Some(StartAnim { script, sequences })
             });
-            let role = roles.get(&inst.placement.translation.map(f32::to_bits)).copied().unwrap_or(drone::SpawnRole::Placed);
+            let pooled = pool_sentinel(inst.placement.translation);
+            let role = if pooled { drone::SpawnRole::Reinforcement { channel: 0 } } else {
+                roles.get(&inst.placement.translation.map(f32::to_bits)).copied().unwrap_or(drone::SpawnRole::Placed)
+            };
+            if pooled {
+                let ci = characters.len();
+                match npc_pool.iter_mut().find(|n| n.key == inst.placement.translation.map(f32::to_bits)) {
+                    Some(n) => n.chars.push(ci),
+                    None => npc_pool.push(NpcSlot { key: inst.placement.translation.map(f32::to_bits), skin: skin_hash, params: inst.placement.params.clone(), chars: vec![ci] }),
+                }
+            }
             characters.push(Character { matrix: inst.matrix, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: obj.gfx.slot_bones.clone(), start, role, floor: None, script: None });
             // The held weapon (`AnimObjectDraw`): weapon_data[w] +0x80 mesh on the datum whose id is +0x50 (0xFF → 0),
             // once per drone (a skin may have several main meshes).
@@ -2160,7 +2208,7 @@ impl Scene {
         }
         let models_0x800: HashMap<u32, bool> = level.maps.iter()
             .flat_map(|m| m.objects.iter().map(|o| (o.hashcode, o.flags & 0x800 != 0))).collect();
-        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800 }
+        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the
