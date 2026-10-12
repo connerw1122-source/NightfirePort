@@ -72,6 +72,13 @@
 //!   SeenAndAttacking only.
 //! - **0xb4 DeleteMe** (0x173f00) [M]: ENTER — `NDrone2_Enable(0)` + `obj+0xfe |= 1`: a soft
 //!   removal (invisible, skipped by triggers/hits; 07000007's k16=5 party placement [D]).
+//!
+//! The band re-dispatch arms yield to a pending transition (`next_state.is_none()`): the game's
+//! damage messages run inside the state router (0x175778) so a same-tick death applies before the
+//! next UPDATE, while the port's explosion damage sits outside `send` — without the guard the
+//! router clobbered a pending death and left a zero-health ninja standing (fix-finale-blockers).
+//! Death_Anim raises the death channel on its first UPDATE while `+0xCD8` is set, not the anim's
+//! end (0x1637f8 case 2) — Drake's death danim never completes and still raises.
 
 pub const KIKO_MISSION: u8 = 0x19;
 pub const KIKO_MISSION_RUN: u8 = 0x1a;

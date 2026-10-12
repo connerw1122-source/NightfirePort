@@ -2463,29 +2463,6 @@ impl Drone {
         }
     }
 
-    /// Applies a pending `set_state` transition now (send's tail). The game's damage messages run
-    /// inside the state router, so the death transition applies before any later msg reaches the
-    /// (old) state's UPDATE arm; the port's explosion damage sits outside `send`, so the kill
-    /// flushes here — otherwise a same-tick UPDATE re-dispatch (the ninja chain's band router)
-    /// clobbers the pending death (fix-finale-blockers).
-    pub(crate) fn flush_state(&mut self, d: &Data, rng: &mut Rng, frame: u32) {
-        let mut guard = 0;
-        while let Some(n) = self.next_state.take() {
-            self.exiting_to = n;
-            self.handle(d, rng, frame, self.state, msg::EXIT);
-            self.prev_state = self.state;
-            self.state = n;
-            self.vision_on = false;
-            self.timer_c = None;
-            self.idle_timeout = None;
-            self.entered = frame;
-            self.log.push((frame, n));
-            self.handle(d, rng, frame, n, msg::ENTER);
-            guard += 1;
-            if guard > 16 { break; }
-        }
-    }
-
     fn handle(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> bool {
         use state::*;
         if m == msg::BULLET { return self.on_bullet(d, rng, frame, s); }
@@ -3308,7 +3285,7 @@ impl Drone {
                 self.set_state(crate::kiko::ninja_band(self.dist));
                 true
             }
-            (crate::kiko::NINJA_ATTACK, msg::UPDATE) => { self.set_state(crate::kiko::ninja_band(self.dist)); true }
+            (crate::kiko::NINJA_ATTACK, msg::UPDATE) => { if self.next_state.is_none() { self.set_state(crate::kiko::ninja_band(self.dist)); } true }
             // The bands 0xa8/0xa9/0xaa (0x16bfc0/0x16c248/0x16c650): advance, then re-dispatch
             // through 0xa7 (the melee/throwing-star anims need the ninja set — not modelled [S]).
             (crate::kiko::NINJA_LONG_RANGE | crate::kiko::NINJA_MID_RANGE | crate::kiko::NINJA_SHORT_RANGE, msg::ENTER) => {
@@ -3316,12 +3293,12 @@ impl Drone {
                 true
             }
             (crate::kiko::NINJA_LONG_RANGE | crate::kiko::NINJA_MID_RANGE | crate::kiko::NINJA_SHORT_RANGE, msg::UPDATE) => {
-                self.set_state(crate::kiko::NINJA_ATTACK);
+                if self.next_state.is_none() { self.set_state(crate::kiko::NINJA_ATTACK); }
                 true
             }
             // StandFire 0xb2 (0x16d5b8): hold at the melee band and re-dispatch.
             (crate::kiko::NINJA_STAND_FIRE, msg::ENTER) => { self.call_anim(d, anim_state::AIM_STAND, 0, 0); true }
-            (crate::kiko::NINJA_STAND_FIRE, msg::UPDATE) => { self.set_state(crate::kiko::NINJA_ATTACK); true }
+            (crate::kiko::NINJA_STAND_FIRE, msg::UPDATE) => { if self.next_state.is_none() { self.set_state(crate::kiko::NINJA_ATTACK); } true }
             // KikoMission 0x19 (0x15df28): the route chase — done → prop 0x1d clear → StandBlind.
             // Its sound-class msgs are ignored on 0x07000016 (case 0x11..0x1f `return 1`).
             (crate::kiko::KIKO_MISSION, msg::ENTER) => { self.vision_on = true; self.call_anim(d, 0x34, 0, 0); true }
@@ -5183,7 +5160,7 @@ impl Drones {
                                 // thrower; fix-actors].
                                 if owner == usize::MAX { dr.hit_by_player = true; }
                                 dr.health -= ddmg * dr.damage_taken;
-                                if dr.health <= 0.0 { dr.health = 0.0; dr.set_state(state::DEATH_ANIM); dr.flush_state(d, &mut self.rng, frame); }
+                                if dr.health <= 0.0 { dr.health = 0.0; dr.set_state(state::DEATH_ANIM); }
                                 else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
                             }
                         }
