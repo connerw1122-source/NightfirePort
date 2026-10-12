@@ -14,6 +14,10 @@ use wgpu::util::DeviceExt;
 
 pub const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+/// One uniform slot: vp (64 B) + fog/fogk/lp0/lp1/lc0/lc1 (6 × 16 B) = 160 B, padded to the
+/// 256-byte dynamic-offset alignment (fix-lighting).
+const UNIFORM_SLOT: usize = 256;
+
 /// `SqueezeColourIn` / 0x80 [L 0x91].
 pub const GAIN: f32 = 145.0 / 128.0;
 
@@ -25,8 +29,9 @@ override FAR: f32 = 0.0;
 override NOTEX: f32 = 0.0;  // debug: 1.0 = ignore the texture sample (treat as solid white) to isolate vertex colour
 override NOFOG: f32 = 0.0;   // debug: 1.0 = skip the fog pass entirely
 // fog: rgb + enabled; fogk: N1, (F1 − N1)·n/(f − n), f, gain.
-// lp: the dynamic light's position + 1/r^2; lc: its colour x intensity + active (fix-lighting: the muzzle light).
-struct U { vp: mat4x4<f32>, fog: vec4<f32>, fogk: vec4<f32>, lp: vec4<f32>, lc: vec4<f32> };
+// lp0/lp1: the frame's two closest lights' positions (psiLight_SetLights 0x10e588's TLight, w = 1);
+// lc0/lc1: their TColor rows (rgb·intensity in the game's byte scale, w = 1/r²), fix-lighting.
+struct U { vp: mat4x4<f32>, fog: vec4<f32>, fogk: vec4<f32>, lp0: vec4<f32>, lp1: vec4<f32>, lc0: vec4<f32>, lc1: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
 // G-043 GPU skinning: the frame's matrix palette and colour table (`Scene::skin_palette`).
 @group(0) @binding(1) var<storage, read> pal: array<mat4x4<f32>>;
@@ -45,17 +50,34 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
         p = sw * (pal[sa.x] * q).xyz + (1.0 - sw) * (pal[sa.y] * q).xyz;
         c = vec4<f32>(c0.rgb * cols[sc].rgb, c0.a);
     }
-    // The dynamic light (`Light_Create` + `psiLight_SetLights` 0x10e588: position, colour x intensity, 1/r^2).
-    // STANDIN: the VU1 microcode's per-vertex formula is not disassembled yet; this is N.L x (1 - d^2/r^2).
-    if (u.lc.w > 0.5 && FAR < 0.5) {
+    // The point lights (`Light_Create` + `Lights_CalcClosestLights` 0x1cb2e0 + `psiLight_SetLights`
+    // 0x10e588; fix-lighting). The VU1 microcode's formula (.vutext 0x241c80, the point-light
+    // program ~832-960), in world space: L = lightpos − pos, d² = |L|², 1/d² via DIV (VF0.w = 1),
+    // atten = max(0, 1/d² − 1/r²), diffuse = max(0, atten · dot(N, L)) with the RAW L, and the sum
+    // adds TColor.rgb · diffuse on the tinted vertex colour (the ambient row is the object's TWEAK,
+    // already folded into the vertex colour by the port's fix-render path). fix-lighting2: the
+    // vertex colour arrives as Unorm8x4 = byte/255 and the game's add is in BYTES, so the add is
+    // /255 (the port's /128 over-added by exactly 255/128 — the saturation the merge flagged), and
+    // the program clamps the summed colour to byte 255 with MINIi (I = 255.0 loaded by the LOI at
+    // I-mem 900/936, applied at 919/954) — min(·, 1.0) here. No normal (sprites, snow, the radar,
+    // the flash itself): unlit.
+    if (FAR < 0.5) {
         var n = n0.xyz;
         if (sa.x != 0xffffffffu) { n = sw * (pal[sa.x] * vec4<f32>(n0.xyz, 0.0)).xyz + (1.0 - sw) * (pal[sa.y] * vec4<f32>(n0.xyz, 0.0)).xyz; }
-        let d = u.lp.xyz - p;
-        let att = max(0.0, 1.0 - dot(d, d) * u.lp.w);
-        // No normal (sprites, snow, the radar, the flash itself): unlit. The 0.25 and the squared falloff are tuned by
-        // eye against PCSX2 (STANDIN until the microcode is read): the raw colour x 2.0 saturates everything in range.
-        let ndl = select(max(0.0, dot(normalize(n), normalize(d))), 0.0, dot(n, n) < 1e-6);
-        c = vec4<f32>(c.rgb + u.lc.rgb * (0.25 * ndl * att * att), c.a);
+        let n2 = dot(n, n);
+        if (n2 > 1e-6) {
+            for (var i: u32 = 0u; i < 2u; i = i + 1u) {
+                let lp = select(u.lp0, u.lp1, i == 1u);
+                let lc = select(u.lc0, u.lc1, i == 1u);
+                if (lc.w <= 0.0 || (lc.x + lc.y + lc.z) <= 0.0) { continue; }
+                let d = lp.xyz - p;
+                let d2 = dot(d, d);
+                let inv_d2 = 1.0 / d2;
+                let atten = max(0.0, inv_d2 - lc.w);
+                let term = max(0.0, atten * dot(normalize(n), d));
+                c = vec4<f32>(min(c.rgb + lc.rgb * term / 255.0, vec3<f32>(1.0)), c.a);
+            }
+        }
     }
     o.p = u.vp * vec4<f32>(p, 1.0);
     o.d = o.p.w;
@@ -186,7 +208,7 @@ pub fn alpha_shaped(rgba: &[u8]) -> bool {
 
 /// One indexed draw: its layer, pass, pipeline, texture bind group, index range and the object's world centre + radius.
 #[derive(Clone, Copy)]
-struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16>, chain: u32 }
+struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16>, chain: u32, lflags: u16 }
 
 pub struct Renderer {
     hud_pipeline: wgpu::RenderPipeline,
@@ -215,8 +237,10 @@ pub struct Renderer {
     pal_buf: wgpu::Buffer,
     col_buf: wgpu::Buffer,
     pub skin_layout: crate::scene::SkinLayout,
-    /// The dynamic light for this frame: position, 1/r^2, colour x intensity, active (see the shader's `lp`/`lc`).
-    pub light: [f32; 8],
+    /// The frame's lights, resolved (kind-2 positions against their parts). Per draw the renderer
+    /// picks the ≤2 closest within the draw's bounding sphere (`Lights_CalcClosestLights`
+    /// 0x1cb2e0 / `psiLight_SetLights` 0x10e588) into the draw's uniform slot.
+    pub lights: nf_game::light::ResolvedLights,
     ibuf: wgpu::Buffer,
     tex_bgs: Vec<wgpu::BindGroup>,
     /// Per texture slot: its first bind group, frame count and rate (animated textures).
@@ -244,7 +268,9 @@ impl Renderer {
             label: None,
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                // fix-lighting: one 256-byte slot per draw (dynamic offset) — the game uploads a
+                // per-object light pair (`Lights_CalcClosestLights` + `psiLight_SetLights` per object/cel).
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: true, min_binding_size: None },
                 count: None,
             },
             wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
@@ -357,9 +383,10 @@ impl Renderer {
         let (skin_layout, char_attrs) = scene.skin_layout();
         let pal_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("palette"), size: (skin_layout.n_mats.max(1) as u64) * 64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let col_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("colours"), size: (skin_layout.col_one as u64 + 1) * 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let slots = (scene.materials.len() + 2) as u64;
         let make_uniform = || {
-            let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 128, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &ubgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: pal_buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: col_buf.as_entire_binding() }] });
+            let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: UNIFORM_SLOT as u64 * slots, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &ubgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &buf, offset: 0, size: Some(std::num::NonZero::new(UNIFORM_SLOT as u64).unwrap()) }) }, wgpu::BindGroupEntry { binding: 1, resource: pal_buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: col_buf.as_entire_binding() }] });
             (buf, bg)
         };
         let (uniform, uniform_bg) = make_uniform();
@@ -426,7 +453,7 @@ impl Renderer {
         // ordinal (u32::MAX = a distance-keyed object entry). This replaces fix-render4's alpha_shaped stand-in, which
         // reordered by texture shape instead of by the game's own keys (gpu::alpha_shaped stays for its pinned test).
         let draws: Vec<DrawCall> = scene.materials.iter().zip(&material_tex)
-            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel, chain: m.chain }).collect();
+            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel, chain: m.chain, lflags: m.lflags }).collect();
         let fog = scene.fog;
         let snow_pipeline = make_pipeline(Draw { pass: 5, blend: 1, zwrite: false, atest: 0, fog: 0 });
         let snow_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (SNOW_MAX * std::mem::size_of::<crate::scene::Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -434,7 +461,7 @@ impl Renderer {
         let order_cap = draws.len();
         let cel_boxes = scene.cels.iter().map(|c| (c.min, c.max)).collect();
         let cel_graph = scene.cel_graph.clone();
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, light: [0.0; 8], ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph }
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph }
     }
 
     /// `build_FindCel` (0x1c8cb0) over the room cels' boxes for the walk's start cell: the inclusive
@@ -492,11 +519,40 @@ impl Renderer {
             None => ([0.0; 3], 0.0, 0.0),
         };
         let extra = [fog_rgb[0], fog_rgb[1], fog_rgb[2], fog_on, 8.0, k, 16_777_216.0, GAIN];
-        let mut u = [0f32; 32];
+        // Per-draw uniform slots (fix-lighting): the game uploads the ≤2 closest lights per object
+        // (`View_DrawObjList` 0x1e69a0 / `View_DrawCelGlist` 0x1e6538 → `Lights_CalcClosestLights`
+        // 0x1cb2e0 + `psiLight_SetLights` 0x10e588). Slot 0 = the eye's own sphere (the snow pass — the
+        // game's particle path inherits the previous upload and the flakes have no normals, so the
+        // pick is inert); slot k+1 = draw k. fix-lighting2: the per-draw flags are the source object's
+        // glist flags word (`Control_SetGList` 0x134960 → obj+0xF0 / cel+0x94), not the hardcoded 0x80
+        // that let the kind-0 ambient radiators crowd the muzzle light off the world draws; the sky
+        // draws upload NO lights (`View_DrawSky` 0x1e5ad0 / `View_DrawSprites` 0x1e5290 call
+        // `psiLight_SetLights(0,0,0,0,0)`).
+        let slot_f = UNIFORM_SLOT / 4;
+        let n_draws = self.draws.len();
+        let mut staged = vec![0f32; slot_f * (n_draws + 1)];
+        {
+            let s = &mut staged[..slot_f];
+            s[16..24].copy_from_slice(&extra);
+            let (lp, lc) = self.lights.pick2([eye[0], eye[1], eye[2], 2.0], 0x80);
+            for (i, v) in lp.iter().chain(lc.iter()).enumerate() { s[24 + i * 4..28 + i * 4].copy_from_slice(v); }
+        }
+        for (k, dc) in self.draws.iter().enumerate() {
+            let s = &mut staged[(k + 1) * slot_f..][..slot_f];
+            s[16..24].copy_from_slice(&extra);
+            if matches!(dc.layer, crate::scene::Layer::SkyCamera | crate::scene::Layer::SkyFixed) {
+                // The game zeroes the light slots for the sky and sprite passes [M 0x1e5ad0:89].
+                continue;
+            }
+            let (lp, lc) = self.lights.pick2([dc.centre[0], dc.centre[1], dc.centre[2], dc.radius], dc.lflags as u32);
+            for (i, v) in lp.iter().chain(lc.iter()).enumerate() { s[24 + i * 4..28 + i * 4].copy_from_slice(v); }
+        }
         for (m, vp) in [(&self.uniform, view_proj), (&self.uniform_rot, view_proj_rot)] {
-            for r in 0..4 { for c in 0..4 { u[r * 4 + c] = vp[r][c]; } }
-            u[16..24].copy_from_slice(&extra);
-            u[24..32].copy_from_slice(&self.light);
+            let mut u = staged.clone();
+            for slot in 0..=n_draws {
+                let s = &mut u[slot * slot_f..][..slot_f];
+                for r in 0..4 { for c in 0..4 { s[r * 4 + c] = vp[r][c]; } }
+            }
             queue.write_buffer(m, 0, bytemuck::cast_slice(&u));
         }
         // The frame starts as fog (what the fog pass covers where nothing was drawn: zb 0).
@@ -575,10 +631,9 @@ impl Renderer {
                 }
             } else { Vec::new() };
             let mut cel_culled = 0usize;
-            // Skip redundant `set_pipeline` / `set_bind_group(0)` calls (A-11e): `last_pipeline` and `last_bg0_rot`
-            // (whether the previous bind-group-0 was the rotation-only sky one) let us issue each only on a change.
+            // Skip redundant `set_pipeline` calls (A-11e). The group-0 bind now carries a per-draw
+            // dynamic offset (fix-lighting: each draw's own light pair), so it is issued every draw.
             let mut last_pipeline: Option<usize> = None;
-            let mut last_bg0_rot: Option<bool> = None;
             // Debug: `NF_SKIP_MAT=i,j,..` skips those material indices (bisecting a wrong-looking surface).
             static SKIP: std::sync::OnceLock<Vec<usize>> = std::sync::OnceLock::new();
             let skip = SKIP.get_or_init(|| std::env::var("NF_SKIP_MAT").map(|v| v.split(',').filter_map(|t| t.trim().parse().ok()).collect()).unwrap_or_default());
@@ -596,16 +651,16 @@ impl Renderer {
                 }
                 if trace { submitted += 1; }
                 let (layer, first, count) = (dc.layer, dc.first, dc.count);
-                let uniform = if layer == Layer::SkyCamera { &self.uniform_rot_bg } else { &self.uniform_bg };
+                let (uniform, off) = if layer == Layer::SkyCamera {
+                    (&self.uniform_rot_bg, (k + 1) as u32 * UNIFORM_SLOT as u32)
+                } else {
+                    (&self.uniform_bg, (k + 1) as u32 * UNIFORM_SLOT as u32)
+                };
                 if last_pipeline != Some(dc.pipeline) {
                     pass.set_pipeline(&self.pipelines[dc.pipeline].1);
                     last_pipeline = Some(dc.pipeline);
                 }
-                let bg0_rot = layer == Layer::SkyCamera;
-                if last_bg0_rot != Some(bg0_rot) {
-                    pass.set_bind_group(0, uniform, &[]);
-                    last_bg0_rot = Some(bg0_rot);
-                }
+                pass.set_bind_group(0, uniform, &[off]);
                 let (first_bg, n_frames, rate) = self.tex_frames[dc.tex];
                 pass.set_bind_group(1, &self.tex_bgs[first_bg + ((ticks / rate) % n_frames) as usize], &[]);
                 pass.draw_indexed(first..first + count, 0, 0..1);
@@ -617,7 +672,7 @@ impl Renderer {
             // `DrawDrops` runs after the fog pass, the alpha list and the shards.
             if ns > 0 {
                 pass.set_pipeline(&self.snow_pipeline);
-                pass.set_bind_group(0, &self.uniform_bg, &[]);
+                pass.set_bind_group(0, &self.uniform_bg, &[0]);
                 pass.set_bind_group(1, &self.snow_bg, &[]);
                 pass.set_vertex_buffer(0, self.snow_vbuf.slice(..));
                 pass.set_vertex_buffer(1, self.snow_skin.slice(..));
@@ -707,5 +762,31 @@ mod tests {
             let n = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
             assert!((n - 1.0).abs() < 1e-5, "plane normal not unit length: {n}");
         }
+    }
+}
+
+#[cfg(test)]
+mod shader_tests {
+    /// The WGSL must parse and validate offline (the sandbox has no GPU adapter; the main agent's
+    /// picture checks run elsewhere). fix-lighting touched the main shader's uniform struct and
+    /// light block — a syntax or validation error would break every draw at Renderer::new.
+    #[test]
+    fn the_shaders_parse_and_validate() {
+        for (name, src) in [("main", super::SHADER), ("hud", super::HUD_SHADER)] {
+            let module = naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("{name} WGSL parse: {e}"));
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+                .validate(&module).unwrap_or_else(|e| panic!("{name} WGSL validate: {e}"));
+        }
+    }
+
+    /// fix-lighting2: the light add is the game's byte-scale `TColor.rgb · term` over the Unorm8x4
+    /// (byte/255) vertex colour — /255, not /128 — and the summed colour clamps at byte 255 like the
+    /// microcode's MINIi (I = 255.0, .vutext I-mem 919/954). The old /128 over-added by exactly
+    /// 255/128 ≈ 2× (the view-model saturation the merge flagged) and never clamped.
+    #[test]
+    fn the_light_add_is_in_byte_255_units_with_the_minii_clamp() {
+        assert!(super::SHADER.contains("min(c.rgb + lc.rgb * term / 255.0, vec3<f32>(1.0))"),
+            "the shader must add the byte-scale light over the byte/255 vertex colour and clamp to byte 255");
+        assert!(!super::SHADER.contains("term / 128.0"), "the old 2× over-add must stay gone");
     }
 }
