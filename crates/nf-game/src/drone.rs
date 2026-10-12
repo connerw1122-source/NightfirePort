@@ -3174,7 +3174,11 @@ impl Drone {
                 if self.update_mission_route(d, rng, frame) { self.set_state(ALLY_LEAD_DONE); return true; }
                 // An armed, started hostile within 10 → LeadHide (the cower) [M 0x15e698's armed-drone
                 // branch + 0x15ec08; the port's armed_peer_dist snapshot].
-                if self.armed_peer_dist <= 10.0 { self.set_state(LEAD_HIDE); return true; }
+                if self.armed_peer_dist <= 10.0 {
+                    if std::env::var_os("NF_AILOG").is_some() { eprintln!("[ailog] escort {} → LeadHide (peer {:.1})", self.index, self.armed_peer_dist); }
+                    self.set_state(LEAD_HIDE);
+                    return true;
+                }
                 // Bond blocking the route → PlayerInWay [M 0x15ea28's entry; the port's route_blocked].
                 if self.route_blocked && self.dist <= 3.0 { self.set_state(PLAYER_IN_WAY); return true; }
                 // Bond far behind → wait for him [M 0x15e698 case 3: the path-distance rules of
@@ -5084,7 +5088,7 @@ mod tests {
             health: 10.0, max_health: 10.0, damage_taken: 1.0, damageable: true, kind: 0,
             last_damage: 0.0, silent_kill: false, big_hit: false, flinch_at: None, hit: None, impact_resume: 0, hits_taken: 0,
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
-            corpse: false, death_pending: false, death_channel: 0, special_death: 0, special_spot: pos, special_yaw: 0.0,
+            corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false, death_channel: 0, special_death: 0, special_spot: pos, special_yaw: 0.0,
             stationary: false, alpha: 255.0, raise: None,
             velocity: [0.0; 3], in_air: false, on_surface: true,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(),
