@@ -27,11 +27,23 @@ override NOFOG: f32 = 0.0;   // debug: 1.0 = skip the fog pass entirely
 // fog: rgb + enabled; fogk: N1, (F1 − N1)·n/(f − n), f, gain.
 struct U { vp: mat4x4<f32>, fog: vec4<f32>, fogk: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
+// G-043 GPU skinning: the frame's matrix palette and colour table (`Scene::skin_palette`).
+@group(0) @binding(1) var<storage, read> pal: array<mat4x4<f32>>;
+@group(0) @binding(2) var<storage, read> cols: array<vec4<f32>>;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @location(1) c: vec4<f32>, @location(2) d: f32 };
-@vertex fn vs(@location(0) p: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) c: vec4<f32>) -> VO {
+@vertex fn vs(@location(0) p0: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) c0: vec4<f32>,
+              @location(3) sa: vec2<u32>, @location(4) sw: f32, @location(5) sc: u32) -> VO {
     var o: VO;
+    var p = p0;
+    var c = c0;
+    // Skinned (a != 0xFFFFFFFF): w*(P[a]*p) + (1-w)*(P[b]*p), and the object's TAmbient multiplier.
+    if (sa.x != 0xffffffffu) {
+        let q = vec4<f32>(p0, 1.0);
+        p = sw * (pal[sa.x] * q).xyz + (1.0 - sw) * (pal[sa.y] * q).xyz;
+        c = vec4<f32>(c0.rgb * cols[sc].rgb, c0.a);
+    }
     o.p = u.vp * vec4<f32>(p, 1.0);
     o.d = o.p.w;
     if (FAR > 0.5) { o.p.z = o.p.w; }
@@ -177,6 +189,11 @@ pub struct Renderer {
     uniform_rot: wgpu::Buffer,
     uniform_rot_bg: wgpu::BindGroup,
     vbuf: wgpu::Buffer,
+    skin_buf: wgpu::Buffer,
+    snow_skin: wgpu::Buffer,
+    pal_buf: wgpu::Buffer,
+    col_buf: wgpu::Buffer,
+    pub skin_layout: crate::scene::SkinLayout,
     ibuf: wgpu::Buffer,
     tex_bgs: Vec<wgpu::BindGroup>,
     /// Per texture slot: its first bind group, frame count and rate (animated textures).
@@ -206,7 +223,9 @@ impl Renderer {
                 binding: 0, visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                 ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                 count: None,
-            }],
+            },
+            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None }],
         });
         let tbgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
@@ -245,6 +264,10 @@ impl Renderer {
                         array_stride: std::mem::size_of::<crate::scene::Vertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Unorm8x4],
+                    }), Some(wgpu::VertexBufferLayout {
+                        array_stride: std::mem::size_of::<crate::scene::SkinAttr>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![3 => Uint32x2, 4 => Float32, 5 => Uint32],
                     })],
                 },
                 primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
@@ -300,9 +323,13 @@ impl Renderer {
         let hud_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (HUD_MAX * std::mem::size_of::<HudVertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let mut pipelines: Vec<(Draw, wgpu::RenderPipeline)> = Vec::new();
         for m in &scene.materials { if !pipelines.iter().any(|(d, _)| *d == m.draw) { pipelines.push((m.draw, make_pipeline(m.draw))); } }
+        // G-043: the skinning layout, palette and colour buffers (sized once per scene).
+        let (skin_layout, char_attrs) = scene.skin_layout();
+        let pal_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("palette"), size: (skin_layout.n_mats.max(1) as u64) * 64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let col_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("colours"), size: (skin_layout.col_one as u64 + 1) * 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let make_uniform = || {
             let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 96, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &ubgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }] });
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &ubgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 1, resource: pal_buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: col_buf.as_entire_binding() }] });
             (buf, bg)
         };
         let (uniform, uniform_bg) = make_uniform();
@@ -347,7 +374,16 @@ impl Renderer {
                 }
             }
         }
-        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.vertices), usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST });
+        // The Character-layer tail holds the bind-pose positions; the shader poses them with the palette.
+        let mut verts = scene.vertices.clone();
+        for (v, cv) in verts[scene.char_vertex_start..].iter_mut().zip(&scene.char_verts) { v.pos = cv.pos; }
+        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST });
+        let stat = crate::scene::SkinAttr { a: u32::MAX, b: u32::MAX, w: 1.0, col: 0 };
+        let mut attrs = vec![stat; scene.char_vertex_start];
+        attrs.extend_from_slice(&char_attrs);
+        attrs.resize(verts.len(), stat);
+        let skin_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("skin attrs"), contents: bytemuck::cast_slice(&attrs), usage: wgpu::BufferUsages::VERTEX });
+        let snow_skin = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("snow attrs"), contents: bytemuck::cast_slice(&vec![stat; SNOW_MAX]), usage: wgpu::BufferUsages::VERTEX });
         let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.indices), usage: wgpu::BufferUsages::INDEX });
         // Draw order (docs/systems/render.md): sky before the world, list 0, characters, list 1 (alpha), sky after the fog
         // pass, effects; the vertex buffer keeps its layout (the character tail stays contiguous).
@@ -360,7 +396,7 @@ impl Renderer {
         let order_cap = draws.len();
         let cel_boxes = scene.cels.iter().map(|c| (c.min, c.max)).collect();
         let cel_graph = scene.cel_graph.clone();
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph }
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph }
     }
 
     /// `build_FindCel` (0x1c8cb0) over the room cels' boxes for the walk's start cell: the inclusive
@@ -375,6 +411,19 @@ impl Renderer {
             if v < vol { vol = v; best = Some(i); }
         }
         best
+    }
+
+    /// G-043: upload one frame's skinning palette and colour table (replaces re-uploading every posed vertex).
+    pub fn update_skin(&self, queue: &wgpu::Queue, scene: &Scene, choice: Option<usize>, time: f32, opts: crate::scene::ViewOpts) {
+        let (pal, cols) = scene.skin_palette(&self.skin_layout, choice, time, opts);
+        if !pal.is_empty() { queue.write_buffer(&self.pal_buf, 0, bytemuck::cast_slice(&pal)); }
+        queue.write_buffer(&self.col_buf, 0, bytemuck::cast_slice(&cols));
+    }
+
+    /// Upload an already-built (possibly interpolated) palette and colour table.
+    pub fn upload_skin(&self, queue: &wgpu::Queue, pal: &[nf_formats::anim::Mat4], cols: &[[f32; 4]]) {
+        if !pal.is_empty() { queue.write_buffer(&self.pal_buf, 0, bytemuck::cast_slice(pal)); }
+        if !cols.is_empty() { queue.write_buffer(&self.col_buf, 0, bytemuck::cast_slice(cols)); }
     }
 
     /// `view_proj`: full camera; `view_proj_rot`: the same without the camera translation.
@@ -427,6 +476,7 @@ impl Renderer {
                 timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
             });
             pass.set_vertex_buffer(0, self.vbuf.slice(..));
+            pass.set_vertex_buffer(1, self.skin_buf.slice(..));
             pass.set_index_buffer(self.ibuf.slice(..), wgpu::IndexFormat::Uint32);
             use crate::scene::Layer;
             let d2 = |c: [f32; 3]| (c[0] - eye[0]).powi(2) + (c[1] - eye[1]).powi(2) + (c[2] - eye[2]).powi(2);
@@ -519,6 +569,7 @@ impl Renderer {
                 pass.set_bind_group(0, &self.uniform_bg, &[]);
                 pass.set_bind_group(1, &self.snow_bg, &[]);
                 pass.set_vertex_buffer(0, self.snow_vbuf.slice(..));
+                pass.set_vertex_buffer(1, self.snow_skin.slice(..));
                 pass.draw(0..ns as u32, 0..1);
             }
             if n > 0 {

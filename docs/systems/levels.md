@@ -120,7 +120,93 @@ which calls `Trigger_Activate` for class-0x1D objects [M 0x1a5170:134-137]. Rout
 (once per second). Lets the user see why the level doesn't end — e.g. ch 0x1D is off because the EndLevel script
 never ran (ch 0x65 never fired because the gate-guard drone wasn't at post).
 
-## 5. Open items
+## 5. Level-start and intro cut-scenes (fix-cutscenes)
+
+Every cut-scene ScriptPlayer on the 20 story levels, from `nf-extract placements <iso> <level.bin> d9` plus the
+levels' type-0xC loadable records [D, measured with the survey behind `crates/nf-view/tests/fix_cutscenes_live.rs`].
+"Mode" is placement param 2 (script A's mode): **1** = plays the moment the level loads (state 7 → auto-play),
+**64** = preloaded at create (primed state 1; plays when its trigger fires), **0** = waits (loads+plays on its
+trigger), **8** = loops. A script lives either in the level archive (kind-7 entry) or in a **loadable pack**:
+the level's type-0xC entries hold (script hash, flag) pairs (`LoaderProcess` 0x1d4880 case 0xC), and
+`SP_LoadScript` (0x1dbc08) → `isLoadable` (0x1d69a0) → `LoadableLoad` (0x1d69e8) streams the pack named with the
+**level id's (flag+7) nibble**: flag 1 → `078000NN.bin`, flag 2 → `079000NN.bin`, flag 3 → `07A000NN.bin`
+[measured: every record's pack exists in FILES.BIN and contains exactly the recorded script]. The packs also
+carry the cut-scene animation sequences (kind-4).
+
+The port (fix-cutscenes) reads the type-0xC records in `nf_view::load_with_carry` and merges every pack's
+kind-7 scripts into the script lib and kind-4 sequences into the animation set — previously the pack scripts
+were missing, the ScriptPlayer deleted itself on its first trigger (`Player::load`'s missing-script arm), and
+the cut-scene never played.
+
+### 5.1 Loadable-pack cut-scenes (broken before fix-cutscenes, working after)
+
+| Level | SP (placement) | Script | Pack | Trigger → start | Plays now |
+|---|---|---|---|---|---|
+| 07000001 | #277 "Script Player Wedge" (mode 1) | 0x06000087 | 07800001 | level start | **yes (was deleted at load)** |
+| 07000002 | #400 "Script Player" (mode 1) | 0x06000084 | 07800002 | level start | **yes (was deleted at load)** |
+| 07000002 | #399 (mode 0, mask 1, out 53) | 0x0600007f | 07900002 | ch 0x35 | **yes** |
+| 07000007 | #419 "NIS_Trigger" (mask 1, out 21) | 0x06000072 | 07900007 | TouchOnce #356 (box 92.9–98.0, 49.0–53.8, −79.8–−78.9) raises ch 0x15 | **yes — the party fly-through where Bond first sees Drake (3000 ticks, camera + 25 guest anims)** |
+| 07000007 | #420 "Script_Trigger" (mask 1, out 72) | 0x06000073 | 07800007 | TouchOnce #412 (box 93.3–95.2, 43.2–44.1, −46.4–−45.4, lock 0x63) raises ch 0x48 | **yes — the control-taking cut-scene (3 × event 4/5/6/7 cycles)** |
+| 07000008 | #294 "ScriptPlayer_Trigger_1stNIS" (out 73) | 0x06000077 | 07800008 | TouchOnce #237 (box 137.1–141.2, 48.5–50.5, −82.4–−80.2) raises ch 0x49; Bond spawns at (139.5, 50.5, −76.4), ~3.5 m away — "starts almost immediately" | **yes — the gondola intro (3880 ticks)** |
+| 07000008 | #296 "ScriptPlayer_Trigger_1stNIS" (out 83) | 0x06000078 | 07900008 | ch 0x53 | **yes** |
+| 0700000b | #177 (out 45) / #246 (out 51) | 0x060004fa / 0x060004f9 | 0790000b / 0780000b | ch 0x2D / ch 0x33 | **yes** |
+| 0700000d | #377 (mode 1) | 0x0600068f | 0780000d | level start | **yes** |
+| 07000013 | #65 "Script Player" (mode 1) | 0x060006d7 | 07900013 | level start | **yes** |
+| 07000014 | #276 (out 126) / #382 (out 8) / #407 (out 9) | 0x06000833 / 0x0600062f / 0x06000848 | 07800014 / 07900014 / 07A00014 | ch 0x7E / ch 8 / ch 9 | **yes** |
+| 07000016 | #262 (out 129) / #263 (out 130) | 0x06000631 / 0x06000632 | 07800016 / 07900016 | ch 0x81 / ch 0x82 | **yes** |
+| 0700001b | #147 "ScriptPlayer_Trigger" (mode 1, mask 1) | 0x0600085c | 0780001b | level start | **yes** |
+| 0700004a | #273 + #289 (out 131/64) / #276 (out 132) | 0x060006cf / 0x060006d3 | 0780004a / 0790004a | ch 0x83 / ch 0x40 / ch 0x84 | **yes** |
+
+Records whose script no SP references directly (loaded into the hashtable for sub-scripts/other users, all now
+in the lib): 07000009's 0x060004f8 → 07800009, 0700000b's 0x060004fb → 07A0000b, 0700000d's 0x0600073a →
+0790000d, 07000011's 0x06000655 → 07800011, 07000013's 0x06000646 → 07800013, 07000016's 0x06000633 → 07A00016,
+0700001b's 0x0600085f → 0790001b.
+
+One dead reference: 07000005 #71 waits on ch 0x7D for 0x06000074, but 07000005 has **no** loadable record for it
+and no `07800005/07900005.bin` exists on the disc — the real game cannot stream it either (`isLoadable` returns
+0, `Script_Load` misses the hashtable), so it never plays there either.
+
+### 5.2 Level-start cut-scenes with scripts in the level archive (played before and after the fix)
+
+| Level | SP | Script | Note |
+|---|---|---|---|
+| 07000004 | #3 | 0x06000083 | mode 1 |
+| 07000005 | #37 "Scriptplayer_SC10" | 0x06000A22 | the wine truck (5895 ticks, keep-objects) |
+| 0700000a | #779 "Q-WORM SCRIPTPLAYER" (mode 1, out 72) | 0x060009f0 | with #780 looping partner |
+| 0700000b | #347 / #355 "Script Player Wedge" | 0x060009ee / 0x060009fb | mode 1/1 and 1/0 |
+| 07000016 | #272 "ScriptPlayer_ShuttleLaunch" (out 185) / #347 "ScriptPlayer_ShuttleBayLift" (out 80) | 0x0600090a / 0x060009e9 | |
+| 0700001b | #41–56 "ScriptPlayer_SolarPanel" ×16 | 0x06000832 | ambient |
+| 0700001b | #212 "ScriptPlayerShuttleFlyBy1"; #200 "ScripPlayer_Missile4" (gate 191); #148/#201 "Speech" (gate 191/19); #213–220 "MissileDissarm" ×8 (gates 31–38) | … | gated ones wait for their gate channel |
+| 0700004a | #42 "SCRIPTPLAYER_Lift" (out 34) | 0x06000571 | |
+
+### 5.3 Mode-64 preload ScriptPlayers (primed at level start, play on a trigger)
+
+Cut-scene-worthy ones (the rest are object animations — vents, doors, indicators, hatches):
+
+| Level | SP | Script | Waits on |
+|---|---|---|---|
+| 07000007 | #312 "OBJECT_UrnBreak" (mask 2) | 0x0600007A (archive) | a bullet hit — `SP_Hit` bit 2, not modelled in the port yet (the priming itself is: state 1 at the first tick, tested) |
+| 07000008 | #295 "ScriptPlayer_CableCar" (out 1) | 0x0600004C (archive) | mux #235: AND(ch 0x4A, ch 4) — the cable-car boarding |
+| 07000005 | #320 "ScriptPlayer_EndLevel" (out 101) | 0x06000A23 (archive) | ch 0x65 (the level-exit chain, already works) |
+| 07000006 | #809 "Script-IceTrigger" (out 40) | 0x06000A28 (archive) | ch 0x28 |
+| 0700000d | #492 "ScriptPlayer_CraneRotate" (out 10) | 0x06000A08 (archive) | ch 0xA |
+
+### 5.4 The level intros (core-loop item 8: movie + subtitle scripts)
+
+`ResetMap_Load` (0x1d6360) phase 0 loads `07000500.bin` (the global pack — it holds 14 tiny kind-7 scripts,
+64–320 bytes each) and, **only when the subtitles option is on** (`DAT_002a37c8`, the flag `Sound_DoSubtitle`
+0x1dde58 and `Text_AddMsg` 0x1b0c30 read), creates one ScriptPlayer per level from the movie-code table
+[0x1d6360:40-99]: 0x7100001→0x0600095A, 0x7100005→0x06000961, 0x7100009→0x06000963, 0x710000c→0x06000965,
+0x7100011→0x06000967, 0x7100014→0x06000969, 0x7100018→0x0600096B (level 0700001b; movie codes 0x710000xx map
+1:1 from 0x070000xx per `ResetMap_LevelToLoad` 0x1d3800, except 0x0700001b→0x7100018 and 0x0700004a→0x710004a,
+which is not in the table → no intro), plus the driving codes 0x7300004/8/b/d/13/17/1b → 0x0600095D/62/64/66/68/7A/6C.
+Measured content [D]: every one of the 14 scripts is a single stream of op-0x1E `Script_TextStart` commands —
+subtitle timings for the intro MOVIE (the `GameFlow_PushState(0,6)` background video), not an in-engine
+cut-scene. The port plays neither movies nor subtitles (no PSS player), so there is nothing to port here beyond
+what exists: the port's `load` skips the intro SP creation and the playtest symptom "no intro" is the movie
+gap (GAPS, `ResetMap_Load` row), not a ScriptPlayer bug.
+
+## 6. Open items
 
 - **G-016** (cel/portal system): until ported, every level uses one cel + collision LOS instead of the room/cel
   visibility + reverb zones. This affects rendering (no per-room culling) and audio (`SFXSetEnvironment` defaults to
@@ -130,6 +216,9 @@ never ran (ch 0x65 never fired because the gate-guard drone wasn't at post).
 - **Rendering verification**: headless `--shot` needs a Vulkan ICD (lavapipe); this environment lacks one. The render
   path is the same `Scene::build` 07000005 uses, so levels load through it; visual diffing against PCSX2 is pending a
   GPU environment (U-0xx to add).
+- **`SP_Hit` trigger bits** (nis.rs): mask bits 2 (bullet) / 8 / 0x10 (bullet and neighbour proxies on the SP's
+  stream objects) are not modelled — 07000007's urn ScriptPlayer #312 (mask 2, script 0x0600007A, primed) is the
+  one cut-scene that still waits on them.
 
 ## Ladders and water, per level (fix-ladder)
 

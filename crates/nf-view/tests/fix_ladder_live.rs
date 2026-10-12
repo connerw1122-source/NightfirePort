@@ -14,6 +14,20 @@ fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
 fn load(iso: &str) -> Sim {
     let mut scene = nf_view::load(iso, "07000002.bin", false).expect("load 07000002");
+    // fix-cutscenes: 07000002's mode-1 ScriptPlayer #400 (0x06000084, pack 07800002.bin) plays at load
+    // like the game's (before the fix the SP deleted itself — the pack script was missing). Skip it the
+    // way the game lets the player — hold the skip action until the script ends and control returns.
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        let pending = |sim: &nf_view::scene::Sim| sim.drones.scripts.players.iter().any(|p| p.scripts[0] == 0x0600_0084 && (matches!(p.state, 1 | 2 | 7) || p.info[p.cur].as_ref().is_some_and(|s| s.play & 1 != 0)));
+        for t in 0..600u32 {
+            let sim = scene.sim.as_mut().unwrap();
+            if t >= 2 && !pending(sim) && !sim.disabled { break; }
+            sim.drones.scripts.skip_request = true;
+            sim.step_bond(Default::default(), false, false, false);
+        }
+    }
+    assert!(!scene.sim.as_ref().unwrap().disabled, "07000002's level-start cut-scene never handed control back");
     scene.sim.take().expect("sim")
 }
 

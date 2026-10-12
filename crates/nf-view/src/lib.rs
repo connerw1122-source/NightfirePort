@@ -22,6 +22,7 @@ pub mod dev;
 pub mod hud;
 pub mod scene;
 pub mod replay;
+pub mod panel;
 
 use anyhow::{bail, Context, Result};
 use glam::{Mat4, Vec3};
@@ -40,7 +41,30 @@ const MOUSE_SENSITIVITY: f32 = 0.0025;
 /// The game's vertical field of view in play (60°, docs/systems/player.md).
 const GAME_FOV: f32 = std::f32::consts::FRAC_PI_3;
 
+#[derive(Clone, Copy)]
 struct Camera { pos: Vec3, yaw: f32, pitch: f32, fov: f32 }
+
+/// Render interpolation (G-043): logic runs at a fixed 60 Hz; frames between two ticks draw `t` of the way from
+/// the previous tick's camera and palette to the latest one (one tick behind, the standard fixed-step scheme).
+/// Jumps larger than `SNAP` (cut-scene cuts, teleports, hide/show) snap instead of blending.
+const SNAP: f32 = 4.0;
+fn lerp_cam(a: &Camera, b: &Camera, t: f32) -> Camera {
+    if a.pos.distance(b.pos) > SNAP || (a.fov - b.fov).abs() > 0.2 { return *b; }
+    let mut dy = b.yaw - a.yaw;
+    while dy > std::f32::consts::PI { dy -= std::f32::consts::TAU; }
+    while dy < -std::f32::consts::PI { dy += std::f32::consts::TAU; }
+    Camera { pos: a.pos.lerp(b.pos, t), yaw: a.yaw + dy * t, pitch: a.pitch + (b.pitch - a.pitch) * t, fov: a.fov + (b.fov - a.fov) * t }
+}
+fn lerp_palette(a: &[nf_formats::anim::Mat4], b: &[nf_formats::anim::Mat4], t: f32) -> Vec<nf_formats::anim::Mat4> {
+    if a.len() != b.len() { return b.to_vec(); }
+    a.iter().zip(b).map(|(x, y)| {
+        let d = (0..3).map(|k| (x[3][k] - y[3][k]).powi(2)).sum::<f32>().sqrt();
+        if d > SNAP { return *y; }
+        let mut m = *y;
+        for r in 0..4 { for c in 0..4 { m[r][c] = x[r][c] + (y[r][c] - x[r][c]) * t; } }
+        m
+    }).collect()
+}
 
 impl Camera {
     fn dir(&self) -> Vec3 { Vec3::new(self.pitch.cos() * self.yaw.sin(), self.pitch.sin(), self.pitch.cos() * self.yaw.cos()) }
@@ -110,7 +134,7 @@ pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_gam
         Ok(Some(iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?))
     };
     let data = read(archive)?.with_context(|| format!("no {archive} in FILES.BIN"))?;
-    let level = Level::parse(&data)?;
+    let mut level = Level::parse(&data)?;
     let lb = LevelBin::parse(&data)?;
     let skeletons: HashMap<u8, character::Skeleton> = lb.entries.iter().filter(|e| e.kind == 6)
         .map(|e| character::parse_skeleton(lb.data(&data, e)).map(|s| (s.id as u8, s)))
@@ -125,6 +149,49 @@ pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_gam
             let s = Sequence::parse(alb.data(&anim, e))?;
             sequences.entry(s.skeleton).or_default().push(s);
         }
+    }
+    // The loadable cut-scene packs (fix-cutscenes): `SP_LoadScript` (0x1dbc08) checks `isLoadable(hash)`
+    // (0x1d69a0 — the table filled by `LoaderProcess` 0x1d4880 case 0xC from the level archive's type-0xC
+    // entries, one record per entry: u32 script hashcode at +0, u8 flag at +4) and, when it hits, streams the
+    // pack file named with the CURRENT LEVEL's id and the (flag+7) nibble at bits 20-23 (`LoadableLoad`
+    // 0x1d69e8: `GameState+0xC & 0xff0fffff | ((flag+7) << 20)`; `LoaderLoad` 0x1d4a00 case 0 sprintf's that
+    // into "%08x.bin"; flag 1 → nibble 8, flag 2 → nibble 9, flag 3 → nibble A). Measured on the disc
+    // [D]: 07000007's records (0x06000072, 2) and (0x06000073, 1) → 07900007.bin / 07800007.bin, which hold
+    // exactly those type-7 scripts plus their kind-4 sequences; 07000008's (0x06000077, 1) / (0x06000078, 2)
+    // → 07800008.bin / 07900008.bin likewise. These scripts exist nowhere else — the party's Drake fly-through
+    // (0x06000072), the party's hand-back cut-scene (0x06000073) and the gondola level's intro (0x06000077)
+    // are pack-only. Without the packs the port's ScriptPlayers hit the missing-script arm of `Player::load`
+    // (state 5, deleted) on their first trigger and the cut-scene never plays (the user's playtest). The
+    // pack's kind-7 entries go into `level.nis` (the same lib `Scripts::new` reads) and kind-4 into
+    // `sequences`, mirroring `parsemap_parsemap` (LoaderProcess case 2 → the map parser walks the entries:
+    // kind 7 → `Script_Load`, kinds 3/4/5 → `AnimLoadFile`).
+    let level_id = u32::from_str_radix(&archive[..8], 16).unwrap_or(0);
+    for e in lb.entries.iter().filter(|e| e.kind == 0xC) {
+        let r = lb.data(&data, e);
+        if r.len() < 5 { continue; }
+        let (hash, flag) = (u32::from_le_bytes([r[0], r[1], r[2], r[3]]), r[4]);
+        if flag == 0 || flag > 3 { continue; }
+        let pack_name = format!("{:08x}.bin", (level_id & 0xff0f_ffff) | ((flag as u32 + 7) << 20));
+        let Some(pack) = read(&pack_name)? else { eprintln!("loadable pack {pack_name} not on the disc (script {hash:08x})"); continue };
+        let plb = LevelBin::parse(&pack)?;
+        for pe in plb.entries.iter() {
+            match pe.kind {
+                7 => { let h = pe.hash(); match nf_formats::nis::Nis::parse(h, plb.data(&pack, pe)) { Ok(n) => { level.nis.insert(h, n); }, Err(err) => eprintln!("pack {pack_name} script {h:08x}: {err}") } }
+                // Pack sequences go under `0x80 | skeleton` — a key no skin's skeleton ever uses. The game
+                // DELETES the animation hashtable before streaming a pack (`LoadableLoad` 0x1d69e8's
+                // `hashtable_delete_hashtype(0x4000000)`, then `AnimLoadFile` for the pack's kind-4 entries):
+                // the cut-scene's sequences REPLACE the cache while it plays and never join the level's
+                // per-skeleton sequence list. In the port that list is order-sensitive gameplay data —
+                // `frame_of`'s `k % len` idle cycle and the skeleton-filtered `seq_index` drone lookups —
+                // and appending to it changed guards' animations and broke live tests (07000001's
+                // `dropped_guns_dim_to_the_cel_ambient` "the guard died"). The sentinel key still reaches
+                // the by-hash map `Scene::seqs` (built by flattening every bucket), which is the only thing
+                // a cut-scene's `Script_AnimStart` resolution reads (`script_frame`'s hash → `seqs.get`).
+                4 if pe.length >= 0x40 => { let s = Sequence::parse(plb.data(&pack, pe))?; sequences.entry(s.skeleton | 0x80).or_default().push(s); }
+                _ => {}
+            }
+        }
+        eprintln!("loadable pack {pack_name}: {} scripts, {} sequences (for {hash:08x})", plb.entries.iter().filter(|e| e.kind == 7).count(), plb.entries.iter().filter(|e| e.kind == 4).count());
     }
     // Drone start animations: ACTION.ELF's tables (read through its symbols) and the level's scripts (type 5).
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
@@ -389,7 +456,25 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     opts.right = opts_right;
     opts.up = opts_up;
     let mut r = gpu::Renderer::new(&device, &queue, format, scene, notex, nofog);
-    r.update_vertices(&queue, scene.char_vertex_start, &posed_vertices(scene, choice, time, opts));
+    r.update_skin(&queue, scene, choice, time, opts);
+    // `NF_BENCH=N`: time the per-frame CPU side N times (posing + vertex build, and the upload) for profiling.
+    if let Some(n) = std::env::var("NF_BENCH").ok().and_then(|v| v.parse::<u32>().ok()) {
+        let t0 = std::time::Instant::now();
+        for _ in 0..n { let _ = scene.animate(choice, time, opts); }
+        let t1 = std::time::Instant::now();
+        let mut v = Vec::new();
+        for _ in 0..n { v = posed_vertices(scene, choice, time, opts); }
+        let t2 = std::time::Instant::now();
+        let _ = &v;
+        queue.submit([]); let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let t3 = std::time::Instant::now();
+        let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f64() * 1000.0 / n as f64;
+        eprintln!("[bench] {} char vertices: animate {:.2} ms, posed_vertices (incl. animate) {:.2} ms, upload {:.2} ms", v.len(), ms(t0, t1), ms(t1, t2), ms(t2, t3));
+        let t4 = std::time::Instant::now();
+        for _ in 0..n { r.update_skin(&queue, scene, choice, time, opts); }
+        queue.submit([]); let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        eprintln!("[bench] GPU path: palette build + upload {:.2} ms", ms(t4, std::time::Instant::now()));
+    }
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
         dimension: wgpu::TextureDimension::D2, format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
@@ -459,6 +544,10 @@ struct App {
     weapon_cycle: i8,
     gadget_cycle: i8,
     weapon_switch_to: Option<u8>,
+    /// The external dev panel (http://127.0.0.1:7007, `--dev`) and the level its catalog describes.
+    panel: Option<panel::Handle>,
+    panel_level: u32,
+    panel_frames: u32,
     /// Right mouse held: scope zoom (`Player_Zoom`).
     zoom: bool,
     /// Dev mode (WORKLOG 0083): `None` when `--dev` is off.
@@ -484,6 +573,15 @@ struct App {
     /// 0x1a24c8:247): the previous tick's channel state. Reset on every level load — the game's `_prev`
     /// is restored from the RamSave, whose value for the lock channel is 0 in every pre-party level.
     prev_lock_ch: bool,
+    /// Render interpolation state: the cameras and palettes of the last two ticks, and whether a tick ran this frame.
+    ticked: bool,
+    cam_prev: Option<Camera>,
+    cam_cur: Option<Camera>,
+    pal_prev: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
+    pal_cur: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
+    /// `--fps N`: a frame-rate cap (vsync off); None = vsync.
+    fps_cap: Option<f32>,
+    frame_start: std::time::Instant,
 }
 
 impl App {
@@ -517,6 +615,35 @@ impl App {
 
     /// B-9: apply a dev-menu action and set the on-screen result message. Shared by mouse-click and keyboard
     /// (Enter) so both produce the same feedback. The result stays ~3 s (180 ticks).
+    /// Apply the dev panel's queued commands and keep its catalog current (every 30 frames, and on level change).
+    fn poll_panel(&mut self) {
+        let Some(h) = self.panel.clone() else { return };
+        let queued: Vec<String> = h.lock().map(|mut g| std::mem::take(&mut g.queue)).unwrap_or_default();
+        let mut changed = !queued.is_empty();
+        for q in queued {
+            let q = panel::query(&q);
+            let what = q.iter().find(|(k, _)| k == "do").map(|(_, v)| v.clone()).unwrap_or_default();
+            let status = match what.as_str() {
+                "god" => match self.dev.as_deref_mut() { Some(d) => { d.god_mode = !d.god_mode; format!("god mode {}", if d.god_mode { "on" } else { "off" }) } None => "no dev mode".into() },
+                "ammo" => match self.dev.as_deref_mut() { Some(d) => { d.infinite_ammo = !d.infinite_ammo; format!("infinite ammo {}", if d.infinite_ammo { "on" } else { "off" }) } None => "no dev mode".into() },
+                _ => {
+                    let (status, switch) = panel::apply(&mut self.scene, &q);
+                    if let Some(w) = switch { self.weapon_switch_to = Some(w); }
+                    status
+                }
+            };
+            eprintln!("[panel] {status}");
+            if let Ok(mut g) = h.lock() { g.status = status; }
+        }
+        let level = self.scene.sim.as_ref().map_or(0, |s| s.level);
+        self.panel_frames += 1;
+        if changed || level != self.panel_level || self.panel_frames % 30 == 0 {
+            changed = true;
+            self.panel_level = level;
+        }
+        if changed { let c = panel::catalog(&self.scene); if let Ok(mut g) = h.lock() { g.catalog = c; } }
+    }
+
     fn apply_menu_action(&mut self, action: dev::MenuAction) {
         let result = match action {
             dev::MenuAction::Close => { if let Some(d) = self.dev.as_deref_mut() { d.menu = false; } "menu closed".to_string() }
@@ -577,6 +704,8 @@ impl ApplicationHandler for App {
         // they are — like the headless `--shot` path's Rgba8Unorm. An sRGB surface would encode them again and wash the
         // picture out, so use the plain (non-sRGB) variant of the surface's format.
         config.format = config.format.remove_srgb_suffix();
+        // Vsync at the display rate by default (a 120/144 Hz display gets 120/144 fps); `--fps N` turns it off and caps.
+        config.present_mode = if self.fps_cap.is_some() { wgpu::PresentMode::AutoNoVsync } else { wgpu::PresentMode::AutoVsync };
         surface.configure(&device, &config);
         let depth = gpu::depth_view(&device, config.width, config.height);
         let renderer = gpu::Renderer::new(&device, &queue, config.format, &self.scene, self.notex, self.nofog);
@@ -770,6 +899,8 @@ impl ApplicationHandler for App {
                 }
                 if self.noclip || self.scene.sim.is_none() { self.cam.pos += mv * speed; }
                 // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
+                self.ticked = false;
+                self.poll_panel();
                 if !self.paused {
                     // Game logic at its fixed 60 Hz, decoupled from the render rate: one AI tick per whole tick of time.
                     // Dev mode's time scale changes the number of ticks run (WORKLOG 0081), not the tick rate.
@@ -785,6 +916,7 @@ impl ApplicationHandler for App {
                         .and_then(|v| v.parse::<u32>().ok()).filter(|v| *v > 0).unwrap_or(4));
                     let elapsed = (self.anim_time as u32).saturating_sub(before).min(max_ticks);
                     let n_ticks = self.dev.as_deref_mut().map_or(elapsed, |d| d.tick_count(elapsed));
+                    self.ticked = n_ticks > 0;
                     let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
                     let look = self.cam.dir().to_array();
                     if let Some(sim) = self.scene.sim.as_mut() {
@@ -881,7 +1013,23 @@ impl ApplicationHandler for App {
                 let (r, u) = cam_axes(&self.cam);
                 self.opts.right = r;
                 self.opts.up = u;
-                g.renderer.update_vertices(&g.queue, self.scene.char_vertex_start, &posed_vertices(&self.scene, self.choice, self.anim_time, self.opts));
+                // G-043: build the palette only when a tick ran, then draw between the last two ticks.
+                if self.ticked || self.pal_cur.is_none() {
+                    let new = self.scene.skin_palette(&g.renderer.skin_layout, self.choice, self.anim_time, self.opts);
+                    self.pal_prev = self.pal_cur.take();
+                    self.pal_cur = Some(new);
+                    self.cam_prev = self.cam_cur;
+                    self.cam_cur = Some(self.cam);
+                }
+                let interp = !self.noclip && !self.paused && self.scene.sim.is_some() && std::env::var_os("NF_NOINTERP").is_none();
+                let alpha = if interp { self.anim_time.fract() } else { 1.0 };
+                let draw_cam = match (self.cam_prev, self.cam_cur) { (Some(a), Some(b)) if interp => lerp_cam(&a, &b, alpha), _ => self.cam };
+                if let Some((pal, cols)) = &self.pal_cur {
+                    match &self.pal_prev {
+                        Some((pp, _)) if interp => g.renderer.upload_skin(&g.queue, &lerp_palette(pp, pal, alpha), cols),
+                        _ => g.renderer.upload_skin(&g.queue, pal, cols),
+                    }
+                }
                 let frame = match g.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
                     wgpu::CurrentSurfaceTexture::Outdated => { g.surface.configure(&g.device, &g.config); g.window.request_redraw(); return; }
@@ -899,13 +1047,19 @@ impl ApplicationHandler for App {
                 };
                 let view = frame.texture.create_view(&Default::default());
                 let aspect = g.config.width as f32 / g.config.height as f32;
-                let (vp, vp_rot) = self.cam.view_proj(aspect);
-                let snow = snow_for(&self.scene, &self.cam);
+                let (vp, vp_rot) = draw_cam.view_proj(aspect);
+                let snow = snow_for(&self.scene, &draw_cam);
                 let mut hud = overlay_for(&self.scene, aspect);
                 if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }
-                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, self.cam.pos.to_array(), self.anim_time as u32, &snow, &hud);
+                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud);
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
+                if let Some(fps) = self.fps_cap.filter(|f| *f > 0.0) {
+                    let target = std::time::Duration::from_secs_f32(1.0 / fps);
+                    let el = self.frame_start.elapsed();
+                    if el < target { std::thread::sleep(target - el); }
+                }
+                self.frame_start = std::time::Instant::now();
                 g.window.request_redraw();
             }
             _ => {}
@@ -938,6 +1092,8 @@ pub fn run() -> Result<()> {
     let level = if level.to_ascii_lowercase().ends_with(".bin") { level } else { format!("{level}.bin") };
     let all = args.iter().any(|a| a == "--all");
     let dev = args.iter().any(|a| a == "--dev");
+    // `--fps N`: cap the frame rate at N with vsync off (0 = uncapped). Without it: vsync at the display rate.
+    let fps_cap: Option<f32> = args.iter().position(|a| a == "--fps").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<f32>().ok());
     let mut scenario = args.iter().position(|a| a == "--scenario").and_then(|i| args.get(i + 1)).cloned();
     let record_path = args.iter().position(|a| a == "--record").and_then(|i| args.get(i + 1)).cloned();
     let replay_path = args.iter().position(|a| a == "--replay").and_then(|i| args.get(i + 1)).cloned();
@@ -1022,8 +1178,17 @@ pub fn run() -> Result<()> {
     let sound = build_sound(&mut scene);
     // `--dev --scenario <name>`: place Bond and set up the world for a specific feature test. (B-3a/b: the two
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev::default())), notex, nofog, iso, pending_level: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0 };
     if dev {
+        app.panel = panel::start();
+        match &app.panel {
+            Some(_) => eprintln!("dev panel: open http://127.0.0.1:{} in a browser (beside the game window)", panel::PORT),
+            None => eprintln!("dev panel: port {} busy (another nf-view?) — panel not started", panel::PORT),
+        }
+        if args.iter().any(|a| a == "--arena") {
+            let (status, _) = panel::apply(&mut app.scene, &[("do".to_string(), "arena".to_string())]);
+            eprintln!("[arena] {status}");
+        }
         if let (Some(d), Some(n)) = (app.dev.as_deref_mut(), scenario.as_ref()) {
             if let Some((_, f)) = dev::scenario(n) {
                 f(&mut app.scene);
