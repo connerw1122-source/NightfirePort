@@ -658,6 +658,8 @@ impl Sim {
     /// aim box (±0.296 across, ±0.4 up) and turn the view only past its edge (pad aim mode; the mouse has none, D-002); the shot goes through the smoothed
     /// cursor (`Player_GetAimingPoint`).
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
+        nf_game::prof::tick();
+        let _prof = nf_game::prof::scope("step_bond (total)");
         let (trigger, reload) = if self.disabled { input = Default::default(); (false, false) } else { (trigger, reload) };
         let aiming = input.aiming;
         // Weapon switching (`Player_WeaponChange` 0x1a6f80): only when idle (not firing/reloading/holstering). The

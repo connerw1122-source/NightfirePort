@@ -3951,6 +3951,8 @@ impl Drones {
 
     /// One 60 Hz game tick: global vision (`DroneVision_ProcessDroneSight`), then each drone's control.
     pub fn tick(&mut self, d: &Data, player: &Player) {
+        let _prof_all = crate::prof::scope("drones.tick (total)");
+        let prof_pre = crate::prof::scope("drones: shared passes");
         self.frame += 1;
         let frame = self.frame;
         // Music: `Drone_InitComms` resets the attack gate; `DroneFunc_CheckAlarmRaised` (07000005 / 06) posts event 2 = 3
@@ -4177,7 +4179,8 @@ impl Drones {
         let touchers: Vec<crate::triggers::Toucher> = std::iter::once(crate::triggers::Toucher::player([player.pos[0], player.pos[1] - 0.4, player.pos[2]]))
             .chain(self.list.iter().filter(|x| x.enabled).map(|x| crate::triggers::Toucher { a: [x.pos[0], x.pos[1] - 1.0, x.pos[2]], b: x.head(), r: 0.4, drone: true, skin: x.skin }))
             .collect();
-        crate::triggers::calc(d.level, &mut self.triggers, &mut self.channels, &touchers, frame);
+        drop(prof_pre);
+        { let _p = crate::prof::scope("drones: Trigger_Calc"); crate::triggers::calc(d.level, &mut self.triggers, &mut self.channels, &touchers, frame); }
         // `switch_channels_prev` is snapshotted right after `Trigger_Calc`, BEFORE the object walk [M 0x1336f8:52-53
         // — `prev ← hold; hold ← channels` at 0x1337cc/0x1337dc] — so `Door_Update`'s lock rising edge
         // (`prev == 0 && now != 0`, 0x136550-0x136608) sees a channel a trigger or script pulsed earlier this
@@ -4185,7 +4188,7 @@ impl Drones {
         // invisible to the edge test.
         self.doors.end_tick(&self.channels);
         // Script players (*deviation*: all of them here, not interleaved with the placed objects by list order).
-        self.scripts.tick(&mut self.channels, d, frame);
+        { let _p = crate::prof::scope("drones: scripts"); self.scripts.tick(&mut self.channels, d, frame); }
         // Script objects with collision data join the collision world where they now are: animations' discrete
         // parts and drawn entities (`Collide_PickObj`; triggers and AI volumes are not obstacles).
         // Id: object index · 64 + part (stable while the object lives) for the ride (`ground_motion`).
@@ -4203,7 +4206,7 @@ impl Drones {
         // call — at most one tick (4 cm) behind the visual. Id: high bit 40 + the door index.
         parts.extend(self.doors.list.iter().enumerate().filter(|(_, x)| x.glist != 0)
             .map(|(k, x)| (0x100_0000_0000 | k as u64, x.glist, x.matrix)));
-        d.world.set_dynamic(&parts);
+        { let _p = crate::prof::scope("drones: set_dynamic"); d.world.set_dynamic(&parts); }
         // Script triggers (`Trigger_TouchOnce` / `Trigger_Touch` made by `Script_CreateEntity`): one per live entity,
         // its volume the glist's collision at the entity's matrix this tick; gone with the object. New objects head the
         // control list, so they update before the placed ones (placement index past them all).
@@ -4292,8 +4295,9 @@ impl Drones {
             .collect();
         // Per drone: timers, alertness decay, update message, turning, aim, firing, animation.
         let mut talk_queue: Vec<(usize, Vec<(usize, bool)>)> = Vec::new();
+        let prof_loop = crate::prof::scope("drones: control-list loop");
         for &(_, what, index) in &order {
-            if what == 1 {
+            if what == 1 { let _pw = crate::prof::scope("ctl: kind 1");
                 self.triggers[index].update(&mut self.channels, &touchers, frame);
                 // `LOAD_LEVEL` (0xE8): when the exit trigger fires, carry the next level's hashcode for the main loop
                 // to reload (`Trigger_Activate` 0x1b2318 → `ResetMap_LevelToLoad`). Also post `Music_Event(3, 1)`
@@ -4317,7 +4321,7 @@ impl Drones {
                 }
                 continue;
             }
-            if what == 4 {
+            if what == 4 { let _pw = crate::prof::scope("ctl: kind 4");
                 // `Door_Update` (docs/systems/world-objects.md "Doors"): channels, the auto-close timer, the
                 // anim; its sounds (open 285 / close 284 / the locked 320 thud on 07000005) enter the pool.
                 let evs = self.doors.update(index, &mut self.channels, &actors, frame);
@@ -4329,7 +4333,7 @@ impl Drones {
                 }
                 continue;
             }
-            if what == 3 {
+            if what == 3 { let _pw = crate::prof::scope("ctl: kind 3");
                 // `Searchlight_Update` (docs/systems/world-objects.md): channels, sweep/tracking, the parts, the
                 // break check; its `Sound_Play3D` events (0xE5 relay, 0xE6 glass) enter the pool and the hearing list.
                 let evs = self.searchlights.update(d, player, &mut self.channels, index, &self.bullet_paths, &mut self.rng, frame);
@@ -4341,7 +4345,7 @@ impl Drones {
                 }
                 continue;
             }
-            if what == 2 {
+            if what == 2 { let _pw = crate::prof::scope("ctl: kind 2");
                 // `DroneSpawner_Control` returns immediately while the drones are disabled (`NPCGlobals == 0`,
                 // [M 0x137e68:21-22]) — a cut-scene with event 5 also freezes spawners.
                 if !self.npc_enabled { continue; }
@@ -4381,9 +4385,10 @@ impl Drones {
             if dr.spawn_frame == frame { continue; }   // spawned this tick: the game's walk already passed it
             if dr.target.stamp != self.target.stamp { dr.target = self.target.clone(); }
             dr.channel_on = self.channels.on(dr.switch_channel as u32);
-            dr.drawn = dr.enabled && visible_to(player, d.world, dr.pos, dr.head());
+            { let _p = crate::prof::scope("drone: visible_to (drawn ray)"); dr.drawn = dr.enabled && visible_to(player, d.world, dr.pos, dr.head()); }
             dr.links_used = std::mem::take(&mut self.used);
             dr.cover_rt = std::mem::take(&mut self.cover_rt);
+            let _pc = crate::prof::scope("drone: clones + misc");
             dr.others = positions.clone();
             dr.peers = peers.clone();
             // `NDrone2_PreDroneControl`: the second switch (`+0x135`) with a tag (`+0x13A`): 0xC deletes the drone,
@@ -4404,7 +4409,8 @@ impl Drones {
             if let Some((t, m)) = dr.delayed { if frame >= t { dr.delayed = None; dr.send(d, rng, frame, m); } }
             if dr.alert < 1.0 && dr.alert > dr.alert_floor { dr.alert -= 1.0 / (60.0 * 50.0); }
             if dr.alert < dr.alert_floor { dr.alert = dr.alert_floor; }
-            dr.send(d, rng, frame, msg::UPDATE);
+            drop(_pc);
+            { let _p = crate::prof::scope("drone: UPDATE msg (AI)"); dr.send(d, rng, frame, msg::UPDATE); }
             // `NDrone2_SeenAndAttacking` from the combat states (docs/systems/music.md: the gate posts
             // `Music_Event(2, 5)`; *suggested*: once per update, the port's states numbered as the game's).
             if dr.enabled && matches!(dr.state, state::SNIPER_AIM | state::SNIPER_FIRE | state::SNIPER_RELOAD | state::COMBAT | state::COMBAT_NO_MOVE
@@ -4432,7 +4438,8 @@ impl Drones {
             // which let the torso wind all the way around (the playtest's "spine flipped" patrol look).
             let want = if dr.anim.class == 2 && dr.aims_torso() { angle_difference(dr.yaw, dr.yaw_to_opp).clamp(-0.9, 0.9) } else { 0.0 };
             dr.aim_yaw = rotate_to_bearing(dr.aim_yaw, want, 0.2, crate::trig::PI);
-            if !dr.corpse { if let Some(b) = dr.handle_firing(d, rng, frame, player, (moving, first_moved), index) { self.bullets.push(b); } }
+            if !dr.corpse { let _pf = crate::prof::scope("drone: handle_firing"); if let Some(b) = dr.handle_firing(d, rng, frame, player, (moving, first_moved), index) { self.bullets.push(b); } }
+            let _pa = crate::prof::scope("drone: update_anim");
             if let Some((next_ai, done_msg)) = dr.update_anim(d) {
                 // `SetEndAIState`: the AI state is queued, then the message routed (which applies the queued state).
                 dr.set_state(next_ai);
@@ -4461,7 +4468,7 @@ impl Drones {
             for mut p in dr.drops.drain(..) { p.from = Some(index); self.pickups.push(p); }
             // `Drone_CollisionHandler` (0x140968, WORKLOG 0078): the feet-sphere down-ray + gravity, before the
             // AI-boundary push-out (the game's `AINetwork_GetBoundsPushVectorForSphere` runs last in the handler).
-            dr.collision_handler(d.world);
+            { let _p = crate::prof::scope("drone: collision_handler"); dr.collision_handler(d.world); }
             // `NDrone2_Collision`: the feet sphere (r 0.4) is pushed out of the AI-network boundaries.
             if dr.enabled && dr.bounded && d.nav.bounds {
                 let p = d.nav.push_out(dr.feet(), 0.4);
@@ -4469,6 +4476,7 @@ impl Drones {
                 dr.pos[2] = p[2];
             }
         }
+        drop(prof_loop);
         // The drones' speech requests, in update order (no random draws in `SpeechSFX` / `PlaySFX`).
         for (index, talks) in talk_queue { self.speech(d, index, talks, frame); }
         // `Doors_Calc` — the control pass's last act (0x1336f8's tail): the door groups sync, the busy markers

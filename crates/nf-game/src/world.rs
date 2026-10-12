@@ -36,6 +36,9 @@ struct Geo {
     /// Each triangle's surface byte (`HITDATA+0x50`; `& 0x3F` indexes `EffectInfo`).
     mats: Vec<u8>,
     objects: Vec<Object>,
+    /// Static only (`chunk`): bounds over runs of consecutive `objects` (`tris` = an object index range), so a query
+    /// skips whole runs. Empty = test every object.
+    groups: Vec<Object>,
 }
 
 impl Geo {
@@ -48,6 +51,35 @@ impl Geo {
             self.mats.push(m);
         }
         if self.tris.len() > start { self.objects.push(Object { lo, hi, tris: start..self.tris.len() }); }
+    }
+
+    /// Split every object into runs of `n` consecutive triangles with their own bounds. Static geometry only: its
+    /// objects carry no identity, so the queries (`near`, `segment_in`) return exactly the same hits, but a
+    /// segment no longer tests every triangle of a large room mesh whose overall box it touches. Mesh triangles
+    /// are stored in strip order, so consecutive runs are spatially compact. (07000007: the per-drone `drawn`
+    /// ray cost 12 of a 15 ms tick before this.)
+    fn chunk(&mut self, n: usize) {
+        let mut out = Vec::with_capacity(self.tris.len() / n + self.objects.len());
+        for o in &self.objects {
+            let mut s = o.tris.start;
+            while s < o.tris.end {
+                let e = (s + n).min(o.tris.end);
+                let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+                for t in &self.tris[s..e] { for p in t { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } } }
+                out.push(Object { lo, hi, tris: s..e });
+                s = e;
+            }
+        }
+        self.objects = out;
+        self.groups.clear();
+        let mut s = 0;
+        while s < self.objects.len() {
+            let e = (s + 32).min(self.objects.len());
+            let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+            for o in &self.objects[s..e] { for k in 0..3 { lo[k] = lo[k].min(o.lo[k]); hi[k] = hi[k].max(o.hi[k]); } }
+            self.groups.push(Object { lo, hi, tris: s..e });
+            s = e;
+        }
     }
 }
 
@@ -62,13 +94,47 @@ pub struct CollisionWorld {
     shape_mats: std::collections::HashMap<u32, Vec<u8>>,
 }
 
+/// Whether the segment `from + t·d`, t in [0, 1], passes through the box (slab test, a little padding).
+fn seg_box(from: V3, d: V3, lo: V3, hi: V3) -> bool {
+    let (mut t0, mut t1) = (0.0f32, 1.0f32);
+    for k in 0..3 {
+        let (l, h) = (lo[k] - 1e-3, hi[k] + 1e-3);
+        if d[k].abs() < 1e-12 { if from[k] < l || from[k] > h { return false; } continue; }
+        let inv = 1.0 / d[k];
+        let (mut a, mut b) = ((l - from[k]) * inv, (h - from[k]) * inv);
+        if a > b { std::mem::swap(&mut a, &mut b); }
+        t0 = t0.max(a); t1 = t1.min(b);
+        if t0 > t1 { return false; }
+    }
+    true
+}
+
+/// The objects the segment `from → to` passes through the bounds of (through `groups` when present).
+fn along<'a>(g: &'a Geo, from: V3, to: V3) -> impl Iterator<Item = &'a Object> + 'a {
+    let d = sub(to, from);
+    let all: Box<dyn Iterator<Item = &'a Object>> = if g.groups.is_empty() { Box::new(g.objects.iter()) } else {
+        Box::new(g.groups.iter().filter(move |gr| seg_box(from, d, gr.lo, gr.hi)).flat_map(move |gr| g.objects[gr.tris.clone()].iter()))
+    };
+    all.filter(move |o| seg_box(from, d, o.lo, o.hi))
+}
+
+/// The objects whose bounds overlap `lo..hi` (through `groups` when present).
+fn overlapping<'a>(g: &'a Geo, lo: V3, hi: V3) -> impl Iterator<Item = &'a Object> + 'a {
+    let out = move |o: &Object| (0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k]);
+    let all: Box<dyn Iterator<Item = &'a Object>> = if g.groups.is_empty() { Box::new(g.objects.iter()) } else {
+        Box::new(g.groups.iter().filter(move |gr| !(0..3).any(|k| gr.hi[k] < lo[k] || gr.lo[k] > hi[k])).flat_map(move |gr| g.objects[gr.tris.clone()].iter()))
+    };
+    all.filter(move |o| !out(o))
+}
+
 /// First hit of `from → to` in one geometry set (fraction).
 fn segment_in(g: &Geo, from: V3, to: V3) -> Option<f32> {
     let d = sub(to, from);
     let mut best = None::<f32>;
     for k in 0..3 { if from[k].min(to[k]).is_nan() { return None; } }
-    for o in &g.objects {
-        if (0..3).any(|k| o.hi[k] < from[k].min(to[k]) || o.lo[k] > from[k].max(to[k])) { continue; }
+    let (lo, hi): (V3, V3) = ([from[0].min(to[0]), from[1].min(to[1]), from[2].min(to[2])], [from[0].max(to[0]), from[1].max(to[1]), from[2].max(to[2])]);
+    let _ = (lo, hi);
+    for o in along(g, from, to) {
         for t in &g.tris[o.tris.clone()] {
             let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
             let p = cross(d, e2);
@@ -123,6 +189,7 @@ impl CollisionWorld {
                 }
             }
         }
+        stat.chunk(16);
         CollisionWorld { stat, dynamic: Default::default(), shapes, shape_mats }
     }
 
@@ -167,7 +234,7 @@ impl CollisionWorld {
         let d = self.dynamic.read().unwrap();
         let mut best: Option<(f32, usize)> = None;
         for (i, o) in d.geo.objects.iter().enumerate() {
-            let g = Geo { tris: d.geo.tris[o.tris.clone()].to_vec(), mats: d.geo.mats[o.tris.clone()].to_vec(), objects: vec![Object { lo: o.lo, hi: o.hi, tris: 0..o.tris.len() }] };
+            let g = Geo { tris: d.geo.tris[o.tris.clone()].to_vec(), mats: d.geo.mats[o.tris.clone()].to_vec(), objects: vec![Object { lo: o.lo, hi: o.hi, tris: 0..o.tris.len() }], groups: Vec::new() };
             if let Some(t) = segment_in(&g, from, to) { if best.is_none_or(|b| t < b.0) { best = Some((t, i)); } }
         }
         let (t, i) = best?;
@@ -182,11 +249,20 @@ impl CollisionWorld {
     fn stat_segment(&self, from: V3, to: V3) -> Option<f32> { segment_in(&self.stat, from, to) }
 
     /// Every triangle of the objects whose box meets `lo`..`hi`, static first.
+    /// Every triangle whose object's bounds the segment `from → to` passes through (`near` for segments).
+    fn near_seg(&self, from: V3, to: V3, mut f: impl FnMut(&[V3; 3], u8)) {
+        let dynamic = self.dynamic.read().unwrap();
+        for g in [&self.stat, &dynamic.geo] {
+            for o in along(g, from, to) {
+                for k in o.tris.clone() { f(&g.tris[k], g.mats[k]); }
+            }
+        }
+    }
+
     fn near(&self, lo: V3, hi: V3, mut f: impl FnMut(&[V3; 3], u8)) {
         let dynamic = self.dynamic.read().unwrap();
         for g in [&self.stat, &dynamic.geo] {
-            for o in &g.objects {
-                if (0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k]) { continue; }
+            for o in overlapping(g, lo, hi) {
                 for k in o.tris.clone() { f(&g.tris[k], g.mats[k]); }
             }
         }
@@ -197,7 +273,7 @@ impl CollisionWorld {
         let d = sub(to, from);
         let (mut best, mut lo, mut hi) = (None::<f32>, [0f32; 3], [0f32; 3]);
         for k in 0..3 { lo[k] = from[k].min(to[k]); hi[k] = from[k].max(to[k]); }
-        self.near(lo, hi, |t, _| {
+        let _ = (lo, hi); self.near_seg(from, to, |t, _| {
             let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
             let p = cross(d, e2);
             let det = dot(e1, p);
@@ -223,7 +299,7 @@ impl CollisionWorld {
         let d = sub(to, from);
         let (mut best, mut lo, mut hi) = (None::<(f32, V3, u8)>, [0f32; 3], [0f32; 3]);
         for k in 0..3 { lo[k] = from[k].min(to[k]); hi[k] = from[k].max(to[k]); }
-        self.near(lo, hi, |t, mat| {
+        let _ = (lo, hi); self.near_seg(from, to, |t, mat| {
             let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
             let p = cross(d, e2);
             let det = dot(e1, p);
@@ -345,7 +421,7 @@ mod tests {
 
     fn world(tris: Vec<[V3; 3]>) -> CollisionWorld {
         let n = tris.len();
-        let stat = Geo { mats: vec![0; n], tris, objects: vec![Object { lo: [-10.0; 3], hi: [10.0; 3], tris: 0..n }] };
+        let stat = Geo { mats: vec![0; n], tris, objects: vec![Object { lo: [-10.0; 3], hi: [10.0; 3], tris: 0..n }], groups: Vec::new() };
         CollisionWorld { stat, dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default() }
     }
 

@@ -466,7 +466,9 @@ impl Renderer {
             let cel_visible: Vec<bool> = if cel_cull {
                 let depth0: [[f32; 4]; 5] = [planes[0], planes[1], planes[2], planes[3], planes[4]];
                 let eye_room = Self::eye_room_cel(&self.cel_boxes, eye);
-                match eye_room.filter(|_| !self.cel_graph.portals.is_empty()) {
+                // Opt-in (NF_PORTAL=1): on 07000006, between the truck and the courtyard, the walk from the eye's cel
+                // hid the whole level (user screenshot), and it gave no frame-rate gain in play.
+                match eye_room.filter(|_| !self.cel_graph.portals.is_empty() && std::env::var_os("NF_PORTAL").is_some()) {
                     Some(room) => match crate::scene::portal_visible_cels(&self.cel_graph, room, eye, &depth0) {
                         Some(cell_vis) => self.cel_graph.room_to_cell.iter()
                             .map(|m| m.map(|c| cell_vis[c]).unwrap_or(true)).collect(),
