@@ -3647,7 +3647,8 @@ impl Drone {
         let damage = 100.0f32;
         Some(crate::grenade::Grenade {
             pos: origin, velocity: [dir[0] * speed, dir[1] * speed, dir[2] * speed], speed,
-            travelled: 0.0, range, damage, radius, weapon_type, owner, state: 0, bounces: 0,
+            travelled: 0.0, range, damage, radius, weapon_type, mesh: d.weapons.projectile_mesh(self.weapon as usize),
+            owner, state: 0, bounces: 0,
         })
     }
 
@@ -3757,7 +3758,7 @@ impl Drone {
         let mut damage = f32_at(0x0c) * self.damage_mul;
         if self.dist < 4.0 { damage *= 2.0 }
         Some(crate::bullet::Bullet { pos: muzzle, dir, speed: f32_at(0x20), travelled: 0.0, range: f32_at(0x1c), damage, owner, state: 0,
-            flyby: d.weapons.flyby(self.weapon as usize) })
+            weapon: self.weapon as u16, flyby: d.weapons.flyby(self.weapon as usize) })
     }
 
     // ---- per tick -----------------------------------------------------------------------------------------------

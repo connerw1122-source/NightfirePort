@@ -109,6 +109,23 @@ impl WeaponData {
     /// `+0x92`: the clip size (also what a dropped gun's rounds scale).
     pub fn clip_size(&self, weapon: usize) -> i16 { self.u16_at(weapon, 0x92) as i16 }
 
+    /// `+0x5C`: the projectile's drawn mesh (`Bullet_update` 0x12e7b0 disasm 0x12e8f0: `lw $a1, 0x5c($v0)`
+    /// (the weapon record) → `jal hashtable_set_object_to_entity_gfx` — the flying bullet shows the mesh
+    /// `weapon_data[w]+0x5C` in every view (`View_SetDrawInAllViews`), instead of the 0x02000123 trail, whenever
+    /// the field is non-zero [M]. 0 and 0xFFFFFFFF both mean none (the hashtable set refuses 0xffffffff [M
+    /// 0x1ca6d8: `if (param_2 != 0xffffffff)`]; the record's sentinel is 0xffffffff). The gravity bullets
+    /// (grenades 0x35/0x36/0x37 → 0x02000726/0x0200071f/0x02000a6e [L ee_start_05.bin]), the rockets (0x3A →
+    /// 0x0200074f), the darts (0x3B..0x40 → 0x020007b3) and the Q-Worm (0x46 → 0x0200025f) all carry one.
+    pub fn projectile_mesh(&self, weapon: usize) -> u32 {
+        match self.records.get(weapon) {
+            Some(r) => {
+                let h = u32::from_le_bytes(r[0x5c..0x60].try_into().unwrap());
+                if h == u32::MAX { 0 } else { h }
+            }
+            None => 0,
+        }
+    }
+
     /// `+0xDC`: the first-person model; `Player_EquipWeapon` refuses a weapon whose model is not loaded.
     pub fn first_person(&self, weapon: usize) -> u32 {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xdc..0xe0].try_into().unwrap()))

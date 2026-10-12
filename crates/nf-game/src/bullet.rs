@@ -20,6 +20,9 @@ pub struct Bullet {
     pub owner: usize,
     /// State 0 (first tick: step (0.5 + FRand 0.5) · speed), 1 flying, 2 dead.
     pub state: u8,
+    /// The weapon that fired it (`Drone+0x62` when the drone fired; the mesh `weapon_data[w]+0x5C` is the
+    /// drawn projectile, `Bullet_update` disasm 0x12e8f0 [M]). 0 = none/unknown (hitscan).
+    pub weapon: u16,
     /// `weapon_data+0x6C & 0x40000`: the weapon's bullets play a fly-by (whiz) sound in `Bullet_DoTrails` [M].
     pub flyby: bool,
 }
