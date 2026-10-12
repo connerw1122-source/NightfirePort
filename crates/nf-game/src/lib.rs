@@ -15,6 +15,8 @@ pub mod env;
 pub mod gun;
 pub mod grenade;
 pub mod ladder;
+pub mod fusebox;
+pub mod ss;
 pub mod mission;
 pub mod music;
 pub mod nav;

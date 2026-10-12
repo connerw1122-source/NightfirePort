@@ -3969,11 +3969,19 @@ pub struct Drones {
     /// The level's doors (docs/systems/world-objects.md "Doors"); created in `attach_level`, updated in `tick`'s
     /// control-list order (`Door_Update`), the group sync (`Doors_Calc`) at the pass's end.
     pub doors: crate::door::Doors,
+    /// The fuseboxes (`FuseBox_Create` 0x1b0448; map-tower2): 07000014's OBJECT_FuseBox1 sabotage boxes.
+    pub fuseboxes: Vec<crate::fusebox::FuseBox>,
+    /// The animated SimpleScripts (`SS_Create` 0x1a9c58 / `SS_Update` 0x1a9948; map-tower2): the
+    /// 07000012 lift screens, shutters and lift doors swap on their switch channels.
+    pub sss: crate::ss::SsList,
     /// Bond's bullet segments of this tick (`from`, `to`): the searchlights' break check (U-041 stand-in).
     bullet_paths: Vec<([f32; 3], [f32; 3])>,
     /// The mission layer (`Mission_Update` 0x182c60, docs/systems/mission.md). `inited` latches the
     /// per-level `Mission_Init` (0x182270, from `ResetMap_GameInit`) on this level's first tick.
     pub mission: crate::mission::Mission,
+    /// The previous level's mission globals (map-tower2): restored at the `Mission_Init` latch, after
+    /// init, the way the game's `.data` globals sit under it [M 0x182270:68-129].
+    pub mission_carry: Option<crate::mission::MissionSave>,
     /// The photograph targets and breakable doors (crate::props; placements 0xFD / 0xE1 —
     /// `CamSubject_Create` 0x1bc5d8, `Destroy_Create` 0x12c318), created in `attach_level`.
     pub props: crate::props::Props,
@@ -4027,7 +4035,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_inited: false, mission_events: Vec::new() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -4065,6 +4073,17 @@ impl Drones {
             })
         });
         self.doors.create_channels(&mut self.channels, self.frame);
+        // Fuseboxes (`FuseBox_Create` 0x1b0448, placement 0x31 with a script hash): 07000014's
+        // OBJECT_FuseBox1 security-sabotage boxes (map-tower2).
+        let (fuseboxes, _spheres) = crate::fusebox::FuseBox::create(&level.maps[m].placements, |p| {
+            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
+                else { level.maps[m].objects.get(p.index as usize) };
+            obj.map(|o| (o.centre, o.radius))
+        });
+        self.fuseboxes = fuseboxes;
+        // SimpleScripts (`SS_Create` 0x1a9c58): the 0xE2 placements with a non-zero key count, their
+        // keys from the main map's 0x19 blocks (map-tower2).
+        self.sss = crate::ss::SsList::create(&level.maps[m].placements, &path_blocks);
         // Weather: `Env_Create` (placement 0xDF, parameter 0 = drop type) and the `RainBox_Create` volumes (0x32: the
         // glist bounds at the placement translation).
         self.map_sounds = crate::sound::MapSounds::new(level.maps[m].sounds.clone());
@@ -4284,6 +4303,17 @@ impl Drones {
             match d.sfx {
                 Some(t) => { let h = t.get(id as u32); self.play_sound_handle(pos, h); }
                 None => { self.audio.play3d(id as u32, pos, None); }
+            }
+        }
+        // The fuseboxes: `Player_Activate` 0x1a5170 reaches the box's class-0 SP first (the lid), and
+        // `FuseBox_Update` 0x1adfe8 does the cut/channel work (map-tower2). The live-wire hurt goes
+        // through the same `Player_Hurt` → `pain_generic` path the explosions use.
+        for k in 0..self.fuseboxes.len() {
+            let hurt = self.fuseboxes[k].player_use(head, look, &mut self.channels, frame);
+            if hurt > 0.0 {
+                let before = self.health.health;
+                self.health.pain_generic(hurt, DIFFICULTY, d.level, 0);
+                self.player_hits.push((frame, usize::MAX, before - self.health.health));
             }
         }
         // `Player_Activate`'s class-0x1D trigger path: for every trigger within the use sphere, call
@@ -5048,8 +5078,15 @@ impl Drones {
         // visible (docs/systems/mission.md). The per-level `Mission_Init` (0x182270, from
         // `ResetMap_GameInit` 0x1d5080:53) latches on this level's first tick; the port's loads are
         // cold (warm = false — previous parts keep their `.data` states, as the game's cold path).
+        // The SimpleScripts' playheads (`SS_Update` 0x1a9948 — channel on → the last key, off → key 0).
+        self.sss.tick(&self.channels);
         if !self.mission_inited {
-            self.mission.init(d.level, false, &mut self.channels, frame);
+            self.mission.init(d.level, self.mission_carry.is_some(), &mut self.channels, frame);
+            // The carried mission globals restore AFTER init, exactly as the game's `.data` globals sit
+            // when `Mission_Init` runs on a warm transition: init resets the current + future parts in
+            // place and the carried snapshot puts the previous parts' states back [M 0x182270:68-129;
+            // the payload shape is LS_MakeMission/LS_LoadMission 0x1cd720/0x1cd880; map-tower2].
+            if let Some(s) = self.mission_carry.take() { self.mission.restore(&s); }
             self.mission_inited = true;
         }
         let dead = self.health.health <= 0.0;

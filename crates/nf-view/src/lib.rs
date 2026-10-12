@@ -320,6 +320,9 @@ pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_gam
     // loadout switch. The port used to stand Bond at the first "Player1" placement with the [L] 07000005
     // loadout at EVERY level (playtest F1/F2/F4).
     if let Some(sim) = scene.sim.as_mut() {
+        // The mission globals ride the RamSave (the game keeps them in `.data` across the load; the
+        // port restores them at the `Mission_Init` latch — map-tower2).
+        sim.drones.mission_carry = save.and_then(|s| s.mission.clone());
         let starts: Vec<nf_game::player::LevelStart> = level_starts(&level);
         if !starts.is_empty() {
             // The gate scan reads the carried channels on a warm transition (the save mirrors the live
@@ -895,7 +898,8 @@ impl ApplicationHandler for App {
                     // the sim), then `Player_RamSave` [M 0x1b2318:97-116] — capture the old sim now, before
                     // the scene swap drops it (fix-level2 F2).
                     let save = self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
-                        &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels));
+                        &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
+                        .with_mission(&sim.drones.mission));
                     let name = level_archive_name(next);
                     eprintln!("level: loading {name} ({})", if save.is_some() { "warm" } else { "cold" });
                     match load_with_carry(&self.iso, &name, self.all, save.as_ref()) {
