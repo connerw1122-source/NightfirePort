@@ -195,32 +195,33 @@ fn probe_07000005_truck_script_entities() {
 /// Bond in the back. The level must end (ch 0x70+0x71+0x72 → mux 0x65 → SP #320 → 0x1D → LOAD_LEVEL 118
 /// → 0x07000006). Traces the chain every 100 ticks.
 ///
-/// DIAGNOSED (fix-level, not fixed — see WORKLOG): the ride and every link up to the last one work —
-/// the cut-scene hands Bond onto the truck (t≈2100), ch 0x71 (truck-bed touch, parented to the truck)
-/// is on for the whole ride, ch 0x22 fires on the way through the gatehouse (t≈3700), the gate guard
-/// spawns and stands at his post so ch 0x72 turns on (t≈3700). The level still doesn't end because
-/// **ch 0x70 (the parked-position TouchOnce, player-mask 0x8) never fires**: its plate is a flat quad
-/// at y = 37.7418 [D script stream 6, hash 0x0200047F — NOT parented to the truck], and the port's
-/// riding Bond parks with his capsule axis at y ≥ feet−0.4+0.55+0.15 ≈ 38.53, i.e. the 0.55-radius
-/// touch capsule ([M Player_Collision 0x194DF0: 0x3f0ccccd = 0.55]) misses the plate by ≈0.24 m.
-/// In the game the plate lies exactly at the bed-floor height (truck root at the park 36.05 + bed
-/// hull bottom ≈1.69 ≈ 37.74), so the game's Bond stands ON it — the port's truck collision/ride
-/// keeps him ≈0.6 higher. (fix-truck refined the diagnosis: the +0.44 is the bed RAILS stand, caused by
-/// the SP #298 walk never running — see truck_ride_park_and_chain_match_the_trace below.) Fixing it needs
-/// triggers (the writer of obj+0xD0, untraced) or the port's bed stand height (drone.rs — a shared
-/// file this task must not retune without game evidence). `#[ignore]`d so the suite stays green;
-/// run with `cargo test … truck_ride -- --ignored --nocapture` to re-trace.
+/// FIXED (fix-truck): two things were wrong. (1) The harness gap — the test assigned `sim.bond.pos`
+/// on the level-start Bond, while the viewer's `--bond` path (which does trigger the gatehouse
+/// cut-scene) replaces the whole Bond with `Bond::new` at the spot; `Bond::new` is the setup the game
+/// matches (a clean standing Bond), so the test now uses it. (2) The ride parks Bond 0.49 m too high
+/// (the port's fixed standing capsule vs the game's stance-driven `obj+0xCC = obj+0x3C` [M
+/// Player_Update 0x193600:449]) so the ch 0x70 plate at y 37.7418 [D script stream 6 key 8] never
+/// fired — the trace's ride is CROUCHED (park pos−floor 0.607 vs the standing 1.086), and the port
+/// now models the crouched capsule height (CROUCH_ROOT_HEIGHT, crates/nf-game/src/player.rs), which
+/// parks Bond at 37.93 and lets the touch reach the plate. The test crouches Bond as the hand-off
+/// re-enables him, like the trace's play. `fix_truck_live.rs` holds the full chain + park assertions.
 #[test]
-#[ignore = "diagnosed: ch 0x70's parked plate misses the port's riding Bond by ~0.24 m (bed stand height) — see doc comment"]
 fn truck_ride_to_the_castle_ends_the_level() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
     let sim = scene.sim.as_mut().unwrap();
     // Bond at the gatehouse plate (98.49, 27.05, 106.36 [D U-048]); the cut-scene hands him onto the truck.
-    sim.bond.pos = [100.0, 26.0, 108.0];
-    sim.bond.yaw = 0.0;
+    // The viewer's `--bond 100,26,108` setup path (nf-view lib.rs): a fresh Bond exactly there.
+    sim.bond = nf_game::player::Bond::new([100.0, 26.0, 108.0], sim.bond.yaw);
+    let mut prev_dis = sim.disabled;
+    let mut crouch = false;
+    let mut input = nf_game::player::Input::default();
     for t in 1..=6000u32 {
-        sim.step_bond(Default::default(), false, false, false);
+        // Crouch as the ride begins (the hand-off re-enables Bond on the truck bed).
+        if !sim.disabled && prev_dis && sim.bond.pos[0] < 95.0 { crouch = true; }
+        prev_dis = sim.disabled;
+        if crouch && !sim.bond.crouched { input.crouch = true; crouch = false; } else { input.crouch = false; }
+        sim.step_bond(input, false, false, false);
         if t % 100 == 0 || t < 10 {
             eprintln!("[ride] t{t} bond ({:.1},{:.1},{:.1}) 0x22:{} 0x70:{} 0x71:{} 0x72:{} 0x65:{} 0x1D:{} exit {:?}",
                 sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2],
@@ -295,7 +296,12 @@ fn probe_07000006_loads_headless() {
     }
 }
 
-// ── fix-truck diagnostics ───────────────────────────────────────────────────────────────────────────
+// ── fix-truck diagnostics ─
+// The superseding fix + the passing park/chain assertions live in fix_truck_live.rs (the stance-driven
+// capsule, obj+0xCC = obj+0x3C [M Player_Update 0x193600:449]; the trace's ride is crouched). The probes
+// below are the raw surface/hand-off dumps behind that work; the rest-triangle reading in their output
+// (part#3 tris at 36.65-36.96 in Bond's column) are not walkable tops — the bed's resting surface is
+// 020003be's hull top at 37.28 [D, fix-truck report].──────────────────────────────────────────────────────────────────────
 
 use nf_formats::anim::Mat4 as TMat4;
 
@@ -475,153 +481,5 @@ fn probe_truck_handin_and_rest_tri() {
                 }
             }
         }
-    }
-}
-
-/// fix-truck: the 07000005 truck ride end-to-end against tests/traces/05-truck.trace (the user's PCSX2
-/// run, god mode). Setup = the nf-view headless path exactly (`--bond 100,26,108 --frame 7000`):
-/// `nf_view::load` then `Bond::new` — not the old `pos =` assignment, which left the pre-ride Bond state
-/// (velocity, grounded history) from the level start and never reproduced the viewer's run.
-///
-/// Ground truth [D trace, frames relative to the last 07000005 frame 37173]:
-///   −317 ch 0x72 on (the gate guard at his post); −300 ch 0x70 + 0x65 on the same frame (the parked
-///   plate, Bond in the bed at (29.885, 37.887, 51.656)); −273/−272 ch 0x73 / 0x74; 0 ch 0x1D, the
-///   LOAD_LEVEL loads 07000006 on the next frame.
-///
-/// The 0x72 gap is AI-driven (the guard's walk), so only its order is asserted. The park-side gaps are
-/// script-driven (SP #37's events) and are asserted against the trace's numbers.
-/// DIAGNOSED (fix-truck, not fixed — see WORKLOG): the ride reaches the park with Bond on the truck's
-/// bed RAILS (+0.44 over the game's bed-floor stand), so ch 0x70's plate (y 37.7418) never reaches him
-/// and the chain stops. Chain of causes, all measured:
-///   1. The game walks Bond from the gatehouse plate to the truck inside a cut-scene: SP #298's
-///      0x06000994 (length 1400) animates skin 0x05000007 (Bond) with 0x06000995 and hands him back at
-///      entity 0x0200063A [D script streams]. The port's SP #298 never activates (no ch 0x43 event in
-///      the trace either, so its in-game trigger is something else — untraced), and the port has no
-///      player-follows-script-anim mechanic, so its Bond sits at the plate.
-///   2. The port's SP #38 (0x060008C8, 143 ticks) then frees Bond at entity 0x0200063A's matrix
-///      (92.25, 19.42, 103.58) — on the road mid-route (the game's Bond is never yanked there [D trace
-///      33607-35092]). Player_Enable 0x195498 writes obj+0x30 from the matrix directly — the direct
-///      placement in scene.rs is that [M] fix; the floor snap it replaced was port-invented.
-///   3. The parked truck's tailgate then shoves the road-standing capsule up onto the bed rails:
-///      the port's Bond rides at truck-root +1.06..1.23 (feet), the game's at +0.62..0.81 [D trace
-///      36856-37173 vs the port's rest probe].
-/// Run with `cargo test … truck_ride_park_and_chain -- --ignored --nocapture` to re-trace.
-#[test]
-#[ignore = "diagnosed: Bond rides on the bed rails (+0.44) because the SP #298 walk (the game's plate-to-truck cut-scene) never runs in the port — see doc comment"]
-fn truck_ride_park_and_chain_match_the_trace() {
-    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
-    let sim = scene.sim.as_mut().unwrap();
-    sim.bond = nf_game::player::Bond::new([100.0, 26.0, 108.0], 0.0);
-    let mut first_on: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
-    let mut exit_tick = None;
-    let mut parked = [0.0f32; 3];
-    for t in 1..=7000u32 {
-        sim.step_bond(Default::default(), false, false, false);
-        for c in [0x72u32, 0x70, 0x65, 0x73, 0x74, 0x1d] {
-            if sim.drones.channels.on(c) { first_on.entry(c).or_insert(t); }
-        }
-        if first_on.contains_key(&0x1d) { parked = sim.bond.pos; }
-        if sim.drones.level_exit.is_some() { exit_tick = Some(t); break; }
-    }
-    let at = |c: u32| first_on.get(&c).copied();
-    // The whole chain fires, in the trace's order.
-    assert_eq!(at(0x72), Some(first_on.get(&0x72).copied().unwrap()), "0x72 must fire");
-    for c in [0x70u32, 0x65, 0x73, 0x74, 0x1d] {
-        assert!(at(c).is_some(), "ch {c:#x} must fire (the truck park chain)");
-    }
-    let (t72, t70, t65) = (at(0x72).unwrap(), at(0x70).unwrap(), at(0x65).unwrap());
-    let (t73, t74, t1d) = (at(0x73).unwrap(), at(0x74).unwrap(), at(0x1d).unwrap());
-    assert!(t72 < t70, "0x72 (guard at post) must precede 0x70 (the parked plate) [D trace −317 vs −300]");
-    assert!(t65.abs_diff(t70) <= 1, "0x65 must fire with 0x70 (same trace frame)");
-    assert_eq!(t73.abs_diff(t70), 27, "0x73 fires 27 frames after 0x70 [D trace 36900 vs 36873]");
-    assert_eq!(t74.abs_diff(t70), 28, "0x74 fires 28 frames after 0x70 [D trace 36901 vs 36873]");
-    assert_eq!(t1d.abs_diff(t70), 300, "0x1D fires 300 frames after 0x70 [D trace 37173 vs 36873]");
-    assert_eq!(sim.drones.level_exit, Some(0x0700_0006), "the LOAD_LEVEL trigger must end the level");
-    assert!(exit_tick.is_some());
-    // Bond's parked position: the trace's last 07000005 frame is (29.885, 37.887, 51.656); the y must
-    // match within 0.05 (the port parks him on the bed floor, not on the side rails).
-    assert!((parked[1] - 37.887).abs() <= 0.05, "parked bond y {} must be 37.887±0.05 [D trace]", parked[1]);
-    assert!((parked[0] - 29.885).abs() < 0.5 && (parked[2] - 51.656).abs() < 0.5,
-        "parked bond xz {:?} near the trace's (29.885, 51.656)", &parked[0..3]);
-    // Sister: the tolerance can actually fail — the pre-fix rails stand (38.376, WORKLOG fix-level) is
-    // 0.489 off and would be rejected by the same comparison.
-    assert!((38.376f32 - 37.887).abs() > 0.05, "the 0.05 tolerance must reject the pre-fix rails stand");
-}
-
-/// fix-truck probe: script 0x060008C8 (the gatehouse cut-scene) — every stream's entity/anim/event
-/// commands in order, so the event-6 stream and its object can be identified.
-#[test]
-fn probe_gatehouse_cutscene_streams() {
-    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    let data = read_archive(&iso, "07000005.bin");
-    let level = Level::parse(&data).expect("parse");
-    for (h, nis) in &level.nis {
-        if *h != 0x0600_08c8 && *h != 0x0600_0994 { continue; }
-        eprintln!("[c8] script {h:08x}: {} streams", nis.streams.len());
-        for (si, st) in nis.streams.iter().enumerate() {
-            for cmd in st.decode() {
-                match &cmd {
-                    nf_formats::nis::Cmd::Entity { hash, obj_type, parent, spline, params } =>
-                        eprintln!("[c8] stream {si}: ENTITY hash {hash:08x} type {obj_type:#x} parent {parent:?} spline {spline} params {:x?}", params.iter().take(8).collect::<Vec<_>>()),
-                    nf_formats::nis::Cmd::Anim { script, skin, start } =>
-                        eprintln!("[c8] stream {si}: ANIM script {script:08x} skin {skin:08x} start {start}"),
-                    nf_formats::nis::Cmd::Event { kind, params } =>
-                        eprintln!("[c8] stream {si}: EVENT {kind:#x} params {:x?}", params),
-                    nf_formats::nis::Cmd::Wait(t) if si == 3 || si == 4 => eprintln!("[c8] stream {si}: WAIT {t}"),
-                    nf_formats::nis::Cmd::Marker(t) if si == 3 || si == 4 => eprintln!("[c8] stream {si}: MARKER {t}"),
-                    nf_formats::nis::Cmd::Wait(t) => {}
-                    nf_formats::nis::Cmd::Marker(t) => eprintln!("[c8] stream {si}: MARKER {t}"),
-                    nf_formats::nis::Cmd::Unread(op) => eprintln!("[c8] stream {si}: UNREAD op {op:#x}"),
-                    nf_formats::nis::Cmd::Other(op) if si == 3 || si == 4 => eprintln!("[c8] stream {si}: OTHER op {op:#x}"),
-                    _ => {}
-                }
-            }
-        }
-    }
-}
-
-/// fix-truck probe: the gatehouse cut-scene's skin-7 anim character world position over time (its
-/// discrete object 0 = the anim root), to compare with the game's obj+0x30 walk [D trace 33900-34780].
-#[test]
-fn probe_gatehouse_anim_character_path() {
-    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
-    let sim = scene.sim.as_mut().unwrap();
-    sim.bond = nf_game::player::Bond::new([100.0, 26.0, 108.0], 0.0);
-    for t in 1..=4200u32 {
-        sim.step_bond(Default::default(), false, false, false);
-        if t % 100 != 0 { continue; }
-        // Build the Data view the same way scene.rs does.
-        let d = nf_game::drone::Data {
-            tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons,
-            world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins,
-            skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
-            hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
-            surfaces: sim.surfaces.as_ref(), voices: None,
-        };
-        let mut line = format!("[c8anim] t{t} bond ({:.2},{:.2},{:.2})", sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2]);
-        for (oi, o) in sim.drones.scripts.objects.list.iter().enumerate() {
-            if let Some(nf_game::nis::Obj::Anim { skin, script, frame, .. }) = o {
-                if let Some(m) = nf_game::nis::World::discrete0(&d, *skin, *script, *frame) {
-                    line += &format!(" | anim#{oi} skin {skin:08x} f{:.0} at ({:.2},{:.2},{:.2})", frame, m[3][0], m[3][1], m[3][2]);
-                }
-            }
-        }
-        eprintln!("{line}");
-    }
-}
-
-/// fix-truck probe: the level's script players (both script slots, modes, gates) and each script's length.
-#[test]
-fn probe_script_players() {
-    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    let scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
-    let sim = scene.sim.as_ref().unwrap();
-    for (i, p) in sim.drones.scripts.players.iter().enumerate() {
-        let la = sim.drones.scripts.lib.get(&p.scripts[0]).map(|n| (n.hashcode, n.length));
-        let lb = sim.drones.scripts.lib.get(&p.scripts[1]).map(|n| (n.hashcode, n.length));
-        eprintln!("[sp] #{i} placement {} scripts {:08x}/{:08x} lens {:?}/{:?} modes {:?} gate {:#x} mask {:x} stay {}",
-            p.placement, p.scripts[0], p.scripts[1], la, lb, p.modes, p.gate, p.mask, p.stay);
     }
 }

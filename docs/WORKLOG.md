@@ -4969,7 +4969,66 @@ no new RNG draws; no wall-clock; the fixed 60 Hz tick path unchanged.
   normals are now unlit.
 - Not ported: the `Rand_Rand(0)` in `Light_Create` and the `Gas_Init` smoke `Rand_FRand` (sim RNG order), guard
   muzzle lights, level lights.
-## fix-truck — the 07000005 truck level end against tests/traces/05-truck.trace
+
+## fix-truck — the 07000005 truck park against the 05-truck trace
+
+Branch s/fix-truck (from origin/master 5056ab4). Repro + fix tests: `crates/nf-view/tests/fix_truck_live.rs`;
+the un-ignored harness: `crates/nf-view/tests/level_reload_live.rs::truck_ride_to_the_castle_ends_the_level`.
+
+**The symptom** (reproduced headless first): `nf_view::load` + the viewer's `--bond 100,26,108` setup, tick 7000 —
+Bond parks at (29.879, **38.376**, 51.971) vs the trace's (29.885, **37.887**, 51.656), and ch 0x70 (the truck's
+parked-position TouchOnce plate, player-mask 0x8) never fires, so 0x65/0x1D/LOAD_LEVEL never run. The rest of the
+chain was already live: the gatehouse cut-scene (SP #38, 0x060008C8 via ch 0x5C) disables Bond at t1884 and hands him
+onto the truck at t2028, ch 0x71 is on for the whole ride, ch 0x22/0x72 fire on the way through the gatehouse.
+
+**Root cause — the capsule height, not the truck's collision.** Measured through the port's own data path:
+- The bed's only resting surfaces are part4 0x020003be's hull: bed-floor top 37.28 (visual mesh = collision mesh,
+  same 36.248..39.496 AABB; block 0x2E), underbody 36.25, no surface at ~36.8 anywhere under the park spot [D].
+- The game's standing pos-to-floor is 1.086 [L trace level start: obj+0x30 24.963 over floor 23.877 measured through
+  the port] — the port's 1.096 matches it, so the convention is right.
+- At the park the trace's pos−floor is **0.607** — 0.48 BELOW the standing offset, with no collision surface there:
+  the game's Bond in the bed is not standing on the bed floor at the standing height. The game's capsule height is
+  DYNAMIC: `obj+0xCC = obj+0x3C` every tick [M Player_Update 0x193600:449, Player_CollisionHandler 0x1949a8:182],
+  the stance's root height above the feet; the anim/stance writes `obj+0x3C` (`Player_StandAtNewPosition` 0x190d88
+  takes the placement vec4's W; `Player_Enable` 0x195498 copies the free script's matrix translation row — W
+  included — onto obj+0x30..0x3C; `Script_Free` 0x1da880:45 passes SCRIPTINFO+0x40 and the +0xAB6 mode). The trace's
+  ride is CROUCHED: park pos−floor 0.607 − the 0.051 standing rest offset ⇒ cc ≈ 0.556 ≈ the capsule radius [M
+  0x194df0's 0x3f0ccccd]. The hand-off bounce in the trace (f33800–33900: y 19.7..20.95 ±0.6) is the stance
+  transition; the port's fixed standing capsule ignored the stance entirely, so a crouched ride still parked at
+  floor + 1.135 = 38.41 [shown failing: fix_truck_live on the pre-fix code parks 38.414].
+- The ch 0x70 plate is a flat quad at y 37.7418 [D script stream 6 key 8], and the touch capsule runs from pos+0.15
+  up with radius 0.55 [M Toucher::player] — the standing park misses it by 0.234; the crouched park reaches it.
+
+**Fix** (crates/nf-game/src/player.rs, riding/capsule only): `Bond::cc` — the dynamic capsule height [M obj+0xCC =
+obj+0x3C], standing `ROOT_HEIGHT` 1.0347183 [L], crouched `CROUCH_ROOT_HEIGHT` 0.55 [L trace-derived ≈ the radius,
+tagged in the code]; `capsule()`, both floor rays and the grounded test read it; the crouch toggle swaps it
+([S] simplification: the game's cc follows the anim pose per-tick, the port per-stance). Result: the crouched ride
+parks Bond at 37.929 — 0.042 from the trace's 37.887 (the residual is the port's resting band, 0.099 vs the game's
+0.051; the task's bar was ±0.05).
+
+**Verified** [M tests, NF_ISO]: `truck_ride_parks_bond_at_the_game_height_and_ends_the_level` — park y ±0.05 of
+37.887, x/z within 0.5 (the port parks at z 52.14 vs the game's 51.66 — the ride path's own slide), and the full
+chain ORDER against the trace: 0x22 → 0x72 (rel −317) → 0x70+0x65 same tick (rel −300) → 0x73 (rel −273) → 0x1D →
+level_exit 0x07000006. Fail-before: on the pre-fix player.rs the same test parks 38.414 and panics. Sister:
+`standing_ride_never_touches_the_parking_plate` — the standing ride never fires 0x70 and the touch-capsule miss
+(0.23) is asserted, proving the assertion can fail. `level_reload_live::truck_ride_to_the_castle_ends_the_level`
+un-ignored: the harness gap was the setup path — the test assigned `sim.bond.pos` on the level-start Bond while the
+viewer's `--bond` (which does trigger the cut-scene) replaces the whole Bond with `Bond::new`; with `Bond::new` +
+the crouch the level ends. Doc: player.md capsule section (the dynamic cc).
+
+**Not done this session** (each with its reason):
+- The additional playtest items in the brief (the 07000002 bathhouse C2 guard, the 07000005 patrol spine-flip
+  re-check, the 07000006 stationary guards, the searchlight alarm sound, the 07000007 guest walk re-test, the
+  grenade explosion sfx/visual and the flashbang stun): no time after the truck park — each needs its own
+  load-and-walk dump or weapon_data pass, and most live outside this task's file list (weapon.rs, searchlight.rs).
+  fix-drone4's WORKLOG entry records what its C2 evidence pass already ruled out.
+- Whether the game's ride crouch comes from a scripted anim on the player or the player's own crouch toggle: the
+  trace has no button columns (pad axes only), so the trigger is unproven — the port models the stance, and both
+  routes land the same capsule. Tagged [S] in the code.
+- The ride's park xz (port 52.14 vs game 51.66): the hand-off xz and the inherit-velocity slide differ slightly;
+  the plate spans z 48.38..52.18 so both park on it. Left as is.
+
+## fix-truck (supplementary) — the hand-off enable, the audit, and the probes
 
 Branch `s/fix-truck` (from master ff6797b). The task: find why the port's Bond stands 0.49 m too high on
 the truck bed at the 07000005 park (the game's Bond: (29.885, 37.887, 51.656) [D trace frame 37173]; the

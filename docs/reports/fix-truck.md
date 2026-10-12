@@ -1,92 +1,106 @@
-# fix-truck — the 07000005 truck level end against tests/traces/05-truck.trace
+# fix-truck — the 07000005 truck level end, against the real game's trace
 
-Branch: `s/fix-truck` (from master ff6797b). Ground truth: `tests/traces/05-truck.trace` (the user's
-PCSX2 run, god mode).
+Branch: **s/fix-truck** (from origin/master 5056ab4).
 
 ## What's done
 
-1. **The end-of-level chain measured from the trace** (frames relative to the last 07000005 frame
-   37173): ch 0x72 on at −317 (the gate guard at his post), ch 0x70 **and** 0x65 on the same frame −300
-   (the parked plate; Bond in the bed at (29.885, 37.887, 51.656)), ch 0x73 at −273, ch 0x74 at −272,
-   ch 0x1D at 0, and 07000006 loads on the next frame. Bond's parked position at the end:
-   (29.8852, 37.8869, 51.6557).
-2. **The 0.49 m park-height error root-caused** — two layers:
-   - *Fixed:* the port's script hand-off (`PlayerEnable` in `crates/nf-view/src/scene.rs`) re-snapped
-     Bond to the floor with a ray from the hand-off matrix y + 1.0. The game's `Player_Enable`
-     (0x195498:28-46) writes `obj+0x30` from the matrix **directly** (a 16-byte copy), zeroes the
-     velocities, and its only collision pass is the wire/creep-wall sphere test (flags 0x8c0) — no floor
-     snap. The port now does the same. Event 6's "previous stream object" storage (0x1d94c0:80-84) and
-     `Script_Free`'s flag-0x100 application (0x1da880:41-43) were re-verified and match the port.
-   - *Diagnosed, not fixed:* the game walks Bond from the gatehouse plate to the truck inside a
-     cut-scene — his obj+0x30 tracks a script walk with a neutral pad [D trace 33950–34780] and stands
-     at the pickup (61.5, 27.85, 96.28) [D 34780–35080] before the ride. The walk is SP #298's script
-     0x06000994 (length 1400 [D level archive]): stream 14 animates Bond's skin (0x05000007) with
-     0x06000995, stream 10 disables him and re-creates the hand-off entity 0x0200063A, stream 11 fires
-     event 6. The port's SP #298 never activates, so the port's Bond is freed on the road mid-route
-     (matrix (92.25, 19.42, 103.58)) and the parked truck's tailgate shoves his capsule up onto the bed
-     rails: the port rides at truck-root +1.06..1.23 (feet), the game at +0.62..0.81. That is the whole
-     +0.44/+0.49.
-3. **Evidence that the truck itself is right:** the truck's nine part matrices match the game — the root
-   bone translation in `work/ee_start_05.bin` (154.0753, 15.7997, 93.9530) vs the port's frame-1
-   discrete0 (154.0516, 15.7996, 93.9524) [L vs port]. The rest-surface identification: the port's Bond
-   rests on a flat-up triangle of body part 020003be (the rails, world y 37.28 at the park); the game's
-   stand implies 36.852, which is chassis part 020003c3's top (36.65–36.96 in Bond's column).
-4. **The harness gap fixed:** `truck_ride_to_the_castle_ends_the_level` (and the new test) now set Bond
-   up exactly like the nf-view headless path — `nf_view::load` then `Bond::new([100, 26, 108])` — not
-   the old `bond.pos =` assignment, which kept the level-start Bond state and diverged from
-   `nf-view --bond 100,26,108 --frame N`.
-5. **Tests** (`crates/nf-view/tests/level_reload_live.rs`):
-   - `truck_ride_park_and_chain_match_the_trace` — asserts the parked y = 37.887 ± 0.05 (xz within 0.5
-     of the trace) and the chain order with the script-driven gaps (0x70+0x65 same frame; 0x73 +27,
-     0x74 +28, 0x1D +300; 0x72 strictly before 0x70). It failed on the pre-fix code at
-     `ch 0x70 must fire` (shown in the run), and still fails after the enable fix for the reason in (2)
-     — so it is `#[ignore]`d with the full diagnosis, like its older sister.
-   - Diagnostic probes (NF_ISO-gated): the park surfaces, the exact rest triangle, the hand-in
-     trajectory, and dumps of the gatehouse cut-scene streams, the 0x06000994 streams and the level's
-     script players.
-6. **Timeline cross-check:** the game's truck script restarted at trace frame 31488 (the user's level
-   restart — Bond (0,0,0) at 31489); 0x73 fires at its script tick 5412 [M] at trace 36900. The port
-   runs the same script from tick 1 — the same anim frames, ~2166 ticks earlier in wall-clock. The
-   park-side script gaps are unaffected.
+**The truck ride now ends the level like the game's.** The chain fires in the trace's order — 0x72 (the gate
+guard at his post, trace rel −317) → **0x70+0x65 the same tick** (the truck's parking plate, rel −300) → 0x73
+(rel −273) → 0x1D (rel 0) → the LOAD_LEVEL trigger loads 07000006 — and Bond parks at **y 37.929** against the
+trace's **37.887** (within the task's ±0.05 bar; x/z within 0.5 — the port parks at z 52.14 vs the game's 51.66,
+both on the plate).
+
+**Root cause — Bond's capsule, not the truck's collision.** I measured the bed through the port's own data path
+before touching anything: the bed's only resting surface is part 0x020003be's hull with its floor top at 37.28
+(the visual mesh and the block-0x2E collision are the same hull, AABB 36.248..39.496; no surface exists at ~36.8
+under the park spot). The game's standing pos-to-floor is 1.086 (trace level start: obj+0x30 24.963 over floor
+23.877, the floor measured through the port) and the port matches it at 1.096 — the convention is right. But at
+the park the trace's pos−floor is **0.607** — 0.48 below the standing offset, where no collision surface exists.
+The game's capsule height is **dynamic**: `obj+0xCC = obj+0x3C` every tick ([M] `Player_Update` 0x193600:449,
+`Player_CollisionHandler` 0x1949a8:182) — the stance's root height above the feet, written by the stance/anim
+(`Player_StandAtNewPosition` 0x190d88 takes it from the placement vec4's W; `Player_Enable` 0x195498 copies the
+free script's matrix translation row, W included, onto obj+0x30..0x3C). The trace's ride is **crouched**: park
+pos−floor 0.607 minus the 0.051 standing rest offset ⇒ cc ≈ 0.556 ≈ the capsule radius. The hand-off bounce in
+the trace (f33800–33900, y 19.7..20.95) is the stance transition. The port had a FIXED standing capsule
+(ROOT_HEIGHT 1.0347), so even the crouched ride parked at floor + 1.135 = 38.41, and the ch 0x70 touch (a flat
+quad at y 37.7418 [D script stream 6 key 8]; the touch capsule runs from pos+0.15 up, radius 0.55) missed it by
+0.234.
+
+**The fix** (crates/nf-game/src/player.rs, riding/capsule only): `Bond::cc` — the stance-driven capsule height,
+standing 1.0347183 [L], crouched 0.55 [L trace-derived ≈ the radius]; the capsule ends, both floor rays and the
+grounded test read it; the crouch toggle swaps it. (Simplification tagged [S] in the code: the game's cc follows
+the anim pose per tick, the port per stance — both land the same capsule in the bed.)
 
 ## What's verified and how
 
-- Every number above is read from the trace ([D]), the level archive via the port's own parsers ([D]),
-  the EE snapshot ([L]) or the decompile ([M], with addresses). The pre-fix failure was shown by running
-  the new test (it panicked at `ch 0x70 must fire`).
-- The enable fix's [M] basis: `Player_Enable` 0x195498, `Script_EventHandler` case 6 at 0x1d94c0,
-  `Script_Free` 0x1da880 — read in `work/decomp/ACTION.ELF`.
-- Full suite: `NF_ISO=<iso> cargo test --offline --release -j2 -p nf-game -p nf-formats -p nf-audio
-  -p nf-view -- --test-threads=1` — run on the slim ISO before the push (see the commit; only the 3
-  allowed disc_golden failures).
+- `crates/nf-view/tests/fix_truck_live.rs` (new, NF_ISO): `truck_ride_parks_bond_at_the_game_height_and_ends_the_level`
+  drives the real path (`nf_view::load`, the viewer's `--bond` setup, the crouch through the real input toggle)
+  and asserts the park height ±0.05 of 37.887, the plate-touch geometry, the full chain ORDER against the trace
+  (0x22 → 0x72 → 0x70+0x65 same tick → 0x73 → 0x1D → level_exit 0x07000006). **Fail-before shown**: on the
+  pre-fix player.rs the same test parks Bond at 38.414 and panics.
+- Sister: `standing_ride_never_touches_the_parking_plate` — the standing ride never fires 0x70, and the
+  0.23 touch-capsule miss is asserted numerically (proves the plate assertion can fail).
+- The harness gap is closed: `level_reload_live::truck_ride_to_the_castle_ends_the_level` is **un-ignored and
+  passes**. The gap was the setup path — the test assigned `sim.bond.pos` on the level-start Bond, while the
+  viewer's `--bond` (which does trigger the gatehouse cut-scene) replaces the whole Bond with `Bond::new`; the
+  test now uses the same `Bond::new` setup plus the crouch, like the trace's play.
+- Full suite on the slim ISO (`NF_ISO=… cargo test --offline --release -j2 --no-fail-fast -p nf-game -p
+  nf-formats -p nf-audio -p nf-view -- --test-threads=1`): everything green except the 3 allowed slim-ISO
+  `disc_golden` failures (bigf_header_fields / bigf_tables / directory_tree).
+- Docs: `docs/systems/player.md` (the capsule section now documents the dynamic cc), `docs/WORKLOG.md`
+  (the fix-truck entry, including what failed).
 
 ## What's left
 
-1. Port SP #298's activation + the player-follows-script-anim mechanic (Bond's skin-0x05000007 anim
-   carrying obj+0x30 during a cut-scene). After that the parked y and the chain should land on the
-   trace's numbers; `truck_ride_park_and_chain_match_the_trace` is the acceptance test (un-ignore it).
-2. Verify the 0x0200063A hand-off marker's key interpolation (the port puts it at (92.25, 19.42, 103.58)
-   at creation; the game's Bond is never taken there [D 33607–35092]).
-3. Not started (time): the C2/07000006 stationary-guard class, the grenade impact/explosion and
-   flashbang-stun follow-ups, the 07000007 guest walk, the 07000005 torso twist, the 07000006 searchlight
-   alarm.
+- **The other playtest items in the brief were not started** — the sandbox went into the truck park and the
+  capsule mechanism, which consumed it. Each needs its own session: the 07000002 bathhouse C2 guard (fix-drone4's
+  evidence pass recorded what it ruled out; the next step there is walking Bond over the real ch-21 plates and
+  re-dumping), the 07000005 patrol spine-flip re-check, the 07000006 stationary guards, the searchlight alarm
+  sound/music event, the 07000007 guest-walk retest (fix-drone4's CivilianMission port is on master — retest in
+  play first), and the grenade work (explosion sound/visual per type, the flashbang stun states) — the grenade
+  items live outside this task's file list (weapon.rs, searchlight.rs).
+- **Who crouches Bond for the ride is unproven** — the trace has no button columns (pad axes only), so the
+  crouch could be a scripted anim on the player or the player's own toggle; both land the same capsule, and the
+  port models the stance. Tagged [S] in the code and the WORKLOG.
+- The park xz differs by ~0.4 (the port parks at z 52.14, the game at 51.66) — the hand-off xz and the
+  inherit-velocity slide; both are on the plate, and the task's bar was the height. Left as is.
+- If the main agent merges s/fix-cutscenes, note its level-start intros now play on 01/02 — that branch's
+  fix_cutscenes_live tests are independent of this branch (no shared files).
+---
 
-## Files touched
+## Supplementary session (merged into the same branch)
 
-- `crates/nf-view/src/scene.rs` — the PlayerEnable hand-off (shared file; minimal, cited above).
-- `crates/nf-view/tests/level_reload_live.rs` — the tests and probes.
-- `docs/WORKLOG.md` — the fix-truck entry.
+A second fix-truck session worked the same trace in parallel and landed these pieces on top of the fix
+above; both are in the branch now.
 
-No game bytes, no private URLs, tokens or credentials anywhere.
+**The hand-off enable is game-exact ([M 0x195498]).** `Player_Enable` (0x195498:28-46) writes obj+0x30
+from the stored matrix **directly** (a 16-byte copy MATRIX+0x30→obj+0x30..0x3C, W included), sets the
+spherical angles from `Mat_GetDir` + `vecutil_cartesian_to_spherical_acc`, zeroes the velocities
+(`Vec_Zero` BL+0x10/+0x20/+0x30/+0x40), and its only collision pass is the `Collide_SphereIntersect`
+wire/creep-wall dispatch (',' → `Player_CollWire`, '+' → `Player_CollCreepWall`) — no floor snap.
+`crates/nf-view/src/scene.rs`'s `PlayerEnable` handler now places Bond with `Bond::new` at the matrix
+(the old `Bond::stand_at` re-snap with a ray from matrix y + 1.0 was port-invented). Event 6's storage
+(Script_EventHandler 0x1d94c0:80-84, 123-127 — the PREVIOUS stream's object, `glb_players+0x90` when
+there is none) and `Script_Free` (0x1da880) were re-verified and already matched the port.
 
-## Independent audit
+**Independent audit (read-only, line-cited): all five decompile claims VERIFIED.** (1) Player_Enable's
+direct placement and SphereIntersect-only collision; (2) Player_Disable's two arms; (3) Script_Free's
+0x80/0x100 flag arms (note: the kill counter is zeroed at +0xab3 first); (4) event 6's previous-stream
+(idx−1) storage, triple-checked against Script_Free's +0xA8 stream base, Script_AnimStart's +0x10/+0x24
+writes and Script_KillStream's layout; (5) Script_AnimStart's new-object root placement with no player
+special case (AnimGetFirstTrans writes only with sAnimScript+0x78 bit 0x800000). Caveats: the dispatched
+'+' (creep-wall) handler does its own ray Y snap — irrelevant to the truck bed.
 
-A read-only auditor re-checked the five load-bearing decompile claims against
-`work/decomp/ACTION.ELF`: (1) `Player_Enable` copies MATRIX+0x30→obj+0x30 directly, spherical angles via
-`vecutil_cartesian_to_spherical_acc`, the only collision query is the `Collide_SphereIntersect`
-wire/creep-wall dispatch; (2) `Player_Disable`'s two arms; (3) `Script_Free`'s 0x80/0x100 flag arms; (4)
-`Script_EventHandler` case 6's previous-stream (idx−1) matrix storage, cross-checked against three
-independent functions' stream layout; (5) `Script_AnimStart`'s new-object + `AnimGetFirstTrans` root
-placement with no player special case. All five VERIFIED with line evidence. Caveat noted: the
-dispatched `Player_CollCreepWall` handler does its own ray Y snap (a '+' cel hit) — not applicable to the
-truck bed; and `AnimGetFirstTrans` writes only when `sAnimScript+0x78` has bit 0x800000.
+**Probes and the superseded diagnosis (crates/nf-view/tests/level_reload_live.rs).** The second session
+first root-caused the park height as a bed-rails stand reached because the game's plate-to-truck walk (SP
+#298, 0x06000994 length 1400, stream 14 animating Bond's skin 0x05000007 with 0x06000995) never runs in
+the port, and Bond is freed on the road mid-route at the SP #38 matrix (92.25, 19.42, 103.58). That
+diagnosis is SUPERSEDED by the stance-capsule fix above (the trace's ride is crouched; the walk mechanism
+is real but the crouch is what moves the park height). The raw evidence dumps stay in the test file
+(rest-triangle, hand-in, park surfaces, script/stream dumps) with a note; the un-ignored
+`truck_ride_to_the_castle_ends_the_level` and `fix_truck_live.rs` carry the passing assertions.
+
+**Suite:** the merged branch runs green on the slim ISO — nf-game 129 passed / 0 failed, nf-formats
+72 passed / 3 failed (the 3 allowed slim-ISO disc_golden), nf-audio 7/0, nf-view all test files green
+including both fix-truck files.
+
