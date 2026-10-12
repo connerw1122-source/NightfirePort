@@ -3860,6 +3860,9 @@ pub struct Drones {
     /// The mission layer (`Mission_Update` 0x182c60, docs/systems/mission.md). `inited` latches the
     /// per-level `Mission_Init` (0x182270, from `ResetMap_GameInit`) on this level's first tick.
     pub mission: crate::mission::Mission,
+    /// The photograph targets and breakable doors (crate::props; placements 0xFD / 0xE1 —
+    /// `CamSubject_Create` 0x1bc5d8, `Destroy_Create` 0x12c318), created in `attach_level`.
+    pub props: crate::props::Props,
     mission_inited: bool,
     /// The mission layer's events this tick (`Text_AddMsg` types 2/3, the FailLabel writes, the
     /// level-end/reset decisions) — drained by the view each tick.
@@ -3910,13 +3913,17 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new(), mission: crate::mission::Mission::new(), mission_inited: false, mission_events: Vec::new() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_inited: false, mission_events: Vec::new() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
     /// main map's drone placements), which orders the per-frame object updates.
     pub fn attach_level(&mut self, level: &nf_formats::level::Level) {
         self.triggers = crate::triggers::build(level);
+        // The photograph targets (0xFD) and breakable doors (0xE1) [M CamSubject_Create 0x1bc5d8,
+        // Destroy_Create 0x12c318 — the game creates them in placement order in
+        // parsemap_create_dynamic_objects 0x1d04f0].
+        self.props = crate::props::Props::create(level);
         let Some(m) = level.main_map() else { return };
         // Searchlights (`Searchlight_Create`, placement order; every part draws `Rand_Rand(480)`, spots another
         // `Rand_Rand(0)` — the shared stream, in this order). The game interleaves these draws with the other
@@ -4015,6 +4022,9 @@ impl Drones {
             let ray = [b.dir[0] * l, b.dir[1] * l, b.dir[2] * l];
             let end = [b.pos[0] + ray[0], b.pos[1] + ray[1], b.pos[2] + ray[2]];
             self.bullet_paths.push((b.pos, end));
+            // The photograph targets and breakable doors see the bullet this tick (the game's
+            // collision pass registers the contact; the prop's update walks it — crate::props).
+            self.props.bullet_hit(b.pos, end, b.weapon, b.damage, &mut self.channels, frame);
             let tw = d.world.segment(b.pos, end);
             let mut best: Option<(usize, i16, f32)> = None;
             for (i, dr) in self.list.iter().enumerate() {

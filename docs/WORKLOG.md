@@ -5498,3 +5498,75 @@ never pulsed pre-fix, the dressing scene never started).
 (#117/#118 p3=200 [D]) are the U-044 boundary locks.
 
 Determinism: no RNG draws added (the monitor is channel-reading only; the containment branch is pure geometry).
+
+## map-powerstation — the power station missions 0700000c/0700000d mapped; the photograph mechanic ported; the walkthroughs
+
+**Done** (built on fix-mission's landed mission layer — crates/nf-game/src/mission.rs's
+`Mission::init`/`update`/`monitor` and the per-level `c0700000c`/`c0700000d` records, whose [L]
+data matches my own dump of ee_start_05.bin @0x2a4080/0x2a40c8 byte for byte, including the +0x08
+hint labels 0x4000061-66):
+- **The photograph mechanic** (crates/nf-game/src/props.rs, new): placement 0xFD
+  `CamSubject_Create` 0x1bc5d8 / `CamSubject_Update` 0x1bc668 — a camera-gadget (weapon 0x54) bullet
+  entering the subject's volume writes the subject's channel (placement param 0): 0700000c's jetpack
+  display #414/#454 → ch 0x1c, 0700000d's laser display #494/#495 → ch 0x1e [D placements]. Placement
+  0xE1 `Destroy_Create` 0x12c318 / `Destroy_CollisionHandler` 0x12bd48 / `Destroy_Update` 0x12c4f8 —
+  the breakable doors: bullets subtract their damage, death writes the channel (0700000d's C5 leaves
+  #93/#96, ch 0x1f, health 1000/10000 [D]; the death is `health < 0.0` strictly [M 0x12bd48:46]).
+  Bullet checks in `Drones::update_player_bullets`; the bounds come from the object's gfx box
+  (transformed by the placement), falling back to the collision triangles when the gfx bounds are the
+  parser's ±1e7 sentinel (#93's object carries no gfx and an empty collision block — its box is
+  unbuildable [D]).
+- **The fire gate** (crates/nf-view/src/scene.rs, minimal): the port blocked every script-less weapon
+  from firing (`has_fire_script`); the game has no such gate — `Player_RoundToFire` 0x1a18e0 rounds to
+  fire unconditionally for ammo_type 0 and checks only the ammo pool otherwise [M], and the
+  press-tick spawn for fire_anim_len == 0 is [M 0x1a5460:688-693]. The gate now stands in only for
+  the hands class 'G' (0x47, fix-ladder2's concern). This is what lets the camera gadget photograph.
+- **The level loadouts** (crates/nf-game/src/player.rs `init_level_loadout`): case 0x700000c —
+  `Player_InitAmmoWeapons`, the handgun (48), `Upgrade_Weapon(0x1e)` (the sniper, 999),
+  `Upgrade_Weapon(0x4a)` (the Q-Claw, 999), the gadgets 0x50/0x54/0x58 at 0, the sniper selected
+  [M 0x1a7ef8:210-220]; case 0x700000d — the RamLoad keep + the game's own fallthrough to the 0c arm
+  on a cold load [M 0x1a7ef8:221-224].
+- **The NIS decoder** (crates/nf-formats/src/nis.rs, additive): ops 0x13/0x14/0x15/0x18/0x1a/0x1b/
+  0x1d/0x1e decode past (their `Script_Run` 0x1d8548 byte lengths) and op 0x1b decodes as
+  `SubScript { hash, stream, mode }` (`Script_SubScriptStart` 0x1db050) — the 0700000c/0d script
+  players' streams were halting at the first light/sub-script op, hiding everything after it.
+- **The level docs** (docs/levels/0700000c.md, docs/levels/0700000d.md): starts, the [L] objective
+  chains with the USATxt texts and hints, the actors, the interactions, the exits, the failures, the
+  not-ported lists with the game functions.
+- **The walkthroughs** (crates/nf-view/tests/walk_0700000c_live.rs 4 tests, walk_0700000d_live.rs 3
+  tests): 0700000c end-to-end (the loadout asserts, the ST-1 plate → objective 1, the camera
+  photograph → objective 2, the E-key gate → level_exit 0x0700000d; sisters: the locked gate without
+  the photograph, the plate skipped); 0700000d (the carried arrival → ch 0x23 completes TR-2 and
+  reveals ST-3, the record-12 channel clear on load [M Mission::init], the ST-3 plate → objective 4,
+  the laser photograph → objective 5, the C5 door data + the corridor plate ch 0x28 + the open AND
+  sister).
+- **portal_live's cold-loadout sweep** gained the game's 0c/0d arms (the sniper + the camera).
+
+**Measured**
+- [M] The 0700000c exit (#556) is USE-activated: its gate param is 0 so `Trigger_Update` case 10
+  (0x1b1a78:162-166) never self-fires; `Player_Activate` 0x1a5170 case 0x1d → `Trigger_Activate`
+  0x1b2318 does it from the E key (the port's `player_use_triggers` already covered the path).
+- [M] Weapon 0x54 (the camera): fp skin 0x05000045, ammo_type 0, range 50, speed 33.33, NO fire
+  scripts (+0xB0/+0xB4 = 0), fire_anim_len 0 — the disc data behind the fire-gate fix [D probe].
+- [D] The 0700000d corridor plate #433's 6 tris are the corridor's sloped faces (down to y ≈ 5.4
+  over a floor at 3.65): the standing capsule brushes them just inside the C5 end (z −269..−265).
+- [M] The mission records' +0x08 word (0x04000061-66 for the power station) = the hint labels the
+  `Q Hint Touchplate`s and the objective HUD's long text use — the port's Lang binds them.
+
+**Failed / corrected**
+- Two trigger-containment variants (the AABB-span overlap, then the tris' bounding sphere) fired
+  07000005's #291 under the fix-wire crossing rider and froze it — caught by wire_live; both
+  reverted (master's landed containment already carries the wire-rider exclusion from
+  c81361f, which is the same wall I hit independently).
+- The old map-mayhew mission table (read at struct base 0x2a4354) misaligned every record by one
+  word; the disc says record 0 completes on ch 0x46, not 0x70 (both the snapshot and ACTION.ELF's
+  static bytes). fix-mission's landed layer reads the base correctly; my walkthroughs run on it.
+- The first portal_live sweep failed twice while the loadout cases landed (0c/0d now select the
+  sniper by the game's own switch) — the sweep's blanket "weapon 2" assertion gained the game's
+  0c/0d arms.
+
+**Blocked items for the report:** the C5 mounted-laser sequence (see docs/levels/0700000d.md §6) —
+nothing on the disc's 0700000d data the port can reach writes ch 0x1f except the `Destroy` death
+itself, and the laser lives inside the crane cut-scene's scripted timeline.
+
+**Full suite:** `--no-fail-fast` run green except the 3 allowed `disc_golden` failures (the slim ISO).
