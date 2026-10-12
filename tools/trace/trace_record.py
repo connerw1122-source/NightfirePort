@@ -27,6 +27,7 @@ DRONE_LIST = 0x298E14     # first drone; +4 next
 PLAYERS = 0x2D88E0        # player obj_tag*; obj+0xE0 = BLData*
 T_SLOT = 0x245680         # pad slot 0: +0x122 held buttons (u16), +0x128..0x12B analog bytes
 SWITCH_CHANNELS = 0x26FC90
+THE_DOORS = 0x316F70       # first door ext (DOORINFO); ext+4 next, ext+8 obj
 
 F100 = struct.unpack("<I", struct.pack("<f", 100.0))[0]
 F50 = struct.unpack("<I", struct.pack("<f", 50.0))[0]
@@ -110,6 +111,14 @@ def main():
                     st = p.read16(d + 0x10C)
                     dp = [f32(p.read32(o + 0x30 + 4 * k)) for k in range(3)] if o else [0.0] * 3
                     row += [str(st), *[f"{v:.3f}" for v in dp]]
+                # Doors (TheDoors walk): state (obj+0xF4: 2 closed, 4 open, 8 opening, 0x10 closing) and the
+                # auto-close quiet timer (ext+0x72, counts to 360).
+                row.append("|")
+                e, k = p.read32(THE_DOORS), 0
+                while e and k < 64:
+                    o = p.read32(e + 8)
+                    row += [f"{p.read16(o + 0xF4) if o else 0:x}", str(p.read16(e + 0x72))]
+                    e, k = p.read32(e + 4), k + 1
                 f.write(" ".join(row) + "\n")
                 now = p.read_bytes(SWITCH_CHANNELS, 256)
                 for i, (old, new) in enumerate(zip(channels, now)):
