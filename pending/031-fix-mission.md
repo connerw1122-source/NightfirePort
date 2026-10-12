@@ -25,4 +25,9 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 - **Update the doc entry** to say it's fixed, with your commit.
 
+**Priority note (the user, 2026-10-11): map completion, actors and objectives are the focus now.** The per-mission tasks 032–037 and `038-fix-actors` run right after you and build on your objective system, so push it early:
+1. First push: `crates/nf-game/src/mission.rs` with the objective data model, per-level objective lists (in `crates/nf-game/src/mission/<code>.rs`), complete/fail events and the HUD notices (the strings 0x2000051/52/53 are already bound in `nf_formats::hud::Lang`).
+2. Then the flow: mission success leading to the level end, failure leading to a restart, and the end-of-mission data hook for `210-fix-progress`.
+3. Document the module's API in `docs/systems/mission.md`, so the parallel tasks can use it without reading your code.
+
 **Branch:** `s/fix-mission`.
