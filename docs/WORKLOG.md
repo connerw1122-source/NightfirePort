@@ -4788,3 +4788,243 @@ paths: the take→message test uses whatever placed pickup takes; the label test
   suite. The user's retest likely pre-dates merge 924b51e. Remaining parity debts: the party weapon lock
   (playtest F4) and `near_armed_person`'s game triple test (prop 0x3c + seen-this-tick + armed opponent,
   0x1787c8).
+## fix-render4 — the flat light-blue floor quads measured to their objects; the 07000002 dump pass the user asked for
+
+Branch `s/fix-render4` (from master 923595b). Playtest reference: docs/playtests/2026-10-11.md. **No library code
+changed this session — both headline bugs are measured to their objects but not fixed; the evidence and the exact
+next moves are below.** Two new opt-in test files: `crates/nf-view/tests/probe_render4.rs` (the render evidence
+harness) and `crates/nf-view/tests/dump_render4.rs` (the real-walk dump pass fix-drone4 asked for).
+
+**The floor quads are identified.** The user's flat light-blue quads near stairs and railings (07000007+) are the
+level's baked shadow-decal objects: `hall_shadows1/3/4`, `OBJECT_banistershadows1..4`, `hall_shadow_banister01/02`
+[D 07000007.bin main map 47, names+flags 0x221/0x21/0x20], drawn from textures `002f:003e`/`002f:0055` (64×64, RGB
+≈ black mean 3 sd 0, the shape in the ALPHA channel 0–255) as list-1 (flags & 1) batches with ALPHA_1 0x44 normal
+blend, TEST_1 0x5001B (only A=0 discarded), ZBUF per leaf, vertex rgba ≈ (14,14,14,67) — i.e. subtle dark shadows
+in the game. Measured headless (probe_render4): **the port has 0 untextured World groups, 0 out-of-range texture
+REFs, 0 coronas (0xFC) and 0 searchlights (0xDE) on 07000007/07000008** — "missing texture" and "wrong object"
+theories are dead; the port binds the same textures and per-pixel GS state the game's packets carry.
+
+**What the decompile added [M]:** `psiCreateEntityGfx` 0x1171b0 resolves each texture REF addr through the 0x10
+texture-header entry (+8 word → runtime record → record+0x1a u16 → global upload chain `DAT_00254ae8`), and
+`psiCreateMapTextures` 0x11d200 dedups textures by pixel CRC into that global table — so the port's
+`maps[map].textures[addr]` binding is pixel-equivalent even where the global id differs. `psiStartAlpha` 0x124900 /
+`psiEndAlpha` 0x124920 only set/clear `AlphaFogObjects` (the list-1 distance fade, active only when `FogOn`) — the
+port's fog=2 shader path already gates identically. `View_DrawObjList` 0x1e69a0 reads `bCharacterLight`
+(obj+0xFE bit 2) and `bShadowCharacter` (bit 3) per object for the VU1 pipeline — the port ignores obj+0xFE
+entirely, and those VU1 semantics are hand-written asm (untraced, gs-leaf.md "Not verified").
+
+**Not fixed, and why.** No GPU here, so the port's on-screen colour for those decals can't be compared with the
+user's screenshots; every headless check (texture content, blend/test/depth per batch, REF resolution, list
+routing, corona/searchlight presence) matches the game. The two candidate deltas for the next pass (main agent has
+the GPU): (a) the `bShadowCharacter` VU1 path — if set on these objects the game forces their output colour/alpha
+in ways the port never models; (b) R2's depth rule — the game's 24-bit integer GEQUAL depth with coplanar decals
+vs the port's f32 LessEqual (z-fighting shows decals through floors). What should change on screen: the pale
+blue-white solid quads near stairs/railings must become faint dark soft-edged shadows on the floor.
+
+**The 07000002 real-walk dump (dump_render4.rs) — the concrete port defect, not fixed this session.** Walking Bond
+(teleported beside the bathhouse civilian at (−20,1,34), then at the plate positions) and dumping every drawn
+drone with the requested fields shows: the bathhouse guards d00/d01/d03/d06/d07 (skins 0x05000036/3a/39, team 1,
+ch 21/23) and the team-3 "captain" bodyguards d22/d23 (skin 0x05000034 "captain" [D], team 3, modes 7/5, dtypenew
+14, ch 22/23) are **`started=false`, `enabled=true` at tick 0 and end in WAIT_SWITCH with `enabled=false`** — the
+port's WAIT_SWITCH enter (drone.rs `(WAIT_SWITCH, ENTER)`) disables the drone, and the port's disabled drones are
+not posed (no animation) and not hit-tested — while the renderer still draws their placement meshes (Scene::build
+adds every char instance). The user therefore sees a frozen, unhittable guard standing next to the hostage. In the
+game, WaitSwitch stops vision/AI engagement but the drone stays at its post with its idle pose and takes damage.
+The teleport-walk over plates 341/383 (kind 0xEA → ch 21 [D]) did not raise ch21 headless — Bond got jammed at the
+upper-floor plate positions, so the plate wake is still unverified end-to-end; the channel raise via the real
+trigger path needs an unobstructed walk route. NOT FIXED.
+
+**Not done this session** (each with its reason): G-041 bullet decals (small-medium, out of budget); G-042
+skin-texel check (needs the civilian skin's texture identified on disc); O5 searchlight beam/corona (07000007/08
+have 0 searchlights; the 07000006 beam work needs screen checks); the 07000005 torso flip and 07000006 stationary
+guards (no new evidence; fix-drone3's clamp is still in); the searchlight→alarm music event (Searchlight_Update's
+sound call not yet identified).
+
+Determinism: no code changed, no RNG draws added. Files: the two new test files only.
+## main-1: performance — collision ray bounds, GPU skinning, render interpolation (2026-10-11)
+
+- **Sim (`NF_PROFILE=1`, new `nf_game::prof`):** 07000007's tick was 15.4 ms, 12 of it the per-drone `drawn` ray (`visible_to`): static collision had only per-object boxes and the party's rooms are single objects of thousands of triangles. Static geometry is now split into 16-triangle runs, grouped 32 at a time; segment queries slab-test both levels. Identical hits (full suite). Tick: 07000007 15.4 → 1.7 ms, 07000006 1.8 → 0.46 ms.
+- **GPU skinning (G-043):** `Scene::frame_state` (the matrices `animate` built) and `colour_mults` were split out; `skin_layout` gives each Character-layer vertex two palette indices, a weight and a colour slot, and `skin_palette` builds one frame's matrices (per character: object + skin·object per bone; attachments, searchlight parts, doors, pickups) and colours. The vertex shader blends `w·P[a]p + (1−w)·P[b]p`. `gpu_skin_live.rs` proves it equals `animate`/`posed_vertices` on 05/06/07 (max error 1.5e-5, colours exact) with a sister test. Per-frame CPU: posed vertices ≈ 16 ms + 4.6 ms upload → palette 1.5 ms.
+- **Render interpolation / high refresh:** logic stays fixed at 60 Hz; frames draw between the last two ticks (camera and palette lerp, snapping jumps > 4 units). Vsync at the display rate by default; `--fps N` caps with vsync off. `NF_NOINTERP` disables the blend.
+- **Portal walk** (`fix-perf-level`) made opt-in (`NF_PORTAL=1`): it hid all of 07000006 between the truck and the courtyard.
+
+
+---
+
+## fix-cutscenes — the loadable cut-scene packs (`isLoadable` / `LoadableLoad`), the party Drake scene and the gondola intro
+
+Area: the script players' streaming arm (`SP_LoadScript` 0x1dbc08 → `isLoadable` 0x1d69a0 → `LoadableLoad`
+0x1d69e8 → `LoaderLoad` 0x1d4a00 case 0), the level-start path (`nf_view::load_with_carry`). Branch
+`s/fix-cutscenes`. Playtest items: the 07000007 party cut-scene where Bond first sees Drake, and the
+07000008 (gondola) cut-scene that should start almost immediately; plus the survey of every level-start and
+intro cut-scene (docs/systems/levels.md §5).
+
+**Root cause [M]:** the two cut-scenes' scripts are not in their level archives. Each level's type-0xC
+entries register (script hash, flag) pairs (`LoaderProcess` 0x1d4880 case 0xC: u32 at +0, u8 flag at +4,
+one record per entry), and `LoadableLoad(hash, flag)` builds the pack file name from the CURRENT LEVEL's id
+with the (flag+7) nibble at bits 20-23: flag 1 → `078000NN.bin`, 2 → `079000NN.bin`, 3 → `07A000NN.bin`
+[measured on the disc: 07000007's (0x06000072, 2)/(0x06000073, 1) → 07900007/07800007, which contain exactly
+those kind-7 scripts plus their kind-4 sequences; the same holds for 01/02/08/09/0b/0d/11/13/14/16/1b/4a].
+The port's script lib held only the level archive's kind-7 entries, so the mode-0 ScriptPlayers hit
+`Player::load`'s missing-script arm (state 5, deleted) on their first trigger and the cut-scene never
+played. The party chain: TouchOnce #356 (box 92.9–98.0, 49.0–53.8, −79.8–−78.9) → ch 0x15 → SP #419 plays
+0x06000072 (the 3000-tick fly-through with the camera sweep and every guest animated — the Drake reveal);
+TouchOnce #412 → ch 0x48 → SP #420 plays 0x06000073 (the control-taking scene, 3 × event 4/5/6/7). The
+gondola chain: Bond spawns at (139.5, 50.5, −76.4), TouchOnce #237 ~3.5 m away → ch 0x49 → SP #294 plays
+0x06000077 (3880 ticks) — "starts almost immediately".
+
+**Reproduce before fix [NF_ISO, shown failing]:** `crates/nf-view/tests/fix_cutscenes_live.rs` — 3 symptom
+tests drive the real path (`nf_view::load` → `step_bond` into the trigger triangles → ch → SP) and failed
+before the fix ("SP deleted itself on its trigger — the pack script was missing"); the 4th (the 07000007
+urn SP #312, mode 64, mask 2) is the priming control and passed.
+
+**Fix:** `load_with_carry` reads the type-0xC records and merges each pack's kind-7 scripts into
+`level.nis` (the lib `Scripts::new` reads) and its kind-4 sequences into the animation set — mirroring
+`parsemap_parsemap` (LoaderProcess case 2 walks the entries). Two measured subtleties:
+- **Pack sequences never join the level's per-skeleton list.** The game DELETES the animation hashtable
+  before streaming a pack (`LoadableLoad`'s `hashtable_delete_hashtype(0x4000000)`) — the cut-scene's
+  sequences replace the cache while it plays. The port's per-skeleton list is order-sensitive gameplay
+  data (`frame_of`'s `k % len` idle cycle, the skeleton-filtered `seq_index` drone lookups): appending to
+  it changed guard animations and broke 07000001's `dropped_guns_dim_to_the_cel_ambient` ("the guard
+  died"). Pack sequences go under the sentinel skeleton key `0x80 | skeleton`, which still reaches the
+  by-hash map (`Scene::seqs`) that `Script_AnimStart` resolution reads.
+- **The level-start intros now play like the game's.** 07000001's SP #277 (mode 1, pack 07800001) and
+  07000002's #400 (pack 07800002) play at load — verified against the game's own snapshot [L
+  ee_start_07000001.bin: SP 0x18fbf70 = state 2, play 0x1, clock 42, length 2120, script 0x06000087].
+  The intros fire event 4 (Bond disabled) and event 0xD (07000001: ch 0xB, which releases its waiters and
+  brings an arrival in), so four test files (fix_player2/3_live, fix_ladder_live, render2_live's
+  dropped_guns) now skip the intro the way the game lets the player (hold the skip action,
+  `Scripts::skip_request` → `Script_FFwd`) before running their scenarios. Test-only adaptations for the
+  corrected post-intro world: the raptor-drop take loop approaches each drop from the four cardinal
+  offsets (a walking player takes a drop from the open side), drops whose column has no walkable floor at
+  or above them are logged and exempted (the ch-0xB arrival's drop lands under the courtyard slope), and
+  the crosshair sister tries the next enemy when the first is occluded.
+
+**Survey (docs/systems/levels.md §5):** every cut-scene ScriptPlayer on the 20 story levels + the wrappers —
+loadable-pack scenes (§5.1, all playable now), archive-resident mode-1 level-start scenes (§5.2, already
+played), mode-64 preloads (§5.3), and the intros (§5.4): `ResetMap_Load` 0x1d6360 creates one ScriptPlayer
+per level from the movie-code table only when the SUBTITLES option is on (`DAT_002a37c8`), and all 14
+scripts in `07000500.bin` are single op-0x1E text streams — subtitle timings for the intro MOVIE, which the
+port does not play (no PSS player). 07000005's #71 (0x06000074) has no loadable record and no pack on the
+disc — the real game cannot stream it either.
+
+**Not done (left):** `SP_Hit` proxy trigger bits (0x2 bullet / 8 / 0x10) — 07000007's urn break (mask 2,
+primed) still waits on them; the `GameFlow_PushState(12.0, 0xD, 0xFF)` streaming loading screen; the C2-class
+viewer dump on 07000002, the 07000005 torso-twist / 07000006 stationary-guard and searchlight-alarm items —
+drone.rs/searchlight.rs are outside this task's file list. The pack's kind-4 sequence merge is eager (level
+load) where the game streams lazily at first use — same content, no RNG-order impact; noted in
+script-player.md.
+
+**Verification:** the 3 symptom tests + priming control pass; full suite green on the slim ISO except the 3
+allowed disc_golden failures (nf-formats 74 tests, nf-audio 7, nf-game 133, nf-view 106 — 0 failures).
+
+
+## fix-ladder2 — the ladders draw, the climb look, the weapon save/restore, the crouch footsteps
+
+Branch `s/fix-ladder2` (from origin/master 923595b). Tests: `crates/nf-view/tests/fix_ladder2_live.rs`
+(NF_ISO) + the `climb_look_turns_within_the_ladder_window_and_pitch_is_free` unit test in player.rs.
+Probe: `crates/nf-view/examples/probe_ladder2.rs` (weapon 0x47's record, the 07000002 water geometry,
+the pool collision from above).
+
+**1. The ladders weren't drawn — root-caused and fixed.** The ladder (placement 0x22) is a dynamic
+object (`parsemap_create_dynamic_objects` 0x1d04f0 case 0x22 → `Ladder_Create` 0x1966c0); its
+placements never carry the 0x8000 CREATE_CEL flag [M 0x1d1998 vs 0x1d1b68 — the static-cel path and
+the dynamic-object path are mutually exclusive per placement], and `Scene::build` draws
+`level.instances(cels_only=true)` — every placement without 0x8000 dropped. The game draws each ladder
+exactly once through the generic dynamic-object path: `View_DrawObjList` 0x1e69a0 dispatches on
+`obj+0xFA` (no ladder sets the anim/particle bits) → `View_DrawObjectGlist` 0x1e6780 renders
+`obj+0xD8` (the celglist = the placement's resolved object, stored directly at 0x19671c, no
+`Control_SetGList`) at `obj+0x90` — the placement transform `control_create_object` 0x1344e0 builds
+(`View_RotTransMatrix` 0x1e5168); class 0x2D has no update function so `obj+0x90` is constant [M].
+A straddling sphere reroutes to `View_AddForcedObjects` 0x1e5fb8 — still exactly once [M
+Controls_StraddleTest 0x134778]. No ambient dim (obj+0xF0 stays 0; `View_SetupRenderModes_Tweak`
+0x1e5888 white branch) [M]. Port fix (scene.rs): 0x22 retained out of the instance loop + a sweep
+that instances each 0x22 placement's resolved object at the placement matrix, World layer, mult 1.0,
+counted in the new `Scene::ladders_drawn`. Test: 07000002 draws exactly 4 (the disc count [D]), 07000005
+exactly 1 [D]; the exact count doubles as the double-draw guard.
+
+**2. The camera couldn't move on a ladder — fixed.** `Player_Climb` 0x196310's look: the turn channel
+(`bd+0x34`) still integrates into the yaw after `Player_Climb` (`Player_Update`'s `bd+0x30..0x3F` →
+`obj+0x50..0x5F` integration [M 0x193600]) inside the eased ±90° window (`diff = AngleDiff(yaw,
+ladder.yaw+π)`, hard snap beyond ±π/2, ease `yaw += diff·0.2` with the PRE-clamp diff [M 0x196310:18-33]);
+the ease pauses while the aim key is held — AnimObj bit 0 IS the aiming flag, cleared by
+`Player_WeaponNone` on the grab [M 0x1a9858:18-19; the atlas's [S] upgraded]. The pitch offset
+`BL+0x8A8` takes the stick freely during the climb (`Player_Aiming` runs for every substate ≤ 7 [M
+0x1a1d28:21-30]; `Player_ViewClamping` clamps ±1.0 [M 0x1a92e8]). Port (player.rs climb_tick):
+`yaw += input.turn` after the clamp+ease, `pitch += input.look` clamped ±1, ease gated on `!aiming`.
+Note the equilibrium: a held turn settles at deviation = turn/0.2 (the ease opposes the channel) —
+0.25 rad at the test's 0.05/tick; that IS the game's math.
+
+**3. The weapon is now saved on the grab and re-equipped on the dismount; hands can't fire.**
+`Player_WeaponNone` 0x1a9858 saves the current id to `anim+0x64` and goes to 'G' (0x47) immediately
+(no holster cycle — `anim+0xF4 = 0`) [M]; the port ran a switch_request cycle instead and never saved.
+The dismount carry `if (AnimObj+0x62 == 'G') AnimObj[99] = AnimObj[100]` [M 0x196310:99-102] plus
+`Player_SetWeaponAnimObj`'s idle path re-running `Player_WeaponSelect` [M 0x1a2e38:197-201] is the
+restore: the port now queues `switch_request = saved_weapon` on the dismount tick (scene.rs). The
+'hands fire once' bug: weapon 0x47's record has NO fire scripts (+0xB0/+0xB4 = 0, no idle +0xA0
+[D probe]) and the round spawn runs from the state-9 fire-script release path (`Player_SetFiringAnim`
+0x1a3c70 → case 9 0x1a2e38:416-420; the press-tick spawn for +0x44 == 0 sits behind that call [M
+0x1a5460:681-690]) — the port now blocks the trigger when the record carries no fire script. Fists
+keeps its fire script 0x060006de [D] — punching unaffected. Tests: the grab saves 2 → hands, firing
+at hands spawns no bullet, the dismount restores the P2K (all through `Sim::step_bond`).
+
+**4. Crouch-walking "rapid footsteps on metal" — root-caused and fixed.** `AnimObjectUpdate`
+0x1befd8:163-198 [M]: the stride is 1.65 EXCEPT while the CLIMB substate (1) runs — 0.4125 with the
+fixed `Sound_Play3D(0x286)` at Bond (the rung sound); every other step is `Effect_Create(…, foot|0x42)`
+→ the floor surface's footstep. The port had attached the 0.4125/0x286 pair to CROUCH. Fix (scene.rs):
+the stride/sound special case keys on `substate == SS_CLIMB`; crouch steps run the normal 1.65 surface
+path (the crouch anim's smaller per-tick displacement slows them naturally). The climb's step distance
+is 3D (the game's `anim+0xD8` follows the anim up the rungs) [*suggested* — horizontal elsewhere].
+
+**5. Swimming from a bank — repro recorded, NOT fixed.** [D probe_ladder2] 07000002's garden water
+(cel 17): collision floor 3.7647 vs surface 3.7675 — Bond stands ON the water (pos.y − 0.3 ≫ surface,
+`Player_InWater` 0x195e50 never fires); the deep pool (cel 16) has NO floor below the surface within
+14 units, but the deck around it sits 0.5–1.0 ABOVE the surface, and every probed pool point hits a
+floor at 4.23–4.74 from above. The port's `capsule_push` is double-sided (*Deviation*, world.rs —
+"the game's triangles are one-sided by their stored plane; the port's winding is not known to match"),
+so Bond stands on planes the game's player collision would let him fall through — the likely root
+cause, but flipping sidedness needs the winding convention verified against the game's stored plane
+data first (not done — no time). The repro lives as `#[ignore] swim_repro_walks_on_the_water_from_the_bank`
+(asserts the CURRENT broken behaviour; flip it after the fix).
+
+**Not done this session** (each with its reason):
+- The vent grate / creepwall (07000002's vent): researched — there is NO grate class [M: all decomp
+  "grate/vent" hits are Music_Event substrings]; the crawlable vent is a creepwall (placement 0x3F →
+  `CreepWall_Create` 0x196fc8, class 0x2B; use → `Player_Activate` 0x1a5170's unarmed nearest-0x2B
+  branch → `Player_CollCreepWall` 0x196758 → substate 7 `Player_Creep` 0x1969d0 with `Music_Event(0xD,1)`
+  and `ch[param3]` set/clear), and the grate panel itself is a door (class 0x1C, `Door_Activate`
+  0x135be0) [M]. Porting = the creepwall object + substate 7 — a full session of its own.
+- The level-select weapon fallback (`Player_InitWeapon` 0x1a7ef8): researched — `Player_EquipWeapon`
+  0x1a8a58 refuses a weapon whose +0xDC FP skin is absent; `Player_CheckWeaponsLoaded` 0x1a97c8 zeroes
+  whole class groups; the tail falls back to `AnimObj[99] = 1` (fists) [M]. Not ported (the dev-tool
+  give path lives outside my named files).
+- The searchlight spotted→alarm MUSIC half on 07000006: researched — the chain is Searchlight_Update
+  0x1cb900 (arm test: spot within 2.0 of Bond) → state 1 sets `ch[param3]` every tick →
+  `DroneFunc_CheckAlarmRaised` 0x1453a8 counts `ch[0x37]` → `Music_Event(2,1)` → `UpdateMusicalEvents`
+  0x114e70 hysteresis → `UpdateMFX_01CastleB` 0x113060 → PickRandomCombat [M]. The port has everything
+  except the per-level music dispatch (music.rs runs the castle-A updater only for 07000005) — a ~10
+  line change in music.rs, a shared file, left for the owner session (full chain recorded above).
+- C2 (scripted/ally drones drawn but not hittable/no AI), the 07000005 patrol torso twist, the grenade
+  impact/explosion and flashbang stun work: not started (time; grenade research not run).
+- 07000007 guests: already fixed by fix-drone4 (master carries CivilianMission 0x16 + the route-chain
+  fix) — nothing to do.
+
+Files: `crates/nf-view/src/scene.rs` (the ladder sweep + `ladders_drawn`, the weapon save/restore, the
+fire gate, the footstep fix), `crates/nf-game/src/player.rs` (the climb look + its unit test),
+`crates/nf-game/src/gun.rs` untouched (go_to_hands already matched `Player_WeaponNone`). Determinism:
+no new RNG draws; no wall-clock; the fixed 60 Hz tick path unchanged.
+
+## main-2: the muzzle-flash light, render side (2026-10-11)
+
+- `Player_MuzzleFlash` 0x1a4298 → `Light_Create` (disasm 0x1a4370–0x1a43a8) [M]: radius = weapon_data+0x58,
+  intensity 2.0, rgb = +0x56/+0x55/+0x54, life 0 (so `Light_Update` deletes it next tick: one tick per shot).
+  Ported render-side: `Scene::dyn_light` → the shader's `lp`/`lc` uniform; `Vertex::nrm` carries normals (World
+  rotated to world space, posed ones rotated by the palette in the shader).
+- The shading is STANDIN: `lc × 0.25 × N·L × (1 − d²/r²)²`, tuned by eye; the VU1 formula is unread (fix-lighting).
+- Failed first: keying the light on `last_shot == drones.frame`. The shot is stamped before the drone tick
+  advances the frame, so the light was never on. The first "lit" 07000005 shot only showed the flash sprite,
+  and its brightness gain was the sprite. Fixed with `Sim::shot_tick`, caught by `lighting_live`.
+- Failed second: a zero normal fell back to N·L = 1, so the radar, the snow and the sprites lit full orange. Zero
+  normals are now unlit.
+- Not ported: the `Rand_Rand(0)` in `Light_Create` and the `Gas_Init` smoke `Rand_FRand` (sim RNG order), guard
+  muzzle lights, level lights.
