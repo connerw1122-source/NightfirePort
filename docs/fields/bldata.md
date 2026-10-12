@@ -252,7 +252,7 @@ player path reads: +0x184 (HandleDeath gate), +0x1A4, +0x244 (night-sight on). +
 1. **Armour bypass**: in 07000005 give Bond the armour pickup (or `poke` BL+0x8B0 = 50 at 0x016cf0f0+0x8B0),
    step off the castle stairs to trigger a fall (`watch 0x016cf984 4 readwrite` = BL+0x894 — it should drop
    WITHOUT BL+0x8B4+0xFC... precisely BL+0x8B0 at 0x016cf990 staying 50.0). The pre-fix port drained the armour.
-2. **Grenade-belt regen**: `watch 0x016cf8e4 2` (= BL+0x4F4) for 2 s of play on 07000005 after throwing a
+2. **Grenade-belt regen**: `watch 0x016cf5e4 2` (= BL+0x4F4; corrected from 0x016cf8e4 by the main agent) for 2 s of play on 07000005 after throwing a
    grenade — the value should climb +1 per 6 frames toward 100. (The snapshot starts it at 0.)
 3. **Switch timer writer**: `gdbwatch 0x016cf0f0+0x95e 1 write --seconds 4` while switching weapons — the
    expected writer is `HUD_UpdateAmmoPane` (0x19a7f0+0x…), NOT the weapon-switch state machine.
@@ -263,3 +263,25 @@ player path reads: +0x184 (HandleDeath gate), +0x1A4, +0x244 (night-sight on). +
 which should surface exactly the accessors in the rows above; any extra accessor means this map missed a
 reader. Priority ranges: 0x118-0x134 (the crosshair block — Check_AutoAim/Check_Target/Aiming), 0x92C-0x960
 (the fire/switch block) and 0x4F4/0x530/0x548/0x560/0x56C/0x41C (the regen slots).
+
+## Live census (main agent, 2026-10-12)
+
+`tools/trace/gdbwatch.py`, GDB-server PCSX2, 07000005 just after the start, **nobody playing** (idle: aim mode
+off, no targets), BL = 0x016cf0f0 [L: `PLAYERS` 0x2D88E0 → 0x016cefe0, `obj+0xE0` → 0x016cf0f0]. Per field,
+read and write traced separately, 4-6 s each. Instruction addresses are the accessing PCs.
+
+| Range | Access | Live accessors | Verdict |
+|---|---|---|---|
+| +0x118 / +0x11C | write | `Player_AutoAim`+0x230, +0x234 (0x1a7ec8/cc) | **missed by the static pass.** `Player_AutoAim` 0x1a7c98 runs every frame: in aim mode (`obj+0xDC`→+0x60 bit 0) the crosshair offset +0x120/+0x124 eases half-way to the cursor (`+0x120 += (+0x118 − +0x120)·0.5`); otherwise all four values halve each frame. The row's "zeroed when aim mode ends" is wrong: they decay ×0.5 per frame. The port already does exactly this (`scene.rs` aim block, `self.cursor`/`self.cross`), so only the doc changes |
+| +0x118 / +0x11C | read | `Player_AutoAim`+0x1e8, +0x1f0 | same function (the decay) |
+| +0x120 / +0x124 | write | `Player_AutoAim`+0x228, +0x22c | **missed**: the every-frame smoothing/decay above. `Check_AutoAim` did not fire while idle (no target in range) |
+| +0x120 / +0x124 | read | `HUD_UpdateCrossHair`+0x26c/+0x284, `Player_WeaponRecoil`+0x17c/+0x1a0, `Player_SetWeaponAnimObj`+0x340/+0x35c, `Player_AutoAim`+0x1e0/+0x1e4, `Player_GetAimingPoint`+0x50/+0x88 | **four readers missed**. `Player_WeaponRecoil` tilts the view model: rot +0x50 = −cy·π/6 ÷ zoom, +0x54 = viewer+0x114·(−cx·π/6 ÷ zoom) + BL+0x8E4. The port (`scene.rs` gun axes) uses π/6 but **omits the ÷ zoom (`glb_viewer+0x108`) and hard-codes 4/3 for viewer+0x114**: a zoomed view tilts the gun as if unzoomed. `Player_SetWeaponAnimObj` tests offset == 0 (a centred gate). Open: G-044 in docs/GAPS.md |
+| +0x128..+0x12F | read / write | none while idle | consistent with "aim mode only" (`Player_Aiming`) |
+| +0x130 / +0x131 | read | `Player_SSWalk`+0x124, `Player_Update`+0x59c/+0x680 | matches the rows |
+| +0x130 / +0x131 | write | none while idle | the writers need a state change (walk / aim); not exercised |
+| +0x132 / +0x133 | write | `Check_Target`+0x134/+0x140 | matches |
+| +0x132 / +0x133 | read | `HUD_UpdateCrossHair`+0x1f4 | matches |
+| +0x4F4 (clip[0x45]) | read/write | `Player_Update`+0x9e8 (0x193fe8) only | **confirms** the regen block (disasm 0x193eb8-0x19405c) |
+
+Not yet run: the fire/switch block 0x92C-0x960 and the other regen slots under play (walk-switch-shoot needs
+someone at the controls), and the aim-mode-on pass for +0x128..+0x131 writers.
