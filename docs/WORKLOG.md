@@ -5154,3 +5154,91 @@ paths: the take→message test uses whatever placed pickup takes; the label test
 - Tools: `tools/trace/cheats.py` (god mode + infinite ammo in PCSX2); `NF_SKIP_MAT`; probe_render4 gains
   draws-near-a-point, placements-near-a-point, texture dump and material vertices.
 - Full suite: 360 passed.
+## fix-npcs — the C2 "drawn but never attacks / can't be damaged" class, the searchlight spot ray and the 07000006 alarm music
+
+Branch `s/fix-npcs` (from origin/master 7e75c58). Playtest reference: docs/playtests/2026-10-11.md (C1/C2/C3,
+the 07000005 torso item, the 07000006 searchlight item, the 07000007 guest retest). Tests: `crates/nf-view/tests/fix_npcs_live.rs`;
+the regression fix in `crates/nf-view/tests/fix_drone3_live.rs` (shared test file, minimal, noted below).
+
+**The diagnosis that reframes C2.** The bathhouse/end-of-level "drawn frozen guard" is the port's ch-waiter drone in
+`NDrone2_DSTATE_WaitSwitch` — and in the GAME that drone is an INVISIBLE statue: WaitSwitch ENTER calls
+`NDrone2_Enable(0)` [M 0x15b960:14-17] which sets `obj+0xF0 |= 0x10|0x20` (View_AddObjects 0x1e62d8:33 drops 0x10
+objects from the draw; Collide_PickObj 0x1eae80:26-30 drops 0x20 objects from the pick) and clears `+0x4F8 & 0x1801A0`
+(no anim/AI) [M 0x149dd0:8-15]. It wakes only when its live switch channel fires [M 0x15b960:21-37]. The earlier
+fix-render4 WORKLOG claim ("in the game, WaitSwitch stops vision/AI engagement but the drone stays at its post with
+its idle pose and takes damage") is WRONG — corrected here; the decompile and the [L] waiters (`obj+0xFC = 0`, hit
+sphere 0) both say invisible-and-unhittable. On current master the port ALREADY hides the post-intro waiters
+(state 1, enabled false, the renderer's hidden gate at scene.rs) — the user's playtest predates that gate. Verified
+headless on 07000002 at tick 3000 (post-intro): d00/d01/d03/d06 in WaitSwitch, enabled=false, `frame_state.hidden=1`;
+the civilian woman (d21, team 2, HostageIdle) enabled and drawn. `dump_drone4`'s dump "doesn't match play" because
+its whole observation window (~542 ticks) sits INSIDE the level-start NIS freeze (~1540 ticks), where nothing has
+started yet — that is why fix-drone2/4 could not reproduce the symptom headless.
+
+**What was actually broken and is fixed — the NIS-freeze window.** During ANY cut-scene the port left every drone
+per-drone `enabled=true`: the renderer drew them frozen (the user's symptom class on 07000005's gatehouse scene and
+every intro), and a bullet already in flight could still hit and damage them. The game: `Drone_EnableAll(0)` walks the
+whole llist calling `NDrone2_Enable(0)` per drone [M 0x1383e8:13-23], `Drone_CollisionHandler` returns while
+`NPCGlobals == 0` [M 0x140968:62], and `Script_Free`'s 0x80 flag re-enables every drone EXCEPT state-1 WaitSwitch ones
+[M 0x1da880:41-43, 0x1383e8:14]. Port fix (drone.rs): `Request::DroneEnable` now mirrors per drone
+(`enabled = on && state != WAIT_SWITCH` for present drones), and `update_player_bullets`' drone-pick loop is gated on
+`npc_enabled`. Fail-before: `fix_npcs_live::the_intro_freeze_disables_every_drone_and_shields_them_from_bullets` on
+07000002 at tick 120 (mid-freeze) — pre-fix all present drones `enabled=true` and a fired bullet damages the nearest;
+post-fix all disabled and the bullet passes through. After the intro the waiters sit in WaitSwitch disabled and the
+civilian stays enabled+drawn (asserted).
+
+**The 07000006 stationary guards (C2 there) — the same class, plus a working-AI lock.** Post-intro dump: 20 of 25
+guards are ch-waiters (channels 11/12/13/15/16/18/19/55) in WaitSwitch disabled — invisible statues the game wakes by
+trigger; d14/d17 sit on always-on channel 185; d02/d15/d16/d14 are enabled IDLE guards. The enabled idle guards
+behave: `an_idle_gate_guard_sees_and_attacks_bond_on_the_same_floor` walks Bond in front of d15 — los within 70 ticks,
+alert 1.0, into the combat chain, Bond takes damage to 57. (The IDLE enter sets `+0x4F8 |= 0x10000` [M 0x15bf18:30] —
+the port's vision_on — and Idle UPDATE's `EnemyLookForOpponent` returns 0x56 [M 0x177ed0]; both already ported by
+fix-drone3.) The waiters' wake path stays fix-drone3's ch-55 test.
+
+**The searchlight spot ray picks the player [M], ported.** `Searchlight_Update`'s spot ray runs with pick flags 0x18,
+and Collide_PickObj's mask mapping excludes the player's class ONLY under mask 0x400 [M 0x1eae80:26-40] — the ray hits
+Bond's world sphere (`obj+0x80`, r `obj+0x8C` = 1.0576 [L]) when the beam is on him, which is what makes the arm test
+`Vec_Dist3D(spot, player) ≤ 2.0` [M 0x1cb900:251] fire at shallow angles where a static-only ray runs past him. The
+port's ray tested static geometry only (the main agent's diagnosis; fix_drone3_live's teleport-onto-the-spot test
+passed while play failed). Fix (searchlight.rs): ray-vs-sphere on top of the static segment; the closer hit wins, the
+spot orients by that normal. Fail-before shown with a pinned synthetic head over the real 07000006 world
+(`the_spot_ray_picks_bond_and_arms_the_light_from_his_sphere`): pre-fix the spot never draws and the light never arms;
+post-fix the spot lands on Bond's sphere (dist 1.31) and the light arms (state 0→1) and raises ch 55. (The test
+geometry needed the open sky at y 150: the castle's room-boundary planes at every z and the covered courtyards leave
+no un-occluded chest-height ray on foot — measured by probe and recorded here.)
+**The first cut of the fix had a real bug the regression suite caught**: `spherical(100, …)` returns a 100-length
+vector and the ray-sphere quadratic assumed a unit direction — the spot flew to −10000 and fix_drone3_live's
+searchlight test failed. Fixed (a = |dir|² in the quadratic); the incident is kept in this log because it is exactly
+why the full suite runs before every push.
+
+**The 07000006 alarm music — the missing dispatch, ported.** The chain up to `Music_Event(2,1)` was ported
+(fix-drone3/ladder2); `UpdateMusicalEvents`' per-level dispatch ran `UpdateMFX_01CastleA` for 07000005 only
+[M 0x114e70 → 0x113060]. `UpdateMFX_01CastleB` is `under_attack ? PickRandomCombat(0) : PickRandomStealth()` [M
+0x113060:26-30] — ported as the 0x0700_0006 arm of the dispatch (nf-game/src/music.rs). The NIS-trigger half
+(DAT_002d3524 == 0x6000071 → the MapMusicData+0x14/+0x18 marker jump) is NOT ported: the MapMusic parse lacks those
+marker fields (a separate nf-formats change, left to the audio session). Test: `Music::the_07000006_alarm_demands_combat_music` (nf-game/src/music.rs) streams
+`Music_Event(2,1)` per frame — the combat jump lands on the 12th tick (the hysteresis's alert_frames), targets the
+combat set; sister: a quiet 07000006 picks nothing. Shown failing pre-change? The dispatch arm is new code — the
+fail-before is the behaviour itself (pre-fix no `UpdateMFX` ran for 0x0700_0006 at all, so no jump could ever issue;
+the pinned-head searchlight test's ch55 half plus this unit test pin the two halves of the chain).
+
+**The 07000007 guest retest — already fixed on master, verified.** fix-drone4's `a_party_guest_walks_her_mission_route`
+passes with the freeze mirror in; the routed guest walks, PartyGirls stand (game-accurate [M 0x160140 case 3]), the
+waiter guests stay disabled. `the_party_waiter_guests_stay_disabled_and_the_walkers_settle` locks the post-intro
+state (no enabled guest in a combat state). The guest walk is a one-shot mission route (arrived clears prop 0x1D →
+Civilian), which is why the user sees stillness after the first walk.
+
+**The 07000005 patrol torso item — verified, no code.** fix-drone3's two-sided ±0.9 clamp is in and its test passes;
+a re-read of `AnimObjectAimAt` 0x1bfe58 confirms the port's sign convention is self-consistent (the game's aim angle
+comes from `acos` + the scalar-triple-product sign, not a yaw difference, so there is no absolute left/right datum to
+copy) — the "spine flipped" report matches the pre-fix-drone3 build. Remaining known gap (not ported, G-026 family):
+head tracking (`AnimObjectHeadTrack` bone 5, max dist 3.0, rate ~0.13 [M 0x1472c8]) — cosmetic, left to a render-side
+session.
+
+**Shared-file notes.** `crates/nf-view/tests/fix_drone3_live.rs`: the searchlight chase capped at +3 over Bond's
+start feet — with the player-pick sphere the spot rides his sphere once the beam is on him, and the old uncapped
+`spot + 0.4` chase walked him into the sky. `crates/nf-game/src/drone.rs` and `searchlight.rs`/`music.rs` are this
+task's named files; scene.rs untouched (the existing hidden gate already keys on the per-drone `enabled` the freeze
+now clears).
+
+Determinism: no new RNG draws on the shared path (the freeze mirror and the bullet gate add none; the test's
+`fire_player` call consumes the sim RNG exactly as a real shot does); the fixed 60 Hz tick path unchanged.

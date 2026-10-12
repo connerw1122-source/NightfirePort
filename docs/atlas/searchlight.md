@@ -110,6 +110,12 @@ Gate: only kind 1 proceeds (`lhu` @0x1cb94c). Kill: inst+0x35 ≠ 0 and `switch_
   (0x1ec690 @0x1cbe28, cel = obj+0x20) → hit: move the spot to the hit point (stores to s1+0x30 and
   angles to s1+0x50/0x54 @0x1cbe90–0x1cbea8; matrix via 0x1e7c18 @0x1cbee0), `View_SetDrawInAllViews`;
   miss: `View_SetDrawInNoViews` (0x1e7c80 @0x1cbef0); `Collide_FreeHitList` (0x1ede00 @0x1cbef8).
+  **The ray picks the player** [M Collide_PickObj 0x1eae80:26-40 — the pick-mask mapping: the always-on
+  `obj+0xF0 & 0x20` gate, mask 0x8 → obj 0x40, 0x4 → obj 0x10; the class-3 (player) exclusion is mask
+  0x400, which Searchlight_Update's flags **0x18** does not set] — so when Bond stands in the beam the
+  ray's first hit is his world sphere (`obj+0x80` centre, `obj+0x8C` radius) and the spot lands ON him,
+  not on the ground/wall behind. Ported in fix-npcs (the port's static-only ray is what left the user's
+  "standing in the beam" un-armed).
 - **0→1 transition** @0x1cbf14–0x1cbf54: `d = Vec_Dist3D(s1+0x30, Bond+0x30)` where s1 is the
   **spot (links[2])** — if `obj+0xF4 == 0` and `d ≤ 2.0` (`c.ole.s` vs 2.0 @0x1cbf40) ⇒
   `obj+0xF4 = 1`, spot `inst+4 = 0` (@0x1cbf50/0x1cbf54). An unlinked head (links[2] = 0) never

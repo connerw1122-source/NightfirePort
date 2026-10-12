@@ -297,12 +297,41 @@ impl Searchlights {
             self.parts[m].matrix = mm;
         }
         // The spot [M]: a 100-unit ray along the aim; on a hit the spot sits on the surface, oriented by the
-        // hit normal. No hit: hidden.
+        // hit normal. No hit: hidden. The ray's pick flags 0x18 do NOT exclude the player's class [M
+        // Collide_PickObj 0x1eae80:26-40 — the class-3 exclusion is mask 0x400, absent from 0x18], so when
+        // Bond stands in the beam the ray hits HIS world sphere (`obj+0x80` centre, `obj+0x8C` radius) first
+        // and the spot lands on him — that is what makes `Vec_Dist3D(spot, player) <= 2.0` [M 0x1cb900:251]
+        // arm the light in play at shallow beam angles, where a static-only ray would run past him to a far
+        // wall. The port adds the ray-vs-sphere test on top of the static segment.
         if let Some(sp) = self.parts[head].links[2] {
             let (yaw, pitch) = (self.parts[head].yaw, self.parts[head].pitch);
             let dir = spherical(100.0, yaw, -pitch);
             let end = [pos[0] + dir[0], pos[1] + dir[1], pos[2] + dir[2]];
-            if let Some((t, n, _)) = d.world.segment_surface(pos, end) {
+            // The player's pick sphere: centre `obj+0x80` (the `Player.sph` the port fills from
+            // `Bond::sphere_centre`), radius `M_CONTROL+0x8C` = 1.0576 [L ee_start_05.bin].
+            const PLAYER_SPH_R: f32 = 1.0576;
+            let (mut t_hit, mut n_hit) = match d.world.segment_surface(pos, end) {
+                Some((t, n, _)) => (Some(t), Some(n)),
+                None => (None, None),
+            };
+            {
+                // The ray is `pos + dir·t` with |dir| = 100 (spherical's length), t ∈ [0, 1] on the segment.
+                let oc = [pos[0] - player.sph[0], pos[1] - player.sph[1], pos[2] - player.sph[2]];
+                let a = dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2];
+                let b = oc[0] * dir[0] + oc[1] * dir[1] + oc[2] * dir[2];
+                let c = oc[0] * oc[0] + oc[1] * oc[1] + oc[2] * oc[2] - PLAYER_SPH_R * PLAYER_SPH_R;
+                let disc = b * b - a * c;
+                if disc >= 0.0 {
+                    let t = (-b - disc.sqrt()) / a;
+                    if t > 0.0 && t_hit.is_none_or(|tw| t < tw) {
+                        let p = [pos[0] + dir[0] * t, pos[1] + dir[1] * t, pos[2] + dir[2] * t];
+                        let inv = 1.0 / PLAYER_SPH_R;
+                        n_hit = Some([(p[0] - player.sph[0]) * inv, (p[1] - player.sph[1]) * inv, (p[2] - player.sph[2]) * inv]);
+                        t_hit = Some(t);
+                    }
+                }
+            }
+            if let (Some(t), Some(n)) = (t_hit, n_hit) {
                 let hit = [pos[0] + (end[0] - pos[0]) * t, pos[1] + (end[1] - pos[1]) * t, pos[2] + (end[2] - pos[2]) * t];
                 let spot = &mut self.parts[sp];
                 spot.pos = [hit[0] + n[0] * 0.01, hit[1] + n[1] * 0.01, hit[2] + n[2] * 0.01];

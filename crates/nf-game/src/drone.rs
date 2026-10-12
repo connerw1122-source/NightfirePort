@@ -3799,7 +3799,10 @@ impl Drones {
             let tw = d.world.segment(b.pos, end);
             let mut best: Option<(usize, i16, f32)> = None;
             for (i, dr) in self.list.iter().enumerate() {
-                if !dr.present || !dr.enabled || dr.corpse { continue; }
+                // `Drone_CollisionHandler` 0x140968:62 returns while `NPCGlobals == 0` (the NIS freeze:
+                // drones take no damage) and `Collide_PickObj` 0x1eae80:26-30 drops `obj+0xF0 & 0x20`
+                // objects (set by `NDrone2_Enable(0)`) — bullets pass through the frozen drones.
+                if !self.npc_enabled || !dr.present || !dr.enabled || dr.corpse { continue; }
                 let c = [dr.pos[0], dr.pos[1], dr.pos[2]];
                 if seg_point_dist2(b.pos, end, c) > 1.05 * 1.05 * 4.0 { continue; }
                 if let Some((part, t)) = crate::damage::first_box_hit(b.pos, ray, &dr.hit_boxes(d)) {
@@ -4314,7 +4317,18 @@ impl Drones {
             match r {
                 crate::nis::Request::PlayerDisable | crate::nis::Request::PlayerEnable { .. } => self.player_events.push(r.clone()),
                 // Events 5 / 7: the game's own drone gate (`Drone_EnableAll` → `NPCGlobals`) [M 0x1383e8].
-                crate::nis::Request::DroneEnable { on } => self.npc_enabled = on,
+                // `Drone_EnableAll(0)` walks the whole llist calling `NDrone2_Enable(0)` per drone —
+                // `obj+0xF0 |= 0x10|0x20` (not drawn, not picked) and `+0x4F8 &= ~0x1801A0` (no anim/AI)
+                // [M 0x149dd0:8-15] — and sets `NPCGlobals = 0`. The re-enable (`Script_Free`'s 0x80 flag,
+                // 0x1da880:41-43) skips state-1 WaitSwitch drones [M 0x1383e8:14] — they stay disabled until
+                // their own switch channel wakes them [M 0x15b960:21-37]. The port's `enabled` is the
+                // obj+0xF0 gate's stand-in, so the freeze mirrors per drone.
+                crate::nis::Request::DroneEnable { on } => {
+                    self.npc_enabled = on;
+                    for dr in self.list.iter_mut().filter(|d| d.present) {
+                        dr.enabled = on && dr.state != state::WAIT_SWITCH;
+                    }
+                }
                 crate::nis::Request::Camera { script, start } => self.music.event(if start { 0xb } else { 0xc }, script),
                 // `Script_SoundStart`: 2-D, or 3-D at the stream's object (its position each frame, `Script_Interp` 5).
                 crate::nis::Request::Sound { id, at, src } => {
