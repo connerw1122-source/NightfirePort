@@ -3858,6 +3858,9 @@ pub struct Drones {
     /// The mission layer (`Mission_Update` 0x182c60, docs/systems/mission.md). `inited` latches the
     /// per-level `Mission_Init` (0x182270, from `ResetMap_GameInit`) on this level's first tick.
     pub mission: crate::mission::Mission,
+    /// The previous level's mission globals (map-tower2): restored at the `Mission_Init` latch, after
+    /// init, the way the game's `.data` globals sit under it [M 0x182270:68-129].
+    pub mission_carry: Option<crate::mission::MissionSave>,
     mission_inited: bool,
     /// The mission layer's events this tick (`Text_AddMsg` types 2/3, the FailLabel writes, the
     /// level-end/reset decisions) — drained by the view each tick.
@@ -3908,7 +3911,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new(), mission: crate::mission::Mission::new(), mission_inited: false, mission_events: Vec::new() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -4896,7 +4899,12 @@ impl Drones {
         // `ResetMap_GameInit` 0x1d5080:53) latches on this level's first tick; the port's loads are
         // cold (warm = false — previous parts keep their `.data` states, as the game's cold path).
         if !self.mission_inited {
-            self.mission.init(d.level, false, &mut self.channels, frame);
+            self.mission.init(d.level, self.mission_carry.is_some(), &mut self.channels, frame);
+            // The carried mission globals restore AFTER init, exactly as the game's `.data` globals sit
+            // when `Mission_Init` runs on a warm transition: init resets the current + future parts in
+            // place and the carried snapshot puts the previous parts' states back [M 0x182270:68-129;
+            // the payload shape is LS_MakeMission/LS_LoadMission 0x1cd720/0x1cd880; map-tower2].
+            if let Some(s) = self.mission_carry.take() { self.mission.restore(&s); }
             self.mission_inited = true;
         }
         let dead = self.health.health <= 0.0;

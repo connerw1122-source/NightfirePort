@@ -895,6 +895,13 @@ pub struct RamSave {
     /// `_prev` (0x2b9f8d/0x2ba08d); the port models no hold array and keeps `_prev` per-consumer
     /// (trigger-port-check #10) [M gap noted in the WORKLOG].
     pub ch_time: Vec<u32>,
+    /// The mission layer's globals (`MissionState` 0x30cb9c, `BaseMap` 0x30cba0, `ThisOrderNum`
+    /// 0x30cba4, `FailLabel` 0x30cba8 and the per-objective states). The game keeps them in `.data`
+    /// across `ResetMap_LevelToLoad` — only `Mission_Init` 0x182270 touches them, and it resets the
+    /// current and future parts IN PLACE, leaving previous parts alone [M 0x182270:68-129]. The port
+    /// re-creates `Mission` per load, so the carry rides the RamSave (the payload shape is
+    /// `LS_MakeMission`/`LS_LoadMission` 0x1cd720/0x1cd880; map-tower2).
+    pub mission: Option<crate::mission::MissionSave>,
 }
 
 impl RamSave {
@@ -911,7 +918,15 @@ impl RamSave {
             keys: inv.keys.clone(),
             channels: ch.v.clone(),
             ch_time: ch.time.clone(),
+            mission: None,
         }
+    }
+
+    /// Attaches the mission globals snapshot — the game persists them in `.data` across a level load
+    /// while the port re-creates `Mission` (map-tower2; see the `mission` field).
+    pub fn with_mission(mut self, m: &crate::mission::Mission) -> RamSave {
+        self.mission = Some(m.snapshot());
+        self
     }
 
     /// `Player_RamLoad` (0x1957a8), `IsWarmReset != 0` arm [M]: the whole body is gated on the warm flag,
