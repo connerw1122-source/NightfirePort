@@ -10,7 +10,8 @@ no game bytes are stored.
 every owned weapon's clip to the fullest seen every 30 frames, so the user can play through without dying. That changes the run (damage reactions still happen, death never does), so the
 trace header records it.
 
-Usage: python -I tools/trace/trace_record.py <out.trace> [--god] [--seconds N]
+Usage: python -I tools/trace/trace_record.py <out.trace> [--god] [--ammo] [--seconds N]
+--ammo: infinite ammo (refill clips); leave it off when the recording must show shots being spent.
 Stop with Ctrl+C at any time; the file is complete up to the last frame.
 Needs PCSX2 running with PINE enabled (slot 28011) and a level loaded.
 """
@@ -50,7 +51,7 @@ def main():
     if not a or a[0].startswith("--"):
         print(__doc__)
         return
-    out, god = a[0], "--god" in a
+    out, god, ammo = a[0], "--god" in a, "--ammo" in a
     seconds = float(a[a.index("--seconds") + 1]) if "--seconds" in a else None
     p = Pine()
     # Wait for the game: PINE answers before a disc is booted, but EE reads fail until then.
@@ -67,6 +68,7 @@ def main():
     channels = p.read_bytes(SWITCH_CHANNELS, 256)
     t0, last, n = time.time(), None, 0
     max_clip = {}
+    inv = None
     with open(out, "w") as f:
         f.write(f"# nightfire trace v1 level={level:08x} god={int(god)} start={time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write("# frame level pad ax ay bx by bond.x bond.y bond.z bond.yaw health armour | drone: state x y z ...\n")
@@ -85,7 +87,7 @@ def main():
                     p.write(bl + 0x8B0, F50, 4)
                 # Infinite ammo (with --god): every 30 frames, top each owned weapon's clip (BLData+0x1B8+w*0xC, s16;
                 # owned byte at +0x1BA) back up to the fullest clip seen for it this run.
-                if god and bl and fr % 30 == 0:
+                if ammo and bl and fr % 30 == 0:
                     for w in range(1, 0x72):
                         e = bl + 0x1B8 + w * 0xC
                         if p.read_bytes(e + 2, 1)[0] != 1:
@@ -120,6 +122,26 @@ def main():
                     row += [f"{p.read16(o + 0xF4) if o else 0:x}", str(p.read16(e + 0x72))]
                     e, k = p.read32(e + 4), k + 1
                 f.write(" ".join(row) + "\n")
+                # Inventory every 15 frames, as change events: spare rounds per ammo type (BLData+0x170 + a*2, s16)
+                # and per weapon w the clip (BLData+0x1B8 + w*0xC, s16) and owned byte (+2).
+                if bl and fr % 15 == 0:
+                    raw = p.read_bytes(bl + 0x170, 0x1B4 + 0x72 * 0xC - 0x170)
+                    spare = [int.from_bytes(raw[2 * k:2 * k + 2], 'little', signed=True) for k in range(33)]
+                    weap = []
+                    for w in range(0x72):
+                        o = 0x1B8 + w * 0xC - 0x170
+                        weap.append((int.from_bytes(raw[o:o + 2], 'little', signed=True), raw[o + 2]))
+                    if inv is None:
+                        owned = " ".join(f"{w:x}:{c}" for w, (c, o) in enumerate(weap) if o == 1)
+                        f.write(f"inv0 {fr} spare {' '.join(map(str, spare))} owned {owned}\n")
+                    else:
+                        for k in range(33):
+                            if spare[k] != inv[0][k]:
+                                f.write(f"spare {fr} {k} {inv[0][k]} {spare[k]}\n")
+                        for w in range(0x72):
+                            if weap[w] != inv[1][w]:
+                                f.write(f"weap {fr} {w:x} clip {inv[1][w][0]}->{weap[w][0]} owned {inv[1][w][1]}->{weap[w][1]}\n")
+                    inv = (spare, weap)
                 now = p.read_bytes(SWITCH_CHANNELS, 256)
                 for i, (old, new) in enumerate(zip(channels, now)):
                     if old != new:
