@@ -129,6 +129,14 @@ impl Hud<'_> {
     }
 }
 
+/// What the ammo strip draws for a clip count: the drawn height is `strip_clip(clip, clip_size) · hpr`
+/// (hud.rs, `HUD_UpdateAmmoPane` 0x19a7f0's pane layout). A clip can exceed its size only through the dev
+/// tools (infinite ammo / no reload), and the strip must clamp to the clip size — the user's stacked/garbled
+/// icons on the right of the screen were the strip drawing `clip · hpr` tall, past the pane's empty-column
+/// sprite (`clip_size · hpr`). The game itself can't reach this state: pickups and reloads both cap the clip
+/// at its size [M pickup.rs `Inventory::give` / the reload paths] — the clamp is the HUD standing safe.
+pub fn strip_clip(clip: f32, clip_size: f32) -> f32 { clip.min(clip_size.max(1.0)) }
+
 /// Build 6 NDC vertices (two triangles) for a rectangle from (x0,y0) to (x1,y1).
 fn ndc_rect(x0: f32, y0: f32, x1: f32, y1: f32) -> [crate::gpu::HudVertex; 6] {
     use crate::gpu::HudVertex;
@@ -199,7 +207,9 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     if let Some(&[bu, bv, bw, hpr]) = t.bullets.get(ammo_type) {
         let k = if clip_size > 87.0 { 16.0 } else { 1.0 };
         let (x, bottom) = (AMMO_AT.0 - bw * k, AMMO_AT.1);
-        let clip = s.gun.clip as f32;
+        // fix-dev T3: the dev tools can push the clip past its size (infinite ammo / no reload) — the strip
+        // must draw at most the clip size, or it overflows the pane (the user's stacked/garbled icons).
+        let clip = strip_clip(s.gun.clip as f32, clip_size);
         let (rounds, empty) = (&t.ammo[5], &t.ammo[6]);
         h.quad(Anchor::Right, rounds.layer as i32, 0x0300_0128, 0, x, bottom - clip * hpr, bw * k, clip * hpr, [bu, (clip_size - clip) * hpr + bv, bw, clip * hpr], (false, false), gs(rounds.colour >> 8, rounds.colour & 0xff));
         h.quad(Anchor::Right, empty.layer as i32, 0x0300_0128, 0, x, bottom - clip_size * hpr, bw * k, clip_size * hpr, [bu, bv, bw, clip_size * hpr], (false, false), gs(empty.colour >> 8, empty.colour & 0xff));

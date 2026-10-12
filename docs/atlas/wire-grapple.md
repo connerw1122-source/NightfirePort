@@ -22,7 +22,9 @@ Header stores: `obj+0xD8` = celglist arg (@0x198250); `obj+0xF0` = `*(u32*)(glis
 (@0x198254/0x19825c); `obj+0xFF = 0x2C` (`addiu $a3,$zero,0x2c` @0x198220, `sb` @0x198258);
 `build_LinkToRoom(obj,0,glb_world)` (@0x198260) and `Controls_StraddleTest` (0x134778 @0x198268 —
 puts the object on ForcedList 0x270590 with `obj+0xF0 |= 0x10000000 | 0x8000` when it spans ≥2
-cels) [M]. `rot.z` is negated at create (@0x198208–0x198214) as for ladders [M].
+cels) [M]. `rot.z` is negated at create (@0x198208–0x198214) — **a wire-only quirk: `Ladder_Create`
+0x1966c0 passes the rotation quaternion through unmodified** (fix-ladder disasm 0x1966c0–0x19675c;
+the earlier "as for ladders" note was wrong) [M].
 
 **There are no endpoint params.** The line geometry is derived at grab/ride time from the object's
 world sphere (`obj+0x80..0x8C`, centre + radius) and the placement yaw [M]:
@@ -57,7 +59,8 @@ uses `obj+0x20` (cel, for LOS), `obj+0x30` (pull target), `obj+0xC0..0xCC` / `ob
   does **not** enter 7). Full dispatch: 0 `Player_SSWalk` 0x192310, 1 `Player_Climb` 0x196310,
   2 SSGrapple, 3 riding (inline), 4 `Player_SSCrouch` 0x1924c0, 5 `Player_SSScanMode` 0x193098,
   6 Player_Wire, 7 Player_Creep, 8/9 `Player_ZeroG` 0x192ab0, 10 scripted-cam countdown (inline;
-  restores the saved substate `BLData+0x942`), 0xF Zipline.
+  restores the saved substate `BLData+0x942`), 0xF Zipline. Case 3 is the swim, not only riding —
+  see `docs/atlas/ladder.md` (fix-ladder).
 - Entry points: `Player_CollWire` 0x197130 (the grab) is called from `Player_DealWithObjHit`
   0x194458 (hit-class dispatch: 0x2C → CollWire, 0x2D → CollLadder, 0x27 → Hurt),
   `Player_HandleJump` 0x1916b0 (jump-grab: `BLData+0x95F == 3`, nearest class-0x2C scan) and

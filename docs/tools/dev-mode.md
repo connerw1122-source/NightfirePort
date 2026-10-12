@@ -81,14 +81,44 @@ A mouse-clickable list (click the mouse on an item to apply it):
 | force: impulse (hop up) | The nearest guard gets a velocity impulse straight up — to test falling off ledges. |
 | force: SpecialDeath (fall) | The nearest guard enters a SpecialDeath (free root, gravity on) — the falling-off-ledge test. |
 | god mode: ON/OFF | Bond's health is locked at 100, armour at 100, the hit flash cleared each tick. |
-| infinite ammo: ON/OFF | The gun's clip is refilled each tick. |
+| infinite ammo: ON/OFF | The whole INVENTORY is refilled each tick (fix-dev): every weapon's clip slot to its `weapon_data+0x92` clip size, every ammo type's carried rounds to 200 — so it holds for other ammo types, after a weapon switch or level carry-over, and for Bond's grenades (the 0x45 belt's clip slot). The old refill only topped the gun's transient copies, which `Sim::run` re-reads from the inventory each tick — the gun stopped firing while the HUD still showed a full clip. |
+| no reload: ON/OFF | The current weapon's clip is topped to its clip size each tick (fix-dev): it never empties, so the game never reloads. |
 | teleport: save spot | Save Bond's current position. |
 | teleport: restore spot | Teleport Bond to the saved spot. |
 | time: 1x / 0.25x / pause | The time scale. "pause" stops the simulation; F11 steps one tick. |
+| level: 070000xx | Jump to a level (fix-dev): one row per level archive on the disc. Feeds `pending_level` — the same warm transition a level exit takes, so health/weapons carry over. |
 
 The spawn uses the game's own spawn path (`Drone::new` + `present`/`enabled`/`llist.push`, the same as `Action::Spawn`).
-The force / impulse / SpecialDeath set the same fields the game's own state machine would. God mode and infinite ammo
-set the same fields `Player_HandlePain` and `Player_WeaponFiring` read.
+The force / impulse / SpecialDeath set the same fields the game's own state machine would. God mode, infinite ammo and
+no reload set the same fields `Player_HandlePain` / `Player_WeaponFiring` / the reload read (the inventory at
+`BL+0x170`/`+0x1B8`). The HUD's ammo strip clamps what it draws to the clip size (`hud::strip_clip`), so a
+dev-refilled clip can't overflow the pane (the stacked/garbled icons the user screenshotted). The ammo pane's
+"clip-spare" text keeps the real numbers.
+
+## Skipping cut-scenes (any key)
+
+While a cut-scene is playing, any key except the viewer's own (Esc, F1, F2, F11, F12) skips it. This is the game's
+own skip ported, not a port-only hack [M SP_Update 0x1dbda8:129-141, Script_FFwd 0x1dac78, Script_Update
+0x1da998:19-110, Script_Interp 0x1d9a08:146,205, Script_IsDeathNIS 0x1dae60]:
+
+- `SP_Update` state 2 checks `Input_Action(-1, 0x19, 1)` — any player pressing the skip action. The viewer maps a
+  key press to `Scripts::skip_request` while `Scripts::cutscene_playing()` (an SP in state 2 with a playing script).
+- `Script_FFwd(cur, 1)` arms the skip on the FIRST press while the script's camera is active (op 0xD set `+0xAB5`
+  bit 4): `fade_len = min(length − clock, 45)`, `play |= 0x10`, `fade_clock = 1` (FRAME_RATE_MUL),
+  `Music_Event(5, hash)`, `Camera_SetFade(fade_len, 4, 0xff, 1)` (view-side; the port models the state, not the
+  fade picture). A script running event 0x10 (no cameras) just kills its camera stream.
+- The fade advances one frame per tick; past its length it sets the freeze flag (bit 5) and `Script_Update`'s
+  do-while loops — running the streams once per iteration, advancing the clocks — until the script is no longer
+  playing: the rest of the cut-scene fast-forwards inside one tick, and every command past the skip point (events,
+  channel sets, `LoadLevel`) still runs. When the script stops with the fade past its length, the game fades back
+  in and clears the skip latch.
+- `Script_Interp` freezes the anims and the camera while the freeze flag is set (the game does the same).
+- The three death NISs (0x6000952, 0x600098a, 0x6000991) can NOT be skipped (`Script_IsDeathNIS`), and neither can
+  a script without a camera — the intro truck script (0x6000A22) has `nis.camera` false and is correctly not
+  skippable.
+
+Tests: `crates/nf-view/tests/dev_tools_live.rs` (NF_ISO) + the nis.rs unit test
+`skip_fast_forwards_a_camera_script_but_not_a_death_nis`.
 
 ## Scenarios (`--scenario <name>`)
 

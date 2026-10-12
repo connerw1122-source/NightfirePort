@@ -190,6 +190,11 @@ pub struct Renderer {
     /// (0x1e6ba0) frustum-tests each cel's bbox per viewer; fix-render3 skips a static World draw
     /// whose cel fails the same test. `NF_NOCELCULL` disables.
     cel_boxes: Vec<([f32; 3], [f32; 3])>,
+    /// The runtime cel graph + portals (fix-perf-level): `portal_visible_cels` runs per frame from the
+    /// eye's room cel, and the walk's per-full-cel set gates static World draws (the `View_AddCels`
+    /// GfxList set — only portal-visited cels are added). Graphs without portals fall back to the
+    /// fix-render3 box test.
+    cel_graph: crate::scene::CelGraph,
 }
 
 impl Renderer {
@@ -354,7 +359,22 @@ impl Renderer {
         let snow_bg = match &scene.snow_texture { Some(t) => make_tex(t.width, t.height, &t.rgba), None => make_tex(1, 1, &[255, 255, 255, 255]) };
         let order_cap = draws.len();
         let cel_boxes = scene.cels.iter().map(|c| (c.min, c.max)).collect();
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes }
+        let cel_graph = scene.cel_graph.clone();
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph }
+    }
+
+    /// `build_FindCel` (0x1c8cb0) over the room cels' boxes for the walk's start cell: the inclusive
+    /// bbox test with the port's smallest-volume tie-break (the same rule `scene::find_cel` uses).
+    fn eye_room_cel(boxes: &[([f32; 3], [f32; 3])], eye: [f32; 3]) -> Option<usize> {
+        let mut best = None;
+        let mut vol = f32::INFINITY;
+        for (i, &(min, max)) in boxes.iter().enumerate() {
+            let inside = min[0] <= eye[0] && eye[0] <= max[0] && min[1] <= eye[1] && eye[1] <= max[1] && min[2] <= eye[2] && eye[2] <= max[2];
+            if !inside { continue; }
+            let v = (max[0] - min[0]) * (max[1] - min[1]) * (max[2] - min[2]);
+            if v < vol { vol = v; best = Some(i); }
+        }
+        best
     }
 
     /// `view_proj`: full camera; `view_proj_rot`: the same without the camera translation.
@@ -438,8 +458,22 @@ impl Renderer {
             // out is skipped before the pipeline/bind work. The eye's own cel always passes (its
             // bbox contains the eye, so its sphere can never be outside the frustum).
             let cel_cull = std::env::var_os("NF_NOCELCULL").is_none();
+            // fix-perf-level: the visibility set is the game's own portal walk
+            // (`Vision_Portal_Recurse` 0x1e86e8 → `Vision_Recurse` 0x1e82e0, the GfxList set) from the
+            // eye's room cel, with the depth-0 pyramid = the frustum's four side planes + near (the
+            // game's five `Vision_Calculate_View_Fustrum` 0x1e7df8 planes). Cels the walk cannot run
+            // for (no graph / no portals / eye outside every cel) keep the fix-render3 box test.
             let cel_visible: Vec<bool> = if cel_cull {
-                self.cel_boxes.iter().map(|&(min, max)| !box_outside(&planes, min, max)).collect()
+                let depth0: [[f32; 4]; 5] = [planes[0], planes[1], planes[2], planes[3], planes[4]];
+                let eye_room = Self::eye_room_cel(&self.cel_boxes, eye);
+                match eye_room.filter(|_| !self.cel_graph.portals.is_empty()) {
+                    Some(room) => match crate::scene::portal_visible_cels(&self.cel_graph, room, eye, &depth0) {
+                        Some(cell_vis) => self.cel_graph.room_to_cell.iter()
+                            .map(|m| m.map(|c| cell_vis[c]).unwrap_or(true)).collect(),
+                        None => self.cel_boxes.iter().map(|&(min, max)| !box_outside(&planes, min, max)).collect(),
+                    },
+                    None => self.cel_boxes.iter().map(|&(min, max)| !box_outside(&planes, min, max)).collect(),
+                }
             } else { Vec::new() };
             let mut cel_culled = 0usize;
             // Skip redundant `set_pipeline` / `set_bind_group(0)` calls (A-11e): `last_pipeline` and `last_bg0_rot`

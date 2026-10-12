@@ -73,7 +73,7 @@ The histogram per level is produced by `level-survey`. The types the port curren
 | 0xe8 | level-exit trigger | **yes** (0077) | `trig.rs`; routes to `ResetMap_LevelToLoad` |
 | 0xfc | corona / glow | **yes** | `corona.rs` (WORKLOG 0073) |
 | 0x2c/0x2d/0x2e/0x2f/0x30/0x31/0x32/0x33 | pickups / breakables / rigid bodies | partial | G-029 (pickups), G-026 (breakables); the collision stands in |
-| 0x22/0x3a/0x3e/0xf0 | ladder / zip wire / grapple / pickup | partial | G-029 |
+| 0x22/0x3a/0x3e/0xf0 | ladder / zip wire / grapple / pickup | partial | G-029; **0x22 ladders: yes (fix-ladder)** — `docs/atlas/ladder.md` |
 | 0xe5/0xe6 | sensor / hurt | partial | G-026 |
 | 0x47 | static decoration | **yes** | drawn as PS2_GFX (no gameplay) |
 | 0x19 (0x19:103 etc.) | ambient sound trigger | **yes** | `MapSounds` (sound.rs) |
@@ -131,8 +131,34 @@ never ran (ch 0x65 never fired because the gate-guard drone wasn't at post).
   path is the same `Scene::build` 07000005 uses, so levels load through it; visual diffing against PCSX2 is pending a
   GPU environment (U-0xx to add).
 
-## Grenade-carrying guards (WORKLOG B-1; corrected by fix-drone)
+## Ladders and water, per level (fix-ladder)
 
+From `crates/nf-view/tests/fix_ladder_live.rs::ladder_and_water_counts_per_level` [D disc]: ladder
+placements (type 0x22, `Ladder_Create` 0x1966c0) and water cels (flag word 0xC023, whose bbox top is the
+swimmable surface — `docs/atlas/ladder.md`).
+
+| Level | Ladders | Water cels | Notes |
+|---|---|---|---|
+| 07000001 | 0 | 0 | |
+| **07000002** | **4** | **5** | The bunker exit ≈(−26.9, 2.3, 42.2) yaw −π (world-sphere top 5.96); water surfaces 3.76–4.34 (the bunker channels and the garden moat) |
+| 07000003 | 1 | 0 | (34.2, 7.6, 18.2) |
+| 07000004 | 0 | 0 | |
+| 07000005 | 1 | 0 | (60.9, 29.9, 89.2) — the test level's ladder |
+| 07000006 | 0 | 0 | |
+| 07000007 | 0 | 0 | |
+| 07000008 | 4 | 0 | two degenerate placements at the origin |
+| 07000009 | 0 | 0 | |
+| 0700000a | 1 | 0 | (−13.2, −1.3, −9.5) |
+| 0700000b | 0 | 0 | |
+| 0700000c | 3 | 0 | |
+| 0700000d | 3 | 0 | |
+| 07000011–14 | 0 | 0 | |
+| 07000015 | 3 | 0 | |
+| 07000016 | 1 | 1 | (−0.4, −6.2, −86.2) + one water cel |
+| 0700001b | 0 | 0 | |
+
+
+## Grenade-carrying guards (WORKLOG B-1; corrected by fix-drone)
 `NDrone2_DefaultInit` 0x14b300 takes the grenade word from **placement param 11**
 (`piVar19[0x18]`, params start at `piVar19[13]` — drone-port-check.md #1). The original B-1 scan
 read **param 24** (the alert block's middle word), so its table documented the wrong word; the
