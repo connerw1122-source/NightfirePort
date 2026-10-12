@@ -152,22 +152,43 @@ pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_gam
     }
 
     // G-021 (models-characters): drone placements whose skin (placement param 0) is not in their
-    // level's archive. The game's skin/skeleton/object hash tables accumulate every archive loaded
-    // in the session (`AnimLoadFile` 0x1d8248 registers per map; nothing frees between levels), so
-    // a skin placed on a level whose own archive lacks it resolves from another archive of the
-    // flow. Measured on the disc [D]: 33 such placements on 2 levels — 0700000c ×7 and 07000014 ×15
-    // want 0x05000090 (in 07000049/0d/16/15), and 07000014 ×11 want 0x050000b1 (in 07000016/15).
-    // `CommonAnimFile` (the LoaderLoad type-4 name source, the variable at 0x30d860 [M 0x1d4a00
-    // case 0: `param_2 = CommonAnimFile` — the only reference in ACTION.ELF, no writer]) is 0 at
-    // every level-start snapshot [L ee_start_05.bin / ee_start_07000001.bin / ee_start_0700000a.bin
-    // @0x30d860], so the common file is not in play at these levels. The port merges the missing
-    // skin's archive: its maps (the skin's meshes are glist objects of that archive), object
-    // hashcodes (first wins, like the game's table), skins, skeletons, and — only for skeletons the
-    // level has no sequences for — its 07F sequences (a NEW bucket, so the order-sensitive gameplay
-    // lists the WORKLOG warns about are untouched; both G-021 skins use skeleton 0, which 0700000c
-    // (429 seqs) and 07000014 (402) already cover [D]). Index of skin → archive, once per process.
+    // level's archive — 33 of them on 2 levels [D scan]. TWO mechanisms, read off the decompile:
+    //
+    // 1. `AnimObjectNew` (0x1be910 disasm 0x1be958-0x1be9b0) SUBSTITUTES 0x05000090 before the
+    //    hashtable get: on GameState+0x12 == 0x0700000c → 0x05000087 (0700000c's own skin), on
+    //    0x07000014 → 0x05000093 (07000014's own). The port mirrors it at load: the placement hash
+    //    0x05000090 resolves to the substitute skin's data — exactly the object the game builds.
+    // 2. 07000014's 0x050000b1 (11 placements) has NO substitution (the disassembly covers only
+    //    0x05000090) — the game's skin table accumulates every archive loaded in the session
+    //    (`AnimLoadFile` 0x1d8248 registers per map; nothing frees between levels), and 0x050000b1
+    //    lives in 07000015/16's archives [D]. `CommonAnimFile` (the LoaderLoad type-4 name source,
+    //    the variable at 0x30d860 [M 0x1d4a00 case 0: `param_2 = CommonAnimFile` — the only
+    //    reference in ACTION.ELF, no writer]) is 0 at every level-start snapshot [L
+    //    ee_start_05.bin / ee_start_07000001.bin / ee_start_0700000a.bin @0x30d860], so the common
+    //    file is not the source here. The port merges the holding archive: its maps (the skin's
+    //    meshes are glist objects of that archive), object hashcodes (first wins), skins and
+    //    skeletons — and its 07F sequences ONLY for skeletons the level has no sequences for (a NEW
+    //    bucket; the per-skeleton lists are order-sensitive gameplay data — the WORKLOG's warning).
     {
         let mm = level.main_map();
+        }
+        let mm = level.main_map();
+        // The substitution [M 0x1be910]: 0x05000090 → the level's own variant, before anything
+        // else looks the hash up. `GameState+0x12` is the current level id.
+        match u32::from_str_radix(&archive[..8], 16).unwrap_or(0) {
+            0x0700_000c | 0x0700_0014 => {
+                let level_id = u32::from_str_radix(&archive[..8], 16).unwrap_or(0);
+                let sub = if level_id == 0x0700_000c { 0x0500_0087u32 } else { 0x0500_0093 };
+                if let Some(mut sk) = level.skins.get(&sub).cloned() {
+                    // The port keys its skin tables by the placement's hash (the sim's `dr.skin`,
+                    // the draw caches, the 0x800 ambient tables): the substituted entry keeps the
+                    // placement's identity while carrying the variant's data.
+                    sk.hashcode = 0x0500_0090;
+                    level.skins.entry(0x0500_0090).or_insert(sk);
+                }
+            }
+            _ => {}
+        }
         let mut wanted: Vec<u32> = Vec::new();
         if let Some(m) = mm {
             for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f) {
@@ -189,7 +210,6 @@ pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_gam
                     }
                 }
             }
-        }
         if !wanted.is_empty() {
             static SKIN_ARCHIVES: std::sync::OnceLock<HashMap<u32, String>> = std::sync::OnceLock::new();
             let index = SKIN_ARCHIVES.get_or_init(|| {
