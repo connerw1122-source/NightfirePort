@@ -30,6 +30,7 @@ research pass (subagent, 2026-10-09); "checked" = read here (the tables are read
   0x9D1912 (< 2); alpha 0.55 below h, 0.15 above; sprite 8 blinks (30-tick period) when h < 0.5. Ring 15: the
   health colour at alpha 140.
 - Fade F = min(`BL+0x8BC` · 4, 1): held at 1 while `PlayerSetting+0xB` = 0 (snapshot) [S: an auto-hide option].
+- fix-hud: ported — the damage-direction bits (`pain_from`), the air pane (AirSprInfo), and the crouch icon (sprite 19: 0x03000173 crouched, 0x03000174 held 60 ticks after standing, fade over the last 30 [M 0x19b9c8:305-328]).
 - Damage glow sprites 20–23: full screen, additive, textures 0x0300018D (20, 21 flipped V) / 0x0300018E (22, 23
   flipped U), red at alpha `BL+0x968`, per bit of `BL+0x967` (direction from `Player_DealWithObjHit`; 0xC both
   sides from `Player_HandlePain`).
@@ -53,14 +54,23 @@ gap 5, space 3. Pen (`__Font_DrawText` 0x1ee598): + kern (`Font_GetKernAdjust` 0
 pairs, next char at +2, signed adjustment at +4), + pre-gap (not for the first), quad at y + yoff − (glyph 0's
 h + yoff), + w + post-advance. `FE 2` right-aligns, `FE 3` centres.
 
-## Pickup / message panes [M] (not ported)
+## Pickup / message panes [M] (fixed by fix-hud)
 
 `Text_AddMsg` (0x1b0c30), pane 21 (pickups, 180 ticks): bar 256 × 26 at (128, 364) from 0x0300007A, text centred at
-(256, 380) in font 2; states hidden → open → text → fade (last 15 ticks) → close (16 px / tick). Needs the language
-strings ("Picked up %s").
+(256, 380) in font 2; states hidden → open → text → fade (last 15 ticks, alpha = time·17) → close (16 px / tick;
+the open is one frame — this doc's "16 px/tick open" was wrong). Strings come from the `*.dat` language tables:
+`Txt_LoadLanguage` 0x1caad0 loads `FNames[SelLang]` (the NTSC-U default is `USATxt.dat`; FNames[0] "DUTxt.dat" is
+Dutch); layout: u32 dataBytes + data (padded `4 - (dataBytes & 3)`, 4 even when aligned), u32 NumEntries,
+u32 offsets[NumEntries−1] (entry i ≥ 1 at data[offsets[i−1]]), u32 NumFixups + fixups[]; `Txt_BindLabel` 0x1cad60
+= fixups[id>>24] + (id & 0xffffff). Pickup_Handler 0x18e650: 0x200000D "Picked up %s", 0x200000E "Picked up %dx %s",
+0x200000F armour, 0x2000010 key, 0x200004A bonus; sounds 0xF5/0x141/0x14C. fix-hud ports the queue over the port's
+`drones.taken` events (Sim::hud_tick per tick).
 
 ## Port
 
 nf-view `hud.rs` (WORKLOG 0046): crosshair, health / armour segments and ring, damage glow, ammo text and strips, from
-the ELF tables and the level's textures; layer-sorted runs, additive where flagged. Not yet: weapon name / mode, the
-message panes, icons, the hit direction, air / blood / scope panes.
+the ELF tables and the level's textures; layer-sorted runs, additive where flagged. fix-hud (WORKLOG 0090) added the
+fire-mode / weapon-name labels, the pickup message bar, the damage-direction glow (BL+0x967 bits → sprites 20-23),
+the air pane (AirSprInfo 0x2bd490) and the crouch icon (sprite 19). Not yet: objective/status message callers
+(Mission_MonitorObjectives 0x1827d8 is unported), the gadget icon area (no HUD_Update* function identified yet),
+blood / scope panes beyond the sight overlay.

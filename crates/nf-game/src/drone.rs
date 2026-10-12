@@ -4589,9 +4589,13 @@ impl Drones {
                             if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
                         }
                     }
-                    crate::bullet::BulletEvent::Player { damage, .. } => {
+                    crate::bullet::BulletEvent::Player { damage, at } => {
                         let before = self.health.health;
-                        self.health.pain(damage, DIFFICULTY, d.level);
+                        // `Player_DealWithObjHit` 0x194458:201-226: the direction bits from the ATTACKER's position
+                        // (HITDATA+0x30 = the shooter) in the viewer's frame.
+                        let attacker = self.list.get(b.owner).filter(|d| d.present).map_or(at, |d| d.pos);
+                        let yaw = player.aim[2].atan2(player.aim[0]);
+                        self.health.pain_from(damage, DIFFICULTY, d.level, attacker, player.eye, yaw);
                         self.player_hits.push((frame, b.owner, before - self.health.health));
                     }
                     // `Bullet_DoTrails` fly-by: `Sound_Play3D(0x1dc, closest_point, 100, -1, -1, …, custom 0)` [M].
@@ -4623,7 +4627,9 @@ impl Drones {
                         // Bond: `Player_Hurt` (the difficulty factor is applied in `explode_propagate`).
                         if hits.player > 0.0 {
                             let before = self.health.health;
-                            self.health.pain(hits.player, DIFFICULTY, d.level);
+                            // `Explode_Propagate` → `Player_Hurt` → `Player_HandlePain` (type 0): BL+0x967 = 0xC
+                            // (both sides) [M 0x1902c8:124-130].
+                            self.health.pain_generic(hits.player, DIFFICULTY, d.level, 0);
                             self.player_hits.push((frame, owner, before - self.health.health));
                         }
                         // Drones: `Drone_ExplosiveHit` → msg 9 (the port routes through `on_bullet` as an impact).

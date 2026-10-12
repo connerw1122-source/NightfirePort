@@ -251,6 +251,42 @@ pub struct Sim {
     pub view_model_chars: Vec<usize>,
     /// fix-render3: the `ambient_at` call counter (a test guard for the posed-vertices hoist).
     pub ambient_lookups: std::cell::Cell<usize>,
+    /// The language string table (`USATxt.dat`, the NTSC-U default `FNames[SelLang]`) — the source of the
+    /// HUD's label text (`Txt_BindLabel` 0x1cad60). Loaded in `nf_view::load`.
+    pub lang: Option<nf_formats::hud::Lang>,
+    /// The HUD's per-frame state (`fix-hud`): the weapon-name timer (`BL+0x95E`), the health pane's
+    /// crouch-icon timer, the pickup message bar (pane 21) and how many `drones.taken` events it has
+    /// converted. Stepped per tick in `hud_tick` (the game's HUD update runs per 60 Hz frame).
+    pub hud: HudState,
+}
+
+/// One pickup/status message (`Text_AddMsg` 0x1b0c30's `TXT_MSG` node: text + time-left).
+#[derive(Clone, Debug)]
+pub struct Msg { pub text: String, pub time: f32 }
+
+/// The HUD state the port keeps in Sim (the game keeps it in BLData / the TXTMSG list / pane structs).
+#[derive(Clone, Debug, Default)]
+pub struct HudState {
+    /// The (viewer 0, type 6) pickup message queue, head first (`Text_AddMsg` 0x1b0c30's list head 0x31997c).
+    pub msgs: std::collections::VecDeque<Msg>,
+    /// How many `drones.taken` events `hud_tick` has converted into messages.
+    pub taken_seen: usize,
+    /// `BL+0x95E`: 60 ticks after a weapon whose record's +2 word changed; the ammo pane shows the
+    /// fire-mode label bright while it runs, then the weapon name (`HUD_UpdateAmmoPane` 0x19a7f0).
+    pub weapon_label_timer: u8,
+    /// `obj+0x63`: the weapon id the HUD last saw (the timer's change test) [M 0x19a7f0:206-213].
+    pub hud_weapon: u8,
+    /// The health pane's `CrouchIconTimer` (60 after Bond stands; fades sprite 19 over the last 30)
+    /// [M `HUD_UpdateHealthPane` 0x19b9c8:305-328].
+    pub crouch_icon_timer: i32,
+    /// The pickup bar's close animation (its remaining width; `HUD_UpdateStatusPane` 0x19c310 state 4
+    /// shrinks 16 px per tick — pane+0xC = 0x10 for the pickup pane).
+    pub bar_close: f32,
+}
+
+impl HudState {
+    /// The bar's open width when a message is up (256) — the pane template's width [D hud.md].
+    const BAR_W: f32 = 256.0;
 }
 
 impl Sim {
@@ -1239,9 +1275,70 @@ impl Sim {
         // (The B-10 symptom was the opposite gating bug: freezing the whole tick stopped Trigger_Calc +
         // SP_Update, so PlayerEnable never arrived.)
         self.drones.tick(&d, &player);
+        // The HUD's per-frame state: the weapon-name timer, the crouch-icon timer, the pickup messages
+        // (`Text_UpdateMsg` 0x1b11d8 runs from the HUD/status-pane update at frame rate).
+        self.hud_tick();
         // `Lights_CalcAmbientLight` (0x1cb178) runs per moving object from `control_movement_object_handler`
         // (0x1336f8) — the last step of the tick, before the draw reads obj+0x100..0x102.
         self.ramp_char_ambient();
+    }
+
+    /// The HUD's per-tick state (`fix-hud`). Runs from the tick path (the game's HUD update is per
+    /// 60 Hz frame): `HUD_UpdateAmmoPane` 0x19a7f0's BL+0x95E weapon timer, `HUD_UpdateHealthPane`
+    /// 0x19b9c8's crouch-icon timer, and the pickup message queue (`Pickup_Handler` 0x18e650 →
+    /// `Text_AddMsg` 0x1b0c30; `Text_UpdateMsg` 0x1b11d8 decrements the head's time by FRAME_RATE_MUL
+    /// = 1 and deletes it at ≤ 0).
+    fn hud_tick(&mut self) {
+        // The weapon-name timer: set to 60 when the HUD's weapon id differs from the last seen one and
+        // the two records' +2 words differ [M 0x19a7f0:206-213]; counts down every frame.
+        let w = self.gun.weapon;
+        if self.hud.hud_weapon != w && w != 0 {
+            let changed = match (self.weapons.records.get(self.hud.hud_weapon as usize), self.weapons.records.get(w as usize)) {
+                (Some(a), Some(b)) => a[2..4] != b[2..4],
+                _ => false,
+            };
+            if changed { self.hud.weapon_label_timer = 60; }
+        }
+        self.hud.hud_weapon = w;
+        self.hud.weapon_label_timer = self.hud.weapon_label_timer.saturating_sub(1);
+        // The crouch icon: the timer holds 60 while crouched, then fades after standing
+        // [M 0x19b9c8:305-328].
+        if self.bond.crouched { self.hud.crouch_icon_timer = 60; }
+        else if self.hud.crouch_icon_timer > 0 { self.hud.crouch_icon_timer -= 1; }
+        // New pickup events → messages (`Pickup_Handler` 0x18e650's Text_AddMsg calls, type 6, 180 ticks
+        // in SP; sounds 0xF5/0x141/0x14C are the take sounds the pickup path already plays).
+        let lang = self.lang.take();
+        let mut new_msgs: std::collections::VecDeque<Msg> = Default::default();
+        for (_, t) in self.drones.taken.iter().skip(self.hud.taken_seen) {
+            let Some(lang) = lang.as_ref() else { break };
+            let text = match t {
+                nf_game::pickup::Taken::Weapon { weapon } => {
+                    let name = lang.bind(self.weapons.name_label(*weapon as usize)).unwrap_or("");
+                    lang.format(0x200_000D, &[name.to_string()])
+                }
+                nf_game::pickup::Taken::Ammo { weapon, rounds } => {
+                    let at = self.weapons.ammo_type(*weapon as usize);
+                    let name = lang.bind(self.weapons.ammo_name_label(at)).unwrap_or("");
+                    lang.format(0x200_000E, &[rounds.to_string(), name.to_string()])
+                }
+                nf_game::pickup::Taken::Key { .. } => lang.bind(0x200_0010).unwrap_or("").to_string(),
+                nf_game::pickup::Taken::Armour => lang.bind(0x200_000F).unwrap_or("").to_string(),
+                nf_game::pickup::Taken::Bonus => lang.bind(0x200_004A).unwrap_or("").to_string(),
+            };
+            if !text.is_empty() { new_msgs.push_back(Msg { text, time: 180.0 }); }
+        }
+        self.hud.taken_seen = self.drones.taken.len();
+        for m in new_msgs { self.hud.msgs.push_back(m); }
+        self.lang = lang;
+        // `Text_UpdateMsg` 0x1b11d8: time −= 1 per frame, delete at ≤ 0. The bar closes (state 4) when
+        // the queue empties [M `HUD_UpdateStatusPane` 0x19c310].
+        for m in &mut self.hud.msgs { m.time -= 1.0; }
+        self.hud.msgs.retain(|m| m.time > 0.0);
+        if self.hud.msgs.is_empty() {
+            if self.hud.bar_close > 0.0 { self.hud.bar_close = (self.hud.bar_close - 16.0).max(0.0); }
+        } else {
+            self.hud.bar_close = HudState::BAR_W;
+        }
     }
 
     /// The crosshair offset (`BL+0x120 / +0x124`: −1…1 across half the screen) from the auto-aim offset angles: tan of the
@@ -1735,7 +1832,7 @@ impl Scene {
         // Level-placed pickups (`Pickup_Create` 0x18dda0 via `parsemap_create_dynamic_objects` type 0xF0),
         // built BEFORE the draw groups so the draw loop can instance them (fix-player2: the placed armour
         // had no drawn instance at all — `View_DrawObjectGlist` 0x1e6780 draws `obj+0xD8` at `obj+0x90`).
-        let placed_weapons = drones.and_then(|d| d.weapons.clone()).unwrap_or_else(|| nf_formats::weapon::WeaponData { records: Vec::new(), ammo_cap: Vec::new() });
+        let placed_weapons = drones.and_then(|d| d.weapons.clone()).unwrap_or_else(|| nf_formats::weapon::WeaponData { records: Vec::new(), ammo_cap: Vec::new(), ammo_raw: Vec::new() });
             let hoist_models = nf_game::pickup::models(level);
             let mm = level.main_map().unwrap_or(0);
             let placed_pickups: Vec<nf_game::pickup::Pickup> = level.maps[mm].placements.iter()
@@ -2259,7 +2356,7 @@ impl Scene {
                 })
                 .collect();
             drones.pickups.extend(placed_pickups);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0) })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default() })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {

@@ -14,6 +14,8 @@ pub struct WeaponData {
     /// `ammo_data` (0x2C69B8, 12-byte records) `+0x02`: the most rounds of each ammo type Bond carries
     /// (docs/systems/pickups.md).
     pub ammo_cap: Vec<i16>,
+    /// The raw `ammo_data` records (the +8 name label of each type).
+    pub ammo_raw: Vec<[u8; 12]>,
 }
 
 impl WeaponData {
@@ -31,7 +33,8 @@ impl WeaponData {
         let (ammo, ammo_size) = sym("ammo_data")?;
         let ammo = m.read(ammo, ammo_size as usize)?;
         let ammo_cap = ammo.chunks_exact(12).map(|r| i16::from_le_bytes([r[2], r[3]])).collect();
-        Ok(WeaponData { records: bytes.chunks(RECORD).map(|c| c.try_into().unwrap()).collect(), ammo_cap })
+        let ammo_raw = ammo.chunks_exact(12).map(|r| r.try_into().unwrap()).collect();
+        Ok(WeaponData { records: bytes.chunks(RECORD).map(|c| c.try_into().unwrap()).collect(), ammo_cap, ammo_raw })
     }
 
     /// A character's muzzle flash (`DroneWeap_FireWeapon`): the `+0x4C` mesh (none when 0) and the light colour
@@ -89,6 +92,19 @@ impl WeaponData {
 
     /// `+0x90`: the ammo type (index into `ammo_data` and Bond's carried rounds).
     pub fn ammo_type(&self, weapon: usize) -> usize { self.records.get(weapon).map_or(0, |r| r[0x90] as usize) }
+
+    /// `ammo_data[type] + 8`: the ammo's name label (the `%s` of the pickup ammo message; `Pickup_Handler`
+    /// 0x18e650 case 1 binds `ammo_data[weapon_data[w]+0x90]+8`). `ammo_data` records are 12 bytes.
+    pub fn ammo_name_label(&self, ammo_type: usize) -> u32 {
+        self.ammo_raw.get(ammo_type).map_or(0, |r| u32::from_le_bytes(r[8..12].try_into().unwrap()))
+    }
+
+    /// `+0x30 + mode*4`: the fire-mode label id (u32 per fire mode; `HUD_UpdateAmmoPane` 0x19a7f0 reads
+    /// `*(int*)(weapon + mode*4 + 0x30)`, mode = the belt byte `BL+0x1BB + w*0xC`). 0 = no label.
+    pub fn fire_mode_label(&self, weapon: usize, mode: usize) -> u32 {
+        let o = 0x30 + mode * 4;
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[o..o + 4].try_into().unwrap()))
+    }
 
     /// `+0x92`: the clip size (also what a dropped gun's rounds scale).
     pub fn clip_size(&self, weapon: usize) -> i16 { self.u16_at(weapon, 0x92) as i16 }
@@ -243,7 +259,7 @@ mod tests {
     fn weapon_with_bullet_flags(flags: u32) -> WeaponData {
         let mut r = [0u8; RECORD];
         r[0x6c..0x70].copy_from_slice(&flags.to_le_bytes());
-        WeaponData { records: vec![r], ammo_cap: Vec::new() }
+        WeaponData { records: vec![r], ammo_cap: Vec::new(), ammo_raw: Vec::new() }
     }
 
     /// `+0x6C & 0x40000` = the fly-by bit. Sister: a weapon without the bit (e.g. 0x50) does not fly-by.

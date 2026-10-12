@@ -1,6 +1,7 @@
 //! The HUD's static tables in ACTION.ELF (docs/systems/hud.md): `SpriteInfo` arrays (`Sprite_Create2` 0x1de3d8,
-//! 0x2C bytes), the bullet-strip table `BulletImg.189`, and the fonts (`FONTSerpLight` + `FontDataSerpLight`, read
-//! by `__Font_DrawText` 0x1ee598 / `Font_GetKernAdjust` 0x1ee298).
+//! 0x2C bytes), the bullet-strip table `BulletImg.189`, the fonts (`FONTSerpLight` + `FontDataSerpLight`, read
+//! by `__Font_DrawText` 0x1ee598 / `Font_GetKernAdjust` 0x1ee298), and the language string tables
+//! (`Txt_LoadLanguage` 0x1caad0 / `Txt_BindLabel` 0x1cad60 over the disc `*.dat` files, e.g. `USATxt.dat`).
 
 use crate::buf::{Buf, FormatError, Result};
 use crate::elf::Elf;
@@ -52,6 +53,8 @@ impl Font {
 pub struct HudTables {
     pub health: Vec<SpriteInfo>,
     pub ammo: Vec<SpriteInfo>,
+    /// The air/oxygen pane's 3 sprites (`HUD_UpdateAirPane` 0x1a11c8, `AirSprInfo` 0x2bd490).
+    pub air: Vec<SpriteInfo>,
     /// Per ammo type: u, v, width, pixels per round.
     pub bullets: Vec<[f32; 4]>,
     /// Font 2 (`FONTSerpLight`, the HUD's).
@@ -101,6 +104,82 @@ impl HudTables {
             Ok(Glyph { u: s(0)?, v: s(2)?, w: s(4)?, h: s(6)?, yoff: s(8)?, pre: s(0xa)?, post: s(0xc)?, code: gb.u16(o + 0x14)?, kerns })
         }).collect::<Result<_>>()?;
         let font = Font { first, last, gap: fh.f32(0x14)?, space: fh.f32(0x18)?, glyphs };
-        Ok(HudTables { health: sprites("HealthSprInfo")?, ammo: sprites("AmmoSprInfo")?, bullets, font })
+        let air = sprites("AirSprInfo")?;
+        Ok(HudTables { health: sprites("HealthSprInfo")?, ammo: sprites("AmmoSprInfo")?, air, bullets, font })
+    }
+}
+
+/// A language string table: one disc `*.dat` file (e.g. `USATxt.dat`, the NTSC-U default — `FNames[SelLang]`,
+/// `Txt_LoadLanguage` 0x1caad0 sprintf's `"%s%s"` over it). Layout [M 0x1caad0, verified on the disc]:
+/// `u32 dataBytes`, the data block, padded to `dataBytes + (4 - dataBytes % 4)` (the reader's advance is
+/// `size + (4 - (size & 3))` — 4 even when aligned); `u32 NumEntries`; `u32 offsets[NumEntries - 1]`
+/// (entry *i* ≥ 1 is the NUL-terminated string at `data[offsets[i-1]]`; entry 0 is the heap-string slot,
+/// bound to an empty sentinel in the ELF); `u32 NumFixups`; `u32 fixups[NumFixups]`.
+/// `Txt_BindLabel(id, _)` 0x1cad60: `index = fixups[id >> 24] + (id & 0xffffff)`; 0 → the heap (no static
+/// string), `>= NumEntries` → "Invalid Text Label", else `Bank[index]`.
+#[derive(Clone, Debug, Default)]
+pub struct Lang {
+    data: Vec<u8>,
+    /// Entry *i*'s offset into `data` (index shifted by one: `offsets[i-1]` in the file).
+    offsets: Vec<u32>,
+    fixups: Vec<u32>,
+}
+
+impl Lang {
+    pub fn parse(data: &[u8]) -> Result<Lang> {
+        let b = Buf(data);
+        if data.len() < 4 { return Err(FormatError::Invalid("text table: no header".into())); }
+        let size = b.u32(0)? as usize;
+        let mut p = 4 + size + (4 - (size & 3));
+        if p + 4 > data.len() { return Err(FormatError::Invalid("text table: data past the file".into())); }
+        let data_end = 4 + size;
+        let n = b.u32(p)? as usize; p += 4;
+        if n == 0 { return Ok(Lang { data: data[4..data_end].to_vec(), offsets: Vec::new(), fixups: Vec::new() }); }
+        if p + (n - 1) * 4 > data.len() { return Err(FormatError::Invalid("text table: offsets past the file".into())); }
+        let mut offsets = Vec::with_capacity(n - 1);
+        for _ in 1..n { offsets.push(b.u32(p)?); p += 4; }
+        if p + 4 > data.len() { return Err(FormatError::Invalid("text table: no fixup count".into())); }
+        let nf = b.u32(p)? as usize; p += 4;
+        if p + nf * 4 > data.len() { return Err(FormatError::Invalid("text table: fixups past the file".into())); }
+        let mut fixups = Vec::with_capacity(nf);
+        for _ in 0..nf { fixups.push(b.u32(p)?); p += 4; }
+        Ok(Lang { data: data[4..data_end].to_vec(), offsets, fixups })
+    }
+
+    /// `Txt_BindLabel` (0x1cad60): the NUL-terminated string for a `0x2xxxxxx` label id, lossy-decoded.
+    /// `None` = the game's empty cases: no fixup table, an out-of-range bank, index 0 (a heap string) or
+    /// `>= NumEntries` ("Invalid Text Label").
+    pub fn bind(&self, id: u32) -> Option<&str> {
+        if self.fixups.is_empty() { return None; }
+        let bank = (id >> 24) as usize;
+        if bank >= self.fixups.len() { return None; }
+        let index = self.fixups[bank] + (id & 0xffffff);
+        if index == 0 || index as usize >= self.offsets.len() + 1 { return None; }
+        let off = self.offsets[index as usize - 1] as usize;
+        let end = self.data[off..].iter().position(|&c| c == 0).map_or(self.data.len(), |e| off + e);
+        Some(std::str::from_utf8(&self.data[off..end]).unwrap_or(""))
+    }
+
+    /// `sprintf`-style substitution for the `%s` / `%d` forms the game builds with
+    /// `sprintf(heap, Txt_BindLabel(id), args)` (`Pickup_Handler` 0x18e650). Only the pickup messages'
+    /// forms are handled: `%s` (weapon name), `%d` (a count), `%%`.
+    pub fn format(&self, id: u32, args: &[String]) -> String {
+        let Some(tpl) = self.bind(id) else { return String::new() };
+        let mut out = String::new();
+        let mut next = 0usize;
+        let mut chars = tpl.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '%' { out.push(c); continue; }
+            match chars.next() {
+                Some('%') => out.push('%'),
+                Some('s') | Some('d') | Some('x') => {
+                    if let Some(a) = args.get(next) { out.push_str(a); }
+                    next += 1;
+                }
+                Some(other) => { out.push('%'); out.push(other); }
+                None => out.push('%'),
+            }
+        }
+        out
     }
 }
