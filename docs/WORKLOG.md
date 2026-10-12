@@ -4648,3 +4648,57 @@ plate positions (walk Bond over plates 341/383 [D]) and a damage check on the wo
 Files: `crates/nf-game/src/drone.rs` (the mission-state block), `crates/nf-game/src/nav.rs` (for_path — shared
 file, minimal change, noted), the two new test files + the probe. Determinism: no new RNG draws (BondTalk's
 draws are inside the unported function); the walk call is fixed-anim.
+
+## fix-render4 — the flat light-blue floor quads measured to their objects; the 07000002 dump pass the user asked for
+
+Branch `s/fix-render4` (from master 923595b). Playtest reference: docs/playtests/2026-10-11.md. **No library code
+changed this session — both headline bugs are measured to their objects but not fixed; the evidence and the exact
+next moves are below.** Two new opt-in test files: `crates/nf-view/tests/probe_render4.rs` (the render evidence
+harness) and `crates/nf-view/tests/dump_render4.rs` (the real-walk dump pass fix-drone4 asked for).
+
+**The floor quads are identified.** The user's flat light-blue quads near stairs and railings (07000007+) are the
+level's baked shadow-decal objects: `hall_shadows1/3/4`, `OBJECT_banistershadows1..4`, `hall_shadow_banister01/02`
+[D 07000007.bin main map 47, names+flags 0x221/0x21/0x20], drawn from textures `002f:003e`/`002f:0055` (64×64, RGB
+≈ black mean 3 sd 0, the shape in the ALPHA channel 0–255) as list-1 (flags & 1) batches with ALPHA_1 0x44 normal
+blend, TEST_1 0x5001B (only A=0 discarded), ZBUF per leaf, vertex rgba ≈ (14,14,14,67) — i.e. subtle dark shadows
+in the game. Measured headless (probe_render4): **the port has 0 untextured World groups, 0 out-of-range texture
+REFs, 0 coronas (0xFC) and 0 searchlights (0xDE) on 07000007/07000008** — "missing texture" and "wrong object"
+theories are dead; the port binds the same textures and per-pixel GS state the game's packets carry.
+
+**What the decompile added [M]:** `psiCreateEntityGfx` 0x1171b0 resolves each texture REF addr through the 0x10
+texture-header entry (+8 word → runtime record → record+0x1a u16 → global upload chain `DAT_00254ae8`), and
+`psiCreateMapTextures` 0x11d200 dedups textures by pixel CRC into that global table — so the port's
+`maps[map].textures[addr]` binding is pixel-equivalent even where the global id differs. `psiStartAlpha` 0x124900 /
+`psiEndAlpha` 0x124920 only set/clear `AlphaFogObjects` (the list-1 distance fade, active only when `FogOn`) — the
+port's fog=2 shader path already gates identically. `View_DrawObjList` 0x1e69a0 reads `bCharacterLight`
+(obj+0xFE bit 2) and `bShadowCharacter` (bit 3) per object for the VU1 pipeline — the port ignores obj+0xFE
+entirely, and those VU1 semantics are hand-written asm (untraced, gs-leaf.md "Not verified").
+
+**Not fixed, and why.** No GPU here, so the port's on-screen colour for those decals can't be compared with the
+user's screenshots; every headless check (texture content, blend/test/depth per batch, REF resolution, list
+routing, corona/searchlight presence) matches the game. The two candidate deltas for the next pass (main agent has
+the GPU): (a) the `bShadowCharacter` VU1 path — if set on these objects the game forces their output colour/alpha
+in ways the port never models; (b) R2's depth rule — the game's 24-bit integer GEQUAL depth with coplanar decals
+vs the port's f32 LessEqual (z-fighting shows decals through floors). What should change on screen: the pale
+blue-white solid quads near stairs/railings must become faint dark soft-edged shadows on the floor.
+
+**The 07000002 real-walk dump (dump_render4.rs) — the concrete port defect, not fixed this session.** Walking Bond
+(teleported beside the bathhouse civilian at (−20,1,34), then at the plate positions) and dumping every drawn
+drone with the requested fields shows: the bathhouse guards d00/d01/d03/d06/d07 (skins 0x05000036/3a/39, team 1,
+ch 21/23) and the team-3 "captain" bodyguards d22/d23 (skin 0x05000034 "captain" [D], team 3, modes 7/5, dtypenew
+14, ch 22/23) are **`started=false`, `enabled=true` at tick 0 and end in WAIT_SWITCH with `enabled=false`** — the
+port's WAIT_SWITCH enter (drone.rs `(WAIT_SWITCH, ENTER)`) disables the drone, and the port's disabled drones are
+not posed (no animation) and not hit-tested — while the renderer still draws their placement meshes (Scene::build
+adds every char instance). The user therefore sees a frozen, unhittable guard standing next to the hostage. In the
+game, WaitSwitch stops vision/AI engagement but the drone stays at its post with its idle pose and takes damage.
+The teleport-walk over plates 341/383 (kind 0xEA → ch 21 [D]) did not raise ch21 headless — Bond got jammed at the
+upper-floor plate positions, so the plate wake is still unverified end-to-end; the channel raise via the real
+trigger path needs an unobstructed walk route. NOT FIXED.
+
+**Not done this session** (each with its reason): G-041 bullet decals (small-medium, out of budget); G-042
+skin-texel check (needs the civilian skin's texture identified on disc); O5 searchlight beam/corona (07000007/08
+have 0 searchlights; the 07000006 beam work needs screen checks); the 07000005 torso flip and 07000006 stationary
+guards (no new evidence; fix-drone3's clamp is still in); the searchlight→alarm music event (Searchlight_Update's
+sound call not yet identified).
+
+Determinism: no code changed, no RNG draws added. Files: the two new test files only.
