@@ -205,7 +205,8 @@ fn probe_07000005_truck_script_entities() {
 /// touch capsule ([M Player_Collision 0x194DF0: 0x3f0ccccd = 0.55]) misses the plate by ≈0.24 m.
 /// In the game the plate lies exactly at the bed-floor height (truck root at the park 36.05 + bed
 /// hull bottom ≈1.69 ≈ 37.74), so the game's Bond stands ON it — the port's truck collision/ride
-/// keeps him ≈0.6 higher. Fixing it needs either the game's collide-stage contact geometry for
+/// keeps him ≈0.6 higher. (fix-truck refined the diagnosis: the +0.44 is the bed RAILS stand, caused by
+/// the SP #298 walk never running — see truck_ride_park_and_chain_match_the_trace below.) Fixing it needs
 /// triggers (the writer of obj+0xD0, untraced) or the port's bed stand height (drone.rs — a shared
 /// file this task must not retune without game evidence). `#[ignore]`d so the suite stays green;
 /// run with `cargo test … truck_ride -- --ignored --nocapture` to re-trace.
@@ -291,5 +292,336 @@ fn probe_07000006_loads_headless() {
     eprintln!("07000006: sim present {}", scene.sim.is_some());
     if let Some(sim) = scene.sim.as_ref() {
         eprintln!("level id {:#x}, bond at {:?}", sim.level, sim.bond.pos);
+    }
+}
+
+// ── fix-truck diagnostics ───────────────────────────────────────────────────────────────────────────
+
+use nf_formats::anim::Mat4 as TMat4;
+
+/// `Data::discrete_parts` replica for probes (Sim fields are the same maps).
+fn probe_parts(sim: &nf_view::scene::Sim, skin: u32, script: u32, frame: f32) -> Vec<(u32, TMat4)> {
+    let Some(sk) = sim.skins.get(&skin) else { return Vec::new() };
+    let Some(skel) = sim.skeletons.get(&sk.skeleton) else { return Vec::new() };
+    let Some(scr) = sim.scripts.get(&script) else { return Vec::new() };
+    let Some((q, f)) = nf_game::anim::script_frame(scr, frame) else { return Vec::new() };
+    let Some(seq) = sim.seqs.get(&q).filter(|q| nf_formats::anim::fits(q, skel)) else { return Vec::new() };
+    let world = nf_formats::anim::world_pose(&nf_formats::anim::local_pose(seq, skel, sk, f as u32), sk);
+    sk.extra.iter().filter_map(|&(bone, part)| Some((part?, *world.get(bone as usize)?))).collect()
+}
+
+/// fix-truck probe: at the park, dump the script objects (the truck anim), its discrete parts, which
+/// part's triangles lie under Bond, and the surface heights involved.
+#[test]
+fn probe_truck_park_surfaces() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
+    let sim = scene.sim.as_mut().unwrap();
+    sim.bond = nf_game::player::Bond::new([100.0, 26.0, 108.0], 0.0);
+    for t in 1..=6000u32 {
+        sim.step_bond(Default::default(), false, false, false);
+        if t % 1000 == 0 {
+            eprintln!("[park] t{t} bond ({:.3},{:.3},{:.3}) 0x70:{} 0x71:{} 0x72:{} exit {:?}",
+                sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2],
+                sim.drones.channels.on(0x70) as i32, sim.drones.channels.on(0x71) as i32,
+                sim.drones.channels.on(0x72) as i32, sim.drones.level_exit);
+        }
+    }
+    let bp = sim.bond.pos;
+    eprintln!("[park] bond pos {:?} grounded {} floor_ny {:.3}", bp, sim.bond.grounded, sim.bond.floor_ny);
+    eprintln!("[park] game target: root y 37.887 [D trace 37173] → port pos must be 37.887±0.05");
+    // The surface straight below Bond (dynamic parts included — set_dynamic ran this tick).
+    for drop in [0.1f32, 1.0, 1.7, 3.0] {
+        if let Some((tt, n)) = sim.world.segment_hit([bp[0], bp[1] + 0.05, bp[2]], [bp[0], bp[1] - drop, bp[2]]) {
+            let y = bp[1] + 0.05 - tt * (drop + 0.05);
+            eprintln!("[park] hit below at y {y:.4} (from +0.05 drop {drop}) normal {:.2?}", n);
+            break;
+        }
+    }
+    let gm = sim.world.ground_motion(bp, [bp[0], bp[1] - 1.6347, bp[2]]);
+    eprintln!("[park] ground_motion {:?}", gm.map(|g| (g.delta, g.turn)));
+    // Static floor under the truck park spot.
+    eprintln!("[park] floor_below at bond xz: {:?}", sim.world.floor_below([bp[0], 40.0, bp[2]], 8.0));
+    // Script objects and their parts.
+    for (oi, o) in sim.drones.scripts.objects.list.iter().enumerate() {
+        match o {
+            Some(nf_game::nis::Obj::Anim { skin, script, frame, .. }) => {
+                eprintln!("[park] obj#{oi} ANIM skin {skin:#x} script {script:#x} frame {frame:.2}");
+                for (pi, (h, m)) in probe_parts(sim, *skin, *script, *frame).into_iter().enumerate() {
+                    let tr = sim.world.shape(h).map(|s| s.len()).unwrap_or(0);
+                    let trly = m[3][1];
+                    // World-space y range of the part's tris near Bond's x/z (2 m box).
+                    let mut ymax = f32::NEG_INFINITY; let mut ymin = f32::INFINITY; let mut n = 0;
+                    if let Some(tris) = sim.world.shape(h) {
+                        for t in tris {
+                            let w: Vec<[f32; 3]> = t.iter().map(|p| nf_formats::placement::transform(&m, *p)).collect();
+                            let near = w.iter().any(|p| (p[0] - bp[0]).abs() < 2.0 && (p[2] - bp[2]).abs() < 2.0);
+                            if near { n += 1; for p in &w { ymax = ymax.max(p[1]); ymin = ymin.min(p[1]); } }
+                        }
+                    }
+                    eprintln!("[park]   part#{pi} {h:08x} tris {tr} mat y {trly:.3} near-bond tris {n} y {ymin:.3}..{ymax:.3}");
+                }
+            }
+            Some(nf_game::nis::Obj::Entity { hash, kind, matrix, .. }) => {
+                let tr = sim.world.shape(*hash).map(|s| s.len()).unwrap_or(0);
+                eprintln!("[park] obj#{oi} ENTITY hash {hash:08x} kind {kind:#x} tris {tr} at ({:.2},{:.3},{:.2})",
+                    matrix[3][0], matrix[3][1], matrix[3][2]);
+            }
+            Some(nf_game::nis::Obj::Camera { matrix, fov, .. }) => eprintln!("[park] obj#{oi} CAMERA fov {fov} at {:.2?}", matrix[3]),
+            None => eprintln!("[park] obj#{oi} None"),
+        }
+    }
+    // The 0x70 plate and 0x71 bed-touch trigger boxes as built.
+    for t in &sim.drones.triggers {
+        if t.out == 0x70 || t.out == 0x71 {
+            eprintln!("[park] trigger out {:#x} tris {} lo {:?} hi {:?}", t.out, t.tris.len(), t.lo, t.hi);
+        }
+    }
+}
+
+/// fix-truck probe: the truck's discrete part matrices at anim frame 1 (the level-start pose) to compare
+/// with the game's obj+0x90 matrices in work/ee_start_05.bin.
+#[test]
+fn probe_truck_frame1_parts() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
+    let sim = scene.sim.as_ref().unwrap();
+    for (pi, (h, m)) in probe_parts(sim, 0x0500_0005, 0x0600_0092, 1.0).into_iter().enumerate() {
+        eprintln!("[f1] part#{pi} {h:08x} mat [ {:.4}, {:.4}, {:.4}, {:.4} / {:.4}, {:.4}, {:.4}, {:.4} / {:.4}, {:.4}, {:.4}, {:.4} / {:.4}, {:.4}, {:.4}, {:.4} ]",
+            m[0][0], m[0][1], m[0][2], m[0][3], m[1][0], m[1][1], m[1][2], m[1][3],
+            m[2][0], m[2][1], m[2][2], m[2][3], m[3][0], m[3][1], m[3][2], m[3][3]);
+    }
+}
+
+/// fix-truck probe: which part's triangles form the surface under the parked Bond, and what lies between
+/// it and the game's rest height (36.85 world = truck-local ~0.81).
+#[test]
+fn probe_truck_rest_triangle() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
+    let sim = scene.sim.as_mut().unwrap();
+    sim.bond = nf_game::player::Bond::new([100.0, 26.0, 108.0], 0.0);
+    for _ in 0..6000u32 { sim.step_bond(Default::default(), false, false, false); }
+    let bp = sim.bond.pos;
+    // The truck anim object.
+    for (oi, o) in sim.drones.scripts.objects.list.iter().enumerate() {
+        let Some(nf_game::nis::Obj::Anim { skin, script, frame, .. }) = o else { continue };
+        eprintln!("[rest] truck anim obj#{oi} skin {skin:#x} script {script:#x} frame {frame:.1}");
+        for (pi, (h, m)) in probe_parts(sim, *skin, *script, *frame).into_iter().enumerate() {
+            let Some(tris) = sim.world.shape(h) else { continue };
+            // Object-space bbox of the whole part.
+            let mut blo = [f32::INFINITY; 3]; let mut bhi = [f32::NEG_INFINITY; 3];
+            for t in tris { for p in t { for k in 0..3 { blo[k] = blo[k].min(p[k]); bhi[k] = bhi[k].max(p[k]); } } }
+            // Triangles near Bond's column (0.8 m) whose world y is in the two candidate bands.
+            for (band, y0, y1) in [("PORT-rest 37.0-37.6", 37.0f32, 37.6f32), ("GAME-rest 36.6-37.0", 36.6, 37.0)] {
+                let mut hits = 0;
+                for t in tris {
+                    let w: Vec<[f32; 3]> = t.iter().map(|p| nf_formats::placement::transform(&m, *p)).collect();
+                    if !w.iter().all(|p| (p[0] - bp[0]).abs() < 0.8 && (p[2] - bp[2]).abs() < 0.8) { continue; }
+                    let ymid = (w.iter().map(|p| p[1]).fold(0.0f32, |a, b| a + b)) / 3.0;
+                    if ymid < y0 || ymid > y1 { continue; }
+                    hits += 1;
+                    if hits <= 3 {
+                        eprintln!("[rest]   part#{pi} {h:08x} {band}: tri y-mid {ymid:.3} verts {}",
+                            w.iter().map(|p| format!("({:.2},{:.2},{:.2})", p[0], p[1], p[2])).collect::<Vec<_>>().join(" "));
+                    }
+                }
+                eprintln!("[rest]   part#{pi} {h:08x} {band}: {hits} tris in Bond's column (obj bbox y {:.2}..{:.2})", blo[1], bhi[1]);
+            }
+        }
+    }
+}
+
+/// fix-truck probe: the hand-in moment (Bond leaves the script walk, lands in the bed) and the exact
+/// flat-up triangle he finally rests on, per part.
+#[test]
+fn probe_truck_handin_and_rest_tri() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
+    let sim = scene.sim.as_mut().unwrap();
+    sim.bond = nf_game::player::Bond::new([100.0, 26.0, 108.0], 0.0);
+    let mut last = sim.bond.pos;
+    for t in 1..=6000u32 {
+        sim.step_bond(Default::default(), false, false, false);
+        let p = sim.bond.pos;
+        // The ride start: bond x passes below 70 while the truck drives (script walk ends near x=61.5 [D trace]).
+        if last[0] >= 70.0 && p[0] < 70.0 || (t > 2000 && t < 4200 && t % 50 == 0) {
+            let floor = sim.world.segment_hit([p[0], p[1] + 0.05, p[2]], [p[0], p[1] - 2.5, p[2]])
+                .map(|(tt, _)| p[1] + 0.05 - tt * 2.55);
+            eprintln!("[hand] t{t} bond ({:.3},{:.3},{:.3}) vel {:.2?} floor_below {:.3}", p[0], p[1], p[2], sim.bond.vel, floor.unwrap_or(f32::NAN));
+        }
+        last = p;
+    }
+    let bp = sim.bond.pos;
+    eprintln!("[hand] parked bond {:?}", bp);
+    // All flat-up (ny > 0.9) triangles in Bond's column between y 36.3 and 37.6, by part.
+    for (oi, o) in sim.drones.scripts.objects.list.iter().enumerate() {
+        let Some(nf_game::nis::Obj::Anim { skin, script, frame, .. }) = o else { continue };
+        for (pi, (h, m)) in probe_parts(sim, *skin, *script, *frame).into_iter().enumerate() {
+            let Some(tris) = sim.world.shape(h) else { continue };
+            for (ti, t) in tris.iter().enumerate() {
+                let w: Vec<[f32; 3]> = t.iter().map(|p| nf_formats::placement::transform(&m, *p)).collect();
+                if !w.iter().all(|p| (p[0] - bp[0]).abs() < 0.8 && (p[2] - bp[2]).abs() < 0.8) { continue; }
+                let e1 = [w[1][0] - w[0][0], w[1][1] - w[0][1], w[1][2] - w[0][2]];
+                let e2 = [w[2][0] - w[0][0], w[2][1] - w[0][1], w[2][2] - w[0][2]];
+                let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                if nl < 1e-9 { continue; }
+                let ny = (n[1] / nl).abs();
+                let ymid = w.iter().map(|p| p[1]).sum::<f32>() / 3.0;
+                if ny > 0.9 && ymid > 36.3 && ymid < 37.7 {
+                    eprintln!("[hand] flat-up obj#{oi} part#{pi} {h:08x} tri#{ti} y-mid {ymid:.3} verts {}",
+                        w.iter().map(|p| format!("({:.2},{:.2},{:.2})", p[0], p[1], p[2])).collect::<Vec<_>>().join(" "));
+                }
+            }
+        }
+    }
+}
+
+/// fix-truck: the 07000005 truck ride end-to-end against tests/traces/05-truck.trace (the user's PCSX2
+/// run, god mode). Setup = the nf-view headless path exactly (`--bond 100,26,108 --frame 7000`):
+/// `nf_view::load` then `Bond::new` — not the old `pos =` assignment, which left the pre-ride Bond state
+/// (velocity, grounded history) from the level start and never reproduced the viewer's run.
+///
+/// Ground truth [D trace, frames relative to the last 07000005 frame 37173]:
+///   −317 ch 0x72 on (the gate guard at his post); −300 ch 0x70 + 0x65 on the same frame (the parked
+///   plate, Bond in the bed at (29.885, 37.887, 51.656)); −273/−272 ch 0x73 / 0x74; 0 ch 0x1D, the
+///   LOAD_LEVEL loads 07000006 on the next frame.
+///
+/// The 0x72 gap is AI-driven (the guard's walk), so only its order is asserted. The park-side gaps are
+/// script-driven (SP #37's events) and are asserted against the trace's numbers.
+/// DIAGNOSED (fix-truck, not fixed — see WORKLOG): the ride reaches the park with Bond on the truck's
+/// bed RAILS (+0.44 over the game's bed-floor stand), so ch 0x70's plate (y 37.7418) never reaches him
+/// and the chain stops. Chain of causes, all measured:
+///   1. The game walks Bond from the gatehouse plate to the truck inside a cut-scene: SP #298's
+///      0x06000994 (length 1400) animates skin 0x05000007 (Bond) with 0x06000995 and hands him back at
+///      entity 0x0200063A [D script streams]. The port's SP #298 never activates (no ch 0x43 event in
+///      the trace either, so its in-game trigger is something else — untraced), and the port has no
+///      player-follows-script-anim mechanic, so its Bond sits at the plate.
+///   2. The port's SP #38 (0x060008C8, 143 ticks) then frees Bond at entity 0x0200063A's matrix
+///      (92.25, 19.42, 103.58) — on the road mid-route (the game's Bond is never yanked there [D trace
+///      33607-35092]). Player_Enable 0x195498 writes obj+0x30 from the matrix directly — the direct
+///      placement in scene.rs is that [M] fix; the floor snap it replaced was port-invented.
+///   3. The parked truck's tailgate then shoves the road-standing capsule up onto the bed rails:
+///      the port's Bond rides at truck-root +1.06..1.23 (feet), the game's at +0.62..0.81 [D trace
+///      36856-37173 vs the port's rest probe].
+/// Run with `cargo test … truck_ride_park_and_chain -- --ignored --nocapture` to re-trace.
+#[test]
+#[ignore = "diagnosed: Bond rides on the bed rails (+0.44) because the SP #298 walk (the game's plate-to-truck cut-scene) never runs in the port — see doc comment"]
+fn truck_ride_park_and_chain_match_the_trace() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
+    let sim = scene.sim.as_mut().unwrap();
+    sim.bond = nf_game::player::Bond::new([100.0, 26.0, 108.0], 0.0);
+    let mut first_on: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    let mut exit_tick = None;
+    let mut parked = [0.0f32; 3];
+    for t in 1..=7000u32 {
+        sim.step_bond(Default::default(), false, false, false);
+        for c in [0x72u32, 0x70, 0x65, 0x73, 0x74, 0x1d] {
+            if sim.drones.channels.on(c) { first_on.entry(c).or_insert(t); }
+        }
+        if first_on.contains_key(&0x1d) { parked = sim.bond.pos; }
+        if sim.drones.level_exit.is_some() { exit_tick = Some(t); break; }
+    }
+    let at = |c: u32| first_on.get(&c).copied();
+    // The whole chain fires, in the trace's order.
+    assert_eq!(at(0x72), Some(first_on.get(&0x72).copied().unwrap()), "0x72 must fire");
+    for c in [0x70u32, 0x65, 0x73, 0x74, 0x1d] {
+        assert!(at(c).is_some(), "ch {c:#x} must fire (the truck park chain)");
+    }
+    let (t72, t70, t65) = (at(0x72).unwrap(), at(0x70).unwrap(), at(0x65).unwrap());
+    let (t73, t74, t1d) = (at(0x73).unwrap(), at(0x74).unwrap(), at(0x1d).unwrap());
+    assert!(t72 < t70, "0x72 (guard at post) must precede 0x70 (the parked plate) [D trace −317 vs −300]");
+    assert!(t65.abs_diff(t70) <= 1, "0x65 must fire with 0x70 (same trace frame)");
+    assert_eq!(t73.abs_diff(t70), 27, "0x73 fires 27 frames after 0x70 [D trace 36900 vs 36873]");
+    assert_eq!(t74.abs_diff(t70), 28, "0x74 fires 28 frames after 0x70 [D trace 36901 vs 36873]");
+    assert_eq!(t1d.abs_diff(t70), 300, "0x1D fires 300 frames after 0x70 [D trace 37173 vs 36873]");
+    assert_eq!(sim.drones.level_exit, Some(0x0700_0006), "the LOAD_LEVEL trigger must end the level");
+    assert!(exit_tick.is_some());
+    // Bond's parked position: the trace's last 07000005 frame is (29.885, 37.887, 51.656); the y must
+    // match within 0.05 (the port parks him on the bed floor, not on the side rails).
+    assert!((parked[1] - 37.887).abs() <= 0.05, "parked bond y {} must be 37.887±0.05 [D trace]", parked[1]);
+    assert!((parked[0] - 29.885).abs() < 0.5 && (parked[2] - 51.656).abs() < 0.5,
+        "parked bond xz {:?} near the trace's (29.885, 51.656)", &parked[0..3]);
+    // Sister: the tolerance can actually fail — the pre-fix rails stand (38.376, WORKLOG fix-level) is
+    // 0.489 off and would be rejected by the same comparison.
+    assert!((38.376f32 - 37.887).abs() > 0.05, "the 0.05 tolerance must reject the pre-fix rails stand");
+}
+
+/// fix-truck probe: script 0x060008C8 (the gatehouse cut-scene) — every stream's entity/anim/event
+/// commands in order, so the event-6 stream and its object can be identified.
+#[test]
+fn probe_gatehouse_cutscene_streams() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let data = read_archive(&iso, "07000005.bin");
+    let level = Level::parse(&data).expect("parse");
+    for (h, nis) in &level.nis {
+        if *h != 0x0600_08c8 && *h != 0x0600_0994 { continue; }
+        eprintln!("[c8] script {h:08x}: {} streams", nis.streams.len());
+        for (si, st) in nis.streams.iter().enumerate() {
+            for cmd in st.decode() {
+                match &cmd {
+                    nf_formats::nis::Cmd::Entity { hash, obj_type, parent, spline, params } =>
+                        eprintln!("[c8] stream {si}: ENTITY hash {hash:08x} type {obj_type:#x} parent {parent:?} spline {spline} params {:x?}", params.iter().take(8).collect::<Vec<_>>()),
+                    nf_formats::nis::Cmd::Anim { script, skin, start } =>
+                        eprintln!("[c8] stream {si}: ANIM script {script:08x} skin {skin:08x} start {start}"),
+                    nf_formats::nis::Cmd::Event { kind, params } =>
+                        eprintln!("[c8] stream {si}: EVENT {kind:#x} params {:x?}", params),
+                    nf_formats::nis::Cmd::Wait(t) if si == 3 || si == 4 => eprintln!("[c8] stream {si}: WAIT {t}"),
+                    nf_formats::nis::Cmd::Marker(t) if si == 3 || si == 4 => eprintln!("[c8] stream {si}: MARKER {t}"),
+                    nf_formats::nis::Cmd::Wait(t) => {}
+                    nf_formats::nis::Cmd::Marker(t) => eprintln!("[c8] stream {si}: MARKER {t}"),
+                    nf_formats::nis::Cmd::Unread(op) => eprintln!("[c8] stream {si}: UNREAD op {op:#x}"),
+                    nf_formats::nis::Cmd::Other(op) if si == 3 || si == 4 => eprintln!("[c8] stream {si}: OTHER op {op:#x}"),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// fix-truck probe: the gatehouse cut-scene's skin-7 anim character world position over time (its
+/// discrete object 0 = the anim root), to compare with the game's obj+0x30 walk [D trace 33900-34780].
+#[test]
+fn probe_gatehouse_anim_character_path() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
+    let sim = scene.sim.as_mut().unwrap();
+    sim.bond = nf_game::player::Bond::new([100.0, 26.0, 108.0], 0.0);
+    for t in 1..=4200u32 {
+        sim.step_bond(Default::default(), false, false, false);
+        if t % 100 != 0 { continue; }
+        // Build the Data view the same way scene.rs does.
+        let d = nf_game::drone::Data {
+            tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons,
+            world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins,
+            skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
+            hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
+            surfaces: sim.surfaces.as_ref(), voices: None,
+        };
+        let mut line = format!("[c8anim] t{t} bond ({:.2},{:.2},{:.2})", sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2]);
+        for (oi, o) in sim.drones.scripts.objects.list.iter().enumerate() {
+            if let Some(nf_game::nis::Obj::Anim { skin, script, frame, .. }) = o {
+                if let Some(m) = nf_game::nis::World::discrete0(&d, *skin, *script, *frame) {
+                    line += &format!(" | anim#{oi} skin {skin:08x} f{:.0} at ({:.2},{:.2},{:.2})", frame, m[3][0], m[3][1], m[3][2]);
+                }
+            }
+        }
+        eprintln!("{line}");
+    }
+}
+
+/// fix-truck probe: the level's script players (both script slots, modes, gates) and each script's length.
+#[test]
+fn probe_script_players() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
+    let sim = scene.sim.as_ref().unwrap();
+    for (i, p) in sim.drones.scripts.players.iter().enumerate() {
+        let la = sim.drones.scripts.lib.get(&p.scripts[0]).map(|n| (n.hashcode, n.length));
+        let lb = sim.drones.scripts.lib.get(&p.scripts[1]).map(|n| (n.hashcode, n.length));
+        eprintln!("[sp] #{i} placement {} scripts {:08x}/{:08x} lens {:?}/{:?} modes {:?} gate {:#x} mask {:x} stay {}",
+            p.placement, p.scripts[0], p.scripts[1], la, lb, p.modes, p.gate, p.mask, p.stay);
     }
 }

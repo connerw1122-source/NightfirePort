@@ -838,14 +838,19 @@ impl Sim {
         if self.creeping {
             self.drones.music.event(0xd, 1);
         }
-        // Script hand-offs (docs/systems/script-player.md): event 4 stops Bond; `Script_Free` after event 6 puts him
-        // back at the script's matrix (on the floor below it), facing its +Z.
+        // Script hand-offs (docs/systems/script-player.md): event 4 stops Bond; `Script_Free` after event 6
+        // enables him at the stored matrix. [M Player_Enable 0x195498:28-46] `obj+0x30 ← matrix+0x30` directly
+        // (a 16-byte copy), the spherical angles from the matrix's direction, the velocities zeroed
+        // (`Vec_Zero` BL+0x10/+0x20/+0x30/+0x40) — the only collision pass is the wire / creep-wall sphere
+        // test (flags 0x8c0), NO floor snap. The old `Bond::stand_at` ray (from matrix y + 1.0) started above
+        // the 07000005 truck's bed rails, so the hand-off snapped Bond onto the rails (+0.48 over the game's
+        // bed-floor stand, WORKLOG fix-level/fix-truck) and ch 0x70's parked plate never reached him.
         for e in std::mem::take(&mut self.drones.player_events) {
             match e {
                 nf_game::nis::Request::PlayerDisable => self.disabled = true,
                 nf_game::nis::Request::PlayerEnable { at, .. } => {
                     if let Some(m) = at {
-                        self.bond = nf_game::player::Bond::stand_at(&self.world, [m[3][0], m[3][1], m[3][2]], m[2][0].atan2(m[2][2]));
+                        self.bond = nf_game::player::Bond::new([m[3][0], m[3][1], m[3][2]], m[2][0].atan2(m[2][2]));
                     }
                     self.disabled = false;
                 }
