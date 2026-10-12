@@ -799,6 +799,26 @@ impl Sim {
             let (fs, fl) = (rd(0xb0), rd(0xb4));
             (self.view_script == fs || (fl != 0 && self.view_script == fl)) && self.view_time < len(self.view_script) - 1.0
         });
+        // The per-tick clip regen [M Player_Update 0x193600 disasm 0x193eb8-0x19405c]: while the view-anim
+        // state is not 9 (the port's `fire_busy` gate), six clip slots refill +FRAME_RATE_MUL toward their
+        // weapon's `weapon_data[w].clip_size` (+0x92): clip[0x4A] (+0x530) and clip[0x4E] (+0x560) and
+        // clip[0x33] (+0x41C) on `frame & 3 == 0`; clip[0x4C] (+0x548) and clip[0x4F] (+0x56C) on
+        // `frame & 1 == 0`; clip[0x45] (+0x4F4, the grenade belt) on `frame % 6 == 0`. No ownership gate.
+        if !self.disabled && !fire_busy {
+            let frame = self.drones.frame;
+            let gates: [(usize, bool); 6] = [
+                (0x4A, frame & 3 == 0), (0x4E, frame & 3 == 0), (0x33, frame & 3 == 0),
+                (0x4C, frame & 1 == 0), (0x4F, frame & 1 == 0), (0x45, frame % 6 == 0),
+            ];
+            for (w, on) in gates {
+                if !on { continue; }
+                let cap = self.weapons.records.get(w).map_or(0, |rec| u16::from_le_bytes([rec[0x92], rec[0x93]]) as i16);
+                if let Some(c) = self.drones.inventory.clip.get_mut(w) {
+                    if *c < cap { *c += 1; }
+                    if w == self.gun.weapon as usize { self.gun.clip = (*c).max(0) as u32; }
+                }
+            }
+        }
         if self.gun.switch_state == 0 && self.gun.reload_state == 0 && !fire_busy {
             let owned = self.drones.inventory.owned.clone();
             let carried = self.drones.inventory.carried.clone();
@@ -940,9 +960,11 @@ impl Sim {
                 self.drones.channels.set(self.wire_channel as u32, 0, self.drones.frame);
                 self.wire_channel = 0;
             }
-            // `Player_MonitorAir` 0x191a70's drown damage: `Player_HandlePain(0.5, type 7)` [M 0x191a70:136-143].
+            // `Player_MonitorAir` 0x191a70's drown damage: `Player_HandlePain(0.5, type 7)` [M 0x191a70:136-143]
+            // — the FULL pipeline (difficulty factor, no armour for type 7 [M 0x1902c8:84-104], the pain
+            // flash +0x968 and the both-sides bits +0x967 = 0xC), not a bare subtraction.
             if let Some(dmg) = self.bond.drown_damage {
-                self.drones.health.health = (self.drones.health.health - dmg).max(0.0);
+                self.drones.health.pain_generic(dmg, nf_game::drone::DIFFICULTY, self.level, 7);
             }
         }
         // Footsteps (`AnimObjectUpdate` 0x1befd8:163-198 [M], player): `BL+0x924` gathers the distance
@@ -974,7 +996,10 @@ impl Sim {
         // The bob phases: `BL+0x8DC` += the forward speed (`BL+0x28`), `BL+0x8E8` += (π/2) / 60.
         self.bob[0] += self.bond.local[1];
         self.bob[1] += std::f32::consts::FRAC_PI_2 / 60.0;
-        if let Some(dmg) = self.bond.fall_damage { self.drones.health.health = (self.drones.health.health - dmg).max(0.0); }
+        // The landing damage: `Player_CollisionHandler` 0x1949a8:117-126 calls `Player_HandlePain(timer - 60,
+        // type 6)` — the full pipeline: the difficulty factor, NO armour (types 1..7 bypass it [M
+        // 0x1902c8:84-104]), the pain flash +0x968 and the vertical direction bits +0x967 = 2.
+        if let Some(dmg) = self.bond.fall_damage { self.drones.health.pain_generic(dmg, nf_game::drone::DIFFICULTY, self.level, 6); }
         let (head, look) = (self.bond.head(), self.bond.look());
         // The shot's direction through the crosshair: forward + 0.76966 cx · right + 0.57724 cy · up.
         let (yaw, p) = (self.bond.yaw, self.bond.pitch * std::f32::consts::FRAC_PI_2);

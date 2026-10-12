@@ -136,9 +136,16 @@ impl PlayerHealth {
     /// (`Plr_DMod_*`, `ReadTuningVars`; 4 → ×2), armour absorbs first, health floors at 0 (below 1 → 0);
     /// flash += min(d · 21.333, 128), capped at 255. [L] 07000005 at difficulty 1: SG5 hits cost 1.65 = 2.75 × 0.6.
     pub fn pain(&mut self, damage: f32, difficulty: u32, level: u32) {
+        self.apply(damage, difficulty, level, 1.0);
+    }
+
+    /// The shared `Player_HandlePain` body. `armour_frac` is the pain type's armour fraction
+    /// [M 0x1902c8:84-104]: the type switch sets 1.0 for the default/bullet arm and 0.0 for types
+    /// 1..7 (the MP kill-feed writes in the 5/6/7 arms fall through to the same 0.0).
+    fn apply(&mut self, damage: f32, difficulty: u32, level: u32, armour_frac: f32) {
         if self.health <= 0.0 || damage <= 0.0 { return; }
         let d = damage * damage_factor(level, difficulty);
-        let absorbed = d.min(self.armour);
+        let absorbed = (d * armour_frac).min(self.armour);
         self.armour -= absorbed;
         self.health = (self.health - (d - absorbed)).max(0.0);
         if self.health < 1.0 { self.health = 0.0; }
@@ -148,9 +155,14 @@ impl PlayerHealth {
     /// `Player_HandlePain` 0x1902c8:124-130 also writes `BL+0x967`: the generic pain paths set 0xC (both
     /// sides — drowning/pain-type 7 use it too); pain type 6 sets 2. The directional path is
     /// `Player_DealWithObjHit` 0x194458:201-226, which the callers below mirror instead.
+    ///
+    /// The armour gate follows the game's pain-type switch [M 0x1902c8:84-104]: ONLY type 0 (the
+    /// default/bullet arm) lets armour absorb; types 1..7 set armourFraction 0.0 — falls (6,
+    /// `Player_CollisionHandler` 0x1949a8:120), drowning (7, `Player_MonitorAir` 0x191a70:142) and
+    /// the hurt-volume types drain health alone.
     pub fn pain_generic(&mut self, damage: f32, difficulty: u32, level: u32, pain_type: u32) {
         self.dir_bits = if pain_type == 6 { 2 } else { 0xC };
-        self.pain(damage, difficulty, level);
+        self.apply(damage, difficulty, level, if (1..=7).contains(&pain_type) { 0.0 } else { 1.0 });
     }
 
     /// `Player_DealWithObjHit` 0x194458:201-226: the attacker position transformed into the viewer's frame,
@@ -194,6 +206,29 @@ pub fn damage_factor(level: u32, difficulty: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// fields-player: the armour gate of `Player_HandlePain`'s pain-type switch
+    /// [M 0x1902c8:84-104]: ONLY type 0 (the default/bullet arm) lets armour absorb;
+    /// types 1..7 (falls 6, drowning 7, hurt volumes) set armourFraction 0.0.
+    #[test]
+    fn armour_bypass_by_pain_type() {
+        // 07000005 at difficulty 1: damage_factor 0.6, so 30.0 -> 18.0 effective.
+        let mut h = PlayerHealth { health: 100.0, armour: 50.0, flash: 0.0, dir_bits: 0 };
+        h.pain_generic(30.0, 1, 0x0700_0005, 6); // fall damage
+        assert_eq!(h.armour, 50.0, "a fall must not drain armour [M 0x1902c8:84-104]");
+        assert!((h.health - 82.0).abs() < 1e-4, "the fall still costs the full 18 health");
+        assert_eq!(h.dir_bits, 2, "pain type 6 sets the vertical bits");
+        h.health = 100.0; h.flash = 0.0;
+        h.pain_generic(30.0, 1, 0x0700_0005, 7); // drowning
+        assert_eq!(h.armour, 50.0, "drowning must not drain armour either");
+        assert_eq!(h.dir_bits, 0xC);
+        // Sister: type 0 (bullets, `pain`) DOES absorb — armour first, then health. Armour 10 <
+        // the effective 18: it empties and the remainder 8 reaches health.
+        h.health = 100.0; h.flash = 0.0; h.dir_bits = 0; h.armour = 10.0;
+        h.pain(30.0, 1, 0x0700_0005);
+        assert!((h.armour - 0.0).abs() < 1e-4, "bullets drain the armour first");
+        assert!((h.health - 92.0).abs() < 1e-4, "the remainder 18 - 10 reaches health");
+    }
 
     #[test]
     fn cylinder_and_pain() {

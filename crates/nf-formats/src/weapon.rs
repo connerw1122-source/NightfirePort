@@ -222,8 +222,10 @@ impl WeaponData {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xc8..0xcc].try_into().unwrap()))
     }
 
-    /// `+0xCC`: the idle-alert flag (non-zero = the weapon has idle-alert behavior; case 0 of
-    /// `Player_SetWeaponAnimObj` checks it) [M]. Not a script hashcode.
+    /// `+0xCC`: the idle-alert script hashcode (case 0 of `Player_SetWeaponAnimObj` tests it non-zero
+    /// to enable the idle-alert behaviour, and the table value IS a `0x0600xxxx` view-script hash on
+    /// every armed weapon — 0x06000826 on the P2K, 0x060004d6, 0x060004ac, … [L weapon_data dump;
+    /// M AnimDatumGetWeaponInfo 0x1c7900 family]). Non-zero = the weapon has the idle script.
     pub fn idle_alert_flag(&self, weapon: usize) -> u32 {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xcc..0xd0].try_into().unwrap()))
     }
@@ -238,8 +240,10 @@ impl WeaponData {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xd4..0xd8].try_into().unwrap()))
     }
 
-    /// `+0xD8`: the holster variant flag (case 1: if non-zero, `AnimScriptAdd` instead of `AnimScriptAddSpeed`)
-    /// [M disassembly 0x1a36d4: `lw a1,216(s1)`].
+    /// `+0xD8`: the holster-variant script hashcode (case 1: if non-zero, `AnimScriptAdd` instead of
+    /// `AnimScriptAddSpeed` [M disassembly 0x1a36d4: `lw a1,216(s1)`]). The table value is a
+    /// `0x0600xxxx` view-script hash (0x0600082f on the P2K, … [L weapon_data dump]) — the "flag"
+    /// test works because "script present" is the flag.
     pub fn holster_variant_flag(&self, weapon: usize) -> u32 {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xd8..0xdc].try_into().unwrap()))
     }
@@ -258,9 +262,11 @@ impl WeaponData {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0x48..0x4c].try_into().unwrap()))
     }
 
-    /// `+0x60`: the drone fire sound id (per `docs/systems/sound.md` §7).
-    pub fn fire_sound(&self, weapon: usize) -> u32 {
-        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0x60..0x64].try_into().unwrap()))
+    /// `+0x60`: the view-anim datum id (u16; the third out-param of `AnimDatumGetWeaponInfo` 0x1c7900
+    /// beside the +0x4C mesh hash and the +0x80 third-person model) — `lhu 96(v1)` [M1 0x1c7964].
+    /// +0x62 is zero in all 115 records [L weapon_data dump]. NOT a sound id.
+    pub fn view_anim_datum(&self, weapon: usize) -> u16 {
+        self.records.get(weapon).map_or(0, |r| u16::from_le_bytes(r[0x60..0x62].try_into().unwrap()))
     }
 
     /// `+0x38`: the weapon name label hashcode (for the HUD / pickup message).

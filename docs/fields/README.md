@@ -34,6 +34,12 @@ Lessons so far:
 | Struct | Doc | Fields mapped | [L-verified] | Notes |
 |---|---|---|---|---|
 | sprite (runtime HUD sprite) + HUD pane list | [sprite.md](sprite.md) | 14 | 3 | started 2026-10-12 |
+| HUDPANE_tag + HUDPANECREATE_tag + all 26 `*SprInfo` tables | [hud-panes.md](hud-panes.md) | 15 + 26 tables | 2 | fields-player 2026-10; stride 0x2C everywhere, BSS fillers found |
+| BLData (the player's 0x970-byte block) | [bldata.md](bldata.md) | ~110 | snapshot-cross-checked throughout | fields-player 2026-10; port fixes: the pain-type armour gate, the fall/drown pipeline, the clip regen |
+| weapon_data record (0x10C × 115) | [weapon_data.md](weapon_data.md) | ~40 | 3 | fields-player 2026-10; +0x60 retyped u16, +0xCC/+0xD8 are script hashes |
+| ammo_data (34 × 12) | [ammo-data.md](ammo-data.md) | 4/record + the weapon→ammo map | full dump | fields-player 2026-10 |
+| PlrStat_* / ScoringTable / RewardsTable | [player-stats.md](player-stats.md) | 14 + 11 + row layout | 4 | fields-player 2026-10; the whole system is unported (documented) |
+| obj_tag class-3 (the player) | [obj-tag-player.md](obj-tag-player.md) | ~25 | snapshot cross-checked | fields-player 2026-10; corrected the +0xCC root-height story; class 3 ↔ 0x12 |
 
 Static passes for the remaining structs are queued as worker tasks (`docs/fields/<struct>.md`, [M*] level); the main
 agent then runs the live pass for the fields the port relies on.
