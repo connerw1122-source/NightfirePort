@@ -26,12 +26,17 @@
 //!   point-light program (I-mem ~832-940; the light setup at 595-608 loads packet qwords 8/9 =
 //!   the light positions, 12/13 = TColor0/1, 15 = TAmbient) computes, per vertex, in the object's
 //!   local space: `L = lightpos − pos`, `d² = |L|²` (componentwise `MUL` + the ACC broadcast-sum),
-//!   `1/d²` via `DIV Q, VF0.w, d²` (VF0.w = 1.0, PCSX2 vuMemReset), atten = `max(0, 1/d² − 1/r²)`
+//!   `1/d²` via `DIV Q, VF0.w, d²` (VF0.w = 1.0, PCSX2 vuMemReset; the DIV at I-mem 866/902 reads
+//!   Fs=VF00.w ÷ Ft=VF28.y — `_Fsf_` = bits 21-22 = w), atten = `max(0, 1/d² − 1/r²)`
 //!   (`SUBw VF24, VF28, TColor.w`, then `MAXx.xy`), the diffuse `atten · dot(N, L)` with the RAW
 //!   (unnormalized) L (componentwise `MUL` + broadcast-sum, no RSQRT in the program), clamped
 //!   `max(0, ·)`, and the sum `TAmbient ⊙ rgba + TColor.rgb · term` (895: `MUL VF22, VF12, VF28`;
 //!   911/912: `MADDAx VF7·term1` + `MADDy VF8·term0`). The vertex normal enters as a packed int
-//!   × 1/128 (`MULi VF26, VF29, I`, I = 0x3c000000). The port runs the same math in world space —
+//!   × 1/128 (`MULi VF26, VF29, I`, I = 0x3c000000 — the LOI at 862/898/934). The summed colour is
+//!   CLAMPED to byte 255 by `MINIi` (I = 255.0 from the LOI at 900/936, applied at 919/954) before
+//!   the FTOI0 output store — the game's answer to close-range saturation. fix-lighting2: the port's
+//!   shader mirrored the add at /128 over an Unorm8x4 (byte/255) vertex colour — 2× the game's add —
+//!   and missed the clamp; both fixed (gpu.rs). The port runs the same math in world space —
 //!   the game's object space is a rigid transform of it and N·L is invariant.
 
 use crate::drone::Rng;
@@ -252,9 +257,10 @@ fn dist3(a: [f32; 4], b: [f32; 4]) -> f32 {
 
 /// The VU1 point-light shading for one vertex (the microcode's formula, world space). `base_rgb`
 /// is the ambient ⊙ vertex-rgba product in the game's byte scale (the port's shader has it as the
-/// vertex colour), `normal` unit, `pos` world, `lp` the two light positions (`.w` spare),
-/// `lc` the two TColor rows in the byte scale with `.w` = 1/radius². Returns rgb in the byte
-/// scale — the caller normalises by 1/128 for the port's 0x80 = 1.0 vertex-colour convention.
+/// Unorm8x4 vertex colour = byte/255), `normal` unit, `pos` world, `lp` the two light positions
+/// (`.w` spare), `lc` the two TColor rows in the byte scale with `.w` = 1/radius². Returns rgb in
+/// the byte scale, clamped to 255 like the program's MINIi (I = 255.0, .vutext I-mem 919/954) —
+/// the caller's shader divides by 255 to enter the byte/255 vertex-colour scale.
 pub fn shade_vertex(base_rgb: [f32; 3], normal: [f32; 3], pos: [f32; 3],
                     lp: &[[f32; 4]; 2], lc: &[[f32; 4]; 2]) -> [f32; 3] {
     let mut out = base_rgb;
@@ -263,14 +269,16 @@ pub fn shade_vertex(base_rgb: [f32; 3], normal: [f32; 3], pos: [f32; 3],
         if lc[i][3] <= 0.0 || (lc[i][0] + lc[i][1] + lc[i][2]) <= 0.0 { continue; }
         let d = [lp[i][0] - pos[0], lp[i][1] - pos[1], lp[i][2] - pos[2]];
         let d2 = dot(d, d);
-        let inv_d2 = 1.0 / d2; // DIV Q, VF0.w (=1.0), d²
+        let inv_d2 = 1.0 / d2; // DIV Q, VF0.w (=1.0), d² [M .vutext 866/902: Fs=VF00.w / Ft=VF28.y(d²)]
         let atten = (inv_d2 - lc[i][3]).max(0.0);
         let term = (atten * dot(normal, d)).max(0.0);
         out[0] += lc[i][0] * term;
         out[1] += lc[i][1] * term;
         out[2] += lc[i][2] * term;
     }
-    out
+    // The program clamps the summed colour to byte 255 before the FTOI0 output store
+    // [M .vutext 919/954: MINIi .xyzw VF23, VF22, I with I = 255.0 from the LOI at 900/936].
+    [out[0].min(255.0), out[1].min(255.0), out[2].min(255.0)]
 }
 
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] }

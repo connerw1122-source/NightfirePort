@@ -52,12 +52,15 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
     }
     // The point lights (`Light_Create` + `Lights_CalcClosestLights` 0x1cb2e0 + `psiLight_SetLights`
     // 0x10e588; fix-lighting). The VU1 microcode's formula (.vutext 0x241c80, the point-light
-    // program ~832-940), in world space: L = lightpos − pos, d² = |L|², 1/d² via DIV (VF0.w = 1),
+    // program ~832-960), in world space: L = lightpos − pos, d² = |L|², 1/d² via DIV (VF0.w = 1),
     // atten = max(0, 1/d² − 1/r²), diffuse = max(0, atten · dot(N, L)) with the RAW L, and the sum
-    // adds TColor.rgb · diffuse on the vertex colour (the ambient row is the object's TWEAK, already
-    // folded into the vertex colour by the port's fix-render path). The colour enters at /128 (the
-    // game's byte-scale add over the 0x80 = 1.0 vertex colours). No normal (sprites, snow, the
-    // radar, the flash itself): unlit.
+    // adds TColor.rgb · diffuse on the tinted vertex colour (the ambient row is the object's TWEAK,
+    // already folded into the vertex colour by the port's fix-render path). fix-lighting2: the
+    // vertex colour arrives as Unorm8x4 = byte/255 and the game's add is in BYTES, so the add is
+    // /255 (the port's /128 over-added by exactly 255/128 — the saturation the merge flagged), and
+    // the program clamps the summed colour to byte 255 with MINIi (I = 255.0 loaded by the LOI at
+    // I-mem 900/936, applied at 919/954) — min(·, 1.0) here. No normal (sprites, snow, the radar,
+    // the flash itself): unlit.
     if (FAR < 0.5) {
         var n = n0.xyz;
         if (sa.x != 0xffffffffu) { n = sw * (pal[sa.x] * vec4<f32>(n0.xyz, 0.0)).xyz + (1.0 - sw) * (pal[sa.y] * vec4<f32>(n0.xyz, 0.0)).xyz; }
@@ -72,7 +75,7 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
                 let inv_d2 = 1.0 / d2;
                 let atten = max(0.0, inv_d2 - lc.w);
                 let term = max(0.0, atten * dot(normalize(n), d));
-                c = vec4<f32>(c.rgb + lc.rgb * term / 128.0, c.a);
+                c = vec4<f32>(min(c.rgb + lc.rgb * term / 255.0, vec3<f32>(1.0)), c.a);
             }
         }
     }
@@ -205,7 +208,7 @@ pub fn alpha_shaped(rgba: &[u8]) -> bool {
 
 /// One indexed draw: its layer, pass, pipeline, texture bind group, index range and the object's world centre + radius.
 #[derive(Clone, Copy)]
-struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16>, chain: u32 }
+struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16>, chain: u32, lflags: u16 }
 
 pub struct Renderer {
     hud_pipeline: wgpu::RenderPipeline,
@@ -450,7 +453,7 @@ impl Renderer {
         // ordinal (u32::MAX = a distance-keyed object entry). This replaces fix-render4's alpha_shaped stand-in, which
         // reordered by texture shape instead of by the game's own keys (gpu::alpha_shaped stays for its pinned test).
         let draws: Vec<DrawCall> = scene.materials.iter().zip(&material_tex)
-            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel, chain: m.chain }).collect();
+            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel, chain: m.chain, lflags: m.lflags }).collect();
         let fog = scene.fog;
         let snow_pipeline = make_pipeline(Draw { pass: 5, blend: 1, zwrite: false, atest: 0, fog: 0 });
         let snow_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (SNOW_MAX * std::mem::size_of::<crate::scene::Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -518,10 +521,13 @@ impl Renderer {
         let extra = [fog_rgb[0], fog_rgb[1], fog_rgb[2], fog_on, 8.0, k, 16_777_216.0, GAIN];
         // Per-draw uniform slots (fix-lighting): the game uploads the ≤2 closest lights per object
         // (`View_DrawObjList` 0x1e69a0 / `View_DrawCelGlist` 0x1e6538 → `Lights_CalcClosestLights`
-        // 0x1cb2e0 + `psiLight_SetLights` 0x10e588). Slot 0 = the eye's own sphere (the snow pass);
-        // slot k+1 = draw k. The per-draw display-flags gate: [S] the port has no per-object
-        // obj+0xF0, so world/character/effect draws pass 0x80 (kinds 0/1/2 apply — emitters, the
-        // game's 0x100, do not exist as draws here) and sky draws none.
+        // 0x1cb2e0 + `psiLight_SetLights` 0x10e588). Slot 0 = the eye's own sphere (the snow pass — the
+        // game's particle path inherits the previous upload and the flakes have no normals, so the
+        // pick is inert); slot k+1 = draw k. fix-lighting2: the per-draw flags are the source object's
+        // glist flags word (`Control_SetGList` 0x134960 → obj+0xF0 / cel+0x94), not the hardcoded 0x80
+        // that let the kind-0 ambient radiators crowd the muzzle light off the world draws; the sky
+        // draws upload NO lights (`View_DrawSky` 0x1e5ad0 / `View_DrawSprites` 0x1e5290 call
+        // `psiLight_SetLights(0,0,0,0,0)`).
         let slot_f = UNIFORM_SLOT / 4;
         let n_draws = self.draws.len();
         let mut staged = vec![0f32; slot_f * (n_draws + 1)];
@@ -534,8 +540,11 @@ impl Renderer {
         for (k, dc) in self.draws.iter().enumerate() {
             let s = &mut staged[(k + 1) * slot_f..][..slot_f];
             s[16..24].copy_from_slice(&extra);
-            let flags = if matches!(dc.layer, crate::scene::Layer::SkyCamera | crate::scene::Layer::SkyFixed) { 0 } else { 0x80 };
-            let (lp, lc) = self.lights.pick2([dc.centre[0], dc.centre[1], dc.centre[2], dc.radius], flags);
+            if matches!(dc.layer, crate::scene::Layer::SkyCamera | crate::scene::Layer::SkyFixed) {
+                // The game zeroes the light slots for the sky and sprite passes [M 0x1e5ad0:89].
+                continue;
+            }
+            let (lp, lc) = self.lights.pick2([dc.centre[0], dc.centre[1], dc.centre[2], dc.radius], dc.lflags as u32);
             for (i, v) in lp.iter().chain(lc.iter()).enumerate() { s[24 + i * 4..28 + i * 4].copy_from_slice(v); }
         }
         for (m, vp) in [(&self.uniform, view_proj), (&self.uniform_rot, view_proj_rot)] {
@@ -768,5 +777,16 @@ mod shader_tests {
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
                 .validate(&module).unwrap_or_else(|e| panic!("{name} WGSL validate: {e}"));
         }
+    }
+
+    /// fix-lighting2: the light add is the game's byte-scale `TColor.rgb · term` over the Unorm8x4
+    /// (byte/255) vertex colour — /255, not /128 — and the summed colour clamps at byte 255 like the
+    /// microcode's MINIi (I = 255.0, .vutext I-mem 919/954). The old /128 over-added by exactly
+    /// 255/128 ≈ 2× (the view-model saturation the merge flagged) and never clamped.
+    #[test]
+    fn the_light_add_is_in_byte_255_units_with_the_minii_clamp() {
+        assert!(super::SHADER.contains("min(c.rgb + lc.rgb * term / 255.0, vec3<f32>(1.0))"),
+            "the shader must add the byte-scale light over the byte/255 vertex colour and clamp to byte 255");
+        assert!(!super::SHADER.contains("term / 128.0"), "the old 2× over-add must stay gone");
     }
 }

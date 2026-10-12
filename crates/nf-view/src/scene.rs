@@ -134,6 +134,14 @@ pub struct Material {
     pub chain: u32,
     /// `(map, texture)`; `None` = untextured.
     pub key: Option<(usize, u32)>,
+    /// The draw's light-selection flags: the low 16 bits of the source object's glist flags word
+    /// (`MapObject.flags` = `celglist+0x44`, which `Control_SetGList` 0x134960 copies to `obj+0xF0`;
+    /// cels: the same word lands in `cel+0x94` — `lights.rs`' `closest` reads bit 0x80 for kinds 0/2
+    /// and bit 0x100 to skip kind 1). fix-lighting2: the port used to pass 0x80 for every draw, which
+    /// let 07000005's kind-0 ambient radiators crowd the muzzle light off the world draws — the disc
+    /// data has almost no 0x80/0x100 on world cels, 0x8a0/0x28a0 on character/weapon skins, 0x100 on
+    /// effect objects [D probe in lighting_live.rs].
+    pub lflags: u16,
     pub first_index: u32,
     pub index_count: u32,
 }
@@ -1863,7 +1871,7 @@ pub fn fog_for(level: u32) -> Option<([u8; 3], f32)> {
 
 /// Grouped by layer, then (world layers) the object — the game sorts cels per object (`View_AddCels`) — then texture
 /// and draw state. The value keeps the object's world centre and scaled radius for the per-frame sort + frustum cull.
-type Groups = BTreeMap<(Layer, [u32; 3], u32, u32, Option<(usize, u32)>, Draw), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32, Option<u16>)>;
+type Groups = BTreeMap<(Layer, [u32; 3], u32, u32, Option<(usize, u32)>, Draw, u16), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32, Option<u16>)>;
 
 fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>, searchlight: Option<u16>, door: Option<u16>, pickup: Option<u16>, mult: [f32; 3], cels: &[Cel], chain: u32) {
     let obj = &level.maps[inst.map].objects[inst.object];
@@ -1890,6 +1898,11 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
     let centre = transform(&inst.matrix, obj.centre);
     let col_len = |c: usize| (inst.matrix[0][c] * inst.matrix[0][c] + inst.matrix[1][c] * inst.matrix[1][c] + inst.matrix[2][c] * inst.matrix[2][c]).sqrt();
     let radius = obj.radius * col_len(0).max(col_len(1)).max(col_len(2));
+    // The light-selection flags: the glist flags word's low 16 bits — `Control_SetGList` 0x134960
+    // copies `celglist+0x44` to `obj+0xF0` and `View_DrawObjList` 0x1e69a0 / `View_DrawCelGlist`
+    // 0x1e6538 / `View_SetupRenderModes` 0x1e78b0 (the anim-object path) pass its u16 to
+    // `Lights_CalcClosestLights`. `MapObject.flags` is that word [D level.rs ENTITY_PARAMS +4].
+    let lflags = (obj.flags & 0xffff) as u16;
     let ikey = if matches!(layer, Layer::World) { centre.map(f32::to_bits) } else { [0; 3] };
     // GS state: each leaf's `DIRECT` writes, inherited by the leaves that send none. The GS applies each DIRECT
     // write immediately at its position in the packet, so a write between batch 2 and batch 3 affects batch 3
@@ -1912,7 +1925,7 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
         // build_FindCel 0x1c8cb0 on the object's world centre; View_AddCels 0x1e6ba0 frustum-tests
         // each cel's bbox per viewer). Everything posed per frame keeps None.
         let cel = if layer == Layer::World { find_cel(cels, centre).map(|i| i as u16) } else { None };
-        let (vs, is, cv, c, r, gcel) = groups.entry((layer, ikey, lkey, chain, key, draw)).or_default();
+        let (vs, is, cv, c, r, gcel) = groups.entry((layer, ikey, lkey, chain, key, draw, lflags)).or_default();
         *gcel = cel;
         *c = centre;
         *r = radius;
@@ -2545,11 +2558,11 @@ impl Scene {
         }
         let (mut vertices, mut indices, mut materials, mut char_verts) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut char_vertex_start = None;
-        for ((layer, _, _, chain, key, draw), (vs, is, cv, centre, radius, cel)) in groups {
+        for ((layer, _, _, chain, key, draw, lflags), (vs, is, cv, centre, radius, cel)) in groups {
             if is.is_empty() { continue; }
             if matches!(layer, Layer::Character | Layer::Effect) && char_vertex_start.is_none() { char_vertex_start = Some(vertices.len()); }
             let base = vertices.len() as u32;
-            materials.push(Material { layer, draw, centre, radius, cel, chain, key, first_index: indices.len() as u32, index_count: is.len() as u32 });
+            materials.push(Material { layer, draw, centre, radius, cel, chain, key, lflags, first_index: indices.len() as u32, index_count: is.len() as u32 });
             indices.extend(is.iter().map(|i| i + base));
             vertices.extend(vs);
             char_verts.extend(cv);
