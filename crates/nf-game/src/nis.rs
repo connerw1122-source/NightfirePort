@@ -93,6 +93,15 @@ pub struct Script {
     pub script_cam: bool,
     /// `+0xAB2`: 1 playing, 2 done, 8 looping.
     pub play: u8,
+    /// `+0xA4` fade clock: the skip's fade-out progress (`Script_FFwd` sets it to `FRAME_RATE_MUL`; the game's
+    /// `Camera_SetFade` call itself is view-side and not modelled).
+    pub fade_clock: f32,
+    /// `+0xAB4` fade length: `min(length − clock, 45)` frames from `Script_FFwd` (0x1dac78:48-51).
+    pub fade_len: u8,
+    /// `+0xAB5`: bit 0 skip latch (a skip ran), bit 4 camera active (event 0xD set / `Script_CameraEnd`
+    /// cleared), bit 5 fade past its length — anims and the camera freeze while it is set (`Script_Interp`
+    /// 0x1d9a08:146,205).
+    pub fade_flags: u8,
     /// Event 6: where the player comes back (`+0x40`) and `+0xAB6`.
     pub player_at: Option<Mat4>,
     /// Requests raised where no output list is at hand (`Script_KillStream`), passed on by the next update / free.
@@ -126,7 +135,7 @@ impl Script {
     pub fn load(nis: Arc<Nis>, matrix: Mat4, scale: f32) -> Script {
         let streams = nis.streams.iter().map(|s| Stream { first_key: s.first_key, last_key: s.last_key, pc: Some(0), parent: -1, ..Default::default() }).collect();
         let flags = if nis.camera { 0x40 } else { 0 };
-        Script { nis, matrix, scale, delay: 0, clock: 0.0, flags, script_cam: false, play: 0, streams, player_at: None, player_mode: 0, pending: Vec::new(), pending_weapon: Vec::new(), player: 0 }
+        Script { nis, matrix, scale, delay: 0, clock: 0.0, flags, script_cam: false, play: 0, fade_clock: 0.0, fade_len: 0, fade_flags: 0, streams, player_at: None, player_mode: 0, pending: Vec::new(), pending_weapon: Vec::new(), player: 0 }
     }
 
     /// `Script_Play` (0x1db588).
@@ -141,7 +150,45 @@ impl Script {
     /// `Script_IsPlaying` (0x1db630).
     pub fn playing(&self) -> bool { self.play & 1 != 0 && (self.play & 8 != 0 || self.play & 2 == 0) }
 
-    /// `Script_Update` (0x1da998): every stream's `Script_Run`, then the clocks advance one tick.
+    /// `Script_IsDeathNIS` (0x1dae60): the three death cut-scenes can NOT be skipped [M 0x1dae60:6-17].
+    pub fn is_death_nis(hash: u32) -> bool { matches!(hash, 0x0600_0952 | 0x0600_098a | 0x0600_0991) }
+
+    /// `Script_FFwd(si, 1)` (0x1dac78) — the game's cut-scene skip, called from `SP_Update` state 2 while the
+    /// player presses the skip action (`Input_Action(-1, 0x19, 1)` [M 0x1dbda8:129-141]).
+    ///
+    /// Only a script with its camera running (event 0xD set `+0xAB5` bit 4; `Script_CameraEnd` clears it) can
+    /// skip [M 0x1dac78:19-21]. On the FIRST press [M :23-84]: a no-cameras script (event 0x10) just kills its
+    /// camera stream; otherwise the fade is armed — `+0xAB4 = min(length − clock, 45)`, `play |= 0x10`,
+    /// `+0xA4 = FRAME_RATE_MUL`, `Music_Event(5, hash)`, `+0xAB5 |= 1`, `Camera_SetFade(+0xAB4, 4, 0xff, 1)`
+    /// (view-side; not modelled) and every kind-2 stream's datum gets `+0xC8 |= 0x40000` (the snap flag; the
+    /// port's Anim objects carry a frame number, no datum). Later presses only clear `play` bit 4 [M :86-88].
+    /// The end-of-script effects still apply: the fade's catch-up fast-forwards the script through every
+    /// remaining command in `Script_Update` (below), so events/channels/`LoadLevel` all run.
+    pub fn ffwd(&mut self, objs: &mut Objects, out: &mut Vec<Request>) {
+        if self.fade_flags & 0x10 == 0 || self.fade_flags & 1 != 0 {
+            // No camera (or a skip already armed): the game only clears play bit 4 (0x1dac78:86-88).
+            self.play &= !0x10;
+            return;
+        }
+        if self.flags & 0x20 != 0 {
+            // Event 0x10 (no cameras): kill the camera stream(s) and return — no fast-forward [M :32-47].
+            for i in 0..self.streams.len() { if self.streams[i].kind == 4 { self.kill(i, objs); } }
+            return;
+        }
+        let remaining = self.nis.length as f32 - self.clock;
+        self.fade_len = remaining.max(0.0).min(45.0) as u8;
+        self.play |= 0x10;
+        self.fade_clock = 1.0; // FRAME_RATE_MUL
+        self.fade_flags |= 1;
+        // Music_Event(5, hash) [M 0x1dac78:55]: the skip's music pulse (EventList[5] = hash; the port's music
+        // runtime has no consumer for the skip pulse, so it rides the uncarried Event request).
+        out.push(Request::Event { kind: 0x40, params: vec![self.nis.hashcode] });
+    }
+
+    /// `Script_Update` (0x1da998): every stream's `Script_Run`, then the clocks advance one tick. The game's
+    /// do-while [M 0x1da998:19-100] loops while the skip fade is past its length (`fade_clock > fade_len`) and
+    /// the script is still playing — that IS the skip's fast-forward: the remaining script (streams, commands,
+    /// events, end) runs to completion inside this one call, then the final block fades back in [M :101-110].
     pub fn update(&mut self, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>) {
         // Flush Event 0xB's deferred weapon writes before any early-return: even if the script has since stopped
         // or is waiting on a delay, the Anim object's weapon byte must reflect the event the script already fired.
@@ -156,10 +203,41 @@ impl Script {
             return;
         }
         if !self.playing() { return; }
-        for i in 0..self.streams.len() { self.run(i, objs, ch, w, frame, out); }
-        out.append(&mut self.pending);
-        self.clock += 1.0;
-        for s in &mut self.streams { s.clock += 1.0; }
+        // The game's loop guard is only `Script_IsPlaying`; a looping script (play & 8) would spin forever, and
+        // the data never skips one — bound the iterations (a guard, not a behaviour change: a non-looping script
+        // finishes within `length` iterations because op 6 fires at clock >= length [M Script_Run :43-49]).
+        let max_passes = 2 * self.nis.length as usize + 256;
+        for _ in 0..max_passes {
+            for i in 0..self.streams.len() { self.run(i, objs, ch, w, frame, out); }
+            out.append(&mut self.pending);
+            self.clock += 1.0;
+            for s in &mut self.streams { s.clock += 1.0; }
+            // The near-end fade of a camera script [M :44-79]: from `length − 20` on, `Camera_SetFade(40, 4,
+            // 0xff, 0)` (view-side; not modelled) unless the hash is in the game's no-fade set; a death NIS
+            // breaks the loop there (a death cut-scene never fast-forwards past its fall). The game also gates
+            // this on a settings byte (DAT_002d88c0+0x235 != 1) the port has no equivalent for.
+            if self.script_cam && self.flags & 0x40 != 0 && self.clock >= self.nis.length as f32 - 20.0 {
+                let h = self.nis.hashcode;
+                if Script::is_death_nis(h) { break; }
+                let no_fade = h == 0x0600_04fa || h == 0x0600_08c8 || h == if h < 0x0600_04fb { 0x0600_0080 } else { 0x0600_0994 };
+                let _ = no_fade; // the SetFade call is view-side; the branch only gates it in the game
+            }
+            // The fade bookkeeping [M :84-98]: the skip's fade advances one frame per tick; past its length it
+            // sets the freeze flag (bit 5).
+            if self.fade_clock != 0.0 {
+                if self.fade_clock <= self.fade_len as f32 { self.fade_clock += 1.0; } else { self.fade_flags |= 0x20; }
+            }
+            if self.fade_clock <= self.fade_len as f32 { break; } // the normal single-pass tick
+            if !self.playing() { break; }                          // fade past its length + script finished
+            // else: loop again — the game's fast-forward.
+        }
+        // Final block [M :101-110]: once the fade is past its length and the script stopped, fade back in
+        // (`Camera_SetFade(−9, 0, 0xff, 1)`, view-side), clear the fade clock, play bit 4 and the skip latch.
+        if self.fade_clock > self.fade_len as f32 && !self.playing() {
+            self.fade_clock = 0.0;
+            self.play &= !0x10;
+            self.fade_flags &= !1;
+        }
     }
 
     /// `Script_Run` (0x1d8548).
@@ -243,7 +321,8 @@ impl Script {
                     }
                     0x0d => {
                         // `Script_CameraStart` (0x1d9140): u8 spline, u16 first key, u16 last key; the camera uses keys
-                        // first..last − 1. Skipped while flag 0x20 (no cameras).
+                        // first..last − 1. Skipped while flag 0x20 (no cameras). The camera-active flag (`+0xAB5 |=
+                        // 0x10` [M 0x1d9140]) arms `Script_FFwd`'s skip.
                         let (Some(&sp), Some(a), Some(b)) = (cmds.get(pc + 1), rd(1, 2), rd(3, 2)) else { self.streams[i].pc = None; return };
                         next = pc + 7;
                         if self.flags & 0x20 == 0 {
@@ -257,12 +336,14 @@ impl Script {
                             s.first_key = a as u16;
                             s.last_key = (b as u16).wrapping_sub(1);
                             s.flags = if sp != 0 { 2 } else { 0 };
+                            self.fade_flags |= 0x10;
                             self.interp(i, objs, w);
                         }
                     }
                     0x0f => {
                         // `Script_CameraEnd`.
                         if self.streams[i].clock < len || self.play & 8 == 0 { self.kill(i, objs); }
+                        self.fade_flags &= !0x10; // the camera-active flag clears [M 0x1db348:21]
                         next = pc + 2;
                     }
                     0x13 | 0x14 | 0x15 | 0x18 | 0x1a | 0x1b | 0x1d | 0x1e => {
@@ -435,11 +516,15 @@ impl Script {
             4 => {
                 // `Script_Interp` case 4 → `Script_UpdateCamera`: the keys' matrix (the script matrix applied,
                 // *suggested*: the decomp loses that argument) and the field of view.
+                // The skip's freeze: `Script_Interp` returns early while `+0xAB5 & 0x20` [M 0x1d9a08:205].
+                if self.fade_flags & 0x20 != 0 { return; }
                 let Some((m, scale, _)) = self.keys(i) else { return };
                 let m = mul(&m, &self.matrix);
                 if let Some(Some(Obj::Camera { matrix, fov, .. })) = objs.list.get_mut(o) { *matrix = m; *fov = scale * (4.0 / 3.0); }
             }
             2 => {
+                // The skip's freeze: `Script_Interp` case 2 returns while `+0xAB5 & 0x20` [M 0x1d9a08:146].
+                if self.fade_flags & 0x20 != 0 { return; }
                 let f = s.clock - s.start_clock + s.start_frame;
                 if let Some(Some(Obj::Anim { script, frame, .. })) = objs.list.get_mut(o) {
                     let len = w.anim_length(*script).unwrap_or(1).max(1) as f32;
@@ -577,8 +662,9 @@ impl Player {
     }
 
     /// `SP_Update` (0x1dbda8). Trigger flags: only the channel bit (1) and activation (4); bullets and touching
-    /// objects (2, 8, 0x10, `SP_Hit`) are not modelled yet.
-    pub fn update(&mut self, lib: &HashMap<u32, Arc<Nis>>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>) {
+    /// objects (2, 8, 0x10, `SP_Hit`) are not modelled yet. `skip` is the game's `Input_Action(-1, 0x19, 1)` —
+    /// any player pressed the skip action this tick (`Scripts::skip_request`, set by the viewer's key handler).
+    pub fn update(&mut self, lib: &HashMap<u32, Arc<Nis>>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>, skip: bool) {
         if self.deleted || (self.gate != 0 && !ch.on(self.gate as u32)) { return; }
         if let Some(s) = self.info[self.cur].as_mut() { s.update(objs, ch, w, frame, out); }
         let mut flags = 0u16;
@@ -606,6 +692,14 @@ impl Player {
                 if self.mask & 1 != 0 && self.out != 0 && ch.on(self.out as u32) {
                     self.activated = true;
                     if let Some(s) = self.info[self.cur].as_mut() { s.delay = 0; }
+                }
+                // The skip [M 0x1dbda8:129-141]: `Input_Action(-1, 0x19, 1)` — any player pressing the skip
+                // action — fast-forwards the current script via `Script_FFwd(cur, 1)`, unless the script is one
+                // of the three death NISs (`Script_IsDeathNIS` reads slot A's hash, always +0x1C).
+                if skip {
+                    if !Script::is_death_nis(self.scripts[0]) {
+                        if let Some(s) = self.info[self.cur].as_mut() { s.ffwd(objs, out); }
+                    }
                 }
                 if !self.info[self.cur].as_ref().is_some_and(Script::playing) {
                     if self.stay { self.state = 5; } else {
@@ -660,13 +754,22 @@ pub struct Scripts {
     /// The create-time load beat (`SP_CreateScriptPlayer`'s immediate `SP_LoadScript` for mode A ∉ {0, 1})
     /// runs once at the first tick — the game does it during the level load [M 0x1db9a8:81-86].
     primed: bool,
+    /// The game's `Input_Action(-1, 0x19, 1)` for the next tick — any player pressing the skip action. The
+    /// viewer's key handler sets this while a cut-scene is playing (fix-dev T1); consumed every tick.
+    pub skip_request: bool,
 }
 
 impl Scripts {
     /// The scripts (`lib`) and the players placed on the main map.
     pub fn new(lib: HashMap<u32, Arc<Nis>>, placements: &[Placement]) -> Scripts {
         let players = placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xd9).filter_map(|(i, p)| Player::from_placement(i, p)).collect();
-        Scripts { lib, players, objects: Objects::default(), requests: Vec::new(), primed: false }
+        Scripts { lib, players, objects: Objects::default(), requests: Vec::new(), primed: false, skip_request: false }
+    }
+
+    /// Any script player playing a non-looping script right now — the game's skip window (`SP_Update` state 2
+    /// with `Script_IsPlaying`). The viewer's key handler asks this before mapping a key press to the skip.
+    pub fn cutscene_playing(&self) -> bool {
+        self.players.iter().any(|p| p.state == 2 && p.info[p.cur].as_ref().is_some_and(Script::playing))
     }
 
     /// The live cut-scene camera (the newest): world matrix and vertical field of view.
@@ -676,13 +779,14 @@ impl Scripts {
 
     pub fn tick(&mut self, ch: &mut Channels, w: &dyn World, frame: u32) {
         self.requests.clear();
+        let skip = std::mem::take(&mut self.skip_request);
         if !self.primed {
             self.primed = true;
             let mut out = std::mem::take(&mut self.requests);
             for p in &mut self.players { p.prime(&self.lib, &mut self.objects, ch, w, frame, &mut out); }
             self.requests = out;
         }
-        for p in &mut self.players { p.update(&self.lib, &mut self.objects, ch, w, frame, &mut self.requests); }
+        for p in &mut self.players { p.update(&self.lib, &mut self.objects, ch, w, frame, &mut self.requests, skip); }
     }
 }
 
@@ -793,5 +897,71 @@ mod tests {
         let mut out2 = Vec::new();
         s2.update(&mut objs, &mut ch, &TestWorld, 1, &mut out2);
         assert_eq!(s2.streams[0].pc, None, "sister: a command truncated past the blob halts that stream (no read past the end)");
+    }
+
+    /// The cut-scene skip (`Script_FFwd` 0x1dac78 + `Script_Update` 0x1da998's catch-up loop, via `SP_Update`
+    /// state 2's `Input_Action(-1, 0x19)` [M 0x1dbda8:129-141]). A camera script (op 0xD arms `+0xAB5` bit 4)
+    /// with a skip pressed every tick: the fade runs ≤ 45 ticks, then the remaining frames fast-forward in ONE
+    /// `Script_Update`, the script reaches its done bit, and the commands after the skip point (the event) still
+    /// ran. A death NIS (0x6000952/0x600098a/0x6000991) refuses the skip in `SP_Update`.
+    #[test]
+    fn skip_fast_forwards_a_camera_script_but_not_a_death_nis() {
+        // One stream: camera start (op 0xD: spline, first, last — 7 bytes total), a long wait, then an event
+        // (op 0x12: n=0, kind=4 PlayerDisable) near the end and the end command. length 100.
+        let mut cmds = vec![0x0d, 0, 0, 0, 63, 0, 0]; // camera, keys 0..63
+        cmds.extend([0x05, 0, 100, 0]);              // wait until 100 (the length) — the game holds the pc there
+        cmds.extend([0x12, 0x00, 0x04]);             // event 4 (PlayerDisable), no params
+        cmds.push(0);                                 // event pad
+        cmds.extend([0x06, 0x64, 0x00, 0x00]);       // done: length (100) <= clock → play |= 2 [M Script_Run :43-49]
+        cmds.extend([0x04, 0xff, 0xff]);             // stream end (held)
+        let mk = |hash: u32| Arc::new(Nis {
+            hashcode: hash, camera: true, loop_start: 0, length: 100,
+            streams: vec![NisStream { first_key: 0, last_key: 0, commands: cmds.clone() }],
+            keys: Vec::new(),
+        });
+        let nis = mk(0x0600_0421);
+        let mut p = Player { placement: 0, scripts: [0x0600_0421, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 0, activated: false, countdown: 0, info: [None, None], deleted: false };
+        let mut lib = HashMap::new();
+        lib.insert(0x0600_0421u32, nis);
+        let mut objs = Objects::default();
+        let mut ch = Channels::default();
+        let world = TestWorld;
+        let mut out = Vec::new();
+        // State 0 with mask 0... the game needs a trigger; start it the way SP_Update state 0 does.
+        p.load(&lib, &mut objs, &mut ch, &world, 0, &mut out);
+        p.state = 2;
+        if let Some(s) = p.info[0].as_mut() { s.start(false); }
+        // Tick to clock 10 with the skip held (the game: the key pressed every tick).
+        for frame in 0..10 { p.update(&lib, &mut objs, &mut ch, &world, frame, &mut out, true); }
+        {
+            let s = p.info[0].as_ref().unwrap();
+            assert!(s.fade_flags & 1 != 0, "the skip armed (the game's skip latch +0xAB5 bit 0)");
+            assert_eq!(s.fade_len, 45, "fade_len = min(100-10, 45) [M Script_FFwd 0x1dac78:48-51]");
+            assert!(s.fade_clock > 0.0, "the fade clock runs");
+        }
+        // Keep mashing: the fade runs up to 45 ticks, then the catch-up loop runs the remaining frames —
+        // done well inside 130 ticks.
+        for frame in 10..140 { p.update(&lib, &mut objs, &mut ch, &world, frame, &mut out, true); }
+        {
+            let s = p.info[0].as_ref().unwrap();
+            assert_eq!(s.play & 2, 2, "the skipped script reached its done bit within ~50 ticks of mashing");
+            assert!(s.clock >= 100.0, "the script fast-forwarded to its end (clock {}), not cut short", s.clock);
+        }
+        // The end-of-script effects: the event after the skip point ran (kind 4 → the PlayerDisable request).
+        assert!(out.iter().any(|r| matches!(r, Request::PlayerDisable)), "the event past the skip point still fired (end effects apply)");
+        assert_eq!(p.state, 3, "SP_Update state 2 saw the finished script and moved on");
+
+        // Sister: the same script as a death NIS (hash 0x6000952) NEVER skips — `SP_Update` refuses `Script_FFwd`
+        // [M 0x1dbda8:134-136] and `Script_Update`'s near-end break keeps it from fast-forwarding.
+        lib.insert(0x0600_0952u32, mk(0x0600_0952));
+        let mut p2 = Player { placement: 0, scripts: [0x0600_0952, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 0, activated: false, countdown: 0, info: [None, None], deleted: false };
+        let mut objs2 = Objects::default();
+        p2.load(&lib, &mut objs2, &mut ch, &world, 0, &mut out);
+        p2.state = 2;
+        if let Some(s) = p2.info[0].as_mut() { s.start(false); }
+        for frame in 0..70 { p2.update(&lib, &mut objs2, &mut ch, &world, frame, &mut out, true); }
+        let s2 = p2.info[0].as_ref().unwrap();
+        assert_eq!(s2.fade_flags & 1, 0, "a death NIS never arms the skip");
+        assert!(s2.play & 2 == 0 || s2.clock < 100.0, "the death NIS was not fast-forwarded (clock {} play {:#x})", s2.clock, s2.play);
     }
 }

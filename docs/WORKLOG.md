@@ -4381,6 +4381,169 @@ Could not verify / left open (evidence recorded, no guessing):
 - Not run: a real PCSX2 trace of a transition (no emulator in the sandbox); the window/renderer path is
   unchanged by this task.
 
+## fix-perf-level — portal visibility walk (G-016's portal half), cold-start loadout, the tick cap
+
+The task's top priorities were the 07000007 draw cost (the user's "lag direction is awful": 4526
+World draws on the start view) and the 07000006 frame jitter, then the level-start loadout. GPU
+skinning and the 120 fps interpolation did not fit the sandbox — G-043 records the measured split
+and the port shape. The C2-class NPC dump, the 07000005 torso twist, the 07000006 stationary guards
+and the searchlight alarm path were not reached at all (drone.rs is fix-drone3's file this round);
+nothing was changed there.
+
+**The portal visibility walk — the game's own cull, ported whole.** Research in the decomp: the
+per-view flow is `View_CaptureScene` (0x1e6df0) → `Vision_Init_Portal_Recurse` (0x1e89a8:
+`VisCelCount = 0`, `ViewPoints[0]` = the eye, `Vision_Calculate_View_Fustrum` 0x1e7df8 builds the
+depth-0 planes — four sides through the eye + a near plane, `NumPortalPlanes[0] = 5`, the first four
+copied to viewer+0x70) → `Vision_Portal_Recurse` (0x1e86e8) → `Vision_Recurse` (0x1e82e0): per
+portal of the current cel's +0x28 list — side flag +0x27 = 0 skip, `dot(plane, eye) >= 0` skip,
+`Door_IsClosed(portal+0x0C)` (0x1367b0) skip — the corner quad is clipped against the planes
+accumulated on the path by `ClipPortalWithPlane` (0x1e7fa0: keep `value >= 0`; return 0 = fully
+inside → polygon unchanged; √1e-7 compaction), a non-empty result adds the destination cel to
+`VisCelList` and, at ≥ 3 corners, builds the next depth's planes (one `Plane_PlaneEq` per polygon
+edge with ref = the eye, plus the portal's own plane last) and recurses (budget 100 recursions,
+depth ≤ 45, 64 cels). `View_AddCels` (0x1e6ba0) adds ONLY the walked cels' glists. `Plane_PlaneEq`
+(0x1df8d0): n = normalize(cross(v1−r, v2−v1)), d = −dot(n, r).
+
+**Map block 0x21 — the file layout, re-measured on the disc [D]** (cel.md's own note said
+re-measure on contact, and the contact was overdue): 07000006's main-map block is 2468 bytes, count
+44 → **stride 56**, not the recorded 68 (4 + 44·56 = 2468 exactly): four corner VECTORs, +0x30 u16
+celA, +0x32 u16 celB, +0x34 u16 flags, +0x36 pad; all 44 flags words are 0. The **pCelList record
+index is the placement's own `index` field** — `parsemap_block_map_data_static` (0x1d1998)
+computes `pCelList + placement.index * 0x50` for by-index placements [M]; keying the graph by
+ordinal (my first reading) dropped 22 of 07000002's 37 portal endpoints, keying by `placement.index`
+drops 0 on 02/05/06/07 (37/21/44/34 portals). The forward plane's normal points into celA on
+136/137 resolvable records (measured, not assumed — the winding the walk's `dot < 0` test needs).
+
+Port (all cited above, in cel.md §Portals/§Visibility): `nf-formats/src/level.rs` block 0x21 →
+`PortalQuad`; `nf-view/src/scene.rs` `parse_cel_graph` (cells + portals + room_to_cell, built in one
+pass with the room cels so `Scene::cels` and the graph cannot diverge — `parse_room_cels` now
+delegates), `plane_eq`, `clip_positive`, `portal_visible_cels` (the walk; doors treated open —
+the port has no portal↔door link, conservative: can only keep cels visible); `nf-view/src/gpu.rs`
+`Renderer` stores the graph, and `render` runs the walk from the eye's room cel each frame
+(`build_FindCel` smallest-volume over the cel boxes), falling back to fix-render3's box test when
+the graph has no portals; `NF_NOCELCULL` still disables everything.
+
+Measured (portal_live.rs, the real viewer path) on 07000007 from the start camera:
+**start 4526 → 177 World draws, away 64 → 62, left 1379 → 81, right 148 → 81, down 145 → 80** —
+the walk never adds draws in any direction (asserted), and the eye's own cel is always in the set
+(asserted). The user's "lag direction is awful" lever is in; the main agent should re-render the
+direction sweep images.
+
+**The cold-start loadout (the no-weapon report), reproduced then fixed.** `nf-view <iso> 07000006
+--frame 30` printed `switch request 0` (07000005 printed 2) — `Player_InitWeapon` (0x1a7ef8) case
+0x7000006 reads `p2k_owned` off the port's legacy default inventory (the sim's built-in owned
+flags), takes `req = saved_weapon` = the uninitialized 0, and the draw machine holsters into weapon
+0: no gun, no ammo — the user's exact symptom. The game's cold path (`IsWarmReset == 0`) skips
+`Player_RamLoad`'s whole body [M 0x1957a8:9] and reads the boot-cleared inventory
+(`Player_InitAmmoWeapons` 0x1a17f8's zero arm; the [L] boot snapshot proves it ran). Fix
+(player.rs, `init_level_loadout`): a cold load (`save = None`) clears the inventory first — cases
+5/7 and the default re-clear or replace anyway, so only cases 6/8 change (6 → the fresh-05 arm,
+request 2). `portal_live.rs::cold_loadout_arms_bond_on_every_story_level` sweeps all 13 story
+levels through `load_with_carry(None)` + 30 ticks: 01–06 and 09–0d draw the P2K (7/41), 07 draws
+fists (the party disguise), and 08 also draws fists — that is the game's own case-8 fallback [M
+0x1a7ef8: "P2K not owned → the 07 case"], not a port bug; the warm path keeps the RamSave loadout
+(level_carry_live's tests re-ran green in the suite as the sister).
+
+**The tick cap.** The window loop's catch-up was already capped at 8 ticks/frame (33 ms bursts on
+07000006 at 4.1 ms/tick — the jitter fix-render3 measured). Now `NF_MAXTICKS`, default **4**:
+capped ticks are dropped, not deferred — the game itself has no catch-up and slows down under load;
+logic stays fixed-60 Hz and deterministic (the tick count depends only on frame times, never their
+content). lib.rs only; the replay/scenario paths are untouched.
+
+Tests: `crates/nf-view/tests/portal_live.rs` — 4 NF_ISO tests (the 07000007 start-view cut + the
+box-test-fallback sister, the never-adds/eye-cel guard over the five render3 directions, the graph
+geometry sanity with the measured winding rule, the 13-level cold-loadout sweep), shown failing
+first: the walk initially submitted 4526-equivalent counts with ordinal keying (22 dropped
+endpoints on 02), the parse overran the block with stride 68 ("read out of bounds for u32 at
+0x9a4"), and the loadout sweep printed weapon-1-on-08 before the case-8 reading; the failing runs
+are quoted above and in this file's history. Shared-file touches: `docs/atlas/cel.md` (the block
+0x21 + Vision_* sections rewritten with the measured layout), `docs/GAPS.md` (G-016 portal half
+closed, G-043 opened for GPU skinning / pose cache / 120 fps).
+
+Not verified / not reached:
+- The rendered pictures: no GPU in the sandbox — the walk's numbers are CPU-side draw counts through
+  the render path's cull logic; the main agent should confirm the 07000007 start view looks right
+  (nothing missing) and re-measure the direction sweep images.
+- The walk's door skip: `Door_IsClosed` unported (no portal↔door link); behind a closed door the
+  port keeps drawing (the game culls) — conservative, never hides.
+- By-hash cel placements' pCelList records (the entity-hashtable path at 0x1d1998) — untraced; no
+  measured level needs them (0 dropped endpoints).
+- GPU skinning, the tick-keyed pose cache, 120 fps interpolation, `--fps` — G-043 with the port
+  shape; `posed_vertices` 13.2 ms/frame and the 4.1 ms tick stand as the remaining 07000006 cost.
+- The C2-class NPC dump (drawn-but-not-hittable/not-running-AI drones with
+  present/started/enabled/in_llist/held/drawn/team/mode/dtypenew/channel), the 07000005 patrol torso
+  twist, the 07000006 stationary guards, the searchlight spotted→alarm path — not reached (out of
+  budget; drone.rs is fix-drone3's file this round). No evidence gathered, nothing ported — the
+  items stay with their owner sessions.
+## fix-dev — dev tools for long playtests (skip cut-scenes, reliable infinite ammo, HUD clamp, no reload, level select)
+
+Branch `s/fix-dev`. Files: `crates/nf-game/src/nis.rs` (the script-player skip), `crates/nf-view/src/{dev,hud,lib}.rs`,
+tests `crates/nf-view/tests/dev_tools_live.rs` (new) + `menu_live.rs` (the ammo assertion updated to the fixed
+behaviour), docs `docs/tools/dev-mode.md` + `docs/atlas/script-player.md`.
+
+### What was done
+
+- **Cut-scene skip (any key), ported from the game** [M]: `SP_Update` state 2 checks `Input_Action(-1, 0x19, 1)`
+  (0x1dbda8:129-141) and calls `Script_FFwd(cur, 1)` (0x1dac78) unless `Script_IsDeathNIS(script A)` (0x1dae60:
+  0x6000952/0x600098a/0x6000991 refuse). `Script_FFwd` needs the camera-active flag (`+0xAB5` bit 4, set by op 0xD
+  `Script_CameraStart`, cleared by `Script_CameraEnd` 0x1db348 — the port's op handlers now maintain it): first press
+  arms the fade (`fade_len = min(length − clock, 45)`, `play |= 0x10`, `fade_clock = FRAME_RATE_MUL`,
+  `Music_Event(5, hash)`; `Camera_SetFade` and the kind-2 datum snap flag 0x40000 are view-side, not modelled);
+  event 0x10 scripts kill their camera stream instead. `Script_Update` (0x1da998:19-110)'s do-while — re-run the
+  streams while `fade_clock > fade_len` and still playing — IS the fast-forward: the rest of the cut-scene (events,
+  channel sets, `LoadLevel`) runs inside that one tick, then the final block fades back in and clears the latch.
+  `Script_Interp` (0x1d9a08:146,205) freezes kinds 2/4 while the freeze flag (bit 5) is set. The viewer maps any key
+  press except Esc/F1/F2/F11/F12 to `Scripts::skip_request` while `Scripts::cutscene_playing()`. A non-looping script
+  finishes within `length` passes (op 6 fires at clock ≥ length); the loop is additionally bounded at
+  `2·length + 256` passes (a guard: the game's own loop would spin forever on a looping script, which the data
+  never skips).
+- **Infinite ammo made reliable (the user's "isn't always reliable")**: the refill wrote only `gun.clip`/`gun.spare`
+  — transient copies `Sim::run` re-reads from the INVENTORY (`BL+0x170`/`+0x1B8`) every tick — so the store kept
+  emptying while the HUD showed a full clip. `Dev::after_tick` now tops every clip slot to its weapon's
+  `weapon_data+0x92` clip size and every ammo type's carried rounds to 200: other ammo types, weapon switches, the
+  level carry-over, and Bond's grenades (the 0x45 belt's clip slot [M gun.rs:100-106]) all covered.
+- **HUD ammo strip clamp** (`hud::strip_clip`, fix-dev T3): a clip above its size (only reachable via the dev tools;
+  pickups/reloads cap it [M pickup.rs]) drew `clip · hpr` tall — the user's stacked/garbled icons. The strip now
+  draws at most `clip_size · hpr`; the "clip-spare" text keeps the real numbers.
+- **No reload** (F2): the current weapon's clip is topped to its clip size each tick.
+- **Level select** (F2, fix-dev T5; B-12 had not added one): `level: 070000xx` rows for the 34 level archives on the
+  disc (`nf-extract files-manifest`), feeding `pending_level` — the same warm transition a level exit takes.
+- Reproduce-first: each fix has a test that failed before it (`dev_infinite_ammo_survives_sustained_fire`,
+  `dev_no_reload_keeps_clip_full`, `dev_skip_ends_the_gatehouse_cutscene`, `hud_ammo_strip_clamped`), with sister
+  assertions (`sister_infinite_ammo_off_still_runs_out`, the phase-A "still playing" checks). The skip also has a
+  synthetic unit test in nis.rs covering the death-NIS refusal. Full suite green except the 3 allowed slim-ISO
+  `disc_golden` failures (bigf_header/bigf_tables/directory_tree).
+
+### What could not be verified, and why
+
+- The skip's `Camera_SetFade` picture (the fade-out/fade-in) is view-side; the port has no camera-fade renderer, so
+  the visual fade is not verifiable headless — the state machine and end effects are.
+- The gatehouse cut-scene was NOT driven by walking: B-12's `cutscene-ai-pause` spot (100, 28, 108) does not reach
+  the plate TOUCH_ONCE (trig5: volume x 104.5..107.4 at y 24.4065; Bond lands at y 25.9 and walks over it at feet
+  y 25.0 — 0.59 above the plane, outside the 0.55 toucher radius), and script 0x6000074 is not in the level's
+  script lib (it streams from disc in the game; `isLoadable`). The test instead activates the level's own
+  camera cut-scene SPs (0x60008C8 via ch 92, 0x6000994 via ch 67) the way the game's chains would (as K does), then
+  mashes the skip through the exact field the viewer's key handler writes. The cutscene-ai-pause scenario's spot is
+  stale — its own doc claim ("fires within ~1 s") does not reproduce at that position.
+- Music_Event(5, hash) (the skip's music pulse) rides the uncarried `Request::Event` — the port's music runtime has
+  no consumer for it yet (the same status as the other uncarried events).
+
+### C2-class first dump (07000002, throwaway probe, numbers only)
+
+`nf_view::load("07000002.bin")` + 300 idle ticks; every present drone with present/started/enabled/in-llist/held/
+drawn/corpse/team/mode/dtype/channel (25 present, none spawner-held, none corpses):
+
+- #0–#20: team 1, dtype 0x2, `enabled=0 drawn=0`, in-llist, switch channels 21/23/24/25/129/8 — the switch-gated
+  combat guards, correctly invisible + disabled until their channels fire.
+- #21: **team 2, mode 0xC, dtype 0xC, ch 0, enabled=1 drawn=1 in-llist, state 0x1C** at (−24.3, 1.0, 31.9) — the
+  only DRAWN non-team-1 drone at the start; a non-hostile-class character the port draws like a guard (the C2
+  candidate: "drawn, never attacks, can't be damaged" — the port's damage/target path keys off team != 1).
+- #22–#24: team 3, modes 0x7/0x5, dtype 0xe, ch 22/23/25, `enabled=0 drawn=0` — the fix-drone3 mission-state
+  characters (civilian guard, civilians), correctly dormant at start.
+
+Not done (sandbox time): what the game does with a team-2/mode-0xC drone (its real behaviour to port), the
+07000005 patrol torso-twist clamp, the 07000006 stationary-guard class, and the searchlight spotted→alarm path —
+each needs the same load-and-walk dump driven to the reported spots.
 ## fix-drone4 — the party guests never walk (user retest), plus the C2 evidence pass
 
 Branch s/fix-drone4 (from origin/master 94ca4c3). Repro + fix tests: `crates/nf-view/tests/fix_drone4_live.rs`;

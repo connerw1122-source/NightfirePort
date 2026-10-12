@@ -54,17 +54,60 @@ the separate tint, default white.
 ## Portals (map block 0x21) [M]
 
 - Dispatch: `parsemap_handle_block_id` @0x1d1020 `case 0x21` → **`parsemap_block_portal_data`**
-  @0x1d15f8. File layout: count = u32 @FileNextBlock+4; records start @+8, **stride 68 (0x44)**:
+  @0x1d15f8. File layout: count = u32 @FileNextBlock+4; records start @+8, **stride 56** —
+  *measured* [D] on the disc (fix-perf-level): 07000006's main-map block is 2468 bytes with count 44
+  = 4 + 44·56 exactly; the earlier "stride 68" reading was wrong (the audit note below flagged it).
   - +0x00..0x2f: four corner VECTORs (the door/portal quad);
   - +0x30: u16 **celA index**, +0x32: u16 **celB index** (into the pCelList record array);
-  - +0x34: u16 flags (bit 0 → A-side alloc flag `(flag&2)==0`; bit 1 → B-side `(flag&1)^1`).
-  Two plane equations are built from the quad (`Plane_PlaneEq`, forward + reversed) — one per side.
+  - +0x34: u16 flags (bit 0 → A-side alloc flag `(flag&2)==0`; bit 1 → B-side `(flag&1)^1`);
+    +0x36: u16 pad. All 44 flags words on 07000006 are 0 [D].
+  Two plane equations are built from the quad (`Plane_PlaneEq` @0x1df8d0: n = normalize(cross(v1−r,
+  v2−v1)), d = −dot(n,r), called (out, ref=c0, v1=c1, v2=c2) forward and over the reversed corner
+  copy for the B side) — one per side; *measured* [D/M]: the forward normal points into celA on
+  137/137 resolvable records across 07000002/05/06/07 (one 07000002 record degenerate).
+- The **pCelList record index is the placement's own `index` field**: `parsemap_block_map_data_static`
+  @0x1d1998 computes `pCelList + placement.index * 0x50` for by-index placements [M] (the by-hash
+  path resolves through the entity hashtable — untraced; portals naming those records are
+  unresolvable in the port). *Measured* [D]: with `index`-keying, 0 of 37/21/44/34 portal endpoints
+  drop on 07000002/05/06/07; an ordinal-based indexing dropped 22 on 07000002.
 - Runtime **`portal_tag`** — `build_alloc_portal(plane_eq, next, dest_cel, flag)` @0x1c8928,
   malloc **0xa0**: +0x00 next portal; +0x04 **twin** (parser sets `P1↔P2`); +0x08 **destination
-  cel**; +0x10 plane_equ (16B); +0x24 u16 = 0xFFFF; +0x27 u8 side flag; +0x30..0x6F the four corner
-  VECTORs; +0x70 quad centre; +0x80/+0x8C bbox min−0.1 / max+0.1.
+  cel**; +0x10 plane_equ (16B); +0x0C door object (0 until `build_LinkDoors2Portals`); +0x24 u16 =
+  0xFFFF; +0x26 u8 seen flag; +0x27 u8 side flag; +0x30..0x6F the four corner VECTORs (forward
+  order on the celB node, reversed on the celA node); +0x70 quad centre; +0x80/+0x8C bbox min−0.1 /
+  max+0.1. The celB node carries the forward plane with side flag `(flags&2)==0`, the celA node the
+  reversed plane with `(flags&1)^1` [M 0x1d15f8].
 - Storage: each of the two cels gets its own portal node on **cel+0x28**; twins cross-link; each
   node's +0x8 points at the opposite cel.
+
+## Visibility — the portal walk (Vision_* 0x1e7df8..0x1e89e0) [M] (fix-perf-level)
+
+Per viewer (`View_CaptureScene` 0x1e6df0): clear `cel+0xa0` visited flags over the world cel chain;
+`Vision_Init_Portal_Recurse` (0x1e89a8): `VisCelCount = 0`, `ViewPoints[0]` = the eye,
+`Vision_Calculate_View_Fustrum` (0x1e7df8) builds the depth-0 planes: the near quad at 200 units
+along the view axes (half-extents `tan(fov/2)·200` and `tan(fov/2)·aspect·200`), then **five**
+`Plane_PlaneEq`s through the eye and consecutive corner pairs plus one through three corners (the
+near plane) into `PortalPlanes[0]` (0x2d6a90, 48 depth slots × 10 planes); `NumPortalPlanes[0] = 5`;
+the first four planes are copied to viewer+0x70 (what `Vision_InView` tests).
+`Vision_Portal_Recurse` (0x1e86e8): add the viewer's cel to `VisCelList` (0x34b3b0, pairs of
+{cel, u16 depth}, cap 0x40) and run **`Vision_Recurse` (0x1e82e0)**: for each portal of the current
+cel's +0x28 list — skip when the side flag (+0x27) is 0, when `dot(plane, ViewPoints[0]=eye) >= 0`
+(the portal faces away), or when `Door_IsClosed(portal+0x0C)` [M 0x1367b0]; copy the four corners
+into the working polygon, clip it against `NumPortalPlanes[depth]` planes with
+`ClipPortalWithPlane` (0x1e7fa0: keep `value >= 0`; returns 0 = fully inside → polygon unchanged;
+the √1e-7 successive-duplicate compaction runs on every clipped result); a non-empty polygon marks
+portal+twin seen (+0x26), adds the destination cel (+0x8) to `VisCelList` (dedup by scan; `cel+0xa0
+= 1`), and — when the polygon keeps ≥ 3 corners — builds the next depth's planes: one
+`Plane_PlaneEq` per polygon edge with **ref = the eye** (`ViewPoints[0]`), plus the portal's own
+plane last; `NumPortalPlanes[depth+1] = corners+1`; recurse (budget: `VisionRecurseCount > 100`,
+depth > 45 stop). Afterwards `VisCelList` is QuickSorted (stride 8, comp 3) and threaded into the
+`GfxList` chain via `cel+0x20`; **`View_AddCels` (0x1e6ba0) adds ONLY these cels' glists** (+ the
+cel's own objects; the +0x18 sibling chain still passes `Vision_InView`, the 4-plane viewer+0x70
+test with radius slack [M 0x1e89e0]). The walk replaces fix-render3's box test as the visibility
+authority (G-016's portal half); `switch_ForceDrawAll` bypasses it (0x1e6df0).
+Port: `nf_view::scene::{parse_cel_graph, portal_visible_cels}` + the `Renderer` hookup; measured on
+07000007: start view 4526 → **177** World draws, away 64 → 62, left 1379 → 81, right 148 → 81,
+down 145 → 80.
 
 ## Object ↔ cel assignment [M]
 
