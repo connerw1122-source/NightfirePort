@@ -10,8 +10,9 @@ use nf_formats::hud::SpriteInfo;
 const SW: f32 = 512.0;
 const SH: f32 = 448.0;
 
-/// HUD textures the overlay uses (indices + 1 in `HudFrame` runs).
-pub const TEXTURES: [u32; 8] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002];
+/// HUD textures the overlay uses (indices + 1 in `HudFrame` runs). `fix-hud` added the crouch icons
+/// (0x03000173/74), the air bar (0x0300017F) and its bubble icon (0x0300017D) [M AirSprInfo/HealthSprInfo].
+pub const TEXTURES: [u32; 12] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d];
 const CROSS_TEX: u32 = 0x0300_0026;
 const FONT_TEX: u32 = 0x0300_0003;
 /// SightPane textures [D 07000005.bin entries 71 + 56]: 0x03000034 = the scope overlay (256×256, the circular
@@ -42,6 +43,11 @@ fn gs(rgb: u32, a: u32) -> [f32; 4] {
 }
 
 impl Hud<'_> {
+    /// A texture's pixel size (for the w/h-0 "texture size" sprites). (0, 0) when not loaded.
+    pub(crate) fn tex_dims(&self, tex: u32) -> (f32, f32) {
+        self.textures.iter().find(|(hh, _)| *hh == tex).map_or((0.0, 0.0), |(_, t)| (t.width as f32, t.height as f32))
+    }
+
     pub(crate) fn ndc(&self, anchor: Anchor, x: f32, y: f32) -> [f32; 2] {
         // One screen pixel in NDC across, keeping the 4:3 pixel shape at the window's height.
         let s = 2.0 / SW * (4.0 / 3.0) / self.aspect.max(1e-3);
@@ -72,7 +78,16 @@ impl Hud<'_> {
     /// A `SpriteInfo` sprite at the pane origin with colour `c`.
     fn sprite(&mut self, anchor: Anchor, at: (f32, f32), s: &SpriteInfo, c: [f32; 4]) {
         let uv = s.uv.map(|k| k as f32);
-        self.quad(anchor, s.layer as i32, s.texture, if s.flags & 0x100 != 0 { 1 } else if s.flags & 0x200 != 0 { 2 } else { 0 }, at.0 + s.x as f32, at.1 + s.y as f32, s.w as f32, s.h as f32, uv, (s.flags & 0x40 != 0, s.flags & 0x80 != 0), c);
+        // w/h 0 = the texture's own size (the icon sprites: crouch 19, air bubble, damage glow)
+        // [M SpriteInfo: "w / h (0 = texture size)"] — resolved against the loaded texture.
+        let (mut w, mut h) = (s.w as f32, s.h as f32);
+        if w == 0.0 || h == 0.0 {
+            if let Some(ti) = self.textures.iter().position(|(hh, _)| *hh == s.texture) {
+                if w == 0.0 { w = self.textures[ti].1.width as f32; }
+                if h == 0.0 { h = self.textures[ti].1.height as f32; }
+            }
+        }
+        self.quad(anchor, s.layer as i32, s.texture, if s.flags & 0x100 != 0 { 1 } else if s.flags & 0x200 != 0 { 2 } else { 0 }, at.0 + s.x as f32, at.1 + s.y as f32, w, h, uv, (s.flags & 0x40 != 0, s.flags & 0x80 != 0), c);
     }
 
     /// Font 2 text with its top-left pen at (x, y − cap) (`FE 02`: right-aligned → x − width), colour `c`; flag 0x20:
@@ -184,13 +199,26 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
         h.sprite(Anchor::Left, HEALTH_AT, &t.health[8 + i], gs(colour, (a * f * 255.0) as u32));
     }
     h.sprite(Anchor::Left, HEALTH_AT, &t.health[15], gs(colour, (f * 140.0) as u32));
-    // Damage glow (sprites 22 / 23 for `BL+0x967` = 0xC, the both-sides value `Player_HandlePain` writes; the port does
-    // not track the hit direction yet): full screen, additive, red at alpha `BL+0x968`.
+    // Damage glow (sprites 20–23, `HealthSprInfo[20..24]`): full screen, additive, red at alpha `BL+0x968`,
+    // gated per bit of `BL+0x967` — bit 1 → sprite 20 (tex 0x0300018D), bit 2 → 21 (flipped V), bit 4 → 22
+    // (tex 0x0300018E), bit 8 → 23 (flipped U) [M HUD_UpdateHealthPane 0x19b9c8:92-113]. `pain_from`
+    // (Player_DealWithObjHit 0x194458) writes the bits per the attacker's view-space direction; the
+    // generic pain paths write 0xC (both sides).
     let flash = s.drones.health.flash;
+    let dir_bits = s.drones.health.dir_bits;
     if flash > 0.0 {
-        for k in [22usize, 23] {
-            let tex = if k < 22 { 0x0300_018d } else { 0x0300_018e };
-            h.quad(Anchor::Stretch, 30, tex, 1, 0.0, 0.0, SW, SH, [0.0, 0.0, 64.0, 64.0], (k == 23, k == 21), gs(0xff0000, flash as u32));
+        let mut lit = [false; 4];
+        if dir_bits & 0xC == 0xC { lit[2] = true; lit[3] = true; }
+        else {
+            if dir_bits & 0x1 != 0 { lit[0] = true; }
+            if dir_bits & 0x2 != 0 { lit[1] = true; }
+            if dir_bits & 0x4 != 0 { lit[2] = true; }
+            if dir_bits & 0x8 != 0 { lit[3] = true; }
+        }
+        for (k, on) in lit.iter().enumerate() {
+            if !*on { continue; }
+            let tex = if k < 2 { 0x0300_018d } else { 0x0300_018e };
+            h.quad(Anchor::Stretch, 30, tex, 1, 0.0, 0.0, SW, SH, [0.0, 0.0, 64.0, 64.0], (k == 3, k == 1), gs(0xff0000, flash as u32));
         }
     }
     // Ammo pane: "clip-spare" in font 2 right-aligned at (496, 412) with a black shadow, the rounds strip above it.
@@ -213,6 +241,88 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
         let (rounds, empty) = (&t.ammo[5], &t.ammo[6]);
         h.quad(Anchor::Right, rounds.layer as i32, 0x0300_0128, 0, x, bottom - clip * hpr, bw * k, clip * hpr, [bu, (clip_size - clip) * hpr + bv, bw, clip * hpr], (false, false), gs(rounds.colour >> 8, rounds.colour & 0xff));
         h.quad(Anchor::Right, empty.layer as i32, 0x0300_0128, 0, x, bottom - clip_size * hpr, bw * k, clip_size * hpr, [bu, bv, bw, clip_size * hpr], (false, false), gs(empty.colour >> 8, empty.colour & 0xff));
+    }
+    // The fire-mode / weapon-name labels (sprites 1 / 2, both at pane (0,38) → (496, 432), layer 28,
+    // colour 0x7D6D59 with the black shadow): the fire-mode label = `Txt_BindLabel(weapon+0x30 + mode*4)`
+    // (the port always fires mode 0 — the belt mode byte `BL+0x1BB + w*0xC` has no switching path yet),
+    // the name = `Txt_BindLabel(weapon+0x38)`. While `BL+0x95E` runs (60 ticks after a weapon whose
+    // record's +2 word changed — `Sim::hud_tick`) the fire-mode label is bright (0xFF) and the name dim
+    // (0x1C); at rest the reverse [M HUD_UpdateAmmoPane 0x19a7f0:206-235]. Both drawn — the dim one is
+    // the template's faint ghost. Alignment: the name's template flag 0x1000 = right-aligned; the
+    // fire-mode's template has no 0x1000, but a left pen at x=496 would clip off the 512-wide screen, so
+    // both are drawn right-aligned [S — check against a PCSX2 frame].
+    {
+        let label_alpha = |bright: bool| (if bright { 0xFF } else { 0x1C }) as u32;
+        let (mode_bright, name_bright) = if s.hud.weapon_label_timer > 0 { (true, false) } else { (false, true) };
+        if let (Some(lang), Some(sp)) = (s.lang.as_ref(), t.ammo.get(1)) {
+            let fid = s.weapons.fire_mode_label(wi, 0);
+            if let Some(txt) = lang.bind(fid).filter(|t| !t.is_empty()) {
+                h.text(Anchor::Right, &t.font, sp.layer as i32, txt, AMMO_AT.0 + sp.x as f32, AMMO_AT.1 + sp.y as f32, true, gs(sp.colour >> 8, label_alpha(mode_bright)), true);
+            }
+        }
+        if let (Some(lang), Some(sp)) = (s.lang.as_ref(), t.ammo.get(2)) {
+            let nid = s.weapons.name_label(wi);
+            if nid != u32::MAX && nid != 0 {
+                if let Some(txt) = lang.bind(nid).filter(|t| !t.is_empty()) {
+                    h.text(Anchor::Right, &t.font, sp.layer as i32, txt, AMMO_AT.0 + sp.x as f32, AMMO_AT.1 + sp.y as f32, true, gs(sp.colour >> 8, label_alpha(name_bright)), true);
+                }
+            }
+        }
+    }
+    // The pickup message bar (pane 21, `Text_AddMsg` 0x1b0c30 + `HUD_UpdateStatusPane` 0x19c310): a
+    // 256×26 bar at (128, 364) from tex 0x0300007A with the text centred at (256, 380) in font 2,
+    // colour 0x7D6D59; the bar opens in one frame when a message arrives, the text fades over the last
+    // 15 ticks of its 180 (alpha = time·17), then the bar closes at 16 px per tick, re-centred
+    // [M 0x19c310; hud.md; the runtime template `PickupStatusSprInfo` is BSS — its layers here are
+    // [S] 32 (bar) / 31 (text), between the ammo text (28) and the crosshair (49)].
+    {
+        let (bw, bh, bx, by) = (256.0f32, 26.0f32, 128.0f32, 364.0f32);
+        if let Some(msg) = s.hud.msgs.front() {
+            let a = (msg.time * 17.0).min(255.0) as u32;
+            h.quad(Anchor::Left, 32, 0x0300_007a, 0, bx, by, bw, bh, [0.0, 0.0, bw, bh], (false, false), gs(0x7f7f7f, a));
+            h.text(Anchor::Centre, &t.font, 31, &msg.text, SW / 2.0, 380.0, false, gs(0x7d6d59, a), true);
+        } else if s.hud.bar_close > 0.0 {
+            // State 4: the bar shrinks 16 px per tick around its centre.
+            let w = s.hud.bar_close;
+            h.quad(Anchor::Left, 32, 0x0300_007a, 0, bx + (bw - w) / 2.0, by, w, bh, [0.0, 0.0, w, bh], (false, false), gs(0x7f7f7f, 0xff));
+        }
+    }
+    // The air/oxygen pane (pane 5, `HUD_UpdateAirPane` 0x1a11c8, `AirSprInfo` 0x2bd490): shown while
+    // Bond swims (the game enables it in player modes 3/6 — `Player_MonitorAir` 0x191a70:50); the fill
+    // bar's width is `air·2 + 28` of the 256-wide track, its colour 0x68D6B1 fully submerged (mode 6) /
+    // 0x68B1D6 swimming (mode 3); the bubble icon is additive, bright under water (0xFF) and 0x1F at the
+    // surface, with the bar at 0x1E/0x1F [M 0x1a11c8].
+    {
+        let under = s.bond.underwater;
+        if under || s.bond.air < 100.0 {
+            let air = s.bond.air.clamp(0.0, 100.0);
+            let (a_fill, a_bar, a_icon) = if under { (0xFF, 0xFF, 0xFF) } else { (0x1E, 0x1F, 0x1F) };
+            let fill_col = if under { 0x68d6b1 } else { 0x68b1d6 };
+            if t.air.len() >= 2 {
+                let (bar, fill) = (&t.air[0], &t.air[1]);
+                let w = (air * 2.0 + 28.0).clamp(1.0, 256.0);
+                h.sprite(Anchor::Left, (0.0, 0.0), bar, gs(bar.colour >> 8, a_bar));
+                h.quad(Anchor::Left, fill.layer as i32, fill.texture, 0, fill.x as f32, fill.y as f32, w, fill.h as f32, [fill.uv[0] as f32, fill.uv[1] as f32, w, fill.uv[3] as f32], (false, false), gs(fill_col, a_fill));
+            }
+            if let Some(icon) = t.air.get(2) {
+                h.sprite(Anchor::Left, (0.0, 0.0), icon, gs(icon.colour >> 8, a_icon));
+            }
+        }
+    }
+    // The crouch icon (health pane sprite 19, tex 0x03000173 at pane (320,−300) → (336, 37), layer −1,
+    // w/h 0 = the texture's size): shown while Bond crouches (player mode 4), then the post-stand icon
+    // 0x03000174 holds 60 ticks and fades over the last 30 (alpha = timer·255/30); hidden at rest
+    // [M HUD_UpdateHealthPane 0x19b9c8:305-328].
+    {
+        let (crouched, timer) = (s.bond.crouched, s.hud.crouch_icon_timer);
+        if crouched || timer > 0 {
+            let sp = &t.health[19];
+            let (tex, a) = if crouched { (0x0300_0173u32, 0x1Du32) }
+                else if timer >= 30 { (0x0300_0174u32, 0x1Du32) }
+                else { (0x0300_0174u32, (timer as u32 * 255 / 30).max(1)) };
+            let (tw, th) = h.tex_dims(tex);
+            h.quad(Anchor::Left, sp.layer as i32, tex, 0, HEALTH_AT.0 + sp.x as f32, HEALTH_AT.1 + sp.y as f32, tw, th, [0.0, 0.0, tw, th], (false, false), gs(0x7f7f7f, a));
+        }
     }
     // Scope overlay (the SightPane, `HUD_UpdateCrossHair` 0x19e6d0 pane[6]): 3 sprites at layer 39 [D].
     // Sprite 0: the scope texture (0x03000034, 256×256) centered at x=32, y=0, w=448, h=448, UV 0..511.

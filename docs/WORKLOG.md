@@ -4727,3 +4727,64 @@ script-player.md.
 **Verification:** the 3 symptom tests + priming control pass; full suite green on the slim ISO except the 3
 allowed disc_golden failures (nf-formats 74 tests, nf-audio 7, nf-game 133, nf-view 106 — 0 failures).
 
+
+## 0090 — fix-hud: the HUD remainder (fire-mode/name labels, pickup messages, damage direction, air bar, crouch icon) + the language tables
+
+Branch `s/fix-hud` from master 6faffb4. Task: port the missing HUD elements from the HUD_* decompile with
+headless NF_ISO tests, per docs/systems/hud.md.
+
+**Language tables (new, `nf_formats::hud::Lang`):** `Txt_LoadLanguage` 0x1caad0 loads `FNames[SelLang]` —
+FNames[0] = "DUTxt.dat" is Dutch; the NTSC-U default read back from the disc is `USATxt.dat` [D FILES.BIN].
+On-disc layout measured and verified: `u32 dataBytes`, data, pad of `4 - (dataBytes & 3)` (4 even when
+aligned), `u32 NumEntries`, `u32 offsets[NumEntries-1]` (entry i ≥ 1 at `data[offsets[i-1]]`, entry 0 =
+the heap sentinel), `u32 NumFixups`, `u32 fixups[NumFixups]`; `Txt_BindLabel` 0x1cad60 = `fixups[id>>24]
++ (id & 0xffffff)`. Read back: 0x200000D "Picked up %s", 0x200000E "Picked up %dx %s", 0x200000F "Picked
+up Armor", 0x2000010 "Picked up Code Key", 0x200004A "007 Bonus collected", 0x2000051/52/53 the objective
+strings. `nf_view::load` parses `USATxt.dat` into `Sim.lang`.
+
+**Ported (crates/nf-view/src/hud.rs + Sim::hud_tick in scene.rs):** the ammo pane's fire-mode label
+(`weapon+0x30 + mode*4`; the port has no fire-mode switching, so mode 0 → "Semi" for the PP7) and weapon
+name (`weapon+0x38` → "Wolfram PP7") at (496, 432) layer 28, with the `BL+0x95E` 60-tick timer (set when
+the HUD's weapon id changes and the records' +2 words differ, bright/dim 0xFF/0x1C swap per the decompile
+— note: at rest the NAME is bright, during the timer the FIRE-MODE is bright [M 0x19a7f0:206-235]); the
+pickup message bar (pane 21: `Text_AddMsg` 0x1b0c30 queue over `drones.taken`, 180 SP ticks, text fade
+alpha = time·17 over the last 15, close 16 px/tick [M HUD_UpdateStatusPane 0x19c310], bar 256×26 at
+(128,364) tex 0x0300007A, text centred (256,380) font 2 0x7D6D59); the damage-direction glow (BL+0x967
+bits 1/2/4/8 → HealthSprInfo 20/21/22/23, tex 0x0300018D/0x0300018E with the table's flips, alpha
+BL+0x968; `PlayerHealth::pain_from` ports the view-space rule of Player_DealWithObjHit 0x194458:201-226
+at the drone-bullet hit site, `pain_generic` sets 0xC for explosions [M Player_HandlePain 0x1902c8]);
+the air/oxygen pane (AirSprInfo 0x2bd490: track 256×16 at (128,48) tex 0x0300017F, fill w = air·2+28,
+colour 0x68D6B1 submerged / 0x68B1D6 swimming, additive bubble 0x0300017D [M HUD_UpdateAirPane 0x1a11c8]);
+the crouch icon (health sprite 19 at pane (320,−300), tex 0x03000173 crouched, 0x03000174 held 60 ticks
+after standing, fade over the last 30 [M 0x19b9c8:305-328]). `Hud::sprite` now resolves w/h 0 to the
+texture's own size.
+
+**Tests (`fix_hud_live.rs`, 6):** shown failing with the pre-fix hud.rs stashed (4/6 fail); all 6 pass
+with the fix. The pickup-take could NOT be driven headless (no placed 07000005 pickup takes via
+stand-at + the touch ring in 90 ticks × 12 candidates × 5 offsets — the take path needs the player's
+body model, which `Bond::stand_at` lacks); that test skips honestly. The other five drive the real
+paths: the take→message test uses whatever placed pickup takes; the label test uses the cycle input.
+
+**Not done (out of time; root causes measured by parallel research, fixes NOT implemented here):**
+- 07000002/06 drawn-but-unhittable guards: the game rejects damage in `NDrone2_DealWithObjHit` 0x13fff0
+  case 5 — victim team 2/3 (the "friend" types 10/11/13/14 → team 3 per 0x14cbd8) shot by the player
+  instance (team 2/3) → `bVar3=false` → hard return; the port's `update_player_bullets` checks only
+  present/enabled/corpse, so the team gate is the missing rule. The dump harness `dump_drone4.rs` already
+  prints team/mode/state/channel per drawn drone.
+- 07000006 searchlight: the port's spot ray never tests Bond — the game's `Collide_RayIntersect` pick
+  walks the cel's objects, so the spot lands ON Bond (dist ≈ 0 ⇒ arm). Fix: add Bond's capsule to
+  `Searchlights::update`'s segment test; then state 1 → ch 55 → the ch-55 waiters + `Music_Event(2,1)`
+  (already ported, drone.rs:4043).
+- Grenades: the frag blast sound is INSIDE script 0x6000052 (the port plays 0x4A7, the rest-bounce sound
+  of weapons 0x3b/0x45 — wrong id); explode-on-impact flag = weapon_data+0x70 & 4 (walls explode, floors
+  bounce — the port always bounces); the stun grenade (record 0x36) must route victims to
+  StunGrenadeImpact/Loop/Recover (0x172bb0/0x1631c0/0x163350; anims 0x2d/0x2e/0x76, recover per
+  DroneFunc_RecoverTime 0x147188) instead of `health -= damage` — the port applies lethal damage for
+  every grenade type (the user's flashbang kills). Explode_Create 0x17cbd0 (script 0x6000052, camera
+  shake, radius·0.0666 lifetime) is unported.
+- 07000007 guests not walking + 07000005 torso twist: both were root-caused and fixed on master by
+  fix-drone4 (CivilianMission 0x16 + kind-8 route assignment + Route::for_path open-chain; the ±0.9 rad
+  two-sided aim clamp + `aims_torso()` gate) — `fix_drone4_live.rs`/`probe_drone4.rs` cover them in the
+  suite. The user's retest likely pre-dates merge 924b51e. Remaining parity debts: the party weapon lock
+  (playtest F4) and `near_armed_person`'s game triple test (prop 0x3c + seen-this-tick + armed opponent,
+  0x1787c8).

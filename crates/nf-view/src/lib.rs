@@ -223,7 +223,19 @@ pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_gam
         voices: nf_formats::sfx::voice_lines(&elf).map_err(|e| eprintln!("Drone_SfxInfo: {e}")).ok(),
         hud: nf_formats::hud::HudTables::from_action_elf(&elf).map_err(|e| eprintln!("HUD tables: {e}")).ok(),
     };
-    let scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));
+    let mut scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));
+    // The HUD's language strings (`fix-hud`): `Txt_LoadLanguage` 0x1caad0 loads `FNames[SelLang]` — the
+    // NTSC-U default is `USATxt.dat` [D FILES.BIN; FNames 0x244680]. Parsed per its on-disc layout.
+    if let Some(s) = scene.sim.as_mut() {
+        match read("USATxt.dat") {
+            Ok(Some(bytes)) => match nf_formats::hud::Lang::parse(&bytes) {
+                Ok(lang) => s.lang = Some(lang),
+                Err(e) => eprintln!("USATxt.dat: {e} — HUD labels/messages blank"),
+            },
+            Ok(None) => eprintln!("no USATxt.dat in FILES.BIN — HUD labels/messages blank"),
+            Err(e) => eprintln!("USATxt.dat: {e}"),
+        }
+    }
     if std::env::var("NF_DRAWS").is_ok() {
         let mut c: std::collections::BTreeMap<String, (usize, u32)> = Default::default();
         for m in &scene.materials { let e = c.entry(format!("{:?} {:?}", m.layer, m.draw)).or_default(); e.0 += 1; e.1 += m.index_count / 3; }

@@ -120,11 +120,13 @@ fn closest_point_on_segment(a: V3, b: V3, p: V3) -> V3 {
     [a[0] + d[0] * t, a[1] + d[1] * t, a[2] + d[2] * t]
 }
 
-/// Bond's health and armour (`BL+0x894`, `+0x8B0`; single player starts at 100 / 0) and the hit flash (`BL+0x968`).
+/// Bond's health and armour (`BL+0x894`, `+0x8B0`; single player starts at 100 / 0), the hit flash (`BL+0x968`)
+/// and the hit-direction bits (`BL+0x967`).
 #[derive(Clone, Copy, Debug)]
-pub struct PlayerHealth { pub health: f32, pub armour: f32, pub flash: f32 }
+pub struct PlayerHealth { pub health: f32, pub armour: f32, pub flash: f32, /// `BL+0x967`: the damage-direction bits — 1/2 = the view's vertical axis (sprites 20/21), 4/8 = the horizontal (22/23) [M `HUD_UpdateHealthPane` 0x19b9c8:92-113].
+pub dir_bits: u8 }
 
-impl Default for PlayerHealth { fn default() -> Self { PlayerHealth { health: 100.0, armour: 0.0, flash: 0.0 } } }
+impl Default for PlayerHealth { fn default() -> Self { PlayerHealth { health: 100.0, armour: 0.0, flash: 0.0, dir_bits: 0 } } }
 
 impl PlayerHealth {
     /// `Player_HandlePain` (single player, damage type 0): × the level's damage factor for the difficulty
@@ -138,6 +140,40 @@ impl PlayerHealth {
         self.health = (self.health - (d - absorbed)).max(0.0);
         if self.health < 1.0 { self.health = 0.0; }
         self.flash = (self.flash + (d * 21.333).min(128.0)).min(255.0);
+    }
+
+    /// `Player_HandlePain` 0x1902c8:124-130 also writes `BL+0x967`: the generic pain paths set 0xC (both
+    /// sides — drowning/pain-type 7 use it too); pain type 6 sets 2. The directional path is
+    /// `Player_DealWithObjHit` 0x194458:201-226, which the callers below mirror instead.
+    pub fn pain_generic(&mut self, damage: f32, difficulty: u32, level: u32, pain_type: u32) {
+        self.dir_bits = if pain_type == 6 { 2 } else { 0xC };
+        self.pain(damage, difficulty, level);
+    }
+
+    /// `Player_DealWithObjHit` 0x194458:201-226: the attacker position transformed into the viewer's frame,
+    /// normalised, then `if 0.5 <= |x| or |y|`: `|y| < |x|` → `x < 0 ? 4 : 8`, else `y < 0 ? 1 : 2`.
+    /// The game reads the matrix at `glb_viewer+0x160`; the port rebuilds the two axes from Bond's yaw
+    /// (right = (cos yaw, 0, −sin yaw), forward = (sin yaw, 0, cos yaw)) and takes the view's y as the
+    /// attacker's height over the eye — the same x rule exactly; the y rule is [S] (the world-up
+    /// projection of a pitch-rotated frame).
+    pub fn pain_from(&mut self, damage: f32, difficulty: u32, level: u32, attacker: [f32; 3], eye: [f32; 3], yaw: f32) {
+        let d = [attacker[0] - eye[0], attacker[1] - eye[1], attacker[2] - eye[2]];
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        self.dir_bits = 0;
+        if len > 1e-4 {
+            let (x, y) = (d[0] / len, d[1] / len);
+            // The port's object frame has +X = screen-left (see `Sim::crosshair`), so the view's x axis is
+            // (−cos yaw, 0, sin yaw); x < 0 = the attacker on the screen's left → bit 4 (sprite 22).
+            let (rx, rz) = (-yaw.cos(), yaw.sin());
+            let vx = (d[0] / len) * rx + (d[2] / len) * rz;
+            let vy = y;
+            let (ax, ay) = (vx.abs(), vy.abs());
+            if ax >= 0.5 || ay >= 0.5 {
+                if ay < ax { self.dir_bits = if vx < 0.0 { 0x4 } else { 0x8 }; }
+                else { self.dir_bits = if vy < 0.0 { 0x1 } else { 0x2 }; }
+            }
+        }
+        self.pain(damage, difficulty, level);
     }
 }
 
