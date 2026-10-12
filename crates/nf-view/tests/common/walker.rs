@@ -529,8 +529,9 @@ impl Walker {
             };
             if err.abs() > 1.2 { input.forward = 0.0; }
             if self.sidestep != 0 {
+                // Pure lateral (no forward): the diagonal walk grinds into the same wall corner.
                 input.strafe = if self.sidestep > 0 { 1.0 } else { -1.0 };
-                input.forward = 0.4;
+                input.forward = 0.0;
                 self.sidestep -= 1;
             }
             self.tick(input, false);
@@ -555,9 +556,16 @@ impl Walker {
                         self.use_door(di, label);
                         self.stuck = 0;
                     } else if self.stuck == 1 {
-                        self.sidestep = 40; // nudge right
+                        // No world wall on the hip line: a knee-high rail — hop first.
+                        let rail = sim.world.segment([self.pos[0], self.pos[1] - 0.7, self.pos[2]], [wp.at[0], wp.at[1] - 0.7, wp.at[2]]).is_some();
+                        if rail {
+                            let sim = self.scene.sim.as_mut().unwrap();
+                            if sim.bond.grounded { self.tick(Input { jump: true, forward: 1.0, ..Default::default() }, false); }
+                        } else {
+                            self.sidestep = 60; // nudge right
+                        }
                     } else if self.stuck == 2 {
-                        self.sidestep = -40; // nudge left
+                        self.sidestep = -60; // nudge left
                     } else if self.stuck == 3 {
                         // jump once
                         let sim = self.scene.sim.as_mut().unwrap();
@@ -687,10 +695,90 @@ pub fn nav_route(sim: &nf_view::scene::Sim, start: V3, dest: V3) -> Option<Vec<V
     None
 }
 
-/// A route leg: two anchors, filled with nav nodes between them.
+/// A route leg: two anchors, filled with nav nodes between them (per-path A* first, then the
+/// cross-path roadmap).
 pub fn leg(sim: &nf_view::scene::Sim, from: V3, to: V3) -> Vec<V3> {
     let mut pts = vec![from];
-    pts.extend(nav_route(sim, from, to).unwrap_or_default());
+    pts.extend(nav_route(sim, from, to).or_else(|| nav_route_global(sim, from, to)).unwrap_or_default());
     pts.push(to);
     pts
+}
+
+/// Cross-path roadmap: Dijkstra over EVERY path's nodes (within-path links + cross-path hops where
+/// two nodes stand within 3 units). The game's per-path A* cannot span rooms the AI paths split
+/// across; the walk harness can. Returns node positions from `start` to `dest` (exclusive ends).
+pub fn nav_route_global(sim: &nf_view::scene::Sim, start: V3, dest: V3) -> Option<Vec<V3>> {
+    use std::collections::BinaryHeap;
+    #[derive(PartialEq)]
+    struct Q { cost: f32, node: usize }
+    impl Eq for Q {}
+    impl Ord for Q { fn cmp(&self, o: &Self) -> std::cmp::Ordering { o.cost.total_cmp(&self.cost) } }
+    impl PartialOrd for Q { fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(o)) } }
+
+    let mut nodes: Vec<V3> = Vec::new();
+    let mut owner: Vec<usize> = Vec::new(); // path index per node
+    for (pi, p) in sim.nav.paths.iter().enumerate() {
+        if p.kind & 0xd != 0 { continue; } // boundary/mission-only kinds are not walk roads
+        for n in &p.nodes { nodes.push(n.pos); owner.push(pi); }
+    }
+    if nodes.is_empty() { return None; }
+    let n = nodes.len();
+    // Adjacency: within-path links, then cross-path proximity hops.
+    let mut adj: Vec<Vec<(usize, f32)>> = vec![Vec::new(); n];
+    for (pi, p) in sim.nav.paths.iter().enumerate() {
+        if p.kind & 0xd != 0 { continue; }
+        for l in &p.links {
+            let (a, b) = (l.a as usize, l.b as usize);
+            // Global node index: the path's nodes were pushed in order; find the offset.
+            let off: usize = sim.nav.paths.iter().take(pi).map(|q| if q.kind & 0xd != 0 { 0 } else { q.nodes.len() }).sum();
+            let (ga, gb) = (off + a, off + b);
+            adj[ga].push((gb, l.len));
+            adj[gb].push((ga, l.len));
+        }
+    }
+    for a in 0..n {
+        for b in (a + 1)..n {
+            if owner[a] == owner[b] { continue; }
+            let d = ((nodes[a][0] - nodes[b][0]).powi(2) + (nodes[a][1] - nodes[b][1]).powi(2) + (nodes[a][2] - nodes[b][2]).powi(2)).sqrt();
+            if d < 3.0 && sim.nav.move_test(&sim.world, nodes[a], nodes[b], false, false).0 == 1 {
+                adj[a].push((b, d));
+                adj[b].push((a, d));
+            }
+        }
+    }
+    let nearest = |p: V3| -> Option<usize> {
+        let mut best: Option<(f32, usize)> = None;
+        for (i, q) in nodes.iter().enumerate() {
+            let dy = (q[1] - p[1]).abs();
+            let d = dxz(*q, p) + dy * dy * 8.0;
+            if best.is_none_or(|(bd, _)| d < bd) { best = Some((d, i)); }
+        }
+        best.map(|(_, i)| i).filter(|&i| dxz(nodes[i], p) < 12.0)
+    };
+    let s = nearest(start)?;
+    let g = nearest(dest)?;
+    let mut dist = vec![f32::INFINITY; n];
+    let mut prev = vec![usize::MAX; n];
+    let mut heap = BinaryHeap::new();
+    dist[s] = 0.0;
+    heap.push(Q { cost: 0.0, node: s });
+    while let Some(Q { cost, node }) = heap.pop() {
+        if cost > dist[node] { continue; }
+        if node == g { break; }
+        for &(nb, w) in &adj[node] {
+            let c = cost + w;
+            if c < dist[nb] { dist[nb] = c; prev[nb] = node; heap.push(Q { cost: c, node: nb }); }
+        }
+    }
+    if dist[g].is_infinite() { return None; }
+    let mut path = Vec::new();
+    let mut k = g;
+    while k != usize::MAX {
+        path.push(nodes[k]);
+        if k == s { break; }
+        k = prev[k];
+    }
+    path.reverse();
+    // Trim the ends (the start/dest nodes stand in for the endpoints).
+    if path.len() > 2 { Some(path[1..path.len() - 1].to_vec()) } else { Some(Vec::new()) }
 }

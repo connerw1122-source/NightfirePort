@@ -1,32 +1,53 @@
-//! walkreal-a probe 15: guard 15 (skin 0x5000036) at (−23.3, 6.3, 14.4) — why do the bullets miss
-//! at 2.7? Dump his hit boxes vs the aim ray. Diagnostic.
+//! walkreal-a probe: 07000002's dock geometry — what blocks (−23.4,34.2)→(−17,34.5)? Diagnostic.
 
-use nf_game::player::Input;
+use nf_formats::iso9660::IsoImage;
+use nf_formats::placement::transform;
 
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 
-fn dxz(a: [f32; 3], b: [f32; 3]) -> f32 { ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() }
-
 #[test]
-fn probe_guard15_boxes() {
+fn probe_02_dock() {
     let iso = iso();
-    let mut scene = nf_view::load(&iso, "07000001.bin", false).expect("load");
-    let sim = scene.sim.as_mut().unwrap();
-    for _ in 0..4000 { sim.step_bond(Input::default(), false, false, false); if sim.drones.channels.on(0xb) { break; } }
-    for _ in 0..6000 { sim.step_bond(Input::default(), false, false, false); }
-    let gi = sim.drones.list.iter().position(|d| d.skin == 0x0500_0036 && d.pos[0] < -20.0).map(|v| v as i32).unwrap_or(-1) as usize;
-    if gi == 0 || gi >= sim.drones.list.len() { eprintln!("no such guard"); return; }
-    let d = &sim.drones.list[gi];
-    eprintln!("guard {gi}: skin {:#x} pos {:?} health {} started {} enabled {}", d.skin, d.pos, d.health, d.started, d.enabled);
-    let boxes = sim.drones.list[gi].hit_boxes(&nf_game::drone::Data {
-        tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons,
-        world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins, skeletons: &sim.skeletons,
-        nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning, hitboxes: &sim.hitboxes, volumes: &sim.volumes,
-        sfx: sim.sfx.as_ref(), models: &sim.models, surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(),
-    });
-    eprintln!("{} boxes:", boxes.len());
-    for b in boxes.iter().take(20) {
-        eprintln!("  part {:3}: centre ({:.2},{:.2},{:.2}) half {:?}", b.part, b.m[3][0], b.m[3][1], b.m[3][2], b.half);
+    let img = IsoImage::open(&iso).expect("open iso");
+    let (entries, bin) = nf_formats::disc::files_bin_entries(&img).expect("FILES.BIN");
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case("07000002.bin")).expect("archive");
+    let data = img.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).expect("read");
+    let level = nf_formats::level::Level::parse(&data).expect("parse");
+    let (lo, hi) = ([-28.0f32, -0.6, 27.5], [-13.5, 3.6, 37.0]);
+    let mut seen = std::collections::HashSet::new();
+    for inst in level.instances(true).0 {
+        let Some(c) = &level.maps[inst.map].objects[inst.object].collision else { continue };
+        for t in c.triangles() {
+            let tw = t.map(|p| transform(&inst.matrix, p));
+            let tlo = [0, 1, 2].map(|k| tw.iter().map(|v| v[k]).fold(f32::INFINITY, f32::min));
+            let thi = [0, 1, 2].map(|k| tw.iter().map(|v| v[k]).fold(f32::NEG_INFINITY, f32::max));
+            if (0..3).any(|k| thi[k] < lo[k] || tlo[k] > hi[k]) { continue; }
+            let key = (inst.map, inst.object);
+            if seen.insert(key) {
+                eprintln!("obj map{} obj{} name={:?} flags={:#x}", inst.map, inst.object,
+                    level.maps[inst.map].objects[inst.object].name.trim(), level.maps[inst.map].objects[inst.object].flags);
+            }
+        }
     }
-    eprintln!("guard crouched? anim state {:#x} danim {}", sim.drones.list[gi].anim.state, sim.drones.list[gi].anim.danim);
+    // And the dock's walkable probes at y 1.1: which cells are free?
+    let img2 = IsoImage::open(&iso).expect("open iso");
+    let (entries2, bin2) = nf_formats::disc::files_bin_entries(&img2).expect("FILES.BIN");
+    let fe2 = entries2.iter().find(|e| e.name.eq_ignore_ascii_case("07000002.bin")).expect("archive");
+    let data2 = img2.read_bytes(bin2.lba as u64 * 2048 + fe2.offset as u64, fe2.size as u64).expect("read");
+    let level2 = nf_formats::level::Level::parse(&data2).expect("parse");
+    let world = nf_game::world::CollisionWorld::build(&level2, &level2.instances(true).0);
+    let mut z = 25.5f32;
+    while z <= 38.0 {
+        let mut row = String::new();
+        let mut x = -28.0f32;
+        while x <= -13.0 {
+            let (a, b) = ([x, 1.7, z], [x, 0.6, z]);
+            let (push, _) = world.capsule_push(a, b, 0.55);
+            let blocked = push.iter().any(|v| v.abs() > 0.05);
+            row.push(if blocked { '#' } else { '.' });
+            x += 1.0;
+        }
+        eprintln!("z={z:5.1}: {row}   (x -28..-13)");
+        z += 1.0;
+    }
 }
