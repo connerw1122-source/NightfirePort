@@ -55,7 +55,7 @@ pass (fieldprobe/gdbwatch, each doc's "Live checks" section) comes next.
 
 | Struct | Doc | Instance | Notes |
 |---|---|---|---|
-| obj_tag (generic header) | [obj-tag.md](obj-tag.md) | 0x110 @ obj+0 | reader-list status per row; class-3 variant: obj-tag-player.md (s/044x-fields-player) |
+| obj_tag (generic header) | [obj-tag.md](obj-tag.md) | 0x110 @ obj+0 | reader-list status per row; class-3 variant: obj-tag-player.md |
 | level_tag (placement params) | [level-tag.md](level-tag.md) | 0xB0 stack | +2 key count, +4 rate, +8 key-list ptr; per-creator param map for all 48 readers |
 | trigger | [trigger.md](trigger.md) | 0x40, class 0x1D | port fixes: raw-0DC shift removed (3 live 0xDC on 0700000c) |
 | door (DOORINFO) | [door.md](door.md) | 0x80, class 0x1C | atlas door.md corrections (Activate doesn't read +0x66) |

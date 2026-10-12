@@ -3,7 +3,7 @@
 Proof levels: see [README.md](README.md). This doc upgrades docs/atlas/object.md's field table to
 the field-map standard: every row now states its reader-list status, and the rows re-verified this
 session carry their decompile lines. The class-3 (player) reading of the same header lives in
-docs/fields/obj-tag-player.md (branch s/044x-fields-player). Allocation: `control_create_object`
+docs/fields/obj-tag-player.md. Allocation: `control_create_object`
 0x1344e0 (`Mem_Malloc(instance_size + 0x110)`, memset 0); init `control_init_object` 0x134630;
 lists, cel links and the update order are docs/atlas/object.md's §Lists/§Update order (still
 authoritative). Level: ee_start_05 (07000005 at start, 523 objects).
