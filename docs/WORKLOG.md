@@ -5631,3 +5631,74 @@ nothing on the disc's 0700000d data the port can reach writes ch 0x1f except the
 itself, and the laser lives inside the crane cut-scene's scripted timeline.
 
 **Full suite:** `--no-fail-fast` run green except the 3 allowed `disc_golden` failures (the slim ISO).
+
+## fix-objects2 — 07000008 (the gondola level) objects
+
+Branch `s/fix-objects2` (from master 9aac84e). Task: the user's playtest items — the invisible wall after the
+opening cut-scene, and the safe + gondola object side (the safe/laser-watch chain, the ride as a script-driven
+moving platform).
+
+**The invisible wall — found and fixed.** Reproduced headless first (`probe_objects2.rs` walks the real input
+path: Bond stalls on the walkway descent with NO drawn mesh and NO static instance pushing him — the blocker is
+invisible collision). The blocker is the `BlockingPoly_PlayerMissile` family: glist flags **0x1000**, 4 objects
+on this level forming a bullet cage (a lid at y 52.8 over the map, a floor at y −40, a wall plane x 135.3
+z −100.1..−116, and two walls over the station walkway) [D triangles dumped]. The game skips them for the actor
+queries: `Collide_Pick` (0x1eb320, disassembly 0x1eb468-0x1eb49c) tests each collision node's cel flags word
+(cel+0x94 = the glist flags) — nodes with **0x1000 are skipped when the query's HITTEST+0x98 carries bit 0x20**
+(the actor-movement queries; the ray/sight callers pass flags without it — the searchlight's 0x18). The level is
+playable across the wall in the game, which pins the actor query to the skipping side. Fix: `world.rs::build`
+splits 0x1000-flagged objects into a `missile` geo set — solid to `segment`/`segment_surface` (bullets, sight,
+the floor rays), invisible to `capsule_push` (`near_actor`). Fail-first shown: the capsule assertion is red on
+the pre-fix code (the cage wall pushed the capsule +x at (135.5, 48.6, −101)); the walk route is green post-fix.
+
+**The safe and the gondola — the whole chain ported and green end-to-end.** [D placements dump; M where noted.]
+- The safe bolts = **locks** (kind 0x2E → `Lock_Create` 0x1ae1f8; out = param 5, chs 134/135; the burn reads the
+  activating weapon in `Lock_Update` 0x1ae3d8 case 0 — 0x4E/0x4F the decryptor, the 0x56/0x57 band :162 — and
+  writes `switch_channels[record u16+8]` :194). New `lock.rs`: the object + the burn hook (the laser gadget
+  itself is not ported — the gadget port map says all of 0x4A..0x5E are out of selection; the hook is the
+  documented seam). Burn both → mux #278 → ch 136 → the safe door #205 (SimpleScript, `ss.rs`, animates) and
+  SP #286 SafePickUps.
+- The fusebox #219 (kind 0x31, script 0x060008AD — NOT script-less as the earlier probe guessed) already worked
+  via the port's fusebox E-cut stand-in → ch 137 → the bolt #217 (SimpleScript), Door_Guardroom #122 (lock ch
+  137), SP #221 GuardRoomLights, MusicTrigger #277.
+- The briefcase #290 (kind 0xF0 **type 4**) was refused by the port's inventory (`_ => None`): the game's
+  `Pickup_Handler` case 4 (0x18e650) is the LABEL/item pickup — `Txt_BindLabel(+0x34)` when the label is
+  non-zero (0 here [D]), always consumed. Fixed: `kind::LABEL` + `Taken::Label` (the two HUD matches updated;
+  fix_hud_live's match included).
+- Bond on the cable-car floor (Touch 0xEB #236, out 4, mask 8 = the player) + ch 0x4A → mux #235 → ch 1 →
+  SP #295 (mask 1 on ch 1, mode 64 = loaded-armed [M SP_LoadScript 0x1dbc08 disasm]) plays the ride script
+  0x0600004C — **in the LEVEL BIN** (the level doc's "loadable pack" note was wrong), 53 streams/1420 ticks:
+  OBJECT_Carriage descends (112.0, 32.4, −126.3) → (112.0, 18.0, −179.4); stream 46 writes **ch 0x53 (83) at
+  tick 1410**; SP #296 (mask 1, ch 83) plays 0x06000078 (the bottom cinematic) whose stream 10 writes **ch 5**.
+- The helicopter #45 (kind 0x2F → `Copter_Create` 0x17d340): new `copter.rs` — the channel machine exact
+  [M: gate record+0x70 = param 6, the arrival write record+0x72 = param 7 on the move's completion
+  (0x17dbb8 cases 4/5/6 :249-268), the +0x74/+0x76 countdown pulse :16-22]; gate = ch 5, out = ch 0x4B. The
+  flight rides the port's script machinery via `Scripts::spawn_once` (the hidden `SP_Create` inside
+  `Copter_Create`, 0x1dc7e0 = SP_Create). ch 0x4B → mux #276 → ch 100 → MissionState 6 → 0x0730008
+  [M 0x182c60:85-116]. The combat states (missiles/guns, Music_Event(2,1)) are NOT ported (the extraction
+  copter never arms here).
+- **The trigger containment contact** (`triggers.rs::touched_by`): the AABB containment fired the plunge death
+  NIS for Bond standing on the boarding platform INSIDE plunge #54's AABB (the volume's mesh is two valley-sized
+  quads the platform never touches [D tris]) — fix-level2's recorded walk-in graze (F5). The containment now
+  applies only to volumes whose triangles are all < 24 units on an edge (the room shells/plates — 07000006's
+  LoadPoint #746, edges ≤ 10.4); the plunge family's quads (edges 25.8-46.5) fall back to the mesh test [S: the
+  game's contact is the mesh; the tri-size gate is the port's approximation]. 07000006's walk test re-verified
+  green.
+- **The gondola as a moving platform**: collision works (the carriage joins `set_dynamic` through the normal
+  script-entity path; Bond standing in its path is pushed, standing on its line is swept — both observed).
+  The RIDING inherit does not engage on the carriage: Bond grounded at his teleport height while the floor
+  below moves away (the probe: `grounded=1`, `floor_below` = the static platform 10.8 below, the grate's
+  shape present and moving) — the truck ride's inherit ran on ANIM discrete parts; the carriage's parts are
+  script ENTITY parts (one `(id, hash, matrix)` per entity). Left open with that diagnosis; the level is
+  completable without it (the ride is a scripted cut-scene the game itself disables input for — Bond boards
+  and the script takes over).
+
+**Tests** (`crates/nf-view/tests/fix_objects2_live.rs`, all NF_ISO, all green): the walk past the former
+invisible wall (spawn → the intro plate → the 3881-tick cut-scene → the shutters (E) → the walkway → down the
+stairs past x 135.3); the cage still stops bullets but not the capsule (the fail-first sister); the safe chain
+(burn → 136 → the SS door animates → the briefcase → ch 0x4A → objective 1 completes); the ride chain end-to-end
+(0x4A + the floor switch → ch 1 → the carriage descends → ch 83 → ch 5 → the copter → ch 0x4B → ch 100 → the
+mission completes); boarding without the briefcase never starts the ride (the sister). `probe_objects2.rs` is
+the dump/repro probe kept for reference.
+
+**Full suite:** `--no-fail-fast` run green except the 3 allowed `disc_golden` failures (the slim ISO).

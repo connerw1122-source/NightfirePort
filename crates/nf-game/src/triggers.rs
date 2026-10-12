@@ -213,7 +213,20 @@ impl Trigger {
         // the containment contact fired the falling-to-death cut-scene the moment he grabbed the 07000005 cable
         // (ch 0xBE, merge of map-mayhew over fix-wire). In the game the crossing has no fall or death path at all
         // [M Player_Wire 0x197658]. [S]: the game's exact contact rule for a hanging Bond isn't read yet.
-        if c.contain && (0..3).all(|k| c.a[k] >= self.lo[k] && c.a[k] <= self.hi[k])
+        // fix-objects2: containment is a PLATE/ROOM contact, not a valley-shell one. The game's contact is the
+        // capsule against the volume's own mesh (the shells fire on crossing; standing strictly inside a hollow
+        // volume touches nothing — 07000008's boarding platform sits INSIDE plunge #54's AABB and the game's player
+        // does not die there [D #54 tris: a floor quad at y 17.5 + a wall at x 136.6 over the valley; the platform
+        // at y ≈ 24–27 touches neither]). The containment approximation stays only for volumes whose triangles are
+        // small (the room-exit shells and walk-over plates — 07000006's LoadPoint #746, edges ≤ 10.4); the plunge
+        // family's valley-sized quads (edges 25.8–46.5 [D]) fall back to the mesh test alone.
+        let contain_ok = self.tris.iter().all(|t| (0..3).all(|k| {
+            let a = t[k];
+            let b = t[(k + 1) % 3];
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)) < 24.0 * 24.0
+        }));
+        if c.contain && contain_ok
+            && (0..3).all(|k| c.a[k] >= self.lo[k] && c.a[k] <= self.hi[k])
             && (0..3).all(|k| c.b[k] >= self.lo[k] && c.b[k] <= self.hi[k]) {
             return true;
         }

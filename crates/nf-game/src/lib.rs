@@ -15,6 +15,8 @@ pub mod gun;
 pub mod grenade;
 pub mod ladder;
 pub mod fusebox;
+pub mod copter;
+pub mod lock;
 pub mod ss;
 pub mod mission;
 pub mod music;

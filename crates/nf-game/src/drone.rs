@@ -3857,6 +3857,12 @@ pub struct Drones {
     pub doors: crate::door::Doors,
     /// The fuseboxes (`FuseBox_Create` 0x1b0448; map-tower2): 07000014's OBJECT_FuseBox1 sabotage boxes.
     pub fuseboxes: Vec<crate::fusebox::FuseBox>,
+    /// The helicopter (`Copter_Create` 0x17d340, placement 0x2F; fix-objects2): 07000008's
+    /// extraction copter — gated on ch 5, its arrival writes ch 0x4B (the last mission objective).
+    pub copters: Vec<crate::copter::Copter>,
+    /// The locks (`Lock_Create` 0x1ae1f8, placement 0x2E; fix-objects2): the laser-burn targets —
+    /// 07000008's safe bolts (chs 134/135 → mux 136 → the safe door).
+    pub locks: Vec<crate::lock::Lock>,
     /// The animated SimpleScripts (`SS_Create` 0x1a9c58 / `SS_Update` 0x1a9948; map-tower2): the
     /// 07000012 lift screens, shutters and lift doors swap on their switch channels.
     pub sss: crate::ss::SsList,
@@ -3921,7 +3927,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), copters: Vec::new(), locks: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -3970,6 +3976,14 @@ impl Drones {
         // SimpleScripts (`SS_Create` 0x1a9c58): the 0xE2 placements with a non-zero key count, their
         // keys from the main map's 0x19 blocks (map-tower2).
         self.sss = crate::ss::SsList::create(&level.maps[m].placements, &path_blocks);
+        // The helicopter (`Copter_Create` 0x17d340, placement 0x2F) and the locks (`Lock_Create`
+        // 0x1ae1f8, placement 0x2E) (fix-objects2). Neither draws RNG at create.
+        self.copters = crate::copter::Copter::create(&level.maps[m].placements);
+        self.locks = crate::lock::Lock::create(&level.maps[m].placements, |p| {
+            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
+                else { level.maps[m].objects.get(p.index as usize) };
+            obj.map(|o| (o.centre, o.radius))
+        });
         // Weather: `Env_Create` (placement 0xDF, parameter 0 = drop type) and the `RainBox_Create` volumes (0x32: the
         // glist bounds at the placement translation).
         self.map_sounds = crate::sound::MapSounds::new(level.maps[m].sounds.clone());
@@ -4538,6 +4552,16 @@ impl Drones {
         // frame (core-loop §7 item 5). It used to snapshot at the END of the tick, so a 1-tick lock pulse was
         // invisible to the edge test.
         self.doors.end_tick(&self.channels);
+        // The helicopter (`Copter_Update` 0x17dbb8, fix-objects2): the gate check, the countdown
+        // pulse and the arrival write; on the gate's rising edge the flight script starts as a
+        // synthetic one-shot player (the game's hidden `SP_Create` inside `Copter_Create` 0x17d340).
+        let mut copter_flight: Vec<(usize, u32, nf_formats::anim::Mat4)> = Vec::new();
+        for c in &mut self.copters {
+            let len = self.scripts.lib.get(&c.scripts[1]).map(|n| n.length as u32).unwrap_or(0);
+            let (started, _) = c.tick(&mut self.channels, len, frame);
+            if started { copter_flight.push((c.placement, c.scripts[1], c.matrix)); }
+        }
+        for (placement, script, matrix) in copter_flight { self.scripts.spawn_once(placement, script, matrix); }
         // Script players (*deviation*: all of them here, not interleaved with the placed objects by list order).
         { let _p = crate::prof::scope("drones: scripts"); self.scripts.tick(&mut self.channels, d, frame); }
         // Script objects with collision data join the collision world where they now are: animations' discrete
