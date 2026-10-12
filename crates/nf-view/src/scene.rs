@@ -2746,8 +2746,11 @@ impl Scene {
             // like the searchlight parts.
             if let Some(dr) = v.door {
                 let Some(s) = self.sim.as_ref() else { return [0.0, -10000.0, 0.0]; };
-                let Some(d) = s.drones.doors.list.get(dr as usize) else { return [0.0, -10000.0, 0.0]; };
-                return transform(&d.matrix, v.pos);
+                // The door slot space also holds the SimpleScripts (map-tower2): indices past the doors
+                // list index `drones.sss.list`.
+                if let Some(d) = s.drones.doors.list.get(dr as usize) { return transform(&d.matrix, v.pos); }
+                let Some(q) = s.drones.sss.list.get(dr as usize - s.drones.doors.list.len()) else { return [0.0, -10000.0, 0.0]; };
+                return transform(&q.matrix, v.pos);
             }
             if let Some(a) = v.attachment { return transform(&attach[a as usize], v.pos); }
             let c = &self.characters[v.character as usize];
