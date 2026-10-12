@@ -121,3 +121,33 @@ fn a_hit_from_straight_ahead_glows_both_sides() {
     h.pain_from(2.0, 1, 0x0700_0005, [4.0, 1.5, 0.0], eye, 0.0);
     assert_eq!(h.dir_bits, 0x4);
 }
+
+#[test]
+fn the_pickup_bar_stays_centred_under_its_text_on_a_widescreen_window() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
+    for _ in 0..120 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
+    scene.sim.as_mut().unwrap().hud.msgs.push_back(nf_view::scene::Msg { text: "Picked up Winter Covert Sniper".into(), time: 180.0 });
+    // In NDC (x in −1..1) at 16:9: the bar's centre and the text's centre are both the screen's centre.
+    let centre = |aspect: f32| -> (f32, f32) {
+        let f = nf_view::hud::overlay(&scene, aspect);
+        let ti = |h: u32| scene.hud_textures.iter().position(|(hh, _)| *hh == h).unwrap() + 1;
+        let span = |tex: usize, y0: f32, y1: f32| {
+            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+            for r in f.runs.iter().filter(|r| r.0 == tex) {
+                for v in &f.v[r.2 as usize..(r.2 + r.3) as usize] {
+                    let sy = (1.0 - v.p[1]) * 224.0;
+                    // The bar's columns only (u 185..196 of the sheet); the health arcs share the texture.
+                    let bar_col = tex != ti(0x0300_007a) || (185.0..=196.0).contains(&(v.uv[0] * 256.0));
+                    if sy >= y0 && sy <= y1 && bar_col { lo = lo.min(v.p[0]); hi = hi.max(v.p[0]); }
+                }
+            }
+            (lo + hi) / 2.0
+        };
+        (span(ti(0x0300_007a), 363.5, 390.5), span(ti(0x0300_0003), 366.0, 388.0))
+    };
+    let (bar, text) = centre(16.0 / 9.0);
+    eprintln!("[hud] 16:9 bar centre {bar:.3}, text centre {text:.3} (NDC)");
+    assert!(bar.abs() < 0.01, "the bar is centred on a widescreen window");
+    assert!((bar - text).abs() < 0.03, "the text sits on the bar");
+}

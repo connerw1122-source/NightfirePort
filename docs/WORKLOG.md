@@ -5116,3 +5116,7 @@ paths: the take→message test uses whatever placed pickup takes; the label test
 - Tests: `crates/nf-view/tests/hud_playtest_live.rs` (4, with sisters). Full suite: 352 passed, 0 failed.
 - Open: the truck ride's voice lines (queued to fix-audio2); whether some ammo pickups are really kind 6
   (the "007 Bonus collected" message): asked the user for the spot.
+- main-4 follow-up (user playtest, widescreen): the pickup bar was Left-anchored and its text started AT the
+  centre, so on a 16:9 window the bar sat left and the text ran right. Both are centre-anchored now, and the text
+  is centred on (256, 380) by its laid-out width. `hud_playtest_live` adds a 16:9 test (bar 0.000 / text 0.002
+  NDC). Full suite: 353 passed.

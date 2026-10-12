@@ -272,17 +272,22 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     // 16 px per tick around its centre.
     {
         let (bw, bh, bx, by) = (256.0f32, 26.0f32, 128.0f32, 364.0f32);
+        // Centre-anchored like its text: on a widescreen window a Left anchor left the bar off to the left of the
+        // centred text (user playtest).
         let bar = |h: &mut Hud, w: f32| {
             let x = bx + (bw - w) / 2.0;
             let c = gs(0x7f7f7f, 0x8d);
-            h.quad(Anchor::Left, 30, 0x0300_007a, 0, x, by, w, bh, [190.0, 0.0, 1.0, 56.0], (false, false), c);
-            h.quad(Anchor::Left, 30, 0x0300_007a, 0, x - 5.0, by, 5.0, bh, [185.0, 0.0, 5.0, 56.0], (false, false), c);
-            h.quad(Anchor::Left, 30, 0x0300_007a, 0, x + w, by, 5.0, bh, [191.0, 0.0, 5.0, 56.0], (false, false), c);
+            h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x, by, w, bh, [190.0, 0.0, 1.0, 56.0], (false, false), c);
+            h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x - 5.0, by, 5.0, bh, [185.0, 0.0, 5.0, 56.0], (false, false), c);
+            h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x + w, by, 5.0, bh, [191.0, 0.0, 5.0, 56.0], (false, false), c);
         };
         if let Some(msg) = s.hud.msgs.front() {
             let a = (msg.time * 17.0).min(255.0) as u32;
             bar(&mut h, bw);
-            h.text(Anchor::Centre, &t.font, 29, &msg.text, SW / 2.0, 380.0, false, gs(0x7d6d59, a), true);
+            // Centred on (256, 380): the pen starts half the text's width left of the centre (it started AT the
+            // centre, so the text ran off to the right of the bar).
+            let (_, tw) = t.font.layout(&msg.text, 0.0, 0.0);
+            h.text(Anchor::Centre, &t.font, 29, &msg.text, SW / 2.0 - tw / 2.0, 380.0, false, gs(0x7d6d59, a), true);
         } else if s.hud.bar_close > 0.0 {
             bar(&mut h, s.hud.bar_close);
         }
