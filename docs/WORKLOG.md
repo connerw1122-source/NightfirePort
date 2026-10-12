@@ -5439,3 +5439,62 @@ grenade path instead. Script-disabled Bond swallows the trigger (the disabled ga
 (PlayerEnable) relocates Bond — teleport AFTER `disabled` clears.
 
 Suite: 374 passed / 3 failed (the 3 disc_golden slim-ISO failures) after merging master.
+
+## map-mayhew — the Mayhew estate missions 07000005-08 mapped, the objective layer ported, walkthrough tests
+
+Branch `s/map-mayhew` (from origin/master 6a012ee). Docs: `docs/levels/07000005.md` … `07000008.md`. Code:
+`crates/nf-game/src/mission.rs` (new file, this task's own), one additive hook in drone.rs (`Drones::mission` +
+the tick monitor), the volume-containment branch in triggers.rs' `touched_by` (shared file, noted). Tests:
+`crates/nf-view/tests/walk_0700000{5,6,7,8}_live.rs`.
+
+**The objective layer [M Mission_MonitorObjectives 0x1827d8, Mission_Update 0x182c60] — ported in mission.rs.**
+The game's table is 18 records of 0x28 bytes at EE 0x2a4354 ([L] ee_start_05.bin, dumped: every record's level
+field = the mission's FIRST level code — the Mayhew records all read 0x07000005), each objective { label, fail
+ptr, +0x0C complete channel, +0x0F reveal channel, +0x10 flags (bit 1 inverted), +0x14 state }. The monitor per
+tick: state 1 + reveal ch → 3; state 3 + complete ch → 4; inverted objectives fail (ch 99) when their channel
+turns on; the all-done AND is LIVE over every objective's channel condition; ch 0x61/0x60 → fail (ch 99); all on →
+**ch 100** + Music_Event(8,1). `Mission_Update`: ch 99 → fail (end 0x7000048); ch 100 → complete → `LevelToEndTo`
+per level — **0x07000008 → 0x07300008 (the DRIVING hand-off)** [M 0x182c60:85-116]. The port runs the whole table
+(18 records — the other map sessions build on it) against `base_map(level)` (the chain ranges [S, pinned by the
+table's base codes and the driving switch]). The Mayhew chain [L]: 0x4000000 "Breach the castle walls" (ch 0x70,
+reveal 0x45) → 0x4000001 "Find a way inside to the party" (ch 0x02, reveal 0x70) → 0x4000002 (ch 0x48, reveal
+0x47) + 0x4000003 (ch 0x49, reveal 0x48) → 0x4000004 (ch 0x4A, reveal 0x49) + 0x4000005 (ch 0x4B, reveal 0x4A).
+Not ported (the HUD/fail screens): Text_AddMsg presentation, MenuManager_Create, the unarmed-impact fail reasons
+(SetMissionFailReason 7/2/0xb — the reason plumbing is 031-fix-mission's file).
+
+**The LoadPoint containment fix [M Trigger_Hit 0x1b1fc8 does NO geometry]** — it classifies the object's CONTACT
+LIST (obj+0xD0), which the collision pass fills for anything overlapping the trigger's glist bounds. The port's
+triangle-only `touched_by` missed a toucher standing INSIDE a room-shaped volume (07000006's LoadPoint #746: 6
+tris forming an open box [D measured] — a capsule inside touches nothing). `touched_by` now also hits when the
+toucher capsule is fully contained in the trigger's bounds. fail-before: walk_07000006's dress step (ch 0x83
+never pulsed pre-fix, the dressing scene never started).
+
+**Walkthroughs (all real path, NF_ISO, slim ISO):**
+- 07000005: the cold start #26 → the castle-gate door #118 E → fallback ch 0x1F → level_exit 0x07000006, objective
+  1 incomplete (the door route never fires ch 0x70 [L — the game completes it only on the truck route; the door
+  route's ch-0x70 writer is not on disc, flagged in the doc]); the truck ride (the fix-truck integration) parks on
+  the ch-0x70 plate → the monitor completes objective 1 → the same exit. F1's matched-entry spawn is
+  level_carry_live's (unchanged).
+- 07000006: the carried 0x1D save spawns at #496 (the truck arrival plates raise ch 185 ✓) → the LoadPoint #746
+  volume → ch 0x83 → SP #810's dressing script 0x06000071 (in the level bin, NOT a pack — 07000006 has no
+  loadable records [D]) → at its tick 1129 ch 0x02 (the objective completes) + event 0x12 → level_exit
+  0x07000007. Sister: away from the volume nothing fires.
+- 07000007: spawn #0 → the spawn plate #411 raises ch 0x47 (objective 1 reveals; the fists switch request lands
+  within ~100 ticks) → the hall plate #412 raises ch 0x48 (the lock releases; the viewer's input mapping
+  nf-view lib.rs 989/997 — `weapon_lock_input` + the rising-edge auto-draw — mirrored in the test) → objective 1
+  completes, objective 2 reveals, the P2K draws → the roof exit #418 (LOAD_LEVEL, gate 0 [D — the agent report's
+  "no recorded exit" was wrong; the placement dump found it]) → level_exit 0x07000008. Sisters: skipping #412
+  keeps fists (weapon 1) and the objective incomplete; the exit still fires (ungated).
+- 07000008: spawn #0 → the intro plate #237 raises ch 0x49 (07000007's objective 2 completes through the carried
+  records — the record chain crosses levels exactly as the [L] table says) → the boarding ch 0x4A + the ride
+  ch 0x4B (their writers are the loadable-pack scripts 0x0600004C/0x06000077-78 — the packs ARE on the slim ISO
+  [D FILES.BIN] but the SP scripts' channel events are not yet dumped; the walkthrough drives the two channels and
+  documents the gap) → ch 100 → level_exit **0x07300008** [M 0x182c60:100]. Sisters: without the ride the mission
+  stays open (no LOAD_LEVEL to fall back to); E at the gondola doors never fires the mask-8 plunge (F5's gate,
+  [M 0x1b2318:38-40] — the port-side walk-in graze remains fix-level2's open item).
+
+**F5's real mechanism on 07000008** (for the record): the falling-to-death cut-scene is TouchOnce out 0x7C mask 8
+→ SP 0x06000991 [D WORKLOG 4324-4328]; the E path is closed by the mask gate; the door route's own lock channels
+(#117/#118 p3=200 [D]) are the U-044 boundary locks.
+
+Determinism: no RNG draws added (the monitor is channel-reading only; the containment branch is pure geometry).

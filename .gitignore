@@ -11,3 +11,10 @@
 /tools-bin
 /scripts
 /nf-view-crash.log
+# Worker sandbox logs (map-mayhew).
+build.log
+fmt_audio.log
+nf_*.log
+s1.log
+s3.log
+suite*.log

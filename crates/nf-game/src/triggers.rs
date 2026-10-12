@@ -195,11 +195,23 @@ impl Trigger {
     }
 
     /// Whether a capsule touches the trigger's triangles.
+    /// `Trigger_Hit` 0x1b1fc8 itself does NO geometry: it classifies the object's CONTACT LIST
+    /// (obj+0xD0, built by the collision pass — a toucher whose sphere overlaps the trigger's glist
+    /// bounds counts, including one standing INSIDE a room-shaped volume where no triangle is
+    /// within reach). The port's triangle tests cover the plate/quad cases; the containment branch
+    /// here covers the volume case (a toucher capsule fully inside the trigger's bounds — e.g.
+    /// 07000006's LoadPoint #746, an open room-shaped glist [D measured tris]).
     pub fn touched_by(&self, c: &Toucher) -> bool {
         let grow = c.r + 0.1;
         let lo = [c.a[0].min(c.b[0]) - grow, c.a[1].min(c.b[1]) - grow, c.a[2].min(c.b[2]) - grow];
         let hi = [c.a[0].max(c.b[0]) + grow, c.a[1].max(c.b[1]) + grow, c.a[2].max(c.b[2]) + grow];
         if (0..3).any(|k| hi[k] < self.lo[k] || lo[k] > self.hi[k]) { return false; }
+        // Containment: both capsule ends inside the trigger's own bounds (the bounding-sphere
+        // contact the game's collision pass registers).
+        if (0..3).all(|k| c.a[k] >= self.lo[k] && c.a[k] <= self.hi[k])
+            && (0..3).all(|k| c.b[k] >= self.lo[k] && c.b[k] <= self.hi[k]) {
+            return true;
+        }
         self.tris.iter().any(|t| {
             segment_hits_triangle(c.a, c.b, t) || point_triangle(c.a, t) <= c.r || point_triangle(c.b, t) <= c.r
                 || (0..3).any(|k| segment_segment(c.a, c.b, t[k], t[(k + 1) % 3]) <= c.r)
