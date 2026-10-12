@@ -205,7 +205,7 @@ pub fn alpha_shaped(rgba: &[u8]) -> bool {
 
 /// One indexed draw: its layer, pass, pipeline, texture bind group, index range and the object's world centre + radius.
 #[derive(Clone, Copy)]
-struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16>, late: bool }
+struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16>, chain: u32 }
 
 pub struct Renderer {
     hud_pipeline: wgpu::RenderPipeline,
@@ -295,6 +295,13 @@ impl Renderer {
             let blend = match d.blend {
                 1 => wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add }, alpha: alpha_keep },
                 2 => wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::ReverseSubtract }, alpha: alpha_keep },
+                // (Cs−Cd)·FIX0 + Cd (07000041's mod batches): the framebuffer comes back unchanged, but the
+                // depth test/write and the alpha test still run as configured (the GS evaluates the whole
+                // equation to D = Cd) — scene.rs `Draw::from_gs` blend 3.
+                3 => wgpu::BlendState { color: alpha_keep, alpha: alpha_keep },
+                // (Cs−0)·Ad + Cd (07000041's env-map overlays): add the source only where the base batch
+                // wrote destination alpha; the alpha channel itself comes back unchanged (D = Cd).
+                4 => wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::DstAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add }, alpha: alpha_keep },
                 _ => wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add }, alpha: alpha_keep },
             };
             // As >= 1 (TEST 0x5001B) -> a >= 1/128; As > 0x7F (0x507FD) -> a > 127/128.
@@ -434,16 +441,16 @@ impl Renderer {
         let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&scene.indices), usage: wgpu::BufferUsages::INDEX });
         // Draw order (docs/systems/render.md): sky before the world, list 0, characters, list 1 (alpha), sky after the fog
         // pass, effects; the vertex buffer keeps its layout (the character tail stays contiguous).
-        // Alpha-shaped textures (most texels well below the texture's peak alpha: the baked shadow decals such as
-        // 07000007's `hall_shadows` / `banistershadows`, cut-outs). In list 0 they share the walls' exact draw state,
-        // and the front-to-back sort drew a decal (its centre nearer than the big wall's) BEFORE the wall it lies on:
-        // its depth write, even where its alpha is near 0, then rejected the wall — holes showing the clear colour
-        // (the user's navy blocks, R2). The game draws the room cels before the objects on them (`View_DrawCelGlist`
-        // 0x1e6538, then `View_DrawObjList` 0x1e69a0) [M]; the port has no cel/object split per draw, so it draws
-        // the alpha-shaped list-0 draws after the opaque ones [S: the texture test stands in for "object on a cel"].
-        let shaped: Vec<bool> = std::iter::once(false).chain(scene.textures.iter().map(|t| alpha_shaped(&t.rgba))).collect();
+        // List 0 order per `View_DrawObjList` (0x1e69a0) + `View_AddCels` (0x1e6ba0): the viewer's per-list array holds
+        // both cel entries and object entries, QuickSorted by key. `View_AddCels` pushes every runtime cel's PRIMARY
+        // glist — one per 0x8000 placement — into list 0 with the SYNTHETIC key −90000 + 10k in cel-chain
+        // (placement-parse) order, before any distance-keyed entry; `View_AddObjects` (0x1e62d8) pushes the objects with
+        // ±dist². So the level's statics draw first in placement-parse order (a baked decal after the wall it lies on —
+        // the R2 hole bug's real fix), then the dynamic World objects front-to-back. `Material::chain` carries the
+        // ordinal (u32::MAX = a distance-keyed object entry). This replaces fix-render4's alpha_shaped stand-in, which
+        // reordered by texture shape instead of by the game's own keys (gpu::alpha_shaped stays for its pinned test).
         let draws: Vec<DrawCall> = scene.materials.iter().zip(&material_tex)
-            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel, late: m.draw.pass == 1 && shaped.get(tex).copied().unwrap_or(false) }).collect();
+            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel, chain: m.chain }).collect();
         let fog = scene.fog;
         let snow_pipeline = make_pipeline(Draw { pass: 5, blend: 1, zwrite: false, atest: 0, fog: 0 });
         let snow_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (SNOW_MAX * std::mem::size_of::<crate::scene::Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -562,9 +569,16 @@ impl Renderer {
             // Reuse the cached `order` Vec (A-11e): clear + refill, no per-frame alloc.
             self.order.clear();
             self.order.extend(self.draws.iter().enumerate().map(|(k, dc)| {
-                let key = match dc.pass { 1 => d2(dc.centre), 3 => -d2(dc.centre), _ => 0.0 };
-                // Sort group: pass × 2, + 1 for the alpha-shaped list-0 draws (after the opaque ones of their pass).
-                (dc.pass * 2 + dc.late as u8, key, k)
+                // List 0 (pass 1): the statics' parse-order synthetic key (View_AddCels: −90000 + 10·k, all
+                // before any distance key), the dynamics by squared distance (View_AddObjects). List 1 (pass 3):
+                // back-to-front (−dist²) for everything. Ties fall through to the draw index (the material
+                // order = the build's group order, i.e. leaf/batch order within one object).
+                let key = match dc.pass {
+                    1 => if dc.chain != u32::MAX { -90_000.0 + 10.0 * dc.chain as f32 } else { d2(dc.centre) },
+                    3 => -d2(dc.centre),
+                    _ => 0.0,
+                };
+                (dc.pass * 2, key, k)
             }));
             self.order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
             // The 6 frustum planes for the CPU-side cull (Gribb-Hartmann from `view_proj`).

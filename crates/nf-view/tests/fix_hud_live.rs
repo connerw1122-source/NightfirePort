@@ -72,6 +72,7 @@ fn taking_an_armour_pickup_shows_the_message_bar_then_it_fades() {
     let expected = match &tk {
         Taken::Armour => lang.bind(0x200_000F).unwrap_or("").to_string(),
         Taken::Bonus => lang.bind(0x200_004A).unwrap_or("").to_string(),
+        Taken::Label => String::new(), // fix-objects2: kind 4 has no label on the disc data so far [M 0x18e650 case 4]
         Taken::Key { .. } => lang.bind(0x200_0010).unwrap_or("").to_string(),
         Taken::Weapon { weapon } => lang.format(0x200_000D, &[lang.bind(sim.weapons.name_label(*weapon as usize)).unwrap_or("").to_string()]),
         Taken::Ammo { weapon, rounds } => {

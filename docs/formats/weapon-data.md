@@ -24,6 +24,7 @@ table in 30,819 of 30,820 bytes. The odd byte is record 1 +0xDC: a skin hashcode
 | +0x4C | u32 | hashcode passed out by `AnimDatumGetWeaponInfo` (often 0x02000261) | decomp |
 | +0x50 | u8 | datum id the third-person model hangs on (0xFF = none → id 0 when drawn) | `AnimObjectDraw` |
 | +0x6C | u32 | bullet-type flags; bit `0x40000` = the weapon's bullets play a fly-by (whiz) sound in `Bullet_DoTrails` | drone-damage.md "Bullets" (SG5 `0x40050`); accessor `bullet_flags`/`flyby` |
+| +0x5C | u32 | the flying bullet's drawn mesh (`0xFFFFFFFF`/0 = none) — `Bullet_update` 0x12e7b0 state 0 sets it via `hashtable_set_object_to_entity_gfx` (disasm 0x12e8f0) and skips the draw when the hashtable misses | accessor `projectile_mesh`; grenades 0x35/0x36/0x37 → 0x02000726/0x0200071f/0x02000a6e, rocket 0x3A → 0x0200074f, darts 0x3B..0x40 → 0x020007b3, Q-Worm 0x46 → 0x0200025f (measured, `ee_start_05.bin` @ weapon+0x5C) |
 | +0x7C | u32 | first-person (Bond) model hashcode | `Player_WeaponFiring` |
 | +0x80 | u32 | third-person model hashcode (`…_3rd_LOD0` map objects in the level archives) | `AnimObjectDraw` |
 

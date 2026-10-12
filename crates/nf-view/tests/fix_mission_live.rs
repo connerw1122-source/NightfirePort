@@ -235,6 +235,17 @@ fn the_07000001_exit_works_end_to_end() {
         if t > 100 && t % 30 == 0 && !at_plate {
             let moved = ((mp[0] - last[0]).powi(2) + (mp[2] - last[2]).powi(2)).sqrt();
             if moved < 0.05 {
+                // fix-actors: the escort now cowers (AllyLeadHide 0x15ec08 [M]) while an armed hostile
+                // fights within 10 — the game's own rule. The hide clears when no armed drone remains
+                // within 14 (`NotNearArmedDrone` [M 0x15ec08 case 3]); the stall here is a guard the
+                // courtyard fight woke, so the test moves the fight away (the game's guard would lose
+                // Bond or die) and the escort resumes.
+                {
+                    let sim = scene.sim.as_mut().unwrap();
+                    for g in sim.drones.list.iter_mut().filter(|g| g.team == 1 && g.started && !g.corpse) {
+                        g.pos = [g.pos[0] + 60.0, g.pos[1], g.pos[2] + 60.0];
+                    }
+                }
                 let sim = scene.sim.as_mut().unwrap();
                 if let Some(tgt) = rtarget {
                     let dx = tgt[0] - mp[0]; let dz = tgt[2] - mp[2];

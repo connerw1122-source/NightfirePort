@@ -57,6 +57,7 @@ Every field the port reads (cross-checked against the decompile) plus others ver
 | +0x50 | u8 | `datum_id` | anim datum the third-person model hangs on (0xFF = none) | static init | `AnimDatumGetWeaponInfo`@`0x1c7900`:22 | `[M]` |
 | +0x54..+0x56 | u8 × 3 | `muzzle_rgb` | muzzle-flash light colour (b, g, r) | static init | `Player_MuzzleFlash`@`0x1a4298`:89 | `[M]` |
 | +0x58 | u32 | `fp_flash_radius` | `Light_Create` radius for the first-person muzzle flash | static init | `Player_MuzzleFlash`@`0x1a4298`:88 | `[M]` |
+| **+0x5C** | u32 | `projectile_mesh` | the flying bullet's drawn mesh (`0xFFFFFFFF`/0 = none); `Bullet_update` state 0 sets it on the bullet object with `hashtable_set_object_to_entity_gfx` + `View_SetDrawInAllViews` and draws it instead of the 0x02000123 trail | static init | `Bullet_update`@`0x12e7b0` disasm 0x12e8f0-0x12e900 (`lw $a1, 0x5c($v0)` → `jal 0x1ca6d8`) | `[M]` |
 | +0x60 | u16 | `fire_sound` | drone fire-sound id | static init | `AnimDatumGetWeaponInfo`@`0x1c7900`:20 | `[M]` |
 | **+0x68** | u32 | `flags` | weapon flags (see bit table below) | static init | `Player_WeaponFiring` (10×), `Player_SetWeaponAnimObj`, `Player_EquipAmmo` | `[M]` |
 | **+0x6C** | u32 | `bullet_flags` | bullet-type flags (see bit table below) | static init | `Player_WeaponFiring`@`0x1a5460`:666,671; `Player_MuzzleFlash`@`0x1a4298`:93,105 | `[M]` |
@@ -104,6 +105,39 @@ Every field the port reads (cross-checked against the decompile) plus others ver
 | 0x10000 | fire-on-trigger hold | `Player_WeaponFiring`@`0x1a5460`:429 | `[M]` |
 | 0x40000 | alternate fire scripts (+0xB0/+0xB4 by the `BLData+0x958` toggle) and alternate muzzle datum (bone 4) | `Player_SetFiringAnim`@`0x1a3c70`:40-49; `Player_MuzzleFlash`@`0x1a4298`:70 | `[M]` |
 | 0x80000 | random fire-script pick: one `Rand(100)` per shot, > 50 plays +0xB4 (the fists' left/right punch) | `Player_SetFiringAnim`@`0x1a3c70`:34-36 | `[M]` |
+
+### `+0x5C` projectile meshes (measured, `ee_start_05.bin` `[L]`)
+
+The gravity bullets (grenades, `+0x6C & 0x8`) and the other mesh-carrying projectiles; `0xFFFFFFFF` = no
+mesh (the bullet draws the 0x02000123 trail or nothing):
+
+| weapon | meaning | mesh | tag |
+|---:|---|---|:---:|
+| 0x11 | (scoped, ammo 15) | `0x02000816` | `[L]` |
+| 0x1B | 0x1A variant (ammo 12) | `0x02000441` | `[L]` |
+| 0x2A/0x2B | (fire-on-trigger) | `0x02000860` | `[L]` |
+| 0x2C..0x2F | (ammo 14) | `0x02000432` | `[L]` |
+| 0x30/0x31 | (ammo 14) | `0x020006e0` | `[L]` |
+| 0x32/0x33 | (scoped, 100 rounds) | `0x020008d7` | `[L]` |
+| 0x34 | captain grenade (elsewhere) | `0x020002af` | `[L]` |
+| 0x35 | Frag Grenade | `0x02000726` | `[L]` |
+| 0x36 | Stun Grenade | `0x0200071f` | `[L]` |
+| 0x37 | Remote Mine | `0x02000a6e` | `[L]` |
+| 0x3A | (rocket-type, ammo 28) | `0x0200074f` | `[L]` |
+| 0x3B..0x40 | dart-type (ammo 29) | `0x020007b3` | `[L]` |
+| 0x41/0x43/0x44 | dart/tranq | `0x020008bd` | `[L]` |
+| 0x45 | grenade-type (clip 100) | `0x02000a44` | `[L]` |
+| 0x46 | Q-Worm (unlimited) | `0x0200025f` | `[L]` |
+| 0x59/0x5B | (ammo 30) | `0x02000833` / `0x02000ac2` | `[L]` |
+
+Records 0x62-0x70 (the AI-only weapons) carry meshes too (`0x02000432`, `0x0200025f`, `0x0200071f`,
+`0x020008d7`); the atlas's "the rest are zero" holds for the fields it lists, not for +0x5C.
+
+On the level archives [D scan, `models_weapons_live::probe` measurements]: the frag mesh 0x02000726 is
+in 07000001..08 and 15/16 only; the stun mesh 0x0200071f in 0700000c-16 (the Tower-A/B/C and the early
+Castle/Mayhew levels do NOT carry it); the late levels resolve both through the session object table
+(the merge in `nf_view::load_impl`; `hashtable_delete_hashtype` has only the pack loader as its caller
+[M decompile grep]).
 
 ### `+0x6C` flag bits
 

@@ -25,10 +25,17 @@ pub struct Dev {
     pub time_scale: f32,
     /// One-shot: run exactly one tick this frame (the "step" key), whatever the time scale.
     pub step: bool,
-    /// God mode: Bond's health is locked at 100 and the hit flash cleared each tick.
+    /// God mode: Bond's health is locked at 100, armour at 50 and the hit flash cleared each tick.
     pub god_mode: bool,
-    /// Infinite ammo: the gun's clip is refilled each tick.
+    /// Infinite ammo: every OWNED weapon's clip and every spare type is topped back to the most seen
+    /// this run, every 30th tick — the recorder's `--ammo` cheat (the trace-session tool), not a
+    /// blanket refill.
     pub infinite_ammo: bool,
+    /// `--ammo` state: the most clip/spare seen this run per weapon/ammo type, and the level they
+    /// belong to (the recorder resets both when the game's BLData pointer changes — a level load).
+    pub best_level: Option<u32>,
+    pub best_clip: Vec<i16>,
+    pub best_spare: Vec<i16>,
     /// No reload: the current weapon's clip is topped to its `weapon_data` clip size each tick, so it never
     /// empties and the game never reloads.
     pub no_reload: bool,
@@ -56,7 +63,7 @@ pub enum SpawnPick { Normal, Sniper, Ambush }
 
 impl Default for Dev {
     fn default() -> Self {
-        Dev { overlay: false, menu: false, time_scale: 1.0, step: false, god_mode: false, infinite_ammo: false, no_reload: false, spawn: SpawnPick::Normal, forced: Vec::new(), saved_spot: None, mouse: (0.0, 0.0), scenario: None, menu_sel: 0, result_msg: None, result_timer: 0 }
+        Dev { overlay: false, menu: false, time_scale: 1.0, step: false, god_mode: false, infinite_ammo: false, best_level: None, best_clip: Vec::new(), best_spare: Vec::new(), no_reload: false, spawn: SpawnPick::Normal, forced: Vec::new(), saved_spot: None, mouse: (0.0, 0.0), scenario: None, menu_sel: 0, result_msg: None, result_timer: 0 }
     }
 }
 
@@ -78,24 +85,51 @@ impl Dev {
     /// transient copies, so the next tick re-read the drained inventory: the gun stopped firing while the HUD
     /// still showed a full clip (the user's "infinite ammo isn't always reliable" — and it broke hardest for
     /// other ammo types, after a weapon switch, and across a level carry-over, exactly the cases where the
-    /// drained slot differs from the current weapon's). Refilling every slot covers all of them, plus Bond's
-    /// grenades (the 0x45 belt pseudo-weapon's clip slot, `weapon_data[0x45].clip_size` 100 [M gun.rs]).
-    /// No reload tops only the current weapon's clip to its `weapon_data+0x92` size.
+    /// drained slot differs from the current weapon's). No reload tops only the current weapon's clip to its
+    /// `weapon_data+0x92` size.
+    ///
+    /// The infinite-ammo shape is the TRACE-SESSION cheat, `tools/trace/trace_record.py --ammo` /
+    /// `tools/trace/cheats.py` (what the 01-raptor.trace user played with): every 30 frames each **owned**
+    /// weapon's clip and each spare type is topped back to the most seen this run — the best only moves up,
+    /// and both tables reset when the game's BLData pointer changes (a level load; here: `Sim::level`).
+    /// Spares therefore never rise above what a take wrote, so no ammo cap refuses a pickup (the trace:
+    /// spare type 3 grows 0→6→13→20→25 by takes alone against the type-3 cap 36 [D ammo_data], every drop
+    /// taken), and an unowned gun's clip stays 0, so equipping a dropped gun adds no rounds to the spare
+    /// (the trace's first Raptor take: clip 0→9, no spare event). The old blanket refill (`carried.max(200)`
+    /// on every type, every clip to its clip size) sat above every ammo cap, so `Player_EquipAmmo`'s cap
+    /// check refused every later drop — "some later drops can't be picked up" — and leaked the first drop's
+    /// rounds into the spare (fix-pickups-trace).
     pub fn after_tick(&mut self, scene: &mut Scene) {
         if self.god_mode {
             if let Some(sim) = scene.sim.as_mut() {
                 sim.drones.health.health = 100.0;
-                sim.drones.health.armour = 100.0;
+                // The recorder's god writes armour 50.0 (`p.write(bl + 0x8B0, F50, 4)`, cheats.py; the
+                // trace's armour column reads 50.0 throughout) — the armour-take refuse threshold.
+                sim.drones.health.armour = 50.0;
                 sim.drones.health.flash = 0.0;
             }
         }
         if self.infinite_ammo || self.no_reload {
             if let Some(sim) = scene.sim.as_mut() {
-                if self.infinite_ammo {
-                    for (w, c) in sim.drones.inventory.clip.iter_mut().enumerate() {
-                        *c = (*c).max(sim.weapons.clip_size(w));
+                if self.infinite_ammo && sim.drones.frame % 30 == 0 {
+                    if self.best_level != Some(sim.level) {
+                        self.best_level = Some(sim.level);
+                        self.best_clip.clear();
+                        self.best_spare.clear();
                     }
-                    for n in sim.drones.inventory.carried.iter_mut() { *n = (*n).max(200); }
+                    self.best_clip.resize(sim.drones.inventory.clip.len(), 0);
+                    self.best_spare.resize(sim.drones.inventory.carried.len(), 0);
+                    // Clips: owned weapons only (`if read(bl+0x1B8+w·0xC+2) != 1: continue`).
+                    for (w, c) in sim.drones.inventory.clip.iter_mut().enumerate() {
+                        if !sim.drones.inventory.owned.get(w).copied().unwrap_or(false) { continue; }
+                        if *c > self.best_clip[w] { self.best_clip[w] = *c; }
+                        else if *c < self.best_clip[w] { *c = self.best_clip[w]; }
+                    }
+                    // Spares: every type (the recorder's loop has no owned gate — spares have none).
+                    for (k, n) in sim.drones.inventory.carried.iter_mut().enumerate() {
+                        if *n > self.best_spare[k] { self.best_spare[k] = *n; }
+                        else if *n < self.best_spare[k] { *n = self.best_spare[k]; }
+                    }
                 }
                 let wi = sim.gun.weapon as usize;
                 let cs = sim.weapons.clip_size(wi);

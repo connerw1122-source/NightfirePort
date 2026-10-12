@@ -26,6 +26,7 @@ pub mod id {
     pub const MAP_DATA_STATIC: u8 = 0x1a;
     pub const MEMORY_DISCARD: u8 = 0x1c;
     pub const END: u8 = 0x1d;
+    pub const LOD: u8 = 0x1f;
     pub const PORTAL_DATA: u8 = 0x21;
     pub const AMBIENT_RADIATORS: u8 = 0x26;
     pub const UNHANDLED_27: u8 = 0x27;

@@ -133,7 +133,7 @@ fn the_facility_chain_runs_to_the_delta_sector_exit() {
     let rp = scene.sim.as_ref().unwrap().drones.list[rook_i].pos;
     scene.sim.as_mut().unwrap().drones.grenades.push(nf_game::grenade::Grenade {
         pos: [rp[0], rp[1] + 0.5, rp[2]], velocity: [0.0, 0.0, 0.0], speed: 0.0,
-        travelled: 0.0, range: 60.0, damage: 100.0, radius: 3.0, weapon_type: 0x35, owner: usize::MAX, state: 0, bounces: 0,
+        travelled: 0.0, range: 60.0, damage: 100.0, radius: 3.0, weapon_type: 0x35, mesh: 0x0200_0726, owner: usize::MAX, state: 0, bounces: 0,
     });
     let mut dead = false;
     for _ in 0..300u32 {

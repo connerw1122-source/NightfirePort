@@ -5740,3 +5740,412 @@ path) was caught by `lighting_live` and fixed by moving the update to Game_Run's
 (`shader_tests::the_shaders_parse_and_validate` — the sandbox has no GPU adapter, so the shader had
 never compiled here). Full suite after the re-baselines: 430 passed, only the 3 slim-ISO
 `disc_golden` failures (the task's allowance). The report is `docs/reports/fix-lighting.md`.
+## fix-actors — the non-guard actors: the fail rules, the ally sub-states, the spawner arm, the inventory
+
+Branch `s/fix-actors` (origin/master b2ce7bd). Playtest reference: docs/playtests/2026-10-11.md (C1/C2/C3).
+Inventory: **docs/systems/actors.md** (new) — `DroneTypeSettings` 0x29aee8 and `NDrone2_StateFuncs` 0x29b300
+decoded from ee_start_05.bin [L], the `GetDTYPENEW` 0x14c938 special cases [M], the 593-drone sweep of all 24
+story levels (the dtype/mode/team/skin/level table), the fail rules, the spawner params, the port status.
+GAPS G-025/G-026 updated.
+
+**The protected-actor fail rules** (`ally.rs`, new): `DroneFunc_SetMissionFailReason` 0x13e560 (1/3/6/9 →
+"Killed Civilians" 0x4000034 + ch 0x60; 2/4/5/7/8/10/11/12 → "Cover Lost" 0x4000033 + ch 99; 0x10 → Alarm
+0x4000032; 0xF → ch 99 bare) and `DroneFunc_OnInitDeath` 0x145bd0's mission-fail half — the protected-actor
+props **0x53/0x54** (85 drones over 14 levels carry them: the party guests, the office/hotel staff, the
+Mayhew/Zoe/Drake VIPs, the 06 driver): team 1 dies → reason 2/4, team 2/3 → reason 1 (a drone killer) / 3
+(the player's kill). Wired at the DEATH_ANIM enter (`hit_by_player` tracks Drone+0x2B4's killer) and drained
+next to the death-channel raise; the monitor's standing ch-0x60 hook does the rest [M 0x1827d8]. Test:
+`killing_a_protected_guest_fails_the_mission_but_scaring_him_does_not` — the guest dies → ch 0x60 + the label
++ MissionState 2; the sister: a near shot and an unprotected guard leave the mission open.
+
+**The ally sub-states** (the 031-fix-mission stand-ins): AllyLeadPlayerInWay 0x15ea28, AllyLeadHide 0x15ec08
+(anim 0x19; `NotNearArmedDrone(14)` → timer C 2 ticks → Lead), AllyLeadMissionWait 0x15efc8 (the wait
+channel = obj+0x12C, 0 → 0x99), AllyLeadBondCombat 0x15f120, AllyFollowInit/Follow/FollowWait/FollowDone
+0x15f3c8/0x15f4e0/0x15f6a0/0x15f858, AllyGoToGoalPosition 0x15f938 — the Lead dispatch reads
+`NDrone2_NearArmedDrone`'s 10-unit check through a per-tick armed-peer snapshot. The real AllyLead update
+0x15e698 case 3 was read for the first time here: the armed-drone check gates the whole route update — the
+old port walked through fire. The escort test stall was exactly that rule firing (game-correct); the shared
+test now resolves the fight. `the_escort_cowers_in_a_fight_and_resumes_the_lead` drives Lead → Hide → Lead.
+
+**The spawner arm fix** (`spawners.rs`): `DroneSpawner_Create` 0x1378d0 puts param 7 at +0x14 — the **ARM**
+channel (`Control` 0x137e68 latches `ch[p7] → armed`), not a kill channel; the stop channel (p5) un-triggers,
+pauses an armed spawner, deletes an un-armed one. Pre-fix, walking 07000011's stairwell (TouchOnce #285 →
+ch 0x1D = the spawner's arm channel) REMOVED the spawner instead of arming it — the C2-class "the guards
+never arrive". Test: `the_spawner_arrives_on_its_channels`.
+
+**The trigger contact volume**: 07000011's arm touch #183 sits at the standing floor (y 46.93…47.91, the
+floor 47.81 [D]) — the port's hip-high player capsule (feet+0.15) could never reach it; `Toucher::player`
+now covers the body from the caller's y.
+
+**The boss**: 07000004's assassin (skin 0x0500001e, dtype 15 → the ATTACK start [L types[15]], death channel
+param 12 = 0x54 [D]) — `the_assassin_dies_and_completes_his_objective` pins the defeat → "Defeat the
+assassin" chain. Rook (07000014) is already driven by the map-tower2 walkthrough.
+
+**The party civilians**: the girls start PartyGirl 0x2F (GetDTYPENEW 10/11 → 0x12 = 18 decimal →
+types[18].start = 0x2E [L]) and the males Civilian 0x11 — the port already matched; the scared radius
+(+0xCF8 = 20.0, 10.0 on 07000007 [M 0x15d118]) and the scared chain were ported (fix-npcs era). The C3
+"guests can be shot" is the game's own rule — the fail now fires (the protected-guest test).
+
+Full suite: 80 binaries ok; only the 3 allowed `disc_golden` failures.
+## fix-levels-sweep — the 27-level headless health check (2026-01)
+
+`s/fix-levels-sweep`. `crates/nf-view/tests/levels_sweep_live.rs` runs every on-foot archive in
+FILES.BIN (27 on this ISO; driving 07000023-29 and the packs 07000500/07000999 excluded, 0e/f/10
+absent from the disc) through the real Sim path: the smoke (load + 600 idle ticks, the required
+NF_ISO test) and the deep sweep (1800 ticks of a scripted walk along the nav graph with E pressed
+every half second, then one CPU pose pass — the GPU-less `--shot` counts only). Results in
+docs/systems/levels.md §7.
+
+Findings:
+- **No panics on any level** (both passes assert). No unresolved objects, no pickups without a
+  model anywhere.
+- Unhandled placement types per level, each with its `parsemap_create_dynamic_objects` (0x1d04f0)
+  creator: 0x21 Ripples, 0x26 MP object, 0x35 PCQWorm (lands with s/map-tower), 0x38/0x39 space
+  laser/missile, 0x3a Grapple, 0x3b DynamicObject, 0x3f CreepWall, 0x41 InverterTrigger, 0x4a
+  Apocalypse, 0x4e Light, 0xd2 Shooter, 0xd4 Cloud, 0xd5 OneSided, 0xd8 RB (rigid bodies), 0xda
+  Car, 0xe3 Flicker, 0xe7 ThirdCam, 0xf2 Emitter, 0xf3 EnvTree, 0xf4 MoviePlayer, 0xfc Corona.
+  0x17/0x23 have no case in 0x1d04f0 at all (map-block data).
+- Unported drone state ids (no constant in the port's 88-state machine): 0x85 (mode 7 — the
+  WORKLOG B-3d "stuck" stand-in) on 07000011/12/13/15, 0xa7 on 07000004, 0xb4 on 07000007 — the
+  pass-through start-state ids from `DroneTypeSettings` with no handler arm.
+- 0700001b: 11 of 74 ScriptPlayers still waiting on their gate channel (param 9) and 11 drones
+  never enabled after 1800 ticks (`NDrone2_Enable` 0x149dd0 / the k15 wait-switch — the fix-npcs
+  C2 class; no writer fired in the blind walk).
+- The objective-channel writer scan (cross-mission: the monitor matches BaseMap, so sibling
+  levels' writers count) closed two of the brief's known gaps:
+  - **07000005's ch 0x46** ("Breach the castle walls") is written by **07000006's OR mux #498**
+    [D: type 0xC out 0x46 list [0x32, 0x33, 0x34]]; enable ch 0x45 by 07000005's TOUCH_ONCE #36
+    [D]. The record byte at +0x0E is NOT the init value — `Mission_Init` reads init from **+0x0D**
+    [M 0x182270:118-124: `switch_channels[+0xc] = +0xd`], which is 0 for this record; the task
+    brief's `46 00 01 45` reading put the init one byte late. fix-mission's records are correct.
+  - **07000002/03's key-gate exit channels 0x4C/0x52**: both written (0x4C by an AND mux on 02
+    [D trigger(out 3)], 0x52 by a script event on 03 [D script 0x06000082 event0d]).
+  - The scan's param reader had to be **little-endian** — the port's `nis.rs run()` rd is LE
+    (validated: `47 00 00 00` = ch 0x47, the map-tower2 doc's [D decode] agrees); my first BE
+    pass reported garbage channel ids.
+- Remaining writer gaps (levels.md §7.3): 07000008 ch 0x4B (the cable-car ride SP chain —
+  `SP_Update` 0x1dbda8's out-hold does not raise it), 07000003 ch 0x4E (the Dragon Safe — the
+  0x3b DynamicObject family, unported), 07000016 ch 0x90 (map-finale's scope), 0700000a/0b's
+  Q-Worm channels (written by s/map-tower's PCQWorm, unmerged at scan time).
+
+Full suite: 82 test binaries ok; the only failures are the 3 permitted slim-ISO `disc_golden`.
+No product-code changes were needed — the sweep found no crash (the task's fix budget went to
+the writer analysis and the tables).
+## fix-pickups-trace — the Raptor drops match the real game's 01-raptor trace; the dev infinite-ammo refill no longer refuses every later drop
+
+**Repro first** (`crates/nf-view/tests/fix_pickups_trace_live.rs`, NF_ISO, real path `nf_view::load` +
+`Sim::step_bond`; shown failing by stashing the dev.rs fix — panic "drop 7 (weapon 0xe) is taken —
+the user's symptom", with `NF_PICKUPLOG=1` showing `[take] weapon 0xe kind 0 rounds 6 → None` every
+tick after the first take landed):
+
+- **The user's bug**: with the play cheats (god + infinite ammo — the trace session's setup) the
+  first Raptor drop equips but every later drop refuses forever. Cause [M dev.rs after_tick]: the
+  dev refill wrote `carried[i] = max(carried[i], 200)` — above every ammo cap (type 3 caps at 36
+  [D ammo_data]) — so `Player_EquipAmmo`'s cap check (0x1a8d18, ported in pickup.rs) refused every
+  owned-weapon drop; and it topped **unowned** clips to their clip size, so the first take's
+  `Player_EquipWeapon` (0x1a8a58) saw `old = clip[0xE] = 9` and pushed the whole drop's rounds into
+  the spare instead of none.
+- **The game's cheat shape** (what the trace session actually ran): the recorder tool
+  (tools/trace/trace_record.py --ammo / cheats.py) tops each **owned** weapon's clip (BL+0x1B8+w·0xC)
+  and each spare type (BL+0x170+a·2) back to the **most seen this run**, every 30 frames, resetting
+  on a BLData change. Spares never exceed a take → no cap refuses (trace spare type 3: 0→6→13→20→25
+  vs cap 36, every drop taken); an unowned gun's clip stays 0 → the first take adds no spare (trace:
+  no type-3 event at 6.0 s).
+
+**Fix** (crates/nf-view/src/dev.rs, `Dev::after_tick`): the infinite-ammo branch now ports the
+recorder's cheat exactly — every 30th tick (`sim.drones.frame % 30`), owned weapons' clips and all
+spare types topped to `best_*` (max-seen, only moves up), tables reset when `Sim::level` changes
+(the tool's BLData-change reset); the `carried.max(200)` line is gone. God's armour write corrected
+100.0 → 50.0 (cheats.py `F50`; the trace's armour column reads 50.0 throughout). Fields
+`best_level/best_clip/best_spare` are pub (tests build `Dev` literals).
+
+**The 0x0E chain, all measured** (docs/atlas/pickup.md "PCSX2 trace check — Resolved"):
+weapon 0x0E = "Raptor Magnum" [D USATxt label 0x0500002D], base 0x0E, ammo type 3, clip 9,
+flags68 0x1000 [D ACTION.ELF weapon_data, cross-checked PCSX2]; the 07000001 guards carry it via
+placement param 9 = 0xE [D 07000001.bin]; the drop id = `weapon_data[w]+0x02` = 0xE [M
+DroneWeap_DropWeapon 0x17a2a0:96-98]; `Upgrade_Weapon(0xE) = 0xE` [M 0x1a8f30 — not in the tables];
+drop rounds = `9 · (Rand_FRand(0.5) + 0.5)` truncated = 4..8 (the clip < 10 branch [M :88-98], one
+draw per drop, the 0x1A twin's draw after :103). **The port already matched all of it** — the old
+WORKLOG "Raptor (weapon 6, flags68 0x100C)" naming was wrong (6 = Wolfram P2K, type 2, clip 16;
+the Raptor is 0xE, flags68 0x1000). Test 1 pins it: first drop → `Taken::Weapon{0xE}`, owned,
+clip 9, spare type 3 still 0, HUD message binds "Raptor Magnum" (name_label of the raw id, [M
+0x18e650:246]).
+
+**Tests** (fix_pickups_trace_live.rs, 2): the first-take chain above; and under god + infinite
+ammo 5 Raptor guards killed through the fire path (a switch-gated one enables via its own
+`switch_channel` — the stand-in for the walking that turns the level's channels on) with every
+drop taken: takes = Weapon{0xE} then Ammo{0xE, 6/7/4/7} — all in 4..8, spare = the sum only,
+nothing left on the floor. Test-harness notes: kills re-aim every tick and walk an 8-direction ×
+2-radius LOS spot ring (alerted guards run; a fixed south spot is walled for guards 14/15).
+
+**Shared-file edits** (kept minimal): `dev_tools_live.rs` — the "every clip slot topped" assertion
+now filters to OWNED weapons (the recorder cheat leaves unowned slots 0; the switch cycle only
+offers owned weapons); `menu_live.rs` — the god/ammo toggle test seeds the best-seen tables at the
+full clip before draining (the recorder semantics; the old drain-then-refill order had nothing
+seeded).
+
+Not modelled (unchanged): the trace's non-owned clip creep (0x33/0x45/0x4C/0x4F creeping toward
+100 in the `weap` log) — neither cheat tool writes those (both gate on the owned byte), so the
+writer is elsewhere in the game; out of scope here. The tool's 30-frame phase (the game's global
+frame counter) differs from the port's per-level counter — cadence matches, phase is unobservable.
+
+**Full suite** (this task, slim ISO, `--test-threads=1`, run crate-by-crate after the background
+runner was OOM-killed twice): nf-formats 11 passed + the 3 allowed `disc_golden` failures;
+nf-audio 7 passed; nf-game 133 passed; nf-view 207 passed / 0 failed across 58 binaries.
+## fix-objects2 — 07000008 (the gondola level) objects
+
+Branch `s/fix-objects2` (from master 9aac84e). Task: the user's playtest items — the invisible wall after the
+opening cut-scene, and the safe + gondola object side (the safe/laser-watch chain, the ride as a script-driven
+moving platform).
+
+**The invisible wall — found and fixed.** Reproduced headless first (`probe_objects2.rs` walks the real input
+path: Bond stalls on the walkway descent with NO drawn mesh and NO static instance pushing him — the blocker is
+invisible collision). The blocker is the `BlockingPoly_PlayerMissile` family: glist flags **0x1000**, 4 objects
+on this level forming a bullet cage (a lid at y 52.8 over the map, a floor at y −40, a wall plane x 135.3
+z −100.1..−116, and two walls over the station walkway) [D triangles dumped]. The game skips them for the actor
+queries: `Collide_Pick` (0x1eb320, disassembly 0x1eb468-0x1eb49c) tests each collision node's cel flags word
+(cel+0x94 = the glist flags) — nodes with **0x1000 are skipped when the query's HITTEST+0x98 carries bit 0x20**
+(the actor-movement queries; the ray/sight callers pass flags without it — the searchlight's 0x18). The level is
+playable across the wall in the game, which pins the actor query to the skipping side. Fix: `world.rs::build`
+splits 0x1000-flagged objects into a `missile` geo set — solid to `segment`/`segment_surface` (bullets, sight,
+the floor rays), invisible to `capsule_push` (`near_actor`). Fail-first shown: the capsule assertion is red on
+the pre-fix code (the cage wall pushed the capsule +x at (135.5, 48.6, −101)); the walk route is green post-fix.
+
+**The safe and the gondola — the whole chain ported and green end-to-end.** [D placements dump; M where noted.]
+- The safe bolts = **locks** (kind 0x2E → `Lock_Create` 0x1ae1f8; out = param 5, chs 134/135; the burn reads the
+  activating weapon in `Lock_Update` 0x1ae3d8 case 0 — 0x4E/0x4F the decryptor, the 0x56/0x57 band :162 — and
+  writes `switch_channels[record u16+8]` :194). New `lock.rs`: the object + the burn hook (the laser gadget
+  itself is not ported — the gadget port map says all of 0x4A..0x5E are out of selection; the hook is the
+  documented seam). Burn both → mux #278 → ch 136 → the safe door #205 (SimpleScript, `ss.rs`, animates) and
+  SP #286 SafePickUps.
+- The fusebox #219 (kind 0x31, script 0x060008AD — NOT script-less as the earlier probe guessed) already worked
+  via the port's fusebox E-cut stand-in → ch 137 → the bolt #217 (SimpleScript), Door_Guardroom #122 (lock ch
+  137), SP #221 GuardRoomLights, MusicTrigger #277.
+- The briefcase #290 (kind 0xF0 **type 4**) was refused by the port's inventory (`_ => None`): the game's
+  `Pickup_Handler` case 4 (0x18e650) is the LABEL/item pickup — `Txt_BindLabel(+0x34)` when the label is
+  non-zero (0 here [D]), always consumed. Fixed: `kind::LABEL` + `Taken::Label` (the two HUD matches updated;
+  fix_hud_live's match included).
+- Bond on the cable-car floor (Touch 0xEB #236, out 4, mask 8 = the player) + ch 0x4A → mux #235 → ch 1 →
+  SP #295 (mask 1 on ch 1, mode 64 = loaded-armed [M SP_LoadScript 0x1dbc08 disasm]) plays the ride script
+  0x0600004C — **in the LEVEL BIN** (the level doc's "loadable pack" note was wrong), 53 streams/1420 ticks:
+  OBJECT_Carriage descends (112.0, 32.4, −126.3) → (112.0, 18.0, −179.4); stream 46 writes **ch 0x53 (83) at
+  tick 1410**; SP #296 (mask 1, ch 83) plays 0x06000078 (the bottom cinematic) whose stream 10 writes **ch 5**.
+- The helicopter #45 (kind 0x2F → `Copter_Create` 0x17d340): new `copter.rs` — the channel machine exact
+  [M: gate record+0x70 = param 6, the arrival write record+0x72 = param 7 on the move's completion
+  (0x17dbb8 cases 4/5/6 :249-268), the +0x74/+0x76 countdown pulse :16-22]; gate = ch 5, out = ch 0x4B. The
+  flight rides the port's script machinery via `Scripts::spawn_once` (the hidden `SP_Create` inside
+  `Copter_Create`, 0x1dc7e0 = SP_Create). ch 0x4B → mux #276 → ch 100 → MissionState 6 → 0x0730008
+  [M 0x182c60:85-116]. The combat states (missiles/guns, Music_Event(2,1)) are NOT ported (the extraction
+  copter never arms here).
+- **The trigger containment contact** (`triggers.rs::touched_by`): the AABB containment fired the plunge death
+  NIS for Bond standing on the boarding platform INSIDE plunge #54's AABB (the volume's mesh is two valley-sized
+  quads the platform never touches [D tris]) — fix-level2's recorded walk-in graze (F5). The containment now
+  applies only to volumes whose triangles are all < 24 units on an edge (the room shells/plates — 07000006's
+  LoadPoint #746, edges ≤ 10.4); the plunge family's quads (edges 25.8-46.5) fall back to the mesh test [S: the
+  game's contact is the mesh; the tri-size gate is the port's approximation]. 07000006's walk test re-verified
+  green.
+- **The gondola as a moving platform**: collision works (the carriage joins `set_dynamic` through the normal
+  script-entity path; Bond standing in its path is pushed, standing on its line is swept — both observed).
+  The RIDING inherit does not engage on the carriage: Bond grounded at his teleport height while the floor
+  below moves away (the probe: `grounded=1`, `floor_below` = the static platform 10.8 below, the grate's
+  shape present and moving) — the truck ride's inherit ran on ANIM discrete parts; the carriage's parts are
+  script ENTITY parts (one `(id, hash, matrix)` per entity). Left open with that diagnosis; the level is
+  completable without it (the ride is a scripted cut-scene the game itself disables input for — Bond boards
+  and the script takes over).
+
+**Tests** (`crates/nf-view/tests/fix_objects2_live.rs`, all NF_ISO, all green): the walk past the former
+invisible wall (spawn → the intro plate → the 3881-tick cut-scene → the shutters (E) → the walkway → down the
+stairs past x 135.3); the cage still stops bullets but not the capsule (the fail-first sister); the safe chain
+(burn → 136 → the SS door animates → the briefcase → ch 0x4A → objective 1 completes); the ride chain end-to-end
+(0x4A + the floor switch → ch 1 → the carriage descends → ch 83 → ch 5 → the copter → ch 0x4B → ch 100 → the
+mission completes); boarding without the briefcase never starts the ride (the sister). `probe_objects2.rs` is
+the dump/repro probe kept for reference.
+
+**Full suite:** `--no-fail-fast` run green except the 3 allowed `disc_golden` failures (the slim ISO).
+
+## models-weapons-items — every weapon/gadget/pickup/projectile model resolves and draws
+
+Branch `s/models-weapons-items` (from master 2b030c5). Lane: every weapon's first-person and
+third-person model, the gadgets' models, the pickups, dropped weapons and the projectiles. The
+golden: `crates/nf-view/tests/models_weapons_live.rs` (4 tests, NF_ISO), the inventory
+`docs/models/weapons-items.md`.
+
+**The projectile bodies — found and fixed.** The field table missed `weapon_data+0x5C`:
+`Bullet_update` (0x12e7b0) state 0, disasm 0x12e8f0-0x12e900, sets the flying bullet's drawn mesh
+from `weapon+0x5C` via `hashtable_set_object_to_entity_gfx` + `View_SetDrawInAllViews` (`0xFFFFFFFF`/
+0 = none; the trail 0x02000123 is the OTHER branch). Measured [L ee_start_05.bin]: the frag 0x35 →
+0x02000726, stun 0x36 → 0x0200071f, mine 0x37 → 0x02000a6e, rocket 0x3A → 0x0200074f, darts
+0x3B..0x40 → 0x020007b3, Q-Worm 0x46 → 0x0200025f. The port drew no projectile at all. Fixed: the
+`Grenade`/`Bullet` structs carry the mesh, and `Scene::build` pools Effect slots (8 grenades, 32
+drone bullets, 8 player bullets; one instance per slot × distinct resolving mesh) posed in
+`frame_state` at `Mat_Align2Dir(dir, up (0,1,0) [L @0x2d6210], fallback (1,0,0) @0x2d6220)` with
+the position row — `Bullet_init` 0x12c5a0:185 aligns the bullet matrix to its direction, and the
+per-tick tail (0x12f1ac-0x12f1e4) moves `obj+0x30..0x38` only. Fail-first: the draw branch
+neutralized → the throw test fails at "drawn at the grenade".
+
+**The session object table — Tower-2's missing flashes.** The flash meshes 0x02000261/0x0200044a
+and the SMG's held 0x0200025c are on NO archive from 07000011 on [D scan], yet 07000011-16's guards
+fire those weapons: the game's map-object hashtable accumulates every archive loaded in the session
+(`hashtable_delete_hashtype`'s only callers are the cut-scene pack loader 0x1d69e8/0x1d6ab0 [M
+decompile grep]). The port drew 64 armed guards with no flash and one unarmed SMG guard. Fixed:
+`load_impl` merges every missing weapon-model hash (+0x80/+0x4C/+0x5C + the sleeves) from the
+latest earlier story archive that holds it (the story order = `ResetMap_LevelCode2Img` 0x1d5258's
+case order — the level codes ascend in mission order [docs/systems/levels.md §1]); maps append
+(never shifting an existing (map, object) index) and `by_hash` stays first-wins. Fail-first: the
+merge neutralized → the Tower-2 test fails at "Pistol_Muz resolves".
+
+**The shipped game's own artifacts (measured, not port defects):** the stun grenade flies invisible
+on 07000001/03 (no archive the session has loaded by then holds 0x0200071f [D]; `Bullet_update`'s
+miss arm skips the draw [M]), and 07000004/16's SMG guards draw unarmed (skin 0x0500001e has no
+datum 4 [D]; `AnimDatumSetEntity` 0x1c7848 no-ops on a missing datum id [M]). Both pinned in the
+golden with their numbers.
+
+**Dev view models (folded 190-fix-dev2).** Each level archive ships only its own FP skins; the dev
+panel showed "no 1st-person model here" for most weapons. `--dev` now indexes every archive's
+type-3 skins (skin hash → archive), merges the missing FP skins with their maps/skeletons/sequences
+and the weapons' kind-5 anim scripts, and `Scene::build` gives every selectable weapon a view model
+(GPU skinning covers them). Normal play unchanged (the sister assertion pins the L96A1
+view-model-less on 07000005 without the flag). Fail-first shown.
+
+**The golden.** Per story level: armed drones, their guns/flash meshes, the placed pickups, and the
+projectile meshes of every firable weapon (drone param-9 + param-11 grenade weapons + pickup ids +
+the level's cold loadout) resolve through the level archive OR the session union (the running union
+of the earlier story archives). The four nonzero miss entries are the artifacts above.
+## models-world — every level's world geometry and placed static objects: the inventory, the GS-state and draw-order fixes (2026-10-12)
+
+**Done.** The lane's inventory is complete and pinned: every placement of every story level
+(07000001–0700004b, 27 codes) resolves to an object (0 unresolved), every glist/leaf/batch/texture
+REF decodes, and the per-level counts are in `crates/nf-view/golden/models_world.tsv` (numbers
+only; `models_world_live::story_levels_match_the_model_inventory_golden` with a tamper sister).
+Disc-wide over the 27 levels: 3,571,061 static vertices / 2,278,382 triangles / 47,051 leaves /
+69,445 batches; box min/max == decoded vertex bounds bit-for-bit on every leaf (0 mismatches).
+
+**Measured — the per-object GS state closes G-018.** Over every DIRECT A+D write of all 27 levels,
+only ALPHA_1 (0x42) / TEST_1 (0x47) / ZBUF_1 (0x4e) ever occur — **no CLAMP (0x08), no TEX1
+(0x14)** in any PS2_GFX packet; CLAMP/filtering are global texture-upload state (render.md), so
+the port's fixed sampler needs no per-batch state. The six ALPHA shapes (ps2tek GS tables
+*sourced*, values *measured*): 0x44 (0,1,0,1) normal; 0x7F00000048 (0,2,0,1) additive;
+0x7F00000042 (2,0,0,1) subtractive; **0x58 (0,2,1,1) = (Cs−0)·Ad+Cd — additive gated by the
+framebuffer's alpha**; **0x64 (0,1,2,1) with FIX=0 = (Cs−Cd)·0+Cd — keep-destination**. The
+0x58/0x64 batches exist only on 07000041 map 0x63 (`EnvModTest_ModEnv`, `EnvModTest_BaseModEnv`,
+`polySurface2` 0x02000631) [D probe]; nothing in the load/draw path patches their FIX
+(psiCreateEntityGfx 0x1171b0 rewrites only texture REF addresses; DrawThisBox 0x1230d8 only kicks
+the packet; CacheAndFillNewGlistTextures 0x11f180 only uploads) — the port drew both shapes as the
+normal blend (opaque overlays!) and now implements blend 3 (keep-dest) and blend 4 (Cs·Ad+Cd).
+TEST_1 fix: 0x5000b (GEQUAL 0 = always pass) and ATST ALWAYS map to no alpha test (the old mapping
+rejected a=0 texels and skipped their depth write). `models_world_live::draw_state_matches_the_decoded_gs_writes`
+pins the mapping (unit table + the real 07000005/07000041 batches; the sisters assert the old
+mappings fail).
+
+**Measured — the real list-0 draw order (the R2 hole's root cause).** `View_DrawObjList` 0x1e69a0
+sorts ONE mixed array of cel and object entries; `View_AddCels` 0x1e6ba0 pushes every runtime
+cel's primary glist into **list 0 with the synthetic key −90000+10k in cel-chain (≈ placement-
+parse) order, with no list choice at that push**; only `View_AddObjects` 0x1e62d8's objects (and
+the cel +0x18 chain records — LOD variants, which never occur: no 0x1f block exists in any of the
+2,230 maps [D probe]) carry distance keys. So the game's list 0 = **all visible statics in
+placement-parse order, then dynamic objects front-to-back**. The port sorted everything by its own
+centre distance — a baked shadow decal with a nearer centre drew before the wall it lies on and its
+depth write rejected the wall (the user's navy blocks, R2); fix-render4's alpha_shaped reorder was
+a texture-shape stand-in. The port now uses the game's key exactly (`Material::chain`: statics get
+the parse ordinal, dynamics u32::MAX = distance-keyed), the alpha_shaped hack is retired (the
+classifier stays, pinned by decal_order_live), and glist-flag-0x1 statics draw in list 0 (the
+primary push has no list choice). `statics_draw_in_parse_order_and_decals_after_their_walls` pins
+it on 07000007. **Visual check owed**: the main agent should eyeball 07000041's env-map object and
+any flag-0x1 statics (07000005's pine trees) — no GPU in this sandbox.
+
+**Also measured this pass**: the cel-pass skip (glist flags bit 0x10) is the game's own —
+View_AddCels never pushes a record with flags & 0x10 [M re-read]; `WallHug_Blocker1_Long`'s
+out-of-range texture REF (0700000d, index 185 ≥ 185 textures) sits on a flag-0x10 blocker the game
+never draws [D]; the UV distribution confirms UV (not ST·Q) semantics — 10,966,959 coords in range,
+the 303 outliers are U-022's garbage floats; the +0x30 field exceeds the decoded triangle count on
+690 leaves (per-leaf view of U-020; worst 0700000d 274 / 0700004a 243); every placement type the
+port does not draw is listed per level in docs/models/world.md §6 (the other model lanes' material:
+fuse boxes 0x31, sensors 0x28, rigid bodies 0xd8, DynamicObjects 0x3b, …). `--bond` eyeball spots
+for every model class per level are in docs/models/world.md §5 (`bond_spots` probe).
+
+**G-014**: the microcode remains unread (no VU disassembler installable in this sandbox); the
+disc-side measurement now covers it (fresh-qword invariant on every batch, w ∈ {0,−1} on 69,445
+batches, bit-exact bounds, the nfre cross-check, the UV histogram) — GAPS row updated.
+
+**Files touched**: `crates/nf-view/src/scene.rs` (Draw::from_gs rewrite + Material::chain + the
+pass/order wiring), `crates/nf-view/src/gpu.rs` (blend 3/4 pipelines, the list-0 sort), `crates/nf-formats/src/map.rs`
+(+ the 0x1f LOD id const), `crates/nf-view/tests/models_world_live.rs` (new: the golden, the
+draw-state test, the draw-order test, the survey/probe/bond-spot tools), `crates/nf-view/golden/models_world.tsv`
+(new), `docs/models/world.md` (new), docs/formats/ps2gfx.md, docs/systems/render.md, docs/GAPS.md.
+**Full suite** (slim ISO, --test-threads=1): 97 test binaries ok; only the 3 allowed `disc_golden`
+failures (full-disc manifest/bigf goldens).
+
+
+## fix-finale-blockers — the finale missions complete: 07000016's chaser, 0700001b's Drake, 0700004a's lift, the unported start states (2026-10-12)
+
+**Done**
+- **07000016 (Kiko's defeat, ch 0x90)** — the port now completes the final mission. New
+  `crates/nf-game/src/kiko.rs` (the addresses and tags) + additive state arms in `drone.rs`:
+  KikoMission 0x19 (0x15df28), KikoMissionRun 0x1a (0x15e0d8), StandBlind 0x18 (0x172870),
+  RunToAlarm 0x89 (0x1736f8), the Ninja chain 0xa6→0xa7→0xa8/0xa9/0xaa/0xb2 (0x16b990/0x16bb50 and
+  the band states), EnemyRunToPoint 0x85 (0x168910) and DeleteMe 0xb4 (0x173f00). The chaser is
+  placement #261 (skin 0x0500001e, dtype 0xf → the ninja chain; the #294–297 pit squad share the
+  skin but carry death channels 23..26). Her defeat raise is a documented stand-in: ch 0x90 has no
+  writer in the level's triggers, its 300+ scripts (incl. the 07800016/07900016/07A00016 packs —
+  event 0x0D and the conditional 0x11 swept), the SP outs, any drone's param 12, or the decompile's
+  full `switch_channels`-writer enumeration (103 files) [D+M scans]; kiko.rs documents it. The spawn
+  chain is the game's own: ch 0x81 → SP #262's pack cinema 0x06000631 → ch 185 → SP #272's
+  0x0600090a → ch 240/242 → spawners #257/#293 [D] — the test fires only the unproven head (ch
+  0x81). Her death → ch 0x90 → AND #271 → ch 100 → MissionState 6 → 0x7300017 [M 0x182c60:111-112].
+- **0700001b (Drake's defeat)** — no stand-in: Drake is drone #186 (skin 0x050000ba, death channel
+  param 12 = 14 = 0x0e [D]); ch 0x0e spawns him (spawner #187, trigger 10) and enables him (his
+  wait-switch, param 3 = 10), and `NDrone2_DSTATE_SpaceDrake` 0x16dee0 reads it. SP #198
+  ("ScriptPlayer_Pause", out 0x0e, mask 1 [D]) plays the defeat NIS 0x06000a20, whose event-11
+  stream writes ch 0x0b at t600 and ch 0x64 = **100** at t720 [D decode; Script_EventHandler
+  0x1d94c0 case 0x11] — the mission end bypasses the monitor's AND, so the unproven console
+  objective (ch 0x09) does not block it. The level ends into 0x0730001b [M 0x182c60:114-116].
+- **0700004a (the lift)** — the lift IS script SP #42 "SCRIPTPLAYER_Lift" (mode 1) playing NIS
+  0x06000571: its entity 0x20005b4 descends 150 units over 4950 ticks [D keys], ch 0x40 fires at
+  t1610 (unlocking the −52 doors [D #110/111]). Two port bugs fixed: (1) `Script_Update` blocked
+  forever on a NEGATIVE delay — event 3's `p0 − 1` with p0 = 0 (the script's t1611 event) froze the
+  lift at ~t1611; the game only decrements a POSITIVE delay and runs the streams otherwise
+  [M 0x1da998:17-18,112-114]; (2) the lobby arrival: no writer of ch 0x4a exists anywhere [D scans
+  of the 42 maps' triggers/scripts/SPs; the kind list has no lift/SS/car object] — the port writes
+  it when the lift script ends (the SP state-2 completion in `nis.rs`, keyed to 0x0700004a +
+  0x06000571) [S, documented]. Known gap: the shaft doors' auto-open on the lift's approach is not
+  ported (a rider is scraped off around −52; the test re-seats Bond along the script's key line).
+- **The unported start states** — 0xb4 DeleteMe despawns (07000007's mode-21 party placement),
+  0x85 EnemyRunToPoint resolves per 0x168910:32-36 (return state 0x56; on 07000011/12/13/41 with
+  the player unseen → Idle/Alert — the port has no 0xe9 AI-point registry, so the none-found arm is
+  the proven stand; the sweep levels' gate-waiters stay in WaitSwitch 0x01 as in the game), and
+  07000004's assassin runs the ninja chain at alert 1.0 (dtype 0xf → 0xd → 0xa6/0xa7, alert remap
+  [M 0x14c938/0x14cbd8]).
+- **Two cross-cutting death fixes** [M]: Death_Anim raises the death channel on its first UPDATE
+  while `+0xCD8` is set (0x1637f8 case 2) — not on the anim's end (a drone whose death danim never
+  completes — Drake — never raised); and the explosion kill flushes the pending transition
+  immediately (the game's damage messages run inside the state router; the port's sat outside, so a
+  same-tick UPDATE re-dispatch — the ninja band router — clobbered the death).
+- Tests: `crates/nf-view/tests/fix_finale_live.rs` (4 tests, NF_ISO) — the 07000016 chain+kill,
+  0700001b's Drake, 0700004a's ride+arrival, the three start states, each with sisters (a non-chaser
+  death never raises 0x90; ch 0x0b waits for the NIS's t600; ch 0x4a waits for the script's end).
+  All 4 fail on the pre-fix code (verified by stashing the fix), all pass after.
+
+**Measured**
+- 0700001b's intro: SP #147 plays the 0780001b pack cinema 0x0600085c (2000 ticks) — event 5
+  (drones off) + event 4 (player off) at t0, event 7 (drones on) at t1995, ch 0xbf at t1999 [D];
+  the sweep's "11 never-enabled drones" were waiting on it.
+- 07000016's skins: 0x0500005e is NOT only Drake — the VIP #287 (dtype 12) stands at the silo
+  (sw_ch 0x50 = SP #347's out) and the drone-props voice mapping (skin 0x5e → voice 0x13
+  [M 0x14b300]) is what KikoMission's CivilianMission entry tests.
+- The 0700001b console hypothesis (Monitor camera channels) does NOT hold: no Monitor (0x30) or
+  Sensor (0x28) placements with channels on any of its 42 maps [D]; the NIS console entities
+  (0x060007c0/c1, stream class 0x26) are plain objects [M Script_CreateEntity 0x1d8968's dispatch
+  has no 0x26 case — disassembly-checked]; AND #139's inputs 21/22/27 are the SpaceMissiles'
+  per-missile channels [D #129/131/136 p6], written by the missile state machine's flight path
+  [M 0x1aa118 state 3] behind the launch order ch 19 = AND(0xc1, 0xc2) [D #202], whose writers are
+  not on the disc data.
+- `Monitor_Activate` 0x1b0058 / `Monitor_Update` 0x1afcc8 (the E camera-console family) documented
+  for the record: E on a class-0x38 object → a Sensor (CameraList = the Sensor list, 0x1b0868)
+  camera view; while viewed the sensor's data+0x5c channel is written [M].
+
+**Failed / corrected**
+- The first ninja implementation lost kills: the explosion kill's pending DEATH_ANIM transition was
+  clobbered by the same-tick ninja UPDATE re-dispatch (health 0, state back to 0xa8) — fixed by
+  flushing the transition (the game's damage messages run inside the router [M 0x175778]).
+- `Script_Update`'s negative-delay block (above) also froze every other script that fires event 3
+  with p0 = 0.

@@ -108,6 +108,21 @@ pub mod state {
     pub const ALLY_LEAD_WAIT: u8 = 0x20;
     /// `NDrone2_DSTATE_AllyLeadDone` (0x15f2e8): the route is walked — stand at the goal.
     pub const ALLY_LEAD_DONE: u8 = 0x23;
+    /// `NDrone2_DSTATE_AllyLeadPlayerInWay` (0x15ea28): Bond blocks the lead route (fix-actors).
+    pub const PLAYER_IN_WAY: u8 = 0x1e;
+    /// `NDrone2_DSTATE_AllyLeadHide` (0x15ec08): cower while a hostile fights nearby (fix-actors).
+    pub const LEAD_HIDE: u8 = 0x1f;
+    /// `NDrone2_DSTATE_AllyLeadMissionWait` (0x15efc8): the route's wait-channel node (fix-actors).
+    pub const LEAD_MISSION_WAIT: u8 = 0x21;
+    /// `NDrone2_DSTATE_AllyLeadBondCombat` (0x15f120): hold while Bond fights nearby (fix-actors).
+    pub const LEAD_BOND_COMBAT: u8 = 0x22;
+    /// `NDrone2_DSTATE_AllyFollowInit` (0x15f3c8) / Follow (0x15f4e0) / FollowWait (0x15f6a0) /
+    /// FollowDone (0x15f858) and `AllyGoToGoalPosition` (0x15f938) (fix-actors).
+    pub const FOLLOW_INIT: u8 = 0x24;
+    pub const FOLLOW: u8 = 0x25;
+    pub const FOLLOW_WAIT: u8 = 0x26;
+    pub const FOLLOW_DONE: u8 = 0x27;
+    pub const GO_TO_GOAL_ALLY: u8 = 0x28;
     pub const PARTY_GIRL_INIT: u8 = 0x2e;
     pub const PARTY_GIRL: u8 = 0x2f;
     pub const CIVILIAN_GUARD: u8 = 0x30;
@@ -547,6 +562,22 @@ pub struct Drone {
     pub corpse: bool,
     pub death_pending: bool,
     pub death_channel: u8,
+    /// The last hit on this drone came from the player (a bullet, a punch or an owned explosion) —
+    /// `Drone+0x2B4` (last-hit-by) is the player [M `DroneFunc_OnInitDeath` 0x145bd0 reads it; the port
+    /// tracks the two bullet paths separately, so a flag stands in] (fix-actors).
+    pub hit_by_player: bool,
+    /// The pending `OnInitDeath` fail verdict, drained by the tick (fix-actors).
+    pub fail_reason: Option<crate::ally::FailReason>,
+    /// AllyLeadMissionWait's channel (obj+0x12C, the placement's param 6; 0 → 0x99) [M 0x15efc8], and
+    /// the tick's read of it (fix-actors).
+    pub wait_channel: u16,
+    pub wait_channel_on: bool,
+    /// The last `update_mission_route` report was BLOCKED/NO_PATH (fix-actors; Lead's PlayerInWay entry).
+    pub route_blocked: bool,
+    /// The distance to the nearest started, alive, team-1 drone (the "armed drone" of
+    /// `NDrone2_NearArmedDrone` 0x15ea28's calls — the port snapshots positions, so the team/started
+    /// filter runs where the snapshot is built; f32::MAX = none) (fix-actors).
+    pub armed_peer_dist: f32,
     pub special_death: u32,
     /// The spot a special death plays at (`+0xBE0`: the object's position at creation; `+0xBF4`: its yaw) and the
     /// stationary flag (`+0x4F8 & 0x10`: set at creation for special-death scripts other than 0x0600021F; blocks combat
@@ -685,7 +716,11 @@ impl Drone {
             health: 10.0, max_health: 10.0, damage_taken: 1.0, damageable: !matches!(skin, 0x0500_003b | 0x0500_003c | 0x0500_0053), kind: setup.kind,
             last_damage: 0.0, silent_kill: false, big_hit: false, flinch_at: None, hit: None, impact_resume: 0, hits_taken: 0,
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
-            corpse: false, death_pending: false, death_channel: param(12) as u8, special_death: param(13), special_spot: pos, special_yaw: yaw,
+            corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false,
+            // fix-finale-blockers: 07000016's chaser (skin 0x0500001e, dtype 0xf, no placement death
+            // channel [D]) carries 0x90 at init — the defeat stand-in documented in kiko.rs [S].
+            death_channel: crate::kiko::chaser_death_channel(d.level, skin, param(15) as u8, param(12) as u8),
+            special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0,
             velocity: [0.0; 3], in_air: false, on_surface: true,
@@ -907,10 +942,11 @@ impl Drone {
         match code {
             crate::nav::follow::ARRIVED => { self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); true }
             crate::nav::follow::BLOCKED | crate::nav::follow::NO_PATH => {
+                self.route_blocked = true;
                 if self.alert >= 0.66 { self.request_anim(d, anim_state::ALERT_IDLE) } else { self.set_stand_idle(d, _rng, _frame, false) }
                 false
             }
-            _ => { self.request_anim(d, self.walk_anim(d)); self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); false }
+            _ => { self.route_blocked = false; self.request_anim(d, self.walk_anim(d)); self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); false }
         }
     }
 
@@ -1595,7 +1631,13 @@ impl Drone {
                 self.vision_on = false;
                 self.firing = false;
                 if self.special_death != 0 { self.set_state(SPECIAL_DEATH); return Some(true); }
-                self.death_pending = true; // `OnInitDeath` (mission-fail props: not modelled)
+                self.death_pending = true;
+                // `DroneFunc_OnInitDeath` 0x145bd0's mission-fail half (fix-actors): the protected-actor
+                // props 0x53/0x54 — team 1 dies → "Cover Lost" (ch 99), team 2/3 → "Killed Civilians"
+                // (ch 0x60); the monitor's standing hooks turn the channels into the fail [M 0x1827d8].
+                if let Some(r) = crate::ally::on_init_death(self.team, self.prop(d, 0x53), self.prop(d, 0x54), self.hit_by_player) {
+                    self.fail_reason = Some(r); // drained by the tick, next to `raise` (fix-actors)
+                }
                 // `OnInitDeath` 0x145bd0:57-59: the player's kill is logged as dispatched UNLESS the KO flag
                 // (+0x4F8 & 0x1000000) is set — the KO already logged EnemyDisabled instead [*suggested*: the
                 // game also requires the last hit (+0x2B4) to be the player, which in SP it always is].
@@ -1644,8 +1686,12 @@ impl Drone {
             (DEATH_ANIM, msg::TIMER_C) => { if self.death_pending { self.set_death_channel(); self.death_pending = false; } true }
             (SPECIAL_DEATH, msg::TIMER_C) => { self.death_pending = true; true }
             // Update: the gun drops while the firing flag (`+0x3B`) is clear or the anim set is 4 / 9.
+            // Death_Anim's msg-2 raises the death channel every update while `+0xCD8` is set — NOT on
+            // the anim's end [M 0x1637f8 case 2: `if (+0xcd8 != 0) SetDeathChannel()`] — the fix
+            // that lets a drone whose death danim never completes (0700001b's Drake) still raise it.
             (DEATH_ANIM, msg::UPDATE) => {
                 if !self.firing || matches!(self.anim_set, 4 | 9) { self.drop_weapon(d, rng); }
+                if self.death_pending { self.set_death_channel(); }
                 true
             }
             (DEAD, msg::ENTER) => {
@@ -2795,7 +2841,7 @@ impl Drone {
             // GoToGoalPosition 0x63 (`NDrone2_DSTATE_GoToGoalPosition` 0x165640): run to the goal (`+0x710`), looking for
             // the opponent on the way; blocked → aim or look about; arrived or failed → DeleteMe (prop 0x59) or the
             // return state `+0x5A2`. Deaf meanwhile (`+0x4F8` 0x400000; hearing is not ported).
-            (GO_TO_GOAL, msg::ENTER) => { self.vision_on = true; true }
+            (GO_TO_GOAL, msg::ENTER) => { self.vision_on = true; true } // guard 0x63 (fix-actors had renamed it to the ally's 0x28)
             (GO_TO_GOAL, msg::UPDATE) => {
                 if self.seen && !(self.ever_seen && self.dist >= self.engage_range) {
                     if let Some(n) = self.look_for_opponent(d) { self.set_state(n); return true; }
@@ -3030,7 +3076,10 @@ impl Drone {
             // FollowRoute — arrived → the prop clears → Civilian; blocked (creep 9/0xc) → look-around at
             // alert ≥ 0.66 else stand idle; else keep walking [M 0x15d860 case 3; UpdateMissionRoute 0x154a80].
             (CIVILIAN_MISSION, msg::ENTER) => {
-                if self.voice_type == 0x13 { self.set_state(HOSTAGE_IDLE); return true; } // 0x19 stand-in (a standing state)
+                // CivilianMission 0x15d860 case 1: voice 0x13 → KikoMission 0x19 (the port's skin
+                // mapping: skin 0x5e → 0x13 [M 0x14b300]); unreached by the disc's placements
+                // (kiko.rs) but ported for fidelity. fix-finale-blockers replaced the 0x0d stand-in.
+                if self.voice_type == 0x13 { self.set_state(crate::kiko::KIKO_MISSION); return true; }
                 self.call_anim(d, anim_state::WALK, 0, 0);
                 true
             }
@@ -3134,6 +3183,15 @@ impl Drone {
             (ALLY_LEAD, msg::UPDATE) => {
                 // The route first: done → AllyLeadDone [M 0x15e698 case 3, FollowRoute branch 3].
                 if self.update_mission_route(d, rng, frame) { self.set_state(ALLY_LEAD_DONE); return true; }
+                // An armed, started hostile within 10 → LeadHide (the cower) [M 0x15e698's armed-drone
+                // branch + 0x15ec08; the port's armed_peer_dist snapshot].
+                if self.armed_peer_dist <= 10.0 {
+                    if std::env::var_os("NF_AILOG").is_some() { eprintln!("[ailog] escort {} → LeadHide (peer {:.1})", self.index, self.armed_peer_dist); }
+                    self.set_state(LEAD_HIDE);
+                    return true;
+                }
+                // Bond blocking the route → PlayerInWay [M 0x15ea28's entry; the port's route_blocked].
+                if self.route_blocked && self.dist <= 3.0 { self.set_state(PLAYER_IN_WAY); return true; }
                 // Bond far behind → wait for him [M 0x15e698 case 3: the path-distance rules of
                 // ObjectMissionPathDistance — the port's straight-line stand-in uses 12 units; the
                 // game's close-Bond wait also needs BondWithinAngle(0.52) (the "assure him" stance),
@@ -3148,7 +3206,135 @@ impl Drone {
                 if self.dist <= 10.0 { self.set_state(ALLY_LEAD); }
                 true
             }
+            // ---- the AllyLead sub-states (fix-actors; 038's brief) ---------------------------------
+            // Lead's UPDATE dispatches them [M 0x15e698 case 3 + the sub-state entries]: an armed,
+            // started hostile within 10 (0x41200000) cowers the escort in LeadHide; Bond blocking the
+            // route (the port's `route_blocked`, set by `update_mission_route`, with Bond within 3)
+            // parks him in PlayerInWay.
+            (PLAYER_IN_WAY, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15ea28 case 1: 0x21]
+            (PLAYER_IN_WAY, msg::UPDATE) => {
+                // No armed drone within 10 and Bond out of the way band → Lead [M 0x15ea28 case 3;
+                // the 1.06-rad facing check is the game's nudge-aside, the port resumes on distance —
+                // *suggested*, documented in docs/systems/actors.md].
+                if self.armed_peer_dist > 10.0 && self.dist > 3.0 { self.set_state(ALLY_LEAD); }
+                true
+            }
+            (LEAD_HIDE, msg::ENTER) => { self.call_anim(d, anim_state::COWER, 0, 0); true } // [M 0x15ec08 case 1: 0x19]
+            (LEAD_HIDE, msg::UPDATE) => {
+                // No armed drone within 14 (0x41600000) → latch and return to Lead in 2 ticks
+                // [M 0x15ec08 case 3: +0xCD8 = 1, timer C = now + 2·FRAME_RATE_INT].
+                if self.armed_peer_dist > 14.0 && self.timer_c.is_none() {
+                    self.timer_c = Some(frame + 2);
+                }
+                true
+            }
+            (LEAD_HIDE, msg::TIMER_C) => { self.set_state(ALLY_LEAD); true }
+            // AllyLeadMissionWait 0x21 (0x15efc8): the route's wait-channel node parks the escort until
+            // the channel fires. The port's route nodes carry no channels — the state is reachable
+            // through the forced-state path only [*suggested*; documented].
+            (LEAD_MISSION_WAIT, msg::ENTER) => {
+                self.wait_channel = if self.second_channel != 0 { self.second_channel as u16 } else { 0x99 }; // [M 0x15efc8 case 1]
+                self.call_anim(d, anim_state::ALERT_IDLE, 0, 0);
+                true
+            }
+            (LEAD_MISSION_WAIT, msg::UPDATE) => {
+                if self.wait_channel_on { self.set_state(ALLY_LEAD); } // [M 0x15efc8 case 3]
+                true
+            }
+            // AllyLeadBondCombat 0x22 (0x15f120): Bond is fighting near the escort — hold the alert
+            // idle until the fight moves away, then Lead. The game's ObjectMissionPathDistance(5.0)
+            // route check is the port's armed-peer + distance band [*suggested*; documented].
+            (LEAD_BOND_COMBAT, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15f120 case 1: 0x21]
+            (LEAD_BOND_COMBAT, msg::UPDATE) => {
+                if self.armed_peer_dist > 10.0 { self.set_state(ALLY_LEAD); }
+                true
+            }
+            // ---- the AllyFollow chain (0x24–0x27, 0x15f3c8/0x15f4e0/0x15f6a0/0x15f858) -------------
+            (FOLLOW_INIT, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15f3c8 case 1: 0x21]
+            (FOLLOW_INIT, msg::UPDATE) => {
+                // Bond visible (+0x228 & 4 — the port's `seen`) → AllyFollow [M 0x15f3c8 case 3].
+                if self.seen { self.set_state(FOLLOW); }
+                true
+            }
+            (FOLLOW, msg::ENTER) => { self.call_anim(d, self.walk_anim(d), 0, 0); true }
+            (FOLLOW, msg::UPDATE) => {
+                // Follow the mission band: beyond 8 walk at Bond, inside it stand (the game walks the
+                // route toward Bond's node; the port's band is *suggested*, documented).
+                if self.dist > 8.0 { self.desired_yaw = self.yaw_to_opp; self.request_anim(d, self.walk_anim(d)); }
+                else { self.set_stand_idle(d, rng, frame, false); }
+                true
+            }
+            (FOLLOW_WAIT, msg::UPDATE) => { if self.dist <= 6.0 { self.set_state(FOLLOW); } true }
+            (FOLLOW_DONE, msg::ENTER) => { self.set_stand_idle(d, rng, frame, true); true } // [M 0x15f858]
+            // AllyGoToGoalPosition 0x28 (0x15f938): walk to the saved goal, then Lead (the escort's
+            // only user) [*suggested*: the goal = the route's last node].
+            (GO_TO_GOAL_ALLY, msg::ENTER) => { self.call_anim(d, self.walk_anim(d), 0, 0); true }
+            (GO_TO_GOAL_ALLY, msg::UPDATE) => {
+                if self.update_mission_route(d, rng, frame) { self.set_state(ALLY_LEAD); }
+                true
+            }
             (ALLY_LEAD_DONE, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15f2e8 case 1: 0x21]
+            // ---- fix-finale-blockers (crates/nf-game/src/kiko.rs has the addresses and the tags) ----
+            // NinjaStand 0xa6 (0x16b990) ENTER: the eyes datum then SetState(0xa7) — the BLIND_DRONES
+            // cheat is not modelled, so the fall-through is the only arm.
+            (0xa6, msg::ENTER) => { self.set_state(crate::kiko::NINJA_ATTACK); true }
+            // NinjaAttack 0xa7 (0x16bb50): alert 1.0, the distance bands; UPDATE re-routes each tick.
+            (crate::kiko::NINJA_ATTACK, msg::ENTER) => {
+                self.vision_on = true;
+                self.alert = 1.0;
+                self.set_state(crate::kiko::ninja_band(self.dist));
+                true
+            }
+            (crate::kiko::NINJA_ATTACK, msg::UPDATE) => { if self.next_state.is_none() { self.set_state(crate::kiko::ninja_band(self.dist)); } true }
+            // The bands 0xa8/0xa9/0xaa (0x16bfc0/0x16c248/0x16c650): advance, then re-dispatch
+            // through 0xa7 (the melee/throwing-star anims need the ninja set — not modelled [S]).
+            (crate::kiko::NINJA_LONG_RANGE | crate::kiko::NINJA_MID_RANGE | crate::kiko::NINJA_SHORT_RANGE, msg::ENTER) => {
+                self.call_anim(d, self.walk_anim(d), 0, 0);
+                true
+            }
+            (crate::kiko::NINJA_LONG_RANGE | crate::kiko::NINJA_MID_RANGE | crate::kiko::NINJA_SHORT_RANGE, msg::UPDATE) => {
+                if self.next_state.is_none() { self.set_state(crate::kiko::NINJA_ATTACK); }
+                true
+            }
+            // StandFire 0xb2 (0x16d5b8): hold at the melee band and re-dispatch.
+            (crate::kiko::NINJA_STAND_FIRE, msg::ENTER) => { self.call_anim(d, anim_state::AIM_STAND, 0, 0); true }
+            (crate::kiko::NINJA_STAND_FIRE, msg::UPDATE) => { if self.next_state.is_none() { self.set_state(crate::kiko::NINJA_ATTACK); } true }
+            // KikoMission 0x19 (0x15df28): the route chase — done → prop 0x1d clear → StandBlind.
+            // Its sound-class msgs are ignored on 0x07000016 (case 0x11..0x1f `return 1`).
+            (crate::kiko::KIKO_MISSION, msg::ENTER) => { self.vision_on = true; self.call_anim(d, 0x34, 0, 0); true }
+            (crate::kiko::KIKO_MISSION, msg::UPDATE) => {
+                if self.update_mission_route(d, rng, frame) {
+                    d.props.set(0x1d, &mut self.props, 0);
+                    self.set_state(crate::kiko::STAND_BLIND);
+                }
+                true
+            }
+            (crate::kiko::KIKO_MISSION, msg::SOUND | msg::ALARM | 0x11 | 0x12 | 0x15 | 0x16 | 0x1f) => d.level == 0x0700_0016,
+            // KikoMissionRun 0x1a (0x15e0d8): route done → RunToAlarm.
+            (crate::kiko::KIKO_MISSION_RUN, msg::ENTER) => { self.vision_on = true; self.call_anim(d, 0x1e, 0, 0); true }
+            (crate::kiko::KIKO_MISSION_RUN, msg::UPDATE) => {
+                if self.update_mission_route(d, rng, frame) { self.set_state(crate::kiko::RUN_TO_ALARM); }
+                true
+            }
+            // StandBlind 0x18 (0x172870): the stand anim only.
+            (crate::kiko::STAND_BLIND, msg::ENTER) => { self.call_anim(d, anim_state::STAND_IDLE, 0, 0); true }
+            // RunToAlarm 0x89 (0x1736f8): no alarm point reachable on the ported paths → Idle (the
+            // none-found arm; the port has no alarm-point registry [S]).
+            (crate::kiko::RUN_TO_ALARM, msg::ENTER) => { self.vision_on = true; self.set_state(IDLE); true }
+            // EnemyRunToPoint 0x85 (0x168910): the return state 0x56, on 11/12/13/41 with the player
+            // not yet seen → 4/5; FindRunToPoint's none-found arm (no AI-point registry in the port,
+            // the sweep levels' mode-7 drones provably stand [M 0x168910:32-36]).
+            (crate::kiko::ENEMY_RUN_TO_POINT, msg::ENTER) => {
+                self.vision_on = true;
+                let mut ret = ATTACK;
+                if matches!(d.level, 0x0700_0011 | 0x0700_0012 | 0x0700_0013 | 0x0700_0041) && !self.ever_seen {
+                    ret = if self.alert < 0.66 { IDLE } else { ALERT };
+                }
+                self.set_state(ret);
+                true
+            }
+            // DeleteMe 0xb4 (0x173f00): the soft removal (NDrone2_Enable(0) + obj+0xfe |= 1).
+            (crate::kiko::DELETE_ME, msg::ENTER) => { self.present = false; self.enabled = false; true }
             (_, msg::ENTER | msg::EXIT | msg::UPDATE) => true,
             _ => false,
         }
@@ -3533,7 +3719,8 @@ impl Drone {
         let damage = 100.0f32;
         Some(crate::grenade::Grenade {
             pos: origin, velocity: [dir[0] * speed, dir[1] * speed, dir[2] * speed], speed,
-            travelled: 0.0, range, damage, radius, weapon_type, owner, state: 0, bounces: 0,
+            travelled: 0.0, range, damage, radius, weapon_type, mesh: d.weapons.projectile_mesh(self.weapon as usize),
+            owner, state: 0, bounces: 0,
         })
     }
 
@@ -3647,7 +3834,7 @@ impl Drone {
         let mut damage = f32_at(0x0c) * self.damage_mul;
         if self.dist < 4.0 { damage *= 2.0 }
         Some(crate::bullet::Bullet { pos: muzzle, dir, speed: f32_at(0x20), travelled: 0.0, range: f32_at(0x1c), damage, owner, state: 0,
-            flyby: d.weapons.flyby(self.weapon as usize) })
+            weapon: self.weapon as u16, flyby: d.weapons.flyby(self.weapon as usize) })
     }
 
     // ---- per tick -----------------------------------------------------------------------------------------------
@@ -3865,11 +4052,20 @@ pub struct Drones {
     /// The level's searchlights (docs/systems/world-objects.md; created in `attach_level`, updated in `tick`'s
     /// control-list order with the drones and triggers).
     pub searchlights: crate::searchlight::Searchlights,
+    /// The use objects (map-tower): the Q-Worm PCs (0x35) and switches (0x29) of
+    /// `Player_Activate` 0x1a5170 — crate::useobj.
+    pub useobjs: crate::useobj::UseObjects,
     /// The level's doors (docs/systems/world-objects.md "Doors"); created in `attach_level`, updated in `tick`'s
     /// control-list order (`Door_Update`), the group sync (`Doors_Calc`) at the pass's end.
     pub doors: crate::door::Doors,
     /// The fuseboxes (`FuseBox_Create` 0x1b0448; map-tower2): 07000014's OBJECT_FuseBox1 sabotage boxes.
     pub fuseboxes: Vec<crate::fusebox::FuseBox>,
+    /// The helicopter (`Copter_Create` 0x17d340, placement 0x2F; fix-objects2): 07000008's
+    /// extraction copter — gated on ch 5, its arrival writes ch 0x4B (the last mission objective).
+    pub copters: Vec<crate::copter::Copter>,
+    /// The locks (`Lock_Create` 0x1ae1f8, placement 0x2E; fix-objects2): the laser-burn targets —
+    /// 07000008's safe bolts (chs 134/135 → mux 136 → the safe door).
+    pub locks: Vec<crate::lock::Lock>,
     /// The animated SimpleScripts (`SS_Create` 0x1a9c58 / `SS_Update` 0x1a9948; map-tower2): the
     /// 07000012 lift screens, shutters and lift doors swap on their switch channels.
     pub sss: crate::ss::SsList,
@@ -3888,6 +4084,8 @@ pub struct Drones {
     /// The mission layer's events this tick (`Text_AddMsg` types 2/3, the FailLabel writes, the
     /// level-end/reset decisions) — drained by the view each tick.
     pub mission_events: Vec<crate::mission::Event>,
+    /// The weapon of each `bullet_paths` entry, in order (crate::useobj's 0x58 install check).
+    bullet_path_weapons: Vec<u16>,
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -3905,6 +4103,7 @@ pub fn voice_type(skin: u32) -> u16 {
 /// The script runtime's view of the level data: animation lengths and an animated object's discrete object 0.
 impl crate::nis::World for Data<'_> {
     fn anim_length(&self, script: u32) -> Option<u16> { self.scripts.get(&script).map(|s| s.length) }
+    fn level(&self) -> u32 { self.level }
     fn discrete0(&self, skin: u32, script: u32, frame: f32) -> Option<nf_formats::anim::Mat4> {
         self.discrete_parts(skin, script, frame).into_iter().next().map(|p| p.1)
     }
@@ -3945,6 +4144,10 @@ impl Drones {
         // Destroy_Create 0x12c318 — the game creates them in placement order in
         // parsemap_create_dynamic_objects 0x1d04f0].
         self.props = crate::props::Props::create(level);
+        // The Q-Worm PCs (0x35) and switches (0x29) of `Player_Activate` 0x1a5170 (map-tower;
+        // `parsemap_create_dynamic_objects` 0x1d04f0 cases 0x35/0x29, crate::useobj).
+        self.useobjs = crate::useobj::UseObjects::create(&level.maps[level.main_map().unwrap_or(0)].placements);
+        self.useobjs.init_channels(&mut self.channels, self.frame);
         let Some(m) = level.main_map() else { return };
         // Searchlights (`Searchlight_Create`, placement order; every part draws `Rand_Rand(480)`, spots another
         // `Rand_Rand(0)` — the shared stream, in this order). The game interleaves these draws with the other
@@ -3995,6 +4198,14 @@ impl Drones {
         // SimpleScripts (`SS_Create` 0x1a9c58): the 0xE2 placements with a non-zero key count, their
         // keys from the main map's 0x19 blocks (map-tower2).
         self.sss = crate::ss::SsList::create(&level.maps[m].placements, &path_blocks);
+        // The helicopter (`Copter_Create` 0x17d340, placement 0x2F) and the locks (`Lock_Create`
+        // 0x1ae1f8, placement 0x2E) (fix-objects2). Neither draws RNG at create.
+        self.copters = crate::copter::Copter::create(&level.maps[m].placements);
+        self.locks = crate::lock::Lock::create(&level.maps[m].placements, |p| {
+            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
+                else { level.maps[m].objects.get(p.index as usize) };
+            obj.map(|o| (o.centre, o.radius))
+        });
         // Weather: `Env_Create` (placement 0xDF, parameter 0 = drop type) and the `RainBox_Create` volumes (0x32: the
         // glist bounds at the placement translation).
         self.map_sounds = crate::sound::MapSounds::new(level.maps[m].sounds.clone());
@@ -4053,6 +4264,7 @@ impl Drones {
     fn update_player_bullets(&mut self, d: &Data) {
         self.player_impacts.clear();
         self.bullet_paths.clear();
+        self.bullet_path_weapons.clear();
         let frame = self.frame;
         let mut bullets = std::mem::take(&mut self.player_bullets);
         for b in &mut bullets {
@@ -4069,6 +4281,7 @@ impl Drones {
             // The photograph targets and breakable doors see the bullet this tick (the game's
             // collision pass registers the contact; the prop's update walks it — crate::props).
             self.props.bullet_hit(b.pos, end, b.weapon, b.damage, &mut self.channels, frame);
+            self.bullet_path_weapons.push(b.weapon);
             let tw = d.world.segment(b.pos, end);
             let mut best: Option<(usize, i16, f32)> = None;
             for (i, dr) in self.list.iter().enumerate() {
@@ -4092,6 +4305,7 @@ impl Drones {
                     if hit.damage > 0.5 { self.audio.play3d(0x413, hit.point, None); }
                     let rng = &mut self.rng;
                     let dr = &mut self.list[i];
+                    dr.hit_by_player = true; // +0x2B4 = the player [M 0x145bd0; fix-actors]
                     dr.hit = Some(hit);
                     dr.global_flinch = self.last_flinch;
                     dr.bond_aiming = self.bond_aiming;
@@ -4229,6 +4443,11 @@ impl Drones {
         // `Player_Activate`'s class-0x1D trigger path: for every trigger within the use sphere, call
         // `Trigger_Activate` — for LOAD_LEVEL, request the level load; for TouchOnce, set the output channel.
         self.player_use_triggers(head, look, frame);
+        // `Player_Activate`'s remaining classes the Tower levels need (map-tower): the mask-4
+        // ScriptPlayers (`SP_Activate` 0x1dc338 — the elevator, the security keyboard), the
+        // switches (0x29, `Switch_Activate` 0x1b02a8) and the Q-Worm PCs (0x35,
+        // `PCQWorm_Activate` 0x1b0840) — crate::useobj.
+        self.useobjs.player_activate(&mut self.scripts, &mut self.channels, head, look, frame);
     }
 
     /// The class-0x1D trigger half of `Player_Activate` (0x1a5170:134-137). Bond's use sphere (radius 1.0 at
@@ -4320,6 +4539,10 @@ impl Drones {
     /// Turns a switch channel on (callers and tests).
     pub fn set_channel(&mut self, c: u8) { let f = self.frame; self.channels.set(c as u32, 1, f); }
 
+    /// This tick's player-bullet segments (`from`, `to`) and their weapon ids — the same data the
+    /// PC install check reads (crate::useobj; the game's class-5 contact list [M 0x1aee20]).
+    pub fn bullet_paths(&self) -> (&[(V3, V3)], &[u16]) { (&self.bullet_paths, &self.bullet_path_weapons) }
+
     /// One 60 Hz game tick: global vision (`DroneVision_ProcessDroneSight`), then each drone's control.
     pub fn tick(&mut self, d: &Data, player: &Player) {
         let _prof_all = crate::prof::scope("drones.tick (total)");
@@ -4366,6 +4589,12 @@ impl Drones {
             for dr in self.list.iter_mut().filter(|x| x.present) { dr.light = light; dr.opponent_info(player); dr.seen = false; dr.bond_armed = armed; }
         }
         self.update_player_bullets(d);
+        // The use objects' per-tick halves (`PCQWorm_Update` 0x1aee20's bullet install +
+        // `Switch_Update` 0x1adea8's value/auto-return; map-tower, crate::useobj). The bullet
+        // segments are this tick's paths — the game reads the class-5 contact list the same pass.
+        let (paths, weapons) = self.bullet_paths();
+        let shots: Vec<(V3, V3, u16)> = paths.iter().zip(weapons).map(|(&(a, b), &w)| (a, b, w)).collect();
+        self.useobjs.tick(&shots, &mut self.channels, frame);
         // `Drone_InitComms`: corpses (0x0F, 0x47, 0x48 + 300, 0xBF by the time their state began); beyond 3
         // (`DAT_00298F5C`) the oldest fades fast (`DroneFunc_DeadDrone`).
         let mut corpses = 0;
@@ -4549,6 +4778,15 @@ impl Drones {
             }
         }
         let positions: Vec<Option<V3>> = self.list.iter().map(|x| x.enabled.then_some(x.pos)).collect();
+        // The armed-peer distances for `NDrone2_NearArmedDrone`'s calls (fix-actors): the nearest
+        // started, alive, team-1 drone (positions only here; the per-drone team/started filter runs
+        // on the same list before the mutable borrow below).
+        let armed_peer_dist: Vec<f32> = self.list.iter().enumerate().map(|(i, dr)| {
+            self.list.iter().enumerate()
+                .filter(|&(j, o)| j != i && o.team == 1 && o.started && !o.corpse && o.enabled)
+                .map(|(_, o)| ((o.pos[0] - dr.pos[0]).powi(2) + (o.pos[1] - dr.pos[1]).powi(2) + (o.pos[2] - dr.pos[2]).powi(2)).sqrt())
+                .fold(f32::MAX, f32::min)
+        }).collect();
         let peers: Vec<(usize, V3, bool)> = self.llist.iter().map(|&i| (i, self.list[i].pos, self.list[i].seen)).filter(|&(i, _, _)| self.list[i].enabled).collect();
         // `Trigger_Calc`, then every object in the control list (newest first = reverse placement order): triggers and
         // drones interleaved, so a channel a trigger pulses is seen only by the objects updated after it.
@@ -4563,6 +4801,16 @@ impl Drones {
         // frame (core-loop §7 item 5). It used to snapshot at the END of the tick, so a 1-tick lock pulse was
         // invisible to the edge test.
         self.doors.end_tick(&self.channels);
+        // The helicopter (`Copter_Update` 0x17dbb8, fix-objects2): the gate check, the countdown
+        // pulse and the arrival write; on the gate's rising edge the flight script starts as a
+        // synthetic one-shot player (the game's hidden `SP_Create` inside `Copter_Create` 0x17d340).
+        let mut copter_flight: Vec<(usize, u32, nf_formats::anim::Mat4)> = Vec::new();
+        for c in &mut self.copters {
+            let len = self.scripts.lib.get(&c.scripts[1]).map(|n| n.length as u32).unwrap_or(0);
+            let (started, _) = c.tick(&mut self.channels, len, frame);
+            if started { copter_flight.push((c.placement, c.scripts[1], c.matrix)); }
+        }
+        for (placement, script, matrix) in copter_flight { self.scripts.spawn_once(placement, script, matrix); }
         // Script players (*deviation*: all of them here, not interleaved with the placed objects by list order).
         { let _p = crate::prof::scope("drones: scripts"); self.scripts.tick(&mut self.channels, d, frame); }
         // Script objects with collision data join the collision world where they now are: animations' discrete
@@ -4781,12 +5029,16 @@ impl Drones {
             if dr.spawn_frame == frame { continue; }   // spawned this tick: the game's walk already passed it
             if dr.target.stamp != self.target.stamp { dr.target = self.target.clone(); }
             dr.channel_on = self.channels.on(dr.switch_channel as u32);
+            dr.wait_channel_on = dr.wait_channel != 0 && self.channels.on(dr.wait_channel as u32);
             { let _p = crate::prof::scope("drone: visible_to (drawn ray)"); dr.drawn = dr.enabled && visible_to(player, d.world, dr.pos, dr.head()); }
             dr.links_used = std::mem::take(&mut self.used);
             dr.cover_rt = std::mem::take(&mut self.cover_rt);
             let _pc = crate::prof::scope("drone: clones + misc");
             dr.others = positions.clone();
             dr.peers = peers.clone();
+            // `NDrone2_NearArmedDrone`'s scan (fix-actors): the nearest started, alive, hostile peer.
+            // (The snapshot list was taken before the mutable borrow; the armed/started filter rides it.)
+            dr.armed_peer_dist = armed_peer_dist[index];
             // `NDrone2_PreDroneControl`: the second switch (`+0x135`) with a tag (`+0x13A`): 0xC deletes the drone,
             // otherwise the alternate type's state (`+0x5A4`; Attack for these guards, *suggested*).
             if dr.second_channel != 0 && dr.second_tag != 0 && self.channels.on(dr.second_channel as u32) {
@@ -4850,6 +5102,16 @@ impl Drones {
                 }
             }
             if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
+            // `DroneFunc_OnInitDeath`'s verdict: the FailLabel event + the fail channel [M 0x13e560
+            // applied per 0x145bd0's reasons; fix-actors]. The monitor's standing hooks (ch 0x60/0x61
+            // → the label + ch 99) take it from here [M 0x1827d8:98-107].
+            if let Some(r) = dr.fail_reason.take() {
+                if r.label != 0 {
+                    self.mission.fail_label = r.label;
+                    self.mission_events.push(crate::mission::Event::FailLabel(r.label));
+                }
+                if r.channel != 0 { self.channels.set(r.channel as u32, 1, frame); }
+            }
             // The animation's sounds (`Sound_Play3D` at the drone) enter the hearing list for the next tick.
             let (snd, at) = (std::mem::take(&mut dr.anim_sounds), dr.pos);
             // The script's footstep: the floor under the drone (alertness 0: not heard by the drones).
@@ -4953,6 +5215,9 @@ impl Drones {
                         for (di, ddmg) in hits.drones {
                             if let Some(dr) = self.list.get_mut(di) {
                                 dr.last_damage = ddmg;
+                                // The owner's grenade: usize::MAX = the player's throw [M +0x2B4 = the
+                                // thrower; fix-actors].
+                                if owner == usize::MAX { dr.hit_by_player = true; }
                                 dr.health -= ddmg * dr.damage_taken;
                                 if dr.health <= 0.0 { dr.health = 0.0; dr.set_state(state::DEATH_ANIM); }
                                 else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
@@ -5018,7 +5283,7 @@ mod tests {
             health: 10.0, max_health: 10.0, damage_taken: 1.0, damageable: true, kind: 0,
             last_damage: 0.0, silent_kill: false, big_hit: false, flinch_at: None, hit: None, impact_resume: 0, hits_taken: 0,
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
-            corpse: false, death_pending: false, death_channel: 0, special_death: 0, special_spot: pos, special_yaw: 0.0,
+            corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false, death_channel: 0, special_death: 0, special_spot: pos, special_yaw: 0.0,
             stationary: false, alpha: 255.0, raise: None,
             velocity: [0.0; 3], in_air: false, on_surface: true,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(),
