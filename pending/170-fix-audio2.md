@@ -28,4 +28,6 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 - **Update the doc entry** to say it's fixed, with your commit.
 
+**User playtest (2026-10-11, after fix-truck):** the 07000005 truck ride now ends the level, but **no voice lines play during the ride**. In PCSX2 the ride has dialogue. Find what plays it (the truck script's sound/speech events, `docs/systems/speech.md`, the script-player speech events), reproduce it headless along `fix_truck_live`'s ride (assert that the speech starts at the script's tick), and port it.
+
 **Branch:** `s/fix-audio2`.
