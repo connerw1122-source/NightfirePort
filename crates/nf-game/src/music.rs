@@ -144,7 +144,14 @@ impl Music {
         self.delay_timer = t;
         if e[6] != 0 { self.jump(m.on_death, true); self.out.push(Cmd::FadeDown { music: false }); self.wait_for_end = true; }
         if e[7] != 0 { self.jump(m.on_fail, true); self.out.push(Cmd::FadeDown { music: false }); self.wait_for_end = true; }
-        if !self.wait_for_end && m.level == 0x0700_0005 { self.castle_a(&e, &m); }
+        if !self.wait_for_end {
+            if m.level == 0x0700_0005 { self.castle_a(&e, &m); }
+            // `UpdateMFX_01CastleB` 0x113060 (07000006): the NIS-trigger half (DAT_002d3524 == 0x6000071 → the
+            // MapMusicData+0x14/+0x18 marker jump) needs the MapMusic marker fields the port doesn't parse yet
+            // (*not ported*); the alarm half is the one play hears: `MusicUnderAttack ? PickRandomCombat(0) :
+            // PickRandomStealth()` [M 0x113060:26-30].
+            if m.level == 0x0700_0006 { if self.under_attack { self.pick_combat(false); } else { self.pick_stealth(); } }
+        }
         self.events = [0; 64];
     }
 
@@ -213,5 +220,42 @@ mod tests {
         // Sister: not seen for 2 s and far → nothing.
         g.new_frame(); g.new_frame();
         assert!(!g.seen_and_attacking(3, false, 200, 50.0));
+    }
+
+    fn castle_b() -> MapMusic {
+        MapMusic { level: 0x0700_0006, track: 16, start: 0, on_death: 11, on_fail: 10, end_combat: 8, end_calm: 9, alert_frames: 10, calm_frames: 160, combat: vec![4, 12, 14], stealth: vec![6, 16, 18] }
+    }
+
+    /// `UpdateMFX_01CastleB` 0x113060 (07000006): the alarm's `Music_Event(2,1)` stream drives the hysteresis
+    /// into `under_attack`, and the per-level dispatch (fix-npcs) then demands combat — pre-fix nothing ran
+    /// for this level, so the alarm raised ch 55 but the music never left stealth.
+    #[test]
+    fn the_07000006_alarm_demands_combat_music() {
+        let mut m = Music::new(vec![castle_b()]);
+        m.event(0, 0x0700_0006); m.event(1, 1);
+        m.update(0);
+        assert_eq!(m.out.drain(..).collect::<Vec<_>>(), vec![Cmd::Start { track: 16, section: 0 }]);
+        // The CheckAlarmRaised stream: Music_Event(2,1) every tick while ch 55 counts. After the 10
+        // alert_frames the hysteresis flips under_attack and castle_b picks a combat section.
+        let mut jumped = None;
+        for f in 1..=30 {
+            m.event(2, 1);
+            m.update(0);
+            if let Some(Cmd::Jump { section, instant: false }) = m.out.iter().copied().find(|c| matches!(c, Cmd::Jump { instant: false, .. })) {
+                assert!(vec![4, 12, 14].contains(&section), "the jump targets the combat set — got {section}");
+                jumped = Some(f);
+                break;
+            }
+            m.out.clear();
+        }
+        assert_eq!(jumped, Some(12), "the combat pick lands on the 12th streamed tick (count2 10 → <0 on the 11th, dispatch same tick)");
+        // Sister: no alarm, no jump — stealth is only picked coming OUT of combat (the IOP reports a combat
+        // section), so a quiet 07000006 requests nothing.
+        let mut m = Music::new(vec![castle_b()]);
+        m.event(0, 0x0700_0006); m.event(1, 1);
+        m.update(0);
+        m.out.clear();
+        for _ in 0..40 { m.update(0); }
+        assert!(m.out.is_empty(), "a quiet 07000006 picks no section");
     }
 }

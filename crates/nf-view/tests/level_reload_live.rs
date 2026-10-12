@@ -119,6 +119,17 @@ fn probe_07000001_load_level_trigger() {
 fn level_end_07000001_needs_bond_and_the_0x4f_npc_on_the_plate() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = nf_view::load(&iso, "07000001.bin", false).expect("load 07000001");
+    // Wait out the level-start NIS: it fires the game's `Drone_EnableAll(0)` [M 0x1383e8], which (fix-npcs)
+    // disables every drone per `NDrone2_Enable(0)` — a frozen NPC is unpickable, so the plate's AND-chain
+    // can only fire once the NIS re-enables the drones (0x1da880:41-43), as in play.
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        for _ in 0..3000 {
+            sim.step_bond(Default::default(), false, false, false);
+            if !sim.disabled && sim.drones.npc_enabled { break; }
+        }
+        assert!(sim.drones.npc_enabled, "the intro NIS re-enabled the drones");
+    }
     let sim = scene.sim.as_mut().unwrap();
     // The plate volume (from the build): put Bond inside it.
     let touch = sim.drones.triggers.iter().find(|t| t.kind == nf_game::triggers::kind::TOUCH && t.out == 0x10)
