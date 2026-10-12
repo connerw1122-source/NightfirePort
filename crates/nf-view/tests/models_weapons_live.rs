@@ -366,3 +366,4 @@ fn dev_gives_every_selectable_weapon_a_view_model_on_07000005() {
         assert!(!scene.view_models.contains_key(&l96), "no --dev: the L96A1 has no view model on 07000005");
     }
 }
+
