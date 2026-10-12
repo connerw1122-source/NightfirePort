@@ -357,7 +357,8 @@ fn dev_gives_every_selectable_weapon_a_view_model_on_07000005() {
     assert!(!attrs.is_empty(), "the skin attributes are built");
     // The panel catalog then reports a first-person model for every selectable weapon.
     let cat = nf_view::panel::catalog(&scene);
-    assert!(!cat.contains("no 1st-person model here\\"), "the catalog still shows a missing model");
+    let no_model = cat.matches("no 1st-person model here").count();
+    assert_eq!(no_model, 0, "the catalog shows {no_model} weapons without a first-person model");
     // Sister: normal play stays unchanged — the dev-only weapons have no view model there.
     let l96 = 0x24u8; // the L96A1 (its skin is not in 07000005's archive [D])
     if !normal.contains(&l96) {
