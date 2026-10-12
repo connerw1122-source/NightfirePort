@@ -35,6 +35,10 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 - **Update the doc entry** to say it's fixed, with your commit.
 
+**Main agent's correction (added after merging fix-hud):**
+- **Don't port fix-hud's proposed C2 "team gate"; it's wrong.** In `NDrone2_DealWithObjHit` 0x13fff0 case 5, the shooter is the bullet's owner (`HITDATA+0x58` → `+0xE0` → `+0x30`). Its class byte `+0xFF` = 3 (the player) or 0x36 sets `bVar3 = true` (damage) with no team test (decompile lines 182–185). The team comparison applies only to class 2 shooters (drones). So in the game Bond **can** damage team 2/3 characters. C2 is something else, such as activation (channels, `+0x4F8 & 0x80000`, `NDrone2_DSTATE_Disabled` 0x172440). Dump the drone first.
+- **The searchlight alarm, fix-hud's lead (unverified):** the spot ray is `Collide_RayIntersect(head, head + 100·dir, cel, ignore = the light, 0, hits, 0, flags 0x18)` [M Searchlight_Update 0x1cb900:206]; the arm test is `Vec_Dist3D(spot, glb_players+0x30) <= 2.0` [M :251]. If that ray can hit Bond's object, the spot lands on him and arms the light; the port's ray tests static geometry only. Verify whether flags 0x18 / `Collide_Pick` 0x1eb320 include the player object before changing the ray. `fix_drone3_live`'s searchlight test teleports Bond onto the spot, which is why it passes while play fails.
+
 **Branch:** `s/fix-npcs`.
 
 ---
