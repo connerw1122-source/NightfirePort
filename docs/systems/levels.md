@@ -348,3 +348,193 @@ it fires at the mission's last level only [M 0x1827d8].
 |  | "Defeat Drake before the base goes critical" | 0x0b | 0x09 |  |
 | 0x0700004a | "Gain access to lobby" | 0x4a | 0x4d |  |
 
+## 7. The levels sweep (fix-levels-sweep)
+
+Every on-foot archive in FILES.BIN (27 on this disc; the driving missions 07000023-29 and
+the shared packs 07000500/07000999 are out of scope per §1/§3; 0700000e/f/10 exist in the
+mission data but their archives are not on this ISO) run headless through the real Sim path
+(`nf_view::load` + `Sim::step_bond`): the smoke loads and runs 600 idle ticks; the deep sweep
+walks 1800 ticks along the AI path graph (nav waypoints, E every half second for doors) and
+finishes with one CPU pose pass (the GPU-less `--shot` counts only — no Vulkan ICD here, §6).
+Test: `crates/nf-view/tests/levels_sweep_live.rs` (opt-in `NF_ISO`). Result: **no panics on any
+level**; the counts below are the improvement targets, each with the game function behind it.
+
+### 7.1 Per-level health
+
+| level | panic | unresolved | unhandled placement types | unported drone states | never-started SPs / drones | pickups w/o model | pose verts |
+|---|---|---|---|---|---|---|---|
+| 07000001 | 0 | 0 | 0x21 Ripples_Create (water ripples; presentation), 0x4e Light_Create (dynamic lights), 0xd2 Shooter_Create (turret shooters), 0xd8 RB_Create (rigid bodies) | 0 | 0 / 0 | 0/6 | 377971 |
+| 07000002 | 0 | 0 | 0x17 and 0x23 (no case in 0x1d04f0 — map-block data), 0x21 Ripples_Create (water ripples; presentation), 0x3b DynamicObject_Create, 0xd8 RB_Create (rigid bodies), 0xe7 ThirdCam_Create, 0xf2 Emitter_CreatePlist (particles), 0xf3 Env_Tree_Create | 0 | 0 / 0 | 0/8 | 405030 |
+| 07000003 | 0 | 0 | 0x3b DynamicObject_Create, 0xd8 RB_Create (rigid bodies) | 0 | 0 / 0 | 0/5 | 353186 |
+| 07000004 | 0 | 0 | 0x21 Ripples_Create (water ripples; presentation), 0xd8 RB_Create (rigid bodies), 0xf3 Env_Tree_Create, 0xfc Corona_Create (dynamic coronas) | 1 ({a7: 1}) | 0 / 0 | 0/4 | 239930 |
+| 07000005 | 0 | 0 | 0x3a Grapple_Create (grapple points), 0x3b DynamicObject_Create, 0x3f CreepWall_Create (creep walls), 0xe7 ThirdCam_Create, 0xfc Corona_Create (dynamic coronas) | 0 | 0 / 0 | 0/6 | 363546 |
+| 07000006 | 0 | 0 | 0x41 InverterTrigger_Create, 0xd4 Cloud_Create, 0xd8 RB_Create (rigid bodies) | 0 | 0 / 0 | 0/11 | 435011 |
+| 07000007 | 0 | 0 | 0x3b DynamicObject_Create | 1 ({b4: 1}) | 0 / 0 | 0/3 | 488878 |
+| 07000008 | 0 | 0 | 0xe7 ThirdCam_Create | 0 | 0 / 0 | 0/8 | 462801 |
+| 07000009 | 0 | 0 | — | 0 | 0 / 0 | 0/3 | 195855 |
+| 0700000a | 0 | 0 | 0x35 PCQWorm_Create 0x1b07a8 (the Q-Worm PC — lands with s/map-tower), 0x3a Grapple_Create (grapple points) | 0 | 0 / 0 | 0/5 | 243974 |
+| 0700000b | 0 | 0 | 0x21 Ripples_Create (water ripples; presentation), 0x35 PCQWorm_Create 0x1b07a8 (the Q-Worm PC — lands with s/map-tower) | 0 | 0 / 0 | 0/5 | 351940 |
+| 0700000c | 0 | 0 | 0x3a Grapple_Create (grapple points), 0x3b DynamicObject_Create, 0xe7 ThirdCam_Create, 0xff no case in 0x1d04f0 (static) | 0 | 0 / 0 | 0/15 | 434064 |
+| 0700000d | 0 | 0 | 0x3a Grapple_Create (grapple points), 0x3b DynamicObject_Create, 0x3f CreepWall_Create (creep walls), 0xd8 RB_Create (rigid bodies), 0xe7 ThirdCam_Create, 0xff no case in 0x1d04f0 (static) | 0 | 0 / 0 | 0/16 | 533627 |
+| 07000011 | 0 | 0 | 0x35 PCQWorm_Create 0x1b07a8 (the Q-Worm PC — lands with s/map-tower), 0x3a Grapple_Create (grapple points) | 2 ({85: 2}) | 0 / 0 | 0/13 | 439488 |
+| 07000012 | 0 | 0 | 0x35 PCQWorm_Create 0x1b07a8 (the Q-Worm PC — lands with s/map-tower), 0x3a Grapple_Create (grapple points), 0x41 InverterTrigger_Create | 1 ({85: 1}) | 0 / 0 | 0/18 | 444509 |
+| 07000013 | 0 | 0 | — | 2 ({85: 2}) | 0 / 0 | 0/7 | 297822 |
+| 07000014 | 0 | 0 | 0x3a Grapple_Create (grapple points), 0x3b DynamicObject_Create, 0x41 InverterTrigger_Create, 0x4a Apocalypse_Create, 0xf2 Emitter_CreatePlist (particles) | 0 | 0 / 0 | 0/32 | 591431 |
+| 07000015 | 0 | 0 | 0x4a Apocalypse_Create, 0xd2 Shooter_Create (turret shooters), 0xf2 Emitter_CreatePlist (particles), 0xfc Corona_Create (dynamic coronas) | 1 ({85: 1}) | 0 / 0 | 0/12 | 413266 |
+| 07000016 | 0 | 0 | 0x23 (no case in 0x1d04f0), 0x3b DynamicObject_Create, 0x4a Apocalypse_Create, 0xfc Corona_Create (dynamic coronas) | 0 | 0 / 0 | 0/17 | 540258 |
+| 0700001b | 0 | 0 | 0x38 Create_SpaceLaser (space-station laser), 0x39 Create_SpaceMissile, 0x3b DynamicObject_Create, 0x4a Apocalypse_Create | 0 | 11 / 11 | 0/7 | 284445 |
+| 07000041 | 0 | 0 | 0x21 Ripples_Create (water ripples; presentation), 0x23 (no case in 0x1d04f0), 0x3a Grapple_Create (grapple points), 0x3b DynamicObject_Create, 0x3f CreepWall_Create (creep walls), 0x4a Apocalypse_Create, 0xd2 Shooter_Create (turret shooters), 0xd4 Cloud_Create, 0xd5 OneSided_Create, 0xd8 RB_Create (rigid bodies), 0xe3 Flicker_Create, 0xe7 ThirdCam_Create, 0xf4 Trigger_MoviePlayer, 0xfc Corona_Create (dynamic coronas) | 0 | 0 / 0 | 0/1 | 488781 |
+| 07000043 | 0 | 0 | — | 0 | 0 / 0 | 0/0 | 77727 |
+| 07000046 | 0 | 0 | 0x35 PCQWorm_Create 0x1b07a8 (the Q-Worm PC — lands with s/map-tower), 0xda Car_Create, 0xf2 Emitter_CreatePlist (particles) | 0 | 0 / 0 | 0/2 | 488921 |
+| 07000048 | 0 | 0 | — | 0 | 0 / 0 | 0/0 | 3072 |
+| 07000049 | 0 | 0 | — | 0 | 0 / 0 | 0/0 | 77727 |
+| 0700004a | 0 | 0 | 0xd2 Shooter_Create (turret shooters) | 0 | 0 / 0 | 0/0 | 459997 |
+| 0700004b | 0 | 0 | 0x26 MP_RegisterMPObject (multiplayer-only), 0x3a Grapple_Create (grapple points), 0xda Car_Create | 0 | 0 / 0 | 0/28 | 404803 |
+
+The unhandled types are **not crashes** — the port draws their placements as static geometry
+and skips their gameplay; each row names the game creator `parsemap_create_dynamic_objects`
+(0x1d04f0) would call. The unported drone states are ids the game's DSTATE dispatcher
+(`NDrone2_ControlSTANDARD` 0x1490f0 and the per-dtype controls) has and the port's 88-constant
+state machine does not: mode 7's 0x85 (the guards are meant to stand — the WORKLOG B-3d note),
+0xa7 and 0xb4 (start-state ids passed through from `DroneTypeSettings`, no handler). The
+never-started entries on 0700001b are ScriptPlayers waiting on their gate channel (param 9)
+and drones never enabled (`NDrone2_Enable` 0x149dd0 / the k15 wait-switch) — the fix-npcs C2
+class; no writer fired in the blind walk.
+
+### 7.2 Objective channels and their writers
+
+Every objective's condition channel (with `Mission_Init`'s reset value, +0x0D [M 0x182270:106-112])
+and enable channel, and the writer found anywhere in the SAME mission (the monitor matches
+BaseMap, so a sibling level's mux can write this level's channel). Writers: trigger outs, the
+OUT-mirror's target list, the LOAD_LEVEL success/fallback writes, script event-0xD writes
+(the libs include the fix-cutscenes loadable packs), pickups' +0x28 channel, drone death
+channels (placement param 12 [M set_death_channel 0x13e660]), fuseboxes, cam-subjects and
+destroy props. `NONE` = no writer found on the disc — the gap later tasks can target.
+
+**07000001**:
+- part 0 0x04000006 ch 0x47 → script 06000084 event0d v1
+
+**07000002**:
+- part 1 0x04000007 ch 0x48 enable 0x47[script 06000084 event0d v1] → destroy(0xe1)
+- part 1 0x04000008 ch 0x4b enable 0x47[script 06000084 event0d v1] → trigger(3)
+- part 1 0x04000009 ch 0x4d enable 0x4c[trigger(3)] → trigger(1)
+
+**07000003**:
+- part 2 0x0400000a ch 0x4e enable 0x4d[trigger(1)] → NONE **GAP**
+- part 2 0x0400000b ch 0x51 enable 0x4d[trigger(1)] → trigger(3)
+- part 2 0x0400000c ch 0x53 enable 0x52[trigger(3)] → script 06000082 event0d v1
+
+**07000004**:
+- part 3 0x0400000d ch 0x54 enable 0x53[script 06000082 event0d v1] → trigger(5), drone death(p12)
+
+**07000005**:
+- part 0 0x04000000 ch 0x46 enable 0x45[trigger(1)] → trigger(12)
+
+**07000006**:
+- part 1 0x04000001 ch 0x02 enable 0x46[trigger(12)] → script 06000071 event0d v1
+
+**07000007**:
+- part 2 0x04000002 ch 0x48 enable 0x47[trigger(1)] → trigger(1)
+- part 2 0x04000003 ch 0x49 enable 0x48[trigger(1)] → trigger(1)
+
+**07000008**:
+- part 3 0x04000004 ch 0x4a enable 0x49[trigger(1)] → pickup(0xf0)
+- part 3 0x04000005 ch 0x4b enable 0x4a[pickup(0xf0)] → NONE **GAP**
+
+**07000009**:
+- part 0 0x04000016 ch 0x61 INVERTED → trigger(12)
+- part 0 0x04000017 ch 0x46 → trigger(3)
+- part 0 0x04000018 ch 0x47 enable 0x46[trigger(3)] → trigger(1)
+
+**0700000a**:
+- part 1 0x04000019 ch 0x48 enable 0x47[trigger(1)] → NONE **GAP**
+- part 1 0x0400001a ch 0x49 enable 0x47[trigger(1)] → trigger(3)
+- part 1 0x0400001b ch 0x4b enable 0x4a[trigger(3)] → trigger(1)
+
+**0700000b**:
+- part 2 0x0400001c ch 0x4c enable 0x4b[trigger(1)] → NONE **GAP**
+- part 2 0x0400001d ch 0x4d enable 0x4b[trigger(1)] → trigger(1)
+- part 2 0x0400001e ch 0x4e enable 0x4d[trigger(1)] → trigger(12)
+- part 2 0x0400001f ch 0x59 enable 0x4f[trigger(3)] → script 060004fa event0d v1
+- part 2 0x04000020 ch 0x5a enable 0x59[script 060004fa event0d v1] → out-mirror(target)
+
+**0700000c**:
+- part 0 0x0400002c ch 0x1b → trigger(2), trigger(2), trigger(2), trigger(2), trigger(2)
+- part 0 0x0400002d ch 0x1c enable 0x1b[trigger(2), trigger(2), trigger(2), trigger(2), trigger(2)] → camsubject(0xfd), camsubject(0xfd)
+- part 0 0x0400002e ch 0x23 enable 0x1c[camsubject(0xfd), camsubject(0xfd)] → trigger(1)
+
+**0700000d**:
+- part 1 0x0400002f ch 0x1d enable 0x23[trigger(1)] → trigger(1)
+- part 1 0x04000030 ch 0x1e enable 0x1d[trigger(1)] → camsubject(0xfd), camsubject(0xfd)
+- part 1 0x04000031 ch 0x1f enable 0x1d[trigger(1)] → destroy(0xe1), destroy(0xe1)
+
+**0700000e**:
+- part 0 0x04000041 ch 0x0f → NONE **GAP**
+- part 0 0x04000042 ch 0x0a enable 0x07[NONE] → NONE **GAP**
+- part 0 0x04000043 ch 0x0b enable 0x08[NONE] → NONE **GAP**
+- part 0 0x04000044 ch 0x0c enable 0x09[NONE] → NONE **GAP**
+
+**0700000f**:
+- part 1 0x04000045 ch 0(raw) → NONE
+
+**07000010**:
+- part 0 0x04000046 ch 0(raw) → NONE
+- part 0 0x04000047 ch 0(raw) → NONE
+- part 0 0x04000048 ch 0(raw) → NONE
+
+**07000011**:
+- part 0 0x04000035 ch 0x64 → trigger(1), trigger(1), trigger(1)
+- part 0 0x04000036 ch 0x48 → trigger(1)
+
+**07000012**:
+- part 1 0x04000037 ch 0x49 enable 0x48[trigger(1)] → trigger(1)
+- part 1 0x04000038 ch 0x4d enable 0x49[trigger(1)] → trigger(1)
+
+**07000013**:
+- part 3 0x0400003a ch 0x50 enable 0x4a[trigger(1)] → trigger(1)
+
+**07000014**:
+- part 0 0x04000049 ch 0x47 → script 06000833 event0d v1
+- part 0 0x0400004a ch 0x48 enable 0x47[script 06000833 event0d v1] → script 0600062f event0d v1
+- part 0 0x0400004b ch 0x4a enable 0x48[script 0600062f event0d v1] → script 06000848 event0d v1
+- part 0 0x0400004c ch 0x54 enable 0x4a[script 06000848 event0d v1] → drone death(p12)
+- part 0 0x04000069 ch 0xce enable 0x54[drone death(p12)] → load_level(fallback)
+
+**07000015**:
+- part 1 0x0400004d ch 0x8e enable 0x4b[trigger(1)] → trigger(1)
+
+**07000016**:
+- part 2 0x0400004e ch 0x8f enable 0x8e[trigger(1)] → trigger(1)
+- part 2 0x0400004f ch 0x90 enable 0x8f[trigger(1)] → NONE **GAP**
+
+**0700001b**:
+- part 0 0x04000059 ch 0x09 → trigger(3)
+- part 0 0x0400005a ch 0x0b enable 0x09[trigger(3)] → script 06000a20 event11-
+
+**0700004a**:
+- part 2 0x04000039 ch 0x4a enable 0x4d[trigger(1)] → trigger(1)
+### 7.3 The gaps, with the game function that would write them
+
+- **0700000a ch 0x48 / 0700000b ch 0x4c** (the two Q-Worm installs): written by `PCQWorm_Update`
+  0x1aee20's `switch_channels[param1] = 1` when the weapon-0x58 bullet enters the PC — ported on
+  **s/map-tower** (unmerged at scan time, so the scan cannot see it); the walkthroughs prove it.
+- **07000008 ch 0x4b** (the cable-car ride): the SP chain `mux #235 = AND(ch 0x4A, ch 4)` →
+  ScriptPlayer #295 (script 0x0600004C, mode 64) — the pack script's SP plays but raises no event
+  0xD for 0x4B on the disc [D decode]; the writer is the game's cable-car ride logic around
+  `SP_Update` 0x1dbda8 that the port's ScriptPlayer-out hold does not reproduce. The mayhew
+  walkthrough drives the channel (docs/levels/07000008.md).
+- **07000003 ch 0x4e** ("Retrieve Dragon Safe contents"): no trigger/mux/script writer in the
+  castle mission's data — the Dragon Safe's open chain (map-castle's doc covers the door flow, not
+  this channel). The writer would be the safe-object handler (the `DynamicObject_Create` 0x3b
+  family on 03, unported).
+- **07000016 ch 0x90** ("Prevent Kiko from launching into space"): the Kiko-launch chain —
+  s/map-finale's scope (branch open, unmerged at scan time).
+- **0700000e / 0700000f / 07000010**: the mission records exist (`mission::LEVELS`) but the level
+  archives are not on this ISO — nothing to scan; their ch-0(raw) objectives are driven by the
+  raw `switch_channels[0]` the game's own out-0 triggers write [M 0x1827d8:33-37].
+- **07000005 obj1 / the 0x46 mystery from the brief**: RESOLVED — ch 0x46 is written by
+  **07000006's OR mux #498** [D: type 0xC out 0x46 list [0x32, 0x33, 0x34]] (the monitor matches
+  BaseMap 07000005 while playing 06), and enable ch 0x45 by 07000005's TOUCH_ONCE #36 [D]. The
+  record byte at +0x0E (0x01) is not the init value — `Mission_Init` reads init from **+0x0D**
+  [M 0x182270:118-124, `switch_channels[+0xc] = +0xd`], which is 0 here; fix-mission's record is
+  correct.

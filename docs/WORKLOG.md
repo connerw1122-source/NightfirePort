@@ -5679,3 +5679,47 @@ types[18].start = 0x2E [L]) and the males Civilian 0x11 — the port already mat
 "guests can be shot" is the game's own rule — the fail now fires (the protected-guest test).
 
 Full suite: 80 binaries ok; only the 3 allowed `disc_golden` failures.
+## fix-levels-sweep — the 27-level headless health check (2026-01)
+
+`s/fix-levels-sweep`. `crates/nf-view/tests/levels_sweep_live.rs` runs every on-foot archive in
+FILES.BIN (27 on this ISO; driving 07000023-29 and the packs 07000500/07000999 excluded, 0e/f/10
+absent from the disc) through the real Sim path: the smoke (load + 600 idle ticks, the required
+NF_ISO test) and the deep sweep (1800 ticks of a scripted walk along the nav graph with E pressed
+every half second, then one CPU pose pass — the GPU-less `--shot` counts only). Results in
+docs/systems/levels.md §7.
+
+Findings:
+- **No panics on any level** (both passes assert). No unresolved objects, no pickups without a
+  model anywhere.
+- Unhandled placement types per level, each with its `parsemap_create_dynamic_objects` (0x1d04f0)
+  creator: 0x21 Ripples, 0x26 MP object, 0x35 PCQWorm (lands with s/map-tower), 0x38/0x39 space
+  laser/missile, 0x3a Grapple, 0x3b DynamicObject, 0x3f CreepWall, 0x41 InverterTrigger, 0x4a
+  Apocalypse, 0x4e Light, 0xd2 Shooter, 0xd4 Cloud, 0xd5 OneSided, 0xd8 RB (rigid bodies), 0xda
+  Car, 0xe3 Flicker, 0xe7 ThirdCam, 0xf2 Emitter, 0xf3 EnvTree, 0xf4 MoviePlayer, 0xfc Corona.
+  0x17/0x23 have no case in 0x1d04f0 at all (map-block data).
+- Unported drone state ids (no constant in the port's 88-state machine): 0x85 (mode 7 — the
+  WORKLOG B-3d "stuck" stand-in) on 07000011/12/13/15, 0xa7 on 07000004, 0xb4 on 07000007 — the
+  pass-through start-state ids from `DroneTypeSettings` with no handler arm.
+- 0700001b: 11 of 74 ScriptPlayers still waiting on their gate channel (param 9) and 11 drones
+  never enabled after 1800 ticks (`NDrone2_Enable` 0x149dd0 / the k15 wait-switch — the fix-npcs
+  C2 class; no writer fired in the blind walk).
+- The objective-channel writer scan (cross-mission: the monitor matches BaseMap, so sibling
+  levels' writers count) closed two of the brief's known gaps:
+  - **07000005's ch 0x46** ("Breach the castle walls") is written by **07000006's OR mux #498**
+    [D: type 0xC out 0x46 list [0x32, 0x33, 0x34]]; enable ch 0x45 by 07000005's TOUCH_ONCE #36
+    [D]. The record byte at +0x0E is NOT the init value — `Mission_Init` reads init from **+0x0D**
+    [M 0x182270:118-124: `switch_channels[+0xc] = +0xd`], which is 0 for this record; the task
+    brief's `46 00 01 45` reading put the init one byte late. fix-mission's records are correct.
+  - **07000002/03's key-gate exit channels 0x4C/0x52**: both written (0x4C by an AND mux on 02
+    [D trigger(out 3)], 0x52 by a script event on 03 [D script 0x06000082 event0d]).
+  - The scan's param reader had to be **little-endian** — the port's `nis.rs run()` rd is LE
+    (validated: `47 00 00 00` = ch 0x47, the map-tower2 doc's [D decode] agrees); my first BE
+    pass reported garbage channel ids.
+- Remaining writer gaps (levels.md §7.3): 07000008 ch 0x4B (the cable-car ride SP chain —
+  `SP_Update` 0x1dbda8's out-hold does not raise it), 07000003 ch 0x4E (the Dragon Safe — the
+  0x3b DynamicObject family, unported), 07000016 ch 0x90 (map-finale's scope), 0700000a/0b's
+  Q-Worm channels (written by s/map-tower's PCQWorm, unmerged at scan time).
+
+Full suite: 82 test binaries ok; the only failures are the 3 permitted slim-ISO `disc_golden`.
+No product-code changes were needed — the sweep found no crash (the task's fix budget went to
+the writer analysis and the tables).
