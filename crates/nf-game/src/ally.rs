@@ -46,24 +46,34 @@ pub fn apply_fail_reason(reason: u32, ch: &mut Channels, frame: u32, fail_label:
     r
 }
 
-/// `DroneFunc_OnInitDeath`'s mission-fail half (0x145bd0) [M]: the killed drone's verdict.
+/// `DroneFunc_OnInitDeath`'s mission-fail half (0x145bd0) [M], corner-exact per the every-reader map
+/// (`docs/fields/drone.md`; 044y-fields-actors):
+/// - team 1 (the KO check opens the team-1 arm [M 0x145bd0:20-22] — the caller passes it): prop 0x54
+///   → a drone killer (killer obj class 3) reasons 2; a non-drone killer falls through to the
+///   prop-0x53 check — set → reason 4, unset → **no fail** [M LAB_00145cc8]; prop 0x53 without 0x54 →
+///   a drone killer reasons 2, else 4 [M `if (bVar7) goto LAB_00145ce4`];
+/// - team 2/3: prop 0x54 → a drone killer reasons 1; a non-drone killer falls through to prop 0x53 —
+///   set → reason 3, unset → no fail [M LAB_00145c3c]; prop 0x53 alone → drone killer reasons 1, else
+///   3 [M `if (bVar7) goto LAB_00145c58`]. (No KO gate in this arm.)
 /// `team` = Drone+0x44, `prop53`/`prop54` = behaviour properties 0x53/0x54 (the protected-actor flags),
-/// `killed_by_player` = the killer (+0x2B4) was the player's bullet/explosion.
+/// `killed_by_player` = the killer (+0x2B4) was not a class-3 obj — in SP the killer is the player or
+/// a drone, so this equals `!bVar7` there (the port records no other killer classes).
 pub fn on_init_death(team: u8, prop53: bool, prop54: bool, killed_by_player: bool) -> Option<FailReason> {
+    let drone_kill = !killed_by_player;
     if team == 1 {
-        // team 1: prop 0x54 → reason 2, else prop 0x53 → reason 4 — both "Cover Lost" + ch 99
-        // [M 0x145bd0: the LAB_00145cc8/00145ce4 arms].
-        if prop54 { return Some(mission_fail_reason(2)); }
-        if prop53 { return Some(mission_fail_reason(4)); }
+        if prop54 {
+            if drone_kill { return Some(mission_fail_reason(2)); }
+            // The non-drone killer re-checks prop 0x53 before failing [M 0x145bd0 LAB_00145cc8].
+            return prop53.then(|| mission_fail_reason(4));
+        }
+        if prop53 { return Some(mission_fail_reason(if drone_kill { 2 } else { 4 })); }
         None
     } else {
-        // team 2/3 (civilians, VIPs, allies): prop 0x54 → a drone killer reasons 1, a player killer
-        // reasons 3; else prop 0x53 → reason 3 — "Killed Civilians" + ch 0x60 [M the LAB_00145c3c/
-        // 00145c58 arms]. bVar7 = the killer is class 3 (a drone) [M].
         if prop54 {
-            return Some(mission_fail_reason(if killed_by_player { 3 } else { 1 }));
+            if drone_kill { return Some(mission_fail_reason(1)); }
+            return prop53.then(|| mission_fail_reason(3)); // [M 0x145bd0 LAB_00145c3c]
         }
-        if prop53 { return Some(mission_fail_reason(3)); }
+        if prop53 { return Some(mission_fail_reason(if drone_kill { 1 } else { 3 })); }
         None
     }
 }
@@ -82,8 +92,10 @@ pub mod states {
     /// and timer C in 2 ticks → the timer returns to Lead 0x1D.
     pub const LEAD_HIDE: u8 = 0x1f;
     /// AllyLeadMissionWait 0x21 (0x15efc8) [M]: the route's scripted wait. ENTER: the wait channel =
-    /// obj+0x12C (the placement's param 6, the drone's second channel; 0 → 0x99), MoveTo the route node,
-    /// anim 0x21. UPDATE: the wait channel on → Lead 0x1D.
+    /// `Drone+0x12C` (init 0 by `Drone_SM_InitObject` 0x175838; no writer anywhere in the decompile,
+    /// so the game's `0 → 0x99` default always fires — the second channel `+0x135` is a different
+    /// field), latched at `+0xCD8`; MoveTo the route node; anim 0x21. UPDATE: the wait channel on →
+    /// Lead 0x1D.
     pub const LEAD_MISSION_WAIT: u8 = 0x21;
     /// AllyLeadBondCombat 0x22 (0x15f120) [M]: Bond is fighting near the escort. ENTER: alert status 2,
     /// anim 0x21. UPDATE: no armed drone within 10 → `ObjectMissionPathDistance(5.0)` to Bond; negative
@@ -101,7 +113,7 @@ pub mod states {
     /// AllyFollowDone 0x27 (0x15f858) [M]: the follow route finished — stand at the goal.
     pub const FOLLOW_DONE: u8 = 0x27;
     /// AllyGoToGoalPosition 0x28 (0x15f938) [M]: walk to the saved goal position (+0x970), then the
-    /// state saved at +0x5A6 (the port: Lead 0x1D — the escort's only user).
+    /// start/return state `Drone+0x5A2` (the port: Lead 0x1D — the escort's only user).
     pub const GO_TO_GOAL: u8 = 0x28;
 }
 
@@ -151,5 +163,28 @@ mod tests {
         assert_eq!(label, FAIL_CIVILIANS);
         // The channel write stamped the time (the monitor's AND reads the live channel [M 0x1827d8]).
         assert_eq!(ch.time[0x60], 7);
+    }
+
+    /// The OnInitDeath corners (044y-fields-actors' every-reader map, `docs/fields/drone.md`):
+    /// - a prop-0x54 kill by a NON-drone falls through to the prop-0x53 check — prop 0x53 unset → NO
+    ///   fail [M 0x145bd0: `if (!bVar7) goto LAB_00145cc8` / `LAB_00145c3c`];
+    /// - prop 0x53 + a DRONE killer (killer obj class 3) → reason 2 (team 1) / 1 (team 2/3) [M
+    ///   0x145bd0: `if (bVar7) goto LAB_00145ce4` / `LAB_00145c58`], not the player-kill reason.
+    /// `killed_by_player` = the killer is not a class-3 obj — in SP the killer is the player or a
+    /// drone, so `killed_by_player == !bVar7` there (the port records no other killer classes).
+    #[test]
+    fn oninitdeath_corners_match_the_decompile() {
+        // team 1: prop 0x54 + player kill → the game re-checks prop 0x53: unset → no fail, set → 4.
+        assert!(on_init_death(1, false, true, true).is_none(),
+            "prop 0x54 + player kill + no prop 0x53 → no fail [M 0x145bd0 LAB_00145cc8]");
+        assert_eq!(on_init_death(1, true, true, true).map(|r| r.label), Some(FAIL_COVER),
+            "prop 0x54 + player kill re-checks prop 0x53 → reason 4 [M 0x145bd0]");
+        // team 1: prop 0x53 + drone killer → reason 2 (not 4) [M 0x145bd0 `if (bVar7) goto 00145ce4`].
+        assert_eq!(on_init_death(1, true, false, false).map(|r| r.label), Some(FAIL_COVER));
+        // team 2/3: prop 0x54 + player kill → re-checks prop 0x53: unset → no fail, set → 3.
+        assert!(on_init_death(2, false, true, true).is_none(),
+            "prop 0x54 + player kill + no prop 0x53 → no fail [M 0x145bd0 LAB_00145c3c]");
+        // team 2/3: prop 0x53 + drone killer → reason 1 (not 3) [M 0x145bd0 `if (bVar7) goto 00145c58`].
+        assert_eq!(on_init_death(3, true, false, false).map(|r| r.channel), Some(0x60));
     }
 }

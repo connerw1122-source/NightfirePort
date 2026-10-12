@@ -88,7 +88,8 @@ pub mod state {
     /// characters. CivilianInit 0x10, Civilian 0x11, CivilianScared 0x12, CivilianHiding 0x13, CivilianPatrol 0x14
     /// (0x172730 / 0x15d118 / 0x15d3a0 / 0x15d520 / 0x15d610); PartyGirlInit 0x2e, PartyGirl 0x2f (0x1728c0 / 0x160140);
     /// CivilianGuard 0x30, CivilianDoorGuard 0x31 (0x1603a8 / 0x160648); the truck driver 0x32..0x35
-    /// (0x160bd0 / 0x160d98 / 0x160ed0 / 0x161030); HostageIdle 0x1c (0x15ce60). CivilianMission 0x16
+    /// (0x160bd0 / 0x160d98 / 0x160ed0 / 0x161030); HostageIdle is 0x0d (0x15ce60 — 0x1c is AllyLeadInit, the escort
+    /// entry [L NDrone2_StateFuncs 0x29b300]). CivilianMission 0x16
     /// (0x15d860) — the prop-0x1D characters WITH a kind-8 (mission) route: the party's walkers
     /// [M table entry 0x16 → 0x15d860, read from the EE snapshot].
     pub const CIVILIAN_INIT: u8 = 0x10;
@@ -165,7 +166,8 @@ pub mod msg {
     /// Timer D (the sniper cover's 6-s return timer; `*(int*)(Drone+0xCD0)`).
     pub const TIMER_D: u8 = 0xd;
     /// An explosive (grenade / mine) landed near the drone (`DroneFunc_ConsiderExplosive`, msg 0x21): the cover and
-    /// combat states route it to flee (state 0x86, `RecoverFromScaryObject`).
+    /// combat states route it to flee (state 0x86 `RunAwayFromObject`, then 0x88 `RecoverFromScaryObject` — names per
+    /// the state-table map, docs/fields/dronetype-tables.md).
     pub const EXPLOSIVE: u8 = 0x21;
     pub const FORCED_ATTACK: u8 = 0x1f;
     /// `Drone_Message(0xE)`: enable (WaitSwitch → the drone's start state).
@@ -568,10 +570,13 @@ pub struct Drone {
     pub hit_by_player: bool,
     /// The pending `OnInitDeath` fail verdict, drained by the tick (fix-actors).
     pub fail_reason: Option<crate::ally::FailReason>,
-    /// AllyLeadMissionWait's channel (obj+0x12C, the placement's param 6; 0 → 0x99) [M 0x15efc8], and
-    /// the tick's read of it (fix-actors).
+    /// The wait-channel latch `+0xCD8` (`AllyLeadMissionWait`'s and the other wait states'), and the
+    /// tick's read of it (fix-actors). The source word is `mission_wait_channel` (+0x12C) [M 0x15efc8].
     pub wait_channel: u16,
     pub wait_channel_on: bool,
+    /// `Drone+0x12C`: the mission-wait channel word `AllyLeadMissionWait` ENTER latches (0 → 0x99)
+    /// [M 0x15efc8:17-20]. Init 0 by `Drone_SM_InitObject` 0x175838; no writer in the decompile.
+    pub mission_wait_channel: u16,
     /// The last `update_mission_route` report was BLOCKED/NO_PATH (fix-actors; Lead's PlayerInWay entry).
     pub route_blocked: bool,
     /// The distance to the nearest started, alive, team-1 drone (the "armed drone" of
@@ -623,7 +628,10 @@ pub struct Drone {
     pub drops: Vec<crate::pickup::Pickup>,
     /// Drone modes (`behaviour_util_get`: placement parameter 15 = type `+0xC7`, 16 = the normal block's mode `+0xC8`,
     /// 21 = the alert block's `+0xC9`; `NDrone2_GetDTYPENEW` → mode `+0xC5`, alternate mode `+0xC6`), the team `+0x44`,
-    /// the alternate (attack) state `+0x5A4`, and the alert block's alertness `+0x504`.
+    /// the alternate (attack) state `+0x5A4`, and the resting alertness `Drone+0x500` (both `+0x500` and the live
+    /// `+0x50C` start at this table value — `DoModeSettingsNEW` 0x14c600:70-77; the alt profile's resting value is
+    /// `alert_floor` = `Drone+0x504`, read only by `GetDroneTypeAttackTypeFriend` 0x14cbd8:165). The live alertness is
+    /// the `alert` field (+0x50C).
     pub dtype: u8,
     pub mode_normal: u8,
     pub mode_alert: u8,
@@ -640,7 +648,11 @@ pub struct Drone {
     /// `Drone+0x480`: per-tick velocity; gravity accumulates here and `pos += velocity · REC_FRAME_RATE` (`Drone_CollisionHandler`
     /// 0x140968, WORKLOG 0078). Zero on the ground; the down-ray (`Drone_FeetOnPoint`) sets the on-surface flag.
     pub velocity: V3,
-    /// `Drone+0x4F8 & 0x4000`: in-air this tick (the down-ray missed a walkable surface within 0.2 below the feet).
+    /// The port's "off the ground" flag — its own model: the down-ray (`Drone_FeetOnPoint`) missed a walkable
+    /// surface within 0.2 below the feet. NOT the game's `Drone+0x4F8 & 0x4000`: the decompile has no setter for that
+    /// bit — only the per-tick clear at the top of `Drone_CollisionHandler` 0x140968:70 and the `0x4200` tests in the
+    /// armed-peer selection (docs/fields/drone.md, bit census) — the game's real gravity gates are bits 0x80 / 0x20 /
+    /// 0x200 (the port's `bounded` / `corpse`).
     pub in_air: bool,
     /// `anim+0x60 & 8`: feet on a walkable surface this tick (`Drone_FeetOnPoint`).
     pub on_surface: bool,
@@ -717,6 +729,7 @@ impl Drone {
             last_damage: 0.0, silent_kill: false, big_hit: false, flinch_at: None, hit: None, impact_resume: 0, hits_taken: 0,
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
             corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false,
+            mission_wait_channel: 0,
             // fix-finale-blockers: 07000016's chaser (skin 0x0500001e, dtype 0xf, no placement death
             // channel [D]) carries 0x90 at init — the defeat stand-in documented in kiko.rs [S].
             death_channel: crate::kiko::chaser_death_channel(d.level, skin, param(15) as u8, param(12) as u8),
@@ -1632,11 +1645,15 @@ impl Drone {
                 self.firing = false;
                 if self.special_death != 0 { self.set_state(SPECIAL_DEATH); return Some(true); }
                 self.death_pending = true;
-                // `DroneFunc_OnInitDeath` 0x145bd0's mission-fail half (fix-actors): the protected-actor
-                // props 0x53/0x54 — team 1 dies → "Cover Lost" (ch 99), team 2/3 → "Killed Civilians"
-                // (ch 0x60); the monitor's standing hooks turn the channels into the fail [M 0x1827d8].
-                if let Some(r) = crate::ally::on_init_death(self.team, self.prop(d, 0x53), self.prop(d, 0x54), self.hit_by_player) {
-                    self.fail_reason = Some(r); // drained by the tick, next to `raise` (fix-actors)
+                // `DroneFunc_OnInitDeath` 0x145bd0's mission-fail half (fix-actors, corners per
+                // docs/fields/drone.md): the protected-actor props 0x53/0x54 — team 1 dies → "Cover Lost"
+                // (ch 99), team 2/3 → "Killed Civilians" (ch 0x60); the monitor's standing hooks turn the
+                // channels into the fail [M 0x1827d8]. The KO check opens the game's team-1 arm
+                // [M 0x145bd0:20-22]: a punched-out team-1 guard never fails the mission.
+                if !(self.team == 1 && self.knocked_out) {
+                    if let Some(r) = crate::ally::on_init_death(self.team, self.prop(d, 0x53), self.prop(d, 0x54), self.hit_by_player) {
+                        self.fail_reason = Some(r); // drained by the tick, next to `raise` (fix-actors)
+                    }
                 }
                 // `OnInitDeath` 0x145bd0:57-59: the player's kill is logged as dispatched UNLESS the KO flag
                 // (+0x4F8 & 0x1000000) is set — the KO already logged EnemyDisabled instead [*suggested*: the
@@ -2454,6 +2471,8 @@ impl Drone {
             // ... and the timers (C/D; the idle timeout too: *suggested*, it is re-armed by every enter that uses it).
             self.timer_c = None;
             self.idle_timeout = None;
+            self.timer_d = None; // RouteMsgDCV clears BOTH message timers on every change [M-dis 0x17207c-88]
+            self.damage_taken = 1.0; // the hit-effect multiplier +0x14C resets on every change [M-dis 0x17207c-88]
             self.entered = frame;
             self.log.push((frame, n));
             self.handle(d, rng, frame, n, msg::ENTER);
@@ -3233,7 +3252,10 @@ impl Drone {
             // the channel fires. The port's route nodes carry no channels — the state is reachable
             // through the forced-state path only [*suggested*; documented].
             (LEAD_MISSION_WAIT, msg::ENTER) => {
-                self.wait_channel = if self.second_channel != 0 { self.second_channel as u16 } else { 0x99 }; // [M 0x15efc8 case 1]
+                // The game latches `Drone+0x12C`, 0 → 0x99 [M 0x15efc8 case 1]. Drone+0x12C is init 0 by
+                // Drone_SM_InitObject 0x175838 and no decompiled function ever writes it, so in the game the
+                // 0x99 default always fires; the port models the field (`mission_wait_channel`) for fidelity.
+                self.wait_channel = if self.mission_wait_channel != 0 { self.mission_wait_channel } else { 0x99 };
                 self.call_anim(d, anim_state::ALERT_IDLE, 0, 0);
                 true
             }
@@ -5275,6 +5297,7 @@ mod tests {
             last_damage: 0.0, silent_kill: false, big_hit: false, flinch_at: None, hit: None, impact_resume: 0, hits_taken: 0,
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
             corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false, death_channel: 0, special_death: 0, special_spot: pos, special_yaw: 0.0,
+            mission_wait_channel: 0,
             stationary: false, alpha: 255.0, raise: None,
             velocity: [0.0; 3], in_air: false, on_surface: true,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(),
