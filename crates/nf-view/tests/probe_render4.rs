@@ -66,3 +66,51 @@ fn probe_decal_objects_07000007() {
         }
     }
 }
+
+/// Every draw whose bounds come within 3 units of `NF_PROBE_AT=x,y,z` on `NF_PROBE_LEVEL`: its draw state, texture
+/// (with alpha min/max) and nearest object name. For user screenshot spots (nf-shots). Opt-in via NF_ISO.
+#[test]
+fn probe_draws_near_a_point() {
+    let Some(iso_path) = iso() else { return };
+    let Ok(at) = std::env::var("NF_PROBE_AT") else { return };
+    let p: Vec<f32> = at.split(',').map(|v| v.parse().unwrap()).collect();
+    let archive_env = std::env::var("NF_PROBE_LEVEL").unwrap_or_else(|_| "07000006.bin".into());
+    let scene = nf_view::load(&iso_path, &archive_env, false).expect("load");
+    let level = parse_level(&iso_path, &archive_env);
+    let (instances, _) = level.instances(false);
+    for (mi, m) in scene.materials.iter().enumerate() {
+        let tris = &scene.indices[m.first_index as usize..(m.first_index + m.index_count) as usize];
+        let (mut lo, mut hi) = ([f32::MAX; 3], [-f32::MAX; 3]);
+        for &i in tris { let v = &scene.vertices[i as usize]; for k in 0..3 { lo[k] = lo[k].min(v.pos[k]); hi[k] = hi[k].max(v.pos[k]); } }
+        let d2: f32 = (0..3).map(|k| { let c = p[k].clamp(lo[k], hi[k]); (c - p[k]).powi(2) }).sum();
+        if d2 > 9.0 || hi[0] - lo[0] > 200.0 { continue }
+        let tex = m.key.and_then(|k| scene.textures.iter().find(|t| t.key == k));
+        let (amin, amax) = tex.map_or((0, 0), |t| t.rgba.chunks(4).fold((255u8, 0u8), |(a, b), px| (a.min(px[3]), b.max(px[3]))));
+        let vc = scene.vertices[tris[0] as usize].rgba;
+        let (mut best, mut name) = (f32::MAX, String::new());
+        for inst in &instances {
+            let o = &level.maps[inst.map].objects[inst.object];
+            let d = (o.centre[0] - m.centre[0]).powi(2) + (o.centre[1] - m.centre[1]).powi(2) + (o.centre[2] - m.centre[2]).powi(2);
+            if d < best { best = d; name = format!("\"{}\" flags {:#x}", o.name.trim(), o.flags); }
+        }
+        eprintln!("m{mi:5} {:?} {:?} tex {:?} a {amin}..{amax} vc {vc:?} box ({:.1},{:.1},{:.1})..({:.1},{:.1},{:.1}) {name}", m.layer, m.draw, m.key, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
+    }
+}
+
+/// Dump one scene texture (`NF_PROBE_TEX=map,index` on `NF_PROBE_LEVEL`) to `NF_PROBE_OUT` as PNG, twice: as is, and
+/// with alpha shown as grey. Opt-in via NF_ISO.
+#[test]
+fn probe_dump_texture() {
+    let Some(iso_path) = iso() else { return };
+    let (Ok(k), Ok(out)) = (std::env::var("NF_PROBE_TEX"), std::env::var("NF_PROBE_OUT")) else { return };
+    let k: Vec<u32> = k.split(',').map(|v| v.parse().unwrap()).collect();
+    let archive_env = std::env::var("NF_PROBE_LEVEL").unwrap_or_else(|_| "07000006.bin".into());
+    let scene = nf_view::load(&iso_path, &archive_env, false).expect("load");
+    let t = scene.textures.iter().find(|t| t.key == (k[0] as usize, k[1])).expect("texture");
+    let n = (t.rgba.len() / 4) as f32;
+    let mean = |c: usize| t.rgba.chunks(4).map(|p| p[c] as f32).sum::<f32>() / n;
+    eprintln!("tex {}x{} mean rgba ({:.0},{:.0},{:.0},{:.0})", t.width, t.height, mean(0), mean(1), mean(2), mean(3));
+    std::fs::write(format!("{out}.png"), nf_formats::png::encode_rgba(t.width, t.height, &t.rgba)).unwrap();
+    let a: Vec<u8> = t.rgba.chunks(4).flat_map(|p| [p[3], p[3], p[3], 255]).collect();
+    std::fs::write(format!("{out}-alpha.png"), nf_formats::png::encode_rgba(t.width, t.height, &a)).unwrap();
+}
