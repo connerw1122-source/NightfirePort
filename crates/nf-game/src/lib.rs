@@ -21,6 +21,7 @@ pub mod grenade;
 pub mod ladder;
 pub mod kiko;
 pub mod fusebox;
+pub mod gas;
 pub mod copter;
 pub mod lock;
 pub mod ss;

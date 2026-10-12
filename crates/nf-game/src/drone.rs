@@ -3995,6 +3995,9 @@ pub struct Drones {
     /// The pending level-exit request: when a `LOAD_LEVEL` (0xE8) trigger fires, the next level's hashcode
     /// (`Trigger_Activate` 0x1b2318 → `ResetMap_LevelToLoad` 0x1d3800). The main loop reads this to reload [M].
     pub level_exit: Option<u32>,
+    /// The gas/smoke puffs (`Gas_Init` 0x1aacc8 / `gases_smoke` 0x1ab2d0, crates/nf-game/src/gas.rs):
+    /// muzzle smoke, broken-searchlight smoke, bullet trails. Fixed slot pool, updated per tick.
+    pub gas: crate::gas::GasPool,
     /// Bond's weapon byte (player `anim+0x62`; the P2K = 2).
     pub bond_weapon: u8,
     /// Weather (`DrawSnow`: a `SNOW_gen` placement, type 0xDF): the drop type and volumes from the level, built at the
@@ -4120,7 +4123,8 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(),
+            gas: Default::default() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -4523,6 +4527,8 @@ impl Drones {
         let _prof_all = crate::prof::scope("drones.tick (total)");
         let prof_pre = crate::prof::scope("drones: shared passes");
         self.frame += 1;
+        // The gas puffs (`gases_smoke` 0x1ab2d0 runs in the object handler every frame).
+        self.gas.update();
         let frame = self.frame;
         // Music: `Drone_InitComms` resets the attack gate; `DroneFunc_CheckAlarmRaised` (07000005 / 06) posts event 2 = 3
         // for the first 58 frames of channel 0xA4, then = 1 for the first 598 of channel 0x37 or 0x61; Bond dead →
@@ -4953,6 +4959,17 @@ impl Drones {
                         None => { self.audio.play3d(id, pos, None); }
                     }
                 }
+                // The broken light's smoke [M 0x1cb900:373-385: state 2, every 7th frame
+                // `(GameState[52] + obj+0xEC) % 7 == 0`, at obj+0x30; `Gas_Init(0.05, 0.25, …, 0x2000039,
+                // 7, 0x48403080, 1)`]. The per-object phase byte (obj+0xEC, a create-time Rand draw) is
+                // not ported — the part index stands in for it [S]; the game's RNG draws stay un-consumed
+                // (G-033; see gas.rs). Life [S]: the decomp drops the call's 11th arg; 24 ticks matches
+                // the visual scale of the game's lingering break smoke.
+                for (pi, part) in self.searchlights.parts.iter().enumerate() {
+                    if part.kind == 1 && part.state == 2 && (frame + pi as u32) % 7 == 0 {
+                        self.gas.init(part.pos, 0.0, [0.0; 3], 0.05, 0.25, 7, [0x48, 0x40, 0x30, 0x80], 24.0);
+                    }
+                }
                 continue;
             }
             if what == 2 { let _pw = crate::prof::scope("ctl: kind 2");
@@ -5189,6 +5206,14 @@ impl Drones {
                                 else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
                             }
                         }
+                        // The explosion visual: `Explode_Create` 0x17cbd0 Script_Loads the effect script
+                        // (0x6000052 for every disc caller of the bullet path [M 0x12cd98]) at the blast,
+                        // aligned to it, scale = radius·0.06666667 [M 0x17cbd0:84-106]. The port plays it
+                        // as a one-shot script player; its entity streams draw through the scene's
+                        // script-entity attachments. Missing from the level's lib → the player no-ops.
+                        let mut bm = [[0.0f32; 4]; 4];
+                        bm[0][0] = 1.0; bm[1][1] = 1.0; bm[2][2] = 1.0; bm[3] = [pos[0], pos[1], pos[2], 1.0];
+                        self.scripts.spawn_once_scaled(usize::MAX, 0x0600_0052, bm, radius * 0.0666_6667);
                         self.explosions.push((pos, radius, damage, owner, weapon_type));
                         break;
                     }
