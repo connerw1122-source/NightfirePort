@@ -124,7 +124,10 @@ fn hatch_exit_and_sisters() {
         "the hatch refuses E while ch 0x4A is off [M 0x1b2318:76-90]");
 
     // Unlocked: Q-Worm (0x48) + keyboard (0x3A → AND #741 → 0x49) → AND #742 → 0x4A → E loads.
-    let mut scene = load_carry(&iso, Some(&save));
+    // The channels go in AFTER the first ticks: `Mission_Init` (0x182270:106-107) resets the
+    // current part's objective channels (0x48/0x49 among them) on the level's first tick — the
+    // install happens minutes into the level in the game, after that init.
+    tick(&mut scene, 10);
     {
         let sim = scene.sim.as_mut().unwrap();
         sim.drones.set_channel(0x3a); // SP #60 KeyboardMH's out (docs/levels/0700000a.md)
@@ -150,6 +153,6 @@ fn hatch_exit_and_sisters() {
     let mut scene = load_carry(&iso, Some(&save));
     scene.sim.as_mut().unwrap().drones.set_channel(0x61);
     tick(&mut scene, 340);
-    assert_eq!(scene.sim.as_ref().unwrap().drones.level_exit, Some(0x0700_0048),
-        "the alarm fails the mission [M 0x1827d8:128-131]");
+    assert_eq!(scene.sim.as_ref().unwrap().drones.level_exit, Some(0x0700_000a),
+        "the alarm fails the mission → the fail menu = a level restart [M 0x182c60:77-81]");
 }

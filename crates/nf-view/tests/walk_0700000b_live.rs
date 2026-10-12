@@ -238,8 +238,13 @@ fn files_parachute_and_mission_complete() {
         // same skip the port logs [M 0x182c60:99-101; the LevelEnd drain]).
         assert_eq!(sim.drones.mission.status(), 6, "MissionState 6 = complete [M 0x182c60:85-122]");
         assert_eq!(sim.drones.mission.to_end, 0x0730_000b, "the driving hand-off target");
-        assert_eq!(sim.drones.mission.states.iter().flatten().filter(|&&s| s == 4).count(), 11,
-            "all 11 tower objectives complete");
+        // The 10 positive objectives are DONE (state 4) [M 0x1827d8 case 3]; the inverted alarm
+        // objective (0x4000016) stays ACTIVE (state 2) — its condition (ch 0x61 off) is the
+        // satisfied-live kind, it never completes.
+        assert_eq!(sim.drones.mission.states.iter().flatten().filter(|&&s| s == 4).count(), 10,
+            "the 10 positive tower objectives complete");
+        assert!(sim.drones.mission.states.iter().flatten().any(|&s| s == 2),
+            "the inverted alarm objective stays active");
     }
     // Sister 1: no parachute → no complete (the SEQ's first input never fires).
     let mut scene2 = load_carry(&iso, "0700000b.bin", Some(&save));

@@ -66,19 +66,20 @@ fn alarm_fails_the_mission() {
     // before the LevelEnd to 0x07000048 lands.
     for _ in 0..340 { sim.step_bond(Default::default(), false, false, false); }
     assert!(sim.drones.channels.on(0x61), "OR mux #278: ch 0x7C must raise the alarm ch 0x61");
-    // The monitor: objective 1 inverted on 0x61 → ch 99 fail → Mission_Update → 0x07000048.
-    assert_eq!(sim.drones.level_exit, Some(0x0700_0048), "the alarm must fail the mission [M 0x1827d8:128-141]");
+    // The monitor: objective 1 inverted on 0x61 → ch 99 fail → Mission_Update's fail menu
+    // (the port renders the 0x40000042 menu as a level restart [M 0x182c60:77-81]).
+    assert_eq!(sim.drones.level_exit, Some(0x0700_0009), "the alarm fails the mission [M 0x1827d8:128-141]");
     // Sister: ch 0x32 alone (in the lift) must NOT fire while the alarm is on — the exit's cancel
     // channels 0x60..0x63 [M 0x1b2318:64-75].
     let mut scene2 = load(&iso);
     let sim2 = scene2.sim.as_mut().unwrap();
     sim2.drones.set_channel(0x7d);
     for _ in 0..340 { sim2.step_bond(Default::default(), false, false, false); }
-    assert_eq!(sim2.drones.level_exit, Some(0x0700_0048));
+    assert_eq!(sim2.drones.level_exit, Some(0x0700_0009));
     sim2.drones.set_channel(0x32);
     for _ in 0..5 { sim2.step_bond(Default::default(), false, false, false); }
     // The exit already fired with the fail — the level_exit stays the FIRST request.
-    assert_eq!(sim2.drones.level_exit, Some(0x0700_0048), "the fail end wins");
+    assert_eq!(sim2.drones.level_exit, Some(0x0700_0009), "the fail end wins");
 }
 
 /// The elevator chain end-to-end (once the activation writer is ported): ch 0x39 → AND #274 →
