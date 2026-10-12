@@ -4308,3 +4308,45 @@ Could not verify / left open (evidence recorded, no guessing):
   applied in load() [M], verified for 07000007 by the party test (gun.weapon reaches 1).
 - Not run: a real PCSX2 trace of a transition (no emulator in the sandbox); the window/renderer path is
   unchanged by this task.
+
+## fix-objects — the pickup draw desyncs, the invisible placed pickups, the silent 007 bonus
+
+User reports (master 0a2fcc4): a spinning gold "007" mesh where an armour pickup belongs and at a
+guard drop (07000001 screenshots); every dead guard dropping several objects; two placed piles
+swapped (ammo acts as armour, armour as ammo); the bonus pickup doing nothing on take.
+
+**What was done** (branch s/fix-objects, commits 50977ef + ce50193):
+
+1. **The draw-slot desync (the top-priority symptom).** `Drones::update_pickups` ended with
+   `self.pickups.retain(|p| !p.gone)`, but the renderer draws placed pickup slot `k` with build-time
+   `placed_pickups[k]`'s mesh posed at `Sim::drones.pickups[k].m` (`View_DrawObjectGlist` 0x1e6780
+   draws each pickup object's own glist at its own matrix [M]). The first take/expiry shifted every
+   later slot by one, so meshes were drawn at other pickups' and drops' matrices. Fixed: taken/expired
+   pickups stay as `gone` tombstones; every consumer filters `gone`/`hidden` (the two dropped-gun
+   attachment searches gained `!p.gone`).
+2. **The invisible placed pickups (the O2 class).** The game draws the celglist handed to
+   `Pickup_Create` ([M] 0x1d04f0:459-462 → 0x18dda0:134; `View_DrawObjectGlist` reads obj+0xD8), a
+   pointer, not a hashcode. The port re-looked the mesh up by the resolved object's own hashcode;
+   07000005's `oOBJECT_AmmoPickUp_9mm` objects have hashcode 0xFFFFFFFF [D], no by-hash entry, so
+   those pickups were created, takeable, never drawn. `Pickup.obj` now carries (map, object); the
+   draw uses it; the touch-test bounds are the object's own glist bounds.
+3. **The silent 007 bonus.** `Pickup_Handler` overwrites the pickup sound per kind at take time
+   (0xF5/0x141/0x14C, 0x18e650:290,300,319-321) and kind 6 runs `PlrStat_LogBondBonus` (:234-236).
+   The port consumed the bonus silently. `Taken::Bonus` now flows; the caller plays 0x14C (armour
+   takes 0x141) and the window-title notice shows (no HUD text path exists yet).
+4. The four 07000001 piles were verified against their disc placements ([D] nf-extract placements f0):
+   kinds/ids/rounds/meshes all correct in the port now (the old extra[2]/extra[3] param misread was
+   already fixed by the param(index) map; the tests pin it).
+
+**Evidence**: tests in crates/nf-view/tests/fix_objects_live.rs — all five failed on master
+(out-of-bounds shift; `kind-1 pickup draws <unresolved 0xffffffff>`; missing CharVertex records for
+slot 3), all pass now. fix_player2/3, scenario, pickup_live, rng_live, weapon_switch_live re-run green.
+Independent audit (subagent, decompile-only): 6/6 claims VERIFIED (case 0xf0 arg map, the glist
+pointer draw path, `hashtable_hashcode_to_celglist(0xFFFFFFFF) == 0` at 001ca798:12-14, kind 3/6
+creates, the take conditions, the handler tail); no unfiltered `Drones.pickups` consumer left.
+
+**Not reached (2-hour sandbox)**: O1 (07000006 placed-pickup filter), O3 (breakable glass), O4
+(wire-cut box), F3 (the tuxedo skin-swap in nis.rs), the 07000002 next-area door draw, the gondola
+invisible wall, the rocket-launcher pickup gate, the red-headband guard skin. Nothing was changed
+for them: each needs its own decompile pass and a failing repro test first. The full NF_ISO suite
+was not run end-to-end (time); the touched crates' pickup/player/scenario/rng/weapon tests were.
