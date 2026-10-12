@@ -5854,3 +5854,59 @@ mission completes); boarding without the briefcase never starts the ride (the si
 the dump/repro probe kept for reference.
 
 **Full suite:** `--no-fail-fast` run green except the 3 allowed `disc_golden` failures (the slim ISO).
+
+## 044x-fields-player — the field maps for the player/HUD/weapon structs: every field, every reader, with proof
+
+The task: map BLData (the player's 0x970-byte block), the HUD pane structs + every `*SprInfo` table, the
+`weapon_data` record, `ammo_data`, the `PlrStat_*` family, and the player object's class-3 use of `obj_tag`
+— every offset with every reader/writer cited [M], cross-checked against the EE snapshot [L], and checked
+against the port. Method: 7 research subagents (2 needed re-scoping after timeouts; BLData 0x000-0x170
+grepped by hand) + ELF/snapshot cross-checks; every ambiguous C form settled against the disassembly
+(`tools/crosscheck/mipsdis.py`). Two traps found and documented: the ELF encodes `mul rd,rs,rt` as
+SPECIAL funct 0x18 (mipsdis prints `mult`), and Ghidra's shifted-pointer artifacts in `Player_Update`
+(the regen block's `puVar2 + 0x13d` is really `BL+0x4F4` — clip[0x45]; the disassembly at 0x193eb8-0x19405c
+gives the true slots 0x41C/0x4F4/0x530/0x548/0x560/0x56C with their `frame & 3 / & 1 / % 6` gates).
+
+Docs (all in docs/fields/, README coverage updated): bldata.md (~110 offsets across 0x000-0x970, the
+RamSave anchor map, the HandlePain arithmetic, live checks + census), hud-panes.md (HUDPANE_tag,
+HUDPANECREATE_tag, all 26 SprInfo tables — every one a clean 0x2C stride; the BSS status tables' boot
+filler 0x1a0058 with the 0x30-stride source region 0x2FC2E0..0x2FC4F0), weapon_data.md (~40 fields with
+the 58-file reader inventory), ammo-data.md (34×12 records + the weapon→ammo map), player-stats.md
+(PlrMissionStats 8×56, ScoringTable 12×60, RewardsTable, the GetScore formula and the medal bits — the
+whole system is unported, documented), obj-tag-player.md (the class table at 0x26f890 — the player is
+class 3, re-classed to 0x12 on death; glb_players is 4 slots; the full header map).
+sprite.md got a corrections section (the label's three cases, rt+0x1C/0x20/0x22/0x28, the 0x1000
+clip-to-screen flag, TextMsgFormats).
+
+Port fixes (fail-first shown, then green):
+- **The armour gate by pain type** [M Player_HandlePain 0x1902c8:84-104]: ONLY pain type 0 (bullets) lets
+  armour absorb; types 1..7 (falls 6, drowning 7, hurt volumes) set armourFraction 0. The port's
+  `PlayerHealth::pain_generic` always absorbed. Fixed in bullet.rs (the shared `apply(…, armour_frac)`);
+  tests `nf_game::bullet::tests::armour_bypass_by_pain_type` + the NF_ISO sister
+  `bullet_damage_still_absorbs_into_armour`.
+- **Fall/drown damage ran outside the pain pipeline**: scene.rs subtracted the raw damage from health
+  directly — no difficulty factor, no pain flash (BL+0x968), no direction bits (BL+0x967). Now routed
+  through `pain_generic(.., 6)` / `(.., 7)` [M 0x1949a8:117-126, 0x191a70:136-143]. Fail-first:
+  `fall_damage_runs_the_full_pain_pipeline` (the flash assert is red pre-fix).
+- **The clip regen was unmodeled** [M Player_Update 0x193600 disasm 0x193eb8-0x19405c]: six clip slots
+  refill +FRAME_RATE_MUL toward weapon_data[w].clip_size while the view-anim state ≠ 9 — clip[0x4A]/
+  [0x4E]/[0x33] on `frame & 3`, clip[0x4C]/[0x4F] on `& 1`, clip[0x45] (the grenade belt) on `% 6`. Ported
+  into `step_bond`; fail-first `clip_slots_regen_on_the_game_schedule` (with the clip[0x44] control).
+- **weapon.rs doc/type fixes**: +0x60 is a u16 view-anim datum id (AnimDatumGetWeaponInfo's third
+  out-param, `lhu` 0x1c7964) — the "fire_sound" u32 accessor is retyped `view_anim_datum` (values were
+  right by luck: +0x62 is 0 in all 115 records, so no test can fail-first — stated in the report);
+  +0xCC/+0xD8 comments corrected to script hashes (the flag tests work because script-present IS the flag).
+- **The +0xCC root-height correction**: the every-tick copy at Player_Update 0x193600:449-453 is
+  `obj+0xC0..0xCC = obj+0x30..0x3C` (the matrix row 3, gated on flags2 bit 4), NOT a root-height write;
+  the root height lives at AnimObject+0xCC and the feet-point math reads it there [M 0x194df0:86,222-236].
+  player.md §Collision and the player.rs CROUCH_ROOT_HEIGHT comment corrected (the port's VALUES were right).
+
+Reported, not fixed (no test can fail-first or out of scope): the locks never consult the key ring
+(Lock_Activate 0x1aed00:19,26 / Lock_Update 0x1ae3d8:143 gate on BL+0x70C+id — the port's lock.rs is
+burn-only and the gadget is unported, so the path is dead code today); the cheat's health-subtraction skip;
+the zoom block BL+0x8D0/0x8D4/0x8D8; the freeze gate BL+0x94A/0x94B; water_fade has no renderer consumer;
+the HUD flag 0x1000 unhandled; the hurt-volume pain types (the port passes 0 — the game passes
+Hurt_GetType; the port's hurt records don't carry the type); the missing weapon_data accessors
+(+0x40 refire, +0x2C pellets, +0x1C range, +0x94 rumble, +0x7C view-model hash…).
+
+Full suite (`--no-fail-fast`): 101 binaries, 473 passed, the 3 allowed `disc_golden` failures (slim ISO).
