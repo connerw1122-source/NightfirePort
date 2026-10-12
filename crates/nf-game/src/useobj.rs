@@ -69,18 +69,22 @@ pub struct SwitchObj {
     pub pos: V3,
     /// param 0: the channel this switch toggles.
     pub ch: u8,
-    /// param 5: the gate channel that must be ON (0 = always allowed) [M 0x1b02a8].
+    /// param 5: the inhibit gate — usable only while this channel is OFF (0 = always allowed)
+    /// [M 0x1b02a8:22 `(*(ushort *)(iVar2 + 0x14) == 0 || (switch_channels[+0x14] == '\0'))`].
     pub gate: u8,
     /// param 3: the rest value the auto-return flips toward [M 0x1adea8].
     pub rest: u8,
-    /// param 4: the busy flag (the script-idle gate; the port stands in a cooldown).
+    /// param 4: the busy flag — with it set, the switch activates only while its channel has
+    /// never changed (`Switch_Activate` 0x1b02a8:12-16 returns when +0x18 != 0; +0x18 is bumped
+    /// on every channel change in `Switch_Update` 0x1adea8:22,29) — a one-shot latch, not a
+    /// re-armable cooldown.
     pub busy: bool,
     /// param 2: the auto-toggle delay in frames (0 = none) [M 0x1adea8].
     pub auto_delay: u16,
     /// `obj+0xF4`: the stored value [M 0x1adcc0 creates it from param 3].
     pub value: u8,
-    /// The stand-in for the switch script's busy state (frames since the last toggle).
-    pub cooldown: u16,
+    /// `inst+0x18`: the change latch — bumped on every channel change [M 0x1adea8:22,29].
+    pub latch: u8,
     /// The auto-return frame counter (`obj+0xF6`) [M 0x1adea8].
     pub auto_ct: u16,
 }
@@ -119,7 +123,8 @@ impl UseObjects {
                 // +0x19 = param 4, +0x14 = param 5; obj+0xF4 starts at param 3.
                 u.switches.push(SwitchObj {
                     pos, ch: par(0) as u8, gate: par(5) as u8, rest: par(3) as u8, busy: par(4) != 0,
-                    auto_delay: par(2) as u16, value: par(3) as u8, cooldown: 0, auto_ct: 0,
+                    auto_delay: par(2) as u16, value: par(3) as u8, auto_ct: 0,
+                    latch: 0,
                 });
             }
         }
@@ -156,10 +161,12 @@ impl UseObjects {
             }
         }
         for s in self.switches.iter_mut() {
-            if s.cooldown > 0 { s.cooldown -= 1; }
-            // The stored value follows the channel [M 0x1adea8's first block].
+            // The stored value follows the channel; every change bumps the latch [M 0x1adea8:20-23].
             let cur = ch.v.get(s.ch as usize).copied().unwrap_or(0);
-            if s.value != cur { s.value = cur; }
+            if s.value != cur {
+                s.value = cur;
+                s.latch = s.latch.saturating_add(1);
+            }
             // The auto-return [M 0x1adea8's second block]: after param2 frames off the rest
             // value, flip the channel back.
             if s.auto_delay != 0 && cur != s.rest {
@@ -202,8 +209,9 @@ impl UseObjects {
         // activator never toggles ch 0x61 — the port's use path is always the player (class 3),
         // so the alarm channel is excluded here exactly as the game's check does.
         for s in self.switches.iter_mut() {
-            if s.busy && s.cooldown > 0 { continue; }
-            if s.gate != 0 && !ch.on(s.gate as u32) { continue; }
+            if s.busy && s.latch != 0 { continue; }
+            // The inhibit gate: usable while the gate channel is OFF [M 0x1b02a8:22].
+            if s.gate != 0 && ch.on(s.gate as u32) { continue; }
             if s.ch == 0 { continue; } // [M 0x1b02a8:24 — a channel-less switch never activates]
             if s.ch == 0x61 { continue; }
             let cur = ch.v.get(s.ch as usize).copied().unwrap_or(0);
@@ -212,7 +220,9 @@ impl UseObjects {
                 let v = if cur != 0 { 0u8 } else { 1u8 };
                 ch.set(s.ch as u32, v, _frame);
                 s.value = v;
-                if s.busy { s.cooldown = 60; }
+                // The toggle's mirror mismatch bumps +0x18 next Update [M 0x1adea8:20-23]; the
+                // port syncs the mirror here, so it bumps the latch at the same point.
+                s.latch = s.latch.saturating_add(1);
                 used = true;
             }
         }
@@ -326,5 +336,56 @@ mod tests {
         let mut ch3 = chans(&[0x50]);
         u2.player_activate(&mut scripts2, &mut ch3, [0.0, 0.5, -0.5], [0.0, 0.0, 1.0], 1);
         assert!(scripts2.players[0].activated, "gate on → activates");
+    }
+    /// docs/fields/switch.md +0x14: the inhibit gate is usable while the channel is OFF
+    /// [M 0x1b02a8:22]. Fail-first: the old port required the channel ON.
+    #[test]
+    fn switch_inhibit_gate_blocks_only_while_on() {
+        let mut u = UseObjects::default();
+        u.switches.push(SwitchObj { pos: [0.0, 0.5, -0.5], ch: 9, gate: 7, rest: 0, busy: false,
+            auto_delay: 0, value: 0, latch: 0, auto_ct: 0 });
+        // Gate channel OFF: the switch activates.
+        let mut scripts = crate::nis::Scripts::default();
+        let mut ch = Channels::default();
+        let used = u.player_activate(&mut scripts, &mut ch, [0.0, 0.5, -0.5], [0.0, 0.0, 1.0], 1);
+        assert!(used && ch.on(9), "gate channel OFF → the switch activates");
+        // Sister: the same switch with its gate channel ON never activates.
+        let mut u2 = UseObjects::default();
+        u2.switches.push(SwitchObj { pos: [0.0, 0.5, -0.5], ch: 9, gate: 7, rest: 0, busy: false,
+            auto_delay: 0, value: 0, latch: 0, auto_ct: 0 });
+        let mut scripts2 = crate::nis::Scripts::default();
+        let mut ch2 = chans(&[7]);
+        let used2 = u2.player_activate(&mut scripts2, &mut ch2, [0.0, 0.5, -0.5], [0.0, 0.0, 1.0], 1);
+        assert!(!used2 && !ch2.on(9), "gate channel ON → blocked");
+        // Sister 2: gate 0 always allows.
+        let mut u3 = UseObjects::default();
+        u3.switches.push(SwitchObj { pos: [0.0, 0.5, -0.5], ch: 9, gate: 0, rest: 0, busy: false,
+            auto_delay: 0, value: 0, latch: 0, auto_ct: 0 });
+        let mut scripts3 = crate::nis::Scripts::default();
+        let mut ch3 = Channels::default();
+        assert!(u3.player_activate(&mut scripts3, &mut ch3, [0.0, 0.5, -0.5], [0.0, 0.0, 1.0], 1),
+            "no gate → activates");
+    }
+
+    /// docs/fields/switch.md +0x18: with param 4 (busy) set the switch is a ONE-SHOT — its latch
+    /// (+0x18) bumps on the first channel change and never resets [M 0x1adea8:22,29; gate
+    /// 0x1b02a8:12-16]. Fail-first: the old port re-armed after a 60-tick cooldown.
+    #[test]
+    fn switch_busy_is_one_shot_never_rearms() {
+        let mut u = UseObjects::default();
+        u.switches.push(SwitchObj { pos: [0.0, 0.5, -0.5], ch: 9, gate: 0, rest: 0, busy: true,
+            auto_delay: 0, value: 0, latch: 0, auto_ct: 0 });
+        let mut scripts = crate::nis::Scripts::default();
+        let mut ch = Channels::default();
+        let head = [0.0, 0.5, -0.5]; let look = [0.0, 0.0, 1.0];
+        assert!(u.player_activate(&mut scripts, &mut ch, head, look, 1), "first use activates");
+        // Let the tick see the channel change (the game's mirror test bumps +0x18).
+        u.tick(&[], &mut ch, 2);
+        assert_eq!(u.switches[0].latch, 1, "the channel change bumped the latch");
+        assert!(!u.player_activate(&mut scripts, &mut ch, head, look, 3), "second use blocked");
+        // After 61 ticks the game is still dead (the latch never resets).
+        for f in 4..70 { u.tick(&[], &mut ch, f); }
+        assert!(!u.player_activate(&mut scripts, &mut ch, head, look, 70),
+            "a busy switch never re-arms");
     }
 }

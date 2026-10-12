@@ -385,9 +385,11 @@ pub fn build(level: &Level) -> Vec<Trigger> {
         let param = |k: u32| p.params.iter().find(|(j, _)| *j == k).map(|&(_, v)| v).unwrap_or(0);
         let kind = match p.flags { 0xea => kind::TOUCH_ONCE, 0xeb => kind::TOUCH, 0xec => kind::AND, 0xed => kind::SEQ_AND, 0xee => kind::OUT,
             0xef => kind::OR, 0xe8 => kind::LOAD_LEVEL, 0xdc => param(0) as u8, _ => continue };
-        let raw = p.flags == 0xdc;
-        let shift = raw as u32; // a raw Trigger (0xDC) carries its type in p0 and the rest one later (*suggested*)
-        let q = |k: u32| param(k + shift);
+        // Every trigger family — typed 0xEA-0xEF wrappers and the raw 0xDC alike — shares one param
+        // layout: the type byte at p0 (the typed wrappers overwrite it), out = p1, inputs = p2..p8,
+        // mask = p9, lock = p10, hide = p11 [M Trigger_Create 0x1b1720:61-91; the 0xEA-0xEF wrappers
+        // all tail-call it with the same param_3]. No shift for the raw type.
+        let q = |k: u32| param(k);
         let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() } else if (p.index as usize) < map.objects.len() { Some((m, p.index as usize)) } else { None };
         let mx = object_matrix(p.rotation, p.translation);
         let tris: Vec<[V3; 3]> = target.and_then(|(om, oi)| level.maps[om].objects[oi].collision.as_ref())
