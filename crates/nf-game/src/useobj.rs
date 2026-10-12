@@ -17,8 +17,13 @@
 //!   the Tower switches set it). A class-3 activator can never toggle ch 0x61 [M 0x1b02a8].
 //! - **ScriptPlayer E-activation** (`SP_Activate` 0x1dc338): an SP whose mask has bit 2 (4) is
 //!   player-activatable — the use sets `ext+0x2C = 1` (the `activated` flag its own
-//!   `SP_Update` 0x1dbda8 consumes as trigger bit 4), gated on the gate channel (param 9) and,
-//!   when mask also has bit 1, on the OUT channel being on. On the Tower levels this is the
+//!   `SP_Update` 0x1dbda8 consumes as trigger bit 4), gated on the OUT channel when mask also
+//!   has bit 1 (the gate channel is `SP_Update`'s own per-tick early return, not an activate
+//!   gate [M 0x1dbda8:60-62 — the port keeps the stricter check]). NOTE: in the game
+//!   `Player_Activate` dispatches to `SP_Activate` only for class-0 objects while 0xD9 placements
+//!   create class-0x1B objects [M 0x1db9a8:71] — the E path cannot reach the Tower SPs either;
+//!   this arm is the port's stand-in for the (unresolved) elevator/keyboard activation, and the
+//!   level docs record the open question. On the Tower levels this is the
 //!   elevator (`SCRIPTPLAYER_Elevators`, 07000009 #70: mask 4, out ch 0x39 — the activation is
 //!   what objective 2's AND mux #274 waits for) and the security keyboard (0700000a #60).
 //!   The SP's use-target here is its placement matrix; the game keys the SP object's matrix from
@@ -51,6 +56,9 @@ pub struct PcQworm {
     pub ch: u8,
     /// param 2: non-zero makes `PCQWorm_Activate` (the E path) start the install [M 0x1b0840].
     pub e_usable: u8,
+    /// param 3: `PCQWorm_Update` 0x1aee20 scans for the bullet only when it is non-zero
+    /// (0x1aee20:49-51); both Tower PCs carry 1, the decoy office PCs carry 0 with no channel.
+    pub armed: bool,
     /// `obj+0xF4`: 0 idle, 1 installing, ≥2 done [M 0x1aee20].
     pub state: u8,
 }
@@ -85,6 +93,17 @@ pub struct UseObjects {
 }
 
 impl UseObjects {
+    /// `Switch_Create` 0x1adcc0:39-43's load beat: `switch_channels[param0] = param3` (+ the time
+    /// stamp) at level load. The Tower switches all carry rest 0 (no-op) — ported for fidelity.
+    pub fn init_channels(&self, ch: &mut Channels, frame: u32) {
+        for s in &self.switches {
+            if s.ch != 0 && s.rest != 0 {
+                ch.set(s.ch as u32, s.rest, frame);
+                ch.time[s.ch as usize] = frame;
+            }
+        }
+    }
+
     /// `parsemap_create_dynamic_objects` 0x1d04f0 cases 0x35 / 0x29, in placement order.
     pub fn create(ps: &[nf_formats::placement::Placement]) -> UseObjects {
         let mut u = UseObjects::default();
@@ -94,7 +113,7 @@ impl UseObjects {
             let pos = p.translation;
             if p.flags & 0xff == 0x35 {
                 // PCQWorm_Create 0x1b07a8: ext[1] = param 1 (the channel), ext[2] byte = param 2.
-                u.pcs.push(PcQworm { pos, ch: par(1) as u8, e_usable: par(2) as u8, state: 0 });
+                u.pcs.push(PcQworm { pos, ch: par(1) as u8, e_usable: par(2) as u8, armed: par(3) != 0, state: 0 });
             } else {
                 // Switch_Create 0x1adcc0: +0x12 = param 0, +0x10 = param 2, +0x16 = param 3,
                 // +0x19 = param 4, +0x14 = param 5; obj+0xF4 starts at param 3.
@@ -116,12 +135,15 @@ impl UseObjects {
             match pc.state {
                 0 => {
                     // State 0: a Q-Worm bullet (weapon 0x58) reaching the PC begins the install
-                    // [M 0x1aee20: the class-5 toucher with ext+0x44 == 0x58]. The contact box is
-                    // the PC's glist; the port stands in the placement sphere r = 0.7 (the
-                    // Q-WORM_PC_1 box's circumscribed radius, [D placements 0x35]).
-                    let hit = bullets.iter().any(|&(a, b, w)| w == 0x58
-                        && seg_sphere(a, b, pc.pos, 0.7));
-                    if hit { pc.state = 1; }
+                    // [M 0x1aee20: the class-5 toucher with ext+0x44 == 0x58] — only when param 3
+                    // is set (0x1aee20:49-51). The contact box is the PC's glist; the port stands
+                    // in the placement sphere r = 0.7 (the Q-WORM_PC_1 box's circumscribed radius,
+                    // [D placements 0x35]).
+                    if pc.armed {
+                        let hit = bullets.iter().any(|&(a, b, w)| w == 0x58
+                            && seg_sphere(a, b, pc.pos, 0.7));
+                        if hit { pc.state = 1; }
+                    }
                 }
                 1 => {
                     // State 1: the keycode message (param 0 keys; presentation) and the channel
@@ -182,6 +204,7 @@ impl UseObjects {
         for s in self.switches.iter_mut() {
             if s.busy && s.cooldown > 0 { continue; }
             if s.gate != 0 && !ch.on(s.gate as u32) { continue; }
+            if s.ch == 0 { continue; } // [M 0x1b02a8:24 — a channel-less switch never activates]
             if s.ch == 0x61 { continue; }
             let cur = ch.v.get(s.ch as usize).copied().unwrap_or(0);
             if s.value != cur { continue; }
