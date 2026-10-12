@@ -91,3 +91,9 @@ is still unverified end-to-end; it needs an unobstructed walk route.
 
 `crates/nf-view/tests/probe_render4.rs` (new), `crates/nf-view/tests/dump_render4.rs` (new),
 `docs/WORKLOG.md` (fix-render4 entry), this report. No shared library files touched.
+
+## Final state
+
+Branch tip: s/fix-render4 with origin/master (6faffb4, the parallel fix-cutscenes work) merged;
+after the merge, `probe_render4` + `dump_render4` + `fix_cutscenes_live` all pass on the slim ISO,
+and the full suite is green except the 3 allowed disc_golden failures.
