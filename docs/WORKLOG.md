@@ -4859,3 +4859,98 @@ script-player.md.
 allowed disc_golden failures (nf-formats 74 tests, nf-audio 7, nf-game 133, nf-view 106 — 0 failures).
 
 >>>>>>> origin/master
+
+## fix-ladder2 — the ladders draw, the climb look, the weapon save/restore, the crouch footsteps
+
+Branch `s/fix-ladder2` (from origin/master 923595b). Tests: `crates/nf-view/tests/fix_ladder2_live.rs`
+(NF_ISO) + the `climb_look_turns_within_the_ladder_window_and_pitch_is_free` unit test in player.rs.
+Probe: `crates/nf-view/examples/probe_ladder2.rs` (weapon 0x47's record, the 07000002 water geometry,
+the pool collision from above).
+
+**1. The ladders weren't drawn — root-caused and fixed.** The ladder (placement 0x22) is a dynamic
+object (`parsemap_create_dynamic_objects` 0x1d04f0 case 0x22 → `Ladder_Create` 0x1966c0); its
+placements never carry the 0x8000 CREATE_CEL flag [M 0x1d1998 vs 0x1d1b68 — the static-cel path and
+the dynamic-object path are mutually exclusive per placement], and `Scene::build` draws
+`level.instances(cels_only=true)` — every placement without 0x8000 dropped. The game draws each ladder
+exactly once through the generic dynamic-object path: `View_DrawObjList` 0x1e69a0 dispatches on
+`obj+0xFA` (no ladder sets the anim/particle bits) → `View_DrawObjectGlist` 0x1e6780 renders
+`obj+0xD8` (the celglist = the placement's resolved object, stored directly at 0x19671c, no
+`Control_SetGList`) at `obj+0x90` — the placement transform `control_create_object` 0x1344e0 builds
+(`View_RotTransMatrix` 0x1e5168); class 0x2D has no update function so `obj+0x90` is constant [M].
+A straddling sphere reroutes to `View_AddForcedObjects` 0x1e5fb8 — still exactly once [M
+Controls_StraddleTest 0x134778]. No ambient dim (obj+0xF0 stays 0; `View_SetupRenderModes_Tweak`
+0x1e5888 white branch) [M]. Port fix (scene.rs): 0x22 retained out of the instance loop + a sweep
+that instances each 0x22 placement's resolved object at the placement matrix, World layer, mult 1.0,
+counted in the new `Scene::ladders_drawn`. Test: 07000002 draws exactly 4 (the disc count [D]), 07000005
+exactly 1 [D]; the exact count doubles as the double-draw guard.
+
+**2. The camera couldn't move on a ladder — fixed.** `Player_Climb` 0x196310's look: the turn channel
+(`bd+0x34`) still integrates into the yaw after `Player_Climb` (`Player_Update`'s `bd+0x30..0x3F` →
+`obj+0x50..0x5F` integration [M 0x193600]) inside the eased ±90° window (`diff = AngleDiff(yaw,
+ladder.yaw+π)`, hard snap beyond ±π/2, ease `yaw += diff·0.2` with the PRE-clamp diff [M 0x196310:18-33]);
+the ease pauses while the aim key is held — AnimObj bit 0 IS the aiming flag, cleared by
+`Player_WeaponNone` on the grab [M 0x1a9858:18-19; the atlas's [S] upgraded]. The pitch offset
+`BL+0x8A8` takes the stick freely during the climb (`Player_Aiming` runs for every substate ≤ 7 [M
+0x1a1d28:21-30]; `Player_ViewClamping` clamps ±1.0 [M 0x1a92e8]). Port (player.rs climb_tick):
+`yaw += input.turn` after the clamp+ease, `pitch += input.look` clamped ±1, ease gated on `!aiming`.
+Note the equilibrium: a held turn settles at deviation = turn/0.2 (the ease opposes the channel) —
+0.25 rad at the test's 0.05/tick; that IS the game's math.
+
+**3. The weapon is now saved on the grab and re-equipped on the dismount; hands can't fire.**
+`Player_WeaponNone` 0x1a9858 saves the current id to `anim+0x64` and goes to 'G' (0x47) immediately
+(no holster cycle — `anim+0xF4 = 0`) [M]; the port ran a switch_request cycle instead and never saved.
+The dismount carry `if (AnimObj+0x62 == 'G') AnimObj[99] = AnimObj[100]` [M 0x196310:99-102] plus
+`Player_SetWeaponAnimObj`'s idle path re-running `Player_WeaponSelect` [M 0x1a2e38:197-201] is the
+restore: the port now queues `switch_request = saved_weapon` on the dismount tick (scene.rs). The
+'hands fire once' bug: weapon 0x47's record has NO fire scripts (+0xB0/+0xB4 = 0, no idle +0xA0
+[D probe]) and the round spawn runs from the state-9 fire-script release path (`Player_SetFiringAnim`
+0x1a3c70 → case 9 0x1a2e38:416-420; the press-tick spawn for +0x44 == 0 sits behind that call [M
+0x1a5460:681-690]) — the port now blocks the trigger when the record carries no fire script. Fists
+keeps its fire script 0x060006de [D] — punching unaffected. Tests: the grab saves 2 → hands, firing
+at hands spawns no bullet, the dismount restores the P2K (all through `Sim::step_bond`).
+
+**4. Crouch-walking "rapid footsteps on metal" — root-caused and fixed.** `AnimObjectUpdate`
+0x1befd8:163-198 [M]: the stride is 1.65 EXCEPT while the CLIMB substate (1) runs — 0.4125 with the
+fixed `Sound_Play3D(0x286)` at Bond (the rung sound); every other step is `Effect_Create(…, foot|0x42)`
+→ the floor surface's footstep. The port had attached the 0.4125/0x286 pair to CROUCH. Fix (scene.rs):
+the stride/sound special case keys on `substate == SS_CLIMB`; crouch steps run the normal 1.65 surface
+path (the crouch anim's smaller per-tick displacement slows them naturally). The climb's step distance
+is 3D (the game's `anim+0xD8` follows the anim up the rungs) [*suggested* — horizontal elsewhere].
+
+**5. Swimming from a bank — repro recorded, NOT fixed.** [D probe_ladder2] 07000002's garden water
+(cel 17): collision floor 3.7647 vs surface 3.7675 — Bond stands ON the water (pos.y − 0.3 ≫ surface,
+`Player_InWater` 0x195e50 never fires); the deep pool (cel 16) has NO floor below the surface within
+14 units, but the deck around it sits 0.5–1.0 ABOVE the surface, and every probed pool point hits a
+floor at 4.23–4.74 from above. The port's `capsule_push` is double-sided (*Deviation*, world.rs —
+"the game's triangles are one-sided by their stored plane; the port's winding is not known to match"),
+so Bond stands on planes the game's player collision would let him fall through — the likely root
+cause, but flipping sidedness needs the winding convention verified against the game's stored plane
+data first (not done — no time). The repro lives as `#[ignore] swim_repro_walks_on_the_water_from_the_bank`
+(asserts the CURRENT broken behaviour; flip it after the fix).
+
+**Not done this session** (each with its reason):
+- The vent grate / creepwall (07000002's vent): researched — there is NO grate class [M: all decomp
+  "grate/vent" hits are Music_Event substrings]; the crawlable vent is a creepwall (placement 0x3F →
+  `CreepWall_Create` 0x196fc8, class 0x2B; use → `Player_Activate` 0x1a5170's unarmed nearest-0x2B
+  branch → `Player_CollCreepWall` 0x196758 → substate 7 `Player_Creep` 0x1969d0 with `Music_Event(0xD,1)`
+  and `ch[param3]` set/clear), and the grate panel itself is a door (class 0x1C, `Door_Activate`
+  0x135be0) [M]. Porting = the creepwall object + substate 7 — a full session of its own.
+- The level-select weapon fallback (`Player_InitWeapon` 0x1a7ef8): researched — `Player_EquipWeapon`
+  0x1a8a58 refuses a weapon whose +0xDC FP skin is absent; `Player_CheckWeaponsLoaded` 0x1a97c8 zeroes
+  whole class groups; the tail falls back to `AnimObj[99] = 1` (fists) [M]. Not ported (the dev-tool
+  give path lives outside my named files).
+- The searchlight spotted→alarm MUSIC half on 07000006: researched — the chain is Searchlight_Update
+  0x1cb900 (arm test: spot within 2.0 of Bond) → state 1 sets `ch[param3]` every tick →
+  `DroneFunc_CheckAlarmRaised` 0x1453a8 counts `ch[0x37]` → `Music_Event(2,1)` → `UpdateMusicalEvents`
+  0x114e70 hysteresis → `UpdateMFX_01CastleB` 0x113060 → PickRandomCombat [M]. The port has everything
+  except the per-level music dispatch (music.rs runs the castle-A updater only for 07000005) — a ~10
+  line change in music.rs, a shared file, left for the owner session (full chain recorded above).
+- C2 (scripted/ally drones drawn but not hittable/no AI), the 07000005 patrol torso twist, the grenade
+  impact/explosion and flashbang stun work: not started (time; grenade research not run).
+- 07000007 guests: already fixed by fix-drone4 (master carries CivilianMission 0x16 + the route-chain
+  fix) — nothing to do.
+
+Files: `crates/nf-view/src/scene.rs` (the ladder sweep + `ladders_drawn`, the weapon save/restore, the
+fire gate, the footstep fix), `crates/nf-game/src/player.rs` (the climb look + its unit test),
+`crates/nf-game/src/gun.rs` untouched (go_to_hands already matched `Player_WeaponNone`). Determinism:
+no new RNG draws; no wall-clock; the fixed 60 Hz tick path unchanged.
