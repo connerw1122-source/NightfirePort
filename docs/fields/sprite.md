@@ -38,3 +38,27 @@ L-read: obj 016cefe0, BL 016cf0f0, HUD 016c8630].
 Template sprites (`*SprInfo`, 0x2C bytes, static): layer at +8, x/y at +0xC/+0xE, w/h +0x10/+0x12, uv +0x14..+0x1A,
 label +0x1C, texture +0x24 [`nf_formats::hud::SpriteInfo`]. Exception: `PickupStatusSprInfo`'s three bar sprites are
 copied from 0x2FC460 with a 0x30 stride [L ee_start_05.bin].
+
+## Corrections and extensions (fields-player, 2026-10)
+
+- **The template `label` (+0x1C) has three cases**, not two [M `Sprite_Create2` 0x1de3d8:111-134; L data]:
+  −1 = a texture sprite; **0 = a text sprite whose string is bound at run time** (`Txt_BindLabel(0)` → heap
+  sentinel; the ammo pane's three text sprites are 0); 0x02xxxxxx = a static label (e.g.
+  `ObjectiveStatusSprInfo[5]` = 0x02000052).
+- **Runtime sprite fields the first pass conflated** [M 0x1de3d8; S 0x1de5bc-5d8]: rt+0x1C = the text STYLE
+  pointer (a 16-byte `{u32 colour, 0, u32 colour2, 0}` record; the ammo text's is 0x30CC78); **rt+0x20 = the
+  text LENGTH** (strlen at create — the "+0x20 draw flag/length" row above is this); **rt+0x22 = the template
+  flags u16** (copied from template +0x0A); rt+0x28/0x2A = the home x/y (template +0xC/+0xE when label ≠ −1).
+- **Template +0x20 = the text-style pointer, +0x28 (s8) = the viewer link index** — 5 (the overlay viewer)
+  for every entry of every table [L census]. The port's decoder reads neither (no functional impact).
+- **flags 0x1000 = clip-to-screen** (skipped by `HUD_CalcWidthHeight` 0x19a598:29 — the ammo pane's strip
+  sprites carry it, which is why the pane's h computes to 38) [M]; 0x800 on the crosshair/blip sprites.
+- **The BSS status tables** (`MissionStatus`/`ObjectiveStatus`/`InfoStatus`/`PickupStatus`SprInfo at
+  0x319580/0x319608/0x319730/0x319830) are boot-filled by `__static_initialization_and_destruction_0`
+  0x1a0058: entry 0 built on the stack, the rest byte-copied from **0x30-stride source records at
+  0x2FC2E0 (mission, 2) / 0x2FC340 (objective, 3) / 0x2FC3D0 (info, 3) / 0x2FC460 (pickup, 3)** — the
+  sprite.md exception above is one quarter of a 0x2FC2E0..0x2FC4F0 region [M 0x1a0058:77-104; L dump].
+- **`TextMsgFormats` 0x2BF108** (56 B) = 7 × {u32 stylePtr, u16 maxWidth}: the status CREATE tags' widths
+  are TextMsgFormats[type]·maxWidth (480/480/256) [L; M 0x19c310 family].
+- **The full pane maps** (HUDPANE_tag, HUDPANECREATE_tag, all 26 SprInfo tables with entry counts and
+  consumers) are in [hud-panes.md](hud-panes.md).

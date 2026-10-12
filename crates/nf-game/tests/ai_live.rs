@@ -84,7 +84,8 @@ impl Level05 {
         let seed = std::env::var("NF_TEST_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(seed);
         let d = self.data();
         let mut rng = Rng::new(seed);
-        let mut drones = nf_game::drone::level_drones(&d, &self.level, &mut rng);
+        let mut lights = nf_game::light::LightList::default();
+        let mut drones = nf_game::drone::level_drones(&d, &self.level, &mut rng, &mut lights);
         if let Some(a) = alert { for dr in &mut drones { dr.alert = a; dr.alert_floor = a; } }
         let found = drones.iter().position(|dr| (dr.pos[0] - x).abs() < 0.01).unwrap();
         (drones, found, rng)
@@ -97,9 +98,10 @@ fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, 
 fn guard_notices_and_fires_like_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    // Seed 1 (re-picked in WORKLOG 0072 after the searchlight creates joined the RNG; 0069 had 2, 0037 also 7):
+    // Seed 2 (re-picked for fix-lighting: the ambient radiators, the type-0x4E lights and the guards'
+    // muzzle-light creates joined the RNG; WORKLOG 0072 had 1, 0069 had 2, 0037 also 7):
     // the first combat-move roll picks the step (strafe or step are equally likely; the trace shows steps).
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 1);
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 2);
     let mut sim = l.sim(drones, rng);
     // As in the live session, Bond appears (teleported) after the level has run: 10 ticks with him far away first, so
     // spawner 266's drone is already in the list.
@@ -381,8 +383,8 @@ fn bond_kills_guards_with_two_torso_shots() {
     let d = l.data();
     // `placement`: the drone's placement index.
     let run = |bond: [f32; 3], placement: usize, frames: u32, over: f32| {
-        // Seed 2 (re-picked in WORKLOG 0072 after the searchlight creates joined the RNG; was 1).
-        let (drones, _, rng) = l.drones_seeded(None, 61.342, 2);
+        // Seed 1 (re-picked for fix-lighting: the light creates joined the RNG; WORKLOG 0072 had 2).
+        let (drones, _, rng) = l.drones_seeded(None, 61.342, 1);
         let i = drones.iter().position(|dr| dr.placement == placement).unwrap();
         let mut sim = l.sim(drones, rng);
         let p = bond_at(bond);

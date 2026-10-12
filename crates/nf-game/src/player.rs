@@ -16,10 +16,12 @@ pub const ROOT_HEIGHT: f32 = 1.0347183;
 /// The CROUCHED stance's root height [L, derived from the PCSX2 trace 05-truck]: riding the truck bed
 /// crouched, Bond parks with obj+0x30 = 37.887 over the bed floor 37.280 — pos−floor 0.607, i.e. cc
 /// 0.556 after the standing rest offset (0.051: standing live 1.086 with cc 1.0347) — ≈ the capsule
-/// radius 0.55 [M 0x194df0: 0x3f0ccccd]. The game's cc follows the pose (`obj+0xCC = obj+0x3C` every
-/// tick [M Player_Update 0x193600:449, Player_CollisionHandler 0x1949a8:182]; the anim/stance writes
-/// `obj+0x3C` — `Player_StandAtNewPosition` 0x190d88 takes it from the placement vec4's W); the port
-/// models the two stances as constants.
+/// radius 0.55 [M 0x194df0: 0x3f0ccccd]. The game's cc is **AnimObject+0xCC** (obj+0xDC+0xCC): the
+/// anim/stance writes it and the feet-point math reads it there [M Player_Collision 0x194df0:86,
+/// 222-236]. The every-tick copy at Player_Update 0x193600:449-453 / Player_CollisionHandler
+/// 0x1949a8:179-183 is `obj+0xC0..0xCC = obj+0x30..0x3C` — the matrix ROW 3 mirroring the position
+/// (gated on flags2 bit 4), NOT a root-height write (fields-player correction: the earlier
+/// `obj+0xCC = obj+0x3C` reading mistook it). The port models the two stances as constants.
 pub const CROUCH_ROOT_HEIGHT: f32 = 0.55;
 /// Capsule radius (`HITTEST+0x8C`).
 pub const RADIUS: f32 = 0.55;

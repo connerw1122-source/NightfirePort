@@ -81,7 +81,8 @@ impl Level02 {
     fn drones(&self) -> (Vec<Drone>, Rng) {
         let d = self.data();
         let mut rng = Rng::new(0x1234_5678);
-        let drones = nf_game::drone::level_drones(&d, &self.level, &mut rng);
+        let mut lights = nf_game::light::LightList::default();
+        let drones = nf_game::drone::level_drones(&d, &self.level, &mut rng, &mut lights);
         (drones, rng)
     }
 

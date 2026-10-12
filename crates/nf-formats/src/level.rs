@@ -94,6 +94,40 @@ pub struct LevelMap {
     pub path_data: Vec<Vec<u8>>,
     /// Portal records (block 0x21; main map). `parsemap_block_portal_data` 0x1d15f8.
     pub portals: Vec<PortalQuad>,
+    /// LOD chains (block 0x27, `parsemap_block_LOD` 0x1d1f10): one first-dword per cel-list entry — the next
+    /// (lower) LOD object's index, −1 = none. `Destroy_Create` 0x12c318 reads the same word off the placement's
+    /// celglist (`celglist+0x40`) as the destroyed variant's glist, and `Destroy_Smash` 0x12bb60 swaps to it
+    /// (`Control_SetGList` at 0x12bbc4, arg a1 = tag[0] proven by the disassembly 0x12bbb8 `lw a1,0(s1)`).
+    /// Absent block → empty (every lookup None).
+    pub lod: Vec<i32>,
+    /// Ambient radiators (block 0x26; main map). `Light_SetAmbientRadiators` 0x1caeb8 creates one
+    /// permanent kind-0 light per entry (fix-lighting).
+    pub radiators: Vec<LightRadiator>,
+}
+
+/// One block-0x26 entry: 8 floats [x, y, z, radius², pad, r, g, b] with r/g/b 0-1
+/// [M `Light_SetAmbientRadiators` 0x1caeb8: the vec4 passes x/y/z + radius² (SQRT at create),
+/// the colour floats ×255 into the light's rgb bytes].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightRadiator {
+    pub pos: [f32; 3],
+    pub radius: f32,
+    pub rgb: [f32; 3],
+}
+
+impl LightRadiator {
+    pub fn parse_block(payload: &[u8]) -> crate::buf::Result<Vec<LightRadiator>> {
+        let b = crate::buf::Buf(payload);
+        let n = b.u32(0)? as usize;
+        (0..n).map(|k| {
+            let o = 4 + 32 * k;
+            Ok(LightRadiator {
+                pos: [b.f32(o)?, b.f32(o + 4)?, b.f32(o + 8)?],
+                radius: b.f32(o + 12)?.sqrt(),
+                rgb: [b.f32(o + 20)?, b.f32(o + 24)?, b.f32(o + 28)?],
+            })
+        }).collect()
+    }
 }
 
 /// One object drawn somewhere: `(map, object)` indexes into `Level::maps`, and its row-vector world matrix.
@@ -120,6 +154,15 @@ pub struct Instance {
     pub object: usize,
     pub matrix: [[f32; 4]; 4],
     pub placement: Placement,
+}
+
+impl LevelMap {
+    /// The object's LOD-chain target (`celglist+0x40`, block 0x27): `Some((this map, next))` when the entry is not
+    /// −1 and in range. `Destroy_Smash` 0x12bb60 swaps to it; the engine's `Control_NextLOD` walks it.
+    pub fn lod_target(&self, object: usize) -> Option<usize> {
+        let next = *self.lod.get(object)?;
+        (next >= 0 && (next as usize) < self.objects.len()).then_some(next as usize)
+    }
 }
 
 pub struct Level {
@@ -165,6 +208,8 @@ impl Level {
             let mut sounds = Vec::new();
             let mut path_data = Vec::new();
             let mut portals = Vec::new();
+            let mut lod = Vec::new();
+            let mut radiators = Vec::new();
             for blk in &mf.blocks {
                 match blk.id {
                     0x2e => pending_coll = Some(crate::collision::Collision::parse(blk.payload(data))?),
@@ -182,10 +227,16 @@ impl Level {
                     0x28 => sounds = MapSound::parse_block(blk.payload(data))?,
                     0x19 => path_data.push(blk.payload(data).to_vec()),
                     id::PORTAL_DATA => portals.extend(PortalQuad::parse_block(blk.payload(data))?),
+                    // `parsemap_block_LOD` 0x1d1f10: per cel entry an 8-byte record; the first dword is the next
+                    // LOD object's index (−1 = none). The decomp reads the first dword of each pair
+                    // (`iVar3 = *piVar5`, stride `piVar5 += 2`) and writes `cel+0x40 = index·0x50 + pCelList`.
+                    id::LOD => lod = blk.payload(data).chunks_exact(8)
+                        .map(|c| i32::from_le_bytes(c[..4].try_into().unwrap())).collect(),
+                    0x26 => radiators = LightRadiator::parse_block(blk.payload(data))?,
                     _ => {}
                 }
             }
-            maps.push(LevelMap { entry, kind: e.kind, name: e.name.clone(), textures, objects, placements, ai_network, sounds, path_data, portals });
+            maps.push(LevelMap { entry, kind: e.kind, name: e.name.clone(), textures, objects, placements, ai_network, sounds, path_data, portals, lod, radiators });
         }
         let mut by_hash = HashMap::new();
         for (m, map) in maps.iter().enumerate() {
@@ -230,16 +281,25 @@ impl Level {
     /// (0x1e79a0): main-map placements of object type 0x2A (placement flags & 0xFF); slot = parameter 0, sorted by slot
     /// (the order `View_DrawSky` 0x1e5ad0 draws them). Lightning variants (parameter 1 ≠ 0) are skipped. The bool is
     /// glist flag bit 2: drawn centred on the viewer instead of at the placement translation.
+    /// Also the clouds (case 0xD4 → `Cloud_Create` 0x18d620, `View_SetDrawInNoViews` + `View_AddSkyObj` variant
+    /// flag 0): the dispatcher passes the expanded param block as Cloud_Create's param 3 [M 001d1b68:93-97 call;
+    /// 001d04f0 case 0xd4 passes param_2], so its slot word `*(u16*)(block+0x3C)` is **parameter 4** and the drift
+    /// rates are params 0–3 [M 0018d620:20-28].
     pub fn sky_instances(&self) -> Vec<(Instance, bool)> {
         let Some(m) = self.main_map() else { return Vec::new() };
         let mut out: Vec<(u32, Instance, bool)> = Vec::new();
-        for p in self.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x2a) {
+        for p in self.maps[m].placements.iter().filter(|p| matches!(p.flags & 0xff, 0x2a | 0xd4)) {
             let param = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
-            if param(1) != 0 { continue; }
+            // 0x2A's param 1 is the lightning-variant flag (View_AddSkyObj's param_6 byte); the cloud's
+            // params 1/2 are its drift rates [M 0018d620:22-24], never a variant flag.
+            if p.flags & 0xff == 0x2a && param(1) != 0 { continue; }
+            // 0x2A: slot = param 0 [M 001d04f0 case 0x2a reads the param block at +0x2C]. 0xD4: slot = param 4
+            // [M 0018d620:27 reads *(u16*)(block+0x3C) = param block offset 0x3C = param 4].
+            let slot = if p.flags & 0xff == 0x2a { param(0) } else { param(4) };
             let target = if p.by_hash() { self.by_hash.get(&p.hashcode).copied() } else { Some((m, p.index as usize)) };
             let Some((map, object)) = target else { continue };
             let follows_camera = self.maps[map].objects[object].flags & 2 != 0;
-            out.push((param(0), Instance { map, object, matrix: placement::object_matrix(p.rotation, p.translation), placement: p.clone() }, follows_camera));
+            out.push((slot, Instance { map, object, matrix: placement::object_matrix(p.rotation, p.translation), placement: p.clone() }, follows_camera));
         }
         out.sort_by_key(|(slot, _, _)| *slot);
         out.into_iter().map(|(_, i, c)| (i, c)).collect()

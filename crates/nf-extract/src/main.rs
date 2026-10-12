@@ -79,6 +79,7 @@ fn main() -> Result<()> {
         }
         "level-survey" => level_survey(&IsoImage::open(a(1)?)?),
         "level-mesh-audit" => level_mesh_audit(&IsoImage::open(a(1)?)?, a(2)?),
+        "kind-census" => kind_census(&IsoImage::open(a(1)?)?),
         "char-textures" => char_textures(&IsoImage::open(a(1)?)?, a(2)?),
         other => bail!("unknown command {other:?} (see the module doc)"),
     }
@@ -453,7 +454,8 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     // so the shared stream is unaffected; the speech/footstep sounds simply do not play).
     let d = Data { tables: &tables, props: &props, scripts: &scripts, weapons: &weapons, world: &world, level: level_id, sequences: &sequences, skins: &level.skins, skeletons: &skeletons, nav: &nav, covers: &covers, tuning: &tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: Some(&sfx_table), models: &models, surfaces: None, voices: None };
     let mut rng = Rng::new(std::env::var("NF_SEED").ok().and_then(|v| v.parse().ok()).unwrap_or(0x1234_5678));
-    let drones = nf_game::drone::level_drones(&d, &level, &mut rng);
+    let mut lights = nf_game::light::LightList::default();
+    let drones = nf_game::drone::level_drones(&d, &level, &mut rng, &mut lights);
     let mut sim = Drones::new(drones, rng);
     sim.attach_level(&level);
     // NF_SWITCHES=22,a4: switch channels on from the start (hex).
@@ -561,6 +563,33 @@ fn placements(iso: &IsoImage, level_name: &str, kind: u32) -> Result<()> {
             println!("    gfx verts {lo:?}..{hi:?}; flags {:#x}; collision {:?}", o.flags, o.collision.as_ref().map(|c| c.triangles().len()));
         }
     }
+    }
+    Ok(())
+}
+
+/// Per-archive census of main-map placement kinds (models-misc): `archive \t kind \t count \t resolved \t unresolved \t
+/// with_gfx \t with_collision`. `resolved` = the record's object resolves (by hash or index); `with_gfx` = the object
+/// has at least one non-empty batch (a visible mesh). The companion to `level_summary` (which counts only totals).
+fn kind_census(iso: &IsoImage) -> Result<()> {
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    println!("archive\tkind\tcount\tresolved\tunresolved\twith_gfx\twith_collision");
+    for fe in entries.iter().filter(|e| e.name.to_ascii_lowercase().ends_with(".bin")) {
+        let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+        let level = nf_formats::level::Level::parse(&data)?;
+        let Some(main) = level.main_map() else { continue };
+        let mut kinds: std::collections::BTreeMap<u8, (u32, u32, u32, u32, u32)> = Default::default();
+        for p in &level.maps[main].placements {
+            let e = kinds.entry((p.flags & 0xff) as u8).or_default();
+            e.0 += 1;
+            let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                else if (p.index as usize) < level.maps[main].objects.len() { Some((main, p.index as usize)) } else { None };
+            let Some((om, oi)) = target else { e.2 += 1; continue };
+            e.1 += 1;
+            let o = &level.maps[om].objects[oi];
+            if o.gfx.leaves.iter().any(|l| !l.batches.is_empty()) { e.3 += 1; }
+            if o.collision.is_some() { e.4 += 1; }
+        }
+        for (k, (c, r, u, g, col)) in kinds { println!("{}\t0x{:02x}\t{c}\t{r}\t{u}\t{g}\t{col}", fe.name, k); }
     }
     Ok(())
 }

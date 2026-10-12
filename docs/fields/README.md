@@ -34,6 +34,17 @@ Lessons so far:
 | Struct | Doc | Fields mapped | [L-verified] | Notes |
 |---|---|---|---|---|
 | sprite (runtime HUD sprite) + HUD pane list | [sprite.md](sprite.md) | 14 | 3 | started 2026-10-12 |
+| HUDPANE_tag + HUDPANECREATE_tag + all 26 `*SprInfo` tables | [hud-panes.md](hud-panes.md) | 15 + 26 tables | 2 | fields-player 2026-10; stride 0x2C everywhere, BSS fillers found |
+| BLData (the player's 0x970-byte block) | [bldata.md](bldata.md) | ~110 | snapshot-cross-checked throughout | fields-player 2026-10; port fixes: the pain-type armour gate, the fall/drown pipeline, the clip regen |
+| weapon_data record (0x10C × 115) | [weapon_data.md](weapon_data.md) | ~40 | 3 | fields-player 2026-10; +0x60 retyped u16, +0xCC/+0xD8 are script hashes |
+| ammo_data (34 × 12) | [ammo-data.md](ammo-data.md) | 4/record + the weapon→ammo map | full dump | fields-player 2026-10 |
+| PlrStat_* / ScoringTable / RewardsTable | [player-stats.md](player-stats.md) | 14 + 11 + row layout | 4 | fields-player 2026-10; the whole system is unported (documented) |
+| obj_tag class-3 (the player) | [obj-tag-player.md](obj-tag-player.md) | ~25 | snapshot cross-checked | fields-player 2026-10; corrected the +0xCC root-height story; class 3 ↔ 0x12 |
+| Drone_tag (the AI/drone record, obj+0x110, 0xD20 bytes) — the +0x4F8 bit census, +0x2B0/+0x2B4, the alertness block, +0x5A2/+0x5A4, the secondary offsets | [drone.md](drone.md) | 32 bits + 21 fields | 0 (live pass owed) | 044y-fields-actors 2026-10-13; drove the port fixes listed in the doc |
+| DCVars_tag + StateMachineInfo_tag (Drone+0x108) + the SM message protocol | [drone-statemachine.md](drone-statemachine.md) | 4 + 11 + 20 msg ids | 0 (live pass owed) | 044y-fields-actors; obj+0xE0 = Drone_tag*, SMI embedded |
+| DroneTypeSettings (0x29aee8, 85×12) + NDrone2_StateFuncs (0x29b300, 250 entries) | [dronetype-tables.md](dronetype-tables.md) | 4 row fields + 250 states | tables read from 4 snapshots [L] | 044y-fields-actors |
+| AnimObject (obj+0xDC, 0x120 bytes): weapon bytes +0x62/+0x63/+0x64, LOD fade bytes +0x110..0x113 | [animobject.md](animobject.md) | 20 | 0 (live pass owed) | 044y-fields-actors; character alpha is obj+0x103..0x106, NOT the fade bytes |
+| HITDATA_tag (0x60) + the spawner block (obj+0xE0) + the ally/mission-fail fields | [hitdata-spawner-ally.md](hitdata-spawner-ally.md) | 15 + 12 + 12 | spawner offsets [L ee_start_05] | 044y-fields-actors; the spawner p7 arm-vs-kill disagreement is written up with a decisive live check |
 
 ## Coverage — the world-object structs (fields-world, 2026-10-12)
 
