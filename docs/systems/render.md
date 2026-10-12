@@ -37,12 +37,27 @@ alpha-list distance fade, environment mapping, dynamic lights / motion blur / br
   outer walls, gate towers). Order within a leaf is the batch order, and the overlay passes the depth test at equal
   depth (ZTST GEQUAL on the GS's inverted Z = "≤" in the port). WORKLOG 0059.
 - Typical: 463 normal + depth write (rooms); ~130 additive no write (blasts, coronas, moon, searchlights, glows);
-  16 normal no write (glass, footprints, beams); 14 normal + write in list 1 (pine trees, skybox, shadows).
-- Draw lists (`View_AddCels` 0x1e6ba0, glist flags): 0x1 → list 1 back to front; 0x2000 → list 2 after `psiClearZ`;
-  else list 0 front to back. Flags 0x8 billboard, 0x4 scale jitter 1.0–1.05 per frame, 0x10 hidden; `cel+0xA3`
+  16 normal no write (glass, footprints, beams); 14 normal + write flagged 0x1 (pine trees, skybox, shadows — as
+  statics their cel primary still draws in list 0 parse order; the flag matters for the +0x18 chain records and
+  dynamic objects, models-world).
+- Draw lists: `View_AddCels` (0x1e6ba0) pushes every visible runtime cel's **primary glist** into
+  **list 0** with a synthetic key −90000 + 10k in GfxList walk order (the VisCelList QuickSort
+  orders the chain by cel pointer ≈ allocation ≈ placement-parse order), *without consulting the
+  glist flags for the list choice* — the primary push has none [M decompile re-read, models-world].
+  The cel's +0x18 chain records (LOD variants — never present on this disc: no 0x1f blocks) and the
+  per-object entries (`View_AddObjects` 0x1e62d8) pick their list by flags: 0x1 → list 1
+  back-to-front (key −dist²), 0x2000 → list 2 after `psiClearZ`, else list 0 with +dist².
+  `View_DrawObjList` (0x1e69a0) QuickSorts ONE mixed array of cel and object entries per list and
+  draws each (cel entries through `View_DrawCelGlist`, objects through
+  `View_SetupRenderModes_Tweak` + `View_DrawObjectGlist`). So list 0 = **all visible statics in
+  placement-parse order, then the dynamic objects front-to-back**; list 1 = the flagged objects
+  back-to-front. Flags 0x8 billboard, 0x4 scale jitter 1.0–1.05 per frame, 0x10 hidden (the
+  cel-pass skip — `View_AddCels` never pushes a record with glist flags bit 0x10); `cel+0xA3`
   alpha pulse for placement types 0x8018 / 0x8019.
-- Textures: bilinear, no mipmaps (TEX1 0x60); REGION_REPEAT inside the page; MODULATE, TCC 1; animated frame (ticks per frame = 60 / rate byte for 1–59, else 1)
-  (GameState+0x38 / rate) % frames.
+- Textures: bilinear, no mipmaps (TEX1 0x60); REGION_REPEAT inside the page; MODULATE, TCC 1;
+  animated frame (ticks per frame = 60 / rate byte for 1–59, else 1)
+  (GameState+0x38 / rate) % frames. Per-object GS state: only ALPHA_1/TEST_1/ZBUF_1 occur in the
+  packets (ps2gfx.md §GS state; the 0x58/0x64 env-map/mod shapes included).
 
 ## Lighting [M, L]
 

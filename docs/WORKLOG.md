@@ -5854,3 +5854,67 @@ mission completes); boarding without the briefcase never starts the ride (the si
 the dump/repro probe kept for reference.
 
 **Full suite:** `--no-fail-fast` run green except the 3 allowed `disc_golden` failures (the slim ISO).
+
+## models-world — every level's world geometry and placed static objects: the inventory, the GS-state and draw-order fixes (2026-10-12)
+
+**Done.** The lane's inventory is complete and pinned: every placement of every story level
+(07000001–0700004b, 27 codes) resolves to an object (0 unresolved), every glist/leaf/batch/texture
+REF decodes, and the per-level counts are in `crates/nf-view/golden/models_world.tsv` (numbers
+only; `models_world_live::story_levels_match_the_model_inventory_golden` with a tamper sister).
+Disc-wide over the 27 levels: 3,571,061 static vertices / 2,278,382 triangles / 47,051 leaves /
+69,445 batches; box min/max == decoded vertex bounds bit-for-bit on every leaf (0 mismatches).
+
+**Measured — the per-object GS state closes G-018.** Over every DIRECT A+D write of all 27 levels,
+only ALPHA_1 (0x42) / TEST_1 (0x47) / ZBUF_1 (0x4e) ever occur — **no CLAMP (0x08), no TEX1
+(0x14)** in any PS2_GFX packet; CLAMP/filtering are global texture-upload state (render.md), so
+the port's fixed sampler needs no per-batch state. The six ALPHA shapes (ps2tek GS tables
+*sourced*, values *measured*): 0x44 (0,1,0,1) normal; 0x7F00000048 (0,2,0,1) additive;
+0x7F00000042 (2,0,0,1) subtractive; **0x58 (0,2,1,1) = (Cs−0)·Ad+Cd — additive gated by the
+framebuffer's alpha**; **0x64 (0,1,2,1) with FIX=0 = (Cs−Cd)·0+Cd — keep-destination**. The
+0x58/0x64 batches exist only on 07000041 map 0x63 (`EnvModTest_ModEnv`, `EnvModTest_BaseModEnv`,
+`polySurface2` 0x02000631) [D probe]; nothing in the load/draw path patches their FIX
+(psiCreateEntityGfx 0x1171b0 rewrites only texture REF addresses; DrawThisBox 0x1230d8 only kicks
+the packet; CacheAndFillNewGlistTextures 0x11f180 only uploads) — the port drew both shapes as the
+normal blend (opaque overlays!) and now implements blend 3 (keep-dest) and blend 4 (Cs·Ad+Cd).
+TEST_1 fix: 0x5000b (GEQUAL 0 = always pass) and ATST ALWAYS map to no alpha test (the old mapping
+rejected a=0 texels and skipped their depth write). `models_world_live::draw_state_matches_the_decoded_gs_writes`
+pins the mapping (unit table + the real 07000005/07000041 batches; the sisters assert the old
+mappings fail).
+
+**Measured — the real list-0 draw order (the R2 hole's root cause).** `View_DrawObjList` 0x1e69a0
+sorts ONE mixed array of cel and object entries; `View_AddCels` 0x1e6ba0 pushes every runtime
+cel's primary glist into **list 0 with the synthetic key −90000+10k in cel-chain (≈ placement-
+parse) order, with no list choice at that push**; only `View_AddObjects` 0x1e62d8's objects (and
+the cel +0x18 chain records — LOD variants, which never occur: no 0x1f block exists in any of the
+2,230 maps [D probe]) carry distance keys. So the game's list 0 = **all visible statics in
+placement-parse order, then dynamic objects front-to-back**. The port sorted everything by its own
+centre distance — a baked shadow decal with a nearer centre drew before the wall it lies on and its
+depth write rejected the wall (the user's navy blocks, R2); fix-render4's alpha_shaped reorder was
+a texture-shape stand-in. The port now uses the game's key exactly (`Material::chain`: statics get
+the parse ordinal, dynamics u32::MAX = distance-keyed), the alpha_shaped hack is retired (the
+classifier stays, pinned by decal_order_live), and glist-flag-0x1 statics draw in list 0 (the
+primary push has no list choice). `statics_draw_in_parse_order_and_decals_after_their_walls` pins
+it on 07000007. **Visual check owed**: the main agent should eyeball 07000041's env-map object and
+any flag-0x1 statics (07000005's pine trees) — no GPU in this sandbox.
+
+**Also measured this pass**: the cel-pass skip (glist flags bit 0x10) is the game's own —
+View_AddCels never pushes a record with flags & 0x10 [M re-read]; `WallHug_Blocker1_Long`'s
+out-of-range texture REF (0700000d, index 185 ≥ 185 textures) sits on a flag-0x10 blocker the game
+never draws [D]; the UV distribution confirms UV (not ST·Q) semantics — 10,966,959 coords in range,
+the 303 outliers are U-022's garbage floats; the +0x30 field exceeds the decoded triangle count on
+690 leaves (per-leaf view of U-020; worst 0700000d 274 / 0700004a 243); every placement type the
+port does not draw is listed per level in docs/models/world.md §6 (the other model lanes' material:
+fuse boxes 0x31, sensors 0x28, rigid bodies 0xd8, DynamicObjects 0x3b, …). `--bond` eyeball spots
+for every model class per level are in docs/models/world.md §5 (`bond_spots` probe).
+
+**G-014**: the microcode remains unread (no VU disassembler installable in this sandbox); the
+disc-side measurement now covers it (fresh-qword invariant on every batch, w ∈ {0,−1} on 69,445
+batches, bit-exact bounds, the nfre cross-check, the UV histogram) — GAPS row updated.
+
+**Files touched**: `crates/nf-view/src/scene.rs` (Draw::from_gs rewrite + Material::chain + the
+pass/order wiring), `crates/nf-view/src/gpu.rs` (blend 3/4 pipelines, the list-0 sort), `crates/nf-formats/src/map.rs`
+(+ the 0x1f LOD id const), `crates/nf-view/tests/models_world_live.rs` (new: the golden, the
+draw-state test, the draw-order test, the survey/probe/bond-spot tools), `crates/nf-view/golden/models_world.tsv`
+(new), `docs/models/world.md` (new), docs/formats/ps2gfx.md, docs/systems/render.md, docs/GAPS.md.
+**Full suite** (slim ISO, --test-threads=1): 97 test binaries ok; only the 3 allowed `disc_golden`
+failures (full-disc manifest/bigf goldens).

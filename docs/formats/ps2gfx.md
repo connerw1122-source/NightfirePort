@@ -55,6 +55,18 @@ MSCNT                                      run the microprogram on this batch
 B cycles through 0x2E1, 0x1D8, 0xCF (triple buffering). Texture changes (REF) apply to the batches after them; the
 first CNT also sends GS state (`FLUSHE; DIRECT` A+D writes: ALPHA_1, TEST_1, …).
 
+GS state: *measured over every DIRECT A+D write of all 27 on-foot levels* — only ALPHA_1 (0x42), TEST_1 (0x47) and
+ZBUF_1 (0x4e) ever occur (no CLAMP/TEX1/TEX0: filtering and wrapping are global texture-upload state). The ALPHA_1
+values and their port mapping (fields A,B,C,D per the ps2tek GS tables; equation ((A−B)·C >> 7) + D): 0x44 (0,1,0,1)
+= (Cs−Cd)·As+Cd normal; 0x7F00000048 (0,2,0,1) = Cs·As+Cd additive; 0x7F00000042 (2,0,0,1) = Cd−Cs·As subtractive;
+0x58 (0,2,1,1) = Cs·**Ad**+Cd — additive gated by the framebuffer's alpha (07000041's `EnvModTest_*` env-map overlays,
+the only 159); 0x64 (0,1,2,1) with FIX = 0 = (Cs−Cd)·0+Cd — keep-destination (the mod batches, the other 159; the
+GS still depth-tests/writes and alpha-tests). Nothing in the load/draw path patches the FIX field
+(`psiCreateEntityGfx` 0x1171b0, `DrawThisBox` 0x1230d8, `CacheAndFillNewGlistTextures` 0x11f180 re-checked), so the
+disc values are final. TEST_1: 0x5001b (ATE, GEQUAL 1), 0x507fd (GREATER 0x7f), 0x5000b (GEQUAL 0 = always pass);
+ZBUF_1 ZMSK at bit 32. Confidence for the state semantics: high (*sourced* tables + *measured* values; the port
+implements them in `scene.rs::Draw::from_gs`).
+
 Triangles: the GIF tag's PRIM is a triangle strip (type 4); vertex `i ≥ 2` closes triangle `(i−2, i−1, i)` unless its
 w is −1. The GS has no winding; the port's exporter alternates winding with `i`'s parity inside the batch.
 
