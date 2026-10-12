@@ -634,6 +634,9 @@ pub struct Drone {
     pub alert_block: f32,
     /// `Drone+0xCF8`: the armed-person radius that scares a Civilian (0x15d118 ENTER: 10 on 07000007, else 20).
     pub scared_radius: f32,
+    /// `Drone+0xBB0`: the tick of the last `NDrone2_OpenDoor` attempt — `ControlSTANDARD` re-tries
+    /// only 60 ticks later [M 0x1490f0:242].
+    pub door_open_at: u32,
     pub alpha: f32,
     /// A switch channel to raise after the drone's update (`SetDeathChannel`).
     pub raise: Option<u8>,
@@ -724,6 +727,7 @@ impl Drone {
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0,
             velocity: [0.0; 3], in_air: false, on_surface: true,
+            door_open_at: 0,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
         };
         dr.init_properties(d, &param);
@@ -4911,6 +4915,7 @@ impl Drones {
             .collect();
         // Per drone: timers, alertness decay, update message, turning, aim, firing, animation.
         let mut talk_queue: Vec<(usize, Vec<(usize, bool)>)> = Vec::new();
+        let mut door_sounds: Vec<(u32, V3)> = Vec::new();
         let prof_loop = crate::prof::scope("drones: control-list loop");
         for &(_, what, index) in &order {
             if what == 1 { let _pw = crate::prof::scope("ctl: kind 1");
@@ -5070,6 +5075,23 @@ impl Drones {
             let want = if dr.anim.class == 2 && dr.aims_torso() { angle_difference(dr.yaw, dr.yaw_to_opp).clamp(-0.9, 0.9) } else { 0.0 };
             dr.aim_yaw = rotate_to_bearing(dr.aim_yaw, want, 0.2, crate::trig::PI);
             if !dr.corpse { let _pf = crate::prof::scope("drone: handle_firing"); if let Some(b) = dr.handle_firing(d, rng, frame, player, (moving, first_moved), index) { self.bullets.push(b); } }
+            // `NDrone2_OpenDoor` (0x14aa38) from `ControlSTANDARD` (0x1490f0:242): a drone pushing
+            // against a closed/closing door activates it, re-trying only 60 ticks later (+0xBB0).
+            // The game reads the collision pass's hit object (+0xBA8, class 0x1C) and
+            // `NDrone2_DoorIsOpen` (0x14aaa0, open = state == 4); the port stands the hit object in
+            // with the nearest door within 2.0 of the drone (the game's own distance gate).
+            if dr.enabled && !dr.corpse && frame >= dr.door_open_at + 60 {
+                if let Some(di) = self.doors.list.iter().position(|door| {
+                    door.state & 0x12 != 0
+                        && (door.pos[0] - dr.pos[0]).powi(2) + (door.pos[1] - dr.pos[1]).powi(2) + (door.pos[2] - dr.pos[2]).powi(2) < 4.0
+                }) {
+                    let mut evs: Vec<crate::door::SoundEvent> = Vec::new();
+                    self.doors.activate(di, &[(dr.pos, 0.4, false)], false, &mut self.channels, frame, &mut evs);
+                    dr.door_open_at = frame;
+                    // The sounds play after the loop (the `rng` borrow holds `self` here).
+                    door_sounds.extend(evs.iter().map(|&(id, pos)| (id as u32, pos)));
+                }
+            }
             let _pa = crate::prof::scope("drone: update_anim");
             if let Some((next_ai, done_msg)) = dr.update_anim(d) {
                 // `SetEndAIState`: the AI state is queued, then the message routed (which applies the queued state).
@@ -5120,6 +5142,13 @@ impl Drones {
         drop(prof_loop);
         // The drones' speech requests, in update order (no random draws in `SpeechSFX` / `PlaySFX`).
         for (index, talks) in talk_queue { self.speech(d, index, talks, frame); }
+        // The drones' door-open sounds (`NDrone2_OpenDoor`'s `Door_Activate` events).
+        for (id, pos) in door_sounds {
+            match d.sfx {
+                Some(t) => { let h = t.get(id); self.play_sound_handle(pos, h); }
+                None => { self.audio.play3d(id, pos, None); }
+            }
+        }
         // `Doors_Calc` — the control pass's last act (0x1336f8's tail): the door groups sync, the busy markers
         // clear. (`switch_channels_prev` is snapshotted after `Trigger_Calc`, at the top of the tick — see above.)
         self.doors.calc();
@@ -5280,6 +5309,7 @@ mod tests {
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(),
             voice_type: 0, female: false, attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(),
             free_root: false, bounded: true, dtype: 0, mode_normal: 0, mode_alert: 0, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0, alert_block: 0.0,
+            door_open_at: 0,
         };
         dr
     }
