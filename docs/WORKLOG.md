@@ -5154,202 +5154,62 @@ paths: the take→message test uses whatever placed pickup takes; the label test
 - Tools: `tools/trace/cheats.py` (god mode + infinite ammo in PCSX2); `NF_SKIP_MAT`; probe_render4 gains
   draws-near-a-point, placements-near-a-point, texture dump and material vertices.
 - Full suite: 360 passed.
-## fix-npcs — the C2 "drawn but never attacks / can't be damaged" class, the searchlight spot ray and the 07000006 alarm music
 
-Branch `s/fix-npcs` (from origin/master 7e75c58). Playtest reference: docs/playtests/2026-10-11.md (C1/C2/C3,
-the 07000005 torso item, the 07000006 searchlight item, the 07000007 guest retest). Tests: `crates/nf-view/tests/fix_npcs_live.rs`;
-the regression fix in `crates/nf-view/tests/fix_drone3_live.rs` (shared test file, minimal, noted below).
+## map-mayhew — the Mayhew estate missions 07000005-08 mapped, the objective layer ported, walkthrough tests
 
-**The diagnosis that reframes C2.** The bathhouse/end-of-level "drawn frozen guard" is the port's ch-waiter drone in
-`NDrone2_DSTATE_WaitSwitch` — and in the GAME that drone is an INVISIBLE statue: WaitSwitch ENTER calls
-`NDrone2_Enable(0)` [M 0x15b960:14-17] which sets `obj+0xF0 |= 0x10|0x20` (View_AddObjects 0x1e62d8:33 drops 0x10
-objects from the draw; Collide_PickObj 0x1eae80:26-30 drops 0x20 objects from the pick) and clears `+0x4F8 & 0x1801A0`
-(no anim/AI) [M 0x149dd0:8-15]. It wakes only when its live switch channel fires [M 0x15b960:21-37]. The earlier
-fix-render4 WORKLOG claim ("in the game, WaitSwitch stops vision/AI engagement but the drone stays at its post with
-its idle pose and takes damage") is WRONG — corrected here; the decompile and the [L] waiters (`obj+0xFC = 0`, hit
-sphere 0) both say invisible-and-unhittable. On current master the port ALREADY hides the post-intro waiters
-(state 1, enabled false, the renderer's hidden gate at scene.rs) — the user's playtest predates that gate. Verified
-headless on 07000002 at tick 3000 (post-intro): d00/d01/d03/d06 in WaitSwitch, enabled=false, `frame_state.hidden=1`;
-the civilian woman (d21, team 2, HostageIdle) enabled and drawn. `dump_drone4`'s dump "doesn't match play" because
-its whole observation window (~542 ticks) sits INSIDE the level-start NIS freeze (~1540 ticks), where nothing has
-started yet — that is why fix-drone2/4 could not reproduce the symptom headless.
+Branch `s/map-mayhew` (from origin/master 6a012ee). Docs: `docs/levels/07000005.md` … `07000008.md`. Code:
+`crates/nf-game/src/mission.rs` (new file, this task's own), one additive hook in drone.rs (`Drones::mission` +
+the tick monitor), the volume-containment branch in triggers.rs' `touched_by` (shared file, noted). Tests:
+`crates/nf-view/tests/walk_0700000{5,6,7,8}_live.rs`.
 
-**What was actually broken and is fixed — the NIS-freeze window.** During ANY cut-scene the port left every drone
-per-drone `enabled=true`: the renderer drew them frozen (the user's symptom class on 07000005's gatehouse scene and
-every intro), and a bullet already in flight could still hit and damage them. The game: `Drone_EnableAll(0)` walks the
-whole llist calling `NDrone2_Enable(0)` per drone [M 0x1383e8:13-23], `Drone_CollisionHandler` returns while
-`NPCGlobals == 0` [M 0x140968:62], and `Script_Free`'s 0x80 flag re-enables every drone EXCEPT state-1 WaitSwitch ones
-[M 0x1da880:41-43, 0x1383e8:14]. Port fix (drone.rs): `Request::DroneEnable` now mirrors per drone
-(`enabled = on && state != WAIT_SWITCH` for present drones), and `update_player_bullets`' drone-pick loop is gated on
-`npc_enabled`. Fail-before: `fix_npcs_live::the_intro_freeze_disables_every_drone_and_shields_them_from_bullets` on
-07000002 at tick 120 (mid-freeze) — pre-fix all present drones `enabled=true` and a fired bullet damages the nearest;
-post-fix all disabled and the bullet passes through. After the intro the waiters sit in WaitSwitch disabled and the
-civilian stays enabled+drawn (asserted).
+**The objective layer [M Mission_MonitorObjectives 0x1827d8, Mission_Update 0x182c60] — ported in mission.rs.**
+The game's table is 18 records of 0x28 bytes at EE 0x2a4354 ([L] ee_start_05.bin, dumped: every record's level
+field = the mission's FIRST level code — the Mayhew records all read 0x07000005), each objective { label, fail
+ptr, +0x0C complete channel, +0x0F reveal channel, +0x10 flags (bit 1 inverted), +0x14 state }. The monitor per
+tick: state 1 + reveal ch → 3; state 3 + complete ch → 4; inverted objectives fail (ch 99) when their channel
+turns on; the all-done AND is LIVE over every objective's channel condition; ch 0x61/0x60 → fail (ch 99); all on →
+**ch 100** + Music_Event(8,1). `Mission_Update`: ch 99 → fail (end 0x7000048); ch 100 → complete → `LevelToEndTo`
+per level — **0x07000008 → 0x07300008 (the DRIVING hand-off)** [M 0x182c60:85-116]. The port runs the whole table
+(18 records — the other map sessions build on it) against `base_map(level)` (the chain ranges [S, pinned by the
+table's base codes and the driving switch]). The Mayhew chain [L]: 0x4000000 "Breach the castle walls" (ch 0x70,
+reveal 0x45) → 0x4000001 "Find a way inside to the party" (ch 0x02, reveal 0x70) → 0x4000002 (ch 0x48, reveal
+0x47) + 0x4000003 (ch 0x49, reveal 0x48) → 0x4000004 (ch 0x4A, reveal 0x49) + 0x4000005 (ch 0x4B, reveal 0x4A).
+Not ported (the HUD/fail screens): Text_AddMsg presentation, MenuManager_Create, the unarmed-impact fail reasons
+(SetMissionFailReason 7/2/0xb — the reason plumbing is 031-fix-mission's file).
 
-**The 07000006 stationary guards (C2 there) — the same class, plus a working-AI lock.** Post-intro dump: 20 of 25
-guards are ch-waiters (channels 11/12/13/15/16/18/19/55) in WaitSwitch disabled — invisible statues the game wakes by
-trigger; d14/d17 sit on always-on channel 185; d02/d15/d16/d14 are enabled IDLE guards. The enabled idle guards
-behave: `an_idle_gate_guard_sees_and_attacks_bond_on_the_same_floor` walks Bond in front of d15 — los within 70 ticks,
-alert 1.0, into the combat chain, Bond takes damage to 57. (The IDLE enter sets `+0x4F8 |= 0x10000` [M 0x15bf18:30] —
-the port's vision_on — and Idle UPDATE's `EnemyLookForOpponent` returns 0x56 [M 0x177ed0]; both already ported by
-fix-drone3.) The waiters' wake path stays fix-drone3's ch-55 test.
+**The LoadPoint containment fix [M Trigger_Hit 0x1b1fc8 does NO geometry]** — it classifies the object's CONTACT
+LIST (obj+0xD0), which the collision pass fills for anything overlapping the trigger's glist bounds. The port's
+triangle-only `touched_by` missed a toucher standing INSIDE a room-shaped volume (07000006's LoadPoint #746: 6
+tris forming an open box [D measured] — a capsule inside touches nothing). `touched_by` now also hits when the
+toucher capsule is fully contained in the trigger's bounds. fail-before: walk_07000006's dress step (ch 0x83
+never pulsed pre-fix, the dressing scene never started).
 
-**The searchlight spot ray picks the player [M], ported.** `Searchlight_Update`'s spot ray runs with pick flags 0x18,
-and Collide_PickObj's mask mapping excludes the player's class ONLY under mask 0x400 [M 0x1eae80:26-40] — the ray hits
-Bond's world sphere (`obj+0x80`, r `obj+0x8C` = 1.0576 [L]) when the beam is on him, which is what makes the arm test
-`Vec_Dist3D(spot, player) ≤ 2.0` [M 0x1cb900:251] fire at shallow angles where a static-only ray runs past him. The
-port's ray tested static geometry only (the main agent's diagnosis; fix_drone3_live's teleport-onto-the-spot test
-passed while play failed). Fix (searchlight.rs): ray-vs-sphere on top of the static segment; the closer hit wins, the
-spot orients by that normal. Fail-before shown with a pinned synthetic head over the real 07000006 world
-(`the_spot_ray_picks_bond_and_arms_the_light_from_his_sphere`): pre-fix the spot never draws and the light never arms;
-post-fix the spot lands on Bond's sphere (dist 1.31) and the light arms (state 0→1) and raises ch 55. (The test
-geometry needed the open sky at y 150: the castle's room-boundary planes at every z and the covered courtyards leave
-no un-occluded chest-height ray on foot — measured by probe and recorded here.)
-**The first cut of the fix had a real bug the regression suite caught**: `spherical(100, …)` returns a 100-length
-vector and the ray-sphere quadratic assumed a unit direction — the spot flew to −10000 and fix_drone3_live's
-searchlight test failed. Fixed (a = |dir|² in the quadratic); the incident is kept in this log because it is exactly
-why the full suite runs before every push.
+**Walkthroughs (all real path, NF_ISO, slim ISO):**
+- 07000005: the cold start #26 → the castle-gate door #118 E → fallback ch 0x1F → level_exit 0x07000006, objective
+  1 incomplete (the door route never fires ch 0x70 [L — the game completes it only on the truck route; the door
+  route's ch-0x70 writer is not on disc, flagged in the doc]); the truck ride (the fix-truck integration) parks on
+  the ch-0x70 plate → the monitor completes objective 1 → the same exit. F1's matched-entry spawn is
+  level_carry_live's (unchanged).
+- 07000006: the carried 0x1D save spawns at #496 (the truck arrival plates raise ch 185 ✓) → the LoadPoint #746
+  volume → ch 0x83 → SP #810's dressing script 0x06000071 (in the level bin, NOT a pack — 07000006 has no
+  loadable records [D]) → at its tick 1129 ch 0x02 (the objective completes) + event 0x12 → level_exit
+  0x07000007. Sister: away from the volume nothing fires.
+- 07000007: spawn #0 → the spawn plate #411 raises ch 0x47 (objective 1 reveals; the fists switch request lands
+  within ~100 ticks) → the hall plate #412 raises ch 0x48 (the lock releases; the viewer's input mapping
+  nf-view lib.rs 989/997 — `weapon_lock_input` + the rising-edge auto-draw — mirrored in the test) → objective 1
+  completes, objective 2 reveals, the P2K draws → the roof exit #418 (LOAD_LEVEL, gate 0 [D — the agent report's
+  "no recorded exit" was wrong; the placement dump found it]) → level_exit 0x07000008. Sisters: skipping #412
+  keeps fists (weapon 1) and the objective incomplete; the exit still fires (ungated).
+- 07000008: spawn #0 → the intro plate #237 raises ch 0x49 (07000007's objective 2 completes through the carried
+  records — the record chain crosses levels exactly as the [L] table says) → the boarding ch 0x4A + the ride
+  ch 0x4B (their writers are the loadable-pack scripts 0x0600004C/0x06000077-78 — the packs ARE on the slim ISO
+  [D FILES.BIN] but the SP scripts' channel events are not yet dumped; the walkthrough drives the two channels and
+  documents the gap) → ch 100 → level_exit **0x07300008** [M 0x182c60:100]. Sisters: without the ride the mission
+  stays open (no LOAD_LEVEL to fall back to); E at the gondola doors never fires the mask-8 plunge (F5's gate,
+  [M 0x1b2318:38-40] — the port-side walk-in graze remains fix-level2's open item).
 
-**The 07000006 alarm music — the missing dispatch, ported.** The chain up to `Music_Event(2,1)` was ported
-(fix-drone3/ladder2); `UpdateMusicalEvents`' per-level dispatch ran `UpdateMFX_01CastleA` for 07000005 only
-[M 0x114e70 → 0x113060]. `UpdateMFX_01CastleB` is `under_attack ? PickRandomCombat(0) : PickRandomStealth()` [M
-0x113060:26-30] — ported as the 0x0700_0006 arm of the dispatch (nf-game/src/music.rs). The NIS-trigger half
-(DAT_002d3524 == 0x6000071 → the MapMusicData+0x14/+0x18 marker jump) is NOT ported: the MapMusic parse lacks those
-marker fields (a separate nf-formats change, left to the audio session). Test: `Music::the_07000006_alarm_demands_combat_music` (nf-game/src/music.rs) streams
-`Music_Event(2,1)` per frame — the combat jump lands on the 12th tick (the hysteresis's alert_frames), targets the
-combat set; sister: a quiet 07000006 picks nothing. Shown failing pre-change? The dispatch arm is new code — the
-fail-before is the behaviour itself (pre-fix no `UpdateMFX` ran for 0x0700_0006 at all, so no jump could ever issue;
-the pinned-head searchlight test's ch55 half plus this unit test pin the two halves of the chain).
+**F5's real mechanism on 07000008** (for the record): the falling-to-death cut-scene is TouchOnce out 0x7C mask 8
+→ SP 0x06000991 [D WORKLOG 4324-4328]; the E path is closed by the mask gate; the door route's own lock channels
+(#117/#118 p3=200 [D]) are the U-044 boundary locks.
 
-**The 07000007 guest retest — already fixed on master, verified.** fix-drone4's `a_party_guest_walks_her_mission_route`
-passes with the freeze mirror in; the routed guest walks, PartyGirls stand (game-accurate [M 0x160140 case 3]), the
-waiter guests stay disabled. `the_party_waiter_guests_stay_disabled_and_the_walkers_settle` locks the post-intro
-state (no enabled guest in a combat state). The guest walk is a one-shot mission route (arrived clears prop 0x1D →
-Civilian), which is why the user sees stillness after the first walk.
-
-**The 07000005 patrol torso item — verified, no code.** fix-drone3's two-sided ±0.9 clamp is in and its test passes;
-a re-read of `AnimObjectAimAt` 0x1bfe58 confirms the port's sign convention is self-consistent (the game's aim angle
-comes from `acos` + the scalar-triple-product sign, not a yaw difference, so there is no absolute left/right datum to
-copy) — the "spine flipped" report matches the pre-fix-drone3 build. Remaining known gap (not ported, G-026 family):
-head tracking (`AnimObjectHeadTrack` bone 5, max dist 3.0, rate ~0.13 [M 0x1472c8]) — cosmetic, left to a render-side
-session.
-
-**Shared-file notes.** `crates/nf-view/tests/fix_drone3_live.rs`: the searchlight chase capped at +3 over Bond's
-start feet — with the player-pick sphere the spot rides his sphere once the beam is on him, and the old uncapped
-`spot + 0.4` chase walked him into the sky. `crates/nf-game/src/drone.rs` and `searchlight.rs`/`music.rs` are this
-task's named files; scene.rs untouched (the existing hidden gate already keys on the per-drone `enabled` the freeze
-now clears).
-
-Determinism: no new RNG draws on the shared path (the freeze mirror and the bullet gate add none; the test's
-`fire_player` call consumes the sim RNG exactly as a real shot does); the fixed 60 Hz tick path unchanged.
-## 0091 — fix-wire: the cable crossing (Player_CollWire + Player_Wire + Player_Zipline)
-
-The user's report: at the cable left of the castle gate (07000005), pressing E plays the falling-to-death
-animation instead of the hand-over-hand crossing. Root cause: the port had NO wire gameplay at all — the
-old `wire.rs` derived endpoints from "translation + glist extent" with misnamed params (`channel` = param 2,
-`glist` = param 3), and the only wire code was a proximity hack that posted `Music_Event(0xD, 1)` when Bond
-walked within 1.5 units of a wire (scene.rs `creeping`). Walking at the cable did nothing; the spot is over
-the chasm, so Bond fell (tests/wire_repro.rs: substate stayed 0, y 33.37 → 32.18 in 30 ticks).
-
-What was ported (crates/nf-game/src/wire.rs, crates/nf-game/src/player.rs, minimal scene.rs/dev.rs plumbing):
-
-- `Wire` rebuilt from the atlas: instance bytes = params 1/0/2/3 at inst+0x00/02/04/06 (type, param0,
-  param2, switch channel — the old field names were shifted); endpoints derive at grab/ride time from the
-  world sphere (centre + radius from the placement's object bounds through the yaw-only matrix — the live
-  07000005 sphere centre/radius match the snapshot [L ee_start_05 016dc430]); grab segment radius − 2.0 at
-  obj+0x58 pitch [M CollWire 0x1971f8], travel radius − 0.5 pitch 0 [M Player_Wire 0x1976f8], zipline full
-  radius at pitch [M Player_Zipline 0x197ff0]. `Wire::all` resolves placements against their map objects
-  like `ladder::all` (the hardcoded 4.0 length is gone).
-- Segment direction pinned by disassembly: `Vec_Spherical_2_Cartesian` 0x1e3948 computes
-  (r·sin θ·cos p, r·sin p, r·cos θ·cos p) of the yaw ARG (its internal `+π/2` builds the cos), and the wire
-  call sites add π/2 to obj+0x54 before the call [M 0x1971f8]. With 07000005's yaw −1.5708 the wire runs
-  along Z — the atlas's "endpoints ≈ (−19.95…−27.03, …)" X-span used a cos/sin-swapped reading; corrected
-  in the atlas.
-- `Player_CollWire` 0x197130: the grab guards (regrab, type ≠ 1, substate ≠ target, zipline lower-end
-  refusal), ClearInertia, substate 6/0xF by type, mode 0xC + anim 0x060005e5 (type 0) / 0x06000095 (type 2),
-  hang offsets 1.0207 / 1.17363, the yaw = the nearer of wire.yaw ± π/2, the hand-reach correction from the
-  grab anim's root delta (x − 0.082, rotated — signs reconstructed from the MMI disasm [S]), cam mode 0xB.
-- `Player_Wire` 0x197658 (substate 6) whole: the travel-segment endpoint snap (SqDist2D), the auto-drop
-  timer (+100/(60·30) per tick, paused in the grab pose, drop past 100), the drop path (jump press →
-  saved_sub, cam 0, regrab 0x1E, AnimObj[99]=[100] via the Sim's re-equip carry), the strafe-axis move
-  modes 7/8 with the end-zeroing band (within 0.5² of the travelled-to end or past the far one), the idle
-  pair 0x060005ec/ed, the turn pair 0x060005ee/ea and the move pair 0x060000b4/b5 with the decompile's
-  oldhash alternation and the ±0.0542 sway (perpendicular to the facing), the per-add clamp onto the line
-  at closest.y − 1.0207, and the anim root motion (the tracks sampled from the level archive's kind-5
-  scripts + the anim archive's sequences; the move pair travels 0.7637/0.7106 per cycle at the ±1.2 rate
-  [D measured]). No fall check while attached [M — the decompile has none].
-- `Player_Zipline` 0x197f50 (substate 0xF): the ride anim 0x06000096 re-added while stopped, the lower-end
-  arrival test on the LIFTED y (the decompile lifts Bond onto the wire first [M 0x197ff8]), mode 9 +
-  0x06000094 then the walk-substate dismount with regrab 60, the fall-speed accumulator (+0.15/tick) as
-  the downward velocity the clamp projects onto the line [S — the game's Player_Move applies BLData+0x18;
-  no live zipline exists on the two levels to check against].
-- The grab scan in the Sim: the level's wires tested with the capsule vs the world sphere every walking
-  tick (the game's object hit test is the swept segment vs the sphere, Collide_PickObj 0x1eae80's
-  version-0x200 branch [M]) plus on the use key [S — the PC action key; the game's jump-grab needs the
-  icon context +0x95F == 3 which is not ported]. `Player_WeaponNone` on grab, the re-equip carry on drop,
-  `Music_Event(0xD, 1)` every on-wire tick and the wire switch channel 1/0 now come from the substate
-  (the proximity hack is gone). dev.rs's wire-music scenario updated for the new Wire fields.
-
-Evidence: tests/wire_live.rs — 07000005: E grabs (substate 6, hang 34.4676 − 1.0207), the idle control leg
-holds the end, the strafe crossing travels 4.6+ units to the far end alive (health 100 the whole way), the
-at-rest clamp holds the line, the action press dismounts with regrab 0x1E and Bond stays alive; 07000002:
-the same chain across its offset-centre 11.5-radius wire (the centre rotation pinned); the zipline unit
-test rides a synthetic sloped wire downhill to the lower end and dismounts (regrab 60) with the lower-end
-grab-refusal sister. Full suite 352 passed / 3 failed (the 3 disc_golden slim-ISO failures).
-
-Not verified / left open:
-- The zipline has no live level to test against (both wires are type 0); the ride is decompile-faithful,
-  the fall-speed consumer [S].
-- The third-person wire camera: `cam_mode` 0xB is recorded on Bond but the viewer stays first-person —
-  the renderer work is out of this task's scope.
-- The jump-grab's icon context (+0x95F == 3) and the PC use-key binding are [S]; the collision grab (walk
-  into the sphere) is the [M] path and is what the tests exercise.
-- The hand-reach correction's exact MMI sign order [S]; its magnitude (~0.46 along the facing) is erased
-  by the grab anim's own root motion.
-- The 07000002 wire's ends sit inside trigger volumes (a touch trigger at the B end starts a cut-scene
-  that disables Bond mid-ride) — the test grabs mid-wire; the real game presumably starts its own script
-  there, which is the script layer's business.
-
-## fix-player4: fists knock out (the punch hit path, the KO state machine, the punch alternation)
-
-The task's three evidence lines (fix-player3, WORKLOG item 7): the punch is a bullet with 1.75 range, the KO state
-is at 0x172a30, and the port did 5.0 damage with no knock-out. All three now ported.
-
-**Who sends a drone to KO on a weapon-1 hit** (the pass fix-player3 could not fit in): `NDrone2_DealWithObjHit`
-case 5 (0x13fff0:269-306) — the shooter is the player, so the WEAPON picks the message: 1 (fists), 0x4B, 0x4D →
-**msg 6 (punch)**; 0x4A/0x4C → msg 7 (taser); 0x43/0x44 → msg 0x19; everything else `Drone_BulletHit` msg 8. The
-state table at 0x29b300 [L ee_start_05.bin] maps **0x42 → NDrone2_DSTATE_KnockedOut_Anim** (0x172a30), 0x43 →
-Knocked_Out (0x172b48), 0x53 → PunchImpact (0x172ee0). `DroneFunc_HandleImpact` case 6 (0x1469b8:34-57) calls
-`NDrone2_PunchImpact` (0x145f28) with the state's resume/allow — and a scan of all 250 DSTATE decomps shows msg 6's
-(resume, allow) equals msg 8's in every one of the 46 states that carry a case 6, so the port reuses its msg-8
-table. `PunchImpact` stamps the resume into +0x118, applies the damage through `DoHitEffects` → `HitDamage` (a head
-punch reads as a torso, 0x145558:25-30), and at health ≤ 0 enters **0x42** (mode 0x1E bots → 0xF2, not ported);
-alive it staggers (anim 0x51 → +0x118, both flinch stamps) when allow, else enters the resume state — the (0x56, 0)
-pairs are what turn a punched idle guard hostile at once.
-
-**The KO state machine** (0x172a30, disasm-checked): ENTER — corpse flag 0x20, alert status 3, health = 0,
-`CallAnim(0, 0x50, 0, next 0x47)` (the fall), `+0x4F8 |= 0x1000000` (the KO flag), `DroneWeap_DropWeapon` (the
-one-visible-gun drop at KO time), `PlrStat_LogEnemyDisabled` for enemies. EXIT — `SetDeathChannel` on every level
-EXCEPT {0x07000009, 0x0700000A}: the guard at 0x172b14 is `sltiu` (UNSIGNED), so 07000005's difference 0xfffffffc
-passes. Cases 8/9 → Death_Anim 0x44. There is NO OnInitDeath in the path: no death talk, no grenade drop. The KO
-flag makes `OnInitDeath` (0x145bd0:22,57-59) and `NDrone2_LogDroneDeath` (0x14ab00) skip
-`PlrStat_LogEnemyDispatched` — **a KO'd guard counts as disabled, not killed**, and never gets back up (the fall
-anim ends in Dead 0x47 → Fade 0x48 like any death).
-
-**The punch alternation**: `Player_SetFiringAnim` (0x1a3c70) — flag 0x80000 weapons (the fists, +0x68 = 0x880A2 [L
-record 1]) draw `Rand(100)` per shot and play +0xB4 (0x060006DD) on > 50, else +0xB0 (0x060006DE): the left/right
-punch, one shared-RNG draw per punch. Flag 0x1000/base-0x11 last-round and the 0x40000 strict toggle (+0x958) are in
-the same function; the port's `Gun::firing_anim_script` ports all of it and `scene.rs` calls it.
-
-Port: `drone.rs` — msg::PUNCH (6), states 0x42/0x43/0x53, anims 0x50/0x51, `update_player_bullets`' weapon→msg
-route, `on_punch`/`on_impact`/`on_punch_resume`/`punch_impact`, `handle_knockout` (ENTER/EXIT/update + 0x43 + 0x53),
-the KO observables (`knocked_out`, `disabled_logged`, `dispatched_logged` — the dispatched log sits where
-OnInitDeath runs, DEATH_ANIM/SpecialDeath enter). `gun.rs` — `alt_fire_toggle` (BLData+0x958) +
-`firing_anim_script`. `scene.rs` — one call (the fire-script pick; shared file, ~10 lines).
-
-Tests: `crates/nf-view/tests/fix_player4_live.rs`, driven through `nf_view::load` + `Sim::step_bond`:
-`punching_a_guard_knocks_him_out_without_killing` (pre-fix: "the punch KILLED the guard (state 0x44)"; post-fix: 2
-punches → 0x53 stagger → 0x42, no 0x44 in the state log, health 0, disabled not dispatched, the one-visible-gun
-drop; sister: a P2K shot guard logs dispatched, not disabled) and `the_punch_fire_script_alternates_left_and_right`
-(10 punches in the air; every pick predicted from a clone of the shared RNG taken before the press; both scripts
-play, 5/5 on the level seed). Full suite in the commit.
+Determinism: no RNG draws added (the monitor is channel-reading only; the containment branch is pure geometry).

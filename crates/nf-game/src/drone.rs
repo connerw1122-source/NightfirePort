@@ -3798,6 +3798,8 @@ pub struct Drones {
     /// The level's searchlights (docs/systems/world-objects.md; created in `attach_level`, updated in `tick`'s
     /// control-list order with the drones and triggers).
     pub searchlights: crate::searchlight::Searchlights,
+    /// The mission/objective records (crate::mission; the game's 0x2a4354 table).
+    pub mission: Vec<crate::mission::Record>,
     /// The level's doors (docs/systems/world-objects.md "Doors"); created in `attach_level`, updated in `tick`'s
     /// control-list order (`Door_Update`), the group sync (`Doors_Calc`) at the pass's end.
     pub doors: crate::door::Doors,
@@ -3849,7 +3851,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), mission: crate::mission::table(), doors: Default::default(), bullet_paths: Vec::new() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -4220,6 +4222,14 @@ impl Drones {
             else if step(1, 0x37, 600) || step(2, 0x61, 600) { self.music.event(2, 1); }
         }
         if self.health.health <= 0.0 { self.music.event(6, 1); }
+        // `Mission_Update` state 1 runs `Mission_MonitorObjectives` every tick [M 0x182c60:17]: the
+        // objective reveal/complete/fail monitor over the game's own record table (crate::mission).
+        // Its ch-100 complete ends the level through `Mission_Update`'s `LevelToEndTo` [M 0x182c60:85-116].
+        match crate::mission::monitor(&mut self.mission, crate::mission::base_map(d.level), &self.channels) {
+            crate::mission::Outcome::Complete => if self.level_exit.is_none() { self.level_exit = Some(crate::mission::level_end_to(d.level)); },
+            crate::mission::Outcome::Fail => if self.level_exit.is_none() { self.level_exit = Some(0x0700_0048); },
+            crate::mission::Outcome::None => {}
+        }
         // `Game_Run`: `Env_Update` (one `Rand_Rand(20000)`, then `UpdateDrops`) before the object handler.
         if let Some((kind, boxes)) = self.env_pending.take() { self.env = Some(crate::env::Drops::new(kind, boxes, d.level, &mut Rng::new(0x5eed_0001))); }
         if let Some(env) = self.env.as_mut() {

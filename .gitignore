@@ -1,13 +1,19 @@
-/target
-/work
-*.iso
-*.ISO
-*.elf
-*.ELF
-*.bin
-*.BIN
 # The sandbox's audio/Vulkan prefix and env wrapper (WORKLOG 0071/0074): extracted .deb binaries,
 # re-derivable, machine-specific.
-/tools-bin
-/scripts
+*.BIN
+*.ELF
+*.ISO
+*.bin
+*.elf
+*.iso
 /nf-view-crash.log
+/scripts
+/target
+/tools-bin
+/work
+build.log
+fmt_audio.log
+nf_*.log
+s1.log
+s3.log
+suite*.log
