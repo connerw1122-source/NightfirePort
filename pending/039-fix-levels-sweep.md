@@ -28,4 +28,6 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 - **Update the doc entry** to say it's fixed, with your commit.
 
+**Also: objective channels with no writer (from the merges of fix-mission and map-castle/map-mayhew).** For every level, list each objective's condition and enable channels (`nf_game::mission::LEVELS`) and find their writers on the disc (placements, multiplexers, script events, drone death channels, pickups, doors, locks). Known gaps: **07000005's first objective "Breach the castle walls" completes on ch 0x46** (record `46 00 01 45` at +0x0C [L ee_start_05.bin 0x2a3e34]) and its enable ch 0x45; no writer has been found for either. 07000002/03's exits are key-gated on ch 0x4C / 0x52, and 07000008's boarding and ride channels 0x4A/0x4B come from the cable-car pack script (not parsed). Port the writers you can prove, and put the rest in the table with the game function that would write them.
+
 **Branch:** `s/fix-levels-sweep`.
