@@ -26,7 +26,11 @@ pub mod id {
     pub const MAP_DATA_STATIC: u8 = 0x1a;
     pub const MEMORY_DISCARD: u8 = 0x1c;
     pub const END: u8 = 0x1d;
-    pub const LOD: u8 = 0x1f;
+    /// The second entity-params handler id: `parsemap_handle_block_id` 0x1d1020 case 4 AND 0x1f both call
+    /// `parsemap_block_entity_params`. (No level bin on the disc carries a 0x1f block [D block dumps];
+    /// models-world's `LOD = 0x1f` misnamed it — the game's `parsemap_block_LOD` is dispatch case **0x27**,
+    /// and every 0x27 payload parses as clean s32 object indices, mostly −1 [D 0700000d].)
+    pub const ENTITY_PARAMS_2: u8 = 0x1f;
     pub const PORTAL_DATA: u8 = 0x21;
     pub const AMBIENT_RADIATORS: u8 = 0x26;
     /// LOD chains (`parsemap_block_LOD` 0x1d1f10, dispatch 0x1d1020 case 0x27): 8-byte records, one per cel-list
