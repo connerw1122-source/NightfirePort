@@ -2,6 +2,8 @@
 
 The port covers the on-foot levels (ACTION.ELF). Nightfire's driving missions run on a separate executable, DRIVING.ELF (its build identity is in `docs/build-identity.md`; the decompile is in `work/decomp/DRIVING.ELF/`). Nothing has been mapped yet. Write the map so a later phase can plan the port.
 
+**Extra download for this task:** `Nightfire-driving.7z` (428,903,899 bytes), in the same share folder as `work.7z` (the `/KOTPT/` folder in your setup). Download it the same way, check the size, extract it next to the slim ISO, then delete the .7z.
+
 1. **Which levels:** the driving missions, their archive files on the disc, and how the front end hands over to DRIVING.ELF and back (the ELF switch, the arguments, the save state carried).
 2. **The main loop and the subsystems:** the frame loop, the vehicle physics (the car model, the wheel and suspension, the collision), the weapons and gadgets on the car, the AI traffic and the pursuers, the camera, the HUD, sound and music. For each: the entry points, the key structs with offsets, and how far it shares code with ACTION.ELF (the same engine functions at other addresses, or new code).
 3. **The data formats:** which of the on-foot formats (`docs/formats/`) the driving archives reuse unchanged, which differ, and what's new (the road and track data, the vehicle definitions). Run the existing parsers in `crates/nf-formats` over the driving archives and record what parses and what doesn't, as numbers.
