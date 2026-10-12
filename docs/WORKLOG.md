@@ -5136,3 +5136,47 @@ paths: the take→message test uses whatever placed pickup takes; the label test
 - Rendered after: soft banister shadows on the stair wall, soft shadows behind the paintings; the 05 start view
   is unchanged. Test: `decal_order_live.rs`. Full suite: 354 passed.
 - Also: `--bond` takes a 5th value (pitch), and F12 / the panel's screenshot logs it.
+
+## fix-player4: fists knock out (the punch hit path, the KO state machine, the punch alternation)
+
+The task's three evidence lines (fix-player3, WORKLOG item 7): the punch is a bullet with 1.75 range, the KO state
+is at 0x172a30, and the port did 5.0 damage with no knock-out. All three now ported.
+
+**Who sends a drone to KO on a weapon-1 hit** (the pass fix-player3 could not fit in): `NDrone2_DealWithObjHit`
+case 5 (0x13fff0:269-306) — the shooter is the player, so the WEAPON picks the message: 1 (fists), 0x4B, 0x4D →
+**msg 6 (punch)**; 0x4A/0x4C → msg 7 (taser); 0x43/0x44 → msg 0x19; everything else `Drone_BulletHit` msg 8. The
+state table at 0x29b300 [L ee_start_05.bin] maps **0x42 → NDrone2_DSTATE_KnockedOut_Anim** (0x172a30), 0x43 →
+Knocked_Out (0x172b48), 0x53 → PunchImpact (0x172ee0). `DroneFunc_HandleImpact` case 6 (0x1469b8:34-57) calls
+`NDrone2_PunchImpact` (0x145f28) with the state's resume/allow — and a scan of all 250 DSTATE decomps shows msg 6's
+(resume, allow) equals msg 8's in every one of the 46 states that carry a case 6, so the port reuses its msg-8
+table. `PunchImpact` stamps the resume into +0x118, applies the damage through `DoHitEffects` → `HitDamage` (a head
+punch reads as a torso, 0x145558:25-30), and at health ≤ 0 enters **0x42** (mode 0x1E bots → 0xF2, not ported);
+alive it staggers (anim 0x51 → +0x118, both flinch stamps) when allow, else enters the resume state — the (0x56, 0)
+pairs are what turn a punched idle guard hostile at once.
+
+**The KO state machine** (0x172a30, disasm-checked): ENTER — corpse flag 0x20, alert status 3, health = 0,
+`CallAnim(0, 0x50, 0, next 0x47)` (the fall), `+0x4F8 |= 0x1000000` (the KO flag), `DroneWeap_DropWeapon` (the
+one-visible-gun drop at KO time), `PlrStat_LogEnemyDisabled` for enemies. EXIT — `SetDeathChannel` on every level
+EXCEPT {0x07000009, 0x0700000A}: the guard at 0x172b14 is `sltiu` (UNSIGNED), so 07000005's difference 0xfffffffc
+passes. Cases 8/9 → Death_Anim 0x44. There is NO OnInitDeath in the path: no death talk, no grenade drop. The KO
+flag makes `OnInitDeath` (0x145bd0:22,57-59) and `NDrone2_LogDroneDeath` (0x14ab00) skip
+`PlrStat_LogEnemyDispatched` — **a KO'd guard counts as disabled, not killed**, and never gets back up (the fall
+anim ends in Dead 0x47 → Fade 0x48 like any death).
+
+**The punch alternation**: `Player_SetFiringAnim` (0x1a3c70) — flag 0x80000 weapons (the fists, +0x68 = 0x880A2 [L
+record 1]) draw `Rand(100)` per shot and play +0xB4 (0x060006DD) on > 50, else +0xB0 (0x060006DE): the left/right
+punch, one shared-RNG draw per punch. Flag 0x1000/base-0x11 last-round and the 0x40000 strict toggle (+0x958) are in
+the same function; the port's `Gun::firing_anim_script` ports all of it and `scene.rs` calls it.
+
+Port: `drone.rs` — msg::PUNCH (6), states 0x42/0x43/0x53, anims 0x50/0x51, `update_player_bullets`' weapon→msg
+route, `on_punch`/`on_impact`/`on_punch_resume`/`punch_impact`, `handle_knockout` (ENTER/EXIT/update + 0x43 + 0x53),
+the KO observables (`knocked_out`, `disabled_logged`, `dispatched_logged` — the dispatched log sits where
+OnInitDeath runs, DEATH_ANIM/SpecialDeath enter). `gun.rs` — `alt_fire_toggle` (BLData+0x958) +
+`firing_anim_script`. `scene.rs` — one call (the fire-script pick; shared file, ~10 lines).
+
+Tests: `crates/nf-view/tests/fix_player4_live.rs`, driven through `nf_view::load` + `Sim::step_bond`:
+`punching_a_guard_knocks_him_out_without_killing` (pre-fix: "the punch KILLED the guard (state 0x44)"; post-fix: 2
+punches → 0x53 stagger → 0x42, no 0x44 in the state log, health 0, disabled not dispatched, the one-visible-gun
+drop; sister: a P2K shot guard logs dispatched, not disabled) and `the_punch_fire_script_alternates_left_and_right`
+(10 punches in the air; every pick predicted from a clone of the shared RNG taken before the press; both scripts
+play, 5/5 on the level seed). Full suite in the commit.

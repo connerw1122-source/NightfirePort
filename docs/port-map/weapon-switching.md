@@ -41,6 +41,7 @@ Addresses are this build's (ACTION.ELF `e7ffdcb3…`). Tags: [M] decompile, [D] 
 | +0xA8 | u32 | reload-start script | [M] case 5 |
 | +0xB0 | u32 | fire script | [M] case 9 |
 | +0xB4 | u32 | fire-on-last-round script | [M] case 9/0xB |
+
 | **+0xC0** | **u32** | **draw script** (case 3) | **[M] disassembly 0x1a3828: `lw a1,192(s1)`** |
 | **+0xC4** | **u32** | **holster script** (case 1, played at 1.25x) | **[M] disassembly 0x1a36c0: `lw v1,196(s1)`** |
 | **+0xC8** | **u32** | **variant-swap script** (same-base swap, case 8, 1.3x) | **[M] `Player_WeaponSelect` 0x1a2cc0 line 24** |
@@ -48,6 +49,12 @@ Addresses are this build's (ACTION.ELF `e7ffdcb3…`). Tags: [M] decompile, [D] 
 | +0xD0 | u32 | idle-alert raise script (played when a target appears) | [M] case 0: `weapon_data[iVar15 + 0xd0]` |
 | +0xD4 | u32 | idle-alert lower script | [M] case 0 sub-state 3 |
 | +0xD8 | u32 | holster variant flag (case 1: if non-zero, `AnimScriptAdd` instead of `AnimScriptAddSpeed`) | [M] disassembly 0x1a36d4: `lw a1,216(s1)` |
+`Player_SetFiringAnim` (0x1a3c70) picks between +0xB0 and +0xB4 per shot: flag-0x1000/base-0x11 weapons on
+their last round (`clip < 1`, post-decrement) play +0xB4; flag-0x80000 weapons (the fists, 0x01 [L]) draw
+`Rand(100)` and play +0xB4 on > 50 — the left/right punch alternation (one shared-RNG draw per punch);
+flag-0x40000 weapons flip the `BLData+0x958` toggle and alternate strictly. Port: `Gun::firing_anim_script`
+(`gun.rs`), called from the view-script block in `scene.rs` (fix-player4).
+
 | +0xDC | u32 | first-person model hashcode | [M] `Player_EquipWeapon` |
 | +0xE0..+0xE8 | f32×3 | first-person gun offset (x, y, z) | [M] `Player_PositionGun` |
 
