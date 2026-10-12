@@ -190,6 +190,119 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     if dev {
         merge_dev_view_models(&iso, &read, &archive[..8], &mut level, &mut skeletons, &mut sequences, &mut level_scripts)?;
     }
+
+
+    // G-021 (models-characters): drone placements whose skin (placement param 0) is not in their
+    // level's archive — 33 of them on 2 levels [D scan]. TWO mechanisms, read off the decompile:
+    //
+    // 1. `AnimObjectNew` (0x1be910 disasm 0x1be958-0x1be9b0) SUBSTITUTES 0x05000090 before the
+    //    hashtable get: on GameState+0x12 == 0x0700000c → 0x05000087 (0700000c's own skin), on
+    //    0x07000014 → 0x05000093 (07000014's own). The port mirrors it at load: the placement hash
+    //    0x05000090 resolves to the substitute skin's data — exactly the object the game builds.
+    // 2. 07000014's 0x050000b1 (11 placements) has NO substitution (the disassembly covers only
+    //    0x05000090) — the game's skin table accumulates every archive loaded in the session
+    //    (`AnimLoadFile` 0x1d8248 registers per map; nothing frees between levels), and 0x050000b1
+    //    lives in 07000015/16's archives [D]. `CommonAnimFile` (the LoaderLoad type-4 name source,
+    //    the variable at 0x30d860 [M 0x1d4a00 case 0: `param_2 = CommonAnimFile` — the only
+    //    reference in ACTION.ELF, no writer]) is 0 at every level-start snapshot [L
+    //    ee_start_05.bin / ee_start_07000001.bin / ee_start_0700000a.bin @0x30d860], so the common
+    //    file is not the source here. The port merges the holding archive: its maps (the skin's
+    //    meshes are glist objects of that archive), object hashcodes (first wins), skins and
+    //    skeletons — and its 07F sequences ONLY for skeletons the level has no sequences for (a NEW
+    //    bucket; the per-skeleton lists are order-sensitive gameplay data — the WORKLOG's warning).
+    {
+        let mm = level.main_map();
+        }
+        let mm = level.main_map();
+        // The substitution [M 0x1be910]: 0x05000090 → the level's own variant, before anything
+        // else looks the hash up. `GameState+0x12` is the current level id.
+        match u32::from_str_radix(&archive[..8], 16).unwrap_or(0) {
+            0x0700_000c | 0x0700_0014 => {
+                let level_id = u32::from_str_radix(&archive[..8], 16).unwrap_or(0);
+                let sub = if level_id == 0x0700_000c { 0x0500_0087u32 } else { 0x0500_0093 };
+                if let Some(mut sk) = level.skins.get(&sub).cloned() {
+                    // The port keys its skin tables by the placement's hash (the sim's `dr.skin`,
+                    // the draw caches, the 0x800 ambient tables): the substituted entry keeps the
+                    // placement's identity while carrying the variant's data.
+                    sk.hashcode = 0x0500_0090;
+                    level.skins.entry(0x0500_0090).or_insert(sk);
+                }
+            }
+            _ => {}
+        }
+        let mut wanted: Vec<u32> = Vec::new();
+        if let Some(m) = mm {
+            for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x0f) {
+                if let Some(&v) = p.params.iter().find(|(k, _)| *k == 0).map(|(_, v)| v) {
+                    if v != 0 && !level.skins.contains_key(&v) && !wanted.contains(&v) { wanted.push(v); }
+                }
+            }
+        }
+        // The cut-scene actors: every ScriptPlayer placement's script's `Anim` skins.
+        if let Some(m) = mm {
+            for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0xd9) {
+                let Some(&v) = p.params.iter().find(|(k, _)| *k == 0).map(|(_, v)| v) else { continue };
+                let Some(nis) = level.nis.get(&v) else { continue };
+                for st in nis.streams.iter() {
+                    for cmd in st.decode() {
+                        if let nf_formats::nis::Cmd::Anim { skin, .. } = cmd {
+                            if skin != 0 && !level.skins.contains_key(&skin) && !wanted.contains(&skin) { wanted.push(skin); }
+                        }
+                    }
+                }
+            }
+        if !wanted.is_empty() {
+            static SKIN_ARCHIVES: std::sync::OnceLock<HashMap<u32, String>> = std::sync::OnceLock::new();
+            let index = SKIN_ARCHIVES.get_or_init(|| {
+                let mut map = HashMap::new();
+                for e in entries.iter().filter(|e| e.name.len() == 12 && e.name.ends_with(".bin")) {
+                    let Ok(d) = iso.read_bytes(bin.lba as u64 * 2048 + e.offset as u64, e.size as u64) else { continue };
+                    let Ok(l) = LevelBin::parse(&d) else { continue };
+                    for pe in l.entries.iter().filter(|pe| pe.kind == 3) {
+                        let raw = l.data(&d, pe);
+                        if raw.len() < 4 { continue }
+                        let h = u32::from_le_bytes(raw[0..4].try_into().unwrap());
+                        if (h & 0xff00_0000) == 0x0500_0000 { map.entry(h).or_insert_with(|| e.name.clone()); }
+                    }
+                }
+                map
+            });
+            let mut merged: Vec<String> = Vec::new();
+            for want in wanted.iter() {
+                let Some(archive_name) = index.get(want) else { eprintln!("g-021: skin {want:08x} is on no archive of the disc"); continue };
+                if merged.contains(archive_name) { continue; }
+                merged.push(archive_name.clone());
+                let Some(fd) = read(archive_name)? else { continue };
+                let mut foreign = Level::parse(&fd)?;
+                let flb = LevelBin::parse(&fd)?;
+                let map_base = level.maps.len();
+                // `LevelMap` is not `Clone`: move the maps out of the parsed foreign level.
+                level.maps.append(&mut foreign.maps);
+                let foreign_by_hash = std::mem::take(&mut foreign.by_hash);
+                for (h, (m, o)) in foreign_by_hash.iter() {
+                    level.by_hash.entry(*h).or_insert((map_base + m, *o));
+                }
+                for (&h, sk) in foreign.skins.iter() {
+                    level.skins.entry(h).or_insert_with(|| sk.clone());
+                }
+                for e in flb.entries.iter().filter(|e| e.kind == 6) {
+                    let sk = character::parse_skeleton(flb.data(&fd, e))?;
+                    if skeletons.contains_key(&(sk.id as u8)) { continue; }
+                    if let Some(anim) = read(&format!("{}F{}", &archive_name[..2], &archive_name[3..]))? {
+                        let alb = LevelBin::parse(&anim)?;
+                        for pe in alb.entries.iter().filter(|pe| pe.kind == 4 && pe.length >= 0x40) {
+                            let s = Sequence::parse(alb.data(&anim, pe))?;
+                            if s.skeleton == sk.id as u8 { sequences.entry(s.skeleton | 0x80).or_default().push(s); }
+                        }
+                    }
+                    skeletons.insert(sk.id as u8, sk);
+                }
+                eprintln!("g-021: merged {} for skins {:?} ({} maps, {} skins)", archive_name,
+                    wanted.iter().filter(|w| level.skins.contains_key(w)).map(|w| format!("{w:08x}")).collect::<Vec<_>>(),
+                    foreign.maps.len(), foreign.skins.len());
+            }
+        }
+    }
     // The loadable cut-scene packs (fix-cutscenes): `SP_LoadScript` (0x1dbc08) checks `isLoadable(hash)`
     // (0x1d69a0 — the table filled by `LoaderProcess` 0x1d4880 case 0xC from the level archive's type-0xC
     // entries, one record per entry: u32 script hashcode at +0, u8 flag at +4) and, when it hits, streams the
