@@ -28,6 +28,3 @@ Files: `crates/nf-game/src/{wire,player}.rs` and the player substate dispatch. S
 
 **Also: 07000002 has a climbable wire too**, like 07000005's. Make sure your wire port works on both levels, and add an NF_ISO test for the 07000002 wire.
 **Branch:** `s/fix-wire`.
-
----
-claimed-by: sandbox2 at 2026-10-12T03:26Z

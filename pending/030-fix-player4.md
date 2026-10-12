@@ -2,19 +2,18 @@ Read `docs/playtests/2026-10-11.md` first: it's the user's multi-level playtest,
 10. **Push your report with your branch.** Write the plain-language report (the same text you give the user) to `docs/reports/<your task id>.md` and commit it as the last commit on your branch. The main agent reads it from there, so the user doesn't have to paste it. Never put credentials or URLs in it.
 11. **Write everything in English:** code, comments, docs, the WORKLOG, commit messages and your report to the user.
 
-## Your task: `fix-hud`, the rest of the HUD
+## Your task: `fix-player4`, fists and melee
 
-Port the HUD elements the port lacks, each from the HUD code (`HUD_*`, `docs/systems/hud.md`):
-- the fire-mode label under the ammo count ("Semi" and others);
-- pickup messages ("Picked up …", armour, ammo, the 007 bonus);
-- the damage direction indicator and the hit flash;
-- the oxygen/air bar while swimming (`Player_MonitorAir`);
-- objective notices, if `fix-mission` hasn't added them;
-- the gadget icon area, empty until gadgets exist.
+`fix-player3` gathered the evidence but ran out of time:
+- the punch is a bullet with 1.75 range;
+- the knock-out state is at 0x172a30;
+- the port still does 5.0 damage with no knock-out.
 
-Match positions, colours, timings and fonts from the game's tables. A headless test per element asserts its HUD quads exist with the right texture and position, and the main agent checks the picture.
+1. Port non-lethal knock-out punches: the punch hit path for weapon 1, the drone KO state machine (fall, lie unconscious, and recover or not, as the game does), whether KO'd guards count as kills, and their drops.
+2. Port the punch animation's left/right alternation, if the game has it (the fists' animation script).
+3. Test through input: punch a guard N times and assert he enters the KO state and isn't dead.
 
-Files: `crates/nf-view/src/hud.rs` and its data tables.
+Files: `crates/nf-game/src/{gun,player}.rs`, and the KO states in `drone.rs` (pull often; `fix-drone4` may be editing it).
 
 **Reproduce before you fix.** The user's play is the reference, and previous fixes passed tests but still failed in play. For each bug:
 1. Write a headless NF_ISO test that drives the real input path (the `nf-view` input mapping into `Sim`, or `nf_view::load` plus `dev::scenario`), and show it reproducing the user's symptom.
@@ -42,8 +41,4 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 **Grenade follow-ups (user retest after `fix-player3`):**
 - The thrown grenade kills a guard on impact, bounces back and damages Bond, and there's a bounce sound but **no explosion sound or effect**. Check the impact behaviour per grenade type (the frag fuse versus contact), the explosion sound id and the listener, and port the explosion visual (script 0x6000052, `Explode_Create`).
 - **The flashbang (stun grenade) kills enemies**, even when it isn't thrown at them. A stun grenade must stun, not deal lethal damage: per-type damage (`weapon_data`, the 0x36 flags), and the stun receiving states (`StunGrenadeImpact`/`Loop`/`Recover`).
-**From the user's PCSX2 play:**
-- **Pickup notifications at the bottom middle of the screen,** naming what was picked up (the ammo type, the weapon, armour). This is the "pickup messages" item: match the game's position (bottom centre), text from the string table (`Text_AddMsg` and the message ids `Pickup_Handler` uses, e.g. 0x200000F armour, 0x2000010 key, 0x200004A bonus), duration (180 ticks), stacking and fade.
-- **A crouching indicator:** the HUD shows when Bond is crouched. Find the HUD element and its condition, and port it.
-
-**Branch:** `s/fix-hud`.
+**Branch:** `s/fix-player4`.
