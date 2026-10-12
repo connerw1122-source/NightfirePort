@@ -6041,3 +6041,64 @@ failures (full-disc manifest/bigf goldens).
   flushing the transition (the game's damage messages run inside the router [M 0x175778]).
 - `Script_Update`'s negative-delay block (above) also froze every other script that fires event 3
   with p0 = 0.
+
+## models-misc (s/models-misc, 044)
+
+**The lane: vehicles, effect meshes, broken states, front-end, cut-scene props — every model class
+mapped from the decompile, the missing draws ported, the census pinned.** Four research passes (all
+decompile, tagged): the vehicles/creators, the effect meshes, the broken/destroyed states, the front
+end. The decisive structural fact: a dynamic object's mesh is `obj+0xD8` at `obj+0x90` (`View_DrawObjList`
+0x1e69a0 → `View_DrawObjectGlist` 0x1e6780), and each placement-kind creator either attaches the
+placement's glist (→ the port's static instance at the placement transform is the game's draw exactly,
+because `control_create_object` 0x1344e0:20-29 builds obj+0x90 from the placement and those updates
+never move it) or attaches nothing (→ the game draws nothing and the port must not either).
+
+**Ported this lane:**
+- **The static dynamic entities sweep** (scene.rs `misc_static_sweep`, `Scene::misc_drawn`): locks
+  0x2E, monitors 0x30, gun-imp parents 0x34, PCQ worms 0x35, grapples 0x3A, dynamic objects 0x3B
+  (param 0 ≠ 0 = hidden until its channel [M 0x18dbf8:31] — skipped), creep walls 0x3F, rotors 0x71,
+  one-sided 0xD5, rigid bodies 0xD8, destroyables 0xE1, flickers 0xE3, cars 0xDA + `Car_InitBits`
+  0x12fec8's fixed parts (0x2000502 at the body's exact matrix, 0x2000505 at body translation + identity
+  rotation), third icons 0xFA / cam subjects 0xFD / Apocalypses 0x4A (mesh-ful only — `psiDrawObjectMatrix`
+  no-ops on empty glists). The 0x800 ambient dim and the mirror-only skip ride along.
+- **The kinds that must NOT draw** (asserted): switches 0x29 and fuseboxes 0x31 attach no mesh ever
+  ([M 0x1adcc0:35, 0x1b0448:25] — the visible box is baked geometry); GTs 0x27 are hidden at create
+  [M 0x17ffa0:78]; rainboxes 0x32 never draw their mesh (`RainBox_Clip` 0x18d0d0 reads only the AABB);
+  space laser/missile 0x38/0x39 are invisible controllers; emitters 0xF2 have no glist; clouds 0xD4
+  ride the sky pipeline.
+- **Block 0x27 = the LOD chains** (`parsemap_block_LOD` 0x1d1f10, dispatch case 0x27) — parsed per map
+  into `Map::lod`, `lod_target` = `Destroy_Smash` 0x12bb60's swap glist (celglist+0x40, arg proven by
+  disasm 0x12bbb8 `lw a1,0(s1)`). models-world's `id::LOD = 0x1f` misnamed the second entity-params id
+  (no level bin carries a 0x1f block — their probe silently found nothing); renamed `ENTITY_PARAMS_2`,
+  their probe now reads the real blocks.
+- **The sky clouds** (`Cloud_Create` 0x18d620 → `View_AddSkyObj`): `sky_instances` carries 0xD4 at
+  slot = param 4 (the dispatcher passes the expanded param block, so +0x3C = param 4); the 0x2A variant
+  flag does not apply to clouds.
+- **The gas/smoke system** (nf-game/src/gas.rs): `Gas_Init` 0x1aacc8's parameter mapping + `gases_smoke`
+  0x1ab2d0's update (types 0/4/7), the shared `smoke_1_dust` 0x0200039 quad, drawn as billboarded quads
+  with the live rgba. Spawns: Bond's muzzle smoke (`Player_MuzzleFlash` 0x1a4298:91-103 incl. the 0x2000
+  skip) and the broken-searchlight smoke (0x1cb900:373-385, every 7th frame). The game's 5 shared-RNG
+  draws per puff stay un-consumed (G-033) — counter-hash jitter; the decomp drops both call sites' life
+  arg (8/24 ticks [S]).
+- **The explosion visual**: `Explode_Create` 0x17cbd0 Script_Loads 0x6000052 at scale radius·0.06666667
+  [M :84-106]; the sim spawns a one-shot script player per blast (`spawn_once_scaled`), the scene's
+  script-entity scan adds the fixed hash, so the blast's ~40 keyframed glist entities (cloud/burst/smoke
+  quads, 16 `Blast_frame_N` one per tick, sparks, the 120-tri `Blast_radius_ball` [D script decode])
+  draw at their live matrices.
+- **The front end measured**: 07000048 has NO 3D placements (291 textures + one meshless fusebox) — the
+  front-end visuals are the kind-8 menu-def sprite pipeline (`MenuManager_Create` 0x21b908), a separate
+  task; the archive facts are asserted in the test.
+- **nf-extract kind-census**: per-archive placement-kind census (resolved/gfx/collision columns).
+
+**Fail-first shown**: the sweep disabled → the census test is red (`{}` vs the expected map), cars draw
+0 vs 12; the smoke test through the input path (pulsed trigger) red before gas.rs existed.
+
+**Full suite**: green except the 3 allowed `disc_golden` failures (slim ISO); models_misc_live 10/10,
+models_world_live green after the LOD-id fix.
+
+**Remaining** (docs/models/misc.md has the full mechanisms): the lightning (0x2C chains + FractalThing
++ the sky-slot flash driver — measured, unported); the breakables' death (per-triangle HEINFO debris +
+the glass shard pool — measured, unported); the Destroy swap wiring when a variant exists (7-16 objects
+per level); the GunImp turret child (needs the ELF TurretGuns table); rotor/RB/Apocalypse motion; the
+car MP variant (lift + 0x2000194 re-skin); trees (0xF3) via the anim-object path; the blast's
+Mat_Align2Dir tilt; overlapping blasts share the newest entity set.
