@@ -6,8 +6,8 @@ the four analog bytes, tSlot+0x122/+0x128), Bond's position and yaw (player obj+
 (0x26fc90, 256 bytes) are logged only when one changes, as "ch <frame> <index> <old> <new>" lines. Numbers only:
 no game bytes are stored.
 
---god keeps Bond alive by writing full health (100.0) and armour (50.0) into emulated RAM every frame, so the user
-can play through without dying. That changes the run (damage reactions still happen, death never does), so the
+--god keeps Bond alive by writing full health (100.0) and armour (50.0) into emulated RAM every frame, and refills
+every owned weapon's clip to the fullest seen every 30 frames, so the user can play through without dying. That changes the run (damage reactions still happen, death never does), so the
 trace header records it.
 
 Usage: python -I tools/trace/trace_record.py <out.trace> [--god] [--seconds N]
@@ -65,6 +65,7 @@ def main():
     print(f"level {level:08x}; recording to {out}{' (god mode)' if god else ''}. Play; Ctrl+C to stop.")
     channels = p.read_bytes(SWITCH_CHANNELS, 256)
     t0, last, n = time.time(), None, 0
+    max_clip = {}
     with open(out, "w") as f:
         f.write(f"# nightfire trace v1 level={level:08x} god={int(god)} start={time.strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write("# frame level pad ax ay bx by bond.x bond.y bond.z bond.yaw health armour | drone: state x y z ...\n")
@@ -81,6 +82,20 @@ def main():
                 if god and bl:
                     p.write(bl + 0x894, F100, 4)
                     p.write(bl + 0x8B0, F50, 4)
+                # Infinite ammo (with --god): every 30 frames, top each owned weapon's clip (BLData+0x1B8+w*0xC, s16;
+                # owned byte at +0x1BA) back up to the fullest clip seen for it this run.
+                if god and bl and fr % 30 == 0:
+                    for w in range(1, 0x72):
+                        e = bl + 0x1B8 + w * 0xC
+                        if p.read_bytes(e + 2, 1)[0] != 1:
+                            continue
+                        clip = p.read16(e)
+                        clip = clip - 0x10000 if clip & 0x8000 else clip
+                        best = max_clip.get(w, 0)
+                        if clip > best:
+                            max_clip[w] = clip
+                        elif clip < best:
+                            p.write(e, best, 2)
                 slot = p.read_bytes(T_SLOT + 0x122, 10)
                 held = slot[0] | slot[1] << 8
                 sticks = slot[6:10]
