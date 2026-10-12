@@ -42,6 +42,3 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 - The thrown grenade kills a guard on impact, bounces back and damages Bond, and there's a bounce sound but **no explosion sound or effect**. Check the impact behaviour per grenade type (the frag fuse versus contact), the explosion sound id and the listener, and port the explosion visual (script 0x6000052, `Explode_Create`).
 - **The flashbang (stun grenade) kills enemies**, even when it isn't thrown at them. A stun grenade must stun, not deal lethal damage: per-type damage (`weapon_data`, the 0x36 flags), and the stun receiving states (`StunGrenadeImpact`/`Loop`/`Recover`).
 **Branch:** `s/fix-pickups-trace`.
-
----
-claimed-by: sandbox2 at 2026-10-12T03:27Z
