@@ -5570,3 +5570,51 @@ nothing on the disc's 0700000d data the port can reach writes ch 0x1f except the
 itself, and the laser lives inside the crane cut-scene's scripted timeline.
 
 **Full suite:** `--no-fail-fast` run green except the 3 allowed `disc_golden` failures (the slim ISO).
+
+## fix-actors — the non-guard actors: the fail rules, the ally sub-states, the spawner arm, the inventory
+
+Branch `s/fix-actors` (origin/master b2ce7bd). Playtest reference: docs/playtests/2026-10-11.md (C1/C2/C3).
+Inventory: **docs/systems/actors.md** (new) — `DroneTypeSettings` 0x29aee8 and `NDrone2_StateFuncs` 0x29b300
+decoded from ee_start_05.bin [L], the `GetDTYPENEW` 0x14c938 special cases [M], the 593-drone sweep of all 24
+story levels (the dtype/mode/team/skin/level table), the fail rules, the spawner params, the port status.
+GAPS G-025/G-026 updated.
+
+**The protected-actor fail rules** (`ally.rs`, new): `DroneFunc_SetMissionFailReason` 0x13e560 (1/3/6/9 →
+"Killed Civilians" 0x4000034 + ch 0x60; 2/4/5/7/8/10/11/12 → "Cover Lost" 0x4000033 + ch 99; 0x10 → Alarm
+0x4000032; 0xF → ch 99 bare) and `DroneFunc_OnInitDeath` 0x145bd0's mission-fail half — the protected-actor
+props **0x53/0x54** (85 drones over 14 levels carry them: the party guests, the office/hotel staff, the
+Mayhew/Zoe/Drake VIPs, the 06 driver): team 1 dies → reason 2/4, team 2/3 → reason 1 (a drone killer) / 3
+(the player's kill). Wired at the DEATH_ANIM enter (`hit_by_player` tracks Drone+0x2B4's killer) and drained
+next to the death-channel raise; the monitor's standing ch-0x60 hook does the rest [M 0x1827d8]. Test:
+`killing_a_protected_guest_fails_the_mission_but_scaring_him_does_not` — the guest dies → ch 0x60 + the label
++ MissionState 2; the sister: a near shot and an unprotected guard leave the mission open.
+
+**The ally sub-states** (the 031-fix-mission stand-ins): AllyLeadPlayerInWay 0x15ea28, AllyLeadHide 0x15ec08
+(anim 0x19; `NotNearArmedDrone(14)` → timer C 2 ticks → Lead), AllyLeadMissionWait 0x15efc8 (the wait
+channel = obj+0x12C, 0 → 0x99), AllyLeadBondCombat 0x15f120, AllyFollowInit/Follow/FollowWait/FollowDone
+0x15f3c8/0x15f4e0/0x15f6a0/0x15f858, AllyGoToGoalPosition 0x15f938 — the Lead dispatch reads
+`NDrone2_NearArmedDrone`'s 10-unit check through a per-tick armed-peer snapshot. The real AllyLead update
+0x15e698 case 3 was read for the first time here: the armed-drone check gates the whole route update — the
+old port walked through fire. The escort test stall was exactly that rule firing (game-correct); the shared
+test now resolves the fight. `the_escort_cowers_in_a_fight_and_resumes_the_lead` drives Lead → Hide → Lead.
+
+**The spawner arm fix** (`spawners.rs`): `DroneSpawner_Create` 0x1378d0 puts param 7 at +0x14 — the **ARM**
+channel (`Control` 0x137e68 latches `ch[p7] → armed`), not a kill channel; the stop channel (p5) un-triggers,
+pauses an armed spawner, deletes an un-armed one. Pre-fix, walking 07000011's stairwell (TouchOnce #285 →
+ch 0x1D = the spawner's arm channel) REMOVED the spawner instead of arming it — the C2-class "the guards
+never arrive". Test: `the_spawner_arrives_on_its_channels`.
+
+**The trigger contact volume**: 07000011's arm touch #183 sits at the standing floor (y 46.93…47.91, the
+floor 47.81 [D]) — the port's hip-high player capsule (feet+0.15) could never reach it; `Toucher::player`
+now covers the body from the caller's y.
+
+**The boss**: 07000004's assassin (skin 0x0500001e, dtype 15 → the ATTACK start [L types[15]], death channel
+param 12 = 0x54 [D]) — `the_assassin_dies_and_completes_his_objective` pins the defeat → "Defeat the
+assassin" chain. Rook (07000014) is already driven by the map-tower2 walkthrough.
+
+**The party civilians**: the girls start PartyGirl 0x2F (GetDTYPENEW 10/11 → 0x12 = 18 decimal →
+types[18].start = 0x2E [L]) and the males Civilian 0x11 — the port already matched; the scared radius
+(+0xCF8 = 20.0, 10.0 on 07000007 [M 0x15d118]) and the scared chain were ported (fix-npcs era). The C3
+"guests can be shot" is the game's own rule — the fail now fires (the protected-guest test).
+
+Full suite: 80 binaries ok; only the 3 allowed `disc_golden` failures.
