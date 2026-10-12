@@ -98,7 +98,7 @@ Globals: `DAT_00298e20+4·group` = the group's template-drone list head, `DAT_00
 | +0x0E | u16 | **p4 trigger channel** — consumed (`= 0`) when it fires and `+0x1E` set to 1 | [M 0x1378d0:28, 0x137e68:55-62] [L-read: group 2 = 0x22] |
 | +0x10 | u16 | **p5 stop channel** — on: un-triggers (`+0x1E = 0`); pauses an armed spawner (returns); deletes an un-armed one (`obj+0xFE \|= 1`) | [M 0x1378d0:29, 0x137e68:72-85] [L-read: both 0 here] |
 | +0x12 | u16 | **p6 done channel** — raised (+ `switch_channels_time` stamp) when all waves spawned and (when `+0x14` is set) no spawned drone is alive; then the spawner disables (`obj+0xFE \|= 1`, `+0x1D = 0`) | [M 0x1378d0:30, 0x137e68:126-143] |
-| +0x14 | u16 | **p7** — `Control` latches `ch[p7]` → the byte at +0x20 **[DISPUTED, see below]** | [M 0x1378d0:31, 0x137e68:50-52] [L-read: group 2 = 0x43 (the 07000005 wall-hug plate #301)] |
+| +0x14 | u16 | **p7** — `Control` latches `ch[p7]` → the byte at +0x20 = the **KILL** channel **[L-verified, see "Live result" below]** | [M 0x1378d0:31, 0x137e68:50-52] [L-read: group 2 = 0x43 (the 07000005 wall-hug plate #301)] |
 | +0x18 | f32 | **p8 min spot distance** (0 → 10.0) — `SpawnDrone` accepts a template spot only when the player is at least this far (unless +0x1F) | [M 0x1378d0:32-36, 0x137cb0:30-34] [L-read: 10.0 and 4.0] |
 | +0x1C | u8 | the per-frame "spawn now" decision (`Control` internal; cleared at wave rollover) | [M 0x137e68:151/177/185/203] |
 | +0x1D | u8 | initialised (Init sets 1; `Control` clears it when done; 0 → `Control` returns) | [M 0x137aa0:69, 0x137e68:47/142/287] [L-read: 1] |
@@ -279,3 +279,19 @@ msg 0xC two frames later and the escort resumes the lead.
   globals confirmed by use, owners not traced.
 - HITTEST_tag's own field map (+0x62 weapon-class byte, +0x8C radius, +0x90 damage, +0x94 shape type, +0x98/0x9A
   request flags, +0x9C result flags) is only sketched here from the readers HITDATA needs.
+
+## Live result: p7 is the KILL channel (main agent, 2026-10-12)
+
+GDB-server PCSX2, 07000005, nobody playing. Channels written directly in `switch_channels` 0x26FC90 (PINE); RAM
+from slot-9 save states (`drones_snapshot.py`); gate spawner object 0x016da670, data block 0x016da780.
+
+| Step | Spawner block | Drones |
+|---|---|---|
+| start | +0x0E = 0x22, +0x14 = 0x43, +0x1D = 1, +0x1E = 0, +0x20 = 0 | 13 |
+| ch 0x22 = 1 | +0x0E → 0 (consumed), +0x1E → 1 | **15**: two gate guards spawn at (28.3, 37.2, 44.9) and (32.1, 37.0, 44.9) |
+| ch 0x43 = 1 | +0x20 stays 0 at first: ch 0x43 plays a script whose event calls `Drone_EnableAll(0)` (`Script_EventHandler` 0x1d94c0), so `NPCGlobals` byte 0 = 0 and `DroneSpawner_Control` returns at its first line. A read watchpoint on ch 0x43 saw only `amemcpy` (the per-frame channel copy) | 15 |
+| script ends (`Script_Free` re-enables NPCs) | **+0x20 → 1**, +0x1E → 0, both slots zeroed, the spawner's `obj+0xFE` → 1 (it deletes itself) | **13: both gate guards removed** |
+
+So the decompile's cleanup branch (0x137e68:235-288) is what runs: **p7 = the kill channel**, triggers.md's original
+reading. fix-actors' ARM reading is refuted. Its 07000011 playtest symptom fits the cleanup's level split: on
+0x11..0x13, 0x16 and 0x4A only drones with `obj+0xFC` == 0 are removed. The port fix is queued as `046b-fix-spawner-p7`.
