@@ -29,7 +29,10 @@ pub mod id {
     pub const LOD: u8 = 0x1f;
     pub const PORTAL_DATA: u8 = 0x21;
     pub const AMBIENT_RADIATORS: u8 = 0x26;
-    pub const UNHANDLED_27: u8 = 0x27;
+    /// LOD chains (`parsemap_block_LOD` 0x1d1f10, dispatch 0x1d1020 case 0x27): 8-byte records, one per cel-list
+    /// entry; the first dword is the next (lower) LOD object's index, −1 = none. `Destroy_Create` reads the same
+    /// word (`celglist+0x40`) as the destroyed variant's glist (`Destroy_Smash` 0x12bb60 swaps to it).
+    pub const LOD: u8 = 0x27;
     pub const MAP_SOUNDS: u8 = 0x28;
     pub const MORPH_DATA: u8 = 0x2b;
     pub const HASHLIST: u8 = 0x2c;

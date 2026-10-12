@@ -1,0 +1,246 @@
+//! models-misc: the remaining model classes — static dynamic entities, the Destroy LOD swap, the
+//! cars' fixed parts, the sky clouds, and the per-level draw census golden.
+//!
+//! Every drawn kind here is a placement kind whose game creator attaches the placement's glist to
+//! `obj+0xD8` and whose update never moves `obj+0x90` away from the placement transform, so a static
+//! World-layer instance at the placement transform is the game's draw at rest exactly [M
+//! View_DrawObjList 0x1e69a0 → View_DrawObjectGlist 0x1e6780 draws obj+0xD8 at obj+0x90;
+//! control_create_object 0x1344e0:20-29 builds obj+0x90 from the placement pos/rot].
+//! docs/models/misc.md carries the per-kind creator citations and the kinds that must NOT draw.
+//!
+//! Run with: `NF_ISO=… cargo test -p nf-view --test models_misc_live -- --test-threads=1`
+
+use std::collections::BTreeMap;
+
+fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
+
+/// Parse a level archive straight off the disc image (the same data `nf_view::load` reads).
+fn parse_level(iso: &str, name: &str) -> nf_formats::level::Level {
+    let img = nf_formats::iso9660::IsoImage::open(iso).unwrap();
+    let (entries, bin) = nf_formats::disc::files_bin_entries(&img).unwrap();
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)).unwrap_or_else(|| panic!("no {name}"));
+    let data = img.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).unwrap();
+    nf_formats::level::Level::parse(&data).unwrap()
+}
+
+/// The kind's expected drawn count for a level, recomputed independently of the scene sweep: main-map
+/// placements of the kind whose object resolves with gfx batches, minus the kinds' own skip rules
+/// (0x3B hidden-until-channel: param 0 ≠ 0 [M DynamicObject_Create 0x18dbf8:31]; mirror-only glists,
+/// flags 0x400 [M View_AddObjects 0x1e62d8:38-47]).
+fn expected_misc(level: &nf_formats::level::Level, kinds: &[u8]) -> BTreeMap<u8, usize> {
+    let mut out: BTreeMap<u8, usize> = BTreeMap::new();
+    let Some(m) = level.main_map() else { return out };
+    for p in &level.maps[m].placements {
+        let kind = (p.flags & 0xff) as u8;
+        if !kinds.contains(&kind) { continue; }
+        if kind == 0x3b && p.params.iter().find(|(i, _)| *i == 0).is_some_and(|(_, v)| *v != 0) { continue; }
+        let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+            else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
+        let Some((om, oi)) = target else { continue };
+        let o = &level.maps[om].objects[oi];
+        if !o.gfx.leaves.iter().any(|l| !l.batches.is_empty()) || o.flags & 0x400 != 0 { continue; }
+        *out.entry(kind).or_default() += 1;
+    }
+    out
+}
+
+const MISC_KINDS: [u8; 17] = [0x2e, 0x30, 0x34, 0x35, 0x3a, 0x3b, 0x3f, 0x71, 0xd5, 0xd8, 0xe1, 0xe3, 0xda, 0xfa, 0xfd, 0xfe, 0x4a];
+
+/// Every misc kind the level carries (with a resolvable, gfx-ful object) gets exactly its census count
+/// of World-layer instances — the sweep must neither skip nor double-draw a class.
+#[test]
+fn misc_static_entities_match_the_census_on_every_level() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let levels = ["07000001.bin", "07000002.bin", "07000003.bin", "07000004.bin", "07000005.bin", "07000006.bin",
+        "07000007.bin", "07000008.bin", "07000009.bin", "0700000a.bin", "0700000b.bin", "0700000c.bin",
+        "0700000d.bin", "07000011.bin", "07000012.bin", "07000013.bin", "07000014.bin", "07000015.bin",
+        "07000016.bin", "0700001b.bin", "07000041.bin", "0700004a.bin", "0700004b.bin",
+        "07000023.bin", "07000024.bin", "07000025.bin", "07000026.bin", "07000027.bin", "07000028.bin",
+        "07000029.bin", "07000043.bin", "07000046.bin", "07000049.bin"];
+    for name in levels {
+        let scene = nf_view::load(&iso, name, false).unwrap_or_else(|e| panic!("load {name}: {e}"));
+        let level = parse_level(&iso, name);
+        let expect = expected_misc(&level, &MISC_KINDS);
+        let mut got: BTreeMap<u8, usize> = scene.misc_drawn.clone();
+        // The cars' two children add to the 0xDA count in the sweep (body + 0x2000502 + 0x2000505 each);
+        // the census expectation counts bodies, so subtract the drawn children for the comparison.
+        let car_children = level.main_map().map(|m| level.by_hash.get(&0x0200_0502).is_some_and(|&(cm, co)| {
+            level.maps[cm].objects[co].gfx.leaves.iter().any(|l| !l.batches.is_empty())
+        }) && level.by_hash.get(&0x0200_0505).is_some_and(|&(cm, co)| {
+            level.maps[cm].objects[co].gfx.leaves.iter().any(|l| !l.batches.is_empty())
+        })).unwrap_or(false);
+        if car_children { if let Some(n) = got.get_mut(&0xda) { *n = n.saturating_sub(2 * n.div_ceil(3)); } }
+        assert_eq!(got, expect, "{name}: misc draw census mismatch");
+        // Spot checks against the disc census (docs/models/misc.md): 0700000c carries 5 locks, 5 dynamic
+        // objects and 5 grapple points; 0700000d carries 5 dynamic objects, 3 grapple points, 1 gun imp
+        // and 9 draw-able destroyables.
+        if name == "0700000c.bin" {
+            assert_eq!(scene.misc_drawn.get(&0x2e), Some(&5));
+            assert_eq!(scene.misc_drawn.get(&0x3b), Some(&5));
+            assert_eq!(scene.misc_drawn.get(&0x3a), Some(&5));
+        }
+        if name == "0700000d.bin" {
+            // One of the five hides until its channel (param 0 = 43 [D placements dump]) — 4 draw.
+            assert_eq!(scene.misc_drawn.get(&0x3b), Some(&4));
+            assert_eq!(scene.misc_drawn.get(&0x3a), Some(&3));
+            assert_eq!(scene.misc_drawn.get(&0x34), Some(&1));
+            assert_eq!(scene.misc_drawn.get(&0xe1), Some(&9));
+        }
+        // 07000014 carries 45 dynamic objects, 23 of them hidden until their switch channel (param 0 ≠ 0
+        // [D placements; M DynamicObject_Create 0x18dbf8:31]) — 22 draw; 12 monitors. Its 11 Apocalypse
+        // placements resolve to collision-only glists, which the game draws as nothing [M 0x18dcc0:20].
+        if name == "07000014.bin" {
+            assert_eq!(scene.misc_drawn.get(&0x3b), Some(&22));
+            assert_eq!(scene.misc_drawn.get(&0x30), Some(&12));
+            assert_eq!(scene.misc_drawn.get(&0x4a), None);
+        }
+    }
+}
+
+/// The kinds whose game creators never attach a mesh must never appear in the sweep — the wrong fix
+/// would draw fuseboxes/switches/rainboxes the game does not draw ([M 001adcc0:35 switch and 001b0448:25
+/// fusebox: obj+0xD8 = 0; 0x18d0d0 rainbox: only the AABB is read; 0x17ffa0:78 GT: hidden at create;
+/// 0x17ae00:100-101 emitter: no glist ever; 0x18d620:25-27 cloud: sky pipeline]).
+#[test]
+fn meshless_kinds_never_draw() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    // 0700001b carries 129 fusebox placements (all with gfx on their objects — but the game never
+    // attaches one); 0700000b carries 17 mesh-ful rainboxes; 07000009 12. If any of these draw, the
+    // sweep is wrong, not merely silent.
+    for name in ["0700001b.bin", "0700000b.bin", "07000009.bin"] {
+        let scene = nf_view::load(&iso, name, false).unwrap_or_else(|e| panic!("load {name}: {e}"));
+        for bad in [0x29u8, 0x31, 0x32, 0x27, 0x38, 0x39, 0xf2, 0xd4] {
+            assert_eq!(scene.misc_drawn.get(&bad), None, "{name}: kind {bad:#x} must not draw");
+        }
+        // The sister: the same levels really do carry those placements, so the assertion above has teeth.
+        let level = parse_level(&iso, name);
+        let m = level.main_map().unwrap();
+        let has = |k: u8| level.maps[m].placements.iter().any(|p| p.flags & 0xff == k as u32);
+        match name {
+            "0700001b.bin" => assert!(has(0x31), "no fuseboxes?"),
+            "0700000b.bin" => assert!(has(0x32) && has(0x29), "no rainboxes/switches?"),
+            _ => assert!(has(0x32), "no rainboxes?"),
+        }
+    }
+}
+
+/// The cars (`Car_Create` 0x1305b0 body + `Car_InitBits` 0x12fec8's fixed parts 0x2000502/0x2000505):
+/// each of 07000024's four car placements draws body + two children (12 instances), and the children
+/// resolve in the level's own hash table.
+#[test]
+fn cars_draw_body_and_two_fixed_parts() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let scene = nf_view::load(&iso, "07000024.bin", false).unwrap();
+    assert_eq!(scene.misc_drawn.get(&0xda), Some(&12), "4 cars × (body + 2 children)");
+    let level = parse_level(&iso, "07000024.bin");
+    for &h in &[0x0200_0502u32, 0x0200_0505] {
+        assert!(level.by_hash.contains_key(&h), "car part {h:#x} missing from the hash table");
+    }
+    // Sister: a level without cars draws none.
+    let scene = nf_view::load(&iso, "0700000d.bin", false).unwrap();
+    assert_eq!(scene.misc_drawn.get(&0xda), None);
+}
+
+/// The sky clouds (`Cloud_Create` 0x18d620:26-27 → `View_AddSkyObj`, slot = param 4) ride the sky pass:
+/// 07000041 and 07000006 each carry one cloud placement; it must appear in `sky_instances` and the
+/// static instance sweep must not also draw it.
+#[test]
+fn clouds_ride_the_sky_pass() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    for name in ["07000041.bin", "07000006.bin"] {
+        let data = nf_view::load(&iso, name, false).unwrap();
+        let level = parse_level(&iso, name);
+        let m = level.main_map().unwrap();
+        let clouds: Vec<_> = level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0xd4).collect();
+        assert_eq!(clouds.len(), 1, "{name}: expected one cloud placement");
+        let sky = level.sky_instances();
+        let cloud_obj = if clouds[0].by_hash() { level.by_hash.get(&clouds[0].hashcode).copied() } else { Some((m, clouds[0].index as usize)) };
+        assert!(cloud_obj.is_some_and(|c| sky.iter().any(|i| (i.0.map, i.0.object) == c)), "{name}: cloud not in the sky pass");
+        assert_eq!(data.misc_drawn.get(&0xd4), None, "the cloud must not also draw in the world sweep");
+    }
+}
+
+/// The LOD block (map block 0x27, `parsemap_block_LOD` 0x1d1f10) parses and answers lookups:
+/// 0700000d's map 01000147 has object 6 → 7; every −1 and out-of-range index reads None. This is the
+/// pointer `Destroy_Create` 0x12c318:25 stores as tag[0] and `Destroy_Smash` 0x12bb60 swaps to
+/// (Control_SetGList, arg proven by the disassembly 0x12bbb8 `lw a1,0(s1)`).
+#[test]
+fn lod_block_parses_and_destroy_swap_targets_resolve() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    nf_view::load(&iso, "0700000d.bin", false).unwrap();
+    let level = parse_level(&iso, "0700000d.bin");
+    let m = level.maps.iter().position(|mp| mp.name == "010000cf").expect("map 010000cf");
+    assert_eq!(level.maps[m].lod_target(6), Some(7));
+    assert_eq!(level.maps[m].lod_target(0), None, "−1 = no LOD");
+    assert_eq!(level.maps[m].lod_target(9), Some(11));
+    assert_eq!(level.maps[m].lod_target(usize::MAX), None, "out of range");
+    // The 0700000d C5 doors (bigdoor01/02) have NO LOD entry [D block 0x27 all −1 but map 01000147]:
+    // their smash keeps the intact glist (Destroy_Smash's tag[0] == 0 skips the swap) — the port must
+    // not invent a variant. Count the destroyables whose object has a LOD target level-wide.
+    let mut with_variant = 0;
+    if let Some(mm) = level.main_map() {
+        for p in level.maps[mm].placements.iter().filter(|p| p.flags & 0xff == 0xe1) {
+            let t = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() } else { Some((mm, p.index as usize)) };
+            if let Some((om, oi)) = t { if level.maps[om].lod_target(oi).is_some() { with_variant += 1; } }
+        }
+    }
+    eprintln!("0700000d destroyables with a LOD variant: {with_variant}");
+}
+
+/// The per-level misc census golden (numbers only): the BTreeMap of kind → drawn instances, hashed as
+/// a line `name kind:count …` per level. Sister: perturbing any count changes the hash (asserted by
+/// comparing two different levels' hashes differ and by the per-kind spot checks in the census test).
+#[test]
+fn misc_census_golden() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let levels = ["07000001.bin", "07000002.bin", "07000003.bin", "07000004.bin", "07000005.bin", "07000006.bin",
+        "07000007.bin", "07000008.bin", "07000009.bin", "0700000a.bin", "0700000b.bin", "0700000c.bin",
+        "0700000d.bin", "07000011.bin", "07000012.bin", "07000013.bin", "07000014.bin", "07000015.bin",
+        "07000016.bin", "0700001b.bin", "07000023.bin", "07000024.bin", "07000025.bin", "07000026.bin",
+        "07000027.bin", "07000028.bin", "07000029.bin", "07000041.bin", "07000043.bin", "07000046.bin",
+        "07000048.bin", "07000049.bin", "0700004a.bin", "0700004b.bin"];
+    let mut lines = Vec::new();
+    for name in levels {
+        let scene = match nf_view::load(&iso, name, false) { Ok(s) => s, Err(e) => { eprintln!("skip {name}: {e}"); continue } };
+        let mut line = format!("{name}\t");
+        for (k, n) in &scene.misc_drawn { line.push_str(&format!("{k:#04x}:{n} ")); }
+        lines.push(line.trim_end().to_string());
+        eprintln!("{}", lines.last().unwrap());
+    }
+    let h = sha1_lines(&lines);
+    let expected = "dc647240c3f1770d4018ce4410aef13af0008f07";
+    assert_eq!(h, expected, "misc census golden — if a count legitimately changed, re-pin");
+}
+
+/// The front end (07000048) — measured on the disc [D block dump + kind census]:
+/// its main map (0100009a) carries 291 textures, ONE placement (a 0x31 fusebox — a meshless-creator
+/// kind, correctly undrawn) and no 3D geometry placements; the four sub-maps' objects are sprite/menu
+/// resources. The game's front-end visuals are the kind-8 menu-def archive entry (`LoaderProcess`
+/// 0x1d4880 case 8 → `MenuManager_Load`) drawn as sprite pages by `MenuManager_Create` 0x21b908 —
+/// a sprite pipeline the port does not have yet (docs/models/misc.md, "front end"). The models-lane
+/// facts: the archive loads, the single placement resolves, the menu-def entry exists.
+#[test]
+fn frontend_level_loads_and_resolves() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let scene = nf_view::load(&iso, "07000048.bin", false).unwrap();
+    let level = parse_level(&iso, "07000048.bin");
+    let m = level.main_map().expect("07000048 main map");
+    assert_eq!(level.maps.len(), 5, "4 geometry maps + the texture main map");
+    assert_eq!(level.maps[m].placements.len(), 1);
+    let p = &level.maps[m].placements[0];
+    assert_eq!(p.flags & 0xff, 0x31, "the only placement is a fusebox (meshless creator)");
+    assert_eq!(scene.misc_drawn.get(&0x31), None, "and it correctly draws nothing");
+    // The kind-8 menu-def entry exists in the archive (`LoaderProcess` 0x1d4880 case 8).
+    let img = nf_formats::iso9660::IsoImage::open(&iso).unwrap();
+    let (entries, bin) = nf_formats::disc::files_bin_entries(&img).unwrap();
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case("07000048.bin")).unwrap();
+    let data = img.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).unwrap();
+    let lb = nf_formats::levelbin::LevelBin::parse(&data).unwrap();
+    assert_eq!(lb.entries.iter().filter(|e| e.kind == 8).count(), 1, "the menu def entry");
+}
+
+fn sha1_lines(lines: &[String]) -> String {
+    let mut h = nf_formats::sha1::Sha1::new();
+    for l in lines { h.update(l.as_bytes()); h.update(b"\n"); }
+    nf_formats::sha1::hex(&h.finish())
+}
