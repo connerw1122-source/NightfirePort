@@ -2833,8 +2833,8 @@ impl Drone {
             // GoToGoalPosition 0x63 (`NDrone2_DSTATE_GoToGoalPosition` 0x165640): run to the goal (`+0x710`), looking for
             // the opponent on the way; blocked → aim or look about; arrived or failed → DeleteMe (prop 0x59) or the
             // return state `+0x5A2`. Deaf meanwhile (`+0x4F8` 0x400000; hearing is not ported).
-            (GO_TO_GOAL_ALLY, msg::ENTER) => { self.vision_on = true; true }
-            (GO_TO_GOAL_ALLY, msg::UPDATE) => {
+            (GO_TO_GOAL, msg::ENTER) => { self.vision_on = true; true } // guard 0x63 (fix-actors had renamed it to the ally's 0x28)
+            (GO_TO_GOAL, msg::UPDATE) => {
                 if self.seen && !(self.ever_seen && self.dist >= self.engage_range) {
                     if let Some(n) = self.look_for_opponent(d) { self.set_state(n); return true; }
                 }
