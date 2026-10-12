@@ -6149,3 +6149,39 @@ failures (full-disc manifest/bigf goldens).
   flushing the transition (the game's damage messages run inside the router [M 0x175778]).
 - `Script_Update`'s negative-delay block (above) also froze every other script that fires event 3
   with p0 = 0.
+
+## fix-lighting2 — the per-draw light selection from the real glist flags, the VU1 colour units (the byte-scale add + the MINIi 255 clamp)
+
+Branch `s/fix-lighting2` (from `s/fix-lighting` + master). The merge flagged two render regressions:
+the muzzle light never reached the world draws, and restoring it saturated. Root causes, both read
+from the disc this session:
+
+- **The flags**: `Control_SetGList` 0x134960 copies `celglist+0x44` to `obj+0xF0`, and
+  `View_DrawObjList` 0x1e69a0 / `View_DrawCelGlist` 0x1e6538 (cel+0x94) / `View_SetupRenderModes`
+  0x1e78b0 pass its u16 to `Lights_CalcClosestLights` 0x1cb2e0 (kinds 0/2 need 0x80, kind 1 is
+  skipped on 0x100). The port passed 0x80 for every draw, so 07000005's 23 kind-0 ambient
+  radiators qualified everywhere and crowded the muzzle light off. Measured [D]: world cels carry
+  almost no 0x80/0x100 (131 of 132 cel placements — the radiators light only characters), the
+  character/weapon skins carry 0x8a0/0x28a0 (radiators + muzzle — "lights fall on characters"),
+  the effects 0x0321 (muzzle-excluded); the sky/sprite passes upload NO lights
+  (`psiLight_SetLights(0,0,0,0,0)` at 0x1e5ad0:89 / 0x1e5290:41). The port threads
+  `MapObject.flags & 0xffff` per draw (`Material::lflags`) and zeroes the sky slots.
+- **The units**: the shader's `lc.rgb·term/128` sat over an Unorm8x4 (byte/255) vertex colour —
+  255/128 ≈ 2× the game's byte-scale add. And the VU1 program (.vutext ~832-960, re-disassembled
+  with a PCSX2-table-checked decoder) clamps the summed colour to byte 255 with `MINIi`
+  (I = 255.0 from the LOI at 900/936, applied at 919/954) before the FTOI0 store — the game's
+  answer to close-range saturation; the port never clamped. The shader now adds /255 with
+  min(·, 1.0); `shade_vertex` mirrors it. The DIV's `_Fsf_` is bits 21-22 (PCSX2 microVU_Misc.h) —
+  the 1/d² reciprocal at I-mem 866/902 confirmed.
+- The fail-first (`lighting_live.rs::the_world_draw_nearest_the_muzzle_selects_it`) was shown
+  failing with the old 0x80 gate ("slot-0 light is NOT the muzzle (dist 2.83)") and passes with
+  the real flags; the shader-line pin and the formula-number pins are in the same file + gpu.rs's
+  shader_tests.
+- Merge fallout fixed in passing: `s/fix-lighting` had `[m`-stripped index expressions in light.rs
+  (the branch as pushed could not compile) and the merge commit's `Drones::new` missed master's
+  `useobjs/bullet_path_weapons/copters/locks` — both repaired; `fix_mission_live.rs`'s 07000001
+  escort exit re-baselined for the merged RNG stream (the courtyard door completes its opening —
+  Bond presses from the sphere edge and steps out of the sweep — and Bond waits ON the exit plate
+  near it, the game's own positioning; not this task's file, noted in the report).
+- Full suite: 495 passed, only the 3 allowed `disc_golden` failures (the slim ISO). The report
+  with the live checks for the main agent is `docs/reports/fix-lighting2.md`.
