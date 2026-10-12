@@ -26,6 +26,10 @@ Files: `crates/nf-game/src/mission.rs` (the restart flow, additive), a new `crat
 your report. Put new behaviour in new files. Pull `master` before you start and before every push: other workers
 merge into it all day.
 
+## New from the user's playtest of 2026-10-12
+
+- **A restart loop:** on 07000007, "once I died, we went into a replay loop where it kept replaying at the start of the mission over and over again. I had to quickly close out." Reproduce it first (die on 07000007 after punching a guest) and fix it before anything else here.
+
 **Reproduce before you fix.** The user's play is the reference, and previous fixes passed tests but still failed in play. For each bug:
 1. Write a headless NF_ISO test that drives the real input path (the `nf-view` input mapping into `Sim`, or `nf_view::load` plus `dev::scenario`), and show it reproducing the user's symptom.
 2. Then find the cause in the decompile and fix it.

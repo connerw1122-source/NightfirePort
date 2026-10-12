@@ -2,17 +2,25 @@ Read `docs/playtests/2026-10-11.md` first: it's the user's multi-level playtest,
 10. **Push your report with your branch.** Write the plain-language report (the same text you give the user) to `docs/reports/<your task id>.md` and commit it as the last commit on your branch. The main agent reads it from there, so the user doesn't have to paste it. Never put credentials or URLs in it.
 11. **Write everything in English:** code, comments, docs, the WORKLOG, commit messages and your report to the user.
 
-## Your task: `fix-audio2`, the audio remainder (GAPS G-032)
+## Your task: `fix-gadgets`, Bond's gadgets (currently 0 of 8 ported, removed from selection)
 
-- **G-032d:** the exact SPU2 Gaussian interpolation table (currently Catmull-Rom).
-- The cel/room-driven `SFXSetEnvironment` (reverb per room, now that cels and portals exist).
-- The speech remainder (`docs/systems/speech.md`).
-- Bullet casing sounds (the `fix-impacts` task, 110, ports the casings and owns the landing-sound trigger if it lands first; you own the sample choice), the 0x601 body-hit variant, drone foley (`NDrone2_PlaySFX`, and its RNG pitch draw in game order), sound precache, and pausing sounds during cut-scenes.
-- Music events from systems ported since (objectives, exits, room triggers).
+Read `docs/port-map/gadgets.md` first.
 
-Each one with a test against the decompile's values.
+Port, one at a time, each with a test, and re-enable it in the G-key cycle only once it works:
+1. Q-Claw grapple (`Player_SSGrapple`, substate 2; grapple points are placement 0x3A, already parsed);
+2. Q-Decryptor (`Player_SSScanMode`);
+3. Q-Laser (`Player_LaserPointer`);
+4. the laser watch and any others the 07000005–07000007 levels give Bond.
 
-Files: `crates/nf-audio/*`, `crates/nf-game/src/{sound,music}.rs`.
+Include each gadget's HUD, view model, sounds and the world interaction (grapple targets, locks, cuttable objects).
+
+Files: a new `crates/nf-game/src/gadget.rs`, `player.rs` substates (pull often: `fix-ladder2` and `fix-wire` also edit it), the gadget view models in `scene.rs`.
+
+## New from the user's playtest of 2026-10-12 (highest priority: "need to prioritize getting every gadget and weapon to work properly")
+
+- **Every gadget must be selectable and usable.** The user could not find or equip: the **Q-Worm** on 0700000a ("cant find the gadget"), the **camera** on 0700000c ("I also can't equip the camera gadget. Don't know how to. Don't think it's possible"), the **briefcase** gadget picked up on 07000012 ("it wouldn't let me switch to it, not sure how to"). Port the game's gadget selection (the inventory and the select input) so every gadget the levels give Bond can be selected, then make each one work.
+- **The laser watch** must melt the hinges of 0700000c's roof hatch (`045h-fix-level-0c` owns the hatch side).
+- Say in your report which key selects gadgets, so the user knows.
 
 **Reproduce before you fix.** The user's play is the reference, and previous fixes passed tests but still failed in play. For each bug:
 1. Write a headless NF_ISO test that drives the real input path (the `nf-view` input mapping into `Sim`, or `nf_view::load` plus `dev::scenario`), and show it reproducing the user's symptom.
@@ -28,6 +36,4 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 - **Update the doc entry** to say it's fixed, with your commit.
 
-**User playtest (2026-10-11, after fix-truck):** the 07000005 truck ride now ends the level, but **no voice lines play during the ride**. In PCSX2 the ride has dialogue. Find what plays it (the truck script's sound/speech events, `docs/systems/speech.md`, the script-player speech events), reproduce it headless along `fix_truck_live`'s ride (assert that the speech starts at the script's tick), and port it.
-
-**Branch:** `s/fix-audio2`.
+**Branch:** `s/fix-gadgets`.

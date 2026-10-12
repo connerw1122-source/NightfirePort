@@ -12,6 +12,18 @@ Also the user's report: on the gondola level, the rocket launcher and its ammo c
 
 Files: `crates/nf-game/src/{gun,bullet,pickup}.rs`, and the weapon parts of `scene.rs`.
 
+## New from the user's playtest of 2026-10-12 (highest priority: "need to prioritize getting every gadget and weapon to work properly")
+
+- **Every weapon needs a first-person model** (the dev panel: "Every single weapon needs to have a first person model"; "still missing models").
+- **Fire modes:** the Scorpion launcher's heat-seeker mode doesn't work, and the user doesn't know how to change modes. Port the alt-fire/mode switch and say which key it is in your report.
+- **The frag grenade** "does not throw well. And it looks really buggy when you throw it. And it blows up immediately as soon as it hits the ground"; an earlier grenade "bounced back and hit me … I heard the bouncing sound, but no explosion" (the explosion visual/sound may be `120-fix-explosions`'s; you own the throw and the fuse).
+- **The flashbang kills enemies** "even if I dont throw it directly at them". A stun grenade shouldn't kill.
+- **Guards drop multiple objects** each ("all enemies are dropping multiple objects").
+- **07000012: the starting pistol "does not sound right"**.
+- **Punching:** "fists alternate though I cant really tell if I knocked them out or killed them". Make a knock-out look like the game's.
+- **Switching levels in the dev panel** "eventually was given a weapon I cant use and had to swap".
+- On 07000012 there were "killable MP, unkillable NPCs, like enemies": find which drones can't be killed.
+
 **Reproduce before you fix.** The user's play is the reference, and previous fixes passed tests but still failed in play. For each bug:
 1. Write a headless NF_ISO test that drives the real input path (the `nf-view` input mapping into `Sim`, or `nf_view::load` plus `dev::scenario`), and show it reproducing the user's symptom.
 2. Then find the cause in the decompile and fix it.

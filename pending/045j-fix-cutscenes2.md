@@ -13,6 +13,13 @@ Read `docs/playtests/2026-10-11.md` first: it's the user's multi-level playtest,
 
 Files: `crates/nf-game/src/nis.rs`, `crates/nf-audio`/`sound.rs` for speech, and the script-character parts of `crates/nf-view/src/scene.rs`.
 
+## New from the user's playtest of 2026-10-12
+
+- **07000007, the Kimiko cut-scene** "immediately gets skipped and an objective banner plays" (the user may have pressed W; make sure movement keys don't skip a scene unless the game's skip input does).
+- **07000002 intro:** "models are missing from this cutscene".
+- Items 1, 3 and 4 above were seen again (no voices, the gun hand-back scene, the duplicated models in the Drake scene); the user's 07000007 screenshot `--bond 34.25,44.13,-70.71,1.549,-0.070` at frame 1790 shows two identical guards side by side.
+- The objective banner's timing around cut-scenes belongs to `045c-fix-party-mission`.
+
 **Reproduce before you fix.** The user's play is the reference, and previous fixes passed tests but still failed in play. For each bug:
 1. Write a headless NF_ISO test that drives the real input path (the `nf-view` input mapping into `Sim`, or `nf_view::load` plus `dev::scenario`), and show it reproducing the user's symptom.
 2. Then find the cause in the decompile and fix it.
