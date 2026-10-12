@@ -31,3 +31,6 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 3. Document the module's API in `docs/systems/mission.md`, so the parallel tasks can use it without reading your code.
 
 **Branch:** `s/fix-mission`.
+
+---
+claimed-by: sandbox3 at 2026-10-12T05:32Z
