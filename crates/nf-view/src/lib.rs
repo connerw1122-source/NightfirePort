@@ -40,7 +40,30 @@ const MOUSE_SENSITIVITY: f32 = 0.0025;
 /// The game's vertical field of view in play (60°, docs/systems/player.md).
 const GAME_FOV: f32 = std::f32::consts::FRAC_PI_3;
 
+#[derive(Clone, Copy)]
 struct Camera { pos: Vec3, yaw: f32, pitch: f32, fov: f32 }
+
+/// Render interpolation (G-043): logic runs at a fixed 60 Hz; frames between two ticks draw `t` of the way from
+/// the previous tick's camera and palette to the latest one (one tick behind, the standard fixed-step scheme).
+/// Jumps larger than `SNAP` (cut-scene cuts, teleports, hide/show) snap instead of blending.
+const SNAP: f32 = 4.0;
+fn lerp_cam(a: &Camera, b: &Camera, t: f32) -> Camera {
+    if a.pos.distance(b.pos) > SNAP || (a.fov - b.fov).abs() > 0.2 { return *b; }
+    let mut dy = b.yaw - a.yaw;
+    while dy > std::f32::consts::PI { dy -= std::f32::consts::TAU; }
+    while dy < -std::f32::consts::PI { dy += std::f32::consts::TAU; }
+    Camera { pos: a.pos.lerp(b.pos, t), yaw: a.yaw + dy * t, pitch: a.pitch + (b.pitch - a.pitch) * t, fov: a.fov + (b.fov - a.fov) * t }
+}
+fn lerp_palette(a: &[nf_formats::anim::Mat4], b: &[nf_formats::anim::Mat4], t: f32) -> Vec<nf_formats::anim::Mat4> {
+    if a.len() != b.len() { return b.to_vec(); }
+    a.iter().zip(b).map(|(x, y)| {
+        let d = (0..3).map(|k| (x[3][k] - y[3][k]).powi(2)).sum::<f32>().sqrt();
+        if d > SNAP { return *y; }
+        let mut m = *y;
+        for r in 0..4 { for c in 0..4 { m[r][c] = x[r][c] + (y[r][c] - x[r][c]) * t; } }
+        m
+    }).collect()
+}
 
 impl Camera {
     fn dir(&self) -> Vec3 { Vec3::new(self.pitch.cos() * self.yaw.sin(), self.pitch.sin(), self.pitch.cos() * self.yaw.cos()) }
@@ -389,7 +412,25 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     opts.right = opts_right;
     opts.up = opts_up;
     let mut r = gpu::Renderer::new(&device, &queue, format, scene, notex, nofog);
-    r.update_vertices(&queue, scene.char_vertex_start, &posed_vertices(scene, choice, time, opts));
+    r.update_skin(&queue, scene, choice, time, opts);
+    // `NF_BENCH=N`: time the per-frame CPU side N times (posing + vertex build, and the upload) for profiling.
+    if let Some(n) = std::env::var("NF_BENCH").ok().and_then(|v| v.parse::<u32>().ok()) {
+        let t0 = std::time::Instant::now();
+        for _ in 0..n { let _ = scene.animate(choice, time, opts); }
+        let t1 = std::time::Instant::now();
+        let mut v = Vec::new();
+        for _ in 0..n { v = posed_vertices(scene, choice, time, opts); }
+        let t2 = std::time::Instant::now();
+        let _ = &v;
+        queue.submit([]); let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let t3 = std::time::Instant::now();
+        let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f64() * 1000.0 / n as f64;
+        eprintln!("[bench] {} char vertices: animate {:.2} ms, posed_vertices (incl. animate) {:.2} ms, upload {:.2} ms", v.len(), ms(t0, t1), ms(t1, t2), ms(t2, t3));
+        let t4 = std::time::Instant::now();
+        for _ in 0..n { r.update_skin(&queue, scene, choice, time, opts); }
+        queue.submit([]); let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        eprintln!("[bench] GPU path: palette build + upload {:.2} ms", ms(t4, std::time::Instant::now()));
+    }
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
         dimension: wgpu::TextureDimension::D2, format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
@@ -484,6 +525,15 @@ struct App {
     /// 0x1a24c8:247): the previous tick's channel state. Reset on every level load — the game's `_prev`
     /// is restored from the RamSave, whose value for the lock channel is 0 in every pre-party level.
     prev_lock_ch: bool,
+    /// Render interpolation state: the cameras and palettes of the last two ticks, and whether a tick ran this frame.
+    ticked: bool,
+    cam_prev: Option<Camera>,
+    cam_cur: Option<Camera>,
+    pal_prev: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
+    pal_cur: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
+    /// `--fps N`: a frame-rate cap (vsync off); None = vsync.
+    fps_cap: Option<f32>,
+    frame_start: std::time::Instant,
 }
 
 impl App {
@@ -577,6 +627,8 @@ impl ApplicationHandler for App {
         // they are — like the headless `--shot` path's Rgba8Unorm. An sRGB surface would encode them again and wash the
         // picture out, so use the plain (non-sRGB) variant of the surface's format.
         config.format = config.format.remove_srgb_suffix();
+        // Vsync at the display rate by default (a 120/144 Hz display gets 120/144 fps); `--fps N` turns it off and caps.
+        config.present_mode = if self.fps_cap.is_some() { wgpu::PresentMode::AutoNoVsync } else { wgpu::PresentMode::AutoVsync };
         surface.configure(&device, &config);
         let depth = gpu::depth_view(&device, config.width, config.height);
         let renderer = gpu::Renderer::new(&device, &queue, config.format, &self.scene, self.notex, self.nofog);
@@ -770,6 +822,7 @@ impl ApplicationHandler for App {
                 }
                 if self.noclip || self.scene.sim.is_none() { self.cam.pos += mv * speed; }
                 // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
+                self.ticked = false;
                 if !self.paused {
                     // Game logic at its fixed 60 Hz, decoupled from the render rate: one AI tick per whole tick of time.
                     // Dev mode's time scale changes the number of ticks run (WORKLOG 0081), not the tick rate.
@@ -785,6 +838,7 @@ impl ApplicationHandler for App {
                         .and_then(|v| v.parse::<u32>().ok()).filter(|v| *v > 0).unwrap_or(4));
                     let elapsed = (self.anim_time as u32).saturating_sub(before).min(max_ticks);
                     let n_ticks = self.dev.as_deref_mut().map_or(elapsed, |d| d.tick_count(elapsed));
+                    self.ticked = n_ticks > 0;
                     let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
                     let look = self.cam.dir().to_array();
                     if let Some(sim) = self.scene.sim.as_mut() {
@@ -881,7 +935,23 @@ impl ApplicationHandler for App {
                 let (r, u) = cam_axes(&self.cam);
                 self.opts.right = r;
                 self.opts.up = u;
-                g.renderer.update_vertices(&g.queue, self.scene.char_vertex_start, &posed_vertices(&self.scene, self.choice, self.anim_time, self.opts));
+                // G-043: build the palette only when a tick ran, then draw between the last two ticks.
+                if self.ticked || self.pal_cur.is_none() {
+                    let new = self.scene.skin_palette(&g.renderer.skin_layout, self.choice, self.anim_time, self.opts);
+                    self.pal_prev = self.pal_cur.take();
+                    self.pal_cur = Some(new);
+                    self.cam_prev = self.cam_cur;
+                    self.cam_cur = Some(self.cam);
+                }
+                let interp = !self.noclip && !self.paused && self.scene.sim.is_some() && std::env::var_os("NF_NOINTERP").is_none();
+                let alpha = if interp { self.anim_time.fract() } else { 1.0 };
+                let draw_cam = match (self.cam_prev, self.cam_cur) { (Some(a), Some(b)) if interp => lerp_cam(&a, &b, alpha), _ => self.cam };
+                if let Some((pal, cols)) = &self.pal_cur {
+                    match &self.pal_prev {
+                        Some((pp, _)) if interp => g.renderer.upload_skin(&g.queue, &lerp_palette(pp, pal, alpha), cols),
+                        _ => g.renderer.upload_skin(&g.queue, pal, cols),
+                    }
+                }
                 let frame = match g.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
                     wgpu::CurrentSurfaceTexture::Outdated => { g.surface.configure(&g.device, &g.config); g.window.request_redraw(); return; }
@@ -899,13 +969,19 @@ impl ApplicationHandler for App {
                 };
                 let view = frame.texture.create_view(&Default::default());
                 let aspect = g.config.width as f32 / g.config.height as f32;
-                let (vp, vp_rot) = self.cam.view_proj(aspect);
-                let snow = snow_for(&self.scene, &self.cam);
+                let (vp, vp_rot) = draw_cam.view_proj(aspect);
+                let snow = snow_for(&self.scene, &draw_cam);
                 let mut hud = overlay_for(&self.scene, aspect);
                 if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }
-                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, self.cam.pos.to_array(), self.anim_time as u32, &snow, &hud);
+                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud);
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
+                if let Some(fps) = self.fps_cap.filter(|f| *f > 0.0) {
+                    let target = std::time::Duration::from_secs_f32(1.0 / fps);
+                    let el = self.frame_start.elapsed();
+                    if el < target { std::thread::sleep(target - el); }
+                }
+                self.frame_start = std::time::Instant::now();
                 g.window.request_redraw();
             }
             _ => {}
@@ -938,6 +1014,8 @@ pub fn run() -> Result<()> {
     let level = if level.to_ascii_lowercase().ends_with(".bin") { level } else { format!("{level}.bin") };
     let all = args.iter().any(|a| a == "--all");
     let dev = args.iter().any(|a| a == "--dev");
+    // `--fps N`: cap the frame rate at N with vsync off (0 = uncapped). Without it: vsync at the display rate.
+    let fps_cap: Option<f32> = args.iter().position(|a| a == "--fps").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<f32>().ok());
     let mut scenario = args.iter().position(|a| a == "--scenario").and_then(|i| args.get(i + 1)).cloned();
     let record_path = args.iter().position(|a| a == "--record").and_then(|i| args.get(i + 1)).cloned();
     let replay_path = args.iter().position(|a| a == "--replay").and_then(|i| args.get(i + 1)).cloned();
@@ -1022,7 +1100,7 @@ pub fn run() -> Result<()> {
     let sound = build_sound(&mut scene);
     // `--dev --scenario <name>`: place Bond and set up the world for a specific feature test. (B-3a/b: the two
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev::default())), notex, nofog, iso, pending_level: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev::default())), notex, nofog, iso, pending_level: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now() };
     if dev {
         if let (Some(d), Some(n)) = (app.dev.as_deref_mut(), scenario.as_ref()) {
             if let Some((_, f)) = dev::scenario(n) {

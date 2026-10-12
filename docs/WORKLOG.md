@@ -4648,3 +4648,10 @@ plate positions (walk Bond over plates 341/383 [D]) and a damage check on the wo
 Files: `crates/nf-game/src/drone.rs` (the mission-state block), `crates/nf-game/src/nav.rs` (for_path — shared
 file, minimal change, noted), the two new test files + the probe. Determinism: no new RNG draws (BondTalk's
 draws are inside the unported function); the walk call is fixed-anim.
+
+## main-1: performance — collision ray bounds, GPU skinning, render interpolation (2026-10-11)
+
+- **Sim (`NF_PROFILE=1`, new `nf_game::prof`):** 07000007's tick was 15.4 ms, 12 of it the per-drone `drawn` ray (`visible_to`): static collision had only per-object boxes and the party's rooms are single objects of thousands of triangles. Static geometry is now split into 16-triangle runs, grouped 32 at a time; segment queries slab-test both levels. Identical hits (full suite). Tick: 07000007 15.4 → 1.7 ms, 07000006 1.8 → 0.46 ms.
+- **GPU skinning (G-043):** `Scene::frame_state` (the matrices `animate` built) and `colour_mults` were split out; `skin_layout` gives each Character-layer vertex two palette indices, a weight and a colour slot, and `skin_palette` builds one frame's matrices (per character: object + skin·object per bone; attachments, searchlight parts, doors, pickups) and colours. The vertex shader blends `w·P[a]p + (1−w)·P[b]p`. `gpu_skin_live.rs` proves it equals `animate`/`posed_vertices` on 05/06/07 (max error 1.5e-5, colours exact) with a sister test. Per-frame CPU: posed vertices ≈ 16 ms + 4.6 ms upload → palette 1.5 ms.
+- **Render interpolation / high refresh:** logic stays fixed at 60 Hz; frames draw between the last two ticks (camera and palette lerp, snapping jumps > 4 units). Vsync at the display rate by default; `--fps N` caps with vsync off. `NF_NOINTERP` disables the blend.
+- **Portal walk** (`fix-perf-level`) made opt-in (`NF_PORTAL=1`): it hid all of 07000006 between the truck and the courtyard.
