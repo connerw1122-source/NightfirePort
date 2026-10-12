@@ -803,7 +803,11 @@ impl ApplicationHandler for App {
                 }
                 match (k, event.state) {
                     (KeyCode::Escape, ElementState::Pressed) => if self.grabbed { self.grab(false) } else { el.exit() },
-                    (KeyCode::F12, ElementState::Pressed) => if let Err(e) = shot(&self.scene, &self.cam, "nf-view-shot.png", self.choice, self.anim_time, self.opts, self.notex, self.nofog) { eprintln!("screenshot: {e}") },
+                    (KeyCode::F12, ElementState::Pressed) => {
+                        // Log the spot in `--bond` form so a reported view can be re-rendered headless.
+                        if let Some(sim) = self.scene.sim.as_ref() { let (p, y) = (sim.bond.pos, sim.bond.yaw); eprintln!("[spot] --bond {:.2},{:.2},{:.2},{:.3}", p[0], p[1], p[2], y); }
+                        if let Err(e) = shot(&self.scene, &self.cam, "nf-view-shot.png", self.choice, self.anim_time, self.opts, self.notex, self.nofog) { eprintln!("screenshot: {e}") }
+                    }
                     (KeyCode::BracketRight | KeyCode::BracketLeft, ElementState::Pressed) => {
                         self.choice = match (k == KeyCode::BracketRight, self.choice) {
                             (true, None) => Some(0),

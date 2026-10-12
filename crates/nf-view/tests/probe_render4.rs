@@ -19,7 +19,8 @@ fn parse_level(iso_path: &str, archive: &str) -> Level {
 #[test]
 fn probe_decal_objects_07000007() {
     let Some(iso_path) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    let archive = "07000007.bin";
+    let archive_env = std::env::var("NF_PROBE_LEVEL").unwrap_or_else(|_| "07000007.bin".into());
+    let archive = archive_env.as_str();
     let scene = nf_view::load(&iso_path, archive, false).expect("load");
     let level = parse_level(&iso_path, archive);
     let (instances, _) = level.instances(false);
