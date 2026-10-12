@@ -5353,3 +5353,50 @@ punches → 0x53 stagger → 0x42, no 0x44 in the state log, health 0, disabled 
 drop; sister: a P2K shot guard logs dispatched, not disabled) and `the_punch_fire_script_alternates_left_and_right`
 (10 punches in the air; every pick predicted from a clone of the shared RNG taken before the press; both scripts
 play, 5/5 on the level seed). Full suite in the commit.
+
+## fix-mission: the mission layer — objectives, mission flow, level ends, the 07000001 escort exit
+
+**The system** (docs/systems/mission.md is the API contract for the parallel tasks): `MissionData`
+(0x2a4350) + the 24 named objective tables decoded — the 0x18-byte objective record is +0x00 text label,
++0x04 fail label, +0x08 hint label, +0x0C condition channel, +0x0D init value, +0x0F enable channel,
++0x10 flags (bit 1 = the channel ON fails), +0x14 runtime state [L ee_start_05.bin; the readers
+0x1827d8/0x182270/0x182630; U-024 closed in docs/formats/mission-data.md]. The port embeds the tables as
+`mission::LEVELS` (`crates/nf-game/src/mission/c0<level>.rs`, texts resolved from USATxt.dat).
+
+`Mission_Init` (0x182270, from `ResetMap_GameInit` 0x1d5080:53), `Mission_MonitorObjectives` (0x1827d8:
+the per-objective state machine 0→3/2→4/5, the AND over every part of the mission → success ch 100, the
+0x60 "Killed Civilians" / 0x61 "Alarm Raised" fail hooks) and `Mission_Update` (0x182c60: ch 99 →
+"Mission Fail" → the 0x40000042 menu — the port restarts the level; ch 0x62 (player dead,
+`Player_HandleDeath` 0x190bb0:32) → the death flow; ch 100 → "Mission Complete" →
+`ResetMap_LevelToLoad(LevelToEndTo)` — 0x0730xxxx driving levels logged and skipped) — all ported in
+`crates/nf-game/src/mission.rs` (a new module), hooked at the end of `Drones::tick` (shared file, ~12
+lines: the mission fields, the lazy init, the tick, the ch 0x62 death write).
+
+**The HUD** (nf-view/src/hud.rs + scene.rs): the objective banner (pane 3: 480×56 at (16,0), the status
+label 0x02000051 "NEW OBJECTIVE" / 0x02000053 "OBJECTIVE COMPLETE" at (128,20), the text at (128,40),
+left-aligned per fmt 0x30cdb0, alpha time·17, close 16 px/tick) and the mission banner (pane 2: 512×103
+at (0,156), "Mission Complete"/"Mission Fail" centred at (256,42), the FailLabel line at (256,64)
+flashing 0x785A14 while a type-2 notice is up, close 32 px/tick) [M 0x19c310; the SprInfo tables L
+0x319580/0x319608]. All strings resolve through the existing `Lang::bind` — the mission label ids are
+bank-2/4 (0x02000053…), NOT the 0x20000053 nibble order a first pass guessed (the tests caught it).
+
+**The 07000001 exit end to end**: the level-start intro's event 0xD writes ch 0xB [L ee_start_07000001],
+releasing Mayhew (skin 0x0500004F, mode 12). The real gap: mode 12's start state 0x1c is
+**AllyLeadInit** (`NDrone2_StateFuncs[0x1c]` [L 0x29b300]; `DroneTypeSettings[12].start` [L 0x29aee8]) —
+the port had 0x1c mapped to a standing HostageIdle, so Mayhew never walked. Ported AllyLeadInit/Lead/
+Wait/Done (0x15e4f0/0x15e698/0x15eda8/0x15f2e8) over the port's existing mission-route machinery
+(`update_mission_route` = `UpdateMissionRoute` 0x154a80); the flee/combat sub-states (0x1e/0x1f/0x21/
+0x22/0x28) and `ObjectMissionPathDistance`'s exact wait rules are stand-ins for 038-fix-actors. The
+end-to-end test: the intro plays unskipped → ch 0xB → Mayhew leads ~199 units along path 0 (kind 8) →
+Bond E-opens the courtyard slide door en route → Mayhew reaches the plate (AllyLeadDone) → Bond joins →
+Touch #137 (out 0x10, filters [player, skin 0x4F]) → LOAD_LEVEL → `level_exit = Some(0x07000002)`.
+
+**Tests** (`crates/nf-view/tests/fix_mission_live.rs`, all through `nf_view::load` + `Sim::step_bond`,
+each shown failing pre-fix): the objective lifecycle (07000005's enable 0x45 → "Breach the castle walls"
+→ condition 0x46 → OBJECTIVE COMPLETE; sister: an unrelated channel does nothing), the alarm fail
+(07000009: the alarm button's channel 0x7C → the disc's own OR (placement 278, out 0x61) → "Fail: …" +
+FailLabel "Alarm Raised" + ch 99 → "Mission Fail" → the restart; sister: no alarm, no fail), mission
+success (every part's channel on 07000001 → ch 100 → "Mission Complete" → LevelToEndTo 0x07000048; the
+AND is unsatisfied one channel short), and the end-to-end escort exit. Docs: docs/systems/mission.md
+(new, the API), docs/systems/levels.md §7 (all 55 objectives per level), docs/formats/mission-data.md
+(U-024 closed).

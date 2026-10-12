@@ -280,3 +280,71 @@ param-24 artifacts. On 0x7000014 a decoded weapon in (0x34, 0x37) clamps to 0x34
 guards actually have grenades, or set the grenade fields the way `NDrone2_DefaultInit` decodes param 11 (grenade_live
 uses raw 0x13 → 0x36 × 3). The port's `Drone::new` reads **param 11** to set `+0xBCC`/`+0xBCE` (fix-drone; it
 previously read param 24, which decodes to no grenades on every level).
+
+## 7. Objectives per level (fix-mission)
+
+`MissionData` (ACTION.ELF 0x2a4350, docs/formats/mission-data.md) gives every story level its
+objective list; the port embeds it in `crates/nf-game/src/mission/`. Texts resolved from
+USATxt.dat [L ee_start_05.bin; the port's `Lang::bind`]. "ch" = the condition channel that
+completes the objective (FAIL = the channel failing it instead), "en" = the announce-gate channel
+(0 = announce at level start). The mission's objectives AND together into success channel 100, so
+it fires at the mission's last level only [M 0x1827d8].
+
+| Level | Objective (text) | ch | en | |
+|---|---|---|---|---|
+| 0x07000001 | "Escort Mayhew to bunker" | 0x47 | 0x00 |  |
+| 0x07000002 | "Destroy Mayhew's computer" | 0x48 | 0x47 |  |
+|  | "Rescue geisha girls" | 0x4b | 0x47 |  |
+|  | "Find door to servants quarters" | 0x4d | 0x4c |  |
+| 0x07000003 | "Retrieve Dragon Safe contents" | 0x4e | 0x4d |  |
+|  | "Rescue Mayhew's servants" | 0x51 | 0x4d |  |
+|  | "Find door leading to Mayhew" | 0x53 | 0x52 |  |
+| 0x07000004 | "Defeat the assassin" | 0x54 | 0x53 |  |
+| 0x07000005 | "Breach the castle walls" | 0x46 | 0x45 |  |
+| 0x07000006 | "Find a way inside to the party" | 0x02 | 0x46 |  |
+| 0x07000007 | "Rendezvous with undercover agents and maintain cover as party guest" | 0x48 | 0x47 |  |
+|  | "Spy on secret meeting" | 0x49 | 0x48 |  |
+| 0x07000008 | "Retrieve guidance chip from "Safe Room"" | 0x4a | 0x49 |  |
+|  | "Escape with Zoe in gondola" | 0x4b | 0x4a |  |
+| 0x07000009 | "Don't let the security guards raise the alarm" | 0x61 | 0x00 | FAIL |
+|  | "Get to the lobby and activate the main elevator system" | 0x46 | 0x00 |  |
+|  | "Take main elevator to office floor" | 0x47 | 0x46 |  |
+| 0x0700000a | "Install Q-Worm on office computer systems" | 0x48 | 0x47 |  |
+|  | "Find the security center and unlock exterior door" | 0x49 | 0x47 |  |
+|  | "Find door to outer balcony" | 0x4b | 0x4a |  |
+| 0x0700000b | "Install Q-Worm on Mayhew's computer system" | 0x4c | 0x4b |  |
+|  | "Locate the Secure Terminal Room" | 0x4d | 0x4b |  |
+|  | "Retrieve the NightFire files from the Secure Terminal" | 0x4e | 0x4d |  |
+|  | "Escape to the roof" | 0x59 | 0x4f |  |
+|  | "Acquire parachute from helicopter then jump off tower roof" | 0x5a | 0x59 |  |
+| 0x0700000c | "Investigate building ST- 1 " | 0x1b | 0x00 |  |
+|  | "Photograph the Jetpack Prototype " | 0x1c | 0x1b |  |
+|  | "Advance through Warehouse TR - 2" | 0x23 | 0x1c |  |
+| 0x0700000d | "Investigate building ST- 3 " | 0x1d | 0x23 |  |
+|  | "Photograph the Laser Prototype" | 0x1e | 0x1d |  |
+|  | "Destroy door C5 with mounted laser on catwalk" | 0x1f | 0x1d |  |
+| 0x0700000e | "Disable all security measures before using the lift" | 0x0f | 0x00 |  |
+|  | "Disable system 1 of 3" | 0x0a | 0x07 |  |
+|  | "Disable system 2 of 3" | 0x0b | 0x08 |  |
+|  | "Disable system 3 of 3" | 0x0c | 0x09 |  |
+| 0x0700000f | "Mission Objective 5" | 0x00 | 0x00 |  |
+| 0x07000010 | "Mission Objective 1" | 0x00 | 0x00 |  |
+|  | "Mission Objective 2" | 0x00 | 0x00 |  |
+|  | "Mission Objective 3" | 0x00 | 0x00 |  |
+| 0x07000011 | "Escape from the tower" | 0x64 | 0x00 |  |
+|  | "Gain access to lower office floor" | 0x48 | 0x00 |  |
+| 0x07000012 | "Activate elevator override control in security center" | 0x49 | 0x48 |  |
+|  | "Escape through the elevator shaft" | 0x4d | 0x49 |  |
+| 0x07000013 | "Raise security gate and escape through front entrance" | 0x50 | 0x4a |  |
+| 0x07000014 | "Infiltrate Drake's facility undetected" | 0x47 | 0x00 |  |
+|  | "Follow Kiko to the Security Control Center" | 0x48 | 0x47 |  |
+|  | "Sabotage base security and escape from room" | 0x4a | 0x48 |  |
+|  | "Prevent Rook from cutting the power to Delta Sector" | 0x54 | 0x4a |  |
+|  | "Take the exit to Delta Sector" | 0xce | 0x54 |  |
+| 0x07000015 | "Find the exit to Omega Sector" | 0x8e | 0x4b |  |
+| 0x07000016 | "Reach Drake's launch silo" | 0x8f | 0x8e |  |
+|  | "Prevent Kiko from launching into space" | 0x90 | 0x8f |  |
+| 0x0700001b | "Disable the missiles before they are launched" | 0x09 | 0x00 |  |
+|  | "Defeat Drake before the base goes critical" | 0x0b | 0x09 |  |
+| 0x0700004a | "Gain access to lobby" | 0x4a | 0x4d |  |
+

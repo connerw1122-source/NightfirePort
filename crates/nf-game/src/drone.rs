@@ -97,7 +97,17 @@ pub mod state {
     pub const CIVILIAN_HIDING: u8 = 0x13;
     pub const CIVILIAN_PATROL: u8 = 0x14;
     pub const CIVILIAN_MISSION: u8 = 0x16;
-    pub const HOSTAGE_IDLE: u8 = 0x1c;
+    /// The real `NDrone2_DSTATE_HostageIdle` (0x15ce60) — `NDrone2_StateFuncs[0x0d]` [L 0x29b300].
+    pub const HOSTAGE_IDLE: u8 = 0x0d;
+    /// `NDrone2_DSTATE_AllyLeadInit` (0x15e4f0) — `NDrone2_StateFuncs[0x1c]` [L 0x29b300] and
+    /// `DroneTypeSettings[12].start` [L 0x29aee8+12·12]: the escort lead's entry (07000001's Mayhew).
+    pub const ALLY_LEAD_INIT: u8 = 0x1c;
+    /// `NDrone2_DSTATE_AllyLead` (0x15e698): walk the mission AI path, waiting for Bond.
+    pub const ALLY_LEAD: u8 = 0x1d;
+    /// `NDrone2_DSTATE_AllyLeadWait` (0x15eda8).
+    pub const ALLY_LEAD_WAIT: u8 = 0x20;
+    /// `NDrone2_DSTATE_AllyLeadDone` (0x15f2e8): the route is walked — stand at the goal.
+    pub const ALLY_LEAD_DONE: u8 = 0x23;
     pub const PARTY_GIRL_INIT: u8 = 0x2e;
     pub const PARTY_GIRL: u8 = 0x2f;
     pub const CIVILIAN_GUARD: u8 = 0x30;
@@ -3018,7 +3028,7 @@ impl Drone {
             // FollowRoute — arrived → the prop clears → Civilian; blocked (creep 9/0xc) → look-around at
             // alert ≥ 0.66 else stand idle; else keep walking [M 0x15d860 case 3; UpdateMissionRoute 0x154a80].
             (CIVILIAN_MISSION, msg::ENTER) => {
-                if self.voice_type == 0x13 { self.set_state(HOSTAGE_IDLE); return true; } // 0x19 stand-in
+                if self.voice_type == 0x13 { self.set_state(HOSTAGE_IDLE); return true; } // 0x19 stand-in (a standing state)
                 self.call_anim(d, anim_state::WALK, 0, 0);
                 true
             }
@@ -3087,14 +3097,56 @@ impl Drone {
                 true
             }
             (CIVILIAN_HIDING, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
-            // HostageIdle (0x15ce60) ENTER: stand idle, alert 0; UPDATE: an armed drone within 20 → HostageHide
-            // (0xe — not ported; the hostages stay here). Bullets HandleImpact(0xe, …) — resume 0 keeps the state.
+            // HostageIdle (0x15ce60 — state 0x0d [L NDrone2_StateFuncs 0x29b300]) ENTER: stand idle, alert 0;
+            // UPDATE: an armed drone within 20 → HostageHide (0xe — not ported; the hostages stay here). Bullets
+            // HandleImpact(0xe, …) — resume 0 keeps the state.
             (HOSTAGE_IDLE, msg::ENTER) => {
                 self.alert = 0.0;
                 self.call_anim(d, anim_state::STAND_IDLE, 0, 0);
                 true
             }
             (HOSTAGE_IDLE, msg::BULLET) => self.on_bullet_resume(d, rng, frame, 0, false),
+            // AllyLead (0x15e4f0 / 0x15e698 / 0x15eda8 / 0x15f2e8): the escort lead — 07000001's Mayhew
+            // (mode 12, `DroneTypeSettings[12].start` = 0x1c [L 0x29aee8]) leads Bond along the mission
+            // AI path to the bunker plate. Minimal port: the entry, the lead loop (the port's
+            // `update_mission_route` = `UpdateMissionRoute` 0x154a80) and the Bond wait; the
+            // flee/combat sub-states (0x1e PlayerInWay, 0x1f Hide, 0x21 MissionWait, 0x22 BondCombat,
+            // 0x28 GoToGoalPosition) are not ported (038-fix-actors). The wait distances are straight-
+            // line stand-ins for `DroneMove_ObjectMissionPathDistance` (0x153f50).
+            (ALLY_LEAD_INIT, msg::ENTER) => {
+                if self.prop(d, 0x1d) { self.assign_path(d, 8); } // [M 0x15e4f0 case 1: AssignAIPath(8)]
+                if self.route.is_none() {
+                    // `+0x9F2 == 0`: no route → stand idle and stay [M 0x15e4f0 case 1]
+                    self.set_stand_idle(d, rng, frame, true);
+                } else {
+                    self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); // 0x21
+                }
+                true
+            }
+            (ALLY_LEAD_INIT, msg::UPDATE) => {
+                // Bond within 3.0 → AllyLeadWait [M 0x15e4f0 case 3]
+                if self.dist < 3.0 { self.set_state(ALLY_LEAD_WAIT); }
+                true
+            }
+            (ALLY_LEAD, msg::ENTER) => { self.call_anim(d, anim_state::RUN, 0, 0); true } // [M 0x15e698 case 1: 0x1e]
+            (ALLY_LEAD, msg::UPDATE) => {
+                // The route first: done → AllyLeadDone [M 0x15e698 case 3, FollowRoute branch 3].
+                if self.update_mission_route(d, rng, frame) { self.set_state(ALLY_LEAD_DONE); return true; }
+                // Bond far behind → wait for him [M 0x15e698 case 3: the path-distance rules of
+                // ObjectMissionPathDistance — the port's straight-line stand-in uses 12 units; the
+                // game's close-Bond wait also needs BondWithinAngle(0.52) (the "assure him" stance),
+                // which a following escort does not trigger].
+                if self.dist > 12.0 { self.set_state(ALLY_LEAD_WAIT); }
+                true
+            }
+            (ALLY_LEAD_WAIT, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15eda8 case 1: 0x21]
+            (ALLY_LEAD_WAIT, msg::UPDATE) => {
+                // Resume the lead once Bond is back in the escort band (the game's path-distance
+                // resume 0x15eda8 case 3 → 0x1d; hysteresis against the 12-unit entry).
+                if self.dist <= 10.0 { self.set_state(ALLY_LEAD); }
+                true
+            }
+            (ALLY_LEAD_DONE, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15f2e8 case 1: 0x21]
             (_, msg::ENTER | msg::EXIT | msg::UPDATE) => true,
             _ => false,
         }
@@ -3803,6 +3855,13 @@ pub struct Drones {
     pub doors: crate::door::Doors,
     /// Bond's bullet segments of this tick (`from`, `to`): the searchlights' break check (U-041 stand-in).
     bullet_paths: Vec<([f32; 3], [f32; 3])>,
+    /// The mission layer (`Mission_Update` 0x182c60, docs/systems/mission.md). `inited` latches the
+    /// per-level `Mission_Init` (0x182270, from `ResetMap_GameInit`) on this level's first tick.
+    pub mission: crate::mission::Mission,
+    mission_inited: bool,
+    /// The mission layer's events this tick (`Text_AddMsg` types 2/3, the FailLabel writes, the
+    /// level-end/reset decisions) — drained by the view each tick.
+    pub mission_events: Vec<crate::mission::Event>,
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -3849,7 +3908,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new() }
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), bullet_paths: Vec::new(), mission: crate::mission::Mission::new(), mission_inited: false, mission_events: Vec::new() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -4219,7 +4278,12 @@ impl Drones {
             if d.level == 0x0700_0005 && step(0, 0xa4, 60) { self.music.event(2, 3); }
             else if step(1, 0x37, 600) || step(2, 0x61, 600) { self.music.event(2, 1); }
         }
-        if self.health.health <= 0.0 { self.music.event(6, 1); }
+        if self.health.health <= 0.0 {
+            // `Player_HandleDeath` 0x190bb0:32: the death raises ch 0x62 (cleared by `Player_Init`
+            // 0x1910f8:26,30 at the next level load); the mission layer reads it (0x182c60:21).
+            if !self.channels.on(0x62) { self.channels.set(0x62, 1, frame); }
+            self.music.event(6, 1);
+        }
         // `Game_Run`: `Env_Update` (one `Rand_Rand(20000)`, then `UpdateDrops`) before the object handler.
         if let Some((kind, boxes)) = self.env_pending.take() { self.env = Some(crate::env::Drops::new(kind, boxes, d.level, &mut Rng::new(0x5eed_0001))); }
         if let Some(env) = self.env.as_mut() {
@@ -4826,6 +4890,19 @@ impl Drones {
         }
         self.grenades.retain(|g| g.state < 2);
         self.health.flash = (self.health.flash - 1.0).max(0.0);
+        // `Mission_Update` (0x182c60) runs from `Game_Run` once per frame; the port runs it at the end
+        // of the tick so this tick's channel writes (triggers, scripts, the alarm, the death) are all
+        // visible (docs/systems/mission.md). The per-level `Mission_Init` (0x182270, from
+        // `ResetMap_GameInit` 0x1d5080:53) latches on this level's first tick; the port's loads are
+        // cold (warm = false — previous parts keep their `.data` states, as the game's cold path).
+        if !self.mission_inited {
+            self.mission.init(d.level, false, &mut self.channels, frame);
+            self.mission_inited = true;
+        }
+        let dead = self.health.health <= 0.0;
+        let mut events = std::mem::take(&mut self.mission_events);
+        self.mission.update(&mut self.channels, frame, d.level, dead, &mut events);
+        self.mission_events = events;
     }
 }
 
