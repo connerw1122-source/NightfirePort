@@ -3564,7 +3564,7 @@ impl Drone {
     }
 
     /// `DroneWeap_HandleFiring` → `DoFiring` → `FireWeapon`.
-    fn handle_firing(&mut self, d: &Data, rng: &mut Rng, frame: u32, p: &Player, motion: (bool, bool), owner: usize) -> Option<crate::bullet::Bullet> {
+    fn handle_firing(&mut self, d: &Data, rng: &mut Rng, frame: u32, p: &Player, motion: (bool, bool), owner: usize, lights: &mut crate::light::LightList) -> Option<crate::bullet::Bullet> {
         if !self.firing { return None; }
         self.burst_done = false;
         let mut more = false;
@@ -3573,7 +3573,7 @@ impl Drone {
         if self.unseen_ticks < 0x10 || self.prop(d, 0x17) {
             more = true;
             if self.next_shot <= frame && self.ready_to_fire() {
-                bullet = self.fire_weapon(d, rng, frame, p, motion, owner);
+                bullet = self.fire_weapon(d, rng, frame, p, motion, owner, lights);
                 // `DroneWeap_FireWeapon`: `Sound_Play3D(weapon_data[w] +0x60, drone)`, skipped for 0x5EF.
                 if let Some(r) = d.weapons.records.get(self.weapon as usize) {
                     let id = u16::from_le_bytes([r[0x60], r[0x61]]) as u32;
@@ -3611,7 +3611,7 @@ impl Drone {
 
     /// `DroneWeap_FireWeapon` + `DoBulletAccuracy`: hit roll, the miss wobble, the cone (`Bullet_init`), damage
     /// (`Drone_ModBulletDamage`: ×2 under 4 units, × `+0x100`).
-    fn fire_weapon(&mut self, d: &Data, rng: &mut Rng, frame: u32, p: &Player, (moving, first_moved): (bool, bool), owner: usize) -> Option<crate::bullet::Bullet> {
+    fn fire_weapon(&mut self, d: &Data, rng: &mut Rng, frame: u32, p: &Player, (moving, first_moved): (bool, bool), owner: usize, lights: &mut crate::light::LightList) -> Option<crate::bullet::Bullet> {
         let w = d.weapons.records.get(self.weapon as usize)?;
         let f32_at = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
         // Hit chance: p = 100 − 5·accuracy, ×2 under TooClose (3), ×0.25 first moved, ×0.75 moving, × level
@@ -3637,6 +3637,10 @@ impl Drone {
             [l[0] * c + l[2] * s, l[1], -l[0] * s + l[2] * c]
         };
         let muzzle = self.muzzle(d);
+        // `DroneWeap_FireWeapon` 0x178f68:189 creates the muzzle light on every shot:
+        // `Light_Create(radius 7.0, intensity 1.0, the muzzle, rgb = weapon_data+0x56/+0x55/+0x54,
+        // channel 0, life 0 → +0x20 = 1 (one tick), kind 1)` — before the bullet's spread draws.
+        lights.create(7.0, 1.0, muzzle, [w[0x56], w[0x55], w[0x54]], 0, 0, 1, 0, rng);
         let aim = [p.target[0] + off[0] - muzzle[0], p.target[1] + off[1] - muzzle[1], p.target[2] + off[2] - muzzle[2]];
         let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
         let dir = crate::bullet::spread(aim, f32_at(0x24), flags68, rng);
@@ -3731,14 +3735,20 @@ pub fn visible_to(player: &Player, world: &CollisionWorld, pos: V3, head: V3) ->
 
 /// Every drone placement of the level's main map, in placement order (`Drone_Create`); spawner templates included
 /// (`Drones::attach_level` marks them absent). Positions on the collision floor below the placement.
-pub fn level_drones(d: &Data, level: &nf_formats::level::Level, rng: &mut Rng) -> Vec<Drone> {
+pub fn level_drones(d: &Data, level: &nf_formats::level::Level, rng: &mut Rng, lights: &mut crate::light::LightList) -> Vec<Drone> {
+    // The map parse's ambient radiators precede every dynamic-object create [M parsemap_handle_block_id 0x1d1020].
+    crate::light::level_lights(level, rng, lights);
     let Some(m) = level.main_map() else { return Vec::new() };
-    level.maps[m].placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0x0f).map(|(i, p)| {
+    level.maps[m].placements.iter().enumerate().filter_map(|(i, p)| {
+        // The drones (0x0F) and the type-0x4E lights are created by the same
+        // `parsemap_create_dynamic_objects` pass in placement order, so their RNG draws interleave here.
+        if p.flags & 0xff == 0x4e { crate::light::placement_light(level, m, i, rng, lights); return None; }
+        if p.flags & 0xff != 0x0f { return None; }
         let param = |k: u32| p.params.iter().find(|(j, _)| *j == k).map(|&(_, v)| v).unwrap_or(0);
         let floor = d.world.floor_below(p.translation, 3.0).unwrap_or(p.translation[1] - 1.0);
         let mut dr = Drone::new(d, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, rng);
         dr.placement = i;
-        dr
+        Some(dr)
     }).collect()
 }
 
@@ -3797,6 +3807,9 @@ pub struct Drones {
     pub player_bullets: Vec<PlayerBullet>,
     pub player_impacts: Vec<PlayerImpact>,
     pub last_flinch: Option<u32>,
+    /// The level's `light_tag` records (`LightList` 0x2c74c0): level placements, ambient radiators,
+    /// the searchlights' kind-2 beams and the muzzle flashes (fix-lighting).
+    pub lights: crate::light::LightList,
     /// The last alarm broadcast (`DAT_0029AA88`) and whether one went out (`DAT_0029AA85`, 07000014 sends only one).
     pub last_alarm: Option<u32>,
     /// Auto-aim: the last target (`BL+0x114`) and the crosshair offset as (yaw, pitch) radians (`BL+0x120` / `+0x124`,
@@ -3920,7 +3933,7 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        Drones { list, frame: 0, los_cursor: 0, llist, rng, bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
+        Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new() }
     }
 
@@ -3942,6 +3955,18 @@ impl Drones {
                 else { level.maps[m].objects.get(p.index as usize) };
             obj.map_or(([0.0; 3], [0.0; 3]), |o| (o.min, o.max))
         });
+        // `Searchlight_Create`'s kind-2 light record (0x1cb4f8:150-172): white, radius 500, intensity 1.0,
+        // kind 2, permanent, position tracked to the part (below the world until the first ray hit). The
+        // record's only RNG draw is the `Rand_Rand(0)` flicker seed already taken in the create above.
+        for (k, part) in self.searchlights.parts.iter().enumerate() {
+            if part.kind != 2 { continue; }
+            self.lights.lights.push(crate::light::Light {
+                pos: part.pos, life: 0, channel: 0, flicker_period: 0, flicker_base: 0,
+                flicker_count: part.light.unwrap_or(0) as u16, flicker_mask: 0, sound: 0,
+                track: Some(k as u32), radius: 500.0, intensity: 1.0, falloff: 0.0,
+                rgb: [255, 255, 255], kind: 2, active: true,
+            });
+        }
         // Doors (`Door_Create`, placement order — no RNG draw). The anim comes from the level's 0x19 key-list
         // blocks (`m_paths`), the sphere from the placement object's own gfx sphere (`Control_BuildWorldSph`).
         let path_blocks = level.path_blocks();
@@ -4705,6 +4730,15 @@ impl Drones {
                         None => { self.audio.play3d(id, pos, None); }
                     }
                 }
+                // The kill path clears a kind-2 part's light (`Searchlight_Update`'s off-channel branch
+                // removes the `light_tag` record): mirror it onto the light list.
+                for (k, p) in self.searchlights.parts.iter().enumerate() {
+                    if p.kind == 2 && p.light.is_none() {
+                        for l in self.lights.lights.iter_mut() {
+                            if l.kind == 2 && l.track == Some(k as u32) { l.active = false; }
+                        }
+                    }
+                }
                 continue;
             }
             if what == 2 { let _pw = crate::prof::scope("ctl: kind 2");
@@ -4800,7 +4834,7 @@ impl Drones {
             // which let the torso wind all the way around (the playtest's "spine flipped" patrol look).
             let want = if dr.anim.class == 2 && dr.aims_torso() { angle_difference(dr.yaw, dr.yaw_to_opp).clamp(-0.9, 0.9) } else { 0.0 };
             dr.aim_yaw = rotate_to_bearing(dr.aim_yaw, want, 0.2, crate::trig::PI);
-            if !dr.corpse { let _pf = crate::prof::scope("drone: handle_firing"); if let Some(b) = dr.handle_firing(d, rng, frame, player, (moving, first_moved), index) { self.bullets.push(b); } }
+            if !dr.corpse { let _pf = crate::prof::scope("drone: handle_firing"); let b = { let lights = &mut self.lights; dr.handle_firing(d, rng, frame, player, (moving, first_moved), index, lights) }; if let Some(b) = b { self.bullets.push(b); } }
             let _pa = crate::prof::scope("drone: update_anim");
             if let Some((next_ai, done_msg)) = dr.update_anim(d) {
                 // `SetEndAIState`: the AI state is queued, then the message routed (which applies the queued state).

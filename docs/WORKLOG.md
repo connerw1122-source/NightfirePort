@@ -5631,3 +5631,107 @@ nothing on the disc's 0700000d data the port can reach writes ch 0x1f except the
 itself, and the laser lives inside the crane cut-scene's scripted timeline.
 
 **Full suite:** `--no-fail-fast` run green except the 3 allowed `disc_golden` failures (the slim ISO).
+
+## fix-lighting — the dynamic lights: the VU1 point-light formula, the sim-side light list, the muzzle light + guards' + level lights
+
+Branch `s/fix-lighting` (origin/master 9aac84e). Task: the user's PCSX2 comparison — lights fall on
+characters and firing lights the surroundings; the port only applied the flat cel ambient. Playtest
+reference: docs/playtests/2026-10-11.md (the lighting items live under Rendering).
+
+**The VU1 microcode, read at last (G-014).** ACTION.ELF `.vutext` (0x241c80, 0x2880 bytes = 1296
+instructions) + the six `.DVP.overlay` sections disassembled with a purpose-built decoder (field
+positions and opcode tables cross-checked against PCSX2's DisVUops.h/DisVUmicro.h; the pairs are
+little-endian qwords = {lower, upper}; lower opcode 0x40 = the special table; the tool lives in
+~/dl/vutext/vudis.py, not committed). Findings:
+- The base image is a DVP monitor: a jump table at I-mem 2..25 (MSCAL entries 0/2/4/6...), a
+  dispatcher that reads the packet's own slots (`ILW +20/+22(VI2)`, VI2 = 2) and `JR`s into
+  overlay code; `BAL VI15` links; the packet lives at VU1 data address 0.
+- The light setup (I-mem 595-608, reached from the dispatcher) loads packet qwords 0-7 = the matrix
+  chain, **8/9 = the two light positions** (FillMatrixChainRot 0x122310 transformed them into the
+  object's rotation space), **12/13 = TColor0/1** (rgb·intensity·tint, **w = 1/radius²**,
+  `psiLight_SetLights` 0x10e588), **15 = TAmbient** (= the object's TWEAK: `psiSetTweakARGB`
+  0x124770 stores 0x2650d0; `sceVu0LightColorMatrix` 0x229108 packs rows TColor0/1/2/TAmbient at
+  packet 12-15).
+- The point-light program (I-mem ~832-940, one software-pipelined iteration per vertex): L =
+  lightpos − pos (object space, `SUB`); d² = |L|² (componentwise `MUL` + the ACC broadcast-sum with
+  fs = VF9, whose y = `ADDw.y VF9, VF0, VF0` = **VF0.w = 1.0** — the VU's VF00 = (0,0,0,1) [M PCSX2
+  vuMemReset], which also explains `MULAw ACC, VF4, VF0` = the matrix's W row and `DIV Q, VF0.w,
+  d²` = **1/d²**); atten = `max(0, 1/d² − 1/r²)` (`SUBw VF24, VF28, TColor.w` then `MAXx.xy`);
+  diffuse = `max(0, atten · dot(N, L))` with the **RAW unnormalised L** (componentwise `MUL` +
+  broadcast-sum; no RSQRT in the program); the sum `TAmbient ⊙ rgba + TColor.rgb · diffuse` (895
+  `MUL VF22, VF12, VF28`, 911/912 `MADDAx/MADDy`); the normal enters as the packed stream int ×
+  1/128 (`MULi VF26, VF29, I`, I = 0x3c000000 from the LOI). Both atten and the product clamp at 0.
+  The second colour matrix (packet 16-19, `LQ.xyw`, rows from PS2Viewer+0x120.. /256) is the
+  directional/cel matrix path (View_DrawCelGlist's `flags & 4` twinkle) — not ported.
+- The selection sort: `QuickSort(SortList, n, 4, 1, 0)` uses the comparator at 0x1d3350 — ascending
+  by `light+0x38` = `d/(radius·0.5)`; accepted kinds: 0 needs obj-flags 0x80, 1 skips 0x100, 2
+  needs 0x80 with the 2D (xz, `Vec_Dist2D` 0x1e2ec8) distance ≤ 4.0 and intensity
+  `(1 − d·0.25)·50` [M 0x1cb40c], else 3D ≤ sphere + radius; max 30 entries.
+
+**New `crates/nf-game/src/light.rs`**: the `light_tag` record (0x50-byte layout: pos +0x10, life
++0x20, channel +0x22, flicker +0x24..+0x2C, track +0x30, falloff +0x38, radius +0x3C, intensity
++0x40, rgb +0x44..46, kind +0x47, active +0x48), `LightList` (the pool grows, no fixed cap [M
+Light_Create mallocs 0xa00 = 32 × 0x50 when the free list empties]), `Light_Create` with the
+unconditional `Rand_Rand(param_11)` draw (state advance is argument-independent; the 10-arg call
+sites leave param_11 uninitialised for the counter seed — [S] the flicker path re-derives it),
+`Light_Update` (life countdown + delete, the channel gate, the flicker state machine; the flicker's
+`Sound_Play3D` not ported — the placement calls leave the sound id uninitialised), the selection
+(`resolve` → `ResolvedLights::closest/pick2`, one implementation for the sim tests and the
+renderer), and `shade_vertex` (the VU1 formula above, world space — the game's object space is a
+rigid transform of it, N·L invariant).
+
+**Wiring** (all [M] with the address in the comment):
+- Drones owns `pub lights`; `Game_Run` 0x1c9790:33 runs `Light_Update` before the object movement,
+  so the update sits at the top of `Sim::step_bond` (the port's drones.tick runs after the fire
+  path and deleted the fresh muzzle light same-tick — caught by `lighting_live`).
+- Bond's shot: `Player_MuzzleFlash` 0x1a4298 → `Light_Create(radius = weapon_data+0x58, 2.0, the
+  muzzle, rgb +0x56/+0x55/+0x54, life 0 → +0x20 = 1, kind 1)`, gated on weapon_data+0xDC ≠ 0 &&
+  +0x48 ≠ 0; then `Gas_Init`'s `Rand_FRand(2π)` unless +0x68 & 0x2000 (the smoke puff record is
+  sim-side [S] rise+fade; not rendered). The sim's muzzle position = eye + aim·0.5 [S] (the game
+  uses AnimGetBoneWorldTrans datum 0; the render could refine it later).
+- Guards: `DroneWeap_FireWeapon` 0x178f68:189 → `Light_Create(7.0, 1.0, the muzzle, the weapon rgb,
+  kind 1)` between the accuracy roll and the bullet's spread draws — the port's `fire_weapon` does
+  exactly that (the light list threaded through `handle_firing`).
+- Level lights: block 0x26 (new `LevelMap::radiators`, 8 floats per entry [M
+  `Light_SetAmbientRadiators` 0x1caeb8: x,y,z,radius²,pad,r,g,b 0-1], kind 0, intensity 1.0,
+  permanent, one `Rand_Rand(0)` draw each) created before the placement walk; the type-0x4E
+  placements (`parsemap_create_dynamic_objects` 0x1d04f0 case 0x4e: radius = +0x2C, rgb bytes
+  +0x30/34/38, channel +0x3C, flicker +0x40, kind 0, permanent) created inside `level_drones`'
+  placement walk so their draws interleave with the drones' creates.
+- Searchlights: `Searchlight_Create` 0x1cb4f8:150-172 builds the kind-2 record inline (white,
+  radius 500, intensity 1.0, tracked to the part) — one `Light` per kind-2 part with
+  `track = part index`, resolved per frame against the part's live position (below the world until
+  the first lock, exactly like the game); the kill path deactivates it.
+- The renderer: the uniform grew to per-draw 256-byte dynamic-offset slots (vp + fog + lp0/lp1 +
+  lc0/lc1); per draw, `pick2` on the draw's bounding sphere (`Material::centre/radius` — the game's
+  obj+0x80 sphere) selects the ≤2 closest; sky draws select none. The per-draw flags gate passes
+  0x80 for world/character/effect ([S] the port has no per-object obj+0xF0; emitters — the game's
+  0x100 — don't exist as draws). The shader replaces the STANDIN `lc × 0.25 × N·L × (1−d²/r²)²`
+  with the microcode's formula (colour at /128 for the port's 0x80 = 1.0 vertex scale; zero normals
+  stay unlit). `Scene::dyn_light` (the render-only STANDIN path) is replaced by
+  `Scene::frame_lights` → `Renderer::lights`.
+
+**Tests** — `crates/nf-game/tests/light_selection.rs` (9, all fail on master: the module is new):
+the falloff/radius gate, the kind gates with the kind-2 intensity, the ≤2-sorted-by-falloff upload,
+life/delete, the create's RNG advance at arg 0, the record fill, the searchlight's tracked
+position, the VU1 formula's exact values (atten 0 at d = r, 0.75 at d = r/2, backface clamp, zero
+normal), and the render-independent sister pair — a character next to the muzzle light brightens
+that frame, the same vertex without the light does not.
+`crates/nf-view/tests/lighting_live.rs` (NF_ISO, rewritten): the muzzle light's weapon values,
+one-tick lifetime, the frame view resolution, the shared-RNG advance, the smoke puff + the no-shot
+sister.
+
+**Failed first**: the kind-3 radius gate compared against r² (inv_r2.recip()) not r; pick2 fed the
+falloff (not the raw 2D distance) into the kind-2 intensity — both caught by the new unit tests and
+fixed. The muzzle light dying same-tick (Light_Update inside drones.tick running after the fire
+path) was caught by `lighting_live` and fixed by moving the update to Game_Run's slot.
+
+**Not ported** (each with its reason):
+- The directional/cel matrix path (packet 16-19): the cel twinkle/rim uses PS2Viewer values — out
+  of this task's scope, the world cels keep their baked colours plus the point lights.
+- The smoke puff's render (the record + RNG draws are in; the game's `gases_smoke` particle render
+  needs a billboard path the port lacks) and its exact velocity integration [S] model in place.
+- The flicker's `Sound_Play3D` (the placement calls leave the sound id uninitialised).
+- `Lights_CalcAmbientLight`'s per-character ambient bytes (obj+0x100) beyond what fix-render
+  already applies; the character flags gating (0x80/0x100) is approximated per draw [S].
+- The `TweakRGBA` +2 microcode entry (the TWEAK-colour program variant).

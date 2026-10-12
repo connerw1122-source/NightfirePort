@@ -79,7 +79,8 @@ impl Fixture {
     fn sim(&self) -> Drones {
         let d = self.data();
         let mut rng = Rng::new(0x1234_5678);
-        let drones = nf_game::drone::level_drones(&d, &self.level, &mut rng);
+        let mut lights = nf_game::light::LightList::default();
+        let drones = nf_game::drone::level_drones(&d, &self.level, &mut rng, &mut lights);
         let mut s = Drones::new(drones, rng);
         s.attach_level(&self.level);
         s
@@ -220,7 +221,8 @@ fn combat_no_route_toggle_follows_0x164c08() {
     let Some(l) = Fixture::load("07000002.bin", 0x0700_0002) else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
     let (drones, rng) = { let dd = l.data(); let mut r = Rng::new(0x1234_5678);
-        (nf_game::drone::level_drones(&dd, &l.level, &mut r), r) };
+        let mut lights = nf_game::light::LightList::default();
+        (nf_game::drone::level_drones(&dd, &l.level, &mut r, &mut lights), r) };
     let mut sim = Drones::new(drones, rng);
     sim.attach_level(&l.level);
     let far = bond_at([0.0, -1000.0, 0.0]);
@@ -268,7 +270,8 @@ fn under_cover_idle_retries_three_times() {
     let Some(l) = Fixture::load("07000002.bin", 0x0700_0002) else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
     let (drones, rng) = { let dd = l.data(); let mut r = Rng::new(0x1234_5678);
-        (nf_game::drone::level_drones(&dd, &l.level, &mut r), r) };
+        let mut lights = nf_game::light::LightList::default();
+        (nf_game::drone::level_drones(&dd, &l.level, &mut r, &mut lights), r) };
     let mut sim = Drones::new(drones, rng);
     sim.attach_level(&l.level);
     let far = bond_at([0.0, -1000.0, 0.0]);
