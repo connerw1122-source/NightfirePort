@@ -3309,7 +3309,7 @@ impl Drone {
                 }
                 true
             }
-            (crate::kiko::KIKO_MISSION, msg::SOUND | msg::ALARM | 0x11 | 0x12 | 0x14 | 0x15 | 0x16 | 0x1e | 0x1f) => d.level == 0x0700_0016,
+            (crate::kiko::KIKO_MISSION, msg::SOUND | msg::ALARM | 0x11 | 0x12 | 0x15 | 0x16 | 0x1f) => d.level == 0x0700_0016,
             // KikoMissionRun 0x1a (0x15e0d8): route done → RunToAlarm.
             (crate::kiko::KIKO_MISSION_RUN, msg::ENTER) => { self.vision_on = true; self.call_anim(d, 0x1e, 0, 0); true }
             (crate::kiko::KIKO_MISSION_RUN, msg::UPDATE) => {
