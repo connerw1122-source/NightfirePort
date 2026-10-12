@@ -193,6 +193,18 @@ fn cold_loadout_arms_bond_on_every_story_level() {
             // ported switch's cold answer, not a port bug.
             assert_eq!(w, 1, "{name}: the game's case-8 cold fallback draws fists, got weapon {w}");
             assert!(owned.contains(&2), "{name}: the party arm still equips the P2K (owned {owned:?})");
+        } else if n == 0xc || n == 0xd {
+            // [M 0x1a7ef8 cases 0x700000c/0x700000d] (map-powerstation): the power station's cold
+            // loadout selects Upgrade_Weapon(0x1e) = 0x1e and carries the camera gadget 0x54; 0d's
+            // own case falls into it on a cold load (no RamSave, the game's own branch).
+            assert_eq!(w, 0x1e, "{name}: the power-station loadout selects the sniper, got weapon {w}");
+            assert!(owned.contains(&0x54), "{name}: the camera gadget is not owned (owned {owned:?})");
+        } else if n == 0xc || n == 0xd {
+            // [M 0x1a7ef8 cases 0x700000c/0x700000d] (map-powerstation): the power station's cold
+            // loadout selects Upgrade_Weapon(0x1e) = 0x1e and carries the camera gadget 0x54; 0d's
+            // own case falls into it on a cold load (no RamSave, the game's own branch).
+            assert_eq!(w, 0x1e, "{name}: the power-station loadout selects the sniper, got weapon {w}");
+            assert!(owned.contains(&0x54), "{name}: the camera gadget is not owned (owned {owned:?})");
         } else {
             assert!(owned.contains(&2), "{name}: the P2K is not owned on a cold start (owned {owned:?})");
             assert_eq!(w, 2, "{name}: weapon {w} drawn after 30 ticks — the switch request did not arm the P2K");

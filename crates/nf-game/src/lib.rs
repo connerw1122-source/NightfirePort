@@ -20,6 +20,7 @@ pub mod mission;
 pub mod music;
 pub mod nav;
 pub mod nis;
+pub mod props;
 pub mod pickup;
 pub mod player;
 pub mod searchlight;

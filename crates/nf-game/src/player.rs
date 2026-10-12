@@ -1060,6 +1060,36 @@ pub fn init_level_loadout(
             req = saved_weapon;
             if !p2k_owned(inv) { party(inv, health); req = 1; }
         }
+        // The power station [M 0x1a7ef8 cases 0x700000c/0x700000d]: a cold 0x070000c runs
+        // `Player_InitAmmoWeapons` then equips the handgun (2, 48), `Upgrade_Weapon(0x1e)` (the
+        // sniper, 999), `Upgrade_Weapon(0x4a)` (the Q-Claw, 999) and the gadgets 0x50/0x54/0x58 at 0,
+        // selecting the sniper (`+0x63 = uVar3`). 0x070000d is the 06/08 shape: `Player_RamLoad`
+        // keeps the carry and re-selects the saved weapon; when the sniper is missing the 0c
+        // loadout re-runs.
+        0x0700_000c => {
+            init_ammo_weapons(inv, w, loaded);
+            equip(inv, w, HANDGUN, 0x30, loaded);
+            equip(inv, w, crate::pickup::Inventory::upgrade_weapon(0x1e, 0, 0), 999, loaded);
+            equip(inv, w, crate::pickup::Inventory::upgrade_weapon(0x4a, 0, 0), 999, loaded);
+            equip(inv, w, 0x50, 0, loaded);
+            equip(inv, w, 0x54, 0, loaded);
+            equip(inv, w, 0x58, 0, loaded);
+            req = crate::pickup::Inventory::upgrade_weapon(0x1e, 0, 0) as u8;
+        }
+        0x0700_000d => {
+            req = saved_weapon;
+            let sniper = crate::pickup::Inventory::upgrade_weapon(0x1e, 0, 0);
+            if !inv.owned.get(sniper as usize).copied().unwrap_or(false) {
+                init_ammo_weapons(inv, w, loaded);
+                equip(inv, w, HANDGUN, 0x30, loaded);
+                equip(inv, w, sniper, 999, loaded);
+                equip(inv, w, crate::pickup::Inventory::upgrade_weapon(0x4a, 0, 0), 999, loaded);
+                equip(inv, w, 0x50, 0, loaded);
+                equip(inv, w, 0x54, 0, loaded);
+                equip(inv, w, 0x58, 0, loaded);
+                req = sniper as u8;
+            }
+        }
         _ => { *inv = crate::pickup::Inventory::level_start(inv.clip.len(), inv.carried.len()); req = HANDGUN as u8; }
     }
     // Common tail [M 0x1a7ef8:318-319].

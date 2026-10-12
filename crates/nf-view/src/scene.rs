@@ -992,7 +992,8 @@ impl Sim {
 
     fn run(&mut self, pos: [f32; 3], sph: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool, reload: bool, use_key: bool) {
         // The drones aim at and look for Bond's chest (`Drone_View_Bones`; one point here, 0.45 under the eye).
-        let player = nf_game::drone::Player { pos, target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look, sph };
+        let hanging = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
+        let player = nf_game::drone::Player { pos, target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look, sph, hanging };
         let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models, surfaces: self.surfaces.as_ref(), voices: self.voices.as_deref() };
         // `Player_WeaponFiring` → `Player_WeaponInitBullet` from the eye along the view (*deviation*: no auto-aim and
         // no aim-point ray yet); the first-person fire script's sound 0x403 feeds the drones' hearing.
@@ -1172,7 +1173,14 @@ impl Sim {
             // [M 0x1a5460:681-690]. Fists (0x01) keeps its fire script 0x060006de [D] — punching is
             // unaffected (fix-ladder2: the hands state fired once).
             let has_fire_script = rd0(0xb0) != 0 || rd0(0xb4) != 0;
-            let (trigger, reload) = if can_fire && has_fire_script { (trigger, reload) } else { (false, reload) };
+            // The game's general fire branch has NO fire-script gate — `Player_RoundToFire`
+            // (0x1a18e0:9-25) rounds to fire unconditionally for ammo_type 0 and checks only the
+            // ammo pool otherwise [M]. The gate here stands in for the hands class 'G' (0x47: no
+            // fire scripts and no idle anim — fix-ladder2); every other script-less weapon fires
+            // and spawns on the press tick (+0x44 == 0 [M 0x1a5460:688-693]) — the camera gadget
+            // 0x54 (idle 0x060005A6, no fire scripts [D probe]) photographs through this path.
+            let hands = self.gun.weapon == 0x47;
+            let (trigger, reload) = if can_fire && (has_fire_script || !hands) { (trigger, reload) } else { (false, reload) };
             let fired = self.gun.update_with(trigger, reload, busy, params);
             // Advance the reload state machine [M Player_SetWeaponAnimObj cases 5/6/7].
             let new_reload_state = self.gun.reload_tick(trigger, params);

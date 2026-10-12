@@ -91,7 +91,7 @@ impl Level05 {
     }
 }
 
-fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0], sph: p } }
+fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0], sph: p, hanging: false } }
 
 #[test]
 fn guard_notices_and_fires_like_the_game() {
@@ -262,7 +262,7 @@ fn switched_guard_patrols_like_the_game() {
     sim.set_channel(0x22);
     let y = -2.1467f32;
     let p = [104.95, 24.96, 108.83];
-    let player = Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [y.sin(), 0.0, y.cos()], sph: p };
+    let player = Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [y.sin(), 0.0, y.cos()], sph: p, hanging: false };
     let mut at = Vec::new();
     for _ in 0..1500 { sim.tick(&d, &player); at.push(sim.list[gi].pos); }
     assert_eq!(sim.list[gi].state, nf_game::drone::state::PATROL);
@@ -684,7 +684,7 @@ fn guard_surrenders_to_bond_behind_him() {
     let at = |p: [f32; 3], g: [f32; 3]| {
         let to = [g[0] - p[0], 0.0, g[2] - p[2]];
         let n = (to[0] * to[0] + to[2] * to[2]).sqrt();
-        Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [to[0] / n, 0.0, to[2] / n], sph: p }
+        Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [to[0] / n, 0.0, to[2] / n], sph: p, hanging: false }
     };
     // A guard present at the start with alertness 0 and a free spot behind him: (placement, Bond's spot).
     let warm = || {
@@ -725,7 +725,7 @@ fn guard_surrenders_to_bond_behind_him() {
     assert!(!sim.pickups.is_empty(), "his gun lies on the ground");
     // Bond 15 units away: CheckUnsurrender → Unsurrender → Attack (unarmed) → DrawWeapon → weapon 6.
     let p = [behind[0] + 15.0, behind[1], behind[2]];
-    let away = Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0], sph: p };
+    let away = Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0], sph: p, hanging: false };
     for _ in 0..300 { sim.tick(&l.data(), &away); }
     let log: Vec<u8> = sim.list[i].log.iter().map(|&(_, s)| s).collect();
     eprintln!("after: log {log:x?}, weapon {}", sim.list[i].weapon);
@@ -805,7 +805,7 @@ fn surrendered_guard_killed_keeps_a_pose() {
     let behind = [49.35606, 27.907804, 93.699425];
     let to = [g[0] - behind[0], 0.0, g[2] - behind[2]];
     let n = (to[0] * to[0] + to[2] * to[2]).sqrt();
-    let bond = Player { pos: behind, target: [behind[0], behind[1] + 0.5, behind[2]], eye: [behind[0], behind[1] + 1.0, behind[2]], aim: [to[0] / n, 0.0, to[2] / n], sph: behind };
+    let bond = Player { pos: behind, target: [behind[0], behind[1] + 0.5, behind[2]], eye: [behind[0], behind[1] + 1.0, behind[2]], aim: [to[0] / n, 0.0, to[2] / n], sph: behind, hanging: false };
     for _ in 0..400 { sim.tick(&d, &bond); }
     assert_eq!(sim.list[i].state, state::SURRENDERED);
     let t = sim.list[i].pos;

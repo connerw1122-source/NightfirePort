@@ -62,11 +62,12 @@ pub struct Trigger {
 
 /// A body that can touch triggers: capsule axis from `a` to `b`, radius, drone (true) or Bond, drone skin hash.
 #[derive(Clone, Copy, Debug)]
-pub struct Toucher { pub a: V3, pub b: V3, pub r: f32, pub drone: bool, pub skin: u32 }
+/// `contain`: whether the volume-containment contact (see `Trigger::touched_by`) applies to this toucher.
+pub struct Toucher { pub a: V3, pub b: V3, pub r: f32, pub drone: bool, pub skin: u32, pub contain: bool }
 
 impl Toucher {
     /// Bond in the normal stance (`Player_Collision` 0x194DF0, hip height 1.035 read live).
-    pub fn player(feet: V3) -> Toucher { Toucher { a: [feet[0], feet[1] + 0.55, feet[2]], b: [feet[0], feet[1] + 1.86, feet[2]], r: 0.55, drone: false, skin: 0 } }
+    pub fn player(feet: V3) -> Toucher { Toucher { a: [feet[0], feet[1] + 0.55, feet[2]], b: [feet[0], feet[1] + 1.86, feet[2]], r: 0.55, drone: false, skin: 0, contain: true } }
 }
 
 /// The channel table (`switch_channels`) with the frame each channel was last set (`switch_channels_time`).
@@ -195,11 +196,27 @@ impl Trigger {
     }
 
     /// Whether a capsule touches the trigger's triangles.
+    /// `Trigger_Hit` 0x1b1fc8 itself does NO geometry: it classifies the object's CONTACT LIST
+    /// (obj+0xD0, built by the collision pass — a toucher whose sphere overlaps the trigger's glist
+    /// bounds counts, including one standing INSIDE a room-shaped volume where no triangle is
+    /// within reach). The port's triangle tests cover the plate/quad cases; the containment branch
+    /// here covers the volume case (a toucher capsule fully inside the trigger's bounds — e.g.
+    /// 07000006's LoadPoint #746, an open room-shaped glist [D measured tris]).
     pub fn touched_by(&self, c: &Toucher) -> bool {
         let grow = c.r + 0.1;
         let lo = [c.a[0].min(c.b[0]) - grow, c.a[1].min(c.b[1]) - grow, c.a[2].min(c.b[2]) - grow];
         let hi = [c.a[0].max(c.b[0]) + grow, c.a[1].max(c.b[1]) + grow, c.a[2].max(c.b[2]) + grow];
         if (0..3).any(|k| hi[k] < self.lo[k] || lo[k] > self.hi[k]) { return false; }
+        // Containment: both capsule ends inside the trigger's own bounds (the bounding-sphere
+        // contact the game's collision pass registers).
+        // Not for Bond hanging on a wire / zipline: there the bounds of the chasm's plunge volume enclose him, and
+        // the containment contact fired the falling-to-death cut-scene the moment he grabbed the 07000005 cable
+        // (ch 0xBE, merge of map-mayhew over fix-wire). In the game the crossing has no fall or death path at all
+        // [M Player_Wire 0x197658]. [S]: the game's exact contact rule for a hanging Bond isn't read yet.
+        if c.contain && (0..3).all(|k| c.a[k] >= self.lo[k] && c.a[k] <= self.hi[k])
+            && (0..3).all(|k| c.b[k] >= self.lo[k] && c.b[k] <= self.hi[k]) {
+            return true;
+        }
         self.tris.iter().any(|t| {
             segment_hits_triangle(c.a, c.b, t) || point_triangle(c.a, t) <= c.r || point_triangle(c.b, t) <= c.r
                 || (0..3).any(|k| segment_segment(c.a, c.b, t[k], t[(k + 1) % 3]) <= c.r)

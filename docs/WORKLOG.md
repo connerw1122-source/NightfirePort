@@ -5461,3 +5461,173 @@ nothing for them [S — the barrel-trap note]). simplescript_live's assertion fo
   the exit 0xCE + 07000015), the exit's key gate locked until Rook falls (the sister test).
 
 **Full suite**: green except the 3 allowed `disc_golden` failures on the slim ISO.
+## 0092 — map-castle: the castle missions 07000001–04 mapped and walkthrough-tested
+
+The mission-objective system came out of ACTION.ELF's data [M]: the per-arc objective tables
+(Castle_Exterior 0x2a3e28 … the castle arc's lists at 0x2a3eb8/0x2a3ed0/0x2a3f18/0x2a3f60), the mission
+table at 0x2a4354 (basemap 0x0700001 = the castle arc, 4 stages = the 4 levels), `Mission_Init` 0x182270
+(clears the watch channels at arc start), `Mission_MonitorObjectives` 0x1827d8 (an objective completes
+when its watch channel turns on; all done → **switch_channels[100 = 0x64]**; ch 0x60/0x61 →
+switch_channels[0x63] = failed), `Mission_Update` 0x182c60 (0x64 → the mission-complete flow; on
+07000004 it loads **0x7300004**, the next arc's driving level — which is why 07000004 has NO 0xE8 exit).
+
+The castle arc's channel map [M tables + D placements/scripts]:
+- 07000001: 1 objective watching 0x47; the exit (0xE8 #18, gate 0x10) needs the Touch #180 AND-chain
+  (Bond + the skin-0x4F contact, mask 0x18/filter 0x4F). **The ch 0xB mystery solved**: the level-start
+  pack script 0x06000087 writes ch 0xB in stream 8 (the intro cut-scene) — it enables the contact (drone
+  #161, wait channel param 3 = 0xB) and 5 more drones. The contact's death raises ch 0x60 (drone param
+  12) = the mission-fail channel. The port already runs all of this (fix-cutscenes' pack scripts);
+  `walk_07000001_live` drives it end to end: intro → ch 0xB → the plate → ch 0x10 → the exit →
+  07000002 loads.
+- 07000002: 3 objectives (0x48/0x4B/0x4D); the exit #206's E-key path has the KEY GATE ch 0x4C
+  [M Trigger_Activate 0x1b2318:76-90 — refused with the Txt_BindLabel(0x2000021) message]. No disc
+  writer for 0x4C/0x48/0x4B/0x4D exists (scripts, triggers, drone death channels, pickups, doors, locks
+  all scanned — the un-ported mission/dialogue layer owns them; 031-fix-mission). The gate mechanics are
+  tested both ways in `walk_07000002_live`.
+- 07000003: 3 objectives (0x4E/0x51/0x53); the exit #451's key gate = ch 0x52, same refusal path;
+  `walk_07000003_live` both ways.
+- 07000004: 1 objective watching 0x54 = the target's death channel (drone #1, skin 0x0500001e, param 12);
+  the intro SP #3 freezes the AI (event 5) and disables Bond (event 4), writes ch 0x38, which starts the
+  story scene SP #2 (0x06000082) — its stream-9 event writes ch 0x53 and its stream-8 event 7 sets the
+  Script_Free 0x80 flag, whose end re-enables the AI [M Script_Free 0x1da880:41-43]. The port settles it
+  by ~tick 1600. The target's death → ch 0x54 → OUT trigger #46 copies it to ch 0x64 (mission complete)
+  → (unported mission layer) → 0x7300004. `walk_07000004_live` asserts the death → 0x54 → 0x64 chain and
+  the alive sister.
+
+Test-fire notes for future sessions: the P2K bullet vs the skin-0x4F contact lands on his hit boxes but
+the civilian-class damage application drops it (the C2/015-fix-npcs gap); the tests use the game's own
+grenade path instead. Script-disabled Bond swallows the trigger (the disabled gate); the intro hand-off
+(PlayerEnable) relocates Bond — teleport AFTER `disabled` clears.
+
+Suite: 374 passed / 3 failed (the 3 disc_golden slim-ISO failures) after merging master.
+
+## map-mayhew — the Mayhew estate missions 07000005-08 mapped, the objective layer ported, walkthrough tests
+
+Branch `s/map-mayhew` (from origin/master 6a012ee). Docs: `docs/levels/07000005.md` … `07000008.md`. Code:
+`crates/nf-game/src/mission.rs` (new file, this task's own), one additive hook in drone.rs (`Drones::mission` +
+the tick monitor), the volume-containment branch in triggers.rs' `touched_by` (shared file, noted). Tests:
+`crates/nf-view/tests/walk_0700000{5,6,7,8}_live.rs`.
+
+**The objective layer [M Mission_MonitorObjectives 0x1827d8, Mission_Update 0x182c60] — ported in mission.rs.**
+The game's table is 18 records of 0x28 bytes at EE 0x2a4354 ([L] ee_start_05.bin, dumped: every record's level
+field = the mission's FIRST level code — the Mayhew records all read 0x07000005), each objective { label, fail
+ptr, +0x0C complete channel, +0x0F reveal channel, +0x10 flags (bit 1 inverted), +0x14 state }. The monitor per
+tick: state 1 + reveal ch → 3; state 3 + complete ch → 4; inverted objectives fail (ch 99) when their channel
+turns on; the all-done AND is LIVE over every objective's channel condition; ch 0x61/0x60 → fail (ch 99); all on →
+**ch 100** + Music_Event(8,1). `Mission_Update`: ch 99 → fail (end 0x7000048); ch 100 → complete → `LevelToEndTo`
+per level — **0x07000008 → 0x07300008 (the DRIVING hand-off)** [M 0x182c60:85-116]. The port runs the whole table
+(18 records — the other map sessions build on it) against `base_map(level)` (the chain ranges [S, pinned by the
+table's base codes and the driving switch]). The Mayhew chain [L]: 0x4000000 "Breach the castle walls" (ch 0x70,
+reveal 0x45) → 0x4000001 "Find a way inside to the party" (ch 0x02, reveal 0x70) → 0x4000002 (ch 0x48, reveal
+0x47) + 0x4000003 (ch 0x49, reveal 0x48) → 0x4000004 (ch 0x4A, reveal 0x49) + 0x4000005 (ch 0x4B, reveal 0x4A).
+Not ported (the HUD/fail screens): Text_AddMsg presentation, MenuManager_Create, the unarmed-impact fail reasons
+(SetMissionFailReason 7/2/0xb — the reason plumbing is 031-fix-mission's file).
+
+**The LoadPoint containment fix [M Trigger_Hit 0x1b1fc8 does NO geometry]** — it classifies the object's CONTACT
+LIST (obj+0xD0), which the collision pass fills for anything overlapping the trigger's glist bounds. The port's
+triangle-only `touched_by` missed a toucher standing INSIDE a room-shaped volume (07000006's LoadPoint #746: 6
+tris forming an open box [D measured] — a capsule inside touches nothing). `touched_by` now also hits when the
+toucher capsule is fully contained in the trigger's bounds. fail-before: walk_07000006's dress step (ch 0x83
+never pulsed pre-fix, the dressing scene never started).
+
+**Walkthroughs (all real path, NF_ISO, slim ISO):**
+- 07000005: the cold start #26 → the castle-gate door #118 E → fallback ch 0x1F → level_exit 0x07000006, objective
+  1 incomplete (the door route never fires ch 0x70 [L — the game completes it only on the truck route; the door
+  route's ch-0x70 writer is not on disc, flagged in the doc]); the truck ride (the fix-truck integration) parks on
+  the ch-0x70 plate → the monitor completes objective 1 → the same exit. F1's matched-entry spawn is
+  level_carry_live's (unchanged).
+- 07000006: the carried 0x1D save spawns at #496 (the truck arrival plates raise ch 185 ✓) → the LoadPoint #746
+  volume → ch 0x83 → SP #810's dressing script 0x06000071 (in the level bin, NOT a pack — 07000006 has no
+  loadable records [D]) → at its tick 1129 ch 0x02 (the objective completes) + event 0x12 → level_exit
+  0x07000007. Sister: away from the volume nothing fires.
+- 07000007: spawn #0 → the spawn plate #411 raises ch 0x47 (objective 1 reveals; the fists switch request lands
+  within ~100 ticks) → the hall plate #412 raises ch 0x48 (the lock releases; the viewer's input mapping
+  nf-view lib.rs 989/997 — `weapon_lock_input` + the rising-edge auto-draw — mirrored in the test) → objective 1
+  completes, objective 2 reveals, the P2K draws → the roof exit #418 (LOAD_LEVEL, gate 0 [D — the agent report's
+  "no recorded exit" was wrong; the placement dump found it]) → level_exit 0x07000008. Sisters: skipping #412
+  keeps fists (weapon 1) and the objective incomplete; the exit still fires (ungated).
+- 07000008: spawn #0 → the intro plate #237 raises ch 0x49 (07000007's objective 2 completes through the carried
+  records — the record chain crosses levels exactly as the [L] table says) → the boarding ch 0x4A + the ride
+  ch 0x4B (their writers are the loadable-pack scripts 0x0600004C/0x06000077-78 — the packs ARE on the slim ISO
+  [D FILES.BIN] but the SP scripts' channel events are not yet dumped; the walkthrough drives the two channels and
+  documents the gap) → ch 100 → level_exit **0x07300008** [M 0x182c60:100]. Sisters: without the ride the mission
+  stays open (no LOAD_LEVEL to fall back to); E at the gondola doors never fires the mask-8 plunge (F5's gate,
+  [M 0x1b2318:38-40] — the port-side walk-in graze remains fix-level2's open item).
+
+**F5's real mechanism on 07000008** (for the record): the falling-to-death cut-scene is TouchOnce out 0x7C mask 8
+→ SP 0x06000991 [D WORKLOG 4324-4328]; the E path is closed by the mask gate; the door route's own lock channels
+(#117/#118 p3=200 [D]) are the U-044 boundary locks.
+
+Determinism: no RNG draws added (the monitor is channel-reading only; the containment branch is pure geometry).
+
+## map-powerstation — the power station missions 0700000c/0700000d mapped; the photograph mechanic ported; the walkthroughs
+
+**Done** (built on fix-mission's landed mission layer — crates/nf-game/src/mission.rs's
+`Mission::init`/`update`/`monitor` and the per-level `c0700000c`/`c0700000d` records, whose [L]
+data matches my own dump of ee_start_05.bin @0x2a4080/0x2a40c8 byte for byte, including the +0x08
+hint labels 0x4000061-66):
+- **The photograph mechanic** (crates/nf-game/src/props.rs, new): placement 0xFD
+  `CamSubject_Create` 0x1bc5d8 / `CamSubject_Update` 0x1bc668 — a camera-gadget (weapon 0x54) bullet
+  entering the subject's volume writes the subject's channel (placement param 0): 0700000c's jetpack
+  display #414/#454 → ch 0x1c, 0700000d's laser display #494/#495 → ch 0x1e [D placements]. Placement
+  0xE1 `Destroy_Create` 0x12c318 / `Destroy_CollisionHandler` 0x12bd48 / `Destroy_Update` 0x12c4f8 —
+  the breakable doors: bullets subtract their damage, death writes the channel (0700000d's C5 leaves
+  #93/#96, ch 0x1f, health 1000/10000 [D]; the death is `health < 0.0` strictly [M 0x12bd48:46]).
+  Bullet checks in `Drones::update_player_bullets`; the bounds come from the object's gfx box
+  (transformed by the placement), falling back to the collision triangles when the gfx bounds are the
+  parser's ±1e7 sentinel (#93's object carries no gfx and an empty collision block — its box is
+  unbuildable [D]).
+- **The fire gate** (crates/nf-view/src/scene.rs, minimal): the port blocked every script-less weapon
+  from firing (`has_fire_script`); the game has no such gate — `Player_RoundToFire` 0x1a18e0 rounds to
+  fire unconditionally for ammo_type 0 and checks only the ammo pool otherwise [M], and the
+  press-tick spawn for fire_anim_len == 0 is [M 0x1a5460:688-693]. The gate now stands in only for
+  the hands class 'G' (0x47, fix-ladder2's concern). This is what lets the camera gadget photograph.
+- **The level loadouts** (crates/nf-game/src/player.rs `init_level_loadout`): case 0x700000c —
+  `Player_InitAmmoWeapons`, the handgun (48), `Upgrade_Weapon(0x1e)` (the sniper, 999),
+  `Upgrade_Weapon(0x4a)` (the Q-Claw, 999), the gadgets 0x50/0x54/0x58 at 0, the sniper selected
+  [M 0x1a7ef8:210-220]; case 0x700000d — the RamLoad keep + the game's own fallthrough to the 0c arm
+  on a cold load [M 0x1a7ef8:221-224].
+- **The NIS decoder** (crates/nf-formats/src/nis.rs, additive): ops 0x13/0x14/0x15/0x18/0x1a/0x1b/
+  0x1d/0x1e decode past (their `Script_Run` 0x1d8548 byte lengths) and op 0x1b decodes as
+  `SubScript { hash, stream, mode }` (`Script_SubScriptStart` 0x1db050) — the 0700000c/0d script
+  players' streams were halting at the first light/sub-script op, hiding everything after it.
+- **The level docs** (docs/levels/0700000c.md, docs/levels/0700000d.md): starts, the [L] objective
+  chains with the USATxt texts and hints, the actors, the interactions, the exits, the failures, the
+  not-ported lists with the game functions.
+- **The walkthroughs** (crates/nf-view/tests/walk_0700000c_live.rs 4 tests, walk_0700000d_live.rs 3
+  tests): 0700000c end-to-end (the loadout asserts, the ST-1 plate → objective 1, the camera
+  photograph → objective 2, the E-key gate → level_exit 0x0700000d; sisters: the locked gate without
+  the photograph, the plate skipped); 0700000d (the carried arrival → ch 0x23 completes TR-2 and
+  reveals ST-3, the record-12 channel clear on load [M Mission::init], the ST-3 plate → objective 4,
+  the laser photograph → objective 5, the C5 door data + the corridor plate ch 0x28 + the open AND
+  sister).
+- **portal_live's cold-loadout sweep** gained the game's 0c/0d arms (the sniper + the camera).
+
+**Measured**
+- [M] The 0700000c exit (#556) is USE-activated: its gate param is 0 so `Trigger_Update` case 10
+  (0x1b1a78:162-166) never self-fires; `Player_Activate` 0x1a5170 case 0x1d → `Trigger_Activate`
+  0x1b2318 does it from the E key (the port's `player_use_triggers` already covered the path).
+- [M] Weapon 0x54 (the camera): fp skin 0x05000045, ammo_type 0, range 50, speed 33.33, NO fire
+  scripts (+0xB0/+0xB4 = 0), fire_anim_len 0 — the disc data behind the fire-gate fix [D probe].
+- [D] The 0700000d corridor plate #433's 6 tris are the corridor's sloped faces (down to y ≈ 5.4
+  over a floor at 3.65): the standing capsule brushes them just inside the C5 end (z −269..−265).
+- [M] The mission records' +0x08 word (0x04000061-66 for the power station) = the hint labels the
+  `Q Hint Touchplate`s and the objective HUD's long text use — the port's Lang binds them.
+
+**Failed / corrected**
+- Two trigger-containment variants (the AABB-span overlap, then the tris' bounding sphere) fired
+  07000005's #291 under the fix-wire crossing rider and froze it — caught by wire_live; both
+  reverted (master's landed containment already carries the wire-rider exclusion from
+  c81361f, which is the same wall I hit independently).
+- The old map-mayhew mission table (read at struct base 0x2a4354) misaligned every record by one
+  word; the disc says record 0 completes on ch 0x46, not 0x70 (both the snapshot and ACTION.ELF's
+  static bytes). fix-mission's landed layer reads the base correctly; my walkthroughs run on it.
+- The first portal_live sweep failed twice while the loadout cases landed (0c/0d now select the
+  sniper by the game's own switch) — the sweep's blanket "weapon 2" assertion gained the game's
+  0c/0d arms.
+
+**Blocked items for the report:** the C5 mounted-laser sequence (see docs/levels/0700000d.md §6) —
+nothing on the disc's 0700000d data the port can reach writes ch 0x1f except the `Destroy` death
+itself, and the laser lives inside the crane cut-scene's scripted timeline.
+
+**Full suite:** `--no-fail-fast` run green except the 3 allowed `disc_golden` failures (the slim ISO).
