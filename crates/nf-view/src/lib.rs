@@ -785,6 +785,11 @@ fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
             nf_game::music::Cmd::FadeDown { music } => fade_down = Some(music),
         }
     }
+    // The IOP's op-0x19 pair each frame (`SFXUpdate` emits it when it changed): `NisPlaying` pauses the
+    // `PauseInNis` sounds (`ES_HandleNisPauseSfx`), `NisQuitten` stops the ducker [M sound.md §6 step 3, §8].
+    let (nis_playing, nis_quitten) = sim.drones.music.nis_state();
+    s.driver.set_nis_playing(nis_playing);
+    s.driver.set_nis_quitten(nis_quitten);
     let driver = &s.driver;
     sim.drones.audio.update(sim.sfx.as_ref(), (pos, norm, [0.0, 1.0, 0.0], f), &|h| driver.is_playing(h));
     let cmds = sim.drones.audio.take_commands();
@@ -1566,6 +1571,7 @@ impl ApplicationHandler for App {
                                     nf_game::pickup::Taken::Armour => "  picked up armour".to_string(),   // 0x200000F [M 0x18e650:290-294]
                                     nf_game::pickup::Taken::Bonus => "  picked up a 007 bonus".to_string(), // 0x200004A [M 0x18e650:315-321]
                                     nf_game::pickup::Taken::Label => "  picked up the item".to_string(), // case 4, label 0 on 07000008 [M 0x18e650]
+                                    nf_game::pickup::Taken::Message => "  picked up a pickup".to_string(), // 0x2000013 [M 0x18e650 case 5]
                                 });
                                 g.window.set_title(&format!("nf-view — Bond health {:.0}{}  P2K {} / {}{hit}{msg}", h.health, if h.health <= 0.0 { " (dead)" } else { "" }, sim.gun.clip, sim.gun.spare));
                             }
@@ -1630,6 +1636,7 @@ impl ApplicationHandler for App {
                     }
                 } else { overlay_for(&self.scene, aspect) };
                 if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }
+                hud.append(&self.scene.script_overlay_hud(aspect));
                 g.renderer.lights = self.scene.frame_lights();
                 let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud);
                 g.queue.submit([enc.finish()]);

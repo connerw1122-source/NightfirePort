@@ -13,6 +13,19 @@ pub const DROP_LIFETIME: u16 = 60 * 120;
 /// `WldGravity.y · REC_FRAME_RATE²` [L]: the fall per tick².
 const GRAVITY: f32 = -9.8 * (1.0 / 60.0) * (1.0 / 60.0);
 
+/// `BestWeapon` (0x2bede0, 36 bytes in the symtab): the auto-switch ranking, best first. An entry is
+/// a weapon id; the ranking compares `weapon_data[entry].base` [M Player_IsBetterWeapon 0x1a6eb0.
+/// Live values [L ee_start_05.bin 0x2bede0]. A pickup whose base is not in the table (the rockets
+/// 0x2C/0x2E, the AR's 0x1B, the gadgets) never auto-switches — the game keeps the held gun.
+pub const BEST_WEAPON: [u16; 18] = [0x42, 0x32, 0x1a, 0x18, 0x1c, 0x16, 0x15, 0x08, 0x10, 0x0e, 0x0d, 0x0c, 0x12, 0x06, 0x04, 0x02, 0x0a, 0x01];
+
+/// `PickupMatrix` (0x2b9100, 110 bytes) row 0 — the MP weapon-set table `Pickup_CreateFromSet`
+/// (0x18f1b0) reads for kinds 7–11: `PickupMatrix[row][(kind-7)*2]`, row = the u16 at
+/// `MPSettings+0x1B4` (0 in SP [L ee_start_05.bin]; rows of 10 s16 entries). The disc's live row:
+/// set 7 → 0x6, 8 → 0x1e, 9 → 0x2c, 10 → 0x6, 11 → 0x10. The odd columns of the live row
+/// ([0x1c, 0x18, 0x2, 0xa, 0x42]) are not read by 0x18f1b0.
+pub const PICKUP_MATRIX_ROW0: [u16; 5] = [0x6, 0x1e, 0x2c, 0x6, 0x10];
+
 /// A model's glist bounds (`celglist+0x20`: centre, radius).
 #[derive(Clone, Copy, Debug)]
 pub struct Model { pub centre: V3, pub radius: f32 }
@@ -39,6 +52,10 @@ pub mod kind {
     pub const TEXT: u16 = 4;
     pub const LABEL: u16 = TEXT;
     pub const BOND_BONUS: u16 = 6;
+    /// `Pickup_Handler` case 5 [M 0x18e650:229-233]: clears the taker's `BLData+0x888` and shows
+    /// message 0x2000013; consumed like every other kind. No existing constant (the old
+    /// two-name TEXT/LABEL pair is the same kind 4).
+    pub const MESSAGE: u16 = 5;
 }
 
 /// One pickup object (`control_create_object(0x40)` + PICKUPINFO at `obj+0xE0`).
@@ -76,6 +93,15 @@ pub struct Pickup {
     /// pointer, not a hashcode re-lookup — an object with hashcode 0xFFFFFFFF (07000005's
     /// `oOBJECT_AmmoPickUp_9mm` [D]) has no by-hash entry and would never be drawn.
     pub obj: Option<(usize, usize)>,
+    /// `+0x2C`: 0 = delete when taken; 0xFFFF = stays takeable forever; else hidden for
+    /// `FRAME_RATE_INT · respawn · 10` ticks [M 0x18e650:338-348, 0x18e148:183-189].
+    pub respawn: u16,
+    /// The state-2 wait counter (the game reads the take stamp `obj+0xEC` against the clock; the
+    /// port counts the ticks down directly).
+    pub respawn_ticks: u32,
+    /// `+0x38` spin: 1 = rotate about +Y by REC_FRAME_RATE rad per tick (`RotMatrix((0,1/60,0))`
+    /// into `obj+0x90` every tick) [M 0x18dda0:138-144, 0x18e148:193-201]. Set for kind 6 or MP.
+    pub spin: bool,
 }
 
 /// What Bond took.
@@ -96,6 +122,11 @@ pub enum Taken {
     /// Kind 4, the label/item pickup (the guidance-chip briefcase): consumed, no per-kind sound
     /// override [M 0x18e650 case 4 — `lVar20 = Txt_BindLabel(+0x34)` only].
     Label,
+    /// Kind 5 [M 0x18e650 case 5:229-233]: clears the taker's `BLData+0x888` (a class-3 taker;
+    /// the port's Inventory has no +0x888 — nothing to clear) and falls through to the shared
+    /// tail: message 0x2000013, the take sound, the channel, CONSUMED. The port refused it before
+    /// (the pickup stayed on the floor forever).
+    Message,
 }
 
 fn trans(m: &Mat4) -> V3 { [m[3][0], m[3][1], m[3][2]] }
@@ -117,8 +148,14 @@ impl Pickup {
     /// the placement's extra words give the type, id, switch channel, sound, respawn and lifetime. The pickup
     /// starts at rest (state 1, on the floor). The model comes from the placement's celglist (the placement's
     /// object), NOT from `weapon_data[id]+0x80` — the glist is passed as `param_4` to `Pickup_Create` [M 0x1d04f0].
-    pub fn create_placed(translation: V3, rotation: [f32; 3], type_: u16, id: u16, rounds: i16, switch_channel: u16, sound: u16, _respawn: u32, lifetime: u8, model: u32, bounds: Model, w: &WeaponData) -> Option<Pickup> {
+    /// Kinds 7–11 are intercepted by `Pickup_Create` → `Pickup_CreateFromSet` (0x18f1b0): a kind-0 pickup of the
+    /// set weapon (`PickupMatrix[row][(kind-7)*2]`, the BASE id, `clip_size·2` rounds, the WEAPON's own glist —
+    /// not the placement's object).
+    pub fn create_placed(translation: V3, rotation: [f32; 3], type_: u16, id: u16, rounds: i16, switch_channel: u16, sound: u16, respawn: u16, lifetime: u8, model: u32, bounds: Model, w: &WeaponData, models: &std::collections::HashMap<u32, Model>) -> Option<Pickup> {
         if id == 0xFFFF { return None; }
+        if (7..=11).contains(&type_) {
+            return Self::create_from_set(translation, rotation, type_, w, models);
+        }
         if model == 0 { return None; }
         // Build the matrix directly from the placement translation — do NOT call `create` which lowers the
         // Y by `radius - |centre.y|` (that's for DROPPED pickups that fall to the floor; level-placed
@@ -131,6 +168,7 @@ impl Pickup {
             switch_channel,
             sound: if sound == 0xFFFF { None } else { Some(sound as u32) },
             hidden: false, gone: false, from: None, obj: None,
+            respawn, respawn_ticks: 0, spin: type_ == kind::BOND_BONUS,
         };
         let mut p = p;
         p.lifetime = if lifetime == 0 { 0 } else { lifetime as u16 * 60 };
@@ -138,6 +176,29 @@ impl Pickup {
             p.rounds = w.clip_size(id as usize);
         }
         Some(p)
+    }
+
+    /// `Pickup_CreateFromSet` (0x18f1b0): the kind is 7–11 (`Pickup_Create`'s intercept [M 0x18dda0:104-105]);
+    /// the weapon is `PickupMatrix[row][(kind-7)*2]` (row 0 in SP [L MPSettings+0x1B4 = 0]); the created
+    /// pickup is kind 0 of the weapon's BASE id with `clip_size(base)·2` rounds and the WEAPON's own model
+    /// (`weapon_data[base]+0x80` — the placement's object is not used) [M 0x18f1b0:38-47]. When the set weapon
+    /// is the AR (0x1a) the game also drops a kind-1 pile of its grenade launcher (`weapon_data[0x1B]`, a full
+    /// clip, model 0x20007c4, at +0.1,+0.1, with a 0.5 fall velocity [M :49-62] — the offset/velocity are the
+    /// port's unmodelled remainder). State 1 (the set pickups rest where placed).
+    pub fn create_from_set(translation: V3, rotation: [f32; 3], set: u16, w: &WeaponData, models: &std::collections::HashMap<u32, Model>) -> Option<Pickup> {
+        let weapon = *PICKUP_MATRIX_ROW0.get((set - 7) as usize)?;
+        let base = w.base(weapon as usize) as u16;
+        let model = w.model(base as usize);
+        let bounds = *models.get(&model)?;
+        let rounds = (w.clip_size(base as usize) as i16).wrapping_mul(2);
+        let m = nf_formats::placement::object_matrix(rotation, translation);
+        Some(Pickup {
+            kind: kind::WEAPON, weapon: base, rounds, model, bounds, m,
+            start: translation, vel: [0.0; 3], state: 1, lifetime: 0,
+            switch_channel: 0, sound: None,
+            hidden: false, gone: false, from: None, obj: None,
+            respawn: 0, respawn_ticks: 0, spin: false,
+        })
     }
 
     /// `Pickup_Create` for a dropped pickup: upright with the matrix's heading (`Mat_Align2Up(M, +Y, Mat_GetDir(M))`,
@@ -153,7 +214,33 @@ impl Pickup {
         let x = [z[2], 0.0, -z[0]];
         let y = t[1] - (bounds.radius - bounds.centre[1].abs());
         let m = [[x[0], x[1], x[2], 0.0], [0.0, 1.0, 0.0, 0.0], [z[0], z[1], z[2], 0.0], [t[0], y, t[2], 1.0]];
-        Pickup { kind, weapon, rounds, model, bounds, m, start: t, vel: [0.0; 3], state: 0, lifetime: DROP_LIFETIME, switch_channel: 0, sound: Some(SOUND), hidden: false, gone: false, from: None, obj: None }
+        Pickup { kind, weapon, rounds, model, bounds, m, start: t, vel: [0.0; 3], state: 0, lifetime: DROP_LIFETIME, switch_channel: 0, sound: Some(SOUND), hidden: false, gone: false, from: None, obj: None, respawn: 0, respawn_ticks: 0, spin: false }
+    }
+
+    /// The state-2 respawn wait [M 0x18e148:182-189]: after `FRAME_RATE_INT · respawn · 10` ticks the
+    /// pickup shows again (`obj+0xF0 &= ~0x10`, state 1) and nothing else that tick. Call once per tick
+    /// for pickups in state 2.
+    pub fn respawn_wait(&mut self) {
+        if self.state != 2 { return; }
+        if self.respawn_ticks > 0 { self.respawn_ticks -= 1; }
+        if self.respawn_ticks == 0 {
+            self.hidden = false;
+            self.state = 1;
+        }
+    }
+
+    /// `+0x38` spin [M 0x18e148:193-201]: while set, `obj+0x90` gets `RotMatrix((0, REC_FRAME_RATE, 0))`
+    /// concatenated per tick — about +Y by 1/60 rad.
+    pub fn spin_tick(&mut self) {
+        if !self.spin { return; }
+        let a = 1.0f32 / 60.0;
+        let (s, c) = a.sin_cos();
+        // Rotate the matrix's x/z rows about Y, keeping the translation row.
+        for r in 0..3 {
+            let (x, z) = (self.m[r][0], self.m[r][2]);
+            self.m[r][0] = x * c + z * s;
+            self.m[r][2] = z * c - x * s;
+        }
     }
 
     /// The world sphere centre (`obj+0x80`, `Control_BuildWorldSph`): the glist centre through the matrix.
@@ -349,6 +436,36 @@ impl Inventory {
         }
     }
 
+    /// `Player_IsBetterWeapon` (0x1a6eb0): the auto-switch ranking. The guard: the CURRENT weapon's
+    /// base in [0x4a, 0x5e] (the gadgets) blocks every switch [M the `(int)base - 0x4aU > 0x14`
+    /// unsigned check]. Then `BestWeapon` (0x2bede0, 18 entries) is walked: the rank of an id is the
+    /// slot whose entry's `weapon_data[entry].base` equals the id's base; a base not in the table
+    /// ranks -1 (the rockets 0x2C/0x2E, 0x1B, the gadgets) — no switch. Verdict:
+    /// `rank(pickup) < rank(current)` [M 0x1a6eb0].
+    pub fn is_better_weapon(w: &WeaponData, cur: u8, id: u16) -> bool {
+        let base = |x: u16| w.base(x as usize) as u16;
+        let cur_base = base(cur as u16);
+        if (0x4a..=0x5e).contains(&cur_base) { return false; }
+        let (pickup_base, cur_rank) = (base(id), BEST_WEAPON.iter().position(|&e| base(e) == cur_base));
+        let Some(cur_rank) = cur_rank else { return false; };
+        match BEST_WEAPON.iter().position(|&e| base(e) == pickup_base) {
+            Some(pickup_rank) => pickup_rank < cur_rank,
+            None => false,
+        }
+    }
+
+    /// `Player_EquipAmmo`'s id remap [M 0x1a8d18:11-19]: the ammo pickups of the upgraded weapons
+    /// remap through their BASE's upgrade then +1 — 0x1f → `Upgrade_Weapon(0x1e) + 1`, 0x25 →
+    /// `Upgrade_Weapon(0x24) + 1` (identity without the upgrade shop: slot 0). EquipWeapon's remap
+    /// (`Upgrade_Weapon` alone) does NOT do this.
+    pub fn upgrade_ammo_id(id: u16, upgrades: usize, state_clock: u32) -> u16 {
+        match id {
+            0x1f => Self::upgrade_weapon(0x1e, upgrades, state_clock).wrapping_add(1),
+            0x25 => Self::upgrade_weapon(0x24, upgrades, state_clock).wrapping_add(1),
+            _ => id,
+        }
+    }
+
     /// `Pickup_Handler` (0x18e650) for Bond. `armour` = `BLData+0x8B0` (the taker's armour, written on the
     /// armour case); `clock` = `GameState+0x52` (the game clock, for the 10 → 0xC remap). Types 0/1: a weapon
     /// he lacks is equipped, otherwise its rounds are taken as ammo. Type 2 (key): `Player_EquipKey`, never
@@ -360,12 +477,14 @@ impl Inventory {
     pub fn take(&mut self, w: &WeaponData, p: &Pickup, loaded: bool, armour: &mut f32, clock: u32) -> Option<Taken> {
         // The remapped id decides the owned-check and the equip; the display id stays raw [M 0x18e650:142-144, :246].
         let id = Self::upgrade_weapon(p.weapon, 0, clock) as usize;
+        // `Player_EquipAmmo`'s own remap [M 0x1a8d18:11-19] — 0x1f/0x25 go through their base's upgrade +1.
+        let ammo_id = Self::upgrade_ammo_id(p.weapon, 0, clock) as usize;
         match p.kind {
             kind::WEAPON if !self.owned.get(id).copied().unwrap_or(true) => {
                 self.equip_weapon(w, id, p.rounds, loaded).then_some(Taken::Weapon { weapon: p.weapon })
             }
             kind::WEAPON | kind::AMMO => {
-                let n = self.equip_ammo(w, id, p.rounds);
+                let n = self.equip_ammo(w, ammo_id, p.rounds);
                 (n != 0).then_some(Taken::Ammo { weapon: p.weapon, rounds: n })
             }
             kind::KEY => {
@@ -393,6 +512,13 @@ impl Inventory {
                 // skipped. The pickup is consumed [M 0x18e650:234-236]. fix-objects: reported as
                 // `Bonus` so the caller plays the take-time sound 0x14C instead of staying silent.
                 Some(Taken::Bonus)
+            }
+            kind::MESSAGE => {
+                // Type 5 [M 0x18e650 case 5:229-233]: a class-3 taker's `BLData+0x888` is cleared
+                // (the port's Inventory has no +0x888) and the shared tail runs — message
+                // 0x2000013, the take sound, the channel, consumed. Previously refused here, which
+                // left the pickup on the floor forever.
+                Some(Taken::Message)
             }
             _ => None,
         }
@@ -484,6 +610,67 @@ mod tests {
         // Full: refused → the pickup stays (None).
         assert_eq!(inv.take(&w, &p, true, &mut armour, 1), None, "≥ 50 refuses");
         assert_eq!(armour, 50.0);
+    }
+
+
+    /// `Player_IsBetterWeapon` (0x1a6eb0) over the live `BestWeapon` table [L 0x2bede0]: the P2K
+    /// (base 2, rank 15) switches to the SG5 (0x16, rank 5) and to the AR (0x1a, rank 2); the
+    /// rockets (0x2C/0x2E) are NOT in the table — no switch, whichever gun is held [M]; holding a
+    /// gadget (base 0x4a-0x5e) blocks every switch [M the guard]; the same base never switches
+    #[test]
+    fn the_auto_switch_ranks_best_weapons_and_skips_gadgets_and_rockets() {
+        let mut w = table();
+        // The ranking compares BASES: every id the walk can see needs a record whose base is
+        // itself (the disc's records are) or the zero records collapse onto base 0.
+        for id in BEST_WEAPON { let id = id as usize; if id >= w.records.len() { continue; }
+            w.records[id][0..2].copy_from_slice(&(id as u16).to_le_bytes());
+            w.records[id][2..4].copy_from_slice(&(id as u16).to_le_bytes());
+        }
+        w.records[0x2c][0..2].copy_from_slice(&0x2cu16.to_le_bytes());
+        w.records[0x2c][2..4].copy_from_slice(&0x2cu16.to_le_bytes());
+        assert!(Inventory::is_better_weapon(&w, 2, 0x16), "SG5 rank 5 beats the P2K rank 15");
+        assert!(Inventory::is_better_weapon(&w, 2, 0x1a), "the AR (rank 2) beats the P2K");
+        assert!(!Inventory::is_better_weapon(&w, 0x16, 2), "sister: the P2K does not beat the SG5");
+        assert!(!Inventory::is_better_weapon(&w, 2, 0x2c), "the rocket launcher is not in BestWeapon — no auto-switch");
+        assert!(!Inventory::is_better_weapon(&w, 0x4a, 0x16), "holding a gadget blocks the switch");
+        assert!(Inventory::is_better_weapon(&w, 2, 6), "the upgraded P2K (0x6) has its own BestWeapon slot (13 < 15) — it switches");
+        assert!(!Inventory::is_better_weapon(&w, 2, 2), "sister: the same id never re-switches (15 < 15 is false)");
+    }
+
+    /// `Pickup_CreateFromSet` (0x18f1b0) with the live row 0 [L MPSettings+0x1B4 = 0,
+    /// PickupMatrix 0x2b9100]: set 9 → weapon 0x2c (the rocket launcher), kind 0, the BASE id,
+    /// `clip_size·2` = 8 rounds; sets 7/8/10/11 → 0x6/0x1e/0x6/0x10.
+    #[test]
+    fn set_kinds_resolve_through_the_pickup_matrix() {
+        let mut w = table();
+        w.records[0x2c][0..2].copy_from_slice(&0x2cu16.to_le_bytes());
+        w.records[0x2c][2..4].copy_from_slice(&0x2cu16.to_le_bytes());
+        w.records[0x2c][0x92..0x94].copy_from_slice(&4u16.to_le_bytes());
+        let models = std::collections::HashMap::new();
+        // The rocket's model is not in the test table map — extend it.
+        let mut models = models;
+        let rocket_model = w.model(0x2c as usize);
+        models.insert(rocket_model, Model { centre: [0.0; 3], radius: 0.5 });
+        let p = Pickup::create_from_set([1.0, 2.0, 3.0], [0.0; 3], 9, &w, &models).expect("set 9 creates");
+        assert_eq!((p.kind, p.weapon, p.rounds), (kind::WEAPON, 0x2c, 8), "the rocket set: kind 0, base id, clip·2");
+        assert_eq!(p.model, rocket_model, "the WEAPON's glist, not the placement's object");
+        assert_eq!((p.state, p.spin), (1, false), "rests where placed, no spin");
+        assert!(Pickup::create_from_set([0.0; 3], [0.0; 3], 12, &w, &models).is_none(), "sister: kind 12 is not a set");
+    }
+
+    /// The respawn tail [M 0x18e650:338-348 + 0x18e148:182-189]: respawn 60 hides for
+    /// 60·60·10 ticks then restores; 0xFFFF never hides; 0 deletes (the caller's `gone`).
+    #[test]
+    fn respawn_hides_for_frame_rate_times_respawn_times_ten() {
+        let m = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0; 4]];
+        let mut p = Pickup { kind: 3, weapon: 0x47, rounds: 50, model: 0, bounds: Model { centre: [0.0; 3], radius: 0.5 }, m, start: [0.0; 3], vel: [0.0; 3], state: 1, lifetime: 0, switch_channel: 0, sound: None, hidden: false, gone: false, from: None, obj: None, respawn: 60, respawn_ticks: 0, spin: false };
+        p.hidden = true; p.state = 2; p.respawn_ticks = 60 * 60 * 10;
+        for _ in 0..(60 * 60 * 10 - 1) { p.respawn_wait(); }
+        assert!(p.hidden && p.state == 2, "still hidden on the last wait tick");
+        p.respawn_wait();
+        assert!(!p.hidden && p.state == 1, "restored after 60·60·10 ticks");
+        // Sister: the forever respawn (0xFFFF) never enters the wait in the first place — the
+        // caller leaves it visible (`match p.respawn { 0xFFFF => {} }`, drone.rs).
     }
 
     /// The take ray's ORIGIN is the caller's third argument — `Pickup_Update` passes the player's

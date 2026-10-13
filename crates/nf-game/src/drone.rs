@@ -4553,6 +4553,11 @@ pub enum PlayerImpact { Drone { drone: usize, part: i16, at: V3 }, World(V3) }
 #[derive(Clone, Copy, Debug)]
 pub struct Sound { pub id: u32, pub pos: V3, pub inner: f32, pub outer: f32, pub weight: f32 }
 
+/// The script fade overlay's state (`Camera_SetFade` 0x1bbdd8's viewer fields +0x228/+0x22C): the
+/// black overlay's alpha and its per-tick rate. Ticked in `Drones::tick`; drawn by nf-view.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewFade { pub alpha: f32, pub rate: f32 }
+
 /// Anim states of the noise chain: turn (0x61) and a short look (0xB).
 const TURN: u16 = 0x61;
 const LOOK_SHORT: u16 = 0x0b;
@@ -4665,6 +4670,21 @@ pub struct Drones {
     /// cut-scene ends (playtest item 5: they used to run over the cut-scenes). The pane state
     /// machines (0x19c310 case 0) poll the same gate, so a banner arriving mid-NIS stays closed too.
     pub hud_frozen: bool,
+    /// The script camera's letterbox borders (`Script_CameraStart` 0x1d9140's two border sprites of
+    /// SpriteInfo 0x2c9468 at draw layer 1, the bottom at +0x26 = 0x180; `Script_KillStream` case 4
+    /// hides them) — true while a script camera is live. nf-view draws two solid black 512×64 bars
+    /// [L ACTION.ELF 0x2c9468: x 0, y 0, w 512, h 64, colour 0x000000ff, texture 0].
+    pub letterbox: bool,
+    /// The script fade overlay (`Camera_SetFade` 0x1bbdd8's viewer state, +0x228..+0x235): the black
+    /// overlay's alpha and its per-tick rate (1/|duration|; negative duration = fading in from
+    /// black). Armed by op 0x13, `Script_Update`'s length−20 auto fade-out and the −22 handback
+    /// fade-in; ticked in `Drones::tick` (the game ticks it in the viewer update) [S: the viewer
+    /// state's exact lifecycle — who clears +0x235 — is not decoded; the port parks the alpha at the
+    /// target and re-arms only from an empty state].
+    pub view_fade: Option<ViewFade>,
+    /// Op 0x1e script messages (`Text_AddMsg(-1, 0, 4, Txt_BindLabel(label), 0, time)`, drained to
+    /// the HUD like `taken`): (label, display frames).
+    pub script_msgs: Vec<(u32, u16)>,
     /// The section the IOP player reports (`0x2500CC`, read by `UpdateMusicalEvents`): the audio layer
     /// writes it each frame; the music update at the tick's end consumes it (fix-party-mission item 4 —
     /// the game's `UpdateMusicalEvents` runs every frame whether or not an output device exists).
@@ -4789,6 +4809,11 @@ pub struct Drones {
     /// built at load (scene.rs) with `gone = true` (undrawn, inert) and goes live when the script
     /// spawns it.
     pub script_pickup_slots: HashMap<(u32, u8), usize>,
+    /// The auto-switch request `Pickup_Handler` → `Player_EquipWeapon`'s tail wrote this tick
+    /// [M 0x1a8a58: the `DAT_002a38d2[idx·0x158]` flag (live 1 [L ee_start_05]) ∧
+    /// `Player_IsBetterWeapon` → `anim+0x63 = id`]. The view applies it to the draw machine
+    /// (gun.switch_request).
+    pub weapon_switch_request: Option<u16>,
     /// The grapple points (placement 0x3A, `Grapple_Create` 0x198298; fix-gadgets).
     pub grapple_points: Vec<crate::gadget::GrapplePoint>,
     /// The animated SimpleScripts (`SS_Create` 0x1a9c58 / `SS_Update` 0x1a9948; map-tower2): the
@@ -4897,6 +4922,7 @@ impl Drones {
             gas: Default::default(),
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
             // — the shared-constructor collisions, merge lesson 4).
+            letterbox: false, view_fade: None, script_msgs: Vec::new(),
             death: Default::default(), bond_fire: false, auto_restart: true, level_exit_cold: false,
             // fix-restart-target: the fail-menu Restart's warm arm + the current level (GameState+0xC).
             level_exit_restart: false,
@@ -4905,6 +4931,9 @@ impl Drones {
             // script's obj_type-0xF0 Entity (`Script_CreateEntity` 0x1d8968's Pickup_Create arm);
             // built at load in scene.rs, matched by the runtime spawn.
             script_pickup_slots: Default::default(),
+            // fix-pickups-remainder: the pickup auto-switch request (fields on their own lines —
+            // merge lesson 4).
+            weapon_switch_request: None,
             worldobjs: Default::default(),
             // fix-world-fx: the presentation FX (fields on their own lines — merge lesson 4).
             fx: Default::default(),
@@ -5055,6 +5084,7 @@ impl Drones {
                 info: [None, None],
                 deleted: false,
                 live_matrix: m,
+                subs: Vec::new(),
             });
         }
         if let Some(p) = ps.iter().find(|p| p.flags & 0xff == 0xdf) {
@@ -5398,6 +5428,29 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
     }
 
+    /// `NDrone2_PlaySFX` (0x141848) for the foley lines (scale 1.0, delay enforced — the door line 0x27, the
+    /// kick 0x28): the 30-frame post-load gate, the entry's `repeatDelay` (`lastFrame`), then the entry's sfx id
+    /// at the drone. `lastFrame` is stamped **before** the play (rate-limited even when the play fails) [M
+    /// 0x141848: disasm 0x141a1c]. The handle is not referenced (speech's +0x4D0 stays free) and +0x4D4's
+    /// 180-frame talk suppression is not modelled — it only gates optional talk lines [M 0x13f1d0].
+    fn foley(&mut self, d: &Data, index: usize, idx: usize, frame: u32) {
+        if let Some(l) = Self::foley_entry(d.voices, &mut self.voice_last, idx, frame) {
+            let pos = self.list[index].pos;
+            match d.sfx { Some(t) => { self.play_sound_handle(pos, t.get(l.sfx)); } None => { self.audio.play3d(l.sfx, pos, None); } }
+        }
+    }
+
+    /// The `NDrone2_PlaySFX` gate + `Drone_SfxInfo` stamp (`lastFrame` in the table, shared by every drone) —
+    /// split out so the door site inside the `list.iter_mut()` loop can play through the narrow field borrows.
+    fn foley_entry(lines: Option<&[nf_formats::sfx::VoiceLine]>, voice_last: &mut Vec<Option<u32>>, idx: usize, frame: u32) -> Option<nf_formats::sfx::VoiceLine> {
+        let lines = lines?;
+        if voice_last.len() < lines.len() { voice_last.resize(lines.len(), None); }
+        let l = lines.get(idx).copied()?;
+        if frame < 30 || l.sfx == 0 || voice_last[idx].is_some_and(|t| frame < t + l.repeat) { return None; }
+        voice_last[idx] = Some(frame);
+        Some(l)
+    }
+
     /// `Effect_Bullet`: the impact sound of the surface the segment `from → to` hits (`EffectInfo+0x14`), at the hit.
     fn impact_sound(&mut self, d: &Data, from: V3, to: V3) {
         let (Some(s), Some((t, _, m))) = (d.surfaces, d.world.segment_surface(from, to, false)) else { return };
@@ -5508,8 +5561,34 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // Script_CameraStart 0x1d9140:46-49 disables the viewers' HUD; Script_KillStream
                     // 0x1d9860:71-72 restores it. The flag freezes the HUD message timers [M 0x1b11d8].
                     self.hud_frozen = start;
+                    // The letterbox: `Script_CameraStart` creates the two border sprites (0x2c9468, the
+                    // second at +0x26 = 0x180) at draw layer 1 and `Script_KillStream` case 4 sets
+                    // their layer to 0xff — the bars show exactly while a script camera is live
+                    // [M 0x1d9140:49-61, 0x1d9860:87-93]. nf-view draws them from this flag.
+                    self.letterbox = start;
                     self.music.event(if start { 0xb } else { 0xc }, script)
                 }
+                // Op 0x13: `Camera_SetFade(-f, 4, 0xff, 0)` [M 0x1db3d0, 0x1bbdd8] — a black overlay
+                // (colour 0x000000ff) whose alpha ramps 1/|f| per tick: f < 0 fades in from black,
+                // f > 0 fades out to black. The game refuses a second fade while the same viewer's
+                // pair (+0x234, +0x235) is active [M 0x1bbdd8:11]; the port's one-state stand-in
+                // re-arms only when nothing is running [S: the viewer state's exact lifecycle is not
+                // decoded]. The same state carries the script's auto-fades (Script_Update's
+                // length−20 fade-out and the −22 handback fade-in) and nf-view draws it.
+                crate::nis::Request::Fade { ticks } => {
+                    // `Camera_SetFade(duration, 4, 0xff, 0)` [M 0x1bbdd8]: rate = 1/duration per tick;
+                    // a NEGATIVE duration starts at alpha 1.0 and fades in, a positive one starts at
+                    // 0.0 and fades out (op 0x13 passes the script f32 negated, so a script fade of
+                    // −82 arrives as +82 = out to black [M 0x1db3d0, 0x06000071's bytes]).
+                    if self.view_fade.is_none() {
+                        let (alpha, rate) = if ticks < 0.0 { (1.0, 1.0 / ticks) } else if ticks > 0.0 { (0.0, 1.0 / ticks) } else { (0.0, 0.0) };
+                        self.view_fade = Some(ViewFade { alpha, rate });
+                    }
+                }
+                // Op 0x1e: `Text_AddMsg(-1, 0, 4, Txt_BindLabel(label, 0), 0, time)` [M 0x1db2b8] —
+                // the raw label rides to nf-view (the Lang table lives above nf-game), the
+                // `drones.taken` pattern; the HUD pane shows it for `time` frames.
+                crate::nis::Request::Text { label, time } => self.script_msgs.push((label, time)),
                 // `Script_SoundStart`: 2-D, or 3-D at the stream's object (its position each frame, `Script_Interp` 5).
                 crate::nis::Request::Sound { id, at, src } => {
                     // `SFXStart` 0x115a68:18-20 / `SFXStart3D` 0x115bf0: a sound with id 0x172 (the NIS
@@ -5582,11 +5661,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         for k in 0..self.pickups.len() {
             let p = &mut self.pickups[k];
             if p.gone { continue; }
+            // State 2 (taken, waiting to respawn) [M 0x18e148:182-189]: nothing else that tick.
+            if p.state == 2 {
+                p.respawn_wait();
+                continue;
+            }
+            // `+0x38` spin [M 0x18e148:193-201] — every tick, before the touch.
+            p.spin_tick();
             p.fall(d.world);
             // The distance test runs from the player's position (+0x30) but the LOS from his world-sphere
             // centre (+0x80) — two different points [M 0x18e148:203-214 + L]. Port-check §1: the old call
             // passed `player.pos` for both, so the take-ray origin differed from the game's by construction.
-            if alive && p.touches(d.world, player.cel, player.pos, player.sph) {
+            if alive && !p.hidden && p.touches(d.world, player.cel, player.pos, player.sph) {
                 let loaded = d.skins.contains_key(&d.weapons.first_person(p.weapon as usize));
                 // `Pickup_Handler`: the armour case writes `BLData+0x8B0`; the clock is `GameState+0x52`
                 // (the 10 → 0xC remap gate) — the port's tick count stands in for it.
@@ -5598,7 +5684,24 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     eprintln!("[take] tick {} weapon {:#x} kind {} rounds {} loaded {} → {:?}", frame, p.weapon, p.kind, p.rounds, loaded, res);
                 }
                 if let Some(t) = res {
-                    p.gone = true;
+                    // The respawn tail [M 0x18e650:338-348]: respawn 0 → deleted; -1 (0xFFFF) → stays
+                    // takeable; else hidden (obj+0xF0 |= 0x10), state 2, until
+                    // `FRAME_RATE_INT · respawn · 10` ticks pass. The port used to delete unconditionally.
+                    match p.respawn {
+                        0 => p.gone = true,
+                        0xFFFF => {}
+                        r => { p.hidden = true; p.state = 2; p.respawn_ticks = 60 * r as u32 * 10; }
+                    }
+                    // `Player_EquipWeapon`'s tail [M 0x1a8a58]: on a WEAPON equip (not the ammo path —
+                    // `Player_EquipAmmo` has no switch), the per-player auto-switch flag (live 1 [L]) ∧
+                    // `Player_IsBetterWeapon` writes `anim+0x63 = the upgraded id`. The port's `bond_weapon`
+                    // is the view's held weapon (one tick stale at most).
+                    if matches!(t, crate::pickup::Taken::Weapon { .. }) {
+                        let id = crate::pickup::Inventory::upgrade_weapon(p.weapon, 0, clock);
+                        if crate::pickup::Inventory::is_better_weapon(d.weapons, self.bond_weapon, id) {
+                            self.weapon_switch_request = Some(id);
+                        }
+                    }
                     // `PlrStat_LogBondBonus(0)` 0x1999e0 — `Pickup_Handler` case 6 0x18e650:234-236
                     // logs the bonus pickup in the take-effect switch (fix-progress).
                     if matches!(t, crate::pickup::Taken::Bonus) { self.progress.log_bond_bonus(self.mission.status()); }
@@ -6024,6 +6127,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // below, in the game's list order (fix-script-start-tick — the old all-players-here beat
         // ran a trigger-started script one tick behind the placement trigger that started it).
         let script_skip = { let _p = crate::prof::scope("drones: scripts head"); self.scripts.begin_tick(&mut self.channels, d, frame) };
+        // The script fade overlay's per-tick advance (`Camera_SetFade`'s viewer state; the game ticks
+        // it in the viewer update): the alpha moves by the rate each tick and parks at its end —
+        // 1.0 after a fade-to-black (the screen stays black until a fade-in), 0.0 after a fade-in.
+        if let Some(f) = self.view_fade.as_mut() {
+            if f.rate > 0.0 { f.alpha = (f.alpha + f.rate).min(1.0); }
+            else if f.rate < 0.0 { f.alpha = (f.alpha + f.rate).max(0.0); }
+        }
         // Script objects with collision data join the collision world where they now are: animations' discrete
         // parts and drawn entities (`Collide_PickObj`; triggers and AI volumes are not obstacles).
         // Id: object index · 64 + part (stable while the object lives) for the ride (`ground_motion`).
@@ -6469,7 +6579,20 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
             // The door anim's event 6 (fired in `update_anim` just above): msg 0x20 to self —
             // only `DSTATE_OpenDoor` handles it (the send's GLOBAL fallback drops it elsewhere).
-            if std::mem::take(&mut dr.pending_door_msg) { dr.send(d, rng, frame, msg::DOOR); }
+            // `NDrone2_DSTATE_OpenDoor` case 0x20 plays Drone_SfxInfo[0x27] (sfx 1477) before the door
+            // activation — `NDrone2_PlaySFX(1.0, DCVars, 0x27, drone+0x30, enforceDelay 1)` [M 0x1681f8].
+            if std::mem::take(&mut dr.pending_door_msg) {
+                // `NDrone2_DSTATE_OpenDoor` case 0x20 plays Drone_SfxInfo[0x27] (sfx 1477) before the door
+                // activation — `NDrone2_PlaySFX(1.0, DCVars, 0x27, drone+0x30, enforceDelay 1)` [M 0x1681f8].
+                // (The narrow play mirrors `foley` — `&mut self` is split by the loop's `list` borrow.)
+                if let Some(l) = Self::foley_entry(d.voices, &mut self.voice_last, 0x27, frame) {
+                    match d.sfx {
+                        Some(t) => { let h = t.get(l.sfx); self.audio.play3d(h.id, dr.pos, None); if !h.looped { self.sounds.push(Sound { id: h.id, pos: dr.pos, inner: h.inner, outer: h.outer, weight: h.weight }); } }
+                        None => { self.audio.play3d(l.sfx, dr.pos, None); }
+                    }
+                }
+                dr.send(d, rng, frame, msg::DOOR);
+            }
             if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
             // `DroneFunc_OnInitDeath`'s verdict: the FailLabel event + the fail channel [M 0x13e560
             // applied per 0x145bd0's reasons; fix-actors]. The monitor's standing hooks (ch 0x60/0x61
@@ -6527,6 +6650,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
             // No reserved slot: build from the entity params; the bounds from the entity's hash
             // (the game's glist comes from `hashtable_hashcode_to_celglist(hash)`, 0x1d8bcc).
+            // Kinds 7-11 resolve through `Pickup_CreateFromSet` like every other create [M 0x18dda0:104-105].
+            if (7..=11).contains(&sp.kind) {
+                if let Some(mut p) = crate::pickup::Pickup::create_from_set(
+                    [sp.matrix[3][0], sp.matrix[3][1], sp.matrix[3][2]], [0.0; 3], sp.kind, d.weapons, &d.models) {
+                    p.m = sp.matrix;
+                    self.pickups.push(p);
+                }
+                continue;
+            }
             let bounds = d.models.get(&sp.hash).copied().unwrap_or(crate::pickup::Model { centre: [0.0; 3], radius: 0.3 });
             self.pickups.push(crate::pickup::Pickup {
                 kind: sp.kind, weapon: sp.id, rounds: sp.rounds, model: sp.hash,
@@ -6535,6 +6667,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 vel: [0.0; 3], state: 1, lifetime: 0, switch_channel: sp.switch_ch,
                 sound: if sp.sound == 0 || sp.sound == 0xFFFF { None } else { Some(sp.sound) },
                 hidden: false, gone: false, from: None, obj: None,
+                respawn: 0, respawn_ticks: 0, spin: sp.kind == crate::pickup::kind::BOND_BONUS,
             });
         }
         { let _p = crate::prof::scope("drones: set_dynamic"); d.world.set_dynamic(&script_parts(self, d)); }
@@ -6912,5 +7045,41 @@ mod tests {
         let mut dr2 = drone_at([0.0, 0.5, 0.0]); // feet at −0.5, floor at −1.5 → gap 1.0 > 0.2
         dr2.collision_handler(&w2);
         assert!(dr2.in_air && !dr2.on_surface, "in the air");
+    }
+}
+
+#[cfg(test)]
+mod foley_tests {
+    use super::*;
+
+    /// `NDrone2_PlaySFX`'s gate + `Drone_SfxInfo` stamp (`foley_entry`, 0x141848): the 30-frame post-load gate,
+    /// the entry's `repeatDelay` enforced from the table's `lastFrame` (stamped **before** the play — the rate
+    /// limit holds even when the play itself fails [M 0x141848 disasm 0x141a1c]), and a zero-sfxId entry is
+    /// silent (entry 0x23 [L ee_snapshot.bin: sfxId 0]).
+    #[test]
+    fn foley_gate_repeat_delay_and_stamp_before_play() {
+        let lines = vec![
+            nf_formats::sfx::VoiceLine { sfx: 1477, facial: 0, repeat: 0 },     // the door line (idx 0x27)
+            nf_formats::sfx::VoiceLine { sfx: 0, facial: 0, repeat: 180 },      // the disabled surrender line
+            nf_formats::sfx::VoiceLine { sfx: 924, facial: 0, repeat: 300 },    // a cooldown line
+        ];
+        let mut last: Vec<Option<u32>> = Vec::new();
+        // Inside the first 30 frames nothing plays and nothing is stamped.
+        assert_eq!(Drones::foley_entry(Some(&lines), &mut last, 0, 29), None);
+        assert!(last.iter().all(|t| t.is_none()), "no entry stamped: {last:?}");
+        // Frame 30: the door line plays and stamps frame 30 before the play.
+        assert_eq!(Drones::foley_entry(Some(&lines), &mut last, 0, 30), Some(lines[0]));
+        assert_eq!(last[0], Some(30));
+        // A zero-sfxId entry (0x23) returns at the entry's first gate, before any stamp [M 0x141848: 0x1418ac].
+        assert_eq!(Drones::foley_entry(Some(&lines), &mut last, 1, 40), None);
+        assert_eq!(last[1], None);
+        // The repeat delay gates a re-fire until lastFrame + repeat.
+        let l2 = nf_formats::sfx::VoiceLine { sfx: 924, facial: 0, repeat: 300 };
+        assert_eq!(Drones::foley_entry(Some(&lines), &mut last, 2, 100), Some(l2));
+        assert_eq!(Drones::foley_entry(Some(&lines), &mut last, 2, 399), None, "inside lastFrame + 300");
+        assert_eq!(Drones::foley_entry(Some(&lines), &mut last, 2, 400), Some(l2), "the gate opens on the tick");
+        // Sister: no table → nothing (a level without a voice table stays silent).
+        let mut none: Vec<Option<u32>> = Vec::new();
+        assert_eq!(Drones::foley_entry(None, &mut none, 0, 100), None);
     }
 }

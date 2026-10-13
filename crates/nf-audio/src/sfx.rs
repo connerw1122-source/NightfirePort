@@ -66,6 +66,10 @@ struct Item {
     fade_kill: bool,
     fade_kill_vol: i32,
     streamed: bool,
+    /// `Paused` (SFXItem+0x290): a `PauseInNis` sound while an NIS plays — pitch 0, skipped by `SFXUpdate` [M §8].
+    paused: bool,
+    /// `KeyOnFrameDelay` (SFXItem+0x2B4): the precache countdown; `HasSampleEnded` reports false while ≥ 1 [M §3.2].
+    key_on_delay: i32,
 }
 
 /// Bank slot data: the parsed bank, its decoded samples (lazily) and the raw ADPCM.
@@ -118,6 +122,10 @@ pub struct Driver {
     timer_ms: i32,
     /// `NisQuitten`: when set, `ES_StopDucker` runs (Duration=0 → fast recovery) [M sound.md §6 step 2].
     nis_quitten: bool,
+    /// `SFXKeyOnFrameDelay` (gp −0x7f18): the pending precache countdown, read and cleared by the next start [M].
+    key_on_frame_delay: i32,
+    /// `NisPlaying` (gp 0x339b0): a cut-scene is playing — `PauseInNis` sounds pause [M §8, ES_HandleNisPauseSfx].
+    nis_playing: bool,
     listener_pos: P3,
     listener_dir: P3,
     listener_norm: P3,
@@ -153,7 +161,8 @@ impl Driver {
         Driver { slots: HashMap::new(), items: Vec::new(), voices: vec![None; HW_VOICES], rnd: Rnd::default(), started: 0, mode: 1, master: 100,
             music_master: 70, mute_sfx: 1, indoors: 100, indoors_target: 100, reverb: 0, reverb_target: 0, underwater: false,
             fade: 10000, fade_music_volume: 10000, fade_status: 0, fade_rate: 30, fade_music: 1, fade_start: 0,
-            ducker_current: 100, ducker_volume: 100, ducker_duration: 1, ducker_start: 0, timer_ms: 0, nis_quitten: false,
+            ducker_current: 100, ducker_volume: 100, ducker_duration: 1, ducker_start: 0, timer_ms: 0, nis_quitten: false, nis_playing: false,
+            key_on_frame_delay: 0,
             listener_pos: [0; 3], listener_dir: [0, 1000, 0], listener_norm: [-1000, 0, 0], active: Vec::new(), streams: None, stream_pcm: HashMap::new() }
     }
 
@@ -191,10 +200,20 @@ impl Driver {
     /// `SFXStart3D(id, pos, vel, handle, volume, inner, outer)`; `pos = None` is `SFXStart` (2-D, position zero).
     /// Radii −1 = the effect's. Returns 0 ok, 1 not found / setup failed, 2 list full.
     pub fn start(&mut self, out: &mut Vec<Cmd>, id: u32, pos: Option<[f32; 3]>, handle: u32, radii: Option<(i32, i32)>) -> u32 {
+        // `kd = SFXKeyOnFrameDelay; SFXKeyOnFrameDelay = 0` — read and cleared on every start [M §3.2 step 1].
+        let kd = std::mem::replace(&mut self.key_on_frame_delay, 0);
         let mut slots: Vec<usize> = self.slots.keys().copied().collect();
         slots.sort();
         let Some((slot, fx)) = slots.into_iter().find_map(|s| self.slots[&s].bank.effect(id).and_then(|b| Effect::parse(b).ok()).map(|e| (s, e))) else { return 1 };
-        // Only streams can be precached; no precache here (`SFXKeyOnFrameDelay` 0).
+        // Precache (§3.2 step 3): only 1-sample streams can be precached. A live countdown item with the same id
+        // is taken over by a real start (kd == 0; the port's zero-latency stand-in keyed it on at once, so the
+        // audible voice just keeps playing) and a second precache of the same id is refused [M].
+        if let Some(k) = self.items.iter().position(|it| it.id == id && it.key_on_delay > 0 && !it.delete) {
+            if kd != 0 { return 1; }
+            self.items[k].key_on_delay = 0;
+            return 0;
+        }
+        if kd != 0 && !(fx.count == 1 && fx.subs[0].file < 0) { return 1; }
         if self.items.len() >= MAX_ITEMS { return 2; }
         let p = pos.map_or([0; 3], |v| v.map(|x| (x * 1000.0) as i32));
         let (inner, outer) = radii.unwrap_or((-1, -1));
@@ -202,6 +221,7 @@ impl Driver {
             id, counter: 0, vh: [None; 10], base_volume: [0; 10], pitch: [0; 10], pan: [0; 10], cue_pos: 0, csw: [0; 50], cued: Vec::new(),
             inner: if inner == -1 { fx.inner } else { inner }, outer: if outer == -1 { fx.outer } else { outer }, fx: Arc::new(fx), slot,
             updated: 0, real_pos: p, pos: p, handle, delete: false, fade_kill: false, fade_kill_vol: 100, streamed: false,
+            paused: false, key_on_delay: kd,
         };
         self.items.insert(0, item);
         if self.setup(out, 0) { 0 } else { 1 }
@@ -434,10 +454,21 @@ impl Driver {
         match v { None => true, Some(v) => self.voices[v].as_ref().is_none_or(|x| !x.playing && !x.looping) }
     }
 
+    /// `HasSampleEnded` (0x6ac) for the item's first channel: 0 (not ended) while `KeyOnFrameDelay` ≥ 1 [M §3.2].
+    fn sample_ended(&self, i: usize) -> bool { self.items[i].key_on_delay <= 0 && self.ended(self.items[i].vh[0]) }
+
     fn unlock(&mut self, i: usize, ch: usize, out: &mut Vec<Cmd>) {
         if let Some(v) = self.items[i].vh[ch].take() {
             if let Some(x) = self.voices[v].take() { if let Some(r) = x.rear { self.voices[r as usize] = None; let _ = out; } }
         }
+    }
+
+    /// `SFXPreCache(id, frames)` (RPC cmd 0x26, IOP 0x39f4): `SFXKeyOnFrameDelay = frames + 5` then `SFXStart(id, 0)`.
+    /// Only streams can be precached: the start finds an existing same-id item with a countdown to take over, else
+    /// marks the new one `DeleteMe` [M sound.md §3.2 step 3].
+    pub fn pre_cache(&mut self, out: &mut Vec<Cmd>, id: u32, frames: i32) {
+        self.key_on_frame_delay = frames + 5;
+        self.start(out, id, None, 0, None);
     }
 
     /// `SFXSetEnvironment(reverb, indoors)` (RPC cmd 0x1D; called by `Sound_UpdateListeners`@1dce10 [M]).
@@ -476,6 +507,10 @@ impl Driver {
 
     /// Sets the `NisQuitten` flag (a cut-scene is quitting); `ES_StopDucker` runs next `SFXUpdate` [M].
     pub fn set_nis_quitten(&mut self, on: bool) { self.nis_quitten = on; }
+
+    /// Sets `NisPlaying` (RPC op 0x19, emitted by `SFXUpdate` when it changed): `PauseInNis` sounds pause while
+    /// it is set [M sound.md §8, `ES_HandleNisPauseSfx`].
+    pub fn set_nis_playing(&mut self, on: bool) { self.nis_playing = on; }
 
     /// `SFXUpdateEnvironment` (0xe60): `SFXReverb` moves toward `reverb_target` by at most +16 (rising) / −4 (falling)
     /// per frame; `SFXIndoorsVolume` moves ±4. Returns the new reverb depth 0..1 (EVOL = r·80/100·0x3FFF) [M].
@@ -537,15 +572,30 @@ impl Driver {
             let fx = self.items[i].fx.clone();
             {
                 let it = &mut self.items[i];
+                // `ES_HandleNisPauseSfx` (§8): a `PauseInNis` sound pauses while an NIS plays — the live voices get
+                // pitch 0 and the item is skipped (no counter, no 3-D update, no end test); unpausing restores the
+                // pitch on the next full update (the port has no global `SFXPause`) [M].
+                let want = self.nis_playing && fx.pause_in_nis != 0;
+                if want && !it.paused {
+                    for ch in 0..10 {
+                        if let Some(v) = it.vh[ch] { if let Some(vx) = self.voices[v].as_ref() { out.push(Cmd::Set { voice: vx.front, pitch: 0, left: 0.0, right: 0.0 }); if let Some(r) = vx.rear { out.push(Cmd::Set { voice: r, pitch: 0, left: 0.0, right: 0.0 }); } } }
+                    }
+                }
+                it.paused = want;
+                // The precache countdown (`KeyOnFrameDelay`): counts down once per frame [M §3.2]. (*Deviation*: the
+                // game deletes the silent pre-setup at 0 — the port keyed the voice on at once, so expiry just
+                // closes the precache window.)
+                if it.key_on_delay > 0 { it.key_on_delay -= 1; }
+                if it.paused { i += 1; continue; }
                 if it.fade_kill { it.fade_kill_vol -= 5; if it.fade_kill_vol < 0 { it.fade_kill_vol = 0; it.delete = true; } }
                 it.updated += 1;
                 it.counter += 1;
             }
             let mut rerun = false;
             if fx.multi_sample == 0 {
-                if self.ended(self.items[i].vh[0]) { self.unlock(i, 0, out); rerun = self.ending(out, i); }
+                if self.sample_ended(i) { self.unlock(i, 0, out); rerun = self.ending(out, i); }
             } else if fx.polyphonic == 0 {
-                if self.ended(self.items[i].vh[0]) {
+                if self.sample_ended(i) {
                     self.unlock(i, 0, out);
                     if self.items[i].cue_pos == 0 { rerun = self.ending(out, i); } else {
                         let c = self.items[i].csw[0];

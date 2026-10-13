@@ -994,7 +994,7 @@ impl Sim {
                 }
             }
         }
-        // The fire-mode button (pad ○ = action 12; keyboard M) [M `Player_Weapon` 0x1a24c8:204-260]:
+        // The fire-mode button (pad ○ = action 12; keyboard B) [M `Player_Weapon` 0x1a24c8:204-260]:
         // only with the view anim idle (the game's `anim+0xF4 == 0`: no switch, no reload, no fire
         // script) and not while aiming a scoped weapon (+0x68 & 0x40). Twin-linked records (weapon_data
         // +0x05) switch to their twin through the normal switch request; the rest cycle the mode byte
@@ -1032,6 +1032,27 @@ impl Sim {
             }
         }
         self.prev_trigger = input.fire;
+        // The pickup auto-switch [M Player_EquipWeapon 0x1a8a58's tail]: `anim+0x63` is written
+        // directly (no Player_WeaponChange gate) — the draw machine holsters and draws it when it
+        // can; a later weapon-cycle request overwrites it, as in the game.
+        // GATED OFF (fix-pickups-remainder): the request is computed and unit-tested
+        // (Inventory::is_better_weapon), but applying it regresses walkreal_07000001's
+        // walk_from_the_spawn_to_the_exit_with_the_contact (green on master, stuck in the contact
+        // follow with the switch live: after the first Raptor drop take the draw machine swaps to
+        // the Raptor and the follow wedges at d=3.89 standing 1.13 above the floor). The
+        // interaction (the switch's view-model/anim side effects vs the contact's script) needs the
+        // main agent's live check before the drain re-opens. See docs/reports/fix-pickups-remainder.md.
+        if false {
+            if let Some(id) = self.drones.weapon_switch_request.take() {
+                if id != self.gun.weapon as u16 {
+                    let cur = self.gun.weapon;
+                    if cur >= 1 && cur <= 0x47 { self.gun.prev_weapon = cur; }
+                    if cur >= 0x4a && cur <= 0x5e { self.gun.prev_gadget = if cur == 0x55 { 0x54 } else { cur }; }
+                    self.gun.switch_request = id as u8;
+                }
+            }
+        }
+        self.drones.weapon_switch_request = None;
         if self.gun.switch_state == 0 && self.gun.reload_state == 0 && !fire_busy {
             let owned = self.drones.inventory.owned.clone();
             let carried = self.drones.inventory.carried.clone();
@@ -1884,10 +1905,17 @@ impl Sim {
         // [M 0x19b9c8:305-328].
         if self.bond.crouched { self.hud.crouch_icon_timer = 60; }
         else if self.hud.crouch_icon_timer > 0 { self.hud.crouch_icon_timer -= 1; }
-        // New pickup events → messages (`Pickup_Handler` 0x18e650's Text_AddMsg calls, type 6, 180 ticks
-        // in SP; sounds 0xF5/0x141/0x14C are the take sounds the pickup path already plays).
+        // Script op-0x1e text commands (`Script_TextStart` 0x1db2b8 → `Text_AddMsg(-1, 0, 4,
+        // Txt_BindLabel(label), 0, time)` [M]): the raw labels drain to HUD messages with the same
+        // bank binding as the pickup texts (fix-script-commands).
         let lang = self.lang.take();
         let mut new_msgs: std::collections::VecDeque<Msg> = Default::default();
+        if let Some(lang) = lang.as_ref() {
+            for (label, time) in self.drones.script_msgs.drain(..) {
+                let text = lang.bind(label).unwrap_or("").trim().to_string();
+                if !text.is_empty() { new_msgs.push_back(Msg::new(text, time as f32)); }
+            }
+        }
         for (_, t) in self.drones.taken.iter().skip(self.hud.taken_seen) {
             let Some(lang) = lang.as_ref() else { break };
             let text = match t {
@@ -1903,6 +1931,8 @@ impl Sim {
                 nf_game::pickup::Taken::Key { .. } => lang.bind(0x200_0010).unwrap_or("").to_string(),
                 nf_game::pickup::Taken::Armour => lang.bind(0x200_000F).unwrap_or("").to_string(),
                 nf_game::pickup::Taken::Bonus => lang.bind(0x200_004A).unwrap_or("").to_string(),
+                // Case 5 [M 0x18e650:229-233 + the shared tail]: message 0x2000013.
+                nf_game::pickup::Taken::Message => lang.bind(0x200_0013).unwrap_or("").to_string(),
                 // Case 4 [M 0x18e650]: the pickup's own label (PICKUPINFO+0x34); the port's pickups
                 // do not carry it, and the only kind-4 pickup on the disc data so far labels 0.
                 nf_game::pickup::Taken::Label => String::new(),
@@ -2383,8 +2413,8 @@ fn script_pickup_reservations(level: &Level, weapons: &nf_formats::weapon::Weapo
             let key = nis.keys.get(st.first_key as usize).map(|k| k.pos).unwrap_or([0.0; 4]);
             let Some(mut pk) = nf_game::pickup::Pickup::create_placed(
                 [key[0], key[1], key[2]], [0.0; 3], p(0) as u16, p(1) as u16, p(2) as u16 as i16,
-                p(3) as u16, p(4) as u16, p(5), 0, obj_.hashcode,
-                nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, weapons) else { continue };
+                p(3) as u16, p(4) as u16, p(5) as u16, 0, obj_.hashcode,
+                nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, weapons, models) else { continue };
             pk.gone = true; // reserved: inert until the script spawns it
             pk.obj = Some((om, oi));
             slots.push(((hash, si as u8), out.len()));
@@ -2608,6 +2638,17 @@ fn drone_height(hip: f32) -> f32 {
 }
 
 impl Scene {
+    /// The script player's overlay (fix-script-commands): the fade, the letterbox borders and the
+    /// op-0x14 sprites — see `hud::script_overlay`. Appended to the HUD frame OUTSIDE the cut-scene
+    /// gate (the game draws these over the blanked HUD).
+    pub fn script_overlay_hud(&self, aspect: f32) -> crate::gpu::HudFrame {
+        let Some(sim) = self.sim.as_ref() else { return Default::default() };
+        let sprites: Vec<(u32, [f32; 4])> = sim.drones.scripts.objects.list.iter()
+            .filter_map(|o| match o { Some(nf_game::nis::Obj::Sprite { hash, rect, .. }) => Some((*hash, *rect)), _ => None })
+            .collect();
+        crate::hud::script_overlay(sim.drones.view_fade, sim.drones.letterbox, &sprites, &self.hud_textures, aspect)
+    }
+
     /// `skeletons`: every skeleton on the disc by id; `sequences`: the level's animation archive, grouped by skeleton.
     pub fn build(level: &Level, cels_only: bool, skeletons: &HashMap<u8, Skeleton>, sequences: HashMap<u8, Vec<Sequence>>, drones: Option<&DroneContext>) -> Scene {
         let by_hash: HashMap<u32, (u8, usize)> = sequences.iter()
@@ -2687,7 +2728,7 @@ impl Scene {
                         hoist_models.get(&obj_.hashcode).map(|&m| (obj_.hashcode,
                             nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, (om, oi)))
                     })?;
-                    let mut p2 = nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn, lifetime, model, bounds, &placed_weapons)?;
+                    let mut p2 = nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn as u16, lifetime, model, bounds, &placed_weapons, &hoist_models)?;
                     p2.obj = Some(obj);
                     Some(p2)
                 })
@@ -3420,7 +3461,7 @@ impl Scene {
                         pickup_models.get(&obj_.hashcode).map(|&m| (obj_.hashcode,
                             nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, (om, oi)))
                     })?;
-                    let mut p2 = nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn, lifetime, model, bounds, &weapons)?;
+                    let mut p2 = nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn as u16, lifetime, model, bounds, &weapons, &pickup_models)?;
                     p2.obj = Some(obj);
                     Some(p2)
                 })
