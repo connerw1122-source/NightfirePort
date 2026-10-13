@@ -98,3 +98,19 @@ previously-failing families all green inside these chunks: `level_end_live` 5/5,
 8/8, `walk_07000005_live` 2/2 (incl. `cold_start_reaches_the_castle_door_and_exits_to_the_castle`),
 plus the sisters `fix_swim_vent_live` 2/2, `fix_wire2_live` 3/3 and the new `fix_swim_vent5_live`
 2/2. (Baseline before this branch: 764 passed, 4 failed — the four "E at the gate door" reds.)
+
+## ntfy failed
+
+All three fallbacks ran, in order, and all three failed with the same server-side limit:
+
+1. `curl -sS -m 20 -H "Title: NightfirePort" -d "fix-swim-vent5: ..." https://ntfy.sh/nightfire-yoda-8k3x`
+   → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your
+   limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. `python3 urllib` (the driver's one-liner, ASCII body)
+   → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. `wget --post-data "fix-swim-vent5: done" https://ntfy.sh/nightfire-yoda-8k3x`
+   → `HTTP request sent, awaiting response... 429 Too Many Requests` / `ERROR 429: Too Many Requests.`
+
+A retry after the report push repeated the 429 (curl, same body). The notification could not be
+delivered: ntfy.sh's daily message quota for the free tier was already exhausted (other workers'
+notifications).
