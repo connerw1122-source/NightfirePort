@@ -828,8 +828,48 @@ fn cam_axes(cam: &Camera) -> ([f32; 3], [f32; 3]) {
     (right.to_array(), up.to_array())
 }
 
-/// Renders one frame offscreen and writes it as a PNG.
-fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, mut opts: scene::ViewOpts, notex: bool, nofog: bool) -> Result<()> {
+/// fix-menus2: the front-end overlay for `--shot`. On the front-end boot the menu overlay replaces the
+/// gameplay HUD (the task: the shot path must draw the menus). `--page <start|main|codename|
+/// difficulty|missions|dossier>` jumps to a page for the per-page renders, `--cursor N` picks the row,
+/// `--unlock-all` is the `menu_unlock_everything` dev global [M 0x30d2a7, 0x20b8d8:18]. The page is
+/// drawn with the game's font (ACTION.ELF's FONTSerpLight) and the USATxt.dat strings.
+fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> Option<gpu::HudFrame> {
+    let page_arg = args.iter().position(|a| a == "--page");
+    if !front_end && page_arg.is_none() { return None; }
+    let Some(tables) = scene.hud.as_ref() else { eprintln!("[front end] no HUD tables (the game font) — the menu overlay needs ACTION.ELF"); return None; };
+    let mut fe = menu::FrontEnd::new();
+    if args.iter().any(|a| a == "--unlock-all") { fe.unlock_all = true; }
+    if let Some(i) = args.iter().position(|a| a == "--cursor") {
+        fe.cursor = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(0);
+    }
+    if let Some(i) = page_arg {
+        let name = args.get(i + 1).map(String::as_str).unwrap_or("start");
+        fe.page = match name {
+            "start" | "title" => menu::Page::Start,
+            "main" => menu::Page::Main,
+            "codename" => menu::Page::Codename,
+            "difficulty" => menu::Page::Difficulty,
+            "missions" | "single" => menu::Page::MissionSelect,
+            "dossier" => menu::Page::Dossier,
+            other => { eprintln!("unknown --page '{other}' (start|main|codename|difficulty|missions|dossier)"); return None; }
+        };
+    }
+    // Tick through the boot load and let the page's timers run (the flash cycle etc.).
+    for _ in 0..3 { fe.flow.main_tick(); let _ = fe.flow.load_tick(); }
+    fe.press_start_on = true;
+    let lang = read_files_bin(&scene_iso_name(), "USATxt.dat").and_then(|b| nf_formats::hud::Lang::parse(&b).ok())
+        .or_else(|| scene.sim.as_ref().and_then(|s| s.lang.clone()));
+    Some(menu::menu_overlay(&fe, &tables.font, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0))
+}
+
+/// The ISO path for `read_files_bin` (the NF_ISO env or the default sandbox path).
+fn scene_iso_name() -> String {
+    std::env::var("NF_ISO").unwrap_or_else(|_| "Nightfire-onfoot.iso".to_string())
+}
+
+/// Renders one frame offscreen and writes it as a PNG. `menu` = a front-end overlay frame (fix-menus2:
+/// `--shot` on the front-end boot draws the menu pages too, so the main agent can compare with PCSX2).
+fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, mut opts: scene::ViewOpts, notex: bool, nofog: bool, menu: Option<&gpu::HudFrame>) -> Result<()> {
     let (w, h) = (1280u32, 720u32);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let (_adapter, device, queue) = pollster::block_on(device(&instance, None))?;
@@ -866,7 +906,9 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let depth = gpu::depth_view(&device, w, h);
     let (vp, vp_rot) = cam.view_proj(w as f32 / h as f32);
     let snow = snow_for(scene, cam);
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, &overlay_for(scene, w as f32 / h as f32));
+    let overlay_owned = menu.map_or_else(|| overlay_for(scene, w as f32 / h as f32), |m| m.clone());
+    let hud = &overlay_owned;
+    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, hud);
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -1030,7 +1072,11 @@ impl App {
             .unwrap_or_else(|| { let p = self.cam.pos; format!("camera {:.2},{:.2},{:.2}", p.x, p.y, p.z) });
         let line = format!("{level:08x} {spot} frame {}", self.anim_time as u32);
         let _ = std::fs::write(png.with_extension("txt"), format!("{line}\n"));
-        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog) {
+        let fe_menu = self.fe.as_ref().and_then(|fe| self.scene.hud.as_ref().map(|t| {
+            let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
+            menu::menu_overlay(fe, &t.font, lang, &self.scene.hud_textures, 1280.0 / 720.0)
+        }));
+        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref()) {
             Ok(()) => format!("saved {} ({line})", png.display()),
             Err(e) => format!("screenshot failed: {e} ({line})"),
         }
@@ -1668,7 +1714,8 @@ pub fn run() -> Result<()> {
                 eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);
             }
         }
-        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts, notex, nofog);
+        let menu_frame = front_end_menu(&args, &scene, front_end);
+        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts, notex, nofog, menu_frame.as_ref());
     }
     let event_loop = EventLoop::new()?;
     // Sound: the level's bank in the driver, the default output device (silent without one).

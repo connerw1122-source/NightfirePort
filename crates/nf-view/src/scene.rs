@@ -3144,7 +3144,7 @@ impl Scene {
         let textures = keys.into_iter().map(|key| {
             TextureImage::from_texture(key.0, &level.maps[key.0].textures[key.1 as usize])
         }).collect();
-        let hud_textures = crate::hud::TEXTURES.iter().filter_map(|&h| level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == h).map(|t| {
+        let hud_textures = crate::hud::TEXTURES.iter().chain(crate::menu::MENU_TEXTURES.iter()).filter_map(|&h| level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == h).map(|t| {
             (h, TextureImage::from_texture(mi, t))
         }))).collect();
         let hud = drones.and_then(|d| d.hud.clone());
