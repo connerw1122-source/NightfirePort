@@ -7888,3 +7888,34 @@ requests the dart ([M Player_InitWeapon 0x1a7ef8:192-202]), so that expectation 
 (4) walk_0700000a Restart — already fixed on master. Suspects for 1+2: fix-progress's runtime difficulty
 in Data, fix-menus2's input/front-end handling, fix-restart-target's Drones fields, fix-sky's tick
 additions. Started 17:55 UTC, sandbox expires ~19:53 UTC (stop new work 19:33).
+
+**fix-weapon-modes2 outcome (19:10 UTC)**: landed on master (merge 5cf2a6f of 3576133). The two reds were
+NOT merge interactions — both fail on unmerged s/fix-weapon-modes in this sandbox with either ISO (the
+original entry's "Suite: see below" count was never recorded; the "passed on your branch" premise didn't
+hold). Root causes, both fixed from the decompile: (1) the variant swap round-tripped the clip —
+`Player_WeaponSelect` 0x1a2cc0:18-29 writes ONLY the weapon byte, the mode byte, the +0xC8 script at
+1.3x and view state 8 (the twin is the same physical gun; the port's gun.clip→clip[old] +
+clip[new]→gun.clip zeroed the P2K's 7 live rounds on 0x02→0x03 since clip[3] is a never-equipped slot),
+and the reload branches gate on view state == 0 (`Player_WeaponFiring` 0x1a5460:409 the R-key branch's
+`0xf4 == 0`, :447-450 the auto-reload's `0xf4 != 0 → return`) — the port's `busy` ignored the switch
+states, so the swap tick auto-reloaded and the +0xA4 reload script overwrote the +0xC8 variant script;
+state 8 then waited for `len(06000828)−1 = 200` while view_time was driven by the reload script's cap
+154 → stuck at 8 forever. Fixes: scene.rs drops the clip round-trip from both variant paths, and `busy`
+gains `switching` ([M 0x1a5460:409,447-450]). (2) `Bullet_heatseekable` 0x12f248's real guard gate is
+`+0xfc != 0 && health > 0 && +0xf4 != 1` — the port used `enabled` (the +0xF0 stand-in, which the game
+does NOT read here) and missed the WAIT_SWITCH(1) state gate; the test's spawner-held template guard was
+parked in WAIT_SWITCH and its enabled got cleared → never seekable. drone.rs seekable → `drawn && health
+> 0 && state != WAIT_SWITCH`. The homing test's geometry was also unwinnable as written: the start room's
+gate pillar walls off dx ≤ +4 from z+6 on (segment sweep [D]) so the missile's early straight path died
+at t23; the test now stands Bond past the pillar mouth, scans the guard spot at the MUZZLE height (+0.7 —
+the eye ray passes over the lintel the bullet hits), dx+1.2/z+14 (straight twin still misses by >1 unit;
+homing spiral converges), and pins the guard (teleport lands him on a floorless point — the pin stands in
+for the placement-driven floor snap). (3) portal_live 07000009 now expects the DART per [M 0x1a7ef8:132,
+:192-202] (`request = uVar6 = Upgrade_Weapon(0x43)` = 0x43/67), and cold 0a/0b too (cases 0x700000a/b
+fall into the case-9 loadout while the handgun is unowned — a cold load skips Player_RamLoad's body [M
+0x1957a8:9]; measured: weapon 67). Suite: nf-formats+nf-audio all ok; nf-game 31 binaries ok ×2
+consecutive runs (one earlier run under -j2 load had 3 flaky failures — a 66-test and a 3-test binary —
+not reproducible since); nf-view 108-bin partial run ok + every remaining binary ok — 0 failures, the 3
+disc_golden included (driving_golden passed). Report: docs/reports/fix-weapon-modes2.md. Left: the
+briefcase turret (gt.rs), Bullet_init's mode spread, the grenade mode pair, the decryptor mini-game, the
++0x60 fire_sound contradiction — all carried from fix-weapon-modes' list.
