@@ -10,12 +10,15 @@ fn driver() -> (Driver, nf_formats::soundbank::Bank, Vec<u8>) {
     let Some(path) = std::env::var_os("NF_ISO") else { panic!("skip: NF_ISO not set") };
     let iso = IsoImage::open(&path).unwrap();
     let get = |p: &str| iso.read_file(iso.find(p).unwrap()).unwrap();
-    let slot = *bank_slots(&get("PS2/SBINFO.SBI")).unwrap().iter().position(|&h| h == 5).unwrap();
+    let slot = bank_slots(&get("PS2/SBINFO.SBI")).unwrap().iter().position(|&h| h == 5).unwrap();
     let bank = Bank::parse(&get(&bank_path("ENGLISH", slot, "SHF")), &get(&bank_path("ENGLISH", slot, "SFX"))).unwrap();
     let sbf = get(&bank_path("ENGLISH", slot, "SBF"));
     let mut d = Driver::new();
     d.load_bank(slot, bank.clone(), sbf.clone());
     d.set_listener([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+    // Streamed effects (a precache's only subjects) need STREAMS.LUT/BIN.
+    let lut = nf_formats::soundbank::stream_lut(&get("PS2/ENGLISH/STREAMS/STREAMS.LUT")).unwrap();
+    d.load_streams(lut, std::sync::Arc::new(get("PS2/ENGLISH/STREAMS/STREAMS.BIN")));
     (d, bank, sbf)
 }
 
