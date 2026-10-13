@@ -6572,3 +6572,15 @@ spread, ammo types, reload kinds, rocket/grenade launchers, crossbow, melee; hea
 per weapon (equip → fire → reload → assert rounds/projectile/sound). Plus the 2026-10-12 playtest
 weapon bugs (view models, Scorpion mode switch, frag throw/fuse, flashbang kills, drop spam, pistol
 sound, punch knock-out, dev-panel give list audit). Started 05:40 UTC, deadline ~07:36 UTC.
+
+**fix-weapons-all outcome (07:30 UTC)**: grenade bounce never explodes — `Bullet_CollisionHandler`
+0x12ce80 only zeroes the speed on a slow bounce or at the 20-bounce max; only the tick fuse pops
+(fail-first: the frag exploded at ~t90 on flat ground, now t208/210). Per-material bounce coefficients
+0x3037dc [L: 0.5, 0.0 for 13/14/22] replace the flat 0.4. The dev panel names 0x3A "AT-600 Scorpion
+(rocket launcher)" (0x33/0x45 named [S]). Panel give list locked to weapon_data (0x35/0x36/0x3A ids,
+view models, pinned projectile meshes). Stun can never kill: radius +0x08 = 0.0 [L] →
+Explode_Propagate damages nobody (test-locked). Throw scripts are per-level [D scan] — 07000001 has
+none, so a dev-given grenade can't throw there (data-shaped, not a port bug). 4 NF_ISO tests in
+`crates/nf-view/tests/fix_weapons_all_live.rs`; walk_07000014's Rook drop retimed to the fuse.
+Report: docs/reports/fix-weapons-all.md. Left: fire-mode switch, zoom, reload matrix, punch KO,
+drop spam, 07000012 sound/NPCs, gondola rocket pickups.
