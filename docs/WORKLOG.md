@@ -6790,3 +6790,16 @@ Work Log:
 
 Stage Summary:
 - Branch s/fix-fusebox-cut pushed (final 87f9b9d). The fusebox cut is hit-driven through the real bullet path; the cutting weapon is the disc's "Laser" (0x4E/0x4F). Live checks (wire-sphere radius [S] 0.5, the render at the guard-room box, the 07000008 single-registration confirmation) listed in the report.
+
+---
+Task ID: 045m-fix-wire2
+Agent: NightfirePort worker (fix-wire2 session)
+Task: fix-wire2 — the 07000005 cable crossing (the grab + the hand-over-hand move) and the 07000014 fusebox dev scenario (branch s/fix-wire2)
+
+Work Log:
+- Setup reused (repo + game files + queue worktree intact); branch s/fix-wire2 created from origin/master (0c30212).
+- Evidence gathered: Player_Activate 0x1a5170 has NO class-0x2C wire arm (the game's E does not grab wires); the real grabs are Player_DealWithObjHit 0x194458 (the walking collision) and Player_HandleJump 0x1916b0:118-147 (the JUMP grab: icon ctx +0x95F == 3 → the nearest class-0x2C within 1000 units). ThirdIcon_Update 0x196e80 + ThirdIcon_Create 0x197070 (placement kind 0xFA, param 0 = the ctx type, param 1 = the on-channel) set the player's +0x95F; Player_Init 0x1910f8:76 sets the player's class to 3 — the icon walks its room list for the player. [D probe] 07000005 map 50 has three type-3 icons at (−23.58, 32.24, 2.65), (−23.56, 32.24, 0.21), (−23.80, 32.74, 12.33) — under the wire at (−23.49, 34.47, 6.26).
+- Input mapping re-verified: Input_Actionf(slot,1,1) in Player_Wire 0x1976 is action 1 = the LEFT stick X (psiInput_MapInputs 0x10cd80 style 0: field +0x18 = −(stickX−127)); action 2 = forward. The wire move is strafe-driven [M] — W (forward) does nothing on the wire in the game too.
+
+Stage Summary:
+- Branch s/fix-wire2 pushed (branch start). Next: the icon ctx + jump-grab port, the mode-6 move gate fix, the fusebox dev scenario, tests.
