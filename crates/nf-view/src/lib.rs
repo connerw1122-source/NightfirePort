@@ -726,6 +726,17 @@ fn level_starts(level: &Level) -> Vec<nf_game::player::LevelStart> {
 /// then masks it back to 07000006.bin.
 pub fn level_archive_name(code: u32) -> String { format!("{:08x}.bin", code & 0xff0f_ffff) }
 
+/// The keyboard stand-ins for the game's cut-scene skip action (`Input_Action(-1, 0x19, 1)`, read by
+/// `SP_Update` state 2 [M 0x1dbda8:129-141]). Action 0x19 is bound to raw pad mask 0x840 — R1 (0x800)
+/// or D-pad DOWN (0x040), pad 0 only [M psiInput_MapInputs 0x10cd80:415-417] — so a movement key
+/// (W/A/S/D, Space, the mouse) NEVER skips a scene; the user's W press skipped the 07000007 Kimiko
+/// scene (2026-10-12 playtest). The port maps that action to ArrowDown (D-pad down) and R (R1). The
+/// viewer's dedicated keys (Esc, F1/F2/F11/F12) keep their own functions; `--skip-cutscenes` is the
+/// dev override and bypasses this.
+pub fn cutscene_skip_key(k: winit::keyboard::KeyCode) -> bool {
+    matches!(k, winit::keyboard::KeyCode::ArrowDown | winit::keyboard::KeyCode::KeyR)
+}
+
 /// The Character-layer vertices posed after `time` 60 Hz ticks: start animations (`None`) or sequence `choice`.
 /// (`Scene::posed_vertices` also applies the per-character ambient multiplier — the 0x800 TWEAK dim.)
 fn posed_vertices(scene: &scene::Scene, choice: Option<usize>, time: f32, opts: scene::ViewOpts) -> Vec<scene::Vertex> {
@@ -1157,13 +1168,16 @@ impl ApplicationHandler for App {
             },
             // No manual-aim mode with the mouse (PLAN.md D-002): the mouse aims directly; `aiming` stays for a pad.
             WindowEvent::KeyboardInput { event, .. } => if let PhysicalKey::Code(k) = event.physical_key {
-                // fix-dev T1: skip cut-scenes with any key. The game's own skip is `Input_Action(-1, 0x19, 1)`
-                // read in `SP_Update` state 2 → `Script_FFwd(cur, 1)` unless the script is a death NIS
-                // [M SP_Update 0x1dbda8:129-141, Script_FFwd 0x1dac78]. The port's skip request is consumed by
-                // the script players at the next tick (`Scripts::skip_request`); the viewer's dedicated keys
-                // (Esc, F1, F2, F11, F12) keep their own functions and do not skip.
+                // The skip is the game's `Input_Action(-1, 0x19, 1)` read in `SP_Update` state 2 →
+                // `Script_FFwd(cur, 1)` unless the script is a death NIS [M SP_Update 0x1dbda8:129-141,
+                // Script_FFwd 0x1dac78]. Action 0x19 is bound to raw pad mask 0x840 — R1 (0x800) or
+                // D-pad DOWN (0x040), pad 0 only [M psiInput_MapInputs 0x10cd80:415-417] — so MOVEMENT
+                // NEVER SKIPS (the user's W press skipped the 07000007 Kimiko scene, 2026-10-12
+                // playtest). The port's keyboard stand-ins for that action: ArrowDown (the D-pad-down
+                // key) and R (R1). The viewer's dedicated keys keep their own functions and never skip;
+                // `--skip-cutscenes` (lib.rs 1556) still skips every tick as a dev override.
                 if event.state == ElementState::Pressed && !event.repeat
-                    && !matches!(k, KeyCode::Escape | KeyCode::F1 | KeyCode::F2 | KeyCode::F11 | KeyCode::F12)
+                    && cutscene_skip_key(k)
                     && self.scene.sim.as_ref().is_some_and(|s| s.drones.scripts.cutscene_playing()) {
                     if let Some(sim) = self.scene.sim.as_mut() { sim.drones.scripts.skip_request = true; }
                 }

@@ -84,6 +84,68 @@ pub fn script_pose(scripts: &HashMap<u32, Script>, seqs: &HashMap<u32, Sequence>
     Some(sequence_pose(seq, skel, skin, f))
 }
 
+/// A script's pose with EVERY started opcode-0 window playing together. `AnimProcessScriptCmds`
+/// (0x1c1b38) starts each window whose time the script enters as its own playing anim — the pack
+/// cut-scene scripts pair a narrow 22-channel face track with the full 222-channel body track
+/// (060004f1/060004f2 of the 07000007 Kimiko scene: windows [1..0x10e6] seq …467/…468 then
+/// [1..0x10e7] seq …332/…3f9; the 07000005 ledge's 06000996/97: [1..0x5dc] 040007fa then
+/// [1..0x579] 040007f8) [D `nf-extract script-info` dumps]. Per bone the FIRST-started window that
+/// covers it owns it and the later windows fill only the bones the earlier ones do not reach [S:
+/// the direction follows the play reference — the game's mouths move while the body animates, which
+/// the old single-window read (last wins, fix-drone2) cannot do; both windows start at frame 1 here,
+/// so command order breaks the tie]. A window past its end holds its last frame (`AnimScriptTick`
+/// 0x1c2630); `sequence_pose`'s clamp provides that. The AI/drone path keeps `script_pose`
+/// (last-wins, fix-drone2's pinned behaviour) — this is the cut-scene character path only.
+pub fn script_pose_together(scripts: &HashMap<u32, Script>, seqs: &HashMap<u32, Sequence>, skel: &Skeleton, skin: &Skin, hash: u32, time: f32) -> Option<Pose> {
+    let script = scripts.get(&hash)?;
+    let t = time.floor().max(1.0) as u16;
+    let wins: Vec<(u16, u32)> = script.sequences().filter(|(a, _, _)| *a <= t).map(|(a, _, q)| (a, q)).collect();
+    // The base: the widest started window on this skeleton (the body track), at its own frame — it
+    // also stands in for the bones no window reaches.
+    let (base_i, base_n) = wins.iter().enumerate()
+        .filter_map(|(i, (_, q))| seqs.get(q).filter(|s| s.skeleton == skin.skeleton).map(|s| (i, nf_formats::anim::bones_covered(s, skel))))
+        .max_by_key(|&(_, n)| n)?;
+    if base_n == 0 { return None; }
+    let (base_first, base_q) = wins[base_i];
+    let base_f = (time - base_first as f32 + 1.0).max(1.0);
+    // A single window that does not fit the skeleton (the old `fits` filter — e.g. a lone narrow
+    // track): the character hid before this function existed; keep that.
+    let Some(base_seq) = seqs.get(&base_q) else { return None };
+    if !nf_formats::anim::fits(base_seq, skel) { return None; }
+    let mut acc = sequence_pose_n(base_seq, skel, skin, base_f, base_n);
+    if acc.len() < skel.bones as usize {
+        // Pad to the full bone count with the base's last bone pose (never read: the body covers all).
+        while acc.len() < skel.bones as usize { acc.push(*acc.last().unwrap()); }
+    }
+    let mut owned = vec![false; base_n];
+    for (first, q) in &wins {
+        let Some(seq) = seqs.get(q) else { continue };
+        if seq.skeleton != skin.skeleton { continue; }
+        let n = nf_formats::anim::bones_covered(seq, skel).min(base_n);
+        if n == 0 { continue; }
+        let f = (time - *first as f32 + 1.0).max(1.0);
+        let p = sequence_pose_n(seq, skel, skin, f, n);
+        for (i, v) in p.iter().enumerate().take(n) {
+            if !owned[i] { acc[i] = *v; owned[i] = true; }
+        }
+    }
+    Some(acc)
+}
+
+/// `sequence_pose` for the first `bones` bones only (a narrow sequence — the face tracks — whose
+/// channel list `local_pose` would read past).
+pub fn sequence_pose_n(seq: &Sequence, skel: &Skeleton, skin: &Skin, frame: f32, bones: usize) -> Pose {
+    let last = seq.frames.max(1) as u32;
+    let f0 = (frame.floor() as u32).clamp(1, last);
+    let frac = (frame - frame.floor()).clamp(0.0, 1.0);
+    let mut p = nf_formats::anim::local_pose_bones(seq, skel, skin, f0, bones);
+    if frac > 0.0002 && f0 < last {
+        let q = nf_formats::anim::local_pose_bones(seq, skel, skin, f0 + 1, bones);
+        blend(&mut p, &q, frac);
+    }
+    p
+}
+
 /// A script that is fading out (`AnimScriptAppendBlend`: fade −1, flags 0x500000): it keeps playing while its blend
 /// clock runs down; weight = clock / length.
 #[derive(Clone, Debug)]
