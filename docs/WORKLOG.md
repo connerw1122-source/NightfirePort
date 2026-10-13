@@ -6925,3 +6925,17 @@ Work log:
   combat-path test is `#[ignore]`d on a setup detail (the spawned pair reads hp 10 at spawn [L
   probe] and takes a stray death in the yard wait; the fix's own assertions inside it pass). Full
   suite still to run (time) — see docs/reports/fix-wallhug-freeze.md.
+
+## fix-cel-order (2026-10-13)
+
+Task: the static draw order must be the game's cel-chain order. On 0700000c the baked pylonshadow
+decal (material 3380, chain 68) draws before the ground room under it (materials 2818-2838, chain
+88) because models-world sorts list 0 by −90000 + 10·chain with chain = placement-parse order; the
+decal darkens the fog clear colour and its zwrite rejects the ground (the user's pale lattice). The
+game's order is the cel chain: `View_AddCels` 0x1e6ba0 gives the root cel (GfxList+4) −90000, then
++10 per cel+0x18 hop. A plain reversal breaks 07000007's R2 decals. Measure the real chain in the
+EE snapshots, find the linking code (parsemap_create_dynamic_objects 0x1d04f0 / cel creators), port
+the law into `Material::chain`, keep 07's decals after their walls.
+
+Work log:
+- Setup: branch `s/fix-cel-order` from origin/master (b67754f), this entry started.
