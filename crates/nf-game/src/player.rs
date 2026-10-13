@@ -158,6 +158,9 @@ pub struct Bond {
     pub underwater: bool,
     /// `BL+0x8C4`: the underwater fade 0..1 (`Player_MonitorAir`: →1 under, →0 surfaced), for the renderer.
     pub water_fade: f32,
+    /// The runtime cel the queries start from (obj+0x20, the movement pass's relink — fix-safe08b):
+    /// the `pCelList` cell index in the world's `ScopeGraph`. `None` = the flat (unscoped) world.
+    pub cel: Option<usize>,
     /// The drown-damage tick accumulator (the game uses `GameState % 30` [M 0x191a70:136-140]).
     air_tick: u32,
     /// `BL+0x18` → the climb's one-tick local-forward push (`+0.6` top / `−0.05` action [M Player_Climb]),
@@ -209,6 +212,7 @@ impl Bond {
             substate: SS_WALK, ladder: None, climb_top: 0.0, climb_bottom: 0.0, regrab: 0, mode: 0, saved_sub: 0, air: 100.0, drown_damage: None, underwater: false,
             water_fade: 0.0, air_tick: 0, push_fwd: 0.0, wire: None, auto_drop: 0.0, wire_anim: 0, wire_anim_time: 0.0, wire_anim_rate: 1.0, cam_mode: 0, fall_speed: 0.0, grapple: None,
             icon_ctx: 0xff,
+            cel: None,
         }
     }
 

@@ -21,6 +21,312 @@ fn load(iso: &str, level: &str) -> nf_view::scene::Scene {
     nf_view::load(iso, level, false).expect("load")
 }
 
+// ── probe (fix-safe08b): identity of every static hit along the take rays / the walk line, and the
+// cel graph's bedroom→exterior connectivity. Scratch — removed or turned into asserts by the fix.
+#[test]
+fn probe_blue_block_and_take_rays() {
+    if std::env::var_os("NF_SAFE08_PROBE").is_none() { return; }
+    use nf_formats::placement::transform;
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    // The level parse for identity + the cel graph.
+    let img = nf_formats::iso9660::IsoImage::open(&iso).expect("open iso");
+    let (entries, bin) = nf_formats::disc::files_bin_entries(&img).expect("FILES.BIN");
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case("07000008.bin")).expect("level entry");
+    let data = img.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).expect("read archive");
+    let level = nf_formats::level::Level::parse(&data).expect("parse level");
+    // The sim for the real sphere centre at the doorway.
+    let mut scene = load(&iso, "07000008.bin");
+    open_safe(&mut scene);
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = [161.87, 43.39, -116.54];
+        sim.bond.yaw = 1.583;
+    }
+    for _ in 0..3 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    let body = scene.sim.as_ref().unwrap().bond.sphere_centre();
+    eprintln!("[probe] body at the doorway {body:?}");
+    let rocket = [162.58832, 42.75039, -116.77789];
+    let case = [162.70, 43.54, -116.22];
+    let walk_a = [155.6, 43.35, -114.0]; // mid-bedroom, door side
+    let walk_b = [161.0, 43.35, -116.3]; // just before the safe
+
+    // The instances the collision world is built from.
+    let (instances, _) = level.instances(true);
+    // The cel graph: cells + portals.
+    let (_, graph) = nf_view::scene::parse_cel_graph(&level);
+    eprintln!("[probe] cells {} portals {} dropped {}", graph.cells.len(), graph.portals.len(), graph.dropped_portals);
+    // Which cell holds a point (containment, smallest volume wins — find_cel semantics).
+    let cell_at = |p: [f32; 3]| -> Option<usize> {
+        let mut best = None; let mut vol = f32::INFINITY;
+        for (i, c) in graph.cells.iter().enumerate() {
+            let inside = (0..3).all(|k| c.min[k] <= p[k] && p[k] <= c.max[k]);
+            if !inside { continue; }
+            let v: f32 = (0..3).map(|k| c.max[k] - c.min[k]).product();
+            if v < vol { vol = v; best = Some(i); }
+        }
+        best
+    };
+    let body_cell = cell_at([body[0], body[1], body[2]]);
+    eprintln!("[probe] body cell {body_cell:?}");
+    // The exterior room object.
+    for (mi, map) in level.maps.iter().enumerate() {
+        for (oi, o) in map.objects.iter().enumerate() {
+            if o.name.contains("Outside_3") || o.hashcode == 0x07000008 {
+                eprintln!("[probe] map{mi} obj{oi} name {} hash {:08x} flags {:#x} centre {:?}", o.name, o.hashcode, o.flags, o.centre);
+            }
+        }
+    }
+    // Ray vs every instance's collision tris (world space, both faces).
+    let hits = |from: [f32; 3], to: [f32; 3]| -> Vec<(f32, usize, u8)> {
+        let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+        let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        let mut out = Vec::new();
+        for (ii, inst) in instances.iter().enumerate() {
+            let Some(c) = &level.maps[inst.map].objects[inst.object].collision else { continue };
+            for (tri, mat) in c.triangles_with_material() {
+                let t = tri.map(|p| transform(&inst.matrix, p));
+                let e1 = sub(t[1], t[0]); let e2 = sub(t[2], t[0]);
+                let p = cross(d, e2);
+                let det = dot(e1, p);
+                if det.abs() < 1e-12 { continue; }
+                let inv = 1.0 / det;
+                let s = sub(from, t[0]);
+                let u = dot(s, p) * inv;
+                if !(0.0..=1.0).contains(&u) { continue; }
+                let q = cross(s, e1);
+                let v = dot(d, q) * inv;
+                if v < 0.0 || u + v > 1.0 { continue; }
+                let tt = dot(e2, q) * inv;
+                if (0.0..=1.0).contains(&tt) { out.push((tt, ii, mat)); }
+            }
+        }
+        out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        out
+    };
+    let name = |ii: usize| {
+        let inst = &instances[ii];
+        let o = &level.maps[inst.map].objects[inst.object];
+        format!("map{} obj{} {} hash {:08x} flags {:#010x} at ({:.1},{:.1},{:.1})", inst.map, inst.object, o.name, o.hashcode, o.flags,
+            inst.placement.translation[0], inst.placement.translation[1], inst.placement.translation[2])
+    };
+    for (label, from, to) in [("rocket", body, rocket), ("case", body, case), ("walk", walk_a, walk_b)] {
+        eprintln!("[probe] {label} ray {from:?} → {to:?}:");
+        for (t, ii, mat) in hits(from, to).into_iter().take(8) {
+            eprintln!("[probe]   t {t:.3} mat {mat} {}", name(ii));
+        }
+    }
+    // The cells of the two take rays' blockers + the exterior object's instance cell.
+    for (ii, inst) in instances.iter().enumerate() {
+        let o = &level.maps[inst.map].objects[inst.object];
+        if o.name.contains("Outside_3") {
+            let pos = inst.placement.translation;
+            eprintln!("[probe] Outside_3 instance {ii} placement cell {:?} pos {pos:?}", cell_at(pos));
+        }
+    }
+    // BFS over portals from the body cell: which cells are reachable at all (portal graph, no shape test)?
+    if let Some(start) = body_cell {
+        let mut seen = vec![false; graph.cells.len()];
+        seen[start] = true;
+        let mut frontier = vec![start];
+        while let Some(c) = frontier.pop() {
+            for p in &graph.portals {
+                let d = if p.cel_a == c { Some(p.cel_b) } else if p.cel_b == c { Some(p.cel_a) } else { None };
+                if let Some(d) = d { if !seen[d] { seen[d] = true; frontier.push(d); } }
+            }
+        }
+        let reach: Vec<usize> = (0..seen.len()).filter(|&i| seen[i]).collect();
+        eprintln!("[probe] portal-reachable from the body cell: {reach:?}");
+    }
+    // The take ray's STRADDLE set (`Collide_StraddleCels` with the 0x201 ray test: the segment vs the
+    // portal's two triangles — corners 0,1,2 then 0,2,3 [M Intersect_Portal 0x1ea7b8 Index_189]).
+    let seg_tri = |from: [f32; 3], to: [f32; 3], t: &[[f32; 3]; 3]| -> bool {
+        let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        let d = sub(to, from);
+        let e1 = sub(t[1], t[0]); let e2 = sub(t[2], t[0]);
+        let p = cross(d, e2);
+        let det = dot(e1, p);
+        if det.abs() < 1e-12 { return false; }
+        let inv = 1.0 / det;
+        let s = sub(from, t[0]);
+        let u = dot(s, p) * inv;
+        if !(0.0..=1.0).contains(&u) { return false; }
+        let q = cross(s, e1);
+        let v = dot(d, q) * inv;
+        if v < 0.0 || u + v > 1.0 { return false; }
+        let tt = dot(e2, q) * inv;
+        (0.0..=1.0).contains(&tt)
+    };
+    if let Some(start) = body_cell {
+        let from = [body[0], body[1], body[2]];
+        let to = rocket;
+        let mut seen = vec![false; graph.cells.len()];
+        seen[start] = true;
+        let mut collected = vec![start];
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(start);
+        while let Some(c) = queue.pop_front() {
+            if collected.len() >= 0x7e { break; }
+            for p in &graph.portals {
+                let dest = if p.cel_a == c { Some(p.cel_b) } else if p.cel_b == c { Some(p.cel_a) } else { None };
+                let Some(dest) = dest else { continue };
+                if seen[dest] { continue; }
+                let t0 = [p.corners[0], p.corners[1], p.corners[2]];
+                let t1 = [p.corners[0], p.corners[2], p.corners[3]];
+                if !(seg_tri(from, to, &t0) || seg_tri(from, to, &t1)) { continue; }
+                seen[dest] = true;
+                collected.push(dest);
+                queue.push_back(dest);
+            }
+        }
+        collected.sort();
+        eprintln!("[probe] take-ray straddle set from cell {start}: {collected:?}");
+        // Where is the safe? Its object centre transformed.
+        for (mi, map) in level.maps.iter().enumerate() {
+            for (oi, o) in map.objects.iter().enumerate() {
+                if o.name.contains("Object_Safe") && o.collision.is_some() {
+                    let c = transform(&level.instances(true).0.iter().find(|i| i.map == mi && i.object == oi).map(|i| i.matrix).unwrap_or([[1.0,0.0,0.0,0.0],[0.0,1.0,0.0,0.0],[0.0,0.0,1.0,0.0],[0.0,0.0,0.0,1.0]]), o.centre);
+                    let cc = cell_at(c);
+                    eprintln!("[probe] {} centre {c:?} → cell {cc:?} (collected: {})", o.name, cc.map(|c| collected.contains(&c)).unwrap_or(false));
+                }
+            }
+        }
+        // And the rocket's own cell.
+        eprintln!("[probe] rocket cell {:?} (collected: {})", cell_at(rocket), cell_at(rocket).map(|c| collected.contains(&c)).unwrap_or(false));
+        // The quick tests the game runs BEFORE the exact tri test: the object's world sphere
+        // (glist centre/radius [M Control_BuildWorldSph 0x133070]) vs the closest point on the ray's
+        // LINE [M Collide_Pick 0x1eb49c-0x1eb4d8, Collide_PickObj 0x1eae80 ray path]. If the sphere
+        // misses, the safe is never tested and the take is clear.
+        let closest_on_line = |a: [f32; 3], b: [f32; 3], p: [f32; 3]| -> [f32; 3] {
+            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+            let t = if l2 > 0.0 { (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1] + (p[2] - a[2]) * ab[2]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t]
+        };
+        let dist = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+        for (mi, map) in level.maps.iter().enumerate() {
+            for (oi, o) in map.objects.iter().enumerate() {
+                if o.name != "Object_Safe" || o.collision.is_none() { continue; }
+                let all_inst = level.instances(true).0;
+                let Some(inst) = all_inst.iter().find(|i| i.map == mi && i.object == oi) else { continue };
+                let mut lo = [f32::INFINITY; 3]; let mut hi = [f32::NEG_INFINITY; 3];
+                for (tri, _) in o.collision.as_ref().unwrap().triangles_with_material() {
+                    for p in tri.map(|p| transform(&inst.matrix, p)) {
+                        for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); }
+                    }
+                }
+                let bc = [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
+                let br = o.collision.as_ref().unwrap().triangles_with_material().iter()
+                    .map(|(tri, _)| tri.iter().map(|p| dist(transform(&inst.matrix, *p), bc)).fold(0.0f32, f32::max))
+                    .fold(0.0f32, f32::max);
+                let wc = transform(&inst.matrix, o.centre);
+                for (label, c, r) in [("coll-bbox-sphere", bc, br), ("glist-sphere", wc, o.radius)] {
+                    let cl = closest_on_line(body, rocket, c);
+                    let d = dist(cl, c);
+                    eprintln!("[probe] {label}: centre {c:?} r {r:.3} — closest point on the take-ray line {cl:?} dist {d:.3} → {} ({:.2} slack)",
+                        if d < r { "CANDIDATE (tested)" } else { "MISSED (skipped)" }, r - d);
+                    let cls = closest_on_line(body, case, c);
+                    let dcs = dist(cls, c);
+                    eprintln!("[probe] {label}: briefcase ray closest {cls:?} dist {dcs:.3} → {}", if dcs < r { "CANDIDATE" } else { "MISSED" });
+                }
+                eprintln!("[probe] Object_Safe coll bbox lo {lo:?} hi {hi:?} centre {bc:?} tight r {br:.3}; glist centre {wc:?} radius {:.3}", o.radius);
+            }
+        }
+    }
+    // The instance->cell mapping (the build_scoped rule) for the floor under the GuardRoom fusebox.
+    if let Some(start40) = cell_at([153.15, 43.38, -119.67]) {
+        // BFS reachability from the fusebox cell (the portal graph, no shape test — the upper bound).
+        let mut seen = vec![false; graph.cells.len()];
+        seen[start40] = true;
+        let mut frontier = vec![start40];
+        while let Some(c) = frontier.pop() {
+            for p in &graph.portals {
+                let d = if p.cel_a == c { Some(p.cel_b) } else if p.cel_b == c { Some(p.cel_a) } else { None };
+                if let Some(d) = d { if !seen[d] { seen[d] = true; frontier.push(d); } }
+            }
+        }
+        let reach: Vec<usize> = (0..seen.len()).filter(|&i| seen[i]).collect();
+        eprintln!("[probe] fusebox cell {start40}; portal-reachable: {reach:?}");
+        // The mapped cell of every instance whose transformed bbox contains the fusebox floor point.
+        for (ii, inst) in instances.iter().enumerate() {
+            let Some(c) = &level.maps[inst.map].objects[inst.object].collision else { continue };
+            let centre = transform(&inst.matrix, level.maps[inst.map].objects[inst.object].centre);
+            let mc = cell_at(centre);
+            let _ = c;
+            if mc.is_some_and(|m| m == start40) || ii < 3 {
+                let o = &level.maps[inst.map].objects[inst.object];
+                eprintln!("[probe] inst {ii} {} mapped cell {mc:?} centre {centre:?}", o.name);
+            }
+        }
+        // Which instances have tris under the fusebox point (down-ray), and their mapped cells.
+        let from = [153.15, 44.2, -119.67];
+        let to = [153.15, 40.0, -119.67];
+        for (t, ii, mat) in hits(from, to).into_iter().take(8) {
+            let inst = &instances[ii];
+            let centre = transform(&inst.matrix, level.maps[inst.map].objects[inst.object].centre);
+            eprintln!("[probe] floor hit t {t:.3} mat {mat} inst {ii} {} mapped cell {:?}", level.maps[inst.map].objects[inst.object].name, cell_at(centre));
+        }
+    }
+    // The critical cells' bboxes.
+    for ci in [40usize, 48, 59, 106] {
+        let c = graph.cells[ci];
+        eprintln!("[probe] cell {ci} bbox lo {:?} hi {:?}", c.min, c.max);
+    }
+    for (label, p) in [("fusebox", [153.15f32, 43.38, -119.67]), ("doorway", [161.87, 43.39, -116.54]), ("bedroom mid", [157.0, 43.3, -114.5])] {
+        let mut inside = Vec::new();
+        for (i, c) in graph.cells.iter().enumerate() {
+            if (0..3).all(|k| c.min[k] <= p[k] && p[k] <= c.max[k]) { inside.push(i); }
+        }
+        eprintln!("[probe] {label} {p:?} inside cells {inside:?}");
+    }
+    panic!("probe done");
+}
+
+/// ── Bond walks from the bedroom door to the safe without the blue block ─────────────────────────
+/// The user's playtest: "big … obstacle in the way" — `Room_Outside_3`'s (map51 obj16) collision tris
+/// stand in the bedroom. The game never collides them from indoors: `Collide_Pick` (0x1eb320) tests
+/// only the cels `Collide_StraddleCels` (0x1eac98) collects through portals the query straddles
+/// (`Intersect_Portal` 0x1ea7b8), and the bedroom's cell has no portal path to the exterior's cell
+/// ([D probe: the walk from cell 48 reaches 17 cells, none of them the exterior's 106]).
+/// fix-safe08b scopes the actor queries the same way; the walk must still reach the safe — a
+/// regression guard that the scope does not EAT bedroom geometry (a wrong cell mapping would).
+/// *Measured*: the straight line also completes on the flat world (the block's tris stand beside the
+/// east wall, off this corridor), so this walk is not the symptom's fail-first; the mechanism's
+/// fail-first is `world::tests::scoped_actor_queries_keep_only_the_straddle_cels` and the render
+/// checks below.
+#[test]
+fn bond_walks_from_the_bedroom_door_to_the_safe_without_the_block() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000008.bin");
+    for _ in 0..60 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    let sim = scene.sim.as_mut().unwrap();
+    // The bedroom door (the user's render spot for the block), facing the safe.
+    sim.bond.pos = [155.19, 43.12, -113.38];
+    sim.bond.yaw = (161.87f32 - 155.19).atan2(-116.54 - -113.38);
+    sim.bond.pitch = 0.0;
+    for _ in 0..10 { sim.step_bond(Input::default(), false, false, false); }
+    assert!(sim.bond.cel.is_some(), "the walk's start cell resolved (the scope is engaged)");
+    let input = Input { forward: 1.0, ..Default::default() };
+    let mut min_dist = f32::INFINITY;
+    let safe = [161.87, 43.39, -116.54]; // the user's take spot in the safe doorway
+    for t in 0..600 {
+        sim.step_bond(input, false, false, false);
+        let p = sim.bond.pos;
+        let d = ((p[0] - safe[0]).powi(2) + (p[2] - safe[2]).powi(2)).sqrt();
+        min_dist = min_dist.min(d);
+        if t % 120 == 0 { eprintln!("[safe08-walk] t {t} at ({:.2}, {:.2}, {:.2}) dist to the safe {d:.2}", p[0], p[1], p[2]); }
+        if d < 1.6 { break; }
+    }
+    let p = sim.bond.pos;
+    let d = ((p[0] - safe[0]).powi(2) + (p[2] - safe[2]).powi(2)).sqrt();
+    eprintln!("[safe08-walk] end at ({:.2}, {:.2}, {:.2}) dist {d:.2} min {min_dist:.2}", p[0], p[1], p[2]);
+    assert!(d < 2.2, "Bond walks from the bedroom door to the safe (ended {d:.2} away, min {min_dist:.2}) — \
+        Room_Outside_3's collision no longer stands in the bedroom [M Collide_StraddleCels 0x1eac98]");
+}
+
 /// Drives the real safe chain to ch 136: the fusebox's two E presses, then the Lazer Watch burns
 /// both bolts (the chain fix-party-mission already pinned; abbreviated here, same real inputs).
 fn open_safe(scene: &mut nf_view::scene::Scene) {

@@ -466,7 +466,7 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     // trigger contact classification reads it [M Player_Collision 0x194df0]). Standing cc [M
     // player.rs ROOT_HEIGHT] — this tracer's sim carries no stance state.
     let capsule = ([bond[0], bond[1] + 0.55, bond[2]], [bond[0], bond[1] + 0.275 - nf_game::player::ROOT_HEIGHT, bond[2]]);
-    let player = Player { pos: bond, target: [bond[0], bond[1] + 0.5, bond[2]], eye: [bond[0], bond[1] + 1.0, bond[2]], aim, sph: bond, hanging: false, capsule };
+    let player = Player { pos: bond, target: [bond[0], bond[1] + 0.5, bond[2]], eye: [bond[0], bond[1] + 1.0, bond[2]], aim, sph: bond, hanging: false, capsule, cel: None };
     let near = (0..sim.list.len()).min_by(|&a, &b| {
         let da = |i: usize| { let p = sim.list[i].pos; (p[0] - bond[0]).powi(2) + (p[2] - bond[2]).powi(2) };
         da(a).total_cmp(&da(b))

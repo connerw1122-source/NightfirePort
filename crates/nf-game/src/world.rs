@@ -8,6 +8,7 @@ use std::collections::HashMap;
 
 pub type V3 = [f32; 3];
 
+#[derive(Clone)]
 struct Object {
     lo: V3,
     hi: V3,
@@ -39,6 +40,9 @@ struct Geo {
     /// Static only (`chunk`): bounds over runs of consecutive `objects` (`tris` = an object index range), so a query
     /// skips whole runs. Empty = test every object.
     groups: Vec<Object>,
+    /// Static only (`chunk`): for each chunked run, the pushed object (instance) it came from — the
+    /// cel-scope bucketing key (fix-safe08b). One entry per `objects` entry after `chunk`.
+    owners: Vec<u32>,
 }
 
 impl Geo {
@@ -60,17 +64,20 @@ impl Geo {
     /// ray cost 12 of a 15 ms tick before this.)
     fn chunk(&mut self, n: usize) {
         let mut out = Vec::with_capacity(self.tris.len() / n + self.objects.len());
-        for o in &self.objects {
+        let mut owners = Vec::with_capacity(self.tris.len() / n + self.objects.len());
+        for (si, o) in self.objects.iter().enumerate() {
             let mut s = o.tris.start;
             while s < o.tris.end {
                 let e = (s + n).min(o.tris.end);
                 let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
                 for t in &self.tris[s..e] { for p in t { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } } }
                 out.push(Object { lo, hi, tris: s..e });
+                owners.push(si as u32);
                 s = e;
             }
         }
         self.objects = out;
+        self.owners = owners;
         self.groups.clear();
         let mut s = 0;
         while s < self.objects.len() {
@@ -81,6 +88,34 @@ impl Geo {
             s = e;
         }
     }
+}
+
+/// One block-0x21 portal as the two triangles `Intersect_Portal` (0x1ea7b8) tests (its `Index_189`
+/// indexing: corners 0,1,2 then 0,2,3), with the two cells it joins.
+#[derive(Clone)]
+pub struct ScopePortal {
+    pub tris: [[V3; 3]; 2],
+    pub a: usize,
+    pub b: usize,
+}
+
+/// The cel graph the game scopes collision queries with: one bbox per runtime cel (the parse-wide
+/// pCelList records) and the portals between them. Plain data — `nf-view` maps its parsed graph in
+/// at `CollisionWorld::build_scoped`.
+#[derive(Clone, Default)]
+pub struct ScopeGraph {
+    pub cells: Vec<([f32; 3], [f32; 3])>,
+    pub portals: Vec<ScopePortal>,
+}
+
+/// The per-cell static buckets + the graph, built once (`build_scoped`).
+struct ScopeData {
+    graph: ScopeGraph,
+    /// `stat.objects` (chunked-run) indices per cell.
+    cells: Vec<Vec<u32>>,
+    /// Runs whose instance mapped to no cell: tested by every scoped query (the port's safety net —
+    /// the game leaves such objects unlinked and untested, but a mapping miss here must not eat a wall).
+    always: Vec<u32>,
 }
 
 /// Static geometry, plus moving objects (script animations' discrete parts: docs/systems/script-player.md) placed each
@@ -101,6 +136,10 @@ pub struct CollisionWorld {
     /// Collision triangles (object space) of every hashed glist object, for `set_dynamic`.
     shapes: std::collections::HashMap<u32, Vec<[V3; 3]>>,
     shape_mats: std::collections::HashMap<u32, Vec<u8>>,
+    /// The cel scope (`build_scoped`): when set, the actor queries (`capsule_push`, the floor ray,
+    /// the take ray) test only the cels the game's straddle walk keeps — `Collide_StraddleCels`
+    /// 0x1eac98 via `Intersect_Portal` 0x1ea7b8, cap 0x7e cels, the start cel always kept.
+    scope: Option<ScopeData>,
 }
 
 /// Whether the segment `from + t·d`, t in [0, 1], passes through the box (slab test, a little padding).
@@ -167,11 +206,44 @@ fn sub(a: V3, b: V3) -> V3 { [a[0] - b[0], a[1] - b[1], a[2] - b[2]] }
 fn dot(a: V3, b: V3) -> f32 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] }
 fn cross(a: V3, b: V3) -> V3 { [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]] }
 
+/// The segment's AABB.
+fn box_of(from: V3, to: V3) -> (V3, V3) {
+    ([from[0].min(to[0]), from[1].min(to[1]), from[2].min(to[2])], [from[0].max(to[0]), from[1].max(to[1]), from[2].max(to[2])])
+}
+
+/// Whether the segment `from → to` crosses the triangle `t` (Möller–Trumbore, t in [0, 1]).
+fn seg_tri_hit(from: V3, to: V3, t: &[V3; 3]) -> bool {
+    let d = sub(to, from);
+    let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+    let p = cross(d, e2);
+    let det = dot(e1, p);
+    if det.abs() < 1e-12 { return false; }
+    let inv = 1.0 / det;
+    let s = sub(from, t[0]);
+    let u = dot(s, p) * inv;
+    if !(0.0..=1.0).contains(&u) { return false; }
+    let q = cross(s, e1);
+    let v = dot(d, q) * inv;
+    if v < 0.0 || u + v > 1.0 { return false; }
+    let tt = dot(e2, q) * inv;
+    (0.0..=1.0).contains(&tt)
+}
+
 impl CollisionWorld {
     /// From the level's instances (as drawn: cel placements; skipped-cel blockers included — they block).
     pub fn build(level: &Level, instances: &[Instance]) -> CollisionWorld {
+        Self::build_scoped(level, instances, None)
+    }
+
+    /// `build` with the cel scope: each instance joins the cell containing its world sphere centre
+    /// (`Control_BuildWorldSph` 0x133070 → `build_FindCel` 0x1c8cb0 over the runtime cels, smallest
+    /// volume on ties — the port's `find_cel` tie-break; `build_LinkToRoom` 0x1c9680 links the game's
+    /// objects the same way). Instances whose centre maps to no cell stay in the `always` bucket.
+    pub fn build_scoped(level: &Level, instances: &[Instance], graph: Option<ScopeGraph>) -> CollisionWorld {
         let mut stat = Geo::default();
         let mut missile = Geo::default();
+        // Per pushed object: the cell its world sphere centre lands in.
+        let mut obj_cell: Vec<Option<u32>> = Vec::new();
         for inst in instances {
             let Some(c) = &level.maps[inst.map].objects[inst.object].collision else { continue };
             // The 0x1000-flagged objects (the player-missile cage) never block the actor capsule [M
@@ -179,6 +251,16 @@ impl CollisionWorld {
             if level.maps[inst.map].objects[inst.object].flags & 0x1000 != 0 {
                 missile.push(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)));
                 continue;
+            }
+            if let Some(g) = &graph {
+                let centre = transform(&inst.matrix, level.maps[inst.map].objects[inst.object].centre);
+                obj_cell.push(g.cells.iter().enumerate()
+                    .filter(|(_, (lo, hi))| (0..3).all(|k| lo[k] <= centre[k] && centre[k] <= hi[k]))
+                    .min_by_key(|(_, (lo, hi))| {
+                        let v: f32 = (0..3).map(|k| hi[k] - lo[k]).product();
+                        (v * 1e6) as i64
+                    })
+                    .map(|(i, _)| i as u32));
             }
             stat.push(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)));
         }
@@ -207,7 +289,20 @@ impl CollisionWorld {
         }
         stat.chunk(16);
         missile.chunk(16);
-        CollisionWorld { stat, missile, dynamic: Default::default(), shapes, shape_mats }
+        // The per-cell buckets over the chunked runs (fix-safe08b). Runs of an instance that mapped to
+        // no cell (or built without a graph) test in every scoped query.
+        let scope = graph.map(|graph| {
+            let mut cells = vec![Vec::new(); graph.cells.len()];
+            let mut always = Vec::new();
+            for (run, src) in stat.owners.iter().enumerate() {
+                match obj_cell.get(*src as usize).copied().flatten() {
+                    Some(c) if (c as usize) < cells.len() => cells[c as usize].push(run as u32),
+                    _ => always.push(run as u32),
+                }
+            }
+            ScopeData { graph, cells, always }
+        });
+        CollisionWorld { stat, missile, dynamic: Default::default(), shapes, shape_mats, scope }
     }
 
     pub fn triangle_count(&self) -> usize { self.stat.tris.len() }
@@ -219,7 +314,7 @@ impl CollisionWorld {
     pub fn from_triangles(tris: Vec<[V3; 3]>) -> CollisionWorld {
         let mut stat = Geo::default();
         stat.push(tris.into_iter().map(|t| (t, 0)));
-        CollisionWorld { stat, missile: Geo::default(), dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default() }
+        CollisionWorld { stat, missile: Geo::default(), dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default(), scope: None }
     }
 
     /// Glist object `hash`'s collision triangles in object space.
@@ -251,7 +346,7 @@ impl CollisionWorld {
         let d = self.dynamic.read().unwrap();
         let mut best: Option<(f32, usize)> = None;
         for (i, o) in d.geo.objects.iter().enumerate() {
-            let g = Geo { tris: d.geo.tris[o.tris.clone()].to_vec(), mats: d.geo.mats[o.tris.clone()].to_vec(), objects: vec![Object { lo: o.lo, hi: o.hi, tris: 0..o.tris.len() }], groups: Vec::new() };
+            let g = Geo { tris: d.geo.tris[o.tris.clone()].to_vec(), mats: d.geo.mats[o.tris.clone()].to_vec(), objects: vec![Object { lo: o.lo, hi: o.hi, tris: 0..o.tris.len() }], groups: Vec::new(), owners: Vec::new() };
             if let Some(t) = segment_in(&g, from, to) { if best.is_none_or(|b| t < b.0) { best = Some((t, i)); } }
         }
         let (t, i) = best?;
@@ -294,6 +389,240 @@ impl CollisionWorld {
                 for k in o.tris.clone() { f(&g.tris[k], g.mats[k]); }
             }
         }
+    }
+
+    /// `Collide_StraddleCels` (0x1eac98): the cells the query keeps — the start cell plus, BFS, every
+    /// cell across a portal the query shape straddles (`Intersect_Portal` 0x1ea7b8), cap 0x7e cells,
+    /// each cell entered once. `portal_hit` = the shape test for the query's kind.
+    fn straddle(&self, start: usize, portal_hit: &mut dyn FnMut(&ScopePortal) -> bool) -> Vec<usize> {
+        let Some(sc) = &self.scope else { return Vec::new() };
+        let mut seen = vec![false; sc.graph.cells.len()];
+        let mut out = Vec::new();
+        let start = if start < seen.len() { start } else { return out };
+        seen[start] = true;
+        out.push(start);
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(start);
+        while let Some(c) = queue.pop_front() {
+            if out.len() >= 0x7e { break; }
+            for p in &sc.graph.portals {
+                let dest = if p.a == c { Some(p.b) } else if p.b == c { Some(p.a) } else { None };
+                let Some(dest) = dest else { continue };
+                if dest >= seen.len() || seen[dest] { continue; }
+                if !portal_hit(p) { continue; }
+                seen[dest] = true;
+                out.push(dest);
+                queue.push_back(dest);
+                if out.len() >= 0x7e { break; }
+            }
+        }
+        out
+    }
+
+    /// The `stat.objects` runs the scoped query tests: the straddle cells' buckets plus the `always`
+    /// remainder (`None` when there is no scope — the caller falls back to the flat query).
+    fn scoped_runs(&self, cell: usize, portal_hit: &mut dyn FnMut(&ScopePortal) -> bool) -> Option<Vec<u32>> {
+        let sc = self.scope.as_ref()?;
+        let mut taken = vec![false; self.stat.objects.len()];
+        let mut out = Vec::new();
+        for c in self.straddle(cell, portal_hit) {
+            for &r in &sc.cells[c] { if !taken[r as usize] { taken[r as usize] = true; out.push(r); } }
+        }
+        for &r in &sc.always { if !taken[r as usize] { taken[r as usize] = true; out.push(r); } }
+        Some(out)
+    }
+
+    /// The actor-capsule portal test (`Intersect_Portal`'s 0x800 path [M 0x1ea7b8]: the point on the
+    /// capsule's segment closest to the portal's reference point, then that point's distance to the
+    /// portal's two triangles against radius × 1.5).
+    fn capsule_portal_hit(a: V3, b: V3, r: f32) -> impl FnMut(&ScopePortal) -> bool {
+        move |p: &ScopePortal| {
+            let mut hit = false;
+            for t in &p.tris {
+                // The portal's reference point: corner 0 (the game's portal+0x70 stored point).
+                let q = closest_on_segment(a, b, t[0]);
+                let (cp, _) = closest_on_triangle(q, t);
+                let d = sub(q, cp);
+                if dot(d, d) < (r * 1.5) * (r * 1.5) { hit = true; break; }
+            }
+            hit
+        }
+    }
+
+    /// The ray portal test (`Intersect_Portal`'s 0x201 path [M 0x1ea7b8]: `Collide_RayTriangle` over
+    /// the portal's two triangles — a hit on either straddles).
+    fn ray_portal_hit(from: V3, to: V3) -> impl FnMut(&ScopePortal) -> bool {
+        move |p: &ScopePortal| p.tris.iter().any(|t| seg_tri_hit(from, to, t))
+    }
+
+    /// The actor capsule against the straddle cells' static geometry (`capsule_push` over the cel
+    /// scope; falls back to the flat world when there is no scope or the query's cell is unmapped).
+    pub fn capsule_push_scoped(&self, cell: Option<usize>, a: V3, b: V3, r: f32) -> (V3, bool) {
+        let Some(cell) = cell else { return self.capsule_push(a, b, r) };
+        let Some(runs) = self.scoped_runs(cell, &mut Self::capsule_portal_hit(a, b, r)) else { return self.capsule_push(a, b, r) };
+        let dynamic = self.dynamic.read().unwrap();
+        let (mut a, mut b) = (a, b);
+        let mut total = [0f32; 3];
+        let mut walkable = false;
+        let grow = r + 0.1;
+        let mut lo = [0f32; 3];
+        let mut hi = [0f32; 3];
+        for k in 0..3 { lo[k] = a[k].min(b[k]) - grow; hi[k] = a[k].max(b[k]) + grow; }
+        let stat = &self.stat;
+        let mut test = |t: &[V3; 3], a: &mut V3, b: &mut V3, total: &mut V3, walkable: &mut bool| {
+                let tl = [0, 1, 2].map(|k| t[0][k].min(t[1][k]).min(t[2][k]));
+                let th = [0, 1, 2].map(|k| t[0][k].max(t[1][k]).max(t[2][k]));
+                let (sl, sh) = ([0, 1, 2].map(|k| a[k].min(b[k]) - grow), [0, 1, 2].map(|k| a[k].max(b[k]) + grow));
+                if (0..3).any(|k| th[k] < sl[k] || tl[k] > sh[k]) { return; }
+                let n = cross(sub(t[1], t[0]), sub(t[2], t[0]));
+                let nl = dot(n, n).sqrt();
+                if nl < 1e-12 { return; }
+                let n = [n[0] / nl, n[1] / nl, n[2] / nl];
+                let ab = sub(*b, *a);
+                let denom = dot(n, ab);
+                let mut p = if denom.abs() > 0.0002 {
+                    let tt = (-(dot(n, sub(*a, t[0]))) / denom).clamp(0.0, 1.0);
+                    [a[0] + ab[0] * tt, a[1] + ab[1] * tt, a[2] + ab[2] * tt]
+                } else {
+                    let c = [0, 1, 2].map(|k| (t[0][k] + t[1][k] + t[2][k]) / 3.0);
+                    closest_on_segment(*a, *b, c)
+                };
+                let (q, on_edge) = closest_on_triangle(p, t);
+                if on_edge { p = closest_on_segment(*a, *b, q); }
+                let v = sub(p, q);
+                let dist = dot(v, v).sqrt();
+                if dist >= r { return; }
+                let dir = if dist > 1e-6 { [v[0] / dist, v[1] / dist, v[2] / dist] } else if dot(n, sub(*a, q)) >= 0.0 { n } else { [-n[0], -n[1], -n[2]] };
+                let push = [dir[0] * (r - dist), dir[1] * (r - dist), dir[2] * (r - dist)];
+                for k in 0..3 { a[k] += push[k]; b[k] += push[k]; total[k] += push[k]; }
+                if n[1].abs() > 0.7 && q[1] < b[1] { *walkable = true; }
+        };
+        for r in runs {
+            let o = &stat.objects[r as usize];
+            if !(0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k]) {
+                for k in o.tris.clone() { test(&stat.tris[k], &mut a, &mut b, &mut total, &mut walkable); }
+            }
+        }
+        for g in [&dynamic.geo] {
+            for o in overlapping(g, lo, hi) {
+                for k in o.tris.clone() { test(&g.tris[k], &mut a, &mut b, &mut total, &mut walkable); }
+            }
+        }
+        (total, walkable)
+    }
+
+    /// The floor ray against the straddle cells' static geometry (the walk's `segment_hit`).
+    pub fn segment_hit_scoped(&self, cell: Option<usize>, from: V3, to: V3) -> Option<(f32, V3)> {
+        let Some(cell) = cell else { return self.segment_hit(from, to) };
+        let Some(runs) = self.scoped_runs(cell, &mut Self::ray_portal_hit(from, to)) else { return self.segment_hit(from, to) };
+        let d = sub(to, from);
+        let mut best = None::<(f32, V3)>;
+        let stat = &self.stat;
+        for r in runs {
+            let o = &stat.objects[r as usize];
+            for k in o.tris.clone() {
+                let t = &stat.tris[k];
+                let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                let p = cross(d, e2);
+                let det = dot(e1, p);
+                if det.abs() < 1e-12 { continue; }
+                let inv = 1.0 / det;
+                let s = sub(from, t[0]);
+                let u = dot(s, p) * inv;
+                if !(0.0..=1.0).contains(&u) { continue; }
+                let q = cross(s, e1);
+                let v = dot(d, q) * inv;
+                if v < 0.0 || u + v > 1.0 { continue; }
+                let tt = dot(e2, q) * inv;
+                if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b.0) {
+                    let n = cross(e1, e2);
+                    let l = dot(n, n).sqrt().max(1e-12);
+                    let n = if dot(n, d) > 0.0 { [-n[0] / l, -n[1] / l, -n[2] / l] } else { [n[0] / l, n[1] / l, n[2] / l] };
+                    best = Some((tt, n));
+                }
+            }
+        }
+        let dynamic = self.dynamic.read().unwrap();
+        let (blo, bhi) = box_of(from, to);
+        for o in overlapping(&dynamic.geo, blo, bhi) {
+            for k in o.tris.clone() {
+                let t = &dynamic.geo.tris[k];
+                let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                let p = cross(d, e2);
+                let det = dot(e1, p);
+                if det.abs() < 1e-12 { continue; }
+                let inv = 1.0 / det;
+                let s = sub(from, t[0]);
+                let u = dot(s, p) * inv;
+                if !(0.0..=1.0).contains(&u) { continue; }
+                let q = cross(s, e1);
+                let v = dot(d, q) * inv;
+                if v < 0.0 || u + v > 1.0 { continue; }
+                let tt = dot(e2, q) * inv;
+                if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b.0) {
+                    let n = cross(e1, e2);
+                    let l = dot(n, n).sqrt().max(1e-12);
+                    let n = if dot(n, d) > 0.0 { [-n[0] / l, -n[1] / l, -n[2] / l] } else { [n[0] / l, n[1] / l, n[2] / l] };
+                    best = Some((tt, n));
+                }
+            }
+        }
+        best
+    }
+
+    /// The take's LOS ray: the straddle cells' static geometry, the 0x1000 missile cage excluded
+    /// (`Collide_Pick`'s bit-0x20 skip, flags 0x721 [M 0x1eb480-0x1eb49c + 0x18e148:213-214]) and the
+    /// surface classes the take's query-type filter skips — `Collide_Intersect` 0x1ebaa8's tail: the
+    /// HITTEST+0x98 bit 0x1 (0x721 carries it) drops every hit whose surface byte's low 6 bits are
+    /// 0xd or 0xe (`(byte & 0x3f) - 0xd < 2`).
+    pub fn segment_take_scoped(&self, cell: Option<usize>, from: V3, to: V3) -> Option<f32> {
+        let Some(cell) = cell else { return self.segment_actor(from, to) };
+        let Some(runs) = self.scoped_runs(cell, &mut Self::ray_portal_hit(from, to)) else { return self.segment_actor(from, to) };
+        let d = sub(to, from);
+        let mut best = None::<f32>;
+        let stat = &self.stat;
+        for r in runs {
+            let o = &stat.objects[r as usize];
+            for k in o.tris.clone() {
+                let m = stat.mats[k];
+                if (m as u32 & 0x3f).wrapping_sub(0xd) < 2 { continue; }
+                let t = &stat.tris[k];
+                let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                let p = cross(d, e2);
+                let det = dot(e1, p);
+                if det.abs() < 1e-12 { continue; }
+                let inv = 1.0 / det;
+                let s = sub(from, t[0]);
+                let u = dot(s, p) * inv;
+                if !(0.0..=1.0).contains(&u) { continue; }
+                let q = cross(s, e1);
+                let v = dot(d, q) * inv;
+                if v < 0.0 || u + v > 1.0 { continue; }
+                let tt = dot(e2, q) * inv;
+                if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b) { best = Some(tt); }
+            }
+        }
+        let dynamic = self.dynamic.read().unwrap();
+        let (blo, bhi) = box_of(from, to);
+        for o in overlapping(&dynamic.geo, blo, bhi) {
+            for k in o.tris.clone() {
+                let t = &dynamic.geo.tris[k];
+                let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                let p = cross(d, e2);
+                let det = dot(e1, p);
+                if det.abs() < 1e-12 { continue; }
+                let inv = 1.0 / det;
+                let s = sub(from, t[0]);
+                let u = dot(s, p) * inv;
+                if !(0.0..=1.0).contains(&u) { continue; }
+                let q = cross(s, e1);
+                let v = dot(d, q) * inv;
+                if v < 0.0 || u + v > 1.0 { continue; }
+                let tt = dot(e2, q) * inv;
+                if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b) { best = Some(tt); }
+            }
+        }
+        best
     }
 
     /// First hit along the segment `from → to` as a fraction in [0, 1] (Möller–Trumbore, both faces).
@@ -471,8 +800,76 @@ mod tests {
 
     fn world(tris: Vec<[V3; 3]>) -> CollisionWorld {
         let n = tris.len();
-        let stat = Geo { mats: vec![0; n], tris, objects: vec![Object { lo: [-10.0; 3], hi: [10.0; 3], tris: 0..n }], groups: Vec::new() };
-        CollisionWorld { stat, missile: Geo::default(), dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default() }
+        let stat = Geo { mats: vec![0; n], tris, objects: vec![Object { lo: [-10.0; 3], hi: [10.0; 3], tris: 0..n }], groups: Vec::new(), owners: Vec::new() };
+        CollisionWorld { stat, missile: Geo::default(), dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default(), scope: None }
+    }
+
+    /// fix-safe08b: the straddle walk. A wall assigned to an exterior cell with NO portal from the
+    /// query's cell is never tested by the scoped actor queries (`Collide_StraddleCels` 0x1eac98:
+    /// the exterior cel is not portal-visible from the bedroom); the flat queries still hit it; a
+    /// portal the capsule straddles brings the wall back; and the take ray skips the surface classes
+    /// the 0x721 filter drops (`Collide_Intersect` 0x1ebaa8's tail: bit 0x1 → classes 0xd/0xe).
+    #[test]
+    fn scoped_actor_queries_keep_only_the_straddle_cels() {
+        // A wall quad at x = 2 (bedroom side, 1.5 units from the capsule) — its collision object is
+        // assigned to cell 1 (the "exterior"): its world sphere centre (2, 1, 0) lies in cell 1's box.
+        let wall = [
+            [[2.0, 0.0, -2.0], [2.0, 2.0, -2.0], [2.0, 2.0, 2.0]],
+            [[2.0, 0.0, -2.0], [2.0, 2.0, 2.0], [2.0, 0.0, 2.0]],
+        ];
+        let mut stat = Geo::default();
+        for t in wall { stat.push(std::iter::once((t, 0u8))); }
+        stat.chunk(16);
+        let cell_centre = |lo: V3, hi: V3| [0, 1, 2].map(|k| (lo[k] + hi[k]) / 2.0);
+        let mut graph = ScopeGraph {
+            cells: vec![([-8.0, -8.0, -8.0], [1.9, 8.0, 8.0]), ([1.95, -8.0, -8.0], [8.0, 8.0, 8.0])],
+            portals: Vec::new(),
+        };
+        // The wall's centre (2, 1, 0) → cell 1. Bucket by the same rule build_scoped uses.
+        let mut scope_cells = vec![Vec::new(); graph.cells.len()];
+        let mut always = Vec::new();
+        for (run, _) in stat.owners.iter().enumerate() {
+            let lo = stat.objects[run].lo; let hi = stat.objects[run].hi;
+            let c = cell_centre(lo, hi);
+            match graph.cells.iter().position(|(lo, hi)| (0..3).all(|k| lo[k] <= c[k] && c[k] <= hi[k])) {
+                Some(i) => scope_cells[i].push(run as u32),
+                None => always.push(run as u32),
+            }
+        }
+        let mk = |graph: ScopeGraph, cells: Vec<Vec<u32>>| CollisionWorld {
+            stat: Geo { tris: stat.tris.clone(), mats: stat.mats.clone(), objects: stat.objects.clone(), groups: Vec::new(), owners: Vec::new() },
+            missile: Geo::default(), dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default(),
+            scope: Some(ScopeData { graph, cells, always: always.clone() }),
+        };
+        let w = mk(graph.clone(), scope_cells.clone());
+        // The capsule stands in cell 0, 1 unit west of the wall: the flat world pushes it out; the
+        // scoped one does not (cell 1 is portal-unreachable).
+        let (flat, _) = w.capsule_push([1.6, 1.0, 0.0], [1.6, 1.2, 0.0], 0.55);
+        assert!(flat[0] < -0.1, "flat: pushed west of the wall {flat:?}");
+        let (scoped, _) = w.capsule_push_scoped(Some(0), [1.6, 1.0, 0.0], [1.6, 1.2, 0.0], 0.55);
+        assert_eq!(scoped, [0.0; 3], "scoped: the portal-unreachable wall is not tested");
+        // The floor ray behaves the same way: a ray THROUGH the wall plane.
+        assert!(w.segment_hit([1.5, 1.0, 0.0], [2.5, 1.0, 0.0]).is_some(), "flat segment_hit still sees the wall");
+        assert!(w.segment_hit_scoped(Some(0), [1.5, 1.0, 0.0], [2.5, 1.0, 0.0]).is_none(), "the scoped floor ray skips the unreachable wall");
+        // Sister: with a portal the capsule straddles (a quad across its path), the wall is back.
+        graph.portals.push(ScopePortal { tris: [[[1.8, 0.0, -4.0], [1.8, 4.0, -4.0], [1.8, 4.0, 4.0]], [[1.8, 0.0, -4.0], [1.8, 4.0, 4.0], [1.8, 0.0, 4.0]]], a: 0, b: 1 });
+        scope_cells[1].push(0);
+        let w2 = mk(graph, scope_cells);
+        let (scoped2, _) = w2.capsule_push_scoped(Some(0), [1.6, 1.0, 0.0], [1.6, 1.2, 0.0], 0.55);
+        assert!(scoped2[0] < -0.1, "with the straddled portal the wall blocks again {scoped2:?}");
+        // The take ray's surface filter: a mat-0xd triangle in the START cell is skipped by
+        // segment_take_scoped (the 0x721 bit 0x1) while the flat segment_actor still hits it.
+        let mut stat2 = Geo::default();
+        let tri: [[V3; 3]; 1] = [[[-1.0, 0.0, 2.0], [1.0, 0.0, 2.0], [0.0, 1.5, 2.0]]];
+        for t in tri { stat2.push(std::iter::once((t, 0xd))); }
+        stat2.chunk(16);
+        let w3 = CollisionWorld {
+            stat: stat2, missile: Geo::default(), dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default(),
+            scope: Some(ScopeData { graph: ScopeGraph { cells: vec![([-8.0; 3], [8.0; 3])], portals: Vec::new() }, cells: vec![vec![0]], always: Vec::new() }),
+        };
+        assert!(w3.segment_actor([0.0, 0.5, 0.0], [0.0, 0.5, 4.0]).is_some(), "flat: the mat-0xd tri blocks");
+        assert!(w3.segment_take_scoped(Some(0), [0.0, 0.5, 0.0], [0.0, 0.5, 4.0]).is_none(), "the take's 0x721 filter skips the mat-0xd tri");
+        assert!(w3.segment_take_scoped(None, [0.0, 0.5, 0.0], [0.0, 0.5, 4.0]).is_some(), "unmapped cell: the flat fallback keeps the old behaviour");
     }
 
     #[test]

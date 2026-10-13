@@ -318,6 +318,9 @@ pub struct Sim {
     /// The level's room cels (`Cel`; `build_FindCel` 0x1c8cb0 walks them, `Lights_CalcAmbientLight` 0x1cb178
     /// reads their ambient) — the source of the 0x800-object ambient ramp.
     pub cels: Vec<Cel>,
+    /// The room cel → pCelList cell map (`cel_graph.room_to_cell`), the actor queries' start-cell
+    /// lookup (obj+0x20 — fix-safe08b).
+    pub room_cell: Vec<Option<usize>>,
     /// Per character (scene index): `obj+0x100..0x102`, the ambient-light bytes of `Lights_CalcAmbientLight`
     /// (0x1cb178), initialised to the 0xff,ff,ff sentinel of `control_init_object` (0x134630) and stepped by
     /// `ramp_char_ambient` each tick.
@@ -548,6 +551,18 @@ pub fn plane_eq(r: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> [f32; 4] {
 /// entity hashtable, untraced — those records are unreachable here and the portals naming them are
 /// counted in `dropped_portals`). Records the port cannot resolve are the *sparse* remainder of the
 /// game's array; only the named ones exist as nodes.
+/// The collision scope graph from the parsed cel graph (fix-safe08b): plain bboxes + the portals as
+/// the two triangles `Intersect_Portal` (0x1ea7b8) tests, for `CollisionWorld::build_scoped`.
+fn scope_graph(g: &CelGraph) -> nf_game::world::ScopeGraph {
+    nf_game::world::ScopeGraph {
+        cells: g.cells.iter().map(|c| (c.min, c.max)).collect(),
+        portals: g.portals.iter().map(|p| nf_game::world::ScopePortal {
+            tris: [[p.corners[0], p.corners[1], p.corners[2]], [p.corners[0], p.corners[2], p.corners[3]]],
+            a: p.cel_a, b: p.cel_b,
+        }).collect(),
+    }
+}
+
 pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
     let main = level.main_map();
     let mut cells: Vec<CelNode> = Vec::new();
@@ -1023,6 +1038,9 @@ impl Sim {
             let was_on_wire = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
             let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
             input.fire = trigger;
+            // The queries' start cel (obj+0x20 — fix-safe08b): the movement pass's relink, read fresh
+            // off the position the same way `build_LinkToRoom` 0x1c9680 re-links.
+            self.bond.cel = self.cel_at(self.bond.pos).and_then(|room| self.room_cell.get(room).copied().flatten());
             self.bond.tick_ctx(&self.world, &ctx, &input);
             // `Player_WeaponNone` 0x1a9858 runs in `Player_CollLadder` on the grab [M 0x196118]: the
             // current weapon id is SAVED to `anim+0x64` (the port's `saved_weapon`), the class becomes
@@ -1175,7 +1193,8 @@ impl Sim {
         } else {
             ([pos[0], pos[1] + 0.55, pos[2]], [pos[0], pos[1] + 0.275 - self.bond.cc, pos[2]])
         };
-        let player = nf_game::drone::Player { pos, target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look, sph, hanging, capsule };
+        let player = nf_game::drone::Player { pos, target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look, sph, hanging, capsule,
+            cel: self.cel_at(self.bond.pos).and_then(|room| self.room_cell.get(room).copied().flatten()) };
         let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models, surfaces: self.surfaces.as_ref(), voices: self.voices.as_deref() };
         // `Player_WeaponFiring` → `Player_WeaponInitBullet` from the eye along the view (*deviation*: no auto-aim and
         // no aim-point ray yet); the first-person fire script's sound 0x403 feeds the drones' hearing.
@@ -2962,7 +2981,16 @@ impl Scene {
             let m = level.main_map()?;
             // Breakables (type 0x20) are drawn but not solid yet: their collision rules (glass that sight and bullets
             // pass or break) come with the Break_Create port.
-            let world = nf_game::world::CollisionWorld::build(level, &level.instances(true).0);
+            // fix-safe08b: the cel scope is built (`CollisionWorld::build_scoped`, the straddle walk
+            // of `Collide_StraddleCels` 0x1eac98 via `Intersect_Portal` 0x1ea7b8). The TAKE query uses
+            // it (`segment_take_scoped`: flags 0x721's cel scoping + the 0xd/0xe surface skip +
+            // `Collide_Pick`'s 0x1000 skip). The ACTOR CAPSULE and the floor ray stay FLAT for now:
+            // with the scope, Bond falls through the GuardRoom floor at the fusebox — the shared
+            // `Room_Stairwell_T_2` mesh maps to cell 59 by the port's smallest-volume rule, which the
+            // capsule's straddle walk from cell 40 never keeps; the game's `build_LinkToRoom` 0x1c9680
+            // links by `build_FindCel` 0x1c8cb0's RAYCAST tie-break among all containing cels, which
+            // the port has not ported (the next session's item, with the live check).
+            let world = nf_game::world::CollisionWorld::build_scoped(level, &level.instances(true).0, Some(scope_graph(&cel_graph)));
             let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, d.level_id);
             let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
             let hitboxes = d.hitboxes.clone()?;
@@ -3061,7 +3089,7 @@ impl Scene {
             drones.pickups.extend(placed_pickups);
             drones.pickups.extend(reserved);
             drones.script_pickup_slots = sim_slots.into_iter().collect();
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(),
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(),
                 wire_cels, laser_beam: None,
             })
         });

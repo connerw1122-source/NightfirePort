@@ -195,7 +195,7 @@ impl Pickup {
     /// + L: the distance test uses the player's position (+0x30), the LOS test the player's world-sphere centre
     /// (+0x80) — two different points]. `pos` = the player position, `body` = the player's sphere centre
     /// (`Bond::sphere_centre`).
-    pub fn touches(&self, world: &CollisionWorld, pos: V3, body: V3) -> bool {
+    pub fn touches(&self, world: &CollisionWorld, cel: Option<usize>, pos: V3, body: V3) -> bool {
         let c = self.centre();
         let r = self.bounds.radius + 1.1;
         let d2 = (c[0] - pos[0]).powi(2) + (c[1] - pos[1]).powi(2) + (c[2] - pos[2]).powi(2);
@@ -207,7 +207,10 @@ impl Pickup {
         // (0x1edf50 → `Collide_RayIntersect` 0x1ec690) does not fail on the endpoint contact — the port
         // treats a hit at the ray's end (t ≈ 1) as clear. *Unverified*: RayIntersect's exact t range (the
         // wrapper decompile is one call; WORKLOG fix-player2 records it).
-        let los = world.segment_actor(body, c).map_or(true, |t| t >= 1.0 - 1e-4);
+        // fix-safe08b: the ray is the game's flags-0x721 query — cel-scoped (`Collide_StraddleCels`
+        // 0x1eac98 from the player's cel, obj+0x20), the 0x1000 cage skipped (bit 0x20) and the
+        // surface classes 0xd/0xe skipped (`Collide_Intersect` 0x1ebaa8's tail, bit 0x1).
+        let los = world.segment_take_scoped(cel, body, c).map_or(true, |t| t >= 1.0 - 1e-4);
         // `NF_PICKUPLOG=1`: every take test — Bond's position, the pickup centre, the distance against
         // radius + 1.1, the LOS ray, and the state (fix-player2's drop diagnostics).
         if std::env::var_os("NF_PICKUPLOG").is_some() {
@@ -494,8 +497,8 @@ mod tests {
         let pos = [0.0, 0.0, -0.6];
         let c = p.centre();
         assert!((c[2] - 0.7).abs() < 1e-4 && (c[1] - 0.05).abs() < 1e-4, "resting |centre y| above the floor: {:?}", c);
-        assert!(p.touches(&w, pos, [0.0, 1.2, -0.6]), "ray from above the wall top: taken");
-        assert!(!p.touches(&w, pos, [0.0, 0.6, -0.6]), "sister: ray from below the wall top is blocked");
+        assert!(p.touches(&w, None, pos, [0.0, 1.2, -0.6]), "ray from above the wall top: taken");
+        assert!(!p.touches(&w, None, pos, [0.0, 0.6, -0.6]), "sister: ray from below the wall top is blocked");
     }
 
     #[test]
@@ -512,7 +515,7 @@ mod tests {
         assert!((p.centre()[1] - 0.05).abs() < 1e-5, "the sphere centre rests |centre y| above the floor: {:?}", p.centre());
         // 0.85 units at 9.8 / 3600 per tick²: ⌈√(2 · 0.85 · 3600 / 9.8)⌉ ≈ 25 ticks.
         assert!((24..=27).contains(&ticks), "{ticks}");
-        assert!(p.touches(&floor, [0.5, 0.0, 1.5], [0.5, 1.0, 1.5]));
-        assert!(!p.touches(&floor, [0.5, 0.0, 3.0], [0.5, 1.0, 3.0]), "1.1 + radius away");
+        assert!(p.touches(&floor, None, [0.5, 0.0, 1.5], [0.5, 1.0, 1.5]));
+        assert!(!p.touches(&floor, None, [0.5, 0.0, 3.0], [0.5, 1.0, 3.0]), "1.1 + radius away");
     }
 }
