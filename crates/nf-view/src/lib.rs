@@ -743,13 +743,16 @@ fn posed_vertices(scene: &scene::Scene, choice: Option<usize>, time: f32, opts: 
     scene.posed_vertices(choice, time, opts)
 }
 
-/// The snow quads facing the camera.
+/// The snow quads facing the camera, plus the emitter particles (fix-world-fx: the same billboard
+/// pass — `Emitter_Draw` 0x17b708 path A draws both through `psiDrawParticleList`).
 fn snow_for(scene: &scene::Scene, cam: &Camera) -> Vec<scene::Vertex> {
     let Some(sim) = scene.sim.as_ref() else { return Vec::new() };
     let f = cam.dir();
     let right = f.cross(Vec3::Y).normalize_or_zero();
     let up = right.cross(f).normalize_or_zero();
-    sim.snow_quads(right.to_array(), up.to_array())
+    let mut out = sim.snow_quads(right.to_array(), up.to_array());
+    out.extend(sim.particle_quads(right.to_array(), up.to_array()));
+    out
 }
 
 /// One frame of sound (`Sound_UpdateListeners` → `Sound_UpdateSounds` → the batch → `SFXUpdate`): the listener is

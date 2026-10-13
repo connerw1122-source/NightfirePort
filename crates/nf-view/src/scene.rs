@@ -1831,6 +1831,28 @@ impl Sim {
         out
     }
 
+    /// The emitter particles as camera-facing quads (`Emitter_Draw` 0x17b708 path A →
+    /// `psiDrawParticleList` 0x122d50: a size-`def.size` rgba sprite per alive slot). The game sizes
+    /// the sprite in screen space (`4·size / (PS2ParticleSize · PS2SnowSizeMult)`, 0x11e2e8:67) — the
+    /// port takes the def size as the world-space half-extent [S], the way the snow quads do. The
+    /// white rgb in the game's sprite comes from the bound def texture (the font-slot hash, def+0x04)
+    /// modulated by the slot rgba [M 0x119910:19]; the port has no per-def texture, so the colour is
+    /// the slot rgba itself — listed in the report's render follow-ups.
+    pub fn particle_quads(&self, right: [f32; 3], up: [f32; 3]) -> Vec<Vertex> {
+        let sprites = self.drones.fx.particle_sprites();
+        let mut out = Vec::with_capacity(sprites.len() * 6);
+        for s in sprites {
+            let (r, u) = (right.map(|v| v * s.size), up.map(|v| v * s.size));
+            let c = |sr: f32, su: f32, uv: [f32; 2]| Vertex {
+                pos: [s.pos[0] + r[0] * sr + u[0] * su, s.pos[1] + r[1] * sr + u[1] * su, s.pos[2] + r[2] * sr + u[2] * su],
+                uv, rgba: s.rgba, nrm: [0; 4],
+            };
+            let (a, b, cc, d) = (c(-1.0, -1.0, [0.0, 1.0]), c(1.0, -1.0, [1.0, 1.0]), c(1.0, 1.0, [1.0, 0.0]), c(-1.0, 1.0, [0.0, 0.0]));
+            out.extend_from_slice(&[a, b, cc, a, cc, d]);
+        }
+        out
+    }
+
     /// The live animated script object from `src` (script hash, stream) on `skin`: its animation script and frame.
     pub fn script_anim(&self, src: (u32, u8), skin: u32) -> Option<(u32, f32)> {
         self.drones.scripts.objects.list.iter().flatten().rev().find_map(|o| match o {
