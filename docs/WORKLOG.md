@@ -8675,6 +8675,19 @@ Stage Summary:
   foreground chunks over every target — **781 passed, 3 failed** (only the 3 sanctioned
   disc_golden trio; 147/147 nf-view binaries). Report updated with the chunk breakdown.
 
+---
+Task: fix-cover-remainder
+Agent: fix-cover-remainder worker
+Branch: s/fix-cover-remainder
+
+Work Log:
+- (session start 20:45 UTC 2026-10-13, deadline ~22:39 UTC) Branch cut from master f767e3d.
+  Scope: GAPS G-028 remainder — ValidateCoverAnim low-node anim validation, the +0x538 blend
+  timing for non-call anims, RunForCover route shape near the 05 gate (U-030), per-target cover
+  slots (only Bond today), RecoverFromScaryObject (0x86) flee route. Files: drone.rs cover arms,
+  docs/systems/drone-cover.md. Plan: read the decompile + existing drone.rs cover code first,
+  reproduce each gap through the real input path (tests/traces/05-*.trace, ai_traces_live),
+  fix, NF_ISO test per fix, full suite before every push.
 ## fix-script-commands (s/fix-script-commands) — 2026-10-13
 Task: GAPS G-031, the script player remainder — port the unported command streams from
 `Script_EventHandler` 0x1d94c0 / `Script_Interp` in this order: fades and letterbox (visible in
@@ -8997,3 +9010,95 @@ Stage Summary:
 - The morph target buffer is pinned with a decompile address + an exact disc census; the CPU vertex
   half is landed and exercised through the real trigger path. Report: docs/reports/fix-facial2.md
   (live checks for the main agent listed). Full suite NOT run in the window — re-run before merge.
+Task: fix-nav-remainder
+Agent: fix-nav-remainder worker
+Branch: s/fix-nav-remainder (from origin/master 0cda458)
+
+Work Log:
+- Sandbox kept (repo, work/, onfoot ISO, nf-queue present); token refreshed, master pulled,
+  branch created. Starting G-027's remainder in the order the task gives: the door/kick/action
+  nodes (0x81-0x84) first, then GoToGoalPosition 0x63 (+SetGoalToCloserPosition /
+  SetGoalToDroneWithLosToOpponent), then the rest (+0x31C drone-ahead flags/state 0x5E,
+  obstacle avoidance, EnemyMission kind-8 paths, PatrolTalk RNG, boundary push-out).
+
+Stage Summary:
+- (in progress)
+
+---
+Task: fix-nav-remainder
+Agent: fix-nav-remainder worker
+Branch: s/fix-nav-remainder
+
+Work Log:
+- Census (ephemeral test over all 20 story levels' nav data [D]): kick nodes (flag 4) exist ONLY on
+  0700000c ("DoorOpen" kind-2 path, the user's complained level) and 07000012 (Default Navigation
+  n144/n248 + Patrol Path - C); action (8) and fiddle (0x40) nodes exist NOWHERE on the disc;
+  ally-wait (0x20) + the four Mayhew-line flags (0x10000..) exist only on 07000001's kind-8
+  "Mayhew Route".
+- Reproduced first (tests/nav_kick_live.rs, NF_ISO): a 07000012 guard driven by GoToGoalPosition
+  (0x63) through the kick pair n144→n248 (route plan asserted) never entered DSTATE_KickObject
+  and the script-0x0600_05bb ScriptPlayer (#662, placement 662) never triggered — the port had NO
+  kick/action/fiddle/ally-wait handling in `ReachedDestNode`'s dispatch, and `move_to_goal` (0x63's
+  route half) skipped the dispatch entirely.
+- Ported (crates/nf-game/src/drone.rs): `route_reached_door` → `route_reached_special` = the full
+  `NDrone2_ReachedDestNode` (0x153358) dispatch — door 2 (as before), kick 4 (bind + first-crossing
+  node flag 0x8000 → 0x82), action 8 → 0x83, ally-wait 0x20 (switch_channels[0x99] gate) → 0x21
+  with the return state in +0x5A2, fiddle 0x40 → 0x84, and the Mayhew lines (0x44-0x47 speeches);
+  the dispatch now also runs in `move_to_goal` (LinkCreep_Handler serves every followed route).
+  New DSTATE arms: KickObject 0x82 (0x1684c0: kick anim 0x4e, timer-C re-kick at +2, msg 0x20 →
+  sfx 0x28 + `NDrone2_KickObject` 0x14aa00 → `SP_UnPause` 0x1dca58 + back to +0x5A6), ActionAnim
+  0x83 (0x168628: plays the start script +0x554 as SetScript(+0x554,10,0x32,0x1e,0,5,0); done →
+  0x6f), StandFiddle 0x84 (0x1687c0: anim 0x23, timer C at +5 → +0x5A6). `Drones::tick` builds the
+  kick-node → ScriptPlayer binding (`NDrone_InitKickNodes` 0x139ce0: nearest class-0x1b object whose
+  script is 0x0600_05bb; port: nearest `Scripts::players` entry carrying that script), keeps the
+  nodes' once-only 0x8000 flags in a shared set, and services the kick outbox (`activated = true` +
+  the current script's pause cleared). Fields on their own lines (merge lesson 4).
+- Two harness bugs found while reproducing: the tick's route-path lookup now falls back to
+  `croute` (0x63's repositioning route, not just the patrol `route`), and the "next node" for the
+  dispatch is taken from the reached node's position in the route list (the port's follow advances
+  the index inside the same call; the game reads it before SetupNextNode).
+- Green: tests/nav_kick_live.rs 2 drive/data tests — 07000012: the guard enters 0x82 once at the
+  pair, the grunt sfx 0x28 fires, and the SP leaves its wait (state 0 → 2, plays 0x0600_05bb, and
+  self-deletes via its stay flag — the game's SP_Activate trigger semantics); 0700000c: the pair is
+  adjacent, binds nothing (no 0x0600_05bb SP in the level [D]) and a start guard does pin the
+  DoorOpen path (in-play route to the pair is direct — documented, live check in the report).
+
+Stage Summary:
+- The door/kick/action node item of G-027 is ported and test-pinned (kick end-to-end on 07000012;
+  action/fiddle states ported with zero disc users per the census). Still open from G-027:
+  +0x31C drone-ahead (0x5E only via NoBunching), obstacle avoidance, EnemyMission kind-8 assign,
+  PatrolTalk's RNG, the boundary push-out's suggested push; the 0x63 goal setters were already
+  ported (verified: set_goal_to_closer_position 0x155e10 / set_goal_to_drone_with_los 0x1543f8).
+Task: fix-cover-remainder
+Agent: fix-cover-remainder worker
+Branch: s/fix-cover-remainder
+
+Work Log:
+- Scope G-028. Ported the scary-object flee chain end to end (G-026): msg 0x21 now fires at a grenade's
+  bounce (HandleExplosives 0x1435f0 + BuildDynamicAwarePoints 0x138b10 kind-2 gates: fear props 0x3A/0x3B,
+  radius 12.0/8.0, LOS); ConsiderExplosive 0x1431c0's real constants (run 4.0/10.0/14.0, return state
+  +0x354 = 0x87 Hide default, deadline 2 s/10 s, +0x2B); RunAway 0x86 / Hide 0x87 / Recover 0x88 in
+  drone.rs handle_scary (FindSafety 0x152250 straight-line goal; the emitter strategy [S]-approximated by
+  the route clamp). The old port constants "5.0 stun / 8.0 mine / 12.0 frag" were wrong, and state 0x86
+  had no handler (the drone froze).
+- ValidateCoverAnim 0x13bf40 ported (validate_cover_anim) + wired into cover_anim's low-node arm; invalid
+  anims now queue NOTHING (the 0x21-stand-up replacement is gone); mode 3's 0x58 stays raw [M
+  0x13c078:297-300].
+- RunForCover slide 0.1 → 0.025 [M 0x169150:62-67] + the finding: the slide condition (route+0x88 < 1.0)
+  is dead in the GAME too (MoveToGoalPosition arrives at GetRouteDistance < +0x8EC = 2.0 first [M
+  0x1517d8:44-54, 0x14b300:579]) — the doc's "10 %/tick" described dead code; U-030 remains the route
+  shape (OptimiseRoute), not the slide.
+- Analysed, not codeable this session (reasons in the report): the 8 per-target slots (SP-identical — all
+  guards' SetOpponent(Bond) lands on slot 0 and InitComms rebuilds the slots every frame [M 0x139520]);
+  the +0x538 blend-out lifetime (inside the AnimScript engine, the 275-fix-anim-blend trap).
+- Tests (ai_live, NF_ISO): grenade_bounce_scares_the_guard_into_the_flee_family (0x86→0x87→0x88→0x56 +
+  out-of-radius sister), validate_cover_anim_matches_the_game_table (real anim sets). Suite: nf-game
+  230 passed / 0 failed over all 32 binaries with NF_ISO; guard_takes_cover_like_the_game green on the
+  finished branch. Only nf-game touched; the other three crates compile-checked after the master merge.
+- Report: docs/reports/fix-cover-remainder.md (live checks: the grenade flee in PCSX2, +0x2B/+0x324/+0x354
+  probes, the nf-view --bond spot).
+
+Stage Summary:
+- G-028: the flee chain and ValidateCoverAnim are IN; the slide constant is decompile-true with its
+  dead-code status documented; the 8-slot table and the +0x538 blend-out remain open with the blockers
+  written down. Branch s/fix-cover-remainder; report docs/reports/fix-cover-remainder.md.
