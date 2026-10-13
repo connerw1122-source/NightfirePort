@@ -7640,3 +7640,24 @@ Stage Summary:
   12-mission sp_level campaign with the unlock rule, the confirm box, the Dossier, button-icon hint
   bars, and a --shot path that renders every page for the PCSX2 side-by-side. Left (reported): the
   zeroed menu FMVs, the ✕/△ glyph sprites, the per-mission preview mapping, the driving-row launch.
+
+**fix-menus3 outcome (18:20 UTC)**: the eight render-vs-PCSX2 gaps from the main agent's 2026-10-13
+comparison are closed on `s/fix-menus3`. Framing: the overlay draws everything through
+`Anchor::Centre` — the window's central 4:3 band, so the menus get the black side bars back (at a 4:3
+window nothing changes). Title: the legal block wraps inside its plate with a font-measured `wrap_px`,
+centred at x=320, and `Font::layout` walks chars now — the byte walk split the CP-1252-decoded "©"
+into C2+A9 and printed "Â©". Main menu: the PAGE record's aux movie 0x07330048 is the backdrop FMV
+(no static art control exists; the ISO stubs its PSS — still-from-retail left to a movie-enabled
+build); the rows are the page data's own LBL text. Headers stay LBL per the page data (the stylised
+look is the game's unparsed menu font — reported). Hints: the `specialchar` table 0x2dd8d8 (texture
+0x03000075, per-token u/v/w/h/advance) replaced the guessed 0x03000042 atlas tiles and the letter-X
+fallback — ✕ is the table's (235,1,19×19). Ring preview: drawn as 24 chord strips of the emblem
+circle (the game masks it; a HudFrame has no per-pixel mask), under the ring per the controls' f1
+order. Mission previews: sp_level[i]+0x00 is the per-row preview texture [M 0x1f8388's msg 0x24 to
+0x10000020] — CAMPAIGN now carries all four record lanes (preview/name/desc/level) from the EE
+snapshot, locked rows dim to 0x60 with +0x14's "Continue playing to unlock this mission.", and a
+fresh profile unlocks rows 0-1 [D sp_level boot state]. Descriptions wrap inside their plates. 17
+menus_flow tests green (band, strip-clip, specialchar uv, wraps, per-row preview + the EE [L]
+cross-check); full suite green except the 3 allowed disc_golden. Left: the main-menu FMV still (needs
+the retail ISO), the menu font, the √-token positions vs the captures. Report:
+docs/reports/fix-menus3.md.
