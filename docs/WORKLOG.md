@@ -7217,3 +7217,11 @@ by G-017/G-024 with the repro. Suite: escort walk green on the final state + dif
 the full-suite re-run timed out (sandbox) after the revert — sim paths are otherwise byte-identical to
 master's. Shared-file hooks: lib.rs (pub mod ps2math), nf-extract main.rs (Player.capsule compile fix;
 pose-check level names take the FILES.BIN .bin names). Report: docs/reports/verify-bitexact.md.
+
+## fix-impacts (s/fix-impacts) — 2026-10-13
+Task: bullet decals, ejected shell casings, impact dust and sparks, ricochets, bullet
+trails (G-041/G-025). Port the game's effect path sim-side first (Effect_Create 0x1ce688,
+Effect_Bullet 0x1ce8a8, the 200-entry FIFO, casings 0x12f678/0x12fde0/0x12faa0,
+Debris_Create 0x1aaa00, Particles_Create 0x1cf478, Effect_RicochetProb 0x1cf290), keep the
+RNG draws in game order, expose one Scene function returning this frame's effect vertices.
+Started 10:58 UTC, sandbox expires ~12:56 UTC.
