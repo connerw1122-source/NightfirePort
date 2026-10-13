@@ -124,3 +124,10 @@ view-model/anim side effects vs the contact's script) — live checks below.
 5. **The kind-5 pickup** (07000014's placements at (-28.0, 2.7, 6.9) is kind 0; the disc's kind-5
    placements: 07000041's #0? — the census's kind table shows 0 kind-5 placed; the script spawns
    would show message 0x2000013 on take).
+
+## ntfy failed
+
+All three fallbacks returned HTTP 429 (daily message quota, ntfy.sh "limit reached: daily message
+quota reached; increase your limits with a paid plan"): the curl published `{"code":42908,"http":429}`,
+the python fallback raised `HTTPError: HTTP Error 429: Too Many Requests`, and the wget fallback
+returned empty with the same limit (the same 429 the fix-facial session recorded on this channel).
