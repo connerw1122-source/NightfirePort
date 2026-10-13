@@ -6565,3 +6565,31 @@ demonstrated live before the reset and the chain test re-run green on the restor
 2. Press fire (✕) while dying: the menu/restart should come immediately instead of the 7.5 s.
 3. Die on 07000007 (punch a guest to death): the fail banner ~5 s, then the restart to 07000005
    (the mission start), COLD — full health, fists, objectives re-announced. The old replay loop gone.
+
+## fix-npc-doors-escort (2026-10-13)
+
+The NPCs' door handling from the real path and the 07000002 E-usable grates. Report:
+`docs/reports/fix-npc-doors-escort.md`.
+
+1. **The route's door nodes open doors** (`NDrone_InitDoorNodes` 0x139a70 binding + `ReachedDestNode`
+   0x153358 → `DSTATE_OpenDoor` 0x1681f8 = state 0x81 [L 0x29b300 + 0x81·4] → `NDrone2_OpenDoor`
+   0x14aa38 → `Door_Activate(door, drone, 0)`, timer-C retry every 2 ticks, `DoorIsOpen` 0x14aaa0 exit to
+   `Drone+0x5A6`): ported in `drone.rs` (the `hit_door`/`door_return`/`door_node`/`door_attempt`/
+   `pending_door_msg` outbox pattern, the `node_doors` binding map on `Drones`, the 0x81 state, the anim
+   event 6 → msg 0x20, and `ControlSTANDARD` 0x1490f0:232-248's +0xBA8 check exact — the old nearest-door
+   scan is gone). `update_patrol_route` runs the same dispatch (patrolling guards open doors too).
+2. **07000001 escort test** (`fix_npc_doors_live`): Mayhew opens the screenshot's shoji (7.92, 5.34, 11.14)
+   with Bond 3.9 away and leads past both interior doors (x −20 at +11362 t); fail-first shown on pre-fix
+   `drone.rs`. The stairwell-head guard pressure (AllyLeadHide 0x1f) is the game's own behavior and still
+   the end-state open question (live checks in the report).
+3. **07000001's exit doors** (`gallery_secretdoor` #224/#225) have NO channels [L ee_start_07000001: all
+   five doors +0x66/+0x68 = 0] — they open by Bond's E or the escort's own handling; the AND plate
+   (inputs 0xE + skin 0x4F, `Trigger_Hit` 0x1b1fc8) only gates the level load. No wiring needed; item 1 is
+   the fix.
+4. **`SS_Activate` 0x1a9ea8 ported** (`ss.rs`: `state` = create param 0 at ext+0x22, `mask` = param 2 at
+   +0x1E; state != 0 && mask & 4 → state 1 + the channel latch) with the use-key pick in `scene.rs` (the
+   nearest E-armed SS under the head ray, 2.2 stand-in for the 1.0-sphere-vs-mesh). 07000002's E-usable
+   grates: placements 272/308 (ch 2)/440. Test `fix_ss_grate_live` green (state 0x40→1, t 0.80, ch 2 on).
+   The vent crawl (CreepWall 0x3F / substate 7) stays with `140-fix-swim-vent`.
+5. Merge drift repaired: `Player.capsule` initializers in `ai_live.rs`/`drone_portcheck_live.rs` (master's
+   fix-gadgets 6753e51 broke their build on master itself).
