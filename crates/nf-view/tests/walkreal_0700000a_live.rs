@@ -81,7 +81,7 @@ fn shoot_at(w: &mut Walker, target: [f32; 3], range: f32, max_ticks: u32, label:
 }
 
 #[test]
-#[ignore = "the cab mouth's SS lift doors (placements 524/525, channel param 0x00 [D]) stand closed at key 0 forever in the port (SsList::tick targets key 0 when the channel is 0) and are solid since fix-party-mission item 7 (Ss.hash joins set_dynamic) — Bond pins at z 12.4 leaving the cab. In the game the doors arrive open on the elevator chain from 07000009 (ch 0x39/0x46 ride the RamSave [M 0x195670:13]) — the port's cold load has no writer for them. Needs the game-side answer (gdbwatch switch_channels during the real 09→0a ride: what opens the 0a leaves) or the warm-chain carry of the door channels. walkreal-a walked this route before the SS collision landed"]
+#[ignore = "the cab mouth's SS lift doors (placements 524/525, channel param 0x00 [D]; keys 0-3 closed, key 4 slid aside [D parse]) stand closed at key 0 forever in the port (SsList::tick targets key 0 when the channel is 0) and are solid since fix-party-mission item 7 (Ss.hash joins set_dynamic) — Bond pins at z 12.4 leaving the cab. The game's own 0a start snapshot holds them CLOSED as well [L ee_start_0700000a.bin: leaf matrices (−2.973,1.303,13.031) @0xE2E2A4 and (−4.893,1.275,13.031) @0xE2E314] — the game opens them during the arrival via a writer the port lacks (the channel param is 0, so the writer is a script/trigger, not the SS channel). Live check for the main agent: gdbwatch switch_channels (0x26fc90) and the leaf obj+0x90 during the real 09→0a intro — the writer instruction names the opener"]
 fn walk_office_floor_qworm_keyboard_hatch() {
     let mut w = load_carry(None);
     {
