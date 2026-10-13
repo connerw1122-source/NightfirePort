@@ -281,6 +281,10 @@ pub struct Sim {
     pub surfaces: Option<nf_formats::sfx::SurfaceSounds>,
     pub voices: Option<Vec<nf_formats::sfx::VoiceLine>>,
     pub step_dist: f32,
+    /// The laser-family beam's endpoints this tick (the hand/head end, the hit end) —
+    /// `gadget::laser_tick` while a laser weapon is out [M Player_LaserPointer 0x1a65d8]. The
+    /// renderer draws the beam mesh (0x2000131/0x2000133) between them.
+    pub laser_beam: Option<(nf_game::world::V3, nf_game::world::V3)>,
     /// The level's zip wires (placement type 0x3E, `Wire_Create` 0x1981d8). Bond grabs one by walking
     /// into its world sphere (fix-wire: the real grab + crossing live in `nf_game::player`).
     pub wires: Vec<nf_game::wire::Wire>,
@@ -810,6 +814,19 @@ impl Sim {
         self.shot_tick = false;
         // The smoke puffs (`gases_smoke` 0x1ab2d0 [S] simplified) tick with the sim.
         for s in self.smoke.iter_mut() { s.update(); }
+        // The laser-family beam [M Player_LaserPointer 0x1a65d8]: while the Q-Laser (0x50/0x51) or
+        // the laser watch (0x54) is out, the beam ray runs every tick from the head along the view,
+        // 100 units; a lock its ray touches burns [M Lock_Update 0x1ae3d8 case 0 — the beam's
+        // weapon id in the lock's contact list], writing the lock's out channel. The beam's
+        // endpoints are parked for the renderer (the 0x2000131/0x2000133 meshes).
+        self.laser_beam = None;
+        if !self.disabled && nf_game::gadget::runs_beam(self.gun.weapon) {
+            let head = self.bond.head();
+            let dir = self.bond.look();
+            let frame = self.drones.frame + 1;
+            let (a, b) = nf_game::gadget::laser_tick(head, dir, &mut self.drones.locks, &self.world, &mut self.drones.channels, frame);
+            self.laser_beam = Some((a, b));
+        }
         self.smoke.retain(|s| !s.dead());
         let (trigger, reload) = if self.disabled { input = Default::default(); (false, false) } else { (trigger, reload) };
         let aiming = input.aiming;
@@ -935,6 +952,25 @@ impl Sim {
         // whose top is far below Bond is no water either). The sink control is unused in play (the
         // viewer's input has no bind; the crouch key sinks in the Sim path below).
         if !self.disabled {
+            // The Q-Claw grapple's fire [M Player_SetGrapplePoint 0x195da0]: with the claw (0x4A/0x4C)
+            // out and the fire pressed on foot, the aim ray's grapple point (placement 0x3A) latches
+            // and Bond enters the substate 2 (the reel). The enter tick swallows the fire — it runs
+            // BEFORE the bond tick so a release tick's fire cannot re-latch in the same tick.
+            let mut trigger = trigger;
+            if trigger
+                && self.bond.substate == nf_game::player::SS_WALK
+                && self.bond.grapple.is_none()
+                && matches!(self.gun.weapon, 0x4a | 0x4c)
+            {
+                let head = self.bond.head();
+                let dir = self.bond.look();
+                if let Some(point) = nf_game::gadget::pick_grapple_point(&self.drones.grapple_points, head, dir, 100.0) {
+                    self.bond.grapple = Some(nf_game::gadget::GrappleState { point, phase: 1, pull: 0.0 });
+                    self.bond.substate = nf_game::player::SS_GRAPPLE;
+                    self.bond.vel = [0.0; 3];
+                    trigger = false;
+                }
+            }
             let water = self.cel_at(self.bond.pos).map(|i| self.cels[i].water).filter(|w| *w > -400.0);
             let sink = input.crouch;
             let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink };
@@ -974,6 +1010,7 @@ impl Sim {
             }
             let was_on_wire = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
             let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
+            input.fire = trigger;
             self.bond.tick_ctx(&self.world, &ctx, &input);
             // `Player_WeaponNone` 0x1a9858 runs in `Player_CollLadder` on the grab [M 0x196118]: the
             // current weapon id is SAVED to `anim+0x64` (the port's `saved_weapon`), the class becomes
@@ -1164,7 +1201,13 @@ impl Sim {
                     // Swap the weapon byte now (the variant-swap doesn't holster).
                     if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
                     if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
-                    self.gun.prev_weapon = self.gun.weapon;
+                    // The leave-side prev slot follows the LEAVING weapon's type [M 0x1a6f80:134-141 —
+                    // +0x930 takes weapons only, +0x932 gadgets only; the request path (above) already
+                    // wrote it, but the variant swap used to write prev_weapon unconditionally — a
+                    // gadget→gadget hop (0x50→0x52) polluted +0x930 with a gadget id and the next
+                    // WEAPON cycle then toggled back to a gadget].
+                    if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
+                    if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
                     let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
                     if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
@@ -1173,7 +1216,8 @@ impl Sim {
                     if log_switch { eprintln!("[weapon-switch] tick {}: instant variant swap (no script) {:#x}→{:#x}", self.drones.frame, cur_id, req_id); }
                     if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
                     if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
-                    self.gun.prev_weapon = self.gun.weapon;
+                    if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
+                    if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
                     let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
                     if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
@@ -1197,7 +1241,8 @@ impl Sim {
                     if log_switch { eprintln!("[weapon-switch] tick {}: instant swap (no holster) {:#x}→{:#x}", self.drones.frame, cur_id, req_id); }
                     if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
                     if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
-                    self.gun.prev_weapon = self.gun.weapon;
+                    if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
+                    if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
                     let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
                     if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
@@ -1228,7 +1273,8 @@ impl Sim {
                         // Holster done: write the current weapon's clip/spare back, swap, read the new weapon's.
                         if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
                         if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
-                        self.gun.prev_weapon = self.gun.weapon;
+                        if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
+                        if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                         self.gun.weapon = self.gun.switch_request;
                         let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
                         if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
@@ -2849,7 +2895,11 @@ impl Scene {
                 .collect();
             drones.pickups.extend(placed_pickups);
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(),
+<<<<<<< HEAD
                 wire_cels,
+=======
+                laser_beam: None,
+>>>>>>> origin/master
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));

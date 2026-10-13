@@ -295,3 +295,39 @@ from slot-9 save states (`drones_snapshot.py`); gate spawner object 0x016da670, 
 So the decompile's cleanup branch (0x137e68:235-288) is what runs: **p7 = the kill channel**, triggers.md's original
 reading. fix-actors' ARM reading is refuted. Its 07000011 playtest symptom fits the cleanup's level split: on
 0x11..0x13, 0x16 and 0x4A only drones with `obj+0xFC` == 0 are removed. The port fix is queued as `046b-fix-spawner-p7`.
+
+## Ported: fix-spawner-p7 (2026-10-12)
+
+The kill-channel reading is ported (`crates/nf-game/src/spawners.rs` against 0x137e68 and the disasm
+0x137fbc-0x1380b4): the latch (+0x20), the early-outs (`NPCGlobals`, `Drone_bDisableSystem` 0x30ca9e — no
+options menu in the port, the gate is wired but stays false — the spawner's own `obj+0xFE` bit 0, the
+mode/group/slot checks), the stop-channel pause/delete split, the done-path wait (p6 OR p7), the cleanup's
+level split and the kept-drone count. Tests: `nf-game/tests/spawner_kill.rs` (the unit shapes),
+`nf-view/tests/spawner_kill_live.rs` (07000005 end-to-end + the 07000011 stairwell keep),
+`fix_actors_live.rs::the_spawner_arrives_on_its_channels` (the arrival, re-driven through the trigger).
+The pre-fix failure was shown on master's code: the same 07000005 flow left both guards alive (the arm
+reading) — the symptom this task fixes.
+
+`obj+0xFC` (byte, on the NPC object) — the **draw counter** the kill gate reads [M `lbu $v0, 0xfc($s0)`
+0x13805c]: the renderer sets it to 2 for every object added to the draw list [M `View_AddObjects`
+0x1e62d8:71, `View_AddForcedObjects` 0x1e5fb8:174] and the per-frame object pass decrements it while
+non-zero [M `control_movement_object_handler` 0x1336f8:239-247 — core-loop item 11]. So 2 = drawn this
+frame, 1 = drawn last frame, 0 = not drawn for 2+ frames; the keep arm of the cleanup keeps only drones
+with a non-zero value. (Other object classes use the same offset as a float timer — bullets 0x12d890,
+cars 0x130060 — a per-class field, not a global.) The port's per-drone `drawn` visibility flag stands in,
+snapshotted at control-walk start so the scan reads last frame's value like the game's.
+
+### Correction from real play (main agent + the user, 2026-10-12): the swap is instant
+
+`tests/traces/05-gate-swap.trace` (07000005 played from the start, the gate guards left alive, god mode). Frame by frame:
+- 173757: ch 0x22 → the two gate guards spawn at (28.3, 44.9) and (32.1, 44.9) (state 4); the two placed guards behind
+  them at (32.4, 49.9) and (27.6, 49.7) are disabled (state 1).
+- 174328: the player steps on the ledge plate #301 → ch 0x43 (the script that plays is the wall-shimmy, not a cut-scene).
+- **174329 (the next frame): the spawned pair is removed AND the placed pair activates (state 1 → 4) in the same frame.**
+  The gate is never empty.
+
+The "Live result" table above (channels written by hand over PINE) saw `NPCGlobals` = 0 and a delayed latch; in real play
+there is no such delay, so treat that delay as an artefact of the hand-written channels. **What the port must do:** remove
+the spawned pair and enable the placed pair on the same tick. (Before this, the port removed the pair on the touch
+tick, which is right, but kept the placed pair hidden until the shimmy script ended, about 1,400 ticks, so the gate sat
+empty: the user's `gate05` report.)
