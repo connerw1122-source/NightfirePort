@@ -521,3 +521,18 @@ by the developer before acting.
 - None have been visually verified (no lavapipe in the sandbox) ✗
 - friendly-actor team=2→3 bug FIXED
 - searchlight-tracks-bond and door-anti-crush don't verify a searchlight/door is present (noted)
+
+## fix-explosions2 — the grenade weapon ids and the death-branch routing
+
+The grenade weapon ids, named by the disc labels (`Txt_BindLabel(weapon_data+0x38)`, resolved against
+USATxt.dat with the game's own fixup algorithm — see the report): **0x34 'Fragmentation Grenade'
+(radius 8 / damage 100), 0x35 'Stun Grenade' (10/0), 0x36 'Smoke Grenade' (0/0), 0x37-0x39 'Remote
+Mine' (8/100), 0x3a 'Laser Tripbomb' (8/100), 0x3b-0x40 'Satchel Charge' (8/2000)** [L]. The
+`Bullet_DoTrails` 0x12d890 timer-death branch routes on the weapon's `+0x70` flags [M asm
+0x12dd60/0x12e104/0x12e1c0]: `& 0x2000` → the flash branch (0x35 only among the grenades [L sweep]);
+`& 0x20000` → the smoke branch (0x36: Occlude_Create + Sound 0x14 + a 1200-tick re-arm); else
+`Explode_Create(wd+8, wd+8, wd+0xC)` — the frag/mine/satchel blast. fix-explosions' mapping was one
+id off (it called 0x35 the frag and 0x36 the stun), which made its port stun on the smoke, dud the
+stun throwers, and conclude the frag was harmless. `NDrone2_DefaultInit` 0x14b300's +0xBCC selection
+(1→0x36, 2→0x35, 4→0x34, 5→count+0x3a, 6→0x6c) and `DroneWeap_ThrowGrenade` 0x179558's sniper pick
+(0x35, ⅓ → 0x36) use the same constants the port already had.

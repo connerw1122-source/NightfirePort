@@ -7554,3 +7554,32 @@ casing slot carries ammo_data[1] = 0x0200043f and tracks the pose; debris pool +
 shot none; bit-for-bit rerun) — shown failing first against the scaffold. Full suite green except
 the 3 allowed disc_golden fails. docs/atlas/effect.md written (the owed entry); GAPS G-041/G-025
 updated. No GPU here — render spots + live checks in docs/reports/fix-impacts-render.md.
+---
+Task: fix-explosions2
+Agent: fix-explosions2 worker
+Branch: s/fix-explosions2
+
+Work Log:
+- Research: the frag's real damage path FOUND — the disc name labels (Txt_BindLabel of weapon_data+0x38,
+  USATxt.dat parsed with the game's own fixup algorithm: Bank[k] = offsets[k-2], FixupTable
+  [0,1000,1812,1903,1958,2065,2183]) name 0x34 'Fragmentation Grenade' (8/100), 0x35 'Stun Grenade'
+  (10/0), 0x36 'Smoke Grenade' (0/0), 0x37-39 'Remote Mine' (8/100), 0x3a 'Laser Tripbomb' (8/100),
+  0x3b-40 'Satchel Charge' (8/2000). fix-explosions' mapping was one id off. The kill path:
+  Bullet_DoTrails 0x12d890's timer death routes on +0x70 flags — & 0x2000 flash (0x35 only [L sweep]),
+  & 0x20000 smoke (Occlude + Sound 0x14 + 1200 re-arm), else Explode_Create(8, 8, 100) → Propagate
+  → the guard dies with the (int)-truncated falloff. Difficulty multipliers [L 0x30cab0]: 2.0/1.5/0.5.
+- Fix: drone.rs routes on the flags (flash/smoke/explode), the flash branch lost the duplicate 0x16 and
+  the wrongful 0x6000052 script, its stun broadcast gated to the player thrower (SP [M 0x12e094]); the
+  smoke re-arm (Grenade.smoke_popped); the mine fuse 420 (0x12c5a0:214-223); panel.rs catalog renamed
+  (the user's "frag looks like a stun grenade" was the one-id-off names); tests re-locked (frag 0x34
+  kills, stun 0x35 stuns with no damage, smoke 0x36 pops). Fail-first: the stun test FAILED on the old
+  id-keyed routing, passes on the flag routing.
+- Suite: nf-game lib 121; NF_ISO explode_live 2/2, fix_player3_live 6/6, fix_weapons_all_live 4/4, all
+  walk/walkreal + the grenade-adjacent binaries green; formats/audio/game green (3 bigf allowed);
+  nf-view green across two full passes. Report: docs/reports/fix-explosions2.md.
+
+Stage Summary:
+- The frag grenade kills like the game (0x34: radius 8 / damage 100 through the real Propagate), the
+  stun grenade stuns (0x35 flash branch), the smoke pops (0x36), the mine fuses 420; the dev panel
+  names match the disc. Left: the smoke's Occlude visual, the whiteout falloff curve, the mine
+  trigger/detonator, the tripbomb laser, the satchel timer — all noted in the report.
