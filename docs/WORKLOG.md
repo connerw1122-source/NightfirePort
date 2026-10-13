@@ -8043,3 +8043,25 @@ Stage Summary:
 - Not ported: the PartyGirl armed-intruder shout (msg 0x11, prop 0x33 → the guards' prop-0x28 route,
   0x160140:63-70), the fail reason 0xb behind prop 0x52, and the disabled WaitSwitch guests (the
   idle ones can't be punched until their switch channel wakes them).
+
+---
+Task: fix-pickups-remainder (branch s/fix-pickups-remainder)
+Agent: fix-pickups-remainder worker
+Task: G-029 remainder — the pickup auto-switch (Player_IsBetterWeapon 0x1a6eb0, the 0x2A38D2 flag), the toggle-back key, level-placed + script pickups, Pickup_CreateFromSet (types 7-11), keys/armour/types 5-6, respawn (state 2), spin, moving-platform landings, the creation push-out, text messages, Upgrade_Weapon's upgrade bytes; the census over the 27 on-foot levels
+
+Work Log:
+- Census started. Decompile reads this session: Player_IsBetterWeapon 0x1a6eb0 (the BestWeapon
+  table is the 36-byte object at 0x2bede0 per the symtab, entries are weapon ids walked by their
+  weapon_data base; guard: the CURRENT weapon's base in [0x4a,0x5e] blocks the switch; verdict
+  pickup_rank < cur_rank), Player_GetBestWeapon 0x1a9680 (same table, first owned+ammo entry,
+  the 0x1BC variant addend), Player_WeaponChange 0x1a6f80 (the +0x930/+0x932 toggle-back memory —
+  the port's gun.rs already matches), Player_EquipWeapon 0x1a8a58 (the auto-switch tail: the flag
+  is per-player DAT_002a38d2[idx*0x158], idx 0 live = 1 [L ee_start_05]; writes anim+0x63 = the
+  upgraded id; the 0x52 pickup clears BLData+0x59E and force-switches 0x53 → 0x52), the
+  Script_EntityStart 0x1d8d78 → Script_CreateEntity 0x1d8968 0xF0 arm (params [kind, id, rounds,
+  switch] from the entity param block, DAT_00349974+4i), Pickup_CreateFromSet 0x18f1b0 +
+  Pickup_MakeRandomWeaponSet 0x18f098 (the MP PickupMatrix weapon sets — 7-11 read
+  PickupMatrix[row][set-7], the base weapon with clip*2, + a 0x1B ammo pile when the AR), and
+  Pickup_Handler 0x18e650 in full (kind 5: clears BLData+0x888 for a class-3 taker + msg
+  0x2000013, CONSUMED — the port refuses it today; the take messages/sounds/channels/respawn
+  tail all match the port's HUD path).
