@@ -49,3 +49,6 @@ Files: `crates/nf-view/src/{menu,lib}.rs`, the HUD/sprite drawing it needs, `doc
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/menus2`.
+
+---
+claimed-by: sandbox3 at 2026-10-13T14:38Z
