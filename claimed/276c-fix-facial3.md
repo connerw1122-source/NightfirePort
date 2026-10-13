@@ -25,3 +25,6 @@ Files: `crates/nf-game/src/anim.rs`, `crates/nf-game/src/drone.rs` (the anim loo
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/facial3`.
+
+---
+claimed-by: sandbox5 at 2026-10-13T22:52Z
