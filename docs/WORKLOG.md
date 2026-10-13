@@ -6427,3 +6427,33 @@ test through the real input path, show the failure pre-fix.
   `fix_finale_live.rs` (the sister re-baseline), `docs/GAPS.md` (G-025's one-line correction).
 - Full suite (post-merge, NF_ISO): **109 test binaries green; only the 3 allowed `disc_golden` failures**
   (the slim ISO). The report is `docs/reports/fix-spawner-p7.md`.
+## fix-gadgets (2026-10-13)
+
+Bond's gadgets: the selection re-enabled and three gadget systems ported with tests.
+
+- **The selection** (the user's #1 ask): the G key was commented out with the whole gadget cycle;
+  the machinery itself was complete and the weapon_data's +0x04 selectable flag is 1 for the gadget
+  ids [D ACTION.ELF weapon_data] — the port-map's "gadgets have 0" note was wrong (lesson 1: check
+  the data, not one comment). Fixed the prev-slot pollution: a gadget→gadget hop wrote +0x930
+  (prev_weapon) with a gadget id [M 0x1a6f80:134-141 — the slots are per-type], so the next WEAPON
+  cycle toggled back into the gadgets (the user's "it wouldn't let me switch to it").
+  `gadget_select_live`: 0700000c's camera pickup (0x52) takes and equips through the G cycle; 05's
+  level-start gadgets (0x4A/0x4E/0x50/0x54 [L]) all reachable; the sister keeps Q in 1..0x47.
+- **The Q-Laser / laser watch** (0x50/0x51/0x54): new `gadget.rs` — the per-tick beam ray (the head
+  along the view, 100 units [M Player_LaserPointer 0x1a65d8's structure]) and the lock burn
+  [M Lock_Update 0x1ae3d8 case 0]. The 08 safe door's collision plane sits ~0.9 in front of the
+  bolt centres [D the probe grid], so the lock contact uses the aim line's closest approach [S].
+  `gadget_laser_live`: the watch equips via G, the real look input aims, ch 134 rises; the sister
+  aims away and nothing burns. The port-map's laser-flag note corrected: the +0x68 bit-3 gate is
+  the GUNS' laser sights.
+- **The Q-Decryptor** (0x4E/0x4F): the lock burn through the same beam path [M 0x1ae3d8:57-63];
+  the scan-mode camera/UI is NOT ported (the decryptor selects and burns; the UI is left).
+- **The Q-Claw grapple** (0x4A/0x4C, substate 2): the points parse (placement 0x3A — the port map's
+  "0x3E" was the wire's type), the fire latches the aim-ray point [M Player_SetGrapplePoint
+  0x195da0], the reel hangs Bond [M Player_SSGrapple 0x192860], the fire releases. The rope visual
+  and the swing momentum are [S]/[S]. `gadget_grapple_live` drives the whole loop.
+- Files: new `crates/nf-game/src/gadget.rs`; `player.rs` (SS_GRAPPLE + Bond::grapple + Input::fire —
+  additive); `scene.rs` (the enter path, the laser tick hook, the prev-slot gates); `lib.rs`/`replay.rs`
+  (Input::fire plumbing); `drone.rs` (grapple_points — additive, on its own lines).
+- Left: the decryptor's scan UI, the camera/briefcase/Q-Worm fire-side functions (the mission
+  layer's), the rope/beam render items (Sim::laser_beam holds the endpoints), the swing momentum.

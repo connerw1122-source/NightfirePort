@@ -17,18 +17,26 @@ Tags: [M] decompile, [D] disc, [L] snapshot, [S] suggested.
 | 0x50 | Q-Laser (watch laser) | `Player_LaserPointer` 0x1a65d8, `Draw_LaserBeam` 0x1a4560; sounds SFX_GADGET_WATCH_LASER_* |
 | 0x54 | Laser Watch (scoped) | `weapon_data[0x54]+0x68` flag 0x40 (scoped); sounds SFX_GADGET_WATCH_LASER_* / WATCH_TASER |
 
-## Status: all NOT STARTED
+## Status (fix-gadgets, 2026-10-13)
 
 | Address | Name | Status | Notes |
 |---|---|---|---|
-| 0x192860 | `Player_SSGrapple` | **not started** | The grapple substate (substate 2): fires the grapple, attaches to a surface, swings Bond on the rope. 592 bytes. |
-| 0x195d10 | `Player_InitGrapple` | **not started** | Initialises the grapple rope object. 144 bytes. |
-| 0x192728 | `Player_GrappleSetRope` | **not started** | Sets the rope's endpoints. |
-| 0x195da0 | `Player_SetGrapplePoint` | **not started** | Sets the grapple's target point. |
-| 0x193098 | `Player_SSScanMode` | **not started** | The decryptor substate (substate 5): opens the scan-mode camera, decodes digits. 1020 bytes. |
-| 0x1a65d8 | `Player_LaserPointer` | **not started** | The laser pointer: casts a ray, draws the beam, burns through locks. 1016 bytes. |
-| 0x1a4560 | `Draw_LaserBeam` | **not started** | Draws the laser beam effect. |
-| 0x198298 | `Grapple_Create` | **not started** | Creates a grapple point placement (type 0x3E). |
+| 0x192860 | `Player_SSGrapple` | **ported (logic)** | Substate 2: the fire latches the aim-ray point, the reel (0.05→0.5/tick SP) hangs Bond < 2.0 from it, the fire releases. The rope's visual and the swing momentum's restore are not modelled [S]. `gadget_grapple_live`. |
+| 0x195d10 | `Player_InitGrapple` | **stand-in** | The rope object (mesh 0x2000138) is not created (the renderer's item). |
+| 0x192728 | `Player_GrappleSetRope` | **stand-in** | The rope endpoints are not drawn. |
+| 0x195da0 | `Player_SetGrapplePoint` | **ported (logic)** | The enter path in scene.rs (the aim ray vs the point's sphere; the exact selection cone [S]). |
+| 0x193098 | `Player_SSScanMode` | **partial** | The decryptor's lock burn works through the beam path (`runs_beam` — 0x4E/0x4F in `Lock_Update` 0x1ae3d8's contact scan); the scan-mode camera/UI is not ported. |
+| 0x1a65d8 | `Player_LaserPointer` | **ported (logic)** | The beam ray per tick while the laser family is out; the lock contact via the aim line's closest approach [S — the 08 safe door's collision plane sits ~0.9 in front of the bolt centres, so the world-capped beam can never touch them]. `gadget_laser_live`. The +0x68 bit-3 gate belongs to the GUNS' laser sights (0x06/0x07/0x08/0x09/0x0f/0x17/0x18), not the gadgets. |
+| 0x1a4560 | `Draw_LaserBeam` | **render item** | The beam's endpoints are parked on `Sim::laser_beam` for the renderer (the meshes 0x2000131/0x2000133). |
+| 0x198298 | `Grapple_Create` | **ported** | The grapple points parse (placement 0x3A — this page's 0x3E was the WIRE's type; corrected). `drones.grapple_points`. |
+
+The SELECTION is live: the weapon_data's +0x04 selectable flag is 1 for
+0x4A/0x4C/0x4E/0x4F/0x50/0x51/0x52/0x53/0x54/0x56/0x57/0x58/0x59 [D ACTION.ELF weapon_data] — the
+"Gadgets and non-weapons have 0" note in weapon.rs was wrong. The G key cycles gadgets (the game's
+d-pad Up/Down [M Player_WeaponChange 0x1a6f80 mode 1]); the prev-slot pollution (a gadget→gadget hop
+writing +0x930) is fixed. The Q-Worm (0700000a) arrives from the story scripts (no placed pickup —
+the mission layer owns the grant); the camera (0700000c's 0x52) and the briefcase (07000012's 0x52)
+pick up and equip; their fire-side functions are the mission layer's (not ported).
 
 ## What each gadget does (from the decompile)
 
