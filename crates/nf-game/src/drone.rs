@@ -264,6 +264,11 @@ pub struct Data<'a> {
     pub surfaces: Option<&'a nf_formats::sfx::SurfaceSounds>,
     /// Drone voice lines (`Drone_SfxInfo`); `None`: the drones do not talk.
     pub voices: Option<&'a [nf_formats::sfx::VoiceLine]>,
+    /// `GameState+0x40` (0x2a37a8): the difficulty — the `Player_HandlePain` 0x1902c8 damage
+    /// factor, the `DroneWeap_DoBulletAccuracy` 0x179740 hit chance, the captain/lock/hint gates
+    /// and `PlrStat_GetScore` 0x1984b0's multiplier all read it (fix-progress; mirrored from
+    /// `Drones::difficulty` in the view's `data()`).
+    pub difficulty: u32,
 }
 
 /// A bullet that hit a drone (HITDATA): the part (bone id), the ray (`+0x30`), the point, damage (`+0x08`), weapon.
@@ -722,6 +727,12 @@ pub struct Drone {
     /// `+0x554 = piVar19[0xE]` = params[1], 0 when the word is 0x6000000 or one of the 0x6000892/0x600089c
     /// specials). Non-zero → `NDrone2_DSTATE_Global`'s enter starts the drone in PlayScript (3).
     pub start_script: u32,
+    /// The surrender tally outbox: `PlrStat_LogEnemySurrender(0)` 0x1997b8 runs in the
+    /// `Surrender_Anim` ENTER (0x1626a0) — folded into `Drones.progress` by the tick (fix-progress).
+    pub surrender_logged: bool,
+    /// The shot-hit-enemy tally outbox (count this tick): `NDrone2_HitDamage` 0x145558:57-60's
+    /// `PlrStat_LogShotHitEnemy` (the team-1 + hit-by-the-player gate) — folded by the tick.
+    pub hit_log: u32,
 }
 
 /// Normalise a vector (the grenade throw direction helper).
@@ -793,6 +804,9 @@ impl Drone {
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
             grenade_weapon, grenade_count, pending_grenade: false,
             shots: Vec::new(), log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, start_script, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
+            // fix-progress tally outboxes (fields on their own lines — merge lesson 4):
+            surrender_logged: false,
+            hit_log: 0,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
             switch_channel: param(3) as u8, channel_on: false, placement: 0, spawn_seq: 0, spawn_frame: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
@@ -830,7 +844,7 @@ impl Drone {
     /// (truncated). Type 0xC drops properties 0x14–0x16 (kind 9 also gets 0x4C).
     fn captain_setup(&mut self, d: &Data) {
         use nf_formats::ps2float::mul;
-        let by_difficulty = match DIFFICULTY { 1 => self.prop(d, 9), 2 => self.prop(d, 5), 3 => self.prop(d, 8), _ => false };
+        let by_difficulty = match d.difficulty { 1 => self.prop(d, 9), 2 => self.prop(d, 5), 3 => self.prop(d, 8), _ => false };
         if by_difficulty {
             let skin = match self.kind { 1 => Some(0x0500_0038), 2 => Some(0x0500_002f), 3 => Some(0x0500_0006), 6 => Some(0x0500_0093), 7 => Some(0x0500_00b2), _ => None };
             if let Some(skin) = skin {
@@ -1697,7 +1711,11 @@ impl Drone {
         let Some(h) = self.hit else { return };
         self.hits_taken += 1;
         let target = crate::damage::Target { damageable: self.damageable, armour: 0, mode: 0, skin: self.skin, kind: self.kind };
-        let r = crate::damage::hit_damage(d.tuning, target, nf_formats::ps2float::mul(h.damage, self.damage_taken), h.part, h.weapon, false, DIFFICULTY, d.level);
+        let r = crate::damage::hit_damage(d.tuning, target, nf_formats::ps2float::mul(h.damage, self.damage_taken), h.part, h.weapon, false, d.difficulty, d.level);
+        // `NDrone2_HitDamage` 0x145558:57-60 (and the explosive arm :129-130): a hit on a team-1
+        // drone from the player (+0x2B4 == the player object) logs the accuracy numerator
+        // (`PlrStat_LogShotHitEnemy` 0x199840). Outboxed; the tick folds it into the tally.
+        if self.team == 1 { self.hit_log = self.hit_log.saturating_add(1); }
         if r.head { self.silent_kill = true; }
         self.health -= r.loss;
         self.last_damage = r.recorded;
@@ -2875,6 +2893,9 @@ impl Drone {
                 self.anim_set = 0xc;
                 self.clip = 0;
                 self.timer_c = Some(frame + 15);
+                // `NDrone2_DSTATE_Surrender_Anim` 0x1626a0's ENTER ends with
+                // `PlrStat_LogEnemySurrender(0)` — outboxed, folded into the tally by the tick.
+                self.surrender_logged = true;
                 if self.special_death == 0x0600_021f { self.special_death = 0; self.death_channel = 0; }
                 true
             }
@@ -4146,7 +4167,7 @@ impl Drone {
         if close { pct *= 2.0 }
         if first_moved { pct *= 0.25 }
         if moving { pct *= 0.75 }
-        pct *= level_accuracy(d.level, DIFFICULTY);
+        pct *= level_accuracy(d.level, d.difficulty);
         if close { pct *= 2.0 }
         let mut hit = rng.frand(100.0) < pct;
         if !close { hit &= self.seen_ticks >= 120 && !self.lost_sight; }
@@ -4280,10 +4301,8 @@ pub fn level_drones(d: &Data, level: &nf_formats::level::Level, rng: &mut Rng, l
     }).collect()
 }
 
-/// Difficulty (`GameState+0x28`); 1 in the user's live sessions.
-pub const DIFFICULTY: u32 = 1;
-
-/// Per-level accuracy factors by difficulty (`ReadTuningVars` 0x1d3a80).
+/// Per-level accuracy factors by difficulty (`ReadTuningVars` 0x1d3a80). The difficulty itself is
+/// `Drones::difficulty` (`GameState+0x40`, 0x2a37a8 — NOT +0x28; fix-progress made it runtime).
 pub fn level_accuracy(level: u32, difficulty: u32) -> f32 {
     let (e, n, h) = match level & 0xff {
         0x01..=0x04 | 0x14..=0x16 => (0.5, 0.7, 1.0),
@@ -4500,6 +4519,17 @@ pub struct Drones {
     /// The world presentation FX (0x21 ripples, 0xe3 flicker, 0xd4 cloud drift, 0x4a apocalypse,
     /// 0xf2 emitters — crates/nf-game/src/world_fx.rs, fix-world-fx).
     pub fx: crate::world_fx::WorldFx,
+    /// The mission-progress layer (crates/nf-game/src/progress.rs, docs/systems/progress.md):
+    /// `PlrMissionStats` 0x2bcc20, `BondMoments` 0x2bcde0, the `ScoringTable` runtime, the `bonus`
+    /// bitmask, the `sp_level` flags and the save codec (fix-progress). The tally hooks fold the
+    /// per-drone outboxes in `tick`; the menus (180-fix-menus) read it through here.
+    pub progress: crate::progress::Progress,
+    /// `GameState+0x40` (0x2a37a8): the difficulty — 1 Agent / 2 Secret Agent (the boot default
+    /// [M bootup 0x1c7e78:25]) / 3 00 Agent / 4 the bonus double-damage mode [M Player_HandlePain
+    /// 0x1902c8:29-48]. The old `DIFFICULTY` const (hardcoded 1, commented as `GameState+0x28` —
+    /// the wrong offset; the scored member is +0x40 [M PlrStat_GetScore 0x1984b0:295]) stood in
+    /// for this. The difficulty page (180-fix-menus) writes it through `set_difficulty`.
+    pub difficulty: u32,
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -4556,7 +4586,7 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
+        let mut drones = Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true,
             npc_system_disabled: false,
             spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
@@ -4574,7 +4604,23 @@ impl Drones {
             fx: Default::default(),
             effects: crate::effect::Effects::new(),
             casings: crate::casing::Casings::new(),
+            // fix-progress: the tally/scoring layer and the runtime difficulty (fields on their
+            // own lines — the shared-constructor collisions, merge lesson 4).
+            progress: Default::default(),
+            difficulty: 2, // [M bootup 0x1c7e78:25 GameState._40_4_ = 2]
+    };
+        // `NDrone2_DefaultInit` 0x14b300:609 → `PlrStat_LogEnemySpawned(0)` per created drone; the
+        // level's placements are created before this (the gate's Mission_Status is 0 at a cold
+        // load — inside the Log family's {0, 1} window either way).
+        for _ in drones.list.iter() { drones.progress.log_enemy_spawned(0); }
+        drones
     }
+
+    /// `GameState+0x40`'s setter (C_SBNFDFCTY_Handler 0x216ca8:10-17 writes the difficulty page's
+    /// selection; the boot default is 2 [M 0x1c7e78:25]). The menus (180-fix-menus) call this.
+    pub fn set_difficulty(&mut self, d: u32) {
+        self.difficulty = d.clamp(1, 4);
+        self.progress.difficulty = self.difficulty;
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -4772,6 +4818,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let f = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
         let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
         for _ in 0..u32::from_le_bytes(w[0x18..0x1c].try_into().unwrap()).clamp(1, 16) {
+            // `PlrStat_LogShotFired(0)` 0x1998d8 per bullet spawned (Player_WeaponInitBullet
+            // 0x1a4bf0:258 runs inside the per-pellet loop) — fix-progress.
+            self.progress.log_shot_fired(self.mission.status());
             let dir = crate::bullet::spread(dir, f(0x24), flags68, &mut self.rng);
             self.player_bullets.push(PlayerBullet { pos: from, dir, speed: f(0x20), travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0 });
         }
@@ -4889,6 +4938,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     b.dead = true;
                     let hit = at(w);
                     self.player_impacts.push(PlayerImpact::World(hit));
+                    // `PlrStat_LogShotHitScenery(0)` 0x198408 (SP_Update 0x1dbda8:261; Destroy_Smash
+                    // 0x12bb60:55 — the port folds the breakables into this world-hit path): the
+                    // accuracy denominator nets to the enemy hits only (fix-progress).
+                    self.progress.log_shot_hit_scenery(self.mission.status());
                     self.impact_sound(d, b.pos, end);
                     // `Bullet_CollisionHandler` 0x12ce80 → `Effect_Create` 0x1ce688 / `Effect_Bullet`
                     // 0x1ce8a8 / `Effect_RicochetProb` 0x1cf290 (docs/atlas/effect.md). Bond is class 3,
@@ -4928,7 +4981,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let yaw = look[0].atan2(look[2]);
         let pitch = look[1].clamp(-1.0, 1.0).asin();
         let wf = d.weapons.records.get(weapon as usize).map_or(100.0, |w| f32::from_le_bytes(w[0x14..0x18].try_into().unwrap()));
-        let diff = match DIFFICULTY { 1 => t.Autoaim_EasyMul, 3 | 4 => t.Autoaim_HardMul, _ => t.Autoaim_NormalMul };
+        let diff = match self.difficulty { 1 => t.Autoaim_EasyMul, 3 | 4 => t.Autoaim_HardMul, _ => t.Autoaim_NormalMul };
         let mut best = t.Autoaim_Range;
         let mut found = None;
         for (i, dr) in self.list.iter().enumerate() {
@@ -5185,6 +5238,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 }
                 if let Some(t) = res {
                     p.gone = true;
+                    // `PlrStat_LogBondBonus(0)` 0x1999e0 — `Pickup_Handler` case 6 0x18e650:234-236
+                    // logs the bonus pickup in the take-effect switch (fix-progress).
+                    if matches!(t, crate::pickup::Taken::Bonus) { self.progress.log_bond_bonus(self.mission.status()); }
                     // `if (+0x28) switch_channels[+0x28] = 1` (+ time stamp) [M 0x18e650:330-333].
                     if p.switch_channel != 0 { self.channels.set(p.switch_channel as u32, 1, frame); }
                     // `Pickup_Handler` overwrites `+0x2A` with the per-kind sound at take time —
@@ -5625,7 +5681,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         // wire's; the port's hurt has no radius falloff, docs/fields/fusebox.md #6).
                         let at = Self::script_obj_pos(&self.scripts, d, obj).unwrap_or(self.fuseboxes[fi].pos);
                         let before = self.health.health;
-                        self.health.pain_generic(crate::fusebox::LIVE_WIRE_HURT, DIFFICULTY, d.level, 0);
+                        self.health.pain_generic(crate::fusebox::LIVE_WIRE_HURT, self.difficulty, d.level, 0);
                         self.player_hits.push((frame, usize::MAX, before - self.health.health));
                         let _ = at;
                     }
@@ -5764,6 +5820,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         dr.spawn_seq = self.spawn_counter;
                         dr.spawn_frame = frame;
                         self.llist.push(i);
+                        // `NDrone2_DefaultInit` 0x14b300:609 → `PlrStat_LogEnemySpawned(0)` per created
+                        // drone (fix-progress).
+                        self.progress.log_enemy_spawned(self.mission.status());
                     }
                     crate::spawners::Action::Remove(v) => {
                         // 0x07000016's kill first raises each removed drone's death channel
@@ -6120,7 +6179,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         // (HITDATA+0x30 = the shooter) in the viewer's frame.
                         let attacker = self.list.get(b.owner).filter(|d| d.present).map_or(at, |d| d.pos);
                         let yaw = player.aim[2].atan2(player.aim[0]);
-                        self.health.pain_from(damage, DIFFICULTY, d.level, attacker, player.eye, yaw);
+                        self.health.pain_from(damage, self.difficulty, d.level, attacker, player.eye, yaw);
                         self.player_hits.push((frame, b.owner, before - self.health.health));
                     }
                     // `Bullet_DoTrails` fly-by: `Sound_Play3D(0x1dc, closest_point, 100, -1, -1, …, custom 0)` [M].
@@ -6148,13 +6207,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         // `Explode_Propagate`: the drones' positions + Bond, linear falloff.
                         let drones: Vec<(usize, V3)> = self.list.iter().enumerate()
                             .filter(|(_, x)| x.present && !x.corpse).map(|(i, x)| (i, x.pos)).collect();
-                        let hits = crate::grenade::explode_propagate(pos, radius, damage, &drones, player.pos, 1.8);
+                        let hits = crate::grenade::explode_propagate(pos, radius, damage, &drones, player.pos, 1.8, self.difficulty);
                         // Bond: `Player_Hurt` (the difficulty factor is applied in `explode_propagate`).
                         if hits.player > 0.0 {
                             let before = self.health.health;
                             // `Explode_Propagate` → `Player_Hurt` → `Player_HandlePain` (type 0): BL+0x967 = 0xC
                             // (both sides) [M 0x1902c8:124-130].
-                            self.health.pain_generic(hits.player, DIFFICULTY, d.level, 0);
+                            self.health.pain_generic(hits.player, self.difficulty, d.level, 0);
                             self.player_hits.push((frame, owner, before - self.health.health));
                         }
                         // Drones: `Drone_ExplosiveHit` → msg 9 (the port routes through `on_bullet` as an impact).
@@ -6194,6 +6253,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         self.sss.tick(&self.channels);
         if !self.mission_inited {
             self.mission.init(d.level, self.mission_carry.is_some(), &mut self.channels, frame);
+            // `PlrStat_ResetForMission` 0x1993a0 — Mission_Init 0x182270:65 wipes PlrMissionStats
+            // (0x1C0) and BondMoments (0x14) when the level is the mission's first part [M].
+            if crate::mission::LEVELS.iter().find(|l| l.level == d.level).is_some_and(|l| l.part == 0) {
+                self.progress.reset_for_mission();
+            }
             // The carried mission globals restore AFTER init, exactly as the game's `.data` globals sit
             // when `Mission_Init` runs on a warm transition: init resets the current + future parts in
             // place and the carried snapshot puts the previous parts' states back [M 0x182270:68-129;
@@ -6213,6 +6277,32 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         if events.iter().any(|e| matches!(e, crate::mission::Event::MissionFailed)) { self.music.event(7, 1); }
         if events.iter().any(|e| matches!(e, crate::mission::Event::MissionComplete { .. })) { self.music.event(8, 1); }
         self.mission_events = events;
+        // fix-progress: the tally folds — the per-drone `PlrStat_Log*` outboxes, `Trigger_Calc`'s
+        // Bond-moment scan and the health snapshot (docs/fields/player-stats.md's writers table).
+        {
+            let ms = self.mission.status();
+            let (mut dispatched, mut disabled, mut surrendered, mut hit) = (0u32, 0u32, 0u32, 0u32);
+            for dr in self.list.iter_mut() {
+                // `PlrStat_LogEnemyDispatched` 0x1996a8 (OnInitDeath 0x145bd0:57-59),
+                // `LogEnemyDisabled` 0x199730 (the KO enter 0x172ac8), `LogEnemySurrender`
+                // 0x1997b8 (the Surrender_Anim ENTER 0x1626a0), `LogShotHitEnemy` 0x199840
+                // (NDrone2_HitDamage 0x145558:57-60) — outboxed by the drones, folded here.
+                if dr.dispatched_logged { dr.dispatched_logged = false; dispatched += 1; }
+                if dr.disabled_logged { dr.disabled_logged = false; disabled += 1; }
+                if dr.surrender_logged { dr.surrender_logged = false; surrendered += 1; }
+                hit += dr.hit_log; dr.hit_log = 0;
+            }
+            for _ in 0..dispatched { self.progress.log_enemy_dispatched(ms); }
+            for _ in 0..disabled { self.progress.log_enemy_disabled(ms); }
+            for _ in 0..surrendered { self.progress.log_enemy_surrender(ms); }
+            for _ in 0..hit { self.progress.log_shot_hit_enemy(ms); }
+            // `Trigger_Calc` 0x1b1900:12-17: channels 0x65..0x6E on → `PlrStat_DoneBondMoment(0, ch)`
+            // (the BondMoments gate makes repeats inert).
+            for id in 0x65u32..=0x6E { if self.channels.on(id) { self.progress.done_bond_moment(ms, id); } }
+            // `PlrStat_LogHealth` 0x199620 ← `Player_SetHealth` 0x1960b8:14: the snapshot GetScore's
+            // row 6 reads; the port writes it once per tick (the game's last write wins too).
+            self.progress.log_health(ms, self.health.health);
+        }
         // `UpdateMusicalEvents` 0x114e70 — once per tick, after the drones (their script requests and the
         // mission's pulses are this tick's EventList) [M]. The audio layer feeds `iop_section`.
         self.prev_event2 = self.music.events[2];
@@ -6238,6 +6328,7 @@ mod tests {
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip: 0, clip_max: 0,
             grenade_weapon: 0x35, grenade_count: 0, pending_grenade: false, shots: Vec::new(),
+            surrender_logged: false, hit_log: 0,
             log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, start_script: 0, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: 0, lost_sight: false,
             damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,

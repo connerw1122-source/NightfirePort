@@ -47,7 +47,7 @@ fn the_intro_freeze_disables_every_drone_and_shields_them_from_bullets() {
         }).map(|(i, _)| i).unwrap();
         let hp0 = sim.drones.list[target].health;
         {
-            let d = nf_game::drone::Data { tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons, world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins, skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning, hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: None, models: &sim.models, surfaces: None, voices: None };
+            let d = nf_game::drone::Data { tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons, world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins, skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning, hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: None, models: &sim.models, surfaces: None, voices: None, difficulty: 1 };
             let from = sim.bond.head();
             let tp = sim.drones.list[target].pos;
             let dir = [tp[0] - from[0], tp[1] + 0.8 - from[1], tp[2] - from[2]];

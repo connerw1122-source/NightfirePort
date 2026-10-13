@@ -9,7 +9,7 @@
 //! propagate step). The throw state (0x2D) and the `DroneAnim_EventFunc` datum 1 live in `drone.rs`.
 
 use crate::world::{CollisionWorld, V3};
-use crate::drone::{Rng, DIFFICULTY};
+use crate::drone::Rng;
 
 /// One grenade in flight (`Bullet_init` with a gravity-affected weapon_definition). Fields carry the game's `BU+0x…`
 /// offsets where they match.
@@ -154,6 +154,7 @@ pub fn explode_propagate(
     drones: &[(usize, V3)],
     player: V3,
     _player_height: f32,
+    difficulty: u32,
 ) -> ExplosionHits {
     let mut hits = ExplosionHits { pos, ..Default::default() };
     if radius < 0.0002 || damage < 0.0002 { return hits; }
@@ -165,7 +166,7 @@ pub fn explode_propagate(
     if pdist < radius {
         let d = damage * (1.0 - pdist / radius);
         // `Player_Hurt` applies the level's damage factor (`Plr_DMod_*`); 07000005 difficulty 1 → 0.6.
-        if d >= 0.0002 { hits.player = d * crate::bullet::damage_factor(0x0700_0005, DIFFICULTY); }
+        if d >= 0.0002 { hits.player = d * crate::bullet::damage_factor(0x0700_0005, difficulty); }
     }
     for &(i, dpos) in drones {
         let dx = dpos[0] - pos[0];
@@ -270,13 +271,13 @@ mod tests {
     fn explode_propagate_linear_falloff() {
         // A grenade at the origin, radius 4, damage 100. Bond at distance 0 takes 100; at distance 2 takes 50; at
         // distance 4 takes 0 (the cutoff); a drone at distance 1 takes 75.
-        let hits = explode_propagate([0.0, 1.0, 0.0], 4.0, 100.0, &[(0, [1.0, 1.0, 0.0])], [0.0, 1.0, 0.0], 1.8);
+        let hits = explode_propagate([0.0, 1.0, 0.0], 4.0, 100.0, &[(0, [1.0, 1.0, 0.0])], [0.0, 1.0, 0.0], 1.8, 1);
         // Bond at the centre: damage 100 × the difficulty factor (0.6 on 07000005 difficulty 1) = 60.
         assert!((hits.player - 100.0 * 0.6).abs() < 1e-3, "player at centre: {}", hits.player);
         // Drone at distance 1: damage 100 × (1 − 1/4) = 75.
         assert!((hits.drones[0].1 - 75.0).abs() < 1e-3, "drone at distance 1: {}", hits.drones[0].1);
         // Sister: a target beyond the radius takes nothing.
-        let hits2 = explode_propagate([0.0, 1.0, 0.0], 4.0, 100.0, &[(0, [10.0, 1.0, 0.0])], [10.0, 1.0, 0.0], 1.8);
+        let hits2 = explode_propagate([0.0, 1.0, 0.0], 4.0, 100.0, &[(0, [10.0, 1.0, 0.0])], [10.0, 1.0, 0.0], 1.8, 1);
         assert!(hits2.drones.is_empty(), "drone beyond radius: no damage");
         assert!((hits2.player - 0.0).abs() < 1e-6, "player beyond radius: no damage");
     }

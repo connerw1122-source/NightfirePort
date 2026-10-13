@@ -1159,7 +1159,7 @@ impl Sim {
             // — the FULL pipeline (difficulty factor, no armour for type 7 [M 0x1902c8:84-104], the pain
             // flash +0x968 and the both-sides bits +0x967 = 0xC), not a bare subtraction.
             if let Some(dmg) = self.bond.drown_damage {
-                self.drones.health.pain_generic(dmg, nf_game::drone::DIFFICULTY, self.level, 7);
+                self.drones.health.pain_generic(dmg, self.drones.difficulty, self.level, 7);
             }
         }
         // Footsteps (`AnimObjectUpdate` 0x1befd8:163-198 [M], player): `BL+0x924` gathers the distance
@@ -1194,7 +1194,7 @@ impl Sim {
         // The landing damage: `Player_CollisionHandler` 0x1949a8:117-126 calls `Player_HandlePain(timer - 60,
         // type 6)` — the full pipeline: the difficulty factor, NO armour (types 1..7 bypass it [M
         // 0x1902c8:84-104]), the pain flash +0x968 and the vertical direction bits +0x967 = 2.
-        if let Some(dmg) = self.bond.fall_damage { self.drones.health.pain_generic(dmg, nf_game::drone::DIFFICULTY, self.level, 6); }
+        if let Some(dmg) = self.bond.fall_damage { self.drones.health.pain_generic(dmg, self.drones.difficulty, self.level, 6); }
         let (head, look) = (self.bond.head(), self.bond.look());
         // The shot's direction through the crosshair: forward + 0.76966 cx · right + 0.57724 cy · up.
         let (yaw, p) = (self.bond.yaw, self.bond.pitch * std::f32::consts::FRAC_PI_2);
@@ -1269,7 +1269,7 @@ impl Sim {
         };
         let player = nf_game::drone::Player { pos, target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look, sph, hanging, capsule,
             cel: self.cel_at(self.bond.pos).and_then(|room| self.room_cell.get(room).copied().flatten()) };
-        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models, surfaces: self.surfaces.as_ref(), voices: self.voices.as_deref() };
+        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models, surfaces: self.surfaces.as_ref(), voices: self.voices.as_deref(), difficulty: self.drones.difficulty };
         // `Player_WeaponFiring` → `Player_WeaponInitBullet` from the eye along the view (*deviation*: no auto-aim and
         // no aim-point ray yet); the first-person fire script's sound 0x403 feeds the drones' hearing.
         // The gun's clip and spare rounds live in Bond's inventory (BLData `+0x1B8`, `+0x170`), which pickups fill.
@@ -1726,6 +1726,9 @@ impl Sim {
         // (The B-10 symptom was the opposite gating bug: freezing the whole tick stopped Trigger_Calc +
         // SP_Update, so PlayerEnable never arrived.)
         self.drones.tick(&d, &player);
+        // `PlarStat_LogUpdateElapsedTime(0)` 0x1995a0 — `Player_Update` 0x193600:132 calls it once per
+        // tick; `now` is the port's frame-derived 1/100 s clock (deterministic; fix-progress).
+        self.drones.progress.log_update_elapsed(nf_game::progress::PlrMissionStats::now_100ths(self.drones.frame));
         // The HUD's per-frame state: the weapon-name timer, the crouch-icon timer, the pickup messages
         // (`Text_UpdateMsg` 0x1b11d8 runs from the HUD/status-pane update at frame rate).
         self.hud_tick();
@@ -1966,7 +1969,7 @@ impl Sim {
 
     /// The game data the simulation consults, borrowed from this Sim.
     pub fn data(&self) -> nf_game::drone::Data<'_> {
-        nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models , surfaces: self.surfaces.as_ref(), voices: self.voices.as_deref() }
+        nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models , surfaces: self.surfaces.as_ref(), voices: self.voices.as_deref(), difficulty: self.drones.difficulty }
     }
 
     /// (sequence index, frame) the first-person gun's script shows.
@@ -3177,7 +3180,7 @@ impl Scene {
             let hitboxes = d.hitboxes.clone()?;
             let volumes = nf_game::aivolume::build(level, d.level_id);
             let models = nf_game::pickup::models(level);
-            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: d.sfx.as_ref(), models: &models, surfaces: d.surfaces.as_ref(), voices: d.voices.as_deref() };
+            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: d.sfx.as_ref(), models: &models, surfaces: d.surfaces.as_ref(), voices: d.voices.as_deref(), difficulty: 2 };
             let mut rng = nf_game::drone::Rng::new(0x1234_5678);
             // The drones' creates (and the interleaved type-0x4E light creates) draw from the shared
             // generator here; the map parse's ambient radiators went in first, inside `level_drones`.
