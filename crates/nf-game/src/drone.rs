@@ -176,6 +176,13 @@ pub mod msg {
     pub const IDLE_TIMEOUT: u8 = 4;
     /// A sound was heard (`DroneFunc_HandleSoundAlerts`); a turn finished (HeardNoise*); SearchArea's anim steps.
     pub const SOUND: u8 = 0x14;
+    /// A hurt civilian's scream broadcast (`DroneFunc_SendHurtMessage` 0x145e28:36-56 broadcasts
+    /// msg 0x12 with the victim as the alert source; the receivers' case 0x12 runs
+    /// `DroneVision_EnemyAlerts` → prop 0x27 → `DroneVision_ShoutFromOtherDrone` [M 0x177c18:41-51]).
+    pub const SCREAM: u8 = 0x12;
+    /// An armed-intruder shout (`NDrone2_DroneAlertToObject(…, 0x11, Bond)` from the PartyGirl
+    /// update 0x160140:63-70; the receivers' case 0x11 gates on prop 0x28 [M 0x177c18:33-40]).
+    pub const SHOUT: u8 = 0x11;
     pub const TURNED: u8 = 0x23;
     pub const SEARCH_LOOKED: u8 = 0x24;
     pub const SEARCH_DONE: u8 = 0x25;
@@ -697,6 +704,14 @@ pub struct Drone {
     pub alert_block: f32,
     /// `Drone+0xCF8`: the armed-person radius that scares a Civilian (0x15d118 ENTER: 10 on 07000007, else 20).
     pub scared_radius: f32,
+    /// `+0x4f8 & 8`: the hurt scream already broadcast (`DroneFunc_SendHurtMessage` 0x145e28:57 —
+    /// once per life; cleared nowhere in ACTION.ELF's readers).
+    pub screamed: bool,
+    /// `+0x4f8 & 0x200000`: the armed-intruder shout already made (PartyGirl update 0x160140:70).
+    pub scare_shouted: bool,
+    /// The scream/shout broadcast queued this tick: msg id + the alert source position
+    /// (`Drone_SM_BroadcastMsg`'s alert struct carries the shouter's position 0x145e28:41-53).
+    pub pending_shout: Option<(u8, V3)>,
     /// `Drone+0xBB0`: the tick of the last `NDrone2_OpenDoor` attempt — `ControlSTANDARD` re-tries
     /// only 60 ticks later [M 0x1490f0:242].
     pub door_open_at: u32,
@@ -849,7 +864,7 @@ impl Drone {
             special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
             head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
-            captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0,
+            captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0, screamed: false, scare_shouted: false, pending_shout: None,
             velocity: [0.0; 3], in_air: false, on_surface: true,
             door_open_at: 0,
             hit_door: None, door_return: 0, door_node: None, door_attempt: false, pending_door_msg: false, hit_door_open: true,
@@ -1669,7 +1684,18 @@ impl Drone {
             self.set_state(state::KNOCKED_OUT_ANIM);
             return true;
         }
+        // `Drone_AlertStatusSet(2)` [M 0x145f28:30] — the port's alert-status-2 = alert ≥ 0.66
+        // (the convention crate::drone line ~2703 uses for the stun family).
+        self.alert = self.alert.max(1.0);
         self.pain_talk(d);
+        // `DroneFunc_SendHurtMessage` 0x145e28:19-57 (prop 0x32 = the scream property, the +8
+        // once-per-life bit, +0xc5 != 2): the hurt civilian SCREAMS — msg 0x12 broadcast with the
+        // victim as the alert source. The queue drains in the shared pass (the send needs the
+        // other drones, unreachable from inside this one's borrow).
+        if self.health > 0.0 && self.prop(d, 0x32) && !self.screamed {
+            self.screamed = true;
+            self.pending_shout = Some((msg::SCREAM, self.pos));
+        }
         if allow {
             // `CallAnim(0, 0x51, 0, *(Drone+0x118), 0, 0)` + both flinch stamps (0x145f28:89-94).
             self.call_anim(d, anim_state::PUNCHED, self.impact_resume, 0);
@@ -2780,6 +2806,21 @@ impl Drone {
         use state::*;
         if m == msg::BULLET { return self.on_bullet(d, rng, frame, s); }
         if m == msg::PUNCH { return self.on_punch(d, rng, frame, s); }
+        // The scream/shout broadcasts [M 0x145e28 + 0x160140; the receivers' EnemyAlerts arms
+        // 0x177c18:33-51]: case 0x12 gates on prop 0x27, case 0x11 on prop 0x28; the receiver's
+        // next state comes from `DroneVision_ShoutFromOtherDrone`. The port's civilian states go
+        // CivilianScared (whose ENTER runs CivilianHiding's cower 0x19 [M 0x15d3a0/0x15d520]);
+        // the guard states keep their sound-alert investigation (`enemy_alerts`, the port's
+        // `DroneVision_AlertSound` else-arm [M 0x177800:81-88]).
+        if m == msg::SCREAM || m == msg::SHOUT {
+            let hear = if m == msg::SCREAM { self.prop(d, 0x27) } else { self.prop(d, 0x28) };
+            if !hear { return true; }
+            let civilian = matches!(s, PARTY_GIRL | CIVILIAN | CIVILIAN_MISSION | CIVILIAN_PATROL | CIVILIAN_DOOR_GUARD | TRUCK_DRIVER_IDLE | CIVILIAN_SCARED | CIVILIAN_HIDING);
+            if civilian {
+                if !matches!(s, CIVILIAN_SCARED | CIVILIAN_HIDING) { self.set_state(CIVILIAN_SCARED); }
+            } else if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); }
+            return true;
+        }
         // BulletImpact 0x55 (0x173098): enter turns vision on; the flinch call ends it (state `+0x118`).
         if s == BULLET_IMPACT && matches!(m, 0 | msg::ENTER | msg::UPDATE) { if m == msg::ENTER { self.vision_on = true; } return true; }
         if let Some(r) = self.handle_death(d, rng, frame, s, m) { return r; }
@@ -5663,6 +5704,20 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             self.last_alarm = Some(frame);
             for dr in self.list.iter_mut().filter(|x| x.present && x.enabled) { dr.send(d, &mut self.rng, frame, msg::ALARM); }
         }
+        // The scream/shout broadcasts queued by the punch/scare paths this tick
+        // (`Drone_SM_BroadcastMsg` 0x145e28:56 — the alert source's position rides the alert; the
+        // PartyGirl armed shout's radii are 20/20/0.75 [M 0x160140:63-70], the port uses 20.0).
+        let shouts: Vec<(u8, V3)> = self.list.iter_mut()
+            .filter(|x| x.present && x.enabled)
+            .filter_map(|x| x.pending_shout.take())
+            .collect();
+        for (m, pos) in shouts {
+            for dr in self.list.iter_mut().filter(|x| x.present && x.enabled) {
+                let dx = [dr.pos[0] - pos[0], dr.pos[1] - pos[1], dr.pos[2] - pos[2]];
+                if dx[0]*dx[0] + dx[1]*dx[1] + dx[2]*dx[2] > 400.0 { continue; }
+                dr.send(d, &mut self.rng, frame, m);
+            }
+        }
         } // end `NPCGlobals` shared-pass block
         // Bond's motion (`DroneWeap_DoOpponentTargetting`): moving, and "first moved" for 2 s after he starts.
         let moving = self.prev_player.is_some_and(|q| (q[0] - player.pos[0]).abs() + (q[2] - player.pos[2]).abs() > 1e-4);
@@ -6531,7 +6586,7 @@ mod tests {
             velocity: [0.0; 3], in_air: false, on_surface: true,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(),
             voice_type: 0, female: false, attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(),
-            free_root: false, bounded: true, dtype: 0, mode_normal: 0, mode_alert: 0, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0, alert_block: 0.0,
+            free_root: false, bounded: true, dtype: 0, mode_normal: 0, mode_alert: 0, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0, screamed: false, scare_shouted: false, pending_shout: None, alert_block: 0.0,
             door_open_at: 0,
             hit_door: None, door_return: 0, door_node: None, door_attempt: false, pending_door_msg: false, hit_door_open: true,
             head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
