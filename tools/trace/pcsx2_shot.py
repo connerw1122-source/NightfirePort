@@ -4,7 +4,9 @@ Places Bond in the running PCSX2 game (player obj+0x30 position, +0x54 yaw, writ
 in-game frames, then captures the PCSX2 window to a PNG with a Windows screen grab. Render the port from the same
 spot with `nf-view <iso> <level> --bond x,y,z,yaw --frame N --shot out.png` and compare.
 
-Usage: python -I tools/trace/pcsx2_shot.py <out.png> (--pos x y z yaw [--wait frames] | --here)
+Usage: python -I tools/trace/pcsx2_shot.py <out.png> (--pos x y z yaw [--pitch p] [--wait frames] [--god] | --here)
+  --pitch p  the view pitch, BLData+0x8A8 (and its lerp target +0x8AC), units of pi/2 like the port's `--bond` 5th value
+  --god      keep health 100 / armour 50 during the hold (BLData+0x894/+0x8B0), as cheats.py does
 The level must already be loaded (tools/trace/goto_level.py). Nothing is stored but the PNG you ask for.
 
 Limit: the game collides Bond against his current cel (room). Teleporting into another room leaves that link
@@ -65,6 +67,7 @@ def main():
     out = os.path.abspath(a[0])
     p = Pine()
     obj = p.read32(PLAYERS)
+    pitch, god = None, False
     if here:
         x, y, z = (struct.unpack("<f", struct.pack("<I", p.read32(obj + 0x30 + 4 * k)))[0] for k in range(3))
         yaw = struct.unpack("<f", struct.pack("<I", p.read32(obj + 0x54)))[0]
@@ -73,16 +76,41 @@ def main():
         i = a.index("--pos")
         x, y, z, yaw = (float(v) for v in a[i + 1:i + 5])
         wait = int(a[a.index("--wait") + 1]) if "--wait" in a else 20
-    # Hold the position for `wait` frames (the game's own movement and gravity would otherwise move him off it).
-    start = p.read32(GAMESTATE + 0x34)
-    while p.read32(GAMESTATE + 0x34) - start < wait:
+    pitch = float(a[a.index("--pitch") + 1]) if "--pitch" in a else None
+    god = "--god" in a
+    # Hold the position for `wait` frames (the game's own movement and gravity would otherwise move him off it), and
+    # keep holding while the window is grabbed (the game eases the pitch back toward its lerp target every frame).
+    def hold():
         for k, v in enumerate((x, y, z)):
             p.write(obj + 0x30 + 4 * k, f2u(v), 4)
         p.write(obj + 0x54, f2u(yaw), 4)
-        time.sleep(0.005)
+        bl = p.read32(obj + 0xE0)
+        if bl and pitch is not None:
+            p.write(bl + 0x8A8, f2u(pitch), 4)
+            p.write(bl + 0x8AC, f2u(pitch), 4)
+        if bl and god:
+            p.write(bl + 0x894, f2u(100.0), 4)
+            p.write(bl + 0x8B0, f2u(50.0), 4)
+    start = p.read32(GAMESTATE + 0x34)
+    if not here:
+        while p.read32(GAMESTATE + 0x34) - start < wait:
+            hold()
+            time.sleep(0.005)
+    import threading
+    done = threading.Event()
+    def keep():
+        while not done.is_set():
+            hold()
+            time.sleep(0.005)
+    t = threading.Thread(target=keep, daemon=True)
+    if not here:
+        t.start()
     ps = GRAB.replace("TITLE", WINDOW).replace("OUT", out.replace("'", "''"))
     r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True)
     print(r.stdout.strip() or r.stderr.strip())
+    done.set()
+    if t.is_alive():
+        t.join()
     pos = [struct.unpack("<f", struct.pack("<I", p.read32(obj + 0x30 + 4 * k)))[0] for k in range(3)]
     print(f"level {p.read32(GAMESTATE + 0xC):08x}; Bond at {pos} yaw {yaw}; saved {out}")
 
