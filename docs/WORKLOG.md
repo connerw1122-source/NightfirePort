@@ -7996,3 +7996,16 @@ panel code. Report updated.
 the cel/room environment (SFXSetEnvironment per room), G-032d SPU2 Gaussian interpolation (replace
 the Catmull-Rom 4-tap), pause-in-cutscenes + precache + op-1 per-weapon remaps. Branch cut from
 origin/master 3d33a27. Scope files: crates/nf-audio/*, crates/nf-game/src/drone.rs (additive), docs/systems/sound.md.
+
+**fix-sound-remainder outcome (20:5x UTC)**: G-032d landed (the nocash PSX-SPX 512×16 Gaussian table +
+the SAR-15 formula in `nf-audio/src/lib.rs::resample_gauss`, quad-sum cross-check 0x7F7F..0x7F81, the
+sample-exact VAG test whose expectations came from an independent Python implementation of the doc
+formula; fail-first vs the old Catmull-Rom: −2000/750 vs 148/460); `PauseInNis` (per-item pitch-0 +
+skipped update while `NisPlaying`) and `SFXPreCache` (streams only, same-id take-over, the
+`KeyOnFrameDelay` window) in `sfx.rs` with real-bank NF_ISO tests; the drone door foley
+(`DSTATE_OpenDoor` case 0x20 → `Drone_SfxInfo[0x27]` = sfx 1477 through the new `foley`/`foley_entry`
+gates [M 0x1681f8, 0x141848]) in `drone.rs`. Research corrections recorded in the report: PlaySFX is
+NOT the footsteps path (the port's per-surface drone footsteps already match `Effect_Player`), the
+op-1 remap table + the precache sender are pinned for the next session, and the cel env (+0x98) value
+is mapped register-level for the EE half. No `Rand_*` draws added. Report:
+docs/reports/fix-sound-remainder.md.
