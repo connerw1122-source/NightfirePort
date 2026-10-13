@@ -7032,3 +7032,15 @@ tint; the Kimiko scene lets the objective banner (and its sound) through; 070000
   only the 3 allowed disc_golden failures. Files: nf-view lib.rs/scene.rs, nf-game anim.rs,
   nf-formats anim.rs (shared: the delegation refactor + bones_covered, noted in the report),
   tests/fix_cutscenes2_live.rs.
+
+---
+Task: fix-world-fx
+Agent: fix-world-fx worker
+Branch: s/fix-world-fx (from origin/master cdfec70)
+
+Work Log:
+- Sandbox kept from the earlier session: repo, work/, the onfoot ISO, nf-queue all present; refreshed the token URL and pulled master.
+- Branch created and pushed with this entry.
+
+Stage Summary:
+- Starting fix-world-fx: the presentation object types (0xe3 Flicker, 0x4e Light, 0xf2 Emitter, 0x21 Ripples, 0xf3 EnvTree, 0xd4 Cloud, 0xd5 OneSided, 0x4a Apocalypse, 0xf4 MoviePlayer, 0x38 SpaceLaser / 0x39 SpaceMissile on 0700001b) per docs/systems/levels.md §7.
