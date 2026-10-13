@@ -8366,3 +8366,18 @@ Work Log:
 Stage Summary:
 - The blend + decode landed with green tests; the vertex application is the next session's item
   once the target buffer's base is pinned (live check listed in the report).
+
+---
+Task: fix-portal6
+Agent: fix-portal6 worker
+Branch: s/fix-portal6 (from origin/s/fix-portal5 073b055, origin/master 0cda458 merged)
+
+Work Log:
+- Sandbox kept (repo, work/, onfoot ISO, nf-queue, target/ all present); origin fetched.
+- Branch cut from s/fix-portal5, origin/master merged (WORKLOG conflict resolved keeping both
+  sides' appended entries; no code conflicts).
+
+Stage Summary:
+- Task open: keep the courtyard fix, bring back the 07 clock hall's props (grandfather clock +
+  both wall shields missing with the walk ON at 34.25,44.13,-70.71,1.549,-0.070; fine with
+  NF_NOPORTAL=1 and in the real game). Started.
