@@ -2013,6 +2013,45 @@ pub fn fog_for(level: u32) -> Option<([u8; 3], f32)> {
 /// and draw state. The value keeps the object's world centre and scaled radius for the per-frame sort + frustum cull.
 type Groups = BTreeMap<(Layer, [u32; 3], u32, u32, Option<(usize, u32)>, Draw, u16), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32, Option<u16>)>;
 
+/// fix-safe08: the pickups the level's scripts spawn through `Script_CreateEntity` 0x1d8968's
+/// obj_type-0xF0 arm (`Pickup_Create` 0x18dda0 at the stream's posed position, rest = 1 [M disasm
+/// 0x1d8bcc-0x1d8c20]). Each such (script, stream) gets a RESERVED pickup slot: built inert
+/// (`gone`, so the draw loop and the take test skip it) and activated by the sim when the script
+/// actually spawns it. The slot keeps the renderer's per-index draw (`placed_pickup_pose`) working
+/// for a pickup that does not exist at load. 07000008's SafePickUps script 0x060009E2 spawns the
+/// safe's briefcase (kind 4, switch 0x4A) and the rocket launcher (id 0x2C) at the safe's shelves
+/// this way [D the level-bin script; the parked 0xF0 placements sit 10 units east, inside the east
+/// wall]. Scans `level.nis` sorted by hashcode (deterministic); pack scripts (07x00008) are not in
+/// the level archive and fall back to the runtime's no-slot push (takeable, by-hash mesh).
+fn script_pickup_reservations(level: &Level, weapons: &nf_formats::weapon::WeaponData, models: &std::collections::HashMap<u32, nf_game::pickup::Model>) -> (Vec<nf_game::pickup::Pickup>, Vec<((u32, u8), usize)>) {
+    let mut out = Vec::new();
+    let mut slots = Vec::new();
+    let mut hashes: Vec<u32> = level.nis.keys().copied().collect();
+    hashes.sort_unstable();
+    for hash in hashes {
+        let nis = &level.nis[&hash];
+        for (si, st) in nis.streams.iter().enumerate() {
+            let cmds = st.decode();
+            let Some(nf_formats::nis::Cmd::Entity { hash: eh, obj_type: 0xf0, params, .. }) = cmds.iter().find(|c| matches!(c, nf_formats::nis::Cmd::Entity { obj_type: 0xf0, .. })) else { continue };
+            let p = |k: usize| params.get(k).copied().unwrap_or(0);
+            let target = level.by_hash.get(eh).copied();
+            let Some((om, oi)) = target else { continue };
+            let obj_ = &level.maps[om].objects[oi];
+            let Some(&m0) = models.get(&obj_.hashcode) else { continue };
+            let key = nis.keys.get(st.first_key as usize).map(|k| k.pos).unwrap_or([0.0; 4]);
+            let Some(mut pk) = nf_game::pickup::Pickup::create_placed(
+                [key[0], key[1], key[2]], [0.0; 3], p(0) as u16, p(1) as u16, p(2) as u16 as i16,
+                p(3) as u16, p(4) as u16, p(5), 0, obj_.hashcode,
+                nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, weapons) else { continue };
+            pk.gone = true; // reserved: inert until the script spawns it
+            pk.obj = Some((om, oi));
+            slots.push(((hash, si as u8), out.len()));
+            out.push(pk);
+        }
+    }
+    (out, slots)
+}
+
 fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>, searchlight: Option<u16>, door: Option<u16>, pickup: Option<u16>, mult: [f32; 3], cels: &[Cel], chain: u32) {
     let obj = &level.maps[inst.map].objects[inst.object];
     let mut m = inst.matrix;
@@ -2276,6 +2315,13 @@ impl Scene {
                     Some(p2)
                 })
                 .collect();
+            // fix-safe08: the scripts' obj_type-0xF0 Entity spawns reserve slots after the placed
+            // pickups, in the SAME order the sim build appends them (the draw slot k must equal the
+            // sim's pickups[k]).
+            let (reserved, _render_slots) = script_pickup_reservations(level, &placed_weapons, &hoist_models);
+            let reserved_len = reserved.len();
+            let mut placed_pickups = placed_pickups;
+            placed_pickups.extend(reserved);
 
         // The spawn comes from the placement records even when entities are not drawn (Player1 is not a 0x8000 cel).
         let start = level.instances(false).0.iter()
@@ -2917,7 +2963,10 @@ impl Scene {
                     Some(p2)
                 })
                 .collect();
+            let (reserved, sim_slots) = script_pickup_reservations(level, &weapons, &pickup_models);
             drones.pickups.extend(placed_pickups);
+            drones.pickups.extend(reserved);
+            drones.script_pickup_slots = sim_slots.into_iter().collect();
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(),
                 laser_beam: None,
             })
