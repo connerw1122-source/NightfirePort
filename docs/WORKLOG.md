@@ -7341,3 +7341,35 @@ Evidence gathered so far:
 - The port's `capsule_push`/`segment_surface` are double-sided (*Deviation*, world.rs:709) — Bond
   stands on the garden pond's down-facing floor (3.7647, 3 mm under the surface 3.7675 [D
   probe_ladder2]) where the game's Bond falls through and swims.
+
+Progress (same session): the swim entry FIXED. Evidence chain:
+- [M 0x194188 Player_FeetOnPoint:92-100] the grounding ray's cel argument is `obj+0x20` (the
+  player's CURRENT cel); [M 0x1ec940 Collide_SphereIntersect] the capsule test takes the cel too —
+  the game's player collision is cel-scoped.
+- [D probe_vent_swim] in all four 07000002 water cels (4/6/16/17) every underwater hit straight
+  down is surface material 14 (0xE) at `cel+0x90` (the water surface/bed plane) and the banks are
+  mats 1/4/7/10; the water volume's bbox top = `cel+0x90`, and the walking root (bed + 1.03) is
+  always above it, so the walking player's cel is never the water cel — the game's Bond never
+  tests the water planes from the bank: he falls in and `Player_InWater` 0x195e50 (root − 0.3 <
+  surface) enters the swim substate. The port's flat world tested the mat-14 bed and he walked
+  across on it (the user's symptom).
+- [M 0x10a8c8 Intersect_RayGeom:150-168] ray tests are one-sided (the stored plane, `n·dir >= 0`
+  skips); [M 0x109da0 Intersect_CylGeom:302-322] the capsule culls head-on plane crossings by side
+  (with the game's 1.31 walk spine, Player_Collision 0x194df0 case 0/6, every near-horizontal plane
+  is head-on); [M 0x194df0 case 3:228-253] the swim capsule is the low-slung pair
+  (0.65−cc, 0.45−cc), radius 0.55.
+Port (world.rs, player.rs): the player's grounding ray (`segment_hit`) and both capsule paths
+  (`capsule_push`, `capsule_push_scoped`) drop mat-&0x3f==0xE triangles (the material form of the
+  cel scoping — [S] approximation, the full per-cel scoping is the follow-up); all ray paths are
+  one-sided by the winding (= the stored plane, docs/formats/collision.md); `capsule_push` adds the
+  one-sided rule for near-horizontal faces (|n·y| > 0.7 ≈ the game's 0.999/1.31 cone, top end `a`
+  as the side reference); `Bond::capsule` returns case 3's swim spine while substate == 3.
+  Non-player ray callers keep water (grenade/impact/spot: false; the drone/player footstep rays:
+  true — they are feet rays). `tris_near` added (the [D] evidence path).
+Test: `swim_repro_walks_on_the_water_from_the_bank` un-ignored — Bond starts on the west bank
+  (floor 4.155, surface 3.7675), walks +x, falls through the bed (grounded false), enters SS_SWIM
+  at tick 1621 at y 3.725, and stays in the water for 180 more ticks. Sister asserts: the bed's
+  material is 0xE at the surface level; the entry point is under the surface. fix_ladder2_live
+  4/4, walk_07000002_live 2/2, walkreal_07000002_live 1/1 (the level the change touches);
+  nf-game 68 passed, nf-formats 11 passed + the 3 allowed disc_golden. The rest of nf-view's live
+  suite did not fit the sandbox window — listed in the report.
