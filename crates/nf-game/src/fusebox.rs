@@ -6,6 +6,10 @@
 //! - `FuseBox_Create` stores param 1 → +0x54, param 2 → +0x56, param 3 → +0x5C, param 4 → +0x5E
 //!   (two channel words per wire group), sets class 0x3C, and `SP_Create`s the box's script
 //!   (param 0, mode 0x40 = preloaded) with `FuseBox_Register` as the create callback.
+//! - The create also `SP_Create`s the box's script (param 0, mode 0x40 preload) — its entity
+//!   streams ARE the box's visible mesh (the object itself never draws, obj+0xD8 = 0 [M
+//!   001b0448:33-35]); fix-party-mission pushes the player at attach (after `Scripts::new` — the
+//!   rebuild wipes earlier pushes) so the 07000008 GuardRoom fusebox renders.
 //! - `FuseBox_Register` files every entity the script creates into the box's two wire groups
 //!   (10 slots each at +0x04/+0x2C) and counts them at +0x58/+0x5A.
 //! - `FuseBox_Update` runs per frame: a wire whose hit list is non-empty (`Collide_FilterBullets`
