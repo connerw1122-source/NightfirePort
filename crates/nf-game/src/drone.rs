@@ -1080,10 +1080,12 @@ impl Drone {
         self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]);
     }
 
-    /// CivilianMission's route half (`UpdateMissionRoute` 0x154a80 = `NDrone2_FollowRoute`): the walk anim on
-    /// MOVING, look-around/stand when the creep is blocked (the game's route creep byte 9/0xc — the port's
-    /// BLOCKED code), and `true` once the route ARRIVED (the caller clears prop 0x1D and falls to Civilian).
-    fn update_mission_route(&mut self, d: &Data, _rng: &mut Rng, _frame: u32) -> bool {
+    /// CivilianMission's route half (`UpdateMissionRoute` 0x154a80 = `NDrone2_FollowRoute`): `moving_anim` while the
+    /// route MOVES (each game DSTATE picks its own — CivilianMission walks, `DSTATE_AllyLead` 0x15e698 case 3 calls
+    /// `CallAnim(0x1e)` = RUN on code 0/2), look-around/stand when the creep is blocked (the game's route creep byte
+    /// 9/0xc — the port's BLOCKED code), and `true` once the route ARRIVED (the caller clears prop 0x1D and falls to
+    /// Civilian).
+    fn update_mission_route(&mut self, d: &Data, _rng: &mut Rng, _frame: u32, moving_anim: u16) -> bool {
         let feet = self.feet();
         let Some(route) = self.route.as_mut() else { self.request_anim(d, anim_state::STAND_IDLE); return false };
         let (code, reached) = route.follow(d.nav, feet);
@@ -1102,7 +1104,7 @@ impl Drone {
                 if self.alert >= 0.66 { self.request_anim(d, anim_state::ALERT_IDLE) } else { self.set_stand_idle(d, _rng, _frame, false) }
                 false
             }
-            _ => { self.route_blocked = false; self.request_anim(d, self.walk_anim(d)); self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); false }
+            _ => { self.route_blocked = false; self.request_anim(d, moving_anim); self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); false }
         }
     }
 
@@ -3476,7 +3478,7 @@ impl Drone {
                     if self.voice_type == 0x10 { self.team = 1; self.set_state(ATTACK); }
                     else { self.set_state(CIVILIAN_SCARED); }
                 } else if self.route.is_some() {
-                    let arrived = self.update_mission_route(d, rng, frame);
+                    let arrived = self.update_mission_route(d, rng, frame, self.walk_anim(d));
                     if arrived && self.next_state.is_none() { d.props.set(0x1d, &mut self.props, 0); self.set_state(CIVILIAN); }
                 } else {
                     d.props.set(0x1d, &mut self.props, 0);
@@ -3570,7 +3572,10 @@ impl Drone {
             (ALLY_LEAD, msg::ENTER) => { self.call_anim(d, anim_state::RUN, 0, 0); true } // [M 0x15e698 case 1: 0x1e]
             (ALLY_LEAD, msg::UPDATE) => {
                 // The route first: done → AllyLeadDone [M 0x15e698 case 3, FollowRoute branch 3].
-                if self.update_mission_route(d, rng, frame) { self.set_state(ALLY_LEAD_DONE); return true; }
+                // MOVING rides the RUN anim [M 0x15e698 case 3: code 0/2 → CallAnim(0x1e)] — the old
+                // walk-anim stand-in walked the whole lead at half speed and spent the test's escort
+                // window on the stairs.
+                if self.update_mission_route(d, rng, frame, anim_state::RUN) { self.set_state(ALLY_LEAD_DONE); return true; }
                 // `ReachedDestNode` queued `DSTATE_OpenDoor` — the sub-state checks below must not
                 // stomp it (the game's SetState applies at once; the port's flush is deferred).
                 if self.next_state.is_some() { return true; }
@@ -3664,7 +3669,7 @@ impl Drone {
             // only user) [*suggested*: the goal = the route's last node].
             (GO_TO_GOAL_ALLY, msg::ENTER) => { self.call_anim(d, self.walk_anim(d), 0, 0); true }
             (GO_TO_GOAL_ALLY, msg::UPDATE) => {
-                if self.update_mission_route(d, rng, frame) && self.next_state.is_none() { self.set_state(ALLY_LEAD); }
+                if self.update_mission_route(d, rng, frame, self.walk_anim(d)) && self.next_state.is_none() { self.set_state(ALLY_LEAD); }
                 true
             }
             // NDrone2_DSTATE_OpenDoor (0x1681f8) — `NDrone2_StateFuncs[0x81]` [L 0x29b300 + 0x81·4]:
@@ -3738,7 +3743,7 @@ impl Drone {
             // Its sound-class msgs are ignored on 0x07000016 (case 0x11..0x1f `return 1`).
             (crate::kiko::KIKO_MISSION, msg::ENTER) => { self.vision_on = true; self.call_anim(d, 0x34, 0, 0); true }
             (crate::kiko::KIKO_MISSION, msg::UPDATE) => {
-                if self.update_mission_route(d, rng, frame) && self.next_state.is_none() {
+                if self.update_mission_route(d, rng, frame, 0x34) && self.next_state.is_none() {
                     d.props.set(0x1d, &mut self.props, 0);
                     self.set_state(crate::kiko::STAND_BLIND);
                 }
@@ -3748,7 +3753,7 @@ impl Drone {
             // KikoMissionRun 0x1a (0x15e0d8): route done → RunToAlarm.
             (crate::kiko::KIKO_MISSION_RUN, msg::ENTER) => { self.vision_on = true; self.call_anim(d, 0x1e, 0, 0); true }
             (crate::kiko::KIKO_MISSION_RUN, msg::UPDATE) => {
-                if self.update_mission_route(d, rng, frame) && self.next_state.is_none() { self.set_state(crate::kiko::RUN_TO_ALARM); }
+                if self.update_mission_route(d, rng, frame, anim_state::RUN) && self.next_state.is_none() { self.set_state(crate::kiko::RUN_TO_ALARM); }
                 true
             }
             // StandBlind 0x18 (0x172870): the stand anim only.

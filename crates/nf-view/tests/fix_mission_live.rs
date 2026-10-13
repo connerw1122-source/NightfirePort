@@ -238,12 +238,15 @@ fn the_07000001_exit_works_end_to_end() {
                 // Face the DOOR: the use sphere sits 1 unit ahead of the head [M Player_Activate 0x1a5170].
                 sim.bond.yaw = (door[0] - bx).atan2(door[2] - bz);
                 (t % 2 == 0, mp)
-            } else if dist2d(mp, [cx, 0.0, cz]) < 4.5 {
-                // fix-lighting2 merge re-baseline: near the exit plate the merged stream's escort
-                // paced in the PlayerInWay band (Bond's 2.5-follow keeps him within the 3-unit
-                // resume band, so Mayhew flip-flops just outside the plate's 2.0 radius). The game's
-                // Bond is already ON the exit plate at this point — stand him there so the escort
-                // resumes out of the way band and walks the last stretch in.
+            } else if dist2d(mp, [cx, 0.0, cz]) < 2.0 {
+                // The game's Bond is BEHIND the escort and steps onto the plate as he does — the
+                // touch needs BOTH in the volume, so Bond joins at the plate only once Mayhew is
+                // inside the 2.0 latch ball. The old 4.5 threshold pre-placed Bond while Mayhew
+                // was still 3.6 out, and his r-0.4 toucher then brushed the volume's z lo (12.17
+                // [D probe]) from 11.77 — the level end fired a tick before the at_plate latch
+                // could ever see him. The pacing problem that motivated 4.5 (the escort flipping
+                // in the PlayerInWay band) is gone: the lead now RUNS the route [M 0x15e698
+                // case 3] and never paces at the plate.
                 let floor = sim.world.floor_below([cx, mp[1], cz], 6.0).unwrap_or(mp[1]);
                 sim.bond.pos = [cx, floor + 1.1, cz];
                 (false, mp)
