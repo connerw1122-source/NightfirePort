@@ -15,6 +15,17 @@ winit = "0.30.13"
 wgpu = "30.0.1"
 pollster = "1.0.1"
 glam = "0.34.1"
+gilrs = { version = "0.11.2", optional = true }
 
 [dev-dependencies]
 naga = { version = "30.0.1", features = ["wgsl-in"] }
+
+[features]
+# The gamepad backend (fix-input): `gilrs` (MIT OR Apache-2.0) reads the OS pad; the port then
+# runs the game's own mapping and curves on it (docs/systems/input.md). Off by default — master
+# builds and tests without it (and without gilrs in the dep tree). Needs libudev to build
+# (gilrs-core's Linux hotplug).
+gamepad = ["dep:gilrs"]
+# The decoder (oxideav-mpeg12video, MIT) stays opt-in until the user approves it: `--features movies`
+# enables nf-formats/movies, the --movie CLI and the movie tests.
+movies = ["nf-formats/movies"]
