@@ -34,3 +34,5 @@ One line per finished queue task: merged into master or not, and why. Written by
   - the switch inhibit gate's polarity, and the busy state as a one-shot latch;
   - the raw 0xDC triggers no longer shift their params (3 on 0c).
   The first suite run lost 4 test files to a system memory leak (RuntimeBroker held 215 GB of commit; the user ended it); the rerun was green, 522/522.
+- 2026-10-12 **046b-fix-spawner-p7**: merged (clean). p7 is the kill channel, with the cleanup's level split from the disasm (kill-all, vs keep-drawn on 0x11-0x13, 0x16 and 0x4A). `obj+0xFC` is identified as the renderer's drawn-recently counter (`View_AddObjects` sets 2, the object pass decrements it). Control's early-outs are ported in order. The bug was reproduced first, using the main agent's live measurement as the test. fix_finale_live's sister was re-targeted (its old target is now legitimately removed earlier). Suite 531/531.
+- walkreal-a (812a0fd): not merged (no report; an [S] door-open stand-in with no fail-first test; `agent-ctx/` scratch notes). Queued task 045g picks up its NDrone2_OpenDoor port and walker harness.

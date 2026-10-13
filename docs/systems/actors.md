@@ -139,15 +139,27 @@ rest; the full per-level roll is in `docs/levels/<code>.md` where written):
 The placement params → the data block [M 0x1378d0]: p0 = mode (> 1 required; 2 = keep `alive < p2`, 3 = only
 when none alive), p1 = group (the templates are the group's 0x0F placements), p2 = max alive, p3 = waves
 (0 → 32000), **p4 = the trigger channel** (consumed when it fires), **p5 = the stop channel** (un-triggers;
-pauses an armed spawner, deletes an un-armed one), p6 = the done channel (all waves spawned and — when the
-arm channel is set — no spawned drone alive), **p7 = the arm channel** (latches `armed`; an armed spawner
-needs no trigger), p8 = the min spot distance (0 → 10).
+pauses a kill-latched spawner for the tick, deletes an un-latched one), p6 = the done channel (all waves
+spawned and — when p6 or p7 is set — no spawned drone alive), **p7 = the KILL channel** (latches `+0x20`;
+the latched path runs the cleanup and never spawns again — see triggers.md "Spawners"), p8 = the min spot
+distance (0 → 10).
 
-The port (`crates/nf-game/src/spawners.rs`) models all nine; the fix-actors correction: **p7 is the arm
-channel** — the port read it as a kill channel and removed the spawner when it fired (07000011's stairwell
-spawner died instead of arriving; `the_spawner_arrives_on_its_channels` pins it). The per-level SFX quirk of
-`Control` (0x700000c/d plays a spawn line) is power-station-only and not ported. The alarm reinforcements are
-spawners gated on the alarm channels (e.g. 07000006's spawner waits ch 55 [D]).
+The port (`crates/nf-game/src/spawners.rs`) models all nine. **p7's history**: the original port read it as
+a kill channel with kill-all semantics everywhere; fix-actors refuted that as an "arm channel" (07000011's
+stairwell spawner died instead of arriving); the live measurement (07000005 in the GDB-server PCSX2,
+docs/fields/hitdata-spawner-ally.md "Live result", 2026-10-12) settled it as the **kill channel** and
+explained the playtest with the cleanup's level split: on 0x07000011..13, 0x07000016 and 0x0700004A the
+cleanup removes only drones whose `obj+0xFC` draw counter is 0 (not drawn in the last 2 frames — the
+renderer sets it to 2 per drawn frame [M 0x1e62d8:71], the per-frame pass decrements [M 0x1336f8:239-247]),
+so on-screen guards survive — the stairwell guards were drawn when the channel fired.
+`fix_actors_live::the_spawner_arrives_on_its_channels` (the arrival on the trigger) and
+`spawner_kill_live::tower2_stairwell_the_kill_channel_keeps_the_drawn_guard` (the keep) pin it.
+`Control`'s early-outs: `NPCGlobals` (script event 5) and `Drone_bDisableSystem` (the options-menu
+"drones off" setting, 0x30ca9e — not ported, no menu) return at the first lines [M 0x137e68:21-26], the
+spawner's own `obj+0xFE` bit 0 [M :31-33], and the block checks mode < 2 / group == 0 / the slot pointer
+[M :38-46]. The per-level SFX quirk of `Control` (0x700000c/d plays a spawn line) is power-station-only
+and not ported. The alarm reinforcements are spawners gated on the alarm channels (e.g. 07000006's spawner
+waits ch 55 [D]).
 
 ## 6. Scripted actors (the NIS hand-over)
 

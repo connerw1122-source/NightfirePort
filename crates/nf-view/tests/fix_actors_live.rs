@@ -7,8 +7,10 @@
 //!   (reason 2/4 → ch 99), team 2/3 dies → "Killed Civilians" (reason 1/3 → ch 0x60) [M 0x13e560].
 //! - The party guests of 07000007 (dtype 10, team 3, props 0x53/0x54 [D drone-props]) start in
 //!   CivilianScared 0x12 (`DroneTypeSettings[10].start` [L 0x29aee8]) and cower in CivilianHiding 0x13.
-//! - The spawners: `DroneSpawner_Create` 0x1378d0 puts param 7 at +0x14 — the ARM channel, latched in
-//!   `DroneSpawner_Control` 0x137e68 (`ch[p7] → armed = 1`), not a kill channel (fix-actors).
+//! - The spawners: `DroneSpawner_Create` 0x1378d0 puts param 7 at +0x14 — the KILL channel, latched
+//!   in `DroneSpawner_Control` 0x137e68 (`ch[p7] → +0x20 = 1` → the cleanup block) [L-verified
+//!   07000005, fix-spawner-p7]; fix-actors' ARM reading was refuted by the live measurement, and its
+//!   07000011 playtest is explained by the cleanup's keep-level split (07000011 keeps drawn drones).
 //! - The boss: 07000004's assassin (skin 0x0500001e, dtype 15 → ATTACK start [L DroneTypeSettings[15]],
 //!   death channel param 12 = 0x54 [D]) — killing him raises the "Defeat the assassin" channel [L
 //!   c07000004.rs].
@@ -84,10 +86,13 @@ fn killing_a_protected_guest_fails_the_mission_but_scaring_him_does_not() {
     assert!(failed, "killing a civilian fails the mission [M 0x1827d8]");
 }
 
-/// The spawner's arm channel: 07000011's group-1 spawner (p4 = trigger ch 0x15 ← touch #182, p5 = stop
-/// ch 0x16, p7 = **arm** ch 0x1D ← the stairwell TouchOnce #285 [D]) — pre-fix the port read p7 as a
-/// kill channel, so walking the stairwell flight (#285 fires 0x1D) REMOVED the spawner instead of
-/// arming it, and its reinforcements never arrived. Sister: without the stairwell channel no spawn.
+/// The stairwell reinforcements arrive: 07000011's group-1 spawner (p4 = trigger ch 0x15 ← touch
+/// #182, p5 = stop ch 0x16, p7 = kill ch 0x1D ← the stairwell Touch #285 [D]) — fix-spawner-p7
+/// settled p7 as the KILL channel [L-verified 07000005]; fix-actors' ARM reading is refuted. What
+/// this test pins is the playtest symptom itself: the guards come in on their trigger channel
+/// (in play the player crosses #182 before the stairwell, so the arrival precedes the kill). The
+/// kill channel's drawn-guard keep is pinned by
+/// `spawner_kill_live::tower2_stairwell_the_kill_channel_keeps_the_drawn_guard`.
 #[test]
 fn the_spawner_arrives_on_its_channels() {
     let iso = iso();
@@ -103,13 +108,19 @@ fn the_spawner_arrives_on_its_channels() {
     assert!(tpls.iter().all(|&i| !scene.sim.as_ref().unwrap().drones.list[i].present),
         "the spawner holds its templates before the channels [M 0x137aa0]");
 
-    // Walk the stairwell TouchOnce #285 (out 0x1D; 13.62…15.69, 31.29…35.75, −2.86…−0.78) [D]: the
-    // game ARMS the spawner (ch[p7] → armed = 1 [M 0x137e68]) and the wave comes in.
+    // Walk the trigger TouchOnce #182 (out 0x15; centre of 6.02…10.48, 47.09…49.16, −4.65…0.10) [D]:
+    // the spawner activates on its start channel [M 0x137e68:53-64] and the wave comes in.
     {
         let sim = scene.sim.as_mut().unwrap();
-        sim.bond.pos = [14.6, 33.4, -1.8];
+        sim.bond.pos = [8.25, 48.13, -2.28];
         for _ in 0..20 { sim.step_bond(Input::default(), false, false, false); }
-        assert!(sim.drones.channels.on(0x1d), "the stairwell touch #285 fires ch 0x1D [D]");
+        assert!(sim.drones.channels.on(0x15), "the trigger touch #182 fires ch 0x15 [D]");
+    }
+    // A spot the spawn's stealth checks pass (the templates far and behind Bond).
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = [-30.0, 48.0, 40.0];
+        sim.bond.yaw = 0.0;
     }
     let mut spawned = 0;
     for _ in 0..300u32 {
@@ -117,9 +128,9 @@ fn the_spawner_arrives_on_its_channels() {
         spawned = tpls.iter().filter(|&&i| scene.sim.as_ref().unwrap().drones.list[i].present).count();
         if spawned > 0 { break; }
     }
-    assert!(spawned > 0, "the armed spawner brings its templates in [M 0x137e68]");
-    assert!(scene.sim.as_ref().unwrap().drones.spawners.iter().any(|sp| sp.arm == 0x1d && !sp.gone),
-        "the spawner survives the arm channel (pre-fix it killed itself)");
+    assert!(spawned > 0, "the spawner brings its templates in on the trigger [M 0x137e68]");
+    assert!(scene.sim.as_ref().unwrap().drones.spawners.iter().any(|sp| sp.kill == 0x1d && !sp.gone),
+        "the spawner is alive with its kill channel unarmed [M 0x137e68]");
 }
 
 /// The boss: 07000004's assassin (dtype 15, ATTACK start, death channel 0x54) — wounding him does not

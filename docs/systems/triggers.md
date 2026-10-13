@@ -48,13 +48,26 @@ the collision system: the player's capsule against the triangles. Player capsule
 ## Spawners (`DroneSpawner_Control` 0x137E68) [M]
 
 Parameters: p0 mode (2: spawn while alive < max; 3: only when none alive), p1 group (drone parameter 4), p2 max alive
-(0 or more than the templates → all), p3 waves (0 → 32000), p4 start channel, p5 stop channel, p6 done channel, p7 kill
-channel, p8 minimum player distance (0 → 10). Init: the group's drones become templates and are removed; with p4 = 0 (or
-on) and p5 off the spawner is "immediate" (no distance / visibility checks). Per frame: kill channel → kill flag (latch);
-inactive until `ch[p4]` (then p4 = 0); `ch[p5]` → stop (deleted unless killing); kill → delete every live spawned drone
-and the spawner; past the last wave wait for none alive, set `ch[p6]`, delete. At most one spawn per frame:
-`Rand_Rand(templates)` picks the k-th unused template; unless immediate its spot must be ≥ p8 from the player and not
-visible to him (`Drone_PositionVisible`).
+(0 or more than the templates → all), p3 waves (0 → 32000), p4 start channel, p5 stop channel, p6 done channel, p7 **kill
+channel** (measured live, docs/fields/hitdata-spawner-ally.md "Live result" — fix-actors' "arm" reading was refuted),
+p8 minimum player distance (0 → 10). Init: the group's drones become templates and are removed; with p4 = 0 (or on) and
+p5 off the spawner is "immediate" (no distance / visibility checks). Early-outs, in order [M 0x137e68:21-46]:
+`NPCGlobals == 0` (script event 5) → return; `Drone_bDisableSystem != 0` (the options-menu "drones off" setting,
+0x30ca9e, written by `Drone_PauseNoDraw` 0x13a710 ← `Drone_InitComms` 0x139520:287 and `ResetMap_GameInit` 0x1d5080:14)
+→ return; the spawner's own `obj+0xFE` bit 0 → return; the block's mode < 2 / group == 0 / slot pointer == 0 → return.
+
+Per frame: `ch[p7]` → the kill latch +0x20 (only while Control runs — a script's `Drone_EnableAll(0)` holds it off
+until `Script_Free` [L]); inactive until `ch[p4]` (then p4 = 0) — skipped entirely once latched; `ch[p5]` → un-trigger
+and pause this tick when latched, delete when not [M :77-84]. **Latched (the cleanup, :235-288)** — level split
+[M 0x137fbc-0x1380b4, `s7` through the delay slot at 0x137fe8]: on levels < 0x07000011, 0x07000014/15, and
+> 0x07000016 except 0x0700004A every live spawned drone is removed (`obj+0xFE |= 1`, the slot zeroed — on 0x07000016
+each removal first raises the drone's death channel [M `jal 0x13e660` at 0x138074]) and the spawner deletes itself in
+the same pass; on 0x07000011..13, 0x07000016 and 0x0700004A only drones whose `obj+0xFC` byte is 0 are removed — the
+draw counter the renderer sets to 2 per drawn frame [M 0x1e62d8:71, 0x1e5fb8:174] and the per-frame pass decrements
+[M 0x1336f8:239-247] — and the spawner lingers while any drawn drone remains (the kept count `s6`, [M 0x138098]), then
+deletes itself. Past the last wave wait for none alive, set `ch[p6]`, delete (the wait applies when p6 OR p7 is set
+[M :126-143]). At most one spawn per frame: `Rand_Rand(templates)` picks the k-th unused template; unless immediate its
+spot must be ≥ p8 from the player and not visible to him (`Drone_PositionVisible`).
 
 ## Drones and channels [M]
 
