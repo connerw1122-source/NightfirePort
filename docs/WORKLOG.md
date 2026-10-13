@@ -9102,3 +9102,12 @@ Stage Summary:
 - G-028: the flee chain and ValidateCoverAnim are IN; the slide constant is decompile-true with its
   dead-code status documented; the 8-slot table and the +0x538 blend-out remain open with the blockers
   written down. Branch s/fix-cover-remainder; report docs/reports/fix-cover-remainder.md.
+
+Task ID: fix-nav-remainder2
+Agent: worker (nav-remainder2 session)
+Task: GAPS G-017-followup: re-enable the two parts fix-nav-remainder switched OFF at 61fa5ce — (1) the ally-wait state entry (0x21, from the 0x20 "Mayhew Route" nodes), which gates on switch_channels[0x99] and needs 0x99's writer found in the game (trigger/touch volume/script event, Trigger_Calc, level placements) or the state's own exit; (2) the NoBunching tick scan (the 0x5E "drone ahead" flags +0x31C), which regressed 07000001's death-drop tests — root-cause the regression (the scan moving the guard out of the test's line, or the scan firing where the game's wouldn't) before re-enabling.
+
+Work Log:
+- Session started 22:58 UTC (deadline ~00:57 UTC). Branch s/fix-nav-remainder2 created from origin/master (5017f15), pushed.
+- Evidence base: 61fa5ce's diff read — the ally-wait entry (`dr.ally_wait_node` → LEAD_MISSION_WAIT 0x21 when node flag 0x20 && !channels.on(0x99) && state != 0x21) and the NoBunching scan (nearest peer/player within 3.0 → +0x31C bits 0x8/0x10/0x2/0x4 by angle vs facing) are both currently stubbed to no-ops.
+- (next: reproduce both regressions on this branch, then decompile work)
