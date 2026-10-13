@@ -9229,3 +9229,8 @@ Stage Summary:
   the flicker machine is faithful; the placement census settled late-spot-creation as a
   non-mechanism. Live checks for the main agent: the 6 items in the report.
 
+## fix-spawner-remainder (s/fix-spawner-remainder) — 2026-10-13
+
+Task 286: GAPS G-025 (the spawner mode-3 wave-delay byte +0x1F and the power-station spawn SFX
+branch, DroneSpawner Control 0x137e68) and G-040 (07000001's second gate guard, placement 277,
+script 0x0600007f not in the kind-7 NIS archive). Work starting.
