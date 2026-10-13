@@ -34,3 +34,7 @@ Files: as fix-weapon-modes, plus `crates/nf-view/tests/portal_live.rs` (the 0700
 
 ---
 claimed-by: sandbox4 at 2026-10-13T17:46Z
+
+---
+## Report (done, 2026-10-13T19:04Z)
+
