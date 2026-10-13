@@ -7821,3 +7821,19 @@ looping menu BGs from M_PAGE+0xC4, skip = action 0x19 instant). nf-view/src/movi
 + headless `--movie <code> --frame N --shot out.png` dumps (feature-gated), verified on two movies. Left for
 the next session: live playback wiring (window + cpal + skip), the FILES.BIN menu-BG codes, the 0x72xxxxxx
 codes. The slim ISO stubs all movies (lba=0/size=0) — set NF_MOVIE_ISO to the retail image to run the tests.
+
+---
+Task: fix-portal4
+Agent: fix-portal4 worker
+Branch: s/fix-portal4 (from s/fix-portal3 377873e, origin/master ce88d6f merged)
+
+Work Log:
+- Sandbox kept (repo, work/, onfoot ISO, nf-queue present); token refreshed, origin fetched.
+- s/fix-portal4 = origin/s/fix-portal3 (377873e) + origin/master (ce88d6f); only docs/WORKLOG.md
+  conflicted (fix-portal3's entry vs master's four new entries) — both sides kept append-only.
+  Pushed as the first checkpoint.
+
+Stage Summary:
+- Starting fix-portal4: make the port's visible room set at the 07000006 courtyard spot match the
+  live ground truth (VisCelCount 2: eye cel 33 + room 0x0179fb30 at depth 1, its 40-node +0x18
+  chain) so wall cels 20/22/38/5/13/23 draw; full suite started in the background first thing.
