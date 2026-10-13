@@ -6651,13 +6651,37 @@ and the gate spawner removed both guards on the touch tick — the gate stood em
   **the 3 allowed `disc_golden` failures** (the slim ISO). The report is
   `docs/reports/fix-script-start-tick.md`.
 
-## fix-render-artifacts (2026-10-13) — IN PROGRESS
-Task: the render artifacts from the 2026-10-12 playtest screenshots: the pale-blue cross on
-07000012, the T-shaped sun, the white floor patch on 0700000c, the dark slabs in the 07000008
-missile-closet doorway, the duplicated guards on 07000007, the shadow decals brightening instead
-of darkening (0700000c crane, maybe the cross), the green-grey party guests (item 7 — hue is
-right, brightness/warm highlights are not), the view-model muzzle flash (low priority).
-Branch: s/fix-render-artifacts. Work started; this entry is updated as items land.
+## fix-render-artifacts (2026-10-13)
+The 2026-10-12 playtest render artifacts. Report: docs/reports/fix-render-artifacts.md.
+- **The fix**: the A-11e World sphere cull was unsound — fix-render2's "the placement-matrix glist
+  spheres are exact" premise is false on the disc: a 0700000c floor decal at glist centre
+  (28.54, 0.33, −182.49) carries glist r 0.6 while its drawn verts reach 0.644 [D 0700000c.bin].
+  An under-covering sphere culls draws with visible geometry at the frustum edge and the
+  fog-coloured clear (0700000c [0xd1,0xd5,0xd6] — pale blue-white) shows through: pale untextured
+  patches like the user's. The game consults the bbox next to the sphere (`View_AddObjects` 0x1e62d8
+  passes obj+0x8c AND obj+0x80 to `Vision_InView` 0x1e89e0); the drain now sets each World
+  material's radius to max(glist r, max |v−centre| over the group's drawn verts).
+- **The tests** (`fix_render_artifacts_live.rs`): `the_world_cull_sphere_covers_its_drawn_vertices`
+  walks every World material of 0700000c/07000012 and fails pre-fix (0.6 < 0.644, shown by the
+  probe on the unpatched tree); `the_subtractive_shadow_blend_maps_to_the_exact_gs_equation` pins
+  ALPHA_1 0x7F00000042 → blend 2 → ReverseSubtract (SrcAlpha, One) = Cd − Cs·As — the lead's
+  subtractive hypothesis is already correct on HEAD (the decals carry 0x44 anyway);
+  `the_artifact_decal_objects_parse_with_their_disc_state` pins pylonshadow/SHADOW_Map's disc state
+  (white-rgb/alpha-shape textures × black vertex rgb = dark in both equations);
+  `the_sun_glow_batches_carry_normal_blend_on_the_disc` names the sun's 0x44 sky batches — the
+  "T + red line" sun is G-019's open sky-pass blend (the disc's per-leaf 0x44 cannot be the game's
+  sky state; an opaque black square would show there too).
+- **Measured, ruled out** (probes kept in `probe_render_artifacts.rs`): no cull holes at the five
+  spots (the one candidate's bounding box touches the frustum corner but its geometry is out);
+  no white-fallback textures; no conflicting-blend overlay draws. The pale decals' static state
+  matches the game exactly — the remaining delta is runtime (bShadowCharacter obj+0xFE bit 3 in
+  `View_DrawObjList` 0x1e69a0, unmeasured) or the sky pass.
+- **Not reached**: item 4 (07000008 doorway — G-016's per-portal Door_IsClosed skip), item 5
+  (duplicates — 045j's mechanism; the runtime probe `probe_play_draws_near` is the tool), item 7
+  (guest brightness — the G-043 one-light-pair-per-group approximation), item 8 (view-model flash).
+  Live checks for the main agent are in the report.
+- Full suite (NF_ISO, post-merge of fix-safe08): nf-game 94+ green, nf-audio green, nf-view all
+  green (incl. the 4 new tests), nf-formats only the 3 allowed `disc_golden` failures.
 ## fix-gadgets2 (2026-10-13)
 
 The gadgets as the user played them (the checks `gadgets` and `camera0c2`). The held-fire polarity is
