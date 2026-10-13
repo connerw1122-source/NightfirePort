@@ -66,6 +66,9 @@ impl TickInput {
             switch_to: if self.switch_to < 0 { None } else { Some(self.switch_to as u8) },
             zoom: self.zoom,
             fire: self.trigger,
+            // The mode press is not part of the replay format (replays predate it); no recorded
+            // replay presses it (fix-weapon-modes).
+            mode_switch: false,
         };
         (input, self.trigger, self.reload, self.use_key)
     }

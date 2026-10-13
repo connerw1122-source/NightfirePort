@@ -231,6 +231,47 @@ impl CycleMode {
     }
 }
 
+/// The outcome of one press of the fire-mode button (`Player_Weapon` 0x1a24c8's ○ block).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ModeSwitch {
+    /// A twin-variant switch passed the has-ammo gate: the id to write to `anim+0x63`
+    /// (the normal switch request — the holster/draw or variant-swap machinery runs).
+    pub new_weapon: Option<u8>,
+    /// The mode byte's new value (`BL + w*0xC + 0x1BB`); `None` = leave it.
+    pub new_mode: Option<u8>,
+}
+
+/// `Player_Weapon` 0x1a24c8 (lines 204-260): the ○ press (`Input_Action(slot, 0xc, 4)`; for the
+/// watch variants 0x54/0x55 the fire press ORs in) with the view anim idle and not
+/// (aiming ∧ weapon flag 0x40):
+/// - weapon_data[w]+0x05 == 0 → cycle the mode byte, wrapping at the record's mode count
+///   (`+0x2E`, u8): `mode = mode + 1; if (mode == count) mode = 0`. Records with count 1 (every
+///   gun; the table's +0x2E is 1 except the grenades 0x60/0x61 [L ee_start_05.bin]) don't move.
+/// - weapon_data[w]+0x05 ≠ 0 (s8) → the twin-variant switch: `new = w + twin`; when
+///   `Player_WeaponHasAmmo` (0x1a16c0 — carried rounds of the record's ammo type, rounds in the
+///   clip, ammo type 0, or a matching ground pickup for flag-0x20000 weapons; it does NOT read the
+///   owned byte) passes, write it to `obj+0x63` and reset the zoom floats. This is the P2K's
+///   silencer (0x02 'Semi' ↔ 0x03 'Silenced'), the AT-600 Scorpion's heat-seeker (0x2E
+///   'Heatseeker' ↔ 0x2F 'Unguided' — only 0x2E's `+0x6C` carries the 0x20000 homing bit [L]),
+///   the SG5's 0x16 ↔ 0x17 and the watch's laser/taser pair.
+pub fn fire_mode_switch(weapon: u8, twin: i8, mode_count: u8, mode: u8, has_ammo: impl Fn(u8) -> bool) -> ModeSwitch {
+    if twin == 0 {
+        if mode_count != 1 {
+            let m = mode + 1;
+            ModeSwitch { new_weapon: None, new_mode: Some(if m == mode_count { 0 } else { m }) }
+        } else {
+            ModeSwitch { new_weapon: None, new_mode: None }
+        }
+    } else {
+        let new = (weapon as i32 + twin as i32) as u8;
+        if has_ammo(new) {
+            ModeSwitch { new_weapon: Some(new), new_mode: None }
+        } else {
+            ModeSwitch { new_weapon: None, new_mode: None }
+        }
+    }
+}
+
 /// The fields of a `weapon_data` record the trigger uses.
 #[derive(Clone, Copy, Debug)]
 pub struct GunParams {

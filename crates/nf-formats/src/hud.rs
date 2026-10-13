@@ -29,12 +29,19 @@ impl Font {
     /// `__Font_DrawText` at scale 1 for one line: per character the kern of the previous glyph's pair list, the pre-gap
     /// (not for the first), the quad at (pen, y + yoff − (glyph 0's h + yoff)), then pen += w + post-advance. A space
     /// advances by the font's space width × 1.25 (*suggested* from the research pass). Returns the glyphs and the width.
+    ///
+    /// Iterates chars, not bytes [M: the game's renderer walks NUL-terminated byte strings — one glyph per byte;
+    /// `Lang::parse` re-encodes the bank's CP-1252 bytes as UTF-8, so a byte walk split "©" (U+00A9 → C2 A9) into
+    /// glyphs 0xC2 + 0xA9 and the title's legal line read "Â©" — the main agent's 2026-10-13 render]. Chars restore
+    /// the one-glyph-per-source-byte mapping: each CP-1252 byte became exactly one char, so glyph code = char code.
     pub fn layout(&self, text: &str, x: f32, y: f32) -> (Vec<Placed>, f32) {
         let top = self.glyphs.first().map_or(0.0, |g| (g.h + g.yoff) as f32);
         let (mut pen, mut out, mut prev): (f32, Vec<Placed>, Option<usize>) = (x, Vec::new(), None);
-        for ch in text.bytes() {
-            if ch == b' ' { pen += self.space * 1.25; prev = None; continue; }
-            let Some(gi) = self.glyph(ch as u16) else { continue };
+        for ch in text.chars() {
+            let ci = ch as u32;
+            if ci > 0xffff { continue; }
+            if ch == ' ' { pen += self.space * 1.25; prev = None; continue; }
+            let Some(gi) = self.glyph(ci as u16) else { continue };
             let g = &self.glyphs[gi];
             if let Some(p) = prev {
                 pen += self.glyphs[p].kerns.iter().find(|k| k.0 == ch as u16).map_or(0.0, |k| k.1 as f32);
