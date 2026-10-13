@@ -6999,3 +6999,14 @@ instance/update/param tables + the RB/Car remainder with the read decompile evid
 checks). levels.md §7.1 got the additive update note. NOT ported (documented): 0xd8 RB (the
 decompile reading is in the atlas doc — RB_Update 0x1d6e38/EulerEvolve/Impulses/RestingContact
 chain), 0xda Car (driving-adjacent). Report + finish next.
+
+**fix-world-objects outcome (10:12 UTC)**: finished — the report is at docs/reports/
+fix-world-objects.md, pushed (f38e2b4); finish.sh ran `done 051-fix-world-objects` (its first run
+cd'd into the queue worktree so the relative report path missed — repaired by appending the
+report to done/051-fix-world-objects.md and pushing the queue); the ntfy notification went out
+via curl (first channel, id IxABLLDIAo11). Branch s/fix-world-objects tips at f38e2b4: the four
+light world-object families ported + 5 fail-first NF_ISO tests + the atlas doc (with the RB/Car
+decompile reading for the next session) + the census + the levels.md note. Suite 630 passed /
+3 failed (the 3 allowed disc_golden). Remaining for the next message on this branch: 0xd8 RB
+(the full integration), 0xda Car, the renderer consumption (obj+0xF0 bit 0x10, obj+0x106 alpha,
+the ThirdCam camera wiring).
