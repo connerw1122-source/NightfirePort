@@ -6939,3 +6939,11 @@ the law into `Material::chain`, keep 07's decals after their walls.
 
 Work log:
 - Setup: branch `s/fix-cel-order` from origin/master (b67754f), this entry started.
+- The law, measured + disassembled: `View_AddCels` 0x1e6ba0 (disasm) gives -90000+10k to the +0x20
+  chain `Vision_Portal_Recurse` 0x1e86e8 threads per frame from `VisCelList` (0x34b3b0) — sorted by
+  `QuickSort` 0x1d30a8 comparator[3] @0x1d3430 = ascending u16 portal-recursion depth at element+4
+  [M]; the cel+0x18 inner nodes get +/-dist^2 keys. [L ee_start_05.bin] 137 runtime cels = 19 rooms
+  (0xc047) + 113 inner 0x8019 cels hanging on 8 rooms' +0x18 chains; the port's 05 creates_cel set
+  is exactly 19 rooms + 113 non-rooms. Disc probe: 0c's pylonshadow decal = flags16 0x8019 (cel#69),
+  every 0c/07 decal non-room. Fix: rooms keep chain ordinals (per-frame depth chain, baked
+  room-rank fallback); non-room creates_cel draws become distance-keyed (chain=u32::MAX).
