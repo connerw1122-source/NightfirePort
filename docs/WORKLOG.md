@@ -7277,3 +7277,13 @@ walkreal_probe_fb2/3/4/5 committed; door.rs got one additive diagnostic line in 
 matrix row3 + keys presence). Suite at the session cap: 79 passed / 3 failed (the 3 allowed
 disc_golden) before the timeout cut it — the four-crate pass still owes a full run. Shared files
 touched: door.rs (the diagnostic), no others. Report: docs/reports/fix-final-blockers.md.
+
+Task ID: 045o-fix-final-blockers2
+Agent: NightfirePort worker (fix-final-blockers2 session)
+Task: fix-final-blockers2 — the 4a lift-landing enable and the rest of the 16 walk (branch s/fix-final-blockers2)
+
+Work Log:
+- Setup reused (repo + game files + queue worktree intact); branch s/fix-final-blockers2 created from origin/master (71d1496, fix-final-blockers merged). This entry started.
+
+Stage Summary:
+- (in progress)
