@@ -7905,3 +7905,20 @@ Stage Summary:
   the objective's own string id; the fail message is centred. Shared-file changes: drone.rs (the
   Mission_Update move), scene.rs (the drain/freeze order, the head-only tick, the SFX-at-open),
   hud.rs (the centred objective-banner rows) — all additive, listed in the report.
+
+## fix-anim-blend (2026-10-13, branch s/fix-anim-blend, from origin/master 13abef4)
+
+Task: animation frame blending and speed modes (characters walk smoothly). The user on 0c:
+"The walking animation is kind of fucked too." The port snaps sequences to integer frames;
+the game blends (GAPS G-020: AnimFrameSet f/f+1 slerp; G-030: speed modes 1-3 with distance
+tables and synced scripts; the far-object blend path; the +0x538 blend timing).
+
+Plan:
+- Port AnimFrameSet's fractional-frame interpolation (slerp of rotation keys, lerp of
+  translations) and the transition blend between sequences (blend weight + rate).
+- Port speed modes 1-3 (distance-driven playback so feet don't slide).
+- Failing NF_ISO tests first: posed bone at frame 10.5 == game's interpolation of 10 and 11;
+  walking guard's stance foot bone world drift < 0.05 over a stride.
+
+Work Log:
+- (started) branch created from origin/master 13abef4; reading anim docs + decompile next.
