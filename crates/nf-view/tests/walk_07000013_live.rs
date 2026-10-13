@@ -66,6 +66,8 @@ fn the_warm_chain_arrives_with_all_previous_channels_on() {
     for _ in 0..120 { sim.step_bond(Input::default(), false, false, false); if sim.drones.channels.on(0x4d) { landed = true; break; } }
     eprintln!("[4a] bond after spawn {:?}, ch4d {landed}", sim.bond.pos);
     assert!(landed, "the lobby-floor touch #277 fires 0x4D once Bond lands [D]");
+    // fix-objective-banner: the monitor completes the objective the tick after the channel rises.
+    for _ in 0..2 { sim.step_bond(Input::default(), false, false, false); }
     assert_eq!(mission_state(sim, 0x0700_0012, 1), 4, "'Escape through the elevator shaft' completes (late AND)");
     let save = nf_game::player::RamSave::capture(&sim.drones.health, sim.gun.switch_request,
         &sim.drones.inventory, &sim.drones.channels).with_mission(&sim.drones.mission);
@@ -118,7 +120,7 @@ fn the_front_entrance_completes_the_mission() {
     let mut success_at = None;
     for t in 0..400u32 {
         sim.step_bond(Input::default(), false, false, false);
-        if sim.drones.channels.on(0x50) { assert_eq!(mission_state(sim, 0x0700_0013, 0), 4, "the objective completes"); }
+        if sim.drones.channels.on(0x50) { sim.step_bond(Input::default(), false, false, false); assert_eq!(mission_state(sim, 0x0700_0013, 0), 4, "the objective completes"); } // fix-objective-banner: the monitor is one tick after the channel
         if sim.drones.channels.on(0x64) && success_at.is_none() { success_at = Some(t); }
         if sim.drones.mission.state == 6 { break; }
     }

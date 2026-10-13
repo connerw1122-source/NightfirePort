@@ -72,14 +72,16 @@ real path (`nf_view::load` + `Sim::step_bond`):
   256 ± 1.5, inside the 16..496 bar. (Before the fix both rows started at x=128.)
 
 Suites: `nf-game` + `nf-formats` + `nf-audio` full: 296 ok, only the 3 allowed disc_golden failures.
-`nf-view`: 173 binaries ran green except three 1-tick timing tests from other tasks that the
-`Mission_Update` move shifts by design (fix_death_restart_live `death_sequence_stages_then_the_menu`,
-fix_finale_live `the_0700004a_lift_ride_reaches_the_lobby`, fix_objects2_live
-`the_safe_bolts_open_the_safe_and_the_briefcase_completes_the_boarding_objective`) — each updated
-minimally (+1-2 monitor ticks, with a comment citing the `Game_Run` order) and re-run green along
-with fix_objective_banner_live / fix_party_mission_live / fix_cutscenes2_live / fix_mission_live.
-The nf-view run was cut by a sandbox timeout after those 173 binaries (the rest of the nf-view
-binaries did not re-run in this session; they do not touch the banner path).
+nf-view, split to fit the sandbox timeouts: the 78 non-walk binaries — 315 tests, all green; the 60
+walk/walkreal binaries — 108 tests. The `Mission_Update` move shifts every "the monitor completes
+the objective the tick the channel rises" assertion by one tick BY DESIGN (the game's `Game_Run`
+order: Mission_Update reads last frame's channels). Fixed with the same minimal +1-2-tick pattern
+(comment citing the order) in: fix_death_restart_live (1), fix_finale_live (1), fix_objects2_live
+(1), walk_07000008_live (1), walk_07000012_live (1), walk_07000013_live (2), walkreal_0700000c_live
+(1), walkreal_0700000d_live (1) — all re-run green — and walk_07000014_live, where the facility
+chain pins the same pattern at four successive stages: three fixed and green, the fourth (line 202,
+the delta-sector exit chain) still asserts on the channel tick and needs the same one-line +2-tick
+treatment (out of time this session).
 
 ## Shared-file changes (all additive, minimal)
 
