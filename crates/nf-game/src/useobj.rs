@@ -315,6 +315,7 @@ mod tests {
             placement: 0, scripts: [1, 0], modes: [64, 0], stay: false, mask, out, gate,
             scale: 1.0, matrix: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
             cur: 0, state: 1, activated: false, countdown: 0, info: [None, None], deleted: false,
+            live_matrix: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
         };
         let mut scripts = crate::nis::Scripts::default();
         scripts.players = vec![sp(0x39, 0, 4), sp(0x40, 0x50, 4)];

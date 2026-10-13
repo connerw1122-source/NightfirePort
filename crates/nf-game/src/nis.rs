@@ -667,6 +667,11 @@ pub struct Player {
     pub countdown: u8,
     pub info: [Option<Script>; 2],
     pub deleted: bool,
+    /// The SP object's LIVE matrix — `Script_Interp` 0x1d9a08:106-133 keys the SP object's `obj+0x90`
+    /// from stream 0 every frame (parent chain, then the script base), so the object's world position
+    /// follows its script (the elevator cab, the keyboard): `SP_Activate` 0x1dc338's use test reads
+    /// THAT sphere, not the placement transform. Starts at the placement matrix.
+    pub live_matrix: Mat4,
 }
 
 impl Player {
@@ -680,10 +685,31 @@ impl Player {
             placement: index, scripts: [g(0), g(1)], modes, stay: g(4) as u8 != 0, mask, out: g(6) as u16, gate: g(9) as u16,
             scale: if g(10) == 0 { 1.0 } else { g(10) as f32 * 0.01 }, matrix, cur: 0, state, activated: false, countdown: 0,
             info: [None, None], deleted: false,
+            live_matrix: matrix,
         })
     }
 
     fn other(&self) -> Option<u32> { Some(self.scripts[self.cur ^ 1]).filter(|&h| h != 0) }
+
+    /// The single-player start checks `SP_Update` (0x1dbda8) runs in state 0 when a trigger lands
+    /// [M 0x1dbda8:80-106, disasm 0x1dbf50-0x1dbf70: `lw $v1, glb_blokes; lwc1 $f0, 0x894($v1)` — the
+    /// decompiler's `*(float*)(glb_blokes+0x894)` is player 0's BLData+0x894 = Bond's health]:
+    /// `bVar5 = health > 0`; any set mission status must be 1 (`Mission_Status` 0x1830d0 — 2/3/6 are
+    /// the fail/dead/complete states, Mission_Update 0x182c60); and for exactly one script — the
+    /// 07000005 ledge cut-scene 0x06000994 (SP #298, the plate #301 → ch 0x43) — a live combat-music
+    /// event (`Get_Music_Event(2) != 0` = `EventList[2]`, posted by `DroneFunc_CheckAlarmRaised`
+    /// 0x1453a8 and `NDrone2_SeenAndAttacking` 0x145150) refuses the scene. Refused: state 5 — the
+    /// player deletes itself next tick (obj+0xFE |= 1), so the level's other ch-0x43 users run on:
+    /// the real play's swap with no cut-scene and no `Drone_EnableAll(0)` freeze (trace
+    /// tests/traces/05-gate-swap 174328→174329, the courtyard sniper cycling SNIPER_AIM/FIRE since
+    /// 173533). The state-1/3/6 retriggers skip these checks [M 0x1dbda8 cases 1/3/6], as does the
+    /// create-time load beat [M 0x1db9a8]. `MPSettings+0x180 == 0` (single player) is the port's
+    /// only case.
+    pub fn start_allowed(&self, gate: SpStart) -> bool {
+        gate.health_ok
+            && (gate.mission == 0 || gate.mission == 1)
+            && !(self.scripts[self.cur] == 0x0600_0994 && gate.music2 != 0)
+    }
 
     /// `SP_CreateScriptPlayer@0x1db9a8:81-86`'s load beat: mode A ∉ {0, 1} loads the script immediately and
     /// `SP_LoadScript@0x1dbc08:41-55`'s mode dispatch leaves it **primed in state 1 after having run once**
@@ -727,9 +753,30 @@ impl Player {
     /// `SP_Update` (0x1dbda8). Trigger flags: only the channel bit (1) and activation (4); bullets and touching
     /// objects (2, 8, 0x10, `SP_Hit`) are not modelled yet. `skip` is the game's `Input_Action(-1, 0x19, 1)` —
     /// any player pressed the skip action this tick (`Scripts::skip_request`, set by the viewer's key handler).
-    pub fn update(&mut self, lib: &HashMap<u32, Arc<Nis>>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>, skip: bool) {
+    pub fn update(&mut self, lib: &HashMap<u32, Arc<Nis>>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>, skip: bool, gate: SpStart) {
         if self.deleted || (self.gate != 0 && !ch.on(self.gate as u32)) { return; }
-        if let Some(s) = self.info[self.cur].as_mut() { s.update(objs, ch, w, frame, out); }
+        if let Some(s) = self.info[self.cur].as_mut() {
+            s.update(objs, ch, w, frame, out);
+            // `Script_Interp` 0x1d9a08:106-133 keys the SP object's `obj+0x90` from stream 0 every
+            // frame: the keys' matrix (an anim stream: its discrete object 0), each parent stream's
+            // matrix, then the script base. The SP's use sphere follows it (`SP_Activate` 0x1dc338
+            // reads the live object).
+            let s0 = &s.streams[0];
+            let m0 = match s0.kind {
+                2 => s.stream_matrix(0, objs, w),
+                _ => s.keys(0).map(|(m, _, _)| m),
+            };
+            if let Some(mut m) = m0 {
+                let mut par = s.streams[0].parent as i32;
+                let mut n = 0;
+                while par >= 0 && (par as usize) < s.streams.len() && n < s.streams.len() {
+                    if let Some(pm) = s.stream_matrix(par as usize, objs, w) { m = mul(&m, &pm); }
+                    par = s.streams[par as usize].parent as i32;
+                    n += 1;
+                }
+                self.live_matrix = mul(&m, &s.matrix);
+            }
+        }
         let mut flags = 0u16;
         if self.countdown == 0 && self.out != 0 && ch.on(self.out as u32) { flags |= 1; }
         let mut value = self.out != 0 && ch.on(self.out as u32);
@@ -739,9 +786,13 @@ impl Player {
         let trig = flags & self.mask != 0;
         match self.state {
             0 if trig => {
-                self.load(lib, objs, ch, w, frame, out);
-                if let Some(s) = self.info[self.cur].as_mut() { s.start(false); }
-                self.state = 2;
+                if self.start_allowed(gate) {
+                    self.load(lib, objs, ch, w, frame, out);
+                    if let Some(s) = self.info[self.cur].as_mut() { s.start(false); }
+                    self.state = 2;
+                } else {
+                    self.state = 5; // [M 0x1dbda8:106 → LAB_001dc0fc; the delete lands next tick]
+                }
             }
             1 if trig => {
                 self.state = 2;
@@ -814,6 +865,20 @@ impl Player {
     }
 }
 
+/// The `SP_Update` state-0 start-check inputs [M 0x1dbda8:80-106]: Bond's health gate
+/// (BLData+0x894 > 0 [D trace_record.py pokes health there]), the global `MissionState`
+/// (0x30cb9c; only 0/1 let a script start), and the tick's view of `EventList[2]` — the
+/// combat-music event (`Get_Music_Event` 0x1de350). The game's `UpdateMusicalEvents`
+/// (0x114e70, from `SFXUpdate` 0x1156c0 in `Game_Run`'s pre/post passes 0x1c9790) clears the
+/// EventList once per frame, so a post made later in the object walk survives into the next
+/// walk — the port passes the LAST walk's event here (`Drones::prev_event2`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SpStart {
+    pub health_ok: bool,
+    pub mission: u32,
+    pub music2: u32,
+}
+
 /// The level's script players, their scripts and the objects they made.
 #[derive(Clone, Debug, Default)]
 pub struct Scripts {
@@ -851,6 +916,7 @@ impl Scripts {
         self.players.push(Player {
             placement, scripts: [script, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0,
             scale, matrix, cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
+            live_matrix: matrix,
         });
     }
 
@@ -890,9 +956,9 @@ impl Scripts {
     /// every player together BEFORE the walk — a script triggered by a placement trigger saw the
     /// channel one tick late and the spawners acted a tick before the freeze: the 07000005 playtest
     /// had the gate guards vanish on the touch tick instead of after the wall-hug scene.)
-    pub fn update_player(&mut self, i: usize, ch: &mut Channels, w: &dyn World, frame: u32, skip: bool) {
+    pub fn update_player(&mut self, i: usize, ch: &mut Channels, w: &dyn World, frame: u32, skip: bool, gate: SpStart) {
         if i >= self.players.len() { return; }
-        self.players[i].update(&self.lib, &mut self.objects, ch, w, frame, &mut self.requests, skip);
+        self.players[i].update(&self.lib, &mut self.objects, ch, w, frame, &mut self.requests, skip, gate);
     }
 }
 
@@ -1026,7 +1092,8 @@ mod tests {
             keys: Vec::new(),
         });
         let nis = mk(0x0600_0421);
-        let mut p = Player { placement: 0, scripts: [0x0600_0421, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 0, activated: false, countdown: 0, info: [None, None], deleted: false };
+        let mut p = Player { placement: 0, scripts: [0x0600_0421, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 0, activated: false, countdown: 0, info: [None, None], deleted: false,
+            live_matrix: IDENT };
         let mut lib = HashMap::new();
         lib.insert(0x0600_0421u32, nis);
         let mut objs = Objects::default();
@@ -1038,7 +1105,7 @@ mod tests {
         p.state = 2;
         if let Some(s) = p.info[0].as_mut() { s.start(false); }
         // Tick to clock 10 with the skip held (the game: the key pressed every tick).
-        for frame in 0..10 { p.update(&lib, &mut objs, &mut ch, &world, frame, &mut out, true); }
+        for frame in 0..10 { p.update(&lib, &mut objs, &mut ch, &world, frame, &mut out, true, crate::nis::SpStart::default()); }
         {
             let s = p.info[0].as_ref().unwrap();
             assert!(s.fade_flags & 1 != 0, "the skip armed (the game's skip latch +0xAB5 bit 0)");
@@ -1047,7 +1114,7 @@ mod tests {
         }
         // Keep mashing: the fade runs up to 45 ticks, then the catch-up loop runs the remaining frames —
         // done well inside 130 ticks.
-        for frame in 10..140 { p.update(&lib, &mut objs, &mut ch, &world, frame, &mut out, true); }
+        for frame in 10..140 { p.update(&lib, &mut objs, &mut ch, &world, frame, &mut out, true, crate::nis::SpStart::default()); }
         {
             let s = p.info[0].as_ref().unwrap();
             assert_eq!(s.play & 2, 2, "the skipped script reached its done bit within ~50 ticks of mashing");
@@ -1060,12 +1127,13 @@ mod tests {
         // Sister: the same script as a death NIS (hash 0x6000952) NEVER skips — `SP_Update` refuses `Script_FFwd`
         // [M 0x1dbda8:134-136] and `Script_Update`'s near-end break keeps it from fast-forwarding.
         lib.insert(0x0600_0952u32, mk(0x0600_0952));
-        let mut p2 = Player { placement: 0, scripts: [0x0600_0952, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 0, activated: false, countdown: 0, info: [None, None], deleted: false };
+        let mut p2 = Player { placement: 0, scripts: [0x0600_0952, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 0, activated: false, countdown: 0, info: [None, None], deleted: false,
+            live_matrix: IDENT };
         let mut objs2 = Objects::default();
         p2.load(&lib, &mut objs2, &mut ch, &world, 0, &mut out);
         p2.state = 2;
         if let Some(s) = p2.info[0].as_mut() { s.start(false); }
-        for frame in 0..70 { p2.update(&lib, &mut objs2, &mut ch, &world, frame, &mut out, true); }
+        for frame in 0..70 { p2.update(&lib, &mut objs2, &mut ch, &world, frame, &mut out, true, crate::nis::SpStart::default()); }
         let s2 = p2.info[0].as_ref().unwrap();
         assert_eq!(s2.fade_flags & 1, 0, "a death NIS never arms the skip");
         assert!(s2.play & 2 == 0 || s2.clock < 100.0, "the death NIS was not fast-forwarded (clock {} play {:#x})", s2.clock, s2.play);

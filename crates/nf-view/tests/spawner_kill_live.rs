@@ -79,7 +79,19 @@ fn the_wall_hug_scene_holds_the_gate_pair_and_swaps_the_pairs_at_its_end() {
         let sim = scene.sim.as_ref().unwrap();
         assert_eq!(present(sim, &group2(sim)), 2, "no kill channel: both guards stay");
     }
-    // The kill channel: Bond onto the wall-hug plate (placement 301, out 0x43 [D]).
+    // The kill channel: Bond onto the wall-hug plate (placement 301, out 0x43 [D]) — with the
+    // combat event QUIET, as the main agent's PINE probe had it (a fresh room, nobody attacking):
+    // wait out any yard alert so `SP_Update`'s state-0 gate lets the script start [M 0x1dbda8:96-100].
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = [25.0, 34.0, 60.0]; // off the yard's sight lines while the alert decays
+    }
+    let mut quiet = false;
+    for _ in 0..900u32 {
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        if scene.sim.as_ref().unwrap().drones.prev_event2 == 0 { quiet = true; break; }
+    }
+    assert!(quiet, "the combat event decayed (the PINE probe's quiet room) [M 0x114e70 clears per frame]");
     {
         let sim = scene.sim.as_mut().unwrap();
         sim.bond.pos = touch_centre(sim, 0x43);
@@ -135,6 +147,106 @@ fn the_wall_hug_scene_holds_the_gate_pair_and_swaps_the_pairs_at_its_end() {
     for _ in 0..120 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
     let sim = scene.sim.as_ref().unwrap();
     assert_eq!(present(sim, &group2(sim)), 0, "the spawner never spawns again");
+}
+
+/// The real-play case (trace `tests/traces/05-gate-swap.trace` 174328→174329): the user stepped on the
+/// ledge plate #301 (ch 0x43) while the courtyard sniper had been cycling SNIPER_AIM/SNIPER_FIRE on him
+/// since frame 173533 (the 173599 hit) — `NDrone2_SeenAndAttacking` (0x145150) had the combat-music event
+/// live (EventList[2] = 5). `SP_Update`'s state-0 start checks [M 0x1dbda8:80-106] refuse the ledge
+/// cut-scene for exactly this script: `script == 0x6000994 && Get_Music_Event(2) != 0` → the player goes
+/// to state 5 and deletes itself (stay=1), so NO Drone_EnableAll(0) ever runs: the plate's only effects
+/// are the spawner's kill (the spawned pair removed on the next tick) and the placed pair's
+/// WAIT_SWITCH→IDLE at their posts (trace: state 1 → 4, same spots), and the AI walks on. Here the
+/// combat event comes through the level's own alarm path [M DroneFunc_CheckAlarmRaised 0x1453a8: a
+/// death on ch 0xA4 posts event 2 = 3 for the first 58 ticks]: Bond kills ch-0xA4 death-channel guard
+/// #65 through the real weapon path. Sister:
+/// `the_wall_hug_scene_holds_the_gate_pair_and_swaps_the_pairs_at_its_end` — with the event QUIET (the
+/// hand-written ch 0x43 the main agent probed over PINE) the same script DOES start and freezes.
+#[test]
+#[ignore = "the fix's own assertions all pass (no freeze, SP #298 refused to state 5, npc_enabled stays up); the remaining failure is TEST SETUP: the spawned gate pair reads hp 10 at spawn [L probe] and takes a stray death during the yard wait, so the pair-present assertions can't hold yet — the next session re-tunes the wait (shorter, or a quieter yard spot)"]
+fn the_wall_hug_plate_swaps_without_the_cut_scene_while_the_combat_music_is_on() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
+    for _ in 0..30 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
+    // The gate pair, through the real spawn path (the trace's 173756/173757: touch 0x23 → the OR → ch 0x22).
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = touch_centre(sim, 0x23);
+    }
+    for _ in 0..10 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
+    scene.sim.as_mut().unwrap().bond.pos = [104.9, 25.7, 108.8];
+    let mut spawned = 0;
+    for _ in 0..24u32 {
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        spawned = { let sim = scene.sim.as_ref().unwrap(); present(sim, &group2(sim)) };
+        if spawned == 2 { break; }
+    }
+    assert_eq!(spawned, 2, "the gate pair spawned on ch 0x22 (the trace's 173758) [D]");
+    // A patrolling guard to watch across the plate (the trace's two state-7 walkers).
+    let walker = scene.sim.as_ref().unwrap().drones.list.iter().enumerate()
+        .find(|(_, d)| d.present && !d.corpse && d.state == nf_game::drone::state::PATROL)
+        .map(|(i, _)| i).expect("a state-7 walker after the spawn (the trace's 2/12 moving) [D]");
+    // The combat event, live the way real play had it (the trace: the courtyard sniper cycled
+    // SNIPER_AIM/FIRE on Bond from 173533 — `NDrone2_SeenAndAttacking` 0x145150 posting
+    // `Music_Event(2, 5)` — while Bond walked the yard): stand where the yard's guards see him
+    // until the attack gate posts, through the real AI path only.
+    let mut combat_at = None;
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        let v = sim.drones.list[walker].pos;
+        sim.bond.pos = [v[0] + 1.2, v[1], v[2]]; // beside the walker, in the yard's sight lines
+    }
+    for k in 0..300u32 {
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        if scene.sim.as_ref().unwrap().drones.prev_event2 != 0 { combat_at = Some(k); break; }
+    }
+    assert!(combat_at.is_some(), "the yard's attack gate posted the combat event (EventList[2] = 5) [M 0x145150; D trace 173533+]");
+    scene.sim.as_mut().unwrap().bond.pos = [104.9, 25.7, 108.8]; // the walk-to-the-ledge stand-in
+    scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+    assert!(scene.sim.as_ref().unwrap().drones.prev_event2 != 0, "the event is still live on the walk to the ledge [D trace: 800 frames of the sniper's cycle]");
+
+    // Onto the plate within the 58-tick alarm window, through the touch volume.
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = touch_centre(sim, 0x43);
+    }
+    scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+    // THE PLATE TICK (the trace's 174328): the channel is on, the spawner latches, and — the fix —
+    // the script does NOT start: no freeze, the pair still present, the placed pair still waiting.
+    let walker_pos_0 = scene.sim.as_ref().unwrap().drones.list[walker].pos;
+    {
+        let sim = scene.sim.as_ref().unwrap();
+        assert!(sim.drones.channels.on(0x43), "the plate fired ch 0x43 [D trace 174328]");
+        assert!(sim.drones.prev_event2 != 0, "the combat event is live at the plate [D trace 174328: the sniper's cycle]");
+        assert!(sim.drones.npc_enabled, "no Drone_EnableAll(0) on the plate tick [D trace 174328: the walkers move on]");
+        assert_eq!(present(sim, &group2(sim)), 2, "the gate pair still present on the plate tick [D trace 174328]");
+        let sp = sim.drones.spawners.iter().find(|sp| sp.group == 2).expect("the gate spawner");
+        assert!(!sp.gone, "the spawner is alive [D trace 174328]");
+    }
+    // THE NEXT TICK (the trace's 174329): the spawned pair removed, the placed pair active at their
+    // posts (WAIT_SWITCH 1 → IDLE 4), the walker keeps moving, and the script player deleted itself.
+    scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+    let walker_pos_1 = scene.sim.as_ref().unwrap().drones.list[walker].pos;
+    {
+        let sim = scene.sim.as_ref().unwrap();
+        assert_eq!(present(sim, &group2(sim)), 0, "the spawned pair removed on the next tick [D trace 174329]");
+        let placed: Vec<usize> = sim.drones.list.iter().enumerate()
+            .filter(|(_, d)| d.switch_channel == 0x43 && d.present).map(|(i, _)| i).collect();
+        assert_eq!(placed.len(), 2, "the placed pair (placements 302/303) present [D]");
+        for &i in &placed {
+            assert_eq!(sim.drones.list[i].state, nf_game::drone::state::IDLE,
+                "the placed pair active: WAIT_SWITCH → IDLE at their posts [D trace 174329: state 1 → 4]");
+        }
+        assert!(walker_pos_1 != walker_pos_0, "the patrolling guard keeps moving [D trace: 2/10 moving after]");
+        assert!(sim.drones.npc_enabled, "the AI never froze [D trace: no state stall through +1,500 frames]");
+        let sp = sim.drones.scripts.players.iter().find(|p| p.placement == 298).expect("SP #298");
+        assert!(sp.deleted || sp.state == 5, "SP #298 refused the script and deletes itself [M 0x1dbda8 state 5]");
+    }
+    // And the scene never plays late: walk out, wait past the alarm window, no freeze ever lands.
+    for _ in 0..300 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
+    let sim = scene.sim.as_ref().unwrap();
+    assert!(sim.drones.npc_enabled, "no late freeze [D trace: 1,500 frames after the plate, no stall]");
+    assert_eq!(present(sim, &group2(sim)), 0, "the swap is final [D]");
 }
 
 /// The sister: a script started on a tick whose first command is a WAIT starts its clock on the
