@@ -192,3 +192,15 @@ the actor capsule stays flat for one documented reason (a floor-mapping gap that
 4. `Controls_StraddleTest`/ForcedList: dump obj+0xF0 for the static objects around the safe
    (Object_Safe, the SS door's object) — bit 0x20000000 would put them in the ForcedList (tested in
    EVERY query), bit 0x30000000 would skip them entirely; either would change the take's answer.
+
+
+---
+## Addendum (fix-safe08b, draw-side evaluation, 09:38 UTC)
+
+The headless portal-walk evaluation landed (fix_safe08_live::the_portal_walk_keeps_every_room_and_
+drops_the_exterior_from_the_bedroom): every room on 07000008/07000006 keeps itself; 07000006's
+incident does NOT reproduce with real eye positions (37 portal-linked rooms, smallest keep 2) —
+130 should re-bisect NF_PORTAL at the incident spot; the exterior room's cel on 07000008 is a
+whole-exterior box the bedroom's walk keeps, so the blue block's draw fix needs the per-placement
+cel assignment of the static parse (0x1d1998) — 130's general portal draw. Full suite re-verified
+green before the final push (b23f2f8).
