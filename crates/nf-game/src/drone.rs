@@ -766,6 +766,14 @@ pub struct Drone {
     /// Serviced by `Drones::tick` where the ScriptPlayers live: `SP_UnPause` 0x1dca58 on the bound
     /// player (`+0xBA8`), i.e. `activated = true` and the current script's pause cleared.
     pub kick_attempt: bool,
+    /// `Drone+0x31C`: `DroneMove_NoBunching`'s (0x150ad0) obstacle flags, rebuilt every tick by
+    /// `Drones::tick` from `NDrone2_Steer`'s (0x14eba8) nearest-obstacle scan (`Drone+0x314`,
+    /// the nearest drone or the player within 3.0 — `EvaluateObstacle` 0x14e6f0's sqDist < 9 gate):
+    /// bit 2 = the obstacle is within 45° of the movement direction (ahead), 4 = to the side,
+    /// 8/0x10 = which side (the decomp drops the ATAN2 store, so the side sign is [*suggested*];
+    /// bit 2 is sign-independent). Read at the top of `DroneAnim_SetCombatMoveAnim` (0x13cfb0:35:
+    /// bit 2 → state 0x5E instead of a move anim) and in the strafe selection (:78/:247/:281).
+    pub no_bunching: u32,
     pub alpha: f32,
     /// A switch channel to raise after the drone's update (`SetDeathChannel`).
     pub raise: Option<u8>,
@@ -900,7 +908,7 @@ impl Drone {
             hit_door: None, door_return: 0, door_node: None, door_attempt: false, pending_door_msg: false, hit_door_open: true,
             // fix-nav-remainder: the kick-node outbox + the ScriptPlayer binding (fields on
             // their own lines — the shared-constructor collisions, merge lesson 4).
-            kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false,
+            kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false, no_bunching: 0,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
         };
         dr.init_properties(d, &param);
@@ -4031,6 +4039,9 @@ impl Drone {
     /// random, each case falling through to the next when it fails; left/right order random.
     fn choose_combat_move(&mut self, d: &Data, rng: &mut Rng) -> u8 {
         use state::*;
+        // 0x13cfb0:35-39 — `DroneAnim_SetCombatMoveAnim`'s FIRST check precedes every combat
+        // move-anim choice, the option list included: a drone directly ahead → state 0x5E.
+        if self.no_bunching & 2 != 0 { return state::COMBAT_DRONE_AHEAD; }
         if self.stays(d) { return 0; }
         // The gate's "opponent is aiming at me" is `DroneWeap_OpponentIsAimingAtMe` [M 0x17a500:12-29]:
         // armed Bond AND the +0x2A threat latch `Check_Target` stamps [M 0x1a7810:149-150] — the port's
@@ -4226,6 +4237,9 @@ impl Drone {
     /// `DroneMove_NoBunching` (`+0x31C`) are not ported.
     fn set_combat_move_anim(&mut self, d: &Data, rng: &mut Rng, route_dist: f32) {
         use anim_state::*;
+        // 0x13cfb0:35-39, FIRST: a drone directly ahead (`DroneMove_NoBunching`'s +0x31C bit 2)
+        // parks the mover in `DSTATE_CombatDroneAhead` (0x5E) instead of a move anim.
+        if self.no_bunching & 2 != 0 { self.set_state(state::COMBAT_DRONE_AHEAD); return; }
         let Some(route) = self.croute.as_ref() else { self.call_anim(d, RUN, 0, 0); return };
         let t = route.target;
         let next = route.next_node_turn(d.nav, self.feet());
@@ -5998,6 +6012,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 .fold(f32::MAX, f32::min)
         }).collect();
         let peers: Vec<(usize, V3, bool)> = self.llist.iter().map(|&i| (i, self.list[i].pos, self.list[i].seen)).filter(|&(i, _, _)| self.list[i].enabled).collect();
+        // NoBunching's candidate snapshot (present, enabled, non-corpse — the game's chain rides
+        // +0x4F8 bits the port does not model), indexed by drone index.
+        let bunching_ok: Vec<bool> = self.list.iter().map(|x| x.present && x.enabled && !x.corpse).collect();
         // `Trigger_Calc`, then every object in the control list (newest first = reverse placement order): triggers and
         // drones interleaved, so a channel a trigger pulses is seen only by the objects updated after it.
         // The player toucher keeps the historical stand-in (`Toucher::player(pos − 0.4)`, reach
@@ -6312,6 +6329,33 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             let _pc = crate::prof::scope("drone: clones + misc");
             dr.others = positions.clone();
             dr.peers = peers.clone();
+            // `DroneMove_NoBunching` (0x150ad0) over `NDrone2_Steer`'s (0x14eba8) obstacle scan:
+            // the nearest drone or the player within 3.0 (`EvaluateObstacle` 0x14e6f0: sqDist < 9,
+            // the scan seeds `Drone+0x310` at 3.0 and keeps the minimum). The game's candidate
+            // chain (`+0x4F8 & 0x600 == 0 && & 0x100 != 0 && +0xac > 0.0 && class != 0x11 && not
+            // deleted`) rides bits the port does not model — the port takes present, enabled,
+            // non-corpse peers and the live player [*suggested*]. The angle is the movement
+            // direction (yaw + the anim's quad offset, the port's `yaw_offset` = +0x570's bits);
+            // the decomp drops the ATAN2 store, so the 8/0x10 side sign is [*suggested*] — bit 2
+            // (ahead, |diff| < π/4) is sign-independent.
+            dr.no_bunching = 0;
+            {
+                let mut best: Option<(f32, V3)> = None;
+                for (i, pos, _) in peers.iter() {
+                    if *i == index || !bunching_ok[*i] { continue; }
+                    let q = (pos[0] - dr.pos[0]).powi(2) + (pos[1] - dr.pos[1]).powi(2) + (pos[2] - dr.pos[2]).powi(2);
+                    if q < 9.0 && best.map_or(true, |(bq, _)| q < bq) { best = Some((q, *pos)); }
+                }
+                let pq = (player.pos[0] - dr.pos[0]).powi(2) + (player.pos[1] - dr.pos[1]).powi(2) + (player.pos[2] - dr.pos[2]).powi(2);
+                if pq < 9.0 && best.map_or(true, |(bq, _)| pq < bq) { best = Some((pq, player.pos)); }
+                if let Some((_, op)) = best {
+                    let angle = atan2_approx(op[0] - dr.pos[0], op[2] - dr.pos[2]);
+                    let facing = dr.yaw + dr.yaw_offset;
+                    let diff = angle_difference(angle, facing);
+                    dr.no_bunching |= if diff < 0.0 { 0x10 } else { 8 };
+                    if diff.abs() < std::f32::consts::FRAC_PI_4 { dr.no_bunching |= 2 } else { dr.no_bunching |= 4 }
+                }
+            }
             // `NDrone2_NearArmedDrone`'s scan (fix-actors): the nearest started, alive, hostile peer.
             // (The snapshot list was taken before the mutable borrow; the armed/started filter rides it.)
             dr.armed_peer_dist = armed_peer_dist[index];
@@ -6878,7 +6922,7 @@ mod tests {
             hit_door: None, door_return: 0, door_node: None, door_attempt: false, pending_door_msg: false, hit_door_open: true,
             // fix-nav-remainder: the kick-node outbox + the ScriptPlayer binding (fields on
             // their own lines — the shared-constructor collisions, merge lesson 4).
-            kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false,
+            kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false, no_bunching: 0,
             head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
         };
         dr

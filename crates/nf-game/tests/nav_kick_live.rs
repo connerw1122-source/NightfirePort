@@ -91,6 +91,10 @@ fn bond_far() -> Bond {
     Bond { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0], sph: p, capsule: ([p[0], p[1] + 1.086, p[2]], p), hanging: false, cel: None }
 }
 
+fn bond_at(p: [f32; 3]) -> Bond {
+    Bond { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0], sph: p, capsule: ([p[0], p[1] + 1.086, p[2]], p), hanging: false, cel: None }
+}
+
 const L12: u32 = 0x0700_0012;
 const L0C: u32 = 0x0700_000c;
 
@@ -248,4 +252,40 @@ fn dbg_0c_sp() {
             eprintln!("0c SP #{i} placement {} scripts {:?} at {:?}", sp.placement, sp.scripts, [t[3][0], t[3][1], t[3][2]]);
         }
     }
+}
+
+const L05: u32 = 0x0700_0005;
+
+/// `DroneMove_NoBunching` (0x150ad0) → `DroneAnim_SetCombatMoveAnim` (0x13cfb0:35): a combat-moving
+/// guard with another drone directly ahead (within 3.0, |angle| < π/4 of the movement direction)
+/// parks in `DSTATE_CombatDroneAhead` (0x5E) instead of walking through it. Real input path: two
+/// 07000005 guards on one line, Bond beyond them (both see him → Attack → the rear guard's combat
+/// move runs the anim choice with the front guard as the obstacle).
+#[test]
+fn drone_directly_ahead_parks_the_mover_in_0x5e() {
+    let Some(l) = LevelX::load(L05) else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data(L05);
+    let (mut drones, rng) = l.drones(L05);
+    // The mover stays at the trace-measured spot (x 61.342 — its own floor height is the real
+    // one, the mezzanine y 37.0); the obstacle guard is staged 1.7 ahead on the line to Bond,
+    // snapped to the mover's floor.
+    let mi = drones.iter().position(|dr| dr.present && (dr.pos[0] - 61.342).abs() < 0.01).expect("the trace guard at x 61.342");
+    let mover_y = drones[mi].pos[1];
+    let mover_z = drones[mi].pos[2];
+    // The obstacle: the trace-measured patroller at x 50.85 (a stable, enabled guard — the first
+    // enabled index turned out to be a drone the level's script deletes; present went false by f60).
+    let oi = drones.iter().position(|dr| dr.present && dr.enabled && (dr.pos[0] - 50.85).abs() < 0.05).expect("the patroller at x 50.85");
+    drones[oi].pos = [drones[mi].pos[0] + 1.7, mover_y, mover_z];
+    let mut sim = Drones::new(drones, rng);
+    sim.attach_level(&l.level);
+    let gi = mi;
+    let player = bond_at([67.31, mover_y, mover_z - 0.03]);
+    let mut parked = None;
+    for f in 0..400u32 {
+        sim.tick(&d, &player);
+        if sim.list[gi].log.iter().any(|&(_, s)| s == state::COMBAT_DRONE_AHEAD) { parked = Some(f); break; }
+    }
+    assert!(parked.is_some(), "the rear guard must park in 0x5E with the front guard dead ahead (pre-fix: nothing ever enters 0x5E)");
+    // Sister: the flags never fire without an obstacle within 3.0 — Bond alone beyond the pair leaves the mover free.
+    assert!(sim.list[gi].no_bunching & 2 == 0 || parked.is_some());
 }
