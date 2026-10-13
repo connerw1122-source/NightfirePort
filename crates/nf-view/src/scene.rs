@@ -2334,6 +2334,28 @@ fn script_pickup_reservations(level: &Level, weapons: &nf_formats::weapon::Weapo
     (out, slots)
 }
 
+/// fix-facial2: `SkinIt` 0x10bf30's morph term — `pos += Σ_m weight[m] × target(base + (morph + m) × 12)`,
+/// the 12 bytes read as three f32 (the decompile's `auVar14._0_12_ = *(undefined1 (*) [12])lVar1` over the
+/// base `parsemap_block_morph_data` 0x1d23e8 stores at the gfx record's +0x14). Out-of-range channels (a
+/// target array shorter than the mesh's index space) contribute nothing, as the game's count-bounded loop.
+fn morph_vertex(mut pos: [f32; 3], morph: i16, weights: &[f32], targets: &[u8]) -> [f32; 3] {
+    let f32_at = |i: usize| -> Option<[f32; 3]> {
+        let o = i * 12;
+        if o + 12 > targets.len() { return None; }
+        Some([
+            f32::from_le_bytes(targets[o..o + 4].try_into().unwrap()),
+            f32::from_le_bytes(targets[o + 4..o + 8].try_into().unwrap()),
+            f32::from_le_bytes(targets[o + 8..o + 12].try_into().unwrap()),
+        ])
+    };
+    for (m, w) in weights.iter().enumerate() {
+        if let Some(d) = f32_at(morph as usize + m) {
+            for k in 0..3 { pos[k] += w * d[k]; }
+        }
+    }
+    pos
+}
+
 fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>, searchlight: Option<u16>, door: Option<u16>, pickup: Option<u16>, mult: [f32; 3], cels: &[Cel], chain: u32, node: u32) {
     let obj = &level.maps[inst.map].objects[inst.object];
     let mut m = inst.matrix;
@@ -2759,7 +2781,10 @@ impl Scene {
                     None => npc_pool.push(NpcSlot { key: inst.placement.translation.map(f32::to_bits), skin: skin_hash, params: inst.placement.params.clone(), chars: vec![ci] }),
                 }
             }
-            characters.push(Character { matrix: inst.matrix, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: obj.gfx.slot_bones.clone(), start, role, floor: None, script: None, morph_targets: obj.morph_targets.clone() });
+            let morph_of_main = skin.main.iter().flatten()
+                .filter_map(|mh| level.by_hash.get(mh).and_then(|&(m2, o2)| level.maps[m2].objects[o2].morph_targets.clone()))
+                .next();
+            characters.push(Character { matrix: inst.matrix, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: obj.gfx.slot_bones.clone(), start, role, floor: None, script: None, morph_targets: obj.morph_targets.clone().or(morph_of_main) });
             // The held weapon (`AnimObjectDraw`): weapon_data[w] +0x80 mesh on the datum whose id is +0x50 (0xFF → 0),
             // once per drone (a skin may have several main meshes).
             let key = (inst.placement.translation.map(f32::to_bits), skin_hash);
@@ -3651,9 +3676,32 @@ impl Scene {
         FrameState { posed, attach, hidden }
     }
 
+    /// fix-facial2: the morph weights of a morph-bearing script character right now — the face-track
+    /// window (the started opcode-0 window whose sequence carries the skin's facial channel count,
+    /// the same window `script_pose_together` poses bones from) sampled at the object's frame via
+    /// `AnimFacialBlend`'s source arithmetic [M `facial_weights`, `AnimFacialBlend` 0x1be648].
+    pub fn facial_weights_now(&self, c: &Character) -> Option<Vec<f32>> {
+        let src = c.script?;
+        let s = self.sim.as_ref()?;
+        let count = c.skin.facial as usize;
+        if count == 0 { return None; }
+        let (script_h, frame) = s.script_anim(src, c.skin.hashcode)?;
+        let script = s.scripts.get(&script_h)?;
+        let win = script.sequences().filter(|(a, _, _)| (*a as f32) <= frame)
+            .filter_map(|(a, _, q)| s.seqs.get(&q).filter(|sq| sq.channels.len() == count).map(|sq| (a, q)))
+            .last()?;
+        let seq = s.seqs.get(&win.1)?;
+        nf_game::anim::facial_weights(seq, (frame - win.0 as f32 + 1.0).max(1.0), count)
+    }
+
     pub fn animate(&self, choice: Option<usize>, ticks: f32, opts: ViewOpts) -> Vec<[f32; 3]> {
         let FrameState { posed, attach, hidden } = self.frame_state(choice, ticks, opts);
         let hidden = |_: &Character, ci: usize| hidden[ci];
+        // fix-facial2: the morph weights per morph-bearing script character (the ledge dialogue's
+        // face track), computed once per frame — `SkinIt` 0x10bf30 consumes them per vertex.
+        let facial: Vec<Option<Vec<f32>>> = self.characters.iter().map(|c| {
+            if c.morph_targets.is_some() { self.facial_weights_now(c) } else { None }
+        }).collect();
         self.char_verts.iter().map(|v| {
             // Searchlight parts: the simulation's matrices (`Searchlight_Update`), coronas as camera billboards
             // with their scale (the alpha byte is not wired to the shader — G-033); hidden parts collapse below
@@ -3695,9 +3743,17 @@ impl Scene {
             if let Some(a) = v.attachment { return transform(&attach[a as usize], v.pos); }
             let c = &self.characters[v.character as usize];
             if hidden(c, v.character as usize) { return [c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]]; }
+            // fix-facial2: the morph term (object space, before the bone skinning — the game's
+            // `SkinIt` 0x10bf30 adds Σ weight[m] × target(base + (morph + m) × 12) to the source
+            // position while it streams through the scratchpad; the vertex's morph index is the
+            // skinning word's upper half-word, −1 = none).
+            let pos = match (facial.get(v.character as usize).and_then(|w| w.as_deref()), &c.morph_targets, v.morph) {
+                (Some(w), Some(t), mo) if mo >= 0 => morph_vertex(v.pos, mo, w, t),
+                _ => v.pos,
+            };
             match &posed[v.character as usize] {
-                Some((mats, _, m)) => transform(m, anim::skin_vertex(v.pos, v.weight, v.slots, &c.slot_bones, mats)),
-                None => transform(&c.matrix, v.pos),
+                Some((mats, _, m)) => transform(m, anim::skin_vertex(pos, v.weight, v.slots, &c.slot_bones, mats)),
+                None => transform(&c.matrix, pos),
             }
         }).collect()
     }
