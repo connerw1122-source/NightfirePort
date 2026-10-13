@@ -15,6 +15,9 @@ use std::collections::HashMap;
 pub mod state {
     pub const GLOBAL: u8 = 0x00;
     pub const WAIT_SWITCH: u8 = 0x01;
+    /// `NDrone2_DSTATE_PlayScript` 0x15ba68 = `NDrone2_StateFuncs[3]` [L table read]: a drone with a
+    /// start script (`Drone+0x554`, param 1) plays it here before its start state.
+    pub const PLAY_SCRIPT: u8 = 0x03;
     pub const IDLE: u8 = 0x04;
     pub const ALERT: u8 = 0x05;
     pub const INIT_PATROL: u8 = 0x06;
@@ -704,6 +707,10 @@ pub struct Drone {
     pub disabled_logged: bool,
     /// `PlrStat_LogEnemyDispatched` ran (a death without the KO flag — `OnInitDeath` 0x145bd0:57-59).
     pub dispatched_logged: bool,
+    /// `Drone+0x554`: the drone's start script (placement param 1; `NDrone2_DefaultInit` 0x14b300:
+    /// `+0x554 = piVar19[0xE]` = params[1], 0 when the word is 0x6000000 or one of the 0x6000892/0x600089c
+    /// specials). Non-zero → `NDrone2_DSTATE_Global`'s enter starts the drone in PlayScript (3).
+    pub start_script: u32,
 }
 
 /// Normalise a vector (the grenade throw direction helper).
@@ -744,6 +751,9 @@ impl Drone {
             _ => (0u16, 0i16),
         };
         if d.level == 0x0700_0014 && (0x34..0x37).contains(&grenade_weapon) { grenade_weapon = 0x34; }
+        // `Drone+0x554` (NDrone2_DefaultInit 0x14b300: `+0x554 = piVar19[0xE]` = params[1]): the start
+        // script. 0x6000000 and the 0x6000892/0x600089c dtypenew specials leave it 0.
+        let start_script = match param(1) { 0x6000000 | 0x6000892 | 0x600089c => 0, s => s };
         let mut dr = Drone {
             skin, anim_set, weapon, pos, yaw, desired_yaw: yaw, aim_yaw: 0.0, alert, alert_floor: alert, props: normal, alert_props,
             sight_range: e8, half_fov: crate::trig::HALF_PI, engage_range: f0, combat_range: fc,
@@ -756,7 +766,7 @@ impl Drone {
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
             grenade_weapon, grenade_count, pending_grenade: false,
-            shots: Vec::new(), log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
+            shots: Vec::new(), log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, start_script, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
             switch_channel: param(3) as u8, channel_on: false, placement: 0, spawn_seq: 0, spawn_frame: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
@@ -2628,7 +2638,37 @@ impl Drone {
             (GLOBAL, msg::ENTER) => {
                 self.return_state = self.start_state(d);
                 if self.switch_channel != 0 && !self.channel_on { self.set_state(WAIT_SWITCH); return true; }
+                // `NDrone2_DSTATE_Global` 0x15b830: a drone with a start script (`Drone+0x554`) enters
+                // PlayScript (3) instead of its start state — the script plays first [L 07000001's first
+                // guard is in state 3 on the trace's line 0].
+                if self.start_script != 0 { self.set_state(PLAY_SCRIPT); return true; }
                 self.set_state(self.start_state(d));
+                true
+            }
+            // `NDrone2_DSTATE_PlayScript` 0x15ba68. ENTER (msg 1): `+0x4F8 |= 0x10000 | 0x2000`, resume
+            // `+0xCD8` per script — 0x60005e6/0x60008ae and the default → 0x56 ATTACK (SetScript 0x24,
+            // follow-on 0x11a, msg-arg 0x1e, 5, replay 0); 0x6000168 → (10, 0x32, 8, 0, 5, 0) resume 0;
+            // 0x6000169 → (5, 0x32, 0x1e, 0, 5, 0) + AttackTalk + `+0x4F8 |= 0x400000`, resume 0;
+            // 0x60007ac → (10, 0x32, 0xf, 0, 5, 0) + props 0x3b/0x3a cleared, resume 0. UPDATE (msg 3):
+            // the opponent look runs while the script plays (`+0xCDC = 1`), and a fully-alerted drone
+            // attacks (`NDrone2_SeenAndAttacking`); resume 0 falls back to the start state.
+            (PLAY_SCRIPT, msg::ENTER) => {
+                let (st, follow, resume) = match self.start_script {
+                    0x6000_168 => (10, 0x32, 0),
+                    0x6000_169 => (5, 0x32, 0),
+                    0x6000_7ac => (10, 0x32, 0),
+                    _ => (0x24, 0x11a, ATTACK),
+                };
+                let next = if resume == 0 { self.start_state(d) } else { resume };
+                self.play_script(d, self.start_script, st, follow, next, 0);
+                true
+            }
+            (PLAY_SCRIPT, msg::UPDATE) => {
+                // The game's msg-3 also attacks a fully-alerted drone (`NDrone2_SeenAndAttacking`), but
+                // the trace's guard stays in 3 for ~350 lines — the port's creation alert for it is
+                // unresolved (the port's start_state mapped it to ATTACK; see the report), so only the
+                // look runs here for now.
+                if let Some(n) = self.look_for_opponent(d) { self.set_state(n) }
                 true
             }
             (WAIT_SWITCH, msg::ENTER) => { self.enabled = false; self.vision_on = false; self.watching = false; true }
@@ -5992,7 +6032,7 @@ mod tests {
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip: 0, clip_max: 0,
             grenade_weapon: 0x35, grenade_count: 0, pending_grenade: false, shots: Vec::new(),
-            log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: 0, lost_sight: false,
+            log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, start_script: 0, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: 0, lost_sight: false,
             damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
