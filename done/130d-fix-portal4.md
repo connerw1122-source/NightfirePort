@@ -44,3 +44,7 @@ Files: `crates/nf-view/src/{scene,gpu,lib}.rs`, `crates/nf-view/tests/fix_portal
 
 ---
 claimed-by: sandbox5 at 2026-10-13T16:36Z
+
+---
+## Report (done, 2026-10-13T18:18Z)
+
