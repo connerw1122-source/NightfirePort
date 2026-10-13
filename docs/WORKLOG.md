@@ -6457,3 +6457,35 @@ Bond's gadgets: the selection re-enabled and three gadget systems ported with te
   (Input::fire plumbing); `drone.rs` (grapple_points — additive, on its own lines).
 - Left: the decryptor's scan UI, the camera/briefcase/Q-Worm fire-side functions (the mission
   layer's), the rope/beam render items (Sim::laser_beam holds the endpoints), the swing momentum.
+
+## fix-gadgets2 (2026-10-13)
+
+The gadgets as the user played them (the checks `gadgets` and `camera0c2`). The held-fire polarity is
+the theme: the game's gadget fires are HELD-fire systems and the port had them press/release-inverted.
+
+- The burn (laser family + decryptor) runs only while the fire is HELD — the watch (0x54/0x55) also
+  only while AIMED [M 0x1a5460:442, 512-514; the shots spawn per refire tick via 0x1a4bf0 → +0x95b →
+  0x1a4298 → Draw_LaserBeam/TaserBeam]. Release stops it the same tick. The per-shot watch sound
+  0xec [M 0x1a4bf0:261-263].
+- The fire script no longer restarts every held tick: the game skips SetFiringAnim while the view
+  state is 9 and +0x68 & 0x100400 [M 0x1a5460:664-672] — the Q-Laser's release-frame shot now spawns
+  while held (the user's "when I let go, they actually release" is fixed).
+- The grapple: the hang HOLDS while the fire is held and the RELEASE detaches [M 0x192860:56-66]; the
+  reel reads no fire input and the SP pull cap is 1.5 [M 0x192860:79-121] — the port had both wrong,
+  so a human click latched+detached invisibly ("doesn't work at all"). The pick models the claw's
+  bolt: radius 1.0 [M 0x12c5a0:92], range weapon_data+0x1c = 5.0/10.0 [M 0x12e7b0:158; D
+  weapon_data_live.bin]. The user's screenshot spot is 15.4 units out — the real game cannot attach
+  from there either (test-pinned).
+- The loop sounds: the fire scripts' op-4 sub-op 3 = Sound_StopAllWithId [M 0x1c1b38:388] is now run
+  (the port only played the op-1 starts — every gadget loop leaked).
+- The red/yellow marker boxes (creep walls 0x3F, grapple points 0x3A) are out of misc_static_sweep:
+  neither creator attaches gfx [M 0x198298 (zero hashtable gfx calls), 0x196fc8], the census test
+  carries the must-not-draw teeth.
+- The 0c Q-Worm is the GAME's own loadout [M 0x1a7ef8 case 0x700000c equips 0x58 at 0]; --dev grants
+  nothing. No change.
+- NOT done: the micro-camera overlay (HUD_UpdateCameraPane 0x1a12d8 is the function; the port has no
+  camera pane). Leftovers: the 0x95f ThirdIcon gate for the 0x50/0x51 fire, the lock data[0] id split
+  (the burn locks take only 0x4E/0x4F; 0x56/0x57 feed the keypad decode), the rope draw, the claw-cam.
+- Tests: gadget_grapple_user_spot (2), gadget_grapple_live + gadget_laser_live updated to the held
+  forms, the gadget unit tests (polarity/bolt/range), models_misc_live census minus 0x3a/0x3f.
+  Report: docs/reports/fix-gadgets2.md.
