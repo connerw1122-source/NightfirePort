@@ -511,7 +511,14 @@ pub struct CelGraph {
 }
 
 #[derive(Clone, Copy)]
-pub struct CelNode { pub min: [f32; 3], pub max: [f32; 3] }
+pub struct CelNode {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+    /// The runtime cel's glist flags word (`celglist+0x44` copied to `cel+0x94` by the static parser
+    /// [M MapObject.flags doc / fix-lighting2]); bit 0x40000 marks the room cels `build_FindCel`
+    /// 0x1c8cb0 collects (`*puVar1 & 0x40000`). fix-portal.
+    pub flags: u32,
+}
 
 /// One block-0x21 portal as two half-edges: `corners` in file order, the FORWARD plane built
 /// `Plane_PlaneEq(plane, ref = corner 0, corner 1, corner 2)` [M 0x1d15f8] — its normal points into
@@ -590,7 +597,7 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
             match obj {
                 Some((om, oi)) => {
                     let o = &level.maps[om].objects[oi];
-                    cells.push(CelNode { min: o.min, max: o.max });
+                    cells.push(CelNode { min: o.min, max: o.max, flags: o.flags });
                     if is_main && matches!(flags16, 0xc023 | 0xc047) {
                         let mut a0 = [param(0), param(1), param(2)];
                         if a0 == [0, 0, 0] { a0 = [0x3c; 3]; }
@@ -603,7 +610,7 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
                         room_to_cell.push(Some(idx));
                     }
                 }
-                None => { cells.push(CelNode { min: [0.0; 3], max: [0.0; 3] }); }
+                None => { cells.push(CelNode { min: [0.0; 3], max: [0.0; 3], flags: 0 }); }
             }
             // The record address is `pCelList + index*0x50` [M 0x1d1998] — by-index placements only.
             if !p.by_hash() { cell_of_record.insert(p.index as usize, idx); }
@@ -670,6 +677,121 @@ fn clip_positive(poly: &[[f32; 3]], plane: [f32; 4]) -> Option<Vec<[f32; 3]>> {
     Some(comp)
 }
 
+/// The viewer's persistent cel state — `viewer+4` [M `Camera_CheckLocation` 0x1bae90]. The game
+/// carries the eye's cel across frames; the port used to re-pick from scratch every frame, which is
+/// the 07000006 collapse's enabling bug (the smallest-volume tie-break can flip between overlapping
+/// room boxes mid-walk where the game keeps the cel it walked through).
+#[derive(Clone, Copy, Default)]
+pub struct ViewerCel {
+    /// The current cell (`cells` index); `None` = the game's 0 (no cel yet).
+    pub cell: Option<usize>,
+    /// The position the cel was resolved at (`viewer+0x34`; `Cel_ObjectLeftCel`'s ray origin).
+    pub pos: [f32; 3],
+}
+
+/// `Cel_ObjectLeftCel` (0x1e0d58) [M]: raycast the move `from -> to` against `cell`'s portal list —
+/// the per-portal bbox pre-cull (+0x20/+0x24, the ±0.1 inset box `build_alloc_portal` 0x1c8928
+/// fills) then two ray-triangle tests on the quad corners (+0xc/+0x10/+0x14 and +0x14/+0x18/+0xc —
+/// corners (0,1,2) and (2,3,0)); a hit returns `portal+0x8` = the destination cel of the node the
+/// walker's cel owns. The node attached to celB stores the forward corners (dest celA), the celA
+/// node the reversed ones (dest celB) [M 0x1d15f8 / 0x1c8928] — either way the destination is the
+/// OTHER endpoint, so the quad to test is the same record's.
+fn portal_move_dest(graph: &CelGraph, cell: usize, from: [f32; 3], to: [f32; 3]) -> Option<usize> {
+    let dir = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    let hit = |tri: [[f32; 3]; 3]| -> bool {
+        // Möller–Trumbore over the move segment [0, 1].
+        let e1 = [tri[1][0] - tri[0][0], tri[1][1] - tri[0][1], tri[1][2] - tri[0][2]];
+        let e2 = [tri[2][0] - tri[0][0], tri[2][1] - tri[0][1], tri[2][2] - tri[0][2]];
+        let pv = [dir[1] * e2[2] - dir[2] * e2[1], dir[2] * e2[0] - dir[0] * e2[2], dir[0] * e2[1] - dir[1] * e2[0]];
+        let det = e1[0] * pv[0] + e1[1] * pv[1] + e1[2] * pv[2];
+        if det.abs() < 1e-12 { return false; }
+        let inv = 1.0 / det;
+        let tv = [from[0] - tri[0][0], from[1] - tri[0][1], from[2] - tri[0][2]];
+        let u = (tv[0] * pv[0] + tv[1] * pv[1] + tv[2] * pv[2]) * inv;
+        if !(-1e-9..=1.0 + 1e-9).contains(&u) { return false; }
+        let qv = [tv[1] * e1[2] - tv[2] * e1[1], tv[2] * e1[0] - tv[0] * e1[2], tv[0] * e1[1] - tv[1] * e1[0]];
+        let v = (dir[0] * qv[0] + dir[1] * qv[1] + dir[2] * qv[2]) * inv;
+        if !(-1e-9..=1.0 + 1e-9).contains(&v) || u + v > 1.0 + 2e-9 { return false; }
+        let t = (e2[0] * qv[0] + e2[1] * qv[1] + e2[2] * qv[2]) * inv;
+        (0.0..=1.0).contains(&t)
+    };
+    for p in &graph.portals {
+        let dest: usize = if p.cel_a == cell { p.cel_b } else if p.cel_b == cell { p.cel_a } else { continue };
+        let c = &p.corners;
+        if hit([c[0], c[1], c[2]]) || hit([c[2], c[3], c[0]]) { return Some(dest); }
+    }
+    None
+}
+
+/// `build_point_in_bounding_box` (0x1c9500) [M]: the inclusive bbox test over one cel.
+fn point_in_cell(graph: &CelGraph, cell: usize, p: [f32; 3]) -> bool {
+    graph.cells.get(cell).is_some_and(|c| (0..3).all(|k| c.min[k] <= p[k] && p[k] <= c.max[k]))
+}
+
+/// `build_FindCel` (0x1c8cb0) over the graph: collect the containing room cels (the 0x40000 flag
+/// [M `*puVar1 & 0x40000`], cap 0x40), then — when several contain the point — the game's
+/// vertical-RAYCAST tie-break: per candidate a ray up to 256 units and its mirrored down ray, the
+/// nearest collision hit wins, and with no hit at all the FIRST candidate stands (0x1c8cb0's tail:
+/// `iVar6 = CelList_153; ... return iVar6`). The port has no per-cel collision geometry in the
+/// graph, so the rays test the candidate's own bbox faces (the ceiling/floor the game's ray
+/// effectively finds for a room); documented as the port's approximation in the report.
+fn find_cell_raycast(graph: &CelGraph, eye: [f32; 3]) -> Option<usize> {
+    let mut cands: Vec<usize> = Vec::new();
+    for (i, c) in graph.cells.iter().enumerate() {
+        if c.flags & 0x40000 == 0 { continue; }
+        if (0..3).all(|k| c.min[k] <= eye[k] && eye[k] <= c.max[k]) {
+            cands.push(i);
+            if cands.len() >= 0x40 { break; }
+        }
+    }
+    match cands.len() {
+        0 => None,
+        1 => Some(cands[0]),
+        _ => {
+            let mut best: Option<(usize, f32)> = None;
+            for &i in &cands {
+                let c = &graph.cells[i];
+                let up = c.max[1] - eye[1];
+                let down = eye[1] - c.min[1];
+                let d = up.min(down);
+                if d < 256.0 && best.map_or(true, |(_, bd)| d < bd) { best = Some((i, d)); }
+            }
+            Some(best.map_or(cands[0], |(i, _)| i))
+        }
+    }
+}
+
+/// The eye's cel for this frame — `Camera_CheckLocation` (0x1bae90) [M], over the persistent state:
+/// 1. `Cel_ObjectLeftCel` (0x1e0d58): the move raycast against the current cel's portals relinks
+///    directly to the crossed portal's destination;
+/// 2. `build_point_in_bounding_box` (0x1c9500): still inside the current cel's box keeps it;
+/// 3. `build_FindCel` (0x1c8cb0): a fresh search;
+/// 4. a FindCel miss KEEPS the previous cel, and a first-ever miss takes the world's first cel
+///    (`puVar1[1] = *glb_world`) [M 0x1bae90:34-38].
+pub fn eye_cell(graph: &CelGraph, state: &mut ViewerCel, eye: [f32; 3]) -> Option<usize> {
+    if let Some(c) = state.cell {
+        if let Some(dest) = portal_move_dest(graph, c, state.pos, eye) {
+            state.pos = eye;
+            state.cell = Some(dest);
+            return Some(dest);
+        }
+        if point_in_cell(graph, c, eye) {
+            state.pos = eye;
+            return Some(c);
+        }
+    }
+    let found = find_cell_raycast(graph, eye);
+    state.pos = eye;
+    match found {
+        Some(c) => { state.cell = Some(c); Some(c) }
+        None => {
+            let keep = state.cell.or(Some(0)).filter(|&c| c < graph.cells.len());
+            state.cell = keep;
+            keep
+        }
+    }
+}
+
 /// The game's portal visibility walk (`Vision_Portal_Recurse` 0x1e86e8 → `Vision_Recurse` 0x1e82e0),
 /// producing the per-`cells`-index visibility the renderer gates static World draws with (the
 /// `View_AddCels` GfxList set: only portal-visited cels are added).
@@ -682,7 +804,15 @@ fn clip_positive(poly: &[[f32; 3]], plane: [f32; 4]) -> Option<Vec<[f32; 3]>> {
 /// [M 0x1e82e0:51]; the port has no per-portal door link yet, so every portal is treated open —
 /// conservative (it can only keep cels visible, never hide them).
 pub fn portal_visible_cels(graph: &CelGraph, eye_room: usize, eye: [f32; 3], depth0: &[[f32; 4]; 5]) -> Option<Vec<bool>> {
-    let chain = portal_cel_chain(graph, eye_room, eye, depth0)?;
+    let start = graph.room_to_cell.get(eye_room).copied().flatten()?;
+    portal_visible_cels_from_cell(graph, start, eye, depth0)
+}
+
+/// The walk from an already-resolved runtime cel (the `viewer+4` the game hands
+/// `Vision_Portal_Recurse` 0x1e86e8 — `Camera_CheckLocation` 0x1bae90's state, not a per-frame
+/// re-pick). fix-portal.
+pub fn portal_visible_cels_from_cell(graph: &CelGraph, start_cell: usize, eye: [f32; 3], depth0: &[[f32; 4]; 5]) -> Option<Vec<bool>> {
+    let chain = portal_cel_chain_from_cell(graph, start_cell, eye, depth0)?;
     let mut visible = vec![false; graph.cells.len()];
     for c in chain { visible[c] = true; }
     Some(visible)
@@ -697,6 +827,11 @@ pub fn portal_visible_cels(graph: &CelGraph, eye_room: usize, eye: [f32; 3], dep
 /// cannot run (same guards as `portal_visible_cels`, whose visibility mask this also is).
 pub fn portal_cel_chain(graph: &CelGraph, eye_room: usize, eye: [f32; 3], depth0: &[[f32; 4]; 5]) -> Option<Vec<usize>> {
     let start = graph.room_to_cell.get(eye_room).copied().flatten()?;
+    portal_cel_chain_from_cell(graph, start, eye, depth0)
+}
+
+/// The chain from a resolved cell — see `portal_cel_chain`.
+pub fn portal_cel_chain_from_cell(graph: &CelGraph, start: usize, eye: [f32; 3], depth0: &[[f32; 4]; 5]) -> Option<Vec<usize>> {
     let mut visited = vec![false; graph.cells.len()];
     let mut planes: Vec<Vec<[f32; 4]>> = vec![Vec::new(); 48];
     planes[0] = depth0.to_vec();
@@ -713,18 +848,25 @@ pub fn portal_cel_chain(graph: &CelGraph, eye_room: usize, eye: [f32; 3], depth0
         *budget += 1;
         if *budget > 100 || depth > 45 { return; }
         let n0 = planes[depth].len();
+        let dbg = std::env::var_os("NF_PORTAL_DEBUG").is_some();
         for p in &graph.portals {
             let (side_open, dest, fwd) = if cell == p.cel_a {
                 ((p.flags & 1) == 0, p.cel_b, false)
             } else if cell == p.cel_b {
                 ((p.flags & 2) == 0, p.cel_a, true)
             } else { continue };
-            if !side_open { continue; }
+            if !side_open {
+                if std::env::var_os("NF_PORTAL_DEBUG").is_some() { eprintln!("[pwalk] d{depth} cell {cell} -> {dest}: side closed (flags {:x})", p.flags); }
+                continue;
+            }
             // The side's plane: the node attached to celB carries the forward plane, the celA node
             // its reverse [M 0x1c8928 / 0x1d15f8]. `Vision_Recurse` processes a portal only when the
             // eye is on its negative side [M 0x1e82e0:50].
             let (n, d) = if fwd { (p.n_fwd, p.d_fwd) } else { ([-p.n_fwd[0], -p.n_fwd[1], -p.n_fwd[2]], -p.d_fwd) };
-            if n[0] * eye[0] + n[1] * eye[1] + n[2] * eye[2] + d >= 0.0 { continue; }
+            if n[0] * eye[0] + n[1] * eye[1] + n[2] * eye[2] + d >= 0.0 {
+                if dbg { eprintln!("[pwalk] d{depth} cell {cell} -> {dest}: eye on the wrong side of the portal plane"); }
+                continue;
+            }
             // The quad as the runtime node stores it: forward corners on the celB node, reversed
             // (c3,c2,c1,c0) on the celA node [M 0x1c8928's amemcpy sources].
             let mut poly: Vec<[f32; 3]> = if fwd { p.corners.to_vec() } else { vec![p.corners[3], p.corners[2], p.corners[1], p.corners[0]] };
@@ -735,8 +877,14 @@ pub fn portal_cel_chain(graph: &CelGraph, eye_room: usize, eye: [f32; 3], depth0
                 }
                 if poly.is_empty() { break; }
             }
-            if poly.is_empty() { continue; }
-            if !visited[dest] { visited[dest] = true; order.push((dest, (depth + 1) as u16)); }
+            if poly.is_empty() {
+                if dbg { eprintln!("[pwalk] d{depth} cell {cell} -> {dest}: poly empty after clip (n0 {n0})"); }
+                continue;
+            }
+            // The VisCelList insert cap: `if (VisCelCount < 0x40)` guards the dedup + insert
+            // [M 0x1e82e0]; the recursion itself continues past the cap.
+            if !visited[dest] && order.len() < 0x40 { visited[dest] = true; order.push((dest, (depth + 1) as u16)); }
+            if dbg { eprintln!("[pwalk] d{depth} cell {cell} -> {dest}: poly {} (n0 {n0}, budget {budget}, {} new)", poly.len(), !visited[dest] as u8); }
             if poly.len() >= 3 {
                 // The next depth's planes: one per clipped-polygon edge, ref = the eye (ViewPoints[0]
                 // [M 0x1e82e0:146]), plus the portal's own plane last [M 0x1e82e0:151-155].
@@ -3532,15 +3680,27 @@ impl Scene {
     }
 
     /// One frame's palette and colour table for `skin_layout` (the GPU replacement for `posed_vertices`).
-    pub fn skin_palette(&self, l: &SkinLayout, choice: Option<usize>, time: f32, opts: ViewOpts) -> (Vec<Mat4>, Vec<[f32; 4]>) {
+    /// `vis`: the frame's room-level visibility mask (the portal walk's set, `Renderer::cel_visibility`)
+    /// — the object half of the game's cull [M `View_AddObjects` 0x1e62d8 / `View_DrawObjList`
+    /// 0x1e69a0: only the VISIBLE cels' object lists draw; each object's cel via `build_LinkToRoom`
+    /// 0x1c9680 → `build_FindCel`]. A posed object whose room cel is not visible collapses its
+    /// palette to FAR (off-picture — the port's established "not drawn" state, the same mechanism as
+    /// `fs.hidden`); objects the cel pass cannot place draw (the game's unlinked objects draw from
+    /// the forced list, `View_AddForcedObjects` 0x1e5fb8). `None` = the walk is off (`NF_NOPORTAL`).
+    pub fn skin_palette(&self, l: &SkinLayout, choice: Option<usize>, time: f32, opts: ViewOpts, vis: Option<&[bool]>) -> (Vec<Mat4>, Vec<[f32; 4]>) {
         const FAR: Mat4 = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
         let fs = self.frame_state(choice, time, opts);
         let collapse = |at: &Mat4| -> Mat4 { [[0.0; 4], [0.0; 4], [0.0; 4], [at[3][0], at[3][1], at[3][2], 1.0]] };
+        let vis_room = |pos: [f32; 3]| -> bool {
+            vis.map_or(true, |v| self.cel_index_at(pos).map_or(true, |r| v.get(r).copied().unwrap_or(true)))
+        };
         let mut p = vec![FAR; l.n_mats as usize];
         for (ci, c) in self.characters.iter().enumerate() {
             let base = l.char_base[ci] as usize;
             let nb = c.skeleton.bones as usize;
             if fs.hidden[ci] { for k in 0..=nb { p[base + k] = collapse(&c.matrix); } continue; }
+            let cpos = fs.posed[ci].as_ref().map_or(c.matrix[3], |(_, _, m)| m[3]);
+            if !vis_room([cpos[0], cpos[1], cpos[2]]) { for k in 0..=nb { p[base + k] = FAR; } continue; }
             match &fs.posed[ci] {
                 Some((mats, _, m)) => {
                     p[base] = *m;
@@ -3552,6 +3712,11 @@ impl Scene {
         for (a, m) in fs.attach.iter().enumerate() { p[l.attach_base as usize + a] = *m; }
         if let Some(s) = self.sim.as_ref() {
             for k in 0..(l.door_base - l.sl_base) as usize {
+                let keep = match s.drones.searchlights.parts.get(k) {
+                    Some(sp) => vis_room(sp.pos),
+                    None => true,
+                };
+                if !keep { p[l.sl_base as usize + k] = FAR; continue; }
                 p[l.sl_base as usize + k] = match s.drones.searchlights.parts.get(k) {
                     Some(sp) if !sp.drawn => FAR,
                     Some(sp) if sp.kind == 4 => [
@@ -3567,13 +3732,18 @@ impl Scene {
             for k in 0..(l.pick_base - l.door_base) as usize {
                 // The door region also holds the SimpleScripts' matrices (map-tower2): the ss vertices
                 // index `n_doors + k`, and `pick_base − door_base` = max door-or-ss index + 1.
+                let dpos = s.drones.doors.list.get(k).map(|d| d.matrix[3])
+                    .or_else(|| s.drones.sss.list.get(k - s.drones.doors.list.len()).map(|q| q.matrix[3]));
+                if dpos.is_some_and(|p3| !vis_room([p3[0], p3[1], p3[2]])) { p[l.door_base as usize + k] = FAR; continue; }
                 p[l.door_base as usize + k] = match s.drones.doors.list.get(k) {
                     Some(d) => d.matrix,
                     None => s.drones.sss.list.get(k - s.drones.doors.list.len()).map_or(FAR, |q| q.matrix),
                 };
             }
             for k in 0..(l.n_mats - l.pick_base) as usize {
-                p[l.pick_base as usize + k] = s.drones.pickups.get(k).filter(|q| !q.gone && !q.hidden).map_or(FAR, |q| q.m);
+                let pk = s.drones.pickups.get(k).filter(|q| !q.gone && !q.hidden);
+                if pk.is_some_and(|q| !vis_room([q.m[3][0], q.m[3][1], q.m[3][2]])) { continue; } // stays FAR
+                p[l.pick_base as usize + k] = pk.map_or(FAR, |q| q.m);
             }
         }
         let (mults, pickup_mult, attach_mult) = self.colour_mults();
