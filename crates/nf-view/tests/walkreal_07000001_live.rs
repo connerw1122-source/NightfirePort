@@ -16,7 +16,6 @@ use walker::{Act, Walker, Wp};
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 
 #[test]
-#[ignore = "walker limit (fix-ai-traces2 merge): with the merged RNG stream guard 16 crouches in cover (0x5c, health 10) at (-5.2,6.3,10.5) and the walker's torso shot hits the wall (seg t 0.82), so the contact stays in LeadHide 0x1f; the walker needs a flank/re-aim step (task 053c-walkreal-01-cover)"]
 fn walk_from_the_spawn_to_the_exit_with_the_contact() {
     let iso = iso();
     let mut w = Walker::new(nf_view::load(&iso, "07000001.bin", false).expect("load 07000001"));
@@ -254,3 +253,4 @@ fn the_plate_refuses_bond_alone() {
             sim.drones.list[ci].pos);
     }
 }
+

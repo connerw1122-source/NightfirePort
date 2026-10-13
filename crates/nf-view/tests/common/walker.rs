@@ -274,6 +274,16 @@ impl Walker {
             eprintln!("[walk] {label}: resupply attempt {attempt} at ({:.1},{:.1},{:.1}) (d {:.1})", target[0], target[1], target[2], d);
             self.walk_nav_to(target, &format!("{label} resupply {attempt}"), 1.8);
             if ammo(self) > before { break; }
+            // The nav's 1.8 arrive radius can stop short of a pickup sitting just behind a cycling
+            // doorway (the 01 west-hall ammo box sat 1.33 away through a door that opened and shut
+            // while the nav believed it had arrived). Close the last stretch directly — walk_to's
+            // stuck handler opens the doors on the way; lenient so a wedged doorway gives up.
+            if dxz(target, self.pos) > 0.9 {
+                self.lenient = true;
+                self.walk_to(Wp { at: target, act: Act::None, arrive: 0.7 }, &format!("{label} resupply {attempt} close"));
+                self.lenient = false;
+            }
+            if ammo(self) > before { break; }
         }
         let got = ammo(self) > before;
         eprintln!("[walk] {label}: resupply done ({got}) clip {} spare {}", self.scene.sim.as_ref().unwrap().gun.clip, self.scene.sim.as_ref().unwrap().gun.spare);
@@ -304,42 +314,89 @@ impl Walker {
         c + s > 0
     }
 
-    /// Aim at a drone's torso (root + 0.3 — the port's drone pos is the ROOT, the torso box centre
-    /// sits +0.27 above it [L hit-box dump]) with the view (turn + look through the input) and tap
-    /// the trigger until it dies or the cap. The real fire path (the gun, the bullets, the hit
-    /// boxes). The port's semi-autos fire once per trigger press [M the fire script gates
-    /// Player_WeaponFiring], so the trigger pulses; an empty clip pulses the reload key (the game's R).
+    /// The exposed-part aim point: enumerate the drone's hit boxes (the same boxes the port's
+    /// bullets test against, `hit_boxes` [L hit-box dump]; the game's per-part damage groups are
+    /// `NDrone2_HitDamage` 0x145558 — head 5 ×100, the arms 53–56 ×1.0, legs ×0.75) and return the
+    /// clearest one's centre: the eye→centre world segment must miss everything. A player pinned by
+    /// a crouched guard in cover re-aims at whatever sticks out instead of shooting the wall. The
+    /// preference is the clear box closest to the torso anchor (root + 0.3 — the old aim), so a
+    /// clear torso wins and a head/arm pick only happens when the torso is buried.
+    pub fn exposed_aim(&self, di: usize) -> Option<V3> {
+        let sim = self.scene.sim.as_ref().unwrap();
+        let d = &sim.drones.list[di];
+        let bp = sim.bond.pos;
+        let eye = [bp[0], bp[1] + sim.bond.eye - sim.bond.crouch_drop, bp[2]];
+        let data = nf_game::drone::Data {
+            tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons,
+            world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins,
+            skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
+            hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
+            surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(),
+        };
+        let torso = [d.pos[0], d.pos[1] + 0.3, d.pos[2]];
+        let mut best: Option<(f32, V3)> = None;
+        for b in d.hit_boxes(&data) {
+            let c = [b.m[3][0], b.m[3][1], b.m[3][2]];
+            if sim.world.segment(eye, c).is_some() { continue; }
+            let dev = dxz(c, torso);
+            if best.map_or(true, |(bd, _)| dev < bd) { best = Some((dev, c)); }
+        }
+        best.map(|(_, c)| c)
+    }
+
+    /// Aim at a drone (its exposed part — see `exposed_aim`) with the view (turn + look through the
+    /// input) and tap the trigger until it dies or the cap. The real fire path (the gun, the
+    /// bullets, the hit boxes). The port's semi-autos fire once per trigger press [M the fire
+    /// script gates Player_WeaponFiring], so the trigger pulses; an empty clip pulses the reload
+    /// key (the game's R).
+    ///
+    /// Cover behaviour (a player's, not a seed dodge): while NO part's segment is clear the trigger
+    /// stays DOWN — firing into the wall only burns the clip — and Bond flanks: alternate sidesteps
+    /// every 90 ticks, plus a forward push while beyond 8 units; after 9 s of that failing (a
+    /// corner pins the sidestep) he walks the NAV GRAPH to a flank point — perpendicular to the
+    /// guard bearing, alternating the side and growing the offset 3→5→7 — and re-checks. The
+    /// 900-tick no-damage fallback (4 repositions) stays for clear-aim-but-missing cases.
     pub fn shoot(&mut self, di: usize, label: &str) -> bool {
         let mut hp0 = self.scene.sim.as_ref().unwrap().drones.list[di].health;
         let mut repositions = 0i32;
         let mut last_progress = 0u32;
         let mut last_tap = 0u32;
+        let mut aim = self.exposed_aim(di);
+        let mut blocked_streak = 0u32;
+        let mut flanks = 0i32;
         for t in 0..10800u32 {
             {
                 let sim = self.scene.sim.as_ref().unwrap();
                 if sim.drones.list[di].corpse || sim.drones.list[di].health <= 0.0 { return true; }
+                // Re-pick the exposed part periodically: the guard animates, a part clears or buries.
+                if t % 30 == 0 { aim = self.exposed_aim(di); }
                 let (bp, dp) = (sim.bond.pos, sim.drones.list[di].pos);
+                let at = aim.unwrap_or([dp[0], dp[1] + 0.3, dp[2]]);
                 let dx = dp[0] - bp[0];
                 let dz = dp[2] - bp[2];
-                let dy = (dp[1] + 0.3) - (bp[1] + sim.bond.eye - sim.bond.crouch_drop);
+                let dy = at[1] - (bp[1] + sim.bond.eye - sim.bond.crouch_drop);
                 let desired = dx.atan2(dz);
                 let err = wrap_pi(desired - sim.bond.yaw);
                 let want_pitch = (dy / dxz(bp, dp).max(0.5)).atan() / std::f32::consts::FRAC_PI_2;
                 let perr = want_pitch - sim.bond.pitch;
                 let clip_empty = sim.gun.clip == 0 && sim.gun.spare > 0;
-                let out_of_ammo = sim.gun.clip == 0 && sim.gun.spare == 0;
                 let reload = clip_empty && t % 20 == 0;
-                // Tap only when the view is ON the torso (the boxes are ~0.3 wide; the fixed-period
-                // taps sprayed ammo at a drifting aim).
+                let blocked = aim.is_none();
+                blocked_streak = if blocked { blocked_streak + 1 } else { 0 };
+                // Tap only when the view is ON the part (the boxes are ~0.3 wide; the fixed-period
+                // taps sprayed ammo at a drifting aim) and SOMETHING is exposed.
                 let on_target = err.abs() < 0.02 && perr.abs() < 0.028 && t.saturating_sub(last_tap) > 15;
-                let trigger = !clip_empty && on_target;
+                let trigger = !clip_empty && !blocked && on_target;
                 if trigger { last_tap = t; }
+                // The flank: while blocked, sidestep (alternating every 90 ticks) and push forward
+                // in the first half of each window when the guard is far.
+                let far = dxz(bp, dp) > 8.0;
+                let window = (blocked_streak / 90) % 2 == 0;
                 let input = Input {
                     turn: err.clamp(-0.08, 0.08),
                     look: perr.clamp(-0.08, 0.08),
-                    // Repositioning: slide sideways when the rounds are not landing (a column or a
-                    // nook swallows the ray).
-                    strafe: if repositions % 2 != 0 && t - last_progress < 60 { -1.0 } else if repositions % 2 != 0 { 0.0 } else if t - last_progress < 60 { 1.0 } else { 0.0 },
+                    forward: if blocked && far && window { 1.0 } else { 0.0 },
+                    strafe: if blocked { if window { 1.0 } else { -1.0 } } else if repositions % 2 != 0 && t - last_progress < 60 { -1.0 } else if repositions % 2 != 0 { 0.0 } else if t - last_progress < 60 { 1.0 } else { 0.0 },
                     ..Default::default()
                 };
                 self.scene.sim.as_mut().unwrap().step_bond(input, trigger, reload, false);
@@ -360,10 +417,33 @@ impl Walker {
                 last_progress = t;
                 eprintln!("[walk] {label}: no damage for 900 ticks — repositioning ({repositions})");
             }
+            // 9 s fully blocked: the local sidestep is pinned (a corner, a column) — walk the nav
+            // graph to a flank point: perpendicular to the guard bearing, alternating the side,
+            // growing the offset 3→5→7. This is the player's walk-around-the-cover; it ends when a
+            // part's segment clears (the loop above picks it up).
+            if blocked_streak >= 540 && flanks < 6 {
+                flanks += 1;
+                let side = if flanks % 2 == 1 { 1.0 } else { -1.0 };
+                let dist = 2.0 + flanks as f32 * 1.5;
+                let sim = self.scene.sim.as_ref().unwrap();
+                let (bp, dp) = (sim.bond.pos, sim.drones.list[di].pos);
+                let (vx, vz) = (dp[0] - bp[0], dp[2] - bp[2]);
+                let len = (vx * vx + vz * vz).sqrt().max(0.001);
+                let (px, pz) = (-vz / len, vx / len);
+                let fp = [dp[0] + px * side * dist, dp[1], dp[2] + pz * side * dist];
+                drop(sim);
+                eprintln!("[walk] {label}: no exposed part for {blocked_streak} ticks — flanking to ({:.1},{:.1},{:.1}) (side {side}, offset {dist:.1})", fp[0], fp[1], fp[2]);
+                self.lenient = true;
+                self.walk_nav_to(fp, &format!("{label} flank {flanks}"), 2.0);
+                self.lenient = false;
+                blocked_streak = 0;
+                aim = self.exposed_aim(di);
+                last_progress = t; // the flank is the progress for now
+            }
             if t % 1200 == 0 {
                 let sim = self.scene.sim.as_ref().unwrap();
-                eprintln!("[walk] {label}: shooting drone {di} at +{t} (health {:.0}, dist {:.1}, clip {} spare {})",
-                    sim.drones.list[di].health, dxz(sim.bond.pos, sim.drones.list[di].pos), sim.gun.clip, sim.gun.spare);
+                eprintln!("[walk] {label}: shooting drone {di} at +{t} (health {:.0}, dist {:.1}, clip {} spare {}, exposed {})",
+                    sim.drones.list[di].health, dxz(sim.bond.pos, sim.drones.list[di].pos), sim.gun.clip, sim.gun.spare, aim.is_some());
             }
         }
         let sim = self.scene.sim.as_ref().unwrap();
@@ -445,6 +525,11 @@ impl Walker {
         let mut use_left = 0u32;
         let mut ladder = false;
         let mut riding = false;
+        // The last door the stuck handler used: the second use of the SAME door without Bond
+        // crossing means the door is not the blocker — the wedge is the geometry beside it
+        // (the 01 stairwell head's threshold door sat on the lane, opened, auto-closed, and
+        // re-hijacked the mitigation forever, so the sidestep/jump ladder never ran).
+        let mut last_door: Option<usize> = None;
         loop {
             if self.total_ticks - start_ticks >= 40_000 && !self.lenient {
                 let dump = fail_dump(&self.scene, wp.at, label);
@@ -630,20 +715,35 @@ impl Walker {
                     self.stuck += 1;
                     // The real player's reaction: a closed door in reach → press E until it moves,
                     // then let the swing finish. Anything else: sidestep, jump, then report.
-                    let sim = self.scene.sim.as_ref().unwrap();
-                    let door_i = sim.drones.doors.list.iter().position(|d| {
-                        dxz(d.pos, self.pos) < 2.8
-                            && (d.pos[1] - self.pos[1]).abs() < 2.5  // the door's own floor (the 15 crossing's lower gantry doors sit 17.6 below the lane)
-                            && !(d.ch_lock != 0 && !sim.drones.channels.on(d.ch_lock as u32))  // a LOCKED door: the E thuds, never opens (the 15 keypad doors)
-                            && sim.world.segment(self.pos, d.pos).is_some()
-                    });
+                    // The door decision in its own scope (the immutable sim borrow must end
+                    // before use_door's &mut self, and before the ladder's re-borrows).
+                    let door_i = {
+                        let sim = self.scene.sim.as_ref().unwrap();
+                        sim.drones.doors.list.iter().position(|d| {
+                            dxz(d.pos, self.pos) < 2.8
+                                && (d.pos[1] - self.pos[1]).abs() < 2.5  // the door's own floor (the 15 crossing's lower gantry doors sit 17.6 below the lane)
+                                && !(d.ch_lock != 0 && !sim.drones.channels.on(d.ch_lock as u32))  // a LOCKED door: the E thuds, never opens (the 15 keypad doors)
+                                && sim.world.segment(self.pos, d.pos).is_some()
+                        })
+                    };
+                    let repeat = door_i.is_some() && last_door == door_i;
+                    let mut used_door = false;
                     if let Some(di) = door_i {
-                        drop(sim);
-                        self.use_door(di, label);
-                        self.stuck = 0;
-                    } else if self.stuck == 1 {
+                        if !repeat {
+                            last_door = Some(di);
+                            self.use_door(di, label);
+                            self.stuck = 0;
+                            used_door = true;
+                        } else {
+                            // The same door again: not the blocker — clear the memory and let the
+                            // plain wedge ladder below run (back up, sidestep, jump).
+                            last_door = None;
+                        }
+                    }
+                    if !used_door {
+                    if self.stuck == 1 {
                         // No world wall on the hip line: a knee-high rail — hop first.
-                        let rail = sim.world.segment([self.pos[0], self.pos[1] - 0.7, self.pos[2]], [wp.at[0], wp.at[1] - 0.7, wp.at[2]]).is_some();
+                        let rail = self.scene.sim.as_ref().unwrap().world.segment([self.pos[0], self.pos[1] - 0.7, self.pos[2]], [wp.at[0], wp.at[1] - 0.7, wp.at[2]]).is_some();
                         if rail {
                             let sim = self.scene.sim.as_mut().unwrap();
                             if sim.bond.grounded { self.tick(Input { jump: true, forward: 1.0, ..Default::default() }, false); }
@@ -680,6 +780,7 @@ impl Walker {
                                 self.report.stuck_events, dump);
                         }
                         self.stuck = 0;
+                    }
                     }
                 } else {
                     self.stuck = 0;
