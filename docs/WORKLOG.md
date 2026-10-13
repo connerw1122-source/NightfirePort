@@ -6607,3 +6607,22 @@ not; it is exterior stonework drawn inside.
   with one flat static world → the exterior stone draws over the room and its collision blocks the
   walk to the safe. NOT FIXED this session (needs the cel-scoped draw+collision; the faithful fix is
   world.rs + gpu.rs taking the room/portal graph).
+
+**Session continuation (the takes land):**
+- Third blocker found and fixed: the script's own briefcase entity (`oBriefcase_closed`, the
+  SafePickUps entity at the shelf) joined `set_dynamic` with its glist collision — the pickup's own
+  mesh blocked its take ray at t 0.869. The game control-unlinks the created pickup
+  (`Script_CreateEntity` tail `control_unlink_object` 0x1d8d54). Fix: 0xF0 entities are excluded
+  from the set_dynamic parts (`drone.rs`). The briefcase then takes through the real path:
+  `taken [(531, Label)]`, **ch 0x4A on** — the objective's writer.
+- Fourth blocker measured: with the briefcase gone the rocket's ray from the doorway still fails —
+  the safe door SS #205's OPEN-pose slab (keys park it at (161.2, 42.08), x 159.9..162.5, y
+  41.0..43.15) clips the shallow ray the pushed-back capsule produces. Empirically, dropping the
+  SS's collision makes BOTH take (`taken [(531, Label), (541, Weapon { weapon: 44 })]`). What the
+  game does for the resting SS door's collision in the take query is not decoded — the port keeps
+  the SS solid (fix-party-mission's choice) and the rocket's take is the remaining open item.
+- Suite: nf-game all green; nf-view all green (the reservation hook touches every level's build —
+  no regressions); nf-formats 11 + the 3 allowed disc_golden failures; nf-audio green.
+- Tests: `fix_safe08_live.rs` — the sister (nothing takes before ch 136) and the main path (the
+  briefcase takes at the user's spot, ch 0x4A on; the shelf rocket exists at the script's key
+  position). `probe_safe08.rs` kept as the dump/LOS probe.

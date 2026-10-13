@@ -5048,7 +5048,11 @@ pub fn fire_player(&mut self, d: &Data, from: V3, dir: V3, weapon: u8, sound: nf
             let id = |k: usize| (oi as u64) << 6 | k as u64;
             match o {
                 Some(crate::nis::Obj::Anim { skin, script, frame, .. }) => parts.extend(d.discrete_parts(*skin, *script, *frame).into_iter().enumerate().map(|(k, (h, m))| (id(k), h, m))),
-                Some(crate::nis::Obj::Entity { hash, kind, matrix, .. }) if !matches!(kind, 0xea | 0xeb | 0xf5 | 0xf2) => parts.push((id(0), *hash, *matrix)),
+                // fix-safe08: pickups (0xF0) stay out of the collision world — the game's
+                // `Script_CreateEntity` control-unlinks the created pickup (0x1d8d54) and its take
+                // ray passes through the pickup's own glist (the safe's briefcase blocked its own
+                // take here).
+                Some(crate::nis::Obj::Entity { hash, kind, matrix, .. }) if !matches!(kind, 0xea | 0xeb | 0xf5 | 0xf2 | 0xf0) => parts.push((id(0), *hash, *matrix)),
                 _ => {}
             }
         }

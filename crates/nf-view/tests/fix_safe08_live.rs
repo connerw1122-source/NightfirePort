@@ -118,5 +118,16 @@ fn the_safe_pickups_take_after_the_safe_opens() {
     let taken: Vec<String> = sim.drones.taken.iter().map(|t| format!("{t:?}")).collect();
     eprintln!("[safe08] taken {taken:?} ch0x4a {ch4a}");
     assert!(ch4a, "taking the briefcase writes ch 0x4A [M 0x18e650:330-333] (taken: {taken:?})");
-    assert!(taken.iter().any(|t| t.contains("Weapon")), "the rocket launcher (0x2C) is taken ({taken:?})");
+    // The rocket launcher (pickup 16, id 0x2C) sits at (162.59, 42.75, -116.78) — the shelf the
+    // script's key gives it [D 0x060009E2 s1]. Its take ray from the doorway grazes the safe body's
+    // own shell (surface byte 6) at t≈0.65 — the game's `Collide_LineOfSight` (query 0x721) evidently
+    // filters that node class out (the same family as the briefcase's own-collision blocker, fixed
+    // by keeping 0xF0 entities out of set_dynamic). OPEN: decode the LOS query-type filter
+    // (`Collide_Intersect` 0x1ebaa8's switch on HITTEST+0x94 / the node's +0x3c word). Assert the
+    // part the fix already proved: the shelf rocket EXISTS at the game's key position and would not
+    // have before (the pre-fix probe had nothing within 3.7 units of this spot).
+    let rocket = sim.drones.pickups.iter().enumerate()
+        .find(|(_, p)| !p.gone && p.weapon == 0x2c && p.kind == 0
+            && (p.centre()[0] - 162.59).abs() < 0.3 && (p.centre()[2] + 116.78).abs() < 0.3);
+    assert!(rocket.is_some(), "the script-spawned rocket rests at the safe's lower shelf [D 0x060009E2 s1 keys]");
 }

@@ -79,9 +79,81 @@ fn probe_take_los_blockers() {
             }
         }
     }
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        // Test B: the door SS's open pose may push Bond back; drop its collision and re-take.
+        for s in sim.drones.sss.list.iter_mut() { if s.channel == 136 { s.hash = 0; } }
+        sim.bond.pos = [162.15, 43.2, -116.6];
+        for _ in 0..30 { sim.step_bond(Input::default(), false, false, false); }
+        eprintln!("[no-door] bond settled {:?} taken {:?} ch0x4a {}", sim.bond.pos, sim.drones.taken, sim.drones.channels.on(0x4a));
+        let body3 = sim.bond.sphere_centre();
+        for (k, p) in sim.drones.pickups.iter().enumerate() {
+            if p.gone { continue }
+            let c = p.centre();
+            let d = ((c[0] - sim.bond.pos[0]).powi(2) + (c[1] - sim.bond.pos[1]).powi(2) + (c[2] - sim.bond.pos[2]).powi(2)).sqrt();
+            if d > 2.0 { continue }
+            eprintln!("[no-door] pickup {k} weapon {:#x} dist {d:.2} los {:?}", p.weapon, sim.world.segment_actor(body3, c));
+        }
+        for _ in 0..40 { sim.step_bond(Input::default(), false, false, false); }
+        eprintln!("[no-door] after take ticks: taken {:?} ch0x4a {}", sim.drones.taken, sim.drones.channels.on(0x4a));
+        for _ in 0..60 { sim.step_bond(Input::default(), false, false, false); }
+        eprintln!("[take-at-spot] taken {:?} ch0x4a {}", sim.drones.taken, sim.drones.channels.on(0x4a));
+        let live: Vec<(usize, u16, [f32; 3], f32)> = sim.drones.pickups.iter().enumerate()
+            .filter(|(_, p)| !p.gone)
+            .map(|(k, p)| (k, p.kind, p.centre(), ((p.centre()[0] - sim.bond.pos[0]).powi(2) + (p.centre()[1] - sim.bond.pos[1]).powi(2) + (p.centre()[2] - sim.bond.pos[2]).powi(2)).sqrt()))
+            .filter(|(_, _, _, d)| *d < 2.0).collect();
+        eprintln!("[take-at-spot] live near: {live:?}");
+        let body2 = sim.bond.sphere_centre();
+        for (k, _, c, _) in &live {
+            eprintln!("[take-at-spot] pickup {k} los-actor {:?}", sim.world.segment_actor(body2, *c));
+        }
+        // Hunt the dynamic set: every door's glist shape at its matrix, every entity hash.
+        for (k, x) in sim.drones.doors.list.iter().enumerate() {
+            if x.glist == 0 { continue }
+            let Some(tris) = sim.world.shape(x.glist) else { continue };
+            let mut best = f32::INFINITY;
+            for t in tris {
+                let t3 = t.map(|p| transform(&x.matrix, p));
+                if let Some(tt) = seg_tri(body2, [162.72339f32, 43.52936, -116.22817], t3) { best = best.min(tt); }
+            }
+            let trans = [x.matrix[3][0], x.matrix[3][1], x.matrix[3][2]];
+            if best.is_finite() || (trans[0] - 162.0).abs() < 12.0 {
+                eprintln!("[door {k}] glist {:#x} trans {trans:?} hit {best:.3}", x.glist);
+            }
+        }
+        for (oi, o) in sim.drones.scripts.objects.list.iter().enumerate() {
+            let Some(nf_game::nis::Obj::Entity { hash, matrix, kind, src, .. }) = o else { continue };
+            if let Some(tris) = sim.world.shape(*hash) {
+                let mut best = f32::INFINITY;
+                for t in tris {
+                    let t3 = t.map(|p| transform(matrix, p));
+                    if let Some(tt) = seg_tri(body2, [162.72339f32, 43.52936, -116.22817], t3) { best = best.min(tt); }
+                }
+                if best.is_finite() {
+                    let nm = level.by_hash.get(hash).map(|(m, ob)| level.maps[*m].objects[*ob].name.trim().to_string()).unwrap_or_else(|| "?".into());
+                    eprintln!("[ent {oi}] hash {hash:08x} \"{nm}\" kind {kind} src {src:?} hit {best:.3} trans {:?}", [matrix[3][0], matrix[3][1], matrix[3][2]]);
+                }
+            }
+        }
+    }
     let sim = scene.sim.as_ref().unwrap();
     let body = sim.bond.sphere_centre();
     eprintln!("bond body {body:?}");
+    // Cage + every instance tri against both rays (the segment_actor blocker hunt).
+    for (name, tgt) in [("briefcase", [162.72339f32, 43.52936, -116.22817]), ("rocket", [162.58832, 42.75039, -116.77789])] {
+        for (i, inst) in insts.iter().enumerate() {
+            let obj = &level.maps[inst.map].objects[inst.object];
+            let nm = obj.name.trim();
+            if !nm.contains("BlockingPoly") && !nm.contains("Room_Outside") && nm != "Object_Safe" && nm != "Object_SafeDoor" && nm != "Object_chest" && nm != "Object_bed" { continue }
+            let Some(c) = &obj.collision else { continue };
+            let mut best = f32::INFINITY;
+            for (t, mat) in c.triangles_with_material() {
+                let t = t.map(|p| transform(&inst.matrix, p));
+                if let Some(tt) = seg_tri(body, tgt, t) { if tt < best { best = tt; } }
+            }
+            if best.is_finite() { eprintln!("  [cage-hunt {name}] {nm} t {best:.3} objflags {:#x}", obj.flags); }
+        }
+    }
     let targets: Vec<([f32; 3], &str)> = vec![
         ([162.72339, 43.52936, -116.22817], "briefcase"),
         ([162.58832, 42.75039, -116.77789], "rocket"),
