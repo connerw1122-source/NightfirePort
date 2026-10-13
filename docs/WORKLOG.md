@@ -8529,3 +8529,18 @@ Stage Summary:
   and the ammo-id remaps are new port behaviour with game citations.
 - Left: the auto-switch drain re-open (live checks 1-2 in the report), moving-platform landings,
   the drop push-out, the AR set's second pile, the +0x888 kind-5 field, the shop's Upgrades byte.
+
+## fix-room-sound (s/fix-room-sound) — 2026-10-13
+Task: G-016/G-032 audio remainder — (1) the room environment: keep the cel env value in the port's
+map parse (parseentity_fixup_entity 0x1d00c0: class 0xc023 -> 0x9898 the underwater sentinel,
+0xc047 -> level_tag+0x50), track the viewer's current cel (Sound_UpdateListeners 0x1dd278 sends
+SFXSetEnvironment(cel s16 +0x98, underwater = (cel+0x3c & 0x10000000) || env >= 20) from the active
+viewer's cel), feed the real value into sound_tick (nf-view lib.rs's drv.set_environment(0, 0)
+stand-in); pin 07000005's two values (env 0 / env 40) [L]. (2) The guard foley call sites on
+Drones::foley: kick 0x28 [M 0x1684c0], interrogation 0x4a [M 0x161a40], civilian patrol 0x48
+[M 0x15d610], hostage-die 10 [M 0x1725a0], spawner 0xd6+Rand(2) [M 0x137e68], the pain pools
+[M 0x125ed8] (shared Rand_* stream — re-pick moved seed tests by the WORKLOG 0072 procedure).
+Files: crates/nf-audio/*, crates/nf-game/src/drone.rs, crates/nf-view/src/{lib,scene}.rs.
+Started 22:08 UTC, sandbox expires ~00:03 UTC (stop new work 23:43 UTC). Branch cut from
+origin/master (7a614ba). Setup already in place from the prior session (repo, work/, ISO,
+nf-queue, rustup, user-prefix ALSA).
