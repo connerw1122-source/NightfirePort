@@ -22,6 +22,7 @@ pub mod ladder;
 pub mod kiko;
 pub mod light;
 pub mod fusebox;
+pub mod gadget;
 pub mod gas;
 pub mod copter;
 pub mod lock;
