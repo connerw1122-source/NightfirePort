@@ -39,3 +39,6 @@ Files: `crates/nf-view/src/{menu,lib}.rs`, `crates/nf-formats/src/hud.rs` (text/
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/menus3`.
+
+---
+claimed-by: sandbox6 at 2026-10-13T16:54Z
