@@ -208,7 +208,7 @@ pub fn alpha_shaped(rgba: &[u8]) -> bool {
 
 /// One indexed draw: its layer, pass, pipeline, texture bind group, index range and the object's world centre + radius.
 #[derive(Clone, Copy)]
-struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16>, chain: u32, lflags: u16 }
+struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16>, chain: u32, node: u32, lflags: u16 }
 
 pub struct Renderer {
     hud_pipeline: wgpu::RenderPipeline,
@@ -445,15 +445,16 @@ impl Renderer {
         // Draw order (docs/systems/render.md): sky before the world, list 0, characters, list 1 (alpha), sky after the fog
         // pass, effects; the vertex buffer keeps its layout (the character tail stays contiguous).
         // List 0 order per `View_DrawObjList` (0x1e69a0) + `View_AddCels` (0x1e6ba0): the viewer's per-list array holds
-        // both cel entries and object entries, QuickSorted by key. `View_AddCels` pushes every runtime cel's PRIMARY
-        // glist — one per 0x8000 placement — into list 0 with the SYNTHETIC key −90000 + 10k in cel-chain
-        // (placement-parse) order, before any distance-keyed entry; `View_AddObjects` (0x1e62d8) pushes the objects with
-        // ±dist². So the level's statics draw first in placement-parse order (a baked decal after the wall it lies on —
-        // the R2 hole bug's real fix), then the dynamic World objects front-to-back. `Material::chain` carries the
-        // ordinal (u32::MAX = a distance-keyed object entry). This replaces fix-render4's alpha_shaped stand-in, which
-        // reordered by texture shape instead of by the game's own keys (gpu::alpha_shaped stays for its pinned test).
+        // both cel entries and object entries, QuickSorted by key. `View_AddCels` pushes the ROOM cels' primary
+        // glists — one per 0xc023/0xc047 placement — into list 0 with the SYNTHETIC key −90000 + 10k over the
+        // +0x20 chain `Vision_Portal_Recurse` (0x1e86e8) threads per frame from the depth-sorted `VisCelList`
+        // (QuickSort 0x1d30a8 comparator[3]: ascending portal depth); the non-room 0x8000 placements (the baked
+        // decals, walkways, blockers — the +0x18 inner nodes) and the dynamic World objects draw at ±dist²
+        // (`View_AddObjects` 0x1e62d8). So the rooms draw first (per-frame chain order), then the distance-keyed
+        // entries front-to-back. `Material::chain` carries the room's build-time parse-rank fallback, `node` its
+        // per-frame chain cel (u32::MAX = a distance-keyed entry).
         let draws: Vec<DrawCall> = scene.materials.iter().zip(&material_tex)
-            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel, chain: m.chain, lflags: m.lflags }).collect();
+            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel, chain: m.chain, node: m.node, lflags: m.lflags }).collect();
         let fog = scene.fog;
         let snow_pipeline = make_pipeline(Draw { pass: 5, blend: 1, zwrite: false, atest: 0, fog: 0 });
         let snow_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (SNOW_MAX * std::mem::size_of::<crate::scene::Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -575,23 +576,46 @@ impl Renderer {
             pass.set_index_buffer(self.ibuf.slice(..), wgpu::IndexFormat::Uint32);
             use crate::scene::Layer;
             let d2 = |c: [f32; 3]| (c[0] - eye[0]).powi(2) + (c[1] - eye[1]).powi(2) + (c[2] - eye[2]).powi(2);
+            // The 6 frustum planes for the CPU-side cull (Gribb-Hartmann from `view_proj`).
+            let planes = extract_frustum(view_proj);
+            // fix-cel-order: the room cels' −90000 + 10·k list-0 keys are handed out over the chain
+            // `Vision_Portal_Recurse` (0x1e86e8) threads per frame from the depth-sorted `VisCelList`
+            // (`QuickSort` 0x1d30a8 comparator[3] @0x1d3430: ascending portal depth, ties in the
+            // game's own unstable order). Compute that chain for THIS eye and map each room cel
+            // (`Material::node`) to its k. When the walk cannot run (no graph / the eye's room
+            // unmapped) the build-time parse-rank fallback (`Material::chain`) stands in. Ordering
+            // only — the cull below is untouched (NF_PORTAL still gates the cull walk).
+            let chain_ord: Option<Vec<Option<u32>>> = if !self.cel_graph.portals.is_empty() {
+                let depth0: [[f32; 4]; 5] = [planes[0], planes[1], planes[2], planes[3], planes[4]];
+                Self::eye_room_cel(&self.cel_boxes, eye).and_then(|room| crate::scene::portal_cel_chain(&self.cel_graph, room, eye, &depth0))
+                    .map(|chain| {
+                        let mut ord: Vec<Option<u32>> = vec![None; self.cel_graph.cells.len()];
+                        for (k, c) in chain.into_iter().enumerate() { if c < ord.len() { ord[c] = Some(k as u32); } }
+                        ord
+                    })
+            } else { None };
             // Reuse the cached `order` Vec (A-11e): clear + refill, no per-frame alloc.
             self.order.clear();
             self.order.extend(self.draws.iter().enumerate().map(|(k, dc)| {
-                // List 0 (pass 1): the statics' parse-order synthetic key (View_AddCels: −90000 + 10·k, all
-                // before any distance key), the dynamics by squared distance (View_AddObjects). List 1 (pass 3):
-                // back-to-front (−dist²) for everything. Ties fall through to the draw index (the material
-                // order = the build's group order, i.e. leaf/batch order within one object).
+                // List 0 (pass 1): the room cels' −90000 + 10·k (`View_AddCels` 0x1e6ba0 over the
+                // per-frame depth-sorted chain, `Material::node` → k; `chain` = the build-time
+                // parse-rank fallback when the walk cannot run), every distance-keyed entry (the
+                // +0x18 inner-node statics and `View_AddObjects`' objects) by squared distance.
+                // List 1 (pass 3): back-to-front (−dist²) for everything. Ties fall through to the
+                // draw index (the material order = the build's group order, i.e. leaf/batch order
+                // within one object).
                 let key = match dc.pass {
-                    1 => if dc.chain != u32::MAX { -90_000.0 + 10.0 * dc.chain as f32 } else { d2(dc.centre) },
+                    1 => if dc.chain != u32::MAX {
+                        chain_ord.as_ref().and_then(|o| o.get(dc.node as usize).copied().flatten())
+                            .map(|k2| -90_000.0 + 10.0 * k2 as f32)
+                            .unwrap_or_else(|| -90_000.0 + 10.0 * dc.chain as f32)
+                    } else { d2(dc.centre) },
                     3 => -d2(dc.centre),
                     _ => 0.0,
                 };
                 (dc.pass * 2, key, k)
             }));
             self.order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
-            // The 6 frustum planes for the CPU-side cull (Gribb-Hartmann from `view_proj`).
-            let planes = extract_frustum(view_proj);
             // fix-render2: the World draws' bounding spheres are exact — static geometry through the
             // placement matrix (scene.rs add_instance) — so they cull always. Everything posed per
             // frame keeps its build-time centre (doors swinging, pickups, the truck, searchlight
