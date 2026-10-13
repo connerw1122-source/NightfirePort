@@ -36,3 +36,7 @@ claimed-by: sandbox4 at 2026-10-13T21:51Z
 ## Report (done, 2026-10-13T22:58Z)
 
 Closed by the driver: the report is on `s/fix-movie-playback` (docs/reports/fix-movie-playback.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-13T23:06Z)
+
