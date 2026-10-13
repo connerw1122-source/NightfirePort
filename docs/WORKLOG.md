@@ -8073,3 +8073,41 @@ Stage Summary:
   glist, hashtable_hashcode_to_celglist, parseentity_fixup_entity 0x1d00c0) vs the port's
   scene.rs attribution that parks wall materials under ROOM cells 20/22/38/13; settle the 9 extra
   chain nodes on cell 21; pin with a failing-first test + render spots.
+
+---
+Task: fix-portal5
+Agent: fix-portal5 worker
+Branch: s/fix-portal5 (from origin/s/fix-portal4 02c0786, origin/master aba19b0 merged)
+
+Work Log:
+- Decoded the game's draw mechanism [M]: vision_generate_display_list 0x1e8848 threads the
+  depth-sorted VisCelList through cel+0x20; View_AddCels 0x1e6ba0 walks it (list-0 -90000+10k keys
+  for the visible cels' own glists, +/-dist^2 for the +0x18 chain nodes under Vision_InView);
+  View_AddObjects 0x1e62d8(cel, viewer) additionally walks each visible cel's OWN object list
+  (cel+0x8, filled by control_link_object_to_cel 0x1346b8/build_LinkToRoom 0x1c9680) and draws its
+  non-0x8000-glist members; View_AddForcedObjects 0x1e5fb8 complements it (0x8000 only).
+- [L] ee_start_05.bin glist census: all 137 runtime cels' glists match the port's parsed objects by
+  model header (local sphere/radius/bbox/flags at glist+0x10..0x44), 137/137; every runtime ROOM
+  cel's game model equals the port's room placement object — the cel->glist attribution matches the
+  game exactly; the divergence was in the port's node keys and the chain-owner rule.
+- Fix 1: Scene::build's own_cells now mirrors the walk's filters (rooms + retained-out classes
+  dropped; the cels_only 0x20/0xe2 extension appended). Pre-fix 379/765 non-room instances on
+  07000006 keyed materials under other placements' cells (wall-region generics under hidden ROOM
+  cells 13/20/22/38); post-fix 0/765.
+- Fix 2: build_chains' owner rule replaced by build_link_objects_to_rooms 0x1c9150 (radius gate +
+  bbox containment + the Collide_SphereIntersect 0x1ec940 closest-hit tie-break) via the new
+  world.closest_point_scoped (nf-game, minimal shared-file touch). find_cell_raycast stays for the
+  eye-cel picker.
+- The 9 chain(21) extras identified: the parked helicopter's statics (HeliPadLight 48 mats,
+  Helicopter 118, Cabin 38, Windows 3, the rear blocker) + 4 railing dots; their game-side owner is
+  the collision-assignment residue (live checks + report).
+- Pin: the_courtyard_walls_draw_with_the_walk_on — RED first (cell 40 keyed 4 foreign batches), then
+  GREEN (rooms {33,21} draw all their materials, chain(21) = live 40 + 9 counted extras, no wall
+  room leaks, the courtyard generics own their batches).
+- Report: docs/reports/fix-portal5.md. Render spots + live checks listed there.
+
+Stage Summary:
+- The courtyard walls draw from the visible rooms' own glists + chains, as the game does; the
+  port's node keys now match the game's per-placement glist identity. Left: the scoped collision
+  assignment (build_scoped's volume rule vs the game's per-cel link), the 9-extras owner live
+  check, the full-suite numbers and the render verification.
