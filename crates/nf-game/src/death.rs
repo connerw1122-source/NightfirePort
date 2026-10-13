@@ -20,18 +20,33 @@
 //!    0xff0000ff, `Music_Event(6,1)`, health 0), 3 → 7 (`TimeOut` 1.0 = 1 tick at FRAME_RATE_MUL
 //!    1.0 [L 0x30d0d8], `GS_PausePlayer(1,0)` per tick), 7 → 4, and case 4 opens the 0x40000042
 //!    menu [M 0x182c60:77-81].
-//! 6. The menu (`C_GCPAUSE_Handler` 0x204408, menu 0x40000042): Restart → `ResetMap_LevelToLoad(
-//!    Mission_BaseMapHCode(), 0, 1)` + `user_restarted_or_quit = 1` [M 0x204408:136-155]; Quit →
-//!    `GameState._28_4_ = 0x4000001c` + `ResetMap_LevelToLoad(0x7000048, 0, 0)` [M 0x204408:143-149].
-//!    `Mission_BaseMapHCode` returns `BaseMap` — the mission's FIRST level [M 0x1830a0].
+//! 6. The menu — the 0x40000042 fail/death menu's handler is `P_ENDMISSION_Handler` 0x216618
+//!    (`Handler_HandleMessage` 0x2029e0:498-500 routes menu id 0x40000042 to it; 0x204408 is the
+//!    PAUSE menu 0x10000028's handler, :217-219). Its event-0x4b arms over `__Menu_Send`'s row
+//!    index [M 0x216618:11-27]: row 0 (Restart) → `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` +
+//!    `Player_RamLoad(Bond, 1)` — the CURRENT level, `IsWarmReset = 1`, no 0x70→0x71 remap;
+//!    row 1 → `ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)` — BaseMap, cold;
+//!    row 2 → `GameState+0x28 = 0x4000001c` + `ResetMap_LevelToLoad(0x7000048, 0, 0)` — the front
+//!    end. `Mission_BaseMapHCode` returns `BaseMap` — the mission's FIRST level [M 0x1830a0].
 //!
-//! The restart is a COLD load: `ResetMap_LevelToLoad`'s IsWarmReset = 0 → `Init_SwitchChannels`
-//! zeroes every switch channel [M 0x1d5080:44-46, 0x134310] and `Player_RamLoad`'s whole body is
-//! gated on IsWarmReset [M 0x1957a8] — so no RamSave is carried: fresh loadout, fresh channels, and
-//! `Mission_Init(level, 0)` re-announces the mission from its first level. (The trigger-exit level
-//! change is the WARM arm: `ResetMap_LevelToLoad(next, 1, 0)` + `Player_RamSave` [M 0x1b2318:111-116]
-//! — that carry is fix-level2's.) Carrying the RamSave across a restart is what looped the user's
-//! 07000007 session: the saved ch 99 re-fails the mission the tick the level comes back.
+//! The Restart is a WARM reload of the CURRENT level: `IsWarmReset = 1` keeps the switch channels
+//! (`Init_SwitchChannels` only runs when it is 0 [M 0x1d5080:48-50]) and runs `Player_RamLoad`'s
+//! whole body [M 0x1957a8:9-37] — the ENTRY checkpoint (the `Player_RamSave` the previous level's
+//! exit made [M 0x1b2318:115]; script checkpoints too, case 0x12 [M 0x1d94c0:194-199]) comes back:
+//! Bond's loadout blocks, `PlrMissionStats`, the four channel arrays — whose ch 99/100 are clean
+//! because they were saved before this level ever failed — plus the difficulty health floor
+//! (`ContinueHealthBoost*`, all 50.0 [L ee_start_05.bin 0x30cc34-3c]) because the handler passes
+//! `Player_RamLoad`'s boost arg 1. `Mission_Init(level, 1)` resets the current and future parts'
+//! objective states + condition channels (previous parts keep theirs [M 0x182270:68-129]) and
+//! `Player_InitWeapon` re-runs the level's entry case (0x07000007: the fixed party loadout, armour 0
+//! [M 0x1a7ef8:176-186]). The trigger-exit level change is the other warm arm (`ResetMap_LevelToLoad(
+//! next, 1, 0)` + a fresh `Player_RamSave` [M 0x1b2318:111-116] — fix-level2's carry).
+//!
+//! fix-death-restart had the restart COLD to `Mission_BaseMapHCode()`, citing 0x204408 — that is
+//! the PAUSE menu's Restart, not the fail menu's (the handler routing, above). Carrying the DYING
+//! state is what looped the 07000007 session (playtest 2026-10-12): a capture taken at the fail
+//! brings ch 99 back. The game never does that — the restart restores the ENTRY checkpoint, whose
+//! channels predate the fail (fix-restart-target; docs/reports/fix-restart-target.md).
 
 /// The red fade's tick count (`RED_FADE_TICKS`): see the module docs — sprite width 512 [L
 /// BloodSprInfo 0x2bcfd8], the cover gate `viewer.h = 448` [M 0x19f4e8:33].
@@ -101,22 +116,26 @@ impl crate::drone::Drones {
         self.mission.menu_open && self.mission.menu_choice.is_none()
     }
 
-    /// Restart picked (`C_GCPAUSE_Handler` 0x204408:136-140,155): `ResetMap_LevelToLoad(
-    /// Mission_BaseMapHCode(), 0, 1)` — the mission's first level [M 0x1830a0], IsWarmReset = 0
-    /// (the COLD arm), `user_restarted_or_quit = 1`. The port marks the exit cold so the viewer's
-    /// reload drops the RamSave (`level_exit_cold`, consumed by lib.rs).
+    /// Restart picked (`P_ENDMISSION_Handler` 0x216618:19-21, menu 0x40000042's row 0):
+    /// `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` + `Player_RamLoad(Bond, 1)` — a WARM reload
+    /// of the CURRENT level (`GameState+0xC` — `Drones::level_current` [M 0x1d5080:6], the level
+    /// Bond is on, NOT the mission's base map; that is the pause menu's Restart, `C_GCPAUSE_Handler`
+    /// 0x204408:139) on the ENTRY checkpoint with the 50.0 health floor [L 0x30cc34-3c]. The viewer
+    /// re-serves the save this level was loaded with (`level_exit_restart`); it does NOT capture the
+    /// dying state — that would carry ch 99 and replay the fail (the old 07000007 loop).
     pub fn fail_choose_restart(&mut self) {
         if !self.mission.menu_open { return; }
-        let to = self.mission.base_map;
         self.mission.menu_open = false;
         self.mission.menu_choice = Some(crate::mission::MenuChoice::Restart);
-        self.level_exit = Some(to);
-        self.level_exit_cold = true;
+        self.level_exit = Some(self.level_current); // [M 0x216618:20 GameState._12_4_]
+        self.level_exit_cold = false;                // [M 0x216618:20 IsWarmReset = 1]
+        self.level_exit_restart = true;              // [M 0x216618:21 Player_RamLoad(Bond, 1)]
     }
 
-    /// Quit picked (`C_GCPAUSE_Handler` 0x204408:141-149): `GameState._28_4_ = 0x4000001c` and
-    /// `ResetMap_LevelToLoad(0x7000048, 0, 0)` — the front end. The port cannot load 0x07000048
-    /// (no front end); the viewer logs the request and holds, like the driving levels.
+    /// Quit picked (menu 0x40000042's row 2, `P_ENDMISSION_Handler` 0x216618:24-27 — the pause
+    /// menu's Quit is the same shape, `C_GCPAUSE_Handler` 0x204408:141-149): `GameState._28_4_ =
+    /// 0x4000001c` and `ResetMap_LevelToLoad(0x7000048, 0, 0)` — the front end. The port cannot load
+    /// 0x07000048 (no front end); the viewer logs the request and holds, like the driving levels.
     pub fn fail_choose_quit(&mut self) {
         if !self.mission.menu_open { return; }
         self.mission.menu_open = false;

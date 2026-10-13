@@ -44,3 +44,23 @@ GDB-server PCSX2, Bond held at `7.24,42.03,-39.31` yaw 10.161 pitch 0.428 (god m
 The chain walks `+0x18` from the room record; node class 0x8019 with or without 0x08000000, as fix-portal2's census
 said. This is the [L] answer to the chain-builder window question: compare the port's `CelGraph::chains` for its
 equivalent of 0x0179fb30 against this list.
+
+## View_AddForcedObjects at the courtyard spot: not the wall path (PINE, later the same day)
+
+fix-portal4 decoded `View_AddForcedObjects` 0x1e5fb8 (draws frustum-tested objects independent of the VisCelList) and
+proposed it as the courtyard-wall path. Checked live at the same spot [L]: the global object list
+(`DynamicObjList` 0x2705a0 + 0x14 = `control_first_object` 0x134300, next = obj+0x14) has **710 objects**; with the main
+viewer's mask (`1 << (glb_viewer[0]+0x28 & 0x1f)` = **0x1**; the global `object_display_mask` 0x30d87c reads 0x80
+between frames, the last viewer's) only **12 pass the function's static gates** (`+0xf8 & mask`, `+0xd8 != 0`,
+`+0xf0 & 0x8000`, not `+0xf0 & 0x10`):
+
+| class (+0xff) | count | spheres |
+|---|---|---|
+| 0x3d | 6 | at Bond (7.0..7.7, 42.3..43.0, −38.8..−40.0), r ≤ 0.2 (the player's own parts) |
+| 0x00 | 2 | (3.8, 42.4, −36.4) r 4.9; (28.1, 42.0, −18.2) r 2.0 |
+| 0x1c | 4 | (4.6, 50.1, −64.9), (4.4, 43.1, −51.1), (27.9, 41.1, −23.6), (35.9, 41.1, −16.3), all r 1.3 (doors) |
+
+None is a wall (the masonry spans tens of units). **So the forced-objects list does not draw the courtyard walls.** With
+VisCelCount = 2 (the eye cel and 0x0179fb30), the wall geometry must reach the draw through those two rooms: room
+0x0179fb30's own glist or its 40-node chain. Where the port attributes those wall meshes to other rooms (its cells
+20/22/38/13), the attribution is what differs from the game.

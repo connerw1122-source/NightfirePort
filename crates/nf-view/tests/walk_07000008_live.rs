@@ -75,9 +75,10 @@ fn the_gondola_mission_completes_and_hands_off_to_the_driving_level() {
     assert!(sim.drones.channels.on(100), "the mission-complete channel fires [M 0x1827d8:155-160]");
     // The mission ends into the DRIVING interlude 0x07300008 [M 0x182c60:100]; the port logs and skips driving
     // codes (docs/systems/mission.md §4), so the mark of the end is MissionState 6 (complete). `Mission_Update`
-    // reads ch 100 on the tick after the monitor raises it, so step once more.
+    // reads ch 100 on the tick after the monitor raises it, so step; fix-objective-banner: the
+    // monitor itself runs at the TOP of the tick (Game_Run order), one tick later still.
     let mut scene = scene;
-    scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+    for _ in 0..3 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
     let sim = scene.sim.as_ref().unwrap();
     assert_eq!(sim.drones.mission.status(), 6, "the mission completes (the driving hand-off is skipped by the port)");
 }

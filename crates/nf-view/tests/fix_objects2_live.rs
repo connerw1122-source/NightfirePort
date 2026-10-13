@@ -159,6 +159,9 @@ fn the_safe_bolts_open_the_safe_and_the_briefcase_completes_the_boarding_objecti
     sim.bond.pos = [172.7, 44.6, -116.2];
     assert!(wait(sim, 120, |s| s.drones.channels.on(0x4a)), "taking the briefcase writes ch 0x4A [M Pickup_Handler 0x18e650:330-333]");
     let i8 = nf_game::mission::LEVELS.iter().position(|l| l.level == 0x0700_0008).unwrap();
+    // fix-objective-banner: the monitor runs at the TOP of the tick (Game_Run order), completing
+    // the objective the tick after the channel rises.
+    for _ in 0..2 { sim.step_bond(Input::default(), false, false, false); }
     assert_eq!(sim.drones.mission.states[i8][0], 4, "the boarding objective completes [L record 3]");
     // Sister: the safe chain alone never completes the mission (the ride is still ahead).
     assert!(!sim.drones.channels.on(100), "the mission stays open without the ride");

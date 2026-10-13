@@ -29,12 +29,19 @@ impl Font {
     /// `__Font_DrawText` at scale 1 for one line: per character the kern of the previous glyph's pair list, the pre-gap
     /// (not for the first), the quad at (pen, y + yoff − (glyph 0's h + yoff)), then pen += w + post-advance. A space
     /// advances by the font's space width × 1.25 (*suggested* from the research pass). Returns the glyphs and the width.
+    ///
+    /// Iterates chars, not bytes [M: the game's renderer walks NUL-terminated byte strings — one glyph per byte;
+    /// `Lang::parse` re-encodes the bank's CP-1252 bytes as UTF-8, so a byte walk split "©" (U+00A9 → C2 A9) into
+    /// glyphs 0xC2 + 0xA9 and the title's legal line read "Â©" — the main agent's 2026-10-13 render]. Chars restore
+    /// the one-glyph-per-source-byte mapping: each CP-1252 byte became exactly one char, so glyph code = char code.
     pub fn layout(&self, text: &str, x: f32, y: f32) -> (Vec<Placed>, f32) {
         let top = self.glyphs.first().map_or(0.0, |g| (g.h + g.yoff) as f32);
         let (mut pen, mut out, mut prev): (f32, Vec<Placed>, Option<usize>) = (x, Vec::new(), None);
-        for ch in text.bytes() {
-            if ch == b' ' { pen += self.space * 1.25; prev = None; continue; }
-            let Some(gi) = self.glyph(ch as u16) else { continue };
+        for ch in text.chars() {
+            let ci = ch as u32;
+            if ci > 0xffff { continue; }
+            if ch == ' ' { pen += self.space * 1.25; prev = None; continue; }
+            let Some(gi) = self.glyph(ci as u16) else { continue };
             let g = &self.glyphs[gi];
             if let Some(p) = prev {
                 pen += self.glyphs[p].kerns.iter().find(|k| k.0 == ch as u16).map_or(0.0, |k| k.1 as f32);
@@ -143,7 +150,33 @@ impl Lang {
         if p + nf * 4 > data.len() { return Err(FormatError::Invalid("text table: fixups past the file".into())); }
         let mut fixups = Vec::with_capacity(nf);
         for _ in 0..nf { fixups.push(b.u32(p)?); p += 4; }
-        Ok(Lang { data: data[4..data_end].to_vec(), offsets, fixups })
+        // The bank's text is CP-1252 (the title's legal line holds "© 2002" as the lone byte 0xA9), so a
+        // raw `str::from_utf8` in `bind` failed and the string came back empty — fix-menus' unresolved
+        // legal line (docs/reports/fix-menus.md "What's left" 7). Decode to UTF-8 here and remap every
+        // offset, so `bind` never hits invalid UTF-8.
+        let raw = &data[4..data_end];
+        let mut decoded = Vec::with_capacity(raw.len() + 16);
+        let mut remap = vec![0u32; raw.len() + 1];
+        for (i, &c) in raw.iter().enumerate() {
+            remap[i] = decoded.len() as u32;
+            match c {
+                // 0x80–0x9f: the Windows-1252 table; 0xa0–0xff: latin-1 (U+00A0–U+00FF). Either way the
+                // byte is not valid UTF-8 on its own, so it becomes the character's UTF-8 encoding.
+                0x80..=0xff => decoded.extend_from_slice(Self::cp1252_high(c).encode_utf8(&mut [0u8; 4]).as_bytes()),
+                _ => decoded.push(c),
+            }
+        }
+        remap[raw.len()] = decoded.len() as u32;
+        let offsets = offsets.into_iter().map(|o| remap[(o as usize).min(raw.len())]).collect();
+        Ok(Lang { data: decoded, offsets, fixups })
+    }
+
+    /// One CP-1252 byte 0x80–0xff → its character: the Windows-1252 table for the 0x80–0x9f control
+    /// range (the five undefined slots become U+FFFD), latin-1 for 0xa0–0xff.
+    fn cp1252_high(c: u8) -> char {
+        const HIGH: [char; 32] = ['€', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{fffd}', 'Ž', '\u{fffd}', '\u{fffd}',
+                                  '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{fffd}', 'ž', 'Ÿ', '\u{fffd}'];
+        if (0x80..=0x9f).contains(&c) { HIGH[(c - 0x80) as usize] } else { c as char }
     }
 
     /// `Txt_BindLabel` (0x1cad60): the NUL-terminated string for a `0x2xxxxxx` label id, lossy-decoded.

@@ -96,3 +96,57 @@ Sky: `View_DrawSky` twice — slots with param 4 = 1 before the world (fogged), 
 ## Open
 
 VU1 microcode (snow size, light falloff, env map), who writes `SqueezeColourIn`, the FBMSK reading of the fog pass.
+
+## Sky remainder (fix-sky, GAPS G-019) [M unless noted]
+
+`View_DrawSky` (0x1e5ad0) ticks and draws the 21 sky slots (stride 0x40 in `GfxList` at 0x2d6270) whose
+`+0x4a` sky id matches its argument — the argument is the slot's **sky group**: 1 = before the world list,
+0 = after `psiPostSolid` / before the alpha list (`Game_Draw` 0x1e6f50). Placement parameter 4 is that
+group [M parsemap 0x1d04f0 case 0x2a — the caller copies the placement's parameter words to level+0x2c..,
+so param 0 = slot, 1 = flash variant, 2 = lightning interval, 3 = flash length, 4 = group].
+
+**Lightning** (`nf_game::sky`): a type-0x2A placement with param 1 ≠ 0 is the flash variant of its slot
+(`View_AddSkyObj` 0x1e79a0 stores param 2 × `FRAME_RATE` [L 0x30d0d0 = 60.0] as the dark-interval
+`Rand_Rand` argument and param 3 as the flash length). Per tick, when not flashing: the dark timer wraps
+0→0xffff and the `(int)(x << 16) < 1` test takes **0 and 1** — a fresh slot flashes on its first tick —
+then flash := flash length, dark := `Rand_Rand(interval)`, and `Rand_Rand(100) < 51` makes it a
+reflicker-type flash (thunder in 10 ticks, `LightningType` 1, sound 0x5e) with a normal one otherwise
+(thunder in `Rand_Rand(120) + 30` ticks, sound 0x5d). While flashing: ~50 % of ticks (`Rand_Rand(100) > 50`)
+draw the flash glist instead of the normal one; reflicker-type flash ticks raise `SuperHappyLightningFlag`
+[0x30d0b8], which shows the 8-beam lightning polyline (`Lightning_Update` 0x18cf68, re-fractaled by
+`Reflicker` via `FractalThing`; the beams follow the player). **The flash does not light the level**: no
+ambient write and no `Light_Create` in the path — the level-side evidence is the beams only; the port
+leaves a marked hook (`sky::Sky.globals.super_happy`) for 050-fix-lighting. RNG order per tick: flash start
+= `Rand_Rand(interval)` then `Rand_Rand(100)` (plus `Rand_Rand(120)` on the non-reflicker branch); a
+flashing tick = one `Rand_Rand(100)`; dark ticks draw nothing [M 0x1e5ad0:92-158].
+
+Disc parameters [D]: 0700000a Thunderhead slot 3 = interval 24 → 1440 ticks, flash 5; 0700000b slot 3 =
+30 → 1800, flash 10. The other 25 on-foot levels have no flash variant.
+
+**The rotating sky of 0x0700001B**: inside the per-slot body, when the glist flags lack bit 0x8, the frame
+counter `rotatosky.168` [0x30d878] increments once per slot pass (both of 0700001b's slots — SKY_StarField
+and SKY_Earth, flags 0x222 [D] — qualify, so +2 per frame while unpaused; the two layers' angles stay one
+count apart), and the draw matrix gets `RotMatrix([count × 0.00069444446, 0, 0])` concatenated on the
+outside: spin · slot-rotation · camera. 0.00069444446 = 1/1440 rad per count → a full revolution in
+~4524 frames ≈ 75 s. The same block recomputes the sun vector 0x2d88a0 every pass:
+`Vec_Spherical_2_Cartesian(1000.0, 0x409f2c8e, 0xbf29c920)` = 285.00002° azimuth, −38.00000° elevation —
+`Env_Create` 0x17b968 fills it from the level's +0x54/+0x58 degree parameters at load; here the hardcoded
+angles overwrite it each frame and the rotated matrix is applied (`ApplyMatrixLVI`) [M 0x1e5ad0:186-198,
+0x1e2368 RotMatrix, 0x1e4a90 Concat = B := A·B, 0x1e4960].
+
+**The sky pass's GS state**: the pass opens with `psiSetTweakARGB(0xff…)` (no tint), `psiSetUpColourBlend(2)`
+→ `AddDMAChainRegSet(0x2a, 0x42)` [M 0x1214f8] → ALPHA_1 = 0x2a = (0−0)·FIX0 + Cs = **replace, no blend**,
+`psiLight_SetLights(0,…)` (no lights), and `psiFog(...)` — **a stub** [M 0x121578, size 8; also in
+`Game_Draw`], so the sky pass itself writes no fog register. The glists confirm the inheritance [D
+sky_gs_live]: the 0700000a Thunderhead's first CNT carries **no A+D writes at all** (effective state =
+the pass-initial 0x2a / TEST_1 0x5001b), while 0700001b's SKY_StarField writes its own ALPHA_1 0x44
+(normal blend), TEST_1 0x5001b and ZBUF_1 0x1_31000000. gpu.rs's sky pipelines (pass 0: depth Always, no
+write; pass 4: LessEqual, no write, far-pin) stay as modeled; the exact ZMSK state the GS holds during the
+sky draws is a live check for the main agent below.
+
+**Snow and rain** are not sky-pass draws: `DrawDrops` 0x18cb90 runs after the alpha list (blend 2, no
+lights, `Game_Draw`). The physics/density live in `nf_game::env.rs` (`InitDrops` 0x18bf68 etc.). The look,
+from the decompile: DropType 1 draws each drop as sprite glist 0x2000290 at the drop position (plus a
+second, darker sprite 0x2000039 tinted `psiSetTweakARGB(0x24,0x20,0x20,0x20)` on levels 0x07000009-b);
+DropType 0/2 draw through `psiDrawParticleList(0.2f, …, argb 0xff808080, glist 0x3000045 / 0x3000087)`.
+Max counts: 4096 (snow), 2048 (rising), 128/64 (rain, split by level ≥ 0x0700000c).
