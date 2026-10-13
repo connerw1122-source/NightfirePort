@@ -288,6 +288,9 @@ pub struct Sim {
     /// The level's zip wires (placement type 0x3E, `Wire_Create` 0x1981d8). Bond grabs one by walking
     /// into its world sphere (fix-wire: the real grab + crossing live in `nf_game::player`).
     pub wires: Vec<nf_game::wire::Wire>,
+    /// The level's third icons (placement kind 0xFA, `ThirdIcon_Create` 0x197070). Each tick the Sim
+    /// writes the enabled icon's context into `bond.icon_ctx` (`BLData+0x95F`) — fix-wire2.
+    pub icons: Vec<nf_game::wire::Icon>,
     /// Whether Bond is currently on a wire (substate 6/0xF) — the music event 0xD source.
     pub creeping: bool,
     /// The wire anims' root tracks, resolved from the level archive's kind-5 scripts + the anim
@@ -984,14 +987,27 @@ impl Sim {
             let water = self.cel_at(self.bond.pos).map(|i| self.cels[i].water).filter(|w| *w > -400.0);
             let sink = input.crouch;
             let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink };
+            // The third-icon context [M ThirdIcon_Update 0x196e80 + Player_CollisionHandler 0x1949a8:22]:
+            // the tick starts with +0x95F = 0xFF (none), then every ENABLED icon (its param-1 channel on,
+            // or param 1 == 0 = always) whose room holds the player writes its type. The game scopes by the
+            // icon's room object list; the port stands in with the same-cel test, falling back to a 4-unit
+            // sphere when the cel can't be resolved [S]. The last enabled icon wins (the game re-writes per
+            // icon on its 4-tick refresh).
+            self.bond.icon_ctx = 0xff;
+            for icon in &self.icons {
+                if icon.on_channel != 0 && !self.drones.channels.on(u32::from(icon.on_channel)) { continue; }
+                let same_cel = self.cel_at(icon.pos).is_some_and(|i| Some(i) == self.cel_at(self.bond.pos));
+                let near = (icon.pos[0] - self.bond.pos[0]).powi(2) + (icon.pos[1] - self.bond.pos[1]).powi(2) + (icon.pos[2] - self.bond.pos[2]).powi(2) < 16.0;
+                if same_cel || near { self.bond.icon_ctx = icon.ctx; }
+            }
             // The wire grab scan [M Player_DealWithObjHit 0x194458: the collision pass's class-0x2C hit
-            // dispatches to Player_CollWire 0x197130; Player_HandleJump 0x1916b0 adds the jump-grab (the
-            // nearest class-0x2C scan, 0x1916b0:118-147)]. The game's hit test for a dynamic object is
+            // dispatches to Player_CollWire 0x197130]. The game's hit test for a dynamic object is
             // its world sphere vs the player's swept segment (Collide_PickObj 0x1eae80's version-0x200
-            // branch); the port scans the level's wires with the capsule segment while Bond walks. The
-            // use key runs the same scan [S — the PC action key; the game's jump/action button drives
-            // HandleJump's jump-grab, whose icon context (+0x95F == 3) is not ported]. Health guard [M
-            // CollWire refuses at +0x894 <= 0].
+            // branch); the port scans the level's wires with the capsule segment while Bond walks.
+            // THE USE KEY DOES NOT GRAB: `Player_Activate` 0x1a5170's dispatch has no class-0x2C arm —
+            // E does nothing at a wire in the game too. The second real grab path is the jump grab
+            // (Player_HandleJump 0x1916b0:118-147 with the icon context, ported in Bond::physics_tick).
+            // Health guard [M CollWire refuses at +0x894 <= 0].
             if self.bond.substate == nf_game::player::SS_WALK && self.bond.regrab == 0 && self.drones.health.health > 0.0 {
                 let (ca, cb) = self.bond.capsule_seg();
                 if let Some(wi) = self.wires.iter().position(|w| w.sphere_hits(ca, cb)) {
@@ -2937,6 +2953,10 @@ impl Scene {
             // against their map objects like the ladders (fix-wire: the world sphere replaces the
             // hardcoded 4.0 length; the endpoints derive at grab time per the atlas).
             let wires = nf_game::wire::all(level);
+            // The third icons (placement kind 0xFA, `ThirdIcon_Create` 0x197070): the interaction
+            // contexts written to `BLData+0x95F` each tick (fix-wire2 — the cable's type-3 icons gate
+            // the jump-grab). Position-only: the icon object has no gameplay geometry.
+            let icons = nf_game::wire::icons(level);
             // The wire anims' root tracks: the level archive's kind-5 scripts (the player body anims)
             // resolved to their sequences [D 07000005: 0x060005e5 101 frames → 0x04000536, the move pair
             // 0x060000b4/b5 → 0x04000034/35 travelling 0.7637/0.7106 per cycle].
@@ -2992,7 +3012,7 @@ impl Scene {
             drones.pickups.extend(placed_pickups);
             drones.pickups.extend(reserved);
             drones.script_pickup_slots = sim_slots.into_iter().collect();
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(),
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(),
                 laser_beam: None,
             })
         });

@@ -669,6 +669,7 @@ pub fn scenario(name: &str) -> Option<(&'static str, fn(&mut Scene))> {
         "autoaim" => ("Auto-aim (T)", scenarios::autoaim),
         "sniper-scope" => ("Sniper scope (right mouse)", scenarios::sniper_scope),
         "shotgun-reload" => ("Shotgun reload (R, shell-by-shell)", scenarios::shotgun_reload),
+        "fusebox-07000014" => ("Fusebox sabotage (07000014, crouched in the vent)", scenarios::fusebox_07000014),
         _ => return None,
     };
     Some((n, f))
@@ -682,6 +683,7 @@ pub const SCENARIOS: &[&str] = &[
     "door-anti-crush", "cutscene-ai-pause",
     "ghostly-white", "door-textures", "invisible-walls", "level-exit",
     "weapon-switch", "sg5-pickup", "wire-music", "autoaim", "sniper-scope", "shotgun-reload",
+    "fusebox-07000014",
 ];
 
 mod scenarios {
@@ -1209,5 +1211,40 @@ mod scenarios {
             }
         }
         eprintln!("[dev] shotgun-reload: Bond has the SG5 Commando (0x16) with an empty clip. Press R to reload (loads all rounds at once — the shell-by-shell loop needs a shotgun 0x1c which is not in this level's archive).");
+    }
+
+    /// fix-wire2 — the 07000014 fusebox sabotage demo. The user's playtest: the fusebox spot spawned
+    /// him ABOVE the vent he was supposed to be in. This scenario starts Bond CROUCHED INSIDE the
+    /// level's crawl vent — the [D]-proven crawl tunnel system at x 31-41 (headroom 1.44-1.46 over
+    /// floor 2.15-2.40; the cold start (40.81, 2.40, 65.08) is the tunnel's north end). The spot
+    /// (41.0, 2.45, 62.0) is inside the north run's 1.46 headroom [D probe_vent2]. From there the user
+    /// crawls south (hold C) to the vent drop (TouchOnce #301 at 39.68..41.75, 2.07..4.14,
+    /// 37.62..40.40 [D]) and plays the chain to the sabotage. The Laser (0x4E — the disc's cutting
+    /// weapon, bullet category 0x0002 [L weapon_data; M Collide_FilterBullets 0x1ece30]) is owned,
+    /// loaded and selected so the wires can be burned on arrival (fix-fusebox-cut's cut path).
+    pub fn fusebox_07000014(scene: &mut Scene) {
+        let Some(sim) = scene.sim.as_mut() else { return };
+        if sim.level != 0x0700_0014 {
+            eprintln!("[scenario] fusebox-07000014: this scenario is 07000014-only (the fusebox sabotage level).");
+            eprintln!("[scenario] Run: nf-view <iso> 07000014 --dev --scenario fusebox-07000014");
+            return;
+        }
+        let pos = [41.0, 2.45, 62.0];
+        sim.bond = nf_game::player::Bond::new(pos, std::f32::consts::PI);
+        // Start CROUCHED (the crawl): `Player_HandleJump`'s crouch set — `crouched`, cc = the 0.55
+        // crouch root height [M 0x1924c0; the port's CROUCH_ROOT_HEIGHT]. crouch_drop eases in on tick.
+        sim.bond.crouched = true;
+        sim.bond.cc = nf_game::player::CROUCH_ROOT_HEIGHT;
+        let wi = sim.weapons.records.len();
+        if wi > 0x4e {
+            sim.drones.inventory.owned[0x4e] = true;
+            sim.drones.inventory.clip[0x4e] = 100;
+            sim.gun.weapon = 0x4e;
+            sim.gun.switch_request = 0x4e;
+            sim.view_script = sim.weapons.idle_script(0x4e);
+            sim.view_time = 0.0;
+            sim.view_speed = 1.0;
+        }
+        eprintln!("[scenario] fusebox-07000014: Bond crouched INSIDE the vent at (41.0, 2.45, 62.0), facing the drop (south). Hold C to stay crouched and W to crawl south to the vent drop; the chain then runs to the generator room. The Laser (0x4E) is out — burn the fusebox wires with left mouse.");
     }
 }

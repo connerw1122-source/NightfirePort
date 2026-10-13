@@ -193,6 +193,12 @@ pub struct Bond {
     /// The Q-Claw grapple's runtime state (`BLData+0x140..0x160` narrowed; fix-gadgets). `Some`
     /// while the substate 2 runs [M Player_SetGrapplePoint 0x195da0 → ChangeSubState(2)].
     pub grapple: Option<crate::gadget::GrappleState>,
+    /// `BLData+0x95F`: the third-icon interaction context — 0xFF = none. `Player_CollisionHandler`
+    /// 0x1949a8:22 resets it every tick and `ThirdIcon_Update` 0x196e80 writes the enabled icon's
+    /// type (param 0) while the player is in its room; `Player_HandleJump` 0x1916b0:118-147 grabs the
+    /// nearest wire when the jump is pressed with 3 (the cable context). The Sim (scene.rs) owns the
+    /// reset + the icon writes.
+    pub icon_ctx: u8,
 }
 
 impl Bond {
@@ -201,7 +207,9 @@ impl Bond {
         Bond { pos, yaw, pitch: 0.0, local: [0.0; 2], vel: [0.0; 3], grounded: true, floor_ny: 1.0, grounded_history: 8, jump: 0, land_delay: 0,
             crouched: false, lockout: 0, cc: ROOT_HEIGHT, crouch_drop: 0.0, eye: EYE, fall_timer: 0, head_bump: false, fall_damage: None,
             substate: SS_WALK, ladder: None, climb_top: 0.0, climb_bottom: 0.0, regrab: 0, mode: 0, saved_sub: 0, air: 100.0, drown_damage: None, underwater: false,
-            water_fade: 0.0, air_tick: 0, push_fwd: 0.0, wire: None, auto_drop: 0.0, wire_anim: 0, wire_anim_time: 0.0, wire_anim_rate: 1.0, cam_mode: 0, fall_speed: 0.0, grapple: None }
+            water_fade: 0.0, air_tick: 0, push_fwd: 0.0, wire: None, auto_drop: 0.0, wire_anim: 0, wire_anim_time: 0.0, wire_anim_rate: 1.0, cam_mode: 0, fall_speed: 0.0, grapple: None,
+            icon_ctx: 0xff,
+        }
     }
 
     /// On the floor below `p` (within 10 units), as a level start places him.
@@ -278,7 +286,7 @@ impl Bond {
     /// 0x2D to `Player_CollLadder` 0x196118.
     fn walk_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
         if self.enter_water(ctx) { return; }
-        self.physics_tick(world, input, false);
+        self.physics_tick(world, ctx, input, false);
         self.ladder_grab(ctx);
     }
 
@@ -307,7 +315,7 @@ impl Bond {
     /// Bond's y is below the water surface [M the default case jumps past `WldGravity` to the substate
     /// capsule switch when `cel+0x90 > obj+0x34`].
     fn swim_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
-        self.physics_tick(world, input, true);
+        self.physics_tick(world, ctx, input, true);
         let Some(w) = ctx.water else { self.substate = SS_WALK; return };
         if self.grounded && w <= self.pos[1] - 0.3 {
             // Leave the water [M case 3: `(AnimObj+0x60 & 8) && cel+0x90 <= pos.y − 0.3` → substate 0].
@@ -378,7 +386,7 @@ impl Bond {
     fn climb_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
         let li = match self.ladder {
             Some(li) if ctx.ladders.get(li).is_some() => li,
-            _ => { self.substate = SS_WALK; self.ladder = None; self.physics_tick(world, input, false); return; }
+            _ => { self.substate = SS_WALK; self.ladder = None; self.physics_tick(world, ctx, input, false); return; }
         };
         let lad = &ctx.ladders[li];
         // The yaw clamp+ease [M 0x196310:18-33]: target = ladder.yaw + π (facing the ladder). The ease
@@ -596,7 +604,7 @@ impl Bond {
     fn wire_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
         let wi = match self.wire {
             Some(wi) if ctx.wires.get(wi).is_some() => wi,
-            _ => { self.substate = SS_WALK; self.wire = None; self.physics_tick(world, input, false); return; }
+            _ => { self.substate = SS_WALK; self.wire = None; self.physics_tick(world, ctx, input, false); return; }
         };
         let wire = ctx.wires[wi].clone();
         let hang = 1.0207f32;
@@ -659,8 +667,11 @@ impl Bond {
             self.wire_anim_add(hash, 1.0, sign, closest, hang);
             return;
         }
-        // The move/turn tree [M 0x1978e0-0x1979d0] — only once the current anim stopped (mode ≠ 6).
-        if !stopped { return; }
+        // The move/turn tree [M 0x1978e0-0x1979d0]. The decompile gates on `AnimScriptIsStopped`
+        // ONLY when the mode byte is NOT 6 — an idle (mode 6) with move input falls straight into the
+        // move tree (0x197838's `if (+0x94D == 6)` only wraps the idle branch), so a strafe press
+        // during the idle starts the move immediately instead of waiting out the idle cycle.
+        if self.mode != 6 && !stopped { return; }
         if next_mode >= 7 {
             let target = if next_mode == 7 { wire.yaw + 3.0 * std::f32::consts::FRAC_PI_2 } else { wire.yaw + std::f32::consts::FRAC_PI_2 };
             let diff = wrap_pi(target - self.yaw);
@@ -702,7 +713,7 @@ impl Bond {
     fn zipline_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, _input: &Input) {
         let wi = match self.wire {
             Some(wi) if ctx.wires.get(wi).is_some() => wi,
-            _ => { self.substate = SS_WALK; self.wire = None; self.physics_tick(world, _input, false); return; }
+            _ => { self.substate = SS_WALK; self.wire = None; self.physics_tick(world, ctx, _input, false); return; }
         };
         let wire = ctx.wires[wi].clone();
         if self.mode == 9 {
@@ -791,7 +802,7 @@ impl Bond {
     /// One 60 Hz physics tick (the port's `Player_Move` + `Player_Collision` walk body). `swimming`
     /// selects the swim-substate differences: no `Player_HandleJump` (case 3 doesn't call it [M]) and no
     /// gravity (`Player_Collision`'s water path skips `WldGravity` [M]).
-    fn physics_tick(&mut self, world: &CollisionWorld, input: &Input, swimming: bool) {
+    fn physics_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input, swimming: bool) {
         let prev = self.pos;
         self.fall_damage = None;
         // `Player_SSWalk` / `Player_SSCrouch`: the lockout runs down (*deviation*: the transition animation that may
@@ -823,6 +834,21 @@ impl Bond {
             self.cc = ROOT_HEIGHT;
             self.lockout = 60;
         } else if !self.crouched && self.jump == 0 && input.jump && self.grounded_history != 0 && !self.head_bump && headroom(world) {
+            // `Player_HandleJump` 0x1916b0:118-147 — the jump grab: with the third-icon context 3 (the
+            // wire icon, `BLData+0x95F`), the press scans the level's wires for the NEAREST class-0x2C
+            // within 1000 units (no capsule test) and grabs it instead of jumping [M — the game's scan
+            // is `control_first_object` over class ',' with `Vec_Dist3D`]. A refused grab (the regrab
+            // lockout inside `grab_wire`) still eats the jump — the game returns from HandleJump
+            // regardless [M 0x1916b0:146-149]. No context (0xFF) or other types → the plain jump.
+            if self.icon_ctx == 3 {
+                if let Some(wi) = ctx.wires.iter().enumerate()
+                    .filter(|(_, w)| dist3_sq(w.centre, self.pos) < 1000.0 * 1000.0)
+                    .min_by(|(_, a), (_, b)| dist3_sq(a.centre, self.pos).partial_cmp(&dist3_sq(b.centre, self.pos)).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(i, _)| i) {
+                    self.grab_wire(wi, ctx);
+                    return;
+                }
+            }
             self.vel = [0.0, -GRAVITY * 0.4, 0.0];
             self.jump = 1;
             self.land_delay = 4;
