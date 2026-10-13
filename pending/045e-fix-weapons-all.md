@@ -24,6 +24,10 @@ Files: `crates/nf-game/src/{gun,bullet,pickup}.rs`, and the weapon parts of `sce
 - **Switching levels in the dev panel** "eventually was given a weapon I cant use and had to swap".
 - On 07000012 there were "killable MP, unkillable NPCs, like enemies": find which drones can't be killed.
 
+## New from the user's second round (2026-10-12 evening)
+
+- **The dev panel gives the wrong items** (`nades05`): "a frag grenade spawns what looks to be a stun grenade that explodes like a frag grenade. I cant tell whats what. no clue what the rocket launcher is". Audit the panel's give list against `weapon_data` (ids, names via the game's labels, the pickup kind it creates) so every entry gives exactly the named weapon with its own view model and projectile (models-weapons-items pinned the projectile meshes: frag 0x35 → 0x02000726, stun 0x36 → 0x0200071f, rocket 0x3A → 0x0200074f). Test: each panel entry → the equipped weapon id, its view model and the thrown/fired projectile's mesh.
+
 **Reproduce before you fix.** The user's play is the reference, and previous fixes passed tests but still failed in play. For each bug:
 1. Write a headless NF_ISO test that drives the real input path (the `nf-view` input mapping into `Sim`, or `nf_view::load` plus `dev::scenario`), and show it reproducing the user's symptom.
 2. Then find the cause in the decompile and fix it.
