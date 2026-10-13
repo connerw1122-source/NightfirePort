@@ -41,6 +41,7 @@ pub mod pickup;
 pub mod player;
 pub mod ps2math;
 pub mod searchlight;
+pub mod sky;
 pub mod sound;
 pub mod spawners;
 pub mod trig;
