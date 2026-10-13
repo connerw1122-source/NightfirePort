@@ -134,10 +134,14 @@ fn the_facility_chain_runs_to_the_delta_sector_exit() {
     assert!(scene.sim.as_ref().unwrap().drones.channels.on(0x0d), "SEQ_AND #475 [0x8C, 0x0F] raises 0x0D [D]");
     assert!(scene.sim.as_ref().unwrap().drones.list[rook_i].started, "Rook leaves his switch-channel wait [M 0x14b300]");
     // Kill him through the game's own explosive path (the castle walkthrough's grenade route).
+    // fix-weapons-all [M Bullet_CollisionHandler 0x12ce80]: a landed grenade never explodes on
+    // contact — it bounces/sits and pops at its tick fuse. This drop is set one tick from its fuse
+    // (travelled 59 of range 60) so the blast lands before Rook's AI walks him out of the 3-unit
+    // radius — the game's own timing for a grenade that lands and immediately goes off.
     let rp = scene.sim.as_ref().unwrap().drones.list[rook_i].pos;
     scene.sim.as_mut().unwrap().drones.grenades.push(nf_game::grenade::Grenade {
         pos: [rp[0], rp[1] + 0.5, rp[2]], velocity: [0.0, 0.0, 0.0], speed: 0.0,
-        travelled: 0.0, range: 60.0, damage: 100.0, radius: 3.0, weapon_type: 0x35, mesh: 0x0200_0726, owner: usize::MAX, state: 0, bounces: 0,
+        travelled: 59.0, range: 60.0, damage: 100.0, radius: 3.0, weapon_type: 0x35, mesh: 0x0200_0726, owner: usize::MAX, state: 0, bounces: 0,
     });
     let mut dead = false;
     for _ in 0..300u32 {
