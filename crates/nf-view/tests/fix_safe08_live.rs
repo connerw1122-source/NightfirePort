@@ -236,6 +236,52 @@ fn probe_blue_block_and_take_rays() {
             }
         }
     }
+    // The instance->cell mapping (the build_scoped rule) for the floor under the GuardRoom fusebox.
+    if let Some(start40) = cell_at([153.15, 43.38, -119.67]) {
+        // BFS reachability from the fusebox cell (the portal graph, no shape test — the upper bound).
+        let mut seen = vec![false; graph.cells.len()];
+        seen[start40] = true;
+        let mut frontier = vec![start40];
+        while let Some(c) = frontier.pop() {
+            for p in &graph.portals {
+                let d = if p.cel_a == c { Some(p.cel_b) } else if p.cel_b == c { Some(p.cel_a) } else { None };
+                if let Some(d) = d { if !seen[d] { seen[d] = true; frontier.push(d); } }
+            }
+        }
+        let reach: Vec<usize> = (0..seen.len()).filter(|&i| seen[i]).collect();
+        eprintln!("[probe] fusebox cell {start40}; portal-reachable: {reach:?}");
+        // The mapped cell of every instance whose transformed bbox contains the fusebox floor point.
+        for (ii, inst) in instances.iter().enumerate() {
+            let Some(c) = &level.maps[inst.map].objects[inst.object].collision else { continue };
+            let centre = transform(&inst.matrix, level.maps[inst.map].objects[inst.object].centre);
+            let mc = cell_at(centre);
+            let _ = c;
+            if mc.is_some_and(|m| m == start40) || ii < 3 {
+                let o = &level.maps[inst.map].objects[inst.object];
+                eprintln!("[probe] inst {ii} {} mapped cell {mc:?} centre {centre:?}", o.name);
+            }
+        }
+        // Which instances have tris under the fusebox point (down-ray), and their mapped cells.
+        let from = [153.15, 44.2, -119.67];
+        let to = [153.15, 40.0, -119.67];
+        for (t, ii, mat) in hits(from, to).into_iter().take(8) {
+            let inst = &instances[ii];
+            let centre = transform(&inst.matrix, level.maps[inst.map].objects[inst.object].centre);
+            eprintln!("[probe] floor hit t {t:.3} mat {mat} inst {ii} {} mapped cell {:?}", level.maps[inst.map].objects[inst.object].name, cell_at(centre));
+        }
+    }
+    // The critical cells' bboxes.
+    for ci in [40usize, 48, 59, 106] {
+        let c = graph.cells[ci];
+        eprintln!("[probe] cell {ci} bbox lo {:?} hi {:?}", c.min, c.max);
+    }
+    for (label, p) in [("fusebox", [153.15f32, 43.38, -119.67]), ("doorway", [161.87, 43.39, -116.54]), ("bedroom mid", [157.0, 43.3, -114.5])] {
+        let mut inside = Vec::new();
+        for (i, c) in graph.cells.iter().enumerate() {
+            if (0..3).all(|k| c.min[k] <= p[k] && p[k] <= c.max[k]) { inside.push(i); }
+        }
+        eprintln!("[probe] {label} {p:?} inside cells {inside:?}");
+    }
     panic!("probe done");
 }
 

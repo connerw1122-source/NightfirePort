@@ -472,11 +472,11 @@ impl Bond {
         // the collision pass).
         for k in 0..3 { self.pos[k] += self.vel[k] / 60.0; }
         let (a, b) = self.capsule();
-        let (push, walkable) = world.capsule_push_scoped(self.cel, a, b, RADIUS);
+        let (push, walkable) = world.capsule_push(a, b, RADIUS);
         self.head_bump = push[1] < -1e-4;
         for k in 0..3 { self.pos[k] += push[k]; }
         let ray = self.cc + 0.6;
-        let floor = world.segment_hit_scoped(self.cel, self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
+        let floor = world.segment_hit(self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
         self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
         if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
     }
@@ -855,9 +855,9 @@ impl Bond {
         for k in 0..3 { if !(swimming && k == 1) { self.pos[k] += self.vel[k] / 60.0; } }
         // `Player_CollisionHandler`: the floor ray first, then the capsule's push.
         let (a, b) = self.capsule();
-        let (push, walkable) = world.capsule_push_scoped(self.cel, a, b, RADIUS);
+        let (push, walkable) = world.capsule_push(a, b, RADIUS);
         let ray = self.cc + 0.6;
-        let floor = world.segment_hit_scoped(self.cel, self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
+        let floor = world.segment_hit(self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
         self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
         if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
         self.head_bump = push[1] < -1e-4;

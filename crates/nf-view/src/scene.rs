@@ -2990,16 +2990,16 @@ impl Scene {
             let m = level.main_map()?;
             // Breakables (type 0x20) are drawn but not solid yet: their collision rules (glass that sight and bullets
             // pass or break) come with the Break_Create port.
-            // fix-safe08b: the cel scope is implemented (`CollisionWorld::build_scoped` +
-            // `capsule_push_scoped`/`segment_hit_scoped`/`segment_take_scoped`, the straddle walk of
-            // `Collide_StraddleCels` 0x1eac98) and unit-tested, but NOT enabled for the actor capsule
-            // yet: on 07000008 the scoped capsule/floor at the GuardRoom fusebox (Bond at
-            // (153.15, 43.38, -119.67), cell 40) falls through the floor — a floor instance maps to a
-            // cell the capsule's straddle walk does not keep (the game's `build_LinkToRoom` 0x1c9680
-            // raycast tie-break in `build_FindCel` 0x1c8cb0 picks a different cel than the port's
-            // smallest-volume heuristic for the big shared floors). The world stays flat; the TAKE
-            // query still uses its scoped path with the flat fallback (`segment_take_scoped`).
-            let world = nf_game::world::CollisionWorld::build(level, &level.instances(true).0);
+            // fix-safe08b: the cel scope is built (`CollisionWorld::build_scoped`, the straddle walk
+            // of `Collide_StraddleCels` 0x1eac98 via `Intersect_Portal` 0x1ea7b8). The TAKE query uses
+            // it (`segment_take_scoped`: flags 0x721's cel scoping + the 0xd/0xe surface skip +
+            // `Collide_Pick`'s 0x1000 skip). The ACTOR CAPSULE and the floor ray stay FLAT for now:
+            // with the scope, Bond falls through the GuardRoom floor at the fusebox — the shared
+            // `Room_Stairwell_T_2` mesh maps to cell 59 by the port's smallest-volume rule, which the
+            // capsule's straddle walk from cell 40 never keeps; the game's `build_LinkToRoom` 0x1c9680
+            // links by `build_FindCel` 0x1c8cb0's RAYCAST tie-break among all containing cels, which
+            // the port has not ported (the next session's item, with the live check).
+            let world = nf_game::world::CollisionWorld::build_scoped(level, &level.instances(true).0, Some(scope_graph(&cel_graph)));
             let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, d.level_id);
             let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
             let hitboxes = d.hitboxes.clone()?;
