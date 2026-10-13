@@ -9102,3 +9102,19 @@ Stage Summary:
 - G-028: the flee chain and ValidateCoverAnim are IN; the slide constant is decompile-true with its
   dead-code status documented; the 8-slot table and the +0x538 blend-out remain open with the blockers
   written down. Branch s/fix-cover-remainder; report docs/reports/fix-cover-remainder.md.
+
+## fix-facial3 (s/fix-facial3) — 2026-10-14
+Task: the facial remainder after fix-facial2 (the morph buffer + the CPU vertex half are merged) —
+(1) the idle/blink driver AnimFacialUpdate 0x1be310 (state byte +0x99, timer +0x92, the male/female
+state tables already banked in anim.rs, its Rand_Rand draws in order) wired into the drones' anim
+loop; the draws move seed-pinned tests (re-pick by WORKLOG 0072). (2) The face tracks' consumer:
+script_pose_drone poses BONES from the 22-channel tracks today; the decode says they're morph
+weights — re-point to the weights, keeping the 07000006 truck driver's immobility and ai_traces
+green (the immobility must then come from the body track's root: check the data first). (3) The GPU
+skinning path: apply the morphs in the vertex shader or upload the morphed positions for faces;
+keep the GPU vs CPU palette oracle green. Tests: eyelids close/reopen on the blink cycle; a
+dialogue mouth moves at frame 767 of the 07000005 ledge track; sister assertions. Files:
+crates/nf-game/src/{anim,drone}.rs, crates/nf-view/src/{scene,gpu}.rs.
+Started 22:56 UTC, sandbox expires ~00:54 UTC (stop new work 00:34 UTC). Branch cut from
+origin/master (5017f15 — facial2 + viewmodel-zoom merged). Setup all in place from the prior
+session (repo, work/, ISO, nf-queue, rustup, user-prefix ALSA).
