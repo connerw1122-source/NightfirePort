@@ -6949,3 +6949,15 @@ NPC door path — 045g-fix-npc-doors2), 0a (the cab-mouth SS leaves ch 0x00; the
 snapshot holds them closed too [L ee_start_0700000a.bin 0xE2E2A4/0xE2E314] — the arrival writer
 is missing), 13 (the entrance mouth glazed at z≈65 — the gate-raise writer missing), 14 (the
 vent cut-scene ch 0x47 — walkreal-b's parked item). Report: docs/reports/fix-walkreal-b2.md.
+
+## verify-bitexact (s/verify-bitexact) — 2026-10-13
+Task: differential testing against the real game's own calls. Build the harness
+(crates/nf-game/tests/diff_calls.rs) that replays every .calls recording from master's
+tests/calls/ through a port adapter and requires bit-identical results; sister test that a
+one-bit change fails. Then the adapters in order: PS2Sinf3/PS2Sinf/PS2Cosf (port the game's
+approximation exactly, use it at every game call site — GAPS G-017), Quat_QuatToMat +
+psiBuildMatrixPalette's VU0 composition (G-024), Rand_Rand/Rand_FRand, and a new
+crates/nf-game/src/ps2math.rs (EE FPU + VU0 multiply/add/multiply-add with unit tests). Then
+spec what to record next for the game-logic functions (Lights_CalcClosestLights, Check_Target,
+Player_AutoAim, Collide_RayIntersect, HUD_UpdateAmmoPane). Report ends with a recording-request
+table. Started 09:09 UTC, sandbox expires ~11:08 UTC.
