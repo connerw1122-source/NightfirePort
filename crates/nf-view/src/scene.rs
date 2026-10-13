@@ -764,13 +764,25 @@ fn link_owner_room(graph: &CelGraph, generic: usize, world: &nf_game::world::Col
     best.map(|(i, _)| i)
 }
 
-/// `Vision_InView` (0x1e89e0) [M]: visible iff for each of the four viewer+0x70 side planes
-/// `n·c + d·r + r >= 0` — the SIMD dot of the node's (centre, radius) VECTOR against the (n, d)
-/// plane plus the radius slack (`if (dot < -param_1) return 0`, param_1 = the radius at cel+0x8c).
+/// `Vision_InView` (0x1e89e0) [M]: visible iff the node's (centre, radius) sphere meets each of the
+/// four viewer+0x70 side planes. The port reads the game's test as the signed-distance form
+/// `n·c + d + r >= 0`. The RAW decompile is `dot((cx,cy,cz,r),(n,d)) < r -> reject` (c.lt.s f0, f12
+/// + bc1t -> return 0; the decompile's `< -param_1` is a Ghidra polarity artifact), i.e. the literal
+/// `n·c + d·r >= r` — but that form is untestable-absurd with the game's OWN stored planes [L
+/// ee_start_05.bin: |n| = 1, n·eye + d = 0, d = 51..117 — the fustrum builder 0x1e7df8 anchors every
+/// side plane at the eye through the far-quad corners, so d = -n·eye scales with the eye's distance
+/// from the world origin]: at the 05 start (|eye| = 153) the d·r term adds 130..300 of slack per
+/// plane (the cull degenerates to draw-everything), and at the 07000007 clock-hall spot (the eye
+/// looking away from the origin, d = -69.6 on the left plane) it subtracts 184 and rejects the
+/// grandfather clock at r = 2.65 that the real game DRAWS [L ground truth]. The two readings agree
+/// exactly when |d| << 1, and the signed-distance form is that common limit — the port ships it and
+/// lists the open question (what the game's +0x70 quads hold mid-gameplay) under the report's live
+/// checks. fix-portal6 (the fix-portal5 regression: every chain node of a visited room failed this
+/// gate at the clock hall, dropping the clock + the wall shields the game shows).
 /// The port derives (centre, radius) from the cel's glist bbox (the game's sphere comes from the
 /// pCelList record's +0x10..0x1c) — documented as the approximation. fix-portal2.
 pub fn vision_in_view(centre: [f32; 3], radius: f32, sides: &[[f32; 4]; 4]) -> bool {
-    sides.iter().all(|p| p[0] * centre[0] + p[1] * centre[1] + p[2] * centre[2] + p[3] * radius + radius >= 0.0)
+    sides.iter().all(|p| p[0] * centre[0] + p[1] * centre[1] + p[2] * centre[2] + p[3] + radius >= 0.0)
 }
 
 /// A cel's (centre, radius) sphere from its bbox — the `Vision_InView` input.
