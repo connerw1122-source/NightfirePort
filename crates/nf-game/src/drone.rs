@@ -6531,8 +6531,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // the last frame — see the snapshot above), plus the level id for the cleanup's split.
                 let action = self.spawners[index].update(&mut self.channels, frame, d.level,
                     |i| list[i].present, |i| drawn_prev[i],
+                    // Pre-selection usability: the spot at least `min_dist` from the player
+                    // [M 0x137cb0:30 — usable templates are skipped without consuming the draw].
                     |i, min| { let q = list[i].pos; let dd = ((q[0] - player.pos[0]).powi(2) + (q[2] - player.pos[2]).powi(2)).sqrt();
-                        dd >= min && !visible_to(player, d.world, q, [q[0], q[1] + 0.6, q[2]]) },
+                        dd >= min },
+                    // Post-selection abort: the picked spot visible to Bond fails the attempt
+                    // [M 0x137cb0:43 — the slot persists and retries next tick].
+                    |i| { let q = list[i].pos; visible_to(player, d.world, q, [q[0], q[1] + 0.6, q[2]]) },
                     &mut |n| rng.rand(n));
                 match action {
                     crate::spawners::Action::Spawn(i) => {
@@ -6564,6 +6569,21 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         for i in v { self.list[i].present = false; self.list[i].enabled = false; self.llist.retain(|&k| k != i); }
                     }
                     crate::spawners::Action::None => {}
+                }
+                // The mode-3 re-arm stinger [M 0x137e68:191-200]: `NDrone2_PlaySFX(1.0, NULL,
+                // Drone_SfxInfo[0xD6/0xD7], NULL, enforceDelay = 1)` — the entry's 600-frame repeat
+                // delay throttles and is stamped even when suppressed [M 0x141848:81-92, stamped
+                // at 0x141a1c before the play]. The game passes a NULL position (no DCVars, no
+                // drone object); the port plays at the group's first template spot [S — a live
+                // check should confirm where the real game puts it].
+                if let Some(idx) = self.spawners[index].sfx_request.take() {
+                    if let Some(l) = Self::foley_entry(d.voices, &mut self.voice_last, idx as usize, frame) {
+                        let pos = self.spawners[index].templates.first().and_then(|&i| self.list.get(i)).map(|dr| dr.pos).unwrap_or([0.0; 3]);
+                        match d.sfx {
+                            Some(t) => { self.play_sound_handle(pos, t.get(l.sfx)); }
+                            None => { self.audio.play3d(l.sfx, pos, None); }
+                        }
+                    }
                 }
                 continue;
             }
