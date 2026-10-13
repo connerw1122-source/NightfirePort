@@ -26,6 +26,8 @@ pub mod fusebox;
 pub mod gadget;
 pub mod gas;
 pub mod copter;
+pub mod casing;
+pub mod effect;
 pub mod lock;
 pub mod ss;
 pub mod mission;

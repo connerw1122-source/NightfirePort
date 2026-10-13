@@ -7408,3 +7408,36 @@ from `s/fix-swim-vent` (6b63096, the swim fix + the vent crawl) and merges
 fix_mission_live 347 + fix_objects2_live 117 + walkreal_0700000c_live 94), fix each
 from evidence (docs/formats/collision.md, the disc normals, Collide_Pick 0x1eb320),
 full suite green before every push, report at docs/reports/fix-swim-vent2.md.
+## fix-impacts (s/fix-impacts) — 2026-10-13
+Task: bullet decals, ejected shell casings, impact dust and sparks, ricochets, bullet
+trails (G-041/G-025). Port the game's effect path sim-side first (Effect_Create 0x1ce688,
+Effect_Bullet 0x1ce8a8, the 200-entry FIFO, casings 0x12f678/0x12fde0/0x12faa0,
+Debris_Create 0x1aaa00, Particles_Create 0x1cf478, Effect_RicochetProb 0x1cf290), keep the
+RNG draws in game order, expose one Scene function returning this frame's effect vertices.
+Started 10:58 UTC, sandbox expires ~12:56 UTC.
+
+**fix-impacts outcome (12:47 UTC)**: the game's impact path is in, sim-side — `EffectInfo` 0x3037c0
+parsed at runtime into `SurfaceSounds.effects` (decals, ricochet N, the +0x1c reflection bits, 3 gas
+entries, debris fields) plus `ammo_data` (casing meshes); `crates/nf-game/src/effect.rs` implements
+`Effect_Create` 0x1ce688 / `Effect_Bullet` 0x1ce8a8 / `Debris_Create` 0x1aaa00+`Debris_Update`
+0x1aac00 / `Effect_RicochetProb` 0x1cf290 with the game's draw order and the 200-entry decal FIFO;
+`crates/nf-game/src/casing.rs` ports the 32-slot casing pool (0x12fd48/0x12fde0/0x12f678/0x12faa0,
+7 RNG draws per eject in game order, the material landing-sound table); both impact sites + both fire
+paths hooked; `scene.effect_quads` exposes decals/debris/casings vertices. Tests: 111/111 lib, 3/3
+NF_ISO impacts_live (wall decal at hit+0.01 with the surface normal/mesh, sky shot none, one casing
+lands in lifetime, bit-for-bit seeded rerun). Known: `guard_takes_cover_like_the_game` needs its seed
+re-picked (0072's procedure — the impact draws joined the stream, as the game's own do). Report:
+docs/reports/fix-impacts.md.
+
+Task ID: 045o-fix-final-blockers2
+Agent: NightfirePort worker (fix-final-blockers2 session)
+Task: fix-final-blockers2 — the 4a lift-landing enable and the rest of the 16 walk (branch s/fix-final-blockers2)
+
+Work Log:
+- Setup reused (repo + game files + queue worktree intact); branch s/fix-final-blockers2 created from origin/master (71d1496, fix-final-blockers merged). This entry started.
+
+Stage Summary:
+- 4a root-caused to the last open bit: the enable matrix = the event-6 snapshot [M 0x1d94c0:125-134], taken ONCE at event time (Script_Free 0x1da880 does NOT re-read); the source is cut-scene #289's stream-25 marker entity (obj_type 0x19, no parent, key (1.80,-54.128,-3.453) @t575); the cut-scene actually runs t1611..t2186. The base question is CONTRADICTORY: the case-1/case-4 decompile + the marker's geometry say unparented keys are WORLD-SPACE (the candidate fix made the whole 4a flow work end-to-end: enable at the freeze pose, fall 17.5 onto the still-descending cab, grounded t2313 0.4 under the line, ride on, ch 0x4a, walk out — walkreal_0700004a_live GREEN), but 07000014's fusebox wire + 07000008's safe entities are render-verified WITH the base (they broke: wire at the origin). REVERTED (nis.rs behaviour unchanged from master; kept: the NF_SCRIPTLOG event-6/free diagnostics + stream_bindings()); the 4a test re-parked with the full chain; probes fb6/fb7/fb8 committed.
+- The composed marker (1.80,-107.66,-6.83) is a VOID column (probe fb6j: no floor -52..-160, only a north wall at z -6.0) — the game's rescue (mode-1 SphereIntersect in Player_Enable 0x195498?) is the live check. The live checks + the --bond spots are in docs/reports/fix-final-blockers2.md.
+- 07000016 progress: the ch-0x24 panel writer FOUND (probe fb9): trigger #0, kind 0x1 mask 0x4 out 0x24, placement 250 at (−15.20, 6.52, −94.56) — an UPPER WALKWAY west of the trench (deck y ≈ 5.71-6.44 at x ≤ −10, z −88..−112; an upper deck also spans x 2..8 at z −106..−112 over door[0]'s approach — the access is the next probe). The door[0] approach lane tightened (west approach + threshold legs arrive cleanly); the through-leg still wedges on the locked door (ch 0x24 can't fire until the panel is reached) — the walk stays parked, the route comments carry the evidence.
+- Verification after the revert: fix_fusebox_cut_live 4 + fix_safe08_live 5 green; nf-game 190/0; nf-formats+nf-audio 80 with only the 3 allowed disc_golden trio; the three nf-view casualties of the candidate fix (the two 07000014 laser/fusebox tests, the 07000008 safe chain) re-verified green.
