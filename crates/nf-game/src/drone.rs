@@ -1360,6 +1360,13 @@ impl Drone {
     fn impact_args(s: u8) -> Option<(u8, bool)> {
         use state::*;
         Some(match s {
+            // The BASE handler itself: `Drone_SM_RouteMsgDCV` routes an unhandled message to GLOBAL, and
+            // `DroneFunc_HandleImpact` (0x1469b8) IS the base DSTATE — its case 8 (0x1469b8:134-166) runs
+            // `NDrone2_BulletImpact(d, hit, resume)` with the resume 0 unconditionally (the damage applies;
+            // the +0x118 stamp and the state 0x55 entry need a valid resume). Without this arm every state
+            // the port has no DSTATE for (07000004's seated target, state 0xb2) swallowed the player's
+            // bullets — the impacts registered, the health never moved.
+            GLOBAL => (0, false),
             IDLE | ALERT | PATROL | ALERT_TO_POSITION | SEARCH_AREA | HEARD_NOISE_AWARE | HEARD_NOISE_SUSPECT | HEARD_NOISE_ALERT
                 | RUN_FOR_COVER | UNDER_COVER_INIT | UNDER_COVER_LEAVE_NOW => (ATTACK, false),
             UNDER_COVER_IDLE | UNDER_COVER_AIM | UNDER_COVER_FIRE | UNDER_COVER_RETURN => (UNDER_COVER_LEAVE_NOW, false),

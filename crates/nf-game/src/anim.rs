@@ -63,11 +63,24 @@ pub fn sequence_pose(seq: &Sequence, skel: &Skeleton, skin: &Skin, frame: f32) -
     p
 }
 
-/// A script's pose at `time` (`None` when the script or its sequence is not loaded, or the sequence belongs to
-/// another skeleton).
+/// A script's pose at `time` (`None` when the script or its sequence is not loaded, or the sequence
+/// cannot pose this skeleton).
 pub fn script_pose(scripts: &HashMap<u32, Script>, seqs: &HashMap<u32, Sequence>, skel: &Skeleton, skin: &Skin, hash: u32, time: f32) -> Option<Pose> {
     let (q, f) = script_frame(scripts.get(&hash)?, time)?;
-    let seq = seqs.get(&q).filter(|s| s.skeleton == skin.skeleton)?;
+    // The skeleton-id match is the historical strictness; the pose machinery itself
+    // (`local_pose_with`) reads the channels by the SKEL's translation mask, never by
+    // `seq.skeleton`. Shared human tracks ride on other rigs' ids: 07000004's seated target
+    // (skin 0x0500001e, skeleton 8) plays 0x0400028a, whose record byte is skeleton 0 — the
+    // strict filter left him with no palette and no hit boxes (the bullets could never land).
+    // [S the game's use of the seq's +0x3c byte is unverified; the channel-count guard keeps
+    // short tracks (a 22-channel face track on a body need) rejected.]
+    let seq = seqs.get(&q).filter(|s| {
+        s.skeleton == skin.skeleton
+            || {
+                let need: usize = (0..skel.bones as usize).map(|b| if skel.has_translation(b) { 6 } else { 3 }).sum();
+                s.channels.len() >= need
+            }
+    })?;
     Some(sequence_pose(seq, skel, skin, f))
 }
 
