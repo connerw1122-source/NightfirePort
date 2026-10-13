@@ -4067,6 +4067,10 @@ pub struct Drones {
     pub lights: crate::light::LightList,
     /// The last alarm broadcast (`DAT_0029AA88`) and whether one went out (`DAT_0029AA85`, 07000014 sends only one).
     pub last_alarm: Option<u32>,
+    /// The section the IOP player reports (`0x2500CC`, read by `UpdateMusicalEvents`): the audio layer
+    /// writes it each frame; the music update at the tick's end consumes it (fix-party-mission item 4 —
+    /// the game's `UpdateMusicalEvents` runs every frame whether or not an output device exists).
+    pub iop_section: i32,
     /// `DAT_0029aa86` — the interrogate latch: 0 while the party is calm, 1 once an interrogation began
     /// (`DroneVision_BeginInterogate` 0x1782a8; `EndInterogate` 0x1782c8 never clears it on 07000007).
     /// Gates `DroneFunc_DoForcedAttack` 0x148c60's forced attacks on 07000007 (playtest item 3: one punch
@@ -4208,7 +4212,7 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, aim_target: None, aim_offset: [0.0; 2],
+        Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(),
             gas: Default::default() }
     }
@@ -4957,6 +4961,10 @@ impl Drones {
                 crate::nis::Request::Camera { script, start } => self.music.event(if start { 0xb } else { 0xc }, script),
                 // `Script_SoundStart`: 2-D, or 3-D at the stream's object (its position each frame, `Script_Interp` 5).
                 crate::nis::Request::Sound { id, at, src } => {
+                    // `SFXStart` 0x115a68:18-20 / `SFXStart3D` 0x115bf0: a sound with id 0x172 (the NIS
+                    // music stream — the cut-scene's own score) sets `SfxNisMusicTrigger`, which the level's
+                    // music updater jumps on [M]. fix-party-mission item 4: the cut-scene music change.
+                    if id == 0x172 { self.music.nis_trigger = true; }
                     let h = match at.and_then(|o| obj_pos(&self.scripts, o)) {
                         Some(pos) => {
                             let h = self.audio.play3d(id, pos, None);
@@ -5352,7 +5360,16 @@ impl Drones {
         let dead = self.health.health <= 0.0;
         let mut events = std::mem::take(&mut self.mission_events);
         self.mission.update(&mut self.channels, frame, d.level, dead, &mut events);
+        // `Mission_Update` 0x182c60's music pulses [M 0x182c60:30-33 (fail → Music_Event(7,1)),
+        // 0x182c60:23-28 (success → Music_Event(8,1))]: the level updaters' end-sting block reads them
+        // (EventList[8]; fix-party-mission item 4). The death pulse (event 6) is emitted at the health
+        // check above; the fail/success ones ride the mission's own transitions here.
+        if events.iter().any(|e| matches!(e, crate::mission::Event::MissionFailed)) { self.music.event(7, 1); }
+        if events.iter().any(|e| matches!(e, crate::mission::Event::MissionComplete { .. })) { self.music.event(8, 1); }
         self.mission_events = events;
+        // `UpdateMusicalEvents` 0x114e70 — once per tick, after the drones (their script requests and the
+        // mission's pulses are this tick's EventList) [M]. The audio layer feeds `iop_section`.
+        self.music.update(self.iop_section);
     }
 }
 

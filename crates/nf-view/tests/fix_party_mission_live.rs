@@ -293,3 +293,47 @@ fn punching_a_guest_keeps_the_other_guests_animated() {
     let tposed: Vec<usize> = states.iter().filter(|(i, _, s, dn)| *i != guest && (s.is_none() || *dn == 0)).map(|(i, _, _, _)| *i).collect();
     assert!(tposed.is_empty(), "punching a guest T-poses the others (no anim on {tposed:?}) [playtest item 3]");
 }
+
+/// ── Item 4: the music changes at NIS start and end ──────────────────────────────────────────────
+/// Playtest: "The mission music keeps playing over the cut-scenes", and on 07000008 "the cutscene
+/// music still hasn't finished while playing".
+///
+/// The game's per-level music updaters jump sections on the NIS events: 07000008's
+/// `UpdateMFX_01CastleD` 0x1133b8 — the intro NIS 0x06000077's Music_Event(0xB, script) at start
+/// (event 11, `MusicLastJump == 0`) → `SFXJumpToMusicMarker(2, instant)`; Music_Event(0xC, script)
+/// at end (event 12) → marker 4 instantly. 07000007's `UpdateMFX_01CastleC` 0x113188 — the Drake
+/// reveal 0x6000072: start → 2, end (or the 0x172 NIS music sound [M 0x115a68]) → 5; the hall
+/// scene 0x6000073: start → 7, end → 0xa. Ported as `Music::castle_c`/`castle_d`; the test drives
+/// the REAL path (the level's intro NIS through `Sim::step_bond`).
+#[test]
+fn the_cutscene_music_jumps_at_nis_start_and_end() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000008.bin");
+    let sim = scene.sim.as_mut().unwrap();
+    // The intro NIS (SP #294, 0x06000077) fires from the intro plate #237 (139.2, 49.5, −81.2) [D].
+    for _ in 0..600 { sim.step_bond(Input::default(), false, false, false); }
+    sim.bond.pos = [139.2, 49.5, -81.2];
+    let mut jumps: Vec<i32> = Vec::new();
+    for _ in 0..4200 {
+        sim.step_bond(Input::default(), false, false, false);
+        for c in sim.drones.music.out.drain(..) {
+            if let nf_game::music::Cmd::Jump { section, .. } = c { jumps.push(section); }
+        }
+        if sim.disabled { break; } // the script took control — the NIS is running
+    }
+    // Let the NIS play out and watch its end jump too.
+    for _ in 0..4200 {
+        sim.step_bond(Input::default(), false, false, false);
+        for c in sim.drones.music.out.drain(..) {
+            if let nf_game::music::Cmd::Jump { section, .. } = c { jumps.push(section); }
+        }
+        if !sim.disabled { break; }
+    }
+    for _ in 0..10 { sim.step_bond(Input::default(), false, false, false);
+        for c in sim.drones.music.out.drain(..) {
+            if let nf_game::music::Cmd::Jump { section, .. } = c { jumps.push(section); }
+        } }
+    eprintln!("[party] 07000008 music jumps around the intro: {jumps:?} (nis start → 2, end → 4 [M 0x1133b8])");
+    assert!(jumps.contains(&2), "the intro NIS's start jumps the music to section 2 [M 0x1133b8:8-12]");
+    assert!(jumps.contains(&4), "the intro NIS's end jumps the music to section 4 [M 0x1133b8:13-16]");
+}
