@@ -840,7 +840,7 @@ fn point_in_cell(graph: &CelGraph, cell: usize, p: [f32; 3]) -> bool {
 /// `iVar6 = CelList_153; ... return iVar6`). The port has no per-cel collision geometry in the
 /// graph, so the rays test the candidate's own bbox faces (the ceiling/floor the game's ray
 /// effectively finds for a room); documented as the port's approximation in the report.
-fn find_cell_raycast(graph: &CelGraph, eye: [f32; 3]) -> Option<usize> {
+pub fn find_cell_raycast(graph: &CelGraph, eye: [f32; 3]) -> Option<usize> {
     let mut cands: Vec<usize> = Vec::new();
     for (i, c) in graph.cells.iter().enumerate() {
         if c.flags & 0x40000 == 0 { continue; }
