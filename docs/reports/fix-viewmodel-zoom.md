@@ -130,3 +130,15 @@ included); nf-formats + nf-audio green except the allowed 3 `disc_golden` failur
 (`bigf_header_fields_behave_as_documented`, `bigf_tables_match_the_golden_manifest`,
 `directory_tree_matches_the_golden_manifest` — the slim ISO's known misses). Zero unexpected
 failures, zero panics. No `Rand_*` draws added; no seed-pinned test moved.
+
+## ntfy failed
+
+All three channels, in order, same cause (the daily message quota):
+1. `curl`: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh/docs/publish/#limitations","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. `python3 urllib`: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. `wget`: exit 8 (server error, 429), no body printed with `-q`.
+
+The result line that should have been delivered: "fix-viewmodel-zoom: done — G-044 gun tilt
+divides by the zoom (0x1a3de8) + per-weapon zoom overlays (0x19e6d0): the watch/micro-camera
+viewfinder, the OICW and Ronin panes, the scope; 3 failing-first tests green; suite 32/32 nf-game
++ 154/154 nf-view green, 3 allowed disc_golden; finish.sh OK 283-fix-viewmodel-zoom."
