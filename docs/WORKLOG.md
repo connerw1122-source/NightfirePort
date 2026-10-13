@@ -8529,3 +8529,12 @@ Stage Summary:
   and the ammo-id remaps are new port behaviour with game citations.
 - Left: the auto-switch drain re-open (live checks 1-2 in the report), moving-platform landings,
   the drop push-out, the AR set's second pile, the +0x888 kind-5 field, the shop's Upgrades byte.
+
+## fix-menu-movies
+
+Branch: s/fix-menu-movies (from origin/master 7a614ba)
+
+Work Log:
+- (started) branch created; reading docs/systems/movies.md, docs/reports/fix-menus3.md and the
+  menu/movie code next. Goal: main-menu + list-page looping background movies under the page
+  controls, title->Start intro movie (skippable), movie audio via cpal.
