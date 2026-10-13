@@ -30,3 +30,8 @@ Files: `crates/nf-game/src/drone.rs`, `crates/nf-game/tests/nav_kick_live.rs`.
 
 ---
 claimed-by: sandbox2 at 2026-10-13T22:53Z
+
+---
+## Report (done, 2026-10-13T23:55Z)
+
+Closed by the driver: the report is on `s/fix-nav-remainder2` (docs/reports/fix-nav-remainder2.md); the worker didn't run finish.sh.
