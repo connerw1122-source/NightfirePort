@@ -6961,3 +6961,18 @@ crates/nf-game/src/ps2math.rs (EE FPU + VU0 multiply/add/multiply-add with unit 
 spec what to record next for the game-logic functions (Lights_CalcClosestLights, Check_Target,
 Player_AutoAim, Collide_RayIntersect, HUD_UpdateAmmoPane). Report ends with a recording-request
 table. Started 09:09 UTC, sandbox expires ~11:08 UTC.
+
+**verify-bitexact outcome (11:00 UTC)**: the differential-call harness landed
+(`crates/nf-game/tests/diff_calls.rs`): every recording in `tests/calls/` replays through a port adapter and
+must match bit for bit — PS2Sinf 40/40, Quat_QuatToMat 40/40 (EE-FPU op order, new `nf_game::ps2math`),
+Rand_Rand 40/40 including the generator state after each call; Check_Target / Player_AutoAim reported not
+covered. Sisters prove the comparison bites: platform sin differs on 24/40 recorded calls, the FPU-sum
+polynomial on 11/40, a flipped output bit fails while a caller-owned byte does not. `anim::sinf` is the
+canonical bit-exact PS2Sinf (trig::sinf delegates); the palette-exact models (quat_trans_to_mat with FPU
+rounding, mul with VU0 products + guard-bit sums) are implemented and snapshot-clean (pose-check world 0.0 on
+all three EE snapshots except the documented 0x40f drone) but flipping them in flips a damage outcome in the
+07000001 contact-escort walk (guard 5 dies a round early, escort stalls) — reverted in the sim paths, owned
+by G-017/G-024 with the repro. Suite: escort walk green on the final state + diff_calls/unit tests green;
+the full-suite re-run timed out (sandbox) after the revert — sim paths are otherwise byte-identical to
+master's. Shared-file hooks: lib.rs (pub mod ps2math), nf-extract main.rs (Player.capsule compile fix;
+pose-check level names take the FILES.BIN .bin names). Report: docs/reports/verify-bitexact.md.

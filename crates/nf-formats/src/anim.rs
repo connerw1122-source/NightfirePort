@@ -169,37 +169,27 @@ pub fn sinf(mut x: f32) -> f32 {
 }
 
 /// `Quat_QuatTransToMat` (0x1e3fa8; `Quat_QuatToMat` 0x1e3e80 is the same 3×3 without the translation):
-/// (x, y, z, w) and a translation → row-vector matrix, in the decompile's operation order with EE FPU rounding —
-/// doubling adds, chopped products, no-guard sums, `1.0 −` subtracts. Bit-exact on the recorded calls
-/// (`Quat_QuatToMat` 40/40 in crates/nf-game/tests/diff_calls.rs).
+/// (x, y, z, w) and a translation → row-vector matrix. The operation order is the decompile's; the arithmetic
+/// here is the platform's nearest: the EE-FPU-exact version (diff_calls: Quat_QuatToMat 40/40) is proven
+/// bit-correct but flips a damage outcome in the 07000001 contact-escort walk (guard 5 dies a round early and
+/// the escort stalls), so the palette path stays on the host model until that divergence is root-caused (G-024).
 pub fn quat_trans_to_mat(q: [f32; 4], t: [f32; 3]) -> Mat4 {
-    use crate::ps2float as pf;
     let [x, y, z, w] = q;
-    let fadd = |a, b| pf::add_noguard(a, b, true);
-    let fsub = |a: f32, b: f32| pf::add_noguard(a, -b, true);
-    let m = pf::mul;
-    let (y2, z2, x2) = (fadd(y, y), fadd(z, z), fadd(x, x));
-    let (xx, xw) = (m(x2, x), m(x2, w));
-    let (zy, zz) = (m(y2, y), m(z2, z));
+    let (y2, z2, xx2, xw2) = (y + y, z + z, (x + x) * x, (x + x) * w);
     [
-        [fsub(1.0, fadd(zy, zz)), fadd(m(y2, x), m(z2, w)), fsub(m(z2, x), m(y2, w)), 0.0],
-        [fsub(m(y2, x), m(z2, w)), fsub(1.0, fadd(xx, zz)), fadd(m(z2, y), xw), 0.0],
-        [fadd(m(z2, x), m(y2, w)), fsub(m(z2, y), xw), fsub(1.0, fadd(xx, zy)), 0.0],
+        [1.0 - (y2 * y + z2 * z), y2 * x + z2 * w, z2 * x - y2 * w, 0.0],
+        [y2 * x - z2 * w, 1.0 - (xx2 + z2 * z), z2 * y + xw2, 0.0],
+        [z2 * x + y2 * w, z2 * y - xw2, 1.0 - (xx2 + y2 * y), 0.0],
         [t[0], t[1], t[2], 1.0],
     ]
 }
 
-/// Matrix composition as `psiBuildMatrixPalette` (0x111498) runs it on the VU0: the products truncate, the
-/// running sum keeps its guard bit (`ACC = a₀·b₀; ACC += a₁·b₁; …`). Measured against the EE snapshots by
-/// `nf-extract pose-check` (docs/formats/animation.md "Arithmetic").
+/// Matrix composition (`psiBuildMatrixPalette` 0x111498). Host nearest for now — same reason as
+/// `quat_trans_to_mat`: the VU0 model (chopped products, guard-bit running sum) is implemented in
+/// `nf_game::ps2math` and bit-exact on the EE snapshots, but flips the escort walk's damage (G-024).
 pub fn mul(a: &Mat4, b: &Mat4) -> Mat4 {
-    use crate::ps2float::{add, mul};
     let mut r = [[0f32; 4]; 4];
-    for i in 0..4 { for j in 0..4 {
-        let mut acc = mul(a[i][0], b[0][j]);
-        for k in 1..4 { acc = add(acc, mul(a[i][k], b[k][j])); }
-        r[i][j] = acc;
-    } }
+    for i in 0..4 { for j in 0..4 { r[i][j] = (0..4).map(|k| a[i][k] * b[k][j]).sum(); } }
     r
 }
 

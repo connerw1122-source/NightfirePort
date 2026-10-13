@@ -46,3 +46,12 @@ record the memory the function writes instead.
 | `PS2Sinf.calls` (0x120700) | registers only (`f12` in, `f0` out) | 40 | **differs from the true sine by up to 3.84e-5; bit-identical to f32(sin) on only 13/40**: live evidence for G-017 |
 | `Player_AutoAim.calls` (0x1a7c98) | `io:@(a0+0xe0)+0x114:0x20 in:@(a0+0xdc)+0x60:4` | 80 | recorded under play in aim mode: the aim bit set on all 80, the cursor non-zero, the block changed by the 0.5 easing on 76 |
 | `Check_Target.calls` (0x1a7810) | `io:@(a0+0xe0)+0x130:4` | 40 | no target under the crosshair (+0x132 = 0, +0x133 = 2) on all 40: the no-hit path only |
+
+## Harness status (045n verify-bitexact, 2026-10-13)
+
+`crates/nf-game/tests/diff_calls.rs` replays every recording through a port adapter and requires the same bits:
+`PS2Sinf` 40/40, `Quat_QuatToMat` 40/40 (EE-FPU op order from the decompile), `Rand_Rand` 40/40 including the
+state after each call. `Check_Target` and `Player_AutoAim` are not covered yet (no adapter). Sisters: the
+platform f32 sin differs from the game on 24/40 recorded calls; the same polynomial with FPU no-guard sums
+differs on 11/40 (the VU0 guard bit is load-bearing); a flipped output bit fails, a caller-owned byte does not.
+Format v1 carried everything the adapters needed.

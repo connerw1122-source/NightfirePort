@@ -57,26 +57,20 @@ pub fn parse(payload: &[u8]) -> Result<Vec<Placement>> {
 }
 
 /// `RotMatrix` (ACTION.ELF 0x1e2368) followed by `Mat_SetTrans`: a row-vector matrix (`v' = v·M`, translation in
-/// row 3), entries exactly as the decomp computes them: two `PS2Sinf3` calls (`(rx+π/2, rx, ry+π/2)` then
-/// `(rz+π/2, rz, ry)`) with cosines as sin(angle + π/2), then the nine products/sums in the decompile's order on
-/// the EE FPU. G-017 closed: the sines are the game's own `PS2Sinf` (`anim::sinf`, bit-exact on the recorded
-/// calls and the interpreter samples), not the platform's.
+/// row 3), entries exactly as the decomp computes them. The game takes sines from `PS2Sinf3` (its own
+/// approximation) and multiplies on the EE FPU; `nf_game::ps2math` + `anim::sinf` implement that bit-exactly and
+/// the diff harness proves the pieces (PS2Sinf 40/40 recorded calls) — but switching this function to them flips
+/// a damage outcome in the 07000001 contact-escort walk (the escort stalls; see docs/reports/verify-bitexact.md),
+/// so the platform sine stays until that divergence is root-caused (G-017: the port is proven, the call site is
+/// the open item).
 pub fn object_matrix(rot: [f32; 3], trans: [f32; 3]) -> [[f32; 4]; 4] {
-    use crate::anim::sinf;
-    use crate::ps2float as pf;
-    let fadd = |a, b| pf::add_noguard(a, b, true);
-    let fsub = |a: f32, b: f32| pf::add_noguard(a, -b, true);
-    let (rx, ry, rz) = (rot[0], rot[1], rot[2]);
-    let half = f32::from_bits(0x3fc9_0fdb);
-    // PS2Sinf3(rx + π/2, rx, ry + π/2) → (cx, sx, cy); PS2Sinf3(rz + π/2, rz, ry) → (cz, sz, sy).
-    let (cx, sx, cy) = (sinf(fadd(rx, half)), sinf(rx), sinf(fadd(ry, half)));
-    let (cz, sz, sy) = (sinf(fadd(rz, half)), sinf(rz), sinf(ry));
-    let m = pf::mul;
-    let n = |v: f32| -v; // exact sign flip; the decompile folds the negations into the operands
+    let (sx, cx) = rot[0].sin_cos();
+    let (sy, cy) = rot[1].sin_cos();
+    let (sz, cz) = rot[2].sin_cos();
     [
-        [m(cy, cz), fadd(m(m(sx, sy), cz), m(cx, sz)), fadd(m(m(cx, n(sy)), cz), m(sx, sz)), 0.0],
-        [m(cy, n(sz)), fsub(m(cx, cz), m(m(sx, sy), sz)), fsub(m(sx, cz), m(m(cx, n(sy)), sz)), 0.0],
-        [sy, m(n(sx), cy), m(cx, cy), 0.0],
+        [cy * cz, sx * sy * cz + cx * sz, cx * -sy * cz + sx * sz, 0.0],
+        [cy * -sz, cx * cz - sx * sy * sz, sx * cz - cx * -sy * sz, 0.0],
+        [sy, -sx * cy, cx * cy, 0.0],
         [trans[0], trans[1], trans[2], 1.0],
     ]
 }
@@ -117,21 +111,12 @@ mod tests {
     fn matrix_matches_the_decomp_for_single_axes() {
         let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1e-6);
         let h = std::f32::consts::FRAC_PI_2;
-        // The 0-rotation matrix is the game's, not the platform's: PS2Sinf(π/2) = 0x3F800001 (one ulp above 1.0),
-        // and every cosine is sinf(angle + π/2), so all three diagonal entries are products of two 1.0000001s.
-        let m = object_matrix([0.0; 3], [1.0, 2.0, 3.0]);
-        assert!(close(transform(&m, [1.0, 0.0, 0.0]), [2.0, 2.0, 3.0]));
-        assert_eq!(m[0][0].to_bits(), 0x3f80_0002); // cy·cz, both PS2Sinf(π/2) = 1.0000001
-        assert_eq!(m[1][1].to_bits(), 0x3f80_0002); // 1.0000002 − 0
-        assert_eq!(m[2][2].to_bits(), 0x3f80_0002); // cx·cy
-        assert_eq!(m[0][1].to_bits(), 0); // (sx·sy)·cz + cx·sz = 0 + 0
-        // Entries from RotMatrix with only y = π/2: m[2][0] = sin y = PS2Sinf(π/2) = 1.0000001, m[0][2] = −sin y;
-        // the π adds reduce to exact zeros (cy = PS2Sinf(π) = 0.0).
+        // Identity and translation.
+        assert_eq!(transform(&object_matrix([0.0; 3], [1.0, 2.0, 3.0]), [1.0, 0.0, 0.0]), [2.0, 2.0, 3.0]);
+        // Entries from RotMatrix with only y = π/2: m[2][0] = sin y = 1, m[0][2] = −sin y.
         let m = object_matrix([0.0, h, 0.0], [0.0; 3]);
         assert!(close(transform(&m, [1.0, 0.0, 0.0]), [0.0, 0.0, -1.0]));
         assert!(close(transform(&m, [0.0, 0.0, 1.0]), [1.0, 0.0, 0.0]));
-        assert_eq!(m[2][0].to_bits(), 0x3f80_0001); // sinf(π/2)
-        assert_eq!(m[2][2].to_bits(), 0); // cx·cy = 1.0000001 · 0.0
         // Only z = π/2: x → (cz, sz, ..) = y.
         let m = object_matrix([0.0, 0.0, h], [0.0; 3]);
         assert!(close(transform(&m, [1.0, 0.0, 0.0]), [0.0, 1.0, 0.0]));
