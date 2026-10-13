@@ -21,6 +21,127 @@ fn load(iso: &str, level: &str) -> nf_view::scene::Scene {
     nf_view::load(iso, level, false).expect("load")
 }
 
+// ── probe (fix-safe08b): identity of every static hit along the take rays / the walk line, and the
+// cel graph's bedroom→exterior connectivity. Scratch — removed or turned into asserts by the fix.
+#[test]
+fn probe_blue_block_and_take_rays() {
+    if std::env::var_os("NF_SAFE08_PROBE").is_none() { return; }
+    use nf_formats::placement::transform;
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    // The level parse for identity + the cel graph.
+    let img = nf_formats::iso9660::IsoImage::open(&iso).expect("open iso");
+    let (entries, bin) = nf_formats::disc::files_bin_entries(&img).expect("FILES.BIN");
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case("07000008.bin")).expect("level entry");
+    let data = img.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).expect("read archive");
+    let level = nf_formats::level::Level::parse(&data).expect("parse level");
+    // The sim for the real sphere centre at the doorway.
+    let mut scene = load(&iso, "07000008.bin");
+    open_safe(&mut scene);
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = [161.87, 43.39, -116.54];
+        sim.bond.yaw = 1.583;
+    }
+    for _ in 0..3 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    let body = scene.sim.as_ref().unwrap().bond.sphere_centre();
+    eprintln!("[probe] body at the doorway {body:?}");
+    let rocket = [162.58832, 42.75039, -116.77789];
+    let case = [162.70, 43.54, -116.22];
+    let walk_a = [155.6, 43.35, -114.0]; // mid-bedroom, door side
+    let walk_b = [161.0, 43.35, -116.3]; // just before the safe
+
+    // The instances the collision world is built from.
+    let (instances, _) = level.instances(true);
+    // The cel graph: cells + portals.
+    let (_, graph) = nf_view::scene::parse_cel_graph(&level);
+    eprintln!("[probe] cells {} portals {} dropped {}", graph.cells.len(), graph.portals.len(), graph.dropped_portals);
+    // Which cell holds a point (containment, smallest volume wins — find_cel semantics).
+    let cell_at = |p: [f32; 3]| -> Option<usize> {
+        let mut best = None; let mut vol = f32::INFINITY;
+        for (i, c) in graph.cells.iter().enumerate() {
+            let inside = (0..3).all(|k| c.min[k] <= p[k] && p[k] <= c.max[k]);
+            if !inside { continue; }
+            let v: f32 = (0..3).map(|k| c.max[k] - c.min[k]).product();
+            if v < vol { vol = v; best = Some(i); }
+        }
+        best
+    };
+    let body_cell = cell_at([body[0], body[1], body[2]]);
+    eprintln!("[probe] body cell {body_cell:?}");
+    // The exterior room object.
+    for (mi, map) in level.maps.iter().enumerate() {
+        for (oi, o) in map.objects.iter().enumerate() {
+            if o.name.contains("Outside_3") || o.hashcode == 0x07000008 {
+                eprintln!("[probe] map{mi} obj{oi} name {} hash {:08x} flags {:#x} centre {:?}", o.name, o.hashcode, o.flags, o.centre);
+            }
+        }
+    }
+    // Ray vs every instance's collision tris (world space, both faces).
+    let hits = |from: [f32; 3], to: [f32; 3]| -> Vec<(f32, usize, u8)> {
+        let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+        let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        let mut out = Vec::new();
+        for (ii, inst) in instances.iter().enumerate() {
+            let Some(c) = &level.maps[inst.map].objects[inst.object].collision else { continue };
+            for (tri, mat) in c.triangles_with_material() {
+                let t = tri.map(|p| transform(&inst.matrix, p));
+                let e1 = sub(t[1], t[0]); let e2 = sub(t[2], t[0]);
+                let p = cross(d, e2);
+                let det = dot(e1, p);
+                if det.abs() < 1e-12 { continue; }
+                let inv = 1.0 / det;
+                let s = sub(from, t[0]);
+                let u = dot(s, p) * inv;
+                if !(0.0..=1.0).contains(&u) { continue; }
+                let q = cross(s, e1);
+                let v = dot(d, q) * inv;
+                if v < 0.0 || u + v > 1.0 { continue; }
+                let tt = dot(e2, q) * inv;
+                if (0.0..=1.0).contains(&tt) { out.push((tt, ii, mat)); }
+            }
+        }
+        out.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        out
+    };
+    let name = |ii: usize| {
+        let inst = &instances[ii];
+        let o = &level.maps[inst.map].objects[inst.object];
+        format!("map{} obj{} {} hash {:08x} flags {:#010x} at ({:.1},{:.1},{:.1})", inst.map, inst.object, o.name, o.hashcode, o.flags,
+            inst.placement.translation[0], inst.placement.translation[1], inst.placement.translation[2])
+    };
+    for (label, from, to) in [("rocket", body, rocket), ("case", body, case), ("walk", walk_a, walk_b)] {
+        eprintln!("[probe] {label} ray {from:?} → {to:?}:");
+        for (t, ii, mat) in hits(from, to).into_iter().take(8) {
+            eprintln!("[probe]   t {t:.3} mat {mat} {}", name(ii));
+        }
+    }
+    // The cells of the two take rays' blockers + the exterior object's instance cell.
+    for (ii, inst) in instances.iter().enumerate() {
+        let o = &level.maps[inst.map].objects[inst.object];
+        if o.name.contains("Outside_3") {
+            let pos = inst.placement.translation;
+            eprintln!("[probe] Outside_3 instance {ii} placement cell {:?} pos {pos:?}", cell_at(pos));
+        }
+    }
+    // BFS over portals from the body cell: which cells are reachable at all (portal graph, no shape test)?
+    if let Some(start) = body_cell {
+        let mut seen = vec![false; graph.cells.len()];
+        seen[start] = true;
+        let mut frontier = vec![start];
+        while let Some(c) = frontier.pop() {
+            for p in &graph.portals {
+                let d = if p.cel_a == c { Some(p.cel_b) } else if p.cel_b == c { Some(p.cel_a) } else { None };
+                if let Some(d) = d { if !seen[d] { seen[d] = true; frontier.push(d); } }
+            }
+        }
+        let reach: Vec<usize> = (0..seen.len()).filter(|&i| seen[i]).collect();
+        eprintln!("[probe] portal-reachable from the body cell: {reach:?}");
+    }
+    panic!("probe done");
+}
+
 /// Drives the real safe chain to ch 136: the fusebox's two E presses, then the Lazer Watch burns
 /// both bolts (the chain fix-party-mission already pinned; abbreviated here, same real inputs).
 fn open_safe(scene: &mut nf_view::scene::Scene) {
