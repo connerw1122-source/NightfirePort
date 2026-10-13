@@ -66,6 +66,9 @@ fn the_override_console_writes_ch_49_until_the_lobby_locks_it() {
     sim.bond.yaw = 0.0; // look +z into the console volume (z 8.07…8.34)
     for _ in 0..6 { sim.step_bond(Input::default(), false, false, true); if sim.drones.channels.on(0x49) { break; } }
     assert!(sim.drones.channels.on(0x49), "E at the console writes ch 0x49 [D]");
+    // fix-objective-banner: the monitor runs at the TOP of the tick (Game_Run order), completing
+    // the objective the tick after the channel rises.
+    for _ in 0..2 { sim.step_bond(Input::default(), false, false, false); }
     assert_eq!(mission_state(sim, 0x0700_0012, 0), 4, "the override objective completes [M 0x1827d8]");
     assert_eq!(mission_state(sim, 0x0700_0012, 1), 3, "'Escape through the elevator shaft' announces (enable 0x49)");
     // Sister (the lock's real reach): the game's E-activation arm has NO lock read [M 0x1b2318 type-1:
