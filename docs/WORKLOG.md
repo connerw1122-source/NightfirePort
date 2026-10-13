@@ -6873,3 +6873,14 @@ The held fix-npc-doors-escort merge's two red tests, chased to the game's own an
 - Full suite (merged tree 3ec4fd5, NF_ISO, --no-fail-fast, --test-threads=1): **595 passed, 4 failed**
   — the 3 allowed `disc_golden` (the slim ISO's missing /DRIVING files) + `fix_npc_doors_live::the_
   escort_opens_the_interior_doors_on_his_route` (item 5). The two the driver named pass.
+
+## fix-safe08b (2026-10-13, branch s/fix-safe08b) — the 07000008 bedroom blue block: room-scoped collision and drawing — IN PROGRESS
+
+Task: continue fix-safe08 (merged 9c9674b): the blue block `Room_Outside_3` (map51 obj16) must not collide with
+or be drawn into `Room_Guardhouse_F2` indoors, and the safe take's `Collide_LineOfSight` (flags 0x721) must
+stop being blocked by hits the game's query ignores (t 0.65–0.88). Plan: (1) scope static collision by the
+room/portal graph (`Collide_StraddleCels` 0x1eac98 via `Intersect_Portal`, cap 0x7e) for actor queries first;
+(2) evaluate un-gating the draw's portal walk on this level; (3) decode the LOS query-type filter
+(HITTEST +0x94/+0x98, 0x201/0x721 in `Collide_Intersect` 0x1ebaa8's switch, per-node +0x3c word) and make
+`the_safe_pickups_take_after_the_safe_opens` fire. Starting from origin/master ac5ca9f; reading
+docs/reports/fix-safe08.md first.
