@@ -116,9 +116,11 @@ pub struct GameFlow {
 }
 
 impl GameFlow {
-    /// Boot: stack = [ST_BOOT], the boot page 0x40000034, load pending [M 0x1c7e78].
+    /// Boot: stack = [ST_BOOT], the boot page 0x40000034 [M 0x1c7e78]. `Reset_MapLoadSettings`
+    /// 0x1d6958 sets GameState+0x8 = 0x7000048 when it is 0 and calls `ResetMap_LevelToLoad(level, 0, 0)`
+    /// — the boot load of the front-end map.
     pub fn boot() -> Self {
-        GameFlow { stack: vec![ST_BOOT], page: PAGE_START, load_pending: 1, ..Default::default() }
+        GameFlow { stack: vec![ST_BOOT], page: PAGE_START, level_to_load: FRONTEND_LEVEL, ..Default::default() }
     }
 
     /// [M 0x1c9e80]
@@ -151,9 +153,10 @@ impl GameFlow {
     pub fn main_tick(&mut self) {
         self.ticks = self.ticks.wrapping_add(1);
         match self.get_state() {
-            // Boot: Mem_Init, bootup, push 2, load the PTP data [M case 1].
-            ST_BOOT => { self.load_pending = 1; self.push_state(ST_RUNNER); }
-            // Runner: when a load was requested, push the loader [M case 2 reads +0x24].
+            // Boot: Mem_Init, bootup (pushes 2), Boot_LoadPTPData, Reset_MapLoadSettings → the boot
+            // load of the front-end map [M case 1 + 0x1d6958].
+            ST_BOOT => { self.push_state(ST_RUNNER); self.reset_map_level_to_load(self.level_to_load, false, false); }
+            // Runner: when a load was requested (GameState+0x24 [M case 2]), push the loader.
             ST_RUNNER if self.load_pending != 0 => { self.load_pending = 0; self.push_state(ST_MAPLOAD); }
             // Movie: pops when the movie finishes or the skip action fires [M case 6, Input_Action(-1, 0x19)].
             ST_MOVIE => { self.pop_state(); }
@@ -170,10 +173,10 @@ impl GameFlow {
         if self.get_state() != ST_MAPLOAD { return true; }
         if self.movie_code != 0 {
             // Phase 2 [M LoadState 2: `GetLevelToLoadFromMovieCode(GameState+0x10)` maps the 0x71/0x73
-            // movie codes back to level codes; 0x7100018 → 0x700001b is the one special case].
+            // movie codes back to level codes; 0x07100018 → 0x0700001b is the one special case].
             let mc = self.movie_code;
             self.movie_code = 0;
-            self.level_to_load = if mc == 0x7100_0018 { 0x0700_001b } else { 0x0700_0000 | (mc & 0xffff) };
+            self.level_to_load = if mc == 0x0710_0018 { 0x0700_001b } else { 0x0700_0000 | (mc & 0xffff) };
             return false;
         }
         let level = self.level_to_load;
@@ -198,8 +201,11 @@ impl GameFlow {
         self.warm_reset = warm;
         if !matches!(self.get_state(), ST_RUNNER | 7 | ST_FADE_HOLD | 0xd | ST_FADE_IN) { return; }
         self.skip_draw = true; // [M: GameState[0x40] = 1 in the menu states]
-        let code = if !no_intro && (0x0700_0001..=0x0700_004a).contains(&level) && level & 0xff0000 == 0 {
-            0x7100_0000 | (level & 0xffff)
+        // [M 0x1d3800's switch wraps exactly these story codes when param_3 == 0; 0x7000048 and the
+        // other wrapper/multiplayer codes are not in the switch and pass through.]
+        let plain = level & 0xff00_ffff;
+        let code = if !no_intro && level & 0xff0000 == 0 && ((0x0700_0001..=0x0700_0016).contains(&plain) || plain == 0x0700_001b || plain == 0x0700_004a) {
+            level + 0x0010_0000
         } else { level };
         self.level_to_load = code;
         self.push_state(ST_MAPLOAD);
@@ -280,13 +286,18 @@ pub struct FrontEnd {
     pub stats: Stats,
     /// The level the front end wants the host to load next (set together with a MAPLOAD push).
     pub requested_level: Option<u32>,
+    /// The pause page's quit confirm: the game swaps the row text and only quits on the second
+    /// choose (`state_quit_166` [M C_GCPAUSE_Handler 0x204408:210-220]).
+    pub confirming_quit: bool,
+    /// The pause page's resume choice: the host closes the menu when this is set.
+    pub closed: bool,
 }
 
 impl FrontEnd {
     pub fn new() -> Self {
         let flow = GameFlow::boot();
         let page = Page::from_id(flow.page).unwrap_or(Page::Start);
-        FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None }
+        FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, confirming_quit: false, closed: false }
     }
 
     pub fn rows(&self) -> usize {
@@ -296,7 +307,7 @@ impl FrontEnd {
             Page::MissionSelect => MISSIONS.len(),
             Page::Difficulty => DIFFICULTIES.len(),
             Page::Options => 3,                    // the options page stubs three rows [S]
-            Page::Pause => 8,                      // [M 0x203c28 builds 8 rows]
+            Page::Pause => 4,                      // resume / restart / options / quit [S rows; actions M 0x204408]
             Page::Results => 3,                    // restart / continue / quit [M 0x216618]
         }
     }
@@ -309,8 +320,12 @@ impl FrontEnd {
             Page::MissionSelect => MISSIONS.get(row).map_or(String::new(), |(n, _)| (*n).into()),
             Page::Difficulty => DIFFICULTIES.get(row).map_or(String::new(), |n| (*n).into()),
             Page::Options => ["Screen adjust", "Controls", "Back"][row.min(2)].into(),
-            // [M 0x203c28: the eight Txt ids, in order]
-            Page::Pause => bind([0x82, 0x91, 0xa0, 0xaf, 0xbe, 0xcd, 0x100018b, 0x100019a][row.min(7)]),
+            // The single-player pause rows [S labels — the disc page data holds the originals; the
+            // ACTIONS are the game's: restart = ResetMap_LevelToLoad(BaseMap, 0, 1) and the quit
+            // confirm two-step [M C_GCPAUSE_Handler 0x204408:139-152/210-220]. The eight Txt ids
+            // 0x82..0x100019a in P_PAUSE 0x203c28 turned out to be the multiplayer scenario names
+            // ("NightFire"…"Classic Bond") — see docs/reports/fix-menus.md.]
+            Page::Pause => ["Resume", "Restart mission", "Options", "Quit to menu"][row.min(3)].into(),
             Page::Results => ["Restart mission", "Continue", "Quit to menu"][row.min(2)].into(),
         }
     }
@@ -339,15 +354,14 @@ impl FrontEnd {
         } else { false }
     }
 
-    /// A mission ended; the game sets +0x28 = 0x40000036, fades 60 frames, loads the front-end map
-    /// [M 0x182c60:74 + 0x1d6360]. The port keeps the stats the caller fills in.
+    /// A mission ended; the game records the results page and pushes the 60-frame fade [M 0x182c60:74
+    /// sets +0x28 = 0x40000036, `GameFlow_PushState(60.0, 7, …)`]. The front-end map itself is only
+    /// loaded once the player picks restart / continue / quit [M 0x216618's message 0x4b arms].
     pub fn mission_ended(&mut self, outcome: Outcome, stats: Stats) {
         self.outcome = outcome;
         self.stats = stats;
         self.flow.page = PAGE_RESULTS;
-        self.flow.skip_draw = true;
-        self.flow.push_state(ST_FADE_HOLD); // [M 0x182c60:74 pushes a 60-frame fade]
-        self.flow.reset_map_level_to_load(FRONTEND_LEVEL, false, true);
+        self.flow.push_state(ST_FADE_HOLD); // [M 0x182c60:74 pushes a fade]
         self.page = Page::Results;
         self.cursor = 0;
     }
@@ -397,30 +411,35 @@ impl FrontEnd {
                 _ => {}
             },
             Page::Pause => match a {
-                Action::Up => { self.cursor = (self.cursor + 7) % 8; return true; }
-                Action::Down => { self.cursor = (self.cursor + 1) % 8; return true; }
-                Action::Back => { self.page = Page::Main; return true; }   // resume [S: row 0 + back both resume]
+                Action::Up => { self.cursor = (self.cursor + 3) % 4; return true; }
+                Action::Down => { self.cursor = (self.cursor + 1) % 4; return true; }
+                Action::Back => { self.confirming_quit = false; self.page = Page::Main; return true; }   // resume [S]
                 Action::Confirm => {
                     match self.cursor {
-                        // Row set [S]; the actions the game's own buttons take:
-                        0 => { self.page = Page::Main; return true; }                        // resume
-                        1 => {                                                               // restart [M 0x216618's restart arm]
-                            let level = self.flow.current_level;
+                        0 => { self.confirming_quit = false; self.closed = true; return true; }   // resume — the host closes the menu
+                        1 => {                                                               // restart [M 0x204408:139-141:
+                            // ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1) — the mission's FIRST map]
+                            self.confirming_quit = false;
+                            let level = MISSIONS[self.mission].1;
                             self.requested_level = Some(level);
-                            self.flow.reset_map_level_to_load(level, true, true);
+                            self.flow.reset_map_level_to_load(level, false, true);
                             self.page = Page::Main;
                             return true;
                         }
                         2 => { self.page = Page::Options; self.cursor = 0; return true; }    // options
-                        7 | 3 => {                                                           // quit to menu [M 0x216618's quit arm]
-                            self.flow.page = PAGE_RESULTS_QUIT_TARGET;
+                        3 => {                                                               // quit, two-step [M 0x204408:210-220]
+                            if !self.confirming_quit {
+                                self.confirming_quit = true;   // the game swaps the row text to 0x200
+                                return true;
+                            }
+                            self.flow.page = PAGE_RESULTS_QUIT_TARGET;                          // +0x28 = 0x4000001c [M :143-148]
                             self.requested_level = Some(FRONTEND_LEVEL);
                             self.flow.reset_map_level_to_load(FRONTEND_LEVEL, false, true);
                             self.page = Page::Main;
                             self.cursor = 0;
                             return true;
                         }
-                        _ => {} // the other rows (memory card, stats, …) are stubs — reported
+                        _ => {}
                     }
                 }
             },
@@ -513,6 +532,10 @@ fn page_rows_no_head(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, y
         let y = y0 + row as f32 * 26.0;
         if row == fe.cursor { h.text(Anchor::Centre, font, -2, &format!("> {}", label), SW / 2.0, y, false, sel_c, true); }
         else { h.text(Anchor::Centre, font, -2, &label, SW / 2.0, y, false, row_c, true); }
+    }
+    // The quit confirm swaps in a confirm line [M 0x204408: label 0x200 replaces the quit row's text].
+    if fe.page == Page::Pause && fe.confirming_quit {
+        h.text(Anchor::Centre, font, -2, "QUIT TO MENU — CONFIRM?", SW / 2.0, SH - 40.0, false, sel_c, true);
     }
 }
 
