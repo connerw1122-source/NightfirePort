@@ -22,3 +22,6 @@ Files: `crates/nf-view/src/{gpu,lib,menu,movie}.rs`, the two features' tests.
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/menu-movies2`.
+
+---
+claimed-by: sandbox1 at 2026-10-13T23:37Z
