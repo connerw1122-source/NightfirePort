@@ -57,8 +57,9 @@ from `ResetMap_GameInit` 0x1d5080:53 with `IsWarmReset`). It sets `BaseMap`/`Thi
 current and future parts' objective states (0 = no enable channel, 1 = waiting for the enable channel) and
 the condition channels to their `init` values; previous parts keep their states [M 0x182270:68-129].
 
-`update` runs once per tick (the game: from `Game_Run` 0x1c9790; the port: the end of `Drones::tick`, so
-the tick's channel writes are visible). While the player is alive it runs
+`update` runs once per tick (the game: from `Game_Run` 0x1c9790:17, BEFORE the object handler — so the
+monitor reads last frame's channels and a trigger's announce lands after any cut-scene its trigger
+started [M; fix-objective-banner]; the port: the top of `Drones::tick`). While the player is alive it runs
 `Mission_MonitorObjectives` [M 0x1827d8]:
 
 - state 0 → announce the objective (type 2, 300 ticks) once the record's level is reached, → 3 (or 2 for
@@ -84,7 +85,7 @@ interludes — the port logs and skips them), else 0x07000048 → `ResetMap_Leve
 
 | Event | The port's action |
 |---|---|
-| `Objective { label, is_new, ticks, failed }` | the objective banner queue (type 2); the text bound via `Lang::bind`, "Fail: %s" (0x170) when `failed`; the SFX 1532+469 (new) / 468 (complete) [M 0x19c310:150-163, 220-234] |
+| `Objective { label, is_new, ticks, failed }` | the objective banner queue (type 2); the text bound via `Lang::bind`, "Fail: %s" (0x170) when `failed`. The SFX play when the message first DISPLAYS, not when the event lands: 1532 at open (468 for "OBJECTIVE COMPLETE"), 469 sixty ticks later — new objectives only [M 0x19c310:148-164, 219-235; fix-objective-banner] |
 | `FailLabel(u32)` | the mission banner's second line (`Lang::bind` at draw) |
 | `MissionComplete { next }` | the type-3 banner (240 ticks) |
 | `MissionFailed` | the type-3 banner (300 ticks) |
@@ -98,9 +99,14 @@ Two banners after the pickup bar, per `HUD_UpdateStatusPane` 0x19c310 and the Sp
 0x319580/0x319608]:
 
 - **Objective banner** (pane 3, `MsgObjectiveStatusPane`): a 480×56 sheet-0x0300007A column bar at
-  (16, 0) with 5-px caps (u 185/191), the status label ("NEW OBJECTIVE" 0x02000051 / "OBJECTIVE
-  COMPLETE" 0x02000053) at (128, 20) and the text at (128, 40), left-aligned (fmt 0x30cdb0 align 2),
-  colour 0x7D6D59, layer 29; alpha = time·17 over the last 15 ticks; closes 16 px/tick.
+  (16, 0) with 5-px caps (u 185/191) — case 1 re-pins the middle's x/w to the template on every
+  open [M 0x19c310:101-111], so the pane-x 128 add at creation is overwritten for the bar. The
+  status label ("NEW OBJECTIVE" 0x02000051 / "OBJECTIVE COMPLETE" 0x02000053) and the text are
+  text sprites at template (128, 20)/(128, 40) + pane x 128 = **256, justify centre** (fmt
+  0x30cdb0's 0xfe-3 byte [M Font_ParseFormat 0x1ee3e0; Font_DrawText 0x1eee48 flag 2 → x −= w/2])
+  — centred on the bar [L 0x319608 entries 5/0 + CREATE 0x319710; fix-objective-banner], colour
+  0x7D6D59, layer 29; alpha = time·17 over the last 15 ticks; closes 16 px/tick. `Text_UpdateMsg`
+  ticks only the displayed head [M 0x1b11d8:48-73] — queued banners wait their turn.
 - **Mission banner** (pane 2, `MsgMissionStatusPane`): a 512×103 bar at (0, 156) (uv 198,0), the text
   centred at (256, 42) (fmt 0x30cdb8 align 1), the fail reason at (256, 64) — flashing 0x785A14 while a
   type-2 notice is up; closes 32 px/tick [M 0x1a1028 sets the pane's type 3 and slide 0x20].

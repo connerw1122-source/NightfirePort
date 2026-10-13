@@ -298,13 +298,20 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     }
     // The objective banner (pane 3, `MsgObjectiveStatusPane` 0x319710 + `ObjectiveStatusSprInfo`
     // 0x319608 [L ee_start_05.bin], `HUD_UpdateStatusPane` 0x19c310): the middle is a 1-texel column
-    // of the HUD sheet 0x0300007A (u 190, v 0..56) stretched to 480×56 at (16, 0), the caps 5-texel
-    // columns (u 185 / 191) against its ends; all colour 0x7F7F7F, alpha 0x8D, layer 30. The main
-    // text is left-aligned at (128, 40) (fmt 0x30cdb0's align 2; the pickup/mission texts use align 1
-    // = centre) in colour 0x7D6D59 with the shadow; the status label above it at (128, 20) rebinds
-    // per display: 0x2000051 "NEW OBJECTIVE" while the current message is not "OBJECTIVE COMPLETE",
-    // else 0x2000053 [M 0x19c310:127-144]. Alpha = time·17 over the last 15 ticks; the banner closes
-    // 16 px per tick around its centre (the pane's slide 0x10 [M 0x1a1070]).
+    // of the HUD sheet 0x0300007A (u 190, v 0..56) stretched to 480×56 — template (16, 0) + the pane
+    // x 128, re-pinned to the template x on every open (`HUD_UpdateStatusPane` case 1 resets the
+    // middle's x/w from the SprInfo entry [M 0x19c310:101-111]) — so the bar spans 16..496, the caps
+    // 5-texel columns (u 185 / 191) riding its ends; all colour 0x7F7F7F, alpha 0x8D, layer 30. Both
+    // text rows are text sprites whose screen x = template x + pane x = 128 + 128 = **256** with the
+    // fmt 0x30cdb0 justify byte 3 = CENTRE (`Font_ParseFormat` 0x1ee3e0 case 0xfe/3 → flag 2;
+    // `Font_DrawText` 0x1eee48 flag 2 → x −= width/2; the status label sits at template (128, 20),
+    // the body at (128, 40) [L 0x319608 entries 5/0 + CREATE 0x319710 x=128]) — i.e. centred on the
+    // bar's own centre. The port used to draw both rows left-aligned from x=128, which left the
+    // "Fail: …" notice hugging the bar's left edge (the user's off-centre fail message). Colour
+    // 0x7D6D59, layer 29; the status label rebinds per display: 0x2000051 "NEW OBJECTIVE" while the
+    // message is not "OBJECTIVE COMPLETE", else 0x2000053 [M 0x19c310:127-144]. Alpha = time·17 over
+    // the last 15 ticks; the banner closes 16 px per tick around its centre (the pane's slide 0x10
+    // [M 0x1a1070]).
     {
         let (bw, bh, bx, by) = (480.0f32, 56.0f32, 16.0f32, 0.0f32);
         let bar = |h: &mut Hud, w: f32| {
@@ -321,10 +328,12 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
             bar(&mut h, bw);
             if let Some(lang) = s.lang.as_ref() {
                 if let Some(st) = lang.bind(msg.status) {
-                    h.text(Anchor::Left, &t.font, 29, st, 128.0, 20.0, false, gs(0x7d6d59, a), true);
+                    let (_, sw) = t.font.layout(st, 0.0, 0.0);
+                    h.text(Anchor::Centre, &t.font, 29, st, SW / 2.0 - sw / 2.0, 20.0, false, gs(0x7d6d59, a), true);
                 }
             }
-            h.text(Anchor::Left, &t.font, 29, &msg.text, 128.0, 40.0, false, gs(0x7d6d59, a), true);
+            let (_, tw) = t.font.layout(&msg.text, 0.0, 0.0);
+            h.text(Anchor::Centre, &t.font, 29, &msg.text, SW / 2.0 - tw / 2.0, 40.0, false, gs(0x7d6d59, a), true);
         } else if s.hud.objective_close > 0.0 {
             bar(&mut h, s.hud.objective_close);
         }
