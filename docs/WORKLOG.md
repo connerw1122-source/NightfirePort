@@ -8529,3 +8529,12 @@ Stage Summary:
   and the ammo-id remaps are new port behaviour with game citations.
 - Left: the auto-switch drain re-open (live checks 1-2 in the report), moving-platform landings,
   the drop push-out, the AR set's second pile, the +0x888 kind-5 field, the shop's Upgrades byte.
+## fix-gpu-skinning (s/fix-gpu-skinning) — 2026-10-13
+Task: GAPS G-043 — GPU skinning (CharVertex bind pose + weights + two bone slots; bone
+matrices to a storage buffer, skin in the vertex shader; the gpu_palette_matches_the_cpu_pose_*
+test is the oracle, worst error <= 1.5e-5), the tick-keyed pose cache (no re-pose when no sim
+tick ran), and 120 fps rendering (logic stays 60 Hz; render at the display rate, camera + poses
+interpolated between the last two sim states by the fractional tick; --fps N cap; a test that
+60 and 144 Hz render loops produce identical sim states). Files: crates/nf-view/src/{gpu,scene,lib}.rs
+and the shaders. Started 21:18 UTC, sandbox expires ~23:17 UTC. Branch created from origin/master
+(7a614ba) and pushed. Setup (rustup, work-slim, ISO) under way; disk is tight (9.3 GB free).
