@@ -31,3 +31,6 @@ Files: as fix-weapon-modes, plus `crates/nf-view/tests/portal_live.rs` (the 0700
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/weapon-modes2` (start from `s/fix-weapon-modes`, then merge `origin/master` into it).
+
+---
+claimed-by: sandbox4 at 2026-10-13T17:46Z
