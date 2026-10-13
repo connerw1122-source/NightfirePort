@@ -1304,6 +1304,9 @@ impl ApplicationHandler for App {
                     // the gadget ids [D ACTION.ELF weapon_data] and the switch/equip path is tested
                     // (gadget_select_live). The gadgets' fire-side substates land per gadget.
                     (KeyCode::KeyG, ElementState::Pressed) => if self.grabbed && !self.noclip { self.gadget_cycle = 1 },
+                    // The fire-mode button is the game's ○ (action 12); the keyboard binding is M,
+                    // which the catch-all below already lands in `just` (read in the Input build:
+                    // `mode_switch`) [M Player_Weapon 0x1a24c8: `Input_Action(slot, 0xc, 4)`].
                     // Turn every switch channel on: drones waiting for one (WaitSwitch) start (triggers are not ported).
                     (KeyCode::KeyK, ElementState::Pressed) => if let Some(sim) = self.scene.sim.as_mut() { for c in 1..=255 { sim.drones.set_channel(c) } },
                     // Bug 3: log the name of the object Bond is touching (its AABB contains his feet).
@@ -1425,6 +1428,8 @@ impl ApplicationHandler for App {
                                     switch_to: self.weapon_switch_to.take(),
                                     fire: self.trigger,
                                     zoom: self.zoom,
+                                    // The fire-mode button (pad ○; keyboard M) [M Player_Weapon 0x1a24c8].
+                                    mode_switch: self.just.remove(&KeyCode::KeyM),
                                 };
                                 (input, self.trigger, self.just.remove(&KeyCode::KeyR), self.just.remove(&KeyCode::KeyE))
                             };

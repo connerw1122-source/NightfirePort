@@ -29,6 +29,9 @@ fn remap_op1_sound(id: u32, weapon: u8) -> u32 {
     }
 }
 
+/// Test export of `remap_op1_sound` (the `map_analog_stick_for_test` pattern).
+pub fn remap_op1_sound_for_test(id: u32, weapon: u8) -> u32 { remap_op1_sound(id, weapon) }
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
@@ -270,6 +273,9 @@ pub struct Sim {
     /// Bond fired during the latest `step_bond` (the muzzle light's one tick; `last_shot` is stamped before the
     /// drone tick advances the frame, so it cannot say this alone).
     pub shot_tick: bool,
+    /// The fire trigger's last-tick state — the press edge the watch pair 0x54/0x55's mode toggle ORs
+    /// in (`Player_Weapon` 0x1a24c8's `Input_Action(slot, 9, 4)`) (fix-weapon-modes).
+    pub prev_trigger: bool,
     pub view_time: f32,
     pub view_speed: f32,
     pub bob: [f32; 2],
@@ -983,6 +989,44 @@ impl Sim {
                 }
             }
         }
+        // The fire-mode button (pad ○ = action 12; keyboard M) [M `Player_Weapon` 0x1a24c8:204-260]:
+        // only with the view anim idle (the game's `anim+0xF4 == 0`: no switch, no reload, no fire
+        // script) and not while aiming a scoped weapon (+0x68 & 0x40). Twin-linked records (weapon_data
+        // +0x05) switch to their twin through the normal switch request; the rest cycle the mode byte
+        // (the Inventory's `fire_mode`, `BL + w*0xC + 0x1BB`) up to the record's mode count (+0x2E).
+        // For the watch pair 0x54/0x55 the fire press ORs in (the game reads action 9 mask 4 there) —
+        // the port tracks the trigger's press edge in `prev_trigger`.
+        if input.mode_switch {
+            let watch = matches!(self.gun.weapon, 0x54 | 0x55);
+            let fire_new = input.fire && !self.prev_trigger;
+            let toggled = if watch { fire_new } else { false };
+            if (input.mode_switch || toggled)
+                && self.gun.switch_state == 0 && self.gun.reload_state == 0 && !self.gun.fire_state && !fire_busy
+                && !(aiming && self.weapons.flags(self.gun.weapon as usize) & 0x40 != 0)
+            {
+                if let Some(w) = self.weapons.records.get(self.gun.weapon as usize) {
+                    let twin = w[5] as i8;
+                    let mode_count = w[0x2e];
+                    let mode = self.drones.inventory.fire_mode.get(self.gun.weapon as usize).copied().unwrap_or(0);
+                    let carried = self.drones.inventory.carried.clone();
+                    let clip = self.drones.inventory.clip.clone();
+                    let weapons = &self.weapons;
+                    let has_ammo = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
+                    let sw = nf_game::gun::fire_mode_switch(self.gun.weapon, twin, mode_count, mode, has_ammo);
+                    if let Some(new) = sw.new_weapon {
+                        // The twin switch writes `obj+0x63` (the switch request) [M 0x1a24c8:246-260].
+                        let cur = self.gun.weapon;
+                        if cur >= 1 && cur <= 0x47 { self.gun.prev_weapon = cur; }
+                        if cur >= 0x4a && cur <= 0x5e { self.gun.prev_gadget = if cur == 0x55 { 0x54 } else { cur }; }
+                        self.gun.switch_request = new;
+                    }
+                    if let Some(m) = sw.new_mode {
+                        if let Some(fm) = self.drones.inventory.fire_mode.get_mut(self.gun.weapon as usize) { *fm = m; }
+                    }
+                }
+            }
+        }
+        self.prev_trigger = input.fire;
         if self.gun.switch_state == 0 && self.gun.reload_state == 0 && !fire_busy {
             let owned = self.drones.inventory.owned.clone();
             let carried = self.drones.inventory.carried.clone();
@@ -1435,7 +1479,7 @@ impl Sim {
         let can_fire = !switching;
         if let Some(w) = self.weapons.records.get(self.gun.weapon as usize) {
             let scripts = &self.scripts;
-            let params = nf_game::gun::GunParams::from_record(w, 0, |h| scripts.get(&h).map(|s| s.length as u32));
+            let params = nf_game::gun::GunParams::from_record(w, self.drones.inventory.fire_mode.get(self.gun.weapon as usize).copied().unwrap_or(0) as usize, |h| scripts.get(&h).map(|s| s.length as u32));
             // Auto-aim (on by default in the game's options) only outside aim mode; in aim mode the offset eases back.
             // Auto-aim off (or aim mode): no target; the offsets still halve every tick (`Player_AutoAim` 0x1a7c98), so
             // the crosshair returns to the centre instead of staying where the last lock left it.
@@ -3288,7 +3332,7 @@ impl Scene {
             // 0x1c7e78:25] and the front-end boot keeps it until 180-fix-menus wires the page's
             // write (C_SBNFDFCTY 0x216ca8) into `set_difficulty`.
             drones.difficulty = 1;
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(),
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, prev_trigger: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(),
                 wire_cels, laser_beam: None,
             })
         });
