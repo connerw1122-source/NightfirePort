@@ -102,13 +102,21 @@ the actor capsule stays flat for one documented reason (a floor-mapping gap that
   `build_FindCel` tie-break is ported (the floor fall). For 07000008's bedroom the practical
   impact is small (the walk test shows the corridor was never blocked; the user's "obstacle" was
   primarily the DRAWN block over the room).
-- **Draw**: NOT landed. The portal walk `portal_visible_cels` exists (NF_PORTAL-gated since the
-  07000006 incident). The task's evaluation item, and the coordination note for **130-fix-portal**
-  (which owns the general portal draw — I did NOT do the draw side, so 130 keeps it): the walk from
-  the bedroom keeps the room itself and drops the exterior cell only if the portal graph between
-  them stays closed — same graph as the collision straddle (17-cell component from 48, no 106), so
-  the draw walk would drop the blue block. The 07000006 re-check and the render are the main
-  agent's.
+- **Draw**: NOT landed — and the evaluation found WHY a per-room-cel cull cannot do it. Headless
+  evaluation (`fix_safe08_live::the_portal_walk_keeps_every_room_and_drops_the_exterior_from_the_
+  bedroom`, wide depth-0 pyramid = full portal reachability):
+  - every room on 07000008 and 07000006 keeps itself; every portal-linked room keeps ≥ 2 cells;
+  - **07000006 with real eye positions does NOT reproduce the incident** (37 portal-linked rooms,
+    smallest keep 2) — the walk's connectivity is sound there; the incident's cause is elsewhere
+    (the eye's cel resolution between truck/courtyard or the depth-0 planes) — 130 should re-bisect
+    with `NF_PORTAL=1` at the incident spot rather than assume the walk;
+  - the exterior room's cel on 07000008 (cell 15) is a WHOLE-EXTERIOR box (135,−34,−460)..(297,168,8)
+    that CONTAINS the bedroom, and the bedroom's walk keeps it — so culling by room cel keeps the
+    blue block. The game hides the block because `parsemap_block_map_data_static` 0x1d1998 makes a
+    runtime cel per 0x8000 placement (`build_alloc_cel`, the cel's bbox = the object's glist bbox)
+    and the block's OWN cel is not portal-visible from the bedroom. The draw fix needs the
+    per-placement cel assignment — **130-fix-portal's general portal draw** (I did NOT do the draw
+    side, so 130 keeps it).
 
 ## What's left (for the next session)
 
