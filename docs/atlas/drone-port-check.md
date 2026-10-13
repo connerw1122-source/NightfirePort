@@ -246,3 +246,57 @@ draw and the live field is rewritten.)
   claims that were themselves written from this decomp, but were not re-measured here. Treat them
   as "documented, not independently re-checked".
 - No Rust code was changed in this task (atlas-1 scope).
+
+## Trace replay (fix-ai-traces): the guards against the real game's recordings
+
+`crates/nf-view/tests/ai_traces_live.rs` replays Bond's recorded path from `tests/traces/*.trace` through
+`nf_view::load` + `Sim::step_bond` (Bond placed per frame from the trace, velocity from the frame delta, pad
+bits → the real input path per docs/systems/input.md §3: R1 = fire, L1 = aim, ✕ rising = crouch, △ rising =
+jump), and compares every drone's state id (`+0x10C`) and position (`obj+0x30`) per frame, in DRONE_LIST
+order (`Drones::llist`). Per trace, each drone's matched-frames count is pinned in the test and can only go
+up. Comparisons use the game's own alignment facts, all measured from this replay + the snapshot:
+
+- **The recorder starts mid-run**: the trace's line 0 is the state a few frames after load (GameState+0x34
+  is the session counter, already at 29322+). The harness finds the warm-up K by matching line 0's drone
+  states (K = 2 for 07000005, 1 elsewhere); the RNG rides the same ticks, so it stays in game order.
+- **The 07000005 sniper is spawned by its spawner, then immediately re-spawned**: [L] `ee_start_05`: the
+  live sniper's group `Drone+0x144` = 1, a spawner object exists for group 1 (`DAT_00298e9c`), and
+  `DAT_00298f18[1]` = 0xffff — `DroneSpawner_Init` 0x137aa0 ran (its tail writes the 0xffff) and templated
+  the group; the group-1 spawner's immediate start re-creates it on the first tick. The port does the same
+  (template held back, spawned at tick 1, SNIPER_IDLE 0x29 from tick 2) — K = 2 aligns it.
+- **obj+0x30.y is feet + the live hip**, not the port's `pos[1]` (feet + 1.0 placement convention):
+  `DroneAnim_PreTransCallback` 0x13b490 (`obj+0xFF == 2`) reads the hip from `animobj+0x5c`, sets
+  `Drone+0xA0 = value − 0.02` (min 0.2) and adds the `A0 − A4` delta to the root vector's y — so an
+  animating drone's object y rises to feet + A0 ([L] the idle residuals 0.148–0.153, a walking drone
+  0.142, over the placement y). A disabled drone's anim object never ticks ([L] the trace's WAIT_SWITCH
+  rows match the port's raw y exactly), so the lift applies only to enabled drones. The harness converts
+  with the port's anim root track; the residuals vs the game (0.023–0.167) are the converter's gap —
+  `animobj+0x5c` is NOT the root track's y (a live check is in the report). The AI conclusion is unaffected:
+  x/z match to 0.001 and every state matches.
+- **The user's kills are injected**: Bond's pitch is not recorded, so the port's Bond cannot hit what the
+  user hit. When the game's list loses a drone and the tail aligns shifted, the harness force-removes that
+  port drone (reported as `user-kill`) so the OTHER drones keep being compared.
+
+### First divergence per drone (pinned in ai_traces_live; counts = trace lines matched)
+
+**02-civilian (07000002, 1083 frames)** — replays perfectly: 24 of 25 drones match ALL frames. Only the
+ALLY_LEAD escort (drone 21) drifts at 295 (pos 0.167, the hip-conversion y; state 28 matches throughout).
+
+**05-truck (07000005, 7851 frames)** — drone 2 (the wall guard) matches the WHOLE level. The first guard
+alerts, paths and fights on time (line 0 pos residuals are the hip conversion). First events:
+
+| drone | first divergence | what |
+|---|---|---|
+| 3 | 506 (frame 29828) | the port entered SURRENDER_ANIM (0x3f) where the game stayed IDLE — unresolved (needs the surrender trigger's [L] check) |
+| 4–11 | 885 / 2168 | the game's list lost the user-killed drones (injected; the port's own AI held to that line) |
+| 12 (sniper) | 0 pos only | state 41 matches from line 0 |
+| 13 | 7049 (frame 36372) | the port entered 0x6F where the game was IDLE — near the truck park; unresolved |
+
+**01-doors / 01-raptor (07000001, 3785 / 5001 frames)**:
+
+| drone | first divergence | what |
+|---|---|---|
+| 0 | 0 (pos) | FIXED this task: the guard has a start script and the game starts it in **PlayScript (3)** (`NDrone2_DSTATE_PlayScript` 0x15ba68 = StateFuncs[3]; the script is `Drone+0x554` = param 1, `NDrone2_DefaultInit` 0x14b300). The port skipped it and went straight to its start state → AIM_STAND (0x67) at tick 1 (instantly "alerted"). Now ported: Global 0x15b830 enters 3 when `+0x554 != 0`; ENTER plays the script per the decomp's variants (resume `+0xCD8`: ATTACK for the default/0x60005e6/0x60008ae, the start state for 0x6000168/0x6000169/0x60007ac); UPDATE runs the opponent look. The state matches from line 0 in both traces; the remaining pos divergence (0.597) is the script's root-motion step |
+| 1 | 0 (state) | Mayhew (ally, 0x1C ALLY_LEAD_INIT in the port) — the game holds him in WAIT_SWITCH (1) until channel 0xb: the ally's start gating ignores his switch channel in the port — OPEN |
+| 15/16 | 63/64–76 | the port entered RUN_FOR_COVER (0x8c) where the game was in COMBAT (0x58/0x103) — the first fight's cover choice diverges — OPEN |
+| 2–13 | 346/375 | the first user kill (injected shift) |

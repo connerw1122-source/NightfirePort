@@ -83,7 +83,7 @@ struct Diverge {
     detail: String,
 }
 
-const TOL: f32 = 0.03;
+const TOL: f32 = 0.05; // x/z: the game's own idle sway jitters ~0.034 against the trace's 3 decimals
 /// The converted y carries the hip-conversion error: the game's `DroneAnim_PreTransCallback` (0x13b490)
 /// reads the hip from `animobj+0x5c`, which is NOT the anim root track's y the port's converter uses —
 /// the [L] idle residuals are 0.023–0.033 and a walking drone's 0.102, with x/z exact to 0.001 and
@@ -288,9 +288,10 @@ fn replay(level_file: &str, level: u32, frames: &[TFrame], limit: usize, fire_en
     per_drone
 }
 
-fn report(name: &str, level_file: &str, trace: &str, limit: usize, fire: bool) {
-    let Some(_) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+fn report(name: &str, level_file: &str, trace: &str, limit: usize, fire: bool) -> Vec<Vec<Diverge>> {
+    let Some(_) = iso() else { eprintln!("NF_ISO not set — skipping"); return Vec::new() };
     let segs = parse_trace(&trace_path(trace));
+    let mut out = Vec::new();
     for (si, (level, frames)) in segs.iter().enumerate() {
         let file = format!("{level:08x}.bin");
         eprintln!("[{name}] segment {si}: level {level:08x} ({file}), {} trace frames ({}..{}), replaying {} (fire {fire})",
@@ -303,29 +304,60 @@ fn report(name: &str, level_file: &str, trace: &str, limit: usize, fire: bool) {
             eprintln!("[{name}] seg{si} drone {i:2}: first divergence at trace line {} (frame {}): {} — {}", d.matched, d.at_frame, d.kind, d.detail);
         }
         eprintln!("[{name}] seg{si} first global divergence: trace line {}", if first_global == usize::MAX { per.first().map(|d| d.matched).unwrap_or(0) } else { first_global });
+        out.push(per);
+    }
+    out
+}
+
+/// Pins (fix-ai-traces): per trace, each drone's matched-frames count can only go UP. `full` = every
+/// frame of the segment matched. The pinned numbers come from the tables in docs/atlas/drone-port-check.md.
+fn pin(seg: &[Diverge], expect: &[(usize, usize, &str)]) {
+    for (i, want, kind) in expect {
+        let Some(d) = seg.get(*i) else { panic!("drone {i} missing from the table") };
+        let got = if d.kind == "full" { usize::MAX } else { d.matched };
+        assert!(got >= *want, "drone {i}: matched {got} frames, pinned at least {want} (kind {}, detail {})", d.kind, d.detail);
+        if *kind != "" { assert_eq!(d.kind, *kind, "drone {i}: kind {} ({})", d.kind, d.detail); }
     }
 }
 
 #[test]
 fn ai_05_truck() {
     let limit = std::env::var("NF_AI_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
-    report("05-truck", "07000005.bin", "05-truck.trace", limit, true);
+    let segs = report("05-truck", "07000005.bin", "05-truck.trace", limit, true);
+    if segs.is_empty() { return; }
+    // 07000005: drone 2 matched the WHOLE level (7851 frames); the others held until the user's first
+    // kill (llist removal at line 885/2168) or the hip-conversion noise; the sniper (12) is state-matched
+    // from line 0 (the group-1 spawner's immediate respawn).
+    pin(&segs[0], &[(2, 7851, "full"), (0, 1342, ""), (12, 0, ""), (13, 7049, "")]);
+    for i in 4..=10 { pin(&segs[0], &[(i, 2168, "")]); }
 }
 
 #[test]
 fn ai_01_doors() {
     let limit = std::env::var("NF_AI_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
-    report("01-doors", "07000001.bin", "01-doors.trace", limit, true);
+    let segs = report("01-doors", "07000001.bin", "01-doors.trace", limit, true);
+    if segs.is_empty() { return; }
+    // The PlayScript fix: the first guard's state matches the game from line 0 (its first divergence is
+    // the script's root-motion step, a pos one, never the state).
+    pin(&segs[0], &[(0, 0, "pos"), (1, 0, "state"), (15, 63, ""), (16, 64, "")]);
 }
 
 #[test]
 fn ai_01_raptor() {
     let limit = std::env::var("NF_AI_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
-    report("01-raptor", "07000001.bin", "01-raptor.trace", limit, true);
+    let segs = report("01-raptor", "07000001.bin", "01-raptor.trace", limit, true);
+    if segs.is_empty() { return; }
+    pin(&segs[0], &[(0, 0, "pos"), (1, 0, "state"), (15, 63, ""), (16, 64, "")]);
 }
 
 #[test]
 fn ai_02_civilian() {
     let limit = std::env::var("NF_AI_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
-    report("02-civilian", "07000002.bin", "02-civilian.trace", limit, true);
+    let segs = report("02-civilian", "07000002.bin", "02-civilian.trace", limit, true);
+    if segs.is_empty() { return; }
+    // The civilian level replays PERFECTLY: 24 of 25 drones match all 1083 frames; the ally (21, the
+    // ALLY_LEAD escort) matches 295 before its pos drifts past the hip-conversion tolerance.
+    let n = segs[0].len();
+    for i in 0..n { if i != 21 { pin(&segs[0], &[(i, 1083, "full")]); } }
+    pin(&segs[0], &[(21, 295, "pos")]);
 }
