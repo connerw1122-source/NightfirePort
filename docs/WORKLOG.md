@@ -8529,3 +8529,8 @@ Stage Summary:
   and the ammo-id remaps are new port behaviour with game citations.
 - Left: the auto-switch drain re-open (live checks 1-2 in the report), moving-platform landings,
   the drop push-out, the AR set's second pile, the +0x888 kind-5 field, the shop's Upgrades byte.
+
+## fix-movie-playback (s/fix-movie-playback) — 2026-10-13
+
+Task 221: play the real briefing/outro movies in the mission flow (nf-view state 6), replacing
+fix-menus' countdown stand-in, per docs/systems/movies.md. Work starting.
