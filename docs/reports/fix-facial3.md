@@ -143,3 +143,11 @@ Drone facial fields), `crates/nf-view/src/scene.rs` (`facial_weights_at` + the s
 `crates/nf-view/tests/facial3_live.rs` (new), `crates/nf-view/tests/fix_cutscenes2_live.rs` (the
 Kimiko test's corrected semantics — a shared test file whose premise this task overturns),
 `docs/WORKLOG.md` (appended). No shared file rewritten; no `Rand_*` draws added.
+
+## ntfy failed
+
+All three transports returned the server-side daily quota (00:08 UTC, 2026-10-14 — the quota did
+not reset with the UTC date):
+- `curl`: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- `python3 urllib`: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- `wget`: no output, same 429 server response.
