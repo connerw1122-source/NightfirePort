@@ -7583,3 +7583,18 @@ Stage Summary:
   stun grenade stuns (0x35 flash branch), the smoke pops (0x36), the mine fuses 420; the dev panel
   names match the disc. Left: the smoke's Occlude visual, the whiteout falloff curve, the mine
   trigger/detonator, the tripbomb laser, the satchel timer — all noted in the report.
+
+---
+Task: fix-menus2 (started)
+Agent: fix-menus2 worker
+Branch: s/fix-menus2
+
+Work Log:
+- Branch created from origin/master (a5bff8b). Reading docs/reports/fix-menus.md (merged) and the current
+  crates/nf-view/src/{menu,lib}.rs. Goal per the driver: the front end must match the real game's screens
+  (title art, main-menu backdrop + stylised items, codename select, difficulty BEFORE mission list, mission
+  list with the real names/unlock rule, button-icon sprites, --shot draws the overlay).
+
+Stage Summary:
+- Setup done; work starting. Next: research the page handlers' decompiles and the 07000048 assets, then
+  rewrite the overlay to the game's layouts.
