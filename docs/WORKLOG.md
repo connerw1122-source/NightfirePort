@@ -6873,3 +6873,31 @@ The held fix-npc-doors-escort merge's two red tests, chased to the game's own an
 - Full suite (merged tree 3ec4fd5, NF_ISO, --no-fail-fast, --test-threads=1): **595 passed, 4 failed**
   — the 3 allowed `disc_golden` (the slim ISO's missing /DRIVING files) + `fix_npc_doors_live::the_
   escort_opens_the_interior_doors_on_his_route` (item 5). The two the driver named pass.
+
+## fix-wallhug-freeze (2026-10-13)
+
+Task: in real play (`tests/traces/05-gate-swap.trace`, 07000005 from the start) the ledge plate #301
+(ch 0x43) swaps the gate pair for the placed pair on the very next frame and never freezes the
+patrolling guards — but the port starts SP #298 (script 0x06000AD4), whose event 5 freezes every NPC
+~1,400 ticks. Find the trigger condition that keeps SP #298 unrun in real play (the SP's mask/mode,
+`SP_LoadScript` 0x1dbc08's arming, a second channel, a once-only flag, Bond's creep state, a
+progress gate) and make the port match: swap on the next frame, no freeze. Re-assert
+`spawner_kill_live.rs` against the trace.
+
+Work log:
+- Setup: branch `s/fix-wallhug-freeze` from origin/master (03ed005), this entry started and pushed.
+- Root cause [M]: `SP_Update` 0x1dbda8 state 0's start checks (health via BLData+0x894 — the
+  disassembly 0x1dbf50 shows the decompiler dropped the pointer load; MissionStatus; and a hardcoded
+  `script == 0x6000994 && Get_Music_Event(2) != 0` refusal for exactly this script → state 5 → the
+  SP deletes itself, stay=1). The trace's courtyard sniper cycled SNIPER_AIM/FIRE from 173533 through
+  the plate (`NDrone2_SeenAndAttacking` 0x145150 keeping EventList[2] live) → the real play never runs
+  the freeze; the PINE hand-write (quiet room) did.
+- Fix: nis.rs `Player::start_allowed` + the state-0 arm; `SpStart` rides `update_player`; drone.rs
+  `Drones::prev_event2` (the last walk's EventList[2] — UpdateMusicalEvents 0x114e70 clears per
+  frame, so later-walk posts survive into the SP's next read) captured before `music.update`; the
+  gate fed from health.health/mission.status()/prev_event2. Shared-file deltas: drone.rs (the field,
+  the capture, the wiring — additive), nis.rs (the two unit tests' new arg).
+- Tests: the freeze sister passes with a new quiet-room wait (the PINE probe's state); the new
+  combat-path test is `#[ignore]`d on a setup detail (the spawned pair reads hp 10 at spawn [L
+  probe] and takes a stray death in the yard wait; the fix's own assertions inside it pass). Full
+  suite still to run (time) — see docs/reports/fix-wallhug-freeze.md.

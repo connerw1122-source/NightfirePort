@@ -4282,6 +4282,12 @@ pub struct Drones {
     pub music: crate::music::Music,
     pub attack_gate: crate::music::AttackGate,
     alarm_music: [u16; 3],
+    /// `EventList[2]` as of the LAST walk's end (`Music_Event(2, …)` posts: CheckAlarmRaised 0x1453a8,
+    /// SeenAndAttacking 0x145150). `UpdateMusicalEvents` 0x114e70 clears the EventList once per frame
+    /// (from `SFXUpdate` 0x1156c0 in `Game_Run`'s pre/post passes), so a post made later in the walk
+    /// than a script player survives into the player's next read — the SP start gate
+    /// (`SP_Update` 0x1dbda8:96-100) sees the LAST walk's event, not this walk's.
+    pub prev_event2: u32,
     /// Speech: each line's last play frame (`Drone_SfxInfo+0x08`, global; `None` = never) and the patrol-talk cooldown.
     voice_last: Vec<Option<u32>>,
     patrol_cooldown: u32,
@@ -4384,7 +4390,7 @@ impl Drones {
         Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true,
             npc_system_disabled: false,
-            spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(),
+            spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
             node_doors: None,
             gas: Default::default(),
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
@@ -5529,7 +5535,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // trailing `Script_Update` 0x1dbc08:56]. The requests drain immediately: event 5's
                 // `Drone_EnableAll(0)` must gate the later objects' control funcs the same frame
                 // (`DroneSpawner_Control` 0x137e68:21-23 returns while NPCGlobals == 0).
-                self.scripts.update_player(index, &mut self.channels, d, frame, script_skip);
+                // The SP_Update state-0 start checks [M 0x1dbda8:80-106]: Bond's health
+                // (BLData+0x894 [D]), the mission status (MissionState 0x30cb9c), and the LAST
+                // walk's EventList[2] (the combat-music event; see prev_event2). States 1/3/6
+                // retrigger without the checks [M cases 1/3/6].
+                let sp_gate = crate::nis::SpStart {
+                    health_ok: self.health.health > 0.0, // BLData+0x894 > 0 [D; the port's health tracker]
+                    mission: self.mission.status(),
+                    music2: self.prev_event2,
+                };
+                self.scripts.update_player(index, &mut self.channels, d, frame, script_skip, sp_gate);
                 self.drain_script_requests(d);
                 continue;
             }
@@ -5880,6 +5895,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         self.mission_events = events;
         // `UpdateMusicalEvents` 0x114e70 — once per tick, after the drones (their script requests and the
         // mission's pulses are this tick's EventList) [M]. The audio layer feeds `iop_section`.
+        self.prev_event2 = self.music.events[2];
         self.music.update(self.iop_section);
     }
 }
