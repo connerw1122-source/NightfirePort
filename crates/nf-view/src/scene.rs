@@ -532,6 +532,12 @@ pub struct CelNode {
     /// room bit `build_FindCel` 0x1c8cb0 collects; the placement's raw word 0xc047 does NOT carry
     /// it), the generic classes 0x8019. fix-portal.
     pub flags: u32,
+    /// The cel's world (centre, radius) sphere — `cel+0x80..0x8c`, the pCelList record's +0x10..0x1c
+    /// local sphere transformed by the placement matrix (`parseentity_transform_bounding_box`
+    /// 0x1d0fb0 [M]; the port derives it from the placement-transformed bbox corners). This is what
+    /// `Vision_InView` (0x1e89e0) tests for the `+0x18` chain pass; `min`/`max` stay raw (the game's
+    /// `build_FindCel` 0x1c8cb0 tests the raw glist bbox copied to cel+0x40..0x58). fix-portal2.
+    pub sphere: ([f32; 3], f32),
 }
 
 /// One block-0x21 portal as two half-edges: `corners` in file order, the FORWARD plane built
@@ -629,10 +635,25 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
             let is_main = Some(mi) == main;
             let idx = cells.len();
             let node_flags = cel_flags_word(flags16);
+            // The world sphere: the object's raw bbox corners through the placement matrix, then the
+            // AABB's centre / half-diagonal (`parseentity_transform_bounding_box` 0x1d0fb0).
+            let sphere = |min: [f32; 3], max: [f32; 3]| {
+                let m = nf_formats::placement::object_matrix(p.rotation, p.translation);
+                let mut lo = [f32::MAX; 3];
+                let mut hi = [f32::MIN; 3];
+                for cx in [min[0], max[0]] { for cy in [min[1], max[1]] { for cz in [min[2], max[2]] {
+                    let w = nf_formats::placement::transform(&m, [cx, cy, cz]);
+                    for k in 0..3 { lo[k] = lo[k].min(w[k]); hi[k] = hi[k].max(w[k]); }
+                } } }
+                let c3 = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, (lo[2] + hi[2]) * 0.5];
+                let d = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+                (c3, (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() * 0.5)
+            };
             match obj {
                 Some((om, oi)) => {
                     let o = &level.maps[om].objects[oi];
-                    cells.push(CelNode { min: o.min, max: o.max, flags: node_flags });
+                    let sp = sphere(o.min, o.max);
+                    cells.push(CelNode { min: o.min, max: o.max, flags: node_flags, sphere: sp });
                     if is_main && matches!(flags16, 0xc023 | 0xc047) {
                         let mut a0 = [param(0), param(1), param(2)];
                         if a0 == [0, 0, 0] { a0 = [0x3c; 3]; }
@@ -645,13 +666,17 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
                         room_to_cell.push(Some(idx));
                     }
                 }
-                None => { cells.push(CelNode { min: [0.0; 3], max: [0.0; 3], flags: cel_flags_word(flags16) }); }
+                None => { cells.push(CelNode { min: [0.0; 3], max: [0.0; 3], flags: cel_flags_word(flags16), sphere: ([0.0; 3], 0.0) }); }
             }
             chains.push(Vec::new());
             // The generic classes ride the chains as nodes [L ee_start_05.bin node census] — hung
-            // on every cel parsed before them in this block.
+            // on every cel parsed before them in this block. The snapshot's per-owner counts never
+            // exceed 58 (< the game's 0x40 list caps), so each owner keeps its first 0x40 nodes
+            // (the parse-closest = spatially nearest generics) [S — the exact window is unresolved;
+            // without the cap the whole-block model over-rescues: 814 draws vs the game's 177 on
+            // the 07000007 start view].
             if matches!(flags16, 0x8018 | 0x8019) {
-                for &b in &block { chains[b].push(idx as u32); }
+                for &b in &block { if chains[b].len() < 0x40 { chains[b].push(idx as u32); } }
             }
             block.push(idx);
             if is_main { own_cells_main.push(Some(idx as u32)); }
@@ -687,11 +712,7 @@ pub fn vision_in_view(centre: [f32; 3], radius: f32, sides: &[[f32; 4]; 4]) -> b
 }
 
 /// A cel's (centre, radius) sphere from its bbox — the `Vision_InView` input.
-fn cel_sphere(c: &CelNode) -> ([f32; 3], f32) {
-    let c3 = [(c.min[0] + c.max[0]) * 0.5, (c.min[1] + c.max[1]) * 0.5, (c.min[2] + c.max[2]) * 0.5];
-    let d = [c.max[0] - c.min[0], c.max[1] - c.min[1], c.max[2] - c.min[2]];
-    (c3, (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() * 0.5)
-}
+fn cel_sphere(c: &CelNode) -> ([f32; 3], f32) { c.sphere }
 
 /// The game's World-glist visibility: the VisCelList walk PLUS `View_AddCels` (0x1e6ba0)'s `+0x18`
 /// chain pass — for every visited cel, each chain node draws when `Vision_InView` passes, skipping
