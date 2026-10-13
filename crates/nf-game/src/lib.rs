@@ -29,6 +29,7 @@ pub mod lock;
 pub mod ss;
 pub mod mission;
 pub mod music;
+pub mod death;
 pub mod nav;
 pub mod nis;
 pub mod props;

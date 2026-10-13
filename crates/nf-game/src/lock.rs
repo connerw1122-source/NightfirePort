@@ -18,7 +18,16 @@
 //! - `Lock_Activate` (0x1aed00): the E-interaction plays the locked/burnt sounds only; the burn is
 //!   the laser's doing, not the use key.
 //!
-//! Port status: the record, the out channel and the burn hook exist; the gadget itself is not
+//! Port status (fix-party-mission): FIXED in play — the Lazer Watch 0x4E/0x4F's bullets burn the
+//! lock through the bullet pass's segment-vs-sphere contact (`Lock_Update` case 0's cell walk, the
+//! weapon id already on the port's BU), and the burn is instant (the create-time base is 0 on this
+//! level's data [M 0x1ae1f8 — 07000008's #207/#208 param 2 = 0]); the chain test drives both bolts
+//! through the real path (watch select, aim, fire) to ch 136. The watch's fp view-model beam and
+//! the bolt meshes are still render-side work (0x2E is not in the port's dynamic draw list). The
+//! gadget itself was previously not ported (docs/port-map/gadgets.md — all of 0x4A..0x5E are out of
+//! selection), so the burn was a method the (future) `Player_LaserPointer` 0x1a65d8 calls per tick
+//! while its ray hits the lock's world sphere, and tests could drive it directly. The framelist
+//! open-animation is not posed — render-side, noted in the report.
 //! ported (docs/port-map/gadgets.md — all of 0x4A..0x5E are out of selection), so the burn is a
 //! method the (future) `Player_LaserPointer` 0x1a65d8 calls per tick while its ray hits the lock's
 //! world sphere, and tests can drive it directly. The bolt meshes are not drawn yet (the 0x2E
