@@ -36,3 +36,7 @@ claimed-by: sandbox4 at 2026-10-13T19:07Z
 ## Report (done, 2026-10-13T20:33Z)
 
 Closed by the driver: the report is on `s/fix-sound-remainder` (docs/reports/fix-sound-remainder.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-13T20:33Z)
+
