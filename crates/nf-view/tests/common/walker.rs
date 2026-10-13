@@ -87,6 +87,10 @@ pub struct Walker {
     lenient: bool,
 }
 
+/// The stuck dump, public for the walkreal tests' own aim loops (walkreal-b2).
+#[allow(dead_code)]
+pub fn fail_dump_pub(scene: &Scene, target: V3, label: &str) -> String { fail_dump(scene, target, label) }
+
 fn fail_dump(scene: &Scene, target: V3, label: &str) -> String {
     let sim = scene.sim.as_ref().unwrap();
     let p = sim.bond.pos;
@@ -137,12 +141,78 @@ impl Walker {
     /// A script cut-scene holding Bond (`disabled`) is SKIPPED through the game's own skip action
     /// (`Scripts::skip_request` = `Input_Action(−1, 0x19, 1)` [M nis.rs; fix-dev T1] — the walk
     /// cannot watch cut-scenes, and the skip is the real player's button).
+    /// Walk a nav route by stepping EVERY node as its own waypoint (the direct final legs of
+    /// `walk_nav_to` wedge on furniture the AI's node chain threads between). Returns false when
+    /// no route exists. The per-node walks are lenient: a wedged node is skipped and the next
+    /// node re-aims, so one bad node doesn't strand the walk.
+    pub fn follow_nav_route(&mut self, target: V3, label: &str) -> bool {
+        let pts = {
+            let sim = self.scene.sim.as_ref().unwrap();
+            nav_route(sim, self.pos, target)
+        };
+        let pts = match pts {
+            Some(p) => p,
+            None => {
+                eprintln!("[walk] {label}: no nav route — the direct chain");
+                let sim = self.scene.sim.as_ref().unwrap();
+                let mut v = leg(sim, self.pos, target);
+                v.pop();
+                v
+            }
+        };
+        for (k, p) in pts.iter().enumerate() {
+            let _ = self.walk_to(Wp::new(p[0], p[1], p[2]).r(1.3), &format!("{label} node {k}"));
+        }
+        let _ = self.walk_to(Wp::new(target[0], target[1], target[2]).r(1.3), &format!("{label} end"));
+        true
+    }
+
+    /// Walk to a tall-step target with a jump every 30 ticks (the player's own stair move when
+    /// the step exceeds the walk's step-up): turn, run forward, hop. Returns on arrival or the
+    /// y/xy cap.
+    pub fn climb_stairs(&mut self, target: V3, label: &str, arrive: f32, max_ticks: u32) -> bool {
+        eprintln!("[walk] {label}: climb begin (bond {:?})", self.scene.sim.as_ref().unwrap().bond.pos);
+        let start = self.total_ticks;
+        loop {
+            if self.total_ticks - start >= max_ticks {
+                eprintln!("[walk] {label}: climb cap (bond {:?} target {target:?})", self.scene.sim.as_ref().unwrap().bond.pos);
+                return false;
+            }
+            if self.stop_on_exit && self.scene.sim.as_ref().unwrap().drones.level_exit.is_some() { return true; }
+            let p = self.scene.sim.as_ref().unwrap().bond.pos;
+            let d = dxz(p, target);
+            if d < arrive { return true; }
+            let sim = self.scene.sim.as_ref().unwrap();
+            let desired = (target[0] - p[0]).atan2(target[2] - p[2]);
+            let err = wrap_pi(desired - sim.bond.yaw);
+            let jump = self.total_ticks % 30 == 0 && sim.bond.grounded;
+            let input = Input {
+                turn: err.clamp(-0.08, 0.08),
+                forward: if err.abs() > 1.0 { 0.0 } else { 1.0 },
+                jump,
+                ..Default::default()
+            };
+            self.tick(input, false);
+        }
+    }
+
     pub fn tick(&mut self, input: Input, use_key: bool) {
+        self.tick_inner(input, use_key, false);
+    }
+
+    /// One tick with the trigger HELD (walkreal-b2): the gadget burns come from the held fire's refire
+    /// [M Player_WeaponInitBullet 0x1a4bf0 → Player_MuzzleFlash 0x1a4298 → Draw_LaserBeam 0x1a4560; the
+    /// held-fire loop 0x1a5460:601-694]; `Lock_Update` 0x1ae3d8:194 burns the lock the beam touches.
+    pub fn tick_fire(&mut self, input: Input) {
+        self.tick_inner(input, false, true);
+    }
+
+    fn tick_inner(&mut self, input: Input, use_key: bool, fire: bool) {
         if self.scene.sim.as_ref().unwrap().disabled {
             self.scene.sim.as_mut().unwrap().drones.scripts.skip_request = true;
         }
         let y_before = self.scene.sim.as_ref().unwrap().bond.pos[1];
-        self.scene.sim.as_mut().unwrap().step_bond(input, false, false, use_key);
+        self.scene.sim.as_mut().unwrap().step_bond(input, fire, false, use_key);
         let sim = self.scene.sim.as_ref().unwrap();
         self.total_ticks += 1;
         if sim.bond.pos[1] < y_before - 0.4 && !sim.bond.grounded {

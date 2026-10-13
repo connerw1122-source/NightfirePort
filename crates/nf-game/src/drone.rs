@@ -4505,6 +4505,7 @@ impl Drones {
             let p = &level.maps[m].placements[fb.placement];
             let script = p.params.iter().find(|(k, _)| *k == 0).map_or(0, |&(_, v)| v);
             if script < 0x0600_0000 { continue; }
+            let m = nf_formats::placement::object_matrix(p.rotation, p.translation);
             self.scripts.players.push(crate::nis::Player {
                 placement: fb.placement,
                 scripts: [script, 0],
@@ -4514,13 +4515,14 @@ impl Drones {
                 out: 0,
                 gate: 0,
                 scale: 1.0,
-                matrix: nf_formats::placement::object_matrix(p.rotation, p.translation),
+                matrix: m,
                 cur: 0,
                 state: 0,
                 activated: false,
                 countdown: 0,
                 info: [None, None],
                 deleted: false,
+                live_matrix: m,
             });
         }
         if let Some(p) = ps.iter().find(|p| p.flags & 0xff == 0xdf) {

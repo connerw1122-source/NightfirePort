@@ -667,6 +667,11 @@ pub struct Player {
     pub countdown: u8,
     pub info: [Option<Script>; 2],
     pub deleted: bool,
+    /// The SP object's LIVE matrix — `Script_Interp` 0x1d9a08:106-133 keys the SP object's `obj+0x90`
+    /// from stream 0 every frame (parent chain, then the script base), so the object's world position
+    /// follows its script (the elevator cab, the keyboard): `SP_Activate` 0x1dc338's use test reads
+    /// THAT sphere, not the placement transform. Starts at the placement matrix.
+    pub live_matrix: Mat4,
 }
 
 impl Player {
@@ -680,6 +685,7 @@ impl Player {
             placement: index, scripts: [g(0), g(1)], modes, stay: g(4) as u8 != 0, mask, out: g(6) as u16, gate: g(9) as u16,
             scale: if g(10) == 0 { 1.0 } else { g(10) as f32 * 0.01 }, matrix, cur: 0, state, activated: false, countdown: 0,
             info: [None, None], deleted: false,
+            live_matrix: matrix,
         })
     }
 
@@ -749,7 +755,28 @@ impl Player {
     /// any player pressed the skip action this tick (`Scripts::skip_request`, set by the viewer's key handler).
     pub fn update(&mut self, lib: &HashMap<u32, Arc<Nis>>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>, skip: bool, gate: SpStart) {
         if self.deleted || (self.gate != 0 && !ch.on(self.gate as u32)) { return; }
-        if let Some(s) = self.info[self.cur].as_mut() { s.update(objs, ch, w, frame, out); }
+        if let Some(s) = self.info[self.cur].as_mut() {
+            s.update(objs, ch, w, frame, out);
+            // `Script_Interp` 0x1d9a08:106-133 keys the SP object's `obj+0x90` from stream 0 every
+            // frame: the keys' matrix (an anim stream: its discrete object 0), each parent stream's
+            // matrix, then the script base. The SP's use sphere follows it (`SP_Activate` 0x1dc338
+            // reads the live object).
+            let s0 = &s.streams[0];
+            let m0 = match s0.kind {
+                2 => s.stream_matrix(0, objs, w),
+                _ => s.keys(0).map(|(m, _, _)| m),
+            };
+            if let Some(mut m) = m0 {
+                let mut par = s.streams[0].parent as i32;
+                let mut n = 0;
+                while par >= 0 && (par as usize) < s.streams.len() && n < s.streams.len() {
+                    if let Some(pm) = s.stream_matrix(par as usize, objs, w) { m = mul(&m, &pm); }
+                    par = s.streams[par as usize].parent as i32;
+                    n += 1;
+                }
+                self.live_matrix = mul(&m, &s.matrix);
+            }
+        }
         let mut flags = 0u16;
         if self.countdown == 0 && self.out != 0 && ch.on(self.out as u32) { flags |= 1; }
         let mut value = self.out != 0 && ch.on(self.out as u32);
@@ -889,6 +916,7 @@ impl Scripts {
         self.players.push(Player {
             placement, scripts: [script, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0,
             scale, matrix, cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
+            live_matrix: matrix,
         });
     }
 
@@ -1064,7 +1092,8 @@ mod tests {
             keys: Vec::new(),
         });
         let nis = mk(0x0600_0421);
-        let mut p = Player { placement: 0, scripts: [0x0600_0421, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 0, activated: false, countdown: 0, info: [None, None], deleted: false };
+        let mut p = Player { placement: 0, scripts: [0x0600_0421, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 0, activated: false, countdown: 0, info: [None, None], deleted: false,
+            live_matrix: IDENT };
         let mut lib = HashMap::new();
         lib.insert(0x0600_0421u32, nis);
         let mut objs = Objects::default();
@@ -1098,7 +1127,8 @@ mod tests {
         // Sister: the same script as a death NIS (hash 0x6000952) NEVER skips — `SP_Update` refuses `Script_FFwd`
         // [M 0x1dbda8:134-136] and `Script_Update`'s near-end break keeps it from fast-forwarding.
         lib.insert(0x0600_0952u32, mk(0x0600_0952));
-        let mut p2 = Player { placement: 0, scripts: [0x0600_0952, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 0, activated: false, countdown: 0, info: [None, None], deleted: false };
+        let mut p2 = Player { placement: 0, scripts: [0x0600_0952, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 0, activated: false, countdown: 0, info: [None, None], deleted: false,
+            live_matrix: IDENT };
         let mut objs2 = Objects::default();
         p2.load(&lib, &mut objs2, &mut ch, &world, 0, &mut out);
         p2.state = 2;

@@ -6925,3 +6925,27 @@ Work log:
   combat-path test is `#[ignore]`d on a setup detail (the spawned pair reads hp 10 at spawn [L
   probe] and takes a stray death in the yard wait; the fix's own assertions inside it pass). Full
   suite still to run (time) — see docs/reports/fix-wallhug-freeze.md.
+
+## fix-walkreal-b2 (s/fix-walkreal-b2) — 2026-10-13
+Task: land walkreal-b's work on master green. Start fresh from origin/master; bring over the walker
+harness (tests/common/walker.rs, tower2.rs), the door lock-edge fix (door.rs Doors::end_tick [M
+0x1336f8]) with its test, and the per-level walk tests; do NOT bring walkreal-a's drone.rs
+nearest-door stand-in or agent-ctx/. Make every walk test pass on master, or #[ignore] the ones
+blocked by known open gaps (C5 door on 0d, 14's vent scene, 12 doorway crossing) with the gap and
+owner named. No test may stay red. Full suite all four crates, report the count.
+Started 06:50 UTC, sandbox expires ~08:47 UTC.
+
+**fix-walkreal-b2 outcome (08:00 UTC)**: landed on master green. The door two-latch fix
+(door.rs `end_tick` [M 0x1336f8 `prev ← hold; hold ← channels`]) + the walker harness
+(tests/common/walker.rs, tower2.rs) + the 10 per-level walkreal tests. The one real route fix:
+the Q-Decryptor keypad burn runs on the HELD FIRE (fix-gadgets2's model [M 0x1a5460:601-694];
+walker `tick_fire` → `Lock_Update` 0x1ae3d8:194) — 07000012 passes end to end through the burn,
+the door[19] edge and the shaft exit. Additive shared hooks: `nis::Player.live_matrix`
+(Script_Interp 0x1d9a08 stream-0 keying; SP ctors incl. the fusebox SP in drone.rs) — the useobj
+matrix read NOT switched (no test needed it; master's useobj.rs keeps `sp.matrix`). Suite: 589
+passed / 3 failed (the 3 allowed `disc_golden`) / 13 ignored, `--no-fail-fast`, test-threads=1.
+Four documented gap-ignores, each with evidence + owner + live check: 01 (the contact escort's
+NPC door path — 045g-fix-npc-doors2), 0a (the cab-mouth SS leaves ch 0x00; the game's own start
+snapshot holds them closed too [L ee_start_0700000a.bin 0xE2E2A4/0xE2E314] — the arrival writer
+is missing), 13 (the entrance mouth glazed at z≈65 — the gate-raise writer missing), 14 (the
+vent cut-scene ch 0x47 — walkreal-b's parked item). Report: docs/reports/fix-walkreal-b2.md.

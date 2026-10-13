@@ -207,10 +207,11 @@ pub struct Doors {
     pub group_states: [u16; 101],
     /// The previous tick's `switch_channels` (`switch_channels_prev`) for the lock channel's rising edge.
     prev_channels: [u8; 256],
+    hold_channels: [u8; 256],
 }
 
 impl Default for Doors {
-    fn default() -> Doors { Doors { list: Vec::new(), group_states: [0; 101], prev_channels: [0; 256] } }
+    fn default() -> Doors { Doors { list: Vec::new(), group_states: [0; 101], prev_channels: [0; 256], hold_channels: [0; 256] } }
 }
 
 /// The main map's door placements in creation order (create and nf-view).
@@ -303,7 +304,7 @@ impl Doors {
             }
             list.push(d);
         }
-        Doors { list, group_states: [0; 101], prev_channels: [0; 256] }
+        Doors { list, group_states: [0; 101], prev_channels: [0; 256], hold_channels: [0; 256] }
     }
 
     /// A door that starts open sets its open channel at create (`Door_Create`'s tail).
@@ -619,12 +620,19 @@ impl Doors {
         (sounds, hits)
     }
 
-    /// Snapshot the channels for this tick's lock-edge test (`switch_channels_prev`). The game copies
-    /// `prev ← hold; hold ← channels` right after `Trigger_Calc`, BEFORE the object walk [M 0x1336f8:52-53,
-    /// 0x1337cc/0x1337dc] — `Drones::tick` calls this at that exact point, so `Door_Update`'s rising edge sees a
-    /// channel pulsed earlier in the same frame (core-loop §7 item 5).
+    /// Snapshot the channels for this tick's lock-edge test (`switch_channels_prev`). The game
+    /// copies BOTH latches right after `Trigger_Calc`, BEFORE the object walk — two amemcpys at
+    /// the head of `control_movement_object_handler` [M 0x1336f8: `amemcpy(0x26fd90, 0x26fe90,
+    /// 0x100); amemcpy(0x26fe90, 0x26fc90, 0x100)` — `prev ← hold; hold ← channels`]: `prev`
+    /// lags `channels` by TWO snapshots, so a channel pulsed anywhere since the last snapshot
+    /// (a trigger or script mid-walk, or the player's own laser burn in `Player_Update`'s
+    /// class-4 slot [M Player_LaserPointer 0x1a65d8 → `Lock_Update` 0x1ae3d8:194]) still shows a
+    /// rising edge in `Door_Update`'s `prev == 0 && now != 0` test (0x136550-0x136608). The old
+    /// single-copy read made any pre-snapshot write (the Q-Decryptor keypad burn on 07000012)
+    /// invisible to the edge — the door stayed locked forever.
     pub fn end_tick(&mut self, channels: &Channels) {
-        for (k, c) in self.prev_channels.iter_mut().enumerate() { *c = channels.v.get(k).copied().unwrap_or(0); }
+        self.prev_channels = self.hold_channels;
+        for (k, c) in self.hold_channels.iter_mut().enumerate() { *c = channels.v.get(k).copied().unwrap_or(0); }
     }
 
     /// `NF_DOORLOG=1` per-tick diagnostic (Task A-8-2): for every door, prints placement, kind,
