@@ -7855,3 +7855,45 @@ Work Log:
 Stage Summary:
 - Starting: the guests' reaction state + its anim on 07000007, the death→results→restart flow
   (fix-menus' P_NFRESULTS / P_ENDMISSION), and the protected-actor fail path (0x145bd0/0x13e560).
+
+---
+Task: fix-guest-reactions (branch s/fix-guest-reactions)
+Agent: fix-guest-reactions worker
+Task: civilians when Bond attacks one (the T-pose), the death replay/restart loop, punch = mission fail on protected actors
+
+Work Log:
+- Reproduced through the real input path. The punch first never landed at all: the port spawns the
+  fists' round at the fire script's strike frame (+0x44 = 6) and the guest moves in that window —
+  the existing T-pose test's own log showed ko=false and zero punch dispatches, so it passed
+  vacuously. The repro test re-aims every tick and waits out the strike frame.
+- The T-pose chain, from the decompile: `NDrone2_PunchImpact` 0x145f28:30 sets
+  `Drone_AlertStatusSet(2)` on the victim (the port skipped it) and :55 calls
+  `DroneFunc_SendHurtMessage` 0x145e28:19-57 — prop 0x32, the +8 once-per-life bit — which
+  BROADCASTS msg 0x12 (`Drone_SM_BroadcastMsg`) with the victim as the alert source. The receivers'
+  DSTATE case 0x12 → `DroneVision_EnemyAlerts` 0x177c18:41-51 gates on prop 0x27 →
+  `DroneVision_ShoutFromOtherDrone` → CivilianScared 0x12 → CivilianHiding 0x13 with `CallAnim(0x19)`
+  — the cower [M 0x15d3a0/0x15d520] — the animation the user's build was missing (the T-pose).
+  The port had none of it: no broadcast, no 0x12 receivers, no victim alert (its sound-alert path
+  can't carry the scream — the voices' hearing weight is 0.0 in the sfx table, and 07000007's
+  `DroneFunc_HandleSoundAlerts` 0x148a30:33-39 returns early for UNARMED drones). The port now
+  queues the scream (`pending_shout`) and drains it in the shared pass to every present+enabled
+  drone within 20.0 (the PartyGirl shout's radii [M 0x160140:63-70]); the receivers go
+  CivilianScared → the cower (guards keep their `enemy_alerts` investigation, the AlertSound
+  else-arm [M 0x177800:81-88]).
+- The replay loop: `Mission_Update`'s game case 5 is a bare `break` [M 0x182c60:83-84] — the
+  0x40000042 menu waits for the answer. The port's catch-all re-armed internal 1, re-running the
+  whole death/fail sequence and queueing another restart every tick after the answer — the user's
+  "kept replaying at the start of the mission over and over again". Fixed with the explicit wait arm.
+- Punch = fail was already ported (fix-party-mission; `punch_impact`'s 0x145f28:45-56 arm) but was
+  untestable through the input path until the strike-frame punch landed; the new test pins it for a
+  GUEST (the bouncer was covered).
+- The guests' props measured [L probe]: 0x27/0x32/0x33/0x52 set, 0x28/0x1f clear — the scream chain
+  gates all line up.
+
+Stage Summary:
+- All three items verified green: fix_guest_reactions_live (3 tests) + the full suite — nf-game 225,
+  nf-formats+nf-audio 88 (the 3 allowed disc_golden), nf-view 337 fast + 103 walk, zero unexpected
+  failures. Report: docs/reports/fix-guest-reactions.md.
+- Not ported: the PartyGirl armed-intruder shout (msg 0x11, prop 0x33 → the guards' prop-0x28 route,
+  0x160140:63-70), the fail reason 0xb behind prop 0x52, and the disabled WaitSwitch guests (the
+  idle ones can't be punched until their switch channel wakes them).
