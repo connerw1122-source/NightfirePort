@@ -7696,6 +7696,40 @@ the detected counter's live hook, `Player_InitWeapon`'s per-difficulty autoaim d
 NewScoresRef PTP hand-off, the results screens (180-fix-menus). docs/systems/progress.md is the
 port map; GAPS G-045 added. Report: docs/reports/fix-progress.md.
 
+## fix-weapon-modes (s/fix-weapon-modes) — 2026-10-13
+Task: weapon fire modes — the Circle mode-switch (`Player_Weapon` 0x1a24c8: `Input_Action(slot, 0xc, 4)`,
+the mode byte at `BL + w*0xC + 0x1BB`, the twin-variant switch via weapon_data +0x05), each mode's behaviour
+(the launcher's heat-seeker homing `Bullet_update` 0x12e7b0:483 → `Bullet_homing` 0x12f358 on weapon_data
++0x6C & 0x20000), and the HUD fire-mode label (+0x30 + mode*4). Plus each weapon's first-person fire sound id
+(op-1 per-weapon remap) and gadget switching/use (briefcase, Q-Worm, camera). Started 16:45 UTC, sandbox
+expires ~18:32 UTC.
+
+**fix-weapon-modes outcome (18:25 UTC)**: the fire-mode system is ported. The button: `Input.mode_switch`
+(keyboard M = the pad's ○, action 12 mask 4 [M `Player_Weapon` 0x1a24c8:204-260 — the view-idle gate, the
+not-(aiming∧scoped) gate, the watch 0x54/0x55's fire OR-in via `Sim.prev_trigger`'s press edge]) handled in
+`scene.rs` before the switch-cycle block: a twin result (`weapon_data[w]+0x05`, s8) goes through the real
+switch request after `Player_WeaponHasAmmo` 0x1a16c0 (which reads carried/clip/type-0/ground-pickup — NOT
+the owned byte [M]); a mode result writes the mode byte, now `Inventory.fire_mode` (the game's
+`BL + w*0xC + 0x1BB`), which feeds `GunParams::from_record`'s shots-per-pull (`+0x28 + mode·2`) and the
+HUD's fire-mode label (`+0x30 + mode·4`, was hardcoded mode 0). The name resolution [L USATxt.dat +
+Lang::bind]: 0x2E 'Heatseeker' ↔ 0x2F 'Unguided' is the **AT-600 Scorpion**, 0x2C 'Guided' ↔ 0x2D the
+'Torpedo Launcher', 0x02 'Semi' ↔ 0x03 'Silenced' the P2K. The homing: `Bullet_homing` 0x12f358 ported in
+`drone.rs` (`Bullet_update` 0x12e7b0:483's `+0x6C & 0x20000` branch): the live-drone scan (nearest ≤ 1000,
+dot > 0.66, LOS via world.segment, the +0xfe&1 re-scan) and the `clamp((to−dir)·0.0333, ±0.01)` steer, no
+RNG draws. The op-1 remap (G-032's item) was already correct — pinned with a test (six table rows +
+the P2K 0x02's 0x403-unchanged [M 0x1c1b38:251-277]). The island: `Player_InitWeapon` 0x1a7ef8 case
+0x0700009 + the 0x070000a/b RamLoad fallback now grant the Q-Worm 0x58/Decryptor 0x56/Shaver 0x5b
+(the user could never select the Q-Worm — no grant existed). Gadget id corrections for the docs (not
+rewritten — lesson 5): 0x52 = briefcase ('Phoenix Ronin', pickups on 0700000c + 07000012, NOT 07000008 —
+its `oBriefcase_closed` is a kind-4 LABEL item [D]), 0x54 = Micro-Camera, 0x56/57 = Decryptor, 0x58 =
+Q-Worm. Tests: `crates/nf-view/tests/fix_weapon_modes_live.rs` (the twin toggle both ways + the no-twin
+sister 0x0c, the homing hit vs the unguided sister through the real trigger, the label ids, the Q-Worm
+grant, the op-1 table). Suite: see below. Report: docs/reports/fix-weapon-modes.md. Left: the briefcase's
+`GT_DeployMiniGun` turret (a new gt.rs), `Bullet_init`'s mode spread, the grenade mode pair, the decryptor
+decode mini-game, the camera's first-equip hint, the gadgets.md id-table fix, and the +0x60 fire_sound vs
+view_anim_datum contradiction (both docs cite readers — DroneWeap_FireWeapon 0x178f68:274-278 plays it vs
+weapon.rs' retyping; needs one [L] watch to settle).
+
 ## fix-movies (s/fix-movies) — 2026-10-13
 Task: the FMVs (PSS): verify the pss.rs demuxer on Nightfire's own movies with an
 NF_ISO golden test over every PSS on the disc; decode the MPEG-2 (IPU-style) video
@@ -8009,3 +8043,141 @@ NOT the footsteps path (the port's per-surface drone footsteps already match `Ef
 op-1 remap table + the precache sender are pinned for the next session, and the cel env (+0x98) value
 is mapped register-level for the EE half. No `Rand_*` draws added. Report:
 docs/reports/fix-sound-remainder.md.
+---
+Task: fix-guest-reactions (branch s/fix-guest-reactions)
+Agent: fix-guest-reactions worker
+Task: civilians when Bond attacks one (the T-pose), the death replay/restart loop, punch = mission fail on protected actors
+
+Work Log:
+- Branch created from origin/master (3576133); setup verified (work/, EE snapshots, ISO, nf-queue all present).
+
+Stage Summary:
+- Starting: the guests' reaction state + its anim on 07000007, the death→results→restart flow
+  (fix-menus' P_NFRESULTS / P_ENDMISSION), and the protected-actor fail path (0x145bd0/0x13e560).
+
+---
+Task: fix-guest-reactions (branch s/fix-guest-reactions)
+Agent: fix-guest-reactions worker
+Task: civilians when Bond attacks one (the T-pose), the death replay/restart loop, punch = mission fail on protected actors
+
+Work Log:
+- Reproduced through the real input path. The punch first never landed at all: the port spawns the
+  fists' round at the fire script's strike frame (+0x44 = 6) and the guest moves in that window —
+  the existing T-pose test's own log showed ko=false and zero punch dispatches, so it passed
+  vacuously. The repro test re-aims every tick and waits out the strike frame.
+- The T-pose chain, from the decompile: `NDrone2_PunchImpact` 0x145f28:30 sets
+  `Drone_AlertStatusSet(2)` on the victim (the port skipped it) and :55 calls
+  `DroneFunc_SendHurtMessage` 0x145e28:19-57 — prop 0x32, the +8 once-per-life bit — which
+  BROADCASTS msg 0x12 (`Drone_SM_BroadcastMsg`) with the victim as the alert source. The receivers'
+  DSTATE case 0x12 → `DroneVision_EnemyAlerts` 0x177c18:41-51 gates on prop 0x27 →
+  `DroneVision_ShoutFromOtherDrone` → CivilianScared 0x12 → CivilianHiding 0x13 with `CallAnim(0x19)`
+  — the cower [M 0x15d3a0/0x15d520] — the animation the user's build was missing (the T-pose).
+  The port had none of it: no broadcast, no 0x12 receivers, no victim alert (its sound-alert path
+  can't carry the scream — the voices' hearing weight is 0.0 in the sfx table, and 07000007's
+  `DroneFunc_HandleSoundAlerts` 0x148a30:33-39 returns early for UNARMED drones). The port now
+  queues the scream (`pending_shout`) and drains it in the shared pass to every present+enabled
+  drone within 20.0 (the PartyGirl shout's radii [M 0x160140:63-70]); the receivers go
+  CivilianScared → the cower (guards keep their `enemy_alerts` investigation, the AlertSound
+  else-arm [M 0x177800:81-88]).
+- The replay loop: `Mission_Update`'s game case 5 is a bare `break` [M 0x182c60:83-84] — the
+  0x40000042 menu waits for the answer. The port's catch-all re-armed internal 1, re-running the
+  whole death/fail sequence and queueing another restart every tick after the answer — the user's
+  "kept replaying at the start of the mission over and over again". Fixed with the explicit wait arm.
+- Punch = fail was already ported (fix-party-mission; `punch_impact`'s 0x145f28:45-56 arm) but was
+  untestable through the input path until the strike-frame punch landed; the new test pins it for a
+  GUEST (the bouncer was covered).
+- The guests' props measured [L probe]: 0x27/0x32/0x33/0x52 set, 0x28/0x1f clear — the scream chain
+  gates all line up.
+
+Stage Summary:
+- All three items verified green: fix_guest_reactions_live (3 tests) + the full suite — nf-game 225,
+  nf-formats+nf-audio 88 (the 3 allowed disc_golden), nf-view 337 fast + 103 walk, zero unexpected
+  failures. Report: docs/reports/fix-guest-reactions.md.
+- Not ported: the PartyGirl armed-intruder shout (msg 0x11, prop 0x33 → the guards' prop-0x28 route,
+  0x160140:63-70), the fail reason 0xb behind prop 0x52, and the disabled WaitSwitch guests (the
+  idle ones can't be punched until their switch channel wakes them).
+
+## fix-weapon-modes2 (s/fix-weapon-modes2) — 2026-10-13
+
+Landing fix-weapon-modes (4ed1519) on current master: branch = s/fix-weapon-modes + merge origin/master
+(3576133, which held the backed-out merge after 764 passed / 4 failed). The 4 reds: (1) p2k_mode_button
+toggle reaches weapon 0x03 but switch_state stays 8 after 200 ticks; (2) the heat-seeker misses the guard;
+(3) portal_live cold_loadout on 07000009 draws weapon 67, not the P2K — the game equips the set and
+requests the dart ([M Player_InitWeapon 0x1a7ef8:192-202]), so that expectation is the one to update;
+(4) walk_0700000a Restart — already fixed on master. Suspects for 1+2: fix-progress's runtime difficulty
+in Data, fix-menus2's input/front-end handling, fix-restart-target's Drones fields, fix-sky's tick
+additions. Started 17:55 UTC, sandbox expires ~19:53 UTC (stop new work 19:33).
+
+**fix-weapon-modes2 outcome (19:10 UTC)**: landed on master (merge 5cf2a6f of 3576133). The two reds were
+NOT merge interactions — both fail on unmerged s/fix-weapon-modes in this sandbox with either ISO (the
+original entry's "Suite: see below" count was never recorded; the "passed on your branch" premise didn't
+hold). Root causes, both fixed from the decompile: (1) the variant swap round-tripped the clip —
+`Player_WeaponSelect` 0x1a2cc0:18-29 writes ONLY the weapon byte, the mode byte, the +0xC8 script at
+1.3x and view state 8 (the twin is the same physical gun; the port's gun.clip→clip[old] +
+clip[new]→gun.clip zeroed the P2K's 7 live rounds on 0x02→0x03 since clip[3] is a never-equipped slot),
+and the reload branches gate on view state == 0 (`Player_WeaponFiring` 0x1a5460:409 the R-key branch's
+`0xf4 == 0`, :447-450 the auto-reload's `0xf4 != 0 → return`) — the port's `busy` ignored the switch
+states, so the swap tick auto-reloaded and the +0xA4 reload script overwrote the +0xC8 variant script;
+state 8 then waited for `len(06000828)−1 = 200` while view_time was driven by the reload script's cap
+154 → stuck at 8 forever. Fixes: scene.rs drops the clip round-trip from both variant paths, and `busy`
+gains `switching` ([M 0x1a5460:409,447-450]). (2) `Bullet_heatseekable` 0x12f248's real guard gate is
+`+0xfc != 0 && health > 0 && +0xf4 != 1` — the port used `enabled` (the +0xF0 stand-in, which the game
+does NOT read here) and missed the WAIT_SWITCH(1) state gate; the test's spawner-held template guard was
+parked in WAIT_SWITCH and its enabled got cleared → never seekable. drone.rs seekable → `drawn && health
+> 0 && state != WAIT_SWITCH`. The homing test's geometry was also unwinnable as written: the start room's
+gate pillar walls off dx ≤ +4 from z+6 on (segment sweep [D]) so the missile's early straight path died
+at t23; the test now stands Bond past the pillar mouth, scans the guard spot at the MUZZLE height (+0.7 —
+the eye ray passes over the lintel the bullet hits), dx+1.2/z+14 (straight twin still misses by >1 unit;
+homing spiral converges), and pins the guard (teleport lands him on a floorless point — the pin stands in
+for the placement-driven floor snap). (3) portal_live 07000009 now expects the DART per [M 0x1a7ef8:132,
+:192-202] (`request = uVar6 = Upgrade_Weapon(0x43)` = 0x43/67), and cold 0a/0b too (cases 0x700000a/b
+fall into the case-9 loadout while the handgun is unowned — a cold load skips Player_RamLoad's body [M
+0x1957a8:9]; measured: weapon 67). Suite: nf-formats+nf-audio all ok; nf-game 31 binaries ok ×2
+consecutive runs (one earlier run under -j2 load had 3 flaky failures — a 66-test and a 3-test binary —
+not reproducible since); nf-view 108-bin partial run ok + every remaining binary ok — 0 failures, the 3
+disc_golden included (driving_golden passed). Report: docs/reports/fix-weapon-modes2.md. Left: the
+briefcase turret (gt.rs), Bullet_init's mode spread, the grenade mode pair, the decryptor mini-game, the
++0x60 fire_sound contradiction — all carried from fix-weapon-modes' list.
+---
+Task: fix-facial
+Agent: fix-facial worker
+Branch: s/fix-facial (from origin/master 13abef4)
+
+Work Log:
+- Sandbox kept (repo, work/, onfoot ISO, nf-queue present); token refreshed, master pulled.
+- Starting G-020/G-030: decode the skin morph data (skin +0x12 facial count, the skinning word's
+  morph index) into docs/formats/character.md, port AnimFacialUpdate/AnimFacialBlend, drive from
+  the cut-scene scripts' 22-channel face tracks + speech. WORKLOG first, branch pushed.
+
+Stage Summary:
+- (in progress)
+
+---
+Task: fix-facial
+Agent: fix-facial worker
+Branch: s/fix-facial
+
+Work Log:
+- Decoded the facial pipeline [M]: skin +0x12 = the facial count (→ AnimSkin+0x2e, AnimProcessSkinData
+  0x1bd500; 22 on every dialogue skin — the face tracks' channel count); AnimObjectNew 0x1be910
+  mallocs the weight array (animData+0xb0); AnimFacialBlend 0x1be648 blends the three facial script
+  slots' sequence frame buffers (sAnimSeq+0x84 — for a face track the 22 channels ARE the morph
+  weights) into the weights with the >0.01 overrides and the eye bytes (+0x97 → indices 14/13,
+  +0x98 → 11/12, value/255 and 1−value); ScriptCam plays slot 2 only. AnimFacialUpdate 0x1be310 =
+  the idle/blink state machine over Male/Female_Facial_State_Anims [D ELF .data 0x2c6ea8/0x2c6ec0:
+  060000f8/f9/f5/f6/f3 male, 0600036d/6f/6a/6b/70 female]. AnimObjectDraw 0x1c4490 loads
+  Morph_Weight/Morph_Index (distance gate <13, selection sorts) and SkinIt 0x10bf30 applies them
+  per vertex via the skinning word's upper half (target = base + (idx + Morph_Index[m])·12).
+- Landed: Skin.facial (+0x12), nf_game::anim::facial_blend + facial_weights (the exact arithmetic),
+  the facial tables; tests crates/nf-game/tests/facial_live.rs (3, green): skin 05000007 facial 22,
+  the 07000005 ledge face track 040007fa sampled over the first 60 ticks == the channel evaluation
+  with the first >0.01 weight at frame 767 of 1500, and the blend arithmetic vs the decompile.
+- Open: the morph TARGET buffer's disc location (the skin-info +0xC word is the slot-bone list, not
+  targets; a morph-bearing mesh shows indices to 5272 → a ≳63 KB target array inside the block;
+  gfx-runtime+0x14's writer is a dropped store) — the face-vertex-move test and the skinning-upload
+  hook wait on it; the face tracks still pose bones in script_pose_drone ([L]-pinned truck trace).
+
+Stage Summary:
+- The blend + decode landed with green tests; the vertex application is the next session's item
+  once the target buffer's base is pinned (live check listed in the report).
+>

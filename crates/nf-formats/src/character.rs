@@ -42,6 +42,11 @@ pub struct Skin {
     pub extra: Vec<(u8, Option<u32>)>,
     /// Per bone (only when there are skinned meshes): inverse-bind translation and quaternion.
     pub inverse_bind: Vec<([f32; 3], [f32; 4])>,
+    /// Facial morph count (disc `+0x12` → runtime `AnimSkin+0x2e` [M `AnimProcessSkinData`
+    /// 0x1bd500]). `AnimObjectNew` 0x1be910 mallocs this many f32 for the object's morph weight
+    /// array (animData+0xb0, zeroed); 22 on every dialogue skin measured — the same count as the
+    /// cut-scene scripts' face tracks. fix-facial.
+    pub facial: u8,
     /// Attachment points (`AnimDatum*`): weapons and props hang here.
     pub datums: Vec<Datum>,
 }
@@ -93,7 +98,7 @@ pub fn parse_skin(data: &[u8], bone_count: impl Fn(u8) -> Option<u8>) -> Result<
         let f = |i: usize| b.f32(o + 8 + 4 * i);
         Ok(Datum { id: b.u32(o)?, bone: b.u32(o + 4)? as i32, t: [f(0)?, f(1)?, f(2)?], q: [f(3)?, f(4)?, f(5)?, f(6)?] })
     }).collect::<Result<_>>()?;
-    Ok(Skin { hashcode: b.u32(0)?, scale: [b.f32(4)?, b.f32(8)?, b.f32(12)?], skeleton, bones, main, extra, inverse_bind, datums })
+    Ok(Skin { hashcode: b.u32(0)?, scale: [b.f32(4)?, b.f32(8)?, b.f32(12)?], skeleton, bones, main, extra, inverse_bind, facial: b.u8(0x12)?, datums })
 }
 
 #[cfg(test)]

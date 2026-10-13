@@ -281,6 +281,13 @@ impl Mission {
                     self.internal = 5;
                 }
             }
+            5 => {
+                // The 0x40000042 menu is up and the mission waits for the view's Restart/Quit —
+                // the game's case 5 is a bare `break` [M 0x182c60:83-84]. The port used to fall to
+                // the catch-all and re-arm internal 1, re-running the whole death/fail sequence
+                // (and queueing another restart) every tick after the answer — the user's "replay
+                // loop where it kept replaying at the start of the mission over and over again".
+            }
             _ => self.internal = 1, // [M 0x182c60:131-133]
         }
     }

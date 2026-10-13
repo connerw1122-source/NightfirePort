@@ -205,6 +205,20 @@ fn cold_loadout_arms_bond_on_every_story_level() {
             // own case falls into it on a cold load (no RamSave, the game's own branch).
             assert_eq!(w, 0x1e, "{name}: the power-station loadout selects the sniper, got weapon {w}");
             assert!(owned.contains(&0x54), "{name}: the camera gadget is not owned (owned {owned:?})");
+        } else if n == 9 || n == 0xa || n == 0xb {
+            // [M 0x1a7ef8 case 0x7000009] (the Nightfire island): the loadout equips the set —
+            // handgun 0x30, Stunner 999, Decryptor 0, Q-Worm 0x58, Q-Claw 0x50, the dart
+            // `Upgrade_Weapon(0x43)` 999, Shaver 0x5b 999 — and SELECTS THE DART:
+            // `*(char *)(control + 99) = (char)uVar6` with `uVar6 = Upgrade_Weapon__FUi(0x43)`
+            // [M 0x1a7ef8:132, :192-202]. The upgrade level is the boot 0, so the request is 0x43
+            // (67) itself; the P2K is owned but holstered. Cases 0x700000a/b [M 0x1a7ef8] RamLoad
+            // and re-select the SAVED weapon, falling into the 0x7000009 loadout when the handgun
+            // is unowned — a cold load skipped Player_RamLoad's body ([M 0x1957a8:9]), so on 0a/0b
+            // cold the game's own answer is the case-9 dart too (measured: weapon 67 after 30
+            // ticks).
+            assert_eq!(w, 0x43, "{name}: the island loadout selects the dart gun, got weapon {w}");
+            assert!(owned.contains(&0x58), "{name}: the Q-Worm is not owned (owned {owned:?})");
+            assert!(owned.contains(&2), "{name}: the P2K is not owned on a cold start (owned {owned:?})");
         } else {
             assert!(owned.contains(&2), "{name}: the P2K is not owned on a cold start (owned {owned:?})");
             assert_eq!(w, 2, "{name}: weapon {w} drawn after 30 ticks — the switch request did not arm the P2K");
