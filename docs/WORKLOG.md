@@ -8200,3 +8200,17 @@ rocket launchers are 0x2C/0x2E; the sister assertion was strengthened (the catal
 "AT-600 Scorpion" AND "AT-420 Sentinel"). Post-delta revalidation: 90 non-walk nf-view binaries
 (349 tests) + the 4 panel-touching files (16) + 12 walk binaries green; the walks reference no
 panel code. Report updated.
+
+---
+Task: fix-swim-vent5 (started)
+Agent: fix-swim-vent5 worker
+Branch: s/fix-swim-vent5
+
+Work Log:
+- Branch created from origin/s/fix-swim-vent4 (c463614) + master merged (3d33a27); WORKLOG keep-both.
+- Task: the four "E at the 07000005 gate door loads 07000006" reds — (1) remove the creep arm's
+  proximity fallback (`|| best.is_some()`) at both scene.rs sites, gate on `icon_ctx == 6` only
+  [M Player_Activate 0x1a5170:66 `if (BL+0x95f == 6)`]; (2) port the real third-icon scope from
+  ThirdIcon_Update 0x196e80 + Player_CollisionHandler 0x1949a8:22 so icon_ctx is 0xFF at the gate
+  door (30.0, 38.84, 37.70) and level start (104.95, 25.12, 108.83) [L PCSX2 2026-10-13] and 6 only
+  where the game shows the shimmy/crawl icon. Sandbox expires ~21:09 UTC.
