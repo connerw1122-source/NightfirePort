@@ -10,7 +10,7 @@ no game bytes are stored.
 every owned weapon's clip to the fullest seen every 30 frames, so the user can play through without dying. That changes the run (damage reactions still happen, death never does), so the
 trace header records it.
 
-Usage: python -I tools/trace/trace_record.py <out.trace> [--god] [--ammo] [--seconds N]
+Usage: python -I tools/trace/trace_record.py <out.trace> [--god] [--ammo] [--alert] [--seconds N]
 --ammo: infinite ammo (refill clips); leave it off when the recording must show shots being spent.
 Stop with Ctrl+C at any time; the file is complete up to the last frame.
 Needs PCSX2 running with PINE enabled (slot 28011) and a level loaded.
@@ -52,6 +52,7 @@ def main():
         print(__doc__)
         return
     out, god, ammo = a[0], "--god" in a, "--ammo" in a
+    alert = "--alert" in a  # append each drone's live alertness (Drone+0x50C) as a<value>
     seconds = float(a[a.index("--seconds") + 1]) if "--seconds" in a else None
     p = Pine()
     # Wait for the game: PINE answers before a disc is booted, but EE reads fail until then.
@@ -83,6 +84,11 @@ def main():
                 obj = p.read32(PLAYERS)
                 bl = p.read32(obj + 0xE0) if obj else 0
                 if god and bl:
+                    # The damage taken since the last refill (god mode would otherwise hide every hit): health below
+                    # 100 or armour below 50 is a hit this frame.
+                    hp0, ar0 = f32(p.read32(bl + 0x894)), f32(p.read32(bl + 0x8B0))
+                    if hp0 < 100.0 or ar0 < 50.0:
+                        f.write(f"hit {fr} health {100.0 - hp0:.2f} armour {50.0 - ar0:.2f}\n")
                     p.write(bl + 0x894, F100, 4)
                     p.write(bl + 0x8B0, F50, 4)
                 # Infinite ammo (with --god): every 30 frames, top each owned weapon's clip (BLData+0x1B8+w*0xC, s16;
@@ -113,6 +119,9 @@ def main():
                     st = p.read16(d + 0x10C)
                     dp = [f32(p.read32(o + 0x30 + 4 * k)) for k in range(3)] if o else [0.0] * 3
                     row += [str(st), *[f"{v:.3f}" for v in dp]]
+                    if alert:
+                        # Drone+0x50C: the live alertness 0..1 (docs/fields/drone.md group 3).
+                        row.append(f"a{f32(p.read32(d + 0x50C)):.3f}")
                 # Doors (TheDoors walk): state (obj+0xF4: 2 closed, 4 open, 8 opening, 0x10 closing) and the
                 # auto-close quiet timer (ext+0x72, counts to 360).
                 row.append("|")
