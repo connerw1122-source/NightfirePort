@@ -239,6 +239,9 @@ impl WorldFx {
                     // `Emitter_CreatePlist` 0x17b848: the rate from param 1 (0 → −1, 1 → 0, else /60);
                     // `Emitter_Create` 0x17ae00 inits every slot dead (age 100000, life 0), the
                     // expired byte = (rate == 0), the toggle state = 1, the channels from params 2-4.
+                    // An unresolvable def means NO object (`Emitter_Create` 0x17ae00: hashtable_getitem
+                    // 0 → returns 0) — the placement is skipped exactly like the game.
+                    let Some(d) = fx.defs.get(&param(0)) else { continue; };
                     let rate = match param(1) as i32 { 0 => -1.0, 1 => 0.0, n => n as f32 * REC_FRAME_RATE };
                     fx.emitters.push(EmitterFx {
                         placement: i, pos, rotation: p.rotation,
@@ -247,7 +250,9 @@ impl WorldFx {
                         toggle_period: param(5) as i32 as f32,
                         toggle_timer: 0.0, toggle_state: true,
                         expired: rate == 0.0, dead_ticks: 0,
-                        parts: Vec::new(), counter: i as u32,
+                        parts: (0..d.max).map(|_| EmitterParticle {
+                            pos: [0.0; 3], vel: [0.0; 3], age: 99999.0, life: 0.0, rgba: [0; 4],
+                        }).collect(), counter: i as u32,
                     });
                 }
                 _ => {}
@@ -361,7 +366,7 @@ impl WorldFx {
             if (e.dead_ticks > 0 || e.expired) && all_dead { e.dead_ticks += 1; }
         }
         self.emitters.retain(|e| e.dead_ticks < 3);
-        gas.update();
+        // (no gas.update() here — Drones::tick already runs the pool once per tick at its head)
     }
 
     /// The frame's particle sprites (`Emitter_Draw` path A inputs: position, def size, the slot rgba).

@@ -224,7 +224,7 @@ impl EmitterDef {
                 blend: (tag >> 8) as u16, max, batch, size,
                 life_base, life_var, gravity, speed_base, speed_var, pitch_base, pitch_var, yaw_base, yaw_var, keys,
             });
-            o = 64 + 20 * keycount;
+            o += 64 + 20 * keycount;
         }
         Ok(out)
     }
