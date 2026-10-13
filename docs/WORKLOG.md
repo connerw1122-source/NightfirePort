@@ -7230,3 +7230,27 @@ symptom on 07000007 (--bond 61.11,44.12,-52.58,-2.541,-0.010): two partygoers dr
 outside. Tests walk 07000005/06/07 routes and pin the visible draw counts. Files:
 crates/nf-view/src/{scene,gpu}.rs, crates/nf-formats/src/level.rs. Started 11:10 UTC, sandbox
 expires ~13:06 UTC.
+
+**fix-portal outcome (12:35 UTC)**: the portal walk is the default again (NF_NOPORTAL disables).
+Four game rules ported, each cited: (1) the eye's cel is `Camera_CheckLocation` (0x1bae90)'s
+persistent `viewer+4` state — `Cel_ObjectLeftCel` (0x1e0d58) relinks through the crossed portal,
+`build_point_in_bounding_box` (0x1c9500) keeps the cel, `build_FindCel` (0x1c8cb0) searches fresh
+with the vertical-raycast tie-break (bbox-face approximation, no per-cel collision in the graph),
+and a FindCel miss KEEPS the previous cel (first-ever miss → the world's first cel) — the port
+re-picked smallest-volume from scratch every frame; (2) the walk's depth-0 near plane keeps
+`fw·p ≤ fw·eye + 200` [M 0x1e7df8 disassembled: the near plane (c1,c3,c2) normal points BACK at
+the eye — beyond 200 units is fog], replacing the Gribb-Hartmann near; (3) the 0x40 VisCelCount
+insert cap [M 0x1e82e0/0x1e86e8]; (4) the object half of the cull [M View_DrawObjList 0x1e69a0 /
+View_AddObjects 0x1e62d8]: posed objects (characters, doors, pickups, searchlights) whose room cel
+the walk hides collapse to FAR in the skin palette — the user's two partygoers standing in the
+snow on 07000007. The cel flags word is the DERIVED 0x804c023/0x804c047 [M parseentity_fixup_entity
+0x1d00c0] — the raw placement word 0xc047 carries no room bit, and CelNode.flags now records it.
+NF_ISO tests (crates/nf-view/tests/fix_portal_live.rs, 6 green): the 07000006 truck→courtyard walk
+pins min 104 World draws + the viewer cel following 29→37 (was the collapse route); the castle-door
+crossing; the ballroom hidden room 0-draws-on/543-off + its 9 partygoers collapsed-on/standing-off;
+and the 07000007 start view submits **exactly 177 draws — the game-measured number** from
+fix-perf-level's master measurement. Suite: nf-game/nf-formats/nf-audio/nf-view green except the 3
+allowed slim-ISO golden tests. Shared-file hooks: gpu.rs (cel_visibility/depth0_game/last_vis),
+lib.rs (the frame loop computes one visibility per frame for the palette + render), scene.rs
+(ViewerCel/eye_cell/portal_move_dest/find_cell_raycast, CelNode.flags, the 0x40 cap, skin_palette's
+vis param), gpu_skin_live.rs (the skin_palette call sites). Report: docs/reports/fix-portal.md.
