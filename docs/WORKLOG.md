@@ -7066,3 +7066,10 @@ every script's op-0x16 sound ids, the anim sets' op-1/op-4 commands and their ba
 - Merge origin/master (walkreal-b2/render-artifacts/npc-doors2/wallhug-freeze) into s/fix-wire2: scene.rs resolved keeping BOTH the wire_cels cel-gated use-key grab (master's, fixing 07000002's bunker swallow — the walk-in auto-grab removed on master per their Collide_PickObj version evidence) and this task's icon ctx + jump-grab [M 0x1916b0:118-147]; WORKLOG kept both appends in order; nf-extract's Player literal fixed for the new capsule field (standing stance, ROOT_HEIGHT). Merge fixup committed.
 - Post-merge suite: 605 + 374 passed (nf-game/formats/audio + nf-view), 3 failed — the allowed disc_golden (slim ISO). fix_wire2_live 3/3, wire_live 4/4 green on the merge.
 
+
+## fix-ai-traces (branch s/fix-ai-traces) — 2026-10-13 — the guards against the real game's recordings
+
+Started. Plan: replay Bond's recorded path from tests/traces/05-truck.trace, 01-doors.trace, 01-raptor.trace,
+02-civilian.trace through nf_view::load + step_bond, compare every drone's state id / position / facing per frame
+against the recording, write first divergences into docs/atlas/drone-port-check.md, then fix from the decompile
+(each fix citing the address, with a fail-first trace-window test).
