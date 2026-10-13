@@ -37,7 +37,28 @@ After the fix the sim holds the shelf pickups at (162.59, 42.75, −116.78) / (1
 ch 136 nothing takes and ch 0x4A stays off. `the_safe_pickups_take_after_the_safe_opens` still
 fails on the last take step (below).
 
-## The last take blocker (open, with the evidence)
+## UPDATE (same session, later): the briefcase takes — ch 0x4A on
+
+Two more blockers found and fixed after the first report was drafted:
+
+1. **The pickup's own collision blocked its take ray.** The SafePickUps script's briefcase entity
+   (`oBriefcase_closed`, kind 0xF0, at the shelf) joined `set_dynamic` with its glist collision and
+   blocked the take ray at t 0.869. The game control-unlinks every `Script_CreateEntity` result
+   (`control_unlink_object`, tail of 0x1d8968). Fix: 0xF0 entities are excluded from the dynamic
+   collision parts (`drone.rs`). The briefcase then takes through the real path from the user's
+   spot: `taken [(531, Label)]`, **ch 0x4A on** — the objective writer fires.
+2. **The rocket's last blocker is measured and left open**: the safe door SS #205's OPEN-pose slab
+   (the keys park it at (161.2, 42.08), x 159.9..162.5, y 41.0..43.15) clips the shallow take ray
+   the pushed-back capsule produces. Dropping the SS's collision makes BOTH take
+   (`taken [(531, Label), (541, Weapon { weapon: 44 })]`). What the game's take query does with a
+   resting SS door's collision is not decoded; the port keeps the SS solid (fix-party-mission's
+   "solid like the doors" choice) — the rocket's take is the remaining item, with the live check
+   below. The test asserts the fixed part: the shelf rocket exists at the script's key position.
+
+**Suite**: nf-game all green; nf-view all green (the reservation hook touches every level's build —
+no regressions); nf-formats 11 passed + the 3 allowed `disc_golden`; nf-audio green.
+
+## (original draft) The last take blocker (open, with the evidence)
 
 The take test (`Pickup_Update` 0x18e148:203-214) needs distance < radius+1.1 **and**
 `Collide_LineOfSight` (flags **0x721**, bit 0x20 set) from the player's sphere centre to the
