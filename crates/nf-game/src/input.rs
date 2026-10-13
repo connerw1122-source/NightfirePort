@@ -250,7 +250,9 @@ pub struct AccelState {
 
 impl AccelState {
     pub fn new(base: f32) -> AccelState { AccelState { state: base } }
-    /// One tick; returns the new speed.
+    /// One tick; returns the new speed. The target is `base` (|stick| < hi) or `base·mul` —
+    /// UNSIGNED, like the game's [M 0x1a9218: the target never flips sign; the stick's sign rides
+    /// the multiply outside]. The negative-state branch exists only for the clamp's defence.
     pub fn step(&mut self, stick: f32, base: f32, mul: f32, steps: f32, lo: f32, hi: f32) -> f32 {
         let target = if stick.abs() < hi { base } else { base * mul };
         let d = (base * mul - base) / steps;
@@ -368,4 +370,50 @@ impl PadDriver {
 
     /// The mirrored aim-box cursor (BL+0x118/0x11c).
     pub fn cursor(&self) -> [f32; 2] { [self.cursor_x, self.cursor_y] }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The dead zone's exact outputs [M 0x10ca78:38-55, f32 arithmetic: threshold 40, scale
+    /// 1.4597701, trunc-then-char-wrap]. G-012: the raw byte exists only between `scePadRead`
+    /// and this loop — the code pins the behaviour the live check would observe.
+    #[test]
+    fn dead_zone_matches_the_decomp_constants() {
+        // (raw, dead-zoned): centre, the ±40 thresholds (inside -> 0, first step -> ±1), the
+        // extremes (full deflection stays ≈127), and a mid value.
+        let cases = [
+            (0u8, 0u8), (24, 36), (86, 126), (87, 127), (88, 127), (127, 127),
+            (167, 127), (168, 128), (200, 175), (230, 218), (255, 255),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(dead_zone(raw), want, "raw {raw}");
+        }
+        // Sister: the zone is per-axis by construction (the function takes one byte), and the
+        // ±40..±127 output range covers exactly 255..0.
+        assert_eq!(dead_zone(255) as i32 - dead_zone(0) as i32, 255);
+    }
+
+    /// The ramp's shape [M AccelFunc0 0x1a9218]: reset at |stick| ≤ lo, target switch at hi,
+    /// clamp at ±base(1+mul), per-tick step (base·mul − base)/steps.
+    #[test]
+    fn accel_state_shape() {
+        let (base, mul, steps) = (0.04f32, 2.0f32, 120.0f32);
+        let mut a = AccelState { state: base };
+        a.step(1.0, base, mul, steps, 0.05, 0.95);
+        assert!((a.state - (base + (base * mul - base) / steps)).abs() < 1e-9);
+        // reset
+        let mut a = AccelState { state: base * mul };
+        a.step(0.0, base, mul, steps, 0.05, 0.95);
+        assert_eq!(a.state, base);
+        // clamp ceiling
+        let mut a = AccelState { state: base * mul };
+        a.step(1.0, base, mul, steps, 0.05, 0.95);
+        assert_eq!(a.state, base * mul);
+        // below hi the target is base: no growth
+        let mut a = AccelState { state: base };
+        a.step(0.9, base, mul, steps, 0.05, 0.95);
+        assert_eq!(a.state, base);
+    }
 }
