@@ -205,14 +205,16 @@ mod tests {
 
     #[test]
     fn destroy_case_needs_damage_at_least_one() {
-        // Case 0x21's gate [M 0x17c6a8]: the smash fires only when the falloff reaches 1.0.
+        // Case 0x21's gate [M 0x17c6a8]: the smash fires only when the falloff reaches 1.0. With the
+        // integer truncation the amounts jump in damage/radius steps: damage 5, radius 10 → a target at
+        // 9.5 (truncated 9) takes 5·(1−9/10) = 0.5 → no smash; at 4.5 (truncated 4) it takes 3 → smash.
         let far = Targets { drones: &[], player: [1000.0; 3], breaks: &[],
-            destroys: &[(0, [9.99, 0.0, 0.0], 0.0, false)] };
-        let h = propagate([0.0; 3], 10.0, 100.0, usize::MAX, &far);
-        assert!(h.destroys.is_empty(), "0.1 damage must not smash");
+            destroys: &[(0, [9.5, 0.0, 0.0], 0.0, false)] };
+        let h = propagate([0.0; 3], 10.0, 5.0, usize::MAX, &far);
+        assert!(h.destroys.is_empty(), "0.5 damage must not smash");
         let near = Targets { drones: &[], player: [1000.0; 3], breaks: &[],
-            destroys: &[(0, [5.0, 0.0, 0.0], 0.0, false), (1, [5.0, 0.0, 0.0], 0.0, true)] };
-        let h = propagate([0.0; 3], 10.0, 100.0, usize::MAX, &near);
-        assert_eq!(h.destroys, vec![0], "50 damage smashes the unsmashed one only");
+            destroys: &[(0, [4.5, 0.0, 0.0], 0.0, false), (1, [4.5, 0.0, 0.0], 0.0, true)] };
+        let h = propagate([0.0; 3], 10.0, 5.0, usize::MAX, &near);
+        assert_eq!(h.destroys, vec![0], "3 damage smashes the unsmashed one only");
     }
 }

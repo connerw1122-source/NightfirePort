@@ -7226,3 +7226,25 @@ sound but no explosion sound/effect; flashbang kills enemies instead of stunning
 SimpleScript 0xE2: activation, keyframe playback, collision, rolling-barrel damage,
 open/closed pairs. 0700000d C5 door laser sequence if time. Started 11:08 UTC, sandbox
 expires ~13:08 UTC.
+
+**fix-explosions outcome (12:26 UTC)**: the three grenade bugs are fixed against the decompile. (1)
+The blast damage was the hardcoded 100 — the disassembly of the fuse call site (0x12cd98: f12/f14 =
+weapon_data+0x08/0x0C → Explode_Create's f13 radius / f14 damage; the `addiu $t2, 0x64` u8 is never
+read) and the disc records (frag 0x35 = 10/0, flashbang 0x36 = 0/0, mine 0x37 = 8/100) re-locked
+every throw to the per-type values; the frag now damages nobody (the user's "kills on impact /
+damages Bond" was the hardcode), the mine/rocket still kill. (2) The blast sound: the old 0x4A7 was
+Bullet_CollisionHandler's rest-impact sound of 0x3B/0x45; the blast is script 0x6000052's own
+Sound(0x3E) [D stream 36], riding the script player's Request::Sound. (3) The flashbang stun: the
+game's path is Bullet_DoTrails 0x12d890's +0x70 & 0x2000 death branch — sound 0x16, Light(10,5,white),
+Gas_Init, Camera_Shake(2), Bond whiteout (Player_SetFlashBang falloff) and ≤20 u drones → msg 0x18 →
+StunGrenadeImpact 0x4D (no HitDamage) — ported with the 0x4D/0x4E/0x4F family (recover 7200 ticks =
+DroneFunc_RecoverTime with stats-default +0xB9 = 0; anims 0x2D/0x2E/0x76; msg 8/9 → 0x44). New
+`crates/nf-game/src/explode.rs` carries the explosion entity and the full 12-case Explode_Propagate
+(with the game's (int)-truncated falloff and the 0x21 ≥1.0 gate); `PlayerHealth.flashbang` +
+`Drones::shake` expose the whiteout/shake to the view (the render consumption is the remaining
+half). Tests: explode.rs unit tests (lifetime 15, truncation, radius-0 no-op, smash gate), new
+`explode_live.rs` (frag no-damage + mine damage + the flash stun/kill through the real Sim path),
+fix_player3_live's grenade test re-locked to the game. Suite: nf-game/formats/audio + 84 nf-view
+binaries green (only the 3 disc_golden bigf fails, the slim-ISO allowance). Left: the view-side
+shake/whiteout draws, the stun weapon drop, barrels (Propagate's break/destroy targets), the
+SimpleScript 0xE2 work and the 0700000d C5 door — report: docs/reports/fix-explosions.md.

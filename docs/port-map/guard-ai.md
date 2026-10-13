@@ -493,8 +493,8 @@ by the developer before acting.
 | 0x1499d0 DroneFunc_ClampPosToCollisionCylinder | Absent | not started |
 | 0x14b190 DroneFunc_NearPlayerCollision | Absent (MP-only) | not started |
 | 0x13aab8 Drone_ExplosiveHit | Sends msg 8 (BULLET) instead of msg 9; no owner tracking (+0x2B4); inline damage double-counts with on_bullet | partial |
-| 0x17cbd0 Explode_Create | Entirely absent (no explosion entity, no lifetime, no camera shake, no script 0x6000052) | not started |
-| 0x17c518 Explode_Propagate | 10 of 12 per-type dispatch cases missing (breakables, MP, turrets, sensors, monitors, subs) | partial |
+| 0x17cbd0 Explode_Create | `explode.rs` (`Explosion::create`): radius/damage from weapon+0x08/0x0C [M 0x12cd98 disasm], lifetime script?+0xAB0:15, scale radius·0.0666, script 0x6000052 via the one-shot player, shake ≥ 0.5 into `Drones::shake` | done (fix-explosions) |
+| 0x17c518 Explode_Propagate | `explode::propagate`: all 12 dispatch cases + the (int)-truncated falloff and the 0x21 ≥1.0 gate; the Sim feeds drones/Bond (break/destroy targets arrive with the dynamic-object pass) | done for the ported lists (fix-explosions) |
 | 0x173658 RecoverFromScaryObject (0x86) | No handler — drone stuck in flee state indefinitely | stub |
 | 0x1431c0 ConsiderExplosive | 14-case weapon-type switch not ported; +0x324 timer, +0x354 resume, +0x340 pos not set | partial |
 | 0x12ce80 Bullet_CollisionHandler | Ricochet path not ported | partial |
@@ -504,7 +504,7 @@ by the developer before acting.
 | 0x173480 GrenadeThrow state | Missing impact msgs 6/7/9/0x17 (HandleImpact not called for non-BULLET impacts) | partial |
 | Multiple states | UNDER_COVER_SNIPER_FIRE, SNIPER_RELOAD, AMBUSH_INIT, AMBUSH_WAIT missing from impact_args — bullets don't damage them | partial |
 | 0x14e018 NDrone2_init_DMODE_Ambush | Not modeled — prop 0x10 read from placement, not set by init | partial |
-| Stun grenade receiving (0x1631c0, 0x163350, 0x172bb0) | Not ported | stub |
+| Stun grenade receiving (0x1631c0, 0x163350, 0x172bb0) | `handle_stun`: 0x4D/0x4E/0x4F with the 7200-tick recover, anims 0x2D/0x2E/0x76, msg-8/9 → 0x44; the weapon drop not modelled; entered from the flash broadcast (Bullet_DoTrails 0x12d890's +0x70 & 0x2000 death branch, msg 0x18) | partial (fix-explosions) |
 
 ### Test audit findings
 
