@@ -20,6 +20,12 @@ Files: `crates/nf-game/src/nis.rs`, `crates/nf-audio`/`sound.rs` for speech, and
 - Items 1, 3 and 4 above were seen again (no voices, the gun hand-back scene, the duplicated models in the Drake scene); the user's 07000007 screenshot `--bond 34.25,44.13,-70.71,1.549,-0.070` at frame 1790 shows two identical guards side by side.
 - The objective banner's timing around cut-scenes belongs to `045c-fix-party-mission`.
 
+## From the user's check `party07b` (2026-10-12, after fix-party-mission merged)
+
+- **The Kimiko scene still doesn't hold the objective:** "obj doesnt wait for kimiko cutscene and plays the sound immediately". fix-party-mission's `hud_frozen` hold-off (set by the NIS camera requests) works for the 07000001/07000002 intros but not for this scene: find which camera/script path the Kimiko scene takes that skips it, and hold the banner **and its sound** until the scene ends.
+- **"models in that cutscene arent accurate"**: compare the scene's entities with the script (missing, duplicated or wrong-skinned characters; the user's earlier report saw duplicates in the Drake scene).
+- **The mission-fail message is off-centre** during a cut-scene fail (`fail07`): centre it like the game's text (the status pane's own centring).
+
 **Reproduce before you fix.** The user's play is the reference, and previous fixes passed tests but still failed in play. For each bug:
 1. Write a headless NF_ISO test that drives the real input path (the `nf-view` input mapping into `Sim`, or `nf_view::load` plus `dev::scenario`), and show it reproducing the user's symptom.
 2. Then find the cause in the decompile and fix it.
