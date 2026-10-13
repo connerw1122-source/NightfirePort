@@ -80,6 +80,22 @@ fn dump_cutscene289_streams_and_matrices() {
         }
         eprintln!("{line}");
         if t == 2190 {
+            // The geometry around the COMPOSED marker (1.80,-107.66,-6.83): 6-way rays + a floor grid.
+            let c = [1.8f32, -107.66, -6.83];
+            for (d, n) in [([0.0,1.0,0.0],"up"), ([0.0,-1.0,0.0],"dn"), ([1.0,0.0,0.0],"ex"), ([-1.0,0.0,0.0],"wx"), ([0.0,0.0,1.0],"nz"), ([0.0,0.0,-1.0],"sz")] {
+                let hit = sim.world.segment_hit(c, [c[0]+d[0]*8.0, c[1]+d[1]*8.0, c[2]+d[2]*8.0]);
+                eprintln!("marker ray {} {}: {:?}", n, if hit.is_some() {"HIT"} else {"open"}, hit.map(|h| (h.0*8.0, h.1)));
+            }
+            for x in [0.0f32, 0.9, 1.8, 2.7, 3.6, 4.5] {
+                let mut row = String::new();
+                for z in [-9.0f32, -8.0, -7.0, -6.83, -6.0, -5.0, -4.0] {
+                    let hit = sim.world.segment_hit([x, -104.0, z], [x, -112.0, z]);
+                    row.push_str(&format!(" z{z:.1}{}", hit.map(|h| format!("{:.2}", -104.0 + h.0 * -8.0)).unwrap_or("--".into())));
+                }
+                eprintln!("deep x{x:.1}:{row}");
+            }
+        }
+        if t == 2190 {
             // The floor grid around the -52 landing: raycast down from 1.2 above each cell.
             for x in [0.0, 1.0, 1.8, 2.2, 2.6, 3.0, 3.4, 3.8, 4.2, 4.6, 5.0, 5.4, 6.0, 7.0] {
                 let mut row = String::new();
