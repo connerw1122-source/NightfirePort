@@ -288,6 +288,9 @@ pub struct Player {
     /// `Player_Collision` 0x194df0 builds the capsule per substate off obj+0x30 with the up vector.
     /// Built at the construction site off Bond's stance (`cc`).
     pub capsule: (V3, V3),
+    /// The runtime cel the queries start from (obj+0x20 — fix-safe08b): the `pCelList` cell index in
+    /// the world's `ScopeGraph`; `None` = the flat (unscoped) world.
+    pub cel: Option<usize>,
 }
 
 /// The player as an AI target (`DAT_00298fd0`): his position when the nodes were found, the frame (`+0x54`), and per
@@ -4932,7 +4935,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // The distance test runs from the player's position (+0x30) but the LOS from his world-sphere
             // centre (+0x80) — two different points [M 0x18e148:203-214 + L]. Port-check §1: the old call
             // passed `player.pos` for both, so the take-ray origin differed from the game's by construction.
-            if alive && p.touches(d.world, player.pos, player.sph) {
+            if alive && p.touches(d.world, player.cel, player.pos, player.sph) {
                 let loaded = d.skins.contains_key(&d.weapons.first_person(p.weapon as usize));
                 // `Pickup_Handler`: the armour case writes `BLData+0x8B0`; the clock is `GameState+0x52`
                 // (the 10 → 0xC remap gate) — the port's tick count stands in for it.

@@ -158,6 +158,9 @@ pub struct Bond {
     pub underwater: bool,
     /// `BL+0x8C4`: the underwater fade 0..1 (`Player_MonitorAir`: →1 under, →0 surfaced), for the renderer.
     pub water_fade: f32,
+    /// The runtime cel the queries start from (obj+0x20, the movement pass's relink — fix-safe08b):
+    /// the `pCelList` cell index in the world's `ScopeGraph`. `None` = the flat (unscoped) world.
+    pub cel: Option<usize>,
     /// The drown-damage tick accumulator (the game uses `GameState % 30` [M 0x191a70:136-140]).
     air_tick: u32,
     /// `BL+0x18` → the climb's one-tick local-forward push (`+0.6` top / `−0.05` action [M Player_Climb]),
@@ -201,7 +204,8 @@ impl Bond {
         Bond { pos, yaw, pitch: 0.0, local: [0.0; 2], vel: [0.0; 3], grounded: true, floor_ny: 1.0, grounded_history: 8, jump: 0, land_delay: 0,
             crouched: false, lockout: 0, cc: ROOT_HEIGHT, crouch_drop: 0.0, eye: EYE, fall_timer: 0, head_bump: false, fall_damage: None,
             substate: SS_WALK, ladder: None, climb_top: 0.0, climb_bottom: 0.0, regrab: 0, mode: 0, saved_sub: 0, air: 100.0, drown_damage: None, underwater: false,
-            water_fade: 0.0, air_tick: 0, push_fwd: 0.0, wire: None, auto_drop: 0.0, wire_anim: 0, wire_anim_time: 0.0, wire_anim_rate: 1.0, cam_mode: 0, fall_speed: 0.0, grapple: None }
+            water_fade: 0.0, air_tick: 0, push_fwd: 0.0, wire: None, auto_drop: 0.0, wire_anim: 0, wire_anim_time: 0.0, wire_anim_rate: 1.0, cam_mode: 0, fall_speed: 0.0, grapple: None,
+            cel: None }
     }
 
     /// On the floor below `p` (within 10 units), as a level start places him.
@@ -468,11 +472,11 @@ impl Bond {
         // the collision pass).
         for k in 0..3 { self.pos[k] += self.vel[k] / 60.0; }
         let (a, b) = self.capsule();
-        let (push, walkable) = world.capsule_push(a, b, RADIUS);
+        let (push, walkable) = world.capsule_push_scoped(self.cel, a, b, RADIUS);
         self.head_bump = push[1] < -1e-4;
         for k in 0..3 { self.pos[k] += push[k]; }
         let ray = self.cc + 0.6;
-        let floor = world.segment_hit(self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
+        let floor = world.segment_hit_scoped(self.cel, self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
         self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
         if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
     }
@@ -851,9 +855,9 @@ impl Bond {
         for k in 0..3 { if !(swimming && k == 1) { self.pos[k] += self.vel[k] / 60.0; } }
         // `Player_CollisionHandler`: the floor ray first, then the capsule's push.
         let (a, b) = self.capsule();
-        let (push, walkable) = world.capsule_push(a, b, RADIUS);
+        let (push, walkable) = world.capsule_push_scoped(self.cel, a, b, RADIUS);
         let ray = self.cc + 0.6;
-        let floor = world.segment_hit(self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
+        let floor = world.segment_hit_scoped(self.cel, self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
         self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
         if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
         self.head_bump = push[1] < -1e-4;
