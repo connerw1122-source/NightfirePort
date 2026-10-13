@@ -1011,45 +1011,15 @@ impl Sim {
                 let near = (icon.pos[0] - self.bond.pos[0]).powi(2) + (icon.pos[1] - self.bond.pos[1]).powi(2) + (icon.pos[2] - self.bond.pos[2]).powi(2) < 16.0;
                 if same_cel || near { self.bond.icon_ctx = icon.ctx; }
             }
-            // The wire grab [M Player_HandleJump 0x1916b0:126-147]: the game grabs a wire on the
-            // ACTION KEY press (Input_Action 7, edge 4) with the wire icon showing (+0x95F == 3),
-            // taking the NEAREST class-0x2C object by `Vec_Dist3D(obj+0x30, player+0x30)` (cap
-            // 1000.0) — there is NO walk-in auto-grab. The walking pick pass cannot hit a wire at
-            // all: `Collide_PickObj`'s world-sphere branch runs only for HITTEST versions
-            // 0x200/0x201 (the use/jump query) and a wire has no glist triangles for the other
-            // versions' tests. The port stands the icon context in with the wire's world sphere
-            // (the pick test [M 0x1eae80]) on Bond's capsule segment, cel-gated [M Collide_Pick
-            // 0x1eb320], on the use-key edge. Without the key gate 07000002's courtyard wire
-            // (world sphere r 11.5) swallowed Bond the moment he walked the secret bunker (the
-            // same room-cel), making the bunker touch plates unreachable.
-            // fix-wire2: the icon context IS ported now (above) and the JUMP press carries the
-            // decompile's nearest-wire grab in `Bond::physics_tick` [M 0x1916b0:118-147]; this
-            // use-key scan stays as the E affordance (the game's E does nothing — `Player_Activate`
-            // 0x1a5170 has no class-0x2C arm — and this scan needs the capsule inside the sphere,
-            // so it changes nothing at the ledge where E "did nothing" in the user's play).
-            if use_key
-                && self.bond.substate == nf_game::player::SS_WALK
-                && self.bond.regrab == 0
-                && self.drones.health.health > 0.0
-            {
-                let (ca, cb) = self.bond.capsule_seg();
-                // The cel gate (see `wire_cels`): the game's pick pass tests an object only in the
-                // cels its query straddles [M Collide_Pick 0x1eb320] — the straddle set is
-                // approximated by Bond's one cel [S]. `None` = no cel owns the wire → unculled.
-                let bond_cel = find_cel(&self.cels, self.bond.pos);
-                let mut best: Option<(f32, usize)> = None;
-                for (i, w) in self.wires.iter().enumerate() {
-                    if !self.wire_cels.get(i).map_or(true, |wc| wc.is_none() || *wc == bond_cel) { continue; }
-                    if !w.sphere_hits(ca, cb) { continue; }
-                    let d = (w.centre[0] - self.bond.pos[0]).powi(2)
-                        + (w.centre[1] - self.bond.pos[1]).powi(2)
-                        + (w.centre[2] - self.bond.pos[2]).powi(2);
-                    if best.map_or(true, |(bd, _)| d < bd) { best = Some((d, i)); }
-                }
-                if let Some((_, wi)) = best {
-                    self.bond.grab_wire(wi, &ctx);
-                }
-            }
+            // No walk-in or use-key wire grab (main agent at the fix-wire2 × walkreal-b2 merge): the game's
+            // grab that is certain is the JUMP grab [M Player_HandleJump 0x1916b0:107-147 — action 7 is the
+            // jump (the same press plays the refused-jump sound 0x1db on 07000007), with the icon context
+            // +0x95F == 3], ported in `Bond::physics_tick`. E is action 0xE → `Player_Activate` 0x1a5170, which
+            // has no class-0x2C arm. A walking-pick grab (`Player_DealWithObjHit` 0x194458:104 → CollWire)
+            // exists only if the walking query version reaches `Collide_PickObj`'s world-sphere branch
+            // (versions 0x200/0x201 [M 0x1eae80]) — unproven, and the unculled sphere let 07000002's courtyard
+            // wire swallow Bond in the bunker; left out until measured. `wire_cels` stays for that.
+
             let was_on_wire = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
             let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
             input.fire = trigger;
@@ -3028,14 +2998,14 @@ impl Scene {
             // against their map objects like the ladders (fix-wire: the world sphere replaces the
             // hardcoded 4.0 length; the endpoints derive at grab time per the atlas).
             let wires = nf_game::wire::all(level);
-            // The third icons (placement kind 0xFA, `ThirdIcon_Create` 0x197070): the interaction
-            // contexts written to `BLData+0x95F` each tick (fix-wire2 — the cable's type-3 icons gate
-            // the jump-grab). Position-only: the icon object has no gameplay geometry.
-            let icons = nf_game::wire::icons(level);
             // The wires' owning cels (see `wire_cels`): the game's pick pass tests a dynamic object
             // only in the cels its query straddles [M 0x1eb320], and the object lives in the cel
             // whose creation block carried it [M 0x1d04f0].
             let wire_cels = wires.iter().map(|w| find_cel(&sim_cels, w.centre)).collect::<Vec<_>>();
+            // The third icons (placement kind 0xFA, `ThirdIcon_Create` 0x197070): the interaction
+            // contexts written to `BLData+0x95F` each tick (fix-wire2 — the cable's type-3 icons gate
+            // the jump-grab). Position-only: the icon object has no gameplay geometry.
+            let icons = nf_game::wire::icons(level);
             // The wire anims' root tracks: the level archive's kind-5 scripts (the player body anims)
             // resolved to their sequences [D 07000005: 0x060005e5 101 frames → 0x04000536, the move pair
             // 0x060000b4/b5 → 0x04000034/35 travelling 0.7637/0.7106 per cycle].

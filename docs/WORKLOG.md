@@ -6949,6 +6949,7 @@ NPC door path — 045g-fix-npc-doors2), 0a (the cab-mouth SS leaves ch 0x00; the
 snapshot holds them closed too [L ee_start_0700000a.bin 0xE2E2A4/0xE2E314] — the arrival writer
 is missing), 13 (the entrance mouth glazed at z≈65 — the gate-raise writer missing), 14 (the
 vent cut-scene ch 0x47 — walkreal-b's parked item). Report: docs/reports/fix-walkreal-b2.md.
+
 ---
 Task ID: 045m-fix-wire2
 Agent: NightfirePort worker (fix-wire2 session)
@@ -6968,5 +6969,7 @@ Stage Summary:
 
 Stage Summary:
 - Branch s/fix-wire2 pushed. The cable's real grab (jump + icon ctx 3) is in; E correctly does nothing (game-faithful, the record fixed); the move starts on the strafe press during the idle; the fusebox-07000014 scenario starts crouched in the vent with the Laser. Live checks (icon scope radius, the jump grab from the ground, 2 --bond render spots) listed in the report.
+
 - Merge origin/master (walkreal-b2/render-artifacts/npc-doors2/wallhug-freeze) into s/fix-wire2: scene.rs resolved keeping BOTH the wire_cels cel-gated use-key grab (master's, fixing 07000002's bunker swallow — the walk-in auto-grab removed on master per their Collide_PickObj version evidence) and this task's icon ctx + jump-grab [M 0x1916b0:118-147]; WORKLOG kept both appends in order; nf-extract's Player literal fixed for the new capsule field (standing stance, ROOT_HEIGHT). Merge fixup committed.
 - Post-merge suite: 605 + 374 passed (nf-game/formats/audio + nf-view), 3 failed — the allowed disc_golden (slim ISO). fix_wire2_live 3/3, wire_live 4/4 green on the merge.
+

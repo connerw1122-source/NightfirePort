@@ -10,6 +10,9 @@ use nf_formats::iso9660::IsoImage;
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
 #[test]
+// Ignored at the fix-wire2 merge (main agent): E is action 0xE → `Player_Activate` 0x1a5170, which has no
+// class-0x2C (wire) arm; the game grabs a wire by walking into it or by the jump with the icon context.
+#[ignore = "E never grabs a wire in the game (Player_Activate has no wire arm); see fix_wire2_live"]
 fn repro_e_near_the_07000005_cable() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let img = IsoImage::open(&iso).expect("open iso");
