@@ -207,7 +207,7 @@ impl Pickup {
         // (0x1edf50 → `Collide_RayIntersect` 0x1ec690) does not fail on the endpoint contact — the port
         // treats a hit at the ray's end (t ≈ 1) as clear. *Unverified*: RayIntersect's exact t range (the
         // wrapper decompile is one call; WORKLOG fix-player2 records it).
-        let los = world.segment(body, c).map_or(true, |t| t >= 1.0 - 1e-4);
+        let los = world.segment_actor(body, c).map_or(true, |t| t >= 1.0 - 1e-4);
         // `NF_PICKUPLOG=1`: every take test — Bond's position, the pickup centre, the distance against
         // radius + 1.1, the LOS ray, and the state (fix-player2's drop diagnostics).
         if std::env::var_os("NF_PICKUPLOG").is_some() {

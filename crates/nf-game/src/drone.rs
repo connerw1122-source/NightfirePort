@@ -4176,6 +4176,11 @@ pub struct Drones {
     /// The locks (`Lock_Create` 0x1ae1f8, placement 0x2E; fix-objects2): the laser-burn targets —
     /// 07000008's safe bolts (chs 134/135 → mux 136 → the safe door).
     pub locks: Vec<crate::lock::Lock>,
+    /// fix-safe08: (script hash, stream) → the renderer's reserved pickup slot for that script's
+    /// obj_type-0xF0 Entity (`Script_CreateEntity` 0x1d8968's `Pickup_Create` arm). The slot is
+    /// built at load (scene.rs) with `gone = true` (undrawn, inert) and goes live when the script
+    /// spawns it.
+    pub script_pickup_slots: HashMap<(u32, u8), usize>,
     /// The grapple points (placement 0x3A, `Grapple_Create` 0x198298; fix-gadgets).
     pub grapple_points: Vec<crate::gadget::GrapplePoint>,
     /// The animated SimpleScripts (`SS_Create` 0x1a9c58 / `SS_Update` 0x1a9948; map-tower2): the
@@ -4251,7 +4256,11 @@ impl Drones {
             gas: Default::default(),
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
             // — the shared-constructor collisions, merge lesson 4).
-            death: Default::default(), bond_fire: false, auto_restart: true, level_exit_cold: false }
+            death: Default::default(), bond_fire: false, auto_restart: true, level_exit_cold: false,
+            // fix-safe08: (script hash, stream) → the reserved pickup slot the renderer built for the
+            // script's obj_type-0xF0 Entity (`Script_CreateEntity` 0x1d8968's Pickup_Create arm);
+            // built at load in scene.rs, matched by the runtime spawn.
+            script_pickup_slots: Default::default() }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -5002,6 +5011,35 @@ pub fn fire_player(&mut self, d: &Data, from: V3, dir: V3, weapon: u8, sound: nf
         for (placement, script, matrix) in copter_flight { self.scripts.spawn_once(placement, script, matrix); }
         // Script players (*deviation*: all of them here, not interleaved with the placed objects by list order).
         { let _p = crate::prof::scope("drones: scripts"); self.scripts.tick(&mut self.channels, d, frame); }
+        // fix-safe08: `Script_CreateEntity` 0x1d8968's obj_type-0xF0 arm — the game calls
+        // `Pickup_Create` (0x18dda0) at the stream's posed position with rest = 1 (disasm
+        // 0x1d8bcc-0x1d8c20). A reserved slot (built at load from the level's scripts) goes live;
+        // a spawn without one (a script outside the pre-scan) pushes a fresh pickup — takeable,
+        // with the by-hash renderer fallback.
+        for sp in std::mem::take(&mut self.scripts.objects.pending_pickups) {
+            let activate = |p: &mut crate::pickup::Pickup, m: nf_formats::anim::Mat4| {
+                p.gone = false; p.hidden = false; p.state = 1; p.vel = [0.0; 3]; p.m = m;
+            };
+            if let Some(&k) = self.script_pickup_slots.get(&(sp.script, sp.stream)) {
+                if let Some(p) = self.pickups.get_mut(k) {
+                    if p.gone && p.from.is_none() {
+                        activate(p, sp.matrix);
+                        continue;
+                    }
+                }
+            }
+            // No reserved slot: build from the entity params; the bounds from the entity's hash
+            // (the game's glist comes from `hashtable_hashcode_to_celglist(hash)`, 0x1d8bcc).
+            let bounds = d.models.get(&sp.hash).copied().unwrap_or(crate::pickup::Model { centre: [0.0; 3], radius: 0.3 });
+            self.pickups.push(crate::pickup::Pickup {
+                kind: sp.kind, weapon: sp.id, rounds: sp.rounds, model: sp.hash,
+                bounds,
+                m: sp.matrix, start: [sp.matrix[3][0], sp.matrix[3][1], sp.matrix[3][2]],
+                vel: [0.0; 3], state: 1, lifetime: 0, switch_channel: sp.switch_ch,
+                sound: if sp.sound == 0 || sp.sound == 0xFFFF { None } else { Some(sp.sound) },
+                hidden: false, gone: false, from: None, obj: None,
+            });
+        }
         // Script objects with collision data join the collision world where they now are: animations' discrete
         // parts and drawn entities (`Collide_PickObj`; triggers and AI volumes are not obstacles).
         // Id: object index · 64 + part (stable while the object lives) for the ride (`ground_motion`).

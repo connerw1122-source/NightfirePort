@@ -298,24 +298,46 @@ impl CollisionWorld {
 
     /// First hit along the segment `from → to` as a fraction in [0, 1] (Möller–Trumbore, both faces).
     pub fn segment(&self, from: V3, to: V3) -> Option<f32> {
+        self.segment_in_sets(from, to, true)
+    }
+
+    /// The actor-class segment: static MINUS the 0x1000 missile cage, plus the dynamic set — the
+    /// game's queries whose HITTEST+0x98 carries bit 0x20 skip the 0x1000-flagged nodes [M
+    /// `Collide_Pick` 0x1eb320 disasm 0x1eb480-0x1eb49c, fix-objects2], and the take test's
+    /// `Collide_LineOfSight` runs with flags 0x721 (bit 0x20 set) [M 0x18e148:214]. The flat
+    /// `segment` (bullets/sight) still hits the cage. fix-safe08: the 07000008 safe take's LOS ray
+    /// crossed the cage's hidden wall beside the safe and refused every take.
+    pub fn segment_actor(&self, from: V3, to: V3) -> Option<f32> {
+        self.segment_in_sets(from, to, false)
+    }
+
+    fn segment_in_sets(&self, from: V3, to: V3, with_missile: bool) -> Option<f32> {
         let d = sub(to, from);
         let (mut best, mut lo, mut hi) = (None::<f32>, [0f32; 3], [0f32; 3]);
         for k in 0..3 { lo[k] = from[k].min(to[k]); hi[k] = from[k].max(to[k]); }
-        let _ = (lo, hi); self.near_seg(from, to, |t, _| {
-            let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
-            let p = cross(d, e2);
-            let det = dot(e1, p);
-            if det.abs() < 1e-12 { return; }
-            let inv = 1.0 / det;
-            let s = sub(from, t[0]);
-            let u = dot(s, p) * inv;
-            if !(0.0..=1.0).contains(&u) { return; }
-            let q = cross(s, e1);
-            let v = dot(d, q) * inv;
-            if v < 0.0 || u + v > 1.0 { return; }
-            let tt = dot(e2, q) * inv;
-            if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b) { best = Some(tt); }
-        });
+        let _ = (lo, hi);
+        let dynamic = self.dynamic.read().unwrap();
+        let sets: Vec<&Geo> = if with_missile { vec![&self.stat, &self.missile, &dynamic.geo] } else { vec![&self.stat, &dynamic.geo] };
+        for g in sets {
+            for o in along(g, from, to) {
+                for k in o.tris.clone() {
+                    let t = &g.tris[k];
+                    let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                    let p = cross(d, e2);
+                    let det = dot(e1, p);
+                    if det.abs() < 1e-12 { continue; }
+                    let inv = 1.0 / det;
+                    let s = sub(from, t[0]);
+                    let u = dot(s, p) * inv;
+                    if !(0.0..=1.0).contains(&u) { continue; }
+                    let q = cross(s, e1);
+                    let v = dot(d, q) * inv;
+                    if v < 0.0 || u + v > 1.0 { continue; }
+                    let tt = dot(e2, q) * inv;
+                    if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b) { best = Some(tt); }
+                }
+            }
+        }
         best
     }
 
