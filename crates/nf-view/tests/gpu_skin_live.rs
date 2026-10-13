@@ -21,7 +21,7 @@ fn check(scene: &mut Scene, ticks: u32) {
     let cpu = scene.animate(None, t, opts);
     let cpu_v = scene.posed_vertices(None, t, opts);
     let (layout, attrs) = scene.skin_layout();
-    let (pal, cols) = scene.skin_palette(&layout, None, t, opts);
+    let (pal, cols) = scene.skin_palette(&layout, None, t, opts, None);
     assert_eq!(attrs.len(), scene.char_verts.len());
     assert_eq!(cpu.len(), scene.char_verts.len());
     let (mut worst, mut at) = (0f32, 0usize);
@@ -61,7 +61,7 @@ fn sister_a_wrong_palette_is_caught() {
     let opts = ViewOpts::default();
     let cpu = scene.animate(None, 1.0, opts);
     let (layout, attrs) = scene.skin_layout();
-    let (mut pal, _) = scene.skin_palette(&layout, None, 1.0, opts);
+    let (mut pal, _) = scene.skin_palette(&layout, None, 1.0, opts, None);
     for m in pal.iter_mut() { m[3][1] += 1.0; }
     let i = attrs.iter().position(|a| a.a != a.b).expect("a blended vertex");
     let g = apply(&pal, &attrs[i], scene.char_verts[i].pos);

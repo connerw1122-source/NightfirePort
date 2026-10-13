@@ -586,6 +586,33 @@ impl CollisionWorld {
         best
     }
 
+    /// The closest distance from `p` to `cell`'s OWN scoped static triangles plus the unmapped
+    /// `always` runs — `Collide_SphereIntersect` (0x1ec940)'s per-cel closest hit the way the chain
+    /// builder `build_link_objects_to_rooms` (0x1c9150) uses it: a sphere at `p` with a containing
+    /// radius (4001), the query scoped so hits outside the queried cel read 1e8 while hits whose
+    /// cel is 0 (unmapped instances — the port's `always` runs) still intersect. fix-portal5: this
+    /// orders the candidate rooms of a generic's chain hang by their nearest collision point.
+    /// `None` = no scope or the cell is unmapped.
+    pub fn closest_point_scoped(&self, cell: usize, p: V3) -> Option<f32> {
+        let sc = self.scope.as_ref()?;
+        let runs = sc.cells.get(cell)?;
+        let stat = &self.stat;
+        let mut best: Option<f32> = None;
+        for r in runs.iter().chain(sc.always.iter()) {
+            let o = &stat.objects[*r as usize];
+            // Bounding reject: the run's box against the best distance so far.
+            let slack = best.unwrap_or(f32::MAX);
+            if (0..3).any(|k| p[k] < o.lo[k] - slack || p[k] > o.hi[k] + slack) { continue; }
+            for k in o.tris.clone() {
+                let (cp, _) = closest_on_triangle(p, &stat.tris[k]);
+                let d = sub(cp, p);
+                let dist = dot(d, d).sqrt();
+                if best.is_none_or(|b| dist < b) { best = Some(dist); }
+            }
+        }
+        best
+    }
+
     /// The take's LOS ray: the straddle cells' static geometry, the 0x1000 missile cage excluded
     /// (`Collide_Pick`'s bit-0x20 skip, flags 0x721 [M 0x1eb480-0x1eb49c + 0x18e148:213-214]) and the
     /// surface classes the take's query-type filter skips — `Collide_Intersect` 0x1ebaa8's tail: the
