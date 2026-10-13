@@ -125,6 +125,8 @@ fn meshless_kinds_never_draw() {
         match name {
             "0700001b.bin" => assert!(has(0x31), "no fuseboxes?"),
             "0700000b.bin" => assert!(has(0x32) && has(0x29), "no rainboxes/switches?"),
+            // 0700000c carries the 5 grapple placements the teeth are for [D]; no rainboxes.
+            "0700000c.bin" => assert!(has(0x3a) && has(0x3b), "no grapple points/dynamic objects?"),
             _ => assert!(has(0x32), "no rainboxes?"),
         }
     }
@@ -214,7 +216,9 @@ fn misc_census_golden() {
         eprintln!("{}", lines.last().unwrap());
     }
     let h = sha1_lines(&lines);
-    let expected = "dc647240c3f1770d4018ce4410aef13af0008f07";
+    // Re-pinned for fix-gadgets2: 0x3A grapple points and 0x3F creep walls left the sweep (their
+    // creators attach no gfx [M 0x198298, 0x196fc8] — the user's red/yellow marker boxes).
+    let expected = "bb66b783b7500c3912098cd57daa1449d725b60b";
     assert_eq!(h, expected, "misc census golden — if a count legitimately changed, re-pin");
 }
 
