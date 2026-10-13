@@ -7697,3 +7697,15 @@ Stage Summary:
   stun grenade stuns (0x35 flash branch), the smoke pops (0x36), the mine fuses 420; the dev panel
   names match the disc. Left: the smoke's Occlude visual, the whiteout falloff curve, the mine
   trigger/detonator, the tripbomb laser, the satchel timer — all noted in the report.
+
+---
+Task ID: 140c-fix-swim-vent3
+Agent: fix-swim-vent3 (worker)
+Task: fix-swim-vent3 (branch s/fix-swim-vent3) — the last two reds (07000001 exit pad, 0700000c ST-1 plate ch 0x1b), then land the swim fix
+Started 14:40 UTC 2026-10-13, sandbox expires ~16:38 UTC.
+
+Work Log:
+- Branch s/fix-swim-vent3 = s/fix-swim-vent2 (8b6374a) merged with origin/master (7fb019b); WORKLOG conflict resolved keeping both sides' entries (append-only). First checkpoint pushed.
+
+Stage Summary:
+- (in progress)
