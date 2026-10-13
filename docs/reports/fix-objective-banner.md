@@ -96,12 +96,13 @@ binaries did not re-run in this session; they do not touch the banner path).
 
 ## What's left
 
-- `fix_progress_live.rs` `killing_two_guards_and_taking_a_bonus_tallies_like_the_decompile` fails on
-  the rebased branch: the guards die (health −42.5) but `PlrStat` shows `dispatched 0, hit 0`. This
-  task's diff does not touch the kill/tally path; the failure appeared after rebasing onto master
-  (fix-progress + the movie-decoder merges landed together). Needs an A/B against origin/master to
-  assign it — left to the driver/next session.
-- The remaining nf-view binaries (after the timeout cut) should re-run once on the merged master.
+- The remaining nf-view binaries (after the sandbox timeout cut the run at 173) should re-run once
+  on the merged master; every binary that touches the banner/mission/tally path re-ran green.
+- During the rebase onto master (fix-progress merged) the tally fold block (fix-progress's
+  `PlrStat_Log*` outbox fold at the end of `Drones::tick`) was lost in the drone.rs conflict and
+  then RESTORED verbatim at its original end-of-tick place (the block only reads the outboxes and
+  the mission status, so the `Game_Run`-order move does not affect it) — `fix_progress_live` runs
+  green again, as do the nf-game lib tests (128) and the banner/death/mission live binaries.
 - Live checks for the main agent (PCSX2, 07000007): at the Kimiko rendezvous the "NEW OBJECTIVE /
   Spy on secret meeting" banner and its sting must appear only AFTER the cut-scene hands back; the
   banner's two text rows sit centred on the bar's centre (the bar spans 16..496); the fail notice

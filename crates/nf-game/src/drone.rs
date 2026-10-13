@@ -6443,6 +6443,35 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         self.sss.tick(&self.channels);
         // `Mission_Update` moved to the top of the tick (fix-objective-banner): the game's Game_Run
         // order — see the block before `fx.tick` above.
+        // fix-progress: the tally folds — the per-drone `PlrStat_Log*` outboxes, `Trigger_Calc`'s
+        // Bond-moment scan and the health snapshot (docs/fields/player-stats.md's writers table).
+        // (Restored here by fix-objective-banner: the fold lived between the mission update and the
+        // music update and was lost in the Game_Run-order rebase; it only reads the outboxes and
+        // the mission status, so the end of the tick is still its place.)
+        {
+            let ms = self.mission.status();
+            let (mut dispatched, mut disabled, mut surrendered, mut hit) = (0u32, 0u32, 0u32, 0u32);
+            for dr in self.list.iter_mut() {
+                // `PlrStat_LogEnemyDispatched` 0x1996a8 (OnInitDeath 0x145bd0:57-59),
+                // `LogEnemyDisabled` 0x199730 (the KO enter 0x172ac8), `LogEnemySurrender`
+                // 0x1997b8 (the Surrender_Anim ENTER 0x1626a0), `LogShotHitEnemy` 0x199840
+                // (NDrone2_HitDamage 0x145558:57-60) — outboxed by the drones, folded here.
+                if dr.dispatched_logged { dr.dispatched_logged = false; dispatched += 1; }
+                if dr.disabled_logged { dr.disabled_logged = false; disabled += 1; }
+                if dr.surrender_logged { dr.surrender_logged = false; surrendered += 1; }
+                hit += dr.hit_log; dr.hit_log = 0;
+            }
+            for _ in 0..dispatched { self.progress.log_enemy_dispatched(ms); }
+            for _ in 0..disabled { self.progress.log_enemy_disabled(ms); }
+            for _ in 0..surrendered { self.progress.log_enemy_surrender(ms); }
+            for _ in 0..hit { self.progress.log_shot_hit_enemy(ms); }
+            // `Trigger_Calc` 0x1b1900:12-17: channels 0x65..0x6E on → `PlrStat_DoneBondMoment(0, ch)`
+            // (the BondMoments gate makes repeats inert).
+            for id in 0x65u32..=0x6E { if self.channels.on(id) { self.progress.done_bond_moment(ms, id); } }
+            // `PlrStat_LogHealth` 0x199620 ← `Player_SetHealth` 0x1960b8:14: the snapshot GetScore's
+            // row 6 reads; the port writes it once per tick (the game's last write wins too).
+            self.progress.log_health(ms, self.health.health);
+        }
         // `UpdateMusicalEvents` 0x114e70 — once per tick, after the drones (their script requests and the
         // mission's pulses are this tick's EventList) [M]. The audio layer feeds `iop_section`.
         self.prev_event2 = self.music.events[2];
