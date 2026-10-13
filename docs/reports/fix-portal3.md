@@ -111,4 +111,10 @@ No shared file rewritten; nf-game/nf-formats/nf-audio untouched.
 
 ## ntfy
 
-(filled after the finish step)
+Sent 17:01 UTC (curl, first try, id MCAoRF4SXht4): "fix-portal3: done — the game-faithful
+build_FindCel collision tie-break + the placement viewer-cel clear landed on s/fix-portal3
+(= s/portal3); the courtyard wall cels at the exact placed camera are live-gated (VisCelList
+watch in the report); the full suite needs a re-run before merge".
+Note: the first `finish.sh` run attached no report (the script cd's to the queue dir, so the
+relative report path missed); repaired by appending this report to `done/130c-fix-portal3.md`
+on origin/queue directly.
