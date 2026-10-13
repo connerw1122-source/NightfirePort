@@ -278,6 +278,7 @@ fn probe_the_bond_spot_viewer_cel() {
 /// the file-order-corner (FORWARD) node — the decompile (0x1d15f8) and the disassembly disagree on
 /// which side that is; the snapshot settles it.
 #[test]
+#[ignore = "diagnostic probe (fix-portal3): runs > 5 min on the merged portal6 tree (a snapshot scan; every loop is capped, so it is slow rather than infinite); not a behaviour test. Run by hand with --ignored."]
 fn probe_snapshot_portal_plane_sides() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     // The same parse the port's load runs (lib.rs 157-163), for the raw PortalQuad record indices.
