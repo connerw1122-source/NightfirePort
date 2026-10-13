@@ -1564,7 +1564,8 @@ pub fn run() -> Result<()> {
         --no-fog: skip the fog screen pass (isolate vertex colour/texture). --no-tex: ignore texture samples (solid white, isolate lighting/fog).";
     // --movie <name/code> --frame N --shot out.png: headless PSS movie test (fix-movies) — demux, decode one
     // frame of the disc's MPEG-2 video, dump it as a PNG (no window, no GPU). The game plays these through
-    // psiStartBackgroundMovie 0x001081a8 (cdrom0:\movies\30_FPS\%8.8x.pss;1).
+    // psiStartBackgroundMovie 0x001081a8 (cdrom0:\movies\30_FPS\%8.8x.pss;1). Needs `--features movies`.
+    #[cfg(feature = "movies")]
     if let Some(m) = args.iter().position(|a| a == "--movie") {
         let name = args.get(m + 1).context("--movie needs a movie name or hashcode (e.g. 07100001)")?;
         let frame: usize = args.iter().position(|a| a == "--frame").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0);
