@@ -43,6 +43,10 @@ fn dump_floor_grids() {
     floor_grid("07000015", 60.0, 96.0, -14.0, 8.0, 41.5, 2.0, 8.0);
     // 07000016: the pit at z −88..−100 (the ladder at x −0.4) — the side ledges.
     floor_grid("07000016", -10.0, 14.0, -106.0, -82.0, 1.0, 2.0, 8.0);
+    // 0700004a: the top lobby (the spawn y −7.7) — the boarding wedge and the walk-off east.
+    floor_grid("0700004a", -8.0, 12.0, -10.0, 6.0, -7.5, 1.0, 8.0);
+    // 0700004a: the bottom lobby (the ride's end y −157) — the fall to −2761 crossed it.
+    floor_grid("0700004a", -8.0, 12.0, -10.0, 6.0, -156.5, 1.0, 8.0);
 }
 
 #[test]
@@ -78,5 +82,67 @@ fn dump_levels() {
             eprintln!("drone[{i}] skin={:#x} dtype={:#x} pos=({:.1},{:.1},{:.1}) mode={} state={:#x} enabled={} switch_ch={:#x} death_ch={} corpse={} health={:.0}",
                 d.skin, d.dtype, d.pos[0], d.pos[1], d.pos[2], d.mode, d.state, d.enabled, d.switch_channel, d.death_channel, d.corpse, d.health);
         }
+    }
+}
+
+#[test]
+fn probe_4a_spawn_support() {
+    let iso = iso();
+    let mut scene = nf_view::load(&iso, "0700004a.bin", false).expect("load");
+    for t in 0..300 {
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        if t % 30 == 0 {
+            let sim = scene.sim.as_ref().unwrap();
+            eprintln!("t{t}: pos=({:.2},{:.2},{:.2}) grounded={} substate={}", sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2], sim.bond.grounded, sim.bond.substate);
+        }
+    }
+    let sim = scene.sim.as_ref().unwrap();
+    eprintln!("final: y {:.2} (start −7.71)", sim.bond.pos[1]);
+}
+
+#[test]
+fn probe_4a_ride_scrape() {
+    let iso = iso();
+    let mut scene = nf_view::load(&iso, "0700004a.bin", false).expect("load");
+    for t in 0..2400 {
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        scene.sim.as_mut().unwrap().drones.health.health = 100.0;
+        if (1350..=2400).contains(&t) && t % 20 == 0 {
+            let sim = scene.sim.as_ref().unwrap();
+            let p = sim.bond.pos;
+            let doors: Vec<String> = sim.drones.doors.list.iter()
+                .filter(|d| (110..=111).contains(&d.placement))
+                .map(|d| format!("[{}]({:.1},{:.1},{:.1}) st{:#x} p01{:.2}", d.placement, d.pos[0], d.pos[1], d.pos[2], d.state, d.pos01))
+                .collect();
+            let plat = sim.drones.scripts.objects.list.iter().enumerate()
+                .filter_map(|(i,o)| o.as_ref().map(|o| (i, match o { nf_game::nis::Obj::Entity { matrix, .. } => Some(matrix[3][1]), _ => None })))
+                .collect::<Vec<_>>();
+            if t == 1660 {
+                let b = &sim.bond;
+                let (a, c) = b.capsule_seg();
+                let (push, walkable) = sim.world.capsule_push(a, c, 0.4);
+                eprintln!("FROZEN probe: capsule a=({:.2},{:.2},{:.2}) c=({:.2},{:.2},{:.2}) push=({:.3},{:.3},{:.3}) walkable={}",
+                    a[0], a[1], a[2], c[0], c[1], c[2], push[0], push[1], push[2], walkable);
+                eprintln!("floor_below 3: {:?}  floor_below 0.5: {:?}", sim.world.floor_below([p[0], p[1], p[2]], 3.0), sim.world.floor_below([p[0], p[1], p[2]], 0.5));
+                eprintln!("segment down 3: {:?}", sim.world.segment([p[0], p[1], p[2]], [p[0], p[1] - 3.0, p[2]]));
+                eprintln!("segment up 3: {:?}", sim.world.segment([p[0], p[1] + 0.5, p[2]], [p[0], p[1] + 3.0, p[2]]));
+            }
+            eprintln!("t{t}: bond=({:.2},{:.2},{:.2}) grounded={} plat={:?} doors {}", p[0], p[1], p[2], sim.bond.grounded, plat, doors.join(" "));
+        }
+        if sim_y(scene.sim.as_ref().unwrap()) < -200.0 { eprintln!("fell past −200 at t{t}"); break; }
+    }
+}
+
+fn sim_y(sim: &nf_view::scene::Sim) -> f32 { sim.bond.pos[1] }
+
+#[test]
+fn probe_16_door7_fields() {
+    let iso = iso();
+    let scene = nf_view::load(&iso, "07000016.bin", false).expect("load");
+    let sim = scene.sim.as_ref().unwrap();
+    for (i, d) in sim.drones.doors.list.iter().enumerate() {
+        eprintln!("door[{i}] plc={} kind={} flags={:#x} approach={} locked_flag={} straddle={} ch_lock={:#x} state={:#x} sph=({:.2},{:.2},{:.2}) r{:.2}",
+            d.placement, d.kind, d.flags, d.approach, d.locked_flag, d.straddle, d.ch_lock, d.state,
+            d.sph.0[0], d.sph.0[1], d.sph.0[2], d.sph.1);
     }
 }
