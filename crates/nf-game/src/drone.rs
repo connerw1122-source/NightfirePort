@@ -6606,11 +6606,55 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             let _pc = crate::prof::scope("drone: clones + misc");
             dr.others = positions.clone();
             dr.peers = peers.clone();
-            // The NoBunching flag computation is SUSPENDED (see the report): the scan alone regressed
-            // the 07000001 death-drop tests (fix_objects_live a_death_draws_its_drop, green on master
-            // 0cda458 and at the kick commit) — the flags feed only the 0x5E gate, so a zero here
-            // disables the gate, not the tested kick path. Root cause next session.
+            // `DroneMove_NoBunching` (0x150ad0) over `NDrone2_Steer`'s (0x14eba8) obstacle scan —
+            // DRONE-ONLY: the game's +0x314 obstacle is written by `NDrone2_EvaluateObstacle`
+            // (0x14e6f0:58-65) only for a drone candidate (`param_2 != 0`; the write IS the
+            // nearest-keeper, seed 3.0 set by Steer 0x14eba8:83-85), the player is evaluated with
+            // param_2 = 0 (0x14eba8:98-99; the MP arm :110-131 likewise) and the state-0xb / speed-0
+            // fallback (0x14eba8:180-214) loops drones — so Bond NEVER lands in +0x314 and never
+            // feeds these flags. The first port included him: the 07000001 death-drop guard (Bond
+            // 3.0 behind his walk line) took bit 2 ("drone ahead") from the PLAYER alone, parked in
+            // 0x5E at the chooser gates (0x13cfb0:35 / 0x148338:95), and died inside Bond's pickup
+            // sphere — the drop taken (`gone`), fix_objects_live a_death_draws_its_drop. Root cause
+            // fixed this session (the [nb] instrumentation logged PLAYER-only candidates for the
+            // shot guard, dist 2.3-2.96). Peers keep the port's candidate stand-in (present, enabled,
+            // non-corpse — the game's chain rides +0x4F8 bits the port does not model: 0x600 == 0,
+            // 0x100 set, +0xac > 0.0, class != 0x11, +0xFE bit 0 clear [M 0x14eba8:150-155]; the
+            // NoBunching reader additionally demands the obstacle's 0x10 movement-lock clear
+            // [M 0x150ad0:22] — unmodelled, documented). The angle: ATAN2_APPROX(op−drone) against
+            // the movement yaw with +0x570's quad offset around it (bit 8 +90°, 0x10 +180°, 0x20 −90°
+            // [M 0x150ad0:30-40]); the decomp drops the ATAN2 store, so the 0x8/0x10 side sign is
+            // [*suggested*] — bit 2 (ahead, |diff| < π/4) is sign-independent [M 0x150ad0:42-55].
+            // ControlSTANDARD 0x1490f0:202-226 zeroes +0x31C/+0x314/+0x310 and re-runs this per tick
+            // while +0x23 == 0 (the port zeroes unconditionally — no +0x23 model); the result byte
+            // lands at obj+0x17; `LinkCreep_Handler` 0x15a2c8:90 ORs 0x1e on the advancing follower.
+            //
+            // HELD INERT one more session (NB_SCAN_LIVE): with the player term removed the scan is
+            // green on everything it regressed (fix_objects_live a_death_draws_its_drop, render2_live
+            // dropped_guns_dim, the un-ignored nav_kick drive test, ai_traces_live 4/4 with 01-doors/
+            // 01-raptor holding) — but it reshuffles 07000001's RNG-chained escort walk
+            // (walkreal_07000001_live): the west mezzanine guard (drone 2, ch 0x26) now outlives the
+            // test's fixed 12-round clearing budget at 10 hp, and the contact parks in AllyLeadHide
+            // (0x1f) with him armed within 14. That fight needs its own re-pin (the scan has no RNG
+            // draws — the delta is behaviour timing), so the flip waits for it. Everything here is
+            // the game-true shape; the flip is one const.
+            const NB_SCAN_LIVE: bool = false;
             dr.no_bunching = 0;
+            if NB_SCAN_LIVE {
+                let mut best: Option<(f32, V3)> = None;
+                for (i, pos, _) in peers.iter() {
+                    if *i == index || !bunching_ok[*i] { continue; }
+                    let q = (pos[0] - dr.pos[0]).powi(2) + (pos[1] - dr.pos[1]).powi(2) + (pos[2] - dr.pos[2]).powi(2);
+                    if q < 9.0 && best.map_or(true, |(bq, _)| q < bq) { best = Some((q, *pos)); }
+                }
+                if let Some((_, op)) = best {
+                    let angle = atan2_approx(op[0] - dr.pos[0], op[2] - dr.pos[2]);
+                    let facing = dr.yaw + dr.yaw_offset;
+                    let diff = angle_difference(angle, facing);
+                    dr.no_bunching |= if diff < 0.0 { 0x10 } else { 8 };
+                    if diff.abs() < std::f32::consts::FRAC_PI_4 { dr.no_bunching |= 2 } else { dr.no_bunching |= 4 }
+                }
+            }
             // `NDrone2_NearArmedDrone`'s scan (fix-actors): the nearest started, alive, hostile peer.
             // (The snapshot list was taken before the mutable borrow; the armed/started filter rides it.)
             dr.armed_peer_dist = armed_peer_dist[index];
@@ -6679,13 +6723,28 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     }
                 }
             }
-            // The route's ally-wait node (flag 0x20) is RESOLVED but not acted on: the game parks
-            // the drone in 0x21 while `switch_channels[0x99]` is off (`ReachedDestNode` 0x153358:85-94),
-            // but enabling that here regressed 07000001's exit walk (the courtyard shoji never
-            // opened — the parker stood between Mayhew and the door, fix_mission_live's
-            // the_07000001_exit_works_end_to_end, green on master 0cda458). The game's ch-0x99
-            // timing around that node is the missing fact — live check in the report. The outbox
-            // stays (the resolution proves the node dispatch), the state entry waits for it.
+            // The route's ally-wait node (flag 0x20) is RESOLVED but not acted on — the state entry
+            // stays parked on a missing link this session pinned precisely. The chain, all on disc
+            // data of 07000001 (the only level with 0x20 nodes — the kind-8 "Mayhew Route", path 0,
+            // node 33 (2.91, 5.74, 7.57) is the game's park: the real recording tests/traces/
+            // 01-doors.trace holds the contact in state 0x21 at (2.94, 7.22) for 1262 frames):
+            //   guards (switch ch 0x0e: drones 6/7/11 at (5.42,14.44)/(9.05,17.01)/(5.93,17.86),
+            //   death channels 0x13/0x11/0x12) die → `DroneFunc_SetDeathChannel` 0x13e660 raises
+            //   0x11/0x12/0x13 → the AND mux pl 318 (0xEC at (7.76, 6.22, 15.33), out 0x99, inputs
+            //   0x11/0x12/0x13) raises switch_channels[0x99] → `ReachedDestNode` 0x153358:87's gate
+            //   opens and 0x21's UPDATE (0x15efc8 case 3) exits to 0x1d. The port HAS every link of
+            //   that chain (the mux is Trigger::update's AND; the death writes at drone.rs).
+            //   The guards' enable channel 0x0e is written by script 0x06000086 (SP #276: modes
+            //   [0,0] → state 0, mask 1, out 0x21 — the SP starts when switch_channels[0x21] rises
+            //   [M nis.rs state-0 arm]) — and ch 0x21's writer is in NO placement, script event,
+            //   door, mux or pickup the port parses (the full scans this session: every placement
+            //   param == 0x21/0x99/0x11-0x13; every script event 0xd/0x11 write — the only one is
+            //   0x06000086's own 0x0e; the doors' ch_open are all 0). Enabling the entry now stalls
+            //   the escort forever (walkreal_07000001's repro: parked at (3.5, 6.3, 7.1) state 0x21,
+            //   "no guard to clear" — the courtyard guards stay WAIT_SWITCH, enabled=false, outside
+            //   the test's clearing filter) and the fix_mission_live shoji ping-pongs. The game's
+            //   ch-0x21 writer is the live check in docs/reports/fix-nav-remainder2.md; the outbox
+            //   stays (the resolution proves the node dispatch), the state entry waits for it.
             let _ = dr.ally_wait_node.take();
             // The kick request (`NDrone2_KickObject` 0x14aa00): the bound ScriptPlayer's script
             // unpauses (`SP_UnPause` 0x1dca58: `+0x2c = 1`, the current script's pause cleared).
