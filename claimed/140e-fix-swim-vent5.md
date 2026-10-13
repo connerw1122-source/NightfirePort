@@ -33,3 +33,6 @@ Files: as fix-swim-vent4, plus the icon loop in `crates/nf-view/src/scene.rs`.
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/swim-vent5` (start from `s/fix-swim-vent4`, then merge `origin/master` into it).
+
+---
+claimed-by: sandbox2 at 2026-10-13T19:00Z
