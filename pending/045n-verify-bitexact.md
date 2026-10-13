@@ -5,17 +5,15 @@ record real calls of a game function in PCSX2 (its inputs and outputs), replay e
 and require the same result **bit for bit**. (Idea from morluto/rea's reconstruction showcases, which pass thousands
 of cases recorded from the original binary; facts only, no code taken.)
 
-**Who does what.** The sandbox has no PCSX2. The main agent records the calls with the GDB-server PCSX2
-(`tools/trace/gdbwatch.py`'s client; `docs/tools/pcsx2-gdb.md`) and commits them to `master` under `tests/calls/`. You
-build everything else, and say exactly what you need recorded.
+**Who does what.** The sandbox has no PCSX2. The main agent records the calls (`tools/trace/gdbcall.py`) and commits
+them to `master` under `tests/calls/`. You build the harness and the fixes, and say exactly what you need recorded.
 
-1. **The call-trace format** (`docs/tools/call-traces.md`, write it first and push it early so the main agent can
-   start recording): one file per function, `tests/calls/<function>.calls`, text, one call per record:
-   the function's EE address and name; the argument registers at entry (`a0..a3`, `t0..t3`, `f12..f19` as IEEE bit
-   patterns); the **input memory regions** the function reads (address, length, hex) and the **output** at return
-   (`v0/v1`, `f0` bits, and the same regions after the call, so writes show as diffs); the frame number and level.
-   Per function, a **spec** line saying which regions to capture (for example `Quat_QuatToMat`: 16 bytes at a0 in,
-   64 bytes at a1 out). Numbers and addresses only, no disc bytes.
+1. **The recorder and the format already exist** (main agent, master 411b86c): `tools/trace/gdbcall.py` and
+   `docs/tools/call-traces.md` (format v1). The first recordings are in `tests/calls/`: `Quat_QuatToMat.calls`,
+   `Rand_Rand.calls` (with SEED_X/SEED_Y 0x30d0a0/0x30d0a4 before and after) and `PS2Sinf.calls` (40 calls each,
+   07000005). **`PS2Sinf` is bit-identical to the f32 sine on only 13 of 40 calls** (up to 3.84e-5 off): the
+   first target. Parse format v1 as documented; if you need a field it doesn't carry, say so in your report and
+   the main agent extends the recorder.
 2. **The harness** (`crates/nf-game/tests/diff_calls.rs`, NF_ISO not needed): it reads every `.calls` file, maps each
    function to a port adapter (`fn(&CallRecord) -> CallResult`), runs it and compares the results bit for bit. On a
    mismatch it prints the first differing call (inputs, game result, port result, the ULP distance for floats). A
