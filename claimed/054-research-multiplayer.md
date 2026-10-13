@@ -17,3 +17,6 @@ what parses, and the plan in your report.
 [S]); use subagents in parallel, and have an independent auditor re-derive your key claims. Never commit game bytes.
 
 **Branch:** `s/research-multiplayer`.
+
+---
+claimed-by: sandbox1 at 2026-10-13T10:00Z
