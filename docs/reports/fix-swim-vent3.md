@@ -69,9 +69,18 @@ Evidence (new example `crates/nf-view/examples/probe_scoped.rs`):
   Master passes because its walk dynamics carry him a fraction further south. The test itself is not
   wrong — the game's Bond walks ONTO the pad (centre z −154.15, 1.0 inside the band).
 
-Next session: either the walker's final approach targets the pad centre (a test-side correction the
-evidence supports — the pad and the volume are the disc's), or the touch evaluation gains the game's
-tolerance. Prefer the former: one target-coordinate change with the disc citation above.
+Session-2 addendum (probe_scoped's seam map + poke): the touch evaluation itself is PROVEN good —
+Bond poked to the pad centre (5.84, 12.9, −154.15) fires ch 0x1b on the poke tick (his cel relinks to
+284), and the pad floor spans x 5.0..6.5 south of the corridor (y 11.84, up plane), with VOID (floor
+6.27) at x ≤ 4.5 and x ≥ 7.0 south of z −153.2; the corridor itself (y 11.27-11.32) runs to z −153.2
+even at x 7.0-7.2. The seam triangles are mats 05/06 — the water drop is NOT the cause. The failure is
+purely the approach walk: Bond parks at (7.2, −153.1) FACING SOUTH, and every walker variant (pad-centre
+loop target, dogleg via x 5.5, walk_to the pad, turn-in-place phases) bled into the x ≥ 7.0 void before
+the 0.07/tick turn caught up, or stopped 0.03 outside the band. The test file was left at HEAD (no
+change landed — the walker variants are documented here instead of committed half-working). Next
+session: teach the loop turn-in-place FIRST at the parked spot (safe floor at (7.2, −153.1)), walk the
+corridor WEST to x ≤ 6.5 (targets (x−0.5, −152.95)), then due south over the pad's wide part to
+(5.84, −154.15); the poke proves the touch fires the moment Bond is on the pad.
 
 ## Files touched this session
 
