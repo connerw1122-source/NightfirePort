@@ -7653,3 +7653,13 @@ Work Log:
 Stage Summary:
 - The pad path is the game's, as data + code, verified against the game's own functions. G-005/G-012 closed; G-003's ramp half closed (the live pad playtest remains for the main agent). Report: docs/reports/fix-input.md (the --bond spots are there).
 - Left: a real pad playtest (no device in the sandbox); the pad's weapon cycling needs Input_Update's hold-counter active flags (actions 20/21); the scope branch's driver path is a stub; PadConfig::style is fixed at construction.
+---
+Task ID: 260
+Agent: fix-sky (worker)
+Task: fix-sky (branch s/fix-sky) — sky remainder: lightning, the rotating sky, the sky pass's GS state
+
+Work Log:
+- Branch created from origin/master (87625dc); setup verified (work/, EE snapshots, ISO, nf-queue).
+
+Stage Summary:
+- Starting: lightning variants [G-019], the 0x0700001B rotating sky, the sky pass's GS state vs gpu.rs, snow/rain particle look if sky-owned.
