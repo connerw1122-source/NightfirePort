@@ -7340,3 +7340,11 @@ NF_ISO impacts_live (wall decal at hit+0.01 with the surface normal/mesh, sky sh
 lands in lifetime, bit-for-bit seeded rerun). Known: `guard_takes_cover_like_the_game` needs its seed
 re-picked (0072's procedure — the impact draws joined the stream, as the game's own do). Report:
 docs/reports/fix-impacts.md.
+
+## fix-ai-remainder (s/fix-ai-remainder) — 2026-10-13
+Task: the guard-AI items open in GAPS G-026/G-023/G-021, in order: SpecialDeath scripted
+deaths, head tracking / aim bone look-at, corpse fading, Bond's 16 hit boxes with per-location
+damage multipliers, reload + other drone weapons, weapon swaps by animation events (G-023),
+missing drone skins via CommonAnimFile + AnimSleeveGetEntity (G-021), drone modes 9/0x12/0x1E
+and Drone_InitComms cover-node order (G-026). Branch from origin/master at 78d73e0.
+Started 12:47 UTC, sandbox expires ~14:44 UTC.
