@@ -1369,11 +1369,15 @@ impl Drone {
         }
     }
 
-    /// The sequence and frame the playing script shows (opcode-0 command covering the script time).
+    /// The sequence and frame the playing script shows. The LAST-started opcode-0 window covering the
+    /// script time owns the root bone (`AnimProcessScriptCmds` 0x1c1b38 starts every window; the later
+    /// one overwrites — [L] the 07000006 driver's face track, started after his body track, pins his
+    /// root to its all-zero track so he holds position while the body's root runs 0.57; the free
+    /// `anim::script_frame` is last-wins the same way, fix-drone2).
     pub fn script_frame(&self, d: &Data) -> Option<(u32, u32)> {
         let script = d.scripts.get(&self.anim.script?)?;
         let t = (1 + self.anim.time) as u16;
-        let (a, _, q) = script.sequences().find(|(a, b, _)| *a <= t && t <= *b).or_else(|| script.sequences().next())?;
+        let (a, _, q) = script.sequences().filter(|(a, b, _)| *a <= t && t <= *b).last().or_else(|| script.sequences().next())?;
         Some((q, (t.saturating_sub(a) + 1) as u32))
     }
 
@@ -1937,10 +1941,10 @@ impl Drone {
     pub fn local_pose(&self, d: &Data) -> Option<crate::anim::Pose> {
         let skin = d.skins.get(&self.skin)?;
         let skel = d.skeletons.get(&skin.skeleton)?;
-        let cur = crate::anim::script_pose(d.scripts, d.sequences, skel, skin, self.anim.script?, 1.0 + self.anim.ftime)?;
+        let cur = crate::anim::script_pose_drone(d.scripts, d.sequences, skel, skin, self.anim.script?, 1.0 + self.anim.ftime)?;
         let outs: Vec<(crate::anim::Pose, f32)> = self.anim.outgoing.iter()
             .filter_map(|o| {
-                let mut p = crate::anim::script_pose(d.scripts, d.sequences, skel, skin, o.script, o.time)?;
+                let mut p = crate::anim::script_pose_drone(d.scripts, d.sequences, skel, skin, o.script, o.time)?;
                 if o.unyaw != 0.0 { if let Some(r) = p.first_mut() { r.1 = crate::anim::unyaw(r.1, o.unyaw); } }
                 Some((p, o.weight()))
             }).collect();
@@ -2633,11 +2637,17 @@ impl Drone {
         if let Some(r) = self.handle_grenade_throw(d, rng, frame, s, m) { return r; }
         match (s, m) {
             // `NDrone2_DSTATE_Global` enter: a drone with a switch channel that is still off waits (WaitSwitch); else its
-            // start state `+0x5A2` (InitPatrol with props 0x24/0x25, else Idle). Modes 0x1E / 0x17 and start scripts
+            // start state `+0x5A2` (InitPatrol with props 0x24/0x25, else Idle). Modes 0x1E and start scripts
             // (PlayScript 3) are not ported.
             (GLOBAL, msg::ENTER) => {
                 self.return_state = self.start_state(d);
                 if self.switch_channel != 0 && !self.channel_on { self.set_state(WAIT_SWITCH); return true; }
+                // `NDrone2_DSTATE_Global` 0x15b830 msg 1: dtypenew 0x17 (the truck driver) → TruckDriverInit
+                // (0x32) BEFORE the start-script branch — the driver never enters PlayScript, and
+                // WaitSwitch 0x15b960 case 3 (his channel firing) routes him to 0x32 the same way. [L]
+                // 05-truck's 07000006 segment: the driver (drone 13) is in state 0x32 for the whole
+                // 700-frame window while the level's start-script guards sit in 3.
+                if self.mode == 0x17 { self.set_state(TRUCK_DRIVER_INIT); return true; }
                 // `NDrone2_DSTATE_Global` 0x15b830: a drone with a start script (`Drone+0x554`) enters
                 // PlayScript (3) instead of its start state — the script plays first [L 07000001's first
                 // guard is in state 3 on the trace's line 0].
@@ -2645,23 +2655,39 @@ impl Drone {
                 self.set_state(self.start_state(d));
                 true
             }
-            // `NDrone2_DSTATE_PlayScript` 0x15ba68. ENTER (msg 1): `+0x4F8 |= 0x10000 | 0x2000`, resume
-            // `+0xCD8` per script — 0x60005e6/0x60008ae and the default → 0x56 ATTACK (SetScript 0x24,
-            // follow-on 0x11a, msg-arg 0x1e, 5, replay 0); 0x6000168 → (10, 0x32, 8, 0, 5, 0) resume 0;
-            // 0x6000169 → (5, 0x32, 0x1e, 0, 5, 0) + AttackTalk + `+0x4F8 |= 0x400000`, resume 0;
-            // 0x60007ac → (10, 0x32, 0xf, 0, 5, 0) + props 0x3b/0x3a cleared, resume 0. UPDATE (msg 3):
-            // the opponent look runs while the script plays (`+0xCDC = 1`), and a fully-alerted drone
-            // attacks (`NDrone2_SeenAndAttacking`); resume 0 falls back to the start state.
+            // `NDrone2_DSTATE_PlayScript` 0x15ba68. ENTER (msg 1): `+0x4F8 |= 0x10000 | 0x2000`, then
+            // SetScript(`+0x554`, …) per script — 0x60005e6/0x60008ae and the default → (0x24, 0x11a,
+            // 0x1e, 0, 5, 0); 0x6000168 → (10, 0x32, 8, 0, 5, 0); 0x6000169 → (5, 0x32, 0x1e, 0, 5, 0)
+            // + AttackTalk + `+0x4F8 |= 0x400000`; 0x60007ac → (10, 0x32, 0xf, 0, 5, 0) + props
+            // 0x3b/0x3a cleared. The resume `+0xCD8` (0x56 ATTACK for the default/0x60005e6/0x60008ae
+            // arms) is the IMPACT resume (cases 6/7/8/9 → `HandleImpact(+0xCD8)`), not the script's
+            // natural end — msg 5 lands back in this state (below). Not ported: the impact resume, the
+            // AttackTalk/flag side effects, and the UPDATE arm's fully-alerted
+            // `NDrone2_SeenAndAttacking` (fix-ai-traces' live check 2: the game's guard alert never
+            // reaches 1.0 in the PlayScript window — no [L] evidence it fires).
             (PLAY_SCRIPT, msg::ENTER) => {
-                let (st, follow, resume) = match self.start_script {
-                    0x6000_168 => (10, 0x32, 0),
-                    0x6000_169 => (5, 0x32, 0),
-                    0x6000_7ac => (10, 0x32, 0),
-                    _ => (0x24, 0x11a, ATTACK),
+                let (st, follow) = match self.start_script {
+                    0x6000_168 => (10, 0x32),
+                    0x6000_169 => (5, 0x32),
+                    0x6000_7ac => (10, 0x32),
+                    _ => (0x24, 0x11a),
                 };
-                let next = if resume == 0 { self.start_state(d) } else { resume };
-                self.play_script(d, self.start_script, st, follow, next, 0);
+                self.play_script(d, self.start_script, st, follow, 0, msg::ANIM_DONE);
                 true
+            }
+            // msg 5 (0x15ba68 case 5, the script's natural end): `+0x554 = 0`, then — the default and
+            // 0x60005e6/0x60008ae arms → `SetState(+0x5A2)` (the START state, not ATTACK: the guard on
+            // 07000006 whose 1244-frame start script ends settles into IDLE, fix-npcs' d15); the
+            // 0x6000168/0x6000169 arms → `CallAnim(0, 10, 0, 0x68, 0, 0)` + AttackTalk and the state is
+            // HELD (the 07000001 guard's script 06000169 ends into his idle-then-aim follow-up);
+            // 0x60007ac → `SetDAnimNow(0xf4, 0, 1)` + the start state (no 0x60007ac drone is ported).
+            (PLAY_SCRIPT, msg::ANIM_DONE) => {
+                let played = self.anim.script.unwrap_or(0);
+                self.start_script = 0;
+                match played {
+                    0x6000_168 | 0x6000_169 => { self.call_anim(d, 10, AIM_STAND_FIRE, 0); true }
+                    _ => { let s = self.start_state(d); self.set_state(s); true }
+                }
             }
             (PLAY_SCRIPT, msg::UPDATE) => {
                 // The game's msg-3 also attacks a fully-alerted drone (`NDrone2_SeenAndAttacking`), but
@@ -3170,16 +3196,31 @@ impl Drone {
             // CivilianInit 0x172730 / Civilian 0x15d118 / CivilianScared 0x15d3a0 / CivilianHiding 0x15d520 /
             // CivilianPatrol 0x15d610, 0x1c → HostageIdle 0x15ce60. Before this block the port had NO handler for
             // any of them: the playtest's guests, driver, hostage-side NPCs and civilians stood frozen (turning only).
-            // TruckDriverInit (0x160bd0) ENTER: prop 0x1d → AssignAIPath(8) then cleared; the port has no `+0x554`
-            // script link (the truck NIS), so the game's script-less branch applies — straight to TruckDriverIdle
-            // (case 1 else). The scripted branch (danim 0x11a via SetScript, the `+0x4F8` bit clears) is not modelled:
-            // the driver stands on the truck bed under gravity here. The sound/bullet arms keep the game's routing
-            // for the transient state (0x33 / HandleImpact(0x33, 0)).
+            // TruckDriverInit (0x160bd0) ENTER (case 1): prop 0x1d → AssignAIPath(8) in BOTH branches;
+            // `+0x694 = obj+0x54` (the sit target, not ported); a start script (`+0x554`) plays FROM HERE
+            // — SetScript(`+0x554`, 0x24, 0x11a, 0x1e, 0, 5, 0), `+0x554 = 0`, `+0x4F8` bits 0x20/0x80
+            // cleared — and the state HOLDS until the script's done (case 5 → 0x35 when the AI-path
+            // counter `+0x9f2` is set, else 0x34): [L] 05-truck's 07000006 driver (start script 0600011d)
+            // sits in 0x32 for the whole 700-frame trace window. Script-less: the prop clears and it is
+            // straight to TruckDriverIdle. The sound/bullet arms keep the game's routing for the
+            // transient state (0x33 / HandleImpact(0x33, 0)).
             (TRUCK_DRIVER_INIT, msg::ENTER) => {
-                if self.prop(d, 0x1d) { self.assign_path(d, 8); d.props.set(0x1d, &mut self.props, 0); }
+                if self.prop(d, 0x1d) { self.assign_path(d, 8); }
+                if self.start_script != 0 {
+                    let script = self.start_script;
+                    self.start_script = 0;
+                    self.play_script(d, script, 0x24, 0x11a, 0, msg::ANIM_DONE);
+                    return true;
+                }
+                d.props.set(0x1d, &mut self.props, 0);
                 self.set_state(TRUCK_DRIVER_IDLE);
                 true
             }
+            // 0x160bd0 case 5 (the script's done): the AI-path counter `+0x9f2` (InitAIPath 0x153720's
+            // node cursor — the port models no per-node path walk, and the game's driver is never shown
+            // leaving on a mission path in the traces) → 0x34; only a running mission path would take
+            // 0x35. The driver steps into TruckDriverIdle ("hands behind back", the user's C1).
+            (TRUCK_DRIVER_INIT, msg::ANIM_DONE) => { self.set_state(TRUCK_DRIVER_IDLE); true }
             (TRUCK_DRIVER_INIT, msg::SOUND | msg::ALARM) => { self.set_state(TRUCK_DRIVER_INIT_ALERT); true } // 0x11/0x12/0x13/0x16/0x1e → 0x33
             (TRUCK_DRIVER_INIT, msg::BULLET) => self.on_bullet_resume(d, rng, frame, TRUCK_DRIVER_INIT_ALERT, false), // HandleImpact(0x33, 0)
             // TruckDriverInitAlert (0x160d98): anim done → CivilianScared (0x12); bullets/noise HandleImpact(0, …).
