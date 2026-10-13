@@ -1,0 +1,95 @@
+# fix-swim-vent — the plain-language report
+
+Branch `s/fix-swim-vent` (from master f0e1b23). The sandbox window ended the session early; the
+swim fix is done and verified, the vent crawl and the music step are not started beyond the
+research fix-ladder2 already recorded.
+
+## Done — swimming from a bank (playtest item, fix-ladder2's leftover)
+
+**The user's symptom**: on 07000002, Bond walks on the water instead of entering it.
+
+**Root cause** (evidence-tagged, with the addresses in the WORKLOG and code comments):
+- The game's player collision is **cel-scoped**: the grounding ray (`Player_FeetOnPoint` 0x194188)
+  and the capsule test (`Collide_SphereIntersect` 0x1ec940) only test the geometry of the cel the
+  player is currently in (`obj+0x20`). [M]
+- The water surface/bed planes carry surface **material 0xE** and live in the water cels, whose
+  bbox tops are the water surface (`cel+0x90`). A walking root stands 1.03 above any bed, i.e.
+  always above the water volume's bbox — so the walking player's cel is never the water cel, and
+  the game's Bond never stands on water: he falls through and `Player_InWater` 0x195e50 (root − 0.3
+  < surface) puts him in the swim substate. [M + D probe]
+- On the disc, every underwater hit in all four 07000002 water cels is material 14 (0xE) at the
+  surface level; the banks are 1/4/7/10. [D probe_vent_swim]
+- The port's collision world is flat (no cel scoping), so it grounded Bond on the mat-14 bed — he
+  walked across the pond at standing height and `Player_InWater` never fired. That was the bug.
+- Two supporting game facts also ported: all the game's ray tests are **one-sided** by the stored
+  plane (`Intersect_RayGeom` 0x10a8c8 skips `n·dir >= 0`; the stored normal = +cross of the
+  winding per docs/formats/collision.md) [M]; and the swim substate builds its own **low-slung
+  capsule** (spheres at 0.65−cc / 0.45−cc, radius 0.55, `Player_Collision` 0x194df0 case 3) so the
+  swimming Bond's capsule hangs under the root and never catches the bed plane. [M]
+
+**The fix** (`crates/nf-game/src/world.rs`, `crates/nf-game/src/player.rs`):
+1. The player's grounding ray (`segment_hit`) and both capsule paths (`capsule_push`,
+   `capsule_push_scoped`) drop material-0xE triangles — the material form of the cel scoping. The
+   full per-cel scoping (a query-time cel argument through the world) is the faithful long form
+   and is listed below. Bullets, LOS, the searchlight spot and the grenade bounce keep water
+   geometry (unchanged); the drone and player footstep rays drop it (they are feet rays).
+2. All ray paths are now one-sided by the triangle's winding (the game's rule).
+3. The capsule is one-sided for near-horizontal faces (the game's head-on cull 0x109da0:302-322,
+   approximated by the |n·y| > 0.7 split ≈ the game's 0.999/1.31 spine cone) — walls and steep
+   slopes stay double-sided, as in the game's non-head-on path.
+4. `Bond::capsule` returns the game's case-3 swim spine while swimming.
+5. `CollisionWorld::tris_near` added (the read-only evidence accessor).
+
+**Verification** (all NF_ISO, through `nf_view::load` + `Sim::step_bond`):
+- `fix_ladder2_live::swim_repro_walks_on_the_water_from_the_bank` — un-ignored, expectation
+  flipped: Bond starts on the west bank (floor 4.155 vs surface 3.7675), walks in, is NOT grounded
+  over the pond, enters SS_SWIM at tick 1621 at y 3.725 (0.04 under the surface), and is still
+  swimming 180 ticks later. Sisters: the bed under the pond centre is material 0xE at the surface
+  level; the entry point is under the surface. This test failed before the fix (he never entered
+  the water).
+- fix_ladder2_live's other 3 tests (the ladder draw/look/weapon) still pass 4/4;
+  walk_07000002_live 2/2 and walkreal_07000002_live 1/1 (the level the change touches) pass.
+- Suite: nf-game 68 passed, nf-formats 11 passed + the 3 allowed `disc_golden` failures (slim
+  ISO), nf-audio green. **The remainder of nf-view's live suite did not fit the sandbox window** —
+  the collision change is wide, so the next session should run the full nf-view suite first thing.
+
+## Not done (each with its reason)
+
+1. **The vent crawl (the creepwall)** — not started. fix-ladder2's WORKLOG entry has the full
+   function chain: the crawlable vent is a creepwall (placement 0x3F → `CreepWall_Create`
+   0x196fc8, class 0x2B; use → `Player_Activate` 0x1a5170's unarmed nearest-0x2B branch →
+   `Player_CollCreepWall` 0x196758 → substate 7 `Player_Creep` 0x1969d0 with `Music_Event(0xD,1)`
+   and `ch[param3]` set/clear), and the grate panel is an ordinary door (class 0x1C,
+   `Door_Activate` 0x135be0). It needs a new creepwall module, the crawl substate 7 in player.rs
+   and the scene wiring — a full session of its own.
+2. **The alarm music's last step** — not started. The chain (spotted → ch →
+   `DroneFunc_CheckAlarmRaised` 0x1453a8 → `Music_Event(2,1)` → `UpdateMusicalEvents` 0x114e70 →
+   `UpdateMFX_01CastleB` 0x113060 → PickRandomCombat) is recorded in fix-ladder2's entry; the port
+   has everything except the per-level music dispatch in music.rs (~10 lines: run the castle-B
+   updater for 07000006).
+
+## Shared files touched (minimal, per the rules)
+
+- `crates/nf-game/src/world.rs` — the one-sided rays + the water/capsule rules + `tris_near`
+  (the swim fix's substance; the file is shared, the change is confined to the query functions).
+- `crates/nf-game/src/{drone,searchlight,grenade}.rs`, `crates/nf-game/tests/ai_live.rs`,
+  `crates/nf-view/src/scene.rs` — mechanical only: the `segment_surface` signature gained the
+  no-water flag (`false` = unchanged behavior everywhere except the feet rays, which pass `true`).
+- `crates/nf-view/tests/fix_ladder2_live.rs` — the repro un-ignored with the correct expectation.
+- New: `crates/nf-view/examples/probe_vent_swim.rs` (the read-only probe).
+
+## Live checks for the main agent
+
+1. 07000002 garden pond (cel 17, west of the bunker, around (−67, 32)): walk from the west bank
+   into the pond — Bond should fall in and swim (the swim animation, the camera low over the
+   water), not walk across. `--bond -78,5.2,32.05` facing +x, then walk +x.
+2. The deep pool (cel 16, around (−42, 32)): same entry from the deck — should already have
+   worked pre-fix; confirm it still does after the change.
+3. The lake (cel 6, south, surface 4.34): walk in from the north bank (−45.7, 4.75, 9.5) — swim
+   entry expected.
+4. Water landing: no fall damage / no stuck-on-the-surface; leaving the water at a bank edge
+   still works (the leave path was not changed, but the one-sided rays touch it).
+
+## ntfy
+
+(sent after the push — see the finish step)
