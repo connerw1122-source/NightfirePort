@@ -92,7 +92,9 @@ impl Level02 {
 fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, p[2]], eye: [p[0], p[1] + 1.0, p[2]], aim: [-1.0, 0.0, 0.0], ..Default::default() } }
 
 /// On 07000002 (whose own placements grant no grenades — param 11 = 0 everywhere), a guard given the grenade
-/// fields the way `NDrone2_DefaultInit` decodes them (raw 0x13: `(0x13 >> 4) & 0xffff` = 1 → stun 0x36, count 3)
+/// fields the way `NDrone2_DefaultInit` decodes them (raw 0x43: `(0x43 >> 4) & 0xffff` = 4 → the frag 0x34, count 3 —
+/// fix-explosions2's disc names: sel 1 → 0x36 is the SMOKE grenade, which never explodes, so the old 0x13 setup no
+/// longer describes an exploding throw)
 /// and put within 8–20 units should throw: the throw anim plays, a grenade entity spawns, flies under gravity,
 /// bounces off the world, and explodes. Sister: Bond out of range (dist > 20) → no throw.
 #[test]
@@ -104,16 +106,16 @@ fn guard_throws_a_grenade_on_level_02() {
     let mut sim = l.sim(drones, rng);
 
     // A present normal combat guard (not mode 7 / 0x1e); 07000002's placements carry no grenades
-    // (param 11 = 0), so the fields are set the way `NDrone2_DefaultInit` decodes a 0x13 word.
+    // (param 11 = 0), so the fields are set the way `NDrone2_DefaultInit` decodes a 0x43 word.
     let gi = sim.list.iter().position(|x| {
         x.present && x.mode != 7 && x.mode != 0x1e && !x.corpse
     }).expect("level 07000002 should have a normal combat guard");
     let g = sim.list[gi].pos;
-    sim.list[gi].grenade_weapon = 0x36; // (0x13 >> 4) & 0xffff == 1 → stun 0x36
-    sim.list[gi].grenade_count = 3;     // 0x13 & 0xf == 3
+    sim.list[gi].grenade_weapon = 0x34; // (0x43 >> 4) & 0xffff == 4 → the frag 0x34
+    sim.list[gi].grenade_count = 3;     // 0x43 & 0xf == 3
     let gw = sim.list[gi].grenade_weapon;
     let gc = sim.list[gi].grenade_count;
-    assert!(gw == 0x36 && gc > 0, "guard has stun grenades: weapon={:#x} count={}", gw, gc);
+    assert!(gw == 0x34 && gc > 0, "guard has frag grenades: weapon={:#x} count={}", gw, gc);
 
     // Bond 15 units in front of the guard, in view.
     let bond = bond_at([g[0] + 15.0, g[1], g[2]]);
@@ -155,7 +157,7 @@ fn guard_throws_a_grenade_on_level_02() {
     let (drones2, rng2) = l.drones();
     let mut sim2 = l.sim(drones2, rng2);
     let gi2 = sim2.list.iter().position(|x| x.present && x.mode != 7 && x.mode != 0x1e && !x.corpse).unwrap();
-    sim2.list[gi2].grenade_weapon = 0x36; // param 11 raw 0x13 → stun 0x36 × 3
+    sim2.list[gi2].grenade_weapon = 0x34; // param 11 raw 0x43 → the frag 0x34 × 3
     sim2.list[gi2].grenade_count = 3;
     let g2 = sim2.list[gi2].pos;
     let bond_far = bond_at([g2[0] + 30.0, g2[1], g2[2]]); // 30 units — outside the 8–20 window
@@ -177,7 +179,7 @@ fn guard_decides_to_throw_grenade_unforced() {
     let mut sim = l.sim(drones, rng);
 
     // Find a present normal combat guard. On 07000002 no placement carries grenades (param 11 = 0), so the
-    // guard's grenade fields are set the way `NDrone2_DefaultInit` decodes param 11 (raw 0x13 → 0x36 × 3).
+    // guard's grenade fields are set the way `NDrone2_DefaultInit` decodes param 11 (raw 0x13 → 0x36 × 3; 0x36 is the smoke grenade per fix-explosions2 — the throw decision is the same for every type).
     let gi = sim.list.iter().position(|x| {
         x.present && x.mode == 0 && x.team == 1
     }).expect("level 07000002 should have a normal combat guard");
@@ -186,7 +188,7 @@ fn guard_decides_to_throw_grenade_unforced() {
     sim.list[gi].grenade_weapon = 0x36;
     sim.list[gi].grenade_count = 3;
     let gc_before = sim.list[gi].grenade_count;
-    eprintln!("unforced: combat guard #{} at ({:.1}, {:.1}, {:.1}), given 3 stun grenades, mode={}", gi, g[0], g[1], g[2], sim.list[gi].mode);
+    eprintln!("unforced: combat guard #{} at ({:.1}, {:.1}, {:.1}), given 3 smoke grenades (0x36), mode={}", gi, g[0], g[1], g[2], sim.list[gi].mode);
 
     // Bond 12 units in front of the guard (in +x), on the floor. The guard faces roughly -x (yaw -1.5),
     // so Bond is behind the guard. But visibility still fires (dist < sight_range, alert >= 1 after first
