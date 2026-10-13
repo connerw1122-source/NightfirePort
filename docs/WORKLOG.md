@@ -6949,3 +6949,4 @@ NPC door path — 045g-fix-npc-doors2), 0a (the cab-mouth SS leaves ch 0x00; the
 snapshot holds them closed too [L ee_start_0700000a.bin 0xE2E2A4/0xE2E314] — the arrival writer
 is missing), 13 (the entrance mouth glazed at z≈65 — the gate-raise writer missing), 14 (the
 vent cut-scene ch 0x47 — walkreal-b's parked item). Report: docs/reports/fix-walkreal-b2.md.
+## fix-audio2 (branch s/fix-audio2) — the audio remainder (GAPS G-032)
