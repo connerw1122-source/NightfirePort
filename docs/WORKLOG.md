@@ -8857,3 +8857,30 @@ Work Log:
   89 / 4 (the 3 permitted disc_golden + the pre-existing pss_movies_live slim-ISO absence);
   nf-view 396 / 0 (the walkreal net included; one final probe binary was cut by the chunk timeout
   with 0 failures in its log). Report: docs/reports/fix-anim-blend2.md.
+## fix-gpu-skinning (s/fix-gpu-skinning) — 2026-10-13
+Task: GAPS G-043 — GPU skinning (CharVertex bind pose + weights + two bone slots; bone
+matrices to a storage buffer, skin in the vertex shader; the gpu_palette_matches_the_cpu_pose_*
+test is the oracle, worst error <= 1.5e-5), the tick-keyed pose cache (no re-pose when no sim
+tick ran), and 120 fps rendering (logic stays 60 Hz; render at the display rate, camera + poses
+interpolated between the last two sim states by the fractional tick; --fps N cap; a test that
+60 and 144 Hz render loops produce identical sim states). Files: crates/nf-view/src/{gpu,scene,lib}.rs
+and the shaders. Started 21:18 UTC, sandbox expires ~23:17 UTC. Branch created from origin/master
+(7a614ba) and pushed. Setup (rustup, work-slim, ISO) under way; disk is tight (9.3 GB free).
+
+**fix-gpu-skinning outcome (22:45 UTC)**: G-043 was already 90 % landed on master (the GPU palette
+path `skin_layout`/`skin_palette` + the shader's storage-buffer skinning, the tick-keyed palette
+rebuild, the one-tick-behind camera/palette interpolation with the 4-unit snap, `--fps N`, the
+fixed-60 Hz decoupled loop) — this session verified all three items and closed the named gap, the
+missing fps-determinism proof. New: the loop's tick scheduler extracted verbatim into
+`nf_view::ticks_for_frame` (+ `lerp_yaw` out of `lerp_cam`) so headless tests drive the same
+arithmetic the winit loop runs; `fps_determinism_live.rs` — 60 Hz vs 144 Hz render loops over
+4.005 s of wall time produce identical sim states on 07000006 (240 ticks, Bond's head, health,
+`drones.frame`), 144 Hz frames never burst, the 5 fps loop is dropped to the cap of 4 (slow, never
+deferred), the scheduler's boundary arithmetic and the short-arc yaw wrap are pinned headless. The
+oracle re-run: worst position error 1.5258789e-5 (2⁻¹⁶, at the 1.5e-5 bar), 0 colour mismatches,
+712k–837k vertices on 05/06/07 at ticks 1 and 240. GAPS.md G-043 closed. Shared-file hooks: lib.rs
+only (the two extractions, both called by the loop — behaviour-identical; scene.rs/gpu.rs untouched).
+Suite: nf-game+nf-formats+nf-audio 326 passed / 3 failed (the sanctioned disc_golden trio),
+nf-view 482 passed / 0 failed (152 binaries; portal_live re-run to completion after a chunk
+timeout). Left: the `--fps` pacing/present-mode path and the interpolation's visual quality need
+the main agent's GPU render (live checks 1–3 in the report).

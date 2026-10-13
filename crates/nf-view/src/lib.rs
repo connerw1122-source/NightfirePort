@@ -54,10 +54,27 @@ struct Camera { pos: Vec3, yaw: f32, pitch: f32, fov: f32 }
 const SNAP: f32 = 4.0;
 fn lerp_cam(a: &Camera, b: &Camera, t: f32) -> Camera {
     if a.pos.distance(b.pos) > SNAP || (a.fov - b.fov).abs() > 0.2 { return *b; }
-    let mut dy = b.yaw - a.yaw;
+    Camera { pos: a.pos.lerp(b.pos, t), yaw: lerp_yaw(a.yaw, b.yaw, t), pitch: a.pitch + (b.pitch - a.pitch) * t, fov: a.fov + (b.fov - a.fov) * t }
+}
+
+/// The yaw half of `lerp_cam`: the short way round the ±π wrap (07000002's corridor turns must not
+/// sweep the long way). Extracted with the tick scheduler so the fps-determinism test pins it.
+pub fn lerp_yaw(a: f32, b: f32, t: f32) -> f32 {
+    let mut dy = b - a;
     while dy > std::f32::consts::PI { dy -= std::f32::consts::TAU; }
     while dy < -std::f32::consts::PI { dy += std::f32::consts::TAU; }
-    Camera { pos: a.pos.lerp(b.pos, t), yaw: a.yaw + dy * t, pitch: a.pitch + (b.pitch - a.pitch) * t, fov: a.fov + (b.fov - a.fov) * t }
+    a + dy * t
+}
+
+/// The render loop's tick scheduler (`RedrawRequested`, the `anim_time += dt * 60` block), extracted
+/// verbatim so the headless fps-determinism test drives the same arithmetic the winit loop runs:
+/// a render frame advances the 60 Hz clock by `dt * 60` and runs the whole ticks that appeared,
+/// capped at `max_ticks` (fix-perf-level's drop cap — capped ticks are dropped, not deferred).
+/// Logic stays fixed-60 Hz at any frame rate: faster frames just run 0 ticks more often.
+pub fn ticks_for_frame(anim_time: &mut f32, dt: f32, max_ticks: u32) -> u32 {
+    let before = *anim_time as u32;
+    *anim_time += dt * 60.0;
+    (*anim_time as u32).saturating_sub(before).min(max_ticks)
 }
 fn lerp_palette(a: &[nf_formats::anim::Mat4], b: &[nf_formats::anim::Mat4], t: f32) -> Vec<nf_formats::anim::Mat4> {
     if a.len() != b.len() { return b.to_vec(); }
@@ -1487,7 +1504,6 @@ impl ApplicationHandler for App {
                     // Game logic at its fixed 60 Hz, decoupled from the render rate: one AI tick per whole tick of time.
                     // Dev mode's time scale changes the number of ticks run (WORKLOG 0081), not the tick rate.
                     let before = self.anim_time as u32;
-                    self.anim_time += dt * 60.0;
                     // fix-perf-level: the catch-up cap. A slow render frame must not burst a spiral of
                     // ticks — on 07000006 a tick costs ~4.1 ms, so the old 8-tick cap let the sim
                     // burst 33 ms behind one frame (the jitter fix-render3 measured). The game itself
@@ -1496,7 +1512,9 @@ impl ApplicationHandler for App {
                     // only on frame times, never on their content). `NF_MAXTICKS` retunes it.
                     let max_ticks = *MAX_TICKS.get_or_init(|| std::env::var("NF_MAXTICKS").ok()
                         .and_then(|v| v.parse::<u32>().ok()).filter(|v| *v > 0).unwrap_or(4));
-                    let elapsed = (self.anim_time as u32).saturating_sub(before).min(max_ticks);
+                    // G-043: the loop's tick scheduling, extracted verbatim into `ticks_for_frame`
+                    // (the fps-determinism test drives the same arithmetic headless).
+                    let elapsed = ticks_for_frame(&mut self.anim_time, dt, max_ticks);
                     let n_ticks = self.dev.as_deref_mut().map_or(elapsed, |d| d.tick_count(elapsed));
                     self.ticked = n_ticks > 0;
                     let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
