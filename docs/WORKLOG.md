@@ -7752,3 +7752,28 @@ Stage Summary:
 - The walker now breaks cover like a player (re-aim at exposed parts, step to a clear line, fire); no
   RNG reseeding, no new draws. Open question for a live pass: whether the port's UnderCover guard
   peeks on the game's cycle (the walk now succeeds either way).
+- Session 2 (15:29-17:10 UTC): full suite on the merged branch: nf-game (lib 121 + all binaries) green,
+  nf-formats + nf-audio green, the branch-touched nf-view binaries green (fix_objects2 5/5, impacts 2/2,
+  fix_swim_vent 4/4); the 2 known reds confirmed. The two live reds probed from the disc and the port's
+  world (new read-only examples probe_pad.rs + probe_scoped.rs):
+  - 07000001: the exit plate's pads EXIST on the disc (obj 137's descending step slabs, stored planes UP:
+    y 3.959@z12.2 … y 1.809@z15.4-16.8 … y 0.643@z18.7; the plate centre is the touch volume's centre
+    (−33.105, 2.301, 15.429), NOT the (−36.6, 11.8) the previous probe assumed) and the port's flat world
+    finds them (down-rays y 4.14→0.14 mat 0xa up the whole corridor). At Mayhew's exact stall pose the
+    move_by probes (line_of_sight at pos.y/+0.5) and feet_on_point are IDENTICAL on master and the branch
+    (probes CLEAR, floor found), the boundary walls are identical, and follow()'s bounds_node_test(0.2,
+    feet→target) is unblocked. The walk debug (temporary, reverted) shows the gait running while the net
+    advance is ~0: Mayhew passed door 4 (hit_door Some(4) at (−32.6, 8.3)), descended the obj 139 stairs
+    and ping-pongs at their bottom (walk ↔ DSTATE_OpenDoor ↔ the 180° turn anim, root deltas cancel) with
+    the route 1-2 nodes AHEAD of master's from t1600 (one 2.0 stall-nudge). The task's three static
+    suspects (the re-wind, the cel scoping, the water drop) are eliminated AT THE STALL POSE by the
+    identical-probe evidence; the divergence is dynamic (route-advance timing + the door-4 ping-pong).
+  - 0700000c: the ST-1 plate #506 (placement 506, out 0x1b, volume 4.67..7.00 × 12.73..13.67 ×
+    −155.13..−153.18) has its pad in the port's flat world (down-ray y 11.84, normal up). The test's walk
+    target (6.8, 12.2, −153.15) sits 0.03 OUTSIDE the volume's z hi (−153.175) — Bond stops on the band's
+    edge and the touch never sees him; Bond's grounding is the FLAT segment_hit (player.rs:509/994), so
+    the cel scoping does not gate the grounding. Next session: the touch evaluation + the walk's final
+    approach onto the pad.
+- Not done this window: the fixes themselves (the static suspects are eliminated; the remaining work is
+  the escort walk dynamics and the 0c touch/approach); the full nf-view suite run (nf-game/formats/audio
+  + the 6 branch-adjacent nf-view binaries ran green; the long walk binaries are owed).
