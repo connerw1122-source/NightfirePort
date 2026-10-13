@@ -95,6 +95,7 @@ impl Shooter {
             state: 0,
             weapon: self.weapon,
             flyby: flags68 & 0x40_0000 != 0,
+            bounces: 0,
         });
     }
 }
