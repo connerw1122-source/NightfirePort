@@ -142,6 +142,19 @@ pub mod state {
     /// route's door node parked the drone here: work the door (+0xBA8) until `DoorIsOpen`, then back
     /// to the saved return state `Drone+0x5A6`.
     pub const OPEN_DOOR: u8 = 0x81;
+    /// `NDrone2_DSTATE_KickObject` (0x1684c0) = `NDrone2_StateFuncs[0x82]` [M 0x153358's SetState(0x82)
+    /// at its kick branch; the table entry is the function itself]. The route's kick node parked the
+    /// drone here: play the kick anim 0x4e, and its event 6 (msg 0x20) kicks the object in `+0xBA8`
+    /// (`NDrone2_KickObject` 0x14aa00 → `SP_UnPause` 0x1dca58 for the scripted prop), grunts sfx 0x28
+    /// and returns to the saved state `Drone+0x5A6`. Timer C re-kicks every 2 ticks.
+    pub const KICK_OBJECT: u8 = 0x82;
+    /// `NDrone2_DSTATE_ActionAnim` (0x168628) = state 0x83 [M 0x153358's action branch]. ENTER plays
+    /// the drone's start script `+0x554` (`DroneAnim_SetScript(+0x554, 10, 0x32, 0x1e, 0, 5, 0)`);
+    /// script-done (msg 5) → state 0x6f, msg 0x20 → the saved state `+0x5A6`.
+    pub const ACTION_ANIM: u8 = 0x83;
+    /// `NDrone2_DSTATE_StandFiddle` (0x1687c0) = state 0x84 [M 0x153358's fiddle branch]. ENTER plays
+    /// the fiddle anim 0x23 and arms timer C at +5 ticks; the timer (and msg 0x20) → the saved state.
+    pub const STAND_FIDDLE: u8 = 0x84;
     pub const PARTY_GIRL_INIT: u8 = 0x2e;
     pub const PARTY_GIRL: u8 = 0x2f;
     pub const CIVILIAN_GUARD: u8 = 0x30;
@@ -736,6 +749,23 @@ pub struct Drone {
     /// The `NDrone2_DoorIsOpen` (0x14aaa0) verdict for `hit_door`, refreshed by `Drones::tick` each
     /// tick (true when there is no door in the way; else the door's state == 4).
     pub hit_door_open: bool,
+    /// `Drone+0xBA8`'s kick side (`NDrone_InitKickNodes` 0x139ce0 binds the nearest class-0x1b
+    /// ScriptPlayer whose script is 0x60005bb at the kick node's +0x28; `ReachedDestNode` stands it
+    /// in `+0xBA8` like a door). Port index into `Scripts::players`. `NDrone2_KickObject` 0x14aa00
+    /// unpauses it (`SP_UnPause` 0x1dca58); the game's one slot is shared with `hit_door`, but a
+    /// route never carries a door pair and a kick pair at once, so the port keeps them apart.
+    pub kick_sp: Option<usize>,
+    /// Outbox: the route node just reached that carries the kick flag (bit 2). `Drones::tick`
+    /// resolves it to the bound ScriptPlayer and — on the node's first crossing — enters
+    /// `DSTATE_KickObject` (the game's node-flag 0x8000, shared by every drone).
+    pub kick_node: Option<u16>,
+    /// Outbox: the route node just reached that carries the ally-wait flag 0x20 (`ReachedDestNode`
+    /// 0x153358: the `switch_channels[0x99]` gate lives in `Drones`, like the door bindings).
+    pub ally_wait_node: Option<u16>,
+    /// Outbox: `NDrone2_KickObject` requested this tick (DSTATE_KickObject's timer C / msg 0x20).
+    /// Serviced by `Drones::tick` where the ScriptPlayers live: `SP_UnPause` 0x1dca58 on the bound
+    /// player (`+0xBA8`), i.e. `activated = true` and the current script's pause cleared.
+    pub kick_attempt: bool,
     pub alpha: f32,
     /// A switch channel to raise after the drone's update (`SetDeathChannel`).
     pub raise: Option<u8>,
@@ -868,6 +898,9 @@ impl Drone {
             velocity: [0.0; 3], in_air: false, on_surface: true,
             door_open_at: 0,
             hit_door: None, door_return: 0, door_node: None, door_attempt: false, pending_door_msg: false, hit_door_open: true,
+            // fix-nav-remainder: the kick-node outbox + the ScriptPlayer binding (fields on
+            // their own lines — the shared-constructor collisions, merge lesson 4).
+            kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
         };
         dr.init_properties(d, &param);
@@ -1081,10 +1114,9 @@ impl Drone {
             // The door nodes: the same `ReachedDestNode` dispatch the mission route runs
             // (patrolling guards and party guests open the doors on their paths).
             let route_path = route.path;
-            let next_is_door = route.nodes.get((route.index + 1) as usize)
-                .map_or(false, |&n| d.nav.paths[route_path].nodes[n as usize].flags & 2 != 0);
+            let next = route.nodes.iter().position(|&x| x == node).and_then(|i| route.nodes.get(i + 1)).copied();
             drop(route);
-            if self.route_reached_door(d, route_path, Some(node), next_is_door) { return; } // the OpenDoor anim is set
+            if self.route_reached_special(d, route_path, Some(node), next) { return; } // the OpenDoor anim is set
         }
         let alerted = self.prop(d, 0x25) && self.alert >= 0.66;
         match code {
@@ -1104,12 +1136,12 @@ impl Drone {
         let (code, reached) = route.follow(d.nav, feet);
         let target = route.target;
         // `NDrone2_ReachedDestNode` (0x153358, via `LinkCreep_Handler` 0x15a2c8): a reached door node
-        // parks the drone in `DSTATE_OpenDoor` (fix-npc-doors-escort).
+        // parks the drone in `DSTATE_OpenDoor` (fix-npc-doors-escort); the kick/action/fiddle nodes
+        // dispatch the same way.
         let route_path = route.path;
-        let next_is_door = route.nodes.get((route.index + 1) as usize)
-            .map_or(false, |&n| d.nav.paths[route_path].nodes[n as usize].flags & 2 != 0);
+        let next = reached.and_then(|n| route.nodes.iter().position(|&x| x == n)).and_then(|i| route.nodes.get(i + 1)).copied();
         drop(route);
-        self.route_reached_door(d, route_path, reached, next_is_door);
+        self.route_reached_special(d, route_path, reached, next);
         match code {
             crate::nav::follow::ARRIVED => { self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); true }
             crate::nav::follow::BLOCKED | crate::nav::follow::NO_PATH => {
@@ -1121,26 +1153,77 @@ impl Drone {
         }
     }
 
-    /// `NDrone2_ReachedDestNode` (0x153358) at a reached special node: a door node (bit 1) with a
-    /// door-node successor — the doorway's node pair [M :149-163] — stands the node's own bound door
-    /// (`NDrone_InitDoorNodes` 0x139a70 wrote it at node+0x28) in `Drone+0xBA8`, saves the current
-    /// state in `Drone+0x5A6` and enters `DSTATE_OpenDoor` (0x81). On the pair's far side (no
-    /// door-node successor) `NDrone2_DoorIsOpen` (0x14aaa0) decides: open → the tail clears +0xBA8
-    /// [:175]; closed → stay (the opener is still working the door). `next_is_door` is the successor
-    /// node's door flag; the door resolution itself (node → `Doors::list` index) runs in
-    /// `Drones::tick`, which owns the doors. Returns whether `DSTATE_OpenDoor` was entered.
-    fn route_reached_door(&mut self, d: &Data, route_path: usize, reached: Option<u16>, next_is_door: bool) -> bool {
+    /// `NDrone2_ReachedDestNode` (0x153358) at a reached special node — the full flag dispatch in the
+    /// game's order (door 2 beats kick 4 beats action 8; 0x20 and fiddle 0x40 only when none of
+    /// those). Door bit 1 with a door-node successor — the doorway's node pair [M :149-163] — stands
+    /// the node's own bound door (`NDrone_InitDoorNodes` 0x139a70 wrote it at node+0x28) in
+    /// `Drone+0xBA8`, saves the current state in `Drone+0x5A6` and enters `DSTATE_OpenDoor` (0x81).
+    /// On the pair's far side (no door-node successor) `NDrone2_DoorIsOpen` (0x14aaa0) decides: open
+    /// → the tail clears +0xBA8 [:175]; closed → stay (the opener is still working the door).
+    /// Kick bit 2 with a kick-node successor [M :135-153]: stand the node's bound ScriptPlayer
+    /// (`NDrone_InitKickNodes` 0x139ce0, the class-0x1b script-0x60005bb object at node+0x28) in
+    /// +0xBA8 and — on the node's first crossing only (the game sets node flag 0x8000, never
+    /// cleared) — save +0x5A6 and enter `DSTATE_KickObject` (0x82). Anywhere else on a kick node the
+    /// tail clears the binding. Action bit 3 [M :112-124] → `DSTATE_ActionAnim` (0x83) with +0x5A6
+    /// saved (no +0xBA8 use); fiddle bit 0x40 [M :96-107] → `DSTATE_StandFiddle` (0x84) likewise;
+    /// ally-wait bit 0x20 [M :85-94] parks the drone in state 0x21 with the return state saved in
+    /// +0x5A2 — gated on `switch_channels[0x99] == 0`, which `Drones::tick` owns like the door
+    /// bindings (outbox `ally_wait_node`). The Mayhew lines (flags 0x10000/0x20000/0x40000/0x80000
+    /// [M :57-77] → `Drone_MayhewTalk` 0x44/0x45/0x46/0x47) fire for every reached node that carries
+    /// them, before the dispatch. The bindings and the channel gate resolve in `Drones::tick`, which
+    /// owns the doors / the ScriptPlayers / the channels. Returns whether a special state was entered.
+    fn route_reached_special(&mut self, d: &Data, route_path: usize, reached: Option<u16>, next: Option<u16>) -> bool {
         let Some(node) = reached else { return false };
-        if d.nav.paths[route_path].nodes[node as usize].flags & 2 == 0 { return false; }
-        if next_is_door {
-            self.door_node = Some(node);
-            self.door_return = self.state;
-            self.set_state(state::OPEN_DOOR);
-            true
-        } else if self.hit_door_open {
-            self.hit_door = None; // [M 0x153358:175]
-            false
-        } else { false }
+        let flags = d.nav.paths[route_path].nodes[node as usize].flags;
+        let next_kick = next.map_or(false, |n| d.nav.paths[route_path].nodes[n as usize].flags & 4 != 0);
+        let next_door = next.map_or(false, |n| d.nav.paths[route_path].nodes[n as usize].flags & 2 != 0);
+        // The Mayhew lines [M 0x153358:57-77]: flags 0x10000/0x40000/0x20000/0x80000 → `Drone_MayhewTalk`
+        // (0x149818) 0x44/0x46/0x45/0x47 — `NDrone2_SpeechSFX(idx, 0, 0, 0)`, non-forced. The game's
+        // gate (the type-0x0c drone's +0x4F8 chain, `Drone_MayhewTalk`:24-40) applies where the node
+        // is reached — on 07000001 that is Mayhew's own kind-8 route, so the walker is the speaker
+        // [*suggested*: the port pushes on the walker, not the type-0x0c drone].
+        if flags & 0x10000 != 0 { self.talks.push((0x44, false)); }
+        if flags & 0x40000 != 0 { self.talks.push((0x46, false)); }
+        if flags & 0x20000 != 0 { self.talks.push((0x45, false)); }
+        if flags & 0x80000 != 0 { self.talks.push((0x47, false)); }
+        if flags & 2 != 0 {
+            if next_door {
+                self.door_node = Some(node);
+                self.door_return = self.state;
+                self.set_state(state::OPEN_DOOR);
+                return true;
+            }
+            if self.hit_door_open { self.hit_door = None; } // [M 0x153358:175]
+            return false;
+        }
+        if flags & 4 != 0 {
+            // [M 0x153358:135-153]: no successor → the tail clears +0xBA8; a kick successor binds
+            // this node's object (the first crossing enters 0x82); otherwise the tail clears too.
+            match next {
+                Some(_) if next_kick => { self.kick_node = Some(node); }
+                _ => self.kick_sp = None,
+            }
+            return false;
+        }
+        if flags & 8 != 0 {
+            // [M 0x153358:112-124]: +0xBAC = the node; +0x5A6 saved when not already 0x83; → 0x83.
+            if self.state != state::ACTION_ANIM { self.door_return = self.state; }
+            self.set_state(state::ACTION_ANIM);
+            return true;
+        }
+        if flags & 0x20 != 0 {
+            // [M 0x153358:85-94]: only while switch channel 0x99 is off (tick reads the channels);
+            // +0x5A2 = the current state, → 0x21 (stay when already there).
+            self.ally_wait_node = Some(node);
+            return false;
+        }
+        if flags & 0x40 != 0 {
+            // [M 0x153358:96-107]: +0xBAC = the node; +0x5A6 saved when not already 0x84; → 0x84.
+            if self.state != state::STAND_FIDDLE { self.door_return = self.state; }
+            self.set_state(state::STAND_FIDDLE);
+            return true;
+        }
+        false
     }
 
     // ---- animation ---------------------------------------------------------------------------------------------
@@ -2361,12 +2444,24 @@ impl Drone {
                 Err(code) => { self.croute = None; return code }
             }
         }
-        let route = self.croute.as_mut().unwrap();
-        route.remaining = route.distance(d.nav, feet);
-        if route.remaining < 2.0 { return 3; }
-        let (code, _) = route.follow(d.nav, feet);
-        if let Some(used) = self.links_used.get_mut(route.path) { route.mark_used(used) }
-        let t = route.target;
+        let (code, reached) = {
+            let route = self.croute.as_mut().unwrap();
+            route.remaining = route.distance(d.nav, feet);
+            if route.remaining < 2.0 { return 3; }
+            let r = route.follow(d.nav, feet);
+            // `LinkCreep_Handler` (0x15a2c8) runs `ReachedDestNode` for EVERY followed route — the
+            // repositioning drives through door/kick/action nodes like any other (fix-nav-remainder).
+            // The successor node is the one AFTER the reached node in the route's node list (the
+            // game reads `route+0x80`+1 BEFORE `SetupNextNode` advances; the port's follow advances
+            // inside the same call, so the index is already past it).
+            let rpath = route.path;
+            let next = r.1.and_then(|n| route.nodes.iter().position(|&x| x == n)).and_then(|i| route.nodes.get(i + 1)).copied();
+            drop(route);
+            self.route_reached_special(d, rpath, r.1, next);
+            r
+        };
+        if let Some(used) = self.links_used.get_mut(self.croute.as_ref().unwrap().path) { let rt = self.croute.as_mut().unwrap(); rt.mark_used(used) }
+        let t = self.croute.as_ref().unwrap().target;
         self.desired_yaw = atan2_approx(t[0] - self.pos[0], t[2] - self.pos[2]);
         match code { 3 | 0xc => code, _ => 0 }
     }
@@ -3758,6 +3853,59 @@ impl Drone {
                 self.door_attempt = true;
                 true
             }
+            // ---- fix-nav-remainder: the route's kick / action / fiddle nodes (G-027) ----
+            // `NDrone2_DSTATE_KickObject` (0x1684c0) — state 0x82 [M 0x153358:146]. ENTER (case 1):
+            // the kick anim 0x4e (the `+0x4F8 |= 0x10000` "record opponent history" bit is not
+            // modelled — the port's BOT_* bookkeeping doesn't exist, same as DSTATE_OpenDoor's).
+            (state::KICK_OBJECT, msg::ENTER) => {
+                self.call_anim(d, 0x4e, 0, 0);
+                self.timer_c = Some(frame + 2); // [M 0x1684c0 case 0xc tail: +2·FRAME_RATE]
+                true
+            }
+            // Timer C (case 0xc): kick the bound object again, re-arm at +2. The unpausing itself
+            // runs in `Drones::tick` (the ScriptPlayers live there) via the `kick_attempt` outbox.
+            (state::KICK_OBJECT, msg::TIMER_C) => {
+                self.kick_attempt = true;
+                self.timer_c = Some(frame + 2);
+                true
+            }
+            // Msg 0x20 (case 0x20, the kick anim's event 6): the kick grunt (`NDrone2_PlaySFX`
+            // 0x28 — 1.0 volume), `NDrone2_KickObject` (0x14aa00 → `SP_UnPause` 0x1dca58: the
+            // bound ScriptPlayer's script unpauses — serviced by tick), and straight back to the
+            // saved state `+0x5A6` [M 0x1684c0 case 0x20: `Drone_SM_SetState(+0x5a6)`].
+            (state::KICK_OBJECT, msg::DOOR) => {
+                self.anim_sounds.push(0x28);
+                self.kick_attempt = true;
+                self.set_state(self.door_return);
+                true
+            }
+            // `NDrone2_DSTATE_ActionAnim` (0x168628) — state 0x83 [M 0x153358:119]. ENTER (case 1):
+            // play the drone's start script `+0x554` (`DroneAnim_SetScript(+0x554, 10, 0x32, 0x1e,
+            // 0, 5, 0)` — anim state 10, follow-on 0x32, completion msg 5).
+            (state::ACTION_ANIM, msg::ENTER) => {
+                if self.start_script != 0 {
+                    self.play_script(d, self.start_script, 10, 0x32, 0, msg::ANIM_DONE);
+                }
+                true
+            }
+            // Case 5 (the script's done): clear +0x4F8's 0x400000 (not modelled) and → 0x6f
+            // [M 0x168628 case 5: `Drone_SM_SetState(0x6f)`].
+            (state::ACTION_ANIM, msg::ANIM_DONE) => { self.set_state(state::AIM_CROUCH); true }
+            // Msg 0x20 (case 0x20): back to the saved state `+0x5A6`.
+            (state::ACTION_ANIM, msg::DOOR) => { self.set_state(self.door_return); true }
+            // Timer C (case 0xc): re-arm at +2 (nothing else).
+            (state::ACTION_ANIM, msg::TIMER_C) => { self.timer_c = Some(frame + 2); true }
+            // `NDrone2_DSTATE_StandFiddle` (0x1687c0) — state 0x84 [M 0x153358:101]. ENTER (case 1):
+            // the fiddle anim 0x23 and timer C at +5·FRAME_RATE.
+            (state::STAND_FIDDLE, msg::ENTER) => {
+                self.call_anim(d, 0x23, 0, 0);
+                self.timer_c = Some(frame + 5);
+                true
+            }
+            // Timer C (case 0xc) and msg 0x20: back to the saved state `+0x5A6` [M cases 0xc/0x20].
+            (state::STAND_FIDDLE, msg::TIMER_C | msg::DOOR) => { self.set_state(self.door_return); true }
+            // Case 3 sets the drone's +0x38 byte (no ported reader — not modelled); UPDATE falls
+            // through to the game's default (unhandled → the GLOBAL handler), like KickObject's.
             (ALLY_LEAD_DONE, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15f2e8 case 1: 0x21]
             // ---- fix-finale-blockers (crates/nf-game/src/kiko.rs has the addresses and the tags) ----
             // NinjaStand 0xa6 (0x16b990) ENTER: the eyes datum then SetState(0xa7) — the BLIND_DRONES
@@ -4673,6 +4821,13 @@ pub struct Drones {
     /// its nearest door object), keyed (nav path, node id) → `Doors::list` index. Computed lazily on
     /// the first tick that needs it (the doors' positions are static).
     node_doors: Option<HashMap<(usize, u16), usize>>,
+    /// The kick-node → ScriptPlayer binding (`NDrone_InitKickNodes` 0x139ce0), keyed (nav path,
+    /// node id) → `Scripts::players` index. Built lazily like `node_doors`.
+    node_kicks: Option<HashMap<(usize, u16), usize>>,
+    /// The kick nodes' first-crossing flags — the game sets bit 0x8000 on the NODE (0x153358:141),
+    /// shared by every drone and never cleared. The port keeps them here (the state machine cannot
+    /// mutate the network).
+    kicked_nodes: std::collections::HashSet<(usize, u16)>,
     /// The placement-gated world objects (crate::worldobj; placements 0x41 / 0xd2 / 0x3b / 0xe7 —
     /// `InverterTrigger_Create` 0x1b3040, `Shooter_Create` 0x17d030, `DynamicObject_Create` 0x18dbf8,
     /// `ThirdCam_Create` 0x1bc510), created in `attach_level`.
@@ -4752,6 +4907,9 @@ impl Drones {
             npc_system_disabled: false,
             spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
             node_doors: None,
+            // fix-nav-remainder (fields on their own lines — merge lesson 4).
+            node_kicks: None,
+            kicked_nodes: Default::default(),
             gas: Default::default(),
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
             // — the shared-constructor collisions, merge lesson 4).
@@ -6189,6 +6347,60 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     if let Some(i) = dr.hit_door { dr.hit_door_open = self.doors.list[i].state == crate::door::OPEN; }
                 }
             }
+            // The route's KICK node (fix-nav-remainder): resolve the node → ScriptPlayer binding
+            // (`NDrone_InitKickNodes` 0x139ce0, built lazily below) and — on the node's first
+            // crossing (the game's node flag 0x8000, `ReachedDestNode` 0x153358:141) — save the
+            // return state and enter `DSTATE_KickObject` (0x82). Later crossings only re-bind.
+            if let Some(node) = dr.kick_node.take() {
+                // The route may be the patrol/mission one (`route`) or the combat repositioning
+                // one (`croute`, GoToGoalPosition) — `LinkCreep_Handler` serves both.
+                if let Some(path) = dr.route.as_ref().map(|r| r.path).or_else(|| dr.croute.as_ref().map(|r| r.path)) {
+                    if self.node_kicks.is_none() {
+                        let mut m: HashMap<(usize, u16), usize> = HashMap::new();
+                        for (pi, p) in d.nav.paths.iter().enumerate() {
+                            for (ni, n) in p.nodes.iter().enumerate() {
+                                if n.flags & 4 == 0 { continue; }
+                                let mut best: Option<(usize, f32)> = None;
+                                for (si, sp) in self.scripts.players.iter().enumerate() {
+                                    if sp.scripts[0] != 0x0600_05bb && sp.scripts[1] != 0x0600_05bb { continue; }
+                                    let t = sp.matrix;
+                                    let q = (t[3][0] - n.pos[0]).powi(2) + (t[3][1] - n.pos[1]).powi(2) + (t[3][2] - n.pos[2]).powi(2);
+                                    if best.map_or(true, |(_, bq)| q < bq) { best = Some((si, q)); }
+                                }
+                                if let Some((si, _)) = best { m.insert((pi, ni as u16), si); }
+                            }
+                        }
+                        self.node_kicks = Some(m);
+                    }
+                    dr.kick_sp = self.node_kicks.as_ref().and_then(|m| m.get(&(path, node))).copied();
+                    if !self.kicked_nodes.contains(&(path, node)) {
+                        self.kicked_nodes.insert((path, node)); // [M 0x153358:141 — set once, never cleared]
+                        dr.door_return = dr.state;
+                        dr.set_state(state::KICK_OBJECT);
+                    }
+                }
+            }
+            // The route's ally-wait node (flag 0x20): only while `switch_channels[0x99]` is off —
+            // the channels live here, like the door bindings (`ReachedDestNode` 0x153358:85-94).
+            if let Some(node) = dr.ally_wait_node.take() {
+                if let Some(path) = dr.route.as_ref().map(|r| r.path).or_else(|| dr.croute.as_ref().map(|r| r.path)) {
+                    if d.nav.paths[path].nodes[node as usize].flags & 0x20 != 0 && !self.channels.on(0x99) && dr.state != state::LEAD_MISSION_WAIT {
+                        dr.return_state = dr.state; // +0x5A2 [M 0x153358:90]
+                        dr.set_state(state::LEAD_MISSION_WAIT);
+                    }
+                }
+            }
+            // The kick request (`NDrone2_KickObject` 0x14aa00): the bound ScriptPlayer's script
+            // unpauses (`SP_UnPause` 0x1dca58: `+0x2c = 1`, the current script's pause cleared).
+            if dr.kick_attempt {
+                dr.kick_attempt = false;
+                if let Some(si) = dr.kick_sp {
+                    if let Some(sp) = self.scripts.players.get_mut(si) {
+                        sp.activated = true;
+                        if let Some(s) = sp.info[sp.cur].as_mut() { s.delay = 0; }
+                    }
+                }
+            }
             // The ENTER / timer-C activation request (`NDrone2_OpenDoor` 0x14aa38): only a CLOSED
             // /CLOSING door activates; the attempt stamps +0xBB0. `Door_Activate(door, drone, 0)`.
             if dr.door_attempt {
@@ -6664,6 +6876,9 @@ mod tests {
             free_root: false, bounded: true, dtype: 0, mode_normal: 0, mode_alert: 0, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0, screamed: false, scare_shouted: false, pending_shout: None, alert_block: 0.0,
             door_open_at: 0,
             hit_door: None, door_return: 0, door_node: None, door_attempt: false, pending_door_msg: false, hit_door_open: true,
+            // fix-nav-remainder: the kick-node outbox + the ScriptPlayer binding (fields on
+            // their own lines — the shared-constructor collisions, merge lesson 4).
+            kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false,
             head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
         };
         dr
