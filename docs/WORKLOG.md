@@ -7289,3 +7289,88 @@ sequence/key bounds at anim.rs:70), port the UPDATE arm's missing NDrone2_SeenAn
 correct any older test whose expectation the trace/decompile shows wrong, then run the full suite --no-fail-fast
 across all four crates and report the count.
 
+
+---
+fix-final-blockers outcome (11:50 UTC, branch s/fix-final-blockers): door[7] on 07000016 RESOLVED —
+the door itself opens (state 0x4/pos01 1.00 at the stuck dump; the walkreal-c "state stays 0x2"
+predates the straddle walk-in that landed in door.rs post-report); the real blocker was the ROUTE
+LANE: the doorway's operable half is the leaf's span x 4.35..5.62 and x 2.8..4.2 is a sealed
+static wall (the corridor cel mesh's west filler at z −74.13) — the walkreal-c route aimed Bond
+at x 3.5 and wedged on it. The lane moved to x 4.9; the walk then crossed the trench (z −88..−102
+dips to −4.8; the east lane x 8..11 bypasses it) and parked at door[0]'s approach (Bond hops onto
+furniture east of the doorway at (5.16,1.75,−113.63); door[0] is lock 0x24, its panel writer
+unlocated). Focused NF_ISO test walkreal_07000016_live::door7_opens_on_bonds_e_and_bond_passes
+PASSES (fail-first: the old lane wedged with the door open) + the static-floor sister; the 12
+sister green. 0700004a ROOT-CAUSED deeper: the walkreal-c door-solid hypothesis is DISPROVED (the
+leaves never touch the rider — z gap 2.8, capsule push (0,0,0)); the −52 landing starts cut-scene
+#289 (0x060006cf, events 0xb/5/4 at frame 1612 [NF_SCRIPTLOG]) which disables Bond (the game does
+this too), and when the cut-scene plays out its Script_Free enable places Bond at −107.66 — the
+event-6 player_at matrix is NOT the platform's live pose. Parked walkreal_0700004a_live there
+(ignore message + header carry the chain and the next session's fix path). Evidence probes
+walkreal_probe_fb2/3/4/5 committed; door.rs got one additive diagnostic line in log_doors (the
+matrix row3 + keys presence). Suite at the session cap: 79 passed / 3 failed (the 3 allowed
+disc_golden) before the timeout cut it — the four-crate pass still owes a full run. Shared files
+touched: door.rs (the diagnostic), no others. Report: docs/reports/fix-final-blockers.md.
+Task ID: 054-research-multiplayer
+Agent: NightfirePort worker (research-multiplayer session)
+Task: research-multiplayer — an atlas of multiplayer and the bots (branch s/research-multiplayer)
+
+Work Log:
+- Setup reused (repo + game files + queue worktree intact); branch s/research-multiplayer created from origin/master (30b98a5). This entry started.
+
+Stage Summary:
+- Deliverables all on the branch (pushed): docs/atlas/multiplayer.md (the full atlas: 8 arenas pinned, MPSettings/MPGame maps, the 13-mode scenario table, the bots (Drone object + 0x780 BOT_vars_t @0x26D660 + 0x12-byte records @0x2DEEAA + the DSTATE_Bot family 0xC3..0xF9), split screen (11-slot glb_viewer @0x2d88b0, per-count rects, viewer-5 HUD overlay, MapPlayerToSlot), the 6-phase port plan); crates/nf-game/tests/mp_arenas_live.rs (all 8 arenas pinned: e.g. 0x23 = 181/78/0/20/32/27; 0 drones everywhere, 30-32 spawns (type 0x25), 17-28 pickups (0xf0), 18-28 MP objects (0x26)); docs/reports/research-multiplayer.md.
+- Verification: mode IDs re-checked first-hand in the decompile; the arena test green on the ISO; four-crate suite chunked: 620 + 376 passed, 0 unexpected failures, only the 3 allowed disc_golden trio red (slim ISO); the 52 walk/walkreal nf-view binaries not re-run (no nf-view source changed).
+- Live checks for the main agent: 5 watches listed in the report (MPSettings +0x420/+0x424/+0x428, SpawnPoints @0x2a7360, glb_viewer rects, BOT_vars+0x45).
+- Open items: the 0x2F3DE0 validateRoute jump table, the 0x10/0x20 scenario names, the +0x416 time unit.
+## research-driving
+
+Task: research-driving, branch s/research-driving. Started (setup). Atlas of the driving
+levels: DRIVING.ELF decompile map (levels, main loop, vehicle physics, AI traffic, camera,
+HUD, sound), which on-foot formats the driving archives reuse vs new formats, an NF_ISO
+golden test over the driving archives, input path (G-004), and a phased port estimate.
+
+## research-driving (progress)
+
+Branch s/research-driving. Measured: the ACTION->DRIVING handover end to end (GameFlow_Main
+state 9 -> Boot_GetPTPData fills PTPDATA 0x31c090 size 0xa50 -> psiLaunchDriving 0x120af0 copies
+it to EE 0x100000, flags 0x10097c, RunNextModule DRIVING.ELF; DRIVING's FUN_00175a28 reads the
+level key at 0x1004f4 and opens driving\<suffix>.viv; psiGetDrivingData 0x120a88 copies 0x1000
+bytes back; PlrStats_Get/SetDrivingData carry 12 stat slots). Level keys + archives mapped from
+DRIVING.ELF strings. Golden: crates/nf-formats/tests/driving_golden.rs pins the BIGF census of
+all 23 driving archives (1,499 entries; every entry content-hashed against the disc-measured
+golden/bigf_entries.tsv), the magic classification, and DRIVING.SYM (12,719). New docs:
+docs/formats/driving-viv.md, docs/atlas/driving.md. Left: DRIVING main/frame loop, vehicle
+physics, input G-004 (SYM addresses confirmed absent in our build), .crp format.
+
+## research-driving (final)
+
+Branch s/research-driving. Added after the progress entry: DRIVING.ELF main located
+(FUN_00174bf0 0x174bf0, called from entry 0x24c0d8 with the crt0 arg block; argv switches
+-streams/-ntsc/-pal/-pal60/-t<level>; writes/reads the level key at 0x1004f4, parses the mission
+number from key+3); the init chain + MISC.VIV boot-open confirmed inside FUN_00174198; the exit
+path measured (FUN_00300058 0x300058 writes block+0x97c, optionally the next key at +0x4f4, and
+launches BASE.ELF — the boot loader re-dispatches). Atlas + format docs + report written.
+Suite: nf-formats 11 passed / 3 allowed disc_golden fails; driving_golden 4/4; nf-game/nf-audio/
+nf-view compile clean (full run exceeds the sandbox tool timeout; no code changed in them).
+
+## fix-impacts (s/fix-impacts) — 2026-10-13
+Task: bullet decals, ejected shell casings, impact dust and sparks, ricochets, bullet
+trails (G-041/G-025). Port the game's effect path sim-side first (Effect_Create 0x1ce688,
+Effect_Bullet 0x1ce8a8, the 200-entry FIFO, casings 0x12f678/0x12fde0/0x12faa0,
+Debris_Create 0x1aaa00, Particles_Create 0x1cf478, Effect_RicochetProb 0x1cf290), keep the
+RNG draws in game order, expose one Scene function returning this frame's effect vertices.
+Started 10:58 UTC, sandbox expires ~12:56 UTC.
+
+**fix-impacts outcome (12:47 UTC)**: the game's impact path is in, sim-side — `EffectInfo` 0x3037c0
+parsed at runtime into `SurfaceSounds.effects` (decals, ricochet N, the +0x1c reflection bits, 3 gas
+entries, debris fields) plus `ammo_data` (casing meshes); `crates/nf-game/src/effect.rs` implements
+`Effect_Create` 0x1ce688 / `Effect_Bullet` 0x1ce8a8 / `Debris_Create` 0x1aaa00+`Debris_Update`
+0x1aac00 / `Effect_RicochetProb` 0x1cf290 with the game's draw order and the 200-entry decal FIFO;
+`crates/nf-game/src/casing.rs` ports the 32-slot casing pool (0x12fd48/0x12fde0/0x12f678/0x12faa0,
+7 RNG draws per eject in game order, the material landing-sound table); both impact sites + both fire
+paths hooked; `scene.effect_quads` exposes decals/debris/casings vertices. Tests: 111/111 lib, 3/3
+NF_ISO impacts_live (wall decal at hit+0.01 with the surface normal/mesh, sky shot none, one casing
+lands in lifetime, bit-for-bit seeded rerun). Known: `guard_takes_cover_like_the_game` needs its seed
+re-picked (0072's procedure — the impact draws joined the stream, as the game's own do). Report:
+docs/reports/fix-impacts.md.

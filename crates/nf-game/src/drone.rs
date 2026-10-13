@@ -4119,7 +4119,7 @@ impl Drone {
         let mut damage = f32_at(0x0c) * self.damage_mul;
         if self.dist < 4.0 { damage *= 2.0 }
         Some(crate::bullet::Bullet { pos: muzzle, dir, speed: f32_at(0x20), travelled: 0.0, range: f32_at(0x1c), damage, owner, state: 0,
-            weapon: self.weapon as u16, flyby: d.weapons.flyby(self.weapon as usize) })
+            weapon: self.weapon as u16, flyby: d.weapons.flyby(self.weapon as usize), bounces: 0 })
     }
 
     // ---- per tick -----------------------------------------------------------------------------------------------
@@ -4180,7 +4180,10 @@ fn seg_point_dist2(a: V3, b: V3, p: V3) -> f32 {
 
 /// One of Bond's bullets (`Player_WeaponInitBullet` → `Bullet_init` / `Bullet_update` with owner = player).
 #[derive(Clone, Debug)]
-pub struct PlayerBullet { pub pos: V3, pub dir: V3, pub speed: f32, pub travelled: f32, pub range: f32, pub damage: f32, pub weapon: u16, pub first: bool, pub dead: bool }
+pub struct PlayerBullet { pub pos: V3, pub dir: V3, pub speed: f32, pub travelled: f32, pub range: f32, pub damage: f32, pub weapon: u16, pub first: bool, pub dead: bool,
+    /// fix-impacts: the ricochet count (`Bullet_CollisionHandler` 0x12d798's bounce counter, killed
+    /// at 3). Field on its own line (merge lesson 4).
+    pub bounces: u8 }
 
 /// What one of Bond's bullets hit: a drone (index, part) or the world, and where.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -4260,6 +4263,13 @@ pub struct Drones {
     pub player_hits: Vec<(u32, usize, f32)>,
     /// Impacts this tick (for effects).
     pub impacts: Vec<crate::bullet::BulletEvent>,
+    /// fix-impacts: bullet impact effects — the 200-decal FIFO and the debris
+    /// (`Effect_Bullet` 0x1ce8a8, `Debris_Create` 0x1aaa00; docs/atlas/effect.md). Fields on their
+    /// own lines (merge lesson 4).
+    pub effects: crate::effect::Effects,
+    /// fix-impacts: ejected shell casings (`Bullet_InitCasingLists` 0x12fd48's 32-slot pool,
+    /// `crates/nf-game/src/casing.rs`).
+    pub casings: crate::casing::Casings,
     /// Bond's previous position and the tick he started moving (`DoOpponentTargetting` +0x1DC / +0x1DD).
     prev_player: Option<V3>,
     moved_since: Option<u32>,
@@ -4509,6 +4519,8 @@ impl Drones {
             worldobjs: Default::default(),
             // fix-world-fx: the presentation FX (fields on their own lines — merge lesson 4).
             fx: Default::default(),
+            effects: crate::effect::Effects::new(),
+            casings: crate::casing::Casings::new(),
     }
     }
 
@@ -4708,8 +4720,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
         for _ in 0..u32::from_le_bytes(w[0x18..0x1c].try_into().unwrap()).clamp(1, 16) {
             let dir = crate::bullet::spread(dir, f(0x24), flags68, &mut self.rng);
-            self.player_bullets.push(PlayerBullet { pos: from, dir, speed: f(0x20), travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false });
+            self.player_bullets.push(PlayerBullet { pos: from, dir, speed: f(0x20), travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0 });
         }
+        // `Bullet_init_casing` 0x12fde0 (Player_WeaponInitBullet 0x1a4bf0:306, right after the
+        // bullet's spread draws): one shell per shot, ejected from the view model after the weapon's
+        // +0x78-tick delay. [S] the eject origin is the muzzle `from` and the bone rotation stands in
+        // for the view-model matrix (the game reads `AnimGetBoneWorldTrans(obj, 1|5, 0)` — the main
+        // agent's render check owns the visual).
+        let yaw = dir[0].atan2(dir[2]);
+        let pitch = dir[1].clamp(-1.0, 1.0).asin();
+        self.casings.eject(&d.surfaces.map(|s| &s.ammo).unwrap_or(&Default::default()), w, from, yaw, pitch, from[1], &mut self.rng);
         // Heard by the drones; the audible shot comes from the gun's fire script (op 1), played by the player's owner.
         if !sound.looped { self.sounds.push(Sound { id: sound.id, pos: from, inner: sound.inner, outer: sound.outer, weight: sound.weight }); }
     }
@@ -4814,8 +4834,26 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 }
                 (_, Some(w)) => {
                     b.dead = true;
-                    self.player_impacts.push(PlayerImpact::World(at(w)));
+                    let hit = at(w);
+                    self.player_impacts.push(PlayerImpact::World(hit));
                     self.impact_sound(d, b.pos, end);
+                    // `Bullet_CollisionHandler` 0x12ce80 → `Effect_Create` 0x1ce688 / `Effect_Bullet`
+                    // 0x1ce8a8 / `Effect_RicochetProb` 0x1cf290 (docs/atlas/effect.md). Bond is class 3,
+                    // so `Effect_Bullet` skips its `Rand_Rand(2)` [M 0x1ce94c]. A ricochet keeps the
+                    // bullet alive on the reflected direction [M 0x12d704].
+                    let flags70 = d.weapons.records.get(b.weapon as usize)
+                        .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
+                    if let Some((_, n, m)) = d.world.segment_surface(b.pos, end) {
+                        if let Some(dir) = self.effects.bullet_impact(&mut self.rng, d.surfaces, &mut self.gas, hit, n, m, b.dir, flags70, b.bounces, true) {
+                            if b.bounces < 3 {
+                                b.dead = false;
+                                b.pos = hit;
+                                b.dir = dir;
+                                b.bounces += 1;
+                                b.first = false;
+                            }
+                        }
+                    }
                 }
                 _ => b.pos = [b.pos[0] + b.dir[0] * step, b.pos[1] + b.dir[1] * step, b.pos[2] + b.dir[2] * step],
             }
@@ -5158,6 +5196,14 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         // The gas puffs (`gases_smoke` 0x1ab2d0 runs in the object handler every frame).
         self.gas.update();
+        // fix-impacts: `Debris_Update` 0x1aac00 — debris physics (gravity, spin, fade, life).
+        self.effects.update();
+        // fix-impacts: `Bullet_casing_update` 0x12faa0 — casings fly, land (the material sound via
+        // `Sound_Play3D`), die at 240 ticks.
+        {
+            let audio = &mut self.audio;
+            self.casings.update(|id, pos| { audio.play3d(id as u32, pos, None); });
+        }
         let frame = self.frame;
         // The presentation FX tick (ripples/flicker/clouds/apocalypse/emitters, fix-world-fx): the
         // game's object handler updates them per frame in the same control pass.
@@ -5797,7 +5843,19 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // which let the torso wind all the way around (the playtest's "spine flipped" patrol look).
             let want = if dr.anim.class == 2 && dr.aims_torso() { angle_difference(dr.yaw, dr.yaw_to_opp).clamp(-0.9, 0.9) } else { 0.0 };
             dr.aim_yaw = rotate_to_bearing(dr.aim_yaw, want, 0.2, crate::trig::PI);
-            if !dr.corpse { let _pf = crate::prof::scope("drone: handle_firing"); let b = { let lights = &mut self.lights; dr.handle_firing(d, rng, frame, player, (moving, first_moved), index, lights) }; if let Some(b) = b { self.bullets.push(b); } }
+            if !dr.corpse { let _pf = crate::prof::scope("drone: handle_firing"); let b = { let lights = &mut self.lights; dr.handle_firing(d, rng, frame, player, (moving, first_moved), index, lights) }; if let Some(b) = b {
+                // `DroneWeap_FireWeapon` 0x178f68:264 → `Bullet_init_casing`: the guard's shell eject,
+                // right after `Bullet_init`'s spread draws [S] the eject draws run inline here instead
+                // of on the weapon's +0x78-tick delay expiry; origin = the muzzle, rotation = the aim
+                // direction (the game reads the weapon bone's world transform).
+                let (muzzle, bdir, bweapon) = (b.pos, b.dir, b.weapon);
+                if let Some(w) = d.weapons.records.get(bweapon as usize) {
+                    let yaw = bdir[0].atan2(bdir[2]);
+                    let pitch = bdir[1].clamp(-1.0, 1.0).asin();
+                    self.casings.eject(&d.surfaces.map(|s| &s.ammo).unwrap_or(&Default::default()), w, muzzle, yaw, pitch, dr.pos[1], rng);
+                }
+                self.bullets.push(b);
+            } }
             // `ControlSTANDARD`'s door check (0x1490f0:232-248): a door standing in +0xBA8, 60 ticks
             // after the last attempt (+0xBB0 + 60 < GameState): beyond 2.0 (Vec_Dist3D of the obj
             // positions) the drone forgets it; else `NDrone2_DoorIsOpen` false → `NDrone2_OpenDoor`.
@@ -5945,8 +6003,21 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 match ev {
                     crate::bullet::BulletEvent::World(p) => {
                         let end = [p[0] + dir[0] * 0.1, p[1] + dir[1] * 0.1, p[2] + dir[2] * 0.1];
-                        if let (Some(s), Some((_, _, m))) = (d.surfaces, d.world.segment_surface(from, end)) {
+                        if let (Some(s), Some((_, n, m))) = (d.surfaces, d.world.segment_surface(from, end)) {
                             if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
+                            // `Bullet_CollisionHandler` 0x12ce80: the effects + ricochet. The shooter is a
+                            // drone (not class 3), so `Effect_Bullet` draws its `Rand_Rand(2)` [M 0x1ce94c].
+                            let flags70 = d.weapons.records.get(b.weapon as usize)
+                                .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
+                            if let Some(nd) = self.effects.bullet_impact(&mut self.rng, d.surfaces, &mut self.gas, p, n, m, b.dir, flags70, b.bounces, false) {
+                                if b.bounces < 3 {
+                                    // The bullet continues on the reflected direction [M 0x12d7a8..0x12d7f0].
+                                    b.state = 1;
+                                    b.pos = p;
+                                    b.dir = nd;
+                                    b.bounces += 1;
+                                }
+                            }
                         }
                     }
                     crate::bullet::BulletEvent::Player { damage, at } => {

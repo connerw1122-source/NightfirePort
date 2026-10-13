@@ -40,6 +40,10 @@ const WLD_GRAVITY: V3 = [0.0, -9.8, 0.0];
 pub struct Gas {
     pub pos: V3,
     pub vel: V3,
+    /// The puff's mesh hash (`Gas_Init`'s hashtable_set_object_to_entity_gfx argument); the callers'
+    /// common case is SMOKE_QUAD, the `Effect_Bullet` entries carry their own (0x02000124 hard-surface,
+    /// 0x02000129 water [D EffectInfo@0x3037c0]). fix-impacts, additive field.
+    pub mesh: u32,
     pub scale: f32,
     pub scale_rate: f32,
     /// The current rgba as floats (data+0x20), byte-clamped into the draw colour each tick.
@@ -83,6 +87,14 @@ impl GasPool {
     /// unused by the port's billboard draw beyond the spin), `vel` = the type-4 velocity vector.
     #[allow(clippy::too_many_arguments)]
     pub fn init(&mut self, pos: V3, yaw: f32, vel: V3, p1: f32, p2: f32, kind: u8, rgba: [u8; 4], life: f32) {
+        self.init_ex(crate::gas::SMOKE_QUAD, pos, yaw, vel, p1, p2, kind, rgba, 0, life);
+    }
+
+    /// The full form the `Effect_Bullet` gas entries need [M disasm 0x1ce964..0x1cea90]: the entry's own
+    /// mesh hash (the callers' SMOKE_QUAD is only the common case) and the packed rgba END (the game
+    /// fades start→end; `init`'s callers pass ~0). Fix-impacts hook, additive.
+    #[allow(clippy::too_many_arguments)]
+    pub fn init_ex(&mut self, mesh: u32, pos: V3, yaw: f32, vel: V3, p1: f32, p2: f32, kind: u8, rgba: [u8; 4], rgba_end: u32, life: f32) {
         if life <= 0.0 || self.puffs.len() >= Self::CAP { return; }
         let n = self.counter.wrapping_add(0x9e37_79b9);
         self.counter = n;
@@ -99,17 +111,27 @@ impl GasPool {
             _ => [0.0, REC_FRAME_RATE, 0.0],
         };
         let _ = yaw;
+        // The fade target: the entry's packed rgba end (the game's param 10 [M 0x1aacc8:56-71]).
+        let end = [(rgba_end >> 24) as u8, (rgba_end >> 16) as u8, (rgba_end >> 8) as u8, rgba_end as u8];
         self.puffs.push(Gas {
             pos, vel,
+            mesh,
             scale: p1,
             scale_rate: (p2 - p1) / life,
             rgba: rgba.map(f32::from),
-            // Target = the callers' ~0 [M 0x1aacc8:56-71]: rates = (0 − start)/life.
-            rgba_rate: rgba.map(|c| -f32::from(c) / life),
+            rgba_rate: [
+                (f32::from(end[0]) - f32::from(rgba[0])) / life,
+                (f32::from(end[1]) - f32::from(rgba[1])) / life,
+                (f32::from(end[2]) - f32::from(rgba[2])) / life,
+                (f32::from(end[3]) - f32::from(rgba[3])) / life,
+            ],
             spin,
             life,
             kind,
         });
+        // The mesh rides alongside for the draw (the game passes it to the gfx hashtable); the port's
+        // billboard draw reads it from the puff via the pool index.
+        if let Some(g) = self.puffs.last_mut() { g.mesh = mesh; }
     }
 
     /// `gases_smoke` 0x1ab2d0 for the ported types (0, 4, 7): motion, growth, fade, the life countdown
