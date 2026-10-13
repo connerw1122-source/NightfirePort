@@ -6712,3 +6712,43 @@ no voice audio in any watched scene; mouths don't move (face tracks unported); 0
 scene skips too fast, has pre-standing models and doesn't set mission state; the Drake fly-through draws
 every model twice (live drones + script characters); pack-script characters lack the obj+0x100 ambient
 tint; the Kimiko scene lets the objective banner (and its sound) through; 07000002's intro misses models.
+
+**fix-cutscenes2 session results (2026-10-13):**
+- **Skip**: the viewer skipped on ANY key; the game's skip is `Input_Action(-1, 0x19, 1)` = raw pad
+  0x840 (R1 0x800 | D-down 0x040, pad 0 only) [M SP_Update 0x1dbda8:129-141, psiInput_MapInputs
+  0x10cd80:415-417]. The user's W press skipped the Kimiko scene, which also explains "obj doesnt
+  wait ... plays the sound immediately" (the skip kills the scene's camera → hud_frozen clears → the
+  banner+sound land) and the un-set mission state after the hand-back (the end events never ran).
+  Fix: `nf_view::cutscene_skip_key` (ArrowDown | R stand-ins) gates the viewer's skip;
+  `--skip-cutscenes` stays the dev override. The winit handler cannot run headless — the classifier
+  is unit-tested (`only_the_game_skip_action_keys_skip_a_cutscene`) and the sim-side contract (the
+  scene survives while playing; the game's own skip ends it and re-enables the party, anims from
+  script time 1) is pinned in fix_cutscenes2_live.rs.
+- **Duplicated models**: the game rule was already ported (event 5 → Drone_EnableAll(0), event 7 →
+  0x80 re-enable, nis.rs event()); the new fly-through test proves the live party hides (npc_enabled
+  off, no present drone enabled) and restores after the game's skip. The user's screenshot predates
+  fix-party-mission's walk interleave; a live render should confirm.
+- **Face tracks**: `AnimProcessScriptCmds` 0x1c1b38 starts EVERY op-0 window; the pack scripts pair a
+  narrow 22-channel face track (first window) with the 222-channel body (last) [D script-info:
+  060004f1/f2, 06000996/97]. The port played the last window only → no lip-sync. New
+  `nf_game::anim::script_pose_together` (per bone the FIRST-started covering window owns it — [S]
+  direction from the play reference; both windows start at frame 1, command order breaks the tie) +
+  `nf_formats::anim::{bones_covered, local_pose_bones}` (local_pose_with delegates to a bone-limited
+  core — signatures unchanged). The cut-scene character path in scene.rs uses it; the AI/drone path
+  keeps script_pose (fix-drone2's last-wins). Test: the joined pose differs from body-only on the
+  face bones and matches it past them.
+- **Voices**: the chain is complete and now pinned end-to-end: op-0x16 (Script_SoundStart 0x1d8820)
+  → Request::Sound → the drain's play3d → the pool's Start commands; the Kimiko scene's 0x11d (at
+  script tick 0x351=849 — the nf-extract dump prints hex) and 0x5c0/0x5c1 all fire and resolve in
+  the level bank (slot 6) to in-bank samples 111/110/115/116, pause_in_nis 0 — NOT streams; the
+  STREAMS.LUT/BIN path exists for FileRef<0 sub-tracks. Audible output needs a live check.
+- **Kimiko banner hold**: `hud_frozen` (camera request → hold; the game's ScriptCam hold reads
+  HUD_UpdateStatusPane 0x19c310:219-235) covers the scene once the skip is fixed; test-pinned
+  through 150 movement ticks.
+- **Op-0x16 3-D object stand-in**: b[1]==0 resolves the sound's object to stream i−1 (the port) where
+  the game reads SCRIPTINFO+0xab3 ("the current entity stream") [M 0x1d8820] — a positional
+  difference only (2-D fallback), noted, not chased.
+- Suite: nf-game 94+5, nf-view all green incl. the 5 new tests, nf-audio green, nf-formats 61+11 with
+  only the 3 allowed disc_golden failures. Files: nf-view lib.rs/scene.rs, nf-game anim.rs,
+  nf-formats anim.rs (shared: the delegation refactor + bones_covered, noted in the report),
+  tests/fix_cutscenes2_live.rs.
