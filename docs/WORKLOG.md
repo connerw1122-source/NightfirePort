@@ -7703,3 +7703,29 @@ the mode byte at `BL + w*0xC + 0x1BB`, the twin-variant switch via weapon_data +
 +0x6C & 0x20000), and the HUD fire-mode label (+0x30 + mode*4). Plus each weapon's first-person fire sound id
 (op-1 per-weapon remap) and gadget switching/use (briefcase, Q-Worm, camera). Started 16:45 UTC, sandbox
 expires ~18:32 UTC.
+
+**fix-weapon-modes outcome (18:25 UTC)**: the fire-mode system is ported. The button: `Input.mode_switch`
+(keyboard M = the pad's ○, action 12 mask 4 [M `Player_Weapon` 0x1a24c8:204-260 — the view-idle gate, the
+not-(aiming∧scoped) gate, the watch 0x54/0x55's fire OR-in via `Sim.prev_trigger`'s press edge]) handled in
+`scene.rs` before the switch-cycle block: a twin result (`weapon_data[w]+0x05`, s8) goes through the real
+switch request after `Player_WeaponHasAmmo` 0x1a16c0 (which reads carried/clip/type-0/ground-pickup — NOT
+the owned byte [M]); a mode result writes the mode byte, now `Inventory.fire_mode` (the game's
+`BL + w*0xC + 0x1BB`), which feeds `GunParams::from_record`'s shots-per-pull (`+0x28 + mode·2`) and the
+HUD's fire-mode label (`+0x30 + mode·4`, was hardcoded mode 0). The name resolution [L USATxt.dat +
+Lang::bind]: 0x2E 'Heatseeker' ↔ 0x2F 'Unguided' is the **AT-600 Scorpion**, 0x2C 'Guided' ↔ 0x2D the
+'Torpedo Launcher', 0x02 'Semi' ↔ 0x03 'Silenced' the P2K. The homing: `Bullet_homing` 0x12f358 ported in
+`drone.rs` (`Bullet_update` 0x12e7b0:483's `+0x6C & 0x20000` branch): the live-drone scan (nearest ≤ 1000,
+dot > 0.66, LOS via world.segment, the +0xfe&1 re-scan) and the `clamp((to−dir)·0.0333, ±0.01)` steer, no
+RNG draws. The op-1 remap (G-032's item) was already correct — pinned with a test (six table rows +
+the P2K 0x02's 0x403-unchanged [M 0x1c1b38:251-277]). The island: `Player_InitWeapon` 0x1a7ef8 case
+0x0700009 + the 0x070000a/b RamLoad fallback now grant the Q-Worm 0x58/Decryptor 0x56/Shaver 0x5b
+(the user could never select the Q-Worm — no grant existed). Gadget id corrections for the docs (not
+rewritten — lesson 5): 0x52 = briefcase ('Phoenix Ronin', pickups on 0700000c + 07000012, NOT 07000008 —
+its `oBriefcase_closed` is a kind-4 LABEL item [D]), 0x54 = Micro-Camera, 0x56/57 = Decryptor, 0x58 =
+Q-Worm. Tests: `crates/nf-view/tests/fix_weapon_modes_live.rs` (the twin toggle both ways + the no-twin
+sister 0x0c, the homing hit vs the unguided sister through the real trigger, the label ids, the Q-Worm
+grant, the op-1 table). Suite: see below. Report: docs/reports/fix-weapon-modes.md. Left: the briefcase's
+`GT_DeployMiniGun` turret (a new gt.rs), `Bullet_init`'s mode spread, the grenade mode pair, the decryptor
+decode mini-game, the camera's first-equip hint, the gadgets.md id-table fix, and the +0x60 fire_sound vs
+view_anim_datum contradiction (both docs cite readers — DroneWeap_FireWeapon 0x178f68:274-278 plays it vs
+weapon.rs' retyping; needs one [L] watch to settle).
