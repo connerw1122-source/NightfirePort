@@ -16,6 +16,10 @@ Files: `crates/nf-view/src/{scene,gpu}.rs`, `crates/nf-formats/src/level.rs`
 ## New from the user's second round (2026-10-12 evening)
 
 6. **0700000c: a pale blue-white crane shape on the ground** (`0700000c --bond 14.22,16.29,-147.02,0.973,-0.300`), next to the white floor patch of item 3 (`0700000c --bond 14.22,16.72,-154.43,3.505,-0.279`). **Lead (main agent):** these look like baked shadow decals drawn *brightening* the floor instead of darkening it. models-world measured the per-object ALPHA_1 shapes; check the subtractive one, 0x7F00000042 = (Cd − Cs)·FIX… (A=2, B=0, C=0, D=1), and any other the port maps to an additive or normal blend, against the GS formula (ps2tek). Item 1's pale-blue cross on 07000012 may be the same bug. Fix the blend once and recheck all three spots.
+   **Confirmed against the real game (main agent, PCSX2 screenshot 2026-10-12, Bond at (14.23, 16.29, −146.28) yaw 1.046,
+   looking down):** the "crane" is the baked shadow of the electricity pylon. In the game it is a **dark** lattice on
+   the ground beside the crates (the ground darkens under it); the port draws the same decal pale blue-white. So the
+   decal's blend must darken the destination.
 7. **07000007: the party guests have a green-grey colour cast** (`07000007 --bond 68.33,44.12,-43.74,-1.111,-0.154`): dull and greenish next to the warm room. The user's check "characters lit by the room" failed. fix-lighting2 (merged) gave characters the level radiators plus the muzzle light; find what tints them green (the radiator colour order, the TAmbient tint, `obj+0x100` ambient, or the VU1 byte scale) against `docs/systems/render.md` and the VU1 program, and say what the real game shows.
    **Real-game reference (main agent, PCSX2 screenshot 2026-10-12, Bond at (67.87, 44.13, −43.77) yaw −1.243):** the
    room DOES tint the guests green-teal in the game (skin and dresses in shadow read olive/green), so the hue is
