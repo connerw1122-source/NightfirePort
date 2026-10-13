@@ -1531,7 +1531,36 @@ impl Sim {
         // The use key (`Player_Activate` 0x1a5170): the doors its sphere — one unit ahead of the head — meets
         // open, swing or thud locked (docs/systems/world-objects.md "Doors"); the player object updates before
         // the control list's doors, so they see the activation this same tick.
-        if use_key { self.drones.player_use_doors(&d, camera, look, self.drones.frame); }
+        if use_key {
+            self.drones.player_use_doors(&d, camera, look, self.drones.frame);
+            // `Player_Activate` 0x1a5170 case '%': the pick's class-0x25 SS objects activate
+            // (`SS_Activate` 0x1a9ea8 — state + mask gate, then the channel latch). The game's
+            // pick is a 1.0-radius sphere at head+look vs the SS's mesh; the port takes the
+            // nearest E-armed SS under the head ray within 2.2 (the mesh extent of a hatch panel) (the doors' reach stand-in shape).
+            let head = [camera[0], camera[1], camera[2]];
+            let mut best: Option<(f32, usize)> = None;
+            for (i, s) in self.drones.sss.list.iter().enumerate() {
+                if s.state == 0 || s.mask & 4 == 0 { continue; }
+                let p = s.pos();
+                let to = [p[0] - head[0], p[1] - head[1], p[2] - head[2]];
+                let proj = to[0] * look[0] + to[1] * look[1] + to[2] * look[2];
+                if proj < 0.0 { continue; }
+                let cl = [head[0] + look[0] * proj, head[1] + look[1] * proj, head[2] + look[2] * proj];
+                let dd = ((p[0] - cl[0]).powi(2) + (p[1] - cl[1]).powi(2) + (p[2] - cl[2]).powi(2)).sqrt();
+                if dd > 2.2 { continue; }
+                if best.map_or(true, |(bd, _)| dd < bd) { best = Some((dd, i)); }
+            }
+            if let Some((_, i)) = best {
+                let frame = self.drones.frame;
+                let st = self.drones.sss.list[i].state;
+                let mk = self.drones.sss.list[i].mask;
+                let _ = (st, mk);
+                let mut ch = std::mem::take(&mut self.drones.channels);
+                let hit = self.drones.sss.list[i].activate(&mut ch, frame);
+                self.drones.channels = ch;
+                if hit { eprintln!("[ss] SS #{i} (placement {}) activated by the use key", self.drones.sss.list[i].placement); }
+            }
+        }
         // `Check_Target` (0x1a7810, every 6th frame — `GameState+0x52 % 6`): Bond's 50-unit view ray (mask
         // 0xC, world only); the first drone under it decides the crosshair state (BLData+0x133): 2 normal,
         // 3 = a non-enemy target — in SP the test is the target's `BLData+0x44 != 1` [M 0x1a7810:109-139,
