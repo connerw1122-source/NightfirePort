@@ -7989,3 +7989,10 @@ rocket launchers are 0x2C/0x2E; the sister assertion was strengthened (the catal
 "AT-600 Scorpion" AND "AT-420 Sentinel"). Post-delta revalidation: 90 non-walk nf-view binaries
 (349 tests) + the 4 panel-touching files (16) + 12 walk binaries green; the walks reference no
 panel code. Report updated.
+
+## fix-sound-remainder (s/fix-sound-remainder) — 2026-10-13
+
+**Task started** (19:2x UTC). GAPS G-032 open items: drone foley (Drone_SfxInfo / NDrone2_PlaySFX),
+the cel/room environment (SFXSetEnvironment per room), G-032d SPU2 Gaussian interpolation (replace
+the Catmull-Rom 4-tap), pause-in-cutscenes + precache + op-1 per-weapon remaps. Branch cut from
+origin/master 3d33a27. Scope files: crates/nf-audio/*, crates/nf-game/src/drone.rs (additive), docs/systems/sound.md.
