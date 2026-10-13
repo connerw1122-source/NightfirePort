@@ -7349,3 +7349,24 @@ fonts, layouts from the disc. nf-view keeps the direct <level> launch; plain nf-
 starts at the title. Mouse + keyboard everywhere, headless tests per state transition.
 New crates/nf-view/src/menu.rs, game flow in lib.rs, front-end formats in nf-formats.
 Started 12:32 UTC, sandbox expires ~14:29 UTC.
+
+**fix-menus outcome (13:48 UTC)**: the front end is ported sim-side — `crates/nf-view/src/menu.rs`
+implements the GameFlow GameState stack machine (GameFlow_GetState 0x1c9e80 / PopState 0x1c9eb0 /
+PushState 0x1c9f38 with the 7→8 and 0xb→0xc conversions, GameFlow_Main 0x1c98c8's per-state bodies,
+bootup 0x1c7e78, Reset_MapLoadSettings 0x1d6958's boot load of 0x7000048, ResetMap_LevelToLoad
+0x1d3800's 0x0710xxxx intro wrap, ResetMap_Load 0x1d6360's movie wrap / phase-2 back-map / pop-push-4
+tail) and the front-end pages with the game's own page ids (page table probed out of ACTION.ELF .data:
+0x40000034 P_START, 0x2e P_MAIN, 0x39 P_NFSELECT, 0x47 P_NFDFCTY, 0x68 P_CNOPTIONS, 0xc P_PAUSE,
+0x36 P_NFRESULTS, quit target 0x4000001c): title (240-frame Press-Start flash, legal line 0x375, attract
+count 0xa8c) → main menu → mission select (MissionData 0x2a4350's 9 missions) → difficulty → mission
+launch; pause (C_GCPAUSE 0x204408: resume / restart = ResetMap_LevelToLoad(BaseMap,0,1) / options /
+two-step quit confirm — the game's 0x200 label is literally "QUIT: ARE YOU SURE?" [D USATxt.dat]) and
+results (Mission_Update 0x182c60:74 + P_ENDMISSION 0x216618's restart/continue/quit arms). Draw side:
+`menu_overlay` builds a HudFrame from the game's FONTSerpLight font + 512×448 screen, per page; wired in
+lib.rs — `nf-view <iso>` boots to the title on the 07000048 map, `<level>` direct launch unchanged,
+Esc pauses in a mission, menu loads go through the existing pending_level reload path. Tests: 9 new
+headless `menus_flow` tests (every transition; NF_ISO ones verify the game's own strings). Found: the
+eight Txt ids in P_PAUSE 0x203c28 are the multiplayer scenario names, not pause rows; the single-player
+pause rows live in the disc's page data (not parsed). Full suite green except the 3 allowed disc_golden
+failures (slim ISO); nf-game/nf-formats/nf-audio untouched by this branch. Report:
+docs/reports/fix-menus.md.
