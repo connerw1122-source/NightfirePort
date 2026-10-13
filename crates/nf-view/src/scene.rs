@@ -1590,22 +1590,31 @@ impl Sim {
                     let f32_at = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
                     let sdir = nf_game::bullet::spread(dir, f32_at(0x24), flags, &mut self.drones.rng);
                     let speed = f32_at(0x20);
-                    // The fuse is the bullet's BU+0xFC: 210 ticks, 300 when weapon +0x70 & 0x10000 —
-                    // hardcoded in `Bullet_init` (0x12c5a0:103, :196), NOT weapon_data+0x1C (0x35's +0x1C
-                    // is 5000.0 [L ee_start_07000001.bin, audit fix-player2 claim 8]). The port's
-                    // `Grenade.range` doubles as the tick fuse.
+                    // The fuse is the bullet's BU+0xFC: 210 ticks, 300 when weapon +0x70 & 0x10000, the
+                    // mine 0x37 → 420 (7777.0 for a player owner — trigger-detonated; the port has no
+                    // detonator and keeps 420) — hardcoded in `Bullet_init` (0x12c5a0:103,196-223), NOT
+                    // weapon_data+0x1C (0x34's +0x1C is 5000.0 [L ee_start_07000001.bin, audit
+                    // fix-player2 claim 8]). The port's `Grenade.range` doubles as the tick fuse.
+                    let wt = u16::from_le_bytes([w[2], w[3]]);
                     let fuse = if u32::from_le_bytes(w[0x70..0x74].try_into().unwrap()) & 0x10000 != 0 { 300.0 } else { 210.0 };
-                    // The blast damage: `Explode_Create`'s damage arg is the hardcoded 100
-                    // [M disasm 0x12cd98/0x12ce18: `addiu $t2, $zero, 0x64` → Explode_Propagate's amount via
-                    // EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15); radius = $f12 =
-                    // weapon_data+0x08]. +0x0C is the damage multiplier (weapon-data.md), not the amount.
+                    let fuse = if wt == 0x37 { 420.0 } else { fuse };
+                    // The blast damage: `weapon_data+0x0C` [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` →
+                    // Explode_Create's f14 → EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15);
+                    // radius = $f12/$f13 = weapon_data+0x08]. The `addiu $t2, $zero, 0x64` (100) is the
+                    // 10th argument, an u8 `Explode_Create` never reads (its prologue — 0x17cbd0 — reads
+                    // only a0-a3, f12-f14, t3 and the stack u16). fix-explosions2: the disc labels name
+                    // the records [L USATxt.dat] — the frag is 0x34 'Fragmentation Grenade' (radius 8,
+                    // damage 100: the real kill through Explode_Propagate), 0x35 'Stun Grenade' (10/0,
+                    // the flash branch), 0x36 'Smoke Grenade' (0/0, the occlude/re-arm branch). The old
+                    // hardcode's sin was killing with EVERY type and on impact; the per-type records
+                    // route each grenade to its own death branch [M 0x12dd60/0x12e104/0x12e1c0].
                     self.drones.grenades.push(nf_game::grenade::Grenade {
                         pos: camera,
                         velocity: [sdir[0] * speed, sdir[1] * speed, sdir[2] * speed],
-                        speed, travelled: 0.0, range: fuse, damage: 100.0, radius: f32_at(0x08),
-                        weapon_type: u16::from_le_bytes([w[2], w[3]]),
+                        speed, travelled: 0.0, range: fuse, damage: f32_at(0x0c), radius: f32_at(0x08),
+                        weapon_type: wt,
                         mesh: self.weapons.projectile_mesh(self.gun.weapon as usize),
-                        owner: usize::MAX, state: 0, bounces: 0,
+                        owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false,
                     });
                 } else {
                     self.last_shot = Some(self.drones.frame);
@@ -2827,7 +2836,7 @@ impl Scene {
         // bullet's matrix, aligned to the flight direction (`Bullet_init` 0x12c5a0:185
         // `Mat_Align2Dir(obj+0x90, dir, up (0,1,0) [L ee_start_05.bin @0x2d6210], fallback (1,0,0) @0x2d6220)`),
         // while the position lives in `obj+0x30` (the per-tick tail 0x12f1ac-0x12f1e4 moves `obj+0x30..0x38` only).
-        // Grenades are gravity bullets: the frag (0x35 → 0x02000726), the stun (0x36 → 0x0200071f), the mine
+        // Grenades are gravity bullets: the stun (0x35 → 0x02000726), the smoke (0x36 → 0x0200071f), the mine
         // (0x37 → 0x02000a6e) and the rocket (0x3A → 0x0200074f) all show their body in flight [L ee_start_05.bin].
         // The port pools the slots like the tracers: GRENADE_SLOTS grenades, then TRACER_SLOTS drone bullets,
         // then PLAYER_BULLET_SLOTS of Bond's. One instance per (slot, mesh) for every distinct projectile mesh the

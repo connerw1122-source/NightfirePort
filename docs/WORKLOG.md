@@ -7217,6 +7217,37 @@ by G-017/G-024 with the repro. Suite: escort walk green on the final state + dif
 the full-suite re-run timed out (sandbox) after the revert — sim paths are otherwise byte-identical to
 master's. Shared-file hooks: lib.rs (pub mod ps2math), nf-extract main.rs (Player.capsule compile fix;
 pose-check level names take the FILES.BIN .bin names). Report: docs/reports/verify-bitexact.md.
+## fix-explosions (s/fix-explosions) — 2026-10-13
+Task: port Explode_Create and the explosion entity (lifetime, visual script 0x6000052,
+camera shake, sound, damage falloff through Explode_Propagate's 12 per-type cases),
+explosive objects (barrels), grenade/rocket impacts. Grenade follow-ups: frag has bounce
+sound but no explosion sound/effect; flashbang kills enemies instead of stunning.
+SimpleScript 0xE2: activation, keyframe playback, collision, rolling-barrel damage,
+open/closed pairs. 0700000d C5 door laser sequence if time. Started 11:08 UTC, sandbox
+expires ~13:08 UTC.
+
+**fix-explosions outcome (12:26 UTC)**: the three grenade bugs are fixed against the decompile. (1)
+The blast damage was the hardcoded 100 — the disassembly of the fuse call site (0x12cd98: f12/f14 =
+weapon_data+0x08/0x0C → Explode_Create's f13 radius / f14 damage; the `addiu $t2, 0x64` u8 is never
+read) and the disc records (frag 0x35 = 10/0, flashbang 0x36 = 0/0, mine 0x37 = 8/100) re-locked
+every throw to the per-type values; the frag now damages nobody (the user's "kills on impact /
+damages Bond" was the hardcode), the mine/rocket still kill. (2) The blast sound: the old 0x4A7 was
+Bullet_CollisionHandler's rest-impact sound of 0x3B/0x45; the blast is script 0x6000052's own
+Sound(0x3E) [D stream 36], riding the script player's Request::Sound. (3) The flashbang stun: the
+game's path is Bullet_DoTrails 0x12d890's +0x70 & 0x2000 death branch — sound 0x16, Light(10,5,white),
+Gas_Init, Camera_Shake(2), Bond whiteout (Player_SetFlashBang falloff) and ≤20 u drones → msg 0x18 →
+StunGrenadeImpact 0x4D (no HitDamage) — ported with the 0x4D/0x4E/0x4F family (recover 7200 ticks =
+DroneFunc_RecoverTime with stats-default +0xB9 = 0; anims 0x2D/0x2E/0x76; msg 8/9 → 0x44). New
+`crates/nf-game/src/explode.rs` carries the explosion entity and the full 12-case Explode_Propagate
+(with the game's (int)-truncated falloff and the 0x21 ≥1.0 gate); `PlayerHealth.flashbang` +
+`Drones::shake` expose the whiteout/shake to the view (the render consumption is the remaining
+half). Tests: explode.rs unit tests (lifetime 15, truncation, radius-0 no-op, smash gate), new
+`explode_live.rs` (frag no-damage + mine damage + the flash stun/kill through the real Sim path),
+fix_player3_live's grenade test re-locked to the game. Suite: nf-game/formats/audio + 84 nf-view
+binaries green (only the 3 disc_golden bigf fails, the slim-ISO allowance). Left: the view-side
+shake/whiteout draws, the stun weapon drop, barrels (Propagate's break/destroy targets), the
+SimpleScript 0xE2 work and the 0700000d C5 door — report: docs/reports/fix-explosions.md.
+
 ---
 Task: fix-world-fx
 Agent: fix-world-fx worker
@@ -7374,6 +7405,44 @@ NF_ISO impacts_live (wall decal at hit+0.01 with the surface normal/mesh, sky sh
 lands in lifetime, bit-for-bit seeded rerun). Known: `guard_takes_cover_like_the_game` needs its seed
 re-picked (0072's procedure — the impact draws joined the stream, as the game's own do). Report:
 docs/reports/fix-impacts.md.
+---
+Task: fix-explosions2
+Agent: fix-explosions2 worker
+Branch: s/fix-explosions2 (from origin/s/fix-explosions 88189da, merged origin/master 78d73e0)
+
+Work Log:
+- Sandbox kept: repo, work/, onfoot ISO, nf-queue present. Leftover WIP probe from the interrupted
+  fix-final-blockers2 session committed to its own branch (walkreal_probe_fb6.rs t2190 rays) and pushed.
+- Branch created from s/fix-explosions, master merged (only WORKLOG.md conflicted, both sides kept).
+
+Stage Summary:
+- Task: find the frag grenade's real damage path (fix-explosions read weapon 0x35 as radius 10 / damage 0,
+  making frags harmless and re-locking the grenade test to that), show it with evidence, land the fix with
+  the real falloff; keep the good parts (no on-impact kill, blast sound, flashbang stun no-damage, mine/rocket 8/100).
+
+---
+Task: fix-explosions2 (progress)
+Work Log:
+- RESEARCH DONE: the frag's real damage path FOUND. The weapon-id mapping fix-explosions used was shifted
+  by one: the disc name labels (Txt_BindLabel, weapon_data+0x38 SP name, resolved against USATxt.dat with the
+  game's own fixup algorithm — Bank[k] = offsets[k-2], FixupTable = [0,1000,1812,1903,1958,2065,2183]) say:
+  0x34 = 'Fragmentation Grenade' (radius 8, damage 100), 0x35 = 'Stun Grenade' (10/0, +0x70 0x2280), 0x36 =
+  'Smoke Grenade' (0/0, +0x70 0x20280), 0x37/38/39 = 'Remote Mine' (8/100), 0x3a = 'Laser Tripbomb' (8/100),
+  0x3b-0x40 = 'Satchel Charge' (8/2000). The frag's kill: Bullet_DoTrails 0x12d890's timer-death branch
+  (gate +0x70 & 0x200, asm 0x12dd2c-0x12dd44) → NOT & 0x2000 → NOT & 0x20000 → Explode_Create(wd+8, wd+8,
+  wd+0xC) [asm 0x12e1c0] = radius 8 / damage 100 → Explode_CollisionHandler 0x17cde0 → Explode_Propagate
+  0x17c518 case 2 (drones, Drone_ExplosiveHit → msg 9) / case 3 (Bond, Player_Hurt). The stun = the & 0x2000
+  branch (asm 0x12dd64: ONLY 0x35/0x59/0x5b carry the bit [L sweep]) — the flash/stun path fix-explosions
+  ported, gated on the WRONG id (0x36 = the smoke). The smoke = the & 0x20000 branch (asm 0x12e104: first
+  expiry Occlude_Create + Sound 0x14 + re-arm 1200 ticks, second expiry dies). NDrone2_HitDamage difficulty
+  multipliers [L .data 0x30cab0]: Easy 2.0 / Normal 1.5 / Hard 0.5 — none zero, not the lethality source.
+  DroneWeap_ThrowGrenade sniper pick (0x35, 1/3 → 0x36) and DefaultInit +0xBCC (sel 1→0x36, 2→0x35, 4→0x34,
+  5→count+0x3a, 6→0x6c; 0x7000014 clamp → 0x34) match the port's constants already — comments only.
+
+Stage Summary:
+- Next: re-route the port's flash branch to 0x35 (+0x70 & 0x2000), give 0x36 the smoke branch (sound 0x14,
+  re-arm, no whiteout/stun/script), gate the drone stun broadcast on the player-thrown case, fix the fuse
+  override for 0x37 (420 [M 0x12c5a0:214-223] vs the port's 300), re-lock the tests to the real names.
 
 Task ID: 045o-fix-final-blockers2
 Agent: NightfirePort worker (fix-final-blockers2 session)
@@ -7485,3 +7554,32 @@ casing slot carries ammo_data[1] = 0x0200043f and tracks the pose; debris pool +
 shot none; bit-for-bit rerun) — shown failing first against the scaffold. Full suite green except
 the 3 allowed disc_golden fails. docs/atlas/effect.md written (the owed entry); GAPS G-041/G-025
 updated. No GPU here — render spots + live checks in docs/reports/fix-impacts-render.md.
+---
+Task: fix-explosions2
+Agent: fix-explosions2 worker
+Branch: s/fix-explosions2
+
+Work Log:
+- Research: the frag's real damage path FOUND — the disc name labels (Txt_BindLabel of weapon_data+0x38,
+  USATxt.dat parsed with the game's own fixup algorithm: Bank[k] = offsets[k-2], FixupTable
+  [0,1000,1812,1903,1958,2065,2183]) name 0x34 'Fragmentation Grenade' (8/100), 0x35 'Stun Grenade'
+  (10/0), 0x36 'Smoke Grenade' (0/0), 0x37-39 'Remote Mine' (8/100), 0x3a 'Laser Tripbomb' (8/100),
+  0x3b-40 'Satchel Charge' (8/2000). fix-explosions' mapping was one id off. The kill path:
+  Bullet_DoTrails 0x12d890's timer death routes on +0x70 flags — & 0x2000 flash (0x35 only [L sweep]),
+  & 0x20000 smoke (Occlude + Sound 0x14 + 1200 re-arm), else Explode_Create(8, 8, 100) → Propagate
+  → the guard dies with the (int)-truncated falloff. Difficulty multipliers [L 0x30cab0]: 2.0/1.5/0.5.
+- Fix: drone.rs routes on the flags (flash/smoke/explode), the flash branch lost the duplicate 0x16 and
+  the wrongful 0x6000052 script, its stun broadcast gated to the player thrower (SP [M 0x12e094]); the
+  smoke re-arm (Grenade.smoke_popped); the mine fuse 420 (0x12c5a0:214-223); panel.rs catalog renamed
+  (the user's "frag looks like a stun grenade" was the one-id-off names); tests re-locked (frag 0x34
+  kills, stun 0x35 stuns with no damage, smoke 0x36 pops). Fail-first: the stun test FAILED on the old
+  id-keyed routing, passes on the flag routing.
+- Suite: nf-game lib 121; NF_ISO explode_live 2/2, fix_player3_live 6/6, fix_weapons_all_live 4/4, all
+  walk/walkreal + the grenade-adjacent binaries green; formats/audio/game green (3 bigf allowed);
+  nf-view green across two full passes. Report: docs/reports/fix-explosions2.md.
+
+Stage Summary:
+- The frag grenade kills like the game (0x34: radius 8 / damage 100 through the real Propagate), the
+  stun grenade stuns (0x35 flash branch), the smoke pops (0x36), the mine fuses 420; the dev panel
+  names match the disc. Left: the smoke's Occlude visual, the whiteout falloff curve, the mine
+  trigger/detonator, the tripbomb laser, the satchel timer — all noted in the report.
