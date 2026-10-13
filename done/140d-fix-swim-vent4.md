@@ -32,3 +32,7 @@ Files: `crates/nf-game/src/drone.rs` (the follow/next_node arms, minimal), `crat
 
 ---
 claimed-by: sandbox3 at 2026-10-13T16:47Z
+
+---
+## Report (done, 2026-10-13T18:18Z)
+
