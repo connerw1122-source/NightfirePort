@@ -7814,3 +7814,14 @@ Work Log:
 Stage Summary:
 - The timed sky is data + code, golden-verified against an independent replica of the game's arithmetic. Open for
   the main agent: the nf-view render-side hook (flash glist swap + spin matrix + bolt draw), the live ZMSK check.
+---
+Task: fix-objective-banner (branch s/fix-objective-banner)
+Agent: fix-objective-banner worker
+Task: the objective banner text and timing, the fail message (07000007 Kimiko cut-scene, "NEW OBJECTIVE" text, off-centre fail message)
+
+Work Log:
+- Branch created from origin/master (067a54c); setup verified (work/, EE snapshots, ISO, nf-queue all present).
+
+Stage Summary:
+- Starting: banner timing (what holds the objective pane while a script player owns the camera), the
+  banner's real text from the mission table, the fail message's centring.
