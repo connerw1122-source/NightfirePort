@@ -2,6 +2,8 @@
 
 These items are from the user's playtest of 2026-10-12 (the user's own words are quoted). Screenshots are referenced by their `--bond` spot: run `nf-view <iso> <level> --bond x,y,z,yaw,pitch` to stand there.
 
+**Start from `s/walkreal-a` (812a0fd, unmerged).** It has a first port of `NDrone2_OpenDoor` 0x14aa38 from `ControlSTANDARD` 0x1490f0:242 in `drone.rs` (the +0xBB0 60-tick retry), but it stands in the game's collision hit object (+0xBA8, class 0x1C) with "the nearest door within 2.0" [S] and has no fail-first test. Port the real hit-object path, test it fail-first, and bring over its walker harness (`crates/nf-view/tests/common/walker.rs`) and the 07000001 walk if they help. Do NOT bring `agent-ctx/` (scratch copies of the field docs).
+
 1. **NPCs can't open doors**, on every level the user played ("npcs cant open doors"; on 07000007 "none of the NPCs can open the doors"). Port how a drone opens a door on its path (the door's NPC-use path, the AI's door handling) so guards, guests and Mayhew walk through.
 2. **07000001, the escort:** "mahew doesnt really follow properly"; the screenshot (`07000001 --bond 6.28,6.47,6.20,6.338,-0.083`) shows Mayhew stuck facing a shoji door. Fix his follow behaviour against the game's ally route code (`docs/fields/hitdata-spawner-ally.md`).
 3. **The level-exit door** "should be able to open without him walking all the way to it". Find the exit's real condition.
