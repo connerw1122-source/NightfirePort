@@ -7976,3 +7976,16 @@ allowed disc_golden + pss_movies_live audio_sample_count (the slim onfoot ISO ca
 Shared-file changes: NONE (the WORKLOG append and the master-merge conflict resolution only;
 dev.rs and the weapon tables untouched — the panel is crates/nf-view/src/panel.rs, the task's
 "dev.rs" pointer is the F2 menu which spawns no weapons).
+
+**fix-dev-panel delta (18:52 UTC)**: the listing filter no longer drops the clip-0 gadgets the
+game's loadouts grant (0x50 Grapple, 0x56/0x57 Decryptor, 0x58 Q-Worm — named + selectable [L],
+tp model 0, clip 0; the old `model==0 && clip<=0` filter hid them from the panel entirely) — the
+catalog is 98 entries. A give on a record with no first-person model is now refused with the game's
+own reason (`Player_EquipWeapon` 0x1a8a58:20) instead of switching onto an unholdable record. The
+give test covers every catalogued entry (variants own their base per 0x1a8a58). `0x`-prefixed panel
+ids parse as hex. `crates/nf-view/tests/fix_weapons_all_live.rs`: comment/label-only correction —
+it pinned "0x3A = Scorpion (rocket launcher)"; the bank binds 0x3A to "Laser Tripbomb" and the
+rocket launchers are 0x2C/0x2E; the sister assertion was strengthened (the catalog must contain
+"AT-600 Scorpion" AND "AT-420 Sentinel"). Post-delta revalidation: 90 non-walk nf-view binaries
+(349 tests) + the 4 panel-touching files (16) + 12 walk binaries green; the walks reference no
+panel code. Report updated.
