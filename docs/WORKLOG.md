@@ -7255,3 +7255,25 @@ Work Log:
 Stage Summary:
 - Emitter/ripples/flicker/cloud/apocalypse sims live; MoviePlayer + EnvTree sway + SpaceLaser/Missile documented as out of scope (not gameplay blockers — fix-finale-blockers report).
 - Follow-ups listed in the report: the cloud-drift/flicker-tint render hooks, the Apocalypse screen fade, the emitter textures.
+
+---
+fix-final-blockers outcome (11:50 UTC, branch s/fix-final-blockers): door[7] on 07000016 RESOLVED —
+the door itself opens (state 0x4/pos01 1.00 at the stuck dump; the walkreal-c "state stays 0x2"
+predates the straddle walk-in that landed in door.rs post-report); the real blocker was the ROUTE
+LANE: the doorway's operable half is the leaf's span x 4.35..5.62 and x 2.8..4.2 is a sealed
+static wall (the corridor cel mesh's west filler at z −74.13) — the walkreal-c route aimed Bond
+at x 3.5 and wedged on it. The lane moved to x 4.9; the walk then crossed the trench (z −88..−102
+dips to −4.8; the east lane x 8..11 bypasses it) and parked at door[0]'s approach (Bond hops onto
+furniture east of the doorway at (5.16,1.75,−113.63); door[0] is lock 0x24, its panel writer
+unlocated). Focused NF_ISO test walkreal_07000016_live::door7_opens_on_bonds_e_and_bond_passes
+PASSES (fail-first: the old lane wedged with the door open) + the static-floor sister; the 12
+sister green. 0700004a ROOT-CAUSED deeper: the walkreal-c door-solid hypothesis is DISPROVED (the
+leaves never touch the rider — z gap 2.8, capsule push (0,0,0)); the −52 landing starts cut-scene
+#289 (0x060006cf, events 0xb/5/4 at frame 1612 [NF_SCRIPTLOG]) which disables Bond (the game does
+this too), and when the cut-scene plays out its Script_Free enable places Bond at −107.66 — the
+event-6 player_at matrix is NOT the platform's live pose. Parked walkreal_0700004a_live there
+(ignore message + header carry the chain and the next session's fix path). Evidence probes
+walkreal_probe_fb2/3/4/5 committed; door.rs got one additive diagnostic line in log_doors (the
+matrix row3 + keys presence). Suite at the session cap: 79 passed / 3 failed (the 3 allowed
+disc_golden) before the timeout cut it — the four-crate pass still owes a full run. Shared files
+touched: door.rs (the diagnostic), no others. Report: docs/reports/fix-final-blockers.md.
