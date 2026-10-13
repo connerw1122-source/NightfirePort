@@ -132,3 +132,65 @@ straight-line stand-ins).
   game's saves carry them via LS_MakeMission — `MissionSave` is the port's hook for 210-fix-progress).
 - Ch-0 conditions read the raw `switch_channels[0]` (the game has no zero guard [M 0x1827d8:33-37]);
   the port's `Channels::set` refuses 0, so an out-0 trigger cannot set it.
+
+## 8. The death sequence and the fail/death restart (fix-death-restart)
+
+The full path the player sees, ported end to end (nf-game::death + mission.rs):
+
+1. **The death starts** — `Player_CheckForDeath` (0x190810), on health ≤ 0: ch 0x5e, `Music_Event(6,1)`,
+   `Player_ClearInertia`, `Player_WeaponNone` (the fists), the death marker (`obj+0xff = 0x12`), the start
+   tick (`obj+0xec`), cam mode 0, health 0, `obj+0xf4 = 2` and substate 0xd (the death anim), the death
+   sound 0x89 [M 0x190810:34-97]. While `obj+0xf4` is 2/3 `Player_Update` runs only the anim +
+   `Player_HandleDeath` — no input [M 0x193600:317-319].
+2. **The red fade** — `Player_HandleDeath` (0x190bb0) enables the blood pane on the first dead tick
+   (`HUD_DisableAll` + `HUD_Enable(pane 12, 1, 0)` [M :23-25]); `HUD_UpdateBloodPane` (0x19a6a8) grows the
+   two blood sprites 1 px/tick and sets the pane's state word to 1 at full cover [M :23-34]. The gate is
+   `w − viewer.w ≥ viewer.h`, viewer.h = 448 [M 0x19f4e8:33], template width 512 [L BloodSprInfo 0x2bcfd8]
+   → **448 ticks (~7.5 s)**. The pane's template colours are 0x007f7fff (two sprites, layer 9, textures
+   0x0300005a/0x03000002 [L 0x2bcfd8]) — the render-side fade is the main agent's check.
+3. **The channel** — ch 0x62 rises when the pane covers the screen or the player presses action 25 (✕ /
+   Start, player 0 — the skip), unless the menu already resolved the death [M 0x190bb0:29-33].
+   `Mission_Update` reads ch 0x62 [M 0x182c60:21] — **not health**; the port's old health read fired the
+   whole restart the tick the pain landed.
+4. **The mission states** — case 1 → 3 (`FadeClr` 0xff0000ff — red, `Music_Event(6,1)`, health 0), case 3
+   (`TimeOut` 1.0 = 1 tick — `FRAME_RATE_MUL` 1.0 [L 0x30d0d8]) → case 7 (`GS_PausePlayer(1,0)` per tick)
+   → case 4 → the menu. The fail path (ch 99) is the same shape with the type-3 "Mission Fail" banner and
+   `TimeOut` 300 [M 0x182c60:45-64] — the banner shows ~5 s before the menu, the death ~0 s after the fade.
+5. **The 0x40000042 menu** — `MenuManager_Create(-0x80000004, 0x40000042, 0, 0, 0x28, 0, 4)` +
+   `GS_PauseGame(1)` [M 0x182c60:77-81]; the handler is `C_GCPAUSE_Handler` (0x204408, shared with the
+   pause menu). Restart (control 6 = 1) → confirm (controls 0xc/0xd) → `ResetMap_LevelToLoad(
+   Mission_BaseMapHCode(), 0, 1)` + `user_restarted_or_quit = 1` [M 0x204408:136-155]; Quit (control 6 = 2)
+   → `GameState._28_4_ = 0x4000001c` + `ResetMap_LevelToLoad(0x7000048, 0, 0)` [M :141-149].
+   `Mission_BaseMapHCode` = `BaseMap` — the mission's FIRST level [M 0x1830a0].
+6. **The port's API** — `Mission.menu_open` / `menu_choice` (`MenuChoice::Restart|Quit`), the
+   `Event::MenuOpen` event, and `Drones::fail_menu_open()` / `fail_choose_restart()` /
+   `fail_choose_quit()` (crate::death) for 180-fix-menus to draw and answer. While nothing draws the
+   menu, `Drones.auto_restart` (default true) answers Restart the tick the menu opens — the pre-menu
+   behaviour, behind the flag. Quit queues `level_exit = 0x07000048`; the viewer logs it and holds (the
+   front end is not ported).
+
+**What a restart resets and keeps** — the menu's Restart is `IsWarmReset = 0` (param 2) [M 0x204408:139]:
+`ResetMap_GameInit` runs `Init_SwitchChannels` (all 256 channels + hold/prev/time zeroed [M 0x134310,
+0x1d5080:44-46]) and `Player_RamLoad`'s whole body is gated on IsWarmReset [M 0x1957a8] — so **nothing is
+carried**: level-start loadout, channels clear, `Mission_Init(BaseMap, 0)` resets every part's objective
+states (ThisOrderNum = 0) [M 0x182270:68-129]. A restart is byte-for-byte a fresh load of the mission's
+first level (the port: `load_with_carry(..., None)` — `Drones.level_exit_cold` tells lib.rs to drop the
+RamSave). The trigger-exit level change is the WARM arm (`ResetMap_LevelToLoad(next, 1, 0)` +
+`Player_RamSave` [M 0x1b2318:111-116], fix-level2's carry) — that carry is exactly what looped the user's
+07000007 session (playtest 2026-10-12): the saved ch 99 re-failed the mission every reload, no input
+needed. Deaths, the chasm volumes and the scripted falls all share the one entry: health ≤ 0 → the
+sequence above (the port's fall/pain paths land in the same `Drones::death_tick`).
+
+Falling deaths and the chasm/death-NIS volumes reach this path through Bond's health; the death NIS
+scripts themselves (`Script_IsDeathNIS` 0x1dae60, the 07000011 atrium fall) play their script and the
+sim's death sequence runs underneath — the render-side check is the main agent's.
+
+### Known gaps (updated)
+
+- The pause-screen objectives list (as before) is not ported.
+- ~~The fail/death 0x40000042 menu is a level restart; the red death fade is not drawn~~ → the menu
+  logic + API are ported (§8); the menu DRAWING is 180-fix-menus'; the red fade drawing (pane 12's
+  growing sprites, `death.pane_on`/`death.ticks`/`death.covered`) is render-side, not drawn yet.
+- `DroneFunc_SetMissionFailReason` (as before) — the 0x60/0x61 hooks are ported.
+- The death substate's animation (substate 0xd's fall) is not animated by the sim; Bond just stops
+  taking input while `death.active` (the game runs `AnimObjectUpdate` [M 0x193600:317-319]).
