@@ -28,6 +28,9 @@ Files: `crates/nf-view/src/{scene,gpu}.rs`, `crates/nf-formats/src/level.rs`
    level's radiators (the warm lamp lights) reach character skins (falloff, the 2-closest-lights selection, the
    colour scale), not at the ambient hue.
 
+8. **Low priority (the user is not worried):** in the real game the first-person gun itself flashes orange on the shot
+   frame (the muzzle light reaches the view model); the port keeps the view model dark. The parapet glow already matches.
+
 **Reproduce before you fix.** The user's play is the reference, and previous fixes passed tests but still failed in play. For each bug:
 1. Write a headless NF_ISO test that drives the real input path (the `nf-view` input mapping into `Sim`, or `nf_view::load` plus `dev::scenario`), and show it reproducing the user's symptom.
 2. Then find the cause in the decompile and fix it.
