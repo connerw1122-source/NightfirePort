@@ -8542,3 +8542,38 @@ Stage Summary:
   and the ammo-id remaps are new port behaviour with game citations.
 - Left: the auto-switch drain re-open (live checks 1-2 in the report), moving-platform landings,
   the drop push-out, the AR set's second pile, the +0x888 kind-5 field, the shop's Upgrades byte.
+
+---
+Task: fix-cover-remainder
+Agent: fix-cover-remainder worker
+Branch: s/fix-cover-remainder
+
+Work Log:
+- Scope G-028. Ported the scary-object flee chain end to end (G-026): msg 0x21 now fires at a grenade's
+  bounce (HandleExplosives 0x1435f0 + BuildDynamicAwarePoints 0x138b10 kind-2 gates: fear props 0x3A/0x3B,
+  radius 12.0/8.0, LOS); ConsiderExplosive 0x1431c0's real constants (run 4.0/10.0/14.0, return state
+  +0x354 = 0x87 Hide default, deadline 2 s/10 s, +0x2B); RunAway 0x86 / Hide 0x87 / Recover 0x88 in
+  drone.rs handle_scary (FindSafety 0x152250 straight-line goal; the emitter strategy [S]-approximated by
+  the route clamp). The old port constants "5.0 stun / 8.0 mine / 12.0 frag" were wrong, and state 0x86
+  had no handler (the drone froze).
+- ValidateCoverAnim 0x13bf40 ported (validate_cover_anim) + wired into cover_anim's low-node arm; invalid
+  anims now queue NOTHING (the 0x21-stand-up replacement is gone); mode 3's 0x58 stays raw [M
+  0x13c078:297-300].
+- RunForCover slide 0.1 → 0.025 [M 0x169150:62-67] + the finding: the slide condition (route+0x88 < 1.0)
+  is dead in the GAME too (MoveToGoalPosition arrives at GetRouteDistance < +0x8EC = 2.0 first [M
+  0x1517d8:44-54, 0x14b300:579]) — the doc's "10 %/tick" described dead code; U-030 remains the route
+  shape (OptimiseRoute), not the slide.
+- Analysed, not codeable this session (reasons in the report): the 8 per-target slots (SP-identical — all
+  guards' SetOpponent(Bond) lands on slot 0 and InitComms rebuilds the slots every frame [M 0x139520]);
+  the +0x538 blend-out lifetime (inside the AnimScript engine, the 275-fix-anim-blend trap).
+- Tests (ai_live, NF_ISO): grenade_bounce_scares_the_guard_into_the_flee_family (0x86→0x87→0x88→0x56 +
+  out-of-radius sister), validate_cover_anim_matches_the_game_table (real anim sets). Suite: nf-game
+  230 passed / 0 failed over all 32 binaries with NF_ISO; guard_takes_cover_like_the_game green on the
+  finished branch. Only nf-game touched; the other three crates compile-checked after the master merge.
+- Report: docs/reports/fix-cover-remainder.md (live checks: the grenade flee in PCSX2, +0x2B/+0x324/+0x354
+  probes, the nf-view --bond spot).
+
+Stage Summary:
+- G-028: the flee chain and ValidateCoverAnim are IN; the slide constant is decompile-true with its
+  dead-code status documented; the 8-slot table and the +0x538 blend-out remain open with the blockers
+  written down. Branch s/fix-cover-remainder; report docs/reports/fix-cover-remainder.md.
