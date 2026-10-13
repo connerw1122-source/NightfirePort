@@ -44,3 +44,6 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 **Branch:** `s/fix-weapons-all`.
 
+
+---
+claimed-by: sandbox2 at 2026-10-13T05:09Z
