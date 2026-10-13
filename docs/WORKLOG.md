@@ -6704,3 +6704,12 @@ none, so a dev-given grenade can't throw there (data-shaped, not a port bug). 4 
 `crates/nf-view/tests/fix_weapons_all_live.rs`; walk_07000014's Rook drop retimed to the fuse.
 Report: docs/reports/fix-weapons-all.md. Left: fire-mode switch, zoom, reload matrix, punch KO,
 drop spam, 07000012 sound/NPCs, gondola rocket pickups.
+
+## fix-walkreal-b2 (s/fix-walkreal-b2) — 2026-10-13
+Task: land walkreal-b's work on master green. Start fresh from origin/master; bring over the walker
+harness (tests/common/walker.rs, tower2.rs), the door lock-edge fix (door.rs Doors::end_tick [M
+0x1336f8]) with its test, and the per-level walk tests; do NOT bring walkreal-a's drone.rs
+nearest-door stand-in or agent-ctx/. Make every walk test pass on master, or #[ignore] the ones
+blocked by known open gaps (C5 door on 0d, 14's vent scene, 12 doorway crossing) with the gap and
+owner named. No test may stay red. Full suite all four crates, report the count.
+Started 06:50 UTC, sandbox expires ~08:47 UTC.
