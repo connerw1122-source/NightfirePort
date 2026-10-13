@@ -7729,3 +7729,14 @@ grant, the op-1 table). Suite: see below. Report: docs/reports/fix-weapon-modes.
 decode mini-game, the camera's first-equip hint, the gadgets.md id-table fix, and the +0x60 fire_sound vs
 view_anim_datum contradiction (both docs cite readers — DroneWeap_FireWeapon 0x178f68:274-278 plays it vs
 weapon.rs' retyping; needs one [L] watch to settle).
+
+## fix-weapon-modes2 (s/fix-weapon-modes2) — 2026-10-13
+
+Landing fix-weapon-modes (4ed1519) on current master: branch = s/fix-weapon-modes + merge origin/master
+(3576133, which held the backed-out merge after 764 passed / 4 failed). The 4 reds: (1) p2k_mode_button
+toggle reaches weapon 0x03 but switch_state stays 8 after 200 ticks; (2) the heat-seeker misses the guard;
+(3) portal_live cold_loadout on 07000009 draws weapon 67, not the P2K — the game equips the set and
+requests the dart ([M Player_InitWeapon 0x1a7ef8:192-202]), so that expectation is the one to update;
+(4) walk_0700000a Restart — already fixed on master. Suspects for 1+2: fix-progress's runtime difficulty
+in Data, fix-menus2's input/front-end handling, fix-restart-target's Drones fields, fix-sky's tick
+additions. Started 17:55 UTC, sandbox expires ~19:53 UTC (stop new work 19:33).
