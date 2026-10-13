@@ -70,14 +70,27 @@ fn the_07000016_chasers_defeat_completes_the_final_mission() {
         }
         found.expect("the launch chain spawns the chaser (spawner #257, group 6 [D])")
     };
-    // Sister first: a pit-squad drone's death (ch 23..26) never raises ch 0x90 on its own.
+    // Sister first: a non-chaser drone's death (the pit squad's ch 23..26 [D]) never raises ch 0x90
+    // on its own. Re-baselined for fix-spawner-p7: the launch chain's ch 0x15 is the group-1
+    // spawner's KILL channel [L-verified 07000005], and 07000016 is a keep level, so the chain's
+    // own cleanup removes its undrawn spawns before this point — the sister throws at the nearest
+    // remaining non-chaser (a ninja escort, who walks), re-reading his position per attempt like
+    // the chaser defeat below.
     {
         let sim = scene.sim.as_mut().unwrap();
         let squad = sim.drones.list.iter().position(|d| d.present && !d.corpse && d.death_channel != 0x90)
             .expect("a non-chaser guard exists");
-        let p = sim.drones.list[squad].pos;
-        grenade_at(sim, p);
-        for _ in 0..200 { sim.step_bond(Input::default(), false, false, false); }
+        let mut died = false;
+        for _ in 0..4 {
+            let p = sim.drones.list[squad].pos;
+            grenade_at(sim, p);
+            for _ in 0..200 {
+                sim.step_bond(Input::default(), false, false, false);
+                if sim.drones.list[squad].corpse { died = true; break; }
+            }
+            if died { break; }
+        }
+        assert!(died, "the grenade reaches the non-chaser guard");
     }
     {
         let sim = scene.sim.as_ref().unwrap();

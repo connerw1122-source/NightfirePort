@@ -10,9 +10,10 @@
 //!   (10 slots each at +0x04/+0x2C) and counts them at +0x58/+0x5A.
 //! - `FuseBox_Update` runs per frame: a wire whose hit list is non-empty (`Collide_FilterBullets`
 //!   0xfffd — the wires die to bullets) is removed; removing a **group 1** wire hurts Bond 5.0
-//!   (`Player_Hurt(0x40a00000, …)` — the live wire) unless +0x56 == 0. When a group's wire count
-//!   reaches 0, both of its channel words are written (`switch_channels[ch] = 1` + timestamp) and
-//!   cleared: group 0 → param 1 then param 3, group 1 → param 2 then param 4.
+//!   (`Player_Hurt(0x40a00000, …)`) **iff +0x56 == 0** [M 0x1adfe8:99-101] — a configured param-2
+//!   channel disables the hurt — and zeroes group 0's second word +0x5C [M 0x1adfe8:102]. When a
+//!   group's wire count reaches 0, both of its channel words are written (`switch_channels[ch] = 1` +
+//!   timestamp) and cleared: group 0 → param 1 then param 3, group 1 → param 2 then param 4.
 //!
 //! Port stand-ins [S, noted in the report]: the wire sub-objects and their bullet-filter collisions
 //! are not ported (the SP-entity machinery does not create class-5 hittables), so the wires are
@@ -89,10 +90,17 @@ impl FuseBox {
             return 0.0;
         }
         // One wire per press, group 0 (safe) before group 1 (live) — `FuseBox_Update`'s group scan
-        // order [M 0x1adfe8]. Cutting the live wire hurts 5.0 [M 0x1adfe8 Player_Hurt(0x40a00000)].
+        // order [M 0x1adfe8]. The live-wire hurt fires while +0x56 (param 2) is UNSET [M 0x1adfe8:99-101
+        // `if (*(short *)(iVar1 + 0x56) == 0) Player_Hurt(0x40a00000,…)`]; a configured param-2
+        // channel is the game's no-hurt configuration.
         let Some(g) = (0..2).find(|&g| self.wires[g]) else { return 0.0 };
         self.wires[g] = false;
-        let hurt = if g == 1 && self.ch[1] != 0 { LIVE_WIRE_HURT } else { 0.0 };
+        let hurt = if g == 1 && self.ch[1] == 0 { LIVE_WIRE_HURT } else { 0.0 };
+        // A group-1 wire death zeroes group 0's second word (+0x5C = param 3) before it can fire
+        // [M 0x1adfe8:102 `*(undefined2 *)(iVar1 + 0x5c) = 0;`].
+        if g == 1 {
+            self.ch[2] = 0;
+        }
         // The group emptied: write both of its channel words with the timestamp, then clear [M 0x1adfe8].
         if !self.wires[0] {
             for &c in &[self.ch[0], self.ch[2]] {
@@ -106,5 +114,50 @@ impl FuseBox {
         }
         if !self.wires[0] && !self.wires[1] { self.gone = true; }
         hurt
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::triggers::Channels;
+
+    fn box_with(ch: [u16; 4], wires: [bool; 2]) -> FuseBox {
+        FuseBox { placement: 0, pos: [0.0; 3], ch, wires, opened: true, open_t: 0, gone: false }
+    }
+
+    /// docs/fields/fusebox.md +0x56: the live-wire hurt fires while +0x56 (param 2) is UNSET
+    /// [M 0x1adfe8:99-101]; a configured param-2 channel disables it. Fail-first: the old port
+    /// read the polarity inverted (`self.ch[1] != 0`).
+    #[test]
+    fn live_wire_hurts_only_when_param2_unset() {
+        let head = [0.0; 3];
+        let look = [0.0; 3];
+        // No param-2 channel: cutting the group-1 wire hurts 5.0.
+        let mut b = box_with([10, 0, 11, 12], [false, true]);
+        let mut ch = Channels::default();
+        let hurt = b.player_use(head, look, &mut ch, 0);
+        assert_eq!(hurt, LIVE_WIRE_HURT, "group-1 death with +0x56 == 0 hurts 5.0");
+        // Sister: with param 2 configured the same death never hurts, and the channel fires.
+        let mut b = box_with([10, 5, 11, 12], [false, true]);
+        let mut ch = Channels::default();
+        let hurt = b.player_use(head, look, &mut ch, 0);
+        assert_eq!(hurt, 0.0, "group-1 death with +0x56 configured never hurts");
+        assert!(ch.on(5), "group 1 emptied: its first word (+0x56 = param 2) fires");
+        assert!(ch.on(12), "group 1 emptied: its second word (+0x5E = param 4) fires");
+    }
+
+    /// docs/fields/fusebox.md +0x5C: a group-1 wire death zeroes group 0's second word (+0x5C)
+    /// before it can fire [M 0x1adfe8:102]. Fail-first: the old port left +0x5C armed.
+    #[test]
+    fn group1_death_cancels_group0_second_word() {
+        // Group 0 was already cut earlier (its first word fired then); +0x5C still armed.
+        let mut b = box_with([10, 5, 11, 12], [false, true]);
+        let mut ch = Channels::default();
+        ch.set(10, 1, 0);
+        b.player_use([0.0; 3], [0.0; 3], &mut ch, 1);
+        assert!(!ch.on(11), "+0x5C is cleared by the group-1 death, never fires");
+        // Sister: the group-1 words still fire.
+        assert!(ch.on(5) && ch.on(12), "group 1's own words fire");
     }
 }

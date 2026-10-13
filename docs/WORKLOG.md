@@ -6150,6 +6150,20 @@ failures (full-disc manifest/bigf goldens).
 - `Script_Update`'s negative-delay block (above) also froze every other script that fires event 3
   with p0 = 0.
 
+## fields-world (2026-10-12, branch s/fields-world)
+
+The field map for the world object structs: obj_tag (generic header), level_tag (placement params),
+and the per-type instances — trigger, door, pickup, switch, SS, fusebox, script player + entities,
+searchlight, corona, CamSubject, Destroy, ladder, wire, the mission objective record (0x18) +
+OBJ_STATE, glist (celglist_tag), leaf/colour bytes. docs/fields/<struct>.md ×18, coverage table in
+docs/fields/README.md. Method: creator decode → every reader grepped (scaling rules in
+tools/fields/RECIPE.md; scanner tools/fields/param_offsets.py) → [L] snapshot spot checks → port
+cross-check. Port fixes (fail-first tests, NF_ISO where the disc settles it): fusebox live-wire
+hurt polarity (+0x56 == 0) + the +0x5C group-0 clear (fusebox.rs); switch inhibit-gate polarity +
+the busy one-shot latch (useobj.rs); the raw-0DC trigger param shift removed (triggers.rs — 3 live
+0xDC placements on 0700000c). All five 07000014 fuseboxes carry param 2 non-zero, so the old port
+hurt on every live-wire cut. Live checks + census requests in each doc for the main agent.
+
 ## models-misc (s/models-misc, 044)
 
 **The lane: vehicles, effect meshes, broken states, front-end, cut-scene props — every model class
@@ -6354,3 +6368,62 @@ from the disc this session:
   near it, the game's own positioning; not this task's file, noted in the report).
 - Full suite: 495 passed, only the 3 allowed `disc_golden` failures (the slim ISO). The report
   with the live checks for the main agent is `docs/reports/fix-lighting2.md`.
+
+## fix-spawner-p7 — the spawner's param 7 is the KILL channel (live-measured): the latch, the early-outs, the cleanup's level split with the obj+0xFC draw-counter gate
+
+Branch `s/fix-spawner-p7` (from 32af1c6, merged master 0cad1d9 mid-task). The driver's brief: the main
+agent's live measurement (07000005 in the GDB-server PCSX2, docs/fields/hitdata-spawner-ally.md "Live
+result") settled the p7 disagreement — the kill reading stands, fix-actors' ARM reading is refuted, and the
+07000011 playtest is explained by the cleanup's level split. Port it with the early-outs, cite everything,
+test through the real input path, show the failure pre-fix.
+
+- **The decompile + the disasm** (`DroneSpawner_Control` 0x137e68; the kill block's disasm
+  0x137fbc-0x1380b4 with capstone): p7 (+0x14) latches +0x20 (:50-52); the latched path skips the trigger
+  wait (:53-71) and the spawn machinery (`if (cVar4 == 0)` wraps :87-233) and runs the cleanup (:235-288).
+  The decompiler's comma expression in the cleanup loop (`sVar8 = sVar7 + 1, *(char *)(iVar2 + 0xfc) == 0`)
+  looks like the count includes removed drones — the disasm says otherwise: the increment is the delay slot
+  at 0x138064 and `s6` only updates at 0x138098 when the `bnez` (drone DRAWN) is taken, so `s6` = the kept
+  count; the spawner lingers while `s6 != 0` (0x1380bc) and deletes itself once none remain. The level
+  split (`s7` through the always-executed delay slot at 0x137fe8): kill-all for < 0x07000011, 0x07000014/15
+  and > 0x07000016 except 0x0700004A; the obj+0xFC-gated keep for 0x07000011..13, 0x07000016, 0x0700004A;
+  on 0x07000016 each removal first raises the drone's death channel (`jal 0x13e660` at 0x138074).
+- **`obj+0xFC` found** (the brief asked for every writer): the renderer sets it to 2 for every object
+  added to the draw list (`View_AddObjects` 0x1e62d8:71, `View_AddForcedObjects` 0x1e5fb8:174) and the
+  per-frame object pass decrements it while non-zero (`control_movement_object_handler` 0x1336f8:239-247 —
+  core-loop item 11). So the keep arm keeps drones drawn within the last 2 frames. (Other object classes
+  use the same offset as a float timer — bullets 0x12d890, cars 0x130060 — a per-class field.) The port's
+  per-drone `drawn` visibility flag stands in, **snapshotted at control-walk start** — the game's writer is
+  outside the walk, so the scan must read last frame's value, not a same-walk recompute (the stairwell
+  guard's own pass runs before its spawner's and would read fresh).
+- **The early-outs ported** in Control's order: `NPCGlobals == 0` (the port's `npc_enabled`, call-site),
+  `Drone_bDisableSystem` (0x30ca9e — new `npc_system_disabled`, wired but false: the writers are the
+  options-menu "drones off" setting `switch_NO_DRONES` 0x30ce2c via `Drone_PauseNoDraw` 0x13a710 ←
+  `Drone_InitComms` 0x139520:287 and `ResetMap_GameInit` 0x1d5080:14; the port has no menu), the spawner's
+  own `obj+0xFE` bit 0 (the port's `gone`), and the block's mode < 2 / group == 0 / slot pointer checks
+  (:38-46). The stop channel pauses a latched spawner, deletes an un-latched one (:77-84); the done path
+  waits for the spawned when p6 OR p7 is set (:126-143).
+- **The tests** (`nf-game/tests/spawner_kill.rs`, 5 unit; `nf-view/tests/spawner_kill_live.rs`, 4 NF_ISO):
+  the 07000005 live-measurement replay end-to-end (ch 0x22 → the two gate guards; ch 0x43 → SP 298's
+  script 0x06000AD4 freezes the NPCs → both guards removed, the spawner gone, never spawns again), the
+  sister (no ch 0x43 → they stay), the NPCGlobals gate (a latched channel held off while frozen, lands on
+  re-enable), and the 07000011 stairwell keep (the guard arrives on the trigger touch #182; the kill touch
+  #285 keeps the DRAWN guard; once undrawn the next scan removes him and the spawner deletes itself).
+  `fix_actors_live.rs::the_spawner_arrives_on_its_channels` (shared file, minimal) re-driven through the
+  trigger touch #182 — the arrival is the playtest symptom; the drawn-guard keep is the new test's.
+- **The pre-fix failure was shown on master's code**: the same 07000005 flow (stash + a throwaway test)
+  left both guards alive after ch 0x43 ("SYMPTOM: ch 0x43 removed nothing — master's arm reading leaves
+  both guards alive", left: 2) — the arm reading in the flesh.
+- **Two test re-baselines the corrected semantics forced** (both documented in the reports): the 07000005
+  wall-hug window (the port's script player runs its first commands one tick after `start` — nis.rs, a
+  pre-existing deviation from the game's same-frame SP start, so the removal lands on the touch tick; the
+  end state matches [L] and the freeze-window latch hold is pinned by the NPCGlobals-gate test), and
+  `fix_finale_live.rs`'s sister (the launch chain's ch 0x15 is the group-1 spawner's kill channel and
+  07000016 is a keep level, so the chain's own cleanup removes its undrawn spawns before the sister runs —
+  she now re-reads the nearest remaining non-chaser per throw, the test's own pattern for the walking
+  chaser; the assertions are unchanged: a non-chaser corpse, ch 0x90 stays off).
+- Shared files touched beyond the task's list (all minimal, listed in the report): `drone.rs` (the call
+  site: level + the drawn snapshot + the bDisableSystem gate; the 0x07000016 death-channel hook in
+  Remove; `npc_system_disabled`), `fix_actors_live.rs` (the header bullet + the re-driven arrival test),
+  `fix_finale_live.rs` (the sister re-baseline), `docs/GAPS.md` (G-025's one-line correction).
+- Full suite (post-merge, NF_ISO): **109 test binaries green; only the 3 allowed `disc_golden` failures**
+  (the slim ISO). The report is `docs/reports/fix-spawner-p7.md`.
