@@ -7378,3 +7378,23 @@ Music item resolved (same session): the castle-B per-level dispatch is ALREADY o
 (fix-npcs a80b713: `UpdateMFX_01CastleB` 0x113060 → under_attack ? PickRandomCombat : PickRandomStealth,
 music.rs, + the unit test `the_07000006_alarm_demands_combat_music`) — verified passing in this
 session's nf-game run. Nothing to do; the report is corrected.
+
+The vent crawl ported (same session, before the window closed): `crates/nf-game/src/creepwall.rs`
+(new — `CreepWall` + `all(level)`, the 0x3F sweep mirroring wire::all; the channel = param 3
+[M 0x196fc8:19-22 reads placement+0x2c/0x30/0x34/0x38 → BLData u16[0..3], `Player_Creep` reads
+`*(short*)(params+6)` = u16[3]; half_len = the placement scale's x [S]); player.rs: SS_CREEP = 7,
+`Bond::creep`, `start_creep` [M Player_CollCreepWall 0x196758: the guards, the axis snap, the floor
+ray → hit+1.0, hands via the caller, ClearInertia, cam 0xB] and `creep_tick` [M Player_Creep
+0x1969d0: the per-tick axis snap + fwd·0.275, the yaw = wall.yaw + π, the 1.0-end exits with the
+input toward the end, the exit yaw ∓π/2, regrab 0x78, +0x18 += 0.05; [S] the crawl motion 0.02/tick
+— the game's displacement rides the anim scripts 0x600046d/f/0x71/0x75, unread]; scene.rs: the
+creepwalls on the Sim, the ctx, the per-tick `Music_Event(0xD,1)` + `switch_channels[ch] = 1`
+[mirrors the wire block], the use-key creep arm hoisted ABOVE the doors/SS pick (the game's
+context-6 arm returns before the pick [M 0x1a5170:66-97]; the port's fallback gate [S]).
+Tests (`fix_swim_vent_live.rs`, 07000005 — the creepwalls live on 05/0d/41 [D levels.md], NOT 02):
+the walls parse with ch 113 = the atlas's 0x71; the use key enters SS_CREEP on the axis (≤0.35 off),
+the crawl holds, and crawling to the far end exits to SS_WALK with the regrab lockout.
+KNOWN ISSUE left: the port's channel-gated grate door re-writes its OLD state's not-moving 0 over
+the crawl's channel set every tick (`Door_SetState` 0x135618:26's mirror, door.rs set_state), so
+`channels.on(113)` reads 0 while crawling — the game's crawl wins because the door only writes on
+transitions; the port's door-side ordering is the remaining fix (the crawl side is faithful).

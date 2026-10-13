@@ -53,15 +53,38 @@ research fix-ladder2 already recorded.
   ISO), nf-audio green. **The remainder of nf-view's live suite did not fit the sandbox window** —
   the collision change is wide, so the next session should run the full nf-view suite first thing.
 
+## Done — the vent crawl (the creepwall), landed just before the window closed
+
+The crawlable vents are the 07000005/0700000d/07000041 creepwall placements [D docs/systems/
+levels.md] — not 07000002 (that "grate" is the SS hatch, class 0x25, already ported by
+fix-npc-doors-escort). Ported: the creepwall module (placement 0x3F → class 0x2B '+', the channel
+= param 3 [M 0x196fc8 + 0x1969d0:86-88], the half-length from the placement scale [S]); the crawl
+entry `start_creep` [M Player_CollCreepWall 0x196758]; the crawl substate 7 `creep_tick` [M
+Player_Creep 0x1969d0 — the per-tick axis snap + fwd·0.275, the 1.0-end exits with the input
+toward the end, the exit yaw ∓π/2, regrab 0x78, the +0.05 push; [S] the crawl motion 0.02/tick
+(the game's displacement rides the unread anim scripts)]; the scene wiring (the use-key creep arm
+hoisted above the doors/SS pick — the game's context-6 arm returns first [M 0x1a5170:66-97]) and
+the per-tick `Music_Event(0xD,1)` + `switch_channels[ch] = 1`.
+
+**Verified** (`fix_swim_vent_live.rs`, NF_ISO, 07000005): the two disc creepwalls parse (ch 113 =
+the atlas's 0x71); the use key near the vent enters SS_CREEP on the wall's axis (≤0.35 off), the
+crawl holds across ticks, and crawling to the far end exits to SS_WALK with the regrab lockout.
+Sister: the axis midpoint sits on the placement centre.
+
+**Remaining known issue**: the port's channel-gated grate door writes its OLD state's not-moving
+0 over the crawl's channel set every tick (`Door_SetState` 0x135618:26's mirror in door.rs
+set_state), so `channels.on(0x71)` reads 0 while crawling. The game's crawl wins because its door
+only writes on transitions; the port's door re-writes per tick. The crawl side is faithful; the
+door-side ordering is the remaining fix. The door-grate link itself (the crawl's channel opens
+the grate door) is the same channel write.
+
 ## Not done (each with its reason)
 
-1. **The vent crawl (the creepwall)** — not started. fix-ladder2's WORKLOG entry has the full
-   function chain: the crawlable vent is a creepwall (placement 0x3F → `CreepWall_Create`
-   0x196fc8, class 0x2B; use → `Player_Activate` 0x1a5170's unarmed nearest-0x2B branch →
-   `Player_CollCreepWall` 0x196758 → substate 7 `Player_Creep` 0x1969d0 with `Music_Event(0xD,1)`
-   and `ch[param3]` set/clear), and the grate panel is an ordinary door (class 0x1C,
-   `Door_Activate` 0x135be0). It needs a new creepwall module, the crawl substate 7 in player.rs
-   and the scene wiring — a full session of its own.
+1. **The crawl's body animation and the crawl camera** — the port runs no body anim scripts for
+   Bond (the crawl anims 0x600046d/0x600046f/0x6000471/0x6000475 and the entry 0x6000476 are
+   unread), and the crawl camera mode 0xB's specifics are not modelled (the port keeps its normal
+   third-person camera). The substate, the movement, the entry/exit and the channel/music effects
+   are ported.
 2. **The alarm music's last step — already on master, nothing to do.** The per-level dispatch
    (07000006 → the castle-B updater's `MusicUnderAttack ? PickRandomCombat(0) : PickRandomStealth()`,
    `UpdateMFX_01CastleB` 0x113060) landed with fix-npcs (commit a80b713, music.rs lines with the [M

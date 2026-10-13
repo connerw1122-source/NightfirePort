@@ -297,6 +297,8 @@ pub struct Sim {
     /// The level's zip wires (placement type 0x3E, `Wire_Create` 0x1981d8). Bond grabs one by walking
     /// into its world sphere (fix-wire: the real grab + crossing live in `nf_game::player`).
     pub wires: Vec<nf_game::wire::Wire>,
+    /// The level's creepwalls (class 0x2B, placement 0x3F) — the crawlable vents (fix-swim-vent).
+    pub creepwalls: Vec<nf_game::creepwall::CreepWall>,
     /// The level's third icons (placement kind 0xFA, `ThirdIcon_Create` 0x197070). Each tick the Sim
     /// writes the enabled icon's context into `bond.icon_ctx` (`BLData+0x95F`) — fix-wire2.
     pub icons: Vec<nf_game::wire::Icon>,
@@ -1086,7 +1088,7 @@ impl Sim {
             }
             let water = self.cel_at(self.bond.pos).map(|i| self.cels[i].water).filter(|w| *w > -400.0);
             let sink = input.crouch;
-            let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink };
+            let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink, creepwalls: &self.creepwalls };
             // The third-icon context [M ThirdIcon_Update 0x196e80 + Player_CollisionHandler 0x1949a8:22]:
             // the tick starts with +0x95F = 0xFF (none), then every ENABLED icon (its param-1 channel on,
             // or param 1 == 0 = always) whose room holds the player writes its type. The game scopes by the
@@ -1144,10 +1146,19 @@ impl Sim {
             // every tick on the wire (the music jumps to the stealth section) and the wire's switch
             // channel set 1 while Bond is on it, 0 on drop.
             let on_wire = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
-            self.creeping = on_wire;
+            // The crawl's per-tick effects [M Player_Creep 0x1969d0:85-88]: `Music_Event(0xD, 1)` and
+            // `switch_channels[wall.ch] = 1` every tick while Bond crawls (fix-swim-vent).
+            let on_creep = self.bond.substate == nf_game::player::SS_CREEP;
+            self.creeping = on_wire || on_creep;
             if on_wire {
                 self.drones.music.event(0xd, 1);
                 if let Some(ch) = self.bond.wire.and_then(|wi| self.wires.get(wi)).map(|w| w.channel).filter(|c| *c != 0) {
+                    self.drones.channels.set(ch as u32, 1, self.drones.frame);
+                    self.wire_channel = ch;
+                }
+            } else if on_creep {
+                self.drones.music.event(0xd, 1);
+                if let Some(ch) = self.bond.creep.and_then(|wi| self.creepwalls.get(wi)).map(|w| w.ch).filter(|c| *c != 0) {
                     self.drones.channels.set(ch as u32, 1, self.drones.frame);
                     self.wire_channel = ch;
                 }
@@ -1670,7 +1681,32 @@ impl Sim {
         // The use key (`Player_Activate` 0x1a5170): the doors its sphere — one unit ahead of the head — meets
         // open, swing or thud locked (docs/systems/world-objects.md "Doors"); the player object updates before
         // the control list's doors, so they see the activation this same tick.
+        let mut crept = false;
         if use_key {
+            // `Player_Activate` 0x1a5170:66-97's creepwall arm comes FIRST: with the third-icon
+            // context 6 the use key scans every object for class '+' (0x2B) and calls
+            // `Player_CollCreepWall` on the NEAREST within the squared distance 1000 (no capsule
+            // test) [M] — returning before the head-ray pick ever runs. The port gates on the icon
+            // context 6 when an icon is present, else on the plain proximity of the scan range
+            // [S — the game's icon list may not carry a ctx-6 marker for every vent; the vent
+            // placement itself is the gameplay evidence].
+            if self.bond.substate == nf_game::player::SS_WALK {
+                let mut cbest: Option<(f32, usize)> = None;
+                for (i, w) in self.creepwalls.iter().enumerate() {
+                    let d = (w.pos[0] - self.bond.pos[0]).powi(2) + (w.pos[1] - self.bond.pos[1]).powi(2) + (w.pos[2] - self.bond.pos[2]).powi(2);
+                    if d >= 1000.0 { continue; }
+                    if cbest.map_or(true, |(bd, _)| d < bd) { cbest = Some((d, i)); }
+                }
+                if self.bond.icon_ctx == 6 || cbest.is_some() {
+                    if let Some((_, i)) = cbest {
+                        let cctx = nf_game::player::LadderCtx { creepwalls: &self.creepwalls, ..Default::default() };
+                        self.bond.start_creep(i, &self.world, &cctx);
+                        crept = self.bond.substate == nf_game::player::SS_CREEP;
+                    }
+                }
+            }
+        }
+        if use_key && !crept {
             self.drones.player_use_doors(&d, camera, look, self.drones.frame);
             // `Player_Activate` 0x1a5170 case '%': the pick's class-0x25 SS objects activate
             // (`SS_Activate` 0x1a9ea8 — state + mask gate, then the channel latch). The game's
@@ -1689,6 +1725,30 @@ impl Sim {
                 if dd > 2.2 { continue; }
                 if best.map_or(true, |(bd, _)| dd < bd) { best = Some((dd, i)); }
             }
+            // `Player_Activate` 0x1a5170:66-97's creepwall arm comes FIRST: with the third-icon
+            // context 6 the use key scans every object for class '+' (0x2B) and calls
+            // `Player_CollCreepWall` on the NEAREST within the squared distance 1000 (no capsule
+            // test) [M] — preempting the head-ray pick. The port gates on the icon context 6 when
+            // an icon is present, else on the plain proximity of the scan range [S — the game's
+            // icon list may not carry a ctx-6 marker for every vent; the vent placement itself is
+            // the gameplay evidence].
+            let mut crept = false;
+            if self.bond.substate == nf_game::player::SS_WALK {
+                let mut best: Option<(f32, usize)> = None;
+                for (i, w) in self.creepwalls.iter().enumerate() {
+                    let d = (w.pos[0] - self.bond.pos[0]).powi(2) + (w.pos[1] - self.bond.pos[1]).powi(2) + (w.pos[2] - self.bond.pos[2]).powi(2);
+                    if d >= 1000.0 { continue; }
+                    if best.map_or(true, |(bd, _)| d < bd) { best = Some((d, i)); }
+                }
+                if (self.bond.icon_ctx == 6 || best.is_some()) {
+                    if let Some((_, i)) = best {
+                        let cctx = nf_game::player::LadderCtx { creepwalls: &self.creepwalls, ..Default::default() };
+                        self.bond.start_creep(i, &self.world, &cctx);
+                        crept = self.bond.substate == nf_game::player::SS_CREEP;
+                    }
+                }
+            }
+            if !crept {
             if let Some((_, i)) = best {
                 let frame = self.drones.frame;
                 let st = self.drones.sss.list[i].state;
@@ -1698,6 +1758,7 @@ impl Sim {
                 let hit = self.drones.sss.list[i].activate(&mut ch, frame);
                 self.drones.channels = ch;
                 if hit { eprintln!("[ss] SS #{i} (placement {}) activated by the use key", self.drones.sss.list[i].placement); }
+            }
             }
         }
         // `Check_Target` (0x1a7810, every 6th frame — `GameState+0x52 % 6`): Bond's 50-unit view ray (mask
@@ -3139,6 +3200,8 @@ impl Scene {
             // against their map objects like the ladders (fix-wire: the world sphere replaces the
             // hardcoded 4.0 length; the endpoints derive at grab time per the atlas).
             let wires = nf_game::wire::all(level);
+            // The creepwalls (`CreepWall_Create` 0x196fc8, placement type 0x3F): the crawlable vents.
+            let creepwalls = nf_game::creepwall::all(level);
             // The wires' owning cels (see `wire_cels`): the game's pick pass tests a dynamic object
             // only in the cels its query straddles [M 0x1eb320], and the object lives in the cel
             // whose creation block carried it [M 0x1d04f0].
@@ -3202,7 +3265,7 @@ impl Scene {
             drones.pickups.extend(placed_pickups);
             drones.pickups.extend(reserved);
             drones.script_pickup_slots = sim_slots.into_iter().collect();
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(),
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(),
                 wire_cels, laser_beam: None,
             })
         });
