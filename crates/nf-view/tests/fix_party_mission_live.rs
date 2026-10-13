@@ -625,21 +625,54 @@ fn the_07000008_safe_chain_works_in_play() {
     eprintln!("[safe] fusebox SP present {sp}, mesh entity {had_mesh}");
     assert!(sp && had_mesh, "the fusebox's own ScriptPlayer ran and built the visible box [M 0x1b0448 SP_Create mode 0x40]");
 
+    // The GuardRoom fusebox cut through the REAL path: the box's script registers its wire
+    // (`FuseBox_Register` 0x1b0970 via the script's event 0xF [L NF_SCRIPTLOG stream 2 → group 0]),
+    // the Laser's beam bullets hit it (the 0x0002 category word survives `Collide_FilterBullets`'s
+    // 0xfffd [L weapon_data 0x4E; M 0x1ece30:24-31]) and `FuseBox_Update` writes ch 137
+    // [M 0x1adfe8:110-115]. `Player_Activate` 0x1a5170 has no class-0x3C arm — E does nothing.
+    let (fb, wire_pos) = {
+        let sim = scene.sim.as_ref().unwrap();
+        let f = sim.drones.fuseboxes.iter().position(|f| f.ch[0] == 0x89).expect("the GuardRoom fusebox (ch 137) exists");
+        let obj = sim.drones.fuseboxes[f].alive_wires().next().expect("the wire is registered by the box's script").2;
+        let pos = nf_game::drone::Drones::script_obj_pos(&sim.drones.scripts, &sim.data(), obj).expect("the wire has a position");
+        eprintln!("[safe] fusebox wire at {pos:?}");
+        (f, pos)
+    };
+    {   // settle on the floor near the box, then close inside the Laser's 4.0 range [L +0x1C].
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = [wire_pos[0] + 1.2, wire_pos[1] - 1.0, wire_pos[2]];
+        for _ in 0..60 { sim.step_bond(Input::default(), false, false, false); }
+        for _ in 0..4 {
+            let head = sim.bond.head();
+            let d = [wire_pos[0] - head[0], wire_pos[1] - head[1], wire_pos[2] - head[2]];
+            let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            if dist <= 2.4 { break; }
+            let h = (d[0] * d[0] + d[2] * d[2]).sqrt();
+            if h < 0.3 { break; }
+            let step = (dist - 2.0).min(h);
+            sim.bond.pos = [sim.bond.pos[0] + d[0] / h * step, sim.bond.pos[1], sim.bond.pos[2] + d[2] / h * step];
+            for _ in 0..10 { sim.step_bond(Input::default(), false, false, false); }
+        }
+    }
+    for _ in 0..40 { scene.sim.as_mut().unwrap().step_bond(Input { switch_to: Some(0x4e), ..Default::default() }, false, false, false); }
+    assert_eq!(scene.sim.as_ref().unwrap().gun.weapon, 0x4e, "the Laser is selected [D USATxt 0x05000043]");
+    let mut ch137 = false;
+    for _ in 0..200u32 {
+        {
+            let sim = scene.sim.as_mut().unwrap();
+            let head = sim.bond.head();
+            let dir = [wire_pos[0] - head[0], wire_pos[1] - head[1], wire_pos[2] - head[2]];
+            let l = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-4);
+            sim.bond.yaw = dir[0].atan2(dir[2]);
+            sim.bond.pitch = (dir[1] / l).asin() / (std::f32::consts::FRAC_PI_2);
+        }
+        scene.sim.as_mut().unwrap().step_bond(Input::default(), true, false, false);
+        if scene.sim.as_ref().unwrap().drones.channels.on(137) { ch137 = true; break; }
+    }
+    eprintln!("[safe] ch137 {ch137} after the laser burn");
+    assert!(ch137, "the laser burn cuts the wire and writes ch 137 [M 0x1adfe8 group 0 → param 1]");
+    let _ = fb;
     let sim = scene.sim.as_mut().unwrap();
-    // The GuardRoom fusebox (the game's E flow: the lid, then the wire): two presses with the lid
-    // script's 63 ticks between [M 0x1a5170 → the class-0 SP; crate::fusebox's stand-in].
-    let fb = sim.drones.fuseboxes.iter().position(|f| f.ch[0] == 0x89).expect("the GuardRoom fusebox (ch 137) exists");
-    let fp = sim.drones.fuseboxes[fb].pos;
-    eprintln!("[safe] fusebox at {fp:?}");
-    sim.bond.pos = [fp[0] - 1.2, fp[1], fp[2]];
-    sim.bond.yaw = (fp[0] - sim.bond.pos[0]).atan2(fp[2] - sim.bond.pos[2]);
-    sim.bond.pitch = 0.0;
-    for _ in 0..5 { sim.step_bond(Input::default(), false, false, true); }
-    for _ in 0..80 { sim.step_bond(Input::default(), false, false, false); } // the lid script
-    for _ in 0..5 { sim.step_bond(Input::default(), false, false, true); }
-    for _ in 0..20 { sim.step_bond(Input::default(), false, false, false); }
-    eprintln!("[safe] ch137 {} after the two presses", sim.drones.channels.on(137));
-    assert!(sim.drones.channels.on(137), "the fusebox's wire cut writes ch 137 [M 0x1adfe8 group 0 → param 1]");
     let bolt_t = sim.drones.sss.list.iter().find(|s| s.channel == 137).map(|s| s.t).unwrap_or(-1.0);
     eprintln!("[safe] doorway bolt SS t={bolt_t}");
     assert!(bolt_t > 0.0, "the doorway bolt SS opens on ch 137 [D #217 param 3]");

@@ -68,13 +68,16 @@ fn fusebox_07000014_param2_decides_the_live_wire_hurt() {
         assert_eq!(b.ch, [par(1) as u16, par(2) as u16, par(3) as u16, par(4) as u16]);
     }
     if let Some(b) = boxes.iter().find(|b| b.ch[1] == 0) {
-        // A box with +0x56 == 0: cutting its live wire MUST hurt (the fixed polarity).
+        // A box with +0x56 == 0: a group-1 wire dying to a kept hit (the Laser's 0x0002 category
+        // word [L weapon_data]) MUST hurt (the fixed polarity) — the real cut path [M 0x1adfe8].
         let mut b2 = nf_game::fusebox::FuseBox {
-            placement: b.placement, pos: b.pos, ch: b.ch, wires: [false, true],
-            opened: true, open_t: 0, gone: false,
+            placement: b.placement, pos: b.pos, ch: b.ch, groups: Default::default(),
         };
+        b2.register_wire(0, 1); // the group-1 wire (the script's event-0xF registration)
+        b2.mark_hit(1, 0);
         let mut ch = nf_game::triggers::Channels::default();
-        let hurt = b2.player_use([0.0; 3], [0.0; 3], &mut ch, 0);
-        assert_eq!(hurt, nf_game::fusebox::LIVE_WIRE_HURT, "param 2 unset → the live wire hurts");
+        let cuts = b2.update(&mut ch, 0);
+        assert!(cuts.iter().any(|c| matches!(c, nf_game::fusebox::Cut::LiveWireHurt { .. })),
+            "param 2 unset → the live wire hurts [M 0x1adfe8:99-101]");
     }
 }

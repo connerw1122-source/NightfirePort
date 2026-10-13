@@ -55,6 +55,11 @@ pub enum Request {
     /// The two hash-specific enable extras (0x600001b → msg 10 + Music_Event(0xf), 0x600002e → msg 0xe walk) are
     /// not ported — neither script is live on the ported levels.
     DroneEnable { on: bool },
+    /// Event 0xF: the SP create-callback hand-off (`Script_EventHandler` 0x1d94c0:172-175 case 0xF
+    /// calls `SPINFO+0x84` with the CURRENT stream's entity and the event's param 0) — the owning
+    /// ScriptPlayer's placement (`player`, the fusebox's), the object index in `Scripts::objects`
+    /// and the group (param 0; `FuseBox_Register` 0x1b0970 guards group < 2).
+    WireRegister { player: usize, obj: usize, group: u16 },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -535,6 +540,19 @@ impl Script {
             // hashcode; `Player_RamSave` is skipped (no memory card in the port).
             0x12 => out.push(Request::LoadLevel { level: g(0) }),
             0x13 => self.script_cam = true,
+            // Event 0xF (`Script_EventHandler` 0x1d94c0:172-175): the create-callback hand-off —
+            // the object of stream i−1 (the handler's record base is +0x80, one 0x28 record below
+            // `Script_Run`'s +0xa8 — the same previous-stream pattern as events 6 and 0xB [M
+            // 0x1d94c0:84-89]; the kind must be 1/2 = entity/anim), group = param 0, through the
+            // SP's callback (`FuseBox_Register` 0x1b0970 for the fuseboxes). The fusebox scripts'
+            // wires are the streams' ANIM objects [L dump: 07000014's 0x06000A1B — stream 1's anim
+            // registered by stream 2's event (group 0), stream 5's by stream 6 (group 1)].
+            0xf => {
+                let prev = i.checked_sub(1).map(|j| &self.streams[j]).filter(|s| matches!(s.kind, 1 | 2)).and_then(|s| s.obj);
+                if let Some(obj) = prev {
+                    out.push(Request::WireRegister { player: self.player, obj, group: g(0) as u16 });
+                }
+            }
             _ => out.push(Request::Event { kind, params: p }),
         }
     }
