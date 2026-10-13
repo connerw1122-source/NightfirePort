@@ -8595,3 +8595,6 @@ Stage Summary:
 - Full suite running at entry time; report docs/reports/fix-viewmodel-zoom.md carries the count and
   the live checks (PCSX2: the watch's viewfinder vs the sniper scope + the fieldprobe tilt probe;
   nf-view --bond spots for scope/viewfinder/OICW/laser).
+- Suite complete: nf-game 32/32 and nf-view 154/154 binaries green (the 3 new tests included);
+  nf-formats + nf-audio green except the 3 allowed disc_golden misses on the slim ISO. Zero
+  unexpected failures; no Rand_* draws added.

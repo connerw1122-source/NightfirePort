@@ -123,6 +123,10 @@ nf-view (`--bond` spots; 07000005 `--bond 104.9,25.1,108.8,0.0`):
 
 ## Suite count
 
-nf-game: 33 binaries green (3 new viewmodel-zoom units included). nf-view: 116 binaries green.
-nf-formats + nf-audio: the allowed 3 `disc_golden` failures only (slim ISO), plus the pre-existing
-`audio_sample_count` (untouched crates). No regressions.
+`NF_ISO=$NF_ISO cargo test --offline --release -j2 --no-fail-fast -p nf-game -p nf-formats -p
+nf-audio -p nf-view -- --test-threads=1` (run per crate after the sandbox killed background jobs):
+**nf-game 32/32 binaries green; nf-view 154/154 binaries green (the 3 new fix-viewmodel-zoom tests
+included); nf-formats + nf-audio green except the allowed 3 `disc_golden` failures**
+(`bigf_header_fields_behave_as_documented`, `bigf_tables_match_the_golden_manifest`,
+`directory_tree_matches_the_golden_manifest` — the slim ISO's known misses). Zero unexpected
+failures, zero panics. No `Rand_*` draws added; no seed-pinned test moved.
