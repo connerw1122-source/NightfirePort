@@ -36,3 +36,13 @@ One line per finished queue task: merged into master or not, and why. Written by
   The first suite run lost 4 test files to a system memory leak (RuntimeBroker held 215 GB of commit; the user ended it); the rerun was green, 522/522.
 - 2026-10-12 **046b-fix-spawner-p7**: merged (clean). p7 is the kill channel, with the cleanup's level split from the disasm (kill-all, vs keep-drawn on 0x11-0x13, 0x16 and 0x4A). `obj+0xFC` is identified as the renderer's drawn-recently counter (`View_AddObjects` sets 2, the object pass decrements it). Control's early-outs are ported in order. The bug was reproduced first, using the main agent's live measurement as the test. fix_finale_live's sister was re-targeted (its old target is now legitimately removed earlier). Suite 531/531.
 - walkreal-a (812a0fd): not merged (no report; an [S] door-open stand-in with no fail-first test; `agent-ctx/` scratch notes). Queued task 045g picks up its NDrone2_OpenDoor port and walker harness.
+- 2026-10-12 **045d-fix-gadgets**: merged (clean). G cycles gadgets (the key was disabled; the machinery worked). A gadget→gadget switch no longer writes the previous-WEAPON slot (+0x930), so Q gets back to the guns. The Q-Laser and laser watch burn locks through the beam ray (07000008's safe bolts); the decryptor burns locks; the Q-Claw grapple fires, reels and releases (07000005 #282). Not done: the Q-Worm grant (mission scripts), the photo/briefcase actions, the beam and rope draws. 0c's camera and 12's briefcase are the same id 0x52 on the disc. Suite 544/544.
+- 2026-10-12 **045c-fix-party-mission**: merged (WORKLOG union; my `simplescript_live` call updated for `SsList::create`'s new hash argument). All 7 playtest items, each reproduced first:
+  - the bouncers don't shoot fists-only Bond;
+  - a punch on a guard fails the mission (Cover Lost), and a shot guest fails it;
+  - punching a guest no longer T-poses the others;
+  - the NIS music hand-over (CastleC/D);
+  - banners hold during NIS (hud_frozen);
+  - the post-Kimiko re-show;
+  - the 07000008 safe chain end to end: the fusebox's own SP mesh, the watch burns the bolts, the briefcase → ch 0x4A, the gondola and the rocket launcher.
+  The worker pushed its report without marking the queue done, so the watcher now also accepts a report on a claimed task. Suite 559/559.

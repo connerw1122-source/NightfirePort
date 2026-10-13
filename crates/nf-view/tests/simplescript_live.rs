@@ -22,7 +22,7 @@ fn simplescript_props_are_in_the_scene() {
     // rest); the key-less ones stay static (the game creates nothing for them [S]).
     let statics: Vec<String> = lv.scene_instances(true).0.iter().filter(|i| i.placement.flags & 0xff == 0xe2).map(name).collect();
     let pb: Vec<&[u8]> = lv.path_blocks();
-    let ss = nf_game::ss::SsList::create(&lv.maps[lv.main_map().unwrap()].placements, &pb, |_| 0); // (the collision hash is the sim's concern)
+    let ss = nf_game::ss::SsList::create(&lv.maps[lv.main_map().unwrap()].placements, &pb, |_p| 0);
     let ss_names: Vec<String> = ss.list.iter().map(|s| {
         let p = &lv.maps[lv.main_map().unwrap()].placements[s.placement];
         let obj = if p.by_hash() { lv.by_hash.get(&p.hashcode).copied() } else { Some((lv.main_map().unwrap(), p.index as usize)) };
