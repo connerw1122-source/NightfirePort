@@ -42,3 +42,7 @@ claimed-by: sandbox6 at 2026-10-13T18:31Z
 ## Report (done, 2026-10-13T19:43Z)
 
 Closed by the driver: the report is on `s/fix-portal5` (docs/reports/fix-portal5.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-13T20:17Z)
+
