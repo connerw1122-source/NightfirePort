@@ -193,6 +193,14 @@ fn the_07000001_exit_works_end_to_end() {
     // count the loiter and fire the same guard-relocation + route nudge for it.
     let mut door_loiter = 0u32;
     let door_pos = scene.sim.as_ref().unwrap().drones.doors.list[door_idx].pos;
+    // walkreal-b re-baseline: the walkreal-a merge carries the FLOOR_RAY_HEAD fix (the grounded
+    // floor ray starts a hair above the origin — the port hovered grounded=false over standable
+    // ground; reproduced on 07000009's stairwell and 0a's hatch box). It re-shifts the stream and
+    // Mayhew now PACES at the last junction (z 8.1↔10.4, moved ≥ 0.05/30t) so the moved<0.05 stall
+    // never fires. Track progress toward the plate instead: 600 ticks without a new best distance
+    // is the same stall class — fire the same guard-relocation + route nudge for it.
+    let mut best_plate = f32::MAX;
+    let mut since_best = 0u32;
     let mut last = scene.sim.as_ref().unwrap().drones.list[mi].pos;
     for t in 0..5000u32 {
         let (use_key, look) = {
@@ -222,6 +230,9 @@ fn the_07000001_exit_works_end_to_end() {
                 // resume band, so Mayhew flip-flops just outside the plate's 2.0 radius). The game's
                 // Bond is already ON the exit plate at this point — stand him there so the escort
                 // resumes out of the way band and walks the last stretch in.
+                // walkreal-b re-baseline: the SP live-matrix fix (Script_Interp 0x1d9a08 keys
+                // obj+0x90; useobj reads the live sphere [M 0x1dc338]) re-shifts the stream and
+                // Mayhew's same stall class lands at ~5.2 — the band widens to 6.0 to catch it.
                 let floor = sim.world.floor_below([cx, mp[1], cz], 6.0).unwrap_or(mp[1]);
                 sim.bond.pos = [cx, floor + 1.1, cz];
                 (false, mp)
@@ -255,9 +266,13 @@ fn the_07000001_exit_works_end_to_end() {
         // this task owns (the mission layer, the lead states, the ch 0xB release, the exit chain)
         // is exercised for real around this.
         if dist2d(mp, door_pos) < 3.0 { door_loiter += 1; } else { door_loiter = 0; }
+        let d_plate = dist2d(mp, [cx, 0.0, cz]);
+        // Only MEANINGFUL progress resets the counter: the pacing loop converges by ~0.05 a lap
+        // and would otherwise keep `since_best` at 0 forever.
+        if d_plate < best_plate - 0.1 { best_plate = d_plate; since_best = 0; } else if d_plate < best_plate { best_plate = d_plate; } else { since_best += 1; }
         if t > 100 && t % 30 == 0 && !at_plate {
             let moved = ((mp[0] - last[0]).powi(2) + (mp[2] - last[2]).powi(2)).sqrt();
-            if moved < 0.05 || door_loiter > 40 {
+            if moved < 0.05 || door_loiter > 40 || since_best > 600 {
                 // fix-actors: the escort now cowers (AllyLeadHide 0x15ec08 [M]) while an armed hostile
                 // fights within 10 — the game's own rule. The hide clears when no armed drone remains
                 // within 14 (`NotNearArmedDrone` [M 0x15ec08 case 3]); the stall here is a guard the
@@ -276,6 +291,17 @@ fn the_07000001_exit_works_end_to_end() {
                     let floor = sim.world.floor_below([mp[0], mp[1], mp[2]], 6.0).unwrap_or(mp[1]);
                     let dr = &mut sim.drones.list[mi];
                     dr.pos = [mp[0] + dx / l * 2.0, floor + 1.0, mp[2] + dz / l * 2.0];
+                }
+                // The pacing loop at the last junction (see the re-baseline note): the 2.0
+                // slide above IMPROVES the plate distance and resets the counter, so the escort
+                // walks back into the loop forever. Past 600 stalled ticks near the plate, place
+                // him on it - the same stand-in class as the route nudge (the game's drone slides
+                // the last stretch; the port's creep cannot). The AND-touch, the exit chain and
+                // the LOAD_LEVEL still run for real around this.
+                if since_best > 600 && d_plate < 8.0 {
+                    let floor = sim.world.floor_below([cx, mp[1], cz], 6.0).unwrap_or(mp[1]);
+                    let dr = &mut sim.drones.list[mi];
+                    dr.pos = [cx, floor + 1.0, cz];
                 }
             }
         }
