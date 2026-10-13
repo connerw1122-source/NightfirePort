@@ -97,3 +97,10 @@ remaining ~140 nf-view binaries did not fit the window; re-run before merge.
 `crates/nf-game/tests/facial_live.rs` (new), `crates/nf-formats/tests/facial_probe.rs` (new, the
 evidence probe), `docs/formats/character.md`, `docs/WORKLOG.md`. No shared file rewritten; no
 Rand_* draws added to the sim (the facial state machine is not wired yet).
+
+## ntfy failed
+
+All three fallbacks failed with the server-side quota error (sent 19:13 UTC):
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- python urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget: exit code 8 (server error), no body.
