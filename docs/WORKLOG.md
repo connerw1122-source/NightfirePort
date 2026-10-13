@@ -9102,3 +9102,9 @@ Stage Summary:
 - G-028: the flee chain and ValidateCoverAnim are IN; the slide constant is decompile-true with its
   dead-code status documented; the 8-slot table and the +0x538 blend-out remain open with the blockers
   written down. Branch s/fix-cover-remainder; report docs/reports/fix-cover-remainder.md.
+
+## fix-spawner-remainder (s/fix-spawner-remainder) — 2026-10-13
+
+Task 286: GAPS G-025 (the spawner mode-3 wave-delay byte +0x1F and the power-station spawn SFX
+branch, DroneSpawner Control 0x137e68) and G-040 (07000001's second gate guard, placement 277,
+script 0x0600007f not in the kind-7 NIS archive). Work starting.
