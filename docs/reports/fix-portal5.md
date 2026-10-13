@@ -163,3 +163,17 @@ before the report commit:
 `crates/nf-game/src/world.rs` (`closest_point_scoped`, minimal), `crates/nf-view/tests/fix_portal5_live.rs`
 (new: the pin + 3 probes). Shared-file notes: world.rs addition listed here per the rules; WORKLOG.md
 append-only entry.
+
+## ntfy failed
+
+All three fallbacks failed with the same upstream limit (2026-10-13 ~20:17-20:18 UTC):
+
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- python3 urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget: `HTTP request sent, awaiting response... 429 Too Many Requests` / `2026-10-13 20:18:09 ERROR 429: Too Many Requests.`
+
+The notification content was: `fix-portal5: done — the courtyard wall draw mechanism decoded (View_AddCels
+0x1e6ba0 + View_AddObjects 0x1e62d8 per-cel object lists), the own-cell attribution fixed (379/765
+misaligned -> 0), the chain-owner rule = build_link_objects_to_rooms 0x1c9150; pin RED-first then green;
+render spots + live checks in docs/reports/fix-portal5.md`. The report itself is on the branch and
+attached to the queue's done/ entry.
