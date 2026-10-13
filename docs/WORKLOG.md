@@ -7905,3 +7905,17 @@ Stage Summary:
   the objective's own string id; the fail message is centred. Shared-file changes: drone.rs (the
   Mission_Update move), scene.rs (the drain/freeze order, the head-only tick, the SFX-at-open),
   hud.rs (the centred objective-banner rows) — all additive, listed in the report.
+
+---
+Task: fix-facial
+Agent: fix-facial worker
+Branch: s/fix-facial (from origin/master 13abef4)
+
+Work Log:
+- Sandbox kept (repo, work/, onfoot ISO, nf-queue present); token refreshed, master pulled.
+- Starting G-020/G-030: decode the skin morph data (skin +0x12 facial count, the skinning word's
+  morph index) into docs/formats/character.md, port AnimFacialUpdate/AnimFacialBlend, drive from
+  the cut-scene scripts' 22-channel face tracks + speech. WORKLOG first, branch pushed.
+
+Stage Summary:
+- (in progress)
