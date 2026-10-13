@@ -42,3 +42,7 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox5 at 2026-10-13T05:54Z
+
+---
+## Report (done, 2026-10-13T07:34Z)
+
