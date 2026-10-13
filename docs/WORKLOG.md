@@ -7695,3 +7695,5 @@ bonus 1, spawned ≥ 13, the zero-sister on reload; the save carries the run's f
 the detected counter's live hook, `Player_InitWeapon`'s per-difficulty autoaim distances, the
 NewScoresRef PTP hand-off, the results screens (180-fix-menus). docs/systems/progress.md is the
 port map; GAPS G-045 added. Report: docs/reports/fix-progress.md.
+
+## fix-restart-target (s/fix-restart-target) — 2026-10-13
