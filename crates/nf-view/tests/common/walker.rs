@@ -75,6 +75,11 @@ pub struct Walker {
     pub top_up_health: bool,
     /// Stop the walk the moment `level_exit` is requested.
     pub stop_on_exit: bool,
+    /// The cut-scene skip (the game's own skip action) while `disabled`. On by default (the walk
+    /// cannot watch cut-scenes); a route that must NOT skip (a script whose channel writes the
+    /// route depends on — walkreal-c's 07000016 launch chain and 0700001b defeat NIS) turns it
+    /// off and drives `step_bond` itself for that segment.
+    pub skip_cutscenes: bool,
     pub report: Report,
     pub total_ticks: u32,
     pos: V3,
@@ -122,7 +127,7 @@ impl Walker {
     pub fn new(scene: Scene) -> Walker {
         let pos = scene.sim.as_ref().unwrap().bond.pos;
         Walker {
-            scene, top_up_health: true, stop_on_exit: true,
+            scene, top_up_health: true, stop_on_exit: true, skip_cutscenes: true,
             report: Report { legs: Vec::new(), stuck_events: Vec::new(), falls: Vec::new() },
             total_ticks: 0, pos, last_sample: pos, sample_tick: 0, stuck: 0, stuck_cycles: 0,
             sidestep: 0, max_y: pos[1], lenient: false,
@@ -208,7 +213,7 @@ impl Walker {
     }
 
     fn tick_inner(&mut self, input: Input, use_key: bool, fire: bool) {
-        if self.scene.sim.as_ref().unwrap().disabled {
+        if self.skip_cutscenes && self.scene.sim.as_ref().unwrap().disabled {
             self.scene.sim.as_mut().unwrap().drones.scripts.skip_request = true;
         }
         let y_before = self.scene.sim.as_ref().unwrap().bond.pos[1];
