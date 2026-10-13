@@ -176,8 +176,14 @@ fn the_kimiko_scene_characters_play_their_face_tracks() {
     for b in 0..body_only.len() {
         assert_eq!(body_only[b], together[b], "the face track must not pose bone {b} (it is a morph-weight source)");
     }
-    // The weights source: the same window sampled as weights carries live values mid-scene.
-    let w = nf_game::anim::facial_weights(face_seq, frame, char.skin.facial as usize)
-        .expect("the face track samples as weights");
-    assert!(w.iter().any(|v| v.abs() > 0.01), "the face track carries live morph weights at frame {frame}");
+    // The weights source: the same window sampled as weights over its frames carries live values
+    // (the dialogue has quiet stretches, so scan — the track's own maximum is the pin).
+    let mut max_w = 0.0f32;
+    let step = (face_seq.frames / 64).max(1);
+    for f in (1..=face_seq.frames).step_by(step as usize) {
+        if let Some(w) = nf_game::anim::facial_weights(face_seq, f as f32, char.skin.facial as usize) {
+            max_w = max_w.max(w.iter().fold(0.0f32, |m, v| m.max(v.abs())));
+        }
+    }
+    assert!(max_w > 0.01, "the face track carries live morph weights over its frames (max {max_w})");
 }

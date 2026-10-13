@@ -4248,8 +4248,13 @@ impl Scene {
         let hidden = |_: &Character, ci: usize| hidden[ci];
         // fix-facial2: the morph weights per morph-bearing script character (the ledge dialogue's
         // face track), computed once per frame — `SkinIt` 0x10bf30 consumes them per vertex.
+        // fix-facial3: drone-backed characters are gated OUT until the GPU half (the report's item
+        // 3) lands — the driver's face window is live from tick 0 and the weights-as-morph term on
+        // the CPU path alone broke the gpu_palette oracle (0.0033 > 1e-3 on 07000006, exactly the
+        // morph delta the shader does not apply yet). The weights source itself stays live and
+        // tested (facial3_live's driver test reads facial_weights_at directly).
         let facial: Vec<Option<Vec<f32>>> = self.characters.iter().enumerate().map(|(ci, c)| {
-            if c.morph_targets.is_some() { self.facial_weights_at(ci, c) } else { None }
+            if c.morph_targets.is_some() && c.script.is_some() { self.facial_weights_at(ci, c) } else { None }
         }).collect();
         self.char_verts.iter().map(|v| {
             // Searchlight parts: the simulation's matrices (`Searchlight_Update`), coronas as camera billboards

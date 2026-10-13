@@ -104,7 +104,14 @@ a position pin, correcting the port's "sit target" comment). fix_drone3 and ai_t
 
 - `facial3_live` 3/3 (NF_ISO, ~4 s); nf-game lib 135/0 (the driver unit test included);
   ai_traces_live 4/4, fix_cutscenes2_live 5/5, fix_drone3_live green, fix_truck_live 2/2 — all on
-  the pushed tree.
+  the pushed tree. The wider blast-radius run (the posers changed): gpu_skin_live 3/3 (the oracle:
+  07000005 back at 1.5e-5; see the interim gate note), walk_07000005/06/07/01_live 2+2+2+2,
+  models_characters_live 6/6, fix_npcs_live 4/4, character_lighting_live 2/2, facial2_live 2/2.
+- **The interim oracle gate**: the re-point made the driver's live weights reach the CPU morph term
+  from tick 0 on 07000006 and the GPU half does not apply morphs yet — the oracle caught exactly
+  that (0.0033 > 1e-3, the morph delta). Until item 3 lands, `animate`'s morph term is gated to
+  script-object characters (`c.script.is_some()`); the drone weights source stays live and tested
+  (facial3_live reads `facial_weights_at` directly). Landing item 3 removes the gate.
 - **Not run** (next session, before merge): the full four-crate sweep
   `NF_ISO=... cargo test --offline --release -j2 --no-fail-fast -p nf-game -p nf-formats
   -p nf-audio -p nf-view -- --test-threads=1` — the risk areas (the poser changes' blast radius)
