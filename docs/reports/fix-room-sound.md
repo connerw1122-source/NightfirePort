@@ -141,3 +141,10 @@ sphere closure) that broke the build — fixed in the merge commit 2dc44ad.
 - Doc fixes carried over from fix-sound-remainder: sound.md §7's "op 2 / sub 3" → op 4 / event 3,
   and the `cel_tag+0x98` field in docs/atlas/cel.md (this session's `Cel` doc comments carry the
   addresses meanwhile).
+
+## ntfy failed
+
+All three transports returned the same daily-quota rejection (2026-10-13 ~23:42 UTC):
+- `curl`: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- `python3 urllib`: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- `wget`: same 429 body (quiet output, exit 0 from the pipe — the server response was the 429 JSON).
