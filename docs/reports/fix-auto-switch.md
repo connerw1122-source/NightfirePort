@@ -136,3 +136,13 @@ Raptor), but the predicate gap exists with the gate OFF too; it predates this ta
 Nothing for the gate itself. Follow-ups: the disabled-take predicate (live check #1 first);
 the 07000001 placed-Raptor-at-spawn question interacts with every walkreal escort timing —
 worth a dedicated pass with the predicate settled.
+
+## ntfy failed
+
+All three fallbacks returned the daily-quota 429 (the same limit fix-pickups-remainder and
+fix-facial recorded on this channel): curl published
+`{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your
+limits with a paid plan, see https://ntfy.sh"}`, the python fallback raised
+`HTTPError: HTTP Error 429: Too Many Requests`, and the wget fallback returned empty with the
+same limit. The queue entry (done/279b-fix-auto-switch.md with the full report attached) and
+the branch push went through — only the push notification is missing.
