@@ -36,3 +36,7 @@ Files: as fix-swim-vent4, plus the icon loop in `crates/nf-view/src/scene.rs`.
 
 ---
 claimed-by: sandbox2 at 2026-10-13T19:00Z
+
+---
+## Report (done, 2026-10-13T19:57Z)
+
