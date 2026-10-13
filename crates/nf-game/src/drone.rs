@@ -3467,7 +3467,12 @@ impl Drone {
     fn choose_combat_move(&mut self, d: &Data, rng: &mut Rng) -> u8 {
         use state::*;
         if self.stays(d) { return 0; }
-        let (aimed, bunched) = (self.aimed_at, self.bunched);
+        // The gate's "opponent is aiming at me" is `DroneWeap_OpponentIsAimingAtMe` [M 0x17a500:12-29]:
+        // armed Bond AND the +0x2A threat latch `Check_Target` stamps [M 0x1a7810:149-150] — the port's
+        // `aimed_at` 30-tick crosshair latch. Pre-fix the armed half was missing, so an unarmed Bond
+        // counted as "aiming" and threatened guards skipped their dodge/step/crouch roll.
+        let aimed = self.aimed_at && self.bond_armed;
+        let bunched = self.bunched;
         if rng.rand(15) >= 7 && !aimed && !bunched { return 0; }
         let mut opts = Vec::new();
         if aimed && self.prop(d, 0x13) && self.can_do(d, anim_state::DODGE_LEFT) { opts.push(1) }
