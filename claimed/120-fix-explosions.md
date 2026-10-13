@@ -34,3 +34,6 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 **A mission blocker on 0700000d (from map-powerstation's report):** the C5 double door (`bigdoor01/02`, a 0xE1 `Destroy`, health 1000/10000) has to die to write ch 0x1f, which the mission's final AND needs. In the game it's cut by the mounted laser inside the crane cut-scene (`shipping_handle` SimpleScript → `ScriptPlayer_ShippingCrane`; the laser fires weapon-0x67 bullets). Make that sequence run: the SS activation and playback, the script player's timeline, and the laser's bullets hitting the `Destroy` (`props.rs`, on master). Then extend `walk_0700000d_live` to reach the mission end. `bigdoor01` (#93) has no gfx bounds and an empty collision block [D], so check how the game builds its hit volume.
 
 **Branch:** `s/fix-explosions`.
+
+---
+claimed-by: sandbox6 at 2026-10-13T11:01Z
