@@ -75,6 +75,11 @@ pub struct Walker {
     pub top_up_health: bool,
     /// Stop the walk the moment `level_exit` is requested.
     pub stop_on_exit: bool,
+    /// The cut-scene skip (the game's own skip action) while `disabled`. On by default (the walk
+    /// cannot watch cut-scenes); a route that must NOT skip (a script whose channel writes the
+    /// route depends on — walkreal-c's 07000016 launch chain and 0700001b defeat NIS) turns it
+    /// off and drives `step_bond` itself for that segment.
+    pub skip_cutscenes: bool,
     pub report: Report,
     pub total_ticks: u32,
     pos: V3,
@@ -122,7 +127,7 @@ impl Walker {
     pub fn new(scene: Scene) -> Walker {
         let pos = scene.sim.as_ref().unwrap().bond.pos;
         Walker {
-            scene, top_up_health: true, stop_on_exit: true,
+            scene, top_up_health: true, stop_on_exit: true, skip_cutscenes: true,
             report: Report { legs: Vec::new(), stuck_events: Vec::new(), falls: Vec::new() },
             total_ticks: 0, pos, last_sample: pos, sample_tick: 0, stuck: 0, stuck_cycles: 0,
             sidestep: 0, max_y: pos[1], lenient: false,
@@ -208,7 +213,7 @@ impl Walker {
     }
 
     fn tick_inner(&mut self, input: Input, use_key: bool, fire: bool) {
-        if self.scene.sim.as_ref().unwrap().disabled {
+        if self.skip_cutscenes && self.scene.sim.as_ref().unwrap().disabled {
             self.scene.sim.as_mut().unwrap().drones.scripts.skip_request = true;
         }
         let y_before = self.scene.sim.as_ref().unwrap().bond.pos[1];
@@ -628,6 +633,7 @@ impl Walker {
                     let sim = self.scene.sim.as_ref().unwrap();
                     let door_i = sim.drones.doors.list.iter().position(|d| {
                         dxz(d.pos, self.pos) < 2.8
+                            && (d.pos[1] - self.pos[1]).abs() < 2.5  // the door's own floor (the 15 crossing's lower gantry doors sit 17.6 below the lane)
                             && sim.world.segment(self.pos, d.pos).is_some()
                     });
                     if let Some(di) = door_i {
@@ -695,13 +701,27 @@ impl Walker {
             return;
         }
         eprintln!("[walk] {label}: opening door ({:.1},{:.1},{:.1}) state {:#x}", dpos[0], dpos[1], dpos[2], state);
-        for k in 0..40u32 {
+        for k in 0..60u32 {
             let sim = self.scene.sim.as_ref().unwrap();
             let desired = (dpos[0] - sim.bond.pos[0]).atan2(dpos[2] - sim.bond.pos[2]);
             let err = wrap_pi(desired - sim.bond.yaw);
+            // The use point is head + look (radius 1, doors' reach 2.5 [M 0x1a5170; door.rs
+            // player_use]): aim the LOOK at the door's centre (the placement pos is its base — a
+            // door a floor below the approach needs the pitched look, or the E misses).
+            let centre = [dpos[0], dpos[1] + 1.0, dpos[2]];
+            let to = [centre[0] - sim.bond.pos[0], centre[1] - (sim.bond.pos[1] + sim.bond.eye - sim.bond.crouch_drop), centre[2] - sim.bond.pos[2]];
+            let want_pitch = (to[1] / to[0].hypot(to[2]).max(0.5)).atan() / std::f32::consts::FRAC_PI_2;
+            let perr = want_pitch - sim.bond.pitch;
             let d = &sim.drones.doors.list[di];
+            let far = dxz(sim.bond.pos, dpos) > 1.7;
             let pressing = d.state & 0xc == 0 && k % 6 == 0; // one edge per 6 ticks
-            self.tick(Input { turn: err.clamp(-0.08, 0.08), ..Default::default() }, pressing);
+            let input = Input {
+                turn: err.clamp(-0.08, 0.08),
+                look: perr.clamp(-0.06, 0.06),
+                forward: if far { 0.5 } else { 0.0 },
+                ..Default::default()
+            };
+            self.tick(input, pressing);
             if self.scene.sim.as_ref().unwrap().drones.doors.list[di].state & 0x8 != 0 { break; } // opening
         }
     }
