@@ -6457,3 +6457,63 @@ Bond's gadgets: the selection re-enabled and three gadget systems ported with te
   (Input::fire plumbing); `drone.rs` (grapple_points — additive, on its own lines).
 - Left: the decryptor's scan UI, the camera/briefcase/Q-Worm fire-side functions (the mission
   layer's), the rope/beam render items (Sim::laser_beam holds the endpoints), the swing momentum.
+
+## walkreal-b (2026-10-13, branch s/walkreal-b)
+
+The tower/power-station/second-tower missions (07000009, 0a, 0b, 0c, 0d, 11, 12, 13, 14) walked with the player's own
+movement — input only, no teleports except documented stand-ins at unported logic.
+
+- **07000009, 0700000a, 0700000b**: walked end to end with input only (earlier commits on the branch). 09: car park →
+  stairs → lobby → lift → 0a; the elevator-activation writer pinned as the level's documented blocker. 0a: the loop by
+  nav nodes; the Q-Worm cubicle collision and the locked office door ch 0x30 pinned as the two documented blockers
+  (ch 0x48/0x30 driven as the documented stand-ins). 0b: walked to MISSION COMPLETE (the deck jump driven east off the
+  helicopter; the win read through the re-firing band's 20-tick window onto the mission latch).
+- **0700000c** walked to the 0d gate with input only: the ST-1 plate ch 0x1b (objective 1), the REAL camera photograph
+  through the bullet path into the CamSubject volumes (ch 0x1c, objective 2), the yard, the ladder climb (top 12.1),
+  the patrol circle, the gate E → level_exit 0700000d. The vent/display/secret-door/pulley crossings are the documented
+  0xE2 SimpleScript stand-ins (the port's SS gap on map-powerstation).
+- **0700000d** walked arrival → the C5 door: the start trigger (objective 3), the crane stand-in (the port's 0xE2 gap —
+  fix-explosions owns the crane/laser), the ST-3 plate ch 0x1d (objective 4), the REAL laser photograph ch 0x1e
+  (objective 5), the corridor plate ch 0x28, THE DOCUMENTED STOP at the C5 door (ch 0x1f has no writer — the
+  mounted-laser cut-scene is unported; the AND stays open, no mission complete).
+- **07000011** walked spawn → the Load Point E → level_exit 07000012 (the spawn tile ch 0x7E, the stairwell door's south
+  band, the stairwell-descent stand-in — the flight graph needs the level mesh).
+- **07000012** walked: the elevator start → the spawn ch 0x48 → the REAL walk south around the shaft core → the REAL
+  Q-Decryptor keypad burn (the G cycle equips 0x4E from the loadout; the held beam burns the "Lock - KeypadLocked"
+  locks #656/#694 → ch 0xa [M Lock_Update 0x1ae3d8:194]) → ch 0xa's rising edge OPENS the crossing door[19] → the
+  doorway stand-in (the corner pincer, below) → the REAL walk to the security-centre console → E → ch 0x49 (objective
+  1) + ch 0x59 (the SS lift doors #677/#678 animate to key 1) → the shaft-lobby entrance stand-in (below) → the REAL
+  walk into touch #683 (ch 0x1F) → the gated exit #669 auto-fires → level_exit 0700004A.
+- **07000013** walked through the full warm chain: 12 walked → 4A's spawn drop fires ch 0x4D (the late AND) → 13 warm →
+  the spawn ch 0x4A → the REAL walk south through the lobby (the east lane past the wing plate #w56-zone, the desk
+  block wedges the direct line) → the entrance #156 writes ch 0x50 (the objective completes) → the success band patrol →
+  MISSION SUCCESS (state 6, the AND over 0x48/0x49/0x4D/0x4A/0x50 [M 0x1827d8:119-123]) → LevelToEndTo 0x07300013
+  (the driving interlude; the port logs and skips driving codes). The level's own exit #72 is dead data (ch 0x4E has no
+  writer [D]) and sits beyond the entrance's west wall — the route ends at the latch.
+- **07000014** (in progress, to be continued): the route is written (`walkreal_07000014_live.rs`); leg 1 walks the vent
+  store room to the drop touch #301; the vent cut-scene (SP #276, 0x06000833) does not yet write ch 0x47 within the
+  2400-tick window — the next session picks up there (the toucher's y band, the cut-scene's own trigger, or the walker's
+  arrival point).
+- **THE FIX (game-code, cited)**: `Doors::end_tick` (door.rs) — the game snapshots the switch-channel latches with TWO
+  amemcpys at the head of `control_movement_object_handler` [M 0x1336f8: `amemcpy(0x26fd90, 0x26fe90, 0x100);
+  amemcpy(0x26fe90, 0x26fc90, 0x100)` — `prev ← hold; hold ← channels`], so `prev` lags the live channels by two
+  snapshots and `Door_Update`'s lock rising edge (`prev == 0 && now != 0`, 0x136550-0x136608) fires for any channel
+  pulsed since the last snapshot. The port made ONE copy into `prev_channels`, so a channel written before the snapshot
+  (the player's own Q-Decryptor keypad burn, which runs in `step_bond` before `Drones::tick`) never showed an edge —
+  the keypad door stayed locked forever. Fixed by adding the `hold_channels` latch (new field on its own line) and the
+  two-stage copy. The failing test is `walkreal_07000012_live` (the burn → the door must open); the sister is the
+  existing door unit test's seeded-edge case.
+- **Two documented stand-ins on 07000012** (all other legs real): (1) the door[19] doorway crossing — the closed leaf's
+  tunnel (x 6.74..7.07, z −1.46..−0.26 [D probe]) is 1.2 wide; the OPEN leaf's slab (x 5.65..6.85, z −1.59..−1.26 [D
+  probe]) pokes its east edge 0.2 into the tunnel mouth and the capsule (r 0.55 [M Player_Collision 0x194df0]) has no
+  convergent push path (the drives from z −0.9/−0.8/−0.76/−0.72/−0.5 all pin at x ≈ 7.14; capsule_push at the pin sums
+  an east push (0.057, 0.029)); (2) the shaft lobby's entrance — the lobby (exit #669 at (2.3, 10.0), touch #683 at z
+  12.1-13.1) is walled off on every probed line (south x 0.5/2.4, east z 9.5/11, west z 9.5 — class-21 hits [D probe]);
+  the call-button #699 (1.1, 8.2) is an E-touch on the wall face, not a doorway. Both need a live check (below).
+- **Shared files touched** (all minimal, listed for the merge): `crates/nf-game/src/door.rs` (the `hold_channels`
+  latch field + the two-stage `end_tick`; the struct field on its own line).
+- **Test files**: `crates/nf-view/tests/walkreal_0700000{9,a,b,c,d}_live.rs`, `walkreal_07000011_live.rs`,
+  `walkreal_07000012_live.rs`, `walkreal_07000013_live.rs`, `walkreal_07000014_live.rs` (in progress),
+  `common/tower2.rs` (the shared 12 route), the probes `walkreal_probe0{9,b,c,d}.rs`/`walkreal_probe1{1,2}.rs`.
+- The report: `docs/reports/walkreal-b.md` (per-level walkable yes/no, the stuck points, the --bond render spots, the
+  live checks).
