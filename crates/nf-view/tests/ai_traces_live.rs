@@ -328,7 +328,12 @@ fn ai_05_truck() {
     // 07000005: drone 2 matched the WHOLE level (7851 frames); the others held until the user's first
     // kill (llist removal at line 885/2168) or the hip-conversion noise; the sniper (12) is state-matched
     // from line 0 (the group-1 spawner's immediate respawn).
-    pin(&segs[0], &[(2, 7851, "full"), (0, 1342, ""), (12, 0, ""), (13, 7049, "")]);
+    // Drone 13's pin was 7049 (his first divergence at the frame-36372 0x6F guard event) until
+    // fix-impacts' effect draws (casings/debris on every user shot, 0x12f680) joined the shared RNG
+    // stream — his idle-timeout walk then starts a few seconds earlier and the pos divergence moves to
+    // trace line 5508 (state 4 still matching, dmax 3.72). Verified pre-merge: fd4ec1b passes at 7049;
+    // the re-pick follows master's own precedent (ad5fb7f re-picked ai_live's seed for the same join).
+    pin(&segs[0], &[(2, 7851, "full"), (0, 1342, ""), (12, 0, ""), (13, 5508, "")]);
     for i in 4..=10 { pin(&segs[0], &[(i, 2168, "")]); }
 }
 
