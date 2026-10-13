@@ -7695,3 +7695,29 @@ bonus 1, spawned ≥ 13, the zero-sister on reload; the save carries the run's f
 the detected counter's live hook, `Player_InitWeapon`'s per-difficulty autoaim distances, the
 NewScoresRef PTP hand-off, the results screens (180-fix-menus). docs/systems/progress.md is the
 port map; GAPS G-045 added. Report: docs/reports/fix-progress.md.
+
+## fix-movies (s/fix-movies) — 2026-10-13
+Task: the FMVs (PSS): verify the pss.rs demuxer on Nightfire's own movies with an
+NF_ISO golden test over every PSS on the disc; decode the MPEG-2 (IPU-style) video
+and the PSS audio stream; find in the decompile when the game plays movies
+(boot, level loads, mission ends) and whether they can be skipped
+(docs/systems/movies.md); wire playback into nf-view (full-screen plane + cpal
+audio + skip) with a headless frame dump (--movie <name> --frame N --shot) since
+there is no GPU here. Files: crates/nf-formats/src/pss.rs, a new mpeg2 decoder
+(or crate glue behind a cargo feature `movies`), crates/nf-view/src/movie.rs,
+docs/formats/pss.md. Started 14:28 UTC, sandbox expires ~16:25 UTC.
+
+**fix-movies outcome (16:22 UTC)**: the PSS demuxer is verified on all 22 disc movies and closed the RC2 gaps
+G-008 warned about — Nightfire's audio sub-stream header is `FF A0 00 00` (not RC2's `FF A1 00 cc`; the old
+demuxer errored 100 KB into the first movie) and the audio is 16-bit LE PCM 48 kHz stereo (`SShd` kind 1, not
+ADPCM kind 0x10; `Audio::parse` rejected every Nightfire movie). golden/pss_movies.tsv pins per-movie packet
+counts, geometry (512x448, 30 Hz, Main@Low interlaced), picture counts and audio formats; the NF_ISO golden
+tests + sisters are in crates/nf-formats/tests/pss_movies_live.rs. Video decodes via `oxideav-mpeg12video`
+0.0.13 (pure Rust, MIT — dependency approval wanted) behind the opt-in cargo feature `movies`:
+mpeg2.rs glue, frame 0/1000 SHA-1s pinned, ffmpeg cross-check 66-68 dB PSNR. docs/formats/pss.md and
+docs/systems/movies.md written (the full movie map: psiStartBackgroundMovie 0x001081a8, boot logos
+0x7370048/0x7380048, briefings 0x0710xxxx via ResetMap_Load states 3->6, outros 0x0730xxxx, win 0x73F0048,
+looping menu BGs from M_PAGE+0xC4, skip = action 0x19 instant). nf-view/src/movie.rs: Movie::load + PCM audio
++ headless `--movie <code> --frame N --shot out.png` dumps (feature-gated), verified on two movies. Left for
+the next session: live playback wiring (window + cpal + skip), the FILES.BIN menu-BG codes, the 0x72xxxxxx
+codes. The slim ISO stubs all movies (lba=0/size=0) — set NF_MOVIE_ISO to the retail image to run the tests.

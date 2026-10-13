@@ -26,3 +26,6 @@ naga = { version = "30.0.1", features = ["wgsl-in"] }
 # builds and tests without it (and without gilrs in the dep tree). Needs libudev to build
 # (gilrs-core's Linux hotplug).
 gamepad = ["dep:gilrs"]
+# The decoder (oxideav-mpeg12video, MIT) stays opt-in until the user approves it: `--features movies`
+# enables nf-formats/movies, the --movie CLI and the movie tests.
+movies = ["nf-formats/movies"]

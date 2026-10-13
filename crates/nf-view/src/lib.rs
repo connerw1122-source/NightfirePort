@@ -23,6 +23,7 @@ pub mod gamepad;
 pub mod dev;
 pub mod hud;
 pub mod menu;
+pub mod movie;
 pub mod scene;
 pub mod replay;
 pub mod panel;
@@ -1576,6 +1577,19 @@ pub fn run() -> Result<()> {
         --dev --scenario <name>: place Bond for a feature test (weapon-switch, sg5-pickup, wire-music, autoaim)\n\
         --record <file>: record every logic tick's input to <file> (B-5). --replay <file>: replay a recording.\n\
         --no-fog: skip the fog screen pass (isolate vertex colour/texture). --no-tex: ignore texture samples (solid white, isolate lighting/fog).";
+    // --movie <name/code> --frame N --shot out.png: headless PSS movie test (fix-movies) — demux, decode one
+    // frame of the disc's MPEG-2 video, dump it as a PNG (no window, no GPU). The game plays these through
+    // psiStartBackgroundMovie 0x001081a8 (cdrom0:\movies\30_FPS\%8.8x.pss;1). Needs `--features movies`.
+    #[cfg(feature = "movies")]
+    if let Some(m) = args.iter().position(|a| a == "--movie") {
+        let name = args.get(m + 1).context("--movie needs a movie name or hashcode (e.g. 07100001)")?;
+        let frame: usize = args.iter().position(|a| a == "--frame").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0);
+        let out = args.iter().position(|a| a == "--shot").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from).context("--movie is headless only: pass --shot <out.png>")?;
+        let iso_path = args.first().cloned().or_else(|| std::env::var("NF_ISO").ok()).context("no <iso> given and NF_ISO is not set")?;
+        let iso = nf_formats::iso9660::IsoImage::open(&iso_path)?;
+        movie::movie_frame_shot(&iso, name, frame, &out)?;
+        return Ok(());
+    }
     // Positional arguments are the ones before the first flag.
     let pos: Vec<&String> = args.iter().take_while(|a| !a.starts_with("--")).collect();
     // No <level> at all: the front end (fix-menus) — the game's own boot loads the front-end map
