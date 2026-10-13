@@ -7244,3 +7244,37 @@ Work Log:
 Stage Summary:
 - Emitter/ripples/flicker/cloud/apocalypse sims live; MoviePlayer + EnvTree sway + SpaceLaser/Missile documented as out of scope (not gameplay blockers — fix-finale-blockers report).
 - Follow-ups listed in the report: the cloud-drift/flicker-tint render hooks, the Apocalypse screen fade, the emitter textures.
+Started. Plan: replay Bond's recorded path from tests/traces/05-truck.trace, 01-doors.trace, 01-raptor.trace,
+02-civilian.trace through nf_view::load + step_bond, compare every drone's state id / position / facing per frame
+against the recording, write first divergences into docs/atlas/drone-port-check.md, then fix from the decompile
+(each fix citing the address, with a fail-first trace-window test).
+
+---
+Task ID: 053
+Agent: fix-ai-traces (worker)
+Task: fix-ai-traces (branch s/fix-ai-traces) — the guards against the real game's recordings
+
+Work Log:
+- Built the replay harness `crates/nf-view/tests/ai_traces_live.rs`: parses the 4 traces, loads the level
+  per segment, places Bond per frame (pos/yaw from the trace, velocity from the frame delta, pad bits →
+  the real input path per docs/systems/input.md §3), steps `Sim::step_bond` + the recorder's cheats via
+  `Dev::after_tick`, and compares every drone's state (`+0x10C`) and position (`obj+0x30`) per frame in
+  DRONE_LIST order, printing the first divergence per drone.
+- Pinned the alignment facts ([L] trace + ee_start_05): the recorder starts mid-run (warm-up K by state
+  match); the 07000005 sniper is spawner-templated then immediately re-spawned (group 1, count 0xffff);
+  obj+0x30.y = feet + the live hip (`DroneAnim_PreTransCallback` 0x13b490 adds the `+0xA0` delta to the
+  root vector's y; a disabled drone's anim never ticks); the user's kills are injected (no pitch in the
+  trace) when the game's list tail aligns shifted.
+- FIXED the earliest divergence (07000001's line 0, both 01 traces): ported **PlayScript (state 3)** —
+  `NDrone2_DSTATE_PlayScript` 0x15ba68, `Drone+0x554` = param 1 (`NDrone2_DefaultInit` 0x14b300), Global
+  0x15b830 enters it when a start script exists; UPDATE runs the opponent look; the resume `+0xCD8` per
+  the decomp's script variants. The first guard's state now matches the game from line 0.
+- Pinned per-trace per-drone matched-frame counts (can only go up); the full suite is green (nf-game 174,
+  nf-view 383; only the 3 allowed disc_golden failures on the slim ISO).
+
+Stage Summary:
+- 02-civilian replays PERFECTLY (24/25 drones, all 1083 frames). 05-truck: drone 2 matches the whole level;
+  the rest hold to the first user kill; two open state divergences (SURRENDER_ANIM at 29828, 0x6F at 36372).
+- Open (documented in docs/atlas/drone-port-check.md + the report): Mayhew's WAIT_SWITCH gating, the
+  0x8c-vs-0x58 cover choice in the first fight, the PlayScript root-motion step, the hip converter's
+  `animobj+0x5c` source, the SURRENDER/0x6F triggers. Live checks listed in the report.
