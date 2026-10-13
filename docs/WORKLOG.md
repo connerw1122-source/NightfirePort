@@ -6611,3 +6611,15 @@ and the gate spawner removed both guards on the touch tick — the gate stood em
 - Full suite (post-merge, NF_ISO): nf-game 23/23, nf-view 85/85, nf-audio+nf-formats green except
   **the 3 allowed `disc_golden` failures** (the slim ISO). The report is
   `docs/reports/fix-script-start-tick.md`.
+## fix-wallhug-freeze (2026-10-13)
+
+Task: in real play (`tests/traces/05-gate-swap.trace`, 07000005 from the start) the ledge plate #301
+(ch 0x43) swaps the gate pair for the placed pair on the very next frame and never freezes the
+patrolling guards — but the port starts SP #298 (script 0x06000AD4), whose event 5 freezes every NPC
+~1,400 ticks. Find the trigger condition that keeps SP #298 unrun in real play (the SP's mask/mode,
+`SP_LoadScript` 0x1dbc08's arming, a second channel, a once-only flag, Bond's creep state, a
+progress gate) and make the port match: swap on the next frame, no freeze. Re-assert
+`spawner_kill_live.rs` against the trace.
+
+Work log:
+- Setup: branch `s/fix-wallhug-freeze` from origin/master (03ed005), this entry started and pushed.
