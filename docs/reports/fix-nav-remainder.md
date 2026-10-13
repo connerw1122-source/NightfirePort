@@ -101,3 +101,10 @@ node's position in the route list.
 `crates/nf-game/src/drone.rs` (the task's primary file) and `docs/WORKLOG.md` (append-only). No
 other shared file touched; `nis.rs` had a temporary debug line during development, removed before
 commit.
+
+## ntfy failed
+
+All three channels refused with the daily-quota 429:
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- python urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget: exit 8 (server error response), no output.
