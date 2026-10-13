@@ -17,16 +17,16 @@ Tags: [M] decompile, [D] disc, [L] snapshot, [S] suggested.
 | 0x50 | Q-Laser (watch laser) | `Player_LaserPointer` 0x1a65d8, `Draw_LaserBeam` 0x1a4560; sounds SFX_GADGET_WATCH_LASER_* |
 | 0x54 | Laser Watch (scoped) | `weapon_data[0x54]+0x68` flag 0x40 (scoped); sounds SFX_GADGET_WATCH_LASER_* / WATCH_TASER |
 
-## Status (fix-gadgets, 2026-10-13)
+## Status (fix-gadgets2, 2026-10-13)
 
 | Address | Name | Status | Notes |
 |---|---|---|---|
-| 0x192860 | `Player_SSGrapple` | **ported (logic)** | Substate 2: the fire latches the aim-ray point, the reel (0.05→0.5/tick SP) hangs Bond < 2.0 from it, the fire releases. The rope's visual and the swing momentum's restore are not modelled [S]. `gadget_grapple_live`. |
+| 0x192860 | `Player_SSGrapple` | **ported (logic)** | Substate 2: the fire's bolt latches the point, the reel (0.05→1.5/tick SP [M :96-104]) hangs Bond < 2.0 from it, the hang HOLDS while the fire is held and the RELEASE detaches [M :56-66] — fix-gadgets2 fixed the inverted polarity that made a human click latch+detach invisibly. The pick models the bolt (radius 1.0 [M 0x12c5a0:92], range weapon_data+0x1c 5.0/10.0 [M 0x12e7b0:158]). The rope's visual, the claw-cam substate 10 and the swing momentum are not modelled [S]. `gadget_grapple_live`, `gadget_grapple_user_spot`. |
 | 0x195d10 | `Player_InitGrapple` | **stand-in** | The rope object (mesh 0x2000138) is not created (the renderer's item). |
 | 0x192728 | `Player_GrappleSetRope` | **stand-in** | The rope endpoints are not drawn. |
 | 0x195da0 | `Player_SetGrapplePoint` | **ported (logic)** | The enter path in scene.rs (the aim ray vs the point's sphere; the exact selection cone [S]). |
 | 0x193098 | `Player_SSScanMode` | **partial** | The decryptor's lock burn works through the beam path (`runs_beam` — 0x4E/0x4F in `Lock_Update` 0x1ae3d8's contact scan); the scan-mode camera/UI is not ported. |
-| 0x1a65d8 | `Player_LaserPointer` | **ported (logic)** | The beam ray per tick while the laser family is out; the lock contact via the aim line's closest approach [S — the 08 safe door's collision plane sits ~0.9 in front of the bolt centres, so the world-capped beam can never touch them]. `gadget_laser_live`. The +0x68 bit-3 gate belongs to the GUNS' laser sights (0x06/0x07/0x08/0x09/0x0f/0x17/0x18), not the gadgets. |
+| 0x1a65d8 | `Player_LaserPointer` | **the GUNS' laser sight** | fix-gadgets2 re-read: this is the GUNS' laser-sight ray (+0x68 & 0x8 weapons, drawn every tick while equipped) — the gadget beams draw from the per-shot `Player_MuzzleFlash` 0x1a4298 → `Draw_LaserBeam` 0x1a4560 (weapdef+0x6c bit 0x100 — the decryptor 0x4E/0x4F) / `Draw_TaserBeam` 0x1a46a8 (bit 0x80 — the claw) path, spawned by the HELD fire's refire loop [M 0x1a5460:442-694]. The port's burn runs while the fire is held (the watch also aimed [M 0x1a5460:512-514]). The Q-Laser 0x50/0x51's SP `+0x95f == 2` ThirdIcon gate [M :523] is not ported. |
 | 0x1a4560 | `Draw_LaserBeam` | **render item** | The beam's endpoints are parked on `Sim::laser_beam` for the renderer (the meshes 0x2000131/0x2000133). |
 | 0x198298 | `Grapple_Create` | **ported** | The grapple points parse (placement 0x3A — this page's 0x3E was the WIRE's type; corrected). `drones.grapple_points`. |
 
