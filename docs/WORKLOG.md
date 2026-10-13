@@ -8065,3 +8065,25 @@ Work Log:
   Pickup_Handler 0x18e650 in full (kind 5: clears BLData+0x888 for a class-3 taker + msg
   0x2000013, CONSUMED — the port refuses it today; the take messages/sounds/channels/respawn
   tail all match the port's HUD path).
+- Census: 29 failures found, 0 left. Fixes (each with a would-have-failed test):
+  Pickup_CreateFromSet (kinds 7-11 → the PickupMatrix row-0 weapon [L 0x2b9100 row 0,
+  MPSettings+0x1B4 = 0 in SP], the BASE id, clip·2, the weapon's own glist) — 25 SP placements on
+  0700004b/07000041 took nothing before; the auto-switch decode + the sim-side request
+  (is_better_weapon [M 0x1a6eb0], BestWeapon = the symtab's 0x2bede0 object, the gadget-base guard,
+  rockets never switch); EquipAmmo's 0x1f/0x25 remap [M 0x1a8d18:11-19]; kind 5 consumed
+  (msg 0x2000013); the respawn tail (state 2, 60·respawn·10 ticks); the +0x38 spin.
+  Toggle-back/text messages/keys/armour verified already matching 0x1a6f80/0x18e650.
+- GATED OFF: the auto-switch's view drain (scene.rs `if false`, fully noted) — with it live,
+  walkreal_07000001's contact-follow wedges (green on a master worktree); the request is computed
+  and unit-tested, the drain needs the main agent's live check first. Walker shared file NOT
+  changed (reverted).
+- Suite: nf-game 31 binaries green (9 new pickup units), nf-view 109 green (the census + walks),
+  nf-formats+nf-audio only the allowed disc_golden 3 (+ audio_sample_count, pre-existing on the
+  slim ISO, untouched crates). Report: docs/reports/fix-pickups-remainder.md.
+
+Stage Summary:
+- Every 0xF0 placement on all 27 on-foot levels now creates with the right kind/weapon/ammo and is
+  takeable from a standing spot (the census, green). Sets 7-11, the respawn tail, the spin, kind 5
+  and the ammo-id remaps are new port behaviour with game citations.
+- Left: the auto-switch drain re-open (live checks 1-2 in the report), moving-platform landings,
+  the drop push-out, the AR set's second pile, the +0x888 kind-5 field, the shop's Upgrades byte.
