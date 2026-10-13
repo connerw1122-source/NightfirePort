@@ -1565,13 +1565,17 @@ pub fn run() -> Result<()> {
     let pos: Vec<&String> = args.iter().take_while(|a| !a.starts_with("--")).collect();
     // No <level> at all: the front end (fix-menus) — the game's own boot loads the front-end map
     // 0x7000048 and opens the P_START page on it [M bootup 0x1c7e78 + ResetMap_Load 0x1d6360].
+    // A lone positional that names an existing file is the image, not a level (`nf-view <iso>` boots the
+    // front end too).
+    let lone_iso = matches!(pos.as_slice(), [p] if std::path::Path::new(p.as_str()).is_file());
     let (iso, level) = match pos.as_slice() {
         [iso, level] => (iso.to_string(), level.to_string()),
+        [iso] if lone_iso => (iso.to_string(), "07000048".to_string()),
         [level] => (std::env::var("NF_ISO").map_err(|_| anyhow::anyhow!("NF_ISO is not set and no <iso> was given\n{USAGE}"))?, level.to_string()),
         [] => (std::env::var("NF_ISO").map_err(|_| anyhow::anyhow!("NF_ISO is not set and no <iso> was given\n{USAGE}"))?, "07000048".to_string()),
         _ => bail!("{USAGE}"),
     };
-    let front_end = pos.is_empty();
+    let front_end = pos.is_empty() || lone_iso;
     let level = if level.to_ascii_lowercase().ends_with(".bin") { level } else { format!("{level}.bin") };
     let all = args.iter().any(|a| a == "--all");
     let dev = args.iter().any(|a| a == "--dev");
