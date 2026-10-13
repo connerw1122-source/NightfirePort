@@ -288,6 +288,9 @@ pub struct Sim {
     /// The level's zip wires (placement type 0x3E, `Wire_Create` 0x1981d8). Bond grabs one by walking
     /// into its world sphere (fix-wire: the real grab + crossing live in `nf_game::player`).
     pub wires: Vec<nf_game::wire::Wire>,
+    /// The level's third icons (placement kind 0xFA, `ThirdIcon_Create` 0x197070). Each tick the Sim
+    /// writes the enabled icon's context into `bond.icon_ctx` (`BLData+0x95F`) — fix-wire2.
+    pub icons: Vec<nf_game::wire::Icon>,
     /// Each wire's owning cel (the smallest-volume `cels` bbox containing the wire's world-sphere
     /// centre — `build_FindCel` 0x1c8cb0's test). The game's pick pass is CEL-CULLED:
     /// `Collide_Pick` 0x1eb320 tests only the cels the query segment straddles
@@ -299,9 +302,6 @@ pub struct Sim {
     /// sphere r 11.5 at (−63.1, 8.1, −34.5)) swallows Bond the moment he enters the secret bunker
     /// (a different cel), making the bunker's touch plates unreachable.
     pub wire_cels: Vec<Option<usize>>,
-    /// The level's third icons (placement kind 0xFA, `ThirdIcon_Create` 0x197070). Each tick the Sim
-    /// writes the enabled icon's context into `bond.icon_ctx` (`BLData+0x95F`) — fix-wire2.
-    pub icons: Vec<nf_game::wire::Icon>,
     /// Whether Bond is currently on a wire (substate 6/0xF) — the music event 0xD source.
     pub creeping: bool,
     /// The wire anims' root tracks, resolved from the level archive's kind-5 scripts + the anim
@@ -1019,6 +1019,7 @@ impl Sim {
             // exists only if the walking query version reaches `Collide_PickObj`'s world-sphere branch
             // (versions 0x200/0x201 [M 0x1eae80]) — unproven, and the unculled sphere let 07000002's courtyard
             // wire swallow Bond in the bunker; left out until measured. `wire_cels` stays for that.
+
             let was_on_wire = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
             let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
             input.fire = trigger;

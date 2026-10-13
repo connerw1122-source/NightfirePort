@@ -7062,3 +7062,7 @@ the report.)
 
 Suite green (only the 3 allowed disc_golden failures). Probe kept: `crates/nf-view/tests/audio_probe.rs` dumps
 every script's op-0x16 sound ids, the anim sets' op-1/op-4 commands and their bank/stream resolutions per level.
+
+- Merge origin/master (walkreal-b2/render-artifacts/npc-doors2/wallhug-freeze) into s/fix-wire2: scene.rs resolved keeping BOTH the wire_cels cel-gated use-key grab (master's, fixing 07000002's bunker swallow — the walk-in auto-grab removed on master per their Collide_PickObj version evidence) and this task's icon ctx + jump-grab [M 0x1916b0:118-147]; WORKLOG kept both appends in order; nf-extract's Player literal fixed for the new capsule field (standing stance, ROOT_HEIGHT). Merge fixup committed.
+- Post-merge suite: 605 + 374 passed (nf-game/formats/audio + nf-view), 3 failed — the allowed disc_golden (slim ISO). fix_wire2_live 3/3, wire_live 4/4 green on the merge.
+
