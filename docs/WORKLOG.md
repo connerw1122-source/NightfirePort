@@ -8214,3 +8214,31 @@ Work Log:
   ThirdIcon_Update 0x196e80 + Player_CollisionHandler 0x1949a8:22 so icon_ctx is 0xFF at the gate
   door (30.0, 38.84, 37.70) and level start (104.95, 25.12, 108.83) [L PCSX2 2026-10-13] and 6 only
   where the game shows the shimmy/crawl icon. Sandbox expires ~21:09 UTC.
+
+---
+Task: fix-swim-vent5
+Agent: fix-swim-vent5 worker
+Branch: s/fix-swim-vent5
+
+Work Log:
+- Reproduced headless BEFORE any change (fix_swim_vent5_live): the gate door read icon_ctx 6
+  (pre-fix same-cel scope) and E there entered substate 7 — the user's exact crawl symptom.
+- Fix 1: both Player_Activate creep-arm sites lost the proximity fallback (|| best.is_some());
+  the gate is the icon context alone [M 0x1a5170:66 if (BL+0x95f == 6)] — the door's nearest wall
+  (squared 579 < the scan's 1000) only crawled because of the fallback.
+- Fix 2: the third-icon scope is now the icon's own straddle volume [M Controls_StraddleTest
+  0x134778:30-38 + Control_BuildWorldSph 0x133070; the write ThirdIcon_Update 0x196e80:36-52 over
+  the Collide_Update 0x1ea398:160-233 hitdata chain]. The port cannot resolve the game's cel chain
+  (the 19 room-cel bboxes share cel 1 between the gate door and the ctx-6 icons; the scoped
+  buckets hold no courtyard-floor geometry — probed), so the radius is the live-measured window
+  [L PCSX2 2026-10-13: 0xFF at the door (24.1) and the start (~94); 6 at the crawl spot (3.9); 3
+  at the wire ledge (1.8)] → 12.0. Tests pin both game spots at 0xFF + the crawl spot at 6.
+- Suite: 557 passed / 0 failed / 3 disc_golden (the allowed trio) before the 560 s foreground cap
+  cut the run; the merge families all green to completion (level_end 5/5, level_carry 8/8,
+  walk_07000005 2/2, vent 2/2, wire2 3/3, vent5 2/2). Report: docs/reports/fix-swim-vent5.md
+  (live checks: the icon +0x8c sphere radius reading; the obj+0xd0 chain empty at the door).
+
+Stage Summary:
+- All four "E at the gate door loads 07000006" reds green; the vent crawl and the wire grab keep
+  their contexts. The 12.0 sphere radius is a measured stand-in pending the celglist-sphere parse
+  or one live reading (the report lists the exact checks).
