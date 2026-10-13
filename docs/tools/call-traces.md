@@ -44,3 +44,5 @@ record the memory the function writes instead.
 | `Quat_QuatToMat.calls` (0x1e3e80) | `in:a0:16 out:a1:64` | 40 | every output row is unit length (within 6.2e-6) |
 | `Rand_Rand.calls` (0x1e3738) | `io:0x30d0a0:4 io:0x30d0a4:4` (SEED_X, SEED_Y) | 40 | return == ((SEED_Y' & 0xffff) · a0) >> 16 on 40/40 |
 | `PS2Sinf.calls` (0x120700) | registers only (`f12` in, `f0` out) | 40 | **differs from the true sine by up to 3.84e-5; bit-identical to f32(sin) on only 13/40**: live evidence for G-017 |
+| `Player_AutoAim.calls` (0x1a7c98) | `io:@(a0+0xe0)+0x114:0x20 in:@(a0+0xdc)+0x60:4` | 80 | recorded under play in aim mode: the aim bit set on all 80, the cursor non-zero, the block changed by the 0.5 easing on 76 |
+| `Check_Target.calls` (0x1a7810) | `io:@(a0+0xe0)+0x130:4` | 40 | no target under the crosshair (+0x132 = 0, +0x133 = 2) on all 40: the no-hit path only |
