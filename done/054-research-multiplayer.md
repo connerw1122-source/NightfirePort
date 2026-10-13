@@ -20,3 +20,7 @@ what parses, and the plan in your report.
 
 ---
 claimed-by: sandbox1 at 2026-10-13T10:00Z
+
+---
+## Report (done, 2026-10-13T11:43Z)
+
