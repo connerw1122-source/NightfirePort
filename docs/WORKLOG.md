@@ -7385,3 +7385,27 @@ Stage Summary:
 - Task: find the frag grenade's real damage path (fix-explosions read weapon 0x35 as radius 10 / damage 0,
   making frags harmless and re-locking the grenade test to that), show it with evidence, land the fix with
   the real falloff; keep the good parts (no on-impact kill, blast sound, flashbang stun no-damage, mine/rocket 8/100).
+
+---
+Task: fix-explosions2 (progress)
+Work Log:
+- RESEARCH DONE: the frag's real damage path FOUND. The weapon-id mapping fix-explosions used was shifted
+  by one: the disc name labels (Txt_BindLabel, weapon_data+0x38 SP name, resolved against USATxt.dat with the
+  game's own fixup algorithm — Bank[k] = offsets[k-2], FixupTable = [0,1000,1812,1903,1958,2065,2183]) say:
+  0x34 = 'Fragmentation Grenade' (radius 8, damage 100), 0x35 = 'Stun Grenade' (10/0, +0x70 0x2280), 0x36 =
+  'Smoke Grenade' (0/0, +0x70 0x20280), 0x37/38/39 = 'Remote Mine' (8/100), 0x3a = 'Laser Tripbomb' (8/100),
+  0x3b-0x40 = 'Satchel Charge' (8/2000). The frag's kill: Bullet_DoTrails 0x12d890's timer-death branch
+  (gate +0x70 & 0x200, asm 0x12dd2c-0x12dd44) → NOT & 0x2000 → NOT & 0x20000 → Explode_Create(wd+8, wd+8,
+  wd+0xC) [asm 0x12e1c0] = radius 8 / damage 100 → Explode_CollisionHandler 0x17cde0 → Explode_Propagate
+  0x17c518 case 2 (drones, Drone_ExplosiveHit → msg 9) / case 3 (Bond, Player_Hurt). The stun = the & 0x2000
+  branch (asm 0x12dd64: ONLY 0x35/0x59/0x5b carry the bit [L sweep]) — the flash/stun path fix-explosions
+  ported, gated on the WRONG id (0x36 = the smoke). The smoke = the & 0x20000 branch (asm 0x12e104: first
+  expiry Occlude_Create + Sound 0x14 + re-arm 1200 ticks, second expiry dies). NDrone2_HitDamage difficulty
+  multipliers [L .data 0x30cab0]: Easy 2.0 / Normal 1.5 / Hard 0.5 — none zero, not the lethality source.
+  DroneWeap_ThrowGrenade sniper pick (0x35, 1/3 → 0x36) and DefaultInit +0xBCC (sel 1→0x36, 2→0x35, 4→0x34,
+  5→count+0x3a, 6→0x6c; 0x7000014 clamp → 0x34) match the port's constants already — comments only.
+
+Stage Summary:
+- Next: re-route the port's flash branch to 0x35 (+0x70 & 0x2000), give 0x36 the smoke branch (sound 0x14,
+  re-arm, no whiteout/stun/script), gate the drone stun broadcast on the player-thrown case, fix the fuse
+  override for 0x37 (420 [M 0x12c5a0:214-223] vs the port's 300), re-lock the tests to the real names.
