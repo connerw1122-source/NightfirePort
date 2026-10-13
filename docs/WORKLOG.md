@@ -8560,3 +8560,6 @@ Work Log:
   the plate stands in without the frame). Note: the sandbox has only the slim ISO (every PSS
   stubbed) — the four task movies were range-fetched from the retail image on the file host into a
   70 MB mini ISO (scripts/, never committed); tests skip without NF_MOVIE_ISO data.
+- Suite (chunked foreground, slim ISO): nf-game 232/0; nf-formats + nf-audio 94/3 (the 3 permitted
+  disc_golden BIGF stubs); nf-view 481/0. movies-feature run: menu_movies 6/6 with the retail-image
+  movies. Report: docs/reports/fix-menu-movies.md.
