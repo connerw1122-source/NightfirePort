@@ -8538,7 +8538,35 @@ early, repro in docs/reports/verify-bitexact.md), then swap `placement::object_m
 palette path to the exact models and re-pin the moved seed/trace tests with trace evidence.
 
 Work Log:
-- (started) Setup verified from the previous session's sandbox: repo, work/, ISO present.
+- The swap (from s/verify-bitexact e246658, re-applied on master): placement::object_matrix = RotMatrix
+  0x1e2368 op-for-op (the two PS2Sinf3 calls via anim::sinf, the nine products/sums on the EE FPU);
+  anim::quat_trans_to_mat = Quat_QuatTransToMat 0x1e3fa8 on the EE FPU; anim::mul = psiBuildMatrixPalette
+  0x111498 on the VU0 (chopped products, guard-bit sum). Unit tests pin the game's non-exact identity
+  (0-rotation diagonal 0x3F800002). The functions live in nf-formats (the task's file list said
+  nf-game/src/{anim,placement}.rs — they are not there).
+- Side-by-side (scratch replay of the 01-doors trace, Bond per frame from the recording, per-tick dump
+  of state+pos/health bits, host vs exact): first divergence tick 28 = Bond's y by 1 ulp (host
+  0x40cf2bfd vs exact 0x40cf2c00); bisected to object_matrix alone (palette-only stays host). Mechanism:
+  CollisionWorld::build_scoped bakes every placed object's collision triangles through the placement's
+  object_matrix, so the game's RotMatrix (cos = PS2Sinf(a+π/2), PS2Sinf(π/2) = 0x3F800001) puts the
+  walkway under Bond's start a few ulps higher — floor_below 5.3394012 (host) vs 5.3394027 (exact);
+  the floor snap rides it. First AI-visible divergence tick 835: drone 13's x by 1 ulp (807 ticks of
+  identical AI before it).
+- Game agreement: ai_traces_live 01-doors/01-raptor full replays give IDENTICAL per-drone first
+  divergences on both maths (15→75/63, 16→76/64, kinds and states identical), pins hold; the exact path
+  is the game's arithmetic by construction (PS2Sinf 40/40, Quat_QuatToMat 40/40, palette world-0.0);
+  the escort walk passes (level_exit tick 63143). Decision: the game agrees with the exact path.
+- verify-bitexact's repro (the escort stall, guard 5 dead at round 0) no longer reproduces on master +
+  the swap — the fight it lived in changed with master's merges.
+- Re-pins: none in nf-game (no new RNG draws; the seed-pinned suites green). One nf-view test moved:
+  fix_input_kbd_trace's goldens (host-math bits) — the floor under 07000005's start moved the same few
+  ulps; re-pinned t29–t179 position components; yaw/pitch/local/vel/cc bit-identical, so the keyboard
+  path the test guards is untouched.
+- Suite: nf-game+nf-formats+nf-audio 326/0 + 3 sanctioned disc_golden; nf-view 477/0 after the re-pin.
+  Report: docs/reports/fix-exact-math-swap.md.
 
 Stage Summary:
-- (in progress)
+- G-017/G-024 closed: the sim runs the game's exact sine/RotMatrix/Quat_QuatTransToMat/palette path.
+  The flip the swap used to cause is root-caused (the game's RotMatrix shifts placed collision by ulps;
+  Bond's floor snap rides it; ulp-wide AI margins decide the fights — the game has them too). Live
+  checks 1-2 in the report (the floor query under Bond in PCSX2; the walkway instance's identity).
