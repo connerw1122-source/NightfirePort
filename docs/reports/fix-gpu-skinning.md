@@ -93,7 +93,16 @@ evidence this section of the task asked for.
    `animate`/`posed_vertices` cost on no-tick frames (`NF_BENCH` on `--shot` still exercises the
    CPU path for reference).
 
-## ntfy
+## ntfy failed
 
-Sent at the end of the session (see the WORKLOG); if the send failed, the exact error is in the
-"ntfy failed" section below.
+All three fallbacks hit ntfy.sh's daily message quota (the same 429 other tasks recorded this
+merge day):
+
+- `curl -sS -m 20 -H "Title: NightfirePort" -d "fix-gpu-skinning: done — …" https://ntfy.sh/nightfire-yoda-8k3x`
+  → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- `python3 urllib.request` → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- `wget -q -O- --post-data "fix-gpu-skinning: done" …` → exit 0 with an empty body (wget does not
+  treat 429 as an error; with the quota confirmed by the two above, the message was not delivered)
+
+The queue entry (`done/282-fix-gpu-skinning.md`, queue commit e585ebb) carries the same one-line
+result.
