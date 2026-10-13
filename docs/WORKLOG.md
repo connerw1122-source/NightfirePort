@@ -8529,3 +8529,16 @@ Stage Summary:
   and the ammo-id remaps are new port behaviour with game citations.
 - Left: the auto-switch drain re-open (live checks 1-2 in the report), moving-platform landings,
   the drop push-out, the AR set's second pile, the +0x888 kind-5 field, the shop's Upgrades byte.
+
+## fix-exact-math-swap (s/fix-exact-math-swap) — 2026-10-13
+
+Task: GAPS G-017/G-024 — switch the sim to the bit-exact `anim::sinf` and the EE-FPU
+`Quat_QuatToMat`, root-cause the 07000001 contact-escort damage flip (guard 5 dies a round
+early, repro in docs/reports/verify-bitexact.md), then swap `placement::object_matrix` and the
+palette path to the exact models and re-pin the moved seed/trace tests with trace evidence.
+
+Work Log:
+- (started) Setup verified from the previous session's sandbox: repo, work/, ISO present.
+
+Stage Summary:
+- (in progress)
