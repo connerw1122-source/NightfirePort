@@ -785,6 +785,14 @@ pub struct Drone {
     /// Serviced by `Drones::tick` where the ScriptPlayers live: `SP_UnPause` 0x1dca58 on the bound
     /// player (`+0xBA8`), i.e. `activated = true` and the current script's pause cleared.
     pub kick_attempt: bool,
+    /// Outbox: `Drone_SfxInfo` one-shot indices queued by the state arms (fix-room-sound) — the
+    /// civilian patrol's female scream 0x48 (`NDrone2_PlaySFX(1.0, DCVars, 0x48, 0, 1)` [M
+    /// 0x15d610 disasm 0x15d754-a4]). Drained by `Drones::tick` through `foley_entry` (the game's
+    /// shared gates: the 30-frame post-load, the entry's repeatDelay, the stamp-before-play).
+    pub foley_reqs: Vec<usize>,
+    /// `comm+0x73c`'s stand-in for `BOT_handlePain` (0x125ed8): the handle of the currently playing
+    /// pain grunt, stopped before the next pool play (`Sound_Stop_Ref` 0x1de370) [M 0x126168-0x1261a0].
+    pub pain_grunt: Option<u32>,
     /// `Drone+0x31C`: `DroneMove_NoBunching`'s (0x150ad0) obstacle flags, rebuilt every tick by
     /// `Drones::tick` from `NDrone2_Steer`'s (0x14eba8) nearest-obstacle scan (`Drone+0x314`,
     /// the nearest drone or the player within 3.0 — `EvaluateObstacle` 0x14e6f0's sqDist < 9 gate):
@@ -928,6 +936,8 @@ impl Drone {
             // fix-nav-remainder: the kick-node outbox + the ScriptPlayer binding (fields on
             // their own lines — the shared-constructor collisions, merge lesson 4).
             kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false, no_bunching: 0,
+            // fix-room-sound: the foley one-shot outbox + the pain-grunt handle (own lines — merge lesson 4).
+            foley_reqs: Vec::new(), pain_grunt: None,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
             // fix-cover-remainder: the scary-object flee family (fields on their own lines — merge lesson 4).
             scared: false, flee_return: 0, flee_deadline: None, explosive_msg: None,
@@ -3809,7 +3819,14 @@ impl Drone {
             }
             (CIVILIAN_PATROL, msg::UPDATE) => {
                 self.update_patrol_route(d, rng, frame);
-                if self.near_armed_person(d) { self.sighted = true; self.set_state(CIVILIAN_SCARED); } // 0x15d610:32 — dead arg [M 0x1787c8]
+                if self.near_armed_person(d) {
+                    self.sighted = true;
+                    // The female scream 0x48 before the scare-state switch (`Drone+0x15` != 0; the
+                    // game's CivilianInit carve-out `+0xd8 == 0x10` has no port counterpart — the
+                    // port's CIVILIAN_PATROL is never entered from CIVILIAN_INIT) [M 0x15d610:60].
+                    if self.female { self.foley_reqs.push(0x48); }
+                    self.set_state(CIVILIAN_SCARED);
+                } // 0x15d610:32 — dead arg [M 0x1787c8]
                 true
             }
             (CIVILIAN_PATROL, msg::BULLET) => self.on_bullet_resume(d, rng, frame, ATTACK, false), // HandleImpact(0x56, 0)
@@ -4017,10 +4034,11 @@ impl Drone {
                 self.timer_c = Some(frame + 2);
                 true
             }
-            // Msg 0x20 (case 0x20, from the door anim's event 6): the grunt (NDrone2_PlaySFX 0x27)
-            // and another activation attempt.
+            // Msg 0x20 (case 0x20, from the door anim's event 6): another activation attempt. The
+            // grunt itself is the `Drone_SfxInfo` line played by the `pending_door_msg` drain in
+            // `Drones::tick` (state-dependent: 0x27 here, 0x28 for the kick — the raw `anim_sounds`
+            // pushes played `t.get(0x27/0x28)`, sound 39/40, instead of the lines' 1477/1478).
             (state::OPEN_DOOR, msg::DOOR) => {
-                self.anim_sounds.push(0x27);
                 self.door_attempt = true;
                 true
             }
@@ -4045,7 +4063,9 @@ impl Drone {
             // bound ScriptPlayer's script unpauses — serviced by tick), and straight back to the
             // saved state `+0x5A6` [M 0x1684c0 case 0x20: `Drone_SM_SetState(+0x5a6)`].
             (state::KICK_OBJECT, msg::DOOR) => {
-                self.anim_sounds.push(0x28);
+                // The kick grunt is the `Drone_SfxInfo[0x28]` line (sfx 1478), played through the
+                // `NDrone2_PlaySFX` gates by the `pending_door_msg` drain (the same event-6 delivery
+                // as the door; the state's case 0x20 picks the line) [M 0x1684c0 disasm 0x16857c-90].
                 self.kick_attempt = true;
                 self.set_state(self.door_return);
                 true
@@ -5646,6 +5666,46 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         Some(l)
     }
 
+    /// `BOT_handlePain` (0x125ed8, fix-room-sound): the bots' grunt pools — the pain pool is
+    /// male `0x14d..0x151` (`Rand_Rand(5)`) / female `0x152..0x153` (`Rand_Rand(2)`), the death
+    /// pool male `0x154..0x156` / female `0x157..0x159` (`Rand_Rand(3)`, no playing gate on a
+    /// death) [M disasm 0x1260c8-0x12617c; the decomp's `uVar8 == 0x1e` verdict branch is dead].
+    /// Exactly one `Rand_Rand(n)` draw per call that reaches a pool, before the play [M 0x126168];
+    /// the previous grunt is stopped and the new handle stored (`Sound_Stop_Ref` 0x1de370, the
+    /// handle at `comm+0x73c`) [M 0x126178-0x1261a4]. All ten pool entries are `Drone_SfxInfo`
+    /// lines (950/948/943/596/138 · 944/465 · 949/947/139 · 945/581/466), so the play runs the
+    /// shared `NDrone2_PlaySFX` gates via `foley_entry`.
+    ///
+    /// NOT wired into the hit path: the game reaches `BOT_handlePain` only under `MPSettings+0x388`
+    /// (the bots flag [M 0x145558:15-17]) and the port is single-player — `NDrone2_HitDamage`'s SP
+    /// arm is `NDrone2_PainTalk` (`pain_talk`), which is what the port runs, so no `Rand_*` draws
+    /// were added to the live stream and no seed-pinned test moves. *Deviation*: the "previous
+    /// grunt still playing" gate (`Sound_Playing_Ref` 0x1de3a0 on the stored handle) needs the
+    /// sound pool's node state, which nf-game does not expose — the port stops the previous handle
+    /// and always plays.
+    pub fn bot_handle_pain(&mut self, d: &Data, index: usize, died: bool, frame: u32) {
+        let female = self.list[index].female;
+        let (base, n) = Self::pain_pool(female, died);
+        let id = base + self.rng.rand(n) as usize;
+        if let Some(l) = Self::foley_entry(d.voices, &mut self.voice_last, id, frame) {
+            let pos = self.list[index].pos;
+            if let Some(prev) = self.list[index].pain_grunt.take() { self.audio.stop(prev); }
+            let h = match d.sfx {
+                Some(t) => self.play_sound_handle(pos, t.get(l.sfx)),
+                None => self.audio.play3d(l.sfx, pos, None),
+            };
+            self.list[index].pain_grunt = (h != 0).then_some(h);
+        }
+    }
+
+    /// `BOT_handlePain`'s pool pick: the verdict (1 = died, 0x1f = alive) selects the death pool
+    /// (male 0x154 / female 0x157, `Rand_Rand(3)`, no playing gate) over the pain pool (male
+    /// 0x14d `Rand_Rand(5)` / female 0x152 `Rand_Rand(2)`); the female byte is `Drone+0x15`
+    /// [M disasm 0x1260c8-0x126168].
+    fn pain_pool(female: bool, died: bool) -> (usize, u32) {
+        if died { (if female { 0x157 } else { 0x154 }, 3) } else if female { (0x152, 2) } else { (0x14d, 5) }
+    }
+
     /// `Effect_Bullet`: the impact sound of the surface the segment `from → to` hits (`EffectInfo+0x14`), at the hit.
     fn impact_sound(&mut self, d: &Data, from: V3, to: V3) {
         let (Some(s), Some((t, _, m))) = (d.surfaces, d.world.segment_surface(from, to, false)) else { return };
@@ -6527,6 +6587,28 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 if self.npc_system_disabled { continue; }
                 let list = &self.list;
                 let rng = &mut self.rng;
+                // `DroneSpawner_Control` 0x137e68 (fix-room-sound): mode 3's first wave on the
+                // power-station pair announces itself — `Rand_Rand(2)` then `NDrone2_PlaySFX(1.0,
+                // NULL, 0xd6+draw, 0, 1)` [M decomp 0x1382fc-0x138324, disasm `jal 0x1e3738;
+                // addiu $a0,2` 0x138304]: DCVars NULL → the zero position and ref 0. The draw
+                // precedes the call, so it happens even when the entry's 600-frame repeat gate
+                // (0xd6 → 1353, 0xd7 → 1318) suppresses the play; the wave-spawned gate (+0x2C
+                // == 0) is the port's `wave == 0` and "none alive" is `update`'s mode-3 `may`.
+                {
+                    let sp = &self.spawners[index];
+                    if sp.mode == 3 && sp.wave == 0 && sp.active && !sp.gone
+                        && (d.level == 0x0700_000c || d.level == 0x0700_000d)
+                        && sp.spawned.iter().filter(|&&i| list[i].present).count() == 0 {
+                        let draw = rng.rand(2) as usize;
+                        if let Some(l) = Self::foley_entry(d.voices, &mut self.voice_last, 0xd6 + draw, frame) {
+                            let pos = [0.0f32; 3];
+                            match d.sfx {
+                                Some(t) => { let h = t.get(l.sfx); self.audio.play3d(h.id, pos, None); if !h.looped { self.sounds.push(Sound { id: h.id, pos, inner: h.inner, outer: h.outer, weight: h.weight }); } }
+                                None => { self.audio.play3d(l.sfx, pos, None); }
+                            }
+                        }
+                    }
+                }
                 // fix-spawner-p7: the kill gate reads the walk-start `drawn` snapshot (obj+0xFC as of
                 // the last frame — see the snapshot above), plus the level id for the cleanup's split.
                 let action = self.spawners[index].update(&mut self.channels, frame, d.level,
@@ -6832,21 +6914,33 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     self.grenades.push(g);
                 }
             }
-            // The door anim's event 6 (fired in `update_anim` just above): msg 0x20 to self —
-            // only `DSTATE_OpenDoor` handles it (the send's GLOBAL fallback drops it elsewhere).
-            // `NDrone2_DSTATE_OpenDoor` case 0x20 plays Drone_SfxInfo[0x27] (sfx 1477) before the door
-            // activation — `NDrone2_PlaySFX(1.0, DCVars, 0x27, drone+0x30, enforceDelay 1)` [M 0x1681f8].
+            // The anim impact event 6 (fired in `update_anim` just above): msg 0x20 to self —
+            // `DSTATE_OpenDoor` and `DSTATE_KickObject` handle it (the GLOBAL fallback drops it
+            // elsewhere); the case picks its own `Drone_SfxInfo` line (0x27 door / 0x28 kick).
             if std::mem::take(&mut dr.pending_door_msg) {
-                // `NDrone2_DSTATE_OpenDoor` case 0x20 plays Drone_SfxInfo[0x27] (sfx 1477) before the door
-                // activation — `NDrone2_PlaySFX(1.0, DCVars, 0x27, drone+0x30, enforceDelay 1)` [M 0x1681f8].
-                // (The narrow play mirrors `foley` — `&mut self` is split by the loop's `list` borrow.)
-                if let Some(l) = Self::foley_entry(d.voices, &mut self.voice_last, 0x27, frame) {
+                // `DroneAnim_EventFunc` datum 6 delivers msg 0x20 to self for BOTH anims' impact
+                // events; the state's case 0x20 picks the `Drone_SfxInfo` line — OpenDoor 0x27 (sfx
+                // 1477) [M 0x1681f8], KickObject 0x28 (sfx 1478) [M 0x1684c0]. The narrow play
+                // mirrors `foley` — `&mut self` is split by the loop's `list` borrow.
+                let line = if dr.state == state::KICK_OBJECT { 0x28 } else { 0x27 };
+                if let Some(l) = Self::foley_entry(d.voices, &mut self.voice_last, line, frame) {
                     match d.sfx {
                         Some(t) => { let h = t.get(l.sfx); self.audio.play3d(h.id, dr.pos, None); if !h.looped { self.sounds.push(Sound { id: h.id, pos: dr.pos, inner: h.inner, outer: h.outer, weight: h.weight }); } }
                         None => { self.audio.play3d(l.sfx, dr.pos, None); }
                     }
                 }
                 dr.send(d, rng, frame, msg::DOOR);
+            }
+            // The state arms' queued `Drone_SfxInfo` one-shots (fix-room-sound): the civilian
+            // patrol's female scream 0x48 (sfx 924, repeat 300) [M 0x15d610 disasm 0x15d754-a4].
+            // Same narrow play as the drain above.
+            for req in std::mem::take(&mut dr.foley_reqs) {
+                if let Some(l) = Self::foley_entry(d.voices, &mut self.voice_last, req, frame) {
+                    match d.sfx {
+                        Some(t) => { let h = t.get(l.sfx); self.audio.play3d(h.id, dr.pos, None); if !h.looped { self.sounds.push(Sound { id: h.id, pos: dr.pos, inner: h.inner, outer: h.outer, weight: h.weight }); } }
+                        None => { self.audio.play3d(l.sfx, dr.pos, None); }
+                    }
+                }
             }
             if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
             // `DroneFunc_OnInitDeath`'s verdict: the FailLabel event + the fail channel [M 0x13e560
@@ -7232,6 +7326,8 @@ mod tests {
             // fix-nav-remainder: the kick-node outbox + the ScriptPlayer binding (fields on
             // their own lines — the shared-constructor collisions, merge lesson 4).
             kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false, no_bunching: 0,
+            // fix-room-sound: the foley one-shot outbox + the pain-grunt handle (own lines — merge lesson 4).
+            foley_reqs: Vec::new(), pain_grunt: None,
             head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
             // fix-cover-remainder: the scary-object flee family (own line — merge lesson 4).
             scared: false, flee_return: 0, flee_deadline: None, explosive_msg: None,
@@ -7339,5 +7435,40 @@ mod foley_tests {
         // Sister: no table → nothing (a level without a voice table stays silent).
         let mut none: Vec<Option<u32>> = Vec::new();
         assert_eq!(Drones::foley_entry(None, &mut none, 0, 100), None);
+    }
+
+    /// `BOT_handlePain`'s pools (fix-room-sound): the verdict/gender pick, the one `Rand_Rand(n)`
+    /// draw before the play, and the line ids through the gate — pinned against the live
+    /// `Drone_SfxInfo` entries [L the 0x2812d0 table: 0x14d→950, 0x152→944, 0x154→949, 0x157→945].
+    #[test]
+    fn bot_pain_pools_pick_by_verdict_and_gender_and_draw_once() {
+        // The pick: death pool (no playing gate) 0x154/0x157 width 3, pain pool 0x14d width 5
+        // (male) / 0x152 width 2 (female) [M disasm 0x1260c8-0x126168].
+        assert_eq!(Drones::pain_pool(false, false), (0x14d, 5), "male pain");
+        assert_eq!(Drones::pain_pool(true, false), (0x152, 2), "female pain");
+        assert_eq!(Drones::pain_pool(false, true), (0x154, 3), "male death");
+        assert_eq!(Drones::pain_pool(true, true), (0x157, 3), "female death");
+        // The real pool entries as `VoiceLine`s at their indices (repeatDelay 0 on all of them,
+        // so the shared gate rate-limits nothing; sfx values from the live table [L]).
+        let mut lines: Vec<nf_formats::sfx::VoiceLine> = vec![nf_formats::sfx::VoiceLine { sfx: 0, facial: 0, repeat: 0 }; 0x15a];
+        for (i, id) in [(0x14dusize, 950u32), (0x14e, 948), (0x14f, 943), (0x150, 596), (0x151, 138), (0x152, 944), (0x153, 465), (0x154, 949), (0x155, 947), (0x156, 139), (0x157, 945), (0x158, 581), (0x159, 466)] {
+            lines[i] = nf_formats::sfx::VoiceLine { sfx: id, facial: 0, repeat: 0 };
+        }
+        // A deterministic draw stream: the id played is base + the one draw, gated like any
+        // `NDrone2_PlaySFX` (the 30-frame post-load applies here too).
+        let mut rng = Rng::new(0x1234_5678);
+        let mut last: Vec<Option<u32>> = Vec::new();
+        for frame in [30u32, 31, 32] {
+            let (base, n) = Drones::pain_pool(false, false);
+            let draw = rng.rand(n) as usize;
+            let l = Drones::foley_entry(Some(&lines), &mut last, base + draw, frame).expect("the pool entry plays");
+            assert!(l.sfx >= 943 && l.sfx <= 950 || l.sfx == 596 || l.sfx == 138, "a male pain-pool sfx, got {}", l.sfx);
+            assert_eq!(last[base + draw], Some(frame), "the stamp is the played entry's");
+        }
+        // Sister: the death pool's ids differ from the pain pool's — 0x154..0x156, never 0x14d..0x151.
+        let (base, n) = Drones::pain_pool(false, true);
+        let draw = rng.rand(n) as usize;
+        let l = Drones::foley_entry(Some(&lines), &mut last, base + draw, 40).expect("the death entry plays");
+        assert!(l.sfx == 949 || l.sfx == 947 || l.sfx == 139, "a male death-pool sfx, got {}", l.sfx);
     }
 }

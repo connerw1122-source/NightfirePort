@@ -786,7 +786,8 @@ fn snow_for(scene: &scene::Scene, cam: &Camera) -> Vec<scene::Vertex> {
 
 /// One frame of sound (`Sound_UpdateListeners` → `Sound_UpdateSounds` → the batch → `SFXUpdate`): the listener is
 /// Bond's eye and view (glb_viewer[0]; the cut-scene camera's listener call is dropped by the EE batcher [M]).
-fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
+/// `pub` so the headless tests drive the exact function the winit loop runs (the fix-gpu-skinning precedent).
+pub fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
     let (pos, f) = (sim.bond.head(), sim.bond.look());
     // Row 0 of the view matrix: up × forward, the screen-left axis (snapshot: dir (−0.839, 0, −0.545) → (−0.545, 0, 0.839)).
     let norm = { let l = (f[0] * f[0] + f[2] * f[2]).sqrt().max(1e-6); [f[2] / l, 0.0, -f[0] / l] };
@@ -810,10 +811,18 @@ fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
     let driver = &s.driver;
     sim.drones.audio.update(sim.sfx.as_ref(), (pos, norm, [0.0, 1.0, 0.0], f), &|h| driver.is_playing(h));
     let cmds = sim.drones.audio.take_commands();
+    // `Sound_UpdateListeners` 0x1dd278 (fix-room-sound): every frame, from the active viewer's cel —
+    // `SFXSetEnvironment(cel s16 +0x98, underwater = (cel+0x3c & 0x10000000) || env >= 20)` [M disasm
+    // 0x1dd4b0-0x1dd4fc]; a viewer with no cel sends nothing and the IOP keeps its previous targets.
+    // The port's single viewer is Bond's eye (as below); the glb_viewer[4] script-camera override is
+    // not modelled — the script-camera listener call is dropped by the EE batcher.
+    let env_send = sim.cel_at(pos).map(|i| {
+        let c = &sim.cels[i];
+        (c.env as i32, (c.underwater || c.env >= 20) as i32)
+    });
     s.batch(|drv, out| {
-        // `Sound_UpdateListeners`→`SFXSetEnvironment(room env, underwater)` [M sound.md §0]. The cel/room system that
-        // supplies `room env` is not yet ported (G-016); default to no reverb / no underwater until it is.
-        drv.set_environment(0, 0);
+        // `Sound_UpdateListeners`→`SFXSetEnvironment(room env, underwater)` [M sound.md §0, 0x1dd278].
+        if let Some((reverb, underwater)) = env_send { drv.set_environment(reverb, underwater); }
         for c in cmds {
             match c {
                 nf_game::sound::Cmd::Listener { pos, norm, dir, .. } => { drv.set_listener(pos, dir, norm); }

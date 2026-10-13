@@ -480,6 +480,12 @@ impl Driver {
         self.indoors_target = if indoors != 0 { 50 } else { 100 };
     }
 
+    /// The last `SFXSetEnvironment` state: (reverb target, underwater, indoors target) — the reverb
+    /// target is what `SFXUpdateEnvironment` ramps `SFXReverb` toward, the indoors target is what the
+    /// EE's second argument selects (50 = the muffled mix). Test accessor for the env-feed tests
+    /// (`fix-room-sound`) [M 0x0db4, 0x0e60].
+    pub fn environment(&self) -> (i32, bool, i32) { (self.reverb_target, self.underwater, self.indoors_target) }
+
     /// `SFXFadeDown(fadeMusic)` (RPC cmd 6): start a fade-down. `music` copies `FadeVolume`→`FadeMusicVolume` [M].
     pub fn fade_down(&mut self, music: bool) {
         self.fade_status = 1;
