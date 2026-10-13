@@ -7069,6 +7069,8 @@ every script's op-0x16 sound ids, the anim sets' op-1/op-4 commands and their ba
 
 ## fix-safe08b (2026-10-13, branch s/fix-safe08b) — the 07000008 bedroom blue block: room-scoped collision and drawing — IN PROGRESS
 
+## fix-safe08b (2026-10-13, branch s/fix-safe08b) — the 07000008 bedroom blue block: room-scoped collision and drawing — DONE (within the session's scope; see docs/reports/fix-safe08b.md for the two open items: the build_FindCel tie-break for the capsule scope, the rocket-take live check)
+
 Task: continue fix-safe08 (merged 9c9674b): the blue block `Room_Outside_3` (map51 obj16) must not collide with
 or be drawn into `Room_Guardhouse_F2` indoors, and the safe take's `Collide_LineOfSight` (flags 0x721) must
 stop being blocked by hits the game's query ignores (t 0.65–0.88). Plan: (1) scope static collision by the

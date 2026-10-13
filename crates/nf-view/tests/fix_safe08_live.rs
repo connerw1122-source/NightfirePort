@@ -327,6 +327,81 @@ fn bond_walks_from_the_bedroom_door_to_the_safe_without_the_block() {
         Room_Outside_3's collision no longer stands in the bedroom [M Collide_StraddleCels 0x1eac98]");
 }
 
+/// ── The draw side's portal walk, evaluated headless (fix-safe08b, for 130-fix-portal) ──────────
+/// `Vision_Portal_Recurse` 0x1e86e8's walk with the depth-0 pyramid opened wide (= the full
+/// portal-reachability the draw would keep): from EVERY room cel the walk must keep the room itself,
+/// and a room with portal edges must keep at least one neighbour (the 07000006 incident's signature
+/// was the walk hiding the whole level). On 07000008 the bedroom's walk keeps the whole-exterior
+/// cel — the measured reason a per-room-cel draw cull cannot drop the blue block (the game's static
+/// parse makes a runtime cel per 0x8000 placement; the block's own cel is not portal-visible).
+#[test]
+fn the_portal_walk_keeps_every_room_and_drops_the_exterior_from_the_bedroom() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let wide = [[0.0f32, 0.0, 0.0, 1e9]; 5];
+    // 07000008.
+    {
+        let scene = load(&iso, "07000008.bin");
+        let g = &scene.cel_graph;
+        assert!(!g.portals.is_empty(), "the level has portals");
+        // The exterior room's cell: the one containing Room_Outside_3's glist centre (216, 67, -226).
+        let centre = [216.0f32, 67.0, -226.0];
+        let mut exterior: Option<usize> = None;
+        let mut vol = f32::INFINITY;
+        for (i, c) in g.cells.iter().enumerate() {
+            if !(0..3).all(|k| c.min[k] <= centre[k] && centre[k] <= c.max[k]) { continue; }
+            let v: f32 = (0..3).map(|k| c.max[k] - c.min[k]).product();
+            if v < vol { vol = v; exterior = Some(i); }
+        }
+        if let Some(e) = exterior { let c = &g.cells[e]; eprintln!("[portal-walk] the exterior cell {e} bbox {:?}", (c.min, c.max)); }
+        let eye_rooms: Vec<usize> = (0..scene.cels.len()).collect();
+        let mut min_visible = usize::MAX;
+        for room in eye_rooms {
+            let eye = scene.cels[room].min.iter().zip(scene.cels[room].max.iter()).map(|(a, b)| (a + b) / 2.0).collect::<Vec<f32>>().try_into().unwrap();
+            let Some(vis) = nf_view::scene::portal_visible_cels(g, room, eye, &wide) else { continue };
+            let Some(start) = g.room_to_cell.get(room).copied().flatten() else { continue };
+            assert!(vis[start], "room {room} keeps itself");
+            let n = vis.iter().filter(|&&v| v).count();
+            min_visible = min_visible.min(n);
+        }
+        eprintln!("[portal-walk] 07000008: min cells kept from any room: {min_visible}");
+        assert!(min_visible >= 1);
+        // The exterior room's cel (15) is a WHOLE-EXTERIOR box that contains the bedroom too, and the
+        // bedroom's walk KEEPS it — so a per-room-cel draw cull cannot drop `Room_Outside_3`: the
+        // game hides it because the static parse makes a runtime cel per 0x8000 placement
+        // (`parsemap_block_map_data_static` 0x1d1998: build_alloc_cel per flagged placement, the cel's
+        // bbox = the object's glist bbox) and the block's OWN cel is not portal-visible from the
+        // bedroom. The draw fix therefore needs the per-placement cel assignment — 130-fix-portal's
+        // general portal draw — not a walk over the room cels alone.
+        let bedroom = scene.cels.iter().position(|c| c.min[0] <= 161.87 && 161.87 <= c.max[0] && c.min[2] <= -116.54 && -116.54 <= c.max[2]);
+        if let (Some(bedroom), Some(ext)) = (bedroom, exterior) {
+            let vis = nf_view::scene::portal_visible_cels(g, bedroom, [161.87, 43.4, -116.54], &wide).expect("the bedroom's walk runs");
+            let kept = vis.iter().filter(|&&v| v).count();
+            eprintln!("[portal-walk] 07000008: the bedroom keeps {kept} cells; the exterior-spanning cell {ext} visible: {}", vis[ext]);
+            assert!(vis[ext], "the giant exterior cel is portal-visible from the bedroom (the per-room-cel cull keeps it)");
+            assert!(kept >= 4, "the bedroom keeps itself and its neighbours ({kept})");
+        } else {
+            eprintln!("[portal-walk] 07000008: the bedroom or the exterior cell unresolved (bedroom {bedroom:?}, exterior {exterior:?})");
+        }
+    }
+    // 07000006 (the incident level): every room keeps itself; every room WITH portals keeps a neighbour.
+    {
+        let scene = load(&iso, "07000006.bin");
+        let g = &scene.cel_graph;
+        let mut worst = (usize::MAX, 0usize);
+        for room in 0..scene.cels.len() {
+            let Some(start) = g.room_to_cell.get(room).copied().flatten() else { continue };
+            let eye = scene.cels[room].min.iter().zip(scene.cels[room].max.iter()).map(|(a, b)| (a + b) / 2.0).collect::<Vec<f32>>().try_into().unwrap();
+            let Some(vis) = nf_view::scene::portal_visible_cels(g, room, eye, &wide) else { continue };
+            assert!(vis[start], "07000006 room {room} keeps itself");
+            let has_portal = g.portals.iter().any(|p| p.cel_a == start || p.cel_b == start);
+            let n = vis.iter().filter(|&&v| v).count();
+            if has_portal { worst = (worst.0.min(n), worst.1 + 1); }
+        }
+        eprintln!("[portal-walk] 07000006: rooms with portals: {}; the smallest keep: {}", worst.1, worst.0);
+        assert!(worst.0 >= 2, "every portal-linked room keeps itself plus at least one neighbour (the 07000006 incident hid the level)");
+    }
+}
+
 /// Drives the real safe chain to ch 136: the fusebox's two E presses, then the Lazer Watch burns
 /// both bolts (the chain fix-party-mission already pinned; abbreviated here, same real inputs).
 fn open_safe(scene: &mut nf_view::scene::Scene) {
