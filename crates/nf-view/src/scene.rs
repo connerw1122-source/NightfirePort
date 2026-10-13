@@ -4216,7 +4216,31 @@ impl Scene {
             .filter_map(|(a, _, q)| s.seqs.get(&q).filter(|sq| sq.channels.len() == count).map(|sq| (a, q)))
             .last()?;
         let seq = s.seqs.get(&win.1)?;
-        nf_game::anim::facial_weights(seq, (frame - win.0 as f32 + 1.0).max(1.0), count)
+        let mut out = nf_game::anim::facial_weights(seq, (frame - win.0 as f32 + 1.0).max(1.0), count)?;
+        // fix-facial3: `AnimFacialBlend` (0x1be648) — the drone's facial script slots over the track
+        // weights: slot 0 (the idle face) copies straight, slot 1 (the blink) overrides |w| > 0.01.
+        // The drone's script-object sibling has no slots (the game's script objects get theirs from
+        // the same driver — the difference is [S], the tracks dominate there).
+        if c.script.is_none() {
+            if let Some(di) = s.char_drone.get(ci).copied().flatten() {
+                let dr = &s.drones.list[di];
+                let now = dr.last_tick;
+                let slot_w = |slot: Option<(u32, u32)>| -> Option<Vec<f32>> {
+                    let (h, start) = slot?;
+                    if (now as i64) < start as i64 { return None; }
+                    let fscript = s.scripts.get(&h)?;
+                    let (first, _, q) = fscript.sequences().next()?;
+                    let fseq = s.seqs.get(&q)?;
+                    nf_game::anim::facial_weights(fseq, (now - start) as f32 - first as f32 + 1.0, count)
+                };
+                let idle = slot_w(dr.facial_idle);
+                let blink = slot_w(dr.facial_blink);
+                if idle.is_some() || blink.is_some() {
+                    nf_game::anim::facial_blend(&mut out, idle.as_deref(), blink.as_deref(), None, [0, 0], false);
+                }
+            }
+        }
+        Some(out)
     }
 
     pub fn animate(&self, choice: Option<usize>, ticks: f32, opts: ViewOpts) -> Vec<[f32; 3]> {

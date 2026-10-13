@@ -552,3 +552,132 @@ pub fn facial_blend(out: &mut [f32], slot0: Option<&[f32]>, slot1: Option<&[f32]
     write_lid(out, eyes[0], 14, 13); // animObject+0x97
     write_lid(out, eyes[1], 11, 12); // animObject+0x98
 }
+
+/// `AnimFacialUpdate` (0x1be310) — the idle/blink driver, one call per skinned object per frame
+/// (`AnimObjectUpdate` 0x1befd8:127-136, gated on the skin's facial count, the big-skeleton flag
+/// and `AnimObjectIsClose(obj, 0xc)`; frozen under `ScriptCam` and the +0x58 bit-0x10000 facial-off
+/// flag). Pure state half: the state byte (low 7 bits, bit 0x80 = the female double-blink flag)
+/// and the u16 frame timer live on the anim object at sub+0x99/sub+0x92.
+///
+/// Per state [M decomp 0x1be310, disasm 0x1be3e0-0x1be5cc]:
+/// state 0 (init): the state stores 1 BEFORE the draw; one `Rand_Rand(180)` → timer = d + 90
+/// (90..269 frames); the caller appends the table[0] idle face (marker 0xe0000000).
+/// state 1 (idle/blink): an alert-level change re-appends the alert row's idle face and returns
+/// (0 draws); the timer counts down unless the drone's alert level is 3 (combat — blinking frozen);
+/// on wrap: one `Rand_Rand(120)` → timer = d + 120 (calm) / d + 60 (alerted), the caller appends
+/// table[4] (the blink, marker 0xe0000001); a female then rolls `Rand_Rand(100)`: ≤ 50 done,
+/// 51..75 → `Rand_Rand(6)` → timer = d + 6 (the double-blink comes at once, bit 0x80 set),
+/// ≥ 76 → `Rand_FRand(0.2) + 0.2` = the blink script's start-time offset (0.2..0.4 s); with bit
+/// 0x80 already set the next wrap clears it and rolls nothing.
+/// state 2 (talk): stay while a talk script (marker 0xe0000002) plays; else state 1 + the alert
+/// changed flag (0 draws — the next frame re-appends the idle face).
+///
+/// The game's gender select is anim-object flag bit 10 (raw+0xC8 & 0x400); the port passes its
+/// `Drone+0x15` female byte (the skin-mask stand-in — flagged in the report). Returns the table
+/// rows to append this frame.
+#[derive(Debug, Default, PartialEq)]
+pub struct FacialCmd {
+    /// Append the idle face, table row (marker 0xe0000000) — the init's row 0 or the alert row.
+    pub idle_row: Option<usize>,
+    /// Append the blink, table[4] (marker 0xe0000001).
+    pub blink: bool,
+    /// The blink script's start-time offset (`Rand_FRand(0.2) + 0.2`, the ≥ 76 female roll) —
+    /// seconds; 0.0 when the blink starts at once.
+    pub blink_delay: f32,
+}
+
+pub fn facial_update(
+    state: &mut u8, timer: &mut u16, female: bool, alert: u8, alert_changed: &mut bool, talking: bool,
+    rng: &mut crate::drone::Rng,
+) -> FacialCmd {
+    let mut cmd = FacialCmd::default();
+    match *state & 0x7f {
+        0 => {
+            *state = 1; // stored BEFORE the draw [M disasm 0x1be3e0 → the jal 0x1be3f0]
+            *timer = (rng.rand(180) + 90) as u16;
+            cmd.idle_row = Some(0);
+        }
+        1 => {
+            if *alert_changed {
+                *alert_changed = false;
+                cmd.idle_row = Some(alert as usize);
+                return cmd;
+            }
+            // The timer counts down unless the drone's alert level is 3 (combat freeze).
+            if alert != 3 {
+                if *timer == 0 {
+                    // The wrap: the blink. One `Rand_Rand(120)`, timer = d + 120 (calm) / d + 60.
+                    let d = rng.rand(120);
+                    *timer = (if alert != 0 { 60 + d } else { 120 + d }) as u16;
+                    cmd.blink = true;
+                    // The female double-blink roll [M disasm 0x1be52c-0x1be5cc].
+                    if female {
+                        if *state & 0x80 == 0 {
+                            let r = rng.rand(100);
+                            if r > 50 {
+                                if r <= 75 {
+                                    let d2 = rng.rand(6);
+                                    *timer = (6 + d2) as u16;
+                                    *state |= 0x80;
+                                } else {
+                                    cmd.blink_delay = rng.frand(0.2) + 0.2;
+                                }
+                            }
+                        } else {
+                            *state &= !0x80;
+                        }
+                    }
+                } else {
+                    *timer -= 1;
+                }
+            }
+        }
+        2 => {
+            // Stay while a talk script plays; else back to idle and re-append the face next frame.
+            if !talking { *state = 1; *alert_changed = true; }
+        }
+        _ => {}
+    }
+    cmd
+}
+
+#[cfg(test)]
+mod facial3_tests {
+    use super::*;
+
+    /// `facial_update` (0x1be310, fix-facial3): the state machine's transitions and the draw
+    /// accounting — the init's state-before-draw, the wrap's `Rand(120)` + the female rolls.
+    #[test]
+    fn facial_update_state_machine_and_draws() {
+        let mut rng = crate::drone::Rng::new(0x1234_5678);
+        // State 0 (init): state stores 1 BEFORE the draw; one Rand(180) → timer 90..269; row 0.
+        let (mut st, mut tm) = (0u8, 0u16);
+        let cmd = facial_update(&mut st, &mut tm, false, 0, &mut false, false, &mut rng);
+        assert_eq!(st, 1);
+        assert!((90..=269).contains(&tm), "timer = Rand(180)+90, got {tm}");
+        assert_eq!(cmd, FacialCmd { idle_row: Some(0), blink: false, blink_delay: 0.0 });
+        // State 1, alert changed: the idle row re-appends with 0 draws (the timer untouched).
+        let mut changed = true;
+        let cmd = facial_update(&mut st, &mut tm, false, 2, &mut changed, false, &mut rng);
+        assert_eq!(cmd.idle_row, Some(2));
+        assert!(!changed);
+        // State 2 (talk): stay while talking; exit sets state 1 + the re-append flag, 0 draws.
+        let mut st2 = 2u8;
+        facial_update(&mut st2, &mut tm, false, 0, &mut false, true, &mut rng);
+        assert_eq!(st2, 2);
+        facial_update(&mut st2, &mut tm, false, 0, &mut false, false, &mut rng);
+        assert_eq!(st2, 1);
+        // State 1 wrap: force the timer to 0 → the blink; the calm timer = Rand(120)+120.
+        let mut stf = 1u8;
+        let mut tmf = 0u16;
+        let cmd = facial_update(&mut stf, &mut tmf, true, 0, &mut false, false, &mut rng);
+        assert!(cmd.blink, "the wrap blinks");
+        assert!((120..=239).contains(&tmf), "the calm wrap timer = Rand(120)+120, got {tmf}");
+        // The combat freeze: alert 3 never wraps (0 draws, the timer frozen).
+        let mut stc = 1u8;
+        let mut tmc = 0u16;
+        let cmd = facial_update(&mut stc, &mut tmc, false, 3, &mut false, false, &mut rng);
+        assert!(!cmd.blink && tmc == 0, "alert 3 freezes the blink");
+    }
+}
+

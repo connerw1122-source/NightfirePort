@@ -785,6 +785,19 @@ pub struct Drone {
     /// Serviced by `Drones::tick` where the ScriptPlayers live: `SP_UnPause` 0x1dca58 on the bound
     /// player (`+0xBA8`), i.e. `activated = true` and the current script's pause cleared.
     pub kick_attempt: bool,
+    /// fix-facial3: `AnimFacialUpdate`'s state byte (sub+0x99: low 7 bits = the state, bit 0x80 =
+    /// the female double-blink flag) and its u16 frame timer (sub+0x92).
+    pub facial_state: u8,
+    pub facial_timer: u16,
+    /// The talk-state re-append flag (the alert-status [0x51E] changed byte for the facial path).
+    pub facial_reappend: bool,
+    /// The facial script slots (markers 0xe0000000 idle / 0xe0000001 blink): (script hash, start
+    /// tick) — `AnimScriptAppend` 0x1c7000's appends, sampled by the weights path
+    /// (`Scene::facial_weights_at`) through `AnimFacialBlend`'s slot semantics.
+    pub facial_idle: Option<(u32, u32)>,
+    pub facial_blink: Option<(u32, u32)>,
+    /// The tick this drone last ran (the facial slots' clock; `Drones::tick`'s frame stamped per drone).
+    pub last_tick: u32,
     /// `Drone+0x31C`: `DroneMove_NoBunching`'s (0x150ad0) obstacle flags, rebuilt every tick by
     /// `Drones::tick` from `NDrone2_Steer`'s (0x14eba8) nearest-obstacle scan (`Drone+0x314`,
     /// the nearest drone or the player within 3.0 — `EvaluateObstacle` 0x14e6f0's sqDist < 9 gate):
@@ -928,6 +941,8 @@ impl Drone {
             // fix-nav-remainder: the kick-node outbox + the ScriptPlayer binding (fields on
             // their own lines — the shared-constructor collisions, merge lesson 4).
             kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false, no_bunching: 0,
+            // fix-facial3: the blink driver state + the facial script slots (own line — merge lesson 4).
+            facial_state: 0, facial_timer: 0, facial_reappend: false, facial_idle: None, facial_blink: None, last_tick: 0,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
             // fix-cover-remainder: the scary-object flee family (fields on their own lines — merge lesson 4).
             scared: false, flee_return: 0, flee_deadline: None, explosive_msg: None,
@@ -7254,6 +7269,8 @@ mod tests {
             // fix-nav-remainder: the kick-node outbox + the ScriptPlayer binding (fields on
             // their own lines — the shared-constructor collisions, merge lesson 4).
             kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false, no_bunching: 0,
+            // fix-facial3: the blink driver state + the facial script slots (own line — merge lesson 4).
+            facial_state: 0, facial_timer: 0, facial_reappend: false, facial_idle: None, facial_blink: None, last_tick: 0,
             head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
             // fix-cover-remainder: the scary-object flee family (own line — merge lesson 4).
             scared: false, flee_return: 0, flee_deadline: None, explosive_msg: None,
