@@ -112,9 +112,17 @@ fn the_missile_cage_still_stops_bullets_but_never_the_capsule() {
     assert!(hit.is_some(), "a bullet upward from the walkway hits the cage lid");
     let y = 50.0 + (56.0 - 50.0) * hit.unwrap();
     assert!((y - 52.8).abs() < 0.1, "the lid is at y 52.8 [D], got {y}");
-    // The cage wall at x 135.3 (z −100.1..−116, y 46.2..52.8, PM2's t0/t1 [D]): solid to segments …
-    let wall = sim.world.segment([136.0, 48.6, -101.0], [134.5, 48.6, -101.0]);
-    assert!(wall.is_some(), "the cage wall stops a bullet/LOS segment crossing x 135.3");
+    // The cage wall at x 135.3 (z −100.1..−116, y 46.2..52.8, PM2's t0/t1 [D]) is ONE-SIDED like
+    // every static triangle: its stored plane normal is (−1, 0, 0) — raw s16 (−16384, 0, 0),
+    // facing WEST into the station side (probe_planes on the disc; `Intersect_RayGeom` 0x10a8c8
+    // skips a triangle when dot(plane_normal, ray_dir) >= 0). A bullet/LOS ray running WEST
+    // (walkway → station) hits its BACK face and passes; the same wall stops the EAST-bound ray.
+    let wall = sim.world.segment([134.5, 48.6, -101.0], [136.0, 48.6, -101.0]);
+    assert!(wall.is_some(), "the cage wall stops an east-bound bullet/LOS segment crossing x 135.3");
+    let x = 134.5 + 1.5 * wall.unwrap();
+    assert!((x - 135.33).abs() < 0.05, "the stop is at the wall plane x 135.33, got {x}");
+    assert!(sim.world.segment([136.0, 48.6, -101.0], [134.5, 48.6, -101.0]).is_none(),
+        "sister: the west-bound ray is a back-face hit — the game's one-sided test lets it pass");
     // … and invisible to the actor capsule standing against it (the walk height band): pre-fix the
     // wall pushed the capsule +x (east, away from its west face); the floor's push is +y only.
     let (push, _) = sim.world.capsule_push([135.5, 48.6, -101.0], [135.5, 48.0, -101.0], 0.55);
