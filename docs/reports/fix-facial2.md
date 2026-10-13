@@ -62,12 +62,16 @@ the object array, entry fields 0x20/0x24, the REF-index terminator and the skin-
     the hard pins are the census above and the render spots below.
 - The blast radius was run in the window (all green): **nf-game 228 passed / 0 failed** (incl. the
   3 facial tests); **nf-formats 11 passed + the 3 sanctioned `disc_golden` slim-ISO stubs**;
-  **nf-view targeted: ai_traces_live 4/4, fix_truck_live 2/2, walk_07000005_live 2/2,
-  facial2_live 2/2**. NOT run (did not fit): nf-audio, the remaining nf-view binaries — re-run
+  **nf-audio 7/0**; **nf-view targeted: ai_traces_live 4/4, fix_truck_live 2/2,
+  walk_07000005_live 2/2, facial2_live 2/2, gpu_skin_live 3/3, character_lighting_live 4/4,
+  fix_npcs_live 4/4, walk_07000001_live 2/2, fix_cutscenes2_live 5/5, models_characters_live 6/6,
+  walk_07000006/07/0d_live 2+2+3, fix_weapons_all_live 4/4, fix_actors_live 4/4,
+  frustum_cull_live 2/2, worldobj_live 5/5** (walkreal_07000005: 2 ignored — its own env gate, no
+  failures). NOT run: the remaining nf-view binaries — re-run
   `NF_ISO=... cargo test --offline --release -j2 --no-fail-fast -p nf-game -p nf-formats
   -p nf-audio -p nf-view -- --test-threads=1` before merge. The risk areas are covered: animate()
   is the shared draw path (the morph term sits behind `c.morph_targets.is_some()`), and
-  script_pose_together is untouched (ai_traces + truck green above).
+  script_pose_together is untouched (ai_traces + truck + cutscenes2 green above).
 
 ## What's left
 
