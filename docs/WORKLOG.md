@@ -7319,3 +7319,24 @@ path measured (FUN_00300058 0x300058 writes block+0x97c, optionally the next key
 launches BASE.ELF — the boot loader re-dispatches). Atlas + format docs + report written.
 Suite: nf-formats 11 passed / 3 allowed disc_golden fails; driving_golden 4/4; nf-game/nf-audio/
 nf-view compile clean (full run exceeds the sandbox tool timeout; no code changed in them).
+
+## fix-impacts (s/fix-impacts) — 2026-10-13
+Task: bullet decals, ejected shell casings, impact dust and sparks, ricochets, bullet
+trails (G-041/G-025). Port the game's effect path sim-side first (Effect_Create 0x1ce688,
+Effect_Bullet 0x1ce8a8, the 200-entry FIFO, casings 0x12f678/0x12fde0/0x12faa0,
+Debris_Create 0x1aaa00, Particles_Create 0x1cf478, Effect_RicochetProb 0x1cf290), keep the
+RNG draws in game order, expose one Scene function returning this frame's effect vertices.
+Started 10:58 UTC, sandbox expires ~12:56 UTC.
+
+**fix-impacts outcome (12:47 UTC)**: the game's impact path is in, sim-side — `EffectInfo` 0x3037c0
+parsed at runtime into `SurfaceSounds.effects` (decals, ricochet N, the +0x1c reflection bits, 3 gas
+entries, debris fields) plus `ammo_data` (casing meshes); `crates/nf-game/src/effect.rs` implements
+`Effect_Create` 0x1ce688 / `Effect_Bullet` 0x1ce8a8 / `Debris_Create` 0x1aaa00+`Debris_Update`
+0x1aac00 / `Effect_RicochetProb` 0x1cf290 with the game's draw order and the 200-entry decal FIFO;
+`crates/nf-game/src/casing.rs` ports the 32-slot casing pool (0x12fd48/0x12fde0/0x12f678/0x12faa0,
+7 RNG draws per eject in game order, the material landing-sound table); both impact sites + both fire
+paths hooked; `scene.effect_quads` exposes decals/debris/casings vertices. Tests: 111/111 lib, 3/3
+NF_ISO impacts_live (wall decal at hit+0.01 with the surface normal/mesh, sky shot none, one casing
+lands in lifetime, bit-for-bit seeded rerun). Known: `guard_takes_cover_like_the_game` needs its seed
+re-picked (0072's procedure — the impact draws joined the stream, as the game's own do). Report:
+docs/reports/fix-impacts.md.
