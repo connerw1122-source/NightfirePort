@@ -6565,3 +6565,11 @@ demonstrated live before the reset and the chain test re-run green on the restor
 2. Press fire (✕) while dying: the menu/restart should come immediately instead of the 7.5 s.
 3. Die on 07000007 (punch a guest to death): the fail banner ~5 s, then the restart to 07000005
    (the mission start), COLD — full health, fists, objectives re-announced. The old replay loop gone.
+
+## fix-safe08 (2026-10-13, branch s/fix-safe08) — the 07000008 bedroom: the blue block and the safe's pickups
+
+In progress. The user's safe08 playtest (2026-10-12, after fix-party-mission): the briefcase and the
+rocket launcher in the safe can't be picked up, and a huge dark-blue block of castle EXTERIOR stonework
+stands in the middle of the bedroom (spot 07000008 --bond 155.19,43.12,-113.38,-3.837,0.010 frame 6587),
+blocking view and movement. fix-party-mission assumed the pillar was the locked GuardRoom door — it is
+not; it is exterior stonework drawn inside.
