@@ -39,6 +39,43 @@ then per-bone quaternion+translation matrices, tail_count × 0x24 bytes
 All 1,217 skins on the disc parse with their archive's skeletons. Main entries: 582 resolve to exactly the 582
 skinned objects; 627 are sleeve substitutes.
 
+## Facial morphs (fix-facial)
+
+- **`+0x12 u8` = the facial (morph) count** → runtime `AnimSkin+0x2e` [M `AnimProcessSkinData` 0x1bd500]. 22 on the
+  dialogue skins (`05000007`, `050000ac`, `0500008f`, … — the count every archive's face-bearing skins share), which
+  equals the cut-scene scripts' face tracks' 22 channels. `AnimObjectNew` 0x1be910 mallocs `count × f32` (zeroed) for
+  the object's morph weight array (`animData+0xb0`; the sAnimObject's weights pointer reads `+0x40`).
+- **Weights → face** [M `AnimFacialBlend` 0x1be648]: three facial script slots are looked up by marker
+  (0xe0000000 idle / 0xe0000001 blink / 0xe0000002 talk) via `AnimListBuild(obj, 0x200, ~marker, 0, 1)`; each slot's
+  playing sequence's **frame buffer (`sAnimSeq+0x84`, `AnimSeqNew` 0x1c7248's per-channel float evaluation — for a
+  face track the 22 channels ARE the morph weights)** blends into the weight array: slot 0 copies straight; slots 1
+  and 2 override a weight only when |w| > 0.01; the anim object's eye bytes write +0x97 → index 14 (value/255) and 13
+  (1 − value/255), +0x98 → index 11 and 12, each guarded by the same 0.01. Under a script camera (`ScriptCam != 0`)
+  only slot 2 applies, as a straight copy. Ported: `nf_game::anim::facial_blend` / `facial_weights`.
+- **Idle/blink driver** [M `AnimFacialUpdate` 0x1be310]: per anim object, state byte +0x99 (0x7f mask) and timer
+  +0x92 pick scripts from `Male_Facial_State_Anims` / `Female_Facial_State_Anims` (bit 10 of anim object +0x58 =
+  the gender select) — [D ACTION.ELF .data 0x2c6ea8/0x2c6ec0: male `060000f8/060000f9/060000f5/060000f6/060000f3`,
+  female `0600036d/0600036f/0600036a/0600036b/06000370`; table[0] = idle (0xe0000000), table[4] = blink
+  (0xe0000001), with `Rand_Rand` draws for the blink cadence and a 50/52 % chance of a longer blink gap].
+- **Weights → vertices** [M `AnimObjectDraw` 0x1c4490 → `psiDrawSkinObjectMatrix` 0x111828 → `SkinIt` 0x10bf30]:
+  near objects only (the min of the four lighting bytes at animData+0x110..0x113 < 13; no gate under a script
+  camera), `Morph_Count` = skin+0x2e, `Morph_Weight[i]` = the weight array's floats with `Morph_Index[i] = i`, then a
+  (weight, index) selection sort (first min(count, 8) descending by weight, then the index order restored). Per
+  vertex, the skinning word's upper half-word (the short at +0x1E, −1 = none) is the morph index; `SkinIt` fetches
+  `target_base + (vertex_index + Morph_Index[m]) × 12` for each morph m and adds the weight-scaled VECTOR3. The
+  target base is the runtime gfx record's +0x14 (`psiDrawSkinObjectMatrix` reads it after `psiCreateEntityGfx`
+  0x1171b0 resolved the skin-info words: +0 source buffer, +4 size, +8 the −1-terminated REF index list, +0xC the
+  0xFF-terminated slot-bone list measured 0x30 bytes before the skin info). The morph targets' own disc region is
+  NOT yet located — the block carries a large float region beyond the REF list (a 0x04000048 mesh: 356 morph
+  vertices, indices up to 5272, so the target array spans ≳ 63 KB inside the block), and gfx-runtime+0x14's writer
+  is still unread (the decomp drops the store). Open: the base's exact offset + the sort's final order.
+- The face tracks ride the cut-scene scripts as the second opcode-0 window (docs/formats/animation.md "Scripts"):
+  07000005's ledge pair 06000996/97 → face sequence 040007fa (frames 1..0x5dc), whose first weight crosses 0.01 at
+  frame 767 [D, `facial_live`]. The port currently poses BONES from those channels
+  (`nf_game::anim::script_pose_drone`'s narrow-track path, [L]-pinned by the 07000006 truck-driver trace) — re-pointing
+  them at the morph weights is the next step and needs the truck-driver immobility re-explained (the body track's
+  root motion must then be zeroed by the cut-scene itself).
+
 ## Placement
 
 Characters are `oDrone` placements (flag 0x0F; also 8 animated `Tree`s) whose parameter 0 is a skin hashcode: 522

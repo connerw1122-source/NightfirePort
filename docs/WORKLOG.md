@@ -8119,3 +8119,45 @@ not reproducible since); nf-view 108-bin partial run ok + every remaining binary
 disc_golden included (driving_golden passed). Report: docs/reports/fix-weapon-modes2.md. Left: the
 briefcase turret (gt.rs), Bullet_init's mode spread, the grenade mode pair, the decryptor mini-game, the
 +0x60 fire_sound contradiction — all carried from fix-weapon-modes' list.
+---
+Task: fix-facial
+Agent: fix-facial worker
+Branch: s/fix-facial (from origin/master 13abef4)
+
+Work Log:
+- Sandbox kept (repo, work/, onfoot ISO, nf-queue present); token refreshed, master pulled.
+- Starting G-020/G-030: decode the skin morph data (skin +0x12 facial count, the skinning word's
+  morph index) into docs/formats/character.md, port AnimFacialUpdate/AnimFacialBlend, drive from
+  the cut-scene scripts' 22-channel face tracks + speech. WORKLOG first, branch pushed.
+
+Stage Summary:
+- (in progress)
+
+---
+Task: fix-facial
+Agent: fix-facial worker
+Branch: s/fix-facial
+
+Work Log:
+- Decoded the facial pipeline [M]: skin +0x12 = the facial count (→ AnimSkin+0x2e, AnimProcessSkinData
+  0x1bd500; 22 on every dialogue skin — the face tracks' channel count); AnimObjectNew 0x1be910
+  mallocs the weight array (animData+0xb0); AnimFacialBlend 0x1be648 blends the three facial script
+  slots' sequence frame buffers (sAnimSeq+0x84 — for a face track the 22 channels ARE the morph
+  weights) into the weights with the >0.01 overrides and the eye bytes (+0x97 → indices 14/13,
+  +0x98 → 11/12, value/255 and 1−value); ScriptCam plays slot 2 only. AnimFacialUpdate 0x1be310 =
+  the idle/blink state machine over Male/Female_Facial_State_Anims [D ELF .data 0x2c6ea8/0x2c6ec0:
+  060000f8/f9/f5/f6/f3 male, 0600036d/6f/6a/6b/70 female]. AnimObjectDraw 0x1c4490 loads
+  Morph_Weight/Morph_Index (distance gate <13, selection sorts) and SkinIt 0x10bf30 applies them
+  per vertex via the skinning word's upper half (target = base + (idx + Morph_Index[m])·12).
+- Landed: Skin.facial (+0x12), nf_game::anim::facial_blend + facial_weights (the exact arithmetic),
+  the facial tables; tests crates/nf-game/tests/facial_live.rs (3, green): skin 05000007 facial 22,
+  the 07000005 ledge face track 040007fa sampled over the first 60 ticks == the channel evaluation
+  with the first >0.01 weight at frame 767 of 1500, and the blend arithmetic vs the decompile.
+- Open: the morph TARGET buffer's disc location (the skin-info +0xC word is the slot-bone list, not
+  targets; a morph-bearing mesh shows indices to 5272 → a ≳63 KB target array inside the block;
+  gfx-runtime+0x14's writer is a dropped store) — the face-vertex-move test and the skinning-upload
+  hook wait on it; the face tracks still pose bones in script_pose_drone ([L]-pinned truck trace).
+
+Stage Summary:
+- The blend + decode landed with green tests; the vertex application is the next session's item
+  once the target buffer's base is pinned (live check listed in the report).
