@@ -179,8 +179,10 @@ fn the_searchlight_beam_arms_raises_the_alarm_channel_and_wakes_its_guards() {
     let mut scene = nf_view::load(&iso, "07000006.bin", false).expect("load");
     let sim = scene.sim.as_mut().unwrap();
     for _ in 0..2 { sim.step_bond(Default::default(), false, false, false); }
-    // The head (part 0) starts off, its spot parked at the −10000 offset [M Searchlight_Create].
-    assert_eq!(sim.drones.searchlights.parts[0].state, 3, "the light starts off (param 1 = on-channel 64)");
+    // fix-searchlight-alarm: the level boots NIS 0x06000066 (its stream 0 raises the heads' on-channels
+    // 64/63/61/62 at waits 1/59/116/167 [D 07000006 NIS 0x06000066]), so head part 0 (on-channel 64) is
+    // already lit here — the manual raise below only re-writes the same channel. The spot stays parked
+    // at the −10000 offset until the first update [M Searchlight_Create].
     let waiters: Vec<usize> = sim.drones.list.iter().enumerate()
         .filter(|(_, dr)| dr.present && dr.switch_channel == 55).map(|(i, _)| i).collect();
     assert!(!waiters.is_empty(), "07000006 places guards waiting on the searchlight alarm channel 55");
@@ -191,7 +193,6 @@ fn the_searchlight_beam_arms_raises_the_alarm_channel_and_wakes_its_guards() {
     // sunken approach) is wanted, but with the player-pick sphere in the spot ray (fix-npcs,
     // Collide_PickObj 0x1eae80) the spot rides his sphere once the beam is on him — an uncapped chase
     // would walk him up into the sky.
-    sim.drones.channels.set(64, 1, sim.drones.frame);
     let head_pos = sim.drones.searchlights.parts[0].pos;
     stand_armed_at(sim, [head_pos[0] + 8.0, head_pos[1] - 9.0, head_pos[2] + 2.0], head_pos);
     let foot_y = sim.bond.pos[1];

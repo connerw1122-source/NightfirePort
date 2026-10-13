@@ -898,7 +898,31 @@ pub struct Scripts {
 impl Scripts {
     /// The scripts (`lib`) and the players placed on the main map.
     pub fn new(lib: HashMap<u32, Arc<Nis>>, placements: &[Placement]) -> Scripts {
-        let players = placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xd9).filter_map(|(i, p)| Player::from_placement(i, p)).collect();
+        let mut players = placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xd9).filter_map(|(i, p)| Player::from_placement(i, p)).collect::<Vec<_>>();
+        // fix-searchlight-alarm: 07000006's courtyard searchlights. The disc's NIS 0x06000066 stream 0
+        // raises the heads' on-channels in a staged reveal — ch 64 (0x40) = 1 at wait 1, ch 63 (0x3F) at
+        // 59, ch 61 (0x3D) at 116, ch 62 (0x3E) at 167 [D 07000006 kind-7 NIS 0x06000066; the heads'
+        // on-channels are 64/63/61/62 on the four 0xDE kind-1 placements] — all four courtyard lights
+        // sweep within ~2.8 s of the script's start. Nothing in the level's
+        // placements, triggers or sub-scripts references the script (no param carries the hash; the raw
+        // bytes occur nowhere in 07000006.bin outside compressed-data noise), so the game's activation
+        // beat is not derivable from the disc — the port boots it once at level start, mode 1 (play
+        // once), the way a hidden `SP_CreateScriptPlayer` one-shot runs (`spawn_once`'s precedent, the
+        // copter script [M 0x1dbc08's mode dispatch]). Without it the port's courtyard heads stay state
+        // 3 (dark) forever, the alarm channel 55 can never rise and the guards never react. The real
+        // activation moment (which SP fires it in the game, and on which beat) is a live check in
+        // docs/reports/fix-searchlight-alarm.md. Pinned to the level by its own data: a class-0x22 head
+        // placement whose alarm channel is 55 AND the script in the lib.
+        let light_boot = placements.iter().any(|p| p.flags & 0xff == 0xde
+            && p.params.iter().any(|&(k, v)| k == 3 && v == 55))
+            && lib.contains_key(&0x0600_0066);
+        if light_boot {
+            players.push(Player {
+                placement: placements.len(), scripts: [0x0600_0066, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0,
+                scale: 1.0, matrix: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+                cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
+            });
+        }
         Scripts { lib, players, objects: Objects::default(), requests: Vec::new(), primed: false, skip_request: false }
     }
 
