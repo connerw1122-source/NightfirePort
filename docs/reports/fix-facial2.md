@@ -117,6 +117,13 @@ the object array, entry fields 0x20/0x24, the REF-index terminator and the skin-
 `docs/formats/character.md`, `docs/WORKLOG.md` (appended). No shared file rewritten; no Rand_*
 draws added.
 
-## ntfy
+## ntfy failed
 
-(send result recorded after the finish step)
+All three fallbacks failed with the server-side daily quota (sent 21:25 UTC, 2026-10-13):
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- python urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget: exit code 8 (server error), no body.
+
+Message attempted: `fix-facial2: morph target buffer pinned (MORPH_DATA 0x2b payload = gfx+0x14,
+exact census 5294=5272+22), vertex half landed in CPU skinning + real-plate test; nf-game 228/0;
+blink driver + track re-point next`.
