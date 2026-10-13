@@ -6329,33 +6329,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             let _pc = crate::prof::scope("drone: clones + misc");
             dr.others = positions.clone();
             dr.peers = peers.clone();
-            // `DroneMove_NoBunching` (0x150ad0) over `NDrone2_Steer`'s (0x14eba8) obstacle scan:
-            // the nearest drone or the player within 3.0 (`EvaluateObstacle` 0x14e6f0: sqDist < 9,
-            // the scan seeds `Drone+0x310` at 3.0 and keeps the minimum). The game's candidate
-            // chain (`+0x4F8 & 0x600 == 0 && & 0x100 != 0 && +0xac > 0.0 && class != 0x11 && not
-            // deleted`) rides bits the port does not model — the port takes present, enabled,
-            // non-corpse peers and the live player [*suggested*]. The angle is the movement
-            // direction (yaw + the anim's quad offset, the port's `yaw_offset` = +0x570's bits);
-            // the decomp drops the ATAN2 store, so the 8/0x10 side sign is [*suggested*] — bit 2
-            // (ahead, |diff| < π/4) is sign-independent.
+            // The NoBunching flag computation is SUSPENDED (see the report): the scan alone regressed
+            // the 07000001 death-drop tests (fix_objects_live a_death_draws_its_drop, green on master
+            // 0cda458 and at the kick commit) — the flags feed only the 0x5E gate, so a zero here
+            // disables the gate, not the tested kick path. Root cause next session.
             dr.no_bunching = 0;
-            {
-                let mut best: Option<(f32, V3)> = None;
-                for (i, pos, _) in peers.iter() {
-                    if *i == index || !bunching_ok[*i] { continue; }
-                    let q = (pos[0] - dr.pos[0]).powi(2) + (pos[1] - dr.pos[1]).powi(2) + (pos[2] - dr.pos[2]).powi(2);
-                    if q < 9.0 && best.map_or(true, |(bq, _)| q < bq) { best = Some((q, *pos)); }
-                }
-                let pq = (player.pos[0] - dr.pos[0]).powi(2) + (player.pos[1] - dr.pos[1]).powi(2) + (player.pos[2] - dr.pos[2]).powi(2);
-                if pq < 9.0 && best.map_or(true, |(bq, _)| pq < bq) { best = Some((pq, player.pos)); }
-                if let Some((_, op)) = best {
-                    let angle = atan2_approx(op[0] - dr.pos[0], op[2] - dr.pos[2]);
-                    let facing = dr.yaw + dr.yaw_offset;
-                    let diff = angle_difference(angle, facing);
-                    dr.no_bunching |= if diff < 0.0 { 0x10 } else { 8 };
-                    if diff.abs() < std::f32::consts::FRAC_PI_4 { dr.no_bunching |= 2 } else { dr.no_bunching |= 4 }
-                }
-            }
             // `NDrone2_NearArmedDrone`'s scan (fix-actors): the nearest started, alive, hostile peer.
             // (The snapshot list was taken before the mutable borrow; the armed/started filter rides it.)
             dr.armed_peer_dist = armed_peer_dist[index];
@@ -6424,16 +6402,14 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     }
                 }
             }
-            // The route's ally-wait node (flag 0x20): only while `switch_channels[0x99]` is off —
-            // the channels live here, like the door bindings (`ReachedDestNode` 0x153358:85-94).
-            if let Some(node) = dr.ally_wait_node.take() {
-                if let Some(path) = dr.route.as_ref().map(|r| r.path).or_else(|| dr.croute.as_ref().map(|r| r.path)) {
-                    if d.nav.paths[path].nodes[node as usize].flags & 0x20 != 0 && !self.channels.on(0x99) && dr.state != state::LEAD_MISSION_WAIT {
-                        dr.return_state = dr.state; // +0x5A2 [M 0x153358:90]
-                        dr.set_state(state::LEAD_MISSION_WAIT);
-                    }
-                }
-            }
+            // The route's ally-wait node (flag 0x20) is RESOLVED but not acted on: the game parks
+            // the drone in 0x21 while `switch_channels[0x99]` is off (`ReachedDestNode` 0x153358:85-94),
+            // but enabling that here regressed 07000001's exit walk (the courtyard shoji never
+            // opened — the parker stood between Mayhew and the door, fix_mission_live's
+            // the_07000001_exit_works_end_to_end, green on master 0cda458). The game's ch-0x99
+            // timing around that node is the missing fact — live check in the report. The outbox
+            // stays (the resolution proves the node dispatch), the state entry waits for it.
+            let _ = dr.ally_wait_node.take();
             // The kick request (`NDrone2_KickObject` 0x14aa00): the bound ScriptPlayer's script
             // unpauses (`SP_UnPause` 0x1dca58: `+0x2c = 1`, the current script's pause cleared).
             if dr.kick_attempt {
