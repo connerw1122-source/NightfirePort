@@ -6488,6 +6488,12 @@ Bond's gadgets: the selection re-enabled and three gadget systems ported with te
   the near-fatal sisters (nothing triggers). All 7 fail to compile against the pre-fix tree (the API
   is new) and the pre-fix behaviour they contradict is in HEAD~1 (instant ch 0x62 + the carried
   restart).
+- Continuation (the same session, later): an 8th test `lethal_fall_reaches_the_death_path_and_the_cold_restart`
+  covers task item 4 — a real 400-unit fall on 07000011 (the atrium level, part 0 of its own mission)
+  lands through `Player_CollisionHandler` 0x1949a8's fall damage into the full sequence and the COLD
+  restart to 07000011; the 8-unit sister triggers nothing. The fail-restart target on 0700000a was
+  corrected 0x0700000a → 0x07000009 in `walk_0700000a_live.rs` (the menu restarts the MISSION'S first
+  level [M 0x204408:139], not the current one). All 8 pass.
 
 **Measured / notes**
 - The fail path's banner really takes 300 ticks before the menu [M 0x182c60:52-57

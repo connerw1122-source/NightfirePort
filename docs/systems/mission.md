@@ -183,7 +183,11 @@ sequence above (the port's fall/pain paths land in the same `Drones::death_tick`
 
 Falling deaths and the chasm/death-NIS volumes reach this path through Bond's health; the death NIS
 scripts themselves (`Script_IsDeathNIS` 0x1dae60, the 07000011 atrium fall) play their script and the
-sim's death sequence runs underneath — the render-side check is the main agent's.
+sim's death sequence runs underneath — the render-side check is the main agent's. **Verified (this
+task)**: the NF_ISO test `lethal_fall_reaches_the_death_path_and_the_cold_restart` drives the real
+fall on 07000011 — a 400-unit drop lands into the full sequence (`Player_CollisionHandler` 0x1949a8:117-126
+→ `Player_HandlePain(timer − 60, type 6)` → the pane, ch 0x5e/0x62, the menu) and the COLD restart to
+the mission's first level (07000011, part 0 of its own mission); an 8-unit drop triggers none of it.
 
 ### Known gaps (updated)
 

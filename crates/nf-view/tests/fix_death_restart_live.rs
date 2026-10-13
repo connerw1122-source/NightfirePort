@@ -227,6 +227,50 @@ fn restart_matches_a_clean_load() {
         "the warm carry differs from a clean load — why the restart must be cold");
 }
 
+/// ── 5. The falls and the scripted deaths share the one entry ────────────────────────────────────
+/// The 07000011 atrium-style fall: a lethal landing enters through `Player_CollisionHandler`
+/// 0x1949a8:117-126 — `Player_HandlePain(timer − 60, type 6)` → health ≤ 0 → `Player_CheckForDeath`
+/// 0x190810 — the SAME sequence a bullet takes (the port: `Bond::fall_damage` → `pain_generic(type 6)`
+/// → `death_tick`). The scripted arm — the death NISs (`Script_IsDeathNIS` 0x1dae60: the three hashes
+/// can NOT be skipped [M nf-game::nis]) — plays its script over this same sim sequence. Sister: a
+/// survivable drop (fall_timer ≤ 60 [M 0x1949a8]) triggers nothing at all.
+#[test]
+fn lethal_fall_reaches_the_death_path_and_the_cold_restart() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000011.bin");
+    let sim = scene.sim.as_mut().unwrap();
+    tick(sim, 5);
+    let spawn = sim.bond.pos;
+    // The sister: an 8-unit drop (fall_timer lands near the 60-tick gate [M 0x1949a8:117-126] —
+    // velocity is units/second, so one free-fall second covers ~5 units) hurts at most, kills never.
+    sim.bond.pos = [spawn[0], spawn[1] + 8.0, spawn[2]];
+    sim.bond.vel = [0.0; 3];
+    for i in 0..300 { sim.step_bond(Default::default(), false, false, false); if i > 30 && sim.bond.grounded { break; } }
+    assert!(sim.drones.health.health > 50.0, "the survivable fall leaves Bond alive (health {:.1})", sim.drones.health.health);
+    assert!(!sim.drones.death.active && !sim.drones.channels.on(0x62), "alive: no death sequence");
+    assert!(sim.drones.level_exit.is_none(), "alive: no restart");
+    // The lethal fall: 400 units onto the atrium floor — the real physics path, no scripted damage.
+    sim.bond.pos = [spawn[0], spawn[1] + 400.0, spawn[2]];
+    sim.bond.vel = [0.0; 3];
+    let mut landed = false;
+    for i in 0..900 {
+        sim.step_bond(Default::default(), false, false, false);
+        if i > 30 && sim.bond.grounded { landed = true; break; }
+    }
+    assert!(landed && sim.drones.death.active, "the lethal fall landed into the death sequence [M 0x1949a8 → 0x190810]");
+    assert_eq!(sim.drones.health.health, 0.0, "the fall drained health to 0 — the one death entry");
+    assert!(sim.drones.death.pane_on, "the blood pane enabled on the first dead tick [M 0x190bb0:24-25]");
+    assert!(sim.drones.channels.on(0x5e), "the death's ch 0x5e [M 0x190810:40]");
+    // ✕ skip → ch 0x62 → the mission states → the menu → the COLD restart to the mission's first
+    // level (07000011 is part 0 of its own mission [L mission-data] — the restart re-plays THIS level).
+    tick_fire(sim, 1);
+    assert!(sim.drones.death.ch62 && sim.drones.channels.on(0x62), "✕ raised the death channel [M 0x190bb0:32]");
+    tick(sim, 4);
+    let (lv, cold) = exit(sim);
+    assert_eq!(lv, Some(0x0700_0011), "the fall restart → Mission_BaseMapHCode() = 07000011 [M 0x204408:139]");
+    assert!(cold, "the fall restart is the COLD arm (IsWarmReset = 0) [M 0x204408:139]");
+}
+
 /// ── 4. The menu API for 180-fix-menus ───────────────────────────────────────────────────────────
 /// With `auto_restart` off the mission waits on the menu; the view answers Restart or Quit exactly
 /// as `C_GCPAUSE_Handler` 0x204408 does.
