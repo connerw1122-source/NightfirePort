@@ -9007,3 +9007,23 @@ Stage Summary:
   dead-code status documented; the 8-slot table and the +0x538 blend-out remain open with the blockers
   written down. Branch s/fix-cover-remainder; report docs/reports/fix-cover-remainder.md.
 >>>>>>> origin/master
+
+**fix-room-sound outcome (23:40 UTC)**: the room environment landed — the parse keeps the cel env
+(cel+0x98: 0x9898 sentinel for 0xc023, param 9 raw u16 for 0xc047 [M 0x1d00c0]) + the underwater
+flag (param 3 != 0), sound_tick sends SFXSetEnvironment(cel.env, flag || env >= 20) from the
+listener's cel every frame and nothing when cel-less [M 0x1dd278 disasm 0x1dd4b0-0x1dd4fc];
+07000005 pinned 19 cels = 15x (env 0, dry) + 4x (env 40, underwater) [L ee_start_05.bin], the
+env-40 leg fails on the pre-fix hardcoded (0,0). Foley: the kick 0x28 now plays Drone_SfxInfo[0x28]
+(1478) through the gate (the drain picks the line by state; the raw anim_sounds 0x27/0x28
+plays — sound 39/40 — removed), the civilian patrol's female scream 0x48 queued from the UPDATE
+arm [M 0x15d610], the spawner wave announce 0xd6+Rand(2) on 0700000C/0D mode-3 first wave none-alive
+[M 0x137e68 disasm 0x1382fc], BOT_handlePain's four grunt pools + pain_pool/bot_handle_pain with the
+handle bookkeeping [M 0x125ed8] — MP-gated in the game, NOT wired live (SP is pain_talk), so no
+Rand_* draws entered the live stream and no seed re-pick was needed. Interrogation 0x4a and
+hostage-die 10 fully specified in the report, need their state machines. Upstream repair: master's
+scene.rs carried two corrupted lines (dropped [m/[h bytes in the nav-remainder sphere closure) —
+fixed in the merge. Suite: fix_room_sound_live 2/2, nf-game lib 135/0, nav_kick_live 5+1 ign,
+ai_live 35/0, nf-audio 7/0; the full nf-formats/nf-view sweeps did not fit the window (next session:
+run them before merging). Shared files: lib.rs (sound_tick pub + the feed), sfx.rs (the
+environment() accessor), drone.rs (foley_reqs/pain_grunt fields + 4 hooks), scene.rs (the Cel
+fields). Report: docs/reports/fix-room-sound.md.
