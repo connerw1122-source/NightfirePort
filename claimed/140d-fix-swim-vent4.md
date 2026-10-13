@@ -29,3 +29,6 @@ Files: `crates/nf-game/src/drone.rs` (the follow/next_node arms, minimal), `crat
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/swim-vent4` (start from `s/fix-swim-vent3`, then merge `origin/master` into it).
+
+---
+claimed-by: sandbox3 at 2026-10-13T16:47Z
