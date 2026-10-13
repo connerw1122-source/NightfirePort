@@ -7721,3 +7721,58 @@ looping menu BGs from M_PAGE+0xC4, skip = action 0x19 instant). nf-view/src/movi
 + headless `--movie <code> --frame N --shot out.png` dumps (feature-gated), verified on two movies. Left for
 the next session: live playback wiring (window + cpal + skip), the FILES.BIN menu-BG codes, the 0x72xxxxxx
 codes. The slim ISO stubs all movies (lba=0/size=0) — set NF_MOVIE_ISO to the retail image to run the tests.
+Task: fix-menus2 (started)
+Agent: fix-menus2 worker
+Branch: s/fix-menus2
+
+Work Log:
+- Branch created from origin/master (a5bff8b). Reading docs/reports/fix-menus.md (merged) and the current
+  crates/nf-view/src/{menu,lib}.rs. Goal per the driver: the front end must match the real game's screens
+  (title art, main-menu backdrop + stylised items, codename select, difficulty BEFORE mission list, mission
+  list with the real names/unlock rule, button-icon sprites, --shot draws the overlay).
+
+Stage Summary:
+- Setup done; work starting. Next: research the page handlers' decompiles and the 07000048 assets, then
+  rewrite the overlay to the game's layouts.
+
+---
+Task: fix-menus2
+Agent: fix-menus2 worker
+Branch: s/fix-menus2
+
+Work Log:
+- Decoded the disc's front-end page data: the kind-8 entry 08000002 in 07000048.bin is a tag stream
+  (MenuManager_Create 0x21b908) — chunk layouts derived from the decompile (PAGE −0x10 = 17 B {page id,
+  file hash 0x80000002, aux movie, kind, size}, CONTROL −0x07 = 30 B, MSG 0x18 label / 0x24 texture /
+  0x1b/0x1c colours); parsed 56 pages / 1003 controls to a clean END. Page identity settled by the data:
+  main menu = 0x40000002 (rows NightFire/Multiplayer/Codenames), Select Codename = 0x40000025, Select
+  Difficulty = 0x40000023, Single Player = 0x4000001c, Dossier = 0x4000002b, visible title = 0x40000009
+  (full-screen art 0x03000074 + yellow prompt + legal plate); the boot page 0x40000034's 7 controls are
+  language flags (0x030000c9-cf, the Union Jack first).
+- menu.rs rewritten around the game's layouts (640×480 menu space → the 512×448 screen), strings bound
+  from USATxt.dat (main 0x28/0x149/0x14b + descs 0x1000000-2, codename 0x1f2/0x29b/0x10002ff/0x10000bb,
+  difficulty 0x1f8/0x14d/0x14e/0x14f + 0x1000006-8, list 0x14c, hints 0x3c3/0x54e/0x216/0x218/0x208,
+  legal 0x375, prompt 0x10001eb, Dossier 0x27f), sprites from MENU_TEXTURES (title art, panel, ring,
+  previews, logo, stamp, the 0x03000042 button atlas for the ~N hint glyphs).
+- The campaign = sp_level 0x2df2e0's 12 records (name/desc labels + level codes, cross-checked against
+  ee_snapshot): "Enemies Vanquished" etc. replace the old hard-coded list; unlock rule = row 0 fresh,
+  i+1 on completion (Menu_SetLevelBonus 0x1ffa10), locked rows dimmed + unscrollable (C_SBNFMAP
+  0x20b8d8:18-20), --unlock-all = menu_unlock_everything 0x30d2a7.
+- Flow: Title → START → intro movie (state 6, skippable; the trimmed ISO's menu FMVs are zeroed) →
+  Main → NightFire → Codename (confirm box for Play without saving) → Difficulty → Missions → the
+  sp_level level through the 0x71 wrap; backs + the Dossier side-action.
+- --shot now draws the menu overlay (lib.rs front_end_menu): --page start|main|codename|difficulty|
+  missions|dossier, --cursor N, --unlock-all; F10 screenshots include the menu too.
+- Two real bugs fixed: Lang::parse's raw UTF-8 fallthrough emptied every CP-1252 string (the legal line
+  0x375 — fix-menus' Left #7) — the bank is now CP-1252-decoded with offsets remapped; the loader's
+  movie-wrap check mis-fired on the driving codes 0x09xxxxxx (real sp_level levels) — now tests the
+  0x71/0x73 prefix at bits 20-27.
+- Suite: nf-formats 61 pass + the 3 allowed disc_golden fails; nf-view 379 pass / 0 fail (12 menus_flow
+  tests incl. the page sequence, per-page label ids and per-page sprite hashes, with NF_ISO sisters).
+  Report: docs/reports/fix-menus2.md. Render commands for the main agent are in the report.
+
+Stage Summary:
+- The front end matches the real game's data: the game's own page layouts/sprites/strings/flow, the
+  12-mission sp_level campaign with the unlock rule, the confirm box, the Dossier, button-icon hint
+  bars, and a --shot path that renders every page for the PCSX2 side-by-side. Left (reported): the
+  zeroed menu FMVs, the ✕/△ glyph sprites, the per-mission preview mapping, the driving-row launch.
