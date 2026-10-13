@@ -8768,6 +8768,75 @@ Stage Summary:
   and the ammo-id remaps are new port behaviour with game citations.
 - Left: the auto-switch drain re-open (live checks 1-2 in the report), moving-platform landings,
   the drop push-out, the AR set's second pile, the +0x888 kind-5 field, the shop's Upgrades byte.
+---
+Task: fix-viewmodel-zoom (branch s/fix-viewmodel-zoom)
+Agent: fix-viewmodel-zoom worker
+Task: GAPS G-044 — the view-model/crosshair tilt with zoom and aspect (Player_WeaponRecoil divides
+the tilt by glb_viewer+0x108 zoom and scales x by viewer+0x114; the port uses a fixed 4/3 and no
+zoom divide), plus each zoomable weapon/gadget's own zoom overlay (the micro camera must show its
+viewfinder, not the sniper scope; check the sniper scope, the camera, binocular/night-vision) —
+find the overlay selection in the decompile (HUD panes / weapon flags) and draw the right one per
+weapon id. Files: crates/nf-view/src/scene.rs (gun axes), the HUD overlay code.
+
+Work Log:
+- Session start 21:43 UTC (sandbox expires ~23:43 UTC). Repo found at /home/z/NightfirePort with
+  work/ (2.0G decompile) and target/ (1.6G warm cache) intact; ISO present (1013M); freed 370M by
+  deleting the already-extracted iso .7z. Branch s/fix-viewmodel-zoom created from origin/master
+  (7a614ba). This entry is the setup checkpoint.
+
+Stage Summary:
+- Setup complete; research starting. (To be appended as work proceeds.)
+---
+Task: fix-viewmodel-zoom (branch s/fix-viewmodel-zoom)
+Agent: fix-viewmodel-zoom worker
+Task: GAPS G-044 — the view-model/crosshair tilt with zoom and aspect (Player_WeaponRecoil divides
+the tilt by glb_viewer+0x108 zoom and scales x by viewer+0x114; the port used a fixed 4/3 and no
+zoom divide), plus each zoomable weapon/gadget's own zoom overlay (the user: "The micro camera,
+when you zoom in, doesn't actually have the camera overlay, but the scope of a sniper") — the
+overlay selection per weapon id and the right pane drawn per id.
+
+Work Log:
+- G-044 root cause [M Player_WeaponRecoil 0x1a3de8:52-57]: rot+0x50 = cy·(−π/6) ÷ viewer+0x108,
+  rot+0x54 = viewer+0x114·(−cx·π/6 ÷ viewer+0x108) + BL+0x8E4; viewer = glb_viewer[BL+0x94e]
+  (0x2d88b0); the zoom +0x108 is fed BL+0x8D0 by Player_PositionCamera 0x18f5d8:129 and reset by
+  Camera_CalcViewAngles 0x1baf70; +0x114 is the aspect scale — 4/3, or 16/9 under the widescreen
+  flag DAT_002a37c4 [M 0x1baf70] — [L ee_start_05 viewer 0x1fc6c10+0x108 = 1.0, +0x114 = 0x3faaaaab].
+  The port's gun_matrix divided by nothing. Fix: both terms ÷ Sim::zoom (scene.rs, the task-named
+  gun-axes hook); the 4/3 kept (the port renders a fixed 4:3; widescreen/split not modelled — report).
+- The overlay selection [M HUD_UpdateCrossHair 0x19e6d0:106-147]: aim mode + scoped (weapon_data
+  +0x68 & 0x40) hides the crosshair (LAB_0019e9c8, layer 0xff) and enables the zoom pane by weapon
+  id — the switch runs on wid−0x1a: 0x1a/0x1b → pane 17 (OICW), 0x32/0x33 → pane 19 (Laser/Ronin),
+  0x54/0x55 → pane 11 (Camera; 0x55 is rewritten to 0x54 by the game), default (the sniper 0x24,
+  zoom 10 [L]) → pane 6 (Sight/scope). The offsets decode as pane records (created +0x1F gated,
+  enabled +0x1C written — the inlined HUD_Enable). The port drew the scope for EVERY zoom — the
+  user's bug; the zoomable gadget in the port is the watch 0x54/0x55 (the camera 0x52 is not scoped,
+  its fire-side is the unported mission layer).
+- Fix (hud.rs): zoom_overlay(weapon) → ZoomOverlay {Sight, Oicw, Laser, Camera}; the four pane draws
+  from the SprInfo tables [L ee_start_05: Sight 0x2bd558 (unchanged scope), Camera 0x2bd600
+  viewfinder 0x03000055 + corner brackets 0x03000056/57 — photo-flash sprite 0 and the 3D-positioned
+  sprite 8 (flags 0x900) not drawn, per HUD_UpdateCameraPane 0x1a12d8's hidden-at-rest flash],
+  Laser 0x2be288 (six solid strips), OICW 0x2be008 (cyan subtractive tint + dim circle 0x03000141;
+  text sprites 2-6 not drawn — no text reader); the crosshair hides while an overlay draws;
+  TEXTURES + 0x03000055/56/57/90/0x03000141 (availability per nf-extract tex-list: 55/56/57/90 on
+  nearly every archive, 141 on 07000014-16 + MP).
+- Tests (crates/nf-view/tests/fix_viewmodel_zoom_live.rs, all shown failing first — the stub
+  always-Sight selection, the missing viewfinder, the tilt flat across zoom): the tilt at zoom z =
+  the zoom-1 tilt ÷ z through step_bond's real zoom ramp on the sniper (0x24); the per-weapon draw
+  asserts on 07000014 (which ships the scope + viewfinder + OICW textures); the pure selection per
+  ten weapon ids. Setup note: the loadout's pending switch (switch request 2) must be cleared or it
+  takes the weapon slot back mid-test.
+
+Stage Summary:
+- G-044 closed in code: the zoomed view-model tilt now divides by the zoom (the game's
+  viewer+0x108), x scaled by the 4:3 aspect value the EE snapshot holds. The zoom overlay follows
+  HUD_UpdateCrossHair's per-weapon pane selection: watch/micro camera → the camera viewfinder, the
+  sniper → the scope, OICW/Ronin → their own panes; the crosshair hides while zoomed.
+- Full suite running at entry time; report docs/reports/fix-viewmodel-zoom.md carries the count and
+  the live checks (PCSX2: the watch's viewfinder vs the sniper scope + the fieldprobe tilt probe;
+  nf-view --bond spots for scope/viewfinder/OICW/laser).
+- Suite complete: nf-game 32/32 and nf-view 154/154 binaries green (the 3 new tests included);
+  nf-formats + nf-audio green except the 3 allowed disc_golden misses on the slim ISO. Zero
+  unexpected failures; no Rand_* draws added.
 
 ---
 Task: fix-portal6

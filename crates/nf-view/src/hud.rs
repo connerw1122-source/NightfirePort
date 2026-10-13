@@ -12,13 +12,32 @@ const SH: f32 = 448.0;
 
 /// HUD textures the overlay uses (indices + 1 in `HudFrame` runs). `fix-hud` added the crouch icons
 /// (0x03000173/74), the air bar (0x0300017F) and its bubble icon (0x0300017D) [M AirSprInfo/HealthSprInfo].
-pub const TEXTURES: [u32; 12] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d];
+pub const TEXTURES: [u32; 17] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d, 0x0300_0055, 0x0300_0056, 0x0300_0057, 0x0300_0090, 0x0300_0141];
 const CROSS_TEX: u32 = 0x0300_0026;
 const FONT_TEX: u32 = 0x0300_0003;
 /// SightPane textures [D 07000005.bin entries 71 + 56]: 0x03000034 = the scope overlay (256×256, the circular
 /// vignette + crosshair reticle), 0x03000002 = the solid fill for the left/right letterbox strips (32×32 RGBA).
 const SCOPE_TEX: u32 = 0x0300_0034;
 const SCOPE_STRIP_TEX: u32 = 0x0300_0002;
+
+/// Which zoom overlay a weapon draws [M `HUD_UpdateCrossHair` 0x19e6d0:106-147]: in aim mode a scoped
+/// weapon (flags +0x68 & 0x40 [L weapon_data 0x2bf150]) enables its own zoom pane — the switch runs on
+/// `wid − 0x1a`: 0/1 (0x1a/0x1b, the OICW twins) → pane 17; 0x18/0x19 (0x32/0x33, the Ronin twins) →
+/// pane 19; 0x3a/0x3b (0x54/0x55, the watch; 0x55 is rewritten to 0x54 by the game itself) → pane 11;
+/// the default (any other scoped weapon — the sniper 0x24, zoom 10 [L]) → pane 6, the scope. The
+/// micro camera 0x52 / briefcase 0x53 are not scoped (their zoom is the mission layer's, unported)
+/// but map to the Camera pane — the user's "micro camera ... camera overlay, not the sniper scope".
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ZoomOverlay { Sight, Oicw, Laser, Camera }
+
+pub fn zoom_overlay(weapon: u8) -> ZoomOverlay {
+    match weapon {
+        0x1a | 0x1b => ZoomOverlay::Oicw,
+        0x32 | 0x33 => ZoomOverlay::Laser,
+        0x52 | 0x53 | 0x54 | 0x55 => ZoomOverlay::Camera,
+        _ => ZoomOverlay::Sight,
+    }
+}
 
 /// `HUDCrossCoords` (0x2bec48, u, v, w, h) [L]: 1 = aim mode, 2 = normal, 3 = friendly.
 const CROSS: [[i16; 4]; 4] = [[0, 0, 0, 0], [1, 2, 29, 29], [10, 11, 11, 11], [31, 1, 14, 13]];
@@ -208,7 +227,12 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     let scoped = sim.map_or(false, |s| s.weapons.records.get(s.gun.weapon as usize).is_some_and(|w| u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap()) & 0x40 != 0));
     let cell = if aiming && !scoped { 1 } else { state };
     let [u, v, w, hh] = CROSS[cell.min(3) as usize].map(|k| k as f32);
-    h.quad(Anchor::Centre, 49, CROSS_TEX, 0, SW / 2.0 * (1.0 + cx) - w / 2.0, SH / 2.0 * (1.0 - cy) - hh / 2.0, w, hh, [u, v, w, hh], (false, false), gs(0xff0000, 0xff));
+    // A zoomed weapon hides the crosshair: the aim-mode path of `HUD_UpdateCrossHair` 0x19e6d0 ends at
+    // LAB_0019e9c8 (layer 0xff = not drawn) whenever the weapon is scoped — the zoom overlay replaces it.
+    let zoomed = sim.map_or(false, |s| s.zoom_target > 1.0);
+    if !zoomed {
+        h.quad(Anchor::Centre, 49, CROSS_TEX, 0, SW / 2.0 * (1.0 + cx) - w / 2.0, SH / 2.0 * (1.0 - cy) - hh / 2.0, w, hh, [u, v, w, hh], (false, false), gs(0xff0000, 0xff));
+    }
     let (Some(s), Some(t)) = (sim, scene.hud.as_ref()) else { return h.finish() };
     let frame = s.drones.frame;
     // Health / armour pane (fade factor F = 1: `PlayerSetting+0xB` = 0 [L] holds `BL+0x8BC` at 1).
@@ -449,16 +473,51 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     // drops the instant the button is released. Using the interpolated zoom would delay the overlay's
     // disappearance by ~40 ticks (the zoom-out interpolation time).
     if s.zoom_target > 1.0 {
-        let scope_col = gs(0x7f7f7f, 0xff);
-        // 4 tiles of the scope texture, mirrored per quadrant to form one full circle [M 0x1e5290].
-        h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2,  32.0,   0.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (false, false), scope_col);
-        h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2,  32.0, 224.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (false, true),  scope_col);
-        h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2, 256.0,   0.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (true,  false), scope_col);
-        h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2, 256.0, 224.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (true,  true),  scope_col);
-        // Left strip (solid fill, subtractive)
-        h.quad(Anchor::Stretch, 39, SCOPE_STRIP_TEX, 2, 0.0, 0.0, 33.0, 448.0, [0.0, 0.0, 31.0, 31.0], (false, false), scope_col);
-        // Right strip (solid fill, subtractive)
-        h.quad(Anchor::Stretch, 39, SCOPE_STRIP_TEX, 2, 479.0, 0.0, 33.0, 448.0, [0.0, 0.0, 31.0, 31.0], (false, false), scope_col);
+        match zoom_overlay(s.gun.weapon) {
+            // SightPane 6 [L SightSprInfo 0x2bd558]: the scope — 4 mirrored tiles of 0x03000034 + the two
+            // subtractive side strips [M View_DrawSprites 0x1e5290 tiles the quadrant texture 2×2].
+            ZoomOverlay::Sight => {
+                let scope_col = gs(0x7f7f7f, 0xff);
+                h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2,  32.0,   0.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (false, false), scope_col);
+                h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2,  32.0, 224.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (false, true),  scope_col);
+                h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2, 256.0,   0.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (true,  false), scope_col);
+                h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2, 256.0, 224.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (true,  true),  scope_col);
+                h.quad(Anchor::Stretch, 39, SCOPE_STRIP_TEX, 2, 0.0, 0.0, 33.0, 448.0, [0.0, 0.0, 31.0, 31.0], (false, false), scope_col);
+                h.quad(Anchor::Stretch, 39, SCOPE_STRIP_TEX, 2, 479.0, 0.0, 33.0, 448.0, [0.0, 0.0, 31.0, 31.0], (false, false), scope_col);
+            }
+            // CameraPane 11 [L CameraSprInfo 0x2bd600] — the watch's (0x54/0x55) and the micro camera's
+            // (0x52/0x53) viewfinder: the frame texture over the whole screen + four corner brackets
+            // (sprite 3 h-flipped by flag 0x40). Sprite 0 is the photo flash, hidden at rest and shown
+            // by `HUD_UpdateCameraPane` 0x1a12d8 only during its post-shot countdown; sprite 8 (flags
+            // 0x900) is 3D-positioned — neither is drawn here.
+            ZoomOverlay::Camera => {
+                let c = gs(0x7f7f7f, 0xff);
+                let (tw56, th56) = h.tex_dims(0x0300_0056);
+                let (tw57, th57) = h.tex_dims(0x0300_0057);
+                h.quad(Anchor::Stretch, 39, 0x0300_0055, 2, 0.0, 0.0, SW, SH, [0.0, 0.0, 255.0, 127.0], (false, false), c);
+                h.quad(Anchor::Stretch, 39, 0x0300_0056, 1, 48.0, 192.0, tw56, th56, [0.0, 0.0, tw56, th56], (false, false), c);
+                h.quad(Anchor::Stretch, 39, 0x0300_0056, 1, 336.0, 192.0, tw56, th56, [0.0, 0.0, tw56, th56], (true, false), c);
+                for (x, y) in [(48.0, 120.0), (432.0, 120.0), (48.0, 256.0), (432.0, 256.0)] {
+                    h.quad(Anchor::Stretch, 39, 0x0300_0057, 1, x, y, tw57, th57, [0.0, 0.0, tw57, th57], (false, false), c);
+                }
+            }
+            // LaserPane 19 [L LaserSprInfo 0x2be288] — the Ronin's (0x32/0x33) frame: six solid-texture
+            // strips (top/bottom bars + four centre ticks), blend 1, colour 0x7f7f7f alpha 0x78.
+            ZoomOverlay::Laser => {
+                let c = gs(0x7f7f7f, 0x78);
+                for (x, y, w, hh2, layer) in [(140.0, 64.0, 232.0, 4.0, 40), (140.0, 384.0, 232.0, 4.0, 34), (192.0, 223.0, 40.0, 2.0, 40), (280.0, 223.0, 40.0, 2.0, 40), (255.0, 160.0, 2.0, 40.0, 40), (255.0, 248.0, 2.0, 40.0, 40)] {
+                    h.quad(Anchor::Stretch, layer, SCOPE_STRIP_TEX, 1, x, y, w, hh2, [0.0, 0.0, 31.0, 31.0], (false, false), c);
+                }
+            }
+            // OICWPane 17 [L OICWSprInfo 0x2be008] — the OICW twins' (0x1a/0x1b) digital zoom: a
+            // subtractive cyan full-screen tint (sprite 0, col 0x00ffffff) + the dim scope circle
+            // 0x03000141 (sprite 1, alpha 0x40). Sprites 2–6 are text sprites (the zoom readout) — the
+            // port has no reader for their text yet (the live check).
+            ZoomOverlay::Oicw => {
+                h.quad(Anchor::Stretch, 40, SCOPE_STRIP_TEX, 2, 0.0, 0.0, SW, SH, [0.0, 0.0, 31.0, 31.0], (false, false), gs(0x00ffff, 0xff));
+                h.quad(Anchor::Stretch, 39, 0x0300_0141, 1, 192.0, 160.0, 128.0, 128.0, [1.0, 1.0, 127.0, 127.0], (false, false), gs(0x7f7f7f, 0x40));
+            }
+        }
     }
     h.finish()
 }
