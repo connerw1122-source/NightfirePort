@@ -285,9 +285,13 @@ fn switching_mid_reload_is_refused_and_firing_recovers() {
 /// The grenade is a gravity bullet: `Bullet_init` (0x12c5a0) stores speed +0x20 and the fuse
 /// BU+0xFC = 210; `Bullet_update` (0x12e7b0) moves `pos += velocity` per tick (the velocity is the
 /// per-tick displacement: unit direction · speed, FRAME_RATE_MUL = 1 [M movement tail 0x12f040]).
-/// The blast: `Explode_Create`'s damage arg is the hardcoded 100 [M disasm 0x12ce18], radius =
-/// weapon_data+0x08; `Explode_Propagate` (0x17c518) damages drones and Bond; the blast sound 0x4A7
-/// enters the pool [M 0x12ce80:317].
+/// The blast: `Explode_Create` (0x17cbd0) with radius = weapon_data+0x08 and damage =
+/// weapon_data+0x0C [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` → EXPLODEINFO+0x28; the
+/// `addiu $t2, $zero, 0x64` u8 arg is never read — fix-explosions dropped the old hardcode 100].
+/// The frag's record is radius 10 / damage 0 [L], so the fuse blast hurts NOBODY through
+/// `Explode_Propagate` (0x17c518); the blast sound is the script's own Sound(0x3E) [D script
+/// 0x6000052 stream 36], not 0x4A7 (that is `Bullet_CollisionHandler`'s rest-impact sound of
+/// weapons 0x3B/0x45). A mine (0x37: 8/100 [L]) blast DOES damage — the sister below.
 #[test]
 fn thrown_grenade_flies_and_explodes_with_sound_and_damage() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
@@ -359,8 +363,23 @@ fn thrown_grenade_flies_and_explodes_with_sound_and_damage() {
         tick_idle(sim, 30);
         sim.step_bond(Default::default(), true, false, false);
         for _ in 0..300 { sim.step_bond(Default::default(), false, false, false); }
-        assert!(sim.drones.list[gi].health < hp0 || sim.drones.list[gi].corpse,
-            "the guard near the blast takes damage ({} → {}) [M Explode_Propagate 0x17c518]", hp0, sim.drones.list[gi].health);
+        // fix-explosions [M 0x12ce20 + record 0x35]: the frag's Propagate damage is 0 — the guard
+        // near the blast takes NOTHING (the old port's hardcode 100 killed him; the user's retest).
+        assert!(sim.drones.list[gi].health >= hp0 && !sim.drones.list[gi].corpse,
+            "the frag blast deals no damage (record 0x35: radius 10, damage 0 [L]) ({} → {})", hp0, sim.drones.list[gi].health);
+        // Sister: the same spot with a mine (0x37, radius 8 / damage 100 [L]) takes damage through
+        // the same `Explode_Propagate` path [M 0x17c518 case 2 → Drone_ExplosiveHit].
+        let at = [gp[0], gp[1] + 0.5, gp[2]];
+        sim.drones.grenades.push(nf_game::grenade::Grenade {
+            pos: at, velocity: [0.0; 3], speed: 0.0, travelled: 0.0, range: 2.0,
+            damage: 100.0, radius: 8.0, weapon_type: 0x37, mesh: 0, owner: usize::MAX, state: 1, bounces: 0,
+        });
+        let mut hurt = false;
+        for _ in 0..30 {
+            sim.step_bond(Default::default(), false, false, false);
+            if sim.drones.list[gi].health < hp0 || sim.drones.list[gi].corpse { hurt = true; break; }
+        }
+        assert!(hurt, "the mine blast (100 damage, radius 8) hurts the guard through Explode_Propagate");
     }
 }
 

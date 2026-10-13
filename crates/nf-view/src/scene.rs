@@ -1595,14 +1595,16 @@ impl Sim {
                     // is 5000.0 [L ee_start_07000001.bin, audit fix-player2 claim 8]). The port's
                     // `Grenade.range` doubles as the tick fuse.
                     let fuse = if u32::from_le_bytes(w[0x70..0x74].try_into().unwrap()) & 0x10000 != 0 { 300.0 } else { 210.0 };
-                    // The blast damage: `Explode_Create`'s damage arg is the hardcoded 100
-                    // [M disasm 0x12cd98/0x12ce18: `addiu $t2, $zero, 0x64` → Explode_Propagate's amount via
-                    // EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15); radius = $f12 =
-                    // weapon_data+0x08]. +0x0C is the damage multiplier (weapon-data.md), not the amount.
+                    // The blast damage: `weapon_data+0x0C` [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` →
+                    // Explode_Create's f14 → EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15);
+                    // radius = $f12/$f13 = weapon_data+0x08]. The `addiu $t2, $zero, 0x64` (100) is the
+                    // 10th argument, an u8 `Explode_Create` never reads (its prologue — 0x17cbd0 — reads
+                    // only a0-a3, f12-f14, t3 and the stack u16). fix-explosions: the old port hardcoded
+                    // 100, so the thrown frag (record 0x35: radius 10, damage 0 [L]) killed and hurt.
                     self.drones.grenades.push(nf_game::grenade::Grenade {
                         pos: camera,
                         velocity: [sdir[0] * speed, sdir[1] * speed, sdir[2] * speed],
-                        speed, travelled: 0.0, range: fuse, damage: 100.0, radius: f32_at(0x08),
+                        speed, travelled: 0.0, range: fuse, damage: f32_at(0x0c), radius: f32_at(0x08),
                         weapon_type: u16::from_le_bytes([w[2], w[3]]),
                         mesh: self.weapons.projectile_mesh(self.gun.weapon as usize),
                         owner: usize::MAX, state: 0, bounces: 0,

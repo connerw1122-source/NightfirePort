@@ -84,6 +84,17 @@ pub mod state {
     /// Grenade throw (`NDrone2_DSTATE_GrenadeThrow` 0x2D): the throw anim (0x49) → on event 1, `DroneWeap_ThrowGrenade`
     /// → back to Attack (0x56).
     pub const GRENADE_THROW: u8 = 0x2d;
+    /// The stun-grenade receiving family (`NDrone2_StateFuncs` 0x29b300 indices 0x4D/0x4E/0x4F [L table dump]).
+    /// `StunGrenadeImpact` 0x172bb0: ENTER stuns (recover time 0x147188, drop weapon + ChangeWeapon(1) when
+    /// kind ≠ 4, AlertStatusSet(2), anim 0x2D/0x2E with follow-on 0x4E); a bullet (msg 8/9) → Death_Anim 0x44.
+    pub const STUN_GRENADE_IMPACT: u8 = 0x4d;
+    /// `StunGrenadeLoop` 0x1631c0: ENTER arms the timer at frame + recover; at msg 0xC, if nobody is within 8.0
+    /// (`DroneFunc_AnyoneNear(0x40000000)`) → Recover 0x4F, else re-arm frame + 5·FRAME_RATE_INT. Another flash
+    /// (msg 0x18/0x19) re-arms with a fresh `DroneFunc_RecoverTime`. A bullet (msg 8/9) → 0x44; msg 6 → KO anim 0x42.
+    pub const STUN_GRENADE_LOOP: u8 = 0x4e;
+    /// `StunGrenadeRecover` 0x163350: ENTER sets +0x4F8 & 0x10000 and plays the get-up anim 0x76 with follow-on
+    /// 0x56 (Attack) for non-civilians; bullets (msg 8/9) → 0x44.
+    pub const STUN_GRENADE_RECOVER: u8 = 0x4f;
     /// The mission-state family (`NDrone2_StateFuncs` 0x29b300; docs/WORKLOG fix-drone3): civilians and scripted
     /// characters. CivilianInit 0x10, Civilian 0x11, CivilianScared 0x12, CivilianHiding 0x13, CivilianPatrol 0x14
     /// (0x172730 / 0x15d118 / 0x15d3a0 / 0x15d520 / 0x15d610); PartyGirlInit 0x2e, PartyGirl 0x2f (0x1728c0 / 0x160140);
@@ -229,6 +240,12 @@ pub mod anim_state {
     pub const PUNCHED: u16 = 0x51;
     /// CivilianHiding's cower (`NDrone2_DSTATE_CivilianHiding` 0x15d520 ENTER: `CallAnim(0x19)`).
     pub const COWER: u16 = 0x19;
+    /// The stun-grenade reactions (`StunGrenadeImpact` 0x172bb0 ENTER: `Rand_Rand(2)` → `CallAnim(0, 0x2D/0x2E,
+    /// 0, 0x4E, 0, 0)` — the 4th arg is the follow-on AI state 0x4E [M disasm 0x172c34-0x172c60]).
+    pub const STUNNED_A: u16 = 0x2d;
+    pub const STUNNED_B: u16 = 0x2e;
+    /// The get-up (`StunGrenadeRecover` 0x163350 ENTER: `CallAnim(0, 0x76, 0, 0x56 non-civilian)`).
+    pub const STUN_GET_UP: u16 = 0x76;
 }
 
 /// Read-only game data the AI consults.
@@ -592,6 +609,9 @@ pub struct Drone {
     /// `Drone+0x12C`: the mission-wait channel word `AllyLeadMissionWait` ENTER latches (0 → 0x99)
     /// [M 0x15efc8:17-20]. Init 0 by `Drone_SM_InitObject` 0x175838; no writer in the decompile.
     pub mission_wait_channel: u16,
+    /// The stun-grenade recover deadline (frame): `StunGrenadeLoop`'s `+0xCC4 = GameState._52_4_ + (+0xCE0)`
+    /// [M 0x1631c0 case 1], where `+0xCE0` is `DroneFunc_RecoverTime` 0x147188's ticks. fix-explosions.
+    pub stun_until: u32,
     /// The last `update_mission_route` report was BLOCKED/NO_PATH (fix-actors; Lead's PlayerInWay entry).
     pub route_blocked: bool,
     /// The distance to the nearest started, alive, team-1 drone (the "armed drone" of
@@ -769,6 +789,7 @@ impl Drone {
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
             corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false,
             mission_wait_channel: 0,
+            stun_until: 0,
             // fix-finale-blockers: 07000016's chaser (skin 0x0500001e, dtype 0xf, no placement death
             // channel [D]) carries 0x90 at init — the defeat stand-in documented in kiko.rs [S].
             death_channel: crate::kiko::chaser_death_channel(d.level, skin, param(15) as u8, param(12) as u8),
@@ -1509,6 +1530,13 @@ impl Drone {
     /// (unhandled → GLOBAL → dropped). `KnockedOut_Anim` (0x172a30 case 8/9) routes any bullet to Death_Anim — it
     /// arrives only via a scripted Message, since the bullet scan skips corpses.
     fn on_impact(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, punch: bool) -> bool {
+        // The stun family: a bullet (msg 8/9) on a stunned guard → Death_Anim 0x44 [M 0x172bb0/0x1631c0/0x163350
+        // case 8/9 → `Drone_SM_SetState(0x44)`]. msg 6 (punch) has no case in the family (dropped).
+        if matches!(s, state::STUN_GRENADE_IMPACT | state::STUN_GRENADE_LOOP | state::STUN_GRENADE_RECOVER) {
+            if punch { return false; }
+            self.set_state(state::DEATH_ANIM);
+            return true;
+        }
         if s == state::KNOCKED_OUT_ANIM || s == state::KNOCKED_OUT {
             // KnockedOut_Anim case 8/9 and Knocked_Out case 8/9 → Death_Anim (0x172a30 / 0x172b48); msg 6
             // has no case there (KnockedOut_Anim) and is dropped. These arrive only via a scripted Message —
@@ -2575,6 +2603,54 @@ impl Drone {
         })
     }
 
+    /// The stun-grenade receiving family (fix-explosions). `StunGrenadeImpact` 0x172bb0 case 1: the recover
+    /// time (`DroneFunc_RecoverTime` 0x147188 → +0xCE0), the weapon drop + ChangeWeapon(1) when kind ≠ 4
+    /// (the port's guards carry one fixed weapon — not modelled, noted in the report), `AlertStatusSet(2)`
+    /// and the stunned anim (0x2D/0x2E by `Rand_Rand(2)`) with follow-on Loop 0x4E. `StunGrenadeLoop`
+    /// 0x1631c0 case 1: the timer arms at frame + recover (+0xCC4) and msg 0xC branches to Recover 0x4F
+    /// when nobody is within 8.0 (`DroneFunc_AnyoneNear(0x40000000)`), else re-arms frame + 5·60. Another
+    /// flash (msg 0x18/0x19) re-arms a fresh recover [M 0x1631c0 case 0x18]. `StunGrenadeRecover` 0x163350
+    /// case 1: +0x4F8 & 0x10000 and the get-up anim 0x76 with follow-on 0x56 (non-civilians). The bullets
+    /// (msg 8/9 → 0x44) route through `on_impact`. `AlertStatusSet(2)` maps to the port's alert ≥ 0.66
+    /// (the ALERTNESS_LEVELS index 2 [*suggested* mapping; the port's alert is the 0..1 alertness float]).
+    fn handle_stun(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> Option<bool> {
+        use state::*;
+        if !matches!(s, STUN_GRENADE_IMPACT | STUN_GRENADE_LOOP | STUN_GRENADE_RECOVER) { return None; }
+        Some(match (s, m) {
+            (_, 0) | (_, 10) => true,
+            (STUN_GRENADE_IMPACT, msg::ENTER) => {
+                // `DroneFunc_RecoverTime` 0x147188: for a non-{0x35,0x43,0x44,0x4A,0x4C} hitting weapon
+                // (the flashbang 0x36 among them) the base is `FRAME_RATE_INT·60·0.01·(200 − Drone+0xB9)`
+                // = 36·(200−0) = 7200 ticks with the stats-default +0xB9 = 0 [M 0x14c600:90; the port's
+                // 07000005 snapshot evidence: the stats blob is all zero at run time].
+                self.stun_until = frame + 7200;
+                self.alert = self.alert.max(0.66);
+                self.vision_on = false;
+                self.firing = false;
+                // `Rand_Rand(2)`: one draw of the shared stream, then the anim with follow-on Loop [M 0x172c34].
+                let a = if rng.rand(2) == 0 { anim_state::STUNNED_A } else { anim_state::STUNNED_B };
+                self.call_anim(d, a, STUN_GRENADE_LOOP, 0);
+                true
+            }
+            (STUN_GRENADE_LOOP, msg::ENTER) => { self.vision_on = false; self.firing = false; self.timer_c = Some(self.stun_until); true }
+            (STUN_GRENADE_LOOP, msg::TIMER_C) => {
+                // Case 0xC: anyone within 8.0 keeps him down (re-arm frame + 5·FRAME_RATE_INT = 300).
+                let near = self.opp_dist() <= 8.0;
+                if near { self.timer_c = Some(frame + 300); true } else { self.set_state(STUN_GRENADE_RECOVER); true }
+            }
+            (STUN_GRENADE_RECOVER, msg::ENTER) => {
+                self.timer_c = None;
+                self.call_anim(d, anim_state::STUN_GET_UP, ATTACK, 0);
+                true
+            }
+            _ => true,
+        })
+    }
+
+    /// The drone's distance to Bond (`DroneFunc_AnyoneNear`'s 8.0 test target in single player [*suggested*:
+    /// the game checks every DCVars peer; the port's `dist` field is the maintained Bond distance]).
+    fn opp_dist(&self) -> f32 { self.dist }
+
     // ---- state machine -----------------------------------------------------------------------------------------
 
     fn set_state(&mut self, s: u8) {
@@ -2621,6 +2697,7 @@ impl Drone {
         if let Some(r) = self.handle_knockout(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_cover(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_grenade_throw(d, rng, frame, s, m) { return r; }
+        if let Some(r) = self.handle_stun(d, rng, frame, s, m) { return r; }
         match (s, m) {
             // `NDrone2_DSTATE_Global` enter: a drone with a switch channel that is still off waits (WaitSwitch); else its
             // start state `+0x5A2` (InitPatrol with props 0x24/0x25, else Idle). Modes 0x1E / 0x17 and start scripts
@@ -3910,17 +3987,19 @@ impl Drone {
         let speed = f32_at(0x20);
         // The grenade's weapon type (`+0x02`) for the explosion's per-type behaviour.
         let weapon_type = u16::from_le_bytes([wd[2], wd[3]]);
-        let damage = f32_at(0x0c);
         let radius = f32_at(0x08);
         // The fuse is BU+0xFC: 210 ticks, 300 with +0x70 & 0x10000, 420 for the mine 0x37
         // (`Bullet_init` 0x12c5a0:103,196-223). `weapon_data+0x1C` (5000) is the max-travelled range — a
         // SILENT state-4 death, not the fuse [M Bullet_update case 1 0x12e848]. fix-player3: the old
         // `f32_at(0x1c).max(210.0)` passed 5000, so guard grenades never fuse-exploded (they only died at rest).
         let range = if u32::from_le_bytes(wd[0x70..0x74].try_into().unwrap()) & 0x10000 != 0 { 300.0 } else { 210.0 };
-        // The blast damage is the hardcoded 100 of the `Explode_Create` call, not +0x0C (the damage
-        // multiplier) [M disasm 0x12cd98/0x12ce18: `addiu $t2, $zero, 0x64` → EXPLODEINFO+0x28 →
-        // `Explode_Propagate`'s amount (Explode_CollisionHandler 0x17cde0:13-15); radius = weapon_data+0x08].
-        let damage = 100.0f32;
+        // The blast damage is `weapon_data+0x0C` [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` → Explode_Create's
+        // f14 → EXPLODEINFO+0x28 → Explode_Propagate's amount (Explode_CollisionHandler 0x17cde0:13-15);
+        // radius = f12/f13 = weapon_data+0x08]. The `addiu $t2, $zero, 0x64` (100) is the 10th argument,
+        // an u8 `Explode_Create` never reads (its prologue reads only a0-a3/f12-f14/t3/stack — 0x17cbd0).
+        // fix-explosions: the old port hardcoded 100, which killed through the frag (record 0x35:
+        // radius 10, damage 0 [L]) and through the flashbang.
+        let damage = f32_at(0x0c);
         Some(crate::grenade::Grenade {
             pos: origin, velocity: [dir[0] * speed, dir[1] * speed, dir[2] * speed], speed,
             travelled: 0.0, range, damage, radius, weapon_type, mesh: d.weapons.projectile_mesh(self.weapon as usize),
@@ -4174,6 +4253,10 @@ pub struct Drones {
     pub grenades: Vec<crate::grenade::Grenade>,
     /// Explosions this tick: (pos, radius, damage, owner, weapon_type) for the sound + camera shake.
     pub explosions: Vec<(V3, f32, f32, usize, u16)>,
+    /// The camera-shake amount: `Explode_Create` 0x17cbd0 calls `Camera_Shake(pos, radius)` when the
+    /// radius reaches 0.5 [M 0x17cc28-0x17cc44]; the port decays it 10%/tick − 0.05 [*suggested*: the
+    /// game's `Camera_Shake` curve is view-side, not modelled]. The view reads it for the offset. fix-explosions.
+    pub shake: f32,
     pub health: crate::bullet::PlayerHealth,
     /// Every hit on Bond: (tick, shooting drone, health lost).
     pub player_hits: Vec<(u32, usize, f32)>,
@@ -4409,7 +4492,8 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
+        Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(),
+            shake: 0.0, health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true,
             npc_system_disabled: false,
             spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
@@ -5874,9 +5958,14 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         self.bullets.retain(|b| b.state < 2);
         // Grenades (`Bullet_update` + `Bullet_CollisionHandler`, WORKLOG 0080): move under gravity, bounce off the
-        // world, explode on impact or after the fuse. The explosion (`Explode_Propagate`) damages drones (msg 9 →
-        // `Drone_ExplosiveHit`) and Bond (`Player_Hurt`); the sound 0x51C for a bounce, the explosion script 0x6000052
-        // (sound id 0x4A7 for the blast) enter the pool.
+        // world, explode after the fuse (`Bullet_handle_object_destruction` 0x12cd98: `+0x68 & 0x4000` and
+        // `+0x70 & 0x80204`; a bounce NEVER explodes [M 0x12ce80]). fix-explosions: the blast is `Explode_Create`
+        // 0x17cbd0 (radius = weapon+0x08, damage = weapon+0x0C — see `explode.rs`), the effect script 0x6000052
+        // plays via the one-shot player and ITS Sound(0x3E) is the blast sound [D script stream 36]; the old
+        // port's 0x4A7 was `Bullet_CollisionHandler`'s rest-impact sound of weapons 0x3B/0x45, not the blast.
+        // The flashbang (0x36, radius 0) takes `Bullet_DoTrails` 0x12d890's `+0x70 & 0x2000` death branch
+        // instead: gas, Camera_Shake(2.0), Sound 0x16, Light_Create(10, 5, white) and the flash/stun
+        // broadcast — NO damage anywhere on that path [M 0x12df58-0x12e130].
         self.explosions.clear();
         for g in &mut self.grenades {
             while let Some(ev) = g.update(d.world, &mut self.rng) {
@@ -5886,18 +5975,47 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         break;
                     }
                     crate::grenade::GrenadeEvent::Explode { pos, radius, damage, owner, weapon_type } => {
-                        // The blast sound 0x4A7 (the game's `Sound_Play3D(0x4a7, …)` in `Bullet_CollisionHandler`).
-                        if let Some(t) = d.sfx { let h = t.get(0x4a7); self.audio.play3d(h.id, pos, None); }
-                        // `Explode_Propagate`: the drones' positions + Bond, linear falloff.
-                        let drones: Vec<(usize, V3)> = self.list.iter().enumerate()
-                            .filter(|(_, x)| x.present && !x.corpse).map(|(i, x)| (i, x.pos)).collect();
-                        let hits = crate::grenade::explode_propagate(pos, radius, damage, &drones, player.pos, 1.8);
+                        // The flashbang: `Bullet_DoTrails` 0x12d890's death branch (`weapon+0x70 & 0x2000`,
+                        // record 0x36 [L]) — `Gas_Init(0.5, 1.68, …, fx 0x200001f, 0xB)`, `Camera_Shake(2.0)`,
+                        // `Sound_Play3D(0x16)`, `Light_Create(10.0, 5.0, 0xff,0xff,0xff, 0, 10, 1, 0)`
+                        // [M 0x12df58-0x12df8c], then a 30-unit sphere from the blast [M 0x12dfb0]: Bond's
+                        // head whitens out (dist 5→90, × the facing factor, ×0.5 without LOS
+                        // → `Player_SetFlashBang` [M 0x12e014-0x12e0b8]) and every live drone within 20
+                        // gets msg 0x18 → `HandleImpact` case 0x18 → StunGrenadeImpact 0x4D [M 0x12e0c0,
+                        // 0x1469b8 case 0x18]. NO HitDamage on this path: the Propagate sweep is radius 0,
+                        // a no-op [M 0x17c550]. The port broadcasts directly (no vicinity-message system).
+                        if weapon_type == 0x36 {
+                            self.health.flashbang = 1.0;
+                            if let Some(t) = d.sfx { let h = t.get(0x16); self.audio.play3d(h.id, pos, None); }
+                            self.audio.play3d(0x16, pos, None);
+                            self.lights.create(10.0, 5.0, pos, [0xff, 0xff, 0xff], 0, 10, 1, 0, &mut self.rng);
+                            self.gas.init(pos, 0.0, [0.0; 3], 0.5, 1.68, 0xb, [0x00, 0x80, 0x80, 0x80], 30.0);
+                            self.shake = self.shake.max(2.0);
+                            for dr in self.list.iter_mut() {
+                                if !dr.present || dr.corpse || !dr.enabled { continue; }
+                                let dx = dr.pos[0] - pos[0]; let dy = dr.pos[1] - pos[1]; let dz = dr.pos[2] - pos[2];
+                                if dx * dx + dy * dy + dz * dz <= 400.0 {
+                                    // The player's own throw stuns from behind too: no facing check on the
+                                    // guard side in the game's broadcast [M Drone_MessageObjVicinity 0x12e0c0].
+                                    dr.hit_by_player |= owner == usize::MAX;
+                                    dr.stun_until = frame + 7200; // `DroneFunc_RecoverTime` [M 0x147188]
+                                    dr.set_state(state::STUN_GRENADE_IMPACT);
+                                }
+                            }
+                        } else {
+                        // `Explode_Propagate` 0x17c518 through `explode::propagate`: the full 12-case
+                        // dispatch (drones msg 9, Bond `Player_Hurt`, breakables, destroyables; the
+                        // port has no copter/vehicle/MP/GT/sensor/monitor/sub lists yet).
+                        let drones: Vec<(usize, V3, f32)> = self.list.iter().enumerate()
+                            .filter(|(_, x)| x.present && !x.corpse).map(|(i, x)| (i, x.pos, 0.4)).collect();
+                        let hits = crate::explode::propagate(pos, radius, damage, owner,
+                            &crate::explode::Targets { drones: &drones, player: player.pos, breaks: &[], destroys: &[] });
                         // Bond: `Player_Hurt` (the difficulty factor is applied in `explode_propagate`).
-                        if hits.player > 0.0 {
+                        if let Some(ph) = hits.player {
                             let before = self.health.health;
                             // `Explode_Propagate` → `Player_Hurt` → `Player_HandlePain` (type 0): BL+0x967 = 0xC
                             // (both sides) [M 0x1902c8:124-130].
-                            self.health.pain_generic(hits.player, DIFFICULTY, d.level, 0);
+                            self.health.pain_generic(ph, DIFFICULTY, d.level, 0);
                             self.player_hits.push((frame, owner, before - self.health.health));
                         }
                         // Drones: `Drone_ExplosiveHit` → msg 9 (the port routes through `on_bullet` as an impact).
@@ -5912,14 +6030,20 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                                 else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
                             }
                         }
+                        }
                         // The explosion visual: `Explode_Create` 0x17cbd0 Script_Loads the effect script
                         // (0x6000052 for every disc caller of the bullet path [M 0x12cd98]) at the blast,
-                        // aligned to it, scale = radius·0.06666667 [M 0x17cbd0:84-106]. The port plays it
-                        // as a one-shot script player; its entity streams draw through the scene's
+                        // aligned to it, scale = radius·0.06666667 [M 0x17cbd0:84-106] — 0 for the
+                        // flashbang (no fireball; the flash is the light above). The port plays it as a
+                        // one-shot script player; its entity streams draw through the scene's
                         // script-entity attachments. Missing from the level's lib → the player no-ops.
+                        // The blast sound itself rides the script's own Sound(0x3E) request [D].
                         let mut bm = [[0.0f32; 4]; 4];
                         bm[0][0] = 1.0; bm[1][1] = 1.0; bm[2][2] = 1.0; bm[3] = [pos[0], pos[1], pos[2], 1.0];
                         self.scripts.spawn_once_scaled(usize::MAX, 0x0600_0052, bm, radius * 0.0666_6667);
+                        // `Camera_Shake(pos, radius)` only from radius 0.5 [M 0x17cc28]; the flashbang's
+                        // DoTrails branch shakes a fixed 2.0 [M 0x12df6c].
+                        if radius >= 0.5 { self.shake = self.shake.max(radius); }
                         self.explosions.push((pos, radius, damage, owner, weapon_type));
                         break;
                     }
@@ -5928,6 +6052,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         self.grenades.retain(|g| g.state < 2);
         self.health.flash = (self.health.flash - 1.0).max(0.0);
+        // The flashbang whiteout decays by its own BL amount per tick (FRAME_RATE · f · 10 = f/6 [M
+        // Player_SetFlashBang 0x196040's first arg]); the exact fade is the view's Camera_SetFade.
+        self.health.flashbang = (self.health.flashbang - self.health.flashbang / 6.0).max(0.0);
+        self.shake = (self.shake * 0.9 - 0.05).max(0.0);
         // `Mission_Update` (0x182c60) runs from `Game_Run` once per frame; the port runs it at the end
         // of the tick so this tick's channel writes (triggers, scripts, the alarm, the death) are all
         // visible (docs/systems/mission.md). The per-level `Mission_Init` (0x182270, from
@@ -5994,6 +6122,7 @@ mod tests {
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
             corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false, death_channel: 0, special_death: 0, special_spot: pos, special_yaw: 0.0,
             mission_wait_channel: 0,
+            stun_until: 0,
             stationary: false, alpha: 255.0, raise: None,
             velocity: [0.0; 3], in_air: false, on_surface: true,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(),
