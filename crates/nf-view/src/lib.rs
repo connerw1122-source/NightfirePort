@@ -761,9 +761,6 @@ fn snow_for(scene: &scene::Scene, cam: &Camera) -> Vec<scene::Vertex> {
     let up = right.cross(f).normalize_or_zero();
     let mut out = sim.snow_quads(right.to_array(), up.to_array());
     out.extend(sim.particle_quads(right.to_array(), up.to_array()));
-    // fix-impacts: the bullet decals, debris and casings as flat-colour quads (the real decal/casing/debris
-    // meshes are still owed, see docs/reports/fix-impacts.md).
-    out.extend(sim.effect_quads(right.to_array(), up.to_array()));
     out
 }
 

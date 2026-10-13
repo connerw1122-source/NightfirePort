@@ -7463,3 +7463,25 @@ eight Txt ids in P_PAUSE 0x203c28 are the multiplayer scenario names, not pause 
 pause rows live in the disc's page data (not parsed). Full suite green except the 3 allowed disc_golden
 failures (slim ISO); nf-game/nf-formats/nf-audio untouched by this branch. Report:
 docs/reports/fix-menus.md.
+## fix-impacts-render (s/fix-impacts-render) — 2026-10-13
+Task: draw the impact effects with the game's own meshes (G-041/G-025 render pass).
+Replace the flat-colour `effect_quads` placeholder with the game's decal draw
+(`EffectInfo+4` decal meshes per material, surface-plane oriented, depth-tested,
+alpha-blended, no depth write), the `ammo_data+4` casing mesh instances at the
+integrated casing pose, and the `EffectInfo+0x74` debris meshes at particle
+pose/scale/alpha. Write docs/atlas/effect.md (owed by fix-impacts) and update
+GAPS G-041/G-025. Started 12:34 UTC, sandbox expires ~14:33 UTC.
+
+**fix-impacts-render outcome (13:47 UTC)**: the impact effects draw the game's own meshes — the
+flat-colour `effect_quads` placeholder is removed; `Scene::build` instances every distinct
+`EffectInfo+4` decal / `ammo_data+4` casing / `EffectInfo+0x74` debris hash the level archive
+resolves as Effect-layer pools (200/32/128 slots, one `Attachment::effect` (kind, slot, mesh) per
+slot) and `frame_state` poses each slot per frame: decals via `Mat_Align2Dir` 0x1df2a8's
+construction at the stored `hit + normal·0.01` pose (no scale — the size lives in the mesh), casings
+at the integrated euler-spin pose, debris scaled by `obj+0xe8` with age = 255 − alpha (the exact
+tick count — no nf-game change). Leaf GS blend/atest/zwrite ride the disc glists. Tests:
+impacts_live 4/4 (decal slot matrix at the decal pose with the +Z row = surface normal; the P2K
+casing slot carries ammo_data[1] = 0x0200043f and tracks the pose; debris pool + pose/scale; sky
+shot none; bit-for-bit rerun) — shown failing first against the scaffold. Full suite green except
+the 3 allowed disc_golden fails. docs/atlas/effect.md written (the owed entry); GAPS G-041/G-025
+updated. No GPU here — render spots + live checks in docs/reports/fix-impacts-render.md.
