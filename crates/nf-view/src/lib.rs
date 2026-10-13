@@ -1243,9 +1243,18 @@ impl ApplicationHandler for App {
                     // `Trigger_Activate`'s exit order: the success/fallback channel write (already applied in
                     // the sim), then `Player_RamSave` [M 0x1b2318:97-116] — capture the old sim now, before
                     // the scene swap drops it (fix-level2 F2).
-                    let save = self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
-                        &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
-                        .with_mission(&sim.drones.mission));
+                    // fix-death-restart: the fail/death restart is the COLD arm — the menu's
+                    // `ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)` sets IsWarmReset = 0
+                    // [M 0x204408:139], which zeroes the switch channels (`Init_SwitchChannels`
+                    // [M 0x1d5080:44-46]) and skips `Player_RamLoad` (its whole body is gated on the
+                    // warm flag [M 0x1957a8]). Carrying the RamSave across a restart is what looped
+                    // the 07000007 session: the saved ch 99 re-failed the mission every reload.
+                    let cold = self.scene.sim.as_ref().is_some_and(|sim| sim.drones.level_exit_cold);
+                    let save = if cold { None } else {
+                        self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
+                            &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
+                            .with_mission(&sim.drones.mission))
+                    };
                     let name = level_archive_name(next);
                     eprintln!("level: loading {name} ({})", if save.is_some() { "warm" } else { "cold" });
                     let load = if self.dev.is_some() { load_with_carry_dev } else { load_with_carry };

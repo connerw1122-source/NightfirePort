@@ -6551,3 +6551,56 @@ roof patch (diagnose for 045i), (6) the invisible guards (blocked on playability
   watch-mode split (laser vs camera vs taser 0x55) needs 045d's eyes.
 
 **Tests**: `fix_level_0c_live.rs` 4/4 NF_ISO green (2.9 s).
+## fix-death-restart (2026-10-13)
+
+**Done**
+- The death sequence ported end to end (`crates/nf-game/src/death.rs`): `Player_CheckForDeath`
+  0x190810 (ch 0x5e, `Music_Event(6,1)` once, `Player_WeaponNone`, the death sound 0x89), the blood
+  pane (pane 12) enabling on the first dead tick [M 0x190bb0:23-25], the red fade's 448-tick cover
+  (`HUD_UpdateBloodPane` 0x19a6a8 grows 1 px/tick; viewer.h = 448 [M 0x19f4e8:33], template width 512
+  [L BloodSprInfo 0x2bcfd8]), and ch 0x62 rising on the cover or the player's action 25 (✕/Start
+  [L input.md style 0]) [M 0x190bb0:29-33]. `Player_Update` state 2/3 runs no input [M 0x193600:317-319]
+  — `Sim::step_bond` gates the input while `death.active`/menu.
+- `Mission_Update` now reads the death CHANNEL 0x62 [M 0x182c60:21], not health — the port used to
+  raise ch 0x62 (and replay music 6 every tick) the instant health hit 0, so the whole restart fired
+  during the hit tick.
+- The 0x40000042 fail/death menu: `Mission.menu_open`/`menu_choice`, the `Event::MenuOpen` event and
+  the answer API `Drones::fail_menu_open`/`fail_choose_restart`/`fail_choose_quit` [M 0x182c60:77-81,
+  C_GCPAUSE_Handler 0x204408:136-155] — for 180-fix-menus to draw. `Drones.auto_restart` (default on)
+  answers Restart immediately until then. Quit → 0x07000048, logged and held (no front end).
+- The restart is the game's COLD arm: `ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)` [M
+  0x204408:139] → the mission's FIRST level, `Init_SwitchChannels` [M 0x1d5080:44-46], no
+  `Player_RamLoad` [M 0x1957a8]. The port marks the exit `level_exit_cold` and lib.rs drops the
+  RamSave for it. **That carry was the user's 07000007 replay loop** (playtest 2026-10-12): the old
+  restart reloaded the same level WITH the RamSave, and the saved ch 99 re-failed the mission every
+  reload with no input (the restored InternalState also falls back into the flow — the `_` arm).
+- Tests: `nf-view/tests/fix_death_restart_live.rs`, 7 tests, all NF_ISO: the fail→menu→restart
+  chain to the mission start (07000007 → 07000005), the loop mechanism (warm carry re-fails; cold
+  does not), the death sequence stage by stage (✕ skip + the 448-tick no-skip arm), the menu API
+  (waits, Quit → 0x7000048), restart == clean load (health/channels/inventory/mission states), and
+  the near-fatal sisters (nothing triggers). All 7 fail to compile against the pre-fix tree (the API
+  is new) and the pre-fix behaviour they contradict is in HEAD~1 (instant ch 0x62 + the carried
+  restart).
+- Continuation (the same session, later): an 8th test `lethal_fall_reaches_the_death_path_and_the_cold_restart`
+  covers task item 4 — a real 400-unit fall on 07000011 (the atrium level, part 0 of its own mission)
+  lands through `Player_CollisionHandler` 0x1949a8's fall damage into the full sequence and the COLD
+  restart to 07000011; the 8-unit sister triggers nothing. The fail-restart target on 0700000a was
+  corrected 0x0700000a → 0x07000009 in `walk_0700000a_live.rs` (the menu restarts the MISSION'S first
+  level [M 0x204408:139], not the current one). All 8 pass.
+
+**Measured / notes**
+- The fail path's banner really takes 300 ticks before the menu [M 0x182c60:52-57
+  `VIDEO_FRAME_RATE·4 + VIDEO_FRAME_RATE`, FRAME_RATE_MUL 1.0 [L 0x30d0d8]] — the tests tick through it.
+- 07000009's ch 0x61 is re-driven every tick by the OR trigger (placement 278, list [0x7c, 0x7d]
+  [L probe]) — a direct 0x61 write is stomped; the alarm test writes 0x7C, the real writer.
+- The death restart loads the plain 0x70000NN code (param 3 = 1: no 0x71xxxxx intro-variant remap
+  [M 0x1d3800]) — the port has one archive per level, so the restart replays whatever the archive's
+  level-start script does; the game's restart skips the intro NIS variant. Live check below.
+
+**Live checks for the main agent**
+1. `--bond` on 07000005, kill Bond (fall or guards): the red fade should creep from the centre over
+   ~7.5 s (pane 12's two sprites growing 1 px/tick, layer 9, textures 0x0300005a/0x03000002 [L
+   0x2bcfd8]); the render does not draw it yet — the sim's `death.ticks`/`death.covered` are the data.
+2. Press fire (✕) while dying: the menu/restart should come immediately instead of the 7.5 s.
+3. Die on 07000007 (punch a guest to death): the fail banner ~5 s, then the restart to 07000005
+   (the mission start), COLD — full health, fists, objectives re-announced. The old replay loop gone.
