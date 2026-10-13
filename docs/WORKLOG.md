@@ -7626,3 +7626,30 @@ Stage Summary:
 - The walker now breaks cover like a player (re-aim at exposed parts, step to a clear line, fire); no
   RNG reseeding, no new draws. Open question for a live pass: whether the port's UnderCover guard
   peeks on the game's cycle (the walk now succeeds either way).
+---
+Task ID: 230
+Agent: fix-input (worker)
+Task: fix-input (branch s/fix-input) — gamepad support, the 8 controller styles, the aim ramps
+
+Work Log:
+- Branch created from origin/master (0213cc9); setup verified (work/, EE snapshots, ISO, nf-queue).
+
+Stage Summary:
+- Starting: style x action table from psiInput_MapInputs [G-005], aim/turn ramps [G-003], dead zone [G-012], nf-view gamepad backend behind a cargo feature.
+---
+Task ID: 230
+Agent: fix-input (worker)
+Task: fix-input (branch s/fix-input) — gamepad support, the 8 controller styles, the aim ramps
+
+Work Log:
+- G-005: scripts/gen_styles.py parses the psiInput_MapInputs (0x10cd80) decomp and generates crates/nf-game/src/input/styles_gen.rs — per-style analog sources (style 2's L1 byte swap, style 6's ±1.0 strafe), button masks, the ±1 d-pad axis (styles 4/5: Triangle/Cross), style 5's L1-gated skip of actions 7/8, the common tail (Start/d-pad/face, action 13's per-style mask, LX/LY ±0.5 menu, action 38, player 0's Start|Cross → 25). [L] input_styles_live.rs runs the game's own function in the R5900 interpreter, 8 styles × 21+ pad states, all 40 action floats bit-exact; sisters pin the style differences (Cross→8 on style 0, style 4's right-stick forward, style 6's strafe offsets).
+- G-012: answered from the code [M 0x10c738 (button bytes only) + 0x10ca78:27-58]: the raw bytes live only between scePadRead and the dead-zone loop; threshold 40, scale 1.4597701 (=127/87), both +0x128..0x12b and the curve copy +0x148..0x14b overwritten (the curve write is dead code). Ported as input::dead_zone, exact f32 outputs unit-tested.
+- G-003: AccelFunc0 0x1a9218 = input::AccelState. [L] input_ramp_live.rs runs it tick by tick in the interpreter — the EE float-arg convention decoded from the prologue (six floats f12..f17, the state pointer in a0; AccelFunc0 reads *a0 and returns without storing). 200 ramp-up ticks + reset (|stick| ≤ 0.05) + sub-hi (no growth below 0.95) + unsigned-target sisters. The interpreter's div.s rounds through f64, so ±1 ulp on the step (documented); thresholds/sign/clamp bit-checked. Player_Init 0x1910f8:57-63 zeroes the six states (+0x8ec..0x900) — the PadDriver starts them at 0 too.
+- The curves: MapAnalogStick 0x17f958 multiplies by the literal 0.003921569 (NOT ÷255 — 1 ulp); StickCompensation2/3 0x17f798/0x17f850 per Input_Update's style split; the curve table read from the user's ACTION.ELF (gAnalogStickMappingFunction, 129 bytes at 0x2a3840), never committed. [L] pinned in the interpreter (MapAnalogStick exact, Comp2 ±1 ulp).
+- The backend: crates/nf-view/src/gamepad.rs behind the `gamepad` feature — gilrs 0.11 (MIT OR Apache-2.0) drains the OS pad onto the PS2 bits/bytes, PadDriver::tick runs the game's path (dead zone → style map → Comp2/3 → invert → clamp → ramps) and merges into the keyboard's Input; no pad = a no-op. Master builds without the feature and without gilrs (verified); with the feature it needs libudev (built here against a locally extracted one).
+- Keyboard regression: fix_input_kbd_trace.rs — a 180-tick scripted keyboard/mouse trace on 07000005, bit-exact against goldens recorded from the pre-change tree.
+- Full suite --no-fail-fast: 119+ binaries ok, only the 3 allowed disc_golden trio failed (the run was still finishing its last nf-view level tests at report time; no other failure lines).
+
+Stage Summary:
+- The pad path is the game's, as data + code, verified against the game's own functions. G-005/G-012 closed; G-003's ramp half closed (the live pad playtest remains for the main agent). Report: docs/reports/fix-input.md (the --bond spots are there).
+- Left: a real pad playtest (no device in the sandbox); the pad's weapon cycling needs Input_Update's hold-counter active flags (actions 20/21); the scope branch's driver path is a stub; PadConfig::style is fixed at construction.
