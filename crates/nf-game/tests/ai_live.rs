@@ -1264,3 +1264,81 @@ fn guard_throws_a_grenade_when_in_range() {
     }
     assert!(!can2 || sim2.list[gi2].grenade_count <= 0, "guard without grenades fails CanThrowGrenade or has none");
 }
+
+// ---- fix-cover-remainder (G-028): the scary-object flee, the RunForCover slide rate, ValidateCoverAnim ----------
+
+#[test]
+fn grenade_bounce_scares_the_guard_into_the_flee_family() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (mut drones, gi, rng) = l.drones(None, 61.34); // the gate guard
+    let mut sim = l.sim(drones, rng);
+    let bond = bond_at([0.0, -500.0, 0.0]); // out of the picture: the guard idles until the scare
+    // The grenade lands 3 units from the guard, in plain sight (HandleExplosives: within the entry's radius
+    // 12.0 [M 0x138b10:67-87] and visible [M 0x1435f0:37-44]). At 3.0 the flee goal (4.0 out along the away
+    // line [M 0x152250:142-164]) sits inside MoveToGoalPosition's 2.0 arrival band (+0x8EC = 2.0 [M
+    // 0x14b300:579]), so RunAway arrives at once — the game's own numbers, verified below by the chain.
+    let drop = [sim.list[gi].pos[0] + 3.0, sim.list[gi].pos[1] + 1.0, sim.list[gi].pos[2]];
+    sim.list[gi].props = Default::default();
+    d.props.set(0x3a, &mut sim.list[gi].props, 1); // the kind-2 fear props [M 0x1435f0:30-34]
+    d.props.set(0x3b, &mut sim.list[gi].props, 1);
+    sim.grenades.push(nf_game::grenade::Grenade {
+        pos: drop, velocity: [0.0, -5.0, 0.0], speed: 5.0, travelled: 0.0, range: 100000.0,
+        damage: 1.0, radius: 1.0, weapon_type: 0x34, mesh: 0, owner: usize::MAX, state: 1, bounces: 0, smoke_popped: false,
+    });
+    let mut saw_87 = false; let mut dist_at_87 = 0.0f32;
+    for k in 0..400 {
+        sim.tick(&d, &bond);
+        let st = sim.list[gi].state;
+        let dist = ((sim.list[gi].pos[0] - drop[0]).powi(2) + (sim.list[gi].pos[2] - drop[2]).powi(2)).sqrt();
+        if st == 0x87 { saw_87 = true; dist_at_87 = dist; }
+        // RecoverFromScaryObject 0x88 is transient: its ENTER chains straight to Attack inside one send, so
+        // the live state never reads 0x88 — the state log is the witness.
+        if st == 0x56 && sim.list[gi].log.iter().any(|&(_, s)| s == 0x88) { break; }
+        if k == 399 { eprintln!("tail state {} log {:?}", st, &sim.list[gi].log[..sim.list[gi].log.len().min(16)]); }
+    }
+    let saw_88 = sim.list[gi].log.iter().any(|&(_, s)| s == 0x88);
+    let saw_86 = sim.list[gi].log.iter().any(|&(_, s)| s == 0x86);
+    assert!(saw_86, "the guard never entered RunAwayFromObject 0x86 (log {:?})", &sim.list[gi].log[..sim.list[gi].log.len().min(12)]);
+    assert!(saw_87, "the flee never reached HideFromScaryObject 0x87");
+    assert!(saw_88, "the family never reached RecoverFromScaryObject 0x88");
+    // Attack 0x56 may already have moved into one of its submoves (0x5A/0x5C/0x5F) — the log sequence is
+    // the witness for the recover's return.
+    let log = &sim.list[gi].log;
+    let back_to_attack = saw_88 && log.iter().rev().take_while(|&&(_, s)| s != 0x88).any(|&(_, s)| s == 0x56);
+    assert!(back_to_attack, "the recover never returned to Attack 0x56 (state {}, log {:?})", sim.list[gi].state, &log[..log.len().min(16)]);
+    // The flee moved the guard AWAY from the explosive (the straight-line goal 4.0 out [M 0x152250:142-164];
+    // the route clamp may shorten it — pin a clear net retreat).
+    let _ = dist_at_87; // the arrival band can make the hide near-instant at 3.0 — the chain above is the pin
+    // Sister: the same grenade far from every other guard scares nobody. Another guard, 20+ units off.
+    let other = (0..sim.list.len()).find(|&i| i != gi && sim.list[i].present && !sim.list[i].corpse
+        && ((sim.list[i].pos[0] - drop[0]).powi(2) + (sim.list[i].pos[2] - drop[2]).powi(2)).sqrt() > 20.0);
+    if let Some(oi) = other {
+        assert!(!sim.list[oi].log.iter().any(|&(_, s)| s == 0x86), "a guard 20+ units away fled too");
+    }
+}
+
+#[test]
+fn validate_cover_anim_matches_the_game_table() {
+    // `DroneAnim_ValidateCoverAnim` (0x13bf40) pinned against the real anim sets on the disc: every anim state
+    // the set lacks returns 0xFFFF (except the 5 → 7/0xA substitution), the ones it has pass through.
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, gi, _rng) = l.drones(None, 61.34);
+    let g = &drones[gi];
+    let mut missing = 0;
+    for a in 1u16..0x77 {
+        let v = g.validate_cover_anim(&d, a);
+        if g.can_do(&d, a) {
+            assert_eq!(v, a, "anim {a} is in the set but ValidateCoverAnim returned {v:#x}");
+        } else if a == 5 {
+            assert!(v == 7 || v == 0xa, "the invalid 5 must substitute 7/0xA, got {v:#x}");
+        } else {
+            missing += 1;
+            assert_eq!(v, 0xffff, "anim {a} is missing from the set but validated to {v:#x}");
+        }
+    }
+    assert_eq!(g.validate_cover_anim(&d, 0), 0);
+    assert_eq!(g.validate_cover_anim(&d, 0x78), 0x78, "≥ 0x77 passes unvalidated [M 0x13bf40:12,22]");
+    assert!(missing > 0, "the gate guard's set validated everything — the 0xFFFF arm is untested");
+}

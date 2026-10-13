@@ -65,7 +65,7 @@ reload, out-of-range and no-sight checks, before grenades and combat moves) and 
 
 | State | Behaviour |
 |---|---|
-| RunForCover 0x8C | Update: node no longer OK, or opponent visible within 4 → 0x56. `MoveToGoalPosition` to the approach point: moving → combat-move anim, sliding 10 %/tick to the in-cover point once the route has < 1 left; arrived (route < 2.0) → 0x93; blocked → face, aim or 0x21; else 0x56. Exit (not to 0x93): disown. |
+| RunForCover 0x8C | Update: node no longer OK, or opponent visible within 4 → 0x56. `MoveToGoalPosition` to the approach point: moving → combat-move anim, and `SlideToPosition(0.025, in-cover point, y = 1)` when the route's remaining distance (route+0x88) < 1.0 [M 0x169150:62-67] — unreachable in practice, because `MoveToGoalPosition` reports arrival at route distance < 2.0 first (+0x8EC = 2.0 [M 0x14b300:579]); arrived (route < 2.0) → 0x93; blocked → face, aim or 0x21; else 0x56. Exit (not to 0x93): disown. |
 | UnderCoverInit 0x93 | `CoverAnim(6)` → 0x94; slide 8 %/tick (xz) to the in-cover point, face the cover angle. |
 | UnderCoverIdle 0x94 | `CoverAnim(1)`; refill the clip; timer C in FRand(150) ticks (not with prop 0x10). Update: slide, face; node not OK or > 1.5 from the goal → 0x9C. Ambushers (prop 0x10) wait until the opponent is visible or within 3 → 0x9C. Timer C: Rand(5) = 0 and another cover → 0x8C; node OK with LOS → 0x95; other cover → 0x8C; else retry up to 3 times, then 0x56. |
 | UnderCoverAim 0x95 | `CoverAnim(2)` (lean / step-out) → 0x96. |
@@ -116,8 +116,26 @@ Drone mode 0x10 (`NDrone2_init_DMODE_Ambush`) sets the start state `+0x5A2 = 0x3
 (0x152958): the unoccupied cover node within **2.0 units** of the drone whose anim predicates pass; claims it the same
 way `FindCover` does → 0x93 (UnderCoverInit). Without one: `CallAnim(0, 0x11, 0, 0, …)` (crouch) → 0x38 (AmbushWait),
 which waits until the opponent is visible (`+0x228 & 4`) or within 3.0 → 0x56 (Attack). Ported in `drone.rs::find_ambush_cover`
-and `handle_cover`. `DroneFunc_ConsiderExplosive` (msg 0x21): an explosive landed near the drone → stores `+0x330` /
-`+0x350` and routes to `RecoverFromScaryObject` (0x86); the flee route update is G-026.
+and `handle_cover`.)
+
+## Scary objects (G-026, ported by fix-cover-remainder) [M]
+
+`DroneFunc_HandleExplosives` (0x1435f0, per drone per frame, SP only): while the drone is not scared (`+0x2B == 0`) it
+scans the explosive list `Drone_BuildDynamicAwarePoints` (0x138b10) rebuilds every frame from live objects — kind-2
+entries: the grenade family (thrower weapon 0x2A/0x2C–0x2F) radius 12.0, the flashbang (0x37, not state 3) 8.0, the
+0x34/0x6C and 0x3B–0x40 explosives 12.0, the `*` (0x2A) explosive object 3.0; gas (0x36) makes a kind-1 entry that
+never triggers. A guard with fear prop 0x3A/0x3B within the radius that sees the object (ObjectVisibility ≥ 0.7 +
+`CanSeeObject(5,0)`) sends itself msg 0x21. `DroneFunc_ConsiderExplosive` (0x1431c0): fear props 0x34/0x3A/0x3B and
+the state gate; stores the position (+0x330), the run distance (+0x350: 4.0 grenade weapons with a 2 s deadline,
+10.0 flashbang returning to the caller state, 14.0 the big explosives, 5.0 gas/0x2A-object), the return state
+(+0x354: 0x87 Hide by default), the deadline (+0x324) and +0x2B, then `RunAwayFromObject` 0x86 [M 0x1431c0:194-195]
+— the doc's older "0x86 = RecoverFromScaryObject" reading was wrong. 0x86 ENTER: `FindSafetyFromScaryObject`
+(0x1559f8 → 0x152250): the nav-path emitter at dist·1.8, else the straight-line fallback goal = scary +
+normalise(drone − scary)·dist, y = scary.y + 0.5; fail → 0x88. UPDATE: past the deadline → 0x88; moving → the run
+anim 0x1E; blocked → crouch 0x11; arrived → the return state. `HideFromScaryObject` 0x87: crouch 0x11/0x19/0x21 and
+wait the deadline out → 0x88. `RecoverFromScaryObject` 0x88: +0x2B = 0, +0x5A0 != 0x89 → 0x56 (Attack). The port
+triggers once at the grenade's bounce (the game rescans every frame while the object exists) with the straight-line
+goal (the emitter scan is [S]-approximated by the route build's clamp).
 
 ## 07000005 [M]
 
@@ -127,7 +145,21 @@ Cover prop 0x30 sits in the alert set (parameters 23–25), which governs after 
 0xC, 0xF, 0x30}; the snipers have 0x40 and no 0x30; two guards have an empty alert set. With default nodes they use
 stand lean / stand step (0x17/0x18/0x1B/0x1C, idle 0x1A).
 
+## ValidateCoverAnim (0x13bf40) [M] (ported by fix-cover-remainder)
+
+`DroneAnim_CoverAnim` validates every LOW-node anim through `DroneAnim_ValidateCoverAnim(dcvars, animState)` before
+playing it (mode 3's 0x58 excepted [M 0x13c078:297-300]): 0 passes; ≥ 0x77 passes unvalidated [M 0x13bf40:12,22];
+1..0x77 is valid only when the drone's anim set (+0xDA) has the state's row, the base set's row also counting
+[M 0x13bf40:14-19]; an invalid 5 substitutes 7 when the set has record 11's row, else 0xA [M 0x13bf40:25-38 — the
+port approximates the record-11 gate with `can_do(7)`]; any other invalid → 0xFFFF and `CoverAnim` returns 0 — no
+anim is queued, so UnderCoverInit/Aim linger and UnderCoverReturn/TypeChange take their fail routes [M
+0x13c078:311-314]. The 05 level has no low nodes, so the behaviour is pinned at the function level
+(`validate_cover_anim_matches_the_game_table`).
+
 ## Unknowns
 
-`+0x2E`, `+0x38`, `+0x4C0`, `+0x4F8 & 0x10000`, the meaning of low-node flag 2, UnderCoverFire's clip handling, the
-units of `OpponentIsAimingAtMe` / `BondIsFacingMe` (U-031).
+`+0x2E`, `+0x38`, `+0x4C0`, the meaning of low-node flag 2, UnderCoverFire's clip handling, the
+units of `OpponentIsAimingAtMe` / `BondIsFacingMe` (U-031); `+0x4F8 & 0x10000` = the transient flag the state
+machine clears on every change (set by RunForCover/RunAway/Hide ENTERs [M 0x171df8:182-183]); U-030's RunForCover
+duration gap (live 198 vs port 114 ticks) is NOT the slide (dead in both — see the state table) and remains open:
+the prime suspect is the port's `OptimiseRoute` trimming a waypoint the live route kept.
