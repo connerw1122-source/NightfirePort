@@ -331,14 +331,25 @@ fn thrown_grenade_flies_and_explodes_with_sound_and_damage() {
     let t = exploded_at.unwrap();
     assert!(t <= 380, "the grenade exploded within the fuse window, after {t} ticks");
     // Damage: the blast is the hardcoded 100 with radius 10 [L record 0x35 +0x08 = 10.0]. A guard
-    // standing at the landing point takes damage through `Explode_Propagate` (0x17c518).
+    // standing at the landing point takes damage through `Explode_Propagate` (0x17c518). The pick
+    // wants a guard whose "3 units back" spot is on the guard's own floor — the first enabled
+    // guard's patrol position shifts by a tick or two when the script players joined the control
+    // walk (fix-script-start-tick: the game's list order — a channel is seen only by the objects
+    // updated after it), and 07000001's first pick can stand by a ledge; walk the list until the
+    // spot is solid.
     let guards: Vec<usize> = sim.drones.list.iter().enumerate()
         .filter(|(_, dr)| dr.present && dr.enabled && !dr.corpse && dr.health > 0.0 && dr.team == 1)
         .map(|(i, _)| i).collect();
-    if let Some(&gi) = guards.first() {
+    let spot_floor = |sim: &nf_view::scene::Sim, gi: usize| -> Option<f32> {
+        let gp = sim.drones.list[gi].pos;
+        let gfloor = sim.world.floor_below(gp, 6.0)?;
+        let bfloor = sim.world.floor_below([gp[0], gfloor + 1.0, gp[2] - 3.0], 6.0)?;
+        ((gfloor - bfloor).abs() < 2.0).then_some(gfloor)
+    };
+    if let Some(gi) = guards.iter().copied().find(|&i| spot_floor(sim, i).is_some()) {
         let hp0 = sim.drones.list[gi].health;
         let gp = sim.drones.list[gi].pos;
-        let floor = sim.world.floor_below(gp, 6.0).unwrap_or(gp[1]);
+        let floor = spot_floor(sim, gi).unwrap_or(gp[1]);
         // Throw again from 3 units away, grenade landing near the guard (radius 10 covers 3 units).
         let p = nf_game::pickup::Pickup::create_placed(sim.bond.pos, [0.0; 3], nf_game::pickup::kind::WEAPON, 0x35, 1, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons).unwrap();
         sim.drones.pickups.push(p);
