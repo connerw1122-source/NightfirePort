@@ -1362,12 +1362,16 @@ impl Drone {
         } else if self.anim.time >= len {
             // The wrap tick repeats the script's last step (last frame − the one before): [L] aligned per-tick steps of
             // a live walk cycle (115 ticks, work/patrol_trace.tsv) show the step before the wrap twice.
-            self.anim.time = len.saturating_sub(1);
-            self.anim.ftime = self.anim.time as f32;
-            let last = self.root_value(d);
-            self.anim.time = len.saturating_sub(2);
-            self.anim.ftime = self.anim.time as f32;
-            wrap_end = self.root_value(d).zip(last).map(|(a, b)| [b[0] - a[0], 0.0, b[2] - a[2]]);
+            // fix-anim-blend2: the last-two-frames sampling must not write the live float clock — `AnimSeqTick`
+            // 0x1c28d0 only READS script.time (+0x90) (seq.frame = time − start + 1.0); writing `ftime` here made
+            // `begin_blend`'s outgoing start time (`1.0 + ftime`, the replaced script's clock) land one frame early,
+            // and every blended script switch then replayed the old script's last step on the switch tick — at speed
+            // 1.0 the pre-blend port moved 0 there (its integer sampler clamps to the sequence's last frame), so
+            // guards drifted ~0.01 per switch and the AI timelines (fire ticks, the cover-type Rand) shifted [L
+            // chase_trace seed 1: the pick flipped to the step-out type → danim 178 (90 frames at 1.0) instead of
+            // lean-out 176 (51 at 1.5) → UnderCoverAim 90 vs live 37].
+            let last = self.root_value_at(d, len.saturating_sub(1));
+            wrap_end = self.root_value_at(d, len.saturating_sub(2)).zip(last).map(|(a, b)| [b[0] - a[0], 0.0, b[2] - a[2]]);
             let info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
             let next = if self.anim.danim == 0 { self.anim.follow_on } else { u16::from_le_bytes([info[10], info[11]]) };
             if next != 0 && next != self.anim.danim {
@@ -1466,6 +1470,18 @@ impl Drone {
         let t = (1 + self.anim.time) as u16;
         let (a, _, q) = script.sequences().filter(|(a, b, _)| *a <= t && t <= *b).last().or_else(|| script.sequences().next())?;
         Some((q, (1.0 + self.anim.ftime - a as f32 + 1.0).max(1.0)))
+    }
+
+    /// `root_value` at an explicit script time — the wrap-end step's last-two-frames sample. Reads the sequence
+    /// window at `1 + time` with the float clock `time` exactly as `AnimSeqTick` 0x1c28d0 would
+    /// (seq.frame = time − start + 1.0) WITHOUT touching the playing clock (`script_frame`/`root_value`).
+    fn root_value_at(&self, d: &Data, time: u32) -> Option<V3> {
+        let script = d.scripts.get(&self.anim.script?)?;
+        let t = (1 + time) as u16;
+        let (a, _, q) = script.sequences().filter(|(a, b, _)| *a <= t && t <= *b).last().or_else(|| script.sequences().next())?;
+        let f = (1.0 + time as f32 - a as f32 + 1.0).max(1.0);
+        let s = d.sequences.get(&q).filter(|s| s.channels.len() >= 3)?;
+        Some(crate::anim::root_translation_at(s, f))
     }
 
     /// The root translation at the playing script's (fractional) frame — `AnimFrameSet` 0x1c75a0's ⌊f⌋/⌊f⌋+1 blend
