@@ -2031,10 +2031,20 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
         let (vs, is, cv, c, r, gcel) = groups.entry((layer, ikey, lkey, chain, key, draw, lflags)).or_default();
         *gcel = cel;
         *c = centre;
-        *r = radius;
         let base = vs.len() as u32;
+        // fix-render-artifacts: the A-11e sphere cull must be SOUND. fix-render2 assumed the placement-matrix
+        // glist sphere is exact, but the glist radius can undershoot the drawn geometry [D 0700000c.bin: the
+        // floor decal at glist centre (28.54, 0.33, −182.49) carries r 0.6 while its drawn verts span a
+        // 1.1×0.9×1.0 box — half-diagonal 0.87]. A too-small sphere drops draws whose geometry IS in the
+        // frustum (the user's pale fog-coloured patches: the skipped quad uncovers the fog-coloured clear).
+        // The game's own cull consults the bbox as well as the sphere (`View_AddObjects` 0x1e62d8 passes
+        // obj+0x8c sphere AND obj+0x80 bbox to `Vision_InView` 0x1e89e0), so the group's real bound belongs
+        // in the test: every batch expands its group's radius to cover its transformed verts.
+        let mut batch_d2 = 0.0f32;
         for v in &b.verts {
             let p = transform(&m, v.pos);
+            let d2 = (p[0] - centre[0]).powi(2) + (p[1] - centre[1]).powi(2) + (p[2] - centre[2]).powi(2);
+            if d2.is_finite() && d2 > batch_d2 { batch_d2 = d2; }
             if let Some((lo, hi)) = bounds.as_deref_mut() {
                 if p.iter().all(|c| c.is_finite()) {
                     for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); }
@@ -2062,6 +2072,8 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
             else if let Some(dr) = door { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: None, door: Some(dr), pickup: None }); }
             else if let Some(pk) = pickup { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: None, door: None, pickup: Some(pk) }); }
         }
+        // The batch's bound joins the group's (max across the group's batches — the entry's radius persists).
+        *r = radius.max(*r).max(batch_d2.sqrt());
         for t in b.triangles() { is.extend(t.map(|k| base + k as u32)); }
     }
     // Apply trailing DIRECT writes (after the leaf's last batch) so the state carries to the next leaf.
@@ -2742,8 +2754,21 @@ impl Scene {
         }
         let (mut vertices, mut indices, mut materials, mut char_verts) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut char_vertex_start = None;
-        for ((layer, _, _, chain, key, draw, lflags), (vs, is, cv, centre, radius, cel)) in groups {
+        for ((layer, _, _, chain, key, draw, lflags), (vs, is, cv, centre, mut radius, cel)) in groups {
             if is.is_empty() { continue; }
+            // fix-render-artifacts: the cull sphere must contain the group's DRAWN geometry — the glist
+            // radius can undershoot it (0700000c's floor decal: glist r 0.6 vs a 0.87 half-diagonal box),
+            // which dropped in-view statics at the frustum edge (the user's pale fog-coloured patches).
+            // The game's cull consults the bbox next to the sphere (`View_AddObjects` 0x1e62d8 passes
+            // obj+0x8c AND obj+0x80 to `Vision_InView` 0x1e89e0); this is that bbox term.
+            {
+                let mut d2max = radius * radius;
+                for v in &vs {
+                    let d2 = (v.pos[0] - centre[0]).powi(2) + (v.pos[1] - centre[1]).powi(2) + (v.pos[2] - centre[2]).powi(2);
+                    if d2.is_finite() && d2 > d2max { d2max = d2; }
+                }
+                radius = d2max.sqrt();
+            }
             if matches!(layer, Layer::Character | Layer::Effect) && char_vertex_start.is_none() { char_vertex_start = Some(vertices.len()); }
             let base = vertices.len() as u32;
             materials.push(Material { layer, draw, centre, radius, cel, chain, key, lflags, first_index: indices.len() as u32, index_count: is.len() as u32 });

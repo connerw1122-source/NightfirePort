@@ -198,3 +198,105 @@ fn probe_play_draws_near() {
             lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], dr_state.join("; "), lm = m.layer, dm = m.draw);
     }
 }
+
+/// Cull-hole finder: replicate the app's camera at NF_PROBE_BOND, extract the frustum, and print every World
+/// static whose real geometry is IN the frustum but which the renderer would skip (sphere cull, or the cel-box
+/// cull) — each such draw is a hole in the level that the sky pass fills (the pale shapes). Opt-in via NF_ISO.
+#[test]
+fn probe_cull_holes() {
+    use glam::{Mat4, Vec3};
+    use nf_view::gpu::{box_outside, extract_frustum, sphere_outside};
+    let Some(iso_path) = iso() else { return };
+    let Ok(bond) = std::env::var("NF_PROBE_BOND") else { return };
+    let b: Vec<f32> = bond.split(',').map(|v| v.parse().unwrap()).collect();
+    let archive = std::env::var("NF_PROBE_LEVEL").unwrap_or_else(|_| "0700000c.bin".into());
+    let scene = nf_view::load(&iso_path, &archive, false).expect("load");
+    let (near, far) = (0.05f32, 4000.0f32);
+    let fov = std::f32::consts::FRAC_PI_3;
+    let pitch = b.get(4).copied().unwrap_or(0.0) * std::f32::consts::FRAC_PI_2;
+    let yaw = b.get(3).copied().unwrap_or(0.0);
+    let eye = [b[0], b[1] + 0.7, b[2]];
+    let fw = Vec3::new(pitch.cos() * yaw.sin(), pitch.sin(), pitch.cos() * yaw.cos()).normalize();
+    let s = fw.cross(Vec3::Y).normalize();
+    let u = s.cross(fw);
+    let f = 1.0 / (fov * 0.5).tan();
+    let aspect = 16.0f32 / 9.0;
+    let e = Vec3::from(eye);
+    let proj = Mat4::from_cols_array_2d(&[[f / aspect, 0.0, 0.0, 0.0], [0.0, f, 0.0, 0.0], [0.0, 0.0, far / (near - far), -1.0], [0.0, 0.0, near * far / (near - far), 0.0]]);
+    let view = Mat4::from_cols_array_2d(&[[s.x, u.x, -fw.x, 0.0], [s.y, u.y, -fw.y, 0.0], [s.z, u.z, -fw.z, 0.0], [-s.dot(e), -u.dot(e), fw.dot(e), 1.0]]);
+    let vp = (proj * view).to_cols_array_2d();
+    let planes = extract_frustum(vp);
+    eprintln!("=== cull holes at eye {eye:?} yaw {yaw:.3} pitch {pitch:.3} ({} World draws) ===", scene.materials.iter().filter(|m| m.layer == nf_view::scene::Layer::World).count());
+    let level = parse_level(&iso_path, &archive);
+    for (mi, m) in scene.materials.iter().enumerate() {
+        if m.layer != nf_view::scene::Layer::World { continue }
+        let tris = &scene.indices[m.first_index as usize..(m.first_index + m.index_count) as usize];
+        let (mut lo, mut hi) = ([f32::MAX; 3], [-f32::MAX; 3]);
+        for &i in tris { let v = &scene.vertices[i as usize]; for k in 0..3 { lo[k] = lo[k].min(v.pos[k]); hi[k] = hi[k].max(v.pos[k]); } }
+        let vis_geom = !box_outside(&planes, lo, hi);
+        if !vis_geom { continue }
+        let hole_sphere = sphere_outside(&planes, m.centre, m.radius);
+        let hole_cel = m.cel.and_then(|c| scene.cels.get(c as usize)).map(|c| box_outside(&planes, c.min, c.max)).unwrap_or(false);
+        if !hole_sphere && !hole_cel { continue }
+        let (mut best, mut name) = (f32::MAX, String::new());
+        for inst in level.instances(true).0 {
+            let o = &level.maps[inst.map].objects[inst.object];
+            let d = (o.centre[0] - m.centre[0]).powi(2) + (o.centre[1] - m.centre[1]).powi(2) + (o.centre[2] - m.centre[2]).powi(2);
+            if d < best { best = d; name = format!("\"{}\"", o.name.trim()); }
+        }
+        eprintln!("HOLE m{mi:5} {} {} tex {:?} box ({:.1},{:.1},{:.1})..({:.1},{:.1},{:.1}) centre {:?} r {:.1} cel {:?} sphere-culled {hole_sphere} cel-culled {hole_cel} -> {best:.1}u {name}",
+            format!("{:?}", m.layer), format!("{:?}", m.draw), m.key, lo[0], lo[1], lo[2], hi[0], hi[1], hi[2], m.centre, m.radius, m.cel);
+    }
+}
+
+/// Find every object whose batches use texture NF_PROBE_TEX=map,index; print name, placement, leaf gs, verts.
+#[test]
+fn probe_objects_with_texture() {
+    let Some(iso_path) = iso() else { return };
+    let Ok(tx) = std::env::var("NF_PROBE_TEX") else { return };
+    let t: Vec<u32> = tx.split(',').map(|v| v.parse().unwrap()).collect();
+    let archive = std::env::var("NF_PROBE_LEVEL").unwrap_or_else(|_| "07000012.bin".into());
+    let level = parse_level(&iso_path, &archive);
+    for (mi, map) in level.maps.iter().enumerate() {
+        for (oi, o) in map.objects.iter().enumerate() {
+            let mut used = false;
+            for l in &o.gfx.leaves { for b in &l.batches { if b.texture == Some(t[1]) && mi == t[0] as usize { used = true; } } }
+            if !used { continue }
+            eprintln!("map {mi} obj {oi} \"{}\" oflags {:#x} centre {:?} r {:.1}", o.name.trim(), o.flags, o.centre, o.radius);
+            let placed: Vec<[f32; 3]> = level.main_map().map(|mm| level.maps[mm].placements.iter()
+                .filter(|p| if p.by_hash() { level.by_hash.get(&p.hashcode) == Some(&(mi, oi)) } else { p.index as usize == oi })
+                .map(|p| p.translation).collect()).unwrap_or_default();
+            eprintln!("  placements: {:?}", placed.iter().take(4).collect::<Vec<_>>());
+            for (li, l) in o.gfx.leaves.iter().enumerate() {
+                for b in &l.batches {
+                    if b.texture != Some(t[1]) || mi != t[0] as usize { continue }
+                    let (alo, ahi) = b.verts.iter().fold((255u8, 0u8), |(lo, hi), v| (lo.min(v.rgba[3]), hi.max(v.rgba[3])));
+                    eprintln!("  leaf {li} gs {:x?} verts {} rgba0 {:?} a {alo}..{ahi} uv0 {:?}", l.gs, b.verts.len(), b.verts.first().map(|v| v.rgba), b.verts.first().map(|v| v.uv));
+                }
+            }
+        }
+    }
+}
+
+/// Count materials per texture key near NF_PROBE_AT: a decal texture bound by two materials with different
+/// draw states = a duplicated draw (the pale overlay candidate). Opt-in via NF_ISO.
+#[test]
+fn probe_materials_per_texture() {
+    let Some(iso_path) = iso() else { return };
+    let Ok(at) = std::env::var("NF_PROBE_AT") else { return };
+    let p: Vec<f32> = at.split(',').map(|v| v.parse().unwrap()).collect();
+    let archive = std::env::var("NF_PROBE_LEVEL").unwrap_or_else(|_| "0700000c.bin".into());
+    let scene = nf_view::load(&iso_path, &archive, false).expect("load");
+    use std::collections::BTreeMap;
+    let per_tex: std::cell::RefCell<std::collections::BTreeMap<(usize, u32), Vec<(usize, nf_view::scene::Draw)>>> = std::cell::RefCell::new(Default::default());
+    for (mi, m) in scene.materials.iter().enumerate() {
+        if m.layer != nf_view::scene::Layer::World { continue }
+        let tris = &scene.indices[m.first_index as usize..(m.first_index + m.index_count) as usize];
+        let (mut lo, mut hi) = ([f32::MAX; 3], [-f32::MAX; 3]);
+        for &i in tris { let v = &scene.vertices[i as usize]; for k in 0..3 { lo[k] = lo[k].min(v.pos[k]); hi[k] = hi[k].max(v.pos[k]); } }
+        let d2: f32 = (0..3).map(|k| { let c = p[k].clamp(lo[k], hi[k]); (c - p[k]).powi(2) }).sum();
+        if d2 > 2500.0 { continue }
+        if let Some(k) = m.key { per_tex.borrow_mut().entry(k).or_default().push((mi, m.draw)); }
+    }
+    for (k, ms) in per_tex.into_inner() { if ms.len() > 1 { eprintln!("tex {k:?}: {} materials {:?}", ms.len(), ms.iter().map(|(mi, d)| (*mi, *d)).collect::<Vec<_>>()); } }
+}
