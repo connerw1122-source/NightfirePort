@@ -295,3 +295,24 @@ from slot-9 save states (`drones_snapshot.py`); gate spawner object 0x016da670, 
 So the decompile's cleanup branch (0x137e68:235-288) is what runs: **p7 = the kill channel**, triggers.md's original
 reading. fix-actors' ARM reading is refuted. Its 07000011 playtest symptom fits the cleanup's level split: on
 0x11..0x13, 0x16 and 0x4A only drones with `obj+0xFC` == 0 are removed. The port fix is queued as `046b-fix-spawner-p7`.
+
+## Ported: fix-spawner-p7 (2026-10-12)
+
+The kill-channel reading is ported (`crates/nf-game/src/spawners.rs` against 0x137e68 and the disasm
+0x137fbc-0x1380b4): the latch (+0x20), the early-outs (`NPCGlobals`, `Drone_bDisableSystem` 0x30ca9e — no
+options menu in the port, the gate is wired but stays false — the spawner's own `obj+0xFE` bit 0, the
+mode/group/slot checks), the stop-channel pause/delete split, the done-path wait (p6 OR p7), the cleanup's
+level split and the kept-drone count. Tests: `nf-game/tests/spawner_kill.rs` (the unit shapes),
+`nf-view/tests/spawner_kill_live.rs` (07000005 end-to-end + the 07000011 stairwell keep),
+`fix_actors_live.rs::the_spawner_arrives_on_its_channels` (the arrival, re-driven through the trigger).
+The pre-fix failure was shown on master's code: the same 07000005 flow left both guards alive (the arm
+reading) — the symptom this task fixes.
+
+`obj+0xFC` (byte, on the NPC object) — the **draw counter** the kill gate reads [M `lbu $v0, 0xfc($s0)`
+0x13805c]: the renderer sets it to 2 for every object added to the draw list [M `View_AddObjects`
+0x1e62d8:71, `View_AddForcedObjects` 0x1e5fb8:174] and the per-frame object pass decrements it while
+non-zero [M `control_movement_object_handler` 0x1336f8:239-247 — core-loop item 11]. So 2 = drawn this
+frame, 1 = drawn last frame, 0 = not drawn for 2+ frames; the keep arm of the cleanup keeps only drones
+with a non-zero value. (Other object classes use the same offset as a float timer — bullets 0x12d890,
+cars 0x130060 — a per-class field, not a global.) The port's per-drone `drawn` visibility flag stands in,
+snapshotted at control-walk start so the scan reads last frame's value like the game's.
