@@ -493,7 +493,26 @@ impl Script {
         // Flag 0x80 → `Drone_EnableAll(1, hash)` [M Script_Free 0x1da880:41-43]: the cut-scene's guards come back
         // when the script that froze them (event 5 → `NPCGlobals = 0`) is freed and asked for it (event 7).
         if self.flags & 0x80 != 0 { out.push(Request::DroneEnable { on: true }); }
-        if self.flags & 0x100 != 0 { out.push(Request::PlayerEnable { at: self.player_at, mode: self.player_mode }); }
+        // fix-final-blockers2 diagnostic: the enable matrix `Script_Free` passes to `Player_Enable(glb_players,
+        // SCRIPTINFO+0x40, +0xab6)` [M 0x1da880:46-49]. SCRIPTINFO+0x40 was written ONCE at event-6 time
+        // (`Mat_Copy(iVar5+0x90 | glb_players+0x90 → +0x40)` [M 0x1d94c0:125-134]) — the game does NOT re-read
+        // the entity at free time, so the snapshot's SOURCE is the whole story.
+        if self.flags & 0x100 != 0 {
+            if std::env::var("NF_SCRIPTLOG").is_ok_and(|v| v == "1") {
+                if let Some(m) = &self.player_at {
+                    eprintln!("[scriptlog] free hash {:08x} enable at ({:.2},{:.2},{:.2}) mode {}", self.nis.hashcode, m[3][0], m[3][1], m[3][2], self.player_mode);
+                } else {
+                    eprintln!("[scriptlog] free hash {:08x} enable at None (the game's case-6 fallback re-reads the PLAYER's live matrix at EVENT time) mode {}", self.nis.hashcode, self.player_mode);
+                }
+            }
+            out.push(Request::PlayerEnable { at: self.player_at, mode: self.player_mode });
+        }
+    }
+
+    /// fix-final-blockers2 probe accessor: every stream's (kind, bound-object index, first/last key) —
+    /// the probe pairs the obj index with `Scripts::objects.list` matrices. Read-only, no behaviour.
+    pub fn stream_bindings(&self) -> Vec<(u8, Option<usize>, u16, u16)> {
+        self.streams.iter().map(|s| (s.kind, s.obj, s.first_key, s.last_key)).collect()
     }
 
     /// `Script_EventHandler` (0x1d94c0). Events 3/4/5/6/7/8/9/0xB/0xC/0xD/0xE/0x10/0x11/0x12/0x13 measured there;
@@ -524,6 +543,17 @@ impl Script {
                 let prev = i.checked_sub(1).map(|j| &self.streams[j]).filter(|s| matches!(s.kind, 1 | 2)).and_then(|s| s.obj);
                 self.player_at = prev.and_then(|o| match objs.list.get(o) { Some(Some(Obj::Entity { matrix, .. })) => Some(*matrix), _ => None });
                 self.player_mode = g(0) as u8;
+                // fix-final-blockers2 diagnostic: which stream/object the snapshot came from (the game's iVar5
+                // = record(i−1)+0x10 gated on record(i−1)+0x24 kind ∈ {1,2}, fallback `glb_players+0x90`
+                // [M 0x1d94c0:73-84,125-134]) — and what else was live at the same instant, so a probe can
+                // compare against e.g. the lift platform's SP live matrix.
+                if std::env::var("NF_SCRIPTLOG").is_ok_and(|v| v == "1") {
+                    let pk = i.checked_sub(1).map(|j| self.streams[j].kind);
+                    match (prev, self.player_at) {
+                        (Some(o), Some(m)) => eprintln!("[scriptlog] event6 hash {:08x} stream {i} prev obj {o} (kind {:?}) snapshot ({:.2},{:.2},{:.2})", self.nis.hashcode, pk, m[3][0], m[3][1], m[3][2]),
+                        _ => eprintln!("[scriptlog] event6 hash {:08x} stream {i} prev kind {:?} → NO entity (the game falls back to the player's own matrix at event time)", self.nis.hashcode, pk),
+                    }
+                }
             }
             // Event 5: `Drone_EnableAll(0, +0x98 hash)` → `NPCGlobals = 0` — the game's ONLY scripted drone freeze
             // [M Script_EventHandler 0x1d94c0 case 5, Drone_EnableAll 0x1383e8]. Every other cut-scene keeps the
@@ -576,7 +606,14 @@ impl Script {
             1 => {
                 let Some((mut m, scale, alpha)) = self.keys(i) else { return };
                 if scale != 1.0 { for r in m.iter_mut().take(3) { for v in r.iter_mut().take(3) { *v *= scale; } } }
-                // Each parent stream's matrix, then the script's.
+                // Each parent stream's matrix; the script base lands ONLY at the end of a parent chain.
+                // `Script_Interp` case 1 keeps the `Concat(SCRIPTINFO, obj+0x90)` INSIDE the `parent != -1`
+                // branch [M 0x1d9a08:106-133] — an unparented stream's keys are WORLD-SPACE. The old
+                // unconditional base was the same "*suggested*" guess as the camera's (every SP the port
+                // exercised sat on an identity base, so no test caught it); 0700004a's landing cut-scene
+                // #289 (SP #289 base (0,−53.53,−3.38)) exposed it: its return marker (stream 25, obj_type
+                // 0x19, no parent) keys (1.80,−54.128,−3.453) — exactly the −52 landing floor Bond is
+                // enabled onto — while base-composed it landed 53.5 lower (−107.66, mid-shaft).
                 let mut p = s.parent;
                 let mut n = 0;
                 while p >= 0 && (p as usize) < self.streams.len() && n < self.streams.len() {
@@ -584,16 +621,20 @@ impl Script {
                     p = self.streams[p as usize].parent;
                     n += 1;
                 }
-                m = mul(&m, &self.matrix);
+                if s.parent >= 0 { m = mul(&m, &self.matrix); }
                 if let Some(Some(Obj::Entity { matrix, alpha: a, .. })) = objs.list.get_mut(o) { *matrix = m; *a = alpha; }
             }
             4 => {
-                // `Script_Interp` case 4 → `Script_UpdateCamera`: the keys' matrix (the script matrix applied,
-                // *suggested*: the decomp loses that argument) and the field of view.
+                // `Script_Interp` case 4 → `Script_UpdateCamera`: the keys' matrix goes STRAIGHT into the
+                // CAM_INFO (dest = the CAM_INFO itself, no parent walk and no SCRIPTINFO concat
+                // [M 0x1d9a08:190-200]) and `Script_UpdateCamera` 0x1db518 copies it to the viewer raw.
+                // The camera keys are WORLD-SPACE: #289's camera key[0] (2.889,−7.829,−4.583) is Bond's
+                // boarding spot (the spawn (4.26,−7.71,−4.76), telephoto scale 0.344) — the shot films the
+                // −52 landing from the shaft top. The old `mul(&m, &self.matrix)` was the "*suggested*"
+                // guess; identity-base SPs hid it until now.
                 // The skip's freeze: `Script_Interp` returns early while `+0xAB5 & 0x20` [M 0x1d9a08:205].
                 if self.fade_flags & 0x20 != 0 { return; }
                 let Some((m, scale, _)) = self.keys(i) else { return };
-                let m = mul(&m, &self.matrix);
                 if let Some(Some(Obj::Camera { matrix, fov, .. })) = objs.list.get_mut(o) { *matrix = m; *fov = scale * (4.0 / 3.0); }
             }
             2 => {
@@ -797,7 +838,9 @@ impl Player {
                     par = s.streams[par as usize].parent as i32;
                     n += 1;
                 }
-                self.live_matrix = mul(&m, &s.matrix);
+                // fix-final-blockers2: the base lands only at a parent-chain end (see `interp` case 1) —
+                // stream 0 is usually unparented, so the SP object rides the RAW keys.
+                self.live_matrix = if s.streams[0].parent >= 0 { mul(&m, &s.matrix) } else { m };
             }
         }
         let mut flags = 0u16;

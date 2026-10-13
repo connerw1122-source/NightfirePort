@@ -21,7 +21,7 @@ use walker::Walker;
 
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 
-// ROOT CAUSE CHAIN (fix-final-blockers — the walkreal-c door-solid hypothesis DISPROVED):
+// ROOT CAUSE (fix-final-blockers + fix-final-blockers2 — RESOLVED):
 // ① The leaves never touch the rider: at t1615 the d50/d51 leaves span z −0.98..−0.82 and Bond
 //    stands at z −3.78 — a 2.8 gap; his capsule push is (0,0,0) walkable=false (probe
 //    walkreal_probe_fb5). The moving-set door-solid is NOT the scraper.
@@ -31,22 +31,20 @@ fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 //    ch 0x40 (event 0xd, tick 1610) and pauses (event 3, tick 1611). The game plays the landing
 //    as a NIS — Bond disabled, frozen mid-shaft (the game's Player_CollisionHandler early-returns
 //    [M 0x1949a8:24]) while the platform keeps descending.
-// ③ With the cut-scene PLAYED OUT (skip_cutscenes = false — the real player watches it), it ends
-//    ~t2163 (551 ticks) and the Script_Free enable (flag 0x100, nis.rs free()) places Bond at
-//    −107.66 — 36.8 BELOW the platform's live pose (≈ −63.3..−70.9 there). The walkreal-c
-//    "falls to −107.66" is this enable; the harness's old skip made it fire at t1633 instead.
-// ④ THE PORT BUG: cut-scene #289's event-6 `player_at` (nis.rs event() case 6 — the PREVIOUS
-//    stream's entity matrix) is not the platform's live pose at free time. Either the prev-stream
-//    resolution picks the cut-scene's own animated stand-in instead of the platform entity, or
-//    the matrix must be re-read at free time (the game's Script_Free 0x1da880 places the player
-//    at the entity's CURRENT matrix — during the skip/anim the entity keeps moving).
-// NEXT SESSION: dump cut-scene #289's stream list (NF_SCRIPTLOG over frames 1612-2170), match it
-// against Script_EventHandler 0x1d94c0 case 6 + Script_Free 0x1da880, and fix the enable matrix
-// source. The live check (docs/reports/walkreal-c.md #2: gdbwatch BLData+0x94a and the player's
-// y through the −52 landing) still settles what the game's enable matrix is.
+// ③ THE PORT BUG (fixed in nis.rs): the cut-scene's stream-25 marker (obj_type 0x19, no parent,
+//    key (1.80,−54.128,−3.453) at t575) is the event-6 `player_at` source [M 0x1d94c0:125-134 —
+//    the snapshot is taken at EVENT time; Script_Free 0x1da880 does NOT re-read the entity]. The
+//    port composed the SCRIPT BASE into every unparented stream's keys; the game composes it ONLY
+//    at the end of a parent chain (`Concat(SCRIPTINFO, obj+0x90)` sits INSIDE the `parent != -1`
+//    branch [M 0x1d9a08:106-133]; cameras get no base at all [M 0x1d9a08:190-200 + 0x1db518]).
+//    The NIS keys are WORLD-SPACE: the marker's key IS Bond's freeze pose; #289's camera key[0]
+//    (2.889,−7.829,−4.583) is the boarding spot (telephoto scale 0.344 — the shot films the
+//    landing from the shaft top). Identity-base SPs hid the wrong base in every earlier cut-scene.
+// ④ THE DESIGN: the enable (t2187, mode 1) puts Bond back at his freeze pose — 17.5 ABOVE the
+//    platform that kept descending — and he FALLS ONTO IT (probe walkreal_probe_fb6i: airborne
+//    t2188..2312, grounded t2313 at y −75.50, 0.4 below the key line, riding on to the lobby).
+//    The ride-loop scrape check exempts the disabled window plus the fall (until 5 grounded ticks).
 #[test]
-#[ignore = "PARKED (fix-final-blockers): the -52 landing cut-scene #289's Script_Free enable places Bond at -107.66 (mid-shaft, 36 below the platform) — the event-6 player_at resolves to the wrong entity/matrix; see the header"]
-
 fn ride_the_lift_from_the_spawn_and_walk_into_the_lobby() {
     let iso = iso();
     let mut w = Walker::new(nf_view::load(&iso, "0700004a.bin", false).unwrap());
@@ -92,6 +90,8 @@ fn ride_the_lift_from_the_spawn_and_walk_into_the_lobby() {
     let t0 = w.total_ticks;
     let mut fired: Vec<u32> = Vec::new();
     let mut scrape: Option<(u32, f32, f32)> = None;
+    let mut reground = 0u32;
+    let mut fall_exempt = false;
     for k in 0..5400u32 {
         w.tick(Default::default(), false);
         let sim = w.scene.sim.as_ref().unwrap();
@@ -102,9 +102,17 @@ fn ride_the_lift_from_the_spawn_and_walk_into_the_lobby() {
         let want = (y_board - ((t as f32) - 90.0).max(0.0) * (150.0 / 4950.0)).max(y_board - 150.0);
         let y = sim.bond.pos[1];
         // While the landing cut-scene has Bond disabled he legitimately freezes (the game's
-        // Player_CollisionHandler early-returns [M 0x1949a8:24]) — the enable puts him back on
-        // the platform, so the key-line scrape check only applies to ENABLED ticks.
-        if scrape.is_none() && t > 150 && !sim.disabled && (y - want).abs() > 5.0 {
+        // Player_CollisionHandler early-returns [M 0x1949a8:24]) — and the enable drops him at
+        // his freeze pose to fall ~21 onto the still-descending cab (the header ④; probe
+        // walkreal_probe_fb6i: airborne t2188..2312, grounded t2313 0.4 under the line). The
+        // scrape check resumes only once he is riding again (5 straight grounded ticks).
+        if sim.disabled {
+            fall_exempt = true;
+            reground = 0;
+        } else if fall_exempt {
+            if sim.bond.grounded { reground += 1; if reground >= 5 { fall_exempt = false; } } else { reground = 0; }
+        }
+        if scrape.is_none() && t > 150 && !sim.disabled && !fall_exempt && (y - want).abs() > 5.0 {
             scrape = Some((t, y, want));
             eprintln!("[walk] the ride left the key line at t{t}: y {y:.2} want {want:.2} grounded={} substate={}",
                 sim.bond.grounded, sim.bond.substate);
