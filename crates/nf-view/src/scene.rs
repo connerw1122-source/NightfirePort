@@ -1123,7 +1123,13 @@ impl Sim {
                     // Swap the weapon byte now (the variant-swap doesn't holster).
                     if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
                     if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
-                    self.gun.prev_weapon = self.gun.weapon;
+                    // The leave-side prev slot follows the LEAVING weapon's type [M 0x1a6f80:134-141 —
+                    // +0x930 takes weapons only, +0x932 gadgets only; the request path (above) already
+                    // wrote it, but the variant swap used to write prev_weapon unconditionally — a
+                    // gadget→gadget hop (0x50→0x52) polluted +0x930 with a gadget id and the next
+                    // WEAPON cycle then toggled back to a gadget].
+                    if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
+                    if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
                     let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
                     if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
@@ -1132,7 +1138,8 @@ impl Sim {
                     if log_switch { eprintln!("[weapon-switch] tick {}: instant variant swap (no script) {:#x}→{:#x}", self.drones.frame, cur_id, req_id); }
                     if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
                     if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
-                    self.gun.prev_weapon = self.gun.weapon;
+                    if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
+                    if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
                     let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
                     if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
@@ -1156,7 +1163,8 @@ impl Sim {
                     if log_switch { eprintln!("[weapon-switch] tick {}: instant swap (no holster) {:#x}→{:#x}", self.drones.frame, cur_id, req_id); }
                     if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
                     if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
-                    self.gun.prev_weapon = self.gun.weapon;
+                    if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
+                    if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
                     let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
                     if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
@@ -1187,7 +1195,8 @@ impl Sim {
                         // Holster done: write the current weapon's clip/spare back, swap, read the new weapon's.
                         if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
                         if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
-                        self.gun.prev_weapon = self.gun.weapon;
+                        if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
+                        if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                         self.gun.weapon = self.gun.switch_request;
                         let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
                         if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }

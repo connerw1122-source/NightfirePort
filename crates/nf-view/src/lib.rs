@@ -1200,8 +1200,10 @@ impl ApplicationHandler for App {
                     // (KeyCode::Digit6, ElementState::Pressed) => if self.grabbed { self.weapon_switch_to = Some(0x50) },
                     // (KeyCode::Digit7, ElementState::Pressed) => if self.grabbed { self.weapon_switch_to = Some(0x54) },
                     (KeyCode::KeyQ, ElementState::Pressed) => if self.grabbed && !self.noclip { self.weapon_cycle = -1 },
-                    // Gadgets (G) are disabled until at least one is ported (docs/port-map/gadgets.md).
-                    // (KeyCode::KeyG, ElementState::Pressed) => if self.grabbed && !self.noclip { self.gadget_cycle = 1 },
+                    // Gadgets (G): the cycle is live — the weapon_data's +0x04 selectable flag is 1 for
+                    // the gadget ids [D ACTION.ELF weapon_data] and the switch/equip path is tested
+                    // (gadget_select_live). The gadgets' fire-side substates land per gadget.
+                    (KeyCode::KeyG, ElementState::Pressed) => if self.grabbed && !self.noclip { self.gadget_cycle = 1 },
                     // Turn every switch channel on: drones waiting for one (WaitSwitch) start (triggers are not ported).
                     (KeyCode::KeyK, ElementState::Pressed) => if let Some(sim) = self.scene.sim.as_mut() { for c in 1..=255 { sim.drones.set_channel(c) } },
                     // Bug 3: log the name of the object Bond is touching (its AABB contains his feet).
