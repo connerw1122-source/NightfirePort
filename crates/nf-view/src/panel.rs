@@ -84,12 +84,14 @@ select, input { background:#2a2f38; color:var(--text); border:1px solid #3a404b;
 input[type=search] { width:100%; margin-bottom:6px; }
 </style></head><body>
 <header><h1>nf-view dev panel</h1><span id="level" class="dim"></span><span id="status">connecting…</span>
+<button class="big" onclick="cmd('do=levelkit')">Level kit (the game's loadout)</button>
 <button class="big" onclick="cmd('do=arena')">Arena mode (clear level)</button>
 <button class="big" onclick="cmd('do=clear_npcs')">Remove spawned NPCs</button>
 <button class="big" onclick="cmd('do=god')">God mode</button>
 <button class="big" onclick="cmd('do=ammo')">Infinite ammo</button>
 <button class="big" onclick="cmd('do=shot')">Screenshot + log spot</button></header>
 <main>
+<section><h2>Current weapon</h2><div id="cur" class="dim">-</div></section>
 <section><h2>NPCs (spawn in front of Bond)</h2>
 <div class="dim" style="margin-bottom:6px">Mode: <select id="mode"><option value="">level default</option><option value="0">normal</option><option value="2">sniper</option><option value="16">ambush</option></select></div>
 <div id="npcs"></div></section>
@@ -107,6 +109,10 @@ function el(h) { const d = document.createElement('div'); d.innerHTML = h; retur
 function draw() {
   if (!cat) return;
   document.getElementById('level').textContent = 'level ' + cat.level;
+  const c = cat.current || {};
+  document.getElementById('cur').innerHTML = c.name ? `<b>${c.name}</b> (0x${(+c.weapon).toString(16).padStart(2,'0')})` +
+    (c.fire_mode ? ` · fire mode: <b>${c.fire_mode}</b>` : '') +
+    ` · ammo: <b>${c.ammo_type || '?'}</b> · clip ${c.clip} · spare ${c.spare}` : '-';
   const n = document.getElementById('npcs'); n.innerHTML = '';
   for (const p of cat.npcs) n.append(el(`<div class="row"><span class="name">skin ${p.skin}</span><span class="dim">${p.free}/${p.total} free</span><button onclick="cmd('do=npc&skin=${p.skin}&mode='+document.getElementById('mode').value)">Spawn</button></div>`));
   if (!cat.npcs.length) n.append(el('<div class="dim">no NPC types on this level</div>'));
@@ -116,59 +122,136 @@ function draw() {
   for (const x of cat.weapons) {
     const label = `0x${x.id.toString(16).padStart(2,'0')} ${x.name}`;
     if (f && !label.toLowerCase().includes(f)) continue;
-    (x.gadget ? g : w).append(el(`<div class="row"><span class="name">${label}${x.sel ? '' : ' <span class=dim>(variant)</span>'}</span><span class="dim">clip ${x.clip}${x.fp ? '' : ' · no 1st-person model here'}</span><button onclick="cmd('do=weapon&id=${x.id}')">Give</button><button onclick="cmd('do=ammo_for&id=${x.id}')">+Ammo</button></div>`));
+    const mesh = x.proj ? ` · proj 0x${(+x.proj).toString(16)}` : '';
+    (x.gadget ? g : w).append(el(`<div class="row"><span class="name">${label}${x.sel ? '' : ' <span class=dim>(variant)</span>'}</span><span class="dim">clip ${x.clip}${x.ammo ? ' · ' + x.ammo : ''}${mesh}${x.fp ? '' : ' · no 1st-person model here'}</span><button onclick="cmd('do=weapon&id=${x.id}')">Give</button><button onclick="cmd('do=ammo_for&id=${x.id}')">+Ammo</button></div>`));
   }
   const c = document.getElementById('cons'); c.innerHTML = '';
-  for (const [label, q] of [['Full health', 'do=health'], ['Full armour', 'do=armour'], ['Frag grenades ×5', 'do=weapon&id=53&rounds=5'], ['Stun grenades ×5', 'do=weapon&id=54&rounds=5'], ['Ammo for every owned weapon', 'do=ammo_all']])
+  // The grenade ids are the game's own: 0x34 (52) Fragmentation, 0x35 (53) Stun, 0x36 (54) Smoke
+  // [L USATxt.dat via Txt_BindLabel(+0x38); the old buttons gave 0x35 for "Frag" — the STUN
+  // grenade — the user's "a frag grenade spawns what looks to be a stun grenade"].
+  for (const [label, q] of [['Full health', 'do=health'], ['Full armour', 'do=armour'], ['Fragmentation grenades ×5', 'do=weapon&id=52&rounds=5'], ['Stun grenades ×5', 'do=weapon&id=53&rounds=5'], ['Smoke grenades ×5', 'do=weapon&id=54&rounds=5'], ['Ammo for every owned weapon', 'do=ammo_all']])
     c.append(el(`<div class="row"><span class="name">${label}</span><button onclick="cmd('${q}')">Give</button></div>`));
 }
 async function load() {
-  try { const t = await (await fetch('/api/catalog')).text(); if (t) { const c = JSON.parse(t); if (!cat || c.level !== cat.level || c.stamp !== cat.stamp) { cat = c; draw(); } } status(); }
+  try { const t = await (await fetch('/api/catalog')).text(); if (t) { const c = JSON.parse(t); if (!cat || c.level !== cat.level || c.stamp !== cat.stamp || JSON.stringify(c.current) !== JSON.stringify(cat.current)) { cat = c; draw(); } } status(); }
   catch (e) { document.getElementById('status').textContent = 'game not reachable — start nf-view with --dev'; }
 }
 load(); setInterval(load, 1000);
 </script></body></html>
 "#;
 
-/// Known weapon names (docs/atlas/weapon-data.md; 0x0E from the 01-raptor PCSX2 trace). Others show their id.
-/// fix-weapons-all: 0x3A named from the user's own playtest ("the Scorpion launcher") + the game's
-/// text bank (USATxt.Dat holds 'AT-600 Scorpion '; models-weapons-items pins 0x3A → the rocket mesh
-/// 0x0200074f) — the user's "no clue what the rocket launcher is" was the bare "weapon 0x3a" here.
-/// 0x45 (the clip-100 grenade-type, the +0x48CE cap record [M Player_WeaponHasAmmo 0x1a16c0]) and
-/// 0x33 (scoped, 100 rounds) get their bank names [S — the bank's label binding is not fully decoded;
-/// see the report's live checks].
-fn weapon_name(id: u8) -> &'static str {
-    match id {
-        0x01 => "Fists", 0x02 => "P2K", 0x04 => "P2K variant", 0x06 => "Default sidearm (0x06)", 0x08 => "0x06 variant",
-        0x0E => "Raptor", 0x10 => "(ammo type 11)", 0x11 => "(scoped)", 0x12 => "SMG (32 rounds)", 0x14 => "(21 rounds)",
-        0x16 => "SG5 Commando", 0x19 => "(zoom 3.0)", 0x1C => "Shotgun", 0x20 => "Sniper (scoped)", 0x22 => "Sniper (10 rounds)",
-        0x24 => "Sniper L96A1", 0x26 => "Sniper (scoped)", 0x28 => "Sniper (10 rounds)", 0x30 => "(4 rounds)", 0x33 => "Korsakov K5 (scoped, 100 rounds)",
-        // The grenade names are the disc's own [L USATxt.dat, Txt_BindLabel(weapon_data+0x38) —
-        // fix-explosions2: 0x34 'Fragmentation Grenade' (MP 'Frag Grenade'), 0x35 'Stun Grenade',
-        // 0x36 'Smoke Grenade', 0x37 'Remote Mine'; the old panel had the frag on 0x35 and no name
-        // for 0x34]. 0x45 = the Militek MGL (the launcher; its round is 0x2b [L +0x02 base 0x2a]).
-        0x34 => "Frag Grenade", 0x35 => "Stun Grenade", 0x36 => "Smoke Grenade", 0x37 => "Remote Mine", 0x3A => "AT-600 Scorpion (rocket launcher)", 0x41 => "(ammo type 21)",
-        0x42 => "(ammo type 19)", 0x43 => "(5 rounds)", 0x44 => "(5 rounds variant)", 0x45 => "Militek MGL (grenade launcher)", 0x46 => "(unlimited)",
-        0x50 => "Q-Laser", 0x51 => "Q-Laser variant", 0x52 => "(ammo type 27)", 0x53 => "(variant of 0x52)", 0x54 => "Laser Watch",
-        _ => "",
+/// The game's own name for a record: `Txt_BindLabel(weapon_data[w]+0x38)` over USATxt.dat — the same
+/// lane the game itself binds for the pickup message and the HUD's ammo pane (`Pickup_Handler`
+/// 0x18e650:246, `HUD_UpdateAmmoPane` 0x19a7f0) [M; docs/fields/weapon_data.md +0x38 = the SP name].
+/// The old hardcoded table asserted from memory and was wrong all over (it put the AT-600 Scorpion on
+/// 0x3A — the bank's Laser Tripbomb; "Korsakov K5" on 0x33 — the bank's Phoenix Samurai; "Militek
+/// MGL" on 0x45 — the bank's Oddjob's Hat; "Q-Laser"/"Laser Watch" on 0x50/0x54 — the bank's
+/// Grapple/Micro-Camera), which is the user's "I can't tell what's what / no clue what the rocket
+/// launcher is": the real rocket launchers are 0x2C AT-420 Sentinel and 0x2E AT-600 Scorpion, and the
+/// grenades are 0x34 Fragmentation (radius 8, dmg 100 [L +0x08/+0x0C]) / 0x35 Stun (radius 10, dmg 0)
+/// / 0x36 Smoke / 0x37 Remote Mine. 0x01 (fists) carries no label — the game's own code equips it as
+/// the fists tail (`Player_InitWeapon` 0x1a7ef8:319) [M]. Anything else unnamed shows its id.
+fn record_name(lang: Option<&nf_formats::hud::Lang>, wd: &nf_formats::weapon::WeaponData, id: u8) -> String {
+    let label = wd.name_label(id as usize);
+    if label != 0 && label != 0xFFFFFFFF {
+        if let Some(t) = lang.and_then(|l| l.bind(label)) {
+            let t = t.trim();
+            if !t.is_empty() { return t.to_string(); }
+        }
     }
+    if id == 0x01 { return "Fists".into(); }
+    if id >= 0x4a { format!("gadget {id:#04x}") } else { format!("weapon {id:#04x}") }
 }
 
-/// The current level's spawnables as JSON.
-pub fn catalog(scene: &crate::scene::Scene) -> String {
-    let Some(sim) = scene.sim.as_ref() else { return "{\"level\":\"none\",\"stamp\":0,\"weapons\":[],\"npcs\":[]}".into() };
+/// One panel row: the record's own name, label id and meshes, so the panel shows (and the tests
+/// pin) exactly what a click spawns.
+pub struct Entry {
+    pub id: u8,
+    /// The game's own name (`Txt_BindLabel(+0x38)`; `record_name`'s fallback otherwise).
+    pub name: String,
+    /// The raw +0x38 label id (0xFFFFFFFF = none).
+    pub label: u32,
+    pub clip: i16,
+    /// The ammo type's own bank name (`ammo_data[type]+8`, the pickup's `%s` [M 0x18e650 case 1]); "" when none.
+    pub ammo: String,
+    /// The level carries the first-person model (a view model was built for it).
+    pub fp: bool,
+    /// Gadgets are ids 0x4A and up (`Player_WeaponChange`'s gadget cycle bounds) [M 0x1a6f80].
+    pub gadget: bool,
+    /// `weapon_data+0x04 == 1`: appears in the switch cycle.
+    pub sel: bool,
+    /// The held view-entity model (+0x7C; `AnimDatumSetEntity` per draw, `Player_WeaponFiring`
+    /// 0x1a5460:106 [M]), the third-person/pickup model (+0x80) and the flying projectile's mesh
+    /// (+0x5C; `Bullet_update` 0x12e7b0 disasm 0x12e8f0 sets it on the bullet object [M]). 0 = none.
+    pub held: u32,
+    pub tp: u32,
+    pub proj: u32,
+}
+
+/// The spawnable records for the panel, each resolved through its `weapon_data` record.
+pub fn catalog_entries(scene: &crate::scene::Scene) -> Vec<Entry> {
+    let Some(sim) = scene.sim.as_ref() else { return Vec::new() };
     let wd = &sim.weapons;
-    let mut weapons = Vec::new();
+    let lang = sim.lang.as_ref();
+    let mut out = Vec::new();
     for id in 1..0x72u8 {
-        // Every record with a model or rounds (variants included); 0x47 is "no weapon".
+        // Every record with a model or rounds (variants included); 0x47 is "no weapon". Nameless
+        // padding with no meshes and out of both cycles (0x48/0x49 — the gadget cycle starts at
+        // 0x4A [M 0x1a6f80]) would only add "weapon 0x48" noise rows.
         if id == 0x47 || (wd.model(id as usize) == 0 && wd.clip_size(id as usize) <= 0) { continue; }
-        let clip = wd.clip_size(id as usize);
-        let name = weapon_name(id);
-        let name = if name.is_empty() { format!("weapon {id:#04x}") } else { name.to_string() };
-        // Gadgets are ids 0x48 and up (`Player_WeaponChange`: weapons cycle 1..0x47, gadgets 0x4A..0x5E).
-        let gadget = id >= 0x48;
-        weapons.push(format!("{{\"id\":{id},\"name\":\"{}\",\"clip\":{clip},\"fp\":{},\"gadget\":{gadget},\"sel\":{}}}", js(&name), scene.view_models.contains_key(&id), wd.selectable(id)));
+        let label = wd.name_label(id as usize);
+        let has_mesh = wd.model(id as usize) != 0 || wd.projectile_mesh(id as usize) != 0;
+        if (label == 0 || label == 0xFFFFFFFF) && !wd.selectable(id) && !has_mesh { continue; }
+        let at = wd.ammo_type(id as usize);
+        let al = wd.ammo_name_label(at);
+        let ammo = if al != 0 { lang.and_then(|l| l.bind(al)).unwrap_or("").trim().to_string() } else { String::new() };
+        let norm = |h: u32| if h == u32::MAX { 0 } else { h };
+        let rec = &wd.records[id as usize];
+        let u32_at = |o: usize| u32::from_le_bytes(rec[o..o + 4].try_into().unwrap());
+        out.push(Entry {
+            id,
+            name: record_name(lang, wd, id),
+            label,
+            clip: wd.clip_size(id as usize),
+            ammo,
+            fp: scene.view_models.contains_key(&id),
+            gadget: id >= 0x48,
+            sel: wd.selectable(id),
+            held: norm(u32_at(0x7c)),
+            tp: wd.model(id as usize),
+            proj: norm(wd.projectile_mesh(id as usize)),
+        });
     }
+    out
+}
+
+/// The current weapon's state for the panel: its game name, the fire-mode label text
+/// (`weapon_data+0x30 + mode*4` — the HUD's own read, `HUD_UpdateAmmoPane` 0x19a7f0:229 [M]; the
+/// port's trigger runs mode 0, `GunParams::from_record(w, 0, ..)`), the ammo type's bank name
+/// (`ammo_data[type]+8` [M]) and the HUD's clip/spare counts.
+fn current_json(sim: &crate::scene::Sim) -> String {
+    let wi = sim.gun.weapon;
+    let wd = &sim.weapons;
+    let lang = sim.lang.as_ref();
+    let name = record_name(lang, wd, wi);
+    let fl = wd.fire_mode_label(wi as usize, 0);
+    let fire = if fl != 0 { lang.and_then(|l| l.bind(fl)).unwrap_or("").trim().to_string() } else { String::new() };
+    let at = wd.ammo_type(wi as usize);
+    let al = wd.ammo_name_label(at);
+    let ammo = if al != 0 { lang.and_then(|l| l.bind(al)).unwrap_or("").trim().to_string() } else { format!("ammo type {at}") };
+    format!("{{\"weapon\":{},\"name\":\"{}\",\"fire_mode\":\"{}\",\"ammo_type\":\"{}\",\"clip\":{},\"spare\":{}}}",
+        wi, js(&name), js(&fire), js(&ammo), sim.gun.clip, sim.gun.spare)
+}
+
+/// The current level's spawnables as JSON (plus the current weapon's fire mode and ammo type).
+pub fn catalog(scene: &crate::scene::Scene) -> String {
+    let Some(sim) = scene.sim.as_ref() else { return "{\"level\":\"none\",\"stamp\":0,\"current\":{},\"weapons\":[],\"npcs\":[]}".into() };
+    let mut weapons = Vec::new();
+    for e in catalog_entries(scene) {
+        weapons.push(format!("{{\"id\":{},\"name\":\"{}\",\"label\":{},\"clip\":{},\"ammo\":\"{}\",\"fp\":{},\"gadget\":{},\"sel\":{},\"held\":{},\"tp\":{},\"proj\":{}}}",
+            e.id, js(&e.name), e.label, e.clip, js(&e.ammo), e.fp, e.gadget, e.sel, e.held, e.tp, e.proj));
+    }
+    let current = current_json(sim);
     let mut skins: Vec<u32> = Vec::new();
     for s in &scene.npc_pool { if !skins.contains(&s.skin) { skins.push(s.skin); } }
     let mut free_total = 0;
@@ -178,13 +261,23 @@ pub fn catalog(scene: &crate::scene::Scene) -> String {
         free_total += free;
         format!("{{\"skin\":\"{skin:08x}\",\"free\":{free},\"total\":{}}}", slots.len())
     }).collect();
-    format!("{{\"level\":\"{:08x}\",\"stamp\":{free_total},\"weapons\":[{}],\"npcs\":[{}]}}", sim.level, weapons.join(","), npcs.join(","))
+    format!("{{\"level\":\"{:08x}\",\"stamp\":{free_total},\"current\":{current},\"weapons\":[{}],\"npcs\":[{}]}}", sim.level, weapons.join(","), npcs.join(","))
 }
 
 /// Apply one panel command to the scene. Returns the status text and, for a given weapon, the weapon to switch to.
 pub fn apply(scene: &mut crate::scene::Scene, q: &[(String, String)]) -> (String, Option<u8>) {
     let get = |k: &str| q.iter().find(|(a, _)| a == k).map(|(_, v)| v.as_str());
-    let num = |k: &str| get(k).and_then(|v| v.trim_start_matches("0x").parse::<u32>().ok());
+    // `0x`-prefixed values parse as hex (the old code stripped the prefix and parsed DECIMAL, so
+    // every hex id silently failed); plain values stay decimal (the page's ids are decimal).
+    let num = |k: &str| get(k).and_then(|v| {
+        let v = v.trim();
+        match v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+            Some(d) => u32::from_str_radix(d, 16).ok(),
+            None => v.parse::<u32>().ok(),
+        }
+    });
+    // The bank name for a status line comes from the sim's own Lang (resolved inside each arm —
+    // a shared closure here would hold `scene` immutably across the mutable borrows).
     let Some(what) = get("do") else { return ("no command".into(), None) };
     match what {
         "weapon" => {
@@ -195,7 +288,8 @@ pub fn apply(scene: &mut crate::scene::Scene, q: &[(String, String)]) -> (String
             sim.drones.inventory.equip_weapon(&wd, id as usize, rounds, true);
             let carry = (wd.clip_size(id as usize).max(1) * 3).max(rounds);
             sim.drones.inventory.equip_ammo(&wd, id as usize, carry);
-            (format!("gave weapon {id:#04x} ({})", weapon_name(id as u8)), Some(id as u8))
+            let name = record_name(sim.lang.as_ref(), &wd, id as u8);
+            (format!("gave weapon {id:#04x} ({name})"), Some(id as u8))
         }
         "ammo_for" => {
             let Some(sim) = scene.sim.as_mut() else { return ("no game".into(), None) };
@@ -210,6 +304,26 @@ pub fn apply(scene: &mut crate::scene::Scene, q: &[(String, String)]) -> (String
             let owned: Vec<usize> = (1..0x72).filter(|&w| sim.drones.inventory.owned.get(w).copied().unwrap_or(false)).collect();
             for &w in &owned { sim.drones.inventory.equip_ammo(&wd, w, wd.clip_size(w).max(1) * 3); }
             (format!("ammo for {} owned weapons", owned.len()), None)
+        }
+        // The game's own loadout for the current level: `Player_InitWeapon` (0x1a7ef8) on a cold
+        // load (`save = None` clears through `Player_InitAmmoWeapons` first), the same call the
+        // level-load path runs — so a playtest starts like the real game (weapons AND gadgets).
+        "levelkit" => {
+            let Some(sim) = scene.sim.as_mut() else { return ("no game".into(), None) };
+            let wd = sim.weapons.clone();
+            let level = sim.level;
+            let req = {
+                let skins = &sim.skins;
+                let loaded: Vec<bool> = (0..0x72u32).map(|w| skins.contains_key(&wd.first_person(w as usize))).collect();
+                let drones = &mut sim.drones;
+                // Borrowed (not moved) capture: the closure must be Copy (`init_level_loadout` runs
+                // it per equip, like the level-load call in nf_view::load).
+                nf_game::player::init_level_loadout(level, None, &mut drones.health, &mut drones.inventory,
+                    &mut drones.channels, &wd, |w| loaded.get(w as usize).copied().unwrap_or(false))
+            };
+            sim.gun.switch_request = req;
+            let owned = sim.drones.inventory.owned.iter().filter(|&&o| o).count();
+            (format!("level kit: {owned} owned weapons, switch request {req:#04x}"), None)
         }
         "health" => { if let Some(sim) = scene.sim.as_mut() { sim.drones.health.health = 100.0; } ("health 100".into(), None) }
         "armour" => { if let Some(sim) = scene.sim.as_mut() { sim.drones.health.armour = 50.0; } ("armour 50".into(), None) }
