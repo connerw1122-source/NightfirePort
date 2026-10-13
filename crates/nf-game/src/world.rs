@@ -239,6 +239,16 @@ impl CollisionWorld {
     /// (`Control_BuildWorldSph` 0x133070 → `build_FindCel` 0x1c8cb0 over the runtime cels, smallest
     /// volume on ties — the port's `find_cel` tie-break; `build_LinkToRoom` 0x1c9680 links the game's
     /// objects the same way). Instances whose centre maps to no cell stay in the `always` bucket.
+    /// *fix-room-scope measured* (see `docs/reports/fix-room-scope.md`): the game's real
+    /// `build_FindCel` raycast tie-break, ported and run over this instance-folded world, maps the
+    /// shared `Room_Stairwell_T_2` mesh (07000008 instance 32, centre (149.03, 40.49, −116.00),
+    /// candidates [15, 40]) to cel 15 — and BREAKS the safe take (the safe's own runs leave cell
+    /// 48's bucket the same way). The game's statics do not go through `build_LinkToRoom` at all:
+    /// their collision is the map's own Coll_Data node layer attached to the current cel at parse
+    /// (`parsemap_block_Coll_Data_New` 0x1d1810 writes `pCurrCelList+8`; every `build_LinkToRoom`
+    /// caller is an entity creator — `Control_CreateObjEx` 0x1343c8 et al.). The port folds both
+    /// layers into one instance world, where the object-link law cannot reproduce the game's
+    /// placement. The capsule therefore stays FLAT until the Coll_Data layer exists.
     pub fn build_scoped(level: &Level, instances: &[Instance], graph: Option<ScopeGraph>) -> CollisionWorld {
         let mut stat = Geo::default();
         let mut missile = Geo::default();
