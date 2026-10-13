@@ -27,3 +27,6 @@ Files: `crates/nf-game/src/drone.rs`, `crates/nf-game/tests/nav_kick_live.rs`.
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/nav-remainder2`.
+
+---
+claimed-by: sandbox2 at 2026-10-13T22:53Z
