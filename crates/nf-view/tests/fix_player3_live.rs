@@ -196,7 +196,7 @@ fn reload_from_empty_plays_the_1_35x_loop_and_lands_on_idle() {
     // Pick up ammo through the real pickup path (a kind-1 ammo pickup, id 2).
     let model = sim.weapons.model(2);
     let bounds = *sim.models.get(&model).unwrap_or(&nf_game::pickup::Model { centre: [0.0, 0.05, 0.0], radius: 0.3 });
-    let p = nf_game::pickup::Pickup::create_placed(sim.bond.pos, [0.0; 3], nf_game::pickup::kind::AMMO, 2, 30, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons).expect("ammo pickup");
+    let p = nf_game::pickup::Pickup::create_placed(sim.bond.pos, [0.0; 3], nf_game::pickup::kind::AMMO, 2, 30, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons, &std::collections::HashMap::new()).expect("ammo pickup");
     sim.drones.pickups.push(p);
     // The take and the game's auto-reload (branch B: not newly pressed + clip < ammo_per_shot + spare
     // now > 0 [M 0x1a5460:442-462]) land on the SAME tick — the user's extra R press is a no-op then.
@@ -245,7 +245,7 @@ fn switching_mid_reload_is_refused_and_firing_recovers() {
     let model = sim.weapons.model(id);
     let bounds = *sim.models.get(&model).unwrap_or(&nf_game::pickup::Model { centre: [0.0, 0.05, 0.0], radius: 0.3 });
     let at = sim.bond.pos;
-    let p = nf_game::pickup::Pickup::create_placed(at, [0.0; 3], nf_game::pickup::kind::WEAPON, id as u16, 1, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons)
+    let p = nf_game::pickup::Pickup::create_placed(at, [0.0; 3], nf_game::pickup::kind::WEAPON, id as u16, 1, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons, &std::collections::HashMap::new())
         .expect("grenade pickup builds");
     sim.drones.pickups.push(p);
     tick_idle(sim, 5);
@@ -314,7 +314,7 @@ fn thrown_grenade_flies_and_explodes_with_sound_and_damage() {
     let model = sim.weapons.model(id);
     let bounds = *sim.models.get(&model).unwrap_or(&nf_game::pickup::Model { centre: [0.0, 0.05, 0.0], radius: 0.3 });
     let at = sim.bond.pos;
-    let p = nf_game::pickup::Pickup::create_placed(at, [0.0; 3], nf_game::pickup::kind::WEAPON, id as u16, 1, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons)
+    let p = nf_game::pickup::Pickup::create_placed(at, [0.0; 3], nf_game::pickup::kind::WEAPON, id as u16, 1, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons, &std::collections::HashMap::new())
         .expect("grenade pickup builds");
     sim.drones.pickups.push(p);
     tick_idle(sim, 5);
@@ -366,7 +366,7 @@ fn thrown_grenade_flies_and_explodes_with_sound_and_damage() {
         let gp = sim.drones.list[gi].pos;
         let floor = spot_floor(sim, gi).unwrap_or(gp[1]);
         // Throw again from 3 units away, grenade landing near the guard (radius 10 covers 3 units).
-        let p = nf_game::pickup::Pickup::create_placed(sim.bond.pos, [0.0; 3], nf_game::pickup::kind::WEAPON, 0x34, 1, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons).unwrap();
+        let p = nf_game::pickup::Pickup::create_placed(sim.bond.pos, [0.0; 3], nf_game::pickup::kind::WEAPON, 0x34, 1, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons, &std::collections::HashMap::new()).unwrap();
         sim.drones.pickups.push(p);
         tick_idle(sim, 5);
         sim.bond = nf_game::player::Bond::stand_at(&sim.world, [gp[0], floor + 1.1, gp[2] - 3.0], 0.0);

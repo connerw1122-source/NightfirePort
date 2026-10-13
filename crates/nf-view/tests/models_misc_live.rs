@@ -355,7 +355,7 @@ fn a_grenade_blast_plays_the_explosion_script_entities() {
     let id = 0x35usize;
     let model = sim.weapons.model(id);
     let bounds = *sim.models.get(&model).unwrap_or(&nf_game::pickup::Model { centre: [0.0, 0.05, 0.0], radius: 0.3 });
-    let p = nf_game::pickup::Pickup::create_placed(sim.bond.pos, [0.0; 3], nf_game::pickup::kind::WEAPON, id as u16, 1, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons).expect("grenade pickup builds");
+    let p = nf_game::pickup::Pickup::create_placed(sim.bond.pos, [0.0; 3], nf_game::pickup::kind::WEAPON, id as u16, 1, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons, &std::collections::HashMap::new()).expect("grenade pickup builds");
     sim.drones.pickups.push(p);
     for _ in 0..5 { sim.step_bond(Input::default(), false, false, false); }
     // The blast through the real explosion path: a frag in flight with a 10-tick fuse (the sim's own

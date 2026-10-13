@@ -994,7 +994,7 @@ impl Sim {
                 }
             }
         }
-        // The fire-mode button (pad ○ = action 12; keyboard M) [M `Player_Weapon` 0x1a24c8:204-260]:
+        // The fire-mode button (pad ○ = action 12; keyboard B) [M `Player_Weapon` 0x1a24c8:204-260]:
         // only with the view anim idle (the game's `anim+0xF4 == 0`: no switch, no reload, no fire
         // script) and not while aiming a scoped weapon (+0x68 & 0x40). Twin-linked records (weapon_data
         // +0x05) switch to their twin through the normal switch request; the rest cycle the mode byte
@@ -1032,6 +1032,27 @@ impl Sim {
             }
         }
         self.prev_trigger = input.fire;
+        // The pickup auto-switch [M Player_EquipWeapon 0x1a8a58's tail]: `anim+0x63` is written
+        // directly (no Player_WeaponChange gate) — the draw machine holsters and draws it when it
+        // can; a later weapon-cycle request overwrites it, as in the game.
+        // GATED OFF (fix-pickups-remainder): the request is computed and unit-tested
+        // (Inventory::is_better_weapon), but applying it regresses walkreal_07000001's
+        // walk_from_the_spawn_to_the_exit_with_the_contact (green on master, stuck in the contact
+        // follow with the switch live: after the first Raptor drop take the draw machine swaps to
+        // the Raptor and the follow wedges at d=3.89 standing 1.13 above the floor). The
+        // interaction (the switch's view-model/anim side effects vs the contact's script) needs the
+        // main agent's live check before the drain re-opens. See docs/reports/fix-pickups-remainder.md.
+        if false {
+            if let Some(id) = self.drones.weapon_switch_request.take() {
+                if id != self.gun.weapon as u16 {
+                    let cur = self.gun.weapon;
+                    if cur >= 1 && cur <= 0x47 { self.gun.prev_weapon = cur; }
+                    if cur >= 0x4a && cur <= 0x5e { self.gun.prev_gadget = if cur == 0x55 { 0x54 } else { cur }; }
+                    self.gun.switch_request = id as u8;
+                }
+            }
+        }
+        self.drones.weapon_switch_request = None;
         if self.gun.switch_state == 0 && self.gun.reload_state == 0 && !fire_busy {
             let owned = self.drones.inventory.owned.clone();
             let carried = self.drones.inventory.carried.clone();
@@ -1910,6 +1931,8 @@ impl Sim {
                 nf_game::pickup::Taken::Key { .. } => lang.bind(0x200_0010).unwrap_or("").to_string(),
                 nf_game::pickup::Taken::Armour => lang.bind(0x200_000F).unwrap_or("").to_string(),
                 nf_game::pickup::Taken::Bonus => lang.bind(0x200_004A).unwrap_or("").to_string(),
+                // Case 5 [M 0x18e650:229-233 + the shared tail]: message 0x2000013.
+                nf_game::pickup::Taken::Message => lang.bind(0x200_0013).unwrap_or("").to_string(),
                 // Case 4 [M 0x18e650]: the pickup's own label (PICKUPINFO+0x34); the port's pickups
                 // do not carry it, and the only kind-4 pickup on the disc data so far labels 0.
                 nf_game::pickup::Taken::Label => String::new(),
@@ -2390,8 +2413,8 @@ fn script_pickup_reservations(level: &Level, weapons: &nf_formats::weapon::Weapo
             let key = nis.keys.get(st.first_key as usize).map(|k| k.pos).unwrap_or([0.0; 4]);
             let Some(mut pk) = nf_game::pickup::Pickup::create_placed(
                 [key[0], key[1], key[2]], [0.0; 3], p(0) as u16, p(1) as u16, p(2) as u16 as i16,
-                p(3) as u16, p(4) as u16, p(5), 0, obj_.hashcode,
-                nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, weapons) else { continue };
+                p(3) as u16, p(4) as u16, p(5) as u16, 0, obj_.hashcode,
+                nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, weapons, models) else { continue };
             pk.gone = true; // reserved: inert until the script spawns it
             pk.obj = Some((om, oi));
             slots.push(((hash, si as u8), out.len()));
@@ -2705,7 +2728,7 @@ impl Scene {
                         hoist_models.get(&obj_.hashcode).map(|&m| (obj_.hashcode,
                             nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, (om, oi)))
                     })?;
-                    let mut p2 = nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn, lifetime, model, bounds, &placed_weapons)?;
+                    let mut p2 = nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn as u16, lifetime, model, bounds, &placed_weapons, &hoist_models)?;
                     p2.obj = Some(obj);
                     Some(p2)
                 })
@@ -3438,7 +3461,7 @@ impl Scene {
                         pickup_models.get(&obj_.hashcode).map(|&m| (obj_.hashcode,
                             nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, (om, oi)))
                     })?;
-                    let mut p2 = nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn, lifetime, model, bounds, &weapons)?;
+                    let mut p2 = nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn as u16, lifetime, model, bounds, &weapons, &pickup_models)?;
                     p2.obj = Some(obj);
                     Some(p2)
                 })
