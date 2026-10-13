@@ -281,7 +281,11 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
             h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x - 5.0, by, 5.0, bh, [185.0, 0.0, 5.0, 56.0], (false, false), c);
             h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x + w, by, 5.0, bh, [191.0, 0.0, 5.0, 56.0], (false, false), c);
         };
-        if let Some(msg) = s.hud.msgs.front() {
+        if s.drones.hud_frozen {
+            // `HUD_UpdateStatusPane` case 0 polls `Text_UpdateMsg`, which returns 0 while the viewer's
+            // +0x2a HUD gate is off [M 0x1b11d8:16-18] — the pane never opens during a cut-scene, so
+            // nothing draws (fix-party-mission item 5: banners wait for the NIS to end).
+        } else if let Some(msg) = s.hud.msgs.front() {
             let a = (msg.time * 17.0).min(255.0) as u32;
             bar(&mut h, bw);
             // Centred on (256, 380): the pen starts half the text's width left of the centre (it started AT the
@@ -310,7 +314,9 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
             h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x - 5.0, by, 5.0, bh, [185.0, 0.0, 5.0, 56.0], (false, false), c);
             h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x + w, by, 5.0, bh, [191.0, 0.0, 5.0, 56.0], (false, false), c);
         };
-        if let Some(msg) = s.hud.objective_msgs.front() {
+        if s.drones.hud_frozen {
+            // Same closed pane [M 0x19c310 case 0]: an objective banner queued mid-NIS waits.
+        } else if let Some(msg) = s.hud.objective_msgs.front() {
             let a = (msg.time * 17.0).min(255.0) as u32;
             bar(&mut h, bw);
             if let Some(lang) = s.lang.as_ref() {
@@ -336,7 +342,9 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
             let y = by + (bh - hgt) / 2.0;
             h.quad(Anchor::Centre, 30, 0x0300_007a, 0, bx, y, bw, hgt, [198.0, 0.0, 1.0, 103.0], (false, false), gs(0x7f7f7f, 0x8d));
         };
-        if let Some(msg) = s.hud.mission_msgs.front() {
+        if s.drones.hud_frozen {
+            // Same closed pane [M 0x19c310 case 0]: the mission banner waits too.
+        } else if let Some(msg) = s.hud.mission_msgs.front() {
             let a = (msg.time * 17.0).min(255.0) as u32;
             bar(&mut h, bh);
             h.text(Anchor::Centre, &t.font, 29, &msg.text, SW / 2.0, 42.0 + by, true, gs(0x7d6d59, a), true);

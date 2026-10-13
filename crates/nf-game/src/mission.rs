@@ -111,8 +111,17 @@ pub enum Event {
     /// The banner finished: success → `ResetMap_LevelToLoad(LevelToEndTo)` [M 0x182c60 case 4],
     /// failure/death → the 0x40000042 menu, which the port renders as a level restart.
     LevelEnd { next: u32 },
-    Restart,
+    /// The 0x40000042 fail/death menu opened (`MenuManager_Create` [M 0x182c60:78] — the port's
+    /// `Mission.menu_open`): the view (180-fix-menus) draws Restart/Quit and answers through
+    /// `Drones::fail_choose_restart` / `fail_choose_quit` (crate::death). With
+    /// `Drones.auto_restart` set the port answers Restart immediately (the pre-menu behaviour).
+    MenuOpen,
 }
+
+/// The 0x40000042 fail/death menu's options (`C_GCPAUSE_Handler` 0x204408: control 6's value
+/// 1 = Restart (`state_quit_166 = 0`), 2 = Quit (`state_quit_166 = 1`) [M]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MenuChoice { Restart, Quit }
 
 /// The mission layer's globals: `InternalState` 0x30cb98, `MissionState` 0x30cb9c, `BaseMap`
 /// 0x30cba0, `ThisOrderNum` 0x30cba4, `FailLabel` 0x30cba8, `LevelToEndTo` 0x30cbac, `TimeOut`
@@ -127,6 +136,12 @@ pub struct Mission {
     pub timeout: f32,
     /// `record+0x14` per LEVELS entry, per objective.
     pub states: Vec<Vec<u32>>,
+    /// The 0x40000042 fail/death menu is up (`MenuManager_Create` [M 0x182c60:78]); the mission
+    /// waits in InternalState 5 for `Drones::fail_choose_*` (crate::death). Not saved — the game's
+    /// menu dies with the level change.
+    pub menu_open: bool,
+    /// The player's answer (`C_GCPAUSE_Handler` 0x204408 controls 6/0xc/0xd).
+    pub menu_choice: Option<MenuChoice>,
 }
 
 impl Default for Mission { fn default() -> Self { Self::new() } }
@@ -137,6 +152,8 @@ impl Mission {
         Mission {
             base_map: 0, order: 0, internal: 0, state: 0, fail_label: 0, to_end: 0, timeout: 0.0,
             states: LEVELS.iter().map(|l| vec![0; l.objectives.len()]).collect(),
+            menu_open: false,
+            menu_choice: None,
         }
     }
 
@@ -255,9 +272,11 @@ impl Mission {
                     out.push(Event::LevelEnd { next: self.to_end });
                     self.internal = 5;
                 } else {
-                    // [M 0x182c60:77-81: MenuManager_Create(0x40000042) — the fail/death menu;
-                    // the port restarts the level]
-                    out.push(Event::Restart);
+                    // [M 0x182c60:77-81: MenuManager_Create(-0x80000004, 0x40000042, 0, 0, 0x28, 0, 4)
+                    // + GS_PauseGame(1); InternalState = 5] — the fail/death menu opens and the
+                    // mission waits for the player's Restart / Quit (crate::death's fail_choose_*).
+                    self.menu_open = true;
+                    out.push(Event::MenuOpen);
                     self.internal = 5;
                 }
             }

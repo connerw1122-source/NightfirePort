@@ -829,6 +829,15 @@ impl Sim {
         }
         self.smoke.retain(|s| !s.dead());
         let (trigger, reload) = if self.disabled { input = Default::default(); (false, false) } else { (trigger, reload) };
+        // fix-death-restart: a dead Bond gets no input — `Player_Update` 0x193600 runs only the anim
+        // and `Player_HandleDeath` for state 2/3 [M 0x193600:317-319] — and the 0x40000042 menu
+        // pauses the player (`GS_PausePlayer(1,0)` [M 0x182c60:124]). The fire bit still reaches
+        // the death's skip gate while dying (action 25 [M 0x190bb0:30]); the menu eats it.
+        let menu_pause = self.drones.fail_menu_open();
+        self.drones.bond_fire = trigger && !menu_pause;
+        let (mut input, trigger, reload, use_key) = if self.drones.death.active || menu_pause {
+            (Default::default(), false, false, false)
+        } else { (input, trigger, reload, use_key) };
         let aiming = input.aiming;
         // Weapon switching (`Player_WeaponChange` 0x1a6f80): only when idle (not firing/reloading/holstering). The
         // switch request (`anim+0x63`) is set here; the holster/draw cycle runs in `run` (`Player_SetWeaponAnimObj`).
@@ -1527,7 +1536,16 @@ impl Sim {
         if let Some(n) = self.drones.inventory.carried.get_mut(cur_t) { *n = self.gun.spare as i16; }
         self.aiming = aiming;
         self.drones.bond_aiming = aiming;
-        self.drones.bond_weapon = self.gun.weapon;
+        // The class byte the AI's `ObjectIsArmed` 0x178768 reads: Bond obj+0xdc+0x62. `Player_WeaponSelect`
+        // 0x1a2cc0 copies the request (+0x63) into it at the switch's START (the `weapon_data[+0x64].+0xc4
+        // == 0` arm — +0x64 is 0x47 from InitWeapon 0x1a7ef8:137-139), so mid-holster the AI already reads
+        // the TARGET weapon: at the party Bond reads as the fists (unarmed, class 1) from the first tick,
+        // not as the carried P2K for the ~100 switch ticks (playtest item 1: the entrance bouncers shot).
+        self.drones.bond_weapon = if self.gun.switch_state != 0 && self.gun.switch_request != 0x47 {
+            self.gun.switch_request
+        } else {
+            self.gun.weapon
+        };
         // The use key (`Player_Activate` 0x1a5170): the doors its sphere — one unit ahead of the head — meets
         // open, swing or thud locked (docs/systems/world-objects.md "Doors"); the player object updates before
         // the control list's doors, so they see the activation this same tick.
@@ -1645,8 +1663,12 @@ impl Sim {
         self.hud.taken_seen = self.drones.taken.len();
         for m in new_msgs { self.hud.msgs.push_back(m); }
         self.lang = lang;
-        // `Text_UpdateMsg` 0x1b11d8: time −= 1 per frame, delete at ≤ 0. The bar closes (state 4) when
-        // the queue empties [M `HUD_UpdateStatusPane` 0x19c310].
+        // `Text_UpdateMsg` 0x1b11d8: time −= 1 per frame, delete at ≤ 0 — but the viewer's +0x2a HUD
+        // flag returns early while a cut-scene camera runs [M 0x1b11d8:16-18], freezing every message
+        // until the NIS ends (playtest item 5). The port: no countdown and no bar close while frozen.
+        if self.drones.hud_frozen {
+            return;
+        }
         for m in &mut self.hud.msgs { m.time -= 1.0; }
         self.hud.msgs.retain(|m| m.time > 0.0);
         if self.hud.msgs.is_empty() {
@@ -1697,7 +1719,7 @@ impl Sim {
                             self.hud.mission_msgs.push_back(Msg::new(t.to_string(), 300.0));
                         }
                     }
-                    nf_game::mission::Event::PlayerDead => {} // the red fade is render-side; the restart arrives below
+                    nf_game::mission::Event::PlayerDead => {} // the red fade is render-side; the menu arrives below
                     nf_game::mission::Event::LevelEnd { next } => {
                         // `ResetMap_LevelToLoad(LevelToEndTo)` [M 0x182c60:73]. The 0x0730xxxx codes
                         // are DRIVING.ELF levels the port cannot load — logged and skipped.
@@ -1707,10 +1729,11 @@ impl Sim {
                             eprintln!("[mission] complete → LevelToEndTo {next:08x} (driving level, not ported)");
                         }
                     }
-                    nf_game::mission::Event::Restart => {
-                        // The game opens the 0x40000042 menu (retry/quit) [M 0x182c60:78]; the port
-                        // restarts the level.
-                        self.drones.level_exit = Some(self.level);
+                    nf_game::mission::Event::MenuOpen => {
+                        // The 0x40000042 fail/death menu [M 0x182c60:78]. Until 180-fix-menus draws
+                        // it, the port's auto-restart answers Restart immediately (the flag keeps
+                        // the view free to answer instead via `fail_choose_restart`/`_quit`).
+                        if self.drones.auto_restart { self.drones.fail_choose_restart(); }
                     }
                 }
             }
@@ -2743,7 +2766,9 @@ impl Scene {
             let n_doors = nf_game::door::door_placements(&level.maps[m].placements).len();
             // The same construction the sim's `Drones::attach_level` runs, so the slot order matches
             // the matrix upload's `sss.list` order (deterministic: placement order, same filter).
-            let ss_list = nf_game::ss::SsList::create(&level.maps[m].placements, &level.path_blocks());
+            let ss_list = nf_game::ss::SsList::create(&level.maps[m].placements, &level.path_blocks(), |_p| 0);
+            // (hash 0 here: the render pass does not need the collision hash — it reads the placement
+            // object directly below; the sim's attach_level resolves the real one for set_dynamic.)
             for (si, ss) in ss_list.list.iter().enumerate() {
                 let p = &level.maps[m].placements[ss.placement];
                 let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }

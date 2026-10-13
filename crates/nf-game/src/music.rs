@@ -67,13 +67,22 @@ pub struct Music {
     temp2: i32,
     temp3: i32,
     temp4: bool,
+    /// `SfxNisMusicTrigger` 0x30c8b4 [M 0x115a68:18-20]: set when a sound with id 0x172 (the NIS music
+    /// stream) starts — the cut-scene's own music tells the level updater to jump to its NIS section.
+    pub nis_trigger: bool,
+    /// `MusicTemp1` 0x30c8ec as the CastleC/CastleD updaters use it (0 / 1 / 10 latches).
+    c_temp1: i32,
+    /// `MusicTemp2` 0x30c8f0 as CastleC uses it (the post-combat latch).
+    c_temp2: i32,
+    /// `MusicTemp4` 0x30c8f8 as CastleC uses it (the 0x6000073 scene's started latch).
+    c_temp4: bool,
 }
 
 impl Default for Music {
     fn default() -> Music {
         Music { table: Vec::new(), entry: None, events: [0; 64], out: Vec::new(), nis_playing: false, nis_quitten: 0, delay_timer: 0, last_jump: 0,
             last_request: -1, wait_for_end: false, under_attack: false, count: 0, count2: 0, bonus: 0, which_combat: 0, which_stealth: 0,
-            temp1: false, temp2: 0, temp3: 0, temp4: false }
+            temp1: false, temp2: 0, temp3: 0, temp4: false, nis_trigger: false, c_temp1: 0, c_temp2: 0, c_temp4: false }
     }
 }
 
@@ -144,6 +153,10 @@ impl Music {
         self.delay_timer = t;
         if e[6] != 0 { self.jump(m.on_death, true); self.out.push(Cmd::FadeDown { music: false }); self.wait_for_end = true; }
         if e[7] != 0 { self.jump(m.on_fail, true); self.out.push(Cmd::FadeDown { music: false }); self.wait_for_end = true; }
+        // The per-level updaters: CastleC/CastleD gate their own blocks (the NIS/level-end jumps run even
+        // while `wait_for_end` holds [M 0x113188:5 / 0x1133b8:8-21]), so they sit outside the gate.
+        if m.level == 0x0700_0007 { self.castle_c(&e, &m); }
+        if m.level == 0x0700_0008 { self.castle_d(&e, &m); }
         if !self.wait_for_end {
             if m.level == 0x0700_0005 { self.castle_a(&e, &m); }
             // `UpdateMFX_01CastleB` 0x113060 (07000006): the NIS-trigger half (DAT_002d3524 == 0x6000071 → the
@@ -179,6 +192,56 @@ impl Music {
             self.wait_for_end = true;
         }
         if !self.wait_for_end && e[4] != 0 { self.jump(9, false); self.wait_for_end = true; }
+    }
+
+    /// The level-end block shared by CastleC/CastleD (0x113188:5-33 / 0x1133b8:22-44 — CastleA's twin):
+    /// event 3 (a `Trigger_Activate` end trigger, 0x1b2318) or 8 (mission success, 0x182c60) jumps the
+    /// record's +0x14/+0x18 marker — the +0x24 combat-set scan picks which — instantly, fades down and
+    /// waits for the end.
+    fn castle_end_block(&mut self, e: &[u32; 64], m: &MapMusic) {
+        if e[3] == 0 && e[8] == 0 { return; }
+        let s = if m.combat.contains(&self.last_jump) { m.end_combat } else { m.end_calm };
+        self.jump(s, true);
+        self.out.push(Cmd::FadeDown { music: false });
+        self.wait_for_end = true;
+    }
+
+    /// `UpdateMFX_01CastleC` (0x113188, 07000007) [M]. EventList slots: 3 = a level-end trigger, 8 = mission
+    /// success, 11 = Music_Event(0xB, script) at NIS start, 12 = Music_Event(0xC, script) at NIS end,
+    /// 13 = Music_Event(0xD). The NIS scripts 0x6000072 (the Drake reveal) and 0x6000073 (the hall walk-in)
+    /// jump their own section pairs (2→5, 7→0xa); the cut-scene music sound (0x172) sets `nis_trigger`
+    /// [M 0x115a68] which completes the second jump of the pair.
+    fn castle_c(&mut self, e: &[u32; 64], m: &MapMusic) {
+        self.castle_end_block(e, m);
+        if self.wait_for_end || self.c_temp2 != 0 { return; }
+        if self.c_temp1 == 0 {
+            if e[11] == 0x0600_0072 { self.jump(2, false); }
+            if e[12] == 0x0600_0072 || self.nis_trigger {
+                self.jump(5, false);
+                self.nis_trigger = false;
+                self.c_temp1 = 1;
+            }
+        }
+        if e[11] == 0x0600_0073 { self.jump(7, false); self.c_temp4 = true; }
+        if self.c_temp4 && (e[12] == 0x0600_0073 || self.nis_trigger) {
+            self.jump(0xa, false);
+            self.c_temp1 = 10;
+            self.nis_trigger = false;
+        }
+        if self.c_temp1 == 10 && self.under_attack { self.jump(0xe, false); self.c_temp2 = 1; }
+        if e[13] != 0 { self.jump(0xc, false); }
+    }
+
+    /// `UpdateMFX_01CastleD` (0x1133b8, 07000008) [M]. The intro NIS 0x6000077: start (event 11, only while
+    /// `MusicLastJump == 0`) → section 2 instantly; end (event 12) → section 4 instantly. Then the level-end
+    /// block; while not waiting: event 13 (once) → section 6, and the NIS music sound → section 8 instantly.
+    fn castle_d(&mut self, e: &[u32; 64], m: &MapMusic) {
+        if self.last_jump == 0 && e[11] == 0x0600_0077 { self.jump(2, true); }
+        if e[12] == 0x0600_0077 { self.jump(4, true); }
+        self.castle_end_block(e, m);
+        if self.wait_for_end { return; }
+        if e[13] != 0 && self.c_temp1 == 0 { self.jump(6, false); self.c_temp1 = 1; }
+        if self.nis_trigger { self.jump(8, true); self.nis_trigger = false; }
     }
 }
 
