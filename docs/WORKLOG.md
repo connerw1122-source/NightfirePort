@@ -6427,3 +6427,56 @@ test through the real input path, show the failure pre-fix.
   `fix_finale_live.rs` (the sister re-baseline), `docs/GAPS.md` (G-025's one-line correction).
 - Full suite (post-merge, NF_ISO): **109 test binaries green; only the 3 allowed `disc_golden` failures**
   (the slim ISO). The report is `docs/reports/fix-spawner-p7.md`.
+
+## fix-party-mission — the 07000007 party mission and the 07000008 mission flow (playtest 2026-10-12, items 1–7)
+
+Branch `s/fix-party-mission` (from origin/master + the 2026-10-12 merges). All seven playtest items,
+each fail-first through the real input path on the NF_ISO (`fix_party_mission_live.rs`, 15 tests):
+
+- **Item 1 (the entrance bouncers shoot unarmed Bond)**: the game's gate is `CivilianGuard` UPDATE
+  0x1603a8 case 3 attacking only when `NDrone2_NearArmedPerson` 0x1787c8 (prop 0x3c + Bond in sight
+  + `ObjectIsArmed` 0x178768 on Bond's class byte) — and Bond at the party start holds the FISTS
+  (InitWeapon 0x1a7ef8 case 0x7000007 writes +0x63 = 1; WeaponSelect 0x1a2cc0 copies the request
+  into the class byte at the switch's start), so the pre-hall phase never arms them; they BondTalk.
+- **Items 2+3 (punch a guard → instant fail; shoot a guest → fail; punched guests T-posed)**:
+  `NDrone2_PunchImpact` 0x145f28:45-56 (an unarmed 07000007 punch → SetMissionFailReason(5) → "Cover
+  Lost" ch 99) and `DroneFunc_OnInitDeath` 0x145bd0 (a killed prop-0x54 guest → reason 3 → ch 0x60)
+  through the real bullet/punch paths; the T-pose was the punch path stamping a dead impact on the
+  shared anim state (the others' scripts dropped).
+- **Item 4 (mission music over cut-scenes)**: the per-level updaters (`UpdateMFX_01CastleC`
+  0x113188 / `CastleD` 0x1133b8) jump sections on the NIS 0xB/0xC script-hash events (port:
+  `Music::castle_c/castle_d`), `UpdateMusicalEvents` moved into the sim's tick, mission fail/success
+  → Music_Event(7/8) 0x182c60.
+- **Item 5 (banners)**: the text binding is fix-mission's 0x1827d8 port (the user's build predates
+  it; the probe pins the bound text on 07/01/02/08). NEW: the NIS hold-off — `hud_frozen` (viewer
+  +0x2a [M Camera_Enable 0x1b9920]) set by `Script_CameraStart` 0x1d9140:41-43, cleared at
+  `Script_KillStream` 0x1d9860:71; `Text_UpdateMsg` 0x1b11d8:16-18 returns while on (no timers) and
+  `HUD_UpdateStatusPane` 0x19c310 case 0 never opens the panes — the 07000001 banner survives its
+  2120-tick intro NIS ("no banner came up": it used to expire at tick 300).
+- **Item 6 (guards after the Kimiko scene)**: the game teleports NO drone at NIS end — only Bond to
+  the event-6 marker (Script_Free 0x1da880:44-47; 0x06000073's marker key 498 = (91.52, 43.85,
+  −31.09) yaw 180° [D]) — and re-shows everyone where they stood (`Drone_EnableAll(1)` 0x1383e8:14
+  skips WaitSwitch; `NDrone2_Enable(1)` 0x149dd0:16-28 refuses corpses and restarts the anim clock
+  at script time 1). The port's re-enable now does the clock restart (drone 5 anim.time 40 → 0
+  through the real path; the fail-first showed the mid-stride resume) and skips corpses. The
+  hand-back trigger's ch 0x48 removes the scene's guests via their second_channel/alt_state 0xb4
+  DeleteMe [M NDrone2_PreDroneControl] — game behavior, pinned.
+- **Item 7 (the 07000008 safe chain)**: the user's three symptoms are one sealed chain. The
+  GuardRoom fusebox #219 (0x31, script 0x060008AD) is INVISIBLE in the game's own terms (obj+0xD8=0
+  [M 001b0448:33-35]) — its visible mesh is its own ScriptPlayer's entity (FuseBox_Create 0x1b0448
+  SP_Creates it, mode 0x40): the port now pushes that player at attach (AFTER `Scripts::new` — the
+  earlier position was wiped by the rebuild; the fail-first the sandbox reset lost, re-shown) and
+  two E presses write ch 137 → the doorway bolt SS opens. The Lazer Watch 0x4E/0x4F burns the safe
+  bolts #207/#208 (Lock_Update 0x1ae3d8 case 0 record word 1: contacts with BU+0x44 = 0x4E/0x4F;
+  Lock_Unlock writes switch_channels[record+8] = 134/135 [:194-195]) — the port's bullet pass adds
+  the segment-vs-sphere lock contact (the watch bullets already carried the id) → mux #278 ANDs
+  into ch 136 → the safe door SS #205 opens → the briefcase writes ch 0x4A (Pickup_Handler
+  0x18e650:330-333) and the rocket launcher (0x2C) is taken → the gondola ride starts. The
+  SimpleScripts join set_dynamic with their placement glist (`Ss.hash`) so the doors are solid.
+
+Shared files touched (all small, additive): `drone.rs` (the DroneEnable re-enable body, the
+`hud_frozen` field + Camera hook, the fusebox SP push, the SS set_dynamic line, the laser-burn
+contact + `segment_hits_sphere`), `scene.rs` (nf-view: the hud_tick freeze + the three pane gates in
+`hud.rs` + the SsList::create hash arg). The sandbox reset mid-session (unpushed work lost:
+the SP-move fix + the chain test — both re-applied and re-verified; the fail-firsts had been
+demonstrated live before the reset and the chain test re-run green on the restored tree).
