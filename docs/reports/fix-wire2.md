@@ -74,9 +74,19 @@ I'm supposed to be in. So likely need to spawn in there crouched."
      (cc = CROUCH_ROOT_HEIGHT) inside the tunnel (crawl headroom < 1.7 verified), the Laser
      selected, still crouched and inside after 60 ticks.
 - `tests/wire_live.rs` re-driven (the collision grab + the full crossing, E-inert) — green.
-- Full suite: **601 passed, 3 failed — the 3 `disc_golden` failures the slim ISO allows** (slim
-  ISO, `cargo test --offline --release -j2 --no-fail-fast -p nf-game -p nf-formats -p nf-audio
-  -p nf-view -- --test-threads=1`).
+- Full suite (origin/master merged in — walkreal-b2 / render-artifacts / npc-doors2 / wallhug-freeze):
+  605 + 374 passed, 3 failed — the 3 `disc_golden` failures the slim ISO allows (`cargo test
+  --offline --release -j2 --no-fail-fast -p nf-game -p nf-formats -p nf-audio -p nf-view --
+  --test-threads=1`). All fix-wire2 tests green on the merge.
+- **The merge carried a parallel worker's wire change** (npc-doors2/walkreal-b2): the walk-in
+  auto-grab was REMOVED on master (their evidence: `Collide_PickObj`'s world-sphere branch runs
+  only for HITTEST versions 0x200/0x201, and a wire has no glist triangles for the other versions —
+  so the walking pick cannot hit a wire at all), replaced by a cel-gated use-key grab ([S] stand-in
+  for the jump-grab, fixing 07000002's bunker swallow). The merge keeps BOTH: their cel-gated E
+  affordance (needs the capsule inside the sphere) and this task's decompile-faithful jump grab
+  (icon ctx 3 + nearest wire within 1000 [M 0x1916b0:118-147]). At the user's ledge spot the
+  capsule is outside the sphere, so E still does nothing there — the jump grabs.
+- Merge fixup: nf-extract's `Player` literal gained the new `capsule` field (standing stance).
 
 ## Shared-file hooks (small, additive)
 
@@ -84,7 +94,8 @@ I'm supposed to be in. So likely need to spawn in there crouched."
   arm in `physics_tick`'s jump branch, `physics_tick` grew the `ctx` parameter (all five callers are
   in the same file), the mode-6 gate condition in `wire_tick`.
 - `crates/nf-view/src/scene.rs`: the `icons` field + the load-time `wire::icons` call, the per-tick
-  icon-context write, the grab-scan comment correction.
+  icon-context write, the grab-scan comment correction; the merge kept master's `wire_cels` +
+  use-key grab alongside.
 - `docs/WORKLOG.md`: appended only.
 
 ## What's left
