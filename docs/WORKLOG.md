@@ -6969,3 +6969,11 @@ Stage Summary:
 
 Stage Summary:
 - Branch s/fix-wire2 pushed. The cable's real grab (jump + icon ctx 3) is in; E correctly does nothing (game-faithful, the record fixed); the move starts on the strafe press during the idle; the fusebox-07000014 scenario starts crouched in the vent with the Laser. Live checks (icon scope radius, the jump grab from the ground, 2 --bond render spots) listed in the report.
+
+---
+Task ID: 048-walkreal-c
+Agent: NightfirePort worker (walkreal-c session)
+Task: walkreal-c — walk the final missions (07000015, 07000016, 0700001b, 0700004a) end to end with the player's own movement input, no teleports (branch s/walkreal-c)
+
+Work Log:
+- Setup reused (repo + game files + queue worktree intact); branch s/walkreal-c created from origin/master (03ad7f5).
