@@ -316,3 +316,18 @@ frame, 1 = drawn last frame, 0 = not drawn for 2+ frames; the keep arm of the cl
 with a non-zero value. (Other object classes use the same offset as a float timer — bullets 0x12d890,
 cars 0x130060 — a per-class field, not a global.) The port's per-drone `drawn` visibility flag stands in,
 snapshotted at control-walk start so the scan reads last frame's value like the game's.
+
+### Correction from real play (main agent + the user, 2026-10-12): the swap is instant
+
+`tests/traces/05-gate-swap.trace` (07000005 played from the start, the gate guards left alive, god mode). Frame by frame:
+- 173757: ch 0x22 → the two gate guards spawn at (28.3, 44.9) and (32.1, 44.9) (state 4); the two placed guards behind
+  them at (32.4, 49.9) and (27.6, 49.7) are disabled (state 1).
+- 174328: the player steps on the ledge plate #301 → ch 0x43 (the script that plays is the wall-shimmy, not a cut-scene).
+- **174329 (the next frame): the spawned pair is removed AND the placed pair activates (state 1 → 4) in the same frame.**
+  The gate is never empty.
+
+The "Live result" table above (channels written by hand over PINE) saw `NPCGlobals` = 0 and a delayed latch; in real play
+there is no such delay, so treat that delay as an artefact of the hand-written channels. **What the port must do:** remove
+the spawned pair and enable the placed pair on the same tick. (Before this, the port removed the pair on the touch
+tick, which is right, but kept the placed pair hidden until the shimmy script ended, about 1,400 ticks, so the gate sat
+empty: the user's `gate05` report.)

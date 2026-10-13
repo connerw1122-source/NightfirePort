@@ -285,3 +285,111 @@ read and write traced separately, 4-6 s each. Instruction addresses are the acce
 
 Not yet run: the fire/switch block 0x92C-0x960 and the other regen slots under play (walk-switch-shoot needs
 someone at the controls), and the aim-mode-on pass for +0x128..+0x131 writers.
+
+### Live census of the fire/switch block, under play (main agent + the user, 2026-10-12)
+
+07000005, the user walking, switching weapons and gadgets, aiming and firing (god mode); BL = 0x016cf0f0; range
+BL+0x92C..+0x960 (0x016cfa1c..0x016cfa50). The census covers the whole range, so the rows above still assign each
+accessor to its field.
+
+**Writes** (30 s, 4000 hits, 17 instructions): every writer is one the rows above cite by address. `Player_WeaponFiring` 0x1a5460, `Player_CollisionHandler` 0x1949a8, `Player_Update` 0x193600, `Player_SetWeaponAnimObj` 0x1a2e38, `HUD_UpdateHealthPane` 0x19b9c8 (+0x948), `HUD_UpdateAmmoPane` (+0x95E, the switch timer) and `Player_WeaponChange` 0x1a6f80. **No missed writer.**
+
+```
+4000 hits in 25.8s, 17 distinct instructions
+  0019c024  HUD_UpdateHealthPane+0x65c                       389
+  00193930  Player_Update+0x330                              389
+  001a2f28  Player_SetWeaponAnimObj+0xf0                     389
+  001a54c8  Player_WeaponFiring+0x68                         389
+  001a61d0  Player_WeaponFiring+0xd70                        389
+  001949e4  Player_CollisionHandler+0x3c                     389
+  00194b10  Player_CollisionHandler+0x168                    388
+  00194b28  Player_CollisionHandler+0x180                    384
+  0019ac14  HUD_UpdateAmmoPane+0x424                         246
+  001a2f10  Player_SetWeaponAnimObj+0xd8                     212
+  001a2f18  Player_SetWeaponAnimObj+0xe0                     212
+  001a2ef8  Player_SetWeaponAnimObj+0xc0                     116
+  001a2eec  Player_SetWeaponAnimObj+0xb4                     61
+  0019ac00  HUD_UpdateAmmoPane+0x410                         40
+  001a3904  Player_SetWeaponAnimObj+0xacc                    3
+  001a7234  Player_WeaponChange+0x2b4                        3
+  001a7118  Player_WeaponChange+0x198                        1
+```
+
+**Reads** (8 s, 2277 hits, 73 instructions). `Check_AutoAim+0x44` dominates (442: it loops over every drone, reading the player slot +0x94E); many HUD panes read +0x94E once a frame. Reconciling every reader with the rows is open for the next field pass.
+
+```
+2277 hits in 9.0s, 73 distinct instructions
+  001a743c  Check_AutoAim+0x44                               442
+  0019c46c  HUD_UpdateStatusPane+0x15c                       104
+  00193630  Player_Update+0x30                               26
+  0019e6fc  HUD_UpdateCrossHair+0x2c                         26
+  0019e98c  HUD_UpdateCrossHair+0x2bc                        26
+  0019e9b8  HUD_UpdateCrossHair+0x2e8                        26
+  0019ea00  HUD_MonitorNightSight+0x28                       26
+  0019ea14  HUD_MonitorNightSight+0x3c                       26
+  0019aa8c  HUD_UpdateAmmoPane+0x29c                         26
+  0019ac04  HUD_UpdateAmmoPane+0x414                         26
+  0019acfc  HUD_UpdateAmmoPane+0x50c                         26
+  0019ae38  HUD_UpdateAmmoPane+0x648                         26
+  0019bf08  HUD_UpdateHealthPane+0x540                       26
+  0019c0b4  HUD_UpdateHealthPane+0x6ec                       26
+  0019d7a4  HUD_UpdateLensFlarePane+0x34                     26
+  0019a6c0  HUD_UpdateBloodPane+0x18                         26
+  0019cf0c  HUD_UpdateOICWPane+0x14                          26
+  0019369c  Player_Update+0x9c                               26
+  001936c0  Player_Update+0xc0                               26
+  00193828  Player_Update+0x228                              26
+  00193840  Player_Update+0x240                              26
+  00193850  Player_Update+0x250                              26
+  00193854  Player_Update+0x254                              26
+  0019391c  Player_Update+0x31c                              26
+  00193928  Player_Update+0x328                              26
+  00191e58  Player_Move+0x88                                 26
+  00191e64  Player_Move+0x94                                 26
+  00191e78  Player_Move+0xa8                                 26
+  00191eec  Player_Move+0x11c                                26
+  001916e0  Player_HandleJump+0x30                           26
+  00191718  Player_HandleJump+0x68                           26
+  0019172c  Player_HandleJump+0x7c                           26
+  00191780  Player_HandleJump+0xd0                           26
+  001a2344  Player_Aiming+0x61c                              26
+  00193d40  Player_Update+0x740                              26
+  00194e30  Player_Collision+0x40                            26
+  00194fd0  Player_Collision+0x1e0                           26
+  00193e60  Player_Update+0x860                              26
+  00193e6c  Player_Update+0x86c                              26
+  001a3f60  Player_WeaponRecoil+0x178                        26
+  001a2eb0  Player_SetWeaponAnimObj+0x78                     26
+  001a2eb8  Player_SetWeaponAnimObj+0x80                     26
+  001a2524  Player_Weapon+0x5c                               26
+  001a7cc0  Player_AutoAim+0x28                              26
+  001a4ac8  Player_GetAimingPoint+0x30                       26
+  001a4ad0  Player_GetAimingPoint+0x38                       26
+  001a5eac  Player_WeaponFiring+0xa4c                        26
+  001a5ebc  Player_WeaponFiring+0xa5c                        26
+  001a5fe4  Player_WeaponFiring+0xb84                        25
+  001a61e4  Player_WeaponFiring+0xd84                        25
+  001a634c  Player_WeaponFiring+0xeec                        25
+  00194078  Player_Update+0xa78                              25
+  00194118  Player_Update+0xb18                              25
+  00194138  Player_Update+0xb38                              25
+  001949e8  Player_CollisionHandler+0x40                     25
+  00194b04  Player_CollisionHandler+0x15c                    25
+  00194b64  Player_CollisionHandler+0x1bc                    25
+  00194d00  Player_CollisionHandler+0x358                    25
+  00194d40  Player_CollisionHandler+0x398                    25
+  00194d48  Player_CollisionHandler+0x3a0                    25
+  001960f4  Player_SetHealth+0x3c                            25
+  00194d70  Player_CollisionHandler+0x3c8                    25
+  00194d84  Player_CollisionHandler+0x3dc                    25
+  00194d88  Player_CollisionHandler+0x3e0                    25
+  0018f60c  Player_PositionCamera+0x34                       25
+  0018f620  Player_PositionCamera+0x48                       25
+  0018f6c0  Player_PositionCamera+0xe8                       25
+  001a2ee4  Player_SetWeaponAnimObj+0xac                     10
+  001a2efc  Player_SetWeaponAnimObj+0xc4                     10
+  001a2f00  Player_SetWeaponAnimObj+0xc8                     10
+  001a2f58  Player_SetWeaponAnimObj+0x120                    10
+  001a2fcc  Player_SetWeaponAnimObj+0x194                    10
+  001a2ffc  Player_SetWeaponAnimObj+0x1c4                    10
+```
