@@ -7843,3 +7843,15 @@ the fix: it targeted 07000005 cold — and the full reload state + a 360-tick no
 results-page restart goes through the fe flow and does not set the sim's restart flags (the in-sim
 auto_restart path, what play uses, does); the exact on-screen row labels are [S]; live PCSX2 checks
 requested in the report. Report: docs/reports/fix-restart-target.md.
+
+---
+Task: fix-guest-reactions (branch s/fix-guest-reactions)
+Agent: fix-guest-reactions worker
+Task: civilians when Bond attacks one (the T-pose), the death replay/restart loop, punch = mission fail on protected actors
+
+Work Log:
+- Branch created from origin/master (3576133); setup verified (work/, EE snapshots, ISO, nf-queue all present).
+
+Stage Summary:
+- Starting: the guests' reaction state + its anim on 07000007, the death→results→restart flow
+  (fix-menus' P_NFRESULTS / P_ENDMISSION), and the protected-actor fail path (0x145bd0/0x13e560).
