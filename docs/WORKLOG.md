@@ -7135,3 +7135,13 @@ Stage Summary:
 - Branch s/walkreal-c pushed (98c47b3). The four walkreal tests exist (walkreal_07000015/16/1b/4a _live.rs) with the real-input walker (the common/walker.rs additive hook: the `skip_cutscenes` flag, the pitched walk-in door E, the same-floor door filter). Each test is a documented gap-ignore at its reached blocker, with the evidence trail in the comments and the probe (walkreal_probe_c.rs: the level dumps + the floor grids + the 4a spawn-support/ride-scrape logs + the 16 door fields).
 - 07000015: the silo crossing WORKS with real input — the z≈−5 lane threads the silo hole, doors [0]/[48]/[36] open on the walker's E; the lattice threading to the USE exit #445 was mid-verification at the session end. 07000016: the corridor stalls at door[7] — the E reaches and Doors::activate passes its guards but the leaf never moves (open root-cause question, live check requested). 0700001b: the hub is a pit ring (the straight line falls to −15.4); the zero-G sister (substate never 8/9 on the floor route) PASSES; the nav crossing + the Drake defeat are the parked rest. 0700004a: the spawn IS the boarding (the probe: grounded on the platform from t30); the ride leaves the rider parked at −54.14 at t1620 while the platform continues (the game's lift passes the −52 leaves closed — ch 0x40 opens them at t1610, the platform passed at t1560 [D keys]); the door-solid vs rider interaction is the fix.
 - Suite: the walkreal set + the probe + the 07000012 sister all green (the gap-ignores compile, nothing red). The full four-crate suite did NOT run in this sandbox (time) — run before the merge.
+
+Task ID: 054-research-multiplayer
+Agent: NightfirePort worker (research-multiplayer session)
+Task: research-multiplayer — an atlas of multiplayer and the bots (branch s/research-multiplayer)
+
+Work Log:
+- Setup reused (repo + game files + queue worktree intact); branch s/research-multiplayer created from origin/master (30b98a5). This entry started.
+
+Stage Summary:
+- (in progress)
