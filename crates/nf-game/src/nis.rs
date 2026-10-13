@@ -27,6 +27,16 @@ pub enum Obj {
     /// A cut-scene camera (`CAM_INFO`, `Script_CameraStart`): its world matrix (rows: right, up, forward, position)
     /// and vertical field of view in radians (key scale × `+0x114` = 4/3, `Camera_CalcViewAngles`).
     Camera { matrix: Mat4, fov: f32, src: (u32, u8) },
+    /// A script sprite (`Script_SpriteStart` 0x1d9300 → `Sprite_CreateLink(4)`): the sprite's hash
+    /// (`hashtable_set_sprite`) and its screen rect in the HUD's 512×448 space — the game scales the
+    /// 640×480 script coords by 0.8 (x/w) and 0.9333 (y/h) [M 0x1d9300:31-36] — plus the flag bits it
+    /// set (script bit 2 → +0x22 |= 0x40, bit 4 → |= 0x80, always |= 0x100) and draw layer +0x38 = 2.
+    Sprite { hash: u32, rect: [f32; 4], flags: u16, src: (u32, u8) },
+    /// A script light (`Script_LightStart` 0x1db1b0 → `Light_Create` 0x1cc3d8 at the origin vector
+    /// 0x2d6200 [L ACTION.ELF: (0,0,0)]): the kind byte b2 (the call's `b2 == 1` argument) and the
+    /// stream's parent pair (b0/b1 → +0x25). Deleted by `Script_KillStream` case 6 unless the script
+    /// keeps its objects (flag 0x10) [M 0x1d9860:104-113].
+    Light { kind: u8, src: (u32, u8) },
 }
 
 /// A request the script made this tick for the caller to carry out.
@@ -67,6 +77,15 @@ pub enum Request {
     /// ScriptPlayer's placement (`player`, the fusebox's), the object index in `Scripts::objects`
     /// and the group (param 0; `FuseBox_Register` 0x1b0970 guards group < 2).
     WireRegister { player: usize, obj: usize, group: u16 },
+    /// Op 0x13: `Script_FadeStart` 0x1db3d0 → `Camera_SetFade(-f, 4, 0xff, 0)` (0x1bbdd8) — a black
+    /// overlay (colour 0x000000ff: RGB 0, alpha target 0xff) whose alpha ramps |1/f| per tick on the
+    /// viewer; f < 0 starts at alpha 1 and fades in, f > 0 starts at 0 and fades out. Suppressed
+    /// while `SCRIPTINFO+0xAB5` bit 0 (the skip latch) is set [M 0x1db3d0:10-12].
+    Fade { ticks: f32 },
+    /// Op 0x1e: `Script_TextStart` 0x1db2b8 → `Text_AddMsg(-1, 0, 4, Txt_BindLabel(label, 0), 0,
+    /// time)` — a HUD message from the text bank shown for `time` frames [M 0x1db2b8:9-12]. The raw
+    /// label travels (the Lang table lives above nf-game); nf-view binds it like the pickup messages.
+    Text { label: u32, time: u16 },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -87,6 +106,9 @@ struct Stream {
     parent: i8,
     /// `Script_CreateEntity`'s object type of the current entity (reuse check).
     obj_type: u8,
+    /// Op 0x1b (`Script_SubScriptStart` 0x1db050): the running sub-script's index in the owning
+    /// `Player`'s `subs` (`Script_Load`'s SCRIPTINFO at stream+0x10); `None` = none yet.
+    sub: Option<usize>,
 }
 
 /// A running script (`SCRIPTINFO`).
@@ -205,7 +227,7 @@ impl Script {
     /// port's Anim objects carry a frame number, no datum). Later presses only clear `play` bit 4 [M :86-88].
     /// The end-of-script effects still apply: the fade's catch-up fast-forwards the script through every
     /// remaining command in `Script_Update` (below), so events/channels/`LoadLevel` all run.
-    pub fn ffwd(&mut self, objs: &mut Objects, out: &mut Vec<Request>) {
+    pub fn ffwd(&mut self, subs: &mut Vec<Option<Script>>, objs: &mut Objects, out: &mut Vec<Request>) {
         if self.fade_flags & 0x10 == 0 || self.fade_flags & 1 != 0 {
             // No camera (or a skip already armed): the game only clears play bit 4 (0x1dac78:86-88).
             self.play &= !0x10;
@@ -213,7 +235,7 @@ impl Script {
         }
         if self.flags & 0x20 != 0 {
             // Event 0x10 (no cameras): kill the camera stream(s) and return — no fast-forward [M :32-47].
-            for i in 0..self.streams.len() { if self.streams[i].kind == 4 { self.kill(i, objs); } }
+            for i in 0..self.streams.len() { if self.streams[i].kind == 4 { self.kill(i, subs, objs); } }
             return;
         }
         let remaining = self.nis.length as f32 - self.clock;
@@ -230,7 +252,7 @@ impl Script {
     /// do-while [M 0x1da998:19-100] loops while the skip fade is past its length (`fade_clock > fade_len`) and
     /// the script is still playing — that IS the skip's fast-forward: the remaining script (streams, commands,
     /// events, end) runs to completion inside this one call, then the final block fades back in [M :101-110].
-    pub fn update(&mut self, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>) {
+    pub fn update(&mut self, subs: &mut Vec<Option<Script>>, lib: &HashMap<u32, Arc<Nis>>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>) {
         // Flush Event 0xB's deferred weapon writes before any early-return: even if the script has since stopped
         // or is waiting on a delay, the Anim object's weapon byte must reflect the event the script already fired.
         if !self.pending_weapon.is_empty() {
@@ -250,7 +272,7 @@ impl Script {
         // finishes within `length` iterations because op 6 fires at clock >= length [M Script_Run :43-49]).
         let max_passes = 2 * self.nis.length as usize + 256;
         for _ in 0..max_passes {
-            for i in 0..self.streams.len() { self.run(i, objs, ch, w, frame, out); }
+            for i in 0..self.streams.len() { self.run(i, subs, lib, objs, ch, w, frame, out); }
             out.append(&mut self.pending);
             self.clock += 1.0;
             for s in &mut self.streams { s.clock += 1.0; }
@@ -262,7 +284,10 @@ impl Script {
                 let h = self.nis.hashcode;
                 if Script::is_death_nis(h) { break; }
                 let no_fade = h == 0x0600_04fa || h == 0x0600_08c8 || h == if h < 0x0600_04fb { 0x0600_0080 } else { 0x0600_0994 };
-                let _ = no_fade; // the SetFade call is view-side; the branch only gates it in the game
+                // The game's own fade-out in the last 20 ticks of a camera script [M :53-71]:
+                // `Camera_SetFade(40, 4, 0xff, 0)` — 40 ticks to black — unless the hash is in the
+                // no-fade set. It re-arms every tick; the drain's in-progress guard debounces.
+                if !no_fade { out.push(Request::Fade { ticks: 40.0 }); }
             }
             // The fade bookkeeping [M :84-98]: the skip's fade advances one frame per tick; past its length it
             // sets the freeze flag (bit 5).
@@ -273,9 +298,11 @@ impl Script {
             if !self.playing() { break; }                          // fade past its length + script finished
             // else: loop again — the game's fast-forward.
         }
-        // Final block [M :101-110]: once the fade is past its length and the script stopped, fade back in
-        // (`Camera_SetFade(−9, 0, 0xff, 1)`, view-side), clear the fade clock, play bit 4 and the skip latch.
+        // Final block [M :101-110]: once the fade is past its length and the script stopped, fade back in on
+        // the GAMEPLAY viewer — `Camera_SetFade(0xc1b00000, 0, 0xff, 1)` [L 0xc1b00000 = -22.0: 22 ticks from
+        // black], clear the fade clock, play bit 4 and the skip latch.
         if self.fade_clock > self.fade_len as f32 && !self.playing() {
+            out.push(Request::Fade { ticks: -22.0 });
             self.fade_clock = 0.0;
             self.play &= !0x10;
             self.fade_flags &= !1;
@@ -283,14 +310,15 @@ impl Script {
     }
 
     /// `Script_Run` (0x1d8548).
-    fn run(&mut self, i: usize, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>) {
+    #[allow(clippy::too_many_arguments)]
+    fn run(&mut self, i: usize, subs: &mut Vec<Option<Script>>, lib: &HashMap<u32, Arc<Nis>>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>) {
         let len = self.nis.length as f32;
         let nis = self.nis.clone();
         let cmds = &nis.streams[i].commands;
         // A looping stream whose end sits before the script length would spin; the data never does it.
         for _ in 0..64 {
             if self.streams[i].pc.is_none() { return; }
-            if self.streams[i].clock <= len { self.interp(i, objs, w, out); }
+            if self.streams[i].clock <= len { self.interp(i, subs, lib, objs, ch, w, frame, out); }
             loop {
                 let s = &self.streams[i];
                 let Some(pc) = s.pc else { return };
@@ -325,20 +353,20 @@ impl Script {
                         let (has_parent, parent, spline, obj_type, n) = (head[0], head[1], head[2], head[3], head[4] as usize);
                         let params: Vec<u32> = (0..n).filter_map(|k| rd(9 + 4 * k, 4)).collect();
                         next = pc + 1 + 9 + 4 * n + 1;
-                        self.entity_start(i, hash, has_parent != 0, parent as i8, spline != 0, obj_type, params, objs, w);
+                        self.entity_start(i, subs, lib, hash, has_parent != 0, parent as i8, spline != 0, obj_type, params, objs, ch, w, frame, out);
                     }
                     9 => {
                         // `Script_EntityEnd` (0x1dafe8).
                         let s = &self.streams[i];
-                        if s.obj.is_some() && (s.clock < len || self.play & 8 == 0 || s.tag != 1) { self.kill(i, objs); }
+                        if s.obj.is_some() && (s.clock < len || self.play & 8 == 0 || s.tag != 1) { self.kill(i, subs, objs); }
                         next = pc + 2;
                     }
                     0x0a => {
                         let (Some(script), Some(skin), Some(start)) = (rd(0, 4), rd(4, 4), rd(8, 4)) else { self.streams[i].pc = None; return };
-                        self.anim_start(i, script, skin, start, objs, w);
+                        self.anim_start(i, subs, script, skin, start, objs, w);
                         next = pc + 14;
                     }
-                    0x0c => { self.kill(i, objs); next = pc + 2; }
+                    0x0c => { self.kill(i, subs, objs); next = pc + 2; }
                     0x12 => {
                         let (Some(&n), Some(&kind)) = (cmds.get(pc + 1), cmds.get(pc + 2)) else { self.streams[i].pc = None; return };
                         let p: Vec<u32> = (0..n as usize).filter_map(|k| rd(2 + 4 * k, 4)).collect();
@@ -379,33 +407,114 @@ impl Script {
                             s.last_key = (b as u16).wrapping_sub(1);
                             s.flags = if sp != 0 { 2 } else { 0 };
                             self.fade_flags |= 0x10;
-                            self.interp(i, objs, w, out);
+                            self.interp(i, subs, lib, objs, ch, w, frame, out);
                         }
                     }
                     0x0f => {
                         // `Script_CameraEnd`.
-                        if self.streams[i].clock < len || self.play & 8 == 0 { self.kill(i, objs); }
+                        if self.streams[i].clock < len || self.play & 8 == 0 { self.kill(i, subs, objs); }
                         self.fade_flags &= !0x10; // the camera-active flag clears [M 0x1db348:21]
                         next = pc + 2;
                     }
-                    0x13 | 0x14 | 0x15 | 0x18 | 0x1a | 0x1b | 0x1d | 0x1e => {
-                        // The game has handlers for every one of these (`Script_Run` 0x1d8548:80-118 dispatches
-                        // 0x13 FadeStart, 0x14/0x15 sprite start/end, 0x18/0x1A light start/end, 0x1B/0x1D
-                        // nested-subscript start/end, 0x1E text start) and each handler consumes its arguments
-                        // from the pc; `Script_Run` then adds the opcode's byte and the common +1 (line 120).
-                        // Argument BYTES, counted from the handlers' BIN_Get calls [M: FadeStart 001db3d0 1×
-                        // GetFloat = 4; SpriteStart 001d9300 5×GetWord + GetDWord = 14; SpriteEnd/LightEnd/
-                        // SubScriptEnd 001db3b0/001db298/001db148 no reads = 0; LightStart 001db1b0 3×
-                        // GetByte = 3; SubScriptStart 001db050 GetDWord + 2×GetByte = 6; TextStart 001db2b8
-                        // GetDWord + GetWord = 6] — the atlas's "N reads" column mixed call counts with bytes
-                        // and was corrected. The port does not model sprites, lights, subtitles, nested
-                        // scripts or the fade (view/audio-side objects), so the command is consumed and the
-                        // stream CONTINUES — the old placeholder halted the stream from the opcode onward
-                        // (port-check §5).
-                        let arg = match op { 0x13 => 4, 0x14 => 14, 0x15 | 0x1a | 0x1d => 0, 0x18 => 3, 0x1b => 6, 0x1e => 6, _ => 0 };
-                        if cmds.len() < pc + 2 + arg { self.streams[i].pc = None; return; }
-                        out.push(Request::Event { kind: 0x80 | op, params: Vec::new() });
-                        next = pc + 2 + arg;
+                    0x13 => {
+                        // `Script_FadeStart` 0x1db3d0: one f32, then `Camera_SetFade(-f, 4, 0xff, 0)`
+                        // (0x1bbdd8 — the game's viewer overlay: rate 1/|f| per tick, f < 0 starts at
+                        // alpha 1 and fades in, f > 0 fades out) unless the skip latch (+0xAB5 bit 0)
+                        // is set [M 0x1db3d0:10-12].
+                        let Some(t) = rd(0, 4) else { self.streams[i].pc = None; return };
+                        if self.fade_flags & 1 == 0 { out.push(Request::Fade { ticks: -f32::from_bits(t) }); }
+                        next = pc + 6;
+                    }
+                    0x14 => {
+                        // `Script_SpriteStart` 0x1d9300: 5×u16 (x, y, w, h, flags) + u32 hash. The
+                        // sprite object is created once per stream (`if (+0x10 == 0)
+                        // Sprite_CreateLink(4)`) and updated in place; the 640×480 coords scale to
+                        // the HUD's 512×448 by 0.8 (x/w) / 0.9333 (y/h), layer +0x38 = 2, and
+                        // sprite+0x22 |= 0x100 always, | 0x40 when script flag 2, | 0x80 when 4
+                        // [M 0x1d9300:23-46].
+                        let (Some(x), Some(y), Some(sw), Some(sh), Some(fl), Some(hash)) =
+                            (rd(0, 2), rd(2, 2), rd(4, 2), rd(6, 2), rd(8, 2), rd(10, 4)) else { self.streams[i].pc = None; return };
+                        let rect = [x as f32 * 0.8, y as f32 * 0.933_333_4, sw as f32 * 0.8, sh as f32 * 0.933_333_4];
+                        let flags = fl as u16 | 0x100 | if fl & 2 != 0 { 0x40 } else { 0 } | if fl & 4 != 0 { 0x80 } else { 0 };
+                        let o = match self.streams[i].obj {
+                            Some(o) => o,
+                            None => {
+                                objs.list.push(Some(Obj::Sprite { hash, rect, flags, src: (self.nis.hashcode, i as u8) }));
+                                let o = objs.list.len() - 1;
+                                self.streams[i].obj = Some(o);
+                                o
+                            }
+                        };
+                        if let Some(Some(Obj::Sprite { hash: hh, rect: r, flags: ff, .. })) = objs.list.get_mut(o) {
+                            *hh = hash; *r = rect; *ff = flags;
+                        }
+                        self.streams[i].kind = 3;
+                        next = pc + 16;
+                    }
+                    0x15 => {
+                        // `Script_SpriteEnd` 0x1db3b0 → `Script_KillStream` case 3: `Sprite_Delete`.
+                        self.kill(i, subs, objs);
+                        next = pc + 2;
+                    }
+                    0x18 => {
+                        // `Script_LightStart` 0x1db1b0: 3 bytes — b0/b1 the parent pair (b0 == 0 →
+                        // +0x25 = −1, else the parent stream), b2 the light kind (`Light_Create`
+                        // 0x1cc3d8's `b2 == 1` argument; position = the static origin vector 0x2d6200
+                        // [L ACTION.ELF: (0,0,0)]; kind 6).
+                        let (Some(&b0), Some(&b1), Some(&b2)) = (cmds.get(pc + 1), cmds.get(pc + 2), cmds.get(pc + 3)) else { self.streams[i].pc = None; return };
+                        self.streams[i].parent = if b0 == 0 { -1 } else { b1 as i8 };
+                        if self.streams[i].obj.is_none() {
+                            objs.list.push(Some(Obj::Light { kind: b2, src: (self.nis.hashcode, i as u8) }));
+                            self.streams[i].obj = Some(objs.list.len() - 1);
+                        }
+                        self.streams[i].kind = 6;
+                        next = pc + 5;
+                    }
+                    0x1a => {
+                        // `Script_LightEnd` 0x1db298 → `Script_KillStream` case 6: `Light_Delete`
+                        // unless the script keeps its objects (flag 0x10).
+                        self.kill(i, subs, objs);
+                        next = pc + 2;
+                    }
+                    0x1b => {
+                        // `Script_SubScriptStart` 0x1db050: u32 hash + u8 + u8. On a fresh stream
+                        // (`+0x10 == 0`): +0x20 = clock + 1, the parent pair (b0 == 0 → −1),
+                        // `Script_Load(hash)` (the origin matrix — the stream's keys position the sub,
+                        // `Script_Interp` case 7), kind 7 and `Script_Play(sub, 1)` = looping.
+                        let (Some(hash), Some(&b0), Some(&b1)) = (rd(0, 4), cmds.get(pc + 5), cmds.get(pc + 6)) else { self.streams[i].pc = None; return };
+                        if self.streams[i].obj.is_none() && self.streams[i].sub.is_none() {
+                            self.streams[i].tag = (self.streams[i].clock as i16).wrapping_add(1) as u16;
+                        }
+                        self.streams[i].parent = if b0 == 0 { -1 } else { b1 as i8 };
+                        if self.streams[i].sub.is_none() {
+                            let Some(n) = lib.get(&hash) else { next = pc + 8; self.streams[i].pc = Some(next); return };
+                            let mut sub = Script::load(n.clone(), self.matrix, self.scale);
+                            sub.start(true); // `Script_Play(sub, 1)` — playing + looping [M 0x1db050:36]
+                            subs.push(Some(sub));
+                            self.streams[i].sub = Some(subs.len() - 1);
+                        }
+                        self.streams[i].kind = 7;
+                        next = pc + 8;
+                        // The handler's trailing `Script_Interp(param_1, param_2)` [M 0x1db050:38]:
+                        // the sub's matrix is keyed and the sub ticks its first update this same tick.
+                        self.interp(i, subs, lib, objs, ch, w, frame, out);
+                    }
+                    0x1d => {
+                        // `Script_SubScriptEnd` 0x1db148: kill unless the parent is looping, past its
+                        // length, with the sub started on tick 1 (+0x20 == 1) — the loop-boundary
+                        // persistence condition, the same shape as `Script_CameraEnd`.
+                        if self.streams[i].sub.is_some() {
+                            if self.streams[i].clock < len || self.play & 8 == 0 || self.streams[i].tag != 1 { self.kill(i, subs, objs); }
+                        }
+                        next = pc + 2;
+                    }
+                    0x1e => {
+                        // `Script_TextStart` 0x1db2b8: u32 label + u16 time → `Text_AddMsg(-1, 0, 4,
+                        // Txt_BindLabel(label, 0), 0, time)` — the raw label travels to nf-view (the
+                        // Lang table lives above nf-game), the pickup-message pattern.
+                        let (Some(label), Some(time)) = (rd(0, 4), rd(4, 2)) else { self.streams[i].pc = None; return };
+                        out.push(Request::Text { label, time: time as u16 });
+                        next = pc + 8;
                     }
                     // `Script_Run`'s default: a one-byte command.
                     _ => {}
@@ -418,7 +527,7 @@ impl Script {
 
     /// `Script_EntityStart` (0x1d8d78) and `Script_CreateEntity` (0x1d8968).
     #[allow(clippy::too_many_arguments)]
-    fn entity_start(&mut self, i: usize, hash: u32, has_parent: bool, parent: i8, spline: bool, obj_type: u8, params: Vec<u32>, objs: &mut Objects, w: &dyn World) {
+    fn entity_start(&mut self, i: usize, subs: &mut Vec<Option<Script>>, lib: &HashMap<u32, Arc<Nis>>, hash: u32, has_parent: bool, parent: i8, spline: bool, obj_type: u8, params: Vec<u32>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>) {
         let s = &mut self.streams[i];
         // An object of another type is deleted; one of the same type takes the new glist.
         if let Some(o) = s.obj { if s.obj_type != obj_type { objs.list[o] = None; s.obj = None; } }
@@ -434,7 +543,7 @@ impl Script {
         s.flags = if spline { 2 } else { 0 };
         s.obj_type = obj_type;
         let mut none = Vec::new();
-        self.interp(i, objs, w, &mut none);
+        self.interp(i, subs, lib, objs, ch, w, frame, &mut none);
         // `Script_CreateEntity` 0x1d8968's 0xF0 arm (see `Objects::pending_pickups`): a NEW entity of
         // the pickup class creates the takeable pickup at the stream's posed position [M disasm
         // 0x1d8bcc-0x1d8c20]; the reuse path only re-points the gfx. 07000008's SafePickUps script
@@ -455,8 +564,8 @@ impl Script {
     }
 
     /// `Script_AnimStart` (0x1d8f40).
-    fn anim_start(&mut self, i: usize, script: u32, skin: u32, start: u32, objs: &mut Objects, w: &dyn World) {
-        if self.streams[i].obj.is_some() { self.kill(i, objs); }
+    fn anim_start(&mut self, i: usize, subs: &mut Vec<Option<Script>>, script: u32, skin: u32, start: u32, objs: &mut Objects, w: &dyn World) {
+        if self.streams[i].obj.is_some() { self.kill(i, subs, objs); }
         let len = w.anim_length(script).unwrap_or(1).max(1) as f32;
         let f = start as f32;
         let frame = if f < 1.0 || len < f { if f < 1.0 { 1.0 } else { len } } else { f };
@@ -468,9 +577,10 @@ impl Script {
         s.start_frame = frame;
     }
 
-    /// `Script_KillStream` (0x1d9860): an entity or animated object is deleted unless the script keeps its objects
-    /// (flag 0x10: only detached); a sound stops.
-    fn kill(&mut self, i: usize, objs: &mut Objects) {
+    /// `Script_KillStream` (0x1d9860): an entity, animated object, sprite or light is deleted unless the script
+    /// keeps its objects (flag 0x10: only detached — the light's case 6 keeps the object and just clears the
+    /// kind [M 0x1d9860:104-113]); a camera pops back (Music_Event(0xC)); a sub-script is freed.
+    fn kill(&mut self, i: usize, subs: &mut Vec<Option<Script>>, objs: &mut Objects) {
         let keep = self.flags & 0x10 != 0;
         let s = &mut self.streams[i];
         match s.kind {
@@ -480,6 +590,22 @@ impl Script {
             }
             // The camera pops back to the game's.
             4 => if let Some(o) = s.obj { objs.list[o] = None; self.pending.push(Request::Camera { script: self.nis.hashcode, start: false }); },
+            // Case 3: `Sprite_Delete` [M 0x1d9860:76-82].
+            3 => if let Some(o) = s.obj { objs.list[o] = None; },
+            // Case 6: `Light_Delete` unless the script keeps its objects (the kind clears either way)
+            // [M 0x1d9860:104-113].
+            6 => if !keep { if let Some(o) = s.obj { objs.list[o] = None; } },
+            // Case 7: `Script_Free` on the sub SCRIPTINFO [M 0x1d9860:115-123] — its requests (a
+            // PlayerEnable from a returning sub, say) join the parent's pending.
+            7 => {
+                if let Some(k) = s.sub.take() {
+                    if let Some(slot) = subs.get_mut(k) {
+                        if let Some(mut sub) = slot.take() {
+                            sub.free(subs, objs, &mut self.pending);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         s.kind = 0;
@@ -487,8 +613,8 @@ impl Script {
     }
 
     /// `Script_Free`'s stream pass (`Script_Free` 0x1da880).
-    pub fn free(&mut self, objs: &mut Objects, out: &mut Vec<Request>) {
-        for i in 0..self.streams.len() { self.kill(i, objs); }
+    pub fn free(&mut self, subs: &mut Vec<Option<Script>>, objs: &mut Objects, out: &mut Vec<Request>) {
+        for i in 0..self.streams.len() { self.kill(i, subs, objs); }
         out.append(&mut self.pending);
         // Flag 0x80 → `Drone_EnableAll(1, hash)` [M Script_Free 0x1da880:41-43]: the cut-scene's guards come back
         // when the script that froze them (event 5 → `NPCGlobals = 0`) is freed and asked for it (event 7).
@@ -598,12 +724,13 @@ impl Script {
         }
     }
 
-    /// `Script_Interp` (0x1d9a08) for entity and animation streams.
-    fn interp(&mut self, i: usize, objs: &mut Objects, w: &dyn World, out: &mut Vec<Request>) {
-        let s = &self.streams[i];
-        let Some(o) = s.obj else { return };
-        match s.kind {
+    /// `Script_Interp` (0x1d9a08) for entity, animation and sub-script streams.
+    #[allow(clippy::too_many_arguments)]
+    fn interp(&mut self, i: usize, subs: &mut Vec<Option<Script>>, lib: &HashMap<u32, Arc<Nis>>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>) {
+        match self.streams[i].kind {
             1 => {
+                let s = &self.streams[i];
+                let Some(o) = s.obj else { return };
                 let Some((mut m, scale, alpha)) = self.keys(i) else { return };
                 if scale != 1.0 { for r in m.iter_mut().take(3) { for v in r.iter_mut().take(3) { *v *= scale; } } }
                 // Each parent stream's matrix, then the script's. (fix-final-blockers2 tried "the base only
@@ -630,6 +757,7 @@ impl Script {
                 // render-verified fusebox/safe entities need the base, so the camera keeps it).
                 // The skip's freeze: `Script_Interp` returns early while `+0xAB5 & 0x20` [M 0x1d9a08:205].
                 if self.fade_flags & 0x20 != 0 { return; }
+                let Some(o) = self.streams[i].obj else { return };
                 let Some((m, scale, _)) = self.keys(i) else { return };
                 let m = mul(&m, &self.matrix);
                 if let Some(Some(Obj::Camera { matrix, fov, .. })) = objs.list.get_mut(o) { *matrix = m; *fov = scale * (4.0 / 3.0); }
@@ -637,6 +765,7 @@ impl Script {
             2 => {
                 // The skip's freeze: `Script_Interp` case 2 returns while `+0xAB5 & 0x20` [M 0x1d9a08:146].
                 if self.fade_flags & 0x20 != 0 { return; }
+                let s = &self.streams[i];
                 let f = s.clock - s.start_clock + s.start_frame;
                 let o = s.obj;
                 if let Some(Some(Obj::Anim { script, frame, ticked, .. })) = o.and_then(|o| objs.list.get_mut(o)) {
@@ -652,6 +781,32 @@ impl Script {
                     *ticked = true;
                     for id in w.anim_ops1(*script, from, *frame as i32) {
                         out.push(Request::AnimSound { id, at: o });
+                    }
+                }
+            }
+            7 => {
+                // `Script_Interp` case 7 (0x1d9a08): the sub-script's matrix comes from the stream's
+                // keys (the sub's own scale applied, like case 1's), each parent stream's matrix, then
+                // the script's (the tail `Concat(param_1, ·)` [M 0x1d9a08, the render-verified base
+                // composition]) — and the sub is TICKED here: `Script_Update(sub)` is called from the
+                // case-7 block (the jal at 0x1d9e4c [M]). The skip's freeze applies (case 1's shape).
+                if self.fade_flags & 0x20 != 0 { return; }
+                let Some((mut m, scale, _)) = self.keys(i) else { return };
+                if scale != 1.0 { for r in m.iter_mut().take(3) { for v in r.iter_mut().take(3) { *v *= scale; } } }
+                let mut p = self.streams[i].parent;
+                let mut n = 0;
+                while p >= 0 && (p as usize) < self.streams.len() && n < self.streams.len() {
+                    if let Some(pm) = self.stream_matrix(p as usize, objs, w) { m = mul(&m, &pm); }
+                    p = self.streams[p as usize].parent;
+                    n += 1;
+                }
+                m = mul(&m, &self.matrix);
+                if let Some(k) = self.streams[i].sub {
+                    let mut sub = match subs.get_mut(k) { Some(slot) => slot.take(), _ => None };
+                    if let Some(mut sub) = sub {
+                        sub.matrix = m;
+                        sub.update(subs, lib, objs, ch, w, frame, out);
+                        subs[k] = Some(sub);
                     }
                 }
             }
@@ -733,6 +888,10 @@ pub struct Player {
     /// follows its script (the elevator cab, the keyboard): `SP_Activate` 0x1dc338's use test reads
     /// THAT sphere, not the placement transform. Starts at the placement matrix.
     pub live_matrix: Mat4,
+    /// Op 0x1b's running sub-scripts (`Script_Load`'s SCRIPTINFOs, `Script_Play(sub, 1)`) — the
+    /// owning player's, indexed by the parent stream's `sub` handle; `None` = freed
+    /// (`Script_KillStream` case 7 [M 0x1d9860:115-123]).
+    pub subs: Vec<Option<Script>>,
 }
 
 impl Player {
@@ -747,6 +906,7 @@ impl Player {
             scale: if g(10) == 0 { 1.0 } else { g(10) as f32 * 0.01 }, matrix, cur: 0, state, activated: false, countdown: 0,
             info: [None, None], deleted: false,
             live_matrix: matrix,
+            subs: Vec::new(),
         })
     }
 
@@ -806,9 +966,9 @@ impl Player {
         match mode {
             1 => { s.start(false); self.state = 2; }
             8 => { s.start(true); self.state = 6; }
-            _ => { s.start(false); s.update(objs, ch, w, frame, out); s.stop(); self.state = 1; }
+            _ => { s.start(false); s.update(&mut self.subs, lib, objs, ch, w, frame, out); s.stop(); self.state = 1; }
         }
-        s.update(objs, ch, w, frame, out);
+        s.update(&mut self.subs, lib, objs, ch, w, frame, out);
     }
 
     /// `SP_Update` (0x1dbda8). Trigger flags: only the channel bit (1) and activation (4); bullets and touching
@@ -817,7 +977,7 @@ impl Player {
     pub fn update(&mut self, lib: &HashMap<u32, Arc<Nis>>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>, skip: bool, gate: SpStart) {
         if self.deleted || (self.gate != 0 && !ch.on(self.gate as u32)) { return; }
         if let Some(s) = self.info[self.cur].as_mut() {
-            s.update(objs, ch, w, frame, out);
+            s.update(&mut self.subs, lib, objs, ch, w, frame, out);
             // `Script_Interp` 0x1d9a08:106-133 keys the SP object's `obj+0x90` from stream 0 every
             // frame: the keys' matrix (an anim stream: its discrete object 0), each parent stream's
             // matrix, then the script base. The SP's use sphere follows it (`SP_Activate` 0x1dc338
@@ -873,7 +1033,7 @@ impl Player {
                 // of the three death NISs (`Script_IsDeathNIS` reads slot A's hash, always +0x1C).
                 if skip {
                     if !Script::is_death_nis(self.scripts[0]) {
-                        if let Some(s) = self.info[self.cur].as_mut() { s.ffwd(objs, out); }
+                        if let Some(s) = self.info[self.cur].as_mut() { s.ffwd(&mut self.subs, objs, out); }
                     }
                 }
                 if !self.info[self.cur].as_ref().is_some_and(Script::playing) {
@@ -906,14 +1066,14 @@ impl Player {
             }
             5 => {
                 // `SP_Delete`: both scripts freed (their kept objects stay).
-                for s in self.info.iter_mut().flatten() { s.free(objs, out); }
+                for s in self.info.iter_mut().flatten() { s.free(&mut self.subs, objs, out); }
                 self.info = [None, None];
                 self.deleted = true;
             }
             6 if trig => {
                 if let Some(s) = self.info[self.cur].as_mut() { s.delay = 0; }
                 if self.other().is_some() {
-                    if let Some(mut s) = self.info[0].take() { s.free(objs, out); }
+                    if let Some(mut s) = self.info[0].take() { s.free(&mut self.subs, objs, out); }
                     self.cur ^= 1;
                     self.load(lib, objs, ch, w, frame, out);
                     self.state = 2;
@@ -984,6 +1144,7 @@ impl Scripts {
                 cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
                 // Merge drift (fix-searchlight-alarm × walkreal-b2's field): the identity, like the matrix.
                 live_matrix: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+                subs: Vec::new(),
             });
         }
         Scripts { lib, players, objects: Objects::default(), requests: Vec::new(), primed: false, skip_request: false }
@@ -1004,6 +1165,7 @@ impl Scripts {
             placement, scripts: [script, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0,
             scale, matrix, cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
             live_matrix: matrix,
+            subs: Vec::new(),
         });
     }
 
@@ -1102,7 +1264,7 @@ mod tests {
         // Tick 1: stream 0 creates the Anim (weapon=0); stream 1 fires Event 0xB → pending_weapon.
         // Tick 2: update() flushes pending_weapon → Anim.weapon = 6.
         for frame in 0..3 {
-            script.update(&mut objs, &mut ch, &world, frame, &mut out);
+            let mut subs = Vec::new(); script.update(&mut subs, &lib, &mut objs, &mut ch, &world, frame, &mut out);
         }
         let weapon = objs.list.iter().flatten().find_map(|o| match o { Obj::Anim { weapon, .. } => Some(*weapon), _ => None });
         assert_eq!(weapon, Some(6), "Event 0xB should set the Anim's weapon byte to 6 (Handgun)");
@@ -1140,7 +1302,7 @@ mod tests {
         let mut objs = Objects::default();
         let mut ch = Channels::default();
         let mut out = Vec::new();
-        script.update(&mut objs, &mut ch, &TestWorld, 1, &mut out);
+        let mut subs = Vec::new(); script.update(&mut subs, &lib, &mut objs, &mut ch, &TestWorld, 1, &mut out);
         assert!(ch.on(0x33), "the event after the fade/sprite/text ops must have fired (the stream must not halt)");
         // Sister: a command truncated inside its args halts the stream (no read past the end).
         let bad = Arc::new(Nis {
@@ -1154,7 +1316,7 @@ mod tests {
         let mut s2 = Script::load(bad, IDENT, 1.0);
         s2.start(false);
         let mut out2 = Vec::new();
-        s2.update(&mut objs, &mut ch, &TestWorld, 1, &mut out2);
+        let mut subs2 = Vec::new(); s2.update(&mut subs2, &lib, &mut objs, &mut ch, &TestWorld, 1, &mut out2);
         assert_eq!(s2.streams[0].pc, None, "sister: a command truncated past the blob halts that stream (no read past the end)");
     }
 

@@ -1771,10 +1771,17 @@ impl Sim {
         // [M 0x19b9c8:305-328].
         if self.bond.crouched { self.hud.crouch_icon_timer = 60; }
         else if self.hud.crouch_icon_timer > 0 { self.hud.crouch_icon_timer -= 1; }
-        // New pickup events → messages (`Pickup_Handler` 0x18e650's Text_AddMsg calls, type 6, 180 ticks
-        // in SP; sounds 0xF5/0x141/0x14C are the take sounds the pickup path already plays).
+        // Script op-0x1e text commands (`Script_TextStart` 0x1db2b8 → `Text_AddMsg(-1, 0, 4,
+        // Txt_BindLabel(label), 0, time)` [M]): the raw labels drain to HUD messages with the same
+        // bank binding as the pickup texts (fix-script-commands).
         let lang = self.lang.take();
         let mut new_msgs: std::collections::VecDeque<Msg> = Default::default();
+        if let Some(lang) = lang.as_ref() {
+            for (label, time) in self.drones.script_msgs.drain(..) {
+                let text = lang.bind(label).unwrap_or("").trim().to_string();
+                if !text.is_empty() { new_msgs.push_back(Msg::new(text, time as f32)); }
+            }
+        }
         for (_, t) in self.drones.taken.iter().skip(self.hud.taken_seen) {
             let Some(lang) = lang.as_ref() else { break };
             let text = match t {
@@ -2495,6 +2502,17 @@ fn drone_height(hip: f32) -> f32 {
 }
 
 impl Scene {
+    /// The script player's overlay (fix-script-commands): the fade, the letterbox borders and the
+    /// op-0x14 sprites — see `hud::script_overlay`. Appended to the HUD frame OUTSIDE the cut-scene
+    /// gate (the game draws these over the blanked HUD).
+    pub fn script_overlay_hud(&self, aspect: f32) -> crate::gpu::HudFrame {
+        let Some(sim) = self.sim.as_ref() else { return Default::default() };
+        let sprites: Vec<(u32, [f32; 4])> = sim.drones.scripts.objects.list.iter()
+            .filter_map(|o| match o { Some(nf_game::nis::Obj::Sprite { hash, rect, .. }) => Some((*hash, *rect)), _ => None })
+            .collect();
+        crate::hud::script_overlay(sim.drones.view_fade, sim.drones.letterbox, &sprites, &self.hud_textures, aspect)
+    }
+
     /// `skeletons`: every skeleton on the disc by id; `sequences`: the level's animation archive, grouped by skeleton.
     pub fn build(level: &Level, cels_only: bool, skeletons: &HashMap<u8, Skeleton>, sequences: HashMap<u8, Vec<Sequence>>, drones: Option<&DroneContext>) -> Scene {
         let by_hash: HashMap<u32, (u8, usize)> = sequences.iter()
