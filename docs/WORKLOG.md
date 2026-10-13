@@ -7197,3 +7197,16 @@ Task: research-driving, branch s/research-driving. Started (setup). Atlas of the
 levels: DRIVING.ELF decompile map (levels, main loop, vehicle physics, AI traffic, camera,
 HUD, sound), which on-foot formats the driving archives reuse vs new formats, an NF_ISO
 golden test over the driving archives, input path (G-004), and a phased port estimate.
+
+## research-driving (progress)
+
+Branch s/research-driving. Measured: the ACTION->DRIVING handover end to end (GameFlow_Main
+state 9 -> Boot_GetPTPData fills PTPDATA 0x31c090 size 0xa50 -> psiLaunchDriving 0x120af0 copies
+it to EE 0x100000, flags 0x10097c, RunNextModule DRIVING.ELF; DRIVING's FUN_00175a28 reads the
+level key at 0x1004f4 and opens driving\<suffix>.viv; psiGetDrivingData 0x120a88 copies 0x1000
+bytes back; PlrStats_Get/SetDrivingData carry 12 stat slots). Level keys + archives mapped from
+DRIVING.ELF strings. Golden: crates/nf-formats/tests/driving_golden.rs pins the BIGF census of
+all 23 driving archives (1,499 entries; every entry content-hashed against the disc-measured
+golden/bigf_entries.tsv), the magic classification, and DRIVING.SYM (12,719). New docs:
+docs/formats/driving-viv.md, docs/atlas/driving.md. Left: DRIVING main/frame loop, vehicle
+physics, input G-004 (SYM addresses confirmed absent in our build), .crp format.
