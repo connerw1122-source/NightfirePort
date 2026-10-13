@@ -7289,3 +7289,33 @@ Stage Summary:
 - Verification: mode IDs re-checked first-hand in the decompile; the arena test green on the ISO; four-crate suite chunked: 620 + 376 passed, 0 unexpected failures, only the 3 allowed disc_golden trio red (slim ISO); the 52 walk/walkreal nf-view binaries not re-run (no nf-view source changed).
 - Live checks for the main agent: 5 watches listed in the report (MPSettings +0x420/+0x424/+0x428, SpawnPoints @0x2a7360, glb_viewer rects, BOT_vars+0x45).
 - Open items: the 0x2F3DE0 validateRoute jump table, the 0x10/0x20 scenario names, the +0x416 time unit.
+## research-driving
+
+Task: research-driving, branch s/research-driving. Started (setup). Atlas of the driving
+levels: DRIVING.ELF decompile map (levels, main loop, vehicle physics, AI traffic, camera,
+HUD, sound), which on-foot formats the driving archives reuse vs new formats, an NF_ISO
+golden test over the driving archives, input path (G-004), and a phased port estimate.
+
+## research-driving (progress)
+
+Branch s/research-driving. Measured: the ACTION->DRIVING handover end to end (GameFlow_Main
+state 9 -> Boot_GetPTPData fills PTPDATA 0x31c090 size 0xa50 -> psiLaunchDriving 0x120af0 copies
+it to EE 0x100000, flags 0x10097c, RunNextModule DRIVING.ELF; DRIVING's FUN_00175a28 reads the
+level key at 0x1004f4 and opens driving\<suffix>.viv; psiGetDrivingData 0x120a88 copies 0x1000
+bytes back; PlrStats_Get/SetDrivingData carry 12 stat slots). Level keys + archives mapped from
+DRIVING.ELF strings. Golden: crates/nf-formats/tests/driving_golden.rs pins the BIGF census of
+all 23 driving archives (1,499 entries; every entry content-hashed against the disc-measured
+golden/bigf_entries.tsv), the magic classification, and DRIVING.SYM (12,719). New docs:
+docs/formats/driving-viv.md, docs/atlas/driving.md. Left: DRIVING main/frame loop, vehicle
+physics, input G-004 (SYM addresses confirmed absent in our build), .crp format.
+
+## research-driving (final)
+
+Branch s/research-driving. Added after the progress entry: DRIVING.ELF main located
+(FUN_00174bf0 0x174bf0, called from entry 0x24c0d8 with the crt0 arg block; argv switches
+-streams/-ntsc/-pal/-pal60/-t<level>; writes/reads the level key at 0x1004f4, parses the mission
+number from key+3); the init chain + MISC.VIV boot-open confirmed inside FUN_00174198; the exit
+path measured (FUN_00300058 0x300058 writes block+0x97c, optionally the next key at +0x4f4, and
+launches BASE.ELF — the boot loader re-dispatches). Atlas + format docs + report written.
+Suite: nf-formats 11 passed / 3 allowed disc_golden fails; driving_golden 4/4; nf-game/nf-audio/
+nf-view compile clean (full run exceeds the sandbox tool timeout; no code changed in them).
