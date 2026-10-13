@@ -4762,7 +4762,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // bullet alive on the reflected direction [M 0x12d704].
                     let flags70 = d.weapons.records.get(b.weapon as usize)
                         .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
-                    if let Some((_, n, m)) = d.world.segment_surface(b.pos, end) {
+                    if let Some((_, n, m)) = d.world.segment_surface(b.pos, end, false) {
                         if let Some(dir) = self.effects.bullet_impact(&mut self.rng, d.surfaces, &mut self.gas, hit, n, m, b.dir, flags70, b.bounces, true) {
                             if b.bounces < 3 {
                                 b.dead = false;
@@ -6087,11 +6087,12 @@ mod tests {
         dr
     }
 
-    /// A floor quad at y = 0 (two triangles).
+    /// A floor quad at y = 0 (two triangles, wound with the stored plane normal UP — the disc's
+    /// convention: 7,246 floors up / 0 down; `Intersect_RayGeom` 0x10a8c8 skips dot(n,dir) >= 0).
     fn floor_world() -> CollisionWorld {
         CollisionWorld::from_triangles(vec![
-            [[-5.0, 0.0, -5.0], [5.0, 0.0, -5.0], [5.0, 0.0, 5.0]],
-            [[-5.0, 0.0, -5.0], [5.0, 0.0, 5.0], [-5.0, 0.0, 5.0]],
+            [[-5.0, 0.0, -5.0], [5.0, 0.0, 5.0], [5.0, 0.0, -5.0]],
+            [[-5.0, 0.0, -5.0], [-5.0, 0.0, 5.0], [5.0, 0.0, 5.0]],
         ])
     }
 
@@ -6136,8 +6137,8 @@ mod tests {
         // floor at hip−0.6 ray end) — construct a floor at y = 0.4 so the feet (pos.y − 1.0 = −0.6) are 1.0 above it:
         // on surface. Then move the floor down to y = −0.5: feet at 0.5, floor at −0.5 → gap 1.0 > 0.2 → in air.
         let w = CollisionWorld::from_triangles(vec![
-            [[-5.0, -0.5, -5.0], [5.0, -0.5, -5.0], [5.0, -0.5, 5.0]],
-            [[-5.0, -0.5, -5.0], [5.0, -0.5, 5.0], [-5.0, -0.5, 5.0]],
+            [[-5.0, -0.5, -5.0], [5.0, -0.5, 5.0], [5.0, -0.5, -5.0]],
+            [[-5.0, -0.5, -5.0], [-5.0, -0.5, 5.0], [5.0, -0.5, 5.0]],
         ]);
         let mut dr = drone_at([0.0, 0.5, 0.0]); // feet at −0.5, floor at −0.5 → exactly on it
         dr.collision_handler(&w);

@@ -481,7 +481,9 @@ mod tests {
     fn the_take_ray_origin_decides_the_take() {
         let q = |a: V3, b: V3, c: V3, d: V3| [[a, b, c], [a, c, d]];
         let mut t = Vec::new();
-        t.extend(q([-9.0, 0.0, -9.0], [9.0, 0.0, -9.0], [9.0, 0.0, 9.0], [-9.0, 0.0, 9.0]));
+        // Floors wound with the stored plane normal UP (the disc's convention — 7,246 up / 0 down;
+        // `Intersect_RayGeom` 0x10a8c8 skips dot(n,dir) >= 0, so down-rays need up-wound floors).
+        t.extend(q([-9.0, 0.0, -9.0], [-9.0, 0.0, 9.0], [9.0, 0.0, 9.0], [9.0, 0.0, -9.0]));
         // A 0.5-high wall at z = 0 between the player (z = −0.6) and the pickup (z = +0.7).
         t.extend(q([-9.0, 0.0, 0.0], [-9.0, 0.5, 0.0], [9.0, 0.5, 0.0], [9.0, 0.0, 0.0]));
         let w = CollisionWorld::from_triangles(t);
@@ -504,7 +506,7 @@ mod tests {
     #[test]
     fn a_dropped_gun_falls_to_the_floor_and_rests() {
         let floor = CollisionWorld::from_triangles(vec![
-            [[-5.0, 0.0, -5.0], [5.0, 0.0, -5.0], [5.0, 0.0, 5.0]], [[-5.0, 0.0, -5.0], [5.0, 0.0, 5.0], [-5.0, 0.0, 5.0]],
+            [[-5.0, 0.0, -5.0], [5.0, 0.0, 5.0], [5.0, 0.0, -5.0]], [[-5.0, 0.0, -5.0], [-5.0, 0.0, 5.0], [5.0, 0.0, 5.0]],
         ]);
         let m = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.5, 1.2, 0.5, 1.0]];
         let mut p = Pickup::create(&m, 0x16, 12, kind::WEAPON, 0, Model { centre: [0.0, 0.05, 0.3], radius: 0.4 });

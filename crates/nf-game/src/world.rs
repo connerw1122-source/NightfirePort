@@ -863,9 +863,11 @@ mod tests {
     fn scoped_actor_queries_keep_only_the_straddle_cels() {
         // A wall quad at x = 2 (bedroom side, 1.5 units from the capsule) — its collision object is
         // assigned to cell 1 (the "exterior"): its world sphere centre (2, 1, 0) lies in cell 1's box.
+        // Wound with the stored normal facing −x (west, at the capsule) — the disc's convention for
+        // a wall that stops rays/capsules from the west side (0x10a8c8 one-sided).
         let wall = [
-            [[2.0, 0.0, -2.0], [2.0, 2.0, -2.0], [2.0, 2.0, 2.0]],
-            [[2.0, 0.0, -2.0], [2.0, 2.0, 2.0], [2.0, 0.0, 2.0]],
+            [[2.0, 0.0, -2.0], [2.0, 2.0, 2.0], [2.0, 2.0, -2.0]],
+            [[2.0, 0.0, -2.0], [2.0, 0.0, 2.0], [2.0, 2.0, 2.0]],
         ];
         let mut stat = Geo::default();
         for t in wall { stat.push(std::iter::once((t, 0u8))); }
@@ -910,7 +912,7 @@ mod tests {
         // The take ray's surface filter: a mat-0xd triangle in the START cell is skipped by
         // segment_take_scoped (the 0x721 bit 0x1) while the flat segment_actor still hits it.
         let mut stat2 = Geo::default();
-        let tri: [[V3; 3]; 1] = [[[-1.0, 0.0, 2.0], [1.0, 0.0, 2.0], [0.0, 1.5, 2.0]]];
+        let tri: [[V3; 3]; 1] = [[[-1.0, 0.0, 2.0], [0.0, 1.5, 2.0], [1.0, 0.0, 2.0]]];
         for t in tri { stat2.push(std::iter::once((t, 0xd))); }
         stat2.chunk(16);
         let w3 = CollisionWorld {
@@ -924,9 +926,10 @@ mod tests {
 
     #[test]
     fn moving_objects_collide_where_they_are() {
-        // One unit triangle in object space as glist 7, placed at x = 5 by the matrix.
+        // One unit triangle in object space as glist 7, placed at x = 5 by the matrix (wound so its
+        // plane normal faces −x, the way the disc winds a wall that stops +x rays — 0x10a8c8).
         let mut w = world(Vec::new());
-        w.shapes.insert(7, vec![[[0.0, 0.0, -1.0], [0.0, 1.0, 1.0], [0.0, -1.0, 1.0]]]);
+        w.shapes.insert(7, vec![[[0.0, 0.0, -1.0], [0.0, -1.0, 1.0], [0.0, 1.0, 1.0]]]);
         let at = |x: f32| [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [x, 0.0, 0.0, 1.0]];
         w.set_dynamic(&[(1, 7, at(5.0))]);
         assert!((w.segment([0.0, 0.0, 0.3], [10.0, 0.0, 0.3]).unwrap() - 0.5).abs() < 1e-5);
@@ -943,9 +946,12 @@ mod tests {
     #[test]
     fn segments_hit_floors_and_walls() {
         // A floor quad at y = 0 and a wall at z = 5.
+        // Disc winding: the stored plane normal = +cross(v1−v0, v2−v0) faces UP on every real floor
+        // (probe on the disc: 7,246 up / 0 down), and `Intersect_RayGeom` 0x10a8c8 skips a triangle
+        // when dot(plane_normal, ray_dir) >= 0 — so a down-ray only hits an up-wound floor.
         let w = world(vec![
-            [[-5.0, 0.0, -5.0], [5.0, 0.0, -5.0], [5.0, 0.0, 5.0]], [[-5.0, 0.0, -5.0], [5.0, 0.0, 5.0], [-5.0, 0.0, 5.0]],
-            [[-5.0, 0.0, 5.0], [5.0, 0.0, 5.0], [5.0, 3.0, 5.0]], [[-5.0, 0.0, 5.0], [5.0, 3.0, 5.0], [-5.0, 3.0, 5.0]],
+            [[-5.0, 0.0, -5.0], [5.0, 0.0, 5.0], [5.0, 0.0, -5.0]], [[-5.0, 0.0, -5.0], [-5.0, 0.0, 5.0], [5.0, 0.0, 5.0]],
+            [[-5.0, 0.0, 5.0], [5.0, 3.0, 5.0], [5.0, 0.0, 5.0]], [[-5.0, 0.0, 5.0], [-5.0, 3.0, 5.0], [5.0, 3.0, 5.0]],
         ]);
         assert_eq!(w.floor_below([1.0, 1.1, 1.0], 3.0), Some(0.0));
         assert!(w.line_of_sight([0.0, 1.0, 0.0], [0.0, 1.0, 4.9]));

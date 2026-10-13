@@ -1308,7 +1308,7 @@ mod tests {
     fn climb_look_turns_within_the_ladder_window_and_pitch_is_free() {
         let world = CollisionWorld::from_triangles(Vec::new());
         let lad = Ladder { centre: [10.0, 3.0, 20.0], radius: 2.0, yaw: 0.0, channel: 0 };
-        let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: None, sink: false };
+        let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: None, sink: false, creepwalls: &[] };
         let mut b = Bond::new([10.0, 3.0, 20.0 + 0.5], lad.yaw + std::f32::consts::PI);
         b.substate = SS_CLIMB;
         b.ladder = Some(0);
@@ -1360,11 +1360,14 @@ mod tests {
     fn room() -> CollisionWorld {
         let q = |a: V3, b: V3, c: V3, d: V3| [[a, b, c], [a, c, d]];
         let mut t = Vec::new();
-        t.extend(q([-20.0, 0.0, -20.0], [20.0, 0.0, -20.0], [20.0, 0.0, 20.0], [-20.0, 0.0, 20.0]));
+        // All quads wound with the stored plane normal facing the occupant (floors UP — the disc's
+        // convention, 7,246 up / 0 down; the wall −z at the walker; `Intersect_RayGeom` 0x10a8c8
+        // skips dot(n,dir) >= 0).
+        t.extend(q([-20.0, 0.0, -20.0], [-20.0, 0.0, 20.0], [20.0, 0.0, 20.0], [20.0, 0.0, -20.0]));
         // A wall at z = 5 and a 0.3 step at x ≥ 3 (top at y 0.3).
-        t.extend(q([-20.0, 0.0, 5.0], [20.0, 0.0, 5.0], [20.0, 4.0, 5.0], [-20.0, 4.0, 5.0]));
-        t.extend(q([3.0, 0.3, -20.0], [20.0, 0.3, -20.0], [20.0, 0.3, 4.0], [3.0, 0.3, 4.0]));
-        t.extend(q([3.0, 0.0, -20.0], [3.0, 0.3, -20.0], [3.0, 0.3, 4.0], [3.0, 0.0, 4.0]));
+        t.extend(q([-20.0, 0.0, 5.0], [-20.0, 4.0, 5.0], [20.0, 4.0, 5.0], [20.0, 0.0, 5.0]));
+        t.extend(q([3.0, 0.3, -20.0], [3.0, 0.3, 4.0], [20.0, 0.3, 4.0], [20.0, 0.3, -20.0]));
+        t.extend(q([3.0, 0.0, -20.0], [3.0, 0.0, 4.0], [3.0, 0.3, 4.0], [3.0, 0.3, -20.0]));
         CollisionWorld::from_triangles(t)
     }
 

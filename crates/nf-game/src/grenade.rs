@@ -187,8 +187,8 @@ mod tests {
     /// A floor quad at y = 0 (large enough that a thrown grenade stays above it while it falls).
     fn floor_world() -> CollisionWorld {
         CollisionWorld::from_triangles(vec![
-            [[-100.0, 0.0, -100.0], [100.0, 0.0, -100.0], [100.0, 0.0, 100.0]],
-            [[-100.0, 0.0, -100.0], [100.0, 0.0, 100.0], [-100.0, 0.0, 100.0]],
+            [[-100.0, 0.0, -100.0], [100.0, 0.0, 100.0], [100.0, 0.0, -100.0]],
+            [[-100.0, 0.0, -100.0], [-100.0, 0.0, 100.0], [100.0, 0.0, 100.0]],
         ])
     }
 
