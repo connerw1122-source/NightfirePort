@@ -134,7 +134,13 @@ impl Walker {
 
     /// One tick with the given input; keeps Bond alive when `top_up_health` (damage suppressed —
     /// the "enemies may be disabled for the walk" allowance; falls are tracked in the report).
+    /// A script cut-scene holding Bond (`disabled`) is SKIPPED through the game's own skip action
+    /// (`Scripts::skip_request` = `Input_Action(−1, 0x19, 1)` [M nis.rs; fix-dev T1] — the walk
+    /// cannot watch cut-scenes, and the skip is the real player's button).
     pub fn tick(&mut self, input: Input, use_key: bool) {
+        if self.scene.sim.as_ref().unwrap().disabled {
+            self.scene.sim.as_mut().unwrap().drones.scripts.skip_request = true;
+        }
         let y_before = self.scene.sim.as_ref().unwrap().bond.pos[1];
         self.scene.sim.as_mut().unwrap().step_bond(input, false, false, use_key);
         let sim = self.scene.sim.as_ref().unwrap();
@@ -500,7 +506,9 @@ impl Walker {
                             eprintln!("[walk] {label}: wire grabbed at +{} ticks", self.total_ticks - start_ticks);
                             continue;
                         }
-                        // Walk toward the wire point to grab it (the grab scan runs per tick).
+                        // Walk toward the wire point and PULSE E — the game grabs a wire only on the
+                        // action key (Player_HandleJump 0x1916b0:126-147: the action edge scans for
+                        // the nearest class-0x2C object; no walk-in auto-grab).
                         let desired = (wp.at[0] - self.pos[0]).atan2(wp.at[2] - self.pos[2]);
                         let err = wrap_pi(desired - self.scene.sim.as_ref().unwrap().bond.yaw);
                         let input = Input {
@@ -508,7 +516,8 @@ impl Walker {
                             forward: 1.0,
                             ..Default::default()
                         };
-                        self.tick(input, false);
+                        let press = self.total_ticks % 6 == 0;
+                        self.tick(input, press);
                         if self.total_ticks - start_ticks > 2400 {
                             panic!("wire grab failed at {label}\n{}", fail_dump(&self.scene, wp.at, label));
                         }
@@ -781,4 +790,9 @@ pub fn nav_route_global(sim: &nf_view::scene::Sim, start: V3, dest: V3) -> Optio
     path.reverse();
     // Trim the ends (the start/dest nodes stand in for the endpoints).
     if path.len() > 2 { Some(path[1..path.len() - 1].to_vec()) } else { Some(Vec::new()) }
+}
+
+/// The smallest-volume cel bbox containing `p` (the index, for probes).
+pub fn cel_of(cels: &[nf_view::scene::Cel], p: [f32; 3]) -> Option<usize> {
+    nf_view::scene::find_cel(cels, p)
 }

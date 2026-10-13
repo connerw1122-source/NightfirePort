@@ -102,13 +102,46 @@ fn walk_from_the_spawn_to_the_exit_with_the_contact() {
         }
         eprintln!("[01] round {round}: the contact stalled at ({:.1},{:.1},{:.1}) — clearing guards {:?}",
             settled[0], settled[1], settled[2], guards);
+        // Diagnostic: at the second fruitless round on the same set, dump the guards' boxes vs the
+        // aim ray (the guard-15 miss the previous session probed).
+        if round >= 5 {
+            let sim = w.scene.sim.as_ref().unwrap();
+            for &g in &guards {
+                let d = &sim.drones.list[g];
+                let bp = sim.bond.pos;
+                let eye = [bp[0], bp[1] + sim.bond.eye - sim.bond.crouch_drop, bp[2]];
+                eprintln!("[01] diag guard {g}: pos {:?} health {:.0} state {:#x} crouched-anim state {:#x} dist {:.1}",
+                    d.pos, d.health, d.state, d.anim.state, walker::dxz(d.pos, bp));
+                let to = [d.pos[0], d.pos[1] + 0.3, d.pos[2]];
+                eprintln!("[01] diag guard {g}: torso seg hit {:?}", sim.world.segment(eye, to));
+                let data = nf_game::drone::Data {
+                    tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons,
+                    world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins, skeletons: &sim.skeletons,
+                    nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning, hitboxes: &sim.hitboxes, volumes: &sim.volumes,
+                    sfx: sim.sfx.as_ref(), models: &sim.models, surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(),
+                };
+                let boxes = d.hit_boxes(&data);
+                for b in boxes.iter().take(8) {
+                    eprintln!("[01] diag guard {g} part {:3}: c ({:.2},{:.2},{:.2}) half {:?} from-eye {:.1}",
+                        b.part, b.m[3][0], b.m[3][1], b.m[3][2], b.half, walker::dxz([b.m[3][0], b.m[3][1], b.m[3][2]], bp));
+                }
+            }
+        }
         for g in guards {
             // Walk TO the guard (the route's doors open under Bond's feet via the stuck handler —
-            // a midpoint stop can sit behind a wall with no line of sight).
-            let gpos = w.scene.sim.as_ref().unwrap().drones.list[g].pos;
+            // a midpoint stop can sit behind a wall with no line of sight). The gate is LOS, not
+            // just distance: at the stairwell corner Bond stood 3.2 from the guard with the
+            // eye→torso ray hitting a wall at t 0.18 — the shots could never land.
+            let (gpos, los_clear) = {
+                let sim = w.scene.sim.as_ref().unwrap();
+                let d = &sim.drones.list[g];
+                let bp = sim.bond.pos;
+                let eye = [bp[0], bp[1] + sim.bond.eye - sim.bond.crouch_drop, bp[2]];
+                (d.pos, sim.world.segment(eye, [d.pos[0], d.pos[1] + 0.3, d.pos[2]]).is_none())
+            };
             let bpos = w.scene.sim.as_ref().unwrap().bond.pos;
-            if walker::dxz(gpos, bpos) > 9.0 {
-                w.walk_nav_to(gpos, &format!("approach guard {g}"), 3.5);
+            if walker::dxz(gpos, bpos) > 9.0 || !los_clear {
+                w.walk_nav_to(gpos, &format!("approach guard {g}"), 3.0);
             }
             // Low ammo: grab the nearest pickup first (the placed kind-3 ammo / the guard drops).
             {

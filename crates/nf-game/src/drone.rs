@@ -276,6 +276,11 @@ pub struct Player {
     pub sph: V3,
     /// Bond hangs on a wire or zipline (substate 6 / 0xF): no volume-containment trigger contacts (triggers.rs).
     pub hanging: bool,
+    /// The collision capsule's ends (top, bottom) — the geometry the trigger contact list is built
+    /// from: `Trigger_Hit` 0x1b1fc8 classifies the contacts with no geometry of its own, and
+    /// `Player_Collision` 0x194df0 builds the capsule per substate off obj+0x30 with the up vector.
+    /// Built at the construction site off Bond's stance (`cc`).
+    pub capsule: (V3, V3),
 }
 
 /// The player as an AI target (`DAT_00298fd0`): his position when the nodes were found, the frame (`+0x54`), and per
@@ -4822,6 +4827,15 @@ impl Drones {
         let peers: Vec<(usize, V3, bool)> = self.llist.iter().map(|&i| (i, self.list[i].pos, self.list[i].seen)).filter(|&(i, _, _)| self.list[i].enabled).collect();
         // `Trigger_Calc`, then every object in the control list (newest first = reverse placement order): triggers and
         // drones interleaved, so a channel a trigger pulses is seen only by the objects updated after it.
+        // The player toucher stays the historical stand-in (`Toucher::player(pos − 0.4)` → capsule
+        // pos+0.15..pos+1.46, r 0.55). The game-accurate capsule (0x194df0's standing
+        // pos+0.55 / pos+0.275−cc, in `Player::capsule`) was tried and REVERTED: it is ~0.9 lower,
+        // and 07000005's truck chain then stalls — the hand-off channel 0x5c never fires. The
+        // chain's writer is not a player plate (no mask-8 trigger writes 0x5c [D trigger dump]); a
+        // class-5 OBJECT contact (the truck touching a plate) is the likely game path, and the
+        // port has no object touchers (the documented stand-in, trigger-port-check #11) — the high
+        // stand-in capsule with Bond aboard the truck covers the plate band instead. Revisit when
+        // object touchers land.
         let touchers: Vec<crate::triggers::Toucher> = std::iter::once(crate::triggers::Toucher { contain: !player.hanging, ..crate::triggers::Toucher::player([player.pos[0], player.pos[1] - 0.4, player.pos[2]]) })
             .chain(self.list.iter().filter(|x| x.enabled).map(|x| crate::triggers::Toucher { a: [x.pos[0], x.pos[1] - 1.0, x.pos[2]], b: x.head(), r: 0.4, drone: true, skin: x.skin, contain: true }))
             .collect();
