@@ -6565,3 +6565,10 @@ demonstrated live before the reset and the chain test re-run green on the restor
 2. Press fire (✕) while dying: the menu/restart should come immediately instead of the 7.5 s.
 3. Die on 07000007 (punch a guest to death): the fail banner ~5 s, then the restart to 07000005
    (the mission start), COLD — full health, fists, objectives re-announced. The old replay loop gone.
+
+## fix-weapons-all (s/fix-weapons-all) — 2026-10-13
+Task: every weapon in weapon_data — fire modes/switch, alt-fire, scopes/zoom, burst/auto timing,
+spread, ammo types, reload kinds, rocket/grenade launchers, crossbow, melee; headless NF_ISO tests
+per weapon (equip → fire → reload → assert rounds/projectile/sound). Plus the 2026-10-12 playtest
+weapon bugs (view models, Scorpion mode switch, frag throw/fuse, flashbang kills, drop spam, pistol
+sound, punch knock-out, dev-panel give list audit). Started 05:40 UTC, deadline ~07:36 UTC.
