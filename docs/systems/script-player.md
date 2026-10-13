@@ -89,11 +89,22 @@ update each tick (WORKLOG 0060).
 
 ## Port status
 
-`nf-game::nis`: the player states, `Script_Update` / `Run` / `Interp` (linear and spline keys), commands 04–0F, 12
-(events 3, 4, 6, 0xC, 0xD, 0xE, 0x11, 0x12; others recorded), 16 / 17 (sound requests), entity, animation and camera streams;
-script touch triggers (0xEA / 0xEB) in the trigger system with volumes following their entity; moving collision and
-riding. Not yet: fade, sprite, light, sub-script, text commands (the stream stops on them), `SP_Hit` bullet / object
-flags, AI volumes and pickups made by scripts, letterbox borders, music events, cut-scene skipping.
+`nf-game::nis`: the player states, `Script_Update` / `Run` / `Interp` (linear and spline keys), commands 04–1E —
+including the G-031 remainder: **fade** (op 0x13 → `Camera_SetFade(-f, 4, 0xff, 0)` 0x1db3d0/0x1bbdd8; the port's
+`Drones::view_fade` ticks 1/|f| per tick and nf-view draws the black overlay; `Script_Update`'s own length−20
+fade-out (40) and the −22 handback fade-in are raised too), **letterbox** (`Script_CameraStart` 0x1d9140's two
+512×64 border sprites [L ACTION.ELF 0x2c9468] — `Drones::letterbox` while a script camera is live; the music
+events `Music_Event(0xB/0xC)` were already wired), **sprite** (op 0x14/0x15 → `Obj::Sprite` with the 0.8/0.9333
+scaled rect + hash, killed by `Script_KillStream` case 3), **light** (op 0x18/0x1a → `Obj::Light`,
+`Light_Create` 0x1cc3d8 at the origin vector 0x2d6200 [L (0,0,0)], kill keeps flag-0x10 scripts' lights),
+**sub-script** (op 0x1b/0x1d → `Script_Load` + `Script_Play(sub, 1)` looping on `Player::subs`, ticked from
+`Script_Interp` case 7 — the game ticks the sub there too, the `Script_Update` jal at 0x1d9e4c — and killed by
+`SubScriptEnd`'s loop-persistence condition), and **text** (op 0x1e → `Text_AddMsg(-1, 0, 4,
+Txt_BindLabel(label), 0, time)` 0x1db2b8; the raw label drains `Drones::script_msgs` → the HUD's message queue
+bound through the level's Lang table). Every command is op + args + 1 trailing byte (`Script_Run` 0x1d8548:120)
+— `nf_formats::nis`' decode lens for 0x13/0x14/0x18/0x1b/0x1e were fixed to 6/16/5/8/8 and typed (`Cmd::Fade/
+Sprite/Light/Text`). Not yet: `SP_Hit` bullet / object flags (07000007's urn, mask 2), AI volumes and pickups
+made by scripts, cut-scene skipping's view-side fade arm, `Corona_2`-class generic entity glist drawing.
 
 **The loadable cut-scene packs are ported (fix-cutscenes)** [M]: `SP_LoadScript`'s `isLoadable` arm
 (0x1dbc08 → 0x1d69a0 → 0x1d69e8 → `LoaderLoad` 0x1d4a00) streams the pack named with the level id's (flag+7)

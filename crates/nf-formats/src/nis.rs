@@ -59,6 +59,18 @@ pub enum Cmd {
     /// hash u32, stream u8, mode u8 }; the sub-script (a NIS of the same archive) starts playing on
     /// `stream` when the command ticks (the port records it for the walkthrough traces).
     SubScript { hash: u32, stream: u8, mode: u8 },
+    /// `Script_FadeStart` 0x1db3d0: the fade duration in ticks (the game calls `Camera_SetFade(-f, 4,
+    /// 0xff, 0)` — negative f fades in from black, positive fades out to black).
+    Fade(f32),
+    /// `Script_SpriteStart` 0x1d9300: the 640x480 screen rect, the flag bits (2 → sprite+0x22 |= 0x40,
+    /// 4 → |= 0x80) and the sprite hash (`hashtable_set_sprite`).
+    Sprite { rect: [u16; 4], flags: u16, hash: u32 },
+    /// `Script_LightStart` 0x1db1b0: the parent pair (b0 == 0 → none, else stream b1) and the light
+    /// kind byte b2 (passed to `Light_Create` 0x1cc3d8 as its `b2 == 1` argument).
+    Light { parent: Option<u8>, kind: u8 },
+    /// `Script_TextStart` 0x1db2b8: the text-bank label and the display time in frames
+    /// (`Text_AddMsg(-1, 0, 4, Txt_BindLabel(label), 0, time)`).
+    Text { label: u32, time: u16 },
     /// `Script_Run`'s default: a one-byte command.
     Other(u8),
 }
@@ -105,17 +117,33 @@ impl Stream {
                     (Cmd::Camera { spline: sp != 0, first: a as u16, last: b as u16 }, 7)
                 }
                 0x0f => (Cmd::CameraEnd, 2),
-                0x13 => (Cmd::Skip { op }, 5),
-                0x14 => (Cmd::Skip { op }, 15),
+                // Every command is op + args + 1 trailing byte (the paired opcode; `Script_Run`
+                // 0x1d8548:120 adds the common +1 after each handler) — the old lens for 0x13/0x14/
+                // 0x18/0x1b/0x1e omitted the trail and desynced every stream carrying them
+                // (fix-script-commands: the 5,263-stream census over all 87 archives decodes exactly
+                // with the trail, e.g. 07000029 0x06000052 stream 5 = Wait(0), Light(00 ff 01),
+                // Marker(0), Wait(80), LightEnd, Marker(80), End(165)).
+                0x13 => (Cmd::Fade(f32::from_bits(rd(p + 1, 4).unwrap_or(0))), 6),
+                0x14 => {
+                    let (Some(x), Some(y), Some(w), Some(h), Some(fl), Some(hash)) =
+                        (rd(p + 1, 2), rd(p + 3, 2), rd(p + 5, 2), rd(p + 7, 2), rd(p + 9, 2), rd(p + 11, 4)) else { break };
+                    (Cmd::Sprite { rect: [x as u16, y as u16, w as u16, h as u16], flags: fl as u16, hash }, 16)
+                }
                 0x15 => (Cmd::Skip { op }, 2),
-                0x18 => (Cmd::Skip { op }, 4),
+                0x18 => {
+                    let (Some(b0), Some(&b1), Some(&b2)) = (rd(p + 1, 1), c.get(p + 2), c.get(p + 3)) else { break };
+                    (Cmd::Light { parent: (b0 != 0).then_some(b1), kind: b2 }, 5)
+                }
                 0x1a => (Cmd::Skip { op }, 2),
                 0x1b => {
                     let (Some(hash), Some(b)) = (rd(p + 1, 4), c.get(p + 5..p + 7)) else { break };
-                    (Cmd::SubScript { hash, stream: b[0], mode: b[1] }, 7)
+                    (Cmd::SubScript { hash, stream: b[0], mode: b[1] }, 8)
                 }
                 0x1d => (Cmd::Skip { op }, 2),
-                0x1e => (Cmd::Skip { op }, 7),
+                0x1e => {
+                    let (Some(label), Some(time)) = (rd(p + 1, 4), rd(p + 5, 2)) else { break };
+                    (Cmd::Text { label, time: time as u16 }, 8)
+                }
                 _ => (Cmd::Other(op), 1),
             };
             out.push(cmd);

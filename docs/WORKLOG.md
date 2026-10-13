@@ -8222,6 +8222,7 @@ Shared-file changes: NONE (the WORKLOG append and the master-merge conflict reso
 dev.rs and the weapon tables untouched — the panel is crates/nf-view/src/panel.rs, the task's
 "dev.rs" pointer is the F2 menu which spawns no weapons).
 
+
 **fix-dev-panel delta (18:52 UTC)**: the listing filter no longer drops the clip-0 gadgets the
 game's loadouts grant (0x50 Grapple, 0x56/0x57 Decryptor, 0x58 Q-Worm — named + selectable [L],
 tp model 0, clip 0; the old `model==0 && clip<=0` filter hid them from the panel entirely) — the
@@ -8415,3 +8416,53 @@ Stage Summary:
 - Suite delta (20:45 UTC): the sandbox kills detached runs, so the four-crate suite ran as
   foreground chunks over every target — **781 passed, 3 failed** (only the 3 sanctioned
   disc_golden trio; 147/147 nf-view binaries). Report updated with the chunk breakdown.
+
+## fix-script-commands (s/fix-script-commands) — 2026-10-13
+Task: GAPS G-031, the script player remainder — port the unported command streams from
+`Script_EventHandler` 0x1d94c0 / `Script_Interp` in this order: fades and letterbox (visible in
+every cut-scene), text, lights, sprites, sub-scripts, `SP_Hit` (07000007's urn break, mask 2),
+then AI volumes / pickups / breakables made by scripts, `Corona_2` glow, drones riding objects;
+music events of camera scripts. Each command: a test that runs a REAL script containing it (found
+with nf-extract's script dump) and asserts the effect in the Sim's state. Files:
+crates/nf-game/src/nis.rs, the cut-scene draw hooks in nf-view, docs/systems/script-player.md.
+Started 18:56 UTC, sandbox expires ~20:54 UTC. Branch created from origin/master (a82591d) and
+pushed.
+
+
+**fix-script-commands outcome (20:14 UTC)**: the G-031 command streams are ported from
+`Script_Run` 0x1d8548's dispatch (the eight ops were already consumed-and-skipped by an earlier fix —
+the doc's "stream stops" status was stale; what was missing was the modelling): fade (op 0x13 →
+`Camera_SetFade(-f, 4, 0xff, 0)` [M 0x1db3d0 + 0x1bbdd8 disasm: rate 1/|f| per tick, negative =
+in-from-black] carried as `Drones::view_fade` (alpha + rate, ticked in `Drones::tick`, drawn by
+nf-view as a full-screen black overlay above the blanked HUD), plus `Script_Update`'s OWN auto-fades
+now raised: the length−20 fade-out (40) and the end-of-script handback fade-in (0xc1b00000 = −22.0
+[L] — the port's old comment said −9), both with the game's no-fade hash set; letterbox —
+`Script_CameraStart` 0x1d9140:49-61's two border sprites of SpriteInfo 0x2c9468 [L ELF: 512×64
+solid black, the bottom at y 0x180] → `Drones::letterbox` (set by the existing `Request::Camera`
+drain) drawn as two solid bars; sprite op 0x14/0x15 → `Obj::Sprite` (the 640×480 rect scaled by
+0.8/0.9333 to the 512×448 HUD space, hash for the texture lookup, layer 2 flags 0x40/0x80/0x100)
+created once per stream and deleted by `Script_KillStream` case 3; light op 0x18/0x1a → `Obj::Light`
+(`Light_Create` 0x1cc3d8 at the static origin vector 0x2d6200 [L (0,0,0)]; the parent pair b0/b1 →
+stream +0x25; kill deletes unless the script keeps objects, exactly the game's case 6); sub-script
+op 0x1b/0x1d → `Script_Load` + `Script_Play(sub, 1)` looping on the new `Player::subs`, TICKED from
+`Script_Interp` case 7 (where the game's own `Script_Update(sub)` jal sits, 0x1d9e4c — the sub's
+matrix comes from the stream keys × parent chains × the script base) and freed by `SubScriptEnd`'s
+loop-persistence condition (+0x20 == 1 / looping / clock ≥ length keep it alive); text op 0x1e →
+`Request::Text` → `Drones::script_msgs` → `Sim::hud_tick` binds the label through the level's Lang
+table into `hud.msgs` with `Text_AddMsg`'s time as the message life (the pickup-message pattern).
+nf-formats' decoder: the five lens for 0x13/0x14/0x18/0x1b/0x1e omitted the trailing byte
+(`Script_Run` 0x1d8548:120 adds 1 after every handler) and desynced every stream carrying them —
+fixed to 6/16/5/8/8 with typed `Cmd::Fade/Sprite/Light/Text` variants (the 5,263-stream census over
+all 87 archives decodes exactly; e.g. 07000029's 0x06000052 stream 5 = Wait(0), Light(00 ff 01),
+Marker(0), Wait(80), LightEnd, Marker(80), End(165)). Tests: crates/nf-view/tests/
+fix_script_commands_live.rs — 4 tests, each on a REAL disc script (0x06000052's light stream bytes;
+0x06000071's −82.0 fade; 0x06000072's sprite; 0x06000050→0x06000052's sub→light chain on 07000005;
+0x0600005b's +63.0 fade + letterbox sprites on 07000001; 0x06000961's subtitle label 0x06000068 on
+07000500) — fail-first: the pre-fix tree lacks the whole API (compile-fail shown on the stashed
+tree). Suite on the merged tree (master 0cda458): nf-game 228 / 0, nf-view 361 fast + 41 walk
+samples / 0, nf-formats+nf-audio 89 / 0 with only the 3 allowed disc_golden + the pre-existing
+slim-ISO pss_movies absence. Shared-file hooks (all additive, listed): drone.rs (the drain's
+Fade/Text arms + the Camera arm's letterbox flag + the ViewFade struct + 3 fields + the fade tick),
+lib.rs (one append line), scene.rs (script_msgs → hud.msgs + Scene::script_overlay_hud), useobj.rs
+(a test initializer's new field). Open: SP_Hit mask 2 (the urn), script AI volumes/pickups,
+Corona_2-class generic glist drawing.

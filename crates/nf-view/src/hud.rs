@@ -28,6 +28,33 @@ const AMMO_AT: (f32, f32) = (496.0, 394.0);
 
 pub(crate) struct Quad { pub(crate) layer: i32, pub(crate) tex: usize, pub(crate) blend: u8, pub(crate) v: [HudVertex; 6] }
 
+/// The script player's overlay (fix-script-commands), drawn ABOVE the (during a cut-scene blanked)
+/// HUD the way the game draws them above its own: `Camera_SetFade` 0x1bbdd8's black overlay (op 0x13
+/// + `Script_Update`'s length-20 fade-out and the −22 handback fade-in), the script camera's
+/// letterbox borders (`Script_CameraStart` 0x1d9140:49-61 — two solid black 512×64 bars, the bottom
+/// at y 0x180 = 384 [L ACTION.ELF SpriteInfo 0x2c9468]) and the op-0x14 script sprites (their rects
+/// already scaled to this 512×448 space by `Script_SpriteStart`; drawn only when their texture hash
+/// is loaded, else logged once — the live check decides the visual).
+pub fn script_overlay(fade: Option<nf_game::drone::ViewFade>, letterbox: bool, sprites: &[(u32, [f32; 4])], textures: &[(u32, crate::scene::TextureImage)], aspect: f32) -> HudFrame {
+    let mut h = Hud { quads: Vec::new(), aspect, textures };
+    if letterbox {
+        h.quad(Anchor::Stretch, 1, SCOPE_STRIP_TEX, 0, 0.0, 0.0, SW, 64.0, [0.0; 4], (false, false), [0.0, 0.0, 0.0, 1.0]);
+        h.quad(Anchor::Stretch, 1, SCOPE_STRIP_TEX, 0, 0.0, 384.0, SW, 64.0, [0.0; 4], (false, false), [0.0, 0.0, 0.0, 1.0]);
+    }
+    for &(hash, rect) in sprites {
+        if let Some((_, t)) = textures.iter().find(|(k, _)| *k == hash) {
+            let _ = t;
+            h.quad(Anchor::Stretch, 2, hash, 1, rect[0], rect[1], rect[2], rect[3], [0.0; 4], (false, false), [1.0, 1.0, 1.0, 1.0]);
+        }
+    }
+    if let Some(f) = fade {
+        if f.alpha > 0.0 {
+            h.quad(Anchor::Stretch, 0, SCOPE_STRIP_TEX, 0, 0.0, 0.0, SW, SH, [0.0; 4], (false, false), [0.0, 0.0, 0.0, f.alpha.min(1.0)]);
+        }
+    }
+    h.finish()
+}
+
 /// How a sprite keeps its place in a window wider (or narrower) than the game's 4:3 screen: pixels keep the 4:3
 /// shape, and each element holds to the edge it belongs to — the health pane left, the ammo pane right, the crosshair
 /// centred; full-screen sprites (the damage glow) stretch over the whole window. *Port design* (the PS2 screen was 4:3

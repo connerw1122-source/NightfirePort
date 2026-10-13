@@ -4418,6 +4418,11 @@ pub enum PlayerImpact { Drone { drone: usize, part: i16, at: V3 }, World(V3) }
 #[derive(Clone, Copy, Debug)]
 pub struct Sound { pub id: u32, pub pos: V3, pub inner: f32, pub outer: f32, pub weight: f32 }
 
+/// The script fade overlay's state (`Camera_SetFade` 0x1bbdd8's viewer fields +0x228/+0x22C): the
+/// black overlay's alpha and its per-tick rate. Ticked in `Drones::tick`; drawn by nf-view.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewFade { pub alpha: f32, pub rate: f32 }
+
 /// Anim states of the noise chain: turn (0x61) and a short look (0xB).
 const TURN: u16 = 0x61;
 const LOOK_SHORT: u16 = 0x0b;
@@ -4528,6 +4533,21 @@ pub struct Drones {
     /// cut-scene ends (playtest item 5: they used to run over the cut-scenes). The pane state
     /// machines (0x19c310 case 0) poll the same gate, so a banner arriving mid-NIS stays closed too.
     pub hud_frozen: bool,
+    /// The script camera's letterbox borders (`Script_CameraStart` 0x1d9140's two border sprites of
+    /// SpriteInfo 0x2c9468 at draw layer 1, the bottom at +0x26 = 0x180; `Script_KillStream` case 4
+    /// hides them) — true while a script camera is live. nf-view draws two solid black 512×64 bars
+    /// [L ACTION.ELF 0x2c9468: x 0, y 0, w 512, h 64, colour 0x000000ff, texture 0].
+    pub letterbox: bool,
+    /// The script fade overlay (`Camera_SetFade` 0x1bbdd8's viewer state, +0x228..+0x235): the black
+    /// overlay's alpha and its per-tick rate (1/|duration|; negative duration = fading in from
+    /// black). Armed by op 0x13, `Script_Update`'s length−20 auto fade-out and the −22 handback
+    /// fade-in; ticked in `Drones::tick` (the game ticks it in the viewer update) [S: the viewer
+    /// state's exact lifecycle — who clears +0x235 — is not decoded; the port parks the alpha at the
+    /// target and re-arms only from an empty state].
+    pub view_fade: Option<ViewFade>,
+    /// Op 0x1e script messages (`Text_AddMsg(-1, 0, 4, Txt_BindLabel(label), 0, time)`, drained to
+    /// the HUD like `taken`): (label, display frames).
+    pub script_msgs: Vec<(u32, u16)>,
     /// The section the IOP player reports (`0x2500CC`, read by `UpdateMusicalEvents`): the audio layer
     /// writes it each frame; the music update at the tick's end consumes it (fix-party-mission item 4 —
     /// the game's `UpdateMusicalEvents` runs every frame whether or not an output device exists).
@@ -4760,6 +4780,7 @@ impl Drones {
             gas: Default::default(),
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
             // — the shared-constructor collisions, merge lesson 4).
+            letterbox: false, view_fade: None, script_msgs: Vec::new(),
             death: Default::default(), bond_fire: false, auto_restart: true, level_exit_cold: false,
             // fix-restart-target: the fail-menu Restart's warm arm + the current level (GameState+0xC).
             level_exit_restart: false,
@@ -4916,6 +4937,7 @@ impl Drones {
                 info: [None, None],
                 deleted: false,
                 live_matrix: m,
+                subs: Vec::new(),
             });
         }
         if let Some(p) = ps.iter().find(|p| p.flags & 0xff == 0xdf) {
@@ -5369,8 +5391,34 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // Script_CameraStart 0x1d9140:46-49 disables the viewers' HUD; Script_KillStream
                     // 0x1d9860:71-72 restores it. The flag freezes the HUD message timers [M 0x1b11d8].
                     self.hud_frozen = start;
+                    // The letterbox: `Script_CameraStart` creates the two border sprites (0x2c9468, the
+                    // second at +0x26 = 0x180) at draw layer 1 and `Script_KillStream` case 4 sets
+                    // their layer to 0xff — the bars show exactly while a script camera is live
+                    // [M 0x1d9140:49-61, 0x1d9860:87-93]. nf-view draws them from this flag.
+                    self.letterbox = start;
                     self.music.event(if start { 0xb } else { 0xc }, script)
                 }
+                // Op 0x13: `Camera_SetFade(-f, 4, 0xff, 0)` [M 0x1db3d0, 0x1bbdd8] — a black overlay
+                // (colour 0x000000ff) whose alpha ramps 1/|f| per tick: f < 0 fades in from black,
+                // f > 0 fades out to black. The game refuses a second fade while the same viewer's
+                // pair (+0x234, +0x235) is active [M 0x1bbdd8:11]; the port's one-state stand-in
+                // re-arms only when nothing is running [S: the viewer state's exact lifecycle is not
+                // decoded]. The same state carries the script's auto-fades (Script_Update's
+                // length−20 fade-out and the −22 handback fade-in) and nf-view draws it.
+                crate::nis::Request::Fade { ticks } => {
+                    // `Camera_SetFade(duration, 4, 0xff, 0)` [M 0x1bbdd8]: rate = 1/duration per tick;
+                    // a NEGATIVE duration starts at alpha 1.0 and fades in, a positive one starts at
+                    // 0.0 and fades out (op 0x13 passes the script f32 negated, so a script fade of
+                    // −82 arrives as +82 = out to black [M 0x1db3d0, 0x06000071's bytes]).
+                    if self.view_fade.is_none() {
+                        let (alpha, rate) = if ticks < 0.0 { (1.0, 1.0 / ticks) } else if ticks > 0.0 { (0.0, 1.0 / ticks) } else { (0.0, 0.0) };
+                        self.view_fade = Some(ViewFade { alpha, rate });
+                    }
+                }
+                // Op 0x1e: `Text_AddMsg(-1, 0, 4, Txt_BindLabel(label, 0), 0, time)` [M 0x1db2b8] —
+                // the raw label rides to nf-view (the Lang table lives above nf-game), the
+                // `drones.taken` pattern; the HUD pane shows it for `time` frames.
+                crate::nis::Request::Text { label, time } => self.script_msgs.push((label, time)),
                 // `Script_SoundStart`: 2-D, or 3-D at the stream's object (its position each frame, `Script_Interp` 5).
                 crate::nis::Request::Sound { id, at, src } => {
                     // `SFXStart` 0x115a68:18-20 / `SFXStart3D` 0x115bf0: a sound with id 0x172 (the NIS
@@ -5885,6 +5933,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // below, in the game's list order (fix-script-start-tick — the old all-players-here beat
         // ran a trigger-started script one tick behind the placement trigger that started it).
         let script_skip = { let _p = crate::prof::scope("drones: scripts head"); self.scripts.begin_tick(&mut self.channels, d, frame) };
+        // The script fade overlay's per-tick advance (`Camera_SetFade`'s viewer state; the game ticks
+        // it in the viewer update): the alpha moves by the rate each tick and parks at its end —
+        // 1.0 after a fade-to-black (the screen stays black until a fade-in), 0.0 after a fade-in.
+        if let Some(f) = self.view_fade.as_mut() {
+            if f.rate > 0.0 { f.alpha = (f.alpha + f.rate).min(1.0); }
+            else if f.rate < 0.0 { f.alpha = (f.alpha + f.rate).max(0.0); }
+        }
         // Script objects with collision data join the collision world where they now are: animations' discrete
         // parts and drawn entities (`Collide_PickObj`; triggers and AI volumes are not obstacles).
         // Id: object index · 64 + part (stable while the object lives) for the ride (`ground_motion`).
