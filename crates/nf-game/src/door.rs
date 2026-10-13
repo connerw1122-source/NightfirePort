@@ -678,6 +678,7 @@ impl Doors {
             let keep = d.flags & 0x20 != 0;
             let spline = d.flags & 1 != 0;
             eprintln!("    bits: keep_open={} spline={} busy={} starts_open={}", keep, spline, d.flags & 0x10 != 0, d.flags & 4 != 0);
+            eprintln!("    matrix row3 ({:.3},{:.3},{:.3}) keys {}", d.matrix[3][0], d.matrix[3][1], d.matrix[3][2], if d.keys.is_some() { "yes" } else { "NONE" });
         }
     }
 
