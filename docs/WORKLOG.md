@@ -6803,3 +6803,10 @@ Work Log:
 
 Stage Summary:
 - Branch s/fix-wire2 pushed (branch start). Next: the icon ctx + jump-grab port, the mode-6 move gate fix, the fusebox dev scenario, tests.
+- Implemented: wire.rs Icon struct + icons() (0xFA parse); player.rs icon_ctx field (own line), the jump-grab arm in physics_tick (nearest wire within 1000 when ctx==3, refused grab eats the jump [M 0x1916b0:118-147]), physics_tick grew the ctx param (all callers in-file), the mode-6 gate fix in wire_tick (the idle+move path skips AnimScriptIsStopped [M 0x197838-0x197860]); scene.rs icons field + the per-tick ctx write (reset 0xFF → enabled icons, same-cel OR 4-unit scope [S]), the E record corrected.
+- dev.rs: the fusebox-07000014 scenario — Bond crouched INSIDE the crawl vent at (41.0, 2.45, 62.0) yaw π with the Laser 0x4E owned+selected. Evidence: [D collision probe] the level's only crawl tunnels are the start vent system (headroom 1.44-1.46, x 31-41, z 36-65); NO crawl vent near the west generator room; the vent graphics dress those runs. The user's ask ("spawn in there crouched") satisfied.
+- Tests: fix_wire2_live.rs 3/3 (the jump grab + the E-nothing sister; the strafe-during-idle move start + the W-forward sister + the full crossing; the scenario crouch/vent/laser assertions). wire_live.rs re-recorded (the collision grab; E-inert). Fail-first: the new tests need icon_ctx (no compile pre-fix); the contradicted pre-fix behavior in HEAD~3.
+- Suite: 601 passed, 3 failed — the 3 allowed disc_golden failures (slim ISO). Pushed 3c7481c + the wire_live re-record; report at docs/reports/fix-wire2.md.
+
+Stage Summary:
+- Branch s/fix-wire2 pushed. The cable's real grab (jump + icon ctx 3) is in; E correctly does nothing (game-faithful, the record fixed); the move starts on the strafe press during the idle; the fusebox-07000014 scenario starts crouched in the vent with the Laser. Live checks (icon scope radius, the jump grab from the ground, 2 --bond render spots) listed in the report.
