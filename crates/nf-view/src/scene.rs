@@ -3744,6 +3744,16 @@ impl Scene {
             a.gas.and_then(|gi| self.sim.as_ref().and_then(|s| s.drones.gas.puffs.get(gi as usize))
                 .map(|g| g.rgba.map(|c| c.round().clamp(0.0, 255.0) as u8)))
         }).collect();
+        // The corpse fade (fix-ai-remainder; G-026): the game's `NDrone2_FadeOut` 0x172dd8 decays the
+        // drone object's alpha byte obj+0x106 (0.6 per tick in Fade 0x48, 8.0 in FadeFast 0x49) and the
+        // character draw multiplies the vertices' alpha by it (Dead 0x47's timer-0xC hands the corpse to
+        // Fade, which disables it at 0 — the removal). Per scene character, from its drone.
+        let char_alpha: Vec<f32> = (0..self.characters.len()).map(|ci| {
+            match self.sim.as_ref().and_then(|s| s.char_drone.get(ci).copied().flatten()) {
+                Some(di) => self.sim.as_ref().map_or(1.0, |s| (s.drones.list[di].alpha / 255.0).clamp(0.0, 1.0)),
+                None => 1.0,
+            }
+        }).collect();
         let one = || [1.0f32; 3];
         self.animate(choice, time, opts).into_iter()
             .zip(self.vertices[self.char_vertex_start..].iter().zip(self.char_verts.iter()))
@@ -3769,7 +3779,13 @@ impl Scene {
                     let rgb = [0, 1, 2].map(|k| ((v.rgba[k] as f32 * m[k]).round() as i32).clamp(0, 255) as u8);
                     [rgb[0], rgb[1], rgb[2], v.rgba[3]]
                 };
-                Vertex { pos, uv: v.uv, rgba, nrm: v.nrm }
+                // The corpse fade rides the plain character vertices only (the pickups, the attachments and
+                // the searchlight/door parts are their own objects with their own alpha).
+                let ca = if cv.searchlight.is_none() && cv.door.is_none() && cv.pickup.is_none() && cv.attachment.is_none() {
+                    char_alpha.get(cv.character as usize).copied().unwrap_or(1.0)
+                } else { 1.0 };
+                let a = ((rgba[3] as f32 * ca).round() as i32).clamp(0, 255) as u8;
+                Vertex { pos, uv: v.uv, rgba: [rgba[0], rgba[1], rgba[2], a], nrm: v.nrm }
             }).collect()
     }
 

@@ -380,6 +380,17 @@ pub struct Drone {
     pub desired_yaw: f32,
     /// Upper-body aim yaw (`AnimObjectAimAt`, anim+0xF4) relative to the body.
     pub aim_yaw: f32,
+    /// The aim-at pitch (`AnimObjectAimAt` 0x1bfe58 computes yaw AND pitch; the port kept the yaw only).
+    /// Positive = aim up; the pose negates it for the matrix (positive rotation about +right pitches down).
+    pub aim_pitch: f32,
+    /// Head tracking (`AnimObjectHeadTrack` 0x1bf618 via `psiBuildMatrixPalette` 0x111498, requested by
+    /// `NDrone2_DoTracking` 0x1479d8 / `DoHeadTracking` 0x1472c8): the stored, smoothed head yaw / pitch
+    /// relative to the animation (the sAnimObject's +0x80 / +0x88), the 0x10-track flag stand-in, and the
+    /// re-decide timer `+0x358`. Both angles positive up.
+    pub head_yaw: f32,
+    pub head_pitch: f32,
+    pub tracking: bool,
+    pub track_recheck: u32,
     pub alert: f32,
     pub alert_floor: f32,
     pub props: [u32; 3],
@@ -709,6 +720,21 @@ pub struct Drone {
 /// Normalise a vector (the grenade throw direction helper).
 fn norm(v: V3) -> V3 { let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(); if l > 0.0 { [v[0] / l, v[1] / l, v[2] / l] } else { v } }
 
+/// Rodrigues' rotation about the unit `axis` by `ang` radians, as a 4×4 (the pose rotations of
+/// `AnimObjectHeadTrack` 0x1bf618 / `AnimObjectAimAt` 0x1bfe58 — the game builds the same rotation with
+/// `Quat_AxisAngleToQuat` 0x1becb8 + `Quat_QuatToMat`).
+fn axis_angle_mat(axis: [f32; 3], ang: f32) -> nf_formats::anim::Mat4 {
+    let (s, c) = (ang.sin(), ang.cos());
+    let t = 1.0 - c;
+    let [x, y, z] = axis;
+    [
+        [t * x * x + c, t * x * y - s * z, t * x * z + s * y, 0.0],
+        [t * x * y + s * z, t * y * y + c, t * y * z - s * x, 0.0],
+        [t * x * z - s * y, t * y * z + s * x, t * z * z + c, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
 impl Drone {
     /// From a placement (parameters by index) after `NDrone2_DefaultInit` / `DoModeSettingsNEW`.
     pub fn new(d: &Data, pos: V3, yaw: f32, param: impl Fn(u32) -> u32, rng: &mut Rng) -> Drone {
@@ -774,6 +800,7 @@ impl Drone {
             death_channel: crate::kiko::chaser_death_channel(d.level, skin, param(15) as u8, param(12) as u8),
             special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
+            head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0,
             velocity: [0.0; 3], in_air: false, on_surface: true,
             door_open_at: 0,
@@ -1939,8 +1966,12 @@ impl Drone {
 
     /// Bone matrices in object space (root translation zeroed: `AnimSeqTick` takes it as root motion) with the
     /// upper-body aim (`AnimObjectAimAt`, bone 2: bone 2 and everything below it turned by the aim yaw about the
-    /// model's up axis through bone 2 — *approximation*: the game rotates about the spine axis and pitches too, G-026),
-    /// and the hip height. Drawing and hit boxes both use it.
+    /// model's up axis through bone 2, plus the aim pitch about the aim's horizontal right axis — the game's
+    /// second angle, mode-0 clamp ±0.9, 0x1bfe58; *approximation*: the game rotates about the animated spine's
+    /// own axes), the head tracking (`AnimObjectHeadTrack` 0x1bf618: the head bone ALONE — `psiBuildMatrixPalette`
+    /// 0x111498 calls it on bone 5 while the 0x30 track flags are set — yaw about the neck axis and pitch about
+    /// the head's right axis, premultiplied `q_yaw ⊗ q_pitch ⊗ q_bone`; *approximation*: the port's axes are the
+    /// model's), and the hip height. Drawing and hit boxes both use it.
     pub fn object_pose(&self, d: &Data) -> Option<(Vec<nf_formats::anim::Mat4>, f32)> {
         let skin = d.skins.get(&self.skin)?;
         let mut local = self.local_pose(d)?;
@@ -1948,10 +1979,17 @@ impl Drone {
         if let Some(r) = local.first_mut() { r.0 = [0.0; 3]; }
         let mut world = nf_formats::anim::world_pose(&local, skin);
         let a = self.aim_yaw;
-        if a.abs() > 1e-4 && world.len() > 2 {
+        if (a.abs() > 1e-4 || self.aim_pitch.abs() > 1e-4) && world.len() > 2 {
             let pivot = world[2][3];
             let (sn, cs) = (a.sin(), a.cos());
-            let rot: nf_formats::anim::Mat4 = [[cs, 0.0, -sn, 0.0], [0.0, 1.0, 0.0, 0.0], [sn, 0.0, cs, 0.0], [0.0, 0.0, 0.0, 1.0]];
+            let rot_y: nf_formats::anim::Mat4 = [[cs, 0.0, -sn, 0.0], [0.0, 1.0, 0.0, 0.0], [sn, 0.0, cs, 0.0], [0.0, 0.0, 0.0, 1.0]];
+            // The pitch axis: the aim direction's horizontal right (forward = (sin θ, 0, cos θ) → right =
+            // (cos θ, 0, −sin θ), the game's cross(up, forward)). Positive rotation about +right pitches the
+            // forward DOWN, and `aim_pitch` is positive up, so the matrix angle is negated. Composed as
+            // R = R_yaw · R_pitch (the game's q_yaw ⊗ q_pitch ⊗ q_bone premultiply).
+            let th = self.yaw + a;
+            let rp = axis_angle_mat([th.cos(), 0.0, -th.sin()], -self.aim_pitch);
+            let rot = nf_formats::anim::mul(&rot_y, &rp);
             let below = |b: usize| { let mut p = Some(b); while let Some(x) = p { if x == 2 { return true; } p = skin.parent(x); } false };
             for b in 0..world.len() {
                 if !below(b) { continue; }
@@ -1961,6 +1999,21 @@ impl Drone {
                 for k in 0..3 { r[3][k] += pivot[k]; }
                 world[b] = r;
             }
+        }
+        let (hy, hp) = (self.head_yaw, self.head_pitch);
+        if (hy.abs() > 1e-4 || hp.abs() > 1e-4) && world.len() > 5 {
+            // Bone 5 only (HeadTrack rewrites just that bone's quaternion; the head carries no children).
+            let pivot = world[5][3];
+            let (sn, cs) = (hy.sin(), hy.cos());
+            let rot_y: nf_formats::anim::Mat4 = [[cs, 0.0, -sn, 0.0], [0.0, 1.0, 0.0, 0.0], [sn, 0.0, cs, 0.0], [0.0, 0.0, 0.0, 1.0]];
+            let th = self.yaw + hy;
+            let rp = axis_angle_mat([th.cos(), 0.0, -th.sin()], -hp);
+            let rot = nf_formats::anim::mul(&rot_y, &rp);
+            let mut w = world[5];
+            for k in 0..3 { w[3][k] -= pivot[k]; }
+            let mut r = nf_formats::anim::mul(&w, &rot);
+            for k in 0..3 { r[3][k] += pivot[k]; }
+            world[5] = r;
         }
         Some((world, hip))
     }
@@ -5762,6 +5815,47 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // which let the torso wind all the way around (the playtest's "spine flipped" patrol look).
             let want = if dr.anim.class == 2 && dr.aims_torso() { angle_difference(dr.yaw, dr.yaw_to_opp).clamp(-0.9, 0.9) } else { 0.0 };
             dr.aim_yaw = rotate_to_bearing(dr.aim_yaw, want, 0.2, crate::trig::PI);
+            // Head tracking and the aim pitch (fix-ai-remainder; G-026). `NDrone2_DoTracking` 0x1479d8:
+            // `NDrone2_AimTest` 0x147918 passing (the aim/fire states — the port's `aims_torso` gate) puts
+            // the 0x180 aim flag up: `AnimObjectHeadTrack` 0x1bf618 clears the 0x10 track flag
+            // (`&= 0xffffffef`), the stored head angles ease back to 0 (HeadTrack's bVar5 == 2 path), and
+            // `AnimObjectAimAt` 0x1bfe58 aims the spine (bone 2) with yaw AND pitch — mode-0 clamps ±0.9
+            // (0x3f666666 / 0xbf666666), smoothed at `SetAiming`'s 0.2 (0x1c6878, 0x3e4ccccd). With the aim
+            // off, `NDrone2_DoHeadTracking` 0x1472c8 tracks the opponent (re-decided on `+0x358`, the
+            // same-target re-decide returning before the Rand(5); the tracked point is the opponent's
+            // tracked bone — the port stands in Bond's eye) or, with none, one Rand(10) stops the tracking
+            // and the angles ease back. HeadTrack's clamps: yaw ±1.1, 0 beyond 2.6; pitch [-1.0, +0.6];
+            // speed 0.14 alerted (`DCVars+0x50c > 0.66`) else 0.07 (0x1472c8). Both angles positive up.
+            let aiming = dr.anim.class == 2 && dr.aims_torso();
+            if aiming {
+                let dy = player.eye[1] - (dr.pos[1] + 1.2);
+                let want_p = (dy / dr.dist.max(0.001)).atan().clamp(-0.9, 0.9);
+                dr.aim_pitch = rotate_to_bearing(dr.aim_pitch, want_p, 0.2, crate::trig::PI);
+                if dr.tracking { let _ = rng.rand(10); dr.tracking = false; } // the stop draw (0x1472c8)
+                dr.head_yaw = rotate_to_bearing(dr.head_yaw, 0.0, 0.07, crate::trig::PI);
+                dr.head_pitch = rotate_to_bearing(dr.head_pitch, 0.0, 0.07, crate::trig::PI);
+            } else if dr.los || dr.seen {
+                // `los` (+0x228 & 2) not `seen` (& 4): `DroneVision_HaveOpponentSight` sets the seen bit
+                // only past the reaction time, and the game's head tracking follows Bond from the first
+                // sight pass (`DoHeadTrackingBehaviour`'s +0x228 & 8 path) — the pre-attack window.
+                if !dr.tracking {
+                    dr.tracking = true;
+                    dr.track_recheck = frame + rng.rand(5) as u32 + 2; // (Rand(5)+2)·FR·FR_DIV
+                } else if frame >= dr.track_recheck {
+                    dr.track_recheck = frame + rng.rand(5) as u32 + 2;
+                }
+                let dy = player.eye[1] - (dr.pos[1] + 1.55);
+                let want_y = angle_difference(dr.yaw, dr.yaw_to_opp);
+                let want_y = if want_y.abs() > 2.6 { 0.0 } else { want_y.clamp(-1.1, 1.1) };
+                let want_p = (dy / dr.dist.max(0.001)).atan().clamp(-1.0, 0.6);
+                let sp = if dr.alert > 0.66 { 0.14 } else { 0.07 };
+                dr.head_yaw = rotate_to_bearing(dr.head_yaw, want_y, sp, crate::trig::PI);
+                dr.head_pitch = rotate_to_bearing(dr.head_pitch, want_p, sp, crate::trig::PI);
+            } else {
+                if dr.tracking { let _ = rng.rand(10); dr.tracking = false; } // the stop draw (0x1472c8)
+                dr.head_yaw = rotate_to_bearing(dr.head_yaw, 0.0, 0.07, crate::trig::PI);
+                dr.head_pitch = rotate_to_bearing(dr.head_pitch, 0.0, 0.07, crate::trig::PI);
+            }
             if !dr.corpse { let _pf = crate::prof::scope("drone: handle_firing"); let b = { let lights = &mut self.lights; dr.handle_firing(d, rng, frame, player, (moving, first_moved), index, lights) }; if let Some(b) = b {
                 // `DroneWeap_FireWeapon` 0x178f68:264 → `Bullet_init_casing`: the guard's shell eject,
                 // right after `Bullet_init`'s spread draws [S] the eject draws run inline here instead
@@ -6083,6 +6177,7 @@ mod tests {
             free_root: false, bounded: true, dtype: 0, mode_normal: 0, mode_alert: 0, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0, alert_block: 0.0,
             door_open_at: 0,
             hit_door: None, door_return: 0, door_node: None, door_attempt: false, pending_door_msg: false, hit_door_open: true,
+            head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
         };
         dr
     }
