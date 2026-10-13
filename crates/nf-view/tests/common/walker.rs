@@ -576,10 +576,11 @@ impl Walker {
                     } else if self.stuck == 2 {
                         self.sidestep = -60; // nudge left
                     } else if self.stuck == 3 {
-                        // jump once
+                        // jump once — with forward: a knee-high ledge (the gatehouse floor) needs the
+                        // hop INTO it, a jump in place only re-tests the wall
                         let sim = self.scene.sim.as_mut().unwrap();
                         let j = sim.bond.grounded;
-                        if j { self.tick(Input { jump: true, ..Default::default() }, false); }
+                        if j { self.tick(Input { jump: true, forward: 1.0, ..Default::default() }, false); }
                     } else if self.stuck == 4 {
                         // back up, sidestep, and jump (crate-top pickups need the hop)
                         self.tick(Input { forward: -0.6, ..Default::default() }, false);

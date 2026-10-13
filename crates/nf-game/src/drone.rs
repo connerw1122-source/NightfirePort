@@ -4834,15 +4834,18 @@ impl Drones {
         let peers: Vec<(usize, V3, bool)> = self.llist.iter().map(|&i| (i, self.list[i].pos, self.list[i].seen)).filter(|&(i, _, _)| self.list[i].enabled).collect();
         // `Trigger_Calc`, then every object in the control list (newest first = reverse placement order): triggers and
         // drones interleaved, so a channel a trigger pulses is seen only by the objects updated after it.
-        // The player toucher stays the historical stand-in (`Toucher::player(pos − 0.4)` → capsule
-        // pos+0.15..pos+1.46, r 0.55). The game-accurate capsule (0x194df0's standing
-        // pos+0.55 / pos+0.275−cc, in `Player::capsule`) was tried and REVERTED: it is ~0.9 lower,
-        // and 07000005's truck chain then stalls — the hand-off channel 0x5c never fires. The
-        // chain's writer is not a player plate (no mask-8 trigger writes 0x5c [D trigger dump]); a
-        // class-5 OBJECT contact (the truck touching a plate) is the likely game path, and the
-        // port has no object touchers (the documented stand-in, trigger-port-check #11) — the high
-        // stand-in capsule with Bond aboard the truck covers the plate band instead. Revisit when
-        // object touchers land.
+        // The player toucher keeps the historical stand-in (`Toucher::player(pos − 0.4)`, reach
+        // feet+0.53..feet+3.14). Two alternatives were tried and REVERTED, each breaking a shipped
+        // behaviour:
+        // - the game-accurate capsule (0x194df0's pos+0.55 / pos+0.275−cc, on `Player::capsule`)
+        //   reaches ~0.9 lower: 07000005's truck chain stalled (the hand-off ch 0x5C never fired —
+        //   no mask-8 trigger writes it [D trigger dump]; a class-5 object contact is the likely
+        //   game path, trigger-port-check #11) AND the standing ride touched the ch-0x70 park plate
+        //   the game only fires crouched (fix-truck's trace) — the fix_truck_live sister caught it.
+        // - the union of both capsules also let the standing ride touch the park plate.
+        // The stand-in's known misses (documented): floor plates within 0.53 of the floor
+        // (07000005's ch-0x45 reveal plate at feet+0.47; 07000002's bunker plate 0x80 below the
+        // floor — the stealth route). Revisit when object touchers land.
         let touchers: Vec<crate::triggers::Toucher> = std::iter::once(crate::triggers::Toucher { contain: !player.hanging, ..crate::triggers::Toucher::player([player.pos[0], player.pos[1] - 0.4, player.pos[2]]) })
             .chain(self.list.iter().filter(|x| x.enabled).map(|x| crate::triggers::Toucher { a: [x.pos[0], x.pos[1] - 1.0, x.pos[2]], b: x.head(), r: 0.4, drone: true, skin: x.skin, contain: true }))
             .collect();

@@ -1,24 +1,22 @@
-//! probe: the 04 target's damageable/kind — why does the hit deal no damage?
+//! probe: the nav route from 05's spawn to the wire and to the zip door.
 #[path = "common/walker.rs"]
 mod walker;
-use nf_game::player::Input;
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 #[test]
-fn probe_target_flags() {
+fn probe_05_nav() {
     let iso = iso();
-    let mut scene = nf_view::load(&iso, "07000004.bin", false).expect("load");
-    for _ in 0..3000 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    let scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
     let sim = scene.sim.as_ref().unwrap();
-    let ti = sim.drones.list.iter().position(|d| d.skin == 0x0500_001e).expect("target");
-    let d = &sim.drones.list[ti];
-    eprintln!("target: damageable {} kind {} health {:.1} max {:.1} hits_taken {} state {:#x} team {}",
-        d.damageable, d.kind, d.health, d.max_health, d.hits_taken, d.state, d.team);
-    let data = nf_game::drone::Data {
-        tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons,
-        world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins, skeletons: &sim.skeletons,
-        nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning, hitboxes: &sim.hitboxes, volumes: &sim.volumes,
-        sfx: sim.sfx.as_ref(), models: &sim.models, surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(),
-    };
-    eprintln!("prop 0x2B (damageable?): {}", d.prop(&data, 0x2b as usize));
-    for p in [0x00u32, 0x01, 0x02, 0x11, 0x12, 0x13] { eprintln!("prop {p:#x}: {}", d.prop(&data, p as usize)); }
+    let start = sim.bond.pos;
+    for (name, dest) in [("the wire", [-23.5f32, 34.5, 6.3]), ("the zip door", [37.3, 50.1, -68.4]), ("the gate door", [30.0, 38.8, 38.2])] {
+        match walker::leg(sim, start, dest) {
+            pts if pts.len() > 2 => {
+                eprintln!("{name}: {} nodes:", pts.len() - 2);
+                for p in pts.iter().skip(1).take(pts.len() - 2).step_by(3) {
+                    eprintln!("  ({:.1},{:.1},{:.1})", p[0], p[1], p[2]);
+                }
+            }
+            _ => eprintln!("{name}: no nav route"),
+        }
+    }
 }
