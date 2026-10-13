@@ -113,4 +113,6 @@ Please run in PCSX2 and compare with `nf-view <iso>` (windowed) / `--shot`:
 
 ## ntfy
 
+Delivered 13:36 UTC (curl, first method, response id 2xr9p6sFXsnY).
+
 (sent after this report is pushed; see the queue finish log if it failed)
