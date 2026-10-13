@@ -4292,9 +4292,47 @@ impl Drones {
             obj.map(|o| (o.centre, o.radius))
         });
         self.fuseboxes = fuseboxes;
+        // `FuseBox_Create` 0x1b0448 ends with `SP_Create(pos, rot, param 0, 0, 0x40, 0, obj,
+        // FuseBox_Register 0x1b0970)` — the box's wire/lid ScriptPlayer, mode 0x40 (the preload:
+        // play+update+stop → state 1), whose entity streams are the box's VISIBLE MESH (the object
+        // itself has obj+0xD8 = 0 and never draws [M 001b0448:33-35, docs/models/misc.md]). The port's
+        // fusebox stand-in had no SP, so 07000008's GuardRoom fusebox — the only in-play opener of
+        // the doorway bolt ch 137 — was invisible (playtest item 7's "pillar"). The synthetic player
+        // primes on the first tick; its entities render and join set_dynamic. SP_Create's mask word
+        // is param_6 = 0 [M 001dc7e0]; the port's prime() skips mask-0 SPs (the port-check §9
+        // disabled-byte stand-in), so the player carries mask 1 — the load beat is what matters.
+        for fb in &self.fuseboxes {
+            let p = &level.maps[m].placements[fb.placement];
+            let script = p.params.iter().find(|(k, _)| *k == 0).map_or(0, |&(_, v)| v);
+            if script < 0x0600_0000 { continue; }
+            self.scripts.players.push(crate::nis::Player {
+                placement: fb.placement,
+                scripts: [script, 0],
+                modes: [0x40, 0],
+                stay: false,
+                mask: 1,
+                out: 0,
+                gate: 0,
+                scale: 1.0,
+                matrix: nf_formats::placement::object_matrix(p.rotation, p.translation),
+                cur: 0,
+                state: 0,
+                activated: false,
+                countdown: 0,
+                info: [None, None],
+                deleted: false,
+            });
+        }
         // SimpleScripts (`SS_Create` 0x1a9c58): the 0xE2 placements with a non-zero key count, their
         // keys from the main map's 0x19 blocks (map-tower2).
-        self.sss = crate::ss::SsList::create(&level.maps[m].placements, &path_blocks);
+        self.sss = crate::ss::SsList::create(&level.maps[m].placements, &path_blocks, |p| {
+            // The SS's collision mesh: the placement object's glist hashcode, the same resolution
+            // `Doors::create`'s closure does (the game's SS object carries its glist at create
+            // [M SS_Create 0x1a9c58]; Collide_PickObj walks the cel-linked objects).
+            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
+                else { level.maps[m].objects.get(p.index as usize) };
+            obj.map(|o| if o.hashcode == u32::MAX { 0x8000_0000 | ((m as u32) << 16) | p.index as u32 } else { o.hashcode }).unwrap_or(0)
+        });
         // The helicopter (`Copter_Create` 0x17d340, placement 0x2F) and the locks (`Lock_Create`
         // 0x1ae1f8, placement 0x2E) (fix-objects2). Neither draws RNG at create.
         self.copters = crate::copter::Copter::create(&level.maps[m].placements);
@@ -4343,7 +4381,18 @@ impl Drones {
     /// Bond fires `weapon` from `from` along `dir` (`Player_WeaponInitBullet`: head → aim point): one bullet per pellet
     /// (`+0x18`) with the record's damage `+0x0C`, range `+0x1C`, speed `+0x20` and spread `+0x24`; and the shot's
     /// sound (the first-person fire script's, 0x403 for the P2K) for the drones' hearing.
-    pub fn fire_player(&mut self, d: &Data, from: V3, dir: V3, weapon: u8, sound: nf_formats::sfx::SfxHearing) {
+    /// The closest approach of the segment `a`–`b` to the sphere (centre `c`, radius `r`): the classic
+/// closest-point-on-segment distance test.
+fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    let t = if len2 <= 0.0 { 0.0 } else { (ac[0] * ab[0] + ac[1] * ab[1] + ac[2] * ab[2]) / len2 }.clamp(0.0, 1.0);
+    let d = [ac[0] - ab[0] * t, ac[1] - ab[1] * t, ac[2] - ab[2] * t];
+    d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= r * r
+}
+
+pub fn fire_player(&mut self, d: &Data, from: V3, dir: V3, weapon: u8, sound: nf_formats::sfx::SfxHearing) {
         let Some(w) = d.weapons.records.get(weapon as usize) else { return };
         let f = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
         let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
@@ -4378,6 +4427,18 @@ impl Drones {
             // The photograph targets and breakable doors see the bullet this tick (the game's
             // collision pass registers the contact; the prop's update walks it — crate::props).
             self.props.bullet_hit(b.pos, end, b.weapon, b.damage, &mut self.channels, frame);
+            // The lazer watch's beam burns the locks (`Lock_Update` 0x1ae3d8 case 0, record word 1):
+            // the cell walk takes class-5 contacts whose BU+0x44 reads 0x4E/0x4F (the watch, −3/−10
+            // per tick [:57-103]); `Lock_Unlock` writes `switch_channels[record+8]` [:194-195]. The
+            // port's watch bullets carry the weapon id, so the segment-vs-sphere contact stands in
+            // for the cell walk; the create-time burn base is 0 on this level's data [M 0x1ae1f8 —
+            // 07000008's #207/#208 param 2 = 0], so the first contact completes it (playtest item 7).
+            if matches!(b.weapon, 0x4e | 0x4f) {
+                let hits: Vec<usize> = self.locks.iter().enumerate()
+                    .filter(|(_, lk)| !lk.burned && Self::segment_hits_sphere(b.pos, end, lk.pos, lk.radius.max(0.5)))
+                    .map(|(k, _)| k).collect();
+                for k in hits { self.locks[k].burn(&mut self.channels, frame); }
+            }
             self.bullet_path_weapons.push(b.weapon);
             let tw = d.world.segment(b.pos, end);
             let mut best: Option<(usize, i16, f32)> = None;
@@ -4933,6 +4994,10 @@ impl Drones {
         // call — at most one tick (4 cm) behind the visual. Id: high bit 40 + the door index.
         parts.extend(self.doors.list.iter().enumerate().filter(|(_, x)| x.glist != 0)
             .map(|(k, x)| (0x100_0000_0000 | k as u64, x.glist, x.matrix)));
+        // The SimpleScripts too (fix-party-mission item 7): the safe door (ch 136) and the doorway
+        // bolt (ch 137) are solid at their posed matrix, like the doors. Id: bit 41 + the ss index.
+        parts.extend(self.sss.list.iter().enumerate().filter(|(_, x)| x.hash != 0)
+            .map(|(k, x)| (0x200_0000_0000 | k as u64, x.hash, x.matrix)));
         { let _p = crate::prof::scope("drones: set_dynamic"); d.world.set_dynamic(&parts); }
         // Script triggers (`Trigger_TouchOnce` / `Trigger_Touch` made by `Script_CreateEntity`): one per live entity,
         // its volume the glist's collision at the entity's matrix this tick; gone with the object. New objects head the

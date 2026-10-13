@@ -2640,7 +2640,9 @@ impl Scene {
             let n_doors = nf_game::door::door_placements(&level.maps[m].placements).len();
             // The same construction the sim's `Drones::attach_level` runs, so the slot order matches
             // the matrix upload's `sss.list` order (deterministic: placement order, same filter).
-            let ss_list = nf_game::ss::SsList::create(&level.maps[m].placements, &level.path_blocks());
+            let ss_list = nf_game::ss::SsList::create(&level.maps[m].placements, &level.path_blocks(), |_p| 0);
+            // (hash 0 here: the render pass does not need the collision hash — it reads the placement
+            // object directly below; the sim's attach_level resolves the real one for set_dynamic.)
             for (si, ss) in ss_list.list.iter().enumerate() {
                 let p = &level.maps[m].placements[ss.placement];
                 let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }

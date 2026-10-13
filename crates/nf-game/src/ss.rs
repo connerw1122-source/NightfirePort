@@ -40,6 +40,10 @@ pub struct Ss {
     pub t: f32,
     /// The posed matrix this tick (at rest: key 0).
     pub matrix: Mat4,
+    /// The placement's object glist hashcode (0 when it names nothing): the set_dynamic collision
+    /// mesh (`Collide_PickObj` walks the cel-linked objects; fix-party-mission item 7 — the safe
+    /// door and the doorway bolt are solid like the doors).
+    pub hash: u32,
 }
 
 /// Every animated SimpleScript of the level, in placement order.
@@ -49,7 +53,7 @@ pub struct SsList { pub list: Vec<Ss> }
 impl SsList {
     /// `SS_Create` over the main map's 0xE2 placements with a non-zero key count. The sphere argument
     /// is unused; the pose comes from the key list alone (key 0 = the placement transform [D]).
-    pub fn create(placements: &[Placement], path_blocks: &[&[u8]]) -> SsList {
+    pub fn create(placements: &[Placement], path_blocks: &[&[u8]], mut hash: impl FnMut(&Placement) -> u32) -> SsList {
         let mut list = Vec::new();
         for (i, p) in placements.iter().enumerate() {
             if p.flags & 0xff != 0xe2 { continue; }
@@ -71,6 +75,7 @@ impl SsList {
                 spline: param(6) != 0,
                 t: 0.0,
                 matrix,
+                hash: hash(p),
             });
         }
         SsList { list }
