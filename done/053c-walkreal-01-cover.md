@@ -32,3 +32,7 @@ Files: `crates/nf-view/tests/common/walker.rs`, `crates/nf-view/tests/walkreal_0
 
 ---
 claimed-by: sandbox1 at 2026-10-13T14:17Z
+
+---
+## Report (done, 2026-10-13T14:59Z)
+
