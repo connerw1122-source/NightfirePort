@@ -356,11 +356,14 @@ pub struct Sim {
 /// / 0x2000053 "OBJECTIVE COMPLETE"; `HUD_UpdateStatusPane` 0x19c310:127-144 rebinds it per display
 /// by comparing the message text with "OBJECTIVE COMPLETE" — the port carries the id from the
 /// event instead) and whether the game's Fail-prefixed format ("%s: %s", 0x30cbb8) rendered it.
+/// `life` is the time the node was created with (`Text_AddMsg`'s scaled tick count); `opened`/
+/// `second` track the pane's per-display SFX (`ObjectiveSFXTriggered1/2` 0x30ccb4/0x30ccb8 —
+/// reset by case 2 each time the message becomes the displayed head [M 0x19c310:148-164]).
 #[derive(Clone, Debug)]
-pub struct Msg { pub text: String, pub time: f32, pub status: u32, pub failed: bool }
+pub struct Msg { pub text: String, pub time: f32, pub status: u32, pub failed: bool, pub life: f32, pub opened: bool, pub second: bool }
 
 impl Msg {
-    fn new(text: String, time: f32) -> Msg { Msg { text, time, status: 0, failed: false } }
+    fn new(text: String, time: f32) -> Msg { Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false } }
 }
 
 /// The HUD state the port keeps in Sim (the game keeps it in BLData / the TXTMSG list / pane structs).
@@ -1796,6 +1799,70 @@ impl Sim {
         self.hud.taken_seen = self.drones.taken.len();
         for m in new_msgs { self.hud.msgs.push_back(m); }
         self.lang = lang;
+        // The mission layer's events (`Mission_Update` 0x182c60 / `Mission_MonitorObjectives`
+        // 0x1827d8, docs/systems/mission.md): type-2 objective notices, the FailLabel, the type-3
+        // mission banner and the level-end / restart decisions. `Text_AddMsg` only QUEUES the
+        // message — every sound and every drawn pixel belong to the pane update
+        // (`HUD_UpdateStatusPane` 0x19c310 cases 2/3), which cannot open while a script camera
+        // holds the viewer's +0x2a gate [M 0x1b11d8:16-18]. The port therefore drains the events
+        // BEFORE the frozen check (a banner queued mid-cut-scene waits in the queue, its timer
+        // untouched) and plays the SFX when the message first displays, below.
+        // fix-objective-banner: the drain used to sit behind the frozen check and play the SFX as
+        // the event landed, so on 07000007 the Kimiko trigger's ch 0x48 announced (and played
+        // 1532+469) on the trigger tick — one tick before the scene's `Script_CameraStart` set the
+        // freeze — which the user heard as "obj doesnt wait for kimiko cutscene and plays the
+        // sound immediately".
+        let mut events = std::mem::take(&mut self.drones.mission_events);
+        for ev in events.drain(..) {
+            match ev {
+                nf_game::mission::Event::Objective { label, is_new: _, ticks, failed } => {
+                    let complete = label == 0x0200_0053;
+                    let mut text = match self.lang.as_ref().and_then(|l| l.bind(label)) {
+                        Some(t) => t.to_string(),
+                        None => continue,
+                    };
+                    if failed {
+                        // The game's "%s: %s" (0x30cbb8) with 0x170 "Fail" [M 0x1827d8:72-74].
+                        let fail = self.lang.as_ref().and_then(|l| l.bind(0x170)).unwrap_or("Fail").to_string();
+                        text = format!("{fail}: {text}");
+                    }
+                    let status = if complete { 0x0200_0053 } else { 0x0200_0051 };
+                    self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed, life: ticks as f32, opened: false, second: false });
+                }
+                nf_game::mission::Event::FailLabel(l) => {
+                    self.hud.fail_label = l;
+                }
+                nf_game::mission::Event::MissionComplete { next: _ } => {
+                    // The type-3 "Mission Complete" (0x2000006), 240 ticks [M 0x182c60:85-122].
+                    // The level end itself arrives as `Event::LevelEnd` after the banner (case 4).
+                    if let Some(t) = self.lang.as_ref().and_then(|l| l.bind(0x0200_0006)) {
+                        self.hud.mission_msgs.push_back(Msg::new(t.to_string(), 240.0));
+                    }
+                }
+                nf_game::mission::Event::MissionFailed => {
+                    // The type-3 "Mission Fail" (0x2000007), 300 ticks [M 0x182c60:45-57].
+                    if let Some(t) = self.lang.as_ref().and_then(|l| l.bind(0x0200_0007)) {
+                        self.hud.mission_msgs.push_back(Msg::new(t.to_string(), 300.0));
+                    }
+                }
+                nf_game::mission::Event::PlayerDead => {} // the red fade is render-side; the menu arrives below
+                nf_game::mission::Event::LevelEnd { next } => {
+                    // `ResetMap_LevelToLoad(LevelToEndTo)` [M 0x182c60:73]. The 0x0730xxxx codes
+                    // are DRIVING.ELF levels the port cannot load — logged and skipped.
+                    if next & 0xffff_0000 == 0x0700_0000 {
+                        self.drones.level_exit = Some(next);
+                    } else {
+                        eprintln!("ission] complete → LevelToEndTo {next:08x} (driving level, not ported)");
+                    }
+                }
+                nf_game::mission::Event::MenuOpen => {
+                    // The 0x40000042 fail/death menu [M 0x182c60:78]. Until 180-fix-menus draws
+                    // it, the port's auto-restart answers Restart immediately (the flag keeps
+                    // the view free to answer instead via `fail_choose_restart`/`_quit`).
+                    if self.drones.auto_restart { self.drones.fail_choose_restart(); }
+                }
+            }
+        }
         // `Text_UpdateMsg` 0x1b11d8: time −= 1 per frame, delete at ≤ 0 — but the viewer's +0x2a HUD
         // flag returns early while a cut-scene camera runs [M 0x1b11d8:16-18], freezing every message
         // until the NIS ends (playtest item 5). The port: no countdown and no bar close while frozen.
@@ -1809,81 +1876,46 @@ impl Sim {
         } else {
             self.hud.bar_close = HudState::BAR_W;
         }
-        // The mission layer's events (`Mission_Update` 0x182c60 / `Mission_MonitorObjectives`
-        // 0x1827d8, docs/systems/mission.md): type-2 objective notices, the FailLabel, the type-3
-        // mission banner and the level-end / restart decisions. The banner SFX play when the pane
-        // opens in the game [M 0x19c310:150-163, 220-234] — the port plays them as the event lands.
-        let mut events = std::mem::take(&mut self.drones.mission_events);
-        if !events.is_empty() {
-            let cam = self.bond.head();
-            for ev in events.drain(..) {
-                match ev {
-                    nf_game::mission::Event::Objective { label, is_new, ticks, failed } => {
-                        // Sounds: a new objective plays 1532 then 469; "OBJECTIVE COMPLETE" 468
-                        // [M 0x19c310:150-163, 220-234].
-                        let complete = label == 0x0200_0053;
-                        if complete { self.drones.audio.play3d(468, cam, None); }
-                        else if is_new { self.drones.audio.play3d(1532, cam, None); self.drones.audio.play3d(469, cam, None); }
-                        let mut text = match self.lang.as_ref().and_then(|l| l.bind(label)) {
-                            Some(t) => t.to_string(),
-                            None => continue,
-                        };
-                        if failed {
-                            // The game's "%s: %s" (0x30cbb8) with 0x170 "Fail" [M 0x1827d8:72-74].
-                            let fail = self.lang.as_ref().and_then(|l| l.bind(0x170)).unwrap_or("Fail").to_string();
-                            text = format!("{fail}: {text}");
-                        }
-                        let status = if complete { 0x0200_0053 } else { 0x0200_0051 };
-                        self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed });
-                    }
-                    nf_game::mission::Event::FailLabel(l) => {
-                        self.hud.fail_label = l;
-                    }
-                    nf_game::mission::Event::MissionComplete { next: _ } => {
-                        // The type-3 "Mission Complete" (0x2000006), 240 ticks [M 0x182c60:85-122].
-                        // The level end itself arrives as `Event::LevelEnd` after the banner (case 4).
-                        if let Some(t) = self.lang.as_ref().and_then(|l| l.bind(0x0200_0006)) {
-                            self.hud.mission_msgs.push_back(Msg::new(t.to_string(), 240.0));
-                        }
-                    }
-                    nf_game::mission::Event::MissionFailed => {
-                        // The type-3 "Mission Fail" (0x2000007), 300 ticks [M 0x182c60:45-57].
-                        if let Some(t) = self.lang.as_ref().and_then(|l| l.bind(0x0200_0007)) {
-                            self.hud.mission_msgs.push_back(Msg::new(t.to_string(), 300.0));
-                        }
-                    }
-                    nf_game::mission::Event::PlayerDead => {} // the red fade is render-side; the menu arrives below
-                    nf_game::mission::Event::LevelEnd { next } => {
-                        // `ResetMap_LevelToLoad(LevelToEndTo)` [M 0x182c60:73]. The 0x0730xxxx codes
-                        // are DRIVING.ELF levels the port cannot load — logged and skipped.
-                        if next & 0xffff_0000 == 0x0700_0000 {
-                            self.drones.level_exit = Some(next);
-                        } else {
-                            eprintln!("[mission] complete → LevelToEndTo {next:08x} (driving level, not ported)");
-                        }
-                    }
-                    nf_game::mission::Event::MenuOpen => {
-                        // The 0x40000042 fail/death menu [M 0x182c60:78]. Until 180-fix-menus draws
-                        // it, the port's auto-restart answers Restart immediately (the flag keeps
-                        // the view free to answer instead via `fail_choose_restart`/`_quit`).
-                        if self.drones.auto_restart { self.drones.fail_choose_restart(); }
-                    }
-                }
-            }
+        // `Text_UpdateMsg` ticks only the displayed head [M 0x1b11d8:48-73 — the out-param
+        // `*param_3` is the head node; the queue behind waits]; when it expires the next message
+        // becomes the head and the pane re-opens for it (case 0 → 1). The port used to tick every
+        // queue member in parallel, which expired the banners behind the front one before they
+        // ever showed.
+        if let Some(m) = self.hud.objective_msgs.front_mut() {
+            m.time -= 1.0;
+            if m.time <= 0.0 { self.hud.objective_msgs.pop_front(); }
         }
-        for m in &mut self.hud.objective_msgs { m.time -= 1.0; }
-        self.hud.objective_msgs.retain(|m| m.time > 0.0);
         if self.hud.objective_msgs.is_empty() {
             if self.hud.objective_close > 0.0 { self.hud.objective_close = (self.hud.objective_close - 16.0).max(0.0); }
         } else {
             self.hud.objective_close = HudState::OBJECTIVE_W;
         }
-        for m in &mut self.hud.mission_msgs { m.time -= 1.0; }
-        self.hud.mission_msgs.retain(|m| m.time > 0.0);
+        if let Some(m) = self.hud.mission_msgs.front_mut() {
+            m.time -= 1.0;
+            if m.time <= 0.0 { self.hud.mission_msgs.pop_front(); }
+        }
         if self.hud.mission_msgs.is_empty() {
             if self.hud.mission_close > 0.0 { self.hud.mission_close = (self.hud.mission_close - 32.0).max(0.0); }
         } else {
             self.hud.mission_close = HudState::MISSION_H;
+        }
+        // The banner SFX, where the game plays them: the pane update. Case 2 schedules the pair per
+        // display (new objective: PlayMe1st 1532, PlayMe2nd 469; "OBJECTIVE COMPLETE": PlayMe1st 468
+        // and ObjectiveSFXTriggered2 preset so the 2nd never plays) [M 0x19c310:148-164]; case 3
+        // fires PlayMe1st in the message's first 60 ticks — only while `ScriptCam == 0` (a cut-scene
+        // holds it) [M 0x19c310:219-229] — and PlayMe2nd once the steady phase begins (remaining + 60
+        // ≤ life) [M 0x19c310:232-235]. The port's pane cannot open while `hud_frozen` (the
+        // viewer+0x2a gate above), so at this point the ScriptCam gate has already cleared.
+        if let Some(m) = self.hud.objective_msgs.front_mut() {
+            let cam = self.bond.head();
+            if !m.opened {
+                m.opened = true;
+                let id = if m.status == 0x0200_0053 { 468 } else { 1532 };
+                self.drones.audio.play3d(id, cam, None);
+            } else if !m.second && m.status != 0x0200_0053 && m.time <= m.life - 60.0 {
+                m.second = true;
+                self.drones.audio.play3d(469, cam, None);
+            }
         }
     }
 

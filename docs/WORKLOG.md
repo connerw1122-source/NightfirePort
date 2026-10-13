@@ -7825,3 +7825,54 @@ Work Log:
 Stage Summary:
 - Starting: banner timing (what holds the objective pane while a script player owns the camera), the
   banner's real text from the mission table, the fail message's centring.
+
+---
+Task: fix-objective-banner (branch s/fix-objective-banner)
+Agent: fix-objective-banner worker
+Task: the objective banner's timing (wait for the Kimiko cut-scene's hand-back), the banner's real objective text, the centred fail message
+
+Work Log:
+- Reproduced on master with a headless NF_ISO probe through the real trigger (TouchOnce #412,
+  out 0x48 → SP #420 plays 0x06000073, the Kimiko scene): the announce drained on the trigger
+  tick, one tick BEFORE the scene's Script_CameraStart set hud_frozen, and the port played
+  1532+469 and displayed the banner at the same moment the cut-scene started. Frame trace:
+  frame 1 ch 0x48 set + 2 cold-load banners; frame 2 hud_frozen=true, the "Spy on secret
+  meeting" event drained at frame 1's hud_tick with the sound.
+- The game's mechanism, from the decompile: `Text_AddMsg` 0x1b0c30 only QUEUES a message; every
+  sound and drawn pixel belongs to `HUD_UpdateStatusPane` 0x19c310, whose case 0 polls
+  `Text_UpdateMsg` 0x1b11d8:16-18 — which returns 0 while the viewer's +0x2a HUD gate is off
+  (set by `Script_CameraStart` 0x1d9140:41-43, restored by `Script_KillStream` 0x1d9860:71).
+  `Mission_Update` runs from `Game_Run` 0x1c9790:17 BEFORE the object handler, so the monitor
+  sees a trigger's channel one tick after the trigger — after the camera gate is up. The SFX
+  schedule lives in the pane: case 2 schedules PlayMe1st/PlayMe2nd per display (new objective
+  1532/469, "OBJECTIVE COMPLETE" 468 with Triggered2 preset so 469 never plays) [M
+  0x19c310:148-164]; case 3 fires PlayMe1st in the message's first 60 ticks, only while
+  `ScriptCam == 0` [M 0x19c310:219-229], and PlayMe2nd (469) once the steady phase begins
+  (remaining + 60 ≤ life) [M 0x19c310:232-235]. `Text_UpdateMsg` ticks only the displayed head
+  [M 0x1b11d8:48-73].
+- Fixes: (1) nf-view hud_tick drains the mission events BEFORE the frozen check (queue silently
+  mid-cut-scene, timers untouched) and plays the SFX when the message first displays — PlayMe1st
+  at open, 469 at life−60, complete = 468 only; (2) nf-game Drones::tick runs `Mission_Update` at
+  the TOP of the tick, before fx/triggers/scripts/the death path (the game's Game_Run order —
+  Mission_Update 0x182c60:17 before control_movement_object_handler 0x1336f8:30-35), so the
+  announce lands after the scene's camera gate; (3) the objective/mission banner queues tick
+  head-only (the game's Text_UpdateMsg), which also stops later banners expiring before they
+  ever show; (4) the objective banner's status label + body draw CENTRED on x=256 — template x
+  128 + MsgObjectiveStatusPane CREATE x 128 [L 0x319608 entries 5/0 + CREATE 0x319710; dump in
+  the report] with fmt 0x30cdb0's justify byte 3 = centre [M Font_ParseFormat 0x1ee3e0 case
+  0xfe/3 → flag 2; Font_DrawText 0x1eee48 flag 2 → x −= w/2] — the port drew both rows
+  left-aligned from x=128 (the user's off-centre fail message). The bar itself (16..496) was
+  already right: case 1 re-pins the middle's x/w to the template on every open [M 0x19c310:101-111].
+- Tests (crates/nf-view/tests/fix_objective_banner_live.rs, all NF_ISO, all green):
+  the_kimiko_scene_holds_the_announce_until_the_handback (no banner SFX and no display from the
+  trigger to the hand-back; exactly one announce — the objective's own bound line; 1532 once at
+  the hand-back, 469 once ~60 ticks later); every_objective_banner_shows_the_objectives_own_line
+  (07000005 + 07000007: each banner body == `Lang::bind` of the objective record's own text id,
+  status id 0x02000051); the_fail_message_is_centred_on_the_banner (the Fail-prefixed notice's
+  status + body rows measure centred on 256 ± 1.5, inside the 16..496 bar).
+
+Stage Summary:
+- The banner waits for the cut-scene's hand-back the way the game's pane gate does; the text is
+  the objective's own string id; the fail message is centred. Shared-file changes: drone.rs (the
+  Mission_Update move), scene.rs (the drain/freeze order, the head-only tick, the SFX-at-open),
+  hud.rs (the centred objective-banner rows) — all additive, listed in the report.
