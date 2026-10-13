@@ -8529,3 +8529,15 @@ Stage Summary:
   and the ammo-id remaps are new port behaviour with game citations.
 - Left: the auto-switch drain re-open (live checks 1-2 in the report), moving-platform landings,
   the drop push-out, the AR set's second pile, the +0x888 kind-5 field, the shop's Upgrades byte.
+
+---
+Task: fix-searchlight-remainder (G-033/G-036) — searchlights: late spot creation (only 2 kind-2
+  spots at the snapshot; whose create-walk backfills the rest: spawner or script path), the spot
+  dynamic light + flicker, the broken-head smoke (Gas_Init, 6 RNG calls per puff not consumed
+  today), the corona alpha byte; reconsider re-adding the searchlight-tracks-bond test
+
+Work Log:
+- Started. Branch cut from origin/master 7a614ba. Reading searchlight.rs + decompile.
+
+Stage Summary:
+- In progress.
