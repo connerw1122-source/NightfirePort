@@ -6982,3 +6982,20 @@ Work Log:
 
 Stage Summary:
 - Branch s/fix-world-objects pushed (branch start). Next: read the port's placement parse path, port InverterTrigger (trivial) first, then ThirdCam, Shooter, RB; NF_ISO fail-first tests per type.
+
+**fix-world-objects progress (10:30 UTC)**: the four light families are ported and green —
+`crates/nf-game/src/worldobj.rs` (new file): InverterTrigger (0x1b3040/0x1b30a8: in-channel forces
+the out channel low), Shooter (0x17d030/0x17d0c0: one-shot `Bullet_init` fire on the arm edge —
+obj+0xFE bit 0 deletes it the same tick per the delete pass 0x1336f8:86-87; the 0x3b weapon-class
+case fires straight down, REAL on 0700004a's weapon 0x3d, dmg 2000), DynamicObject (0x18dbf8/
+0x18d3b8: chA gate, mode-0 chB self-delete vs mode-1 flags 0x30, the p2 distance fade into
+obj+0x106), ThirdCam (0x1bc510/0x1bc590: camera id + key-list splines via door::interp). Hooks:
+drone.rs one field + create in attach_level + tick after useobjs.tick (additive, listed in the
+report); lib.rs module line. Tests: crates/nf-view/tests/worldobj_live.rs 5 NF_ISO tests
+(fail-first: the `worldobjs` field had no pre-fix existence; every asserted behaviour had no
+ported writer). Sweep census HANDLED extended (0x3b/0x41/0xd2/0xe7). Full suite: 630 passed /
+3 failed (the 3 allowed disc_golden). Atlas: docs/atlas/world-objects.md (per-type creator/
+instance/update/param tables + the RB/Car remainder with the read decompile evidence + 3 live
+checks). levels.md §7.1 got the additive update note. NOT ported (documented): 0xd8 RB (the
+decompile reading is in the atlas doc — RB_Update 0x1d6e38/EulerEvolve/Impulses/RestingContact
+chain), 0xda Car (driving-adjacent). Report + finish next.
