@@ -28,6 +28,3 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 - **Update the doc entry** to say it's fixed, with your commit.
 
 **Branch:** `s/fix-npc-doors-escort`.
-
----
-claimed-by: sandbox5 at 2026-10-13T02:59Z
