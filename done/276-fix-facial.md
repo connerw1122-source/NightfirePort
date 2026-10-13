@@ -142,3 +142,7 @@ remaining ~140 nf-view binaries did not fit the window; re-run before merge.
 `crates/nf-game/tests/facial_live.rs` (new), `crates/nf-formats/tests/facial_probe.rs` (new, the
 evidence probe), `docs/formats/character.md`, `docs/WORKLOG.md`. No shared file rewritten; no
 Rand_* draws added to the sim (the facial state machine is not wired yet).
+
+## ntfy failed
+
+All three fallbacks failed with the server-side quota error (sent 19:13 UTC): curl HTTP 429 "daily message quota reached" (code 42908); python urllib HTTP 429; wget exit 8. The report commit: 5e021b5.
