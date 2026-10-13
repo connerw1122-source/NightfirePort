@@ -7371,3 +7371,17 @@ NF_ISO impacts_live (wall decal at hit+0.01 with the surface normal/mesh, sky sh
 lands in lifetime, bit-for-bit seeded rerun). Known: `guard_takes_cover_like_the_game` needs its seed
 re-picked (0072's procedure — the impact draws joined the stream, as the game's own do). Report:
 docs/reports/fix-impacts.md.
+---
+Task: fix-explosions2
+Agent: fix-explosions2 worker
+Branch: s/fix-explosions2 (from origin/s/fix-explosions 88189da, merged origin/master 78d73e0)
+
+Work Log:
+- Sandbox kept: repo, work/, onfoot ISO, nf-queue present. Leftover WIP probe from the interrupted
+  fix-final-blockers2 session committed to its own branch (walkreal_probe_fb6.rs t2190 rays) and pushed.
+- Branch created from s/fix-explosions, master merged (only WORKLOG.md conflicted, both sides kept).
+
+Stage Summary:
+- Task: find the frag grenade's real damage path (fix-explosions read weapon 0x35 as radius 10 / damage 0,
+  making frags harmless and re-locking the grenade test to that), show it with evidence, land the fix with
+  the real falloff; keep the good parts (no on-impact kill, blast sound, flashbang stun no-damage, mine/rocket 8/100).
