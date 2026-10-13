@@ -29,3 +29,6 @@ Files: `crates/nf-view/tests/common/walker.rs`, `crates/nf-view/tests/walkreal_0
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/walkreal-01-cover`.
+
+---
+claimed-by: sandbox1 at 2026-10-13T14:17Z
