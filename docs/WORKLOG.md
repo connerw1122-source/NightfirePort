@@ -6947,3 +6947,9 @@ Work log:
   is exactly 19 rooms + 113 non-rooms. Disc probe: 0c's pylonshadow decal = flags16 0x8019 (cel#69),
   every 0c/07 decal non-room. Fix: rooms keep chain ordinals (per-frame depth chain, baked
   room-rank fallback); non-room creates_cel draws become distance-keyed (chain=u32::MAX).
+- Fix shipped: `Material::chain` = the room's parse rank (fallback) + new `Material::node` = the
+  placement's cells index; non-room creates_cel draws distance-keyed (the pylonshadow decal rides
+  the game's list-1 alpha push via glist flag 0x1). `portal_cel_chain` + verbatim `quicksort_viscel`
+  give the per-frame -90000+10k chain in gpu.rs (order only; the cull untouched). Failing-first on
+  master: chain 68 vs MAX. Suite: 617 passed, 3 failed (the allowed disc_golden trio), 13 ignored.
+  Report: docs/reports/fix-cel-order.md.
