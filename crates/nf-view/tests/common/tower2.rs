@@ -58,7 +58,10 @@ pub fn walk_12(w: &mut crate::walker::Walker) {
             look: (want_pitch - sim.bond.pitch).clamp(-0.05, 0.05),
             ..Default::default()
         };
-        w.tick(input, false);
+        // The burn is the held fire's: each held tick spawns the decryptor's beam shot [M
+        // 0x1a5460:601-694's held-fire refire] and Lock_Update 0x1ae3d8:194 burns on its contact
+        // (fix-gadgets2's held-fire model — the released fire spawns no shot and the burn stops).
+        w.tick_fire(input);
     }
     eprintln!("[012] the keypad lock burned at +{} ticks (ch 0xa) [M 0x1ae3d8:194]", w.total_ticks - start);
     {

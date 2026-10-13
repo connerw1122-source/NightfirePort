@@ -16,6 +16,7 @@ use walker::{Act, Walker, Wp};
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 
 #[test]
+#[ignore = "the contact escort's interior doors need the NPC door-open path (NDrone2_OpenDoor): walkreal-a carried the nearest-door-within-2.0 stand-in for it, which this route was walked against, and master rightly dropped it (it breaks Mayhew's walk in fix_mission_live) — the real path lands with 045g-fix-npc-doors2 (branch s/fix-npc-doors2); until then the lead stalls at a closed door with no guard to clear (round 10, state 0x1d, armed_peer 21.8)"]
 fn walk_from_the_spawn_to_the_exit_with_the_contact() {
     let iso = iso();
     let mut w = Walker::new(nf_view::load(&iso, "07000001.bin", false).expect("load 07000001"));

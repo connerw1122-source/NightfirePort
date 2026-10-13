@@ -139,8 +139,21 @@ impl Walker {
     /// One tick with the given input; keeps Bond alive when `top_up_health` (damage suppressed —
     /// the "enemies may be disabled for the walk" allowance; falls are tracked in the report).
     pub fn tick(&mut self, input: Input, use_key: bool) {
+        self.tick_inner(input, use_key, false);
+    }
+
+    /// One tick with the trigger HELD: the gadget burns (the Q-Decryptor keypad melt) come from the
+    /// held fire's refire — each held tick spawns the beam shot [M Player_WeaponInitBullet
+    /// 0x1a4bf0 → Player_MuzzleFlash 0x1a4298 → Draw_LaserBeam 0x1a4560; the held-fire refire loop
+    /// 0x1a5460:601-694], and `Lock_Update` 0x1ae3d8:194 burns the lock the beam touches. The
+    /// port's burn runs in `step_bond`'s trigger arm (fix-gadgets2's held-fire model).
+    pub fn tick_fire(&mut self, input: Input) {
+        self.tick_inner(input, false, true);
+    }
+
+    fn tick_inner(&mut self, input: Input, use_key: bool, fire: bool) {
         let y_before = self.scene.sim.as_ref().unwrap().bond.pos[1];
-        self.scene.sim.as_mut().unwrap().step_bond(input, false, false, use_key);
+        self.scene.sim.as_mut().unwrap().step_bond(input, fire, false, use_key);
         let sim = self.scene.sim.as_ref().unwrap();
         self.total_ticks += 1;
         if sim.bond.pos[1] < y_before - 0.4 && !sim.bond.grounded {
