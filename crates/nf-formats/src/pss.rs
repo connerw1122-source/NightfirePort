@@ -345,8 +345,12 @@ mod tests {
     }
 
     fn audio_header(rate: u32, channels: u32, interleave: u32, body: u32) -> Vec<u8> {
+        audio_header_kind(AUDIO_TYPE_ADPCM, rate, channels, interleave, body)
+    }
+
+    fn audio_header_kind(kind: u32, rate: u32, channels: u32, interleave: u32, body: u32) -> Vec<u8> {
         let mut h = b"SShd".to_vec();
-        for w in [0x18, AUDIO_TYPE_ADPCM, rate, channels, interleave, u32::MAX, u32::MAX] { h.extend_from_slice(&w.to_le_bytes()); }
+        for w in [0x18u32, kind, rate, channels, interleave, u32::MAX, u32::MAX] { h.extend_from_slice(&w.to_le_bytes()); }
         h.extend_from_slice(b"SSbd");
         h.extend_from_slice(&body.to_le_bytes());
         h
@@ -359,14 +363,14 @@ mod tests {
         let pcm: Vec<i16> = (0..256i32).map(|i| ((i * 137) % 6553) as i16 - 3276).collect();
         let mut body = Vec::new();
         for v in &pcm { body.extend_from_slice(&v.to_le_bytes()); }
-        let bytes = [audio_header(48000, 2, 512, body.len() as u32), body].concat();
+        let bytes = [audio_header_kind(AUDIO_TYPE_PCM, 48000, 2, 512, body.len() as u32), body].concat();
         // The RC2-era parser rejected this outright: kind 1 is PCM, not SPU ADPCM.
         assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), AUDIO_TYPE_PCM);
         let a = Audio::parse(&bytes).unwrap();
         assert_eq!((a.header.kind, a.header.rate, a.header.channels, a.header.interleave), (1, 48000, 2, 512));
-        assert_eq!(a.samples(), 256);
+        assert_eq!(a.samples(), 128);
         let out = a.decode();
-        assert_eq!(out.len(), 256);
+        assert_eq!(out.len(), 128);
         assert!(out.iter().zip(pcm.chunks_exact(2)).all(|(o, l)| o[0] == l[0] && o[1] == l[1]));
         // ADPCM kind 0x10 still parses (the RC2 path is unchanged).
         let adpcm = [audio_header(48000, 2, 0x20, 64), vec![0x11u8; 64]].concat();
@@ -374,7 +378,7 @@ mod tests {
         assert_eq!(a.header.kind, AUDIO_TYPE_ADPCM);
         // Any other kind is still an error.
         let bad = audio_header(48000, 2, 0x20, 64);
-        assert!(AudioHeader::parse(&[&bad[..8], &1u32.to_le_bytes(), &bad[12..]].concat()).is_err());
+        assert!(AudioHeader::parse(&[&bad[..8], &0x99u32.to_le_bytes(), &bad[12..]].concat()).is_err());
     }
 
     /// A synthetic program stream: packs, a system header, video split over packets with a PTS, two audio

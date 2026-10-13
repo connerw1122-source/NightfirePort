@@ -46,9 +46,9 @@ pub fn picture_counts(es: &[u8]) -> (usize, usize, usize, usize) {
 /// per §6.1.1.11). Slow (a movie's ES is tens of MB); tests use it on one movie at a time.
 #[cfg(feature = "movies")]
 pub fn decode_video(es: &[u8]) -> crate::buf::Result<Vec<VideoFrame>> {
-    use crate::buf::invalid;
     use oxideav_mpeg12video::video_sequence::decode_video_sequence;
-    let frames = decode_video_sequence(es).map_err(|e| invalid(format!("mpeg2: {e}")))?;
+    let frames = decode_video_sequence(es)
+        .map_err(|e| crate::buf::FormatError::Invalid(format!("mpeg2: {e}")))?;
     Ok(frames
         .into_iter()
         .map(|f| VideoFrame {
@@ -118,8 +118,8 @@ mod tests {
         let (total, i, p, b) = picture_counts(&es);
         assert_eq!((total, i, p, b), (4, 1, 1, 2));
         // A tampered type byte changes the split (sister of the golden pictures columns).
-        es[5] = 0x18; // second picture is B now
+        es[5] = 0x18; // the first picture is B now
         let (total, i, p, b) = picture_counts(&es);
-        assert_eq!((total, i, p, b), (4, 1, 0, 3));
+        assert_eq!((total, i, p, b), (4, 0, 1, 3));
     }
 }

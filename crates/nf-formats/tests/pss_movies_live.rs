@@ -226,9 +226,9 @@ fn audio_sample_count_matches_stream_length() {
 /// Frame 0 and frame 1000 of the first briefing movie decode to fixed SHA-1s (feature `movies`). The hashes are
 /// of the packed Y/Cb/Cr planes (`mpeg2::pack_yuv420`, the ffmpeg `yuv420p` layout). Cross-check (not a test):
 /// `ffmpeg -i 07100001.m2v -frames:v 1 -f rawvideo -pix_fmt yuv420p` hashes the same frame 0 to
-/// `1a4ce4f6b9491e4faa8e7fc7a1474d77d4865559`; the decoders differ only in IDCT rounding (measured PSNR 67.8 dB
-/// on frame 0), so the golden hashes pin *this* decoder's output, and the ffmpeg hash documents the
-/// independent cross-check.
+/// `1a4ce4f6b9491e4faa8e7fc7a1474d77d4865559` and frame 1000 to `1efd3fc609e5b68387d775c6ddea6d079c314b9c`;
+/// the decoders differ only in IDCT rounding (measured PSNR: frame 0 = 67.8 dB, frame 1000 = 66.3 dB), so the
+/// golden hashes pin *this* decoder's output, and the ffmpeg hashes document the independent cross-check.
 #[test]
 #[cfg(feature = "movies")]
 fn video_frames_decode_to_known_sha1s() {
@@ -244,8 +244,8 @@ fn video_frames_decode_to_known_sha1s() {
     let f0 = pack_yuv420(&frames[0]);
     let f1000 = pack_yuv420(&frames[1000]);
     // Computed by this decoder (feature movies); ffmpeg cross-check for frame 0 in the comment above.
-    assert_eq!(sha1(&f0), "SHA1_FRAME_0", "frame 0");
-    assert_eq!(sha1(&f1000), "SHA1_FRAME_1000", "frame 1000");
+    assert_eq!(sha1(&f0), "54b75479b7bbfd6d8e2492e8fc97072484ccbf3d", "frame 0");
+    assert_eq!(sha1(&f1000), "f965b37f552c898f75df29895c83e63aebe50134", "frame 1000");
     // Sister: decode a different frame; it must not match frame 1000's hash.
     assert_ne!(sha1(&pack_yuv420(&frames[999])), sha1(&f1000), "sister: a different frame hashes differently");
 }
