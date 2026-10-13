@@ -72,3 +72,41 @@ Port notes: `crates/nf-view/src/menu.rs` (the layouts as cited constants + the w
 drawers), `crates/nf-view/src/lib.rs` `front_end_menu` (`--shot --page …` renders each page),
 `crates/nf-view/tests/menus_flow.rs` (the sequence, the label ids per page, the sprite hashes per page,
 the unlock rule — with NF_ISO sisters against USATxt.dat and the EE snapshot).
+
+## The 2026-10-13 render gaps, closed (fix-menus3)
+
+The main agent's `nf-view --shot` renders next to the PCSX2 captures found eight differences; what each
+was and what fixed it:
+
+1. **Framing** — the game draws the 640×480 menu space as a centred 4:3 picture [L PCSX2 captures]; the
+   port's `Anchor::Stretch` quads filled the whole window. The overlay now maps every quad and text
+   through `Anchor::Centre`, which is the window's central 4:3 band (identical to Stretch at a 4:3
+   window). `crates/nf-view/src/menu.rs` `quad640`/`plate`/all text calls.
+2. **The legal block** — wraps inside its plate (50,332,540×108) and each line is centred at the plate's
+   centre x=320; `wrap_px` measures lines with the real font instead of the old char-count wrap. The
+   "Â©" came from `Font::layout` walking BYTES of the CP-1252-decoded UTF-8: "©" (C2 A9) drew glyphs
+   0xC2 + 0xA9. `layout` now walks chars — one glyph per source byte, the game's own mapping
+   (`__Font_DrawText` 0x1ee598 walks NUL-terminated byte strings).
+3. **The main menu's backdrop** — page 0x40000002 has NO static art control; its PAGE record names aux
+   movie 0x07330048 (every list page 0x07350048) [L the menu-def PAGE records]. The real background is
+   the looping FMV. The trimmed ISO stubs every movie (0-byte PSS [L]), so the port keeps the dark
+   plate; a still from the retail image is the follow-up. The rows themselves are LBL text at
+   (167,262/294/326,306×28) — the port's text rows are the page data's own.
+4. **Headers** — the page data says LBL text (0x1f2/0x1f8/0x14c at (50,40,376×17)), not images; the
+   stylised look in the captures is the game's menu font, which the port has not parsed (reported).
+5. **Hint icons** — the game draws the ~A/~B/~X/~Y/... tokens through the `specialchar` table
+   (0x2dd8d8, 17 × 0x18 bytes: texture 0x03000075, u0, v0, w, h, advance) [M symtab + table bytes].
+   The port's 64×64-atlas 0x03000042 tiles and the letter-X fallback for ✕ are gone; the table's own
+   tiles draw (✕ = 235,1,19×19).
+6. **The ring preview** — clipped to the ring's circle: the emblem controls draw the preview (f1
+   0x1d/0x1e) UNDER the ring (f1 0x1c — lower layers draw on top [M hud.rs finish]); the port renders
+   the preview as 24 chord strips of the inscribed circle (a HudFrame has no per-pixel mask).
+7. **Mission previews** — `sp_level[i]+0x00` is the row's own preview texture hash [M
+   `Menu_UpdateWheel` 0x1f8388 sends it as msg 0x24 to control 0x10000020; the 12 hashes read from the
+   EE snapshot at 0x2df2e0 [L]]. The port's CAMPAIGN held only name/description/level (the old
+   "+0x04 name" reading was wrong); it now carries all four lanes and the Single Player page draws
+   CAMPAIGN[cursor].0. Locked rows dim to 0x60 and show +0x14's "Continue playing to unlock this
+   mission." A fresh profile unlocks rows 0 AND 1 [D sp_level's boot state in ACTION.ELF .data,
+   file offset 0x1d91e0].
+8. **Descriptions** — wrapped inside their 540px plates with `wrap_px` (the difficulty and mission
+   descriptions ran off the right edge; the mission one was even re-joined into a single line).
