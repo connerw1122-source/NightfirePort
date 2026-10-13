@@ -2004,6 +2004,29 @@ pub fn run() -> Result<()> {
             if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); if let Some(&pt) = v.get(4) { sim.bond.pitch = pt; } }
         }
     }
+    // `--give id[,id...]` (hex like 0x50 or decimal): equip those weapons/gadgets at the start, the way the dev panel's
+    // weapon button does (`Player_EquipWeapon` 0x1a8a58 + three clips of ammo), and draw the first one. For playtest
+    // checks that need a gadget the level hasn't handed out yet.
+    if let Some(i) = args.iter().position(|a| a == "--give") {
+        if let (Some(list), Some(sim)) = (args.get(i + 1), app.scene.sim.as_mut()) {
+            let wd = sim.weapons.clone();
+            let mut first = None;
+            for t in list.split(',') {
+                let t = t.trim();
+                let id = if let Some(h) = t.strip_prefix("0x") { usize::from_str_radix(h, 16).ok() } else { t.parse().ok() };
+                let Some(id) = id.filter(|&i| i < 0x72) else { eprintln!("--give: bad id {t:?}"); continue };
+                let rounds = wd.clip_size(id).max(1);
+                if sim.drones.inventory.equip_weapon(&wd, id, rounds, true) {
+                    sim.drones.inventory.equip_ammo(&wd, id, (rounds * 3).max(rounds));
+                    first.get_or_insert(id as u8);
+                    eprintln!("--give: equipped {id:#04x}");
+                } else {
+                    eprintln!("--give: {id:#04x} refused (no first-person model)");
+                }
+            }
+            if let Some(id) = first { sim.gun.switch_request = id; }
+        }
+    }
     // B-5: start the recorder AFTER the scenario is applied (so the header captures the post-scenario starting state:
     // Bond near a guard, the RNG seed, etc.). On replay, the same starting state is reproduced.
     if let Some(path) = record_path {
