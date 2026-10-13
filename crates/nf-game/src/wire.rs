@@ -138,6 +138,50 @@ impl Wire {
 /// 0..3) [M 0x198224–0x19824c].
 fn param(p: &Placement, k: u32) -> u32 { p.params.iter().find(|(i, _)| *i == k).map_or(0, |&(_, v)| v) }
 
+/// A third icon (placement kind 0xFA, `ThirdIcon_Create` 0x197070): the interaction-context marker the
+/// game scatters through the levels. `ThirdIcon_Create` builds a class-0x42 object whose instance is
+/// `inst+0x00` = param 0 (**the context type written to the player's `BLData+0x95F`**), `inst+0x04`
+/// = param 1 (the on-channel; 0 = always enabled — create sets `obj+0xF4 = 1`), `inst+0x06` = param 2
+/// (a second channel that only sets the `obj+0xFE` bit-0 flag) [M 0x197070:21–32]. `ThirdIcon_Update`
+/// 0x196e80 walks the icon's room list for the PLAYER (`Player_Init` 0x1910f8:76 sets the player's
+/// class to 3) and writes the icon's type into the player's +0x95F on a 4-tick refresh; the type-6 icon
+/// additionally shows a text message [M 0x196e80:36–54]. The player's +0x95F is reset to 0xFF every
+/// tick by `Player_CollisionHandler` 0x1949a8:22 [M].
+///
+/// Consumers: `Player_HandleJump` 0x1916b0:118–147 grabs the NEAREST wire (class 0x2C within 1000
+/// units) when the jump is pressed while +0x95F == 3 — the cable-crossing grab; `Player_Activate`
+/// 0x1a5170:67 grabs a creep wall when +0x95F == 6 (E, not this task).
+///
+/// [D probe] 07000005 map 50 has three type-3 icons under the wire — (−23.58, 32.24, 2.65),
+/// (−23.56, 32.24, 0.21), (−23.80, 32.74, 12.33), the wire at (−23.49, 34.47, 6.26) — all param 1 = 0
+/// (always enabled); type-6 icons sit at the creep walls, type-2 near the level start (the HUD's
+/// ammo-pane context, `HUD_UpdateAmmoPane` 0x19a7f0:330).
+#[derive(Clone, Debug)]
+pub struct Icon {
+    /// The placement translation (the icon object's position).
+    pub pos: V3,
+    /// Param 0: the context type written to `BLData+0x95F` (3 = the wire-grab context here).
+    pub ctx: u8,
+    /// Param 1: the on-channel (0 = always enabled).
+    pub on_channel: u16,
+}
+
+/// Every third-icon placement of a level (flags & 0xff == 0xFA), in placement order.
+pub fn icons(level: &Level) -> Vec<Icon> {
+    let mut out = Vec::new();
+    for m in &level.maps {
+        for p in &m.placements {
+            if p.flags & 0xff != 0xfa { continue; }
+            out.push(Icon {
+                pos: p.translation,
+                ctx: param(p, 0) as u8,
+                on_channel: param(p, 1) as u16,
+            });
+        }
+    }
+    out
+}
+
 /// Every wire placement of a level (`flags & 0xff == 0x3E`), resolved against its map object.
 /// Mirrors the ladder sweep (`ladder::all`) [M 0x1d04f0 case 0x3E → `Wire_Create`].
 pub fn all(level: &Level) -> Vec<Wire> {

@@ -6949,3 +6949,23 @@ NPC door path — 045g-fix-npc-doors2), 0a (the cab-mouth SS leaves ch 0x00; the
 snapshot holds them closed too [L ee_start_0700000a.bin 0xE2E2A4/0xE2E314] — the arrival writer
 is missing), 13 (the entrance mouth glazed at z≈65 — the gate-raise writer missing), 14 (the
 vent cut-scene ch 0x47 — walkreal-b's parked item). Report: docs/reports/fix-walkreal-b2.md.
+
+---
+Task ID: 045m-fix-wire2
+Agent: NightfirePort worker (fix-wire2 session)
+Task: fix-wire2 — the 07000005 cable crossing (the grab + the hand-over-hand move) and the 07000014 fusebox dev scenario (branch s/fix-wire2)
+
+Work Log:
+- Setup reused (repo + game files + queue worktree intact); branch s/fix-wire2 created from origin/master (0c30212).
+- Evidence gathered: Player_Activate 0x1a5170 has NO class-0x2C wire arm (the game's E does not grab wires); the real grabs are Player_DealWithObjHit 0x194458 (the walking collision) and Player_HandleJump 0x1916b0:118-147 (the JUMP grab: icon ctx +0x95F == 3 → the nearest class-0x2C within 1000 units). ThirdIcon_Update 0x196e80 + ThirdIcon_Create 0x197070 (placement kind 0xFA, param 0 = the ctx type, param 1 = the on-channel) set the player's +0x95F; Player_Init 0x1910f8:76 sets the player's class to 3 — the icon walks its room list for the player. [D probe] 07000005 map 50 has three type-3 icons at (−23.58, 32.24, 2.65), (−23.56, 32.24, 0.21), (−23.80, 32.74, 12.33) — under the wire at (−23.49, 34.47, 6.26).
+- Input mapping re-verified: Input_Actionf(slot,1,1) in Player_Wire 0x1976 is action 1 = the LEFT stick X (psiInput_MapInputs 0x10cd80 style 0: field +0x18 = −(stickX−127)); action 2 = forward. The wire move is strafe-driven [M] — W (forward) does nothing on the wire in the game too.
+
+Stage Summary:
+- Branch s/fix-wire2 pushed (branch start). Next: the icon ctx + jump-grab port, the mode-6 move gate fix, the fusebox dev scenario, tests.
+- Implemented: wire.rs Icon struct + icons() (0xFA parse); player.rs icon_ctx field (own line), the jump-grab arm in physics_tick (nearest wire within 1000 when ctx==3, refused grab eats the jump [M 0x1916b0:118-147]), physics_tick grew the ctx param (all callers in-file), the mode-6 gate fix in wire_tick (the idle+move path skips AnimScriptIsStopped [M 0x197838-0x197860]); scene.rs icons field + the per-tick ctx write (reset 0xFF → enabled icons, same-cel OR 4-unit scope [S]), the E record corrected.
+- dev.rs: the fusebox-07000014 scenario — Bond crouched INSIDE the crawl vent at (41.0, 2.45, 62.0) yaw π with the Laser 0x4E owned+selected. Evidence: [D collision probe] the level's only crawl tunnels are the start vent system (headroom 1.44-1.46, x 31-41, z 36-65); NO crawl vent near the west generator room; the vent graphics dress those runs. The user's ask ("spawn in there crouched") satisfied.
+- Tests: fix_wire2_live.rs 3/3 (the jump grab + the E-nothing sister; the strafe-during-idle move start + the W-forward sister + the full crossing; the scenario crouch/vent/laser assertions). wire_live.rs re-recorded (the collision grab; E-inert). Fail-first: the new tests need icon_ctx (no compile pre-fix); the contradicted pre-fix behavior in HEAD~3.
+- Suite: 601 passed, 3 failed — the 3 allowed disc_golden failures (slim ISO). Pushed 3c7481c + the wire_live re-record; report at docs/reports/fix-wire2.md.
+
+Stage Summary:
+- Branch s/fix-wire2 pushed. The cable's real grab (jump + icon ctx 3) is in; E correctly does nothing (game-faithful, the record fixed); the move starts on the strafe press during the idle; the fusebox-07000014 scenario starts crouched in the vent with the Laser. Live checks (icon scope radius, the jump grab from the ground, 2 --bond render spots) listed in the report.
