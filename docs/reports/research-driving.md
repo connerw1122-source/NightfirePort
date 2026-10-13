@@ -91,4 +91,4 @@ port. Research-only; no game code changed. Branch `s/research-driving`.
 
 ## ntfy
 
-(not applicable here — see the final section appended after the finish steps if it failed.)
+Sent (curl, first fallback): message id `VQUJbZX28pn8` on `nightfire-yoda-8k3x`.
