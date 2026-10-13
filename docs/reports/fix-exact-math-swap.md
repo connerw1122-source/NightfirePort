@@ -73,10 +73,18 @@ Decision: the game agrees with the exact path; master's host-math call sites wer
 
 ## Re-pins
 
-None needed so far: the swap adds no `Rand_*` draws and the full-suite run on the swap is in this
-sandbox's record (see Suite below); the seed-pinned suites that reference ulp-sensitive fights
-(`ai_live`, `walkreal_*`) were rerun — see the suite section for the exact counts. The only test
-edits are the new bit pins in `placement.rs` (above).
+The swap adds no `Rand_*` draws; nf-game's seed-pinned suites (`ai_live` and the rest, 31 binaries)
+pass unchanged. One nf-view test moved and was re-pinned with evidence:
+
+- **`fix_input_kbd_trace::keyboard_trace_unchanged`** — its goldens were recorded from the pre-fix-input
+  tree under the host math; with the game's RotMatrix the floor under 07000005's start square moves the
+  same few ulps as the escort's walkway (the t28 mechanism above), and Bond's position rides it:
+  t29 pos[1] +8 ulps, then t59/t89/t119/t149/t179 pos x/y/z by 1–5 ulps each (the walk integrates the
+  shifted floor). Re-pinned to the exact-math values. **The keyboard-path property the test guards is
+  intact**: yaw, pitch, local, vel and cc match the old goldens bit-for-bit at every checkpoint — only
+  the floor-riding position components moved, which is the geometry, not the input path. Trace-match
+  evidence for the game's agreement is the ai_traces section above (01-doors/01-raptor identical
+  first-divergence lines on both maths) plus the escort walk passing.
 
 ## Shared files touched (hooks)
 
@@ -87,7 +95,14 @@ already the proven model and needed no change).
 
 ## Suite
 
-(filled in below when the run finishes)
+`NF_ISO` full suite on the swap (slim ISO), `--test-threads=1`:
+
+- nf-game + nf-formats + nf-audio: **326 passed, 3 failed — the 3 sanctioned `disc_golden`**
+  (bigf/directory golden manifests; pre-existing on the slim ISO, untouched crates).
+- nf-view: **477 passed, 0 failed** after the kbd re-pin (the prefix windows plus the walkreal tail
+  15/15 and the probe/wire/world tail 37/37; the escort walk green, level_exit at tick 63143).
+  Before the re-pin the only failure was `keyboard_trace_unchanged` (above).
+- Total: 803 passed, 3 failed = the allowed disc_golden three. No seed re-picks (no new RNG draws).
 
 ## Live checks for the main agent
 
