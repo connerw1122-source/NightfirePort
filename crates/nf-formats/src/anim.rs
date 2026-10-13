@@ -173,6 +173,33 @@ pub fn local_pose(seq: &Sequence, skel: &Skeleton, skin: &Skin, frame: u32) -> V
 }
 
 pub fn local_pose_with(seq: &Sequence, skel: &Skeleton, skin: &Skin, frame: u32, arith: Arith) -> Vec<([f32; 3], [f32; 4])> {
+    local_pose_bones_with(seq, skel, skin, frame, skel.bones as usize, arith)
+}
+
+/// How many LEADING bones `seq`'s channels pose completely on `skel` — the same sequential walk
+/// `local_pose` makes (6 channels per translated bone, 3 per rotation-only bone). The pack cut-scene
+/// scripts pair a narrow 22-channel face track (060004f1's window [1..0x10e6] → seq …467, the
+/// 07000005 ledge's 06000996/97 [1..0x5dc] → 040007fa) with the full 222-channel body track, so the
+/// face track's channels reach only the first few bones of the skeleton [D script-info dumps].
+pub fn bones_covered(seq: &Sequence, skel: &Skeleton) -> usize {
+    if seq.skeleton != skel.id as u8 { return 0; }
+    let (mut ch, mut bones) = (0usize, 0usize);
+    for bone in 0..skel.bones as usize {
+        let need = if skel.has_translation(bone) { 6 } else { 3 };
+        if ch + need > seq.channels.len() { break; }
+        ch += need;
+        bones += 1;
+    }
+    bones
+}
+
+/// `local_pose` for only the first `bones` bones — a narrower sequence (the face tracks) whose channel
+/// list stops early; the full `local_pose` would read past it.
+pub fn local_pose_bones(seq: &Sequence, skel: &Skeleton, skin: &Skin, frame: u32, bones: usize) -> Vec<([f32; 3], [f32; 4])> {
+    local_pose_bones_with(seq, skel, skin, frame, bones, Arith::Ps2)
+}
+
+fn local_pose_bones_with(seq: &Sequence, skel: &Skeleton, skin: &Skin, frame: u32, bones: usize, arith: Arith) -> Vec<([f32; 3], [f32; 4])> {
     use crate::ps2float as pf;
     // Measured against PCSX2 snapshots (WORKLOG 0017): VU0 squares round toward zero; the FPU sums add without guard
     // bits and round toward zero; the square root rounds to nearest. With this every component of 102 bone poses in
@@ -183,7 +210,7 @@ pub fn local_pose_with(seq: &Sequence, skel: &Skeleton, skin: &Skin, frame: u32,
     };
     let mut ch = 0;
     let mut out = Vec::with_capacity(skel.bones as usize);
-    for bone in 0..skel.bones as usize {
+    for bone in 0..bones.min(skel.bones as usize) {
         let t = if skel.has_translation(bone) {
             let t = [0, 1, 2].map(|k| mul(seq.value_with(ch + k, frame, arith), skin.scale[k]));
             ch += 3;

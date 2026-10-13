@@ -2997,9 +2997,12 @@ impl Scene {
             if let Some(src) = c.script {
                 let s = self.sim.as_ref()?;
                 let (script, frame) = s.script_anim(src, c.skin.hashcode)?;
-                let (q, f) = nf_game::anim::script_frame(s.scripts.get(&script)?, frame)?;
-                let seq = s.seqs.get(&q).filter(|q| anim::fits(q, &c.skeleton))?;
-                let world = anim::world_pose(&anim::local_pose(seq, &c.skeleton, &c.skin, f as u32), &c.skin);
+                // Every started opcode-0 window plays together (`AnimProcessScriptCmds` 0x1c1b38): the
+                // 22-channel face track keeps the bones its channels reach, the 222-channel body track
+                // fills the rest — the cut-scene lip-sync (fix-cutscenes2; the old single-window read
+                // played the body only, so the mouths never moved).
+                let local = nf_game::anim::script_pose_together(&s.scripts, &s.seqs, &c.skeleton, &c.skin, script, frame)?;
+                let world = anim::world_pose(&local, &c.skin);
                 return Some((anim::skin_matrices(&world, &c.skin), world, c.matrix));
             }
             let view = self.sim.as_ref().and_then(|s| self.view_models.get(&s.gun.weapon).filter(|&&v| v == ci)).and(self.sim.as_ref());
