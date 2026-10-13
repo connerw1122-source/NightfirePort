@@ -8381,3 +8381,31 @@ Stage Summary:
 - Task open: keep the courtyard fix, bring back the 07 clock hall's props (grandfather clock +
   both wall shields missing with the walk ON at 34.25,44.13,-70.71,1.549,-0.070; fine with
   NF_NOPORTAL=1 and in the real game). Started.
+
+---
+Task: fix-portal6
+Agent: fix-portal6 worker
+Branch: s/fix-portal6 (from origin/s/fix-portal5 073b055, origin/master 0cda458 merged)
+
+Work Log:
+- Branch cut, master merged (WORKLOG conflict kept both sides), WORKLOG start pushed.
+- Probe on 07000007: the walk at the clock-hall spot visits [33, 29, 31] (Room_Corridor_I,
+  Room_junction_J_1, Room_Corridor_J_2); the clock (cell 50, OBJECT_GrandFatherClock1) rides room
+  29's chain and the hall shields ride room 33's — under BOTH the old find_cell_raycast and the
+  fix-portal5 0x1c9150 owner rules; ALL chain nodes of the visited rooms fail Vision_InView there.
+- Decoded Vision_InView 0x1e89e0 raw (c.lt.s f0,f12 + bc1t: reject iff n·c + d·r < r; the
+  decompile's `< -param_1` is a Ghidra polarity artifact) and the fustrum builder 0x1e7df8 +
+  Plane_PlaneEq 0x1df8d0; verified against ee_start_05.bin's glb_viewer[0] +0x70 quads
+  (|n|=1, n·eye+d=0, d=51..117 = -n·eye, the 4:3 tilt angles) [L]. The literal d·r form is
+  absurd in both polarities at gameplay spots (05 start: draw-everything; clock hall: the on-axis
+  clock the game draws gets rejected with d=-69.6). Shipped the common small-|d| limit
+  n·c + d + r >= 0 in scene.rs vision_in_view (one math line + evidence doc).
+- Pins RED first then green: the_clock_hall_props_draw_with_the_walk_on (clock cell 50 + shield
+  bodies 45/46 + swords 269/270 draw; beside-eye shields 43/48 stay culled),
+  the_07000006_second_spot_keeps_its_props (both in-frustum barrels draw); probes log-only.
+- fix_portal5_live 4/4, fix_portal2_live 2/2, fix_portal_live 6/6 re-run green this session.
+
+Stage Summary:
+- The 07 clock hall's clock + wall shields draw with the walk ON again; the courtyard, the window
+  and the 06 second spot hold. Open: the game's +0x70 planes mid-gameplay (PINE request in the
+  report), the 55 orphan generics on 07000007, the per-cel collision-assignment residue.
