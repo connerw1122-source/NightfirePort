@@ -7175,3 +7175,18 @@ decompile reading for the next session) + the census + the levels.md note. Suite
 3 failed (the 3 allowed disc_golden). Remaining for the next message on this branch: 0xd8 RB
 (the full integration), 0xda Car, the renderer consumption (obj+0xF0 bit 0x10, obj+0x106 alpha,
 the ThirdCam camera wiring).
+
+Post-report progress (same session, before the sandbox end):
+- The straddle walk-in LANDED in the port: `crates/nf-game/src/door.rs` `Doors::player_use` —
+  the kind-2 slide doors' par-4 straddle flag was parsed but never consumed (the game arms
+  obj+0xfd bit 8 from the +0x3c param at `Door_Create` 0x136100 [M]); a closed straddle door now
+  activates when the player stands in its threshold (from_player — the locks hold) [S shape].
+  Sisters walkreal_07000012/0b/0c + nf-game's units (96+32+1+2) green.
+- 07000015's route proven with real input from the spawn to (28.1, 41.5, 68.7): the silo crossing
+  (the z≈−5 lane), doors [0]/[48]/[36]/[38]/[39] (E), the x34.6 spine's WEST plank around the
+  door[45] keypad slot (ch_lock 0xc8 has NO writer on the level — no AND trigger [D dump]; the
+  east plank dead-ends — permanent), doors [46]/[47]. The remaining puzzle: door[32]'s doorway
+  approach in the top band's west wall (the corner hops the walker onto furniture). The 15 test
+  re-marked with the updated gap; the 16/1b/4a gap-ignores unchanged.
+- Pushed 1d414f7 (branch s/walkreal-c). The full four-crate suite still owes a pass on a bigger
+  box before the merge.

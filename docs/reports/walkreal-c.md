@@ -11,10 +11,23 @@ with the evidence in their headers — un-ignore and continue as each blocker la
 
 | level | walkable end to end | reached point |
 |---|---|---|
-| 07000015 | **not yet** — the hard part works | spawn → the reveal (ch 0x4b) → the gantry crossing **walked with real input**: the z≈−5 lane threads the silo hole (the direct z≈0 line falls in at x 67.45 — reproduced first), doors [0]/[48]/[36] open on the walker's E (x 89→42 in the log). The lattice threading from x 42 to the exit hall and the USE press were mid-verification at the session end. |
+| 07000015 | **not yet** — most of the route proven | spawn → the reveal (ch 0x4b) → the gantry crossing **walked with real input** (the z≈−5 lane threads the silo hole; the direct z≈0 line falls in at x 67.45 — reproduced first) → doors [0]/[48]/[36]/[38]/[39] (E) → the x34.6 spine's **west plank** around the door[45] keypad slot (ch_lock 0xc8 — **no writer on the level**: no AND trigger exists [D dump]; the east plank dead-ends there — permanent) → doors [46]/[47] → (28.1, 41.5, 68.7). The stop: the top-band door[32]'s doorway (in the west wall at z 70.1) — the approach corner hops Bond onto furniture and the straddle radius is never entered. |
 | 07000016 | no | the arrival → the spawn plate #252 (ch 0x8e, the carried record 21 completes) → the south corridor to door[7] — **stalls at door[7]** (below). |
 | 0700001b | no | the arrival → the objectives reveal; the straight hub line falls into the pit (y −15.4 — reproduced); the **zero-G sister passes** (the floor route never enters substate 8/9 — the station's zero-G is script-driven, C_CHCHZEROG_Handler 0x216388 msg 0x4b [M], and none plays on the hub floor). The nav crossing + the Drake defeat (ch 0x0a drive → shoot → the NIS's ch 0x0b/ch 100, no skip) are written and parked. |
 | 0700004a | no | the spawn **IS the boarding** (the top lobby's static floor is only the strip z 0..4; the probe shows Bond grounded on the platform from t30, descending with the key line) → the reveal plate #277 fires under the first steps → **the ride loses the rider at t1620** (below). |
+
+## One fix landed: the straddle walk-in (door.rs)
+
+`crates/nf-game/src/door.rs` `Doors::player_use`: the kind-2 slide doors' placement straddle
+param (par 4 [D] — every 07000015/16 kind-2 door carries it) was parsed but **never consumed**;
+the game arms a per-door flag from it at create (`Door_Create` 0x136100 reads the +0x3c param
+into obj+0xfd bit 8 [M]). The player opens these by WALKING INTO the threshold — 07000015's
+top-band door[32] (25.1, 41.6, 70.1, unlocked) is E-dead in the port yet must open for the
+level's only free west crossing [D flow]. The port now activates a closed straddle door
+(from_player — the lock guards hold) when the player stands inside its threshold (xz 1.4, y
+band 2.2) [S — the game's straddle test function is not pinned]. Sisters: `walkreal_07000012`,
+`walkreal_0700000b`, `walkreal_0700000c` all pass; nf-game's unit tests 96+32+1+2 pass.
+**Shared file touched: `crates/nf-game/src/door.rs`** (one additive block in `player_use`).
 
 ## The blockers (each reproduced before any fix attempt)
 
@@ -92,4 +105,5 @@ None outside the test tree. No `nf-game`/`nf-view` source changed this session.
   order: 15 (the lattice threading — likely passes now), 16 (needs the door[7] root cause), 1b
   (the nav crossing, then the Drake defeat with the no-skip NIS), 4a (needs the rider/door-solid
   fix — the test's scrape assertion is the fail-first).
-- The full suite before the merge.
+- The full suite before the merge (the session ran the walkreal set + the 12/0b/0c sisters + nf-game's units — all green; time ran out for the four-crate pass).
+- 15's remaining puzzle: the door[32] doorway approach (the corner at (27.5, 69) hops the walker onto furniture; a patient threshold walk or the doorway's true facing settles it — then the exit hall and the USE press are the last legs, all proven walkable lanes).

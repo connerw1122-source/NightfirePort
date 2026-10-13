@@ -18,7 +18,13 @@ use walker::{Act, Walker, Wp};
 
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 
-// GAP (walkreal-c): the crossing WORKS — the z≈−5 lane threads the silo hole and doors [0]/[48]/[36] E-open (the log: x 89→42, three doors). The lattice threading from x 42 to the exit hall and the USE press were still being verified when the session ended. Re-run as-is; the route needs no code fix so far.
+// GAP (walkreal-c, updated): the route is PROVEN from the spawn to door[47]'s north lane — the
+// silo crossing (the z≈−5 lane threads the silo hole), the x34.6 spine's west plank around the
+// door[45] keypad slot (0xc8 has no writer on the level — the east plank dead-ends), doors
+// [0]/[48]/[36]/[38]/[39]/[46]/[47] all open (E or the straddle walk-in), and the rider reaches
+// (28.1, 41.5, 68.7). The stop: the top-band door[32]'s doorway (in the west wall at z 70.1) —
+// the approach corner hops Bond onto furniture (y 42.2, airborne) and the straddle radius (1.4)
+// is never entered. Next: a patient threshold walk or the doorway's true facing.
 #[test]
 #[ignore = "the walk's reached blocker — see docs/reports/walkreal-c.md; un-ignore when the blocker lands"]
 fn walk_spawn_to_the_omega_sector_exit() {
@@ -45,13 +51,24 @@ fn walk_spawn_to_the_omega_sector_exit() {
     assert!(w.follow_nav_route([34.6, 41.4, 6.0], "the silo crossing"), "the nav route crosses the gantry");
     w.walk_to(Wp::new(34.6, 41.4, 6.0).r(1.2), "the north turn");
 
-    // The north lane through the grid, then the west lane south, then the exit hall. Waypoints
-    // sit between the grid doors so the stuck-mitigation's E press opens each door.
+    // The north lane through the grid, then the west lane south, then the exit hall. The x34.6
+    // spine SPLITS at z 30: the east plank (x38-44) dead-ends at door[45]'s keypad slot (ch_lock
+    // 0xc8 — no writer on the level [D scans; the trigger dump has no AND] — permanent), and the
+    // first runs fell into the lower deck (y −3.9) at (33.7, 38.8). The WEST plank (x 24-34,
+    // z 28-42, the floor grid) carries the route around the slot to door[46].
     let route: &[(&str, Wp)] = &[
         ("door[38] north", Wp::new(34.6, 41.4, 16.0).r(1.2)),
-        ("door[39] north", Wp::new(34.6, 41.4, 30.0).r(1.2)),
-        ("door[46] north", Wp::new(34.6, 41.4, 52.0).r(1.2)),
+        ("door[39] north", Wp::new(34.6, 41.4, 28.0).r(1.2)),
+        ("the west plank", Wp::new(29.0, 41.4, 31.0).r(1.2)),
+        ("the plank north", Wp::new(28.0, 41.4, 35.0).r(1.2)),
+        ("the plank north 2", Wp::new(28.5, 41.4, 39.0).r(1.2)),
+        ("the spine north", Wp::new(30.5, 41.4, 42.0).r(1.2)),
+        ("door[46] north", Wp::new(34.6, 41.4, 46.5).r(1.2)),
+        ("door[46] through", Wp::new(34.6, 41.4, 52.0).r(1.2)),
         ("door[47] north", Wp::new(34.6, 41.4, 65.0).r(1.2)),
+        ("door[32] east side", Wp::new(27.6, 41.4, 70.1).r(0.7)),  // the doorway is in the west wall at z 70.1
+        ("door[32] threshold", Wp::new(26.0, 41.4, 70.1).r(0.7)),  // INTO the straddle door's plane
+        ("door[32] through", Wp::new(23.0, 41.4, 70.3).r(0.9)),
         ("door[32] west-top", Wp::new(20.0, 41.4, 70.0).r(1.2)),
         ("door[29] west-top", Wp::new(4.0, 41.4, 70.0).r(1.2)),
         ("the south turn", Wp::new(-1.0, 41.4, 62.0).r(1.2)),

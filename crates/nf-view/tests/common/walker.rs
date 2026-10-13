@@ -634,6 +634,7 @@ impl Walker {
                     let door_i = sim.drones.doors.list.iter().position(|d| {
                         dxz(d.pos, self.pos) < 2.8
                             && (d.pos[1] - self.pos[1]).abs() < 2.5  // the door's own floor (the 15 crossing's lower gantry doors sit 17.6 below the lane)
+                            && !(d.ch_lock != 0 && !sim.drones.channels.on(d.ch_lock as u32))  // a LOCKED door: the E thuds, never opens (the 15 keypad doors)
                             && sim.world.segment(self.pos, d.pos).is_some()
                     });
                     if let Some(di) = door_i {

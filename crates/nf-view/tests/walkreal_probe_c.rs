@@ -43,6 +43,8 @@ fn dump_floor_grids() {
     floor_grid("07000015", 60.0, 96.0, -14.0, 8.0, 41.5, 2.0, 8.0);
     // 07000016: the pit at z −88..−100 (the ladder at x −0.4) — the side ledges.
     floor_grid("07000016", -10.0, 14.0, -106.0, -82.0, 1.0, 2.0, 8.0);
+    // 07000015: the spine gap at z 28-44 (the upper deck y 41.5).
+    floor_grid("07000015", 24.0, 70.0, 24.0, 44.0, 41.5, 2.0, 8.0);
     // 0700004a: the top lobby (the spawn y −7.7) — the boarding wedge and the walk-off east.
     floor_grid("0700004a", -8.0, 12.0, -10.0, 6.0, -7.5, 1.0, 8.0);
     // 0700004a: the bottom lobby (the ride's end y −157) — the fall to −2761 crossed it.
