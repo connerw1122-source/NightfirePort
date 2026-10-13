@@ -302,6 +302,61 @@ fn recorded_calls_match_bit_for_bit() {
     }
 }
 
+/// Sister: the platform sine is *not* bit-identical to the game's `PS2Sinf` on these recordings — the exact
+/// port (`anim::sinf`, used by `placement::object_matrix` and the pose palette) is what matches (G-017).
+#[test]
+fn the_host_sin_path_is_not_bit_exact() {
+    let (_, _, _, calls) = load_all().into_iter().find(|(f, _, _, _)| f == "PS2Sinf").expect("PS2Sinf recording");
+    let mut host_diffs = Vec::new();
+    for rec in &calls {
+        let x = f32::from_bits(rec.fpr[12]);
+        let host = x.sin();
+        if host.to_bits() != rec.ret[2] { host_diffs.push(rec.n); }
+    }
+    assert!(!host_diffs.is_empty(),
+        "the recordings must distinguish the platform sine from the game's PS2Sinf");
+    println!("platform f32 sin differs from the game's PS2Sinf on {} of {} recorded calls (first: call {})",
+        host_diffs.len(), calls.len(), host_diffs[0]);
+    // The exact port matches every recorded call.
+    for rec in &calls {
+        let port = ps2sinf(rec).unwrap();
+        assert!(compare(rec, &port).is_empty(), "PS2Sinf call {}", rec.n);
+    }
+}
+
+/// The VU0 guard-bit sum is load-bearing: the same polynomial with the EE FPU's no-guard sums — what a
+/// "just use the FPU everywhere" port would do — differs from the game on at least one recorded call.
+fn sinf_fpu_sums(mut x: f32) -> f32 {
+    use nf_game::ps2math as pm;
+    let (pi, tau, half) = (f32::from_bits(0x4049_0fdb), f32::from_bits(0x40c9_0fdb), f32::from_bits(0x3fc9_0fdb));
+    if x >= pi { while x >= pi { x = pm::fpu_sub(x, tau); } } else { while x < -pi { x = pm::fpu_add(x, tau); } }
+    if x > half { x = pm::fpu_sub(pi, x); } else if x < -half { x = pm::fpu_sub(-pi, x); }
+    let (s1, s2, s3, s4) = (f32::from_bits(0xbe2a_aaa4), f32::from_bits(0x3c08_873e), f32::from_bits(0xb94f_b21f), f32::from_bits(0x362e_9c14));
+    let x2 = pm::mul(x, x);
+    let x4 = pm::mul(x2, x2);
+    let x8 = pm::mul(x4, x4);
+    let a = pm::mul(pm::mul(x, s3), x2);
+    let b = pm::mul(x, s1);
+    let c = pm::mul(x, s2);
+    let d = pm::mul(x, s4);
+    let mut acc = pm::mul(b, x2);
+    acc = pm::fpu_add(acc, pm::mul(a, x4));
+    acc = pm::fpu_add(acc, pm::mul(c, x4));
+    acc = pm::fpu_add(acc, x);
+    pm::fpu_add(acc, pm::mul(d, x8))
+}
+
+#[test]
+fn the_vu0_guard_bit_sum_is_load_bearing() {
+    let (_, _, _, calls) = load_all().into_iter().find(|(f, _, _, _)| f == "PS2Sinf").expect("PS2Sinf recording");
+    let fpu_bad: Vec<u32> = calls.iter()
+        .filter(|r| sinf_fpu_sums(f32::from_bits(r.fpr[12])).to_bits() != r.ret[2])
+        .map(|r| r.n).collect();
+    assert!(!fpu_bad.is_empty(), "the FPU-sum polynomial must differ from the game on at least one recorded call");
+    println!("the FPU-sum polynomial differs from the game on {} of {} calls (first: call {})",
+        fpu_bad.len(), calls.len(), fpu_bad[0]);
+}
+
 /// Sister: flipping one bit of a recorded output — a return register, a written matrix float — must be caught.
 /// Flipping a byte the game function does not write (Quat_QuatToMat's caller-owned floats) is not a failure:
 /// the mask exists exactly so the caller's memory is not held against the port.

@@ -37,48 +37,52 @@ mod tests {
 
     /// The f32 just below 1.0 (0x3F7FFFFF).
     const BELOW_1: f32 = f32::from_bits(0x3f7f_ffff);
-    /// 1 + 2⁻²⁴ (0x3F800001).
-    const ABOVE_1: f32 = f32::from_bits(0x3f80_0001);
 
     #[test]
     fn mul_truncates_toward_zero() {
-        // 0x3EAAAAAB = the f32 above 1/3; × 3 = 1.0000000298…: nearest is 1.0, chop gives the value below.
-        assert_eq!(mul(f32::from_bits(0x3eaa_aaab), 3.0).to_bits(), 0x3f7f_ffff);
-        // The same product rounded to nearest would be 1.0 — the chop is the difference.
-        assert_eq!((f32::from_bits(0x3eaa_aaab) * 3.0).to_bits(), 0x3f80_0000);
+        // A genuine chop: the exact square of 0x3F001907 rounds to nearest UP (0x3E803213); truncation gives
+        // the value below.
+        let a = f32::from_bits(0x3f00_1907);
+        assert_eq!(mul(a, a).to_bits(), 0x3e80_3212);
+        assert_eq!((a * a).to_bits(), 0x3e80_3213);
+        // Here the nearest f32 (1.0) is below the true product, so chop keeps it: truncation only steps down
+        // when nearest overshot.
+        assert_eq!(mul(f32::from_bits(0x3eaa_aaab), 3.0).to_bits(), 0x3f80_0000);
         // Exact products stay exact; negatives mirror.
         assert_eq!(mul(1.5, 2.0), 3.0);
-        assert_eq!(mul(-f32::from_bits(0x3eaa_aaab), 3.0).to_bits(), 0xbf7f_ffff);
+        assert_eq!(mul(-a, a).to_bits(), 0xbe80_3212);
     }
 
     #[test]
     fn fpu_add_has_no_guard_bit() {
-        // b = 2⁻²⁴·(1 + 2⁻⁶): its mantissa tail sits beyond one position for d = 24.
-        let b = 2f32.powi(-24) * (1.0 + 2f32.powi(-6));
-        // FPU: b is trimmed to 2⁻²⁴, the sum 1 + 2⁻²⁴ is the exact halfway point and truncates to 1.
-        assert_eq!(fpu_add(1.0, b).to_bits(), 0x3f80_0000);
-        // VU0 (guard bit kept): the exact sum 1 + 2⁻²⁴ + 2⁻³⁰ is above halfway → 1 + 2⁻²⁴.
-        assert_eq!(vu_add(1.0, b).to_bits(), 0x3f80_0001);
         // d ≥ 25: the smaller operand becomes ±0 entirely.
         assert_eq!(fpu_add(1.0, 2f32.powi(-26)), 1.0);
         assert_eq!(vu_add(1.0, 2f32.powi(-26)), 1.0);
+        // d = 23 trims 0x407FFFFF (= 3.99999976, fraction all ones) down to 1.5·2¹ = 3.0 (the fraction below one
+        // position is cleared), which moves the sum onto the exact tie 16777219; ties-to-even overshoots and chop
+        // lands on 16777218.
+        assert_eq!(fpu_add(16777216.0, f32::from_bits(0x407f_ffff)), 16777218.0);
     }
 
     #[test]
     fn fpu_sub_mirrors_fpu_add() {
         let b = 2f32.powi(-24) * (1.0 + 2f32.powi(-6));
-        assert_eq!(fpu_sub(1.0, b).to_bits(), BELOW_1.to_bits() + 1); // 1 − 2⁻²⁴ (halfway, chop → below)
+        // 1 − b' (b' = the trimmed 2⁻²⁴) is the exact tie below 1: nearest overshoots to 1.0, chop takes it down.
+        assert_eq!(fpu_sub(1.0, b).to_bits(), BELOW_1.to_bits());
         assert_eq!(fpu_add(1.0, -b), fpu_sub(1.0, b));
     }
 
     #[test]
     fn vu_madd_accumulates_with_a_guard_bit() {
-        // ACC = 0 + d·e is a plain chopped product.
-        assert_eq!(vu_madd(f32::from_bits(0x3eaa_aaab), 3.0, 0.0).to_bits(), 0x3f7f_ffff);
-        // Adding 2⁻²⁴·(1+2⁻⁶) keeps the tail: the result is 1 + 2⁻²⁴, not the FPU's 1.0.
+        // ACC = 0 + d·e is a plain chopped product (the chop case from mul_truncates_toward_zero).
+        let a = f32::from_bits(0x3f00_1907);
+        assert_eq!(vu_madd(a, a, 0.0).to_bits(), 0x3e80_3212);
+        // Adding 1.0 keeps 1.0: the sum 1 + 2⁻²⁴·(1+2⁻⁶) sits between 1.0 and 1+2⁻²³ and truncates to 1.0
+        // (guard bit or not — the fpu-vs-VU0 difference is exercised on the recorded PS2Sinf calls in
+        // tests/diff_calls.rs, where an FPU-sum polynomial mismatches the game and the VU-sum one does not).
         let b = 2f32.powi(-24) * (1.0 + 2f32.powi(-6));
-        assert_eq!(vu_madd(1.0, b, 0.0).to_bits(), ABOVE_1.to_bits());
-        // A chain matches the PS2Sinf evaluation order: ACC = b·x², + a·x⁴ …
+        assert_eq!(vu_madd(1.0, b, 1.0).to_bits(), 0x3f80_0000);
+        // A chain matches the PS2Sinf evaluation order: ACC = b·x², then ACC += a·x⁴.
         let (x, x2) = (0.5f32, 0.25f32);
         let acc = vu_madd(x, x2, mul(0.5, x2));
         assert_eq!(acc, vu_add(mul(0.5, x2), mul(x, x2)));
