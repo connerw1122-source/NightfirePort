@@ -1094,16 +1094,26 @@ impl Sim {
             let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink, creepwalls: &self.creepwalls };
             // The third-icon context [M ThirdIcon_Update 0x196e80 + Player_CollisionHandler 0x1949a8:22]:
             // the tick starts with +0x95F = 0xFF (none), then every ENABLED icon (its param-1 channel on,
-            // or param 1 == 0 = always) whose room holds the player writes its type. The game scopes by the
-            // icon's room object list; the port stands in with the same-cel test, falling back to a 4-unit
-            // sphere when the cel can't be resolved [S]. The last enabled icon wins (the game re-writes per
-            // icon on its 4-tick refresh).
+            // or param 1 == 0 = always [M ThirdIcon_Create 0x197070:27-32]) that "sees" the player writes
+            // its type. The game's sees = the icon's obj+0xd0 chain: an object whose collision volume
+            // straddles a cel leaves a hitdata node on every occupant of that cel, node+0x58 = the
+            // straddler [M Collide_Update 0x1ea398:160-233], and the icon writes when a node's +0x58 is
+            // the class-3 player [M 0x196e80:36-52] — the straddle volume is the icon's own world sphere
+            // [M Controls_StraddleTest 0x134778:30-38, Control_BuildWorldSph 0x133070]. The port cannot
+            // resolve that chain: its 19 room-cel bboxes put the 07000005 gate door and the second vent's
+            // ctx-6 icons in the same cel 1, and the scoped buckets hold no courtyard-floor geometry
+            // (fix-swim-vent5 probe), so the straddle volume stands in as a sphere at the icon's
+            // placement. The radius is the live-measured scope [L PCSX2 2026-10-13: +0x95F reads 0xFF at
+            // the gate door (30.0, 38.84, 37.70 — 24.1 from the nearest ctx-6 icon) and the level start
+            // (104.95, 25.12, 108.83 — ~94), while the vent crawl spot (3.9 from icon[0]) reads 6 and the
+            // south-ledge wire spot (1.8 from icon[5]) reads 3] — 12.0, the middle of the measured window
+            // (the crawl spot must read 6, the gate door must not). The last enabled icon wins (the game
+            // re-writes per icon on its 4-tick refresh [M 0x196e80:15-17, 53]).
             self.bond.icon_ctx = 0xff;
             for icon in &self.icons {
                 if icon.on_channel != 0 && !self.drones.channels.on(u32::from(icon.on_channel)) { continue; }
-                let same_cel = self.cel_at(icon.pos).is_some_and(|i| Some(i) == self.cel_at(self.bond.pos));
-                let near = (icon.pos[0] - self.bond.pos[0]).powi(2) + (icon.pos[1] - self.bond.pos[1]).powi(2) + (icon.pos[2] - self.bond.pos[2]).powi(2) < 16.0;
-                if same_cel || near { self.bond.icon_ctx = icon.ctx; }
+                let near = (icon.pos[0] - self.bond.pos[0]).powi(2) + (icon.pos[1] - self.bond.pos[1]).powi(2) + (icon.pos[2] - self.bond.pos[2]).powi(2) < 144.0;
+                if near { self.bond.icon_ctx = icon.ctx; }
             }
             // No walk-in or use-key wire grab (main agent at the fix-wire2 × walkreal-b2 merge): the game's
             // grab that is certain is the JUMP grab [M Player_HandleJump 0x1916b0:107-147 — action 7 is the
@@ -1696,12 +1706,13 @@ impl Sim {
         let mut crept = false;
         if use_key {
             // `Player_Activate` 0x1a5170:66-97's creepwall arm comes FIRST: with the third-icon
-            // context 6 the use key scans every object for class '+' (0x2B) and calls
+            // context 6 (BLData+0x95f, the game's ONLY gate [M 0x1a5170:66 `if (BL+0x95f == 6)`])
+            // the use key scans every object for class '+' (0x2B) and calls
             // `Player_CollCreepWall` on the NEAREST within the squared distance 1000 (no capsule
-            // test) [M] — returning before the head-ray pick ever runs. The port gates on the icon
-            // context 6 when an icon is present, else on the plain proximity of the scan range
-            // [S — the game's icon list may not carry a ctx-6 marker for every vent; the vent
-            // placement itself is the gameplay evidence].
+            // test) [M] — returning before the head-ray pick ever runs. No proximity fallback: at
+            // the 07000005 gate door the 0x1D LOAD_LEVEL trigger sits ~24 units from the second
+            // vent's creepwall (squared 579 < 1000), and the game reads +0x95F = 0xFF there
+            // [L PCSX2 2026-10-13] — the scan alone must never creep.
             if self.bond.substate == nf_game::player::SS_WALK {
                 let mut cbest: Option<(f32, usize)> = None;
                 for (i, w) in self.creepwalls.iter().enumerate() {
@@ -1709,7 +1720,7 @@ impl Sim {
                     if d >= 1000.0 { continue; }
                     if cbest.map_or(true, |(bd, _)| d < bd) { cbest = Some((d, i)); }
                 }
-                if self.bond.icon_ctx == 6 || cbest.is_some() {
+                if self.bond.icon_ctx == 6 {
                     if let Some((_, i)) = cbest {
                         let cctx = nf_game::player::LadderCtx { creepwalls: &self.creepwalls, ..Default::default() };
                         self.bond.start_creep(i, &self.world, &cctx);
@@ -1737,13 +1748,9 @@ impl Sim {
                 if dd > 2.2 { continue; }
                 if best.map_or(true, |(bd, _)| dd < bd) { best = Some((dd, i)); }
             }
-            // `Player_Activate` 0x1a5170:66-97's creepwall arm comes FIRST: with the third-icon
-            // context 6 the use key scans every object for class '+' (0x2B) and calls
-            // `Player_CollCreepWall` on the NEAREST within the squared distance 1000 (no capsule
-            // test) [M] — preempting the head-ray pick. The port gates on the icon context 6 when
-            // an icon is present, else on the plain proximity of the scan range [S — the game's
-            // icon list may not carry a ctx-6 marker for every vent; the vent placement itself is
-            // the gameplay evidence].
+            // The same creepwall arm at the second activation site: icon context 6 ONLY
+            // [M Player_Activate 0x1a5170:66 `if (BL+0x95f == 6)`; L the 0xFF live pin at the
+            // gate door] — the scan's own proximity never creeps.
             let mut crept = false;
             if self.bond.substate == nf_game::player::SS_WALK {
                 let mut best: Option<(f32, usize)> = None;
@@ -1752,7 +1759,7 @@ impl Sim {
                     if d >= 1000.0 { continue; }
                     if best.map_or(true, |(bd, _)| d < bd) { best = Some((d, i)); }
                 }
-                if (self.bond.icon_ctx == 6 || best.is_some()) {
+                if self.bond.icon_ctx == 6 {
                     if let Some((_, i)) = best {
                         let cctx = nf_game::player::LadderCtx { creepwalls: &self.creepwalls, ..Default::default() };
                         self.bond.start_creep(i, &self.world, &cctx);
