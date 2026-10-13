@@ -18,3 +18,6 @@ Deliverables: `docs/atlas/driving.md` (the map), `docs/formats/` notes for any n
 - Never commit game bytes: numbers, offsets, names and hashes only.
 
 **Branch:** `s/research-driving`.
+
+---
+claimed-by: sandbox3 at 2026-10-13T10:27Z
