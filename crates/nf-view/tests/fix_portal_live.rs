@@ -65,7 +65,7 @@ fn depth0_game(vp: [[f32; 4]; 4], eye: [f32; 3]) -> [[f32; 4]; 5] {
 fn route_vis(scene: &scene::Scene, state: &mut scene::ViewerCel, eye: [f32; 3], vp: [[f32; 4]; 4]) -> Option<Vec<bool>> {
     let depth0 = depth0_game(vp, eye);
     if scene.cel_graph.portals.is_empty() { return None; }
-    scene::eye_cell(&scene.cel_graph, state, eye).and_then(|cell| {
+    scene::eye_cell(&scene.cel_graph, state, eye, None).and_then(|cell| {
         scene::portal_visible_cels_from_cell(&scene.cel_graph, cell, eye, &depth0)
             .map(|cell_vis| scene.cel_graph.room_to_cell.iter().map(|m| m.map(|c| cell_vis[c]).unwrap_or(true)).collect())
     })
@@ -327,7 +327,7 @@ fn diag_07000007_cell33_portals() {
     for s in 0..=30usize {
         let t = s as f32 / 140.0;
         let eye = [pos[0] + (end[0] - pos[0]) * t, pos[1] + (end[1] - pos[1]) * t + 1.6, pos[2] + (end[2] - pos[2]) * t];
-        let cell = scene::eye_cell(g, &mut state, eye);
+        let cell = scene::eye_cell(g, &mut state, eye, None);
         let ps: Vec<String> = g.portals.iter().enumerate()
             .filter(|(_, p)| p.cel_a == state.cell.unwrap_or(0) || p.cel_b == state.cell.unwrap_or(999))
             .map(|(k, p)| {

@@ -834,13 +834,17 @@ fn point_in_cell(graph: &CelGraph, cell: usize, p: [f32; 3]) -> bool {
 }
 
 /// `build_FindCel` (0x1c8cb0) over the graph: collect the containing room cels (the 0x40000 flag
-/// [M `*puVar1 & 0x40000`], cap 0x40), then — when several contain the point — the game's
-/// vertical-RAYCAST tie-break: per candidate a ray up to 256 units and its mirrored down ray, the
-/// nearest collision hit wins, and with no hit at all the FIRST candidate stands (0x1c8cb0's tail:
-/// `iVar6 = CelList_153; ... return iVar6`). The port has no per-cel collision geometry in the
-/// graph, so the rays test the candidate's own bbox faces (the ceiling/floor the game's ray
-/// effectively finds for a room); documented as the port's approximation in the report.
-pub fn find_cell_raycast(graph: &CelGraph, eye: [f32; 3]) -> Option<usize> {
+/// [M `*puVar1 & 0x40000`], cap 0x40). One candidate returns directly [M 0x1c8cb0: `if
+/// CelListCount_154 != 1` guards the tie-break]. With several, the game's tie-break is a
+/// COLLISION raycast per candidate [M 0x1c8cb0: `Collide_RayIntersect(param_1, up_end, cand, …)`
+/// then the mirrored down ray — the down ray's length is the up ray's min(hit, len), len starts
+/// 256 and shrinks to the best-so-far distance], the candidate with the nearest hit distance
+/// wins, and with no hit at all the FIRST candidate stands (0x1c8cb0's tail:
+/// `iVar6 = CelList_153; ... return iVar6`). `world` (the sim's scoped `CollisionWorld`) supplies
+/// the per-candidate rays through `segment_hit_scoped(Some(cell), …)` — the port's stand-in for
+/// `Collide_RayIntersect`'s per-cel object list; without a world the port's bbox-face
+/// approximation stands (documented).
+pub fn find_cell_raycast(graph: &CelGraph, eye: [f32; 3], world: Option<&nf_game::world::CollisionWorld>) -> Option<usize> {
     let mut cands: Vec<usize> = Vec::new();
     for (i, c) in graph.cells.iter().enumerate() {
         if c.flags & 0x40000 == 0 { continue; }
@@ -849,20 +853,37 @@ pub fn find_cell_raycast(graph: &CelGraph, eye: [f32; 3]) -> Option<usize> {
             if cands.len() >= 0x40 { break; }
         }
     }
-    match cands.len() {
-        0 => None,
-        1 => Some(cands[0]),
-        _ => {
-            let mut best: Option<(usize, f32)> = None;
-            for &i in &cands {
-                let c = &graph.cells[i];
-                let up = c.max[1] - eye[1];
-                let down = eye[1] - c.min[1];
-                let d = up.min(down);
-                if d < 256.0 && best.map_or(true, |(_, bd)| d < bd) { best = Some((i, d)); }
+    if cands.len() <= 1 { return cands.first().copied(); }
+    if let Some(world) = world {
+        // [M 0x1c8cb0]: len = the best-so-far distance (256 first); up ray, then the down ray
+        // capped at min(up hit, len); the nearest hit distance wins; no hits -> the first.
+        let mut best: Option<(usize, f32)> = None;
+        for &i in &cands {
+            let len = best.map_or(256.0, |(_, d)| d);
+            let up = world.segment_hit_scoped(Some(i), eye, [eye[0], eye[1] + len, eye[2]]).map(|(t, _)| t * len);
+            let dlen = up.map_or(len, |ud| ud.min(len));
+            let down = world.segment_hit_scoped(Some(i), eye, [eye[0], eye[1] - dlen, eye[2]]).map(|(t, _)| t * dlen);
+            match (up, down) {
+                (None, None) => continue,
+                (a, b) => {
+                    let d = a.iter().chain(b.iter()).copied().fold(f32::MAX, f32::min);
+                    if best.map_or(true, |(_, bd)| d < bd) { best = Some((i, d)); }
+                }
             }
-            Some(best.map_or(cands[0], |(i, _)| i))
         }
+        return Some(best.map_or(cands[0], |(i, _)| i));
+    }
+    // The no-world approximation: the nearest bbox face (the pre-fix-portal3 behaviour).
+    {
+        let mut best: Option<(usize, f32)> = None;
+        for &i in &cands {
+            let c = &graph.cells[i];
+            let up = c.max[1] - eye[1];
+            let down = eye[1] - c.min[1];
+            let d = up.min(down);
+            if d < 256.0 && best.map_or(true, |(_, bd)| d < bd) { best = Some((i, d)); }
+        }
+        Some(best.map_or(cands[0], |(i, _)| i))
     }
 }
 
@@ -873,7 +894,10 @@ pub fn find_cell_raycast(graph: &CelGraph, eye: [f32; 3]) -> Option<usize> {
 /// 3. `build_FindCel` (0x1c8cb0): a fresh search;
 /// 4. a FindCel miss KEEPS the previous cel, and a first-ever miss takes the world's first cel
 ///    (`puVar1[1] = *glb_world`) [M 0x1bae90:34-38].
-pub fn eye_cell(graph: &CelGraph, state: &mut ViewerCel, eye: [f32; 3]) -> Option<usize> {
+///
+/// `world` (the sim's scoped `CollisionWorld`) feeds `build_FindCel`'s collision tie-break
+/// [M 0x1c8cb0]; `None` keeps the bbox-face approximation.
+pub fn eye_cell(graph: &CelGraph, state: &mut ViewerCel, eye: [f32; 3], world: Option<&nf_game::world::CollisionWorld>) -> Option<usize> {
     if let Some(c) = state.cell {
         if let Some(dest) = portal_move_dest(graph, c, state.pos, eye) {
             state.pos = eye;
@@ -885,7 +909,7 @@ pub fn eye_cell(graph: &CelGraph, state: &mut ViewerCel, eye: [f32; 3]) -> Optio
             return Some(c);
         }
     }
-    let found = find_cell_raycast(graph, eye);
+    let found = find_cell_raycast(graph, eye, world);
     state.pos = eye;
     match found {
         Some(c) => { state.cell = Some(c); Some(c) }

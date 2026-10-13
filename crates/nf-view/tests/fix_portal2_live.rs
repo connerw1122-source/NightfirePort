@@ -93,7 +93,7 @@ fn the_chain_pass_rescues_the_cels_the_strict_walk_hides() {
         let planes = nf_view::gpu::extract_frustum(vp);
         let sides = [planes[0], planes[1], planes[2], planes[3]];
         let depth0 = depth0_game(vp, eye);
-        let Some(cell) = scene::eye_cell(graph, &mut state, eye) else { continue };
+        let Some(cell) = scene::eye_cell(graph, &mut state, eye, None) else { continue };
         let Some(strict) = scene::portal_visible_cels_from_cell(graph, cell, eye, &depth0) else { continue };
         let Some(game) = scene::portal_visible_cels_game_from_cell(graph, cell, eye, &depth0, &sides) else { continue };
         // The game's mask never drops what the strict walk keeps (the chain pass only adds).
@@ -126,7 +126,7 @@ fn the_07000007_hidden_room_stays_hidden_and_the_start_view_holds() {
     let sides = [planes[0], planes[1], planes[2], planes[3]];
     let depth0 = depth0_game(vp, eye);
     let mut state = scene::ViewerCel::default();
-    let start = scene::eye_cell(graph, &mut state, eye).expect("the eye resolves on 07000007");
+    let start = scene::eye_cell(graph, &mut state, eye, None).expect("the eye resolves on 07000007");
     let strict = scene::portal_visible_cels_from_cell(graph, start, eye, &depth0).expect("the walk runs");
     let game = scene::portal_visible_cels_game_from_cell(graph, start, eye, &depth0, &sides).expect("the game mask runs");
     // The post-fix gate: a cel placement draws by its own cell (`Material::node`), the dynamics by
@@ -150,7 +150,7 @@ fn the_07000007_hidden_room_stays_hidden_and_the_start_view_holds() {
     let sides2 = [planes2[0], planes2[1], planes2[2], planes2[3]];
     let depth02 = depth0_game(vp2, eye2);
     let mut state2 = scene::ViewerCel::default();
-    let start2 = scene::eye_cell(graph, &mut state2, eye2).expect("the eye resolves at the window");
+    let start2 = scene::eye_cell(graph, &mut state2, eye2, None).expect("the eye resolves at the window");
     let strict2 = scene::portal_visible_cels_from_cell(graph, start2, eye2, &depth02).expect("the walk runs at the window");
     let game2 = scene::portal_visible_cels_game_from_cell(graph, start2, eye2, &depth02, &sides2).expect("the game mask runs at the window");
     let mut room_cells = 0usize;

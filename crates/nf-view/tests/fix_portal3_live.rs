@@ -74,14 +74,14 @@ fn probe_the_bond_spot_viewer_cel() {
     // the way the interactive loop would carry it (one render per tick → one eye_cell per tick).
     let mut tick_state = scene::ViewerCel::default();
     for t in 1..=120u32 {
-        let sim = sc.sim.as_mut().unwrap();
-        sim.step_bond(Default::default(), false, false, false);
-        let eye = sim.bond.head();
-        let cell = scene::eye_cell(&graph, &mut tick_state, eye);
-        let fresh = scene::find_cell_raycast(&graph, eye);
+        let eye = { let mut sim = sc.sim.as_mut().unwrap(); sim.step_bond(Default::default(), false, false, false); sim.bond.head() };
+        let world = sc.sim.as_ref().map(|s| &s.world);
+        let cell = scene::eye_cell(&graph, &mut tick_state, eye, world);
+        let fresh = scene::find_cell_raycast(&graph, eye, world);
         if t % 20 == 0 || t == 1 {
+            let bp = { let sim = sc.sim.as_ref().unwrap(); sim.bond.pos };
             eprintln!("[spot] t{t} bond ({:.2},{:.2},{:.2}) eye ({:.2},{:.2},{:.2}) state {:?} fresh FindCel {:?} agree {}",
-                sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2], eye[0], eye[1], eye[2], tick_state.cell, fresh, tick_state.cell == fresh);
+                bp[0], bp[1], bp[2], eye[0], eye[1], eye[2], tick_state.cell, fresh, tick_state.cell == fresh);
         }
     }
     let sim = sc.sim.as_ref().unwrap();
@@ -91,14 +91,15 @@ fn probe_the_bond_spot_viewer_cel() {
     drop(sim);
 
     // The render path (shot()): one cel_visibility on a default state at the final eye/camera.
+    let world = sc.sim.as_ref().map(|s| &s.world);
     let cam_pitch = bond_pitch * std::f32::consts::FRAC_PI_2;
     let vp = view_proj(eye, bond_yaw, cam_pitch, 16.0 / 9.0);
     let planes = nf_view::gpu::extract_frustum(vp);
     let sides = [planes[0], planes[1], planes[2], planes[3]];
     let depth0 = depth0_game(vp, eye);
     let mut state = scene::ViewerCel::default();
-    let cell_persist = scene::eye_cell(&graph, &mut state, eye);
-    let fresh = scene::find_cell_raycast(&graph, eye);
+    let cell_persist = scene::eye_cell(&graph, &mut state, eye, world);
+    let fresh = scene::find_cell_raycast(&graph, eye, world);
     let room_start = sc.cel_index_at(eye).and_then(|r| graph.room_to_cell.get(r).copied().flatten());
     eprintln!("[spot] render-path viewer cel {cell_persist:?} (state pos {:?}), fresh FindCel {fresh:?}, room-based {room_start:?} (room at eye {:?})",
         state.pos, sc.cel_index_at(eye));
@@ -204,7 +205,47 @@ fn probe_the_bond_spot_viewer_cel() {
     }
     // The pitch-convention comparison: the same eye at the raw 0.428 rad (24.5 deg) vs the render
     // path's 0.428*pi/2 (38.5 deg) — which start reaches the wall cels, and which drops them.
-    for (label, pitch) in [("raw 0.428", 0.428f32), ("render 0.428*pi/2", 0.428f32 * std::f32::consts::FRAC_PI_2)] {
+    {
+        // Why does portal 26 (19<->33) clip empty even at level pitch? Print each depth-0 plane's
+        // value at the quad's corners.
+        let vp = view_proj(eye, bond_yaw, 0.0, 16.0 / 9.0);
+        let depth0 = depth0_game(vp, eye);
+        let q = &graph.portals.iter().find(|p| (p.cel_a == 19 && p.cel_b == 33) || (p.cel_a == 33 && p.cel_b == 19)).unwrap().corners;
+        for (k, pl) in depth0.iter().enumerate() {
+            let vals: Vec<f32> = q.iter().map(|c| pl[0] * c[0] + pl[1] * c[1] + pl[2] * c[2] + pl[3]).collect();
+            eprintln!("[clip] plane {k} {:?} at quad corners {:?}", pl, vals);
+        }
+        eprintln!("[clip] quad corners {:?}", q);
+        // The walk's exact clip (Sutherland-Hodgman keep >= 0, the game's compaction) over both
+        // corner orders.
+        let clip = |poly: &Vec<[f32; 3]>, plane: [f32; 4]| -> Vec<[f32; 3]> {
+            let val = |p: &[f32; 3]| plane[0] * p[0] + plane[1] * p[1] + plane[2] * p[2] + plane[3];
+            if !poly.iter().any(|p| val(p) < 0.0) { return poly.clone(); }
+            let n = poly.len();
+            let mut out = Vec::with_capacity(n + 2);
+            for i in 0..n {
+                let (cur, nxt) = (poly[i], poly[(i + 1) % n]);
+                let (cin, nin) = (val(&cur) >= 0.0, val(&nxt) >= 0.0);
+                let denom = plane[0] * (cur[0] - nxt[0]) + plane[1] * (cur[1] - nxt[1]) + plane[2] * (cur[2] - nxt[2]);
+                match (cin, nin) {
+                    (true, true) => out.push(nxt),
+                    (true, false) => { if denom != 0.0 { let t = -val(&nxt) / denom; out.push([nxt[0] + t * (cur[0] - nxt[0]), nxt[1] + t * (cur[1] - nxt[1]), nxt[2] + t * (cur[2] - nxt[2])]); } }
+                    (false, true) => { if denom != 0.0 { let t = -val(&nxt) / denom; out.push([nxt[0] + t * (cur[0] - nxt[0]), nxt[1] + t * (cur[1] - nxt[1]), nxt[2] + t * (cur[2] - nxt[2])]); } out.push(nxt); }
+                    (false, false) => {}
+                }
+            }
+            out
+        };
+        for (name, poly) in [("fwd", q.to_vec()), ("rev", vec![q[3], q[2], q[1], q[0]])] {
+            let mut poly = poly;
+            for (k, pl) in depth0.iter().enumerate() {
+                poly = clip(&poly, *pl);
+                eprintln!("[clip] {name} after plane {k}: {} verts", poly.len());
+                if poly.is_empty() { break; }
+            }
+        }
+    }
+    for (label, pitch) in [("level 0.0", 0.0f32), ("raw 0.428", 0.428f32), ("render 0.428*pi/2", 0.428f32 * std::f32::consts::FRAC_PI_2)] {
         let vp = view_proj(eye, bond_yaw, pitch, 16.0 / 9.0);
         let planes = nf_view::gpu::extract_frustum(vp);
         let sides = [planes[0], planes[1], planes[2], planes[3]];
@@ -391,4 +432,114 @@ fn probe_portal_data_audit() {
         }
         eprintln!("[audit] {name}: {} cels, {} nodes, {} pairs matched to 07000006 quads, {unmatched} unmatched", cels.len(), owner.len(), matched);
     }
+}
+
+/// The pinned fix, part 1 [M 0x1c8cb0 + 0x1b9920]: at the failing `--bond 7.24,42.03,-39.31,10.161,0.428`
+/// spot the render-path viewer cel resolves through `build_FindCel`'s collision tie-break (the port's
+/// scoped `CollisionWorld` standing in for the game's per-cel `Collide_RayIntersect` rays) to the
+/// courtyard cel — the same cel the room-based derivation picks. The pre-fix bbox-face approximation
+/// picked the upper-region cel 21 there instead (the sister assertion pins that divergence).
+#[test]
+fn the_placed_viewer_cel_resolves_where_the_game_finds_it() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut sc = match nf_view::load(&iso, "07000006.bin", false) { Ok(s) => s, Err(e) => { eprintln!("07000006: {e}"); return } };
+    let graph = sc.cel_graph.clone();
+    {
+        let sim = sc.sim.as_mut().expect("07000006 has a sim");
+        sim.bond = nf_game::player::Bond::new([7.24, 42.03, -39.31], 10.161);
+        sim.bond.pitch = 0.428;
+        for _ in 0..120 { sim.step_bond(Default::default(), false, false, false); }
+    }
+    let world = sc.sim.as_ref().map(|s| &s.world);
+    let eye = sc.sim.as_ref().unwrap().bond.head();
+    // The render path (shot()): one resolution from a default state — what a placement leaves.
+    let mut state = scene::ViewerCel::default();
+    let cell = scene::eye_cell(&graph, &mut state, eye, world).expect("the placed eye resolves");
+    let room_start = sc.cel_index_at(eye).and_then(|r| graph.room_to_cell.get(r).copied().flatten()).expect("the eye's room maps");
+    eprintln!("[pin1] eye {:?} collision-tie-break cel {cell:?} room-based {room_start:?}", eye);
+    assert_eq!(Some(cell), Some(room_start), "the game-faithful FindCel tie-break must resolve the courtyard cel the room records pick");
+    // Sister: the no-world bbox-face approximation diverged here (the pre-fix behaviour).
+    let approx = scene::find_cell_raycast(&graph, eye, None);
+    eprintln!("[pin1] the bbox-face approximation picks {approx:?} — the divergence the collision tie-break removes");
+    assert_ne!(approx, Some(cell), "the approximation was expected to diverge at this eye (it picked the upper-region cel)");
+    // And the persistent state agrees with the fresh one after the 120 carried ticks.
+    assert_eq!(state.cell, Some(cell));
+}
+
+/// The pinned fix, part 2 — the user's actual case: the truck→courtyard walk extended to the spot.
+/// The persistent `Camera_CheckLocation` state carries through the portals; the courtyard masonry
+/// (cell 19 — the wall the failing view looks at) stays in the game mask along the final leg.
+#[test]
+fn the_user_route_walk_keeps_the_courtyard_walls() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let sc = match nf_view::load(&iso, "07000006.bin", false) { Ok(s) => s, Err(e) => { eprintln!("07000006: {e}"); return } };
+    let graph = &sc.cel_graph;
+    let world = sc.sim.as_ref().map(|s| &s.world);
+    let (pos, yaw) = sc.start.clone().expect("07000006 has a start");
+    let mid = [83.58f32, 35.13, 33.21]; // the courtyard guard spot (fix_searchlight_alarm_live)
+    let end = [7.24f32, 42.03, -39.31]; // the failing --bond spot
+    let mut state = scene::ViewerCel::default();
+    let mut cell19_leg = 0usize;
+    let mut min_game = usize::MAX;
+    for s in 0..=240usize {
+        let t = s as f32 / 240.0;
+        // Two legs: start -> courtyard guard spot -> the failing spot (the walk's own route).
+        let p = if t <= 0.5 {
+            let k = t / 0.5;
+            [pos[0] + (mid[0] - pos[0]) * k, pos[1] + (mid[1] - pos[1]) * k, pos[2] + (mid[2] - pos[2]) * k]
+        } else {
+            let k = (t - 0.5) / 0.5;
+            [mid[0] + (end[0] - mid[0]) * k, mid[1] + (end[1] - mid[1]) * k, mid[2] + (end[2] - mid[2]) * k]
+        };
+        let eye = [p[0], p[1] + 1.6, p[2]];
+        let pitch = if t > 0.5 { (t - 0.5) * 2.0 * 0.428 } else { 0.0 }; // the walker tilts up approaching the spot
+        let vp = view_proj(eye, yaw, pitch, 16.0 / 9.0);
+        let planes = nf_view::gpu::extract_frustum(vp);
+        let sides = [planes[0], planes[1], planes[2], planes[3]];
+        let depth0 = depth0_game(vp, eye);
+        let Some(cell) = scene::eye_cell(graph, &mut state, eye, world) else { continue };
+        let Some(strict) = scene::portal_visible_cels_from_cell(graph, cell, eye, &depth0) else { continue };
+        let Some(game) = scene::portal_visible_cels_game_from_cell(graph, cell, eye, &depth0, &sides) else { continue };
+        if s % 24 == 0 || s == 240 {
+            eprintln!("[pin2] t={t:.2} eye ({:.1},{:.1},{:.1}) cell {:?} strict {} game {}",
+                eye[0], eye[1], eye[2], state.cell, strict.iter().filter(|&&v| v).count(), game.iter().filter(|&&v| v).count());
+        }
+        // The user's reported symptom was the level collapsing to nothing; the game-faithful
+        // walk must keep submitting World draws at every step, and the eye cel must always be
+        // the game's own resolution (never stuck on the world's first cel).
+        assert!(state.cell.is_some(), "t={t:.2}: the viewer cel failed to resolve");
+        min_game = min_game.min(game.iter().filter(|&&v| v).count());
+        // The courtyard wall cel 19 (the masonry under the walkway) draws from the fresh-33
+        // start at level pitch; along the carried state it may not — the live check decides.
+        if t > 0.6 && game.get(19) == Some(&true) { cell19_leg += 1; }
+    }
+    eprintln!("[pin2] cell-19-visible steps on the final leg: {cell19_leg}, min game draws over the route: {min_game}");
+    assert!(min_game > 0, "the walk collapsed to zero game draws somewhere on the route — the user's symptom regressed");
+}
+
+/// The live-gated wall-cel case (see the report's "Live checks"): whether the REAL game draws
+/// wall cels 20/22/38/5/13/23 at the exact placed camera. The port's verified walk rule
+/// ([M] 0x1e82e0 + [L] portal sides + [M] fov 60°) does not reach them from any candidate start;
+/// `NF_NOPORTAL` draws them because it skips the walk. Ignored until the main agent's gdbwatch
+/// of VisCelList (0x34b3b0) at the spot settles which side is the game's.
+#[test]
+#[ignore = "live-gated: needs the main agent's VisCelList watch at the failing spot (docs/reports/fix-portal3.md)"]
+fn the_courtyard_wall_cels_at_the_exact_spot() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let sc = match nf_view::load(&iso, "07000006.bin", false) { Ok(s) => s, Err(e) => { eprintln!("07000006: {e}"); return } };
+    let graph = &sc.cel_graph;
+    let world = sc.sim.as_ref().map(|s| &s.world);
+    let eye = [7.24f32, 42.73, -39.31];
+    let vp = view_proj(eye, 10.161, 0.428 * std::f32::consts::FRAC_PI_2, 16.0 / 9.0);
+    let planes = nf_view::gpu::extract_frustum(vp);
+    let sides = [planes[0], planes[1], planes[2], planes[3]];
+    let depth0 = depth0_game(vp, eye);
+    let mut state = scene::ViewerCel::default();
+    let cell = scene::eye_cell(graph, &mut state, eye, world).expect("resolves");
+    let game = scene::portal_visible_cels_game_from_cell(graph, cell, eye, &depth0, &sides).expect("the walk runs");
+    // The wall cels the failing view needs: the game's VisCelList decides.
+    let walls = [19usize, 20, 22, 38, 5, 13, 23];
+    let kept: Vec<usize> = walls.iter().copied().filter(|c| game[*c]).collect();
+    eprintln!("[live] wall cels kept by the walk+chain pass from cell {cell}: {kept:?}");
+    assert_eq!(kept.len(), walls.len(), "the walk+chain pass hides wall cels {:?} — the live check must confirm the game hides them too", walls.iter().copied().filter(|c| !game[*c]).collect::<Vec<_>>());
 }

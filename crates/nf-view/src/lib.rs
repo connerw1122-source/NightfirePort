@@ -839,7 +839,7 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     opts.up = opts_up;
     let mut r = gpu::Renderer::new(&device, &queue, format, scene, notex, nofog);
     let (vp_shot, _) = cam.view_proj(w as f32 / h as f32);
-    let vis_shot = r.cel_visibility(cam.pos.to_array(), vp_shot);
+    let vis_shot = r.cel_visibility(cam.pos.to_array(), vp_shot, scene.sim.as_ref().map(|s| &s.world));
     r.update_skin(&queue, scene, choice, time, opts, vis_shot.as_deref());
     r.lights = scene.frame_lights();
     // `NF_BENCH=N`: time the per-frame CPU side N times (posing + vertex build, and the upload) for profiling.
@@ -1101,7 +1101,18 @@ impl App {
             dev::MenuAction::SaveSpot => { let p = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos); if let Some(d) = self.dev.as_deref_mut() { d.saved_spot = Some(p); } format!("spot saved at ({:.1},{:.1},{:.1})", p[0], p[1], p[2]) }
             dev::MenuAction::RestoreSpot => {
                 let spot = self.dev.as_deref().and_then(|d| d.saved_spot);
-                match spot { Some(p) => { if let Some(d) = self.dev.as_deref() { d.teleport(&mut self.scene, p, self.cam.yaw); } format!("restored to ({:.1},{:.1},{:.1})", p[0], p[1], p[2]) }, None => "no saved spot — use 'save spot' first".to_string() }
+                match spot {
+                    Some(p) => {
+                        if let Some(d) = self.dev.as_deref() { d.teleport(&mut self.scene, p, self.cam.yaw); }
+                        // The game's own placement clears the viewer's cel so the next
+                        // `Camera_CheckLocation` re-finds it at the placed position
+                        // [M 0x1b9920 `Camera_Enable` with a matrix: `viewer+4 = 0`; the same
+                        // clear in `Player_Init` 0x1910f8 and `Camera_Reset` 0x1b9af0].
+                        if let Some(g) = self.gfx.as_mut() { g.renderer.viewer_cel = crate::scene::ViewerCel::default(); }
+                        format!("restored to ({:.1},{:.1},{:.1})", p[0], p[1], p[2])
+                    }
+                    None => "no saved spot — use 'save spot' first".to_string(),
+                }
             }
             dev::MenuAction::TimeScale(s) => { if let Some(d) = self.dev.as_deref_mut() { d.time_scale = s; } format!("time scale: {}", if s == 0.0 { "paused (F11=step)" } else if s == 1.0 { "1×" } else { "0.25×" }) }
             // The level-select jump (fix-dev T5): the same path a level exit takes — a warm load with the
@@ -1278,9 +1289,14 @@ impl ApplicationHandler for App {
                     (KeyCode::KeyN, ElementState::Pressed) => {
                         self.noclip = !self.noclip;
                         // Back on foot: Bond where the free camera is.
-                        if !self.noclip { if let Some(sim) = self.scene.sim.as_mut() {
-                            sim.bond = nf_game::player::Bond::stand_at(&sim.world, [self.cam.pos.x, self.cam.pos.y - 0.7, self.cam.pos.z], self.cam.yaw);
-                        } }
+                        if !self.noclip {
+                            if let Some(sim) = self.scene.sim.as_mut() {
+                                sim.bond = nf_game::player::Bond::stand_at(&sim.world, [self.cam.pos.x, self.cam.pos.y - 0.7, self.cam.pos.z], self.cam.yaw);
+                            }
+                            // The game's own placement clears the viewer's cel [M 0x1b9920] — the
+                            // next frame re-finds at Bond's position.
+                            if let Some(g) = self.gfx.as_mut() { g.renderer.viewer_cel = crate::scene::ViewerCel::default(); }
+                        }
                     }
                     (KeyCode::KeyT, ElementState::Pressed) => if let Some(sim) = self.scene.sim.as_mut() { sim.auto_aim = !sim.auto_aim },
                     // Weapon switching: number keys 1–9 select directly, Q = prev, E (when not use) = next.
@@ -1493,7 +1509,7 @@ impl ApplicationHandler for App {
                 // One visibility walk per frame, shared by the palette's object cull and render's
                 // World cull (fix-portal): the eye's cel from `Camera_CheckLocation` 0x1bae90's
                 // persistent state, the walk from it [M 0x1e86e8].
-                let vis = g.renderer.cel_visibility(draw_cam.pos.to_array(), vp0);
+                let vis = g.renderer.cel_visibility(draw_cam.pos.to_array(), vp0, self.scene.sim.as_ref().map(|s| &s.world));
                 // G-043: build the palette only when a tick ran, then draw between the last two ticks.
                 if self.ticked || self.pal_cur.is_none() {
                     let new = self.scene.skin_palette(&g.renderer.skin_layout, self.choice, self.anim_time, self.opts, vis.as_deref());

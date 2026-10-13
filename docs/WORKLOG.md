@@ -7659,3 +7659,29 @@ Work Log:
 
 Stage Summary:
 - Starting fix-portal3: the 07000006 courtyard holes persist at the eye-cel state — reproduce headlessly at the exact --bond spot, find what Camera_CheckLocation 0x1bae90 does after a placement jump (FindCel vs stale), make the port + dev teleport + --bond follow the game's placement, walk the user's route there, pin the wall cels with a failing-first test.
+
+**fix-portal3 outcome (17:00 UTC)**: the failing-spot divergence was the `build_FindCel`
+(0x1c8cb0) tie-break, not the carried state: the game breaks candidate ties with per-cel
+COLLISION rays (up 256, down min(up-hit,len), nearest hit wins, no hits → the first candidate)
+and the port's bbox-face approximation picked the upper-region cel 21 at the failing eye where
+the game's raycast picks the courtyard cel 33 (the room records agree). Ported faithfully
+(`scene::find_cell_raycast` + `eye_cell` now take the sim's scoped `CollisionWorld` —
+`segment_hit_scoped(Some(cell))` stands in for `Collide_RayIntersect`'s per-cel list;
+`gpu::cel_visibility`/lib.rs thread it; the world-less callers keep the approximation), and the
+game's own placement rule landed: the dev teleport (RestoreSpot) and the free-cam→Bond placement
+clear the viewer cel the way `Camera_Enable` 0x1b9920 (with a matrix) / `Player_Init` 0x1910f8 /
+`Camera_Reset` 0x1b9af0 clear viewer+4 (the `--bond --shot` path resolves from a default state by
+construction). [L] evidence banked for the next task: the runtime portal-node sides are EXACTLY
+the port's model (FORWARD-corner node in celB's list 21/21 pairs, REVERSED in celA's, active
+(flags&2)/(flags&1), from work/ee_start_05.bin = 07000005's snapshot walked end-to-end) — and the
+game's walk frustum is fovY 60° [M 0x1baf70/0x1bb0f8] with a 4:3/1.618 aspect, so the port's 16:9
+frustum clips LESS than the game. Honest residue: from the game-faithful starts the walk+chain
+pass still hides wall cels 20/22/38/5/13/23 at the exact placed camera (19 joins only at level
+pitch from a fresh 33) — every recoverable rule says the port now matches the game, and rooms
+never ride chains [L], so whether the real game draws those walls at that placed camera is a live
+question (gdbwatch VisCelList 0x34b3b0 at the spot — listed in the report). Tests: the two pins
+green (the tie-break resolution == the room-based cel; the route never collapses, min 7 game
+cells), fix_portal_live 6/6, fix_portal2_live 2/2, lib 8/8; the wall-cel pin is #[ignore]d
+live-gated. The full four-crate suite did NOT fit the sandbox window (background jobs are killed
+between tool calls; the foreground windows ran the nf-view suites above) — re-run before merge.
+Report: docs/reports/fix-portal3.md.
