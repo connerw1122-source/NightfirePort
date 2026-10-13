@@ -1,6 +1,6 @@
-## Your task: `fix-safe08b`, finish the 07000008 bedroom: the take, and room-scoped collision and drawing
+## Your task: `fix-safe08b`, the 07000008 bedroom's blue block: room-scoped collision and drawing
 
-**Start from `s/fix-safe08`** (3e7dad4; read `docs/reports/fix-safe08.md` first). It found both root causes:
+**Update:** the take now works and fix-safe08 (9c9674b) is merged into master: created pickups leave the collision world (0x1d8d54), so item 2 below is DONE. Do only the room-scoped collision and drawing. Start from `origin/master` and read `docs/reports/fix-safe08.md` first. It found both root causes:
 - the safe's items are spawned by the SafePickUps script 0x060009E2 (SP #286 on ch 136) through
   `Script_CreateEntity` 0x1d8968's 0xF0 arm. That's ported: the shelf pickups exist at the game's key positions. But
   `fix_safe08_live::the_safe_pickups_take_after_the_safe_opens` is still red: the take's `Collide_LineOfSight`
