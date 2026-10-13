@@ -7647,3 +7647,15 @@ Stage Summary:
   stun grenade stuns (0x35 flash branch), the smoke pops (0x36), the mine fuses 420; the dev panel
   names match the disc. Left: the smoke's Occlude visual, the whiteout falloff curve, the mine
   trigger/detonator, the tripbomb laser, the satchel timer — all noted in the report.
+
+---
+Task: fix-portal3
+Agent: fix-portal3 worker
+Branch: s/fix-portal3 (from s/fix-portal2 42ba472, master a5bff8b merged; same commit pushed as s/portal3 per the task text)
+
+Work Log:
+- Sandbox kept from earlier sessions (repo, work/, onfoot ISO, nf-queue all present); token URL refreshed, origin fetched.
+- Branch s/fix-portal3 created from origin/s/fix-portal2 (42ba472), origin/master merged (only docs/WORKLOG.md conflicted; both sides kept). Pushed.
+
+Stage Summary:
+- Starting fix-portal3: the 07000006 courtyard holes persist at the eye-cel state — reproduce headlessly at the exact --bond spot, find what Camera_CheckLocation 0x1bae90 does after a placement jump (FindCel vs stale), make the port + dev teleport + --bond follow the game's placement, walk the user's route there, pin the wall cels with a failing-first test.
