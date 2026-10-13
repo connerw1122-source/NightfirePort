@@ -54,10 +54,27 @@ struct Camera { pos: Vec3, yaw: f32, pitch: f32, fov: f32 }
 const SNAP: f32 = 4.0;
 fn lerp_cam(a: &Camera, b: &Camera, t: f32) -> Camera {
     if a.pos.distance(b.pos) > SNAP || (a.fov - b.fov).abs() > 0.2 { return *b; }
-    let mut dy = b.yaw - a.yaw;
+    Camera { pos: a.pos.lerp(b.pos, t), yaw: lerp_yaw(a.yaw, b.yaw, t), pitch: a.pitch + (b.pitch - a.pitch) * t, fov: a.fov + (b.fov - a.fov) * t }
+}
+
+/// The yaw half of `lerp_cam`: the short way round the ±π wrap (07000002's corridor turns must not
+/// sweep the long way). Extracted with the tick scheduler so the fps-determinism test pins it.
+pub fn lerp_yaw(a: f32, b: f32, t: f32) -> f32 {
+    let mut dy = b - a;
     while dy > std::f32::consts::PI { dy -= std::f32::consts::TAU; }
     while dy < -std::f32::consts::PI { dy += std::f32::consts::TAU; }
-    Camera { pos: a.pos.lerp(b.pos, t), yaw: a.yaw + dy * t, pitch: a.pitch + (b.pitch - a.pitch) * t, fov: a.fov + (b.fov - a.fov) * t }
+    a + dy * t
+}
+
+/// The render loop's tick scheduler (`RedrawRequested`, the `anim_time += dt * 60` block), extracted
+/// verbatim so the headless fps-determinism test drives the same arithmetic the winit loop runs:
+/// a render frame advances the 60 Hz clock by `dt * 60` and runs the whole ticks that appeared,
+/// capped at `max_ticks` (fix-perf-level's drop cap — capped ticks are dropped, not deferred).
+/// Logic stays fixed-60 Hz at any frame rate: faster frames just run 0 ticks more often.
+pub fn ticks_for_frame(anim_time: &mut f32, dt: f32, max_ticks: u32) -> u32 {
+    let before = *anim_time as u32;
+    *anim_time += dt * 60.0;
+    (*anim_time as u32).saturating_sub(before).min(max_ticks)
 }
 fn lerp_palette(a: &[nf_formats::anim::Mat4], b: &[nf_formats::anim::Mat4], t: f32) -> Vec<nf_formats::anim::Mat4> {
     if a.len() != b.len() { return b.to_vec(); }
@@ -769,7 +786,8 @@ fn snow_for(scene: &scene::Scene, cam: &Camera) -> Vec<scene::Vertex> {
 
 /// One frame of sound (`Sound_UpdateListeners` → `Sound_UpdateSounds` → the batch → `SFXUpdate`): the listener is
 /// Bond's eye and view (glb_viewer[0]; the cut-scene camera's listener call is dropped by the EE batcher [M]).
-fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
+/// `pub` so the headless tests drive the exact function the winit loop runs (the fix-gpu-skinning precedent).
+pub fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
     let (pos, f) = (sim.bond.head(), sim.bond.look());
     // Row 0 of the view matrix: up × forward, the screen-left axis (snapshot: dir (−0.839, 0, −0.545) → (−0.545, 0, 0.839)).
     let norm = { let l = (f[0] * f[0] + f[2] * f[2]).sqrt().max(1e-6); [f[2] / l, 0.0, -f[0] / l] };
@@ -793,10 +811,18 @@ fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
     let driver = &s.driver;
     sim.drones.audio.update(sim.sfx.as_ref(), (pos, norm, [0.0, 1.0, 0.0], f), &|h| driver.is_playing(h));
     let cmds = sim.drones.audio.take_commands();
+    // `Sound_UpdateListeners` 0x1dd278 (fix-room-sound): every frame, from the active viewer's cel —
+    // `SFXSetEnvironment(cel s16 +0x98, underwater = (cel+0x3c & 0x10000000) || env >= 20)` [M disasm
+    // 0x1dd4b0-0x1dd4fc]; a viewer with no cel sends nothing and the IOP keeps its previous targets.
+    // The port's single viewer is Bond's eye (as below); the glb_viewer[4] script-camera override is
+    // not modelled — the script-camera listener call is dropped by the EE batcher.
+    let env_send = sim.cel_at(pos).map(|i| {
+        let c = &sim.cels[i];
+        (c.env as i32, (c.underwater || c.env >= 20) as i32)
+    });
     s.batch(|drv, out| {
-        // `Sound_UpdateListeners`→`SFXSetEnvironment(room env, underwater)` [M sound.md §0]. The cel/room system that
-        // supplies `room env` is not yet ported (G-016); default to no reverb / no underwater until it is.
-        drv.set_environment(0, 0);
+        // `Sound_UpdateListeners`→`SFXSetEnvironment(room env, underwater)` [M sound.md §0, 0x1dd278].
+        if let Some((reverb, underwater)) = env_send { drv.set_environment(reverb, underwater); }
         for c in cmds {
             match c {
                 nf_game::sound::Cmd::Listener { pos, norm, dir, .. } => { drv.set_listener(pos, dir, norm); }
@@ -918,7 +944,7 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let snow = snow_for(scene, cam);
     let overlay_owned = menu.map_or_else(|| overlay_for(scene, w as f32 / h as f32), |m| m.clone());
     let hud = &overlay_owned;
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, hud);
+    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, hud, None);
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -1036,6 +1062,9 @@ struct App {
     /// curves and ramps — docs/systems/input.md §8).
     #[cfg(feature = "gamepad")]
     pad: Option<gamepad::Backend>,
+    /// The playing mission-flow movie, the port's `psiStartBackgroundMovie` [M 0x1081a8]. Set while
+    /// GameFlow state 6 holds a real briefing/outro; cleared by the skip or the end of stream.
+    movie: Option<movie::Player>,
 }
 
 impl App {
@@ -1045,10 +1074,79 @@ impl App {
     fn demo_results(&mut self, complete: bool) {
         if self.level_code == 0 || self.level_code == menu::FRONTEND_LEVEL { return; }
         let mut fe = menu::FrontEnd::new();
+        // The demo hook stands in for Mission_Update 0x182c60, which fires in state 2 — the flow
+        // must be in a state reset_map_level_to_load accepts (its gate [M 0x1d3800]) for the outro
+        // request to wrap into the movie state.
+        fe.flow.stack = vec![menu::ST_RUNNER];
         fe.flow.current_level = self.level_code;
         fe.mission_ended(if complete { menu::Outcome::Complete } else { menu::Outcome::Failed }, menu::Stats::default());
         self.fe = Some(fe);
         self.grab(false);
+    }
+
+    /// The mission-flow movie glue, one call per redraw: `psiStartBackgroundMovie` on state-6
+    /// entry [M 0x1081a8], the `psiMovieFinished` poll [M 0x1082e8 + GameFlow_Main 0x1c98c8 case 6],
+    /// `psiStopBackgroundMovie` when state 6 leaves [M 0x108328], and the phase-2 resolve routing
+    /// the host's level load [M ResetMap_Load 0x1d6360 LoadState 2].
+    fn movie_tick(&mut self) {
+        let Some(fe) = self.fe.as_mut() else { return };
+        // A pending end_to request from mission_ended rides the same path a menu pick does.
+        if let Some(code) = fe.requested_level.take() { self.pending_level = Some(code); }
+        if fe.flow.get_state() == menu::ST_MOVIE {
+            match &mut self.movie {
+                Some(p) => {
+                    // BGFMVPlaying follows the player: 1 while it decodes, 0 at the end of file —
+                    // state 6 pops through the psiMovieFinished arm on the next main_tick
+                    // [M 0x1082e8 + 0x1c98c8 case 6].
+                    fe.flow.movie_playing = !p.finished();
+                }
+                None => {
+                    let code = fe.flow.movie_code;
+                    if code != 0 {
+                        match movie::Player::start(&self.iso, code) {
+                            Ok(p) => {
+                                eprintln!("movie: playing {code:08x} (state 6)");
+                                fe.flow.movie_playing = true; // BGFMVPlaying = 1 [M 0x1081a8]
+                                self.movie = Some(p);
+                            }
+                            Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in"),
+                        }
+                    }
+                }
+            }
+        } else if self.movie.is_some() && !fe.flow.movie_pending {
+            // State 6 left (the skip, or the flow moved on) and no wrap is on its way:
+            // psiStopBackgroundMovie [M 0x108328].
+            let code = self.movie.as_ref().map_or(0, |p| p.code());
+            if let Some(p) = self.movie.take() { p.stop(); }
+            fe.flow.movie_playing = false;
+            eprintln!("movie: stopped {code:08x}");
+        } else if self.movie.is_none() && fe.flow.movie_pending {
+            // Early start: the decoder works through the fade and the rest of the menu so state 6
+            // opens on the first frame instead of a black screen (the game's hardware IPU starts
+            // streaming instantly [M 0x1081a8]; the port's decode is a whole-stream pass, ~23 s on
+            // 07100001 — the head start hides it). The player finishes starting (movie_playing)
+            // when state 6 actually arrives.
+            let code = fe.flow.level_to_load;
+            if fe.flow.get_state() == menu::ST_MAPLOAD && matches!((code >> 20) & 0xff, 0x71 | 0x73) {
+                match movie::Player::start(&self.iso, code) {
+                    Ok(p) => { self.movie = Some(p); eprintln!("movie: decoding {code:08x} ahead of state 6"); }
+                    Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in"),
+                }
+            }
+        }
+        // The phase-2 resolve: the movie code became the level to load [M 0x1d6360 LoadState 2].
+        if let Some(resolved) = fe.flow.phase2_resolved.take() {
+            self.pending_level = Some(resolved);
+            if resolved != menu::FRONTEND_LEVEL {
+                // The briefing's return: the real level loads and the front end closes — the game
+                // leaves the menu system and Game_Draw takes over.
+                self.fe = None;
+                if self.scene.sim.is_some() { self.grab(true); }
+            }
+            // The outro's return: the front end stays and the results page reopens on the map
+            // (phase 2 set flow.page = 0x40000036 [M]; fe.page follows below in the hud build).
+        }
     }
 
     fn grab(&mut self, on: bool) {
@@ -1296,6 +1394,14 @@ impl ApplicationHandler for App {
                     if let Some(a) = menu::key_action(k) {
                         use menu::Action as MA;
                         let fe = self.fe.as_mut().unwrap();
+                        // State 6: only the skip action matters [M GameFlow_Main 0x1c98c8 case 6
+                        // reads Input_Action(-1, 0x19, 1) and nothing else — the menu pages are not
+                        // up during a movie]. The port's Confirm keys (Enter/Space) stand in for
+                        // the pad's X/Start [S docs/systems/input.md §3].
+                        if fe.flow.get_state() == menu::ST_MOVIE {
+                            if a == MA::Confirm { fe.flow.skip_movie(); }
+                            return;
+                        }
                         if fe.page == menu::Page::Pause && a == MA::Back {
                             self.fe = None; // resume [S: the game's resume is its own row; Back resumes too]
                             if self.scene.sim.is_some() { self.grab(true); }
@@ -1400,9 +1506,19 @@ impl ApplicationHandler for App {
                 }
             },
             WindowEvent::RedrawRequested => {
+                // fix-movie-playback: the movie glue runs before the load path so a phase-2
+                // resolve lands in the same frame the state 6 popped.
+                self.movie_tick();
                 // Bug 5: level transition. A `LOAD_LEVEL` (0xE8) trigger set `pending_level`; reload the scene
                 // with the next archive (`ResetMap_LevelToLoad` 0x1d3800 → `LoaderLoad` 0x1d4a00).
                 if let Some(next) = self.pending_level.take() {
+                    // A movie-wrapped load plays its movie FIRST: the game loads the empty backdrop
+                    // 0x7000500, the briefing/outro runs over it, and only phase 3 loads the real
+                    // level [M 0x1d6360 phases 0/3]. Hold the request while the flow is heading to
+                    // state 6; the phase-2 resolve re-issues it (movie_tick).
+                    if self.fe.as_ref().is_some_and(|fe| fe.flow.movie_pending) {
+                        self.pending_level = Some(next);
+                    } else {
                     // `Trigger_Activate`'s exit order: the success/fallback channel write (already applied in
                     // the sim), then `Player_RamSave` [M 0x1b2318:97-116] — capture the old sim now, before
                     // the scene swap drops it (fix-level2 F2).
@@ -1469,6 +1585,7 @@ impl ApplicationHandler for App {
                     // The lock channel's edge memory starts clean on the new level (the game's `_prev`
                     // comes back from the RamSave; 0x48 has no writer before the party).
                     self.prev_lock_ch = false;
+                    }
                 }
                 let dt = self.last.elapsed().as_secs_f32().min(0.1);
                 self.last = std::time::Instant::now();
@@ -1487,7 +1604,6 @@ impl ApplicationHandler for App {
                     // Game logic at its fixed 60 Hz, decoupled from the render rate: one AI tick per whole tick of time.
                     // Dev mode's time scale changes the number of ticks run (WORKLOG 0081), not the tick rate.
                     let before = self.anim_time as u32;
-                    self.anim_time += dt * 60.0;
                     // fix-perf-level: the catch-up cap. A slow render frame must not burst a spiral of
                     // ticks — on 07000006 a tick costs ~4.1 ms, so the old 8-tick cap let the sim
                     // burst 33 ms behind one frame (the jitter fix-render3 measured). The game itself
@@ -1496,7 +1612,9 @@ impl ApplicationHandler for App {
                     // only on frame times, never on their content). `NF_MAXTICKS` retunes it.
                     let max_ticks = *MAX_TICKS.get_or_init(|| std::env::var("NF_MAXTICKS").ok()
                         .and_then(|v| v.parse::<u32>().ok()).filter(|v| *v > 0).unwrap_or(4));
-                    let elapsed = (self.anim_time as u32).saturating_sub(before).min(max_ticks);
+                    // G-043: the loop's tick scheduling, extracted verbatim into `ticks_for_frame`
+                    // (the fps-determinism test drives the same arithmetic headless).
+                    let elapsed = ticks_for_frame(&mut self.anim_time, dt, max_ticks);
                     let n_ticks = self.dev.as_deref_mut().map_or(elapsed, |d| d.tick_count(elapsed));
                     self.ticked = n_ticks > 0;
                     let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
@@ -1653,19 +1771,35 @@ impl ApplicationHandler for App {
                 let (_, vp_rot) = draw_cam.view_proj(aspect);
                 let vp = vp0;
                 let snow = snow_for(&self.scene, &draw_cam);
-                // fix-menus: a menu page up → the menu overlay replaces the HUD.
+                // fix-menus: a menu page up → the menu overlay replaces the HUD. The movie plane
+                // replaces everything while state 6 is on top — but fe.tick() still runs (it is
+                // what pops state 6 when the movie ends [M 0x1c98c8 case 6]).
+                // The borrow rules: read `is_some` first, then pull the frame — `movie_frame`
+                // holds a borrow into `self.movie` until render() consumes it.
+                let movie_up = self.movie.is_some()
+                    && self.fe.as_ref().is_some_and(|fe| fe.flow.get_state() == menu::ST_MOVIE);
+                let movie_frame = if movie_up { self.movie.as_mut().and_then(|p| p.present()) } else { None };
                 let mut hud = if let Some(fe) = self.fe.as_mut() {
                     let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
                     fe.tick();
-                    match &self.scene.hud {
-                        Some(tables) => menu::menu_overlay(fe, &tables.font, lang, &self.scene.hud_textures, aspect),
-                        None => overlay_for(&self.scene, aspect),
+                    if movie_up {
+                        // The movie plane replaces the overlay: the game blits the decoded frame
+                        // straight into the frame buffer over the backdrop level [M
+                        // DecodeBGFMVFrame 0x108550 + PS2UploadBGMImage 0x108740] and suppresses
+                        // the fog pass while it plays [M psiDrawFogPass 0x10b960]. The quad itself
+                        // is drawn inside render().
+                        gpu::HudFrame::default()
+                    } else {
+                        match &self.scene.hud {
+                            Some(tables) => menu::menu_overlay(fe, &tables.font, lang, &self.scene.hud_textures, aspect),
+                            None => overlay_for(&self.scene, aspect),
+                        }
                     }
                 } else { overlay_for(&self.scene, aspect) };
                 if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }
                 hud.append(&self.scene.script_overlay_hud(aspect));
                 g.renderer.lights = self.scene.frame_lights();
-                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud);
+                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud, movie_frame);
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
                 if let Some(fps) = self.fps_cap.filter(|f| *f > 0.0) {
@@ -1827,7 +1961,8 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+        movie: None, };
     if dev {
         app.panel = panel::start();
         match &app.panel {

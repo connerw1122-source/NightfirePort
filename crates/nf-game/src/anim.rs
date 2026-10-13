@@ -9,18 +9,146 @@ use std::collections::HashMap;
 /// Per bone: local translation and rotation quaternion (x, y, z, w).
 pub type Pose = Vec<([f32; 3], [f32; 4])>;
 
-/// `Quat_Slerp_Acc` (0x1e4188): spherical interpolation along the shorter arc; nearly parallel → linear.
+/// `Quat_Slerp_Acc` (0x1e4188), verbatim [M work/decomp/ACTION.ELF/001e4188]: dot = q0·q1; `neg` = dot < 0 and |dot|
+/// used; the slerp branch runs while `0.01 < 1 − dot` — ω = acosf(dot), ωt = ω·t, w1 = PS2Sinf(ωt)·(1/PS2Sinf(ω)),
+/// w0 = PS2Sinf(ω−ωt)·(1/PS2Sinf(ω)) (a reciprocal multiply, one division); else linear w0 = 1−t, w1 = t. `neg`
+/// negates **w0** (the q0 coefficient — NOT q1), and there is **no renormalisation**: out = w0·q0 + w1·q1 as is. A
+/// rounded dot past 1.0 gives 1 − dot ≤ 0 < 0.01 and lands in the linear branch, so no clamp is needed.
 pub fn slerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     let mut d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
-    let b = if d < 0.0 { d = -d; b.map(|v| -v) } else { b };
-    let (s0, s1) = if d > 0.9995 { (1.0 - t, t) } else {
-        let th = d.clamp(-1.0, 1.0).acos();
-        let s = th.sin();
-        (((1.0 - t) * th).sin() / s, (t * th).sin() / s)
+    let neg = d < 0.0;
+    if neg { d = -d; }
+    let (s0, s1) = if 0.01 < 1.0 - d {
+        let w = d.acos();
+        let wt = w * t;
+        let inv = 1.0 / crate::trig::sinf(w);
+        (crate::trig::sinf(w - wt) * inv, crate::trig::sinf(wt) * inv)
+    } else {
+        (1.0 - t, t)
     };
-    let q = [0, 1, 2, 3].map(|k| a[k] * s0 + b[k] * s1);
-    let l = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt().max(1e-12);
-    q.map(|v| v / l)
+    let s0 = if neg { -s0 } else { s0 };
+    [0, 1, 2, 3].map(|k| a[k] * s0 + b[k] * s1)
+}
+
+/// The root translation at a fractional frame — the game's root motion never samples the quintics between frames:
+/// `AnimSeqTick` (0x1c28d0) takes the blended pose buffer's root, which `AnimFrameSet` (0x1c75a0) filled as frames
+/// ⌊f⌋ and ⌊f⌋+1 blended by `AnimFrameBlend` (0x1c2b80). So: single frame while |frac| ≤ 0.0002 or at the last
+/// frame, else the two integer frames' translations lerped by the fraction, clamped into the next frame's direction
+/// (AnimFrameBlend's translation rule).
+pub fn root_translation_at(seq: &Sequence, frame: f32) -> [f32; 3] {
+    let last = seq.frames.max(1) as u32;
+    let f0 = (frame.floor().max(1.0) as u32).clamp(1, last);
+    let frac = frame - frame.floor();
+    let at = |f: u32| [seq.value(0, f), seq.value(1, f), seq.value(2, f)];
+    let a = at(f0);
+    if frac.abs() <= 0.0002 || f0 >= last { return a; }
+    let b = at(f0 + 1);
+    let mut r = a;
+    for k in 0..3 {
+        let d = b[k] - a[k];
+        let v = a[k] + d * frac;
+        r[k] = if (d >= 0.0 && v > b[k]) || (d < 0.0 && v < b[k]) { b[k] } else { v };
+    }
+    r
+}
+
+/// `AnimDistanceTableCreate(id, axisMask, looping)` (0x1c4060): the cumulative |root Δ| per frame a speed-mode-1
+/// script plays by. Table = `[0]` total, `[1]` segment count N (frames, or frames−1 without `looping`), `[2]` 0.0,
+/// then cum[k] for k = 1..=N−1 at index k+2 — segment k spans `[cum[k−1], cum[k]]` (`cum[0]` = the reserved 0.0).
+/// Each segment's delta = the root translation at frame k+1 minus frame k (via `AnimFrameCopy`, i.e. the integer
+/// quintic samples), components masked by `axis_mask` bits 0/1/2 = x/y/z; a segment under 1e-05 becomes 0.01
+/// [M 001c4060: `fVar8 = 1e-05`, `if fVar7 < fVar8 → 0.01`]. The walk sets build z-only tables (axis mask 4,
+/// `AnimDistanceTableGet` 0x1c76f0) with `looping` set [M AnimSeqSet 0x1c7460 attaches the table to seq+0x80].
+pub struct DistanceTable {
+    pub total: f32,
+    pub segments: u32,
+    /// cum[k] = distance walked by the end of segment k (index k−1 in the game's float array + 3).
+    pub cum: Vec<f32>,
+}
+
+impl DistanceTable {
+    pub fn build(seq: &Sequence, axis_mask: u32, looping: bool) -> Option<DistanceTable> {
+        let frames = seq.frames.max(1) as i32;
+        let n = if looping { frames } else { frames - 1 };
+        if n < 2 { return None; }
+        let at = |f: i32| {
+            let f = f.clamp(1, frames) as u32;
+            [seq.value(0, f), seq.value(1, f), seq.value(2, f)]
+        };
+        let mut cum = Vec::with_capacity((n - 1) as usize);
+        let mut acc = 0.0;
+        for k in 1..n {
+            let (a, b) = (at(k), at(k + 1));
+            let mut d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            if axis_mask & 1 == 0 { d[0] = 0.0; }
+            if axis_mask & 2 == 0 { d[1] = 0.0; }
+            if axis_mask & 4 == 0 { d[2] = 0.0; }
+            let m = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            acc += if m < 1e-05 { 0.01 } else { m };
+            cum.push(acc);
+        }
+        Some(DistanceTable { total: acc, segments: (n - 1) as u32, cum })
+    }
+
+    /// `AnimDistanceTableDistanceToFrame2` (0x1c4270): the speed a mode-1 script plays at this tick. `walked` is the
+    /// walked accumulator (`animObj+0x6C` = obj+0xDC) plus the stride (`animObj+0x64` = obj+0xD4); it is wrapped into
+    /// `[0, total)` and **stored back** (the decomp writes `param_2 + 0x6c`); the frame is the segment plus the
+    /// distance into it; the returned speed is that frame minus the script time, wrapped in the stride's direction.
+    pub fn distance_to_frame(&self, walked: &mut f32, time: f32, forward: bool) -> f32 {
+        if self.segments == 0 || self.total <= 0.0 { return 0.0; }
+        let mut w = *walked;
+        while self.total <= w { w -= self.total; }
+        while w < 0.0 { w += self.total; }
+        // Segment search: the estimate then the walk (0x1c4270: i = (int)(w·N/total), down while w < cum[i−1], up
+        // while cum[i] ≤ w).
+        let mut i = ((w * self.segments as f32) / self.total) as i32;
+        let cum_at = |k: i32| -> f32 { if k <= 0 { 0.0 } else { self.cum[(k as usize).min(self.cum.len()) - 1] } };
+        while i > 0 && w < cum_at(i) { i -= 1; }
+        while (i as u32) < self.segments && cum_at(i + 1) <= w { i += 1; }
+        let seg_end = cum_at(i + 1);
+        let seg_start = cum_at(i);
+        let seg_len = seg_end - seg_start;
+        let frame = (i + 1) as f32 + if seg_len > 0.0 { (w - seg_start) / seg_len } else { 0.0 };
+        *walked = w;
+        let speed = frame - time;
+        if forward {
+            if speed < 0.0 { self.total - time + frame } else { speed }
+        } else if speed >= 0.0 {
+            -(self.total - frame + time)
+        } else {
+            speed
+        }
+    }
+}
+
+/// `AnimScriptTick`'s speed for a script (`+0xB4`), which the tick then adds to the script time [M 001c2630]:
+/// mode 0 — `speed × FRAME_RATE_MUL` (1.0 at the port's fixed 60 Hz); mode 1 — the distance table's frame minus the
+/// time (flags 0x80000000); mode 2 — synced to the master script `+0x4C`: Δ = (M.time−1)/(M.len−1) − (t−1)/(len−1),
+/// wrapped in the master speed's direction, `speed = Δ·(len−1) + 1.0`; mode 3 — `(len+1)·phase(+0x8C) − time` (no
+/// writer found in ACTION.ELF); any other byte keeps the speed.
+pub fn speed_for_mode(mode: u8, speed: f32, time: f32, length: f32, phase: f32, master: Option<(f32, f32, f32)>) -> f32 {
+    match mode {
+        0 => speed,
+        1 => speed, // replaced by the distance table's `distance_to_frame` at the call site (needs the walked state)
+        2 => match master {
+            Some((m_time, m_len, m_speed)) if length > 1.0 && m_len > 1.0 => {
+                let mn = (m_time - 1.0) / (m_len - 1.0);
+                let tn = (time - 1.0) / (length - 1.0);
+                let d = mn - tn;
+                let d = if m_speed >= 0.0 {
+                    if d < 0.0 { (1.0 - tn) + mn } else { d }
+                } else if d >= 1.0 {
+                    (tn + 1.0) - mn
+                } else {
+                    d
+                };
+                d * (length - 1.0) + 1.0
+            }
+            _ => speed,
+        },
+        3 => (length + 1.0) * phase - time,
+        _ => speed,
+    }
 }
 
 /// `AnimFrameBlend(t, out, a, b)`: per bone, translation a + (b − a)·t without overshooting b, rotation slerp; t = 0
@@ -260,6 +388,59 @@ pub fn blend_playing(current: Pose, outgoing: &[(Pose, f32)]) -> Pose {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Quat_Slerp_Acc` negates the w0 coefficient and never renormalises [M 0x1e4188:30-36]: for opposite-w quats
+    /// (the port's channel decode can produce both signs) the result keeps q1's sign — the old port negated q1
+    /// instead and renormalised, giving +1 where the game gives −1.
+    #[test]
+    fn slerp_negates_w0_and_never_renormalises() {
+        // dot = −1: |dot| = 1 → the linear branch (1 − 1 = 0 is not > 0.01); neg flips w0.
+        let q = slerp([0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 0.0, -1.0], 0.5);
+        assert_eq!(q, [0.0, 0.0, 0.0, -1.0], "neg must negate w0 (the q0 weight), not q1");
+        // No renormalisation: the game adds w0·q0 + w1·q1 as is (0x1e4188:33-36) — a length-2 quat stays length 2.
+        let two = [0.0, 0.0, 0.0, 2.0];
+        let q = slerp(two, two, 0.5);
+        assert_eq!(q, two, "a renormalised result would shrink the length-2 quat");
+        // The slerp branch (dot 0 → ω = π/2): w0 = w1 = PS2Sinf(π/4)·(1/PS2Sinf(π/2)) = √½.
+        let id = [0.0, 0.0, 0.0, 1.0];
+        let half_turn_y = [0.0, 1.0, 0.0, 0.0];
+        let q = slerp(id, half_turn_y, 0.5);
+        assert!((q[1] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-5 && (q[3] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-5, "{q:?}");
+    }
+
+    /// The distance table plays frames by walked distance [M 0x1c4060/0x1c4270]: equal walked steps advance the
+    /// implied root distance equally — the feet-don't-slide property the walk sets need.
+    #[test]
+    fn distance_table_maps_walked_distance_to_frames() {
+        use nf_formats::anim::{Sequence, Segment};
+        // 5 frames whose root z walks 1.0 per frame (channels: z = t, t = frame − 1); every channel
+        // carries a segment (`AnimFrameCopy` evaluates the tracks the sequence carries, and an
+        // empty track's `segs.last()` has no neutral stand-in on the read side).
+        let mk = |end: u32, z: f32| vec![Segment { end, c: [0.0, z, 0.0, 0.0, 0.0, 0.0] }];
+        let seq = Sequence {
+            hashcode: 1,
+            flags: 0,
+            frames: 5,
+            skeleton: 0,
+            channels: vec![mk(4, 0.0), mk(4, 0.0), mk(4, 1.0), mk(4, 0.0), mk(4, 0.0), mk(4, 0.0)],
+        };
+        let t = DistanceTable::build(&seq, 4, true).expect("a 5-frame looping walk has a table");
+        assert_eq!(t.segments, 4, "looping → frames−1 segments [M 001c4060]");
+        assert!((t.total - 4.0).abs() < 1e-4, "each frame walks 1.0, total 4.0, got {}", t.total);
+        // walked 0.5 → halfway through segment 1 → frame 1.5; the frame advance per walked unit stays 1.
+        let mut w = 0.5;
+        let speed = t.distance_to_frame(&mut w, 1.0, true);
+        assert!((speed - 0.5).abs() < 1e-5, "frame 1.5 − time 1.0 = 0.5, got {speed}");
+        assert!((w - 0.5).abs() < 1e-6, "the wrapped walked value is stored back [M 001c4270]");
+        // Wrapping: walked total + 0.25 plays like 0.25.
+        let mut w = t.total + 0.25;
+        let _ = t.distance_to_frame(&mut w, 1.0, true);
+        assert!((w - 0.25).abs() < 1e-6, "walked wraps into [0, total), got {w}");
+        // Backward stride wraps the other way (0x1c4270's negative branch).
+        let mut w = 0.25;
+        let speed = t.distance_to_frame(&mut w, 4.5, false);
+        assert!(speed < 0.0, "a backward stride plays the walk in reverse, got {speed}");
+    }
 
     #[test]
     fn slerp_and_blend_follow_the_weights() {

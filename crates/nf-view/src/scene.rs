@@ -199,6 +199,10 @@ pub struct Character {
     /// A script's animated object (script hash, stream): drawn while the simulation has it, posed with its root in world
     /// space (docs/systems/script-player.md).
     pub script: Option<(u32, u8)>,
+    /// fix-facial2: the object's facial morph TARGET array (the MORPH_DATA block 0x2B payload — the
+    /// runtime gfx record's +0x14 base [M `parsemap_block_morph_data` 0x1d23e8]), f32[3] per
+    /// (vertex morph index + channel). `SkinIt` 0x10bf30 adds Σ weight[m] × target[morph + m].
+    pub morph_targets: Option<Vec<u8>>,
 }
 
 /// The script a drone starts with (`NDrone2_DefaultInit` → `DroneAnim_SetAnimD`, or placement parameter 1) and the
@@ -502,6 +506,17 @@ pub struct Cel {
     /// to cel+0x40..0x5F) — and to −500.0 for 0xC047. `Player_InWater` 0x195e50 and the swim substate
     /// clamp read it, and `Player_Collision` skips gravity below it.
     pub water: f32,
+    /// `cel+0x98` (s16): the room's reverb environment [M 0x1d00c0, fix-room-sound]. `parseentity_fixup_entity`
+    /// writes 0x9898 (s16 −26472, the IOP's underwater sentinel) for flag word 0xC023 and placement param 9
+    /// (`level_tag+0x50`, a u16 with no mask or clamp) for 0xC047; a cel without the fixup keeps the 0x98
+    /// allocator fill in both bytes, which reads back as the same 0x9898 sentinel [L ee_start_05.bin: the
+    /// untouched cel bytes at +0xa4..0xaf are 0x98]. `Sound_UpdateListeners` 0x1dd278 sends it to
+    /// `SFXSetEnvironment` from the active viewer's cel every frame.
+    pub env: i16,
+    /// `cel+0x3c & 0x10000000` [M 0x1d00c0]: the underwater flag — placement param 3 (`level_tag+0x38`,
+    /// a full u32) != 0, written for both room-cel classes. `Sound_UpdateListeners` ORs it with `env >= 20`
+    /// (a signed s16 compare) into `SFXSetEnvironment`'s underwater argument.
+    pub underwater: bool,
 }
 
 /// The runtime cel graph for the portal visibility walk (fix-perf-level, G-016's portal half).
@@ -646,9 +661,14 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
                 else if (p.index as usize) < map.objects.len() { Some((mi, p.index as usize)) } else { None };
             let is_main = Some(mi) == main;
             let idx = cells.len();
+            // The raw param values: the fixup reads param 3 (`level_tag+0x38`) as a full u32 and
+            // param 9 (`level_tag+0x50`) as a u16 — neither through the low-byte view of `param`.
+            let param32 = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
             let node_flags = cel_flags_word(flags16);
             // The world sphere: the object's raw bbox corners through the placement matrix, then the
             // AABB's centre / half-diagonal (`parseentity_transform_bounding_box` 0x1d0fb0).
+            // (Merge resolution: this block landed on master with two corrupted lines — the `[m`/`[h`
+            // byte pairs dropped from the corner-array and half-diagonal literals; restored here.)
             let sphere = |min: [f32; 3], max: [f32; 3]| {
                 let m = nf_formats::placement::object_matrix(p.rotation, p.translation);
                 let mut lo = [f32::MAX; 3];
@@ -673,8 +693,13 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
                             let b = [param(6), param(7), param(8)];
                             if b == [0, 0, 0] { a0 } else { b }
                         } else { a0 };
+                        // `parseentity_fixup_entity` 0x1d00c0: +0x98 = 0x9898 for 0xc023 (the
+                        // underwater sentinel), param 9 as a raw u16 for 0xc047; the 0x10000000
+                        // flags bit (the underwater flag) = param 3 != 0, both classes.
+                        let env = if flags16 == 0xc023 { -0x6768i16 } else { param32(9) as u16 as i16 };
                         rooms.push(Cel { min: o.min, max: o.max, ambient: [a0, a1], zone: if flags16 == 0xc047 { param(5) } else { 0 },
-                            water: if flags16 == 0xc023 { o.max[1] } else { -500.0 } });
+                            water: if flags16 == 0xc023 { o.max[1] } else { -500.0 },
+                            env, underwater: param32(3) != 0 });
                         room_to_cell.push(Some(idx));
                     }
                 }
@@ -2522,7 +2547,15 @@ impl Sim {
         let fwd = self.bond.look();
         // The gun's axes: forward turned by the crosshair angles (right = −left), then left / up rebuilt.
         let (cx, cy) = self.crosshair();
-        let (gy, gp) = (4.0 / 3.0 * cx * std::f32::consts::FRAC_PI_6, cy * std::f32::consts::FRAC_PI_6);
+        // G-044 [M Player_WeaponRecoil 0x1a3de8:52-57]: both tilt terms divide by `glb_viewer+0x108`
+        // (the zoom — `Player_PositionCamera` 0x18f5d8:129 feeds it BL+0x8D0, the port's `self.zoom`),
+        // and the x term scales by `viewer+0x114` = 4/3 on a 4:3 screen [L ee_start_05 viewer
+        // 0x1fc6c10+0x114 = 0x3faaaaab; `Camera_CalcViewAngles` 0x1baf70 writes 16/9 there in the
+        // widescreen mode the port doesn't model]. A zoomed view used to tilt the gun as if unzoomed.
+        let (gy, gp) = (
+            4.0 / 3.0 * cx * std::f32::consts::FRAC_PI_6 / self.zoom,
+            cy * std::f32::consts::FRAC_PI_6 / self.zoom,
+        );
         let gf = [0, 1, 2].map(|k| fwd[k] * gp.cos() * gy.cos() - left[k] * gp.cos() * gy.sin() + up[k] * gp.sin());
         let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
         let norm = |v: [f32; 3]| { let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-9); v.map(|x| x / n) };
@@ -2620,6 +2653,10 @@ pub struct CharVertex {
     /// frame at the pickup's matrix (`View_DrawObjectGlist` 0x1e6780 draws `obj+0xD8` at `obj+0x90`);
     /// collapsed when taken/hidden. fix-player2 (the invisible armour).
     pub pickup: Option<u16>,
+    /// fix-facial2: the vertex's morph base index — the skinning word's upper half-word (the short at
+    /// +0x1E, −1 = none), which `SkinIt` 0x10bf30 indexes the morph targets with:
+    /// `target + (morph + channel) * 12`.
+    pub morph: i16,
 }
 
 /// Per-vertex GPU skinning data (`Scene::skin_layout`); world vertices carry `a = u32::MAX` (static).
@@ -2628,7 +2665,7 @@ pub struct CharVertex {
 pub struct SkinAttr { pub a: u32, pub b: u32, pub w: f32, pub col: u32 }
 
 /// The palette / colour-table layout of `Scene::skin_layout`.
-pub struct SkinLayout { pub char_base: Vec<u32>, pub attach_base: u32, pub sl_base: u32, pub door_base: u32, pub pick_base: u32, pub n_mats: u32, pub col_att: u32, pub col_pick: u32, pub col_one: u32 }
+pub struct SkinLayout { pub char_base: Vec<u32>, pub attach_base: u32, pub sl_base: u32, pub door_base: u32, pub pick_base: u32, pub n_mats: u32, pub col_att: u32, pub col_pick: u32, pub col_sl: u32, pub col_one: u32 }
 
 /// One frame's pose state (`Scene::frame_state`).
 pub struct FrameState {
@@ -2766,6 +2803,28 @@ fn script_pickup_reservations(level: &Level, weapons: &nf_formats::weapon::Weapo
     (out, slots)
 }
 
+/// fix-facial2: `SkinIt` 0x10bf30's morph term — `pos += Σ_m weight[m] × target(base + (morph + m) × 12)`,
+/// the 12 bytes read as three f32 (the decompile's `auVar14._0_12_ = *(undefined1 (*) [12])lVar1` over the
+/// base `parsemap_block_morph_data` 0x1d23e8 stores at the gfx record's +0x14). Out-of-range channels (a
+/// target array shorter than the mesh's index space) contribute nothing, as the game's count-bounded loop.
+fn morph_vertex(mut pos: [f32; 3], morph: i16, weights: &[f32], targets: &[u8]) -> [f32; 3] {
+    let f32_at = |i: usize| -> Option<[f32; 3]> {
+        let o = i * 12;
+        if o + 12 > targets.len() { return None; }
+        Some([
+            f32::from_le_bytes(targets[o..o + 4].try_into().unwrap()),
+            f32::from_le_bytes(targets[o + 4..o + 8].try_into().unwrap()),
+            f32::from_le_bytes(targets[o + 8..o + 12].try_into().unwrap()),
+        ])
+    };
+    for (m, w) in weights.iter().enumerate() {
+        if let Some(d) = f32_at(morph as usize + m) {
+            for k in 0..3 { pos[k] += w * d[k]; }
+        }
+    }
+    pos
+}
+
 fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>, searchlight: Option<u16>, door: Option<u16>, pickup: Option<u16>, mult: [f32; 3], cels: &[Cel], chain: u32, node: u32) {
     let obj = &level.maps[inst.map].objects[inst.object];
     let mut m = inst.matrix;
@@ -2858,10 +2917,10 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
             let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
             let nrm = if nl > 1e-6 { [(n[0] / nl * 127.0) as i8, (n[1] / nl * 127.0) as i8, (n[2] / nl * 127.0) as i8, 0] } else { [0; 4] };
             vs.push(Vertex { pos: p, uv, rgba, nrm });
-            if let Some((c, attachment)) = character { cv.push(CharVertex { character: c, pos: v.pos, weight: v.weight, slots: v.slots, attachment, searchlight: None, door: None, pickup: None }); }
-            else if let Some(sl) = searchlight { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: Some(sl), door: None, pickup: None }); }
-            else if let Some(dr) = door { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: None, door: Some(dr), pickup: None }); }
-            else if let Some(pk) = pickup { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: None, door: None, pickup: Some(pk) }); }
+            if let Some((c, attachment)) = character { cv.push(CharVertex { character: c, pos: v.pos, weight: v.weight, slots: v.slots, attachment, searchlight: None, door: None, pickup: None, morph: (v.w >> 16) as i16 }); }
+            else if let Some(sl) = searchlight { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: Some(sl), door: None, pickup: None, morph: -1 }); }
+            else if let Some(dr) = door { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: None, door: Some(dr), pickup: None, morph: -1 }); }
+            else if let Some(pk) = pickup { cv.push(CharVertex { character: 0, pos: v.pos, weight: v.weight, slots: v.slots, attachment: None, searchlight: None, door: None, pickup: Some(pk), morph: -1 }); }
         }
         // The batch's bound joins the group's (max across the group's batches — the entry's radius persists).
         *r = radius.max(*r).max(batch_d2.sqrt());
@@ -3246,7 +3305,10 @@ impl Scene {
                     None => npc_pool.push(NpcSlot { key: inst.placement.translation.map(f32::to_bits), skin: skin_hash, params: inst.placement.params.clone(), chars: vec![ci] }),
                 }
             }
-            characters.push(Character { matrix: inst.matrix, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: obj.gfx.slot_bones.clone(), start, role, floor: None, script: None });
+            let morph_of_main = skin.main.iter().flatten()
+                .filter_map(|mh| level.by_hash.get(mh).and_then(|&(m2, o2)| level.maps[m2].objects[o2].morph_targets.clone()))
+                .next();
+            characters.push(Character { matrix: inst.matrix, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: obj.gfx.slot_bones.clone(), start, role, floor: None, script: None, morph_targets: obj.morph_targets.clone().or(morph_of_main) });
             // The held weapon (`AnimObjectDraw`): weapon_data[w] +0x80 mesh on the datum whose id is +0x50 (0xFF → 0),
             // once per drone (a skin may have several main meshes).
             let key = (inst.placement.translation.map(f32::to_bits), skin_hash);
@@ -3311,7 +3373,7 @@ impl Scene {
                     add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                     attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, projectile: None, script: None, gas: None, effect: None });
                 }
-                characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None, script: None });
+                characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None, script: None , morph_targets: None });
                 view_models.insert(wid, ci as usize);
             }
         }
@@ -3341,11 +3403,13 @@ impl Scene {
                                 let (Some(skin), Some(skeleton)) = (level.skins.get(&sh), level.skins.get(&sh).and_then(|k| skeletons.get(&k.skeleton))) else { continue };
                                 let ci = characters.len() as u32;
                                 let mut slot_bones = Vec::new();
+                                let mut morph_of_object = None;
                                 for &mh in skin.main.iter().flatten() {
                                     let Some(&(map, object)) = level.by_hash.get(&mh) else { continue };
                                     let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
                                     add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                                     slot_bones = level.maps[map].objects[object].gfx.slot_bones.clone();
+                                    morph_of_object = level.maps[map].objects[object].morph_targets.clone();
                                 }
                                 for &(bone, part) in &skin.extra {
                                     let Some(&(map, object)) = part.and_then(|ph| level.by_hash.get(&ph)) else { continue };
@@ -3353,7 +3417,7 @@ impl Scene {
                                     add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                                     attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None, effect: None });
                                 }
-                                characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones, start: None, role: drone::SpawnRole::Placed, floor: None, script: Some((h, si as u8)) });
+                                characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones, start: None, role: drone::SpawnRole::Placed, floor: None, script: Some((h, si as u8)), morph_targets: morph_of_object.clone() });
                                 script_objects += 1;
                                 // The held weapon (`AnimObjectDraw` 0x1c4490:256-265): Event 0xB on the next stream
                                 // sets the weapon byte on this Anim (`sAnimObject+0x62`), then `AnimDatumGetWeaponInfo`
@@ -4144,9 +4208,32 @@ impl Scene {
         FrameState { posed, attach, hidden }
     }
 
+    /// fix-facial2: the morph weights of a morph-bearing script character right now — the face-track
+    /// window (the started opcode-0 window whose sequence carries the skin's facial channel count,
+    /// the same window `script_pose_together` poses bones from) sampled at the object's frame via
+    /// `AnimFacialBlend`'s source arithmetic [M `facial_weights`, `AnimFacialBlend` 0x1be648].
+    pub fn facial_weights_now(&self, c: &Character) -> Option<Vec<f32>> {
+        let src = c.script?;
+        let s = self.sim.as_ref()?;
+        let count = c.skin.facial as usize;
+        if count == 0 { return None; }
+        let (script_h, frame) = s.script_anim(src, c.skin.hashcode)?;
+        let script = s.scripts.get(&script_h)?;
+        let win = script.sequences().filter(|(a, _, _)| (*a as f32) <= frame)
+            .filter_map(|(a, _, q)| s.seqs.get(&q).filter(|sq| sq.channels.len() == count).map(|sq| (a, q)))
+            .last()?;
+        let seq = s.seqs.get(&win.1)?;
+        nf_game::anim::facial_weights(seq, (frame - win.0 as f32 + 1.0).max(1.0), count)
+    }
+
     pub fn animate(&self, choice: Option<usize>, ticks: f32, opts: ViewOpts) -> Vec<[f32; 3]> {
         let FrameState { posed, attach, hidden } = self.frame_state(choice, ticks, opts);
         let hidden = |_: &Character, ci: usize| hidden[ci];
+        // fix-facial2: the morph weights per morph-bearing script character (the ledge dialogue's
+        // face track), computed once per frame — `SkinIt` 0x10bf30 consumes them per vertex.
+        let facial: Vec<Option<Vec<f32>>> = self.characters.iter().map(|c| {
+            if c.morph_targets.is_some() { self.facial_weights_now(c) } else { None }
+        }).collect();
         self.char_verts.iter().map(|v| {
             // Searchlight parts: the simulation's matrices (`Searchlight_Update`), coronas as camera billboards
             // with their scale (the alpha byte is not wired to the shader — G-033); hidden parts collapse below
@@ -4188,9 +4275,17 @@ impl Scene {
             if let Some(a) = v.attachment { return transform(&attach[a as usize], v.pos); }
             let c = &self.characters[v.character as usize];
             if hidden(c, v.character as usize) { return [c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]]; }
+            // fix-facial2: the morph term (object space, before the bone skinning — the game's
+            // `SkinIt` 0x10bf30 adds Σ weight[m] × target(base + (morph + m) × 12) to the source
+            // position while it streams through the scratchpad; the vertex's morph index is the
+            // skinning word's upper half-word, −1 = none).
+            let pos = match (facial.get(v.character as usize).and_then(|w| w.as_deref()), &c.morph_targets, v.morph) {
+                (Some(w), Some(t), mo) if mo >= 0 => morph_vertex(v.pos, mo, w, t),
+                _ => v.pos,
+            };
             match &posed[v.character as usize] {
-                Some((mats, _, m)) => transform(m, anim::skin_vertex(v.pos, v.weight, v.slots, &c.slot_bones, mats)),
-                None => transform(&c.matrix, v.pos),
+                Some((mats, _, m)) => transform(m, anim::skin_vertex(pos, v.weight, v.slots, &c.slot_bones, mats)),
+                None => transform(&c.matrix, pos),
             }
         }).collect()
     }
@@ -4243,10 +4338,15 @@ impl Scene {
         let n_mats = pick_base + n_pick;
         let nc = self.characters.len() as u32;
         let (col_att, col_pick) = (nc, nc + n_att);
-        let col_one = col_pick + n_pick;
+        // fix-searchlight-remainder: one colour slot per searchlight part, so the corona's alpha byte
+        // (obj+0x106, `(dot−0.2)·4·255` low byte [M 0x1cb900:334-336]) reaches the shader — the game's
+        // draw reads obj+0x106 as the quad's alpha. All other parts keep alpha 1.0; the slots sit
+        // before the shared 1.0 entry (`col_one`).
+        let col_sl = col_pick + n_pick;
+        let col_one = col_sl + n_sl;
         let attrs = self.char_verts.iter().map(|v| {
             let one = |m: u32, col: u32| SkinAttr { a: m, b: m, w: 1.0, col };
-            if let Some(sl) = v.searchlight { return one(sl_base + sl as u32, col_one); }
+            if let Some(sl) = v.searchlight { return one(sl_base + sl as u32, col_sl + sl as u32); }
             if let Some(pk) = v.pickup { return one(pick_base + pk as u32, col_pick + pk as u32); }
             if let Some(dr) = v.door { return one(door_base + dr as u32, col_one); }
             if let Some(a) = v.attachment { return one(attach_base + a, col_att + a); }
@@ -4259,7 +4359,7 @@ impl Scene {
                 _ => one(base, v.character),
             }
         }).collect();
-        (SkinLayout { char_base, attach_base, sl_base, door_base, pick_base, n_mats, col_att, col_pick, col_one }, attrs)
+        (SkinLayout { char_base, attach_base, sl_base, door_base, pick_base, n_mats, col_att, col_pick, col_sl, col_one }, attrs)
     }
 
     /// The frame's resolved lights for the renderer: the sim's `LightList` with the kind-2
@@ -4342,6 +4442,16 @@ impl Scene {
         let mut cols = vec![[1.0f32; 4]; l.col_one as usize + 1];
         let has = !mults.is_empty();
         let rgb = |m: [f32; 3]| [m[0], m[1], m[2], 1.0];
+        // fix-searchlight-remainder: the per-part alpha slot — kind-4 coronas carry obj+0x106/255 in
+        // .a (the shader's ×255/128 rescale makes byte 0x2e → 0.36 exactly like the GS); the other
+        // parts stay 1.0. The byte is the sim's (`Searchlight_Update` 0x1cb900:334-336).
+        if let Some(s) = self.sim.as_ref() {
+            for (k, sp) in s.drones.searchlights.parts.iter().enumerate() {
+                if let Some(c) = cols.get_mut(l.col_sl as usize + k) {
+                    c[3] = if sp.kind == 4 { sp.alpha as f32 / 255.0 } else { 1.0 };
+                }
+            }
+        }
         if has {
             for (ci, m) in mults.iter().enumerate() { cols[ci] = rgb(*m); }
             for (a, m) in &attach_mult { if let Some(c) = cols.get_mut((l.col_att + a) as usize) { *c = rgb(*m); } }

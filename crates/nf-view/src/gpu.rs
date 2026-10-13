@@ -48,7 +48,10 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
     if (sa.x != 0xffffffffu) {
         let q = vec4<f32>(p0, 1.0);
         p = sw * (pal[sa.x] * q).xyz + (1.0 - sw) * (pal[sa.y] * q).xyz;
-        c = vec4<f32>(c0.rgb * cols[sc].rgb, c0.a);
+        // fix-searchlight-remainder: the colour table's .a now carries the searchlight corona's alpha
+        // byte (obj+0x106 / 255) — every other slot keeps 1.0, so this multiply changes only the
+        // corona quads (the GS reads the byte as alpha/0x80; the ×255/128 rescale below reproduces it).
+        c = vec4<f32>(c0.rgb * cols[sc].rgb, c0.a * cols[sc].a);
     }
     // The point lights (`Light_Create` + `Lights_CalcClosestLights` 0x1cb2e0 + `psiLight_SetLights`
     // 0x10e588; fix-lighting). The VU1 microcode's formula (.vutext 0x241c80, the point-light
@@ -268,6 +271,14 @@ pub struct Renderer {
     /// chain pass) — `None` when the walk cannot run (the room box fallback gates everything).
     /// fix-portal2.
     pub last_cell_vis: Option<Vec<bool>>,
+    // fix-movie-playback: the lazy full-screen movie plane (fields only touched while a movie
+    // plays; everything else is additive, nothing existing changed shape).
+    movie_tex: Option<wgpu::Texture>,
+    movie_bg: Option<wgpu::BindGroup>,
+    movie_size: Option<(u32, u32)>,
+    movie_vbuf: wgpu::Buffer,
+    hud_tbgl: wgpu::BindGroupLayout,
+    hud_sampler: wgpu::Sampler,
 }
 
 impl Renderer {
@@ -471,7 +482,19 @@ impl Renderer {
         let order_cap = draws.len();
         let cel_boxes = scene.cels.iter().map(|c| (c.min, c.max)).collect();
         let cel_graph = scene.cel_graph.clone();
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None }
+        // fix-movie-playback: the full-screen movie plane. The game blits each decoded 512×448 frame
+        // straight into the frame buffer (DecodeBGFMVFrame 0x108550 → PS2UploadBGMImage 0x108740);
+        // the port draws it as a textured quad through the HUD pipeline after everything else. The
+        // texture + bind group are (re)built lazily in render() at the frame's size, so only the
+        // static quad buffer and the shared layout/sampler are made here.
+        let movie_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 6 * std::mem::size_of::<HudVertex>() as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        queue.write_buffer(&movie_vbuf, 0, bytemuck::cast_slice(&[
+            // Row 0 of the frame at the top of the screen (NDC y up, uv v down — the HUD quad
+            // convention, hud.rs quad()).
+            HudVertex { p: [-1.0, 1.0], uv: [0.0, 0.0], c: [1.0; 4] }, HudVertex { p: [1.0, 1.0], uv: [1.0, 0.0], c: [1.0; 4] }, HudVertex { p: [1.0, -1.0], uv: [1.0, 1.0], c: [1.0; 4] },
+            HudVertex { p: [-1.0, 1.0], uv: [0.0, 0.0], c: [1.0; 4] }, HudVertex { p: [1.0, -1.0], uv: [1.0, 1.0], c: [1.0; 4] }, HudVertex { p: [-1.0, -1.0], uv: [0.0, 1.0], c: [1.0; 4] },
+        ]));
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None, movie_tex: None, movie_bg: None, movie_size: None, movie_vbuf, hud_tbgl: tbgl, hud_sampler: sampler }
     }
 
     /// The game's depth-0 pyramid for the walk [M `Vision_Calculate_View_Fustrum` 0x1e7df8,
@@ -550,7 +573,7 @@ impl Renderer {
     /// the fog pass with the rotation-only uniform) follow the viewer and are never culled. The per-frame `order` Vec
     /// is `clear`ed + refilled (not reallocated); `set_pipeline`/`set_bind_group(0)` are skipped when the value is
     /// unchanged from the previous draw.
-    pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], eye: [f32; 3], ticks: u32, snow: &[crate::scene::Vertex], hud: &HudFrame) -> wgpu::CommandEncoder {
+    pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], eye: [f32; 3], ticks: u32, snow: &[crate::scene::Vertex], hud: &HudFrame, movie: Option<(u32, u32, &[u8])>) -> wgpu::CommandEncoder {
         let ns = snow.len().min(SNOW_MAX);
         if ns > 0 { queue.write_buffer(&self.snow_vbuf, 0, bytemuck::cast_slice(&snow[..ns])); }
         let n = hud.v.len().min(HUD_MAX) / 3 * 3;
@@ -760,6 +783,35 @@ impl Renderer {
                     pass.set_pipeline(match blend { 1 => &self.hud_add_pipeline, 2 => &self.hud_sub_pipeline, _ => &self.hud_pipeline });
                     pass.set_bind_group(0, &self.hud_bgs[tex.min(self.hud_bgs.len() - 1)], &[]);
                     pass.draw(first..end, 0..1);
+                }
+            }
+            // fix-movie-playback: the full-screen movie plane, drawn last (the game DMA-blits the
+            // decoded frame straight into the frame buffer, DecodeBGFMVFrame 0x108550 →
+            // PS2UploadBGMImage 0x108740 — nothing shows above it).
+            if let Some((w, h, rgba)) = movie {
+                if self.movie_size != Some((w, h)) || self.movie_bg.is_none() {
+                    let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+                    let t = device.create_texture(&wgpu::TextureDescriptor {
+                        label: None, size, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+                    });
+                    let view = t.create_view(&Default::default());
+                    self.movie_bg = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: None, layout: &self.hud_tbgl,
+                        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.hud_sampler) }],
+                    }));
+                    self.movie_tex = Some(t);
+                    self.movie_size = Some((w, h));
+                }
+                if let Some(tex) = &self.movie_tex {
+                    queue.write_texture(
+                        wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                        rgba, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+                        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
+                    pass.set_pipeline(&self.hud_pipeline);
+                    pass.set_bind_group(0, self.movie_bg.as_ref().unwrap(), &[]);
+                    pass.set_vertex_buffer(0, self.movie_vbuf.slice(..));
+                    pass.draw(0..6, 0..1);
                 }
             }
         }

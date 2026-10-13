@@ -112,6 +112,36 @@ impl LightList {
         self.lights.len() - 1
     }
 
+    /// `Light_Create` with the full record the 0x4E placements carry: `seed_source` is the game's
+    /// param_11 (node+0x26 = `seed>>1`, node+0x28 = `seed + Rand_Rand(seed)` — the draw ALWAYS
+    /// happens, seed 0 included [M 0x1cc3d8]) and `mask` the flicker mask (node+0x2a). `create`
+    /// above is the same machine with seed_source = the period and mask 0 — what its call sites
+    /// (muzzle, explosion, radiators) pass implicitly. fix-searchlight-remainder, additive.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_full(&mut self, radius: f32, intensity: f32, pos: [f32; 3], rgb: [u8; 3],
+                       channel: u16, life_arg: i16, kind: u8, flicker: u16, seed_source: u16,
+                       mask: u16, rng: &mut Rng) -> usize {
+        let drawn = rng.rand(seed_source as u32);
+        self.lights.push(Light {
+            pos,
+            life: if life_arg == -1 { 0 } else { life_arg + 1 },
+            channel,
+            flicker_period: flicker as i16,
+            flicker_base: seed_source >> 1,
+            flicker_count: seed_source.wrapping_add(drawn as u16),
+            flicker_mask: mask,
+            sound: 0,
+            track: None,
+            radius,
+            intensity,
+            falloff: 0.0,
+            rgb,
+            kind,
+            active: true,
+        });
+        self.lights.len() - 1
+    }
+
     /// `Light_Update` 0x1cafb8. `channel_on` reads the switch channels; `frame` is
     /// `GameState+0x52` (the main-loop tick counter). The flicker path's `Sound_Play3D`
     /// (id +0x2C) is not ported: the placement call sites leave the sound id uninitialised and
@@ -134,7 +164,10 @@ impl LightList {
                     l.flicker_count = count - 1;
                 } else {
                     l.flicker_count = count + 1;
-                    l.active = l.flicker_mask != 0 && (frame as u16 & l.flicker_mask) == l.flicker_mask;
+                    // [M 0x1cafb8: `active = (mask == GameState+52 & mask)` — a mask of 0 compares 0 == 0,
+                    // so a mask-less flicker light is ALWAYS active in phase; the port's old extra
+                    // `flicker_mask != 0 &&` guard made it permanently dark.
+                    l.active = (frame as u16 & l.flicker_mask) == l.flicker_mask;
                     if l.flicker_period < ((count + 1) & 0xfff) as i16 {
                         let base = l.flicker_base;
                         l.flicker_count = base.wrapping_add(rng.rand(base as u32) as u16);
@@ -146,19 +179,25 @@ impl LightList {
         self.lights.retain(|_| { let keep = !dead[k]; k += 1; keep });
     }
 
-    /// The frame's resolved view (kind-2 positions resolved against their tracked parts) — what
-    /// the renderer's per-draw selection reads.
+    /// The frame's resolved view. fix-searchlight-remainder: the UPLOAD position of a kind-2 light is
+    /// the node's STATIC +0x10 — the housing placement position, written once at create before the
+    /// −10000 move and never again [M Searchlight_Create 0x1cb4f8:154-167 writes node+0x10 = obj+0x30
+    /// BEFORE the move; psiLight_SetLights 0x10e588:34-38 uploads node+0x10]. Only the intensity and
+    /// the 4.0-accept test follow the tracked object's LIVE position [M Lights_CalcClosestLights
+    /// 0x1cb2e0:41-44, store 0x1cb400] — carried separately in `ResolvedLight::track_pos`.
     pub fn resolve(&self, track_pos: &dyn Fn(u32) -> [f32; 3]) -> ResolvedLights {
         ResolvedLights {
             lights: self.lights.iter().map(|l| {
-                let pos = if l.kind == 2 { track_pos(l.track.unwrap_or(u32::MAX)) } else { l.pos };
+                let live = if l.kind == 2 { track_pos(l.track.unwrap_or(u32::MAX)) } else { l.pos };
                 ResolvedLight {
-                    pos: [pos[0], pos[1], pos[2], 1.0],
+                    pos: [l.pos[0], l.pos[1], l.pos[2], 1.0],
+                    track_pos: [live[0], live[1], live[2], 1.0],
                     rgb: [l.rgb[0] as f32, l.rgb[1] as f32, l.rgb[2] as f32],
                     intensity: l.intensity,
                     inv_r2: 1.0 / (l.radius * l.radius),
                     kind: l.kind,
                     active: l.active,
+                    track: l.track,
                 }
             }).collect(),
         }
@@ -174,7 +213,12 @@ pub struct ResolvedLights {
 
 #[derive(Clone, Copy, Debug)]
 pub struct ResolvedLight {
+    /// The UPLOADED position: the node's +0x10 [M psiLight_SetLights 0x10e588:34-38] — for kind 2 the
+    /// static housing position (see `resolve`).
     pub pos: [f32; 4],
+    /// The LIVE tracked position (kind 2: the searchlight spot object; other kinds = `pos`) — what
+    /// `Lights_CalcClosestLights` measures the kind-2 distance against [M 0x1cb2e0:41-44].
+    pub track_pos: [f32; 4],
     /// The rgb bytes (+0x44..46).
     pub rgb: [f32; 3],
     /// +0x40 (kind 2 recomputes it per selection).
@@ -183,6 +227,8 @@ pub struct ResolvedLight {
     pub inv_r2: f32,
     pub kind: u8,
     pub active: bool,
+    /// The record's tracked part index (kind 2) — the render-side handle for the live spot.
+    pub track: Option<u32>,
 }
 
 impl ResolvedLights {
@@ -195,30 +241,33 @@ impl ResolvedLights {
         let mut out: Vec<(usize, f32)> = Vec::new();
         for (i, l) in self.lights.iter().enumerate() {
             if !l.active { continue; }
+            // Kind 2 measures against the LIVE tracked position (the spot object); every upload reads
+            // the node's static +0x10 [M 0x1cb2e0 vs 0x10e588].
+            let dp = if l.kind == 2 { l.track_pos } else { l.pos };
             let d = match l.kind {
                 0 => {
                     if flags & 0x80 == 0 { continue; }
-                    dist3(l.pos, sphere)
+                    dist3(dp, sphere)
                 }
                 1 => {
                     if flags & 0x100 != 0 { continue; }
-                    dist3(l.pos, sphere)
+                    dist3(dp, sphere)
                 }
                 2 => {
                     if flags & 0x80 == 0 { continue; }
-                    let dx = l.pos[0] - sphere[0];
-                    let dz = l.pos[2] - sphere[2];
+                    let dx = dp[0] - sphere[0];
+                    let dz = dp[2] - sphere[2];
                     let d = (dx * dx + dz * dz).sqrt();
                     if d > 4.0 { continue; }
                     d
                 }
                 _ => {
-                    let d = dist3(l.pos, sphere);
+                    let d = dist3(dp, sphere);
                     if d > sphere[3] + l.inv_r2.recip().sqrt() { continue; }
                     d
                 }
             };
-            // The falloff `d / (radius · 0.5)` [M 0x1cb3f0]; radius = 1/sqrt(inv_r2).
+            // The falloff `d / (radius · 0.5)` [M 0x1cb448/0x1cb44c]; radius = 1/sqrt(inv_r2).
             let radius = l.inv_r2.recip().sqrt();
             out.push((i, d / (radius * 0.5)));
             if out.len() > 30 { break; }
@@ -229,17 +278,18 @@ impl ResolvedLights {
 
     /// `psiLight_SetLights` 0x10e588: at most the two closest lights as
     /// `(position.xyz, w 1.0)` and `(TColor rgb·intensity, w 1/radius²)` slot pairs.
-    /// The kind-2 intensity `(1 − d·0.25)·50` [M 0x1cb40c] replaces the record's.
+    /// The uploaded POSITION is the node's static +0x10 [M 0x10e588:34-38 — for kind 2 the housing];
+    /// the kind-2 intensity `(1 − d·0.25)·50` [M 0x1cb400] uses the LIVE tracked position's 2D distance.
     pub fn pick2(&self, sphere: [f32; 4], flags: u32) -> ([[f32; 4]; 2], [[f32; 4]; 2]) {
         let mut lp = [[0.0f32; 4]; 2];
         let mut lc = [[0.0f32; 4]; 2];
         for (slot, (i, _falloff)) in self.closest(sphere, flags).into_iter().take(2).enumerate() {
             let l = &self.lights[i];
             lp[slot] = l.pos;
-            // The kind-2 intensity uses the RAW 2D distance [M 0x1cb40c], not the falloff.
+            // The kind-2 intensity uses the RAW 2D distance from the LIVE spot [M 0x1cb400], not the falloff.
             let k = if l.kind == 2 {
-                let dx = l.pos[0] - sphere[0];
-                let dz = l.pos[2] - sphere[2];
+                let dx = l.track_pos[0] - sphere[0];
+                let dz = l.track_pos[2] - sphere[2];
                 (1.0 - (dx * dx + dz * dz).sqrt() * 0.25) * 50.0
             } else { l.intensity };
             lc[slot] = [l.rgb[0] * k, l.rgb[1] * k, l.rgb[2] * k, l.inv_r2];
@@ -330,11 +380,114 @@ pub fn level_lights(level: &nf_formats::level::Level, rng: &mut Rng, lights: &mu
 }
 
 /// The type-0x4E placement lights for one map (called from the placement walk so the draws
-/// interleave with the drones' create draws in placement order).
+/// interleave with the drones' create draws in placement order). The record's tail fields are
+/// pinned from the case-0x4E call site [M 0x1d0bd4-0x1d0c04: lhu 0x40 → a7 = the flicker period,
+/// lhu 0x44 → stack+0 = the counter-seed source (Light_Create stores `seed>>1` at +0x26 and
+/// `seed + Rand_Rand(seed)` at +0x28), lhu 0x48 → stack+8 = the flicker MASK (+0x2a), lhu 0x4c
+/// → stack+0x10 = the wrap sound (+0x2c); n32 stack slots are 8-byte spaced]. The old parse
+/// passed only the period and derived the seed from it — the two coincide only when the level
+/// data's +0x44 == +0x40.
 pub fn placement_light(level: &nf_formats::level::Level, map: usize, index: usize, rng: &mut Rng, lights: &mut LightList) {
     let p = &level.maps[map].placements[index];
     if p.flags & 0xff != 0x4e || p.flags & 0xa000 != 0 { return; }
-    let b = |k: usize| (p.extra[k] & 0xff) as u8;
-    lights.create(f32::from_bits(p.extra[2]), 1.0, p.translation,
-        [b(3), b(4), b(5)], (p.extra[6] & 0xffff) as u16, -1, 0, (p.extra[7] & 0xffff) as u16, rng);
+    let e = |k: usize| p.extra.get(k).copied().unwrap_or(0);
+    let b = |k: usize| (e(k) & 0xff) as u8;
+    lights.create_full(f32::from_bits(e(2)), 1.0, p.translation,
+        [b(3), b(4), b(5)], (e(6) & 0xffff) as u16, -1, 0,
+        (e(7) & 0xffff) as u16, (e(8) & 0xffff) as u16, (e(9) & 0xffff) as u16, rng);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_kind2_light_uploads_the_housing_and_measures_the_live_spot() {
+        // [M 0x10e588:34-38 uploads node+0x10 (static); 0x1cb2e0:41-44 + store 0x1cb400 measure the
+        // tracked obj's LIVE position] — the pre-fix resolve moved the UPLOAD to the live spot, which
+        // lit a halo at the ground circle instead of the beam from the housing.
+        let mut l = LightList::default();
+        let i = l.lights.len();
+        l.lights.push(Light {
+            pos: [10.0, 40.0, 10.0], life: 0, channel: 0, flicker_period: 0, flicker_base: 0,
+            flicker_count: 0, flicker_mask: 0, sound: 0, track: Some(0), radius: 500.0,
+            intensity: 1.0, falloff: 0.0, rgb: [255, 255, 255], kind: 2, active: true,
+        });
+        let r = l.resolve(&|_| [70.0, 46.6, 10.0]); // the live spot 60 units +x of the housing
+        assert_eq!(r.lights[i].pos, [10.0, 40.0, 10.0, 1.0], "the upload stays at the housing");
+        assert_eq!(r.lights[i].track_pos, [70.0, 46.6, 10.0, 1.0], "the live spot rides track_pos");
+        // An object standing at the spot: accepted (2D d = 0 ≤ 4), intensity (1−0)·50, position housing.
+        let (lp, lc) = r.pick2([70.0, 46.6, 10.0, 1.0], 0x80);
+        assert_eq!(lp[0], [10.0, 40.0, 10.0, 1.0], "psiLight_SetLights uploads the housing");
+        assert_eq!(lc[0][0], 255.0 * 50.0, "the intensity (1−d·0.25)·50 at d=0");
+        // 4 units off the spot in x: still accepted, intensity halved; 5 units: rejected.
+        let (_, lc2) = r.pick2([66.0, 46.6, 10.0, 1.0], 0x80);
+        assert_eq!(lc2[0][0], 255.0 * (1.0 - 4.0 * 0.25) * 50.0);
+        let (_, lc3) = r.pick2([65.0, 46.6, 10.0, 1.0], 0x80);
+        assert_eq!(lc3[0], [0.0; 4], "d > 4.0 rejects the spot light");
+        // Sister: the pre-fix pick2 measured the intensity from the housing (d = 60 → rejected) —
+        // an object AT the spot would get no light at all.
+        let old_style_d = ((10.0 - 70.0f32).powi(2) + (10.0 - 10.0f32).powi(2)).sqrt();
+        assert!(old_style_d > 4.0, "the pre-fix reading is exactly the bug");
+    }
+
+    #[test]
+    fn a_maskless_flicker_light_stays_active_in_phase() {
+        // [M 0x1cafb8: `active = (mask == GameState+52 & mask)` — mask 0 compares 0 == 0, always true;
+        // the port's old `flicker_mask != 0 &&` guard made such lights permanently dark.]
+        let mut l = LightList::default();
+        l.lights.push(Light {
+            pos: [0.0; 3], life: 0, channel: 0, flicker_period: 60, flicker_base: 30,
+            flicker_count: 0xf100, flicker_mask: 0, sound: 0, track: None, radius: 5.0,
+            intensity: 1.0, falloff: 0.0, rgb: [255, 255, 255], kind: 0, active: true,
+        });
+        let mut rng = Rng::new(1);
+        for frame in 0..64u32 {
+            l.update(&|_| false, frame, &mut rng);
+            assert!(l.lights[0].active, "mask-0 flicker: active every tick (frame {frame})");
+        }
+        // Sister: a real mask gates only the count-UP (dark) phase — the lit phase sets active=1
+        // unconditionally [M 0x1cafb8]. Mask 8 is on only while bit 3 of the frame is set, checked
+        // on the ticks that run the up-phase (pre-update count has 0xf000 set).
+        let mut m = LightList::default();
+        m.lights.push(Light { flicker_mask: 8, ..l.lights[0].clone() });
+        let mut seen_off = false;
+        let mut seen_on_up = false;
+        for frame in 0..256u32 {
+            let up_phase = m.lights[0].flicker_count & 0xf000 != 0;
+            m.update(&|_| false, frame, &mut rng);
+            if up_phase {
+                let want = frame & 8 == 8;
+                assert_eq!(m.lights[0].active, want, "mask 8 tracks frame bit 3 in the up-phase (frame {frame})");
+                seen_on_up |= want;
+            }
+            seen_off |= !m.lights[0].active;
+        }
+        assert!(seen_on_up && seen_off, "the mask actually toggles");
+    }
+
+    #[test]
+    fn the_4e_parse_consumes_the_seed_draw_from_the_seed_field() {
+        // [M 0x1d0be4: lhu 0x44 → the counter-seed source; the draw is Rand_Rand(param_11).] The port's
+        // create_full derives flicker_base/counter from it — here the seed source differs from the
+        // period, so the record must show the seed's >>1 base, and the stream advances once.
+        let mut rng = Rng::new(7);
+        let mut l = LightList::default();
+        let i = l.create_full(6.0, 1.0, [1.0, 2.0, 3.0], [0xff, 0x80, 0x40], 9, -1, 0, 60, 200, 0x18, &mut rng);
+        let li = &l.lights[i];
+        assert_eq!(li.flicker_period, 60);
+        assert_eq!(li.flicker_base, 100, "seed_source >> 1 [M 0x1cc3d8]");
+        assert_eq!(li.flicker_mask, 0x18);
+        assert_eq!(li.channel, 9);
+        assert_eq!(li.rgb, [0xff, 0x80, 0x40]);
+        let before = Rng { x: rng.x, y: rng.y };
+        let mut rng2 = Rng::new(7);
+        l.create_full(6.0, 1.0, [1.0, 2.0, 3.0], [0xff, 0x80, 0x40], 9, -1, 0, 60, 200, 0x18, &mut rng2);
+        let _ = before;
+        // Sister: the old create derived the base from the PERIOD (60 >> 1 = 30) — wrong when +0x44 ≠ +0x40.
+        let mut old = LightList::default();
+        let mut r3 = Rng::new(7);
+        let j = old.create(6.0, 1.0, [1.0, 2.0, 3.0], [0xff, 0x80, 0x40], 9, -1, 0, 60, &mut r3);
+        assert_eq!(old.lights[j].flicker_base, 30, "the old reading — the data disagrees");
+    }
 }
