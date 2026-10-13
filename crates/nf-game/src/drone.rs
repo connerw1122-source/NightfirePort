@@ -98,6 +98,13 @@ pub mod state {
     /// `StunGrenadeRecover` 0x163350: ENTER sets +0x4F8 & 0x10000 and plays the get-up anim 0x76 with follow-on
     /// 0x56 (Attack) for non-civilians; bullets (msg 8/9) → 0x44.
     pub const STUN_GRENADE_RECOVER: u8 = 0x4f;
+    /// The scary-object family (`DroneFunc_ConsiderExplosive` 0x1431c0 → `RunAwayFromObject` 0x86 [M 0x1431c0:194-195];
+    /// `HideFromScaryObject` 0x87 waits out the flee deadline +0x324 → 0x88 [M 0x168d18:39-44];
+    /// `RecoverFromScaryObject` 0x88: +0x5A0 != 0x89 → Attack 0x56 [M 0x173658:33-42]). Names per the port's
+    /// msg::EXPLOSIVE doc comment (fix-explosions); the doc's "0x86 = RecoverFromScaryObject" was wrong.
+    pub const RUN_AWAY_FROM_OBJECT: u8 = 0x86;
+    pub const HIDE_FROM_SCARY_OBJECT: u8 = 0x87;
+    pub const RECOVER_FROM_SCARY_OBJECT: u8 = 0x88;
     /// The mission-state family (`NDrone2_StateFuncs` 0x29b300; docs/WORKLOG fix-drone3): civilians and scripted
     /// characters. CivilianInit 0x10, Civilian 0x11, CivilianScared 0x12, CivilianHiding 0x13, CivilianPatrol 0x14
     /// (0x172730 / 0x15d118 / 0x15d3a0 / 0x15d520 / 0x15d610); PartyGirlInit 0x2e, PartyGirl 0x2f (0x1728c0 / 0x160140);
@@ -470,10 +477,22 @@ pub struct Drone {
     pub timer_c: Option<u32>,
     /// Timer D (`Drone+0xCD0`): the sniper cover's 6-s return-to-cover timer.
     pub timer_d: Option<u32>,
-    /// `Drone+0x330`: an explosive's position (set by `DroneFunc_ConsiderExplosive` on msg 0x21), and the run distance
-    /// (`+0x350`: 5.0 stun, 8.0 mine, 12.0 frag) for `RecoverFromScaryObject` (0x86).
+    /// `Drone+0x330`: an explosive's position (set by `DroneFunc_ConsiderExplosive` on msg 0x21), and the run
+    /// distance `+0x350` [M 0x1431c0:71-81]: 4.0 grenade-thrower weapons 0x2A/0x2C-0x2F (deadline 2 s), 10.0
+    /// flashbang 0x37 (return to the caller state), 14.0 the 0x34/0x3B-0x40/0x6C explosives (deadline 10 s),
+    /// 5.0 gas 0x36 and the 0x2A explosive object. The old "5.0 stun / 8.0 mine / 12.0 frag" reading was wrong.
     pub explosive_pos: V3,
     pub explosive_run_dist: f32,
+    /// `+0x2B` (scared — set by ConsiderExplosive 0x1431c0:194 and Hide's ENTER 0x168d18:24, cleared by the
+    /// family's EXITs), `+0x354` (the state to enter when the flee arrives; 0x87 Hide by default, the caller
+    /// state for the 0x36/0x37/0x2A-object cases [M 0x1431c0:81-176]) and `+0x324` (the flee deadline,
+    /// now + 10·FRAME_RATE_INT, 2·FRAME_RATE_INT for the grenade weapons [M 0x1431c0:82, 101-119]).
+    pub scared: bool,
+    pub flee_return: u8,
+    pub flee_deadline: Option<u32>,
+    /// The msg-0x21 payload `DroneFunc_HandleExplosives` (0x1435f0:51 SendMsgSelf) delivers: (position, run
+    /// distance, return state, deadline frame). The port's states read it in their msg::EXPLOSIVE arms.
+    pub explosive_msg: Option<(V3, f32, u8, u32)>,
     pub anim: Animator,
     // Firing (`+0x3B` firing, `+0x3C` burst done, `+0xBC0` burst, `+0xBC4` next shot, `+0xBC8` last shot, clip).
     pub firing: bool,
@@ -910,6 +929,8 @@ impl Drone {
             // their own lines — the shared-constructor collisions, merge lesson 4).
             kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false, no_bunching: 0,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
+            // fix-cover-remainder: the scary-object flee family (fields on their own lines — merge lesson 4).
+            scared: false, flee_return: 0, flee_deadline: None, explosive_msg: None,
         };
         dr.init_properties(d, &param);
         dr.type_setup(d);
@@ -2440,19 +2461,100 @@ impl Drone {
         true
     }
 
-    /// `DroneFunc_ConsiderExplosive` (0x1431c0, msg 0x21): an explosive landed near the drone. Stores its position
-    /// (`+0x330`), the run distance (`+0x350`: 12.0 frag / 5.0 stun / 10.0 mine — here the caller passes the type's
-    /// distance), and routes to `RecoverFromScaryObject` (0x86). The port marks `explosive_pos` / `explosive_run_dist`
-    /// and sets the state; the full flee route (state 0x86's update) is not yet ported (G-026).
-    fn consider_explosive(&mut self, d: &Data, pos: V3, resume: u8, run_dist: f32) {
+    /// `DroneFunc_ConsiderExplosive` (0x1431c0, msg 0x21): an explosive landed near the drone. Gates: fear props
+    /// 0x34/0x3A/0x3B [M 0x1431c0:22-30], the state gate [M 0x1431c0:40-67] and +0x2B (not already scared)
+    /// [M 0x1431c0:68-70]. Stores the position (+0x330), the run distance (+0x350, per the caller's classification),
+    /// the return state (+0x354 — 0x87 Hide by default, the caller state for the flashbang/gas/0x2A-object cases;
+    /// 0 → the caller state [M 0x1431c0:191-193]), the deadline (+0x324) and +0x2B, then routes to
+    /// `RunAwayFromObject` (0x86) [M 0x1431c0:194-195] — whose flee update this port now runs (G-026).
+    fn consider_explosive(&mut self, d: &Data, frame: u32, pos: V3, resume: u8, run_dist: f32, ret: u8, deadline: u32) {
         if !self.prop(d, 0x34) && !self.prop(d, 0x3a) && !self.prop(d, 0x3b) { return; }
         // The game skips the flee when the drone is already in an explosive-aware state (0x28/0x2D/0x2E–0x4C, etc.).
         if matches!(self.state, 0x28 | 0x2d | 0x2e..=0x4c | 0x52..=0x56 | 0x62..=0x88) && self.state != 0x86 { return; }
+        if self.scared { return; }
         self.explosive_pos = pos;
         self.explosive_run_dist = run_dist;
-        let _ = resume;
-        // RecoverFromScaryObject (0x86) — the port sets it; its update (run away from the explosive) is G-026.
-        self.set_state(0x86);
+        self.flee_return = if ret != 0 { ret } else { resume }; // +0x354 == 0 → the caller state [M 0x1431c0:191-193]
+        self.flee_deadline = Some(deadline); // +0x324
+        self.scared = true; // +0x2B [M 0x1431c0:194]
+        self.set_state(state::RUN_AWAY_FROM_OBJECT);
+    }
+
+    /// The msg-0x21 payload `DroneFunc_HandleExplosives` (0x1435f0:51 `Drone_SM_SendMsgSelf(0x21, obj)`) delivers;
+    /// `resume` is the caller state each game handler passes (Idle/Alert/Patrol/Hostage 0x56 [M 0x15bf18:134],
+    /// HostageIdle 0x0E, HostageHide 0, UnderCoverFire 0x9C, RunAway/Hide 0x88 [M 0x168d18 case 0x21]).
+    fn take_explosive_msg(&mut self, d: &Data, frame: u32, resume: u8) {
+        if let Some((pos, run, ret, dl)) = self.explosive_msg.take() {
+            self.consider_explosive(d, frame, pos, resume, run, ret, dl);
+        }
+    }
+
+    /// `DroneMove_FindSafetyFromScaryObject` (0x1559f8) → `FindSafetyFromScaryPosition` (0x152250): one goal, two
+    /// strategies — the nav-path emitter at dist·1.8 [M 0x152250:91-134] and the straight-line fallback:
+    /// dir = normalise(drone − scary), goal = scary + dir·dist with y = scary.y + 0.5, clamped into the nav
+    /// network [M 0x152250:142-166]. The port uses the straight-line goal (the route build clamps it; the emitter
+    /// scan is [S]-approximated by it — documented in the report), resets the route [M 0x152250:128-129] and
+    /// stores +0x5A2/+0x5A0 (the return/resume states — the port keeps +0x354 in flee_return) [M 0x152250:167-174].
+    fn find_safety_from_scary_object(&mut self, d: &Data) -> bool {
+        let dist = self.explosive_run_dist;
+        let scary = self.explosive_pos;
+        let (dx, dy, dz) = (self.pos[0] - scary[0], self.pos[1] - scary[1], self.pos[2] - scary[2]);
+        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        if len < 0.001 { return false; }
+        let goal = [scary[0] + dx / len * dist, scary[1] + 0.5, scary[2] + dz / len * dist];
+        self.goal = Some(goal);
+        self.croute = None; // ResetRoute + InvalidateRoute [M 0x152250:128-129]
+        self.move_to_goal(d); // build the route now (the deadline bounds a dead route)
+        true
+    }
+
+    /// The scary-object states (G-026): `RunAwayFromObject` 0x86 [M 0x168aa8], `HideFromScaryObject` 0x87
+    /// [M 0x168d18], `RecoverFromScaryObject` 0x88 [M 0x173658].
+    fn handle_scary(&mut self, d: &Data, _rng: &mut Rng, frame: u32, s: u8, m: u8) -> Option<bool> {
+        use state::*;
+        if !matches!(s, RUN_AWAY_FROM_OBJECT | HIDE_FROM_SCARY_OBJECT | RECOVER_FROM_SCARY_OBJECT) { return None; }
+        Some(match (s, m) {
+            // ENTER: +0x4F8 |= 0x10000, AlertStatusSet(1), +0x4F8 |= 0x400000, FindSafety — fail → 0x88
+            // [M 0x168aa8:18-30].
+            (RUN_AWAY_FROM_OBJECT, msg::ENTER) => {
+                self.vision_on = true;
+                if !self.find_safety_from_scary_object(d) { self.set_state(RECOVER_FROM_SCARY_OBJECT); }
+                true
+            }
+            // UPDATE: past the deadline (+0x324) → 0x88 [M 0x168aa8:38-42]; MoveToGoalPosition (flags 0x300):
+            // moving → the run anim 0x1E [M 0x168aa8:43-47], blocked → the crouch chain 0x11 → 0x19 → 0x21
+            // [M 0x168aa8:53-67], arrived → the return state +0x5A2 [M 0x168aa8:48-52].
+            (RUN_AWAY_FROM_OBJECT, msg::UPDATE) => {
+                if self.flee_deadline.is_some_and(|t| frame > t) { self.set_state(RECOVER_FROM_SCARY_OBJECT); return Some(true); }
+                match self.move_to_goal(d) {
+                    0 => self.call_anim(d, 0x1e, 0, 0),
+                    3 => { let st = self.flee_return; self.set_state(if st == 0 { ATTACK } else { st }); }
+                    0x9 | 0xc => self.call_anim(d, 0x11, 0, 0),
+                    _ => self.call_anim(d, 0x1e, 0, 0),
+                }
+                true
+            }
+            (RUN_AWAY_FROM_OBJECT, msg::EXIT) => { self.scared = false; true } // [M 0x168aa8:31-35]
+            // ENTER: +0x2B = 1, AlertStatusSet(1), crouch 0x11 / else 0x19 / else 0x21 [M 0x168d18:18-43].
+            (HIDE_FROM_SCARY_OBJECT, msg::ENTER) => {
+                self.vision_on = true;
+                self.scared = true;
+                if self.can_do(d, 0x11) { self.call_anim(d, 0x11, 0, 0); }
+                else if self.can_do(d, 0x19) { self.call_anim(d, 0x19, 0, 0); }
+                else { self.call_anim(d, 0x21, 0, 0); }
+                true
+            }
+            // UPDATE: wait the deadline out, then 0x88 [M 0x168d18:39-44]. EXIT: +0x2B = 0 [M 0x168d18:46-48].
+            (HIDE_FROM_SCARY_OBJECT, msg::UPDATE) => {
+                if self.flee_deadline.is_some_and(|t| frame > t) { self.set_state(RECOVER_FROM_SCARY_OBJECT); }
+                true
+            }
+            (HIDE_FROM_SCARY_OBJECT, msg::EXIT) => { self.scared = false; true }
+            // ENTER: the mission-bot path (+0xC5 == 0xC) is not ported; else +0x2B = 0 and +0x5A0 != 0x89 → 0x56
+            // (the port has no RunToAlarm 0x89, so always Attack) [M 0x173658:22-42]. No anim is played here.
+            (RECOVER_FROM_SCARY_OBJECT, msg::ENTER) => { self.scared = false; self.set_state(ATTACK); true }
+            _ => false,
+        })
     }
 
     /// `NDrone2_CoverAvailable(needLos)` (0x155a38).
@@ -2601,14 +2703,31 @@ impl Drone {
             else if self.cover_side == 1 { n.yaw - crate::trig::HALF_PI } else { n.yaw };
     }
 
+    /// `DroneAnim_ValidateCoverAnim` (0x13bf40): 0 passes; ≥ 0x77 passes unvalidated [M 0x13bf40:12,22]; 1..0x77
+    /// is valid only when the drone's anim set has the state's row (the base set's row also counts
+    /// [M 0x13bf40:14-19]); an invalid 5 substitutes 7, else 0xA [M 0x13bf40:25-38 — the record-11 gate
+    /// approximated by `can_do(7)`, the port's documented stand-in]; any other invalid → 0xFFFF.
+    pub fn validate_cover_anim(&self, d: &Data, anim: u16) -> u16 {
+        if anim == 0 || anim >= 0x77 { return anim; }
+        if self.can_do(d, anim) { return anim; }
+        if anim == 5 { return if self.can_do(d, 7) { 7 } else { 0xa }; }
+        0xffff
+    }
+
     /// `DroneAnim_CoverAnim(mode, next state)` (0x13c078): picks the cover type (mode 6, or 7 = maybe change) and plays
     /// the `CCModes` column; false when no anim fits.
     fn cover_anim(&mut self, d: &Data, rng: &mut Rng, mode: u8, next: u8) -> bool {
         use crate::cover::{cc_anim, kind};
         let Some(n) = self.cover.and_then(|c| d.covers.get(c)).cloned() else { return false };
         if !n.is_corner() {
-            let anim = match mode { 0 | 6 | 1 | 4 => n.idle_anim, 2 => n.aim_anim, 3 => 0x58, _ => return false };
-            let anim = if self.can_do(d, anim) { anim } else if anim == 5 { if self.can_do(d, 7) { 7 } else { 0xa } } else { anim };
+            // Mode 3's 0x58 is played raw — the game does not validate it [M 0x13c078:297-300]; every other
+            // low-node anim goes through `DroneAnim_ValidateCoverAnim` [M 0x13c078:286-295, 309-316].
+            let (anim, validate) = match mode { 0 | 6 | 1 | 4 => (n.idle_anim, true), 2 => (n.aim_anim, true), 3 => (0x58u16, false), _ => return false };
+            let anim = if !validate { anim } else {
+                let v = self.validate_cover_anim(d, anim);
+                if v == 0xffff { return false; } // CoverAnim returns 0 — no anim, the state lingers [M 0x13c078:311-314]
+                v
+            };
             self.call_anim(d, anim, next, 0);
             return true;
         }
@@ -2654,7 +2773,10 @@ impl Drone {
                 match self.move_to_goal(d) {
                     0 | 2 => {
                         let remaining = self.croute.as_ref().map_or(0.0, |r| r.remaining);
-                        if remaining < 1.0 { let p = self.cover_point; self.slide_to(d, p, 0.1); }
+                        // `SlideToPosition(0x3CCCCCCC = 0.025, +0x830, y = 1)` [M 0x169150:64-67] — 2.5 %/tick
+                        // toward the in-cover point (the doc's "10 %/tick" was wrong; UnderCoverInit's 8 % xz
+                        // [M 0x169cc0:38] is a different call). The port keeps its xz slide + floor re-snap.
+                        if remaining < 1.0 { let p = self.cover_point; self.slide_to(d, p, 0.025); }
                         self.set_combat_move_anim(d, rng, remaining);
                     }
                     3 => self.set_state(UNDER_COVER_INIT),
@@ -2739,7 +2861,7 @@ impl Drone {
                 }
                 true
             }
-            (UNDER_COVER_FIRE, msg::EXPLOSIVE) => { self.consider_explosive(d, self.explosive_pos, UNDER_COVER_LEAVE_NOW, 12.0); true }
+            (UNDER_COVER_FIRE, msg::EXPLOSIVE) => { self.take_explosive_msg(d, frame, UNDER_COVER_LEAVE_NOW); true }
             // `NDrone2_DSTATE_UnderCoverSniperFire` (0x16a610): fires on timer C (1 s), returns on timer D (6 s),
             // reloads (0x98) when the clip empties. `+0x2E` = the node is not low (corner); `OpponentIsAimingAtMe(7.5)`
             // + `BondIsFacingMe(45)` + Rand(3) = 0 → duck back (0x99).
@@ -2770,7 +2892,7 @@ impl Drone {
             }
             (UNDER_COVER_SNIPER_FIRE, msg::TIMER_C) => { self.fire(d, rng, frame, true); true }
             (UNDER_COVER_SNIPER_FIRE, msg::TIMER_D) => { self.set_state(UNDER_COVER_RETURN); true }
-            (UNDER_COVER_SNIPER_FIRE, msg::EXPLOSIVE) => { self.consider_explosive(d, self.explosive_pos, UNDER_COVER_LEAVE_NOW, 12.0); true }
+            (UNDER_COVER_SNIPER_FIRE, msg::EXPLOSIVE) => { self.take_explosive_msg(d, frame, UNDER_COVER_LEAVE_NOW); true }
             // `NDrone2_DSTATE_UnderCoverSniperReload` (0x16a8b0): the reload anim (0x52), then back to 0x97. Refills
             // the clip from the spare (`+0xBBC = +0xBBE`).
             (UNDER_COVER_SNIPER_RELOAD, msg::ENTER) => {
@@ -2780,7 +2902,7 @@ impl Drone {
                 self.clip = self.clip_max;
                 true
             }
-            (UNDER_COVER_SNIPER_RELOAD, msg::EXPLOSIVE) => { self.consider_explosive(d, self.explosive_pos, 0, 12.0); true }
+            (UNDER_COVER_SNIPER_RELOAD, msg::EXPLOSIVE) => { self.take_explosive_msg(d, frame, 0); true }
             // `NDrone2_DSTATE_AmbushInit` (0x17 2960): find an ambush cover within 2.0 → 0x93; else crouch (0x11) and
             // wait (0x38).
             (AMBUSH_INIT, msg::ENTER) => {
@@ -2799,7 +2921,7 @@ impl Drone {
                 true
             }
             (AMBUSH_WAIT, msg::EXIT) => { d.props.set(0x10, &mut self.props, 0); true }
-            (AMBUSH_WAIT, msg::EXPLOSIVE) => { self.consider_explosive(d, self.explosive_pos, ATTACK, 12.0); true }
+            (AMBUSH_WAIT, msg::EXPLOSIVE) => { self.take_explosive_msg(d, frame, ATTACK); true }
             (UNDER_COVER_RETURN, msg::ENTER) => { if !self.cover_anim(d, rng, 4, UNDER_COVER_TYPE_CHANGE) { self.set_state(UNDER_COVER_LEAVE) } true }
             (UNDER_COVER_RETURN, msg::UPDATE) => { if !in_cover_ok(self, false) || far_from_goal(self) { self.cover_leave |= 4 } true }
             (UNDER_COVER_TYPE_CHANGE, msg::ENTER) => {
@@ -2840,7 +2962,7 @@ impl Drone {
                 self.desired_yaw = self.yaw_to_opp;
                 true
             }
-            msg::EXPLOSIVE => { self.consider_explosive(d, self.explosive_pos, 0, 12.0); true }
+            msg::EXPLOSIVE => { self.take_explosive_msg(d, frame, ATTACK); true }
             msg::BULLET => { self.on_bullet(d, rng, frame, s); true }
             _ => true,
         })
@@ -2951,8 +3073,21 @@ impl Drone {
         }
         // BulletImpact 0x55 (0x173098): enter turns vision on; the flinch call ends it (state `+0x118`).
         if s == BULLET_IMPACT && matches!(m, 0 | msg::ENTER | msg::UPDATE) { if m == msg::ENTER { self.vision_on = true; } return true; }
+        // `DroneFunc_HandleExplosives`'s msg 0x21 for the states outside the cover/grenade-throw handlers: the
+        // game's Idle/Alert/Patrol/Hostage handlers route it to ConsiderExplosive with their resume state
+        // (0x56 [M 0x15bf18:134, 0x15c248:102, 0x15c498:105, ...], HostageIdle 0x0E [M 0x15ce60:51], HostageHide 0
+        // [M 0x15cfe0:48]); the fleeing family re-enters ConsiderExplosive with 0x88 [M 0x168d18 case 0x21]. The
+        // armed states (UnderCoverFire 0x9C [M 0x16a3e0], AMBUSH_WAIT, GRENADE_THROW) keep their own arms.
+        if m == msg::EXPLOSIVE && !matches!(s, UNDER_COVER_FIRE | UNDER_COVER_SNIPER_FIRE | UNDER_COVER_SNIPER_RELOAD | AMBUSH_WAIT | GRENADE_THROW) {
+            let resume = if matches!(s, RUN_AWAY_FROM_OBJECT | HIDE_FROM_SCARY_OBJECT) { RECOVER_FROM_SCARY_OBJECT }
+                else if matches!(s, PARTY_GIRL | CIVILIAN | CIVILIAN_MISSION | CIVILIAN_PATROL | CIVILIAN_DOOR_GUARD | CIVILIAN_SCARED | CIVILIAN_HIDING) { 0 }
+                else { ATTACK };
+            self.take_explosive_msg(d, frame, resume);
+            return true;
+        }
         if let Some(r) = self.handle_death(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_knockout(d, rng, frame, s, m) { return r; }
+        if let Some(r) = self.handle_scary(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_cover(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_grenade_throw(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_stun(d, rng, frame, s, m) { return r; }
@@ -4669,6 +4804,8 @@ pub struct Drones {
     pub bullets: Vec<crate::bullet::Bullet>,
     /// Grenades in flight (`Bullet_init` with a gravity-affected weapon; WORKLOG 0080).
     pub grenades: Vec<crate::grenade::Grenade>,
+    /// Bounced grenades awaiting the `DroneFunc_HandleExplosives` broadcast (position, weapon record id).
+    pub explosive_queue: Vec<(V3, u16)>,
     /// Explosions this tick: (pos, radius, damage, owner, weapon_type) for the sound + camera shake.
     pub explosions: Vec<(V3, f32, f32, usize, u16)>,
     /// The camera-shake amount: `Explode_Create` 0x17cbd0 calls `Camera_Shake(pos, radius)` when the
@@ -5001,6 +5138,8 @@ impl Drones {
             // own lines — the shared-constructor collisions, merge lesson 4).
             progress: Default::default(),
             difficulty: 2, // [M bootup 0x1c7e78:25 GameState._40_4_ = 2]
+            // fix-cover-remainder: the HandleExplosives queue (own line — merge lesson 4).
+            explosive_queue: Vec::new(),
     };
         drones
     }
@@ -6876,6 +7015,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 match ev {
                     crate::grenade::GrenadeEvent::Bounce(p) => {
                         if let Some(t) = d.sfx { let h = t.get(0x51c); self.audio.play3d(h.id, p, None); }
+                        // `DroneFunc_HandleExplosives` (0x1435f0): the kind-2 explosive entries — a guard with the
+                        // fear props within the entry's radius that sees the object sends itself msg 0x21
+                        // [M 0x1435f0:30-52]. The port triggers once at the bounce (the game rescans every frame
+                        // while the object exists; documented in the report).
+                        self.explosive_queue.push((p, g.weapon_type));
                         break;
                     }
                     crate::grenade::GrenadeEvent::Explode { pos, radius, damage, owner, weapon_type } => {
@@ -6972,6 +7116,34 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
         }
         self.grenades.retain(|g| g.state < 2);
+        // The HandleExplosives broadcast for the bounced explosives [M 0x1435f0 + 0x138b10]: classification by
+        // the grenade's weapon record (the game classifies by the thrower's weapon id — the port's events carry
+        // the record id; mapping documented in the report): frag 0x34 → radius 12.0, flee 4.0, deadline 2 s,
+        // return Hide 0x87 [M 0x138b10:67-87 + 0x1431c0:101-119]; stun 0x35 → radius 8.0 [M 0x138b10:163-167],
+        // flee 10.0, deadline 10 s, return to the caller state [M 0x1431c0:165-176]; smoke 0x36 → kind 1, no
+        // flee [M 0x138b10:143-159 + 0x1435f0:24-29 — only kind-2 entries trigger]; satchel 0x3B-0x40 → radius
+        // 12.0, flee 14.0 [M 0x138b10:113-141 + 0x1431c0:122-152]. Per drone: fear prop 0x3A/0x3B [M 0x1435f0:30-34],
+        // within the radius, and the object visible [M 0x1435f0:37-44 ObjectVisibility ≥ 0.7 + CanSeeObject].
+        let queued = std::mem::take(&mut self.explosive_queue);
+        for (p, wt) in queued {
+            let cls = match wt {
+                0x34 => Some((12.0f32, 4.0f32, 120u32, 0x87u8)),
+                0x35 => Some((8.0, 10.0, 600, 0)),
+                0x3b..=0x40 => Some((12.0, 14.0, 600, 0x87)),
+                _ => None,
+            };
+            let Some((radius, run, ticks, ret)) = cls else { continue };
+            let Drones { list, rng, .. } = self;
+            for dr in list.iter_mut() {
+                if !dr.present || dr.corpse || !dr.enabled { continue; }
+                let (dx, dy, dz) = (dr.pos[0] - p[0], dr.pos[1] - p[1], dr.pos[2] - p[2]);
+                if dx * dx + dy * dy + dz * dz > radius * radius { continue; }
+                if !dr.prop(d, 0x3a) && !dr.prop(d, 0x3b) { continue; }
+                if !d.world.line_of_sight([dr.pos[0], dr.pos[1] + 1.0, dr.pos[2]], p) { continue; }
+                dr.explosive_msg = Some((p, run, ret, frame + ticks));
+                dr.send(d, rng, frame, msg::EXPLOSIVE);
+            }
+        }
         self.health.flash = (self.health.flash - 1.0).max(0.0);
         // The flashbang whiteout decays by its own BL amount per tick (FRAME_RATE · f · 10 = f/6 [M
         // Player_SetFlashBang 0x196040's first arg]); the exact fade is the view's Camera_SetFade.
@@ -7061,6 +7233,8 @@ mod tests {
             // their own lines — the shared-constructor collisions, merge lesson 4).
             kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false, no_bunching: 0,
             head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
+            // fix-cover-remainder: the scary-object flee family (own line — merge lesson 4).
+            scared: false, flee_return: 0, flee_deadline: None, explosive_msg: None,
         };
         dr
     }
