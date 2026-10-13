@@ -78,12 +78,11 @@ fn the_page_sequence_matches_the_real_game() {
     // The campaign is sp_level's 12 rows [M 0x2df2e0, 12 × 0x18-byte records].
     assert_eq!(fe.rows(), 12);
     // Confirming a mission requests the level the game does [M C_SBNFMAP 0x20b8d8:21-24
-    // ResetMap_LevelToLoad(sp_level[i]+0xc, 0, 0)]. Row 0 is the only unlocked one on a fresh
-    // profile [S: no writer of the other sp_level flags was found].
+    // ResetMap_LevelToLoad(sp_level[i]+0xc, 0, 0); the row's level is the record's 4th lane].
     fe.unlock_all = true;
     fe.cursor = 1;
     assert!(fe.action(Action::Confirm));
-    assert_eq!(fe.requested_level, Some(menu::CAMPAIGN[1].2));
+    assert_eq!(fe.requested_level, Some(menu::CAMPAIGN[1].3));
     assert_eq!(fe.flow.level_to_load, 0x0710_0005, "story codes wrap to 0x0710 intro codes [M 0x1d3800's switch]");
     assert!(fe.flow.load_tick() == false);
     assert_eq!(fe.flow.movie_code, 0x0710_0005, "GameState+0x10 [M 0x1d6360]");
@@ -107,21 +106,29 @@ fn locked_missions_cannot_be_scrolled_to_or_picked() {
     fe.action(Action::Confirm); // confirm box
     fe.action(Action::Confirm); // difficulty → missions
     assert_eq!(fe.page, Page::MissionSelect);
-    assert!(fe.unlocked_row(0), "a fresh profile can pick the first row [S]");
-    assert!(!fe.unlocked_row(1), "the rest start locked");
-    // Down skips the locked rows entirely.
+    // A fresh profile has rows 0 AND 1 unlocked [D sp_level's boot state in ACTION.ELF .data (file
+    // offset 0x1d91e0): rows 0-1 hold +0x10 = 1, rows 2-11 hold 0].
+    assert!(fe.unlocked_row(0), "Paris Prelude starts unlocked");
+    assert!(fe.unlocked_row(1), "The Exchange starts unlocked too [D sp_level boot +0x10]");
+    assert!(!fe.unlocked_row(2), "the rest start locked");
+    // Down from row 0 walks to the next unlocked row (row 1 is unlocked at boot too [D sp_level +0x10]).
     assert!(fe.action(Action::Down));
-    assert_eq!(fe.cursor, 0, "every other row is locked — the cursor cannot move");
+    assert_eq!(fe.cursor, 1, "the cursor walks the unlocked rows");
     // Picking the locked row 3 does nothing.
     fe.cursor = 3;
     assert!(!fe.action(Action::Confirm), "C_SBNFMAP 0x20b8d8:18-20 returns on a locked row");
     assert_eq!(fe.requested_level, None);
-    // Completing mission 0 unlocks mission 1 [M Menu_SetLevelBonus 0x1ffa10:63-65].
-    fe.cursor = 0;
+    // Completing mission 1 unlocks mission 2 (row 1 was already unlocked at boot [D sp_level
+    // +0x10], so row 2 is the one the unlock actually opens) [M Menu_SetLevelBonus 0x1ffa10:63-65].
+    fe.cursor = 1;
+    fe.mission = 1;
     fe.mission_ended(Outcome::Complete, Stats::default());
-    assert!(fe.unlocked_row(1), "completing row i unlocks row i+1");
+    assert!(fe.unlocked_row(2), "completing row i unlocks row i+1");
+    // Back on the mission list, Down walks onto the newly unlocked row.
+    fe.page = Page::MissionSelect;
+    fe.cursor = 1;
     assert!(fe.action(Action::Down));
-    assert_eq!(fe.cursor, 1, "the cursor reaches the newly unlocked row");
+    assert_eq!(fe.cursor, 2, "the cursor reaches the newly unlocked row");
     // --unlock-all is the game's menu_unlock_everything [M 0x30d2a7 read at 0x20b8d8:18].
     fe.unlock_all = true;
     assert!(fe.unlocked_row(11));
@@ -278,11 +285,20 @@ fn the_menu_overlay_draws_the_game_pages_with_their_own_sprites() {
     assert!(has(0x4000_0025, 0x0300_00bf), "the codename page draws the ring emblem [M control 0x10000103]");
     assert!(has(0x4000_0025, 0x0300_00b6), "the codename page draws its preview [M control 0x100001cc TEX 0x030000b6]");
     assert!(has(0x4000_0023, 0x0300_00a5), "the difficulty page draws its emblem [M control 0x100000be TEX 0x030000a5]");
-    assert!(has(0x4000_001c, 0x0300_0084), "the mission list draws the ring preview [M control 0x10000020 TEX 0x03000084]");
+    // The mission list's ring preview is PER ROW: row 0 (Paris Prelude) must draw Paris Prelude's own
+    // preview 0x03000085 = sp_level[0]+0x00 [L ee_snapshot 0x2df2e0; M 0x1f8388's msg 0x24] — the port
+    // drew The Exchange's 0x03000084 here (the constant 0x10000020 default), which is exactly the
+    // symptom the driver reported.
+    assert!(has(0x4000_001c, 0x0300_0085), "Paris Prelude's own ring preview [M sp_level[0]+0x00]");
+    assert!(!has(0x4000_001c, 0x0300_0084), "row 0 must NOT show The Exchange's preview 0x03000084 (the reported symptom)");
     assert!(has(0x4000_002b, 0x0300_00c4), "the dossier draws its emblem [M control 0x1000010a TEX 0x030000c4]");
     assert!(has(0x4000_001c, 0x0300_016d), "the list pages draw the logo [M control (434,38,156×43) TEX 0x0300016d]");
     assert!(has(0x4000_0023, 0x0300_014c), "the list pages draw the stamp [M control 0x10000224 TEX 0x0300014c]");
-    assert!(has(0x4000_001c, 0x0300_0042), "the hint bars draw the button-glyph atlas [M the ~A/~V tokens; atlas 0x03000042]");
+    // The hint bars draw the game's own specialchar icon font [M specialchar 0x2dd8d8: every entry's
+    // texture is 0x03000075] — not the 64×64 atlas 0x03000042 the port guessed before, and the ✕ is
+    // the table's (235,1,19×19) tile, not the font's letter X.
+    assert!(has(0x4000_001c, 0x0300_0075), "the hint bars draw the specialchar icon font [M 0x2dd8d8]");
+    assert!(!has(0x4000_001c, 0x0300_0042), "the hint bars no longer use the guessed 0x03000042 atlas");
     // The title page is the only one with the full-screen art (the others use the dark plate).
     assert!(!has(0x4000_0002, 0x0300_0074));
 }
@@ -329,10 +345,13 @@ fn the_menu_strings_come_from_the_language_bank() {
     assert!(b(0x0300_0014).starts_with("Drop in on Raphael Drake's reception"));
     assert_eq!(b(0x208), "~A Select  ~Y Dossier  ~V Scroll  ~B Back");
     // Every campaign row's name and description must resolve.
-    for (name, desc, _) in menu::CAMPAIGN {
+    for (preview, name, desc, _) in menu::CAMPAIGN {
+        assert_eq!(preview >> 24, 0x03, "row's preview is a texture hash [M sp_level+0x00]");
         assert!(!b(name).is_empty(), "campaign name {name:#x} did not resolve");
         assert!(!b(desc).is_empty(), "campaign description {desc:#x} did not resolve");
     }
+    // The locked rows' description resolves too [L sp_level+0x14 = 0x01000009; M 0x1f8388's gate].
+    assert!(b(menu::LOCKED_DESC).starts_with("Continue playing"), "the locked-row description [L USATxt 0x01000009]");
     // The Dossier [M page 0x4000002b header 0x27f].
     assert_eq!(b(0x27f), "Dossier");
 }
@@ -360,9 +379,11 @@ fn the_menu_overlay_produces_font_quads_for_every_page() {
     assert!(before > 0 && after > 0, "both outcomes draw");
 }
 
-/// A stand-in font texture (the tests only check geometry, not pixels).
+/// A stand-in font texture (the tests only check geometry, not pixels). The specialchar font gets its
+/// real 256-wide pitch so the icon uvs normalize to the table's own values.
 fn crate_texture(hash: u32) -> nf_view::scene::TextureImage {
-    nf_view::scene::TextureImage { key: (0, hash), width: 8, height: 8, rgba: vec![255; 8 * 8 * 4], more: vec![], rate: 1 }
+    let (w, h) = if hash == 0x0300_0075 { (256, 256) } else { (8, 8) };
+    nf_view::scene::TextureImage { key: (0, hash), width: w as u32, height: h as u32, rgba: vec![255; (w * h * 4) as usize], more: vec![], rate: 1 }
 }
 
 /// A minimal font the draw tests can lay out with (the real one comes from ACTION.ELF).
@@ -381,6 +402,14 @@ fn iso_lang(iso_path: &str) -> Option<nf_formats::hud::Lang> {
     let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case("USATxt.dat"))?;
     let bytes = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).ok()?;
     nf_formats::hud::Lang::parse(&bytes).ok()
+}
+
+/// The game's own menu font [M HudTables::from_action_elf reads FONTSerpLight/FontDataSerpLight —
+/// the font the menu overlay draws with].
+fn iso_font(iso_path: &str) -> nf_formats::hud::Font {
+    let iso = nf_formats::iso9660::IsoImage::open(iso_path).expect("iso");
+    let elf = iso.read_file(iso.find("/ACTION.ELF").expect("ACTION.ELF")).expect("read");
+    nf_formats::hud::HudTables::from_action_elf(&elf).expect("HUD tables").font
 }
 
 #[test]
@@ -409,15 +438,145 @@ fn the_pause_labels_the_handler_uses_resolve_from_the_disc() {
 #[test]
 fn the_campaign_is_sp_level_on_the_disc() {
     assert_eq!(menu::CAMPAIGN.len(), 12, "sp_level holds 12 × 0x18-byte records [M 0x2df2e0, 288 bytes]");
-    // The level codes + name labels read from the EE snapshot (`work/ee_snapshot.bin`, file offset =
-    // EE address) — a mid-game save has all 12 rows unlocked [L].
+    // The preview textures + level codes + name labels read from the EE snapshot (`work/ee_snapshot.bin`,
+    // file offset = EE address) — a mid-game save has all 12 rows unlocked [L].
     let Ok(snap) = std::fs::read("../work/ee_snapshot.bin").or_else(|_| std::fs::read("../../work/ee_snapshot.bin")) else { eprintln!("no ee_snapshot.bin — skipping the [L] cross-check"); return };
-    for (i, &(name, _, level)) in menu::CAMPAIGN.iter().enumerate() {
+    for (i, &(preview, name, _, level)) in menu::CAMPAIGN.iter().enumerate() {
         let rec = &snap[0x2df2e0 + i * 0x18..0x2df2e0 + (i + 1) * 0x18];
-        let snap_level = u32::from_le_bytes(rec[0x0c..0x10].try_into().unwrap());
+        let snap_preview = u32::from_le_bytes(rec[0x00..0x04].try_into().unwrap());
         let snap_name = u32::from_le_bytes(rec[0x04..0x08].try_into().unwrap());
+        let snap_level = u32::from_le_bytes(rec[0x0c..0x10].try_into().unwrap());
+        assert_eq!(snap_preview, preview, "sp_level[{i}] preview texture [L ee_snapshot 0x{:x}]", 0x2df2e0 + i * 0x18);
         assert_eq!(snap_name, name, "sp_level[{i}] name label [L ee_snapshot 0x{:x}]", 0x2df2e0 + i * 0x18 + 4);
         assert_eq!(snap_level, level, "sp_level[{i}] level [L ee_snapshot 0x{:x}]", 0x2df2e0 + i * 0x18 + 0xc);
         assert_eq!(rec[0x10], 1, "the snapshot's save has every row unlocked [L]");
     }
+}
+
+// --- fix-menus3: the 2026-10-13 render-vs-PCSX2 gaps ---
+
+/// Framing: the real game draws the 640×480 menu space as a CENTRED 4:3 picture with black bars at
+/// the sides [L the main agent's PCSX2 captures 2026-10-13]; the port stretched it across the 16:9
+/// window (Anchor::Stretch quads). Every overlay vertex must stay inside the window's central 4:3
+/// band (|x| ≤ (4/3)/aspect), and at a 4:3 window the full-screen plate still spans it edge to edge.
+#[test]
+fn the_menus_draw_inside_a_centred_4_3_band() {
+    let font = test_font();
+    let textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).collect();
+    let mut fe = FrontEnd::new();
+    fe.unlock_all = true;
+    for page in [Page::Start, Page::Main, Page::Codename, Page::Difficulty, Page::MissionSelect] {
+        fe.page = page;
+        let frame = menu::menu_overlay(&fe, &font, None, &textures, 16.0 / 9.0);
+        let band = (4.0 / 3.0) / (16.0 / 9.0); // 0.75
+        let worst = frame.v.iter().fold(0.0f32, |m, vtx| m.max(vtx.p[0].abs()));
+        assert!(worst <= band + 1e-3, "{page:?}: a quad vertex reaches NDC x {worst}, past the 4:3 band {band} (the 16:9 stretch symptom)");
+    }
+    // Sister (4:3 unchanged): the title art still spans the whole window at aspect 4/3.
+    fe.page = Page::Start;
+    let frame = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let worst = frame.v.iter().fold(0.0f32, |m, vtx| m.max(vtx.p[0].abs()));
+    assert!(worst >= 0.999, "at 4:3 the full-screen art reaches the window edges (worst x {worst})");
+}
+
+/// The ring preview is clipped to the ring's circle [L the main agent's render: a visible square box
+/// around the emblem / mission preview]. Every preview vertex (640-space) must sit inside the
+/// inscribed circle of the emblem rect (114,118,150×150); the ring quad itself may reach the box.
+#[test]
+fn the_ring_preview_is_clipped_to_the_ring_circle() {
+    let font = test_font();
+    let textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).collect();
+    let mut fe = FrontEnd::new();
+    fe.unlock_all = true;
+    fe.page = Page::MissionSelect;
+    let frame = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    // The preview's texture index in the frame's runs (1-based into the textures slice).
+    let preview_hash = menu::CAMPAIGN[0].0;
+    let ti = textures.iter().position(|(h, _)| *h == preview_hash).unwrap() + 1;
+    // 640-space back-mapping at aspect 4/3: x640 = (ndc+1)/2·512/0.8, y640 = (1−ndc)·224/0.9333.
+    let to640 = |p: [f32; 2]| [(p[0] + 1.0) * 256.0 / 0.8, (1.0 - p[1]) * 224.0 / (448.0 / 480.0)];
+    let (cx, cy, r) = (114.0 + 75.0, 118.0 + 75.0, 75.0);
+    let mut preview_verts = 0;
+    for run in &frame.runs {
+        if run.0 != ti { continue; }
+        for vtx in &frame.v[run.2 as usize..(run.2 + run.3) as usize] {
+            let [x, y] = to640(vtx.p);
+            let d2 = ((x - cx) / r).powi(2) + ((y - cy) / r).powi(2);
+            assert!(d2 <= 1.0 + 1e-3, "preview vertex ({x:.1},{y:.1}) is outside the ring circle (d²={d2:.3}) — the square-box symptom");
+            preview_verts += 1;
+        }
+    }
+    // 22 of the 24 strips survive — the two outermost chords degenerate to zero height (they are
+    // the circle's leftmost/rightmost points; the ring quad covers them).
+    assert!(preview_verts >= 20 * 6, "the preview drew as the circle strips ({preview_verts} verts)");
+}
+
+/// The hint bar's ~A draws the specialchar table's ✕ tile [M specialchar 0x2dd8d8 entry 0: texture
+/// 0x03000075, u 235, v 1, 19×19, advance 19] — not the font's letter X. Sister: the codename page's
+/// hint has ~Y — the table's triangle tile (235,61).
+#[test]
+fn the_hint_icons_come_from_the_specialchar_table() {
+    let font = test_font();
+    let textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).collect();
+    // The codename page's hint 0x216 = "~A Select  ~Y Create  ~V Scroll  ~B Back" [L USATxt.dat].
+    let mut fe = FrontEnd::new();
+    fe.page = Page::Codename;
+    let frame = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let ti = textures.iter().position(|(h, _)| *h == 0x0300_0075).unwrap() + 1;
+    let mut cross = false;
+    let mut triangle = false;
+    for run in &frame.runs {
+        if run.0 != ti { continue; }
+        for vtx in &frame.v[run.2 as usize..(run.2 + run.3) as usize] {
+            // The uv rect is normalized by the test texture's 256 pitch.
+            let (u, v) = (vtx.uv[0] * 256.0, vtx.uv[1] * 256.0);
+            if (u - 235.0).abs() < 0.6 && (v - 1.0).abs() < 0.6 { cross = true; }
+            if (u - 235.0).abs() < 0.6 && (v - 61.0).abs() < 0.6 { triangle = true; }
+        }
+    }
+    assert!(cross, "the ✕ hint icon is specialchar's (235,1,19×19) tile [M 0x2dd8d8:0] — the letter-X symptom");
+    assert!(triangle, "the △ hint icon is specialchar's (235,61) tile [M 0x2dd8d8:16]");
+}
+
+/// The title's legal block wraps inside its plate (50,332,540×108) and every line is centred at the
+/// plate's centre x=320 [L the main agent's captures: the raw run went off the right edge]; and "©"
+/// lays out as ONE glyph (the CP-1252 decode + a char walk — the byte walk drew C2+A9 = "Â©").
+#[test]
+fn the_legal_line_wraps_inside_its_plate_and_keeps_the_copyright() {
+    let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
+    let Some(lang) = iso_lang(&iso) else { panic!("USATxt.dat must parse") };
+    let legal = lang.bind(0x375).unwrap_or_default();
+    assert!(legal.contains('\u{a9}'), "the legal line holds © [M the CP-1252 0xA9 byte]");
+    let font = iso_font(&iso);
+    let lines = nf_view::menu::wrap_px_for_test(&legal, &font, 500.0);
+    assert!(lines.len() >= 3, "the legal block wraps to several lines (got {})", lines.len());
+    for line in &lines {
+        let w = font.layout(line, 0.0, 0.0).1;
+        assert!(w <= 500.0, "legal line {line:?} is {w}px wide, past the 540px plate");
+    }
+    // One glyph for ©: the char walk maps U+00A9 to the font's own 0xA9 glyph, never two glyphs.
+    let (placed, _) = font.layout("\u{a9}", 0.0, 0.0);
+    assert_eq!(placed.len(), 1, "© is one glyph (the byte walk drew C2 A9 = Â©)");
+    assert_eq!(font.glyphs[placed[0].glyph].code, 0xa9);
+}
+
+/// The difficulty and mission descriptions wrap inside their 540px plates [L the captures: the
+/// single-line descriptions ran off the right edge].
+#[test]
+fn the_descriptions_wrap_inside_their_plates() {
+    let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
+    let Some(lang) = iso_lang(&iso) else { panic!("USATxt.dat must parse") };
+    let font = iso_font(&iso);
+    let b = |id: u32| lang.bind(id).unwrap_or("");
+    for id in menu::DIFFICULTY_DESCS.iter().copied().chain(menu::CAMPAIGN.iter().map(|c| c.2)) {
+        for line in nf_view::menu::wrap_px_for_test(b(id), &font, 500.0) {
+            let w = font.layout(&line, 0.0, 0.0).1;
+            assert!(w <= 500.0, "description {id:#x} line {line:?} is {w}px wide, past the plate");
+        }
+    }
+    // Sister: the wraps cover the whole string (no words dropped).
+    let words = |s: &str| s.split_whitespace().count();
+    let d = b(0x100_0007);
+    let total: usize = nf_view::menu::wrap_px_for_test(d, &font, 500.0).iter().map(|l| words(l)).sum();
+    assert_eq!(total, words(d), "wrapping keeps every word");
 }

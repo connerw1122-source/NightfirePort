@@ -281,3 +281,78 @@ mod tests {
         assert_eq!((n, o.time), (7, 10.0));
     }
 }
+
+/// The facial state script tables [D ACTION.ELF .data 0x2c6ea8/0x2c6ec0, read via the ELF symbols]:
+/// `AnimFacialUpdate` (0x1be310) appends table[0] as the idle face script (marker 0xe0000000) and
+/// table[4] as the blink script (marker 0xe0000001); the gender select is bit 10 of the anim
+/// object's +0x58 flags word. Each hash is an animation script (prefix 06).
+pub const MALE_FACIAL_STATE_ANIMS: [u32; 5] = [0x0600_00f8, 0x0600_00f9, 0x0600_00f5, 0x0600_00f6, 0x0600_00f3];
+pub const FEMALE_FACIAL_STATE_ANIMS: [u32; 5] = [0x0600_036d, 0x0600_036f, 0x0600_036a, 0x0600_036b, 0x0600_0370];
+
+/// One facial script slot's contribution: the playing sequence's evaluated frame (the sAnimSeq's
+/// +0x84 buffer [M `AnimSeqNew` 0x1c7248 / `AnimFrameSet` 0x1c75a0]) — for a face track the 22
+/// channels ARE the morph weights, which `AnimFacialBlend` (0x1be648) reads through
+/// `script+0x54 → seq+0x84`.
+///
+/// `facial_weights` samples a face-track sequence at script time `time` the way the sequence
+/// player does (`script_frame`'s window → frame = time − first + 1; `AnimFrameCopy` evaluates
+/// each channel at the integer frame, the fractional part lerps f/f+1 — [S] for the weights
+/// buffer: `AnimFrameBlend`'s float-path lerp; the bone path's overshoot clamp/slerp does not
+/// apply to scalars). `count` = the skin's facial count (disc +0x12).
+pub fn facial_weights(seq: &Sequence, time: f32, count: usize) -> Option<Vec<f32>> {
+    if count == 0 || seq.channels.len() < count { return None; }
+    let (q, f) = script_frame_of(seq, time)?;
+    let last = seq.frames.max(1) as u32;
+    let f0 = (f.floor() as u32).clamp(1, last);
+    let frac = (f - f.floor()).clamp(0.0, 1.0);
+    let mut w: Vec<f32> = (0..count).map(|c| seq.value(c, f0)).collect();
+    if frac > 0.0002 && f0 < last {
+        for (c, v) in w.iter_mut().enumerate() {
+            let nxt = seq.value(c, f0 + 1);
+            *v += (nxt - *v) * frac;
+        }
+    }
+    let _ = q;
+    Some(w)
+}
+
+/// The covering opcode-0 window and fractional frame for a sequence played from script time
+/// `time` from 1 (the `script_frame` arithmetic against a bare sequence: the whole sequence is
+/// the window, frame = time, clamped to the length — `AnimSeqTick` holds the last frame).
+fn script_frame_of(seq: &Sequence, time: f32) -> Option<(u32, f32)> {
+    let last = seq.frames.max(1) as f32;
+    let f = if time < 1.0 { 1.0 } else { time.min(last) };
+    Some((seq.hashcode, f))
+}
+
+/// `AnimFacialBlend` (0x1be648) over the three facial script slots and the anim object's eye/lid
+/// bytes (+0x97, +0x98): slot 0 (marker 0xe0000000, the idle/base face) copies all `out.len()`
+/// weights straight; slot 1 (0xe0000001, blink) and slot 2 (0xe0000002, talk/forced) override a
+/// weight only when |w| > 0.01; then +0x97 writes indices 14 (value/255) and 13 (1 − value/255),
+/// +0x98 writes indices 11 and 12 the same way, each guarded by the same 0.01 threshold
+/// (0.003921569 = 1/255). Under a script camera (`ScriptCam != 0`) only slot 2 applies, as a
+/// straight copy. `out` = the object's morph weight array (animData+0xb0, `count` floats).
+pub fn facial_blend(out: &mut [f32], slot0: Option<&[f32]>, slot1: Option<&[f32]>, slot2: Option<&[f32]>, eyes: [u8; 2], script_cam: bool) {
+    if script_cam {
+        if let Some(s2) = slot2 {
+            for (o, &w) in out.iter_mut().zip(s2) { *o = w; }
+        }
+        return;
+    }
+    if let Some(s0) = slot0 {
+        for (o, &w) in out.iter_mut().zip(s0) { *o = w; }
+    }
+    for s in [slot1, slot2].into_iter().flatten() {
+        for (o, &w) in out.iter_mut().zip(s) {
+            if w.abs() > 0.01 { *o = w; }
+        }
+    }
+    let write_lid = |out: &mut [f32], b: u8, v_idx: usize, inv_idx: usize| {
+        let v = b as f32 / 255.0;
+        if v > 0.01 { out[v_idx] = v; }   // the value: +0x38 → 14 / +0x2c → 11
+        let inv = (255 - b as i32) as f32 / 255.0;
+        if inv > 0.01 { out[inv_idx] = inv; } // the inverse: +0x34 → 13 / +0x30 → 12
+    };
+    write_lid(out, eyes[0], 14, 13); // animObject+0x97
+    write_lid(out, eyes[1], 11, 12); // animObject+0x98
+}

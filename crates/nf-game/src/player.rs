@@ -94,6 +94,11 @@ pub struct Input {
     /// reel/hang/release [M Player_SSGrapple 0x192860's Input_Action(9, 1)]). The weapon fire path
     /// gets the same bit through its own parameter.
     pub fire: bool,
+    /// The fire-mode button's newly-pressed edge (pad ○, action 12 mask 4) [M `Player_Weapon`
+    /// 0x1a24c8: `Input_Action(slot, 0xc, 4)`]. Cycles the mode byte (`BL + w*0xC + 0x1BB`) on
+    /// records without a twin link, or switches to the twin variant (weapon_data +0x05) when set.
+    /// Keyboard: M (documented in the HUD help).
+    pub mode_switch: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1115,6 +1120,41 @@ pub fn init_level_loadout(
             if !p2k_owned(inv) { fresh_05(inv, health); req = HANDGUN as u8; }
         }
         0x0700_0007 => { party(inv, health); req = 1; }
+        // [M 0x1a7ef8 case 0x7000009]: the Nightfire loadout — `Upgrade_Weapon(6)` (the handgun,
+        // 48), `Upgrade_Weapon(0x4a)` (the Stunner, 999), `Upgrade_Weapon(0x56)` (the Decryptor, 0),
+        // **0x58 (the Q-Worm, 0)**, 0x50 (the Q-Claw, 0), `Upgrade_Weapon(0x43)` (the dart gun, 999)
+        // and 0x5b (the Shaver, 999), selecting the dart gun. The upgrade level is the boot `Upgrades`
+        // (0), so every `Upgrade_Weapon` is its base record here.
+        0x0700_0009 => {
+            init_ammo_weapons(inv, w, loaded);
+            let up = |id: u16| crate::pickup::Inventory::upgrade_weapon(id, 0, 0);
+            equip(inv, w, up(6), 0x30, loaded);
+            equip(inv, w, up(0x4a), 999, loaded);
+            equip(inv, w, up(0x56), 0, loaded);
+            equip(inv, w, 0x58, 0, loaded);
+            equip(inv, w, 0x50, 0, loaded);
+            equip(inv, w, up(0x43), 999, loaded);
+            equip(inv, w, 0x5b, 999, loaded);
+            req = up(0x43) as u8;
+        }
+        // [M 0x1a7ef8 cases 0x700000a/0x700000b]: `Player_RamLoad` keeps the carry and re-selects the
+        // saved weapon; when the handgun record is unowned the 0x0700009 loadout re-runs (the island's
+        // Q-Worm arrives here — the user's "no Q-Worm" symptom had no grant at all).
+        0x0700_000a | 0x0700_000b => {
+            req = saved_weapon;
+            if !p2k_owned(inv) {
+                init_ammo_weapons(inv, w, loaded);
+                let up = |id: u16| crate::pickup::Inventory::upgrade_weapon(id, 0, 0);
+                equip(inv, w, up(6), 0x30, loaded);
+                equip(inv, w, up(0x4a), 999, loaded);
+                equip(inv, w, up(0x56), 0, loaded);
+                equip(inv, w, 0x58, 0, loaded);
+                equip(inv, w, 0x50, 0, loaded);
+                equip(inv, w, up(0x43), 999, loaded);
+                equip(inv, w, 0x5b, 999, loaded);
+                req = up(0x43) as u8;
+            }
+        }
         0x0700_0008 => {
             req = saved_weapon;
             if !p2k_owned(inv) { party(inv, health); req = 1; }

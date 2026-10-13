@@ -408,8 +408,9 @@ fn menu(h: &mut Hud, dev: &Dev, scene: &Scene) {
             y += DESC_H + 1.0;
         }
     }
-    // Footer hint (compact, ASCII).
-    h.text(Anchor::Left, font, 69, "up/dn ent click F2", PANEL_X, y, false, [0.55, 0.55, 0.55, 1.0], false);
+    // Footer hint (compact, ASCII). The fire-mode key (the user chose B): B = the game's ○
+    // (`Player_Weapon` 0x1a24c8's action 12) — the twin/mode switch (fix-weapon-modes).
+    h.text(Anchor::Left, font, 69, "up/dn ent click F2  B=weapon mode", PANEL_X, y, false, [0.55, 0.55, 0.55, 1.0], false);
 }
 
 /// The menu items: (label, one-line description of what to watch for, action). B-9: descriptions added so each
