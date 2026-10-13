@@ -6489,3 +6489,6 @@ the theme: the game's gadget fires are HELD-fire systems and the port had them p
 - Tests: gadget_grapple_user_spot (2), gadget_grapple_live + gadget_laser_live updated to the held
   forms, the gadget unit tests (polarity/bolt/range), models_misc_live census minus 0x3a/0x3f.
   Report: docs/reports/fix-gadgets2.md.
+- Suite record: the only failures are the 3 allowed `disc_golden` (the slim ISO's trimmed MUSIC
+  entries) and the misc census golden + teeth, re-pinned/re-armed in the same session (green on
+  rerun: models_misc_live 10/10).
