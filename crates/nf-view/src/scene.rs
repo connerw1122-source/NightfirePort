@@ -502,6 +502,17 @@ pub struct Cel {
     /// to cel+0x40..0x5F) — and to −500.0 for 0xC047. `Player_InWater` 0x195e50 and the swim substate
     /// clamp read it, and `Player_Collision` skips gravity below it.
     pub water: f32,
+    /// `cel+0x98` (s16): the room's reverb environment [M 0x1d00c0, fix-room-sound]. `parseentity_fixup_entity`
+    /// writes 0x9898 (s16 −26472, the IOP's underwater sentinel) for flag word 0xC023 and placement param 9
+    /// (`level_tag+0x50`, a u16 with no mask or clamp) for 0xC047; a cel without the fixup keeps the 0x98
+    /// allocator fill in both bytes, which reads back as the same 0x9898 sentinel [L ee_start_05.bin: the
+    /// untouched cel bytes at +0xa4..0xaf are 0x98]. `Sound_UpdateListeners` 0x1dd278 sends it to
+    /// `SFXSetEnvironment` from the active viewer's cel every frame.
+    pub env: i16,
+    /// `cel+0x3c & 0x10000000` [M 0x1d00c0]: the underwater flag — placement param 3 (`level_tag+0x38`,
+    /// a full u32) != 0, written for both room-cel classes. `Sound_UpdateListeners` ORs it with `env >= 20`
+    /// (a signed s16 compare) into `SFXSetEnvironment`'s underwater argument.
+    pub underwater: bool,
 }
 
 /// The runtime cel graph for the portal visibility walk (fix-perf-level, G-016's portal half).
@@ -598,6 +609,9 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
                 else if (p.index as usize) < map.objects.len() { Some((mi, p.index as usize)) } else { None };
             let is_main = Some(mi) == main;
             let idx = cells.len();
+            // The raw param values: the fixup reads param 3 (`level_tag+0x38`) as a full u32 and
+            // param 9 (`level_tag+0x50`) as a u16 — neither through the low-byte view of `param`.
+            let param32 = |k: u32| p.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
             match obj {
                 Some((om, oi)) => {
                     let o = &level.maps[om].objects[oi];
@@ -609,8 +623,13 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
                             let b = [param(6), param(7), param(8)];
                             if b == [0, 0, 0] { a0 } else { b }
                         } else { a0 };
+                        // `parseentity_fixup_entity` 0x1d00c0: +0x98 = 0x9898 for 0xc023 (the
+                        // underwater sentinel), param 9 as a raw u16 for 0xc047; the 0x10000000
+                        // flags bit (the underwater flag) = param 3 != 0, both classes.
+                        let env = if flags16 == 0xc023 { -0x6768i16 } else { param32(9) as u16 as i16 };
                         rooms.push(Cel { min: o.min, max: o.max, ambient: [a0, a1], zone: if flags16 == 0xc047 { param(5) } else { 0 },
-                            water: if flags16 == 0xc023 { o.max[1] } else { -500.0 } });
+                            water: if flags16 == 0xc023 { o.max[1] } else { -500.0 },
+                            env, underwater: param32(3) != 0 });
                         room_to_cell.push(Some(idx));
                     }
                 }
