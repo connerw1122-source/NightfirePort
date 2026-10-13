@@ -8884,3 +8884,64 @@ Suite: nf-game+nf-formats+nf-audio 326 passed / 3 failed (the sanctioned disc_go
 nf-view 482 passed / 0 failed (152 binaries; portal_live re-run to completion after a chunk
 timeout). Left: the `--fps` pacing/present-mode path and the interpolation's visual quality need
 the main agent's GPU render (live checks 1–3 in the report).
+
+---
+Task: fix-nav-remainder
+Agent: fix-nav-remainder worker
+Branch: s/fix-nav-remainder (from origin/master 0cda458)
+
+Work Log:
+- Sandbox kept (repo, work/, onfoot ISO, nf-queue present); token refreshed, master pulled,
+  branch created. Starting G-027's remainder in the order the task gives: the door/kick/action
+  nodes (0x81-0x84) first, then GoToGoalPosition 0x63 (+SetGoalToCloserPosition /
+  SetGoalToDroneWithLosToOpponent), then the rest (+0x31C drone-ahead flags/state 0x5E,
+  obstacle avoidance, EnemyMission kind-8 paths, PatrolTalk RNG, boundary push-out).
+
+Stage Summary:
+- (in progress)
+
+---
+Task: fix-nav-remainder
+Agent: fix-nav-remainder worker
+Branch: s/fix-nav-remainder
+
+Work Log:
+- Census (ephemeral test over all 20 story levels' nav data [D]): kick nodes (flag 4) exist ONLY on
+  0700000c ("DoorOpen" kind-2 path, the user's complained level) and 07000012 (Default Navigation
+  n144/n248 + Patrol Path - C); action (8) and fiddle (0x40) nodes exist NOWHERE on the disc;
+  ally-wait (0x20) + the four Mayhew-line flags (0x10000..) exist only on 07000001's kind-8
+  "Mayhew Route".
+- Reproduced first (tests/nav_kick_live.rs, NF_ISO): a 07000012 guard driven by GoToGoalPosition
+  (0x63) through the kick pair n144→n248 (route plan asserted) never entered DSTATE_KickObject
+  and the script-0x0600_05bb ScriptPlayer (#662, placement 662) never triggered — the port had NO
+  kick/action/fiddle/ally-wait handling in `ReachedDestNode`'s dispatch, and `move_to_goal` (0x63's
+  route half) skipped the dispatch entirely.
+- Ported (crates/nf-game/src/drone.rs): `route_reached_door` → `route_reached_special` = the full
+  `NDrone2_ReachedDestNode` (0x153358) dispatch — door 2 (as before), kick 4 (bind + first-crossing
+  node flag 0x8000 → 0x82), action 8 → 0x83, ally-wait 0x20 (switch_channels[0x99] gate) → 0x21
+  with the return state in +0x5A2, fiddle 0x40 → 0x84, and the Mayhew lines (0x44-0x47 speeches);
+  the dispatch now also runs in `move_to_goal` (LinkCreep_Handler serves every followed route).
+  New DSTATE arms: KickObject 0x82 (0x1684c0: kick anim 0x4e, timer-C re-kick at +2, msg 0x20 →
+  sfx 0x28 + `NDrone2_KickObject` 0x14aa00 → `SP_UnPause` 0x1dca58 + back to +0x5A6), ActionAnim
+  0x83 (0x168628: plays the start script +0x554 as SetScript(+0x554,10,0x32,0x1e,0,5,0); done →
+  0x6f), StandFiddle 0x84 (0x1687c0: anim 0x23, timer C at +5 → +0x5A6). `Drones::tick` builds the
+  kick-node → ScriptPlayer binding (`NDrone_InitKickNodes` 0x139ce0: nearest class-0x1b object whose
+  script is 0x0600_05bb; port: nearest `Scripts::players` entry carrying that script), keeps the
+  nodes' once-only 0x8000 flags in a shared set, and services the kick outbox (`activated = true` +
+  the current script's pause cleared). Fields on their own lines (merge lesson 4).
+- Two harness bugs found while reproducing: the tick's route-path lookup now falls back to
+  `croute` (0x63's repositioning route, not just the patrol `route`), and the "next node" for the
+  dispatch is taken from the reached node's position in the route list (the port's follow advances
+  the index inside the same call; the game reads it before SetupNextNode).
+- Green: tests/nav_kick_live.rs 2 drive/data tests — 07000012: the guard enters 0x82 once at the
+  pair, the grunt sfx 0x28 fires, and the SP leaves its wait (state 0 → 2, plays 0x0600_05bb, and
+  self-deletes via its stay flag — the game's SP_Activate trigger semantics); 0700000c: the pair is
+  adjacent, binds nothing (no 0x0600_05bb SP in the level [D]) and a start guard does pin the
+  DoorOpen path (in-play route to the pair is direct — documented, live check in the report).
+
+Stage Summary:
+- The door/kick/action node item of G-027 is ported and test-pinned (kick end-to-end on 07000012;
+  action/fiddle states ported with zero disc users per the census). Still open from G-027:
+  +0x31C drone-ahead (0x5E only via NoBunching), obstacle avoidance, EnemyMission kind-8 assign,
+  PatrolTalk's RNG, the boundary push-out's suggested push; the 0x63 goal setters were already
+  ported (verified: set_goal_to_closer_position 0x155e10 / set_goal_to_drone_with_los 0x1543f8).
