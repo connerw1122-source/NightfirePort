@@ -515,7 +515,6 @@ impl FrontEnd {
             self.unlocked[self.mission + 1] = true;
         }
         self.flow.page = PAGE_RESULTS;
-        self.flow.push_state(ST_FADE_HOLD); // [M 0x182c60:74 pushes a fade]
         // Mission_Update 0x182c60 case 6 sets `LevelToEndTo` from the finished level: the outro
         // code 0x073000xx for the levels with an outro (compiled lui/ori switch at 0x182e60-0x182eb4
         // [L ee_snapshot]; 0x7000016 → 0x7300017 is the one non-identity entry), the front-end map
@@ -526,6 +525,9 @@ impl FrontEnd {
         let end_to = if outcome == Outcome::Complete { outro_for(self.flow.current_level) } else { FRONTEND_LEVEL };
         self.requested_level = Some(end_to);
         self.flow.reset_map_level_to_load(end_to, false, false);
+        // The game's order [M 0x182c60 case 4]: `ResetMap_LevelToLoad(LevelToEndTo, 0, 0)` pushes the load
+        // first, THEN `GameFlow_PushState(60.0, 7, …)` puts the fade on top, so the fade plays before the load.
+        self.flow.push_state(ST_FADE_HOLD);
         self.page = Page::Results;
         self.cursor = 0;
     }
