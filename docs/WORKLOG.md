@@ -6783,3 +6783,15 @@ Work Log:
 
 Stage Summary:
 - Branch s/fix-fusebox-cut pushed (final 87f9b9d). The fusebox cut is hit-driven through the real bullet path; the cutting weapon is the disc's "Laser" (0x4E/0x4F). Live checks (wire-sphere radius [S] 0.5, the render at the guard-room box, the 07000008 single-registration confirmation) listed in the report.
+
+---
+Task ID: 045l-fix-searchlight-alarm
+Agent: worker (fix-searchlight-alarm session)
+Task: fix-searchlight-alarm — 07000006 searchlights don't raise the alarm; guards shoot too soon on sighting; spotlights look weird (branch s/fix-searchlight-alarm)
+
+Work Log:
+- Session started 07:46 UTC (deadline ~09:46 UTC). Setup reused (repo, work/, ISO, nf-queue worktree intact). Branch s/fix-searchlight-alarm created from origin/master (12bae32); pushed as checkpoint.
+- (in progress)
+
+Stage Summary:
+- (in progress)
