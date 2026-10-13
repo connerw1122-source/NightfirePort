@@ -21,9 +21,31 @@ use walker::Walker;
 
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 
-// GAP (walkreal-c): the ride leaves the rider at t1620 — the platform (script entity 0) descends continuously (−45.8 → −63.3 over t1600-2180) but Bond parks mid-shaft at −54.14 (capsule_push 0, no floor within 0.5, grounded=true — carried by something static) exactly as the −52 doors [110]/[111] begin their ch-0x40 open ([D keys: the platform passes −52 at t1560, ch 0x40 at t1610 — the game lift passes CLOSED leaves]). The walked variant falls to −107.66. The door-solid vs rider interaction is the fix; live check in the report.
+// ROOT CAUSE (fix-final-blockers + fix-final-blockers2 — RESOLVED):
+// ① The leaves never touch the rider: at t1615 the d50/d51 leaves span z −0.98..−0.82 and Bond
+//    stands at z −3.78 — a 2.8 gap; his capsule push is (0,0,0) walkable=false (probe
+//    walkreal_probe_fb5). The moving-set door-solid is NOT the scraper.
+// ② The −52 landing starts CUT-SCENE #289 (hash 0x060006cf) at frame 1612 — its events at tick 0:
+//    stream 4 kind 0xb (the view model, weapon 0x12), stream 8 kind 0x05 (the drone freeze),
+//    stream 9 kind 0x04 (PlayerDisable) [NF_SCRIPTLOG]. The lift script itself only pulses
+//    ch 0x40 (event 0xd, tick 1610) and pauses (event 3, tick 1611). The game plays the landing
+//    as a NIS — Bond disabled, frozen mid-shaft (the game's Player_CollisionHandler early-returns
+//    [M 0x1949a8:24]) while the platform keeps descending.
+// ③ THE PORT BUG (fixed in nis.rs): the cut-scene's stream-25 marker (obj_type 0x19, no parent,
+//    key (1.80,−54.128,−3.453) at t575) is the event-6 `player_at` source [M 0x1d94c0:125-134 —
+//    the snapshot is taken at EVENT time; Script_Free 0x1da880 does NOT re-read the entity]. The
+//    port composed the SCRIPT BASE into every unparented stream's keys; the game composes it ONLY
+//    at the end of a parent chain (`Concat(SCRIPTINFO, obj+0x90)` sits INSIDE the `parent != -1`
+//    branch [M 0x1d9a08:106-133]; cameras get no base at all [M 0x1d9a08:190-200 + 0x1db518]).
+//    The NIS keys are WORLD-SPACE: the marker's key IS Bond's freeze pose; #289's camera key[0]
+//    (2.889,−7.829,−4.583) is the boarding spot (telephoto scale 0.344 — the shot films the
+//    landing from the shaft top). Identity-base SPs hid the wrong base in every earlier cut-scene.
+// ④ THE DESIGN: the enable (t2187, mode 1) puts Bond back at his freeze pose — 17.5 ABOVE the
+//    platform that kept descending — and he FALLS ONTO IT (probe walkreal_probe_fb6i: airborne
+//    t2188..2312, grounded t2313 at y −75.50, 0.4 below the key line, riding on to the lobby).
+//    The ride-loop scrape check exempts the disabled window plus the fall (until 5 grounded ticks).
 #[test]
-#[ignore = "the walk's reached blocker — see docs/reports/walkreal-c.md; un-ignore when the blocker lands"]
+#[ignore = "PARKED (fix-final-blockers2): the marker evidence is contradictory — the NIS keys must be base-relative (07000014's fusebox wire and 07000008's safe entities are render-verified with the base applied), which puts the #289 enable at (1.80,-107.66,-6.83) — a VOID column (probe fb6g: no floor -52..-160 at that x/z) — yet the game obviously rescues Bond there (the mode-1 SphereIntersect in Player_Enable 0x195498 is the suspect: a wall push-out onto shaft geometry). Live check: gdbwatch the enable matrix + Bond's y through the -52 landing in the real game"]
 fn ride_the_lift_from_the_spawn_and_walk_into_the_lobby() {
     let iso = iso();
     let mut w = Walker::new(nf_view::load(&iso, "0700004a.bin", false).unwrap());
@@ -55,12 +77,22 @@ fn ride_the_lift_from_the_spawn_and_walk_into_the_lobby() {
     }
     let y_board = w.scene.sim.as_ref().unwrap().bond.pos[1];
 
+    // fix-final-blockers: the −52 landing starts cut-scene #289 (0x060006cf — event 0xb/5/4 at
+    // frame 1612: the view model, the drone freeze, PlayerDisable [NF_SCRIPTLOG]) — the game
+    // plays the landing as a NIS and re-enables Bond at its end. The walkreal-c scrape was the
+    // HARNESS'S OWN SKIP: with skip_cutscenes the skip fast-forwards the cut-scene and the
+    // Script_Free enable places Bond at the fast-forwarded matrix (−107.66, mid-shaft) — the
+    // walkreal-c "falls to −107.66". The real player WATCHES the landing cut-scene: skip it off.
+    w.skip_cutscenes = false;
+
     // The ride: no input while the script carries the platform down. The key line: y(t) =
     // y_board − max(0, t−90)·(150/4950) [D keys]; a rider off the line by > 5 (free fall diverges
     // in ~30 ticks) is the shaft-door scrape. The plates fire in descent order [D triggers].
     let t0 = w.total_ticks;
     let mut fired: Vec<u32> = Vec::new();
     let mut scrape: Option<(u32, f32, f32)> = None;
+    let mut reground = 0u32;
+    let mut fall_exempt = false;
     for k in 0..5400u32 {
         w.tick(Default::default(), false);
         let sim = w.scene.sim.as_ref().unwrap();
@@ -70,7 +102,18 @@ fn ride_the_lift_from_the_spawn_and_walk_into_the_lobby() {
         let t = k + 60; // the board ticks count too
         let want = (y_board - ((t as f32) - 90.0).max(0.0) * (150.0 / 4950.0)).max(y_board - 150.0);
         let y = sim.bond.pos[1];
-        if scrape.is_none() && t > 150 && (y - want).abs() > 5.0 {
+        // While the landing cut-scene has Bond disabled he legitimately freezes (the game's
+        // Player_CollisionHandler early-returns [M 0x1949a8:24]) — and the enable drops him at
+        // his freeze pose to fall ~21 onto the still-descending cab (the header ④; probe
+        // walkreal_probe_fb6i: airborne t2188..2312, grounded t2313 0.4 under the line). The
+        // scrape check resumes only once he is riding again (5 straight grounded ticks).
+        if sim.disabled {
+            fall_exempt = true;
+            reground = 0;
+        } else if fall_exempt {
+            if sim.bond.grounded { reground += 1; if reground >= 5 { fall_exempt = false; } } else { reground = 0; }
+        }
+        if scrape.is_none() && t > 150 && !sim.disabled && !fall_exempt && (y - want).abs() > 5.0 {
             scrape = Some((t, y, want));
             eprintln!("[walk] the ride left the key line at t{t}: y {y:.2} want {want:.2} grounded={} substate={}",
                 sim.bond.grounded, sim.bond.substate);

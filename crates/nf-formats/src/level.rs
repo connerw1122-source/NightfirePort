@@ -103,6 +103,9 @@ pub struct LevelMap {
     /// Ambient radiators (block 0x26; main map). `Light_SetAmbientRadiators` 0x1caeb8 creates one
     /// permanent kind-0 light per entry (fix-lighting).
     pub radiators: Vec<LightRadiator>,
+    /// Particle emitter defs (block 0x30; `Emitter_LoadDefs` 0x17ab40 fills one global hashtable —
+    /// the port merges every map's block into the Level's list; the sim resolves by hash).
+    pub emitter_defs: Vec<EmitterDef>,
 }
 
 /// One block-0x26 entry: 8 floats [x, y, z, radius², pad, r, g, b] with r/g/b 0-1
@@ -146,6 +149,97 @@ impl MapSound {
             let o = 4 + 32 * k;
             Ok(MapSound { id: b.u32(o + 4)?, pos: [b.f32(o + 8)?, b.f32(o + 12)?, b.f32(o + 16)?], param: b.f32(o + 0x14)?, radius: b.f32(o + 0x18)?, inner: b.f32(o + 0x1c)? })
         }).collect()
+    }
+}
+
+/// One block-0x30 emitter def (`parsemap_block_particles` 0x1d2060 → `Emitter_LoadDefs` 0x17ab40; the
+/// per-map .bin's block 0x30, docs/systems/levels.md). File record: u32 tag (low byte must be 4, else
+/// the parse aborts; tag>>8 = the blend flag def+0x3c), u32 name hash (the hashtable key a placement's
+/// param 0 looks up), u32 texture hash (-1 → 0), u32 model/celglist hash (-1 → 0), u16 max particles,
+/// u16 batch spawn count, then 10 floats in FILE order — the game scatters them into the 0x40-byte
+/// header as mem +0x30 (sprite size), +0x0c, +0x10, +0x14, +0x18, +0x1c, +0x20, +0x24, +0x28, +0x2c
+/// [M 0017ab40:87-131: the read locals map to the struct by stack offset] — then u32 key count and
+/// that many 5-float colour keys, each stored (r·0.5, g·0.5, b·0.5, a, t) [M 0017ab40:136-149].
+#[derive(Clone, Debug, PartialEq)]
+pub struct EmitterDef {
+    pub hash: u32,
+    /// def+0x04: the sprite texture hash (-1 → 0) — the font-slot id `psiFont_SetTexture` binds
+    /// [M Emitter_Draw 0x17b708 path A].
+    pub texture: u32,
+    /// def+0x08: the per-particle model (celglist) hash (-1 → 0); 0 = the sprite path.
+    pub model: u32,
+    /// def+0x3c (tag >> 8): 0 = normal alpha blend, else additive [M 0x17b708:15 psiSetUpColourBlend].
+    pub blend: u16,
+    /// def+0x38: the particle slot count [M 0x17ae00 alloc count·0x2c + 0x150].
+    pub max: u16,
+    /// def+0x3a: the spawns per tick cap [M 0017b080 the batch decrement].
+    pub batch: u16,
+    /// def+0x0c/+0x10: lifetime base + range (seconds of age the slot lives).
+    pub life_base: f32,
+    pub life_var: f32,
+    /// def+0x14: the gravity multiplier (vel.y += dt · g · −9.8).
+    pub gravity: f32,
+    /// def+0x18/+0x1c: launch speed base + range.
+    pub speed_base: f32,
+    pub speed_var: f32,
+    /// def+0x20/+0x24: launch pitch base + range (radians off the emitter's up).
+    pub pitch_base: f32,
+    pub pitch_var: f32,
+    /// def+0x28/+0x2c: launch yaw base + range.
+    pub yaw_base: f32,
+    pub yaw_var: f32,
+    /// def+0x30: the sprite world size [M 0x17b708:15 psiDrawParticleList size arg].
+    pub size: f32,
+    /// def+0x40: the colour-over-life keys, rgb pre-halved exactly as stored [M 0017ab40:136-149].
+    pub keys: Vec<[f32; 5]>,
+}
+
+impl EmitterDef {
+    /// `Emitter_LoadDefs` 0x17ab40 minus the hashtable (the defs come back keyed by hash upstream).
+    pub fn parse_block(payload: &[u8]) -> crate::buf::Result<Vec<EmitterDef>> {
+        let b = crate::buf::Buf(payload);
+        let n = b.u32(0)? as usize;
+        let mut out = Vec::new();
+        let mut o = 4usize;
+        for _ in 0..n {
+            let tag = b.u32(o)?;
+            if tag & 0xff != 4 { break; } // [M 0017ab40:89-91] any other type byte aborts the load
+            let (hash, texture, model) = (b.u32(o + 4)?, b.u32(o + 8)?, b.u32(o + 12)?);
+            let max = b.u16(o + 16)?;
+            let batch = b.u16(o + 18)?;
+            // The 10 floats in file order land at mem +0x30, +0x0c, +0x10, +0x14, +0x18, +0x1c, +0x20,
+            // +0x24, +0x28, +0x2c [M 0017ab40:92-108 local-to-struct mapping].
+            let f = |k: usize| b.f32(o + 20 + 4 * k);
+            let size = f(0)?;
+            let (life_base, life_var, gravity, speed_base, speed_var, pitch_base, pitch_var, yaw_base, yaw_var) =
+                (f(1)?, f(2)?, f(3)?, f(4)?, f(5)?, f(6)?, f(7)?, f(8)?, f(9)?);
+            let keycount = b.u32(o + 60)? as usize;
+            let keys = (0..keycount).map(|k| {
+                let ko = o + 64 + 20 * k;
+                Ok([b.f32(ko)? * 0.5, b.f32(ko + 4)? * 0.5, b.f32(ko + 8)? * 0.5, b.f32(ko + 12)?, b.f32(ko + 16)?])
+            }).collect::<crate::buf::Result<Vec<_>>>()?;
+            out.push(EmitterDef {
+                hash, texture: (texture as i32 == -1).then_some(0).unwrap_or(texture),
+                model: (model as i32 == -1).then_some(0).unwrap_or(model),
+                blend: (tag >> 8) as u16, max, batch, size,
+                life_base, life_var, gravity, speed_base, speed_var, pitch_base, pitch_var, yaw_base, yaw_var, keys,
+            });
+            o += 64 + 20 * keycount;
+        }
+        Ok(out)
+    }
+
+    /// `ColourGetValue` 0x17a938: the last key with t ≤ x + 0.001; before the first → key0, past the
+    /// last → the last key, else the lerp of the bracketing pair [M 0017a938:17-47]. Returns rgba floats.
+    pub fn colour_at(&self, x: f32) -> [f32; 4] {
+        let (k, t) = (0.001f32, &self.keys);
+        let Some(last) = (0..t.len()).rev().find(|&i| t[i][4] <= x + k) else {
+            return t.first().map(|c| [c[0], c[1], c[2], c[3]]).unwrap_or([0.0; 4]);
+        };
+        if last + 1 >= t.len() { return [t[last][0], t[last][1], t[last][2], t[last][3]]; }
+        let (a, b) = (&t[last], &t[last + 1]);
+        let frac = ((x - a[4]) / (b[4] - a[4])).clamp(0.0, 1.0);
+        [0, 1, 2, 3].map(|i| a[i] * (1.0 - frac) + b[i] * frac)
     }
 }
 
@@ -210,6 +304,7 @@ impl Level {
             let mut portals = Vec::new();
             let mut lod = Vec::new();
             let mut radiators = Vec::new();
+            let mut emitter_defs = Vec::new();
             for blk in &mf.blocks {
                 match blk.id {
                     0x2e => pending_coll = Some(crate::collision::Collision::parse(blk.payload(data))?),
@@ -233,10 +328,13 @@ impl Level {
                     id::LOD => lod = blk.payload(data).chunks_exact(8)
                         .map(|c| i32::from_le_bytes(c[..4].try_into().unwrap())).collect(),
                     0x26 => radiators = LightRadiator::parse_block(blk.payload(data))?,
+                    // `parsemap_block_particles` 0x1d2060 → `Emitter_LoadDefs` 0x17ab40 (block id 0x30,
+                    // parsemap_handle_block_id 0x1d1020 case 0x30). The defs join the Level-wide table.
+                    0x30 => emitter_defs.extend(EmitterDef::parse_block(blk.payload(data))?),
                     _ => {}
                 }
             }
-            maps.push(LevelMap { entry, kind: e.kind, name: e.name.clone(), textures, objects, placements, ai_network, sounds, path_data, portals, lod, radiators });
+            maps.push(LevelMap { entry, kind: e.kind, name: e.name.clone(), textures, objects, placements, ai_network, sounds, path_data, portals, lod, radiators, emitter_defs });
         }
         let mut by_hash = HashMap::new();
         for (m, map) in maps.iter().enumerate() {

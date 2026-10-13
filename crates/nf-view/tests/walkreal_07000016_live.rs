@@ -28,9 +28,71 @@ fn carry(on: &[u32]) -> RamSave {
     RamSave::capture(&Default::default(), 0, &nf_game::pickup::Inventory::level_start(0x73, 34), &ch)
 }
 
-// GAP (walkreal-c): the corridor walk stalls at door[7] (4.3,−0.1,−74.2, unlocked, flags 0x3, locked_flag 0) — the E reaches (use-sphere d² 3.36 < 6.25) and Doors::activate passes its guards, yet the leaf never moves (14 use_door calls, 840 ticks). A kind-2 slide at 1.0 BELOW the approach floor; door[0] on 07000015 (same kind, same height) opens. Root cause not found in the session — live check requested (docs/reports/walkreal-c.md).
+/// The landed door[7] fix, focused: the door opens on Bond's pitched E from the corridor and he
+/// walks through the leaf's span. FAIL-FIRST: on the walkreal-c branch (before the straddle
+/// walk-in landed in door.rs) the E never moved the leaf (14 use_door calls, state 0x2 — the
+/// report's blocker), and with the old x 3.5 lane the walk wedged on the sealed west half at
+/// (3.5, 0.9, −73.58) even with the door open (the walkreal-c stuck dump; the lane fix is part of
+/// this task). Sisters: the static corridor floor holds Bond throughout (grounded, no sink), and
+/// walkreal_07000012_live's doors still open (the harness's own sister).
 #[test]
-#[ignore = "the walk's reached blocker — see docs/reports/walkreal-c.md; un-ignore when the blocker lands"]
+fn door7_opens_on_bonds_e_and_bond_passes() {
+    let iso = iso();
+    let mut w = Walker::new(nf_view::load_with_carry(&iso, "07000016.bin", false, Some(&carry(&[0x47, 0x48, 0x4a, 0x54, 0xce, 0x4b]))).unwrap());
+    w.wait_enabled(3000, "the launch-centre arrival");
+    w.wait(200);
+    w.walk_route(&[("the corridor south", walker::Wp::new(4.3, 0.6, -72.5).r(1.2))]);
+    // The static floor holds him: grounded on the corridor floor for a full second.
+    for _ in 0..60 {
+        w.tick(Input::default(), false);
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert!(sim.bond.grounded, "the static corridor floor holds Bond");
+    }
+    let di = w.scene.sim.as_ref().unwrap().drones.doors.list.iter().position(|d| (d.pos[2] + 74.2).abs() < 0.5)
+        .expect("door[7] is in reach");
+    assert_eq!(w.scene.sim.as_ref().unwrap().drones.doors.list[di].state & 0x2, 0x2, "door[7] starts closed");
+    w.use_door(di, "door[7] on Bond's E");
+    // The leaf's travel: ~30 ticks at 1/30 [L] — wait it out, then assert the travelled pose.
+    for _ in 0..60 { w.tick(Input::default(), false); }
+    {
+        let sim = w.scene.sim.as_ref().unwrap();
+        let d = &sim.drones.doors.list[di];
+        assert!(d.state == nf_game::door::OPEN || d.state == nf_game::door::OPENING,
+            "door[7] opens on Bond's E (state {:#x}, pos01 {:.3}) — the walkreal-c blocker", d.state, d.pos01);
+        assert!(d.pos01 > 0.5, "the leaf travelled (pos01 {:.3})", d.pos01);
+    }
+    // Through the leaf's span (x 4.35..5.62 — the operable east half; the west half is sealed
+    // static geometry, the probe's crossing sweep).
+    w.walk_to(walker::Wp::new(4.9, -0.1, -78.0).r(1.2), "door[7] through");
+    {
+        let sim = w.scene.sim.as_ref().unwrap();
+        let p = sim.bond.pos;
+        assert!(p[2] < -75.5, "Bond passed the doorway plane (z {:.2})", p[2]);
+        assert!(sim.bond.grounded, "the floor beyond the door holds him");
+    }
+}
+
+// RESOLVED (fix-final-blockers): the walkreal-c stall at door[7] was TWO things. ① The door itself
+// opens — state 0x4 / pos01 1.00 / matrix row3 y 2.175 at the stuck dump (the walkreal-c report's
+// "state stays 0x2" predates the straddle walk-in that landed in door.rs after that report).
+// ② The stall is the ROUTE LANE: the doorway's operable half is the leaf's own span x 4.35..5.62
+// (the closed leaf's world bbox, probe walkreal_probe_fb3) and the static-only crossing sweep
+// shows x 4.4..5.5 OPEN at the door plane while x 2.8..4.2 is a SEALED wall (the corridor cel
+// mesh "Start_corridor1" carries the west filler at z −74.13 — the doorway's left leaf is fixed
+// geometry). The walkreal-c route aimed Bond at x 3.5 — into the sealed west half — and his
+// capsule wedged on it at (3.5, 0.9, −73.58) (segment_to_target 0.124 → z −74.13). The lane moves
+// to x 4.9 (through the leaf's span), the E still reaches (the door pos is the leaf's west edge).
+//
+// NEW BLOCKER (fix-final-blockers, parked): with the lane fixed the walk crosses door[7] and the
+// trench bypass (the corridor dips to −4.8 across x ≤ 7 at z −88..−102; the east lane x 8..11 is
+// a continuous −0.2 floor — the probe's ledge grid), then parks at door[0]'s approach: Bond
+// wedged east of the doorway at (5.16..5.22, 1.75..0.93, −113.63) (segment_to_target 0.102 → a
+// wall at z ≈ −114.3 east of door[0]'s leaf span x 1.84..3.11; the stuck-mitigation's hop put him
+// ON the furniture at y 1.75, grounded=false). door[0] is lock 0x24 [D] — its mask-0x04 panel
+// trigger still needs locating for the E. Next session: re-lane the approach west of x 3.1 and
+// find the 0x24 writer.
+#[test]
+#[ignore = "the walk's next blocker — door[0]'s approach (the east furniture hop); door[7] + the trench are resolved, see the header"]
 fn walk_arrival_to_the_chasers_defeat() {
     let iso = iso();
     let mut w = Walker::new(nf_view::load_with_carry(&iso, "07000016.bin", false, Some(&carry(&[0x47, 0x48, 0x4a, 0x54, 0xce, 0x4b]))).unwrap());
@@ -55,8 +117,21 @@ fn walk_arrival_to_the_chasers_defeat() {
     // 0x28) — the player's E on the panel; the stuck-mitigation presses E at each closed door.
     let route: &[(&str, walker::Wp)] = &[
         ("the corridor south", walker::Wp::new(4.3, 0.6, -72.5).r(1.2)),
-        ("door[7] through", walker::Wp::new(3.5, -0.1, -78.0).r(1.2)),
-        ("the descent", walker::Wp::new(2.5, -0.1, -95.0).r(1.2)),
+        // The operable east half of the doorway (the leaf's span x 4.35..5.62; the west half is a
+        // sealed static wall — the probe's crossing sweep). The E reaches from here too.
+        ("door[7] through", walker::Wp::new(4.9, -0.1, -78.0).r(1.2)),
+        ("the lane east", walker::Wp::new(9.0, 0.0, -80.5).r(1.3)),
+        // The trench bypass: the corridor floor dips to −4.8 across x ≤ 7 (z −88..−102); the east
+        // lane x 8..11 holds a continuous −0.2 floor past it (the probe's ledge grid). The real
+        // player keeps east; the walkreal-c lane (x 2.5) walked into the pit and wedged on its
+        // south wall at (2.56,−3.33,−102.7) (the southward segment 0.126 → z −102.83).
+        ("the east lane south", walker::Wp::new(9.5, 0.0, -100.0).r(1.6)),
+        ("the trench's west end", walker::Wp::new(4.0, 0.0, -108.0).r(1.6)),
+        // fix-final-blockers2: the old single approach (r 1.3) let the walker arrive 0.7 east and
+        // drift into the doorway's east jamb — the stuck hop put him ON the east furniture
+        // (5.16,1.75,-113.63). Hug the leaf's span (x 1.84..3.11) tightly and turn south INSIDE it.
+        ("door[0]'s west approach", walker::Wp::new(2.3, 0.0, -110.0).r(0.7)),
+        ("door[0]'s threshold", walker::Wp::new(2.3, 0.0, -113.2).r(0.7)),
         ("door[0] through", walker::Wp::new(2.0, -0.1, -119.0).r(1.2)),
         ("door[1] through", walker::Wp::new(2.0, -0.1, -132.0).r(1.2)),
         ("door[3] through", walker::Wp::new(2.0, -0.1, -147.0).r(1.2)),
