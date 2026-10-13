@@ -4292,6 +4292,30 @@ impl Drones {
             obj.map(|o| (o.centre, o.radius))
         });
         self.fuseboxes = fuseboxes;
+        // SimpleScripts (`SS_Create` 0x1a9c58): the 0xE2 placements with a non-zero key count, their
+        // keys from the main map's 0x19 blocks (map-tower2).
+        self.sss = crate::ss::SsList::create(&level.maps[m].placements, &path_blocks, |p| {
+            // The SS's collision mesh: the placement object's glist hashcode, the same resolution
+            // `Doors::create`'s closure does (the game's SS object carries its glist at create
+            // [M SS_Create 0x1a9c58]; Collide_PickObj walks the cel-linked objects).
+            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
+                else { level.maps[m].objects.get(p.index as usize) };
+            obj.map(|o| if o.hashcode == u32::MAX { 0x8000_0000 | ((m as u32) << 16) | p.index as u32 } else { o.hashcode }).unwrap_or(0)
+        });
+        // The helicopter (`Copter_Create` 0x17d340, placement 0x2F) and the locks (`Lock_Create`
+        // 0x1ae1f8, placement 0x2E) (fix-objects2). Neither draws RNG at create.
+        self.copters = crate::copter::Copter::create(&level.maps[m].placements);
+        self.locks = crate::lock::Lock::create(&level.maps[m].placements, |p| {
+            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
+                else { level.maps[m].objects.get(p.index as usize) };
+            obj.map(|o| (o.centre, o.radius))
+        });
+        // Weather: `Env_Create` (placement 0xDF, parameter 0 = drop type) and the `RainBox_Create` volumes (0x32: the
+        // glist bounds at the placement translation).
+        self.map_sounds = crate::sound::MapSounds::new(level.maps[m].sounds.clone());
+        let ps = &level.maps[m].placements;
+        let lib = level.nis.iter().map(|(&h, n)| (h, std::sync::Arc::new(n.clone()))).collect();
+        self.scripts = crate::nis::Scripts::new(lib, ps);
         // `FuseBox_Create` 0x1b0448 ends with `SP_Create(pos, rot, param 0, 0, 0x40, 0, obj,
         // FuseBox_Register 0x1b0970)` — the box's wire/lid ScriptPlayer, mode 0x40 (the preload:
         // play+update+stop → state 1), whose entity streams are the box's VISIBLE MESH (the object
@@ -4323,30 +4347,6 @@ impl Drones {
                 deleted: false,
             });
         }
-        // SimpleScripts (`SS_Create` 0x1a9c58): the 0xE2 placements with a non-zero key count, their
-        // keys from the main map's 0x19 blocks (map-tower2).
-        self.sss = crate::ss::SsList::create(&level.maps[m].placements, &path_blocks, |p| {
-            // The SS's collision mesh: the placement object's glist hashcode, the same resolution
-            // `Doors::create`'s closure does (the game's SS object carries its glist at create
-            // [M SS_Create 0x1a9c58]; Collide_PickObj walks the cel-linked objects).
-            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
-                else { level.maps[m].objects.get(p.index as usize) };
-            obj.map(|o| if o.hashcode == u32::MAX { 0x8000_0000 | ((m as u32) << 16) | p.index as u32 } else { o.hashcode }).unwrap_or(0)
-        });
-        // The helicopter (`Copter_Create` 0x17d340, placement 0x2F) and the locks (`Lock_Create`
-        // 0x1ae1f8, placement 0x2E) (fix-objects2). Neither draws RNG at create.
-        self.copters = crate::copter::Copter::create(&level.maps[m].placements);
-        self.locks = crate::lock::Lock::create(&level.maps[m].placements, |p| {
-            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
-                else { level.maps[m].objects.get(p.index as usize) };
-            obj.map(|o| (o.centre, o.radius))
-        });
-        // Weather: `Env_Create` (placement 0xDF, parameter 0 = drop type) and the `RainBox_Create` volumes (0x32: the
-        // glist bounds at the placement translation).
-        self.map_sounds = crate::sound::MapSounds::new(level.maps[m].sounds.clone());
-        let ps = &level.maps[m].placements;
-        let lib = level.nis.iter().map(|(&h, n)| (h, std::sync::Arc::new(n.clone()))).collect();
-        self.scripts = crate::nis::Scripts::new(lib, ps);
         if let Some(p) = ps.iter().find(|p| p.flags & 0xff == 0xdf) {
             let kind = p.params.iter().find(|(i, _)| *i == 0).map_or(0, |&(_, v)| v as u8);
             let boxes = level.instances(false).0.iter().filter(|i| i.placement.flags & 0xff == 0x32).map(|i| {

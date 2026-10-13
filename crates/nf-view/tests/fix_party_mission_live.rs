@@ -592,3 +592,116 @@ fn the_guards_reappear_at_their_places_after_the_kimiko_scene() {
             "drone {i} ({:#04x}) was live before the scene: re-shown, parked on a switch, or removed — not hidden while present", d.state);
     }
 }
+
+/// ── Item 7: the 07000008 safe chain works in play ───────────────────────────────────────────────
+/// Playtest: "There's a giant pillar just blocking" the missile closet (spot 152.35,43.13,-120.76:
+/// the locked GuardRoom door #122 + bolt #217 + safe door #205 [D placements] — with nothing to
+/// open them: the fusebox stand-in was invisible, the laser burn had no caller), "the gondola can't
+/// be activated" (ch 0x4A is written only by the briefcase inside the sealed safe [D #290 →
+/// Pickup_Handler 0x18e650:330-333]) and "Still can't pick up the rocket launcher" (behind the same
+/// door [D #291, id 0x2C]).
+///
+/// The game's chain [M/D]: the GuardRoom fusebox #219 (0x31, script 0x060008AD) cuts a wire on the
+/// second E → `FuseBox_Update` 0x1adfe8 writes ch 137 (param 1) → the bolt SS #217 opens and the
+/// door #122 (lock param 3 = 137) unlocks. The safe bolts #207/#208 (0x2E, record word 1) burn
+/// under the Lazer Watch 0x4E/0x4F's contacts (Lock_Update 0x1ae3d8 case 0: −3/−10 per hit at
+/// +0x104/+0x105; Lock_Unlock 0x1b0650 writes switch_channels[record+8] = 134/135 [:194-195]) →
+/// the mux #278 ANDs them into ch 136 [D] → the safe door SS #205 opens → the briefcase (ch 0x4A)
+/// and the rocket launcher are reachable → the gondola ride starts (fix-objects2's chain).
+///
+/// Fail-first shown on the pre-fix tree: no fusebox SP, no mesh entity (the user's pillar had no
+/// opener in play), and the watch burned nothing.
+#[test]
+fn the_07000008_safe_chain_works_in_play() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000008.bin");
+    for _ in 0..120 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    let (sp, had_mesh) = {
+        let sim = scene.sim.as_ref().unwrap();
+        (sim.drones.scripts.players.iter().any(|p| p.scripts[0] == 0x0600_08ad),
+         sim.drones.scripts.objects.list.iter().flatten()
+             .any(|o| matches!(o, nf_game::nis::Obj::Entity { src: (0x0600_08ad, _), .. })))
+    };
+    eprintln!("[safe] fusebox SP present {sp}, mesh entity {had_mesh}");
+    assert!(sp && had_mesh, "the fusebox's own ScriptPlayer ran and built the visible box [M 0x1b0448 SP_Create mode 0x40]");
+
+    let sim = scene.sim.as_mut().unwrap();
+    // The GuardRoom fusebox (the game's E flow: the lid, then the wire): two presses with the lid
+    // script's 63 ticks between [M 0x1a5170 → the class-0 SP; crate::fusebox's stand-in].
+    let fb = sim.drones.fuseboxes.iter().position(|f| f.ch[0] == 0x89).expect("the GuardRoom fusebox (ch 137) exists");
+    let fp = sim.drones.fuseboxes[fb].pos;
+    eprintln!("[safe] fusebox at {fp:?}");
+    sim.bond.pos = [fp[0] - 1.2, fp[1], fp[2]];
+    sim.bond.yaw = (fp[0] - sim.bond.pos[0]).atan2(fp[2] - sim.bond.pos[2]);
+    sim.bond.pitch = 0.0;
+    for _ in 0..5 { sim.step_bond(Input::default(), false, false, true); }
+    for _ in 0..80 { sim.step_bond(Input::default(), false, false, false); } // the lid script
+    for _ in 0..5 { sim.step_bond(Input::default(), false, false, true); }
+    for _ in 0..20 { sim.step_bond(Input::default(), false, false, false); }
+    eprintln!("[safe] ch137 {} after the two presses", sim.drones.channels.on(137));
+    assert!(sim.drones.channels.on(137), "the fusebox's wire cut writes ch 137 [M 0x1adfe8 group 0 → param 1]");
+    let bolt_t = sim.drones.sss.list.iter().find(|s| s.channel == 137).map(|s| s.t).unwrap_or(-1.0);
+    eprintln!("[safe] doorway bolt SS t={bolt_t}");
+    assert!(bolt_t > 0.0, "the doorway bolt SS opens on ch 137 [D #217 param 3]");
+
+    // The Lazer Watch (0x4E, owned with clip 500 [D loadout tail 0x1a7ef8:318-325]) burns the safe
+    // bolts: stand 1.5 from each bolt, aim through its centre, hold fire.
+    let input = Input { switch_to: Some(0x4e), ..Default::default() };
+    for _ in 0..40 { sim.step_bond(input, false, false, false); } // the draw
+    eprintln!("[safe] weapon {:#x}", sim.gun.weapon);
+    assert_eq!(sim.gun.weapon, 0x4e, "the Lazer Watch is selected");
+    // The mux #278 is an AND: both bolts burn (the game's two-bolt safe [D #207/#208, out 134/135]).
+    for out in [134u16, 135] {
+        let bolt = sim.drones.locks.iter().position(|l| l.out == out && !l.burned)
+            .or_else(|| sim.drones.locks.iter().position(|l| l.out == out)).expect("the safe bolt exists");
+        let (bp, br) = { let b = &sim.drones.locks[bolt]; (b.pos, b.radius) };
+        eprintln!("[safe] bolt out {out} at {bp:?} r {br}");
+        sim.bond.pos = [bp[0], bp[1] - 0.55, bp[2] + 1.5];
+        for _ in 0..10 { sim.step_bond(Input::default(), false, false, false); } // settle (the solid door pushes out)
+        let mut burned = false;
+        for t in 0..200 {
+            {   // re-aim every tick through the bolt's centre (the sim may nudge Bond).
+                let head = sim.bond.head();
+                let dir = [bp[0] - head[0], bp[1] - head[1], bp[2] - head[2]];
+                let l = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-4);
+                sim.bond.yaw = dir[0].atan2(dir[2]);
+                sim.bond.pitch = (dir[1] / l).asin() / (std::f32::consts::FRAC_PI_2);
+            }
+            sim.step_bond(Input::default(), true, false, false);
+            if t % 50 == 0 { eprintln!("[safe{out}] t={t} bond {:?} weapon {:#x} clip {}", sim.bond.pos, sim.gun.weapon, sim.gun.clip); }
+            if sim.drones.locks[bolt].burned { burned = true; break; }
+        }
+        assert!(burned, "the watch's beam burns bolt out {out} [M 0x1ae3d8 case 0 arm 1]");
+    }
+    let mut ch136 = false;
+    for _ in 0..60 { sim.step_bond(Input::default(), false, false, false);
+        if sim.drones.channels.on(136) { ch136 = true; break; } }
+    eprintln!("[safe] ch136 {ch136}");
+    assert!(ch136, "both burns AND into ch 136 (mux #278 [D]) — the safe opens");
+    let door_t = sim.drones.sss.list.iter().find(|s| s.channel == 136).map(|s| s.t).unwrap_or(-1.0);
+    eprintln!("[safe] safe door SS t={door_t}");
+    assert!(door_t > 0.0, "the safe door SS opens on ch 136 [D #205 param 3 = 0x88]");
+
+    // The briefcase inside the safe writes ch 0x4A (the gondola's enable) [M 0x18e650:330-333];
+    // the rocket launcher is a weapon pickup (id 0x2C).
+    let case = sim.drones.pickups.iter().position(|p| p.kind == 4 && !p.gone)
+        .or_else(|| sim.drones.pickups.iter().position(|p| !p.gone));
+    let Some(case) = case else { panic!("the safe's pickups exist") };
+    let pp = [sim.drones.pickups[case].m[3][0], sim.drones.pickups[case].m[3][1], sim.drones.pickups[case].m[3][2]];
+    eprintln!("[safe] pickup {case} at {pp:?}");
+    sim.bond.pos = [pp[0], pp[1] - 1.0, pp[2]];
+    for _ in 0..20 { sim.step_bond(Input::default(), false, false, false); }
+    let taken: Vec<String> = sim.drones.taken.iter().map(|t| format!("{t:?}")).collect();
+    let ch4a = sim.drones.channels.on(0x4a);
+    eprintln!("[safe] taken {taken:?} ch0x4a {ch4a}");
+    assert!(ch4a, "taking the briefcase writes ch 0x4A [M 0x18e650:330-333]");
+    assert!(taken.iter().any(|t| t.contains("Weapon")), "the rocket launcher (0x2C) is takeable [D #291]");
+
+    // With 0x4A on, stepping onto the cable-car floor starts the ride (ch 4 → mux → ch 1).
+    sim.bond.pos = [112.0, 28.0, -127.4];
+    let mut ch1 = false;
+    for _ in 0..60 { sim.step_bond(Input::default(), false, false, false);
+        if sim.drones.channels.on(1) { ch1 = true; break; } }
+    eprintln!("[safe] gondola ride ch1 {ch1}");
+    assert!(ch1, "the gondola ride starts with the briefcase taken (ch 0x4A · ch 4 → mux → ch 1) [D #235/#236]");
+}
