@@ -60,13 +60,14 @@ the object array, entry fields 0x20/0x24, the REF-index terminator and the skin-
     weight-0 frame agrees to the noise floor (per-load HashMap seeds), and non-morph vertices are
     bit-identical. The delta magnitudes here are at the f32 noise floor of the scene contrast —
     the hard pins are the census above and the render spots below.
-- **The full suite did NOT fit the window** (the sandbox's clock; the suite is a 30+ minute run).
-  Re-run `NF_ISO=... cargo test --offline --release -j2 --no-fail-fast -p nf-game -p nf-formats
-  -p nf-audio -p nf-view -- --test-threads=1` before merge. Risky areas: `facial` appears in
-  scene.rs only behind the morph path (no weights → no-op), level.rs adds one field (MapObject
-  initialisers updated: level.rs, scene.rs ×3, dev.rs ×1 — all compile-checked), animate() is the
-  shared draw path (behind `c.morph_targets.is_some()`), and `truck`/`ai_traces` are untouched
-  (script_pose_together unchanged).
+- The blast radius was run in the window (all green): **nf-game 228 passed / 0 failed** (incl. the
+  3 facial tests); **nf-formats 11 passed + the 3 sanctioned `disc_golden` slim-ISO stubs**;
+  **nf-view targeted: ai_traces_live 4/4, fix_truck_live 2/2, walk_07000005_live 2/2,
+  facial2_live 2/2**. NOT run (did not fit): nf-audio, the remaining nf-view binaries — re-run
+  `NF_ISO=... cargo test --offline --release -j2 --no-fail-fast -p nf-game -p nf-formats
+  -p nf-audio -p nf-view -- --test-threads=1` before merge. The risk areas are covered: animate()
+  is the shared draw path (the morph term sits behind `c.morph_targets.is_some()`), and
+  script_pose_together is untouched (ai_traces + truck green above).
 
 ## What's left
 
