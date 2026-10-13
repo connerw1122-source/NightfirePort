@@ -288,6 +288,17 @@ pub struct Sim {
     /// The level's zip wires (placement type 0x3E, `Wire_Create` 0x1981d8). Bond grabs one by walking
     /// into its world sphere (fix-wire: the real grab + crossing live in `nf_game::player`).
     pub wires: Vec<nf_game::wire::Wire>,
+    /// Each wire's owning cel (the smallest-volume `cels` bbox containing the wire's world-sphere
+    /// centre — `build_FindCel` 0x1c8cb0's test). The game's pick pass is CEL-CULLED:
+    /// `Collide_Pick` 0x1eb320 tests only the cels the query segment straddles
+    /// (`Collide_StraddleCels`) and each cel's own object list, and every dynamic object is created
+    /// with its enclosing cel's glist (`parsemap_create_dynamic_objects` 0x1d04f0 passes the
+    /// celglist to `Wire_Create`) — a wire is pickable only in its own cel. The port assigns the cel
+    /// spatially [S — the parse stream's placement→cel parentage is not recovered]; `None` (centre
+    /// inside no bbox) keeps the unculled scan. Without the gate 07000002's courtyard wire (world
+    /// sphere r 11.5 at (−63.1, 8.1, −34.5)) swallows Bond the moment he enters the secret bunker
+    /// (a different cel), making the bunker's touch plates unreachable.
+    pub wire_cels: Vec<Option<usize>>,
     /// Whether Bond is currently on a wire (substate 6/0xF) — the music event 0xD source.
     pub creeping: bool,
     /// The wire anims' root tracks, resolved from the level archive's kind-5 scripts + the anim
@@ -984,17 +995,37 @@ impl Sim {
             let water = self.cel_at(self.bond.pos).map(|i| self.cels[i].water).filter(|w| *w > -400.0);
             let sink = input.crouch;
             let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink };
-            // The wire grab scan [M Player_DealWithObjHit 0x194458: the collision pass's class-0x2C hit
-            // dispatches to Player_CollWire 0x197130; Player_HandleJump 0x1916b0 adds the jump-grab (the
-            // nearest class-0x2C scan, 0x1916b0:118-147)]. The game's hit test for a dynamic object is
-            // its world sphere vs the player's swept segment (Collide_PickObj 0x1eae80's version-0x200
-            // branch); the port scans the level's wires with the capsule segment while Bond walks. The
-            // use key runs the same scan [S — the PC action key; the game's jump/action button drives
-            // HandleJump's jump-grab, whose icon context (+0x95F == 3) is not ported]. Health guard [M
-            // CollWire refuses at +0x894 <= 0].
-            if self.bond.substate == nf_game::player::SS_WALK && self.bond.regrab == 0 && self.drones.health.health > 0.0 {
+            // The wire grab [M Player_HandleJump 0x1916b0:126-147]: the game grabs a wire on the
+            // ACTION KEY press (Input_Action 7, edge 4) with the wire icon showing (+0x95F == 3),
+            // taking the NEAREST class-0x2C object by `Vec_Dist3D(obj+0x30, player+0x30)` (cap
+            // 1000.0) — there is NO walk-in auto-grab. The walking pick pass cannot hit a wire at
+            // all: `Collide_PickObj`'s world-sphere branch runs only for HITTEST versions
+            // 0x200/0x201 (the use/jump query) and a wire has no glist triangles for the other
+            // versions' tests. The port stands the icon context in with the wire's world sphere
+            // (the pick test [M 0x1eae80]) on Bond's capsule segment, cel-gated [M Collide_Pick
+            // 0x1eb320], on the use-key edge. Without the key gate 07000002's courtyard wire
+            // (world sphere r 11.5) swallowed Bond the moment he walked the secret bunker (the
+            // same room-cel), making the bunker touch plates unreachable.
+            if use_key
+                && self.bond.substate == nf_game::player::SS_WALK
+                && self.bond.regrab == 0
+                && self.drones.health.health > 0.0
+            {
                 let (ca, cb) = self.bond.capsule_seg();
-                if let Some(wi) = self.wires.iter().position(|w| w.sphere_hits(ca, cb)) {
+                // The cel gate (see `wire_cels`): the game's pick pass tests an object only in the
+                // cels its query straddles [M Collide_Pick 0x1eb320] — the straddle set is
+                // approximated by Bond's one cel [S]. `None` = no cel owns the wire → unculled.
+                let bond_cel = find_cel(&self.cels, self.bond.pos);
+                let mut best: Option<(f32, usize)> = None;
+                for (i, w) in self.wires.iter().enumerate() {
+                    if !self.wire_cels.get(i).map_or(true, |wc| wc.is_none() || *wc == bond_cel) { continue; }
+                    if !w.sphere_hits(ca, cb) { continue; }
+                    let d = (w.centre[0] - self.bond.pos[0]).powi(2)
+                        + (w.centre[1] - self.bond.pos[1]).powi(2)
+                        + (w.centre[2] - self.bond.pos[2]).powi(2);
+                    if best.map_or(true, |(bd, _)| d < bd) { best = Some((d, i)); }
+                }
+                if let Some((_, wi)) = best {
                     self.bond.grab_wire(wi, &ctx);
                 }
             }
@@ -1143,7 +1174,17 @@ impl Sim {
     fn run(&mut self, pos: [f32; 3], sph: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool, reload: bool, use_key: bool) {
         // The drones aim at and look for Bond's chest (`Drone_View_Bones`; one point here, 0.45 under the eye).
         let hanging = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
-        let player = nf_game::drone::Player { pos, target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look, sph, hanging };
+        // The game's collision capsule off `pos` (= Bond's obj+0x30): standing (case 0/6) ends
+        // pos+up·0.55 / pos+up·(0.275 − cc); crouched (case 3) pos+up·(0.65 − cc) / pos+up·(0.45 − cc)
+        // [M Player_Collision 0x194df0]. Kept on `Player` for the future toucher work: the trigger
+        // toucher still uses the historical stand-in — the game-accurate capsule broke 07000005's
+        // truck chain (the class-5 object-contact stand-in, see drone.rs's toucher comment).
+        let capsule = if self.bond.crouched {
+            ([pos[0], pos[1] + 0.65 - self.bond.cc, pos[2]], [pos[0], pos[1] + 0.45 - self.bond.cc, pos[2]])
+        } else {
+            ([pos[0], pos[1] + 0.55, pos[2]], [pos[0], pos[1] + 0.275 - self.bond.cc, pos[2]])
+        };
+        let player = nf_game::drone::Player { pos, target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look, sph, hanging, capsule };
         let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models, surfaces: self.surfaces.as_ref(), voices: self.voices.as_deref() };
         // `Player_WeaponFiring` → `Player_WeaponInitBullet` from the eye along the view (*deviation*: no auto-aim and
         // no aim-point ray yet); the first-person fire script's sound 0x403 feeds the drones' hearing.
@@ -1545,7 +1586,36 @@ impl Sim {
         // The use key (`Player_Activate` 0x1a5170): the doors its sphere — one unit ahead of the head — meets
         // open, swing or thud locked (docs/systems/world-objects.md "Doors"); the player object updates before
         // the control list's doors, so they see the activation this same tick.
-        if use_key { self.drones.player_use_doors(&d, camera, look, self.drones.frame); }
+        if use_key {
+            self.drones.player_use_doors(&d, camera, look, self.drones.frame);
+            // `Player_Activate` 0x1a5170 case '%': the pick's class-0x25 SS objects activate
+            // (`SS_Activate` 0x1a9ea8 — state + mask gate, then the channel latch). The game's
+            // pick is a 1.0-radius sphere at head+look vs the SS's mesh; the port takes the
+            // nearest E-armed SS under the head ray within 2.2 (the mesh extent of a hatch panel) (the doors' reach stand-in shape).
+            let head = [camera[0], camera[1], camera[2]];
+            let mut best: Option<(f32, usize)> = None;
+            for (i, s) in self.drones.sss.list.iter().enumerate() {
+                if s.state == 0 || s.mask & 4 == 0 { continue; }
+                let p = s.pos();
+                let to = [p[0] - head[0], p[1] - head[1], p[2] - head[2]];
+                let proj = to[0] * look[0] + to[1] * look[1] + to[2] * look[2];
+                if proj < 0.0 { continue; }
+                let cl = [head[0] + look[0] * proj, head[1] + look[1] * proj, head[2] + look[2] * proj];
+                let dd = ((p[0] - cl[0]).powi(2) + (p[1] - cl[1]).powi(2) + (p[2] - cl[2]).powi(2)).sqrt();
+                if dd > 2.2 { continue; }
+                if best.map_or(true, |(bd, _)| dd < bd) { best = Some((dd, i)); }
+            }
+            if let Some((_, i)) = best {
+                let frame = self.drones.frame;
+                let st = self.drones.sss.list[i].state;
+                let mk = self.drones.sss.list[i].mask;
+                let _ = (st, mk);
+                let mut ch = std::mem::take(&mut self.drones.channels);
+                let hit = self.drones.sss.list[i].activate(&mut ch, frame);
+                self.drones.channels = ch;
+                if hit { eprintln!("[ss] SS #{i} (placement {}) activated by the use key", self.drones.sss.list[i].placement); }
+            }
+        }
         // `Check_Target` (0x1a7810, every 6th frame — `GameState+0x52 % 6`): Bond's 50-unit view ray (mask
         // 0xC, world only); the first drone under it decides the crosshair state (BLData+0x133): 2 normal,
         // 3 = a non-enemy target — in SP the test is the target's `BLData+0x44 != 1` [M 0x1a7810:109-139,
@@ -2937,6 +3007,10 @@ impl Scene {
             // against their map objects like the ladders (fix-wire: the world sphere replaces the
             // hardcoded 4.0 length; the endpoints derive at grab time per the atlas).
             let wires = nf_game::wire::all(level);
+            // The wires' owning cels (see `wire_cels`): the game's pick pass tests a dynamic object
+            // only in the cels its query straddles [M 0x1eb320], and the object lives in the cel
+            // whose creation block carried it [M 0x1d04f0].
+            let wire_cels = wires.iter().map(|w| find_cel(&sim_cels, w.centre)).collect::<Vec<_>>();
             // The wire anims' root tracks: the level archive's kind-5 scripts (the player body anims)
             // resolved to their sequences [D 07000005: 0x060005e5 101 frames → 0x04000536, the move pair
             // 0x060000b4/b5 → 0x04000034/35 travelling 0.7637/0.7106 per cycle].
@@ -2993,7 +3067,7 @@ impl Scene {
             drones.pickups.extend(reserved);
             drones.script_pickup_slots = sim_slots.into_iter().collect();
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(),
-                laser_beam: None,
+                wire_cels, laser_beam: None,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));

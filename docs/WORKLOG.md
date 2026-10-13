@@ -6605,6 +6605,34 @@ roof patch (diagnose for 045i), (6) the invisible guards (blocked on playability
 3. Die on 07000007 (punch a guest to death): the fail banner ~5 s, then the restart to 07000005
    (the mission start), COLD — full health, fists, objectives re-announced. The old replay loop gone.
 
+## fix-npc-doors-escort (2026-10-13)
+
+The NPCs' door handling from the real path and the 07000002 E-usable grates. Report:
+`docs/reports/fix-npc-doors-escort.md`.
+
+1. **The route's door nodes open doors** (`NDrone_InitDoorNodes` 0x139a70 binding + `ReachedDestNode`
+   0x153358 → `DSTATE_OpenDoor` 0x1681f8 = state 0x81 [L 0x29b300 + 0x81·4] → `NDrone2_OpenDoor`
+   0x14aa38 → `Door_Activate(door, drone, 0)`, timer-C retry every 2 ticks, `DoorIsOpen` 0x14aaa0 exit to
+   `Drone+0x5A6`): ported in `drone.rs` (the `hit_door`/`door_return`/`door_node`/`door_attempt`/
+   `pending_door_msg` outbox pattern, the `node_doors` binding map on `Drones`, the 0x81 state, the anim
+   event 6 → msg 0x20, and `ControlSTANDARD` 0x1490f0:232-248's +0xBA8 check exact — the old nearest-door
+   scan is gone). `update_patrol_route` runs the same dispatch (patrolling guards open doors too).
+2. **07000001 escort test** (`fix_npc_doors_live`): Mayhew opens the screenshot's shoji (7.92, 5.34, 11.14)
+   with Bond 3.9 away and leads past both interior doors (x −20 at +11362 t); fail-first shown on pre-fix
+   `drone.rs`. The stairwell-head guard pressure (AllyLeadHide 0x1f) is the game's own behavior and still
+   the end-state open question (live checks in the report).
+3. **07000001's exit doors** (`gallery_secretdoor` #224/#225) have NO channels [L ee_start_07000001: all
+   five doors +0x66/+0x68 = 0] — they open by Bond's E or the escort's own handling; the AND plate
+   (inputs 0xE + skin 0x4F, `Trigger_Hit` 0x1b1fc8) only gates the level load. No wiring needed; item 1 is
+   the fix.
+4. **`SS_Activate` 0x1a9ea8 ported** (`ss.rs`: `state` = create param 0 at ext+0x22, `mask` = param 2 at
+   +0x1E; state != 0 && mask & 4 → state 1 + the channel latch) with the use-key pick in `scene.rs` (the
+   nearest E-armed SS under the head ray, 2.2 stand-in for the 1.0-sphere-vs-mesh). 07000002's E-usable
+   grates: placements 272/308 (ch 2)/440. Test `fix_ss_grate_live` green (state 0x40→1, t 0.80, ch 2 on).
+   The vent crawl (CreepWall 0x3F / substate 7) stays with `140-fix-swim-vent`.
+5. Merge drift repaired: `Player.capsule` initializers in `ai_live.rs`/`drone_portcheck_live.rs` (master's
+   fix-gadgets 6753e51 broke their build on master itself).
+
 ## fix-script-start-tick (2026-10-13)
 
 The 07000005 playtest's vanishing gate guards: the port's script player ran a newly started script's
@@ -6790,3 +6818,58 @@ Work Log:
 
 Stage Summary:
 - Branch s/fix-fusebox-cut pushed (final 87f9b9d). The fusebox cut is hit-driven through the real bullet path; the cutting weapon is the disc's "Laser" (0x4E/0x4F). Live checks (wire-sphere radius [S] 0.5, the render at the guard-room box, the 07000008 single-registration confirmation) listed in the report.
+
+## fix-npc-doors2 (2026-10-13)
+
+The held fix-npc-doors-escort merge's two red tests, chased to the game's own answers. Report:
+`docs/reports/fix-npc-doors2.md`. Branch from `s/fix-npc-doors-escort` (754c7d9) + origin/master
+(merged twice: 03ed005, then 323bf00 mid-session).
+
+1. **The mission-test regression is the TEST's own mash deadlock, and the game would deadlock under
+   the same input** — no port change. `Door_Activate` reverses an OPENING swing door when re-activated
+   from outside the swing zone [M 0x135be0 state-4/8 arm → dir toward 0.5, SetState 0x10], and EVERY
+   successful activation sets the tick-busy marker that makes `Door_Update` skip its motion that tick
+   [M 0x135be0 LAB_00135ef8 → 0x1363c8:25; cleared end-of-tick by `Doors_Calc` 0x135fe0]. The old
+   test pressed E every 2nd tick while the shoji was ajar — opposite parity to the escort's own
+   2-tick timer-C retry [M 0x1681f8 case 0xC] — so the courtyard shoji (placement 14, kind 2) was
+   activated EVERY tick: the door log showed state 0x8↔0x10 with pos01 frozen at 0.033, never state 4
+   (`NDrone2_DoorIsOpen` 0x14aaa0 needs exactly 4), and `DSTATE_OpenDoor` has no give-up (case 1/3
+   exit only on DoorIsOpen; `ControlSTANDARD` 0x1490f0:232-248's 60-tick retry is gated on the same
+   +0xF4 & 0x12 as `NDrone2_OpenDoor` 0x14aa38). The game's own NPC gate IS the patience a player
+   has: the test now presses only while Mayhew is in 0x81 AND the door is CLOSED/CLOSING. Sister
+   latch: the shoji must reach state 4 at least once.
+2. **The walk-real test's endgame needed the escort's own path kept walkable**: Bond's 2.5-yaw follow
+   parked him inside PlayerInWay's 3.0 band [M 0x15ea28 entry: route blocked + Bond within 3.0; case
+   3 resumes only beyond 3.0] while the courtyard-junction creep stalled, and "behind along yaw"
+   flipped Bond ACROSS Mayhew whenever a wait state turned him to face Bond. The follow now trails
+   3.9 along the ROUTE direction (the escort test's own distance; inside the lead's ≤ 10 resume band
+   [M 0x15eda8 case 3], outside 3.0 and 12). The nav-gap nudge fired on a PER-TICK `moved < 0.05`
+   read — the stairwell-head creep's real 0.03/tick progress counted as a stall, so Mayhew was yanked
+   2 units every 30 ticks and ping-ponged around route node 27 (−26.24, 14.48) for 3,200 ticks
+   without ARRIVING; the stall test now reads the movement accumulated over the 30-tick window (a
+   true stall still fires). With that, the escort's mission route — which descends to the plate, the
+   last node (−33.11, 2.68, 14.35) ON the AND-plate [L nav dump] — walks out in full: through the
+   shoji (the escort's own 0x81 work), the interior doors, the secretdoor pair, onto the plate; the
+   AND fires ch 0x10 → level_exit 0x07000002. The door mash, the follow and the nudge are test-file
+   changes only (`fix_mission_live.rs`); `drone.rs`/`door.rs` are untouched by this task.
+3. **`walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact` no longer fails on
+   the merged tree** (3/3 stable): the held-merge failure predates fix-script-start-tick's control
+   walk landing in master; the escort walks his route and the guard-clear rounds assert the game's
+   hide/clear loop [M 0x15ec08]. No change needed; the plate-reach end state stays the escort
+   report's open live check.
+4. **Removed `agent-ctx/fields/` from the branch** (the scratch field-doc copies; `agent-ctx/B-3a-b.md`
+   left alone as instructed).
+5. **`fix_npc_doors_live` (the predecessor's test, this task's file list) now FAILS on the merged
+   tree** — it does not exist on master, so master alone cannot reproduce it; the escort branch +
+   master's newest merges (fix-script-start-tick's walk order and/or fix-weapons-all's combat
+   economy) re-position the stairwell guard group and drain Bond dry (clip 1 spare 0 against
+   health-10 guards), the escort hides more, and the test's fixed follow cap expires. In-file
+   mitigations landed (per-round ammo top-up, the follow cap at the walkreal precedent 120k, the
+   clear_guard re-check for doors the escort opened himself, and the open-leaf short-stop at 2.2):
+   the walker panic is gone and the run gets further (x −2.98 at the cap vs x −3.49), but the cap
+   still expires. NOT fixed — needs either a walker resupply that avoids the east-ledge wedge or a
+   look at the new guard flow; the door work the test owns is verified green by the OPEN events
+   (+1327 door #1 with Bond 3.9 away) and by the mission test's full walk.
+- Full suite (merged tree 3ec4fd5, NF_ISO, --no-fail-fast, --test-threads=1): **595 passed, 4 failed**
+  — the 3 allowed `disc_golden` (the slim ISO's missing /DRIVING files) + `fix_npc_doors_live::the_
+  escort_opens_the_interior_doors_on_his_route` (item 5). The two the driver named pass.

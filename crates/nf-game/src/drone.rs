@@ -124,6 +124,10 @@ pub mod state {
     pub const FOLLOW_WAIT: u8 = 0x26;
     pub const FOLLOW_DONE: u8 = 0x27;
     pub const GO_TO_GOAL_ALLY: u8 = 0x28;
+    /// `NDrone2_DSTATE_OpenDoor` (0x1681f8) = `NDrone2_StateFuncs[0x81]` [L 0x29b300 + 0x81·4]. The
+    /// route's door node parked the drone here: work the door (+0xBA8) until `DoorIsOpen`, then back
+    /// to the saved return state `Drone+0x5A6`.
+    pub const OPEN_DOOR: u8 = 0x81;
     pub const PARTY_GIRL_INIT: u8 = 0x2e;
     pub const PARTY_GIRL: u8 = 0x2f;
     pub const CIVILIAN_GUARD: u8 = 0x30;
@@ -179,6 +183,9 @@ pub mod msg {
     /// A punch hit (`NDrone2_DealWithObjHit` 0x13fff0 case 5 → msg 6 with the HITDATA): weapon 1
     /// (fists), 0x4B and 0x4D route here instead of msg 8; 0x4A / 0x4C are the taser (msg 7, not ported).
     pub const PUNCH: u8 = 6;
+    /// "Open that door" (`DroneAnim_EventFunc` 0x13b750 event 6 → `Drone_SM_SendMsg(0x20, 0, own, own)`;
+    /// docs/fields/drone-statemachine.md). Only `DSTATE_OpenDoor` handles it: retry the door activation.
+    pub const DOOR: u8 = 0x20;
 }
 
 /// Anim states (`DroneAnimStates` index).
@@ -276,6 +283,11 @@ pub struct Player {
     pub sph: V3,
     /// Bond hangs on a wire or zipline (substate 6 / 0xF): no volume-containment trigger contacts (triggers.rs).
     pub hanging: bool,
+    /// The collision capsule's ends (top, bottom) — the geometry the trigger contact list is built
+    /// from: `Trigger_Hit` 0x1b1fc8 classifies the contacts with no geometry of its own, and
+    /// `Player_Collision` 0x194df0 builds the capsule per substate off obj+0x30 with the up vector.
+    /// Built at the construction site off Bond's stance (`cc`).
+    pub capsule: (V3, V3),
 }
 
 /// The player as an AI target (`DAT_00298fd0`): his position when the nodes were found, the frame (`+0x54`), and per
@@ -642,6 +654,30 @@ pub struct Drone {
     pub alert_block: f32,
     /// `Drone+0xCF8`: the armed-person radius that scares a Civilian (0x15d118 ENTER: 10 on 07000007, else 20).
     pub scared_radius: f32,
+    /// `Drone+0xBB0`: the tick of the last `NDrone2_OpenDoor` attempt — `ControlSTANDARD` re-tries
+    /// only 60 ticks later [M 0x1490f0:242].
+    pub door_open_at: u32,
+    /// `Drone+0xBA8`: the door object this drone is working — stood in by the route's door nodes
+    /// (`NDrone2_ReachedDestNode` 0x153358) or `NDrone2_FindElevatorDoor` 0x14a940 (sniper/elevator
+    /// states, not ported); read by `NDrone2_OpenDoor` 0x14aa38 / `DoorIsOpen` 0x14aaa0 /
+    /// `ControlSTANDARD` 0x1490f0:232 (cleared when the door is > 2.0 away) / `LinkCreep_Handler`
+    /// 0x15a2c8 (the blocked test is skipped while it stands). Port index into `Doors::list`.
+    pub hit_door: Option<usize>,
+    /// `Drone+0x5A6`: the state `DSTATE_OpenDoor` returns to once the door is open — the state the
+    /// drone was in when `ReachedDestNode` stood the door in [M 0x153358:159].
+    pub door_return: u8,
+    /// Outbox: the route node just reached that carries the door flag (bit 1). `Drones::tick`
+    /// resolves it to the nearest door (`NDrone_InitDoorNodes` 0x139a70 binding) and stands it in
+    /// `hit_door`.
+    pub door_node: Option<u16>,
+    /// Outbox: `NDrone2_OpenDoor` requested this tick (DSTATE_OpenDoor ENTER / timer C / msg 0x20,
+    /// or `ControlSTANDARD`'s 60-tick bump check). Serviced by `Drones::tick` where the doors live.
+    pub door_attempt: bool,
+    /// Outbox: anim event 6 fired (`DroneAnim_EventFunc` case 6 → msg 0x20 to self).
+    pub pending_door_msg: bool,
+    /// The `NDrone2_DoorIsOpen` (0x14aaa0) verdict for `hit_door`, refreshed by `Drones::tick` each
+    /// tick (true when there is no door in the way; else the door's state == 4).
+    pub hit_door_open: bool,
     pub alpha: f32,
     /// A switch channel to raise after the drone's update (`SetDeathChannel`).
     pub raise: Option<u8>,
@@ -737,6 +773,8 @@ impl Drone {
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0,
             velocity: [0.0; 3], in_air: false, on_surface: true,
+            door_open_at: 0,
+            hit_door: None, door_return: 0, door_node: None, door_attempt: false, pending_door_msg: false, hit_door_open: true,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
         };
         dr.init_properties(d, &param);
@@ -947,6 +985,13 @@ impl Drone {
                     self.last_wait = None;
                 }
             }
+            // The door nodes: the same `ReachedDestNode` dispatch the mission route runs
+            // (patrolling guards and party guests open the doors on their paths).
+            let route_path = route.path;
+            let next_is_door = route.nodes.get((route.index + 1) as usize)
+                .map_or(false, |&n| d.nav.paths[route_path].nodes[n as usize].flags & 2 != 0);
+            drop(route);
+            if self.route_reached_door(d, route_path, Some(node), next_is_door) { return; } // the OpenDoor anim is set
         }
         let alerted = self.prop(d, 0x25) && self.alert >= 0.66;
         match code {
@@ -963,8 +1008,15 @@ impl Drone {
     fn update_mission_route(&mut self, d: &Data, _rng: &mut Rng, _frame: u32) -> bool {
         let feet = self.feet();
         let Some(route) = self.route.as_mut() else { self.request_anim(d, anim_state::STAND_IDLE); return false };
-        let (code, _reached) = route.follow(d.nav, feet);
+        let (code, reached) = route.follow(d.nav, feet);
         let target = route.target;
+        // `NDrone2_ReachedDestNode` (0x153358, via `LinkCreep_Handler` 0x15a2c8): a reached door node
+        // parks the drone in `DSTATE_OpenDoor` (fix-npc-doors-escort).
+        let route_path = route.path;
+        let next_is_door = route.nodes.get((route.index + 1) as usize)
+            .map_or(false, |&n| d.nav.paths[route_path].nodes[n as usize].flags & 2 != 0);
+        drop(route);
+        self.route_reached_door(d, route_path, reached, next_is_door);
         match code {
             crate::nav::follow::ARRIVED => { self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); true }
             crate::nav::follow::BLOCKED | crate::nav::follow::NO_PATH => {
@@ -974,6 +1026,28 @@ impl Drone {
             }
             _ => { self.route_blocked = false; self.request_anim(d, self.walk_anim(d)); self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); false }
         }
+    }
+
+    /// `NDrone2_ReachedDestNode` (0x153358) at a reached special node: a door node (bit 1) with a
+    /// door-node successor — the doorway's node pair [M :149-163] — stands the node's own bound door
+    /// (`NDrone_InitDoorNodes` 0x139a70 wrote it at node+0x28) in `Drone+0xBA8`, saves the current
+    /// state in `Drone+0x5A6` and enters `DSTATE_OpenDoor` (0x81). On the pair's far side (no
+    /// door-node successor) `NDrone2_DoorIsOpen` (0x14aaa0) decides: open → the tail clears +0xBA8
+    /// [:175]; closed → stay (the opener is still working the door). `next_is_door` is the successor
+    /// node's door flag; the door resolution itself (node → `Doors::list` index) runs in
+    /// `Drones::tick`, which owns the doors. Returns whether `DSTATE_OpenDoor` was entered.
+    fn route_reached_door(&mut self, d: &Data, route_path: usize, reached: Option<u16>, next_is_door: bool) -> bool {
+        let Some(node) = reached else { return false };
+        if d.nav.paths[route_path].nodes[node as usize].flags & 2 == 0 { return false; }
+        if next_is_door {
+            self.door_node = Some(node);
+            self.door_return = self.state;
+            self.set_state(state::OPEN_DOOR);
+            true
+        } else if self.hit_door_open {
+            self.hit_door = None; // [M 0x153358:175]
+            false
+        } else { false }
     }
 
     // ---- animation ---------------------------------------------------------------------------------------------
@@ -1272,6 +1346,9 @@ impl Drone {
             // `DroneAnim_EventFunc` datum 1: the grenade-throw anim's release frame → `DroneWeap_ThrowGrenade`
             // (the actual throw is deferred to `Drones::tick` so it can borrow `Data` and the RNG).
             1 => self.pending_grenade = true,
+            // `DroneAnim_EventFunc` event 6: "open that door" — msg 0x20 to self (the DSTATE_OpenDoor
+            // handler re-activates +0xBA8; elsewhere the GLOBAL fallback drops it) [M 0x13b750:60-64].
+            6 => self.pending_door_msg = true,
             0xf => self.event_20 = true,
             0x12 => { self.event_20 = true; self.event_21 = true; }
             0x10 => { self.event_20 = false; self.event_21 = false; }
@@ -1364,6 +1441,13 @@ impl Drone {
     fn impact_args(s: u8) -> Option<(u8, bool)> {
         use state::*;
         Some(match s {
+            // The BASE handler itself: `Drone_SM_RouteMsgDCV` routes an unhandled message to GLOBAL, and
+            // `DroneFunc_HandleImpact` (0x1469b8) IS the base DSTATE — its case 8 (0x1469b8:134-166) runs
+            // `NDrone2_BulletImpact(d, hit, resume)` with the resume 0 unconditionally (the damage applies;
+            // the +0x118 stamp and the state 0x55 entry need a valid resume). Without this arm every state
+            // the port has no DSTATE for (07000004's seated target, state 0xb2) swallowed the player's
+            // bullets — the impacts registered, the health never moved.
+            GLOBAL => (0, false),
             IDLE | ALERT | PATROL | ALERT_TO_POSITION | SEARCH_AREA | HEARD_NOISE_AWARE | HEARD_NOISE_SUSPECT | HEARD_NOISE_ALERT
                 | RUN_FOR_COVER | UNDER_COVER_INIT | UNDER_COVER_LEAVE_NOW => (ATTACK, false),
             UNDER_COVER_IDLE | UNDER_COVER_AIM | UNDER_COVER_FIRE | UNDER_COVER_RETURN => (UNDER_COVER_LEAVE_NOW, false),
@@ -3154,7 +3238,7 @@ impl Drone {
                     else { self.set_state(CIVILIAN_SCARED); }
                 } else if self.route.is_some() {
                     let arrived = self.update_mission_route(d, rng, frame);
-                    if arrived { d.props.set(0x1d, &mut self.props, 0); self.set_state(CIVILIAN); }
+                    if arrived && self.next_state.is_none() { d.props.set(0x1d, &mut self.props, 0); self.set_state(CIVILIAN); }
                 } else {
                     d.props.set(0x1d, &mut self.props, 0);
                     self.set_state(CIVILIAN);
@@ -3248,6 +3332,9 @@ impl Drone {
             (ALLY_LEAD, msg::UPDATE) => {
                 // The route first: done → AllyLeadDone [M 0x15e698 case 3, FollowRoute branch 3].
                 if self.update_mission_route(d, rng, frame) { self.set_state(ALLY_LEAD_DONE); return true; }
+                // `ReachedDestNode` queued `DSTATE_OpenDoor` — the sub-state checks below must not
+                // stomp it (the game's SetState applies at once; the port's flush is deferred).
+                if self.next_state.is_some() { return true; }
                 // An armed, started hostile within 10 → LeadHide (the cower) [M 0x15e698's armed-drone
                 // branch + 0x15ec08; the port's armed_peer_dist snapshot].
                 if self.armed_peer_dist <= 10.0 {
@@ -3338,7 +3425,48 @@ impl Drone {
             // only user) [*suggested*: the goal = the route's last node].
             (GO_TO_GOAL_ALLY, msg::ENTER) => { self.call_anim(d, self.walk_anim(d), 0, 0); true }
             (GO_TO_GOAL_ALLY, msg::UPDATE) => {
-                if self.update_mission_route(d, rng, frame) { self.set_state(ALLY_LEAD); }
+                if self.update_mission_route(d, rng, frame) && self.next_state.is_none() { self.set_state(ALLY_LEAD); }
+                true
+            }
+            // NDrone2_DSTATE_OpenDoor (0x1681f8) — `NDrone2_StateFuncs[0x81]` [L 0x29b300 + 0x81·4]:
+            // the route's door node parked the drone here to work the door standing in +0xBA8.
+            // ENTER (case 1): the door-prop drones (props 0x14/0x15/0x16 — behaviour_util_getProperty
+            // on Drone+0x4D8) walk the node and play the door anim 0x4e, whose event 6 sends msg 0x20;
+            // the rest the stand/alert idle by alertness (+0x50C < 1.0 → 0x24 else 0x21). Both then
+            // call `NDrone2_OpenDoor` once (the outbox below) and arm timer C at now + 2 ticks
+            // [M case 1 tail + LAB_001683ac: +0xCC0 = 1, +0xCC4 = GameState + 2·FRAME_RATE_INT].
+            // (The game's kind == 0 gate on the 0x4e branch is not reproducible at ENTER — the port
+            // resolves the door index just after the state machine; the anim choice drops that gate.)
+            (state::OPEN_DOOR, msg::ENTER) => {
+                if self.prop(d, 0x14) || self.prop(d, 0x15) || self.prop(d, 0x16) {
+                    self.call_anim(d, 0x4e, 0, 0);
+                } else if self.alert < 1.0 {
+                    self.call_anim(d, anim_state::STAND_IDLE, 0, 0);
+                } else {
+                    self.call_anim(d, anim_state::ALERT_IDLE, 0, 0);
+                }
+                self.door_attempt = true;
+                self.timer_c = Some(frame + 2);
+                true
+            }
+            // UPDATE (case 3): open → the saved return state +0x5A6; closed → stay (the route creep
+            // keeps walking regardless — `LinkCreep_Handler` 0x15a2c8 skips the blocked test while
+            // +0xBA8 stands; the port's route resumes when the lead state returns).
+            (state::OPEN_DOOR, msg::UPDATE) => {
+                if self.hit_door_open { self.set_state(self.door_return); }
+                true
+            }
+            // Timer C (case 0xC): re-activate the door and re-arm the 2-tick retry.
+            (state::OPEN_DOOR, msg::TIMER_C) => {
+                self.door_attempt = true;
+                self.timer_c = Some(frame + 2);
+                true
+            }
+            // Msg 0x20 (case 0x20, from the door anim's event 6): the grunt (NDrone2_PlaySFX 0x27)
+            // and another activation attempt.
+            (state::OPEN_DOOR, msg::DOOR) => {
+                self.anim_sounds.push(0x27);
+                self.door_attempt = true;
                 true
             }
             (ALLY_LEAD_DONE, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15f2e8 case 1: 0x21]
@@ -3371,7 +3499,7 @@ impl Drone {
             // Its sound-class msgs are ignored on 0x07000016 (case 0x11..0x1f `return 1`).
             (crate::kiko::KIKO_MISSION, msg::ENTER) => { self.vision_on = true; self.call_anim(d, 0x34, 0, 0); true }
             (crate::kiko::KIKO_MISSION, msg::UPDATE) => {
-                if self.update_mission_route(d, rng, frame) {
+                if self.update_mission_route(d, rng, frame) && self.next_state.is_none() {
                     d.props.set(0x1d, &mut self.props, 0);
                     self.set_state(crate::kiko::STAND_BLIND);
                 }
@@ -3381,7 +3509,7 @@ impl Drone {
             // KikoMissionRun 0x1a (0x15e0d8): route done → RunToAlarm.
             (crate::kiko::KIKO_MISSION_RUN, msg::ENTER) => { self.vision_on = true; self.call_anim(d, 0x1e, 0, 0); true }
             (crate::kiko::KIKO_MISSION_RUN, msg::UPDATE) => {
-                if self.update_mission_route(d, rng, frame) { self.set_state(crate::kiko::RUN_TO_ALARM); }
+                if self.update_mission_route(d, rng, frame) && self.next_state.is_none() { self.set_state(crate::kiko::RUN_TO_ALARM); }
                 true
             }
             // StandBlind 0x18 (0x172870): the stand anim only.
@@ -4203,6 +4331,10 @@ pub struct Drones {
     pub mission_events: Vec<crate::mission::Event>,
     /// The weapon of each `bullet_paths` entry, in order (crate::useobj's 0x58 install check).
     bullet_path_weapons: Vec<u16>,
+    /// The route-node → door binding (`NDrone_InitDoorNodes` 0x139a70: each door-flagged node binds
+    /// its nearest door object), keyed (nav path, node id) → `Doors::list` index. Computed lazily on
+    /// the first tick that needs it (the doors' positions are static).
+    node_doors: Option<HashMap<(usize, u16), usize>>,
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -4253,6 +4385,7 @@ impl Drones {
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true,
             npc_system_disabled: false,
             spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(),
+            node_doors: None,
             gas: Default::default(),
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
             // — the shared-constructor collisions, merge lesson 4).
@@ -4856,6 +4989,24 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let _prof_all = crate::prof::scope("drones.tick (total)");
         let prof_pre = crate::prof::scope("drones: shared passes");
         self.frame += 1;
+        // The route-node → door binding (`NDrone_InitDoorNodes` 0x139a70), on the first tick: every
+        // door-flagged node binds the nearest door (the scan takes its first candidate
+        // unconditionally, so effectively the nearest overall); a node with no door never binds.
+        if self.node_doors.is_none() {
+            let mut m: HashMap<(usize, u16), usize> = HashMap::new();
+            for (pi, p) in d.nav.paths.iter().enumerate() {
+                for (ni, n) in p.nodes.iter().enumerate() {
+                    if n.flags & 2 == 0 || self.doors.list.is_empty() { continue; }
+                    let mut best: Option<(usize, f32)> = None;
+                    for (di, door) in self.doors.list.iter().enumerate() {
+                        let q = (door.pos[0] - n.pos[0]).powi(2) + (door.pos[1] - n.pos[1]).powi(2) + (door.pos[2] - n.pos[2]).powi(2);
+                        if best.map_or(true, |(_, bq)| q < bq) { best = Some((di, q)); }
+                    }
+                    if let Some((di, _)) = best { m.insert((pi, ni as u16), di); }
+                }
+            }
+            self.node_doors = Some(m);
+        }
         // The gas puffs (`gases_smoke` 0x1ab2d0 runs in the object handler every frame).
         self.gas.update();
         let frame = self.frame;
@@ -5101,6 +5252,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let peers: Vec<(usize, V3, bool)> = self.llist.iter().map(|&i| (i, self.list[i].pos, self.list[i].seen)).filter(|&(i, _, _)| self.list[i].enabled).collect();
         // `Trigger_Calc`, then every object in the control list (newest first = reverse placement order): triggers and
         // drones interleaved, so a channel a trigger pulses is seen only by the objects updated after it.
+        // The player toucher keeps the historical stand-in (`Toucher::player(pos − 0.4)`, reach
+        // feet+0.53..feet+3.14). Two alternatives were tried and REVERTED, each breaking a shipped
+        // behaviour:
+        // - the game-accurate capsule (0x194df0's pos+0.55 / pos+0.275−cc, on `Player::capsule`)
+        //   reaches ~0.9 lower: 07000005's truck chain stalled (the hand-off ch 0x5C never fired —
+        //   no mask-8 trigger writes it [D trigger dump]; a class-5 object contact is the likely
+        //   game path, trigger-port-check #11) AND the standing ride touched the ch-0x70 park plate
+        //   the game only fires crouched (fix-truck's trace) — the fix_truck_live sister caught it.
+        // - the union of both capsules also let the standing ride touch the park plate.
+        // The stand-in's known misses (documented): floor plates within 0.53 of the floor
+        // (07000005's ch-0x45 reveal plate at feet+0.47; 07000002's bunker plate 0x80 below the
+        // floor — the stealth route). Revisit when object touchers land.
         let touchers: Vec<crate::triggers::Toucher> = std::iter::once(crate::triggers::Toucher { contain: !player.hanging, ..crate::triggers::Toucher::player([player.pos[0], player.pos[1] - 0.4, player.pos[2]]) })
             .chain(self.list.iter().filter(|x| x.enabled).map(|x| crate::triggers::Toucher { a: [x.pos[0], x.pos[1] - 1.0, x.pos[2]], b: x.head(), r: 0.4, drone: true, skin: x.skin, contain: true }))
             .collect();
@@ -5235,6 +5398,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             .collect();
         // Per drone: timers, alertness decay, update message, turning, aim, firing, animation.
         let mut talk_queue: Vec<(usize, Vec<(usize, bool)>)> = Vec::new();
+        let mut door_sounds: Vec<(u32, V3)> = Vec::new();
         let prof_loop = crate::prof::scope("drones: control-list loop");
         // fix-spawner-p7: the spawner kill cleanup's draw-counter gate reads the spawned drone's
         // `obj+0xFC` [M `lbu $v0, 0xfc($s0)` 0x13805c] as of the LAST frame — the game's renderer
@@ -5402,6 +5566,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
             dr.voice_finished = dr.voice.is_none_or(|v| self.audio.finished(v.0));
             dr.patrol_cooldown = self.patrol_cooldown;
+            // `NDrone2_DoorIsOpen` (0x14aaa0) refreshed for this tick: no door in the way → open;
+            // else the door's obj+0xF4 == 4.
+            dr.hit_door_open = dr.hit_door.map_or(true, |i| self.doors.list[i].state == crate::door::OPEN);
             if !dr.started { dr.started = true; dr.send(d, rng, frame, msg::ENTER); dr.entered = frame; dr.log.push((frame, dr.state)); }
             if let Some(t) = dr.timer_c { if frame >= t { dr.timer_c = None; dr.send(d, rng, frame, msg::TIMER_C); } }
             if let Some(t) = dr.timer_d { if frame >= t { dr.timer_d = None; dr.send(d, rng, frame, msg::TIMER_D); } }
@@ -5411,6 +5578,28 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             if dr.alert < dr.alert_floor { dr.alert = dr.alert_floor; }
             drop(_pc);
             { let _p = crate::prof::scope("drone: UPDATE msg (AI)"); dr.send(d, rng, frame, msg::UPDATE); }
+            // The route's door node dispatched inside the state machine: resolve the node → door
+            // binding now (`Drones` owns the doors; the state machine cannot) — `ReachedDestNode`
+            // stood the door in +0xBA8 before `DSTATE_OpenDoor`'s ENTER ran [M 0x153358].
+            if let Some(node) = dr.door_node.take() {
+                if let Some(path) = dr.route.as_ref().map(|r| r.path) {
+                    dr.hit_door = self.node_doors.as_ref().and_then(|m| m.get(&(path, node))).copied();
+                    if let Some(i) = dr.hit_door { dr.hit_door_open = self.doors.list[i].state == crate::door::OPEN; }
+                }
+            }
+            // The ENTER / timer-C activation request (`NDrone2_OpenDoor` 0x14aa38): only a CLOSED
+            // /CLOSING door activates; the attempt stamps +0xBB0. `Door_Activate(door, drone, 0)`.
+            if dr.door_attempt {
+                dr.door_attempt = false;
+                if let Some(i) = dr.hit_door {
+                    if self.doors.list[i].state & 0x12 != 0 {
+                        let mut evs: Vec<crate::door::SoundEvent> = Vec::new();
+                        self.doors.activate(i, &[(dr.pos, 0.4, false)], false, &mut self.channels, frame, &mut evs);
+                        dr.door_open_at = frame;
+                        door_sounds.extend(evs.iter().map(|&(id, pos)| (id as u32, pos)));
+                    }
+                }
+            }
             // `NDrone2_SeenAndAttacking` from the combat states (docs/systems/music.md: the gate posts
             // `Music_Event(2, 5)`; *suggested*: once per update, the port's states numbered as the game's).
             if dr.enabled && matches!(dr.state, state::SNIPER_AIM | state::SNIPER_FIRE | state::SNIPER_RELOAD | state::COMBAT | state::COMBAT_NO_MOVE
@@ -5439,6 +5628,32 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             let want = if dr.anim.class == 2 && dr.aims_torso() { angle_difference(dr.yaw, dr.yaw_to_opp).clamp(-0.9, 0.9) } else { 0.0 };
             dr.aim_yaw = rotate_to_bearing(dr.aim_yaw, want, 0.2, crate::trig::PI);
             if !dr.corpse { let _pf = crate::prof::scope("drone: handle_firing"); let b = { let lights = &mut self.lights; dr.handle_firing(d, rng, frame, player, (moving, first_moved), index, lights) }; if let Some(b) = b { self.bullets.push(b); } }
+            // `ControlSTANDARD`'s door check (0x1490f0:232-248): a door standing in +0xBA8, 60 ticks
+            // after the last attempt (+0xBB0 + 60 < GameState): beyond 2.0 (Vec_Dist3D of the obj
+            // positions) the drone forgets it; else `NDrone2_DoorIsOpen` false → `NDrone2_OpenDoor`.
+            // (The old stand-in scanned for the nearest door within 2.0 — the game only ever checks
+            // the door the route's door nodes or `FindElevatorDoor` stood in.)
+            if dr.enabled && !dr.corpse && frame > dr.door_open_at + 60 {
+                if let Some(i) = dr.hit_door {
+                    let dp = self.doors.list[i].pos;
+                    if (dr.pos[0] - dp[0]).powi(2) + (dr.pos[1] - dp[1]).powi(2) + (dr.pos[2] - dp[2]).powi(2) > 4.0 {
+                        dr.hit_door = None;
+                    } else if !dr.hit_door_open {
+                        dr.door_attempt = true;
+                    }
+                }
+            }
+            if dr.door_attempt {
+                dr.door_attempt = false;
+                if let Some(i) = dr.hit_door {
+                    if self.doors.list[i].state & 0x12 != 0 {
+                        let mut evs: Vec<crate::door::SoundEvent> = Vec::new();
+                        self.doors.activate(i, &[(dr.pos, 0.4, false)], false, &mut self.channels, frame, &mut evs);
+                        dr.door_open_at = frame;
+                        door_sounds.extend(evs.iter().map(|&(id, pos)| (id as u32, pos)));
+                    }
+                }
+            }
             let _pa = crate::prof::scope("drone: update_anim");
             if let Some((next_ai, done_msg)) = dr.update_anim(d) {
                 // `SetEndAIState`: the AI state is queued, then the message routed (which applies the queued state).
@@ -5453,6 +5668,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     self.grenades.push(g);
                 }
             }
+            // The door anim's event 6 (fired in `update_anim` just above): msg 0x20 to self —
+            // only `DSTATE_OpenDoor` handles it (the send's GLOBAL fallback drops it elsewhere).
+            if std::mem::take(&mut dr.pending_door_msg) { dr.send(d, rng, frame, msg::DOOR); }
             if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
             // `DroneFunc_OnInitDeath`'s verdict: the FailLabel event + the fail channel [M 0x13e560
             // applied per 0x145bd0's reasons; fix-actors]. The monitor's standing hooks (ch 0x60/0x61
@@ -5523,6 +5741,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         { let _p = crate::prof::scope("drones: set_dynamic"); d.world.set_dynamic(&script_parts(self, d)); }
         // The drones' speech requests, in update order (no random draws in `SpeechSFX` / `PlaySFX`).
         for (index, talks) in talk_queue { self.speech(d, index, talks, frame); }
+        // The drones' door-open sounds (`NDrone2_OpenDoor`'s `Door_Activate` events).
+        for (id, pos) in door_sounds {
+            match d.sfx {
+                Some(t) => { let h = t.get(id); self.play_sound_handle(pos, h); }
+                None => { self.audio.play3d(id, pos, None); }
+            }
+        }
         // `Doors_Calc` — the control pass's last act (0x1336f8's tail): the door groups sync, the busy markers
         // clear. (`switch_channels_prev` is snapshotted after `Trigger_Calc`, at the top of the tick — see above.)
         self.doors.calc();
@@ -5695,6 +5920,8 @@ mod tests {
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(),
             voice_type: 0, female: false, attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(),
             free_root: false, bounded: true, dtype: 0, mode_normal: 0, mode_alert: 0, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0, alert_block: 0.0,
+            door_open_at: 0,
+            hit_door: None, door_return: 0, door_node: None, door_attempt: false, pending_door_msg: false, hit_door_open: true,
         };
         dr
     }

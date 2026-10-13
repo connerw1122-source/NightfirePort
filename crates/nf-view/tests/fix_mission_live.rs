@@ -186,12 +186,16 @@ fn the_07000001_exit_works_end_to_end() {
         .map(|(i, _)| i).expect("the courtyard door exists");
     let mut at_plate = false;
     let mut walked = 0.0f32;
-    // fix-lighting2 merge re-baseline: the courtyard door freezes half-open (the pre-existing
-    // pause-when-blocked state, 0.2333 in both the master and merged streams) and master's stream
-    // let Mayhew slip past it while the merged stream's micro-positions oscillate at the gap. The
-    // escort loitering at the door is the same nav-gap stall class the nudge below already covers —
-    // count the loiter and fire the same guard-relocation + route nudge for it.
+    // Sister latch: the courtyard door must REACH state 4 (OPEN) at least once — the game's
+    // `NDrone2_DoorIsOpen` 0x14aaa0 only releases `DSTATE_OpenDoor` on exactly that state.
+    let mut door_opened = false;
+    // fix-lighting2 merge re-baseline, kept for the nav-gap stall class: while the escort works the
+    // door (or paces at any junction) he lingers within 3.0 of it — the same stall class the nudge
+    // below already covers — so count the loiter and fire the same guard-relocation + route nudge
+    // for it. (The old "freezes half-open" reading was the mash deadlock the block below explains:
+    // an activation every tick sets Door_Update's per-tick busy marker, so the motion never ran.)
     let mut door_loiter = 0u32;
+    let mut stall_window = 0.0f32;
     let door_pos = scene.sim.as_ref().unwrap().drones.doors.list[door_idx].pos;
     let mut last = scene.sim.as_ref().unwrap().drones.list[mi].pos;
     for t in 0..5000u32 {
@@ -200,13 +204,31 @@ fn the_07000001_exit_works_end_to_end() {
             let mp = sim.drones.list[mi].pos;
             let door = sim.drones.doors.list[door_idx].pos;
             let near_door = ((mp[0] - door[0]).powi(2) + (mp[2] - door[2]).powi(2)).sqrt() < 10.0;
-            if near_door && sim.drones.doors.list[door_idx].pos01 < 0.5 {
-                // Bond runs ahead and presses E on the door (a fresh press every 2nd tick). fix-lighting2
-                // merge re-baseline: at 1.2 units Bond's own capsule paused the door's opening sweep
-                // (pos01 froze at 0.233 with the pause-when-blocked rule) and the merged stream's
-                // escort could not slip the half-open gap the way master's did — stand at the press
-                // sphere's edge and press twice as often so the door completes its opening, the way
-                // the player's mash does.
+            if near_door && sim.drones.list[mi].state == state::OPEN_DOOR
+                && sim.drones.doors.list[door_idx].state & 0x12 != 0 {
+                // The game's choreography: the escort halts at the route's door node in
+                // `DSTATE_OpenDoor` (0x81 [M 0x1681f8]) and works the door himself — the port's
+                // escort test (door #1 opened with Bond 3.9 away, outside use reach) and the
+                // atlas's PCSX2 trace ("Door 2 re-opened at 44.2 s with Bond ~18 m away (a drone
+                // opened it)") show it; Bond's E is the game's OTHER activator [M Door_Activate
+                // 0x135be0 via Player_Activate 0x1a5170]. Bond walks up BEHIND him and presses
+                // only while the door is CLOSED or CLOSING — the game's own NPC activation gate
+                // (`NDrone2_OpenDoor` 0x14aa38 fires on door+0xF4 & 0x12). A press on an OPENING
+                // door re-closes it [M 0x135be0's state-4/8 arm], and EVERY activation sets the
+                // tick-busy marker that skips `Door_Update`'s motion that tick [M 0x135be0
+                // LAB_00135ef8 → 0x1363c8:25; cleared end-of-tick by `Doors_Calc` 0x135fe0] — so
+                // the old every-2nd-tick mash (which also ran ahead while the door was merely
+                // closed) deadlocked this test two ways: (a) the mash's parity was opposite the
+                // escort's own 2-tick timer-C retry [M 0x1681f8 case 0xC], so the shoji was
+                // activated EVERY tick — the door log showed state 0x8↔0x10 with pos01 frozen at
+                // 0.033, never state 4, and `DSTATE_OpenDoor` — which has no give-up (case 1/3
+                // exit only on `NDrone2_DoorIsOpen` 0x14aaa0; `ControlSTANDARD` 0x1490f0's 60-tick
+                // retry is gated on the same & 0x12) — parked Mayhew in 0x81 forever; (b) Bond
+                // running ahead while the door was CLOSED stood inside the lead's PlayerInWay
+                // band, halting Mayhew 2 units short of the node so he never reached 0x81 at all.
+                // The game deadlocks under (a)'s input too (the same code runs there); a player
+                // presses until the door starts to swing, then stops — this gate is exactly that
+                // patience, and only once the escort is actually working the door.
                 let dx = door[0] - mp[0]; let dz = door[2] - mp[2];
                 let l = (dx * dx + dz * dz).sqrt().max(1e-4);
                 let back = if t % 16 < 6 { 1.2 } else { 2.2 };
@@ -236,19 +258,42 @@ fn the_07000001_exit_works_end_to_end() {
                 sim.bond.pos = [mp[0], floor + 1.1, mp[2] - 1.5];
                 (false, mp)
             } else {
-                // Bond 2.5 behind Mayhew ALONG HIS YAW (a straight-line offset cuts the route's
-                // corners into walls and strands the escort).
-                let y = sim.drones.list[mi].yaw;
-                sim.bond.pos = [mp[0] - y.sin() * 2.5, sim.bond.pos[1], mp[2] - y.cos() * 2.5];
+                // Bond trails 3.9 behind along the ROUTE direction — the escort test's own distance.
+                // Two traps the old 2.5-yaw offset walked into: (a) the courtyard-junction creep
+                // stalls (the port's creep gives up where the game slides — the nav-gap stand-in
+                // below), and with Bond within 3.0 on a blocked tick the escort reads PlayerInWay
+                // (0x1e [M 0x15ea28's entry: route blocked + Bond within 3.0]) whose resume rule is
+                // Bond BEYOND 3.0 [M 0x15ea28 case 3] — a permanent 2.5 stand-in never satisfies it,
+                // so Mayhew paced 0x1e forever and never reached the door node; the game's real
+                // player walks through and clears the band. 3.9 sits outside 3.0 but inside the
+                // lead's resume/wait bands (≤ 10 [M 0x15eda8 case 3]; > 12 enters the wait
+                // [M 0x15e698 case 3 stand-in]). (b) "behind along YAW" flips Bond ACROSS Mayhew
+                // whenever a wait state turns him to face Bond — behind-the-yaw lands ahead of the
+                // route. The route direction is stable while he paces; when the target degenerates
+                // (Mayhew standing at his node, e.g. in DSTATE_OpenDoor), Bond stays where he is.
+                let rt = sim.drones.list[mi].route.as_ref().map(|r| r.target);
+                if let Some(t) = rt {
+                    let dx = t[0] - mp[0]; let dz = t[2] - mp[2];
+                    if dx * dx + dz * dz > 0.25 {
+                        let l = (dx * dx + dz * dz).sqrt();
+                        // Re-floor: off the route line the trail spot can hang over a drop (the old
+                        // yaw-follow stayed on Mayhew's walked line and could keep the stale y).
+                        let bx = mp[0] - dx / l * 3.9; let bz = mp[2] - dz / l * 3.9;
+                        let floor = sim.world.floor_below([bx, mp[1], bz], 6.0).unwrap_or(mp[1]);
+                        sim.bond.pos = [bx, floor + 1.1, bz];
+                    }
+                }
                 (false, mp)
             }
         };
         scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, use_key);
+        door_opened |= scene.sim.as_ref().unwrap().drones.doors.list[door_idx].state == nf_game::door::OPEN;
         let (mp, rtarget) = {
             let sim = scene.sim.as_ref().unwrap();
             (sim.drones.list[mi].pos, sim.drones.list[mi].route.as_ref().map(|r| r.target))
         };
         walked += ((mp[0] - last[0]).powi(2) + (mp[2] - last[2]).powi(2)).sqrt();
+        stall_window += ((mp[0] - last[0]).powi(2) + (mp[2] - last[2]).powi(2)).sqrt();
         // NAV-GAP STAND-IN (not this task's files): the shared nav bounds/creep stalls at the
         // courtyard junction (the game's drone slides along the wall; the port's creep gives up) —
         // the test nudges Mayhew toward his route target, the slide the game performs. Everything
@@ -256,8 +301,14 @@ fn the_07000001_exit_works_end_to_end() {
         // is exercised for real around this.
         if dist2d(mp, door_pos) < 3.0 { door_loiter += 1; } else { door_loiter = 0; }
         if t > 100 && t % 30 == 0 && !at_plate {
-            let moved = ((mp[0] - last[0]).powi(2) + (mp[2] - last[2]).powi(2)).sqrt();
-            if moved < 0.05 || door_loiter > 40 {
+            // The stall test reads the movement accumulated over the whole 30-tick window, not the
+            // last tick's step: the stairwell-head creep still advances (≈0.03/tick — the port's
+            // slow wall slide), and the old per-tick `moved < 0.05` read that REAL progress as a
+            // stall, yanking Mayhew 2 units every 30 ticks — he ping-ponged around route node 27
+            // (−26.24, 14.48) for 3,200 ticks without ever ARRIVING, so the route never advanced
+            // to the doorway nodes and down the stairs. A true stall moves ≈0 over the window and
+            // still fires; the game's walking drone is never teleported at all.
+            if stall_window < 0.05 || door_loiter > 40 {
                 // fix-actors: the escort now cowers (AllyLeadHide 0x15ec08 [M]) while an armed hostile
                 // fights within 10 — the game's own rule. The hide clears when no armed drone remains
                 // within 14 (`NotNearArmedDrone` [M 0x15ec08 case 3]); the stall here is a guard the
@@ -278,6 +329,7 @@ fn the_07000001_exit_works_end_to_end() {
                     dr.pos = [mp[0] + dx / l * 2.0, floor + 1.0, mp[2] + dz / l * 2.0];
                 }
             }
+            stall_window = 0.0;
         }
         last = look;
         if ((mp[0] - cx).powi(2) + (mp[2] - cz).powi(2)).sqrt() < 2.0 && (mp[1] - cy).abs() < 2.5 { at_plate = true; }
@@ -291,6 +343,7 @@ fn the_07000001_exit_works_end_to_end() {
     eprintln!("[mission] end: ch10 {} ch99 {} ch0b {} bond {:?} mayhew {:?} at_plate {at_plate}",
         sim.drones.channels.on(0x10), sim.drones.channels.on(99), sim.drones.channels.on(0xb),
         sim.bond.pos, sim.drones.list[mi].pos);
+    assert!(door_opened, "the courtyard shoji reached OPEN (state 4) at least once [M NDrone2_DoorIsOpen 0x14aaa0] — an activation every tick kept it ping-ponging 0x8↔0x10");
     assert!(at_plate, "Mayhew leads to the exit plate (walked {walked:.1}, at {:?}, plate ({cx},{cy},{cz}))",
         sim.drones.list[mi].pos);
     assert_eq!(sim.drones.level_exit, Some(0x0700_0002),
@@ -299,3 +352,4 @@ fn the_07000001_exit_works_end_to_end() {
 }
 
 fn dist2d(a: [f32; 3], b: [f32; 3]) -> f32 { ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() }
+

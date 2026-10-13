@@ -23,6 +23,7 @@ use crate::door::{interp, parse_keys};
 
 const IDENT: Mat4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
 use crate::triggers::Channels;
+use crate::world::V3;
 use nf_formats::placement::Placement;
 
 pub type Mat4 = crate::door::Mat4;
@@ -38,6 +39,10 @@ pub struct Ss {
     pub rate: u32,
     /// Param 6: the spline-interpretation flag (`SS_Create`'s +0x26).
     pub spline: bool,
+    /// `SS_Create` 0x1a9c58: ext+0x22 = param 0 — the state (`SS_Activate` 0x1a9ea8 arms it).
+    pub state: u16,
+    /// ext+0x1E = param 2 — the activate mask (bit 2 = E-usable, `SS_Activate`'s gate).
+    pub mask: u16,
     /// The playhead in key units, 0..=count−1.
     pub t: f32,
     /// The posed matrix this tick (at rest: key 0).
@@ -46,6 +51,21 @@ pub struct Ss {
     /// mesh (`Collide_PickObj` walks the cel-linked objects; fix-party-mission item 7 — the safe
     /// door and the doorway bolt are solid like the doors).
     pub hash: u32,
+}
+
+impl Ss {
+    /// `SS_Activate` (0x1a9ea8) — the use key on the SS's class-0x25 object (`Player_Activate`
+    /// 0x1a5170 case '%'): a state armed at create (ext+0x22 != 0) and the E mask bit (ext+0x1E & 4)
+    /// snap the state to 1 and latch the channel on (the playhead then runs to the last key).
+    pub fn activate(&mut self, ch: &mut crate::triggers::Channels, frame: u32) -> bool {
+        if self.state == 0 || self.mask & 4 == 0 { return false; }
+        self.state = 1;
+        if self.channel != 0 { ch.set(self.channel as u32, 1, frame); }
+        true
+    }
+
+    /// The object's world position (the posed matrix's translation).
+    pub fn pos(&self) -> V3 { [self.matrix[3][0], self.matrix[3][1], self.matrix[3][2]] }
 }
 
 /// Every animated SimpleScript of the level, in placement order.
@@ -75,6 +95,8 @@ impl SsList {
                 keys,
                 rate: if rate == 0 { 75 } else { rate },
                 spline: param(6) != 0,
+                state: param(0) as u16,
+                mask: param(2) as u16,
                 t: 0.0,
                 matrix,
                 hash: hash(p),
