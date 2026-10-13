@@ -6518,3 +6518,36 @@ demonstrated live before the reset and the chain test re-run green on the restor
 laser-hinge hatch across the roof (the hatch side + its channel), (3) the camera gadget equip (with
 045d), (4) the 0c AI states/animations vs the game (docs/fields/drone*.md), (5) the white untextured
 roof patch (diagnose for 045i), (6) the invisible guards (blocked on playability).
+
+## fix-level-0c (2026-10-13)
+
+**Done**
+- The hatch chain (task items 1+2, the user's soft lock) is now TEST-VERIFIED end to end through
+  the real laser path: `crates/nf-view/tests/fix_level_0c_live.rs`, 4 tests. The display vent =
+  `ventmesh-front` #138 (SS, ch 18, 6 keys — the hatch slides y 16.40 → 14.76), the hinges
+  `hingelock1/3` #139–142 (locks 0x2E, out chs 14/15/16/17 [D param 5]), `VentBlockingPoly` #179
+  (SS ch 18, 2 keys — rises y 16.3 → 20.0), the AND mux #505 (list [14,15,16,17] → ch 18 [D
+  triggers]). The aimed Q-Laser (0x50, the loadout [M 0x1a7ef8 case 0x700000c]) burns all four
+  hinges (`Lock_Update` 0x1ae3d8 case 0 → `Lock::burn`), the mux raises ch 18, both SSs play to
+  their last keys and a collision ray passes the opening; with the hinges intact the ray is
+  BLOCKED (the user's "blocked off") and three hinges are not enough (the AND sister). The
+  warehouse vent (`VentLatch` #182 → ch 84 → `ventmesh` #180 + `VentmeshBlockingPloy` #184) is
+  verified too. NO sim code needed changing — the pieces merged from fix-objects2/fix-gadgets/
+  map-powerstation already interlock correctly; what was missing was the proof (and the doc).
+- The white floor patch (task item 5): the spot --bond 14.22,16.73,-154.43 sits inside
+  `room_ex10_5` placement #117 (class 0xc047, a static room piece, t 0 with world-space boxes) —
+  the draw is 045i-fix-render-artifacts' (a texture/material lookup on that mesh; the object is
+  NOT one of the 0xE2/alpha pieces).
+- The AI (task item 4): the 0c guards are SPAWNER-HELD, not broken — 35+ of 40 sit present=false
+  with switch channels 4/6/27/1 (the trigger plates #426/#479 and objective ch 0x1b=27 release
+  them as Bond walks the route; dr7/dr9/dr17/dr24/dr27 wait in WAIT_SWITCH with enabled=false —
+  the game's channel gate). The two patrol guards (dr1/dr39, skin …93) DO walk with advancing
+  anims (danim 282→328→392, time 1:1). The frozen-anim look the user describes needs the render
+  check (the anim POSING is render-side; merge lesson 6) — live checks listed in the report.
+- The camera gadget (task item 3): weapon 0x54 IS in the 0c loadout [M 0x1a7ef8] and the
+  photograph chain (`CamSubject_Update` 0x1bc668 writes ch 0x1c on the class-5 0x54 contact) is
+  the walkthrough's — the equip/selection side is 045d-fix-gadgets'. Note: 0x54 doubles as the
+  watch's camera id in `CamSubject_Update` while `gadget.rs` calls 0x54 "the laser watch" — the
+  watch-mode split (laser vs camera vs taser 0x55) needs 045d's eyes.
+
+**Tests**: `fix_level_0c_live.rs` 4/4 NF_ISO green (2.9 s).
