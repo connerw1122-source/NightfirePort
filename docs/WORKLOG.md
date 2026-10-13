@@ -7402,3 +7402,18 @@ Work Log:
 
 Stage Summary:
 - Starting fix-portal2: land fix-portal without the wall holes — reproduce the 07000006 courtyard hole (walls' cels dropped by the walk) headlessly, find the game rule that keeps them, fix, keep the 07000007 window case only if provable from the game.
+
+---
+Task: fix-portal2
+Agent: fix-portal2 worker
+Branch: s/fix-portal2 (from s/fix-portal a894d7c + master 8142a7f; same commits pushed as s/portal2)
+
+Work Log:
+- Root-caused the holes: View_AddCels (0x1e6ba0) has a second pass the port never had — for every VisCelList cel it also frustum-tests and draws the cel's +0x18 chain nodes with Vision_InView (0x1e89e0: the FOUR side planes only, n·c + d·r + r >= 0 — no near plane: the game's fog-range far view), skipping 0x8018-class nodes while the viewer's cel is 0xc023-class.
+- Chain structure measured from ee_start_05.bin: 2606 nodes/137 cels, node classes only 0x8019/0x8008019 (rooms never ride chains), per-owner counts 0..58 with resets; builder not recoverable this session (no writer in decomp or disasm of 0x1d1998 — dropped store).
+- Ported: CelGraph.chains (per-map block model, nodes 0x8018/0x8019, owner cap 0x40 [S]), CelNode.sphere (placement-transformed — the raw bbox put generic spheres at the origin), vision_in_view + portal_visible_cels_game_from_cell, gpu cell-level gate (Material::node = the placement's own cell for creates_cel placements; rooms/objects keep the strict VisCelList mask so the partygoers stay collapsed).
+- Tests (fix_portal2_live.rs, green): route rescue > 0 with structural pins; 07000007 start view 180 draws vs the game's 177; hidden rooms stay game-hidden.
+- nf-view suite green until the sandbox window cut it mid levels_sweep_live; full 4-crate suite did not complete — flagged in the report.
+
+Stage Summary:
+- The 07000006 courtyard masonry and the far-view rule now come from the game's chain pass, not the walk; the 07000007 window stays hidden on game evidence (rooms are never chain nodes). Render spots + live checks in docs/reports/fix-portal2.md.
