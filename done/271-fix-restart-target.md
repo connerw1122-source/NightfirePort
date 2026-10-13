@@ -35,3 +35,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox4 at 2026-10-13T16:24Z
+
+---
+## Report (done, 2026-10-13T17:23Z)
+
+Closed by the driver: the report is on `s/fix-restart-target` (docs/reports/fix-restart-target.md); the worker didn't run finish.sh.
