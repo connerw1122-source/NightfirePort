@@ -606,14 +606,13 @@ impl Script {
             1 => {
                 let Some((mut m, scale, alpha)) = self.keys(i) else { return };
                 if scale != 1.0 { for r in m.iter_mut().take(3) { for v in r.iter_mut().take(3) { *v *= scale; } } }
-                // Each parent stream's matrix; the script base lands ONLY at the end of a parent chain.
-                // `Script_Interp` case 1 keeps the `Concat(SCRIPTINFO, obj+0x90)` INSIDE the `parent != -1`
-                // branch [M 0x1d9a08:106-133] — an unparented stream's keys are WORLD-SPACE. The old
-                // unconditional base was the same "*suggested*" guess as the camera's (every SP the port
-                // exercised sat on an identity base, so no test caught it); 0700004a's landing cut-scene
-                // #289 (SP #289 base (0,−53.53,−3.38)) exposed it: its return marker (stream 25, obj_type
-                // 0x19, no parent) keys (1.80,−54.128,−3.453) — exactly the −52 landing floor Bond is
-                // enabled onto — while base-composed it landed 53.5 lower (−107.66, mid-shaft).
+                // Each parent stream's matrix, then the script's. (fix-final-blockers2 tried "the base only
+                // at a parent-chain end" per the case-1 tail-Concat structure [M 0x1d9a08:106-133] — it
+                // REVERTED: 07000014's fusebox wire and 07000008's safe entities key LOCAL offsets and are
+                // render-verified with the base applied, so the game composes the base for unparented
+                // streams too (the decompile loses the step). See the report: #289's marker stays the
+                // open question (base-composed −107.66 = void on its column; raw −54.13 = the freeze pose;
+                // the game's mode-1 SphereIntersect rescue is the live check).)
                 let mut p = s.parent;
                 let mut n = 0;
                 while p >= 0 && (p as usize) < self.streams.len() && n < self.streams.len() {
@@ -621,20 +620,18 @@ impl Script {
                     p = self.streams[p as usize].parent;
                     n += 1;
                 }
-                if s.parent >= 0 { m = mul(&m, &self.matrix); }
+                m = mul(&m, &self.matrix);
                 if let Some(Some(Obj::Entity { matrix, alpha: a, .. })) = objs.list.get_mut(o) { *matrix = m; *a = alpha; }
             }
             4 => {
-                // `Script_Interp` case 4 → `Script_UpdateCamera`: the keys' matrix goes STRAIGHT into the
-                // CAM_INFO (dest = the CAM_INFO itself, no parent walk and no SCRIPTINFO concat
-                // [M 0x1d9a08:190-200]) and `Script_UpdateCamera` 0x1db518 copies it to the viewer raw.
-                // The camera keys are WORLD-SPACE: #289's camera key[0] (2.889,−7.829,−4.583) is Bond's
-                // boarding spot (the spawn (4.26,−7.71,−4.76), telephoto scale 0.344) — the shot films the
-                // −52 landing from the shaft top. The old `mul(&m, &self.matrix)` was the "*suggested*"
-                // guess; identity-base SPs hid it until now.
+                // `Script_Interp` case 4 → `Script_UpdateCamera`: the keys' matrix (the script matrix applied,
+                // *suggested*: the decomp loses that argument; fix-final-blockers2 measured the no-base
+                // reading [M 0x1d9a08:190-200 + 0x1db518] and reverted it with the entity change — the
+                // render-verified fusebox/safe entities need the base, so the camera keeps it).
                 // The skip's freeze: `Script_Interp` returns early while `+0xAB5 & 0x20` [M 0x1d9a08:205].
                 if self.fade_flags & 0x20 != 0 { return; }
                 let Some((m, scale, _)) = self.keys(i) else { return };
+                let m = mul(&m, &self.matrix);
                 if let Some(Some(Obj::Camera { matrix, fov, .. })) = objs.list.get_mut(o) { *matrix = m; *fov = scale * (4.0 / 3.0); }
             }
             2 => {
@@ -838,9 +835,7 @@ impl Player {
                     par = s.streams[par as usize].parent as i32;
                     n += 1;
                 }
-                // fix-final-blockers2: the base lands only at a parent-chain end (see `interp` case 1) —
-                // stream 0 is usually unparented, so the SP object rides the RAW keys.
-                self.live_matrix = if s.streams[0].parent >= 0 { mul(&m, &s.matrix) } else { m };
+                self.live_matrix = mul(&m, &s.matrix);
             }
         }
         let mut flags = 0u16;
