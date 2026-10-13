@@ -35,11 +35,16 @@ fn stand_armed_at(sim: &mut nf_view::scene::Sim, at: [f32; 3], to: [f32; 3]) {
 }
 
 /// C1 / the torso half. The friendly driver (skin 0x05000035, dtype 13 → dtypenew 0x17 [M DefaultInit
-/// 0x14b300 case 0x5000035]) starts in TruckDriverInit (0x32, mode 0x17's start [M DroneTypeSettings]) and
-/// — the port ran no handler for it — sat there forever while the old torso-aim gate
-/// (`anim.class == 2 && state != IDLE`) twisted his chest toward Bond. The game: the start anim finishes →
-/// TruckDriverIdle (0x34) [M 0x160bd0 case 5 with the +0x9f2 script cleared], and an unarmed driver never
-/// carries the aim flag [M AnimObjectAimAt 0x1bfe58: `AnimDatumGetWeaponInfo < 0` returns].
+/// 0x14b300 case 0x5000035]) starts in TruckDriverInit (0x32) — Global 0x15b830 msg 1 routes dtypenew
+/// 0x17 there BEFORE its start-script branch (WaitSwitch 0x15b960 case 3 does the same when his channel
+/// fires) — and his START SCRIPT (placement param 1 = 0600011d, 880 frames) plays FROM TruckDriverInit
+/// [M 0x160bd0 case 1 script branch: SetScript(+0x554, 0x24, 0x11a, 0x1e, 0, 5, 0), state held]. He is
+/// in 0x32 the whole 700-frame window of the 05-truck recording's 07000006 segment [L drone 13], then
+/// steps into TruckDriverIdle (0x34) when the script's done [M 0x160bd0 case 5 with the +0x9f2 path
+/// counter clear], and an unarmed driver never carries the aim flag [M AnimObjectAimAt 0x1bfe58:
+/// `AnimDatumGetWeaponInfo < 0` returns]. (The old reading — script-less into 0x34 within 2 ticks — is
+/// what the pre-PlayScript port did; the driver's param 1 is 0600011d, so the game takes the scripted
+/// branch.)
 #[test]
 fn the_truck_driver_reaches_his_idle_state_and_never_twists() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
@@ -47,8 +52,13 @@ fn the_truck_driver_reaches_his_idle_state_and_never_twists() {
     let sim = scene.sim.as_mut().unwrap();
     let di = sim.drones.list.iter().position(|dr| dr.skin == 0x0500_0035).expect("the 07000006 driver (skin 0x05000035)");
     tick_idle(sim, 2);
+    assert_eq!(sim.drones.list[di].state, 0x32,
+        "the driver enters TruckDriverInit and holds it while his start script plays [M 0x160bd0 case 1 script branch; L 05-truck's 07000006 drone 13 in 0x32 for 700 frames]");
+    // Through the script (880 frames, the sit-in-truck one-shot [D nf-extract script-info 0600011d]),
+    // then the script-less idle: case 5 → TruckDriverIdle [M 0x160bd0 case 5, +0x9f2 clear].
+    tick_idle(sim, 920);
     assert_eq!(sim.drones.list[di].state, 0x34,
-        "the driver (no script link in the port) takes TruckDriverInit's script-less branch into TruckDriverIdle [M 0x160bd0 case 1 else]");
+        "the driver steps into TruckDriverIdle when the start script ends [M 0x160bd0 case 5]");
     // Walk armed Bond up to the driver: TruckDriverIdle's NearArmedPerson scares him into CivilianScared →
     // CivilianHiding [M 0x160ed0 case 3 → 0x1787c8], and the old build additionally twisted his torso all the
     // while. fix-party-mission: NearArmedPerson is prop 0x3c + Bond IN SIGHT (+0x228 & 4) + ObjectIsArmed

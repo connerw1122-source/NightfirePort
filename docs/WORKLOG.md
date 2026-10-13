@@ -7191,17 +7191,6 @@ Post-report progress (same session, before the sandbox end):
 - Pushed 1d414f7 (branch s/walkreal-c). The full four-crate suite still owes a pass on a bigger
   box before the merge.
 
----
-fix-final-blockers (10:30 UTC, branch s/fix-final-blockers from master 59d466c): task is the two
-walkreal-c blockers — 07000016 door[7] never opens (state 0x2 through 14 use_door calls; the door
-sits 1.0 below the approach floor) and 0700004a the lift losing its rider mid-shaft at t1620
-(parks at −54.14 as the −52 doors [110]/[111] ch-0x40 open; the game passes CLOSED leaves —
-platform at −52 by t1560, doors open t1610). Plan: reproduce each on the real-input walk tests
-(un-ignore walkreal_07000016_live / walkreal_0700004a_live), root-cause against Door_Activate
-0x135be0 / Door_Update 0x1363c8 and the moving-set door-solid vs rider interaction, fix with
-fail-first NF_ISO tests + sisters (door[0] on 15 opens, a static floor holds Bond). Files:
-door.rs, world.rs, the riding inherit in player.rs/scene.rs, the walk tests. Deadline ~12:28 UTC.
-
 ## verify-bitexact (s/verify-bitexact) — 2026-10-13
 Task: differential testing against the real game's own calls. Build the harness
 (crates/nf-game/tests/diff_calls.rs) that replays every .calls recording from master's
@@ -7255,6 +7244,51 @@ Work Log:
 Stage Summary:
 - Emitter/ripples/flicker/cloud/apocalypse sims live; MoviePlayer + EnvTree sway + SpaceLaser/Missile documented as out of scope (not gameplay blockers — fix-finale-blockers report).
 - Follow-ups listed in the report: the cloud-drift/flicker-tint render hooks, the Apocalypse screen fade, the emitter textures.
+Started. Plan: replay Bond's recorded path from tests/traces/05-truck.trace, 01-doors.trace, 01-raptor.trace,
+02-civilian.trace through nf_view::load + step_bond, compare every drone's state id / position / facing per frame
+against the recording, write first divergences into docs/atlas/drone-port-check.md, then fix from the decompile
+(each fix citing the address, with a fail-first trace-window test).
+
+---
+Task ID: 053
+Agent: fix-ai-traces (worker)
+Task: fix-ai-traces (branch s/fix-ai-traces) — the guards against the real game's recordings
+
+Work Log:
+- Built the replay harness `crates/nf-view/tests/ai_traces_live.rs`: parses the 4 traces, loads the level
+  per segment, places Bond per frame (pos/yaw from the trace, velocity from the frame delta, pad bits →
+  the real input path per docs/systems/input.md §3), steps `Sim::step_bond` + the recorder's cheats via
+  `Dev::after_tick`, and compares every drone's state (`+0x10C`) and position (`obj+0x30`) per frame in
+  DRONE_LIST order, printing the first divergence per drone.
+- Pinned the alignment facts ([L] trace + ee_start_05): the recorder starts mid-run (warm-up K by state
+  match); the 07000005 sniper is spawner-templated then immediately re-spawned (group 1, count 0xffff);
+  obj+0x30.y = feet + the live hip (`DroneAnim_PreTransCallback` 0x13b490 adds the `+0xA0` delta to the
+  root vector's y; a disabled drone's anim never ticks); the user's kills are injected (no pitch in the
+  trace) when the game's list tail aligns shifted.
+- FIXED the earliest divergence (07000001's line 0, both 01 traces): ported **PlayScript (state 3)** —
+  `NDrone2_DSTATE_PlayScript` 0x15ba68, `Drone+0x554` = param 1 (`NDrone2_DefaultInit` 0x14b300), Global
+  0x15b830 enters it when a start script exists; UPDATE runs the opponent look; the resume `+0xCD8` per
+  the decomp's script variants. The first guard's state now matches the game from line 0.
+- Pinned per-trace per-drone matched-frame counts (can only go up); the full suite is green (nf-game 174,
+  nf-view 383; only the 3 allowed disc_golden failures on the slim ISO).
+
+Stage Summary:
+- 02-civilian replays PERFECTLY (24/25 drones, all 1083 frames). 05-truck: drone 2 matches the whole level;
+  the rest hold to the first user kill; two open state divergences (SURRENDER_ANIM at 29828, 0x6F at 36372).
+- Open (documented in docs/atlas/drone-port-check.md + the report): Mayhew's WAIT_SWITCH gating, the
+  0x8c-vs-0x58 cover choice in the first fight, the PlayScript root-motion step, the hip converter's
+  `animobj+0x5c` source, the SURRENDER/0x6F triggers. Live checks listed in the report.
+
+## fix-ai-traces2 (branch s/fix-ai-traces2) — 2026-10-13 — land fix-ai-traces' PlayScript work on master green
+
+Started. Plan: take the held s/fix-ai-traces work (harness + PlayScript port, cherry-picked onto master a2d1d25),
+reproduce the 6 failures the merge hit (truck-driver state 3 vs 52, d15 idle-guard, the two death-drop tests +
+cel-ambient "the guard died", the anim.rs:70 index-out-of-bounds on the start-script pose), fix each from the
+decompile (NDrone2_DefaultInit 0x14b300 vs the TruckDriver init 0x160bd0, the 05-truck trace, the PlayScript
+sequence/key bounds at anim.rs:70), port the UPDATE arm's missing NDrone2_SeenAndAttacking if the evidence allows,
+correct any older test whose expectation the trace/decompile shows wrong, then run the full suite --no-fail-fast
+across all four crates and report the count.
+
 
 ---
 fix-final-blockers outcome (11:50 UTC, branch s/fix-final-blockers): door[7] on 07000016 RESOLVED —
@@ -7353,3 +7387,20 @@ Stage Summary:
 - The composed marker (1.80,-107.66,-6.83) is a VOID column (probe fb6j: no floor -52..-160, only a north wall at z -6.0) — the game's rescue (mode-1 SphereIntersect in Player_Enable 0x195498?) is the live check. The live checks + the --bond spots are in docs/reports/fix-final-blockers2.md.
 - 07000016 progress: the ch-0x24 panel writer FOUND (probe fb9): trigger #0, kind 0x1 mask 0x4 out 0x24, placement 250 at (−15.20, 6.52, −94.56) — an UPPER WALKWAY west of the trench (deck y ≈ 5.71-6.44 at x ≤ −10, z −88..−112; an upper deck also spans x 2..8 at z −106..−112 over door[0]'s approach — the access is the next probe). The door[0] approach lane tightened (west approach + threshold legs arrive cleanly); the through-leg still wedges on the locked door (ch 0x24 can't fire until the panel is reached) — the walk stays parked, the route comments carry the evidence.
 - Verification after the revert: fix_fusebox_cut_live 4 + fix_safe08_live 5 green; nf-game 190/0; nf-formats+nf-audio 80 with only the 3 allowed disc_golden trio; the three nf-view casualties of the candidate fix (the two 07000014 laser/fusebox tests, the 07000008 safe chain) re-verified green.
+---
+Task ID: 053b
+Agent: fix-ai-traces2 (worker)
+Task: fix-ai-traces2 (branch s/fix-ai-traces2) — land fix-ai-traces' PlayScript work on master green
+
+Work Log:
+- Cherry-picked the held s/fix-ai-traces work (harness 14efbfa, PlayScript 71b9e99, pins 2a16d85) onto master a2d1d25; reproduced all 6 held-merge failures.
+- The truck driver: Global 0x15b830 msg 1 routes dtypenew 0x17 → 0x32 BEFORE the start-script branch; TruckDriverInit 0x160bd0 case 1 plays the start script (0600011d, 880 frames) FROM 0x32 and holds; case 5 → 0x34. [L] 05-truck's 07000006 segment: the driver is in 0x32 the whole 700-frame window. fix_drone3's "script-less into 0x34 in 2 ticks" reading corrected with the evidence.
+- PlayScript 0x15ba68 case 5: the natural end (+0x554 = 0) goes to the START state (default/0x60005e6/0x60008ae), CallAnim(0,10,0,0x68,0,0)+AttackTalk held in-state (0x6000168/169), SetDAnimNow(0xf4)+start state (0x60007ac) — the port had mapped the IMPACT resume +0xCD8 onto it. d15 settles into IDLE; fix_npcs green unchanged.
+- The pose: the start scripts are two-window (222ch body + 22ch face); the drone path's last-wins pick took the face track and panicked (gpu_skin, anim.rs:70, index 22 of len 22). New script_pose_drone: every started window plays, per bone the LAST-started window that covers it owns it — the direction settled by [L] (the driver holds position while his body root runs 0.57: the zero-root face track owns his root bone; the single-window guard walks). The widest window fills the rest; the shared-record-byte track counts when its channels cover. Drone::script_frame (root source) last-window the same. value_with bounds its channel read (0.0 past the list — the neutral track).
+- The three death tests aimed once at a guard who now walks his start script (06000169 runs 6.8 units [D script-info]; [L] 01-doors shows him moving inside the script) — they track him per tick now; all assertions after the kill unchanged.
+- Merged origin/master (fix-impacts/research-driving); full suite --no-fail-fast: 284/3 (the allowed disc_golden) + 272/0 + 137/1 = 693 passed / 4 failed.
+- Merge-wave pins (both verified pre-merge-green at fd4ec1b, so not this task's code): ai_05_truck's drone-13 pin 7049 → 5508 (fix-impacts' effect draws joined the RNG stream; the ad5fb7f precedent) re-picked with the reason; the contact walk stalls in PlayerInWay (0x1e — Bond in the lead's lane; the old recovery closed IN) — the recovery now steps Bond back off the lane [M 0x15ea28 case 3], unverified on the merged tree (the walk now exceeds the sandbox's 10-min tool cap).
+
+Stage Summary:
+- The PlayScript port lands: the 6 held failures green, the driver/PlayScript/window-ownership semantics pinned from the decompile + traces. Report: docs/reports/fix-ai-traces2.md.
+- Left: verify the contact walk on the merged tree; the PlayScript impact resume + SeenAndAttacking (live check 2) when evidence arrives; the harness's script-phase warm-up.
