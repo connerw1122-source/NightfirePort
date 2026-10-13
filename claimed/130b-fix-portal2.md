@@ -39,3 +39,6 @@ Pull `master` before you start and before every push: other workers merge into i
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/portal2` (start from `s/fix-portal`, then merge `origin/master` into it).
+
+---
+claimed-by: sandbox3 at 2026-10-13T13:01Z
