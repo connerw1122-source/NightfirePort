@@ -65,13 +65,16 @@ fn panel_give_list_matches_weapon_data() {
     let iso_v = iso();
     let mut scene = nf_view::load_dev(&iso_v, "07000012.bin", false).expect("load 07000012 (the user's level)");
     let wd = scene.sim.as_ref().unwrap().weapons.clone();
-    // The pinned projectile meshes [L ee_start_05.bin @ 0x2bf150 + w*0x10C + 0x5C].
-    assert_eq!(wd.projectile_mesh(0x35), 0x0200_0726, "frag grenade projectile mesh [L]");
-    assert_eq!(wd.projectile_mesh(0x36), 0x0200_071f, "stun grenade projectile mesh [L]");
+    // The pinned projectile meshes [L ee_start_05.bin @ 0x2bf150 + w*0x10C + 0x5C]. The disc labels
+    // name the records [L USATxt.dat]: 0x34 frag, 0x35 stun, 0x36 smoke (fix-explosions2).
+    assert_eq!(wd.projectile_mesh(0x35), 0x0200_0726, "stun grenade projectile mesh [L]");
+    assert_eq!(wd.projectile_mesh(0x36), 0x0200_071f, "smoke grenade projectile mesh [L]");
+    assert_eq!(wd.projectile_mesh(0x34), 0x0200_02af, "frag grenade projectile mesh [L]");
     assert_eq!(wd.projectile_mesh(0x3a), 0x0200_074f, "rocket projectile mesh [L]");
-    // Distinct first-person models (the user: "a frag grenade spawns what looks to be a stun grenade").
-    assert_ne!(wd.first_person(0x35), wd.first_person(0x36), "frag and stun have their own view skins [L]");
-    for &(id, label) in &[(0x35u8, "Frag Grenade"), (0x36, "Stun Grenade"), (0x3a, "Scorpion (rocket launcher)")] {
+    // Distinct first-person models (the user: "a frag grenade spawns what looks to be a stun grenade"
+    // — the panel had the names one id off; fix-explosions2 aligns them with the disc labels).
+    assert_ne!(wd.first_person(0x34), wd.first_person(0x35), "frag and stun have their own view skins [L +0xDC 0x05000041 vs 0x05000070]");
+    for &(id, label) in &[(0x34u8, "Frag Grenade"), (0x35, "Stun Grenade"), (0x3a, "Scorpion (rocket launcher)")] {
         let ticks = give_and_switch(&mut scene, id, label);
         eprintln!("[panel] {label} (0x{id:02x}) equipped in {ticks} ticks, view model: {}",
             scene.view_models.contains_key(&id));
@@ -93,13 +96,13 @@ fn panel_give_list_matches_weapon_data() {
 fn frag_bounces_and_waits_for_the_fuse() {
     let iso_v = iso();
     let mut scene = nf_view::load_dev(&iso_v, "07000015.bin", false).expect("load 07000015");
-    give_and_switch(&mut scene, 0x35, "Frag Grenade");
+    give_and_switch(&mut scene, 0x34, "Frag Grenade");
     let thrown_at = throw_held(&mut scene, true).expect("the frag throw must spawn a grenade projectile");
     eprintln!("[frag] thrown at tick {thrown_at}");
     let sim = scene.sim.as_mut().unwrap();
     let g0 = sim.drones.grenades.last().unwrap().clone();
     eprintln!("[frag] spawn pos {:?} vel {:?} fuse {} radius {}", g0.pos, g0.velocity, g0.range, g0.radius);
-    assert!((g0.radius - 10.0).abs() < 1e-4, "the frag blast radius is weapon_data+0x08 = 10.0 [L 0x35]");
+    assert!((g0.radius - 8.0).abs() < 1e-4, "the frag blast radius is weapon_data+0x08 = 8.0 [L 0x34 'Fragmentation Grenade']");
     // Tick until the explosion (the sim drops exploded grenades from the list; the tick's explosion
     // surfaces in `drones.explosions`), watching the bounce count.
     let mut first_bounce = None;
@@ -124,35 +127,38 @@ fn frag_bounces_and_waits_for_the_fuse() {
         g0.range as u32, exploded_at);
 }
 
-/// The stun grenade explodes with radius 0.0 [L 0x36 +0x08] — `Explode_Propagate` (0x17c518) damages
-/// nobody, so a flashbang can never kill ("The flashbang kills enemies" must stay impossible here).
-/// Sister: the same throw with the FRAG carries radius 10.0 [L 0x35 +0x08] and its explosion damages
-/// a guard standing at the blast.
+/// The stun grenade (0x35 [L USATxt.dat 'Stun Grenade']) NEVER explodes: its `+0x70 & 0x2000` [L
+/// 0x2280] routes `Bullet_DoTrails` 0x12d890's timer death into the flash branch (asm 0x12dd64) —
+/// no `Explode_Create`, so no `explosions` entry and no 0x6000052 fireball; Bond's whiteout sets
+/// instead [M 0x12e0b8]. "The flashbang kills enemies" must stay impossible. Sister: the same throw
+/// with the FRAG (0x34) explodes with radius 8.0 [L 0x34 +0x08] and its blast damages a guard at the
+/// blast (the harness discriminates via the propagate maths).
 #[test]
 fn stun_grenade_never_kills_but_frag_does() {
     let iso_v = iso();
     let mut scene = nf_view::load_dev(&iso_v, "07000015.bin", false).expect("load");
-    give_and_switch(&mut scene, 0x36, "Stun Grenade");
+    give_and_switch(&mut scene, 0x35, "Stun Grenade");
     scene.sim.as_mut().unwrap().bond.pitch = -0.25;
     throw_held(&mut scene, true).expect("stun throw");
-    let mut stun_exploded = false;
-    let mut stun_radius = f32::NAN;
-    for _ in 0..400u32 {
+    let mut stunned = false;
+    let mut flash_at = None;
+    for t in 0..400u32 {
         let sim = scene.sim.as_mut().unwrap();
         sim.step_bond(Input::default(), false, false, false);
-        if let Some(&(_, r, _, _, wt)) = sim.drones.explosions.iter().find(|&&(_, _, _, _, wt)| wt == 0x36) {
-            stun_exploded = true; stun_radius = r; break;
-        }
+        if flash_at.is_none() && sim.drones.health.flashbang > 0.0 { flash_at = Some(t); }
+        if sim.drones.explosions.iter().any(|&(_, _, _, _, wt)| wt == 0x35) { stunned = false; break; }
+        if flash_at.is_some() && t > flash_at.unwrap() + 5 { stunned = true; break; }
     }
-    eprintln!("[stun-vs-frag] stun exploded: {stun_exploded} radius {stun_radius}");
-    assert!(stun_exploded, "the stun grenade must explode at its fuse");
-    assert!(stun_radius == 0.0, "the stun blast radius is weapon_data+0x08 = 0.0 [L 0x36]");
-    // Radius 0 → `Explode_Propagate` damages nobody: a guard AT the blast takes nothing.
-    let hits = nf_game::grenade::explode_propagate([0.0; 3], stun_radius, 100.0, &[(0, [0.5, 0.0, 0.5])], [50.0; 3], 1.8);
+    eprintln!("[stun-vs-frag] flash at {flash_at:?}, explosions entry: {}", !stunned);
+    assert!(stunned, "the stun grenade's death is the flash branch: the whiteout sets, no explosions entry [M 0x12df58-0x12e130]");
+    assert!(flash_at.is_some(), "Bond's whiteout set (Player_SetFlashBang) [M 0x12e0b8]");
+    // The flash branch carries no damage — `Explode_Propagate` never runs for it; a guard AT the
+    // flash takes nothing (the propagate maths below is the discriminating sister).
+    let hits = nf_game::grenade::explode_propagate([0.0; 3], 0.0, 100.0, &[(0, [0.5, 0.0, 0.5])], [50.0; 3], 1.8);
     assert!(hits.drones.is_empty() && hits.player == 0.0, "radius 0 must damage nobody [M 0x17c518]");
-    // Sister: the frag's radius 10.0 [L] at the same spot damages the guard (the harness discriminates).
-    let hits = nf_game::grenade::explode_propagate([0.0; 3], 10.0, 100.0, &[(0, [0.5, 0.0, 0.5])], [50.0; 3], 1.8);
-    assert_eq!(hits.drones.len(), 1, "the frag's blast (radius 10) reaches the guard 1 unit away");
+    // Sister: the frag's radius 8.0 [L 0x34] at the same spot damages the guard (the harness discriminates).
+    let hits = nf_game::grenade::explode_propagate([0.0; 3], 8.0, 100.0, &[(0, [0.5, 0.0, 0.5])], [50.0; 3], 1.8);
+    assert_eq!(hits.drones.len(), 1, "the frag's blast (radius 8) reaches the guard 1 unit away");
     assert!(hits.drones[0].1 > 0.0);
 }
 

@@ -7191,17 +7191,6 @@ Post-report progress (same session, before the sandbox end):
 - Pushed 1d414f7 (branch s/walkreal-c). The full four-crate suite still owes a pass on a bigger
   box before the merge.
 
----
-fix-final-blockers (10:30 UTC, branch s/fix-final-blockers from master 59d466c): task is the two
-walkreal-c blockers — 07000016 door[7] never opens (state 0x2 through 14 use_door calls; the door
-sits 1.0 below the approach floor) and 0700004a the lift losing its rider mid-shaft at t1620
-(parks at −54.14 as the −52 doors [110]/[111] ch-0x40 open; the game passes CLOSED leaves —
-platform at −52 by t1560, doors open t1610). Plan: reproduce each on the real-input walk tests
-(un-ignore walkreal_07000016_live / walkreal_0700004a_live), root-cause against Door_Activate
-0x135be0 / Door_Update 0x1363c8 and the moving-set door-solid vs rider interaction, fix with
-fail-first NF_ISO tests + sisters (door[0] on 15 opens, a static floor holds Bond). Files:
-door.rs, world.rs, the riding inherit in player.rs/scene.rs, the walk tests. Deadline ~12:28 UTC.
-
 ## verify-bitexact (s/verify-bitexact) — 2026-10-13
 Task: differential testing against the real game's own calls. Build the harness
 (crates/nf-game/tests/diff_calls.rs) that replays every .calls recording from master's
@@ -7228,6 +7217,37 @@ by G-017/G-024 with the repro. Suite: escort walk green on the final state + dif
 the full-suite re-run timed out (sandbox) after the revert — sim paths are otherwise byte-identical to
 master's. Shared-file hooks: lib.rs (pub mod ps2math), nf-extract main.rs (Player.capsule compile fix;
 pose-check level names take the FILES.BIN .bin names). Report: docs/reports/verify-bitexact.md.
+## fix-explosions (s/fix-explosions) — 2026-10-13
+Task: port Explode_Create and the explosion entity (lifetime, visual script 0x6000052,
+camera shake, sound, damage falloff through Explode_Propagate's 12 per-type cases),
+explosive objects (barrels), grenade/rocket impacts. Grenade follow-ups: frag has bounce
+sound but no explosion sound/effect; flashbang kills enemies instead of stunning.
+SimpleScript 0xE2: activation, keyframe playback, collision, rolling-barrel damage,
+open/closed pairs. 0700000d C5 door laser sequence if time. Started 11:08 UTC, sandbox
+expires ~13:08 UTC.
+
+**fix-explosions outcome (12:26 UTC)**: the three grenade bugs are fixed against the decompile. (1)
+The blast damage was the hardcoded 100 — the disassembly of the fuse call site (0x12cd98: f12/f14 =
+weapon_data+0x08/0x0C → Explode_Create's f13 radius / f14 damage; the `addiu $t2, 0x64` u8 is never
+read) and the disc records (frag 0x35 = 10/0, flashbang 0x36 = 0/0, mine 0x37 = 8/100) re-locked
+every throw to the per-type values; the frag now damages nobody (the user's "kills on impact /
+damages Bond" was the hardcode), the mine/rocket still kill. (2) The blast sound: the old 0x4A7 was
+Bullet_CollisionHandler's rest-impact sound of 0x3B/0x45; the blast is script 0x6000052's own
+Sound(0x3E) [D stream 36], riding the script player's Request::Sound. (3) The flashbang stun: the
+game's path is Bullet_DoTrails 0x12d890's +0x70 & 0x2000 death branch — sound 0x16, Light(10,5,white),
+Gas_Init, Camera_Shake(2), Bond whiteout (Player_SetFlashBang falloff) and ≤20 u drones → msg 0x18 →
+StunGrenadeImpact 0x4D (no HitDamage) — ported with the 0x4D/0x4E/0x4F family (recover 7200 ticks =
+DroneFunc_RecoverTime with stats-default +0xB9 = 0; anims 0x2D/0x2E/0x76; msg 8/9 → 0x44). New
+`crates/nf-game/src/explode.rs` carries the explosion entity and the full 12-case Explode_Propagate
+(with the game's (int)-truncated falloff and the 0x21 ≥1.0 gate); `PlayerHealth.flashbang` +
+`Drones::shake` expose the whiteout/shake to the view (the render consumption is the remaining
+half). Tests: explode.rs unit tests (lifetime 15, truncation, radius-0 no-op, smash gate), new
+`explode_live.rs` (frag no-damage + mine damage + the flash stun/kill through the real Sim path),
+fix_player3_live's grenade test re-locked to the game. Suite: nf-game/formats/audio + 84 nf-view
+binaries green (only the 3 disc_golden bigf fails, the slim-ISO allowance). Left: the view-side
+shake/whiteout draws, the stun weapon drop, barrels (Propagate's break/destroy targets), the
+SimpleScript 0xE2 work and the 0700000d C5 door — report: docs/reports/fix-explosions.md.
+
 ---
 Task: fix-world-fx
 Agent: fix-world-fx worker
@@ -7255,6 +7275,51 @@ Work Log:
 Stage Summary:
 - Emitter/ripples/flicker/cloud/apocalypse sims live; MoviePlayer + EnvTree sway + SpaceLaser/Missile documented as out of scope (not gameplay blockers — fix-finale-blockers report).
 - Follow-ups listed in the report: the cloud-drift/flicker-tint render hooks, the Apocalypse screen fade, the emitter textures.
+Started. Plan: replay Bond's recorded path from tests/traces/05-truck.trace, 01-doors.trace, 01-raptor.trace,
+02-civilian.trace through nf_view::load + step_bond, compare every drone's state id / position / facing per frame
+against the recording, write first divergences into docs/atlas/drone-port-check.md, then fix from the decompile
+(each fix citing the address, with a fail-first trace-window test).
+
+---
+Task ID: 053
+Agent: fix-ai-traces (worker)
+Task: fix-ai-traces (branch s/fix-ai-traces) — the guards against the real game's recordings
+
+Work Log:
+- Built the replay harness `crates/nf-view/tests/ai_traces_live.rs`: parses the 4 traces, loads the level
+  per segment, places Bond per frame (pos/yaw from the trace, velocity from the frame delta, pad bits →
+  the real input path per docs/systems/input.md §3), steps `Sim::step_bond` + the recorder's cheats via
+  `Dev::after_tick`, and compares every drone's state (`+0x10C`) and position (`obj+0x30`) per frame in
+  DRONE_LIST order, printing the first divergence per drone.
+- Pinned the alignment facts ([L] trace + ee_start_05): the recorder starts mid-run (warm-up K by state
+  match); the 07000005 sniper is spawner-templated then immediately re-spawned (group 1, count 0xffff);
+  obj+0x30.y = feet + the live hip (`DroneAnim_PreTransCallback` 0x13b490 adds the `+0xA0` delta to the
+  root vector's y; a disabled drone's anim never ticks); the user's kills are injected (no pitch in the
+  trace) when the game's list tail aligns shifted.
+- FIXED the earliest divergence (07000001's line 0, both 01 traces): ported **PlayScript (state 3)** —
+  `NDrone2_DSTATE_PlayScript` 0x15ba68, `Drone+0x554` = param 1 (`NDrone2_DefaultInit` 0x14b300), Global
+  0x15b830 enters it when a start script exists; UPDATE runs the opponent look; the resume `+0xCD8` per
+  the decomp's script variants. The first guard's state now matches the game from line 0.
+- Pinned per-trace per-drone matched-frame counts (can only go up); the full suite is green (nf-game 174,
+  nf-view 383; only the 3 allowed disc_golden failures on the slim ISO).
+
+Stage Summary:
+- 02-civilian replays PERFECTLY (24/25 drones, all 1083 frames). 05-truck: drone 2 matches the whole level;
+  the rest hold to the first user kill; two open state divergences (SURRENDER_ANIM at 29828, 0x6F at 36372).
+- Open (documented in docs/atlas/drone-port-check.md + the report): Mayhew's WAIT_SWITCH gating, the
+  0x8c-vs-0x58 cover choice in the first fight, the PlayScript root-motion step, the hip converter's
+  `animobj+0x5c` source, the SURRENDER/0x6F triggers. Live checks listed in the report.
+
+## fix-ai-traces2 (branch s/fix-ai-traces2) — 2026-10-13 — land fix-ai-traces' PlayScript work on master green
+
+Started. Plan: take the held s/fix-ai-traces work (harness + PlayScript port, cherry-picked onto master a2d1d25),
+reproduce the 6 failures the merge hit (truck-driver state 3 vs 52, d15 idle-guard, the two death-drop tests +
+cel-ambient "the guard died", the anim.rs:70 index-out-of-bounds on the start-script pose), fix each from the
+decompile (NDrone2_DefaultInit 0x14b300 vs the TruckDriver init 0x160bd0, the 05-truck trace, the PlayScript
+sequence/key bounds at anim.rs:70), port the UPDATE arm's missing NDrone2_SeenAndAttacking if the evidence allows,
+correct any older test whose expectation the trace/decompile shows wrong, then run the full suite --no-fail-fast
+across all four crates and report the count.
+
 
 ---
 fix-final-blockers outcome (11:50 UTC, branch s/fix-final-blockers): door[7] on 07000016 RESOLVED —
@@ -7428,6 +7493,44 @@ NF_ISO impacts_live (wall decal at hit+0.01 with the surface normal/mesh, sky sh
 lands in lifetime, bit-for-bit seeded rerun). Known: `guard_takes_cover_like_the_game` needs its seed
 re-picked (0072's procedure — the impact draws joined the stream, as the game's own do). Report:
 docs/reports/fix-impacts.md.
+---
+Task: fix-explosions2
+Agent: fix-explosions2 worker
+Branch: s/fix-explosions2 (from origin/s/fix-explosions 88189da, merged origin/master 78d73e0)
+
+Work Log:
+- Sandbox kept: repo, work/, onfoot ISO, nf-queue present. Leftover WIP probe from the interrupted
+  fix-final-blockers2 session committed to its own branch (walkreal_probe_fb6.rs t2190 rays) and pushed.
+- Branch created from s/fix-explosions, master merged (only WORKLOG.md conflicted, both sides kept).
+
+Stage Summary:
+- Task: find the frag grenade's real damage path (fix-explosions read weapon 0x35 as radius 10 / damage 0,
+  making frags harmless and re-locking the grenade test to that), show it with evidence, land the fix with
+  the real falloff; keep the good parts (no on-impact kill, blast sound, flashbang stun no-damage, mine/rocket 8/100).
+
+---
+Task: fix-explosions2 (progress)
+Work Log:
+- RESEARCH DONE: the frag's real damage path FOUND. The weapon-id mapping fix-explosions used was shifted
+  by one: the disc name labels (Txt_BindLabel, weapon_data+0x38 SP name, resolved against USATxt.dat with the
+  game's own fixup algorithm — Bank[k] = offsets[k-2], FixupTable = [0,1000,1812,1903,1958,2065,2183]) say:
+  0x34 = 'Fragmentation Grenade' (radius 8, damage 100), 0x35 = 'Stun Grenade' (10/0, +0x70 0x2280), 0x36 =
+  'Smoke Grenade' (0/0, +0x70 0x20280), 0x37/38/39 = 'Remote Mine' (8/100), 0x3a = 'Laser Tripbomb' (8/100),
+  0x3b-0x40 = 'Satchel Charge' (8/2000). The frag's kill: Bullet_DoTrails 0x12d890's timer-death branch
+  (gate +0x70 & 0x200, asm 0x12dd2c-0x12dd44) → NOT & 0x2000 → NOT & 0x20000 → Explode_Create(wd+8, wd+8,
+  wd+0xC) [asm 0x12e1c0] = radius 8 / damage 100 → Explode_CollisionHandler 0x17cde0 → Explode_Propagate
+  0x17c518 case 2 (drones, Drone_ExplosiveHit → msg 9) / case 3 (Bond, Player_Hurt). The stun = the & 0x2000
+  branch (asm 0x12dd64: ONLY 0x35/0x59/0x5b carry the bit [L sweep]) — the flash/stun path fix-explosions
+  ported, gated on the WRONG id (0x36 = the smoke). The smoke = the & 0x20000 branch (asm 0x12e104: first
+  expiry Occlude_Create + Sound 0x14 + re-arm 1200 ticks, second expiry dies). NDrone2_HitDamage difficulty
+  multipliers [L .data 0x30cab0]: Easy 2.0 / Normal 1.5 / Hard 0.5 — none zero, not the lethality source.
+  DroneWeap_ThrowGrenade sniper pick (0x35, 1/3 → 0x36) and DefaultInit +0xBCC (sel 1→0x36, 2→0x35, 4→0x34,
+  5→count+0x3a, 6→0x6c; 0x7000014 clamp → 0x34) match the port's constants already — comments only.
+
+Stage Summary:
+- Next: re-route the port's flash branch to 0x35 (+0x70 & 0x2000), give 0x36 the smoke branch (sound 0x14,
+  re-arm, no whiteout/stun/script), gate the drone stun broadcast on the player-thrown case, fix the fuse
+  override for 0x37 (420 [M 0x12c5a0:214-223] vs the port's 300), re-lock the tests to the real names.
 
 Task ID: 045o-fix-final-blockers2
 Agent: NightfirePort worker (fix-final-blockers2 session)
@@ -7467,3 +7570,130 @@ STILL RED (2): fix_mission_live::the_07000001_exit_works_end_to_end (Mayhew stal
 11.8; probe: the plate area −36.6,11.8 has NO floor within 6 down — the pad's plane/cel is the next
 dig) and walkreal_0700000c_live (ch 0x1b never fires, fails fast). The full 4-crate suite did not
 fit the window; run it first next session. Everything else: see the report.
+---
+Task ID: 053b
+Agent: fix-ai-traces2 (worker)
+Task: fix-ai-traces2 (branch s/fix-ai-traces2) — land fix-ai-traces' PlayScript work on master green
+
+Work Log:
+- Cherry-picked the held s/fix-ai-traces work (harness 14efbfa, PlayScript 71b9e99, pins 2a16d85) onto master a2d1d25; reproduced all 6 held-merge failures.
+- The truck driver: Global 0x15b830 msg 1 routes dtypenew 0x17 → 0x32 BEFORE the start-script branch; TruckDriverInit 0x160bd0 case 1 plays the start script (0600011d, 880 frames) FROM 0x32 and holds; case 5 → 0x34. [L] 05-truck's 07000006 segment: the driver is in 0x32 the whole 700-frame window. fix_drone3's "script-less into 0x34 in 2 ticks" reading corrected with the evidence.
+- PlayScript 0x15ba68 case 5: the natural end (+0x554 = 0) goes to the START state (default/0x60005e6/0x60008ae), CallAnim(0,10,0,0x68,0,0)+AttackTalk held in-state (0x6000168/169), SetDAnimNow(0xf4)+start state (0x60007ac) — the port had mapped the IMPACT resume +0xCD8 onto it. d15 settles into IDLE; fix_npcs green unchanged.
+- The pose: the start scripts are two-window (222ch body + 22ch face); the drone path's last-wins pick took the face track and panicked (gpu_skin, anim.rs:70, index 22 of len 22). New script_pose_drone: every started window plays, per bone the LAST-started window that covers it owns it — the direction settled by [L] (the driver holds position while his body root runs 0.57: the zero-root face track owns his root bone; the single-window guard walks). The widest window fills the rest; the shared-record-byte track counts when its channels cover. Drone::script_frame (root source) last-window the same. value_with bounds its channel read (0.0 past the list — the neutral track).
+- The three death tests aimed once at a guard who now walks his start script (06000169 runs 6.8 units [D script-info]; [L] 01-doors shows him moving inside the script) — they track him per tick now; all assertions after the kill unchanged.
+- Merged origin/master (fix-impacts/research-driving); full suite --no-fail-fast: 284/3 (the allowed disc_golden) + 272/0 + 137/1 = 693 passed / 4 failed.
+- Merge-wave pins (both verified pre-merge-green at fd4ec1b, so not this task's code): ai_05_truck's drone-13 pin 7049 → 5508 (fix-impacts' effect draws joined the RNG stream; the ad5fb7f precedent) re-picked with the reason; the contact walk stalls in PlayerInWay (0x1e — Bond in the lead's lane; the old recovery closed IN) — the recovery now steps Bond back off the lane [M 0x15ea28 case 3], unverified on the merged tree (the walk now exceeds the sandbox's 10-min tool cap).
+
+Stage Summary:
+- The PlayScript port lands: the 6 held failures green, the driver/PlayScript/window-ownership semantics pinned from the decompile + traces. Report: docs/reports/fix-ai-traces2.md.
+- Left: verify the contact walk on the merged tree; the PlayScript impact resume + SeenAndAttacking (live check 2) when evidence arrives; the harness's script-phase warm-up.
+## fix-ai-remainder (s/fix-ai-remainder) — 2026-10-13
+Task: the guard-AI items open in GAPS G-026/G-023/G-021, in order: SpecialDeath scripted
+deaths, head tracking / aim bone look-at, corpse fading, Bond's 16 hit boxes with per-location
+damage multipliers, reload + other drone weapons, weapon swaps by animation events (G-023),
+missing drone skins via CommonAnimFile + AnimSleeveGetEntity (G-021), drone modes 9/0x12/0x1E
+and Drone_InitComms cover-node order (G-026). Branch from origin/master at 78d73e0.
+Started 12:47 UTC, sandbox expires ~14:44 UTC.
+
+**fix-ai-remainder outcome (14:35 UTC)**: three of the eight items landed; the rest scoped in
+docs/reports/fix-ai-remainder.md. (1) SpecialDeath was already on master (drone.rs `handle_death`,
+the param-13 `+0xBD4` dispatch, test `tower_guards_fall_out_of_the_towers`) — GAPS G-026 updated to
+say so. (2) Head tracking + the aim pitch ported: `Drone::head_yaw/head_pitch/tracking/track_recheck`
+tick through `NDrone2_DoTracking` 0x1479d8's shape (track the opponent from the first sight pass —
+`los`, not the reaction-gated `seen`; Rand(5) on the track start, Rand(10) on the stop, the
+same-target re-decide draws nothing; yaw ±1.1 with 0 beyond 2.6, pitch [-1.0, +0.6]; speed 0.14
+alerted else 0.07; ease back to 0 while the 0x180 aim flag is up) and `Drone::aim_pitch` ports
+`AnimObjectAimAt` 0x1bfe58's second angle (±0.9 mode 0) — `object_pose` applies the head rotation to
+bone 5 alone and the pitch to bone 2 and below, composed R_yaw · R_pitch premultiplied (the game's
+q_yaw ⊗ q_pitch ⊗ q_bone), with the port's axis stand-ins documented. RNG note: the Rand(5)/Rand(10)
+transition draws join the stream — live checks + seed re-picks may be needed like 0072. (3) Corpse
+fading: `Scene::posed_vertices` multiplies the plain character vertices' alpha by the drone's
+`NDrone2_FadeOut` 0x172dd8 alpha (obj+0x106). Tests: `crates/nf-game/tests/fix_ai_remainder_live.rs`
+(head tracks Bond pre-attack, the posed bone-5 delta carries head_yaw and points at Bond, the aim
+owns the pose after ATTACK, the pitch follows Bond's height ±) and
+`crates/nf-view/tests/fix_ai_remainder_live.rs` (the fade alpha reaches the posed vertices; the
+end-to-end kill attempts are listed in the report). Not done (time): Bond's 16 hit boxes, reload
+for every weapon, weapon swaps by anim events (G-023), missing skins (G-021), drone modes
+9/0x12/0x1E + Drone_InitComms cover-node order, the ally-glance half of DoHeadTrackingBehaviour.
+Suite: nf-game lib + the two new test files pass (`--test-threads=1`); the full 4-crate run did not
+fit the sandbox window — the touched crates' slice is green, the rest untouched.
+## fix-menus (s/fix-menus) — 2026-10-13
+Task: port the front end from ACTION.ELF/BASE.ELF — the GameFlow_* state machine and the
+GameState stack: title, main menu, mission select, difficulty, options; pause menu (resume,
+restart, options, quit to menu); mission-complete/failed screens with stats. Game textures,
+fonts, layouts from the disc. nf-view keeps the direct <level> launch; plain nf-view <iso>
+starts at the title. Mouse + keyboard everywhere, headless tests per state transition.
+New crates/nf-view/src/menu.rs, game flow in lib.rs, front-end formats in nf-formats.
+Started 12:32 UTC, sandbox expires ~14:29 UTC.
+
+**fix-menus outcome (13:48 UTC)**: the front end is ported sim-side — `crates/nf-view/src/menu.rs`
+implements the GameFlow GameState stack machine (GameFlow_GetState 0x1c9e80 / PopState 0x1c9eb0 /
+PushState 0x1c9f38 with the 7→8 and 0xb→0xc conversions, GameFlow_Main 0x1c98c8's per-state bodies,
+bootup 0x1c7e78, Reset_MapLoadSettings 0x1d6958's boot load of 0x7000048, ResetMap_LevelToLoad
+0x1d3800's 0x0710xxxx intro wrap, ResetMap_Load 0x1d6360's movie wrap / phase-2 back-map / pop-push-4
+tail) and the front-end pages with the game's own page ids (page table probed out of ACTION.ELF .data:
+0x40000034 P_START, 0x2e P_MAIN, 0x39 P_NFSELECT, 0x47 P_NFDFCTY, 0x68 P_CNOPTIONS, 0xc P_PAUSE,
+0x36 P_NFRESULTS, quit target 0x4000001c): title (240-frame Press-Start flash, legal line 0x375, attract
+count 0xa8c) → main menu → mission select (MissionData 0x2a4350's 9 missions) → difficulty → mission
+launch; pause (C_GCPAUSE 0x204408: resume / restart = ResetMap_LevelToLoad(BaseMap,0,1) / options /
+two-step quit confirm — the game's 0x200 label is literally "QUIT: ARE YOU SURE?" [D USATxt.dat]) and
+results (Mission_Update 0x182c60:74 + P_ENDMISSION 0x216618's restart/continue/quit arms). Draw side:
+`menu_overlay` builds a HudFrame from the game's FONTSerpLight font + 512×448 screen, per page; wired in
+lib.rs — `nf-view <iso>` boots to the title on the 07000048 map, `<level>` direct launch unchanged,
+Esc pauses in a mission, menu loads go through the existing pending_level reload path. Tests: 9 new
+headless `menus_flow` tests (every transition; NF_ISO ones verify the game's own strings). Found: the
+eight Txt ids in P_PAUSE 0x203c28 are the multiplayer scenario names, not pause rows; the single-player
+pause rows live in the disc's page data (not parsed). Full suite green except the 3 allowed disc_golden
+failures (slim ISO); nf-game/nf-formats/nf-audio untouched by this branch. Report:
+docs/reports/fix-menus.md.
+## fix-impacts-render (s/fix-impacts-render) — 2026-10-13
+Task: draw the impact effects with the game's own meshes (G-041/G-025 render pass).
+Replace the flat-colour `effect_quads` placeholder with the game's decal draw
+(`EffectInfo+4` decal meshes per material, surface-plane oriented, depth-tested,
+alpha-blended, no depth write), the `ammo_data+4` casing mesh instances at the
+integrated casing pose, and the `EffectInfo+0x74` debris meshes at particle
+pose/scale/alpha. Write docs/atlas/effect.md (owed by fix-impacts) and update
+GAPS G-041/G-025. Started 12:34 UTC, sandbox expires ~14:33 UTC.
+
+**fix-impacts-render outcome (13:47 UTC)**: the impact effects draw the game's own meshes — the
+flat-colour `effect_quads` placeholder is removed; `Scene::build` instances every distinct
+`EffectInfo+4` decal / `ammo_data+4` casing / `EffectInfo+0x74` debris hash the level archive
+resolves as Effect-layer pools (200/32/128 slots, one `Attachment::effect` (kind, slot, mesh) per
+slot) and `frame_state` poses each slot per frame: decals via `Mat_Align2Dir` 0x1df2a8's
+construction at the stored `hit + normal·0.01` pose (no scale — the size lives in the mesh), casings
+at the integrated euler-spin pose, debris scaled by `obj+0xe8` with age = 255 − alpha (the exact
+tick count — no nf-game change). Leaf GS blend/atest/zwrite ride the disc glists. Tests:
+impacts_live 4/4 (decal slot matrix at the decal pose with the +Z row = surface normal; the P2K
+casing slot carries ammo_data[1] = 0x0200043f and tracks the pose; debris pool + pose/scale; sky
+shot none; bit-for-bit rerun) — shown failing first against the scaffold. Full suite green except
+the 3 allowed disc_golden fails. docs/atlas/effect.md written (the owed entry); GAPS G-041/G-025
+updated. No GPU here — render spots + live checks in docs/reports/fix-impacts-render.md.
+---
+Task: fix-explosions2
+Agent: fix-explosions2 worker
+Branch: s/fix-explosions2
+
+Work Log:
+- Research: the frag's real damage path FOUND — the disc name labels (Txt_BindLabel of weapon_data+0x38,
+  USATxt.dat parsed with the game's own fixup algorithm: Bank[k] = offsets[k-2], FixupTable
+  [0,1000,1812,1903,1958,2065,2183]) name 0x34 'Fragmentation Grenade' (8/100), 0x35 'Stun Grenade'
+  (10/0), 0x36 'Smoke Grenade' (0/0), 0x37-39 'Remote Mine' (8/100), 0x3a 'Laser Tripbomb' (8/100),
+  0x3b-40 'Satchel Charge' (8/2000). fix-explosions' mapping was one id off. The kill path:
+  Bullet_DoTrails 0x12d890's timer death routes on +0x70 flags — & 0x2000 flash (0x35 only [L sweep]),
+  & 0x20000 smoke (Occlude + Sound 0x14 + 1200 re-arm), else Explode_Create(8, 8, 100) → Propagate
+  → the guard dies with the (int)-truncated falloff. Difficulty multipliers [L 0x30cab0]: 2.0/1.5/0.5.
+- Fix: drone.rs routes on the flags (flash/smoke/explode), the flash branch lost the duplicate 0x16 and
+  the wrongful 0x6000052 script, its stun broadcast gated to the player thrower (SP [M 0x12e094]); the
+  smoke re-arm (Grenade.smoke_popped); the mine fuse 420 (0x12c5a0:214-223); panel.rs catalog renamed
+  (the user's "frag looks like a stun grenade" was the one-id-off names); tests re-locked (frag 0x34
+  kills, stun 0x35 stuns with no damage, smoke 0x36 pops). Fail-first: the stun test FAILED on the old
+  id-keyed routing, passes on the flag routing.
+- Suite: nf-game lib 121; NF_ISO explode_live 2/2, fix_player3_live 6/6, fix_weapons_all_live 4/4, all
+  walk/walkreal + the grenade-adjacent binaries green; formats/audio/game green (3 bigf allowed);
+  nf-view green across two full passes. Report: docs/reports/fix-explosions2.md.
+
+Stage Summary:
+- The frag grenade kills like the game (0x34: radius 8 / damage 100 through the real Propagate), the
+  stun grenade stuns (0x35 flash branch), the smoke pops (0x36), the mine fuses 420; the dev panel
+  names match the disc. Left: the smoke's Occlude visual, the whiteout falloff curve, the mine
+  trigger/detonator, the tripbomb laser, the satchel timer — all noted in the report.

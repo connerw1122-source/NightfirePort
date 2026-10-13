@@ -17,6 +17,7 @@ pub mod damage;
 pub mod door;
 pub mod drone;
 pub mod env;
+pub mod explode;
 pub mod gun;
 pub mod grenade;
 pub mod ladder;

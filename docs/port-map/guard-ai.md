@@ -493,8 +493,8 @@ by the developer before acting.
 | 0x1499d0 DroneFunc_ClampPosToCollisionCylinder | Absent | not started |
 | 0x14b190 DroneFunc_NearPlayerCollision | Absent (MP-only) | not started |
 | 0x13aab8 Drone_ExplosiveHit | Sends msg 8 (BULLET) instead of msg 9; no owner tracking (+0x2B4); inline damage double-counts with on_bullet | partial |
-| 0x17cbd0 Explode_Create | Entirely absent (no explosion entity, no lifetime, no camera shake, no script 0x6000052) | not started |
-| 0x17c518 Explode_Propagate | 10 of 12 per-type dispatch cases missing (breakables, MP, turrets, sensors, monitors, subs) | partial |
+| 0x17cbd0 Explode_Create | `explode.rs` (`Explosion::create`): radius/damage from weapon+0x08/0x0C [M 0x12cd98 disasm], lifetime script?+0xAB0:15, scale radius·0.0666, script 0x6000052 via the one-shot player, shake ≥ 0.5 into `Drones::shake` | done (fix-explosions) |
+| 0x17c518 Explode_Propagate | `explode::propagate`: all 12 dispatch cases + the (int)-truncated falloff and the 0x21 ≥1.0 gate; the Sim feeds drones/Bond (break/destroy targets arrive with the dynamic-object pass) | done for the ported lists (fix-explosions) |
 | 0x173658 RecoverFromScaryObject (0x86) | No handler — drone stuck in flee state indefinitely | stub |
 | 0x1431c0 ConsiderExplosive | 14-case weapon-type switch not ported; +0x324 timer, +0x354 resume, +0x340 pos not set | partial |
 | 0x12ce80 Bullet_CollisionHandler | Ricochet path not ported | partial |
@@ -504,7 +504,7 @@ by the developer before acting.
 | 0x173480 GrenadeThrow state | Missing impact msgs 6/7/9/0x17 (HandleImpact not called for non-BULLET impacts) | partial |
 | Multiple states | UNDER_COVER_SNIPER_FIRE, SNIPER_RELOAD, AMBUSH_INIT, AMBUSH_WAIT missing from impact_args — bullets don't damage them | partial |
 | 0x14e018 NDrone2_init_DMODE_Ambush | Not modeled — prop 0x10 read from placement, not set by init | partial |
-| Stun grenade receiving (0x1631c0, 0x163350, 0x172bb0) | Not ported | stub |
+| Stun grenade receiving (0x1631c0, 0x163350, 0x172bb0) | `handle_stun`: 0x4D/0x4E/0x4F with the 7200-tick recover, anims 0x2D/0x2E/0x76, msg-8/9 → 0x44; the weapon drop not modelled; entered from the flash broadcast (Bullet_DoTrails 0x12d890's +0x70 & 0x2000 death branch, msg 0x18) | partial (fix-explosions) |
 
 ### Test audit findings
 
@@ -521,3 +521,18 @@ by the developer before acting.
 - None have been visually verified (no lavapipe in the sandbox) ✗
 - friendly-actor team=2→3 bug FIXED
 - searchlight-tracks-bond and door-anti-crush don't verify a searchlight/door is present (noted)
+
+## fix-explosions2 — the grenade weapon ids and the death-branch routing
+
+The grenade weapon ids, named by the disc labels (`Txt_BindLabel(weapon_data+0x38)`, resolved against
+USATxt.dat with the game's own fixup algorithm — see the report): **0x34 'Fragmentation Grenade'
+(radius 8 / damage 100), 0x35 'Stun Grenade' (10/0), 0x36 'Smoke Grenade' (0/0), 0x37-0x39 'Remote
+Mine' (8/100), 0x3a 'Laser Tripbomb' (8/100), 0x3b-0x40 'Satchel Charge' (8/2000)** [L]. The
+`Bullet_DoTrails` 0x12d890 timer-death branch routes on the weapon's `+0x70` flags [M asm
+0x12dd60/0x12e104/0x12e1c0]: `& 0x2000` → the flash branch (0x35 only among the grenades [L sweep]);
+`& 0x20000` → the smoke branch (0x36: Occlude_Create + Sound 0x14 + a 1200-tick re-arm); else
+`Explode_Create(wd+8, wd+8, wd+0xC)` — the frag/mine/satchel blast. fix-explosions' mapping was one
+id off (it called 0x35 the frag and 0x36 the stun), which made its port stun on the smoke, dud the
+stun throwers, and conclude the frag was harmless. `NDrone2_DefaultInit` 0x14b300's +0xBCC selection
+(1→0x36, 2→0x35, 4→0x34, 5→count+0x3a, 6→0x6c) and `DroneWeap_ThrowGrenade` 0x179558's sniper pick
+(0x35, ⅓ → 0x36) use the same constants the port already had.

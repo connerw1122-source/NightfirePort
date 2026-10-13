@@ -1601,22 +1601,31 @@ impl Sim {
                     let f32_at = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
                     let sdir = nf_game::bullet::spread(dir, f32_at(0x24), flags, &mut self.drones.rng);
                     let speed = f32_at(0x20);
-                    // The fuse is the bullet's BU+0xFC: 210 ticks, 300 when weapon +0x70 & 0x10000 —
-                    // hardcoded in `Bullet_init` (0x12c5a0:103, :196), NOT weapon_data+0x1C (0x35's +0x1C
-                    // is 5000.0 [L ee_start_07000001.bin, audit fix-player2 claim 8]). The port's
-                    // `Grenade.range` doubles as the tick fuse.
+                    // The fuse is the bullet's BU+0xFC: 210 ticks, 300 when weapon +0x70 & 0x10000, the
+                    // mine 0x37 → 420 (7777.0 for a player owner — trigger-detonated; the port has no
+                    // detonator and keeps 420) — hardcoded in `Bullet_init` (0x12c5a0:103,196-223), NOT
+                    // weapon_data+0x1C (0x34's +0x1C is 5000.0 [L ee_start_07000001.bin, audit
+                    // fix-player2 claim 8]). The port's `Grenade.range` doubles as the tick fuse.
+                    let wt = u16::from_le_bytes([w[2], w[3]]);
                     let fuse = if u32::from_le_bytes(w[0x70..0x74].try_into().unwrap()) & 0x10000 != 0 { 300.0 } else { 210.0 };
-                    // The blast damage: `Explode_Create`'s damage arg is the hardcoded 100
-                    // [M disasm 0x12cd98/0x12ce18: `addiu $t2, $zero, 0x64` → Explode_Propagate's amount via
-                    // EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15); radius = $f12 =
-                    // weapon_data+0x08]. +0x0C is the damage multiplier (weapon-data.md), not the amount.
+                    let fuse = if wt == 0x37 { 420.0 } else { fuse };
+                    // The blast damage: `weapon_data+0x0C` [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` →
+                    // Explode_Create's f14 → EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15);
+                    // radius = $f12/$f13 = weapon_data+0x08]. The `addiu $t2, $zero, 0x64` (100) is the
+                    // 10th argument, an u8 `Explode_Create` never reads (its prologue — 0x17cbd0 — reads
+                    // only a0-a3, f12-f14, t3 and the stack u16). fix-explosions2: the disc labels name
+                    // the records [L USATxt.dat] — the frag is 0x34 'Fragmentation Grenade' (radius 8,
+                    // damage 100: the real kill through Explode_Propagate), 0x35 'Stun Grenade' (10/0,
+                    // the flash branch), 0x36 'Smoke Grenade' (0/0, the occlude/re-arm branch). The old
+                    // hardcode's sin was killing with EVERY type and on impact; the per-type records
+                    // route each grenade to its own death branch [M 0x12dd60/0x12e104/0x12e1c0].
                     self.drones.grenades.push(nf_game::grenade::Grenade {
                         pos: camera,
                         velocity: [sdir[0] * speed, sdir[1] * speed, sdir[2] * speed],
-                        speed, travelled: 0.0, range: fuse, damage: 100.0, radius: f32_at(0x08),
-                        weapon_type: u16::from_le_bytes([w[2], w[3]]),
+                        speed, travelled: 0.0, range: fuse, damage: f32_at(0x0c), radius: f32_at(0x08),
+                        weapon_type: wt,
                         mesh: self.weapons.projectile_mesh(self.gun.weapon as usize),
-                        owner: usize::MAX, state: 0, bounces: 0,
+                        owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false,
                     });
                 } else {
                     self.last_shot = Some(self.drones.frame);
@@ -2008,51 +2017,6 @@ impl Sim {
         out
     }
 
-    /// fix-impacts: this frame's effect vertices in world space — the bullet decals as surface-oriented
-    /// quads (`Effect_Bullet` 0x1ce8a8's pool: pos already carries the +0.01 normal offset, the quad
-    /// lies in the surface plane via the normal's tangent basis, G-041), the debris as scaled
-    /// billboards (`Debris_Create` 0x1aaa00's class-0x40 objects) and the casings as small billboards
-    /// (`Bullet_init_casing` 0x12f678's 32-slot pool). The real meshes/textures (decal hashes
-    /// 0x02000122/126/127/128/262, casing `ammo_data+4`, debris `EffectInfo+0x74`) are the main
-    /// agent's render pass — these vertices are where they go and how big they are. Additive hook.
-    pub fn effect_quads(&self, right: [f32; 3], up: [f32; 3]) -> Vec<Vertex> {
-        let mut out = Vec::new();
-        // Decals: a 0.12-unit quad in the surface plane.
-        let h = 0.06;
-        for d in &self.drones.effects.decals {
-            let n = d.normal;
-            let basis = nf_game::effect::orthonormal_basis_sum(n);
-            // The basis sum is tangential; use it and the normal×sum as the quad's two axes.
-            let t1 = [basis[0], basis[1], basis[2]];
-            let tl = (t1[0] * t1[0] + t1[1] * t1[1] + t1[2] * t1[2]).sqrt();
-            let t1 = if tl > 1e-6 { [t1[0] / tl, t1[1] / tl, t1[2] / tl] } else { [1.0, 0.0, 0.0] };
-            let t2 = [n[1] * t1[2] - n[2] * t1[1], n[2] * t1[0] - n[0] * t1[2], n[0] * t1[1] - n[1] * t1[0]];
-            let c = |sr: f32, su: f32, uv: [f32; 2]| Vertex {
-                pos: [d.pos[0] + (t1[0] * sr + t2[0] * su) * h, d.pos[1] + (t1[1] * sr + t2[1] * su) * h, d.pos[2] + (t1[2] * sr + t2[2] * su) * h],
-                uv, rgba: [40, 35, 30, 200], nrm: [0; 4],
-            };
-            let (a, b, cc, d2) = (c(-1.0, -1.0, [0.0, 1.0]), c(1.0, -1.0, [1.0, 1.0]), c(1.0, 1.0, [1.0, 0.0]), c(-1.0, 1.0, [0.0, 0.0]));
-            out.extend_from_slice(&[a, b, cc, a, cc, d2]);
-        }
-        // Debris: camera billboards at the particle's scale.
-        for p in &self.drones.effects.debris {
-            let s = p.scale.max(0.02);
-            let (r, u) = (right.map(|v| v * s), up.map(|v| v * s));
-            let c = |sr: f32, su: f32, uv: [f32; 2]| Vertex { pos: [p.pos[0] + r[0] * sr + u[0] * su, p.pos[1] + r[1] * sr + u[1] * su, p.pos[2] + r[2] * sr + u[2] * su], uv, rgba: [140, 130, 120, p.alpha], nrm: [0; 4] };
-            let (a, b, cc, d) = (c(-1.0, -1.0, [0.0, 1.0]), c(1.0, -1.0, [1.0, 1.0]), c(1.0, 1.0, [1.0, 0.0]), c(-1.0, 1.0, [0.0, 0.0]));
-            out.extend_from_slice(&[a, b, cc, a, cc, d]);
-        }
-        // Casings: small bright billboards (the mesh instances are the render pass's).
-        for c in self.drones.casings.visible() {
-            let s = 0.04;
-            let (r, u) = (right.map(|v| v * s), up.map(|v| v * s));
-            let v = |sr: f32, su: f32, uv: [f32; 2]| Vertex { pos: [c.pos[0] + r[0] * sr + u[0] * su, c.pos[1] + r[1] * sr + u[1] * su, c.pos[2] + r[2] * sr + u[2] * su], uv, rgba: [200, 160, 60, 255], nrm: [0; 4] };
-            let (a, b, cc, d) = (v(-1.0, -1.0, [0.0, 1.0]), v(1.0, -1.0, [1.0, 1.0]), v(1.0, 1.0, [1.0, 0.0]), v(-1.0, 1.0, [0.0, 0.0]));
-            out.extend_from_slice(&[a, b, cc, a, cc, d]);
-        }
-        out
-    }
-
     /// The live animated script object from `src` (script hash, stream) on `skin`: its animation script and frame.
     pub fn script_anim(&self, src: (u32, u8), skin: u32) -> Option<(u32, f32)> {
         self.drones.scripts.objects.list.iter().flatten().rev().find_map(|o| match o {
@@ -2060,6 +2024,7 @@ impl Sim {
             _ => None,
         })
     }
+
 
     /// The world matrix of the live script entity `hash` from `src`.
     pub fn script_entity(&self, src: (u32, u8), hash: u32) -> Option<Mat4> {
@@ -2155,6 +2120,14 @@ pub struct Attachment {
     /// `Some(slot)`: a gas/smoke puff (`Gas_Init` 0x1aacc8) showing `sim.drones.gas.puffs[slot]` —
     /// a billboarded `smoke_1_dust` quad scaled by the puff's scale, faded by its rgba.
     pub gas: Option<u16>,
+    /// fix-impacts-render: an impact-effect draw slot — kind 0 a bullet decal (`Effect_Bullet`
+    /// 0x1ce8a8's 200-node FIFO, `sim.drones.effects.decals[slot]`), kind 1 a shell casing
+    /// (`Bullet_InitCasingLists` 0x12fd48's 32-object pool, `sim.drones.casings.list[slot]`),
+    /// kind 2 a debris particle (`Debris_Create` 0x1aaa00, `sim.drones.effects.debris[slot]`).
+    /// The u32 is the slot's mesh hash (one instance per distinct `EffectInfo`/`ammo_data` hash
+    /// the level archive resolves, the `hashtable_set_sub_object_to_entity_gfx` mesh); the slot
+    /// draws only while the live effect carries THAT mesh — free slots collapse far below the world.
+    pub effect: Option<(u8, usize, u32)>,
 }
 
 /// Viewer switches that change what the game state would be.
@@ -2509,6 +2482,22 @@ fn tracer_matrix(b: &nf_game::bullet::Bullet) -> Mat4 {
     m
 }
 
+/// fix-impacts-render: a shell casing's draw matrix. `Bullet_casing_update` 0x12faa0 adds the eject spin to the
+/// object's euler every tick (`rot(+0x50..+0x5b) += spin` [M]); `Bullet_init_casing_ex` 0x12f678 starts the euler
+/// at the spherical angles of the eject direction (`vecutil_cartesian_to_spherical_acc`, obj+0x58 = 0 [M]). The
+/// port reconstructs the eject direction by undoing the tick gravity (`vel[1] += GRAVITY·REC²·age`) and takes the
+/// tracer's +Z euler convention for it [S — the game eulers the weapon-local dir through the view-model basis;
+/// the port's eject origin/basis is already a documented stand-in, docs/atlas/effect.md].
+fn casing_matrix(c: &nf_game::casing::Casing) -> Mat4 {
+    let g = 9.8 * (1.0 / 60.0) * (1.0 / 60.0);
+    let v0 = [c.vel[0], c.vel[1] + g * c.age, c.vel[2]];
+    let horiz = (v0[0] * v0[0] + v0[2] * v0[2]).sqrt();
+    let pitch0 = -v0[1].atan2(horiz);
+    let yaw0 = v0[0].atan2(v0[2]);
+    let eul = [pitch0 + c.spin[0] * c.age, yaw0 + c.spin[1] * c.age, c.spin[2] * c.age];
+    nf_formats::placement::object_matrix(eul, c.pos)
+}
+
 /// Tracer slots (bullets drawn at once).
 const TRACER_SLOTS: usize = 32;
 /// Projectile mesh slots (`models-weapons-items`): 0..GRENADE_SLOTS are the simulation's grenades
@@ -2518,6 +2507,12 @@ const TRACER_SLOTS: usize = 32;
 /// shows (`Bullet_update` disasm 0x12e8f0 [M]).
 const GRENADE_SLOTS: usize = 8;
 const PLAYER_BULLET_SLOTS: usize = 8;
+/// fix-impacts-render: the impact-effect draw pools. Decals: the game's 200-node FIFO
+/// (`Effect_InitLists` 0x1cf268: `DList_Init(0x3496e0, 0x60, 200)` [M]). Casings: the 32-object
+/// round-robin pool (`Bullet_InitCasingLists` 0x12fd48 [M]). Debris: unbounded in the game (a
+/// class-0x40 object per particle, ≤ 6 per impact, ≤ ~54 ticks) — the port caps the draw slots.
+const DECAL_SLOTS: usize = 200;
+const DEBRIS_SLOTS: usize = 128;
 
 /// The drone's height state after `DroneAnim_PreTransCallback` (0x13b490): `Drone+0xA0` = hip height − 0.02, at least
 /// 0.2 (it starts at 1.0 and keeps its value while the hip height is 0).
@@ -2753,10 +2748,10 @@ impl Scene {
             let character = characters.len() as u32 - 1;
             add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
             let local = anim::quat_trans_to_mat(dt.q, dt.t);
-            attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None });
+            attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None, effect: None });
             // The same gun as a pickup once the drone drops it.
             add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-            attachments.push(Attachment { character, bone: 0, local, flash: None, tracer: None, dropped: true, projectile: None, script: None, gas: None });
+            attachments.push(Attachment { character, bone: 0, local, flash: None, tracer: None, dropped: true, projectile: None, script: None, gas: None, effect: None });
             // Its muzzle flash: `DroneWeap_FireWeapon` asks `AnimGetBoneWorldTrans(obj, datum id, 1, …)`, which looks up
             // the datum whose id is id + 1 — the muzzle (07000005: 8 → 9 at x −0.77, 16 → 17 at x −1.18).
             if let Some((fmesh, rgb)) = wd.muzzle_flash(weapon as u8) {
@@ -2764,7 +2759,7 @@ impl Scene {
                 if let (Some(&(fmap, fobject)), Some(md)) = (level.by_hash.get(&fmesh), muzzle) {
                     let finst = Instance { map: fmap, object: fobject, ..winst };
                     add_instance(level, &finst, Layer::Effect, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb), tracer: None, dropped: false, projectile: None, script: None, gas: None });
+                    attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb), tracer: None, dropped: false, projectile: None, script: None, gas: None, effect: None });
                 }
             }
         }
@@ -2792,7 +2787,7 @@ impl Scene {
                     let Some(&(pmap, pobject)) = part.and_then(|h| level.by_hash.get(&h)) else { continue };
                     let pinst = Instance { map: pmap, object: pobject, matrix: ident, placement: placement.clone() };
                     add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None });
+                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None, effect: None });
                 }
                 // The muzzle flash (`Player_MuzzleFlash`): mesh `weapon+0x48` on datum 0, colour (+0x56, +0x55, +0x54).
                 let r = &wd.records[wid as usize];
@@ -2800,7 +2795,7 @@ impl Scene {
                 if let (Some(&(fmap, fobject)), Some(dt)) = (level.by_hash.get(&flash), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
                     let finst = Instance { map: fmap, object: fobject, matrix: ident, placement: placement.clone() };
                     add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, projectile: None, script: None, gas: None });
+                    attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, projectile: None, script: None, gas: None, effect: None });
                 }
                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None, script: None });
                 view_models.insert(wid, ci as usize);
@@ -2842,7 +2837,7 @@ impl Scene {
                                     let Some(&(map, object)) = part.and_then(|ph| level.by_hash.get(&ph)) else { continue };
                                     let pinst = Instance { map, object, matrix: ident, placement: placement.clone() };
                                     add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None });
+                                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None, effect: None });
                                 }
                                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones, start: None, role: drone::SpawnRole::Placed, floor: None, script: Some((h, si as u8)) });
                                 script_objects += 1;
@@ -2866,7 +2861,7 @@ impl Scene {
                                                 let winst = Instance { map: wmap, object: wobject, matrix: ident, placement: placement.clone() };
                                                 add_instance(level, &winst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                                                 let local = anim::quat_trans_to_mat(dt.q, dt.t);
-                                                attachments.push(Attachment { character: ci, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None });
+                                                attachments.push(Attachment { character: ci, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None, effect: None });
                                             } else { weapons_missing += 1; }
                                         } else { weapons_missing += 1; }
                                     }
@@ -2878,7 +2873,7 @@ impl Scene {
                                 let Some(&(map, object)) = level.by_hash.get(&hash) else { continue };
                                 let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
                                 add_instance(level, &inst, Layer::Character, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                                attachments.push(Attachment { character: 0, bone: 0, local: ident, flash: None, tracer: None, dropped: false, projectile: None, script: Some((h, si as u8, hash)), gas: None });
+                                attachments.push(Attachment { character: 0, bone: 0, local: ident, flash: None, tracer: None, dropped: false, projectile: None, script: Some((h, si as u8, hash)), gas: None, effect: None });
                                 script_objects += 1;
                             }
                             _ => {}
@@ -2893,7 +2888,7 @@ impl Scene {
             for slot in 0..TRACER_SLOTS {
                 let tinst = Instance { map: tmap, object: tobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
                 add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false, projectile: None, script: None, gas: None });
+                attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false, projectile: None, script: None, gas: None, effect: None });
             }
         }
         // Projectile meshes (`models-weapons-items`): a bullet whose weapon has a `+0x5C` mesh draws THAT mesh
@@ -2902,7 +2897,7 @@ impl Scene {
         // bullet's matrix, aligned to the flight direction (`Bullet_init` 0x12c5a0:185
         // `Mat_Align2Dir(obj+0x90, dir, up (0,1,0) [L ee_start_05.bin @0x2d6210], fallback (1,0,0) @0x2d6220)`),
         // while the position lives in `obj+0x30` (the per-tick tail 0x12f1ac-0x12f1e4 moves `obj+0x30..0x38` only).
-        // Grenades are gravity bullets: the frag (0x35 → 0x02000726), the stun (0x36 → 0x0200071f), the mine
+        // Grenades are gravity bullets: the stun (0x35 → 0x02000726), the smoke (0x36 → 0x0200071f), the mine
         // (0x37 → 0x02000a6e) and the rocket (0x3A → 0x0200074f) all show their body in flight [L ee_start_05.bin].
         // The port pools the slots like the tracers: GRENADE_SLOTS grenades, then TRACER_SLOTS drone bullets,
         // then PLAYER_BULLET_SLOTS of Bond's. One instance per (slot, mesh) for every distinct projectile mesh the
@@ -2927,11 +2922,48 @@ impl Scene {
             for slot in 0..proj_slots {
                 let pinst = Instance { map: pmap, object: pobject, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: pslot_placement.clone() };
                 add_instance(level, &pinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                attachments.push(Attachment { character: 0, bone: 0, local: pinst.matrix, flash: None, tracer: None, dropped: false, projectile: Some((slot as u8, mesh)), script: None, gas: None });
+                attachments.push(Attachment { character: 0, bone: 0, local: pinst.matrix, flash: None, tracer: None, dropped: false, projectile: Some((slot as u8, mesh)), script: None, gas: None, effect: None });
             }
         }
         for (inst, follows_camera) in &sky {
             add_instance(level, inst, if *follows_camera { Layer::SkyCamera } else { Layer::SkyFixed }, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+        }
+        // fix-impacts-render: the impact-effect draw pools — the game's own meshes for the bullet decals, the
+        // shell casings and the debris. There is no dedicated draw function in ACTION.ELF: the decal nodes ride
+        // the host obj/cel's sub-object list (`View_DrawObjectGlist` 0x1e6780 / `View_DrawCelGlist` 0x1e6538 draw
+        // `node+0x10`'s glist at `node+0x20`), casings and debris are ordinary class-0x40 objects drawn through
+        // `Control_GetObjMatrix` 0x134210's cached `obj+0x90`. All three render in the game's pass 0 — the port
+        // instances them as Effect-layer pools (the leaf GS registers carry each mesh's own blend/z state; the
+        // Effect layer only skips the static-World cull/sort). One pool per distinct hash the level archive
+        // resolves: the decal mesh `EffectInfo+4` (`hashtable_set_sub_object_to_entity_gfx` 0x1ce9c8), the
+        // casing mesh `ammo_data[type]+4` (`Bullet_init_casing` 0x12fe2c) and the debris mesh `EffectInfo+0x74`
+        // (`Debris_Create` 0x1aab10) — the same hashes the sim stores per effect. Slot counts: the game's
+        // 200-node decal FIFO (`DList_Init(0x3496e0, 0x60, 200)` 0x1cf268) and 32 casing objects
+        // (`Bullet_InitCasingLists` 0x12fd48); debris are unbounded per-impact objects (≤ 6, ≤ ~54 ticks) —
+        // the port caps the draw slots.
+        if let Some(dc) = drones {
+            if let Some(surf) = &dc.surfaces {
+                let mut decal_meshes: Vec<u32> = surf.effects.iter().map(|r| r.decal).filter(|m| *m != 0).collect();
+                let mut debris_meshes: Vec<u32> = surf.effects.iter().map(|r| r.debris_mesh).filter(|m| *m != 0).collect();
+                let mut casing_meshes: Vec<u32> = surf.ammo.casing_mesh.iter().copied().filter(|m| *m != 0).collect();
+                for v in [&mut decal_meshes, &mut debris_meshes, &mut casing_meshes] { v.sort(); v.dedup(); }
+                let slot_placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
+                let ident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
+                for (meshes, slots, kind) in [
+                    (&decal_meshes, DECAL_SLOTS, 0u8),
+                    (&casing_meshes, nf_game::casing::POOL, 1u8),
+                    (&debris_meshes, DEBRIS_SLOTS, 2u8),
+                ] {
+                    for &mesh in meshes {
+                        let Some(&(m, o)) = level.by_hash.get(&mesh) else { continue };
+                        for slot in 0..slots {
+                            let inst = Instance { map: m, object: o, matrix: ident, placement: slot_placement.clone() };
+                            add_instance(level, &inst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                            attachments.push(Attachment { character: 0, bone: 0, local: inst.matrix, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)) });
+                        }
+                    }
+                }
+            }
         }
         // Level coronas (`Corona_Create` 0x18da00, placement type 0xFC): class-1 objects with NO update
         // function — static glow quads at their placement transforms, in every view mode. The glist's +0x44
@@ -3490,6 +3522,51 @@ impl Scene {
                 m[3] = [pos[0], pos[1], pos[2], 1.0];
                 return m;
             }
+            // fix-impacts-render: the impact-effect slots — decals, casings, debris at the game's own draw
+            // transforms (docs/atlas/effect.md). A slot draws only while its live effect carries the slot's
+            // mesh (the game sets the node/object's glist from the hash at create); free slots collapse far
+            // below the world like the tracers.
+            if let Some((kind, slot, mesh)) = a.effect {
+                let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
+                let Some(s) = self.sim.as_ref() else { return far };
+                return match kind {
+                    // The decal node: `Mat_Align2Dir(node+0x20, normal, (0,1,0) @0x2d6210, (1,0,0) @0x2d6220)`
+                    // 0x1df2a8 with the translation `hit + normal·0.01` stored at node+0x50 [M 0x1ce9f0]; drawn
+                    // by `View_DrawObjectGlist`/`View_DrawCelGlist`'s `psiDrawObjectMatrix(node+0x10, node+0x20)`
+                    // (0x1e6780/0x1e6538). No scale — the quad size lives in the mesh [M 0x1e6780:58-65].
+                    0 => match s.drones.effects.decals.get(slot) {
+                        Some(d) if d.mesh == mesh => {
+                            let mut m = nf_game::searchlight::align2dir(d.normal, [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]);
+                            m[3] = [d.pos[0], d.pos[1], d.pos[2], 1.0];
+                            m
+                        }
+                        _ => far,
+                    },
+                    // The casing object: `Control_GetObjMatrix` 0x134210's euler(+0x50)·pos(+0x30)
+                    // (`View_RotTransMatrix`), scaled by obj+0xe8 (= 1 here — no scale write at eject);
+                    // only the flying state draws (`Bullet_init_casing` 0x12fde0 parks the slot
+                    // `View_SetDrawInNoViews` until `Bullet_init_casing_ex` 0x12f678 re-shows it).
+                    1 => match s.drones.casings.list.get(slot) {
+                        Some(c) if c.state == 0 && c.mesh == mesh => casing_matrix(c),
+                        _ => far,
+                    },
+                    // The debris object: euler spin·age at pos, scaled by obj+0xe8 (0.4 + FRand(0.1), applied
+                    // once by `Control_GetObjMatrix` 0x134210:25-33 — `View_DrawObjectGlist` copies the cached
+                    // matrix unscaled for non-billboards [M 0x1e6780:47-49]). The tick count is 255 − alpha:
+                    // `Debris_Create` stores obj+0x106 = 0xff and `Debris_Update` 0x1aac00 steps it down 1/tick.
+                    2 => match s.drones.effects.debris.get(slot) {
+                        Some(d) if d.mesh == mesh => {
+                            let age = 255.0 - d.alpha as f32;
+                            let eul = [d.spin[0] * age, d.spin[1] * age, d.spin[2] * age];
+                            let mut m = nf_formats::placement::object_matrix(eul, d.pos);
+                            for r in 0..3 { for k in 0..3 { m[r][k] *= d.scale; } }
+                            m
+                        }
+                        _ => far,
+                    },
+                    _ => far,
+                };
+            }
             let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
             if let Some((h, si, hash)) = a.script {
                 return self.sim.as_ref().and_then(|s| s.script_entity((h, si), hash)).unwrap_or(far);
@@ -3610,6 +3687,13 @@ impl Scene {
     /// `build_FindCel` (0x1c8cb0) over the Scene's room cels — the same lookup the ambient code and
     /// the World-draw attribution use.
     pub fn cel_index_at(&self, p: [f32; 3]) -> Option<usize> { find_cel(&self.cels, p) }
+
+    /// fix-impacts-render: the attachment index that draws impact-effect slot `(kind, slot, mesh)` —
+    /// kind 0 decal, 1 casing, 2 debris (`Scene::build`'s per-mesh pools; `frame_state` poses it from
+    /// the sim each frame). Tests and the dev panel read the pools through this.
+    pub fn effect_attachment(&self, kind: u8, slot: usize, mesh: u32) -> Option<u32> {
+        self.attachments.iter().position(|a| a.effect == Some((kind, slot, mesh))).map(|i| i as u32)
+    }
 
     /// The GPU skinning layout (G-043): each Character-layer vertex's two palette matrices, blend weight and
     /// colour slot, plus the palette and colour-table sizes. The palette holds, in order: per character its
@@ -3807,6 +3891,16 @@ impl Scene {
             a.gas.and_then(|gi| self.sim.as_ref().and_then(|s| s.drones.gas.puffs.get(gi as usize))
                 .map(|g| g.rgba.map(|c| c.round().clamp(0.0, 255.0) as u8)))
         }).collect();
+        // The corpse fade (fix-ai-remainder; G-026): the game's `NDrone2_FadeOut` 0x172dd8 decays the
+        // drone object's alpha byte obj+0x106 (0.6 per tick in Fade 0x48, 8.0 in FadeFast 0x49) and the
+        // character draw multiplies the vertices' alpha by it (Dead 0x47's timer-0xC hands the corpse to
+        // Fade, which disables it at 0 — the removal). Per scene character, from its drone.
+        let char_alpha: Vec<f32> = (0..self.characters.len()).map(|ci| {
+            match self.sim.as_ref().and_then(|s| s.char_drone.get(ci).copied().flatten()) {
+                Some(di) => self.sim.as_ref().map_or(1.0, |s| (s.drones.list[di].alpha / 255.0).clamp(0.0, 1.0)),
+                None => 1.0,
+            }
+        }).collect();
         let one = || [1.0f32; 3];
         self.animate(choice, time, opts).into_iter()
             .zip(self.vertices[self.char_vertex_start..].iter().zip(self.char_verts.iter()))
@@ -3832,7 +3926,13 @@ impl Scene {
                     let rgb = [0, 1, 2].map(|k| ((v.rgba[k] as f32 * m[k]).round() as i32).clamp(0, 255) as u8);
                     [rgb[0], rgb[1], rgb[2], v.rgba[3]]
                 };
-                Vertex { pos, uv: v.uv, rgba, nrm: v.nrm }
+                // The corpse fade rides the plain character vertices only (the pickups, the attachments and
+                // the searchlight/door parts are their own objects with their own alpha).
+                let ca = if cv.searchlight.is_none() && cv.door.is_none() && cv.pickup.is_none() && cv.attachment.is_none() {
+                    char_alpha.get(cv.character as usize).copied().unwrap_or(1.0)
+                } else { 1.0 };
+                let a = ((rgba[3] as f32 * ca).round() as i32).clamp(0, 255) as u8;
+                Vertex { pos, uv: v.uv, rgba: [rgba[0], rgba[1], rgba[2], a], nrm: v.nrm }
             }).collect()
     }
 

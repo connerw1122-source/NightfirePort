@@ -129,9 +129,14 @@ fn closest_point_on_segment(a: V3, b: V3, p: V3) -> V3 {
 /// and the hit-direction bits (`BL+0x967`).
 #[derive(Clone, Copy, Debug)]
 pub struct PlayerHealth { pub health: f32, pub armour: f32, pub flash: f32, /// `BL+0x967`: the damage-direction bits — 1/2 = the view's vertical axis (sprites 20/21), 4/8 = the horizontal (22/23) [M `HUD_UpdateHealthPane` 0x19b9c8:92-113].
-pub dir_bits: u8 }
+pub dir_bits: u8,
+/// The flashbang whiteout, 0..1: `Player_SetFlashBang(FRAME_RATE·f·10, BL, (u8)(f·255))`'s strength [M
+/// Bullet_DoTrails 0x12d890:349] — set per blast by the dist (5→90 u) × facing × LOS falloff [M
+/// 0x12e014-0x12e0b8], decayed 1/60·10·f per tick (the BL amount [*suggested*: the game's exact fade
+/// is the view's `Camera_SetFade`, not modelled]). fix-explosions.
+pub flashbang: f32 }
 
-impl Default for PlayerHealth { fn default() -> Self { PlayerHealth { health: 100.0, armour: 0.0, flash: 0.0, dir_bits: 0 } } }
+impl Default for PlayerHealth { fn default() -> Self { PlayerHealth { health: 100.0, armour: 0.0, flash: 0.0, dir_bits: 0, flashbang: 0.0 } } }
 
 impl PlayerHealth {
     /// `Player_HandlePain` (single player, damage type 0): × the level's damage factor for the difficulty
@@ -215,7 +220,7 @@ mod tests {
     #[test]
     fn armour_bypass_by_pain_type() {
         // 07000005 at difficulty 1: damage_factor 0.6, so 30.0 -> 18.0 effective.
-        let mut h = PlayerHealth { health: 100.0, armour: 50.0, flash: 0.0, dir_bits: 0 };
+        let mut h = PlayerHealth { health: 100.0, armour: 50.0, flash: 0.0, dir_bits: 0, flashbang: 0.0 };
         h.pain_generic(30.0, 1, 0x0700_0005, 6); // fall damage
         assert_eq!(h.armour, 50.0, "a fall must not drain armour [M 0x1902c8:84-104]");
         assert!((h.health - 82.0).abs() < 1e-4, "the fall still costs the full 18 health");

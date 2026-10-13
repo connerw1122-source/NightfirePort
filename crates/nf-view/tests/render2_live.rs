@@ -240,7 +240,13 @@ fn dropped_guns_dim_to_the_cel_ambient() {
         sim.bond = nf_game::player::Bond::stand_at(&sim.world, stand, 0.0);
         aim_at(sim, [gp[0], gp[1] + 0.3, gp[2]]);
         tick_idle(sim, 10);
+        // The guard's START SCRIPT (07000001's first guard plays 06000169 via PlayScript 3 [M 0x15ba68
+        // ENTER, `+0x554` = param 1]) walks him 6.8 units over its 181 frames [D nf-extract script-info:
+        // the root track runs 0.05 → 6.87], and the game's own recording shows him moving inside the
+        // script [L 01-doors: the guard drifts x −4.919 → −6.03 within the first 120 lines, state still
+        // 3]. A one-shot aim at his pre-script position goes stale, so Bond tracks him while firing.
         for t in 0..600 {
+            aim_at(sim, { let g = sim.drones.list[gi].pos; [g[0], g[1] + 0.3, g[2]] });
             sim.step_bond(Default::default(), t % 9 == 0, false, false);
             if sim.drones.list[gi].health <= 0.0 { break; }
         }
