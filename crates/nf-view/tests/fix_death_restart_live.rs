@@ -1,0 +1,271 @@
+//! fix-death-restart: dying, failing and restarting like the game (playtest 2026-10-11/12).
+//!
+//! Evidence base:
+//! - `Player_CheckForDeath` 0x190810: on health ≤ 0 — ch 0x5e, `Music_Event(6,1)`, `Player_WeaponNone`,
+//!   the death marker, substate 0xd, the death sound 0x89 [M].
+//! - `Player_HandleDeath` 0x190bb0: the blood pane (pane 12) enables on the first dead tick [M :23-25];
+//!   ch 0x62 rises on the pane's full cover or the player's action 25 (✕) [M :29-33].
+//! - The red fade `HUD_UpdateBloodPane` 0x19a6a8: 1 px/tick growth, pane state 1 at cover; viewer.h =
+//!   448 [M 0x19f4e8:33], template width 512 [L BloodSprInfo 0x2bcfd8] → 448 ticks.
+//! - `Mission_Update` 0x182c60 reads ch 0x62 [M :21]; case 4 else opens the 0x40000042 menu [M :77-81];
+//!   `C_GCPAUSE_Handler` 0x204408: Restart → `ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)`
+//!   (the mission's FIRST level, IsWarmReset = 0) [M :136-140], Quit → 0x7000048 [M :143-149].
+//! - The restart is a COLD load: `Init_SwitchChannels` [M 0x1d5080:44-46] + no `Player_RamLoad`
+//!   (gated on IsWarmReset [M 0x1957a8]). The warm carry (ch 99, health 0) is what looped the user's
+//!   07000007 session (playtest 2026-10-12: "it kept replaying at the start of the mission").
+//!
+//! Opt-in via `NF_ISO`.
+
+use nf_game::player::RamSave;
+
+fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
+
+fn load(iso: &str, level: &str) -> nf_view::scene::Scene {
+    nf_view::load(iso, level, false).expect("load")
+}
+
+fn load_carry(iso: &str, level: &str, save: Option<&RamSave>) -> nf_view::scene::Scene {
+    nf_view::load_with_carry(iso, level, false, save).expect("load_with_carry")
+}
+
+fn tick(sim: &mut nf_view::scene::Sim, n: u32) {
+    for _ in 0..n { sim.step_bond(Default::default(), false, false, false); }
+}
+
+/// One tick with the fire button held (action 25 — the ✕ skip [M 0x190bb0:30]).
+fn tick_fire(sim: &mut nf_view::scene::Sim, n: u32) {
+    for _ in 0..n { sim.step_bond(Default::default(), true, false, false); }
+}
+
+/// The restart's exit the way the viewer's reload loop sees it.
+fn exit(sim: &nf_view::scene::Sim) -> (Option<u32>, bool) {
+    (sim.drones.level_exit, sim.drones.level_exit_cold)
+}
+
+/// ── 1. The restart loop (the user's 07000007 symptom) ───────────────────────────────────────────
+/// Punching a guest kills them → "Killed Civilians" ch 0x60 (`DroneFunc_SetMissionFailReason`
+/// reasons 1/3/6/9 [M 0x13e560], the port's `on_init_death` team-2/3 arm) → the 0x61/0x60 hook
+/// raises ch 99 [M 0x1827d8:98-117] → Mission Fail [M 0x182c60 case 2] → the menu → Restart. The
+/// restart must go to the MISSION'S FIRST level (07000005) [M 0x1830a0/0x204408:139], COLD.
+#[test]
+fn fail_restart_targets_the_mission_start_cold() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000007.bin");
+    let sim = scene.sim.as_mut().unwrap();
+    tick(sim, 10);
+    // The civilian-kill channel, exactly what the punched-out guest's OnInitDeath writes.
+    sim.drones.set_channel(0x60);
+    // The fail banner runs its 300 ticks before the menu opens [M 0x182c60:52-57 TimeOut =
+    // VIDEO_FRAME_RATE·4 + VIDEO_FRAME_RATE = 300, FRAME_RATE_MUL 1.0 [L 0x30d0d8] — the menu
+    // shows ~5 s after the "Mission Failed" text, as in the game].
+    tick(sim, 6);
+    assert!(sim.drones.channels.on(99), "the 0x60 hook raised the fail channel [M 0x1827d8:104-107]");
+    assert_eq!(sim.drones.mission.status(), 2, "MissionState 2 (failed) [M 0x182c60:47]");
+    tick(sim, 310);
+    // The auto-restart answered the 0x40000042 menu with Restart → the mission's first level.
+    let (lv, cold) = exit(sim);
+    assert_eq!(lv, Some(0x0700_0005), "Restart → Mission_BaseMapHCode() = 07000005 [M 0x204408:139, 0x1830a0]");
+    assert!(cold, "the restart exit is the COLD arm (IsWarmReset = 0) [M 0x204408:139, 0x1957a8]");
+    assert!(!sim.drones.mission.menu_open && sim.drones.mission.menu_choice == Some(nf_game::mission::MenuChoice::Restart),
+        "the menu resolved with Restart");
+}
+
+/// The loop mechanism itself: the OLD reload carried the RamSave, so the saved ch 99 re-failed the
+/// mission the tick the level came back — no input needed (the user's "replay loop"). The warm path
+/// still does that today (it is the game's trigger-exit arm — the difference is the menu's cold
+/// args), which is why the restart must be cold. Sister: the cold reload comes back clean.
+#[test]
+fn carried_restart_replays_the_fail_but_the_cold_one_does_not() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    // Fail 07000007 like the punch case and capture what the old reload carried.
+    let mut scene = load(&iso, "07000007.bin");
+    let save = {
+        let sim = scene.sim.as_mut().unwrap();
+        tick(sim, 10);
+        sim.drones.set_channel(0x60);
+        tick(sim, 6);
+        assert!(sim.drones.channels.on(99), "the mission failed");
+        RamSave::capture(&sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
+            .with_mission(&sim.drones.mission)
+    };
+    // The WARM (carried) reload — the pre-fix restart: ch 99 comes back and re-fails: the loop.
+    let mut warm = load_carry(&iso, "07000007.bin", Some(&save));
+    let sim = warm.sim.as_mut().unwrap();
+    tick(sim, 6);
+    assert!(sim.drones.channels.on(99) && sim.drones.mission.status() == 2,
+        "the carried ch 99 keeps the mission failed with no input — the user's replay loop");
+    // The carried mission is back in the flow (the restored InternalState falls through to 1), the
+    // carried ch 99 re-fails it, and after the banner the menu auto-restarts AGAIN — the replay loop.
+    tick(sim, 320);
+    let (lv, _) = exit(sim);
+    assert!(lv.is_some(), "another restart queued with the carry still on: the loop");
+    // The COLD reload (the fix): the same level comes back clean.
+    let mut cold = load_carry(&iso, "07000007.bin", None);
+    let sim = cold.sim.as_mut().unwrap();
+    tick(sim, 6);
+    assert!(!sim.drones.channels.on(99), "Init_SwitchChannels cleared the fail channel [M 0x1d5080:44-46]");
+    assert_eq!(sim.drones.mission.status(), 1, "the mission is playing again [M 0x182270:28]");
+    let (lv, _) = exit(sim);
+    assert!(lv.is_none(), "no restart queued — the loop is gone");
+}
+
+/// ── 2. The death sequence, tick by tick (07000005) ─────────────────────────────────────────────
+/// Kill Bond (any pain path — the falls and the chasm volumes land here too), hold ✕: the death
+/// starts (music 6, no ch 0x62 yet — the red fade runs first [M 0x190bb0:23-33]), the ✕ raises
+/// ch 0x62 [M 0x190bb0:32], `Mission_Update` case 1 → 3 → 7 → 4 [M 0x182c60] and the menu opens
+/// (~2 ticks later — case 3's TimeOut is 1.0 = 1 tick at FRAME_RATE_MUL 1.0 [L 0x30d0d8]).
+#[test]
+fn death_sequence_stages_then_the_menu() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000005.bin");
+    let sim = scene.sim.as_mut().unwrap();
+    tick(sim, 10);
+    // A near-fatal sister first: damage without the kill must trigger nothing.
+    let before = sim.drones.health.health;
+    sim.drones.health.pain_generic(1.0, nf_game::drone::DIFFICULTY, 0x0700_0005, 0);
+    tick(sim, 5);
+    assert!(!sim.drones.death.active, "alive: no death sequence");
+    assert!(!sim.drones.channels.on(0x62), "alive: no death channel");
+    assert!(sim.drones.level_exit.is_none(), "alive: no restart");
+    // The kill (500: the difficulty-scaled factor shrinks small numbers).
+    sim.drones.health.pain_generic(500.0, nf_game::drone::DIFFICULTY, 0x0700_0005, 0);
+    tick(sim, 1);
+    assert!(sim.drones.death.active, "the death sequence started [M 0x190810]");
+    assert!(sim.drones.death.pane_on, "the blood pane enabled on the first dead tick [M 0x190bb0:24-25]");
+    assert!(!sim.drones.channels.on(0x62), "no ch 0x62 while the red fade runs [M 0x190bb0:29-33]");
+    assert_eq!(sim.drones.bond_weapon, 0x47, "Player_WeaponNone [M 0x190810:61]");
+    assert!(sim.drones.channels.on(0x5e), "the death's ch 0x5e [M 0x190810:40]");
+    // The ✕ skip (action 25): ch 0x62 the same tick the game reads it.
+    tick_fire(sim, 1);
+    assert!(sim.drones.death.ch62 && sim.drones.channels.on(0x62), "✕ raised the death channel [M 0x190bb0:32]");
+    tick(sim, 1);
+    assert_eq!(sim.drones.mission.status(), 3, "MissionState 3 (the red fade state) [M 0x182c60:61]");
+    // Case 3 → 7 → 4: the menu opens ~2 ticks after the channel [L FRAME_RATE_MUL 0x30d0d8 = 1.0].
+    tick(sim, 2);
+    assert!(sim.drones.mission.menu_open || !sim.drones.mission.menu_choice.is_none() || sim.drones.level_exit.is_some(),
+        "the 0x40000042 menu path ran [M 0x182c60:77-81]");
+    let (lv, cold) = exit(sim);
+    assert_eq!(lv, Some(0x0700_0005), "auto-restart → the mission's first level [M 0x204408:139]");
+    assert!(cold, "the death restart is cold");
+}
+
+/// The no-skip arm: without ✕ the red fade covers the screen in 448 ticks [M 0x19a6a8 + L] and the
+/// pane's state then gates ch 0x62 through by itself.
+#[test]
+fn death_menu_applies_by_itself_after_the_red_fade() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000005.bin");
+    let sim = scene.sim.as_mut().unwrap();
+    tick(sim, 5);
+    sim.drones.health.pain_generic(500.0, nf_game::drone::DIFFICULTY, 0x0700_0005, 0);
+    tick(sim, 1);
+    assert!(sim.drones.death.active && !sim.drones.death.ch62, "dying, no channel yet");
+    tick(sim, nf_game::death::RED_FADE_TICKS + 2);
+    assert!(sim.drones.death.covered, "the fade covered the screen [M 0x19a6a8:24]");
+    assert!(sim.drones.death.ch62 && sim.drones.channels.on(0x62), "the cover raised ch 0x62 [M 0x190bb0:30]");
+    tick(sim, 3);
+    let (lv, cold) = exit(sim);
+    assert_eq!(lv, Some(0x0700_0005) , "the menu auto-restarted to the mission start");
+    assert!(cold, "cold");
+}
+
+/// ── 3. A restart equals a clean load of the mission start ───────────────────────────────────────
+/// Die on 07000005 after taking damage, flipping an objective channel and picking a pickup up;
+/// restart through the real path (the menu → `fail_choose_restart` → the viewer's cold reload).
+/// The reloaded sim must match a fresh load: health, channels, inventory, mission states. Sister:
+/// the WARM carried reload does NOT match (health 0, the channels carried) — the loop's mechanism.
+#[test]
+fn restart_matches_a_clean_load() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000005.bin");
+    let save = {
+        let sim = scene.sim.as_mut().unwrap();
+        tick(sim, 10);
+        // Pick things up: teleport Bond onto the first live pickup and tick (the real take path).
+        let spot = sim.drones.pickups.iter().find(|p| !p.gone).map(|p| [p.m[3][0], p.m[3][1], p.m[3][2]]);
+        if let Some(s) = spot {
+            sim.bond.pos = s;
+            tick(sim, 3);
+        }
+        // Damage + an objective channel (the enable channel 0x45, "Breach the castle walls").
+        sim.drones.set_channel(0x45);
+        sim.drones.health.pain_generic(37.0, nf_game::drone::DIFFICULTY, 0x0700_0005, 0);
+        tick(sim, 2);
+        assert!(sim.drones.health.health < 100.0 || !sim.drones.taken.is_empty() || sim.drones.channels.on(0x45),
+            "the run is dirty: damage, a pickup or a channel");
+        RamSave::capture(&sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
+            .with_mission(&sim.drones.mission)
+    };
+    // Kill → the sequence → the auto-restart, through the real input path.
+    let mut scene = load(&iso, "07000005.bin");
+    let (lv, cold) = {
+        let sim = scene.sim.as_mut().unwrap();
+        tick(sim, 5);
+        sim.drones.health.pain_generic(500.0, nf_game::drone::DIFFICULTY, 0x0700_0005, 0);
+        tick_fire(sim, 2);
+        tick(sim, 4);
+        exit(sim)
+    };
+    assert!(lv == Some(0x0700_0005) && cold, "the death restart queued, cold");
+    // The viewer's reload (lib.rs): cold → save = None.
+    let mut restarted = load_carry(&iso, "07000005.bin", None);
+    let clean = load(&iso, "07000005.bin");
+    let (r, c) = (restarted.sim.as_ref().unwrap(), clean.sim.as_ref().unwrap());
+    assert_eq!(r.drones.health.health, c.drones.health.health, "health back to the level start");
+    assert_eq!(r.drones.health.armour, c.drones.health.armour, "armour back to the level start");
+    assert_eq!(r.drones.channels.v, c.drones.channels.v, "Init_SwitchChannels: the channels match a clean load [M 0x134310]");
+    assert_eq!(r.drones.inventory.carried, c.drones.inventory.carried, "the loadout matches (no RamLoad [M 0x1957a8])");
+    assert_eq!(r.drones.inventory.owned, c.drones.inventory.owned, "owned weapons match");
+    assert_eq!(r.drones.mission.states, c.drones.mission.states, "Mission_Init's objective states match a clean load [M 0x182270:68-129]");
+    assert_eq!(r.drones.mission.status(), c.drones.mission.status(), "MissionState matches");
+    assert!(!r.drones.channels.on(0x62), "Player_Init cleared the death channel [M 0x1910f8:26,30]");
+    assert!(!r.drones.death.active, "the death state is fresh");
+    // Sister: the WARM carried reload would NOT match — the carried health and channels (the loop).
+    let mut warm = load_carry(&iso, "07000005.bin", Some(&save));
+    let w = warm.sim.as_ref().unwrap();
+    assert!(w.drones.health.health != c.drones.health.health || w.drones.channels.v != c.drones.channels.v,
+        "the warm carry differs from a clean load — why the restart must be cold");
+}
+
+/// ── 4. The menu API for 180-fix-menus ───────────────────────────────────────────────────────────
+/// With `auto_restart` off the mission waits on the menu; the view answers Restart or Quit exactly
+/// as `C_GCPAUSE_Handler` 0x204408 does.
+#[test]
+fn fail_menu_waits_for_the_view_answer() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000009.bin");
+    let sim = scene.sim.as_mut().unwrap();
+    tick(sim, 10);
+    sim.drones.auto_restart = false;
+    // The alarm buttons write 0x7C (the OR trigger placement 278, out 0x61, list [0x7c, 0x7d]
+    // [L probe] re-drives 0x61 every tick — a direct 0x61 set would be stomped).
+    sim.drones.set_channel(0x7c);
+    tick(sim, 6);
+    assert!(sim.drones.channels.on(99), "the alarm failed the mission");
+    tick(sim, 310); // the fail banner's 300 ticks [M 0x182c60:52-57]
+    assert!(sim.drones.fail_menu_open(), "the 0x40000042 menu is up and waiting [M 0x182c60:77-81]");
+    assert!(sim.drones.level_exit.is_none(), "nothing restarts until the player answers");
+    tick(sim, 30);
+    assert!(sim.drones.fail_menu_open(), "it stays up (InternalState 5 [M 0x182c60:83-84])");
+    // Quit [M 0x204408:141-149]: 0x07000048 — the front end the port cannot load (logged and held).
+    sim.drones.fail_choose_quit();
+    assert_eq!(sim.drones.level_exit, Some(0x0700_0048), "Quit → 0x7000048 [M 0x204408:148]");
+    assert!(!sim.drones.fail_menu_open());
+}
+
+/// The near-fatal sister on the alarm level: an alive Bond with a big (non-lethal) hit triggers
+/// none of the fail/death machinery.
+#[test]
+fn near_fatal_hit_triggers_nothing() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000009.bin");
+    let sim = scene.sim.as_mut().unwrap();
+    tick(sim, 10);
+    sim.drones.health.pain_generic(1.0, nf_game::drone::DIFFICULTY, 0x0700_0009, 0);
+    tick_fire(sim, 10);
+    tick(sim, 400);
+    assert!(!sim.drones.death.active && !sim.drones.channels.on(0x62), "alive: no death");
+    assert!(!sim.drones.channels.on(99), "alive: no fail");
+    assert!(sim.drones.level_exit.is_none(), "alive: no restart");
+    assert!(!sim.drones.fail_menu_open(), "alive: no menu");
+}

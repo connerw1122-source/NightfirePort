@@ -4071,6 +4071,22 @@ pub struct Drones {
     pub audio: crate::sound::Sounds,
     /// Map ambient sounds (block 0x28 of the main map).
     pub map_sounds: crate::sound::MapSounds,
+    /// fix-death-restart: the death sequence (`Player_CheckForDeath` 0x190810 +
+    /// `Player_HandleDeath` 0x190bb0, `HUD_UpdateBloodPane` 0x19a6a8) — the red fade, the ✕ skip
+    /// and the ch 0x62 gate. Fresh at every load (the game's death state is not saved).
+    pub death: crate::death::Death,
+    /// fix-death-restart: this tick's action 25 (✕ / Start, player 0 [L input.md style 0]) —
+    /// `Sim::step_bond`'s fire button, the death sequence's skip gate [M 0x190bb0:30].
+    pub bond_fire: bool,
+    /// fix-death-restart: the pre-menu auto-restart. While 180-fix-menus has no drawing, the port
+    /// answers the 0x40000042 menu with Restart immediately (`fail_choose_restart`); the flag turns
+    /// that off so the view can answer instead.
+    pub auto_restart: bool,
+    /// fix-death-restart: the pending exit is a COLD restart (`ResetMap_LevelToLoad(BaseMap, 0, 1)`
+    /// [M 0x204408:139] — IsWarmReset 0: `Init_SwitchChannels` + no `Player_RamLoad` [M 0x1d5080,
+    /// 0x1957a8]). The viewer's reload drops the RamSave for this exit; carrying it looped the
+    /// restart (the 07000007 replay loop, playtest 2026-10-12).
+    pub level_exit_cold: bool,
     /// The EE music logic and the drones' attack gate (docs/systems/music.md); the alarm counters of
     /// `DroneFunc_CheckAlarmRaised` (0x1453a8: channel 0xA4, then 0x37 / 0x61).
     pub music: crate::music::Music,
@@ -4170,7 +4186,10 @@ impl Drones {
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true,
             npc_system_disabled: false,
             spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(),
-            gas: Default::default() }
+            gas: Default::default(),
+            // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
+            // — the shared-constructor collisions, merge lesson 4).
+            death: Default::default(), bond_fire: false, auto_restart: true, level_exit_cold: false }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -4614,12 +4633,9 @@ impl Drones {
             if d.level == 0x0700_0005 && step(0, 0xa4, 60) { self.music.event(2, 3); }
             else if step(1, 0x37, 600) || step(2, 0x61, 600) { self.music.event(2, 1); }
         }
-        if self.health.health <= 0.0 {
-            // `Player_HandleDeath` 0x190bb0:32: the death raises ch 0x62 (cleared by `Player_Init`
-            // 0x1910f8:26,30 at the next level load); the mission layer reads it (0x182c60:21).
-            if !self.channels.on(0x62) { self.channels.set(0x62, 1, frame); }
-            self.music.event(6, 1);
-        }
+        // `Player_CheckForDeath` 0x190810 + `Player_HandleDeath` 0x190bb0 (fix-death-restart): the
+        // death sequence gates ch 0x62 on the blood pane's cover or the player's ✕ [M 0x190bb0:29-33].
+        self.death_tick(d, player.pos, frame);
         // `Game_Run`: `Env_Update` (one `Rand_Rand(20000)`, then `UpdateDrops`) before the object handler.
         if let Some((kind, boxes)) = self.env_pending.take() { self.env = Some(crate::env::Drops::new(kind, boxes, d.level, &mut Rng::new(0x5eed_0001))); }
         if let Some(env) = self.env.as_mut() {
@@ -5337,7 +5353,9 @@ impl Drones {
             if let Some(s) = self.mission_carry.take() { self.mission.restore(&s); }
             self.mission_inited = true;
         }
-        let dead = self.health.health <= 0.0;
+        // `Mission_Update` reads the DEATH CHANNEL, not health [M 0x182c60:21 `switch_channels[0x62]`]
+        // — the death sequence (`crate::death`) gates the channel on the red fade / the player's ✕.
+        let dead = self.channels.on(0x62);
         let mut events = std::mem::take(&mut self.mission_events);
         self.mission.update(&mut self.channels, frame, d.level, dead, &mut events);
         self.mission_events = events;
