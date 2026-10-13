@@ -7190,3 +7190,14 @@ Post-report progress (same session, before the sandbox end):
   re-marked with the updated gap; the 16/1b/4a gap-ignores unchanged.
 - Pushed 1d414f7 (branch s/walkreal-c). The full four-crate suite still owes a pass on a bigger
   box before the merge.
+
+---
+fix-final-blockers (10:30 UTC, branch s/fix-final-blockers from master 59d466c): task is the two
+walkreal-c blockers — 07000016 door[7] never opens (state 0x2 through 14 use_door calls; the door
+sits 1.0 below the approach floor) and 0700004a the lift losing its rider mid-shaft at t1620
+(parks at −54.14 as the −52 doors [110]/[111] ch-0x40 open; the game passes CLOSED leaves —
+platform at −52 by t1560, doors open t1610). Plan: reproduce each on the real-input walk tests
+(un-ignore walkreal_07000016_live / walkreal_0700004a_live), root-cause against Door_Activate
+0x135be0 / Door_Update 0x1363c8 and the moving-set door-solid vs rider interaction, fix with
+fail-first NF_ISO tests + sisters (door[0] on 15 opens, a static floor holds Bond). Files:
+door.rs, world.rs, the riding inherit in player.rs/scene.rs, the walk tests. Deadline ~12:28 UTC.
