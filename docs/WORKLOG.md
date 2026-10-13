@@ -8355,6 +8355,42 @@ Stage Summary:
   port's node keys now match the game's per-placement glist identity. Left: the scoped collision
   assignment (build_scoped's volume rule vs the game's per-cel link), the 9-extras owner live
   check, the full-suite numbers and the render verification.
+## fix-anim-blend (2026-10-13, branch s/fix-anim-blend, from origin/master 13abef4)
+
+Task: animation frame blending and speed modes (characters walk smoothly). The user on 0c:
+"The walking animation is kind of fucked too." The port snaps sequences to integer frames;
+the game blends (GAPS G-020: AnimFrameSet f/f+1 slerp; G-030: speed modes 1-3 with distance
+tables and synced scripts; the far-object blend path; the +0x538 blend timing).
+
+Plan:
+- Port AnimFrameSet's fractional-frame interpolation (slerp of rotation keys, lerp of
+  translations) and the transition blend between sequences (blend weight + rate).
+- Port speed modes 1-3 (distance-driven playback so feet don't slide).
+- Failing NF_ISO tests first: posed bone at frame 10.5 == game's interpolation of 10 and 11;
+  walking guard's stance foot bone world drift < 0.05 over a stride.
+
+Work Log:
+- (started) branch created from origin/master 13abef4; reading anim docs + decompile next.
+- Ported (branch s/fix-anim-blend, from origin/master 13abef4): Quat_Slerp_Acc verbatim
+  [M 0x1e4188] — negate the w0 coefficient (not q1), linear gate `0.01 < 1−dot` (was 0.9995),
+  reciprocal-multiply PS2Sinf weights, NO renormalisation (a rounded dot > 1 lands in the linear
+  branch, so no clamp); AnimFrameSet's f/f+1 root translation (`anim::root_translation_at`,
+  gate 0.0002 + AnimFrameBlend's translation clamp [M 0x1c75a0/0x1c2b80]) now feeds the drone
+  root motion at the fractional script time (drone.rs script_frame → (u32 hash, f32 frame),
+  root_value + the outgoing-fade sampler; wrap-tick samples via ftime synced to its forced
+  integer times, loop-wrap keeps ftime's fraction) — at speed 1.0 the frames are unchanged
+  (frac 0), at a fractional Drone_AnimInfo +0x14 speed (lean-out 176 = 1.5, run 0xDC = 0.7 on
+  09/0A) the root motion samples the same blend the pose does instead of stepping whole frames;
+  speed modes [M 0x1c2630 +0xB4]: DistanceTable (AnimDistanceTableCreate 0x1c4060 — cumulative
+  |root Δ|, axis mask, min 1e-05→0.01, looping = frames−1 segments) +
+  distance_to_frame (AnimDistanceTableDistanceToFrame2 0x1c4270 — walked wrap into [0,total),
+  stored back, segment+frac frame, directional speed wrap) + speed_for_mode (modes 0/2/3
+  formulas; the mode-1 call site passes the table's speed) — machinery only this session: no
+  consumer sets +0xB4 yet (the game's walk sets are player-side; the guard walk is mode 0).
+- Tests: anim.rs unit — slerp_negates_w0_and_never_renormalises (RED against the old body:
+  negated q1 + renormalised; the old/renorm code is what the decompile contradicts),
+  distance_table_maps_walked_distance_to_frames (RED pre-fix: no table existed), plus the
+  existing slerp/blend weights test stays green under the exact model.
 **fix-menus3 outcome (18:20 UTC)**: the eight render-vs-PCSX2 gaps from the main agent's 2026-10-13
 comparison are closed on `s/fix-menus3`. Framing: the overlay draws everything through
 `Anchor::Centre` — the window's central 4:3 band, so the menus get the black side bars back (at a 4:3
@@ -8775,3 +8811,49 @@ Stage Summary:
 - The 07 clock hall's clock + wall shields draw with the walk ON again; the courtyard, the window
   and the 06 second spot hold. Open: the game's +0x70 planes mid-gameplay (PINE request in the
   report), the 55 orphan generics on 07000007, the per-cel collision-assignment residue.
+
+## fix-anim-blend2 (2026-10-13, branch s/fix-anim-blend2, from s/fix-anim-blend a14976d + origin/master 0cda458)
+
+Task: the cover lean-out at speed 1.5 now lasts 90 ticks instead of the game's 37
+(ai_live::guard_takes_cover_like_the_game: "UnderCoverAim lasted 90 (live 37)"). The exact
+Quat_Slerp_Acc and the distance-table machinery from fix-anim-blend are wanted and stay. The 37
+is the real game's measured duration (work/chase_trace.tsv, anim 176 at Drone_AnimInfo +0x14 =
+1.5). Seed scan: exactly 90 on 11 of 16 seeds — a 1.5x-speed anim's end/duration detection is
+wrong, not an RNG shift. Suspects: the fractional ftime/wrap handling in Drone::script_frame and
+the root sampler, the "anim done" test, the AnimSeqTick 0x1c28d0 seq.frame = time - start + 1.0
+relation applied twice.
+
+Plan:
+- Reproduce with the single test, find where the lean-out's end detection diverges from
+  AnimScriptTick 0x1c2630 / AnimSeqTick 0x1c28d0, fix it in crates/nf-game/src/{anim,drone}.rs.
+- Keep fix-anim-blend's new unit tests green; live 37 is the check (do NOT re-pick the seed).
+
+Work Log:
+- (started) branch created from origin/s/fix-anim-blend (a14976d), origin/master (0cda458) merged;
+  WORKLOG conflict resolved by keeping both sides. Reading the fix-anim-blend report + the
+  script_frame end-detection code next.
+- The 90/37 reproduction: the port's UnderCoverAim played danim 178 (90 frames, Drone_AnimInfo
+  +0x14 = 1.0) where the game plays lean-out 176 (51 frames at 1.5) [L chase_trace] — the cover
+  type Rand(2) at UnderCoverInit drew STEP where the game drew LEAN. The driver's "not an RNG
+  shift" inference was wrong, and so was fix-anim-blend's "pre-existing on master" stash check:
+  bisect on master (guard test green at a8884f3 / 37fdc7f / 18fd3a7 / 2dbd10f / 13abef4, red on
+  a14976d) pins the regression to the fix-anim-blend changes themselves (5c7b457; origin/master
+  0cda458 does not even contain them).
+- Mechanism [M AnimSeqTick 0x1c28d0 reads +0x90 only]: the blend session's wrap-end sampling wrote
+  `self.anim.ftime = time as f32` (twice) while computing the last-two-frames wrap step; the
+  follow-on's `begin_blend` then read the clobbered clock for the outgoing fade's start time
+  (`1.0 + ftime`), one frame early, so every blended script switch replayed the replaced script's
+  last step on the switch tick (pre-blend port: 0 — its integer sampler clamps to the sequence
+  end). [L] per-tick position dump of the cover scenario: the gate guard's walk 328→392 switch at
+  tick 74 moved +0.0095x/−0.0063z; guards drifted ~0.01 per switch, another guard's burst fired at
+  a shifted tick, the RNG stream at the cover pick flipped → STEP → 178 → 90 ticks.
+- Fix: `root_value_at(d, time)` samples the explicit script time through the same
+  `anim::root_translation_at` (f/f+1 blend, AnimFrameSet 0x1c75a0) without touching the live
+  clock; the fractional root-motion feature is untouched. NF_ISO test
+  `ai_live::blended_switch_tick_applies_no_root_step` red pre-fix (switch tick moved 0.01141) +
+  green with it, sister asserts the walk moves on the next tick; guard_takes_cover_like_the_game
+  green again (live 37).
+- Suite (chunked foreground runs, slim ISO): nf-game 231 passed / 0 failed; nf-formats + nf-audio
+  89 / 4 (the 3 permitted disc_golden + the pre-existing pss_movies_live slim-ISO absence);
+  nf-view 396 / 0 (the walkreal net included; one final probe binary was cut by the chunk timeout
+  with 0 failures in its log). Report: docs/reports/fix-anim-blend2.md.

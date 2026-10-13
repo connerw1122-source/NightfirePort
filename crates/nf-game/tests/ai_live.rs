@@ -258,6 +258,38 @@ fn guard_takes_cover_like_the_game() {
     assert!(near.list[gi].log.iter().all(|(_, s)| *s != 0x8c), "sister: cover must depend on the situation");
 }
 
+/// fix-anim-blend2 regression, shown RED before the fix (the switch tick moved +0.0095x/−0.0063z). The gate guard's
+/// walk hands 328 over to 392 under the danim's own 8-frame end blend (`Drone_AnimInfo +0xE`) on tick 74 of the cover
+/// scenario above. `AnimSeqTick` 0x1c28d0 only READS the script's float clock (+0x90; seq.frame = time − start + 1.0),
+/// so the wrap-end's last-two-frames sample must not write it: writing `ftime` there made `begin_blend` start the
+/// outgoing fade one frame early and replay the old script's last step on the switch tick — the pre-blend port moved
+/// exactly 0 there (its integer sampler clamps to the sequence's last frame) [L both trees' per-tick position dump,
+/// docs/reports/fix-anim-blend2.md]. Sister: the walk DOES move on the following tick, so a frozen sim can't pass.
+#[test]
+fn blended_switch_tick_applies_no_root_step() {
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (drones, _, rng) = l.drones_seeded(None, 61.342, 1);
+    let mut sim = l.sim(drones, rng);
+    let player = bond_at([79.86, 22.92, 96.0]);
+    // The patrolling gate guard (index 3 in this scenario) walks 328 until the switch to 392 at tick 74.
+    let mut at = Vec::new();
+    for _ in 0..76 {
+        sim.tick(&d, &player);
+        at.push((sim.list[3].anim.danim, [sim.list[3].pos[0], sim.list[3].pos[2]]));
+    }
+    let sw = at.iter().position(|(dan, _)| *dan == 392).expect("walk hands over to 392");
+    assert!(sw >= 2, "switch too early: {sw}");
+    let (_, [x0, z0]) = at[sw - 1];
+    let (_, [x1, z1]) = at[sw];
+    let step = ((x1 - x0).powi(2) + (z1 - z0).powi(2)).sqrt();
+    assert!(step < 1e-4, "switch tick moved {step:.5} (must be 0: the fading script's sampler clamps to the sequence end)");
+    // Sister: the next tick takes the walk's ~0.011 step, so the zero above is the switch rule, not a stalled sim.
+    let (_, [x2, z2]) = at[sw + 1];
+    let next = ((x2 - x1).powi(2) + (z2 - z1).powi(2)).sqrt();
+    assert!(next > 0.005, "sister: the walk must move on the tick after the switch ({next:.5})");
+}
+
 /// Live trace (work/switch_trace.tsv): right after the level loads, switch channel 0x22 is set by PINE; the Dr_17 guard
 /// at (−31.30, 37.58, −37.05) leaves WaitSwitch and patrols PatrolPath (Dr_17) from node 10. Bond stands at his start
 /// facing yaw −2.147; the guard is not drawn there (`obj+0xFC` = 0) so it does not animate: it slides 0.02 per frame

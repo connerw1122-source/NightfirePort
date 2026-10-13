@@ -87,3 +87,32 @@ characters' lip-synced voice lines live (op-1 → STREAMS.BIN entries through th
 fix_audio2_live drives 07000001's intro, 07000005's ride dialogue (ScriptPlayer #298, gate ch 0x43) and 07000007's
 fly-through through it. Not yet: facial
 sequences, distance-table speed modes 1–3, head tracking (`AnimObjectHeadTrack`), the far-object blend path.
+
+**fix-anim-blend (2026-10-13, branch s/fix-anim-blend):** the frame-blend side is now exact and
+the speed-mode machinery exists. `nf_game::anim::slerp` is `Quat_Slerp_Acc` (0x1e4188) verbatim:
+dot = q0·q1, `neg` = dot < 0 with **w0** (the q0 coefficient) negated after the branch — not q1;
+the slerp branch runs while `0.01 < 1 − dot` (the port's old 0.9995 gate was wrong), weights
+w1 = PS2Sinf(ωt)·(1/PS2Sinf(ω)), w0 = PS2Sinf(ω−ωt)·(1/PS2Sinf(ω)) (one reciprocal, then
+multiplies), and there is **no renormalisation** (0x1e4188:33-36 add the weights as is; a rounded
+dot past 1.0 gives 1 − dot ≤ 0 < 0.01 and lands in the linear branch, so no clamp is needed either)
+— `slerp_negates_w0_and_never_renormalises` pins all of it. The drones' root motion samples the
+same f/f+1 blend the pose does: `anim::root_translation_at` is `AnimFrameSet` (0x1c75a0) + the
+`AnimFrameBlend` (0x1c2b80) translation rule (gate |frac| ≤ 0.0002, ⌊f⌋/⌊f⌋+1 clamped-lerp) applied
+to the root channels, fed by `Drone::script_frame`'s fractional frame (seq.frame = script.time −
+start + 1.0, `AnimSeqTick` 0x1c28d0 — the script clock is +0x90, a float; the port's `ftime` is the
+same number). At speed 1.0 the fraction is always 0 and every frame is the integer it was before;
+at a fractional `Drone_AnimInfo +0x14` speed (lean-out 176 plays at 1.5, run 0xDC at 0.7 on
+07000009/0A) the root now moves by the blended frame instead of stepping whole frames while the
+bones already moved fractionally. The wrap tick samples through `ftime` synced to its forced
+integer times, and the loop wrap keeps `ftime`'s fraction. Speed modes (`AnimScriptTick` 0x1c2630,
+byte script+0xB4): `anim::DistanceTable::build` is `AnimDistanceTableCreate` (0x1c4060 —
+cumulative |root Δ| per frame, components masked by the axis bits, a segment under 1e-05 becomes
+0.01, looping = frames−1 segments, table = total / count / 0.0 / cum), `distance_to_frame` is
+`AnimDistanceTableDistanceToFrame2` (0x1c4270 — walked wrapped into [0, total) and stored back,
+segment = the estimate then the walk, frame = segment + distance-into/segment-length, speed
+wrapped in the stride's direction), `speed_for_mode` carries modes 0 / 2 (synced to the master
++0x4C, wrap by the master speed's sign) / 3 ((len+1)·phase − time) verbatim. Not yet wired: no
+writer sets +0xB4 in the port — the game's mode-1/2 pairs come from `AnimSetUpdate` (0x1c0938)
+building the player's walk sets (master +0xB4=1, slave +0xB4=2, `sAnimSet` +0x24 = 0.37 idle
+accumulator, +0x28 = 0.5 stride factor [L docs/fields/animobject.md]), which is the remaining
+work; the guards play mode-0 scripts at `Drone_AnimInfo +0x14`, as in the game.
