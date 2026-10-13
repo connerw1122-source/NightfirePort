@@ -364,7 +364,16 @@ entity's channel feeding a placement mux in the same tick — resolve one tick l
 passes because its chain spans multiple ticks [M test]; a one-tick chain would not. — **PARTLY FIXED (s/fix-core)**:
 spawner drones now carry `spawn_seq`/`spawn_frame` — newest-first ordering [M 0x134698 prepend] and the spawn-tick
 skip (the game's walk cursor is already past the head when the spawner runs). Script entities still have no list
-position (their triggers get `usize::MAX - o`; the entities' channel writes ride `Scripts::tick`, before the walk).
+position (their triggers get `usize::MAX - o`; the entities' channel writes ride the walk — the players update from
+the walk now, see below). — **FIXED for the script players (fix-script-start-tick)**: `SP_Update` joined the
+control walk at the player's placement (kind 5, `drone.rs`; `Scripts::update_player`), replacing the old
+all-players-before-the-walk beat (`Scripts::tick` → `begin_tick` + `update_player`). A script a placement trigger
+started now runs its first commands (`SP_LoadScript`'s trailing `Script_Update` [M 0x1dbc08:56]) inside the same
+walk, after the trigger wrote its channel and before the spawners/drones behind it — the 07000005 wall-hug plate
+(#301 → ch 0x43) freezes the NPCs on the touch tick and `DroneSpawner_Control` (0x137e68:21-23) returns at
+`NPCGlobals == 0` with its kill latch off for the whole 1,400-tick scene, exactly the live measurement. The
+requests drain after every player's update (the freeze must gate the later control funcs the same frame), and
+`set_dynamic` moved after the walk (the game's `Collide_Update` 0x1336f8:238 is post-walk).
 
 **10. The truck-ride level end (route a) fails in play for three stacked reasons — all outside the core loop's
 correctness.** The chain is: truck script touch triggers 0x70 (parked) + 0x71 (bed, follows the truck) [D

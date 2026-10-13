@@ -628,7 +628,7 @@ impl Player {
     /// `SP_CreateScriptPlayer@0x1db9a8:81-86`'s load beat: mode A ∉ {0, 1} loads the script immediately and
     /// `SP_LoadScript@0x1dbc08:41-55`'s mode dispatch leaves it **primed in state 1 after having run once**
     /// (mode 64's arm is play+update+stop; mode 8 plays looping and leaves state 6) [M]. The game does this
-    /// during the level load; the port runs it once at the start of the first `Scripts::tick` [L ee_start_05.bin:
+    /// during the level load; the port runs it once at the start of the first `Scripts::begin_tick` [L ee_start_05.bin:
     /// the 07000005 EndLevel SP (script 0x6000A23, mode 64) is primed in state 1 with its clock at 2.0 at level
     /// start, and the disabled looping pair (modes 8, mask 0) already plays].
     fn prime(&mut self, lib: &HashMap<u32, Arc<Nis>>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>) {
@@ -805,7 +805,10 @@ impl Scripts {
         self.objects.list.iter().rev().flatten().find_map(|o| match o { Obj::Camera { matrix, fov, .. } => Some((*matrix, *fov)), _ => None })
     }
 
-    pub fn tick(&mut self, ch: &mut Channels, w: &dyn World, frame: u32) {
+    /// The tick head: the requests reset, the game's `Input_Action(-1, 0x19, 1)` skip taken, and the
+    /// create-time load beat (`prime`) on the first tick. The players themselves update from the
+    /// control walk (`update_player`), in the game's list order — NOT all together here.
+    pub fn begin_tick(&mut self, ch: &mut Channels, w: &dyn World, frame: u32) -> bool {
         self.requests.clear();
         let skip = std::mem::take(&mut self.skip_request);
         if !self.primed {
@@ -814,7 +817,22 @@ impl Scripts {
             for p in &mut self.players { p.prime(&self.lib, &mut self.objects, ch, w, frame, &mut out); }
             self.requests = out;
         }
-        for p in &mut self.players { p.update(&self.lib, &mut self.objects, ch, w, frame, &mut self.requests, skip); }
+        skip
+    }
+
+    /// One player's `SP_Update`, called from the control walk in the game's list order. The game
+    /// runs every object's control func in ONE walk — `control_funcs[obj+0xFF]`, newest first
+    /// (`control_add_object_to_list` prepends [M 0x134698]) — so `SP_Update` is interleaved with
+    /// the triggers, drones and spawners by placement [M 0x1336f8:54-68]. A script triggered by a
+    /// channel an earlier object wrote starts THIS tick and its first commands run inside the same
+    /// walk (`SP_LoadScript`'s trailing `Script_Update` [M 0x1dbc08:56]); the objects after it see
+    /// event 5's `Drone_EnableAll(0)` before their own control funcs run. (The port used to update
+    /// every player together BEFORE the walk — a script triggered by a placement trigger saw the
+    /// channel one tick late and the spawners acted a tick before the freeze: the 07000005 playtest
+    /// had the gate guards vanish on the touch tick instead of after the wall-hug scene.)
+    pub fn update_player(&mut self, i: usize, ch: &mut Channels, w: &dyn World, frame: u32, skip: bool) {
+        if i >= self.players.len() { return; }
+        self.players[i].update(&self.lib, &mut self.objects, ch, w, frame, &mut self.requests, skip);
     }
 }
 

@@ -1,10 +1,11 @@
-//! fix-spawner-p7 NF_ISO tests: the spawner's param 7 is the KILL channel, measured live on
-//! 07000005 (docs/fields/hitdata-spawner-ally.md "Live result"): ch 0x22 spawns the two gate
-//! guards; ch 0x43 (the wall-hug plate) runs SP 298's script (0x06000AD4 — event 5 freezes the
-//! NPCs), and once `DroneSpawner_Control` runs again the kill latch removes both guards and the
-//! spawner. Plus 07000011's stairwell (the fix-actors playtest case): the keep-level split keeps a
-//! drawn guard. Every step goes through the real input path: `step_bond` with Bond teleported into
-//! the disc's touch volumes. Opt-in: NF_ISO.
+//! fix-spawner-p7 NF_ISO tests + fix-script-start-tick: the spawner's param 7 is the KILL channel,
+//! measured live on 07000005 (docs/fields/hitdata-spawner-ally.md "Live result"): ch 0x22 spawns the
+//! two gate guards; ch 0x43 (the wall-hug plate) runs SP 298's script (0x06000994 — event 5 freezes
+//! the NPCs on the TOUCH TICK, the game's one-walk order), and when the script's end re-enables the
+//! NPCs the kill latch removes both guards and the spawner — the placed pair behind the gate swaps
+//! in at the same moment. Plus 07000011's stairwell (the fix-actors playtest case): the keep-level
+//! split keeps a drawn guard. Every step goes through the real input path: `step_bond` with Bond
+//! teleported into the disc's touch volumes. Opt-in: NF_ISO.
 
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
@@ -22,19 +23,32 @@ fn present(sim: &nf_view::scene::Sim, tpls: &[usize]) -> usize {
     tpls.iter().filter(|&&i| sim.drones.list[i].present).count()
 }
 
-/// The live measurement end to end: ch 0x22 → the two gate guards spawn; the wall-hug script
-/// freezes the NPCs (the spawner's Control returns at its first line, so the latch waits); when the
-/// script frees them the latch fires and both guards are removed, the spawner never spawns again.
+/// The live measurement end to end, in the game's visible order [L docs/fields/hitdata-spawner-ally.md
+/// "Live result"]: ch 0x22 → the two gate guards spawn; the wall-hug plate runs SP 298's script
+/// (0x06000994 — the disc's placement data for placement 298; the live run's loadable-pack variant is
+/// 0x06000AD4), whose event 5 freezes the NPCs IN THE TOUCH TICK and the whole ~1,400-tick scene —
+/// the gate pair stays present the whole time, the two placed guards behind the gate stay disabled —
+/// and when the script's end re-enables the NPCs the kill latch fires: both guards removed, the
+/// spawner gone, and the placed pair switch on. The player never sees an empty gate.
 #[test]
-fn the_kill_channel_removes_the_gate_guards_after_the_wall_hug_script() {
+fn the_wall_hug_scene_holds_the_gate_pair_and_swaps_the_pairs_at_its_end() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
+    // The placed pair behind the gate: drones at (32.4, 37.0, 49.9) / (27.6, 37.0, 49.7) — the live
+    // read's (27.6, 37.2, 49.9) / (32.3, 37.2, 50.1), object flags 0x8b0 (disabled) during the scene
+    // and 0x880 after [L hitdata-spawner-ally]. The port's `enabled` is the obj+0xF0 gate's stand-in.
+    let placed = |sim: &nf_view::scene::Sim| -> Vec<usize> {
+        sim.drones.list.iter().enumerate()
+            .filter(|(_, d)| (d.pos[0] - 30.0).abs() < 4.0 && (d.pos[2] - 50.0).abs() < 4.0)
+            .map(|(i, _)| i).collect()
+    };
     for _ in 0..30 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
     {
         let sim = scene.sim.as_mut().unwrap();
         let tpls = group2(sim);
         assert!(!tpls.is_empty(), "the gate spawner's group-2 templates exist [D placement 268]");
         assert!(tpls.iter().all(|&i| !sim.drones.list[i].present), "the spawner holds them back [M 0x137aa0]");
+        assert_eq!(placed(sim).len(), 2, "the two placed guards behind the gate exist [L hitdata-spawner-ally]");
         // The trigger: ch 0x22 comes from the OR gate (placement 0xEF #25) over the three
         // level-start touches (placements 21/22/23, out 0x23/24/25 [D probe]) — Bond onto the
         // first one's volume, the real input path to the gate spawner's trigger channel.
@@ -71,28 +85,39 @@ fn the_kill_channel_removes_the_gate_guards_after_the_wall_hug_script() {
         sim.bond.pos = touch_centre(sim, 0x43);
     }
     scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+    // THE TOUCH TICK, in the game's walk order [M control_movement_object_handler 0x1336f8:54-68:
+    // one newest-first walk runs every control func — the plate #301 writes ch 0x43, then SP #298
+    // (placement 298) triggers and `SP_LoadScript`'s trailing `Script_Update` [M 0x1dbc08:56] runs
+    // its first commands (event 5 → `Drone_EnableAll(0)` [M 0x1d94c0 case 5]), then the spawner
+    // (placement 268) returns at `NPCGlobals == 0` [M 0x137e68:21-23] with its latch still off]:
+    // the freeze holds the SAME tick, the gate pair is still present, the spawner alive.
     {
         let sim = scene.sim.as_ref().unwrap();
         assert!(sim.drones.channels.on(0x43), "the wall-hug plate fires ch 0x43 [D]");
+        assert!(!sim.drones.npc_enabled, "the freeze lands on the touch tick (event 5 in the same walk) [L]");
+        assert_eq!(present(sim, &group2(sim)), 2, "the gate pair survives the touch tick — the spawner was frozen first [L: no empty gate]");
+        let sp = sim.drones.spawners.iter().find(|sp| sp.group == 2).expect("the gate spawner");
+        assert!(!sp.gone && !sp.kill_latch, "the spawner is alive with its kill latch still off [L: +0x20 stays 0 through the scene]");
+        assert!(placed(sim).iter().all(|&i| !sim.drones.list[i].enabled), "the placed pair is disabled by the freeze (obj flags 0x8b0) [L]");
     }
-    // The wall-hug script (SP 298, 0x06000AD4 — the ch-0x43 player; 0x06000994 is the gatehouse
-    // INTRO, cf. dev_tools_live) freezes the NPCs (event 5 → Drone_EnableAll(0) [M 0x1d94c0 case 5]).
-    // *Deviation* (pre-existing, nis.rs): the port's script player runs its first commands one tick
-    // after `start`, so the freeze lands one tick after the touch — the game's walk runs SP #298
-    // (placement 298) before the spawner (placement 268) in the same frame, holding the latch off
-    // through the whole script [L]. The end state matches the measurement either way; the
-    // freeze-window latch hold is pinned by `the_kill_channel_waits_for_the_npcs_to_be_re_enabled`.
-    let mut froze = false;
-    for _ in 0..6000u32 {
-        let sim = scene.sim.as_mut().unwrap();
-        sim.step_bond(Default::default(), false, false, false);
-        if !sim.drones.npc_enabled { froze = true; break; }
-    }
+    // MID-SCENE (~300 ticks in, the scene is 1,400 [D script 0x06000994 length]): the same picture.
+    for _ in 0..300 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
     {
         let sim = scene.sim.as_ref().unwrap();
-        assert!(froze, "the wall-hug script froze the NPCs (event 5 → Drone_EnableAll(0) [M 0x1d94c0 case 5])");
+        assert!(!sim.drones.npc_enabled, "the freeze holds through the scene [L]");
+        assert_eq!(present(sim, &group2(sim)), 2, "the gate pair is present mid-scene [L: 15 drones throughout]");
+        let sp = sim.drones.spawners.iter().find(|sp| sp.group == 2).expect("the gate spawner");
+        assert!(!sp.kill_latch, "the latch waits (Control returns at its first line) [M 0x137e68:21-23]");
+        assert!(placed(sim).iter().all(|&i| !sim.drones.list[i].enabled), "the placed pair stays hidden mid-scene [L]");
     }
-    // The latch fires: kill-all on 07000005 [M 0x137e68:235-288] — both guards removed [L: 15 → 13].
+    // The script's end re-enables the NPCs (stream 8's event 7 at clock 1398 → `Script_Free`'s 0x80
+    // flag [M 0x1da880:41-43]); then the latch fires and the kill scan removes both guards [L: 15 → 13].
+    let mut freed = None;
+    for k in 0..1500u32 {
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        if scene.sim.as_ref().unwrap().drones.npc_enabled { freed = Some(k); break; }
+    }
+    assert!(freed.is_some(), "the script's end re-enabled the NPCs (event 7 → Script_Free 0x80) [L]");
     let mut gone_ticks = None;
     for k in 0..30u32 {
         scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
@@ -104,11 +129,46 @@ fn the_kill_channel_removes_the_gate_guards_after_the_wall_hug_script() {
         assert!(gone_ticks.is_some(), "both gate guards removed once Control runs again [L: 15 → 13]");
         let sp = sim.drones.spawners.iter().find(|sp| sp.group == 2).expect("the gate spawner");
         assert!(sp.gone, "the spawner deletes itself [M 0x137e68: obj+0xFE |= 1]");
+        assert!(placed(sim).iter().all(|&i| sim.drones.list[i].enabled), "the placed pair switched on at the re-enable (0x8b0 → 0x880) [L]");
     }
     // And it never spawns again.
     for _ in 0..120 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
     let sim = scene.sim.as_ref().unwrap();
     assert_eq!(present(sim, &group2(sim)), 0, "the spawner never spawns again");
+}
+
+/// The sister: a script started on a tick whose first command is a WAIT starts its clock on the
+/// start tick. SP 298's script stream 12 is `Wait(369)` → `Sound(368)` [D 0x06000994 decoded]: the
+/// sound lands exactly 369 ticks after the touch (the start tick), not 370 — the old pre-fix player
+/// (first commands one tick after `start`) played it at touch+370.
+#[test]
+fn the_wait_first_stream_starts_its_clock_on_the_start_tick() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
+    for _ in 0..30 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = touch_centre(sim, 0x43);
+    }
+    scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+    {
+        let sim = scene.sim.as_ref().unwrap();
+        assert!(sim.drones.channels.on(0x43), "the wall-hug plate fires ch 0x43 [D]");
+        assert!(!sim.drones.npc_enabled, "the script started and ran its first commands this tick [M 0x1dbc08:56]");
+        let at = |sim: &nf_view::scene::Sim| sim.drones.script_sounds.iter().any(|s| s.0 == (0x0600_0994, 12));
+        assert!(!at(sim), "stream 12's Wait(369) holds the sound back on the start tick [D 0x06000994 stream 12]");
+    }
+    // 368 ticks later: still waiting (369 − 1 for the start tick's own update); the 369th tick after
+    // the touch plays it.
+    for _ in 0..368 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
+    {
+        let sim = scene.sim.as_ref().unwrap();
+        assert!(!sim.drones.script_sounds.iter().any(|s| s.0 == (0x0600_0994, 12)), "the wait is not done at touch+368 [D]");
+    }
+    scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+    let sim = scene.sim.as_ref().unwrap();
+    assert!(sim.drones.script_sounds.iter().any(|s| s.0 == (0x0600_0994, 12)),
+        "the sound lands at touch+369 — the clock started on the start tick [D; pre-fix: touch+370]");
 }
 
 /// The sister: the same spawn sequence without the kill channel — the guards stay.

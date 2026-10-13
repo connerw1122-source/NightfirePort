@@ -6565,3 +6565,49 @@ demonstrated live before the reset and the chain test re-run green on the restor
 2. Press fire (✕) while dying: the menu/restart should come immediately instead of the 7.5 s.
 3. Die on 07000007 (punch a guest to death): the fail banner ~5 s, then the restart to 07000005
    (the mission start), COLD — full health, fists, objectives re-announced. The old replay loop gone.
+
+## fix-script-start-tick (2026-10-13)
+
+The 07000005 playtest's vanishing gate guards: the port's script player ran a newly started script's
+first commands one tick after `start`, so the wall-hug plate's freeze landed a tick after the touch
+and the gate spawner removed both guards on the touch tick — the gate stood empty for the whole
+~1,400-tick scene (the game holds them present throughout; the deviation was documented in
+`spawner_kill_live.rs` by fix-spawner-p7).
+
+- **The cause was not the script player's clock** (the load path already ran the first commands
+  same-tick) — it was WHERE the players ran: the port updated all script players together BEFORE
+  the control walk, so a script triggered by a placement trigger saw the channel one tick late
+  (the TOUCH_ONCE plate writes its channel in the walk) and the spawners acted a tick before the
+  freeze. The game runs every object's control func in ONE newest-first walk
+  [M control_movement_object_handler 0x1336f8:54-68, `control_funcs[obj+0xFF]`]: plate #301 writes
+  ch 0x43 → SP #298 (placement 298) triggers and `SP_LoadScript`'s trailing `Script_Update`
+  [M 0x1dbc08:56] runs its first commands → event 5 freezes the NPCs → the spawner (placement 268)
+  returns at `NPCGlobals == 0` [M 0x137e68:21-23] with the kill latch off for the whole scene.
+- **The fix**: `Scripts::tick` split into `begin_tick` (requests reset, skip take, the create-time
+  prime beat) and `update_player` (one `SP_Update` from the walk); the players joined the control
+  list (kind 5, placement order) in `drone.rs`; the request drain runs before the walk AND after
+  every player's update (`drain_script_requests` — event 5 must gate the later control funcs the
+  same frame); `set_dynamic` moved after the walk (the game's `Collide_Update` 0x1336f8:238 is
+  post-walk — the ride keeps its one-tick-behind-Bond lag instead of gaining a second one).
+- **The tests** (`nf-view/tests/spawner_kill_live.rs`): the rewritten
+  `the_wall_hug_scene_holds_the_gate_pair_and_swaps_the_pairs_at_its_end` asserts the game's visible
+  order at the touch tick (ch 0x43 on AND `npc_enabled` false AND the gate pair present AND the
+  latch off), mid-scene (the same + the placed pair hidden), and after (the gate pair removed, the
+  spawner gone, the placed pair enabled — 0x8b0 → 0x880 [L hitdata-spawner-ally]); the sister
+  `the_wait_first_stream_starts_its_clock_on_the_start_tick` uses the scene's stream 12
+  (`Wait(369)` → `Sound(368)` [D 0x06000994 decoded]) — the sound lands at touch+369, not +370
+  (probed pre-fix). Fail-first: pre-fix the freeze lands at touch+1 and the pair is removed on the
+  touch tick.
+- **One re-baseline the corrected semantics forced** (shared test file, in the report):
+  `fix_player3_live.rs`'s grenade damage pick walked a guard whose 3-units-back spot could face a
+  ledge once the guard's patrol phase shifted (the game's list order — a channel is seen only by
+  the objects updated after it); the pick now requires the spot's floor to match the guard's.
+  Verified fix-specific: the test passes on origin/master (worktree run).
+- Shared files touched beyond the task's list (all minimal, listed in the report): `drone.rs`
+  (the kind-5 walk arm, `drain_script_requests`/`script_obj_pos` extraction, `script_sounds` pub,
+  the `set_dynamic` move — master's fix-party-mission re-enable/hud_frozen/0x172 arms live in the
+  shared drain), `fix_player3_live.rs` (the pick), `docs/port-map/core-loop.md` (divergence 9's
+  fix note). Merged origin/master (22 commits: fix-party-mission, fix-death-restart) mid-task.
+- Full suite (post-merge, NF_ISO): nf-game 23/23, nf-view 85/85, nf-audio+nf-formats green except
+  **the 3 allowed `disc_golden` failures** (the slim ISO). The report is
+  `docs/reports/fix-script-start-tick.md`.
