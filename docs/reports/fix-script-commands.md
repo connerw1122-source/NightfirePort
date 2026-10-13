@@ -128,3 +128,12 @@ nf-view (`--bond` spots; the render decides the visual questions my headless tes
    texture is loaded into `hud_textures`; if it is missing, the texture-loading hook is the next fix.
 7. The intro subtitles (07000500's 0x06000961): the label 0x06000068 text at the message pane for
    1132 frames.
+
+## ntfy failed
+
+All three attempts hit the daily quota (the same server the previous session's short message
+reached, so the address is right — the free tier's daily message limit is exhausted):
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your
+  limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- python urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget: exit 8 (server error response)
