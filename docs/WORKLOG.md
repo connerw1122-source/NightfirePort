@@ -8197,3 +8197,24 @@ Work Log:
 Stage Summary:
 - The blend + decode landed with green tests; the vertex application is the next session's item
   once the target buffer's base is pinned (live check listed in the report).
+
+## fix-anim-blend2 (2026-10-13, branch s/fix-anim-blend2, from s/fix-anim-blend a14976d + origin/master 0cda458)
+
+Task: the cover lean-out at speed 1.5 now lasts 90 ticks instead of the game's 37
+(ai_live::guard_takes_cover_like_the_game: "UnderCoverAim lasted 90 (live 37)"). The exact
+Quat_Slerp_Acc and the distance-table machinery from fix-anim-blend are wanted and stay. The 37
+is the real game's measured duration (work/chase_trace.tsv, anim 176 at Drone_AnimInfo +0x14 =
+1.5). Seed scan: exactly 90 on 11 of 16 seeds — a 1.5x-speed anim's end/duration detection is
+wrong, not an RNG shift. Suspects: the fractional ftime/wrap handling in Drone::script_frame and
+the root sampler, the "anim done" test, the AnimSeqTick 0x1c28d0 seq.frame = time - start + 1.0
+relation applied twice.
+
+Plan:
+- Reproduce with the single test, find where the lean-out's end detection diverges from
+  AnimScriptTick 0x1c2630 / AnimSeqTick 0x1c28d0, fix it in crates/nf-game/src/{anim,drone}.rs.
+- Keep fix-anim-blend's new unit tests green; live 37 is the check (do NOT re-pick the seed).
+
+Work Log:
+- (started) branch created from origin/s/fix-anim-blend (a14976d), origin/master (0cda458) merged;
+  WORKLOG conflict resolved by keeping both sides. Reading the fix-anim-blend report + the
+  script_frame end-detection code next.
