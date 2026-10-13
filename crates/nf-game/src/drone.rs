@@ -1316,6 +1316,7 @@ impl Drone {
         self.anim.outgoing.retain_mut(|o| { let len = d.scripts.get(&o.script).map_or(1.0, |s| s.length as f32); o.tick(len) });
         if self.anim.held { self.root_prev = None; return self.call_handler(d); }
         let before = (self.anim.script, self.anim.danim);
+        let ftime_in = self.anim.ftime;
         // `AnimScriptTick`: a new script runs the commands of its start frame first.
         if !self.anim.started { self.anim.started = true; self.script_commands(d, 0, 1, false); }
         let prev_t = 1 + self.anim.time;
@@ -1347,8 +1348,10 @@ impl Drone {
             // The wrap tick repeats the script's last step (last frame − the one before): [L] aligned per-tick steps of
             // a live walk cycle (115 ticks, work/patrol_trace.tsv) show the step before the wrap twice.
             self.anim.time = len.saturating_sub(1);
+            self.anim.ftime = self.anim.time as f32;
             let last = self.root_value(d);
             self.anim.time = len.saturating_sub(2);
+            self.anim.ftime = self.anim.time as f32;
             wrap_end = self.root_value(d).zip(last).map(|(a, b)| [b[0] - a[0], 0.0, b[2] - a[2]]);
             let info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
             let next = if self.anim.danim == 0 { self.anim.follow_on } else { u16::from_le_bytes([info[10], info[11]]) };
@@ -1376,7 +1379,7 @@ impl Drone {
                 self.anim.time = len.saturating_sub(1);
                 self.anim.ftime = self.anim.time as f32;
             } else {
-                self.anim.ftime = (self.anim.ftime - len as f32).max(0.0);
+                self.anim.ftime = (ftime_in - len as f32).max(0.0);
                 self.anim.time = self.anim.ftime as u32;
             }
             restarted = true;
@@ -1439,18 +1442,23 @@ impl Drone {
     /// one overwrites — [L] the 07000006 driver's face track, started after his body track, pins his
     /// root to its all-zero track so he holds position while the body's root runs 0.57; the free
     /// `anim::script_frame` is last-wins the same way, fix-drone2).
-    pub fn script_frame(&self, d: &Data) -> Option<(u32, u32)> {
+    pub fn script_frame(&self, d: &Data) -> Option<(u32, f32)> {
         let script = d.scripts.get(&self.anim.script?)?;
+        // The window follows the integer tick (the game pins the seq slots when its commands run); the frame keeps
+        // the fraction — `AnimSeqTick` 0x1c28d0: seq.frame = script.time(+0x90, float) − start + 1.0. At speed 1.0
+        // this is the old integer frame exactly; at a fractional speed (Drone_AnimInfo +0x14, e.g. lean-out 176 at
+        // 1.5) the root motion now samples the same f/f+1 blend the pose does.
         let t = (1 + self.anim.time) as u16;
         let (a, _, q) = script.sequences().filter(|(a, b, _)| *a <= t && t <= *b).last().or_else(|| script.sequences().next())?;
-        Some((q, (t.saturating_sub(a) + 1) as u32))
+        Some((q, (1.0 + self.anim.ftime - a as f32 + 1.0).max(1.0)))
     }
 
-    /// The root translation at the playing script frame.
+    /// The root translation at the playing script's (fractional) frame — `AnimFrameSet` 0x1c75a0's ⌊f⌋/⌊f⌋+1 blend
+    /// (`anim::root_translation_at`); the posed bones sample the fraction the same way, so the stance foot stays
+    /// planted instead of stepping only on whole frames.
     fn root_value(&self, d: &Data) -> Option<V3> {
         self.script_frame(d).and_then(|(q, f)| d.sequences.get(&q).filter(|s| s.channels.len() >= 3).map(|s| {
-            let f = f.clamp(1, s.frames.max(1) as u32);
-            [s.value(0, f), s.value(1, f), s.value(2, f)]
+            crate::anim::root_translation_at(s, f)
         }))
     }
 
@@ -1474,8 +1482,7 @@ impl Drone {
                 let at = |t: f32| -> Option<V3> {
                     let (q, f) = crate::anim::script_frame(d.scripts.get(&o.script)?, t)?;
                     let s = d.sequences.get(&q).filter(|s| s.channels.len() >= 3)?;
-                    let f = (f as u32).clamp(1, s.frames.max(1) as u32);
-                    Some([s.value(0, f), s.value(1, f), s.value(2, f)])
+                    Some(crate::anim::root_translation_at(s, f))
                 };
                 let step = match (at(o.time), at(o.time - o.speed)) { (Some(a), Some(b)) if o.speed != 0.0 && a[0].is_finite() => [a[0] - b[0], a[2] - b[2]], _ => [0.0; 2] };
                 (step, o.weight())

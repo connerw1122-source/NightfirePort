@@ -7922,3 +7922,23 @@ Plan:
 
 Work Log:
 - (started) branch created from origin/master 13abef4; reading anim docs + decompile next.
+- Ported (branch s/fix-anim-blend, from origin/master 13abef4): Quat_Slerp_Acc verbatim
+  [M 0x1e4188] — negate the w0 coefficient (not q1), linear gate `0.01 < 1−dot` (was 0.9995),
+  reciprocal-multiply PS2Sinf weights, NO renormalisation (a rounded dot > 1 lands in the linear
+  branch, so no clamp); AnimFrameSet's f/f+1 root translation (`anim::root_translation_at`,
+  gate 0.0002 + AnimFrameBlend's translation clamp [M 0x1c75a0/0x1c2b80]) now feeds the drone
+  root motion at the fractional script time (drone.rs script_frame → (u32 hash, f32 frame),
+  root_value + the outgoing-fade sampler; wrap-tick samples via ftime synced to its forced
+  integer times, loop-wrap keeps ftime's fraction) — at speed 1.0 the frames are unchanged
+  (frac 0), at a fractional Drone_AnimInfo +0x14 speed (lean-out 176 = 1.5, run 0xDC = 0.7 on
+  09/0A) the root motion samples the same blend the pose does instead of stepping whole frames;
+  speed modes [M 0x1c2630 +0xB4]: DistanceTable (AnimDistanceTableCreate 0x1c4060 — cumulative
+  |root Δ|, axis mask, min 1e-05→0.01, looping = frames−1 segments) +
+  distance_to_frame (AnimDistanceTableDistanceToFrame2 0x1c4270 — walked wrap into [0,total),
+  stored back, segment+frac frame, directional speed wrap) + speed_for_mode (modes 0/2/3
+  formulas; the mode-1 call site passes the table's speed) — machinery only this session: no
+  consumer sets +0xB4 yet (the game's walk sets are player-side; the guard walk is mode 0).
+- Tests: anim.rs unit — slerp_negates_w0_and_never_renormalises (RED against the old body:
+  negated q1 + renormalised; the old/renorm code is what the decompile contradicts),
+  distance_table_maps_walked_distance_to_frames (RED pre-fix: no table existed), plus the
+  existing slerp/blend weights test stays green under the exact model.
