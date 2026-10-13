@@ -35,3 +35,8 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox2 at 2026-10-13T01:09Z
+
+---
+## Report (done, 2026-10-13T05:22Z)
+
+Closed by the driver session: the report is on `s/fix-party-mission` (docs/reports/fix-party-mission.md); the worker did not run finish.sh.
