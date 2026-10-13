@@ -4080,7 +4080,7 @@ pub struct Drones {
     voice_last: Vec<Option<u32>>,
     patrol_cooldown: u32,
     /// Script stream sounds: (script, stream) → handle and the object it follows.
-    script_sounds: Vec<((u32, u8), crate::sound::Handle, Option<usize>)>,
+    pub script_sounds: Vec<((u32, u8), crate::sound::Handle, Option<usize>)>,
     /// The level's searchlights (docs/systems/world-objects.md; created in `attach_level`, updated in `tick`'s
     /// control-list order with the drones and triggers).
     pub searchlights: crate::searchlight::Searchlights,
@@ -4523,6 +4523,73 @@ impl Drones {
         }
     }
 
+    /// A script object's world position: an Entity's matrix translation, an Anim's discrete-0 root
+    /// (`Script_Interp` 5's follow point). `d` for the Anim's discrete lookup.
+    fn script_obj_pos(&self, d: &Data, o: usize) -> Option<V3> {
+        match self.scripts.objects.list.get(o) {
+            Some(Some(crate::nis::Obj::Entity { matrix, .. })) => Some([matrix[3][0], matrix[3][1], matrix[3][2]]),
+            Some(Some(crate::nis::Obj::Anim { skin, script, frame, .. })) => crate::nis::World::discrete0(d, *skin, *script, *frame).map(|m| [m[3][0], m[3][1], m[3][2]]),
+            _ => None,
+        }
+    }
+
+    /// The script requests' consumer (sounds, the camera's music events, the drone freeze/free,
+    /// the player enable/disable, the script-driven level transition). Run once before the walk
+    /// (the priming beat's and the copter's requests) and after EVERY script player's
+    /// `SP_Update` in the walk — event 5's `Drone_EnableAll(0)` must gate the objects after it in
+    /// the same frame (`DroneSpawner_Control` returns while `NPCGlobals == 0` [M 0x137e68:21-23];
+    /// in the game the call is synchronous inside `Script_EventHandler`).
+    fn drain_script_requests(&mut self, d: &Data) {
+        for r in std::mem::take(&mut self.scripts.requests) {
+            match r {
+                crate::nis::Request::PlayerDisable | crate::nis::Request::PlayerEnable { .. } => self.player_events.push(r.clone()),
+                // Events 5 / 7: the game's own drone gate (`Drone_EnableAll` → `NPCGlobals`) [M 0x1383e8].
+                // `Drone_EnableAll(0)` walks the whole llist calling `NDrone2_Enable(0)` per drone —
+                // `obj+0xF0 |= 0x10|0x20` (not drawn, not picked) and `+0x4F8 &= ~0x1801A0` (no anim/AI)
+                // [M 0x149dd0:8-15] — and sets `NPCGlobals = 0`. The re-enable (`Script_Free`'s 0x80 flag,
+                // 0x1da880:41-43) skips state-1 WaitSwitch drones [M 0x1383e8:14] — they stay disabled until
+                // their own switch channel wakes them [M 0x15b960:21-37]. The port's `enabled` is the
+                // obj+0xF0 gate's stand-in, so the freeze mirrors per drone.
+                crate::nis::Request::DroneEnable { on } => {
+                    self.npc_enabled = on;
+                    for dr in self.list.iter_mut().filter(|d| d.present) {
+                        dr.enabled = on && dr.state != state::WAIT_SWITCH;
+                    }
+                }
+                crate::nis::Request::Camera { script, start } => self.music.event(if start { 0xb } else { 0xc }, script),
+                // `Script_SoundStart`: 2-D, or 3-D at the stream's object (its position each frame, `Script_Interp` 5).
+                crate::nis::Request::Sound { id, at, src } => {
+                    let h = match at.and_then(|o| self.script_obj_pos(d, o)) {
+                        Some(pos) => {
+                            let h = self.audio.play3d(id, pos, None);
+                            if let (Some(t), false) = (d.sfx, d.sfx.is_some_and(|t| t.get(id).looped)) { let e = t.get(id); self.sounds.push(Sound { id, pos, inner: e.inner, outer: e.outer, weight: e.weight }); }
+                            h
+                        }
+                        None => self.audio.play(id),
+                    };
+                    self.script_sounds.retain(|s| s.0 != src);
+                    self.script_sounds.push((src, h, at));
+                }
+                crate::nis::Request::SoundStop { src } => {
+                    for s in self.script_sounds.iter().filter(|s| s.0 == src) { self.audio.stop(s.1); }
+                    self.script_sounds.retain(|s| s.0 != src);
+                }
+                // Event 0x12: the script-driven level transition. No NIS script on 07000005 fires kind 0x12 (the truck
+                // script 0x06000A22 fires only 0xC and 0xD) — the actual level exit on 07000005 is the placement-0xE8
+                // trigger at the castle door (see the LOAD_LEVEL arm below). This arm is the script-event path for
+                // levels that do fire 0x12. Set `level_exit` so the main loop reloads the next level
+                // [M Script_EventHandler 0x1d94c0:189-199].
+                crate::nis::Request::LoadLevel { level } => {
+                    if self.level_exit.is_none() {
+                        self.level_exit = Some(level);
+                        self.music.event(3, 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// `Pickup_Update` for every pickup: the fall, Bond's touch (`Pickup_Handler`; refused pickups stay, and the
     /// lifetime does not run that tick), the lifetime. Taken: sound 0xF5 at the pickup, deleted (no respawn).
     /// `hashtable_getitem` of the first-person model stands in as "the level has that skin".
@@ -4857,26 +4924,36 @@ impl Drones {
             if started { copter_flight.push((c.placement, c.scripts[1], c.matrix)); }
         }
         for (placement, script, matrix) in copter_flight { self.scripts.spawn_once(placement, script, matrix); }
-        // Script players (*deviation*: all of them here, not interleaved with the placed objects by list order).
-        { let _p = crate::prof::scope("drones: scripts"); self.scripts.tick(&mut self.channels, d, frame); }
+        // The script players' tick head (the create-time load beat — the game does it during the
+        // level load [M 0x1db9a8:81-86]): the players THEMSELVES update from the control walk
+        // below, in the game's list order (fix-script-start-tick — the old all-players-here beat
+        // ran a trigger-started script one tick behind the placement trigger that started it).
+        let script_skip = { let _p = crate::prof::scope("drones: scripts head"); self.scripts.begin_tick(&mut self.channels, d, frame) };
         // Script objects with collision data join the collision world where they now are: animations' discrete
         // parts and drawn entities (`Collide_PickObj`; triggers and AI volumes are not obstacles).
         // Id: object index · 64 + part (stable while the object lives) for the ride (`ground_motion`).
-        let mut parts = Vec::new();
-        for (oi, o) in self.scripts.objects.list.iter().enumerate() {
-            let id = |k: usize| (oi as u64) << 6 | k as u64;
-            match o {
-                Some(crate::nis::Obj::Anim { skin, script, frame, .. }) => parts.extend(d.discrete_parts(*skin, *script, *frame).into_iter().enumerate().map(|(k, (h, m))| (id(k), h, m))),
-                Some(crate::nis::Obj::Entity { hash, kind, matrix, .. }) if !matches!(kind, 0xea | 0xeb | 0xf5 | 0xf2) => parts.push((id(0), *hash, *matrix)),
-                _ => {}
+        // *set_dynamic moved after the walk* (fix-script-start-tick): the walk now moves the script
+        // objects, and the game's `Collide_Update` runs after the walk [M 0x1336f8:238] — the ride
+        // reads this walk's poses, the same one-tick-behind-Bond lag the all-players-here beat
+        // produced before. During the walk the dynamic set holds the last walk's poses (the game's
+        // does too, until Collide_Update).
+        let script_parts = |drones: &Drones, d: &Data| -> Vec<(u64, u32, nf_formats::anim::Mat4)> {
+            let mut parts = Vec::new();
+            for (oi, o) in drones.scripts.objects.list.iter().enumerate() {
+                let id = |k: usize| (oi as u64) << 6 | k as u64;
+                match o {
+                    Some(crate::nis::Obj::Anim { skin, script, frame, .. }) => parts.extend(d.discrete_parts(*skin, *script, *frame).into_iter().enumerate().map(|(k, (h, m))| (id(k), h, m))),
+                    Some(crate::nis::Obj::Entity { hash, kind, matrix, .. }) if !matches!(kind, 0xea | 0xeb | 0xf5 | 0xf2) => parts.push((id(0), *hash, *matrix)),
+                    _ => {}
+                }
             }
-        }
-        // Doors are solid through their object's collision mesh at `obj+0x90` (`Collide_PickObj` walks the
-        // cel-linked objects whatever moves them); the pose this tick's `Door_Update` writes lands in the next
-        // call — at most one tick (4 cm) behind the visual. Id: high bit 40 + the door index.
-        parts.extend(self.doors.list.iter().enumerate().filter(|(_, x)| x.glist != 0)
-            .map(|(k, x)| (0x100_0000_0000 | k as u64, x.glist, x.matrix)));
-        { let _p = crate::prof::scope("drones: set_dynamic"); d.world.set_dynamic(&parts); }
+            // Doors are solid through their object's collision mesh at `obj+0x90` (`Collide_PickObj` walks the
+            // cel-linked objects whatever moves them); the pose this tick's `Door_Update` writes lands in the
+            // same set_dynamic now (the game's Collide_Update is post-walk [M 0x1336f8:238]). Id: high bit 40 + the door index.
+            parts.extend(drones.doors.list.iter().enumerate().filter(|(_, x)| x.glist != 0)
+                .map(|(k, x)| (0x100_0000_0000 | k as u64, x.glist, x.matrix)));
+            parts
+        };
         // Script triggers (`Trigger_TouchOnce` / `Trigger_Touch` made by `Script_CreateEntity`): one per live entity,
         // its volume the glist's collision at the entity's matrix this tick; gone with the object. New objects head the
         // control list, so they update before the placed ones (placement index past them all).
@@ -4896,62 +4973,13 @@ impl Drones {
                 }
             }
         }
-        let obj_pos = |s: &crate::nis::Scripts, o: usize| match s.objects.list.get(o) {
-            Some(Some(crate::nis::Obj::Entity { matrix, .. })) => Some([matrix[3][0], matrix[3][1], matrix[3][2]]),
-            Some(Some(crate::nis::Obj::Anim { skin, script, frame, .. })) => crate::nis::World::discrete0(d, *skin, *script, *frame).map(|m| [m[3][0], m[3][1], m[3][2]]),
-            _ => None,
-        };
-        for r in std::mem::take(&mut self.scripts.requests) {
-            match r {
-                crate::nis::Request::PlayerDisable | crate::nis::Request::PlayerEnable { .. } => self.player_events.push(r.clone()),
-                // Events 5 / 7: the game's own drone gate (`Drone_EnableAll` → `NPCGlobals`) [M 0x1383e8].
-                // `Drone_EnableAll(0)` walks the whole llist calling `NDrone2_Enable(0)` per drone —
-                // `obj+0xF0 |= 0x10|0x20` (not drawn, not picked) and `+0x4F8 &= ~0x1801A0` (no anim/AI)
-                // [M 0x149dd0:8-15] — and sets `NPCGlobals = 0`. The re-enable (`Script_Free`'s 0x80 flag,
-                // 0x1da880:41-43) skips state-1 WaitSwitch drones [M 0x1383e8:14] — they stay disabled until
-                // their own switch channel wakes them [M 0x15b960:21-37]. The port's `enabled` is the
-                // obj+0xF0 gate's stand-in, so the freeze mirrors per drone.
-                crate::nis::Request::DroneEnable { on } => {
-                    self.npc_enabled = on;
-                    for dr in self.list.iter_mut().filter(|d| d.present) {
-                        dr.enabled = on && dr.state != state::WAIT_SWITCH;
-                    }
-                }
-                crate::nis::Request::Camera { script, start } => self.music.event(if start { 0xb } else { 0xc }, script),
-                // `Script_SoundStart`: 2-D, or 3-D at the stream's object (its position each frame, `Script_Interp` 5).
-                crate::nis::Request::Sound { id, at, src } => {
-                    let h = match at.and_then(|o| obj_pos(&self.scripts, o)) {
-                        Some(pos) => {
-                            let h = self.audio.play3d(id, pos, None);
-                            if let (Some(t), false) = (d.sfx, d.sfx.is_some_and(|t| t.get(id).looped)) { let e = t.get(id); self.sounds.push(Sound { id, pos, inner: e.inner, outer: e.outer, weight: e.weight }); }
-                            h
-                        }
-                        None => self.audio.play(id),
-                    };
-                    self.script_sounds.retain(|s| s.0 != src);
-                    self.script_sounds.push((src, h, at));
-                }
-                crate::nis::Request::SoundStop { src } => {
-                    for s in self.script_sounds.iter().filter(|s| s.0 == src) { self.audio.stop(s.1); }
-                    self.script_sounds.retain(|s| s.0 != src);
-                }
-                // Event 0x12: the script-driven level transition. No NIS script on 07000005 fires kind 0x12 (the truck
-                // script 0x06000A22 fires only 0xC and 0xD) — the actual level exit on 07000005 is the placement-0xE8
-                // trigger at the castle door (see the LOAD_LEVEL arm below). This arm is the script-event path for
-                // levels that do fire 0x12. Set `level_exit` so the main loop reloads the next level
-                // [M Script_EventHandler 0x1d94c0:189-199].
-                crate::nis::Request::LoadLevel { level } => {
-                    if self.level_exit.is_none() {
-                        self.level_exit = Some(level);
-                        self.music.event(3, 1);
-                    }
-                }
-                _ => {}
-            }
-        }
+        // The requests raised before the walk (the priming beat, the copter's spawned player): the
+        // game's create-time effects land before any object updates. The walk drains again after
+        // every script player (`drain_script_requests` from the kind-5 arm below).
+        self.drain_script_requests(d);
         for k in 0..self.script_sounds.len() {
             let (_, h, at) = self.script_sounds[k];
-            if let Some(p) = at.and_then(|o| obj_pos(&self.scripts, o)) { self.audio.set_position(h, p); }
+            if let Some(p) = at.and_then(|o| self.script_obj_pos(d, o)) { self.audio.set_position(h, p); }
         }
         let audio = &self.audio;
         self.script_sounds.retain(|s| !audio.finished(s.1));
@@ -4960,6 +4988,9 @@ impl Drones {
             .chain(self.spawners.iter().enumerate().map(|(j, sp)| (sp.placement, 2, j)))
             .chain(self.searchlights.parts.iter().enumerate().filter(|(_, p)| p.kind == 1).map(|(j, p)| (p.placement, 3, j)))
             .chain(self.doors.list.iter().enumerate().map(|(j, d)| (d.placement, 4, j)))
+            // The script players (fix-script-start-tick): `SP_Update` among the control funcs, in the
+            // same newest-first list order [M 0x1336f8:54-68 — `control_funcs[obj+0xFF]` per object].
+            .chain(self.scripts.players.iter().enumerate().filter(|(_, p)| !p.deleted).map(|(j, p)| (p.placement, 5, j)))
             .collect();
         order.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         // Pickups are created at run time, so they head the control list: `Pickup_Update` before the placed objects.
@@ -5099,6 +5130,17 @@ impl Drones {
                 }
                 continue;
             }
+            if what == 5 { let _pw = crate::prof::scope("ctl: kind 5");
+                // `SP_Update` in the walk (fix-script-start-tick): a script a placement trigger
+                // started runs its first commands HERE — after the trigger wrote its channel, before
+                // the spawners/drones below it in the list order [M 0x1336f8:54-68; SP_LoadScript's
+                // trailing `Script_Update` 0x1dbc08:56]. The requests drain immediately: event 5's
+                // `Drone_EnableAll(0)` must gate the later objects' control funcs the same frame
+                // (`DroneSpawner_Control` 0x137e68:21-23 returns while NPCGlobals == 0).
+                self.scripts.update_player(index, &mut self.channels, d, frame, script_skip);
+                self.drain_script_requests(d);
+                continue;
+            }
             // A cut-scene stops the drones only when the game itself says so: `Drone_Control` returns while
             // `NPCGlobals == 0` (script event 5 → `Drone_EnableAll(0)`, undone by `Script_Free`'s 0x80 flag)
             // [M 0x139268:39-42, 0x1d94c0 case 5, 0x1da880:41-43]. `control_movement_object_handler` itself runs
@@ -5217,6 +5259,10 @@ impl Drones {
             }
         }
         drop(prof_loop);
+        // The dynamic collision set, AFTER the walk (fix-script-start-tick): the game's
+        // `Collide_Update` runs post-walk [M 0x1336f8:238], so Bond's next movement reads this
+        // walk's script-object and door poses (the ride's `ground_motion` set).
+        { let _p = crate::prof::scope("drones: set_dynamic"); d.world.set_dynamic(&script_parts(self, d)); }
         // The drones' speech requests, in update order (no random draws in `SpeechSFX` / `PlaySFX`).
         for (index, talks) in talk_queue { self.speech(d, index, talks, frame); }
         // `Doors_Calc` — the control pass's last act (0x1336f8's tail): the door groups sync, the busy markers
