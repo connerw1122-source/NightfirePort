@@ -80,3 +80,38 @@ fn the_laser_away_from_the_bolts_burns_nothing() {
 }
 
 fn dxz(a: [f32; 3], b: [f32; 3]) -> f32 { ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() }
+
+/// The Q-Decryptor (0x4E/0x4F) burns the same locks [M Lock_Update 0x1ae3d8:57-63 — the contact's
+/// weapon id 0x4E/0x4F, the burn 3/tick]: the same safe, the same aim, the bolt burns.
+#[test]
+fn the_decryptor_burns_the_safe_bolt() {
+    let iso = iso();
+    let mut scene = nf_view::load(&iso, "07000008.bin", false).expect("load 07000008");
+    let sim = scene.sim.as_mut().unwrap();
+    sim.bond.pos = [160.3, 45.5, -115.4];
+    sim.bond.yaw = 0.85;
+    let mut equipped = false;
+    for _ in 0..12 {
+        sim.step_bond(Input { gadget_cycle: 1, ..Default::default() }, false, false, false);
+        for _ in 0..60 { sim.step_bond(Input::default(), false, false, false); }
+        if sim.gun.weapon == 0x4e { equipped = true; break; }
+    }
+    assert!(equipped, "the decryptor must equip through the gadget cycle; weapon {:#x}", sim.gun.weapon);
+    let target = [162.2365f32, 43.875843, -117.14455];
+    for _ in 0..300 {
+        let (turn, look) = {
+            let sim = scene.sim.as_ref().unwrap();
+            let bp = sim.bond.pos;
+            let dx = target[0] - bp[0];
+            let dz = target[2] - bp[2];
+            let dy = target[1] - (bp[1] + sim.bond.eye - sim.bond.crouch_drop);
+            let desired = dx.atan2(dz);
+            let err = desired - sim.bond.yaw;
+            let want_pitch = (dy / dxz(bp, target).max(0.5)).atan() / std::f32::consts::FRAC_PI_2;
+            (err.clamp(-0.08, 0.08), (want_pitch - sim.bond.pitch).clamp(-0.08, 0.08))
+        };
+        scene.sim.as_mut().unwrap().step_bond(Input { turn, look, ..Default::default() }, false, false, false);
+    }
+    let sim = scene.sim.as_ref().unwrap();
+    assert!(sim.drones.channels.on(134), "the decryptor's beam burns the top bolt [M 0x1ae3d8:57-63]");
+}

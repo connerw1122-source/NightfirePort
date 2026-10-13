@@ -65,6 +65,7 @@ impl TickInput {
             weapon_cycle: self.weapon_cycle, gadget_cycle: self.gadget_cycle,
             switch_to: if self.switch_to < 0 { None } else { Some(self.switch_to as u8) },
             zoom: self.zoom,
+            fire: self.trigger,
         };
         (input, self.trigger, self.reload, self.use_key)
     }

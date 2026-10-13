@@ -1314,6 +1314,7 @@ impl ApplicationHandler for App {
                                     weapon_cycle: std::mem::take(&mut self.weapon_cycle),
                                     gadget_cycle: std::mem::take(&mut self.gadget_cycle),
                                     switch_to: self.weapon_switch_to.take(),
+                                    fire: self.trigger,
                                     zoom: self.zoom,
                                 };
                                 (input, self.trigger, self.just.remove(&KeyCode::KeyR), self.just.remove(&KeyCode::KeyE))

@@ -809,7 +809,7 @@ impl Sim {
         // weapon id in the lock's contact list], writing the lock's out channel. The beam's
         // endpoints are parked for the renderer (the 0x2000131/0x2000133 meshes).
         self.laser_beam = None;
-        if !self.disabled && nf_game::gadget::is_laser_weapon(self.gun.weapon) {
+        if !self.disabled && nf_game::gadget::runs_beam(self.gun.weapon) {
             let head = self.bond.head();
             let dir = self.bond.look();
             let frame = self.drones.frame + 1;
@@ -941,6 +941,25 @@ impl Sim {
         // whose top is far below Bond is no water either). The sink control is unused in play (the
         // viewer's input has no bind; the crouch key sinks in the Sim path below).
         if !self.disabled {
+            // The Q-Claw grapple's fire [M Player_SetGrapplePoint 0x195da0]: with the claw (0x4A/0x4C)
+            // out and the fire pressed on foot, the aim ray's grapple point (placement 0x3A) latches
+            // and Bond enters the substate 2 (the reel). The enter tick swallows the fire — it runs
+            // BEFORE the bond tick so a release tick's fire cannot re-latch in the same tick.
+            let mut trigger = trigger;
+            if trigger
+                && self.bond.substate == nf_game::player::SS_WALK
+                && self.bond.grapple.is_none()
+                && matches!(self.gun.weapon, 0x4a | 0x4c)
+            {
+                let head = self.bond.head();
+                let dir = self.bond.look();
+                if let Some(point) = nf_game::gadget::pick_grapple_point(&self.drones.grapple_points, head, dir, 100.0) {
+                    self.bond.grapple = Some(nf_game::gadget::GrappleState { point, phase: 1, pull: 0.0 });
+                    self.bond.substate = nf_game::player::SS_GRAPPLE;
+                    self.bond.vel = [0.0; 3];
+                    trigger = false;
+                }
+            }
             let water = self.cel_at(self.bond.pos).map(|i| self.cels[i].water).filter(|w| *w > -400.0);
             let sink = input.crouch;
             let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink };
@@ -960,6 +979,7 @@ impl Sim {
             }
             let was_on_wire = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
             let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
+            input.fire = trigger;
             self.bond.tick_ctx(&self.world, &ctx, &input);
             // `Player_WeaponNone` 0x1a9858 runs in `Player_CollLadder` on the grab [M 0x196118]: the
             // current weapon id is SAVED to `anim+0x64` (the port's `saved_weapon`), the class becomes

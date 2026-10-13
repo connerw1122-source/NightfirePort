@@ -36,6 +36,7 @@ const GRAVITY: f32 = -9.8;
 /// scripted-cam countdown (10), Player_Zipline 0x197f50 (0xF)]. This session ports 1, 3, 6 and 0xF.
 pub const SS_WALK: u8 = 0;
 pub const SS_CLIMB: u8 = 1;
+pub const SS_GRAPPLE: u8 = 2;
 pub const SS_SWIM: u8 = 3;
 /// `Player_Wire` 0x197658 — the hand-over-hand wire crossing (wire type 0) [M dispatch case 6].
 pub const SS_WIRE: u8 = 6;
@@ -89,6 +90,10 @@ pub struct Input {
     pub switch_to: Option<u8>,
     /// Right mouse held: zoom the scope (`Player_Zoom` 0x1a1a70, mouse-first like the game's aim button).
     pub zoom: bool,
+    /// The fire action held this tick (action 9; the substates read it directly — the grapple's
+    /// reel/hang/release [M Player_SSGrapple 0x192860's Input_Action(9, 1)]). The weapon fire path
+    /// gets the same bit through its own parameter.
+    pub fire: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -185,6 +190,9 @@ pub struct Bond {
     /// and the creep drop 0.05 [M Player_Zipline 0x198054, Player_Creep; the game's `Player_Move`
     /// applies it [S — the atlas's BLData table]].
     pub fall_speed: f32,
+    /// The Q-Claw grapple's runtime state (`BLData+0x140..0x160` narrowed; fix-gadgets). `Some`
+    /// while the substate 2 runs [M Player_SetGrapplePoint 0x195da0 → ChangeSubState(2)].
+    pub grapple: Option<crate::gadget::GrappleState>,
 }
 
 impl Bond {
@@ -193,7 +201,7 @@ impl Bond {
         Bond { pos, yaw, pitch: 0.0, local: [0.0; 2], vel: [0.0; 3], grounded: true, floor_ny: 1.0, grounded_history: 8, jump: 0, land_delay: 0,
             crouched: false, lockout: 0, cc: ROOT_HEIGHT, crouch_drop: 0.0, eye: EYE, fall_timer: 0, head_bump: false, fall_damage: None,
             substate: SS_WALK, ladder: None, climb_top: 0.0, climb_bottom: 0.0, regrab: 0, mode: 0, saved_sub: 0, air: 100.0, drown_damage: None, underwater: false,
-            water_fade: 0.0, air_tick: 0, push_fwd: 0.0, wire: None, auto_drop: 0.0, wire_anim: 0, wire_anim_time: 0.0, wire_anim_rate: 1.0, cam_mode: 0, fall_speed: 0.0 }
+            water_fade: 0.0, air_tick: 0, push_fwd: 0.0, wire: None, auto_drop: 0.0, wire_anim: 0, wire_anim_time: 0.0, wire_anim_rate: 1.0, cam_mode: 0, fall_speed: 0.0, grapple: None }
     }
 
     /// On the floor below `p` (within 10 units), as a level start places him.
@@ -253,6 +261,7 @@ impl Bond {
         self.drown_damage = None;
         match self.substate {
             SS_CLIMB => self.climb_tick(world, ctx, input),
+            SS_GRAPPLE => self.grapple_tick(&input),
             SS_SWIM => self.swim_tick(world, ctx, input),
             SS_WIRE => self.wire_tick(world, ctx, input),
             SS_ZIPLINE => self.zipline_tick(world, ctx, input),
@@ -271,6 +280,24 @@ impl Bond {
         if self.enter_water(ctx) { return; }
         self.physics_tick(world, input, false);
         self.ladder_grab(ctx);
+    }
+
+    /// `Player_SSGrapple` 0x192860 through `gadget::grapple_tick`: the reel toward the grapple
+    /// point, the hang, and the fire's release (the substate 0; the swing momentum's restore is
+    /// [S] — the release just drops Bond for now). The reel ignores gravity [M the substate body
+    /// writes obj+0x30 directly].
+    fn grapple_tick(&mut self, input: &Input) {
+        let Some(st) = self.grapple.as_mut() else { self.substate = SS_WALK; return };
+        let mut pos = self.pos;
+        let fire = input.fire;
+        let released = crate::gadget::grapple_tick(&mut pos, st, fire);
+        self.pos = pos;
+        self.vel = [0.0; 3];
+        self.grounded = false;
+        if released {
+            self.grapple = None;
+            self.substate = SS_WALK;
+        }
     }
 
     /// `Player_Update` case 3 [M 0x193958 case 3]: `Player_Move(1.0, …)` — the walk physics with the
