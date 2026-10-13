@@ -108,7 +108,7 @@ impl Grenade {
         // move hits nothing and the fuse keeps counting [M 0x12ce80 tail].
         let speed2 = self.velocity[0] * self.velocity[0] + self.velocity[1] * self.velocity[1] + self.velocity[2] * self.velocity[2];
         if speed2 > 1e-12 {
-            if let Some((t, normal, mat)) = world.segment_surface(self.pos, end) {
+            if let Some((t, normal, mat)) = world.segment_surface(self.pos, end, false) {
                 let hit = [self.pos[0] + (end[0] - self.pos[0]) * t, self.pos[1] + (end[1] - self.pos[1]) * t, self.pos[2] + (end[2] - self.pos[2]) * t];
                 // Bounce: reflect the velocity by the surface normal, × the material coefficient [L 0x3037dc].
                 let v = self.velocity;

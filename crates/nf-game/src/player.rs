@@ -249,8 +249,19 @@ impl Bond {
 
     /// The capsule ends (top A, bottom B) for the current stance, off the dynamic root height `cc`
     /// (`Player_Collision` 0x194df0: standing `0.275` / `0.55 − cc`; crouched `0.65 − cc` / `0.45 − cc`).
+    /// The swim substate (3) builds its own pair [M 0x194df0 case 3:228-253]: spheres at
+    /// `0.1 − (cc − 0.55)` = `0.65 − cc` and `0.45 − cc` with `+0x7cc` (the radius slot) 0.55 — a
+    /// low-slung 0.2-long spine hanging under the root, so at the swim equilibrium (root = surface − 0.3)
+    /// the capsule's top stays ~0.13 under the water plane and never touches a pond floor that sits at
+    /// the surface (the 07000002 garden pond [D probe_vent_swim]).
     fn capsule(&self) -> (V3, V3) {
-        let (a, b) = if self.crouched { (0.65 - self.cc, 0.45 - self.cc) } else { (0.275, 0.55 - self.cc) };
+        let (a, b) = if self.substate == SS_SWIM {
+            (0.65 - self.cc, 0.45 - self.cc)
+        } else if self.crouched {
+            (0.65 - self.cc, 0.45 - self.cc)
+        } else {
+            (0.275, 0.55 - self.cc)
+        };
         ([self.pos[0], self.pos[1] + a, self.pos[2]], [self.pos[0], self.pos[1] + b, self.pos[2]])
     }
 

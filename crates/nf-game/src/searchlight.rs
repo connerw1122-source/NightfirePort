@@ -310,7 +310,7 @@ impl Searchlights {
             // The player's pick sphere: centre `obj+0x80` (the `Player.sph` the port fills from
             // `Bond::sphere_centre`), radius `M_CONTROL+0x8C` = 1.0576 [L ee_start_05.bin].
             const PLAYER_SPH_R: f32 = 1.0576;
-            let (mut t_hit, mut n_hit) = match d.world.segment_surface(pos, end) {
+            let (mut t_hit, mut n_hit) = match d.world.segment_surface(pos, end, false) {
                 Some((t, n, _)) => (Some(t), Some(n)),
                 None => (None, None),
             };

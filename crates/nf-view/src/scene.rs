@@ -1183,7 +1183,7 @@ impl Sim {
                 self.step_dist %= stride;
                 let p = self.bond.pos;
                 if climbing { self.drones.audio.play3d(0x286, p, None); }
-                else if let (Some(s), Some((t, _, m))) = (self.surfaces.as_ref(), self.world.segment_surface(p, [p[0], p[1] - 1.6347, p[2]])) {
+                else if let (Some(s), Some((t, _, m))) = (self.surfaces.as_ref(), self.world.segment_surface(p, [p[0], p[1] - 1.6347, p[2]], true)) {
                     if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.footstep, m) { self.drones.audio.play3d(id, [p[0], p[1] - 1.6347 * t, p[2]], None); }
                 }
             }

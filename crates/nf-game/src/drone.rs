@@ -4814,7 +4814,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
 
     /// `Effect_Bullet`: the impact sound of the surface the segment `from → to` hits (`EffectInfo+0x14`), at the hit.
     fn impact_sound(&mut self, d: &Data, from: V3, to: V3) {
-        let (Some(s), Some((t, _, m))) = (d.surfaces, d.world.segment_surface(from, to)) else { return };
+        let (Some(s), Some((t, _, m))) = (d.surfaces, d.world.segment_surface(from, to, false)) else { return };
         let p = [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t, from[2] + (to[2] - from[2]) * t];
         if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
     }
@@ -5776,7 +5776,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // The script's footstep: the floor under the drone (alertness 0: not heard by the drones).
             if std::mem::take(&mut dr.footstep) {
                 let feet = dr.feet();
-                if let (Some(s), Some((t, _, m))) = (d.surfaces, d.world.segment_surface([feet[0], feet[1] + 0.5, feet[2]], [feet[0], feet[1] - 1.0, feet[2]])) {
+                if let (Some(s), Some((t, _, m))) = (d.surfaces, d.world.segment_surface([feet[0], feet[1] + 0.5, feet[2]], [feet[0], feet[1] - 1.0, feet[2]], true)) {
                     if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.footstep, m) { self.audio.play3d(id, [feet[0], feet[1] + 0.5 - 1.5 * t, feet[2]], None); }
                 }
             }
@@ -5864,7 +5864,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 match ev {
                     crate::bullet::BulletEvent::World(p) => {
                         let end = [p[0] + dir[0] * 0.1, p[1] + dir[1] * 0.1, p[2] + dir[2] * 0.1];
-                        if let (Some(s), Some((_, _, m))) = (d.surfaces, d.world.segment_surface(from, end)) {
+                        if let (Some(s), Some((_, _, m))) = (d.surfaces, d.world.segment_surface(from, end, false)) {
                             if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
                         }
                     }
