@@ -49,10 +49,11 @@ fn probe_01_door_sps() {
             let h = [sim.bond.pos[0], sim.bond.pos[1] + sim.bond.eye - sim.bond.crouch_drop, sim.bond.pos[2]];
             ([h[0], h[1], h[2]], [sim.bond.yaw.sin(), 0.0, sim.bond.yaw.cos()])
         };
-        let used = w.scene.sim.as_mut().unwrap().drones.useobjs.player_activate(
-            &mut w.scene.sim.as_mut().unwrap().drones.scripts,
-            &mut w.scene.sim.as_mut().unwrap().drones.channels,
-            head.into(), look.into(), 1);
+        let used = {
+            let sim = w.scene.sim.as_mut().unwrap();
+            let d = &mut sim.drones;
+            d.useobjs.player_activate(&mut d.scripts, &mut d.channels, head.into(), look.into(), 1)
+        };
         eprintln!("[p01] press at back {back}: used {used}; door pos01 {}", w.scene.sim.as_ref().unwrap().drones.doors.list[door.0].pos01);
     }
 }
