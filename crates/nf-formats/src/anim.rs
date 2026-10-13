@@ -2,7 +2,8 @@
 //!
 //! Channel decoding mirrors `AnimFrameCopy` (ACTION.ELF 0x1c5668); the quaternion → matrix formula is
 //! `Quat_QuatTransToMat` (0x1e3fa8); bone composition follows `psiBuildMatrixPalette` (0x111498). Matrices are
-//! row-vector (`v' = v·M`, translation in row 3), as everywhere in the game.
+//! row-vector (`v' = v·M`, translation in row 3), as everywhere in the game. `sinf` here is the game's own
+//! `PS2Sinf` (0x120700) — every matrix code that needs a sine takes it from this module (GAPS G-017/G-024).
 
 use crate::buf::{invalid, Buf, Result};
 use crate::character::{Skeleton, Skin};
@@ -136,7 +137,42 @@ impl Script {
     }
 }
 
-/// `Quat_QuatTransToMat`: (x, y, z, w) and a translation → row-vector matrix.
+/// `PS2Sinf` (0x120700): range reduction to [−π/2, π/2] on the FPU (no guard bit), then the VU0 polynomial in
+/// the game's operation order (coefficients at 0x2f3b20; `PS2Sinf2` 0x11f968 / `PS2Sinf3` 0x11fc20 run the same
+/// polynomial on 2/3 lanes). Bit-exact: 3000 interpreter samples over ACTION.ELF (WORKLOG 0026) and the 40 calls
+/// recorded from the running game (`crates/nf-game/tests/diff_calls.rs`).
+pub fn sinf(mut x: f32) -> f32 {
+    use crate::ps2float as pf;
+    const S1: f32 = f32::from_bits(0xbe2a_aaa4);
+    const S2: f32 = f32::from_bits(0x3c08_873e);
+    const S3: f32 = f32::from_bits(0xb94f_b21f);
+    const S4: f32 = f32::from_bits(0x362e_9c14);
+    let (pi, tau, half) = (f32::from_bits(0x4049_0fdb), f32::from_bits(0x40c9_0fdb), f32::from_bits(0x3fc9_0fdb));
+    let fadd = |a, b| pf::add_noguard(a, b, true);
+    let fsub = |a: f32, b: f32| pf::add_noguard(a, -b, true);
+    if x >= pi { while x >= pi { x = fsub(x, tau); } } else { while x < -pi { x = fadd(x, tau); } }
+    if x > half { x = fsub(pi, x); } else if x < -half { x = fsub(-pi, x); }
+    let x2 = pf::mul(x, x);
+    let a = pf::mul(pf::mul(x, S3), x2);
+    let b = pf::mul(x, S1);
+    let c = pf::mul(x, S2);
+    let x4 = pf::mul(x2, x2);
+    let d = pf::mul(x, S4);
+    let x8 = pf::mul(x4, x4);
+    // ACC = b·x²; ACC += a·x⁴; ACC += c·x⁴; ACC += x·1; result = ACC + d·x⁸ (VU0: products and sums chopped,
+    // the VU's adds keep their guard bit unlike the FPU's).
+    let mut acc = pf::mul(b, x2);
+    acc = pf::add(acc, pf::mul(a, x4));
+    acc = pf::add(acc, pf::mul(c, x4));
+    acc = pf::add(acc, x);
+    pf::add(acc, pf::mul(d, x8))
+}
+
+/// `Quat_QuatTransToMat` (0x1e3fa8; `Quat_QuatToMat` 0x1e3e80 is the same 3×3 without the translation):
+/// (x, y, z, w) and a translation → row-vector matrix. The operation order is the decompile's; the arithmetic
+/// here is the platform's nearest: the EE-FPU-exact version (diff_calls: Quat_QuatToMat 40/40) is proven
+/// bit-correct but flips a damage outcome in the 07000001 contact-escort walk (guard 5 dies a round early and
+/// the escort stalls), so the palette path stays on the host model until that divergence is root-caused (G-024).
 pub fn quat_trans_to_mat(q: [f32; 4], t: [f32; 3]) -> Mat4 {
     let [x, y, z, w] = q;
     let (y2, z2, xx2, xw2) = (y + y, z + z, (x + x) * x, (x + x) * w);
@@ -148,6 +184,9 @@ pub fn quat_trans_to_mat(q: [f32; 4], t: [f32; 3]) -> Mat4 {
     ]
 }
 
+/// Matrix composition (`psiBuildMatrixPalette` 0x111498). Host nearest for now — same reason as
+/// `quat_trans_to_mat`: the VU0 model (chopped products, guard-bit running sum) is implemented in
+/// `nf_game::ps2math` and bit-exact on the EE snapshots, but flips the escort walk's damage (G-024).
 pub fn mul(a: &Mat4, b: &Mat4) -> Mat4 {
     let mut r = [[0f32; 4]; 4];
     for i in 0..4 { for j in 0..4 { r[i][j] = (0..4).map(|k| a[i][k] * b[k][j]).sum(); } }

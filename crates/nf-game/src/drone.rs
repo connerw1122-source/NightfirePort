@@ -4353,6 +4353,9 @@ pub struct Drones {
     /// `InverterTrigger_Create` 0x1b3040, `Shooter_Create` 0x17d030, `DynamicObject_Create` 0x18dbf8,
     /// `ThirdCam_Create` 0x1bc510), created in `attach_level`.
     pub worldobjs: crate::worldobj::WorldObjects,
+    /// The world presentation FX (0x21 ripples, 0xe3 flicker, 0xd4 cloud drift, 0x4a apocalypse,
+    /// 0xf2 emitters — crates/nf-game/src/world_fx.rs, fix-world-fx).
+    pub fx: crate::world_fx::WorldFx,
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -4423,6 +4426,8 @@ impl Drones {
             // built at load in scene.rs, matched by the runtime spawn.
             script_pickup_slots: Default::default(),
             worldobjs: Default::default(),
+            // fix-world-fx: the presentation FX (fields on their own lines — merge lesson 4).
+            fx: Default::default(),
     }
     }
 
@@ -4565,6 +4570,9 @@ impl Drones {
             }).collect();
             self.env_pending = Some((kind, boxes));
         }
+        // The presentation FX (0x21/0xe3/0xd4/0x4a/0xf2 placements, fix-world-fx): the same
+        // placement-order walk `parsemap_create_dynamic_objects` 0x1d04f0 runs.
+        self.fx = crate::world_fx::WorldFx::attach_level(level);
         for dr in &mut self.list {
             if let Some(i) = level.maps[m].placements.iter().position(|p| p.flags & 0xff == 0x0f
                 && (p.translation[0] - dr.pos[0]).abs() < 1e-3 && (p.translation[2] - dr.pos[2]).abs() < 1e-3) { dr.placement = i; }
@@ -5070,6 +5078,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // The gas puffs (`gases_smoke` 0x1ab2d0 runs in the object handler every frame).
         self.gas.update();
         let frame = self.frame;
+        // The presentation FX tick (ripples/flicker/clouds/apocalypse/emitters, fix-world-fx): the
+        // game's object handler updates them per frame in the same control pass.
+        self.fx.tick(&mut self.channels, player.pos, frame, &mut self.gas);
         // Music: `Drone_InitComms` resets the attack gate; `DroneFunc_CheckAlarmRaised` (07000005 / 06) posts event 2 = 3
         // for the first 58 frames of channel 0xA4, then = 1 for the first 598 of channel 0x37 or 0x61; Bond dead →
         // event 6 (`Player_CheckForDeath`, a player-side call — runs during cut-scenes, not gated).

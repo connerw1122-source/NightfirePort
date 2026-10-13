@@ -134,3 +134,13 @@ the yaw, stopped by collision), and the drone object is put `Drone+0xA0` above t
 
 Open: frame blending (f/f+1); facial morphs; head tracking and aim overrides in `psiBuildMatrixPalette`;
 `sAnimObject+0x60`; opcodes 1 and 4.
+
+### Arithmetic (045n addendum, 2026-10-13)
+
+`PS2Sinf` (0x120700) is ported bit-exactly as `nf_formats::anim::sinf` (its own range reduction + VU0
+polynomial; `PS2Sinf2`/`PS2Sinf3` are the same polynomial on 2/3 lanes), proven against 40 calls recorded from
+the running game and 3000 interpreter samples. `Quat_QuatToMat` (0x1e3e80) is bit-exact with EE FPU rounding in
+the decompile's op order (`nf_game::ps2math`; the harness proves it 40/40). The palette composition models
+(`quat_trans_to_mat` with FPU rounding, `mul` with VU0 products + guard-bit sums) are bit-exact on the EE
+snapshots but flip a damage outcome in the 07000001 contact-escort walk, so the sim keeps the host model on
+those two functions until the flip is root-caused (GAPS G-017/G-024).

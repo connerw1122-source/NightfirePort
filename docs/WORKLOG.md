@@ -7201,3 +7201,57 @@ platform at −52 by t1560, doors open t1610). Plan: reproduce each on the real-
 0x135be0 / Door_Update 0x1363c8 and the moving-set door-solid vs rider interaction, fix with
 fail-first NF_ISO tests + sisters (door[0] on 15 opens, a static floor holds Bond). Files:
 door.rs, world.rs, the riding inherit in player.rs/scene.rs, the walk tests. Deadline ~12:28 UTC.
+
+## verify-bitexact (s/verify-bitexact) — 2026-10-13
+Task: differential testing against the real game's own calls. Build the harness
+(crates/nf-game/tests/diff_calls.rs) that replays every .calls recording from master's
+tests/calls/ through a port adapter and requires bit-identical results; sister test that a
+one-bit change fails. Then the adapters in order: PS2Sinf3/PS2Sinf/PS2Cosf (port the game's
+approximation exactly, use it at every game call site — GAPS G-017), Quat_QuatToMat +
+psiBuildMatrixPalette's VU0 composition (G-024), Rand_Rand/Rand_FRand, and a new
+crates/nf-game/src/ps2math.rs (EE FPU + VU0 multiply/add/multiply-add with unit tests). Then
+spec what to record next for the game-logic functions (Lights_CalcClosestLights, Check_Target,
+Player_AutoAim, Collide_RayIntersect, HUD_UpdateAmmoPane). Report ends with a recording-request
+table. Started 09:09 UTC, sandbox expires ~11:08 UTC.
+
+**verify-bitexact outcome (11:00 UTC)**: the differential-call harness landed
+(`crates/nf-game/tests/diff_calls.rs`): every recording in `tests/calls/` replays through a port adapter and
+must match bit for bit — PS2Sinf 40/40, Quat_QuatToMat 40/40 (EE-FPU op order, new `nf_game::ps2math`),
+Rand_Rand 40/40 including the generator state after each call; Check_Target / Player_AutoAim reported not
+covered. Sisters prove the comparison bites: platform sin differs on 24/40 recorded calls, the FPU-sum
+polynomial on 11/40, a flipped output bit fails while a caller-owned byte does not. `anim::sinf` is the
+canonical bit-exact PS2Sinf (trig::sinf delegates); the palette-exact models (quat_trans_to_mat with FPU
+rounding, mul with VU0 products + guard-bit sums) are implemented and snapshot-clean (pose-check world 0.0 on
+all three EE snapshots except the documented 0x40f drone) but flipping them in flips a damage outcome in the
+07000001 contact-escort walk (guard 5 dies a round early, escort stalls) — reverted in the sim paths, owned
+by G-017/G-024 with the repro. Suite: escort walk green on the final state + diff_calls/unit tests green;
+the full-suite re-run timed out (sandbox) after the revert — sim paths are otherwise byte-identical to
+master's. Shared-file hooks: lib.rs (pub mod ps2math), nf-extract main.rs (Player.capsule compile fix;
+pose-check level names take the FILES.BIN .bin names). Report: docs/reports/verify-bitexact.md.
+---
+Task: fix-world-fx
+Agent: fix-world-fx worker
+Branch: s/fix-world-fx (from origin/master cdfec70)
+
+Work Log:
+- Sandbox kept from the earlier session: repo, work/, the onfoot ISO, nf-queue all present; refreshed the token URL and pulled master.
+- Branch created and pushed with this entry.
+
+Stage Summary:
+- Starting fix-world-fx: the presentation object types (0xe3 Flicker, 0x4e Light, 0xf2 Emitter, 0x21 Ripples, 0xf3 EnvTree, 0xd4 Cloud, 0xd5 OneSided, 0x4a Apocalypse, 0xf4 MoviePlayer, 0x38 SpaceLaser / 0x39 SpaceMissile on 0700001b) per docs/systems/levels.md §7.
+
+---
+Task: fix-world-fx
+Agent: fix-world-fx worker
+Branch: s/fix-world-fx
+
+Work Log:
+- Researched the 10 presentation types in parallel subagents; found Light_FindMapLight 0x1cc3d0 is an 8-byte stub (flicker lamps just fade white, the psi particle sim is dummied out of the PS2 build).
+- New crates/nf-game/src/world_fx.rs: the sim for 0x21 Ripples, 0xe3 Flicker, 0xd4 Cloud drift, 0x4a Apocalypse, 0xf2 Emitter; nf-formats block-0x30 emitter defs (Emitter_LoadDefs 0x17ab40); the particle billboard pass via Sim::particle_quads + snow_for.
+- Fixed mid-flight: the def-walk stride (o += 64+20*keys), the emitter slots pre-created at attach (the game allocates max dead slots), the double gas.update(), the shared-pool test discriminators.
+- Tests: 6 unit + 5 NF_ISO live (defs resolve on 07000002/14/15; ripples on 01; emitters on 14; apocalypse on 15; clouds on 06); full suite green except the 3 allowed disc_golden.
+- Docs: docs/atlas/{emitter,ripples,flicker,cloud}.md; report docs/reports/fix-world-fx.md.
+
+Stage Summary:
+- Emitter/ripples/flicker/cloud/apocalypse sims live; MoviePlayer + EnvTree sway + SpaceLaser/Missile documented as out of scope (not gameplay blockers — fix-finale-blockers report).
+- Follow-ups listed in the report: the cloud-drift/flicker-tint render hooks, the Apocalypse screen fade, the emitter textures.
