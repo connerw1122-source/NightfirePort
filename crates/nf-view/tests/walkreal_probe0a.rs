@@ -50,3 +50,19 @@ fn probe_0a_lift_mouth() {
     let sim = scene.sim.as_ref().unwrap();
     let _ = walker::fail_dump_pub(&scene, [-3.9, 0.0, 15.5], "the lobby south");
 }
+
+#[test]
+fn probe_0a_lift_leaves_keys() {
+    let iso = iso();
+    let scene = nf_view::load(&iso, "0700000a.bin", false).expect("load 0700000a");
+    let sim = scene.sim.as_ref().unwrap();
+    for s in &sim.drones.sss.list {
+        if s.placement == 524 || s.placement == 525 {
+            eprintln!("=== ss placement={} ch={:#04x} rate={} keys={}", s.placement, s.channel, s.rate, s.keys.len());
+            for (k, key) in s.keys.iter().enumerate() {
+                eprintln!("  key {k}: pos=({:.3},{:.3},{:.3})", key.pos[0], key.pos[1], key.pos[2]);
+            }
+            eprintln!("  matrix[3]=({:.3},{:.3},{:.3})", s.matrix[3][0], s.matrix[3][1], s.matrix[3][2]);
+        }
+    }
+}
