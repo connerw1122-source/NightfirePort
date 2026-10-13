@@ -170,3 +170,17 @@ re-checked). Shared files touched this session (small, additive): `world.rs` (`s
   3.7 units of the user's spot (the parked ones at 10-11); post-fix the shelf pickups exist.
 - Full suite: NOT run (time); the touched code paths are the new tests + probes, `cargo build`
   clean for nf-game/nf-view.
+
+
+---
+
+## UPDATE (2026-10-13, later in the session)
+
+Two more blockers found and fixed after the report above: the script's own briefcase entity joined
+the collision world and blocked its own take ray (fixed: 0xF0 entities are excluded from
+set_dynamic — the game control-unlinks created pickups, 0x1d8968 tail); after that the briefcase
+takes through the real path from the user's spot and ch 0x4A fires. The rocket's remaining blocker
+is measured (the safe door SS's open-pose slab clips the shallow take ray; dropping the SS collision
+makes both take) and left open with a live check. Full suite: nf-game green, nf-view green,
+nf-formats 11 + the 3 allowed disc_golden, nf-audio green. The blue block (Room_Outside_3's
+protruding exterior tris; the cel-scoped draw+collision is the fix) remains the main open item.
