@@ -6511,3 +6511,10 @@ contact + `segment_hits_sphere`), `scene.rs` (nf-view: the hud_tick freeze + the
 `hud.rs` + the SsList::create hash arg). The sandbox reset mid-session (unpushed work lost:
 the SP-move fix + the chain test — both re-applied and re-verified; the fail-firsts had been
 demonstrated live before the reset and the chain test re-run green on the restored tree).
+
+## fix-level-0c (2026-10-13)
+
+**Started** — the branch is up; the plan: (1) the way-down hatch (blocked crouch = soft lock), (2) the
+laser-hinge hatch across the roof (the hatch side + its channel), (3) the camera gadget equip (with
+045d), (4) the 0c AI states/animations vs the game (docs/fields/drone*.md), (5) the white untextured
+roof patch (diagnose for 045i), (6) the invisible guards (blocked on playability).
