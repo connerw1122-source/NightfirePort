@@ -8218,3 +8218,28 @@ Work Log:
 - (started) branch created from origin/s/fix-anim-blend (a14976d), origin/master (0cda458) merged;
   WORKLOG conflict resolved by keeping both sides. Reading the fix-anim-blend report + the
   script_frame end-detection code next.
+- The 90/37 reproduction: the port's UnderCoverAim played danim 178 (90 frames, Drone_AnimInfo
+  +0x14 = 1.0) where the game plays lean-out 176 (51 frames at 1.5) [L chase_trace] — the cover
+  type Rand(2) at UnderCoverInit drew STEP where the game drew LEAN. The driver's "not an RNG
+  shift" inference was wrong, and so was fix-anim-blend's "pre-existing on master" stash check:
+  bisect on master (guard test green at a8884f3 / 37fdc7f / 18fd3a7 / 2dbd10f / 13abef4, red on
+  a14976d) pins the regression to the fix-anim-blend changes themselves (5c7b457; origin/master
+  0cda458 does not even contain them).
+- Mechanism [M AnimSeqTick 0x1c28d0 reads +0x90 only]: the blend session's wrap-end sampling wrote
+  `self.anim.ftime = time as f32` (twice) while computing the last-two-frames wrap step; the
+  follow-on's `begin_blend` then read the clobbered clock for the outgoing fade's start time
+  (`1.0 + ftime`), one frame early, so every blended script switch replayed the replaced script's
+  last step on the switch tick (pre-blend port: 0 — its integer sampler clamps to the sequence
+  end). [L] per-tick position dump of the cover scenario: the gate guard's walk 328→392 switch at
+  tick 74 moved +0.0095x/−0.0063z; guards drifted ~0.01 per switch, another guard's burst fired at
+  a shifted tick, the RNG stream at the cover pick flipped → STEP → 178 → 90 ticks.
+- Fix: `root_value_at(d, time)` samples the explicit script time through the same
+  `anim::root_translation_at` (f/f+1 blend, AnimFrameSet 0x1c75a0) without touching the live
+  clock; the fractional root-motion feature is untouched. NF_ISO test
+  `ai_live::blended_switch_tick_applies_no_root_step` red pre-fix (switch tick moved 0.01141) +
+  green with it, sister asserts the walk moves on the next tick; guard_takes_cover_like_the_game
+  green again (live 37).
+- Suite (chunked foreground runs, slim ISO): nf-game 231 passed / 0 failed; nf-formats + nf-audio
+  89 / 4 (the 3 permitted disc_golden + the pre-existing pss_movies_live slim-ISO absence);
+  nf-view 396 / 0 (the walkreal net included; one final probe binary was cut by the chunk timeout
+  with 0 failures in its log). Report: docs/reports/fix-anim-blend2.md.
