@@ -92,6 +92,11 @@ impl Music {
     /// `Music_Event(i, v)`.
     pub fn event(&mut self, i: usize, v: u32) { if i < 64 { self.events[i] = v; } }
 
+    /// The IOP's op-0x19 pair (`NisPlaying`, `NisQuitten`): `UpdateMusicalEvents` keeps `NisPlaying` while a
+    /// script camera runs and counts `NisQuitten` down from 5 after the quit event [M sound.md §6 step 3].
+    /// Read by the audio batch to drive `ES_HandleNisPauseSfx` and `ES_StopDucker`.
+    pub fn nis_state(&self) -> (bool, bool) { (self.nis_playing, self.nis_quitten > 0) }
+
     fn in_set(set: &[i32], x: i32) -> bool { set.contains(&x) }
 
     fn jump(&mut self, s: i32, instant: bool) { self.last_request = s; self.out.push(Cmd::Jump { section: s, instant }); }

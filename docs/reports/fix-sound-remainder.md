@@ -38,6 +38,10 @@ Both from sound.md §8 / §3.2 against `SFX.IRX`:
   no 3-D recompute, no end test — exactly the game's paused-item behaviour; the unpause frame falls
   back through the normal path, which re-sends the stored pitch. *Deviation*: the port has no global
   `SFXPause`, so the "unless globally paused" branch is not modelled.
+- **The EE→driver wiring**: `Music` already tracks `NisPlaying`/`NisQuitten` from the one-frame events
+  0xb/0xc/5 [M music.rs]; `Music::nis_state()` (new accessor) now feeds `set_nis_playing` /
+  `set_nis_quitten` in `sound_tick` (nf-view lib.rs — shared file, 3 added lines, listed here) so a
+  running cut-scene pauses the flagged ambience exactly as the IOP's op 0x19 does.
 - **`SFXPreCache(id, frames)`** (RPC cmd 0x26, IOP 0x39f4): `SFXKeyOnFrameDelay = frames + 5`, then a
   start. Only 1-sample **streams** can be precached (`SFXStart3D` step 3); a start inside the window
   takes the same-id item over instead of starting a second one; `HasSampleEnded` reports 0 while the
@@ -89,11 +93,12 @@ listed below.
   0x137e68], and `BOT_handlePain`'s grunt pools 0x14d+Rand(5) / 0x152 / 0x154+Rand(3) / 0x157+Rand(3)
   [M 0x125ed8] — the pain pools consume the shared `Rand_*` stream, so they need the deliberate
   seed-pinned re-pick pass (WORKLOG 0072 procedure) and did not fit this session.
-- **op-1 per-weapon id remaps** (the view-model path): pinned from `AnimProcessScriptCmds` case 1 [M
-  0x1c1b38 disasm 0x1c2000–0x1c2100] — 1→2 (weapon 7/9), 0x403→2 (3/5), 0xfa→0x1fb (0x14), 0x106→0x284
-  (0x1e..0x23 inclusive), 0x1e1→0x602 (0x10), 4→0x604 (0x16/0x17); the weapon byte is
-  `*(anim_obj→owner obj+0xdc)+0x62`; owner==0 (script anim objects) skips all six — which is why
-  fix-audio2's script path is correct as-is. The port's view-model op-1 site needs the table.
+- **op-1 per-weapon id remaps** — verified complete, nothing to add: the port already applies the
+  table at the view-model op-1 site (`scene.rs::remap_op1_sound`, wired at scene.rs:1563), and every
+  entry matches the pinned decompile [M 0x1c1b38 disasm 0x1c2000–0x1c2100] — 1→2 (weapon 7/9),
+  0x403→2 (3/5), 0xfa→0x1fb (0x14), 0x106→0x284 (0x1e..0x23 inclusive), 0x1e1→0x602 (0x10), 4→0x604
+  (0x16/0x17); the weapon byte is `*(anim_obj→owner obj+0xdc)+0x62`; owner==0 (script anim objects)
+  skips all six, which is why fix-audio2's script path is correct as-is.
 - **The op-1 precache sender**: `SFXPreCache(cmd[2], cmd[1] − (int)cur)` every tick while
   `script+0x78 & 0x10000` (set by `Script_AnimStart` @0x1d8f40) and `(u32)diff < 0x33`; the precache id
   is the RAW cmd[2], the remap applies only to the play [M 0x1c1e9c disasm]. Needs the flag on the
