@@ -8161,3 +8161,18 @@ Work Log:
 Stage Summary:
 - The blend + decode landed with green tests; the vertex application is the next session's item
   once the target buffer's base is pinned (live check listed in the report).
+
+---
+Task: fix-nav-remainder
+Agent: fix-nav-remainder worker
+Branch: s/fix-nav-remainder (from origin/master 0cda458)
+
+Work Log:
+- Sandbox kept (repo, work/, onfoot ISO, nf-queue present); token refreshed, master pulled,
+  branch created. Starting G-027's remainder in the order the task gives: the door/kick/action
+  nodes (0x81-0x84) first, then GoToGoalPosition 0x63 (+SetGoalToCloserPosition /
+  SetGoalToDroneWithLosToOpponent), then the rest (+0x31C drone-ahead flags/state 0x5E,
+  obstacle avoidance, EnemyMission kind-8 paths, PatrolTalk RNG, boundary push-out).
+
+Stage Summary:
+- (in progress)
