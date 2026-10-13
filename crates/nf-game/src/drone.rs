@@ -4536,9 +4536,20 @@ pub struct Drones {
     pub auto_restart: bool,
     /// fix-death-restart: the pending exit is a COLD restart (`ResetMap_LevelToLoad(BaseMap, 0, 1)`
     /// [M 0x204408:139] — IsWarmReset 0: `Init_SwitchChannels` + no `Player_RamLoad` [M 0x1d5080,
-    /// 0x1957a8]). The viewer's reload drops the RamSave for this exit; carrying it looped the
-    /// restart (the 07000007 replay loop, playtest 2026-10-12).
+    /// 0x1957a8]). The viewer's reload drops the RamSave for this exit. (fix-restart-target: this is
+    /// now only the PAUSE menu's Restart — the fail/death menu's Restart is the warm arm, see
+    /// `level_exit_restart`.)
     pub level_exit_cold: bool,
+    /// fix-restart-target: the pending exit is the fail/death menu's Restart — `P_ENDMISSION_Handler`
+    /// 0x216618:19-21, menu 0x40000042's row 0: `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` +
+    /// `Player_RamLoad(Bond, 1)`. The viewer's reload re-serves the ENTRY checkpoint (the RamSave as
+    /// of level entry, ch 99 clean) with the 50.0 health floor [L 0x30cc34-3c] instead of capturing
+    /// the dying state — carrying the dying state is what looped the 07000007 session.
+    pub level_exit_restart: bool,
+    /// fix-restart-target: the level the sim is playing — `GameState._12_4_` [M 0x1d5080:6, set from
+    /// the loaded level at `ResetMap_GameInit`], the fail-menu Restart's reload target [M 0x216618:20].
+    /// Latched where `Mission_Init` runs (`Drones::tick`).
+    pub level_current: u32,
     /// The EE music logic and the drones' attack gate (docs/systems/music.md); the alarm counters of
     /// `DroneFunc_CheckAlarmRaised` (0x1453a8: channel 0xA4, then 0x37 / 0x61).
     pub music: crate::music::Music,
@@ -4686,6 +4697,9 @@ impl Drones {
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
             // — the shared-constructor collisions, merge lesson 4).
             death: Default::default(), bond_fire: false, auto_restart: true, level_exit_cold: false,
+            // fix-restart-target: the fail-menu Restart's warm arm + the current level (GameState+0xC).
+            level_exit_restart: false,
+            level_current: 0,
             // fix-safe08: (script hash, stream) → the reserved pickup slot the renderer built for the
             // script's obj_type-0xF0 Entity (`Script_CreateEntity` 0x1d8968's Pickup_Create arm);
             // built at load in scene.rs, matched by the runtime spawn.
@@ -5401,6 +5415,49 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             self.casings.update(|id, pos| { audio.play3d(id as u32, pos, None); });
         }
         let frame = self.frame;
+        // `Mission_Update` (0x182c60) runs from `Game_Run` (0x1c9790:17) BEFORE the object handler
+        // (`control_movement_object_handler` 0x1336f8:30-35) — i.e. before this frame's triggers,
+        // scripts and the player/death path, on the channels as the previous frame left them.
+        // fix-objective-banner: the port used to run it at the END of the tick, so the monitor saw
+        // the Kimiko trigger's ch 0x48 on the trigger tick itself and queued the announce one tick
+        // before the scene's `Script_CameraStart` disabled the viewer's HUD (0x1d9140:41-43) — the
+        // banner+SFX fired the moment the cut-scene started instead of at its hand-back.
+        // The per-level `Mission_Init` (0x182270, from `ResetMap_GameInit` 0x1d5080:53) latches on
+        // this level's first tick; the port's loads are cold (warm = false — previous parts keep
+        // their `.data` states, as the game's cold path).
+        if !self.mission_inited {
+            self.level_current = d.level; // GameState._12_4_ [M 0x1d5080:6] — the fail-menu Restart's target
+            self.mission.init(d.level, self.mission_carry.is_some(), &mut self.channels, frame);
+
+            // `PlrStat_ResetForMission` 0x1993a0 — Mission_Init 0x182270:65 wipes PlrMissionStats
+            // (0x1C0) and BondMoments (0x14) when the level is the mission's first part [M].
+            if crate::mission::LEVELS.iter().find(|l| l.level == d.level).is_some_and(|l| l.part == 0) {
+                self.progress.reset_for_mission();
+            }
+            // `NDrone2_DefaultInit` 0x14b300:609 → `PlrStat_LogEnemySpawned(0)` per created drone.
+            // The port builds the level's drones before this latch, and the game creates them after
+            // `Mission_Init` ([L] ee_start_05.bin: +0x18 = 13 on 07000001, Mission_Status 1) — so
+            // the initial count rides here, after the part-0 reset above.
+            for _ in self.list.iter() { self.progress.log_enemy_spawned(self.mission.status()); }
+            // The carried mission globals restore AFTER init, exactly as the game's `.data` globals sit
+            // when `Mission_Init` runs on a warm transition: init resets the current + future parts in
+            // place and the carried snapshot puts the previous parts' states back [M 0x182270:68-129;
+            // the payload shape is LS_MakeMission/LS_LoadMission 0x1cd720/0x1cd880; map-tower2].
+            if let Some(s) = self.mission_carry.take() { self.mission.restore(&s); }
+            self.mission_inited = true;
+        }
+        // `Mission_Update` reads the DEATH CHANNEL, not health [M 0x182c60:21 `switch_channels[0x62]`]
+        // — the death sequence (`crate::death`) gates the channel on the red fade / the player's ✕.
+        let dead = self.channels.on(0x62);
+        let mut events = std::mem::take(&mut self.mission_events);
+        self.mission.update(&mut self.channels, frame, d.level, dead, &mut events);
+        // `Mission_Update` 0x182c60's music pulses [M 0x182c60:30-33 (fail → Music_Event(7,1)),
+        // 0x182c60:23-28 (success → Music_Event(8,1))]: the level updaters' end-sting block reads them
+        // (EventList[8]; fix-party-mission item 4). The death pulse (event 6) is emitted at the health
+        // check below; the fail/success ones ride the mission's own transitions here.
+        if events.iter().any(|e| matches!(e, crate::mission::Event::MissionFailed)) { self.music.event(7, 1); }
+        if events.iter().any(|e| matches!(e, crate::mission::Event::MissionComplete { .. })) { self.music.event(8, 1); }
+        self.mission_events = events;
         // The presentation FX tick (ripples/flicker/clouds/apocalypse/emitters, fix-world-fx): the
         // game's object handler updates them per frame in the same control pass.
         self.fx.tick(&mut self.channels, player.pos, frame, &mut self.gas);
@@ -6397,46 +6454,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // Player_SetFlashBang 0x196040's first arg]); the exact fade is the view's Camera_SetFade.
         self.health.flashbang = (self.health.flashbang - self.health.flashbang / 6.0).max(0.0);
         self.shake = (self.shake * 0.9 - 0.05).max(0.0);
-        // `Mission_Update` (0x182c60) runs from `Game_Run` once per frame; the port runs it at the end
-        // of the tick so this tick's channel writes (triggers, scripts, the alarm, the death) are all
-        // visible (docs/systems/mission.md). The per-level `Mission_Init` (0x182270, from
-        // `ResetMap_GameInit` 0x1d5080:53) latches on this level's first tick; the port's loads are
-        // cold (warm = false — previous parts keep their `.data` states, as the game's cold path).
         // The SimpleScripts' playheads (`SS_Update` 0x1a9948 — channel on → the last key, off → key 0).
         self.sss.tick(&self.channels);
-        if !self.mission_inited {
-            self.mission.init(d.level, self.mission_carry.is_some(), &mut self.channels, frame);
-            // `PlrStat_ResetForMission` 0x1993a0 — Mission_Init 0x182270:65 wipes PlrMissionStats
-            // (0x1C0) and BondMoments (0x14) when the level is the mission's first part [M].
-            if crate::mission::LEVELS.iter().find(|l| l.level == d.level).is_some_and(|l| l.part == 0) {
-                self.progress.reset_for_mission();
-            }
-            // `NDrone2_DefaultInit` 0x14b300:609 → `PlrStat_LogEnemySpawned(0)` per created drone.
-            // The port builds the level's drones before this latch, and the game creates them after
-            // `Mission_Init` ([L] ee_start_05.bin: +0x18 = 13 on 07000001, Mission_Status 1) — so
-            // the initial count rides here, after the part-0 reset above.
-            for _ in self.list.iter() { self.progress.log_enemy_spawned(self.mission.status()); }
-            // The carried mission globals restore AFTER init, exactly as the game's `.data` globals sit
-            // when `Mission_Init` runs on a warm transition: init resets the current + future parts in
-            // place and the carried snapshot puts the previous parts' states back [M 0x182270:68-129;
-            // the payload shape is LS_MakeMission/LS_LoadMission 0x1cd720/0x1cd880; map-tower2].
-            if let Some(s) = self.mission_carry.take() { self.mission.restore(&s); }
-            self.mission_inited = true;
-        }
-        // `Mission_Update` reads the DEATH CHANNEL, not health [M 0x182c60:21 `switch_channels[0x62]`]
-        // — the death sequence (`crate::death`) gates the channel on the red fade / the player's ✕.
-        let dead = self.channels.on(0x62);
-        let mut events = std::mem::take(&mut self.mission_events);
-        self.mission.update(&mut self.channels, frame, d.level, dead, &mut events);
-        // `Mission_Update` 0x182c60's music pulses [M 0x182c60:30-33 (fail → Music_Event(7,1)),
-        // 0x182c60:23-28 (success → Music_Event(8,1))]: the level updaters' end-sting block reads them
-        // (EventList[8]; fix-party-mission item 4). The death pulse (event 6) is emitted at the health
-        // check above; the fail/success ones ride the mission's own transitions here.
-        if events.iter().any(|e| matches!(e, crate::mission::Event::MissionFailed)) { self.music.event(7, 1); }
-        if events.iter().any(|e| matches!(e, crate::mission::Event::MissionComplete { .. })) { self.music.event(8, 1); }
-        self.mission_events = events;
+        // `Mission_Update` moved to the top of the tick (fix-objective-banner): the game's Game_Run
+        // order — see the block before `fx.tick` above.
         // fix-progress: the tally folds — the per-drone `PlrStat_Log*` outboxes, `Trigger_Calc`'s
         // Bond-moment scan and the health snapshot (docs/fields/player-stats.md's writers table).
+        // (Restored here by fix-objective-banner: the fold lived between the mission update and the
+        // music update and was lost in the Game_Run-order rebase; it only reads the outboxes and
+        // the mission status, so the end of the tick is still its place.)
         {
             let ms = self.mission.status();
             let (mut dispatched, mut disabled, mut surrendered, mut hit) = (0u32, 0u32, 0u32, 0u32);

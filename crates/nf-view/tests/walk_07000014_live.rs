@@ -61,6 +61,8 @@ fn the_facility_chain_runs_to_the_delta_sector_exit() {
         if sim.drones.channels.on(0x47) { ch47 = true; break; }
     }
     assert!(ch47, "the vent cut-scene 0x06000833 must write ch 0x47 [D]");
+    // fix-objective-banner: the monitor completes the objective the tick after the channel.
+    for _ in 0..2 { sim.step_bond(Input::default(), false, false, false); }
     assert_eq!(mission_state(sim, 0), 4, "the infiltrate objective completes");
     assert!(free(sim, 900), "the cut-scene releases Bond");
 
@@ -72,6 +74,8 @@ fn the_facility_chain_runs_to_the_delta_sector_exit() {
         if sim.drones.channels.on(0x48) { ch48 = true; break; }
     }
     assert!(ch48, "the Kiko cut-scene 0x0600062F must write ch 0x48 [D]");
+    // fix-objective-banner: the monitor completes the objective the tick after the channel.
+    for _ in 0..2 { sim.step_bond(Input::default(), false, false, false); }
     assert_eq!(mission_state(sim, 1), 4, "the follow-Kiko objective completes");
     assert!(free(sim, 900));
 
@@ -159,6 +163,8 @@ fn the_facility_chain_runs_to_the_delta_sector_exit() {
         if scene.sim.as_ref().unwrap().drones.channels.on(0x4a) { ch4a = true; break; }
     }
     assert!(ch4a, "the escape cut-scene 0x06000848 must write ch 0x4A [D]");
+    // fix-objective-banner: the monitor completes the objective the tick after the channel.
+    for _ in 0..2 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
     assert_eq!(mission_state(scene.sim.as_ref().unwrap(), 2), 4, "the sabotage objective completes");
     assert!(free(scene.sim.as_mut().unwrap(), 900));
 
@@ -193,6 +199,8 @@ fn the_facility_chain_runs_to_the_delta_sector_exit() {
         if scene.sim.as_ref().unwrap().drones.channels.on(0x54) { ch54 = true; break; }
     }
     assert!(ch54, "Rook's death channel 0x54 fires [D drone param 12; M 0x13e660]");
+    // fix-objective-banner: the monitor completes the objective the tick after the channel.
+    for _ in 0..2 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
     assert_eq!(mission_state(scene.sim.as_ref().unwrap(), 3), 4, "the Rook objective completes");
 
     // Sister for the exit: the key gate 0x54 was off before Rook died — a fresh load proves the lock.

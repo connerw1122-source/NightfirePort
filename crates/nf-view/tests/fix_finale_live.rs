@@ -238,9 +238,12 @@ fn the_0700004a_lift_ride_reaches_the_lobby() {
         if sim.drones.channels.on(0x4a) { break; }
     }
     {
-        let sim = scene.sim.as_ref().unwrap();
+        let sim = scene.sim.as_mut().unwrap();
         assert!(fired.contains(&0x3d) || fired.contains(&0x17), "descent plates fire during the ride ([D] floors), got {fired:?}");
         assert!(sim.drones.channels.on(0x4a), "the lift's lobby arrival completes the objective [L record 4a; nis.rs stand-in]");
+        // fix-objective-banner: the monitor runs at the TOP of the tick (Game_Run order), so it
+        // completes the objective the tick after the channel rises.
+        for _ in 0..2 { sim.step_bond(Input::default(), false, false, false); }
         assert_eq!(sim.drones.mission.states[17][0], 4, "the monitor completes 'Gain access to lobby'");
     }
 }

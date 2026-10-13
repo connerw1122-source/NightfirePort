@@ -358,7 +358,7 @@ impl FrontEnd {
             Page::Dossier => 1,
             Page::Options => 3,                    // the options page stubs three rows [S]
             Page::Pause => 4,                      // resume / restart / options / quit [S rows; actions M 0x204408]
-            Page::Results => 3,                    // restart / continue / quit [M 0x216618]
+            Page::Results => 3,                    // restart level / restart mission / quit [M 0x216618:19-27]
         }
     }
 
@@ -376,7 +376,12 @@ impl FrontEnd {
             // ACTIONS are the game's: restart = ResetMap_LevelToLoad(BaseMap, 0, 1) and the quit
             // confirm two-step [M C_GCPAUSE_Handler 0x204408:139-152/210-220].]
             Page::Pause => ["Resume", "Restart mission", "Options", "Quit to menu"][row.min(3)].into(),
-            Page::Results => ["Restart mission", "Continue", "Quit to menu"][row.min(2)].into(),
+            // The results page's three rows in the game's arm order [M P_ENDMISSION_Handler
+            // 0x216618:19-27 — `__Menu_Send`'s return IS the row index, so row 0 is the arm-0
+            // behaviour]: row 0 = Restart level (the CURRENT level, warm, on the entry checkpoint —
+            // fix-restart-target); row 1 = Restart mission (Mission_BaseMapHCode(), cold); row 2 =
+            // Quit (0x7000048). The labels are [S — the disc page data holds the originals.]
+            Page::Results => ["Restart level", "Restart mission", "Quit to menu"][row.min(2)].into(),
         }
     }
 
@@ -554,18 +559,24 @@ impl FrontEnd {
                 Action::Down => { self.cursor = (self.cursor + 1) % 3; return true; }
                 Action::Confirm => {
                     match self.cursor {
-                        // [M 0x216618 message 0x4b: 1 = restart, 0 = continue, 2 = quit]
+                        // The arms in row order [M P_ENDMISSION_Handler 0x216618:19-27]:
+                        // row 0 → `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` + `Player_RamLoad(Bond, 1)`
+                        // — the CURRENT level, WARM, on the entry checkpoint (fix-restart-target; the old
+                        // row 0 sent arm 1). Row 1 → `ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)`
+                        // — BaseMap, COLD. Row 2 → `GameState+0x28 = 0x4000001c` + 0x7000048.
                         0 => {
-                            let level = CAMPAIGN[self.mission].2;
+                            let level = self.flow.current_level;
                             self.requested_level = Some(level);
-                            self.flow.reset_map_level_to_load(level, false, true);
+                            self.flow.reset_map_level_to_load(level, true, true);
                             self.page = Page::Main;
                             return true;
                         }
                         1 => {
-                            let level = self.flow.current_level;
+                            // The mission's base map: the campaign row's level code (fix-menus2's `sp_level`
+                            // table; `Mission_BaseMapHCode`).
+                            let level = CAMPAIGN[self.mission].2;
                             self.requested_level = Some(level);
-                            self.flow.reset_map_level_to_load(level, true, true);
+                            self.flow.reset_map_level_to_load(level, false, true);
                             self.page = Page::Main;
                             return true;
                         }

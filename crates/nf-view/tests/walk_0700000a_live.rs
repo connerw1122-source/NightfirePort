@@ -153,8 +153,11 @@ fn hatch_exit_and_sisters() {
     let mut scene = load_carry(&iso, Some(&save));
     scene.sim.as_mut().unwrap().drones.set_channel(0x61);
     tick(&mut scene, 340);
-    // fix-death-restart: the menu's Restart is ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)
-    // [M 0x204408:139, 0x1830a0] — the MISSION'S FIRST level (07000009), not this level.
-    assert_eq!(scene.sim.as_ref().unwrap().drones.level_exit, Some(0x0700_0009),
-        "the alarm fails the mission → the fail menu's restart = the mission start [M 0x204408:139]");
+    // fix-restart-target: the fail menu 0x40000042 is `P_ENDMISSION_Handler` 0x216618 (not the pause menu's
+    // `C_GCPAUSE_Handler` 0x204408); its Restart is `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` — THIS
+    // level (0700000a), warm, on its entry checkpoint [M 0x216618:19-21, routing 0x2029e0:498-500].
+    let d = &scene.sim.as_ref().unwrap().drones;
+    assert_eq!(d.level_exit, Some(0x0700_000a),
+        "the alarm fails the mission → the fail menu's restart = this level [M 0x216618:19-21]");
+    assert!(d.level_exit_restart && !d.level_exit_cold, "warm, on the entry checkpoint");
 }
