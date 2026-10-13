@@ -1538,8 +1538,12 @@ impl Sim {
         self.hud.taken_seen = self.drones.taken.len();
         for m in new_msgs { self.hud.msgs.push_back(m); }
         self.lang = lang;
-        // `Text_UpdateMsg` 0x1b11d8: time −= 1 per frame, delete at ≤ 0. The bar closes (state 4) when
-        // the queue empties [M `HUD_UpdateStatusPane` 0x19c310].
+        // `Text_UpdateMsg` 0x1b11d8: time −= 1 per frame, delete at ≤ 0 — but the viewer's +0x2a HUD
+        // flag returns early while a cut-scene camera runs [M 0x1b11d8:16-18], freezing every message
+        // until the NIS ends (playtest item 5). The port: no countdown and no bar close while frozen.
+        if self.drones.hud_frozen {
+            return;
+        }
         for m in &mut self.hud.msgs { m.time -= 1.0; }
         self.hud.msgs.retain(|m| m.time > 0.0);
         if self.hud.msgs.is_empty() {

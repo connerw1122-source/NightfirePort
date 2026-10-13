@@ -4067,6 +4067,13 @@ pub struct Drones {
     pub lights: crate::light::LightList,
     /// The last alarm broadcast (`DAT_0029AA88`) and whether one went out (`DAT_0029AA85`, 07000014 sends only one).
     pub last_alarm: Option<u32>,
+    /// The viewer's +0x2a HUD flag [M Camera_Enable 0x1b9920:27-28]: `Script_CameraStart` 0x1d9140
+    /// disables the viewers' HUD (`Camera_Enable(i, 0, 0, 0)` for 0..7) and `Script_KillStream`
+    /// 0x1d9860 restores it (`Camera_PopStates`). While it is 0, `Text_UpdateMsg` 0x1b11d8:16-18
+    /// returns without ticking the message timers — the objective/mission banners WAIT until the
+    /// cut-scene ends (playtest item 5: they used to run over the cut-scenes). The pane state
+    /// machines (0x19c310 case 0) poll the same gate, so a banner arriving mid-NIS stays closed too.
+    pub hud_frozen: bool,
     /// The section the IOP player reports (`0x2500CC`, read by `UpdateMusicalEvents`): the audio layer
     /// writes it each frame; the music update at the tick's end consumes it (fix-party-mission item 4 —
     /// the game's `UpdateMusicalEvents` runs every frame whether or not an output device exists).
@@ -4219,7 +4226,7 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, aim_target: None, aim_offset: [0.0; 2],
+        Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true,
             npc_system_disabled: false,
             spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(),
@@ -4967,7 +4974,12 @@ impl Drones {
                         dr.enabled = on && dr.state != state::WAIT_SWITCH;
                     }
                 }
-                crate::nis::Request::Camera { script, start } => self.music.event(if start { 0xb } else { 0xc }, script),
+                crate::nis::Request::Camera { script, start } => {
+                    // Script_CameraStart 0x1d9140:46-49 disables the viewers' HUD; Script_KillStream
+                    // 0x1d9860:71-72 restores it. The flag freezes the HUD message timers [M 0x1b11d8].
+                    self.hud_frozen = start;
+                    self.music.event(if start { 0xb } else { 0xc }, script)
+                }
                 // `Script_SoundStart`: 2-D, or 3-D at the stream's object (its position each frame, `Script_Interp` 5).
                 crate::nis::Request::Sound { id, at, src } => {
                     // `SFXStart` 0x115a68:18-20 / `SFXStart3D` 0x115bf0: a sound with id 0x172 (the NIS

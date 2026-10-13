@@ -272,9 +272,6 @@ fn punching_a_guest_keeps_the_other_guests_animated() {
     let (gp, gy) = { let g = &sim.drones.list[guest]; (g.pos, g.yaw) };
     let from = [gp[0] + gy.sin() * 1.3, gp[1] + 0.6, gp[2] + gy.cos() * 1.3];
     sim.bond.pos = from;
-    let dir = [gp[0] - from[0], (gp[1] + 0.45) - from[1], gp[2] - from[2]];
-    let l = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
-    let dir = [dir[0] / l, dir[1] / l, dir[2] / l];
     // Bond holds the fists and punches through the REAL input path until the guest drops (the playtest's
     // punch KOs the guest), then watches the others' animations.
     sim.gun.weapon = 1; sim.gun.switch_request = 1; sim.gun.switch_state = 0;
@@ -336,4 +333,115 @@ fn the_cutscene_music_jumps_at_nis_start_and_end() {
     eprintln!("[party] 07000008 music jumps around the intro: {jumps:?} (nis start → 2, end → 4 [M 0x1133b8])");
     assert!(jumps.contains(&2), "the intro NIS's start jumps the music to section 2 [M 0x1133b8:8-12]");
     assert!(jumps.contains(&4), "the intro NIS's end jumps the music to section 4 [M 0x1133b8:13-16]");
+}
+
+/// Probe: what the objective banners bind to on 07/01/02/08, and WHEN they land (NIS running?).
+#[test]
+fn probe_objective_banners() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    for level in ["07000007.bin", "07000001.bin", "07000002.bin", "07000008.bin"] {
+        let mut scene = load(&iso, level);
+        let sim = scene.sim.as_mut().unwrap();
+        // The announcements live 300 ticks [M 0x1827d8 case 0] — read them as they land.
+        let mut seen: Vec<(u32, bool, String, f32)> = Vec::new();
+        for t in 0..5200 {
+            sim.step_bond(Input::default(), false, false, false);
+            for m in &sim.hud.objective_msgs {
+                if !seen.iter().any(|(_, _, s, _)| *s == m.text) { seen.push((t, sim.disabled, m.text.clone(), m.time)); }
+            }
+            if !sim.disabled && t > 500 && seen.len() >= 3 { break; }
+        }
+        let nis: Vec<u32> = seen.iter().filter(|(_, d, _, _)| *d).map(|(t, _, _, _)| *t).collect();
+        eprintln!("[banners] {level}: landed {nis:?} (true = during the NIS); all: {seen:?}");
+    }
+}
+
+/// ── Item 5: the banners wait for the cut-scene, and carry the objective text ────────────────────
+/// Playtest: "It just says new objective" (the user's build predates fix-mission's text binding —
+/// `Mission_MonitorObjectives` 0x1827d8 posts the objective record's label [0x04000000/0x02000000
+/// style] and the port binds it through the USATxt.dat table; probe_objective_banners pins the
+/// bound text on 07/01/02/08), "they show during cut-scenes — It needs to wait until after the
+/// cutscene's finished", and on 07000001 "no banner came up": its only banner ("Escort Mayhew to
+/// bunker") is announced by the state-0 arm [M 0x1827d8:41-54] at mission start — while the intro
+/// NIS holds control from tick 0 to ~2120 — and died at tick 300 in the pre-fix build.
+///
+/// The game's gate: `Script_CameraStart` 0x1d9140:41-43 disables every viewer's HUD
+/// (`Camera_Enable(i,0,0,0)` → viewer+0x2a = 0 [M 0x1b9920]); while +0x2a is 0 `Text_UpdateMsg`
+/// 0x1b11d8:16-18 returns without ticking any message timer, and `HUD_UpdateStatusPane` 0x19c310
+/// case 0 never opens the pane — a banner queued mid-NIS waits closed, then opens (and its SFX
+/// play, case 2) when `Script_KillStream` 0x1d9860:71 restores the states.
+#[test]
+fn the_07000001_banner_survives_the_intro_cutscene() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000001.bin");
+    // The intro NIS holds control from tick 0; its objective banner must still be queued — and
+    // drawing — when control returns.
+    let mut nis_end = 0;
+    for t in 0..6000u32 {
+        scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+        if !scene.sim.as_ref().unwrap().disabled && t > 100 { nis_end = t; break; }
+    }
+    assert!(nis_end > 1000, "the intro NIS holds control well past the banner's 300-tick life (ended at {nis_end})");
+    for _ in 0..10 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    {
+        let sim = scene.sim.as_ref().unwrap();
+        let msgs: Vec<&str> = sim.hud.objective_msgs.iter().map(|m| m.text.as_str()).collect();
+        eprintln!("[party] 07000001 after the intro NIS (t={nis_end}): {msgs:?}");
+        assert!(msgs.iter().any(|t| *t == "Escort Mayhew to bunker"),
+            "the mission-start banner survives the intro cut-scene (playtest: 'no banner came up')");
+        assert!(!sim.hud.objective_msgs.is_empty() && sim.hud.objective_msgs.front().unwrap().time > 250.0,
+            "the banner's timer did not run while the NIS played [M 0x1b11d8:16-18]");
+    }
+    let f = nf_view::hud::overlay(&scene, 4.0 / 3.0);
+    let bars = banner_bars(&scene, &f);
+    eprintln!("[party] 07000001 banner bar quads after the NIS: {bars}");
+    assert!(bars >= 3, "the banner draws once control returns [M 0x19c310 case 0 → case 1]");
+}
+
+/// The pane gate itself, on 07000002 (its intro NIS runs from tick 0 and four banners land around
+/// it): through the whole cut-scene no status pane draws; when control returns the queued banners
+/// do.
+#[test]
+fn no_status_pane_draws_during_the_07000002_intro_cutscene() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000002.bin");
+    let mut worst = 0;
+    for t in 0..4000u32 {
+        scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+        // The NIS detector is the game's own gate (viewer+0x2a): on the flush tick it is already
+        // back on while the port's `disabled` clears a tick later — on that tick the banner
+        // legitimately opens [M Script_KillStream 0x1d9860:71 Camera_PopStates → case 0 opens].
+        let sim = scene.sim.as_ref().unwrap();
+        if sim.disabled && sim.drones.hud_frozen {
+            let f = nf_view::hud::overlay(&scene, 4.0 / 3.0);
+            worst = worst.max(banner_bars(&scene, &f));
+        }
+        if !sim.disabled && t > 100 { break; }
+    }
+    for _ in 0..10 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    eprintln!("[party] 07000002 worst mid-NIS banner bar quad count: {worst}");
+    assert_eq!(worst, 0, "no banner draws while the cut-scene runs [M 0x19c310 case 0 + 0x1b11d8:16-18]");
+    assert!(!scene.sim.as_ref().unwrap().hud.objective_msgs.is_empty(), "the banners queued during the NIS are still pending");
+    let f = nf_view::hud::overlay(&scene, 4.0 / 3.0);
+    assert!(banner_bars(&scene, &f) >= 3, "the first banner draws once the cut-scene ends");
+}
+
+/// Every quad (6 vertices) drawn from the status-pane sheet 0x0300007A's BAR columns (the pickup
+/// bar, the objective banner and the mission banner all stamp u 185..199 of it [M 0x19c310; L
+/// ObjectiveStatusSprInfo/MissionStatusSprInfo]; other panes' templates share the sheet — e.g. the
+/// radar's sprite at u 5 [L ee_start_05 SpriteInfo] — and must not count).
+fn banner_bars(scene: &nf_view::scene::Scene, f: &nf_view::gpu::HudFrame) -> usize {
+    let Some(ti) = scene.hud_textures.iter().position(|(h, _)| *h == 0x0300_007a) else { return 0 };
+    let (tw, th) = (scene.hud_textures[ti].1.width as f32, scene.hud_textures[ti].1.height as f32);
+    let mut n = 0;
+    for r in f.runs.iter().filter(|r| r.0 == ti + 1) {
+        for q in f.v[r.2 as usize..(r.2 + r.3) as usize].chunks(6) {
+            let u0 = q[0].uv[0] * tw;
+            let v0 = q[0].uv[1] * th;
+            // The bars stamp v 0..56/103 from the sheet's top edge; the weapon pane's template
+            // sprites further along u have v0 ≥ 6.
+            if (184.0..=199.0).contains(&u0) && v0 < 2.0 { n += 1; }
+        }
+    }
+    n
 }
