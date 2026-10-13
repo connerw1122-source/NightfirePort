@@ -7404,3 +7404,13 @@ Work Log:
 Stage Summary:
 - The PlayScript port lands: the 6 held failures green, the driver/PlayScript/window-ownership semantics pinned from the decompile + traces. Report: docs/reports/fix-ai-traces2.md.
 - Left: verify the contact walk on the merged tree; the PlayScript impact resume + SeenAndAttacking (live check 2) when evidence arrives; the harness's script-phase warm-up.
+---
+Task ID: 230
+Agent: fix-input (worker)
+Task: fix-input (branch s/fix-input) — gamepad support, the 8 controller styles, the aim ramps
+
+Work Log:
+- Branch created from origin/master (0213cc9); setup verified (work/, EE snapshots, ISO, nf-queue).
+
+Stage Summary:
+- Starting: style x action table from psiInput_MapInputs [G-005], aim/turn ramps [G-003], dead zone [G-012], nf-view gamepad backend behind a cargo feature.
