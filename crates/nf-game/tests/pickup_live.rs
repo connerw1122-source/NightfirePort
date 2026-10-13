@@ -46,11 +46,11 @@ fn level_placed_pickups_spawn_from_0xf0_placements() {
                 let obj = &level.maps[m].objects[p.index as usize];
                 pickup_models.get(&obj.hashcode).map(|&bm| (obj.hashcode, bm))
             } else { None }?;
-            nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, 0, 0, 0xFFFF, 0, 0, model, bounds, &wd).is_some().then_some(*p)
+            nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, 0, 0, 0xFFFF, 0, 0, model, bounds, &wd, &std::collections::HashMap::new()).is_some().then_some(*p)
         })
         .collect();
     assert!(!pickups.is_empty(), "at least some 0xF0 placements spawn pickups");
     // Sister: a placement with an invalid id (0xFFFF) does NOT spawn.
-    assert!(nf_game::pickup::Pickup::create_placed([0.0; 3], [0.0; 3], 0, 0xFFFF, 0, 0, 0xFFFF, 0, 0, 0x12345678, nf_game::pickup::Model { centre: [0.0; 3], radius: 0.5 }, &wd).is_none(),
+    assert!(nf_game::pickup::Pickup::create_placed([0.0; 3], [0.0; 3], 0, 0xFFFF, 0, 0, 0xFFFF, 0, 0, 0x12345678, nf_game::pickup::Model { centre: [0.0; 3], radius: 0.5 }, &wd, &std::collections::HashMap::new()).is_none(),
         "a pickup with id 0xFFFF is refused");
 }

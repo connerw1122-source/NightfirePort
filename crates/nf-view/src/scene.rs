@@ -989,14 +989,24 @@ impl Sim {
         // The pickup auto-switch [M Player_EquipWeapon 0x1a8a58's tail]: `anim+0x63` is written
         // directly (no Player_WeaponChange gate) — the draw machine holsters and draws it when it
         // can; a later weapon-cycle request overwrites it, as in the game.
-        if let Some(id) = self.drones.weapon_switch_request.take() {
-            if id != self.gun.weapon as u16 {
-                let cur = self.gun.weapon;
-                if cur >= 1 && cur <= 0x47 { self.gun.prev_weapon = cur; }
-                if cur >= 0x4a && cur <= 0x5e { self.gun.prev_gadget = if cur == 0x55 { 0x54 } else { cur }; }
-                self.gun.switch_request = id as u8;
+        // GATED OFF (fix-pickups-remainder): the request is computed and unit-tested
+        // (Inventory::is_better_weapon), but applying it regresses walkreal_07000001's
+        // walk_from_the_spawn_to_the_exit_with_the_contact (green on master, stuck in the contact
+        // follow with the switch live: after the first Raptor drop take the draw machine swaps to
+        // the Raptor and the follow wedges at d=3.89 standing 1.13 above the floor). The
+        // interaction (the switch's view-model/anim side effects vs the contact's script) needs the
+        // main agent's live check before the drain re-opens. See docs/reports/fix-pickups-remainder.md.
+        if false {
+            if let Some(id) = self.drones.weapon_switch_request.take() {
+                if id != self.gun.weapon as u16 {
+                    let cur = self.gun.weapon;
+                    if cur >= 1 && cur <= 0x47 { self.gun.prev_weapon = cur; }
+                    if cur >= 0x4a && cur <= 0x5e { self.gun.prev_gadget = if cur == 0x55 { 0x54 } else { cur }; }
+                    self.gun.switch_request = id as u8;
+                }
             }
         }
+        self.drones.weapon_switch_request = None;
         if self.gun.switch_state == 0 && self.gun.reload_state == 0 && !fire_busy {
             let owned = self.drones.inventory.owned.clone();
             let carried = self.drones.inventory.carried.clone();

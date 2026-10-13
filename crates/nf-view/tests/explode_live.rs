@@ -46,7 +46,7 @@ fn frag_blast_kills_the_guard_next_to_it_and_the_stun_touches_nobody() {
     let id = 0x34usize;
     let model = sim.weapons.model(id);
     let bounds = *sim.models.get(&model).unwrap_or(&nf_game::pickup::Model { centre: [0.0, 0.05, 0.0], radius: 0.3 });
-    let p = nf_game::pickup::Pickup::create_placed(sim.bond.pos, [0.0; 3], nf_game::pickup::kind::WEAPON, id as u16, 1, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons).expect("frag pickup");
+    let p = nf_game::pickup::Pickup::create_placed(sim.bond.pos, [0.0; 3], nf_game::pickup::kind::WEAPON, id as u16, 1, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons, &std::collections::HashMap::new()).expect("frag pickup");
     sim.drones.pickups.push(p);
     for _ in 0..5 { sim.step_bond(Input::default(), false, false, false); }
     sim.gun.switch_request = 0x34;
