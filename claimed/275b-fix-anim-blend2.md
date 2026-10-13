@@ -25,3 +25,6 @@ Files: `crates/nf-game/src/{anim,drone}.rs`.
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/anim-blend2` (start from `s/fix-anim-blend`, then merge `origin/master` into it).
+
+---
+claimed-by: sandbox6 at 2026-10-13T20:20Z
