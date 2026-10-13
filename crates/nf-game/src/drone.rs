@@ -4609,10 +4609,6 @@ impl Drones {
             progress: Default::default(),
             difficulty: 2, // [M bootup 0x1c7e78:25 GameState._40_4_ = 2]
     };
-        // `NDrone2_DefaultInit` 0x14b300:609 → `PlrStat_LogEnemySpawned(0)` per created drone; the
-        // level's placements are created before this (the gate's Mission_Status is 0 at a cold
-        // load — inside the Log family's {0, 1} window either way).
-        for _ in drones.list.iter() { drones.progress.log_enemy_spawned(0); }
         drones
     }
 
@@ -6258,6 +6254,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             if crate::mission::LEVELS.iter().find(|l| l.level == d.level).is_some_and(|l| l.part == 0) {
                 self.progress.reset_for_mission();
             }
+            // `NDrone2_DefaultInit` 0x14b300:609 → `PlrStat_LogEnemySpawned(0)` per created drone.
+            // The port builds the level's drones before this latch, and the game creates them after
+            // `Mission_Init` ([L] ee_start_05.bin: +0x18 = 13 on 07000001, Mission_Status 1) — so
+            // the initial count rides here, after the part-0 reset above.
+            for _ in self.list.iter() { self.progress.log_enemy_spawned(self.mission.status()); }
             // The carried mission globals restore AFTER init, exactly as the game's `.data` globals sit
             // when `Mission_Init` runs on a warm transition: init resets the current + future parts in
             // place and the carried snapshot puts the previous parts' states back [M 0x182270:68-129;

@@ -148,10 +148,10 @@ fn stun_grenade_never_kills_but_frag_does() {
     assert!(stun_exploded, "the stun grenade must explode at its fuse");
     assert!(stun_radius == 0.0, "the stun blast radius is weapon_data+0x08 = 0.0 [L 0x36]");
     // Radius 0 → `Explode_Propagate` damages nobody: a guard AT the blast takes nothing.
-    let hits = nf_game::grenade::explode_propagate([0.0; 3], stun_radius, 100.0, &[(0, [0.5, 0.0, 0.5])], [50.0; 3], 1.8);
+    let hits = nf_game::grenade::explode_propagate([0.0; 3], stun_radius, 100.0, &[(0, [0.5, 0.0, 0.5])], [50.0; 3], 1.8, 1);
     assert!(hits.drones.is_empty() && hits.player == 0.0, "radius 0 must damage nobody [M 0x17c518]");
     // Sister: the frag's radius 10.0 [L] at the same spot damages the guard (the harness discriminates).
-    let hits = nf_game::grenade::explode_propagate([0.0; 3], 10.0, 100.0, &[(0, [0.5, 0.0, 0.5])], [50.0; 3], 1.8);
+    let hits = nf_game::grenade::explode_propagate([0.0; 3], 10.0, 100.0, &[(0, [0.5, 0.0, 0.5])], [50.0; 3], 1.8, 1);
     assert_eq!(hits.drones.len(), 1, "the frag's blast (radius 10) reaches the guard 1 unit away");
     assert!(hits.drones[0].1 > 0.0);
 }
