@@ -30,3 +30,6 @@ Files: `crates/nf-view/src/{scene,gpu}.rs`, `crates/nf-view/tests/fix_portal*_li
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/portal-sweep`.
+
+---
+claimed-by: sandbox4 at 2026-10-13T23:55Z
