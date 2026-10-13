@@ -10,7 +10,7 @@
 //! touch, ch 0x3F) → the roof-outside volume (ch 0x40) → SEQ #281 → ch 0x41 → ch 0x5A + ch 100
 //! → mission complete [M 0x182c60].
 
-#[path = "common/walker.rs"]
+#[path = "common/walker_b2.rs"]
 mod walker;
 
 use walker::{Walker, Wp};

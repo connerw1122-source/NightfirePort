@@ -20,7 +20,7 @@
 //! still runs) except Rook, who must die. The fuseboxes' live wires carry param 2 non-zero on
 //! every box here → the cut NEVER hurts [M 0x1adfe8:99-101; D placements census].
 
-#[path = "common/walker.rs"]
+#[path = "common/walker_b2.rs"]
 mod walker;
 
 use walker::{Walker, Wp};

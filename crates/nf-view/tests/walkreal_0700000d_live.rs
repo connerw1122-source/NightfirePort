@@ -14,7 +14,7 @@
 //! nothing else on the disc writes ch 0x1f [D docs/levels/0700000d.md §6]; the AND #434 stays
 //! open, no mission complete.
 
-#[path = "common/walker.rs"]
+#[path = "common/walker_b2.rs"]
 mod walker;
 
 use walker::{Walker, Wp};

@@ -19,7 +19,7 @@
 //! plane → E → level_exit 0x0700000d ([M Player_Activate 0x1a5170 case 0x1d → Trigger_Activate
 //! 0x1b2318:111], the key gate ch 0x1c on).
 
-#[path = "common/walker.rs"]
+#[path = "common/walker_b2.rs"]
 mod walker;
 
 use walker::{Walker, Wp};

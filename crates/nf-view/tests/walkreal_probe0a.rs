@@ -2,7 +2,7 @@
 //! Dumps the SS leaves near the shaft mouth, the segment hits along the stuck line, and every
 //! channel that turns on over the first ticks. Diagnostic — run with --nocapture.
 
-#[path = "common/walker.rs"]
+#[path = "common/walker_b2.rs"]
 mod walker;
 
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }

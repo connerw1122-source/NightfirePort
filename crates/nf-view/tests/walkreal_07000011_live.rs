@@ -13,7 +13,7 @@
 //! gate off]). Objective "Gain access to lower office floor" (ch 0x48) has no writer on this
 //! level — it completes one level later on 07000012 [D §2; the design].
 
-#[path = "common/walker.rs"]
+#[path = "common/walker_b2.rs"]
 mod walker;
 
 use walker::{Walker, Wp};

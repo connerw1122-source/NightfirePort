@@ -7,7 +7,7 @@
 //! driven as docs/levels/0700000a.md records) → ch 0x49 (objective 5) → AND #742 → ch 0x4A → the
 //! hatch exit (21.72, 1.12, 19.79), E through its key gate → 0700000b.
 
-#[path = "common/walker.rs"]
+#[path = "common/walker_b2.rs"]
 mod walker;
 
 use walker::{Act, Walker, Wp};

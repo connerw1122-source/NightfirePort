@@ -13,7 +13,7 @@
 //! Trigger_Update 0x1b1a78 case 10]) → level_exit 0700004A. Objective 2 (ch 0x4D) has no writer
 //! here — its writer is TouchOnce #277 on 0700004A (the late AND [D]).
 
-#[path = "common/walker.rs"]
+#[path = "common/walker_b2.rs"]
 mod walker;
 #[path = "common/tower2.rs"]
 mod tower2;

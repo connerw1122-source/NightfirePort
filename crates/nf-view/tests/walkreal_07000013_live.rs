@@ -18,7 +18,7 @@
 //! The fake lift (SP #161, trigger ch 0x23) has no writer on the disc [D §4] — dead data; the
 //! route out is the front entrance, not the lift.
 
-#[path = "common/walker.rs"]
+#[path = "common/walker_b2.rs"]
 mod walker;
 #[path = "common/tower2.rs"]
 mod tower2;

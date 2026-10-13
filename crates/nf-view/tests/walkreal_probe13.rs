@@ -1,7 +1,7 @@
 //! walkreal-b2 probe v2: run the real warm chain (12 → 4A → 13 legs) and at the entrance pin
 //! dump the drones/objects/segments there. Diagnostic — run with --nocapture.
 
-#[path = "common/walker.rs"]
+#[path = "common/walker_b2.rs"]
 mod walker;
 #[path = "common/tower2.rs"]
 mod tower2;

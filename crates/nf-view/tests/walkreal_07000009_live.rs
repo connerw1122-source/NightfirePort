@@ -8,7 +8,7 @@
 //! #67 → ch 0x32 → LOAD_LEVEL #63 → 0700000a. The alarm switches are never touched (obj 1's
 //! inverted channel).
 
-#[path = "common/walker.rs"]
+#[path = "common/walker_b2.rs"]
 mod walker;
 
 use walker::{Act, Walker, Wp};
