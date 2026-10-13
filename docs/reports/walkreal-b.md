@@ -16,7 +16,7 @@ below (each with its reason). The harness is `crates/nf-view/tests/common/walker
 | 0700000d | **yes to the documented stop** | the start trigger (objective 3), the crane stand-in (0xE2; fix-explosions owns the crane/laser), the ST-3 plate ch 0x1d (objective 4), the REAL laser photograph ch 0x1e (objective 5), the corridor plate ch 0x28, then THE DOCUMENTED STOP at the C5 door: ch 0x1f has no writer on the disc (the mounted-laser cut-scene is unported), the AND stays open. |
 | 07000011 | **yes** | the spawn tile ch 0x7E, the stairwell door's south band, the stairwell-descent stand-in (the flight graph needs the level mesh — the probe could not resolve the landing steps into a walked chain), the Load Point E → level_exit 07000012. |
 | 07000012 | **yes with 2 stand-ins** | everything else real (below). |
-| 07000013 | **yes** | the full warm chain: 12 walked → 4A's spawn drop ch 0x4D → 13 → the lobby walk → the entrance → MISSION SUCCESS (state 6) → LevelToEndTo 0x07300013. |
+| 07000013 | **yes pre-merge; regressed post-merge** | the full warm chain passed BEFORE the last master merge (the lobby walk → the entrance → MISSION SUCCESS (state 6) → LevelToEndTo 0x07300013). After merging master (fix-party-mission/fix-death-restart), a new collision blocks the final approach south of the entrance (Bond pins at z ≈ 64.5, the touch band starts z 65.09; the walk passed cleanly pre-merge at 06:27) — a master-side change to probe next session. |
 | 07000014 | **in progress** | the route is written; leg 1 walks the vent store room to the drop touch #301; the vent cut-scene does not yet write ch 0x47 within the window — the next session continues from the branch. |
 
 ## The stuck points found and what was done
@@ -90,3 +90,13 @@ below (each with its reason). The harness is `crates/nf-view/tests/common/walker
   -- --test-threads=1`): the result is recorded in the branch's final commit message (run before the push).
 - Every walkreal test drives the real input path; the enemy allowance is the walker's health top-up (the pain
   pipeline still runs) except Rook on 14 (the real gun path kills him) — not yet exercised this session.
+
+## Post-merge addendum (the same day, 06:56 UTC)
+
+- Merged master (20fe32b) into the branch: one compile fix on my side (the fusebox SP's `live_matrix` initializer —
+  the field `nis::Player` carries since the walkreal-a escort commit; `crates/nf-game/src/drone.rs:4380`).
+- nf-game post-merge: 23 test binaries ok, 0 failed. `walkreal_07000012_live` passes post-merge.
+- `walkreal_07000013_live` regressed post-merge at the final entrance leg (a new collision at z ≈ 65.0 south of
+  the touch band; passed pre-merge). `walkreal_07000014_live` still needs its vent cut-scene debugged.
+- Next session's first moves: (1) probe the new 13 entrance collision (master's diff to scene/player/world since
+  5c5e097), (2) 14's vent cut-scene firing, (3) the two 12 stand-ins via the live checks above.
