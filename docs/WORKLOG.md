@@ -7135,3 +7135,43 @@ Stage Summary:
 - Branch s/walkreal-c pushed (98c47b3). The four walkreal tests exist (walkreal_07000015/16/1b/4a _live.rs) with the real-input walker (the common/walker.rs additive hook: the `skip_cutscenes` flag, the pitched walk-in door E, the same-floor door filter). Each test is a documented gap-ignore at its reached blocker, with the evidence trail in the comments and the probe (walkreal_probe_c.rs: the level dumps + the floor grids + the 4a spawn-support/ride-scrape logs + the 16 door fields).
 - 07000015: the silo crossing WORKS with real input — the z≈−5 lane threads the silo hole, doors [0]/[48]/[36] open on the walker's E; the lattice threading to the USE exit #445 was mid-verification at the session end. 07000016: the corridor stalls at door[7] — the E reaches and Doors::activate passes its guards but the leaf never moves (open root-cause question, live check requested). 0700001b: the hub is a pit ring (the straight line falls to −15.4); the zero-G sister (substate never 8/9 on the floor route) PASSES; the nav crossing + the Drake defeat are the parked rest. 0700004a: the spawn IS the boarding (the probe: grounded on the platform from t30); the ride leaves the rider parked at −54.14 at t1620 while the platform continues (the game's lift passes the −52 leaves closed — ch 0x40 opens them at t1610, the platform passed at t1560 [D keys]); the door-solid vs rider interaction is the fix.
 - Suite: the walkreal set + the probe + the 07000012 sister all green (the gap-ignores compile, nothing red). The full four-crate suite did NOT run in this sandbox (time) — run before the merge.
+
+Task ID: 051-fix-world-objects
+Agent: NightfirePort worker (fix-world-objects session)
+Task: fix-world-objects — port the gameplay placement types the port still draws as static geometry: 0xd2 Shooter, 0xd8 RB, 0x3b DynamicObject, 0x41 InverterTrigger, 0xe7 ThirdCam, 0xda Car (branch s/fix-world-objects)
+
+Work Log:
+- Setup reused (repo + work/ + ISO + queue worktree intact from the earlier session); branch s/fix-world-objects created from origin/master (03ad7f5, merge-log fix-wire2). This entry started and pushed.
+- Evidence: parsemap_create_dynamic_objects 0x1d04f0 dispatch re-read; creators read: Shooter_Create 0x17d030 (class 0 object, type byte +0xff=0x4e, +0xf4/+0xf6 = placement u16 params at celglist+0x2c/+0x30, +0xd8 = celglist), RB_Create 0x1d6bf0 (class 0x160 object, RB_Init with placement u16 at +0x34, cuboid extents from placement floats, RB_Build/RB_SetState), InverterTrigger_Create 0x1b3040 + Update 0x1b30a8 (channel in +0xf4 forces out channel +0xf6 to 0), ThirdCam_Create 0x1bc510 (camera id = celglist+0x2c u16, framelist ptr at celglist+8, count short at celglist+2, byte flag celglist+0x30; ThirdPersonCameras[id] indexed), Car_Create 0x1305b0.
+- Scope from docs/systems/levels.md §7: 0d2 on 07000001/15/4a; 0xd8 on 01/03/04/06/0d/41; 0x3b on 02/03/05/07/0c/0d/14/16/1b/41; 0x41 on 06/12/14; 0xe7 on 02/05/08/0c/0d/41; 0xda on 46/4b. Skips per brief: grapple (150-fix-gadgets), creep walls (140-fix-swim-vent), SS (120-fix-explosions), coronas/lights (050-fix-lighting).
+
+Stage Summary:
+- Branch s/fix-world-objects pushed (branch start). Next: read the port's placement parse path, port InverterTrigger (trivial) first, then ThirdCam, Shooter, RB; NF_ISO fail-first tests per type.
+
+**fix-world-objects progress (10:30 UTC)**: the four light families are ported and green —
+`crates/nf-game/src/worldobj.rs` (new file): InverterTrigger (0x1b3040/0x1b30a8: in-channel forces
+the out channel low), Shooter (0x17d030/0x17d0c0: one-shot `Bullet_init` fire on the arm edge —
+obj+0xFE bit 0 deletes it the same tick per the delete pass 0x1336f8:86-87; the 0x3b weapon-class
+case fires straight down, REAL on 0700004a's weapon 0x3d, dmg 2000), DynamicObject (0x18dbf8/
+0x18d3b8: chA gate, mode-0 chB self-delete vs mode-1 flags 0x30, the p2 distance fade into
+obj+0x106), ThirdCam (0x1bc510/0x1bc590: camera id + key-list splines via door::interp). Hooks:
+drone.rs one field + create in attach_level + tick after useobjs.tick (additive, listed in the
+report); lib.rs module line. Tests: crates/nf-view/tests/worldobj_live.rs 5 NF_ISO tests
+(fail-first: the `worldobjs` field had no pre-fix existence; every asserted behaviour had no
+ported writer). Sweep census HANDLED extended (0x3b/0x41/0xd2/0xe7). Full suite: 630 passed /
+3 failed (the 3 allowed disc_golden). Atlas: docs/atlas/world-objects.md (per-type creator/
+instance/update/param tables + the RB/Car remainder with the read decompile evidence + 3 live
+checks). levels.md §7.1 got the additive update note. NOT ported (documented): 0xd8 RB (the
+decompile reading is in the atlas doc — RB_Update 0x1d6e38/EulerEvolve/Impulses/RestingContact
+chain), 0xda Car (driving-adjacent). Report + finish next.
+
+**fix-world-objects outcome (10:12 UTC)**: finished — the report is at docs/reports/
+fix-world-objects.md, pushed (f38e2b4); finish.sh ran `done 051-fix-world-objects` (its first run
+cd'd into the queue worktree so the relative report path missed — repaired by appending the
+report to done/051-fix-world-objects.md and pushing the queue); the ntfy notification went out
+via curl (first channel, id IxABLLDIAo11). Branch s/fix-world-objects tips at f38e2b4: the four
+light world-object families ported + 5 fail-first NF_ISO tests + the atlas doc (with the RB/Car
+decompile reading for the next session) + the census + the levels.md note. Suite 630 passed /
+3 failed (the 3 allowed disc_golden). Remaining for the next message on this branch: 0xd8 RB
+(the full integration), 0xda Car, the renderer consumption (obj+0xF0 bit 0x10, obj+0x106 alpha,
+the ThirdCam camera wiring).

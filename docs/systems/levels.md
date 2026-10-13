@@ -391,6 +391,13 @@ level**; the counts below are the improvement targets, each with the game functi
 | 0700004a | 0 | 0 | 0xd2 Shooter_Create (turret shooters) | 0 | 0 / 0 | 0/0 | 459997 |
 | 0700004b | 0 | 0 | 0x26 MP_RegisterMPObject (multiplayer-only), 0x3a Grapple_Create (grapple points), 0xda Car_Create | 0 | 0 / 0 | 0/28 | 404803 |
 
+Update (fix-world-objects, 2026-10-13): 0x41, 0xd2, 0x3b and 0xe7 are ported since this table was
+written — `crates/nf-game/src/worldobj.rs` (docs/atlas/world-objects.md), swept into the census
+(`levels_sweep_live.rs` HANDLED). The kinds above still unported: 0xd8 (RB rigid bodies), 0xda
+(Car), plus the presentation families the table already routes elsewhere (0x21/0x4e/0xfc lights
+and coronas, 0xf2/0xf3 particles and trees, 0xd4/0xd5/0xe3 weather, 0x35 PCQWorm → s/map-tower,
+0x3a/0x3f grapple/creep walls → their owners).
+
 The unhandled types are **not crashes** — the port draws their placements as static geometry
 and skips their gameplay; each row names the game creator `parsemap_create_dynamic_objects`
 (0x1d04f0) would call. The unported drone states are ids the game's DSTATE dispatcher

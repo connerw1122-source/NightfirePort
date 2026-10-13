@@ -4349,6 +4349,10 @@ pub struct Drones {
     /// its nearest door object), keyed (nav path, node id) → `Doors::list` index. Computed lazily on
     /// the first tick that needs it (the doors' positions are static).
     node_doors: Option<HashMap<(usize, u16), usize>>,
+    /// The placement-gated world objects (crate::worldobj; placements 0x41 / 0xd2 / 0x3b / 0xe7 —
+    /// `InverterTrigger_Create` 0x1b3040, `Shooter_Create` 0x17d030, `DynamicObject_Create` 0x18dbf8,
+    /// `ThirdCam_Create` 0x1bc510), created in `attach_level`.
+    pub worldobjs: crate::worldobj::WorldObjects,
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -4417,7 +4421,9 @@ impl Drones {
             // fix-safe08: (script hash, stream) → the reserved pickup slot the renderer built for the
             // script's obj_type-0xF0 Entity (`Script_CreateEntity` 0x1d8968's Pickup_Create arm);
             // built at load in scene.rs, matched by the runtime spawn.
-            script_pickup_slots: Default::default() }
+            script_pickup_slots: Default::default(),
+            worldobjs: Default::default(),
+    }
     }
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
@@ -4471,6 +4477,13 @@ impl Drones {
             })
         });
         self.doors.create_channels(&mut self.channels, self.frame);
+        // The world objects (InverterTrigger 0x41, Shooter 0xd2, DynamicObject 0x3b, ThirdCam 0xe7;
+        // parsemap_create_dynamic_objects 0x1d04f0 cases, crate::worldobj — placement order, no RNG).
+        self.worldobjs = crate::worldobj::WorldObjects::create(&level.maps[m].placements, &path_blocks, |p| {
+            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
+                else { level.maps[m].objects.get(p.index as usize) };
+            obj.map_or((0, [0.0; 3]), |o| (o.flags, o.centre))
+        });
         // Fuseboxes (`FuseBox_Create` 0x1b0448, placement 0x31 with a script hash): 07000014's
         // OBJECT_FuseBox1 security-sabotage boxes (map-tower2).
         let (fuseboxes, _spheres) = crate::fusebox::FuseBox::create(&level.maps[m].placements, |p| {
@@ -5100,6 +5113,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let (paths, weapons) = self.bullet_paths();
         let shots: Vec<(V3, V3, u16)> = paths.iter().zip(weapons).map(|(&(a, b), &w)| (a, b, w)).collect();
         self.useobjs.tick(&shots, &mut self.channels, frame);
+        // The world objects' update pass (`control_movement_object_handler` 0x1336f8 pass 4:
+        // `control_funcs[+0xFF].update` — InverterTrigger 0x1b30a8, Shooter 0x17d0c0 (fires one
+        // `Bullet_init` bullet into this tick's list), DynamicObject 0x18d3b8; the camera splines
+        // stay static registration). The viewer position for the fade is `glb_viewer+0xC0` — the
+        // player's eye here (headless stand-in [S]).
+        let wo_viewer = [player.eye[0], player.eye[1], player.eye[2]];
+        crate::worldobj::WorldObjects::tick(
+            &mut self.worldobjs, &mut self.channels, wo_viewer, d.weapons, &mut self.rng, &mut self.bullets, frame,
+        );
         // `Drone_InitComms`: corpses (0x0F, 0x47, 0x48 + 300, 0xBF by the time their state began); beyond 3
         // (`DAT_00298F5C`) the oldest fades fast (`DroneFunc_DeadDrone`).
         let mut corpses = 0;
