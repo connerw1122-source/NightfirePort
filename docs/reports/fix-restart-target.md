@@ -61,7 +61,14 @@ The task asked whether a per-level checkpoint exists. **Yes — the RamSave buff
 Shared-file touches (all additive, listed per the task): `drone.rs` (2 fields + 1 latch line),
 `lib.rs` (1 field + the reload branch), `menu.rs` (Results rows). No other shared files touched.
 
-## Verification (NF_ISO; slim ISO, 0 disc_golden failures counted below)
+## Verification (NF_ISO; slim ISO)
+
+Full suite `--no-fail-fast`, `--test-threads=1`: **every binary green except the 3 allowed
+`disc_golden` failures** (crates/nf-formats/tests/disc_golden.rs — the known slim-ISO golden
+manifest failures; the count is 3, per the rule). nf-game 30+ binaries ok; nf-formats ok except
+those 3; nf-audio ok; nf-view 92 binaries ok. The one real failure found by the sweep —
+`walk_0700000a_live::hatch_exit_and_sisters`, which asserted the old cold-BaseMap fail restart
+(07000009) — was re-pointed at the corrected model (the current level 0700000a, warm) and passes.
 
 - Reproduced first: `fix_restart_target_live.rs::fail_restart_reloads_the_current_level_warm` FAILED
   before the fix (`left: Some(0x07000005)` cold — the user's symptom), PASSES after: the punched-guest
