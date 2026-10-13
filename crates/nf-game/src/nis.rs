@@ -493,7 +493,26 @@ impl Script {
         // Flag 0x80 → `Drone_EnableAll(1, hash)` [M Script_Free 0x1da880:41-43]: the cut-scene's guards come back
         // when the script that froze them (event 5 → `NPCGlobals = 0`) is freed and asked for it (event 7).
         if self.flags & 0x80 != 0 { out.push(Request::DroneEnable { on: true }); }
-        if self.flags & 0x100 != 0 { out.push(Request::PlayerEnable { at: self.player_at, mode: self.player_mode }); }
+        // fix-final-blockers2 diagnostic: the enable matrix `Script_Free` passes to `Player_Enable(glb_players,
+        // SCRIPTINFO+0x40, +0xab6)` [M 0x1da880:46-49]. SCRIPTINFO+0x40 was written ONCE at event-6 time
+        // (`Mat_Copy(iVar5+0x90 | glb_players+0x90 → +0x40)` [M 0x1d94c0:125-134]) — the game does NOT re-read
+        // the entity at free time, so the snapshot's SOURCE is the whole story.
+        if self.flags & 0x100 != 0 {
+            if std::env::var("NF_SCRIPTLOG").is_ok_and(|v| v == "1") {
+                if let Some(m) = &self.player_at {
+                    eprintln!("[scriptlog] free hash {:08x} enable at ({:.2},{:.2},{:.2}) mode {}", self.nis.hashcode, m[3][0], m[3][1], m[3][2], self.player_mode);
+                } else {
+                    eprintln!("[scriptlog] free hash {:08x} enable at None (the game's case-6 fallback re-reads the PLAYER's live matrix at EVENT time) mode {}", self.nis.hashcode, self.player_mode);
+                }
+            }
+            out.push(Request::PlayerEnable { at: self.player_at, mode: self.player_mode });
+        }
+    }
+
+    /// fix-final-blockers2 probe accessor: every stream's (kind, bound-object index, first/last key) —
+    /// the probe pairs the obj index with `Scripts::objects.list` matrices. Read-only, no behaviour.
+    pub fn stream_bindings(&self) -> Vec<(u8, Option<usize>, u16, u16)> {
+        self.streams.iter().map(|s| (s.kind, s.obj, s.first_key, s.last_key)).collect()
     }
 
     /// `Script_EventHandler` (0x1d94c0). Events 3/4/5/6/7/8/9/0xB/0xC/0xD/0xE/0x10/0x11/0x12/0x13 measured there;
@@ -524,6 +543,17 @@ impl Script {
                 let prev = i.checked_sub(1).map(|j| &self.streams[j]).filter(|s| matches!(s.kind, 1 | 2)).and_then(|s| s.obj);
                 self.player_at = prev.and_then(|o| match objs.list.get(o) { Some(Some(Obj::Entity { matrix, .. })) => Some(*matrix), _ => None });
                 self.player_mode = g(0) as u8;
+                // fix-final-blockers2 diagnostic: which stream/object the snapshot came from (the game's iVar5
+                // = record(i−1)+0x10 gated on record(i−1)+0x24 kind ∈ {1,2}, fallback `glb_players+0x90`
+                // [M 0x1d94c0:73-84,125-134]) — and what else was live at the same instant, so a probe can
+                // compare against e.g. the lift platform's SP live matrix.
+                if std::env::var("NF_SCRIPTLOG").is_ok_and(|v| v == "1") {
+                    let pk = i.checked_sub(1).map(|j| self.streams[j].kind);
+                    match (prev, self.player_at) {
+                        (Some(o), Some(m)) => eprintln!("[scriptlog] event6 hash {:08x} stream {i} prev obj {o} (kind {:?}) snapshot ({:.2},{:.2},{:.2})", self.nis.hashcode, pk, m[3][0], m[3][1], m[3][2]),
+                        _ => eprintln!("[scriptlog] event6 hash {:08x} stream {i} prev kind {:?} → NO entity (the game falls back to the player's own matrix at event time)", self.nis.hashcode, pk),
+                    }
+                }
             }
             // Event 5: `Drone_EnableAll(0, +0x98 hash)` → `NPCGlobals = 0` — the game's ONLY scripted drone freeze
             // [M Script_EventHandler 0x1d94c0 case 5, Drone_EnableAll 0x1383e8]. Every other cut-scene keeps the
@@ -576,7 +606,13 @@ impl Script {
             1 => {
                 let Some((mut m, scale, alpha)) = self.keys(i) else { return };
                 if scale != 1.0 { for r in m.iter_mut().take(3) { for v in r.iter_mut().take(3) { *v *= scale; } } }
-                // Each parent stream's matrix, then the script's.
+                // Each parent stream's matrix, then the script's. (fix-final-blockers2 tried "the base only
+                // at a parent-chain end" per the case-1 tail-Concat structure [M 0x1d9a08:106-133] — it
+                // REVERTED: 07000014's fusebox wire and 07000008's safe entities key LOCAL offsets and are
+                // render-verified with the base applied, so the game composes the base for unparented
+                // streams too (the decompile loses the step). See the report: #289's marker stays the
+                // open question (base-composed −107.66 = void on its column; raw −54.13 = the freeze pose;
+                // the game's mode-1 SphereIntersect rescue is the live check).)
                 let mut p = s.parent;
                 let mut n = 0;
                 while p >= 0 && (p as usize) < self.streams.len() && n < self.streams.len() {
@@ -589,7 +625,9 @@ impl Script {
             }
             4 => {
                 // `Script_Interp` case 4 → `Script_UpdateCamera`: the keys' matrix (the script matrix applied,
-                // *suggested*: the decomp loses that argument) and the field of view.
+                // *suggested*: the decomp loses that argument; fix-final-blockers2 measured the no-base
+                // reading [M 0x1d9a08:190-200 + 0x1db518] and reverted it with the entity change — the
+                // render-verified fusebox/safe entities need the base, so the camera keeps it).
                 // The skip's freeze: `Script_Interp` returns early while `+0xAB5 & 0x20` [M 0x1d9a08:205].
                 if self.fade_flags & 0x20 != 0 { return; }
                 let Some((m, scale, _)) = self.keys(i) else { return };
