@@ -33,30 +33,11 @@ pub fn atan2_approx(a: f32, b: f32) -> f32 {
     r
 }
 
-/// `PS2Sinf` (0x120700): range reduction to [−π/2, π/2], then the VU0 polynomial in the game's operation order.
-pub fn sinf(mut x: f32) -> f32 {
-    const S1: f32 = f32::from_bits(0xbe2a_aaa4);
-    const S2: f32 = f32::from_bits(0x3c08_873e);
-    const S3: f32 = f32::from_bits(0xb94f_b21f);
-    const S4: f32 = f32::from_bits(0x362e_9c14);
-    if x >= PI { while x >= PI { x = sub(x, TAU); } } else { while x < -PI { x = add(x, TAU); } }
-    if x > HALF_PI { x = sub(PI, x); } else if x < -HALF_PI { x = sub(-PI, x); }
-    let x2 = mul(x, x);
-    let a = mul(mul(x, S3), x2);
-    let b = mul(x, S1);
-    let c = mul(x, S2);
-    let x4 = mul(x2, x2);
-    let d = mul(x, S4);
-    let x8 = mul(x4, x4);
-    // ACC = b·x2; ACC += a·x4; ACC += c·x4; ACC += x·1; result = ACC + d·x8 (VU0: products and sums chopped, the
-    // VU's adds keep their guard bit unlike the FPU's).
-    let vadd = nf_formats::ps2float::add;
-    let mut acc = mul(b, x2);
-    acc = vadd(acc, mul(a, x4));
-    acc = vadd(acc, mul(c, x4));
-    acc = vadd(acc, x);
-    vadd(acc, mul(d, x8))
-}
+/// `PS2Sinf` (0x120700): the canonical port lives in `nf_formats::anim::sinf` (range reduction to [−π/2, π/2],
+/// then the VU0 polynomial in the game's operation order) so the whole crate shares one implementation; it is
+/// bit-exact on the 3000 interpreter samples (WORKLOG 0026) and on the 40 calls recorded from the running game
+/// (`tests/diff_calls.rs`).
+pub fn sinf(x: f32) -> f32 { nf_formats::anim::sinf(x) }
 
 /// Cosine as the game takes it: `PS2Sinf(θ + 1.5707964)`.
 pub fn cosf(x: f32) -> f32 { sinf(add(x, f32::from_bits(0x3fc9_0fdb))) }

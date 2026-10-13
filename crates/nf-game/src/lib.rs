@@ -35,6 +35,7 @@ pub mod nis;
 pub mod props;
 pub mod pickup;
 pub mod player;
+pub mod ps2math;
 pub mod searchlight;
 pub mod sound;
 pub mod spawners;

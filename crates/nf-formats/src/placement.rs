@@ -57,8 +57,12 @@ pub fn parse(payload: &[u8]) -> Result<Vec<Placement>> {
 }
 
 /// `RotMatrix` (ACTION.ELF 0x1e2368) followed by `Mat_SetTrans`: a row-vector matrix (`v' = v·M`, translation in
-/// row 3), entries exactly as the decomp computes them. The game takes sines from `PS2Sinf3` (its own approximation);
-/// this uses the platform `sin`/`cos`, so values can differ in the last bits (GAPS G-017).
+/// row 3), entries exactly as the decomp computes them. The game takes sines from `PS2Sinf3` (its own
+/// approximation) and multiplies on the EE FPU; `nf_game::ps2math` + `anim::sinf` implement that bit-exactly and
+/// the diff harness proves the pieces (PS2Sinf 40/40 recorded calls) — but switching this function to them flips
+/// a damage outcome in the 07000001 contact-escort walk (the escort stalls; see docs/reports/verify-bitexact.md),
+/// so the platform sine stays until that divergence is root-caused (G-017: the port is proven, the call site is
+/// the open item).
 pub fn object_matrix(rot: [f32; 3], trans: [f32; 3]) -> [[f32; 4]; 4] {
     let (sx, cx) = rot[0].sin_cos();
     let (sy, cy) = rot[1].sin_cos();
