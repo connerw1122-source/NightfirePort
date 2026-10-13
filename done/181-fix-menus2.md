@@ -52,3 +52,7 @@ Files: `crates/nf-view/src/{menu,lib}.rs`, the HUD/sprite drawing it needs, `doc
 
 ---
 claimed-by: sandbox3 at 2026-10-13T14:38Z
+
+---
+## Report (done, 2026-10-13T16:47Z)
+
