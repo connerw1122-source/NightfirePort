@@ -8884,3 +8884,47 @@ Suite: nf-game+nf-formats+nf-audio 326 passed / 3 failed (the sanctioned disc_go
 nf-view 482 passed / 0 failed (152 binaries; portal_live re-run to completion after a chunk
 timeout). Left: the `--fps` pacing/present-mode path and the interpolation's visual quality need
 the main agent's GPU render (live checks 1–3 in the report).
+
+---
+Task: fix-facial2
+Agent: fix-facial2 worker
+Branch: s/fix-facial2
+
+Work Log:
+- (in progress) Setup done; reading fix-facial.md + character.md; items: morph target buffer, vertex
+  half in skinning, face-tracks second consumer check, AnimFacialUpdate blink driver.
+
+---
+Task: fix-facial2
+Agent: fix-facial2 worker
+Branch: s/fix-facial2
+
+Work Log:
+- Pinned the morph TARGET buffer from the decompile+disassembly (not the dropped store's decompile):
+  the gfx record is the 0x28-byte block parsemap_block_morph_data 0x1d23e8 / parsemap_block_PS2_GFX
+  0x1d2450 allocate per cel-list entry; 0x1d23e8 stores FileNextBlock+4 — the MORPH_DATA map block
+  (dispatch 0x1d1020 case 0x2b) payload — into gfx+0x14; psiCreateEntityGfx 0x1171b0's full
+  disassembly has no +0x14 store (only the object array, entry 0x20/0x24, the REF terminator, the
+  skin-info words). psiDrawSkinObjectMatrix 0x111828 reads gfx+0x14 into SkinIt's param 5, gated on
+  Morph_Count != 0 and min-light <= 2.0 (the decompile says 2.0, character.md said <13 — flagged).
+- Disc proof: 07000005 'generic_head_grunt' 0200040d = 63,528 bytes = 5,294 targets with max vertex
+  morph index 5272 → exactly (max + 1 + 22) × 12; 020002da the same (5227 = 5205 + 22). Census test
+  green (failing-first: level.rs dropped 0x2b before).
+- Landed the vertex half (CPU path): MapObject.morph_targets → Character.morph_targets (own object
+  or any skin-main mesh — the head is a separate object), CharVertex.morph (v.w >> 16 as i16),
+  Scene::facial_weights_now (the started face-track window sampled by the existing facial_weights),
+  the morph term in animate() before the bone skinning (morph_vertex, the exact 0x10bf30 sum). No
+  RNG draws added; script_pose_together untouched (truck/ai_traces unchanged).
+- facial2_live (NF_ISO, 2 green): the census; the ledge scene driven through its real start plate
+  (Touch placement 301 out 0x43 → SP #298 06000994), character 70's window 040007fa live, two
+  lockstep scenes (targets cleared vs not) isolate the morph term — face vertices move ~1e-3
+  (mouth-scale: weights 0.0762 × targets 0.0256) at the 0.01 crossing, non-morph vertices
+  bit-identical, weight-0 frame at the noise floor.
+- NOT done (window): the blink driver wiring (0x1be310), the face-track re-point (correctly held:
+  the truck immobility hangs on the narrow track's zero root; the live check for the body-root
+  zeroing is in the report), the GPU skin morph pass, the distance-gate reconciliation.
+
+Stage Summary:
+- The morph target buffer is pinned with a decompile address + an exact disc census; the CPU vertex
+  half is landed and exercised through the real trigger path. Report: docs/reports/fix-facial2.md
+  (live checks for the main agent listed). Full suite NOT run in the window — re-run before merge.

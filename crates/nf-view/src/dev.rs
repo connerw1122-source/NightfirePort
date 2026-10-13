@@ -198,6 +198,7 @@ impl Dev {
             role: nf_formats::drone::SpawnRole::Placed,
             floor: None,
             script: None,
+            morph_targets: None,
         });
         // char_drone maps character index → drone index. The renderer's `animate()` uses this to find the drone
         // for each character; without it, the spawned character would pose in the bind pose (not the drone's state).
