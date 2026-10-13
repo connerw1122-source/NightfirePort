@@ -20,9 +20,12 @@
 //! 0x12cd98 (the fuse: radius = weapon+0x08, damage = weapon+0x0C, script 0x6000052, attacker = BU+0x30)
 //! and 0x12ce80:194-206 (impact explode, `weapon+0x70 & 4`) were disassembled to pin them. The `addiu
 //! $t2, $zero, 0x64` (100) at those sites is the 10th argument — an u8 `Explode_Create` never reads —
-//! NOT the blast damage: the damage is `f14 = *(float*)(weapon_data+0x0C)` [L weapon records: frag 0x35
-//! = radius 10 / damage 0; mine 0x37 and the rockets = 8/100; missiles 0x3B+ = 8/2000; the flashbang
-//! 0x36 = 0/0 — its stun runs through `Bullet_DoTrails` 0x12d890's `+0x70 & 0x2000` death branch instead].
+//! NOT the blast damage: the damage is `f14 = *(float*)(weapon_data+0x0C)` [L the records, named by the
+//! disc labels (Txt_BindLabel of +0x38, resolved against USATxt.dat): 0x34 'Fragmentation Grenade' =
+//! radius 8 / damage 100 — the real frag kill; 0x35 'Stun Grenade' = 10/0 and 0x36 'Smoke Grenade' = 0/0
+//! never reach Explode_Create (the stun takes `Bullet_DoTrails` 0x12d890's `+0x70 & 0x2000` death branch,
+//! the smoke its `& 0x20000` branch); 0x37-0x39 'Remote Mine' and 0x3a 'Laser Tripbomb' = 8/100;
+//! 0x3b-0x40 'Satchel Charge' = 8/2000].
 
 use crate::world::V3;
 
@@ -49,7 +52,9 @@ pub struct Explosion {
     pub propagated: bool,
     /// `obj+0xEC` vs `GameState+0x52`: the age in ticks (the port counts from creation).
     pub age: u32,
-    /// The weapon type that caused it (the port's routing key: 0x36 is the flashbang).
+    /// The weapon type that caused it (informational here — the death-branch routing lives in
+    /// `drone.rs`'s tick on the weapon's own `+0x70` flags: & 0x2000 flash / & 0x20000 smoke [M
+    /// 0x12dd60, 0x12e104]).
     pub weapon_type: u16,
 }
 
@@ -194,8 +199,9 @@ mod tests {
 
     #[test]
     fn zero_radius_hits_nothing() {
-        // The flashbang's record is radius 0 / damage 0 [L weapon 0x36 +0x08/+0x0C]: the early
-        // return [M 0x17c550] means the flashbang damages NOBODY through Propagate.
+        // The smoke grenade's record is radius 0 / damage 0 [L weapon 0x36 +0x08/+0x0C 'Smoke Grenade']:
+        // the early return [M 0x17c550] means the smoke damages NOBODY through Propagate (and the stun
+        // 0x35 never reaches Propagate at all — the `& 0x2000` flash branch).
         let t = Targets { drones: &[(0, [0.1, 0.0, 0.0], 0.0)], player: [0.1, 0.0, 0.0], breaks: &[], destroys: &[] };
         let h = propagate([0.0; 3], 0.0, 100.0, usize::MAX, &t);
         assert!(h.drones.is_empty() && h.player.is_none() && h.breaks.is_empty() && h.destroys.is_empty());

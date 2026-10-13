@@ -288,18 +288,22 @@ fn switching_mid_reload_is_refused_and_firing_recovers() {
 /// The blast: `Explode_Create` (0x17cbd0) with radius = weapon_data+0x08 and damage =
 /// weapon_data+0x0C [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` → EXPLODEINFO+0x28; the
 /// `addiu $t2, $zero, 0x64` u8 arg is never read — fix-explosions dropped the old hardcode 100].
-/// The frag's record is radius 10 / damage 0 [L], so the fuse blast hurts NOBODY through
-/// `Explode_Propagate` (0x17c518); the blast sound is the script's own Sound(0x3E) [D script
+/// fix-explosions2: the disc name labels (Txt_BindLabel of +0x38 vs USATxt.dat) name the records [L]:
+/// the frag is 0x34 'Fragmentation Grenade' = radius 8 / damage 100 — the fuse blast KILLS/HURTS a
+/// guard next to it through `Explode_Propagate` (0x17c518 case 2) (fix-explosions had the mapping
+/// shifted one id: 0x35 is the 'Stun Grenade', whose `+0x70 & 0x2000` death branch [M 0x12dd60]
+/// carries no damage — the sister below). The blast sound is the script's own Sound(0x3E) [D script
 /// 0x6000052 stream 36], not 0x4A7 (that is `Bullet_CollisionHandler`'s rest-impact sound of
-/// weapons 0x3B/0x45). A mine (0x37: 8/100 [L]) blast DOES damage — the sister below.
+/// weapons 0x3B/0x45). The mine (0x37 'Remote Mine': 8/100 [L]) also damages.
 #[test]
 fn thrown_grenade_flies_and_explodes_with_sound_and_damage() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load(&iso, "07000001.bin");
     let sim = scene.sim.as_mut().unwrap();
     tick_idle(sim, 2);
-    // A frag pickup at Bond's feet (the captain-drop form), like fix-player2's test.
-    let id = 0x35usize;
+    // A frag pickup at Bond's feet (the captain-drop form), like fix-player2's test. The frag is
+    // 0x34 [L USATxt.dat label 'Fragmentation Grenade'; MP label 0x0500005b → 'Frag Grenade'].
+    let id = 0x34usize;
     let model = sim.weapons.model(id);
     let bounds = *sim.models.get(&model).unwrap_or(&nf_game::pickup::Model { centre: [0.0, 0.05, 0.0], radius: 0.3 });
     let at = sim.bond.pos;
@@ -307,15 +311,15 @@ fn thrown_grenade_flies_and_explodes_with_sound_and_damage() {
         .expect("grenade pickup builds");
     sim.drones.pickups.push(p);
     tick_idle(sim, 5);
-    assert!(sim.drones.inventory.owned[0x35], "0x35 owned");
-    sim.gun.switch_request = 0x35;
+    assert!(sim.drones.inventory.owned[0x34], "0x34 owned");
+    sim.gun.switch_request = 0x34;
     tick_idle(sim, 60);
-    assert_eq!(sim.gun.weapon, 0x35);
+    assert_eq!(sim.gun.weapon, 0x34);
     // Throw at the horizon.
     aim_at(sim, [sim.bond.head()[0], sim.bond.head()[1] - 0.2, sim.bond.head()[2] + 10.0]);
     sim.step_bond(Default::default(), true, false, false);
     // Track the grenade through its whole life: spawn at the release frame, flight (the game's step is
-    // speed = 0.167 u/tick [L record 0x35 +0x20]; the old port moved ~0.003 u/tick), explosion.
+    // speed = 0.167 u/tick [L record 0x34 +0x20]; the old port moved ~0.003 u/tick), explosion.
     let mut origin = [0.0f32; 3];
     let mut max_dist = 0.0f32;
     let mut exploded_at: Option<u32> = None;
@@ -355,7 +359,7 @@ fn thrown_grenade_flies_and_explodes_with_sound_and_damage() {
         let gp = sim.drones.list[gi].pos;
         let floor = spot_floor(sim, gi).unwrap_or(gp[1]);
         // Throw again from 3 units away, grenade landing near the guard (radius 10 covers 3 units).
-        let p = nf_game::pickup::Pickup::create_placed(sim.bond.pos, [0.0; 3], nf_game::pickup::kind::WEAPON, 0x35, 1, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons).unwrap();
+        let p = nf_game::pickup::Pickup::create_placed(sim.bond.pos, [0.0; 3], nf_game::pickup::kind::WEAPON, 0x34, 1, 0, 0xFFFF, 0, 0, model, bounds, &sim.weapons).unwrap();
         sim.drones.pickups.push(p);
         tick_idle(sim, 5);
         sim.bond = nf_game::player::Bond::stand_at(&sim.world, [gp[0], floor + 1.1, gp[2] - 3.0], 0.0);
@@ -363,23 +367,27 @@ fn thrown_grenade_flies_and_explodes_with_sound_and_damage() {
         tick_idle(sim, 30);
         sim.step_bond(Default::default(), true, false, false);
         for _ in 0..300 { sim.step_bond(Default::default(), false, false, false); }
-        // fix-explosions [M 0x12ce20 + record 0x35]: the frag's Propagate damage is 0 — the guard
-        // near the blast takes NOTHING (the old port's hardcode 100 killed him; the user's retest).
-        assert!(sim.drones.list[gi].health >= hp0 && !sim.drones.list[gi].corpse,
-            "the frag blast deals no damage (record 0x35: radius 10, damage 0 [L]) ({} → {})", hp0, sim.drones.list[gi].health);
-        // Sister: the same spot with a mine (0x37, radius 8 / damage 100 [L]) takes damage through
-        // the same `Explode_Propagate` path [M 0x17c518 case 2 → Drone_ExplosiveHit].
-        let at = [gp[0], gp[1] + 0.5, gp[2]];
+        // fix-explosions2 [M 0x12e1c0 + record 0x34]: the frag's blast is radius 8 / damage 100 —
+        // the guard ~3 units away takes 100·(1 − (int)3/8) = 62.5 through `Explode_Propagate`
+        // (× the game's drone-side difficulty factor [L .data 0x30cab0: Easy 2.0/Normal 1.5/Hard
+        // 0.5 — none zero]) — the ordinary frag kill the game shows.
+        assert!(sim.drones.list[gi].health < hp0 || sim.drones.list[gi].corpse,
+            "the frag blast (0x34: radius 8, damage 100 [L]) hurts the guard ({} → {})", hp0, sim.drones.list[gi].health);
+        // Sister: the same spot with the stun grenade (0x35: 10/0, the `+0x70 & 0x2000` flash
+        // branch [M 0x12dd60]) — health UNTOUCHED, no damage anywhere on that path. Target a guard
+        // the frag blast left alive (the frag above may have killed this one).
+        let Some(gi2) = sim.drones.list.iter().position(|dr| dr.present && dr.enabled && !dr.corpse && dr.health > 0.0) else { return };
+        let hp0 = sim.drones.list[gi2].health;
+        let at = [sim.drones.list[gi2].pos[0], sim.drones.list[gi2].pos[1] + 0.5, sim.drones.list[gi2].pos[2]];
         sim.drones.grenades.push(nf_game::grenade::Grenade {
             pos: at, velocity: [0.0; 3], speed: 0.0, travelled: 0.0, range: 2.0,
-            damage: 100.0, radius: 8.0, weapon_type: 0x37, mesh: 0, owner: usize::MAX, state: 1, bounces: 0,
+            damage: f32::from_le_bytes(sim.weapons.records[0x35][0x0c..0x10].try_into().unwrap()),
+            radius: f32::from_le_bytes(sim.weapons.records[0x35][0x08..0x0c].try_into().unwrap()),
+            weapon_type: 0x35, mesh: 0, owner: usize::MAX, state: 1, bounces: 0, smoke_popped: false,
         });
         let mut hurt = false;
-        for _ in 0..30 {
-            sim.step_bond(Default::default(), false, false, false);
-            if sim.drones.list[gi].health < hp0 || sim.drones.list[gi].corpse { hurt = true; break; }
-        }
-        assert!(hurt, "the mine blast (100 damage, radius 8) hurts the guard through Explode_Propagate");
+        for _ in 0..30 { sim.step_bond(Default::default(), false, false, false); if sim.drones.list[gi2].health < hp0 { hurt = true; break; } }
+        assert!(!hurt, "the stun grenade (0x35) flash branch deals no damage [M 0x12d890]");
     }
 }
 

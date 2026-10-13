@@ -444,7 +444,8 @@ pub struct Drone {
     pub last_shot: u32,
     pub clip: i32,
     pub clip_max: i32,
-    /// `Drone+0xBCC`: the grenade weapon index (0x35 frag, 0x36 stun) and `+0xBCE` the count (decremented on throw).
+    /// `Drone+0xBCC`: the grenade weapon index (0x34 frag, 0x35 stun, 0x36 smoke — the disc name labels
+    /// [L USATxt.dat]) and `+0xBCE` the count (decremented on throw).
     pub grenade_weapon: u16,
     pub grenade_count: i16,
     /// Set by `DroneAnim_EventFunc` datum 1 (the grenade-throw anim's release frame); `Drones::tick` calls
@@ -750,7 +751,9 @@ impl Drone {
         // `placement+0x2C`, 0x84 bytes, to `Drone+0xC34` = `piVar19[13]`), so `piVar19[0x18]` = params[11] =
         // `placement+0x2C+44` (drone-port-check.md #1: the old `param(24)` read the alert block's middle word).
         // `*(short*)(+0xbcc) = (short)(uVar4 >> 4)`; `*(ushort*)(+0xbce) = raw & 0xf`; switch on `(raw >> 4) & 0xffff`:
-        // 1→0x36(stun), 2→0x35(frag), 4→0x34, 5→count+0x3a, 6→0x6c count=1; default→0,0.
+        // 1→0x36(smoke), 2→0x35(stun), 4→0x34(frag), 5→count+0x3a, 6→0x6c count=1; default→0,0. The
+        // constants are the game's own [M NDrone2_DefaultInit 0x14b300:351-372]; the names are the disc
+        // labels [L USATxt.dat: 0x34 'Fragmentation Grenade', 0x35 'Stun Grenade', 0x36 'Smoke Grenade'].
         // On 0x7000014 a weapon in (0x34, 0x37) clamps to 0x34 (0x14b300 lines 374-376; drone.md param-11 row).
         let p11 = param(11);
         let gw_sel = ((p11 >> 4) & 0xffff) as u16;
@@ -2032,8 +2035,9 @@ impl Drone {
         nf_formats::anim::mul(&nf_formats::anim::quat_trans_to_mat(dt.q, dt.t), bone)
     }
 
-    /// `DroneFunc_OnInitDeath` → `DroneFunc_DropGrenade`: a captain drops grenades at its own matrix — weapon 0x35 with
-    /// 2 on 07000001–08, 0x34 with 1 on 07000009–0B, 11–16, 4A.
+    /// `DroneFunc_OnInitDeath` → `DroneFunc_DropGrenade`: a captain drops grenades at its own matrix — the stun
+    /// grenade 0x35 ×2 on 07000001–08 [M 0x145bd0:141-144 `DropGrenade(param_1, 0x35, 2)`], the frag 0x34 on
+    /// 07000009–0B, 11–16, 4A [M :141 `DropGrenade(param_1, 0x34)`].
     fn drop_grenades(&mut self, d: &Data) {
         if !self.captain { return; }
         let (id, n) = match d.level {
@@ -2620,7 +2624,7 @@ impl Drone {
             (_, 0) | (_, 10) => true,
             (STUN_GRENADE_IMPACT, msg::ENTER) => {
                 // `DroneFunc_RecoverTime` 0x147188: for a non-{0x35,0x43,0x44,0x4A,0x4C} hitting weapon
-                // (the flashbang 0x36 among them) the base is `FRAME_RATE_INT·60·0.01·(200 − Drone+0xB9)`
+                // (the stun grenade 0x35 among them) the base is `FRAME_RATE_INT·60·0.01·(200 − Drone+0xB9)`
                 // = 36·(200−0) = 7200 ticks with the stats-default +0xB9 = 0 [M 0x14c600:90; the port's
                 // 07000005 snapshot evidence: the stats blob is all zero at run time].
                 self.stun_until = frame + 7200;
@@ -3962,13 +3966,14 @@ impl Drone {
     }
 
     /// `DroneWeap_ThrowGrenade` (0x179558): decrements `+0xBCE`, picks the grenade weapon (mode 0xD sniper → 1/3 chance
-    /// of stun 0x36, else frag 0x35), computes the throw direction from the right-hand bone (0x15) with a ±π/4 yaw lob
+    /// of the stun grenade 0x35, else 0x36 the smoke [M 0x1795a8-0x1795b4: `uVar4 = 0x35; if (Rand_Rand(3) == 0) 0x36`]),
+    /// computes the throw direction from the right-hand bone (0x15) with a ±π/4 yaw lob
     /// (dist < 10 → +π/4 lob; dist > 18 → −π/4 flat), and creates a `Grenade` projectile. The muzzle falls back to the
     /// drone's chest if the skeleton's bone 0x15 is not posed.
     fn throw_grenade(&mut self, d: &Data, rng: &mut Rng, owner: usize) -> Option<crate::grenade::Grenade> {
         let w = self.grenade_weapon;
         if self.grenade_count > 0 { self.grenade_count -= 1; }
-        // Mode 0xD (sniper): 1/3 chance of stun (0x36), else frag (0x35).
+        // Mode 0xD (sniper): 1/3 chance of the smoke 0x36, else the stun 0x35 [M 0x1795a8].
         let gw = if self.mode == 0xd && rng.rand(3) == 0 { 0x36 } else { w };
         if gw == 0 { return None; }
         let wd = d.weapons.records.get(gw as usize)?;
@@ -3988,22 +3993,25 @@ impl Drone {
         // The grenade's weapon type (`+0x02`) for the explosion's per-type behaviour.
         let weapon_type = u16::from_le_bytes([wd[2], wd[3]]);
         let radius = f32_at(0x08);
-        // The fuse is BU+0xFC: 210 ticks, 300 with +0x70 & 0x10000, 420 for the mine 0x37
+        // The fuse is BU+0xFC: 210 ticks, 300 with +0x70 & 0x10000, the mine 0x37 → 420 (7777.0 for a
+        // player owner — the port keeps 420, it has no detonator)
         // (`Bullet_init` 0x12c5a0:103,196-223). `weapon_data+0x1C` (5000) is the max-travelled range — a
         // SILENT state-4 death, not the fuse [M Bullet_update case 1 0x12e848]. fix-player3: the old
         // `f32_at(0x1c).max(210.0)` passed 5000, so guard grenades never fuse-exploded (they only died at rest).
         let range = if u32::from_le_bytes(wd[0x70..0x74].try_into().unwrap()) & 0x10000 != 0 { 300.0 } else { 210.0 };
+        let range = if gw == 0x37 { 420.0 } else { range };
         // The blast damage is `weapon_data+0x0C` [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` → Explode_Create's
         // f14 → EXPLODEINFO+0x28 → Explode_Propagate's amount (Explode_CollisionHandler 0x17cde0:13-15);
         // radius = f12/f13 = weapon_data+0x08]. The `addiu $t2, $zero, 0x64` (100) is the 10th argument,
         // an u8 `Explode_Create` never reads (its prologue reads only a0-a3/f12-f14/t3/stack — 0x17cbd0).
-        // fix-explosions: the old port hardcoded 100, which killed through the frag (record 0x35:
-        // radius 10, damage 0 [L]) and through the flashbang.
+        // fix-explosions2: the disc labels name the records — 0x34 'Fragmentation Grenade' = radius 8 /
+        // damage 100 (the real frag kill), 0x35 'Stun Grenade' = 10/0 (the flash branch), 0x36 'Smoke
+        // Grenade' = 0/0 (the occlude/re-arm branch) [L USATxt.dat + the records].
         let damage = f32_at(0x0c);
         Some(crate::grenade::Grenade {
             pos: origin, velocity: [dir[0] * speed, dir[1] * speed, dir[2] * speed], speed,
             travelled: 0.0, range, damage, radius, weapon_type, mesh: d.weapons.projectile_mesh(self.weapon as usize),
-            owner, state: 0, bounces: 0,
+            owner, state: 0, bounces: 0, smoke_popped: false,
         })
     }
 
@@ -6045,9 +6053,14 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // 0x17cbd0 (radius = weapon+0x08, damage = weapon+0x0C — see `explode.rs`), the effect script 0x6000052
         // plays via the one-shot player and ITS Sound(0x3E) is the blast sound [D script stream 36]; the old
         // port's 0x4A7 was `Bullet_CollisionHandler`'s rest-impact sound of weapons 0x3B/0x45, not the blast.
-        // The flashbang (0x36, radius 0) takes `Bullet_DoTrails` 0x12d890's `+0x70 & 0x2000` death branch
-        // instead: gas, Camera_Shake(2.0), Sound 0x16, Light_Create(10, 5, white) and the flash/stun
-        // broadcast — NO damage anywhere on that path [M 0x12df58-0x12e130].
+        // fix-explosions2: the death branch routes on the weapon FLAGS, not the id — `Bullet_DoTrails`
+        // 0x12d890's timer death [asm 0x12dd2c-0x12dd68]: `+0x70 & 0x2000` → the FLASH branch (only the stun
+        // grenade 0x35 among the grenades carries the bit [L sweep of all 115 records: 0x2280; 0x59/0x5b are
+        // the non-grenade carriers]); else `+0x70 & 0x20000` → the SMOKE branch (0x36 [L 0x20280]: first
+        // expiry `Occlude_Create` + Sound 0x14 + the fuse re-arms to 1200 ticks [M 0x12e114-0x12e1bc], second
+        // expiry dies); else → `Explode_Create(wd+8, wd+8, wd+0xC)` [M 0x12e1c0] — the frag 0x34 (8/100),
+        // the mine 0x37 (8/100), the satchel family 0x3b-0x40 (8/2000). fix-explosions routed the flash on
+        // id 0x36 — the disc labels name 0x35 'Stun Grenade' and 0x36 'Smoke Grenade' [L USATxt.dat].
         self.explosions.clear();
         for g in &mut self.grenades {
             while let Some(ev) = g.update(d.world, &mut self.rng) {
@@ -6057,37 +6070,57 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         break;
                     }
                     crate::grenade::GrenadeEvent::Explode { pos, radius, damage, owner, weapon_type } => {
-                        // The flashbang: `Bullet_DoTrails` 0x12d890's death branch (`weapon+0x70 & 0x2000`,
-                        // record 0x36 [L]) — `Gas_Init(0.5, 1.68, …, fx 0x200001f, 0xB)`, `Camera_Shake(2.0)`,
-                        // `Sound_Play3D(0x16)`, `Light_Create(10.0, 5.0, 0xff,0xff,0xff, 0, 10, 1, 0)`
-                        // [M 0x12df58-0x12df8c], then a 30-unit sphere from the blast [M 0x12dfb0]: Bond's
-                        // head whitens out (dist 5→90, × the facing factor, ×0.5 without LOS
-                        // → `Player_SetFlashBang` [M 0x12e014-0x12e0b8]) and every live drone within 20
-                        // gets msg 0x18 → `HandleImpact` case 0x18 → StunGrenadeImpact 0x4D [M 0x12e0c0,
-                        // 0x1469b8 case 0x18]. NO HitDamage on this path: the Propagate sweep is radius 0,
-                        // a no-op [M 0x17c550]. The port broadcasts directly (no vicinity-message system).
-                        if weapon_type == 0x36 {
+                        let flags70 = d.weapons.records.get(weapon_type as usize)
+                            .map(|r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()))
+                            .unwrap_or(0);
+                        if flags70 & 0x2000 != 0 {
+                        // The FLASH branch (the stun grenade 0x35): `Bullet_DoTrails` 0x12d890 [M
+                        // 0x12df58-0x12e130] — `Gas_Init(0.5, 1.68, …, fx 0x200001f, 0xB)`, `Camera_Shake(2.0)`,
+                        // `Sound_Play3D(0x16)`, `Light_Create(10.0, 5.0, 0xff,0xff,0xff, 0, 10, 1, 0)`, then a
+                        // 30-unit sphere from the blast [M 0x12dfb0]: Bond's head whitens out (dist 5→90, × the
+                        // facing factor, ×0.5 without LOS → `Player_SetFlashBang` [M 0x12e014-0x12e0b8]) and the
+                        // drones within 20 get msg 0x18 → `HandleImpact` case 0x18 → StunGrenadeImpact 0x4D [M
+                        // 0x12e0c0, 0x1469b8 case 0x18]. NO HitDamage and NO 0x6000052 script anywhere on this
+                        // path (no `Explode_Create` call — the white light and the gas puff are the visuals).
+                        // The broadcast gate [M 0x12e094]: in SP (`MPSettings._388_4_ == 0`) only a PLAYER
+                        // thrower (obj+0xFF == 3) broadcasts — the port is SP-only, so owner == usize::MAX.
                             self.health.flashbang = 1.0;
                             if let Some(t) = d.sfx { let h = t.get(0x16); self.audio.play3d(h.id, pos, None); }
-                            self.audio.play3d(0x16, pos, None);
                             self.lights.create(10.0, 5.0, pos, [0xff, 0xff, 0xff], 0, 10, 1, 0, &mut self.rng);
                             self.gas.init(pos, 0.0, [0.0; 3], 0.5, 1.68, 0xb, [0x00, 0x80, 0x80, 0x80], 30.0);
                             self.shake = self.shake.max(2.0);
-                            for dr in self.list.iter_mut() {
-                                if !dr.present || dr.corpse || !dr.enabled { continue; }
-                                let dx = dr.pos[0] - pos[0]; let dy = dr.pos[1] - pos[1]; let dz = dr.pos[2] - pos[2];
-                                if dx * dx + dy * dy + dz * dz <= 400.0 {
-                                    // The player's own throw stuns from behind too: no facing check on the
-                                    // guard side in the game's broadcast [M Drone_MessageObjVicinity 0x12e0c0].
-                                    dr.hit_by_player |= owner == usize::MAX;
-                                    dr.stun_until = frame + 7200; // `DroneFunc_RecoverTime` [M 0x147188]
-                                    dr.set_state(state::STUN_GRENADE_IMPACT);
+                            if owner == usize::MAX {
+                                for dr in self.list.iter_mut() {
+                                    if !dr.present || dr.corpse || !dr.enabled { continue; }
+                                    let dx = dr.pos[0] - pos[0]; let dy = dr.pos[1] - pos[1]; let dz = dr.pos[2] - pos[2];
+                                    if dx * dx + dy * dy + dz * dz <= 400.0 {
+                                        dr.hit_by_player = true;
+                                        dr.stun_until = frame + 7200; // `DroneFunc_RecoverTime` [M 0x147188]
+                                        dr.set_state(state::STUN_GRENADE_IMPACT);
+                                    }
                                 }
                             }
-                        } else {
+                            break;
+                        }
+                        if flags70 & 0x20000 != 0 {
+                        // The SMOKE branch (0x36): first expiry — state back to 1, `BU+0xF6 = 1`, the fuse
+                        // re-arms to 1200 ticks (0x44960000; 3600 for the 0x69 family), `Occlude_Create(pos,
+                        // 1200, 1)` is the cloud and `Sound_Play3D(0x14)` pops it [M 0x12e114-0x12e1b4]; the
+                        // second expiry falls through to the death [M 0x12e118 `bnel +0xF6, 0 → 0x12e1fc`].
+                        // No damage, no whiteout, no script. The port has no occluder system — the cloud
+                        // visual is missing (live-check item); the pop and the re-arm are the Sim half.
+                            if !g.smoke_popped {
+                                g.smoke_popped = true;
+                                g.state = 1;
+                                g.range += 1200.0;
+                                if let Some(t) = d.sfx { let h = t.get(0x14); self.audio.play3d(h.id, pos, None); }
+                            }
+                            break;
+                        }
                         // `Explode_Propagate` 0x17c518 through `explode::propagate`: the full 12-case
                         // dispatch (drones msg 9, Bond `Player_Hurt`, breakables, destroyables; the
-                        // port has no copter/vehicle/MP/GT/sensor/monitor/sub lists yet).
+                        // port has no copter/vehicle/MP/GT/sensor/monitor/sub lists yet). The frag
+                        // 0x34 lands here with radius 8 / damage 100 [L record] — the real kill.
                         let drones: Vec<(usize, V3, f32)> = self.list.iter().enumerate()
                             .filter(|(_, x)| x.present && !x.corpse).map(|(i, x)| (i, x.pos, 0.4)).collect();
                         let hits = crate::explode::propagate(pos, radius, damage, owner,
@@ -6112,19 +6145,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                                 else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
                             }
                         }
-                        }
                         // The explosion visual: `Explode_Create` 0x17cbd0 Script_Loads the effect script
                         // (0x6000052 for every disc caller of the bullet path [M 0x12cd98]) at the blast,
-                        // aligned to it, scale = radius·0.06666667 [M 0x17cbd0:84-106] — 0 for the
-                        // flashbang (no fireball; the flash is the light above). The port plays it as a
+                        // aligned to it, scale = radius·0.06666667 [M 0x17cbd0:84-106]. The port plays it as a
                         // one-shot script player; its entity streams draw through the scene's
                         // script-entity attachments. Missing from the level's lib → the player no-ops.
                         // The blast sound itself rides the script's own Sound(0x3E) request [D].
                         let mut bm = [[0.0f32; 4]; 4];
                         bm[0][0] = 1.0; bm[1][1] = 1.0; bm[2][2] = 1.0; bm[3] = [pos[0], pos[1], pos[2], 1.0];
                         self.scripts.spawn_once_scaled(usize::MAX, 0x0600_0052, bm, radius * 0.0666_6667);
-                        // `Camera_Shake(pos, radius)` only from radius 0.5 [M 0x17cc28]; the flashbang's
-                        // DoTrails branch shakes a fixed 2.0 [M 0x12df6c].
+                        // `Camera_Shake(pos, radius)` only from radius 0.5 [M 0x17cc28].
                         if radius >= 0.5 { self.shake = self.shake.max(radius); }
                         self.explosions.push((pos, radius, damage, owner, weapon_type));
                         break;
