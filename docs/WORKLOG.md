@@ -7349,3 +7349,17 @@ alpha-blended, no depth write), the `ammo_data+4` casing mesh instances at the
 integrated casing pose, and the `EffectInfo+0x74` debris meshes at particle
 pose/scale/alpha. Write docs/atlas/effect.md (owed by fix-impacts) and update
 GAPS G-041/G-025. Started 12:34 UTC, sandbox expires ~14:33 UTC.
+
+**fix-impacts-render outcome (13:47 UTC)**: the impact effects draw the game's own meshes — the
+flat-colour `effect_quads` placeholder is removed; `Scene::build` instances every distinct
+`EffectInfo+4` decal / `ammo_data+4` casing / `EffectInfo+0x74` debris hash the level archive
+resolves as Effect-layer pools (200/32/128 slots, one `Attachment::effect` (kind, slot, mesh) per
+slot) and `frame_state` poses each slot per frame: decals via `Mat_Align2Dir` 0x1df2a8's
+construction at the stored `hit + normal·0.01` pose (no scale — the size lives in the mesh), casings
+at the integrated euler-spin pose, debris scaled by `obj+0xe8` with age = 255 − alpha (the exact
+tick count — no nf-game change). Leaf GS blend/atest/zwrite ride the disc glists. Tests:
+impacts_live 4/4 (decal slot matrix at the decal pose with the +Z row = surface normal; the P2K
+casing slot carries ammo_data[1] = 0x0200043f and tracks the pose; debris pool + pose/scale; sky
+shot none; bit-for-bit rerun) — shown failing first against the scaffold. Full suite green except
+the 3 allowed disc_golden fails. docs/atlas/effect.md written (the owed entry); GAPS G-041/G-025
+updated. No GPU here — render spots + live checks in docs/reports/fix-impacts-render.md.
