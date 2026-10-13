@@ -254,11 +254,20 @@ pub struct Renderer {
     /// (0x1e6ba0) frustum-tests each cel's bbox per viewer; fix-render3 skips a static World draw
     /// whose cel fails the same test. `NF_NOCELCULL` disables.
     cel_boxes: Vec<([f32; 3], [f32; 3])>,
-    /// The runtime cel graph + portals (fix-perf-level): `portal_visible_cels` runs per frame from the
-    /// eye's room cel, and the walk's per-full-cel set gates static World draws (the `View_AddCels`
-    /// GfxList set — only portal-visited cels are added). Graphs without portals fall back to the
-    /// fix-render3 box test.
+    /// The runtime cel graph + portals (fix-perf-level): the walk's per-full-cel set gates static
+    /// World draws (the `View_AddCels` GfxList set — only portal-visited cels are added). Graphs
+    /// without portals fall back to the fix-render3 box test.
     cel_graph: crate::scene::CelGraph,
+    /// The viewer's persistent cel (`viewer+4`, `Camera_CheckLocation` 0x1bae90) — carried across
+    /// frames, updated by the move raycast / bbox keep / `build_FindCel` chain. fix-portal.
+    pub viewer_cel: crate::scene::ViewerCel,
+    /// This frame's room-level visibility mask, computed once per frame by `cel_visibility` (the
+    /// skin palette's object cull and `render`'s World cull share it — one walk per frame).
+    pub last_vis: Option<Vec<bool>>,
+    /// This frame's CELL-level game mask (`View_AddCels` 0x1e6ba0: the VisCelList plus the `+0x18`
+    /// chain pass) — `None` when the walk cannot run (the room box fallback gates everything).
+    /// fix-portal2.
+    pub last_cell_vis: Option<Vec<bool>>,
 }
 
 impl Renderer {
@@ -462,26 +471,58 @@ impl Renderer {
         let order_cap = draws.len();
         let cel_boxes = scene.cels.iter().map(|c| (c.min, c.max)).collect();
         let cel_graph = scene.cel_graph.clone();
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph }
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None }
     }
 
-    /// `build_FindCel` (0x1c8cb0) over the room cels' boxes for the walk's start cell: the inclusive
-    /// bbox test with the port's smallest-volume tie-break (the same rule `scene::find_cel` uses).
-    fn eye_room_cel(boxes: &[([f32; 3], [f32; 3])], eye: [f32; 3]) -> Option<usize> {
-        let mut best = None;
-        let mut vol = f32::INFINITY;
-        for (i, &(min, max)) in boxes.iter().enumerate() {
-            let inside = min[0] <= eye[0] && eye[0] <= max[0] && min[1] <= eye[1] && eye[1] <= max[1] && min[2] <= eye[2] && eye[2] <= max[2];
-            if !inside { continue; }
-            let v = (max[0] - min[0]) * (max[1] - min[1]) * (max[2] - min[2]);
-            if v < vol { vol = v; best = Some(i); }
-        }
-        best
+    /// The game's depth-0 pyramid for the walk [M `Vision_Calculate_View_Fustrum` 0x1e7df8,
+    /// disassembled]: the four fov side planes through the eye (the Gribb-Hartmann extraction's
+    /// first four are the same half-spaces for this fov/aspect) plus the near plane through the
+    /// 200-unit quad corners (c1,c3,c2) whose normal points BACK at the eye — it keeps
+    /// `fw·p <= fw·eye + 200` (beyond 200 units is fog; the game clips those portal polygons away).
+    /// `fw` = the GH near plane's normalized normal (it points forward, away from the eye).
+    fn depth0_game(planes: &[[f32; 4]; 6], eye: [f32; 3]) -> [[f32; 4]; 5] {
+        let fw = [planes[4][0], planes[4][1], planes[4][2]];
+        let fe = fw[0] * eye[0] + fw[1] * eye[1] + fw[2] * eye[2];
+        [planes[0], planes[1], planes[2], planes[3], [-fw[0], -fw[1], -fw[2], fe + 200.0]]
+    }
+
+    /// This frame's room-level visibility mask — one walk per frame, shared by the skin palette's
+    /// object cull (`View_AddObjects` 0x1e62d8 draws only the visible cels' objects) and `render`'s
+    /// World cull. The eye's cel comes from the persistent `Camera_CheckLocation` (0x1bae90) state
+    /// via `scene::eye_cell`; the walk from that cell is `Vision_Portal_Recurse` 0x1e86e8 with the
+    /// game's depth-0 planes. `world` (the sim's scoped collision) feeds `build_FindCel` 0x1c8cb0's
+    /// collision tie-break when the placement re-finds. `None` (the walk cannot run: no portals /
+    /// no cel) = the fix-render3 box test everywhere, and `NF_NOPORTAL` forces it (the walk is the
+    /// default again, fix-portal).
+    pub fn cel_visibility(&mut self, eye: [f32; 3], view_proj: [[f32; 4]; 4], world: Option<&nf_game::world::CollisionWorld>) -> Option<Vec<bool>> {
+        let planes = extract_frustum(view_proj);
+        let portal_enabled = std::env::var_os("NF_NOPORTAL").is_none();
+        // The cell-level game mask (`View_AddCels` 0x1e6ba0: the VisCelList plus the +0x18 chain
+        // pass under `Vision_InView`) gates the World draws; the strict VisCelList mask gates the
+        // rooms/objects (`View_DrawObjList` 0x1e69a0 walks the VisCelList cels' object lists —
+        // chain nodes never enter the VisCelList). fix-portal2.
+        let (cell_vis, strict_vis) = if portal_enabled && !self.cel_graph.portals.is_empty() {
+            let depth0 = Self::depth0_game(&planes, eye);
+            let sides = [planes[0], planes[1], planes[2], planes[3]];
+            match crate::scene::eye_cell(&self.cel_graph, &mut self.viewer_cel, eye, world) {
+                Some(cell) => (
+                    crate::scene::portal_visible_cels_game_from_cell(&self.cel_graph, cell, eye, &depth0, &sides),
+                    crate::scene::portal_visible_cels_from_cell(&self.cel_graph, cell, eye, &depth0),
+                ),
+                None => (None, None),
+            }
+        } else { (None, None) };
+        self.last_cell_vis = cell_vis;
+        let vis = strict_vis.map(|cell_vis| self.cel_graph.room_to_cell.iter().map(|m| m.map(|c| cell_vis[c]).unwrap_or(true)).collect::<Vec<bool>>());
+        let vis = vis.unwrap_or_else(|| self.cel_boxes.iter().map(|&(min, max)| !box_outside(&planes, min, max)).collect());
+        self.last_vis = Some(vis.clone());
+        Some(vis)
     }
 
     /// G-043: upload one frame's skinning palette and colour table (replaces re-uploading every posed vertex).
-    pub fn update_skin(&self, queue: &wgpu::Queue, scene: &Scene, choice: Option<usize>, time: f32, opts: crate::scene::ViewOpts) {
-        let (pal, cols) = scene.skin_palette(&self.skin_layout, choice, time, opts);
+    /// `vis`: the frame's room visibility mask (see `Scene::skin_palette`).
+    pub fn update_skin(&self, queue: &wgpu::Queue, scene: &Scene, choice: Option<usize>, time: f32, opts: crate::scene::ViewOpts, vis: Option<&[bool]>) {
+        let (pal, cols) = scene.skin_palette(&self.skin_layout, choice, time, opts, vis);
         if !pal.is_empty() { queue.write_buffer(&self.pal_buf, 0, bytemuck::cast_slice(&pal)); }
         queue.write_buffer(&self.col_buf, 0, bytemuck::cast_slice(&cols));
     }
@@ -586,8 +627,10 @@ impl Renderer {
             // unmapped) the build-time parse-rank fallback (`Material::chain`) stands in. Ordering
             // only — the cull below is untouched (NF_PORTAL still gates the cull walk).
             let chain_ord: Option<Vec<Option<u32>>> = if !self.cel_graph.portals.is_empty() {
-                let depth0: [[f32; 4]; 5] = [planes[0], planes[1], planes[2], planes[3], planes[4]];
-                Self::eye_room_cel(&self.cel_boxes, eye).and_then(|room| crate::scene::portal_cel_chain(&self.cel_graph, room, eye, &depth0))
+                // The same resolved viewer cel + the game's depth-0 planes the walk used (the
+                // chain order is the VisCelList the game threaded from ITS walk [M 0x1e86e8]).
+                let depth0 = Self::depth0_game(&planes, eye);
+                self.viewer_cel.cell.and_then(|cell| crate::scene::portal_cel_chain_from_cell(&self.cel_graph, cell, eye, &depth0))
                     .map(|chain| {
                         let mut ord: Vec<Option<u32>> = vec![None; self.cel_graph.cells.len()];
                         for (k, c) in chain.into_iter().enumerate() { if c < ord.len() { ord[c] = Some(k as u32); } }
@@ -640,20 +683,21 @@ impl Renderer {
             // eye's room cel, with the depth-0 pyramid = the frustum's four side planes + near (the
             // game's five `Vision_Calculate_View_Fustrum` 0x1e7df8 planes). Cels the walk cannot run
             // for (no graph / no portals / eye outside every cel) keep the fix-render3 box test.
+            // fix-portal: the walk is the default again (the collapse is fixed: the viewer cel is
+            // `Camera_CheckLocation` 0x1bae90's persistent state and the depth-0 pyramid is the
+            // game's [M 0x1e7df8]); `NF_NOPORTAL` disables it. The mask is computed once per frame
+            // by `cel_visibility` (the skin palette shares it) — reuse it when fresh.
             let cel_visible: Vec<bool> = if cel_cull {
-                let depth0: [[f32; 4]; 5] = [planes[0], planes[1], planes[2], planes[3], planes[4]];
-                let eye_room = Self::eye_room_cel(&self.cel_boxes, eye);
-                // Opt-in (NF_PORTAL=1): on 07000006, between the truck and the courtyard, the walk from the eye's cel
-                // hid the whole level (user screenshot), and it gave no frame-rate gain in play.
-                match eye_room.filter(|_| !self.cel_graph.portals.is_empty() && std::env::var_os("NF_PORTAL").is_some()) {
-                    Some(room) => match crate::scene::portal_visible_cels(&self.cel_graph, room, eye, &depth0) {
-                        Some(cell_vis) => self.cel_graph.room_to_cell.iter()
-                            .map(|m| m.map(|c| cell_vis[c]).unwrap_or(true)).collect(),
-                        None => self.cel_boxes.iter().map(|&(min, max)| !box_outside(&planes, min, max)).collect(),
-                    },
-                    None => self.cel_boxes.iter().map(|&(min, max)| !box_outside(&planes, min, max)).collect(),
-                }
+                // The lazy fallback never fires in the live paths (cel_visibility runs first — lib.rs 1496 / shot());
+                // it has no `world` here, so the FindCel tie-break degrades to the approximation.
+                self.last_vis.clone().unwrap_or_else(|| self.cel_visibility(eye, view_proj, None).unwrap())
             } else { Vec::new() };
+            // fix-portal2: the cell-level game mask. A cel placement's glist draws when ITS cel is
+            // visible (`View_AddCels` 0x1e6ba0 — the VisCelList cel itself or a `+0x18` chain node
+            // under `Vision_InView`); `Material::node` = the placement's own cell for every
+            // creates_cel placement (u32::MAX = the distance-keyed objects, gated by their
+            // containing room as before).
+            let cell_visible: Option<&Vec<bool>> = self.last_cell_vis.as_ref();
             let mut cel_culled = 0usize;
             // Skip redundant `set_pipeline` calls (A-11e). The group-0 bind now carries a per-draw
             // dynamic offset (fix-lighting: each draw's own light pair), so it is issued every draw.
@@ -669,9 +713,15 @@ impl Renderer {
                     if trace { culled += 1; }
                     continue;
                 }
-                if cel_cull && dc.layer == Layer::World && dc.cel.is_some_and(|c| !cel_visible[c as usize]) {
-                    if trace { cel_culled += 1; }
-                    continue;
+                if cel_cull && dc.layer == Layer::World {
+                    let hidden = match (cell_visible, dc.node) {
+                        (Some(cv), n) if n != u32::MAX => !cv[n as usize],
+                        _ => dc.cel.is_some_and(|c| !cel_visible[c as usize]),
+                    };
+                    if hidden {
+                        if trace { cel_culled += 1; }
+                        continue;
+                    }
                 }
                 if trace { submitted += 1; }
                 let (layer, first, count) = (dc.layer, dc.first, dc.count);

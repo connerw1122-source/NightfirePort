@@ -7217,6 +7217,43 @@ by G-017/G-024 with the repro. Suite: escort walk green on the final state + dif
 the full-suite re-run timed out (sandbox) after the revert — sim paths are otherwise byte-identical to
 master's. Shared-file hooks: lib.rs (pub mod ps2math), nf-extract main.rs (Player.capsule compile fix;
 pose-check level names take the FILES.BIN .bin names). Report: docs/reports/verify-bitexact.md.
+
+## fix-portal (s/fix-portal) — 2026-10-13
+Task: fix the portal visibility walk (`scene::portal_visible_cels`, opt-in NF_PORTAL=1) that
+hid the whole level on 07000006 (truck→courtyard), then make it the default again (NF_NOPORTAL
+to disable). Reproduce headless first (eye cel / visited cels / visible draw count per tick along
+the walk), then port the game's rules: eye-cel choice (build_FindCel raycast vs smallest-volume
+tie-break), outdoor cels without portals, depth-0 plane convention, the 0x40 VisCelCount cap,
+door-portal links. Also port the game's per-cel object culling (View_DrawObjList 0x1e69a0 walks
+the visible cels' object lists) so characters in hidden rooms are skipped — second playtest
+symptom on 07000007 (--bond 61.11,44.12,-52.58,-2.541,-0.010): two partygoers drawn in the snow
+outside. Tests walk 07000005/06/07 routes and pin the visible draw counts. Files:
+crates/nf-view/src/{scene,gpu}.rs, crates/nf-formats/src/level.rs. Started 11:10 UTC, sandbox
+expires ~13:06 UTC.
+
+**fix-portal outcome (12:35 UTC)**: the portal walk is the default again (NF_NOPORTAL disables).
+Four game rules ported, each cited: (1) the eye's cel is `Camera_CheckLocation` (0x1bae90)'s
+persistent `viewer+4` state — `Cel_ObjectLeftCel` (0x1e0d58) relinks through the crossed portal,
+`build_point_in_bounding_box` (0x1c9500) keeps the cel, `build_FindCel` (0x1c8cb0) searches fresh
+with the vertical-raycast tie-break (bbox-face approximation, no per-cel collision in the graph),
+and a FindCel miss KEEPS the previous cel (first-ever miss → the world's first cel) — the port
+re-picked smallest-volume from scratch every frame; (2) the walk's depth-0 near plane keeps
+`fw·p ≤ fw·eye + 200` [M 0x1e7df8 disassembled: the near plane (c1,c3,c2) normal points BACK at
+the eye — beyond 200 units is fog], replacing the Gribb-Hartmann near; (3) the 0x40 VisCelCount
+insert cap [M 0x1e82e0/0x1e86e8]; (4) the object half of the cull [M View_DrawObjList 0x1e69a0 /
+View_AddObjects 0x1e62d8]: posed objects (characters, doors, pickups, searchlights) whose room cel
+the walk hides collapse to FAR in the skin palette — the user's two partygoers standing in the
+snow on 07000007. The cel flags word is the DERIVED 0x804c023/0x804c047 [M parseentity_fixup_entity
+0x1d00c0] — the raw placement word 0xc047 carries no room bit, and CelNode.flags now records it.
+NF_ISO tests (crates/nf-view/tests/fix_portal_live.rs, 6 green): the 07000006 truck→courtyard walk
+pins min 104 World draws + the viewer cel following 29→37 (was the collapse route); the castle-door
+crossing; the ballroom hidden room 0-draws-on/543-off + its 9 partygoers collapsed-on/standing-off;
+and the 07000007 start view submits **exactly 177 draws — the game-measured number** from
+fix-perf-level's master measurement. Suite: nf-game/nf-formats/nf-audio/nf-view green except the 3
+allowed slim-ISO golden tests. Shared-file hooks: gpu.rs (cel_visibility/depth0_game/last_vis),
+lib.rs (the frame loop computes one visibility per frame for the palette + render), scene.rs
+(ViewerCel/eye_cell/portal_move_dest/find_cell_raycast, CelNode.flags, the 0x40 cap, skin_palette's
+vis param), gpu_skin_live.rs (the skin_palette call sites). Report: docs/reports/fix-portal.md.
 ## fix-explosions (s/fix-explosions) — 2026-10-13
 Task: port Explode_Create and the explosion entity (lifetime, visual script 0x6000052,
 camera shake, sound, damage falloff through Explode_Propagate's 12 per-type cases),
@@ -7571,6 +7608,32 @@ STILL RED (2): fix_mission_live::the_07000001_exit_works_end_to_end (Mayhew stal
 dig) and walkreal_0700000c_live (ch 0x1b never fires, fails fast). The full 4-crate suite did not
 fit the window; run it first next session. Everything else: see the report.
 ---
+Task: fix-portal2
+Agent: fix-portal2 worker
+Branch: s/fix-portal2 (from s/fix-portal a894d7c, master 8142a7f merged; same commit pushed as s/portal2 per the task text)
+
+Work Log:
+- Sandbox kept from the earlier sessions (repo, work/, onfoot ISO, nf-queue all present); token URL refreshed, origin fetched.
+- Branch s/fix-portal2 created from origin/s/fix-portal (a894d7c), origin/master merged (only docs/WORKLOG.md conflicted; both sides kept). Pushed.
+
+Stage Summary:
+- Starting fix-portal2: land fix-portal without the wall holes — reproduce the 07000006 courtyard hole (walls' cels dropped by the walk) headlessly, find the game rule that keeps them, fix, keep the 07000007 window case only if provable from the game.
+
+---
+Task: fix-portal2
+Agent: fix-portal2 worker
+Branch: s/fix-portal2 (from s/fix-portal a894d7c + master 8142a7f; same commits pushed as s/portal2)
+
+Work Log:
+- Root-caused the holes: View_AddCels (0x1e6ba0) has a second pass the port never had — for every VisCelList cel it also frustum-tests and draws the cel's +0x18 chain nodes with Vision_InView (0x1e89e0: the FOUR side planes only, n·c + d·r + r >= 0 — no near plane: the game's fog-range far view), skipping 0x8018-class nodes while the viewer's cel is 0xc023-class.
+- Chain structure measured from ee_start_05.bin: 2606 nodes/137 cels, node classes only 0x8019/0x8008019 (rooms never ride chains), per-owner counts 0..58 with resets; builder not recoverable this session (no writer in decomp or disasm of 0x1d1998 — dropped store).
+- Ported: CelGraph.chains (per-map block model, nodes 0x8018/0x8019, owner cap 0x40 [S]), CelNode.sphere (placement-transformed — the raw bbox put generic spheres at the origin), vision_in_view + portal_visible_cels_game_from_cell, gpu cell-level gate (Material::node = the placement's own cell for creates_cel placements; rooms/objects keep the strict VisCelList mask so the partygoers stay collapsed).
+- Tests (fix_portal2_live.rs, green): route rescue > 0 with structural pins; 07000007 start view 180 draws vs the game's 177; hidden rooms stay game-hidden.
+- nf-view suite green until the sandbox window cut it mid levels_sweep_live; full 4-crate suite did not complete — flagged in the report.
+
+Stage Summary:
+- The 07000006 courtyard masonry and the far-view rule now come from the game's chain pass, not the walk; the 07000007 window stays hidden on game evidence (rooms are never chain nodes). Render spots + live checks in docs/reports/fix-portal2.md.
+---
 Task ID: 053b
 Agent: fix-ai-traces2 (worker)
 Task: fix-ai-traces2 (branch s/fix-ai-traces2) — land fix-ai-traces' PlayScript work on master green
@@ -7711,6 +7774,42 @@ Stage Summary:
 - (in progress)
 
 ---
+Task: fix-portal3
+Agent: fix-portal3 worker
+Branch: s/fix-portal3 (from s/fix-portal2 42ba472, master a5bff8b merged; same commit pushed as s/portal3 per the task text)
+
+Work Log:
+- Sandbox kept from earlier sessions (repo, work/, onfoot ISO, nf-queue all present); token URL refreshed, origin fetched.
+- Branch s/fix-portal3 created from origin/s/fix-portal2 (42ba472), origin/master merged (only docs/WORKLOG.md conflicted; both sides kept). Pushed.
+
+Stage Summary:
+- Starting fix-portal3: the 07000006 courtyard holes persist at the eye-cel state — reproduce headlessly at the exact --bond spot, find what Camera_CheckLocation 0x1bae90 does after a placement jump (FindCel vs stale), make the port + dev teleport + --bond follow the game's placement, walk the user's route there, pin the wall cels with a failing-first test.
+
+**fix-portal3 outcome (17:00 UTC)**: the failing-spot divergence was the `build_FindCel`
+(0x1c8cb0) tie-break, not the carried state: the game breaks candidate ties with per-cel
+COLLISION rays (up 256, down min(up-hit,len), nearest hit wins, no hits → the first candidate)
+and the port's bbox-face approximation picked the upper-region cel 21 at the failing eye where
+the game's raycast picks the courtyard cel 33 (the room records agree). Ported faithfully
+(`scene::find_cell_raycast` + `eye_cell` now take the sim's scoped `CollisionWorld` —
+`segment_hit_scoped(Some(cell))` stands in for `Collide_RayIntersect`'s per-cel list;
+`gpu::cel_visibility`/lib.rs thread it; the world-less callers keep the approximation), and the
+game's own placement rule landed: the dev teleport (RestoreSpot) and the free-cam→Bond placement
+clear the viewer cel the way `Camera_Enable` 0x1b9920 (with a matrix) / `Player_Init` 0x1910f8 /
+`Camera_Reset` 0x1b9af0 clear viewer+4 (the `--bond --shot` path resolves from a default state by
+construction). [L] evidence banked for the next task: the runtime portal-node sides are EXACTLY
+the port's model (FORWARD-corner node in celB's list 21/21 pairs, REVERSED in celA's, active
+(flags&2)/(flags&1), from work/ee_start_05.bin = 07000005's snapshot walked end-to-end) — and the
+game's walk frustum is fovY 60° [M 0x1baf70/0x1bb0f8] with a 4:3/1.618 aspect, so the port's 16:9
+frustum clips LESS than the game. Honest residue: from the game-faithful starts the walk+chain
+pass still hides wall cels 20/22/38/5/13/23 at the exact placed camera (19 joins only at level
+pitch from a fresh 33) — every recoverable rule says the port now matches the game, and rooms
+never ride chains [L], so whether the real game draws those walls at that placed camera is a live
+question (gdbwatch VisCelList 0x34b3b0 at the spot — listed in the report). Tests: the two pins
+green (the tie-break resolution == the room-based cel; the route never collapses, min 7 game
+cells), fix_portal_live 6/6, fix_portal2_live 2/2, lib 8/8; the wall-cel pin is #[ignore]d
+live-gated. The full four-crate suite did NOT fit the sandbox window (background jobs are killed
+between tool calls; the foreground windows ran the nf-view suites above) — re-run before merge.
+Report: docs/reports/fix-portal3.md.
 Task: walkreal-01-cover
 Agent: walkreal-01-cover worker
 Branch: s/walkreal-01-cover (from origin/master)
@@ -7966,6 +8065,54 @@ Work Log:
   CallAnim(0x1e) confirm, the case-143 solidity).
 
 ---
+---
+Task: fix-portal4
+Agent: fix-portal4 worker
+Branch: s/fix-portal4 (from s/fix-portal3 377873e, origin/master ce88d6f merged)
+
+Work Log:
+- Sandbox kept (repo, work/, onfoot ISO, nf-queue present); token refreshed, origin fetched.
+- s/fix-portal4 = origin/s/fix-portal3 (377873e) + origin/master (ce88d6f); only docs/WORKLOG.md
+  conflicted (fix-portal3's entry vs master's four new entries) — both sides kept append-only.
+  Pushed as the first checkpoint.
+
+Stage Summary:
+- Starting fix-portal4: make the port's visible room set at the 07000006 courtyard spot match the
+  live ground truth (VisCelCount 2: eye cel 33 + room 0x0179fb30 at depth 1, its 40-node +0x18
+  chain) so wall cels 20/22/38/5/13/23 draw; full suite started in the background first thing.
+
+---
+Task: fix-portal4
+Agent: fix-portal4 worker
+Branch: s/fix-portal4
+
+Work Log:
+- Chain-builder model REFUTED and replaced [L]: walked ee_start_05.bin + ee_snapshot.bin world cel
+  lists (+0x14) and every cel's +0x18 chain (head cel+0x18, next node+0x18 [M 0x1e6ba0]). Both
+  snapshots: 137 world cels, 8 ROOM owners, 113 generic members, 0 members outside the owner's
+  world bbox (record +0x40 min vec4 / +0x50 max vec4), 65/65 multi-bbox members hung by the
+  build_FindCel collision tie-break (0x1c8cb0), no orphan 0x8019 cels. The old per-map-block
+  parse-order model (0x40 cap) put far-away map generics on the 06 big room; the live dump [L
+  ground-truth doc] holds 40 spatially-local nodes. build_chains now hangs each generic on the
+  room find_cell_raycast picks for its sphere centre (prepend = reverse parse order, the live
+  dump order). At the courtyard spot: eye 33, walk [33,21] (the live VisCelCount 2), 33's chain
+  empty, 21's chain = the live 40 (12/12 named + 28 railings) + 9 extras whose FindCel tie-break
+  diverges (the port's collision-cell assignment vs the game's per-cel lists) — pinned in
+  fix_portal4_live (shown failing pre-fix: the old model's cell-33 chain was non-empty).
+- The wall-draw lead decoded [M 0x1e6df0 View_CaptureScene -> View_AddForcedObjects 0x1e5fb8]:
+  after View_AddCels, EVERY level object with flag 0x8000, +0xd8 model, not 0x10-hidden, passing
+  Vision_InView draws with a distance key (object_display_mask = 1 << viewer+0x28&0x1f gates the
+  +0xf8 channel; class byte +0xff == 2 additionally needs its Collide_StraddleCels cels to hit
+  the drawn set). The wall geometry sits under the wall ROOM placements (port nodes 13/20/22/38:
+  263 wall-region mats) — the game draws them through THIS path with VisCelCount=2, not through
+  the portal walk. Not landed: needs the object class byte (+0xff) evidence to keep the 07 window
+  room hidden; the render spots list in the report covers the verification.
+
+Stage Summary:
+- Chains now match the live ground truth at the 06 courtyard and the 05 snapshot census; the wall
+  cels still hide — the draw goes through View_AddForcedObjects (0x1e5fb8), the next session's
+  implementable rule. Portal suites green (fix_portal_live 6/6, fix_portal2_live 2/2, portal3
+  pins, fix_portal4 pin); the full four-crate suite could not fit the sandbox window.
 Task: fix-menus2 (started)
 Agent: fix-menus2 worker
 Branch: s/fix-menus2
@@ -8152,6 +8299,62 @@ Stage Summary:
   Mission_Update move), scene.rs (the drain/freeze order, the head-only tick, the SFX-at-open),
   hud.rs (the centred objective-banner rows) — all additive, listed in the report.
 
+---
+Task: fix-portal5
+Agent: fix-portal5 worker
+Branch: s/fix-portal5 (from origin/s/fix-portal4 02c0786, origin/master aba19b0 merged)
+
+Work Log:
+- Sandbox kept (repo, work/, onfoot ISO, nf-queue all present); token refreshed, origin fetched.
+  Branch-name note: the task header/rules say `s/fix-portal5` (twice), the tail says `s/portal5`;
+  no branch of either name existed on origin — created `s/fix-portal5` from origin/s/fix-portal4
+  and merged origin/master (only docs/WORKLOG.md conflicted; both sides kept append-only).
+  Pushed as the first checkpoint.
+
+Stage Summary:
+- Starting fix-portal5: the courtyard wall geometry must draw with the walk on and visible rooms
+  {33, 21} — find how the game assigns a world mesh/glist to a cel (static map cel placement ->
+  glist, hashtable_hashcode_to_celglist, parseentity_fixup_entity 0x1d00c0) vs the port's
+  scene.rs attribution that parks wall materials under ROOM cells 20/22/38/13; settle the 9 extra
+  chain nodes on cell 21; pin with a failing-first test + render spots.
+
+---
+Task: fix-portal5
+Agent: fix-portal5 worker
+Branch: s/fix-portal5 (from origin/s/fix-portal4 02c0786, origin/master aba19b0 merged)
+
+Work Log:
+- Decoded the game's draw mechanism [M]: vision_generate_display_list 0x1e8848 threads the
+  depth-sorted VisCelList through cel+0x20; View_AddCels 0x1e6ba0 walks it (list-0 -90000+10k keys
+  for the visible cels' own glists, +/-dist^2 for the +0x18 chain nodes under Vision_InView);
+  View_AddObjects 0x1e62d8(cel, viewer) additionally walks each visible cel's OWN object list
+  (cel+0x8, filled by control_link_object_to_cel 0x1346b8/build_LinkToRoom 0x1c9680) and draws its
+  non-0x8000-glist members; View_AddForcedObjects 0x1e5fb8 complements it (0x8000 only).
+- [L] ee_start_05.bin glist census: all 137 runtime cels' glists match the port's parsed objects by
+  model header (local sphere/radius/bbox/flags at glist+0x10..0x44), 137/137; every runtime ROOM
+  cel's game model equals the port's room placement object — the cel->glist attribution matches the
+  game exactly; the divergence was in the port's node keys and the chain-owner rule.
+- Fix 1: Scene::build's own_cells now mirrors the walk's filters (rooms + retained-out classes
+  dropped; the cels_only 0x20/0xe2 extension appended). Pre-fix 379/765 non-room instances on
+  07000006 keyed materials under other placements' cells (wall-region generics under hidden ROOM
+  cells 13/20/22/38); post-fix 0/765.
+- Fix 2: build_chains' owner rule replaced by build_link_objects_to_rooms 0x1c9150 (radius gate +
+  bbox containment + the Collide_SphereIntersect 0x1ec940 closest-hit tie-break) via the new
+  world.closest_point_scoped (nf-game, minimal shared-file touch). find_cell_raycast stays for the
+  eye-cel picker.
+- The 9 chain(21) extras identified: the parked helicopter's statics (HeliPadLight 48 mats,
+  Helicopter 118, Cabin 38, Windows 3, the rear blocker) + 4 railing dots; their game-side owner is
+  the collision-assignment residue (live checks + report).
+- Pin: the_courtyard_walls_draw_with_the_walk_on — RED first (cell 40 keyed 4 foreign batches), then
+  GREEN (rooms {33,21} draw all their materials, chain(21) = live 40 + 9 counted extras, no wall
+  room leaks, the courtyard generics own their batches).
+- Report: docs/reports/fix-portal5.md. Render spots + live checks listed there.
+
+Stage Summary:
+- The courtyard walls draw from the visible rooms' own glists + chains, as the game does; the
+  port's node keys now match the game's per-placement glist identity. Left: the scoped collision
+  assignment (build_scoped's volume rule vs the game's per-cel link), the 9-extras owner live
+  check, the full-suite numbers and the render verification.
 **fix-menus3 outcome (18:20 UTC)**: the eight render-vs-PCSX2 gaps from the main agent's 2026-10-13
 comparison are closed on `s/fix-menus3`. Framing: the overlay draws everything through
 `Anchor::Centre` — the window's central 4:3 band, so the menus get the black side bars back (at a 4:3
@@ -8529,3 +8732,46 @@ Stage Summary:
   and the ammo-id remaps are new port behaviour with game citations.
 - Left: the auto-switch drain re-open (live checks 1-2 in the report), moving-platform landings,
   the drop push-out, the AR set's second pile, the +0x888 kind-5 field, the shop's Upgrades byte.
+
+---
+Task: fix-portal6
+Agent: fix-portal6 worker
+Branch: s/fix-portal6 (from origin/s/fix-portal5 073b055, origin/master 0cda458 merged)
+
+Work Log:
+- Sandbox kept (repo, work/, onfoot ISO, nf-queue, target/ all present); origin fetched.
+- Branch cut from s/fix-portal5, origin/master merged (WORKLOG conflict resolved keeping both
+  sides' appended entries; no code conflicts).
+
+Stage Summary:
+- Task open: keep the courtyard fix, bring back the 07 clock hall's props (grandfather clock +
+  both wall shields missing with the walk ON at 34.25,44.13,-70.71,1.549,-0.070; fine with
+  NF_NOPORTAL=1 and in the real game). Started.
+
+---
+Task: fix-portal6
+Agent: fix-portal6 worker
+Branch: s/fix-portal6 (from origin/s/fix-portal5 073b055, origin/master 0cda458 merged)
+
+Work Log:
+- Branch cut, master merged (WORKLOG conflict kept both sides), WORKLOG start pushed.
+- Probe on 07000007: the walk at the clock-hall spot visits [33, 29, 31] (Room_Corridor_I,
+  Room_junction_J_1, Room_Corridor_J_2); the clock (cell 50, OBJECT_GrandFatherClock1) rides room
+  29's chain and the hall shields ride room 33's — under BOTH the old find_cell_raycast and the
+  fix-portal5 0x1c9150 owner rules; ALL chain nodes of the visited rooms fail Vision_InView there.
+- Decoded Vision_InView 0x1e89e0 raw (c.lt.s f0,f12 + bc1t: reject iff n·c + d·r < r; the
+  decompile's `< -param_1` is a Ghidra polarity artifact) and the fustrum builder 0x1e7df8 +
+  Plane_PlaneEq 0x1df8d0; verified against ee_start_05.bin's glb_viewer[0] +0x70 quads
+  (|n|=1, n·eye+d=0, d=51..117 = -n·eye, the 4:3 tilt angles) [L]. The literal d·r form is
+  absurd in both polarities at gameplay spots (05 start: draw-everything; clock hall: the on-axis
+  clock the game draws gets rejected with d=-69.6). Shipped the common small-|d| limit
+  n·c + d + r >= 0 in scene.rs vision_in_view (one math line + evidence doc).
+- Pins RED first then green: the_clock_hall_props_draw_with_the_walk_on (clock cell 50 + shield
+  bodies 45/46 + swords 269/270 draw; beside-eye shields 43/48 stay culled),
+  the_07000006_second_spot_keeps_its_props (both in-frustum barrels draw); probes log-only.
+- fix_portal5_live 4/4, fix_portal2_live 2/2, fix_portal_live 6/6 re-run green this session.
+
+Stage Summary:
+- The 07 clock hall's clock + wall shields draw with the walk ON again; the courtyard, the window
+  and the 06 second spot hold. Open: the game's +0x70 planes mid-gameplay (PINE request in the
+  report), the 55 orphan generics on 07000007, the per-cel collision-assignment residue.
