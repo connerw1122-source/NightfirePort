@@ -100,6 +100,34 @@ pub struct LevelMap {
     /// (`Control_SetGList` at 0x12bbc4, arg a1 = tag[0] proven by the disassembly 0x12bbb8 `lw a1,0(s1)`).
     /// Absent block → empty (every lookup None).
     pub lod: Vec<i32>,
+    /// Ambient radiators (block 0x26; main map). `Light_SetAmbientRadiators` 0x1caeb8 creates one
+    /// permanent kind-0 light per entry (fix-lighting).
+    pub radiators: Vec<LightRadiator>,
+}
+
+/// One block-0x26 entry: 8 floats [x, y, z, radius², pad, r, g, b] with r/g/b 0-1
+/// [M `Light_SetAmbientRadiators` 0x1caeb8: the vec4 passes x/y/z + radius² (SQRT at create),
+/// the colour floats ×255 into the light's rgb bytes].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LightRadiator {
+    pub pos: [f32; 3],
+    pub radius: f32,
+    pub rgb: [f32; 3],
+}
+
+impl LightRadiator {
+    pub fn parse_block(payload: &[u8]) -> crate::buf::Result<Vec<LightRadiator>> {
+        let b = crate::buf::Buf(payload);
+        let n = b.u32(0)? as usize;
+        (0..n).map(|k| {
+            let o = 4 + 32 * k;
+            Ok(LightRadiator {
+                pos: [b.f32(o)?, b.f32(o + 4)?, b.f32(o + 8)?],
+                radius: b.f32(o + 12)?.sqrt(),
+                rgb: [b.f32(o + 20)?, b.f32(o + 24)?, b.f32(o + 28)?],
+            })
+        }).collect()
+    }
 }
 
 /// One object drawn somewhere: `(map, object)` indexes into `Level::maps`, and its row-vector world matrix.
@@ -181,6 +209,7 @@ impl Level {
             let mut path_data = Vec::new();
             let mut portals = Vec::new();
             let mut lod = Vec::new();
+            let mut radiators = Vec::new();
             for blk in &mf.blocks {
                 match blk.id {
                     0x2e => pending_coll = Some(crate::collision::Collision::parse(blk.payload(data))?),
@@ -203,10 +232,11 @@ impl Level {
                     // (`iVar3 = *piVar5`, stride `piVar5 += 2`) and writes `cel+0x40 = index·0x50 + pCelList`.
                     id::LOD => lod = blk.payload(data).chunks_exact(8)
                         .map(|c| i32::from_le_bytes(c[..4].try_into().unwrap())).collect(),
+                    0x26 => radiators = LightRadiator::parse_block(blk.payload(data))?,
                     _ => {}
                 }
             }
-            maps.push(LevelMap { entry, kind: e.kind, name: e.name.clone(), textures, objects, placements, ai_network, sounds, path_data, portals, lod });
+            maps.push(LevelMap { entry, kind: e.kind, name: e.name.clone(), textures, objects, placements, ai_network, sounds, path_data, portals, lod, radiators });
         }
         let mut by_hash = HashMap::new();
         for (m, map) in maps.iter().enumerate() {

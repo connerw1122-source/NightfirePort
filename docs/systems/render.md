@@ -61,9 +61,20 @@ alpha-list distance fade, environment mapping, dynamic lights / motion blur / br
 
 ## Lighting [M, L]
 
-Prelit: texture × vertex colour (0x80 = 1.0). Up to 2 point lights only on objects with glist flag 0x80 (weapons,
-pickups; no `Room_*`); tint (`obj+0x103..0x106`, × room ambient with flag 0x800); environment map on 31 objects
-(box flag +0x34 bit 0, e.g. `OBJECT_windows`): UV ≈ 0.5 + rot·n/256 [S].
+Prelit: texture × vertex colour (0x80 = 1.0). Up to 2 point lights per draw, selected with the
+source object's glist flags word (`celglist+0x44`, copied to `obj+0xF0` by `Control_SetGList`
+0x134960; cels carry the same word at `cel+0x94`): kind 0 (level/ambient-radiator lights) and kind
+2 (searchlight beams) need bit 0x80, kind 1 (muzzle flashes) is skipped when bit 0x100 is set
+(`Lights_CalcClosestLights` 0x1cb2e0). Measured on the disc [D, fix-lighting2]: world cels carry
+almost no 0x80/0x100 (the radiators light only characters — skins 0x8a0/0x28a0 — not rooms), the
+first-person weapon parts are 0x28a0, and the effect objects are 0x0321 (0x100: muzzle-excluded);
+`View_DrawSky` 0x1e5ad0 / `View_DrawSprites` 0x1e5290 upload no lights at all. The VU1 point-light
+program (.vutext ~832-960) adds `TColor.rgb · max(0,(1/d²−1/r²))·max(0,N·L)` in BYTES over the
+vertex colour and clamps the sum to byte 255 (`MINIi`, I = 255.0 at I-mem 919/954) — the port's
+shader mirrors that at /255 over its Unorm8x4 vertex colour with a min(·,1) clamp (fix-lighting2;
+the earlier /128 over an Unorm8x4 colour was 2× the game's add). Tint (`obj+0x103..0x106`, × room
+ambient with flag 0x800); environment map on 31 objects (box flag +0x34 bit 0, e.g.
+`OBJECT_windows`): UV ≈ 0.5 + rot·n/256 [S].
 
 ## Snow (`Env_*`, `*Drops`) [M, L]
 

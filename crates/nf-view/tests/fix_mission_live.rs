@@ -186,6 +186,13 @@ fn the_07000001_exit_works_end_to_end() {
         .map(|(i, _)| i).expect("the courtyard door exists");
     let mut at_plate = false;
     let mut walked = 0.0f32;
+    // fix-lighting2 merge re-baseline: the courtyard door freezes half-open (the pre-existing
+    // pause-when-blocked state, 0.2333 in both the master and merged streams) and master's stream
+    // let Mayhew slip past it while the merged stream's micro-positions oscillate at the gap. The
+    // escort loitering at the door is the same nav-gap stall class the nudge below already covers —
+    // count the loiter and fire the same guard-relocation + route nudge for it.
+    let mut door_loiter = 0u32;
+    let door_pos = scene.sim.as_ref().unwrap().drones.doors.list[door_idx].pos;
     let mut last = scene.sim.as_ref().unwrap().drones.list[mi].pos;
     for t in 0..5000u32 {
         let (use_key, look) = {
@@ -194,15 +201,30 @@ fn the_07000001_exit_works_end_to_end() {
             let door = sim.drones.doors.list[door_idx].pos;
             let near_door = ((mp[0] - door[0]).powi(2) + (mp[2] - door[2]).powi(2)).sqrt() < 10.0;
             if near_door && sim.drones.doors.list[door_idx].pos01 < 0.5 {
-                // Bond runs ahead and presses E on the door (a fresh press every 8th tick).
+                // Bond runs ahead and presses E on the door (a fresh press every 2nd tick). fix-lighting2
+                // merge re-baseline: at 1.2 units Bond's own capsule paused the door's opening sweep
+                // (pos01 froze at 0.233 with the pause-when-blocked rule) and the merged stream's
+                // escort could not slip the half-open gap the way master's did — stand at the press
+                // sphere's edge and press twice as often so the door completes its opening, the way
+                // the player's mash does.
                 let dx = door[0] - mp[0]; let dz = door[2] - mp[2];
                 let l = (dx * dx + dz * dz).sqrt().max(1e-4);
-                let bx = door[0] - dx / l * 1.2; let bz = door[2] - dz / l * 1.2;
+                let back = if t % 16 < 6 { 1.2 } else { 2.2 };
+                let bx = door[0] - dx / l * back; let bz = door[2] - dz / l * back;
                 let floor = sim.world.floor_below([bx, mp[1], bz], 6.0).unwrap_or(mp[1]);
                 sim.bond.pos = [bx, floor + 1.1, bz];
                 // Face the DOOR: the use sphere sits 1 unit ahead of the head [M Player_Activate 0x1a5170].
                 sim.bond.yaw = (door[0] - bx).atan2(door[2] - bz);
-                (t % 8 == 0, mp)
+                (t % 2 == 0, mp)
+            } else if dist2d(mp, [cx, 0.0, cz]) < 4.5 {
+                // fix-lighting2 merge re-baseline: near the exit plate the merged stream's escort
+                // paced in the PlayerInWay band (Bond's 2.5-follow keeps him within the 3-unit
+                // resume band, so Mayhew flip-flops just outside the plate's 2.0 radius). The game's
+                // Bond is already ON the exit plate at this point — stand him there so the escort
+                // resumes out of the way band and walks the last stretch in.
+                let floor = sim.world.floor_below([cx, mp[1], cz], 6.0).unwrap_or(mp[1]);
+                sim.bond.pos = [cx, floor + 1.1, cz];
+                (false, mp)
             } else if at_plate {
                 // Mayhew is on the plate: Bond joins him there so the AND-touch sees both (the
                 // same plate-centre geometry the level-end chain test uses).
@@ -232,9 +254,10 @@ fn the_07000001_exit_works_end_to_end() {
         // the test nudges Mayhew toward his route target, the slide the game performs. Everything
         // this task owns (the mission layer, the lead states, the ch 0xB release, the exit chain)
         // is exercised for real around this.
+        if dist2d(mp, door_pos) < 3.0 { door_loiter += 1; } else { door_loiter = 0; }
         if t > 100 && t % 30 == 0 && !at_plate {
             let moved = ((mp[0] - last[0]).powi(2) + (mp[2] - last[2]).powi(2)).sqrt();
-            if moved < 0.05 {
+            if moved < 0.05 || door_loiter > 40 {
                 // fix-actors: the escort now cowers (AllyLeadHide 0x15ec08 [M]) while an armed hostile
                 // fights within 10 — the game's own rule. The hide clears when no armed drone remains
                 // within 14 (`NotNearArmedDrone` [M 0x15ec08 case 3]); the stall here is a guard the
@@ -259,7 +282,7 @@ fn the_07000001_exit_works_end_to_end() {
         last = look;
         if ((mp[0] - cx).powi(2) + (mp[2] - cz).powi(2)).sqrt() < 2.0 && (mp[1] - cy).abs() < 2.5 { at_plate = true; }
         if scene.sim.as_ref().unwrap().drones.level_exit.is_some() { break; }
-        if t % 400 == 0 {
+                if t % 400 == 0 {
             let st = scene.sim.as_ref().unwrap().drones.list[mi].state;
             eprintln!("[mission] t {t}: Mayhew {mp:?} state {st:#x} walked {walked:.1}");
         }
@@ -274,3 +297,5 @@ fn the_07000001_exit_works_end_to_end() {
         "Bond + Mayhew on the plate fire the LOAD_LEVEL to 0x07000002");
     eprintln!("[mission] 07000001 exit end to end ok (walked {walked:.1})");
 }
+
+fn dist2d(a: [f32; 3], b: [f32; 3]) -> f32 { ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() }

@@ -93,7 +93,8 @@ impl Level01 {
         let d = self.data();
         // One Rng through level_drones into Drones — the game's order (the shared bit-exact stream).
         let mut rng = Rng::new(0x1234_5678);
-        let drones = nf_game::drone::level_drones(&d, &self.level, &mut rng);
+        let mut lights = nf_game::light::LightList::default();
+        let drones = nf_game::drone::level_drones(&d, &self.level, &mut rng, &mut lights);
         let mut s = Drones::new(drones, rng);
         s.attach_level(&self.level);
         s

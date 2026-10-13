@@ -168,9 +168,16 @@ fn raptor_drops_are_all_taken_when_walked_over() {
         tick_idle(sim, 10);
         let hp0 = sim.drones.list[gi].health;
         // Tap the trigger: the P2K is semi-auto (one shot per pull [M Player_WeaponFiring 0x1a5460]).
-        for t in 0..600 {
-            sim.step_bond(Default::default(), t % 9 == 0, false, false);
-            if sim.drones.list[gi].health <= 0.0 || sim.drones.health.health <= 0.0 { break; }
+        // Volleyed: re-aim at the guard's live position, let the smoothed cursor settle (the aim ramp
+        // needs ~10 ticks), then a burst — the guards walk (their AI drifts with the game-faithful
+        // muzzle-light draws now in the shared RNG, fix-lighting), so a fixed burst no longer tracks.
+        'volleys: for _ in 0..24 {
+            aim_at(sim, [sim.drones.list[gi].pos[0], sim.drones.list[gi].pos[1] + 0.3, sim.drones.list[gi].pos[2]]);
+            tick_idle(sim, 10);
+            for t in 0..50 {
+                sim.step_bond(Default::default(), t % 9 == 0, false, false);
+                if sim.drones.list[gi].health <= 0.0 || sim.drones.health.health <= 0.0 { break 'volleys; }
+            }
         }
         if hp0 > 0.0 && sim.drones.list[gi].health <= 0.0 { kills += 1; }
         if sim.drones.health.health <= 0.0 { eprintln!("[drops] Bond died at guard {gi} — stopping"); break; }
@@ -298,8 +305,15 @@ fn aiming_at_a_non_enemy_shows_the_no_crosshair() {
             .filter(|(i, dr)| dr.present && dr.enabled && dr.drawn && dr.team == 1 && dr.health > 0.0 && *i != ei)
             .map(|(i, _)| i).collect();
         let mut reads = Vec::new();
-        for i in std::iter::once(ei).chain(enemies.into_iter().take(2)) {
+        // Every enemy, each from its own clear line (stand 3 units south of it): the guards walk with
+        // the game-faithful muzzle-light draws now in the shared RNG (fix-lighting), and the drift can
+        // park another drone between Bond and the nearest guard — the assert is about enemies showing
+        // the normal crosshair, not about this exact ray.
+        for i in std::iter::once(ei).chain(enemies.into_iter()) {
             let ep = sim.drones.list[i].pos;
+            let floor = sim.world.floor_below(ep, 6.0).unwrap_or(ep[1]);
+            sim.bond = nf_game::player::Bond::stand_at(&sim.world, [ep[0], floor + 1.1, ep[2] - 3.0], 0.0);
+            tick_idle(sim, 5);
             aim_at(sim, [ep[0], ep[1] + 0.3, ep[2]]);
             for _ in 0..7 { sim.step_bond(Default::default(), false, false, false); }
             let r = sim.crosshair_state();

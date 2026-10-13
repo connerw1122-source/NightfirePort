@@ -134,6 +134,14 @@ pub struct Material {
     pub chain: u32,
     /// `(map, texture)`; `None` = untextured.
     pub key: Option<(usize, u32)>,
+    /// The draw's light-selection flags: the low 16 bits of the source object's glist flags word
+    /// (`MapObject.flags` = `celglist+0x44`, which `Control_SetGList` 0x134960 copies to `obj+0xF0`;
+    /// cels: the same word lands in `cel+0x94` — `lights.rs`' `closest` reads bit 0x80 for kinds 0/2
+    /// and bit 0x100 to skip kind 1). fix-lighting2: the port used to pass 0x80 for every draw, which
+    /// let 07000005's kind-0 ambient radiators crowd the muzzle light off the world draws — the disc
+    /// data has almost no 0x80/0x100 on world cels, 0x8a0/0x28a0 on character/weapon skins, 0x100 on
+    /// effect objects [D probe in lighting_live.rs].
+    pub lflags: u16,
     pub first_index: u32,
     pub index_count: u32,
 }
@@ -304,6 +312,9 @@ pub struct Sim {
     /// The language string table (`USATxt.dat`, the NTSC-U default `FNames[SelLang]`) — the source of the
     /// HUD's label text (`Txt_BindLabel` 0x1cad60). Loaded in `nf_view::load`.
     pub lang: Option<nf_formats::hud::Lang>,
+    /// The muzzle smoke puffs (`Gas_Init` 0x1aacc8; fix-lighting: the RNG draw rides the shared
+    /// generator in the game's order, the puff itself is a [S] rise+fade model).
+    pub smoke: Vec<nf_game::light::Smoke>,
     /// The HUD's per-frame state (`fix-hud`): the weapon-name timer (`BL+0x95E`), the health pane's
     /// crouch-icon timer, the pickup message bar (pane 21) and how many `drones.taken` events it has
     /// converted. Stepped per tick in `hud_tick` (the game's HUD update runs per 60 Hz frame).
@@ -776,7 +787,19 @@ impl Sim {
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
         nf_game::prof::tick();
         let _prof = nf_game::prof::scope("step_bond (total)");
+        // `Game_Run` 0x1c9790:33 runs `Light_Update` before the object movement each tick (fix-lighting):
+        // lifetimes (the muzzle light of the previous tick dies here), the script-channel gate and the
+        // flicker state machine. The flicker's RNG re-seeds ride the shared generator before this tick's draws.
+        {
+            let frame = self.drones.frame + 1; // Light_Update sees the new tick's counter
+            let channels = &self.drones.channels;
+            let rng = &mut self.drones.rng;
+            self.drones.lights.update(&|c| channels.on(c as u32), frame, rng);
+        }
         self.shot_tick = false;
+        // The smoke puffs (`gases_smoke` 0x1ab2d0 [S] simplified) tick with the sim.
+        for s in self.smoke.iter_mut() { s.update(); }
+        self.smoke.retain(|s| !s.dead());
         let (trigger, reload) = if self.disabled { input = Default::default(); (false, false) } else { (trigger, reload) };
         let aiming = input.aiming;
         // Weapon switching (`Player_WeaponChange` 0x1a6f80): only when idle (not firing/reloading/holstering). The
@@ -1370,16 +1393,27 @@ impl Sim {
                 } else {
                     self.last_shot = Some(self.drones.frame);
                     self.shot_tick = true;
-                    // The muzzle smoke (`Player_MuzzleFlash` 0x1a4298:91-103, skipped by weapon flag 0x2000):
-                    // `Gas_Init(0.05, 0.1, cel, muzzle, quat, 0, 0x2000039, 7, 0x48403080, 1)` — one puff at
-                    // the muzzle datum. The datum's world transform lives in the per-frame pose, not here;
-                    // the port spawns at the eye + aim·0.6 [S]. Life [S]: the decomp drops the call's 11th
-                    // arg; 8 ticks matches the game's brief muzzle wisp.
-                    let flags6c_flash = u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap());
-                    if flags6c_flash & 0x2000 == 0 {
-                        self.drones.gas.init(
-                            [camera[0] + dir[0] * 0.6, camera[1] + dir[1] * 0.6, camera[2] + dir[2] * 0.6],
-                            0.0, [0.0; 3], 0.05, 0.1, 7, [0x48, 0x40, 0x30, 0x80], 8.0);
+                    // `Player_MuzzleFlash` 0x1a4298 runs on the shot tick: `Light_Create(radius =
+                    // weapon_data+0x58, intensity 2.0, the muzzle (the view model's datum 0; the sim
+                    // approximates it eye + aim·0.5 [S]), rgb = +0x56/+0x55/+0x54, channel 0, life 0 →
+                    // +0x20 = 1 (one tick), kind 1)` — its `Rand_Rand(0)` draw sits between the accuracy
+                    // draws and the bullet's spread draws, as in the game. The smoke: `Gas_Init`'s
+                    // `Rand_FRand(2π)` draw, unless weapon_data+0x68 & 0x2000 (no smoke).
+                    // The game's gate [M 0x1a42e8]: weapon_data+0xDC != 0 && weapon_data+0x48 != 0.
+                    let light_gate = u32::from_le_bytes(w[0xdc..0xe0].try_into().unwrap()) != 0
+                        && u32::from_le_bytes(w[0x48..0x4c].try_into().unwrap()) != 0;
+                    if light_gate {
+                        let radius = f32::from_le_bytes([w[0x58], w[0x59], w[0x5a], w[0x5b]]);
+                        let pos = [camera[0] + dir[0] * 0.5, camera[1] + dir[1] * 0.5, camera[2] + dir[2] * 0.5];
+                        self.drones.lights.create(radius, 2.0, pos, [w[0x56], w[0x55], w[0x54]], 0, 0, 1, 0, &mut self.drones.rng);
+                        let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
+                        if flags68 & 0x2000 == 0 {
+                            // `Gas_Init`'s `Rand_FRand(2π)` draw (the smoke puff's angle), in the game's order.
+                            let _angle = self.drones.rng.frand(6.2831854820251465);
+                            // The puff itself: models-misc's gas system (`Gas_Init(0.05, 0.1, …, 0x2000039, 7,
+                            // 0x48403080, 1)` [M 0x1a4298]); Gas_Init's own draws stay un-consumed (G-033). Life [S] 8 ticks.
+                            self.drones.gas.init(pos, 0.0, [0.0; 3], 0.05, 0.1, 7, [0x48, 0x40, 0x30, 0x80], 8.0);
+                        }
                     }
                     // The hearing sound: the P2K's 0x403 by default, or the remapped op-1 id for other weapons.
                     // The drones' hearing list uses the sfx table's entry for this id.
@@ -1871,7 +1905,7 @@ pub fn fog_for(level: u32) -> Option<([u8; 3], f32)> {
 
 /// Grouped by layer, then (world layers) the object — the game sorts cels per object (`View_AddCels`) — then texture
 /// and draw state. The value keeps the object's world centre and scaled radius for the per-frame sort + frustum cull.
-type Groups = BTreeMap<(Layer, [u32; 3], u32, u32, Option<(usize, u32)>, Draw), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32, Option<u16>)>;
+type Groups = BTreeMap<(Layer, [u32; 3], u32, u32, Option<(usize, u32)>, Draw, u16), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32, Option<u16>)>;
 
 fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>, searchlight: Option<u16>, door: Option<u16>, pickup: Option<u16>, mult: [f32; 3], cels: &[Cel], chain: u32) {
     let obj = &level.maps[inst.map].objects[inst.object];
@@ -1898,6 +1932,11 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
     let centre = transform(&inst.matrix, obj.centre);
     let col_len = |c: usize| (inst.matrix[0][c] * inst.matrix[0][c] + inst.matrix[1][c] * inst.matrix[1][c] + inst.matrix[2][c] * inst.matrix[2][c]).sqrt();
     let radius = obj.radius * col_len(0).max(col_len(1)).max(col_len(2));
+    // The light-selection flags: the glist flags word's low 16 bits — `Control_SetGList` 0x134960
+    // copies `celglist+0x44` to `obj+0xF0` and `View_DrawObjList` 0x1e69a0 / `View_DrawCelGlist`
+    // 0x1e6538 / `View_SetupRenderModes` 0x1e78b0 (the anim-object path) pass its u16 to
+    // `Lights_CalcClosestLights`. `MapObject.flags` is that word [D level.rs ENTITY_PARAMS +4].
+    let lflags = (obj.flags & 0xffff) as u16;
     let ikey = if matches!(layer, Layer::World) { centre.map(f32::to_bits) } else { [0; 3] };
     // GS state: each leaf's `DIRECT` writes, inherited by the leaves that send none. The GS applies each DIRECT
     // write immediately at its position in the packet, so a write between batch 2 and batch 3 affects batch 3
@@ -1920,7 +1959,7 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
         // build_FindCel 0x1c8cb0 on the object's world centre; View_AddCels 0x1e6ba0 frustum-tests
         // each cel's bbox per viewer). Everything posed per frame keeps None.
         let cel = if layer == Layer::World { find_cel(cels, centre).map(|i| i as u16) } else { None };
-        let (vs, is, cv, c, r, gcel) = groups.entry((layer, ikey, lkey, chain, key, draw)).or_default();
+        let (vs, is, cv, c, r, gcel) = groups.entry((layer, ikey, lkey, chain, key, draw, lflags)).or_default();
         *gcel = cel;
         *c = centre;
         *r = radius;
@@ -2632,11 +2671,11 @@ impl Scene {
         }
         let (mut vertices, mut indices, mut materials, mut char_verts) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut char_vertex_start = None;
-        for ((layer, _, _, chain, key, draw), (vs, is, cv, centre, radius, cel)) in groups {
+        for ((layer, _, _, chain, key, draw, lflags), (vs, is, cv, centre, radius, cel)) in groups {
             if is.is_empty() { continue; }
             if matches!(layer, Layer::Character | Layer::Effect) && char_vertex_start.is_none() { char_vertex_start = Some(vertices.len()); }
             let base = vertices.len() as u32;
-            materials.push(Material { layer, draw, centre, radius, cel, chain, key, first_index: indices.len() as u32, index_count: is.len() as u32 });
+            materials.push(Material { layer, draw, centre, radius, cel, chain, key, lflags, first_index: indices.len() as u32, index_count: is.len() as u32 });
             indices.extend(is.iter().map(|i| i + base));
             vertices.extend(vs);
             char_verts.extend(cv);
@@ -2684,8 +2723,11 @@ impl Scene {
             let models = nf_game::pickup::models(level);
             let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: d.sfx.as_ref(), models: &models, surfaces: d.surfaces.as_ref(), voices: d.voices.as_deref() };
             let mut rng = nf_game::drone::Rng::new(0x1234_5678);
+            // The drones' creates (and the interleaved type-0x4E light creates) draw from the shared
+            // generator here; the map parse's ambient radiators went in first, inside `level_drones`.
+            let mut lights = nf_game::light::LightList::default();
+            let list = nf_game::drone::level_drones(&data, level, &mut rng, &mut lights);
             // Every drone placement; spawner templates stay absent until a spawner brings them in.
-            let list = nf_game::drone::level_drones(&data, level, &mut rng);
             let by_pos: HashMap<[u32; 3], usize> = list.iter().enumerate()
                 .map(|(i, dr)| (level.maps[m].placements[dr.placement].translation.map(f32::to_bits), i)).collect();
             let char_drone = characters.iter().map(|c| by_pos.get(&[c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]].map(f32::to_bits)).copied()).collect();
@@ -2699,6 +2741,7 @@ impl Scene {
             let (p0, yaw0) = start.unwrap_or(([0.0; 3], 0.0));
             let bond = nf_game::player::Bond::stand_at(&world, p0, yaw0);
             let mut drones = nf_game::drone::Drones::new(list, rng);
+            drones.lights = lights;
             drones.attach_level(level);
             // Ladders (`Ladder_Create` 0x1966c0, placement type 0x22, class 0x2D): fix-ladder. The world
             // sphere comes from the placement's object glist bounds, like the game's
@@ -2760,7 +2803,7 @@ impl Scene {
                 })
                 .collect();
             drones.pickups.extend(placed_pickups);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default() })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new() })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {
@@ -3097,25 +3140,13 @@ impl Scene {
         (SkinLayout { char_base, attach_base, sl_base, door_base, pick_base, n_mats, col_att, col_pick, col_one }, attrs)
     }
 
-    /// The muzzle-flash light of Bond's shot this tick, packed for the shader (position, 1/r², colour × intensity,
-    /// active). `Player_MuzzleFlash` (0x1a4298, disassembly 0x1a4370-0x1a43a8) creates it on every shot:
-    /// `Light_Create(radius = weapon+0x58, intensity 2.0, the view model's datum 0, rgb = +0x56/+0x55/+0x54,
-    /// channel 0, life 0, kind 1, …)`. Life 0 → +0x20 = 1, so `Light_Update` deletes it on the next tick: one
-    /// tick of light per shot. Not ported here: `Light_Create`'s `Rand_Rand(0)` draw and the `Gas_Init` smoke
-    /// (game-RNG draws on every shot; fix-lighting). Render-side only: the simulation is unchanged.
-    pub fn dyn_light(&self, time: f32, opts: ViewOpts) -> [f32; 8] {
-        let Some(s) = self.sim.as_ref() else { return [0.0; 8] };
-        if !s.shot_tick { return [0.0; 8]; }
-        let w = s.gun.weapon as usize;
-        let Some(rec) = s.weapons.records.get(w) else { return [0.0; 8] };
-        let radius = f32::from_le_bytes([rec[0x58], rec[0x59], rec[0x5a], rec[0x5b]]);
-        if !(radius > 0.0) { return [0.0; 8]; }
-        let Some(&vm) = self.view_models.get(&s.gun.weapon) else { return [0.0; 8] };
-        let fs = self.frame_state(None, time, opts);
-        let Some(k) = self.attachments.iter().position(|a| a.character as usize == vm && a.flash.is_some()) else { return [0.0; 8] };
-        let at = fs.attach[k][3];
-        let i = 2.0 / 255.0;
-        [at[0], at[1], at[2], 1.0 / (radius * radius), rec[0x56] as f32 * i, rec[0x55] as f32 * i, rec[0x54] as f32 * i, 1.0]
+    /// The frame's resolved lights for the renderer: the sim's `LightList` with the kind-2
+    /// positions resolved against their searchlight parts. Per draw the renderer picks the ≤2
+    /// closest within the draw's bounding sphere — the game's
+    /// `Lights_CalcClosestLights` 0x1cb2e0 / `psiLight_SetLights` 0x10e588 per object/cel.
+    pub fn frame_lights(&self) -> nf_game::light::ResolvedLights {
+        let Some(s) = self.sim.as_ref() else { return Default::default() };
+        s.drones.lights.resolve(&|i: u32| s.drones.searchlights.parts.get(i as usize).map(|p| p.pos).unwrap_or([0.0; 3]))
     }
 
     /// One frame's palette and colour table for `skin_layout` (the GPU replacement for `posed_vertices`).
