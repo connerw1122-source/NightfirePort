@@ -7374,3 +7374,21 @@ NF_ISO impacts_live (wall decal at hit+0.01 with the surface normal/mesh, sky sh
 lands in lifetime, bit-for-bit seeded rerun). Known: `guard_takes_cover_like_the_game` needs its seed
 re-picked (0072's procedure — the impact draws joined the stream, as the game's own do). Report:
 docs/reports/fix-impacts.md.
+
+---
+Task ID: 053b
+Agent: fix-ai-traces2 (worker)
+Task: fix-ai-traces2 (branch s/fix-ai-traces2) — land fix-ai-traces' PlayScript work on master green
+
+Work Log:
+- Cherry-picked the held s/fix-ai-traces work (harness 14efbfa, PlayScript 71b9e99, pins 2a16d85) onto master a2d1d25; reproduced all 6 held-merge failures.
+- The truck driver: Global 0x15b830 msg 1 routes dtypenew 0x17 → 0x32 BEFORE the start-script branch; TruckDriverInit 0x160bd0 case 1 plays the start script (0600011d, 880 frames) FROM 0x32 and holds; case 5 → 0x34. [L] 05-truck's 07000006 segment: the driver is in 0x32 the whole 700-frame window. fix_drone3's "script-less into 0x34 in 2 ticks" reading corrected with the evidence.
+- PlayScript 0x15ba68 case 5: the natural end (+0x554 = 0) goes to the START state (default/0x60005e6/0x60008ae), CallAnim(0,10,0,0x68,0,0)+AttackTalk held in-state (0x6000168/169), SetDAnimNow(0xf4)+start state (0x60007ac) — the port had mapped the IMPACT resume +0xCD8 onto it. d15 settles into IDLE; fix_npcs green unchanged.
+- The pose: the start scripts are two-window (222ch body + 22ch face); the drone path's last-wins pick took the face track and panicked (gpu_skin, anim.rs:70, index 22 of len 22). New script_pose_drone: every started window plays, per bone the LAST-started window that covers it owns it — the direction settled by [L] (the driver holds position while his body root runs 0.57: the zero-root face track owns his root bone; the single-window guard walks). The widest window fills the rest; the shared-record-byte track counts when its channels cover. Drone::script_frame (root source) last-window the same. value_with bounds its channel read (0.0 past the list — the neutral track).
+- The three death tests aimed once at a guard who now walks his start script (06000169 runs 6.8 units [D script-info]; [L] 01-doors shows him moving inside the script) — they track him per tick now; all assertions after the kill unchanged.
+- Merged origin/master (fix-impacts/research-driving); full suite --no-fail-fast: 284/3 (the allowed disc_golden) + 272/0 + 137/1 = 693 passed / 4 failed.
+- Merge-wave pins (both verified pre-merge-green at fd4ec1b, so not this task's code): ai_05_truck's drone-13 pin 7049 → 5508 (fix-impacts' effect draws joined the RNG stream; the ad5fb7f precedent) re-picked with the reason; the contact walk stalls in PlayerInWay (0x1e — Bond in the lead's lane; the old recovery closed IN) — the recovery now steps Bond back off the lane [M 0x15ea28 case 3], unverified on the merged tree (the walk now exceeds the sandbox's 10-min tool cap).
+
+Stage Summary:
+- The PlayScript port lands: the 6 held failures green, the driver/PlayScript/window-ownership semantics pinned from the decompile + traces. Report: docs/reports/fix-ai-traces2.md.
+- Left: verify the contact walk on the merged tree; the PlayScript impact resume + SeenAndAttacking (live check 2) when evidence arrives; the harness's script-phase warm-up.
