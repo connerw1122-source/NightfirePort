@@ -21,24 +21,32 @@ use walker::Walker;
 
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 
-// GAP (fix-final-blockers, ROOT CAUSE FOUND — the door-solid hypothesis is WRONG): the ride
-// freezes exactly when the −52 doors [110]/[111] start their ch-0x40 open, but the leaves never
-// touch the rider (probe walkreal_probe_fb5 at t1615: bond capsule push (0,0,0) walkable false;
-// the d50/d51 leaves span z −0.98..−0.82 while Bond stands at z −3.78 — a 2.8 gap). The real
-// mechanism: at t1611 the lift script's landing beat sends PlayerDisable — the riding inherit
-// (scene.rs step_bond, gated on !self.disabled [M 0x1949a8:24]) stops applying the platform's
-// delta, Bond freezes at −54.13 and the platform descends away (the feet-ray gap grows 0.03/tick,
-// grounded stays true via the floor ray's cc+0.1 margin). With the harness's skip_cutscenes the
-// skip completes ~t1633 and the Script_Free re-enable places Bond at the script's matrix —
-// −107.66, 53 units below the platform (this test's scrape). Without the skip Bond floats
-// disabled while the platform departs (the probe). NEXT SESSION'S FIX: the game's landing beat —
-// either the port's script must not disable the rider here (check the 0x06000571 event stream
-// against the decompile: which command maps to PlayerDisable), or the re-enable's `at` matrix
-// must be the platform's CURRENT pose (the game's rider stays ON the platform through the
-// opening leaves — the live check in docs/reports/walkreal-c.md #2 still applies: gdbwatch
-// BLData+0x94a through the −52 landing).
+// ROOT CAUSE CHAIN (fix-final-blockers — the walkreal-c door-solid hypothesis DISPROVED):
+// ① The leaves never touch the rider: at t1615 the d50/d51 leaves span z −0.98..−0.82 and Bond
+//    stands at z −3.78 — a 2.8 gap; his capsule push is (0,0,0) walkable=false (probe
+//    walkreal_probe_fb5). The moving-set door-solid is NOT the scraper.
+// ② The −52 landing starts CUT-SCENE #289 (hash 0x060006cf) at frame 1612 — its events at tick 0:
+//    stream 4 kind 0xb (the view model, weapon 0x12), stream 8 kind 0x05 (the drone freeze),
+//    stream 9 kind 0x04 (PlayerDisable) [NF_SCRIPTLOG]. The lift script itself only pulses
+//    ch 0x40 (event 0xd, tick 1610) and pauses (event 3, tick 1611). The game plays the landing
+//    as a NIS — Bond disabled, frozen mid-shaft (the game's Player_CollisionHandler early-returns
+//    [M 0x1949a8:24]) while the platform keeps descending.
+// ③ With the cut-scene PLAYED OUT (skip_cutscenes = false — the real player watches it), it ends
+//    ~t2163 (551 ticks) and the Script_Free enable (flag 0x100, nis.rs free()) places Bond at
+//    −107.66 — 36.8 BELOW the platform's live pose (≈ −63.3..−70.9 there). The walkreal-c
+//    "falls to −107.66" is this enable; the harness's old skip made it fire at t1633 instead.
+// ④ THE PORT BUG: cut-scene #289's event-6 `player_at` (nis.rs event() case 6 — the PREVIOUS
+//    stream's entity matrix) is not the platform's live pose at free time. Either the prev-stream
+//    resolution picks the cut-scene's own animated stand-in instead of the platform entity, or
+//    the matrix must be re-read at free time (the game's Script_Free 0x1da880 places the player
+//    at the entity's CURRENT matrix — during the skip/anim the entity keeps moving).
+// NEXT SESSION: dump cut-scene #289's stream list (NF_SCRIPTLOG over frames 1612-2170), match it
+// against Script_EventHandler 0x1d94c0 case 6 + Script_Free 0x1da880, and fix the enable matrix
+// source. The live check (docs/reports/walkreal-c.md #2: gdbwatch BLData+0x94a and the player's
+// y through the −52 landing) still settles what the game's enable matrix is.
 #[test]
-#[ignore = "the walk's reached blocker — see docs/reports/walkreal-c.md; un-ignore when the blocker lands"]
+#[ignore = "PARKED (fix-final-blockers): the -52 landing cut-scene #289's Script_Free enable places Bond at -107.66 (mid-shaft, 36 below the platform) — the event-6 player_at resolves to the wrong entity/matrix; see the header"]
+
 fn ride_the_lift_from_the_spawn_and_walk_into_the_lobby() {
     let iso = iso();
     let mut w = Walker::new(nf_view::load(&iso, "0700004a.bin", false).unwrap());
@@ -70,6 +78,14 @@ fn ride_the_lift_from_the_spawn_and_walk_into_the_lobby() {
     }
     let y_board = w.scene.sim.as_ref().unwrap().bond.pos[1];
 
+    // fix-final-blockers: the −52 landing starts cut-scene #289 (0x060006cf — event 0xb/5/4 at
+    // frame 1612: the view model, the drone freeze, PlayerDisable [NF_SCRIPTLOG]) — the game
+    // plays the landing as a NIS and re-enables Bond at its end. The walkreal-c scrape was the
+    // HARNESS'S OWN SKIP: with skip_cutscenes the skip fast-forwards the cut-scene and the
+    // Script_Free enable places Bond at the fast-forwarded matrix (−107.66, mid-shaft) — the
+    // walkreal-c "falls to −107.66". The real player WATCHES the landing cut-scene: skip it off.
+    w.skip_cutscenes = false;
+
     // The ride: no input while the script carries the platform down. The key line: y(t) =
     // y_board − max(0, t−90)·(150/4950) [D keys]; a rider off the line by > 5 (free fall diverges
     // in ~30 ticks) is the shaft-door scrape. The plates fire in descent order [D triggers].
@@ -85,7 +101,10 @@ fn ride_the_lift_from_the_spawn_and_walk_into_the_lobby() {
         let t = k + 60; // the board ticks count too
         let want = (y_board - ((t as f32) - 90.0).max(0.0) * (150.0 / 4950.0)).max(y_board - 150.0);
         let y = sim.bond.pos[1];
-        if scrape.is_none() && t > 150 && (y - want).abs() > 5.0 {
+        // While the landing cut-scene has Bond disabled he legitimately freezes (the game's
+        // Player_CollisionHandler early-returns [M 0x1949a8:24]) — the enable puts him back on
+        // the platform, so the key-line scrape check only applies to ENABLED ticks.
+        if scrape.is_none() && t > 150 && !sim.disabled && (y - want).abs() > 5.0 {
             scrape = Some((t, y, want));
             eprintln!("[walk] the ride left the key line at t{t}: y {y:.2} want {want:.2} grounded={} substate={}",
                 sim.bond.grounded, sim.bond.substate);
