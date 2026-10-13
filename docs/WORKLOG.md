@@ -8161,3 +8161,12 @@ Work Log:
 Stage Summary:
 - The blend + decode landed with green tests; the vertex application is the next session's item
   once the target buffer's base is pinned (live check listed in the report).
+
+---
+Task: fix-facial2
+Agent: fix-facial2 worker
+Branch: s/fix-facial2
+
+Work Log:
+- (in progress) Setup done; reading fix-facial.md + character.md; items: morph target buffer, vertex
+  half in skinning, face-tracks second consumer check, AnimFacialUpdate blink driver.
