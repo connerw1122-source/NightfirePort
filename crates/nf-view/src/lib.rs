@@ -987,6 +987,13 @@ struct App {
     iso: String,
     /// A pending level transition: the next level's hashcode, set by `LOAD_LEVEL`; consumed by the main loop.
     pending_level: Option<u32>,
+    /// fix-restart-target: the ENTRY checkpoint — the RamSave the current level was LOADED with
+    /// (`Player_RamSave` 0x195670's buffer 0x2b9440, which the game keeps across level changes).
+    /// The fail/death menu's Restart re-serves it (`P_ENDMISSION_Handler` 0x216618:21's
+    /// `Player_RamLoad(Bond, 1)`) instead of capturing the dying state — the entry checkpoint's
+    /// channels predate the fail, so the reload cannot re-fail (the 07000007 loop). `None` after a
+    /// cold load (the game's buffer then holds stale/zero data; the boost still floors the health).
+    entry_save: Option<nf_game::player::RamSave>,
     /// The `--all` flag (draw dynamic entities at their placements, not only 0x8000 cels) — reused on level reload.
     all: bool,
     /// Input recorder (B-5): `None` unless `--record <file>` was given. Each tick's input is pushed right before
@@ -1373,18 +1380,45 @@ impl ApplicationHandler for App {
                     // `Trigger_Activate`'s exit order: the success/fallback channel write (already applied in
                     // the sim), then `Player_RamSave` [M 0x1b2318:97-116] — capture the old sim now, before
                     // the scene swap drops it (fix-level2 F2).
-                    // fix-death-restart: the fail/death restart is the COLD arm — the menu's
-                    // `ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)` sets IsWarmReset = 0
-                    // [M 0x204408:139], which zeroes the switch channels (`Init_SwitchChannels`
-                    // [M 0x1d5080:44-46]) and skips `Player_RamLoad` (its whole body is gated on the
-                    // warm flag [M 0x1957a8]). Carrying the RamSave across a restart is what looped
-                    // the 07000007 session: the saved ch 99 re-failed the mission every reload.
+                    // fix-restart-target: the fail/death menu's Restart (`P_ENDMISSION_Handler`
+                    // 0x216618:19-21, menu 0x40000042's row 0) is a WARM reload of the CURRENT level on
+                    // the ENTRY checkpoint: `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` +
+                    // `Player_RamLoad(Bond, 1)`. The game does NOT capture the dying state — it re-serves
+                    // the RamSave buffer as of level entry (the previous level's exit `Player_RamSave`
+                    // [M 0x1b2318:115]), whose ch 99/100 predate the fail, so the reload cannot re-fail
+                    // (the 07000007 replay loop). The boost arg 1 floors the health at the difficulty's
+                    // `ContinueHealthBoost*` — 50.0 on all three [L ee_start_05.bin 0x30cc34-3c].
+                    // The PAUSE menu's Restart stays the COLD arm to BaseMap (`C_GCPAUSE_Handler`
+                    // 0x204408:139 — `level_exit_cold`, save = None).
                     let cold = self.scene.sim.as_ref().is_some_and(|sim| sim.drones.level_exit_cold);
-                    let save = if cold { None } else {
+                    let restart = self.scene.sim.as_ref().is_some_and(|sim| sim.drones.level_exit_restart);
+                    let save = if cold { None } else if restart {
+                        // The entry checkpoint (+ the health floor). A cold-loaded level has none:
+                        // the game's buffer then holds the BSS zeros [S — RamLoad restores them and
+                        // the per-level InitWeapon re-equips], so the port zeroes the arrays at the
+                        // live shapes (an empty RamSave would wipe/panic the restore).
+                        let mut s = self.entry_save.clone().unwrap_or_else(|| {
+                            let sim = self.scene.sim.as_ref().unwrap();
+                            let mut z = nf_game::player::RamSave::capture(
+                                &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels);
+                            z.health = 0.0; z.armour = 0.0;
+                            for v in z.carried.iter_mut() { *v = 0; }
+                            for v in z.clip.iter_mut() { *v = 0; }
+                            for o in z.owned.iter_mut() { *o = false; }
+                            for k in z.keys.iter_mut() { *k = false; }
+                            for c in z.channels.iter_mut() { *c = 0; }
+                            for t in z.ch_time.iter_mut() { *t = 0; }
+                            z
+                        });
+                        s.health = s.health.max(50.0); // [L ee_start_05.bin 0x30cc34-3c, all three 50.0]
+                        Some(s)
+                    } else {
                         self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
                             &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
                             .with_mission(&sim.drones.mission))
                     };
+                    // The loaded level's checkpoint is what a later Restart restores.
+                    self.entry_save = save.clone();
                     let name = level_archive_name(next);
                     eprintln!("level: loading {name} ({})", if save.is_some() { "warm" } else { "cold" });
                     let load = if self.dev.is_some() { load_with_carry_dev } else { load_with_carry };
@@ -1754,7 +1788,7 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend };
     if dev {
         app.panel = panel::start();
         match &app.panel {
