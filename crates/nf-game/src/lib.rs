@@ -12,6 +12,7 @@ pub mod anim;
 pub mod bullet;
 pub mod corona;
 pub mod cover;
+pub mod creepwall;
 pub mod damage;
 pub mod door;
 pub mod drone;

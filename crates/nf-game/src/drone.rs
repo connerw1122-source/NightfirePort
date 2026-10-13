@@ -1095,10 +1095,12 @@ impl Drone {
         self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]);
     }
 
-    /// CivilianMission's route half (`UpdateMissionRoute` 0x154a80 = `NDrone2_FollowRoute`): the walk anim on
-    /// MOVING, look-around/stand when the creep is blocked (the game's route creep byte 9/0xc — the port's
-    /// BLOCKED code), and `true` once the route ARRIVED (the caller clears prop 0x1D and falls to Civilian).
-    fn update_mission_route(&mut self, d: &Data, _rng: &mut Rng, _frame: u32) -> bool {
+    /// CivilianMission's route half (`UpdateMissionRoute` 0x154a80 = `NDrone2_FollowRoute`): `moving_anim` while the
+    /// route MOVES (each game DSTATE picks its own — CivilianMission walks, `DSTATE_AllyLead` 0x15e698 case 3 calls
+    /// `CallAnim(0x1e)` = RUN on code 0/2), look-around/stand when the creep is blocked (the game's route creep byte
+    /// 9/0xc — the port's BLOCKED code), and `true` once the route ARRIVED (the caller clears prop 0x1D and falls to
+    /// Civilian).
+    fn update_mission_route(&mut self, d: &Data, _rng: &mut Rng, _frame: u32, moving_anim: u16) -> bool {
         let feet = self.feet();
         let Some(route) = self.route.as_mut() else { self.request_anim(d, anim_state::STAND_IDLE); return false };
         let (code, reached) = route.follow(d.nav, feet);
@@ -1117,7 +1119,7 @@ impl Drone {
                 if self.alert >= 0.66 { self.request_anim(d, anim_state::ALERT_IDLE) } else { self.set_stand_idle(d, _rng, _frame, false) }
                 false
             }
-            _ => { self.route_blocked = false; self.request_anim(d, self.walk_anim(d)); self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); false }
+            _ => { self.route_blocked = false; self.request_anim(d, moving_anim); self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]); false }
         }
     }
 
@@ -3526,7 +3528,7 @@ impl Drone {
                     if self.voice_type == 0x10 { self.team = 1; self.set_state(ATTACK); }
                     else { self.set_state(CIVILIAN_SCARED); }
                 } else if self.route.is_some() {
-                    let arrived = self.update_mission_route(d, rng, frame);
+                    let arrived = self.update_mission_route(d, rng, frame, self.walk_anim(d));
                     if arrived && self.next_state.is_none() { d.props.set(0x1d, &mut self.props, 0); self.set_state(CIVILIAN); }
                 } else {
                     d.props.set(0x1d, &mut self.props, 0);
@@ -3620,7 +3622,10 @@ impl Drone {
             (ALLY_LEAD, msg::ENTER) => { self.call_anim(d, anim_state::RUN, 0, 0); true } // [M 0x15e698 case 1: 0x1e]
             (ALLY_LEAD, msg::UPDATE) => {
                 // The route first: done → AllyLeadDone [M 0x15e698 case 3, FollowRoute branch 3].
-                if self.update_mission_route(d, rng, frame) { self.set_state(ALLY_LEAD_DONE); return true; }
+                // MOVING rides the RUN anim [M 0x15e698 case 3: code 0/2 → CallAnim(0x1e)] — the old
+                // walk-anim stand-in walked the whole lead at half speed and spent the test's escort
+                // window on the stairs.
+                if self.update_mission_route(d, rng, frame, anim_state::RUN) { self.set_state(ALLY_LEAD_DONE); return true; }
                 // `ReachedDestNode` queued `DSTATE_OpenDoor` — the sub-state checks below must not
                 // stomp it (the game's SetState applies at once; the port's flush is deferred).
                 if self.next_state.is_some() { return true; }
@@ -3714,7 +3719,7 @@ impl Drone {
             // only user) [*suggested*: the goal = the route's last node].
             (GO_TO_GOAL_ALLY, msg::ENTER) => { self.call_anim(d, self.walk_anim(d), 0, 0); true }
             (GO_TO_GOAL_ALLY, msg::UPDATE) => {
-                if self.update_mission_route(d, rng, frame) && self.next_state.is_none() { self.set_state(ALLY_LEAD); }
+                if self.update_mission_route(d, rng, frame, self.walk_anim(d)) && self.next_state.is_none() { self.set_state(ALLY_LEAD); }
                 true
             }
             // NDrone2_DSTATE_OpenDoor (0x1681f8) — `NDrone2_StateFuncs[0x81]` [L 0x29b300 + 0x81·4]:
@@ -3788,7 +3793,7 @@ impl Drone {
             // Its sound-class msgs are ignored on 0x07000016 (case 0x11..0x1f `return 1`).
             (crate::kiko::KIKO_MISSION, msg::ENTER) => { self.vision_on = true; self.call_anim(d, 0x34, 0, 0); true }
             (crate::kiko::KIKO_MISSION, msg::UPDATE) => {
-                if self.update_mission_route(d, rng, frame) && self.next_state.is_none() {
+                if self.update_mission_route(d, rng, frame, 0x34) && self.next_state.is_none() {
                     d.props.set(0x1d, &mut self.props, 0);
                     self.set_state(crate::kiko::STAND_BLIND);
                 }
@@ -3798,7 +3803,7 @@ impl Drone {
             // KikoMissionRun 0x1a (0x15e0d8): route done → RunToAlarm.
             (crate::kiko::KIKO_MISSION_RUN, msg::ENTER) => { self.vision_on = true; self.call_anim(d, 0x1e, 0, 0); true }
             (crate::kiko::KIKO_MISSION_RUN, msg::UPDATE) => {
-                if self.update_mission_route(d, rng, frame) && self.next_state.is_none() { self.set_state(crate::kiko::RUN_TO_ALARM); }
+                if self.update_mission_route(d, rng, frame, anim_state::RUN) && self.next_state.is_none() { self.set_state(crate::kiko::RUN_TO_ALARM); }
                 true
             }
             // StandBlind 0x18 (0x172870): the stand anim only.
@@ -5113,7 +5118,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // bullet alive on the reflected direction [M 0x12d704].
                     let flags70 = d.weapons.records.get(b.weapon as usize)
                         .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
-                    if let Some((_, n, m)) = d.world.segment_surface(b.pos, end) {
+                    if let Some((_, n, m)) = d.world.segment_surface(b.pos, end, false) {
                         if let Some(dir) = self.effects.bullet_impact(&mut self.rng, d.surfaces, &mut self.gas, hit, n, m, b.dir, flags70, b.bounces, true) {
                             if b.bounces < 3 {
                                 b.dead = false;
@@ -5256,7 +5261,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
 
     /// `Effect_Bullet`: the impact sound of the surface the segment `from → to` hits (`EffectInfo+0x14`), at the hit.
     fn impact_sound(&mut self, d: &Data, from: V3, to: V3) {
-        let (Some(s), Some((t, _, m))) = (d.surfaces, d.world.segment_surface(from, to)) else { return };
+        let (Some(s), Some((t, _, m))) = (d.surfaces, d.world.segment_surface(from, to, false)) else { return };
         let p = [from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t, from[2] + (to[2] - from[2]) * t];
         if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
     }
@@ -6342,7 +6347,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // The script's footstep: the floor under the drone (alertness 0: not heard by the drones).
             if std::mem::take(&mut dr.footstep) {
                 let feet = dr.feet();
-                if let (Some(s), Some((t, _, m))) = (d.surfaces, d.world.segment_surface([feet[0], feet[1] + 0.5, feet[2]], [feet[0], feet[1] - 1.0, feet[2]])) {
+                if let (Some(s), Some((t, _, m))) = (d.surfaces, d.world.segment_surface([feet[0], feet[1] + 0.5, feet[2]], [feet[0], feet[1] - 1.0, feet[2]], true)) {
                     if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.footstep, m) { self.audio.play3d(id, [feet[0], feet[1] + 0.5 - 1.5 * t, feet[2]], None); }
                 }
             }
@@ -6430,7 +6435,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 match ev {
                     crate::bullet::BulletEvent::World(p) => {
                         let end = [p[0] + dir[0] * 0.1, p[1] + dir[1] * 0.1, p[2] + dir[2] * 0.1];
-                        if let (Some(s), Some((_, n, m))) = (d.surfaces, d.world.segment_surface(from, end)) {
+                        if let (Some(s), Some((_, n, m))) = (d.surfaces, d.world.segment_surface(from, end, false)) {
                             if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
                             // `Bullet_CollisionHandler` 0x12ce80: the effects + ricochet. The shooter is a
                             // drone (not class 3), so `Effect_Bullet` draws its `Rand_Rand(2)` [M 0x1ce94c].
@@ -6669,11 +6674,12 @@ mod tests {
         dr
     }
 
-    /// A floor quad at y = 0 (two triangles).
+    /// A floor quad at y = 0 (two triangles, wound with the stored plane normal UP — the disc's
+    /// convention: 7,246 floors up / 0 down; `Intersect_RayGeom` 0x10a8c8 skips dot(n,dir) >= 0).
     fn floor_world() -> CollisionWorld {
         CollisionWorld::from_triangles(vec![
-            [[-5.0, 0.0, -5.0], [5.0, 0.0, -5.0], [5.0, 0.0, 5.0]],
-            [[-5.0, 0.0, -5.0], [5.0, 0.0, 5.0], [-5.0, 0.0, 5.0]],
+            [[-5.0, 0.0, -5.0], [5.0, 0.0, 5.0], [5.0, 0.0, -5.0]],
+            [[-5.0, 0.0, -5.0], [-5.0, 0.0, 5.0], [5.0, 0.0, 5.0]],
         ])
     }
 
@@ -6718,8 +6724,8 @@ mod tests {
         // floor at hip−0.6 ray end) — construct a floor at y = 0.4 so the feet (pos.y − 1.0 = −0.6) are 1.0 above it:
         // on surface. Then move the floor down to y = −0.5: feet at 0.5, floor at −0.5 → gap 1.0 > 0.2 → in air.
         let w = CollisionWorld::from_triangles(vec![
-            [[-5.0, -0.5, -5.0], [5.0, -0.5, -5.0], [5.0, -0.5, 5.0]],
-            [[-5.0, -0.5, -5.0], [5.0, -0.5, 5.0], [-5.0, -0.5, 5.0]],
+            [[-5.0, -0.5, -5.0], [5.0, -0.5, 5.0], [5.0, -0.5, -5.0]],
+            [[-5.0, -0.5, -5.0], [-5.0, -0.5, 5.0], [5.0, -0.5, 5.0]],
         ]);
         let mut dr = drone_at([0.0, 0.5, 0.0]); // feet at −0.5, floor at −0.5 → exactly on it
         dr.collision_handler(&w);

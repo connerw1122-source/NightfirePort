@@ -7385,6 +7385,94 @@ launches BASE.ELF — the boot loader re-dispatches). Atlas + format docs + repo
 Suite: nf-formats 11 passed / 3 allowed disc_golden fails; driving_golden 4/4; nf-game/nf-audio/
 nf-view compile clean (full run exceeds the sandbox tool timeout; no code changed in them).
 
+## fix-swim-vent — the swim entry, the vent creepwall, the castle-B music (started)
+
+Branch `s/fix-swim-vent` (from origin/master f0e1b23). Task: (1) swimming from a bank on 07000002
+(fix-ladder2's `#[ignore]`d repro), (2) the vent crawl — the creepwall (placement 0x3F, class 0x2B)
++ the crawl substate 7 + the door-grate link, (3) the alarm music's last step (the per-level music
+dispatch, `UpdateMFX_01CastleB` 0x113060 for 07000006) in music.rs.
+
+Evidence gathered so far:
+- [M 0x10a8c8 Intersect_RayGeom:150-168] the ray-vs-triangle test computes the plane from the
+  triangle's STORED normal (tri+6 → the plane halfword index, s16·2⁻¹⁴) and SKIPS the triangle
+  when `n·dir >= 0` — the game's ray tests are FRONT-FACE ONLY. The grounding ray
+  (`Player_FeetOnPoint` 0x194188:92-100, from pos down cc+0.6 → `Collide_RayIntersect` filter 0xc)
+  therefore only sees UP-facing triangles.
+- [D docs/formats/collision.md whole-disc check] the stored plane normal (s16·2⁻¹⁴) equals
+  +cross(v1−v0, v2−v0) for 2,242,859 of 2,245,313 triangles (146 opposite, 477 disagree, 1,831
+  degenerate) — the winding is a reliable proxy for the stored plane.
+- [M 0x194df0 Player_Collision:101-149] gravity is skipped when Bond's y is below `cel+0x90` (the
+  swim path); [M 0x195e50 Player_InWater] matches the port's enter_water.
+- The port's `capsule_push`/`segment_surface` are double-sided (*Deviation*, world.rs:709) — Bond
+  stands on the garden pond's down-facing floor (3.7647, 3 mm under the surface 3.7675 [D
+  probe_ladder2]) where the game's Bond falls through and swims.
+
+Progress (same session): the swim entry FIXED. Evidence chain:
+- [M 0x194188 Player_FeetOnPoint:92-100] the grounding ray's cel argument is `obj+0x20` (the
+  player's CURRENT cel); [M 0x1ec940 Collide_SphereIntersect] the capsule test takes the cel too —
+  the game's player collision is cel-scoped.
+- [D probe_vent_swim] in all four 07000002 water cels (4/6/16/17) every underwater hit straight
+  down is surface material 14 (0xE) at `cel+0x90` (the water surface/bed plane) and the banks are
+  mats 1/4/7/10; the water volume's bbox top = `cel+0x90`, and the walking root (bed + 1.03) is
+  always above it, so the walking player's cel is never the water cel — the game's Bond never
+  tests the water planes from the bank: he falls in and `Player_InWater` 0x195e50 (root − 0.3 <
+  surface) enters the swim substate. The port's flat world tested the mat-14 bed and he walked
+  across on it (the user's symptom).
+- [M 0x10a8c8 Intersect_RayGeom:150-168] ray tests are one-sided (the stored plane, `n·dir >= 0`
+  skips); [M 0x109da0 Intersect_CylGeom:302-322] the capsule culls head-on plane crossings by side
+  (with the game's 1.31 walk spine, Player_Collision 0x194df0 case 0/6, every near-horizontal plane
+  is head-on); [M 0x194df0 case 3:228-253] the swim capsule is the low-slung pair
+  (0.65−cc, 0.45−cc), radius 0.55.
+Port (world.rs, player.rs): the player's grounding ray (`segment_hit`) and both capsule paths
+  (`capsule_push`, `capsule_push_scoped`) drop mat-&0x3f==0xE triangles (the material form of the
+  cel scoping — [S] approximation, the full per-cel scoping is the follow-up); all ray paths are
+  one-sided by the winding (= the stored plane, docs/formats/collision.md); `capsule_push` adds the
+  one-sided rule for near-horizontal faces (|n·y| > 0.7 ≈ the game's 0.999/1.31 cone, top end `a`
+  as the side reference); `Bond::capsule` returns case 3's swim spine while substate == 3.
+  Non-player ray callers keep water (grenade/impact/spot: false; the drone/player footstep rays:
+  true — they are feet rays). `tris_near` added (the [D] evidence path).
+Test: `swim_repro_walks_on_the_water_from_the_bank` un-ignored — Bond starts on the west bank
+  (floor 4.155, surface 3.7675), walks +x, falls through the bed (grounded false), enters SS_SWIM
+  at tick 1621 at y 3.725, and stays in the water for 180 more ticks. Sister asserts: the bed's
+  material is 0xE at the surface level; the entry point is under the surface. fix_ladder2_live
+  4/4, walk_07000002_live 2/2, walkreal_07000002_live 1/1 (the level the change touches);
+  nf-game 68 passed, nf-formats 11 passed + the 3 allowed disc_golden. The rest of nf-view's live
+  suite did not fit the sandbox window — listed in the report.
+
+Music item resolved (same session): the castle-B per-level dispatch is ALREADY on master
+(fix-npcs a80b713: `UpdateMFX_01CastleB` 0x113060 → under_attack ? PickRandomCombat : PickRandomStealth,
+music.rs, + the unit test `the_07000006_alarm_demands_combat_music`) — verified passing in this
+session's nf-game run. Nothing to do; the report is corrected.
+
+The vent crawl ported (same session, before the window closed): `crates/nf-game/src/creepwall.rs`
+(new — `CreepWall` + `all(level)`, the 0x3F sweep mirroring wire::all; the channel = param 3
+[M 0x196fc8:19-22 reads placement+0x2c/0x30/0x34/0x38 → BLData u16[0..3], `Player_Creep` reads
+`*(short*)(params+6)` = u16[3]; half_len = the placement scale's x [S]); player.rs: SS_CREEP = 7,
+`Bond::creep`, `start_creep` [M Player_CollCreepWall 0x196758: the guards, the axis snap, the floor
+ray → hit+1.0, hands via the caller, ClearInertia, cam 0xB] and `creep_tick` [M Player_Creep
+0x1969d0: the per-tick axis snap + fwd·0.275, the yaw = wall.yaw + π, the 1.0-end exits with the
+input toward the end, the exit yaw ∓π/2, regrab 0x78, +0x18 += 0.05; [S] the crawl motion 0.02/tick
+— the game's displacement rides the anim scripts 0x600046d/f/0x71/0x75, unread]; scene.rs: the
+creepwalls on the Sim, the ctx, the per-tick `Music_Event(0xD,1)` + `switch_channels[ch] = 1`
+[mirrors the wire block], the use-key creep arm hoisted ABOVE the doors/SS pick (the game's
+context-6 arm returns before the pick [M 0x1a5170:66-97]; the port's fallback gate [S]).
+Tests (`fix_swim_vent_live.rs`, 07000005 — the creepwalls live on 05/0d/41 [D levels.md], NOT 02):
+the walls parse with ch 113 = the atlas's 0x71; the use key enters SS_CREEP on the axis (≤0.35 off),
+the crawl holds, and crawling to the far end exits to SS_WALK with the regrab lockout.
+KNOWN ISSUE left: the port's channel-gated grate door re-writes its OLD state's not-moving 0 over
+the crawl's channel set every tick (`Door_SetState` 0x135618:26's mirror, door.rs set_state), so
+`channels.on(113)` reads 0 while crawling — the game's crawl wins because the door only writes on
+transitions; the port's door-side ordering is the remaining fix (the crawl side is faithful).
+
+## fix-swim-vent2 (claim 140b-fix-swim-vent2)
+
+Sandbox reset (no repo, no work/, no ISO) — redoing setup, then landing the held
+fix-swim-vent swim change green on current master. Branch `s/fix-swim-vent2` starts
+from `s/fix-swim-vent` (6b63096, the swim fix + the vent crawl) and merges
+`origin/master`. Plan: reproduce the 15 held-merge failures (12 nf-game unit +
+fix_mission_live 347 + fix_objects2_live 117 + walkreal_0700000c_live 94), fix each
+from evidence (docs/formats/collision.md, the disc normals, Collide_Pick 0x1eb320),
+full suite green before every push, report at docs/reports/fix-swim-vent2.md.
 ## fix-impacts (s/fix-impacts) — 2026-10-13
 Task: bullet decals, ejected shell casings, impact dust and sparks, ricochets, bullet
 trails (G-041/G-025). Port the game's effect path sim-side first (Effect_Create 0x1ce688,
@@ -7456,6 +7544,32 @@ Stage Summary:
 - The composed marker (1.80,-107.66,-6.83) is a VOID column (probe fb6j: no floor -52..-160, only a north wall at z -6.0) — the game's rescue (mode-1 SphereIntersect in Player_Enable 0x195498?) is the live check. The live checks + the --bond spots are in docs/reports/fix-final-blockers2.md.
 - 07000016 progress: the ch-0x24 panel writer FOUND (probe fb9): trigger #0, kind 0x1 mask 0x4 out 0x24, placement 250 at (−15.20, 6.52, −94.56) — an UPPER WALKWAY west of the trench (deck y ≈ 5.71-6.44 at x ≤ −10, z −88..−112; an upper deck also spans x 2..8 at z −106..−112 over door[0]'s approach — the access is the next probe). The door[0] approach lane tightened (west approach + threshold legs arrive cleanly); the through-leg still wedges on the locked door (ch 0x24 can't fire until the panel is reached) — the walk stays parked, the route comments carry the evidence.
 - Verification after the revert: fix_fusebox_cut_live 4 + fix_safe08_live 5 green; nf-game 190/0; nf-formats+nf-audio 80 with only the 3 allowed disc_golden trio; the three nf-view casualties of the candidate fix (the two 07000014 laser/fusebox tests, the 07000008 safe chain) re-verified green.
+
+## fix-swim-vent2 — the swim fix landed green on master's collision (12 unit + the cage), 2 live reds left
+
+Sandbox reset → full setup redo. Branch = s/fix-swim-vent (6b63096, the swim fix + the vent crawl)
+merged with origin/master (8142a7f); master's newer segment_surface callers got no_water=false
+(the main agent's held-merge fix, re-applied: drone.rs ×2, impacts_live.rs ×3, walkreal_probe_fb4,
+probe_swim; probe_cw moved to the current disc API).
+
+THE FINDING (evidence in docs/reports/fix-swim-vent2.md): the 15 held-merge failures are the
+one-sided ray rule meeting the WRONG winding source. [M Intersect_RayGeom 0x10a8c8] skips a
+triangle when dot(STORED plane normal, ray_dir) ≥ 0 — the game tests the plane record, not the
+winding; [D docs/formats/collision.md] stored = +cross for 2,242,859/2,245,313 (146 opposite);
+[D probe on the disc] real floors 7,246 up / 0 down — the 12 unit tests' hand triangles were wound
+the opposite way. Fix: collision.rs triangles_with_material decodes each triangle's stored plane
+normal from the parsed words and swaps the vertex order where it opposes the winding (hit point/t
+winding-independent), so every world.rs one-sided site inherits the game's behavior; the 12 tests
+re-wound to the disc convention with citations. nf-game --lib 117/117.
+
+The cage test: [D probe_planes, raw 0x2E] the x-135.33 wall's stored plane is (−1,0,0) — west into
+the station; the walkway→station bullet is a back-face pass and the station→walkway bullet stops at
+135.33. The test now asserts the disc's directions (5/5), the lid + capsule sisters unchanged.
+
+STILL RED (2): fix_mission_live::the_07000001_exit_works_end_to_end (Mayhew stalls at −33.0,4.54,
+11.8; probe: the plate area −36.6,11.8 has NO floor within 6 down — the pad's plane/cel is the next
+dig) and walkreal_0700000c_live (ch 0x1b never fires, fails fast). The full 4-crate suite did not
+fit the window; run it first next session. Everything else: see the report.
 ---
 Task ID: 053b
 Agent: fix-ai-traces2 (worker)
@@ -7585,6 +7699,18 @@ Stage Summary:
   trigger/detonator, the tripbomb laser, the satchel timer — all noted in the report.
 
 ---
+Task ID: 140c-fix-swim-vent3
+Agent: fix-swim-vent3 (worker)
+Task: fix-swim-vent3 (branch s/fix-swim-vent3) — the last two reds (07000001 exit pad, 0700000c ST-1 plate ch 0x1b), then land the swim fix
+Started 14:40 UTC 2026-10-13, sandbox expires ~16:38 UTC.
+
+Work Log:
+- Branch s/fix-swim-vent3 = s/fix-swim-vent2 (8b6374a) merged with origin/master (7fb019b); WORKLOG conflict resolved keeping both sides' entries (append-only). First checkpoint pushed.
+
+Stage Summary:
+- (in progress)
+
+---
 Task: walkreal-01-cover
 Agent: walkreal-01-cover worker
 Branch: s/walkreal-01-cover (from origin/master)
@@ -7626,6 +7752,49 @@ Stage Summary:
 - The walker now breaks cover like a player (re-aim at exposed parts, step to a clear line, fire); no
   RNG reseeding, no new draws. Open question for a live pass: whether the port's UnderCover guard
   peeks on the game's cycle (the walk now succeeds either way).
+- Session 2 (15:29-17:10 UTC): full suite on the merged branch: nf-game (lib 121 + all binaries) green,
+  nf-formats + nf-audio green, the branch-touched nf-view binaries green (fix_objects2 5/5, impacts 2/2,
+  fix_swim_vent 4/4); the 2 known reds confirmed. The two live reds probed from the disc and the port's
+  world (new read-only examples probe_pad.rs + probe_scoped.rs):
+  - 07000001: the exit plate's pads EXIST on the disc (obj 137's descending step slabs, stored planes UP:
+    y 3.959@z12.2 … y 1.809@z15.4-16.8 … y 0.643@z18.7; the plate centre is the touch volume's centre
+    (−33.105, 2.301, 15.429), NOT the (−36.6, 11.8) the previous probe assumed) and the port's flat world
+    finds them (down-rays y 4.14→0.14 mat 0xa up the whole corridor). At Mayhew's exact stall pose the
+    move_by probes (line_of_sight at pos.y/+0.5) and feet_on_point are IDENTICAL on master and the branch
+    (probes CLEAR, floor found), the boundary walls are identical, and follow()'s bounds_node_test(0.2,
+    feet→target) is unblocked. The walk debug (temporary, reverted) shows the gait running while the net
+    advance is ~0: Mayhew passed door 4 (hit_door Some(4) at (−32.6, 8.3)), descended the obj 139 stairs
+    and ping-pongs at their bottom (walk ↔ DSTATE_OpenDoor ↔ the 180° turn anim, root deltas cancel) with
+    the route 1-2 nodes AHEAD of master's from t1600 (one 2.0 stall-nudge). The task's three static
+    suspects (the re-wind, the cel scoping, the water drop) are eliminated AT THE STALL POSE by the
+    identical-probe evidence; the divergence is dynamic (route-advance timing + the door-4 ping-pong).
+  - 0700000c: the ST-1 plate #506 (placement 506, out 0x1b, volume 4.67..7.00 × 12.73..13.67 ×
+    −155.13..−153.18) has its pad in the port's flat world (down-ray y 11.84, normal up). The test's walk
+    target (6.8, 12.2, −153.15) sits 0.03 OUTSIDE the volume's z hi (−153.175) — Bond stops on the band's
+    edge and the touch never sees him; Bond's grounding is the FLAT segment_hit (player.rs:509/994), so
+    the cel scoping does not gate the grounding. Next session: the touch evaluation + the walk's final
+    approach onto the pad.
+- Not done this window: the fixes themselves (the static suspects are eliminated; the remaining work is
+  the escort walk dynamics and the 0c touch/approach); the full nf-view suite run (nf-game/formats/audio
+  + the 6 branch-adjacent nf-view binaries ran green; the long walk binaries are owed).
+- Session 2 addendum (16:20-16:35 UTC): the 0c plate #506 dug to the seam. probe_scoped's floor map:
+  the corridor (y 11.27-11.32) runs z −153.0..−153.2 at x 5.4-7.2; the pad (y 11.84, up plane) spans
+  x 5.0-6.5 south of it, VOID (6.27) at x ≤ 4.5 / x ≥ 7.0 south of −153.2. A poke at the pad centre
+  (5.84, 12.9, −154.15) fires ch 0x1b ON THE POKE TICK (cel relinks to 284) — the touch evaluation and
+  the pad both work; the walk's approach is the whole failure (Bond parks 0.03 outside the band's z hi
+  at (6.8, −153.15), or slides off the seam's void strips — three walker variants tried and reverted).
+  The seam triangles are mats 05/06 (NOT 0xE — the water drop is not the cause). The approach for the
+  next session: Bond parks at (7.2, −153.1) FACING SOUTH; every walker variant fell into the x ≥ 7.0
+  void before the 0.07/tick turn caught up — the crossing needs the corridor walk west to x ≤ 6.5 with
+  turn-in-place, then due south over the pad's wide part; or the walker's stuck-handling taught the
+  seam. The test file was reverted to HEAD (no change landed); all evidence lives in probe_scoped.rs.
+- Session 2 final (16:40 UTC): the 0c crossing fully characterized — the corridor (y 11.32) meets the
+  pad (y 11.84) across a 0.52 vertical face, and the walk NEVER climbs it from below: five walker
+  variants (pad-centre target, two doglegs, walk_to, turn-in-place ± stand-up press) all end with Bond
+  under the pad (y 6.92-7.4 = the 6.27 floor + hip) after sliding off the x ≥ 7.0 void strip, while the
+  poke ON the pad grounds and fires instantly. The next session's crossing must gain the game's step-up
+  (the port climbs steps in the hand-triangle tests — the live seam is the reproducer) or approach from
+  wherever the game's own path enters the plate. Test file left at HEAD; probes carry every number.
 ---
 Task ID: 230
 Agent: fix-input (worker)
@@ -7755,6 +7924,48 @@ looping menu BGs from M_PAGE+0xC4, skip = action 0x19 instant). nf-view/src/movi
 + headless `--movie <code> --frame N --shot out.png` dumps (feature-gated), verified on two movies. Left for
 the next session: live playback wiring (window + cpal + skip), the FILES.BIN menu-BG codes, the 0x72xxxxxx
 codes. The slim ISO stubs all movies (lba=0/size=0) — set NF_MOVIE_ISO to the retail image to run the tests.
+
+## fix-swim-vent4 (s/fix-swim-vent4) — 2026-10-13
+Task: finish the two reds left by fix-swim-vent3 — (1) 07000001 exit: Mayhew ping-pongs at the west
+stairs' bottom (walk ↔ DSTATE_OpenDoor 0x81 ↔ the 180° turn); root-cause the route-target flip in
+follow()'s creep advance vs next_node order using NDrone2_ReachedDestNode 0x153358 and the LinkCreep
+target (Drone+0x670); (2) 0700000c ST-1 plate: the walker parks 0.03 outside the band's z hi and its
+approach variants slid into the x ≥ 7.0 void — route: turn in place at (7.2, −153.1), corridor west
+to x ≤ 6.5, then due south over the pad's wide part to (5.84, −154.15). Branch from s/fix-swim-vent3
+(ca559c3) + master merged (b9db8b5). Sandbox expires ~19:00 UTC.
+
+Work Log:
+- Setup reused (work/, ISO, nf-queue present); branch created, master merged, conflicts resolved
+  (WORKLOG keep-both; scene.rs keep-both: master's difficulty=1 preamble + this branch's creepwalls).
+- Full suite started in the background at ~17:03 UTC.
+
+## fix-swim-vent4 (s/fix-swim-vent4) — 2026-10-13, outcome
+**Both reds green on the merged branch (ca559c3 + master b9db8b5 + 2652850 + 91e0964).**
+- 07000001 exit: the report's ping-pong does NOT exist on the merged tree (route trace: 0 index
+  regressions in 3761 ticks, state pinned 0x1d, no OpenDoor cycles). The real defect: the lead
+  WALKED its route — `DSTATE_AllyLead` 0x15e698 case 3 calls CallAnim(0x1e) = RUN on codes 0/2;
+  `update_mission_route` hardcoded walk_anim (~0.02/tick — the escort spent the test's window on
+  the west stairs). Fix: the MOVING anim is per-caller (AllyLead RUN, civilians walk, kiko 0x34/
+  RUN). Mayhew runs the route onto the plate: at_plate true, level_exit 0x07000002, walked 172.8.
+  Test choreography: Bond joins the plate only inside the 2.0 latch ball (the game's Bond is
+  BEHIND the escort; the old 4.5 pre-place let Mayhew's r-0.4 toucher brush the volume z lo 12.17
+  [D probe] from 11.77 and end the level before the latch).
+- 0700000c ST-1 plate: the disc evidence re-sited the vent stand-in — the old (13.0, −154.3) drop
+  hangs over the interior pit (no disc floor y 9..13.5 at z ≤ −153.3, x 7.2..13 [D probe_planes]),
+  the display case obj 143 (x 4.56..6.96 on the ledge's south edge) seals the pad (11.84, x 5.0..6.5)
+  from the corridor, and the 12.26 "south walkway" across the gap is the pulley car (dynamic geo,
+  no static tris). The stand-in now drops Bond on the pad's south end; the walk to the volume
+  centre, the touch and the objectives are real (2691 ticks, stuck 0, falls 0). Sisters: the old
+  spot floorless, the pad landing grounded.
+- Suite: nf-game lib 128/128 + all binaries green; nf-formats+nf-audio 89/3 (exactly the allowed
+  disc_golden trio); nf-view 430/4 — the four are the "E at the gate door loads 07000006" family,
+  master's own reds (level_carry_live re-run on master: identical failures). Shared-file note:
+  pss_movies_live's audio test now skips on the slim ISO (0 movies) instead of panicking — without
+  it no branch off this master can meet the "only 3 disc_golden may fail" policy.
+- Report: docs/reports/fix-swim-vent4.md (live checks: the exit-volume brush question, the
+  CallAnim(0x1e) confirm, the case-143 solidity).
+
+---
 Task: fix-menus2 (started)
 Agent: fix-menus2 worker
 Branch: s/fix-menus2
@@ -8161,3 +8372,46 @@ Work Log:
 Stage Summary:
 - The blend + decode landed with green tests; the vertex application is the next session's item
   once the target buffer's base is pinned (live check listed in the report).
+Task: fix-swim-vent5 (started)
+Agent: fix-swim-vent5 worker
+Branch: s/fix-swim-vent5
+
+Work Log:
+- Branch created from origin/s/fix-swim-vent4 (c463614) + master merged (3d33a27); WORKLOG keep-both.
+- Task: the four "E at the 07000005 gate door loads 07000006" reds — (1) remove the creep arm's
+  proximity fallback (`|| best.is_some()`) at both scene.rs sites, gate on `icon_ctx == 6` only
+  [M Player_Activate 0x1a5170:66 `if (BL+0x95f == 6)`]; (2) port the real third-icon scope from
+  ThirdIcon_Update 0x196e80 + Player_CollisionHandler 0x1949a8:22 so icon_ctx is 0xFF at the gate
+  door (30.0, 38.84, 37.70) and level start (104.95, 25.12, 108.83) [L PCSX2 2026-10-13] and 6 only
+  where the game shows the shimmy/crawl icon. Sandbox expires ~21:09 UTC.
+
+---
+Task: fix-swim-vent5
+Agent: fix-swim-vent5 worker
+Branch: s/fix-swim-vent5
+
+Work Log:
+- Reproduced headless BEFORE any change (fix_swim_vent5_live): the gate door read icon_ctx 6
+  (pre-fix same-cel scope) and E there entered substate 7 — the user's exact crawl symptom.
+- Fix 1: both Player_Activate creep-arm sites lost the proximity fallback (|| best.is_some());
+  the gate is the icon context alone [M 0x1a5170:66 if (BL+0x95f == 6)] — the door's nearest wall
+  (squared 579 < the scan's 1000) only crawled because of the fallback.
+- Fix 2: the third-icon scope is now the icon's own straddle volume [M Controls_StraddleTest
+  0x134778:30-38 + Control_BuildWorldSph 0x133070; the write ThirdIcon_Update 0x196e80:36-52 over
+  the Collide_Update 0x1ea398:160-233 hitdata chain]. The port cannot resolve the game's cel chain
+  (the 19 room-cel bboxes share cel 1 between the gate door and the ctx-6 icons; the scoped
+  buckets hold no courtyard-floor geometry — probed), so the radius is the live-measured window
+  [L PCSX2 2026-10-13: 0xFF at the door (24.1) and the start (~94); 6 at the crawl spot (3.9); 3
+  at the wire ledge (1.8)] → 12.0. Tests pin both game spots at 0xFF + the crawl spot at 6.
+- Suite: 557 passed / 0 failed / 3 disc_golden (the allowed trio) before the 560 s foreground cap
+  cut the run; the merge families all green to completion (level_end 5/5, level_carry 8/8,
+  walk_07000005 2/2, vent 2/2, wire2 3/3, vent5 2/2). Report: docs/reports/fix-swim-vent5.md
+  (live checks: the icon +0x8c sphere radius reading; the obj+0xd0 chain empty at the door).
+
+Stage Summary:
+- All four "E at the gate door loads 07000006" reds green; the vent crawl and the wire grab keep
+  their contexts. The 12.0 sphere radius is a measured stand-in pending the celglist-sphere parse
+  or one live reading (the report lists the exact checks).
+- Suite delta (20:45 UTC): the sandbox kills detached runs, so the four-crate suite ran as
+  foreground chunks over every target — **781 passed, 3 failed** (only the 3 sanctioned
+  disc_golden trio; 147/147 nf-view binaries). Report updated with the chunk breakdown.

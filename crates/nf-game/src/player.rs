@@ -40,6 +40,10 @@ pub const SS_GRAPPLE: u8 = 2;
 pub const SS_SWIM: u8 = 3;
 /// `Player_Wire` 0x197658 — the hand-over-hand wire crossing (wire type 0) [M dispatch case 6].
 pub const SS_WIRE: u8 = 6;
+
+/// The crawl substate (`Player_Creep` 0x1969d0; entered by `Player_CollCreepWall` 0x196758 through
+/// `Player_Activate`'s class-'+' use scan).
+pub const SS_CREEP: u8 = 7;
 /// `Player_Zipline` 0x197f50 — the zipline ride (wire type 2) [M dispatch case 0xF].
 pub const SS_ZIPLINE: u8 = 0xf;
 
@@ -60,10 +64,12 @@ pub struct LadderCtx<'a> {
     /// Whether Bond holds the descend control this tick [S — the game's vertical swim input is not
     /// resolved in this pass; see docs/atlas/ladder.md "Not verified"].
     pub sink: bool,
+    /// The level's creepwall objects (class 0x2B '+', placement 0x3F), in placement order.
+    pub creepwalls: &'a [crate::creepwall::CreepWall],
 }
 
 impl Default for LadderCtx<'_> {
-    fn default() -> Self { LadderCtx { ladders: &[], wires: &[], wire_anims: None, water: None, sink: false } }
+    fn default() -> Self { LadderCtx { ladders: &[], wires: &[], wire_anims: None, water: None, sink: false, creepwalls: &[] } }
 }
 
 /// One tick of player input as game actions: `forward` (action 2), `strafe` (action 1; + = left), `turn` (radians
@@ -163,6 +169,9 @@ pub struct Bond {
     pub underwater: bool,
     /// `BL+0x8C4`: the underwater fade 0..1 (`Player_MonitorAir`: →1 under, →0 surfaced), for the renderer.
     pub water_fade: f32,
+    /// `BL+0x884`: the carried creepwall object while the crawl substate (7) runs (`Player_CollCreepWall`
+    /// 0x196758 stores the wall; `Player_Creep` 0x1969d0 reads it back every tick).
+    pub creep: Option<usize>,
     /// The runtime cel the queries start from (obj+0x20, the movement pass's relink — fix-safe08b):
     /// the `pCelList` cell index in the world's `ScopeGraph`. `None` = the flat (unscoped) world.
     pub cel: Option<usize>,
@@ -218,6 +227,7 @@ impl Bond {
             water_fade: 0.0, air_tick: 0, push_fwd: 0.0, wire: None, auto_drop: 0.0, wire_anim: 0, wire_anim_time: 0.0, wire_anim_rate: 1.0, cam_mode: 0, fall_speed: 0.0, grapple: None,
             icon_ctx: 0xff,
             cel: None,
+            creep: None,
         }
     }
 
@@ -254,8 +264,19 @@ impl Bond {
 
     /// The capsule ends (top A, bottom B) for the current stance, off the dynamic root height `cc`
     /// (`Player_Collision` 0x194df0: standing `0.275` / `0.55 − cc`; crouched `0.65 − cc` / `0.45 − cc`).
+    /// The swim substate (3) builds its own pair [M 0x194df0 case 3:228-253]: spheres at
+    /// `0.1 − (cc − 0.55)` = `0.65 − cc` and `0.45 − cc` with `+0x7cc` (the radius slot) 0.55 — a
+    /// low-slung 0.2-long spine hanging under the root, so at the swim equilibrium (root = surface − 0.3)
+    /// the capsule's top stays ~0.13 under the water plane and never touches a pond floor that sits at
+    /// the surface (the 07000002 garden pond [D probe_vent_swim]).
     fn capsule(&self) -> (V3, V3) {
-        let (a, b) = if self.crouched { (0.65 - self.cc, 0.45 - self.cc) } else { (0.275, 0.55 - self.cc) };
+        let (a, b) = if self.substate == SS_SWIM {
+            (0.65 - self.cc, 0.45 - self.cc)
+        } else if self.crouched {
+            (0.65 - self.cc, 0.45 - self.cc)
+        } else {
+            (0.275, 0.55 - self.cc)
+        };
         ([self.pos[0], self.pos[1] + a, self.pos[2]], [self.pos[0], self.pos[1] + b, self.pos[2]])
     }
 
@@ -281,6 +302,7 @@ impl Bond {
             SS_GRAPPLE => self.grapple_tick(&input),
             SS_SWIM => self.swim_tick(world, ctx, input),
             SS_WIRE => self.wire_tick(world, ctx, input),
+            SS_CREEP => self.creep_tick(world, ctx, input),
             SS_ZIPLINE => self.zipline_tick(world, ctx, input),
             _ => self.walk_tick(world, ctx, input),
         }
@@ -708,6 +730,92 @@ impl Bond {
             return;
         }
         self.mode = next_mode;
+    }
+
+    /// The crawl entry, `Player_CollCreepWall` 0x196758 (the caller resolved the wall — the game's
+    /// `Player_Activate` 0x1a5170:66-97 picks the nearest class-'+' object within 1000 when the
+    /// third-icon context is 6). Guards [M 0x196758:73-74]: regrab `+0x951 == 0`, health `+0x894 > 0`
+    /// (the port's dead Bond gets no input — the caller), and the substate check `1 < (u16)(f6 − 6)`
+    /// — the wire (6) and the crawl (7) refuse, everything else passes. Entry [M 0x196758:76-128]:
+    /// Bond's xz snaps to the wall's axis (the closest point of pos ± fwd(yaw+π/2)·len), the velocity
+    /// slots zero, the floor ray (the game's request 0x62d, from closest.y + 5 down to − 5) puts
+    /// `pos.y = hit + 1.0`, `Player_WeaponNone` (the Sim holsters — the caller watches the substate),
+    /// `Player_ClearInertia`, `ChangeSubState(7)`, `+0x94D = 0` (the crawl mode byte), cam mode 0xB,
+    /// the crawl anim script 0x6000476 (the port renders no body anims here) and `BLData+0x884 = wall`.
+    pub fn start_creep(&mut self, wi: usize, world: &CollisionWorld, ctx: &LadderCtx) {
+        let Some(w) = ctx.creepwalls.get(wi) else { return };
+        if self.regrab != 0 { return; }
+        if self.substate == SS_WIRE || self.substate == SS_CREEP { return; }
+        let closest = w.closest_point(self.pos);
+        self.vel = [0.0; 3];
+        self.pos = [closest[0], closest[1], closest[2]];
+        // The floor under the wall line: the game's vertical ray from closest.y + 5 [M 0x196758:94-112].
+        if let Some(floor) = world.floor_below([closest[0], closest[1] + 4.5, closest[2]], 10.0) {
+            self.pos[1] = floor + 1.0;
+        }
+        self.yaw = w.yaw + std::f32::consts::PI; // [M 0x196758:80 + 102: wall.yaw + π/2 + π/2]
+        self.clear_inertia();
+        self.substate = SS_CREEP;
+        self.mode = 0;
+        self.cam_mode = 0xB;
+        self.creep = Some(wi);
+    }
+
+    /// `Player_Creep` 0x1969d0 (substate 7) [M], with [S] the crawl motion: the game drives Bond along
+    /// the wall through the crawl anim scripts (0x600046f/0x6000471/0x6000475 — the port runs no body
+    /// anim scripts), so the port moves him along the axis at 0.02/tick (1.2 u/s) with the input.
+    /// Every tick: the xz snaps to the closest axis point + fwd(yaw)·0.275 [M 0x1969d0:99-125], the
+    /// yaw = wall.yaw + π; the 2D distances to the two ends pick the near end (iVar10) and the exits:
+    /// within 1.0 of an end WITH the input toward it → `+0x942 = 7`, `ChangeSubState(0)`, cam mode 0,
+    /// the exit yaw = crawl yaw ∓ π/2 (toward the open side of that end), regrab = 0x78 (120),
+    /// `AnimObj[99] = [100]` (the Sim's weapon carry, as the ladder dismount), `+0x18 += 0.05` (a
+    /// forward push out) and the channel cleared [M 0x1969d0:134-156]. The music event (0xD,1) and the
+    /// channel set ride the Sim's tick (the port keeps `switch_channels` in the drones).
+    fn creep_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
+        let Some(wi) = self.creep else { self.substate = SS_WALK; return };
+        let Some(w) = ctx.creepwalls.get(wi) else { self.substate = SS_WALK; self.creep = None; return };
+        let crawl_yaw = w.yaw + std::f32::consts::PI;
+        self.yaw = crawl_yaw;
+        let closest = w.closest_point(self.pos);
+        let (s, c) = crawl_yaw.sin_cos();
+        self.pos = [closest[0] + s * 0.275, self.pos[1], closest[2] + c * 0.275];
+        // The ends: A = pos + fwd(yaw+π/2)·len, B = pos − fwd(yaw+π/2)·len [M 0x1969d0:91-105].
+        let (a, b) = w.endpoints();
+        let d2 = |p: V3, q: V3| (p[0] - q[0]) * (p[0] - q[0]) + (p[2] - q[2]) * (p[2] - q[2]);
+        let (d_a, d_b) = (d2(self.pos, a).sqrt(), d2(self.pos, b).sqrt());
+        let fwd = input.forward.clamp(-1.0, 1.0);
+        let pushing = if fwd.abs() < 0.5 { 0u8 } else if fwd > 0.0 { 2 } else { 1 };
+        let at_a = d_a < 1.0;
+        let at_b = d_b < 1.0;
+        let (exit, nearer_a) = if at_a && pushing == 2 {
+            (true, d_a < d_b)
+        } else if at_b && pushing == 1 {
+            (true, d_a < d_b)
+        } else {
+            (false, true)
+        };
+        if exit {
+            // [M 0x1969d0:134-156] the shared exit tail; the yaw turn: nearer the A end → −π/2.
+            self.saved_sub = SS_CREEP as u16;
+            self.substate = SS_WALK;
+            self.creep = None;
+            self.cam_mode = 0;
+            self.yaw = crawl_yaw + if nearer_a { -std::f32::consts::FRAC_PI_2 } else { std::f32::consts::FRAC_PI_2 };
+            self.regrab = 0x78;
+            self.push_fwd += 0.05;
+            return;
+        }
+        // [S] the crawl motion along the axis (the game's anim scripts carry the displacement).
+        if pushing != 0 {
+            let dir = if pushing == 2 { 1.0 } else { -1.0 };
+            let (ax_s, ax_c) = (w.yaw + std::f32::consts::FRAC_PI_2).sin_cos();
+            self.pos[0] += ax_s * 0.02 * dir;
+            self.pos[2] += ax_c * 0.02 * dir;
+            self.mode = pushing;
+        } else {
+            self.mode = 0;
+        }
+        let _ = world;
     }
 
     /// `Player_Zipline` 0x197f50 (substate 0xF, wire type 2) [M]. Mode 9 = the arrival pose: when its
@@ -1240,7 +1348,7 @@ mod tests {
     fn climb_look_turns_within_the_ladder_window_and_pitch_is_free() {
         let world = CollisionWorld::from_triangles(Vec::new());
         let lad = Ladder { centre: [10.0, 3.0, 20.0], radius: 2.0, yaw: 0.0, channel: 0 };
-        let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: None, sink: false };
+        let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: None, sink: false, creepwalls: &[] };
         let mut b = Bond::new([10.0, 3.0, 20.0 + 0.5], lad.yaw + std::f32::consts::PI);
         b.substate = SS_CLIMB;
         b.ladder = Some(0);
@@ -1292,11 +1400,14 @@ mod tests {
     fn room() -> CollisionWorld {
         let q = |a: V3, b: V3, c: V3, d: V3| [[a, b, c], [a, c, d]];
         let mut t = Vec::new();
-        t.extend(q([-20.0, 0.0, -20.0], [20.0, 0.0, -20.0], [20.0, 0.0, 20.0], [-20.0, 0.0, 20.0]));
+        // All quads wound with the stored plane normal facing the occupant (floors UP — the disc's
+        // convention, 7,246 up / 0 down; the wall −z at the walker; `Intersect_RayGeom` 0x10a8c8
+        // skips dot(n,dir) >= 0).
+        t.extend(q([-20.0, 0.0, -20.0], [-20.0, 0.0, 20.0], [20.0, 0.0, 20.0], [20.0, 0.0, -20.0]));
         // A wall at z = 5 and a 0.3 step at x ≥ 3 (top at y 0.3).
-        t.extend(q([-20.0, 0.0, 5.0], [20.0, 0.0, 5.0], [20.0, 4.0, 5.0], [-20.0, 4.0, 5.0]));
-        t.extend(q([3.0, 0.3, -20.0], [20.0, 0.3, -20.0], [20.0, 0.3, 4.0], [3.0, 0.3, 4.0]));
-        t.extend(q([3.0, 0.0, -20.0], [3.0, 0.3, -20.0], [3.0, 0.3, 4.0], [3.0, 0.0, 4.0]));
+        t.extend(q([-20.0, 0.0, 5.0], [-20.0, 4.0, 5.0], [20.0, 4.0, 5.0], [20.0, 0.0, 5.0]));
+        t.extend(q([3.0, 0.3, -20.0], [3.0, 0.3, 4.0], [20.0, 0.3, 4.0], [20.0, 0.3, -20.0]));
+        t.extend(q([3.0, 0.0, -20.0], [3.0, 0.0, 4.0], [3.0, 0.3, 4.0], [3.0, 0.3, -20.0]));
         CollisionWorld::from_triangles(t)
     }
 

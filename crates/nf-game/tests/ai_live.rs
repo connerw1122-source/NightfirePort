@@ -971,7 +971,7 @@ fn bullets_and_feet_make_surface_sounds() {
     // Find a wall: from a spot on the open ground, the first horizontal ray that hits within 20 units.
     let p = [104.954, 25.663, 108.825];
     let (dir, hit) = (0..16).map(|k| { let a = k as f32 * 0.3927; [a.sin(), 0.0, a.cos()] })
-        .find_map(|dir| d.world.segment_surface(p, [p[0] + dir[0] * 20.0, p[1], p[2] + dir[2] * 20.0]).map(|h| (dir, h))).expect("a wall");
+        .find_map(|dir| d.world.segment_surface(p, [p[0] + dir[0] * 20.0, p[1], p[2] + dir[2] * 20.0], false).map(|h| (dir, h))).expect("a wall");
     let want = SurfaceSounds::get(&l.surfaces.impact, hit.2);
     eprintln!("wall surface {} → impact {:x?}", hit.2, want);
     sim.fire_player(&d, p, dir, 2, l.sfx.get(0x403));
@@ -988,7 +988,7 @@ fn bullets_and_feet_make_surface_sounds() {
     let t = hit.0 * 20.0;
     assert!((0..3).all(|k| (at[k] - (p[k] + dir[k] * t)).abs() < 0.2), "{at:?} vs {t} along {dir:?}");
     // The floor below: a footstep surface.
-    let floor = d.world.segment_surface(p, [p[0], p[1] - 3.0, p[2]]).expect("floor");
+    let floor = d.world.segment_surface(p, [p[0], p[1] - 3.0, p[2]], false).expect("floor");
     eprintln!("floor surface {} → footstep {:x?}", floor.2, SurfaceSounds::get(&l.surfaces.footstep, floor.2));
     assert!(SurfaceSounds::get(&l.surfaces.footstep, floor.2).is_some());
     // Sister: surface 0 (and 22) has no sounds.

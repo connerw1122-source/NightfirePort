@@ -145,31 +145,49 @@ fn weapon_saved_on_grab_restored_on_dismount_and_hands_cannot_fire() {
     assert!(sim.gun.switch_state == 0, "stuck mid-switch after the restore (state {})", sim.gun.switch_state);
 }
 
-/// The swim repro from the bank (fix-ladder2, NOT fixed this session — see the report): in the port,
-/// Bond walks on the collision floor that sits at/above the water surface in the garden water (cel 17:
-/// floor 3.7647 vs surface 3.7675 [D probe_ladder2]), so `Player_InWater`'s `pos.y − 0.3 < cel+0x90`
-/// never fires from a reachable spot. The port's collision is double-sided (*Deviation*, world.rs
-/// capsule_push) while the game's triangles are one-sided by their stored plane — the likely root
-/// cause, not yet ported. `#[ignore]`d: this asserts the CURRENT (broken) behaviour as the recorded
-/// repro; the next session flips it after the one-sided floor fix.
+/// The swim entry from the bank (fix-swim-vent). The game's player collision is CEL-SCOPED: the
+/// grounding ray and the capsule test only the player's current cel (`Player_FeetOnPoint` 0x194188
+/// passes `obj+0x20`; `Collide_SphereIntersect` 0x1ec940 takes the cel). The water surface/bed planes
+/// carry surface material 0xE [D probe_vent_swim: every underwater hit in all four 07000002 water
+/// cels is mat 14, the banks are 1/4/7/10] and belong to the water cels, whose bbox tops (= `cel+0x90`)
+/// sit at the surface — the walking root stands 1.03 above the bed, above the bbox, so the game's
+/// Bond never tests the bed while on the bank: he falls in and `Player_InWater` 0x195e50 (root − 0.3
+/// < surface) enters the swim substate. The port's flat world grounded him on the mat-14 bed instead —
+/// the user's "walks on the water". The port now drops mat-0xE triangles from the player's grounding
+/// ray and capsule (the material form of the cel scoping).
 #[test]
-#[ignore]
 fn swim_repro_walks_on_the_water_from_the_bank() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut sim = load(&iso);
-    // The garden water (cel 17: x −80.3..−54.1, z 20.1..44.0, surface 3.7675, floor 3.7647).
-    let c = &sim.cels.iter().enumerate().find(|(_, c)| c.water > 3.7 && c.water < 3.8 && c.max[2] > 40.0)
+    // The garden pond west of the bunker (cel 17: x −80.3..−54.1, surface 3.7675 [D probe_ladder2]).
+    let c = &sim.cels.iter().enumerate().find(|(_, c)| c.water > 3.7 && c.water < 3.8 && c.max[0] < -54.0)
         .expect("the garden water cel").1.clone();
-    let (x, z) = (0.5 * (c.min[0] + c.max[0]), 0.5 * (c.min[2] + c.max[2]));
-    let floor = sim.world.floor_below([x, 6.0, z], 10.0).expect("the bank floor");
-    eprintln!("repro: bank floor {floor} vs water surface {} (delta {})", c.water, c.water - floor);
-    sim.bond = nf_game::player::Bond::stand_at(&sim.world, [x, floor + 1.1, z], 0.0);
+    let (cx, cz) = (0.5 * (c.min[0] + c.max[0]), 0.5 * (c.min[2] + c.max[2]));
+    // [D] the bed under the walk-in line is the water material 0xE at the surface level.
+    let bed = sim.world.segment_surface([cx, c.water + 3.0, cz], [cx, c.water - 25.0, cz], false);
+    let (bed_y, bed_mat) = bed.map(|(t, _, m)| (c.water + 3.0 - 28.0 * t, m)).expect("a bed plane under the pond centre");
+    assert_eq!(bed_mat & 0x3f, 0xE, "the pond bed is not the water material (mat {bed_mat:#x}) — the cel-scoping read is wrong here");
+    assert!((bed_y - c.water).abs() < 0.05, "the bed plane {:.3} is not at the surface {:.3}", bed_y, c.water);
+    // The west bank is 0.39 above the surface; Bond starts there facing +x into the pond.
+    let bx = c.min[0] - 2.0;
+    let floor = sim.world.floor_below([bx, 8.0, cz], 12.0).expect("the west bank floor");
+    eprintln!("bank floor {floor:.4} vs water surface {} (delta {})", c.water, c.water - floor);
+    assert!(floor > c.water, "the start spot is not a bank above the water");
+    sim.bond = nf_game::player::Bond::stand_at(&sim.world, [bx, floor + 1.1, cz], 0.0);
+    sim.bond.yaw = std::f32::consts::FRAC_PI_2; // face +x, into the pond (yaw 0 faces +z)
     let fwd = nf_game::player::Input { forward: 1.0, ..Default::default() };
-    let mut swam = false;
-    for t in 0..600 {
+    let mut swam = None;
+    for t in 0..2400 {
         sim.step_bond(fwd, false, false, false);
-        if sim.bond.substate == nf_game::player::SS_SWIM { swam = true; eprintln!("entered swim at tick {t}, y {}", sim.bond.pos[1]); break; }
+        if sim.bond.substate == nf_game::player::SS_SWIM { swam = Some(t); break; }
     }
-    // The user's symptom (pre-fix): he walks on, never in.
-    assert!(!swam, "Bond entered the water from the bank — the repro no longer reproduces (the fix landed?)");
+    let t = swam.expect("Bond never entered the water from the bank — he walks on it (the user's symptom)");
+    let surface = c.water;
+    assert!(sim.bond.pos[1] - 0.3 < surface, "at the swim entry pos.y − 0.3 = {} is not under the surface {surface}", sim.bond.pos[1]);
+    eprintln!("entered the swim substate at tick {t}, y {:.3} (surface {surface})", sim.bond.pos[1]);
+    // Sister: he stays in the water — the swim tail holds him at/below the surface band instead of
+    // ejecting him back onto the bed.
+    for _ in 0..180 { sim.step_bond(fwd, false, false, false); }
+    assert_eq!(sim.bond.substate, nf_game::player::SS_SWIM, "the swim substate did not hold");
+    assert!(sim.bond.pos[1] - 0.3 < surface + 1e-3, "Bond surfaced to y {} (surface {surface})", sim.bond.pos[1]);
 }

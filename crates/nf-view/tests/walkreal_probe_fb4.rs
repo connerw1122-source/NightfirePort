@@ -35,7 +35,7 @@ fn dump_descent() {
     grid(&sim, -2.0, 8.0, -112.0, -84.0, 1.0, 2.0, 5.0, "the trench band x −2..8 (floors within 5 of y 1)");
     // The stuck point's contacts.
     let bond = [2.56f32, -3.33, -102.70];
-    let down = sim.world.segment_surface([bond[0], bond[1] - 0.05, bond[2]], [bond[0], bond[1] - 4.0, bond[2]]);
+    let down = sim.world.segment_surface([bond[0], bond[1] - 0.05, bond[2]], [bond[0], bond[1] - 4.0, bond[2]], false);
     eprintln!("segment down from (2.56,−3.38,−102.7): {down:?}");
     for z in [-101.0, -102.0, -102.7, -103.5, -104.5, -106.0] {
         let f = sim.world.floor_below([2.56, -2.8, z], 10.0);

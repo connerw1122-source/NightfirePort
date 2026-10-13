@@ -307,6 +307,17 @@ impl CollisionWorld {
 
     pub fn triangle_count(&self) -> usize { self.stat.tris.len() }
 
+    /// Every static triangle whose object's box meets `lo`..`hi`, in stored winding order (the [D]
+    /// evidence path: the game's plane is the stored normal = +cross(v1−v0, v2−v0), so the winding's
+    /// direction IS the game's facing — `Intersect_RayGeom` 0x10a8c8 skips `n·dir >= 0`).
+    pub fn tris_near(&self, lo: V3, hi: V3) -> Vec<[[f32; 3]; 3]> {
+        let mut out = Vec::new();
+        for o in overlapping(&self.stat, lo, hi) {
+            out.extend(self.stat.tris[o.tris.clone()].iter().copied());
+        }
+        out
+    }
+
     /// No geometry (tests).
     pub fn empty() -> CollisionWorld { Self::from_triangles(Vec::new()) }
 
@@ -469,15 +480,20 @@ impl CollisionWorld {
         let mut hi = [0f32; 3];
         for k in 0..3 { lo[k] = a[k].min(b[k]) - grow; hi[k] = a[k].max(b[k]) + grow; }
         let stat = &self.stat;
-        let mut test = |t: &[V3; 3], a: &mut V3, b: &mut V3, total: &mut V3, walkable: &mut bool| {
+        let mut test = |t: &[V3; 3], mat: u8, a: &mut V3, b: &mut V3, total: &mut V3, walkable: &mut bool| {
                 let tl = [0, 1, 2].map(|k| t[0][k].min(t[1][k]).min(t[2][k]));
                 let th = [0, 1, 2].map(|k| t[0][k].max(t[1][k]).max(t[2][k]));
                 let (sl, sh) = ([0, 1, 2].map(|k| a[k].min(b[k]) - grow), [0, 1, 2].map(|k| a[k].max(b[k]) + grow));
                 if (0..3).any(|k| th[k] < sl[k] || tl[k] > sh[k]) { return; }
+                // Water surfaces never collide the player (the cel scoping — see capsule_push).
+                if mat & 0x3f == 0xE { return; }
                 let n = cross(sub(t[1], t[0]), sub(t[2], t[0]));
                 let nl = dot(n, n).sqrt();
                 if nl < 1e-12 { return; }
                 let n = [n[0] / nl, n[1] / nl, n[2] / nl];
+                // The one-sided rule for near-horizontal faces: the capsule's top end must be on the
+                // front (+n) side, else the face is skipped (the game's head-on cull [M 0x109da0:321-322]).
+                if n[1].abs() > 0.7 && dot(n, sub(*a, t[0])) < 0.0 { return; }
                 let ab = sub(*b, *a);
                 let denom = dot(n, ab);
                 let mut p = if denom.abs() > 0.0002 {
@@ -500,12 +516,12 @@ impl CollisionWorld {
         for r in runs {
             let o = &stat.objects[r as usize];
             if !(0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k]) {
-                for k in o.tris.clone() { test(&stat.tris[k], &mut a, &mut b, &mut total, &mut walkable); }
+                for k in o.tris.clone() { test(&stat.tris[k], stat.mats[k], &mut a, &mut b, &mut total, &mut walkable); }
             }
         }
         for g in [&dynamic.geo] {
             for o in overlapping(g, lo, hi) {
-                for k in o.tris.clone() { test(&g.tris[k], &mut a, &mut b, &mut total, &mut walkable); }
+                for k in o.tris.clone() { test(&g.tris[k], g.mats[k], &mut a, &mut b, &mut total, &mut walkable); }
             }
         }
         (total, walkable)
@@ -523,6 +539,7 @@ impl CollisionWorld {
             for k in o.tris.clone() {
                 let t = &stat.tris[k];
                 let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                if dot(cross(e1, e2), d) >= 0.0 { continue; } // back face [M 0x10a8c8:168]
                 let p = cross(d, e2);
                 let det = dot(e1, p);
                 if det.abs() < 1e-12 { continue; }
@@ -537,8 +554,7 @@ impl CollisionWorld {
                 if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b.0) {
                     let n = cross(e1, e2);
                     let l = dot(n, n).sqrt().max(1e-12);
-                    let n = if dot(n, d) > 0.0 { [-n[0] / l, -n[1] / l, -n[2] / l] } else { [n[0] / l, n[1] / l, n[2] / l] };
-                    best = Some((tt, n));
+                    best = Some((tt, [n[0] / l, n[1] / l, n[2] / l]));
                 }
             }
         }
@@ -548,6 +564,7 @@ impl CollisionWorld {
             for k in o.tris.clone() {
                 let t = &dynamic.geo.tris[k];
                 let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                if dot(cross(e1, e2), d) >= 0.0 { continue; } // back face [M 0x10a8c8:168]
                 let p = cross(d, e2);
                 let det = dot(e1, p);
                 if det.abs() < 1e-12 { continue; }
@@ -562,8 +579,7 @@ impl CollisionWorld {
                 if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b.0) {
                     let n = cross(e1, e2);
                     let l = dot(n, n).sqrt().max(1e-12);
-                    let n = if dot(n, d) > 0.0 { [-n[0] / l, -n[1] / l, -n[2] / l] } else { [n[0] / l, n[1] / l, n[2] / l] };
-                    best = Some((tt, n));
+                    best = Some((tt, [n[0] / l, n[1] / l, n[2] / l]));
                 }
             }
         }
@@ -588,6 +604,7 @@ impl CollisionWorld {
                 if (m as u32 & 0x3f).wrapping_sub(0xd) < 2 { continue; }
                 let t = &stat.tris[k];
                 let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                if dot(cross(e1, e2), d) >= 0.0 { continue; } // back face [M 0x10a8c8:168]
                 let p = cross(d, e2);
                 let det = dot(e1, p);
                 if det.abs() < 1e-12 { continue; }
@@ -608,6 +625,7 @@ impl CollisionWorld {
             for k in o.tris.clone() {
                 let t = &dynamic.geo.tris[k];
                 let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                if dot(cross(e1, e2), d) >= 0.0 { continue; } // back face [M 0x10a8c8:168]
                 let p = cross(d, e2);
                 let det = dot(e1, p);
                 if det.abs() < 1e-12 { continue; }
@@ -625,7 +643,8 @@ impl CollisionWorld {
         best
     }
 
-    /// First hit along the segment `from → to` as a fraction in [0, 1] (Möller–Trumbore, both faces).
+    /// First hit along the segment `from → to` as a fraction in [0, 1] (Möller–Trumbore). One-sided
+    /// like every game ray test [M Intersect_RayGeom 0x10a8c8:168: `n·dir >= 0` skips the triangle].
     pub fn segment(&self, from: V3, to: V3) -> Option<f32> {
         self.segment_in_sets(from, to, true)
     }
@@ -652,6 +671,7 @@ impl CollisionWorld {
                 for k in o.tris.clone() {
                     let t = &g.tris[k];
                     let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                    if dot(cross(e1, e2), d) >= 0.0 { continue; } // back face [M 0x10a8c8:168]
                     let p = cross(d, e2);
                     let det = dot(e1, p);
                     if det.abs() < 1e-12 { continue; }
@@ -671,15 +691,29 @@ impl CollisionWorld {
     }
 
     /// First hit along `from → to`: the fraction in [0, 1] and the unit normal of the triangle hit (facing `from`).
-    pub fn segment_hit(&self, from: V3, to: V3) -> Option<(f32, V3)> { self.segment_surface(from, to).map(|h| (h.0, h.1)) }
+    /// The player's GROUNDING variant: water surfaces (material 0xE) never ground him — the cel scoping
+    /// of `Player_FeetOnPoint` 0x194188 (the ray tests only the current cel `obj+0x20`; the water planes
+    /// live in the water cels, whose bbox tops sit at the surface below the walking root) [M] — see
+    /// `capsule_push` for the full note. The flat `segment_hit` keeps water for bullets/LOS/AI.
+    pub fn segment_hit(&self, from: V3, to: V3) -> Option<(f32, V3)> {
+        self.segment_surface(from, to, true).map(|h| (h.0, h.1))
+    }
 
     /// `segment_hit` with the surface byte of the triangle hit (`Intersect_RayGeom` → `HITDATA+0x50`).
-    pub fn segment_surface(&self, from: V3, to: V3) -> Option<(f32, V3, u8)> {
+    /// One-sided [M Intersect_RayGeom 0x10a8c8:150-168]: the plane is the triangle's STORED normal (=
+    /// +cross(v1−v0, v2−v0), docs/formats/collision.md whole-disc check) and a triangle whose
+    /// `n·dir >= 0` is skipped — a ray only hits the front face. `no_water` additionally drops the
+    /// water-surface material (0xE) triangles for the player's grounding rays (the cel scoping — see
+    /// `segment_hit`).
+    pub fn segment_surface(&self, from: V3, to: V3, no_water: bool) -> Option<(f32, V3, u8)> {
         let d = sub(to, from);
         let (mut best, mut lo, mut hi) = (None::<(f32, V3, u8)>, [0f32; 3], [0f32; 3]);
         for k in 0..3 { lo[k] = from[k].min(to[k]); hi[k] = from[k].max(to[k]); }
         let _ = (lo, hi); self.near_seg(from, to, |t, mat| {
+            if no_water && mat & 0x3f == 0xE { return; } // the water planes never ground the player
             let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+            let n = cross(e1, e2);
+            if dot(n, d) >= 0.0 { return; } // back face: the game's ray test skips it [M 0x10a8c8:168]
             let p = cross(d, e2);
             let det = dot(e1, p);
             if det.abs() < 1e-12 { return; }
@@ -692,10 +726,8 @@ impl CollisionWorld {
             if v < 0.0 || u + v > 1.0 { return; }
             let tt = dot(e2, q) * inv;
             if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b.0) {
-                let n = cross(e1, e2);
                 let l = dot(n, n).sqrt().max(1e-12);
-                let n = if dot(n, d) > 0.0 { [-n[0] / l, -n[1] / l, -n[2] / l] } else { [n[0] / l, n[1] / l, n[2] / l] };
-                best = Some((tt, n, mat));
+                best = Some((tt, [n[0] / l, n[1] / l, n[2] / l], mat));
             }
         });
         best
@@ -706,8 +738,14 @@ impl CollisionWorld {
     /// the segment point where it meets the plane (clamped; the point nearest the centroid when parallel), the closest
     /// triangle point to it, and when that lies on an edge the segment point nearest it; closer than `r` → pushed out
     /// along the separation. Returns the summed push and whether a walkable face (normal y > 0.7) touched below `b`.
-    /// *Deviation*: both faces count (the game's triangles are one-sided by their stored plane; the port's winding is
-    /// not known to match it).
+    /// One-sided for near-horizontal faces [M Intersect_CylGeom 0x109da0:302-322 + Player_Collision 0x194df0 case 0/6]:
+    /// the game's walk spine (spheres at pos+0.55 and pos+0.275−cc, 1.31 long) makes every plane within
+    /// ~40° of horizontal a head-on crossing, and those the game culls by side — an up-facing floor is
+    /// solid from above while a down-facing one (the garden pond's floor [D probe_vent_swim]) is passed
+    /// through, and an up-facing platform is jumped through from below. The port keys the rule on the
+    /// face's horizontality (|n·y| > 0.7 ≈ the game's 0.999/1.31 cone) with the capsule's top end `a` as
+    /// the side reference — [S] approximation of the cull, walls and steep slopes stay double-sided as in
+    /// the game's non-head-on path.
     pub fn capsule_push(&self, a: V3, b: V3, r: f32) -> (V3, bool) {
         let (mut a, mut b) = (a, b);
         let mut total = [0f32; 3];
@@ -716,15 +754,27 @@ impl CollisionWorld {
         let mut lo = [0f32; 3];
         let mut hi = [0f32; 3];
         for k in 0..3 { lo[k] = a[k].min(b[k]) - grow; hi[k] = a[k].max(b[k]) + grow; }
-        self.near_actor(lo, hi, |t, _| {
+        self.near_actor(lo, hi, |t, mat| {
                 let tl = [0, 1, 2].map(|k| t[0][k].min(t[1][k]).min(t[2][k]));
                 let th = [0, 1, 2].map(|k| t[0][k].max(t[1][k]).max(t[2][k]));
                 let (sl, sh) = ([0, 1, 2].map(|k| a[k].min(b[k]) - grow), [0, 1, 2].map(|k| a[k].max(b[k]) + grow));
                 if (0..3).any(|k| th[k] < sl[k] || tl[k] > sh[k]) { return; }
+                // Water surfaces never collide the player [M the cel scoping: the player's collision
+                // queries test only his current cel — Player_FeetOnPoint 0x194188 passes obj+0x20 and
+                // Collide_SphereIntersect 0x1ec940 takes the cel; the water surface/bed planes (surface
+                // material 0xE [D probe_vent_swim: every underwater hit on 07000002 is mat 14]) live in
+                // the water cels, which the walking player's origin never occupies (his root stands
+                // 1.03 above the bed, above the water volume's bbox top cel+0x90) — so the game's Bond
+                // falls through every water bed into the swim. The port approximates the cel scoping by
+                // dropping mat-&0x3f==0xE triangles from the player's capsule.
+                if mat & 0x3f == 0xE { return; }
                 let n = cross(sub(t[1], t[0]), sub(t[2], t[0]));
                 let nl = dot(n, n).sqrt();
                 if nl < 1e-12 { return; }
                 let n = [n[0] / nl, n[1] / nl, n[2] / nl];
+                // The one-sided rule for near-horizontal faces: the capsule's top end must be on the
+                // front (+n) side, else the face is skipped (the game's head-on cull [M 0x109da0:321-322]).
+                if n[1].abs() > 0.7 && dot(n, sub(a, t[0])) < 0.0 { return; }
                 let ab = sub(b, a);
                 let denom = dot(n, ab);
                 let mut p = if denom.abs() > 0.0002 {
@@ -813,9 +863,11 @@ mod tests {
     fn scoped_actor_queries_keep_only_the_straddle_cels() {
         // A wall quad at x = 2 (bedroom side, 1.5 units from the capsule) — its collision object is
         // assigned to cell 1 (the "exterior"): its world sphere centre (2, 1, 0) lies in cell 1's box.
+        // Wound with the stored normal facing −x (west, at the capsule) — the disc's convention for
+        // a wall that stops rays/capsules from the west side (0x10a8c8 one-sided).
         let wall = [
-            [[2.0, 0.0, -2.0], [2.0, 2.0, -2.0], [2.0, 2.0, 2.0]],
-            [[2.0, 0.0, -2.0], [2.0, 2.0, 2.0], [2.0, 0.0, 2.0]],
+            [[2.0, 0.0, -2.0], [2.0, 2.0, 2.0], [2.0, 2.0, -2.0]],
+            [[2.0, 0.0, -2.0], [2.0, 0.0, 2.0], [2.0, 2.0, 2.0]],
         ];
         let mut stat = Geo::default();
         for t in wall { stat.push(std::iter::once((t, 0u8))); }
@@ -860,7 +912,7 @@ mod tests {
         // The take ray's surface filter: a mat-0xd triangle in the START cell is skipped by
         // segment_take_scoped (the 0x721 bit 0x1) while the flat segment_actor still hits it.
         let mut stat2 = Geo::default();
-        let tri: [[V3; 3]; 1] = [[[-1.0, 0.0, 2.0], [1.0, 0.0, 2.0], [0.0, 1.5, 2.0]]];
+        let tri: [[V3; 3]; 1] = [[[-1.0, 0.0, 2.0], [0.0, 1.5, 2.0], [1.0, 0.0, 2.0]]];
         for t in tri { stat2.push(std::iter::once((t, 0xd))); }
         stat2.chunk(16);
         let w3 = CollisionWorld {
@@ -874,9 +926,10 @@ mod tests {
 
     #[test]
     fn moving_objects_collide_where_they_are() {
-        // One unit triangle in object space as glist 7, placed at x = 5 by the matrix.
+        // One unit triangle in object space as glist 7, placed at x = 5 by the matrix (wound so its
+        // plane normal faces −x, the way the disc winds a wall that stops +x rays — 0x10a8c8).
         let mut w = world(Vec::new());
-        w.shapes.insert(7, vec![[[0.0, 0.0, -1.0], [0.0, 1.0, 1.0], [0.0, -1.0, 1.0]]]);
+        w.shapes.insert(7, vec![[[0.0, 0.0, -1.0], [0.0, -1.0, 1.0], [0.0, 1.0, 1.0]]]);
         let at = |x: f32| [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [x, 0.0, 0.0, 1.0]];
         w.set_dynamic(&[(1, 7, at(5.0))]);
         assert!((w.segment([0.0, 0.0, 0.3], [10.0, 0.0, 0.3]).unwrap() - 0.5).abs() < 1e-5);
@@ -893,9 +946,12 @@ mod tests {
     #[test]
     fn segments_hit_floors_and_walls() {
         // A floor quad at y = 0 and a wall at z = 5.
+        // Disc winding: the stored plane normal = +cross(v1−v0, v2−v0) faces UP on every real floor
+        // (probe on the disc: 7,246 up / 0 down), and `Intersect_RayGeom` 0x10a8c8 skips a triangle
+        // when dot(plane_normal, ray_dir) >= 0 — so a down-ray only hits an up-wound floor.
         let w = world(vec![
-            [[-5.0, 0.0, -5.0], [5.0, 0.0, -5.0], [5.0, 0.0, 5.0]], [[-5.0, 0.0, -5.0], [5.0, 0.0, 5.0], [-5.0, 0.0, 5.0]],
-            [[-5.0, 0.0, 5.0], [5.0, 0.0, 5.0], [5.0, 3.0, 5.0]], [[-5.0, 0.0, 5.0], [5.0, 3.0, 5.0], [-5.0, 3.0, 5.0]],
+            [[-5.0, 0.0, -5.0], [5.0, 0.0, 5.0], [5.0, 0.0, -5.0]], [[-5.0, 0.0, -5.0], [-5.0, 0.0, 5.0], [5.0, 0.0, 5.0]],
+            [[-5.0, 0.0, 5.0], [5.0, 3.0, 5.0], [5.0, 0.0, 5.0]], [[-5.0, 0.0, 5.0], [-5.0, 3.0, 5.0], [5.0, 3.0, 5.0]],
         ]);
         assert_eq!(w.floor_below([1.0, 1.1, 1.0], 3.0), Some(0.0));
         assert!(w.line_of_sight([0.0, 1.0, 0.0], [0.0, 1.0, 4.9]));

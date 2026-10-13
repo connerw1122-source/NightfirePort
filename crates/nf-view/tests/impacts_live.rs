@@ -24,7 +24,7 @@ fn a_shot_at_a_wall_leaves_a_decal_a_sky_shot_leaves_none() {
             let yaw = k as f32 * 0.08;
             let dir = [yaw.sin(), -0.05, yaw.cos()];
             let end = [eye0[0] + dir[0] * 30.0, eye0[1] + dir[1] * 30.0, eye0[2] + dir[2] * 30.0];
-            if let Some((t, _, _)) = sim.data().world.segment_surface(eye0, end) {
+            if let Some((t, _, _)) = sim.data().world.segment_surface(eye0, end, false) {
                 if t < 0.98 {
                     let hit = [eye0[0] + dir[0] * 30.0 * t, eye0[1] + dir[1] * 30.0 * t, eye0[2] + dir[2] * 30.0 * t];
                     aim = Some((hit, yaw));
@@ -36,7 +36,7 @@ fn a_shot_at_a_wall_leaves_a_decal_a_sky_shot_leaves_none() {
         // The surface material the bullet will hit.
         let dir = [yaw.sin(), -0.05, yaw.cos()];
         let end = [eye0[0] + dir[0] * 30.0, eye0[1] + dir[1] * 30.0, eye0[2] + dir[2] * 30.0];
-        let mat = sim.data().world.segment_surface(eye0, end).map(|(_, _, m)| m).unwrap_or(0);
+        let mat = sim.data().world.segment_surface(eye0, end, false).map(|(_, _, m)| m).unwrap_or(0);
         sim.bond.yaw = yaw;
         sim.bond.pitch = (-0.05f32).asin();
         sim.bond.eye = 0.0;
@@ -70,7 +70,7 @@ fn a_shot_at_a_wall_leaves_a_decal_a_sky_shot_leaves_none() {
     let d = scene.sim.as_ref().unwrap().data();
     let front = [dec.pos[0] + dec.normal[0] * 0.2, dec.pos[1] + dec.normal[1] * 0.2, dec.pos[2] + dec.normal[2] * 0.2];
     let back = [dec.pos[0] - dec.normal[0] * 0.2, dec.pos[1] - dec.normal[1] * 0.2, dec.pos[2] - dec.normal[2] * 0.2];
-    if let Some((t, n2, m2)) = d.world.segment_surface(front, back) {
+    if let Some((t, n2, m2)) = d.world.segment_surface(front, back, false) {
         let hp = [front[0] + (back[0] - front[0]) * t, front[1] + (back[1] - front[1]) * t, front[2] + (back[2] - front[2]) * t];
         let dist = ((dec.pos[0] - hp[0]).powi(2) + (dec.pos[1] - hp[1]).powi(2) + (dec.pos[2] - hp[2]).powi(2)).sqrt();
         assert!(dist < 0.03, "the decal floats 0.01 off the wall, got {dist}");

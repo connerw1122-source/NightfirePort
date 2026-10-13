@@ -60,7 +60,7 @@ fn main() {
     let floor_at = |x: f32, z: f32, surface: f32| -> Option<(f32, f32, u8)> {
         let from = [x, surface + 3.0, z];
         sim.world
-            .segment_surface(from, [x, surface - 30.0, z])
+            .segment_surface(from, [x, surface - 30.0, z], false)
             .map(|(t, n, m)| (from[1] + (surface - 30.0 - from[1]) * t, n[1], m))
     };
 
@@ -83,7 +83,7 @@ fn main() {
         for _ in 0..8 {
             let Some((t, n, m)) = sim
                 .world
-                .segment_surface([cx, y_from, cz], [cx, surface - 30.0, cz])
+                .segment_surface([cx, y_from, cz], [cx, surface - 30.0, cz], false)
             else {
                 if hits.is_empty() {
                     hits.push_str(" none");
@@ -138,7 +138,7 @@ fn main() {
 
     println!("\n== garden bank / bunker exit (−26.9, 2.3, 42.2) ==");
     let bank_y0 = 6.0f32;
-    match sim.world.segment_surface([-26.9, bank_y0, 42.2], [-26.9, bank_y0 - 30.0, 42.2]) {
+    match sim.world.segment_surface([-26.9, bank_y0, 42.2], [-26.9, bank_y0 - 30.0, 42.2], false) {
         Some((t, _, m)) => {
             let y = bank_y0 + (bank_y0 - 30.0 - bank_y0) * t;
             println!("bank floor y = {y:.3} (mat {m}); standing y = {:.3}", y + 1.1);

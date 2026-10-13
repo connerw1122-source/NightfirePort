@@ -80,16 +80,38 @@ impl Collision {
     pub fn triangles(&self) -> Vec<[[f32; 3]; 3]> { self.triangles_with_material().into_iter().map(|t| t.0).collect() }
 
     /// [`Collision::triangles`] with each triangle's surface byte.
+    ///
+    /// The triangle's vertex order is aligned to the game's STORED plane normal: `Intersect_RayGeom`
+    /// (0x10a8c8) tests every triangle against the plane record the triangle halfword points at
+    /// (leaf words + plane·2 bytes: 3 s16 normal · 2⁻¹⁴, then the i32 distance) and skips a hit when
+    /// `dot(plane_normal, ray_dir) >= 0` (the decompile's `if (0.0 <= dot) skip` before
+    /// `t = -(dot(from,n)+dist)/dot(dir,n)`). The winding cross equals the stored normal for
+    /// 2,242,859 of 2,245,313 disc triangles; 146 are the opposite and 477 disagree
+    /// (docs/formats/collision.md). Where they oppose, the vertex order is swapped so the winding
+    /// cross — the port's only normal source — carries the game's plane direction (the hit point and
+    /// t are winding-independent; only the cross flips).
     pub fn triangles_with_material(&self) -> Vec<([[f32; 3]; 3], u8)> {
         let mut out = Vec::new();
         for bx in self.boxes.iter().filter(|b| b.children.is_none()) {
             let base = bx.vblock as usize * 0x20;
             for (ti, t) in self.tris[bx.tris.start as usize..bx.tris.end as usize].iter().enumerate() {
                 let m = self.materials.get(bx.tris.start as usize + ti).copied().unwrap_or(0);
-                out.push((t.v.map(|i| {
+                let mut v = t.v.map(|i| {
                     let w = |k: usize| self.words.get(base + i as usize + k).copied().unwrap_or(0) as f32;
                     [w(0) * bx.scale + bx.origin[0], w(1) * bx.scale + bx.origin[1], w(2) * bx.scale + bx.origin[2]]
-                }), m));
+                });
+                // The stored plane normal: the triangle's plane halfword indexes the leaf's s16 area
+                // (the same base as the vertex halfwords; `Intersect_RayGeom` loads 3 s16 · 2⁻¹⁴).
+                let p = t.plane as usize;
+                let pw = |k: usize| self.words.get(base + p + k).copied().unwrap_or(0) as f32 * (1.0 / 16384.0);
+                let n = [pw(0), pw(1), pw(2)];
+                let e1 = [v[1][0] - v[0][0], v[1][1] - v[0][1], v[1][2] - v[0][2]];
+                let e2 = [v[2][0] - v[0][0], v[2][1] - v[0][1], v[2][2] - v[0][2]];
+                let cr = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+                if n[0] * cr[0] + n[1] * cr[1] + n[2] * cr[2] < 0.0 {
+                    v.swap(1, 2);
+                }
+                out.push((v, m));
             }
         }
         out
