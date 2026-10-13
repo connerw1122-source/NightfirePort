@@ -699,19 +699,24 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
     (rooms, CelGraph { cells, portals, room_to_cell, dropped_portals: dropped, chains, own_cells_main })
 }
 
-/// The `+0x18` chain builder (fix-portal4). The game hangs each generic cel (runtime class
-/// 0x8019/0x8018 — the placement flag words `cel_flags_word` maps there) on a room's chain:
-/// the room is `build_FindCel` (0x1c8cb0)'s pick for the generic's world-sphere centre — the
-/// containing-room-bbox candidates (the 0x40000 room bit, cap 0x40) with the collision up/down
-/// ray tie-break. Evidence [L ee_start_05.bin + ee_snapshot.bin, both walked +0x18-head/next]:
-/// 8 room owners / 113 generic members / 0 members outside the owner's world bbox (+0x40 min
-/// vec4, +0x50 max vec4) / 65 members inside several room bboxes with the owner matching the
-/// FindCel tie-break (64 earlier-smaller room, 1 later room whose co-candidate has no collision
-/// at the point) / no orphan generic (every 0x8019-class cel rides some chain). Live [L
-/// ground-truth doc]: the eye cel's chain is empty, the big room 0x0179fb30's chain is exactly
-/// the 40 courtyard generics. `world` (the sim's scoped `CollisionWorld`) supplies the
-/// tie-break rays; `None` keeps `find_cell_raycast`'s bbox-face approximation (the world-less
-/// callers). Nodes are prepended so a chain reads in reverse parse order — the live dump order.
+/// The `+0x18` chain builder (fix-portal4, the owner rule fix-portal5). The game hangs each generic
+/// cel (runtime class 0x8019/0x8018 — the placement flag words `cel_flags_word` maps there) on a
+/// room's chain at LOAD time by `build_link_objects_to_rooms` (0x1c9150): the owner is picked among
+/// the ROOM-class cels (short class 0xC047/0xC023) whose radius ≥ the generic's and whose world bbox
+/// contains the generic's sphere centre, by `Collide_SphereIntersect` (0x1ec940) — a sphere at the
+/// generic's centre with radius 4001 (containing), scoped to the candidate room, i.e. the candidate
+/// whose collision sits CLOSEST to the centre; strict `<` keeps the first candidate in parse order.
+/// The port's `find_cell_raycast` (the runtime `build_FindCel` 0x1c8cb0 two-ray rule) is the EYE-cel
+/// picker, not the linker — as a stand-in it hung the 9 courtyard extras on the big room 21 [L live
+/// ground truth: the game's 0x0179fb30 chain is exactly the 40 named courtyard generics] and the
+/// wall generics on the wrong rooms. Evidence [L ee_start_05.bin + ee_snapshot.bin, both walked
+/// +0x18-head/next]: 8 room owners / 113 generic members / 0 members outside the owner's world bbox
+/// (+0x40 min vec4, +0x50 max vec4) / no orphan generic (every 0x8019-class cel rides some chain).
+/// Live [L ground-truth doc]: the eye cel's chain is empty, the big room 0x0179fb30's chain is
+/// exactly the 40 courtyard generics. `world` (the sim's scoped `CollisionWorld`) supplies the
+/// closest-hit tie-break (and the radius/bbox gates stand alone); `None` keeps `find_cell_raycast`'s
+/// bbox-face approximation (the world-less callers). Nodes are prepended so a chain reads in reverse
+/// parse order — the live dump order (the game walks its +0x14 list in parse order, prepending).
 pub fn build_chains(graph: &mut CelGraph, world: Option<&nf_game::world::CollisionWorld>) {
     let mut chains = std::mem::take(&mut graph.chains);
     for i in 0..graph.cells.len() {
@@ -722,12 +727,35 @@ pub fn build_chains(graph: &mut CelGraph, world: Option<&nf_game::world::Collisi
         // could not resolve — the game's records always carry real data, and `View_AddCels`
         // (0x1e6ba0) skips chain nodes whose glist pointer is null; skip them here too.
         if node.min == [0.0; 3] && node.max == [0.0; 3] && node.sphere.1 == 0.0 { continue; }
-        let owner = find_cell_raycast(graph, node.sphere.0, world);
+        let owner = match world {
+            Some(w) => link_owner_room(graph, i, w),
+            None => find_cell_raycast(graph, node.sphere.0, None),
+        };
         if let Some(o) = owner {
             if o < chains.len() && o != i { chains[o].insert(0, i as u32); }
         }
     }
     graph.chains = chains;
+}
+
+/// `build_link_objects_to_rooms` (0x1c9150)'s owner pick for the generic cel `generic`: the
+/// room-class candidate (short class 0xC047/0xC023, i.e. the port's flags word & 0xffff) with
+/// `generic.radius <= room.radius` and the generic's sphere centre inside the room's world bbox,
+/// ranked by the room's closest collision point to the centre (`Collide_SphereIntersect` 0x1ec940's
+/// scoped closest hit with a containing sphere — `world.closest_point_scoped`); strict `<` keeps
+/// the first candidate in parse order [M 0x1c9150 walk]. `None` = no candidate hits (the game
+/// leaves the generic unchained).
+fn link_owner_room(graph: &CelGraph, generic: usize, world: &nf_game::world::CollisionWorld) -> Option<usize> {
+    let g = &graph.cells[generic];
+    let mut best: Option<(usize, f32)> = None;
+    for (ri, r) in graph.cells.iter().enumerate() {
+        if !matches!(r.flags & 0xffff, 0xc023 | 0xc047) { continue; }
+        if g.sphere.1 > r.sphere.1 { continue; }
+        if !(0..3).all(|k| r.min[k] <= g.sphere.0[k] && g.sphere.0[k] <= r.max[k]) { continue; }
+        let Some(d) = world.closest_point_scoped(ri, g.sphere.0) else { continue };
+        if best.map_or(true, |(_, bd)| d < bd) { best = Some((ri, d)); }
+    }
+    best.map(|(i, _)| i)
 }
 
 /// `Vision_InView` (0x1e89e0) [M]: visible iff for each of the four viewer+0x70 side planes
@@ -2924,12 +2952,37 @@ impl Scene {
         // instance walk below is aligned with `instances()` (the main map's placements in order,
         // resolved ones kept) via the same resolution test over `own_cells_main` (by placement
         // ordinal).
+        // fix-portal5: `own_cells` must line up 1:1 with the instances that feed it below — the
+        // positional `own_i` advances only for non-room instances that survived the retain above,
+        // so the build applies the SAME filters (unresolved dropped; the retained-out classes
+        // 0x2a/0x22/0xd4 dropped; the room classes dropped — they take the room branch), plus,
+        // when `cels_only`, the trailing 0x20/0xe2 extension `scene_instances` appends. The old
+        // build listed every resolved placement, so after the first room every non-room placement
+        // read an EARLIER placement's cell (07000006: 379 of 765 non-room instances misaligned;
+        // the wall-region generics keyed under hidden ROOM cells 13/20/22/38 while their true
+        // cells hung on room 21's chain — the courtyard walls did not draw).
         let own_cells: Vec<u32> = match level.main_map() {
-            Some(m) => level.maps[m].placements.iter().enumerate().filter_map(|(pi, p)| {
-                let resolved = if p.by_hash() { level.by_hash.contains_key(&p.hashcode) } else { (p.index as usize) < level.maps[m].objects.len() };
-                if !resolved { return None; }
-                Some(cel_graph.own_cells_main.get(pi).copied().flatten().unwrap_or(u32::MAX))
-            }).collect(),
+            Some(m) => {
+                let mut v: Vec<u32> = Vec::new();
+                let resolved = |p: &nf_formats::placement::Placement| if p.by_hash() { level.by_hash.contains_key(&p.hashcode) } else { (p.index as usize) < level.maps[m].objects.len() };
+                for (pi, p) in level.maps[m].placements.iter().enumerate() {
+                    if !resolved(p) { continue; }
+                    if cels_only && !p.creates_cel() { continue; }
+                    if matches!(p.flags & 0xff, 0x2a | 0x22 | 0xd4) { continue; }
+                    if matches!(p.flags & 0xffff, 0xc023 | 0xc047) { continue; }
+                    v.push(cel_graph.own_cells_main.get(pi).copied().flatten().unwrap_or(u32::MAX));
+                }
+                if cels_only {
+                    // `scene_instances(true)`'s extension: the static dynamic entities (0x20/0xe2,
+                    // non-cel placements) appended after the cel placements, in placement order.
+                    for (pi, p) in level.maps[m].placements.iter().enumerate() {
+                        if !resolved(p) || p.creates_cel() || !matches!(p.flags & 0xff, 0x20 | 0xe2) { continue; }
+                        if p.flags & 0xff == 0xe2 && p.extra[7] & 0xffff != 0 { continue; }
+                        v.push(u32::MAX);
+                    }
+                }
+                v
+            }
             None => Vec::new(),
         };
         let mut own_i = 0usize;

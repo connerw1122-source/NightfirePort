@@ -8054,3 +8054,22 @@ Stage Summary:
   the objective's own string id; the fail message is centred. Shared-file changes: drone.rs (the
   Mission_Update move), scene.rs (the drain/freeze order, the head-only tick, the SFX-at-open),
   hud.rs (the centred objective-banner rows) — all additive, listed in the report.
+
+---
+Task: fix-portal5
+Agent: fix-portal5 worker
+Branch: s/fix-portal5 (from origin/s/fix-portal4 02c0786, origin/master aba19b0 merged)
+
+Work Log:
+- Sandbox kept (repo, work/, onfoot ISO, nf-queue all present); token refreshed, origin fetched.
+  Branch-name note: the task header/rules say `s/fix-portal5` (twice), the tail says `s/portal5`;
+  no branch of either name existed on origin — created `s/fix-portal5` from origin/s/fix-portal4
+  and merged origin/master (only docs/WORKLOG.md conflicted; both sides kept append-only).
+  Pushed as the first checkpoint.
+
+Stage Summary:
+- Starting fix-portal5: the courtyard wall geometry must draw with the walk on and visible rooms
+  {33, 21} — find how the game assigns a world mesh/glist to a cel (static map cel placement ->
+  glist, hashtable_hashcode_to_celglist, parseentity_fixup_entity 0x1d00c0) vs the port's
+  scene.rs attribution that parks wall materials under ROOM cells 20/22/38/13; settle the 9 extra
+  chain nodes on cell 21; pin with a failing-first test + render spots.
