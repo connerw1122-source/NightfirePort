@@ -7217,3 +7217,12 @@ by G-017/G-024 with the repro. Suite: escort walk green on the final state + dif
 the full-suite re-run timed out (sandbox) after the revert — sim paths are otherwise byte-identical to
 master's. Shared-file hooks: lib.rs (pub mod ps2math), nf-extract main.rs (Player.capsule compile fix;
 pose-check level names take the FILES.BIN .bin names). Report: docs/reports/verify-bitexact.md.
+
+## fix-explosions (s/fix-explosions) — 2026-10-13
+Task: port Explode_Create and the explosion entity (lifetime, visual script 0x6000052,
+camera shake, sound, damage falloff through Explode_Propagate's 12 per-type cases),
+explosive objects (barrels), grenade/rocket impacts. Grenade follow-ups: frag has bounce
+sound but no explosion sound/effect; flashbang kills enemies instead of stunning.
+SimpleScript 0xE2: activation, keyframe playback, collision, rolling-barrel damage,
+open/closed pairs. 0700000d C5 door laser sequence if time. Started 11:08 UTC, sandbox
+expires ~13:08 UTC.
