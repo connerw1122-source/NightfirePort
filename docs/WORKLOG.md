@@ -6565,3 +6565,13 @@ demonstrated live before the reset and the chain test re-run green on the restor
 2. Press fire (✕) while dying: the menu/restart should come immediately instead of the 7.5 s.
 3. Die on 07000007 (punch a guest to death): the fail banner ~5 s, then the restart to 07000005
    (the mission start), COLD — full health, fists, objectives re-announced. The old replay loop gone.
+
+---
+Task ID: 045h-fix-fusebox-cut
+Agent: main agent (Super Z worker session)
+Task: fix-fusebox-cut — the fusebox wires are cut by hits (the laser), not by pressing E (NightfirePort, branch s/fix-fusebox-cut)
+
+Work Log:
+- Setup reused (repo + game files + queue worktree intact); branch s/fix-fusebox-cut created from origin/master (20fe32b).
+- Decompiled evidence gathered: FuseBox_Update 0x1adfe8 (the hit-driven cut), Collide_FilterBullets 0x1ece30 (polarity), Collide_Update 0x1ea398 (hit-list build), Bullet_init 0x12c5a0 (ext+0x44 = weapon def), Player_WeaponInitBullet 0x1a4bf0 + Player_WeaponFiring 0x1a5460 (the fire path), Break_Update/MP_Demolition (polarity corroboration).
+- weapon_data[w]+0x10 (the bullet category word) dumped for all 115 records over the disc's ACTION.ELF initialiser [L]; gadget names resolved from USATxt.dat labels (+0x38) [D].
