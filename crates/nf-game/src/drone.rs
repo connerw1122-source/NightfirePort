@@ -4629,6 +4629,11 @@ pub struct Drones {
     /// built at load (scene.rs) with `gone = true` (undrawn, inert) and goes live when the script
     /// spawns it.
     pub script_pickup_slots: HashMap<(u32, u8), usize>,
+    /// The auto-switch request `Pickup_Handler` → `Player_EquipWeapon`'s tail wrote this tick
+    /// [M 0x1a8a58: the `DAT_002a38d2[idx·0x158]` flag (live 1 [L ee_start_05]) ∧
+    /// `Player_IsBetterWeapon` → `anim+0x63 = id`]. The view applies it to the draw machine
+    /// (gun.switch_request).
+    pub weapon_switch_request: Option<u16>,
     /// The grapple points (placement 0x3A, `Grapple_Create` 0x198298; fix-gadgets).
     pub grapple_points: Vec<crate::gadget::GrapplePoint>,
     /// The animated SimpleScripts (`SS_Create` 0x1a9c58 / `SS_Update` 0x1a9948; map-tower2): the
@@ -4745,6 +4750,9 @@ impl Drones {
             // script's obj_type-0xF0 Entity (`Script_CreateEntity` 0x1d8968's Pickup_Create arm);
             // built at load in scene.rs, matched by the runtime spawn.
             script_pickup_slots: Default::default(),
+            // fix-pickups-remainder: the pickup auto-switch request (fields on their own lines —
+            // merge lesson 4).
+            weapon_switch_request: None,
             worldobjs: Default::default(),
             // fix-world-fx: the presentation FX (fields on their own lines — merge lesson 4).
             fx: Default::default(),
@@ -5363,11 +5371,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         for k in 0..self.pickups.len() {
             let p = &mut self.pickups[k];
             if p.gone { continue; }
+            // State 2 (taken, waiting to respawn) [M 0x18e148:182-189]: nothing else that tick.
+            if p.state == 2 {
+                p.respawn_wait();
+                continue;
+            }
+            // `+0x38` spin [M 0x18e148:193-201] — every tick, before the touch.
+            p.spin_tick();
             p.fall(d.world);
             // The distance test runs from the player's position (+0x30) but the LOS from his world-sphere
             // centre (+0x80) — two different points [M 0x18e148:203-214 + L]. Port-check §1: the old call
             // passed `player.pos` for both, so the take-ray origin differed from the game's by construction.
-            if alive && p.touches(d.world, player.cel, player.pos, player.sph) {
+            if alive && !p.hidden && p.touches(d.world, player.cel, player.pos, player.sph) {
                 let loaded = d.skins.contains_key(&d.weapons.first_person(p.weapon as usize));
                 // `Pickup_Handler`: the armour case writes `BLData+0x8B0`; the clock is `GameState+0x52`
                 // (the 10 → 0xC remap gate) — the port's tick count stands in for it.
@@ -5379,7 +5394,24 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     eprintln!("[take] tick {} weapon {:#x} kind {} rounds {} loaded {} → {:?}", frame, p.weapon, p.kind, p.rounds, loaded, res);
                 }
                 if let Some(t) = res {
-                    p.gone = true;
+                    // The respawn tail [M 0x18e650:338-348]: respawn 0 → deleted; -1 (0xFFFF) → stays
+                    // takeable; else hidden (obj+0xF0 |= 0x10), state 2, until
+                    // `FRAME_RATE_INT · respawn · 10` ticks pass. The port used to delete unconditionally.
+                    match p.respawn {
+                        0 => p.gone = true,
+                        0xFFFF => {}
+                        r => { p.hidden = true; p.state = 2; p.respawn_ticks = 60 * r as u32 * 10; }
+                    }
+                    // `Player_EquipWeapon`'s tail [M 0x1a8a58]: on a WEAPON equip (not the ammo path —
+                    // `Player_EquipAmmo` has no switch), the per-player auto-switch flag (live 1 [L]) ∧
+                    // `Player_IsBetterWeapon` writes `anim+0x63 = the upgraded id`. The port's `bond_weapon`
+                    // is the view's held weapon (one tick stale at most).
+                    if matches!(t, crate::pickup::Taken::Weapon { .. }) {
+                        let id = crate::pickup::Inventory::upgrade_weapon(p.weapon, 0, clock);
+                        if crate::pickup::Inventory::is_better_weapon(d.weapons, self.bond_weapon, id) {
+                            self.weapon_switch_request = Some(id);
+                        }
+                    }
                     // `PlrStat_LogBondBonus(0)` 0x1999e0 — `Pickup_Handler` case 6 0x18e650:234-236
                     // logs the bonus pickup in the take-effect switch (fix-progress).
                     if matches!(t, crate::pickup::Taken::Bonus) { self.progress.log_bond_bonus(self.mission.status()); }
@@ -6308,6 +6340,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
             // No reserved slot: build from the entity params; the bounds from the entity's hash
             // (the game's glist comes from `hashtable_hashcode_to_celglist(hash)`, 0x1d8bcc).
+            // Kinds 7-11 resolve through `Pickup_CreateFromSet` like every other create [M 0x18dda0:104-105].
+            if (7..=11).contains(&sp.kind) {
+                if let Some(mut p) = crate::pickup::Pickup::create_from_set(
+                    [sp.matrix[3][0], sp.matrix[3][1], sp.matrix[3][2]], [0.0; 3], sp.kind, d.weapons, &d.models) {
+                    p.m = sp.matrix;
+                    self.pickups.push(p);
+                }
+                continue;
+            }
             let bounds = d.models.get(&sp.hash).copied().unwrap_or(crate::pickup::Model { centre: [0.0; 3], radius: 0.3 });
             self.pickups.push(crate::pickup::Pickup {
                 kind: sp.kind, weapon: sp.id, rounds: sp.rounds, model: sp.hash,
@@ -6316,6 +6357,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 vel: [0.0; 3], state: 1, lifetime: 0, switch_channel: sp.switch_ch,
                 sound: if sp.sound == 0 || sp.sound == 0xFFFF { None } else { Some(sp.sound) },
                 hidden: false, gone: false, from: None, obj: None,
+                respawn: 0, respawn_ticks: 0, spin: sp.kind == crate::pickup::kind::BOND_BONUS,
             });
         }
         { let _p = crate::prof::scope("drones: set_dynamic"); d.world.set_dynamic(&script_parts(self, d)); }
