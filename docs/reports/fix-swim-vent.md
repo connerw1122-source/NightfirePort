@@ -92,4 +92,6 @@ research fix-ladder2 already recorded.
 
 ## ntfy
 
-(sent after the push — see the finish step)
+Sent successfully (the first curl, id 2kfv5I4uAAhA): "fix-swim-vent: swim entry fixed+verified
+(cel-scoped water collision, repro green); vent crawl + music step left, research recorded in
+report".
