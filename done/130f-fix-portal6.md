@@ -38,3 +38,8 @@ Files: `crates/nf-view/src/{scene,gpu,lib}.rs`, `crates/nf-view/tests/fix_portal
 
 ---
 claimed-by: sandbox3 at 2026-10-13T19:56Z
+
+---
+## Report (done, 2026-10-13T21:22Z)
+
+Closed by the driver: the report is on `s/fix-portal6` (docs/reports/fix-portal6.md); the worker didn't run finish.sh.
