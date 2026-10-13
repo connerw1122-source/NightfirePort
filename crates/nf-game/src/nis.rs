@@ -21,7 +21,9 @@ pub enum Obj {
     /// sequence's root carries it (docs/systems/script-player.md). `weapon` is the byte Event 0xB writes on
     /// `sAnimObject+0x62` (`Script_EventHandler` 0x1d94c0:152-158) — the held weapon's `weapon_data` index, applied
     /// by `AnimObjectDraw` (0x1c4490:256-265) as `weapon_data[w]+0x80` mesh on datum `weapon_data[w]+0x50`.
-    Anim { skin: u32, script: u32, frame: f32, weapon: u8, src: (u32, u8) },
+    /// `ticked`: false until the stream's first `Script_Interp` runs — the game's fresh anim script has no previous
+    /// time, so the start frame's own commands fire on that first interp (`AnimScriptTick`'s old time is 0).
+    Anim { skin: u32, script: u32, frame: f32, weapon: u8, src: (u32, u8), ticked: bool },
     /// A cut-scene camera (`CAM_INFO`, `Script_CameraStart`): its world matrix (rows: right, up, forward, position)
     /// and vertical field of view in radians (key scale × `+0x114` = 4/3, `Camera_CalcViewAngles`).
     Camera { matrix: Mat4, fov: f32, src: (u32, u8) },
@@ -33,6 +35,11 @@ pub enum Request {
     /// `Sound_Play` (2-D) or `Sound_Play3D` at object `at` (an index into `Scripts::objects`), from stream `src`
     /// (script hash, stream): `Script_Interp` case 5 moves it with that object every frame.
     Sound { id: u32, at: Option<usize>, src: (u32, u8) },
+    /// An animation script's op-1 sound (`AnimProcessScriptCmds` 0x1c1b38 case 1 → `Sound_Play3D` at the anim
+    /// object, `Script_Interp` case 2's `AnimObjectUpdate` firing it): the cut-scene characters' lip-synced
+    /// voice lines and one-shot effects are baked into their animation scripts this way. `at` is the owning
+    /// `Obj::Anim`'s object index (the sound's position, read each drain).
+    AnimSound { id: u32, at: Option<usize> },
     /// The stream's sound ends (`Script_SoundEnd` / `Script_KillStream` → `Sound_Stop`).
     SoundStop { src: (u32, u8) },
     /// An event the port does not carry out yet (type, parameters).
@@ -155,6 +162,9 @@ pub struct PendingPickup {
 pub trait World {
     fn anim_length(&self, script: u32) -> Option<u16>;
     fn discrete0(&self, skin: u32, script: u32, frame: f32) -> Option<Mat4>;
+    /// An animation script's op-1 sound ids with frame in `(from, to]` — the interval `AnimProcessScriptCmds`
+    /// (0x1c1b38 case 1) fires, in command order. Empty default: only the runtime's `Data` holds the scripts.
+    fn anim_ops1(&self, script: u32, from: i32, to: i32) -> Vec<u32> { let _ = (script, from, to); Vec::new() }
     /// The running level (fix-finale-blockers: the 0700004a lift stand-in keys on it).
     fn level(&self) -> u32 { 0 }
 }
@@ -280,7 +290,7 @@ impl Script {
         // A looping stream whose end sits before the script length would spin; the data never does it.
         for _ in 0..64 {
             if self.streams[i].pc.is_none() { return; }
-            if self.streams[i].clock <= len { self.interp(i, objs, w); }
+            if self.streams[i].clock <= len { self.interp(i, objs, w, out); }
             loop {
                 let s = &self.streams[i];
                 let Some(pc) = s.pc else { return };
@@ -369,7 +379,7 @@ impl Script {
                             s.last_key = (b as u16).wrapping_sub(1);
                             s.flags = if sp != 0 { 2 } else { 0 };
                             self.fade_flags |= 0x10;
-                            self.interp(i, objs, w);
+                            self.interp(i, objs, w, out);
                         }
                     }
                     0x0f => {
@@ -423,7 +433,8 @@ impl Script {
         s.kind = 1;
         s.flags = if spline { 2 } else { 0 };
         s.obj_type = obj_type;
-        self.interp(i, objs, w);
+        let mut none = Vec::new();
+        self.interp(i, objs, w, &mut none);
         // `Script_CreateEntity` 0x1d8968's 0xF0 arm (see `Objects::pending_pickups`): a NEW entity of
         // the pickup class creates the takeable pickup at the stream's posed position [M disasm
         // 0x1d8bcc-0x1d8c20]; the reuse path only re-points the gfx. 07000008's SafePickUps script
@@ -449,7 +460,7 @@ impl Script {
         let len = w.anim_length(script).unwrap_or(1).max(1) as f32;
         let f = start as f32;
         let frame = if f < 1.0 || len < f { if f < 1.0 { 1.0 } else { len } } else { f };
-        objs.list.push(Some(Obj::Anim { skin, script, frame, weapon: 0, src: (self.nis.hashcode, i as u8) }));
+        objs.list.push(Some(Obj::Anim { skin, script, frame, weapon: 0, src: (self.nis.hashcode, i as u8), ticked: false }));
         let s = &mut self.streams[i];
         s.obj = Some(objs.list.len() - 1);
         s.kind = 2;
@@ -558,7 +569,7 @@ impl Script {
     }
 
     /// `Script_Interp` (0x1d9a08) for entity and animation streams.
-    fn interp(&mut self, i: usize, objs: &mut Objects, w: &dyn World) {
+    fn interp(&mut self, i: usize, objs: &mut Objects, w: &dyn World, out: &mut Vec<Request>) {
         let s = &self.streams[i];
         let Some(o) = s.obj else { return };
         match s.kind {
@@ -589,9 +600,21 @@ impl Script {
                 // The skip's freeze: `Script_Interp` case 2 returns while `+0xAB5 & 0x20` [M 0x1d9a08:146].
                 if self.fade_flags & 0x20 != 0 { return; }
                 let f = s.clock - s.start_clock + s.start_frame;
-                if let Some(Some(Obj::Anim { script, frame, .. })) = objs.list.get_mut(o) {
+                let o = s.obj;
+                if let Some(Some(Obj::Anim { script, frame, ticked, .. })) = o.and_then(|o| objs.list.get_mut(o)) {
                     let len = w.anim_length(*script).unwrap_or(1).max(1) as f32;
+                    // `Script_Interp` case 2 (0x1d9a08) writes the stream's frame into the anim script's time
+                    // (+0x90) and zeroes its advance (+0x98), then runs `AnimObjectUpdate` → `AnimScriptTick` →
+                    // `AnimProcessScriptCmds(old, new)` [M 0x1d9a08 case 2 + 0x1c2630:31-37]: the op-1 sounds fire
+                    // on (old, new] — old is 0 on the first tick (a fresh script has no previous time), the
+                    // previous frame afterwards. The game's per-command fired bit only suppresses re-fires while
+                    // the window still covers the time, which the interval test already does.
+                    let from = if *ticked { *frame as i32 } else { 0 };
                     *frame = f.floor().clamp(1.0, len);
+                    *ticked = true;
+                    for id in w.anim_ops1(*script, from, *frame as i32) {
+                        out.push(Request::AnimSound { id, at: o });
+                    }
                 }
             }
             _ => {}
