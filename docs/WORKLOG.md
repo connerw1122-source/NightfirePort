@@ -8909,6 +8909,21 @@ Stage Summary:
   and the 06 second spot hold. Open: the game's +0x70 planes mid-gameplay (PINE request in the
   report), the 55 orphan generics on 07000007, the per-cel collision-assignment residue.
 
+---
+Task: fix-auto-switch
+Agent: fix-auto-switch worker
+Branch: s/fix-auto-switch (from origin/master 6be39ed)
+
+Work Log:
+- Branch cut from origin/master 6be39ed, WORKLOG started, pushed. Setup verified in sandbox
+  (repo, work/, Nightfire-onfoot.iso, ../nf-queue all present; time 22:33 UTC, deadline 00:33 UTC).
+- Next: read docs/reports/fix-pickups-remainder.md section 3; reproduce the walk wedge with the
+  switch gate open; study Player_Weapon 0x1a24c8 view states in the decompile.
+
+Stage Summary:
+- Task: open the auto-switch drain gate (if false in scene.rs) without wedging
+  walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact (wedge: d=3.89 after
+  first Raptor take, Bond 1.13 above floor). In progress.
 ## fix-anim-blend2 (2026-10-13, branch s/fix-anim-blend2, from s/fix-anim-blend a14976d + origin/master 0cda458)
 
 Task: the cover lean-out at speed 1.5 now lasts 90 ticks instead of the game's 37
@@ -9229,3 +9244,51 @@ Stage Summary:
   the flicker machine is faithful; the placement census settled late-spot-creation as a
   non-mechanism. Live checks for the main agent: the 6 items in the report.
 
+
+---
+Task: fix-auto-switch
+Agent: fix-auto-switch worker (final entry)
+Branch: s/fix-auto-switch (from origin/master 6be39ed; merged origin/master 2302fc7)
+
+Work Log:
+- Reproduced first: opened the gate behind NF_AUTOSWITCH and ran
+  walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact — TWICE GREEN
+  (level_exit at tick 319323, identical to the gated master runs). The wedge that gated the
+  drain off (fix-pickups-remainder §3: stuck at d=3.89, Bond 1.13 above the floor after the
+  first Raptor take) does NOT reproduce on master 6be39ed. What changed: on master the port
+  takes a PLACED Raptor (0x0E) pickup at the spawn during the intro ([take] tick 817), so Bond
+  already holds 0x0E and the mid-escort guard-drop switch (the reported trigger) cannot fire;
+  a mid-walk switch that does fire (0x0E→0x1C at tick 85489) walks on fine.
+- Decompiled the interaction instead of guessing: full view-state (+0xF4) census over
+  ACTION.ELF (12 functions read it). Player_WeaponFiring 0x1a5460 gates fire/reload;
+  Player_Weapon 0x1a24c8 gates aim/ammo-swap; Player_Move 0x191dd0 zeroes inputs ONLY for
+  grapple gadgets (0x50/0x51) firing; Player_Update 0x193600 skips regen+weapon dispatch while
+  state 9. NOTHING gates walking, walk speed, the capsule or the walk anim on the switch
+  states, and Player_SetWeaponAnimObj 0x1a2e38 / Player_WeaponSelect 0x1a2cc0 touch only the
+  first-person view model at BLData+0x7e8 — never Bond's body/position. The draw machine
+  cannot wedge the walker, and the port's machine already matches.
+- Re-opened the gate: the drain in scene.rs now applies the take request unconditionally and
+  writes ONLY gun.switch_request (the game writes only anim+0x63 [M 0x1a8a58 tail]; the gated
+  code's prev_weapon/prev_gadget writes were Player_WeaponChange 0x1a6f80's cycle bookkeeping
+  — dropped to match). No Rand_* draws added (no seed-pinned movement; suite confirms).
+- fix_auto_switch_live (07000005 + dev sg5-pickup scenario, real Input steering, no pokes):
+  main — taking the better-ranked SG5 (0x16, rank 6) while holding the P2K (0x02, rank 16)
+  swaps through the draw machine and settles idle ([auto-switch] swapped at tick 86); RED on
+  the gated master (shown failing), green after. Sister — a worse-ranked Weapon equip (0x0A,
+  rank 17) fills the inventory and NEVER moves the draw machine [M Player_IsBetterWeapon
+  0x1a6eb0]; green. (A 0x06 drop here is an Ammo take — already owned, EquipAmmo has no switch
+  tail [M 0x1a8d18] — which the sister notes.)
+- Full suite: 198 test binaries, 197 green, 1 binary failed = disc_golden (3 tests, the
+  allowed slim-ISO count; nothing else). walkreal_07000001 re-run green on the final tree.
+
+Stage Summary:
+- The pickup auto-switch is LIVE: a better-ranked take holsters and draws through the real
+  path; the 01 escort walk stays green (319323 ticks, byte-identical route ticks).
+- FOUND, not fixed (shared pickup.rs, census-coupled — needs its own task + live check): the
+  port takes pickups while Bond is script-disabled. Pickup_Update 0x18e148:209 requires the
+  player OBJ state == 1 (playing) in its touch loop; the port's predicate has no such gate, so
+  the 07000001 spawn's placed pickups (P2K ammo @368, 0x12 @776, Raptor 0x0E @817, 0x12 ammo
+  @1000) are taken DURING the intro cut-scene — the game's Bond, if the same applies, would
+  not. This is why the old wedge scenario vanished; it also makes Bond auto-switch mid-intro.
+- Shared files touched: scene.rs only (the drain block + its comment; request-only now).
+- Report: docs/reports/fix-auto-switch.md (live checks inside).
