@@ -7697,3 +7697,31 @@ NewScoresRef PTP hand-off, the results screens (180-fix-menus). docs/systems/pro
 port map; GAPS G-045 added. Report: docs/reports/fix-progress.md.
 
 ## fix-restart-target (s/fix-restart-target) — 2026-10-13
+
+The fail/death menu's Restart went to the mission's base map, cold (`fail_choose_restart` →
+`ResetMap_LevelToLoad(BaseMap, 0, 1)` per fix-death-restart) — the user failing on 07000007 landed on
+"the very beginning map, 05" instead of the start of the level. The decompile: menu 0x40000042's
+handler is `P_ENDMISSION_Handler` 0x216618 (`Handler_HandleMessage` 0x2029e0:498-500), NOT
+`C_GCPAUSE_Handler` 0x204408 (that is the PAUSE menu 0x10000028, :217-219 — fix-death-restart had
+them swapped). Its event-0x4b arms [M 0x216618:11-27]: row 0 (Restart) =
+`ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` + `Player_RamLoad(Bond, 1)` — the CURRENT level, warm,
+on the ENTRY checkpoint; row 1 = BaseMap cold (`Mission_BaseMapHCode` [M 0x1830a0]); row 2 = quit to
+0x7000048. The warm arm keeps the channels (`Init_SwitchChannels` only runs cold [M 0x1d5080:48-50])
+and `Player_RamLoad` restores all four channel arrays from the RamSave [M 0x1957a8:17-20] — the ENTRY
+checkpoint (`Player_RamSave` at the previous level's exit [M 0x1b2318:115]; script case 0x12
+[M 0x1d94c0:194-199]), whose ch 99/100 predate the fail, so the warm restart cannot re-fail: the
+replay loop fix-death-restart feared was an artefact of carrying the DYING state, which the game never
+does. The boost arg 1 floors health at `ContinueHealthBoost*` = 50.0 on all difficulties [L
+ee_start_05.bin 0x30cc34-3c]; `Mission_Init(level, 1)` resets current+future parts [M 0x182270:68-129];
+`Player_InitWeapon` re-runs 07000007's fixed party loadout + armour 0 [M 0x1a7ef8:176-186]. Port:
+`fail_choose_restart` targets `Drones::level_current` (latched at the Mission_Init site) with
+`level_exit_restart`; nf-view keeps `App::entry_save` (the save each level was loaded with) and
+re-serves it with the 50.0 floor (zeroed-at-shape when the level was cold-loaded — the game's BSS
+buffer); the Results page rows moved to the game's arm order (row 0 = restart level warm, row 1 =
+restart mission cold). Tests: `fix_restart_target_live.rs` (the user's 07000007 scenario — RED before
+the fix: it targeted 07000005 cold — and the full reload state + a 360-tick no-re-fail loop check);
+`fix_death_restart_live.rs` re-pointed at the corrected model (the fall test now the warm arm);
+`menus_flow.rs`'s results rows updated. docs/systems/mission.md §4/§8 rewritten. Remaining: the
+results-page restart goes through the fe flow and does not set the sim's restart flags (the in-sim
+auto_restart path, what play uses, does); the exact on-screen row labels are [S]; live PCSX2 checks
+requested in the report. Report: docs/reports/fix-restart-target.md.
