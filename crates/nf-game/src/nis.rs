@@ -119,6 +119,30 @@ pub struct Script {
 #[derive(Clone, Debug, Default)]
 pub struct Objects {
     pub list: Vec<Option<Obj>>,
+    /// `Script_CreateEntity` 0x1d8968's obj_type 0xF0 arm: `Pickup_Create` (0x18dda0) with the
+    /// entity params (kind/id/rounds/switch from the first four, sound the fifth [M disasm
+    /// 0x1d8bcc-0x1d8c20: t0=lhu 0x349974 kind, t1=lhu 0x349978 id, t2=lw 0x34997c rounds,
+    /// t3=lw 0x349980 switch, 0(sp)=lw 0x349984 sound, 8(sp)=1 rest, lifetime 0, label 0]) at the
+    /// stream's current key position (the 0x2d6200 scratch VECTOR; rest=1, so it rests there). The
+    /// game emits this only on the CREATE path (an existing same-class stream object is re-pointed
+    /// without a new pickup [M 0x1d8a68-0x1d8a80]). The sim drains it after the scripts tick.
+    pub pending_pickups: Vec<PendingPickup>,
+}
+
+/// One queued `Pickup_Create` from a script's Entity command (see `Objects::pending_pickups`).
+#[derive(Clone, Debug)]
+pub struct PendingPickup {
+    pub script: u32,
+    /// The Entity command's object hashcode (the glist `Pickup_Create` receives, 0x1d8bcc).
+    pub hash: u32,
+    pub stream: u8,
+    pub kind: u16,
+    pub id: u16,
+    pub rounds: i16,
+    pub switch_ch: u16,
+    pub sound: u32,
+    /// The stream's posed matrix at the creation tick (the game's scratch VECTOR 0x2d6200).
+    pub matrix: Mat4,
 }
 
 /// What the runtime needs from the game: animation lengths and an animated object's discrete object 0 (the world
@@ -384,7 +408,8 @@ impl Script {
         // An object of another type is deleted; one of the same type takes the new glist.
         if let Some(o) = s.obj { if s.obj_type != obj_type { objs.list[o] = None; s.obj = None; } }
         if s.obj.is_none() { s.tag = s.clock as i16 as u16 + 1; }
-        let e = Obj::Entity { hash, kind: obj_type, params, matrix: IDENT, alpha: 1.0, src: (self.nis.hashcode, i as u8) };
+        let fresh = s.obj.is_none();
+        let e = Obj::Entity { hash, kind: obj_type, params: params.clone(), matrix: IDENT, alpha: 1.0, src: (self.nis.hashcode, i as u8) };
         match s.obj {
             Some(o) => objs.list[o] = Some(e),
             None => { objs.list.push(Some(e)); s.obj = Some(objs.list.len() - 1); }
@@ -394,6 +419,23 @@ impl Script {
         s.flags = if spline { 2 } else { 0 };
         s.obj_type = obj_type;
         self.interp(i, objs, w);
+        // `Script_CreateEntity` 0x1d8968's 0xF0 arm (see `Objects::pending_pickups`): a NEW entity of
+        // the pickup class creates the takeable pickup at the stream's posed position [M disasm
+        // 0x1d8bcc-0x1d8c20]; the reuse path only re-points the gfx. 07000008's SafePickUps script
+        // 0x060009E2 spawns the safe's briefcase (kind 4, switch 0x4A) and rocket launcher this way
+        // when the safe opens [D the level bin script; the parked 0xF0 placements sit 10 units east
+        // inside the east wall].
+        if obj_type == 0xF0 && fresh {
+            let pos = match self.streams[i].obj { Some(p) => p, None => 0 };
+            if let Some(Some(Obj::Entity { matrix, .. })) = objs.list.get(pos) {
+                let p = |k: u32| params.get(k as usize).copied().unwrap_or(0);
+                objs.pending_pickups.push(PendingPickup {
+                    script: self.nis.hashcode, stream: i as u8, hash,
+                    kind: p(0) as u16, id: p(1) as u16, rounds: p(2) as u16 as i16,
+                    switch_ch: p(3) as u16, sound: p(4), matrix: *matrix,
+                });
+            }
+        }
     }
 
     /// `Script_AnimStart` (0x1d8f40).

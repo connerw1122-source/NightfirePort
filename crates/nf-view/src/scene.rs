@@ -803,18 +803,30 @@ impl Sim {
         self.shot_tick = false;
         // The smoke puffs (`gases_smoke` 0x1ab2d0 [S] simplified) tick with the sim.
         for s in self.smoke.iter_mut() { s.update(); }
-        // The laser-family beam [M Player_LaserPointer 0x1a65d8]: while the Q-Laser (0x50/0x51) or
-        // the laser watch (0x54) is out, the beam ray runs every tick from the head along the view,
-        // 100 units; a lock its ray touches burns [M Lock_Update 0x1ae3d8 case 0 — the beam's
-        // weapon id in the lock's contact list], writing the lock's out channel. The beam's
-        // endpoints are parked for the renderer (the 0x2000131/0x2000133 meshes).
+        // The laser-family beam [`Player_LaserPointer` 0x1a65d8 is the GUNS' laser-sight ray — the
+        // gadget beams draw from the per-shot `Player_MuzzleFlash` 0x1a4298 → `Draw_LaserBeam`
+        // 0x1a4560 / `Draw_TaserBeam` 0x1a46a8 path (weapdef+0x6c bits 0x100/0x80)]. The port parks
+        // the per-tick burn endpoints on `Sim::laser_beam` for the renderer while the fire is held.
         self.laser_beam = None;
-        if !self.disabled && nf_game::gadget::runs_beam(self.gun.weapon) {
+        // The burn is the fire's, not the equipment's: the game's laser burns come from the SHOTS the
+        // held fire spawns (each refire tick spawns the beam/bullet via `Player_WeaponInitBullet`
+        // 0x1a4bf0 → `+0x95b` → `Player_MuzzleFlash` 0x1a4298 → `Draw_LaserBeam` 0x1a4560 [M
+        // 0x1a5460:601-694's held-fire refire loop]); with the fire released no shot spawns and the burn
+        // stops the same tick. The watch laser/taser (0x54/0x55) additionally needs the AIM state
+        // (`Input_Action(9,1)` branch: `if ((uVar6 == 0x54) && ((obj+0x60 ^ 1) & 1)) return;` [M
+        // 0x1a5460:512-514]). The Q-Laser 0x50/0x51's single-player `+0x95f == 2` ThirdIcon zone gate
+        // (0x1a5460:523) is not modelled — listed in the report.
+        let watch = matches!(self.gun.weapon, 0x54 | 0x55);
+        if !self.disabled && trigger && (!watch || input.aiming) && nf_game::gadget::runs_beam(self.gun.weapon) {
             let head = self.bond.head();
             let dir = self.bond.look();
             let frame = self.drones.frame + 1;
             let (a, b) = nf_game::gadget::laser_tick(head, dir, &mut self.drones.locks, &self.world, &mut self.drones.channels, frame);
             self.laser_beam = Some((a, b));
+            // The watch laser's per-shot sound [M 0x1a4bf0:261-263 — `Sound_Play(100.0, 0xec, 0, 0)` on
+            // every shot of weapon_data[+2] == 0x54; the watch fires every held tick (interval 0 →
+            // the 1.0 floor) so this is the burn tick].
+            if self.gun.weapon == 0x54 { self.drones.audio.play(0xec); }
         }
         self.smoke.retain(|s| !s.dead());
         let (trigger, reload) = if self.disabled { input = Default::default(); (false, false) } else { (trigger, reload) };
@@ -962,7 +974,7 @@ impl Sim {
             {
                 let head = self.bond.head();
                 let dir = self.bond.look();
-                if let Some(point) = nf_game::gadget::pick_grapple_point(&self.drones.grapple_points, head, dir, 100.0) {
+                if let Some(point) = nf_game::gadget::pick_grapple_point(&self.drones.grapple_points, head, dir, nf_game::gadget::grapple_range(self.gun.weapon)) {
                     self.bond.grapple = Some(nf_game::gadget::GrappleState { point, phase: 1, pull: 0.0 });
                     self.bond.substate = nf_game::player::SS_GRAPPLE;
                     self.bond.vel = [0.0; 3];
@@ -1308,6 +1320,16 @@ impl Sim {
                 aim
             };
             let was_reloading = self.gun.reload_state;
+            // The pre-shot fire-script state (`anim+0xF4 == 9`): the game SKIPS `Player_SetFiringAnim`
+            // — the running fire script is NOT restarted — when the view state is already 9 and
+            // `weapon_data+0x68 & 0x100400` [M 0x1a5460:664-672: `if ((*(short *)(...+0xf4) == 9) &&
+            // ((*(uint *)(weapon_data + iVar4 + 0x68) & 0x100400) != 0)) { uVar8 = weapon+0x6c; } else
+            // { Player_SetFiringAnim(...) }`]. Without this gate a held gadget whose fire script has a
+            // release frame (the Q-Laser's +0x44 = 20) restarts the script every refire tick, the frame
+            // never reaches the release, and the shot only spawns after the button comes up — the
+            // user's "when I let go, they actually release and actually do what they're supposed to do
+            // briefly".
+            let was_fire_state = self.gun.fire_state;
             let rd0 = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
             // The gun's animation is busy while a fire script plays (gun state 9; idle = 0).
             let len_of = |h: u32| self.scripts.get(&h).map_or(0.0, |s| s.length as f32);
@@ -1340,8 +1362,10 @@ impl Sim {
                 // (flag 0x1000 / base 0x11), the fists' Rand(100) left/right alternation (flag 0x80000)
                 // and the 0x40000 toggle. The game only queues when the fp model and the script exist
                 // (0x1a3c70:51-54); with no script the view stays as it was.
+                // fix-gadgets2: while the fire script is ALREADY playing (state 9) and +0x68 carries
+                // 0x100400, the game leaves it running — no restart [M 0x1a5460:664-672].
                 let script = self.gun.firing_anim_script(flags, u16::from_le_bytes([w[2], w[3]]), self.gun.clip, rd(0xb0), rd(0xb4), &mut self.drones.rng);
-                if script != 0 {
+                if script != 0 && !(was_fire_state && flags & 0x100400 != 0) {
                     self.view_script = script;
                     (self.view_time, self.view_speed) = (0.0, 1.0);
                 }
@@ -1411,6 +1435,19 @@ impl Sim {
                             let id = remap_op1_sound(c.args[1] as u32, wid);
                             self.drones.audio.play3d(id, camera, None);
                             if std::env::var_os("NF_SOUNDLOG").is_some() { eprintln!("tick {}: gun script {:08x} frame {f}: sound {:#x} (remapped from {:#x} for weapon {:#x})", self.drones.frame, self.view_script, id, c.args[1], wid); }
+                        }
+                    }
+                    // fix-gadgets2, the user's "the sounds keep playing after you stop": `AnimProcessScriptCmds`
+                    // op 4 sub-op 3 is `Sound_StopAllWithId(cmd[3])` [M 0x1c1b38:388] — the fire scripts stop
+                    // their own loop sounds at a scripted frame. The port played the op-1 starts and dropped
+                    // the op-4.3 stops, so every gadget loop (the watch-laser burn, the decryptor decode) leaked
+                    // forever — worse while the old restart bug re-fired the script every tick. Same frame
+                    // window as op 1; sub-op is args[1], the id args[2] (the port's parse: [frame, sub-op, id]).
+                    for c in sc.commands.iter().filter(|c| c.op == 4 && c.args.len() >= 3 && c.args[1] == 3) {
+                        let f = c.args[0] as f32;
+                        if from < f && f <= to {
+                            self.drones.audio.stop_all_with_id(u32::from(c.args[2]));
+                            if std::env::var_os("NF_SOUNDLOG").is_some() { eprintln!("tick {}: gun script {:08x} frame {f}: stop sound {:#x}", self.drones.frame, self.view_script, c.args[2]); }
                         }
                     }
                 }
@@ -1976,6 +2013,45 @@ pub fn fog_for(level: u32) -> Option<([u8; 3], f32)> {
 /// and draw state. The value keeps the object's world centre and scaled radius for the per-frame sort + frustum cull.
 type Groups = BTreeMap<(Layer, [u32; 3], u32, u32, Option<(usize, u32)>, Draw, u16), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32, Option<u16>)>;
 
+/// fix-safe08: the pickups the level's scripts spawn through `Script_CreateEntity` 0x1d8968's
+/// obj_type-0xF0 arm (`Pickup_Create` 0x18dda0 at the stream's posed position, rest = 1 [M disasm
+/// 0x1d8bcc-0x1d8c20]). Each such (script, stream) gets a RESERVED pickup slot: built inert
+/// (`gone`, so the draw loop and the take test skip it) and activated by the sim when the script
+/// actually spawns it. The slot keeps the renderer's per-index draw (`placed_pickup_pose`) working
+/// for a pickup that does not exist at load. 07000008's SafePickUps script 0x060009E2 spawns the
+/// safe's briefcase (kind 4, switch 0x4A) and the rocket launcher (id 0x2C) at the safe's shelves
+/// this way [D the level-bin script; the parked 0xF0 placements sit 10 units east, inside the east
+/// wall]. Scans `level.nis` sorted by hashcode (deterministic); pack scripts (07x00008) are not in
+/// the level archive and fall back to the runtime's no-slot push (takeable, by-hash mesh).
+fn script_pickup_reservations(level: &Level, weapons: &nf_formats::weapon::WeaponData, models: &std::collections::HashMap<u32, nf_game::pickup::Model>) -> (Vec<nf_game::pickup::Pickup>, Vec<((u32, u8), usize)>) {
+    let mut out = Vec::new();
+    let mut slots = Vec::new();
+    let mut hashes: Vec<u32> = level.nis.keys().copied().collect();
+    hashes.sort_unstable();
+    for hash in hashes {
+        let nis = &level.nis[&hash];
+        for (si, st) in nis.streams.iter().enumerate() {
+            let cmds = st.decode();
+            let Some(nf_formats::nis::Cmd::Entity { hash: eh, obj_type: 0xf0, params, .. }) = cmds.iter().find(|c| matches!(c, nf_formats::nis::Cmd::Entity { obj_type: 0xf0, .. })) else { continue };
+            let p = |k: usize| params.get(k).copied().unwrap_or(0);
+            let target = level.by_hash.get(eh).copied();
+            let Some((om, oi)) = target else { continue };
+            let obj_ = &level.maps[om].objects[oi];
+            let Some(&m0) = models.get(&obj_.hashcode) else { continue };
+            let key = nis.keys.get(st.first_key as usize).map(|k| k.pos).unwrap_or([0.0; 4]);
+            let Some(mut pk) = nf_game::pickup::Pickup::create_placed(
+                [key[0], key[1], key[2]], [0.0; 3], p(0) as u16, p(1) as u16, p(2) as u16 as i16,
+                p(3) as u16, p(4) as u16, p(5), 0, obj_.hashcode,
+                nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, weapons) else { continue };
+            pk.gone = true; // reserved: inert until the script spawns it
+            pk.obj = Some((om, oi));
+            slots.push(((hash, si as u8), out.len()));
+            out.push(pk);
+        }
+    }
+    (out, slots)
+}
+
 fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>, searchlight: Option<u16>, door: Option<u16>, pickup: Option<u16>, mult: [f32; 3], cels: &[Cel], chain: u32) {
     let obj = &level.maps[inst.map].objects[inst.object];
     let mut m = inst.matrix;
@@ -2251,6 +2327,13 @@ impl Scene {
                     Some(p2)
                 })
                 .collect();
+            // fix-safe08: the scripts' obj_type-0xF0 Entity spawns reserve slots after the placed
+            // pickups, in the SAME order the sim build appends them (the draw slot k must equal the
+            // sim's pickups[k]).
+            let (reserved, _render_slots) = script_pickup_reservations(level, &placed_weapons, &hoist_models);
+            let reserved_len = reserved.len();
+            let mut placed_pickups = placed_pickups;
+            placed_pickups.extend(reserved);
 
         // The spawn comes from the placement records even when entities are not drawn (Player1 is not a 0x8000 cel).
         let start = level.instances(false).0.iter()
@@ -2612,8 +2695,8 @@ impl Scene {
         //   0x2E Lock_Create 0x1ae1f8:55 (direct obj+0xD8 store) · 0x30 Monitor_Create 0x1b08b0:26
         //   (Control_SetGList) · 0x34 GunImp_Create 0x131f20:68-69 (parent; the fixed-hashcode turret
         //   child needs the ELF TurretGuns table, still open) · 0x35 PCQWorm_Create 0x1b07a8:12-13 ·
-        //   0x3A Grapple_Create 0x198298:17 · 0x3B DynamicObject_Create 0x18dbf8:19-31 (hidden until its
-        //   switch channel when param 0 ≠ 0 — those stay skipped) · 0x3F CreepWall_Create 0x196fc8:23 ·
+        //   0x3B DynamicObject_Create 0x18dbf8:19-31 (hidden until its
+        //   switch channel when param 0 ≠ 0 — those stay skipped)
         //   0x71 rotor_init 0x18f4b8:24 · 0xD5 OneSided_Create 0x1e7ce8:14 (its per-frame backface self-cull
         //   is the port's triangle culling) · 0xD8 RB_Create 0x1d6bf0:52 (rigid bodies evolve obj+0x90 once
         //   disturbed; at rest = placement) · 0xE1 Destroy_Create 0x12c318:23 (death keeps the object drawn:
@@ -2631,9 +2714,16 @@ impl Scene {
         // reads the AABB [M 0018d0d0:20-35]); 0x38/0x39 space laser/missile (invisible controllers, visuals
         // via scripts); 0xF2 emitter (no glist ever [M 0017ae00:100-101]); 0xD4 cloud (sky pipeline, drawn by
         // sky_instances); 0xF3 tree (anim-object path, like characters).
+        // fix-gadgets2, the user's "red and yellow boxes ... for the wall shimmy and one for the grapple":
+        // 0x3A grapple points and 0x3F creep walls are the same shape of invisible: both creators build a
+        // bare control object and attach NO gfx hash — `Grapple_Create` 0x198298 has zero
+        // `hashtable_set_object_to_entity_gfx` calls (instance size 0, no placement params read; only +0xD8,
+        // +0xF0, class 0x51, LinkToRoom, StraddleTest) and `CreepWall_Create` 0x196fc8 likewise sets class 0x2B
+        // with no gfx attach — so `View_DrawObjList`'s empty-glist no-op never draws them. The marker meshes
+        // the sweep used to draw are the placements' referenced objects, which the game discards.
         if cels_only {
         if let Some(m) = level.main_map() {
-            const MISC_KINDS: [u8; 17] = [0x2e, 0x30, 0x34, 0x35, 0x3a, 0x3b, 0x3f, 0x71, 0xd5, 0xd8, 0xe1, 0xe3, 0xda, 0xfa, 0xfd, 0xfe, 0x4a];
+            const MISC_KINDS: [u8; 15] = [0x2e, 0x30, 0x34, 0x35, 0x3b, 0x71, 0xd5, 0xd8, 0xe1, 0xe3, 0xda, 0xfa, 0xfd, 0xfe, 0x4a];
             let nf_hide = std::env::var("NF_HIDE").ok();
             for p in level.maps[m].placements.iter().filter(|p| MISC_KINDS.contains(&((p.flags & 0xff) as u8))) {
                 let kind = (p.flags & 0xff) as u8;
@@ -2898,7 +2988,10 @@ impl Scene {
                     Some(p2)
                 })
                 .collect();
+            let (reserved, sim_slots) = script_pickup_reservations(level, &weapons, &pickup_models);
             drones.pickups.extend(placed_pickups);
+            drones.pickups.extend(reserved);
+            drones.script_pickup_slots = sim_slots.into_iter().collect();
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(),
                 laser_beam: None,
             })

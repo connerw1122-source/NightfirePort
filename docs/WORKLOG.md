@@ -6512,6 +6512,45 @@ contact + `segment_hits_sphere`), `scene.rs` (nf-view: the hud_tick freeze + the
 the SP-move fix + the chain test — both re-applied and re-verified; the fail-firsts had been
 demonstrated live before the reset and the chain test re-run green on the restored tree).
 
+## fix-level-0c (2026-10-13)
+
+**Started** — the branch is up; the plan: (1) the way-down hatch (blocked crouch = soft lock), (2) the
+laser-hinge hatch across the roof (the hatch side + its channel), (3) the camera gadget equip (with
+045d), (4) the 0c AI states/animations vs the game (docs/fields/drone*.md), (5) the white untextured
+roof patch (diagnose for 045i), (6) the invisible guards (blocked on playability).
+
+## fix-level-0c (2026-10-13)
+
+**Done**
+- The hatch chain (task items 1+2, the user's soft lock) is now TEST-VERIFIED end to end through
+  the real laser path: `crates/nf-view/tests/fix_level_0c_live.rs`, 4 tests. The display vent =
+  `ventmesh-front` #138 (SS, ch 18, 6 keys — the hatch slides y 16.40 → 14.76), the hinges
+  `hingelock1/3` #139–142 (locks 0x2E, out chs 14/15/16/17 [D param 5]), `VentBlockingPoly` #179
+  (SS ch 18, 2 keys — rises y 16.3 → 20.0), the AND mux #505 (list [14,15,16,17] → ch 18 [D
+  triggers]). The aimed Q-Laser (0x50, the loadout [M 0x1a7ef8 case 0x700000c]) burns all four
+  hinges (`Lock_Update` 0x1ae3d8 case 0 → `Lock::burn`), the mux raises ch 18, both SSs play to
+  their last keys and a collision ray passes the opening; with the hinges intact the ray is
+  BLOCKED (the user's "blocked off") and three hinges are not enough (the AND sister). The
+  warehouse vent (`VentLatch` #182 → ch 84 → `ventmesh` #180 + `VentmeshBlockingPloy` #184) is
+  verified too. NO sim code needed changing — the pieces merged from fix-objects2/fix-gadgets/
+  map-powerstation already interlock correctly; what was missing was the proof (and the doc).
+- The white floor patch (task item 5): the spot --bond 14.22,16.73,-154.43 sits inside
+  `room_ex10_5` placement #117 (class 0xc047, a static room piece, t 0 with world-space boxes) —
+  the draw is 045i-fix-render-artifacts' (a texture/material lookup on that mesh; the object is
+  NOT one of the 0xE2/alpha pieces).
+- The AI (task item 4): the 0c guards are SPAWNER-HELD, not broken — 35+ of 40 sit present=false
+  with switch channels 4/6/27/1 (the trigger plates #426/#479 and objective ch 0x1b=27 release
+  them as Bond walks the route; dr7/dr9/dr17/dr24/dr27 wait in WAIT_SWITCH with enabled=false —
+  the game's channel gate). The two patrol guards (dr1/dr39, skin …93) DO walk with advancing
+  anims (danim 282→328→392, time 1:1). The frozen-anim look the user describes needs the render
+  check (the anim POSING is render-side; merge lesson 6) — live checks listed in the report.
+- The camera gadget (task item 3): weapon 0x54 IS in the 0c loadout [M 0x1a7ef8] and the
+  photograph chain (`CamSubject_Update` 0x1bc668 writes ch 0x1c on the class-5 0x54 contact) is
+  the walkthrough's — the equip/selection side is 045d-fix-gadgets'. Note: 0x54 doubles as the
+  watch's camera id in `CamSubject_Update` while `gadget.rs` calls 0x54 "the laser watch" — the
+  watch-mode split (laser vs camera vs taser 0x55) needs 045d's eyes.
+
+**Tests**: `fix_level_0c_live.rs` 4/4 NF_ISO green (2.9 s).
 ## fix-death-restart (2026-10-13)
 
 **Done**
@@ -6619,3 +6658,117 @@ missile-closet doorway, the duplicated guards on 07000007, the shadow decals bri
 of darkening (0700000c crane, maybe the cross), the green-grey party guests (item 7 — hue is
 right, brightness/warm highlights are not), the view-model muzzle flash (low priority).
 Branch: s/fix-render-artifacts. Work started; this entry is updated as items land.
+## fix-gadgets2 (2026-10-13)
+
+The gadgets as the user played them (the checks `gadgets` and `camera0c2`). The held-fire polarity is
+the theme: the game's gadget fires are HELD-fire systems and the port had them press/release-inverted.
+
+- The burn (laser family + decryptor) runs only while the fire is HELD — the watch (0x54/0x55) also
+  only while AIMED [M 0x1a5460:442, 512-514; the shots spawn per refire tick via 0x1a4bf0 → +0x95b →
+  0x1a4298 → Draw_LaserBeam/TaserBeam]. Release stops it the same tick. The per-shot watch sound
+  0xec [M 0x1a4bf0:261-263].
+- The fire script no longer restarts every held tick: the game skips SetFiringAnim while the view
+  state is 9 and +0x68 & 0x100400 [M 0x1a5460:664-672] — the Q-Laser's release-frame shot now spawns
+  while held (the user's "when I let go, they actually release" is fixed).
+- The grapple: the hang HOLDS while the fire is held and the RELEASE detaches [M 0x192860:56-66]; the
+  reel reads no fire input and the SP pull cap is 1.5 [M 0x192860:79-121] — the port had both wrong,
+  so a human click latched+detached invisibly ("doesn't work at all"). The pick models the claw's
+  bolt: radius 1.0 [M 0x12c5a0:92], range weapon_data+0x1c = 5.0/10.0 [M 0x12e7b0:158; D
+  weapon_data_live.bin]. The user's screenshot spot is 15.4 units out — the real game cannot attach
+  from there either (test-pinned).
+- The loop sounds: the fire scripts' op-4 sub-op 3 = Sound_StopAllWithId [M 0x1c1b38:388] is now run
+  (the port only played the op-1 starts — every gadget loop leaked).
+- The red/yellow marker boxes (creep walls 0x3F, grapple points 0x3A) are out of misc_static_sweep:
+  neither creator attaches gfx [M 0x198298 (zero hashtable gfx calls), 0x196fc8], the census test
+  carries the must-not-draw teeth.
+- The 0c Q-Worm is the GAME's own loadout [M 0x1a7ef8 case 0x700000c equips 0x58 at 0]; --dev grants
+  nothing. No change.
+- NOT done: the micro-camera overlay (HUD_UpdateCameraPane 0x1a12d8 is the function; the port has no
+  camera pane). Leftovers: the 0x95f ThirdIcon gate for the 0x50/0x51 fire, the lock data[0] id split
+  (the burn locks take only 0x4E/0x4F; 0x56/0x57 feed the keypad decode), the rope draw, the claw-cam.
+- Tests: gadget_grapple_user_spot (2), gadget_grapple_live + gadget_laser_live updated to the held
+  forms, the gadget unit tests (polarity/bolt/range), models_misc_live census minus 0x3a/0x3f.
+  Report: docs/reports/fix-gadgets2.md.
+- Suite record: the only failures are the 3 allowed `disc_golden` (the slim ISO's trimmed MUSIC
+  entries) and the misc census golden + teeth, re-pinned/re-armed in the same session (green on
+  rerun: models_misc_live 10/10).
+
+## fix-weapons-all (s/fix-weapons-all) — 2026-10-13
+Task: every weapon in weapon_data — fire modes/switch, alt-fire, scopes/zoom, burst/auto timing,
+spread, ammo types, reload kinds, rocket/grenade launchers, crossbow, melee; headless NF_ISO tests
+per weapon (equip → fire → reload → assert rounds/projectile/sound). Plus the 2026-10-12 playtest
+weapon bugs (view models, Scorpion mode switch, frag throw/fuse, flashbang kills, drop spam, pistol
+sound, punch knock-out, dev-panel give list audit). Started 05:40 UTC, deadline ~07:36 UTC.
+
+**fix-weapons-all outcome (07:30 UTC)**: grenade bounce never explodes — `Bullet_CollisionHandler`
+0x12ce80 only zeroes the speed on a slow bounce or at the 20-bounce max; only the tick fuse pops
+(fail-first: the frag exploded at ~t90 on flat ground, now t208/210). Per-material bounce coefficients
+0x3037dc [L: 0.5, 0.0 for 13/14/22] replace the flat 0.4. The dev panel names 0x3A "AT-600 Scorpion
+(rocket launcher)" (0x33/0x45 named [S]). Panel give list locked to weapon_data (0x35/0x36/0x3A ids,
+view models, pinned projectile meshes). Stun can never kill: radius +0x08 = 0.0 [L] →
+Explode_Propagate damages nobody (test-locked). Throw scripts are per-level [D scan] — 07000001 has
+none, so a dev-given grenade can't throw there (data-shaped, not a port bug). 4 NF_ISO tests in
+`crates/nf-view/tests/fix_weapons_all_live.rs`; walk_07000014's Rook drop retimed to the fuse.
+Report: docs/reports/fix-weapons-all.md. Left: fire-mode switch, zoom, reload matrix, punch KO,
+drop spam, 07000012 sound/NPCs, gondola rocket pickups.
+
+## fix-safe08 (2026-10-13, branch s/fix-safe08) — the 07000008 bedroom: the blue block and the safe's pickups
+
+In progress. The user's safe08 playtest (2026-10-12, after fix-party-mission): the briefcase and the
+rocket launcher in the safe can't be picked up, and a huge dark-blue block of castle EXTERIOR stonework
+stands in the middle of the bedroom (spot 07000008 --bond 155.19,43.12,-113.38,-3.837,0.010 frame 6587),
+blocking view and movement. fix-party-mission assumed the pillar was the locked GuardRoom door — it is
+not; it is exterior stonework drawn inside.
+
+**Findings (2026-10-13 session):**
+- The takeable items are spawned by the SafePickUps script 0x060009E2 (SP #286, mask 1 on ch 136):
+  stream s1 `Entity{0x02000F35, 0xF0, [0,44,5,0,319,0,0]}` (the rocket, keys at (162.59,42.75,-116.78)),
+  s2 `Entity{0x02000F34, 0xF0, [4,6,0,74,245,0,0]}` (the briefcase, keys at (162.70,43.54,-116.22)) [D
+  the level-bin script]. The game's `Script_CreateEntity` 0x1d8968 obj_type-0xF0 arm calls
+  `Pickup_Create` (kind/id/rounds/switch = params[0..3], sound = params[4], **rest = 1**, lifetime 0,
+  label 0, glist = `hashtable_hashcode_to_celglist(hash)` [M disasm 0x1d8bcc-0x1d8c20]) at the stream's
+  posed position. The disc's parked 0xF0 placements #290/#291 sit at shelf +10 x (inside the east
+  wall) — the port took only those, 10-11 units from the safe.
+- Ported: `Objects::pending_pickups` + the 0xF0 emit in `nis.rs::entity_start` (create path only),
+  the drain in `drone.rs` after `scripts.tick` (reserved slot activation; a no-slot fallback pushes),
+  `scene.rs::script_pickup_reservations` (deterministic pre-scan of `level.nis`, sorted by hashcode,
+  appends inert `gone` slots to BOTH the render and sim placed-pickup lists so the renderer's
+  per-index draw keeps working), `Drones.script_pickup_slots`.
+- The take's remaining blocker: the take LOS ray (player sphere centre → the pickup's glist centre)
+  is hit at t 0.65-0.88 by geometry the game's `Collide_LineOfSight` (flags 0x721, bit 0x20) does not
+  count. Evidence gathered: the safe door SS blocks while near-closed (the door glides 420 ticks at
+  rate 60 — the game's player waits it out); fully open, the briefcase ray is clear of the static
+  set and the rocket ray grazes `Object_Safe`'s shelf (surface byte 6) from the doorway; the port's
+  flat `segment` also crosses the 0x1000 missile cage beside the safe (the cage's tris reach the
+  bedroom — the game's bit-0x20 queries skip 0x1000 [M Collide_Pick 0x1eb480-0x1eb49c]) —
+  `world.segment_actor` added and used by `Pickup::touches`; the take still does not fire in the
+  harness (the struck tri at t≈0.65-0.88 persists — the query-type filter of the game's LOS is not
+  fully decoded; live check below).
+- The bedroom block = `Room_Outside_3` (the castle's east exterior): 20 mesh tris + 32 collision tris
+  CENTRED INSIDE the bedroom interior (10 in the safe band) [D per-tri dump]. The game neither draws
+  nor collides them from indoors: draws go through `Vision_Portal_Recurse` 0x1e86e8 (the
+  `View_AddCels` set), collision through `Collide_StraddleCels` 0x1eac98 (only cels reached through
+  portals the query straddles; `Collide_Pick` 0x1eb320 tests only the collected cels' objects). The
+  port draws by frustum box (the portal walk is NF_PORTAL-gated since fix-perf-level) and collides
+  with one flat static world → the exterior stone draws over the room and its collision blocks the
+  walk to the safe. NOT FIXED this session (needs the cel-scoped draw+collision; the faithful fix is
+  world.rs + gpu.rs taking the room/portal graph).
+
+**Session continuation (the takes land):**
+- Third blocker found and fixed: the script's own briefcase entity (`oBriefcase_closed`, the
+  SafePickUps entity at the shelf) joined `set_dynamic` with its glist collision — the pickup's own
+  mesh blocked its take ray at t 0.869. The game control-unlinks the created pickup
+  (`Script_CreateEntity` tail `control_unlink_object` 0x1d8d54). Fix: 0xF0 entities are excluded
+  from the set_dynamic parts (`drone.rs`). The briefcase then takes through the real path:
+  `taken [(531, Label)]`, **ch 0x4A on** — the objective's writer.
+- Fourth blocker measured: with the briefcase gone the rocket's ray from the doorway still fails —
+  the safe door SS #205's OPEN-pose slab (keys park it at (161.2, 42.08), x 159.9..162.5, y
+  41.0..43.15) clips the shallow ray the pushed-back capsule produces. Empirically, dropping the
+  SS's collision makes BOTH take (`taken [(531, Label), (541, Weapon { weapon: 44 })]`). What the
+  game does for the resting SS door's collision in the take query is not decoded — the port keeps
+  the SS solid (fix-party-mission's choice) and the rocket's take is the remaining open item.
+- Suite: nf-game all green; nf-view all green (the reservation hook touches every level's build —
+  no regressions); nf-formats 11 + the 3 allowed disc_golden failures; nf-audio green.
+- Tests: `fix_safe08_live.rs` — the sister (nothing takes before ch 136) and the main path (the
+  briefcase takes at the user's spot, ch 0x4A on; the shelf rocket exists at the script's key
+  position). `probe_safe08.rs` kept as the dump/LOS probe.

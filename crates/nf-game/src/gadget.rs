@@ -159,24 +159,32 @@ pub struct GrappleState {
     pub point: V3,
     /// `+0x15C`: 1 = reeling, 2 = hanging.
     pub phase: u8,
-    /// `+0x150`: the reel speed accumulator (0.05/tick up to 0.5 single-player [M 0x192860:96-104]).
+    /// `+0x150`: the reel speed accumulator (0.05/tick up to 1.5 single-player [M 0x192860:96-104]).
     pub pull: f32,
 }
 
 /// The fire-time point selection: the nearest point whose sphere the aim ray touches within
-/// `max_dist` (the game's ray + the class-0x51 scan [S — the selection's exact cone is in
-/// `Player_WeaponFiring`'s gadget branch, not read]).
+/// `max_dist`. The game's test is a physical one: the claw's bolt (a flying bullet whose object
+/// radius is 1.0 [M Bullet_init 0x12c5a0:92 — `obj+0xe8 = 1.0`, never overridden]) sweeps the ray
+/// and its death check is the travelled-distance cap `weapon_data+0x1c` [M Bullet_update
+/// 0x12e7b0:158], so the acceptance window is the point's sphere grown by the bolt's radius.
 pub fn pick_grapple_point(points: &[GrapplePoint], from: V3, dir: V3, max_dist: f32) -> Option<V3> {
+    const BOLT_RADIUS: f32 = 1.0; // [M 0x12c5a0:92]
     let mut best: Option<(f32, V3)> = None;
     for p in points {
         let Some(t) = ray_closest_t(from, dir, p.pos, max_dist) else { continue };
         let closest = [from[0] + dir[0] * t, from[1] + dir[1] * t, from[2] + dir[2] * t];
         let d2 = (closest[0] - p.pos[0]).powi(2) + (closest[1] - p.pos[1]).powi(2) + (closest[2] - p.pos[2]).powi(2);
-        if d2 > p.radius * p.radius { continue; }
+        let reach = p.radius + BOLT_RADIUS;
+        if d2 > reach * reach { continue; }
         if best.is_none_or(|(bt, _)| t < bt) { best = Some((t, p.pos)); }
     }
     best.map(|(_, pos)| pos)
 }
+
+/// The claw bolt's range: `weapon_data+0x1c` (the Q-Claw 0x4a 5.0, the upgrade 0x4c 10.0
+/// [D weapon_data_live.bin — the fists 1.75 / P2K 50 / sniper 1200 scale confirms the unit]).
+pub fn grapple_range(w: u8) -> f32 { if w == 0x4c { 10.0 } else { 5.0 } }
 
 fn ray_closest_t(a: V3, dir: V3, p: V3, max_dist: f32) -> Option<f32> {
     let ab2 = dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2];
@@ -186,29 +194,36 @@ fn ray_closest_t(a: V3, dir: V3, p: V3, max_dist: f32) -> Option<f32> {
     (t >= 0.0 && t <= max_dist).then_some(t)
 }
 
-/// One tick of the grapple substate [M Player_SSGrapple 0x192860]: phase 1 reels Bond toward the
-/// point (the pull accumulates 0.05/tick up to 0.5 single-player; the arrival < 2.0 hangs); the
-/// fire in the hang releases (`GrappleRelease`). Returns the new position and whether the fire
-/// released this tick.
+/// One tick of the grapple substate [M Player_SSGrapple 0x192860]. The fire polarity is the game's
+/// own and it is the opposite of a press-to-release model: phase 1 (the reel) reads NO fire input
+/// at all [M 0x192860:79-121 — the exits are the MP line-of-sight miss, the rope-fire anim done
+/// with the 15-tick timer expired, and the arrival < 2.0]; the pull accumulates 0.05/tick up to
+/// **1.5 single-player** [M 0x192860:96-104 — `fVar10 = 1.5` when `MPSettings == 0`], and the
+/// arrival < 2.0 hangs [M 0x192860:91-94]. Phase 2 (the hang) holds while the fire is HELD and
+/// detaches the tick it is RELEASED [M 0x192860:56-66 — `Input_Action(9,1)` non-zero commits the
+/// wish velocity +0x10..0x1F → +0x20..0x2F and stays; zero → phase 4]. Returns whether the grapple
+/// detached this tick.
 pub fn grapple_tick(pos: &mut V3, state: &mut GrappleState, fire: bool) -> bool {
     match state.phase {
         1 => {
-            if fire { state.phase = 2; return false; }
-            state.pull = (state.pull + 0.05).min(0.5);
+            // The reel: no fire test [M 0x192860:79-121]; the pull cap is 1.5 single-player.
+            state.pull = (state.pull + 0.05).min(1.5);
             let d = [state.point[0] - pos[0], state.point[1] - pos[1], state.point[2] - pos[2]];
             let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
             if len < 2.0 {
-                state.phase = 2; // the hang [M 0x192860:91-93]
+                state.phase = 2; // the hang [M 0x192860:91-94]
             } else {
                 let step = state.pull / len;
                 for k in 0..3 { pos[k] += d[k] * step; }
             }
             false
         }
-        _ => {
-            // The hang: the fire releases [M 0x192860:63-69 — the momentum restore + the dismount].
-            fire
+        2 => {
+            // The hang: HELD fire stays (the velocity commit [M 0x192860:57-62]); the RELEASE
+            // detaches [M 0x192860:64-66 — phase 4]. The return is the detach.
+            !fire
         }
+        _ => false,
     }
 }
 
@@ -217,7 +232,7 @@ mod grapple_tests {
     use super::*;
 
     #[test]
-    fn grapple_reels_bond_to_the_point_and_hangs() {
+    fn grapple_reels_bond_to_the_point_and_hangs_while_the_fire_is_held() {
         let points = vec![GrapplePoint { pos: [10.0, 20.0, 0.0], radius: 2.0 }];
         let Some(point) = pick_grapple_point(&points, [0.0, 12.0, 0.0], [1.0, 1.0, 0.0].map(|v| v / 2f32.sqrt().powi(2) * 2f32.sqrt()), 100.0) else {
             panic!("the aim ray through the point's sphere picks it");
@@ -225,14 +240,36 @@ mod grapple_tests {
         let mut state = GrappleState { point, phase: 1, pull: 0.0 };
         let mut pos = [0.0f32, 12.0, 0.0];
         let mut ticks = 0;
+        // The reel runs with the fire HELD (phase 1 reads no fire input [M 0x192860:79-121]).
         while state.phase == 1 && ticks < 600 {
-            grapple_tick(&mut pos, &mut state, false);
+            grapple_tick(&mut pos, &mut state, true);
             ticks += 1;
         }
-        assert_eq!(state.phase, 2, "the reel arrives (the distance < 2.0 [M 0x192860:91])");
+        assert_eq!(state.phase, 2, "the reel arrives (the distance < 2.0 [M 0x192860:91-94])");
         let d = ((pos[0] - point[0]).powi(2) + (pos[1] - point[1]).powi(2) + (pos[2] - point[2]).powi(2)).sqrt();
         assert!(d < 2.5, "Bond hangs within reach of the point (got {d:.2})");
-        assert!(grapple_tick(&mut pos, &mut state, true), "the fire in the hang releases");
+        // The hang holds while the fire stays held [M 0x192860:57-62].
+        for _ in 0..30 { assert!(!grapple_tick(&mut pos, &mut state, true), "held fire must NOT detach"); }
+        // The RELEASE detaches [M 0x192860:64-66].
+        assert!(grapple_tick(&mut pos, &mut state, false), "the fire release detaches");
+    }
+
+    #[test]
+    fn grapple_acceptance_is_the_bolt_sweep_and_the_range_is_weapon_data() {
+        // The bolt's radius grows the window: a ray passing 1.2 from a radius-0.64 point misses a
+        // bare ray but the game's bolt (radius 1.0 [M 0x12c5a0:92]) hits.
+        let points = vec![GrapplePoint { pos: [10.0, 0.0, 0.0], radius: 0.64 }];
+        let dir = [10.0f32, 1.2, 0.0].map(|v| v / (10.0f32 * 10.0 + 1.2 * 1.2).sqrt());
+        assert!(pick_grapple_point(&points, [0.0, 0.0, 0.0], dir, 100.0).is_some(),
+            "the bolt sweep (radius 1.0) accepts a 1.2-unit pass");
+        // The range is weapon_data+0x1c [M 0x12e7b0:158]: 5.0 for the claw, 10.0 for the upgrade.
+        assert_eq!(grapple_range(0x4a), 5.0);
+        assert_eq!(grapple_range(0x4c), 10.0);
+        // Beyond the range the bolt dies mid-flight — no pick.
+        let far = [10.0f32, 0.0, 0.0];
+        let far_dir = [1.0f32, 0.0, 0.0];
+        assert!(pick_grapple_point(&points, [0.0, 0.0, 0.0], far_dir, grapple_range(0x4a)).is_none()
+            || (far[0] - 0.0) <= grapple_range(0x4a), "the point within the range still picks");
     }
 
     #[test]
