@@ -7814,3 +7814,15 @@ Work Log:
 Stage Summary:
 - The timed sky is data + code, golden-verified against an independent replica of the game's arithmetic. Open for
   the main agent: the nf-view render-side hook (flash glist swap + spin matrix + bolt draw), the live ZMSK check.
+
+## fix-dev-panel (s/fix-dev-panel) — 2026-10-13
+Task: the dev panel (the user's main test tool) must be exact: every
+weapon/gadget/pickup entry shows the game's own name (USATxt.dat via `Lang`,
+the weapon's name id) + the weapon id, and spawns exactly that weapon_data
+record — its own mesh (held mesh +0x7C) and projectile body (weapon_data+0x5C)
+— test: for every entry, the spawned weapon id, mesh hash and projectile hash
+match the record; a "level kit" button that grants exactly the current level's
+loadout + gadgets (docs/systems/levels.md); show the current weapon's fire
+mode and ammo type in the panel. Files: crates/nf-view/src/dev.rs, the panel
+draw, nf-game weapon tables (read-only). Started 17:53 UTC, sandbox expires
+~19:51 UTC. Branch created from origin/master (b192fdd) and pushed.
