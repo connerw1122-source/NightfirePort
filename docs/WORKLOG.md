@@ -7340,3 +7340,12 @@ NF_ISO impacts_live (wall decal at hit+0.01 with the surface normal/mesh, sky sh
 lands in lifetime, bit-for-bit seeded rerun). Known: `guard_takes_cover_like_the_game` needs its seed
 re-picked (0072's procedure — the impact draws joined the stream, as the game's own do). Report:
 docs/reports/fix-impacts.md.
+
+## fix-menus (s/fix-menus) — 2026-10-13
+Task: port the front end from ACTION.ELF/BASE.ELF — the GameFlow_* state machine and the
+GameState stack: title, main menu, mission select, difficulty, options; pause menu (resume,
+restart, options, quit to menu); mission-complete/failed screens with stats. Game textures,
+fonts, layouts from the disc. nf-view keeps the direct <level> launch; plain nf-view <iso>
+starts at the title. Mouse + keyboard everywhere, headless tests per state transition.
+New crates/nf-view/src/menu.rs, game flow in lib.rs, front-end formats in nf-formats.
+Started 12:32 UTC, sandbox expires ~14:29 UTC.
