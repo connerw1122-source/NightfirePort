@@ -195,12 +195,16 @@ pub fn catalog_entries(scene: &crate::scene::Scene) -> Vec<Entry> {
     let lang = sim.lang.as_ref();
     let mut out = Vec::new();
     for id in 1..0x72u8 {
-        // Every record with a model or rounds (variants included); 0x47 is "no weapon". Nameless
-        // padding with no meshes and out of both cycles (0x48/0x49 — the gadget cycle starts at
-        // 0x4A [M 0x1a6f80]) would only add "weapon 0x48" noise rows.
-        if id == 0x47 || (wd.model(id as usize) == 0 && wd.clip_size(id as usize) <= 0) { continue; }
+        // 0x47 is "no weapon" (`AnimDatumGetWeaponInfo`'s bounds exclude it from the cycle;
+        // `Player_WeaponChange` cycles 1..0x47) [M]. Everything else that the game names, shows or
+        // cycles stays listed — INCLUDING the clip-0 gadgets (0x50 Grapple, 0x56/0x57 Decryptor,
+        // 0x58 Q-Worm: tp model 0 and clip 0, but named and selectable, and the game's loadouts
+        // grant them — the old filter's `model==0 && clip<=0` silently dropped them).
+        if id == 0x47 { continue; }
         let label = wd.name_label(id as usize);
         let has_mesh = wd.model(id as usize) != 0 || wd.projectile_mesh(id as usize) != 0;
+        // Nameless, meshless, non-selectable padding (0x48/0x49 — the gadget cycle starts at 0x4A
+        // [M 0x1a6f80] — and the AI-clip records 0x61/0x71) would only add "weapon 0x48" noise rows.
         if (label == 0 || label == 0xFFFFFFFF) && !wd.selectable(id) && !has_mesh { continue; }
         let at = wd.ammo_type(id as usize);
         let al = wd.ammo_name_label(at);
@@ -285,10 +289,16 @@ pub fn apply(scene: &mut crate::scene::Scene, q: &[(String, String)]) -> (String
             let Some(id) = num("id").filter(|&i| i < 0x72) else { return ("bad weapon id".into(), None) };
             let rounds = num("rounds").map(|r| r as i16).unwrap_or_else(|| sim.weapons.clip_size(id as usize).max(1));
             let wd = sim.weapons.clone();
-            sim.drones.inventory.equip_weapon(&wd, id as usize, rounds, true);
+            let name = record_name(sim.lang.as_ref(), &wd, id as u8);
+            // `Player_EquipWeapon` 0x1a8a58:20 refuses a weapon whose first-person model (+0xDC) is
+            // 0 — the game would refuse too, so the panel says so instead of switching to a record
+            // Bond cannot hold (the AI-only records list for completeness; the row's dim text says
+            // "no 1st-person model here").
+            if !sim.drones.inventory.equip_weapon(&wd, id as usize, rounds, true) {
+                return (format!("weapon {id:#04x} ({name}): refused — the record has no first-person model (Player_EquipWeapon 0x1a8a58:20)"), None);
+            }
             let carry = (wd.clip_size(id as usize).max(1) * 3).max(rounds);
             sim.drones.inventory.equip_ammo(&wd, id as usize, carry);
-            let name = record_name(sim.lang.as_ref(), &wd, id as u8);
             (format!("gave weapon {id:#04x} ({name})"), Some(id as u8))
         }
         "ammo_for" => {

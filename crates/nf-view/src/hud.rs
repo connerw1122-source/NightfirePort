@@ -283,7 +283,10 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     // port always fires mode 0: no switching path yet), the name = `Txt_BindLabel(weapon+0x38)`. Both right-
     // aligned at x = 496 (PCSX2: "Semi" under "7-6" at the right edge).
     if let Some(lang) = s.lang.as_ref() {
-        let (idx, id) = if switching { (2, s.weapons.name_label(wi)) } else { (1, s.weapons.fire_mode_label(wi, 0)) };
+        // The fire-mode label reads the mode byte the fire path writes (`HUD_UpdateAmmoPane` 0x19a7f0
+        // reads `BL + w*0xC + 0x1BB` and picks `weapon_data[w]+0x30 + mode*4`) (fix-weapon-modes).
+        let mode = s.drones.inventory.fire_mode.get(wi).copied().unwrap_or(0) as usize;
+        let (idx, id) = if switching { (2, s.weapons.name_label(wi)) } else { (1, s.weapons.fire_mode_label(wi, mode)) };
         if let (Some(sp), true) = (t.ammo.get(idx), id != u32::MAX && id != 0) {
             if let Some(txt) = lang.bind(id).filter(|t| !t.is_empty()) {
                 h.text(Anchor::Right, &t.font, sp.layer as i32, txt, AMMO_AT.0 + sp.x as f32, AMMO_AT.1 + sp.y as f32, true, gs(sp.colour >> 8, 0xff), true);

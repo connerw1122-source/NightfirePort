@@ -2,7 +2,12 @@
 
 Branch `s/fix-dev-panel` (from origin/master b192fdd, master 253d01c merged before the final push).
 Files touched: `crates/nf-view/src/panel.rs` (the panel — the task's "dev.rs" pointer is the F2 menu,
-which spawns no weapons and needed no change), new `crates/nf-view/tests/fix_dev_panel_live.rs`.
+which spawns no weapons and needed no change), new `crates/nf-view/tests/fix_dev_panel_live.rs`, and
+`crates/nf-view/tests/fix_weapons_all_live.rs` (comment/label-only correction: its eprintln labels
+and comments pinned "0x3A = Scorpion (rocket launcher)" — the bank [L USATxt.dat via +0x38] binds
+0x3A to "Laser Tripbomb"; the rocket launchers are 0x2C/0x2E. No assertion was weakened — the
+`sister` assertion was strengthened: the catalog must contain "AT-600 Scorpion" AND "AT-420
+Sentinel" by name).
 `dev.rs` and the nf-game weapon tables: untouched (read-only as instructed). **Shared files: none**
 (the WORKLOG append + the master-merge WORKLOG conflict resolution only).
 
@@ -35,11 +40,16 @@ which spawns no weapons and needed no change), new `crates/nf-view/tests/fix_dev
    0x1a5460:106 [M] — the atlas's "fp_flashlight_model" name for +0x7C is wrong;
    docs/fields/weapon-data map is right), **third-person/pickup +0x80**, **projectile +0x5C**
    (`Bullet_update` 0x12e7b0 disasm 0x12e8f0 sets it on the bullet object [M]) and the raw label id.
-   The Give path equips exactly that record (owned + the record's clip slot to the record's clip
-   size, via `Player_EquipWeapon`'s port shape) and the draw request is that id. The page shows
-   `0xNN <name> · clip N · <ammo name> · proj 0xMMMM` per row. Nameless, meshless padding records
-   (0x48/0x49; the AI-clip records 0x61/0x71) no longer list — no name, no mesh, and outside both
-   cycles (gadgets cycle 0x4A..0x5E [M 0x1a6f80]).
+   The Give path equips exactly that record (owned on the record's **base** + the record's clip slot
+   filled to the record's clip size, via `Player_EquipWeapon`'s port shape 0x1a8a58 [M]) and the
+   draw request is that id; a record with no first-person model (the AI-only records) is **refused
+   with the game's own reason** (`Player_EquipWeapon` 0x1a8a58:20) instead of silently switching to
+   an unholdable record. The page shows `0xNN <name> · clip N · <ammo name> · proj 0xMMMM` per row.
+   Listing fixes: the old filter (`model==0 && clip<=0`) silently dropped the clip-0 gadgets the
+   game's loadouts grant — 0x50 Grapple, 0x56/0x57 Decryptor, 0x58 Q-Worm (named + selectable [L]);
+   and nameless, meshless, non-cyclable padding (0x48/0x49, the AI-clip records 0x61/0x71) no
+   longer lists. The catalog is 98 entries; its JSON is pinned well-formed (the page `JSON.parse`s
+   it — the bank carries `20" crossbow bolt`-style strings).
 2. **"Level kit" button**: `do=levelkit` runs the game's cold-load loadout for the current level —
    `nf_game::player::init_level_loadout(level, None, …)` (`Player_InitWeapon` 0x1a7ef8 with no
    RamSave, which clears through `Player_InitAmmoWeapons` first), the exact call the level-load path
@@ -66,19 +76,24 @@ which spawns no weapons and needed no change), new `crates/nf-view/tests/fix_dev
 - `level_kit_grants_the_games_loadout` — wipes the inventory, clicks `do=levelkit`, and requires the
   inventory to equal a reference built by `init_level_loadout(level, None, …)` + the draw request 2.
   **Fails pre-fix** (unknown command leaves the inventory wiped).
-- `panel_give_spawns_exactly_the_record` — for 16 ids across weapons/gadgets/grenades: give → switch
-  request == id, owned, clip slot == the record's clip size (base-shared slots included).
+- `panel_give_spawns_exactly_the_record` — **every entry the catalog lists (98)**: give → switch
+  request == id, owned lands on the record's base (`Player_EquipWeapon`'s variant model [M]), the
+  clip slot == the record's clip size; model-less records must be refused with the switch == None.
 - `panel_shows_the_current_fire_mode_and_ammo_type` — the `current` object exists and carries the
   bank's fire-mode and ammo-type texts ("Semi", "7.65mm rounds" on the start P2K). **Fails pre-fix**.
 - `dump_panel_ground_truth` (NF_PANEL_DUMP=1) — the ground-truth dump the assertions were read from.
 
 Fail-first evidence: with `crates/nf-view/src/panel.rs` stashed (pre-fix), the four fix tests fail;
-restored, all six pass. Full suite on the merged tree (master 253d01c), `--test-threads=1`:
-**nf-game 225 passed / 0 failed; nf-view 451 passed / 0 failed (all 143 test binaries);
-nf-audio 4 passed**; nf-formats green except the **3 allowed `disc_golden`** failures plus
+restored, all six pass. Full suite on the merged tree (master 253d01c): **nf-game 225 passed /
+0 failed; nf-view 451 passed / 0 failed (all 143 test binaries); nf-audio 4 passed**; nf-formats
+green except the **3 allowed `disc_golden`** failures plus
 `pss_movies_live::audio_sample_count_matches_stream_length` — the slim onfoot ISO carries **no
 /MOVIES/30_FPS/ entries at all** (the test finds 0 movies: "expected ~20, checked 0"), a pre-existing
-slim-ISO limitation of the fix-movies tests, untouched by this task.
+slim-ISO limitation of the fix-movies tests, untouched by this task. After the last panel deltas
+(the listing filter, the refusal branch) the affected crate was re-validated: all 90 non-walk
+nf-view binaries green again (349 tests), the 4 panel-touching files green (16), and 12 of the 49
+walk binaries re-run green as a bridge (the walks reference no panel code — `rg 'panel::'` — and
+were green on this tree before the panel-only delta).
 
 ## Docs note for the driver (not changed by me)
 

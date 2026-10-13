@@ -66,25 +66,33 @@ fn panel_give_list_matches_weapon_data() {
     let mut scene = nf_view::load_dev(&iso_v, "07000012.bin", false).expect("load 07000012 (the user's level)");
     let wd = scene.sim.as_ref().unwrap().weapons.clone();
     // The pinned projectile meshes [L ee_start_05.bin @ 0x2bf150 + w*0x10C + 0x5C]. The disc labels
-    // name the records [L USATxt.dat]: 0x34 frag, 0x35 stun, 0x36 smoke (fix-explosions2).
+    // name the records [L USATxt.dat via Txt_BindLabel(+0x38), re-verified by fix-dev-panel's dump]:
+    // 0x34 "Fragmentation Grenade" (radius 8, dmg 100), 0x35 "Stun Grenade" (radius 10, dmg 0),
+    // 0x36 "Smoke Grenade" — fix-explosions2's frag/stun/smoke reading, now bank-exact.
     assert_eq!(wd.projectile_mesh(0x35), 0x0200_0726, "stun grenade projectile mesh [L]");
     assert_eq!(wd.projectile_mesh(0x36), 0x0200_071f, "smoke grenade projectile mesh [L]");
-    assert_eq!(wd.projectile_mesh(0x34), 0x0200_02af, "frag grenade projectile mesh [L]");
-    assert_eq!(wd.projectile_mesh(0x3a), 0x0200_074f, "rocket projectile mesh [L]");
+    assert_eq!(wd.projectile_mesh(0x34), 0x0200_02af, "fragmentation grenade projectile mesh [L]");
+    // 0x3A is the bank's "Laser Tripbomb" (its ammo type 28 binds the same name) — the rocket
+    // LAUNCHERS are 0x2C "AT-420 Sentinel" (Guided) and 0x2E "AT-600 Scorpion" (Heatseeker), whose
+    // ammo type 14 is the bank's "Rockets" [L USATxt.dat]. The old "0x3A = Scorpion (rocket
+    // launcher)" pin was the user's misread that fix-dev-panel corrected.
+    assert_eq!(wd.projectile_mesh(0x3a), 0x0200_074f, "laser tripbomb projectile mesh [L]");
     // Distinct first-person models (the user: "a frag grenade spawns what looks to be a stun grenade"
     // — the panel had the names one id off; fix-explosions2 aligns them with the disc labels).
     assert_ne!(wd.first_person(0x34), wd.first_person(0x35), "frag and stun have their own view skins [L +0xDC 0x05000041 vs 0x05000070]");
-    for &(id, label) in &[(0x34u8, "Frag Grenade"), (0x35, "Stun Grenade"), (0x3a, "Scorpion (rocket launcher)")] {
+    for &(id, label) in &[(0x34u8, "Fragmentation Grenade"), (0x35, "Stun Grenade"), (0x3a, "Laser Tripbomb")] {
         let ticks = give_and_switch(&mut scene, id, label);
         eprintln!("[panel] {label} (0x{id:02x}) equipped in {ticks} ticks, view model: {}",
             scene.view_models.contains_key(&id));
         assert_eq!(scene.sim.as_ref().unwrap().gun.weapon, id, "{label} must be the equipped weapon");
         assert!(scene.view_models.contains_key(&id), "{label} (0x{id:02x}) needs a first-person view model (the dev panel's 'Every single weapon needs to have a first person model')");
     }
-    // The catalog JSON must not leave the rocket launcher unnamed (the user's "no clue what the
-    // rocket launcher is"): no bare "weapon 0x" fallback for the ids the panel lists.
+    // The catalog JSON must not leave any record unnamed (the user's "no clue what the rocket
+    // launcher is"): no bare "weapon 0x" fallback for the ids the panel lists. The rocket launchers
+    // are the bank's "AT-420 Sentinel" (0x2C) / "AT-600 Scorpion" (0x2E) [L USATxt.dat].
     let cat = nf_view::panel::catalog(&scene);
-    assert!(!cat.contains("weapon 0x3a"), "the rocket launcher (0x3A) must be named in the panel: {cat}");
+    assert!(!cat.contains("weapon 0x3a"), "0x3A must carry the bank's own name (Laser Tripbomb): {cat}");
+    assert!(cat.contains("AT-600 Scorpion") && cat.contains("AT-420 Sentinel"), "the rocket launchers must be findable by name: {cat}");
 }
 
 /// The frag must bounce and then SIT on the ground until its 210-tick fuse [M Bullet_CollisionHandler
@@ -96,7 +104,7 @@ fn panel_give_list_matches_weapon_data() {
 fn frag_bounces_and_waits_for_the_fuse() {
     let iso_v = iso();
     let mut scene = nf_view::load_dev(&iso_v, "07000015.bin", false).expect("load 07000015");
-    give_and_switch(&mut scene, 0x34, "Frag Grenade");
+    give_and_switch(&mut scene, 0x34, "Fragmentation Grenade");
     let thrown_at = throw_held(&mut scene, true).expect("the frag throw must spawn a grenade projectile");
     eprintln!("[frag] thrown at tick {thrown_at}");
     let sim = scene.sim.as_mut().unwrap();
