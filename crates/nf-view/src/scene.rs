@@ -281,6 +281,10 @@ pub struct Sim {
     pub surfaces: Option<nf_formats::sfx::SurfaceSounds>,
     pub voices: Option<Vec<nf_formats::sfx::VoiceLine>>,
     pub step_dist: f32,
+    /// The laser-family beam's endpoints this tick (the hand/head end, the hit end) —
+    /// `gadget::laser_tick` while a laser weapon is out [M Player_LaserPointer 0x1a65d8]. The
+    /// renderer draws the beam mesh (0x2000131/0x2000133) between them.
+    pub laser_beam: Option<(nf_game::world::V3, nf_game::world::V3)>,
     /// The level's zip wires (placement type 0x3E, `Wire_Create` 0x1981d8). Bond grabs one by walking
     /// into its world sphere (fix-wire: the real grab + crossing live in `nf_game::player`).
     pub wires: Vec<nf_game::wire::Wire>,
@@ -799,6 +803,19 @@ impl Sim {
         self.shot_tick = false;
         // The smoke puffs (`gases_smoke` 0x1ab2d0 [S] simplified) tick with the sim.
         for s in self.smoke.iter_mut() { s.update(); }
+        // The laser-family beam [M Player_LaserPointer 0x1a65d8]: while the Q-Laser (0x50/0x51) or
+        // the laser watch (0x54) is out, the beam ray runs every tick from the head along the view,
+        // 100 units; a lock its ray touches burns [M Lock_Update 0x1ae3d8 case 0 — the beam's
+        // weapon id in the lock's contact list], writing the lock's out channel. The beam's
+        // endpoints are parked for the renderer (the 0x2000131/0x2000133 meshes).
+        self.laser_beam = None;
+        if !self.disabled && nf_game::gadget::is_laser_weapon(self.gun.weapon) {
+            let head = self.bond.head();
+            let dir = self.bond.look();
+            let frame = self.drones.frame + 1;
+            let (a, b) = nf_game::gadget::laser_tick(head, dir, &mut self.drones.locks, &self.world, &mut self.drones.channels, frame);
+            self.laser_beam = Some((a, b));
+        }
         self.smoke.retain(|s| !s.dead());
         let (trigger, reload) = if self.disabled { input = Default::default(); (false, false) } else { (trigger, reload) };
         let aiming = input.aiming;
@@ -2812,7 +2829,9 @@ impl Scene {
                 })
                 .collect();
             drones.pickups.extend(placed_pickups);
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new() })
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creeping: false, wire_anims, wire_channel: 0, ladders, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(),
+                laser_beam: None,
+            })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {
