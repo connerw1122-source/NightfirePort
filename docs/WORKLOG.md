@@ -7319,3 +7319,25 @@ path measured (FUN_00300058 0x300058 writes block+0x97c, optionally the next key
 launches BASE.ELF — the boot loader re-dispatches). Atlas + format docs + report written.
 Suite: nf-formats 11 passed / 3 allowed disc_golden fails; driving_golden 4/4; nf-game/nf-audio/
 nf-view compile clean (full run exceeds the sandbox tool timeout; no code changed in them).
+
+## fix-swim-vent — the swim entry, the vent creepwall, the castle-B music (started)
+
+Branch `s/fix-swim-vent` (from origin/master f0e1b23). Task: (1) swimming from a bank on 07000002
+(fix-ladder2's `#[ignore]`d repro), (2) the vent crawl — the creepwall (placement 0x3F, class 0x2B)
++ the crawl substate 7 + the door-grate link, (3) the alarm music's last step (the per-level music
+dispatch, `UpdateMFX_01CastleB` 0x113060 for 07000006) in music.rs.
+
+Evidence gathered so far:
+- [M 0x10a8c8 Intersect_RayGeom:150-168] the ray-vs-triangle test computes the plane from the
+  triangle's STORED normal (tri+6 → the plane halfword index, s16·2⁻¹⁴) and SKIPS the triangle
+  when `n·dir >= 0` — the game's ray tests are FRONT-FACE ONLY. The grounding ray
+  (`Player_FeetOnPoint` 0x194188:92-100, from pos down cc+0.6 → `Collide_RayIntersect` filter 0xc)
+  therefore only sees UP-facing triangles.
+- [D docs/formats/collision.md whole-disc check] the stored plane normal (s16·2⁻¹⁴) equals
+  +cross(v1−v0, v2−v0) for 2,242,859 of 2,245,313 triangles (146 opposite, 477 disagree, 1,831
+  degenerate) — the winding is a reliable proxy for the stored plane.
+- [M 0x194df0 Player_Collision:101-149] gravity is skipped when Bond's y is below `cel+0x90` (the
+  swim path); [M 0x195e50 Player_InWater] matches the port's enter_water.
+- The port's `capsule_push`/`segment_surface` are double-sided (*Deviation*, world.rs:709) — Bond
+  stands on the garden pond's down-facing floor (3.7647, 3 mm under the surface 3.7675 [D
+  probe_ladder2]) where the game's Bond falls through and swims.
