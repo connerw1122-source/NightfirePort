@@ -8775,3 +8775,19 @@ Stage Summary:
 - The 07 clock hall's clock + wall shields draw with the walk ON again; the courtyard, the window
   and the 06 second spot hold. Open: the game's +0x70 planes mid-gameplay (PINE request in the
   report), the 55 orphan generics on 07000007, the per-cel collision-assignment residue.
+
+---
+Task: fix-auto-switch
+Agent: fix-auto-switch worker
+Branch: s/fix-auto-switch (from origin/master 6be39ed)
+
+Work Log:
+- Branch cut from origin/master 6be39ed, WORKLOG started, pushed. Setup verified in sandbox
+  (repo, work/, Nightfire-onfoot.iso, ../nf-queue all present; time 22:33 UTC, deadline 00:33 UTC).
+- Next: read docs/reports/fix-pickups-remainder.md section 3; reproduce the walk wedge with the
+  switch gate open; study Player_Weapon 0x1a24c8 view states in the decompile.
+
+Stage Summary:
+- Task: open the auto-switch drain gate (if false in scene.rs) without wedging
+  walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact (wedge: d=3.89 after
+  first Raptor take, Bond 1.13 above floor). In progress.
