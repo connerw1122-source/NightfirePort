@@ -70,8 +70,9 @@ nf-game: 32 result-groups green (incl. the 3 facial tests). nf-formats + nf-audi
 the only failures are the 3 allowed `disc_golden` slim-ISO stubs and `pss_movies_live`'s 1 (needs
 NF_MOVIE_ISO — the retail image; environmental). nf-view targeted subsets green: character_lighting
 4/4, fix_cel_order 2/2, explode 2/2, fix_npcs 4/4, fix_weapons_all 4/4, walk_0700000d 3/3,
-walkreal_07000001 2/2, ai_traces 4/4 (the cut-scene/anim traces — the change's blast radius). The
-remaining ~140 nf-view binaries did not fit the window; re-run before merge.
+walkreal_07000001 2/2, ai_traces 4/4 (the cut-scene/anim traces — the change's blast radius), plus
+the walk suites 01/02/03/05/06/07 (all result-groups green, 19:14 UTC). The remaining nf-view
+binaries did not fit the window; re-run before merge.
 
 ## Live checks for the main agent
 
