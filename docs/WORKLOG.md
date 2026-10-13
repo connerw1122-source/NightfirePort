@@ -7653,3 +7653,45 @@ Work Log:
 Stage Summary:
 - The pad path is the game's, as data + code, verified against the game's own functions. G-005/G-012 closed; G-003's ramp half closed (the live pad playtest remains for the main agent). Report: docs/reports/fix-input.md (the --bond spots are there).
 - Left: a real pad playtest (no device in the sandbox); the pad's weapon cycling needs Input_Update's hold-counter active flags (actions 20/21); the scope branch's driver path is a stub; PadConfig::style is fixed at construction.
+
+## fix-progress (s/fix-progress) — 2026-10-13
+Task: the mission progress/scoring system — the end-of-mission tally (PlrMissionStats
+0x2bcc20 counters, BondMoments 0x2bcde0), the rating (ScoringTable 0x2bc640 rows +
+PlrStat_GetScore 0x1984b0, medal thresholds, RewardsTable 0x2bc920 unlocks), the
+difficulty effects (GameState+0x40 readers: damage/accuracy multipliers, armour/health
+pickups, objective lists — data shared with 070-fix-mission, not forked), and the save
+(LS_Make/Load* layout, stored as a deterministic local file). New crates/nf-game/src/
+progress.rs + minimal nf-view scene.rs hooks + docs/systems/progress.md. 180-fix-menus
+owns the screens; this gives them the API. Started 14:05 UTC, sandbox expires ~16:04 UTC.
+
+**fix-progress outcome (15:45 UTC)**: the mission-progress layer is ported — `crates/nf-game/src/
+progress.rs` (new) holds `PlrMissionStats` 0x2bcc20 (the `PlrStat_Log*` family with the game's
+Mission_Status ∈ {0,1} gate), `BondMoments` 0x2bcde0, the `ScoringTable` 0x2bc640 with its 12 × 9
+row arrays and thresholds read byte-for-byte from `work/ee_start_05.bin` ([L] — thresholds,
+penalties, par counts/targets, `RewardsTable` 0x2bc920, `ScoringTableDifMul` [0.0,1.0,2.0], the
+`sp_level` order), `PlrStat_GetScore` 0x1984b0's 6-step formula (the row-4 detection penalty with
+the 0.03 default, the row-7 1/100 s time ratio, the row-8 all-or-nothing, the difficulty
+multiplier, the status-6 stick rule), the medals (`Menu_SetLevelBonus` 0x1ffa10 +
+`PlrStarts_ProcessRewardCounter` 0x199210's kind-4 group ranks — CastleExterior/TowerA/Tower2A
+share gold bits 0..2, HendersonA/SpaceStationD share 9..10 [L]) and the save (LS_MakeMission
+0x1cd720's MSSN + LS_MakeBonus 0x1ce3b0's BUNS in the game's LSB-first bit packing
+(`BIN_PushBits` 0x1e8b88) chained with the CRC-32 trailer (`crc32buf` 0x120670), round-tripped as
+a deterministic local file). The difficulty is runtime now: `Drones::difficulty` =
+`GameState+0x40` (0x2a37a8 — the old `DIFFICULTY` const was hardcoded 1 AND mislabelled +0x28;
+boot default 2 [M 0x1c7e78:25]), threaded through `Data` to Player_HandlePain 0x1902c8's damage
+factor, DroneWeap_DoBulletAccuracy 0x179740's hit chance, the captain/lock/hint gates and the
+autoaim multiplier. The tally hooks sit at the game's own call sites: fire per pellet
+(0x1a4bf0:258), hit-enemy (0x145558:57-60, team-1 + hit-by-player), hit-scenery (0x198408),
+dispatched/disabled/surrender outboxes (0x145bd0:57-59 / 0x172ac8 / 0x1626a0), spawned per created
+drone (0x14b300:609 — counted after the Mission_Init latch, matching the game's creation order
+[L] +0x18 = 13), the Bond bonus in the take (0x18e650:234-236), the 0x65..0x6E moment scan
+(Trigger_Calc 0x1b1900:12-17), the health snapshot (0x1960b8:14) and the elapsed clock (0x1995a0,
+frame-derived 1/100 s — no wall clock). Tests: 5 module tests (formula arithmetic, medals + level
+stamp, gates, MSSN size, save round-trip + CRC rejection), `progress_live.rs` (a guard's SG5
+damage to Bond through the real AI path: 1.925 at the default difficulty 2 / 1.65 at Agent —
+2.75 × the [L] ReadTuningVars factors, sister ratio 0.6/0.7) and `fix_progress_live.rs` (the
+scripted 07000005 run: 2 kills + 1 bonus through step_bond give dispatched 2 / fired 2 / hit 2 /
+bonus 1, spawned ≥ 13, the zero-sister on reload; the save carries the run's fields). Remaining:
+the detected counter's live hook, `Player_InitWeapon`'s per-difficulty autoaim distances, the
+NewScoresRef PTP hand-off, the results screens (180-fix-menus). docs/systems/progress.md is the
+port map; GAPS G-045 added. Report: docs/reports/fix-progress.md.

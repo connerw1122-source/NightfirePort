@@ -154,10 +154,10 @@ fn stun_grenade_never_kills_but_frag_does() {
     assert!(flash_at.is_some(), "Bond's whiteout set (Player_SetFlashBang) [M 0x12e0b8]");
     // The flash branch carries no damage — `Explode_Propagate` never runs for it; a guard AT the
     // flash takes nothing (the propagate maths below is the discriminating sister).
-    let hits = nf_game::grenade::explode_propagate([0.0; 3], 0.0, 100.0, &[(0, [0.5, 0.0, 0.5])], [50.0; 3], 1.8);
+    let hits = nf_game::grenade::explode_propagate([0.0; 3], 0.0, 100.0, &[(0, [0.5, 0.0, 0.5])], [50.0; 3], 1.8, 1);
     assert!(hits.drones.is_empty() && hits.player == 0.0, "radius 0 must damage nobody [M 0x17c518]");
     // Sister: the frag's radius 8.0 [L 0x34] at the same spot damages the guard (the harness discriminates).
-    let hits = nf_game::grenade::explode_propagate([0.0; 3], 8.0, 100.0, &[(0, [0.5, 0.0, 0.5])], [50.0; 3], 1.8);
+    let hits = nf_game::grenade::explode_propagate([0.0; 3], 8.0, 100.0, &[(0, [0.5, 0.0, 0.5])], [50.0; 3], 1.8, 1);
     assert_eq!(hits.drones.len(), 1, "the frag's blast (radius 8) reaches the guard 1 unit away");
     assert!(hits.drones[0].1 > 0.0);
 }
