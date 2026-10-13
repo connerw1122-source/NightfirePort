@@ -831,8 +831,48 @@ fn cam_axes(cam: &Camera) -> ([f32; 3], [f32; 3]) {
     (right.to_array(), up.to_array())
 }
 
-/// Renders one frame offscreen and writes it as a PNG.
-fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, mut opts: scene::ViewOpts, notex: bool, nofog: bool) -> Result<()> {
+/// fix-menus2: the front-end overlay for `--shot`. On the front-end boot the menu overlay replaces the
+/// gameplay HUD (the task: the shot path must draw the menus). `--page <start|main|codename|
+/// difficulty|missions|dossier>` jumps to a page for the per-page renders, `--cursor N` picks the row,
+/// `--unlock-all` is the `menu_unlock_everything` dev global [M 0x30d2a7, 0x20b8d8:18]. The page is
+/// drawn with the game's font (ACTION.ELF's FONTSerpLight) and the USATxt.dat strings.
+fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> Option<gpu::HudFrame> {
+    let page_arg = args.iter().position(|a| a == "--page");
+    if !front_end && page_arg.is_none() { return None; }
+    let Some(tables) = scene.hud.as_ref() else { eprintln!("[front end] no HUD tables (the game font) — the menu overlay needs ACTION.ELF"); return None; };
+    let mut fe = menu::FrontEnd::new();
+    if args.iter().any(|a| a == "--unlock-all") { fe.unlock_all = true; }
+    if let Some(i) = args.iter().position(|a| a == "--cursor") {
+        fe.cursor = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(0);
+    }
+    if let Some(i) = page_arg {
+        let name = args.get(i + 1).map(String::as_str).unwrap_or("start");
+        fe.page = match name {
+            "start" | "title" => menu::Page::Start,
+            "main" => menu::Page::Main,
+            "codename" => menu::Page::Codename,
+            "difficulty" => menu::Page::Difficulty,
+            "missions" | "single" => menu::Page::MissionSelect,
+            "dossier" => menu::Page::Dossier,
+            other => { eprintln!("unknown --page '{other}' (start|main|codename|difficulty|missions|dossier)"); return None; }
+        };
+    }
+    // Tick through the boot load and let the page's timers run (the flash cycle etc.).
+    for _ in 0..3 { fe.flow.main_tick(); let _ = fe.flow.load_tick(); }
+    fe.press_start_on = true;
+    let lang = read_files_bin(&scene_iso_name(), "USATxt.dat").and_then(|b| nf_formats::hud::Lang::parse(&b).ok())
+        .or_else(|| scene.sim.as_ref().and_then(|s| s.lang.clone()));
+    Some(menu::menu_overlay(&fe, &tables.font, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0))
+}
+
+/// The ISO path for `read_files_bin` (the NF_ISO env or the default sandbox path).
+fn scene_iso_name() -> String {
+    std::env::var("NF_ISO").unwrap_or_else(|_| "Nightfire-onfoot.iso".to_string())
+}
+
+/// Renders one frame offscreen and writes it as a PNG. `menu` = a front-end overlay frame (fix-menus2:
+/// `--shot` on the front-end boot draws the menu pages too, so the main agent can compare with PCSX2).
+fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, mut opts: scene::ViewOpts, notex: bool, nofog: bool, menu: Option<&gpu::HudFrame>) -> Result<()> {
     let (w, h) = (1280u32, 720u32);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let (_adapter, device, queue) = pollster::block_on(device(&instance, None))?;
@@ -871,7 +911,9 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let depth = gpu::depth_view(&device, w, h);
     let (vp, vp_rot) = cam.view_proj(w as f32 / h as f32);
     let snow = snow_for(scene, cam);
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, &overlay_for(scene, w as f32 / h as f32));
+    let overlay_owned = menu.map_or_else(|| overlay_for(scene, w as f32 / h as f32), |m| m.clone());
+    let hud = &overlay_owned;
+    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, hud);
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -947,6 +989,13 @@ struct App {
     iso: String,
     /// A pending level transition: the next level's hashcode, set by `LOAD_LEVEL`; consumed by the main loop.
     pending_level: Option<u32>,
+    /// fix-restart-target: the ENTRY checkpoint — the RamSave the current level was LOADED with
+    /// (`Player_RamSave` 0x195670's buffer 0x2b9440, which the game keeps across level changes).
+    /// The fail/death menu's Restart re-serves it (`P_ENDMISSION_Handler` 0x216618:21's
+    /// `Player_RamLoad(Bond, 1)`) instead of capturing the dying state — the entry checkpoint's
+    /// channels predate the fail, so the reload cannot re-fail (the 07000007 loop). `None` after a
+    /// cold load (the game's buffer then holds stale/zero data; the boost still floors the health).
+    entry_save: Option<nf_game::player::RamSave>,
     /// The `--all` flag (draw dynamic entities at their placements, not only 0x8000 cels) — reused on level reload.
     all: bool,
     /// Input recorder (B-5): `None` unless `--record <file>` was given. Each tick's input is pushed right before
@@ -1040,7 +1089,11 @@ impl App {
             .unwrap_or_else(|| { let p = self.cam.pos; format!("camera {:.2},{:.2},{:.2}", p.x, p.y, p.z) });
         let line = format!("{level:08x} {spot} frame {}", self.anim_time as u32);
         let _ = std::fs::write(png.with_extension("txt"), format!("{line}\n"));
-        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog) {
+        let fe_menu = self.fe.as_ref().and_then(|fe| self.scene.hud.as_ref().map(|t| {
+            let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
+            menu::menu_overlay(fe, &t.font, lang, &self.scene.hud_textures, 1280.0 / 720.0)
+        }));
+        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref()) {
             Ok(()) => format!("saved {} ({line})", png.display()),
             Err(e) => format!("screenshot failed: {e} ({line})"),
         }
@@ -1345,18 +1398,45 @@ impl ApplicationHandler for App {
                     // `Trigger_Activate`'s exit order: the success/fallback channel write (already applied in
                     // the sim), then `Player_RamSave` [M 0x1b2318:97-116] — capture the old sim now, before
                     // the scene swap drops it (fix-level2 F2).
-                    // fix-death-restart: the fail/death restart is the COLD arm — the menu's
-                    // `ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)` sets IsWarmReset = 0
-                    // [M 0x204408:139], which zeroes the switch channels (`Init_SwitchChannels`
-                    // [M 0x1d5080:44-46]) and skips `Player_RamLoad` (its whole body is gated on the
-                    // warm flag [M 0x1957a8]). Carrying the RamSave across a restart is what looped
-                    // the 07000007 session: the saved ch 99 re-failed the mission every reload.
+                    // fix-restart-target: the fail/death menu's Restart (`P_ENDMISSION_Handler`
+                    // 0x216618:19-21, menu 0x40000042's row 0) is a WARM reload of the CURRENT level on
+                    // the ENTRY checkpoint: `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` +
+                    // `Player_RamLoad(Bond, 1)`. The game does NOT capture the dying state — it re-serves
+                    // the RamSave buffer as of level entry (the previous level's exit `Player_RamSave`
+                    // [M 0x1b2318:115]), whose ch 99/100 predate the fail, so the reload cannot re-fail
+                    // (the 07000007 replay loop). The boost arg 1 floors the health at the difficulty's
+                    // `ContinueHealthBoost*` — 50.0 on all three [L ee_start_05.bin 0x30cc34-3c].
+                    // The PAUSE menu's Restart stays the COLD arm to BaseMap (`C_GCPAUSE_Handler`
+                    // 0x204408:139 — `level_exit_cold`, save = None).
                     let cold = self.scene.sim.as_ref().is_some_and(|sim| sim.drones.level_exit_cold);
-                    let save = if cold { None } else {
+                    let restart = self.scene.sim.as_ref().is_some_and(|sim| sim.drones.level_exit_restart);
+                    let save = if cold { None } else if restart {
+                        // The entry checkpoint (+ the health floor). A cold-loaded level has none:
+                        // the game's buffer then holds the BSS zeros [S — RamLoad restores them and
+                        // the per-level InitWeapon re-equips], so the port zeroes the arrays at the
+                        // live shapes (an empty RamSave would wipe/panic the restore).
+                        let mut s = self.entry_save.clone().unwrap_or_else(|| {
+                            let sim = self.scene.sim.as_ref().unwrap();
+                            let mut z = nf_game::player::RamSave::capture(
+                                &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels);
+                            z.health = 0.0; z.armour = 0.0;
+                            for v in z.carried.iter_mut() { *v = 0; }
+                            for v in z.clip.iter_mut() { *v = 0; }
+                            for o in z.owned.iter_mut() { *o = false; }
+                            for k in z.keys.iter_mut() { *k = false; }
+                            for c in z.channels.iter_mut() { *c = 0; }
+                            for t in z.ch_time.iter_mut() { *t = 0; }
+                            z
+                        });
+                        s.health = s.health.max(50.0); // [L ee_start_05.bin 0x30cc34-3c, all three 50.0]
+                        Some(s)
+                    } else {
                         self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
                             &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
                             .with_mission(&sim.drones.mission))
                     };
+                    // The loaded level's checkpoint is what a later Restart restores.
+                    self.entry_save = save.clone();
                     let name = level_archive_name(next);
                     eprintln!("level: loading {name} ({})", if save.is_some() { "warm" } else { "cold" });
                     let load = if self.dev.is_some() { load_with_carry_dev } else { load_with_carry };
@@ -1724,7 +1804,8 @@ pub fn run() -> Result<()> {
                 eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);
             }
         }
-        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts, notex, nofog);
+        let menu_frame = front_end_menu(&args, &scene, front_end);
+        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts, notex, nofog, menu_frame.as_ref());
     }
     let event_loop = EventLoop::new()?;
     // Sound: the level's bank in the driver, the default output device (silent without one).
@@ -1734,7 +1815,7 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend };
     if dev {
         app.panel = panel::start();
         match &app.panel {

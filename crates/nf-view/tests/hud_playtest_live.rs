@@ -76,7 +76,7 @@ fn the_pickup_bar_is_the_sheet_s_dark_column_with_caps() {
     let f = nf_view::hud::overlay(&scene, 4.0 / 3.0);
     // Sister: no message, no bar.
     assert!(!quads(&scene, &f, 0x0300_007a).iter().any(|q| (q[1] - 364.0).abs() < 0.5 && (q[3] - 390.0).abs() < 0.5), "no bar quads (y 364..390) without a message");
-    scene.sim.as_mut().unwrap().hud.msgs.push_back(nf_view::scene::Msg { text: "Picked up 6x .357 Magnum rounds".into(), time: 180.0, status: 0, failed: false });
+    scene.sim.as_mut().unwrap().hud.msgs.push_back(nf_view::scene::Msg::new("Picked up 6x .357 Magnum rounds".into(), 180.0));
     let f = nf_view::hud::overlay(&scene, 4.0 / 3.0);
     let bar: Vec<[f32; 8]> = quads(&scene, &f, 0x0300_007a).into_iter().filter(|q| (q[1] - 364.0).abs() < 0.5).collect();
     for q in &bar { eprintln!("[hud] bar quad x {:.1}..{:.1} y {:.1}..{:.1} u {:.4}..{:.4} v {:.4}..{:.4}", q[0], q[2], q[1], q[3], q[4], q[6], q[5], q[7]); }
@@ -127,7 +127,7 @@ fn the_pickup_bar_stays_centred_under_its_text_on_a_widescreen_window() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
     for _ in 0..120 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
-    scene.sim.as_mut().unwrap().hud.msgs.push_back(nf_view::scene::Msg { text: "Picked up Winter Covert Sniper".into(), time: 180.0, status: 0, failed: false });
+    scene.sim.as_mut().unwrap().hud.msgs.push_back(nf_view::scene::Msg::new("Picked up Winter Covert Sniper".into(), 180.0));
     // In NDC (x in −1..1) at 16:9: the bar's centre and the text's centre are both the screen's centre.
     let centre = |aspect: f32| -> (f32, f32) {
         let f = nf_view::hud::overlay(&scene, aspect);

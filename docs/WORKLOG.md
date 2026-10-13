@@ -7870,3 +7870,187 @@ Stage Summary:
   cels still hide — the draw goes through View_AddForcedObjects (0x1e5fb8), the next session's
   implementable rule. Portal suites green (fix_portal_live 6/6, fix_portal2_live 2/2, portal3
   pins, fix_portal4 pin); the full four-crate suite could not fit the sandbox window.
+Task: fix-menus2 (started)
+Agent: fix-menus2 worker
+Branch: s/fix-menus2
+
+Work Log:
+- Branch created from origin/master (a5bff8b). Reading docs/reports/fix-menus.md (merged) and the current
+  crates/nf-view/src/{menu,lib}.rs. Goal per the driver: the front end must match the real game's screens
+  (title art, main-menu backdrop + stylised items, codename select, difficulty BEFORE mission list, mission
+  list with the real names/unlock rule, button-icon sprites, --shot draws the overlay).
+
+Stage Summary:
+- Setup done; work starting. Next: research the page handlers' decompiles and the 07000048 assets, then
+  rewrite the overlay to the game's layouts.
+
+---
+Task: fix-menus2
+Agent: fix-menus2 worker
+Branch: s/fix-menus2
+
+Work Log:
+- Decoded the disc's front-end page data: the kind-8 entry 08000002 in 07000048.bin is a tag stream
+  (MenuManager_Create 0x21b908) — chunk layouts derived from the decompile (PAGE −0x10 = 17 B {page id,
+  file hash 0x80000002, aux movie, kind, size}, CONTROL −0x07 = 30 B, MSG 0x18 label / 0x24 texture /
+  0x1b/0x1c colours); parsed 56 pages / 1003 controls to a clean END. Page identity settled by the data:
+  main menu = 0x40000002 (rows NightFire/Multiplayer/Codenames), Select Codename = 0x40000025, Select
+  Difficulty = 0x40000023, Single Player = 0x4000001c, Dossier = 0x4000002b, visible title = 0x40000009
+  (full-screen art 0x03000074 + yellow prompt + legal plate); the boot page 0x40000034's 7 controls are
+  language flags (0x030000c9-cf, the Union Jack first).
+- menu.rs rewritten around the game's layouts (640×480 menu space → the 512×448 screen), strings bound
+  from USATxt.dat (main 0x28/0x149/0x14b + descs 0x1000000-2, codename 0x1f2/0x29b/0x10002ff/0x10000bb,
+  difficulty 0x1f8/0x14d/0x14e/0x14f + 0x1000006-8, list 0x14c, hints 0x3c3/0x54e/0x216/0x218/0x208,
+  legal 0x375, prompt 0x10001eb, Dossier 0x27f), sprites from MENU_TEXTURES (title art, panel, ring,
+  previews, logo, stamp, the 0x03000042 button atlas for the ~N hint glyphs).
+- The campaign = sp_level 0x2df2e0's 12 records (name/desc labels + level codes, cross-checked against
+  ee_snapshot): "Enemies Vanquished" etc. replace the old hard-coded list; unlock rule = row 0 fresh,
+  i+1 on completion (Menu_SetLevelBonus 0x1ffa10), locked rows dimmed + unscrollable (C_SBNFMAP
+  0x20b8d8:18-20), --unlock-all = menu_unlock_everything 0x30d2a7.
+- Flow: Title → START → intro movie (state 6, skippable; the trimmed ISO's menu FMVs are zeroed) →
+  Main → NightFire → Codename (confirm box for Play without saving) → Difficulty → Missions → the
+  sp_level level through the 0x71 wrap; backs + the Dossier side-action.
+- --shot now draws the menu overlay (lib.rs front_end_menu): --page start|main|codename|difficulty|
+  missions|dossier, --cursor N, --unlock-all; F10 screenshots include the menu too.
+- Two real bugs fixed: Lang::parse's raw UTF-8 fallthrough emptied every CP-1252 string (the legal line
+  0x375 — fix-menus' Left #7) — the bank is now CP-1252-decoded with offsets remapped; the loader's
+  movie-wrap check mis-fired on the driving codes 0x09xxxxxx (real sp_level levels) — now tests the
+  0x71/0x73 prefix at bits 20-27.
+- Suite: nf-formats 61 pass + the 3 allowed disc_golden fails; nf-view 379 pass / 0 fail (12 menus_flow
+  tests incl. the page sequence, per-page label ids and per-page sprite hashes, with NF_ISO sisters).
+  Report: docs/reports/fix-menus2.md. Render commands for the main agent are in the report.
+
+Stage Summary:
+- The front end matches the real game's data: the game's own page layouts/sprites/strings/flow, the
+  12-mission sp_level campaign with the unlock rule, the confirm box, the Dossier, button-icon hint
+  bars, and a --shot path that renders every page for the PCSX2 side-by-side. Left (reported): the
+  zeroed menu FMVs, the ✕/△ glyph sprites, the per-mission preview mapping, the driving-row launch.
+---
+Task ID: 260
+Agent: fix-sky (worker)
+Task: fix-sky (branch s/fix-sky) — sky remainder: lightning, the rotating sky, the sky pass's GS state
+
+Work Log:
+- Branch created from origin/master (87625dc); setup verified (work/, EE snapshots, ISO, nf-queue).
+
+Stage Summary:
+- Starting: lightning variants [G-019], the 0x0700001B rotating sky, the sky pass's GS state vs gpu.rs, snow/rain particle look if sky-owned.
+---
+Task ID: 260
+Agent: fix-sky (worker)
+Task: fix-sky (branch s/fix-sky) — sky remainder: lightning, the rotating sky, the sky pass's GS state
+
+Work Log:
+- Decode: View_DrawSky 0x1e5ad0 (per-slot lightning timers, RNG order, the 0x0700001B block), View_AddSkyObj
+  0x1e79a0 (slot layout: state at slot*0x40+0x40, interval = param2 × FRAME_RATE), parsemap 0x1d04f0 case 0x2a
+  (params → slot/flash/interval/flashlen/group via the level+0x2c param area), Game_Draw 0x1e6f50 (DrawSky's arg
+  = sky group: 1 pre-world, 0 post psiPostSolid), Lightning_Update 0x18cf68 (SuperHappyLightningFlag → the 8-beam
+  polyline, FractalThing on Reflicker), psiSetUpColourBlend 0x1214f8 (mode 2 → ALPHA_1 0x2a = replace), psiFog
+  0x121578 (a size-8 stub — the sky pass writes no fog), RotMatrix 0x1e2368 / Concat 0x1e4a90 /
+  ApplyMatrixLVI 0x1e4960 / Vec_Spherical_2_Cartesian 0x1e3948.
+- [L] ee_start_05/07000001/0a GfxList dumps: the layout confirmed, the snapshot levels carry no flash variants;
+  [D] disc scan (nf-extract placements 2a): lightning only on 0700000a (slot 3 Thunderhead, 24→1440, flash 5) and
+  0700000b (30→1800, flash 10); 0700001b = SKY_StarField + SKY_Earth, flags 0x222 → both slots spin (+2 counts/frame).
+- crates/nf-game/src/sky.rs: SkySlot/LightningGlobals/RotatingSky + tick_slot/tick_group/Sky (the machine, exact EE
+  chop arithmetic + the game's sinf), rot_matrix/concat/apply_matrix_lvi/spherical_2_cartesian,
+  rotating_sky_matrix. lib.rs: the `pub mod sky;` line (minimal shared-file touch).
+- Tests: sky_lightning.rs (600-tick flags golden vs an independent Python replica incl. the real Thunderhead params;
+  branch census + final RNG state sister; no-flash slots never draw; interval × FRAME_RATE), sky_rotation.rs
+  (spin bits per pass, pause/level gates, sun vector + rotated bits through the game's chain), sky_gs_live.rs
+  (NF_ISO: the first CNT's A+D state — Thunderhead inherits everything, StarField writes 0x44/0x5001b/0x131000000).
+- Docs: render.md "Sky remainder", GAPS G-019. Report: docs/reports/fix-sky.md.
+
+Stage Summary:
+- The timed sky is data + code, golden-verified against an independent replica of the game's arithmetic. Open for
+  the main agent: the nf-view render-side hook (flash glist swap + spin matrix + bolt draw), the live ZMSK check.
+## fix-restart-target (s/fix-restart-target) — 2026-10-13
+
+The fail/death menu's Restart went to the mission's base map, cold (`fail_choose_restart` →
+`ResetMap_LevelToLoad(BaseMap, 0, 1)` per fix-death-restart) — the user failing on 07000007 landed on
+"the very beginning map, 05" instead of the start of the level. The decompile: menu 0x40000042's
+handler is `P_ENDMISSION_Handler` 0x216618 (`Handler_HandleMessage` 0x2029e0:498-500), NOT
+`C_GCPAUSE_Handler` 0x204408 (that is the PAUSE menu 0x10000028, :217-219 — fix-death-restart had
+them swapped). Its event-0x4b arms [M 0x216618:11-27]: row 0 (Restart) =
+`ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` + `Player_RamLoad(Bond, 1)` — the CURRENT level, warm,
+on the ENTRY checkpoint; row 1 = BaseMap cold (`Mission_BaseMapHCode` [M 0x1830a0]); row 2 = quit to
+0x7000048. The warm arm keeps the channels (`Init_SwitchChannels` only runs cold [M 0x1d5080:48-50])
+and `Player_RamLoad` restores all four channel arrays from the RamSave [M 0x1957a8:17-20] — the ENTRY
+checkpoint (`Player_RamSave` at the previous level's exit [M 0x1b2318:115]; script case 0x12
+[M 0x1d94c0:194-199]), whose ch 99/100 predate the fail, so the warm restart cannot re-fail: the
+replay loop fix-death-restart feared was an artefact of carrying the DYING state, which the game never
+does. The boost arg 1 floors health at `ContinueHealthBoost*` = 50.0 on all difficulties [L
+ee_start_05.bin 0x30cc34-3c]; `Mission_Init(level, 1)` resets current+future parts [M 0x182270:68-129];
+`Player_InitWeapon` re-runs 07000007's fixed party loadout + armour 0 [M 0x1a7ef8:176-186]. Port:
+`fail_choose_restart` targets `Drones::level_current` (latched at the Mission_Init site) with
+`level_exit_restart`; nf-view keeps `App::entry_save` (the save each level was loaded with) and
+re-serves it with the 50.0 floor (zeroed-at-shape when the level was cold-loaded — the game's BSS
+buffer); the Results page rows moved to the game's arm order (row 0 = restart level warm, row 1 =
+restart mission cold). Tests: `fix_restart_target_live.rs` (the user's 07000007 scenario — RED before
+the fix: it targeted 07000005 cold — and the full reload state + a 360-tick no-re-fail loop check);
+`fix_death_restart_live.rs` re-pointed at the corrected model (the fall test now the warm arm);
+`menus_flow.rs`'s results rows updated. docs/systems/mission.md §4/§8 rewritten. Remaining: the
+results-page restart goes through the fe flow and does not set the sim's restart flags (the in-sim
+auto_restart path, what play uses, does); the exact on-screen row labels are [S]; live PCSX2 checks
+requested in the report. Report: docs/reports/fix-restart-target.md.
+---
+Task: fix-objective-banner (branch s/fix-objective-banner)
+Agent: fix-objective-banner worker
+Task: the objective banner text and timing, the fail message (07000007 Kimiko cut-scene, "NEW OBJECTIVE" text, off-centre fail message)
+
+Work Log:
+- Branch created from origin/master (067a54c); setup verified (work/, EE snapshots, ISO, nf-queue all present).
+
+Stage Summary:
+- Starting: banner timing (what holds the objective pane while a script player owns the camera), the
+  banner's real text from the mission table, the fail message's centring.
+
+---
+Task: fix-objective-banner (branch s/fix-objective-banner)
+Agent: fix-objective-banner worker
+Task: the objective banner's timing (wait for the Kimiko cut-scene's hand-back), the banner's real objective text, the centred fail message
+
+Work Log:
+- Reproduced on master with a headless NF_ISO probe through the real trigger (TouchOnce #412,
+  out 0x48 → SP #420 plays 0x06000073, the Kimiko scene): the announce drained on the trigger
+  tick, one tick BEFORE the scene's Script_CameraStart set hud_frozen, and the port played
+  1532+469 and displayed the banner at the same moment the cut-scene started. Frame trace:
+  frame 1 ch 0x48 set + 2 cold-load banners; frame 2 hud_frozen=true, the "Spy on secret
+  meeting" event drained at frame 1's hud_tick with the sound.
+- The game's mechanism, from the decompile: `Text_AddMsg` 0x1b0c30 only QUEUES a message; every
+  sound and drawn pixel belongs to `HUD_UpdateStatusPane` 0x19c310, whose case 0 polls
+  `Text_UpdateMsg` 0x1b11d8:16-18 — which returns 0 while the viewer's +0x2a HUD gate is off
+  (set by `Script_CameraStart` 0x1d9140:41-43, restored by `Script_KillStream` 0x1d9860:71).
+  `Mission_Update` runs from `Game_Run` 0x1c9790:17 BEFORE the object handler, so the monitor
+  sees a trigger's channel one tick after the trigger — after the camera gate is up. The SFX
+  schedule lives in the pane: case 2 schedules PlayMe1st/PlayMe2nd per display (new objective
+  1532/469, "OBJECTIVE COMPLETE" 468 with Triggered2 preset so 469 never plays) [M
+  0x19c310:148-164]; case 3 fires PlayMe1st in the message's first 60 ticks, only while
+  `ScriptCam == 0` [M 0x19c310:219-229], and PlayMe2nd (469) once the steady phase begins
+  (remaining + 60 ≤ life) [M 0x19c310:232-235]. `Text_UpdateMsg` ticks only the displayed head
+  [M 0x1b11d8:48-73].
+- Fixes: (1) nf-view hud_tick drains the mission events BEFORE the frozen check (queue silently
+  mid-cut-scene, timers untouched) and plays the SFX when the message first displays — PlayMe1st
+  at open, 469 at life−60, complete = 468 only; (2) nf-game Drones::tick runs `Mission_Update` at
+  the TOP of the tick, before fx/triggers/scripts/the death path (the game's Game_Run order —
+  Mission_Update 0x182c60:17 before control_movement_object_handler 0x1336f8:30-35), so the
+  announce lands after the scene's camera gate; (3) the objective/mission banner queues tick
+  head-only (the game's Text_UpdateMsg), which also stops later banners expiring before they
+  ever show; (4) the objective banner's status label + body draw CENTRED on x=256 — template x
+  128 + MsgObjectiveStatusPane CREATE x 128 [L 0x319608 entries 5/0 + CREATE 0x319710; dump in
+  the report] with fmt 0x30cdb0's justify byte 3 = centre [M Font_ParseFormat 0x1ee3e0 case
+  0xfe/3 → flag 2; Font_DrawText 0x1eee48 flag 2 → x −= w/2] — the port drew both rows
+  left-aligned from x=128 (the user's off-centre fail message). The bar itself (16..496) was
+  already right: case 1 re-pins the middle's x/w to the template on every open [M 0x19c310:101-111].
+- Tests (crates/nf-view/tests/fix_objective_banner_live.rs, all NF_ISO, all green):
+  the_kimiko_scene_holds_the_announce_until_the_handback (no banner SFX and no display from the
+  trigger to the hand-back; exactly one announce — the objective's own bound line; 1532 once at
+  the hand-back, 469 once ~60 ticks later); every_objective_banner_shows_the_objectives_own_line
+  (07000005 + 07000007: each banner body == `Lang::bind` of the objective record's own text id,
+  status id 0x02000051); the_fail_message_is_centred_on_the_banner (the Fail-prefixed notice's
+  status + body rows measure centred on 256 ± 1.5, inside the 16..496 bar).
+
+Stage Summary:
+- The banner waits for the cut-scene's hand-back the way the game's pane gate does; the text is
+  the objective's own string id; the fail message is centred. Shared-file changes: drone.rs (the
+  Mission_Update move), scene.rs (the drain/freeze order, the head-only tick, the SFX-at-open),
+  hud.rs (the centred objective-banner rows) — all additive, listed in the report.

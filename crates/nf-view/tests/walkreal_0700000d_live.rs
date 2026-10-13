@@ -90,7 +90,9 @@ fn walk_arrival_to_the_c5_door() {
         &|sim| sim.drones.channels.on(0x1e));
     assert!(photographed, "the photograph never wrote ch 0x1e [M 0x1bc668:14-24]");
     {
-        let sim = w.scene.sim.as_ref().unwrap();
+        // fix-objective-banner: the monitor completes the objective the tick after the channel.
+        let sim = w.scene.sim.as_mut().unwrap();
+        for _ in 0..2 { sim.step_bond(nf_game::player::Input::default(), false, false, false); }
         assert_eq!(sim.drones.mission.states[12][1], 4, "objective 5 completes [M 0x1827d8:88-99]");
     }
 
