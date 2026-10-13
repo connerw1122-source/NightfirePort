@@ -18,3 +18,8 @@ glam = "0.34.1"
 
 [dev-dependencies]
 naga = { version = "30.0.1", features = ["wgsl-in"] }
+
+[features]
+# The decoder (oxideav-mpeg12video, MIT) stays opt-in until the user approves it: `--features movies`
+# enables nf-formats/movies, the --movie CLI and the movie tests.
+movies = ["nf-formats/movies"]
