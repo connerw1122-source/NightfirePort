@@ -239,24 +239,33 @@ impl GameFlow {
 // The front end pages — layouts from the disc's menu-def (08000002), strings from the language bank
 // ---------------------------------------------------------------------------
 
-/// The campaign [M `sp_level` 0x2df2e0's 12 records: +0x04 name label, +0x08 description label (bank-3
-/// Txt ids), +0x0c level, +0x10 unlocked; read back from the EE snapshot]. The port keeps the game's
-/// level codes verbatim — the 0x09xxxxxx rows are the driving maps (`C_SBNFMAP` passes them straight to
-/// `ResetMap_LevelToLoad` [M 0x20b8d8:21-24]).
-pub const CAMPAIGN: [(u32, u32, u32); 12] = [
-    (0x0300_0001, 0x0300_0013, 0x0900_0001), // Paris Prelude
-    (0x0300_0002, 0x0300_0014, 0x0700_0005), // The Exchange
-    (0x0300_0003, 0x0300_0015, 0x0900_0005), // Alpine Escape
-    (0x0300_0004, 0x0300_0016, 0x0900_0006), // Enemies Vanquished
-    (0x0300_0005, 0x0300_0017, 0x0700_0001), // Double Cross
-    (0x0300_0006, 0x0300_0018, 0x0700_0009), // Night Shift
-    (0x0300_0007, 0x0300_0019, 0x0700_000c), // Chain Reaction
-    (0x0300_0009, 0x0300_001b, 0x0700_0011), // Phoenix Fire
-    (0x0300_000c, 0x0300_001e, 0x0900_0002), // Deep Descent
-    (0x0300_000e, 0x0300_0020, 0x0900_0003), // Island Infiltration
-    (0x0300_0034, 0x0300_0035, 0x0700_0014), // Deep Water
-    (0x0300_0011, 0x0300_0023, 0x0700_001b), // Countdown
+/// The campaign [M `sp_level` 0x2df2e0's 12 × 0x18-byte records: +0x00 the row's ring-preview texture
+/// hash (a 0x03xxxxxx archive id, NOT a Txt label — `Menu_UpdateWheel` 0x1f8388 sends it as msg 0x24 to
+/// the Single Player page's preview control 0x10000020 [M 0x20b94c-0x20b984 call site, 0x1f849c-0x1f84b4
+/// msg send]); +0x04 name label, +0x08 description label (bank-3 Txt ids), +0x0c level, +0x10 unlocked,
+/// +0x14 the locked rows' description label (0x01000009 [L USATxt "Continue playing to unlock this
+/// mission."]); the record bytes read back from the EE snapshot at 0x2df2e0 [L work/ee_snapshot.bin].
+/// The port keeps the game's level codes verbatim — the 0x09xxxxxx rows are the driving maps
+/// (`C_SBNFMAP` passes them straight to `ResetMap_LevelToLoad` [M 0x20b8d8:21-24]).
+pub const CAMPAIGN: [(u32, u32, u32, u32); 12] = [
+    // (ring-preview texture, name label, description label, level) = sp_level[i] +0x00/+0x04/+0x08/+0x0c
+    (0x0300_0085, 0x0300_0001, 0x0300_0013, 0x0900_0001), // Paris Prelude
+    (0x0300_0084, 0x0300_0002, 0x0300_0014, 0x0700_0005), // The Exchange
+    (0x0300_00b0, 0x0300_0003, 0x0300_0015, 0x0900_0005), // Alpine Escape
+    (0x0300_00b2, 0x0300_0004, 0x0300_0016, 0x0900_0006), // Enemies Vanquished
+    (0x0300_008c, 0x0300_0005, 0x0300_0017, 0x0700_0001), // Double Cross
+    (0x0300_008e, 0x0300_0006, 0x0300_0018, 0x0700_0009), // Night Shift
+    (0x0300_008d, 0x0300_0007, 0x0300_0019, 0x0700_000c), // Chain Reaction
+    (0x0300_008f, 0x0300_0009, 0x0300_001b, 0x0700_0011), // Phoenix Fire
+    (0x0300_00ae, 0x0300_000c, 0x0300_001e, 0x0900_0002), // Deep Descent
+    (0x0300_00af, 0x0300_000e, 0x0300_0020, 0x0900_0003), // Island Infiltration
+    (0x0300_0151, 0x0300_0034, 0x0300_0035, 0x0700_0014), // 'Countdown' [L USATxt 0x03000034]
+    (0x0300_0142, 0x0300_0011, 0x0300_0023, 0x0700_001b), // 'Equinox' [L USATxt 0x03000011]
 ];
+/// sp_level[i]+0x14 — the description a LOCKED row shows [L ee_snapshot 0x2df2e0+0x14 = 0x01000009 on
+/// every locked row; USATxt 0x01000009 = "Continue playing to unlock this mission."] [M
+/// `Menu_UpdateWheel` binds +0x08 when unlocked, +0x14 when not].
+pub const LOCKED_DESC: u32 = 0x0100_0009;
 
 /// The difficulty choices [M Txt 0x14d/0x14e/0x14f = "Operative"/"Agent"/"00 Agent" (USATxt.dat), the
 /// order of menu-def page 0x40000023's wheel rows; the `difficulty` global is 0x2df4c0 [M symtab]].
@@ -344,7 +353,11 @@ impl FrontEnd {
         let flow = GameFlow::boot();
         let page = Page::from_id(flow.page).unwrap_or(Page::Start);
         let mut unlocked = [false; 12];
-        unlocked[0] = true; // [S: a fresh profile — see the field doc]
+        // A fresh profile has rows 0 AND 1 unlocked [D sp_level's boot state in ACTION.ELF .data (file
+        // offset 0x1d91e0): rows 0-1 hold +0x10 = 1, rows 2-11 hold 0; the ee_start snapshots captured a
+        // post-unlock session and read 1 everywhere].
+        unlocked[0] = true;
+        unlocked[1] = true;
         FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false }
     }
 
@@ -367,9 +380,10 @@ impl FrontEnd {
         match self.page {
             Page::Start => bind(0x100_01eb),       // "Press the START button" [M 0x20a408]
             Page::Main => bind(MAIN_ITEMS[row.min(2)]),
+            // (CAMPAIGN's name label is +0x04 [M Menu_UpdateWheel 0x1f8388 fills the wheel rows from it].)
             Page::Codename => bind(0x100_02ff),    // "Play without saving" [M Txt; menu-def row labels are runtime-filled]
             Page::Difficulty => bind(DIFFICULTIES[row.min(2)]),
-            Page::MissionSelect => bind(CAMPAIGN.get(row).map_or(0, |c| c.0)),
+            Page::MissionSelect => bind(CAMPAIGN.get(row).map_or(0, |c| c.1)),   // +0x04 name [M 0x1f8388]
             Page::Dossier => bind(0x27f),          // "Dossier"
             Page::Options => ["Screen adjust", "Controls", "Back"][row.min(2)].into(),
             // The single-player pause rows [S labels — the disc page data holds the originals; the
@@ -496,7 +510,7 @@ impl FrontEnd {
                     // ResetMap_LevelToLoad(sp_level[i]+0xc, 0, 0) + a fade push [M :24-41].
                     if !self.unlocked_row(self.cursor) { return false; }
                     self.mission = self.cursor.min(CAMPAIGN.len() - 1);
-                    let level = CAMPAIGN[self.mission].2;
+                    let level = CAMPAIGN[self.mission].3;   // +0x0c [M 0x20b8d8:21]
                     self.requested_level = Some(level);
                     self.flow.reset_map_level_to_load(level, false, false);
                     return true;
@@ -525,7 +539,7 @@ impl FrontEnd {
                         1 => {                                                               // restart [M 0x204408:139-141:
                             // ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1) — the mission's FIRST map]
                             self.confirming_quit = false;
-                            let level = CAMPAIGN[self.mission].2;
+                            let level = CAMPAIGN[self.mission].3;
                             self.requested_level = Some(level);
                             self.flow.reset_map_level_to_load(level, false, true);
                             self.page = Page::Main;
@@ -556,7 +570,7 @@ impl FrontEnd {
                     match self.cursor {
                         // [M 0x216618 message 0x4b: 1 = restart, 0 = continue, 2 = quit]
                         0 => {
-                            let level = CAMPAIGN[self.mission].2;
+                            let level = CAMPAIGN[self.mission].3;
                             self.requested_level = Some(level);
                             self.flow.reset_map_level_to_load(level, false, true);
                             self.page = Page::Main;
@@ -618,7 +632,36 @@ impl FrontEnd {
 /// sizes from the archive: 0x03000074 512×512 title art, 0x030000b3 512×256 panel, 0x030000bf 128×128
 /// ring emblem, 0x03000084/b6/c4/a5 the ring-masked previews, 0x0300016d 256×128 logo,
 /// 0x0300014c 256×256 stamp, 0x03000042 64×64 button/arrow atlas].
-pub const MENU_TEXTURES: [u32; 10] = [0x0300_0042, 0x0300_0074, 0x0300_00b3, 0x0300_00bf, 0x0300_0084, 0x0300_00b6, 0x0300_00c4, 0x0300_00a5, 0x0300_016d, 0x0300_014c];
+pub const MENU_TEXTURES: [u32; 22] = [0x0300_0042, 0x0300_0074, 0x0300_00b3, 0x0300_00bf, 0x0300_0084, 0x0300_00b6, 0x0300_00c4, 0x0300_00a5, 0x0300_016d, 0x0300_014c,
+    // The hint-bar icon font `specialchar` [M 0x2dd8d8: every entry's texture is 0x03000075].
+    0x0300_0075,
+    // The 12 per-mission ring previews = sp_level[i]+0x00 [L ee_snapshot 0x2df2e0; all 12 live in the
+    // 07000048.bin menu archive's texture entry 5 [L nf-extract tex-list]].
+    0x0300_0085, 0x0300_00b0, 0x0300_00b2, 0x0300_008c, 0x0300_008e, 0x0300_008d, 0x0300_008f, 0x0300_00ae, 0x0300_00af, 0x0300_0151, 0x0300_0142];
+
+/// The menu text renderer's special-character table `specialchar` (0x2dd8d8, 17 × 0x18 bytes: the token
+/// char, the texture hash 0x03000075, u0, v0, w, h, advance, height) [M ACTION.ELF symtab + the table's
+/// bytes; the hint strings' ~A/~B/... tokens draw through it — the game's own button glyphs, NOT the
+/// 64×64 atlas 0x03000042 the port guessed before]. (token, u, v, w, h, advance)
+pub const SPECIALCHAR: [(char, u32, f32, f32, f32, f32, f32); 17] = [
+    ('A', 0x0300_0075, 235.0, 1.0, 19.0, 19.0, 19.0),   // the ✕ cross
+    ('B', 0x0300_0075, 235.0, 21.0, 19.0, 19.0, 19.0),  // the circle
+    ('C', 0x0300_0075, 213.0, 111.0, 22.0, 17.0, 20.0),
+    ('D', 0x0300_0075, 190.0, 111.0, 22.0, 17.0, 20.0),
+    ('E', 0x0300_0075, 192.0, 72.0, 18.0, 18.0, 20.0),
+    ('F', 0x0300_0075, 215.0, 72.0, 18.0, 18.0, 20.0),
+    ('H', 0x0300_0075, 236.0, 80.0, 18.0, 19.0, 20.0),
+    ('I', 0x0300_0075, 198.0, 59.0, 7.0, 7.0, 7.0),
+    ('J', 0x0300_0075, 176.0, 57.0, 16.0, 12.0, 16.0),
+    ('L', 0x0300_0075, 213.0, 93.0, 22.0, 13.0, 20.0),
+    ('R', 0x0300_0075, 190.0, 93.0, 22.0, 13.0, 20.0),
+    ('S', 0x0300_0075, 162.0, 113.0, 26.0, 13.0, 20.0),
+    ('T', 0x0300_0075, 150.0, 109.0, 9.0, 7.0, 16.0),
+    ('V', 0x0300_0075, 236.0, 100.0, 18.0, 19.0, 20.0), // the scroll pair
+    ('W', 0x0300_0075, 167.0, 90.0, 20.0, 20.0, 20.0),
+    ('X', 0x0300_0075, 235.0, 41.0, 19.0, 19.0, 19.0),  // the square
+    ('Y', 0x0300_0075, 235.0, 61.0, 19.0, 19.0, 19.0),  // the triangle
+];
 
 /// The menu text colours [M the pages' msg-0x1b/0x1c colour pairs; 0x7d6d59ff is rewritten to
 /// 0x645a49ff by `MenuManager_Create` [M 0x21b908:238-243] — cream text on the warm 007 red].
@@ -639,8 +682,11 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
     let bright = gs(BRIGHT, 0xff);
     let dim = gs(CREAM, 0x80);
     let dimmest = gs(CREAM, 0x40);
-    // The backdrop: the pages' aux FMVs (0x07330048/0x07350048) are zeroed in the trimmed ISO, so the
-    // port draws the dark plate the game fades from [M the pages' 0x1b/0x1c fade colours].
+    // The backdrop: the pages' aux FMVs are the real background — the main menu's PAGE record names
+    // 0x07330048, every list page 0x07350048 [L menu-def PAGE records, M_PAGE+0xC4 — the game plays
+    // them as looping background movies, see docs/systems/movies.md]. The trimmed ISO stubs every
+    // movie (0-byte PSS files [L]), so the port draws the dark plate the pages fade from [M the
+    // pages' 0x1b/0x1c fade colours]; a still from the retail image is the follow-up.
     plate(&mut h, 0.0, 0.0, MW, MH, gs(0x180c08, 0xff));
     match fe.page {
         Page::Start => {
@@ -650,12 +696,15 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             // [M 0x20a408] and 0x375 to the plate, flashing on the 240-frame cycle.]
             quad640(&mut h, 0x0300_0074, 0.0, 0.0, MW, MH, [0.0, 0.0, 512.0, 512.0], gs(0x7f7f7f, 0xff));
             if fe.press_start_on {
-                h.text(Anchor::Left, font, -2, &bind(0x100_01eb), mx(131.0), my(309.0), false, gs(YELLOW, 0xff), true);
+                h.text(Anchor::Centre, font, -2, &bind(0x100_01eb), mx(320.0), my(309.0), false, gs(YELLOW, 0xff), true);
             }
             let legal = bind(0x375);
             if !legal.is_empty() {
-                for (i, line) in wrap(&legal, 92).iter().take(4).enumerate() {
-                    h.text(Anchor::Left, font, -3, line, mx(50.0), my(332.0 + i as f32 * 22.0), false, gs(CREAM, 0xc0), false);
+                // The legal text wraps inside its plate (50,332,540×108) and each line is centred in it
+                // [L the main agent's PCSX2 captures 2026-10-13; the port's raw 92-column run went off
+                // the right edge]. Wrap to the plate's pixel width, centre at the plate's centre x=320.
+                for (i, line) in wrap_px(&legal, font, 500.0).iter().take(6).enumerate() {
+                    h.text(Anchor::Centre, font, -3, line, mx(320.0), my(334.0 + i as f32 * 18.0), false, gs(CREAM, 0xc0), false);
                 }
             }
         }
@@ -663,11 +712,13 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             // The main menu [M menu-def page 0x40000002: rows 0x10000002/3/4 (167,262/294/326,306×28)
             // LBL 0x28/0x149/0x14b, colours 0x1b 0x7d6d59ff (→0x645a49ff) / 0x1c 0x73330f80 (the
             // selected row's red-orange); the description plate 0x10000225 (103,357,434×42) LBL
-            // runtime-filled (Txt 0x10000000/1/2); the hint bar 0x10000001 (50,419,540×21) LBL 0x54e.]
+            // runtime-filled (Txt 0x10000000/1/2); the hint bar 0x10000001 (50,419,540×21) LBL 0x54e.
+            // The page has NO static art control: the backdrop is its aux FMV 0x07330048 [L PAGE
+            // record] — see the plate comment above.]
             for (i, &lbl) in MAIN_ITEMS.iter().enumerate() {
                 let y = 262.0 + i as f32 * 32.0;
                 let (c, scale) = if i == fe.cursor { (gs(ORANGE, 0xff), 1.35) } else { (cream, 1.2) };
-                h.text_scaled(Anchor::Left, font, -2, &bind(lbl), mx(167.0 + 153.0), my(y + 6.0), true, c, true, scale);
+                h.text_scaled(Anchor::Centre, font, -2, &bind(lbl), mx(167.0 + 153.0), my(y + 6.0), true, c, true, scale);
             }
             h.text(Anchor::Centre, font, -2, &bind(MAIN_DESCS[fe.cursor.min(2)]), mx(103.0 + 217.0), my(357.0 + 14.0), false, bright, true);
             hint_bar(&mut h, font, &hint(0x54e, "~V Scroll  ~A Select"), 50.0, 419.0, cream);
@@ -701,22 +752,33 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             panel(&mut h);
             emblem(&mut h, 0x0300_00a5, 0x0300_00bf);
             wheel(&mut h, fe, font, lang, |_fe, row| bind(DIFFICULTIES[row.min(2)]), cream);
-            h.text(Anchor::Centre, font, -2, &bind(DIFFICULTY_DESCS[fe.cursor.min(2)]), mx(320.0), my(301.0 + 40.0), false, bright, true);
+            // The description wraps inside its plate (50,301,540×113) [L the main agent's captures:
+            // the port's single line ran off the right edge].
+            for (i, line) in wrap_px(&bind(DIFFICULTY_DESCS[fe.cursor.min(2)]), font, 500.0).iter().take(4).enumerate() {
+                h.text(Anchor::Centre, font, -2, line, mx(320.0), my(301.0 + 28.0 + i as f32 * 18.0), false, bright, true);
+            }
             hint_bar(&mut h, font, &hint(0x218, "~A Select  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
         Page::MissionSelect => {
             // Single Player [M menu-def page 0x4000001c: header 0x10000029 (50,40) LBL 0x14c; the
-            // panel TEX 0x030000b3; the emblem 0x10000020 (114,118,150×150) TEX 0x03000084 (the
-            // ring-masked preview) over 0x10000102 TEX 0x030000bf (the ring); the five wheel rows
-            // 0x100000e3 (runtime-filled with sp_level's name labels); the description plate
-            // 0x1000001f (50,301,540×113); the hint bar 0x1000010e LBL 0x218 (the game swaps the
-            // □ Dossier hint in [L PCSX2 — the driver's transcript]; Txt 0x208 has it).]
+            // panel TEX 0x030000b3; the emblem 0x10000020 (114,118,150×150) TEX = the ring-masked
+            // preview UNDER 0x10000102 TEX 0x030000bf (the ring, f1 0x1c < the preview's 0x1d — the
+            // ring draws on top); the five wheel rows 0x100000e3; the description plate 0x1000001f
+            // (50,301,540×113); the hint bar LBL 0x218 (□ Dossier, Txt 0x208). The preview texture is
+            // PER ROW: sp_level[cursor]+0x00 [M Menu_UpdateWheel 0x1f8388's msg 0x24 to 0x10000020].]
             page_header(&mut h, font, &bind(0x14c));
             panel(&mut h);
-            emblem(&mut h, 0x0300_0084, 0x0300_00bf);
-            wheel_dim(&mut h, fe, font, lang, |_fe, row| bind(CAMPAIGN[row].0), |fe, row| !fe.unlocked_row(row), cream);
-            h.text(Anchor::Centre, font, -2, &wrap(&bind(CAMPAIGN[fe.cursor.min(CAMPAIGN.len() - 1)].1), 70).join(" "), mx(320.0), my(301.0 + 40.0), false, bright, true);
+            let row = fe.cursor.min(CAMPAIGN.len() - 1);
+            let (c, ring_c) = if fe.unlocked_row(row) { (gs(0x7f7f7f, 0xff), gs(0x7f7f7f, 0xff)) } else { (gs(0x7f7f7f, 0x60), gs(0x7f7f7f, 0x60)) }; // [M 0x1f8388: locked rows' 0x60606060 colour]
+            emblem_col(&mut h, CAMPAIGN[row].0, 0x0300_00bf, c, ring_c);
+            wheel_dim(&mut h, fe, font, lang, |_fe, row| bind(CAMPAIGN[row].1), |fe, row| !fe.unlocked_row(row), cream);
+            // The description: +0x08 for an unlocked row, +0x14 for a locked one [M 0x1f8388], wrapped
+            // inside the plate.
+            let desc = if fe.unlocked_row(row) { bind(CAMPAIGN[row].2) } else { bind(LOCKED_DESC) };
+            for (i, line) in wrap_px(&desc, font, 500.0).iter().take(4).enumerate() {
+                h.text(Anchor::Centre, font, -2, line, mx(320.0), my(301.0 + 28.0 + i as f32 * 18.0), false, bright, true);
+            }
             hint_bar(&mut h, font, &hint(0x208, "~A Select  ~Y Dossier  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
@@ -730,9 +792,9 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             panel(&mut h);
             emblem(&mut h, 0x0300_00c4, 0x0300_00bf);
             let m = fe.mission.min(CAMPAIGN.len() - 1);
-            h.text(Anchor::Centre, font, -2, &bind(CAMPAIGN[m].0), mx(320.0), my(123.0 + 10.0), false, bright, true);
-            for (i, line) in wrap(&bind(CAMPAIGN[m].1), 70).iter().take(6).enumerate() {
-                h.text(Anchor::Centre, font, -2, line, mx(320.0), my(160.0 + i as f32 * 20.0), false, cream, true);
+            h.text(Anchor::Centre, font, -2, &bind(CAMPAIGN[m].1), mx(320.0), my(123.0 + 10.0), false, bright, true);
+            for (i, line) in wrap_px(&bind(CAMPAIGN[m].2), font, 500.0).iter().take(6).enumerate() {
+                h.text(Anchor::Centre, font, -2, line, mx(320.0), my(160.0 + i as f32 * 18.0), false, cream, true);
             }
             hint_bar(&mut h, font, &hint(0x218, "~A Select  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
@@ -770,15 +832,17 @@ fn wheel_dim(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, _lang: Op
         };
         if locked(fe, row) { c = dimmed(base, 0x30); }
         let s = label(fe, row);
-        h.text_scaled(Anchor::Left, font, -2, &s, mx(WHEEL_X[slot]), my(WHEEL_Y[slot] + 2.0), false, c, true, scale);
+        h.text_scaled(Anchor::Centre, font, -2, &s, mx(WHEEL_X[slot]), my(WHEEL_Y[slot] + 2.0), false, c, true, scale);
     }
 }
 
 fn dimmed(mut c: [f32; 4], a: u32) -> [f32; 4] { c[3] = gs(0, a)[3]; c }
 
-/// The page header (cream text at (50,40) [M every list page's 0x10000001 control]).
+/// The page header (cream text at (50,40) [M every list page's 0x10000001 control]). Header text is
+/// the page data's own LBL — the stylised logo look in the captures is the game's menu font, which
+/// the port has not parsed (reported).
 fn page_header(h: &mut Hud, font: &nf_formats::hud::Font, s: &str) {
-    h.text_scaled(Anchor::Left, font, -1, s, mx(50.0), my(40.0), false, gs(BRIGHT, 0xff), true, 1.2);
+    h.text_scaled(Anchor::Centre, font, -1, s, mx(50.0), my(40.0), false, gs(BRIGHT, 0xff), true, 1.2);
 }
 
 /// The panel behind the rows [M pages 0x40000025/0x40000023/0x4000001c/0x4000002b control (50,53,590×295)
@@ -787,11 +851,42 @@ fn panel(h: &mut Hud) {
     quad640(h, 0x0300_00b3, 50.0, 53.0, 590.0, 295.0, [0.0, 0.0, 512.0, 256.0], gs(0x7f7f7f, 0xff));
 }
 
-/// The ring emblem stack: the page's ring-masked preview over the gold ring, both (114,118,150×150)
-/// [M the emblem controls on pages 0x40000025/0x40000023/0x4000001c/0x4000002b].
+/// The ring emblem stack: the page's ring-masked preview UNDER the gold ring, both (114,118,150×150)
+/// [M the emblem controls on pages 0x40000025/0x40000023/0x4000001c/0x4000002b; the ring's f1 layer
+/// (0x1c) is below the preview's (0x1d/0x1e) and lower layers draw on top [M hud.rs finish]]. The
+/// preview is clipped to the ring's circle — the game masks it (the port's square preview poked out
+/// of the ring as a visible box [L the main agent's 2026-10-13 render]).
 fn emblem(h: &mut Hud, preview: u32, ring: u32) {
-    quad640(h, preview, 114.0, 118.0, 150.0, 150.0, [0.0, 0.0, 128.0, 128.0], gs(0x7f7f7f, 0xff));
-    quad640(h, ring, 114.0, 118.0, 150.0, 150.0, [0.0, 0.0, 128.0, 128.0], gs(0x7f7f7f, 0xff));
+    emblem_col(h, preview, ring, gs(0x7f7f7f, 0xff), gs(0x7f7f7f, 0xff));
+}
+
+/// `emblem` with per-quad colours (the locked rows' preview dims to 0x60 [M 0x1f8388's 0x60606060]).
+fn emblem_col(h: &mut Hud, preview: u32, ring: u32, c: [f32; 4], ring_c: [f32; 4]) {
+    circle_clipped_quad(h, preview, 114.0, 118.0, 150.0, 150.0, [0.0, 0.0, 128.0, 128.0], c);
+    quad640(h, ring, 114.0, 118.0, 150.0, 150.0, [0.0, 0.0, 128.0, 128.0], ring_c);
+}
+
+/// A textured quad clipped to the rect's inscribed circle: 24 vertical strips, each the chord of the
+/// circle at that x range, UVs proportional. The game masks the preview to the ring (the emblem
+/// draw order + the square-box render); a `HudFrame` has no per-pixel mask, so the port clips
+/// geometrically — 24 strips' chord steps are under 0.1 px at the 150-px emblem.
+fn circle_clipped_quad(h: &mut Hud, tex: u32, x: f32, y: f32, w: f32, hh: f32, uv: [f32; 4], c: [f32; 4]) {
+    let n = 24;
+    let (cx, cy, r) = (x + w / 2.0, y + hh / 2.0, w / 2.0);
+    for k in 0..n {
+        let sx0 = x + w * k as f32 / n as f32;
+        let sx1 = x + w * (k + 1) as f32 / n as f32;
+        // The chord at the strip's FAR edge: a rectangle's corners must stay inside the circle, so
+        // the y range is clipped at the edge farther from the centre (the strip then sits a hair
+        // inside the circle — under 0.1 px at the 150-px emblem — never poking out).
+        let dx = (sx1 - cx).max(cx - sx0);
+        let half = (r * r - dx * dx).max(0.0).sqrt();
+        if half <= 0.0 { continue; }
+        let (sy0, sy1) = (cy - half, cy + half);
+        let u0 = uv[0] + (sx0 - x) / w * uv[2];
+        let v0 = uv[1] + (sy0 - y) / hh * uv[3];
+        quad_uv(h, tex, mx(sx0), my(sy0), mx(sx1 - sx0), my(sy1 - sy0), [u0, v0, (sx1 - sx0) / w * uv[2], (sy1 - sy0) / hh * uv[3]], c);
+    }
 }
 
 /// The logo (434,38,156×43 TEX 0x0300016d) and the stamp (the 0x10000224 control, whose position
@@ -805,86 +900,89 @@ fn logo_stamp(h: &mut Hud) {
 /// runtime-filled; the text Txt 0x10000bb].
 fn confirm_box(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, c: [f32; 4]) {
     plate(h, mx(50.0), my(301.0), mx(540.0), my(113.0), gs(0x201008, 0xe0));
-    for (i, line) in wrap(text, 78).iter().take(4).enumerate() {
+    for (i, line) in wrap_px(text, font, 500.0).iter().take(4).enumerate() {
         h.text(Anchor::Centre, font, -1, line, mx(320.0), my(306.0 + i as f32 * 22.0), false, c, true);
     }
 }
 
 /// The hint bar with the game's button glyphs [M the bars at (50,419,540×21); the strings carry ~A/~B/
-/// ~X/~Y/~V/~H/~S placeholders the game's text renderer draws as button icons. The icons are the
-/// menu-def sprite atlas 0x03000042's own tiles: the square face (0,0), the circle face (0,16), the
-/// scroll arrows (16,0)/(32,0), the left/right arrows (48,0)/(48,16) and the big pair (0,48)/(32,48)
-/// [M the atlas tiles, 07000048.bin tex 0x03000042]. `~A` (the cross) has no face tile in the atlas —
-/// the port draws the font's X glyph (reported; live check listed in docs/reports/fix-menus2.md).]
+/// ~X/~Y/~V/~H/~S placeholders and the menu text renderer draws them through the `specialchar` table
+/// 0x2dd8d8 — texture 0x03000075, per-token (u, v, w, h, advance) [M the table's bytes]. The port's
+/// earlier 64×64-atlas 0x03000042 tiles were a guess, and ~A (the ✕) fell back to the font's letter X
+/// — both wrong against the PCSX2 captures.]
 fn hint_bar(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y640: f32, c: [f32; 4]) {
     let mut pen = mx(x640);
     let y = my(y640);
-    let icon = mx(16.0);
     let mut rest = text;
     while let Some(t) = rest.find('~') {
         let (before, after) = rest.split_at(t);
         if !before.is_empty() {
-            h.text(Anchor::Left, font, -2, before, pen, y, false, c, true);
+            h.text(Anchor::Centre, font, -2, before, pen, y, false, c, true);
             pen += font.layout(before, 0.0, y).1;
         }
         let token = after.chars().nth(1);
-        let atlas = 0x0300_0042;
-        match token {
-            Some('A') => { h.text(Anchor::Left, font, -2, "X", pen, y, false, c, false); pen += font.layout("X", 0.0, y).1; }
-            Some('Y') => { h.quad(Anchor::Left, -2, atlas, 0, pen, y - 2.0, icon, icon, [0.0, 0.0, 16.0, 16.0], (false, false), c); pen += icon + 2.0; }
-            Some('X') => { h.quad(Anchor::Left, -2, atlas, 0, pen, y - 2.0, icon, icon, [0.0, 16.0, 16.0, 16.0], (false, false), c); pen += icon + 2.0; }
-            Some('B') => { h.quad(Anchor::Left, -2, atlas, 0, pen, y - 2.0, icon, icon, [16.0, 0.0, 16.0, 16.0], (false, false), c); pen += icon + 2.0; }
-            Some('V') => {
-                h.quad(Anchor::Left, -2, atlas, 0, pen + icon * 0.25, y - 3.0, icon * 0.5, icon * 0.5, [16.0, 0.0, 16.0, 16.0], (false, false), c);
-                h.quad(Anchor::Left, -2, atlas, 0, pen + icon * 0.25, y + icon * 0.5 - 1.0, icon * 0.5, icon * 0.5, [32.0, 0.0, 16.0, 16.0], (false, false), c);
+        match token.and_then(|t| SPECIALCHAR.iter().find(|s| s.0 == t)) {
+            Some(&(_, tex, u, v, w, hh, adv)) => {
+                let icon = mx(adv);
+                let iw = mx(w);
+                let ih = my(hh);
+                h.quad(Anchor::Centre, -2, tex, 0, pen, y - ih + my(12.0), iw, ih, [u, v, w, hh], (false, false), c);
                 pen += icon + 2.0;
             }
-            Some('H') => {
-                h.quad(Anchor::Left, -2, atlas, 0, pen, y - 2.0, icon * 0.5, icon, [48.0, 0.0, 16.0, 16.0], (false, false), c);
-                h.quad(Anchor::Left, -2, atlas, 0, pen + icon * 0.5, y - 2.0, icon * 0.5, icon, [48.0, 16.0, 16.0, 16.0], (false, false), c);
-                pen += icon + 2.0;
-            }
-            Some('S') | Some('W') => { h.quad(Anchor::Left, -2, atlas, 0, pen, y - 2.0, icon, icon, [48.0, 16.0, 16.0, 16.0], (false, false), c); pen += icon + 2.0; }
-            _ => { pen += icon; }
+            _ => { pen += mx(16.0); }
         }
         rest = &after[2.min(after.len())..];
         if rest.starts_with(' ') { rest = &rest[1..]; pen += 4.0; }
     }
-    if !rest.is_empty() { h.text(Anchor::Left, font, -2, rest, pen, y, false, c, true); }
+    if !rest.is_empty() { h.text(Anchor::Centre, font, -2, rest, pen, y, false, c, true); }
 }
 
-/// A textured quad in the menu's 640 × 480 space.
+/// A textured quad in the menu's 640 × 480 space. Anchor::Centre keeps every quad inside the centred
+/// 4:3 picture: the game draws the 640×480 menu space as a centred 4:3 image with black bars at the
+/// sides [L the main agent's PCSX2 captures 2026-10-13; the port's Anchor::Stretch quads filled the
+/// whole 16:9 window]. At a 4:3 window Centre ≡ Stretch, so 4:3 renders are unchanged.
 #[allow(clippy::too_many_arguments)]
 fn quad640(h: &mut Hud, tex: u32, x: f32, y: f32, w: f32, hh: f32, uv: [f32; 4], c: [f32; 4]) {
-    h.quad(Anchor::Stretch, 0, tex, 0, mx(x), my(y), mx(w), my(hh), uv, (false, false), c);
+    quad_uv(h, tex, mx(x), my(y), mx(w), my(hh), uv, c);
 }
 
-/// A flat coloured plate (the menu backdrop / the confirm box) — degenerate UVs on the font texture,
-/// like the dev overlay's `ndc_quad` [M hud.rs].
+/// A textured quad at screen-pixel coords with the quad's own uv rect (the circle strips need it).
+#[allow(clippy::too_many_arguments)]
+fn quad_uv(h: &mut Hud, tex: u32, x: f32, y: f32, w: f32, hh: f32, uv: [f32; 4], c: [f32; 4]) {
+    h.quad(Anchor::Centre, 0, tex, 0, x, y, w, hh, uv, (false, false), c);
+}
+
+/// A flat coloured plate (the menu backdrop / the confirm box), inside the centred 4:3 band — see
+/// `quad640` [L the main agent's captures].
 fn plate(h: &mut Hud, x: f32, y: f32, w: f32, hh: f32, c: [f32; 4]) {
-    let (a, b) = (h.ndc(Anchor::Stretch, x, y), h.ndc(Anchor::Stretch, x + w, y + hh));
+    let (a, b) = (h.ndc(Anchor::Centre, x, y), h.ndc(Anchor::Centre, x + w, y + hh));
     let p = |q: [f32; 2]| HudVertex { p: q, uv: [0.03, 0.03], c };
     let v = [p([a[0], a[1]]), p([b[0], a[1]]), p([b[0], b[1]]), p([a[0], a[1]]), p([b[0], b[1]]), p([a[0], b[1]])];
     h.ndc_quad(-5, v, c);
 }
 
-/// Naive greedy word wrap for the legal / confirm / description plates (the game's own text renderer
-/// wraps; `Font::layout` draws one line).
-fn wrap(s: &str, cols: usize) -> Vec<String> {
+/// Greedy word wrap to a pixel width, measured with the real font (the game's text renderer wraps
+/// inside its control's width [M the plates; `Font::layout` measures one line]). The port's earlier
+/// char-count wrap (`wrap`) overfilled the plates and its mission-description call even re-joined
+/// the lines back into one unwrapped string.
+fn wrap_px(s: &str, font: &nf_formats::hud::Font, max_w: f32) -> Vec<String> {
     let mut out = Vec::new();
     for para in s.split('\n') {
         let mut line = String::new();
         for w in para.split_whitespace() {
-            if !line.is_empty() && line.chars().count() + w.chars().count() + 1 > cols {
+            let cand = if line.is_empty() { w.to_string() } else { format!("{line} {w}") };
+            if !line.is_empty() && font.layout(&cand, 0.0, 0.0).1 > max_w {
                 out.push(std::mem::take(&mut line));
-            }
-            if !line.is_empty() { line.push(' '); }
-            line.push_str(w);
+                line = w.to_string();
+            } else { line = cand; }
         }
         out.push(line);
     }
     out
 }
+
+/// `wrap_px` for the tests (the draw path keeps it private).
+pub fn wrap_px_for_test(s: &str, font: &nf_formats::hud::Font, max_w: f32) -> Vec<String> { wrap_px(s, font, max_w) }
 
 fn page_rows(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, head: &str, row_c: [f32; 4], sel_c: [f32; 4]) {
     h.text(Anchor::Centre, font, -4, head, SW / 2.0, my(80.0), false, sel_c, true);
