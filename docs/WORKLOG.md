@@ -8563,3 +8563,16 @@ Work Log:
 - Suite (chunked foreground, slim ISO): nf-game 232/0; nf-formats + nf-audio 94/3 (the 3 permitted
   disc_golden BIGF stubs); nf-view 481/0. movies-feature run: menu_movies 6/6 with the retail-image
   movies. Report: docs/reports/fix-menu-movies.md.
+
+---
+2026-10-13 fix-menu-movies2 (branch s/fix-menu-movies2, from s/fix-menu-movies 9ee385d)
+
+Task: land the menu movies on top of the movie-playback plane. Start from s/fix-menu-movies, merge
+origin/master (movie-playback merged first), and resolve by making the menu movies USE the
+movie-playback plane and decoder plumbing (one movie plane in the Renderer, one player/decoder
+path) instead of a second copy. Keep both features' tests green.
+
+Work Log:
+- (started) branch created from 9ee385d; both reports read (docs/reports/fix-menu-movies.md and
+  fix-movie-playback.md). Next: merge origin/master, reconcile gpu.rs/lib.rs/menu.rs/movie.rs
+  conflicts so the menu backdrop + intro route through the movie-playback plane.
