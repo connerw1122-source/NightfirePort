@@ -18,9 +18,12 @@
 //! (nf-view-shot.png), E = use (doors), Esc = release mouse, Esc again = quit.
 
 pub mod gpu;
+#[cfg(feature = "gamepad")]
+pub mod gamepad;
 pub mod dev;
 pub mod hud;
 pub mod menu;
+pub mod movie;
 pub mod scene;
 pub mod replay;
 pub mod panel;
@@ -972,6 +975,11 @@ struct App {
     level_code: u32,
     /// The game's strings (USATxt.dat) for the front end when the loaded map has no Sim to hold them.
     lang: Option<nf_formats::hud::Lang>,
+    /// The gamepad backend (fix-input), behind the `gamepad` cargo feature. `None` without a pad
+    /// device; with one, its Input merges into the keyboard's each tick (the game's own mapping,
+    /// curves and ramps — docs/systems/input.md §8).
+    #[cfg(feature = "gamepad")]
+    pad: Option<gamepad::Backend>,
 }
 
 impl App {
@@ -1421,6 +1429,14 @@ impl ApplicationHandler for App {
                                 };
                                 (input, self.trigger, self.just.remove(&KeyCode::KeyR), self.just.remove(&KeyCode::KeyE))
                             };
+                            // The gamepad (fix-input, `gamepad` feature): the pad's path through the
+                            // game's own mapping/curves/ramps merges into the keyboard's Input; no pad,
+                            // no change. Mouse look is untouched (its deltas are in input.turn/look; the
+                            // pad's contributions add on top).
+                            #[cfg(feature = "gamepad")]
+                            if let Some(pad) = self.pad.as_mut() {
+                                pad.merge(&mut input, sim.zoom, sim.bond.underwater, false);
+                            }
                             // The party weapon lock (`Player_Weapon` 0x1a24c8:242-275): on 07000007 with
                             // ch 0x48 off the cycle actions cannot leave the fists (fix-level2 F4).
                             nf_game::player::weapon_lock_input(sim.level, sim.drones.channels.on(nf_game::player::WEAPON_LOCK_CHANNEL), &mut input);
@@ -1561,6 +1577,19 @@ pub fn run() -> Result<()> {
         --dev --scenario <name>: place Bond for a feature test (weapon-switch, sg5-pickup, wire-music, autoaim)\n\
         --record <file>: record every logic tick's input to <file> (B-5). --replay <file>: replay a recording.\n\
         --no-fog: skip the fog screen pass (isolate vertex colour/texture). --no-tex: ignore texture samples (solid white, isolate lighting/fog).";
+    // --movie <name/code> --frame N --shot out.png: headless PSS movie test (fix-movies) — demux, decode one
+    // frame of the disc's MPEG-2 video, dump it as a PNG (no window, no GPU). The game plays these through
+    // psiStartBackgroundMovie 0x001081a8 (cdrom0:\movies\30_FPS\%8.8x.pss;1). Needs `--features movies`.
+    #[cfg(feature = "movies")]
+    if let Some(m) = args.iter().position(|a| a == "--movie") {
+        let name = args.get(m + 1).context("--movie needs a movie name or hashcode (e.g. 07100001)")?;
+        let frame: usize = args.iter().position(|a| a == "--frame").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0);
+        let out = args.iter().position(|a| a == "--shot").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from).context("--movie is headless only: pass --shot <out.png>")?;
+        let iso_path = args.first().cloned().or_else(|| std::env::var("NF_ISO").ok()).context("no <iso> given and NF_ISO is not set")?;
+        let iso = nf_formats::iso9660::IsoImage::open(&iso_path)?;
+        movie::movie_frame_shot(&iso, name, frame, &out)?;
+        return Ok(());
+    }
     // Positional arguments are the ones before the first flag.
     let pos: Vec<&String> = args.iter().take_while(|a| !a.starts_with("--")).collect();
     // No <level> at all: the front end (fix-menus) — the game's own boot loads the front-end map
@@ -1676,7 +1705,9 @@ pub fn run() -> Result<()> {
     let sound = build_sound(&mut scene);
     // `--dev --scenario <name>`: place Bond and set up the world for a specific feature test. (B-3a/b: the two
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None };
+    #[cfg(feature = "gamepad")]
+    let pad_backend = gamepad::Backend::new(&iso);
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend };
     if dev {
         app.panel = panel::start();
         match &app.panel {

@@ -7795,3 +7795,98 @@ Stage Summary:
   poke ON the pad grounds and fires instantly. The next session's crossing must gain the game's step-up
   (the port climbs steps in the hand-triangle tests — the live seam is the reproducer) or approach from
   wherever the game's own path enters the plate. Test file left at HEAD; probes carry every number.
+---
+Task ID: 230
+Agent: fix-input (worker)
+Task: fix-input (branch s/fix-input) — gamepad support, the 8 controller styles, the aim ramps
+
+Work Log:
+- Branch created from origin/master (0213cc9); setup verified (work/, EE snapshots, ISO, nf-queue).
+
+Stage Summary:
+- Starting: style x action table from psiInput_MapInputs [G-005], aim/turn ramps [G-003], dead zone [G-012], nf-view gamepad backend behind a cargo feature.
+---
+Task ID: 230
+Agent: fix-input (worker)
+Task: fix-input (branch s/fix-input) — gamepad support, the 8 controller styles, the aim ramps
+
+Work Log:
+- G-005: scripts/gen_styles.py parses the psiInput_MapInputs (0x10cd80) decomp and generates crates/nf-game/src/input/styles_gen.rs — per-style analog sources (style 2's L1 byte swap, style 6's ±1.0 strafe), button masks, the ±1 d-pad axis (styles 4/5: Triangle/Cross), style 5's L1-gated skip of actions 7/8, the common tail (Start/d-pad/face, action 13's per-style mask, LX/LY ±0.5 menu, action 38, player 0's Start|Cross → 25). [L] input_styles_live.rs runs the game's own function in the R5900 interpreter, 8 styles × 21+ pad states, all 40 action floats bit-exact; sisters pin the style differences (Cross→8 on style 0, style 4's right-stick forward, style 6's strafe offsets).
+- G-012: answered from the code [M 0x10c738 (button bytes only) + 0x10ca78:27-58]: the raw bytes live only between scePadRead and the dead-zone loop; threshold 40, scale 1.4597701 (=127/87), both +0x128..0x12b and the curve copy +0x148..0x14b overwritten (the curve write is dead code). Ported as input::dead_zone, exact f32 outputs unit-tested.
+- G-003: AccelFunc0 0x1a9218 = input::AccelState. [L] input_ramp_live.rs runs it tick by tick in the interpreter — the EE float-arg convention decoded from the prologue (six floats f12..f17, the state pointer in a0; AccelFunc0 reads *a0 and returns without storing). 200 ramp-up ticks + reset (|stick| ≤ 0.05) + sub-hi (no growth below 0.95) + unsigned-target sisters. The interpreter's div.s rounds through f64, so ±1 ulp on the step (documented); thresholds/sign/clamp bit-checked. Player_Init 0x1910f8:57-63 zeroes the six states (+0x8ec..0x900) — the PadDriver starts them at 0 too.
+- The curves: MapAnalogStick 0x17f958 multiplies by the literal 0.003921569 (NOT ÷255 — 1 ulp); StickCompensation2/3 0x17f798/0x17f850 per Input_Update's style split; the curve table read from the user's ACTION.ELF (gAnalogStickMappingFunction, 129 bytes at 0x2a3840), never committed. [L] pinned in the interpreter (MapAnalogStick exact, Comp2 ±1 ulp).
+- The backend: crates/nf-view/src/gamepad.rs behind the `gamepad` feature — gilrs 0.11 (MIT OR Apache-2.0) drains the OS pad onto the PS2 bits/bytes, PadDriver::tick runs the game's path (dead zone → style map → Comp2/3 → invert → clamp → ramps) and merges into the keyboard's Input; no pad = a no-op. Master builds without the feature and without gilrs (verified); with the feature it needs libudev (built here against a locally extracted one).
+- Keyboard regression: fix_input_kbd_trace.rs — a 180-tick scripted keyboard/mouse trace on 07000005, bit-exact against goldens recorded from the pre-change tree.
+- Full suite --no-fail-fast: 119+ binaries ok, only the 3 allowed disc_golden trio failed (the run was still finishing its last nf-view level tests at report time; no other failure lines).
+
+Stage Summary:
+- The pad path is the game's, as data + code, verified against the game's own functions. G-005/G-012 closed; G-003's ramp half closed (the live pad playtest remains for the main agent). Report: docs/reports/fix-input.md (the --bond spots are there).
+- Left: a real pad playtest (no device in the sandbox); the pad's weapon cycling needs Input_Update's hold-counter active flags (actions 20/21); the scope branch's driver path is a stub; PadConfig::style is fixed at construction.
+
+## fix-progress (s/fix-progress) — 2026-10-13
+Task: the mission progress/scoring system — the end-of-mission tally (PlrMissionStats
+0x2bcc20 counters, BondMoments 0x2bcde0), the rating (ScoringTable 0x2bc640 rows +
+PlrStat_GetScore 0x1984b0, medal thresholds, RewardsTable 0x2bc920 unlocks), the
+difficulty effects (GameState+0x40 readers: damage/accuracy multipliers, armour/health
+pickups, objective lists — data shared with 070-fix-mission, not forked), and the save
+(LS_Make/Load* layout, stored as a deterministic local file). New crates/nf-game/src/
+progress.rs + minimal nf-view scene.rs hooks + docs/systems/progress.md. 180-fix-menus
+owns the screens; this gives them the API. Started 14:05 UTC, sandbox expires ~16:04 UTC.
+
+**fix-progress outcome (15:45 UTC)**: the mission-progress layer is ported — `crates/nf-game/src/
+progress.rs` (new) holds `PlrMissionStats` 0x2bcc20 (the `PlrStat_Log*` family with the game's
+Mission_Status ∈ {0,1} gate), `BondMoments` 0x2bcde0, the `ScoringTable` 0x2bc640 with its 12 × 9
+row arrays and thresholds read byte-for-byte from `work/ee_start_05.bin` ([L] — thresholds,
+penalties, par counts/targets, `RewardsTable` 0x2bc920, `ScoringTableDifMul` [0.0,1.0,2.0], the
+`sp_level` order), `PlrStat_GetScore` 0x1984b0's 6-step formula (the row-4 detection penalty with
+the 0.03 default, the row-7 1/100 s time ratio, the row-8 all-or-nothing, the difficulty
+multiplier, the status-6 stick rule), the medals (`Menu_SetLevelBonus` 0x1ffa10 +
+`PlrStarts_ProcessRewardCounter` 0x199210's kind-4 group ranks — CastleExterior/TowerA/Tower2A
+share gold bits 0..2, HendersonA/SpaceStationD share 9..10 [L]) and the save (LS_MakeMission
+0x1cd720's MSSN + LS_MakeBonus 0x1ce3b0's BUNS in the game's LSB-first bit packing
+(`BIN_PushBits` 0x1e8b88) chained with the CRC-32 trailer (`crc32buf` 0x120670), round-tripped as
+a deterministic local file). The difficulty is runtime now: `Drones::difficulty` =
+`GameState+0x40` (0x2a37a8 — the old `DIFFICULTY` const was hardcoded 1 AND mislabelled +0x28;
+boot default 2 [M 0x1c7e78:25]), threaded through `Data` to Player_HandlePain 0x1902c8's damage
+factor, DroneWeap_DoBulletAccuracy 0x179740's hit chance, the captain/lock/hint gates and the
+autoaim multiplier. The tally hooks sit at the game's own call sites: fire per pellet
+(0x1a4bf0:258), hit-enemy (0x145558:57-60, team-1 + hit-by-player), hit-scenery (0x198408),
+dispatched/disabled/surrender outboxes (0x145bd0:57-59 / 0x172ac8 / 0x1626a0), spawned per created
+drone (0x14b300:609 — counted after the Mission_Init latch, matching the game's creation order
+[L] +0x18 = 13), the Bond bonus in the take (0x18e650:234-236), the 0x65..0x6E moment scan
+(Trigger_Calc 0x1b1900:12-17), the health snapshot (0x1960b8:14) and the elapsed clock (0x1995a0,
+frame-derived 1/100 s — no wall clock). Tests: 5 module tests (formula arithmetic, medals + level
+stamp, gates, MSSN size, save round-trip + CRC rejection), `progress_live.rs` (a guard's SG5
+damage to Bond through the real AI path: 1.925 at the default difficulty 2 / 1.65 at Agent —
+2.75 × the [L] ReadTuningVars factors, sister ratio 0.6/0.7) and `fix_progress_live.rs` (the
+scripted 07000005 run: 2 kills + 1 bonus through step_bond give dispatched 2 / fired 2 / hit 2 /
+bonus 1, spawned ≥ 13, the zero-sister on reload; the save carries the run's fields). Remaining:
+the detected counter's live hook, `Player_InitWeapon`'s per-difficulty autoaim distances, the
+NewScoresRef PTP hand-off, the results screens (180-fix-menus). docs/systems/progress.md is the
+port map; GAPS G-045 added. Report: docs/reports/fix-progress.md.
+
+## fix-movies (s/fix-movies) — 2026-10-13
+Task: the FMVs (PSS): verify the pss.rs demuxer on Nightfire's own movies with an
+NF_ISO golden test over every PSS on the disc; decode the MPEG-2 (IPU-style) video
+and the PSS audio stream; find in the decompile when the game plays movies
+(boot, level loads, mission ends) and whether they can be skipped
+(docs/systems/movies.md); wire playback into nf-view (full-screen plane + cpal
+audio + skip) with a headless frame dump (--movie <name> --frame N --shot) since
+there is no GPU here. Files: crates/nf-formats/src/pss.rs, a new mpeg2 decoder
+(or crate glue behind a cargo feature `movies`), crates/nf-view/src/movie.rs,
+docs/formats/pss.md. Started 14:28 UTC, sandbox expires ~16:25 UTC.
+
+**fix-movies outcome (16:22 UTC)**: the PSS demuxer is verified on all 22 disc movies and closed the RC2 gaps
+G-008 warned about — Nightfire's audio sub-stream header is `FF A0 00 00` (not RC2's `FF A1 00 cc`; the old
+demuxer errored 100 KB into the first movie) and the audio is 16-bit LE PCM 48 kHz stereo (`SShd` kind 1, not
+ADPCM kind 0x10; `Audio::parse` rejected every Nightfire movie). golden/pss_movies.tsv pins per-movie packet
+counts, geometry (512x448, 30 Hz, Main@Low interlaced), picture counts and audio formats; the NF_ISO golden
+tests + sisters are in crates/nf-formats/tests/pss_movies_live.rs. Video decodes via `oxideav-mpeg12video`
+0.0.13 (pure Rust, MIT — dependency approval wanted) behind the opt-in cargo feature `movies`:
+mpeg2.rs glue, frame 0/1000 SHA-1s pinned, ffmpeg cross-check 66-68 dB PSNR. docs/formats/pss.md and
+docs/systems/movies.md written (the full movie map: psiStartBackgroundMovie 0x001081a8, boot logos
+0x7370048/0x7380048, briefings 0x0710xxxx via ResetMap_Load states 3->6, outros 0x0730xxxx, win 0x73F0048,
+looping menu BGs from M_PAGE+0xC4, skip = action 0x19 instant). nf-view/src/movie.rs: Movie::load + PCM audio
++ headless `--movie <code> --frame N --shot out.png` dumps (feature-gated), verified on two movies. Left for
+the next session: live playback wiring (window + cpal + skip), the FILES.BIN menu-BG codes, the 0x72xxxxxx
+codes. The slim ISO stubs all movies (lba=0/size=0) — set NF_MOVIE_ISO to the retail image to run the tests.

@@ -177,7 +177,8 @@ impl Mission {
             return;
         }
         // `PlrStat_ResetForMission` when the level is the mission's first [M 0x182270:59-66].
-        // (The port's PlrStat counters live on the drones themselves; nothing to reset here.)
+        // (fix-progress: the port's PlrStat counters live in `Drones::progress`; the reset runs in
+        // the tick's `Mission_Init` latch, next to this call.)
         // Per record of this mission [M 0x182270:68-129]: previous parts keep their state,
         // current + future parts reset (state 0/1 by the enable channel, the condition channels
         // back to their init values).

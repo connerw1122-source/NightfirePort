@@ -141,7 +141,9 @@ fn punching_a_guard_knocks_him_out_without_killing() {
     }
     assert!(shot_died, "the P2K kills the guard from 3 units");
     let shot_dr = &sim.drones.list[sgi];
-    assert!(shot_dr.dispatched_logged, "a shot guard logs EnemyDispatched [M 0x145bd0:57-59]");
+    // fix-progress: the outbox flags are consumed by the tick's tally fold — the outcome is the
+    // counter (the same fact: PlrStat_LogEnemyDispatched 0x145bd0:57-59 ran).
+    assert!(sim.drones.progress.stats[0].dispatched >= 1, "a shot guard logs EnemyDispatched [M 0x145bd0:57-59]");
     assert!(!shot_dr.disabled_logged, "a shot guard is not 'disabled' [M 0x172ac8 is KO-only]");
     assert!(!shot_dr.knocked_out, "a shot guard never carries the KO flag");
     assert!(!shot_dr.log.iter().any(|(_, s)| *s == state::KNOCKED_OUT_ANIM), "no KO state on a shot guard");
@@ -156,6 +158,8 @@ fn punching_a_guard_knocks_him_out_without_killing() {
         }
         panic!("a second armed guard exists for the punch");
     };
+    // fix-progress: the shot sister's dispatch is already folded here — the punch must not add one.
+    let shot_dispatched = sim.drones.progress.stats[0].dispatched;
     let punch_states_before = sim.drones.list[gi].log.len();
     face_guard(sim, gi, 1.15);
     tick_idle(sim, 6);
@@ -180,8 +184,9 @@ fn punching_a_guard_knocks_him_out_without_killing() {
     let dr = &sim.drones.list[gi];
     assert!(dr.knocked_out, "the KO flag +0x1000000 is set [M 0x172ab0-c4]");
     assert!(!dr.log.iter().any(|(_, s)| *s == state::DEATH_ANIM), "Death_Anim 0x44 never entered — the guard is not dead");
-    assert!(dr.disabled_logged, "PlrStat_LogEnemyDisabled ran (team 1) [M 0x172ac8-dc]");
-    assert!(!dr.dispatched_logged, "a KO'd guard is NOT dispatched [M 0x145bd0:22 KO-flag skip]");
+    // fix-progress: the fold consumed the KO outbox — the counter moved, dispatched did not.
+    assert!(sim.drones.progress.stats[0].disabled >= 1, "PlrStat_LogEnemyDisabled ran (team 1) [M 0x172ac8-dc]");
+    assert!(sim.drones.progress.stats[0].dispatched == shot_dispatched, "a KO'd guard is NOT dispatched [M 0x145bd0:22 KO-flag skip]");
     assert_eq!(dr.health, 0.0, "the KO enter zeroes health [M 0x172a88]");
     let ko_states: Vec<u8> = dr.log.iter().map(|(_, s)| *s).collect();
     // The KO drop: DroneWeap_DropWeapon at KO enter — the same one-visible-gun drop as death.
