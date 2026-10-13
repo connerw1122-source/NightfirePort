@@ -46,6 +46,8 @@ fn clear_guard(w: &mut Walker, g: usize) -> bool {
     };
     doors.sort_by(|a, b| walker::dxz(a.1, bpos).total_cmp(&walker::dxz(b.1, bpos)));
     for (_, dp) in doors.into_iter().take(2) {
+        // The nav route first (the direct steer wedges on the corridor's bends), then the use press.
+        w.walk_nav_to(dp, "to the shut door", 1.6);
         w.walk_to(Wp { at: dp, act: Act::Use { use_ticks: 120 }, arrive: 1.6 }, "open the way");
     }
     let gpos = w.scene.sim.as_ref().unwrap().drones.list[g].pos;
