@@ -84,6 +84,56 @@ pub fn script_pose(scripts: &HashMap<u32, Script>, seqs: &HashMap<u32, Sequence>
     Some(sequence_pose(seq, skel, skin, f))
 }
 
+/// The drone path's pose: every started opcode-0 window plays together (`AnimProcessScriptCmds`
+/// 0x1c1b38 starts each window as its own playing anim) and per bone the LAST-started window that
+/// covers it owns it — [L] the 07000006 truck driver (start script 0600011d, body 04000064 then the
+/// 22-channel face track 04000065, both covering 1..880) holds his position to 0.01 over the whole
+/// 700-frame trace window while the body track's root runs 0.57: the face track's all-zero root owns
+/// his root bone, so the body's root motion never reaches the object. A single-window script (the
+/// 07000001 guard's 06000169) keeps its root motion — [L] the same trace file's 01-doors segment
+/// shows the guard moving 1.1 units inside his start script. Bones no window covers fall to the
+/// widest one (the game's frame copy leaves them at the anim object's previous values). A shared
+/// human track riding another rig's record byte (0x0400028a, record 0, on skeleton-8 skin —
+/// drone-port-check #3) counts as full-coverage when its channels cover the skeleton. Never panics:
+/// each window poses only the bones its channels reach (`local_pose_bones`).
+pub fn script_pose_drone(scripts: &HashMap<u32, Script>, seqs: &HashMap<u32, Sequence>, skel: &Skeleton, skin: &Skin, hash: u32, time: f32) -> Option<Pose> {
+    let script = scripts.get(&hash)?;
+    let t = time.floor().max(1.0) as u16;
+    let wins: Vec<(u16, u32)> = script.sequences().filter(|(a, _, _)| *a <= t).map(|(a, _, q)| (a, q)).collect();
+    // The bones a window's channels reach; the shared-track arm mirrors `script_pose`'s filter.
+    let covered = |q: u32| -> usize {
+        let Some(s) = seqs.get(&q) else { return 0 };
+        if s.skeleton == skel.id as u8 {
+            nf_formats::anim::bones_covered(s, skel)
+        } else {
+            let need: usize = (0..skel.bones as usize).map(|b| if skel.has_translation(b) { 6 } else { 3 }).sum();
+            if s.channels.len() >= need { skel.bones as usize } else { 0 }
+        }
+    };
+    // The base: the widest started window — it also stands in for the bones no window reaches.
+    let (base_i, base_n) = wins.iter().enumerate()
+        .filter_map(|(i, (_, q))| { let n = covered(*q); (n > 0).then_some((i, n)) })
+        .max_by_key(|&(_, n)| n)?;
+    let (base_first, base_q) = wins[base_i];
+    let base_f = (time - base_first as f32 + 1.0).max(1.0);
+    let base_seq = seqs.get(&base_q)?;
+    let mut acc = sequence_pose_n(base_seq, skel, skin, base_f, base_n);
+    if acc.len() < skel.bones as usize {
+        while acc.len() < skel.bones as usize { acc.push(*acc.last().unwrap()); }
+    }
+    // Then every started window in command order overwrites the bones it reaches — the last one
+    // wins; the base's own pass (first pass over its bones) is its place in that order.
+    for (first, q) in &wins {
+        let n = covered(*q);
+        if n == 0 { continue; }
+        let Some(seq) = seqs.get(q) else { continue };
+        let f = (time - *first as f32 + 1.0).max(1.0);
+        let p = sequence_pose_n(seq, skel, skin, f, n);
+        for (i, v) in p.iter().enumerate().take(n) { acc[i] = *v; }
+    }
+    Some(acc)
+}
+
 /// A script's pose with EVERY started opcode-0 window playing together. `AnimProcessScriptCmds`
 /// (0x1c1b38) starts each window whose time the script enters as its own playing anim — the pack
 /// cut-scene scripts pair a narrow 22-channel face track with the full 222-channel body track

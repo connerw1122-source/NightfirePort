@@ -225,7 +225,19 @@ fn a_death_draws_its_drop_and_nothing_else_moved() {
     sim.bond.yaw = d[0].atan2(d[2]);
     sim.bond.pitch = (d[1] / l).clamp(-1.0, 1.0).asin() / (std::f32::consts::FRAC_PI_2);
     tick_idle(sim, 10);
+    // The guard's START SCRIPT (07000001's first guard plays 06000169 via PlayScript 3 [M 0x15ba68
+    // ENTER, `+0x554` = param 1]) walks him 6.8 units over its 181 frames [D nf-extract script-info:
+    // the root track runs 0.05 → 6.87], and the game's own recording shows him moving inside the
+    // script [L 01-doors: the guard drifts x −4.919 → −6.03 within the first 120 lines, state still 3].
+    // A one-shot aim at his pre-script position goes stale, so Bond tracks him (the player's own
+    // behavior) while firing.
     for t in 0..600 {
+        let g = sim.drones.list[gi].pos;
+        let e = sim.bond.head();
+        let d = [g[0] - e[0], g[1] + 0.3 - e[1], g[2] - e[2]];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+        sim.bond.yaw = d[0].atan2(d[2]);
+        sim.bond.pitch = (d[1] / l).clamp(-1.0, 1.0).asin() / (std::f32::consts::FRAC_PI_2);
         sim.step_bond(Default::default(), t % 9 == 0, false, false);
         if sim.drones.list[gi].health <= 0.0 { break; }
     }

@@ -20,6 +20,7 @@
 pub mod gpu;
 pub mod dev;
 pub mod hud;
+pub mod menu;
 pub mod scene;
 pub mod replay;
 pub mod panel;
@@ -726,6 +727,14 @@ fn level_starts(level: &Level) -> Vec<nf_game::player::LevelStart> {
 /// then masks it back to 07000006.bin.
 pub fn level_archive_name(code: u32) -> String { format!("{:08x}.bin", code & 0xff0f_ffff) }
 
+/// Reads one FILES.BIN entry by name (fix-menus: the front end's USATxt.dat when the map has no Sim).
+fn read_files_bin(iso_path: &str, name: &str) -> Option<Vec<u8>> {
+    let iso = IsoImage::open(iso_path).ok()?;
+    let (entries, bin) = disc::files_bin_entries(&iso).ok()?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(name))?;
+    iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).ok()
+}
+
 /// The keyboard stand-ins for the game's cut-scene skip action (`Input_Action(-1, 0x19, 1)`, read by
 /// `SP_Update` state 2 [M 0x1dbda8:129-141]). Action 0x19 is bound to raw pad mask 0x840 — R1 (0x800)
 /// or D-pad DOWN (0x040), pad 0 only [M psiInput_MapInputs 0x10cd80:415-417] — so a movement key
@@ -752,9 +761,6 @@ fn snow_for(scene: &scene::Scene, cam: &Camera) -> Vec<scene::Vertex> {
     let up = right.cross(f).normalize_or_zero();
     let mut out = sim.snow_quads(right.to_array(), up.to_array());
     out.extend(sim.particle_quads(right.to_array(), up.to_array()));
-    // fix-impacts: the bullet decals, debris and casings as flat-colour quads (the real decal/casing/debris
-    // meshes are still owed, see docs/reports/fix-impacts.md).
-    out.extend(sim.effect_quads(right.to_array(), up.to_array()));
     out
 }
 
@@ -961,9 +967,28 @@ struct App {
     /// `--fps N`: a frame-rate cap (vsync off); None = vsync.
     fps_cap: Option<f32>,
     frame_start: std::time::Instant,
+    /// The front end (fix-menus): Some while a menu page is up (title / main / mission select /
+    /// difficulty / options / pause / results). None = playing a mission directly.
+    fe: Option<menu::FrontEnd>,
+    /// The current level's hashcode (the archive name), for the pause page's restart / the results.
+    level_code: u32,
+    /// The game's strings (USATxt.dat) for the front end when the loaded map has no Sim to hold them.
+    lang: Option<nf_formats::hud::Lang>,
 }
 
 impl App {
+    /// F8/F9: show the mission-complete / mission-failed results page for the loaded mission [S demo
+    /// hook — the game reaches it from `Mission_Update` 0x182c60:74's event; the port's mission-event
+    /// → results glue is listed in docs/reports/fix-menus.md as remaining host work].
+    fn demo_results(&mut self, complete: bool) {
+        if self.level_code == 0 || self.level_code == menu::FRONTEND_LEVEL { return; }
+        let mut fe = menu::FrontEnd::new();
+        fe.flow.current_level = self.level_code;
+        fe.mission_ended(if complete { menu::Outcome::Complete } else { menu::Outcome::Failed }, menu::Stats::default());
+        self.fe = Some(fe);
+        self.grab(false);
+    }
+
     fn grab(&mut self, on: bool) {
         let Some(g) = &self.gfx else { return };
         if on {
@@ -1189,9 +1214,40 @@ impl ApplicationHandler for App {
                     && self.scene.sim.as_ref().is_some_and(|s| s.drones.scripts.cutscene_playing()) {
                     if let Some(sim) = self.scene.sim.as_mut() { sim.drones.scripts.skip_request = true; }
                 }
+                // fix-menus: while a menu page is up, the keys drive the menu and never the game.
+                if event.state == ElementState::Pressed && self.fe.is_some() {
+                    if let Some(a) = menu::key_action(k) {
+                        use menu::Action as MA;
+                        let fe = self.fe.as_mut().unwrap();
+                        if fe.page == menu::Page::Pause && a == MA::Back {
+                            self.fe = None; // resume [S: the game's resume is its own row; Back resumes too]
+                            if self.scene.sim.is_some() { self.grab(true); }
+                            return;
+                        }
+                        fe.action(a);
+                        if let Some(code) = fe.requested_level.take() {
+                            // The menu picked a level: through the same reload path a LOAD_LEVEL uses.
+                            self.pending_level = Some(code);
+                        }
+                    }
+                    return;
+                }
                 match (k, event.state) {
-                    (KeyCode::Escape, ElementState::Pressed) => if self.grabbed { self.grab(false) } else { el.exit() },
+                    (KeyCode::Escape, ElementState::Pressed) => {
+                        if self.grabbed {
+                            self.grab(false);
+                            // Esc in a mission opens the pause page [S: the game pauses on Start].
+                            if self.scene.sim.is_some() && self.level_code != 0 && self.level_code != menu::FRONTEND_LEVEL {
+                                let fe = self.fe.get_or_insert_with(menu::FrontEnd::new);
+                                fe.flow.current_level = self.level_code;
+                                fe.open_pause();
+                            }
+                        } else { el.exit() }
+                    }
                     (KeyCode::F12, ElementState::Pressed) => { let m = self.spot_shot(); eprintln!("[spot] {m}"); }
+                    // fix-menus demo hooks: F8 = mission complete, F9 = mission failed (the results page).
+                    (KeyCode::F8, ElementState::Pressed) => self.demo_results(true),
+                    (KeyCode::F9, ElementState::Pressed) => self.demo_results(false),
                     (KeyCode::BracketRight | KeyCode::BracketLeft, ElementState::Pressed) => {
                         self.choice = match (k == KeyCode::BracketRight, self.choice) {
                             (true, None) => Some(0),
@@ -1315,7 +1371,7 @@ impl ApplicationHandler for App {
                 // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
                 self.ticked = false;
                 self.poll_panel();
-                if !self.paused {
+                if !self.paused && self.fe.is_none() {
                     // Game logic at its fixed 60 Hz, decoupled from the render rate: one AI tick per whole tick of time.
                     // Dev mode's time scale changes the number of ticks run (WORKLOG 0081), not the tick rate.
                     let before = self.anim_time as u32;
@@ -1474,7 +1530,15 @@ impl ApplicationHandler for App {
                 let (_, vp_rot) = draw_cam.view_proj(aspect);
                 let vp = vp0;
                 let snow = snow_for(&self.scene, &draw_cam);
-                let mut hud = overlay_for(&self.scene, aspect);
+                // fix-menus: a menu page up → the menu overlay replaces the HUD.
+                let mut hud = if let Some(fe) = self.fe.as_mut() {
+                    let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
+                    fe.tick();
+                    match &self.scene.hud {
+                        Some(tables) => menu::menu_overlay(fe, &tables.font, lang, &self.scene.hud_textures, aspect),
+                        None => overlay_for(&self.scene, aspect),
+                    }
+                } else { overlay_for(&self.scene, aspect) };
                 if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }
                 g.renderer.lights = self.scene.frame_lights();
                 let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud);
@@ -1510,11 +1574,19 @@ pub fn run() -> Result<()> {
         --no-fog: skip the fog screen pass (isolate vertex colour/texture). --no-tex: ignore texture samples (solid white, isolate lighting/fog).";
     // Positional arguments are the ones before the first flag.
     let pos: Vec<&String> = args.iter().take_while(|a| !a.starts_with("--")).collect();
+    // No <level> at all: the front end (fix-menus) — the game's own boot loads the front-end map
+    // 0x7000048 and opens the P_START page on it [M bootup 0x1c7e78 + ResetMap_Load 0x1d6360].
+    // A lone positional that names an existing file is the image, not a level (`nf-view <iso>` boots the
+    // front end too).
+    let lone_iso = matches!(pos.as_slice(), [p] if std::path::Path::new(p.as_str()).is_file());
     let (iso, level) = match pos.as_slice() {
         [iso, level] => (iso.to_string(), level.to_string()),
+        [iso] if lone_iso => (iso.to_string(), "07000048".to_string()),
         [level] => (std::env::var("NF_ISO").map_err(|_| anyhow::anyhow!("NF_ISO is not set and no <iso> was given\n{USAGE}"))?, level.to_string()),
+        [] => (std::env::var("NF_ISO").map_err(|_| anyhow::anyhow!("NF_ISO is not set and no <iso> was given\n{USAGE}"))?, "07000048".to_string()),
         _ => bail!("{USAGE}"),
     };
+    let front_end = pos.is_empty() || lone_iso;
     let level = if level.to_ascii_lowercase().ends_with(".bin") { level } else { format!("{level}.bin") };
     let all = args.iter().any(|a| a == "--all");
     let dev = args.iter().any(|a| a == "--dev");
@@ -1615,7 +1687,7 @@ pub fn run() -> Result<()> {
     let sound = build_sound(&mut scene);
     // `--dev --scenario <name>`: place Bond and set up the world for a specific feature test. (B-3a/b: the two
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0 };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None };
     if dev {
         app.panel = panel::start();
         match &app.panel {
@@ -1634,6 +1706,21 @@ pub fn run() -> Result<()> {
                 eprintln!("[dev] unknown scenario '{n}'. Available: {}", dev::SCENARIOS.join(", "));
             }
         }
+    }
+    // fix-menus: the front end — the level code, the game's strings, and the boot page.
+    app.level_code = u32::from_str_radix(level.trim_end_matches(".bin"), 16).unwrap_or(0);
+    if front_end {
+        app.fe = Some(menu::FrontEnd::new());
+        // The front end needs the game's strings even when the front-end map carries no Sim
+        // (`Txt_LoadLanguage` 0x1caad0 loads `FNames[SelLang]` = USATxt.dat [M lib.rs load_impl]).
+        match read_files_bin(&app.iso, "USATxt.dat") {
+            Some(bytes) => match nf_formats::hud::Lang::parse(&bytes) {
+                Ok(lang) => app.lang = Some(lang),
+                Err(e) => eprintln!("USATxt.dat: {e} — menu labels show their label ids"),
+            },
+            None => eprintln!("no USATxt.dat in FILES.BIN — menu labels show their label ids"),
+        }
+        eprintln!("[front end] title screen (P_START 0x40000034); Enter/click = start, arrows = move, Esc = back");
     }
     // `--bond x,y,z` in the window too (it only applied to the headless `--frame` path): Bond starts exactly there.
     if let Some(i) = args.iter().position(|a| a == "--bond") {
