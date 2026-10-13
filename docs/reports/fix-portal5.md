@@ -146,8 +146,16 @@ the picture even if the owner cel differs.
 
 ## Suite status (honest)
 
-See the final numbers appended below before merge; slim-ISO allowances: the 3 `disc_golden` stubs and
-`pss_movies_live` without NF_MOVIE_ISO.
+The sandbox's background jobs die between tool calls and each nf-view test binary links ~1 min at
+-j2, so the full four-crate suite did not fit this window (the fix-portal4 precedent). Run and green
+before the report commit:
+- fix_portal_live **2/2**, fix_portal2_live **2/2** (the 07 window stays hidden, the 07 start band
+  holds), fix_portal5_live's courtyard pin **1/1** (plus the RED-first demonstration and the three
+  probes), fix_portal3_live/fix_portal4_live/portal_live/fix_cel_order_live invoked (all built;
+  portal3's slow snapshot probes were mid-run at the cutoff, no failure observed).
+- Not run this window: the remaining ~140 nf-view test binaries and nf-game/nf-formats/nf-audio
+  (nf-game got one additive method; no behaviour change outside the new call path). Re-run before
+  merge. Slim-ISO allowances: the 3 `disc_golden` stubs and `pss_movies_live` without NF_MOVIE_ISO.
 
 ## Files touched
 
