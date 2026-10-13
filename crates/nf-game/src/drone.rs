@@ -4921,7 +4921,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // discarded by the game (the sound cannot be stopped or moved).
                 crate::nis::Request::AnimSound { id, at } => {
                     let _pitch = self.rng.rand(500) as i32 - 250;
-                    match at.and_then(|o| self.script_obj_pos(d, o)) {
+                    match at.and_then(|o| Self::script_obj_pos(&self.scripts, d, o)) {
                         Some(pos) => {
                             self.audio.play3d(id, pos, None);
                             if let Some(t) = d.sfx { let e = t.get(id); if !e.looped { self.sounds.push(Sound { id: e.id, pos, inner: e.inner, outer: e.outer, weight: e.weight }); } }
