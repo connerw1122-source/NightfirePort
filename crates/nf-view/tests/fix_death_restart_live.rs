@@ -138,7 +138,10 @@ fn death_sequence_stages_then_the_menu() {
     // The ✕ skip (action 25): ch 0x62 the same tick the game reads it.
     tick_fire(sim, 1);
     assert!(sim.drones.death.ch62 && sim.drones.channels.on(0x62), "✕ raised the death channel [M 0x190bb0:32]");
-    tick(sim, 1);
+    // fix-objective-banner: Mission_Update runs at the TOP of the tick (Game_Run 0x1c9790:17
+    // order — before the object handler), so it reads ch 0x62 the tick after the death path
+    // writes it.
+    tick(sim, 2);
     assert_eq!(sim.drones.mission.status(), 3, "MissionState 3 (the red fade state) [M 0x182c60:61]");
     // Case 3 → 7 → 4: the menu opens ~2 ticks after the channel [L FRAME_RATE_MUL 0x30d0d8 = 1.0].
     tick(sim, 2);

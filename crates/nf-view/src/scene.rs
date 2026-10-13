@@ -363,7 +363,7 @@ pub struct Sim {
 pub struct Msg { pub text: String, pub time: f32, pub status: u32, pub failed: bool, pub life: f32, pub opened: bool, pub second: bool }
 
 impl Msg {
-    fn new(text: String, time: f32) -> Msg { Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false } }
+    pub fn new(text: String, time: f32) -> Msg { Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false } }
 }
 
 /// The HUD state the port keeps in Sim (the game keeps it in BLData / the TXTMSG list / pane structs).
