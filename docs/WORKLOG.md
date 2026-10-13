@@ -7976,3 +7976,14 @@ allowed disc_golden + pss_movies_live audio_sample_count (the slim onfoot ISO ca
 Shared-file changes: NONE (the WORKLOG append and the master-merge conflict resolution only;
 dev.rs and the weapon tables untouched — the panel is crates/nf-view/src/panel.rs, the task's
 "dev.rs" pointer is the F2 menu which spawns no weapons).
+
+## fix-script-commands (s/fix-script-commands) — 2026-10-13
+Task: GAPS G-031, the script player remainder — port the unported command streams from
+`Script_EventHandler` 0x1d94c0 / `Script_Interp` in this order: fades and letterbox (visible in
+every cut-scene), text, lights, sprites, sub-scripts, `SP_Hit` (07000007's urn break, mask 2),
+then AI volumes / pickups / breakables made by scripts, `Corona_2` glow, drones riding objects;
+music events of camera scripts. Each command: a test that runs a REAL script containing it (found
+with nf-extract's script dump) and asserts the effect in the Sim's state. Files:
+crates/nf-game/src/nis.rs, the cut-scene draw hooks in nf-view, docs/systems/script-player.md.
+Started 18:56 UTC, sandbox expires ~20:54 UTC. Branch created from origin/master (a82591d) and
+pushed.
