@@ -4192,11 +4192,25 @@ impl Scene {
     /// the same window `script_pose_together` poses bones from) sampled at the object's frame via
     /// `AnimFacialBlend`'s source arithmetic [M `facial_weights`, `AnimFacialBlend` 0x1be648].
     pub fn facial_weights_now(&self, c: &Character) -> Option<Vec<f32>> {
-        let src = c.script?;
+        self.facial_weights_at(self.characters.iter().position(|cc| std::ptr::eq(cc, c))?, c)
+    }
+
+    /// `facial_weights_now` with the character's index known (the drone link is `Sim::char_drone[ci]`).
+    pub fn facial_weights_at(&self, ci: usize, c: &Character) -> Option<Vec<f32>> {
         let s = self.sim.as_ref()?;
         let count = c.skin.facial as usize;
         if count == 0 { return None; }
-        let (script_h, frame) = s.script_anim(src, c.skin.hashcode)?;
+        // fix-facial3: drone-backed characters sample their own playing script's face window — the
+        // same source the root-motion path reads (`Drone::script_frame`, the drone's live
+        // `anim.script`/`ftime`); the script-object path keeps its live `Obj::Anim` frame.
+        let (script_h, frame) = match c.script {
+            Some(src) => s.script_anim(src, c.skin.hashcode)?,
+            None => {
+                let di = (*s.char_drone.get(ci)?)?;
+                let dr = &s.drones.list[di];
+                (dr.anim.script?, 1.0 + dr.anim.ftime)
+            }
+        };
         let script = s.scripts.get(&script_h)?;
         let win = script.sequences().filter(|(a, _, _)| (*a as f32) <= frame)
             .filter_map(|(a, _, q)| s.seqs.get(&q).filter(|sq| sq.channels.len() == count).map(|sq| (a, q)))
@@ -4210,8 +4224,8 @@ impl Scene {
         let hidden = |_: &Character, ci: usize| hidden[ci];
         // fix-facial2: the morph weights per morph-bearing script character (the ledge dialogue's
         // face track), computed once per frame — `SkinIt` 0x10bf30 consumes them per vertex.
-        let facial: Vec<Option<Vec<f32>>> = self.characters.iter().map(|c| {
-            if c.morph_targets.is_some() { self.facial_weights_now(c) } else { None }
+        let facial: Vec<Option<Vec<f32>>> = self.characters.iter().enumerate().map(|(ci, c)| {
+            if c.morph_targets.is_some() { self.facial_weights_at(ci, c) } else { None }
         }).collect();
         self.char_verts.iter().map(|v| {
             // Searchlight parts: the simulation's matrices (`Searchlight_Update`), coronas as camera billboards

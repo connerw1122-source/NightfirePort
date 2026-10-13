@@ -1572,9 +1572,21 @@ impl Drone {
 
     /// The sequence and frame the playing script shows. The LAST-started opcode-0 window covering the
     /// script time owns the root bone (`AnimProcessScriptCmds` 0x1c1b38 starts every window; the later
-    /// one overwrites — [L] the 07000006 driver's face track, started after his body track, pins his
-    /// root to its all-zero track so he holds position while the body's root runs 0.57; the free
-    /// `anim::script_frame` is last-wins the same way, fix-drone2).
+    /// one overwrites — fix-drone2, pinned on the live traces). fix-facial3: face-track windows
+    /// (channel count == the skin's facial count) are excluded — their channels are the morph
+    /// weights (`AnimFacialBlend` 0x1be648), not translations; the disc refutes the old "all-zero
+    /// face root" premise (07000006's 04000065 channels 0..2 reach ~1.0, and the body track's root
+    /// runs 0.57 un-zeroed over all 880 frames — the driver's stillness under the game's own trace
+    /// is the sit state + the collision probe, with the hip following the BODY track's ch1, y span
+    /// 0.119 ≈ the body's 0.129). The free `anim::script_frame` is last-wins the same way,
+    /// fix-drone2).
+    /// The skin's facial channel count (`Skin+0x12`): a started window whose channel count equals
+    /// it is a face track — morph weights, never a bone/root pose (fix-facial3, `AnimFacialBlend`
+    /// 0x1be648; docs/formats/character.md "Facial morphs").
+    fn facial_count(&self, d: &Data) -> usize {
+        d.skins.get(&self.skin).map_or(0, |s| s.facial as usize)
+    }
+
     pub fn script_frame(&self, d: &Data) -> Option<(u32, f32)> {
         let script = d.scripts.get(&self.anim.script?)?;
         // The window follows the integer tick (the game pins the seq slots when its commands run); the frame keeps
@@ -1582,7 +1594,12 @@ impl Drone {
         // this is the old integer frame exactly; at a fractional speed (Drone_AnimInfo +0x14, e.g. lean-out 176 at
         // 1.5) the root motion now samples the same f/f+1 blend the pose does.
         let t = (1 + self.anim.time) as u16;
-        let (a, _, q) = script.sequences().filter(|(a, b, _)| *a <= t && t <= *b).last().or_else(|| script.sequences().next())?;
+        let face = self.facial_count(d);
+        let (a, _, q) = script.sequences()
+            .filter(|(a, b, q)| *a <= t && t <= *b && !(face != 0 && d.sequences.get(q).is_some_and(|s| s.channels.len() == face)))
+            .last()
+            .or_else(|| script.sequences()
+                .find(|(_, _, q)| !(face != 0 && d.sequences.get(q).is_some_and(|s| s.channels.len() == face))))?;
         Some((q, (1.0 + self.anim.ftime - a as f32 + 1.0).max(1.0)))
     }
 
@@ -1592,7 +1609,12 @@ impl Drone {
     fn root_value_at(&self, d: &Data, time: u32) -> Option<V3> {
         let script = d.scripts.get(&self.anim.script?)?;
         let t = (1 + time) as u16;
-        let (a, _, q) = script.sequences().filter(|(a, b, _)| *a <= t && t <= *b).last().or_else(|| script.sequences().next())?;
+        let face = self.facial_count(d);
+        let (a, _, q) = script.sequences()
+            .filter(|(a, b, q)| *a <= t && t <= *b && !(face != 0 && d.sequences.get(q).is_some_and(|s| s.channels.len() == face)))
+            .last()
+            .or_else(|| script.sequences()
+                .find(|(_, _, q)| !(face != 0 && d.sequences.get(q).is_some_and(|s| s.channels.len() == face))))?;
         let f = (1.0 + time as f32 - a as f32 + 1.0).max(1.0);
         let s = d.sequences.get(&q).filter(|s| s.channels.len() >= 3)?;
         Some(crate::anim::root_translation_at(s, f))

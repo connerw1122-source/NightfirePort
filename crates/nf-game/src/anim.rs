@@ -228,8 +228,17 @@ pub fn script_pose_drone(scripts: &HashMap<u32, Script>, seqs: &HashMap<u32, Seq
     let script = scripts.get(&hash)?;
     let t = time.floor().max(1.0) as u16;
     let wins: Vec<(u16, u32)> = script.sequences().filter(|(a, _, _)| *a <= t).map(|(a, _, q)| (a, q)).collect();
+    // fix-facial3: a face track (channel count == the skin's facial count — the decode's 22-channel
+    // cut-scene windows, docs/formats/character.md "Facial morphs") is NOT a bone pose:
+    // `AnimFacialBlend` 0x1be648 samples those channels as the morph weights [M]. Measured on the
+    // disc: 07000006's driver face track 04000065 channels 0..2 reach ~1.0 — weight values the old
+    // bone read turned into root/face-bone translations (the weights-as-bones bug).
+    let is_face = |q: u32| -> bool {
+        skin.facial != 0 && seqs.get(&q).is_some_and(|s| s.channels.len() == skin.facial as usize)
+    };
     // The bones a window's channels reach; the shared-track arm mirrors `script_pose`'s filter.
     let covered = |q: u32| -> usize {
+        if is_face(q) { return 0; }
         let Some(s) = seqs.get(&q) else { return 0 };
         if s.skeleton == skel.id as u8 {
             nf_formats::anim::bones_covered(s, skel)
@@ -279,9 +288,11 @@ pub fn script_pose_together(scripts: &HashMap<u32, Script>, seqs: &HashMap<u32, 
     let t = time.floor().max(1.0) as u16;
     let wins: Vec<(u16, u32)> = script.sequences().filter(|(a, _, _)| *a <= t).map(|(a, _, q)| (a, q)).collect();
     // The base: the widest started window on this skeleton (the body track), at its own frame — it
-    // also stands in for the bones no window reaches.
+    // also stands in for the bones no window reaches. Face tracks (channel count == the skin's
+    // facial count) are morph-weight sources, never bone poses (fix-facial3, see
+    // `script_pose_drone`).
     let (base_i, base_n) = wins.iter().enumerate()
-        .filter_map(|(i, (_, q))| seqs.get(q).filter(|s| s.skeleton == skin.skeleton).map(|s| (i, nf_formats::anim::bones_covered(s, skel))))
+        .filter_map(|(i, (_, q))| seqs.get(q).filter(|s| s.skeleton == skin.skeleton && (skin.facial == 0 || s.channels.len() != skin.facial as usize)).map(|s| (i, nf_formats::anim::bones_covered(s, skel))))
         .max_by_key(|&(_, n)| n)?;
     if base_n == 0 { return None; }
     let (base_first, base_q) = wins[base_i];
@@ -299,6 +310,10 @@ pub fn script_pose_together(scripts: &HashMap<u32, Script>, seqs: &HashMap<u32, 
     for (first, q) in &wins {
         let Some(seq) = seqs.get(q) else { continue };
         if seq.skeleton != skin.skeleton { continue; }
+        // fix-facial3: the face track (channel count == the skin's facial count) does not own bones
+        // — its channels are the morph weights (`AnimFacialBlend` 0x1be648), sampled by the
+        // weights path (`Scene::facial_weights_now`).
+        if skin.facial != 0 && seq.channels.len() == skin.facial as usize { continue; }
         let n = nf_formats::anim::bones_covered(seq, skel).min(base_n);
         if n == 0 { continue; }
         let f = (time - *first as f32 + 1.0).max(1.0);
