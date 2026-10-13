@@ -6611,3 +6611,11 @@ and the gate spawner removed both guards on the touch tick — the gate stood em
 - Full suite (post-merge, NF_ISO): nf-game 23/23, nf-view 85/85, nf-audio+nf-formats green except
   **the 3 allowed `disc_golden` failures** (the slim ISO). The report is
   `docs/reports/fix-script-start-tick.md`.
+
+## fix-render-artifacts (2026-10-13) — IN PROGRESS
+Task: the render artifacts from the 2026-10-12 playtest screenshots: the pale-blue cross on
+07000012, the T-shaped sun, the white floor patch on 0700000c, the dark slabs in the 07000008
+missile-closet doorway, the duplicated guards on 07000007, the shadow decals brightening instead
+of darkening (0700000c crane, maybe the cross), the green-grey party guests (item 7 — hue is
+right, brightness/warm highlights are not), the view-model muzzle flash (low priority).
+Branch: s/fix-render-artifacts. Work started; this entry is updated as items land.
