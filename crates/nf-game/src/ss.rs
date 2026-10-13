@@ -2,7 +2,9 @@
 //! 0xE2). The game creates one object per 0xE2 whose animation key count (`level_tag+2` =
 //! `extra[7] & 0xffff`) is non-zero, and `SS_Update` poses it every frame with `KeyFrame_Interp`
 //! (0x1e1140) over the placement's 0x19 key list (`m_paths[record+0x44]` = `extra[8] & 0xffff`),
-//! from key 0 to key `count−1` at the current playhead. The playhead advances while the SS's switch
+//! from key 0 to key `count−1` at the current playhead. The SS's posed matrix joins the sim's
+//! set_dynamic collision world with its placement object's glist hashcode (`Ss.hash`, fix-party-
+//! mission item 7: 07000008's safe door ch 136 and doorway bolt ch 137 are solid like the doors). The playhead advances while the SS's switch
 //! channel (param 3) is on and returns while it is off — the open/closed swap of the lift screens,
 //! shutters and lift doors (07000012's `sh_screen-shutter_down/up`, `lft_screen-liftopen/closed`,
 //! `lft_LIFTDOOR1/2`, `sh_shuttersclosed/open_LEFT`).
@@ -40,6 +42,10 @@ pub struct Ss {
     pub t: f32,
     /// The posed matrix this tick (at rest: key 0).
     pub matrix: Mat4,
+    /// The placement's object glist hashcode (0 when it names nothing): the set_dynamic collision
+    /// mesh (`Collide_PickObj` walks the cel-linked objects; fix-party-mission item 7 — the safe
+    /// door and the doorway bolt are solid like the doors).
+    pub hash: u32,
 }
 
 /// Every animated SimpleScript of the level, in placement order.
@@ -49,7 +55,7 @@ pub struct SsList { pub list: Vec<Ss> }
 impl SsList {
     /// `SS_Create` over the main map's 0xE2 placements with a non-zero key count. The sphere argument
     /// is unused; the pose comes from the key list alone (key 0 = the placement transform [D]).
-    pub fn create(placements: &[Placement], path_blocks: &[&[u8]]) -> SsList {
+    pub fn create(placements: &[Placement], path_blocks: &[&[u8]], mut hash: impl FnMut(&Placement) -> u32) -> SsList {
         let mut list = Vec::new();
         for (i, p) in placements.iter().enumerate() {
             if p.flags & 0xff != 0xe2 { continue; }
@@ -71,6 +77,7 @@ impl SsList {
                 spline: param(6) != 0,
                 t: 0.0,
                 matrix,
+                hash: hash(p),
             });
         }
         SsList { list }

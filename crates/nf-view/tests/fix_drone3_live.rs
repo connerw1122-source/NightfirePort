@@ -23,8 +23,12 @@ fn tick_idle(sim: &mut nf_view::scene::Sim, n: u32) {
 fn stand_armed_at(sim: &mut nf_view::scene::Sim, at: [f32; 3], to: [f32; 3]) {
     sim.bond = nf_game::player::Bond::stand_at(&sim.world, at, 0.0);
     // Armed: the P2K in hand. 07000007 now starts Bond on the fists (fix-level2's F4 party weapon lock), so the test
-    // must draw the gun itself; the drones read `Sim::gun.weapon` as `bond_weapon` each tick.
+    // must draw the gun itself; the drones read `Sim::gun.weapon` as `bond_weapon` each tick. fix-party-mission:
+    // the AI reads the TARGET class mid-switch [M 0x1a2cc0], so the stale fists request must be cleared too —
+    // otherwise the switch completes into the fists and Bond reads unarmed.
     sim.gun.weapon = 2;
+    sim.gun.switch_request = 2;
+    sim.gun.switch_state = 0;
     let e = sim.bond.head();
     let d = [to[0] - e[0], to[1] - e[1], to[2] - e[2]];
     sim.bond.yaw = d[0].atan2(d[2]);
@@ -45,10 +49,13 @@ fn the_truck_driver_reaches_his_idle_state_and_never_twists() {
     tick_idle(sim, 2);
     assert_eq!(sim.drones.list[di].state, 0x34,
         "the driver (no script link in the port) takes TruckDriverInit's script-less branch into TruckDriverIdle [M 0x160bd0 case 1 else]");
-    // Walk armed Bond up to the driver: TruckDriverIdle's NearArmedBond(8) scares him into CivilianScared →
-    // CivilianHiding [M 0x160ed0 case 3], and the old build additionally twisted his torso all the while.
+    // Walk armed Bond up to the driver: TruckDriverIdle's NearArmedPerson scares him into CivilianScared →
+    // CivilianHiding [M 0x160ed0 case 3 → 0x1787c8], and the old build additionally twisted his torso all the
+    // while. fix-party-mission: NearArmedPerson is prop 0x3c + Bond IN SIGHT (+0x228 & 4) + ObjectIsArmed
+    // [M 0x1787c8 — the distance arg is dead], so Bond stands in the driver's facing (±π/2 cone) with LOS.
     let dp = sim.drones.list[di].pos;
-    stand_armed_at(sim, [dp[0] + 4.0, dp[1], dp[2] + 4.0], dp);
+    let dy = sim.drones.list[di].yaw;
+    stand_armed_at(sim, [dp[0] + dy.sin() * 4.0, dp[1], dp[2] + dy.cos() * 4.0], dp);
     tick_idle(sim, 180);
     let dr = &sim.drones.list[di];
     assert!(matches!(dr.state, 0x12 | 0x13),
@@ -93,9 +100,9 @@ fn a_patrolling_guard_walks_with_an_untwisted_torso() {
 /// list [M 0x14b300]) are mode 0x12 → PartyGirlInit → PartyGirl (0x2f) [M GetDTYPENEW 0x14c938 case 10/0xb
 /// female → 0x12; DroneTypeSettings mode 0x12 start 0x2e], and the male bouncers (dtypenew 0x13) are
 /// CivilianGuard (0x30) [M GetDTYPENEW 07000007 case 0..9]. The port had NO handler for either: the guests
-/// stood frozen and the bouncers never reacted. PartyGirl wanders the patrol path and scares (armed person
-/// within 10 → CivilianScared → CivilianHiding) [M 0x160140]; CivilianGuard attacks when armed Bond is
-/// within 20 or in sight [M 0x1603a8].
+/// stood frozen and the bouncers never reacted. PartyGirl wanders the patrol path; her scare and
+/// CivilianGuard's attack both run through `NDrone2_NearArmedPerson` 0x1787c8 — prop 0x3c + Bond in sight +
+/// ObjectIsArmed(Bond); the distance args are dead and kind 0xD never qualifies [M disassembly].
 #[test]
 fn the_party_guests_wander_and_the_bouncers_react() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
@@ -114,19 +121,26 @@ fn the_party_guests_wander_and_the_bouncers_react() {
         "a bouncer runs CivilianGuard [M 0x1603a8] — got {:#x}", sim.drones.list[bouncer].state);
 
     // Armed Bond walks up to the bouncer: he attacks (0x56). (Pre-fix: stood in 0x30 forever.)
+    // fix-party-mission: NearArmedPerson is prop 0x3c + Bond IN SIGHT + ObjectIsArmed [M 0x1787c8 —
+    // the 20.0 distance arg is dead], so Bond stands in the bouncer's facing (±π/2 cone) with LOS.
     let bp = sim.drones.list[bouncer].pos;
-    stand_armed_at(sim, [bp[0] + 6.0, bp[1], bp[2] + 6.0], bp);
+    let by = sim.drones.list[bouncer].yaw;
+    stand_armed_at(sim, [bp[0] + by.sin() * 6.0, bp[1], bp[2] + by.cos() * 6.0], bp);
     tick_idle(sim, 90);
     assert!(matches!(sim.drones.list[bouncer].state,
             0x56 | 0x66 | 0x67 | 0x68 | 0x69),
         "a bouncer leaves CivilianGuard into the attack chain when armed Bond is within 20 [M 0x1603a8 case 3 → 0x56; the unarmed draw is the game's Attack enter] — got {:#x}", sim.drones.list[bouncer].state);
 
-    // Armed Bond walks up to a guest: she scares into CivilianHiding. (Pre-fix: stood in her start state.)
+    // Armed Bond walks up to a guest: fix-party-mission — PartyGirl's scare runs through the same
+    // NearArmedPerson gate [M 0x160140 case 3], and kind 0xD never qualifies [M 0x1787c8 0x178840] —
+    // so a guest does NOT scare from proximity alone: she stays in PartyGirl (stand idle + BondTalk).
+    // (The old within-10 scare was the [S] distance reading the disassembly refutes.)
     let gp = sim.drones.list[guest].pos;
-    stand_armed_at(sim, [gp[0] + 5.0, gp[1], gp[2] + 5.0], gp);
+    let gy = sim.drones.list[guest].yaw;
+    stand_armed_at(sim, [gp[0] + gy.sin() * 5.0, gp[1], gp[2] + gy.cos() * 5.0], gp);
     tick_idle(sim, 90);
-    assert!(matches!(sim.drones.list[guest].state, 0x12 | 0x13),
-        "a guest scares to CivilianScared/Hiding with armed Bond within 10 [M 0x160140 case 3] — got {:#x}",
+    assert_eq!(sim.drones.list[guest].state, 0x2f,
+        "a kind-0xD guest never scares from armed-Bond proximity [M 0x1787c8 0x178840; 0x160140 case 3] — got {:#x}",
         sim.drones.list[guest].state);
 }
 

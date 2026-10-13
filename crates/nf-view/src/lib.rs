@@ -104,13 +104,23 @@ fn build_sound(scene: &mut scene::Scene) -> Option<nf_audio::sfx::Sound> {
         nf_audio::sfx::Sound { driver, output, music_files, music: None, music_pending: Vec::new() }
     });
     if let (Some(sim), Some((mm, vars))) = (scene.sim.as_mut(), scene.music_tables.take()) {
-        sim.drones.attack_gate.vars = vars.iter().find(|v| v.level == sim.level).copied()
-            .or(Some(nf_formats::music::MusicVars { level: sim.level, count: 2, floor: 0, window: 8, distance: 25.0 }));
-        sim.drones.music = nf_game::music::Music::new(mm);
-        sim.drones.music.event(0, sim.level);
-        sim.drones.music.event(1, 1);
+        if sim.drones.music.table.is_empty() {
+            wire_music(sim, mm, vars);
+        }
     }
     sound
+}
+
+/// `Sound_Ready`'s music wiring [M docs/systems/music.md]: the MapMusic/MapDroneData tables into the
+/// sim's music logic + the attack gate, then `Music_Event(0, level)` / `Music_Event(1, 1)` — the start
+/// pulse the first `UpdateMusicalEvents` consumes. fix-party-mission: the tests' `load` path now wires
+/// the music too (the cut-scene music jumps were test-invisible before); `build_sound` reuses this.
+fn wire_music(sim: &mut scene::Sim, mm: Vec<nf_formats::music::MapMusic>, vars: Vec<nf_formats::music::MusicVars>) {
+    sim.drones.attack_gate.vars = vars.iter().find(|v| v.level == sim.level).copied()
+        .or(Some(nf_formats::music::MusicVars { level: sim.level, count: 2, floor: 0, window: 8, distance: 25.0 }));
+    sim.drones.music = nf_game::music::Music::new(mm);
+    sim.drones.music.event(0, sim.level);
+    sim.drones.music.event(1, 1);
 }
 
 pub fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
@@ -461,6 +471,13 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     // Music (`Sound_Ready` → `Music_Event(0, level)`; docs/systems/music.md): the MapMusic / MapDroneData tables, and
     // the level's track through MFXINFO.MXI to PS2/MUSIC/MFX_<n>.{SMF,SSD}.
     scene.music_tables = nf_formats::music::tables(&elf).map_err(|e| eprintln!("music tables: {e}")).ok();
+    // The music logic rides every load (the game's `Sound_Ready` runs before the first frame whether or
+    // not an output device exists); the audio driver takes the tables later in `build_sound`.
+    if let (Some(sim), Some((mm, vars))) = (scene.sim.as_mut(), scene.music_tables.as_ref()) {
+        if sim.drones.music.table.is_empty() {
+            wire_music(sim, mm.clone(), vars.clone());
+        }
+    }
     scene.music_files = (|| {
         let track = scene.music_tables.as_ref()?.0.iter().find(|m| m.level == level_id && m.track != 0)?.track;
         let get = |p: &str| iso.find(p).and_then(|e| iso.read_file(e).ok());
@@ -731,9 +748,9 @@ fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
     // Row 0 of the view matrix: up × forward, the screen-left axis (snapshot: dir (−0.839, 0, −0.545) → (−0.545, 0, 0.839)).
     let norm = { let l = (f[0] * f[0] + f[2] * f[2]).sqrt().max(1e-6); [f[2] / l, 0.0, -f[0] / l] };
     sim.drones.map_sounds.update(&mut sim.drones.audio, pos);
-    // `UpdateMusicalEvents` after the batch: its commands go out with the next frame's batch.
-    let section = s.music.as_ref().map_or(0, |p| p.now_playing);
-    sim.drones.music.update(section);
+    // `UpdateMusicalEvents` moved into the sim's tick (it runs every frame with or without an output
+    // device [M 0x114e70]); the IOP's now-playing section feeds it through `Drones::iop_section`.
+    sim.drones.iop_section = s.music.as_ref().map_or(0, |p| p.now_playing);
     let mut fade_down = None;
     for c in std::mem::take(&mut sim.drones.music.out) {
         match c {
@@ -1226,9 +1243,18 @@ impl ApplicationHandler for App {
                     // `Trigger_Activate`'s exit order: the success/fallback channel write (already applied in
                     // the sim), then `Player_RamSave` [M 0x1b2318:97-116] — capture the old sim now, before
                     // the scene swap drops it (fix-level2 F2).
-                    let save = self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
-                        &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
-                        .with_mission(&sim.drones.mission));
+                    // fix-death-restart: the fail/death restart is the COLD arm — the menu's
+                    // `ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)` sets IsWarmReset = 0
+                    // [M 0x204408:139], which zeroes the switch channels (`Init_SwitchChannels`
+                    // [M 0x1d5080:44-46]) and skips `Player_RamLoad` (its whole body is gated on the
+                    // warm flag [M 0x1957a8]). Carrying the RamSave across a restart is what looped
+                    // the 07000007 session: the saved ch 99 re-failed the mission every reload.
+                    let cold = self.scene.sim.as_ref().is_some_and(|sim| sim.drones.level_exit_cold);
+                    let save = if cold { None } else {
+                        self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
+                            &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
+                            .with_mission(&sim.drones.mission))
+                    };
                     let name = level_archive_name(next);
                     eprintln!("level: loading {name} ({})", if save.is_some() { "warm" } else { "cold" });
                     let load = if self.dev.is_some() { load_with_carry_dev } else { load_with_carry };

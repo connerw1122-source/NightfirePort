@@ -153,6 +153,8 @@ fn hatch_exit_and_sisters() {
     let mut scene = load_carry(&iso, Some(&save));
     scene.sim.as_mut().unwrap().drones.set_channel(0x61);
     tick(&mut scene, 340);
-    assert_eq!(scene.sim.as_ref().unwrap().drones.level_exit, Some(0x0700_000a),
-        "the alarm fails the mission → the fail menu = a level restart [M 0x182c60:77-81]");
+    // fix-death-restart: the menu's Restart is ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)
+    // [M 0x204408:139, 0x1830a0] — the MISSION'S FIRST level (07000009), not this level.
+    assert_eq!(scene.sim.as_ref().unwrap().drones.level_exit, Some(0x0700_0009),
+        "the alarm fails the mission → the fail menu's restart = the mission start [M 0x204408:139]");
 }

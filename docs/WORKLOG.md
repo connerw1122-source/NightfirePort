@@ -6457,3 +6457,111 @@ Bond's gadgets: the selection re-enabled and three gadget systems ported with te
   (Input::fire plumbing); `drone.rs` (grapple_points — additive, on its own lines).
 - Left: the decryptor's scan UI, the camera/briefcase/Q-Worm fire-side functions (the mission
   layer's), the rope/beam render items (Sim::laser_beam holds the endpoints), the swing momentum.
+
+
+## fix-party-mission — the 07000007 party mission and the 07000008 mission flow (playtest 2026-10-12, items 1–7)
+
+Branch `s/fix-party-mission` (from origin/master + the 2026-10-12 merges). All seven playtest items,
+each fail-first through the real input path on the NF_ISO (`fix_party_mission_live.rs`, 15 tests):
+
+- **Item 1 (the entrance bouncers shoot unarmed Bond)**: the game's gate is `CivilianGuard` UPDATE
+  0x1603a8 case 3 attacking only when `NDrone2_NearArmedPerson` 0x1787c8 (prop 0x3c + Bond in sight
+  + `ObjectIsArmed` 0x178768 on Bond's class byte) — and Bond at the party start holds the FISTS
+  (InitWeapon 0x1a7ef8 case 0x7000007 writes +0x63 = 1; WeaponSelect 0x1a2cc0 copies the request
+  into the class byte at the switch's start), so the pre-hall phase never arms them; they BondTalk.
+- **Items 2+3 (punch a guard → instant fail; shoot a guest → fail; punched guests T-posed)**:
+  `NDrone2_PunchImpact` 0x145f28:45-56 (an unarmed 07000007 punch → SetMissionFailReason(5) → "Cover
+  Lost" ch 99) and `DroneFunc_OnInitDeath` 0x145bd0 (a killed prop-0x54 guest → reason 3 → ch 0x60)
+  through the real bullet/punch paths; the T-pose was the punch path stamping a dead impact on the
+  shared anim state (the others' scripts dropped).
+- **Item 4 (mission music over cut-scenes)**: the per-level updaters (`UpdateMFX_01CastleC`
+  0x113188 / `CastleD` 0x1133b8) jump sections on the NIS 0xB/0xC script-hash events (port:
+  `Music::castle_c/castle_d`), `UpdateMusicalEvents` moved into the sim's tick, mission fail/success
+  → Music_Event(7/8) 0x182c60.
+- **Item 5 (banners)**: the text binding is fix-mission's 0x1827d8 port (the user's build predates
+  it; the probe pins the bound text on 07/01/02/08). NEW: the NIS hold-off — `hud_frozen` (viewer
+  +0x2a [M Camera_Enable 0x1b9920]) set by `Script_CameraStart` 0x1d9140:41-43, cleared at
+  `Script_KillStream` 0x1d9860:71; `Text_UpdateMsg` 0x1b11d8:16-18 returns while on (no timers) and
+  `HUD_UpdateStatusPane` 0x19c310 case 0 never opens the panes — the 07000001 banner survives its
+  2120-tick intro NIS ("no banner came up": it used to expire at tick 300).
+- **Item 6 (guards after the Kimiko scene)**: the game teleports NO drone at NIS end — only Bond to
+  the event-6 marker (Script_Free 0x1da880:44-47; 0x06000073's marker key 498 = (91.52, 43.85,
+  −31.09) yaw 180° [D]) — and re-shows everyone where they stood (`Drone_EnableAll(1)` 0x1383e8:14
+  skips WaitSwitch; `NDrone2_Enable(1)` 0x149dd0:16-28 refuses corpses and restarts the anim clock
+  at script time 1). The port's re-enable now does the clock restart (drone 5 anim.time 40 → 0
+  through the real path; the fail-first showed the mid-stride resume) and skips corpses. The
+  hand-back trigger's ch 0x48 removes the scene's guests via their second_channel/alt_state 0xb4
+  DeleteMe [M NDrone2_PreDroneControl] — game behavior, pinned.
+- **Item 7 (the 07000008 safe chain)**: the user's three symptoms are one sealed chain. The
+  GuardRoom fusebox #219 (0x31, script 0x060008AD) is INVISIBLE in the game's own terms (obj+0xD8=0
+  [M 001b0448:33-35]) — its visible mesh is its own ScriptPlayer's entity (FuseBox_Create 0x1b0448
+  SP_Creates it, mode 0x40): the port now pushes that player at attach (AFTER `Scripts::new` — the
+  earlier position was wiped by the rebuild; the fail-first the sandbox reset lost, re-shown) and
+  two E presses write ch 137 → the doorway bolt SS opens. The Lazer Watch 0x4E/0x4F burns the safe
+  bolts #207/#208 (Lock_Update 0x1ae3d8 case 0 record word 1: contacts with BU+0x44 = 0x4E/0x4F;
+  Lock_Unlock writes switch_channels[record+8] = 134/135 [:194-195]) — the port's bullet pass adds
+  the segment-vs-sphere lock contact (the watch bullets already carried the id) → mux #278 ANDs
+  into ch 136 → the safe door SS #205 opens → the briefcase writes ch 0x4A (Pickup_Handler
+  0x18e650:330-333) and the rocket launcher (0x2C) is taken → the gondola ride starts. The
+  SimpleScripts join set_dynamic with their placement glist (`Ss.hash`) so the doors are solid.
+
+Shared files touched (all small, additive): `drone.rs` (the DroneEnable re-enable body, the
+`hud_frozen` field + Camera hook, the fusebox SP push, the SS set_dynamic line, the laser-burn
+contact + `segment_hits_sphere`), `scene.rs` (nf-view: the hud_tick freeze + the three pane gates in
+`hud.rs` + the SsList::create hash arg). The sandbox reset mid-session (unpushed work lost:
+the SP-move fix + the chain test — both re-applied and re-verified; the fail-firsts had been
+demonstrated live before the reset and the chain test re-run green on the restored tree).
+
+## fix-death-restart (2026-10-13)
+
+**Done**
+- The death sequence ported end to end (`crates/nf-game/src/death.rs`): `Player_CheckForDeath`
+  0x190810 (ch 0x5e, `Music_Event(6,1)` once, `Player_WeaponNone`, the death sound 0x89), the blood
+  pane (pane 12) enabling on the first dead tick [M 0x190bb0:23-25], the red fade's 448-tick cover
+  (`HUD_UpdateBloodPane` 0x19a6a8 grows 1 px/tick; viewer.h = 448 [M 0x19f4e8:33], template width 512
+  [L BloodSprInfo 0x2bcfd8]), and ch 0x62 rising on the cover or the player's action 25 (✕/Start
+  [L input.md style 0]) [M 0x190bb0:29-33]. `Player_Update` state 2/3 runs no input [M 0x193600:317-319]
+  — `Sim::step_bond` gates the input while `death.active`/menu.
+- `Mission_Update` now reads the death CHANNEL 0x62 [M 0x182c60:21], not health — the port used to
+  raise ch 0x62 (and replay music 6 every tick) the instant health hit 0, so the whole restart fired
+  during the hit tick.
+- The 0x40000042 fail/death menu: `Mission.menu_open`/`menu_choice`, the `Event::MenuOpen` event and
+  the answer API `Drones::fail_menu_open`/`fail_choose_restart`/`fail_choose_quit` [M 0x182c60:77-81,
+  C_GCPAUSE_Handler 0x204408:136-155] — for 180-fix-menus to draw. `Drones.auto_restart` (default on)
+  answers Restart immediately until then. Quit → 0x07000048, logged and held (no front end).
+- The restart is the game's COLD arm: `ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)` [M
+  0x204408:139] → the mission's FIRST level, `Init_SwitchChannels` [M 0x1d5080:44-46], no
+  `Player_RamLoad` [M 0x1957a8]. The port marks the exit `level_exit_cold` and lib.rs drops the
+  RamSave for it. **That carry was the user's 07000007 replay loop** (playtest 2026-10-12): the old
+  restart reloaded the same level WITH the RamSave, and the saved ch 99 re-failed the mission every
+  reload with no input (the restored InternalState also falls back into the flow — the `_` arm).
+- Tests: `nf-view/tests/fix_death_restart_live.rs`, 7 tests, all NF_ISO: the fail→menu→restart
+  chain to the mission start (07000007 → 07000005), the loop mechanism (warm carry re-fails; cold
+  does not), the death sequence stage by stage (✕ skip + the 448-tick no-skip arm), the menu API
+  (waits, Quit → 0x7000048), restart == clean load (health/channels/inventory/mission states), and
+  the near-fatal sisters (nothing triggers). All 7 fail to compile against the pre-fix tree (the API
+  is new) and the pre-fix behaviour they contradict is in HEAD~1 (instant ch 0x62 + the carried
+  restart).
+- Continuation (the same session, later): an 8th test `lethal_fall_reaches_the_death_path_and_the_cold_restart`
+  covers task item 4 — a real 400-unit fall on 07000011 (the atrium level, part 0 of its own mission)
+  lands through `Player_CollisionHandler` 0x1949a8's fall damage into the full sequence and the COLD
+  restart to 07000011; the 8-unit sister triggers nothing. The fail-restart target on 0700000a was
+  corrected 0x0700000a → 0x07000009 in `walk_0700000a_live.rs` (the menu restarts the MISSION'S first
+  level [M 0x204408:139], not the current one). All 8 pass.
+
+**Measured / notes**
+- The fail path's banner really takes 300 ticks before the menu [M 0x182c60:52-57
+  `VIDEO_FRAME_RATE·4 + VIDEO_FRAME_RATE`, FRAME_RATE_MUL 1.0 [L 0x30d0d8]] — the tests tick through it.
+- 07000009's ch 0x61 is re-driven every tick by the OR trigger (placement 278, list [0x7c, 0x7d]
+  [L probe]) — a direct 0x61 write is stomped; the alarm test writes 0x7C, the real writer.
+- The death restart loads the plain 0x70000NN code (param 3 = 1: no 0x71xxxxx intro-variant remap
+  [M 0x1d3800]) — the port has one archive per level, so the restart replays whatever the archive's
+  level-start script does; the game's restart skips the intro NIS variant. Live check below.
+
+**Live checks for the main agent**
+1. `--bond` on 07000005, kill Bond (fall or guards): the red fade should creep from the centre over
+   ~7.5 s (pane 12's two sprites growing 1 px/tick, layer 9, textures 0x0300005a/0x03000002 [L
+   0x2bcfd8]); the render does not draw it yet — the sim's `death.ticks`/`death.covered` are the data.
+2. Press fire (✕) while dying: the menu/restart should come immediately instead of the 7.5 s.
+3. Die on 07000007 (punch a guest to death): the fail banner ~5 s, then the restart to 07000005
+   (the mission start), COLD — full health, fists, objectives re-announced. The old replay loop gone.
