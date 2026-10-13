@@ -7217,3 +7217,30 @@ by G-017/G-024 with the repro. Suite: escort walk green on the final state + dif
 the full-suite re-run timed out (sandbox) after the revert — sim paths are otherwise byte-identical to
 master's. Shared-file hooks: lib.rs (pub mod ps2math), nf-extract main.rs (Player.capsule compile fix;
 pose-check level names take the FILES.BIN .bin names). Report: docs/reports/verify-bitexact.md.
+---
+Task: fix-world-fx
+Agent: fix-world-fx worker
+Branch: s/fix-world-fx (from origin/master cdfec70)
+
+Work Log:
+- Sandbox kept from the earlier session: repo, work/, the onfoot ISO, nf-queue all present; refreshed the token URL and pulled master.
+- Branch created and pushed with this entry.
+
+Stage Summary:
+- Starting fix-world-fx: the presentation object types (0xe3 Flicker, 0x4e Light, 0xf2 Emitter, 0x21 Ripples, 0xf3 EnvTree, 0xd4 Cloud, 0xd5 OneSided, 0x4a Apocalypse, 0xf4 MoviePlayer, 0x38 SpaceLaser / 0x39 SpaceMissile on 0700001b) per docs/systems/levels.md §7.
+
+---
+Task: fix-world-fx
+Agent: fix-world-fx worker
+Branch: s/fix-world-fx
+
+Work Log:
+- Researched the 10 presentation types in parallel subagents; found Light_FindMapLight 0x1cc3d0 is an 8-byte stub (flicker lamps just fade white, the psi particle sim is dummied out of the PS2 build).
+- New crates/nf-game/src/world_fx.rs: the sim for 0x21 Ripples, 0xe3 Flicker, 0xd4 Cloud drift, 0x4a Apocalypse, 0xf2 Emitter; nf-formats block-0x30 emitter defs (Emitter_LoadDefs 0x17ab40); the particle billboard pass via Sim::particle_quads + snow_for.
+- Fixed mid-flight: the def-walk stride (o += 64+20*keys), the emitter slots pre-created at attach (the game allocates max dead slots), the double gas.update(), the shared-pool test discriminators.
+- Tests: 6 unit + 5 NF_ISO live (defs resolve on 07000002/14/15; ripples on 01; emitters on 14; apocalypse on 15; clouds on 06); full suite green except the 3 allowed disc_golden.
+- Docs: docs/atlas/{emitter,ripples,flicker,cloud}.md; report docs/reports/fix-world-fx.md.
+
+Stage Summary:
+- Emitter/ripples/flicker/cloud/apocalypse sims live; MoviePlayer + EnvTree sway + SpaceLaser/Missile documented as out of scope (not gameplay blockers — fix-finale-blockers report).
+- Follow-ups listed in the report: the cloud-drift/flicker-tint render hooks, the Apocalypse screen fade, the emitter textures.

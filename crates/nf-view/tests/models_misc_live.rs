@@ -272,7 +272,9 @@ fn firing_spawns_a_muzzle_smoke_puff_that_fades_and_dies() {
     let mut g0 = None;
     for t in 0..40 {
         sim.step_bond(Default::default(), t % 9 == 0, false, false);
-        if let Some(g) = sim.drones.gas.puffs.first() { g0 = Some(g.clone()); break; }
+        // fix-world-fx: the pool is shared with the ripples now (the game's is too — every Gas_Init
+        // appends to the same gases list), so the muzzle puff is picked by its type-7 signature.
+        if let Some(g) = sim.drones.gas.puffs.iter().find(|g| g.kind == 7) { g0 = Some(g.clone()); break; }
     }
     let g0 = g0.expect("firing never spawned the muzzle smoke puff");
     // By capture time the pool ticked once (the update runs at the next tick head), so the scale is
@@ -287,15 +289,16 @@ fn firing_spawns_a_muzzle_smoke_puff_that_fades_and_dies() {
     assert!((g0.pos[1] - (spawn_y + 1.45)).abs() < 1.0, "the puff sits at the muzzle height, got {} vs {}", g0.pos[1], spawn_y + 1.45);
     // It fades and dies (8 ticks [S], the decomp drops the game's life arg).
     let mut ticks = 0;
-    while !sim.drones.gas.puffs.is_empty() {
+    while sim.drones.gas.puffs.iter().any(|g| g.kind == 7) {
         sim.step_bond(Input::default(), false, false, false);
         ticks += 1;
         assert!(ticks < 20, "the puff outlived its life");
     }
     assert_eq!(ticks, 7, "life 8, one tick spent before capture: gone after 7 more");
-    // The sister: not firing spawns nothing (the puff count stays 0).
+    // The sister: not firing spawns no muzzle smoke (fix-world-fx: the pool legitimately carries
+    // the ripples' type-6 rings, so the check is the type-7 count).
     for _ in 0..30 { sim.step_bond(Input::default(), false, false, false); }
-    assert!(sim.drones.gas.puffs.is_empty(), "no smoke without a shot");
+    assert!(!sim.drones.gas.puffs.iter().any(|g| g.kind == 7), "no smoke without a shot");
 }
 
 /// The broken searchlight's smoke (`Searchlight_Update` 0x1cb900 state 2, every 7th frame at obj+0x30,

@@ -46,3 +46,4 @@ pub mod useobj;
 pub mod wire;
 pub mod world;
 pub mod worldobj;
+pub mod world_fx;
