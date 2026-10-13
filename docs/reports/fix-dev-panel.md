@@ -88,6 +88,12 @@ mispin. The game's own data is unambiguous: weapon name labels AND ammo_data nam
 fields all say 0x34 Fragmentation / 0x35 Stun / 0x36 Smoke / 0x37 Remote Mine. (The atlas's +0x5C
 mesh *hashes* are unaffected; only the *names* in those two tables are.)
 
+## ntfy
+
+The first curl (the long one-line result) was rejected with `{"code":42908,"http":429,"error":"limit
+reached: daily message quota reached"}`. The two fallbacks with the short `fix-dev-panel: done` body
+both succeeded (python urllib and wget, exit 0, server accepted) — the notification is delivered.
+
 ## What's left
 
 - The `current` fire-mode text shows mode 0 (the only mode the port's trigger runs on master). When
