@@ -1927,6 +1927,73 @@ impl Sim {
         out
     }
 
+    /// The emitter particles as camera-facing quads (`Emitter_Draw` 0x17b708 path A →
+    /// `psiDrawParticleList` 0x122d50: a size-`def.size` rgba sprite per alive slot). The game sizes
+    /// the sprite in screen space (`4·size / (PS2ParticleSize · PS2SnowSizeMult)`, 0x11e2e8:67) — the
+    /// port takes the def size as the world-space half-extent [S], the way the snow quads do. The
+    /// white rgb in the game's sprite comes from the bound def texture (the font-slot hash, def+0x04)
+    /// modulated by the slot rgba [M 0x119910:19]; the port has no per-def texture, so the colour is
+    /// the slot rgba itself — listed in the report's render follow-ups.
+    pub fn particle_quads(&self, right: [f32; 3], up: [f32; 3]) -> Vec<Vertex> {
+        let sprites = self.drones.fx.particle_sprites();
+        let mut out = Vec::with_capacity(sprites.len() * 6);
+        for s in sprites {
+            let (r, u) = (right.map(|v| v * s.size), up.map(|v| v * s.size));
+            let c = |sr: f32, su: f32, uv: [f32; 2]| Vertex {
+                pos: [s.pos[0] + r[0] * sr + u[0] * su, s.pos[1] + r[1] * sr + u[1] * su, s.pos[2] + r[2] * sr + u[2] * su],
+                uv, rgba: s.rgba, nrm: [0; 4],
+            };
+            let (a, b, cc, d) = (c(-1.0, -1.0, [0.0, 1.0]), c(1.0, -1.0, [1.0, 1.0]), c(1.0, 1.0, [1.0, 0.0]), c(-1.0, 1.0, [0.0, 0.0]));
+            out.extend_from_slice(&[a, b, cc, a, cc, d]);
+        }
+        out
+    }
+
+    /// fix-impacts: this frame's effect vertices in world space — the bullet decals as surface-oriented
+    /// quads (`Effect_Bullet` 0x1ce8a8's pool: pos already carries the +0.01 normal offset, the quad
+    /// lies in the surface plane via the normal's tangent basis, G-041), the debris as scaled
+    /// billboards (`Debris_Create` 0x1aaa00's class-0x40 objects) and the casings as small billboards
+    /// (`Bullet_init_casing` 0x12f678's 32-slot pool). The real meshes/textures (decal hashes
+    /// 0x02000122/126/127/128/262, casing `ammo_data+4`, debris `EffectInfo+0x74`) are the main
+    /// agent's render pass — these vertices are where they go and how big they are. Additive hook.
+    pub fn effect_quads(&self, right: [f32; 3], up: [f32; 3]) -> Vec<Vertex> {
+        let mut out = Vec::new();
+        // Decals: a 0.12-unit quad in the surface plane.
+        let h = 0.06;
+        for d in &self.drones.effects.decals {
+            let n = d.normal;
+            let basis = nf_game::effect::orthonormal_basis_sum(n);
+            // The basis sum is tangential; use it and the normal×sum as the quad's two axes.
+            let t1 = [basis[0], basis[1], basis[2]];
+            let tl = (t1[0] * t1[0] + t1[1] * t1[1] + t1[2] * t1[2]).sqrt();
+            let t1 = if tl > 1e-6 { [t1[0] / tl, t1[1] / tl, t1[2] / tl] } else { [1.0, 0.0, 0.0] };
+            let t2 = [n[1] * t1[2] - n[2] * t1[1], n[2] * t1[0] - n[0] * t1[2], n[0] * t1[1] - n[1] * t1[0]];
+            let c = |sr: f32, su: f32, uv: [f32; 2]| Vertex {
+                pos: [d.pos[0] + (t1[0] * sr + t2[0] * su) * h, d.pos[1] + (t1[1] * sr + t2[1] * su) * h, d.pos[2] + (t1[2] * sr + t2[2] * su) * h],
+                uv, rgba: [40, 35, 30, 200], nrm: [0; 4],
+            };
+            let (a, b, cc, d2) = (c(-1.0, -1.0, [0.0, 1.0]), c(1.0, -1.0, [1.0, 1.0]), c(1.0, 1.0, [1.0, 0.0]), c(-1.0, 1.0, [0.0, 0.0]));
+            out.extend_from_slice(&[a, b, cc, a, cc, d2]);
+        }
+        // Debris: camera billboards at the particle's scale.
+        for p in &self.drones.effects.debris {
+            let s = p.scale.max(0.02);
+            let (r, u) = (right.map(|v| v * s), up.map(|v| v * s));
+            let c = |sr: f32, su: f32, uv: [f32; 2]| Vertex { pos: [p.pos[0] + r[0] * sr + u[0] * su, p.pos[1] + r[1] * sr + u[1] * su, p.pos[2] + r[2] * sr + u[2] * su], uv, rgba: [140, 130, 120, p.alpha], nrm: [0; 4] };
+            let (a, b, cc, d) = (c(-1.0, -1.0, [0.0, 1.0]), c(1.0, -1.0, [1.0, 1.0]), c(1.0, 1.0, [1.0, 0.0]), c(-1.0, 1.0, [0.0, 0.0]));
+            out.extend_from_slice(&[a, b, cc, a, cc, d]);
+        }
+        // Casings: small bright billboards (the mesh instances are the render pass's).
+        for c in self.drones.casings.visible() {
+            let s = 0.04;
+            let (r, u) = (right.map(|v| v * s), up.map(|v| v * s));
+            let v = |sr: f32, su: f32, uv: [f32; 2]| Vertex { pos: [c.pos[0] + r[0] * sr + u[0] * su, c.pos[1] + r[1] * sr + u[1] * su, c.pos[2] + r[2] * sr + u[2] * su], uv, rgba: [200, 160, 60, 255], nrm: [0; 4] };
+            let (a, b, cc, d) = (v(-1.0, -1.0, [0.0, 1.0]), v(1.0, -1.0, [1.0, 1.0]), v(1.0, 1.0, [1.0, 0.0]), v(-1.0, 1.0, [0.0, 0.0]));
+            out.extend_from_slice(&[a, b, cc, a, cc, d]);
+        }
+        out
+    }
+
     /// The live animated script object from `src` (script hash, stream) on `skin`: its animation script and frame.
     pub fn script_anim(&self, src: (u32, u8), skin: u32) -> Option<(u32, f32)> {
         self.drones.scripts.objects.list.iter().flatten().rev().find_map(|o| match o {
