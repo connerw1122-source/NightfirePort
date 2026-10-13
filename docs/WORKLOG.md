@@ -7340,3 +7340,12 @@ NF_ISO impacts_live (wall decal at hit+0.01 with the surface normal/mesh, sky sh
 lands in lifetime, bit-for-bit seeded rerun). Known: `guard_takes_cover_like_the_game` needs its seed
 re-picked (0072's procedure — the impact draws joined the stream, as the game's own do). Report:
 docs/reports/fix-impacts.md.
+
+## fix-impacts-render (s/fix-impacts-render) — 2026-10-13
+Task: draw the impact effects with the game's own meshes (G-041/G-025 render pass).
+Replace the flat-colour `effect_quads` placeholder with the game's decal draw
+(`EffectInfo+4` decal meshes per material, surface-plane oriented, depth-tested,
+alpha-blended, no depth write), the `ammo_data+4` casing mesh instances at the
+integrated casing pose, and the `EffectInfo+0x74` debris meshes at particle
+pose/scale/alpha. Write docs/atlas/effect.md (owed by fix-impacts) and update
+GAPS G-041/G-025. Started 12:34 UTC, sandbox expires ~14:33 UTC.
