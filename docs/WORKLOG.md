@@ -7904,3 +7904,29 @@ Work Log:
 - Setup reused (work/, ISO, nf-queue present); branch created, master merged, conflicts resolved
   (WORKLOG keep-both; scene.rs keep-both: master's difficulty=1 preamble + this branch's creepwalls).
 - Full suite started in the background at ~17:03 UTC.
+
+## fix-swim-vent4 (s/fix-swim-vent4) — 2026-10-13, outcome
+**Both reds green on the merged branch (ca559c3 + master b9db8b5 + 2652850 + 91e0964).**
+- 07000001 exit: the report's ping-pong does NOT exist on the merged tree (route trace: 0 index
+  regressions in 3761 ticks, state pinned 0x1d, no OpenDoor cycles). The real defect: the lead
+  WALKED its route — `DSTATE_AllyLead` 0x15e698 case 3 calls CallAnim(0x1e) = RUN on codes 0/2;
+  `update_mission_route` hardcoded walk_anim (~0.02/tick — the escort spent the test's window on
+  the west stairs). Fix: the MOVING anim is per-caller (AllyLead RUN, civilians walk, kiko 0x34/
+  RUN). Mayhew runs the route onto the plate: at_plate true, level_exit 0x07000002, walked 172.8.
+  Test choreography: Bond joins the plate only inside the 2.0 latch ball (the game's Bond is
+  BEHIND the escort; the old 4.5 pre-place let Mayhew's r-0.4 toucher brush the volume z lo 12.17
+  [D probe] from 11.77 and end the level before the latch).
+- 0700000c ST-1 plate: the disc evidence re-sited the vent stand-in — the old (13.0, −154.3) drop
+  hangs over the interior pit (no disc floor y 9..13.5 at z ≤ −153.3, x 7.2..13 [D probe_planes]),
+  the display case obj 143 (x 4.56..6.96 on the ledge's south edge) seals the pad (11.84, x 5.0..6.5)
+  from the corridor, and the 12.26 "south walkway" across the gap is the pulley car (dynamic geo,
+  no static tris). The stand-in now drops Bond on the pad's south end; the walk to the volume
+  centre, the touch and the objectives are real (2691 ticks, stuck 0, falls 0). Sisters: the old
+  spot floorless, the pad landing grounded.
+- Suite: nf-game lib 128/128 + all binaries green; nf-formats+nf-audio 89/3 (exactly the allowed
+  disc_golden trio); nf-view 430/4 — the four are the "E at the gate door loads 07000006" family,
+  master's own reds (level_carry_live re-run on master: identical failures). Shared-file note:
+  pss_movies_live's audio test now skips on the slim ISO (0 movies) instead of panicking — without
+  it no branch off this master can meet the "only 3 disc_golden may fail" policy.
+- Report: docs/reports/fix-swim-vent4.md (live checks: the exit-volume brush question, the
+  CallAnim(0x1e) confirm, the case-143 solidity).
