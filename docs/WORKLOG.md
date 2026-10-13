@@ -7278,3 +7278,14 @@ Stage Summary:
 - Open (documented in docs/atlas/drone-port-check.md + the report): Mayhew's WAIT_SWITCH gating, the
   0x8c-vs-0x58 cover choice in the first fight, the PlayScript root-motion step, the hip converter's
   `animobj+0x5c` source, the SURRENDER/0x6F triggers. Live checks listed in the report.
+
+## fix-ai-traces2 (branch s/fix-ai-traces2) — 2026-10-13 — land fix-ai-traces' PlayScript work on master green
+
+Started. Plan: take the held s/fix-ai-traces work (harness + PlayScript port, cherry-picked onto master a2d1d25),
+reproduce the 6 failures the merge hit (truck-driver state 3 vs 52, d15 idle-guard, the two death-drop tests +
+cel-ambient "the guard died", the anim.rs:70 index-out-of-bounds on the start-script pose), fix each from the
+decompile (NDrone2_DefaultInit 0x14b300 vs the TruckDriver init 0x160bd0, the 05-truck trace, the PlayScript
+sequence/key bounds at anim.rs:70), port the UPDATE arm's missing NDrone2_SeenAndAttacking if the evidence allows,
+correct any older test whose expectation the trace/decompile shows wrong, then run the full suite --no-fail-fast
+across all four crates and report the count.
+
