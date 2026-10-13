@@ -76,5 +76,14 @@ call layer).
 ## Port
 
 `nf_game::anim` (WORKLOG 0048): AnimObject / AnimScript with the add / append-blend / tick / end / weight / delete
-rules and blended fractional poses; the drones' danims and the view model play through it. Not yet: facial
+rules and blended fractional poses; the drones' danims and the view model play through it. **fix-audio2: the op-1
+(sound) commands fire** — the drones' `script_commands` had them (footsteps/weapon events ride op-4), and the NIS
+animation objects now fire them from `Script_Interp` case 2 (0x1d9a08 overrides the anim script's time with the
+stream's frame and runs `AnimObjectUpdate` → `AnimScriptTick` → `AnimProcessScriptCmds(old, new)`, so an op-1 fires
+on the (previous frame, current frame] interval; the first interp's window starts at 0 — the start frame's commands
+run then). `Sound_Play3D(sfx, obj+0x30, 100, −1, −1, pitch Rand(500)−250, ref 0, custom 0)`; the shared RNG's
+`Rand(500)` is consumed per fire (the pitch itself is never forwarded downstream). This is where the cut-scene
+characters' lip-synced voice lines live (op-1 → STREAMS.BIN entries through the bank's negative FileRef) —
+fix_audio2_live drives 07000001's intro, 07000005's ride dialogue (ScriptPlayer #298, gate ch 0x43) and 07000007's
+fly-through through it. Not yet: facial
 sequences, distance-table speed modes 1–3, head tracking (`AnimObjectHeadTrack`), the far-object blend path.

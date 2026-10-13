@@ -4367,6 +4367,16 @@ impl crate::nis::World for Data<'_> {
     fn discrete0(&self, skin: u32, script: u32, frame: f32) -> Option<nf_formats::anim::Mat4> {
         self.discrete_parts(skin, script, frame).into_iter().next().map(|p| p.1)
     }
+    /// The op-1 sounds of `script` with frame in `(from, to]`, in command order (`AnimProcessScriptCmds`
+    /// 0x1c1b38 case 1 iterates the commands forward). The weapon-id remaps are skipped: they only apply when
+    /// the anim object has a weapon parent (`obj+0x1c` ≠ 0, the view model / held-weapon case), which a script
+    /// anim object never has [M 0x1c1b38 case 1: the swap tests all read `*(int *)(param_1 + 0x1c)`].
+    fn anim_ops1(&self, script: u32, from: i32, to: i32) -> Vec<u32> {
+        self.scripts.get(&script).map(|s| s.commands.iter().filter(|c| c.op == 1).filter_map(|c| match c.args.as_slice() {
+            [f, sfx, ..] if (*f as i32) > from && (*f as i32) <= to => Some(*sfx as u32),
+            _ => None,
+        }).collect()).unwrap_or_default()
+    }
 }
 
 impl Data<'_> {
@@ -4677,8 +4687,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     b.dead = true;
                     let hit = Hit { part, ray, point: at(t), damage: b.damage, weapon: b.weapon };
                     self.player_impacts.push(PlayerImpact::Drone { drone: i, part, at: hit.point });
-                    // `NDrone2_DoHitEffects`: damage > 0.5 → 0x413 at the hit (0x601 when HITDATA+0x52 = 5, *not modelled*).
-                    if hit.damage > 0.5 { self.audio.play3d(0x413, hit.point, None); }
+                    // `NDrone2_DoHitEffects` 0x1458e0:102-109: damage > 0.5 and the weapon's `+0x70` flags
+                    // without 0x180 → the hit sound at the hit point: 0x601 when HITDATA+0x52 (the part, the
+                    // port's `part` bone id) is 5 (head), else 0x413.
+                    if hit.damage > 0.5 && d.weapons.hit_flags(b.weapon as usize) & 0x180 == 0 {
+                        self.audio.play3d(if part == 5 { 0x601 } else { 0x413 }, hit.point, None);
+                    }
                     let rng = &mut self.rng;
                     let dr = &mut self.list[i];
                     dr.hit_by_player = true; // +0x2B4 = the player [M 0x145bd0; fix-actors]
@@ -4906,6 +4920,23 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 crate::nis::Request::SoundStop { src } => {
                     for s in self.script_sounds.iter().filter(|s| s.0 == src) { self.audio.stop(s.1); }
                     self.script_sounds.retain(|s| s.0 != src);
+                }
+                // An animation script's op-1 sound (`AnimProcessScriptCmds` 0x1c1b38 case 1):
+                // `Sound_Play3D(sfx, obj+0x30, vol 100, outer 100, inner 0, pitch Rand(500) − 250, ref 0,
+                // custom 0)` [M; the same call the facial path makes, docs/systems/speech.md §5]. The script
+                // anim object has no weapon parent, so no id remap; the pitch draw is consumed here (the
+                // shared RNG — one `Rand(500)` per fired op-1) but not applied: the EE sound layer stores the
+                // pitch and never forwards it [M crates/nf-game/src/sound.rs header]. The handle is
+                // discarded by the game (the sound cannot be stopped or moved).
+                crate::nis::Request::AnimSound { id, at } => {
+                    let _pitch = self.rng.rand(500) as i32 - 250;
+                    match at.and_then(|o| Self::script_obj_pos(&self.scripts, d, o)) {
+                        Some(pos) => {
+                            self.audio.play3d(id, pos, None);
+                            if let Some(t) = d.sfx { let e = t.get(id); if !e.looped { self.sounds.push(Sound { id: e.id, pos, inner: e.inner, outer: e.outer, weight: e.weight }); } }
+                        }
+                        None => { self.audio.play(id); }
+                    }
                 }
                 // Event 0x12: the script-driven level transition. No NIS script on 07000005 fires kind 0x12 (the truck
                 // script 0x06000A22 fires only 0xC and 0xD) — the actual level exit on 07000005 is the placement-0xE8

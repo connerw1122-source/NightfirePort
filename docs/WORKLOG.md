@@ -7032,3 +7032,33 @@ tint; the Kimiko scene lets the objective banner (and its sound) through; 070000
   only the 3 allowed disc_golden failures. Files: nf-view lib.rs/scene.rs, nf-game anim.rs,
   nf-formats anim.rs (shared: the delegation refactor + bones_covered, noted in the report),
   tests/fix_cutscenes2_live.rs.
+
+## fix-audio2 (branch s/fix-audio2) — the audio remainder (GAPS G-032)
+
+**The cut-scene voices (the 2026-10-12 playtest's top item: "voices are missing everywhere" on 07000001, 07000005's
+truck ride end and 07000007).** Root cause: the dialogue is NOT script sound streams — it is **op-1 commands in the
+cut-scene characters' animation scripts**, pointing at STREAMS.BIN entries through the bank's negative FileRef
+(probe: 07000005's ride script 0x06000994 → anim 0x06000996 op-1 f769 sfx 223 → LUT[249] / f934 sfx 224 → LUT[250];
+0x06000997 f838 sfx 227 / f986 sfx 171; 07000007's fly-through 0x060001FD → LUT[16]/[17]/[18], the hand-back
+0x06000225/060004F1/060004F2 → LUT[254..265]; 07000001's intro 0x0600055C/55D/55F → LUT[320..323] + sample 598).
+The game fires them from `Script_Interp` case 2 (0x1d9a08): it overrides the anim script's time with the stream's
+frame, zeroes the advance, and runs `AnimObjectUpdate` → `AnimScriptTick` → `AnimProcessScriptCmds(old, new)` —
+op-1 fires on (old, new], old = 0 on the first tick. The port's anim engine consumed only op-0, so every
+cut-scene voice was silent. Fix: `World::anim_ops1` + a `Request::AnimSound` emitted in `Script_Interp` case 2 and
+drained in `Drones` (`Sound_Play3D` at the anim object's discrete-0 root, the shared RNG's `Rand(500) − 250` pitch
+draw consumed per fire — the pitch is never forwarded downstream [M sound.rs header]; no weapon-id remaps: a script
+anim object has no weapon parent). Tests `fix_audio2_live` (fail-first on the pre-fix tree): the ride dialogue
+(ScriptPlayer #298's gate ch 0x43 → the 223/224/227/171 lines at their frames, none before frame 769), the party
+fly-through through the real TouchOnce trigger (367/366/327), 07000001's intro (489/488/490/598). 0x060008C8
+(the jump-in) has no op-1 — the ride lines are 0x06000994's, which the real game plays during the ride.
+
+**The 0x601 head-hit body sound (GAPS G-032).** `NDrone2_DoHitEffects` 0x1458e0:102-109: a body hit with damage
+> 0.5 and `weapon_data+0x70 & 0x180 == 0` plays **0x601** when HITDATA+0x52 (the part) is 5 (head), else 0x413.
+The port always played 0x413 (its own comment said "not modelled"). New `WeaponData::hit_flags` (+0x70) accessor;
+`fix_audio2_live::body_hit_sounds_head_601_body_413` drives real aimed shots (per-tick re-aim; Bond drifts after a
+teleport) — a part-5 shot starts 0x601, a torso shot 0x413 and never 0x601; fails-first on the pre-fix tree.
+(Player-side 0x600/0x412 not ported: Bond's hit volume is the cylinder stand-in — no part to branch on; noted in
+the report.)
+
+Suite green (only the 3 allowed disc_golden failures). Probe kept: `crates/nf-view/tests/audio_probe.rs` dumps
+every script's op-0x16 sound ids, the anim sets' op-1/op-4 commands and their bank/stream resolutions per level.
