@@ -8538,3 +8538,25 @@ Work Log:
 - (started) branch created; reading docs/systems/movies.md, docs/reports/fix-menus3.md and the
   menu/movie code next. Goal: main-menu + list-page looping background movies under the page
   controls, title->Start intro movie (skippable), movie audio via cpal.
+- The page→movie mapping parsed from the menu-def's PAGE records (0x21b908's own tag walk, all 13
+  record kinds): main 0x40000002 → 0x07330048; boot 0x40000034, every list page (0x40000025/23/1c/2b)
+  and results 0x40000036 → 0x07350048; P_INTRO 0x40000032, title layout 0x40000009 and attract → 0.
+  menu::aux_movie_for pins it; the test re-parses the disc data (NF_ISO, no movie data needed).
+- Playback: MovieStream (movie.rs) decodes closed-GOP chunks of the demuxed ES on a worker thread
+  (sequence header prepended; open GOPs ride their predecessor's chunk) — ~2× realtime vs 31 s for
+  a whole-ES decode; the menu loop 0x07330048 = 1800 pictures (60 s), 90 advance() calls yield 90
+  distinct frames. Audio = the PSS PCM as two aligned mono SPU voices (L/R, pitch 0x1000) through
+  the existing cpal Output; looped movies set the voices' loop point; stop keys them off.
+- Host wiring (lib.rs): movie_menu_tick mirrors the game's decisions [M 0x21c858:338 plays/stops the
+  page's aux on change; 0x209e88 advances the intro on psiMovieFinished]; frames stream into a
+  menu_textures slot (hash = the movie code) and gpu::Renderer::update_hud_texture (small additive
+  hook: hud tbgl/sampler kept + slot updater). Intro: FrontEnd{intro_playing, intro_index} — Start
+  arms it (INTRO_TICKS = 850 = the measured 96+329 pictures × 2), the overlay draws it fullscreen,
+  Confirm (= action 0x19) skips [M case 6]; menus_flow's two blind-Confirm tests updated to the
+  skip contract. --shot gains the movie still (first closed-GOP chunk, --movie-frame N).
+- Tests menu_movies (6, green with --features movies + NF_MOVIE_ISO at a retail image): the disc's
+  PAGE map, the decoded-frame SHA-1 pin (frame 12 = 1f1fe7b0…), the stream-ahead test, the intro
+  budget re-measure, the intro flow, the overlay layering (movie run first = under the controls;
+  the plate stands in without the frame). Note: the sandbox has only the slim ISO (every PSS
+  stubbed) — the four task movies were range-fetched from the retail image on the file host into a
+  70 MB mini ISO (scripts/, never committed); tests skip without NF_MOVIE_ISO data.

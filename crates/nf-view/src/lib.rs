@@ -867,7 +867,28 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> Opt
     fe.press_start_on = true;
     let lang = read_files_bin(&scene_iso_name(), "USATxt.dat").and_then(|b| nf_formats::hud::Lang::parse(&b).ok())
         .or_else(|| scene.sim.as_ref().and_then(|s| s.lang.clone()));
-    Some(menu::menu_overlay(&fe, &tables.font, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0))
+    // fix-menu-movies: with the `movies` feature and an image that has movie data, the page's
+    // backdrop is its own looping FMV instead of the dark plate — the still decodes the first
+    // closed-GOP chunk only (fast). `--movie-frame N` picks the frame. The intro run renders its
+    // current movie the same way (`--page start` with `--intro`).
+    let mut texs = scene.hud_textures.clone();
+    #[cfg(feature = "movies")]
+    {
+        let frame_n: usize = args.iter().position(|a| a == "--movie-frame").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0);
+        let want = if args.iter().any(|a| a == "--intro") {
+            Some(menu::INTRO_MOVIES[args.iter().position(|a| a == "--intro").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(menu::INTRO_MOVIES.len() - 1)])
+        } else {
+            let aux = menu::aux_movie_for(fe.page.id());
+            (aux != 0).then_some(aux)
+        };
+        if let Some(code) = want {
+            match movie::movie_still(&scene_iso_name(), code, frame_n) {
+                Ok(img) => texs.push((code, img)),
+                Err(e) => eprintln!("[front end] movie {code:08X}: {e} — the dark plate stands in"),
+            }
+        }
+    }
+    Some(menu::menu_overlay(&fe, &tables.font, lang.as_ref(), &texs, 1280.0 / 720.0))
 }
 
 /// The ISO path for `read_files_bin` (the NF_ISO env or the default sandbox path).
@@ -1029,6 +1050,18 @@ struct App {
     level_code: u32,
     /// The game's strings (USATxt.dat) for the front end when the loaded map has no Sim to hold them.
     lang: Option<nf_formats::hud::Lang>,
+    /// fix-menu-movies: the hud textures the menu overlay draws from — the scene's list plus the
+    /// background-movie frame slot (its hash = the movie code) once a movie registers. A clone so
+    /// the frame can update in place each tick without touching the renderer's texture list.
+    menu_textures: Vec<(u32, scene::TextureImage)>,
+    /// fix-menu-movies: the looping background movie on the current page (`Menu_PlayMovie(aux, 0,
+    /// 1, …)` [M `Manager_SendMessage` 0x21c858:338]); None while the page has no aux movie or the
+    /// image has no movie data.
+    #[cfg(feature = "movies")]
+    movie_bg: Option<movie::MovieStream>,
+    /// fix-menu-movies: the P_INTRO run's current movie stream (0x07370048 → 0x07380048 [M 0x209e88]).
+    #[cfg(feature = "movies")]
+    intro_stream: Option<movie::MovieStream>,
     /// The gamepad backend (fix-input), behind the `gamepad` cargo feature. `None` without a pad
     /// device; with one, its Input merges into the keyboard's each tick (the game's own mapping,
     /// curves and ramps — docs/systems/input.md §8).
@@ -1060,6 +1093,133 @@ impl App {
             g.window.set_cursor_visible(true);
             self.grabbed = false;
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // fix-menu-movies: the front end's background movies (the host side). The game plays them
+    // through psiStartBackgroundMovie 0x001081a8 / psiStopBackgroundMovie 0x00108328; the page
+    // switch plays/stops the page's aux loop [M Manager_SendMessage 0x21c858:338] and P_INTRO runs
+    // the intro pair [M 0x209e88].
+    // -------------------------------------------------------------------------
+
+    /// The image the movies load from: NF_MOVIE_ISO (a full retail image) over the running one —
+    /// the same precedence movie.rs's tests use [L the on-foot ISO's /MOVIES/30_FPS files are
+    /// zero-length stubs].
+    fn movie_iso_path(&self) -> String { std::env::var("NF_MOVIE_ISO").unwrap_or_else(|_| self.iso.clone()) }
+
+    /// Loads the movie `code` and keys its audio + stream. The audio goes out as two aligned mono
+    /// SPU voices (L, R) at pitch 0x1000 = 48 kHz through the existing cpal output — the game's one
+    /// stereo stream [M movies.md audio]; volume full scale (the game captures `SFXGetVolume()`
+    /// [M 0x209e88], the menus run it at max) [S]. Returns None without movie data — the headless
+    /// countdown model then carries the flow state alone.
+    #[cfg(feature = "movies")]
+    fn movie_open(&mut self, code: u32, looping: bool) -> Option<movie::MovieStream> {
+        let iso = IsoImage::open(self.movie_iso_path()).ok()?;
+        let m = movie::Movie::load(&iso, &format!("{code:08X}")).ok()?;
+        if let Some(sound) = self.sound.as_mut() {
+            if let Some(output) = sound.output.as_ref() {
+                if let Ok((l, r)) = movie::pcm_voices(&m, looping) {
+                    use nf_audio::Cmd;
+                    let (v0, v1) = (code.wrapping_mul(2), code.wrapping_mul(2).wrapping_add(1));
+                    output.send([
+                        Cmd::Play { voice: v0, pcm: l, pitch: 0x1000, left: 1.0, right: 0.0, delay: 0.0, reverb: false },
+                        Cmd::Play { voice: v1, pcm: r, pitch: 0x1000, left: 0.0, right: 1.0, delay: 0.0, reverb: false },
+                    ]);
+                }
+            }
+        }
+        match movie::MovieStream::start(&m, looping) {
+            Ok(s) => Some(s),
+            Err(e) => { eprintln!("[front end] movie {code:08X}: {e}"); None }
+        }
+    }
+
+    /// Key-offs the movie's two voices (`psiStopBackgroundMovie` frees and clears instantly [M 0x00108328]).
+    #[cfg(feature = "movies")]
+    fn movie_audio_stop(&mut self, code: u32) {
+        use nf_audio::Cmd;
+        if let Some(sound) = self.sound.as_mut() {
+            if let Some(output) = sound.output.as_ref() {
+                let (v0, v1) = (code.wrapping_mul(2), code.wrapping_mul(2).wrapping_add(1));
+                output.send([Cmd::Stop { voice: v0 }, Cmd::Stop { voice: v1 }]);
+            }
+        }
+    }
+
+    /// Streams the newest decoded frame into the menu textures and the renderer's hud slot (the
+    /// slot the overlay looks up by the movie's own hashcode). No-op while the decoder warms up.
+    #[cfg(feature = "movies")]
+    fn movie_show_frame(&mut self, code: u32, frame: &nf_formats::mpeg2::VideoFrame) {
+        let rgba = nf_formats::mpeg2::yuv420_to_rgb8(frame);
+        let (w, h) = (frame.width as u32, frame.height as u32);
+        let slot = match self.menu_textures.iter().position(|(hh, _)| *hh == code) {
+            Some(at) => at,
+            None => {
+                self.menu_textures.push((code, scene::TextureImage { key: (usize::MAX, code), width: w, height: h, rgba: Vec::new(), more: Vec::new(), rate: 1 }));
+                self.menu_textures.len() - 1
+            }
+        };
+        let tex = &mut self.menu_textures[slot].1;
+        tex.width = w;
+        tex.height = h;
+        tex.rgba = rgba;
+        let pixels = self.menu_textures[slot].1.rgba.clone();
+        if let Some(g) = self.gfx.as_mut() {
+            g.renderer.update_hud_texture(&g.device, &g.queue, slot + 1, w, h, &pixels);
+        }
+    }
+
+    /// One front-end frame's movie bookkeeping: the P_INTRO run and the page's looping background
+    /// movie, with the game's own start/stop decisions [M 0x21c858:338 — stop when the new page's
+    /// aux is 0 or restart when it differs from the playing one; 0x209e88 — the intro pair advances
+    /// on `psiMovieFinished`; GameFlow_Main case 6 pops the state].
+    #[cfg(feature = "movies")]
+    fn movie_menu_tick(&mut self) {
+        let Some(fe) = self.fe.as_ref() else { return };
+        let intro_up = fe.intro_playing && fe.flow.get_state() == menu::ST_MOVIE;
+        let page_aux = menu::aux_movie_for(fe.page.id());
+        let intro_code = fe.intro_movie_code();
+        let movie_ticks = fe.flow.ticks % 2 == 0;   // one MPEG frame per two 60 Hz ticks (30 fps [M movies.md])
+        if intro_up {
+            // The intro owns the screen: the background loop stops (the game stops any movie before
+            // starting the next [M psiStartBackgroundMovie 0x001081a8]).
+            if let Some(mut s) = self.movie_bg.take() { let c = s.code; s.stop(); self.movie_audio_stop(c); }
+            let (switch, done) = match self.intro_stream.as_ref() {
+                Some(s) => (s.code != intro_code, s.finished && !s.looping),
+                None => (true, false),
+            };
+            if done {
+                // The movie finished [M psiMovieFinished 0x001082e8 polled at 0x209e88]: the counter
+                // advances; after the second movie the page change follows — the host shortens the
+                // headless countdown so the state pops at the real movie end.
+                if let Some(fe) = self.fe.as_mut() {
+                    fe.intro_index += 1;
+                    if fe.intro_index >= menu::INTRO_MOVIES.len() { fe.flow.movie_frames = fe.flow.movie_frames.min(1); }
+                }
+            } else if switch {
+                if let Some(mut s) = self.intro_stream.take() { let c = s.code; s.stop(); self.movie_audio_stop(c); }
+                self.intro_stream = self.movie_open(intro_code, false);
+                if self.intro_stream.is_none() { eprintln!("[front end] intro {intro_code:08X}: no movie data — the countdown model carries the state"); }
+            }
+            if movie_ticks { if let Some(s) = self.intro_stream.as_mut() { s.advance(); } }
+        } else {
+            if let Some(mut s) = self.intro_stream.take() { let c = s.code; s.stop(); self.movie_audio_stop(c); }
+            match page_aux {
+                0 => { if let Some(mut s) = self.movie_bg.take() { let c = s.code; s.stop(); self.movie_audio_stop(c); } }
+                code => {
+                    let restart = match self.movie_bg.as_ref() { Some(s) => s.code != code, None => true };
+                    if restart {
+                        if let Some(mut s) = self.movie_bg.take() { let c = s.code; s.stop(); self.movie_audio_stop(c); }
+                        self.movie_bg = self.movie_open(code, true);
+                    }
+                    if movie_ticks { if let Some(s) = self.movie_bg.as_mut() { s.advance(); } }
+                }
+            }
+        }
+        // Publish whichever stream's newest frame is live.
+        let frame = if let Some(s) = self.intro_stream.as_ref() { s.frame().map(|f| (s.code, f.clone())) }
+            else if let Some(s) = self.movie_bg.as_ref() { s.frame().map(|f| (s.code, f.clone())) } else { None };
+        if let Some((code, f)) = frame { self.movie_show_frame(code, &f); }
     }
 
     /// A click on the dev menu (F2 open): hit-test the mouse against the menu items and apply the action (WORKLOG 0081).
@@ -1094,7 +1254,7 @@ impl App {
         let _ = std::fs::write(png.with_extension("txt"), format!("{line}\n"));
         let fe_menu = self.fe.as_ref().and_then(|fe| self.scene.hud.as_ref().map(|t| {
             let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
-            menu::menu_overlay(fe, &t.font, lang, &self.scene.hud_textures, 1280.0 / 720.0)
+            menu::menu_overlay(fe, &t.font, lang, &self.menu_textures, 1280.0 / 720.0)
         }));
         match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref()) {
             Ok(()) => format!("saved {} ({line})", png.display()),
@@ -1580,6 +1740,13 @@ impl ApplicationHandler for App {
                     // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
                     if let Some(d) = self.dev.as_deref_mut() { d.after_tick(&mut self.scene); }
                 }
+                // fix-menu-movies: the front end's ticks run BEFORE the renderer borrow — the movie
+                // host updates the hud slot through it (fe.tick first, then the movie bookkeeping).
+                if let Some(fe) = self.fe.as_mut() {
+                    fe.tick();
+                }
+                #[cfg(feature = "movies")]
+                self.movie_menu_tick();
                 let Some(g) = &mut self.gfx else { return };
                 if g.minimized {
                     // Keep the game ticking at a modest pace without drawing.
@@ -1626,12 +1793,12 @@ impl ApplicationHandler for App {
                 let aspect = g.config.width as f32 / g.config.height as f32;
                 let (vp, vp_rot) = draw_cam.view_proj(aspect);
                 let snow = snow_for(&self.scene, &draw_cam);
-                // fix-menus: a menu page up → the menu overlay replaces the HUD.
-                let mut hud = if let Some(fe) = self.fe.as_mut() {
+                // fix-menus: a menu page up → the menu overlay replaces the HUD. fix-menu-movies:
+                // the overlay draws the movie frame the host published into `menu_textures`.
+                let mut hud = if let Some(fe) = self.fe.as_ref() {
                     let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
-                    fe.tick();
                     match &self.scene.hud {
-                        Some(tables) => menu::menu_overlay(fe, &tables.font, lang, &self.scene.hud_textures, aspect),
+                        Some(tables) => menu::menu_overlay(fe, &tables.font, lang, &self.menu_textures, aspect),
                         None => overlay_for(&self.scene, aspect),
                     }
                 } else { overlay_for(&self.scene, aspect) };
@@ -1800,7 +1967,16 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend };
+    // fix-menu-movies: the menu overlay's texture list starts as the scene's (the movie slot is
+    // appended on demand, under the `movies` feature only).
+    let menu_textures = scene.hud_textures.clone();
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None,
+        menu_textures,
+        #[cfg(feature = "movies")]
+        movie_bg: None,
+        #[cfg(feature = "movies")]
+        intro_stream: None,
+        #[cfg(feature = "gamepad")] pad: pad_backend };
     if dev {
         app.panel = panel::start();
         match &app.panel {

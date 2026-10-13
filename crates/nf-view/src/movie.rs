@@ -124,3 +124,161 @@ mod tests {
         assert_eq!(m2.name, m.name);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Streaming playback (fix-menu-movies): the front end's background movies.
+//
+// The game decodes one MPEG frame per tick on the IPU in real time [M movies.md: DecodeBGFMVFrame
+// 0x00108550 per tick, PS2FramesToSkip clamped to 2, main 0x00109080]. `decode_video` runs a whole
+// ES per call (a 60 s menu loop takes ~30 s), so live playback decodes GOP chunks on a worker
+// thread: every chunk starts at a CLOSED GOP (set_gop_closed_flag — measured closed on 07330048/
+// 07350048/07370048; 07380048 mixes open GOPs, whose B-frames reference the previous GOP's
+// anchors, so chunk boundaries sit only at closed-GOP starts and open GOPs ride their predecessor's
+// chunk), with the stream's sequence header prepended — self-contained per ISO 13818-2 §6.4.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "movies")]
+pub struct MovieStream {
+    /// Display-ordered frames ready to show, or the worker's end marker.
+    rx: std::sync::mpsc::Receiver<WorkerMsg>,
+    /// The newest frame `advance` handed out (kept so the caller can re-take it between ticks).
+    current: Option<nf_formats::mpeg2::VideoFrame>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The movie this stream plays (the host keys restarts on the code, like
+    /// `Manager_SendMessage` 0x21c858:338 compares M_PAGE+0xC4 against the playing one).
+    pub code: u32,
+    /// Loop like `LoopingMovie` [M psiDecodeBackgroundMovieFrame 0x00108060 restarts the file].
+    pub looping: bool,
+    /// Total pictures the ES holds (the loop length in frames).
+    pub pictures: usize,
+    /// Set when the worker reported Done (a non-looping movie finished — `psiMovieFinished` [M 0x001082e8]).
+    pub finished: bool,
+}
+
+#[cfg(feature = "movies")]
+enum WorkerMsg {
+    Frame(nf_formats::mpeg2::VideoFrame),
+    Done,
+}
+
+/// Splits the video ES at closed-GOP start codes (`00 00 01 B8` with closed_gop set); returns
+/// (chunk byte ranges, the byte offset just past the leading sequence layer). Open GOPs extend
+/// their predecessor's chunk.
+#[cfg(feature = "movies")]
+fn gop_chunks(es: &[u8]) -> (Vec<(usize, usize)>, usize) {
+    let mut gops = Vec::new();
+    let mut i = 0usize;
+    while i + 4 <= es.len() {
+        let Some(at) = es[i..].windows(4).position(|w| w == [0, 0, 1, 0xb8]) else { break };
+        let at = i + at;
+        let closed = (es[at + 7] >> 6) & 1 == 1; // temporal_reference is 25 bits (3 bytes + 1 bit), closed_gop the next
+        gops.push((at, closed));
+        i = at + 4;
+    }
+    // The sequence header ends where the first GOP begins (measured: one sequence header at the
+    // stream start; `decode_video` needs it to establish the geometry).
+    let head_end = gops.first().map(|(at, _)| *at).unwrap_or(es.len());
+    let mut bounds: Vec<usize> = gops.iter().filter(|(_, closed)| *closed).map(|(at, _)| *at).collect();
+    if bounds.first() != Some(&0) && head_end != 0 { bounds.insert(0, 0); } // a leading open GOP decodes alone from stream start
+    bounds.push(es.len());
+    let chunks = bounds.windows(2).map(|w| (w[0], w[1])).filter(|(a, b)| b > a).collect();
+    (chunks, head_end)
+}
+
+#[cfg(feature = "movies")]
+impl MovieStream {
+    /// Starts the worker: decode chunk by chunk ahead of playback. `looping` restarts from the
+    /// first chunk when the ES ends (the game's looping background movies).
+    pub fn start(movie: &Movie, looping: bool) -> Result<MovieStream> {
+        let (chunks, head_end) = gop_chunks(&movie.demuxed.video);
+        anyhow::ensure!(!chunks.is_empty(), "no decodable GOP chunks in {}", movie.name);
+        let head = movie.demuxed.video[..head_end].to_vec();
+        let es = movie.demuxed.video.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<WorkerMsg>();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let pictures = nf_formats::mpeg2::picture_counts(&movie.demuxed.video).0;
+        let code = movie.code;
+        let handle = std::thread::Builder::new().name(format!("movie-{code:08x}")).spawn(move || {
+            'movie: loop {
+                for &(a, b) in &chunks {
+                    if stop2.load(std::sync::atomic::Ordering::Relaxed) { break 'movie; }
+                    // The chunk's own sequence header + its GOPs: a closed-GOP-aligned slice is
+                    // self-contained, so `decode_video` on it equals the whole-stream decode's
+                    // frames for the same pictures.
+                    let mut part = head.clone();
+                    part.extend_from_slice(&es[a..b]);
+                    let Ok(frames) = nf_formats::mpeg2::decode_video(&part) else { break 'movie };
+                    for f in frames {
+                        if stop2.load(std::sync::atomic::Ordering::Relaxed) { break 'movie; }
+                        if tx.send(WorkerMsg::Frame(f)).is_err() { break 'movie; }
+                    }
+                }
+                if !looping { break; }
+            }
+            let _ = tx.send(WorkerMsg::Done);
+        })?;
+        Ok(MovieStream { rx, current: None, handle: Some(handle), stop, code, looping, pictures, finished: false })
+    }
+
+    /// Pops the next decoded frame into `current` (the display advance — the game decodes one frame
+    /// per tick; the port's menus call this every other 60 Hz tick, the 30 fps movie rate). Returns
+    /// false while the decoder is behind (the caller keeps the previous frame, like a skipped IPU
+    /// frame [M PS2FramesToSkip]) or the stream ended.
+    pub fn advance(&mut self) -> bool {
+        match self.rx.try_recv() {
+            Ok(WorkerMsg::Frame(f)) => { self.current = Some(f); true }
+            Ok(WorkerMsg::Done) => { self.finished = true; false }
+            Err(_) => false,
+        }
+    }
+
+    /// The frame to display now.
+    pub fn frame(&self) -> Option<&nf_formats::mpeg2::VideoFrame> { self.current.as_ref() }
+
+    /// Stops the worker (page change / movie stop — `psiStopBackgroundMovie` frees instantly [M 0x00108328]).
+    pub fn stop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() { let _ = h.join(); }
+        self.current = None;
+    }
+}
+
+#[cfg(feature = "movies")]
+impl Drop for MovieStream {
+    fn drop(&mut self) { self.stop(); }
+}
+
+/// The movie's PCM as two mono SPU voices (left, right): the game's movie audio is one 48 kHz
+/// stereo stream [M movies.md audio section; docs/formats/pss.md], and the port's SPU stand-in keys
+/// per-voice mono `Pcm`s — L and R at pitch 0x1000 stay sample-aligned through the same mixer.
+/// `looping` sets both voices' loop point to the stream start (the looping background movies
+/// restart their file — and their audio — inside `psiDecodeBackgroundMovieFrame` [M 0x00108060]).
+#[cfg(feature = "movies")]
+pub fn pcm_voices(movie: &Movie, looping: bool) -> Result<(std::sync::Arc<nf_audio::Pcm>, std::sync::Arc<nf_audio::Pcm>)> {
+    let a = movie.audio()?;
+    anyhow::ensure!(a.header.kind == 1, "movie audio is not PCM (kind {})", a.header.kind);
+    let pairs = a.decode();
+    let (mut l, mut r) = (Vec::with_capacity(pairs.len()), Vec::with_capacity(pairs.len()));
+    for p in &pairs { l.push(p[0]); r.push(p[1]); }
+    let loop_start = looping.then_some(0);
+    Ok((std::sync::Arc::new(nf_audio::Pcm { data: l, loop_start }),
+        std::sync::Arc::new(nf_audio::Pcm { data: r, loop_start })))
+}
+
+/// The movie's frame `n` of the FIRST closed-GOP chunk as an RGBA `TextureImage` — the fast path
+/// for stills (`--shot`): only that chunk decodes (≈ 10 pictures) instead of the whole ES.
+#[cfg(feature = "movies")]
+pub fn movie_still(iso_path: &str, code: u32, n: usize) -> Result<crate::scene::TextureImage> {
+    let iso = IsoImage::open(iso_path)?;
+    let m = Movie::load(&iso, &format!("{code:08X}"))?;
+    let (chunks, head_end) = gop_chunks(&m.demuxed.video);
+    let &(a, b) = chunks.first().context("no closed-GOP chunk in the movie")?;
+    let mut part = m.demuxed.video[..head_end].to_vec();
+    part.extend_from_slice(&m.demuxed.video[a..b]);
+    let f = nf_formats::mpeg2::decode_video(&part)?.into_iter().nth(n)
+        .context(format!("no frame {n} in the first chunk"))?;
+    let rgba = nf_formats::mpeg2::yuv420_to_rgb8(&f);
+    Ok(crate::scene::TextureImage { key: (usize::MAX, code), width: f.width as u32, height: f.height as u32, rgba, more: Vec::new(), rate: 1 })
+}

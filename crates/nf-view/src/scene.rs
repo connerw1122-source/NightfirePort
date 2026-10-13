@@ -158,6 +158,9 @@ pub struct Material {
     pub index_count: u32,
 }
 
+/// fix-menu-movies: `Clone` so the front end can keep its own texture list (the scene's entries
+/// plus the background-movie frame slot) without re-parsing the archive.
+#[derive(Clone)]
 pub struct TextureImage {
     pub key: (usize, u32),
     pub width: u32,

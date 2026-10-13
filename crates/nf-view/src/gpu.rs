@@ -216,6 +216,10 @@ pub struct Renderer {
     hud_sub_pipeline: wgpu::RenderPipeline,
     hud_vbuf: wgpu::Buffer,
     hud_bgs: Vec<wgpu::BindGroup>,
+    /// fix-menu-movies: the hud bind-group layout + sampler, kept so the host can (re)create a hud
+    /// texture slot after `new` (the background-movie frame the window loop streams).
+    hud_tbgl: wgpu::BindGroupLayout,
+    hud_sampler: wgpu::Sampler,
     pipelines: Vec<(Draw, wgpu::RenderPipeline)>,
     /// Snow: the particle pipeline (additive, depth test, no write), a per-frame vertex buffer and the flake texture.
     snow_pipeline: wgpu::RenderPipeline,
@@ -462,7 +466,7 @@ impl Renderer {
         let order_cap = draws.len();
         let cel_boxes = scene.cels.iter().map(|c| (c.min, c.max)).collect();
         let cel_graph = scene.cel_graph.clone();
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph }
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, hud_tbgl: tbgl, hud_sampler: sampler, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph }
     }
 
     /// `build_FindCel` (0x1c8cb0) over the room cels' boxes for the walk's start cell: the inclusive
@@ -715,8 +719,39 @@ impl Renderer {
         }
         enc
     }
-}
 
+    /// fix-menu-movies: the front end's background-movie slot. The host appends the movie's
+    /// `(code, TextureImage)` to `scene.hud_textures`, so the slot index is 1-based like every hud
+    /// texture's; `hud_bgs` was built without it, so this creates the slot's texture on first use
+    /// and streams the decoded frame's pixels into it afterwards (`--shot` gets a fresh Renderer
+    /// either way; only the window loop needs the in-place update). `slot` = the 1-based hud index
+    /// (`Hud::quad`'s `ti + 1`).
+    pub fn update_hud_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, slot: usize, w: u32, h: u32, rgba: &[u8]) {
+        while self.hud_bgs.len() <= slot {
+            // Placeholder 1×1 white keeps the indices aligned until the movie slot itself lands.
+            let bg = Self::hud_bg(device, queue, &self.hud_tbgl, &self.hud_sampler, 1, 1, &[255, 255, 255, 255]);
+            self.hud_bgs.push(bg);
+        }
+        self.hud_bgs[slot] = Self::hud_bg(device, queue, &self.hud_tbgl, &self.hud_sampler, w, h, rgba);
+    }
+
+    /// One hud texture bind group (the same shape `new`'s `make_tex` builds).
+    fn hud_bg(device: &wgpu::Device, queue: &wgpu::Queue, tbgl: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler, w: u32, h: u32, rgba: &[u8]) -> wgpu::BindGroup {
+        let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+        let t = device.create_texture(&wgpu::TextureDescriptor {
+            label: None, size, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &t, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            rgba, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) }, size);
+        let view = t.create_view(&Default::default());
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None, layout: tbgl,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) }],
+        })
+    }
+}
 pub fn depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
     device.create_texture(&wgpu::TextureDescriptor {
         label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
