@@ -7277,3 +7277,15 @@ walkreal_probe_fb2/3/4/5 committed; door.rs got one additive diagnostic line in 
 matrix row3 + keys presence). Suite at the session cap: 79 passed / 3 failed (the 3 allowed
 disc_golden) before the timeout cut it — the four-crate pass still owes a full run. Shared files
 touched: door.rs (the diagnostic), no others. Report: docs/reports/fix-final-blockers.md.
+Task ID: 054-research-multiplayer
+Agent: NightfirePort worker (research-multiplayer session)
+Task: research-multiplayer — an atlas of multiplayer and the bots (branch s/research-multiplayer)
+
+Work Log:
+- Setup reused (repo + game files + queue worktree intact); branch s/research-multiplayer created from origin/master (30b98a5). This entry started.
+
+Stage Summary:
+- Deliverables all on the branch (pushed): docs/atlas/multiplayer.md (the full atlas: 8 arenas pinned, MPSettings/MPGame maps, the 13-mode scenario table, the bots (Drone object + 0x780 BOT_vars_t @0x26D660 + 0x12-byte records @0x2DEEAA + the DSTATE_Bot family 0xC3..0xF9), split screen (11-slot glb_viewer @0x2d88b0, per-count rects, viewer-5 HUD overlay, MapPlayerToSlot), the 6-phase port plan); crates/nf-game/tests/mp_arenas_live.rs (all 8 arenas pinned: e.g. 0x23 = 181/78/0/20/32/27; 0 drones everywhere, 30-32 spawns (type 0x25), 17-28 pickups (0xf0), 18-28 MP objects (0x26)); docs/reports/research-multiplayer.md.
+- Verification: mode IDs re-checked first-hand in the decompile; the arena test green on the ISO; four-crate suite chunked: 620 + 376 passed, 0 unexpected failures, only the 3 allowed disc_golden trio red (slim ISO); the 52 walk/walkreal nf-view binaries not re-run (no nf-view source changed).
+- Live checks for the main agent: 5 watches listed in the report (MPSettings +0x420/+0x424/+0x428, SpawnPoints @0x2a7360, glb_viewer rects, BOT_vars+0x45).
+- Open items: the 0x2F3DE0 validateRoute jump table, the 0x10/0x20 scenario names, the +0x416 time unit.
