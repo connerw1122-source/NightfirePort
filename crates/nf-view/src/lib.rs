@@ -1065,29 +1065,47 @@ impl App {
         // A pending end_to request from mission_ended rides the same path a menu pick does.
         if let Some(code) = fe.requested_level.take() { self.pending_level = Some(code); }
         if fe.flow.get_state() == menu::ST_MOVIE {
-            if self.movie.is_none() {
-                let code = fe.flow.movie_code;
-                if code != 0 {
-                    match movie::Player::start(&self.iso, code) {
-                        Ok(p) => {
-                            eprintln!("movie: playing {code:08x} (state 6)");
-                            fe.flow.movie_playing = true; // BGFMVPlaying = 1 [M 0x1081a8]
-                            self.movie = Some(p);
+            match &mut self.movie {
+                Some(p) => {
+                    // BGFMVPlaying follows the player: 1 while it decodes, 0 at the end of file —
+                    // state 6 pops through the psiMovieFinished arm on the next main_tick
+                    // [M 0x1082e8 + 0x1c98c8 case 6].
+                    fe.flow.movie_playing = !p.finished();
+                }
+                None => {
+                    let code = fe.flow.movie_code;
+                    if code != 0 {
+                        match movie::Player::start(&self.iso, code) {
+                            Ok(p) => {
+                                eprintln!("movie: playing {code:08x} (state 6)");
+                                fe.flow.movie_playing = true; // BGFMVPlaying = 1 [M 0x1081a8]
+                                self.movie = Some(p);
+                            }
+                            Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in"),
                         }
-                        Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in"),
                     }
                 }
-            } else if self.movie.as_ref().map_or(false, |p| p.finished()) {
-                // The decoder hit the end of file: BGFMVPlaying = 0; state 6 pops on the next
-                // main_tick through the psiMovieFinished arm [M 0x1c98c8 case 6].
-                fe.flow.movie_playing = false;
             }
-        } else if self.movie.is_some() {
-            // State 6 left (the skip, or the flow moved on): psiStopBackgroundMovie [M 0x108328].
+        } else if self.movie.is_some() && !fe.flow.movie_pending {
+            // State 6 left (the skip, or the flow moved on) and no wrap is on its way:
+            // psiStopBackgroundMovie [M 0x108328].
             let code = self.movie.as_ref().map_or(0, |p| p.code());
             if let Some(p) = self.movie.take() { p.stop(); }
             fe.flow.movie_playing = false;
             eprintln!("movie: stopped {code:08x}");
+        } else if self.movie.is_none() && fe.flow.movie_pending {
+            // Early start: the decoder works through the fade and the rest of the menu so state 6
+            // opens on the first frame instead of a black screen (the game's hardware IPU starts
+            // streaming instantly [M 0x1081a8]; the port's decode is a whole-stream pass, ~23 s on
+            // 07100001 — the head start hides it). The player finishes starting (movie_playing)
+            // when state 6 actually arrives.
+            let code = fe.flow.level_to_load;
+            if fe.flow.get_state() == menu::ST_MAPLOAD && matches!((code >> 20) & 0xff, 0x71 | 0x73) {
+                match movie::Player::start(&self.iso, code) {
+                    Ok(p) => { self.movie = Some(p); eprintln!("movie: decoding {code:08x} ahead of state 6"); }
+                    Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in"),
+                }
+            }
         }
         // The phase-2 resolve: the movie code became the level to load [M 0x1d6360 LoadState 2].
         if let Some(resolved) = fe.flow.phase2_resolved.take() {
@@ -1699,23 +1717,29 @@ impl ApplicationHandler for App {
                 let aspect = g.config.width as f32 / g.config.height as f32;
                 let (vp, vp_rot) = draw_cam.view_proj(aspect);
                 let snow = snow_for(&self.scene, &draw_cam);
-                // fix-menus: a menu page up → the menu overlay replaces the HUD.
+                // fix-menus: a menu page up → the menu overlay replaces the HUD. The movie plane
+                // replaces everything while state 6 is on top — but fe.tick() still runs (it is
+                // what pops state 6 when the movie ends [M 0x1c98c8 case 6]).
                 // The borrow rules: read `is_some` first, then pull the frame — `movie_frame`
                 // holds a borrow into `self.movie` until render() consumes it.
-                let movie_up = self.movie.is_some();
+                let movie_up = self.movie.is_some()
+                    && self.fe.as_ref().is_some_and(|fe| fe.flow.get_state() == menu::ST_MOVIE);
                 let movie_frame = if movie_up { self.movie.as_mut().and_then(|p| p.present()) } else { None };
-                let mut hud = if movie_up {
-                    // The movie plane replaces the overlay: the game blits the decoded frame straight
-                    // into the frame buffer over the backdrop level [M DecodeBGFMVFrame 0x108550 +
-                    // PS2UploadBGMImage 0x108740] and suppresses the fog pass while it plays
-                    // [M psiDrawFogPass 0x10b960]. The quad itself is drawn inside render().
-                    gpu::HudFrame::default()
-                } else if let Some(fe) = self.fe.as_mut() {
+                let mut hud = if let Some(fe) = self.fe.as_mut() {
                     let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
                     fe.tick();
-                    match &self.scene.hud {
-                        Some(tables) => menu::menu_overlay(fe, &tables.font, lang, &self.scene.hud_textures, aspect),
-                        None => overlay_for(&self.scene, aspect),
+                    if movie_up {
+                        // The movie plane replaces the overlay: the game blits the decoded frame
+                        // straight into the frame buffer over the backdrop level [M
+                        // DecodeBGFMVFrame 0x108550 + PS2UploadBGMImage 0x108740] and suppresses
+                        // the fog pass while it plays [M psiDrawFogPass 0x10b960]. The quad itself
+                        // is drawn inside render().
+                        gpu::HudFrame::default()
+                    } else {
+                        match &self.scene.hud {
+                            Some(tables) => menu::menu_overlay(fe, &tables.font, lang, &self.scene.hud_textures, aspect),
+                            None => overlay_for(&self.scene, aspect),
+                        }
                     }
                 } else { overlay_for(&self.scene, aspect) };
                 if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }

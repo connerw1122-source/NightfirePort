@@ -197,9 +197,10 @@ fn the_briefing_movie_plays_from_the_retail_image() {
         Err(e) => panic!("start failed: {e:?}"),
     };
     assert_eq!(p.code(), 0x0710_0001);
-    // Decode a few presents: the first frames arrive through the bounded channel.
+    // Decode a few presents: the whole-stream decode takes ~23 s on 07100001, so wait up to 90 s
+    // for the first frame (the test skips on images without movie data; the suite never runs it).
     let mut frame = None;
-    for _ in 0..200 {
+    for _ in 0..9000 {
         if let Some((w, h, rgba)) = p.present() {
             frame = Some((w, h, rgba.len()));
             if frame.is_some() { break; }
