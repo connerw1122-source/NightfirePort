@@ -9138,3 +9138,10 @@ ai_live 35/0, nf-audio 7/0; the full nf-formats/nf-view sweeps did not fit the w
 run them before merging). Shared files: lib.rs (sound_tick pub + the feed), sfx.rs (the
 environment() accessor), drone.rs (foley_reqs/pain_grunt fields + 4 hooks), scene.rs (the Cel
 fields). Report: docs/reports/fix-room-sound.md.
+
+**fix-doors-remainder start (23:26 UTC)**: branch s/fix-doors-remainder cut from origin/master
+42309e9 (has tools/test/suite.py). Task: G-035 remainder — the Player_Activate use pick vs the door
+collision mesh (port uses a bounding-sphere stand-in), door labels 0x2000003/0x200000b (locked
+messages), and Door_ReactToHit's exact proxy-list path (from Collide_Update, not Door_Update);
+census first over the 27 levels, then port what fails. Door->portal links NOT touched (portal work
+owns those). Baseline suite starting in the background now.
