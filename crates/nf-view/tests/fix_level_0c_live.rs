@@ -91,7 +91,8 @@ fn burning_the_four_hinges_opens_the_display_vent() {
     'outer: for h in &hinges {
         for _ in 0..60 {
             aim_at(sim, *h);
-            sim.step_bond(Input::default(), false, false, false);
+            // Fire HELD: the burn runs only while the fire is held (fix-gadgets2, `Player_WeaponFiring` 0x1a5460:442).
+            sim.step_bond(Input::default(), true, false, false);
             if sim.drones.locks.iter().filter(|l| (14..=17).contains(&l.out) && l.burned).count() == 4 { break 'outer; }
         }
     }
