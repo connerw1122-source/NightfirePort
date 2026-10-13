@@ -26,7 +26,9 @@ fn free(sim: &mut nf_view::scene::Sim, ticks: u32) -> bool {
 fn grenade_at(sim: &mut nf_view::scene::Sim, pos: [f32; 3]) {
     sim.drones.grenades.push(nf_game::grenade::Grenade {
         pos, velocity: [0.0, 0.0, 0.0], speed: 0.0,
-        travelled: 0.0, range: 60.0, damage: 100.0, radius: 3.0, weapon_type: 0x35, mesh: 0x0200_0726, owner: usize::MAX, state: 0, bounces: 0,
+        // One tick from its fuse (travelled 59 of range 60): a grenade explodes only on its fuse, never on contact
+        // (fix-weapons-all, `Bullet_CollisionHandler` 0x12ce80), so the drop goes off where it lands.
+        travelled: 59.0, range: 60.0, damage: 100.0, radius: 3.0, weapon_type: 0x35, mesh: 0x0200_0726, owner: usize::MAX, state: 0, bounces: 0,
     });
 }
 

@@ -131,14 +131,20 @@ load(); setInterval(load, 1000);
 "#;
 
 /// Known weapon names (docs/atlas/weapon-data.md; 0x0E from the 01-raptor PCSX2 trace). Others show their id.
+/// fix-weapons-all: 0x3A named from the user's own playtest ("the Scorpion launcher") + the game's
+/// text bank (USATxt.Dat holds 'AT-600 Scorpion '; models-weapons-items pins 0x3A → the rocket mesh
+/// 0x0200074f) — the user's "no clue what the rocket launcher is" was the bare "weapon 0x3a" here.
+/// 0x45 (the clip-100 grenade-type, the +0x48CE cap record [M Player_WeaponHasAmmo 0x1a16c0]) and
+/// 0x33 (scoped, 100 rounds) get their bank names [S — the bank's label binding is not fully decoded;
+/// see the report's live checks].
 fn weapon_name(id: u8) -> &'static str {
     match id {
         0x01 => "Fists", 0x02 => "P2K", 0x04 => "P2K variant", 0x06 => "Default sidearm (0x06)", 0x08 => "0x06 variant",
         0x0E => "Raptor", 0x10 => "(ammo type 11)", 0x11 => "(scoped)", 0x12 => "SMG (32 rounds)", 0x14 => "(21 rounds)",
         0x16 => "SG5 Commando", 0x19 => "(zoom 3.0)", 0x1C => "Shotgun", 0x20 => "Sniper (scoped)", 0x22 => "Sniper (10 rounds)",
-        0x24 => "Sniper L96A1", 0x26 => "Sniper (scoped)", 0x28 => "Sniper (10 rounds)", 0x30 => "(4 rounds)", 0x33 => "(scoped, 100 rounds)",
-        0x34 => "(1 round)", 0x35 => "Frag Grenade", 0x36 => "Stun Grenade", 0x37 => "Remote Mine", 0x41 => "(ammo type 21)",
-        0x42 => "(ammo type 19)", 0x43 => "(5 rounds)", 0x44 => "(5 rounds variant)", 0x46 => "(unlimited)",
+        0x24 => "Sniper L96A1", 0x26 => "Sniper (scoped)", 0x28 => "Sniper (10 rounds)", 0x30 => "(4 rounds)", 0x33 => "Korsakov K5 (scoped, 100 rounds)",
+        0x34 => "(1 round)", 0x35 => "Frag Grenade", 0x36 => "Stun Grenade", 0x37 => "Remote Mine", 0x3A => "AT-600 Scorpion (rocket launcher)", 0x41 => "(ammo type 21)",
+        0x42 => "(ammo type 19)", 0x43 => "(5 rounds)", 0x44 => "(5 rounds variant)", 0x45 => "Militek MGL (grenade launcher)", 0x46 => "(unlimited)",
         0x50 => "Q-Laser", 0x51 => "Q-Laser variant", 0x52 => "(ammo type 27)", 0x53 => "(variant of 0x52)", 0x54 => "Laser Watch",
         _ => "",
     }
