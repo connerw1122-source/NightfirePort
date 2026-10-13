@@ -7890,3 +7890,17 @@ looping menu BGs from M_PAGE+0xC4, skip = action 0x19 instant). nf-view/src/movi
 + headless `--movie <code> --frame N --shot out.png` dumps (feature-gated), verified on two movies. Left for
 the next session: live playback wiring (window + cpal + skip), the FILES.BIN menu-BG codes, the 0x72xxxxxx
 codes. The slim ISO stubs all movies (lba=0/size=0) — set NF_MOVIE_ISO to the retail image to run the tests.
+
+## fix-swim-vent4 (s/fix-swim-vent4) — 2026-10-13
+Task: finish the two reds left by fix-swim-vent3 — (1) 07000001 exit: Mayhew ping-pongs at the west
+stairs' bottom (walk ↔ DSTATE_OpenDoor 0x81 ↔ the 180° turn); root-cause the route-target flip in
+follow()'s creep advance vs next_node order using NDrone2_ReachedDestNode 0x153358 and the LinkCreep
+target (Drone+0x670); (2) 0700000c ST-1 plate: the walker parks 0.03 outside the band's z hi and its
+approach variants slid into the x ≥ 7.0 void — route: turn in place at (7.2, −153.1), corridor west
+to x ≤ 6.5, then due south over the pad's wide part to (5.84, −154.15). Branch from s/fix-swim-vent3
+(ca559c3) + master merged (b9db8b5). Sandbox expires ~19:00 UTC.
+
+Work Log:
+- Setup reused (work/, ISO, nf-queue present); branch created, master merged, conflicts resolved
+  (WORKLOG keep-both; scene.rs keep-both: master's difficulty=1 preamble + this branch's creepwalls).
+- Full suite started in the background at ~17:03 UTC.

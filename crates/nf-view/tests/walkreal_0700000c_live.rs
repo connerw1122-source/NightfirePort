@@ -48,48 +48,41 @@ fn walk_start_to_the_st1_plate_and_the_photograph() {
     // for x ≤ 14 at y 14.2 and the raised corner box walls all four sides above y 15.2 [D
     // probes]; the game's way in/out is the vent/pulley route (`ventmesh-front` #138, `VentLatch`
     // #182 `Lock_Create` 0x1ae1f8, the `obj_stor*_pulley` 0xE2 winches) and the port's
-    // SimpleScript objects draw but do not move (docs/reports/map-powerstation.md §gaps). The
-    // documented stand-in: onto the lower walkway by the plate (the map task's render spot).
+    // SimpleScript objects draw but do not move (docs/reports/map-powerstation.md §gaps).
+    // fix-swim-vent4 re-sited the stand-in onto the display ground itself, with the disc reasons
+    // [D probe_planes/probe_path]: (a) the old drop (13.0, −154.3) hangs over the interior pit —
+    // NO disc floor in y 9..13.5 there, so every walk after it ran 5 units UNDER the plate
+    // (the b2-era red); (b) the corridor ledge is sealed from the pad by the display case
+    // (obj 143: x 4.56..6.96 × z −153.14..−153.04 × y 11.08..13.74, standing on the ledge's
+    // south edge); (c) the pad (11.84, x 5.0..6.5, z −153.05..−154.95) is an island — pit 6.27
+    // west/east/south, the case north; the game's own approach is the vent/pulley (the 12.26
+    // "walkway" south of the pad IS the pulley car — dynamic geo, no static triangles [D
+    // probe_planes]). The stand-in is the vent exit onto the pad's south end; the walk to the
+    // plate centre, the touch and the objective chain stay real.
     {
         let sim = w.scene.sim.as_mut().unwrap();
-        sim.bond.pos = [13.0, 12.2, -154.3];
+        // Sister: the old spot is floorless — pin it so the stand-in never moves back there.
+        let old = sim.world.segment_hit([13.0, 12.9, -154.3], [13.0, 4.9, -154.3]);
+        assert!(old.is_none_or(|(t, _)| 12.9 - 8.0 * t < 9.0),
+            "the old stand-in spot gained a floor above y 9; the vent stand-in could return there");
+        sim.bond.pos = [5.84, 12.93, -154.9];
         sim.bond.vel = [0.0; 3];
     }
     w.wait(10);
-    eprintln!("[0c] the vent-descent stand-in (the port's 0xE2 gap) — the lower walkway");
-    // Leg 1b: the lower walkway to the ST-1 plate #506 — walked. The display case stands at
-    // x ~6.5-7.0, z -153.5..-154.9 [D probes]; the walked approach crouch-walks the corridor
-    // north of it (z -153.0..-152.8, open at all walking heights [D probes]) — the upper
-    // walkway's underside gives head_bump there, so the real crouch input carries Bond through.
-    w.walk_to(Wp::new(7.2, 12.2, -153.1).r(0.9), "north of the display case");
+    eprintln!("[0c] the vent-descent stand-in (the port's 0xE2 gap) — the display ground");
     {
-        let start = w.total_ticks;
-        let target = [6.8f32, 12.2, -153.15];
-        loop {
-            if w.scene.sim.as_ref().unwrap().drones.channels.on(0x1b) { break; }
-            if w.total_ticks - start >= 900 {
-                let p = w.scene.sim.as_ref().unwrap().bond.pos;
-                panic!("[0c] the crouch corridor never reached the band; bond {p:?}");
-            }
-            let sim = w.scene.sim.as_ref().unwrap();
-            let p = sim.bond.pos;
-            if walker::dxz(p, target) < 0.5 { break; }
-            let desired = (target[0] - p[0]).atan2(target[2] - p[2]);
-            let err = walker::wrap_pi(desired - sim.bond.yaw);
-            let input = nf_game::player::Input {
-                crouch: true,
-                turn: err.clamp(-0.07, 0.07),
-                forward: 0.5,
-                ..Default::default()
-            };
-            w.tick(input, false);
-        }
-        // Stand back up (crouch is the edge-triggered toggle — docs/systems/input.md §+0x12c).
-        w.tick(nf_game::player::Input { crouch: true, ..Default::default() }, false);
-        for _ in 0..60 {
-            if !w.scene.sim.as_ref().unwrap().bond.crouched { break; }
-            w.tick(nf_game::player::Input::default(), false);
-        }
+        // Sister: Bond LANDS on the pad (11.84 + the standing root), not in the pit below it.
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert!(sim.bond.grounded && (sim.bond.pos[1] - 12.93).abs() < 0.5,
+            "Bond lands on the plate pad (11.84 [D probe]), got {:?}", sim.bond.pos);
+    }
+    // Leg 1b: the walk to the plate #506 volume centre (5.84, −154.15) — walked (the pad is
+    // clear x 5.0..6.5; the display case on it stands x 6.5..7.0 [D probes]).
+    w.walk_to(Wp::new(5.84, 12.9, -154.15).r(0.9), "the ST-1 plate pad");
+    {
+        // Sister: Bond is ON the pad, not back in the pit.
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert!((sim.bond.pos[1] - 12.93).abs() < 0.6, "Bond stands on the pad, got {:?}", sim.bond.pos);
     }
     assert!(w.scene.sim.as_ref().unwrap().drones.channels.on(0x1b),
         "the ST-1 plate #506 → ch 0x1b (objective 1) [D]");
