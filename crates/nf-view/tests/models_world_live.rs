@@ -216,52 +216,84 @@ fn draw_state_matches_the_decoded_gs_writes() {
     assert!(env_batches > 0, "07000041 must carry the env-map (0x58) batches on the disc");
 }
 
-/// The list-0 order (`View_AddCels` 0x1e6ba0 + `View_DrawObjList` 0x1e69a0): the statics draw first
-/// in placement-parse order (the cel primaries' synthetic keys), the dynamics after them by distance.
-/// On 07000007 this is the R2 hole fix: every baked shadow decal draws after the opaque static whose
-/// geometry contains it. Without the parse-order key the front-to-back sort can put the decal first.
+/// The list-0 order (`View_AddCels` 0x1e6ba0 + `View_DrawObjList` 0x1e69a0), fix-cel-order's law:
+/// the ROOM cels (0xc023/0xc047 placements) draw first with the synthetic −90000 + 10·k keys over
+/// the chain `Vision_Portal_Recurse` 0x1e86e8 threads from the depth-sorted `VisCelList` (the
+/// build's parse-rank fallback here — no frame), every non-room 0x8000 placement (the 0x8019/0x8018
+/// inner nodes: the baked decals) and the dynamics after them at ±dist² [L ee_start_05.bin: 19
+/// rooms + 113 inner cels]. On 07000007 this keeps the R2 hole fix: every baked shadow decal
+/// (`hall_shadows*`, `OBJECT_banistershadows*`, `OBJECT_Tableshadow01` — all 0x8019 placements
+/// [D probe]) draws after the opaque room static whose geometry contains it.
 #[test]
 fn statics_draw_in_parse_order_and_decals_after_their_walls() {
     let Some(path) = iso_path() else { eprintln!("NF_ISO not set — skipping"); return };
     let scene = nf_view::load(&path, "07000007.bin", false).expect("load");
-    // Replicate the renderer's list-0 sort (gpu.rs): key = −90000 + 10·chain for the statics (u32::MAX
-    // chain = a distance-keyed object entry), then the squared distance; ties by material index.
+    // Replicate the renderer's list-0 sort (gpu.rs): key = −90000 + 10·chain for the room chain
+    // (u32::MAX chain = a distance-keyed entry — the inner-node statics and the dynamics), ties by
+    // material index.
     let world: Vec<(usize, &nf_view::scene::Material)> = scene.materials.iter().enumerate()
         .filter(|(_, m)| m.layer == nf_view::scene::Layer::World && m.draw.pass == 1).collect();
-    assert!(world.iter().any(|(_, m)| m.chain != u32::MAX), "the level must have static World draws");
+    assert!(world.iter().any(|(_, m)| m.chain != u32::MAX), "the level must have room-chain statics");
     let mut order: Vec<(f32, usize)> = world.iter().map(|(k, m)| {
         let d2 = m.centre.iter().map(|c| c * c).sum::<f32>();
         (if m.chain != u32::MAX { -90_000.0 + 10.0 * m.chain as f32 } else { d2 }, *k)
     }).collect();
     order.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-    // 1. Every static draws before every dynamic World entry in pass 1.
-    let n_statics = world.iter().filter(|(_, m)| m.chain != u32::MAX).count();
-    assert!(order[..n_statics].iter().all(|(key, _)| *key < 0.0) && order[n_statics..].iter().all(|(key, _)| *key >= 0.0),
-        "the statics (synthetic keys) must sort before the distance-keyed dynamics");
-    // 2. The statics draw in placement-parse order (their chain ordinals ascend through the order).
-    let chains: Vec<u32> = order[..n_statics].iter()
+    // 1. Every room-chain draw sorts before every distance-keyed entry in pass 1.
+    let n_rooms = world.iter().filter(|(_, m)| m.chain != u32::MAX).count();
+    assert!(order[..n_rooms].iter().all(|(key, _)| *key < 0.0) && order[n_rooms..].iter().all(|(key, _)| *key >= 0.0),
+        "the room chain must sort before the distance-keyed entries");
+    // 2. The rooms draw in their parse-rank order (the fallback ordinals ascend through the order).
+    let chains: Vec<u32> = order[..n_rooms].iter()
         .map(|(_, k)| world.iter().find(|(i, _)| i == k).unwrap().1.chain).collect();
     let mut sorted = chains.clone();
     sorted.sort_unstable();
-    assert_eq!(chains, sorted, "statics must draw in placement-parse order");
-    // 3. The statics' glist flag 0x1 no longer moves them to the alpha list (the cel primaries go to
-    // list 0 unconditionally — `View_AddCels` 0x1e6ba0's push has no list choice).
+    assert_eq!(chains, sorted, "the rooms must draw in their parse-rank order");
+    // 3. The rooms' glist flag 0x1 does not move them to the alpha list (the cel primaries go to
+    // list 0 unconditionally — `View_AddCels` 0x1e6ba0's top-level push has no list choice).
     for (_, m) in world.iter().filter(|(_, m)| m.chain != u32::MAX) {
-        assert_eq!(m.draw.pass, 1, "a static cel primary must draw in list 0 (pass 1), not the alpha list");
+        assert_eq!(m.draw.pass, 1, "a room cel primary must draw in list 0 (pass 1), not the alpha list");
     }
-    // 4. Decals: every alpha-shaped static texture's material draws after (larger chain than) the
-    // opaque statics whose bounds overlap it — the R2 regression on 07000007's
-    // `hall_shadows`/`banistershadows` decals [D fix-render4].
-    let decal: Vec<_> = world.iter().filter(|(_, m)| {
-        m.chain != u32::MAX && m.key.is_some_and(|k| scene.textures.iter().find(|t| t.key == k).is_some_and(|t| nf_view::gpu::alpha_shaped(&t.rgba)))
-    }).collect();
+    // 4. The baked shadow decals (name-anchored [D fix-render4 / the fix-cel-order disc probe]):
+    // alpha-shaped World draws of the 0x8019 decal placements, all distance-keyed now, each drawing
+    // after the opaque room-chain statics whose bounds overlap it.
+    let iso = IsoImage::open(&path).expect("open iso");
+    let (entries, bin) = disc::files_bin_entries(&iso).expect("FILES.BIN");
+    let base = bin.lba as u64 * 2048;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case("07000007.bin")).unwrap();
+    let data = iso.read_bytes(base + fe.offset as u64, fe.size as u64).unwrap();
+    let lvl = Level::parse(&data).unwrap();
+    let main = lvl.main_map().unwrap();
+    let world_all: Vec<(usize, &nf_view::scene::Material)> = scene.materials.iter().enumerate()
+        .filter(|(_, m)| m.layer == nf_view::scene::Layer::World).collect();
+    let mut decal = Vec::new();
+    for p in &lvl.maps[main].placements {
+        let target = if p.by_hash() { lvl.by_hash.get(&p.hashcode).copied() }
+            else if (p.index as usize) < lvl.maps[main].objects.len() { Some((main, p.index as usize)) } else { None };
+        let Some((om, oi)) = target else { continue };
+        let name = lvl.maps[om].objects[oi].name.trim().to_lowercase();
+        if !(name.contains("shadow") && matches!(p.flags & 0xffff, 0x8019)) { continue; }
+        let m = nf_formats::placement::object_matrix(p.rotation, p.translation);
+        let centre = nf_formats::placement::transform(&m, lvl.maps[om].objects[oi].centre);
+        let bits = centre.map(f32::to_bits);
+        for (k, mat) in &world_all {
+            if mat.centre.map(f32::to_bits) == bits { decal.push((*k, *mat)); }
+        }
+    }
     assert!(!decal.is_empty(), "07000007 must have alpha-shaped (decal) statics");
     for (_, d) in &decal {
-        let wall_before = world.iter().any(|(_, m)| {
-            m.chain != u32::MAX && m.chain < d.chain && m.key.is_some_and(|k| !scene.textures.iter().find(|t| t.key == k).is_some_and(|t| nf_view::gpu::alpha_shaped(&t.rgba)))
-                && (0..3).all(|ax| (m.centre[ax] - d.centre[ax]).abs() < m.radius + d.radius)
-        });
-        assert!(wall_before, "the decal at {:?} must draw after an opaque static overlapping it", d.centre);
+        assert_eq!(d.chain, u32::MAX, "a decal placement (0x8019) is an inner node, not a chain entry");
+        if d.draw.pass == 3 { continue; } // list 1 draws after the whole of list 0 — structural
+        for (_, m) in &world {
+            if m.chain == u32::MAX { continue; }
+            let overlaps = (0..3).all(|ax| (m.centre[ax] - d.centre[ax]).abs() < m.radius + d.radius)
+                && m.key.is_some_and(|k| !scene.textures.iter().find(|t| t.key == k).is_some_and(|t| nf_view::gpu::alpha_shaped(&t.rgba)));
+            if !overlaps { continue; }
+            let room_key = -90_000.0 + 10.0 * m.chain as f32;
+            let decal_key = d.centre.iter().map(|c| c * c).sum::<f32>();
+            assert!(room_key < decal_key, "the wall at {:?} (chain {}) must draw before the decal at {:?}",
+                m.centre, m.chain, d.centre);
+        }
     }
 }
 

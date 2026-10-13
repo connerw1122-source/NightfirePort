@@ -7095,3 +7095,31 @@ rays graze `Object_Safe`'s shell (surface 6, flags 0) at t 0.647/0.692 and NO de
 it — the live check (GDB watch on the take's query, node +0x3c/+0x94 and ForcedList obj+0xF0) is in
 the report. The draw side was NOT landed (130-fix-portal keeps it). Full suite: 135 binaries green
 minus the 3 allowed `disc_golden`. Report: docs/reports/fix-safe08b.md.
+
+## fix-cel-order (2026-10-13)
+
+Task: the static draw order must be the game's cel-chain order. On 0700000c the baked pylonshadow
+decal (material 3380, chain 68) draws before the ground room under it (materials 2818-2838, chain
+88) because models-world sorts list 0 by −90000 + 10·chain with chain = placement-parse order; the
+decal darkens the fog clear colour and its zwrite rejects the ground (the user's pale lattice). The
+game's order is the cel chain: `View_AddCels` 0x1e6ba0 gives the root cel (GfxList+4) −90000, then
++10 per cel+0x18 hop. A plain reversal breaks 07000007's R2 decals. Measure the real chain in the
+EE snapshots, find the linking code (parsemap_create_dynamic_objects 0x1d04f0 / cel creators), port
+the law into `Material::chain`, keep 07's decals after their walls.
+
+Work log:
+- Setup: branch `s/fix-cel-order` from origin/master (b67754f), this entry started.
+- The law, measured + disassembled: `View_AddCels` 0x1e6ba0 (disasm) gives -90000+10k to the +0x20
+  chain `Vision_Portal_Recurse` 0x1e86e8 threads per frame from `VisCelList` (0x34b3b0) — sorted by
+  `QuickSort` 0x1d30a8 comparator[3] @0x1d3430 = ascending u16 portal-recursion depth at element+4
+  [M]; the cel+0x18 inner nodes get +/-dist^2 keys. [L ee_start_05.bin] 137 runtime cels = 19 rooms
+  (0xc047) + 113 inner 0x8019 cels hanging on 8 rooms' +0x18 chains; the port's 05 creates_cel set
+  is exactly 19 rooms + 113 non-rooms. Disc probe: 0c's pylonshadow decal = flags16 0x8019 (cel#69),
+  every 0c/07 decal non-room. Fix: rooms keep chain ordinals (per-frame depth chain, baked
+  room-rank fallback); non-room creates_cel draws become distance-keyed (chain=u32::MAX).
+- Fix shipped: `Material::chain` = the room's parse rank (fallback) + new `Material::node` = the
+  placement's cells index; non-room creates_cel draws distance-keyed (the pylonshadow decal rides
+  the game's list-1 alpha push via glist flag 0x1). `portal_cel_chain` + verbatim `quicksort_viscel`
+  give the per-frame -90000+10k chain in gpu.rs (order only; the cull untouched). Failing-first on
+  master: chain 68 vs MAX. Suite: 617 passed, 3 failed (the allowed disc_golden trio), 13 ignored.
+  Report: docs/reports/fix-cel-order.md.

@@ -123,15 +123,24 @@ pub struct Material {
     /// `View_AddCels` (0x1e6ba0) frustum-tests each cel's bbox (`Vision_InView`); fix-render3 skips a
     /// World draw whose cel fails that test.
     pub cel: Option<u16>,
-    /// The list-0 sort key source. `View_AddCels` (0x1e6ba0) pushes every runtime cel's primary
-    /// glist (one per 0x8000 placement — `parsemap_block_map_data_static` 0x1d1998's
-    /// `build_alloc_cel`) into **list 0** with a synthetic key −90000 + 10k in GfxList walk order
-    /// (the VisCelList QuickSort orders the chain by cel pointer ≈ allocation ≈ placement-parse
-    /// order), before any distance-keyed entry — so the level's statics draw in **placement-parse
-    /// order**, ahead of the dynamic objects. `chain` = that ordinal for the static World draws;
-    /// `u32::MAX` = a distance-keyed entry (dynamic objects: breakables, coronas, wires, ladders,
-    /// triggers — `View_AddObjects` 0x1e62d8 pushes `{±dist², obj, 0}`).
+    /// The list-0 sort key source. `View_AddCels` (0x1e6ba0, disassembled) pushes the −90000 + 10k
+    /// keys on the **+0x20 chain** `Vision_Portal_Recurse` (0x1e86e8) threads per frame from
+    /// `VisCelList` (0x34b3b0) — `QuickSort` (0x1d30a8) comparator[3] @0x1d3430 orders it by the
+    /// ascending u16 portal-recursion depth at element+4 — and only the **room cels** (placement
+    /// flag words 0xc023/0xc047) ride it [L ee_start_05.bin: 19 rooms + 113 inner cels]. The cel
+    /// `+0x18` inner nodes — every non-room 0x8000 placement (0x8019/0x8018 marker classes,
+    /// `parseentity_fixup_entity` 0x1d00c0) — get **±dist²** keys (list by flags bit 0x1/0x2000).
+    /// So `chain` = the room's fallback ordinal (its rank among the room placements in parse
+    /// order, used when the per-frame walk cannot run); `u32::MAX` = a distance-keyed entry (the
+    /// inner-node statics: the baked decals/walkways/blockers, and the dynamic objects —
+    /// `View_AddObjects` 0x1e62d8 pushes `{±dist², obj, 0}`).
     pub chain: u32,
+    /// The draw's own runtime cel in the `CelGraph::cells` sense — the placement's pCelList record
+    /// identity — for the room-class placements whose primary glist rides the −90000 + 10k chain;
+    /// `u32::MAX` = a distance-keyed entry (never looked up in the per-frame chain). The renderer
+    /// maps `node` → the cel's position in the depth-sorted `VisCelList` chain each frame
+    /// (`gpu::render`); `chain` is the fallback ordinal when the walk cannot run.
+    pub node: u32,
     /// `(map, texture)`; `None` = untextured.
     pub key: Option<(usize, u32)>,
     /// The draw's light-selection flags: the low 16 bits of the source object's glist flags word
@@ -673,17 +682,33 @@ fn clip_positive(poly: &[[f32; 3]], plane: [f32; 4]) -> Option<Vec<[f32; 3]>> {
 /// [M 0x1e82e0:51]; the port has no per-portal door link yet, so every portal is treated open —
 /// conservative (it can only keep cels visible, never hide them).
 pub fn portal_visible_cels(graph: &CelGraph, eye_room: usize, eye: [f32; 3], depth0: &[[f32; 4]; 5]) -> Option<Vec<bool>> {
-    let start = graph.room_to_cell.get(eye_room).copied().flatten()?;
+    let chain = portal_cel_chain(graph, eye_room, eye, depth0)?;
     let mut visible = vec![false; graph.cells.len()];
+    for c in chain { visible[c] = true; }
+    Some(visible)
+}
+
+/// The game's `VisCelList` (0x34b3b0) chain order — what `View_AddCels` (0x1e6ba0) walks when it
+/// hands out the −90000 + 10·k list-0 keys. `Vision_Portal_Recurse` (0x1e86e8) inserts the viewer's
+/// cel at depth 0, `Vision_Recurse` (0x1e82e0) inserts each portal-reached cel at **first reach**
+/// with depth = parent+1 (`*(short *)(&DAT_0034b3b4 + uVar9 * 8) = (short)iVar11`), then
+/// `QuickSort` (0x1d30a8, comparator id 3) orders the array and it is threaded through `cel+0x20`.
+/// Returns the sorted `cells` indices in that order (the viewer's cel first), or None when the walk
+/// cannot run (same guards as `portal_visible_cels`, whose visibility mask this also is).
+pub fn portal_cel_chain(graph: &CelGraph, eye_room: usize, eye: [f32; 3], depth0: &[[f32; 4]; 5]) -> Option<Vec<usize>> {
+    let start = graph.room_to_cell.get(eye_room).copied().flatten()?;
     let mut visited = vec![false; graph.cells.len()];
     let mut planes: Vec<Vec<[f32; 4]>> = vec![Vec::new(); 48];
     planes[0] = depth0.to_vec();
     let mut budget = 0usize;
-    // `Vision_Recurse` [M 0x1e82e0]: the recursion budget (VisionRecurseCount > 100) and the depth cap
-    // (45) are the game's own guards; VisCelCount caps at 0x40 cels.
+    // The VisCelList insertion order: the viewer's cel first (depth 0 — `Vision_Portal_Recurse`
+    // inserts it before `Vision_Recurse` runs), then each first-reach cel at depth = parent+1.
+    // `Vision_Recurse` [M 0x1e82e0]: the recursion budget (VisionRecurseCount > 100) and the depth
+    // cap (45) are the game's own guards; VisCelCount caps at 0x40 cels.
+    let mut order: Vec<(usize, u16)> = vec![(start, 0)];
     fn recurse(
         graph: &CelGraph, eye: [f32; 3], cell: usize, depth: usize,
-        visible: &mut Vec<bool>, visited: &mut Vec<bool>, planes: &mut Vec<Vec<[f32; 4]>>, budget: &mut usize,
+        visited: &mut Vec<bool>, planes: &mut Vec<Vec<[f32; 4]>>, budget: &mut usize, order: &mut Vec<(usize, u16)>,
     ) {
         *budget += 1;
         if *budget > 100 || depth > 45 { return; }
@@ -711,7 +736,7 @@ pub fn portal_visible_cels(graph: &CelGraph, eye_room: usize, eye: [f32; 3], dep
                 if poly.is_empty() { break; }
             }
             if poly.is_empty() { continue; }
-            if !visited[dest] { visited[dest] = true; visible[dest] = true; }
+            if !visited[dest] { visited[dest] = true; order.push((dest, (depth + 1) as u16)); }
             if poly.len() >= 3 {
                 // The next depth's planes: one per clipped-polygon edge, ref = the eye (ViewPoints[0]
                 // [M 0x1e82e0:146]), plus the portal's own plane last [M 0x1e82e0:151-155].
@@ -719,15 +744,64 @@ pub fn portal_visible_cels(graph: &CelGraph, eye_room: usize, eye: [f32; 3], dep
                 let mut next: Vec<[f32; 4]> = (0..m).map(|i| plane_eq(eye, poly[i], poly[(i + 1) % m])).collect();
                 next.push([n[0], n[1], n[2], d]);
                 planes[depth + 1] = next;
-                recurse(graph, eye, dest, depth + 1, visible, visited, planes, budget);
+                recurse(graph, eye, dest, depth + 1, visited, planes, budget, order);
                 if *budget > 100 { return; }
             }
         }
     }
     visited[start] = true;
-    visible[start] = true;
-    recurse(graph, eye, start, 0, &mut visible, &mut visited, &mut planes, &mut budget);
-    Some(visible)
+    recurse(graph, eye, start, 0, &mut visited, &mut planes, &mut budget, &mut order);
+    quicksort_viscel(&mut order);
+    Some(order.into_iter().map(|(c, _)| c).collect())
+}
+
+/// `QuickSort` (0x1d30a8) with comparator id 3 — jumptable 0x304fc0[3] → 0x1d3430, disassembled:
+/// `lhu $a0, 4($a0); lhu $v1, 4($a1)` — the ascending **u16 portal depth** at element+4. Unstable:
+/// Hoare partition, pivot = element `count>>1` swapped to the front, the smaller side pushed to the
+/// stack (the decomp's byte-size test `(j − (lo+1)) < (hi − i)` at stride 8 is index-space
+/// `(j − lo) <= (hi − i)`). The tie order feeds `View_AddCels`' −90000 + 10·k ordinals, so the port
+/// sorts exactly like the game over the same insertion order.
+pub fn quicksort_viscel(items: &mut [(usize, u16)]) {
+    let n = items.len();
+    if n < 2 { return; }
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    let (mut lo, mut hi) = (0usize, n - 1);
+    loop {
+        // Pivot: element count>>1 swapped to the front (0x1d31a8's `Swap(((hi−lo)/stride+1)>>1·stride+base, base)`).
+        let count = hi - lo + 1;
+        items.swap(lo, lo + count / 2);
+        let mut i = lo + 1;
+        let mut j = hi + 1;
+        loop {
+            // `while (uVar3 <= uVar5 && Comp(uVar3, param_1) < 1)` — Comp <= 0 stays left.
+            while i <= hi && items[i].1 <= items[lo].1 { i += 1; }
+            j -= 1;
+            // `while (param_1 < uVar2 && Comp(uVar2, param_1) > -1)` — Comp >= 0 stays right.
+            while lo < j && items[j].1 >= items[lo].1 { j -= 1; }
+            if j < i { break; }
+            items.swap(i, j);
+            i += 1;
+        }
+        items.swap(lo, j);
+        if j - lo <= hi.saturating_sub(i) {
+            // Left side smaller (or equal): push the right, loop on the left [LAB_001d32a8].
+            if i < hi { stack.push((i, hi)); }
+            if j > lo + 1 {
+                hi = j - 1;
+            } else {
+                // Left is a single element: pop (LAB_001d32d0).
+                match stack.pop() { Some((l, h)) => { lo = l; hi = h; } None => return }
+            }
+        } else {
+            // Right side smaller: push the left, loop on the right.
+            if lo + 1 < j { stack.push((lo, j - 1)); }
+            lo = i;
+            if lo >= hi {
+                // The do-while's `i < hi` failed: pop.
+                match stack.pop() { Some((l, h)) => { lo = l; hi = h; } None => return }
+            }
+        }
+    }
 }
 
 /// `Lights_CalcAmbientLight` (0x1cb178): the object's ambient RGB steps toward its cel's ambient through
@@ -2091,7 +2165,7 @@ pub fn fog_for(level: u32) -> Option<([u8; 3], f32)> {
 
 /// Grouped by layer, then (world layers) the object — the game sorts cels per object (`View_AddCels`) — then texture
 /// and draw state. The value keeps the object's world centre and scaled radius for the per-frame sort + frustum cull.
-type Groups = BTreeMap<(Layer, [u32; 3], u32, u32, Option<(usize, u32)>, Draw, u16), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32, Option<u16>)>;
+type Groups = BTreeMap<(Layer, [u32; 3], u32, u32, Option<(usize, u32)>, Draw, u16), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32, Option<u16>, u32)>;
 
 /// fix-safe08: the pickups the level's scripts spawn through `Script_CreateEntity` 0x1d8968's
 /// obj_type-0xF0 arm (`Pickup_Create` 0x18dda0 at the stream's posed position, rest = 1 [M disasm
@@ -2132,7 +2206,7 @@ fn script_pickup_reservations(level: &Level, weapons: &nf_formats::weapon::Weapo
     (out, slots)
 }
 
-fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>, searchlight: Option<u16>, door: Option<u16>, pickup: Option<u16>, mult: [f32; 3], cels: &[Cel], chain: u32) {
+fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<(u32, Option<u32>)>, groups: &mut Groups, bounds: Option<&mut ([f32; 3], [f32; 3])>, searchlight: Option<u16>, door: Option<u16>, pickup: Option<u16>, mult: [f32; 3], cels: &[Cel], chain: u32, node: u32) {
     let obj = &level.maps[inst.map].objects[inst.object];
     let mut m = inst.matrix;
     if layer == Layer::SkyCamera { m[3] = [0.0, 0.0, 0.0, 1.0]; }
@@ -2184,8 +2258,9 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
         // build_FindCel 0x1c8cb0 on the object's world centre; View_AddCels 0x1e6ba0 frustum-tests
         // each cel's bbox per viewer). Everything posed per frame keeps None.
         let cel = if layer == Layer::World { find_cel(cels, centre).map(|i| i as u16) } else { None };
-        let (vs, is, cv, c, r, gcel) = groups.entry((layer, ikey, lkey, chain, key, draw, lflags)).or_default();
+        let (vs, is, cv, c, r, gcel, gnode) = groups.entry((layer, ikey, lkey, chain, key, draw, lflags)).or_default();
         *gcel = cel;
+        *gnode = node;
         *c = centre;
         let base = vs.len() as u32;
         // fix-render-artifacts: the A-11e sphere cull must be SOUND. fix-render2 assumed the placement-matrix
@@ -2434,13 +2509,30 @@ impl Scene {
         // object against PCSX2 to see if the game hides, destroys or never creates it.
         let coll_debug = std::env::var_os("NF_COLL").is_some();
         let mut invisible = 0;
-        // The list-0 parse-order key (`Material::chain`): every kept creates_cel placement is one runtime cel
-        // (`parsemap_block_map_data_static` 0x1d1998) whose primary glist `View_AddCels` (0x1e6ba0) pushes into
-        // list 0 with the synthetic key −90000 + 10·k in cel-chain (placement-parse) order, ahead of every
-        // distance-keyed entry. The instances vector is in placement order, so the ordinal = the run count.
-        let mut static_ordinal = 0u32;
+        // The list-0 key (`Material::chain`/`Material::node`): `View_AddCels` (0x1e6ba0, disassembled)
+        // gives the −90000 + 10·k keys to the +0x20 chain `Vision_Portal_Recurse` (0x1e86e8) threads
+        // per frame from the depth-sorted `VisCelList` — and only the room cels (placement flag words
+        // 0xc023/0xc047, `parseentity_fixup_entity` 0x1d00c0) ride that chain [L ee_start_05.bin: 19
+        // rooms + 113 inner cels; the port's 05 creates_cel set is exactly 19 + 113]. Every non-room
+        // 0x8000 placement (the 0x8019/0x8018 marker classes: the baked decals, walkways, blockers)
+        // hangs on a room's +0x18 inner chain and draws with a ±dist² key. So: rooms keep a chain
+        // ordinal (their parse rank among rooms — the fallback when the per-frame walk cannot run)
+        // plus their `cells` node for the per-frame lookup; every other creates_cel placement is
+        // distance-keyed (chain = node = u32::MAX, the same path as the dynamics).
+        let mut room_rank = 0u32;
         for inst in &instances {
             let obj = &level.maps[inst.map].objects[inst.object];
+            // The room rank counts every resolved main-map room-class placement in parse order — the
+            // same order `parse_cel_graph` pushes `rooms`/`room_to_cell` — before any skip so the
+            // rank stays aligned when a room is cel-pass-skipped or NF_HIDE'd.
+            let room_class = matches!(inst.placement.flags & 0xffff, 0xc023 | 0xc047);
+            if room_class { room_rank += 1; }
+            let (chain, node) = if room_class {
+                let node = cel_graph.room_to_cell.get(room_rank as usize - 1).copied().flatten().unwrap_or(usize::MAX) as u32;
+                (room_rank - 1, node)
+            } else {
+                (u32::MAX, u32::MAX)
+            };
             let has_coll = obj.collision.is_some();
             let has_mesh = obj.gfx.leaves.iter().any(|l| !l.batches.is_empty());
             let skipped = inst.placement.creates_cel() && obj.skipped_by_cel_pass();
@@ -2471,8 +2563,7 @@ impl Scene {
                 let p = transform(&inst.matrix, obj.centre);
                 mul_bytes(cel_ambient(&room_cels, p, 0).unwrap_or([0xff; 3]))
             } else { [1.0; 3] };
-            let chain = if inst.placement.creates_cel() { static_ordinal += 1; static_ordinal - 1 } else { u32::MAX };
-            add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds), None, None, None, mult, &room_cels, chain);
+            add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds), None, None, None, mult, &room_cels, chain, node);
         }
         let mut characters = Vec::new();
         let (mut attachments, mut armed, mut weapons_missing) = (Vec::new(), std::collections::HashSet::new(), 0);
@@ -2495,10 +2586,10 @@ impl Scene {
                 add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds), None, None, None, if obj.flags & 0x800 != 0 {
                     // A non-skinned character object drawn through the World layer: the same 0x800 dim.
                     mul_bytes(cel_ambient(&room_cels, transform(&inst.matrix, obj.centre), 0).unwrap_or([0xff; 3]))
-                } else { [1.0; 3] }, &room_cels, u32::MAX);
+                } else { [1.0; 3] }, &room_cels, u32::MAX, u32::MAX);
                 continue;
             }
-            add_instance(level, inst, Layer::Character, Some((characters.len() as u32, None)), &mut groups, Some(&mut bounds), None, None, None, [1.0; 3], &room_cels, u32::MAX);
+            add_instance(level, inst, Layer::Character, Some((characters.len() as u32, None)), &mut groups, Some(&mut bounds), None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
             let start = drones.and_then(|d| {
                 let param = |k: u32| inst.placement.params.iter().find(|(i, _)| *i == k).map(|&(_, v)| v).unwrap_or(0);
                 let hash = drone::start_script(&d.tables, param, d.level_id).script()?;
@@ -2532,11 +2623,11 @@ impl Scene {
             let Some(&(map, object)) = level.by_hash.get(&mesh) else { weapons_missing += 1; continue };
             let winst = Instance { map, object, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: inst.placement.clone() };
             let character = characters.len() as u32 - 1;
-            add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+            add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
             let local = anim::quat_trans_to_mat(dt.q, dt.t);
             attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None });
             // The same gun as a pickup once the drone drops it.
-            add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+            add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
             attachments.push(Attachment { character, bone: 0, local, flash: None, tracer: None, dropped: true, projectile: None, script: None, gas: None });
             // Its muzzle flash: `DroneWeap_FireWeapon` asks `AnimGetBoneWorldTrans(obj, datum id, 1, …)`, which looks up
             // the datum whose id is id + 1 — the muzzle (07000005: 8 → 9 at x −0.77, 16 → 17 at x −1.18).
@@ -2544,7 +2635,7 @@ impl Scene {
                 let muzzle = skin.datums.iter().find(|d| d.id == datum_id + 1 && d.bone >= 0);
                 if let (Some(&(fmap, fobject)), Some(md)) = (level.by_hash.get(&fmesh), muzzle) {
                     let finst = Instance { map: fmap, object: fobject, ..winst };
-                    add_instance(level, &finst, Layer::Effect, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                    add_instance(level, &finst, Layer::Effect, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                     attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb), tracer: None, dropped: false, projectile: None, script: None, gas: None });
                 }
             }
@@ -2568,11 +2659,11 @@ impl Scene {
                 let placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
                 let (map, object) = level.by_hash[&sleeve];
                 let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                 for &(bone, part) in &skin.extra {
                     let Some(&(pmap, pobject)) = part.and_then(|h| level.by_hash.get(&h)) else { continue };
                     let pinst = Instance { map: pmap, object: pobject, matrix: ident, placement: placement.clone() };
-                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                     attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None });
                 }
                 // The muzzle flash (`Player_MuzzleFlash`): mesh `weapon+0x48` on datum 0, colour (+0x56, +0x55, +0x54).
@@ -2580,7 +2671,7 @@ impl Scene {
                 let flash = u32::from_le_bytes(r[0x48..0x4c].try_into().unwrap());
                 if let (Some(&(fmap, fobject)), Some(dt)) = (level.by_hash.get(&flash), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
                     let finst = Instance { map: fmap, object: fobject, matrix: ident, placement: placement.clone() };
-                    add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                    add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                     attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, projectile: None, script: None, gas: None });
                 }
                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None, script: None });
@@ -2616,13 +2707,13 @@ impl Scene {
                                 for &mh in skin.main.iter().flatten() {
                                     let Some(&(map, object)) = level.by_hash.get(&mh) else { continue };
                                     let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                                    add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                                    add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                                     slot_bones = level.maps[map].objects[object].gfx.slot_bones.clone();
                                 }
                                 for &(bone, part) in &skin.extra {
                                     let Some(&(map, object)) = part.and_then(|ph| level.by_hash.get(&ph)) else { continue };
                                     let pinst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                                     attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None });
                                 }
                                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones, start: None, role: drone::SpawnRole::Placed, floor: None, script: Some((h, si as u8)) });
@@ -2645,7 +2736,7 @@ impl Scene {
                                         if let Some(dt) = skin.datums.iter().find(|d| d.id == datum_id && d.bone >= 0) {
                                             if let Some(&(wmap, wobject)) = level.by_hash.get(&mesh) {
                                                 let winst = Instance { map: wmap, object: wobject, matrix: ident, placement: placement.clone() };
-                                                add_instance(level, &winst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                                                add_instance(level, &winst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                                                 let local = anim::quat_trans_to_mat(dt.q, dt.t);
                                                 attachments.push(Attachment { character: ci, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None });
                                             } else { weapons_missing += 1; }
@@ -2658,7 +2749,7 @@ impl Scene {
                                 if !seen.insert((h, si, hash)) { continue; }
                                 let Some(&(map, object)) = level.by_hash.get(&hash) else { continue };
                                 let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                                add_instance(level, &inst, Layer::Character, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                                add_instance(level, &inst, Layer::Character, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                                 attachments.push(Attachment { character: 0, bone: 0, local: ident, flash: None, tracer: None, dropped: false, projectile: None, script: Some((h, si as u8, hash)), gas: None });
                                 script_objects += 1;
                             }
@@ -2673,7 +2764,7 @@ impl Scene {
         if let (Some(_), Some(&(tmap, tobj))) = (drones, level.by_hash.get(&0x0200_0123)) {
             for slot in 0..TRACER_SLOTS {
                 let tinst = Instance { map: tmap, object: tobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
-                add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                 attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false, projectile: None, script: None, gas: None });
             }
         }
@@ -2707,12 +2798,12 @@ impl Scene {
             let Some(&(pmap, pobject)) = level.by_hash.get(&mesh) else { continue };
             for slot in 0..proj_slots {
                 let pinst = Instance { map: pmap, object: pobject, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: pslot_placement.clone() };
-                add_instance(level, &pinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                add_instance(level, &pinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                 attachments.push(Attachment { character: 0, bone: 0, local: pinst.matrix, flash: None, tracer: None, dropped: false, projectile: Some((slot as u8, mesh)), script: None, gas: None });
             }
         }
         for (inst, follows_camera) in &sky {
-            add_instance(level, inst, if *follows_camera { Layer::SkyCamera } else { Layer::SkyFixed }, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+            add_instance(level, inst, if *follows_camera { Layer::SkyCamera } else { Layer::SkyFixed }, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
         }
         // Level coronas (`Corona_Create` 0x18da00, placement type 0xFC): class-1 objects with NO update
         // function — static glow quads at their placement transforms, in every view mode. The glist's +0x44
@@ -2727,7 +2818,7 @@ impl Scene {
                     // `NF_HIDE` applies here too (the 0xFC skip above leaves these out of the loop's check).
                     if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
                     let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
-                    add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                    add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                 }
             }
         }
@@ -2740,7 +2831,7 @@ impl Scene {
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 if let Some((map, object)) = target {
                     let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
-                    add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                    add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                 }
             }
         }
@@ -2761,7 +2852,7 @@ impl Scene {
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 if let Some((map, object)) = target {
                     let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
-                    add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                    add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                     ladders_drawn += 1;
                 }
             }
@@ -2823,21 +2914,21 @@ impl Scene {
                     mul_bytes(cel_ambient(&room_cels, transform(&mx, obj.centre), 0).unwrap_or([0xff; 3]))
                 } else { [1.0; 3] };
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
-                add_instance(level, &inst, Layer::World, None, &mut groups, Some(&mut bounds), None, None, None, mult, &room_cels, u32::MAX);
+                add_instance(level, &inst, Layer::World, None, &mut groups, Some(&mut bounds), None, None, None, mult, &room_cels, u32::MAX, u32::MAX);
                 *misc_drawn.entry(kind).or_default() += 1;
                 // The car's two fixed-hashcode children (Car_InitBits 0x12fec8), drawn only with a car body.
                 if kind == 0xda {
                     let has_gfx = |(cm, co): (usize, usize)| level.maps[cm].objects[co].gfx.leaves.iter().any(|l| !l.batches.is_empty());
                     // Child 1 (data+0xE0, 0x2000502): a full Mat_Copy of the body's matrix [M 0x12fec8:33].
                     if let Some(c) = level.by_hash.get(&0x0200_0502).copied().filter(|&c| has_gfx(c)) {
-                        add_instance(level, &Instance { map: c.0, object: c.1, matrix: inst.matrix, placement: p.clone() }, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                        add_instance(level, &Instance { map: c.0, object: c.1, matrix: inst.matrix, placement: p.clone() }, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                         *misc_drawn.entry(0xda).or_default() += 1;
                     }
                     // Child 2 (data+0xE4, 0x2000505): identity rotation + the body's translation [M 0x12fec8:13-33].
                     if let Some(c) = level.by_hash.get(&0x0200_0505).copied().filter(|&c| has_gfx(c)) {
                         let mut cm = inst.matrix;
                         cm[0] = [1.0, 0.0, 0.0, 0.0]; cm[1] = [0.0, 1.0, 0.0, 0.0]; cm[2] = [0.0, 0.0, 1.0, 0.0];
-                        add_instance(level, &Instance { map: c.0, object: c.1, matrix: cm, placement: p.clone() }, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                        add_instance(level, &Instance { map: c.0, object: c.1, matrix: cm, placement: p.clone() }, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                         *misc_drawn.entry(0xda).or_default() += 1;
                     }
                 }
@@ -2854,7 +2945,7 @@ impl Scene {
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 if let Some((map, object)) = target {
                     let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
-                    add_instance(level, &inst, Layer::Character, None, &mut groups, None, Some(pi as u16), None, None, [1.0; 3], &room_cels, u32::MAX);
+                    add_instance(level, &inst, Layer::Character, None, &mut groups, None, Some(pi as u16), None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                 }
             }
             // Doors (`Door_Create`'s creation order = `door_placements`): each door's object as Character-layer
@@ -2868,7 +2959,7 @@ impl Scene {
                 // `NF_HIDE` leaves the door out of the draw (the A/B check; the simulation still runs it).
                 if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
-                add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, Some(di as u16), None, [1.0; 3], &room_cels, u32::MAX);
+                add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, Some(di as u16), None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
             }
             // SimpleScripts (`SS_Create` 0x1a9c58 / `SS_Update` 0x1a9948, map-tower2): the animated 0xE2
             // placements (key count non-zero) ride the door slot space — their vertices pose from
@@ -2887,7 +2978,7 @@ impl Scene {
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 let Some((map, object)) = target else { continue };
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
-                add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, Some((n_doors + si) as u16), None, [1.0; 3], &room_cels, u32::MAX);
+                add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, Some((n_doors + si) as u16), None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
             }
             // Level-placed pickups (`Pickup_Create` 0x18dda0): `View_DrawObjectGlist` 0x1e6780 draws
             // `obj+0xD8` at `obj+0x90` — the same object carries the glist the renderer draws [M], so the
@@ -2904,7 +2995,7 @@ impl Scene {
                 let target = p.obj.or_else(|| level.by_hash.get(&p.model).copied());
                 let Some((om, oi)) = target else { continue };
                 let inst = Instance { map: om, object: oi, matrix: p.m, placement: level.maps[om].placements.first().cloned().unwrap_or_default() };
-                add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, None, Some(pi as u16), [1.0; 3], &room_cels, u32::MAX);
+                add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, None, Some(pi as u16), [1.0; 3], &room_cels, u32::MAX, u32::MAX);
             }
             // LOAD_LEVEL triggers (0xE8): the placement carries a visible mesh (e.g. 07000005's `Door_Gate8` —
             // the castle gate door — and the route-c zip-wire exit `Locked_Door_Top_I`). In the real game
@@ -2919,12 +3010,12 @@ impl Scene {
                 let Some((map, object)) = target else { continue };
                 if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
-                add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX);
+                add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
             }
         }
         let (mut vertices, mut indices, mut materials, mut char_verts) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         let mut char_vertex_start = None;
-        for ((layer, _, _, chain, key, draw, lflags), (vs, is, cv, centre, mut radius, cel)) in groups {
+        for ((layer, _, _, chain, key, draw, lflags), (vs, is, cv, centre, mut radius, cel, node)) in groups {
             if is.is_empty() { continue; }
             // fix-render-artifacts: the cull sphere must contain the group's DRAWN geometry — the glist
             // radius can undershoot it (0700000c's floor decal: glist r 0.6 vs a 0.87 half-diagonal box),
@@ -2941,7 +3032,7 @@ impl Scene {
             }
             if matches!(layer, Layer::Character | Layer::Effect) && char_vertex_start.is_none() { char_vertex_start = Some(vertices.len()); }
             let base = vertices.len() as u32;
-            materials.push(Material { layer, draw, centre, radius, cel, chain, key, lflags, first_index: indices.len() as u32, index_count: is.len() as u32 });
+            materials.push(Material { layer, draw, centre, radius, cel, chain, node, key, lflags, first_index: indices.len() as u32, index_count: is.len() as u32 });
             indices.extend(is.iter().map(|i| i + base));
             vertices.extend(vs);
             char_verts.extend(cv);
