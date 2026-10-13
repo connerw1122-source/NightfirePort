@@ -179,7 +179,7 @@ fn a_courtyard_head_tracks_bond_until_the_lost_limit() {
     }).collect();
     assert!(sl_cols.iter().any(|&c| c != sl_cols[0]),
         "the parts no longer share one colour slot (the corona's alpha byte has somewhere to live)");
-    let (_, cols) = scene.skin_palette(&layout, None, 0.0, Default::default());
+    let (_, cols) = scene.skin_palette(&layout, None, 0.0, Default::default(), None);
     let (alpha, corona_idx) = {
         let sim = scene.sim.as_ref().unwrap();
         let ci = sim.drones.searchlights.parts[head].links[4].unwrap();
