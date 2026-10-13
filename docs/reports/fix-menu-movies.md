@@ -116,4 +116,19 @@ intro frames are the EON logo / the intro FMV fullscreen.
 
 ## ntfy failed
 
-(none — the notification step ran; see the driver log.)
+All three fallbacks failed with the same daily-quota error (the same 429 the pickups-remainder task
+hit earlier today):
+
+```
+curl:  {"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your
+        limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}
+python: urllib.error.HTTPError: HTTP Error 429: Too Many Requests
+wget:   HTTP/1.1 429 Too Many Requests   (verified with `wget -S`; the plain run's rc=0 was misleading)
+```
+
+## Note on the branch name
+
+The task body names the branch `s/fix-menu-movies` throughout (Rule 1, WORKLOG rule) but the footer
+says `**Branch:** s/menu-movies`. The remote had neither; the repeated `s/fix-menu-movies` won, and
+all work is on `origin/s/fix-menu-movies` (finish id 183-fix-menu-movies, queue done + report
+attached).
