@@ -9142,3 +9142,12 @@ fields). Report: docs/reports/fix-room-sound.md.
 
 Task 221: play the real briefing/outro movies in the mission flow (nf-view state 6), replacing
 fix-menus' countdown stand-in, per docs/systems/movies.md. Work starting.
+
+## fix-anim-events (s/fix-anim-events) — 2026-10-13
+
+Task 288, G-030: the animation scripts' events with effects are partly unported — grenades thrown
+by an anim event, close combat, weapon changes (DroneAnim_EventFunc datum 0x28/100), messages,
+footprints; PlayFiringAnim's +0x20/+0x21 flags. Plan: census the event opcodes every anim script on
+the disc uses (nf-extract's script dump), list which the port handles, port the rest from
+AnimProcessScriptCmds 0x1c1b38 and DroneAnim_EventFunc, with a test per event kind on a real script.
+Files: crates/nf-game/src/{anim,drone}.rs, docs/systems/anim-engine.md. Work starting.
