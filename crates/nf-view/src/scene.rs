@@ -1440,7 +1440,16 @@ impl Sim {
         if let Some(n) = self.drones.inventory.carried.get_mut(cur_t) { *n = self.gun.spare as i16; }
         self.aiming = aiming;
         self.drones.bond_aiming = aiming;
-        self.drones.bond_weapon = self.gun.weapon;
+        // The class byte the AI's `ObjectIsArmed` 0x178768 reads: Bond obj+0xdc+0x62. `Player_WeaponSelect`
+        // 0x1a2cc0 copies the request (+0x63) into it at the switch's START (the `weapon_data[+0x64].+0xc4
+        // == 0` arm — +0x64 is 0x47 from InitWeapon 0x1a7ef8:137-139), so mid-holster the AI already reads
+        // the TARGET weapon: at the party Bond reads as the fists (unarmed, class 1) from the first tick,
+        // not as the carried P2K for the ~100 switch ticks (playtest item 1: the entrance bouncers shot).
+        self.drones.bond_weapon = if self.gun.switch_state != 0 && self.gun.switch_request != 0x47 {
+            self.gun.switch_request
+        } else {
+            self.gun.weapon
+        };
         // The use key (`Player_Activate` 0x1a5170): the doors its sphere — one unit ahead of the head — meets
         // open, swing or thud locked (docs/systems/world-objects.md "Doors"); the player object updates before
         // the control list's doors, so they see the activation this same tick.

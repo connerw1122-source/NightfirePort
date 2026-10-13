@@ -1492,10 +1492,15 @@ impl Drone {
             | AIM_CROUCH | AIM_CROUCH_FIRE | AIM_CROUCH_RELOAD | STEP_AIM_LEFT | STEP_AIM_RIGHT | STRAFE_AIM_LEFT | STRAFE_AIM_RIGHT)
     }
 
-    /// `NDrone2_NearArmedBond` / `NDrone2_NearArmedPerson(dist)`: an armed person within `dist`. The port tests
-    /// Bond only (`bond_armed`, the per-tick opponent distance) [*suggested*: the game's person scan was not read].
-    fn near_armed_person(&self, dist: f32) -> bool {
-        self.bond_armed && self.dist <= dist
+    /// `NDrone2_NearArmedPerson` (0x1787c8) [M — disassembly checked, no float read anywhere]:
+    /// the float arg every caller passes (8/10/20/6, `+0xCF8`) is DEAD in the shipped build — the
+    /// gate is exactly: kind 0xD (the party guests) never qualifies [0x178840]; prop 0x3c set
+    /// [0x178850]; Bond in sight (`+0x228 & 4`, the reaction-acked sight — `DroneVision_HaveOpponentSight`
+    /// 0x175ef0 sets it only past `DroneFunc_ReactionTime`) [0x178864]; and
+    /// `DroneWeap_OpponentHasWeapon` 0x17a4b8 = `ObjectIsArmed` 0x178768 on Bond's class byte
+    /// (`bond_armed`) [0x178874].
+    fn near_armed_person(&self, d: &Data) -> bool {
+        self.kind != 0xd && self.prop(d, 0x3c) && self.seen && self.bond_armed
     }
 
     /// `NDrone2_BulletImpact` (0x1461c8): damage; dead → Death_Anim; alive with `allow` and no flinch for 2 s (this
@@ -3017,10 +3022,11 @@ impl Drone {
             (TRUCK_DRIVER_INIT_ALERT, msg::ANIM_DONE) => { self.set_state(CIVILIAN_SCARED); true }
             (TRUCK_DRIVER_INIT_ALERT, msg::BULLET) => self.on_bullet_resume(d, rng, frame, 0, false),
             (TRUCK_DRIVER_INIT_ALERT, msg::SOUND) => self.on_bullet_resume(d, rng, frame, 0, true),
-            // TruckDriverIdle (0x160ed0): stand idle; armed Bond within 8 (0x40c00000) → CivilianScared (`|= 0x8000000`).
+            // TruckDriverIdle (0x160ed0): stand idle; NearArmedPerson (0x1787c8 — the 8.0 arg is dead)
+            // → CivilianScared (`|= 0x8000000`).
             (TRUCK_DRIVER_IDLE, msg::ENTER) => { self.vision_on = true; self.set_stand_idle(d, rng, frame, true); true }
             (TRUCK_DRIVER_IDLE, msg::UPDATE) => {
-                if self.near_armed_person(8.0) { self.sighted = true; self.set_state(CIVILIAN_SCARED); }
+                if self.near_armed_person(d) { self.sighted = true; self.set_state(CIVILIAN_SCARED); }
                 true
             }
             (TRUCK_DRIVER_IDLE, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
@@ -3047,7 +3053,7 @@ impl Drone {
                 true
             }
             (PARTY_GIRL, msg::UPDATE) => {
-                if self.near_armed_person(10.0) {
+                if self.near_armed_person(d) { // 0x160140:40 passes 0x41200000 — dead arg [M 0x1787c8]
                     self.sighted = true;
                     self.set_state(CIVILIAN_SCARED);
                 } else {
@@ -3069,7 +3075,9 @@ impl Drone {
             }
             (CIVILIAN_GUARD, msg::EXIT) => { self.team = 1; true }
             (CIVILIAN_GUARD, msg::UPDATE) => {
-                if self.near_armed_person(20.0) || (self.bond_armed && self.seen) {
+                // 0x1603a8 case 3: NearArmedPerson (the 20.0 arg is dead [M 0x1787c8]) or
+                // ObjectIsArmed(Bond) && sight [M 0x1603a8:39-45] — then 0x8000000 + the prop-0x33 alert.
+                if self.near_armed_person(d) || (self.bond_armed && self.seen) {
                     self.sighted = true;
                     self.set_state(ATTACK);
                 }
@@ -3103,7 +3111,7 @@ impl Drone {
                 true
             }
             (CIVILIAN_MISSION, msg::UPDATE) => {
-                if self.near_armed_person(10.0) {
+                if self.near_armed_person(d) { // 0x15d860:35 passes 0x41200000 — dead arg [M 0x1787c8]
                     self.sighted = true;
                     if self.voice_type == 0x10 { self.team = 1; self.set_state(ATTACK); }
                     else { self.set_state(CIVILIAN_SCARED); }
@@ -3128,7 +3136,7 @@ impl Drone {
             }
             (CIVILIAN_PATROL, msg::UPDATE) => {
                 self.update_patrol_route(d, rng, frame);
-                if self.near_armed_person(6.0) { self.sighted = true; self.set_state(CIVILIAN_SCARED); }
+                if self.near_armed_person(d) { self.sighted = true; self.set_state(CIVILIAN_SCARED); } // 0x15d610:32 — dead arg [M 0x1787c8]
                 true
             }
             (CIVILIAN_PATROL, msg::BULLET) => self.on_bullet_resume(d, rng, frame, ATTACK, false), // HandleImpact(0x56, 0)
@@ -3143,7 +3151,8 @@ impl Drone {
                 true
             }
             (CIVILIAN, msg::UPDATE) => {
-                if self.near_armed_person(self.scared_radius) { self.sighted = true; self.set_state(CIVILIAN_SCARED); }
+                // 0x15d118:46 passes the stored +0xCF8 radius (10/20) — dead in NearArmedPerson [M 0x1787c8].
+                if self.near_armed_person(d) { self.sighted = true; self.set_state(CIVILIAN_SCARED); }
                 true
             }
             (CIVILIAN, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
