@@ -31,3 +31,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox4 at 2026-10-13T19:07Z
+
+---
+## Report (done, 2026-10-13T20:33Z)
+
+Closed by the driver: the report is on `s/fix-sound-remainder` (docs/reports/fix-sound-remainder.md); the worker didn't run finish.sh.
