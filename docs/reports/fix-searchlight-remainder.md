@@ -150,5 +150,7 @@ sandbox deadline honoured. Files: `crates/nf-game/src/{searchlight,light,gas,dro
 
 ## Suite count
 
-nf-game/nf-formats/nf-audio/nf-view full run on the slim ISO: recorded in the WORKLOG entry
-(the 3 `disc_golden` tests are the only permitted failures).
+nf-game/nf-formats/nf-audio/nf-view full run on the slim ISO (`--no-fail-fast --test-threads=1`):
+**nf-game 32/32 binaries green; nf-view fully green (the 3 new live tests included); nf-formats
+only the 3 allowed `disc_golden` tests failed; nf-audio green.** Zero failures outside the
+permitted trio.
