@@ -8529,3 +8529,21 @@ Stage Summary:
   and the ammo-id remaps are new port behaviour with game citations.
 - Left: the auto-switch drain re-open (live checks 1-2 in the report), moving-platform landings,
   the drop push-out, the AR set's second pile, the +0x888 kind-5 field, the shop's Upgrades byte.
+---
+Task: fix-viewmodel-zoom (branch s/fix-viewmodel-zoom)
+Agent: fix-viewmodel-zoom worker
+Task: GAPS G-044 — the view-model/crosshair tilt with zoom and aspect (Player_WeaponRecoil divides
+the tilt by glb_viewer+0x108 zoom and scales x by viewer+0x114; the port uses a fixed 4/3 and no
+zoom divide), plus each zoomable weapon/gadget's own zoom overlay (the micro camera must show its
+viewfinder, not the sniper scope; check the sniper scope, the camera, binocular/night-vision) —
+find the overlay selection in the decompile (HUD panes / weapon flags) and draw the right one per
+weapon id. Files: crates/nf-view/src/scene.rs (gun axes), the HUD overlay code.
+
+Work Log:
+- Session start 21:43 UTC (sandbox expires ~23:43 UTC). Repo found at /home/z/NightfirePort with
+  work/ (2.0G decompile) and target/ (1.6G warm cache) intact; ISO present (1013M); freed 370M by
+  deleting the already-extracted iso .7z. Branch s/fix-viewmodel-zoom created from origin/master
+  (7a614ba). This entry is the setup checkpoint.
+
+Stage Summary:
+- Setup complete; research starting. (To be appended as work proceeds.)
