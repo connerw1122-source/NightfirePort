@@ -35,3 +35,6 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 **User playtest (2026-10-11, after fix-truck):** the 07000005 truck ride now ends the level, but **no voice lines play during the ride**. In PCSX2 the ride has dialogue. Find what plays it (the truck script's sound/speech events, `docs/systems/speech.md`, the script-player speech events), reproduce it headless along `fix_truck_live`'s ride (assert that the speech starts at the script's tick), and port it.
 
 **Branch:** `s/fix-audio2`.
+
+---
+claimed-by: sandbox5 at 2026-10-13T07:36Z
