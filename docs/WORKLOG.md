@@ -7373,3 +7373,8 @@ Test: `swim_repro_walks_on_the_water_from_the_bank` un-ignored — Bond starts o
   4/4, walk_07000002_live 2/2, walkreal_07000002_live 1/1 (the level the change touches);
   nf-game 68 passed, nf-formats 11 passed + the 3 allowed disc_golden. The rest of nf-view's live
   suite did not fit the sandbox window — listed in the report.
+
+Music item resolved (same session): the castle-B per-level dispatch is ALREADY on master
+(fix-npcs a80b713: `UpdateMFX_01CastleB` 0x113060 → under_attack ? PickRandomCombat : PickRandomStealth,
+music.rs, + the unit test `the_07000006_alarm_demands_combat_music`) — verified passing in this
+session's nf-game run. Nothing to do; the report is corrected.

@@ -62,11 +62,12 @@ research fix-ladder2 already recorded.
    and `ch[param3]` set/clear), and the grate panel is an ordinary door (class 0x1C,
    `Door_Activate` 0x135be0). It needs a new creepwall module, the crawl substate 7 in player.rs
    and the scene wiring — a full session of its own.
-2. **The alarm music's last step** — not started. The chain (spotted → ch →
-   `DroneFunc_CheckAlarmRaised` 0x1453a8 → `Music_Event(2,1)` → `UpdateMusicalEvents` 0x114e70 →
-   `UpdateMFX_01CastleB` 0x113060 → PickRandomCombat) is recorded in fix-ladder2's entry; the port
-   has everything except the per-level music dispatch in music.rs (~10 lines: run the castle-B
-   updater for 07000006).
+2. **The alarm music's last step — already on master, nothing to do.** The per-level dispatch
+   (07000006 → the castle-B updater's `MusicUnderAttack ? PickRandomCombat(0) : PickRandomStealth()`,
+   `UpdateMFX_01CastleB` 0x113060) landed with fix-npcs (commit a80b713, music.rs lines with the [M
+   0x113060:26-30 citation] + the unit test `the_07000006_alarm_demands_combat_music`). Verified
+   passing in this session's nf-game suite run (68 passed) — the alarm stream `Music_Event(2,1)`
+   flips the hysteresis on the 12th tick and the combat pick fires; a quiet level picks nothing.
 
 ## Shared files touched (minimal, per the rules)
 
