@@ -7663,3 +7663,31 @@ Work Log:
 
 Stage Summary:
 - Starting: lightning variants [G-019], the 0x0700001B rotating sky, the sky pass's GS state vs gpu.rs, snow/rain particle look if sky-owned.
+---
+Task ID: 260
+Agent: fix-sky (worker)
+Task: fix-sky (branch s/fix-sky) — sky remainder: lightning, the rotating sky, the sky pass's GS state
+
+Work Log:
+- Decode: View_DrawSky 0x1e5ad0 (per-slot lightning timers, RNG order, the 0x0700001B block), View_AddSkyObj
+  0x1e79a0 (slot layout: state at slot*0x40+0x40, interval = param2 × FRAME_RATE), parsemap 0x1d04f0 case 0x2a
+  (params → slot/flash/interval/flashlen/group via the level+0x2c param area), Game_Draw 0x1e6f50 (DrawSky's arg
+  = sky group: 1 pre-world, 0 post psiPostSolid), Lightning_Update 0x18cf68 (SuperHappyLightningFlag → the 8-beam
+  polyline, FractalThing on Reflicker), psiSetUpColourBlend 0x1214f8 (mode 2 → ALPHA_1 0x2a = replace), psiFog
+  0x121578 (a size-8 stub — the sky pass writes no fog), RotMatrix 0x1e2368 / Concat 0x1e4a90 /
+  ApplyMatrixLVI 0x1e4960 / Vec_Spherical_2_Cartesian 0x1e3948.
+- [L] ee_start_05/07000001/0a GfxList dumps: the layout confirmed, the snapshot levels carry no flash variants;
+  [D] disc scan (nf-extract placements 2a): lightning only on 0700000a (slot 3 Thunderhead, 24→1440, flash 5) and
+  0700000b (30→1800, flash 10); 0700001b = SKY_StarField + SKY_Earth, flags 0x222 → both slots spin (+2 counts/frame).
+- crates/nf-game/src/sky.rs: SkySlot/LightningGlobals/RotatingSky + tick_slot/tick_group/Sky (the machine, exact EE
+  chop arithmetic + the game's sinf), rot_matrix/concat/apply_matrix_lvi/spherical_2_cartesian,
+  rotating_sky_matrix. lib.rs: the `pub mod sky;` line (minimal shared-file touch).
+- Tests: sky_lightning.rs (600-tick flags golden vs an independent Python replica incl. the real Thunderhead params;
+  branch census + final RNG state sister; no-flash slots never draw; interval × FRAME_RATE), sky_rotation.rs
+  (spin bits per pass, pause/level gates, sun vector + rotated bits through the game's chain), sky_gs_live.rs
+  (NF_ISO: the first CNT's A+D state — Thunderhead inherits everything, StarField writes 0x44/0x5001b/0x131000000).
+- Docs: render.md "Sky remainder", GAPS G-019. Report: docs/reports/fix-sky.md.
+
+Stage Summary:
+- The timed sky is data + code, golden-verified against an independent replica of the game's arithmetic. Open for
+  the main agent: the nf-view render-side hook (flash glist swap + spin matrix + bolt draw), the live ZMSK check.
