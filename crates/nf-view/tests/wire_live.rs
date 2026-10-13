@@ -16,16 +16,18 @@ fn read_archive(iso: &str, archive: &str) -> Vec<u8> {
 }
 
 /// The user's play, end to end [D the user report: "at the cable left of the castle gate, pressing E
-/// plays the falling-to-death animation instead of the hand-over-hand crossing"]: Bond stands next to
-/// 07000005's cable (the wire placement −23.4855, 34.4676, 6.2629 [D placements probe], yaw −1.5708,
-/// sphere radius 4.039 [L ee_start_05.bin 016dc430]), presses E, and crosses it hand over hand to the
-/// far end, alive. The pre-fix port failed this at the first step (see tests/wire_repro.rs — the
-/// substate stayed 0 and Bond fell into the chasm).
+/// plays the falling-to-death animation instead of the hand-over-hand crossing"]: Bond walks into
+/// 07000005's cable's grab zone (the wire placement −23.4855, 34.4676, 6.2629 [D placements probe],
+/// yaw −1.5708, sphere radius 4.039 [L ee_start_05.bin 016dc430]) and crosses it hand over hand to the
+/// far end, alive. The grab here is the COLLISION path [M Player_DealWithObjHit 0x194458 — the
+/// walking capsule against the wire's world sphere]; fix-wire2 corrected the record: E (the use key)
+/// NEVER grabs wires — `Player_Activate` 0x1a5170 has no class-0x2C arm — the other real grab is the
+/// jump grab (see tests/fix_wire2_live.rs).
 ///
 /// Sister (the no-input control leg): without the strafe input Bond stays at his end of the wire —
 /// the movement below comes from the input, not from the grab itself.
 #[test]
-fn e_grabs_the_07000005_cable_and_crosses_it_hand_over_hand() {
+fn walking_into_the_07000005_cable_grabs_it_and_crosses_it_hand_over_hand() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
     let sim = scene.sim.as_mut().unwrap();
@@ -37,9 +39,10 @@ fn e_grabs_the_07000005_cable_and_crosses_it_hand_over_hand() {
     sim.bond.pos = [w.centre[0], w.centre[1] - 1.1, b_t[2] + 0.2];
     sim.bond.yaw = 0.0;
     let health0 = sim.drones.health.health;
-    // Press E (the use key) — the grab.
+    // The walking collision grab [M Player_DealWithObjHit 0x194458] — E is NOT involved (no arm [M
+    // 0x1a5170]); the E press here is inert input proving the grab does not need it.
     sim.step_bond(Default::default(), false, false, true);
-    assert_eq!(sim.bond.substate, nf_game::player::SS_WIRE, "E next to the cable must attach Bond (substate 6)");
+    assert_eq!(sim.bond.substate, nf_game::player::SS_WIRE, "the collision grab attaches Bond (substate 6)");
     assert_eq!(sim.bond.cam_mode, 0xB, "the grab sets the wire camera mode (SetCamMode 0xB)");
     assert!((sim.bond.pos[1] - (w.centre[1] - 1.0207)).abs() < 0.09,
         "hang height: closest.y − 1.0207 [M CollWire 0x19744c], got {:?}", sim.bond.pos);
