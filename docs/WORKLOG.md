@@ -7441,3 +7441,29 @@ Stage Summary:
 - The composed marker (1.80,-107.66,-6.83) is a VOID column (probe fb6j: no floor -52..-160, only a north wall at z -6.0) — the game's rescue (mode-1 SphereIntersect in Player_Enable 0x195498?) is the live check. The live checks + the --bond spots are in docs/reports/fix-final-blockers2.md.
 - 07000016 progress: the ch-0x24 panel writer FOUND (probe fb9): trigger #0, kind 0x1 mask 0x4 out 0x24, placement 250 at (−15.20, 6.52, −94.56) — an UPPER WALKWAY west of the trench (deck y ≈ 5.71-6.44 at x ≤ −10, z −88..−112; an upper deck also spans x 2..8 at z −106..−112 over door[0]'s approach — the access is the next probe). The door[0] approach lane tightened (west approach + threshold legs arrive cleanly); the through-leg still wedges on the locked door (ch 0x24 can't fire until the panel is reached) — the walk stays parked, the route comments carry the evidence.
 - Verification after the revert: fix_fusebox_cut_live 4 + fix_safe08_live 5 green; nf-game 190/0; nf-formats+nf-audio 80 with only the 3 allowed disc_golden trio; the three nf-view casualties of the candidate fix (the two 07000014 laser/fusebox tests, the 07000008 safe chain) re-verified green.
+
+## fix-swim-vent2 — the swim fix landed green on master's collision (12 unit + the cage), 2 live reds left
+
+Sandbox reset → full setup redo. Branch = s/fix-swim-vent (6b63096, the swim fix + the vent crawl)
+merged with origin/master (8142a7f); master's newer segment_surface callers got no_water=false
+(the main agent's held-merge fix, re-applied: drone.rs ×2, impacts_live.rs ×3, walkreal_probe_fb4,
+probe_swim; probe_cw moved to the current disc API).
+
+THE FINDING (evidence in docs/reports/fix-swim-vent2.md): the 15 held-merge failures are the
+one-sided ray rule meeting the WRONG winding source. [M Intersect_RayGeom 0x10a8c8] skips a
+triangle when dot(STORED plane normal, ray_dir) ≥ 0 — the game tests the plane record, not the
+winding; [D docs/formats/collision.md] stored = +cross for 2,242,859/2,245,313 (146 opposite);
+[D probe on the disc] real floors 7,246 up / 0 down — the 12 unit tests' hand triangles were wound
+the opposite way. Fix: collision.rs triangles_with_material decodes each triangle's stored plane
+normal from the parsed words and swaps the vertex order where it opposes the winding (hit point/t
+winding-independent), so every world.rs one-sided site inherits the game's behavior; the 12 tests
+re-wound to the disc convention with citations. nf-game --lib 117/117.
+
+The cage test: [D probe_planes, raw 0x2E] the x-135.33 wall's stored plane is (−1,0,0) — west into
+the station; the walkway→station bullet is a back-face pass and the station→walkway bullet stops at
+135.33. The test now asserts the disc's directions (5/5), the lid + capsule sisters unchanged.
+
+STILL RED (2): fix_mission_live::the_07000001_exit_works_end_to_end (Mayhew stalls at −33.0,4.54,
+11.8; probe: the plate area −36.6,11.8 has NO floor within 6 down — the pad's plane/cel is the next
+dig) and walkreal_0700000c_live (ch 0x1b never fires, fails fast). The full 4-crate suite did not
+fit the window; run it first next session. Everything else: see the report.
