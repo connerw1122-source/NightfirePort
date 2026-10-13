@@ -120,11 +120,18 @@ listed below.
 
 ## Verification
 
-- `nf-audio --lib`: 7/7 (the two new G-032d tests + the existing driver suite).
-- `nf-game --lib`: the new foley test + the 128 existing.
-- Full suite (`NF_ISO=… cargo test --offline --release -j2 --no-fail-fast -p nf-game -p nf-formats
-  -p nf-audio -p nf-view -- --test-threads=1`): count reported in the WORKLOG entry (started in the
-  background before the deadline; the log is `suite-sound.log` outside the repo).
+- `nf-audio --lib`: 7/7 (the two G-032d tests + the existing driver suite); `bank_live` green;
+  `fix_sound_remainder_live` 2/2 (the PauseInNis and the precache, real SB_4.SFX + STREAMS).
+- `nf-formats`: green except the 3 allowed `disc_golden` failures (the slim-ISO /DRIVING files).
+- `nf-game`: 31 suites green, 0 failures (the lib's 129 include the foley gate test).
+- `nf-view`: the runner was killed by the session's 10-minute tool cap mid `spawner_kill_live` —
+  **82 binaries had completed, 0 failures** (everything through `fix_npc_doors_live`, `fix_audio2_live`
+  and the alphabetically-earlier suites). Post-merge spot-runs of the three most relevant late binaries:
+  `spawner_kill_live` 4/4, `fix_npc_doors_live` green, `fix_audio2_live` 5+1 green. The un-run tail is
+  the walk probes, which drive the sim directly and do not execute `sound_tick` (my only nf-view delta).
+- The origin/master merge (444ef44 — weapon-modes2, fix-facial, the B key, guest-reactions) only
+  conflicted on `docs/WORKLOG.md` (both sides' entries kept, mine first); `nf-audio`/`nf-game`
+  re-validated green on the merged tree.
 - Determinism: no `Rand_*` draws added anywhere (the foley gate uses none; the precache/window logic
   consumes only the driver's own `SFXrnd` stream inside `start`, as any start does). Seed-pinned sim
   tests are unaffected by design.
