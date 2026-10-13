@@ -7390,3 +7390,15 @@ Stage Summary:
 - The composed marker (1.80,-107.66,-6.83) is a VOID column (probe fb6j: no floor -52..-160, only a north wall at z -6.0) — the game's rescue (mode-1 SphereIntersect in Player_Enable 0x195498?) is the live check. The live checks + the --bond spots are in docs/reports/fix-final-blockers2.md.
 - 07000016 progress: the ch-0x24 panel writer FOUND (probe fb9): trigger #0, kind 0x1 mask 0x4 out 0x24, placement 250 at (−15.20, 6.52, −94.56) — an UPPER WALKWAY west of the trench (deck y ≈ 5.71-6.44 at x ≤ −10, z −88..−112; an upper deck also spans x 2..8 at z −106..−112 over door[0]'s approach — the access is the next probe). The door[0] approach lane tightened (west approach + threshold legs arrive cleanly); the through-leg still wedges on the locked door (ch 0x24 can't fire until the panel is reached) — the walk stays parked, the route comments carry the evidence.
 - Verification after the revert: fix_fusebox_cut_live 4 + fix_safe08_live 5 green; nf-game 190/0; nf-formats+nf-audio 80 with only the 3 allowed disc_golden trio; the three nf-view casualties of the candidate fix (the two 07000014 laser/fusebox tests, the 07000008 safe chain) re-verified green.
+
+---
+Task: fix-portal2
+Agent: fix-portal2 worker
+Branch: s/fix-portal2 (from s/fix-portal a894d7c, master 8142a7f merged; same commit pushed as s/portal2 per the task text)
+
+Work Log:
+- Sandbox kept from the earlier sessions (repo, work/, onfoot ISO, nf-queue all present); token URL refreshed, origin fetched.
+- Branch s/fix-portal2 created from origin/s/fix-portal (a894d7c), origin/master merged (only docs/WORKLOG.md conflicted; both sides kept). Pushed.
+
+Stage Summary:
+- Starting fix-portal2: land fix-portal without the wall holes — reproduce the 07000006 courtyard hole (walls' cels dropped by the walk) headlessly, find the game rule that keeps them, fix, keep the 07000007 window case only if provable from the game.
