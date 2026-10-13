@@ -7138,3 +7138,17 @@ the scope build, scope `capsule_push` + the floor ray, run every walk test, then
 
 Work log:
 - Setup: branch `s/fix-room-scope` from origin/master (4c91a95), this entry started.
+- The faithful `build_FindCel` 0x1c8cb0 tie-break was ported (rooms-only candidates, the two
+  vertical rays, nearest hit wins) and unit-tested, then MEASURED on 07000008: it maps the
+  stairwell mesh (instance 32, candidates [15, 40]) to cel 15 and the capsule's straddle set from
+  cell 40 keeps only [40] — Bond still falls, and the safe take BREAKS (the safe's runs leave cell
+  48 the same way). The resolution: the game's statics never go through `build_LinkToRoom` — their
+  collision is the map's Coll_Data node layer attached to the current cel at parse
+  (`parsemap_block_Coll_Data_New` 0x1d1810 → pCurrCelList+8); every build_LinkToRoom caller is an
+  entity creator. The tie-break was reverted out of build_scoped (smallest-volume restored, the
+  take green again); the verbatim law survives in the probe test
+  (`NF_ROOMSCOPE_PROBE=1 cargo test -p nf-view --test fix_room_scope_live probe_room_scope_links`).
+- Landed: the real-data straddle discipline test (the exterior mesh is missed from cell 48, hit
+  from SOME cell — not orphaned), the flat-capsule fusebox guard, and the two next-session
+  fail-firsts committed IGNORED with the measured reason. The capsule stays FLAT — no behavior
+  change. Suite: the only failures are the 3 allowed disc_golden.
