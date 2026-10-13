@@ -1264,7 +1264,7 @@ mod tests {
         // Tick 1: stream 0 creates the Anim (weapon=0); stream 1 fires Event 0xB → pending_weapon.
         // Tick 2: update() flushes pending_weapon → Anim.weapon = 6.
         for frame in 0..3 {
-            let mut subs = Vec::new(); script.update(&mut subs, &lib, &mut objs, &mut ch, &world, frame, &mut out);
+            let mut subs = Vec::new(); script.update(&mut subs, &Default::default(), &mut objs, &mut ch, &world, frame, &mut out);
         }
         let weapon = objs.list.iter().flatten().find_map(|o| match o { Obj::Anim { weapon, .. } => Some(*weapon), _ => None });
         assert_eq!(weapon, Some(6), "Event 0xB should set the Anim's weapon byte to 6 (Handgun)");
@@ -1302,7 +1302,7 @@ mod tests {
         let mut objs = Objects::default();
         let mut ch = Channels::default();
         let mut out = Vec::new();
-        let mut subs = Vec::new(); script.update(&mut subs, &lib, &mut objs, &mut ch, &TestWorld, 1, &mut out);
+        let mut subs = Vec::new(); script.update(&mut subs, &Default::default(), &mut objs, &mut ch, &TestWorld, 1, &mut out);
         assert!(ch.on(0x33), "the event after the fade/sprite/text ops must have fired (the stream must not halt)");
         // Sister: a command truncated inside its args halts the stream (no read past the end).
         let bad = Arc::new(Nis {
@@ -1316,7 +1316,7 @@ mod tests {
         let mut s2 = Script::load(bad, IDENT, 1.0);
         s2.start(false);
         let mut out2 = Vec::new();
-        let mut subs2 = Vec::new(); s2.update(&mut subs2, &lib, &mut objs, &mut ch, &TestWorld, 1, &mut out2);
+        let mut subs2 = Vec::new(); s2.update(&mut subs2, &Default::default(), &mut objs, &mut ch, &TestWorld, 1, &mut out2);
         assert_eq!(s2.streams[0].pc, None, "sister: a command truncated past the blob halts that stream (no read past the end)");
     }
 
@@ -1342,7 +1342,9 @@ mod tests {
         });
         let nis = mk(0x0600_0421);
         let mut p = Player { placement: 0, scripts: [0x0600_0421, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 0, activated: false, countdown: 0, info: [None, None], deleted: false,
-            live_matrix: IDENT };
+            live_matrix: IDENT,
+            subs: Vec::new(),
+        };
         let mut lib = HashMap::new();
         lib.insert(0x0600_0421u32, nis);
         let mut objs = Objects::default();
@@ -1377,7 +1379,9 @@ mod tests {
         // [M 0x1dbda8:134-136] and `Script_Update`'s near-end break keeps it from fast-forwarding.
         lib.insert(0x0600_0952u32, mk(0x0600_0952));
         let mut p2 = Player { placement: 0, scripts: [0x0600_0952, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 0, activated: false, countdown: 0, info: [None, None], deleted: false,
-            live_matrix: IDENT };
+            live_matrix: IDENT,
+            subs: Vec::new(),
+        };
         let mut objs2 = Objects::default();
         p2.load(&lib, &mut objs2, &mut ch, &world, 0, &mut out);
         p2.state = 2;
