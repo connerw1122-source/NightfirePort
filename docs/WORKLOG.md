@@ -7485,3 +7485,20 @@ casing slot carries ammo_data[1] = 0x0200043f and tracks the pose; debris pool +
 shot none; bit-for-bit rerun) — shown failing first against the scaffold. Full suite green except
 the 3 allowed disc_golden fails. docs/atlas/effect.md written (the owed entry); GAPS G-041/G-025
 updated. No GPU here — render spots + live checks in docs/reports/fix-impacts-render.md.
+
+---
+Task: walkreal-01-cover
+Agent: walkreal-01-cover worker
+Branch: s/walkreal-01-cover (from origin/master)
+
+Work Log:
+- Sandbox kept: repo, work/, onfoot ISO, nf-queue present; token refreshed, master fetched.
+- Task: un-park walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact (ignored at the
+  fix-ai-traces2 merge 7e69b84). The contact (Mayhew) now reaches LeadHide 0x1f at (−0.5, 6.3, 13.6), 32
+  short of the LoadPointActivator, because guard 16 survives in cover (0x5c, health 10, 3.2 from Bond) —
+  the walker's torso shots hit the WORLD first (torso seg hit Some(0.82)). Cause: the shared RNG stream
+  gained draws (fix-impacts casings/debris, PlayScript) so the 01 fight plays out differently.
+
+Stage Summary:
+- Plan: teach tests/common/walker.rs to break cover like a player — re-aim at exposed parts (head 5,
+  arms 53-56), step sideways/forward until a part's segment is clear, then fire. No RNG reseeding.
