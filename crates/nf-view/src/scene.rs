@@ -1347,29 +1347,24 @@ impl Sim {
                     (self.view_time, self.view_speed) = (0.0, 1.3);
                     self.gun.switch_state = 8;
                     switching = true;
-                    // Swap the weapon byte now (the variant-swap doesn't holster).
-                    if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
-                    if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
-                    // The leave-side prev slot follows the LEAVING weapon's type [M 0x1a6f80:134-141 —
-                    // +0x930 takes weapons only, +0x932 gadgets only; the request path (above) already
-                    // wrote it, but the variant swap used to write prev_weapon unconditionally — a
-                    // gadget→gadget hop (0x50→0x52) polluted +0x930 with a gadget id and the next
-                    // WEAPON cycle then toggled back to a gadget].
+                    // The variant swap does NOT touch the clip/carried or the gun's live magazine:
+                    // [M 0x1a2cc0:18-29] writes only the weapon byte, the mode byte, the +0xC8 script
+                    // at 1.3x and view state 8 — the twin is the same physical gun, the magazine
+                    // continues. (The port used to round-trip gun.clip→clip[old] and clip[new]→
+                    // gun.clip here; clip[0x03] is a never-equipped slot, so the P2K's 7 live rounds
+                    // zeroed and the next tick auto-reloaded — whose +0xA4 script then overwrote the
+                    // +0xC8 variant script and left switch_state stuck at 8 forever.)
                     if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
                     if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
-                    let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
-                    if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
                 } else {
-                    // Same base but no variant script: instant swap to idle.
+                    // Same base but no variant script: instant swap to idle. The game's variant path
+                    // touches no clip arrays either [M 0x1a2cc0:18-29] — same physical gun.
                     if log_switch { eprintln!("[weapon-switch] tick {}: instant variant swap (no script) {:#x}→{:#x}", self.drones.frame, cur_id, req_id); }
-                    if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
-                    if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
                     if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
                     if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
-                    let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
-                    if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
+                    let nwi = self.gun.weapon as usize;
                     self.view_script = self.weapons.idle_script(nwi);
                     (self.view_time, self.view_speed) = (0.0, 1.0);
                 }
@@ -1500,9 +1495,15 @@ impl Sim {
             // briefly".
             let was_fire_state = self.gun.fire_state;
             let rd0 = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
-            // The gun's animation is busy while a fire script plays (gun state 9; idle = 0).
+            // The gun's animation is busy while a fire script plays (gun state 9; idle = 0), and the
+            // reload branches additionally gate on the VIEW state being 0 [M 0x1a5460:409 — the R-key
+            // branch's `if (0xf4 == 0)` — and :447-450, the auto-reload branch's `if (0xf4 != 0)
+            // return`]: a reload can only START from the fully idle view, so the switch states 1/3/8
+            // gate here too (`switching` is the port's 0xf4 stand-in for them). Without this the
+            // variant-swap tick could start a reload whose +0xA4 script overwrote the +0xC8 variant
+            // script, and the state-8 wait (which reads the variant's length) never completed.
             let len_of = |h: u32| self.scripts.get(&h).map_or(0.0, |s| s.length as f32);
-            let busy = (self.view_script == rd0(0xb0) || self.view_script == rd0(0xb4)) && self.view_time < len_of(self.view_script) - 1.0;
+            let busy = switching || (self.view_script == rd0(0xb0) || self.view_script == rd0(0xb4)) && self.view_time < len_of(self.view_script) - 1.0;
             // Block the trigger and reload while the holster/draw cycle plays.
             // The hands class 'G' (0x47) cannot fire: its record carries no fire scripts (+0xB0/+0xB4 = 0
             // [D probe_ladder2]; also no idle +0xA0) and the round spawn runs from the state-9 fire-script

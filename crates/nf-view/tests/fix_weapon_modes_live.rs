@@ -88,6 +88,7 @@ fn the_heat_seeker_homes_onto_a_guard_and_the_unguided_twin_does_not() {
     for (weapon, expect_hit) in [(0x2eu8, true), (0x2fu8, false)] {
         let mut scene = load(&iso);
         tick(&mut scene, 30);
+        let mut spot = [0.0f32; 3];
         {
             let sim = scene.sim.as_mut().unwrap();
             // Grant the launcher record and its ammo (type 14) through the inventory the game keys.
@@ -99,39 +100,56 @@ fn the_heat_seeker_homes_onto_a_guard_and_the_unguided_twin_does_not() {
             sim.gun.switch_request = weapon;
             sim.gun.clip = 4;
             sim.gun.spare = 20;
-            // Face +Z (the look() convention: yaw 0 → (0,0,1)) and put guard 0 ahead-left of the
-            // aim ray — 6 units off the straight line (the straight shot misses his boxes) but
-            // inside the 0.66-dot cone (≈ 48.7°) [M Bullet_homing 0x12f358's dot gate]. The
-            // candidate is nudged along the ray until the line of sight is clear — the same
-            // `Collide_LineOfSight` gate the homing scan itself applies.
+            // Face +Z (the look() convention: yaw 0 → (0,0,1)). The start room's gate pillar walls
+            // off everything at dx ≤ +4 from z+6 on [D probe: segment sweep], and the missile's
+            // first ticks fly the straight aim ray — no bend can clear a wall 6 units out. So stand
+            // Bond past the pillar mouth (the corridor at dx+6 is open from z+4 on) and run the
+            // duel there; the guard spot below is scanned at the MUZZLE height (+0.7, the bullet's
+            // flight line), not the eye — the gate lintel the eye-ray passes over still blocks the
+            // shot.
+            let p0 = sim.bond.pos;
+            sim.bond = nf_game::player::Bond::stand_at(&sim.world, [p0[0] + 6.0, p0[1], p0[2] + 4.0], 0.0);
             sim.bond.yaw = 0.0;
             sim.bond.pitch = 0.0;
             let p = sim.bond.pos;
-            let eye = [p[0], p[1] + sim.bond.eye, p[2]];
+            let eye = [p[0], p[1] + 0.7, p[2]];
             let mut placed = false;
-            for back in 0..12 {
-                let cand = [p[0] + 6.0, p[1] + 1.0, p[2] + 24.0 - back as f32 * 2.0];
+            for back in 0..4 {
+                let cand = [p[0] + 1.2, p[1] + 1.0, p[2] + 14.0 - back as f32];
                 if sim.world.segment(eye, cand).is_none() {
                     if let Some(dr) = sim.drones.list.get_mut(0) {
                         dr.pos = cand;
                         dr.present = true;
                         dr.enabled = true;
+                        dr.drawn = true;
                         dr.corpse = false;
                         dr.health = 10.0;
+                        // The game's seekable gate needs a live object and a non-WAIT_SWITCH view
+                        // state [M 0x12f248: +0xfc != 0, health > 0, +0xf4 != 1]. This level's
+                        // drone 0 is a spawner-held template parked in WAIT_SWITCH (1) — stand him
+                        // up (ATTACK), or the ENTER arm disdains him (enabled=false) and no class-2
+                        // object exists for the scan.
+                        dr.state = nf_game::drone::state::ATTACK;
                     }
                     placed = true;
                     break;
                 }
             }
             assert!(placed, "no LOS-clear spot for the guard — the test spot needs a different origin");
+            spot = sim.drones.list[0].pos;
         }
-        // Fire once through the real trigger (press + hold until the round spawns).
+        // Fire once through the real trigger (press + hold until the round spawns). The guard is
+        // pinned to his spot: the teleport stands him on a floorless point (no navmesh there — a
+        // real guard's floor snap is placement-driven), so without the pin he falls out of the
+        // cone through the floor and no 400-tick chase can catch him. The pin stands in for the
+        // floor; the AI keeps him enabled/live around it.
         let mut hit_guard = false;
         for i in 0..400 {
             let fire = i < 12;
             let input = Input::default();
             let sim = scene.sim.as_mut().unwrap();
             sim.step_bond(input, fire, false, false);
+            sim.drones.list[0].pos = spot;
             if let Some(imp) = sim.drones.player_impacts.iter().find(|p| matches!(p, nf_game::drone::PlayerImpact::Drone { drone: 0, .. })) {
                 let _ = imp;
                 hit_guard = true;

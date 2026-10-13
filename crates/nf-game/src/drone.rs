@@ -5085,10 +5085,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // component, normalised, and re-align the facing (the port's dir is the facing).
             // Heat-seekable [M `Bullet_heatseekable` 0x12f248]: the guards (class 2) while alive —
             // `+0xFC` set, health `+0xAC` > 0, anim state ≠ 1 — plus the copter bodies (class 0) and
-            // Bond (class 3); the port's targets are its live drones (`present`/`enabled`, not a
-            // corpse, health > 0). No RNG draws (determinism).
+            // Bond (class 3); the port's targets are its live drones (the gate below). No RNG draws
+            // (determinism).
             if b.homing {
-                let seekable = |dr: &Drone| dr.present && dr.enabled && !dr.corpse && dr.health > 0.0;
+                // `Bullet_heatseekable` 0x12f248 [M]: a guard (class 2) is seekable while its object
+                // exists (`+0xfc != 0` — the port's `drawn`, the per-tick cull stand-in), its health
+                // (`BL+0xac`) is > 0 and its view state (`+0xf4`) is not 1 (`WAIT_SWITCH` — a
+                // spawner-held template waiting for its channel is not a live target). The game does
+                // NOT read the +0xF0 enable byte here (the port used `enabled`) and a corpse is
+                // excluded by health 0, not by its own flag.
+                let seekable = |dr: &Drone| dr.drawn && dr.health > 0.0 && dr.state != state::WAIT_SWITCH;
                 let mut target = b.target;
                 if let Some(ti) = target {
                     if !seekable(&self.list[ti]) { target = None; }
