@@ -45,10 +45,18 @@ fn clear_guard(w: &mut Walker, g: usize) -> bool {
             .map(|(i, d)| (i, d.pos)).collect()
     };
     doors.sort_by(|a, b| walker::dxz(a.1, bpos).total_cmp(&walker::dxz(b.1, bpos)));
-    for (_, dp) in doors.into_iter().take(2) {
+    for (i, dp) in doors.into_iter().take(2) {
+        // Re-check: the escort's own door handling (DSTATE_OpenDoor 0x1681f8) may have opened it
+        // since the closed-set was built — walking a pointless "open the way" leg onto an OPEN
+        // door wedges on the corridor furniture (door #2, the walker 2.7 short for 6000 ticks).
+        if w.scene.sim.as_ref().unwrap().drones.doors.list[i].state & 0x12 == 0 { continue; }
         // The nav route first (the direct steer wedges on the corridor's bends), then the use press.
-        w.walk_nav_to(dp, "to the shut door", 1.6);
-        w.walk_to(Wp { at: dp, act: Act::Use { use_ticks: 120 }, arrive: 1.6 }, "open the way");
+        // Both stop 2.2 SHORT of the door: a kind-2 leaf parks its collider along the wall jog when
+        // open, and walking to the door position itself wedges on it (door #2: the walker stuck
+        // 2.7 short, 6000 ticks). 2.2 is inside the use sphere's stand-in reach (2.5), so the
+        // press still lands — the same geometry the mission test's press uses.
+        w.walk_nav_to(dp, "to the shut door", 2.2);
+        w.walk_to(Wp { at: dp, act: Act::Use { use_ticks: 120 }, arrive: 3.0 }, "open the way");
     }
     let gpos = w.scene.sim.as_ref().unwrap().drones.list[g].pos;
     let bpos = w.scene.sim.as_ref().unwrap().bond.pos;
@@ -180,7 +188,14 @@ fn the_escort_opens_the_interior_doors_on_his_route() {
             // A round cap: the escort stopped (10 s still inside w.follow's sense is not visible
             // here; 4500 ticks of no round progress = stalled).
             if w.total_ticks - round_start > 4500 { break; }
-            assert!(w.total_ticks - start_ticks < 60_000, "the escort follow cap\n{}", doors_dump(&w, ci));
+            // The budget follows the walkreal test's own precedent (12 rounds × 12000): master's
+            // walk-order (fix-script-start-tick) and weapons merges re-position the stairwell-head
+            // guard group, so the escort now takes more hide pauses (AllyLeadHide 0x15ec08 [M]) on
+            // the way west — the old 60k cap expired with him only at x −3.5 (the doors themselves
+            // opened on schedule: the +1327 OPEN line). A dry mid-round spiral is the real time
+            // sink (each wedged resupply leg burns 2×6000 ticks), and the per-round top-up below
+            // keeps the fights supplied.
+            assert!(w.total_ticks - start_ticks < 120_000, "the escort follow cap\n{}", doors_dump(&w, ci));
         }
         // Stalled: who is armed and started within 14 of the contact (LeadHide's band)?
         let guards: Vec<usize> = {
@@ -201,6 +216,13 @@ fn the_escort_opens_the_interior_doors_on_his_route() {
             w.scene.sim.as_ref().unwrap().drones.list[ci].pos[0],
             w.scene.sim.as_ref().unwrap().drones.list[ci].pos[1],
             w.scene.sim.as_ref().unwrap().drones.list[ci].pos[2], guards);
+        // Supply BEFORE the fights (the walkreal test's per-guard check): going dry mid-round is
+        // what wedges the run — the mid-fight resupply walk from the courtyard to the start-room
+        // pickup can wedge at the east ledge and burn 2×6000 ticks per leg.
+        {
+            let sim = w.scene.sim.as_ref().unwrap();
+            if sim.gun.clip + sim.gun.spare < 16 { drop(sim); w.resupply("round top-up"); }
+        }
         for g in guards {
             cleared.insert(g);
             if !clear_guard(&mut w, g) { cleared.remove(&g); } // retry next round
