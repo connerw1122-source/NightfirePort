@@ -186,3 +186,48 @@ manually aiming, the smoothed cursor (+0x120/+0x124) moves halfway to the raw cu
 4. **Tick:** the original is variable-step 60/30 Hz (§6). The port runs logic at a fixed 60 Hz (`FRAME_RATE_MUL` = 1,
    the original's fast path), samples input every rendered frame, accumulates mouse deltas into the next tick and
    interpolates rendering. Reproducing the 30 Hz fallback is optional (a "PS2 pacing" mode) once U-013 is measured.
+
+## 9. The port's pad path (fix-input)
+
+`nf_game::input` carries the game's pad path as code + generated data; `nf-view`'s `gamepad` cargo
+feature feeds a real pad into it. Everything below cites the decomp; the [L] tests run the game's own
+functions in the R5900 interpreter over the user's ACTION.ELF (`crates/nf-game/tests/input_styles_live.rs`,
+`input_ramp_live.rs`).
+
+1. **Dead zone** (`input::dead_zone`): `psiInput_PollDevices` 0x10ca78 — per axis, `v = byte − 127`,
+   |v| < 40 → 0, else `(v ∓ 40) × 1.4597701` (= 127/87), trunc → char arithmetic `+ 0x7f`, written to
+   both +0x128..0x12b and the curve copy +0x148..0x14b. The raw byte exists only between `scePadRead`
+   (`ps2_handle_pad` 0x10c738 touches just the button bytes) and this loop — G-012's "read the code"
+   answer; the curve-mapped write one iteration earlier is dead code.
+2. **Style table** (`input::map_inputs`, data in `input/styles_gen.rs`): generated from the decomp of
+   `psiInput_MapInputs` 0x10cd80 by `scripts/gen_styles.py` (each field cites its decomp line): the six
+   analog sources of actions 0..5 per style (style 2's L1 swaps the strafe byte, style 6 adds ±1.0 from
+   L1/R1), the (action, mask) button writes, the ±1 d-pad axis (styles 4/5 use Triangle/Cross), style 5's
+   L1-gated skip of actions 7/8, and the common tail (Start/d-pad/face, the LX/LY ±0.5 menu overwrites,
+   action 38's LX<−0.8 && RX>0.8 && Up, player 0's Start|Cross → 25). Verified bit-exact against the
+   game's own function, 8 styles × 21+ synthetic pad states.
+3. **Stick compensation** (`input::compensate`): `StickCompensation2` 0x17f798 (radial) /
+   `StickCompensation3` 0x17f850 (axis snap) with `MapAnalogStick` 0x17f958 — the game multiplies by the
+   literal 0.003921569 (not ÷255; the constant's rounding differs by 1 ulp). Per style: Comp2(3,4) then
+   Comp3(0,2) for styles 2/5, else Comp2(3,4), Comp2(0,5), Comp3(1,2). The curve table
+   (`gAnalogStickMappingFunction`, 129 bytes at 0x2a3840) is read from the user's ELF, never committed.
+4. **Ramps** (`input::AccelState`): `AccelFunc0` 0x1a9218 — the state moves toward `base` (|stick| <
+   hi) or `base·mul` by `(base·mul − base)/steps` per tick, |stick| ≤ lo resets to base, clamp
+   ±base(1+mul); the target is UNSIGNED, the stick's sign rides the multiply outside (`Player_Move`
+   writes obj+0x34 = (−action0) × state × FRAME_RATE_MUL [M 0x191dd0:143-148]). `Player_Aiming` 0x1a1d28
+   inlines the same shape for its states: +0x8f4/+0x8f8 (aim edge-turn X/Y), +0x900 (free-look pitch),
+   +0x8ec/+0x8f0 (scope). `Player_Init` 0x1910f8:57-63 zeroes them all. Verified tick-by-tick against
+   AccelFunc0 in the interpreter (the EE float-arg convention: six floats in f12..f17, the state pointer
+   in a0 — decoded from the prologue).
+5. **The pad driver** (`input::PadDriver`): binds the config, the tuning values and one set of ramp
+   states per player; `tick` runs dead zone → map → compensate → invert → clamp [M `Input_Update`
+   0x17ee88's order] and produces the port's `player::Input`: turn/look through the ramps (free look),
+   the aim-mode crosshair at `Plr_AimSpeed × 0.125` with the ramped edge-turn beyond the box, jump/
+   crouch on the newly-pressed edge (+0x120's semantics), fire 9, aim mode 19, zoom = action 6 in aim
+   mode (`Player_Zoom` 0x1a1a70). Not modelled yet: the hold-counter active flags (actions 20/21, the
+   game's pad weapon cycling) — the pad's weapon switch rides the port's keyboard mechanisms for now.
+6. **The backend** (`nf-view/src/gamepad.rs`, `--features gamepad`): `gilrs` 0.11 (MIT OR Apache-2.0)
+   drains the OS pad and maps it onto the PS2 bits/bytes (Cross 0x40 … D-pad; sticks to raw bytes,
+   0 = left/up), then `PadDriver::merge` runs the game's path and merges the result into the keyboard's
+   `Input` (axes add+clamp, buttons OR). No pad connected → no-op: the keyboard/mouse path is untouched
+   (the recorded-trace test pins it bit-exact). Master builds without the feature and without gilrs.
