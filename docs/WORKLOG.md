@@ -7348,3 +7348,26 @@ damage multipliers, reload + other drone weapons, weapon swaps by animation even
 missing drone skins via CommonAnimFile + AnimSleeveGetEntity (G-021), drone modes 9/0x12/0x1E
 and Drone_InitComms cover-node order (G-026). Branch from origin/master at 78d73e0.
 Started 12:47 UTC, sandbox expires ~14:44 UTC.
+
+**fix-ai-remainder outcome (14:35 UTC)**: three of the eight items landed; the rest scoped in
+docs/reports/fix-ai-remainder.md. (1) SpecialDeath was already on master (drone.rs `handle_death`,
+the param-13 `+0xBD4` dispatch, test `tower_guards_fall_out_of_the_towers`) — GAPS G-026 updated to
+say so. (2) Head tracking + the aim pitch ported: `Drone::head_yaw/head_pitch/tracking/track_recheck`
+tick through `NDrone2_DoTracking` 0x1479d8's shape (track the opponent from the first sight pass —
+`los`, not the reaction-gated `seen`; Rand(5) on the track start, Rand(10) on the stop, the
+same-target re-decide draws nothing; yaw ±1.1 with 0 beyond 2.6, pitch [-1.0, +0.6]; speed 0.14
+alerted else 0.07; ease back to 0 while the 0x180 aim flag is up) and `Drone::aim_pitch` ports
+`AnimObjectAimAt` 0x1bfe58's second angle (±0.9 mode 0) — `object_pose` applies the head rotation to
+bone 5 alone and the pitch to bone 2 and below, composed R_yaw · R_pitch premultiplied (the game's
+q_yaw ⊗ q_pitch ⊗ q_bone), with the port's axis stand-ins documented. RNG note: the Rand(5)/Rand(10)
+transition draws join the stream — live checks + seed re-picks may be needed like 0072. (3) Corpse
+fading: `Scene::posed_vertices` multiplies the plain character vertices' alpha by the drone's
+`NDrone2_FadeOut` 0x172dd8 alpha (obj+0x106). Tests: `crates/nf-game/tests/fix_ai_remainder_live.rs`
+(head tracks Bond pre-attack, the posed bone-5 delta carries head_yaw and points at Bond, the aim
+owns the pose after ATTACK, the pitch follows Bond's height ±) and
+`crates/nf-view/tests/fix_ai_remainder_live.rs` (the fade alpha reaches the posed vertices; the
+end-to-end kill attempts are listed in the report). Not done (time): Bond's 16 hit boxes, reload
+for every weapon, weapon swaps by anim events (G-023), missing skins (G-021), drone modes
+9/0x12/0x1E + Drone_InitComms cover-node order, the ally-glance half of DoHeadTrackingBehaviour.
+Suite: nf-game lib + the two new test files pass (`--test-threads=1`); the full 4-crate run did not
+fit the sandbox window — the touched crates' slice is green, the rest untouched.
