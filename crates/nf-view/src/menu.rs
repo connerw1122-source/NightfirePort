@@ -195,7 +195,7 @@ impl GameFlow {
         let level = self.level_to_load;
         // Phase 0: only the 0x71/0x73 intro-wrapped codes record a movie code [M 0x1d6360 "the level
         // still carries the 0x71/0x73 prefix"]. The driving codes 0x09xxxxxx load directly.
-        if matches!(level >> 16, 0x71 | 0x73) {
+        if matches!((level >> 20) & 0xff, 0x71 | 0x73) {
             self.movie_code = level;
             self.push_state(ST_MOVIE);
             return false;
@@ -632,6 +632,9 @@ const YELLOW: u32 = 0xfec43e;
 pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&Lang>, textures: &[(u32, crate::scene::TextureImage)], aspect: f32) -> HudFrame {
     let mut h = Hud { quads: Vec::new(), aspect, textures };
     let bind = |id: u32| -> String { lang.and_then(|l| l.bind(id)).unwrap_or("").to_string() };
+    // Without the language file the hint bars keep their button layout (the ~N tokens) so the pages
+    // still render [S].
+    let hint = |id: u32, fallback: &str| -> String { let s = bind(id); if s.is_empty() { fallback.into() } else { s } };
     let cream = gs(CREAM, 0xff);
     let bright = gs(BRIGHT, 0xff);
     let dim = gs(CREAM, 0x80);
@@ -667,7 +670,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
                 h.text_scaled(Anchor::Left, font, -2, &bind(lbl), mx(167.0 + 153.0), my(y + 6.0), true, c, true, scale);
             }
             h.text(Anchor::Centre, font, -2, &bind(MAIN_DESCS[fe.cursor.min(2)]), mx(103.0 + 217.0), my(357.0 + 14.0), false, bright, true);
-            hint_bar(&mut h, font, &bind(0x54e), 50.0, 419.0, cream);
+            hint_bar(&mut h, font, &hint(0x54e, "~V Scroll  ~A Select"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
         Page::Codename => {
@@ -685,7 +688,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             if fe.confirming_default_profile {
                 confirm_box(&mut h, font, &bind(0x100_00bb), bright);
             }
-            hint_bar(&mut h, font, &bind(0x216), 50.0, 419.0, cream);
+            hint_bar(&mut h, font, &hint(0x216, "~A Select  ~Y Create  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
         Page::Difficulty => {
@@ -699,7 +702,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             emblem(&mut h, 0x0300_00a5, 0x0300_00bf);
             wheel(&mut h, fe, font, lang, |_fe, row| bind(DIFFICULTIES[row.min(2)]), cream);
             h.text(Anchor::Centre, font, -2, &bind(DIFFICULTY_DESCS[fe.cursor.min(2)]), mx(320.0), my(301.0 + 40.0), false, bright, true);
-            hint_bar(&mut h, font, &bind(0x218), 50.0, 419.0, cream);
+            hint_bar(&mut h, font, &hint(0x218, "~A Select  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
         Page::MissionSelect => {
@@ -714,7 +717,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             emblem(&mut h, 0x0300_0084, 0x0300_00bf);
             wheel_dim(&mut h, fe, font, lang, |_fe, row| bind(CAMPAIGN[row].0), |fe, row| !fe.unlocked_row(row), cream);
             h.text(Anchor::Centre, font, -2, &wrap(&bind(CAMPAIGN[fe.cursor.min(CAMPAIGN.len() - 1)].1), 70).join(" "), mx(320.0), my(301.0 + 40.0), false, bright, true);
-            hint_bar(&mut h, font, &bind(0x208), 50.0, 419.0, cream);
+            hint_bar(&mut h, font, &hint(0x208, "~A Select  ~Y Dossier  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
         Page::Dossier => {
@@ -731,7 +734,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             for (i, line) in wrap(&bind(CAMPAIGN[m].1), 70).iter().take(6).enumerate() {
                 h.text(Anchor::Centre, font, -2, line, mx(320.0), my(160.0 + i as f32 * 20.0), false, cream, true);
             }
-            hint_bar(&mut h, font, &bind(0x218), 50.0, 419.0, cream);
+            hint_bar(&mut h, font, &hint(0x218, "~A Select  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
         Page::Options => { page_rows(&mut h, fe, font, "OPTIONS", dim, bright); }

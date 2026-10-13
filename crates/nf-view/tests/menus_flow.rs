@@ -217,9 +217,12 @@ fn cursors_wrap_and_back_walks_up_the_pages() {
     fe.action(Action::Confirm); // the confirm box
     fe.action(Action::Confirm); // through it → difficulty
     assert_eq!(fe.page, Page::Difficulty);
-    // The difficulty wheel wraps over its three rows.
+    // The difficulty wheel wraps over its three rows; the box's ✕ lands the cursor on Agent.
     fe.action(Action::Up);
-    assert_eq!(fe.cursor, 2, "00 Agent wraps up from Operative");
+    assert_eq!(fe.cursor, 0, "up from Agent reaches Operative");
+    fe.action(Action::Down);
+    fe.action(Action::Down);
+    assert_eq!(fe.cursor, 2, "down twice reaches 00 Agent");
     fe.action(Action::Confirm);
     assert_eq!(fe.page, Page::MissionSelect);
     // Down 12 times on the mission select wraps to the same row.
