@@ -98,10 +98,10 @@ fn bond_at(p: [f32; 3]) -> Player { Player { pos: p, target: [p[0], p[1] + 0.5, 
 fn guard_notices_and_fires_like_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    // Seed 2 (re-picked for fix-lighting: the ambient radiators, the type-0x4E lights and the guards'
-    // muzzle-light creates joined the RNG; WORKLOG 0072 had 1, 0069 had 2, 0037 also 7):
+    // Seed 5 (re-picked at the fix-ai-remainder merge: the head-tracking draws joined the RNG; fix-lighting
+    // had 2, WORKLOG 0072 1, 0069 2, 0037 also 7):
     // the first combat-move roll picks the step (strafe or step are equally likely; the trace shows steps).
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 2);
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 5);
     let mut sim = l.sim(drones, rng);
     // As in the live session, Bond appears (teleported) after the level has run: 10 ticks with him far away first, so
     // spawner 266's drone is already in the list.
@@ -223,14 +223,14 @@ fn guard_patrols_like_the_game() {
 /// Live trace (work/chase_trace.tsv: Bond teleported to (79.62, 22.6, 95.96), settling at (79.86, 22.92, 96.0)): the
 /// gate guard notices him, goes Combat → OutOfRange → RunForCover (0x8C) → UnderCoverInit (31 ticks) → UnderCoverIdle →
 /// UnderCoverAim (37 ticks, lean-out 176 at speed 1.5) → UnderCoverFire behind corner node 1 (59.11, 98.69), firing from
-/// (58.83, 99.32). Seed 3 (re-picked at the fix-impacts merge after the impact/casing draws joined the RNG; 0072 had 1,
+/// (58.83, 99.32). Seed 1 (re-picked at the fix-ai-remainder merge after the head-tracking draws joined; fix-impacts had 3, 0072 had 1,
 /// 0056 had 2, 0037 before the snow also 1) makes the port's rolls pick no first-sight move and the lean cover type, as the game did here.
 #[test]
 fn guard_takes_cover_like_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    // Seed 3 (re-picked at the fix-impacts merge: the impact/casing draws joined the RNG; 0072 had 1, 0056 had 2).
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 3);
+    // Seed 1 (re-picked at the fix-ai-remainder merge: the head-tracking draws joined the RNG; fix-impacts had 3, 0072 1, 0056 2).
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 1);
     let mut sim = l.sim(drones, rng);
     let player = bond_at([79.86, 22.92, 96.0]);
     for _ in 0..700 { sim.tick(&d, &player); }
@@ -245,7 +245,7 @@ fn guard_takes_cover_like_the_game() {
     let err = ((g.pos[0] - 58.83).powi(2) + (g.pos[2] - 99.32).powi(2)).sqrt();
     assert!(err < 0.4, "in cover at ({:.2}, {:.2}), {err:.2} from the live position", g.pos[0], g.pos[2]);
     // Sister: with Bond 6 units away (the first test's setup) the same guard never runs for cover.
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 3);
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 1);
     let mut near = l.sim(drones, rng);
     for _ in 0..300 { near.tick(&d, &bond_at([67.31, 26.5, 99.47])); }
     assert!(near.list[gi].log.iter().all(|(_, s)| *s != 0x8c), "sister: cover must depend on the situation");

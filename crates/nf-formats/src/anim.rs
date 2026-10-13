@@ -67,7 +67,11 @@ impl Sequence {
 
     pub fn value_with(&self, channel: usize, frame: u32, arith: Arith) -> f32 {
         let t = frame.saturating_sub(1);
-        let segs = &self.channels[channel];
+        // The game's `AnimFrameCopy` (0x1c5668) evaluates only the tracks the sequence carries — a
+        // narrow record (the 22-channel face tracks) never reads past its own channel list, and the
+        // bones beyond keep the anim object's previous (bind) values. A channel past the list reads 0:
+        // the neutral track (an all-zero polynomial), never a panic.
+        let Some(segs) = self.channels.get(channel) else { return 0.0 };
         let s = segs.iter().find(|s| t <= s.end).unwrap_or(segs.last().unwrap());
         let tf = t as f32;
         match arith {

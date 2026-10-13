@@ -15,6 +15,9 @@ use std::collections::HashMap;
 pub mod state {
     pub const GLOBAL: u8 = 0x00;
     pub const WAIT_SWITCH: u8 = 0x01;
+    /// `NDrone2_DSTATE_PlayScript` 0x15ba68 = `NDrone2_StateFuncs[3]` [L table read]: a drone with a
+    /// start script (`Drone+0x554`, param 1) plays it here before its start state.
+    pub const PLAY_SCRIPT: u8 = 0x03;
     pub const IDLE: u8 = 0x04;
     pub const ALERT: u8 = 0x05;
     pub const INIT_PATROL: u8 = 0x06;
@@ -397,6 +400,17 @@ pub struct Drone {
     pub desired_yaw: f32,
     /// Upper-body aim yaw (`AnimObjectAimAt`, anim+0xF4) relative to the body.
     pub aim_yaw: f32,
+    /// The aim-at pitch (`AnimObjectAimAt` 0x1bfe58 computes yaw AND pitch; the port kept the yaw only).
+    /// Positive = aim up; the pose negates it for the matrix (positive rotation about +right pitches down).
+    pub aim_pitch: f32,
+    /// Head tracking (`AnimObjectHeadTrack` 0x1bf618 via `psiBuildMatrixPalette` 0x111498, requested by
+    /// `NDrone2_DoTracking` 0x1479d8 / `DoHeadTracking` 0x1472c8): the stored, smoothed head yaw / pitch
+    /// relative to the animation (the sAnimObject's +0x80 / +0x88), the 0x10-track flag stand-in, and the
+    /// re-decide timer `+0x358`. Both angles positive up.
+    pub head_yaw: f32,
+    pub head_pitch: f32,
+    pub tracking: bool,
+    pub track_recheck: u32,
     pub alert: f32,
     pub alert_floor: f32,
     pub props: [u32; 3],
@@ -725,10 +739,29 @@ pub struct Drone {
     pub disabled_logged: bool,
     /// `PlrStat_LogEnemyDispatched` ran (a death without the KO flag — `OnInitDeath` 0x145bd0:57-59).
     pub dispatched_logged: bool,
+    /// `Drone+0x554`: the drone's start script (placement param 1; `NDrone2_DefaultInit` 0x14b300:
+    /// `+0x554 = piVar19[0xE]` = params[1], 0 when the word is 0x6000000 or one of the 0x6000892/0x600089c
+    /// specials). Non-zero → `NDrone2_DSTATE_Global`'s enter starts the drone in PlayScript (3).
+    pub start_script: u32,
 }
 
 /// Normalise a vector (the grenade throw direction helper).
 fn norm(v: V3) -> V3 { let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(); if l > 0.0 { [v[0] / l, v[1] / l, v[2] / l] } else { v } }
+
+/// Rodrigues' rotation about the unit `axis` by `ang` radians, as a 4×4 (the pose rotations of
+/// `AnimObjectHeadTrack` 0x1bf618 / `AnimObjectAimAt` 0x1bfe58 — the game builds the same rotation with
+/// `Quat_AxisAngleToQuat` 0x1becb8 + `Quat_QuatToMat`).
+fn axis_angle_mat(axis: [f32; 3], ang: f32) -> nf_formats::anim::Mat4 {
+    let (s, c) = (ang.sin(), ang.cos());
+    let t = 1.0 - c;
+    let [x, y, z] = axis;
+    [
+        [t * x * x + c, t * x * y - s * z, t * x * z + s * y, 0.0],
+        [t * x * y + s * z, t * y * y + c, t * y * z - s * x, 0.0],
+        [t * x * z - s * y, t * y * z + s * x, t * z * z + c, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
 
 impl Drone {
     /// From a placement (parameters by index) after `NDrone2_DefaultInit` / `DoModeSettingsNEW`.
@@ -767,6 +800,9 @@ impl Drone {
             _ => (0u16, 0i16),
         };
         if d.level == 0x0700_0014 && (0x34..0x37).contains(&grenade_weapon) { grenade_weapon = 0x34; }
+        // `Drone+0x554` (NDrone2_DefaultInit 0x14b300: `+0x554 = piVar19[0xE]` = params[1]): the start
+        // script. 0x6000000 and the 0x6000892/0x600089c dtypenew specials leave it 0.
+        let start_script = match param(1) { 0x6000000 | 0x6000892 | 0x600089c => 0, s => s };
         let mut dr = Drone {
             skin, anim_set, weapon, pos, yaw, desired_yaw: yaw, aim_yaw: 0.0, alert, alert_floor: alert, props: normal, alert_props,
             sight_range: e8, half_fov: crate::trig::HALF_PI, engage_range: f0, combat_range: fc,
@@ -779,7 +815,7 @@ impl Drone {
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
             grenade_weapon, grenade_count, pending_grenade: false,
-            shots: Vec::new(), log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
+            shots: Vec::new(), log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, start_script, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
             switch_channel: param(3) as u8, channel_on: false, placement: 0, spawn_seq: 0, spawn_frame: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
@@ -798,6 +834,7 @@ impl Drone {
             death_channel: crate::kiko::chaser_death_channel(d.level, skin, param(15) as u8, param(12) as u8),
             special_death: param(13), special_spot: pos, special_yaw: yaw,
             stationary: param(13) != 0 && param(13) != 0x0600_021f, alpha: 255.0, raise: None,
+            head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0,
             velocity: [0.0; 3], in_air: false, on_surface: true,
             door_open_at: 0,
@@ -1383,11 +1420,15 @@ impl Drone {
         }
     }
 
-    /// The sequence and frame the playing script shows (opcode-0 command covering the script time).
+    /// The sequence and frame the playing script shows. The LAST-started opcode-0 window covering the
+    /// script time owns the root bone (`AnimProcessScriptCmds` 0x1c1b38 starts every window; the later
+    /// one overwrites — [L] the 07000006 driver's face track, started after his body track, pins his
+    /// root to its all-zero track so he holds position while the body's root runs 0.57; the free
+    /// `anim::script_frame` is last-wins the same way, fix-drone2).
     pub fn script_frame(&self, d: &Data) -> Option<(u32, u32)> {
         let script = d.scripts.get(&self.anim.script?)?;
         let t = (1 + self.anim.time) as u16;
-        let (a, _, q) = script.sequences().find(|(a, b, _)| *a <= t && t <= *b).or_else(|| script.sequences().next())?;
+        let (a, _, q) = script.sequences().filter(|(a, b, _)| *a <= t && t <= *b).last().or_else(|| script.sequences().next())?;
         Some((q, (t.saturating_sub(a) + 1) as u32))
     }
 
@@ -1958,10 +1999,10 @@ impl Drone {
     pub fn local_pose(&self, d: &Data) -> Option<crate::anim::Pose> {
         let skin = d.skins.get(&self.skin)?;
         let skel = d.skeletons.get(&skin.skeleton)?;
-        let cur = crate::anim::script_pose(d.scripts, d.sequences, skel, skin, self.anim.script?, 1.0 + self.anim.ftime)?;
+        let cur = crate::anim::script_pose_drone(d.scripts, d.sequences, skel, skin, self.anim.script?, 1.0 + self.anim.ftime)?;
         let outs: Vec<(crate::anim::Pose, f32)> = self.anim.outgoing.iter()
             .filter_map(|o| {
-                let mut p = crate::anim::script_pose(d.scripts, d.sequences, skel, skin, o.script, o.time)?;
+                let mut p = crate::anim::script_pose_drone(d.scripts, d.sequences, skel, skin, o.script, o.time)?;
                 if o.unyaw != 0.0 { if let Some(r) = p.first_mut() { r.1 = crate::anim::unyaw(r.1, o.unyaw); } }
                 Some((p, o.weight()))
             }).collect();
@@ -1970,8 +2011,12 @@ impl Drone {
 
     /// Bone matrices in object space (root translation zeroed: `AnimSeqTick` takes it as root motion) with the
     /// upper-body aim (`AnimObjectAimAt`, bone 2: bone 2 and everything below it turned by the aim yaw about the
-    /// model's up axis through bone 2 — *approximation*: the game rotates about the spine axis and pitches too, G-026),
-    /// and the hip height. Drawing and hit boxes both use it.
+    /// model's up axis through bone 2, plus the aim pitch about the aim's horizontal right axis — the game's
+    /// second angle, mode-0 clamp ±0.9, 0x1bfe58; *approximation*: the game rotates about the animated spine's
+    /// own axes), the head tracking (`AnimObjectHeadTrack` 0x1bf618: the head bone ALONE — `psiBuildMatrixPalette`
+    /// 0x111498 calls it on bone 5 while the 0x30 track flags are set — yaw about the neck axis and pitch about
+    /// the head's right axis, premultiplied `q_yaw ⊗ q_pitch ⊗ q_bone`; *approximation*: the port's axes are the
+    /// model's), and the hip height. Drawing and hit boxes both use it.
     pub fn object_pose(&self, d: &Data) -> Option<(Vec<nf_formats::anim::Mat4>, f32)> {
         let skin = d.skins.get(&self.skin)?;
         let mut local = self.local_pose(d)?;
@@ -1979,10 +2024,17 @@ impl Drone {
         if let Some(r) = local.first_mut() { r.0 = [0.0; 3]; }
         let mut world = nf_formats::anim::world_pose(&local, skin);
         let a = self.aim_yaw;
-        if a.abs() > 1e-4 && world.len() > 2 {
+        if (a.abs() > 1e-4 || self.aim_pitch.abs() > 1e-4) && world.len() > 2 {
             let pivot = world[2][3];
             let (sn, cs) = (a.sin(), a.cos());
-            let rot: nf_formats::anim::Mat4 = [[cs, 0.0, -sn, 0.0], [0.0, 1.0, 0.0, 0.0], [sn, 0.0, cs, 0.0], [0.0, 0.0, 0.0, 1.0]];
+            let rot_y: nf_formats::anim::Mat4 = [[cs, 0.0, -sn, 0.0], [0.0, 1.0, 0.0, 0.0], [sn, 0.0, cs, 0.0], [0.0, 0.0, 0.0, 1.0]];
+            // The pitch axis: the aim direction's horizontal right (forward = (sin θ, 0, cos θ) → right =
+            // (cos θ, 0, −sin θ), the game's cross(up, forward)). Positive rotation about +right pitches the
+            // forward DOWN, and `aim_pitch` is positive up, so the matrix angle is negated. Composed as
+            // R = R_yaw · R_pitch (the game's q_yaw ⊗ q_pitch ⊗ q_bone premultiply).
+            let th = self.yaw + a;
+            let rp = axis_angle_mat([th.cos(), 0.0, -th.sin()], -self.aim_pitch);
+            let rot = nf_formats::anim::mul(&rot_y, &rp);
             let below = |b: usize| { let mut p = Some(b); while let Some(x) = p { if x == 2 { return true; } p = skin.parent(x); } false };
             for b in 0..world.len() {
                 if !below(b) { continue; }
@@ -1992,6 +2044,21 @@ impl Drone {
                 for k in 0..3 { r[3][k] += pivot[k]; }
                 world[b] = r;
             }
+        }
+        let (hy, hp) = (self.head_yaw, self.head_pitch);
+        if (hy.abs() > 1e-4 || hp.abs() > 1e-4) && world.len() > 5 {
+            // Bone 5 only (HeadTrack rewrites just that bone's quaternion; the head carries no children).
+            let pivot = world[5][3];
+            let (sn, cs) = (hy.sin(), hy.cos());
+            let rot_y: nf_formats::anim::Mat4 = [[cs, 0.0, -sn, 0.0], [0.0, 1.0, 0.0, 0.0], [sn, 0.0, cs, 0.0], [0.0, 0.0, 0.0, 1.0]];
+            let th = self.yaw + hy;
+            let rp = axis_angle_mat([th.cos(), 0.0, -th.sin()], -hp);
+            let rot = nf_formats::anim::mul(&rot_y, &rp);
+            let mut w = world[5];
+            for k in 0..3 { w[3][k] -= pivot[k]; }
+            let mut r = nf_formats::anim::mul(&w, &rot);
+            for k in 0..3 { r[3][k] += pivot[k]; }
+            world[5] = r;
         }
         Some((world, hip))
     }
@@ -2704,12 +2771,64 @@ impl Drone {
         if let Some(r) = self.handle_stun(d, rng, frame, s, m) { return r; }
         match (s, m) {
             // `NDrone2_DSTATE_Global` enter: a drone with a switch channel that is still off waits (WaitSwitch); else its
-            // start state `+0x5A2` (InitPatrol with props 0x24/0x25, else Idle). Modes 0x1E / 0x17 and start scripts
+            // start state `+0x5A2` (InitPatrol with props 0x24/0x25, else Idle). Modes 0x1E and start scripts
             // (PlayScript 3) are not ported.
             (GLOBAL, msg::ENTER) => {
                 self.return_state = self.start_state(d);
                 if self.switch_channel != 0 && !self.channel_on { self.set_state(WAIT_SWITCH); return true; }
+                // `NDrone2_DSTATE_Global` 0x15b830 msg 1: dtypenew 0x17 (the truck driver) → TruckDriverInit
+                // (0x32) BEFORE the start-script branch — the driver never enters PlayScript, and
+                // WaitSwitch 0x15b960 case 3 (his channel firing) routes him to 0x32 the same way. [L]
+                // 05-truck's 07000006 segment: the driver (drone 13) is in state 0x32 for the whole
+                // 700-frame window while the level's start-script guards sit in 3.
+                if self.mode == 0x17 { self.set_state(TRUCK_DRIVER_INIT); return true; }
+                // `NDrone2_DSTATE_Global` 0x15b830: a drone with a start script (`Drone+0x554`) enters
+                // PlayScript (3) instead of its start state — the script plays first [L 07000001's first
+                // guard is in state 3 on the trace's line 0].
+                if self.start_script != 0 { self.set_state(PLAY_SCRIPT); return true; }
                 self.set_state(self.start_state(d));
+                true
+            }
+            // `NDrone2_DSTATE_PlayScript` 0x15ba68. ENTER (msg 1): `+0x4F8 |= 0x10000 | 0x2000`, then
+            // SetScript(`+0x554`, …) per script — 0x60005e6/0x60008ae and the default → (0x24, 0x11a,
+            // 0x1e, 0, 5, 0); 0x6000168 → (10, 0x32, 8, 0, 5, 0); 0x6000169 → (5, 0x32, 0x1e, 0, 5, 0)
+            // + AttackTalk + `+0x4F8 |= 0x400000`; 0x60007ac → (10, 0x32, 0xf, 0, 5, 0) + props
+            // 0x3b/0x3a cleared. The resume `+0xCD8` (0x56 ATTACK for the default/0x60005e6/0x60008ae
+            // arms) is the IMPACT resume (cases 6/7/8/9 → `HandleImpact(+0xCD8)`), not the script's
+            // natural end — msg 5 lands back in this state (below). Not ported: the impact resume, the
+            // AttackTalk/flag side effects, and the UPDATE arm's fully-alerted
+            // `NDrone2_SeenAndAttacking` (fix-ai-traces' live check 2: the game's guard alert never
+            // reaches 1.0 in the PlayScript window — no [L] evidence it fires).
+            (PLAY_SCRIPT, msg::ENTER) => {
+                let (st, follow) = match self.start_script {
+                    0x6000_168 => (10, 0x32),
+                    0x6000_169 => (5, 0x32),
+                    0x6000_7ac => (10, 0x32),
+                    _ => (0x24, 0x11a),
+                };
+                self.play_script(d, self.start_script, st, follow, 0, msg::ANIM_DONE);
+                true
+            }
+            // msg 5 (0x15ba68 case 5, the script's natural end): `+0x554 = 0`, then — the default and
+            // 0x60005e6/0x60008ae arms → `SetState(+0x5A2)` (the START state, not ATTACK: the guard on
+            // 07000006 whose 1244-frame start script ends settles into IDLE, fix-npcs' d15); the
+            // 0x6000168/0x6000169 arms → `CallAnim(0, 10, 0, 0x68, 0, 0)` + AttackTalk and the state is
+            // HELD (the 07000001 guard's script 06000169 ends into his idle-then-aim follow-up);
+            // 0x60007ac → `SetDAnimNow(0xf4, 0, 1)` + the start state (no 0x60007ac drone is ported).
+            (PLAY_SCRIPT, msg::ANIM_DONE) => {
+                let played = self.anim.script.unwrap_or(0);
+                self.start_script = 0;
+                match played {
+                    0x6000_168 | 0x6000_169 => { self.call_anim(d, 10, AIM_STAND_FIRE, 0); true }
+                    _ => { let s = self.start_state(d); self.set_state(s); true }
+                }
+            }
+            (PLAY_SCRIPT, msg::UPDATE) => {
+                // The game's msg-3 also attacks a fully-alerted drone (`NDrone2_SeenAndAttacking`), but
+                // the trace's guard stays in 3 for ~350 lines — the port's creation alert for it is
+                // unresolved (the port's start_state mapped it to ATTACK; see the report), so only the
+                // look runs here for now.
+                if let Some(n) = self.look_for_opponent(d) { self.set_state(n) }
                 true
             }
             (WAIT_SWITCH, msg::ENTER) => { self.enabled = false; self.vision_on = false; self.watching = false; true }
@@ -3211,16 +3330,31 @@ impl Drone {
             // CivilianInit 0x172730 / Civilian 0x15d118 / CivilianScared 0x15d3a0 / CivilianHiding 0x15d520 /
             // CivilianPatrol 0x15d610, 0x1c → HostageIdle 0x15ce60. Before this block the port had NO handler for
             // any of them: the playtest's guests, driver, hostage-side NPCs and civilians stood frozen (turning only).
-            // TruckDriverInit (0x160bd0) ENTER: prop 0x1d → AssignAIPath(8) then cleared; the port has no `+0x554`
-            // script link (the truck NIS), so the game's script-less branch applies — straight to TruckDriverIdle
-            // (case 1 else). The scripted branch (danim 0x11a via SetScript, the `+0x4F8` bit clears) is not modelled:
-            // the driver stands on the truck bed under gravity here. The sound/bullet arms keep the game's routing
-            // for the transient state (0x33 / HandleImpact(0x33, 0)).
+            // TruckDriverInit (0x160bd0) ENTER (case 1): prop 0x1d → AssignAIPath(8) in BOTH branches;
+            // `+0x694 = obj+0x54` (the sit target, not ported); a start script (`+0x554`) plays FROM HERE
+            // — SetScript(`+0x554`, 0x24, 0x11a, 0x1e, 0, 5, 0), `+0x554 = 0`, `+0x4F8` bits 0x20/0x80
+            // cleared — and the state HOLDS until the script's done (case 5 → 0x35 when the AI-path
+            // counter `+0x9f2` is set, else 0x34): [L] 05-truck's 07000006 driver (start script 0600011d)
+            // sits in 0x32 for the whole 700-frame trace window. Script-less: the prop clears and it is
+            // straight to TruckDriverIdle. The sound/bullet arms keep the game's routing for the
+            // transient state (0x33 / HandleImpact(0x33, 0)).
             (TRUCK_DRIVER_INIT, msg::ENTER) => {
-                if self.prop(d, 0x1d) { self.assign_path(d, 8); d.props.set(0x1d, &mut self.props, 0); }
+                if self.prop(d, 0x1d) { self.assign_path(d, 8); }
+                if self.start_script != 0 {
+                    let script = self.start_script;
+                    self.start_script = 0;
+                    self.play_script(d, script, 0x24, 0x11a, 0, msg::ANIM_DONE);
+                    return true;
+                }
+                d.props.set(0x1d, &mut self.props, 0);
                 self.set_state(TRUCK_DRIVER_IDLE);
                 true
             }
+            // 0x160bd0 case 5 (the script's done): the AI-path counter `+0x9f2` (InitAIPath 0x153720's
+            // node cursor — the port models no per-node path walk, and the game's driver is never shown
+            // leaving on a mission path in the traces) → 0x34; only a running mission path would take
+            // 0x35. The driver steps into TruckDriverIdle ("hands behind back", the user's C1).
+            (TRUCK_DRIVER_INIT, msg::ANIM_DONE) => { self.set_state(TRUCK_DRIVER_IDLE); true }
             (TRUCK_DRIVER_INIT, msg::SOUND | msg::ALARM) => { self.set_state(TRUCK_DRIVER_INIT_ALERT); true } // 0x11/0x12/0x13/0x16/0x1e → 0x33
             (TRUCK_DRIVER_INIT, msg::BULLET) => self.on_bullet_resume(d, rng, frame, TRUCK_DRIVER_INIT_ALERT, false), // HandleImpact(0x33, 0)
             // TruckDriverInitAlert (0x160d98): anim done → CivilianScared (0x12); bullets/noise HandleImpact(0, …).
@@ -5854,6 +5988,47 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // which let the torso wind all the way around (the playtest's "spine flipped" patrol look).
             let want = if dr.anim.class == 2 && dr.aims_torso() { angle_difference(dr.yaw, dr.yaw_to_opp).clamp(-0.9, 0.9) } else { 0.0 };
             dr.aim_yaw = rotate_to_bearing(dr.aim_yaw, want, 0.2, crate::trig::PI);
+            // Head tracking and the aim pitch (fix-ai-remainder; G-026). `NDrone2_DoTracking` 0x1479d8:
+            // `NDrone2_AimTest` 0x147918 passing (the aim/fire states — the port's `aims_torso` gate) puts
+            // the 0x180 aim flag up: `AnimObjectHeadTrack` 0x1bf618 clears the 0x10 track flag
+            // (`&= 0xffffffef`), the stored head angles ease back to 0 (HeadTrack's bVar5 == 2 path), and
+            // `AnimObjectAimAt` 0x1bfe58 aims the spine (bone 2) with yaw AND pitch — mode-0 clamps ±0.9
+            // (0x3f666666 / 0xbf666666), smoothed at `SetAiming`'s 0.2 (0x1c6878, 0x3e4ccccd). With the aim
+            // off, `NDrone2_DoHeadTracking` 0x1472c8 tracks the opponent (re-decided on `+0x358`, the
+            // same-target re-decide returning before the Rand(5); the tracked point is the opponent's
+            // tracked bone — the port stands in Bond's eye) or, with none, one Rand(10) stops the tracking
+            // and the angles ease back. HeadTrack's clamps: yaw ±1.1, 0 beyond 2.6; pitch [-1.0, +0.6];
+            // speed 0.14 alerted (`DCVars+0x50c > 0.66`) else 0.07 (0x1472c8). Both angles positive up.
+            let aiming = dr.anim.class == 2 && dr.aims_torso();
+            if aiming {
+                let dy = player.eye[1] - (dr.pos[1] + 1.2);
+                let want_p = (dy / dr.dist.max(0.001)).atan().clamp(-0.9, 0.9);
+                dr.aim_pitch = rotate_to_bearing(dr.aim_pitch, want_p, 0.2, crate::trig::PI);
+                if dr.tracking { let _ = rng.rand(10); dr.tracking = false; } // the stop draw (0x1472c8)
+                dr.head_yaw = rotate_to_bearing(dr.head_yaw, 0.0, 0.07, crate::trig::PI);
+                dr.head_pitch = rotate_to_bearing(dr.head_pitch, 0.0, 0.07, crate::trig::PI);
+            } else if dr.los || dr.seen {
+                // `los` (+0x228 & 2) not `seen` (& 4): `DroneVision_HaveOpponentSight` sets the seen bit
+                // only past the reaction time, and the game's head tracking follows Bond from the first
+                // sight pass (`DoHeadTrackingBehaviour`'s +0x228 & 8 path) — the pre-attack window.
+                if !dr.tracking {
+                    dr.tracking = true;
+                    dr.track_recheck = frame + rng.rand(5) as u32 + 2; // (Rand(5)+2)·FR·FR_DIV
+                } else if frame >= dr.track_recheck {
+                    dr.track_recheck = frame + rng.rand(5) as u32 + 2;
+                }
+                let dy = player.eye[1] - (dr.pos[1] + 1.55);
+                let want_y = angle_difference(dr.yaw, dr.yaw_to_opp);
+                let want_y = if want_y.abs() > 2.6 { 0.0 } else { want_y.clamp(-1.1, 1.1) };
+                let want_p = (dy / dr.dist.max(0.001)).atan().clamp(-1.0, 0.6);
+                let sp = if dr.alert > 0.66 { 0.14 } else { 0.07 };
+                dr.head_yaw = rotate_to_bearing(dr.head_yaw, want_y, sp, crate::trig::PI);
+                dr.head_pitch = rotate_to_bearing(dr.head_pitch, want_p, sp, crate::trig::PI);
+            } else {
+                if dr.tracking { let _ = rng.rand(10); dr.tracking = false; } // the stop draw (0x1472c8)
+                dr.head_yaw = rotate_to_bearing(dr.head_yaw, 0.0, 0.07, crate::trig::PI);
+                dr.head_pitch = rotate_to_bearing(dr.head_pitch, 0.0, 0.07, crate::trig::PI);
+            }
             if !dr.corpse { let _pf = crate::prof::scope("drone: handle_firing"); let b = { let lights = &mut self.lights; dr.handle_firing(d, rng, frame, player, (moving, first_moved), index, lights) }; if let Some(b) = b {
                 // `DroneWeap_FireWeapon` 0x178f68:264 → `Bullet_init_casing`: the guard's shell eject,
                 // right after `Bullet_init`'s spread draws [S] the eject draws run inline here instead
@@ -6221,7 +6396,7 @@ mod tests {
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip: 0, clip_max: 0,
             grenade_weapon: 0x35, grenade_count: 0, pending_grenade: false, shots: Vec::new(),
-            log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: 0, lost_sight: false,
+            log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, start_script: 0, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: 0, lost_sight: false,
             damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
@@ -6242,6 +6417,7 @@ mod tests {
             free_root: false, bounded: true, dtype: 0, mode_normal: 0, mode_alert: 0, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0, alert_block: 0.0,
             door_open_at: 0,
             hit_door: None, door_return: 0, door_node: None, door_attempt: false, pending_door_msg: false, hit_door_open: true,
+            head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
         };
         dr
     }
