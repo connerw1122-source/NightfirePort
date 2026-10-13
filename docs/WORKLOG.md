@@ -9118,3 +9118,19 @@ crates/nf-game/src/{anim,drone}.rs, crates/nf-view/src/{scene,gpu}.rs.
 Started 22:56 UTC, sandbox expires ~00:54 UTC (stop new work 00:34 UTC). Branch cut from
 origin/master (5017f15 — facial2 + viewmodel-zoom merged). Setup all in place from the prior
 session (repo, work/, ISO, nf-queue, rustup, user-prefix ALSA).
+
+**fix-facial3 outcome (00:05 UTC)**: item 2 landed — the face tracks re-pointed to the morph
+weights: the disc refutes the all-zero-face-root premise (04000065's channels 0..2 reach ~1.0; the
+body 04000064's root runs 0.57 un-zeroed on all 880 frames; the game holds the seated driver to
+x 0.024/z 0.063 with the hip on the BODY ch1 — the suppression is the sit state, not a zeroed
+track). script_pose_drone/together + the drone root-motion window pickers exclude facial-count
+windows; facial_weights_at gives drone-backed characters the weights source (pre-fix None) and
+blends the facial slots via facial_blend. facial3_live 3/3 (the driver bones failing-first, the
+weights source, the ledge mouth at frame 767 [D]); the Kimiko test updated to the corrected
+semantics; ai_traces/fix_drone3/fix_truck green. Item 1 banked unwired: facial_update (0x1be310's
+pure state machine + the unit test, 135/0) — the wiring moved ai_05_truck's pins EARLIER (4-10:
+2168→885) because AnimObjectIsClose's LOD-byte gate has no port counterpart (over-drawing); wiring
++ the gate + the 0072 re-pin is the next session's first item. Item 3 (the GPU morphs) designed
+and scoped in the report (SkinAttr morph/wslot, the 248 KB static targets buffer + the per-frame
+weights, the shader term before the palette skinning), nothing partial committed. No Rand_* draws
+landed; seed-pinned tests unaffected on the pushed tree. Report: docs/reports/fix-facial3.md.
