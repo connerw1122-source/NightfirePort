@@ -127,7 +127,11 @@ fn walk_arrival_to_the_chasers_defeat() {
         // south wall at (2.56,−3.33,−102.7) (the southward segment 0.126 → z −102.83).
         ("the east lane south", walker::Wp::new(9.5, 0.0, -100.0).r(1.6)),
         ("the trench's west end", walker::Wp::new(4.0, 0.0, -108.0).r(1.6)),
-        ("door[0]'s west approach", walker::Wp::new(2.4, 0.0, -110.0).r(1.3)),
+        // fix-final-blockers2: the old single approach (r 1.3) let the walker arrive 0.7 east and
+        // drift into the doorway's east jamb — the stuck hop put him ON the east furniture
+        // (5.16,1.75,-113.63). Hug the leaf's span (x 1.84..3.11) tightly and turn south INSIDE it.
+        ("door[0]'s west approach", walker::Wp::new(2.3, 0.0, -110.0).r(0.7)),
+        ("door[0]'s threshold", walker::Wp::new(2.3, 0.0, -113.2).r(0.7)),
         ("door[0] through", walker::Wp::new(2.0, -0.1, -119.0).r(1.2)),
         ("door[1] through", walker::Wp::new(2.0, -0.1, -132.0).r(1.2)),
         ("door[3] through", walker::Wp::new(2.0, -0.1, -147.0).r(1.2)),

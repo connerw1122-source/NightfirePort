@@ -59,9 +59,25 @@ chain in its header), and the three probes.
 
 ## 2. 07000016, door[0] onward
 
-Not started — the 4a investigation consumed the session. The walk still parks at door[0]'s
-approach (Bond wedged at (5.16, 1.75, −113.63); door[0] locked by ch 0x24, its mask-0x04 panel
-writer unfound; the re-lane west of x 3.1 pending).
+**The ch-0x24 panel writer is FOUND** (probe `walkreal_probe_fb9`, committed): trigger #0 — kind
+0x1 (the mask-0x04 activate panel), out 0x24, mask 0x4 (the player's E), placement **250** at
+**(−15.20, 6.52, −94.56)** — NOT beside door[0]: it is an UPPER WALKWAY west of the trench
+(the corridor's trench dips to −4.8; the walkway floor holds y ≈ 5.71–6.44 for x ≤ −10 across
+z −88..−112). For contrast the 0x27/0x28 panels sit beside their doors as documented
+(placement 337 at (3.36,0.84,−141.50), 338 at (3.34,0.84,−151.95)).
+
+The route fix attempted: the door[0] approach was re-laned through the leaf's span tightly
+(`door[0]'s west approach` (2.3,−110) r 0.7 → `door[0]'s threshold` (2.3,−113.2) r 0.7 — both
+arrive cleanly now), but the through-leg still wedges: door[0] is CLOSED and LOCKED (ch 0x24
+never fires in the port — the panel is up on the walkway and the walk never reached it), so the
+stuck-mitigation's hop puts Bond on the east furniture (5.20,1.56,−113.63) again. Probe fb9's
+last grid also shows an upper deck at y 5.71 spanning x 2..8 across z −106..−112 (over door[0]'s
+approach) — the walkway access (how the player climbs from the corridor/east lane to the deck)
+is the next session's first probe (candidates: a stair at the deck's east edge x 8..9.5, or from
+the room past door[0] — the deck may also be the −52-style landing above the doorway).
+
+The test keeps its tightened lane (an improvement — the approach legs now arrive) and stays
+`#[ignore]`d with the panel evidence added to the route comments.
 
 ## Verification
 
@@ -82,8 +98,11 @@ writer unfound; the re-lane west of x 3.1 pending).
   and the revert note on the case-1/case-4 comments. Behaviour: UNCHANGED from master.
 - `crates/nf-view/tests/walkreal_0700004a_live.rs` — the header rewritten to the resolved chain,
   the ride loop's fall exemption (disabled window + 5 grounded ticks), re-parked.
-- `crates/nf-view/tests/walkreal_probe_fb6/fb7/fb8.rs` — the evidence probes (the cut-scene
-  stream/matrix dump, the NIS stream/key dump, the object homes + SP placements).
+- `crates/nf-view/tests/walkreal_probe_fb6/fb7/fb8/fb9.rs` — the evidence probes (the cut-scene
+  stream/matrix dump, the NIS stream/key dump, the object homes + SP placements, the 07000016
+  trigger/panel scan + the walkway grids).
+- `crates/nf-view/tests/walkreal_07000016_live.rs` — the tightened door[0] lane (the approach
+  legs arrive now).
 
 ## What's left
 
@@ -91,8 +110,10 @@ writer unfound; the re-lane west of x 3.1 pending).
    really is the raw freeze pose, re-apply the world-space reading SCOPED to the create-time
    snapshot path (or make `Player_Enable`'s sphere-resolve real) and re-land the (already
    written and verified) ride fix + fall exemption.
-2. **07000016**: door[0]'s mask-0x04 panel writer, the re-lane, then doors [1]/[3]/[2], the silo
-   plate, the launch chain, the chaser — as parked in fix-final-blockers.
+2. **07000016**: the walkway access up to the y 5.71 deck (probe x 8..9.5 at z −104..−108 and
+   the deck's ends), the E on the panel at (−15.2,6.52,−94.56) → ch 0x24 → door[0] opens on the
+   E; then doors [1]/[3]/[2] (their panels ARE beside them — placements 337/338), the silo plate,
+   the launch chain, the chaser.
 3. 0700001b's hub pit and 07000015's door[32] (the walkreal-c remainder) — untouched.
 
 ## Live checks for the main agent
