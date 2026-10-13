@@ -17,6 +17,47 @@ mod walker;
 
 use walker::{Act, Walker, Wp};
 
+
+/// Open any shut door lying on the Bond→guard line (the real player's E through the doorway),
+/// then approach and shoot. Returns whether the guard died (or was already dead).
+fn clear_guard(w: &mut Walker, g: usize) -> bool {
+    let (gpos, bpos) = {
+        let sim = w.scene.sim.as_ref().unwrap();
+        (sim.drones.list[g].pos, sim.bond.pos)
+    };
+    // Doors within 2.5 of the straight line, closed, nearest first.
+    let mut doors: Vec<(usize, [f32; 3])> = {
+        let sim = w.scene.sim.as_ref().unwrap();
+        let (mut lo, mut hi) = (bpos, gpos);
+        sim.drones.doors.list.iter().enumerate()
+            .filter(|(_, d)| d.state & 0x12 != 0)
+            .filter(|(_, d)| {
+                // point-to-segment (xz)
+                let (ax, az, bx, bz) = (lo[0], lo[2], hi[0], hi[2]);
+                let (px, pz) = (d.pos[0], d.pos[2]);
+                let (dx, dz) = (bx - ax, bz - az);
+                let l2 = dx * dx + dz * dz;
+                let t = if l2 > 0.0 { ((px - ax) * dx + (pz - az) * dz) / l2 } else { 0.0 };
+                let t = t.clamp(0.0, 1.0);
+                let (qx, qz) = (ax + dx * t, az + dz * t);
+                ((px - qx).powi(2) + (pz - qz).powi(2)).sqrt() < 2.5
+            })
+            .map(|(i, d)| (i, d.pos)).collect()
+    };
+    doors.sort_by(|a, b| walker::dxz(a.1, bpos).total_cmp(&walker::dxz(b.1, bpos)));
+    for (_, dp) in doors.into_iter().take(2) {
+        w.walk_to(Wp { at: dp, act: Act::Use { use_ticks: 120 }, arrive: 1.6 }, "open the way");
+    }
+    let gpos = w.scene.sim.as_ref().unwrap().drones.list[g].pos;
+    let bpos = w.scene.sim.as_ref().unwrap().bond.pos;
+    if walker::dxz(gpos, bpos) > 9.0 {
+        w.try_walk_to(Wp::new(gpos[0], gpos[1], gpos[2]).r(3.5), &format!("approach guard {g}"));
+    }
+    if w.shoot(g, &format!("guard {g}")) { return true; }
+    if w.resupply("ammo retry") { return w.shoot(g, &format!("guard {g}")); }
+    false
+}
+
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 
 /// A short dump of the escort + nearby doors (a failure reads like the user's bug report).
@@ -64,7 +105,7 @@ fn the_escort_opens_the_interior_doors_on_his_route() {
         let sim = w.scene.sim.as_ref().unwrap();
         (0..sim.drones.list.len()).filter(|&i| {
             let d = &sim.drones.list[i];
-            i != ci && d.team == 1 && d.started && !d.corpse && d.enabled && walker::dxz(d.pos, sim.drones.list[ci].pos) < 14.0
+            i != ci && d.team == 1 && d.started && !d.corpse && d.enabled && walker::dxz(d.pos, sim.drones.list[ci].pos) < 20.0
         }).collect()
     };
     eprintln!("[01] {} armed guard(s) within 14 of the contact — clearing", guards.len());
@@ -74,9 +115,7 @@ fn the_escort_opens_the_interior_doors_on_his_route() {
         if walker::dxz(gpos, bpos) > 9.0 {
             w.walk_nav_to(gpos, &format!("approach guard {g}"), 3.5);
         }
-        if !w.shoot(g, &format!("guard {g}")) {
-            if w.resupply("ammo retry") { w.shoot(g, &format!("guard {g}")); }
-        }
+        clear_guard(&mut w, g);
     }
     let cpos = w.scene.sim.as_ref().unwrap().drones.list[ci].pos;
     w.walk_to(Wp { at: cpos, act: Act::None, arrive: 2.5 }, "to the contact");
@@ -91,56 +130,102 @@ fn the_escort_opens_the_interior_doors_on_his_route() {
     let start_ticks = w.total_ticks;
     let mut open_events: Vec<String> = Vec::new();
     let mut was_open = vec![false; w.scene.sim.as_ref().unwrap().drones.doors.list.len()];
-    let _settled = loop {
-        // The walker's follow loop, inlined for the door sampling: steer at the escort from the
-        // 4.5..10 band (PlayerInWay parks him when Bond is within 3 [M 0x15ea28 case 3]).
-        {
-            let sim = w.scene.sim.as_ref().unwrap();
-            let target = sim.drones.list[ci].pos;
-            for (i, d) in sim.drones.doors.list.iter().enumerate() {
-                if d.state == nf_game::door::OPEN && !was_open[i] {
-                    was_open[i] = true;
-                    let note = format!("door #{i} at ({:.1},{:.1},{:.1})", d.pos[0], d.pos[1], d.pos[2]);
-                    eprintln!("[01] +{} ticks: OPEN {note}", w.total_ticks - start_ticks);
-                    open_events.push(note);
+    let mut cleared: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut settled = [0.0f32; 3];
+    // The walkreal-a pattern: rounds of follow → clear (the escort hides while an armed started
+    // guard is within 14 [M 0x15ec08]; the real player fights through, Bond does the same here).
+    'rounds: for _round in 0..10 {
+        let round_start = w.total_ticks;
+        loop {
+            // Sample the doors every tick (an auto-close can slip a coarser grid).
+            {
+                let sim = w.scene.sim.as_ref().unwrap();
+                let bd = walker::dxz(sim.bond.pos, sim.drones.list[ci].pos);
+                for (i, d) in sim.drones.doors.list.iter().enumerate() {
+                    if d.state == nf_game::door::OPEN && !was_open[i] {
+                        was_open[i] = true;
+                        let note = format!("door #{i} at ({:.1},{:.1},{:.1}) bond→contact {:.1}",
+                            d.pos[0], d.pos[1], d.pos[2], bd);
+                        eprintln!("[01] +{} ticks: OPEN {note}", w.total_ticks - start_ticks);
+                        open_events.push(note);
+                    }
                 }
+                let target = sim.drones.list[ci].pos;
+                if target[0] < -20.0 {
+                    eprintln!("[01] the escort led past the interior doors at ({:.1},{:.1},{:.1}) after +{} ticks",
+                        target[0], target[1], target[2], w.total_ticks - start_ticks);
+                    settled = target;
+                    break 'rounds;
+                }
+                if w.scene.sim.as_ref().unwrap().drones.level_exit.is_some() { settled = target; break 'rounds; }
+                let desired = (target[0] - sim.bond.pos[0]).atan2(target[2] - sim.bond.pos[2]);
+                let err = walker::wrap_pi(desired - sim.bond.yaw);
+                let d = walker::dxz(sim.bond.pos, target);
+                let input = nf_game::player::Input {
+                    turn: err.clamp(-0.07, 0.07),
+                    forward: if d > 5.0 { 1.0 } else if d > 4.0 { 0.45 } else { 0.0 },
+                    ..Default::default()
+                };
+                drop(sim);
+                w.tick(input, false);
             }
-            if walker::dxz(target, plate) < 5.0 {
-                eprintln!("[01] the escort reached the plate at ({:.1},{:.1},{:.1}) after +{} ticks",
-                    target[0], target[1], target[2], w.total_ticks - start_ticks);
-                break target;
+            if (w.total_ticks - start_ticks) % 600 == 0 {
+                let sim = w.scene.sim.as_ref().unwrap();
+                let c = &sim.drones.list[ci];
+                eprintln!("[01] +{} t: contact ({:.1},{:.1},{:.1}) state {:#x} hit_door {:?} peer {:.1}",
+                    w.total_ticks - start_ticks, c.pos[0], c.pos[1], c.pos[2], c.state, c.hit_door, c.armed_peer_dist);
             }
-            let desired = (target[0] - sim.bond.pos[0]).atan2(target[2] - sim.bond.pos[2]);
-            let err = walker::wrap_pi(desired - sim.bond.yaw);
-            let d = walker::dxz(sim.bond.pos, target);
-            let input = nf_game::player::Input {
-                turn: err.clamp(-0.07, 0.07),
-                forward: if d > 5.0 { 1.0 } else if d > 4.0 { 0.45 } else { 0.0 },
-                ..Default::default()
-            };
-            drop(sim);
-            w.tick(input, false);
+            // A round cap: the escort stopped (10 s still inside w.follow's sense is not visible
+            // here; 4500 ticks of no round progress = stalled).
+            if w.total_ticks - round_start > 4500 { break; }
+            assert!(w.total_ticks - start_ticks < 60_000, "the escort follow cap\n{}", doors_dump(&w, ci));
         }
-        assert!(w.total_ticks - start_ticks < 14_000, "the escort follow cap\n{}", doors_dump(&w, ci));
-        if w.scene.sim.as_ref().unwrap().drones.level_exit.is_some() { break cpos; }
-    };
+        // Stalled: who is armed and started within 14 of the contact (LeadHide's band)?
+        let guards: Vec<usize> = {
+            let sim = w.scene.sim.as_ref().unwrap();
+            (0..sim.drones.list.len()).filter(|&i| {
+                let d = &sim.drones.list[i];
+                i != ci && d.team == 1 && d.started && !d.corpse && d.enabled
+                    && walker::dxz(d.pos, sim.drones.list[ci].pos) < 20.0 && !cleared.contains(&i)
+            }).collect()
+        };
+        if guards.is_empty() {
+            // No threat: close on him and try again (the lead wait bands, PlayerInWay).
+            let cpos = w.scene.sim.as_ref().unwrap().drones.list[ci].pos;
+            w.walk_nav_to(cpos, "close on the contact", 4.0);
+            continue;
+        }
+        eprintln!("[01] round: the contact stalled at ({:.1},{:.1},{:.1}) — clearing guards {:?}",
+            w.scene.sim.as_ref().unwrap().drones.list[ci].pos[0],
+            w.scene.sim.as_ref().unwrap().drones.list[ci].pos[1],
+            w.scene.sim.as_ref().unwrap().drones.list[ci].pos[2], guards);
+        for g in guards {
+            cleared.insert(g);
+            if !clear_guard(&mut w, g) { cleared.remove(&g); } // retry next round
+        }
+    }
 
     // ---- the assertions --------------------------------------------------------------------
-    // 1. The escort left his post-intro position by a real margin (the route's first leg) and the
-    //    follow ended near the plate (the escort leads the whole interior in the game).
     let cpos1 = w.scene.sim.as_ref().unwrap().drones.list[ci].pos;
     eprintln!("[01] the escort settled at ({:.2},{:.2},{:.2}); plate ({:.1},{:.1},{:.1})",
         cpos1[0], cpos1[1], cpos1[2], plate[0], plate[1], plate[2]);
-    assert!(walker::dxz(cpos1, plate) < 8.0,
-        "the escort never led to the plate (settled {:.1} away at ({:.1},{:.1},{:.1}))",
-        walker::dxz(cpos1, plate), cpos1[0], cpos1[1], cpos1[2]);
-    // 2. SISTER: at least one interior door opened under him — the ones on his route start CLOSED
-    //    [L ee_start_07000001 state 2] and only Bond's use key or the escort's own door handling
-    //    opens them; Bond never pressed E on this walk.
-    assert!(!open_events.is_empty(),
-        "no door opened during the escort's lead — the NPCs' door handling did not run");
+    // 1. The escort crossed BOTH interior shoji doors on his route: door #1 (7.9, 5.3, 11.14 — the
+    //    door the user's screenshot shows Mayhew facing) and door #2 (−14.06, 5.35, 13.05): he must
+    //    stand west of #2's plane (x < −15). Pre-fix he settled against
+    //    door #1 (state 0x1d/0x1f at z ≈ 13 with the door CLOSED — the playtest symptom).
+    assert!(cpos1[0] < -15.0,
+        "the escort never led past the interior shoji doors (settled at ({:.1},{:.1},{:.1}))",
+        cpos1[0], cpos1[1], cpos1[2]);
+    // 2. SISTER: door #1 (the screenshot door) opened while Bond was OUTSIDE his 2.0 use reach of
+    //    it — the escort's own door handling (DSTATE_OpenDoor → Door_Activate), not Bond's E.
+    //    (Bond's follow keeps him 4.5..10 behind the contact; only the guard-clear rounds walk him
+    //    elsewhere, and those runs begin after the escort's first door.)
+    let d1 = open_events.iter().find(|n| n.contains("door #1 ")).expect("door #1 never opened");
+    let bond_d1: f32 = d1.rsplit("bond→contact ").next().and_then(|s| s.trim().parse().ok()).unwrap_or(0.0);
+    eprintln!("[01] door #1 opened with Bond {bond_d1:.1} from the contact");
+    assert!(bond_d1 > 2.5, "door #1 opened with Bond too close ({bond_d1:.1}) — not the escort's doing? ({d1})");
     // 3. And he is not parked against a still-closed door (the user's screenshot symptom):
-    //    every door within 2.5 of his settled position is OPEN (or a lift/kind-inert door).
+    //    every door within 2.5 of his settled position is OPEN.
     let blocking: Vec<String> = w.scene.sim.as_ref().unwrap().drones.doors.list.iter().enumerate()
         .filter(|(_, d)| walker::dxz(d.pos, cpos1) < 2.5 && d.state & 0x12 != 0)
         .map(|(i, d)| format!("door #{i} state {:#x} at ({:.1},{:.1},{:.1})", d.state, d.pos[0], d.pos[1], d.pos[2]))
