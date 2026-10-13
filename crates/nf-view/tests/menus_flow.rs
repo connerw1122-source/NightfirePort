@@ -127,17 +127,21 @@ fn the_results_screen_offers_restart_continue_and_quit() {
     assert_eq!(fe.page, Page::Results);
     assert_eq!(fe.flow.get_state(), ST_FADE_HOLD, "the fade hold is pushed [M 0x182c60:74]");
     assert_eq!(fe.outcome, Outcome::Complete);
-    // Three choices [M 0x216618 message 0x4b: 1 = restart, 0 = continue, 2 = quit to menu].
+    // Three choices in the game's arm order [M 0x216618:19-27 — `__Menu_Send`'s return IS the row:
+    // 0 = the CURRENT level warm + Player_RamLoad (fix-restart-target), 1 = BaseMap cold, 2 = quit].
     assert_eq!(fe.rows(), 3);
-    // Cursor 0 = restart the mission from its first map [M 0x216618: ResetMap_LevelToLoad(BaseMap, 0, 1)].
+    // Cursor 0 = restart the CURRENT level, warm, on the entry checkpoint
+    // [M 0x216618:19-21: ResetMap_LevelToLoad(GameState._12_4_, 1, 1) + Player_RamLoad(Bond, 1)].
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(0x0700_0005));
-    // Cursor 1 = continue from the current level, warm, with the RamSave [M 0x216618's level==0 arm].
+    assert!(fe.flow.warm_reset, "row 0 is the warm arm [M 0x216618:20]");
+    // Cursor 1 = restart the mission from its first map, cold
+    // [M 0x216618:15-17: ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)].
     fe.mission_ended(Outcome::Complete, Stats::default());
     fe.cursor = 1;
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(0x0700_0005));
-    assert!(fe.flow.warm_reset);
+    assert!(!fe.flow.warm_reset, "row 1 is the cold arm [M 0x216618:16]");
     // Cursor 2 = quit to the menu [M 0x216618's level==2 arm].
     fe.mission_ended(Outcome::Failed, Stats::default());
     fe.cursor = 2;
