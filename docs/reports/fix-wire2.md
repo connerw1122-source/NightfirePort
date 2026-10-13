@@ -73,7 +73,10 @@ I'm supposed to be in. So likely need to spawn in there crouched."
   3. `the_fusebox_scenario_starts_crouched_inside_the_vent`: the scenario places Bond crouched
      (cc = CROUCH_ROOT_HEIGHT) inside the tunnel (crawl headroom < 1.7 verified), the Laser
      selected, still crouched and inside after 60 ticks.
-- `tests/wire_live.rs` re-driven (the collision grab + the full crossing, E-inert) — green.
+- `tests/wire_live.rs` on the merged state: 2 passed, 2 ignored — the driver's fix-wire2 × walkreal-b2
+  merge removed the walk-in/use-key wire grab entirely (their comment: unproven against
+  `Collide_PickObj`'s query versions until measured), so the walk-in legs are `#[ignore]`d there;
+  the jump-grab path this task ports is the grab that remains, and it is the one fix_wire2_live covers.
 - Full suite (origin/master merged in — walkreal-b2 / render-artifacts / npc-doors2 / wallhug-freeze):
   605 + 374 passed, 3 failed — the 3 `disc_golden` failures the slim ISO allows (`cargo test
   --offline --release -j2 --no-fail-fast -p nf-game -p nf-formats -p nf-audio -p nf-view --
