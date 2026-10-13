@@ -2180,7 +2180,15 @@ impl Sim {
         let fwd = self.bond.look();
         // The gun's axes: forward turned by the crosshair angles (right = −left), then left / up rebuilt.
         let (cx, cy) = self.crosshair();
-        let (gy, gp) = (4.0 / 3.0 * cx * std::f32::consts::FRAC_PI_6, cy * std::f32::consts::FRAC_PI_6);
+        // G-044 [M Player_WeaponRecoil 0x1a3de8:52-57]: both tilt terms divide by `glb_viewer+0x108`
+        // (the zoom — `Player_PositionCamera` 0x18f5d8:129 feeds it BL+0x8D0, the port's `self.zoom`),
+        // and the x term scales by `viewer+0x114` = 4/3 on a 4:3 screen [L ee_start_05 viewer
+        // 0x1fc6c10+0x114 = 0x3faaaaab; `Camera_CalcViewAngles` 0x1baf70 writes 16/9 there in the
+        // widescreen mode the port doesn't model]. A zoomed view used to tilt the gun as if unzoomed.
+        let (gy, gp) = (
+            4.0 / 3.0 * cx * std::f32::consts::FRAC_PI_6 / self.zoom,
+            cy * std::f32::consts::FRAC_PI_6 / self.zoom,
+        );
         let gf = [0, 1, 2].map(|k| fwd[k] * gp.cos() * gy.cos() - left[k] * gp.cos() * gy.sin() + up[k] * gp.sin());
         let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
         let norm = |v: [f32; 3]| { let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-9); v.map(|x| x / n) };
