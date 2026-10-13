@@ -6790,8 +6790,11 @@ Agent: worker (fix-searchlight-alarm session)
 Task: fix-searchlight-alarm — 07000006 searchlights don't raise the alarm; guards shoot too soon on sighting; spotlights look weird (branch s/fix-searchlight-alarm)
 
 Work Log:
-- Session started 07:46 UTC (deadline ~09:46 UTC). Setup reused (repo, work/, ISO, nf-queue worktree intact). Branch s/fix-searchlight-alarm created from origin/master (12bae32); pushed as checkpoint.
-- (in progress)
+- Session 07:46-09:46 UTC. Setup reused; branch s/fix-searchlight-alarm from origin/master (12bae32), pushed early.
+- Traced the alarm path end to end: the four courtyard heads (0xDE kind 1, on-channels 64/63/61/62, alarm ch 55) start state 3 and light only when their on-channel rises; the guards' second switch (+0x135 = 55, tag 100 [L placements 436-450]) consumes it in PreDroneControl 0x148db0. The disc's NIS 0x06000066 stream 0 stages ch 64 @ wait 1, 63 @ 59, 61 @ 116, 62 @ 167 [D] — and NO placement/trigger/sub-script/anim stream references that script (raw-hash scan = compressed-data noise). Port boots it once at level start through the real Scripts pipeline (Scripts::new, the spawn_once hidden-one-shot precedent [M 0x1dbc08 mode dispatch]).
+- The port's chain verified live: head arms on Bond (spot 2.0, 0x1cb900:251-263) → ch 55 [M 0x1cb900:142-144] → guards attack. Tests: fix_searchlight_alarm_live (fail-first: pre-fix probes showed the heads frozen at 3, ch 55 never up), the first-shot floor pinned 26..180 ticks vs the trace's 70/128 [L 06-firstsight.trace].
+- choose_combat_move's aiming gate: added the armed half of DroneWeap_OpponentIsAimingAtMe [M 0x17a500:12-29, the +0x2A latch from Check_Target 0x1a7810:149-150]; the gate's other arms were already faithful (+0x17 = NoBunching [M 0x1490f0:224-225] = the port's bunched).
+- fix_drone3_live's light test re-premised on the boot (its manual ch-64 raise removed). Suite on the merged tree --no-fail-fast: 589 passed / 3 failed = the allowed disc_golden trio. Report: docs/reports/fix-searchlight-alarm.md (live checks: the 0x06000066 activation beat, the spotlight renders, the RunForCover timer-C fire gap 0x169150 case 0xC).
 
 Stage Summary:
-- (in progress)
+- Branch s/fix-searchlight-alarm pushed (185e9c4). The 07000006 searchlights sweep, arm and alarm; the guards wake on ch 55. Left: the script's real activation beat (live check), the visual pass (main agent renders), the RunForCover fire gap.
