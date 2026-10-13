@@ -375,6 +375,35 @@ impl Walker {
         true
     }
 
+    /// Walk to a tall-step target with a jump every 30 ticks (the player's own stair move when
+    /// the step exceeds the walk's step-up): turn, run forward, hop. Returns on arrival or the
+    /// y/xy cap.
+    pub fn climb_stairs(&mut self, target: V3, label: &str, arrive: f32, max_ticks: u32) -> bool {
+        eprintln!("[walk] {label}: climb begin (bond {:?})", self.scene.sim.as_ref().unwrap().bond.pos);
+        let start = self.total_ticks;
+        loop {
+            if self.total_ticks - start >= max_ticks {
+                eprintln!("[walk] {label}: climb cap (bond {:?} target {target:?})", self.scene.sim.as_ref().unwrap().bond.pos);
+                return false;
+            }
+            if self.stop_on_exit && self.scene.sim.as_ref().unwrap().drones.level_exit.is_some() { return true; }
+            let p = self.scene.sim.as_ref().unwrap().bond.pos;
+            let d = dxz(p, target);
+            if d < arrive { return true; }
+            let sim = self.scene.sim.as_ref().unwrap();
+            let desired = (target[0] - p[0]).atan2(target[2] - p[2]);
+            let err = wrap_pi(desired - sim.bond.yaw);
+            let jump = self.total_ticks % 30 == 0 && sim.bond.grounded;
+            let input = Input {
+                turn: err.clamp(-0.08, 0.08),
+                forward: if err.abs() > 1.0 { 0.0 } else { 1.0 },
+                jump,
+                ..Default::default()
+            };
+            self.tick(input, false);
+        }
+    }
+
     /// `walk_to` that reports a wedge instead of panicking (resupply / guard approach skip the
     /// unreachable target and the caller carries on).
     pub fn try_walk_to(&mut self, wp: Wp, label: &str) -> bool {
