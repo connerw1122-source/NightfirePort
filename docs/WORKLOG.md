@@ -7814,6 +7814,7 @@ Work Log:
 Stage Summary:
 - The timed sky is data + code, golden-verified against an independent replica of the game's arithmetic. Open for
   the main agent: the nf-view render-side hook (flash glist swap + spin matrix + bolt draw), the live ZMSK check.
+
 ## fix-restart-target (s/fix-restart-target) — 2026-10-13
 
 The fail/death menu's Restart went to the mission's base map, cold (`fail_choose_restart` →
@@ -7926,3 +7927,52 @@ menus_flow tests green (band, strip-clip, specialchar uv, wraps, per-row preview
 cross-check); full suite green except the 3 allowed disc_golden. Left: the main-menu FMV still (needs
 the retail ISO), the menu font, the √-token positions vs the captures. Report:
 docs/reports/fix-menus3.md.
+
+## fix-dev-panel (s/fix-dev-panel) — 2026-10-13
+Task: the dev panel (the user's main test tool) must be exact: every
+weapon/gadget/pickup entry shows the game's own name (USATxt.dat via `Lang`,
+the weapon's name id) + the weapon id, and spawns exactly that weapon_data
+record — its own mesh (held mesh +0x7C) and projectile body (weapon_data+0x5C)
+— test: for every entry, the spawned weapon id, mesh hash and projectile hash
+match the record; a "level kit" button that grants exactly the current level's
+loadout + gadgets (docs/systems/levels.md); show the current weapon's fire
+mode and ammo type in the panel. Files: crates/nf-view/src/dev.rs, the panel
+draw, nf-game weapon tables (read-only). Started 17:53 UTC, sandbox expires
+~19:51 UTC. Branch created from origin/master (b192fdd) and pushed.
+
+
+**fix-dev-panel outcome (18:35 UTC)**: the panel rows now show the game's own names —
+`Txt_BindLabel(weapon_data[w]+0x38)` over USATxt.dat, the same SP-name lane the game binds in
+`Pickup_Handler` 0x18e650:246 and `HUD_UpdateAmmoPane` 0x19a7f0 — and every entry carries its
+record's own hashes: the held view-entity model +0x7C (`AnimDatumSetEntity` per draw,
+`Player_WeaponFiring` 0x1a5460:106; the atlas's "fp_flashlight_model" name for +0x7C is wrong,
+docs/fields/weapon_data.md is right), the third-person/pickup model +0x80 and the flying
+projectile's mesh +0x5C (`Bullet_update` 0x12e7b0 disasm 0x12e8f0). The old hardcoded table was
+wrong all over and is gone: it put "AT-600 Scorpion (rocket launcher)" on 0x3A — the bank's
+**Laser Tripbomb** (the real AT-600 is 0x2E "Heatseeker", the AT-420 Sentinel 0x2C "Guided") —
+"Korsakov K5" on 0x33 (the bank's Phoenix Samurai; the K5 is 0x43), "Militek MGL" on 0x45 (the
+bank's Oddjob's Hat; the MGL is 0x2a), "Q-Laser"/"Laser Watch" on 0x50/0x54 (the bank's
+Grapple/Micro-Camera), "Sniper L96A1" on 0x24 (the bank's Winter Covert Sniper). The grenades:
+0x34 Fragmentation Grenade (radius 8, dmg 100 [L +0x08/+0x0C]), 0x35 Stun Grenade (radius 10,
+dmg 0), 0x36 Smoke Grenade, 0x37 Remote Mine [L USATxt.dat via +0x38 AND the ammo_data names at
++8 — two independent banks agree; the atlas's [L+M] pins "0x35 Frag Grenade / 0x36 Stun Grenade"
+and levels.md's grenade table "0x35 (frag) / 0x36 (stun)" are the old mispin]. The consumables'
+"Frag grenades ×5" gave 0x35 = the STUN grenade — the user's "a frag grenade spawns what looks to
+be a stun grenade"; the buttons now give 0x34/0x35/0x36 with the game's own labels. The "level
+kit" button runs the game's cold-load loadout (`Player_InitWeapon` 0x1a7ef8 with save=None — the
+same call nf_view::load runs) on the current level and feeds the draw request; the catalog's new
+`current` object shows the current weapon's fire-mode label text (+0x30+mode*4, the HUD's own
+read; the port's trigger runs mode 0) and the ammo type's bank name (ammo_data[type]+8) plus
+clip/spare. `num()` now honours `0x`-prefixed ids (the old code stripped the prefix and parsed
+DECIMAL, so every hex id silently failed). Nameless meshless padding records (0x48/0x49, the
+AI-clip records 0x61/0x71) no longer list — the gadget cycle starts at 0x4A [M 0x1a6f80] and they
+have no name, no mesh and no cycle slot. Tests: crates/nf-view/tests/fix_dev_panel_live.rs (6 —
+meshes per record, bank names incl. pinned grenade/rocket rows, give-spawns-the-record, level kit
+vs the loadout reference, current fire mode/ammo, and an NF_PANEL_DUMP ground-truth dump); all
+four fix tests shown failing on the stashed pre-fix panel.rs. Full suite on the merged tree
+(master 253d01c): nf-game 225 / nf-view 451 / nf-audio 4 green; nf-formats green except the 3
+allowed disc_golden + pss_movies_live audio_sample_count (the slim onfoot ISO carries no
+/MOVIES/30_FPS entries at all — the test finds 0 movies; pre-existing, not this task's).
+Shared-file changes: NONE (the WORKLOG append and the master-merge conflict resolution only;
+dev.rs and the weapon tables untouched — the panel is crates/nf-view/src/panel.rs, the task's
+"dev.rs" pointer is the F2 menu which spawns no weapons).
