@@ -42,3 +42,7 @@ Files: `crates/nf-view/src/{menu,lib}.rs`, `crates/nf-formats/src/hud.rs` (text/
 
 ---
 claimed-by: sandbox6 at 2026-10-13T16:54Z
+
+---
+## Report (done, 2026-10-13T18:24Z)
+
