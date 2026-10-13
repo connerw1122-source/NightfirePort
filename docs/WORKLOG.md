@@ -7190,3 +7190,10 @@ Post-report progress (same session, before the sandbox end):
   re-marked with the updated gap; the 16/1b/4a gap-ignores unchanged.
 - Pushed 1d414f7 (branch s/walkreal-c). The full four-crate suite still owes a pass on a bigger
   box before the merge.
+
+## research-driving
+
+Task: research-driving, branch s/research-driving. Started (setup). Atlas of the driving
+levels: DRIVING.ELF decompile map (levels, main loop, vehicle physics, AI traffic, camera,
+HUD, sound), which on-foot formats the driving archives reuse vs new formats, an NF_ISO
+golden test over the driving archives, input path (G-004), and a phased port estimate.
