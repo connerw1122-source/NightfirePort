@@ -7837,3 +7837,36 @@ Stage Summary:
 - Starting fix-portal4: make the port's visible room set at the 07000006 courtyard spot match the
   live ground truth (VisCelCount 2: eye cel 33 + room 0x0179fb30 at depth 1, its 40-node +0x18
   chain) so wall cels 20/22/38/5/13/23 draw; full suite started in the background first thing.
+
+---
+Task: fix-portal4
+Agent: fix-portal4 worker
+Branch: s/fix-portal4
+
+Work Log:
+- Chain-builder model REFUTED and replaced [L]: walked ee_start_05.bin + ee_snapshot.bin world cel
+  lists (+0x14) and every cel's +0x18 chain (head cel+0x18, next node+0x18 [M 0x1e6ba0]). Both
+  snapshots: 137 world cels, 8 ROOM owners, 113 generic members, 0 members outside the owner's
+  world bbox (record +0x40 min vec4 / +0x50 max vec4), 65/65 multi-bbox members hung by the
+  build_FindCel collision tie-break (0x1c8cb0), no orphan 0x8019 cels. The old per-map-block
+  parse-order model (0x40 cap) put far-away map generics on the 06 big room; the live dump [L
+  ground-truth doc] holds 40 spatially-local nodes. build_chains now hangs each generic on the
+  room find_cell_raycast picks for its sphere centre (prepend = reverse parse order, the live
+  dump order). At the courtyard spot: eye 33, walk [33,21] (the live VisCelCount 2), 33's chain
+  empty, 21's chain = the live 40 (12/12 named + 28 railings) + 9 extras whose FindCel tie-break
+  diverges (the port's collision-cell assignment vs the game's per-cel lists) — pinned in
+  fix_portal4_live (shown failing pre-fix: the old model's cell-33 chain was non-empty).
+- The wall-draw lead decoded [M 0x1e6df0 View_CaptureScene -> View_AddForcedObjects 0x1e5fb8]:
+  after View_AddCels, EVERY level object with flag 0x8000, +0xd8 model, not 0x10-hidden, passing
+  Vision_InView draws with a distance key (object_display_mask = 1 << viewer+0x28&0x1f gates the
+  +0xf8 channel; class byte +0xff == 2 additionally needs its Collide_StraddleCels cels to hit
+  the drawn set). The wall geometry sits under the wall ROOM placements (port nodes 13/20/22/38:
+  263 wall-region mats) — the game draws them through THIS path with VisCelCount=2, not through
+  the portal walk. Not landed: needs the object class byte (+0xff) evidence to keep the 07 window
+  room hidden; the render spots list in the report covers the verification.
+
+Stage Summary:
+- Chains now match the live ground truth at the 06 courtyard and the 05 snapshot census; the wall
+  cels still hide — the draw goes through View_AddForcedObjects (0x1e5fb8), the next session's
+  implementable rule. Portal suites green (fix_portal_live 6/6, fix_portal2_live 2/2, portal3
+  pins, fix_portal4 pin); the full four-crate suite could not fit the sandbox window.

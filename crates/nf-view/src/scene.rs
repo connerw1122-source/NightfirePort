@@ -508,14 +508,17 @@ pub struct CelGraph {
     pub room_to_cell: Vec<Option<usize>>,
     /// Portal records dropped because an endpoint cel placement did not resolve.
     pub dropped_portals: usize,
-    /// `View_AddCels` (0x1e6ba0)'s `cel+0x18` chain per cell [M + L ee_start_05.bin: 2606 chain
-    /// nodes over 137 world cels, node classes only 0x8019/0x8008019]: for every VisCelList cel
-    /// the game also frustum-tests (`Vision_InView` 0x1e89e0) and draws the cels hung on its
-    /// `+0x18` chain — the generic (0x8018/0x8019) cel placements parsed after it in the same
-    /// map-data block (`parsemap_block_map_data_static` runs per map; the decomp drops the store,
-    /// the disassembly of 0x1d1998 confirms no other writer). The exact per-block window is [S]
-    /// (the 05 snapshot's counts grow 0..58 with resets this port does not reproduce yet); the
-    /// per-map model over-rescues only inside the `Vision_InView` cone. fix-portal2.
+    /// `View_AddCels` (0x1e6ba0)'s `cel+0x18` chain per cell. The chain threads through the cel
+    /// records' +0x18 field [M 0x1e6ba0: the head is the VisCelList cel's +0x18, each node's next
+    /// is node+0x18]; only room-class cels own chains and only the generic (runtime class 0x8019/
+    /// 0x8018) cels ride them as nodes. Built by `build_chains`: each generic hangs on the room
+    /// `build_FindCel` (0x1c8cb0) picks for its world-sphere centre — the bbox candidates plus the
+    /// collision up/down ray tie-break [L ee_start_05.bin + ee_snapshot.bin: 8 room owners, 113
+    /// members, 0 members outside their owner's bbox, 65/65 multi-bbox owners matching the
+    /// FindCel tie-break; L live 07000006: the eye cel's chain empty, the big room 0x0179fb30's
+    /// chain = 40 generics all inside its bbox]. Node order within a chain is reverse parse
+    /// order [L ground-truth doc: the 40-node dump descends by runtime address] — the builder
+    /// prepends. fix-portal4 (the old per-map-block parse-order model is refuted by that data).
     pub chains: Vec<Vec<u32>>,
     /// The main map's placements' own `cells` index, by placement ordinal (`None` = the placement
     /// does not create a cel). A cel placement's glist draws when ITS cel is visible
@@ -621,8 +624,6 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
     let mut chains: Vec<Vec<u32>> = Vec::new();
     let mut own_cells_main: Vec<Option<u32>> = Vec::new();
     for (mi, map) in level.maps.iter().enumerate() {
-        // The `+0x18` block chain (see `CelGraph::chains`): this map's cel placements so far.
-        let mut block: Vec<usize> = Vec::new();
         for p in &map.placements {
             if !p.creates_cel() {
                 if Some(mi) == main { own_cells_main.push(None); }
@@ -669,16 +670,9 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
                 None => { cells.push(CelNode { min: [0.0; 3], max: [0.0; 3], flags: cel_flags_word(flags16), sphere: ([0.0; 3], 0.0) }); }
             }
             chains.push(Vec::new());
-            // The generic classes ride the chains as nodes [L ee_start_05.bin node census] — hung
-            // on every cel parsed before them in this block. The snapshot's per-owner counts never
-            // exceed 58 (< the game's 0x40 list caps), so each owner keeps its first 0x40 nodes
-            // (the parse-closest = spatially nearest generics) [S — the exact window is unresolved;
-            // without the cap the whole-block model over-rescues: 814 draws vs the game's 177 on
-            // the 07000007 start view].
-            if matches!(flags16, 0x8018 | 0x8019) {
-                for &b in &block { if chains[b].len() < 0x40 { chains[b].push(idx as u32); } }
-            }
-            block.push(idx);
+            // (The chains are built AFTER the parse by `build_chains` — the game's own builder
+            // hangs each generic on the room `build_FindCel` 0x1c8cb0 picks for its centre, a
+            // collision raycast tie-break that needs the whole cel set + the scoped world.)
             if is_main { own_cells_main.push(Some(idx as u32)); }
             // The record address is `pCelList + index*0x50` [M 0x1d1998] — by-index placements only.
             if !p.by_hash() { cell_of_record.insert(p.index as usize, idx); }
@@ -700,6 +694,37 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
         }
     }
     (rooms, CelGraph { cells, portals, room_to_cell, dropped_portals: dropped, chains, own_cells_main })
+}
+
+/// The `+0x18` chain builder (fix-portal4). The game hangs each generic cel (runtime class
+/// 0x8019/0x8018 — the placement flag words `cel_flags_word` maps there) on a room's chain:
+/// the room is `build_FindCel` (0x1c8cb0)'s pick for the generic's world-sphere centre — the
+/// containing-room-bbox candidates (the 0x40000 room bit, cap 0x40) with the collision up/down
+/// ray tie-break. Evidence [L ee_start_05.bin + ee_snapshot.bin, both walked +0x18-head/next]:
+/// 8 room owners / 113 generic members / 0 members outside the owner's world bbox (+0x40 min
+/// vec4, +0x50 max vec4) / 65 members inside several room bboxes with the owner matching the
+/// FindCel tie-break (64 earlier-smaller room, 1 later room whose co-candidate has no collision
+/// at the point) / no orphan generic (every 0x8019-class cel rides some chain). Live [L
+/// ground-truth doc]: the eye cel's chain is empty, the big room 0x0179fb30's chain is exactly
+/// the 40 courtyard generics. `world` (the sim's scoped `CollisionWorld`) supplies the
+/// tie-break rays; `None` keeps `find_cell_raycast`'s bbox-face approximation (the world-less
+/// callers). Nodes are prepended so a chain reads in reverse parse order — the live dump order.
+pub fn build_chains(graph: &mut CelGraph, world: Option<&nf_game::world::CollisionWorld>) {
+    let mut chains = std::mem::take(&mut graph.chains);
+    for i in 0..graph.cells.len() {
+        let f16 = graph.cells[i].flags & 0xffff;
+        if !matches!(f16, 0x8018 | 0x8019) { continue; }
+        let node = &graph.cells[i];
+        // The port's unresolvable-object cells (zero bbox/sphere) stand for placements the parse
+        // could not resolve — the game's records always carry real data, and `View_AddCels`
+        // (0x1e6ba0) skips chain nodes whose glist pointer is null; skip them here too.
+        if node.min == [0.0; 3] && node.max == [0.0; 3] && node.sphere.1 == 0.0 { continue; }
+        let owner = find_cell_raycast(graph, node.sphere.0, world);
+        if let Some(o) = owner {
+            if o < chains.len() && o != i { chains[o].insert(0, i as u32); }
+        }
+    }
+    graph.chains = chains;
 }
 
 /// `Vision_InView` (0x1e89e0) [M]: visible iff for each of the four viewer+0x70 side planes
@@ -2842,7 +2867,7 @@ impl Scene {
         // The level's room cels (see `Cel`): parsed before the draw so the static 0x800 world objects can snap
         // to their cel's ambient exactly as the game's link does at level start (`build_LinkToRoom` 0x1c9680 →
         // the snap in `control_link_object_to_cel` 0x1346b8; channels are all 0 here, so triple 1 reads).
-        let (room_cels, cel_graph) = parse_cel_graph(level);
+        let (room_cels, mut cel_graph) = parse_cel_graph(level);
         let sim_cels = room_cels.clone();
         // Bug 3 diagnostic (`NF_COLL=1`): log objects that have collision but are not drawn — the "invisible walls".
         // An object is an invisible wall if it has collision triangles but: it's skipped by the cel pass (flag 0x10),
@@ -3480,6 +3505,9 @@ impl Scene {
             // links by `build_FindCel` 0x1c8cb0's RAYCAST tie-break among all containing cels, which
             // the port has not ported (the next session's item, with the live check).
             let world = nf_game::world::CollisionWorld::build_scoped(level, &level.instances(true).0, Some(scope_graph(&cel_graph)));
+            // fix-portal4: the +0x18 chains hang by the game's build_FindCel (0x1c8cb0) owner pick
+            // over each generic's sphere centre — needs the scoped world for the tie-break rays.
+            build_chains(&mut cel_graph, Some(&world));
             let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, d.level_id);
             let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
             let hitboxes = d.hitboxes.clone()?;
@@ -3609,6 +3637,9 @@ impl Scene {
         }
         let models_0x800: HashMap<u32, bool> = level.maps.iter()
             .flat_map(|m| m.objects.iter().map(|o| (o.hashcode, o.flags & 0x800 != 0))).collect();
+        // fix-portal4: sim-less loads never built a world — the chains fall back to the
+        // bbox-face FindCel approximation (documented deviation; every live load path builds sim).
+        if sim.is_none() { build_chains(&mut cel_graph, None); }
         Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn, misc_drawn }
     }
 
