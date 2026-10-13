@@ -650,7 +650,9 @@ pub fn scenario(name: &str) -> Option<(&'static str, fn(&mut Scene))> {
     //    placement (find a guard near a cover node).
     //  - bullet-flyby: needs the exact fly-by probability from Bullet_DoTrails (decomp).
     //  - friendly-actor: a real game bug — guards outside the llist still fire (B-10).
-    //  - searchlight-tracks-bond (B-9): the searchlight PORT is broken (1/7 heads links to a spot; beam points up).
+    //  (searchlight-tracks-bond RE-ADDED by fix-searchlight-remainder: G-036 closed as a misdiagnosis — the
+    //   1/7 linked heads on 07000005 are the level's own data and the "beam points up" head is the game's
+    //   own mid; 07000006's four heads all carry linked spots and track. Run it on 07000006.)
     //  - grenade-throw / grenade-bounce-explode (B-10): on 07000005 (the only level with active guards at start,
     //    since 07000002's combat guards are switch-gated and turning on all channels starts scripts), the guard's
     //    combat AI keeps entering RUN_FOR_COVER (0x8c) instead of AIM_STAND_FIRE, so `look_for_opponent` never
@@ -672,20 +674,22 @@ pub fn scenario(name: &str) -> Option<(&'static str, fn(&mut Scene))> {
         "sniper-scope" => ("Sniper scope (right mouse)", scenarios::sniper_scope),
         "shotgun-reload" => ("Shotgun reload (R, shell-by-shell)", scenarios::shotgun_reload),
         "fusebox-07000014" => ("Fusebox sabotage (07000014, crouched in the vent)", scenarios::fusebox_07000014),
+        "searchlight-tracks-bond" => ("Searchlight tracks Bond (07000006)", scenarios::searchlight_tracks_bond),
         _ => return None,
     };
     Some((n, f))
 }
 
 /// The list of scenario names (for `--dev` start and `--help`). B-8/B-9/B-10: sniper-cover, bullet-flyby,
-/// friendly-actor, searchlight-tracks-bond, grenade-throw and grenade-bounce-explode are removed until their
-/// tests pass (see `scenario()` comment).
+/// friendly-actor, grenade-throw and grenade-bounce-explode are removed until their tests pass (see
+/// `scenario()` comment). searchlight-tracks-bond is back (G-036 closed as a misdiagnosis; run it on
+/// 07000006, whose four heads all carry linked spots).
 pub const SCENARIOS: &[&str] = &[
     "ambush", "guard-falls-off-ledge",
     "door-anti-crush", "cutscene-ai-pause",
     "ghostly-white", "door-textures", "invisible-walls", "level-exit",
     "weapon-switch", "sg5-pickup", "wire-music", "autoaim", "sniper-scope", "shotgun-reload",
-    "fusebox-07000014",
+    "fusebox-07000014", "searchlight-tracks-bond",
 ];
 
 mod scenarios {
@@ -953,14 +957,12 @@ mod scenarios {
             eprintln!("[scenario] guard-falls-off-ledge: the guard is lifted 3 m. It should fall under gravity (the Drone_CollisionHandler down-ray) and land on the floor. F1 shows in_air / on_surface.");
         }
     }
-    #[allow(dead_code)] // B-9: removed from registry — searchlight PORT is broken (1/7 heads links to a spot; that head's beam points up). See scenario() comment + GAPS.md.
     pub fn searchlight_tracks_bond(scene: &mut Scene) {
-        // B-6/B-8: the old scenario placed Bond near a GUARD, not in a searchlight's sweep — so the light never saw
-        // Bond. Place Bond on the GROUND in a searchlight HEAD's sweep arc. The head is mounted high on a wall/pole
-        // (y≈38 on 07000005) and the play-area floor is ~15 m below, so we search a spiral around the head's XZ in
-        // the sweep direction (base_yaw ± offsets) for a floor position within 30 m below. Bond stands there; the
-        // sweeping beam catches him within ~2 s. (The spot, kind 2, is at −10000 until the first ray hit repositions
-        // it, so we can't use its position pre-tick.) B-7: widened floor search to 30 m.
+        // fix-searchlight-remainder: re-added. G-036's "the port is broken (1/7 heads links to a spot; beam
+        // points up)" was a misdiagnosis (docs/atlas/searchlight.md): 07000005's placement data simply has
+        // 2 spots for 7 heads (the level's own design — 5 heads can never arm, in the game either) and the
+        // mid-6.11 head genuinely sweeps ≈10° above horizontal along +x. 07000006's four heads all carry
+        // linked spots (placements 489-492, created after their heads) — run it there.
         let mut placed = false;
         if let Some(sim) = scene.sim.as_mut() {
             // B-10: do NOT turn on all channels (it starts scripts). Searchlights with an on-channel that's
@@ -1014,8 +1016,8 @@ mod scenarios {
             }
         }
         if !placed {
-            eprintln!("[scenario] ERROR: no searchlight head (or no ground spot) on this level. Searchlights are on 07000005.");
-            eprintln!("[scenario] Run: nf-view <iso> 07000005 --dev --scenario searchlight-tracks-bond");
+            eprintln!("[scenario] ERROR: no searchlight head (or no ground spot) on this level. Run it on 07000006: all four courtyard heads have linked spots.");
+            eprintln!("[scenario] Run: nf-view <iso> 07000006 --dev --scenario searchlight-tracks-bond");
         }
     }
     pub fn door_anti_crush(scene: &mut Scene) {

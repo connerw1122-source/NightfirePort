@@ -9142,3 +9142,90 @@ fields). Report: docs/reports/fix-room-sound.md.
 
 Task 221: play the real briefing/outro movies in the mission flow (nf-view state 6), replacing
 fix-menus' countdown stand-in, per docs/systems/movies.md. Work starting.
+
+---
+Task: fix-searchlight-remainder (G-033/G-036) — searchlights: late spot creation (only 2 kind-2
+  spots at the snapshot; whose create-walk backfills the rest: spawner or script path), the spot
+  dynamic light + flicker, the broken-head smoke (Gas_Init, 6 RNG calls per puff not consumed
+  today), the corona alpha byte; reconsider re-adding the searchlight-tracks-bond test
+
+Work Log:
+- Started. Branch cut from origin/master 7a614ba. Reading searchlight.rs + decompile.
+
+Stage Summary:
+- In progress.
+- Research (settled, all [M] unless tagged):
+  * LATE SPOT CREATION: NO MECHANISM EXISTS. `Searchlight_Create` 0x1cb4f8 has exactly one caller
+    (parsemap_create_dynamic_objects 0x1d04f0 case 0xDE, ungated on param_7); the block walk
+    `parsemap_block_map_data_dynamic` 0x1d1b68 skips only placements with flags & 0xa000, and ALL
+    0xDE placements on 07000005/06 carry flags-hi 0 (probe over the disc). The placement census IS
+    the snapshot histogram: 07000005 has 7 heads / 7 mounts / **2 spots** / 6 beams / 7 coronas —
+    5 heads are spot-less by level design (they can never arm, in the game either); 07000006 has
+    4/4/4/4/4 with every spot placed AFTER its head (indices 489-492 vs heads 2-8) so all 4 link.
+    Neither a spawner nor a script path exists. G-036's open item closes on disc evidence.
+  * SMOKE: the decomp drops Gas_Init's 11th arg at every call site; the disassembly passes it —
+    the searchlight puff's life = 0x80 = 128 ticks (stack arg at 0x1cbce0/0x1cbcb0), not the
+    port's guessed 24. 6 shared-RNG draws per searchlight puff: caller `Rand_FRand(pi)` (0x1cbca0,
+    the rot z) + spin `Rand_FRand(pi/2*REC_FRAME_RATE)` (0x1ab060) + sign `Rand_Rand(0x100)`
+    (0x1ab08c, negate when >= 0x80) + 3 velocity `Rand_FRand(0.2)` (0x1ab160/0x1ab184/0x1ab1a4:
+    vel = (wind + r - 0.1, wind + r, wind + r - 0.1) * REC_FRAME_RATE; wind = Env_GetWindVel
+    0x17c048 = 0 with no cel wind radiator). Gate: `obj+0xFC != 0` (drawn) AND
+    `(GameState+52 + obj+0xEC) % 7 == 0` where obj+0xEC = GameState+52 AT CREATE
+    (control_init_object 0x134630:15) — the port's per-part (frame + pi) stand-in becomes the
+    game-exact (frame + created) phase.
+  * SPOT LIGHT: no flicker exists — psiLight_Create 0x10e788 is a stub, no psiLight_Update, and
+    Light_Update's flicker machine is gated on period +0x24 != 0 (the searchlight record writes 0).
+    REAL MISMATCH FOUND: `psiLight_SetLights` 0x10e588 uploads the node's STATIC +0x10 (the
+    placement/housing position, written before the -10000 move and never again) while the port
+    resolves the kind-2 light to the LIVE spot position; the intensity
+    `(1 - d*0.25)*50` (store 0x1cb400) and the 4.0-accept test DO use the tracked obj's live pos
+    (Lights_CalcClosestLights 0x1cb2e0). So the game shines the light from the housing with
+    spot-driven intensity — the port lights a halo at the spot. Fixing = the "spotlights look
+    weird" illumination delta.
+  * FLICKER (level lights): Light_Update 0x1cafb8 computes `active = (mask == GameState+52 & mask)`
+    — mask 0 => always active. The port's extra `flicker_mask != 0 &&` guard makes such lights
+    permanently dark. The 0x4E parse misses the record's +0x44 (counter seed source) and +0x48
+    (mask) — pinned from the case-0x4E call site (0x1d0bd4-0x1d0c04: lhu 0x40 -> a7 period,
+    lhu 0x44 -> stack+0 seed, lhu 0x48 -> stack+8 mask, lhu 0x4c -> stack+0x10 sound, n32 8-byte
+    slots). Dormant on 05/06 (no 0x4E lights there — probed), fixed faithfully anyway.
+  * CORONA ALPHA: obj+0x106 reaches the draw through the colour table: searchlight part vertices
+    currently share one 1.0 colour slot; a per-part slot region with .a = alpha/255 (the shader
+    already rescales by 255/128, so byte 0x2e -> 0.36 exactly like the GS) wires it with no
+    behaviour change for characters/pickups/attachments (their .a stays 1.0).
+- Tests planned (fail-first): gas 6-draw bit-exact replay + life 128; light static-housing upload +
+  mask-0 active; NF_ISO 07000006 tracks-bond (state 1 persists while Bond walks, LOST_LIMIT 900
+  ticks back to 0), spot-light housing pick2, corona colour slots; the searchlight-tracks-bond dev
+  scenario re-added (07000006 — all four heads have spots).
+- Fixes (each cited in docs/reports/fix-searchlight-remainder.md, all fail-first):
+  * The spot light: the psiLight node's static +0x10 (the housing, written pre-−10000) is now the
+    UPLOAD position [M 0x10e588:34-38] while the intensity/acceptance measure the live spot
+    [M 0x1cb2e0, store 0x1cb400] — Part::spawn_pos + ResolvedLight::{pos,track_pos,track}; the
+    pre-fix "rides the tracked position" reading (light_selection.rs) is re-premised with the
+    corrected citation. Flicker: none exists for the spot (psiLight stubs, period 0) — closed.
+  * The smoke: GasPool::init_searchlight_smoke consumes the game's 6 shared draws (caller
+    Rand_FRand(pi) + spin + sign + 3 type-7 wind spreads, wind 0 [S]) with the REAL life 128
+    (the decomp-dropped 11th arg, 0x1cbce0); the gate is (frame + created) % 7 with created =
+    the obj+0xEC create-time GameState+52 snapshot [M 0x134630:15], plus the obj+0xFC drawn gate.
+  * The corona alpha byte (obj+0x106) reaches the draw: a per-part colour slot region (SkinLayout
+    .col_sl) + the shader's c0.a * cols[sc].a — every other slot keeps 1.0.
+  * The 0x4E flicker machine: the mask-0 inversion fixed (active = (mask == GameState+52 & mask),
+    0x1cafb8) and the record's +0x44 seed source / +0x48 mask parsed via the additive create_full
+    (pinned from the case-0x4E call site 0x1d0bd4-0x1d0c04; dormant on 05/06, no 0x4E lights there).
+  * searchlight-tracks-bond re-added (dev.rs registry, 07000006) — G-036 closed as a misdiagnosis.
+- Tests: 3 new NF_ISO live tests (the housing upload incl. the game's own 30-accept cap, the smoke
+  stream at a fixed offset with life 128, tracks-bond arm/120-tick hold/900-tick lost limit + the
+  corona colour slot) + 4 unit tests (gas 6-draw bit-exact + stream continuation, light housing/
+  live-spot split, mask-0 active, 0x4E seed) + light_selection.rs re-premised. Fail-first proven
+  with a stash run: a pre-fix-compatible probe failed on the pre-fix tree (the housing leg) and
+  passed after the pop.
+- Suite (slim ISO, --no-fail-fast, --test-threads=1): nf-game 32/32 binaries green; nf-view green
+  (incl. the 3 new); nf-formats only the allowed disc_golden trio; nf-audio green.
+
+Stage Summary:
+- G-033/G-036's remainder is closed except the U-041 bullet child-list stand-in and the ±4 ulp
+  VU0 rounding of Mat_Align2Dir (both visual-only, carried in GAPS.md). The spot light now shines
+  from the housing with spot-driven intensity (the "spotlights look weird" illumination delta);
+  the smoke consumes the game's RNG with the real 2.13 s linger; the coronas fade by obj+0x106;
+  the flicker machine is faithful; the placement census settled late-spot-creation as a
+  non-mechanism. Live checks for the main agent: the 6 items in the report.
+

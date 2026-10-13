@@ -148,17 +148,24 @@ fn create_fills_the_record_like_the_game() {
 }
 
 /// The searchlight's kind-2 record as `Searchlight_Create` 0x1cb4f8 builds it inline.
+/// fix-searchlight-remainder re-premised: `psiLight_SetLights` 0x10e588:34-38 uploads the node's
+/// STATIC +0x10 (the housing — written once before the −10000 move [M 0x1cb4f8:154-167]) while the
+/// intensity/acceptance measure the tracked spot's LIVE position [M 0x1cb2e0:41-44, store 0x1cb400].
+/// The old assertion ("kind 2 rides the tracked position") pinned the pre-fix reading that lit a
+/// halo at the ground circle instead of the beam from the housing.
 #[test]
 fn the_searchlight_light_record_matches_the_inline_create() {
     let l = Light {
-        pos: [0.0; 3], life: 0, channel: 0, flicker_period: 0, flicker_base: 0, flicker_count: 0,
+        pos: [10.0, 40.0, 10.0], life: 0, channel: 0, flicker_period: 0, flicker_base: 0, flicker_count: 0,
         flicker_mask: 0, sound: 0, track: Some(3), radius: 500.0, intensity: 1.0, falloff: 0.0,
         rgb: [255, 255, 255], kind: 2, active: true,
     };
     let mut ll = LightList::default();
     ll.lights.push(l);
     let view = ll.resolve(&|i| { assert_eq!(i, 3, "the tracked part's position is read per selection"); [1.0, 2.0, 3.0] });
+    assert_eq!(view.lights[0].pos, [10.0, 40.0, 10.0, 1.0], "the upload stays at the record's (housing) position");
+    assert_eq!(view.lights[0].track_pos, [1.0, 2.0, 3.0, 1.0], "the live spot rides track_pos");
     let (lp, _) = view.pick2([1.0, 2.0, 4.0, 1.0], 0x80);
-    assert!((lp[0][2] - 3.0).abs() < 1e-5, "kind 2 rides the tracked position, not the record's");
+    assert_eq!(lp[0], [10.0, 40.0, 10.0, 1.0], "psiLight_SetLights uploads the housing [M 0x10e588:34-38]");
     let _ = Light { pos: [0.0; 3], life: 0, channel: 0, flicker_period: 0, flicker_base: 0, flicker_count: 0, flicker_mask: 0, sound: 0, track: None, radius: 1.0, intensity: 1.0, falloff: 0.0, rgb: [0, 0, 0], kind: 3, active: false };
 }
