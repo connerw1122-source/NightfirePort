@@ -48,7 +48,10 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
     if (sa.x != 0xffffffffu) {
         let q = vec4<f32>(p0, 1.0);
         p = sw * (pal[sa.x] * q).xyz + (1.0 - sw) * (pal[sa.y] * q).xyz;
-        c = vec4<f32>(c0.rgb * cols[sc].rgb, c0.a);
+        // fix-searchlight-remainder: the colour table's .a now carries the searchlight corona's alpha
+        // byte (obj+0x106 / 255) — every other slot keeps 1.0, so this multiply changes only the
+        // corona quads (the GS reads the byte as alpha/0x80; the ×255/128 rescale below reproduces it).
+        c = vec4<f32>(c0.rgb * cols[sc].rgb, c0.a * cols[sc].a);
     }
     // The point lights (`Light_Create` + `Lights_CalcClosestLights` 0x1cb2e0 + `psiLight_SetLights`
     // 0x10e588; fix-lighting). The VU1 microcode's formula (.vutext 0x241c80, the point-light
