@@ -6884,3 +6884,19 @@ room/portal graph (`Collide_StraddleCels` 0x1eac98 via `Intersect_Portal`, cap 0
 (HITTEST +0x94/+0x98, 0x201/0x721 in `Collide_Intersect` 0x1ebaa8's switch, per-node +0x3c word) and make
 `the_safe_pickups_take_after_the_safe_opens` fire. Starting from origin/master ac5ca9f; reading
 docs/reports/fix-safe08.md first.
+
+## fix-safe08b (2026-10-13, branch s/fix-safe08b) — the 07000008 bedroom blue block: room-scoped collision and drawing
+
+The cel-scoped collision machinery is implemented, unit-tested and verified against the decompile
+(`Collide_StraddleCels` 0x1eac98 → `Intersect_Portal` 0x1ea7b8; `build_LinkToRoom` 0x1c9680;
+`Collide_Intersect` 0x1ebaa8's tail = the take's 0x721 surface filter). The take query runs scoped
+(`Pickup::touches` → `segment_take_scoped`); the actor capsule stays FLAT because with the scope
+Bond falls through the GuardRoom floor at the fusebox: the shared `Room_Stairwell_T_2` mesh maps to
+cell 59 by the port's smallest-volume rule and the capsule's straddle walk from cell 40 never keeps
+it — the game's `build_FindCel` 0x1c8cb0 RAYCAST tie-break (not ported) decides it differently.
+Measured on the level: the bedroom cell (48) has no portal path to the exterior (17-cell component),
+so the game never collides or draws `Room_Outside_3` indoors — that is the blue block. The take
+rays graze `Object_Safe`'s shell (surface 6, flags 0) at t 0.647/0.692 and NO decoded filter skips
+it — the live check (GDB watch on the take's query, node +0x3c/+0x94 and ForcedList obj+0xF0) is in
+the report. The draw side was NOT landed (130-fix-portal keeps it). Full suite: 135 binaries green
+minus the 3 allowed `disc_golden`. Report: docs/reports/fix-safe08b.md.
