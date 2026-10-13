@@ -7583,3 +7583,46 @@ Stage Summary:
   stun grenade stuns (0x35 flash branch), the smoke pops (0x36), the mine fuses 420; the dev panel
   names match the disc. Left: the smoke's Occlude visual, the whiteout falloff curve, the mine
   trigger/detonator, the tripbomb laser, the satchel timer — all noted in the report.
+
+---
+Task: walkreal-01-cover
+Agent: walkreal-01-cover worker
+Branch: s/walkreal-01-cover (from origin/master)
+
+Work Log:
+- Sandbox kept: repo, work/, onfoot ISO, nf-queue present; token refreshed, master fetched.
+- Task: un-park walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact (ignored at the
+  fix-ai-traces2 merge 7e69b84). The contact (Mayhew) now reaches LeadHide 0x1f at (−0.5, 6.3, 13.6), 32
+  short of the LoadPointActivator, because guard 16 survives in cover (0x5c, health 10, 3.2 from Bond) —
+  the walker's torso shots hit the WORLD first (torso seg hit Some(0.82)). Cause: the shared RNG stream
+  gained draws (fix-impacts casings/debris, PlayScript) so the 01 fight plays out differently.
+
+Stage Summary:
+- Plan: teach tests/common/walker.rs to break cover like a player — re-aim at exposed parts (head 5,
+  arms 53-56), step sideways/forward until a part's segment is clear, then fire. No RNG reseeding.
+
+---
+Task: walkreal-01-cover
+Agent: walkreal-01-cover worker
+Branch: s/walkreal-01-cover
+
+Work Log:
+- Reproduced on master: the stall had evolved — ammo drained to 1 round with the resupply failing (the
+  nav's 1.8 arrive declared "arrived" 1.33 short of a pickup behind a cycling doorway), and a wounded
+  guard (health 10, ~11 u) sat fully buried (`exposed false` for 10800 ticks) while the old shoot aimed
+  only at root+0.3 and fired on aim-lock with the ray in the wall; the escort held LeadHide/LeadWait.
+- Fix (tests/common/walker.rs only): `exposed_aim` (the clearest hit-box centre, torso-preferred),
+  shoot re-aims at it and holds fire while fully buried, flanks with alternating sidesteps + forward
+  beyond 8 u, then nav-graph flanks (perpendicular, alternating sides, 3→5→7) after 9 s pinned;
+  `resupply` closes the last stretch directly (arrive 0.7, lenient) through cycling doorways; the
+  stuck handler's repeat-door guard falls through to the wedge ladder when the same door is picked
+  twice without crossing (the stairwell-head threshold loop).
+- walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact un-ignored and GREEN on
+  master: 78110 ticks, level_exit → 07000002, the contact on the plate. All walkreal_*/walk_* binaries
+  re-run green; the full four-crate suite green (3 bigf allowed fails). Report:
+  docs/reports/walkreal-01-cover.md.
+
+Stage Summary:
+- The walker now breaks cover like a player (re-aim at exposed parts, step to a clear line, fire); no
+  RNG reseeding, no new draws. Open question for a live pass: whether the port's UnderCover guard
+  peeks on the game's cycle (the walk now succeeds either way).
