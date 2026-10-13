@@ -229,6 +229,13 @@ pub struct Inventory {
     /// `+0x1B8 + 0xC·w`: rounds in weapon w's clip; `+0x1BA`: owned.
     pub clip: Vec<i16>,
     pub owned: Vec<bool>,
+    /// `+0x1BB + 0xC·w`: the weapon's fire-mode byte (fix-weapon-modes). The game stores it in the
+    /// same per-weapon record as the clip and the owned byte, and every reader keys it by the record
+    /// id: `Player_Weapon` 0x1a24c8 cycles it (pad ○, `Input_Action(0xc, 4)`), the reload re-arms the
+    /// shot budget from `weapon_data[w]+0x28 + mode·2` (`Player_WeaponFiring` 0x1a5460),
+    /// `Bullet_init` 0x12c5a0 reads the same pair for the spread and `HUD_UpdateAmmoPane` 0x19a7f0
+    /// picks the label `weapon_data[w]+0x30 + mode·4` with it.
+    pub fire_mode: Vec<u8>,
     /// `+0x70C + id`: key flags (`Player_EquipKey` 0x1a97a0 writes 1; never read back in the code
     /// studied — the switch channels carry the effect) [M]. Indexed by the pickup's key id.
     pub keys: Vec<bool>,
@@ -236,7 +243,13 @@ pub struct Inventory {
 
 impl Inventory {
     pub fn empty(weapons: usize, ammo_types: usize) -> Inventory {
-        Inventory { carried: vec![0; ammo_types], clip: vec![0; weapons], owned: vec![false; weapons], keys: vec![false; 0x100] }
+        Inventory {
+            carried: vec![0; ammo_types],
+            clip: vec![0; weapons],
+            owned: vec![false; weapons],
+            keys: vec![false; 0x100],
+            fire_mode: vec![0; weapons],
+        }
     }
 
     /// Bond on 07000005 at the level start [L] (`Player_InitWeapon` is not read): weapons 1, 2 (P2K, 7 loaded),

@@ -7696,6 +7696,40 @@ the detected counter's live hook, `Player_InitWeapon`'s per-difficulty autoaim d
 NewScoresRef PTP hand-off, the results screens (180-fix-menus). docs/systems/progress.md is the
 port map; GAPS G-045 added. Report: docs/reports/fix-progress.md.
 
+## fix-weapon-modes (s/fix-weapon-modes) — 2026-10-13
+Task: weapon fire modes — the Circle mode-switch (`Player_Weapon` 0x1a24c8: `Input_Action(slot, 0xc, 4)`,
+the mode byte at `BL + w*0xC + 0x1BB`, the twin-variant switch via weapon_data +0x05), each mode's behaviour
+(the launcher's heat-seeker homing `Bullet_update` 0x12e7b0:483 → `Bullet_homing` 0x12f358 on weapon_data
++0x6C & 0x20000), and the HUD fire-mode label (+0x30 + mode*4). Plus each weapon's first-person fire sound id
+(op-1 per-weapon remap) and gadget switching/use (briefcase, Q-Worm, camera). Started 16:45 UTC, sandbox
+expires ~18:32 UTC.
+
+**fix-weapon-modes outcome (18:25 UTC)**: the fire-mode system is ported. The button: `Input.mode_switch`
+(keyboard M = the pad's ○, action 12 mask 4 [M `Player_Weapon` 0x1a24c8:204-260 — the view-idle gate, the
+not-(aiming∧scoped) gate, the watch 0x54/0x55's fire OR-in via `Sim.prev_trigger`'s press edge]) handled in
+`scene.rs` before the switch-cycle block: a twin result (`weapon_data[w]+0x05`, s8) goes through the real
+switch request after `Player_WeaponHasAmmo` 0x1a16c0 (which reads carried/clip/type-0/ground-pickup — NOT
+the owned byte [M]); a mode result writes the mode byte, now `Inventory.fire_mode` (the game's
+`BL + w*0xC + 0x1BB`), which feeds `GunParams::from_record`'s shots-per-pull (`+0x28 + mode·2`) and the
+HUD's fire-mode label (`+0x30 + mode·4`, was hardcoded mode 0). The name resolution [L USATxt.dat +
+Lang::bind]: 0x2E 'Heatseeker' ↔ 0x2F 'Unguided' is the **AT-600 Scorpion**, 0x2C 'Guided' ↔ 0x2D the
+'Torpedo Launcher', 0x02 'Semi' ↔ 0x03 'Silenced' the P2K. The homing: `Bullet_homing` 0x12f358 ported in
+`drone.rs` (`Bullet_update` 0x12e7b0:483's `+0x6C & 0x20000` branch): the live-drone scan (nearest ≤ 1000,
+dot > 0.66, LOS via world.segment, the +0xfe&1 re-scan) and the `clamp((to−dir)·0.0333, ±0.01)` steer, no
+RNG draws. The op-1 remap (G-032's item) was already correct — pinned with a test (six table rows +
+the P2K 0x02's 0x403-unchanged [M 0x1c1b38:251-277]). The island: `Player_InitWeapon` 0x1a7ef8 case
+0x0700009 + the 0x070000a/b RamLoad fallback now grant the Q-Worm 0x58/Decryptor 0x56/Shaver 0x5b
+(the user could never select the Q-Worm — no grant existed). Gadget id corrections for the docs (not
+rewritten — lesson 5): 0x52 = briefcase ('Phoenix Ronin', pickups on 0700000c + 07000012, NOT 07000008 —
+its `oBriefcase_closed` is a kind-4 LABEL item [D]), 0x54 = Micro-Camera, 0x56/57 = Decryptor, 0x58 =
+Q-Worm. Tests: `crates/nf-view/tests/fix_weapon_modes_live.rs` (the twin toggle both ways + the no-twin
+sister 0x0c, the homing hit vs the unguided sister through the real trigger, the label ids, the Q-Worm
+grant, the op-1 table). Suite: see below. Report: docs/reports/fix-weapon-modes.md. Left: the briefcase's
+`GT_DeployMiniGun` turret (a new gt.rs), `Bullet_init`'s mode spread, the grenade mode pair, the decryptor
+decode mini-game, the camera's first-equip hint, the gadgets.md id-table fix, and the +0x60 fire_sound vs
+view_anim_datum contradiction (both docs cite readers — DroneWeap_FireWeapon 0x178f68:274-278 plays it vs
+weapon.rs' retyping; needs one [L] watch to settle).
+
 ## fix-movies (s/fix-movies) — 2026-10-13
 Task: the FMVs (PSS): verify the pss.rs demuxer on Nightfire's own movies with an
 NF_ISO golden test over every PSS on the disc; decode the MPEG-2 (IPU-style) video
@@ -8043,3 +8077,45 @@ Stage Summary:
 - Not ported: the PartyGirl armed-intruder shout (msg 0x11, prop 0x33 → the guards' prop-0x28 route,
   0x160140:63-70), the fail reason 0xb behind prop 0x52, and the disabled WaitSwitch guests (the
   idle ones can't be punched until their switch channel wakes them).
+
+## fix-weapon-modes2 (s/fix-weapon-modes2) — 2026-10-13
+
+Landing fix-weapon-modes (4ed1519) on current master: branch = s/fix-weapon-modes + merge origin/master
+(3576133, which held the backed-out merge after 764 passed / 4 failed). The 4 reds: (1) p2k_mode_button
+toggle reaches weapon 0x03 but switch_state stays 8 after 200 ticks; (2) the heat-seeker misses the guard;
+(3) portal_live cold_loadout on 07000009 draws weapon 67, not the P2K — the game equips the set and
+requests the dart ([M Player_InitWeapon 0x1a7ef8:192-202]), so that expectation is the one to update;
+(4) walk_0700000a Restart — already fixed on master. Suspects for 1+2: fix-progress's runtime difficulty
+in Data, fix-menus2's input/front-end handling, fix-restart-target's Drones fields, fix-sky's tick
+additions. Started 17:55 UTC, sandbox expires ~19:53 UTC (stop new work 19:33).
+
+**fix-weapon-modes2 outcome (19:10 UTC)**: landed on master (merge 5cf2a6f of 3576133). The two reds were
+NOT merge interactions — both fail on unmerged s/fix-weapon-modes in this sandbox with either ISO (the
+original entry's "Suite: see below" count was never recorded; the "passed on your branch" premise didn't
+hold). Root causes, both fixed from the decompile: (1) the variant swap round-tripped the clip —
+`Player_WeaponSelect` 0x1a2cc0:18-29 writes ONLY the weapon byte, the mode byte, the +0xC8 script at
+1.3x and view state 8 (the twin is the same physical gun; the port's gun.clip→clip[old] +
+clip[new]→gun.clip zeroed the P2K's 7 live rounds on 0x02→0x03 since clip[3] is a never-equipped slot),
+and the reload branches gate on view state == 0 (`Player_WeaponFiring` 0x1a5460:409 the R-key branch's
+`0xf4 == 0`, :447-450 the auto-reload's `0xf4 != 0 → return`) — the port's `busy` ignored the switch
+states, so the swap tick auto-reloaded and the +0xA4 reload script overwrote the +0xC8 variant script;
+state 8 then waited for `len(06000828)−1 = 200` while view_time was driven by the reload script's cap
+154 → stuck at 8 forever. Fixes: scene.rs drops the clip round-trip from both variant paths, and `busy`
+gains `switching` ([M 0x1a5460:409,447-450]). (2) `Bullet_heatseekable` 0x12f248's real guard gate is
+`+0xfc != 0 && health > 0 && +0xf4 != 1` — the port used `enabled` (the +0xF0 stand-in, which the game
+does NOT read here) and missed the WAIT_SWITCH(1) state gate; the test's spawner-held template guard was
+parked in WAIT_SWITCH and its enabled got cleared → never seekable. drone.rs seekable → `drawn && health
+> 0 && state != WAIT_SWITCH`. The homing test's geometry was also unwinnable as written: the start room's
+gate pillar walls off dx ≤ +4 from z+6 on (segment sweep [D]) so the missile's early straight path died
+at t23; the test now stands Bond past the pillar mouth, scans the guard spot at the MUZZLE height (+0.7 —
+the eye ray passes over the lintel the bullet hits), dx+1.2/z+14 (straight twin still misses by >1 unit;
+homing spiral converges), and pins the guard (teleport lands him on a floorless point — the pin stands in
+for the placement-driven floor snap). (3) portal_live 07000009 now expects the DART per [M 0x1a7ef8:132,
+:192-202] (`request = uVar6 = Upgrade_Weapon(0x43)` = 0x43/67), and cold 0a/0b too (cases 0x700000a/b
+fall into the case-9 loadout while the handgun is unowned — a cold load skips Player_RamLoad's body [M
+0x1957a8:9]; measured: weapon 67). Suite: nf-formats+nf-audio all ok; nf-game 31 binaries ok ×2
+consecutive runs (one earlier run under -j2 load had 3 flaky failures — a 66-test and a 3-test binary —
+not reproducible since); nf-view 108-bin partial run ok + every remaining binary ok — 0 failures, the 3
+disc_golden included (driving_golden passed). Report: docs/reports/fix-weapon-modes2.md. Left: the
+briefcase turret (gt.rs), Bullet_init's mode spread, the grenade mode pair, the decryptor mini-game, the
++0x60 fire_sound contradiction — all carried from fix-weapon-modes' list.

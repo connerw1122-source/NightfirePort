@@ -4394,7 +4394,16 @@ fn seg_point_dist2(a: V3, b: V3, p: V3) -> f32 {
 pub struct PlayerBullet { pub pos: V3, pub dir: V3, pub speed: f32, pub travelled: f32, pub range: f32, pub damage: f32, pub weapon: u16, pub first: bool, pub dead: bool,
     /// fix-impacts: the ricochet count (`Bullet_CollisionHandler` 0x12d798's bounce counter, killed
     /// at 3). Field on its own line (merge lesson 4).
-    pub bounces: u8 }
+    pub bounces: u8,
+    /// fix-weapon-modes: the weapon record's `+0x6C` carries the 0x20000 homing bit — `Bullet_update`
+    /// 0x12e7b0:483 runs `Bullet_homing` 0x12f358 for those bullets (the AT-600 Scorpion's
+    /// 'Heatseeker' record 0x2E; 'Unguided' 0x2F and the Torpedo 'Guided' 0x2C/0x2D do not set it
+    /// [L ee_start_05.bin]). No RNG draws anywhere in the homing (determinism).
+    pub homing: bool,
+    /// `BU+0x40`: the current heat-seek target — an index into `Drones::list` (`Bullet_homing`'s
+    /// `*(int*)(BU+0x40)` object pointer; none = re-scan, and the scan re-runs when the target
+    /// dies [M 0x12f3b4: the `+0xfe & 1` clear-and-rescan]).
+    pub target: Option<usize> }
 
 /// What one of Bond's bullets hit: a drone (index, part) or the world, and where.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -4973,7 +4982,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // 0x1a4bf0:258 runs inside the per-pellet loop) — fix-progress.
             self.progress.log_shot_fired(self.mission.status());
             let dir = crate::bullet::spread(dir, f(0x24), flags68, &mut self.rng);
-            self.player_bullets.push(PlayerBullet { pos: from, dir, speed: f(0x20), travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0 });
+            self.player_bullets.push(PlayerBullet {
+                pos: from, dir, speed: f(0x20), travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0,
+                homing: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x2_0000 != 0,
+                target: None,
+            });
         }
         // `Bullet_init_casing` 0x12fde0 (Player_WeaponInitBullet 0x1a4bf0:306, right after the
         // bullet's spread draws): one shell per shot, ejected from the view model after the weapon's
@@ -5113,6 +5126,59 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     }
                 }
                 _ => b.pos = [b.pos[0] + b.dir[0] * step, b.pos[1] + b.dir[1] * step, b.pos[2] + b.dir[2] * step],
+            }
+            // `Bullet_homing` 0x12f358 (from `Bullet_update` 0x12e7b0:483, after the move, for weapons
+            // whose `+0x6C` carries 0x20000): keep/refresh the target, else scan for the nearest
+            // heat-seekable object within 1000 units inside the 0.66-dot cone of the bullet's
+            // direction with a clear line of sight (`Collide_LineOfSight(…, 8)` → the port's static
+            // world segment), then steer: `dir += clamp((to_target − dir)·0.0333, ±0.01)` per
+            // component, normalised, and re-align the facing (the port's dir is the facing).
+            // Heat-seekable [M `Bullet_heatseekable` 0x12f248]: the guards (class 2) while alive —
+            // `+0xFC` set, health `+0xAC` > 0, anim state ≠ 1 — plus the copter bodies (class 0) and
+            // Bond (class 3); the port's targets are its live drones (the gate below). No RNG draws
+            // (determinism).
+            if b.homing {
+                // `Bullet_heatseekable` 0x12f248 [M]: a guard (class 2) is seekable while its object
+                // exists (`+0xfc != 0` — the port's `drawn`, the per-tick cull stand-in), its health
+                // (`BL+0xac`) is > 0 and its view state (`+0xf4`) is not 1 (`WAIT_SWITCH` — a
+                // spawner-held template waiting for its channel is not a live target). The game does
+                // NOT read the +0xF0 enable byte here (the port used `enabled`) and a corpse is
+                // excluded by health 0, not by its own flag.
+                let seekable = |dr: &Drone| dr.drawn && dr.health > 0.0 && dr.state != state::WAIT_SWITCH;
+                let mut target = b.target;
+                if let Some(ti) = target {
+                    if !seekable(&self.list[ti]) { target = None; }
+                }
+                if target.is_none() {
+                    let mut best: Option<(usize, f32)> = None;
+                    for (i, dr) in self.list.iter().enumerate() {
+                        if !seekable(dr) { continue; }
+                        let to = [dr.pos[0] - b.pos[0], dr.pos[1] - b.pos[1], dr.pos[2] - b.pos[2]];
+                        let dist = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+                        if dist <= 0.0 || dist > 1000.0 { continue; }
+                        if best.is_some_and(|(_, bd)| dist >= bd) { continue; }
+                        let n = [to[0] / dist, to[1] / dist, to[2] / dist];
+                        let dot = n[0] * b.dir[0] + n[1] * b.dir[1] + n[2] * b.dir[2];
+                        if dot <= 0.66 { continue; }
+                        if d.world.segment(b.pos, dr.pos).is_some() { continue; }
+                        best = Some((i, dist));
+                    }
+                    target = best.map(|(i, _)| i);
+                }
+                b.target = target;
+                if let Some(ti) = target {
+                    let tp = self.list[ti].pos;
+                    let to = [tp[0] - b.pos[0], tp[1] - b.pos[1], tp[2] - b.pos[2]];
+                    let l = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+                    if l > 0.0 {
+                        let steer = |c: f32, dirc: f32| ((c - dirc) * 0.0333).clamp(-0.01, 0.01);
+                        let dx = b.dir[0] + steer(to[0] / l, b.dir[0]);
+                        let dy = b.dir[1] + steer(to[1] / l, b.dir[1]);
+                        let dz = b.dir[2] + steer(to[2] / l, b.dir[2]);
+                        let m = (dx * dx + dy * dy + dz * dz).sqrt();
+                        if m > 0.0 { b.dir = [dx / m, dy / m, dz / m]; }
+                    }
+                }
             }
         }
         bullets.retain(|b| !b.dead);
