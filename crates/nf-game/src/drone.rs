@@ -5281,6 +5281,29 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
     }
 
+    /// `NDrone2_PlaySFX` (0x141848) for the foley lines (scale 1.0, delay enforced — the door line 0x27, the
+    /// kick 0x28): the 30-frame post-load gate, the entry's `repeatDelay` (`lastFrame`), then the entry's sfx id
+    /// at the drone. `lastFrame` is stamped **before** the play (rate-limited even when the play fails) [M
+    /// 0x141848: disasm 0x141a1c]. The handle is not referenced (speech's +0x4D0 stays free) and +0x4D4's
+    /// 180-frame talk suppression is not modelled — it only gates optional talk lines [M 0x13f1d0].
+    fn foley(&mut self, d: &Data, index: usize, idx: usize, frame: u32) {
+        if let Some(l) = Self::foley_entry(d.voices, &mut self.voice_last, idx, frame) {
+            let pos = self.list[index].pos;
+            match d.sfx { Some(t) => { self.play_sound_handle(pos, t.get(l.sfx)); } None => { self.audio.play3d(l.sfx, pos, None); } }
+        }
+    }
+
+    /// The `NDrone2_PlaySFX` gate + `Drone_SfxInfo` stamp (`lastFrame` in the table, shared by every drone) —
+    /// split out so the door site inside the `list.iter_mut()` loop can play through the narrow field borrows.
+    fn foley_entry(lines: Option<&[nf_formats::sfx::VoiceLine]>, voice_last: &mut Vec<Option<u32>>, idx: usize, frame: u32) -> Option<nf_formats::sfx::VoiceLine> {
+        let lines = lines?;
+        if voice_last.len() < lines.len() { voice_last.resize(lines.len(), None); }
+        let l = lines.get(idx).copied()?;
+        if frame < 30 || l.sfx == 0 || voice_last[idx].is_some_and(|t| frame < t + l.repeat) { return None; }
+        voice_last[idx] = Some(frame);
+        Some(l)
+    }
+
     /// `Effect_Bullet`: the impact sound of the surface the segment `from → to` hits (`EffectInfo+0x14`), at the hit.
     fn impact_sound(&mut self, d: &Data, from: V3, to: V3) {
         let (Some(s), Some((t, _, m))) = (d.surfaces, d.world.segment_surface(from, to, false)) else { return };
@@ -6385,7 +6408,20 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
             // The door anim's event 6 (fired in `update_anim` just above): msg 0x20 to self —
             // only `DSTATE_OpenDoor` handles it (the send's GLOBAL fallback drops it elsewhere).
-            if std::mem::take(&mut dr.pending_door_msg) { dr.send(d, rng, frame, msg::DOOR); }
+            // `NDrone2_DSTATE_OpenDoor` case 0x20 plays Drone_SfxInfo[0x27] (sfx 1477) before the door
+            // activation — `NDrone2_PlaySFX(1.0, DCVars, 0x27, drone+0x30, enforceDelay 1)` [M 0x1681f8].
+            if std::mem::take(&mut dr.pending_door_msg) {
+                // `NDrone2_DSTATE_OpenDoor` case 0x20 plays Drone_SfxInfo[0x27] (sfx 1477) before the door
+                // activation — `NDrone2_PlaySFX(1.0, DCVars, 0x27, drone+0x30, enforceDelay 1)` [M 0x1681f8].
+                // (The narrow play mirrors `foley` — `&mut self` is split by the loop's `list` borrow.)
+                if let Some(l) = Self::foley_entry(d.voices, &mut self.voice_last, 0x27, frame) {
+                    match d.sfx {
+                        Some(t) => { let h = t.get(l.sfx); self.audio.play3d(h.id, dr.pos, None); if !h.looped { self.sounds.push(Sound { id: h.id, pos: dr.pos, inner: h.inner, outer: h.outer, weight: h.weight }); } }
+                        None => { self.audio.play3d(l.sfx, dr.pos, None); }
+                    }
+                }
+                dr.send(d, rng, frame, msg::DOOR);
+            }
             if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
             // `DroneFunc_OnInitDeath`'s verdict: the FailLabel event + the fail channel [M 0x13e560
             // applied per 0x145bd0's reasons; fix-actors]. The monitor's standing hooks (ch 0x60/0x61
@@ -6793,5 +6829,41 @@ mod tests {
         let mut dr2 = drone_at([0.0, 0.5, 0.0]); // feet at −0.5, floor at −1.5 → gap 1.0 > 0.2
         dr2.collision_handler(&w2);
         assert!(dr2.in_air && !dr2.on_surface, "in the air");
+    }
+}
+
+#[cfg(test)]
+mod foley_tests {
+    use super::*;
+
+    /// `NDrone2_PlaySFX`'s gate + `Drone_SfxInfo` stamp (`foley_entry`, 0x141848): the 30-frame post-load gate,
+    /// the entry's `repeatDelay` enforced from the table's `lastFrame` (stamped **before** the play — the rate
+    /// limit holds even when the play itself fails [M 0x141848 disasm 0x141a1c]), and a zero-sfxId entry is
+    /// silent (entry 0x23 [L ee_snapshot.bin: sfxId 0]).
+    #[test]
+    fn foley_gate_repeat_delay_and_stamp_before_play() {
+        let lines = vec![
+            nf_formats::sfx::VoiceLine { sfx: 1477, facial: 0, repeat: 0 },     // the door line (idx 0x27)
+            nf_formats::sfx::VoiceLine { sfx: 0, facial: 0, repeat: 180 },      // the disabled surrender line
+            nf_formats::sfx::VoiceLine { sfx: 924, facial: 0, repeat: 300 },    // a cooldown line
+        ];
+        let mut last: Vec<Option<u32>> = Vec::new();
+        // Inside the first 30 frames nothing plays and nothing is stamped.
+        assert_eq!(Drones::foley_entry(Some(&lines), &mut last, 0, 29), None);
+        assert!(last.iter().all(|t| t.is_none()), "no entry stamped: {last:?}");
+        // Frame 30: the door line plays and stamps frame 30 before the play.
+        assert_eq!(Drones::foley_entry(Some(&lines), &mut last, 0, 30), Some(lines[0]));
+        assert_eq!(last[0], Some(30));
+        // A zero-sfxId entry (0x23) returns at the entry's first gate, before any stamp [M 0x141848: 0x1418ac].
+        assert_eq!(Drones::foley_entry(Some(&lines), &mut last, 1, 40), None);
+        assert_eq!(last[1], None);
+        // The repeat delay gates a re-fire until lastFrame + repeat.
+        let l2 = nf_formats::sfx::VoiceLine { sfx: 924, facial: 0, repeat: 300 };
+        assert_eq!(Drones::foley_entry(Some(&lines), &mut last, 2, 100), Some(l2));
+        assert_eq!(Drones::foley_entry(Some(&lines), &mut last, 2, 399), None, "inside lastFrame + 300");
+        assert_eq!(Drones::foley_entry(Some(&lines), &mut last, 2, 400), Some(l2), "the gate opens on the tick");
+        // Sister: no table → nothing (a level without a voice table stays silent).
+        let mut none: Vec<Option<u32>> = Vec::new();
+        assert_eq!(Drones::foley_entry(None, &mut none, 0, 100), None);
     }
 }

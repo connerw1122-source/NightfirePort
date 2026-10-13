@@ -785,6 +785,11 @@ fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
             nf_game::music::Cmd::FadeDown { music } => fade_down = Some(music),
         }
     }
+    // The IOP's op-0x19 pair each frame (`SFXUpdate` emits it when it changed): `NisPlaying` pauses the
+    // `PauseInNis` sounds (`ES_HandleNisPauseSfx`), `NisQuitten` stops the ducker [M sound.md §6 step 3, §8].
+    let (nis_playing, nis_quitten) = sim.drones.music.nis_state();
+    s.driver.set_nis_playing(nis_playing);
+    s.driver.set_nis_quitten(nis_quitten);
     let driver = &s.driver;
     sim.drones.audio.update(sim.sfx.as_ref(), (pos, norm, [0.0, 1.0, 0.0], f), &|h| driver.is_playing(h));
     let cmds = sim.drones.audio.take_commands();
