@@ -70,47 +70,47 @@ ELF loader: strings `Now parsing and loading %s`, `Now loading segment %d at %08
 `Fatal Error: ELF Magic number not present in header`, plus `host0:BondPS2_Release.elf`
 (= ACTION), `host0:BasePS2_Release.elf`, `host0:TestPS2_Release.elf` and
 `cdrom0:\ACTION.ELF;1` / `cdrom0:\DRIVING.ELF;1` / `cdrom0:\BASE.ELF;1` [D, file offsets 0x1c138–0x1c1d8].
-Which branch selects DRIVING (a save/flag? the PTP? argv?) is **open** — the loader decompile is
-in `work/decomp/SLUS_205.79/`; a live check (below) settles it cheaply.
+The round trip is now measured on both ends: ACTION launches DRIVING.ELF directly
+(`RunNextModule`), DRIVING launches **BASE.ELF** back (§3), and the boot loader re-dispatches from
+the block at 0x100000 (its read of the block is the remaining [S] — decompile in
+`work/decomp/SLUS_205.79/`).
 
-## 3. The main loop and the subsystems
+## 3. Main, the boot sequence and the game loop
 
-**Coverage warning:** the DRIVING.ELF decompile has **not** been function-mapped yet. What
-follows is the measured skeleton + the symbol inventory; everything deeper is next phase.
-
-- Entry 0x24c0d8 [D]. The SYM file's `main` 0x190590 does **not** exist in our build (no
-  decompile file at that address; the SYM is from another build — docs/formats/driving-sym.md),
-  so `main` is **not yet located** [M-negative]. Likely candidates: the function that calls the
-  init chain `FUN_00174198` — its caller list is the first thing to read next.
-- The init chain `FUN_00174198` 0x174198 sequences the subsystem startups with progress strings
-  (the strings between 0x375ae8 and 0x375b60 in its decompile name the steps) [M].
-- The per-frame loop, the timestep (60 Hz assumed [S] — unverified), and the vehicle physics are
-  **unmapped**. The physics tuning inputs exist on disc: `data\tuning\Physics\Rigid\default.tun`
+- `entry` 0x24c0d8 [M]: zeroes `0x3c8180..0x4279b4`, syscalls 0x3c/0x3d, crt0 init
+  `FUN_002be718(0x4279b4, -1, 0x40000, 0x419400, 0x24c190)` (heap top, 0x40000 stack, arg block
+  at 0x419400, static-ctor walker 0x24c190), then calls **`FUN_00174bf0(DAT_00419400, 0x419404)`**
+  — the main function.
+- **`FUN_00174bf0` 0x174bf0 = main** [M] (the SYM's `main` 0x190590 does not exist in our build;
+  docs/formats/driving-sym.md):
+  - parses argv: switches `-streams` (0x375c18), `-ntsc` (0x375c20), `-pal` (0x375c28),
+    `-pal60` (0x375c30) [D]; a `-t`/`-T` switch takes a level key, which it **writes into the
+    handover buffer at 0x1004f4** (`FUN_002a9a50(0x1004f4, argv+2, 0xf)`) — the dev-host path;
+  - reads the key back from 0x1004f4: `FUN_0022f7e8(0x1004f4,1)`; compares the prefix against
+    `"mis"` (0x375c38) and `FUN_002a72b0(0x1004f7)-1` parses the mission number out of `mis4`
+    (key+3) [M]; special-cases `paris_mis01` (0x374da8) [M];
+  - language string `IDL_ENG.LOC` (0x374e38) → `uRam00100548` [M];
+  - calls the init chain `FUN_00174198` 0x174198 (subsystem startups with progress strings;
+    opens `MISC.VIV` — `Opening misc.viv` 0x375a78 / `*** misc.viv found, and being used! ***`
+    0x375ac0 — and the level archive via `FUN_00175a28`, §2) [M];
+  - prints `Entering GameLoop` (0x375c40) and continues into the per-frame section
+    (`FUN_00165ed0`/`FUN_00175cf8`/`FUN_00166260`/`FUN_001749e8` — not yet decomposed) [M].
+- **The exit path** [M]: main's tail checks input flags (`uRam001009a0 & 0x80/0x100` →
+  `iRam00100978 = 2`), then, on exit: `FUN_00206168(DAT_0033a024, 0x100000)`;
+  **`FUN_00300058(0x100000, flag)`** — which checks the block's +0x4b4 flag, writes
+  `block+0x97c = flag` (ACTION wrote 1 there on the way in), and launches **BASE.ELF** —
+  `PTR_s_host0_BasePS2_Release_elf_003c5ea0` / `PTR_s_cdrom0__BASE_ELF_1_003c5ef8` (0x3c5ea0/
+  0x3c5ef8) — then loops forever. So the return is **DRIVING → BASE.ELF (boot) → dispatch**, and
+  the boot loader re-decides from the block at 0x100000. Before exiting, DRIVING can write a
+  **next level key** into the block: `FUN_002a9a50(0x1004f4, 0x32e6b0, 0xf)` [M].
+- The per-frame loop body, the timestep (60 Hz assumed [S] — unverified), and the vehicle physics
+  are **unmapped**. The physics tuning inputs exist on disc: `data\tuning\Physics\Rigid\default.tun`
   (298 B) and `Physical\default.tun` (365 B) per mission, identical everywhere, with visible keys
   `GRAVITY=-34`, `SLEEP_VEL=5`, `GROUND_FRICT…` [D]. The track data is `data\track\<level>.crp`
   (2.1–2.9 MB compressed, announced decompressed size up to 6.8 MB [D]), format unread.
 - Collision: unknown; the mission .VIVs contain **no** on-foot-style level.bin — the collision
   world must come out of the track `.crp` and/or car `.crp` files [S].
 
-**Symbol inventory** (from `DRIVING/DRIVING.SYM`, 12,719 entries — a different build, hints only;
-docs/formats/driving-sym.md) [S for roles, D for the names]:
-
-- The engine namespaces: `EAGL::*` (renderer/loader: `DynamicLoader`, `EAGL_VD_PS2_SINGLE_BUFFERD`),
-  `RView*` (camera: `RViewCamera`), `Act*` (the actor/character layer used inside the car:
-  `ActActor`, `ActCharacter`, `ActPoser`, `ActIKSolver`, `ActWeapon`, `ActModel*`, `ActManager`),
-  `CARP::*` (the car-physics middleware: `CARP::AIHenchInfo`), plus `IOModule`, `InputToAction`,
-  `InputDevice`, `PS2PadDevice`, `BankInfo`/`PrivateData::LoadBank` (audio banks).
-- `ActCharacter::LoadCharacter`, `ActCharacter::InheritWeaponLightingFromCar`,
-  `ActWeapon::SetHenchInfo(CARP::AIHenchInfo*)` — in-car henchmen use the same character/weapon
-  machinery as the on-foot actors [S, from names+parameters].
-- `IOModule::SendGameMessages(InputDevice*, InputToAction*)` — the input → game-message bridge
-  (the on-foot side has the equivalent `psiInput_*` layer) [S].
-
-**Shared code with ACTION.ELF** — not yet measured per function. Method for the next phase: pick
-the known ACTION functions (docs/atlas/*.md) and shape-match into our DRIVING decompile
-(same constants/structure), using the SYM names as search seeds only. The identical per-mission
-files (skeletons `0skel.o`/`1skel.o`, `ALookup.bin`, `driving.dat/.rel`, `common.ssh`,
-`hudNTSC.gal`, `attrib.dir` [D]) strongly suggest the same loaders/formats on both sides [S].
 
 ## 4. The input path (G-004 groundwork)
 
@@ -162,8 +162,9 @@ New: RefPack, `.crp`, `.bnk`-driving, the whole vehicle/physics/AI stack, the PT
 
 ## 7. Open questions / live checks for the main agent
 
-1. Boot-loader branch: watch `SLUS_205.79`'s decision before the ELF load after a driving mission
-   is selected (which string/flag drives `cdrom0:\DRIVING.ELF;1` vs `cdrom0:\ACTION.ELF;1`).
+1. Boot-loader dispatch: after DRIVING exits into `BASE.ELF`, watch the loader read EE
+   0x100000..0x101000 and pick `cdrom0:\ACTION.ELF;1` vs `cdrom0:\DRIVING.ELF;1` (which block
+   fields decide — the +0x97c flag? the +0x4f4 key?).
 2. The transfer window live: dump EE 0x100000..0x101000 right after `psiLaunchDriving`'s memcpy
    and right before `psiGetDrivingData` (which fields of the 0xa50 PTP block does DRIVING
    actually read? the level key at +0x4f4 is proven; the rest is [S]).

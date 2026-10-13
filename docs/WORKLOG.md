@@ -7210,3 +7210,14 @@ all 23 driving archives (1,499 entries; every entry content-hashed against the d
 golden/bigf_entries.tsv), the magic classification, and DRIVING.SYM (12,719). New docs:
 docs/formats/driving-viv.md, docs/atlas/driving.md. Left: DRIVING main/frame loop, vehicle
 physics, input G-004 (SYM addresses confirmed absent in our build), .crp format.
+
+## research-driving (final)
+
+Branch s/research-driving. Added after the progress entry: DRIVING.ELF main located
+(FUN_00174bf0 0x174bf0, called from entry 0x24c0d8 with the crt0 arg block; argv switches
+-streams/-ntsc/-pal/-pal60/-t<level>; writes/reads the level key at 0x1004f4, parses the mission
+number from key+3); the init chain + MISC.VIV boot-open confirmed inside FUN_00174198; the exit
+path measured (FUN_00300058 0x300058 writes block+0x97c, optionally the next key at +0x4f4, and
+launches BASE.ELF — the boot loader re-dispatches). Atlas + format docs + report written.
+Suite: nf-formats 11 passed / 3 allowed disc_golden fails; driving_golden 4/4; nf-game/nf-audio/
+nf-view compile clean (full run exceeds the sandbox tool timeout; no code changed in them).
