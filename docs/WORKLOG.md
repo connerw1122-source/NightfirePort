@@ -6704,3 +6704,11 @@ none, so a dev-given grenade can't throw there (data-shaped, not a port bug). 4 
 `crates/nf-view/tests/fix_weapons_all_live.rs`; walk_07000014's Rook drop retimed to the fuse.
 Report: docs/reports/fix-weapons-all.md. Left: fire-mode switch, zoom, reload matrix, punch KO,
 drop spam, 07000012 sound/NPCs, gondola rocket pickups.
+
+## fix-cutscenes2 (2026-10-13, branch s/fix-cutscenes2) — cut-scenes play; make them right
+
+In progress. From the user's playtests (2026-10-11 §F-items and 2026-10-12, after fix-cutscenes 6faffb4):
+no voice audio in any watched scene; mouths don't move (face tracks unported); 07000007's gun hand-back
+scene skips too fast, has pre-standing models and doesn't set mission state; the Drake fly-through draws
+every model twice (live drones + script characters); pack-script characters lack the obj+0x100 ambient
+tint; the Kimiko scene lets the objective banner (and its sound) through; 07000002's intro misses models.
