@@ -109,5 +109,10 @@ attempted this session (route-machinery surgery did not fit the window).
 3. nf-view `--bond` spot for the view: `--bond 66,100,96,2.6,0` looking at the gate pillar while the guard
    flees — the run anim 0x1E then the crouch 0x11 should show.
 
-## ntfy
-Sent (see the finish step's output in the session log; the fallback order was curl → python3 → wget).
+## ntfy failed
+All three fallbacks failed with the same server-side limit (2026-10-13 ~22:24 UTC):
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh/docs/publish/#limitations","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- python3 urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget --post-data: no body returned (the same 429; exit 0 only because -q swallows it)
+
+Same failure mode as fix-swim-vent5 (merge-log 2026-10-13: "429 daily quota on all three fallbacks").
