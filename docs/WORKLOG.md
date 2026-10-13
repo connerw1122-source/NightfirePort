@@ -8415,3 +8415,17 @@ Stage Summary:
 - Suite delta (20:45 UTC): the sandbox kills detached runs, so the four-crate suite ran as
   foreground chunks over every target — **781 passed, 3 failed** (only the 3 sanctioned
   disc_golden trio; 147/147 nf-view binaries). Report updated with the chunk breakdown.
+
+---
+Task: fix-cover-remainder
+Agent: fix-cover-remainder worker
+Branch: s/fix-cover-remainder
+
+Work Log:
+- (session start 20:45 UTC 2026-10-13, deadline ~22:39 UTC) Branch cut from master f767e3d.
+  Scope: GAPS G-028 remainder — ValidateCoverAnim low-node anim validation, the +0x538 blend
+  timing for non-call anims, RunForCover route shape near the 05 gate (U-030), per-target cover
+  slots (only Bond today), RecoverFromScaryObject (0x86) flee route. Files: drone.rs cover arms,
+  docs/systems/drone-cover.md. Plan: read the decompile + existing drone.rs cover code first,
+  reproduce each gap through the real input path (tests/traces/05-*.trace, ai_traces_live),
+  fix, NF_ISO test per fix, full suite before every push.
