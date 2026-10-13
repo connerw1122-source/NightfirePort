@@ -76,8 +76,7 @@ fn fusebox_07000014_param2_decides_the_live_wire_hurt() {
         b2.register_wire(0, 1); // the group-1 wire (the script's event-0xF registration)
         b2.mark_hit(1, 0);
         let mut ch = nf_game::triggers::Channels::default();
-        let objs: Vec<Option<nf_game::nis::Obj>> = vec![None];
-        let cuts = b2.update(&objs, &mut ch, 0);
+        let cuts = b2.update(&mut ch, 0);
         assert!(cuts.iter().any(|c| matches!(c, nf_game::fusebox::Cut::LiveWireHurt { .. })),
             "param 2 unset → the live wire hurts [M 0x1adfe8:99-101]");
     }

@@ -107,11 +107,19 @@ decompile:
    not a script hash (`if script < 0x0600_0000 { continue; }`, fusebox.rs:59); the game
    creates the class-0x3C object for every main-map 0x31 (0x1d04f0:182-186), scriptless ones
    getting an empty ext (all-zero but the channel params, +0x00 = 0).
-5. **Wire count and cut mechanic are stand-ins** (documented in the module doc, fusebox.rs:17-22):
-   the game registers up to 10 objects per group (0x1b0970) and kills them via **bullet**
-   hits (`Collide_FilterBullets` 0xfffd, 0x1adfe8:88); the port has one abstract wire per
-   group cut by the E path. The 5.0 hurt magnitude (0x1adfe8:100 `0x40a00000`) and the
-   channel-write pairs + clear match.
+5. **Wire count and cut mechanic are stand-ins** — **FIXED 2026-10-13 (fix-fusebox-cut)**: the
+   port now registers the script's event-0xF entities per group (`FuseBox_Register` 0x1b0970,
+   up to 10 slots; the wires are the PREVIOUS stream's object — `Script_EventHandler`'s record
+   base +0x80 sits one 0x28 record below `Script_Run`'s +0xa8, the same previous-stream pattern
+   as events 6/0xB) and kills them through the bullet path: `Collide_FilterBullets(list, 0xfffd)`
+   drops class-5 hitters whose `weapon_definition+0x10` category word ANDs non-zero
+   [M 0x1ece30:24-31 — the same drop polarity `Break_Update`'s `ext+4|0x106` mask and MP
+   demolition's mask 1 confirm]; a wire with a surviving hit dies. Disc words [L weapon_data
+   dump + USATxt.dat labels]: guns 0x0008 (dropped — gunfire never cuts), the **Laser**
+   0x4E/0x4F 0x0002 (kept — it cuts), the Stunner 0x0004, Grapple/Micro-Camera/Decryptor/
+   Q-Worm 0x0100 (dropped), grenades/Ronin/Shaver 0x0000 (kept). The E stand-in is removed:
+   `Player_Activate` 0x1a5170:95-160 has no class-0x3C arm (SP(class 0 + obj+0xE4), 0x1C door,
+   0x1D trigger, 0x25 SS, 0x28 car, 0x36 GT, 0x38 monitor, 0x3A lock, 0x47 GunImp, 0x49 PCQWorm).
 6. **Hurt has no position** — the game hurts from the dying object's world sphere
    (`obj+0x80`, 0x1adfe8:100); the port applies a flat 5.0 (fusebox.rs:95).
 7. **`gone`** — the port sets `gone` when both groups are empty (fusebox.rs:107); the game
@@ -136,6 +144,15 @@ next obj+0x14; filter `obj+0xFF == 0x3C`; ext = u32 at obj+0xE0.
   finishing group 0 → +0x5C must snap to 0 and `switch_channels[param3]` must never turn on.
 
 ## Fixed
+
+**The hit-driven cut is ported (fix-fusebox-cut, 2026-10-13)**: the wires register through the
+box script's event 0xF (07000008's 0x060008AD stream 2 → group 0; 07000014's 0x06000A1B streams
+2/6 → groups 0/1 [L NF_SCRIPTLOG]), the bullet walk marks kept-kind contacts on the wire's
+sphere at the script object's world position [S radius 0.5, unmeasured], and `FuseBox_Update`'s
+filter/death/channel logic runs per tick (the E stand-in removed). Tests:
+`crates/nf-view/tests/fix_fusebox_cut_live.rs` (the laser cuts 07000008's box → ch 137; the E
+and gunfire sisters do nothing) + the re-driven `the_07000008_safe_chain_works_in_play` and
+`walk_07000014_live::the_facility_chain_runs_to_the_delta_sector_exit` stage 3.
 
 The two gameplay-relevant rows (+0x56 hurt polarity, +0x5C clear) are FIXED in
 `crates/nf-game/src/fusebox.rs` (commit `fields-world: the fusebox live-wire polarity...`):

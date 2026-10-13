@@ -82,21 +82,59 @@ fn the_facility_chain_runs_to_the_delta_sector_exit() {
     assert!(sim.drones.channels.on(0x0c), "the room touch #456 writes 0x0C on contact [D]");
     assert!(!sim.drones.channels.on(0x09), "without 0x8C the SEQ_AND #445 must not fire [D]");
 
-    // Stage 3: the sabotage — the two west generator-room fuseboxes [D #383 (p1 0x87), #385 (p1
-    // 0x88); the level's other three boxes carry 0x22/0xE1/0xD1/0x6F]. Two presses each: open (the
-    // lid SP), then the cut; the second cut of each box is the live wire.
+    // Stage 3: the sabotage through the REAL cut — the two west generator-room fuseboxes [D #383
+    // (p1 0x87), #385 (p1 0x88); the level's other three carry 0x22/0xE1/0xD1/0x6F]. Each box's
+    // script registers its wires (the event-0xF hand-off, `FuseBox_Register` 0x1b0970 [L
+    // NF_SCRIPTLOG: streams 2/6 → groups 0/1]); the Laser's beam bullets (category word 0x0002,
+    // which survives `Collide_FilterBullets`'s 0xfffd [L weapon_data; M 0x1ece30]) cut them and
+    // `FuseBox_Update` writes the channels [M 0x1adfe8]. `Player_Activate` 0x1a5170 has no
+    // class-0x3C arm — E does nothing [M 0x1a5170:95-160].
     for want in [0x87u32, 0x88] {
-        let fb = scene.sim.as_ref().unwrap().drones.fuseboxes.iter().position(|f| f.ch[0] as u32 == want)
-            .unwrap_or_else(|| panic!("the fusebox with group-0 channel {want:#x} exists [D]"));
-        let pos = scene.sim.as_ref().unwrap().drones.fuseboxes[fb].pos;
-        let sim = scene.sim.as_mut().unwrap();
-        sim.bond.pos = [pos[0] + 0.6, pos[1] - 1.2, pos[2]];
-        sim.bond.yaw = -std::f32::consts::FRAC_PI_2; // look −x into the box
-        for _ in 0..3 { sim.step_bond(Input::default(), false, false, true); }
-        sim.step_bond(Input::default(), false, false, false);
-        for _ in 0..3 { sim.step_bond(Input::default(), false, false, true); }
-        let (on, live) = (sim.drones.channels.on(want), sim.drones.fuseboxes[fb].wires);
-        assert!(on, "cutting fusebox {fb} writes ch {want:#x} [M 0x1adfe8] (wires {live:?})");
+        let (fb, wires) = {
+            let sim = scene.sim.as_ref().unwrap();
+            let f = sim.drones.fuseboxes.iter().position(|f| f.ch[0] as u32 == want)
+                .unwrap_or_else(|| panic!("the fusebox with group-0 channel {want:#x} exists [D]"));
+            let list: Vec<[f32; 3]> = sim.drones.fuseboxes[f].alive_wires()
+                .filter_map(|(_, _, o)| nf_game::drone::Drones::script_obj_pos(&sim.drones.scripts, &sim.data(), o))
+                .collect();
+            assert!(!list.is_empty(), "box {f}: the script registered wires (groups 0 and 1 [L])");
+            (f, list)
+        };
+        for wp in &wires {
+            {   // settle near the box (floor pre-screened — never over a void), close inside the
+                // Laser's 4.0 range [L weapon_data 0x4E +0x1C], draw, aim through the wire, burn.
+                let sim = scene.sim.as_mut().unwrap();
+                let bp = sim.drones.fuseboxes[fb].pos;
+                let cands = [[0.6f32, -1.2, 0.0], [-0.6, -1.2, 0.0], [0.0, -1.2, 0.6], [0.0, -1.2, -0.6]];
+                let mut stood = false;
+                for c in cands {
+                    let spot = [bp[0] + c[0], bp[1] + c[1], bp[2] + c[2]];
+                    let floor = sim.world.segment(spot, [spot[0], spot[1] - 30.0, spot[2]]).map(|t| spot[1] - 30.0 * t);
+                    if !matches!(floor, Some(f) if (f - (bp[1] - 2.4)).abs() < 3.0) { continue; }
+                    sim.bond.pos = spot;
+                    for _ in 0..60 { sim.step_bond(Input::default(), false, false, false); }
+                    let head = sim.bond.head();
+                    let d = [wp[0] - head[0], wp[1] - head[1], wp[2] - head[2]];
+                    if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() <= 3.4 { stood = true; break; }
+                }
+                assert!(stood, "a stance inside the Laser's range exists for box {fb}'s wire at {wp:?}");
+            }
+            for _ in 0..40 { scene.sim.as_mut().unwrap().step_bond(Input { switch_to: Some(0x4e), ..Default::default() }, false, false, false); }
+            let mut dead = false;
+            for _ in 0..200u32 {
+                {
+                    let sim = scene.sim.as_mut().unwrap();
+                    let head = sim.bond.head();
+                    let dir = [wp[0] - head[0], wp[1] - head[1], wp[2] - head[2]];
+                    let l = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-4);
+                    sim.bond.yaw = dir[0].atan2(dir[2]);
+                    sim.bond.pitch = (dir[1] / l).asin() / (std::f32::consts::FRAC_PI_2);
+                }
+                scene.sim.as_mut().unwrap().step_bond(Input::default(), true, false, false);
+                if scene.sim.as_ref().unwrap().drones.channels.on(want) { dead = true; break; }
+            }
+            assert!(dead, "the laser cuts box {fb}'s wire → ch {want:#x} [M 0x1adfe8]");
+        }
     }
     for _ in 0..10 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
     assert!(scene.sim.as_ref().unwrap().drones.channels.on(0x8c), "AND #391 [0x87, 0x88] raises 0x8C [D]");

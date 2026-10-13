@@ -5142,7 +5142,6 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // group = the event's param 0 [L NF_SCRIPTLOG: 07000008's 0x060008AD stream 2 → 0;
                 // 07000014's 0x06000A1B streams 2/6 → 0/1].
                 crate::nis::Request::WireRegister { player, obj, group } => {
-                    if std::env::var("NF_WIREDBG").is_ok() { eprintln!("[wiredbg] register player {player} obj {obj} group {group}"); }
                     if let Some(fb) = self.fuseboxes.iter_mut().find(|f| f.placement == player) {
                         fb.register_wire(obj, group);
                     }
