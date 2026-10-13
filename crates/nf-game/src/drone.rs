@@ -772,16 +772,29 @@ impl Drone {
     }
 
     /// `NDrone2_GetDTYPENEW` (single player): the mode for type `ty` and a block's mode `block` (0 = the base).
-    fn dtype_of(&self, d: &Data, ty: u8, block: u8) -> u8 {
+    /// Takes `&mut self`: the 07000007 cases WRITE properties [M 0x14c938:37-39/67-69] — dtype 10/0xb
+    /// (the party guests) get prop 0x1f = 0 (deaf to sound alerts, `HandleSoundAlerts` 0x148a30:45) and
+    /// prop 0x54 = 1 (the protected guest), dtype 0xd gets 0x1f = 0; the port dropped these writes and the
+    /// guests heard every punch (playtest item 3: the crowd went hostile and gun-posed).
+    fn dtype_of(&mut self, d: &Data, ty: u8, block: u8) -> u8 {
         if block == 0 && self.prop(d, 0x10) { return 0x10; }
         let lvl7 = d.level == 0x0700_0007;
         match ty {
             0..=9 if lvl7 && block == 0 => return if self.prop(d, 0x4b) { 0x16 } else { 0x13 },
             // GetDTYPENEW 0x14c938 case 10/0xb: below full alertness a FEMALE (+0x15) becomes mode 0x12
             // (PartyGirlInit), any other 9 (CivilianInit) — the port had the non-damageable test here.
-            10 | 11 if block == 0 => return if self.alert < 1.0 { if self.female { 0x12 } else { 9 } } else { 10 },
+            10 | 11 if block == 0 => {
+                if lvl7 {
+                    d.props.set(0x1f, &mut self.props, 0);
+                    d.props.set(0x54, &mut self.props, 1);
+                }
+                return if self.alert < 1.0 { if self.female { 0x12 } else { 9 } } else { 10 };
+            }
             0xc if block == 0 => return if self.kind == 0xc { 0x11 } else { 0xc },
-            0xd if block == 0 => return if self.kind == 0xf { 0x17 } else if self.alert < 1.0 { 9 } else { 10 },
+            0xd if block == 0 => {
+                if lvl7 { d.props.set(0x1f, &mut self.props, 0); } // [M 0x14c938:67-69]
+                return if self.kind == 0xf { 0x17 } else if self.alert < 1.0 { 9 } else { 10 };
+            }
             0xe if block == 0 => return if self.prop(d, 0x4e) { 5 } else if self.alert >= 1.0 { 10 } else { 9 },
             0xf if block == 0 => return 0xd,
             0x10 => return 0x1e,
@@ -1366,6 +1379,16 @@ impl Drone {
             UNSURRENDER_ANIM | DRAW_WEAPON => (0, false),
             AIM_CROUCH | AIM_STAND_RELOAD | AIM_CROUCH_RELOAD | COMBAT_OUT_OF_RANGE | COMBAT_NO_SIGHT | COMBAT_DRONE_AHEAD
                 | GO_TO_GOAL | DRONE_STUCK => (0, false),
+            // The mission states (fix-party-mission, playtest: bullets on party guests did nothing):
+            // PartyGirl 0x160140 case 8 → HandleImpact(0x12, 0); Civilian 0x15d118 case 8 → (0x12, 0);
+            // CivilianHiding 0x15d520 case 8 → (0x12, 0); CivilianScared 0x15d3a0 case 8 → (+0x118, 0);
+            // CivilianMission 0x15d860 case 8 → (0x56, 0); CivilianPatrol 0x15d610 case 8 → (0x56, 0);
+            // CivilianDoorGuard 0x160648 case 8 → (0x56, 0); TruckDriverInit 0x160bd0 case 8 → (0x33, 0);
+            // TruckDriverIdle 0x160ed0 case 8 → (0x12, 0).
+            PARTY_GIRL | CIVILIAN | CIVILIAN_HIDING | TRUCK_DRIVER_IDLE => (CIVILIAN_SCARED, false),
+            CIVILIAN_MISSION | CIVILIAN_PATROL | CIVILIAN_DOOR_GUARD => (ATTACK, false),
+            TRUCK_DRIVER_INIT => (TRUCK_DRIVER_INIT_ALERT, false),
+            CIVILIAN_SCARED => (0, false),
             _ => return None,
         })
     }
@@ -1386,8 +1409,8 @@ impl Drone {
         let (resume, allow) = match s {
             TRUCK_DRIVER_INIT => (TRUCK_DRIVER_INIT_ALERT, false), // 0x160bd0 case 6: HandleImpact(0x33, 0)
             TRUCK_DRIVER_INIT_ALERT => (0, false),
-            TRUCK_DRIVER_IDLE | PARTY_GIRL | CIVILIAN_MISSION | CIVILIAN | CIVILIAN_SCARED | CIVILIAN_HIDING => (CIVILIAN_SCARED, false),
-            CIVILIAN_GUARD | CIVILIAN_PATROL => (ATTACK, false),
+            TRUCK_DRIVER_IDLE | PARTY_GIRL | CIVILIAN | CIVILIAN_SCARED | CIVILIAN_HIDING => (CIVILIAN_SCARED, false),
+            CIVILIAN_MISSION | CIVILIAN_GUARD | CIVILIAN_PATROL | CIVILIAN_DOOR_GUARD => (ATTACK, false), // 0x15d860 case 6 tail: HandleImpact(0x56, 0)
             HOSTAGE_IDLE => (0, false),
             _ => return self.on_impact(d, rng, frame, s, true),
         };
@@ -1461,6 +1484,13 @@ impl Drone {
         if valid(stored) { self.impact_resume = stored; }
         let setv = if p3 == self.state { 0 } else { p3 };
         self.do_hit_effects(d);
+        // 0x145f28:45-56: on 07000007 a punch on an UNARMED drone (ObjectIsArmed 0x178768 on the drone's
+        // own class byte — DoModeSettingsOLD 0x14cfa0:159-163 zeroes it for the party modes 9/10/0x13) is
+        // an instant mission fail (reason 5 → "Cover Lost" ch 99 [M 0x13e560]); the port's fail plumbing
+        // drains `fail_reason` next to `raise` (fix-actors). Punching a guard = the playtest's automatic fail.
+        if d.level == 0x0700_0007 && !self.obj_armed() {
+            self.fail_reason = Some(crate::ally::mission_fail_reason(5));
+        }
         if self.health <= 0.0 {
             // 0x145f28:60-84: enemy or not, mode != 0x1E → 0x42 (the KO); 0x1E → 0xF2 (bots, not ported).
             self.set_state(state::KNOCKED_OUT_ANIM);
@@ -1476,6 +1506,13 @@ impl Drone {
         }
         if valid(setv) { self.set_state(setv); }
         true
+    }
+
+    /// `NDrone2_ObjectIsArmed` 0x178768 on this drone's own class byte: classes 2..0x47 and 0x6a..0x71 are
+    /// armed, 0x47 and 0/1 are not. (The port's `weapon` mirrors obj+0xdc+0x62; the party bouncers carry
+    /// 0/1 until their DrawWeapon exit sets 6.)
+    fn obj_armed(&self) -> bool {
+        (2..0x47).contains(&self.weapon) || (0x6a..=0x71).contains(&self.weapon)
     }
 
     /// The upper-body aim gate. The game's `AnimObjectAimAt` (0x1bfe58, from `psiBuildMatrixPalette` 0x111498)
@@ -4030,6 +4067,11 @@ pub struct Drones {
     pub lights: crate::light::LightList,
     /// The last alarm broadcast (`DAT_0029AA88`) and whether one went out (`DAT_0029AA85`, 07000014 sends only one).
     pub last_alarm: Option<u32>,
+    /// `DAT_0029aa86` — the interrogate latch: 0 while the party is calm, 1 once an interrogation began
+    /// (`DroneVision_BeginInterogate` 0x1782a8; `EndInterogate` 0x1782c8 never clears it on 07000007).
+    /// Gates `DroneFunc_DoForcedAttack` 0x148c60's forced attacks on 07000007 (playtest item 3: one punch
+    /// turned every guest hostile). The interrogate state itself is not ported yet, so only the gate is.
+    pub party_loud: bool,
     /// Auto-aim: the last target (`BL+0x114`) and the crosshair offset as (yaw, pitch) radians (`BL+0x120` / `+0x124`,
     /// screen units in the game; *approximation*: small angles).
     pub aim_target: Option<usize>,
@@ -4166,7 +4208,7 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, aim_target: None, aim_offset: [0.0; 2],
+        Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(),
             gas: Default::default() }
     }
@@ -4722,6 +4764,10 @@ impl Drones {
         }
         for (oi, b) in alerts {
             let o = &mut self.list[oi];
+            // `DroneFunc_DoForcedAttack` 0x148c60's gate: on 07000007 while the interrogate latch
+            // (`DAT_0029aa86` — `party_loud` here) is 0, only the bouncer mode 0x13 and the
+            // CivilianMission 0x16 walkers force-attack; the guests hold the party [M 0x148c60:10-13].
+            if d.level == 0x0700_0007 && !self.party_loud && !matches!(o.mode, 0x13 | 0x16) { continue; }
             o.alerted_by_drone = true;
             o.alert_bits |= b << 16;
             o.send(d, &mut self.rng, frame, msg::FORCED_ATTACK);
