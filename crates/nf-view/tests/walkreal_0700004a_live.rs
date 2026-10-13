@@ -21,7 +21,22 @@ use walker::Walker;
 
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 
-// GAP (walkreal-c): the ride leaves the rider at t1620 — the platform (script entity 0) descends continuously (−45.8 → −63.3 over t1600-2180) but Bond parks mid-shaft at −54.14 (capsule_push 0, no floor within 0.5, grounded=true — carried by something static) exactly as the −52 doors [110]/[111] begin their ch-0x40 open ([D keys: the platform passes −52 at t1560, ch 0x40 at t1610 — the game lift passes CLOSED leaves]). The walked variant falls to −107.66. The door-solid vs rider interaction is the fix; live check in the report.
+// GAP (fix-final-blockers, ROOT CAUSE FOUND — the door-solid hypothesis is WRONG): the ride
+// freezes exactly when the −52 doors [110]/[111] start their ch-0x40 open, but the leaves never
+// touch the rider (probe walkreal_probe_fb5 at t1615: bond capsule push (0,0,0) walkable false;
+// the d50/d51 leaves span z −0.98..−0.82 while Bond stands at z −3.78 — a 2.8 gap). The real
+// mechanism: at t1611 the lift script's landing beat sends PlayerDisable — the riding inherit
+// (scene.rs step_bond, gated on !self.disabled [M 0x1949a8:24]) stops applying the platform's
+// delta, Bond freezes at −54.13 and the platform descends away (the feet-ray gap grows 0.03/tick,
+// grounded stays true via the floor ray's cc+0.1 margin). With the harness's skip_cutscenes the
+// skip completes ~t1633 and the Script_Free re-enable places Bond at the script's matrix —
+// −107.66, 53 units below the platform (this test's scrape). Without the skip Bond floats
+// disabled while the platform departs (the probe). NEXT SESSION'S FIX: the game's landing beat —
+// either the port's script must not disable the rider here (check the 0x06000571 event stream
+// against the decompile: which command maps to PlayerDisable), or the re-enable's `at` matrix
+// must be the platform's CURRENT pose (the game's rider stays ON the platform through the
+// opening leaves — the live check in docs/reports/walkreal-c.md #2 still applies: gdbwatch
+// BLData+0x94a through the −52 landing).
 #[test]
 #[ignore = "the walk's reached blocker — see docs/reports/walkreal-c.md; un-ignore when the blocker lands"]
 fn ride_the_lift_from_the_spawn_and_walk_into_the_lobby() {
