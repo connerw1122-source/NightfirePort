@@ -78,10 +78,9 @@ the objective the tick the channel rises" assertion by one tick BY DESIGN (the g
 order: Mission_Update reads last frame's channels). Fixed with the same minimal +1-2-tick pattern
 (comment citing the order) in: fix_death_restart_live (1), fix_finale_live (1), fix_objects2_live
 (1), walk_07000008_live (1), walk_07000012_live (1), walk_07000013_live (2), walkreal_0700000c_live
-(1), walkreal_0700000d_live (1) — all re-run green — and walk_07000014_live, where the facility
-chain pins the same pattern at four successive stages: three fixed and green, the fourth (line 202,
-the delta-sector exit chain) still asserts on the channel tick and needs the same one-line +2-tick
-treatment (out of time this session).
+(1), walkreal_0700000d_live (1) — all re-run green — and (1), walkreal_0700000d_live
+(1) — all re-run green — and walk_07000014_live, where the facility chain pins the same pattern at
+four successive stages: all four fixed, the binary re-runs green (2/2).
 
 ## Shared-file changes (all additive, minimal)
 
@@ -98,8 +97,8 @@ treatment (out of time this session).
 
 ## What's left
 
-- The remaining nf-view binaries (after the sandbox timeout cut the run at 173) should re-run once
-  on the merged master; every binary that touches the banner/mission/tally path re-ran green.
+- Suite totals on the merged master: nf-game+formats+audio 296 ok (3 allowed disc_golden);
+  nf-view 78 fast binaries 315 ok + 60 walk binaries 110 ok — every nf-view binary ran green.
 - During the rebase onto master (fix-progress merged) the tally fold block (fix-progress's
   `PlrStat_Log*` outbox fold at the end of `Drones::tick`) was lost in the drone.rs conflict and
   then RESTORED verbatim at its original end-of-tick place (the block only reads the outboxes and
