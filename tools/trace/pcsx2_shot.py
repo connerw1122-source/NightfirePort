@@ -4,7 +4,7 @@ Places Bond in the running PCSX2 game (player obj+0x30 position, +0x54 yaw, writ
 in-game frames, then captures the PCSX2 window to a PNG with a Windows screen grab. Render the port from the same
 spot with `nf-view <iso> <level> --bond x,y,z,yaw --frame N --shot out.png` and compare.
 
-Usage: python -I tools/trace/pcsx2_shot.py <out.png> --pos x y z yaw [--wait frames]
+Usage: python -I tools/trace/pcsx2_shot.py <out.png> (--pos x y z yaw [--wait frames] | --here)
 The level must already be loaded (tools/trace/goto_level.py). Nothing is stored but the PNG you ask for.
 
 Limit: the game collides Bond against his current cel (room). Teleporting into another room leaves that link
@@ -58,15 +58,21 @@ def f2u(v):
 
 def main():
     a = sys.argv[1:]
-    if not a or "--pos" not in a:
+    here = "--here" in a  # capture wherever the player stands now (no teleport); logs the spot for the port render
+    if not a or ("--pos" not in a and not here):
         print(__doc__)
         return
     out = os.path.abspath(a[0])
-    i = a.index("--pos")
-    x, y, z, yaw = (float(v) for v in a[i + 1:i + 5])
-    wait = int(a[a.index("--wait") + 1]) if "--wait" in a else 20
     p = Pine()
     obj = p.read32(PLAYERS)
+    if here:
+        x, y, z = (struct.unpack("<f", struct.pack("<I", p.read32(obj + 0x30 + 4 * k)))[0] for k in range(3))
+        yaw = struct.unpack("<f", struct.pack("<I", p.read32(obj + 0x54)))[0]
+        wait = 0
+    else:
+        i = a.index("--pos")
+        x, y, z, yaw = (float(v) for v in a[i + 1:i + 5])
+        wait = int(a[a.index("--wait") + 1]) if "--wait" in a else 20
     # Hold the position for `wait` frames (the game's own movement and gravity would otherwise move him off it).
     start = p.read32(GAMESTATE + 0x34)
     while p.read32(GAMESTATE + 0x34) - start < wait:
