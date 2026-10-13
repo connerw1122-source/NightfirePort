@@ -4420,7 +4420,17 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
     d[0] * d[0] + d[1] * d[1] + d[2] * d[2] <= r * r
 }
 
-pub fn fire_player(&mut self, d: &Data, from: V3, dir: V3, weapon: u8, sound: nf_formats::sfx::SfxHearing) {
+    /// The world position of a script object this tick (an entity's matrix, or the anim's
+    /// discrete object 0) — the resolution the game's collision contacts carry.
+    pub fn script_obj_pos(scripts: &crate::nis::Scripts, d: &Data, o: usize) -> Option<V3> {
+        match scripts.objects.list.get(o) {
+            Some(Some(crate::nis::Obj::Entity { matrix, .. })) => Some([matrix[3][0], matrix[3][1], matrix[3][2]]),
+            Some(Some(crate::nis::Obj::Anim { skin, script, frame, .. })) => crate::nis::World::discrete0(d, *skin, *script, *frame).map(|m| [m[3][0], m[3][1], m[3][2]]),
+            _ => None,
+        }
+    }
+
+    pub fn fire_player(&mut self, d: &Data, from: V3, dir: V3, weapon: u8, sound: nf_formats::sfx::SfxHearing) {
         let Some(w) = d.weapons.records.get(weapon as usize) else { return };
         let f = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
         let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
@@ -4439,6 +4449,9 @@ pub fn fire_player(&mut self, d: &Data, from: V3, dir: V3, weapon: u8, sound: nf
         self.player_impacts.clear();
         self.bullet_paths.clear();
         self.bullet_path_weapons.clear();
+        // `Collide_Update` 0x1ea398's first loop clears every hit list at the head of the frame —
+        // the fusebox wires' hit flags are per-tick only.
+        for fb in &mut self.fuseboxes { fb.clear_hits(); }
         let frame = self.frame;
         let mut bullets = std::mem::take(&mut self.player_bullets);
         for b in &mut bullets {
@@ -4455,6 +4468,26 @@ pub fn fire_player(&mut self, d: &Data, from: V3, dir: V3, weapon: u8, sound: nf
             // The photograph targets and breakable doors see the bullet this tick (the game's
             // collision pass registers the contact; the prop's update walks it — crate::props).
             self.props.bullet_hit(b.pos, end, b.weapon, b.damage, &mut self.channels, frame);
+            // The fusebox wires see the bullet this tick (`Collide_Update` 0x1ea398 pushes the pick
+            // onto the hit object's `obj+0xD0`; `FuseBox_Update` 0x1adfe8:88 filters the list with
+            // `Collide_FilterBullets(list, 0xfffd)` — class-5 hitters whose category word
+            // `weapon_definition+0x10` ANDs non-zero are dropped [M 0x1ece30:24-31]). Disc words
+            // [L dump]: guns 0x0008 (dropped — gunfire never cuts a wire), the Laser 0x0002 (kept —
+            // it cuts), the watch/Decryptor beams 0x0100 (dropped).
+            let kind = d.weapons.records.get(b.weapon as usize).map_or(0u16, |r| u16::from_le_bytes([r[0x10], r[0x11]]));
+            if crate::fusebox::FuseBox::hit_survives_filter(kind) {
+                let mut contacts: Vec<(usize, usize, usize)> = Vec::new();
+                for (fi, fb) in self.fuseboxes.iter().enumerate() {
+                    for (g, k, obj) in fb.alive_wires() {
+                        if let Some(p) = Self::script_obj_pos(&self.scripts, d, obj) {
+                            if Self::segment_hits_sphere(b.pos, end, p, crate::fusebox::WIRE_RADIUS) {
+                                contacts.push((fi, g, k));
+                            }
+                        }
+                    }
+                }
+                for (fi, g, k) in contacts { self.fuseboxes[fi].mark_hit(g, k); }
+            }
             // The lazer watch's beam burns the locks (`Lock_Update` 0x1ae3d8 case 0, record word 1):
             // the cell walk takes class-5 contacts whose BU+0x44 reads 0x4E/0x4F (the watch, −3/−10
             // per tick [:57-103]); `Lock_Unlock` writes `switch_channels[record+8]` [:194-195]. The
@@ -4613,17 +4646,6 @@ pub fn fire_player(&mut self, d: &Data, from: V3, dir: V3, weapon: u8, sound: nf
             match d.sfx {
                 Some(t) => { let h = t.get(id as u32); self.play_sound_handle(pos, h); }
                 None => { self.audio.play3d(id as u32, pos, None); }
-            }
-        }
-        // The fuseboxes: `Player_Activate` 0x1a5170 reaches the box's class-0 SP first (the lid), and
-        // `FuseBox_Update` 0x1adfe8 does the cut/channel work (map-tower2). The live-wire hurt goes
-        // through the same `Player_Hurt` → `pain_generic` path the explosions use.
-        for k in 0..self.fuseboxes.len() {
-            let hurt = self.fuseboxes[k].player_use(head, look, &mut self.channels, frame);
-            if hurt > 0.0 {
-                let before = self.health.health;
-                self.health.pain_generic(hurt, DIFFICULTY, d.level, 0);
-                self.player_hits.push((frame, usize::MAX, before - self.health.health));
             }
         }
         // `Player_Activate`'s class-0x1D trigger path: for every trigger within the use sphere, call
@@ -5115,12 +5137,46 @@ pub fn fire_player(&mut self, d: &Data, from: V3, dir: V3, weapon: u8, sound: nf
                         self.music.event(3, 1);
                     }
                 }
+                // Event 0xF: the SP create-callback hand-off (`Script_EventHandler` 0x1d94c0:172-175)
+                // — the current stream's entity registers with the box's `FuseBox_Register` 0x1b0970,
+                // group = the event's param 0 [L NF_SCRIPTLOG: 07000008's 0x060008AD stream 2 → 0;
+                // 07000014's 0x06000A1B streams 2/6 → 0/1].
+                crate::nis::Request::WireRegister { player, obj, group } => {
+                    if std::env::var("NF_WIREDBG").is_ok() { eprintln!("[wiredbg] register player {player} obj {obj} group {group}"); }
+                    if let Some(fb) = self.fuseboxes.iter_mut().find(|f| f.placement == player) {
+                        fb.register_wire(obj, group);
+                    }
+                }
                 _ => {}
             }
         }
         for k in 0..self.script_sounds.len() {
             let (_, h, at) = self.script_sounds[k];
             if let Some(p) = at.and_then(|o| obj_pos(&self.scripts, o)) { self.audio.set_position(h, p); }
+        }
+        // `FuseBox_Update` (0x1adfe8, the class-0x3C control update) — this tick's wire hits are
+        // consumed: dying wires lose their entity (`Effect_RemoveSObjs` 0x1cf360), a group-1 death
+        // hurts while +0x56 == 0 and cancels +0x5C, and an emptied group writes its two channels
+        // (one-shot by the ext zeroing).
+        for fi in 0..self.fuseboxes.len() {
+            let cuts = self.fuseboxes[fi].update(&mut self.channels, frame);
+            for c in cuts {
+                match c {
+                    crate::fusebox::Cut::RemoveWire { obj } => {
+                        if let Some(slot) = self.scripts.objects.list.get_mut(obj) { *slot = None; }
+                    }
+                    crate::fusebox::Cut::LiveWireHurt { obj } => {
+                        // `Player_Hurt(0x40a00000, glb_players, wire+0x80)` [M 0x1adfe8:99-101] —
+                        // the flat `pain_generic` the explosions use (the position is the dying
+                        // wire's; the port's hurt has no radius falloff, docs/fields/fusebox.md #6).
+                        let at = obj_pos(&self.scripts, obj).unwrap_or(self.fuseboxes[fi].pos);
+                        let before = self.health.health;
+                        self.health.pain_generic(crate::fusebox::LIVE_WIRE_HURT, DIFFICULTY, d.level, 0);
+                        self.player_hits.push((frame, usize::MAX, before - self.health.health));
+                        let _ = at;
+                    }
+                }
+            }
         }
         let audio = &self.audio;
         self.script_sounds.retain(|s| !audio.finished(s.1));

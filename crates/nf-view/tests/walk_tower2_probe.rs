@@ -108,20 +108,20 @@ fn probe_14_fuseboxes() {
     eprintln!("count {}", sim.drones.fuseboxes.len());
 }
 
-/// 07000014 fusebox E-debug: one press at box #383.
+/// 07000014 fusebox wire-debug: the registered wires of box #383 and their world positions.
 #[test]
 fn probe_14_fusebox_use() {
     let iso = iso();
     let mut scene = nf_view::load(&iso, "07000014.bin", false).expect("load");
     let sim = scene.sim.as_mut().unwrap();
     for _ in 0..100 { sim.step_bond(Input::default(), false, false, false); }
-    let pos = sim.drones.fuseboxes[1].pos;
-    sim.bond.pos = [pos[0] + 0.6, pos[1] - 1.2, pos[2]];
-    sim.bond.yaw = -std::f32::consts::FRAC_PI_2;
-    for t in 0..8 {
-        sim.step_bond(Input::default(), false, false, true);
-        let head = sim.bond.head(); let look = sim.bond.look();
-        eprintln!("[t{t}] bond {:?} head {:?} look {:?} opened {} wires {:?} health {:.1}",
-            sim.bond.pos, head, look, sim.drones.fuseboxes[1].opened, sim.drones.fuseboxes[1].wires, sim.drones.health.health);
+    let fb = &sim.drones.fuseboxes[1];
+    eprintln!("[fb] placement {} pos {:?} ch {:?}", fb.placement, fb.pos, fb.ch);
+    for (g, k, obj) in fb.alive_wires() {
+        let pos = match sim.drones.scripts.objects.list.get(obj) {
+            Some(Some(nf_game::nis::Obj::Entity { matrix, .. })) => Some([matrix[3][0], matrix[3][1], matrix[3][2]]),
+            _ => None,
+        };
+        eprintln!("[wire] group {g} slot {k} obj {obj} (entity pos {pos:?})");
     }
 }
