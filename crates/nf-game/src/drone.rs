@@ -4971,7 +4971,20 @@ impl Drones {
                 crate::nis::Request::DroneEnable { on } => {
                     self.npc_enabled = on;
                     for dr in self.list.iter_mut().filter(|d| d.present) {
-                        dr.enabled = on && dr.state != state::WAIT_SWITCH;
+                        if !on {
+                            // `NDrone2_Enable(0)` 0x149dd0:8-15: hide everyone (the anim clock write
+                            // is skipped — the port's renderer poses from `anim.time` live, and the
+                            // game's frozen pose is its last rendered matrix).
+                            dr.enabled = false;
+                        } else if dr.state != state::WAIT_SWITCH && !dr.corpse {
+                            // `Drone_EnableAll(1)` 0x1383e8:14 skips WaitSwitch drones; `NDrone2_Enable(1)`
+                            // 0x149dd0:16-28 refuses corpses (+0x4F8 & 0x200) and restarts the anim clock
+                            // at script time 1 (+0x98 = 0x3f800000) — the re-shown characters replay from
+                            // their script's first frame, not mid-stride (playtest item 6).
+                            dr.enabled = true;
+                            dr.anim.time = 0;
+                            dr.anim.ftime = 0.0;
+                        }
                     }
                 }
                 crate::nis::Request::Camera { script, start } => {

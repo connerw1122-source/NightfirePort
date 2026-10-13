@@ -445,3 +445,150 @@ fn banner_bars(scene: &nf_view::scene::Scene, f: &nf_view::gpu::HudFrame) -> usi
     }
     n
 }
+
+/// Probe (item 6): drive 07000007 into the Kimiko hand-back scene (trigger 412 → SP #420,
+/// 0x06000073) through the real path; snapshot every drone before and after.
+#[test]
+fn probe_kimiko_scene_guards() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000007.bin");
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = [94.3, 44.6, -45.9];
+        for _ in 0..90 { sim.step_bond(Input::default(), false, false, false); }
+    }
+    let mut started = None;
+    for t in 0..600u32 {
+        scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+        if scene.sim.as_ref().unwrap().disabled { started = Some(t); break; }
+    }
+    let started = started.expect("the hand-back scene must take control");
+    type Snap = Vec<(usize, u32, u8, u8, [f32; 3], bool, bool)>;
+    let snap = |scene: &nf_view::scene::Scene| -> Snap {
+        scene.sim.as_ref().unwrap().drones.list.iter().enumerate()
+            .filter(|(_, d)| d.present)
+            .map(|(i, d)| (i, d.skin, d.state, d.team, d.pos, d.enabled, d.corpse)).collect()
+    };
+    let pre = snap(&scene);
+    eprintln!("[kimiko] scene started at t={started}; {} drones present", pre.len());
+    for t in 0..6000u32 {
+        scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+        if !scene.sim.as_ref().unwrap().disabled { eprintln!("[kimiko] control back at +{t}"); break; }
+    }
+    for _ in 0..30 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    let post = snap(&scene);
+    let bond = &scene.sim.as_ref().unwrap().bond;
+    eprintln!("[kimiko] bond at {:?} yaw {:.2} (game marker: 91.52, 43.85, -31.09 yaw 3.14 [D key 498])", bond.pos, bond.yaw);
+    let mut moved_n = 0;
+    for &(i, skin, st, team, pos, en, corpse) in &post {
+        let p = pre.iter().find(|&&(j, s2, ..)| j == i).map(|(.., p, _, _)| *p);
+        let moved = p.map(|pp| ((pp[0] - pos[0]).powi(2) + (pp[2] - pos[2]).powi(2)).sqrt()).unwrap_or(-1.0);
+        if moved > 0.25 || !en {
+            moved_n += 1;
+            eprintln!("[kimiko] drone {i} skin {skin:#x} state {st:#04x} team {team} enabled {en} corpse {corpse} moved {moved:.2}: {pos:?} (pre {p:?})");
+        }
+    }
+    eprintln!("[kimiko] {moved_n} of {} post drones moved >0.25 or disabled", post.len());
+}
+
+/// Probe: drone 23 (state 0xb4) across the Kimiko scene.
+#[test]
+fn probe_drone23() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000007.bin");
+    for _ in 0..300 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    for i in [9usize, 16, 23] {
+        let d = &scene.sim.as_ref().unwrap().drones.list[i];
+        eprintln!("[d23] pre: drone {i} skin {:#x} state {:#04x} present {} enabled {} hp {:.0} second_ch {} second_tag {:#x} switch_ch {} wait_ch {} alt_state {:#x}", d.skin, d.state, d.present, d.enabled, d.health, d.second_channel, d.second_tag, d.switch_channel, d.wait_channel, d.alt_state);
+    }
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = [94.3, 44.6, -45.9];
+        for _ in 0..90 { sim.step_bond(Input::default(), false, false, false); }
+    }
+    for t in 0..6000u32 {
+        scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+        if t % 500 == 0 {
+            let d = &scene.sim.as_ref().unwrap().drones.list[23];
+            eprintln!("[d23] t={t} disabled={} state {:#04x} present {} enabled {} corpse {} hp {:.0}", scene.sim.as_ref().unwrap().disabled, d.state, d.present, d.enabled, d.corpse, d.health);
+        }
+        if !scene.sim.as_ref().unwrap().disabled && t > 100 { break; }
+    }
+    {
+        let d = &scene.sim.as_ref().unwrap().drones.list[23];
+        eprintln!("[d23] post: state {:#04x} present {} enabled {} corpse {} hp {:.0}", d.state, d.present, d.enabled, d.corpse, d.health);
+    }
+}
+
+/// ── Item 6: after the Kimiko cut-scene the guards are where the game puts them ──────────────────
+/// Playtest: "Guards aren't in the proper place after the Kimiko cut-scene."
+///
+/// The game's post-NIS repositioning is exactly two things [M]:
+/// - the PLAYER is teleported to the marker entity the script's event 6 named: `Script_Free`
+///   0x1da880:44-47 → `Player_Enable(glb_players, SI+0x40, +0xAB6)` with the previous stream's
+///   matrix (Script_EventHandler 0x1d94c0:125-134) — the hand-back scene 0x06000073's marker is
+///   key 498 @t4325 = (91.52, 43.85, −31.09) yaw ≈ 180° [D nf-extract nis 07800007.bin 06000073];
+/// - the DRONES are re-shown where they were: `Drone_EnableAll(1)` 0x1383e8 walks the llist
+///   (skipping WaitSwitch drones, +0xF4 == 1 [:14]) → `NDrone2_Enable(1)` 0x149dd0:16-28 refuses
+///   corpses (+0x4F8 & 0x200) and restarts the anim clock at 1.0 (+0x98 = 0x3f800000) — no drone
+///   position is ever written.
+///
+/// The port already froze/kept every drone at its pre-scene position and teleported Bond to the
+/// marker; what it missed was the clock restart — a guard frozen mid-stride resumed mid-stride
+/// (the re-shown characters replay from their script's first frame in the game), and corpses
+/// would have re-enabled.
+#[test]
+fn the_guards_reappear_at_their_places_after_the_kimiko_scene() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000007.bin");
+    // Let the level settle (guards idle at their posts), snapshot, then walk into trigger 412.
+    for _ in 0..300 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    // Pre-scene: an enabled, non-WaitSwitch drone whose animation is past its first frames.
+    type Snap = Vec<(usize, u8, [f32; 3], u32, bool)>;
+    let pre: Snap = scene.sim.as_ref().unwrap().drones.list.iter().enumerate()
+        .filter(|(_, d)| d.present && d.enabled && d.state != nf_game::drone::state::WAIT_SWITCH)
+        .map(|(i, d)| (i, d.state, d.pos, d.anim.time, d.corpse)).collect();
+    let walker = pre.iter().copied().max_by_key(|&(_, _, _, t, _)| t).filter(|&(_, _, _, t, _)| t > 5);
+    eprintln!("[party6] pre-scene: {} live drones, max anim.time {:?}",
+        pre.len(), pre.iter().map(|&(_, _, _, t, _)| t).max());
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = [94.3, 44.6, -45.9];
+        for _ in 0..90 { sim.step_bond(Input::default(), false, false, false); }
+    }
+    for _ in 0..600u32 {
+        scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+        if scene.sim.as_ref().unwrap().disabled { break; }
+    }
+    for t in 0..6000u32 {
+        scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+        if !scene.sim.as_ref().unwrap().disabled { eprintln!("[party6] control back at +{t}"); break; }
+    }
+    // One tick after control returns: the re-shown drones have restarted their animations and
+    // still stand where they stood.
+    scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+    let sim = scene.sim.as_ref().unwrap();
+    let bond = &sim.bond;
+    eprintln!("[party6] bond {:?} yaw {:.2}", bond.pos, bond.yaw);
+    assert!((bond.pos[0] - 91.52).abs() < 0.1 && (bond.pos[2] - -31.09).abs() < 0.1 && ((bond.yaw - std::f32::consts::PI).abs() < 0.06 || (bond.yaw + std::f32::consts::PI).abs() < 0.06),
+        "Bond stands at the scene's return marker [D key 498; M 0x1da880:44-47] (yaw ±180°)");
+    if let Some((i, _, pre_pos, pre_t, _)) = walker {
+        let d = &sim.drones.list[i];
+        eprintln!("[party6] drone {i} anim.time {pre_t} → {} pos {:?}", d.anim.time, d.pos);
+        assert!(d.anim.time <= 2, "the re-shown drone restarts its animation from the script's first frame [M 0x149dd0:21-22] (was mid-stride at {pre_t})");
+        let drift = ((pre_pos[0] - d.pos[0]).powi(2) + (pre_pos[2] - d.pos[2]).powi(2)).sqrt();
+        eprintln!("[party6] drone {i} drift {drift:.2}");
+        assert!(drift < 0.5, "the re-shown drone stands where it stood (no teleport in the game either [M 0x149dd0])");
+    } else {
+        eprintln!("[party6] no mid-animation drone before the scene — the clock restart is not observable this run");
+    }
+    // Nobody who was live pre-scene is left hidden while present: the re-shown drones are live,
+    // WaitSwitch drones stay parked on their channels [M 0x1383e8:14], and the guests the scene's
+    // channel removes (their second_channel is the trigger's 0x48 with the alternate state 0xb4
+    // DeleteMe [M NDrone2_PreDroneControl]) leave present=false — the game streams them out too.
+    for &(i, _, _, _, _) in &pre {
+        let d = &sim.drones.list[i];
+        assert!(!d.present || d.enabled || d.state == nf_game::drone::state::WAIT_SWITCH,
+            "drone {i} ({:#04x}) was live before the scene: re-shown, parked on a switch, or removed — not hidden while present", d.state);
+    }
+}
