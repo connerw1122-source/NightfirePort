@@ -114,10 +114,13 @@ exactly what makes Mayhew open it on approach; the port also E-opens it today (`
   pre-fix `drone.rs`, shown above).
 - `fix_ss_grate_live::the_use_key_activates_an_ss_grate` — GREEN.
 - Both re-run GREEN after the final master merge.
-- Full suite `NF_ISO=$NF_ISO cargo test --offline --release -j2 -p nf-game -p nf-formats -p nf-audio -p nf-view
-  -- --test-threads=1` — launched in this sandbox at the session's end (log `/tmp/suite2.log`); the sandbox's
-  8 GB RAM has OOM-killed background full suites before (walkreal-a's report) — the per-crate subsets that ran
-  during development were green; the driver should re-run the full suite on the bigger box before merging.
+- Full suite: the run got through nf-audio (7/7 ok) and nf-formats (72 passed, only the 3 allowed `disc_golden`
+  failures on the slim ISO) and was then **OOM-killed compiling nf-game's tests** — the same sandbox limit
+  walkreal-a's report documented ("the background full-suite runs were OOM-killed twice in this sandbox"). The
+  subsets that did run on the final merged tree, all green:
+  `nf-game --lib` 92/92; `nf-game --test ai_live` 32/32 (the capsule-repaired crate); `nf-view --test
+  fix_npc_doors_live` + `fix_ss_grate_live` (the two new NF_ISO tests). The driver should re-run the full
+  suite on the bigger box before merging.
 
 ## Live checks for the main agent
 
