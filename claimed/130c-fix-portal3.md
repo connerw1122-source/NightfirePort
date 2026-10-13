@@ -36,3 +36,6 @@ Files: `crates/nf-view/src/{scene,gpu,lib}.rs`, `crates/nf-view/src/dev.rs` (the
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/portal3` (start from `s/fix-portal2`, then merge `origin/master` into it).
+
+---
+claimed-by: sandbox1 at 2026-10-13T15:01Z
