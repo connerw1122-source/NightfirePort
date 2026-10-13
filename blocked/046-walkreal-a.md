@@ -47,3 +47,8 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox1 at 2026-10-12T20:33Z
+
+---
+## Report (blocked, 2026-10-13T01:13Z)
+
+Superseded (driver session, 2026-10-13T01:13Z): s/walkreal-a (812a0fd) pushed the walker harness and an NDrone2_OpenDoor stand-in, but no report even after a nudge. The main session did not merge it. Queued task 045g-fix-npc-doors-escort finishes the door port properly from 812a0fd and brings over the walker harness, without agent-ctx/.
