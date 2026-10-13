@@ -7217,3 +7217,16 @@ by G-017/G-024 with the repro. Suite: escort walk green on the final state + dif
 the full-suite re-run timed out (sandbox) after the revert — sim paths are otherwise byte-identical to
 master's. Shared-file hooks: lib.rs (pub mod ps2math), nf-extract main.rs (Player.capsule compile fix;
 pose-check level names take the FILES.BIN .bin names). Report: docs/reports/verify-bitexact.md.
+
+## fix-portal (s/fix-portal) — 2026-10-13
+Task: fix the portal visibility walk (`scene::portal_visible_cels`, opt-in NF_PORTAL=1) that
+hid the whole level on 07000006 (truck→courtyard), then make it the default again (NF_NOPORTAL
+to disable). Reproduce headless first (eye cel / visited cels / visible draw count per tick along
+the walk), then port the game's rules: eye-cel choice (build_FindCel raycast vs smallest-volume
+tie-break), outdoor cels without portals, depth-0 plane convention, the 0x40 VisCelCount cap,
+door-portal links. Also port the game's per-cel object culling (View_DrawObjList 0x1e69a0 walks
+the visible cels' object lists) so characters in hidden rooms are skipped — second playtest
+symptom on 07000007 (--bond 61.11,44.12,-52.58,-2.541,-0.010): two partygoers drawn in the snow
+outside. Tests walk 07000005/06/07 routes and pin the visible draw counts. Files:
+crates/nf-view/src/{scene,gpu}.rs, crates/nf-formats/src/level.rs. Started 11:10 UTC, sandbox
+expires ~13:06 UTC.
