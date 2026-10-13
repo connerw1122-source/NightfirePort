@@ -157,9 +157,34 @@ so on-screen guards survive — the stairwell guards were drawn when the channel
 `Control`'s early-outs: `NPCGlobals` (script event 5) and `Drone_bDisableSystem` (the options-menu
 "drones off" setting, 0x30ca9e — not ported, no menu) return at the first lines [M 0x137e68:21-26], the
 spawner's own `obj+0xFE` bit 0 [M :31-33], and the block checks mode < 2 / group == 0 / the slot pointer
-[M :38-46]. The per-level SFX quirk of `Control` (0x700000c/d plays a spawn line) is power-station-only
-and not ported. The alarm reinforcements are spawners gated on the alarm channels (e.g. 07000006's spawner
-waits ch 55 [D]).
+[M :38-46]. The per-level SFX quirk of `Control` is ported (fix-spawner-remainder): on the power-station
+pair (0x0700000c/0d, the double compare on `GameState._12_4_` at 0x137e68:191-197), a mode-3 spawner whose
+whole last wave is dead with at least one wave completed plays `Drone_SfxInfo[0xD6]` or `[0xD7]` (sfx
+0x549/0x526, 100.0 vol, outer 15/inner 10) through `NDrone2_PlaySFX(1.0, NULL, id, NULL, enforceDelay=1)`
+[M :199-200] — the entry's 600-frame repeat delay throttles, and the `Rand_Rand(2)` draw is consumed even
+when the delay suppresses the sound (it sits between the alive scan and the spawn attempt, so the RNG order
+is: stinger draw, then the selection draw). The first-ever wave is silent. The disc's census (all 0xF1
+placements of every 07* level): mode-3 spawners exist on 08/11/12/13/06/15 only — none on 0c/0d, so the
+branch is unreachable on retail; the unit tests (`spawner_kill.rs`) pin the semantics.
+
+**The +0x1F block byte** is the initial-fill / no-stealth-checks flag, NOT a wave-delay value (GAPS G-025's
+old label was a misread — there is no delay value anywhere in the spawner family; the gap between mode-3
+waves is purely the alive-scan == 0 wait). `DroneSpawner_Init` 0x137aa0:33-38 sets it to 1 at load iff the
+trigger channel (p4) is absent or already on AND the stop channel (p5) is absent or off — "this spawner
+would be spawning right now"; `Control` clears it at the first wave rollover [M :148]. While set it (a)
+overrides mode 3's nobody-alive rule (the initial post-load fill ignores it, [M :184]) and (b) skips
+`SpawnDrone`'s screens [M 0x137cb0:30/:43] — the min-spot-distance test and the `Drone_PositionVisible`
+abort — so the initial fill can drop a guard onto Bond's lap. The port models it as `immediate`.
+
+**Selection order** [M 0x137cb0:21-58]: one `Rand_Rand` per attempt over the USABLE templates — usable =
+unused this epoch AND, with screening on, at least `min_dist` (p8) from the player (a PRE-selection test:
+a too-close spot is skipped without consuming the draw); after the pick, with screening on, a spot visible
+to Bond aborts the attempt post-selection (the slot persists and retries next tick). Then `Rand_Rand(10000)`
+per successful spawn. Wave exhaustion is the pure counter compare `puVar1[3] <= puVar1[0xb]` (max waves vs
+waves completed, [M 0x137e68:126-143]) — a full wave rolls over first ([M :145-172] zeroes the templates'
+spawned-this-epoch flags and clears +0x1F), so multi-wave single-template spawners (e.g. 07000012
+placement 647, mode 3 max 2 waves 5) keep respawning. The alarm reinforcements are spawners gated on the
+alarm channels (e.g. 07000006's spawner waits ch 55 [D]).
 
 ## 6. Scripted actors (the NIS hand-over)
 
