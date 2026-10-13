@@ -65,8 +65,11 @@ types 0/2; max 4096/2048/128-or-64).
   reproduces that).
 - `crates/nf-view/tests/sky_gs_live.rs` (NF_ISO) — the first-CNT A+D census above.
 - Full suite: `NF_ISO=$NF_ISO cargo test --offline --release -j2 -p nf-game -p nf-formats -p nf-audio
-  -p nf-view -- --test-threads=1` — result recorded in the WORKLOG entry (only the 3 allowed
-  `disc_golden` failures on the slim ISO, if any).
+  -p nf-view -- --test-threads=1` — **interrupted by this session's deadline** (the sandbox kills
+  background runs; the foreground re-run could not start before expiry). The full sky test set passed in
+  the foreground together with `rng_live` (9 tests: sky_gs_live 1, sky_lightning 4, sky_rotation 3,
+  rng_live 1). The changes are additive (one new module, one `pub mod` line, new test files, docs), so
+  the merge-time full suite is the remaining gate.
 
 ## What's left
 
