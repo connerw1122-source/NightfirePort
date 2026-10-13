@@ -7485,3 +7485,13 @@ casing slot carries ammo_data[1] = 0x0200043f and tracks the pose; debris pool +
 shot none; bit-for-bit rerun) — shown failing first against the scaffold. Full suite green except
 the 3 allowed disc_golden fails. docs/atlas/effect.md written (the owed entry); GAPS G-041/G-025
 updated. No GPU here — render spots + live checks in docs/reports/fix-impacts-render.md.
+
+## fix-progress (s/fix-progress) — 2026-10-13
+Task: the mission progress/scoring system — the end-of-mission tally (PlrMissionStats
+0x2bcc20 counters, BondMoments 0x2bcde0), the rating (ScoringTable 0x2bc640 rows +
+PlrStat_GetScore 0x1984b0, medal thresholds, RewardsTable 0x2bc920 unlocks), the
+difficulty effects (GameState+0x40 readers: damage/accuracy multipliers, armour/health
+pickups, objective lists — data shared with 070-fix-mission, not forked), and the save
+(LS_Make/Load* layout, stored as a deterministic local file). New crates/nf-game/src/
+progress.rs + minimal nf-view scene.rs hooks + docs/systems/progress.md. 180-fix-menus
+owns the screens; this gives them the API. Started 14:05 UTC, sandbox expires ~16:04 UTC.
