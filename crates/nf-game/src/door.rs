@@ -617,6 +617,25 @@ impl Doors {
                 hits += 1;
             }
         }
+        // The straddle walk-in (walkreal-c): the kind-2 slide doors carry the placement's straddle
+        // param (par 4 [D] — every 07000015/16 kind-2 door has it) and the game arms a per-door
+        // flag from it at create (`Door_Create` 0x136100 reads the +0x3c param into obj+0xfd bit 8
+        // [M]). The player opens them by WALKING INTO the threshold — the 07000015 top-band door
+        // [32] (25.1, 41.6, 70.1, unlocked) is E-dead in the port yet must open for the level's
+        // only free west crossing [D flow]. The port had the flag parsed but never consumed.
+        // Stand-in shape [S — the game's straddle test function is not pinned]: a closed straddle
+        // door activates (from_player — the lock guards hold) when the player's feet stand inside
+        // its threshold (xz 1.4, the leaf's half-width plus the capsule; y within the door band).
+        for i in 0..self.list.len() {
+            let d = &self.list[i];
+            if !d.straddle || d.kind == 0 || d.state & 0xc != 0 { continue; }
+            let dx = head[0] - d.pos[0];
+            let dz = head[2] - d.pos[2];
+            if dx * dx + dz * dz > 1.96 { continue; }
+            if (head[1] - d.pos[1]).abs() > 2.2 { continue; }
+            self.activate(i, &[(head, 0.0, false)], true, channels, frame, &mut sounds);
+            hits += 1;
+        }
         (sounds, hits)
     }
 
