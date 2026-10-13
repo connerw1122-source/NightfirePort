@@ -23,6 +23,19 @@ pub const ROOT_HEIGHT: f32 = 1.0347183;
 /// (gated on flags2 bit 4), NOT a root-height write (fields-player correction: the earlier
 /// `obj+0xCC = obj+0x3C` reading mistook it). The port models the two stances as constants.
 pub const CROUCH_ROOT_HEIGHT: f32 = 0.55;
+
+/// The grounded floor ray's head-start above the origin (see the site comments).
+const FLOOR_RAY_HEAD: f32 = 0.05;
+
+/// The grounded floor ray: from a hair above the origin down `cc + 0.6`, with the hit parameter
+/// re-based so `t · ray_eff − FLOOR_RAY_HEAD` is the distance below the origin.
+fn floor_ray(world: &CollisionWorld, pos: crate::world::V3, cc: f32) -> (Option<(f32, crate::world::V3)>, f32) {
+    let ray = cc + 0.6;
+    let head = FLOOR_RAY_HEAD;
+    let from = [pos[0], pos[1] + head, pos[2]];
+    let to = [pos[0], pos[1] + head - ray - head, pos[2]];
+    (world.segment_hit(from, to), ray + head)
+}
 /// Capsule radius (`HITTEST+0x8C`).
 pub const RADIUS: f32 = 0.55;
 /// `BL+0x908` on land.
@@ -444,9 +457,8 @@ impl Bond {
         let (push, walkable) = world.capsule_push(a, b, RADIUS);
         self.head_bump = push[1] < -1e-4;
         for k in 0..3 { self.pos[k] += push[k]; }
-        let ray = self.cc + 0.6;
-        let floor = world.segment_hit(self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
-        self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
+        let (floor, ray_eff) = floor_ray(world, self.pos, self.cc);
+        self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray_eff - FLOOR_RAY_HEAD - 0.1 <= self.cc);
         if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
     }
 
@@ -825,9 +837,12 @@ impl Bond {
         // `Player_CollisionHandler`: the floor ray first, then the capsule's push.
         let (a, b) = self.capsule();
         let (push, walkable) = world.capsule_push(a, b, RADIUS);
-        let ray = self.cc + 0.6;
-        let floor = world.segment_hit(self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
-        self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
+        // The floor ray starts a hair ABOVE the origin: a surface exactly at the origin's plane (a
+        // box top, a stair edge) otherwise escapes the sweep and Bond hovers `grounded=false` over
+        // standable ground (reproduced on 07000009's stairwell and 0a's hatch box; the same
+        // head-start convention as `CollisionWorld::floor_below`'s +0.5).
+        let (floor, ray_eff) = floor_ray(world, self.pos, self.cc);
+        self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray_eff - FLOOR_RAY_HEAD - 0.1 <= self.cc);
         if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
         self.head_bump = push[1] < -1e-4;
         for k in 0..3 { self.pos[k] += push[k]; }

@@ -30,6 +30,10 @@ pub struct Ss {
     pub placement: usize,
     /// Param 3: the switch channel that drives the playhead (`SS_Update`'s +0x10 read).
     pub channel: u16,
+    /// Param 2 → ext+0x1E: the operate mask — its toucher-class bits (bullet 2 / player 8 / drone
+    /// 0x10) make `SS_Operate` return 1 on contact, bit 1 stops the channel write [M SS_Create
+    /// 0x1a9c58 `+0x1e = p2`, SS_Operate 0x1a9df8's class bits, SS_Update 0x1a9948's head].
+    pub mask: u16,
     /// The 0x19 key list (`m_paths[record+0x44]`).
     pub keys: Vec<crate::door::Key>,
     /// `extra[7] >> 16`, 0 → 75 (`SS_Create`'s default divisor).
@@ -66,6 +70,7 @@ impl SsList {
             list.push(Ss {
                 placement: i,
                 channel: param(3) as u16,
+                mask: param(2) as u16,
                 keys,
                 rate: if rate == 0 { 75 } else { rate },
                 spline: param(6) != 0,

@@ -82,10 +82,14 @@ pub struct Walker {
     sample_tick: u32,
     stuck: u32,
     stuck_cycles: u32,
+    float_ticks: u32,
     sidestep: i32,
     max_y: f32,
     lenient: bool,
 }
+
+/// The stuck dump, public for the walkreal tests' own aim loops.
+pub fn fail_dump_pub(scene: &Scene, target: V3, label: &str) -> String { fail_dump(scene, target, label) }
 
 fn fail_dump(scene: &Scene, target: V3, label: &str) -> String {
     let sim = scene.sim.as_ref().unwrap();
@@ -120,7 +124,7 @@ impl Walker {
         Walker {
             scene, top_up_health: true, stop_on_exit: true,
             report: Report { legs: Vec::new(), stuck_events: Vec::new(), falls: Vec::new() },
-            total_ticks: 0, pos, last_sample: pos, sample_tick: 0, stuck: 0, stuck_cycles: 0,
+            total_ticks: 0, pos, last_sample: pos, sample_tick: 0, stuck: 0, stuck_cycles: 0, float_ticks: 0,
             sidestep: 0, max_y: pos[1], lenient: false,
         }
     }
@@ -148,8 +152,21 @@ impl Walker {
         }
         if sim.bond.grounded {
             self.max_y = sim.bond.pos[1];
+            self.float_ticks = 0;
             // close any open fall entry
             for f in self.report.falls.iter_mut() { if f.ends_with("(open)") { f.push_str(" landed"); } }
+        } else if sim.bond.substate == 0 && sim.disabled == false {
+            // The floating-landing wedge (seen on 07000009's stairwell and 0a's hatch box): Bond
+            // hangs `grounded=false` over a floor without descending — the port's fall arrest
+            // caught him on an edge. The player's own recovery: hop (the jump re-runs the land
+            // check). Not a teleport — an input.
+            self.float_ticks += 1;
+            if self.float_ticks == 90 {
+                let j = self.scene.sim.as_mut().unwrap();
+                let input = Input { jump: true, ..Default::default() };
+                j.step_bond(input, false, false, false);
+                self.report.falls.push(format!("recovery hop at tick {} y {:.2}", self.total_ticks, self.scene.sim.as_ref().unwrap().bond.pos[1]));
+            }
         }
         if self.top_up_health {
             let h = &mut self.scene.sim.as_mut().unwrap().drones.health;
@@ -330,6 +347,32 @@ impl Walker {
             };
             self.tick(input, false);
         }
+    }
+
+    /// Walk a nav route by stepping EVERY node as its own waypoint (the direct final legs of
+    /// `walk_nav_to` wedge on furniture the AI's node chain threads between). Returns false when
+    /// no route exists. The per-node walks are lenient: a wedged node is skipped and the next
+    /// node re-aims, so one bad node doesn't strand the walk.
+    pub fn follow_nav_route(&mut self, target: V3, label: &str) -> bool {
+        let pts = {
+            let sim = self.scene.sim.as_ref().unwrap();
+            nav_route(sim, self.pos, target)
+        };
+        let pts = match pts {
+            Some(p) => p,
+            None => {
+                eprintln!("[walk] {label}: no nav route — the direct chain");
+                let sim = self.scene.sim.as_ref().unwrap();
+                let mut v = leg(sim, self.pos, target);
+                v.pop();
+                v
+            }
+        };
+        for (k, p) in pts.iter().enumerate() {
+            let _ = self.walk_to(Wp::new(p[0], p[1], p[2]).r(1.3), &format!("{label} node {k}"));
+        }
+        let _ = self.walk_to(Wp::new(target[0], target[1], target[2]).r(1.3), &format!("{label} end"));
+        true
     }
 
     /// `walk_to` that reports a wedge instead of panicking (resupply / guard approach skip the
@@ -546,10 +589,11 @@ impl Walker {
                     // The real player's reaction: a closed door in reach → press E until it moves,
                     // then let the swing finish. Anything else: sidestep, jump, then report.
                     let sim = self.scene.sim.as_ref().unwrap();
-                    let door_i = sim.drones.doors.list.iter().position(|d| {
-                        dxz(d.pos, self.pos) < 2.8
-                            && sim.world.segment(self.pos, d.pos).is_some()
-                    });
+                    // The game's use-cast is a 1.0 sphere at head+look [M Player_Activate 0x1a5170] —
+                    // the door's own plane blocks a straight segment to its centre, so NO LOS filter
+                    // here: the nearest door within reach gets the E (a toggle [M Door_Activate],
+                    // and opening a neighbouring door never blocks the walk).
+                    let door_i = sim.drones.doors.list.iter().position(|d| dxz(d.pos, self.pos) < 2.8);
                     if let Some(di) = door_i {
                         drop(sim);
                         self.use_door(di, label);
