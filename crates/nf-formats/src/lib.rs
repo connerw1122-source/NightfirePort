@@ -24,6 +24,7 @@ pub mod ps2gfx;
 pub mod placement;
 pub mod png;
 pub mod ps2float;
+pub mod mpeg2;
 pub mod pss;
 pub mod sfx;
 pub mod soundbank;

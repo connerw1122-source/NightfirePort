@@ -6,6 +6,12 @@ publish.workspace = true
 description = "Readers for the on-disc formats of 007: Nightfire (PS2, NTSC-U SLUS-20579)"
 
 [dependencies]
+# Pure-Rust MPEG-1/2 video decoder, MIT (the user approved the download, 2026-10-13), behind the opt-in
+# `movies` feature so default builds stay without it (docs/reports/fix-movies.md).
+oxideav-mpeg12video = { version = "=0.0.13", optional = true }
 thiserror.workspace = true
 bytemuck.workspace = true
 anyhow.workspace = true
+
+[features]
+movies = ["dep:oxideav-mpeg12video"]

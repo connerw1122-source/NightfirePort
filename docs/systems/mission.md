@@ -90,7 +90,7 @@ interludes — the port logs and skips them), else 0x07000048 → `ResetMap_Leve
 | `MissionFailed` | the type-3 banner (300 ticks) |
 | `PlayerDead` | (the red fade is render-side; not drawn yet) |
 | `LevelEnd { next }` | `drones.level_exit = Some(next)` for 0x07xxxxxx codes; driving codes (0x0730xxxx) are logged and skipped |
-| `Restart` | `drones.level_exit = Some(current level)` — the fail/death restart |
+| `Restart` | `drones.level_exit = Some(current level)` + `level_exit_restart` — the fail/death restart: the CURRENT level, warm, on the entry checkpoint [M 0x216618:19-21] |
 
 ## 5. The HUD (nf-view/src/hud.rs)
 
@@ -157,11 +157,16 @@ The full path the player sees, ported end to end (nf-game::death + mission.rs):
    → case 4 → the menu. The fail path (ch 99) is the same shape with the type-3 "Mission Fail" banner and
    `TimeOut` 300 [M 0x182c60:45-64] — the banner shows ~5 s before the menu, the death ~0 s after the fade.
 5. **The 0x40000042 menu** — `MenuManager_Create(-0x80000004, 0x40000042, 0, 0, 0x28, 0, 4)` +
-   `GS_PauseGame(1)` [M 0x182c60:77-81]; the handler is `C_GCPAUSE_Handler` (0x204408, shared with the
-   pause menu). Restart (control 6 = 1) → confirm (controls 0xc/0xd) → `ResetMap_LevelToLoad(
-   Mission_BaseMapHCode(), 0, 1)` + `user_restarted_or_quit = 1` [M 0x204408:136-155]; Quit (control 6 = 2)
-   → `GameState._28_4_ = 0x4000001c` + `ResetMap_LevelToLoad(0x7000048, 0, 0)` [M :141-149].
-   `Mission_BaseMapHCode` = `BaseMap` — the mission's FIRST level [M 0x1830a0].
+   `GS_PauseGame(1)` [M 0x182c60:77-81]; the handler is `P_ENDMISSION_Handler` (0x216618 —
+   `Handler_HandleMessage` 0x2029e0:498-500 routes menu id 0x40000042 to it; `C_GCPAUSE_Handler`
+   0x204408 is the PAUSE menu 0x10000028's handler, :217-219 — fix-death-restart had them swapped).
+   The event-0x4b arms over `__Menu_Send(0x100001a4, 0x35)`'s row index [M 0x216618:11-27]:
+   **row 0 (Restart) → `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` + `Player_RamLoad(Bond, 1)`**
+   — the CURRENT level, `IsWarmReset = 1`, no 0x70→0x71 remap [M :19-21]; row 1 →
+   `ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)` — BaseMap, cold [M :15-17]; row 2 →
+   `GameState+0x28 = 0x4000001c` + `ResetMap_LevelToLoad(0x7000048, 0, 0)` — the front end
+   [M :24-27]. `Mission_BaseMapHCode` = `BaseMap` — the mission's FIRST level [M 0x1830a0]; in
+   multiplayer it is the current level instead [M 0x1830a0:6-9].
 6. **The port's API** — `Mission.menu_open` / `menu_choice` (`MenuChoice::Restart|Quit`), the
    `Event::MenuOpen` event, and `Drones::fail_menu_open()` / `fail_choose_restart()` /
    `fail_choose_quit()` (crate::death) for 180-fix-menus to draw and answer. While nothing draws the
@@ -169,25 +174,59 @@ The full path the player sees, ported end to end (nf-game::death + mission.rs):
    behaviour, behind the flag. Quit queues `level_exit = 0x07000048`; the viewer logs it and holds (the
    front end is not ported).
 
-**What a restart resets and keeps** — the menu's Restart is `IsWarmReset = 0` (param 2) [M 0x204408:139]:
-`ResetMap_GameInit` runs `Init_SwitchChannels` (all 256 channels + hold/prev/time zeroed [M 0x134310,
-0x1d5080:44-46]) and `Player_RamLoad`'s whole body is gated on IsWarmReset [M 0x1957a8] — so **nothing is
-carried**: level-start loadout, channels clear, `Mission_Init(BaseMap, 0)` resets every part's objective
-states (ThisOrderNum = 0) [M 0x182270:68-129]. A restart is byte-for-byte a fresh load of the mission's
-first level (the port: `load_with_carry(..., None)` — `Drones.level_exit_cold` tells lib.rs to drop the
-RamSave). The trigger-exit level change is the WARM arm (`ResetMap_LevelToLoad(next, 1, 0)` +
-`Player_RamSave` [M 0x1b2318:111-116], fix-level2's carry) — that carry is exactly what looped the user's
-07000007 session (playtest 2026-10-12): the saved ch 99 re-failed the mission every reload, no input
-needed. Deaths, the chasm volumes and the scripted falls all share the one entry: health ≤ 0 → the
-sequence above (the port's fall/pain paths land in the same `Drones::death_tick`).
+**What the Restart restores (fix-restart-target)** — the fail/death menu's Restart is the WARM arm
+`IsWarmReset = 1` [M 0x216618:20], and it is aimed at `GameState+0xC` — the level Bond is on — NOT
+`BaseMap` (that is the PAUSE menu's Restart, `C_GCPAUSE_Handler` 0x204408:139, which the port keeps
+cold-to-BaseMap; the playtest that named "the very beginning map, 05" was the fail menu). What the
+reload produces [M]:
+
+- **The channels survive** — `Init_SwitchChannels` only runs `IsWarmReset == 0` [M 0x1d5080:48-50],
+  and `Player_RamLoad` restores all four channel arrays from the RamSave [M 0x1957a8:17-20].
+- **The checkpoint is the ENTRY state, not the dying state.** `Player_RamSave` runs at the previous
+  level's exit (`Trigger_Activate` 0x1b2318:115; script checkpoints too — `Script_EventHandler` case
+  0x12, 0x1d94c0:194-199) — so the buffer's ch 99/100/0x62 predate this level's fail. That is why the
+  warm restart does NOT re-fail (the replay loop fix-death-restart feared is an artefact of capturing
+  at the fail, which the game never does). The port keeps the save each level was LOADED with
+  (`App::entry_save`) and re-serves it on `Drones::level_exit_restart`.
+- **The health floor** — the handler passes `Player_RamLoad`'s boost arg 1: the saved health is
+  floored at the difficulty's `ContinueHealthBoost*` — 50.0 on all three difficulties [L
+  ee_start_05.bin 0x30cc34-3c] — then `Player_SetHealth` + the saved armour [M 0x1957a8:21-36].
+- **The mission layer** — `Mission_Init(level, 1)` re-derives `BaseMap`/`ThisOrderNum` from the
+  level, resets the CURRENT and future parts' objective states + condition channels (previous parts
+  keep theirs) [M 0x182270:68-129], and clears `LevelToEndTo`/`FailLabel`.
+- **The loadout** — `Player_InitWeapon` (0x1a7ef8) re-runs the level's entry case on the warm load:
+  0x07000007 RamLoads again, runs `Player_InitAmmoWeapons`, zeroes armour and equips the fixed party
+  loadout [M :176-186] — the port's `party()` (nf-game::player).
+
+A restart of a COLD-loaded level (no entry checkpoint — e.g. mission select → 05 → die): the game's
+buffer holds the BSS zeros, so the restore zeroes the arrays and the health floors at 50.0; the
+per-level `Player_InitWeapon` case re-equips the fresh loadout over them [S — the shapes are the
+game's fixed block widths; the port zeroes at the live shapes].
+
+**What a restart resets and keeps** — see "What the Restart restores" above (fix-restart-target
+corrected this section: the fail/death menu's Restart is WARM on the entry checkpoint;
+`Init_SwitchChannels` [M 0x134310, 0x1d5080:48-50] and the RamLoad gate [M 0x1957a8] belong to the
+COLD arm — the PAUSE menu's Restart [M 0x204408:139] — and the mission-select cold load). The
+trigger-exit level change is the other WARM arm (`ResetMap_LevelToLoad(next, 1, 0)` +
+`Player_RamSave` [M 0x1b2318:111-116], fix-level2's carry). The carry is exactly what looped the
+user's 07000007 session (playtest 2026-10-12) — but only because that reload carried the DYING
+state's ch 99; the game's entry checkpoint predates the fail, and the fixed restart no longer loops
+(the NF_ISO tests prove both arms).
 
 Falling deaths and the chasm/death-NIS volumes reach this path through Bond's health; the death NIS
 scripts themselves (`Script_IsDeathNIS` 0x1dae60, the 07000011 atrium fall) play their script and the
-sim's death sequence runs underneath — the render-side check is the main agent's. **Verified (this
-task)**: the NF_ISO test `lethal_fall_reaches_the_death_path_and_the_cold_restart` drives the real
-fall on 07000011 — a 400-unit drop lands into the full sequence (`Player_CollisionHandler` 0x1949a8:117-126
-→ `Player_HandlePain(timer − 60, type 6)` → the pane, ch 0x5e/0x62, the menu) and the COLD restart to
-the mission's first level (07000011, part 0 of its own mission); an 8-unit drop triggers none of it.
+sim's death sequence runs underneath — the render-side check is the main agent's. **Verified
+(fix-restart-target)**: the NF_ISO tests `fail_restart_reloads_the_current_level_warm` and
+`restart_restores_the_entry_checkpoint_with_the_health_floor` (crates/nf-view/tests/
+fix_restart_target_live.rs) drive the real fail path on 07000007 — the punched-guest ch 0x60 → ch 99
+→ the menu → Restart targets `Some(0x07000007)` warm with `level_exit_restart`, and the reloaded sim
+holds the entry checkpoint's state with the 50.0 floor, the fixed party loadout, armour 0, clean
+channels, and no re-fail over 360 ticks. `fix_death_restart_live.rs`'s tests were re-pointed at the
+corrected model (they asserted the old cold-BaseMap behaviour). The fall test
+(`lethal_fall_reaches_the_death_path_and_the_restart`, a real 400-unit drop on 07000011) still lands
+in the full sequence (`Player_CollisionHandler` 0x1949a8:117-126 → `Player_HandlePain(timer − 60,
+type 6)` → the pane, ch 0x5e/0x62, the menu) — its restart is now the warm arm; an 8-unit drop still
+triggers none of it.
 
 ### Known gaps (updated)
 

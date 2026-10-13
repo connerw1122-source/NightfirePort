@@ -135,7 +135,7 @@ pub struct HudVertex { pub p: [f32; 2], pub uv: [f32; 2], pub c: [f32; 4] }
 
 /// One frame's overlay: vertices and the runs drawn in order — (texture index into `Scene::hud_textures` + 1, 0 =
 /// none; blend mode; first vertex; count). Blend: 0 = normal, 1 = additive, 2 = subtractive.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct HudFrame { pub v: Vec<HudVertex>, pub runs: Vec<(usize, u8, u32, u32)> }
 
 impl HudFrame {

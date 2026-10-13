@@ -4545,9 +4545,20 @@ pub struct Drones {
     pub auto_restart: bool,
     /// fix-death-restart: the pending exit is a COLD restart (`ResetMap_LevelToLoad(BaseMap, 0, 1)`
     /// [M 0x204408:139] — IsWarmReset 0: `Init_SwitchChannels` + no `Player_RamLoad` [M 0x1d5080,
-    /// 0x1957a8]). The viewer's reload drops the RamSave for this exit; carrying it looped the
-    /// restart (the 07000007 replay loop, playtest 2026-10-12).
+    /// 0x1957a8]). The viewer's reload drops the RamSave for this exit. (fix-restart-target: this is
+    /// now only the PAUSE menu's Restart — the fail/death menu's Restart is the warm arm, see
+    /// `level_exit_restart`.)
     pub level_exit_cold: bool,
+    /// fix-restart-target: the pending exit is the fail/death menu's Restart — `P_ENDMISSION_Handler`
+    /// 0x216618:19-21, menu 0x40000042's row 0: `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` +
+    /// `Player_RamLoad(Bond, 1)`. The viewer's reload re-serves the ENTRY checkpoint (the RamSave as
+    /// of level entry, ch 99 clean) with the 50.0 health floor [L 0x30cc34-3c] instead of capturing
+    /// the dying state — carrying the dying state is what looped the 07000007 session.
+    pub level_exit_restart: bool,
+    /// fix-restart-target: the level the sim is playing — `GameState._12_4_` [M 0x1d5080:6, set from
+    /// the loaded level at `ResetMap_GameInit`], the fail-menu Restart's reload target [M 0x216618:20].
+    /// Latched where `Mission_Init` runs (`Drones::tick`).
+    pub level_current: u32,
     /// The EE music logic and the drones' attack gate (docs/systems/music.md); the alarm counters of
     /// `DroneFunc_CheckAlarmRaised` (0x1453a8: channel 0xA4, then 0x37 / 0x61).
     pub music: crate::music::Music,
@@ -4695,6 +4706,9 @@ impl Drones {
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
             // — the shared-constructor collisions, merge lesson 4).
             death: Default::default(), bond_fire: false, auto_restart: true, level_exit_cold: false,
+            // fix-restart-target: the fail-menu Restart's warm arm + the current level (GameState+0xC).
+            level_exit_restart: false,
+            level_current: 0,
             // fix-safe08: (script hash, stream) → the reserved pickup slot the renderer built for the
             // script's obj_type-0xF0 Entity (`Script_CreateEntity` 0x1d8968's Pickup_Create arm);
             // built at load in scene.rs, matched by the runtime spawn.
@@ -6465,6 +6479,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // The SimpleScripts' playheads (`SS_Update` 0x1a9948 — channel on → the last key, off → key 0).
         self.sss.tick(&self.channels);
         if !self.mission_inited {
+            self.level_current = d.level; // GameState._12_4_ [M 0x1d5080:6] — the fail-menu Restart's target
             self.mission.init(d.level, self.mission_carry.is_some(), &mut self.channels, frame);
             // `PlrStat_ResetForMission` 0x1993a0 — Mission_Init 0x182270:65 wipes PlrMissionStats
             // (0x1C0) and BondMoments (0x14) when the level is the mission's first part [M].

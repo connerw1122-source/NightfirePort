@@ -7730,6 +7730,154 @@ decode mini-game, the camera's first-equip hint, the gadgets.md id-table fix, an
 view_anim_datum contradiction (both docs cite readers — DroneWeap_FireWeapon 0x178f68:274-278 plays it vs
 weapon.rs' retyping; needs one [L] watch to settle).
 
+## fix-movies (s/fix-movies) — 2026-10-13
+Task: the FMVs (PSS): verify the pss.rs demuxer on Nightfire's own movies with an
+NF_ISO golden test over every PSS on the disc; decode the MPEG-2 (IPU-style) video
+and the PSS audio stream; find in the decompile when the game plays movies
+(boot, level loads, mission ends) and whether they can be skipped
+(docs/systems/movies.md); wire playback into nf-view (full-screen plane + cpal
+audio + skip) with a headless frame dump (--movie <name> --frame N --shot) since
+there is no GPU here. Files: crates/nf-formats/src/pss.rs, a new mpeg2 decoder
+(or crate glue behind a cargo feature `movies`), crates/nf-view/src/movie.rs,
+docs/formats/pss.md. Started 14:28 UTC, sandbox expires ~16:25 UTC.
+
+**fix-movies outcome (16:22 UTC)**: the PSS demuxer is verified on all 22 disc movies and closed the RC2 gaps
+G-008 warned about — Nightfire's audio sub-stream header is `FF A0 00 00` (not RC2's `FF A1 00 cc`; the old
+demuxer errored 100 KB into the first movie) and the audio is 16-bit LE PCM 48 kHz stereo (`SShd` kind 1, not
+ADPCM kind 0x10; `Audio::parse` rejected every Nightfire movie). golden/pss_movies.tsv pins per-movie packet
+counts, geometry (512x448, 30 Hz, Main@Low interlaced), picture counts and audio formats; the NF_ISO golden
+tests + sisters are in crates/nf-formats/tests/pss_movies_live.rs. Video decodes via `oxideav-mpeg12video`
+0.0.13 (pure Rust, MIT — dependency approval wanted) behind the opt-in cargo feature `movies`:
+mpeg2.rs glue, frame 0/1000 SHA-1s pinned, ffmpeg cross-check 66-68 dB PSNR. docs/formats/pss.md and
+docs/systems/movies.md written (the full movie map: psiStartBackgroundMovie 0x001081a8, boot logos
+0x7370048/0x7380048, briefings 0x0710xxxx via ResetMap_Load states 3->6, outros 0x0730xxxx, win 0x73F0048,
+looping menu BGs from M_PAGE+0xC4, skip = action 0x19 instant). nf-view/src/movie.rs: Movie::load + PCM audio
++ headless `--movie <code> --frame N --shot out.png` dumps (feature-gated), verified on two movies. Left for
+the next session: live playback wiring (window + cpal + skip), the FILES.BIN menu-BG codes, the 0x72xxxxxx
+codes. The slim ISO stubs all movies (lba=0/size=0) — set NF_MOVIE_ISO to the retail image to run the tests.
+Task: fix-menus2 (started)
+Agent: fix-menus2 worker
+Branch: s/fix-menus2
+
+Work Log:
+- Branch created from origin/master (a5bff8b). Reading docs/reports/fix-menus.md (merged) and the current
+  crates/nf-view/src/{menu,lib}.rs. Goal per the driver: the front end must match the real game's screens
+  (title art, main-menu backdrop + stylised items, codename select, difficulty BEFORE mission list, mission
+  list with the real names/unlock rule, button-icon sprites, --shot draws the overlay).
+
+Stage Summary:
+- Setup done; work starting. Next: research the page handlers' decompiles and the 07000048 assets, then
+  rewrite the overlay to the game's layouts.
+
+---
+Task: fix-menus2
+Agent: fix-menus2 worker
+Branch: s/fix-menus2
+
+Work Log:
+- Decoded the disc's front-end page data: the kind-8 entry 08000002 in 07000048.bin is a tag stream
+  (MenuManager_Create 0x21b908) — chunk layouts derived from the decompile (PAGE −0x10 = 17 B {page id,
+  file hash 0x80000002, aux movie, kind, size}, CONTROL −0x07 = 30 B, MSG 0x18 label / 0x24 texture /
+  0x1b/0x1c colours); parsed 56 pages / 1003 controls to a clean END. Page identity settled by the data:
+  main menu = 0x40000002 (rows NightFire/Multiplayer/Codenames), Select Codename = 0x40000025, Select
+  Difficulty = 0x40000023, Single Player = 0x4000001c, Dossier = 0x4000002b, visible title = 0x40000009
+  (full-screen art 0x03000074 + yellow prompt + legal plate); the boot page 0x40000034's 7 controls are
+  language flags (0x030000c9-cf, the Union Jack first).
+- menu.rs rewritten around the game's layouts (640×480 menu space → the 512×448 screen), strings bound
+  from USATxt.dat (main 0x28/0x149/0x14b + descs 0x1000000-2, codename 0x1f2/0x29b/0x10002ff/0x10000bb,
+  difficulty 0x1f8/0x14d/0x14e/0x14f + 0x1000006-8, list 0x14c, hints 0x3c3/0x54e/0x216/0x218/0x208,
+  legal 0x375, prompt 0x10001eb, Dossier 0x27f), sprites from MENU_TEXTURES (title art, panel, ring,
+  previews, logo, stamp, the 0x03000042 button atlas for the ~N hint glyphs).
+- The campaign = sp_level 0x2df2e0's 12 records (name/desc labels + level codes, cross-checked against
+  ee_snapshot): "Enemies Vanquished" etc. replace the old hard-coded list; unlock rule = row 0 fresh,
+  i+1 on completion (Menu_SetLevelBonus 0x1ffa10), locked rows dimmed + unscrollable (C_SBNFMAP
+  0x20b8d8:18-20), --unlock-all = menu_unlock_everything 0x30d2a7.
+- Flow: Title → START → intro movie (state 6, skippable; the trimmed ISO's menu FMVs are zeroed) →
+  Main → NightFire → Codename (confirm box for Play without saving) → Difficulty → Missions → the
+  sp_level level through the 0x71 wrap; backs + the Dossier side-action.
+- --shot now draws the menu overlay (lib.rs front_end_menu): --page start|main|codename|difficulty|
+  missions|dossier, --cursor N, --unlock-all; F10 screenshots include the menu too.
+- Two real bugs fixed: Lang::parse's raw UTF-8 fallthrough emptied every CP-1252 string (the legal line
+  0x375 — fix-menus' Left #7) — the bank is now CP-1252-decoded with offsets remapped; the loader's
+  movie-wrap check mis-fired on the driving codes 0x09xxxxxx (real sp_level levels) — now tests the
+  0x71/0x73 prefix at bits 20-27.
+- Suite: nf-formats 61 pass + the 3 allowed disc_golden fails; nf-view 379 pass / 0 fail (12 menus_flow
+  tests incl. the page sequence, per-page label ids and per-page sprite hashes, with NF_ISO sisters).
+  Report: docs/reports/fix-menus2.md. Render commands for the main agent are in the report.
+
+Stage Summary:
+- The front end matches the real game's data: the game's own page layouts/sprites/strings/flow, the
+  12-mission sp_level campaign with the unlock rule, the confirm box, the Dossier, button-icon hint
+  bars, and a --shot path that renders every page for the PCSX2 side-by-side. Left (reported): the
+  zeroed menu FMVs, the ✕/△ glyph sprites, the per-mission preview mapping, the driving-row launch.
+---
+Task ID: 260
+Agent: fix-sky (worker)
+Task: fix-sky (branch s/fix-sky) — sky remainder: lightning, the rotating sky, the sky pass's GS state
+
+Work Log:
+- Branch created from origin/master (87625dc); setup verified (work/, EE snapshots, ISO, nf-queue).
+
+Stage Summary:
+- Starting: lightning variants [G-019], the 0x0700001B rotating sky, the sky pass's GS state vs gpu.rs, snow/rain particle look if sky-owned.
+---
+Task ID: 260
+Agent: fix-sky (worker)
+Task: fix-sky (branch s/fix-sky) — sky remainder: lightning, the rotating sky, the sky pass's GS state
+
+Work Log:
+- Decode: View_DrawSky 0x1e5ad0 (per-slot lightning timers, RNG order, the 0x0700001B block), View_AddSkyObj
+  0x1e79a0 (slot layout: state at slot*0x40+0x40, interval = param2 × FRAME_RATE), parsemap 0x1d04f0 case 0x2a
+  (params → slot/flash/interval/flashlen/group via the level+0x2c param area), Game_Draw 0x1e6f50 (DrawSky's arg
+  = sky group: 1 pre-world, 0 post psiPostSolid), Lightning_Update 0x18cf68 (SuperHappyLightningFlag → the 8-beam
+  polyline, FractalThing on Reflicker), psiSetUpColourBlend 0x1214f8 (mode 2 → ALPHA_1 0x2a = replace), psiFog
+  0x121578 (a size-8 stub — the sky pass writes no fog), RotMatrix 0x1e2368 / Concat 0x1e4a90 /
+  ApplyMatrixLVI 0x1e4960 / Vec_Spherical_2_Cartesian 0x1e3948.
+- [L] ee_start_05/07000001/0a GfxList dumps: the layout confirmed, the snapshot levels carry no flash variants;
+  [D] disc scan (nf-extract placements 2a): lightning only on 0700000a (slot 3 Thunderhead, 24→1440, flash 5) and
+  0700000b (30→1800, flash 10); 0700001b = SKY_StarField + SKY_Earth, flags 0x222 → both slots spin (+2 counts/frame).
+- crates/nf-game/src/sky.rs: SkySlot/LightningGlobals/RotatingSky + tick_slot/tick_group/Sky (the machine, exact EE
+  chop arithmetic + the game's sinf), rot_matrix/concat/apply_matrix_lvi/spherical_2_cartesian,
+  rotating_sky_matrix. lib.rs: the `pub mod sky;` line (minimal shared-file touch).
+- Tests: sky_lightning.rs (600-tick flags golden vs an independent Python replica incl. the real Thunderhead params;
+  branch census + final RNG state sister; no-flash slots never draw; interval × FRAME_RATE), sky_rotation.rs
+  (spin bits per pass, pause/level gates, sun vector + rotated bits through the game's chain), sky_gs_live.rs
+  (NF_ISO: the first CNT's A+D state — Thunderhead inherits everything, StarField writes 0x44/0x5001b/0x131000000).
+- Docs: render.md "Sky remainder", GAPS G-019. Report: docs/reports/fix-sky.md.
+
+Stage Summary:
+- The timed sky is data + code, golden-verified against an independent replica of the game's arithmetic. Open for
+  the main agent: the nf-view render-side hook (flash glist swap + spin matrix + bolt draw), the live ZMSK check.
+## fix-restart-target (s/fix-restart-target) — 2026-10-13
+
+The fail/death menu's Restart went to the mission's base map, cold (`fail_choose_restart` →
+`ResetMap_LevelToLoad(BaseMap, 0, 1)` per fix-death-restart) — the user failing on 07000007 landed on
+"the very beginning map, 05" instead of the start of the level. The decompile: menu 0x40000042's
+handler is `P_ENDMISSION_Handler` 0x216618 (`Handler_HandleMessage` 0x2029e0:498-500), NOT
+`C_GCPAUSE_Handler` 0x204408 (that is the PAUSE menu 0x10000028, :217-219 — fix-death-restart had
+them swapped). Its event-0x4b arms [M 0x216618:11-27]: row 0 (Restart) =
+`ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` + `Player_RamLoad(Bond, 1)` — the CURRENT level, warm,
+on the ENTRY checkpoint; row 1 = BaseMap cold (`Mission_BaseMapHCode` [M 0x1830a0]); row 2 = quit to
+0x7000048. The warm arm keeps the channels (`Init_SwitchChannels` only runs cold [M 0x1d5080:48-50])
+and `Player_RamLoad` restores all four channel arrays from the RamSave [M 0x1957a8:17-20] — the ENTRY
+checkpoint (`Player_RamSave` at the previous level's exit [M 0x1b2318:115]; script case 0x12
+[M 0x1d94c0:194-199]), whose ch 99/100 predate the fail, so the warm restart cannot re-fail: the
+replay loop fix-death-restart feared was an artefact of carrying the DYING state, which the game never
+does. The boost arg 1 floors health at `ContinueHealthBoost*` = 50.0 on all difficulties [L
+ee_start_05.bin 0x30cc34-3c]; `Mission_Init(level, 1)` resets current+future parts [M 0x182270:68-129];
+`Player_InitWeapon` re-runs 07000007's fixed party loadout + armour 0 [M 0x1a7ef8:176-186]. Port:
+`fail_choose_restart` targets `Drones::level_current` (latched at the Mission_Init site) with
+`level_exit_restart`; nf-view keeps `App::entry_save` (the save each level was loaded with) and
+re-serves it with the 50.0 floor (zeroed-at-shape when the level was cold-loaded — the game's BSS
+buffer); the Results page rows moved to the game's arm order (row 0 = restart level warm, row 1 =
+restart mission cold). Tests: `fix_restart_target_live.rs` (the user's 07000007 scenario — RED before
+the fix: it targeted 07000005 cold — and the full reload state + a 360-tick no-re-fail loop check);
+`fix_death_restart_live.rs` re-pointed at the corrected model (the fall test now the warm arm);
+`menus_flow.rs`'s results rows updated. docs/systems/mission.md §4/§8 rewritten. Remaining: the
+results-page restart goes through the fe flow and does not set the sim's restart flags (the in-sim
+auto_restart path, what play uses, does); the exact on-screen row labels are [S]; live PCSX2 checks
+requested in the report. Report: docs/reports/fix-restart-target.md.
+
 ## fix-weapon-modes2 (s/fix-weapon-modes2) — 2026-10-13
 
 Landing fix-weapon-modes (4ed1519) on current master: branch = s/fix-weapon-modes + merge origin/master

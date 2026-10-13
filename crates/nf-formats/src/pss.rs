@@ -9,13 +9,21 @@
 //!   packets `E0` (video), `BD` (private stream 1: audio) and `BE` (padding), and the end code `00 00 01 B9`.
 //! * **Video** PES packets carry an MPEG-2 video elementary stream (PTS / DTS in their headers); the payloads
 //!   concatenated in file order are the stream `rc-video` decodes.
-//! * **Audio** PES packets: the payload starts with a 4-byte sub-stream header `FF A1 00 cc` (`cc` = the audio
-//!   channel, one per language: 0 English, 2 French, 3 German, 4 Spanish, 5 Italian — the game passes its
-//!   language 0x15ed88 to `sceMpegAddStrCallback(…, sceMpegStrADPCM, language, pcmCallback)`, and the callback
-//!   skips those 4 bytes). The concatenated channel bytes start with a 0x28-byte header (`SShd`: type 0x10 = SPU
-//!   ADPCM, rate, channels, interleave; `SSbd`: body size) followed by the body: blocks of `interleave` bytes per
-//!   channel in turn (L, R, L, R, …), each channel one continuous SPU-ADPCM stream (`audioDecBeginPut` 0x31ac00
-//!   takes the header, `sendADPCM` 0x31ae68 de-interleaves by `interleave`).
+//! * **Audio** PES packets: the payload starts with a 4-byte sub-stream header `FF Ax 00 cc` (`cc` = the audio
+//!   channel). RC2's movies use `FF A1 00 cc` with one channel per language (0 English, 2 French, 3 German,
+//!   4 Spanish, 5 Italian — RC2 passes its language to `sceMpegAddStrCallback`); Nightfire registers a single
+//!   audio stream (0x001083a8 `StartUpBGFMV` adds only str-id 2 → `_strmap` 0x002e4d58 → 0xBD / 0xFFA00000 —
+//!   the `A0` of the sub-stream header) and every one of the disc's 22 movies carries only channel 0 with the
+//!   header `FF A0 00 00`, all 53,374 audio packets measured (golden/pss_movies.tsv). The concatenated channel
+//!   bytes start with a 0x28-byte header (`SShd`: type, rate, channels, interleave; `SSbd`: body size) followed
+//!   by the body.
+//!   * `SShd` type **0x10 = SPU ADPCM** (RC2): blocks of `interleave` bytes per channel in turn (L, R, L, R, …),
+//!     each channel one continuous SPU-ADPCM stream (`audioDecBeginPut` RC2 0x31ac00 takes the header,
+//!     `sendADPCM` RC2 0x31ae68 de-interleaves by `interleave`).
+//!   * `SShd` type **1 = 16-bit little-endian PCM** (Nightfire: all 20 audio-bearing movies — kind 1, 48000 Hz,
+//!     2 channels, interleave 512; the body is exactly `seconds · rate · channels · 2` bytes, e.g. 07100001.PSS:
+//!     8,194,048 = 42.67 s × 48000 × 4). The `interleave` and the game's own volume path (`changeInputVolume`)
+//!     are unchanged; the samples are plain interleaved i16 LE pairs, not ADPCM frames.
 
 use crate::buf::{invalid, Result};
 use crate::vag::{decode_frame, History, Variant, FRAME_BYTES, FRAME_SAMPLES};
@@ -29,12 +37,18 @@ pub const PADDING: u8 = 0xbe;
 pub const END: u8 = 0xb9;
 /// First video stream id (the movies use only 0xE0).
 pub const VIDEO: u8 = 0xe0;
-/// Audio sub-stream header bytes 0..3 (byte 3 = the channel).
-pub const AUDIO_SUBSTREAM: [u8; 3] = [0xff, 0xa1, 0x00];
+/// Audio sub-stream header bytes 0..3 (byte 3 = the channel). RC2: `FF A1 00 cc`; Nightfire: `FF A0 00 cc` —
+/// byte 1 is 0xA0 on every Nightfire audio packet (measured, golden/pss_movies.tsv), so the demuxer accepts
+/// either.
+pub const AUDIO_SUBSTREAM: [u8; 3] = [0xff, 0xa0, 0x00];
+/// RC2's byte 1 for the same header.
+pub const AUDIO_SUBSTREAM_RC2: [u8; 3] = [0xff, 0xa1, 0x00];
 /// `SShd` + `SSbd` header bytes at the start of each audio channel.
 pub const AUDIO_HEADER_BYTES: usize = 0x28;
-/// `SShd` type of SPU ADPCM.
+/// `SShd` type of SPU ADPCM (RC2's movies).
 pub const AUDIO_TYPE_ADPCM: u32 = 0x10;
+/// `SShd` type of 16-bit little-endian PCM (every audio-bearing Nightfire movie).
+pub const AUDIO_TYPE_PCM: u32 = 0x1;
 
 /// What a PES packet carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -119,7 +133,9 @@ impl<'a> Demux<'a> {
                     let dts = (flags & 0xc0 == 0xc0 && hl >= 10).then(|| ts(i + 14)).flatten();
                     let payload = &d[body..end];
                     let stream = if id == PRIVATE_1 {
-                        if payload.len() < 4 || payload[..3] != AUDIO_SUBSTREAM { return invalid(format!("pss: private stream 1 at {i:#x} has no audio sub-stream header ({:02x?})", &payload[..payload.len().min(4)])); }
+                        if payload.len() < 4 || payload[..3] != AUDIO_SUBSTREAM && payload[..3] != AUDIO_SUBSTREAM_RC2 {
+                            return invalid(format!("pss: private stream 1 at {i:#x} has no audio sub-stream header ({:02x?})", &payload[..payload.len().min(4)]));
+                        }
                         return Ok(Some(Packet { offset: i, stream: Stream::Audio(payload[3]), pts, dts, payload: &payload[4..] }));
                     } else if (0xe0..=0xef).contains(&id) {
                         Stream::Video(id)
@@ -226,7 +242,9 @@ impl AudioHeader {
             loop_end: w(0x1c) as i32,
             body_bytes: w(0x24),
         };
-        if h.kind != AUDIO_TYPE_ADPCM { return invalid(format!("pss audio: type {:#x} is not SPU ADPCM", h.kind)); }
+        if h.kind != AUDIO_TYPE_ADPCM && h.kind != AUDIO_TYPE_PCM {
+            return invalid(format!("pss audio: type {:#x} is neither SPU ADPCM ({AUDIO_TYPE_ADPCM:#x}) nor PCM ({AUDIO_TYPE_PCM:#x})", h.kind));
+        }
         if !(1..=2).contains(&h.channels) || h.interleave == 0 || !(h.interleave as usize).is_multiple_of(FRAME_BYTES) || h.rate == 0 {
             return invalid(format!("pss audio: unsupported layout {h:?}"));
         }
@@ -252,16 +270,33 @@ impl<'a> Audio<'a> {
     /// Whole blocks per channel.
     pub fn blocks(&self) -> usize { self.body.len() / (self.header.interleave as usize * self.header.channels as usize) }
 
-    /// Samples per channel.
-    pub fn samples(&self) -> usize { self.blocks() * self.header.interleave as usize / FRAME_BYTES * FRAME_SAMPLES }
+    /// Samples per channel. PCM: `body / (2 · channels)`. ADPCM: whole blocks × frames per block × 28.
+    pub fn samples(&self) -> usize {
+        if self.header.kind == AUDIO_TYPE_PCM { return self.body.len() / (2 * self.header.channels as usize); }
+        self.blocks() * self.header.interleave as usize / FRAME_BYTES * FRAME_SAMPLES
+    }
 
     /// Seconds at the header rate.
     pub fn seconds(&self) -> f64 { self.samples() as f64 / self.header.rate as f64 }
 
-    /// Decodes both channels (a mono stream is duplicated) with the port's SPU ADPCM decoder
-    /// ([`crate::vag::decode_frame`], rounded form), each channel one continuous stream from zero history, at the
-    /// header rate. A trailing partial block is dropped.
+    /// Decodes both channels (a mono stream is duplicated). PCM (kind 1): interleaved i16 LE pairs, in file
+    /// order. ADPCM (kind 0x10): the port's SPU ADPCM decoder ([`crate::vag::decode_frame`], rounded form), each
+    /// channel one continuous stream from zero history, at the header rate. A trailing partial block is dropped.
     pub fn decode(&self) -> Vec<[i16; 2]> {
+        if self.header.kind == AUDIO_TYPE_PCM {
+            let ch = self.header.channels as usize;
+            let n = self.body.len() / (2 * ch);
+            let mut out = vec![[0i16; 2]; n];
+            for i in 0..n {
+                for c in 0..ch {
+                    let at = (i * ch + c) * 2;
+                    let v = i16::from_le_bytes([self.body[at], self.body[at + 1]]);
+                    out[i][c] = v;
+                    if ch == 1 { out[i][1] = v; }
+                }
+            }
+            return out;
+        }
         let il = self.header.interleave as usize;
         let ch = self.header.channels as usize;
         let mut out = vec![[0i16; 2]; self.samples()];
@@ -310,11 +345,40 @@ mod tests {
     }
 
     fn audio_header(rate: u32, channels: u32, interleave: u32, body: u32) -> Vec<u8> {
+        audio_header_kind(AUDIO_TYPE_ADPCM, rate, channels, interleave, body)
+    }
+
+    fn audio_header_kind(kind: u32, rate: u32, channels: u32, interleave: u32, body: u32) -> Vec<u8> {
         let mut h = b"SShd".to_vec();
-        for w in [0x18, AUDIO_TYPE_ADPCM, rate, channels, interleave, u32::MAX, u32::MAX] { h.extend_from_slice(&w.to_le_bytes()); }
+        for w in [0x18u32, kind, rate, channels, interleave, u32::MAX, u32::MAX] { h.extend_from_slice(&w.to_le_bytes()); }
         h.extend_from_slice(b"SSbd");
         h.extend_from_slice(&body.to_le_bytes());
         h
+    }
+
+    /// Nightfire's PCM movies: kind 1 parses, `samples()` is `body / (2 · channels)`, and `decode()` returns the
+    /// interleaved i16 LE pairs in file order (a sine sweep survives the round trip; RC2's 0x10 still parses).
+    #[test]
+    fn pcm_audio_kind_1() {
+        let pcm: Vec<i16> = (0..256i32).map(|i| ((i * 137) % 6553) as i16 - 3276).collect();
+        let mut body = Vec::new();
+        for v in &pcm { body.extend_from_slice(&v.to_le_bytes()); }
+        let bytes = [audio_header_kind(AUDIO_TYPE_PCM, 48000, 2, 512, body.len() as u32), body].concat();
+        // The RC2-era parser rejected this outright: kind 1 is PCM, not SPU ADPCM.
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), AUDIO_TYPE_PCM);
+        let a = Audio::parse(&bytes).unwrap();
+        assert_eq!((a.header.kind, a.header.rate, a.header.channels, a.header.interleave), (1, 48000, 2, 512));
+        assert_eq!(a.samples(), 128);
+        let out = a.decode();
+        assert_eq!(out.len(), 128);
+        assert!(out.iter().zip(pcm.chunks_exact(2)).all(|(o, l)| o[0] == l[0] && o[1] == l[1]));
+        // ADPCM kind 0x10 still parses (the RC2 path is unchanged).
+        let adpcm = [audio_header(48000, 2, 0x20, 64), vec![0x11u8; 64]].concat();
+        let a = Audio::parse(&adpcm).unwrap();
+        assert_eq!(a.header.kind, AUDIO_TYPE_ADPCM);
+        // Any other kind is still an error.
+        let bad = audio_header(48000, 2, 0x20, 64);
+        assert!(AudioHeader::parse(&[&bad[..8], &0x99u32.to_le_bytes(), &bad[12..]].concat()).is_err());
     }
 
     /// A synthetic program stream: packs, a system header, video split over packets with a PTS, two audio
