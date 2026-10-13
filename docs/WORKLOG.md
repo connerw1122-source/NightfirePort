@@ -6969,3 +6969,16 @@ Stage Summary:
 
 Stage Summary:
 - Branch s/fix-wire2 pushed. The cable's real grab (jump + icon ctx 3) is in; E correctly does nothing (game-faithful, the record fixed); the move starts on the strafe press during the idle; the fusebox-07000014 scenario starts crouched in the vent with the Laser. Live checks (icon scope radius, the jump grab from the ground, 2 --bond render spots) listed in the report.
+
+---
+Task ID: 051-fix-world-objects
+Agent: NightfirePort worker (fix-world-objects session)
+Task: fix-world-objects — port the gameplay placement types the port still draws as static geometry: 0xd2 Shooter, 0xd8 RB, 0x3b DynamicObject, 0x41 InverterTrigger, 0xe7 ThirdCam, 0xda Car (branch s/fix-world-objects)
+
+Work Log:
+- Setup reused (repo + work/ + ISO + queue worktree intact from the earlier session); branch s/fix-world-objects created from origin/master (03ad7f5, merge-log fix-wire2). This entry started and pushed.
+- Evidence: parsemap_create_dynamic_objects 0x1d04f0 dispatch re-read; creators read: Shooter_Create 0x17d030 (class 0 object, type byte +0xff=0x4e, +0xf4/+0xf6 = placement u16 params at celglist+0x2c/+0x30, +0xd8 = celglist), RB_Create 0x1d6bf0 (class 0x160 object, RB_Init with placement u16 at +0x34, cuboid extents from placement floats, RB_Build/RB_SetState), InverterTrigger_Create 0x1b3040 + Update 0x1b30a8 (channel in +0xf4 forces out channel +0xf6 to 0), ThirdCam_Create 0x1bc510 (camera id = celglist+0x2c u16, framelist ptr at celglist+8, count short at celglist+2, byte flag celglist+0x30; ThirdPersonCameras[id] indexed), Car_Create 0x1305b0.
+- Scope from docs/systems/levels.md §7: 0d2 on 07000001/15/4a; 0xd8 on 01/03/04/06/0d/41; 0x3b on 02/03/05/07/0c/0d/14/16/1b/41; 0x41 on 06/12/14; 0xe7 on 02/05/08/0c/0d/41; 0xda on 46/4b. Skips per brief: grapple (150-fix-gadgets), creep walls (140-fix-swim-vent), SS (120-fix-explosions), coronas/lights (050-fix-lighting).
+
+Stage Summary:
+- Branch s/fix-world-objects pushed (branch start). Next: read the port's placement parse path, port InverterTrigger (trivial) first, then ThirdCam, Shooter, RB; NF_ISO fail-first tests per type.
