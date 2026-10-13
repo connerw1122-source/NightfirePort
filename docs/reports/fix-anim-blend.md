@@ -102,7 +102,19 @@ that exists.)
 
 ## Suite
 
-`NF_ISO=<slim ISO> cargo test --offline --release -j2 --no-fail-fast -p nf-game -p nf-formats -p
-nf-audio -p nf-view -- --test-threads=1`: running at report time (release build in progress);
-the anim unit tests are green (3 passed, 0 failed). Count to be confirmed by the final push
-message; on the slim ISO only the 3 `disc_golden` tests may fail.
+`NF_ISO=<slim ISO> cargo test --offline --release -j2 --no-fail-fast -p nf-game -p nf-formats
+-p nf-audio -p nf-view -- --test-threads=1` (run in two foreground chunks — the sandbox killed
+the backgrounded nohup runs; same command, same flags):
+
+- **nf-view: all targets green** (the 17 `walkreal_*_live` levels, the cut-scene pose tests, the
+  walk/anim suites — the regression net for the fractional root motion). **nf-audio: green.**
+- **nf-game: all green except one PRE-EXISTING failure** — `ai_live::guard_takes_cover_like_the_game`
+  ("UnderCoverAim lasted 90 (live 37)") fails on **unmodified master too** (verified by stashing
+  this branch's two files and re-running: same 90/37). Not caused by this task.
+- **nf-formats: the 3 permitted `disc_golden` failures** (slim ISO, as the driver allows) plus
+  `pss_movies_live::audio_sample_count_matches_stream_length` ("expected ~20 audio-bearing
+  movies, checked 0") — also pre-existing on master: the slim ISO has no PSS movies and the
+  skip-on-empty guard exists only on the unmerged `s/fix-swim-vent4` branch (c463614). Not this
+  task's file to change.
+- This branch's own tests: `anim::tests` 3 passed / 0 failed with the fix; the two new tests
+  shown RED against the old slerp body before it.
