@@ -6874,7 +6874,7 @@ The held fix-npc-doors-escort merge's two red tests, chased to the game's own an
   — the 3 allowed `disc_golden` (the slim ISO's missing /DRIVING files) + `fix_npc_doors_live::the_
   escort_opens_the_interior_doors_on_his_route` (item 5). The two the driver named pass.
 
-## fix-safe08b (2026-10-13, branch s/fix-safe08b) — the 07000008 bedroom blue block: room-scoped collision and drawing — IN PROGRESS
+## fix-safe08b (2026-10-13, branch s/fix-safe08b) — the 07000008 bedroom blue block: room-scoped collision and drawing — DONE (within the session's scope; see docs/reports/fix-safe08b.md for the two open items: the build_FindCel tie-break for the capsule scope, the rocket-take live check)
 
 Task: continue fix-safe08 (merged 9c9674b): the blue block `Room_Outside_3` (map51 obj16) must not collide with
 or be drawn into `Room_Guardhouse_F2` indoors, and the safe take's `Collide_LineOfSight` (flags 0x721) must
