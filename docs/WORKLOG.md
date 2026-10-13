@@ -7788,3 +7788,10 @@ Stage Summary:
   void before the 0.07/tick turn caught up — the crossing needs the corridor walk west to x ≤ 6.5 with
   turn-in-place, then due south over the pad's wide part; or the walker's stuck-handling taught the
   seam. The test file was reverted to HEAD (no change landed); all evidence lives in probe_scoped.rs.
+- Session 2 final (16:40 UTC): the 0c crossing fully characterized — the corridor (y 11.32) meets the
+  pad (y 11.84) across a 0.52 vertical face, and the walk NEVER climbs it from below: five walker
+  variants (pad-centre target, two doglegs, walk_to, turn-in-place ± stand-up press) all end with Bond
+  under the pad (y 6.92-7.4 = the 6.27 floor + hip) after sliding off the x ≥ 7.0 void strip, while the
+  poke ON the pad grounds and fires instantly. The next session's crossing must gain the game's step-up
+  (the port climbs steps in the hand-triangle tests — the live seam is the reproducer) or approach from
+  wherever the game's own path enters the plate. Test file left at HEAD; probes carry every number.
