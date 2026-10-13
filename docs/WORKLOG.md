@@ -7485,3 +7485,14 @@ casing slot carries ammo_data[1] = 0x0200043f and tracks the pose; debris pool +
 shot none; bit-for-bit rerun) — shown failing first against the scaffold. Full suite green except
 the 3 allowed disc_golden fails. docs/atlas/effect.md written (the owed entry); GAPS G-041/G-025
 updated. No GPU here — render spots + live checks in docs/reports/fix-impacts-render.md.
+
+## fix-movies (s/fix-movies) — 2026-10-13
+Task: the FMVs (PSS): verify the pss.rs demuxer on Nightfire's own movies with an
+NF_ISO golden test over every PSS on the disc; decode the MPEG-2 (IPU-style) video
+and the PSS audio stream; find in the decompile when the game plays movies
+(boot, level loads, mission ends) and whether they can be skipped
+(docs/systems/movies.md); wire playback into nf-view (full-screen plane + cpal
+audio + skip) with a headless frame dump (--movie <name> --frame N --shot) since
+there is no GPU here. Files: crates/nf-formats/src/pss.rs, a new mpeg2 decoder
+(or crate glue behind a cargo feature `movies`), crates/nf-view/src/movie.rs,
+docs/formats/pss.md. Started 14:28 UTC, sandbox expires ~16:25 UTC.
