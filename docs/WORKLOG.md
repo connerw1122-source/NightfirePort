@@ -9117,7 +9117,6 @@ Stage Summary:
 - G-028: the flee chain and ValidateCoverAnim are IN; the slide constant is decompile-true with its
   dead-code status documented; the 8-slot table and the +0x538 blend-out remain open with the blockers
   written down. Branch s/fix-cover-remainder; report docs/reports/fix-cover-remainder.md.
->>>>>>> origin/master
 
 **fix-room-sound outcome (23:40 UTC)**: the room environment landed — the parse keeps the cel env
 (cel+0x98: 0x9898 sentinel for 0xc023, param 9 raw u16 for 0xc047 [M 0x1d00c0]) + the underwater
@@ -9138,3 +9137,8 @@ ai_live 35/0, nf-audio 7/0; the full nf-formats/nf-view sweeps did not fit the w
 run them before merging). Shared files: lib.rs (sound_tick pub + the feed), sfx.rs (the
 environment() accessor), drone.rs (foley_reqs/pain_grunt fields + 4 hooks), scene.rs (the Cel
 fields). Report: docs/reports/fix-room-sound.md.
+
+## fix-movie-playback (s/fix-movie-playback) — 2026-10-13
+
+Task 221: play the real briefing/outro movies in the mission flow (nf-view state 6), replacing
+fix-menus' countdown stand-in, per docs/systems/movies.md. Work starting.

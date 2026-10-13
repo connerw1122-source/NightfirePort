@@ -59,12 +59,19 @@ One stream, decoded on the IOP: `audioCallback` (0x00108988) fills `AudioDec` (0
 per frame; 16-bit PCM 48 kHz stereo (docs/formats/pss.md). Volume: `MovieVolume` = `SFXGetVolume()` captured at
 every start site, applied as `changeInputVolume(MovieVolume * 100)` in `audioDecStart` (0x00107360).
 
-## Port status (this branch)
+## Port status
 
 * Demuxer verified on all 22 movies; PCM audio fixed (was RC2's ADPCM-only); MPEG-2 decoding behind the opt-in
   cargo feature `movies` (`oxideav-mpeg12video` 0.0.13, MIT); headless frame dumps
   (`nf-view --movie <code> --frame N --shot out.png`) verified on 07100001 f0 and 073F0048 f600
   (docs/reports/fix-movies.md).
-* **Not yet wired**: live playback into the front end (GameFlow states 3/6, the page BG movies and the skip
-  action need `nf-view`'s window loop + cpal output; the state machine above is the map to follow). Also open:
-  the FILES.BIN page+0xC4 menu-BG codes and the 0x72xxxxxx codes only `GetLevelToLoadFromMovieCode` sees.
+* **Wired (fix-movie-playback)**: the mission-flow playback — GameFlow state 6 plays the real briefing/outro
+  movies through `movie::Player` (whitelist gate, worker-thread decode, cpal PCM, a full-screen 512×448 plane,
+  skip on the Confirm keys), the briefing wrap implements 0x1d3800's switch (0x700001b → 0x7100018 included),
+  `outro_for` implements Mission_Update case 6's switch, and phase 2 implements `GetLevelToLoadFromMovieCode`
+  0x1d3560 (outros return to the map with the results page). See docs/reports/fix-movie-playback.md.
+  The decode is a whole-stream pass (~23 s on 07100001) — the host starts it when the menu picks the mission
+  so state 6 opens on frames.
+* Still on the countdown/plate model: the title/menu background movies (P_INTRO's 0x7370048/0x7380048 and the
+  FILES.BIN page+0xC4 codes — task 183's scope) and the FILES.BIN page+0xC4 menu-BG loopers. Also open: the
+  0x72xxxxxx codes only `GetLevelToLoadFromMovieCode` sees.
