@@ -44,7 +44,11 @@ fn expected_misc(level: &nf_formats::level::Level, kinds: &[u8]) -> BTreeMap<u8,
     out
 }
 
-const MISC_KINDS: [u8; 17] = [0x2e, 0x30, 0x34, 0x35, 0x3a, 0x3b, 0x3f, 0x71, 0xd5, 0xd8, 0xe1, 0xe3, 0xda, 0xfa, 0xfd, 0xfe, 0x4a];
+// fix-gadgets2: 0x3A (grapple points) and 0x3F (creep walls) are out — their creators attach NO gfx
+// (`Grapple_Create` 0x198298 has zero hashtable gfx calls, instance size 0, no placement params;
+// `CreepWall_Create` 0x196fc8 sets class 0x2B with no gfx attach), so the game never draws them —
+// the user's "red and yellow boxes ... for the wall shimmy and one for the grapple".
+const MISC_KINDS: [u8; 15] = [0x2e, 0x30, 0x34, 0x35, 0x3b, 0x71, 0xd5, 0xd8, 0xe1, 0xe3, 0xda, 0xfa, 0xfd, 0xfe, 0x4a];
 
 /// Every misc kind the level carries (with a resolvable, gfx-ful object) gets exactly its census count
 /// of World-layer instances — the sweep must neither skip nor double-draw a class.
@@ -71,18 +75,18 @@ fn misc_static_entities_match_the_census_on_every_level() {
         })).unwrap_or(false);
         if car_children { if let Some(n) = got.get_mut(&0xda) { *n = n.saturating_sub(2 * n.div_ceil(3)); } }
         assert_eq!(got, expect, "{name}: misc draw census mismatch");
-        // Spot checks against the disc census (docs/models/misc.md): 0700000c carries 5 locks, 5 dynamic
-        // objects and 5 grapple points; 0700000d carries 5 dynamic objects, 3 grapple points, 1 gun imp
-        // and 9 draw-able destroyables.
+        // Spot checks against the disc census (docs/models/misc.md): 0700000c carries 5 locks and 5 dynamic
+        // objects; 0700000d carries 5 dynamic objects, 1 gun imp and 9 draw-able destroyables. The grapple
+        // points (0c: 5, 0d: 3 [D placements]) draw NOTHING since fix-gadgets2 [M 0x198298: no gfx attach].
         if name == "0700000c.bin" {
             assert_eq!(scene.misc_drawn.get(&0x2e), Some(&5));
             assert_eq!(scene.misc_drawn.get(&0x3b), Some(&5));
-            assert_eq!(scene.misc_drawn.get(&0x3a), Some(&5));
+            assert_eq!(scene.misc_drawn.get(&0x3a), None, "the grapple points' marker meshes never draw [M 0x198298]");
         }
         if name == "0700000d.bin" {
             // One of the five hides until its channel (param 0 = 43 [D placements dump]) — 4 draw.
             assert_eq!(scene.misc_drawn.get(&0x3b), Some(&4));
-            assert_eq!(scene.misc_drawn.get(&0x3a), Some(&3));
+            assert_eq!(scene.misc_drawn.get(&0x3a), None, "the grapple points never draw [M 0x198298]");
             assert_eq!(scene.misc_drawn.get(&0x34), Some(&1));
             assert_eq!(scene.misc_drawn.get(&0xe1), Some(&9));
         }
@@ -107,9 +111,11 @@ fn meshless_kinds_never_draw() {
     // 0700001b carries 129 fusebox placements (all with gfx on their objects — but the game never
     // attaches one); 0700000b carries 17 mesh-ful rainboxes; 07000009 12. If any of these draw, the
     // sweep is wrong, not merely silent.
-    for name in ["0700001b.bin", "0700000b.bin", "07000009.bin"] {
+    for name in ["0700001b.bin", "0700000b.bin", "07000009.bin", "0700000c.bin"] {
         let scene = nf_view::load(&iso, name, false).unwrap_or_else(|e| panic!("load {name}: {e}"));
-        for bad in [0x29u8, 0x31, 0x32, 0x27, 0x38, 0x39, 0xf2, 0xd4] {
+        // fix-gadgets2 adds 0x3a (grapple points, 5 on 0c [D]) and 0x3f (creep walls) — the creators
+        // attach no gfx [M 0x198298, 0x196fc8], the user's red/yellow marker boxes.
+        for bad in [0x29u8, 0x31, 0x32, 0x27, 0x38, 0x39, 0xf2, 0xd4, 0x3a, 0x3f] {
             assert_eq!(scene.misc_drawn.get(&bad), None, "{name}: kind {bad:#x} must not draw");
         }
         // The sister: the same levels really do carry those placements, so the assertion above has teeth.
