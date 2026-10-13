@@ -15,7 +15,8 @@ winit = "0.30.13"
 wgpu = "30.0.1"
 pollster = "1.0.1"
 glam = "0.34.1"
-gilrs = { version = "0.11.2", optional = true }
+# gilrs = { version = "0.11.2", optional = true }   # fix-input's pad backend: not in the offline cache yet
+#   (downloading it needs the user's OK); restore this line and `gamepad = []` below to enable it.
 
 [dev-dependencies]
 naga = { version = "30.0.1", features = ["wgsl-in"] }
@@ -25,4 +26,4 @@ naga = { version = "30.0.1", features = ["wgsl-in"] }
 # runs the game's own mapping and curves on it (docs/systems/input.md). Off by default — master
 # builds and tests without it (and without gilrs in the dep tree). Needs libudev to build
 # (gilrs-core's Linux hotplug).
-gamepad = ["dep:gilrs"]
+gamepad = []
