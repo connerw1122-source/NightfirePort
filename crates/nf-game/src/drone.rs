@@ -4377,6 +4377,7 @@ impl Drones {
                 countdown: 0,
                 info: [None, None],
                 deleted: false,
+                live_matrix: nf_formats::placement::object_matrix(p.rotation, p.translation),
             });
         }
         if let Some(p) = ps.iter().find(|p| p.flags & 0xff == 0xdf) {

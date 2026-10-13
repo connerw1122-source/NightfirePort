@@ -79,7 +79,7 @@ fn walk_the_warm_chain_to_the_front_entrance_and_out() {
     w.walk_to(Wp::new(5.0, -368.4, 26.5).r(1.5), "13: the lobby east lane");
     w.walk_to(Wp::new(3.0, -368.4, 45.0).r(1.5), "13: the lobby mid");
     w.walk_to(Wp::new(-6.0, -368.2, 60.0).r(1.5), "13: the lobby south");
-    w.walk_to(Wp::new(-6.4, -368.0, 66.2).r(1.2), "13: the front entrance");
+    w.walk_to(Wp::new(-6.2, -368.0, 66.3).r(0.6), "13: the front entrance");
     {
         let sim = w.scene.sim.as_ref().unwrap();
         assert!(sim.drones.channels.on(0x50), "the entrance touch #156 writes ch 0x50 [D]");
