@@ -27,5 +27,54 @@ fn main() {
         println!("({:.2},{:.2}) flat {} scoped {}", p[0], p[2],
             flat.map_or("—".into(), |(t, n)| format!("y {:.2} ny {:.2}", p[1] - 8.0 * t, n[1])),
             scoped.map_or("—".into(), |(t, n)| format!("y {:.2} ny {:.2}", p[1] - 8.0 * t, n[1])));
+}
+
+    // Poke Bond onto the pad centre and step: does the 0x1b touch fire at all?
+    let sim = scene.sim.as_mut().unwrap();
+    sim.bond.pos = [5.84, 12.9, -154.15];
+    sim.bond.yaw = 0.0;
+    for t in 0..40 {
+        sim.step_bond(Default::default(), false, false, false);
+        if t % 10 == 0 {
+            println!("poke t {t}: bond {:?} cel {:?} ch0x1b {}", sim.bond.pos, sim.bond.cel, sim.drones.channels.on(0x1b));
+        }
     }
+    println!("poke end: ch0x1b {} bond {:?}", sim.drones.channels.on(0x1b), sim.bond.pos);
+    // And at the test's stop spot (0.03 outside the z band).
+    let sim = scene.sim.as_mut().unwrap();
+    sim.bond.pos = [6.8, 12.9, -153.15];
+    for t in 0..40 {
+        sim.step_bond(Default::default(), false, false, false);
+    }
+    println!("edge spot: ch0x1b {} bond {:?}", sim.drones.channels.on(0x1b), sim.bond.pos);
+
+    // Floor map of the corridor→pad seam (flat down-rays from y 12.9, depth 8).
+    let sim = scene.sim.as_ref().unwrap();
+    for z in [-152.8f32, -153.0, -153.2, -153.4, -153.6, -153.9, -154.2] {
+        let mut row = format!("z {z:7.2}: ");
+        for x in [4.5f32, 5.0, 5.5, 6.0, 6.5, 7.0] {
+            let h = sim.world.segment_hit([x, 12.9, z], [x, 4.9, z]);
+            row.push_str(&match h { Some((t, _)) => format!("x{x:.1}={:.2}  ", 12.9 - 8.0 * t), None => format!("x{x:.1}=—     ") });
+        }
+        println!("{row}");
+    }
+
+    // Fine seam map: z −153.02..−153.22, x 5.4..7.3 (flat down-ray from y 12.5).
+    let sim = scene.sim.as_ref().unwrap();
+    for z in [-153.02f32, -153.08, -153.14, -153.2] {
+        let mut row = format!("z {z:7.2}: ");
+        for x in [5.4f32, 5.8, 6.0, 6.2, 6.5, 6.8, 7.0, 7.2] {
+            let h = sim.world.segment_hit([x, 12.5, z], [x, 4.5, z]);
+            row.push_str(&match h { Some((t, _)) => format!("x{x:.1}={:.2} ", 12.5 - 8.0 * t), None => format!("x{x:.1}=—    ") });
+        }
+        println!("{row}");
+    }
+
+    // The seam triangles' materials (the water drop drops mat 0xE from the player's capsule).
+    let sim = scene.sim.as_ref().unwrap();
+    for (x, z) in [(6.8f32, -153.1f32), (6.0, -153.1), (5.8, -153.3), (5.84, -154.15), (6.8, -153.4)] {
+        let h = sim.world.segment_surface([x, 12.5, z], [x, 4.5, z], false);
+        println!("mat ({x:.2},{z:.2}): {}", h.map_or("—".into(), |(_, _, m)| format!("{m:02x}")));
+    }
+
 }

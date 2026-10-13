@@ -7777,3 +7777,14 @@ Stage Summary:
 - Not done this window: the fixes themselves (the static suspects are eliminated; the remaining work is
   the escort walk dynamics and the 0c touch/approach); the full nf-view suite run (nf-game/formats/audio
   + the 6 branch-adjacent nf-view binaries ran green; the long walk binaries are owed).
+- Session 2 addendum (16:20-16:35 UTC): the 0c plate #506 dug to the seam. probe_scoped's floor map:
+  the corridor (y 11.27-11.32) runs z −153.0..−153.2 at x 5.4-7.2; the pad (y 11.84, up plane) spans
+  x 5.0-6.5 south of it, VOID (6.27) at x ≤ 4.5 / x ≥ 7.0 south of −153.2. A poke at the pad centre
+  (5.84, 12.9, −154.15) fires ch 0x1b ON THE POKE TICK (cel relinks to 284) — the touch evaluation and
+  the pad both work; the walk's approach is the whole failure (Bond parks 0.03 outside the band's z hi
+  at (6.8, −153.15), or slides off the seam's void strips — three walker variants tried and reverted).
+  The seam triangles are mats 05/06 (NOT 0xE — the water drop is not the cause). The approach for the
+  next session: Bond parks at (7.2, −153.1) FACING SOUTH; every walker variant fell into the x ≥ 7.0
+  void before the 0.07/tick turn caught up — the crossing needs the corridor walk west to x ≤ 6.5 with
+  turn-in-place, then due south over the pad's wide part; or the walker's stuck-handling taught the
+  seam. The test file was reverted to HEAD (no change landed); all evidence lives in probe_scoped.rs.
