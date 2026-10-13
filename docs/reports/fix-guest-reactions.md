@@ -80,10 +80,12 @@ origin/master worktree).
 
 ## What's left
 
-- The PartyGirl **armed-intruder shout** is not ported: the update's prop-0x33 arm broadcasts msg 0x11
-  to everyone within 20 (`NDrone2_DroneAlertToObject`, 0x160140:63-70) and sets the fail reason 0xb
-  behind prop 0x52 — that is the panic path for an ARMED Bond (the guests' 0x28 is clear, so it only
-  reaches the guards' prop-0x28 route).
+- The PartyGirl **armed-intruder shout** is PORTED but its test is `#[ignore]`: the update's prop-0x33
+  arm now broadcasts msg 0x11 to everyone within 20 (`NDrone2_DroneAlertToObject`, 0x160140:63-70)
+  and sets the fail reason 0xb behind prop 0x52 [M 0x13e560] — the panic path for an ARMED Bond (the
+  guests' 0x28 is clear, so the shout reaches the guards' prop-0x28 route). The test's headless blind
+  spot: the scare's gate needs the guest's `seen` (the sight pass's reaction time/FOV on a wandering
+  guest) which this session could not drive in time; the shout code itself is prop-gated and harmless.
 - The scream broadcast radius is hardcoded 20.0 (the PartyGirl shout's value [M 0x160140:63-70]);
   `Drone_SM_BroadcastMsg`'s own alert-struct radius was not dumped.
 - The idle state-1 guests sit disabled (`WaitSwitch` — `Drone_EnableAll(1)` skips them [M 0x1383e8:14])
