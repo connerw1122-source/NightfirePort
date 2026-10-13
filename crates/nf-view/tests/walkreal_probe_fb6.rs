@@ -53,6 +53,8 @@ fn dump_cutscene289_streams_and_matrices() {
                                 nf_game::nis::Obj::Entity { matrix, hash, .. } => format!("E{:08x}({:.2},{:.2},{:.2})", hash, matrix[3][0], matrix[3][1], matrix[3][2]),
                                 nf_game::nis::Obj::Anim { skin, script, frame, .. } => format!("A{:08x}/s{:08x}@f{:.0}", skin, script, frame),
                                 nf_game::nis::Obj::Camera { matrix, .. } => format!("C({:.2},{:.2},{:.2})", matrix[3][0], matrix[3][1], matrix[3][2]),
+                                nf_game::nis::Obj::Sprite { .. } => "Sprite".to_string(),
+                                nf_game::nis::Obj::Light { .. } => "Light".to_string(),
                             });
                             line.push_str(&format!(" | s{si} k{kind} fk{fk} lk{lk} obj {obj:?} {om:?}"));
                         }
@@ -71,6 +73,8 @@ fn dump_cutscene289_streams_and_matrices() {
                                 nf_game::nis::Obj::Entity { matrix, hash, .. } => format!("E{:08x}({:.2},{:.2},{:.2})", hash, matrix[3][0], matrix[3][1], matrix[3][2]),
                                 nf_game::nis::Obj::Anim { skin, script, frame, .. } => format!("A{:08x}/s{:08x}@f{:.0}", skin, script, frame),
                                 nf_game::nis::Obj::Camera { matrix, .. } => format!("C({:.2},{:.2},{:.2})", matrix[3][0], matrix[3][1], matrix[3][2]),
+                                nf_game::nis::Obj::Sprite { .. } => "Sprite".to_string(),
+                                nf_game::nis::Obj::Light { .. } => "Light".to_string(),
                             });
                             line.push_str(&format!(" | s{si} k{kind} fk{fk} lk{lk} obj {obj:?} {om:?}", ));
                         }
