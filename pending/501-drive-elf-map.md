@@ -19,3 +19,8 @@ Deliverable: `docs/atlas/driving-elf.md` and the phase 4 (vehicle physics) task 
 - End the doc with the phased port plan and the live checks for the main agent.
 
 **Branch:** `s/drive-elf-map`.
+
+- **Run the full suite with the fast runner, started in the background in your first minutes** (it fits the 2-hour window):
+  `NF_ISO=<abs path> nohup python3 tools/test/suite.py > suite.out 2>&1 &` (docs/tools/test-suite.md; once `tools/test/suite.py`
+  is on your branch: merge `origin/master` first). Read `tail -1 suite.out` and its FAILED/TIMEOUT lines before you push, and
+  run it once more on your final tree (merged with `origin/master`). Report the total line.
