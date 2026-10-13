@@ -3456,6 +3456,15 @@ impl Drone {
             (PARTY_GIRL, msg::UPDATE) => {
                 if self.near_armed_person(d) { // 0x160140:40 passes 0x41200000 — dead arg [M 0x1787c8]
                     self.sighted = true;
+                    // 0x160140:63-76: prop 0x33, the 0x200000 once-bit — the scared guest SHOUTS the
+                    // armed intruder to everyone (`NDrone2_DroneAlertToObject(20.0, 20.0, 0.75, …,
+                    // 0x11, Bond)` — the alert source is BOND), and prop 0x52 raises the mission-fail
+                    // reason 0xb [M 0x13e560].
+                    if self.prop(d, 0x33) && !self.scare_shouted {
+                        self.scare_shouted = true;
+                        self.pending_shout = Some((msg::SHOUT, self.target.pos)); // the alert source is BOND [M 0x160140:66-70]
+                    }
+                    if self.prop(d, 0x52) { self.fail_reason = Some(crate::ally::mission_fail_reason(0xb)); }
                     self.set_state(CIVILIAN_SCARED);
                 } else {
                     self.set_stand_idle(d, rng, frame, true);
