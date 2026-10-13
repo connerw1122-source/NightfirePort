@@ -7398,3 +7398,13 @@ KNOWN ISSUE left: the port's channel-gated grate door re-writes its OLD state's 
 the crawl's channel set every tick (`Door_SetState` 0x135618:26's mirror, door.rs set_state), so
 `channels.on(113)` reads 0 while crawling — the game's crawl wins because the door only writes on
 transitions; the port's door-side ordering is the remaining fix (the crawl side is faithful).
+
+## fix-swim-vent2 (claim 140b-fix-swim-vent2)
+
+Sandbox reset (no repo, no work/, no ISO) — redoing setup, then landing the held
+fix-swim-vent swim change green on current master. Branch `s/fix-swim-vent2` starts
+from `s/fix-swim-vent` (6b63096, the swim fix + the vent crawl) and merges
+`origin/master`. Plan: reproduce the 15 held-merge failures (12 nf-game unit +
+fix_mission_live 347 + fix_objects2_live 117 + walkreal_0700000c_live 94), fix each
+from evidence (docs/formats/collision.md, the disc normals, Collide_Pick 0x1eb320),
+full suite green before every push, report at docs/reports/fix-swim-vent2.md.
