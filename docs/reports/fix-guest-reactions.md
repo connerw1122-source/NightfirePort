@@ -91,6 +91,19 @@ origin/master worktree).
 - The idle state-1 guests sit disabled (`WaitSwitch` — `Drone_EnableAll(1)` skips them [M 0x1383e8:14])
   and bullets pass through them; the game wakes them on their placement switch channels. Punching
   those specific guests stays inert until the wake path is ported.
+## ntfy failed
+
+The **primary done notification succeeded** at 18:59:43 UTC (ntfy id `kkHx886NU7mw`, the one-line
+result). The later update notification failed — ntfy's daily message quota:
+
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- python urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget: exit 8 (server error; `-q` prints nothing)
+
+All three carry the same server-side 429 — the message content ("done (final): the armed-intruder
+shout ported, its sight-gated test ignored with reason; suite green") is in this report and the
+WORKLOG instead.
+
 - Live checks for the main agent (PCSX2, 07000007): walk to a party guest, punch it twice — the
   guest screams and the nearby guests cower (the CiviliansHiding cower anim, no T-pose) and the
   mission fails at once ("MISSION FAILED"); die (walk into the atrium fall or let a bouncer kill
