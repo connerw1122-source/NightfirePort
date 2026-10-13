@@ -36,3 +36,6 @@ If you can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 **User playtest (2026-10-11), a second symptom of the portal walk being off:** on 07000007 at `--bond 61.11,44.12,-52.58,-2.541,-0.010` (looking out of a ballroom window) a lit room box, another room's interior, floats in the snow outside. The main agent rendered it headless: with `NF_PORTAL=1` the box disappears (correct), but **two partygoers inside that hidden room are still drawn, standing in the snow**. The walk culls only World draws; the game also skips characters and objects whose cel isn't visible (`View_DrawObjList` 0x1e69a0 walks the visible cels' object lists). Port that too, and add both spots (this one and the 07000006 one that went black) as headless tests: count the draws of the hidden room and of its characters with the walk on, with a sister assertion that they're drawn with it off. Debug aid: `NF_SKIP_MAT=i,j` skips material indices in the renderer, and `crates/nf-view/tests/probe_render4.rs::probe_draws_near_a_point` lists every draw near `NF_PROBE_AT=x,y,z`.
 
 **Branch:** `s/fix-portal`.
+
+---
+claimed-by: sandbox2 at 2026-10-13T11:03Z
