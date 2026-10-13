@@ -36,3 +36,5 @@ claimed-by: sandbox5 at 2026-10-13T19:19Z
 ---
 ## Report (done, 2026-10-13T20:48Z)
 
+
+fix-pickups-remainder: DONE on s/fix-pickups-remainder (repo docs/reports/fix-pickups-remainder.md). The census over all 27 on-foot levels is green (29 failures found, 0 left): Pickup_CreateFromSet (kinds 7-11, 25 SP placements), the respawn tail, the spin, kind 5, the EquipAmmo 0x1f/0x25 remap ported; the auto-switch decoded + unit-tested with its view drain GATED OFF pending the walkreal-01 contact-follow regression (live checks in the report). Suite green except the allowed disc_golden.
