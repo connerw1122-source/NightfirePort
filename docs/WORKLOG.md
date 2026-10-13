@@ -6982,3 +6982,18 @@ Stage Summary:
 - Branch s/walkreal-c pushed (98c47b3). The four walkreal tests exist (walkreal_07000015/16/1b/4a _live.rs) with the real-input walker (the common/walker.rs additive hook: the `skip_cutscenes` flag, the pitched walk-in door E, the same-floor door filter). Each test is a documented gap-ignore at its reached blocker, with the evidence trail in the comments and the probe (walkreal_probe_c.rs: the level dumps + the floor grids + the 4a spawn-support/ride-scrape logs + the 16 door fields).
 - 07000015: the silo crossing WORKS with real input — the z≈−5 lane threads the silo hole, doors [0]/[48]/[36] open on the walker's E; the lattice threading to the USE exit #445 was mid-verification at the session end. 07000016: the corridor stalls at door[7] — the E reaches and Doors::activate passes its guards but the leaf never moves (open root-cause question, live check requested). 0700001b: the hub is a pit ring (the straight line falls to −15.4); the zero-G sister (substate never 8/9 on the floor route) PASSES; the nav crossing + the Drake defeat are the parked rest. 0700004a: the spawn IS the boarding (the probe: grounded on the platform from t30); the ride leaves the rider parked at −54.14 at t1620 while the platform continues (the game's lift passes the −52 leaves closed — ch 0x40 opens them at t1610, the platform passed at t1560 [D keys]); the door-solid vs rider interaction is the fix.
 - Suite: the walkreal set + the probe + the 07000012 sister all green (the gap-ignores compile, nothing red). The full four-crate suite did NOT run in this sandbox (time) — run before the merge.
+
+Post-report progress (same session, before the sandbox end):
+- The straddle walk-in LANDED in the port: `crates/nf-game/src/door.rs` `Doors::player_use` —
+  the kind-2 slide doors' par-4 straddle flag was parsed but never consumed (the game arms
+  obj+0xfd bit 8 from the +0x3c param at `Door_Create` 0x136100 [M]); a closed straddle door now
+  activates when the player stands in its threshold (from_player — the locks hold) [S shape].
+  Sisters walkreal_07000012/0b/0c + nf-game's units (96+32+1+2) green.
+- 07000015's route proven with real input from the spawn to (28.1, 41.5, 68.7): the silo crossing
+  (the z≈−5 lane), doors [0]/[48]/[36]/[38]/[39] (E), the x34.6 spine's WEST plank around the
+  door[45] keypad slot (ch_lock 0xc8 has NO writer on the level — no AND trigger [D dump]; the
+  east plank dead-ends — permanent), doors [46]/[47]. The remaining puzzle: door[32]'s doorway
+  approach in the top band's west wall (the corner hops the walker onto furniture). The 15 test
+  re-marked with the updated gap; the 16/1b/4a gap-ignores unchanged.
+- Pushed 1d414f7 (branch s/walkreal-c). The full four-crate suite still owes a pass on a bigger
+  box before the merge.
