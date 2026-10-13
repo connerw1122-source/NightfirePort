@@ -28,6 +28,14 @@ pub struct MapObject {
     pub gfx: GfxObject,
     /// Collision geometry in object space (block 0x2E before the object), if any.
     pub collision: Option<crate::collision::Collision>,
+    /// fix-facial2: the MORPH_DATA block (0x2B) paired with this object — the facial morph TARGET
+    /// array, f32[3] per (vertex morph index + channel). The game stores the block payload straight
+    /// into the runtime gfx record's +0x14 (`parsemap_block_morph_data` 0x1d23e8:
+    /// `*(gfx+0x14) = FileNextBlock + 4`), and `SkinIt` 0x10bf30 reads
+    /// `target + (morph_index + channel) * 12` per morphed vertex from exactly that base. Pairing
+    /// mirrors the game's parse order: the block belongs to the entity whose params follow it (the
+    /// same `pending` pattern as the 0x2E collision blocks).
+    pub morph_targets: Option<Vec<u8>>,
 }
 
 impl MapObject {
@@ -297,6 +305,10 @@ impl Level {
             // A collision block (0x2E) comes before the PS2_GFX / entity params of the object it belongs to
             // (bounds match the following object in 6,959 of 7,985 blocks; docs/formats/collision.md).
             let mut pending_coll = None;
+            // fix-facial2: a MORPH_DATA block (0x2B) pairs the same way — `parsemap_block_morph_data`
+            // 0x1d23e8 stores `FileNextBlock + 4` (the block payload) into the current entity's gfx
+            // record +0x14, the base `SkinIt` 0x10bf30 morphs from.
+            let mut pending_morph: Option<Vec<u8>> = None;
             let mut placements = Vec::new();
             let mut ai_network = None;
             let mut sounds = Vec::new();
@@ -308,6 +320,8 @@ impl Level {
             for blk in &mf.blocks {
                 match blk.id {
                     0x2e => pending_coll = Some(crate::collision::Collision::parse(blk.payload(data))?),
+                    // MORPH_DATA (dispatch 0x1d1020 case 0x2b → parsemap_block_morph_data 0x1d23e8).
+                    id::MORPH_DATA => pending_morph = Some(blk.payload(data).to_vec()),
                     id::PS2_GFX => pending = Some(GfxObject::parse(&data[blk.offset as usize..][..blk.size as usize])?),
                     id::ENTITY_PARAMS => {
                         let p = crate::buf::Buf(blk.payload(data));
@@ -315,7 +329,7 @@ impl Level {
                         let name = String::from_utf8_lossy(&tail[..tail.iter().position(|&c| c == 0).unwrap_or(tail.len())]).into_owned();
                         let gfx = pending.take().ok_or_else(|| crate::buf::FormatError::Invalid("entity params without PS2_GFX".into()))?;
                         let v = |o: usize| -> crate::buf::Result<[f32; 3]> { Ok([p.f32(o)?, p.f32(o + 4)?, p.f32(o + 8)?]) };
-                        objects.push(MapObject { hashcode: p.u32(0)?, name, flags: p.u32(4)?, centre: v(8)?, radius: p.f32(0x14)?, min: v(0x18)?, max: v(0x24)?, gfx, collision: pending_coll.take() });
+                        objects.push(MapObject { hashcode: p.u32(0)?, name, flags: p.u32(4)?, centre: v(8)?, radius: p.f32(0x14)?, min: v(0x18)?, max: v(0x24)?, gfx, collision: pending_coll.take(), morph_targets: pending_morph.take() });
                     }
                     id::MAP_DATA_STATIC => placements = placement::parse(blk.payload(data))?,
                     0x05 => ai_network = Some(crate::aipath::AiNetwork::parse(blk.payload(data))?),
