@@ -90,6 +90,13 @@ impl WeaponData {
     /// `+0x6C & 0x40000`: whether this weapon's bullets emit a fly-by sound [M].
     pub fn flyby(&self, weapon: usize) -> bool { self.bullet_flags(weapon) & 0x40_000 != 0 }
 
+    /// `+0x70`: hit-sound flags. Bits 0x180 suppress the body/head hit sounds: `NDrone2_DoHitEffects`
+    /// 0x1458e0 plays 0x601/0x413 only when `+0x70 & 0x180 == 0`, `Player_DealWithObjHit` 0x194458
+    /// 0x600/0x412 under the same gate [M].
+    pub fn hit_flags(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()))
+    }
+
     /// `+0x90`: the ammo type (index into `ammo_data` and Bond's carried rounds).
     pub fn ammo_type(&self, weapon: usize) -> usize { self.records.get(weapon).map_or(0, |r| r[0x90] as usize) }
 

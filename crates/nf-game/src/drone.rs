@@ -4682,8 +4682,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     b.dead = true;
                     let hit = Hit { part, ray, point: at(t), damage: b.damage, weapon: b.weapon };
                     self.player_impacts.push(PlayerImpact::Drone { drone: i, part, at: hit.point });
-                    // `NDrone2_DoHitEffects`: damage > 0.5 → 0x413 at the hit (0x601 when HITDATA+0x52 = 5, *not modelled*).
-                    if hit.damage > 0.5 { self.audio.play3d(0x413, hit.point, None); }
+                    // `NDrone2_DoHitEffects` 0x1458e0:102-109: damage > 0.5 and the weapon's `+0x70` flags
+                    // without 0x180 → the hit sound at the hit point: 0x601 when HITDATA+0x52 (the part, the
+                    // port's `part` bone id) is 5 (head), else 0x413.
+                    if hit.damage > 0.5 && d.weapons.hit_flags(b.weapon as usize) & 0x180 == 0 {
+                        self.audio.play3d(if part == 5 { 0x601 } else { 0x413 }, hit.point, None);
+                    }
                     let rng = &mut self.rng;
                     let dr = &mut self.list[i];
                     dr.hit_by_player = true; // +0x2B4 = the player [M 0x145bd0; fix-actors]

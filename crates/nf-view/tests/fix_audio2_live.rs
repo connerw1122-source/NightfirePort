@@ -109,3 +109,73 @@ fn level_01_intro_dialogue_plays() {
     // The bank sample in the same anim set rides the same path.
     assert!(all.contains(&598), "the intro's op-1 bank sample 598 never played");
 }
+
+/// `NDrone2_DoHitEffects` 0x1458e0:102-109 through the real fire path: a body hit with damage > 0.5 and the
+/// weapon's `+0x70` flags without 0x180 plays **0x601** when HITDATA+0x52 (the part; 5 = head, the port's
+/// `part` bone id) is the head, else **0x413**. Before this task the port always played 0x413 (the head
+/// variant "not modelled" — drone.rs's own comment said so).
+///
+/// The level's guards stand in rooms and on slopes, so the test walks the drones and shot heights until a
+/// shot registers on a drone's boxes (the impacts list says which part won) — then asserts the two sounds.
+#[test]
+fn body_hit_sounds_head_601_body_413() {
+    let Some(mut scene) = load("07000005.bin") else { eprintln!("NF_ISO not set — skipping"); return };
+    let drones: Vec<[f32; 3]> = scene.sim.as_ref().unwrap().drones.list.iter()
+        .filter(|d| d.present && !d.corpse).map(|d| d.pos).collect();
+    let mut head = Vec::new();
+    let mut body = Vec::new();
+    // The drones' boxes (16 per guard): the head box sits ~0.76 above `pos`, the torso ~0.40 (the sweep
+    // measured them on drone 6). Aim each shot from the CURRENT eye through that point — Bond drifts for a
+    // few ticks after the teleport, so the aim is refreshed every shot.
+    'outer: for gpos in drones.iter() {
+        for (dy, kind) in [(0.76f32, 0), (0.40, 1)] {
+            let parts = shot_parts(&mut scene, gpos, dy);
+            if parts.iter().any(|p| *p == 5) { head = starts_of(&mut scene); break 'outer; }
+            if !parts.is_empty() && kind == 1 { body = starts_of(&mut scene); }
+        }
+    }
+    assert!(!head.is_empty() || !body.is_empty(), "no shot ever hit a drone's boxes (level geometry?)");
+    if !head.is_empty() {
+        assert!(head.contains(&0x601), "a head shot (part 5) never played 0x601; starts: {head:?}");
+    }
+    if !body.is_empty() {
+        assert!(body.contains(&0x413), "a body shot never played 0x413; starts: {body:?}");
+        assert!(!body.contains(&0x601), "a body shot played the head variant 0x601; starts: {body:?}");
+    }
+}
+
+/// One aimed shot volley at a point `dy` above a guard's mid-body position, 2.5 units away; returns the
+/// parts the shot registered on the drones' boxes (empty when it only hit the world).
+fn shot_parts(scene: &mut nf_view::scene::Scene, gpos: &[f32; 3], dy: f32) -> Vec<i16> {
+    let mut parts = Vec::new();
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = [gpos[0] - 2.5, gpos[1] + dy, gpos[2]];
+        sim.bond.eye = 0.0; // the eye at the aim point's height: a level ray
+        sim.bond.vel = [0.0; 3];
+        let target = [gpos[0], gpos[1] + dy, gpos[2]];
+        for _ in 0..24 {
+            // Re-aim from the CURRENT eye every shot (Bond drifts after the teleport).
+            let e = sim.bond.head();
+            let d = [target[0] - e[0], target[1] - e[1], target[2] - e[2]];
+            sim.bond.yaw = d[0].atan2(d[2]);
+            sim.bond.pitch = d[1].atan2((d[0] * d[0] + d[2] * d[2]).sqrt()) / std::f32::consts::FRAC_PI_2;
+            sim.step_bond(Input { fire: true, ..Input::default() }, true, false, false);
+            for i in &sim.drones.player_impacts {
+                if let nf_game::drone::PlayerImpact::Drone { part, .. } = i { parts.push(*part); }
+            }
+            for _ in 0..7 { sim.step_bond(Input::default(), false, false, false); }
+        }
+    }
+    parts
+}
+
+/// Flushes the sound pool and lists the started sfx ids.
+fn starts_of(scene: &mut nf_view::scene::Scene) -> Vec<u32> {
+    let mut sim = scene.sim.as_mut().unwrap();
+    let listener = ([0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+    sim.drones.audio.update(None, listener, &|_| true);
+    sim.drones.audio.out.iter().filter_map(|c| match c {
+        Cmd::Start { id, .. } => Some(*id), _ => None,
+    }).collect()
+}

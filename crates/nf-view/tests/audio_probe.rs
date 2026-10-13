@@ -118,3 +118,32 @@ fn probe_players() {
         }
     }
 }
+
+#[test]
+fn probe_shot() {
+    use nf_game::player::Input;
+    let Some(iso) = std::env::var("NF_ISO").ok() else { return };
+    let mut scene = nf_view::load(&iso, "07000005.bin", false).unwrap();
+    let sim0 = scene.sim.as_ref().unwrap();
+    let r = &sim0.weapons.records[2];
+    let f32at = |o: usize| f32::from_le_bytes([r[o], r[o+1], r[o+2], r[o+3]]);
+    println!("weapon2 range {} speed {} spread {}", f32at(0x1c), f32at(0x20), f32at(0x24));
+    let gpos = sim0.drones.list[6].pos;
+    for dy in [0.2f32, 0.4, 0.6, 0.8, 1.0, 1.2] {
+        let mut parts = Vec::new();
+        { let sim = scene.sim.as_mut().unwrap();
+          sim.bond.pos = [gpos[0] - 2.5, gpos[1] + dy, gpos[2]];
+          sim.bond.eye = 0.0;
+          sim.bond.yaw = std::f32::consts::FRAC_PI_2;
+          sim.bond.pitch = 0.0;
+          for _ in 0..10 {
+            sim.step_bond(Input { fire: true, ..Input::default() }, true, false, false);
+            for i in &sim.drones.player_impacts { parts.push(match i {
+                nf_game::drone::PlayerImpact::Drone { part, .. } => format!("part{part}"),
+                _ => "world".into() }); }
+            sim.step_bond(Input::default(), false, false, false);
+          }
+        }
+        println!("dy {dy}: {:?} health {}", parts, scene.sim.as_ref().unwrap().drones.list[6].health);
+    }
+}
