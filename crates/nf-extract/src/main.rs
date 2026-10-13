@@ -462,7 +462,11 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     for c in std::env::var("NF_SWITCHES").unwrap_or_default().split(',').filter_map(|c| u8::from_str_radix(c.trim(), 16).ok()) { sim.set_channel(c); }
     // NF_AIM_YAW: Bond's facing (radians; the game's obj+0x54), else −x.
     let aim = std::env::var("NF_AIM_YAW").ok().and_then(|v| v.parse::<f32>().ok()).map_or([-1.0, 0.0, 0.0], |y| [y.sin(), 0.0, y.cos()]);
-    let player = Player { pos: bond, target: [bond[0], bond[1] + 0.5, bond[2]], eye: [bond[0], bond[1] + 1.0, bond[2]], aim, sph: bond, hanging: false };
+    // The standing capsule per the player's stance (mirrors scene.rs's Player construction; the
+    // trigger contact classification reads it [M Player_Collision 0x194df0]). Standing cc [M
+    // player.rs ROOT_HEIGHT] — this tracer's sim carries no stance state.
+    let capsule = ([bond[0], bond[1] + 0.55, bond[2]], [bond[0], bond[1] + 0.275 - nf_game::player::ROOT_HEIGHT, bond[2]]);
+    let player = Player { pos: bond, target: [bond[0], bond[1] + 0.5, bond[2]], eye: [bond[0], bond[1] + 1.0, bond[2]], aim, sph: bond, hanging: false, capsule };
     let near = (0..sim.list.len()).min_by(|&a, &b| {
         let da = |i: usize| { let p = sim.list[i].pos; (p[0] - bond[0]).powi(2) + (p[2] - bond[2]).powi(2) };
         da(a).total_cmp(&da(b))
