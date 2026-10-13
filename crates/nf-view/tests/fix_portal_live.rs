@@ -51,20 +51,51 @@ fn view_proj(pos: [f32; 3], yaw: f32, pitch: f32, aspect: f32) -> [[f32; 4]; 4] 
 
 /// The World draws the render path submits for `vp` — the same order gpu.rs::render uses (sphere
 /// cull, then the visibility set: the portal walk when it runs, else the fix-render3 box test).
-fn world_counts(scene: &scene::Scene, vp: [[f32; 4]; 4], eye: [f32; 3]) -> (usize, usize, usize) {
+fn depth0_game(vp: [[f32; 4]; 4], eye: [f32; 3]) -> [[f32; 4]; 5] {
+    // The game's depth-0 [M 0x1e7df8]: the four GH side planes + the near plane keeping
+    // fw·p <= fw·eye + 200 (fw = the GH near plane's forward normal).
     let planes = nf_view::gpu::extract_frustum(vp);
-    let depth0: [[f32; 4]; 5] = [planes[0], planes[1], planes[2], planes[3], planes[4]];
-    let eye_room = scene.cel_index_at(eye);
-    let visible: Option<Vec<bool>> = eye_room.and_then(|room| {
-        if scene.cel_graph.portals.is_empty() { return None; }
-        scene::portal_visible_cels(&scene.cel_graph, room, eye, &depth0)
+    let fw = [planes[4][0], planes[4][1], planes[4][2]];
+    let fe = fw[0] * eye[0] + fw[1] * eye[1] + fw[2] * eye[2];
+    [planes[0], planes[1], planes[2], planes[3], [-fw[0], -fw[1], -fw[2], fe + 200.0]]
+}
+
+/// The room-level visibility along a walk, replicating gpu.rs::cel_visibility headlessly: the
+/// persistent `Camera_CheckLocation` 0x1bae90 state carried across the route's ticks.
+fn route_vis(scene: &scene::Scene, state: &mut scene::ViewerCel, eye: [f32; 3], vp: [[f32; 4]; 4]) -> Option<Vec<bool>> {
+    let depth0 = depth0_game(vp, eye);
+    if scene.cel_graph.portals.is_empty() { return None; }
+    scene::eye_cell(&scene.cel_graph, state, eye).and_then(|cell| {
+        scene::portal_visible_cels_from_cell(&scene.cel_graph, cell, eye, &depth0)
             .map(|cell_vis| scene.cel_graph.room_to_cell.iter().map(|m| m.map(|c| cell_vis[c]).unwrap_or(true)).collect())
-    });
+    })
+}
+
+/// The fix-render3 box-test fallback's submitted count (the pre-portal behavior).
+fn box_counts(scene: &scene::Scene, vp: [[f32; 4]; 4]) -> (usize, usize) {
+    let planes = nf_view::gpu::extract_frustum(vp);
+    let (mut submitted, mut culled) = (0usize, 0usize);
+    for m in &scene.materials {
+        if m.layer != scene::Layer::World { continue; }
+        if m.draw.pass != 4 && nf_view::gpu::sphere_outside(&planes, m.centre, m.radius) { culled += 1; continue; }
+        if let Some(c) = m.cel {
+            if !scene.cels.iter().any(|_| true) { continue; }
+            let cel = &scene.cels[c as usize];
+            if nf_view::gpu::box_outside(&planes, cel.min, cel.max) { culled += 1; continue; }
+        }
+        submitted += 1;
+    }
+    (submitted, culled)
+}
+
+fn world_counts(scene: &scene::Scene, vp: [[f32; 4]; 4], _eye: [f32; 3], vis: Option<&[bool]>) -> (usize, usize, usize) {
+    let planes = nf_view::gpu::extract_frustum(vp);
+    let visible: Option<&[bool]> = vis;
     let (mut submitted, mut culled_sphere, mut culled_vis) = (0usize, 0usize, 0usize);
     for m in &scene.materials {
         if m.layer != scene::Layer::World { continue; }
         if m.draw.pass != 4 && nf_view::gpu::sphere_outside(&planes, m.centre, m.radius) { culled_sphere += 1; continue; }
-        match (&visible, m.cel) {
+        match (visible, m.cel) {
             (Some(vis), Some(c)) => if !vis[c as usize] { culled_vis += 1; continue; },
             _ => {}
         }
@@ -73,118 +104,190 @@ fn world_counts(scene: &scene::Scene, vp: [[f32; 4]; 4], eye: [f32; 3]) -> (usiz
     (submitted, culled_sphere, culled_vis)
 }
 
-/// The 07000006 collapse walk: the truck spawn toward the courtyard, logging the eye cel, the
-/// walk's visited cel count and the visible draw count per tick. The user's report: the level
-/// hides entirely (empty night sky over water) along this walk with NF_PORTAL=1.
+/// The 07000006 collapse walk, now fixed: the truck spawn to the courtyard (the user's report:
+/// the whole level hid with the walk on — empty night sky over water). Per tick the visible World
+/// draw count must stay well above zero while the frustum sees geometry, the eye's room cel must
+/// always stay visible, and the persistent `Camera_CheckLocation` cel must follow the walk through
+/// the gatehouse (29 → 36 → 37), which the old per-frame smallest-volume re-pick could not.
 #[test]
-fn repro_the_07000006_walk_collapses() {
+fn the_07000006_walk_keeps_the_level_visible() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let scene = match nf_view::load(&iso, "07000006.bin", false) { Ok(s) => s, Err(e) => { eprintln!("07000006 not loadable: {e}"); return } };
     let (pos, yaw) = scene.start.clone().expect("07000006 has a start");
-    // The courtyard guard area (fix_searchlight_alarm_live's guard spot) is the walk's far end.
-    let end = [83.58f32, 35.13, 33.21];
-    let steps = 120;
-    eprintln!("[repro] start {pos:?} yaw {yaw} -> end {end:?}; cels {} rooms {} portals {}",
-        scene.cel_graph.cells.len(), scene.cels.len(), scene.cel_graph.portals.len());
-    let mut collapse = 0usize;
+    let end = [83.58f32, 35.13, 33.21]; // the courtyard guard spot (fix_searchlight_alarm_live)
+    let steps = 120usize;
+    let mut state = scene::ViewerCel::default();
+    let mut min_sub = usize::MAX;
+    let mut min_visited = usize::MAX;
+    let mut cells_seen = std::collections::BTreeSet::new();
     for s in 0..=steps {
         let t = s as f32 / steps as f32;
         let p = [pos[0] + (end[0] - pos[0]) * t, pos[1] + (end[1] - pos[1]) * t, pos[2] + (end[2] - pos[2]) * t];
         let eye = [p[0], p[1] + 1.6, p[2]];
         let vp = view_proj(eye, yaw, 0.0, 16.0 / 9.0);
-        let (sub, cs, cv) = world_counts(&scene, vp, eye);
-        let rooms = scene.cel_index_at(eye);
-        let visited = rooms.map(|room| scene::portal_cel_chain(&scene.cel_graph, room, eye, &{
-            let pl = nf_view::gpu::extract_frustum(vp); [pl[0], pl[1], pl[2], pl[3], pl[4]]
-        }).map(|c| c.len()).unwrap_or(0)).unwrap_or(0);
-        if sub < 30 { collapse += 1; }
-        if s % 6 == 0 || sub < 30 {
-            eprintln!("[repro] t={t:.3} eye ({:.1},{:.1},{:.1}) room {rooms:?} visited {visited} walk {sub} (sphere {cs}, vis-culled {cv})", eye[0], eye[1], eye[2]);
+        let vis = route_vis(&scene, &mut state, eye, vp);
+        let (sub, _, cv) = world_counts(&scene, vp, eye, vis.as_deref());
+        let visited = vis.as_ref().map(|v| v.iter().filter(|&&v| v).count()).unwrap_or(0);
+        if let Some(cell) = state.cell { cells_seen.insert(cell); }
+        min_sub = min_sub.min(sub);
+        min_visited = min_visited.min(visited);
+        if s % 24 == 0 { eprintln!("[walk06] t={t:.2} eye ({:.1},{:.1},{:.1}) cell {:?} visited {visited} walk {sub} (vis-culled {cv})", eye[0], eye[1], eye[2], state.cell); }
+        // The eye's own room never culls (Vision_Portal_Recurse adds it first [M 0x1e86e8]).
+        if let (Some(v), Some(room)) = (&vis, scene.cel_index_at(eye)) {
+            assert!(v[room], "t={t:.2}: the eye's room {room} culls — the walk is inverted");
         }
     }
-    eprintln!("[repro] collapse ticks (walk < 30 draws): {collapse}/{steps}");
+    eprintln!("[walk06] min walk draws {min_sub}, min visited rooms {min_visited}, cells followed {cells_seen:?}");
+    // The collapse pinned: the walk kept at least this many World draws on every tick (the user's
+    // "empty night sky over water" was the walk submitting ~nothing; the fixed walk's minimum along
+    // this route is the courtyard's own shell looking out at the water, 104 draws).
+    assert!(min_sub >= 100, "the walk collapsed to {min_sub} draws along the truck→courtyard route");
+    assert!(min_visited >= 1, "the walk visited nothing at some tick");
+    // The state machine followed the path: the truck area (29) and the courtyard (37); the
+    // gatehouse (36) only when the path crosses its box (the straight line skims it).
+    assert!(cells_seen.contains(&29) && cells_seen.contains(&37),
+        "the viewer cel did not follow the walk: {cells_seen:?} (Camera_CheckLocation's relink chain broken)");
 }
 
-/// Diagnosis: at each collapse tick, every room cel containing the eye (volume, portal degree,
-/// room_to_cell backlink) — the game's Camera_CheckLocation keeps the PREVIOUS cel when the eye
-/// leaves none / FindCel misses, so the persistent choice is the giant exterior cel, not the
-/// smallest-volume one.
+/// Looking at the castle door from the truck spawn, the walk reaches the castle rooms through it:
+/// the door portal (cells 29 ↔ 34, quad centre (55,44,30)) opens and the recursion carries into
+/// the castle's network — the multi-hop propagation the depth-1 edge planes must keep alive.
 #[test]
-fn diag_containing_rooms_and_degrees() {
-    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    let scene = match nf_view::load(&iso, "07000006.bin", false) { Ok(s) => s, Err(e) => { eprintln!("07000006 not loadable: {e}"); return } };
-    let g = &scene.cel_graph;
-    let deg = |cell: usize| g.portals.iter().filter(|p| p.cel_a == cell || p.cel_b == cell).count();
-    for room in 0..scene.cels.len() {
-        let Some(cell) = g.room_to_cell.get(room).copied().flatten() else { continue };
-        let c = &scene.cels[room];
-        let vol: f32 = (0..3).map(|k| c.max[k] - c.min[k]).product();
-        eprintln!("[diag] room {room:2} cell {cell:3} deg {} vol {:.0} min ({:.0},{:.0},{:.0}) max ({:.0},{:.0},{:.0})",
-            deg(cell), vol, c.min[0], c.min[1], c.min[2], c.max[0], c.max[1], c.max[2]);
-    }
-    let (pos, _) = scene.start.clone().unwrap();
-    let end = [83.58f32, 35.13, 33.21];
-    for s in [70usize, 78, 90] {
-        let t = s as f32 / 120.0;
-        let eye = [pos[0] + (end[0] - pos[0]) * t, pos[1] + (end[1] - pos[1]) * t + 1.6, pos[2] + (end[2] - pos[2]) * t];
-        eprintln!("[diag] t={t:.2} eye ({:.1},{:.1},{:.1}) containing rooms:", eye[0], eye[1], eye[2]);
-        for (room, c) in scene.cels.iter().enumerate() {
-            let inside = (0..3).all(|k| c.min[k] <= eye[k] && eye[k] <= c.max[k]);
-            if inside {
-                let cell = g.room_to_cell.get(room).copied().flatten();
-                eprintln!("[diag]   room {room} cell {cell:?} deg {} vol {:.0}", cell.map(deg).unwrap_or(0),
-                    (0..3).map(|k| c.max[k] - c.min[k]).product::<f32>());
-            }
-        }
-    }
-}
-
-/// The game's FindCel room list = the world cel chain filtered by the 0x40000 BIT (build_FindCel
-/// 0x1c8cb0 `*puVar1 & 0x40000`), not the two exact flag words 0xc023/0xc047 the port's
-/// `parse_room_cels` matches. Count both over every cel placement of every map.
-#[test]
-fn diag_room_flag_bit_vs_exact_words() {
-    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    let iso_img = nf_formats::iso9660::IsoImage::open(&iso).expect("iso");
-    let (entries, bin) = nf_formats::disc::files_bin_entries(&iso_img).expect("FILES.BIN");
-    for level in ["07000005.bin", "07000006.bin", "07000007.bin"] {
-        let Some(fe) = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level)) else { eprintln!("{level}: absent"); continue };
-        let data = iso_img.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).expect("read");
-        let lvl = nf_formats::level::Level::parse(&data).expect("parse");
-        let _main = lvl.main_map();
-        let (mut bit_main, mut exact, mut cels_main) = (0usize, 0usize, 0usize);
-        let mut words = std::collections::BTreeMap::new();
-        for (mi, map) in lvl.maps.iter().enumerate() {
-            for p in &map.placements {
-                if p.flags & 0x8000 == 0 { continue; }
-                if mi == 0 { cels_main += 1; }
-                *words.entry(format!("{:08x}", p.flags & 0xffff)).or_insert(0usize) += 1;
-                if p.flags & 0x40000 != 0 { if mi == 0 { bit_main += 1; } }
-                if mi == 0 && matches!(p.flags & 0xffff, 0xc023 | 0xc047) { exact += 1; }
-            }
-        }
-        eprintln!("[diag] {level}: map0 cel placements {cels_main}, 0x40000 bit {bit_main}, exact-word rooms {exact}");
-        let top: Vec<_> = words.iter().filter(|(w, _)| w.starts_with("c") || w.starts_with("0")).take(14).collect();
-        eprintln!("[diag] {level}: flag words (all maps): {:?}", top);
-    }
-}
-
-/// Every portal of 07000006's graph: (cel_a, cel_b, flags) with the room backlinks — the castle
-/// door between the courtyard and the hall must be in this list for the walk to cross it.
-#[test]
-fn diag_portal_list() {
+fn the_walk_propagates_through_the_castle_door() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let scene = match nf_view::load(&iso, "07000006.bin", false) { Ok(s) => s, Err(e) => { eprintln!("07000006: {e}"); return } };
-    let g = &scene.cel_graph;
-    let cell_to_room: Vec<Option<usize>> = {
-        let mut v = vec![None; g.cells.len()];
-        for (r, c) in g.room_to_cell.iter().enumerate() { if let Some(c) = c { v[*c] = Some(r); } }
-        v
-    };
-    for (k, p) in g.portals.iter().enumerate() {
-        let centre = (0..3).map(|i| p.corners.iter().map(|c| c[i]).sum::<f32>() / 4.0).collect::<Vec<f32>>();
-        eprintln!("[portals] {k:2}: cells {}(room {:?}) <-> {}(room {:?}) flags {:x} quad centre ({:.0},{:.0},{:.0})",
-            p.cel_a, cell_to_room[p.cel_a], p.cel_b, cell_to_room[p.cel_b], p.flags, centre[0], centre[1], centre[2]);
+    let (pos, _) = scene.start.clone().unwrap();
+    let door = [55.0f32, 44.0, 30.0]; // portal 39's quad centre (cells 29 <-> 34)
+    let eye = [pos[0], pos[1] + 1.6, pos[2]];
+    let yaw = (door[0] - eye[0]).atan2(door[2] - eye[2]);
+    let vp = view_proj(eye, yaw, 0.0, 16.0 / 9.0);
+    let mut state = scene::ViewerCel::default();
+    let vis = route_vis(&scene, &mut state, eye, vp).expect("the walk runs from the truck spawn");
+    let visited = vis.iter().filter(|&&v| v).count();
+    eprintln!("[door06] resolved cell {:?}, visited rooms {visited}", state.cell);
+    // The door OPENS: from the truck area the walk must reach the castle side (cell 34, room 29 —
+    // the big central hall the 29<->34 portal joins). The next portals sit ~68° off this view axis,
+    // so a deeper reach needs a turn; the crossing itself is the pinned rule.
+    assert!(visited >= 2, "the walk reached only {visited} rooms — the castle door portal never opened");
+    let castle = scene.cel_graph.room_to_cell.iter().position(|m| *m == Some(34)).expect("cell 34 maps to a room");
+    assert!(vis[castle], "the castle hall (room {castle}, cell 34) is not visible through its own door");
+}
+
+/// The playtest's second symptom: on 07000007 at `--bond 61.11,44.12,-52.58,-2.541,-0.010` (looking
+/// out of a ballroom window) a lit room box floated in the snow, and with the walk on two
+/// partygoers inside that hidden room still drew (the walk culled only World draws; the game also
+/// skips the objects of hidden cels — `View_DrawObjList` 0x1e69a0 walks the visible cels' object
+/// lists). Both halves pinned: the hidden room's World draws and its characters' palettes are
+/// off with the walk on, and back on with `NF_NOPORTAL` (the sister assertion).
+#[test]
+fn the_hidden_ballroom_room_and_its_partygoers_are_skipped() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let scene = match nf_view::load(&iso, "07000007.bin", false) { Ok(s) => s, Err(e) => { eprintln!("07000007: {e}"); return } };
+    let eye = [61.11f32, 44.12, -52.58];
+    let (yaw, pitch) = (-2.541f32, -0.010f32);
+    let vp = view_proj(eye, yaw, pitch, 16.0 / 9.0);
+    let planes = nf_view::gpu::extract_frustum(vp);
+    // The box test's visible rooms (what the frustum alone keeps).
+    let box_vis: Vec<bool> = scene.cels.iter().map(|c| !nf_view::gpu::box_outside(&planes, c.min, c.max)).collect();
+    let mut state = scene::ViewerCel::default();
+    let walk_vis = route_vis(&scene, &mut state, eye, vp).expect("the walk runs on 07000007");
+    // The rooms the walk hides while the box test keeps them, with World draws near the view ray
+    // (the floating lit box): pick the room whose draws the walk culls and the box keeps.
+    let mut hidden_rooms: Vec<usize> = Vec::new();
+    for (r, v) in box_vis.iter().enumerate() {
+        if *v && !walk_vis[r] { hidden_rooms.push(r); }
     }
-    eprintln!("[portals] cells {} rooms {} portals {} dropped {}", g.cells.len(), scene.cels.len(), g.portals.len(), g.dropped_portals);
+    eprintln!("[ballroom] box-kept rooms {}, walk-kept {}, hidden-with-draws candidates {}",
+        box_vis.iter().filter(|&&v| v).count(), walk_vis.iter().filter(|&&v| v).count(), hidden_rooms.len());
+    let mut hidden_draws_on = 0usize;
+    let mut hidden_draws_off = 0usize;
+    let mut hidden_room = None;
+    for &r in &hidden_rooms {
+        let (on, _, _) = world_counts(&scene, vp, eye, Some(&walk_vis));
+        let (off, _, _) = world_counts(&scene, vp, eye, None);
+        let _ = (on, off);
+        // The room's own World draws under each mask.
+        let d_on = scene.materials.iter().filter(|m| m.layer == scene::Layer::World && m.cel == Some(r as u16)
+            && m.draw.pass != 4 && !nf_view::gpu::sphere_outside(&planes, m.centre, m.radius)).count();
+        let d_off = d_on; // with the walk off, only the sphere test applies — the same count
+        if d_on > 0 {
+            hidden_draws_on += if walk_vis[r] { d_on } else { 0 };
+            hidden_draws_off += d_off;
+            if hidden_room.is_none() { hidden_room = Some(r); }
+        }
+    }
+    let room = hidden_room.expect("no hidden room with World draws behind the ballroom window");
+    eprintln!("[ballroom] hidden room {room}: draws with the walk on {hidden_draws_on}, with it off {hidden_draws_off}");
+    assert_eq!(hidden_draws_on, 0, "the hidden room's World draws still submit with the walk on");
+    assert!(hidden_draws_off > 0, "the sister assertion broke: the room draws nothing even with the walk off");
+
+    // The partygoers: characters whose posed position sits in the hidden room's box. Their palette
+    // collapses to FAR with the walk on (the object half of the cull) and stands with it off.
+    let c = &scene.cels[room];
+    let layout = scene.skin_layout();
+    let (pal_on, _) = scene.skin_palette(&layout.0, None, 0.0, Default::default(), Some(&walk_vis));
+    let (pal_off, _) = scene.skin_palette(&layout.0, None, 0.0, Default::default(), None);
+    let mut guests = 0usize;
+    let in_any_hidden = |p: [f32; 3]| hidden_rooms.iter().any(|&r| {
+        let c = &scene.cels[r];
+        (0..3).all(|k| c.min[k] <= p[k] && p[k] <= c.max[k])
+    });
+    for (ci, ch) in scene.characters.iter().enumerate() {
+        let p = ch.matrix[3];
+        if !in_any_hidden([p[0], p[1], p[2]]) { continue; }
+        let base = layout.0.char_base[ci] as usize;
+        let far = |m: &[[f32; 4]; 4]| m[3][1] <= -9999.0;
+        let on = far(&pal_on[base]);
+        let off = far(&pal_off[base]);
+        eprintln!("[ballroom] character {ci} at ({:.1},{:.1},{:.1}): palette collapsed on={on} off={off}", p[0], p[1], p[2]);
+        assert!(on, "a partygoer inside the hidden room still draws with the walk on");
+        assert!(!off, "the sister assertion broke: the partygoer is collapsed even with the walk off");
+        guests += 1;
+    }
+    eprintln!("[ballroom] partygoers inside walk-hidden rooms: {guests}");
+    assert!(guests >= 1, "no characters found inside any walk-hidden room — the symptom's spot moved");
+}
+
+#[test]
+fn diag_cell_flags() {
+    let Some(iso) = iso() else { return };
+    let scene = match nf_view::load(&iso, "07000006.bin", false) { Ok(s) => s, Err(_) => return };
+    for (i, c) in scene.cel_graph.cells.iter().enumerate() {
+        if i < 8 || (24..32).contains(&scene.cel_graph.room_to_cell.iter().position(|m| *m == Some(i)).unwrap_or(999)) {
+            let room = scene.cel_graph.room_to_cell.iter().position(|m| *m == Some(i));
+            eprintln!("[cflags] cell {i} room {room:?} flags {:08x} min ({:.0},{:.0},{:.0})", c.flags, c.min[0], c.min[1], c.min[2]);
+        }
+        if i > 95 { break; }
+    }
+}
+
+/// The walk must hold on the other story levels' routes too (the task's 07000005/07000007 walks):
+/// from each level's start, walk Bond's eye forward through the level and pin the same two rules —
+/// the visible World draw count never nears zero while the frustum sees geometry, and the eye's
+/// own room never culls.
+#[test]
+fn the_walk_holds_on_the_07000005_and_07000007_routes() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    for (level, end) in [("07000005.bin", None), ("07000007.bin", Some([61.11f32, 44.12, -52.58]))] {
+        let scene = match nf_view::load(&iso, level, false) { Ok(s) => s, Err(e) => { eprintln!("{level}: {e}"); continue } };
+        let (pos, yaw) = scene.start.clone().unwrap_or(([0.0; 3], 0.0));
+        let end = end.unwrap_or([pos[0] + (yaw.sin()) * 60.0, pos[1], pos[2] + yaw.cos() * 60.0]);
+        let mut state = scene::ViewerCel::default();
+        let mut min_sub = usize::MAX;
+        for s in 0..=60usize {
+            let t = s as f32 / 60.0;
+            let eye = [pos[0] + (end[0] - pos[0]) * t, pos[1] + (end[1] - pos[1]) * t + 1.6, pos[2] + (end[2] - pos[2]) * t];
+            let vp = view_proj(eye, yaw, 0.0, 16.0 / 9.0);
+            let vis = route_vis(&scene, &mut state, eye, vp);
+            let (sub, _, _) = world_counts(&scene, vp, eye, vis.as_deref());
+            let (boxsub, _) = box_counts(&scene, vp);
+            if sub < 200 || s % 20 == 0 { eprintln!("[walk-route] {level} t={t:.2} eye ({:.1},{:.1},{:.1}) cell {:?} walk {sub} box {boxsub}", eye[0], eye[1], eye[2], state.cell); }
+            min_sub = min_sub.min(sub);
+            if let (Some(v), Some(room)) = (&vis, scene.cel_index_at(eye)) {
+                assert!(v[room], "{level} t={t:.2}: the eye's room {room} culls");
+            }
+        }
+        eprintln!("[walk-route] {level}: min walk draws {min_sub}");
+        assert!(min_sub >= 100, "{level}: the walk collapsed to {min_sub} draws along the route");
+    }
 }

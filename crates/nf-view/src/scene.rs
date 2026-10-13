@@ -514,9 +514,10 @@ pub struct CelGraph {
 pub struct CelNode {
     pub min: [f32; 3],
     pub max: [f32; 3],
-    /// The runtime cel's glist flags word (`celglist+0x44` copied to `cel+0x94` by the static parser
-    /// [M MapObject.flags doc / fix-lighting2]); bit 0x40000 marks the room cels `build_FindCel`
-    /// 0x1c8cb0 collects (`*puVar1 & 0x40000`). fix-portal.
+    /// The runtime cel's flags word (`cel+0x3c`), derived per class by `parseentity_fixup_entity`
+    /// 0x1d00c0: the 0xc023/0xc047 room classes become **0x804c023/0x804c047** (bit 0x40000 = the
+    /// room bit `build_FindCel` 0x1c8cb0 collects; the placement's raw word 0xc047 does NOT carry
+    /// it), the generic classes 0x8019. fix-portal.
     pub flags: u32,
 }
 
@@ -579,6 +580,19 @@ fn scope_graph(g: &CelGraph) -> nf_game::world::ScopeGraph {
     }
 }
 
+/// The runtime cel's `+0x3c` flags word for a placement whose low 16 flag bits are `flags16`
+/// [M `parseentity_fixup_entity` 0x1d00c0: the 0xc023 → 0x804c023, 0xc047 → 0x804c047, the
+/// 0xd8..0xf3/0x8017..0x8019 generics → 0x8019, 0x803d → 0x28019; the unlisted words leave the
+/// `build_alloc_cel` 0x1c93f8 zero]. The port's reads need the room bit (0x40000) only.
+fn cel_flags_word(flags16: u16) -> u32 {
+    match flags16 {
+        0xc023 | 0xc047 => 0x804c000 | flags16 as u32,
+        0x803d => 0x28019,
+        0xf | 0x20 | 0x4e | 0xd8..=0xf3 | 0x8017..=0x8019 => 0x8019,
+        _ => 0,
+    }
+}
+
 pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
     let main = level.main_map();
     let mut cells: Vec<CelNode> = Vec::new();
@@ -594,10 +608,11 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
                 else if (p.index as usize) < map.objects.len() { Some((mi, p.index as usize)) } else { None };
             let is_main = Some(mi) == main;
             let idx = cells.len();
+            let node_flags = cel_flags_word(flags16);
             match obj {
                 Some((om, oi)) => {
                     let o = &level.maps[om].objects[oi];
-                    cells.push(CelNode { min: o.min, max: o.max, flags: o.flags });
+                    cells.push(CelNode { min: o.min, max: o.max, flags: node_flags });
                     if is_main && matches!(flags16, 0xc023 | 0xc047) {
                         let mut a0 = [param(0), param(1), param(2)];
                         if a0 == [0, 0, 0] { a0 = [0x3c; 3]; }
@@ -610,7 +625,7 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
                         room_to_cell.push(Some(idx));
                     }
                 }
-                None => { cells.push(CelNode { min: [0.0; 3], max: [0.0; 3], flags: 0 }); }
+                None => { cells.push(CelNode { min: [0.0; 3], max: [0.0; 3], flags: cel_flags_word(flags16) }); }
             }
             // The record address is `pCelList + index*0x50` [M 0x1d1998] — by-index placements only.
             if !p.by_hash() { cell_of_record.insert(p.index as usize, idx); }
