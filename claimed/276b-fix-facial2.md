@@ -33,3 +33,6 @@ Files: `crates/nf-formats/src/character.rs` (+ the gfx block parse), `crates/nf-
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/facial2`.
+
+---
+claimed-by: sandbox2 at 2026-10-13T19:59Z
