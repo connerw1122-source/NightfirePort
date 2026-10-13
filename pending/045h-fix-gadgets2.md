@@ -16,6 +16,10 @@ burn and the Q-Claw headless. The user played them (2026-10-12, checks `gadgets`
    sphere, the range, the fire input).
 4. **The micro-camera zooms through a sniper scope** (`0700000c --bond 5.61,12.49,-154.44,6.286,-0.059`): it needs
    the camera's own overlay. Find the camera's HUD/overlay in the game (the zoom HUD selection by weapon) and port it.
+   **The real overlay (main agent, PCSX2 screenshot 2026-10-12, 0c roof, zoomed):** a rounded-rectangle viewfinder
+   with black outside it; left and right a horizontal level bar ending in a curved hook, with a column of 5 short
+   tick marks above and 5 below each; a centre circle half filled (a level indicator); small green corner brackets
+   in the top-left corner; the "Micro-Camera" label bottom right. No scope reticle or cross-hair lines.
 5. **"I have the Q-worm on a level that doesn't need Q-worm"** (0700000c). Check where the port's start loadout
    for 0c comes from versus the game's (`Player_RamSave` carry versus the level's own loadout), and whether `--dev`
    adds it. The loadout must match the game's.
