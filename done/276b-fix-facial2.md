@@ -36,3 +36,8 @@ Files: `crates/nf-formats/src/character.rs` (+ the gfx block parse), `crates/nf-
 
 ---
 claimed-by: sandbox2 at 2026-10-13T19:59Z
+
+---
+## Report (done, 2026-10-13T21:20Z)
+
+Closed by the driver: the report is on `s/fix-facial2` (docs/reports/fix-facial2.md); the worker didn't run finish.sh.
