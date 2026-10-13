@@ -85,14 +85,16 @@ the pre-fix tree):
 
 ## Suite count
 
-The full four-crate run could not complete inside the sandbox window: two detached runs were
-killed between tool calls (the log ends mid-compile), and the final foreground attempt
-(560 s cap, `--no-fail-fast -j2 --test-threads=1`) reached **557 passed, 0 failed** across every
-binary that completed, then was cut inside the `disc_golden` binary — where exactly the 3
-sanctioned `disc_golden` tests failed on the slim ISO (`bigf_header_fields_behave_as_documented`,
-`bigf_tables_match_the_golden_manifest`, `directory_tree_matches_the_golden_manifest`; 11
-siblings in that binary passed) and no other failure existed. The remaining binaries were cut by
-the cap, not failing. The merge-relevant families were all run to completion individually and
-green: level_end 5/5, level_carry 8/8, walk_07000005 2/2, fix_swim_vent 2/2, fix_wire2 3/3,
-fix_swim_vent5 2/2 (22 nf-view walk/HUD tests). The target cache is warm — a resumed session's
-suite re-run starts straight at the test stage.
+**781 passed, 3 failed** — the only failures are exactly the 3 sanctioned `disc_golden` tests on
+the slim ISO (`bigf_header_fields_behave_as_documented`, `bigf_tables_match_the_golden_manifest`,
+`directory_tree_matches_the_golden_manifest`); no other failure anywhere.
+
+The run could not go through one `cargo test` invocation (two detached runs were killed between
+tool calls), so it was executed as foreground chunks that share the same command line and
+`--test-threads=1`, covering every target: nf-game + nf-formats + nf-audio 325/3 (chunk A), nf-view's
+83 non-walk binaries 328/0 (B1), the 19 early walks + level/levels_sweep binaries 66/0 (B2a), the 45
+later walks + walkreal binaries 62/0 (B2b) — 147 of 147 nf-view test binaries ran. The four
+previously-failing families all green inside these chunks: `level_end_live` 5/5, `level_carry_live`
+8/8, `walk_07000005_live` 2/2 (incl. `cold_start_reaches_the_castle_door_and_exits_to_the_castle`),
+plus the sisters `fix_swim_vent_live` 2/2, `fix_wire2_live` 3/3 and the new `fix_swim_vent5_live`
+2/2. (Baseline before this branch: 764 passed, 4 failed — the four "E at the gate door" reds.)

@@ -8242,3 +8242,6 @@ Stage Summary:
 - All four "E at the gate door loads 07000006" reds green; the vent crawl and the wire grab keep
   their contexts. The 12.0 sphere radius is a measured stand-in pending the celglist-sphere parse
   or one live reading (the report lists the exact checks).
+- Suite delta (20:45 UTC): the sandbox kills detached runs, so the four-crate suite ran as
+  foreground chunks over every target — **781 passed, 3 failed** (only the 3 sanctioned
+  disc_golden trio; 147/147 nf-view binaries). Report updated with the chunk breakdown.
