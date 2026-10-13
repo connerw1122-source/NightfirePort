@@ -7123,3 +7123,18 @@ Work log:
   give the per-frame -90000+10k chain in gpu.rs (order only; the cull untouched). Failing-first on
   master: chain 68 vs MAX. Suite: 617 passed, 3 failed (the allowed disc_golden trio), 13 ignored.
   Report: docs/reports/fix-cel-order.md.
+
+## fix-room-scope (2026-10-13)
+
+Task: switch the room-scoped collision on for the actor capsule. fix-safe08b built the machinery
+(ScopeGraph, the straddle BFS, the scoped queries) but left the capsule flat for one gap: the port's
+smallest-volume containment maps the shared Room_Stairwell_T_2 mesh (07000008 instance 32) to cell
+59, so Bond falls through the GuardRoom floor at the fusebox (153.15, 43.38, -119.67, cell 40). The
+game links with `build_FindCel` 0x1c8cb0's tie-break: every containing cel's bbox is a candidate;
+when several, two vertical rays from the centre (up 256, then down clamped to the up-hit) through
+each candidate's own geometry decide - nearest hit wins, no hits = first candidate. Port that into
+the scope build, scope `capsule_push` + the floor ray, run every walk test, then the draw side
+(un-gate `portal_visible_cels` or the Vision_Portal_Recurse 0x1e86e8 cel set).
+
+Work log:
+- Setup: branch `s/fix-room-scope` from origin/master (4c91a95), this entry started.
