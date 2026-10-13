@@ -7695,3 +7695,11 @@ bonus 1, spawned ≥ 13, the zero-sister on reload; the save carries the run's f
 the detected counter's live hook, `Player_InitWeapon`'s per-difficulty autoaim distances, the
 NewScoresRef PTP hand-off, the results screens (180-fix-menus). docs/systems/progress.md is the
 port map; GAPS G-045 added. Report: docs/reports/fix-progress.md.
+
+## fix-weapon-modes (s/fix-weapon-modes) — 2026-10-13
+Task: weapon fire modes — the Circle mode-switch (`Player_Weapon` 0x1a24c8: `Input_Action(slot, 0xc, 4)`,
+the mode byte at `BL + w*0xC + 0x1BB`, the twin-variant switch via weapon_data +0x05), each mode's behaviour
+(the launcher's heat-seeker homing `Bullet_update` 0x12e7b0:483 → `Bullet_homing` 0x12f358 on weapon_data
++0x6C & 0x20000), and the HUD fire-mode label (+0x30 + mode*4). Plus each weapon's first-person fire sound id
+(op-1 per-weapon remap) and gadget switching/use (briefcase, Q-Worm, camera). Started 16:45 UTC, sandbox
+expires ~18:32 UTC.
