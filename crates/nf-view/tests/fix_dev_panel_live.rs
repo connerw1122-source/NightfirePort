@@ -116,6 +116,10 @@ fn dump_panel_ground_truth() {
         eprintln!("behaviour {id:#04x}: explosion_radius {:?} dmg_mul {:?} fp_model {:#010x} flags68 {:#010x}",
             f32_at(0x08), f32_at(0x0c), u32_at(0xdc), u32_at(0x68));
     }
+    // The page JSON.parses the catalog — drop it somewhere a JSON parser can check well-formedness
+    // (a stray raw control byte from the bank would silently blank the panel).
+    let _ = std::fs::write("/tmp/nf_panel_catalog.json", panel::catalog(&scene));
+    eprintln!("[dump] catalog JSON written to /tmp/nf_panel_catalog.json");
 }
 
 /// Every catalog entry carries the weapon_data record's own meshes: the held view-entity model
@@ -194,31 +198,43 @@ fn panel_names_are_the_games_own() {
     }
 }
 
-/// The Give path spawns exactly the clicked record: Bond owns that id, its clip slot holds the
-/// record's clip size (the clip slot is the base's when +0x05 shares it — `Player_EquipWeapon`
-/// 0x1a8a58:44 [M]) and the draw request is that id. Run on a cleared inventory so every give is
-/// the fresh-own path.
+/// The Give path spawns exactly the clicked record — for EVERY entry the panel lists: Bond owns that
+/// id, its clip slot holds the record's clip size (the clip slot is the base's when +0x05 shares it
+/// — `Player_EquipWeapon` 0x1a8a58:44 [M]) and the draw request is that id. Run on a cleared
+/// inventory so every give is the fresh-own path.
 #[test]
 fn panel_give_spawns_exactly_the_record() {
     let Some(mut scene) = loaded() else { eprintln!("NF_ISO not set — skipping"); return };
-    let ids: Vec<u8> = [2u8, 0x06, 0x0e, 0x16, 0x1c, 0x24, 0x34, 0x35, 0x36, 0x37, 0x3a, 0x45, 0x4a, 0x4e, 0x50, 0x54]
-        .iter().copied().collect();
+    let ids: Vec<u8> = scan_entries(&panel::catalog(&scene)).iter()
+        .filter_map(|e| e.get("id").and_then(|v| v.parse::<u8>().ok())).collect();
+    assert!(ids.len() >= 60, "the catalog lists {} entries — the give test should cover them all", ids.len());
     for id in ids {
+        let fp;
         {
             let sim = scene.sim.as_mut().unwrap();
             let n = sim.drones.inventory.clip.len();
             let a = sim.drones.inventory.carried.len();
             sim.drones.inventory = nf_game::pickup::Inventory::empty(n, a);
             sim.gun.weapon = 0x47; // hands — the give must pull Bond onto the new record
+            fp = sim.weapons.first_person(id as usize);
         }
         let q = [("do".to_string(), "weapon".to_string()), ("id".to_string(), format!("{id}"))];
         let (status, switch) = panel::apply(&mut scene, &q);
-        assert_eq!(switch, Some(id), "giving {id:#04x} must switch Bond onto it ({status})");
         let sim = scene.sim.as_ref().unwrap();
         let wd = &sim.weapons;
-        assert!(sim.drones.inventory.owned.get(id as usize).copied().unwrap_or(false), "giving {id:#04x}: not owned ({status})");
-        // The record's own clip slot (base's when shared) is filled to the record's clip size.
+        if fp == 0 {
+            // `Player_EquipWeapon` 0x1a8a58:20 refuses a weapon whose first-person model is 0 — the
+            // panel must report the refusal and NOT switch Bond onto an unholdable record.
+            assert_eq!(switch, None, "giving {id:#04x}: a model-less record must be refused ({status})");
+            assert!(!sim.drones.inventory.owned.get(id as usize).copied().unwrap_or(false), "giving {id:#04x}: refused but owned ({status})");
+            continue;
+        }
+        assert_eq!(switch, Some(id), "giving {id:#04x} must switch Bond onto it ({status})");
+        // Ownership lands on the record's BASE (`Player_EquipWeapon` 0x1a8a58 — a variant share the
+        // base's owned flag and clip slot; 0x03 gives owned[2] + clip[2] = 7 [M]).
         let base = wd.base(id as usize) as usize;
+        assert!(sim.drones.inventory.owned.get(base).copied().unwrap_or(false), "giving {id:#04x}: base {base:#04x} not owned ({status})");
+        // The record's own clip slot (base's when shared) is filled to the record's clip size.
         let slot = if wd.shares_base_clip(id as usize) && wd.ammo_type(id as usize) == wd.ammo_type(base) { base } else { id as usize };
         let clip = sim.drones.inventory.clip.get(slot).copied().unwrap_or(-1);
         assert_eq!(clip, wd.clip_size(id as usize), "giving {id:#04x}: clip slot {slot} holds {clip}, the record's size is {} ({status})", wd.clip_size(id as usize));
