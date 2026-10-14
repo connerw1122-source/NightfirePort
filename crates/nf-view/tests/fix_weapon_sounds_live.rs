@@ -61,6 +61,10 @@ fn owning(banks: &HashMap<usize, (Bank, Vec<u8>)>, own: usize, id: u32) -> (usiz
 }
 
 fn load(archive: &str) -> Option<nf_view::scene::Scene> {
+    // Never through the speakers: `build_sound` opens the real output device unless NF_SILENT is
+    // set, and these tests fire weapons back to back (a plain `cargo test` once blasted the user).
+    // SAFETY: set before any audio thread starts; every test in this binary sets the same value.
+    unsafe { std::env::set_var("NF_SILENT", "1"); }
     let iso = std::env::var("NF_ISO").ok()?;
     Some(nf_view::load_dev(&iso, archive, false).expect("level loads (dev: foreign weapon scripts merge)"))
 }
