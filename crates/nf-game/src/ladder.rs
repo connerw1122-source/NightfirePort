@@ -59,15 +59,27 @@ impl Ladder {
     /// `BLData+0x8A4` = `centre.y − radius + 1.0` — the bottom dismount threshold [M same functions].
     pub fn bottom(&self) -> f32 { self.centre[1] - self.radius + 1.0 }
 
-    /// The grab hit: the game's pick shape. `Collide_PickObj` 0x1eae80:152-168 [M] tests the player's
+    /// The grab hit, two stages:
+    ///
+    /// Stage 1 — the game's pick sphere. `Collide_PickObj` 0x1eae80:152-168 [M] tests the player's
     /// HITTEST capsule segment against the object's world sphere inflated ×1.5 plus the capsule
-    /// radius (mode word +0x7D4 = 0x800, the sphere test), refined against the ladder's glist mesh by
-    /// `Collide_Intersect` 0x1ebaa8 (not ported — the mesh refine needs the glist triangles). The
+    /// radius (mode word BLData+0x7D4 = 0x800, `Player_Collision` 0x194df0's default/climb arms). The
     /// player capsule segment is `Player_Collision` 0x194df0:313-337's default arm [M]: A = pos + up·0.55,
     /// B = pos + up·(0.55 − AnimObj+0xCC), root height 1.0347. This is what lets a DEEP swimmer
     /// (the pond bed at the hut ladder sits low) trigger the grab — `Player_CollLadder` 0x196118:23-31
-    /// then lifts pos.y to `bottom + 0.02`, the climb-out assist. (The old [S] axis-column band with
-    /// its ±0.5 y slack rejected deep swimmers the game picks up.)
+    /// then lifts pos.y to `bottom + 0.02`, the climb-out assist.
+    ///
+    /// Stage 2 — the climb-plane bound. The game's pick reach is narrowed past the sphere by the
+    /// straddled-cel scoping (`Collide_Pick` 0x1eb320:125-134/318-328 tests only objects linked to the
+    /// cels the player straddles) and the glist mesh refine (`Collide_Intersect` 0x1ebaa8, not ported):
+    /// a tall ladder's bounds sphere is its half-HEIGHT (r 5.75 on the 0700000c yard ladder, y span
+    /// 0.8..12.1 [D probes]), so the bare ×1.5 sphere reaches ~9 units sideways — the dismount lunge at
+    /// the ladder top leaves Bond ~2.9 from the axis at regrab expiry and the bare stage 1 re-grabs him
+    /// into a climb/walk limit cycle (the 102h-fix-swim regression). The port's flat ladder list has no
+    /// cel scoping, so the mesh/cel filter is modelled with the axis-column bound this file carried
+    /// before 102h ([S], kept for stage 2): the ladder's climbable body is its thin vertical axis
+    /// column, horizontal reach `min(radius, 1.0) + capsule_radius`. Deep ON the axis the stage-1
+    /// sphere still rules (the pond grab); far OFF the axis the column bound rules (the land exit).
     pub fn capsule_hits(&self, pos: V3, capsule_radius: f32) -> bool {
         let a = [pos[0], pos[1] + 0.55, pos[2]];
         let b = [pos[0], pos[1] + 0.55 - 1.0347, pos[2]];
@@ -79,7 +91,11 @@ impl Ladder {
         let cx = a[0] + ab[0] * t - self.centre[0];
         let cy = a[1] + ab[1] * t - self.centre[1];
         let cz = a[2] + ab[2] * t - self.centre[2];
-        (cx * cx + cy * cy + cz * cz).sqrt() <= self.radius * 1.5 + capsule_radius
+        if (cx * cx + cy * cy + cz * cz).sqrt() > self.radius * 1.5 + capsule_radius { return false; }
+        let dx = pos[0] - self.centre[0];
+        let dz = pos[2] - self.centre[2];
+        let horiz = (dx * dx + dz * dz).sqrt();
+        horiz <= self.radius.clamp(0.0, 1.0).max(0.35) + capsule_radius
     }
 }
 
@@ -128,11 +144,15 @@ mod tests {
     #[test]
     fn grab_zone_is_the_game_pick_shape() {
         let l = ladder(0.0);
-        // On the axis at mid height: hit (dist 0.4 ≤ 2.0·1.5 + 0.55).
+        // On the axis at mid height: hit (stage 1 dist 0.4 ≤ 1.5·1.5 + 0.55; stage 2 horiz 0.4 ≤ 1.55).
         assert!(l.capsule_hits([10.0, 3.0, 20.4], 0.55));
-        // 2 units to the side: the game's inflated-sphere pick still reaches (2.0 ≤ 3.55) [M 0x1eae80:152-168].
-        assert!(l.capsule_hits([12.0, 3.0, 20.0], 0.55));
-        // 4 units to the side: beyond the inflated sphere + capsule: no hit.
+        // 2 units to the side: the bare stage-1 sphere reaches (2.0 ≤ 2.8) [M 0x1eae80:152-168], but the
+        // game narrows the reach past the sphere (the straddled-cel scoping Collide_Pick 0x1eb320:125-134
+        // + the glist mesh refine Collide_Intersect 0x1ebaa8 — both unported); the port's stage-2
+        // axis-column bound stands in: horiz 2.0 > 1.55 → no hit. (The bare stage 1 here is what
+        // re-grabbed Bond off the 0700000c ladder top — the 102h regression.)
+        assert!(!l.capsule_hits([12.0, 3.0, 20.0], 0.55));
+        // 4 units to the side: beyond both stages: no hit.
         assert!(!l.capsule_hits([14.0, 3.0, 20.0], 0.55));
         // DEEP below the sphere bottom (the pond-bed swimmer): the capsule segment (down to pos − 0.48)
         // against the ×1.5 sphere reaches — the grab y-snap then lifts him to bottom + 0.02 [M 0x196118:23-31].
@@ -140,5 +160,13 @@ mod tests {
         // Sister: a shallow radius ladder stops reaching deep (the pick tracks the sphere).
         let thin = Ladder { radius: 0.6, ..ladder(0.0) };
         assert!(!thin.capsule_hits([10.0, 0.9, 20.0], 0.55), "the inflated pick reached a thin ladder's bed depth");
+        // Sister (the swim2 regression, the 0700000c yard ladder's real geometry — y span 0.8..12.1
+        // [D probes] → cy 5.55, r 5.75): the top-exit dismount leaves Bond ~2.9 from the axis at
+        // walkway height when regrab expires. The bare stage-1 sphere HITS him there (dist 6.4 ≤ 9.18)
+        // and yanked him back into the climb; the stage-2 column bound rejects.
+        let yard = Ladder { centre: [9.7, 5.55, -187.3], radius: 5.75, yaw: 0.0, channel: 0 };
+        assert!(yard.capsule_hits([9.949, 11.736, -186.928], 0.55), "the ladder-top grab itself must still reach");
+        assert!(!yard.capsule_hits([9.285, 11.736, -190.167], 0.55),
+            "the dismounted walker 2.9 from the axis re-grabbed (the 102h limit cycle)");
     }
 }
