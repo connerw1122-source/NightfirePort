@@ -11641,3 +11641,30 @@ Task: the no-exit-trigger levels must chain like the game does — 06→07, 11�
   with mission 07000009 chaining 09→0a→0b headless (3/3, 3/3, 5/5 objectives, real exits). Report:
   docs/reports/fix-level-chain.md (live checks: 11's ch 0x1f/0x1e writer, 06's 0x83, 4a's 0x84).
 - drone.rs/scene.rs/player.rs untouched; lib.rs carries the one resolve call.
+
+## fix-06-alarm — s/fix-06-alarm (task 104c, started 16:03 UTC 2026-10-14)
+- Task: level 06 searchlights alert the guards (045l's ch-55 work, merged) but the ALARM never
+  sounds — no siren, no 'combat/alarm' music event, no flashing lights, no extra guards. Hunting the
+  game's alarm path from the searchlight spot: Searchlight_* (0x1cb900), the alarm channel,
+  Alarm_*/siren emitter, music event 2. Report will be docs/reports/fix-06-alarm.md. Work starts.
+
+## fix-06-alarm — s/fix-06-alarm (task 104c, 16:02-17:xx UTC 2026-10-14)
+- The 06 searchlight alarm's SOUND half was missing: the guards' half worked (045l's ch-55 write +
+  second switch) but the game's SoundTrigger objects (`SoundTrigger_Create` 0x1b2628 /
+  `SoundTrigger_Update` 0x1b2790, placement 0xF9 `oSoundTrigger`) had never been ported — the
+  courtyard's klaxon (placement 702: ON ch 55, sound 329 = 0x149 LOOPED 2-D, OFF ch 177, one-shot
+  [D 07000006 placement 702; D SfxTable 0x149]) never existed in the port. The placement's params
+  read sequentially (param k at record +0x2c+4k — pinned by the searchlights' own placements [D
+  placements 2/4/6]); the keep-when-ON-clears byte is +0x48's low byte = the param count; the
+  +0x44 word is the difficulty gate [M 0x1b2628:24-40]. Update ported op-for-op: the single
+  GlobalVoiceHandle slot, the self-kill when a global voice is busy, the one-shot deaths, the
+  +0xfe-bit-0 kills → control_delete_object [M 0x1336f8:72-89]. The other three 06 triggers (ch 47
+  → 219, ch 57 → 241, ch 103 → 331) ride the same type.
+- The alarm MUSIC half was already ported (the CheckAlarmRaised block's Music_Event(2,1) stream →
+  music.rs's CastleB hysteresis) — the new live test now verifies that chain on the real command
+  board (the combat Jump within ~12 ticks of ch 55).
+- Tests: crates/nf-view/tests/fix_06_alarm_live.rs 2/2 (fail-first: the siren probe failed on
+  pre-fix master; the sister run stays silent). Neighbours: nf-game lib 150/150, fix_drone3_live
+  5/5, fix_searchlight_alarm_live 2/2, spawner_kill_live 5+1 pre-existing ignore, fix_npcs_live
+  4/4. Shared files additive only (sound.rs new type; drone.rs field-on-own-line + two hooks).
+  Report: docs/reports/fix-06-alarm.md.
