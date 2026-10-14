@@ -12,7 +12,10 @@ const SH: f32 = 448.0;
 
 /// HUD textures the overlay uses (indices + 1 in `HudFrame` runs). `fix-hud` added the crouch icons
 /// (0x03000173/74), the air bar (0x0300017F) and its bubble icon (0x0300017D) [M AirSprInfo/HealthSprInfo].
-pub const TEXTURES: [u32; 17] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d, 0x0300_0055, 0x0300_0056, 0x0300_0057, 0x0300_0090, 0x0300_0141];
+/// fix-context-hints added the third-icon context textures [M 0x2FC168 = 0x03000064+ctx; only 0x66
+/// (winch, ctx 2), 0x67 (hanging man, ctx 3) and 0x6A (figure, ctx 6) exist on the disc [D tex-list] —
+/// the table's other four ids never resolve in `hashtable_set_sprite` and the icon stays hidden].
+pub const TEXTURES: [u32; 20] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d, 0x0300_0055, 0x0300_0056, 0x0300_0057, 0x0300_0090, 0x0300_0141, 0x0300_0066, 0x0300_0067, 0x0300_006a];
 const CROSS_TEX: u32 = 0x0300_0026;
 const FONT_TEX: u32 = 0x0300_0003;
 /// SightPane textures [D 07000005.bin entries 71 + 56]: 0x03000034 = the scope overlay (256×256, the circular
@@ -350,6 +353,44 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
             bar(&mut h, s.hud.bar_close);
         }
     }
+    // The info / hint bar (pane 4, `MsgInfoStatusPane` 0x319810 + `InfoStatusSprInfo` 0x319730
+    // [L ee_start_05.bin] — fix-context-hints): the TOP bar the Hint markers (placement 0x33) and
+    // `ThirdIcon_Update`'s type-6 "Press Action" fill through TXTMSG type 1. The same
+    // `HUD_UpdateStatusPane` 0x19c310 machine as the pickup bar: the middle is a 1-texel column
+    // of 0x0300007A (u 190, v 0..56) stretched to 480×26 at (16, 0) — the screen's top edge —
+    // the caps 5-texel columns (u 185 / 191) riding its ends [M 0x19c310:342-347]; all colour
+    // 0x7F7F7F alpha 0x8D, layer 30. The text is the centre-justify style 0x30cdb0 sprite
+    // (template (128, 16) + the pane x 128 = 256 [L], so centred) in font 2, colour 0x7D6D59,
+    // black shadow, layer 29, wrapping at TextMsgFormats[1]'s maxWidth 480 [L 0x2BF110+4],
+    // fading over the last 15 ticks (alpha = time·17); the bar closes 16 px per tick around its
+    // centre (the CREATE's slide 0x10 [L 0x319810+0x14]).
+    {
+        let (bw, bh, bx, by) = (480.0f32, 26.0f32, 16.0f32, 0.0f32);
+        let bar = |h: &mut Hud, w: f32| {
+            let x = bx + (bw - w) / 2.0;
+            let c = gs(0x7f7f7f, 0x8d);
+            h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x, by, w, bh, [190.0, 0.0, 1.0, 56.0], (false, false), c);
+            h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x - 5.0, by, 5.0, bh, [185.0, 0.0, 5.0, 56.0], (false, false), c);
+            h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x + w, by, 5.0, bh, [191.0, 0.0, 5.0, 56.0], (false, false), c);
+        };
+        if s.drones.hud_frozen {
+            // The pane cannot open while the viewer's +0x2a HUD gate is off [M 0x1b11d8:16-18].
+        } else if let Some(msg) = s.hud.info_msgs.front() {
+            let a = (msg.time * 17.0).min(255.0) as u32;
+            bar(&mut h, bw);
+            let wrapped = t.font.word_wrap(&msg.text, 480.0);
+            let lines: Vec<&str> = wrapped.split('\n').collect();
+            let mut maxw = 0.0f32;
+            for l in &lines { maxw = maxw.max(t.font.layout(l, 0.0, 0.0).1); }
+            let x0 = SW / 2.0 - maxw / 2.0;
+            let lh = t.font.line_height();
+            for (k, l) in lines.iter().enumerate() {
+                h.text(Anchor::Centre, &t.font, 29, l, x0, 16.0 + k as f32 * lh, false, gs(0x7d6d59, a), true);
+            }
+        } else if s.hud.info_close > 0.0 {
+            bar(&mut h, s.hud.info_close);
+        }
+    }
     // The objective banner (pane 3, `MsgObjectiveStatusPane` 0x319710 + `ObjectiveStatusSprInfo`
     // 0x319608 [L ee_start_05.bin], `HUD_UpdateStatusPane` 0x19c310): the middle is a 1-texel column
     // of the HUD sheet 0x0300007A (u 190, v 0..56) stretched to 480×56 — template (16, 0) + the pane
@@ -493,6 +534,34 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
                 else { (0x0300_0174u32, (timer as u32 * 255 / 30).max(1)) };
             let (tw, th) = h.tex_dims(tex);
             h.quad(Anchor::Left, 29, tex, 0, 48.0 - tw / 2.0, 48.0 - th / 2.0, tw, th, [0.0, 0.0, tw, th], (false, false), gs(0x7f7f7f, a));
+        }
+    }
+    // The context icon (health pane sprite 18, `HUD_UpdateHealthPane` 0x19b9c8:273-303 —
+    // fix-context-hints). While `BLData+0x95F != 0xFF` the sprite's texture is the 0x2FC168
+    // table's entry for the context id (0x03000064+ctx — `hashtable_set_sprite` fills w/h and
+    // uv with the texture's own size [M 0x1ca3d8:36-46]), the runtime position is (400, 48)
+    // [M disasm 0x19c124-0x19c14c — the same runtime x/y override the crouch icon uses], layer
+    // 29, colour 0x7f7f7fff, and `ThirdIconTimer` = FRAME_RATE·0.5 = 30; on 0xFF the icon fades
+    // out over that timer (alpha = timer·255/30, colour 0x7f7f7f00|alpha [M 0x19c160-0x19c1d4]).
+    // Only ctx 2/3/6 resolve to a disc texture (0x66 winch / 0x67 hanging man / 0x6A figure
+    // [D tex-list]); the others leave the sprite hidden exactly like the game's failed lookup.
+    {
+        let timer = s.hud.context_icon_timer;
+        // The shown texture: the current context id, or — through the fade — the last one the
+        // icon showed (the game's runtime sprite keeps its texture from the last successful
+        // `hashtable_set_sprite`).
+        let ctx = if s.bond.icon_ctx != 0xff { s.bond.icon_ctx } else { s.hud.last_icon_ctx };
+        let (tex, a) = if s.bond.icon_ctx != 0xff {
+            (0x0300_0064u32 + ctx as u32, 0xFFu32)
+        } else if timer > 0 {
+            // alpha = timer·255/30 [M 0x19c190-0x19c1cc: (timer·0x100 − timer)/(FRAME_RATE·0.5)].
+            (0x0300_0064u32 + ctx as u32, (timer as u32 * 255 / 30) as u32)
+        } else { (0u32, 0) };
+        if tex != 0 && a > 0 {
+            let (tw, th) = h.tex_dims(tex);
+            if tw > 0.0 {
+                h.quad(Anchor::Left, 29, tex, 0, 400.0, 48.0, tw, th, [0.0, 0.0, tw, th], (false, false), gs(0x7f7f7f, a));
+            }
         }
     }
     // Scope overlay (the SightPane, `HUD_UpdateCrossHair` 0x19e6d0 pane[6]): 3 sprites at layer 39 [D].
