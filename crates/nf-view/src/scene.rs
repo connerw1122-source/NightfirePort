@@ -2661,6 +2661,52 @@ impl Sim {
                 }
             }
             if release {
+                'shot: {
+                // `Player_WeaponInitBullet` 0x1a4bf0's FIRST branch [M disasm 0x1a4c30-0x1a4cd4]: a record
+                // whose +0x68 carries 0x20000 — the Remote Mine's detonator 0x38 (+0x68 = 0x00020010
+                // [L ee_start_05.bin]; the mine 0x37 = 0x00014090 lacks the bit; 0x39 is the inert
+                // sibling) — never shoots: it walks the objects, marks every player-owned bullet of
+                // this base with the 10-tick detonate fuse (BD+0xFC = 10.0, `swc1 f0,252(a1)`;
+                // `Bullet_DoTrails` 0x12d890:268-281 counts it down and blasts at < 0 with
+                // `Explode_Create(record+0x08, record+0x08, record+0x0C, …)` — radius 8 / damage 100
+                // [L record 0x37]), then `Player_WeaponHasAmmo(base)` arms the switch back to the
+                // mine (BL+0x63 = base, `sb v0,99(v1)` [M 0x1a4cb8]) — or, dry, clears the base's
+                // owned byte (+0x1BA lane [M bldata.md], `sb zero,442(v0)` [M 0x1a4cd0]) and lets
+                // `Player_GetBestWeapon` 0x1a9680 write the request [M 0x1a4ccc]. No bullet, no
+                // muzzle latch (+0x95b never sets in this arm), no casing.
+                if flags & 0x20000 != 0 {
+                    let base = self.weapons.base(self.gun.weapon as usize);
+                    for g in self.drones.grenades.iter_mut() {
+                        // The game's walk matches type-5 objects whose weapon record's +0x02 equals
+                        // the fired record's +0x02 and whose BD+0x30 is the firing player [M
+                        // 0x1a4c5c-0x1a4c88]; the port's grenade list is exactly those bullets, the
+                        // owner usize::MAX is the player. In-flight or resting — the walk has no
+                        // stuck filter.
+                        if g.state < 2 && self.weapons.base(g.weapon_type as usize) == base && g.owner == usize::MAX {
+                            g.range = g.travelled + 10.0; // the absolute BU+0xFC = 10.0 at the mark tick
+                        }
+                    }
+                    let base_u8 = base as u8;
+                    let carried = self.drones.inventory.carried.clone();
+                    let clip = self.drones.inventory.clip.clone();
+                    let weapons = &self.weapons;
+                    let has = nf_game::gun::Gun::has_ammo(base_u8, &carried, &clip, |t| weapons.ammo_type(t as usize), |t| weapons.flags(t as usize));
+                    if has {
+                        self.gun.switch_request = base_u8; // BL+0x63 = the mine [M 0x1a4cb8]
+                    } else {
+                        // Dry: the mine's clip and owned byte go, and GetBestWeapon takes the hand [M 0x1a4cbc-0x1a4cd4].
+                        if let Some(c) = self.drones.inventory.clip.get_mut(base_u8 as usize) { *c = 0; }
+                        if let Some(o) = self.drones.inventory.owned.get_mut(base_u8 as usize) { *o = false; }
+                        const BEST_WEAPON: [u16; 18] = [0x42, 0x32, 0x1a, 0x18, 0x1c, 0x16, 0x15, 0x08, 0x10, 0x0e, 0x0d, 0x0c, 0x12, 0x06, 0x04, 0x02, 0x0a, 0x01];
+                        let owned = self.drones.inventory.owned.clone();
+                        let base_of = |b: u8| weapons.base(b as usize) as u8;
+                        let has_ammo_fn = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
+                        if let Some(id) = self.gun.get_best_weapon(&BEST_WEAPON, base_of, &owned, has_ammo_fn) {
+                            self.gun.switch_request = id; // Player_GetBestWeapon writes BL+0x63 [M 0x1a9680 tail]
+                        }
+                    }
+                    break 'shot;
+                }
                 // fix-gadgets-live: the laser/stunner's shot-tick state, computed HERE where the
                 // refire that spent the round is known (the game's order: Player_RoundToFire 0x1a18e0
                 // spends, then Player_WeaponInitBullet 0x1a4bf0 runs on the same tick; its +0x95b
@@ -2739,7 +2785,11 @@ impl Sim {
                     let fuse = if flags70 & 0x200 == 0 {
                         (f32_at(0x1c) / speed).max(1.0)
                     } else if flags70 & 0x10000 != 0 { 300.0 } else { 210.0 };
-                    let fuse = if wt == 0x37 { 420.0 } else { fuse };
+                    // The mine 0x37 thrown by the PLAYER: BU+0xFC = 7777.0 — it waits for the
+                    // detonator and never self-detonates [M Bullet_init 0x12c5a0:196-223 — the
+                    // owner obj+0xff == 3 arm; guard-thrown mines keep 420]. The detonator's fire
+                    // re-arms the placed mines to 10.0 [M Player_WeaponInitBullet 0x1a4bf0].
+                    let fuse = if wt == 0x37 { 7777.0 } else { fuse };
                     // The blast damage: `weapon_data+0x0C` [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` →
                     // Explode_Create's f14 → EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15);
                     // radius = $f12/$f13 = weapon_data+0x08]. The `addiu $t2, $zero, 0x64` (100) is the
@@ -2820,6 +2870,7 @@ impl Sim {
                             }
                         }
                     }
+                }
                 }
             }
         }

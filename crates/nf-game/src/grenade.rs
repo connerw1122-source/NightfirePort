@@ -145,10 +145,17 @@ impl Grenade {
             if self.travelled >= HAT_STICK_LIFE { self.state = 2; }
             return None;
         }
+        // `Bullet_DoTrails` 0x12d890:268-273 [M]: weapon 0x37's fuse does NOT tick while it is the
+        // player-armed 7777.0 — the mine waits for the detonator (`Player_WeaponInitBullet`'s
+        // +0x68 & 0x20000 arm re-arms it to 10.0 [M 0x1a4bf0 disasm 0x1a4c88]); guard-thrown mines
+        // keep the 420 fuse [M 0x12c5a0:196-223]. Only the fuse count freezes — the movement below
+        // continues, exactly as the game's DoTrails skip sits beside the flight update.
+        let armed_mine = self.weapon_type == 0x37 && self.range >= 7777.0;
         // A rested grenade skips everything but the fuse — the game's zero-speed bullet never moves
         // (the re-normalise pins the move at zero, disasm 0x12f020-0x12f030) so it never collides and
         // never sounds again [M 0x12ce80 tail + 0x12f040].
         if self.resting {
+            if armed_mine { return None; }
             self.travelled += 1.0;
             if self.travelled > self.range {
                 self.state = 2;
@@ -162,14 +169,16 @@ impl Grenade {
         // detonator, so it keeps the guard-thrown 420). Count ticks, not distance —
         // `weapon_data+0x1C` (5000) is the max-travelled range, a SILENT state-4 death, not the fuse
         // [M Bullet_update case 1: travelled > +0x1C → state 4, no explosion].
-        self.travelled += 1.0;
-        if self.travelled > self.range {
-            self.state = 2;
-            // fix-weapon-fire-modes [M Bullet_update 0x12e7b0:158-162]: for a no-fuse record this
-            // expiry is the RANGE-OUT arm — a SILENT state-4 death. The Sim's Explode arm gates on
-            // `+0x70 & 0x200` (the `Bullet_DoTrails` fuse gate 0x12d890:262-281) and removes the
-            // grenade quietly; a fuse grenade (0x2B, 0x34…) explodes here as before.
-            return Some(GrenadeEvent::Explode { pos: self.pos, radius: self.radius, damage: self.damage, owner: self.owner, weapon_type: self.weapon_type });
+        if !armed_mine {
+            self.travelled += 1.0;
+            if self.travelled > self.range {
+                self.state = 2;
+                // fix-weapon-fire-modes [M Bullet_update 0x12e7b0:158-162]: for a no-fuse record this
+                // expiry is the RANGE-OUT arm — a SILENT state-4 death. The Sim's Explode arm gates on
+                // `+0x70 & 0x200` (the `Bullet_DoTrails` fuse gate 0x12d890:262-281) and removes the
+                // grenade quietly; a fuse grenade (0x2B, 0x34…) explodes here as before.
+                return Some(GrenadeEvent::Explode { pos: self.pos, radius: self.radius, damage: self.damage, owner: self.owner, weapon_type: self.weapon_type });
+            }
         }
         // First tick: half-speed (the game's `Rand_FRand(0.5) + 0.5` step [M 0x12e7c0]).
         let step = if self.state == 0 { rng.frand(0.5) + 0.5 } else { 1.0 };

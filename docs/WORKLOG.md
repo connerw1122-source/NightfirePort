@@ -11404,3 +11404,32 @@ Work Log:
 - (10:46 UTC) Branch s/fix-0c-vent2 created from origin/master b65d6f7 and pushed. Setup: ISO re-downloaded (the /tmp symlink target was a 39-byte stub; fresh download verified 369823203 B, extracted 1061754880 B; repo-root hardlink not allowed across devices, copied; `ln -s` blocked in this sandbox).
 - Reading fix-0c-hatch.md's traversal map + decompile next.
 - Route mapped (probes kept in crates/nf-view/tests/probe_vent.rs): the balcony 14.61-14.81 spans x −2..14, z −112.5..−121.5, no holes/ceilings; the lower walkway 11.27 under its north half; ground 6.27 with a south-east ramp; NO wall at x 3.0..4.4 on the vent wall plane. ROOT CAUSE FOUND + FIXED: the winch SSs (#351/#364/#377 — the doc's "way down") listen on ch 0 and the port's Channels::set/on + SsList::tick skipped ch 0 entirely, so a ch-0 SS could never run [M SS_Update 0x1a9948:20-23 indexes switch_channels[ch] for any ch]. Fail-first tests green post-fix (fix_0c_vent2_live: ch-0 roundtrip, winch sweep, hole-drop regression); neighbours + nf-game lib 143 green. Left: the SS_Operate self-latch (the game's ch-0 driver), the ascent jump, the crouched wedge at the south wall, the full suite (ISO re-download ate the window). Report: docs/reports/fix-0c-vent2.md.
+
+## fix-handcannon — s/fix-handcannon (task 105b, started 18:58 UTC)
+- Task: weapon 0x38 fires on 22 of 27 levels with sounds recorded but no shot tick and no observable event (no bullet, no blast, no muzzle flash). Find what 0x38 is (label through the language bank, +0x6C/+0x70 flags, ammo, Player_WeaponFiring 0x1a5460's path for its fire type) and what the game does when it fires; port the missing part. Repro test through the real input path first. Files: crates/nf-game/src/{gun,drone}.rs or scene.rs's fire path.
+- Status: branch cut from origin/master b9ed8b8 (pulled), WORKLOG started. Next: decompile research (what 0x38 is, its fire type's path in Player_WeaponFiring), reproduce, fix.
+
+## fix-handcannon — s/fix-handcannon (task 105b, finished 19:40 UTC)
+- Task: weapon 0x38 (the F family, 22/27 levels) fires with sounds but no shot tick and no observable
+  event. Find what it is and port the missing part. Files: gun.rs / grenade.rs + scene.rs's fire path.
+- What 0x38 is [L ee_start_05.bin + USATxt.dat]: the Remote Mine family — 0x37 the thrower ("Grenade"),
+  0x38 the DETONATOR (label 0x0500004d "Detonate", +4 = 0, base 0x37, +0x91 = 0, fire script == idle
+  0x060004ea, +0x68 = 0x00020010). The game's fire [M Player_WeaponInitBullet 0x1a4bf0 disasm
+  0x1a4c30-0x1a4cd4]: the +0x68 & 0x20000 arm FIRST — mark every type-5 mine of this base owned by the
+  player BD+0xFC = 10.0 (DoTrails 0x12d890:268-281 counts it down → Explode_Create(record+8 radius 8,
+  record+0xC damage 100) [M 0x12d890:388-393]); then has-ammo(base) → BL+0x63 = 0x37 (switch back) or
+  dry → owned cleared + GetBestWeapon [M 0x1a4cd0/0x1a4ccc]; no bullet, no muzzle latch.
+- Fixes: (1) GunParams ammo_per_shot = the RAW +0x91 (RoundToFire 0x1a18e0 spends the raw byte; the old
+  .max(1) turned the detonator's zero-spend into a needs-1-round gate and refused the fire — the F
+  family's "sounds, no shot tick"); (2) the +0x20000 detonate arm ported in scene.rs's shot block
+  ('shot: labeled block — the existing lines untouched); (3) the player's mine fuse 7777.0 [M
+  0x12c5a0:214-223] + the DoTrails 7777 tick skip in Grenade::update [M 0x12d890:268-273] — the old
+  420 self-destruct blew the user's mine up 7 s after the throw.
+- Tests: crates/nf-view/tests/fix_handcannon_live.rs 3/3 — the detonate+switch-back (radius 8 / damage
+  100 / ≤ 11 ticks), the armed mine never self-detonates (600 ticks), the no-bullet fire still switches
+  back. Fail-first: 54afd3d (all three failing for the diagnosed reasons) before 30e69fa (the fix).
+  Neighbours green: grenade_throw 4/4, weapons_all 4/4, weapon_sounds 6/6, explode 2/2,
+  weapon_effects 3/3, gadgets 4/4. Shared file: scene.rs only (2 brace lines + the arm + the fuse line).
+- Report: docs/reports/fix-handcannon.md (live checks: the PCSX2 detonate + the auto switch-back, the
+  7777 gdbwatch, the dry arm; nf-view spot list). Follow-up filed: the game STICKS the mine on first
+  contact, the port bounces it to rest.
