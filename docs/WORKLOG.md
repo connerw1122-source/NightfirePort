@@ -10603,3 +10603,12 @@ Work Log:
 ## fix-movies-tests (outcome)
 - menu_movies.rs:282 E0614 fixed (present returns (u32,u32,&[u8]) by value [M movie.rs:226]); all 203 nf-view+nf-formats test binaries build with --features nf-view/movies; 202 run: 201 ok + disc_golden's 3 allowed slim-ISO fails; PSS-data tests skip on the slim stub image by contract; docs/tools/test-suite.md gained the movies-feature note; weapon_matrix_live (>600 s with or without movies — pre-existing) flagged for the suite gate. No shared source files touched.
 - Post-merge (origin/master 6691ef9 = fix-menus-real2, whose menu_movies copy still carried the (*w,*h) bug): merged, rebuilt menu_movies/menus_flow/movie_playback_flow with movies on the final tree — 7/7, 34/34, 10/10 ok; suite restarted on the merged tree (see report).
+
+## fix-guard-weapons (2026-10-14, branch s/fix-guard-weapons)
+
+Task 103f: check the rest of the guard fire model against the game for every
+weapon guards carry — per-weapon damage (weapon_data+0x0C), fire interval and
+burst, accuracy/spread per difficulty, distance falloff, armour absorption on
+Bond. Port what differs, citing DroneWeap_*/Drone_Fire*/Player_Hurt. Tests:
+3 weapons x 3 difficulties, hit rate over 100 shots at 10 units and damage per
+hit equal the game's model. Files: crates/nf-game/src/{drone,damage}.rs.
