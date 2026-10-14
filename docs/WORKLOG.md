@@ -11399,3 +11399,24 @@ Stage Summary:
 - Task: playtests on 07000007 — "models in that cutscene aren't accurate" (the Kimiko scene), "guards aren't in the proper place after the Kimiko cutscene", and on another scene "models are missing". For each cut-scene on 07000005/06/07: list the actors the script creates (Script_AnimStart, skins), compare with what the port draws (skin resolution), and where the actors end up when the scene hands back (the scene's last keys / Script_KillStream vs the drones' positions). Fix what differs, with a test per scene (actor skin hashes and the post-scene positions). Files: crates/nf-game/src/nis.rs, crates/nf-view/src/scene.rs.
 - Status: branch cut from origin/master 62c17571, pushed. Setup reused (work/, ISO, nf-queue present). Suite started in background (suite.out).
 - Research so far: Kimiko scene = 0x06000073 (pack 07800007.bin, 4326 ticks, 15 streams): anim actors skins 0x0500003b (script 0x060004f1), 0x05000015 (0x060004f2), 0x0500000d (0x06000225); entity 0x02000acb (obj_type 0x1f, keyed); freeze pair event 5 (tick 0) / event 7 (tick 0x10e6); player return event 6 (param 0) at stream 7, previous stream 6's entity (hash 0). Drake fly-through = 0x06000072 (pack 07900007.bin). 07000005/06 have no loadable packs — archive kind-7 scripts only. All three Kimiko skins are in 07000007's own archive [D bin-list].
+- DONE (21:07-21:50 UTC): the per-scene actor inventory pinned and one missing-models fix landed.
+  (1) Inventory [D bin-list/nis dumps]: the actor-carrying cut-scenes on the three levels are
+  07000005 0x060008c8/0x06000952/0x06000994/0x06000a22 (truck), 07000006 0x06000071 (dressing), and
+  07000007's packs 0x06000072 (fly-through, 13 guests) / 0x06000073 (Kimiko: 0500003b/0x060004f1,
+  05000015/0x060004f2, 0500000d/0x06000225); every Anim skin resolves in its own archive and every
+  character builds; all actor-scene SP bases are identity, so the port's root-in-world anim model
+  matches; the Kimiko hand-back chain verified game-accurate step by step (event-6 snapshot of
+  stream 6's key-498 entity → Bond at [91.52, 43.85, -31.09]; the ch-0x48 second-switch drones —
+  placement 414 et al., param 6 = 72, param 8 = 100, alert block 5 → GetDTYPENEW case 5 → mode 0x15
+  → DroneTypeSettings[0x15].alt = 0xb4 — delete through NDrone2_PreDroneControl 0x148db0 when the
+  freeze lifts; WaitSwitch drones hidden per 0x15b960 msg 1 = NDrone2_Enable(0)).
+  (2) FIX (models missing): `Bullet_CollisionHandler` 0x12ce80:212-231 Script_Loads **0x060007c4**
+  via Explode_Create on the weapon `+0x70` 0x100000/0x200000 arms (disc records 0x32/0x6e = 0x100000,
+  0x6b = 0x200000 [L scan]) — no placement references it, so the port's scene build never made its
+  entity instances (Laser_Blast_frame_1/2, Vertical_smoke, After_glow_test, cloud_1, smoke) and the
+  sim never spawned it. Fixed both sides; test fails-first on the pre-fix tree.
+  (3) Tests: crates/nf-view/tests/fix_cutscene_actors_live.rs — 5 (Kimiko actors + hand-back
+  positions, dressing, ledge, fly-through skins, the impact models; the last fails-first). Neighbour
+  binaries green: fix_cutscenes_live 5, fix_cutscenes2_live 4, models_characters_live 6,
+  fix_weapon_effects_live 4, impacts_live 6. The full suite did not fit the window (the 21:51
+  stop-new-work rule) — the next session should run it on the merged tree.
