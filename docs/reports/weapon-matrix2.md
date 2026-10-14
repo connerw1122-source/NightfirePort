@@ -151,10 +151,66 @@ task; all three check green through the real input path.
    impact blast), `--level 07000005 --give 0x2c --frame 40` (the guided-camera view), `--level
    07000005 --give 0x34` (the frag in hand — the old runner's `I`).
 
+
+
+## The upgraded runner's full sweep (appended 11:59 UTC, same session)
+
+The upgraded runner (real give path + per-cell reset + the M/G/X checks) swept all 27 levels × 98
+ids, **0 panics**. Red counts: **D 1278, B 234, R 226, M 152, F 22, W 9** — the red mass is ONE bug:
+the silenced-twin reload hang (above) now reaches the draw because the give no longer stops the cell
+first. Where the old runner printed `.`/`I` and quit, the upgraded cell draws — and hangs the machine
+for the rest of the level's row. Per-weapon signals the new checks add:
+
+- **0x2a MGL impact: 19/27 clean** — the contact blast gap measured green where the cell ran (7 D
+  are hang victims, 1 R); the delay twin 0x2b shows the fused behaviour (19 B are the cell-edge cost
+  of the 230-tick blast watch + the hang, not blast-timing wrongs — no X marks fired).
+- **0x2c Sentinel 'Guided': the camera rode on the 4 clean cells** (mark `-` requires gcam); 10 R +
+  8 D are the reload hang family.
+- **`M` 152** — mode presses refused while the inherited machine hangs; they clear with the reload
+  fix (the 07000005 upgraded row's mode checks are green where the machine was fresh).
+- **0x02 P2K: 19/27 clean** through the real give path (6 F are the manor-intro hold levels, 100d's
+  finding).
+
+```
+marks       ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+07000001    .  F  D  D  D  -  B  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000002    .  F  D  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  R  R  R  R  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000003    .  -  -  -  B  -  B  -  B  -  B  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000004    .  F  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  R  R  R  R  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000005    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  B  D  D  D  D  D  D  D  D  D  D  D  D  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000006    .  -  -  -  B  -  B  W  W  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000007    .  R  -  -  B  R  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000008    .  R  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  R  R  R  R  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000009    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  -  R  R  R  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  .  D  D  D  .  .  D  D  .  D  .  D  D  D  D  D  .  D  .  D  D  .  .  n  n  n  n  D  D  D  D  D  
+0700000a    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  R  D  D  D  D  D  D  D  D  D  D  D  D  D  D  n  D  D  D  D  D  D  D  D  D  .  D  D  D  .  .  D  D  .  D  .  D  D  D  D  D  .  D  .  D  D  .  .  n  n  n  n  D  D  D  D  D  
+0700000b    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  W  D  D  D  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  .  D  D  D  .  .  D  D  .  D  .  D  D  D  D  D  .  D  .  D  D  .  .  n  n  n  n  D  D  D  D  D  
+0700000c    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  .  D  M  B  M  B  M  B  M  B  M  B  -  B  R  R  D  D  D  D  D  D  D  D  D  D  D  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  .  D  D  D  D  n  n  n  n  D  D  D  D  D  
+0700000d    .  F  D  -  B  -  B  -  W  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  .  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  .  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000011    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  R  R  R  R  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000012    .  -  -  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000013    .  F  -  -  W  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  D  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000014    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  R  R  R  R  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000015    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  R  R  R  R  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000016    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  R  R  R  R  R  D  D  M  -  -  -  W  D  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+0700001b    .  F  D  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  R  R  R  R  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000041    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  -  R  R  R  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000043    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  -  R  R  R  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000046    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  R  R  R  R  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000048    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  W  D  D  D  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+07000049    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  -  R  R  R  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+0700004a    .  -  -  -  R  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  W  D  D  D  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+0700004b    .  -  -  -  B  -  B  -  B  -  B  -  -  -  B  -  -  -  B  -  B  -  B  D  -  R  B  R  B  M  R  M  R  M  R  M  R  M  R  M  R  -  B  W  D  D  D  R  D  D  M  -  -  -  M  F  n  D  D  D  D  D  D  D  D  D  D  D  D  D  .  .  D  D  .  D  .  D  D  D  .  .  D  D  D  D  D  D  D  n  n  n  n  D  D  D  D  D  
+
+red by mark: B:234 D:1278 F:22 M:152 R:226 W:9
+```
+
+The old-runner table above stays the methodology-stable comparison; the next window's reload fix
+unlocks this table's real signal (the D/M/R mass collapses, the M/G/X checks measure every cell).
+
 ## What's left
 
-- The upgraded runner's full 27-level sweep → the new table replaces this one; every red cell then
-  gets a fix or a reason under the new marks (M/G/X).
+- The silenced-twin reload-hang fix (the decompile round + an NF_ISO test that fails first) — it
+  holds most of the upgraded table's D/M/R mass.
 - The 0x03 shell-loop hang fix (the decompile round + an NF_ISO test that fails first).
 - The gadget-cycle fallback for the watch gadgets (their fire/beam cells are `.` today).
 - The fast suite on the final tree.
