@@ -11200,3 +11200,11 @@ Work Log:
   vs/vt), fix_reload_hang_live.rs (new), fix_weapon_fire_modes_live.rs (the poke, noted), two
   probe examples. Next window: the runner's death/menu + twin-reach + pulse-window fixes, then the
   full 27-level sweep for the new red counts.
+
+---
+Task ID: 103i2-fix-reload-hang2
+Agent: reload-hang2 worker
+Task: fix-reload-hang2 — the merge of s/fix-reload-hang with master HELDs: fix_weapon_sounds_live::every_weapon_on_07000005_draws_fires_and_reloads_with_sounds fails ("0x4c/0x4f/0x51/0x52/0x53/0x56/0x57/0x58/0x59: draw sound 0x281 never played"). The change is Sim::clip_slot (the base-unification predicate [M Player_ReloadAmmoType 0x1a1988:18-22]) in scene.rs. Narrow it to what the game unifies; keep twin_hop green.
+
+Work Log:
+- (18:11-18:15) Branch s/103i2-fix-reload-hang2 created from origin/s/fix-reload-hang, origin/master merged (WORKLOG conflict resolved keeping both).
