@@ -9946,3 +9946,39 @@ Full suite on the final tree (origin/master 810c109 merged): **909 passed, 3 fai
   projectile, by_hash unchanged), draw→fire→reload through step_bond, native-carry identical
   numbers, the 18 no-model ids listed. Suite: 752 passed, 3 failed (the allowed disc_golden
   slim-ISO set), 27 ignored. Report: docs/reports/fix-weapon-assets.md.
+
+### fix-cutscene-draw — outcome
+The cut-scene cast did not draw because `script_pose_together`'s window composition gave the
+scene's narrow 22-channel face track the body track's bones 0..5 (first-writer-wins per bone,
+fix-cutscenes2 d907aba): the 222-channel body track's root — which carries the actor's absolute
+world position (the value AnimGetFirstTrans 0x1c7348 initialises the game's anim object position
+obj+0x30 from, and AnimFrameResolve 0x1c35f8 advances per frame through the skin's channel map,
+which reaches only the face bones for the face track) — collapsed to the face track's leading
+zeros, posing every script actor as an identity mannequin at the world origin. The palette read
+"real" (the census's gate), the sim was live, and the render showed nothing: the mannequin is
+under the world at (0,0,0) in every cut-scene shot. Probes (headless lavapipe renders + palette
+dumps through the real trigger path) pinned the drop between skin_palette and the GPU draw: the
+actors' skinned verts projected at the party-hall marks only AFTER the pose fix; pre-fix the
+closeup render at the actor's root showed an empty library, post-fix it shows Kimiko (red dress,
+mid-stride, next to the pool table). Fix: the base (widest, fits) track owns the bones it
+covers; narrow windows fill only what it leaves (nf-game/src/anim.rs, one hunk + citation
+comment). Tests: crates/nf-view/tests/cutscene_draw_live.rs — 2 tests through the real input
+path (nf_view::load + step_bond from TouchOnce #412): the pose gate (root = the body track's
+non-zero library position, finite) and the render gate (the uploaded palette's bone 0 at the
+library root, not FAR/collapsed) — both failing on the pre-fix tree (root [0,0,0]), green
+post-fix. The census tests of 101b stay green (live Obj::Anim, finite poses, room gate).
+Files: crates/nf-game/src/anim.rs (the fix; NOT in this task's listed files — the cause lives
+there), crates/nf-view/tests/cutscene_draw_live.rs. Shared files touched: none (the merge
+commit absorbed other workers' master merge).
+Left: the body track's per-bone channel→bone mapping is still the port's sequential walk (the
+game maps channels through the skin's table — bone 72's slots read far-from-root values, the
+mesh may still pose imperfectly inside the fix); a lavapipe GPU-render assertion (the exact
+pixels) instead of the palette-level gate; the live PCSX2 checks below.
+Live checks for the main agent (PCSX2, nf-view --bond 94.2,44.6,-45.9,0,0 on 07000007):
+(1) spot 94.2,44.6,-45.9 (TouchOnce #412): frames 150/300/600/900/1200/1500 — Kimiko (red
+dress), a male guest and a second guest must appear in the library pan near the pool table at
+the marks (86.8,43.7,-33.3) / (92.0,43.7,-30.8) / (92.2,43.9,-31.1); pre-fix none of them drew.
+(2) 07000008's briefcase/safe scene: Kiko plus the other actors besides Bond.
+(3) gdbwatch (action): watch obj+0x30 of a 060004f1 anim object during the scene — the game
+advances it per frame from the seq's first root; the port's pose root now follows the same
+channel. nf-view spot for the render: --bond 86.8,44.0,-25.0,pi,0 (closeup at Kimiko's mark).
