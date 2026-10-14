@@ -324,6 +324,12 @@ pub struct Sim {
     /// another script displaces it. Only records with +0xB8 (the snipers, the AIMS-20 pair, the
     /// micro-camera pair [D census]) raise/lower through scripts.
     pub view_aim_anim: Option<u32>,
+    /// fix-scope-zoom: the per-weapon zoom slots (`BL+0x1B4 + w·0xC`, one f32 per weapon record) —
+    /// `Player_InitAmmoWeapons` 0x1a17f8:51 fills slot w with `sqrt(weapon_data[w]+0x88)`, aim start
+    /// targets slot[base] (`Player_Weapon` 0x1a24c8:173-177, the base from +0x02 so twins share), and
+    /// `Player_Zoom` 0x1a1a70:72-74 writes the reached zoom back, so re-aiming resumes where the last
+    /// zoom left off.
+    pub zoom_slots: Vec<f32>,
     /// fix-weapon-fire-modes: the guided-missile camera (`Bullet_init` 0x12c5a0:234-254 for a weapon
     /// record with `+0x6C & 4` — only the AT-420 Sentinel 'Guided' 0x2C [L ee_start_05.bin]). While
     /// `Some`, the view rides the projectile: position/direction = the bullet's [M
@@ -1648,7 +1654,10 @@ impl Sim {
             (Default::default(), false, false, false)
         } else { (input, trigger, reload, use_key) };
         let aiming = input.aiming;
-        // Weapon switching (`Player_WeaponChange` 0x1a6f80): only when idle (not firing/reloading/holstering). The
+        // fix-scope-zoom: last tick's aim state for the zoom edges (`Player_Weapon` 0x1a24c8:156-157
+        // detects the aim-bit toggle against its previous value) — captured before `run` overwrites
+        // `self.aiming` with this tick's.
+        let was_aiming = self.aiming;
         // switch request (`anim+0x63`) is set here; the holster/draw cycle runs in `run` (`Player_SetWeaponAnimObj`).
         // The weapon/gadget split: mouse wheel / Q cycles weapons (mode=0, 1..0x47); G cycles gadgets (mode=1,
         // 0x4A..0x5E); number keys select directly [M disassembly 0x1a707c].
@@ -2118,23 +2127,61 @@ impl Sim {
         // The pickup take test's LOS origin: the player's world-sphere centre (`obj+0x80`), not his position
         // [M 0x18e148:212-214] — `Bond::sphere_centre` ports `Control_BuildWorldSph`'s player branch.
         self.run(self.bond.pos, self.bond.sphere_centre(), head, look, aim, trigger, aiming, reload, use_key);
-        // `Player_Zoom` (0x1a1a70): the scope zoom. Right mouse (mouse-first) zooms in; releasing returns to 1.0.
-        // The zoom interpolates toward the target at the game's rate (1.025× per tick zooming in, 1.15× out).
-        // The FOV is divided by the zoom factor. Scoped weapons only (`weapon_data+0x68 & 0x40`).
+        // `Player_Weapon` 0x1a24c8:154-187 + `Player_Zoom` 0x1a1a70: the scope zoom. The zoom VALUE
+        // (BL+0x8D0) runs 1.0 (none) up to the record's magnification (+0x88). Aim start targets the
+        // BASE weapon's slot (BL+0x1B4 + base·0xC — `Player_InitAmmoWeapons` 0x1a17f8:51 fills it with
+        // sqrt(+0x88), the base from +0x02 so twins share [M 0x1a24c8:173-177]; the read is gated by the
+        // per-player input option 0x2a38ce, default 1 [M Input_Init 0x17edd8:22, L ee_start_05 = 1]),
+        // clamped down to +0x88 [M 0x1a24c8:179-183]. The zoom axis (action 6) scales the target AND
+        // the value ×1.025 per tick [M 0x1a1a70:35-39,56] — the port's held zoom key stands in for the
+        // full-deflection axis (zoom-in direction; the axis's zoom-out side is unported, see the report).
+        // Releasing the axis KEEPS the zoom (target = value [M 0x1a1a70:70-71] — only releasing AIM
+        // targets 1.0 [M 0x1a24c8:158-166]), and the reached zoom persists into the slot for the next
+        // aim [M 0x1a1a70:72-74]. Whenever the value differs from the target it eases toward it
+        // ×1.15 per tick without crossing [M 0x1a1a70:21-33,55-68] — the aim-in/out ramp. Clamps:
+        // target ≤ +0x88, target < 1 → 1, target > 50 → 50 [M 0x1a1a70:44-54].
         let scoped = self.weapons.records.get(self.gun.weapon as usize).is_some_and(|w| u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap()) & 0x40 != 0);
-        let max_zoom = self.weapons.zoom(self.gun.weapon as usize);
-        if scoped {
-            if input.zoom { self.zoom_target = max_zoom; } else { self.zoom_target = 1.0; }
-        } else {
+        let mag = self.weapons.zoom(self.gun.weapon as usize);
+        if aiming && !was_aiming {
+            // Aim start: target the base weapon's slot, clamped to the record's magnification.
+            let base = self.weapons.base(self.gun.weapon as usize) as usize;
+            self.zoom_target = self.zoom_slots.get(base).copied().unwrap_or(1.0);
+            if self.zoom_target > mag { self.zoom_target = mag; }
+        }
+        if !aiming && was_aiming {
+            // Aim end: the zoom target drops to 1.0 (the value eases back below).
             self.zoom_target = 1.0;
         }
-        // Interpolate zoom toward target [M 0x1a1a70 lines 22-39].
-        // `Player_Zoom` (0x1a1a70): zoom in at 1.025×/tick, zoom out at 1.15×/tick [M lines 22-39].
-        // The game's BLData+0x8D4 is the inverse (decreases as zoom increases); the port's `zoom` is the FOV
-        // divisor (increases as zoom increases), so the interpolation factor is the complement.
-        let rate = if self.zoom < self.zoom_target { 1.0 + 0.025 } else { 1.0 + 0.15 };
-        self.zoom = self.zoom + (self.zoom_target - self.zoom) * (1.0 - 1.0 / rate);
-        self.zoom = self.zoom.clamp(1.0, max_zoom.max(1.0));
+        let zooming = aiming && input.zoom;
+        if zooming {
+            // The zoom axis: the target scales first [M 0x1a1a70:39]. No scoped gate — the game's
+            // axis zooms any aimed weapon up to its own +0x88 (the unscoped mag>1 records 0x18/0x19
+            // mag 3, 0x2a/0x2b mag 2 zoom with no overlay [L ee_start_05 census]).
+            self.zoom_target *= 1.025;
+        }
+        // The target clamps [M 0x1a1a70:44-54] — after the axis multiply, before the value move (the
+        // game's order: the zoom then cannot cross a target already capped at +0x88, so the persisted
+        // slot never exceeds the magnification).
+        if self.zoom_target > mag { self.zoom_target = mag; }
+        if self.zoom_target >= 1.0 { if self.zoom_target > 50.0 { self.zoom_target = 50.0; } } else { self.zoom_target = 1.0; }
+        if zooming {
+            // The value rides the same ×1.025, clamped to not cross the target, and the reached zoom
+            // is held (target = value) and persisted into the base's slot [M 0x1a1a70:56-74].
+            self.zoom *= 1.025;
+            if self.zoom > self.zoom_target { self.zoom = self.zoom_target; }
+            self.zoom_target = self.zoom;
+            let base = self.weapons.base(self.gun.weapon as usize) as usize;
+            if let Some(slot) = self.zoom_slots.get_mut(base) { *slot = self.zoom; }
+        }
+        // The ease toward the target whenever the value differs (the aim ramp either way).
+        if self.zoom != self.zoom_target {
+            let grow = self.zoom < self.zoom_target;
+            self.zoom *= if grow { 1.15 } else { 1.0 / 1.15 };
+            if grow { if self.zoom > self.zoom_target { self.zoom = self.zoom_target; } }
+            else { if self.zoom < self.zoom_target { self.zoom = self.zoom_target; } }
+        }
+        // The value keeps the port's [1, mag] guard (the target clamps ran above, game order).
+        self.zoom = self.zoom.clamp(1.0, mag.max(1.0));
         // Wire / creep: the music event moved up with the substate effects (fix-wire) — the substate is
         // now the only source (the old proximity hack is gone).
         let _ = &self.wires;
@@ -5065,12 +5112,17 @@ impl Scene {
             // 0x1c7e78:25] and the front-end boot keeps it until 180-fix-menus wires the page's
             // write (C_SBNFDFCTY 0x216ca8) into `set_difficulty`.
             drones.difficulty = 1;
+            // fix-scope-zoom: the zoom slots — `sqrt(+0x88)` per record [M Player_InitAmmoWeapons 0x1a17f8:51]
+            // (computed before the `weapons` move below).
+            let zoom_slots = weapons.records.iter()
+                .map(|r| f32::from_le_bytes(r[0x88..0x8c].try_into().unwrap()).sqrt()).collect::<Vec<f32>>();
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, missile_cam: None,
                 hints, hint_cels, hint_fired, icon_msg_timers,
                 view_alert: false,
                 prev_aiming: false,
                 view_aim_anim: None,
+                zoom_slots,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
@@ -5184,9 +5236,11 @@ impl Scene {
             if let Some(s) = view {
                 let g = s.gun_matrix();
                 let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
-                // `Player_PositionCamera` (0x18f5d8:100-106): hide the view model when the aim flag is set
-                // AND the weapon is scoped (`+0x68 & 0x40`). `zoom_target > 1.0` ⇔ scoped && zoom held.
-                let scoped_zoom = s.zoom_target > 1.0;
+                // `Player_PositionCamera` (0x18f5d8:100-107): hide the view model when the aim flag is set
+                // AND the weapon is scoped (`+0x68 & 0x40`) — `View_SetDrawInNoViews` on the view-anim object.
+                // fix-scope-zoom: the gate is aim+scoped, not the zoom value (the old `zoom_target > 1.0`
+                // proxy predates the aim-bit gate evidence).
+                let scoped_zoom = s.aiming && s.weapons.records.get(s.gun.weapon as usize).is_some_and(|w| u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap()) & 0x40 != 0);
                 return Some((mats, world, if s.first_person && !scoped_zoom { g } else { far }));
             }
             let mut m = c.matrix;

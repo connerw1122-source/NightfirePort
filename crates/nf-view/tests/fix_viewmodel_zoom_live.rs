@@ -72,6 +72,9 @@ fn each_zoomable_weapon_draws_its_own_zoom_overlay() {
     let mut zoomed = |scene: &mut nf_view::scene::Scene, w: u8| {
         let sim = scene.sim.as_mut().unwrap();
         sim.gun.weapon = w;
+        // fix-scope-zoom: the overlay's gate is aim + scoped [M 0x19e6d0:106-153] — aim it, as the
+        // game's pane enable requires, and hold the zoom at the given value.
+        sim.aiming = true;
         sim.zoom_target = sim.weapons.zoom(w as usize).max(2.0);
         sim.zoom = sim.zoom_target;
         nf_view::hud::overlay(scene, 4.0 / 3.0)
@@ -92,10 +95,11 @@ fn each_zoomable_weapon_draws_its_own_zoom_overlay() {
     assert!(!tex_runs(&scene, &f, 0x0300_0002).is_empty(), "the Ronin draws its laser frame strips");
     assert!(tex_runs(&scene, &f, 0x0300_0034).is_empty(), "no sniper scope on the Ronin");
     assert!(tex_runs(&scene, &f, 0x0300_0055).is_empty(), "no viewfinder on the Ronin");
-    // Sister: unzoomed, no overlay at all.
+    // Sister: not aiming, no overlay at all (the pane enable rides the aim bit).
     let f = zoomed(&mut scene, 0x24);
     scene.sim.as_mut().unwrap().zoom_target = 1.0;
     scene.sim.as_mut().unwrap().zoom = 1.0;
+    scene.sim.as_mut().unwrap().aiming = false;
     let f = nf_view::hud::overlay(&scene, 4.0 / 3.0);
     assert!(tex_runs(&scene, &f, 0x0300_0034).is_empty(), "no scope unzoomed");
     assert!(tex_runs(&scene, &f, 0x0300_0055).is_empty(), "no viewfinder unzoomed");

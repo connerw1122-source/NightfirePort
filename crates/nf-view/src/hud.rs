@@ -279,8 +279,11 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     let cell = if aiming && !scoped { 1 } else { state };
     let [u, v, w, hh] = CROSS[cell.min(3) as usize].map(|k| k as f32);
     // A zoomed weapon hides the crosshair: the aim-mode path of `HUD_UpdateCrossHair` 0x19e6d0 ends at
-    // LAB_0019e9c8 (layer 0xff = not drawn) whenever the weapon is scoped — the zoom overlay replaces it.
-    let zoomed = sim.map_or(false, |s| s.zoom_target > 1.0);
+    // LAB_0019e9c8 (layer 0xff = not drawn) whenever the weapon is scoped — aim + scoped, no zoom value
+    // in the gate [M 0x19e6d0:106-153]. fix-scope-zoom: the gate was `zoom_target > 1.0`; with the
+    // game's zoom model (the zoom persists after the axis releases) that proxy would keep the crosshair
+    // hidden forever.
+    let zoomed = aiming && scoped;
     if !zoomed {
         h.quad(Anchor::Centre, 49, CROSS_TEX, 0, SW / 2.0 * (1.0 + cx) - w / 2.0, SH / 2.0 * (1.0 - cy) - hh / 2.0, w, hh, [u, v, w, hh], (false, false), gs(0xff0000, 0xff));
     }
@@ -631,11 +634,12 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     // Sprite 2: right strip (0x03000002) at x=479, w=33, h=448. Flag 0x0200 = subtractive.
     // All colour 0x7f7f7fff (white on the GS 0x80=1.0 scale), subtractive blend (Cd - Cs·As/128).
     // Subtractive: white texture → framebuffer darkened to black (scope frame); black texture → unchanged (clear centre).
-    // Drive visibility off zoom_target (the button state), not the interpolated zoom value — the game's
-    // HUD_UpdateCrossHair (0x19e6d0) toggles the SightPane off the aim flag `*(player+0x60) & 1`, which
-    // drops the instant the button is released. Using the interpolated zoom would delay the overlay's
-    // disappearance by ~40 ticks (the zoom-out interpolation time).
-    if s.zoom_target > 1.0 {
+    // The overlay's gate is the game's aim+scoped path of `HUD_UpdateCrossHair` 0x19e6d0:106-153 — the
+    // aim bit (`weapon+0x60 & 1`) with the scoped flag (`+0x68 & 0x40`) hides the crosshair and enables
+    // the weapon's zoom pane; no zoom value in the gate [M]. The old `zoom_target > 1.0` proxy only
+    // worked while the port reset the zoom on every release; with the game's persisting zoom it would
+    // stick.
+    if aiming && scoped {
         // The game's overlay covers its whole 4:3 screen. On a window wider than 4:3 the sprites keep
         // the game's pixel shapes, centred (`Anchor::Centre` — identical mapping at 4:3), and the sides
         // go black: the port's model of the game's 4:3 screen in a wider window [S — the game ran
