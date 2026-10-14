@@ -11436,3 +11436,43 @@ Work Log:
   binaries ran in foreground --test-threads=1 chunks.
 - Report: docs/reports/fix-oddjob-hat.md (the evidence chain, the live checks: the PCSX2 curve/
   stick/clang/expiry, the gdbwatch obj+0xF4=3 and BU+0xFC=1500 countdown, the nf-view render spots).
+
+---
+Task ID: 104a2-fix-escort-01b
+Agent: escort-01b worker
+Task: (continued) fix-escort-01b — root cause found, fix not landed in the window.
+
+Work Log:
+- (19:05-19:20) All three failures reproduced on the merged tree: weapon_matrix_live 0x2a
+  ("must spawn and blast its grenade", the cell shows draw0 — the fire loop never runs),
+  fix_weapon_sounds_live 0x41/[639] 0x42/[1051,1481] 0x43/[1486,1487,1488] never played,
+  probe_escort_root.rs:22 panic. probe FIXED (skip cleanly when script 0x06002056 is absent —
+  the slim ISO's 07000001 does not carry it) — committed, green.
+- (19:30-19:40) CAUSALITY PROVEN by experiment: the escort delta on this merged tree is nav.rs
+  ONLY (drone.rs/triggers.rs are byte-identical to master — `git diff origin/master HEAD` on
+  them is empty). Reverting ONLY crates/nf-game/src/nav.rs to master's version makes BOTH
+  weapon tests pass (matrix ok 60.45s — 0x2a: draw1, fx(0b/0i/2e/1g), the grenade spawns and
+  blasts; sounds 3 passed/0 failed). The escort's game-accurate LinkCreep port (the Decrement
+  step-back, the SqDist2D<1.0 passes, the MOVING-not-BLOCKED refusal — LinkCreep_Handler
+  0x15a2c8 / Decrement 0x15a148 / Increment 0x159f28) un-freezes 05's drones the old BLOCKED
+  path froze at the first boundary post.
+- (19:50-19:55) Mechanism pinned with NF_MATRIX_DBG=1 + NF_SCRIPTLOG=1: from matrix cell 0x06
+  onward the switch input is swallowed with the gun machine IDLE (held=05 req=05 sw=0 rel=0
+  fire=0 for 60 ticks — Bond is script-disabled, not machine-stuck). NF_SCRIPTLOG: the TRUCK
+  script 0x06000A22 (player #37) fires at tick 5412 — exactly the 0x05→0x06 cell boundary —
+  stream 9 event 0x0D params [73, 1] (ch.set(73,1) = ch 0x49, [M Script_EventHandler
+  0x1d94c0; the port's own NF_SCRIPTLOG comment names 06000a22 on 05]), and NO event 4
+  (PlayerDisable) fires — the input death is downstream of ch 0x49 / the truck cut-scene path,
+  NOT a logged script event. The intro script 06000047 (events 0x0f/0x0c at ticks 0/286)
+  completed normally before it.
+- (20:19) origin/master merged again (62c17571 — the oddjob-hat merge block; WORKLOG union).
+  The full four-crate suite did NOT fit the window (it went to the causality experiments; the
+  known 36-min run). nf-view's weapon tests were run directly (above); probe_escort_root green.
+
+Stage Summary:
+- Pushed: the probe fix + the merged tree on s/104a2-fix-escort-01b. The three-failure root
+  cause is PROVEN to the escort nav.rs delta with the truck-script trigger chain identified to
+  the tick. NOT landed: the game-side fix (pin ch 0x49's consumer — the 05 script dump — and
+  scope the LinkCreep activation to the game's FollowRoute 0x15b110 gate, field mappings
+  0x80/0x82/0x88/0x8c vs the port's Route index/links/remaining/radius, then re-verify both
+  the weapon tests AND the escort walkreal set). Report: docs/reports/104a2-fix-escort-01b.md.
