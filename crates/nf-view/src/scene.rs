@@ -2626,6 +2626,8 @@ impl Sim {
                         weapon_type: self.gun.weapon as u16,
                         mesh: self.weapons.projectile_mesh(self.gun.weapon as usize),
                         owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: false,
+                        // fix-oddjob-hat: the stick latch + the homing target (BU+0x40) start clear.
+                        stuck: false, seek_target: None,
                     });
                 } else {
                     // The muzzle light runs on every shot tick for the light-gated records — the
