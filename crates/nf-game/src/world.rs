@@ -331,6 +331,23 @@ impl CollisionWorld {
     /// Whether the world carries a cel scope (`build_scoped` with a graph).
     pub fn has_scope(&self) -> bool { self.scope.is_some() }
 
+    /// Debug introspection (fix-08-collision): for every cell's scope bucket plus the `always`
+    /// remainder, how many chunked runs whose bounds meet `lo..hi` it holds. Probes the per-cel
+    /// attribution without reaching into the private `ScopeData`.
+    pub fn debug_bucket_owners(&self, lo: V3, hi: V3) -> Vec<(i32, usize)> {
+        let meets = |r: u32| {
+            let o = &self.stat.objects[r as usize];
+            !(0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k])
+        };
+        let Some(sc) = &self.scope else { return Vec::new() };
+        let mut out: Vec<(i32, usize)> = sc.cells.iter().enumerate()
+            .map(|(c, runs)| (c as i32, runs.iter().copied().filter(|&r| meets(r)).count()))
+            .collect();
+        out.push((-1, sc.always.iter().copied().filter(|&r| meets(r)).count()));
+        out.retain(|(_, n)| *n > 0);
+        out
+    }
+
     pub fn triangle_count(&self) -> usize { self.stat.tris.len() }
 
     /// Every static triangle whose object's box meets `lo`..`hi`, in stored winding order (the [D]
