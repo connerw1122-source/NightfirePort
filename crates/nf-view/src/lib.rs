@@ -1046,8 +1046,28 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> (Op
             "difficulty" => menu::Page::Difficulty,
             "missions" | "single" => menu::Page::MissionSelect,
             "dossier" => menu::Page::Dossier,
-            other => { eprintln!("unknown --page '{other}' (start|main|codename|difficulty|missions|dossier)"); return (None, None); }
+            // fix-pause-menu: the in-game pages render headless too (the pause page over the
+            // paused frame, the results per outcome). `--cursor N` picks the row, `--pause-tab N`
+            // picks the pause tab, `--confirm` arms the pause confirm.
+            "pause" => menu::Page::Pause,
+            "results" | "failed" => { fe.outcome = menu::Outcome::Failed; menu::Page::Results }
+            "complete" => { fe.outcome = menu::Outcome::Complete; menu::Page::Results }
+            other => { eprintln!("unknown --page '{other}' (start|main|codename|difficulty|missions|dossier|pause|results|complete)"); return (None, None); }
         };
+    }
+    if let Some(i) = args.iter().position(|a| a == "--pause-tab") {
+        fe.pause_tab = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(0);
+    }
+    if args.iter().any(|a| a == "--confirm") {
+        fe.confirming_quit = fe.cursor == 2;
+        fe.confirming_restart = fe.cursor == 1;
+    }
+    // The pause page is a MISSION page: give the flow a mission level so open_pause's guard matches
+    // (the game opens it over a running mission [M Player_Update 0x193600:73]).
+    if fe.page == menu::Page::Pause && fe.flow.current_level == 0 {
+        fe.flow.current_level = 0x0700_0005;
+        fe.mission = 1;
+        fe.open_pause();
     }
     // Tick through the boot load and let the page's timers run (the flash cycle etc.).
     for _ in 0..3 { fe.flow.main_tick(); let _ = fe.flow.load_tick(); }
@@ -1642,6 +1662,14 @@ impl ApplicationHandler for App {
                     if let Some(sim) = self.scene.sim.as_mut() { sim.drones.scripts.skip_request = true; }
                 }
                 // fix-menus: while a menu page is up, the keys drive the menu and never the game.
+                // F12 stays the viewer's screenshot — fix-pause-menu: it previously fell through to
+                // the menu branch (key_action(F12) is None → early return), so the user could not
+                // capture the pause menu (the task's report request).
+                if event.state == ElementState::Pressed && k == KeyCode::F12 {
+                    let m = self.spot_shot();
+                    eprintln!("[spot] {m}");
+                    return;
+                }
                 if event.state == ElementState::Pressed && self.fe.is_some() {
                     if let Some(a) = menu::key_action(k) {
                         use menu::Action as MA;

@@ -140,34 +140,54 @@ fn the_pause_menu_resumes_restarts_and_quits() {
     let mut fe = FrontEnd::new();
     fe.flow.current_level = 0x0700_0005;
     fe.mission = 1; // The Exchange — its first map is 07000005 [M sp_level 0x2df2e0 record 1]
-    // Esc → the pause page over a running mission [S; the page id is the game's 0x4000000c [M]].
+    // Esc → the pause page over a running mission [M Player_Update 0x193600:73 opens
+    // MenuManager_Create(0x80000002, 0x4000004b, …) + GS_PauseGame(1); the old 0x4000000c id was
+    // the NIS page (the handler table maps it to P_NIS_Handler [M Handler_HandleMessage 0x2029e0])].
     assert!(fe.open_pause());
     assert_eq!(fe.page, Page::Pause);
-    assert_eq!(fe.page.id(), 0x4000_000c);
-    // Four rows [S labels; the ACTIONS are the game's C_GCPAUSE_Handler 0x204408].
-    assert_eq!(fe.rows(), 4);
-    // Row 0 = resume: the menu closes [S].
+    assert_eq!(fe.page.id(), 0x4000_004b);
+    // The MISSION tab's THREE rows [L page 0x4000004b's d1=6 list m0x11 labels 0x16a/0x16b/0x16c
+    // = CONTINUE/RESTART/QUIT — the old fourth "Options" row was a guess; options are the game's
+    // CONTROLS tab].
+    assert_eq!(fe.rows(), 3);
+    // Row 0 = continue: the menu closes [M C_GCPAUSE_Handler 0x204408's d1=6 case-0 arm →
+    // MenuManager_Delete].
     assert!(fe.action(Action::Confirm));
     assert!(fe.closed);
-    // Reopen; row 1 = restart: the mission's FIRST map, cold, no intro
-    // [M 0x204408:139-141: ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)].
+    // Reopen; row 1 = restart → the game's RESTART CONFIRM first [M 0x204408's case 1 binds 0x1ff
+    // "RESTART: ARE YOU SURE?" and shows the d1=0xd YES/NO list], YES (row 0) then loads the
+    // mission's FIRST map, cold [M 0x204408:138-141: ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)].
+    fe.open_pause();
     fe.cursor = 1;
     fe.closed = false;
     assert!(fe.action(Action::Confirm));
+    assert!(fe.confirming_restart, "the first choose only arms the RESTART confirm");
+    assert_eq!(fe.requested_level, None, "nothing loads yet");
+    assert_eq!(fe.confirm_sel, 1, "the YES/NO list opens on NO [L page data m0x1d:1; M 0x204408:181]");
+    assert!(fe.action(Action::Confirm), "choosing NO returns to the rows");
+    assert!(!fe.confirming_restart && !fe.closed, "NO cancels the confirm");
+    fe.action(Action::Confirm); // arm again
+    fe.action(Action::Up);      // NO → YES
+    assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(0x0700_0005), "mission 1's BaseMap is 07000005 [M sp_level record 1 +0xc]");
     assert!(!fe.flow.warm_reset, "the restart is a cold load [M 0x204408: param_2 = 0]");
-    // Row 3 = quit: a TWO-STEP confirm [M 0x204408:210-220: state_quit_166 gates the quit; the row
-    // text swaps first], then the front-end map with the quit page [M :143-148: +0x28 = 0x4000001c,
-    // ResetMap_LevelToLoad(0x7000048, 0, 0)].
+    // Row 2 = quit: a TWO-STEP confirm [M 0x204408:210-220: state_quit_166 gates the quit; the row
+    // text swaps to 0x200 "QUIT: ARE YOU SURE?"], then the front-end map with the quit page [M
+    // :143-148: +0x28 = 0x4000001c, ResetMap_LevelToLoad(0x7000048, 0, 0)].
     fe.open_pause();
-    fe.cursor = 3;
+    fe.cursor = 2;
     fe.requested_level = None; // the host consumes it with take(); the test clears it too
     assert!(fe.action(Action::Confirm));
     assert!(fe.confirming_quit, "the first choose only arms the confirm");
     assert_eq!(fe.requested_level, None, "nothing loads yet");
+    fe.action(Action::Up); // NO → YES
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(menu::FRONTEND_LEVEL));
     assert_eq!(fe.flow.page, 0x4000_001c, "the quit page id [M 0x204408]");
+    // ~H cycles the tabs [L the page hint 0x201 "~A Select ~V Scroll ~H Next"].
+    fe.open_pause();
+    assert!(fe.action(Action::Side));
+    assert_eq!(fe.pause_tab, 1);
 }
 
 #[test]
@@ -387,6 +407,45 @@ fn crate_texture(hash: u32) -> nf_view::scene::TextureImage {
     nf_view::scene::TextureImage { key: (0, hash), width: w as u32, height: h as u32, rgba: vec![255; (w * h * 4) as usize], more: vec![], rate: 1 }
 }
 
+/// fix-pause-menu: the in-game pages draw from the mission menu def's own data — the sprite hashes
+/// per page (numbers only) and the pause confirm box's extra quads.
+#[test]
+fn the_pause_page_draws_the_mission_menu_defs_data() {
+    let font = test_font();
+    // 0x03000003 = FONT_TEX [M hud.rs] — without it the text quads are dropped and the count pins see nothing.
+    let textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).chain(std::iter::once((0x0300_0003u32, crate_texture(0x0300_0003)))).collect();
+    // The in-game pages' art hashes are in MENU_TEXTURES: the pause/fail backdrop plate 0x03000070 +
+    // Bond image 0x030000db (every mission archive [L nf-extract tex-list 07000029/0700004b/…]) and
+    // the complete-results photo 0x03000140 (the front-end 07000048.bin [L]).
+    for hash in [0x0300_0070u32, 0x0300_00db, 0x0300_0140] {
+        assert!(menu::MENU_TEXTURES.contains(&hash), "{hash:#x} must be in MENU_TEXTURES (the mission menu def's msg-0x24 art)");
+    }
+    let mut fe = FrontEnd::new();
+    fe.flow.current_level = 0x0700_0005;
+    assert!(fe.open_pause());
+    let base = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0).v.len();
+    assert!(base > 0, "the pause page draws");
+    // The RESTART confirm draws the YES/NO box over the rows [L page 0x4000004b's d1=0xc text +
+    // d1=0xd list; M 0x204408 case 1].
+    fe.cursor = 1;
+    fe.action(Action::Confirm);
+    let with_confirm = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0).v.len();
+    assert!(with_confirm > base, "the confirm box adds quads");
+    // Each pause tab draws [L the four tabs 0x167/0x176/0x168/0x169].
+    for tab in 0..4 {
+        fe.pause_tab = tab;
+        fe.confirming_restart = false;
+        let f = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+        assert!(!f.v.is_empty(), "pause tab {tab} draws");
+    }
+    // The fail menu (page 0x40000042) and the complete results (0x40000036) both draw.
+    fe.page = Page::Results;
+    fe.outcome = Outcome::Failed;
+    assert!(!menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0).v.is_empty(), "the fail menu draws");
+    fe.outcome = Outcome::Complete;
+    assert!(!menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0).v.is_empty(), "the complete results draw");
+}
+
 /// A minimal font the draw tests can lay out with (the real one comes from ACTION.ELF).
 fn test_font() -> nf_formats::hud::Font {
     let glyph = |code: u16| nf_formats::hud::Glyph { u: 0, v: 0, w: 8, h: 12, yoff: 0, pre: 0, post: 8, code, kerns: vec![] };
@@ -423,6 +482,24 @@ fn the_pause_labels_the_handler_uses_resolve_from_the_disc() {
         let s = lang.bind(id).unwrap_or_default();
         eprintln!("pause label {id:#x}: {s:?}");
         assert!(!s.is_empty(), "pause label {id:#x} did not resolve from USATxt.dat");
+    }
+    // fix-pause-menu: the pause PAGE DATA's own labels [L mission menu-def page 0x4000004b: the four
+    // tab controls LBL 0x167/0x176/0x168/0x169, the d1=6 list's m0x11 rows 0x16a/0x16b/0x16c, the
+    // confirm text 0x1ff/0x200 (d1=0xc) and YES/NO 0x5df/0x5e0 (d1=0xd), the hint 0x201].
+    let pause_ids = [(0x167u32, "MISSION"), (0x176, "OBJECTIVES"), (0x168, "CONTROLS"), (0x169, "SCORE"),
+                    (0x16a, "C O N T I N U E"), (0x16b, "R E S T A R T"), (0x16c, "Q U I T"),
+                    (0x1ff, "RESTART: ARE YOU SURE?"), (0x5df, "Y E S"), (0x5e0, "N O")];
+    for (id, want) in pause_ids {
+        let s = lang.bind(id).unwrap_or_default();
+        assert_eq!(s, want, "pause page label {id:#x} is the menu def's own string [L page 0x4000004b]");
+    }
+    // The fail/death menu 0x40000042's labels [L the same menu def: header 0x2fd, rows 0x5bc/0x16c,
+    // hint 0x5c8] and the complete results 0x40000036's [L the front-end def: 0x2c5/0x2cb/0x2cd/0x2d0].
+    let end_ids = [(0x2fdu32, "Mission Failed"), (0x5bc, "R E P L A Y"), (0x5c8, "~A Select  ~V Scroll"),
+                   (0x2c5, "Results"), (0x2cb, "Total Score:"), (0x2cd, "Gold Medal Target:")];
+    for (id, want) in end_ids {
+        let s = lang.bind(id).unwrap_or_default();
+        assert_eq!(s, want, "mission-end label {id:#x} [L pages 0x40000042/0x40000036]");
     }
     // The eight Txt ids P_PAUSE 0x203c28 sends into its list control turned out to be the
     // multiplayer scenario names — every one must still resolve (they are real game strings).
@@ -581,3 +658,4 @@ fn the_descriptions_wrap_inside_their_plates() {
     let total: usize = nf_view::menu::wrap_px_for_test(d, &font, 500.0).iter().map(|l| words(l)).sum();
     assert_eq!(total, words(d), "wrapping keeps every word");
 }
+
