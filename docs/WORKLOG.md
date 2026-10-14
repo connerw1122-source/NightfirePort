@@ -10169,3 +10169,20 @@ s/fix-weapon-fire-modes (guided camera, steering, HUD overlay, modes table, weap
 merging origin/master, deleting `blast_at` and `Grenade.explode_on_impact` and using master's
 `pending_blasts`/`spawn_blast` plus the `GrenadeEvent::Bounce` arm for every impact blast.
 Work starting.
+
+Task 100l outcome (same session): merged origin/master twice (a4164b9 + 66651ba; the second
+merge auto-resolved drone.rs/scene.rs, WORKLOG union only). The duplicates are gone:
+`blast_at` deleted — master's `pending_blasts` → `spawn_blast` drain is the only bullet
+world-hit blast [M Bullet_CollisionHandler 0x12d068-0x12d0bc]; `Grenade::explode_on_impact`
+deleted — the `GrenadeEvent::Bounce` arm's `+0x70 & 4` read is the only grenade contact blast.
+Folded into master's path with citations: the SILENT range-out (the Sim's Explode arm breaks
+for `+0x70 & 0x200 == 0` records [M Bullet_update 0x12e7b0:158-162 + the DoTrails fuse gate
+0x12d890:262-281; L record sweep ee_start_05.bin @ 0x2bf150: every fuse-death record carries
+0x200, no impact record does]) and the view's no-fuse fuse model ((+0x1C / speed) ticks). The
+guided camera, the steering, the HUD overlay, the mode table and the B-key mapping all stay.
+fix_weapon_fire_modes_live reworked to 5 tests pinning exactly ONE explosion entry and ONE
+damage application per impact (the rocket's homing `+0x6C & 0x20000` was measured curving a
+spawn-shot 37.8 units to a guard — the tests aim at the floor by the real look input instead).
+Failing-first: the naive-merge double-blast state reconstructed (uncommitted) — the rocket test
+FAILED with TWO damage applications, the inline explosion entry wiped by `explosions.clear()`.
+Report: docs/reports/fix-fire-modes2.md.
