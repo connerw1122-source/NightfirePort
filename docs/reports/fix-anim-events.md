@@ -108,4 +108,7 @@ game does — the grenade's existing `Rand(3)` stun roll stays mode-gated).
 
 ## Suite (final tree, merged with origin/master 086009a)
 
-See `tail -1 suite.out` below (recorded at report time).
+**871 passed, 3 failed, 27 ignored (23 min)** — the 3 failures are exactly the allowed
+`disc_golden` set on this ISO (baseline master f512bf0 was 856/5/26; its 2
+`movie_playback_flow` failures are gone on the merged tree, and the anim-events work
+introduced none).
