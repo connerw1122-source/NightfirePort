@@ -72,12 +72,14 @@ background jobs between tool calls, the 102c/100f/103k2/104e precedent)
   The 6 fails: the 3 allowed `disc_golden` (slim ISO) + 3 GPU-adapter environmental fails
   (`fix_0c_pylon_live` ×2, `probe_pylon_render` — `adapter: NotFound` at device creation, the
   same 3 fix-aim-raise reported).
-- On the final tree 4041d239, the master-touched surface re-ran: **236 passed, 0 failed**
+- On the final tree 4041d239, the master-touched surface re-ran: **312 passed, 0 failed**
   (nf_game lib + grenade + doors ×3 + ai + trig + oddjob: 196; the 9 weapons/modes/aim binaries
-  above: 40).
-- Excluded for the window: the walk_*/walkreal_* family (the 103l2 walkreal-01 walk is a
-  documented pre-existing merged-tree fail; walkreal 0a/0c/0d ran green here), weapon_matrix_live
-  (>600 s, documented), levels_sweep/portal_sweep. The next session can sweep them.
+  above: 40; the final-tree extras — level_end, menus_flow, devwin_flow, mp_arenas,
+  fix_guest_reactions, fix_mission, fix_party_mission and the walk_07000005/0a/0c walks: 76).
+- Excluded for the window: the rest of the walk_*/walkreal_* family (the 103l2 walkreal-01 walk
+  is a documented pre-existing merged-tree fail; walkreal 0a/0c/0d + walk 05/0a/0c ran green
+  here), weapon_matrix_live (>600 s, documented), levels_sweep/portal_sweep. The next session
+  can sweep them.
 
 ## Live checks for the main agent
 
