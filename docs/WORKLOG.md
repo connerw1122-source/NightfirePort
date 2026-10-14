@@ -11135,3 +11135,6 @@ draws added; no wall-clock in Sim.
   73 tests, 0 failures. The four-crate sweep did not fit the window (background jobs die between tool calls
   in this sandbox — sessions 4 and 5). Report: docs/reports/fix-hud-radar.md (live checks inside: the SP
   no-blip confirmation, the MP ring position/size/blip reading, the pending 100n 007 item).
+
+## weapon-matrix4 — s/weapon-matrix4 (task 105a, started 17:15 UTC)
+- The harness-only sweep: keep Bond alive/unhurt per cell, per-cell settle budget from the game's draw/holster lengths, the reload check re-synced to the idle view; then the full 27-level re-sweep and the red-cell classification (harness vs real weapon bug).
