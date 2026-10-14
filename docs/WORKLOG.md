@@ -11016,6 +11016,7 @@ Work Log:
 - Blockers mapped (the report has the live checks): 01's escort-extraction exit (the ch16 TOUCH filter needs the Mayhew drone; the walkreal-a stall); 06/11/4a have NO exit trigger in the data (06's 0xE9s are Drone_AIPoint [M 0x1d04f0 case 0xe9]) — forced completes land the front end; 09/0a's exit triggers self-loop (next = own hash [D]); 0a's real exit needs the trigger-volume work; the gameplay-driven objective channels ride the per-mission walkthrough tasks.
 - Non-story records 0700000e/f/10: no FILES.BIN archive [D] — cut MissionData records.
 - Report: docs/reports/campaign-flow.md. Files: crates/nf-view/tests/campaign_flow_live.rs (new), crates/nf-game/src/mission.rs (the restore fix), crates/nf-view/tests/probe_campaign06.rs (kept probe). Shared files untouched.
+
 ---
 Task ID: 102i-fix-guard-misc
 Agent: guard-misc worker
@@ -11131,3 +11132,57 @@ hit equal the game's model. Files: crates/nf-game/src/{drone,damage}.rs.
   + the interval/burst fail-first). Remaining: the matrix's later phases trip the harness
   engagement budget (some guards never engage a parked Bond); the suite restart couldn't fit the
   window. Report: docs/reports/fix-guard-weapons.md.
+
+> fix-hud-radar DONE (14:55 UTC): the SP HUD has no radar — panes 13/14 absent in the SP snapshots
+> [L], PaneList 13/14 NULL [L], MPSettings+0x384 = 0 [L]; the bottom-left ring is the health pane's
+> sprite 15 and the port already matched it. The MP radar (pane 14) is now ported + number-pinned:
+> the projection disasm-checked (the unit-dir x/z negation, min(len·0.02,1) = the 50-unit range,
+> the height cue = a DEAD STORE — 0x319574 has no reader), the radar-on layer gate, the HUD_FixMP
+> top-right clamp, TexUV.291. hud.rs additive only (overlay untouched — zero SP visual delta);
+> 73 neighbour tests green in foreground chunks; report: docs/reports/fix-hud-radar.md.
+
+## fix-hud-radar — s/fix-hud-radar (task 103h, 13:55-14:47 UTC)
+- The SP HUD has NO radar: [L ee_start_05.bin + ee_snapshot.bin @HUD 0x16c8630 — panes 13/14 never created;
+  MPSettings 0x2a47a0+0x384 = 0 → PaneList [M 0x199e88:32-37]; PaneList 13,14 = NULL [L docs/fields/hud-panes.md];
+  MPGame slots all NULL, radar flag +0x452 = 0 [L]. The bottom-left ring is the health pane's sprite 15
+  [M 0x19b9c8:205-207; L HealthSprInfo[15] @0x2bd050+15·0x2c — (4,4) 87×86 uv (102,113,85,86) layer 9, the
+  health tint, alpha 140], and the port already drew exactly that. The main agent's "radar stays" live note
+  (docs/live/2026-10-13) was an MP Arena match — the radar is MP pane 14 only.
+- Ported (hud.rs, additive; overlay untouched): RadarObj (RObj @0x318e70 [M 0x189840]), radar_project
+  (HUD_RadarUpdate 0x19f6e8:108-153, DISASM-CHECKED 0x19f758-0x19fa60: the unit view-dir x/z negated
+  [M 0x19f888-0x19f8b0], scale = min(len·0.02, 1) — the 50-unit ring edge, x/y = −dir·scale·(ring·0.45) +
+  ring centre + 0.5, cap 24, layer 0x1c, TexUV.291 @0x2becf0 [L]); the height cue (dy·0.125 clamp ±1) is a
+  DEAD STORE — 0x319574 has no reader [M disasm 0x19f88c-0x19f8d4 vs the reads at 0x19f904/0x19f974]; the
+  radar-on layer gate (MPSettings+player·0x30+0x28) [M 0x19f6e8:102-105]; radar_ring_rect (created (512,0) +
+  HUD_FixMP 0x19b110:73-92 → the viewer's TOP-RIGHT corner [L viewer+0xf0..fc = 0,512,0,448]).
+- Tests: crates/nf-view/tests/hud_radar_live.rs 4/4 (the SP pins on 05 at the grapple spot + 06, the
+  projection numbers, the gate/clamp sisters). Neighbours in foreground chunks: fix_context_hints 6/6,
+  fix_hud 6/6, hud_playtest 5/5, menus_flow 34/34, nf-view lib 8/8, devwin 1/1, dev_menu 5/5, pickup 4/4 —
+  73 tests, 0 failures. The four-crate sweep did not fit the window (background jobs die between tool calls
+  in this sandbox — sessions 4 and 5). Report: docs/reports/fix-hud-radar.md (live checks inside: the SP
+  no-blip confirmation, the MP ring position/size/blip reading, the pending 100n 007 item).
+
+---
+Task ID: 103j-fix-weapon-fx-levels
+Agent: weapon-fx-levels worker
+Task: fix-weapon-fx-levels — audit the weapon EFFECTS across all 27 levels x the carried set (fire sound, reload/draw/mode-switch sounds, muzzle flash, shell eject, tracer, impact puff/spark/decal per surface, projectile model+trail, explosion); record resolve vs missing as a table; fix every missing cell (or give game evidence the game lacks it too); watch gadgets' laser/stunner beam/impact; tests + 3 named spot checks; report docs/reports/fix-weapon-fx-levels.md.
+
+Work Log:
+- (14:29 UTC) Branch s/fix-weapon-fx-levels created from origin/master 088bdf4 (s/weapon-matrix2 already merged: ad50a3c). Setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; effect-resolution research next.
+
+
+---
+Task ID: 103j-fix-weapon-fx-levels
+Agent: weapon-fx-levels worker
+Task: fix-weapon-fx-levels — audit the weapon EFFECTS across all 27 levels x the carried set (fire sound, reload/draw/mode-switch sounds, muzzle flash, shell eject, tracer, impact puff/spark/decal per surface, projectile model+trail, explosion); record resolve vs missing as a table; fix every missing cell (or give game evidence the game lacks it too); watch gadgets' laser/stunner beam/impact; tests + 3 named spot checks; report docs/reports/fix-weapon-fx-levels.md.
+
+Work Log:
+- (14:29 UTC) Branch s/fix-weapon-fx-levels created from origin/master 088bdf4 (s/weapon-matrix2 already merged: ad50a3c). Setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; effect-resolution research next.
+- (15:36) Resumed in a fresh sandbox: master merged (2caa27f, the WORKLOG conflict resolved append-only). Background jobs confirmed dead between tool calls here — testing went through foreground chunks.
+- (15:45-16:35) Research (subagent + own disasm): the game's FX set is per-level redundant (EffectInfo decals/debris/gas, the tracer 0x02000123, the blast script 0x06000052 — kind-7 NIS — all in every story archive [D census]); 100a's wanted list missed the fp muzzle mesh +0x48 (0x02000ac7 only in 14/15/16/1b) and the ammo-9 casing 0x02000548; Bullet_DoTrails 0x12d890's smoke/exhaust trails were never ported (bit 0x2: 0x1b/0x36/0x69 every 4th tick, Bullet_trail_effect_smoke 0x12cba8; bit 0x20: 0x2a/0x2b every 3rd tick — args read off the disasm incl. the dropped life args 0x78/0x40; the bit-0x10000 Swoosh 0x1a4e40 documented, not ported).
+- (16:36-16:50) Fixes: +0x48 + casing_meshes into wanted_weapon_models (lib.rs, weapon_assets.rs param); init_trail_smoke + init_exhaust_puff (gas.rs, 3 shared RNG draws each, searchlight precedent); the two gates in the grenade tick (drone.rs).
+- (16:50-17:27) weapon_fx_levels_live.rs: the static sweep (20 levels x 114 records modelling the give path's pool: own ∪ earlier-story ∪ skin-owner; per-level own bank ∪ all-bank spares for the op-1 ids — args[1], not args[0]) + 3 spot checks. The rifle check is green (draw 0x282 from the own bank, the flash attachment, fire 0x40d, a live casing, the floor decal/debris); the launcher/gadget checks are #[ignore]d with the exact headless fire-path repro attempts written down; the sweep's only residual is two records' +0x80 held model in non-story archives (documented).
+- (17:30) Neighbours green: fix_weapon_effects 6/6, explode 2/2, fix_weapons_all 4/4, fix_weapon_sounds 3/3 (+2 pre-existing ignores). The full suite did NOT fit the window (no background jobs here) — next session runs it on the merged tree.
+
+Stage Summary:
+- Pushed 56d9bff + the report commit to s/fix-weapon-fx-levels; docs/reports/fix-weapon-fx-levels.md (the mechanism, the three fixes with addresses, the table, the live checks incl. the Swoosh reference render, what's left). 0 unexplained missing effect cells; the +0x80 held-model residual and the headless foreign-fire block are the known leftovers.
