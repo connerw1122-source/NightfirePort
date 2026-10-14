@@ -36,8 +36,7 @@ asserts), and the two probes `crates/nf-view/examples/probe_watch.rs` / `probe_r
    48 measured this window — 48 still W (see finding 4 below), 0b not re-measured yet.
 3. **The re-runs:** the Wolfram **0x04 on 0700004a is CLEAN** this window (matrix4's one-off W did
    not reproduce — its "press budget at the cell edge" reading stands; no weapon finding). The MGL
-   **0x2a on 0700000d is NOT re-measured yet** — 0d is a story level and the window went to the
-   fixes + the wrapper sweep; it is the next window's first sweep item.
+   **0x2a on 0700000d: re-measured — STILL X, gap 97** (see the re-runs section).
 
 ## The sweep — where it stands
 
@@ -47,10 +46,27 @@ runner `nf-extract weapon-matrix` drives) measured this window:
 - **07000005 (the in-suite sample level): 98 cells, 3 reds, 0 panics** — 0x32 F, 0x38 F (below),
   plus the by-design 0x01 `.`. The 0x2c Sentinel is CLEAN (gap 2 fixed). The 0x54 watch is CLEAN.
 - **The seven wrappers 41/43/46/48/49/4a/4b: 686 cells, 29 reds, 0 panics.**
-- Panics: **0** everywhere (the catch_unwind net never fired).
-- The remaining 19 story levels (01-0c, 0e-16, 1b) did not fit the window — the next window runs
-  them with `NF_MATRIX=all cargo test -p nf-view --test weapon_matrix_live -- --ignored
-  --test-threads=1` or `PROBE_LEVEL=` chunks through `probe_reds`.
+- **The story levels 01-0c + 0d: 7 levels × 98 (01,02,03,04,06,07) + 5 × 98 (08-0c) + 98 (0d)
+  = 764 cells, reds 18 + 18 + 3, 0 panics.** Per level the reds are the 0x32 F / 0x38 F pair (and
+  the dim 0x01/0x1e/0x43 `.` give-refusals — three records with NO first-person model [D
+  weapon_data +0xDC == 0: Fists, the Winter Tactical Sniper 0x1e, the Korsakov K5 0x43 — the game's
+  own give refusal, `Player_EquipWeapon` 0x1a8a58:20]), except 07000009 (no 0x32 red this run —
+  something spawned, the target-gated discriminator) and 0b/0d (below).
+- **Panics: 0 everywhere** (the catch_unwind net never fired).
+- Remaining unmeasured: 11/12/13/14/15/16/1b (7 story levels) — the next window's first item
+  (`NF_MATRIX=all cargo test -p nf-view --test weapon_matrix_live -- --ignored --test-threads=1`
+  or `PROBE_LEVEL=` chunks through `probe_reds`).
+
+## The re-runs (the task's item 3)
+
+- **The Wolfram 0x04 on 0700004a: CLEAN** — matrix4's one-off W did not reproduce (its "press
+  budget at the cell edge" reading stands; no weapon finding).
+- **The MGL 0x2a on 0700000d: STILL X, gap 97** (gren 2, expl 1, 0 panics). The blast landed 97
+  ticks after the spawn — past the harness's ≤90 "contact" bound, far below the 210-tick fuse. The
+  reading: on 0d's spawn spot the grenade's flight to first contact takes ~97 ticks — the impact
+  arm DID blast on contact, the fixed 90 bound is just spot-geometry-dependent (05's spot measures
+  ~30). Suggested harness tune (next window): gate the 0x2a X mark on `gap` being well under the
+  210 fuse (contact) rather than a fixed 90. Not a port-bug signal.
 
 ## The numbered weapon findings (every red measured this window)
 
@@ -67,20 +83,21 @@ runner `nf-extract weapon-matrix` drives) measured this window:
    player uses (the detonator with nothing planted does nothing — game-honest), or the record's
    fire path lost its grenade spawn in the merged tree. Evidence to collect: the live check below
    (does a real-game give of 0x38 throw a mine on fire?).
-3. **0x2e AT-600 Scorpion — D (draw failed) and 0x30 Torpedo Launcher — D** on the three front-end
-   wrappers 48/4a/4b ONLY. New since matrix4's run (its 4a/48 reds were only 0x2c W / 0x04 W).
-   Suspicion: my gap-2/gap-1 changes altered the END state of the preceding cells (the away switch
-   now lands where it used to fail, the fire presses swap the watch), so the next cell starts from
-   a different held record on these maps; the draw refusal is downstream state, not the Scorpion.
-   NOT root-caused this window — exactly what the next window's first story-level chunks will
-   confirm or clear (the same ids were clean on 05).
-4. **0x2c AT-420 Sentinel — W on 43/48/49 (+ 4a/4b per the mark table)** — the ride-out expires:
-   on the wrappers the guided missile NEVER dies inside the 700-tick bound (open-sky geometry; on
-   05 it hits something in seconds). The honest arm is documented in the harness ("a missile that
-   never dies cannot hang the cell — the cell then records the honest mark"). What's wrong: either
-   the port's missile lacks the game's lifetime/world-bound blast (the game's guided round must
-   eventually explode — a `Bullet_update` 0x12e7b0 lifetime/fuse read is the next evidence step),
-   or the harness should steer the missile down like a player does. Live check below decides.
+3. **0x2e AT-600 Scorpion — D (draw failed) and 0x30 Torpedo Launcher — D** on 0700000b/48/4a/4b —
+   and the cells carry **gcam1**: the GUIDED CAMERA from the preceding 0x2c cell is STILL RIDING
+   when they start. Root cause confirmed this window: on those levels the Sentinel's missile never
+   dies inside the ride-out's 700-tick bound (open-sky geometry), the 0x2c cell ends wedged under
+   the substate-10 camera, and every input of the NEXT cells is eaten (the draw refused → D; the
+   same levels where matrix4 saw the 0x2c W). On every level where the missile dies (05, 01-08,
+   0a, 0c, the wrappers 41/43/46/49) the 0x2e/0x30 cells are clean. The fix is finding 4's: bound
+   the missile the way the game does, and these cells un-wedge with it.
+4. **0x2c AT-420 Sentinel — W on 0b/43/48/49/4a/4b** — the ride-out expires: on those levels the
+   guided missile NEVER dies inside the 700-tick bound (open-sky geometry; on 05 it hits something
+   in seconds), and the cell (and its successors — finding 3) stay wedged under the camera. The
+   honest arm is documented in the harness ("a missile that never dies cannot hang the cell — the
+   cell then records the honest mark"). What's wrong: the port's guided missile has NO lifetime /
+   world-bound blast where the game's must have one (the real missile cannot fly forever — a
+   `Bullet_update` 0x12e7b0 lifetime/fuse read is the next evidence step). Live check below decides.
 5. **0x01 Fists [.]** on every level — by design (no first-person model, `Player_EquipWeapon`
    0x1a8a58:20), dim, not a failure.
 
@@ -121,10 +138,10 @@ runner `nf-extract weapon-matrix` drives) measured this window:
 
 ## What's left (next window)
 
-1. The 19 story levels of the sweep on this runner (chunks through `probe_reds`); the numbered
+1. The 7 remaining story levels of the sweep (11/12/13/14/15/16/1b) on this runner; the numbered
    findings then cover all 27 levels.
-2. The MGL 0x2a on 0700000d re-run (the task's item; the X from matrix4).
-3. Root-cause finding 3 (the 0x2e/0x30 D on the front-end wrappers) — first check whether the
-   story levels reproduce it, then trace the preceding cell's end state on 48.
+2. The port's guided-missile lifetime (finding 4) — `Bullet_update` 0x12e7b0's death paths; the
+   fix un-wedges the 0x2c W family AND the 0x2e/0x30 D cells on the same levels (finding 3).
+3. The 0x2a X mark's fixed 90-tick contact bound → fuse-relative (the 0d re-run's reading).
 4. The full suite on the final tree; the FAILED lines vs the allowances.
 5. The 0x32 follow-up (matrix4's live check, still pending) and finding 2's give-route question.
