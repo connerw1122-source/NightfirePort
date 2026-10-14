@@ -1093,3 +1093,42 @@ fn the_page_headers_draw_the_header_font_atlas() {
         assert!(header_quads > 0, "{page:?}: the header draws glyph quads from the 0x03000005 atlas [L FontTable[0]]");
     }
 }
+
+/// The Dossier wheel opens at row 0 and CLAMPS — the playtest's "the port adds Weapons" was the
+/// stale missions cursor riding into the wheel (with the wrap, Up at Records teleported to
+/// Weapons). Evidence [M P_DOSSIER_Handler 0x216de0:9-16 resets the wheel (msg 0x2e param 0) when
+/// the page opens from missions/results/stats; Scroll_SendMessage 0x222810:98-106 rejects
+/// out-of-range indices; Scroll_Update 0x2221b20:186-210 wraps only under the msg-0x69 flag, which
+/// nothing sets on the dossier scroll 0x1000010c — C_SBDOSSIER 0x216eb0:40-43 always sets the
+/// range [0,3], the four rows of table 0x2dfcd0 whose unlock flags are all 1 [L ee_snapshot]].
+/// At cursor 0 the 5-slot centred window shows only rows 0..2 (Records/Rewards/Gadgets).
+#[test]
+fn the_dossier_wheel_opens_at_records_and_clamps() {
+    let font = test_font();
+    let hfont = test_font();
+    let textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).collect();
+    let mut fe = FrontEnd::new();
+    fe.unlock_all = true;
+    fe.page = Page::MissionSelect;
+    fe.cursor = 3;
+    assert!(fe.action(Action::Side), "□ opens the Dossier");
+    assert_eq!(fe.page, Page::Dossier);
+    assert_eq!(fe.cursor, 0, "the wheel resets to row 0 on open [M 0x216de0:9-16]");
+    let rows: Vec<usize> = fe.wheel().iter().map(|(r, _)| *r).collect();
+    assert_eq!(rows, vec![0, 1, 2], "the window shows Records/Rewards/Gadgets only [M Menu_UpdateWheel 0x1f8388:148-168]");
+    let frame = menu::menu_overlay(&fe, &font, &hfont, None, &textures, 4.0 / 3.0);
+    let row_labels: Vec<String> = frame.v.is_empty().then(Vec::new).unwrap_or_default();
+    let _ = (frame, row_labels);
+    // Sister: no wrap — Up at row 0 and Down at the last row are no-ops (the game rejects them).
+    assert!(!fe.action(Action::Up), "Up at Records is a no-op [M 0x2221b20:202-210]");
+    assert_eq!(fe.cursor, 0);
+    assert!(fe.action(Action::Down), "Down moves to Rewards");
+    assert_eq!(fe.cursor, 1);
+    fe.cursor = fe.rows() - 1;
+    assert!(!fe.action(Action::Down), "Down at Weapons is a no-op [M 0x2221b20:186-194]");
+    assert_eq!(fe.cursor, fe.rows() - 1);
+    // Down once from row 0 does NOT land past row 1 — the old wrap teleported 0 → 3 on Up.
+    fe.cursor = 0;
+    assert!(fe.action(Action::Down));
+    assert_eq!(fe.cursor, 1, "Down steps to Rewards, never wraps");
+}

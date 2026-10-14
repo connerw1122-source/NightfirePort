@@ -716,8 +716,14 @@ impl FrontEnd {
                 _ => {}
             },
             Page::Difficulty => match a {
-                Action::Up => { self.cursor = (self.cursor + self.rows() - 1) % self.rows(); return true; }
-                Action::Down => { self.cursor = (self.cursor + 1) % self.rows(); return true; }
+                // The wheel CLAMPS, it never wraps [M Scroll_Update 0x2221b20:186-194 (Down at the
+                // max) / :202-210 (Up at the min) wrap only when the scroll's +0x144 flag is set,
+                // and that flag is set only by msg 0x69 (Scroll_SendMessage 0x222810:136-139), which
+                // nothing sends to 0x1000010c; msg 0x2e rejects out-of-range indices]. The port's
+                // old % wrap teleported Records → Weapons on Up.
+                Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
+                Action::Up | Action::Down => return false,
                 Action::Confirm => {
                     self.difficulty = self.cursor.min(DIFFICULTIES.len() - 1);
                     // → the Single Player list [M C_SBNFDFCTY 0x216ca8:10-17 Menu_ChangePageCloseIris
