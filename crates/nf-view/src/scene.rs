@@ -741,7 +741,9 @@ pub fn plane_eq(r: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> [f32; 4] {
 /// game's array; only the named ones exist as nodes.
 /// The collision scope graph from the parsed cel graph (fix-safe08b): plain bboxes + the portals as
 /// the two triangles `Intersect_Portal` (0x1ea7b8) tests, for `CollisionWorld::build_scoped`.
-fn scope_graph(g: &CelGraph) -> nf_game::world::ScopeGraph {
+/// Pub for the census tests to drive the exact build path (`Scene::build`'s sequence) headlessly
+/// (fix-missing-objects).
+pub fn scope_graph(g: &CelGraph) -> nf_game::world::ScopeGraph {
     nf_game::world::ScopeGraph {
         cells: g.cells.iter().map(|c| (c.min, c.max)).collect(),
         portals: g.portals.iter().map(|p| nf_game::world::ScopePortal {
@@ -899,8 +901,14 @@ pub fn build_chains(graph: &mut CelGraph, world: Option<&nf_game::world::Collisi
 /// `generic.radius <= room.radius` and the generic's sphere centre inside the room's world bbox,
 /// ranked by the room's closest collision point to the centre (`Collide_SphereIntersect` 0x1ec940's
 /// scoped closest hit with a containing sphere — `world.closest_point_scoped`); strict `<` keeps
-/// the first candidate in parse order [M 0x1c9150 walk]. `None` = no candidate hits (the game
-/// leaves the generic unchained).
+/// the first candidate in parse order [M 0x1c9150 walk]. fix-missing-objects: a candidate whose
+/// cel holds no collision reads the game's miss distance 1e8 and STILL participates ("hits whose
+/// +0x54 cel is the candidate, or 0/unmapped, intersect; everything else reads 1e8" — fix-portal5
+/// §4's disassembly reading), so when no candidate hits, strict `<` keeps the FIRST candidate in
+/// parse order — the game leaves a generic unchained only when NO room passes the radius+bbox
+/// gates. (The old `continue` on an empty bucket dropped the candidate entirely: with every
+/// candidate's bucket empty — the 0700000a office furniture's case — the generic went unchained
+/// and `View_AddCels` never drew it.)
 fn link_owner_room(graph: &CelGraph, generic: usize, world: &nf_game::world::CollisionWorld) -> Option<usize> {
     let g = &graph.cells[generic];
     let mut best: Option<(usize, f32)> = None;
@@ -908,7 +916,7 @@ fn link_owner_room(graph: &CelGraph, generic: usize, world: &nf_game::world::Col
         if !matches!(r.flags & 0xffff, 0xc023 | 0xc047) { continue; }
         if g.sphere.1 > r.sphere.1 { continue; }
         if !(0..3).all(|k| r.min[k] <= g.sphere.0[k] && g.sphere.0[k] <= r.max[k]) { continue; }
-        let Some(d) = world.closest_point_scoped(ri, g.sphere.0) else { continue };
+        let d = world.closest_point_scoped(ri, g.sphere.0).unwrap_or(1.0e8);
         if best.map_or(true, |(_, bd)| d < bd) { best = Some((ri, d)); }
     }
     best.map(|(i, _)| i)
