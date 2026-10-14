@@ -38,3 +38,7 @@ claimed-by: sandbox5 at 2026-10-14T09:01Z
 ## Report (done, 2026-10-14T10:27Z)
 
 Closed by the driver: the report is on `s/fix-guard-misc` (docs/reports/fix-guard-misc.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (blocked, 2026-10-14T10:33Z)
+
