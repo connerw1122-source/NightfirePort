@@ -1643,15 +1643,19 @@ impl Sim {
             // (the fists skin). With the override applied in main.rs, the fists skin (0x050000ab) is found
             // in the level archive, the view model is built, and the cycle can land on fists — matching the
             // game. The `has_view_model` filter is no longer needed.
+            // fix-silencer-modes: the toggle-back gates on the remembered id's BASE (0x1a6f80:97-111)
+            // and restores the remembered TWIN verbatim (line 113); the cycle walk carries the twin
+            // step (0x1a6f80:179-198) — `cycle` takes &mut self for the marker clear.
+            let base_of = |w: u8| weapons.base(w as usize) as u8;
             let target = if let Some(id) = input.switch_to {
                 if id != self.gun.weapon && owned.get(id as usize).copied().unwrap_or(false)
                     && weapons.first_person(id as usize) != 0 { Some(id) } else { None }
             } else if input.weapon_cycle != 0 {
-                self.gun.toggle_back(nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable)
-                    .or_else(|| self.gun.cycle(input.weapon_cycle, nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable))
+                let t = self.gun.toggle_back(nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable, base_of);
+                t.or_else(|| self.gun.cycle(input.weapon_cycle, nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable))
             } else if input.gadget_cycle != 0 {
-                self.gun.toggle_back(nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable)
-                    .or_else(|| self.gun.cycle(input.gadget_cycle, nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable))
+                let t = self.gun.toggle_back(nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable, base_of);
+                t.or_else(|| self.gun.cycle(input.gadget_cycle, nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable))
             } else { None };
             if let Some(id) = target {
                 // Update prev_weapon/prev_gadget [M 0x1a6f80 lines 134-141]: if current is a weapon, save to
@@ -1976,6 +1980,16 @@ impl Sim {
             let req_base = self.weapons.base(req_id as usize);
             // `Player_WeaponSelect` variant-swap path: same base weapon AND same first-person model → play +0xC8
             // at 1.3x, state 8 (a fast swap without holster/draw) [M 0x1a2cc0 lines 13-29].
+            // fix-silencer-modes: the twin-variant cycle marker [M Player_WeaponSelect 0x1a2cc0:15-16]
+            // is written for EVERY same-base request, before the FP-model gate — (requested id − base
+            // id), 0 when the base itself is equipped. `Player_WeaponChange`'s walk (0x1a6f80:180-195)
+            // reads it to hand the equipped twin back on the next cycle to this family.
+            if cur_base == req_base {
+                let slot = cur_base as usize;
+                if slot < self.gun.twin_skip.len() {
+                    self.gun.twin_skip[slot] = req_id as i8 - self.weapons.base(req_id as usize) as i8;
+                }
+            }
             if cur_base == req_base && self.weapons.first_person(cur_id as usize) == self.weapons.first_person(req_id as usize) {
                 let variant = self.weapons.variant_swap_script(req_id as usize);
                 if variant != 0 {
