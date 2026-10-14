@@ -3176,9 +3176,12 @@ impl Drone {
             }
             (STUN_GRENADE_LOOP, msg::ENTER) => { self.vision_on = false; self.firing = false; self.timer_c = Some(self.stun_until); true }
             (STUN_GRENADE_LOOP, msg::TIMER_C) => {
-                // Case 0xC: anyone within 8.0 keeps him down (re-arm frame + 5·FRAME_RATE_INT = 300).
-                let near = self.opp_dist() <= 8.0;
-                if near { self.timer_c = Some(frame + 300); true } else { self.set_state(STUN_GRENADE_RECOVER); true }
+                // Case 0xC [M NDrone2_DSTATE_StunGrenadeLoop 0x1631c0 case 0xc]: near re-arms the
+                // timer at frame + 5·FRAME_RATE_INT = 300; clear falls through to
+                // StunGrenadeRecover. The port held the drone down while Bond was within 8.0 —
+                // twice the game's player radius — so the 07000001 escort followed at the 4-5 band
+                // sat in STUN_GRENADE_LOOP forever (the walkreal stall).
+                if self.stun_kept_down() { self.timer_c = Some(frame + 300); true } else { self.set_state(STUN_GRENADE_RECOVER); true }
             }
             (STUN_GRENADE_RECOVER, msg::ENTER) => {
                 self.timer_c = None;
@@ -3189,9 +3192,14 @@ impl Drone {
         })
     }
 
-    /// The drone's distance to Bond (`DroneFunc_AnyoneNear`'s 8.0 test target in single player [*suggested*:
-    /// the game checks every DCVars peer; the port's `dist` field is the maintained Bond distance]).
-    fn opp_dist(&self) -> f32 { self.dist }
+    /// `DroneFunc_AnyoneNear` 0x14a718's player half at the stun loop's radius 2.0 (0x40000000) [M
+    /// NDrone2_DSTATE_StunGrenadeLoop 0x1631c0 case 0xc]: the glb_players loop tests
+    /// SqDist3D(player+0x30, dcv+0x30) < (2·r)² = 16 — dist < 4.0 — with a separate |dy| <= 3.0
+    /// arm (matters only across floors; the port's `dist` is the maintained 3D player distance
+    /// from `opponent_info`, which bounds |dy| < 4.0 — the strict dy gate is left, no test covers
+    /// a stunned drone under a balcony). With no player near the game falls to
+    /// `NDrone2_DroneNearPos` 2.0 over the drones — left: the port's only near-peer is the player.
+    fn stun_kept_down(&self) -> bool { self.dist < 4.0 }
 
     // ---- state machine -----------------------------------------------------------------------------------------
 
@@ -7721,6 +7729,25 @@ mod tests {
         assert!((dr.pos[1] - 1.0).abs() < 1e-5, "snaps to floor+hip: {}", dr.pos[1]);
         assert!(dr.on_surface && !dr.in_air);
         assert!(dr.velocity[1].abs() < 1e-9);
+    }
+
+    #[test]
+    fn stun_loop_recovers_when_the_player_is_beyond_the_games_4_band() {
+        // `DroneFunc_AnyoneNear` 0x14a718 at the stun loop's radius 2.0 [M NDrone2_DSTATE_StunGrenadeLoop
+        // 0x1631c0 case 0xc]: the player keeps the drone down within 2·r = 4.0 (SqDist < 16), beyond it the
+        // timer expires into StunGrenadeRecover. The port gated at 8.0 — twice the game's radius — so the
+        // 07000001 escort followed at the walker's 4-5 band sat in STUN_GRENADE_LOOP forever (the walkreal
+        // stall this branch fixes). Sister pair: both sides of the 4.0 boundary.
+        let mut near = drone_at([0.0, 1.0, 0.0]);
+        near.dist = 3.9;
+        assert!(near.stun_kept_down(), "Bond at 3.9 keeps the stunned drone down");
+        let mut far = drone_at([0.0, 1.0, 0.0]);
+        far.dist = 4.1;
+        assert!(!far.stun_kept_down(), "Bond at 4.1 lets the stunned drone recover (the port's old 8.0 gate held him)");
+        // The exact boundary is the game's strict SqDist < 16: dist 4.0 is NOT near.
+        let mut at = drone_at([0.0, 1.0, 0.0]);
+        at.dist = 4.0;
+        assert!(!at.stun_kept_down(), "dist == 4.0 is outside the game's strict SqDist < 16");
     }
 
     #[test]
