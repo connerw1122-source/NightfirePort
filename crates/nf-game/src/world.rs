@@ -726,6 +726,41 @@ impl CollisionWorld {
         self.segment_surface(from, to, true).map(|h| (h.0, h.1))
     }
 
+    /// The static-only first hit along `from → to` (fix-portal-sweep): `segment_hit` minus the
+    /// missile cage and the dynamic objects. The near-LOS rescue's ray must not be blocked by the
+    /// player's own collision or the script-animated parts standing next to him — the game's
+    /// `Vision_InView` (0x1e89e0) consults no collision at all (a pure frustum test); this ray is
+    /// the port-side unocclusion guard only, so it reads the static world like the level's own
+    /// glists do.
+    pub fn segment_hit_static(&self, from: V3, to: V3) -> Option<(f32, V3)> {
+        let d = sub(to, from);
+        let mut best: Option<(f32, V3)> = None;
+        for o in along(&self.stat, from, to) {
+            for k in o.tris.clone() {
+                let t = &self.stat.tris[k];
+                let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                if dot(cross(e1, e2), d) >= 0.0 { continue; } // back face [M 0x10a8c8:168]
+                let p = cross(d, e2);
+                let det = dot(e1, p);
+                if det.abs() < 1e-12 { continue; }
+                let inv = 1.0 / det;
+                let s = sub(from, t[0]);
+                let u = dot(s, p) * inv;
+                if !(0.0..=1.0).contains(&u) { continue; }
+                let q = cross(s, e1);
+                let v = dot(d, q) * inv;
+                if v < 0.0 || u + v > 1.0 { continue; }
+                let tt = dot(e2, q) * inv;
+                if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b.0) {
+                    let n = cross(e1, e2);
+                    let l = dot(n, n).sqrt().max(1e-12);
+                    best = Some((tt, [n[0] / l, n[1] / l, n[2] / l]));
+                }
+            }
+        }
+        best
+    }
+
     /// `segment_hit` with the surface byte of the triangle hit (`Intersect_RayGeom` → `HITDATA+0x50`).
     /// One-sided [M Intersect_RayGeom 0x10a8c8:150-168]: the plane is the triangle's STORED normal (=
     /// +cross(v1−v0, v2−v0), docs/formats/collision.md whole-disc check) and a triangle whose

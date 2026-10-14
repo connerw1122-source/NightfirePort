@@ -45,8 +45,10 @@ const MOUSE_SENSITIVITY: f32 = 0.0025;
 /// The game's vertical field of view in play (60°, docs/systems/player.md).
 const GAME_FOV: f32 = std::f32::consts::FRAC_PI_3;
 
+/// The viewer at one tick (pos = the eye, yaw/pitch the look angles, fov half-angle radians). Pub for
+/// the headless interpolation tests (fix-interp-ghosting) to build tick cameras the way the loop does.
 #[derive(Clone, Copy)]
-struct Camera { pos: Vec3, yaw: f32, pitch: f32, fov: f32 }
+pub struct Camera { pub pos: Vec3, pub yaw: f32, pub pitch: f32, pub fov: f32 }
 
 /// Render interpolation (G-043): logic runs at a fixed 60 Hz; frames between two ticks draw `t` of the way from
 /// the previous tick's camera and palette to the latest one (one tick behind, the standard fixed-step scheme).
@@ -76,15 +78,169 @@ pub fn ticks_for_frame(anim_time: &mut f32, dt: f32, max_ticks: u32) -> u32 {
     *anim_time += dt * 60.0;
     (*anim_time as u32).saturating_sub(before).min(max_ticks)
 }
-fn lerp_palette(a: &[nf_formats::anim::Mat4], b: &[nf_formats::anim::Mat4], t: f32) -> Vec<nf_formats::anim::Mat4> {
+/// The palette half of the G-043 interpolation: the draw loop blends the previous tick's skin
+/// palette into the latest one while `lerp_cam` blends the camera by angle. fix-interp-ghosting:
+/// world matrices blend as ROTATION (slerp of the rotation part [M `Quat_Slerp_Acc` 0x1e4188] — a
+/// component-wise lerp of a rotation is not a rotation, it shears and shrinks mid-way, the
+/// playtest's arm/gun smear) + component lerp of the translation. Matrices whose 3×3 is not a
+/// rotation (the collapse/FAR hides, the camera-facing billboards) keep the component lerp, where
+/// slerp has no defined meaning. Pub for the headless interpolation tests (fix-interp-ghosting) to
+/// drive the exact path the `RedrawRequested` handler runs.
+pub fn lerp_palette(a: &[nf_formats::anim::Mat4], b: &[nf_formats::anim::Mat4], t: f32) -> Vec<nf_formats::anim::Mat4> {
     if a.len() != b.len() { return b.to_vec(); }
     a.iter().zip(b).map(|(x, y)| {
         let d = (0..3).map(|k| (x[3][k] - y[3][k]).powi(2)).sum::<f32>().sqrt();
         if d > SNAP { return *y; }
-        let mut m = *y;
-        for r in 0..4 { for c in 0..4 { m[r][c] = x[r][c] + (y[r][c] - x[r][c]) * t; } }
-        m
+        blend_pose(x, y, t)
     }).collect()
+}
+
+/// The rotation blend of one palette entry: slerp of the rotation part ([M `Quat_Slerp_Acc`
+/// 0x1e4188], the game's own skin-pose blend) + lerp of the translation; entries whose 3×3 is not
+/// orthonormal (collapse/FAR hides, scaled billboards) fall back to the component lerp.
+fn blend_pose(x: &nf_formats::anim::Mat4, y: &nf_formats::anim::Mat4, t: f32) -> nf_formats::anim::Mat4 {
+    match (rot_quat(x), rot_quat(y)) {
+        (Some(qx), Some(qy)) => {
+            let qt = nf_game::anim::slerp(qx, qy, t);
+            let mut m = quat_rows(qt);
+            for k in 0..4 { m[3][k] = x[3][k] + (y[3][k] - x[3][k]) * t; }
+            m
+        }
+        _ => {
+            let mut m = *y;
+            for r in 0..4 { for c in 0..4 { m[r][c] = x[r][c] + (y[r][c] - x[r][c]) * t; } }
+            m
+        }
+    }
+}
+
+/// The quaternion of a palette entry's 3×3 when it is a rotation (rows orthonormal within 1e-3 —
+/// collapse/FAR hides and the scaled billboard coronas fail the gate): Shepperd's method on the
+/// port's row-vector matrices (stored rows = the images of the local axes, i.e. the transposed
+/// column-convention form the textbook formulas assume).
+fn rot_quat(m: &nf_formats::anim::Mat4) -> Option<[f32; 4]> {
+    for i in 0..3 {
+        let n = (m[i][0] * m[i][0] + m[i][1] * m[i][1] + m[i][2] * m[i][2]).sqrt();
+        if (n - 1.0).abs() > 1e-3 { return None; }
+    }
+    for i in 0..3 { for j in (i + 1)..3 {
+        let d = m[i][0] * m[j][0] + m[i][1] * m[j][1] + m[i][2] * m[j][2];
+        if d.abs() > 1e-3 { return None; }
+    } }
+    // Proper rotations only: a reflection (det −1) has no quaternion — Shepperd on one would
+    // silently return an unrelated rotation. Scaled billboards with scale 1 can be improper.
+    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            + m[0][1] * (m[1][2] * m[2][0] - m[1][0] * m[2][2])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    if det < 0.5 { return None; }
+    let tr = m[0][0] + m[1][1] + m[2][2];
+    let (x, y, z, w);
+    if tr > 0.0 {
+        let s = (tr + 1.0).sqrt() * 2.0;
+        w = 0.25 * s;
+        x = (m[1][2] - m[2][1]) / s; y = (m[2][0] - m[0][2]) / s; z = (m[0][1] - m[1][0]) / s;
+    } else if m[0][0] > m[1][1] && m[0][0] > m[2][2] {
+        let s = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt() * 2.0;
+        w = (m[1][2] - m[2][1]) / s; x = 0.25 * s;
+        y = (m[0][1] + m[1][0]) / s; z = (m[0][2] + m[2][0]) / s;
+    } else if m[1][1] > m[2][2] {
+        let s = (1.0 + m[1][1] - m[0][0] - m[2][2]).sqrt() * 2.0;
+        w = (m[2][0] - m[0][2]) / s; x = (m[0][1] + m[1][0]) / s; y = 0.25 * s;
+        z = (m[1][2] + m[2][1]) / s;
+    } else {
+        let s = (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt() * 2.0;
+        w = (m[0][1] - m[1][0]) / s; x = (m[0][2] + m[2][0]) / s; y = (m[1][2] + m[2][1]) / s;
+        z = 0.25 * s;
+    }
+    Some([x, y, z, w])
+}
+
+/// The palette-entry matrix of a quaternion: stored rows = the images of the local axes (the
+/// row-vector convention's transposed form; round-trips `rot_quat` exactly).
+fn quat_rows(q: [f32; 4]) -> nf_formats::anim::Mat4 {
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    [
+        [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y + z * w), 2.0 * (x * z - y * w), 0.0],
+        [2.0 * (x * y - z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + x * w), 0.0],
+        [2.0 * (x * z + y * w), 2.0 * (y * z - x * w), 1.0 - 2.0 * (x * x + y * y), 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
+/// The tick camera as a view → world matrix (C⁻¹ = R·T(eye)): rows (left, up, fwd) + the eye —
+/// the exact basis the first-person gun is posed from (`Player_PositionGun` 0x1a3b40 builds the
+/// gun's axes as gl = up×gf = the viewer LEFT, gu = gf×gl = up, gf = the turned forward — det +1,
+/// a proper rotation, and at yaw 0 it is the identity). So the gun's world matrix decomposes as
+/// local pose · C⁻¹ and the camera factor cancels in camera space. (cam_axes' `right = f×Y` rows
+/// would be det −1 — a reflection — which no quaternion represents.)
+fn cam_view_to_world(cam: &Camera) -> nf_formats::anim::Mat4 {
+    let f = cam.dir();
+    let l = Vec3::Y.cross(f).normalize_or_zero(); // the viewer's left = −(f×Y) [M 0x1a3b40's gl]
+    let u = f.cross(l); // the game's gu = gf×gl [M 0x1a3b40] (cam_axes' up = right×f, same vector)
+    [[l.x, l.y, l.z, 0.0], [u.x, u.y, u.z, 0.0], [f.x, f.y, f.z, 0.0], [cam.pos.x, cam.pos.y, cam.pos.z, 1.0]]
+}
+
+/// world → view: C = T(−eye)·Rᵀ (v_view = (v_world − eye)·Rᵀ, rows of the result = right/up/fwd
+/// dots). `cam_view_to_world` is its exact inverse for orthonormal rows.
+fn cam_world_to_view(cam: &Camera) -> nf_formats::anim::Mat4 {
+    let mut m = cam_view_to_world(cam);
+    // transpose the rotation, negate the translation: T(−p)·Rᵀ
+    let (p, r) = ([m[3][0], m[3][1], m[3][2]], rot_transpose3(&m));
+    let mut c = r;
+    let dot = |row: usize| -(p[0] * c[0][row] + p[1] * c[1][row] + p[2] * c[2][row]);
+    c[3] = [dot(0), dot(1), dot(2), 1.0];
+    c
+}
+
+/// Transpose the 3×3 block, zeroing the translation row.
+fn rot_transpose3(m: &nf_formats::anim::Mat4) -> nf_formats::anim::Mat4 {
+    let mut r = *m;
+    for i in 0..3 { for j in 0..3 { r[i][j] = m[j][i]; } }
+    r[3] = [0.0; 4];
+    r
+}
+
+/// The palette entries of the ACTIVE first-person view model (the object matrix, its bones and the
+/// attachment slots hung on the view model character — the rigid gun parts, the muzzle flash).
+fn view_model_entries(scene: &scene::Scene, l: &scene::SkinLayout) -> Option<Vec<usize>> {
+    let s = scene.sim.as_ref()?;
+    let ci = *scene.view_models.get(&s.gun.weapon)?;
+    let base = *l.char_base.get(ci)? as usize;
+    let nb = scene.characters.get(ci)?.skeleton.bones as usize;
+    let mut v: Vec<usize> = (base..=base + nb).collect();
+    let att = l.attach_base as usize;
+    for (k, a) in scene.attachments.iter().enumerate() {
+        if a.character as usize == ci { v.push(att + k); }
+    }
+    Some(v)
+}
+
+/// fix-interp-ghosting: re-attach the first-person view model's palette entries (the hands and gun,
+/// posed in world space from each tick's camera [M `Player_PositionGun` 0x1a3b40]) to the
+/// interpolated draw camera, blending them in CAMERA space: for each entry in `vm_entries`, convert
+/// both ticks' world matrices camera-relative with that tick's camera (`cam_prev` / `cam_cur`),
+/// blend the relative poses at `alpha`, and re-attach the result to `draw_cam` — the same scheme
+/// `lerp_cam` uses for the view itself, so mid-turn the gun cannot swim against the view. Entries
+/// whose relative pose jumps more than `SNAP` snap to the newer tick (draw/holster switches), like
+/// `lerp_palette`'s world-space snap. `out` is the blended palette (from `lerp_palette`), `prev` /
+/// `cur` the two ticks' palettes. Pub for the headless interpolation tests to drive the exact path
+/// the `RedrawRequested` handler runs.
+pub fn reattach_view_model(out: &mut [nf_formats::anim::Mat4], prev: &[nf_formats::anim::Mat4], cur: &[nf_formats::anim::Mat4], alpha: f32,
+                           cam_prev: &Camera, cam_cur: &Camera, draw_cam: &Camera, vm_entries: &[usize]) {
+    let (vp, vc, vd) = (cam_world_to_view(cam_prev), cam_world_to_view(cam_cur), cam_view_to_world(draw_cam));
+    for &k in vm_entries {
+        let (Some(mp), Some(mc)) = (prev.get(k), cur.get(k)) else { continue };
+        let Some(op) = out.get_mut(k) else { continue };
+        let rel_p = nf_formats::anim::mul(mp, &vp);
+        let rel_c = nf_formats::anim::mul(mc, &vc);
+        // The camera-space snap mirrors `lerp_palette`'s world-space one: a relative-pose jump
+        // (draw/holster switches, scoped hide) snaps to the newer tick instead of sweeping.
+        let d = (0..3).map(|k2| (rel_p[3][k2] - rel_c[3][k2]).powi(2)).sum::<f32>().sqrt();
+        if d > SNAP { *op = *mc; continue; }
+        // Non-rotation entries (the collapse/FAR hides) keep the world blend `lerp_palette` wrote.
+        if rot_quat(&rel_p).is_none() || rot_quat(&rel_c).is_none() { continue; }
+        *op = nf_formats::anim::mul(&blend_pose(&rel_p, &rel_c, alpha), &vd);
+    }
 }
 
 impl Camera {
@@ -1775,7 +1931,22 @@ impl ApplicationHandler for App {
                 let alpha = alpha0;
                 if let Some((pal, cols)) = &self.pal_cur {
                     match &self.pal_prev {
-                        Some((pp, _)) if interp => g.renderer.upload_skin(&g.queue, &lerp_palette(pp, pal, alpha), cols),
+                        Some((pp, _)) if interp => {
+                            let mut blended = lerp_palette(pp, pal, alpha);
+                            // fix-interp-ghosting: the view model (posed in world space from each
+                            // tick's camera [M Player_PositionGun 0x1a3b40]) re-attaches to the
+                            // interpolated draw camera — the same camera-space scheme lerp_cam
+                            // uses for the view — so mid-turn the gun cannot swim against the
+                            // view. With a live script camera the tick cams are not Bond's: the
+                            // gun keeps the plain world blend there.
+                            if self.scene.sim.as_ref().map_or(true, |s| s.script_camera().is_none()) {
+                                if let (Some(entries), Some(cp), Some(cc)) =
+                                    (view_model_entries(&self.scene, &g.renderer.skin_layout), self.cam_prev, self.cam_cur) {
+                                    reattach_view_model(&mut blended, pp, pal, alpha, &cp, &cc, &draw_cam, &entries);
+                                }
+                            }
+                            g.renderer.upload_skin(&g.queue, &blended, cols);
+                        }
                         _ => g.renderer.upload_skin(&g.queue, pal, cols),
                     }
                 }
