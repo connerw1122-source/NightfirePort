@@ -654,11 +654,35 @@ impl Doors {
     /// so the open lands where the game's contact would. The lock guards hold: `activate`
     /// (from_player) rejects a locked door (the 320 thud) and the `state & 0xc` skip keeps a
     /// moving leaf alone. Swing doors (kind 0) stay E/ReactToHit-only, as in the E arm.
+    ///
+    /// 102j2-fix-casings-16b — the gate narrowed to the game's scan domain. `Door_Update`'s
+    /// proximity scan exists ONLY as the auto-close: both of its arms sit behind an OPEN-door
+    /// test — `(state & 2) == 0` inside the `(state & 6) != 0` branch [M 0x1363c8 @0x136678,
+    /// the ch_open-went-off arm] and `uVar7 & 4` [M 0x1363c8 @0x136610, the open_timer arm] —
+    /// and its only action is one `Door_Activate` to close. The scan never touches a moving
+    /// leaf: a CLOSING (0x10) door is left to finish. The old `state & 0xc != 0` skip read only
+    /// bits 2–3 (OPEN|OPENING), so a CLOSING straddle door passed the gate and the walk-in
+    /// re-`activate`d it every tick — the port's slide `activate` turns 0x10 into OPENING
+    /// [M Door_Activate 0x135be0: `state & 0x12` → SetState(8)], and a leaf barely off its open
+    /// end snaps straight back to OPEN. That broke 07000001's
+    /// `door_e_opens_then_e_closes_on_07000001` (after the second E the state read 0x4, not
+    /// 0x10). The stand-in is the scan's open-side complement: it acts on a CLOSED IDLE door
+    /// only (`state == CLOSED`), never on a moving one. Two more narrowing arms, same
+    /// principle: a ch_open door is `Door_Update`'s own channel arm's job [M 0x1363c8: channel
+    /// on → `Door_Activate`], so the stand-in covers only the channel-less doors (16's arrival
+    /// door, ch_open 0 [M 0x136100 + glist 0x803f00a0]); and the lock pre-check is silent —
+    /// the game's per-tick scan plays no lock sound (the ch_lock thud is `Door_Activate`'s
+    /// E-path arm [M 0x135be0]), so the walk-in skips before `activate` instead of thudding
+    /// every tick.
     pub fn straddle_walkin(&mut self, actors: &[DoorActor], channels: &mut Channels, frame: u32) -> Vec<SoundEvent> {
         let mut sounds = Vec::new();
         for i in 0..self.list.len() {
             let (straddle, kind, state) = { let d = &self.list[i]; (d.straddle, d.kind, d.state) };
-            if !straddle || kind == 0 || state & 0xc != 0 { continue; }
+            if !straddle || kind == 0 || state != CLOSED { continue; }
+            let (ch_open, ch_lock, locked) =
+                { let d = &self.list[i]; (d.ch_open, d.ch_lock, d.locked_flag) };
+            if ch_open != 0 { continue; }
+            if locked != 0 || (ch_lock != 0 && !channels.on(ch_lock as u32)) { continue; }
             let (sc, sr) = self.list[i].sph;
             let near = actors.iter().filter(|a| !a.2).any(|a| {
                 let dx = sc[0] - a.0[0]; let dy = sc[1] - a.0[1]; let dz = sc[2] - a.0[2];

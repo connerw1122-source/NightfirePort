@@ -156,6 +156,62 @@ fn door_e_opens_then_e_closes_on_07000001() {
     eprintln!("[door] sister: door open without second E stays open ✓");
 }
 
+/// 102j2-fix-casings-16b: the per-tick straddle walk-in acts on a CLOSED IDLE door only.
+/// `Door_Update`'s proximity scan exists only as the auto-close behind an OPEN-door test
+/// [M 0x1363c8 @0x136678: `(state & 2) == 0` inside `(state & 6) != 0`; @0x136610: `uVar7 & 4`]
+/// and never touches a moving leaf, so a CLOSING (0x10) straddle door must complete its close
+/// with no E held. Pre-fix the walk-in's `state & 0xc` gate let 0x10 through and re-`activate`d
+/// the door every tick — the port's slide activate turns 0x10 into OPENING [M Door_Activate
+/// 0x135be0] and the leaf snapped straight back to OPEN (the door_e test read state 0x4 right
+/// after the second E). Sister: Bond never leaves the threshold and never holds E again — once
+/// the leaf is closed idle, the walk-in re-opens it (8/4 returns only AFTER state 2), the
+/// stand-in's premise on the same door.
+#[test]
+fn the_walkin_leaves_a_closing_straddle_door_alone_on_07000001() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000001.bin");
+    let door_idx = scene.sim.as_ref().unwrap().drones.doors.list.iter().enumerate()
+        .find(|(_, d)| d.kind == 2)
+        .map(|(i, _)| i)
+        .expect("a slide door exists on 07000001");
+    let door_pos = scene.sim.as_ref().unwrap().drones.doors.list[door_idx].pos;
+    // E opens the door and it completes its travel.
+    step_at(&mut scene, [door_pos[0], door_pos[1], door_pos[2] - 0.5], 0.0, true);
+    tick(&mut scene, 120);
+    assert_eq!(scene.sim.as_ref().unwrap().drones.doors.list[door_idx].state, 4, "open after E");
+    // Second E starts the close; then NO E for 40 ticks. The door may pass through 0x10 → 2;
+    // it must NEVER show 8/4 before it has shown 2 (pre-fix the reopen happened immediately).
+    step_at(&mut scene, [door_pos[0], door_pos[1], door_pos[2] - 0.5], 0.0, true);
+    let mut saw_closing = false;
+    let mut saw_closed = false;
+    let mut reopened_early = None;
+    let mut reopened_after_close = false;
+    for t in 0..40 {
+        tick(&mut scene, 1);
+        let st = scene.sim.as_ref().unwrap().drones.doors.list[door_idx].state;
+        if st == 0x10 { saw_closing = true; }
+        if st == 2 { saw_closed = true; }
+        if (st == 8 || st == 4) && !saw_closed && reopened_early.is_none() {
+            reopened_early = Some((t, st));
+        }
+        if (st == 8 || st == 4) && saw_closed { reopened_after_close = true; }
+    }
+    eprintln!("[door] closing trace: saw_closing={saw_closing} saw_closed={saw_closed} \
+reopened_early={reopened_early:?} reopened_after_close={reopened_after_close}");
+    assert!(saw_closing, "the second E starts the close (state 0x10 observed)");
+    assert!(saw_closed, "the close completes (state 2 observed)");
+    assert_eq!(reopened_early, None, "a closing straddle door is never re-opened by the walk-in \
+        (pre-fix: state 8/4 reappeared before the close completed)");
+    // Sister: Bond never left the threshold and never held E again — once the leaf is CLOSED
+    // IDLE again, the walk-in opens it (state 8/4 returns, but only after the close completed).
+    // That is the stand-in's premise (16's arrival door) still working on this door. (Relying
+    // on the auto-close to settle the door out here is not available on 01: a guard drone
+    // parks inside the scan sphere and blocks the close — the game's own metric counts drones
+    // [M 0x136678 classes 2/3/0x12].)
+    assert!(reopened_after_close, "the closed straddle door re-opens on the no-E walk-in \
+        once it is closed idle (the walk-in premise holds)");
+}
+
 // Allow the `dev` import to be unused if the tests don't call dev functions.
 #[allow(unused_imports)]
 use dev as _dev;
