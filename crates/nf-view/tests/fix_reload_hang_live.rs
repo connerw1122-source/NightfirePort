@@ -365,9 +365,9 @@ fn shotgun_per_shell_loop_moves_one_per_pass_and_fire_interrupts_it() {
 #[test]
 fn the_twins_draw_completes_and_the_machine_stays_alive() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    let mut scene = nf_view::load_weapons(&iso, "07000005.bin", false, &[0x37, 0x38]).expect("load 07000005");
-    wait_enabled(&mut scene, 7200);
-    // The sweep's give: the real inventory equip + a switch request (fix_weapon_sounds_live::equip).
+    let mut scene = nf_view::load_dev(&iso, "07000005.bin", false).expect("load 07000005");
+    // The sweep's give: the real inventory equip + a switch request (fix_weapon_sounds_live::equip,
+    // load_dev — the sweep's own loader).
     let mut give = |scene: &mut Scene, id: usize| {
         let sim = scene.sim.as_mut().unwrap();
         let wd = sim.weapons.clone();
@@ -396,8 +396,10 @@ fn the_twins_draw_completes_and_the_machine_stays_alive() {
     assert!(drew_twin, "the twin 0x38 never finished its draw — the switch machine wedged (the base's draw script played for the twin)");
     assert_eq!(scene.sim.as_ref().unwrap().gun.weapon, 0x38, "the twin is not the held weapon after its draw");
     // Sister: the machine is still alive — a fresh request back to the base lands too. Pre-fix the
-    // wedge refused every later switch (the sweep's missing draw sounds downstream of 0x38).
-    give(&mut scene, 0x37);
+    // wedge refused every later switch (the sweep's missing draw sounds downstream of 0x38). No new
+    // give: the base is already owned and its pool is at the cap (the give path refuses that —
+    // [M pickup.rs equip_weapon]), so only the switch request is set.
+    scene.sim.as_mut().unwrap().gun.switch_request = 0x37;
     let mut landed = false;
     for _ in 0..400 {
         scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
