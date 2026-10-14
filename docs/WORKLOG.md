@@ -11135,3 +11135,9 @@ draws added; no wall-clock in Sim.
   73 tests, 0 failures. The four-crate sweep did not fit the window (background jobs die between tool calls
   in this sandbox — sessions 4 and 5). Report: docs/reports/fix-hud-radar.md (live checks inside: the SP
   no-blip confirmation, the MP ring position/size/blip reading, the pending 100n 007 item).
+
+## fix-06-alarm — s/fix-06-alarm (task 104c, started 16:03 UTC 2026-10-14)
+- Task: level 06 searchlights alert the guards (045l's ch-55 work, merged) but the ALARM never
+  sounds — no siren, no 'combat/alarm' music event, no flashing lights, no extra guards. Hunting the
+  game's alarm path from the searchlight spot: Searchlight_* (0x1cb900), the alarm channel,
+  Alarm_*/siren emitter, music event 2. Report will be docs/reports/fix-06-alarm.md. Work starts.
