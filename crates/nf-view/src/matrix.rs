@@ -576,12 +576,12 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
         if dbg && (tick == 0 || tick == 20 || tick == 40 || tick + 1 == draw_budget) {
             let sim = scene.sim.as_ref().unwrap();
             let t = sim.weapons.ammo_type(id as usize);
-            eprintln!("[dbg {id:#04x} t{tick}] held={:02x} req={:02x} sw={} rel={} fire={} clip={} carried{}={} owned_new={} saved={:02x} prev_w={:02x} prev_g={:02x} skip02={:?}",
+            eprintln!("[dbg {id:#04x} t{tick}] held={:02x} req={:02x} sw={} rel={} fire={} clip={} carried{}={} owned_new={} saved={:02x} prev_w={:02x} prev_g={:02x} skip02={:?} vs={:08x} vt={}",
                 sim.gun.weapon, sim.gun.switch_request, sim.gun.switch_state, sim.gun.reload_state, sim.gun.fire_state as u8,
                 sim.gun.clip, t, sim.drones.inventory.carried.get(t as usize).copied().unwrap_or(-1),
                 sim.drones.inventory.owned.get(id as usize).copied().unwrap_or(false),
                 sim.gun.saved_weapon, sim.gun.prev_weapon, sim.gun.prev_gadget,
-                sim.gun.twin_skip.get(2));
+                sim.gun.twin_skip.get(2), sim.view_script, sim.view_time);
         }
         if scene.sim.as_ref().unwrap().gun.weapon == id { drew = true; break; }
     }
