@@ -312,7 +312,10 @@ pub fn script_pose_together(scripts: &HashMap<u32, Script>, seqs: &HashMap<u32, 
     // fix-cutscene-draw: the base (widest, `fits`) track OWNS the bones it covers. The game maps
     // each window's channels to bones through the skin's channel table (`AnimFrameCopy` is passed
     // the sAnimSkin [M AnimFrameResolve 0x1c35f8 → AnimFrameCopy; psiBuildMatrixPalette 0x111498
-    // reads sAnimObject+0x94 = the skin]), so a pack cut-scene's narrow 22-channel face track
+    // reads sAnimObject+0x24 = the skin (decompile line 110, `*(int *)(iVar7 + 0x24)` → the
+    // pSkeletons/parents/matrices reads); the +0x94 skin reads sit on other bases —
+    // (obj+0xdc)+0x94 in AnimListBuild 0x1c0fc0:114, obj+0x94 in AnimObjectDraw 0x1c4490:117]),
+    // so a pack cut-scene's narrow 22-channel face track
     // reaches only the face bones and never the body's root — the 222-channel body track (whose
     // root channel carries the actor's absolute world position, `AnimGetFirstTrans` 0x1c7348
     // initialises obj+0x30 from its frame-0 root) covers every bone and wins them. The port's
