@@ -22,11 +22,13 @@ const SCOPE_STRIP_TEX: u32 = 0x0300_0002;
 
 /// Which zoom overlay a weapon draws [M `HUD_UpdateCrossHair` 0x19e6d0:106-147]: in aim mode a scoped
 /// weapon (flags +0x68 & 0x40 [L weapon_data 0x2bf150]) enables its own zoom pane — the switch runs on
-/// `wid − 0x1a`: 0/1 (0x1a/0x1b, the OICW twins) → pane 17; 0x18/0x19 (0x32/0x33, the Ronin twins) →
-/// pane 19; 0x3a/0x3b (0x54/0x55, the watch; 0x55 is rewritten to 0x54 by the game itself) → pane 11;
-/// the default (any other scoped weapon — the sniper 0x24, zoom 10 [L]) → pane 6, the scope. The
-/// micro camera 0x52 / briefcase 0x53 are not scoped (their zoom is the mission layer's, unported)
-/// but map to the Camera pane — the user's "micro camera ... camera overlay, not the sniper scope".
+/// `wid − 0x1a` and has exactly the cases 0/1 (0x1a/0x1b, the AIMS-20 twins) → pane 17; 0x18/0x19
+/// (0x32/0x33, the Phoenix Samurai twins) → pane 19; 0x3a/0x3b (0x54/0x55, the Micro-Camera; 0x55 is
+/// rewritten to 0x54 by the game itself) → pane 11; and the default (any other scoped weapon — the
+/// Winter Tactical Sniper 0x1e, the Delta Repeater 0x11, the Winter Covert Sniper 0x24) → pane 6, the
+/// scope. There is no case 0x38/0x39, so the Phoenix Ronin twins (0x52/0x53 — [L ee_start_05/07000001/
+/// 0700000a weapon_data+0x38 over USATxt.dat: "Phoenix Ronin"; the Micro-Camera is 0x54/0x55]) fall to
+/// the default scope like any other scoped weapon.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ZoomOverlay { Sight, Oicw, Laser, Camera }
 
@@ -34,7 +36,7 @@ pub fn zoom_overlay(weapon: u8) -> ZoomOverlay {
     match weapon {
         0x1a | 0x1b => ZoomOverlay::Oicw,
         0x32 | 0x33 => ZoomOverlay::Laser,
-        0x52 | 0x53 | 0x54 | 0x55 => ZoomOverlay::Camera,
+        0x54 | 0x55 => ZoomOverlay::Camera,
         _ => ZoomOverlay::Sight,
     }
 }
@@ -119,6 +121,44 @@ impl Hud<'_> {
         let p = |q: [f32; 2], t: [f32; 2]| HudVertex { p: q, uv: t, c };
         let v = [p([a[0], a[1]], [u0, v0]), p([b[0], a[1]], [u1, v0]), p([b[0], b[1]], [u1, v1]), p([a[0], a[1]], [u0, v0]), p([b[0], b[1]], [u1, v1]), p([a[0], b[1]], [u0, v1])];
         self.quads.push(Quad { layer, tex: ti + 1, blend, v });
+    }
+
+    /// A sprite with the game's mirror-tile flag, drawn the way `View_DrawSprites` 0x1e5290:52-162 draws
+    /// it [M]: flag 0x400 splits the sprite into `tiles_x = (du+1)/texW × tiles_y = (dv+1)/texH` tiles
+    /// (integer division on the sprite's UV extents against the texture's pixel size), each tile
+    /// `w/tiles_x × h/tiles_y` screen px sampling `(u, v, du>>tiles_x−1, dv>>tiles_y−1)` of `tex`, with
+    /// the U flip alternating per X tile (the start parity from the sprite's 0x40 bit) and the V flip per
+    /// Y tile (0x80) — the mirror repeat that builds one frame out of a quarter design. The zoom
+    /// overlays' textures are quarters [D 07000005.bin / 07000016.bin: the viewfinder 0x03000055 is
+    /// 128×64, the OICW circle 0x03000141 is 64×64, the scope 0x03000034 is 256×256], so without the
+    /// mirroring the sprite's UV extents wrap the texture — an unmirrored 2×2 repeat (the user's grid).
+    /// Without 0x400: one quad. `flags` is the SpriteInfo flags word (blend/flip bits included).
+    #[allow(clippy::too_many_arguments)]
+    fn tiled_quad(&mut self, anchor: Anchor, layer: i32, tex: u32, x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], flags: u16, c: [f32; 4]) {
+        let blend = if flags & 0x100 != 0 { 1 } else if flags & 0x200 != 0 { 2 } else { 0 };
+        let (mut tiles_x, mut tiles_y) = (1u32, 1u32);
+        if flags & 0x400 != 0 {
+            let (tw, th) = self.tex_dims(tex);
+            if tw > 0.0 && th > 0.0 {
+                // (du+1)/texW, (dv+1)/texH — the game's integer division [M 0x1e5290:56-58]; clamped,
+                // which the game's byte counters bound instead.
+                tiles_x = (((uv[2] as i32 + 1) / tw as i32).max(1).min(16)) as u32;
+                tiles_y = (((uv[3] as i32 + 1) / th as i32).max(1).min(16)) as u32;
+            }
+        }
+        // Per-tile UV extents: du >> (tiles_x−1) [M 0x1e5290:63-68, 126-133].
+        let du = (uv[2] as i32 >> (tiles_x - 1)) as f32;
+        let dv = (uv[3] as i32 >> (tiles_y - 1)) as f32;
+        let (tw_tile, th_tile) = (w / tiles_x as f32, h / tiles_y as f32);
+        let mut flip_u = flags & 0x40 != 0;
+        for ix in 0..tiles_x {
+            let mut flip_v = flags & 0x80 != 0;
+            for iy in 0..tiles_y {
+                self.quad(anchor, layer, tex, blend, x + ix as f32 * tw_tile, y + iy as f32 * th_tile, tw_tile, th_tile, [uv[0], uv[1], du, dv], (flip_u, flip_v), c);
+                flip_v = !flip_v;
+            }
+            flip_u = !flip_u;
+        }
     }
 
     /// A `SpriteInfo` sprite at the pane origin with colour `c`.
@@ -509,49 +549,65 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     // drops the instant the button is released. Using the interpolated zoom would delay the overlay's
     // disappearance by ~40 ticks (the zoom-out interpolation time).
     if s.zoom_target > 1.0 {
+        // The game's overlay covers its whole 4:3 screen. On a window wider than 4:3 the sprites keep
+        // the game's pixel shapes, centred (`Anchor::Centre` — identical mapping at 4:3), and the sides
+        // go black: the port's model of the game's 4:3 screen in a wider window [S — the game ran
+        // 4:3 or a stretched 16:9 of the same 512×448 space; nothing outside it was shown].
+        let bar = (1.0 - 4.0 / 3.0 / h.aspect).max(0.0) * SW / 2.0;
+        if bar > 0.5 {
+            let black = [0.0, 0.0, 0.0, 1.0];
+            h.quad(Anchor::Stretch, 45, SCOPE_STRIP_TEX, 0, 0.0, 0.0, bar, SH, [0.0, 0.0, 31.0, 31.0], (false, false), black);
+            h.quad(Anchor::Stretch, 45, SCOPE_STRIP_TEX, 0, SW - bar, 0.0, bar, SH, [0.0, 0.0, 31.0, 31.0], (false, false), black);
+        }
         match zoom_overlay(s.gun.weapon) {
-            // SightPane 6 [L SightSprInfo 0x2bd558]: the scope — 4 mirrored tiles of 0x03000034 + the two
-            // subtractive side strips [M View_DrawSprites 0x1e5290 tiles the quadrant texture 2×2].
+            // SightPane 6 [L SightSprInfo 0x2bd558] — the scope: sprite 0 (32,0) 448×448, uv
+            // (0,0,511,511), flags 0x0600 — the scope quarter texture 0x03000034 (256×256 [D
+            // 07000005.bin]) mirror-tiled 2×2 by View_DrawSprites 0x1e5290 into one oval. Sprites 1/2:
+            // the subtractive side strips (0/479, 33 wide). Geometry unchanged from the port's verified
+            // draw (the main agent's 0700000c match); now through the game's tiler.
             ZoomOverlay::Sight => {
                 let scope_col = gs(0x7f7f7f, 0xff);
-                h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2,  32.0,   0.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (false, false), scope_col);
-                h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2,  32.0, 224.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (false, true),  scope_col);
-                h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2, 256.0,   0.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (true,  false), scope_col);
-                h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2, 256.0, 224.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (true,  true),  scope_col);
-                h.quad(Anchor::Stretch, 39, SCOPE_STRIP_TEX, 2, 0.0, 0.0, 33.0, 448.0, [0.0, 0.0, 31.0, 31.0], (false, false), scope_col);
-                h.quad(Anchor::Stretch, 39, SCOPE_STRIP_TEX, 2, 479.0, 0.0, 33.0, 448.0, [0.0, 0.0, 31.0, 31.0], (false, false), scope_col);
+                h.tiled_quad(Anchor::Centre, 39, SCOPE_TEX, 32.0, 0.0, 448.0, 448.0, [0.0, 0.0, 511.0, 511.0], 0x0600, scope_col);
+                h.quad(Anchor::Centre, 39, SCOPE_STRIP_TEX, 2, 0.0, 0.0, 33.0, 448.0, [0.0, 0.0, 31.0, 31.0], (false, false), scope_col);
+                h.quad(Anchor::Centre, 39, SCOPE_STRIP_TEX, 2, 479.0, 0.0, 33.0, 448.0, [0.0, 0.0, 31.0, 31.0], (false, false), scope_col);
             }
-            // CameraPane 11 [L CameraSprInfo 0x2bd600] — the watch's (0x54/0x55) and the micro camera's
-            // (0x52/0x53) viewfinder: the frame texture over the whole screen + four corner brackets
-            // (sprite 3 h-flipped by flag 0x40). Sprite 0 is the photo flash, hidden at rest and shown
-            // by `HUD_UpdateCameraPane` 0x1a12d8 only during its post-shot countdown; sprite 8 (flags
-            // 0x900) is 3D-positioned — neither is drawn here.
+            // CameraPane 11 [L CameraSprInfo 0x2bd600] — the Micro-Camera's (0x54/0x55) viewfinder.
+            // Sprite 1 (0,0) 512×448, uv (0,0,255,127), flags 0x0600 [L]: the frame quarter texture
+            // 0x03000055 (128×64 [D 07000005.bin]) mirror-tiled 2×2 — ONE full-screen frame (rounded
+            // corners at the screen corners, scale marks both sides, the mid brackets, the centre
+            // circle). Drawn whole, it wrapped: the user's 2×2 grid. Sprites 2-7: the mid-height
+            // brackets 0x03000056 (sprite 3 h-flipped by flag 0x40) and 0x03000057. Sprite 0 is the
+            // photo flash (shown only during `HUD_UpdateCameraPane` 0x1a12d8's post-shot countdown —
+            // hidden at rest) and sprite 8 (flags 0x900) is 3D-positioned; neither is drawn.
             ZoomOverlay::Camera => {
                 let c = gs(0x7f7f7f, 0xff);
                 let (tw56, th56) = h.tex_dims(0x0300_0056);
                 let (tw57, th57) = h.tex_dims(0x0300_0057);
-                h.quad(Anchor::Stretch, 39, 0x0300_0055, 2, 0.0, 0.0, SW, SH, [0.0, 0.0, 255.0, 127.0], (false, false), c);
-                h.quad(Anchor::Stretch, 39, 0x0300_0056, 1, 48.0, 192.0, tw56, th56, [0.0, 0.0, tw56, th56], (false, false), c);
-                h.quad(Anchor::Stretch, 39, 0x0300_0056, 1, 336.0, 192.0, tw56, th56, [0.0, 0.0, tw56, th56], (true, false), c);
+                h.tiled_quad(Anchor::Centre, 39, 0x0300_0055, 0.0, 0.0, SW, SH, [0.0, 0.0, 255.0, 127.0], 0x0600, c);
+                h.quad(Anchor::Centre, 39, 0x0300_0056, 1, 48.0, 192.0, tw56, th56, [0.0, 0.0, tw56, th56], (false, false), c);
+                h.quad(Anchor::Centre, 39, 0x0300_0056, 1, 336.0, 192.0, tw56, th56, [0.0, 0.0, tw56, th56], (true, false), c);
                 for (x, y) in [(48.0, 120.0), (432.0, 120.0), (48.0, 256.0), (432.0, 256.0)] {
-                    h.quad(Anchor::Stretch, 39, 0x0300_0057, 1, x, y, tw57, th57, [0.0, 0.0, tw57, th57], (false, false), c);
+                    h.quad(Anchor::Centre, 39, 0x0300_0057, 1, x, y, tw57, th57, [0.0, 0.0, tw57, th57], (false, false), c);
                 }
             }
-            // LaserPane 19 [L LaserSprInfo 0x2be288] — the Ronin's (0x32/0x33) frame: six solid-texture
-            // strips (top/bottom bars + four centre ticks), blend 1, colour 0x7f7f7f alpha 0x78.
+            // LaserPane 19 [L LaserSprInfo 0x2be288] — the Phoenix Samurai's (0x32/0x33) frame: six
+            // solid-texture strips (top/bottom bars + four centre ticks), blend 1, colour 0x7f7f7f
+            // alpha 0x78. Flags 0x0100 — no 0x400, no tiling [L].
             ZoomOverlay::Laser => {
                 let c = gs(0x7f7f7f, 0x78);
                 for (x, y, w, hh2, layer) in [(140.0, 64.0, 232.0, 4.0, 40), (140.0, 384.0, 232.0, 4.0, 34), (192.0, 223.0, 40.0, 2.0, 40), (280.0, 223.0, 40.0, 2.0, 40), (255.0, 160.0, 2.0, 40.0, 40), (255.0, 248.0, 2.0, 40.0, 40)] {
-                    h.quad(Anchor::Stretch, layer, SCOPE_STRIP_TEX, 1, x, y, w, hh2, [0.0, 0.0, 31.0, 31.0], (false, false), c);
+                    h.quad(Anchor::Centre, layer, SCOPE_STRIP_TEX, 1, x, y, w, hh2, [0.0, 0.0, 31.0, 31.0], (false, false), c);
                 }
             }
-            // OICWPane 17 [L OICWSprInfo 0x2be008] — the OICW twins' (0x1a/0x1b) digital zoom: a
-            // subtractive cyan full-screen tint (sprite 0, col 0x00ffffff) + the dim scope circle
-            // 0x03000141 (sprite 1, alpha 0x40). Sprites 2–6 are text sprites (the zoom readout) — the
-            // port has no reader for their text yet (the live check).
+            // OICWPane 17 [L OICWSprInfo 0x2be008] — the AIMS-20's (0x1a/0x1b) digital zoom. Sprite 0:
+            // the subtractive cyan full-screen tint (flags 0x0200, one quad). Sprite 1 (192,160)
+            // 128×128, uv (1,1,127,127), flags 0x0500 [L]: the reticle quarter texture 0x03000141
+            // (64×64 [D 07000016.bin]) mirror-tiled 2×2 into ONE circle — drawn whole it wrapped into
+            // the user's grid. Sprites 2–6 are text sprites (the zoom readout) — the port has no
+            // reader for their text yet (the live check).
             ZoomOverlay::Oicw => {
-                h.quad(Anchor::Stretch, 40, SCOPE_STRIP_TEX, 2, 0.0, 0.0, SW, SH, [0.0, 0.0, 31.0, 31.0], (false, false), gs(0x00ffff, 0xff));
-                h.quad(Anchor::Stretch, 39, 0x0300_0141, 1, 192.0, 160.0, 128.0, 128.0, [1.0, 1.0, 127.0, 127.0], (false, false), gs(0x7f7f7f, 0x40));
+                h.quad(Anchor::Centre, 40, SCOPE_STRIP_TEX, 2, 0.0, 0.0, SW, SH, [0.0, 0.0, 31.0, 31.0], (false, false), gs(0x00ffff, 0xff));
+                h.tiled_quad(Anchor::Centre, 39, 0x0300_0141, 192.0, 160.0, 128.0, 128.0, [1.0, 1.0, 127.0, 127.0], 0x0500, gs(0x7f7f7f, 0x40));
             }
         }
     }
