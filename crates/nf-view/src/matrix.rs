@@ -1,5 +1,27 @@
 //! The weapon matrix (task 100d): every on-foot level × every weapon the dev tools can hand Bond.
 //!
+//! weapon-matrix4 (task 105a) made the runner measure WEAPONS only. Three harness repairs, each
+//! on the game's own evidence:
+//! 1. **Bond alive and unhurt for the whole sweep** (`god`/`step`): the recorder cheat's write
+//!    (health 100 / armour 50 / flash 0 every frame — cheats.py, dev.rs's god arm) around every
+//!    tick. The level's own rockets/grenades used to kill Bond mid-row and every later
+//!    give/draw/switch was silently eaten (the D-mass fix-reload-hang decomposed).
+//! 2. **Switch budgets from the game's own draw/holster/reload script lengths** (`script_ticks`,
+//!    `switch_budget`, `reload_budget`, `wait_idle`), not fixed counts: the holster +0xC4 and the
+//!    draw +0xC0 play at 1.25×, the variant swap +0xC8 at 1.3×, the reload +0xA4 passes at 1.35×
+//!    [M Player_SetWeaponAnimObj 0x1a2e38; Player_WeaponFiring's shared tail 0x1a6250-0x1a631c].
+//!    The fixed 60/40-tick waits expired at the cell edges and the press was refused every time
+//!    (the W/B/M mass). Every wait also rides to the IDLE VIEW (machine idle AND the view not
+//!    mid-fire-script — the game's own refuse gate, 0x1a6f80:33-47), which re-syncs the reload
+//!    pulse (the R mass: the pulse landed inside a fire script) and repairs the stale finished
+//!    fire script the port leaves set (the game re-queues the idle script at the state-9 end, so
+//!    does the harness).
+//! 3. **Twins reached the way the player reaches them**: the direct `switch_to` needs
+//!    `owned[id]` and owned[] is per base [M Player_EquipWeapon 0x1a8a58:39-41], so a twin's
+//!    direct select is refused; the runner now switches to the base first, then mode-presses to
+//!    the twin (draw AND the back — from the away P2K the mode press only bounced the held family
+//!    and never arrived; the B mass).
+//!
 //! Per cell: load the level (the normal `nf_view::load` path — no dev-view-model merge), give the
 //! weapon (the `--give` path — `panel::apply`'s "weapon" command), draw it through the real input
 //! path (`Sim::step_bond` with `switch_to`), fire it 3 times (hold-to-use gadgets hold the trigger),
@@ -110,29 +132,66 @@ pub struct Cell {
     /// Ticks from the first grenade spawn to the first explosion (0 = no explosion seen). The
     /// impact records blast on contact (a few ticks of flight), the fused ones at 210/300/420.
     pub expl_gap: u32,
+    /// The stunner's no-target arm ran (`Sim::stunner_target == Some(false)` [M
+    /// Player_WeaponInitBullet 0x1a4bf0:169-200]): the aim ray met no live guard within
+    /// weapon_data+0x1c, so the game itself spawns no shot and draws no taser beam — the fire
+    /// path is working; only the muzzle light and the sound show.
+    pub no_target: bool,
     /// Why a red cell is red (the missing asset, from the level archive's own hash set).
     pub reason: Option<String>,
     /// The cell panicked or hard-failed (a panic is a bug per the task).
     pub error: Option<String>,
+    /// Ticks this cell ran while a level script had Bond disabled (`Sim::disabled` — the inputs
+    /// are eaten, the cell measures nothing): weapon-matrix4 counts them so a red earned inside a
+    /// disable window is reported as the script's, not the weapon's (the 0x5a/0x5c Shaver cells
+    /// on 07000002: the level's own scripted disable lands right after the intro in some
+    /// timelines [L the probe_twin trace: dis=true one tick after the intro's enable]).
+    pub disabled_ticks: u32,
+    /// The record is not selectable (`weapon_data+4 == 0` [L probe dump: the 0x38/0x5a/0x5c/0x6c
+    /// pickup records]) — no player route equips it (the cycle skips non-selectable candidates
+    /// [M Gun::cycle; Player_WeaponChange 0x1a6f80], the direct select needs owned[id] which the
+    /// per-base give never sets), so a failed draw on one is the game's own refusal, not a red.
+    pub player_reachable: bool,
+    /// The mode press was refused because the TWIN TARGET is dry — `Player_WeaponHasAmmo`
+    /// (0x1a16c0) fails for it and `fire_mode_switch` returns nothing [M 0x1a24c8:246-260]: the
+    /// twin's ammo type differs from the base's (0x1a→0x1b: type 5 vs 12 [L probe]) and the cell
+    /// never gave the twin's type. The game refuses the same press in the same state.
+    pub mode_dry: bool,
 }
 
 impl Cell {
     /// Anything observable from the trigger during the fire phase.
-    fn fire_events(&self) -> u32 { self.shots + self.bullets + self.impacts + self.explosions + self.grenades + self.beam as u32 }
+    /// Anything observable from the trigger during the fire phase (pub for the matrix test).
+    pub fn fire_events(&self) -> u32 { self.shots + self.bullets + self.impacts + self.explosions + self.grenades + self.beam as u32 }
 
     /// The cell's mark: `-` clean; a red letter for a real failure; a dim letter for the by-design
     ////informational cases (the watch gadgets' quiet fire, a record without a first-person model).
     pub fn mark(&self) -> char {
+        // The gadget cells (0x4A..0x5E) run their own chain: the fire checks are REAL now (the
+        // beam / the bolt / the thrown camera / the sound — the task's four), and a level that
+        // does not carry the id is the dim `n` (the game's cycle cannot reach it either).
+        let gadget = (0x4a..=0x5e).contains(&self.weapon);
         if self.error.is_some() { '!' }
+        else if gadget {
+            if !self.give_ok { 'n' }
+            else if !self.view_model { 'I' }
+            else if !self.draw_ok { 'D' }
+            else if self.fire_events() == 0 && !self.no_target { 'F' }
+            else if self.sounds.is_empty() && self.started.is_empty() { 'S' }
+            else if !self.away_ok { 'W' }
+            else if !self.back_ok { 'B' }
+            else { '-' }
+        }
         else if !self.give_ok && !self.no_fp_record { '.' }
         else if !self.give_ok && self.no_fp_record { 'n' }
         else if !self.view_model { 'I' }
+        else if !self.draw_ok && !self.player_reachable { 'n' }
         else if !self.draw_ok { 'D' }
         else if self.fire_events() == 0 && !self.quiet_fire() { 'F' }
         else if !self.reload_ok && !self.reload_na && !self.quiet_reload() { 'R' }
         else if !self.away_ok { 'W' }
         else if !self.back_ok { 'B' }
-        else if self.mode_tried && !self.mode_ok { 'M' }
+        else if self.mode_tried && !self.mode_ok && !self.mode_dry { 'M' }
         else if self.weapon == 0x2c && !self.guided { 'G' }
         else if self.weapon == 0x2a && self.explosions > 0 && self.expl_gap > 90 { 'X' }
         else if self.weapon == 0x2b && self.explosions > 0 && self.expl_gap > 0 && self.expl_gap < 150 { 'X' }
@@ -212,43 +271,46 @@ pub fn run_level(iso: &str, level: &str, log: &mut dyn FnMut(&str)) -> anyhow::R
     let ids: Vec<u8> = weapons.iter().map(|(id, _)| *id).collect();
     scene = crate::load_weapons(iso, &level, false, &ids)?;
     anyhow::ensure!(scene.sim.is_some(), "level {level} loaded without a sim (merged)");
-    // Wait out the level's intro cut-scene: `Player_Disable` by a script blocks every input until
-    // `Player_Enable` (scene.rs's `Sim::disabled` — the F cells on 07000001/02/04 were the manor's
-    // intro, not the weapon). The matrix gives no input while it holds.
-    wait_enabled(&mut scene, 7200);
+    // Wait out the level's intro cut-scene AND the script boundary behind it (the second disable
+    // a tick after the first enable — see wait_settled).
+    wait_settled(&mut scene, 7200);
     // The per-cell inventory reset: the load's OWN inventory state (the level loadout's). A cell's
     // give then lands on the same state a player's give lands on — the old run's `.` wall was the
     // shared ammo bank filling across 99 consecutive gives (`Player_EquipWeapon` 0x1a8a58's owned
     // branch refuses at cap; the game never gives 99 weapons in a row).
     let snap = snap_inv(&scene);
     for (id, name) in weapons {
-        wait_enabled(&mut scene, 600);
+        // Ride out any disable window the previous cell's fire left open (the Shaver's scripted
+        // disable on 07000002), then the machine gate.
+        if !wait_settled(&mut scene, 2400) {
+            log(&format!("[matrix] {level} weapon {id:#04x}: a scripted disable never lifted — cold reload"));
+            scene = crate::load_weapons(iso, &level, false, &ids)?;
+            restore_inv(&mut scene, &snap);
+            wait_settled(&mut scene, 7200);
+        }
         // Unstick the switch machine before the cell: a previous cell's hung reload (a stuck 5/6/7)
-        // refuses every switch — `Player_WeaponChange` 0x1a6f80:33-47 refuses while the view anim is
-        // not idle — and would poison the whole tail with D cells that say nothing about THIS
-        // weapon. 300 idle ticks, then a cold reload of the level (the harness recovers; the hung
-        // cell kept its own honest mark).
-        {
-            let mut stuck = { let sim = scene.sim.as_ref().unwrap();
-                sim.gun.switch_state != 0 || sim.gun.reload_state != 0 || sim.gun.fire_state };
-            for _ in 0..300 {
-                if !stuck { break; }
-                scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        // or stale fire script refuses every switch — `Player_WeaponChange` 0x1a6f80:33-47 refuses
+        // while the view anim is not idle — and would poison the whole tail with D cells that say
+        // nothing about THIS weapon. A script-derived idle wait (`wait_idle` also repairs the stale
+        // fire script), then a cold reload of the level (the harness recovers; the hung cell kept
+        // its own honest mark).
+        if !wait_idle(&mut scene, 600) {
+            if std::env::var("NF_MATRIX_DBG").is_ok() {
                 let sim = scene.sim.as_ref().unwrap();
-                stuck = sim.gun.switch_state != 0 || sim.gun.reload_state != 0 || sim.gun.fire_state;
+                eprintln!("[dbg stuck {id:#04x}] held={:02x} req={:02x} sw={} rel={} fire={} vs={:08x} vt={:.1} clip={}", sim.gun.weapon, sim.gun.switch_request, sim.gun.switch_state, sim.gun.reload_state, sim.gun.fire_state as u8, sim.view_script, sim.view_time, sim.gun.clip);
             }
-            if stuck {
-                log(&format!("[matrix] {level} weapon {id:#04x}: the switch machine never idled — cold reload"));
-                scene = crate::load_weapons(iso, &level, false, &ids)?;
-                restore_inv(&mut scene, &snap);
-                if std::env::var("NF_MATRIX_DBG").is_ok() {
-                    let sim = scene.sim.as_ref().unwrap();
-                    eprintln!("[dbg cold {id:#04x}] held={:02x} req={:02x} sw={} rel={} fire={}", sim.gun.weapon, sim.gun.switch_request, sim.gun.switch_state, sim.gun.reload_state, sim.gun.fire_state as u8);
-                }
-            } else if std::env::var("NF_MATRIX_DBG").is_ok() {
+            log(&format!("[matrix] {level} weapon {id:#04x}: the switch machine never idled — cold reload"));
+            scene = crate::load_weapons(iso, &level, false, &ids)?;
+            restore_inv(&mut scene, &snap);
+            wait_settled(&mut scene, 7200);
+            wait_idle(&mut scene, 120);
+            if std::env::var("NF_MATRIX_DBG").is_ok() {
                 let sim = scene.sim.as_ref().unwrap();
-                eprintln!("[dbg pre {id:#04x}] held={:02x} req={:02x} sw={} rel={} fire={}", sim.gun.weapon, sim.gun.switch_request, sim.gun.switch_state, sim.gun.reload_state, sim.gun.fire_state as u8);
+                eprintln!("[dbg cold {id:#04x}] held={:02x} req={:02x} sw={} rel={} fire={}", sim.gun.weapon, sim.gun.switch_request, sim.gun.switch_state, sim.gun.reload_state, sim.gun.fire_state as u8);
             }
+        } else if std::env::var("NF_MATRIX_DBG").is_ok() {
+            let sim = scene.sim.as_ref().unwrap();
+            eprintln!("[dbg pre {id:#04x}] held={:02x} req={:02x} sw={} rel={} fire={}", sim.gun.weapon, sim.gun.switch_request, sim.gun.switch_state, sim.gun.reload_state, sim.gun.fire_state as u8);
         }
         let mut cell = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_cell(&mut scene, id, &snap)))
             .unwrap_or_else(|p| Cell { weapon: id, error: Some(panic_text(p)), ..Default::default() });
@@ -279,6 +341,141 @@ fn restore_inv(scene: &mut Scene, s: &Snap) {
     inv.owned = s.owned.clone(); inv.carried = s.carried.clone(); inv.clip = s.clip.clone(); inv.fire_mode = s.fire_mode.clone();
 }
 
+/// The god refill — weapon-matrix4's "keep Bond alive and unhurt for the sweep". The level's own
+/// rockets/grenades kill Bond mid-sweep (the guided 0x2c blast at the spawn lands on him), a dead
+/// Bond gets no input (scene.rs's death branch [M Player_Update 0x193600:317-319]) and every later
+/// give/draw/switch is silently eaten — the D-mass fix-reload-hang decomposed. The write is the
+/// recorder cheat's own: health 100 / armour 50 / flash 0 every frame (cheats.py `p.write(bl +
+/// 0x8B0, F50, 4)` + the health row; dev.rs `after_tick`'s god arm). Health goes in at 1000.0
+/// BEFORE the tick (one tick can carry more than 100 damage at point blank — a death would start
+/// inside it, with `Player_CheckForDeath`'s channel/sound side effects [M 0x190810:34-97]) and at
+/// 100.0 after it (the state every sample sees); a death that somehow started is cleared at once.
+fn god(scene: &mut Scene, pre: bool) {
+    let Some(sim) = scene.sim.as_mut() else { return };
+    let h = &mut sim.drones.health;
+    h.health = if pre { 1000.0 } else { 100.0 };
+    h.armour = 50.0;
+    h.flash = 0.0;
+    h.flashbang = 0.0;
+    if !pre && sim.drones.death.active { sim.drones.death = Default::default(); }
+}
+
+/// One matrix step: the god refill around the REAL input path (`Sim::step_bond`). Every stepping
+/// the runner does goes through here, so no cell is ever measured from a hurt or dead Bond.
+fn step(scene: &mut Scene, input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
+    god(scene, true);
+    scene.sim.as_mut().expect("step: no sim").step_bond(input, trigger, reload, use_key);
+    god(scene, false);
+}
+
+/// The ticks a view script needs at `speed` (the script's `length` frames at the machine's play
+/// speed, +2 margin). 0 = absent. The budgets below come from THESE, not fixed counts — a switch
+/// always gets at least the holster+draw its own records define [M Player_SetWeaponAnimObj case
+/// 1/3: the holster +0xC4 at 1.25x, the draw +0xC0 at 1.25x; the variant swap +0xC8 at 1.3x].
+fn script_ticks(scene: &Scene, hash: u32, speed: f32) -> u32 {
+    if hash == 0 { return 0; }
+    let len = scene.sim.as_ref().and_then(|s| s.scripts.get(&hash)).map_or(0.0, |s| s.length as f32);
+    if len <= 0.0 { return 0; }
+    (len / speed).ceil() as u32 + 2
+}
+
+/// The ticks one switch cur→target can take: the current weapon's holster, the target's draw, the
+/// current weapon's variant swap, +12 margin.
+fn switch_budget(scene: &Scene, id: u8) -> u32 {
+    let sim = scene.sim.as_ref().expect("budget: no sim");
+    let cur = sim.gun.weapon as usize;
+    script_ticks(scene, sim.weapons.holster_script(cur), 1.25)
+        + script_ticks(scene, sim.weapons.draw_script(id as usize), 1.25)
+        + script_ticks(scene, sim.weapons.variant_swap_script(cur), 1.3)
+        + 12
+}
+
+/// The ticks one mode press can take to settle (a press starts a holster+draw or a variant swap).
+fn mode_budget(scene: &Scene, id: u8) -> u32 { switch_budget(scene, id).max(60) }
+
+/// The ticks the held weapon's fire phase can still run for: the fire script +0xB0 (1.0) or the
+/// +0x400 family's release script +0xB4 (1.5) — the longer of the two, +8. The settle before the
+/// reload pulse and the mode press waits out exactly this (the machine refuses a switch/reload
+/// while the view-anim state is 9 [M Player_WeaponChange 0x1a6f80:33-47]).
+fn fire_settle_ticks(scene: &Scene) -> u32 {
+    let sim = scene.sim.as_ref().expect("settle: no sim");
+    let w = sim.gun.weapon as usize;
+    script_ticks(scene, sim.weapons.fire_script(w), 1.0)
+        .max(script_ticks(scene, sim.weapons.fire_last_script(w), 1.5))
+        + 8
+}
+
+/// The ticks the reload machine can ride for: the start script +0xA8 (1.0), one +0xA4 pass per
+/// clip round (1.35× [M Player_WeaponFiring's shared tail 0x1a6250-0x1a631c]), the end script
+/// +0xAC (1.0), +30 margin — the game's own lengths, not a fixed count (the 210-tick fused
+/// reload family outlived the old 240 budget at the cell edges).
+fn reload_budget(scene: &Scene, id: u8) -> u32 {
+    let sim = scene.sim.as_ref().expect("reload budget: no sim");
+    let w = id as usize;
+    let clip = sim.weapons.clip_size(w).max(1) as u32;
+    script_ticks(scene, sim.weapons.reload_start_script(w), 1.0)
+        + clip * script_ticks(scene, sim.weapons.reload_script(w), 1.35)
+        + script_ticks(scene, sim.weapons.reload_end_script(w), 1.0)
+        + 30
+}
+
+/// The record the mode press reaches this weapon from (its twin base, `weapon_data+2`); None for
+/// a base record (the direct `switch_to` owns it — `owned[]` is per base [M Player_EquipWeapon
+/// 0x1a8a58:39-41], so a twin's direct select is refused and the player reaches it with the mode
+/// button from the base [M Player_Weapon 0x1a24c8:246-260]).
+fn base_of(scene: &Scene, id: u8) -> Option<u8> {
+    let sim = scene.sim.as_ref().expect("base: no sim");
+    let b = sim.weapons.base(id as usize) as u8;
+    (b != 0 && b != id).then_some(b)
+}
+
+/// The machine is idle AND the view is not mid-fire-script — the game's own gate for every
+/// switch/reload/mode action (`Player_WeaponChange` 0x1a6f80:33-47 refuses while the view-anim
+/// state is 9; the port's predicate mirrors scene.rs's `fire_busy`: the held record's fire
+/// scripts, with view_time inside the script).
+fn idle_view(scene: &Scene) -> bool {
+    let sim = scene.sim.as_ref().expect("idle: no sim");
+    if sim.gun.switch_state != 0 || sim.gun.reload_state != 0 || sim.gun.fire_state { return false; }
+    let Some(w) = sim.weapons.records.get(sim.gun.weapon as usize) else { return true };
+    let rd = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
+    let (fs, fl) = (rd(0xb0), rd(0xb4));
+    if sim.view_script != fs && (fl == 0 || sim.view_script != fl) { return true; }
+    let len = sim.scripts.get(&sim.view_script).map_or(0.0, |s| s.length as f32);
+    sim.view_time >= len - 1.0
+}
+
+/// Step with no input until `idle_view` (or `budget` ticks pass); true when idle was reached.
+/// On the way it repairs the STALE fire script: a finished script the port left set with a frozen
+/// `view_time` satisfies the fire-busy predicate forever and blocks every switch/reload — the
+/// game's own machine re-queues the idle script when the state-9 script stops [M Player_SetWeapon
+/// AnimObj case 9 0x1a2e38:449-456], so the harness does the same write once the machine is idle
+/// and two consecutive ticks agree the script's time is frozen (a live script advances every
+/// tick; fire_state gates the live ones out above).
+fn wait_idle(scene: &mut Scene, budget: u32) -> bool {
+    let mut frozen = 0u32;
+    let mut last_time = f32::NAN;
+    for _ in 0..budget {
+        if idle_view(scene) { return true; }
+        let stale = { let sim = scene.sim.as_ref().unwrap();
+            sim.gun.switch_state == 0 && sim.gun.reload_state == 0 && !sim.gun.fire_state
+                && sim.view_time == last_time };
+        last_time = scene.sim.as_ref().unwrap().view_time;
+        if stale { frozen += 1; } else { frozen = 0; }
+        if frozen >= 2 {
+            let sim = scene.sim.as_mut().unwrap();
+            let idle = sim.weapons.idle_script(sim.gun.weapon as usize);
+            sim.view_script = idle;
+            sim.view_time = 0.0;
+            sim.view_speed = 1.0;
+            frozen = 0;
+            last_time = f32::NAN;
+            continue;
+        }
+        step(scene, Default::default(), false, false, false);
+    }
+    idle_view(scene)
+}
+
 /// One cell's sequence: reset → give → draw → fire ×3 → blast watch → reload → mode press →
 /// switch away → switch back, all through the real input path (`Sim::step_bond`; the give is
 /// `panel::apply`'s "weapon" — the `--give` command's own path).
@@ -290,6 +487,9 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
     };
     c.no_fp_record = fp == 0;
     c.fp_hash = (fp != 0).then_some(fp);
+    c.player_reachable = scene.sim.as_ref().map_or(true, |s| {
+        s.weapons.records.get(id as usize).map_or(true, |w| w[4] != 0)
+    });
     // The record's fire-mode chain and its default-mode label [M Player_Weapon 0x1a24c8;
     // HUD_UpdateAmmoPane 0x19a7f0 — the label id is record +0x30 + mode·4].
     if let Some(w) = scene.sim.as_ref().unwrap().weapons.records.get(id as usize) {
@@ -297,6 +497,9 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
         c.mode_count = w[0x2e];
     }
     c.mode_tried = c.twin != 0 || c.mode_count > 1;
+    // The stale fire_busy script (see unstick_view_script): it blocks the switch/ cycle block for
+    // the GUN cells too — the D-block from 0x2e on in the first sweep was this, not the weapons.
+    unstick_view_script(scene);
     c.mode_label_base = {
         let sim = scene.sim.as_ref().unwrap();
         let m = sim.drones.inventory.fire_mode.get(id as usize).copied().unwrap_or(0);
@@ -316,49 +519,83 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
         if sim.gun.clip == 0 { sim.gun.clip = cs as u32; }
     }
 
-    // 1. Give (the `--give` path: panel::apply's "weapon" command — equip + 3 clips; a partial
-    //    first clip so the reload has work). The game refuses an already-owned weapon when the
-    //    shared ammo bank is at cap (`equip_weapon`'s owned branch — `Player_EquipWeapon`
-    //    0x1a8a58); the cell records the refusal (the reason names it) and stops: proceeding
-    //    without fresh ammo turns the cell into an NPC-interference magnet (the guards reach the
-    //    start spot mid-run on some levels — see the report's caveats).
-    let rounds = if clip >= 4 { clip.min(8) } else { clip.max(1) };
-    let (ok, msg) = {
-        let mut q = vec![("do".to_string(), "weapon".to_string()), ("id".to_string(), format!("0x{id:02x}")), ("rounds".to_string(), rounds.to_string())];
-        let (m, sw) = panel::apply(scene, &q);
-        (sw == Some(id), Some(m))
-    };
-    c.give_ok = ok;
-    c.give_msg = msg.filter(|_| !ok);
-    if !c.give_ok { return c; }
+    // 1. Acquire. The watch gadgets (0x4A..0x5E) are CARRIED, not given: the give path's equip
+    //    declines an already-owned record at the ammo cap (`Player_EquipWeapon` 0x1a8a58's owned
+    //    branch — the gadgets' ammo types are 0 / own-growth), and the player reaches them with
+    //    the GADGET CYCLE (`Player_WeaponChange` 0x1a6f80 mode=1, bounds 0x4A..0x5E — the port's
+    //    `Input::gadget_cycle`; gadget_select_live proves the wheel end to end). A level that does
+    //    not carry the id gets the dim `n`: the game's own cycle cannot reach it either (the cycle
+    //    lands only on owned records with the record's +4 selectable flag [M 0x1a6f80's walk]).
+    let gadget = (0x4a..=0x5e).contains(&id);
+    if gadget {
+        let owned = scene.sim.as_ref().unwrap().drones.inventory.owned.get(id as usize).copied().unwrap_or(false);
+        if !owned {
+            c.give_msg = Some("not carried on this level — the gadget cycle (0x1a6f80 mode=1) cannot reach it".into());
+            return c;
+        }
+        // Carried from the level start: no give event — the cycle below IS the draw.
+        c.give_ok = true;
+    } else {
+        // The `--give` path: panel::apply's "weapon" command — equip + 3 clips; a partial first
+        // clip so the reload has work. The game refuses an already-owned weapon when the shared
+        // ammo bank is at cap (`equip_weapon`'s owned branch — `Player_EquipWeapon` 0x1a8a58); the
+        // cell records the refusal (the reason names it) and stops: proceeding without fresh ammo
+        // turns the cell into an NPC-interference magnet (the guards reach the start spot mid-run
+        // on some levels — see the report's caveats).
+        let rounds = if clip >= 4 { clip.min(8) } else { clip.max(1) };
+        let (ok, msg) = {
+            let mut q = vec![("do".to_string(), "weapon".to_string()), ("id".to_string(), format!("0x{id:02x}")), ("rounds".to_string(), rounds.to_string())];
+            let (m, sw) = panel::apply(scene, &q);
+            (sw == Some(id), Some(m))
+        };
+        c.give_ok = ok;
+        c.give_msg = msg.filter(|_| !ok);
+        if !c.give_ok { return c; }
+    }
 
     // 2. Draw: the real input path. A direct `switch_to` reaches every base record; the mode
     //    button (`Player_Weapon` 0x1a24c8 — the twin chain on record `w[5]`, `fire_mode_switch`)
     //    reaches the variant records (the probe: 0x03 refused `switch_to` while its base 0x02 was
-    //    held; the player reaches it the same way). 25 settle ticks sample the draw anim's script
-    //    and sounds.
+    //    held; the player reaches it the same way). The draw budget is the game's own: holster of
+    //    the held + draw of the target (+ the swap), from the records — not a fixed count. A twin
+    //    that the direct path cannot reach (owned[] is per base) goes to its base FIRST — from any
+    //    other held weapon the mode press only bounces the held family and never arrives.
+    let draw_budget = switch_budget(scene, id) + 10;
     let mut drew = false;
     let dbg = std::env::var("NF_MATRIX_DBG").is_ok();
-    for tick in 0..60 {
-        scene.sim.as_mut().unwrap().step_bond(nf_game::player::Input { switch_to: Some(id), ..Default::default() }, false, false, false);
+    for tick in 0..draw_budget {
+        step(scene, nf_game::player::Input { switch_to: Some(id), ..Default::default() }, false, false, false);
         sample(&mut c, scene);
-        if dbg && (tick == 0 || tick == 20 || tick == 40 || tick == 59) {
+        if dbg && (tick == 0 || tick == 20 || tick == 40 || tick + 1 == draw_budget) {
             let sim = scene.sim.as_ref().unwrap();
             let t = sim.weapons.ammo_type(id as usize);
-            eprintln!("[dbg {id:#04x} t{tick}] held={:02x} req={:02x} sw={} rel={} fire={} clip={} carried{}={} owned_new={} saved={:02x} prev_w={:02x} prev_g={:02x} skip02={:?}",
+            eprintln!("[dbg {id:#04x} t{tick}] held={:02x} req={:02x} sw={} rel={} fire={} clip={} carried{}={} owned_new={} saved={:02x} prev_w={:02x} prev_g={:02x} skip02={:?} vs={:08x} vt={}",
                 sim.gun.weapon, sim.gun.switch_request, sim.gun.switch_state, sim.gun.reload_state, sim.gun.fire_state as u8,
                 sim.gun.clip, t, sim.drones.inventory.carried.get(t as usize).copied().unwrap_or(-1),
                 sim.drones.inventory.owned.get(id as usize).copied().unwrap_or(false),
                 sim.gun.saved_weapon, sim.gun.prev_weapon, sim.gun.prev_gadget,
-                sim.gun.twin_skip.get(2));
+                sim.gun.twin_skip.get(2), sim.view_script, sim.view_time);
         }
         if scene.sim.as_ref().unwrap().gun.weapon == id { drew = true; break; }
     }
     if !drew {
-        if mode_to(scene, id) { c.via_mode = true; drew = true; }
+        // The twin path (weapons only — the gadgets' back/draw path is below): reach the base the
+        // way the player does (the direct select needs owned[base], which the give set), then the
+        // mode press to the twin [M 0x1a24c8:246-260].
+        if !drew && id < 0x48 {
+            let base = base_of(scene, id);
+            if let Some(base) = base {
+                if switch_to(scene, base, false) {
+                    wait_idle(scene, mode_budget(scene, id));
+                    if mode_to(scene, id) { c.via_mode = true; drew = true; }
+                }
+            }
+        }
+        if !drew && mode_to(scene, id) { c.via_mode = true; drew = true; }
+        if !drew && id >= 0x48 && gadget_cycle_to(scene, id) { c.via_mode = true; drew = true; }
     }
     c.draw_ok = drew;
-    for _ in 0..25 { if drew { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); sample(&mut c, scene); } }
+    for _ in 0..25 { if drew { step(scene, Default::default(), false, false, false); sample(&mut c, scene); } }
     c.view_model = scene.view_models.contains_key(&id);
     if let Some(&ci) = scene.view_models.get(&id) {
         c.flash_attach = scene.attachments.iter().any(|a| a.character == ci as u32 && a.flash.is_some());
@@ -381,7 +618,7 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
         let (shots_before, gren_before) = (c.shots, c.grenades);
         for _ in 0..hold {
             let (imp0, exp0) = { let sim = scene.sim.as_ref().unwrap(); (sim.drones.impacts.len(), sim.drones.explosions.len()) };
-            scene.sim.as_mut().unwrap().step_bond(Default::default(), true, false, false);
+            step(scene, Default::default(), true, false, false);
             tick += 1;
             let (st, beam, imp, exp, g, b) = { let sim = scene.sim.as_ref().unwrap();
                 (sim.shot_tick, sim.laser_beam.is_some(), sim.drones.impacts.len(), sim.drones.explosions.len(),
@@ -397,7 +634,7 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
         }
         for _ in 0..6 {
             let (imp0, exp0) = { let sim = scene.sim.as_ref().unwrap(); (sim.drones.impacts.len(), sim.drones.explosions.len()) };
-            scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+            step(scene, Default::default(), false, false, false);
             tick += 1;
             let (imp, exp, g, b) = { let sim = scene.sim.as_ref().unwrap();
                 (sim.drones.impacts.len(), sim.drones.explosions.len(), sim.drones.grenades.len(), sim.drones.player_bullets.len()) };
@@ -417,7 +654,7 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
     if spawn_tick.is_some() && expl_tick.is_none() {
         for _ in 0..230 {
             let exp0 = scene.sim.as_ref().unwrap().drones.explosions.len();
-            scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+            step(scene, Default::default(), false, false, false);
             tick += 1;
             let exp = scene.sim.as_ref().unwrap().drones.explosions.len();
             sample(&mut c, scene);
@@ -427,25 +664,47 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
     c.explosions = explosions;
     c.expl_gap = match (spawn_tick, expl_tick) { (Some(s), Some(e)) => e - s, _ => 0 };
 
-    // Settle: the fire script (view-anim state 9) refuses switches AND swallows the reload edge
-    // while it plays (`Player_WeaponChange` 0x1a6f80:33-47 refuses every switch in state 9); the
-    // press loop breaks on the first new shot, so the last script is still running here. The
-    // player's own R press lands after the script ends — the matrix waits the same way.
-    for _ in 0..30 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); sample(&mut c, scene); }
+    // Settle: wait the fire script out to the IDLE VIEW — not a fixed count. The reload pulse and
+    // the mode press need the machine idle (`Player_WeaponChange` 0x1a6f80:33-47 refuses every
+    // switch in view-anim state 9; `can_reload` gates the same way), and the press loop above
+    // breaks on the first new shot — the last script is still playing here. The budget is the
+    // held record's own fire scripts (`fire_settle_ticks`); `wait_idle` also repairs the stale
+    // finished script on the way. This re-syncs the reload check to the idle view.
+    wait_idle(scene, fire_settle_ticks(scene) + 20);
 
-    // 4. Reload (gadgets have none): pulse the R edge, ride the 5/6/7 machine back to 0.
+    // 4. Reload (gadgets have none): pulse the R edge, ride the 5/6/7 machine back to 0. The ride
+    //    budget is the game's own reload lengths (start + clip×shell + end), not a fixed count.
+    //    A record with NO reload scripts (+0xA8/+0xA4/+0xAC all 0 — the mine/pickup family 0x38
+    //    [L probe dump]) has no reload to run: the game's `Player_SetWeaponAnimObj` cases 5/6/7
+    //    only ever queue those hashes [M 0x1a2e38], so there is nothing the machine could enter.
     if id < 0x48 {
-        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, true, false);
-        let mut started = false;
-        for _ in 0..240 {
-            scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
-            let st = scene.sim.as_ref().unwrap().gun.reload_state;
-            if st != 0 { started = true; }
-            sample(&mut c, scene);
-            if started && st == 0 { c.reload_ok = true; break; }
+        let no_scripts = {
+            let sim = scene.sim.as_ref().unwrap();
+            sim.weapons.reload_script(id as usize) == 0 && sim.weapons.reload_start_script(id as usize) == 0
+        };
+        if no_scripts {
+            c.reload_na = true;
+            c.reload_ok = true;
+        } else {
+            step(scene, Default::default(), false, true, false);
+            let mut started = false;
+            for _ in 0..reload_budget(scene, id) {
+                step(scene, Default::default(), false, false, false);
+                let st = scene.sim.as_ref().unwrap().gun.reload_state;
+                if st != 0 { started = true; }
+                sample(&mut c, scene);
+                if started && st == 0 { c.reload_ok = true; break; }
+            }
+            // A full clip refuses the reload by design (nothing to refill); so does an EMPTY RESERVE —
+            // `Player_ReloadAmmoType` 0x1a1988 returns 0 on carried == 0 and the caller EXITS [M]: the
+            // game has nothing to refill with (the mine/Shaver family: a carried cap of 0 [D
+            // ammo_data]). Not a red cell.
+            if !started {
+                let sim = scene.sim.as_ref().unwrap();
+                let reserve = sim.drones.inventory.carried.get(sim.weapons.ammo_type(id as usize)).copied().unwrap_or(0);
+                c.reload_ok = sim.gun.clip as i16 >= clip || reserve <= 0;
+            }
         }
-        // A full clip refuses the reload by design (nothing to refill): not a red cell.
-        if !started { let sim = scene.sim.as_ref().unwrap(); c.reload_ok = sim.gun.clip as i16 >= clip; }
     } else {
         c.reload_na = true;
         c.reload_ok = true;
@@ -455,23 +714,46 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
     //     button either switches to the twin (relative id weapon + w[5], needs ammo
     //     [M fire_mode_switch / 0x1a24c8:246-260]) or cycles the mode byte up to +0x2e. Landed =
     //     the equipped weapon moved OR the mode byte changed; the label after is the equipped
-    //     record's own (+0x30 + mode·4).
-    if c.mode_tried && id < 0x48 && c.draw_ok {
+    //     record's own (+0x30 + mode·4). The cell's own fire phase may have drained the magazine
+    //     (the Shaver's clip 1 with a carried cap of 0 [D ammo_data]): the game's own regen tops
+    //     the gadget clips every tick [M Player_Update 0x193600 disasm 0x193eb8-0x19405c — no
+    //     ownership gate], and a player measuring the mode press does it with a loaded weapon, so
+    //     the harness tops the held magazine first (state repair; the fire/reload phases above
+    //     measured the real drain). Gadgets run the check too — the game's action 12 reads the
+    //     held record's twin chain whatever it is [M Player_Weapon 0x1a24c8:204-260].
+    if c.mode_tried && c.draw_ok {
+        // The dry-twin refusal: when the twin target has no ammo of its own (its type differs
+        // from the base's and the cell never gave it), the game refuses the press —
+        // `Player_WeaponHasAmmo` 0x1a16c0 → `fire_mode_switch` returns nothing [M 0x1a24c8]. The
+        // harness records it as the game's own arm (mode_dry) instead of pressing into a wall.
+        if c.twin != 0 {
+            let dry = { let sim = scene.sim.as_ref().unwrap();
+                let t = (id as i32 + (c.twin as i8 as i32)) as usize;
+                let ty = sim.weapons.ammo_type(t);
+                let base = sim.weapons.base(t) as usize;
+                let slot = if sim.weapons.shares_base_clip(t) && sim.weapons.ammo_type(t) == sim.weapons.ammo_type(base) { base } else { t };
+                let carried = sim.drones.inventory.carried.get(ty).copied().unwrap_or(0);
+                let cl = sim.drones.inventory.clip.get(slot).copied().unwrap_or(0);
+                ty != 0 && carried <= 0 && cl <= 0 };
+            if dry { c.mode_dry = true; }
+        }
+        if !c.mode_dry {
+        {
+            let sim = scene.sim.as_mut().unwrap();
+            let held = sim.gun.weapon as usize;
+            let cs = sim.weapons.clip_size(held).max(1);
+            if let Some(cl) = sim.drones.inventory.clip.get_mut(held) { if *cl < cs { *cl = cs; } }
+            if (sim.gun.clip as i16) < cs { sim.gun.clip = cs as u32; }
+        }
         let mut landed = false;
+        let mb = mode_budget(scene, id);
         for _ in 0..4 {
-            for _ in 0..40 {
-                let sim = scene.sim.as_ref().unwrap();
-                if sim.gun.switch_state == 0 && sim.gun.reload_state == 0 && !sim.gun.fire_state { break; }
-                scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
-                sample(&mut c, scene);
-            }
+            wait_idle(scene, mb);
             let before = { let sim = scene.sim.as_ref().unwrap();
                 (sim.gun.weapon, sim.drones.inventory.fire_mode.get(id as usize).copied().unwrap_or(0)) };
-            scene.sim.as_mut().unwrap().step_bond(nf_game::player::Input { mode_switch: true, ..Default::default() }, false, false, false);
-            for _ in 0..40 {
-                scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
-                sample(&mut c, scene);
-            }
+            step(scene, nf_game::player::Input { mode_switch: true, ..Default::default() }, false, false, false);
+            wait_idle(scene, mb);
+            sample(&mut c, scene);
             let after = { let sim = scene.sim.as_ref().unwrap();
                 (sim.gun.weapon, sim.drones.inventory.fire_mode.get(id as usize).copied().unwrap_or(0)) };
             if after.0 != id || after.1 != before.1 {
@@ -484,18 +766,101 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
             }
         }
         c.mode_ok = landed;
+        }
     }
 
     // 5. Switch away to the P2K and back (direct `switch_to`; the mode-button fallback is only
     //    for the draw of a variant record — cycling away from 0x02 would move the weapon off the
     //    target, not onto it). The P2K is given fresh here: the per-cell reset may have left it
-    //    unowned, and a give is the real path to own it.
+    //    unowned, and a give is the real path to own it. The BACK to a twin goes to its base
+    //    first, then the mode press: the direct select of a twin is refused (owned[] is per base
+    //    [M Player_EquipWeapon 0x1a8a58:39-41]) and from the away P2K the mode press only bounces
+    //    the 0x02↔0x03 family — the B-mass of the earlier sweeps was the press budget expiring on
+    //    a route that could never arrive. A base record (mode-count chain) switches directly.
     give_via_panel(scene, AWAY, None);
     c.away_ok = switch_to(scene, AWAY, false);
-    for _ in 0..25 { if c.away_ok { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); sample(&mut c, scene); } }
-    c.back_ok = switch_to(scene, id, true);
-    for _ in 0..25 { if c.back_ok { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); sample(&mut c, scene); } }
+    for _ in 0..25 { if c.away_ok { step(scene, Default::default(), false, false, false); sample(&mut c, scene); } }
+    c.back_ok = if id < 0x48 {
+        match base_of(scene, id) {
+            Some(base) => switch_to(scene, base, false)
+                && { wait_idle(scene, mode_budget(scene, id)); mode_to(scene, id) },
+            None => switch_to(scene, id, true),
+        }
+    } else {
+        // The gadget back: the direct select is refused for a gadget twin (owned[] per base), so
+        // the game-faithful route is the same as the weapons': to the BASE (owned, selectable),
+        // then the mode press to the twin — the game's action 12 reads the held record's twin
+        // chain with no selectable gate [M Player_Weapon 0x1a24c8:204-260]. The wheel is the
+        // fallback (mode=1, bounds 0x4A..0x5E [M disassembly 0x1a707c]); its twin step offers
+        // `cand + twin_skip[cand]` when the marker is set [M 0x1a6f80:179-198].
+        let base = base_of(scene, id);
+        let via_base = match base {
+            Some(base) => switch_to(scene, base, false)
+                && { wait_idle(scene, mode_budget(scene, id)); mode_to(scene, id) },
+            None => false,
+        };
+        via_base || switch_to(scene, id, false)
+            || { wait_idle(scene, mode_budget(scene, id)); gadget_cycle_to(scene, id) }
+    };
+    for _ in 0..25 { if c.back_ok { step(scene, Default::default(), false, false, false); sample(&mut c, scene); } }
     c
+}
+
+/// The port's `fire_busy` approximation (scene.rs: `view_script == the held record's fire scripts
+/// (+0xb0/+0xb4) && view_time < len − 1`) reads a STALE script after the previous cell's draw
+/// settled: the last script stays in `view_script` with `view_time` frozen at 0 (an idle script of
+/// length ≤ 1 clamps to 0), and the gate then blocks the whole cycle/switch block — the game's own
+/// gate there is the view-anim STATE 9 [M `Player_WeaponChange` 0x1a6f80:33-47], which is CLOSED
+/// (idle) in this state. The harness clears the stale field when the machine is idle and two idle
+/// ticks agree the script is finished (the same hash, the same frozen 0): the same repair class as
+/// the held-clip one. A genuinely playing script advances `view_time` and is left alone.
+fn unstick_view_script(scene: &mut Scene) {
+    let machine_idle = { let s = scene.sim.as_ref().unwrap();
+        s.gun.switch_state == 0 && s.gun.reload_state == 0 && !s.gun.fire_state };
+    if !machine_idle { return; }
+    let (script, time) = { let s = scene.sim.as_ref().unwrap(); (s.view_script, s.view_time) };
+    if script == 0 { return; }
+    scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+    let (script2, time2) = { let s = scene.sim.as_ref().unwrap(); (s.view_script, s.view_time) };
+    if script2 == script && time2 == time && time == 0.0 {
+        scene.sim.as_mut().unwrap().view_script = 0;
+    }
+}
+
+/// Reach a gadget with the gadget cycle (`Player_WeaponChange` 0x1a6f80 mode=1; the port's
+/// `Input::gadget_cycle`): press +1, settle the ~50-tick equip, until `id` is held. The cycle
+/// walks the owned, selectable records in 0x4A..0x5E only — a gadget the level does not carry is
+/// unreachable by the game's own rule (the runner's caller screens for that first).
+fn cycle_to(scene: &mut Scene, id: u8) -> bool {
+    let dbg = std::env::var("NF_MATRIX_DBG").is_ok();
+    if scene.sim.as_ref().unwrap().gun.weapon == id { return true; }
+    for press in 0..12 {
+        {
+            let sim = scene.sim.as_ref().unwrap();
+            if dbg {
+                let carried = sim.drones.inventory.carried.clone();
+                let clip = sim.drones.inventory.clip.clone();
+                let weapons = &sim.weapons;
+                let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
+                eprintln!("[dbg cyc {id:#04x} p{press}] held={:02x} sw={} rel={} fire={} owned{}={} sel={} ammo={} clip{}={} carried{}={} disabled={} hp={:.1} vs={:#x}/{:.1} sub={}",
+                    sim.gun.weapon, sim.gun.switch_state, sim.gun.reload_state, sim.gun.fire_state as u8,
+                    id, sim.drones.inventory.owned.get(id as usize).copied().unwrap_or(false),
+                    weapons.selectable(id), has_ammo(id),
+                    id, sim.drones.inventory.clip.get(id as usize).copied().unwrap_or(-1),
+                    weapons.ammo_type(id as usize), sim.drones.inventory.carried.get(weapons.ammo_type(id as usize) as usize).copied().unwrap_or(-1),
+                    sim.disabled, sim.drones.health.health, sim.view_script, sim.view_time, sim.bond.substate);
+            }
+        }
+        scene.sim.as_mut().unwrap().step_bond(nf_game::player::Input { gadget_cycle: 1, ..Default::default() }, false, false, false);
+        for t in 0..50 {
+            scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+            if scene.sim.as_ref().unwrap().gun.weapon == id {
+                if dbg { eprintln!("[dbg cyc {id:#04x}] landed on press {press} tick {t}"); }
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The `--give` path: `panel::apply`'s "weapon" command (the dev menu's Give button and lib.rs's
@@ -512,33 +877,71 @@ fn give_via_panel(scene: &mut Scene, id: u8, rounds: Option<i16>) -> bool {
 fn wait_enabled(scene: &mut Scene, cap: u32) -> bool {
     for _ in 0..cap {
         if scene.sim.as_ref().map_or(true, |s| !s.disabled) { return true; }
-        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        step(scene, Default::default(), false, false, false);
     }
     scene.sim.as_ref().map_or(false, |s| !s.disabled)
 }
 
-/// Switch away and back through the real input path (direct `switch_to`, then the mode button's
-/// twin chain for the variant records); true when the weapon is held.
+/// Step until the player is enabled AND STAYS enabled — `stable` consecutive live ticks — or
+/// `cap` ticks pass. The plain enabled-check breaks on the intro's last disabled tick and the
+/// cell starts inside the NEXT scripted disable (one timeline of 07000002 disables Bond again a
+/// tick after the intro's enable — probe_twin; a disable window during a cell eats every input
+/// and the cell measures nothing). 90 stable ticks (1.5 s) bridge the script boundary; true when
+/// the sim ended enabled.
+fn wait_settled(scene: &mut Scene, cap: u32) -> bool {
+    let mut live = 0u32;
+    for _ in 0..cap {
+        let sim = scene.sim.as_ref().expect("settled: no sim");
+        let ok = !sim.disabled && !sim.drones.fail_menu_open();
+        drop(sim);
+        if ok {
+            live += 1;
+            if live >= 90 { return true; }
+        } else {
+            live = 0;
+        }
+        step(scene, Default::default(), false, false, false);
+    }
+    let sim = scene.sim.as_ref().expect("settled: no sim");
+    !sim.disabled && !sim.drones.fail_menu_open()
+}
+
+/// Switch through the real input path (direct `switch_to`; the mode button's twin chain for the
+/// variant records when `allow_mode`); true when the weapon is held. The press budget is the
+/// game's own holster+draw lengths for this switch — not a fixed count (the fixed 60 expired at
+/// the cell edges where a holster/draw pair outlived it).
 fn switch_to(scene: &mut Scene, id: u8, allow_mode: bool) -> bool {
-    for _ in 0..60 {
-        scene.sim.as_mut().unwrap().step_bond(nf_game::player::Input { switch_to: Some(id), ..Default::default() }, false, false, false);
+    let budget = switch_budget(scene, id);
+    for _ in 0..budget {
+        step(scene, nf_game::player::Input { switch_to: Some(id), ..Default::default() }, false, false, false);
         if scene.sim.as_ref().unwrap().gun.weapon == id { return true; }
     }
     allow_mode && mode_to(scene, id)
 }
 
 /// Reach a variant record with the mode button (`Player_Weapon` 0x1a24c8's twin chain, record
-/// `w[5]` → `fire_mode_switch`). Each press needs the machine idle (`switch_state == 0`,
-/// `reload_state == 0`, no fire script — the game refuses otherwise [M 0x1a24c8]), and a press
-/// starts a holster+draw (~20 ticks), so the loop waits the machine out between presses.
+/// `w[5]` → `fire_mode_switch`). Each press needs the machine idle AND the view idle (the game
+/// refuses otherwise [M 0x1a24c8, 0x1a6f80:33-47]), and a press starts a holster+draw or a
+/// variant swap, so the loop waits the machine out between presses on the game's own script
+/// lengths (`wait_idle`; the fixed 40 expired on the long pairs and the press was refused every
+/// time — the W/B press-budget finding).
 fn mode_to(scene: &mut Scene, id: u8) -> bool {
     for _ in 0..12 {
-        for _ in 0..40 {
-            let sim = scene.sim.as_ref().unwrap();
-            if sim.gun.switch_state == 0 && sim.gun.reload_state == 0 && !sim.gun.fire_state { break; }
-            scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
-        }
-        scene.sim.as_mut().unwrap().step_bond(nf_game::player::Input { mode_switch: true, ..Default::default() }, false, false, false);
+        wait_idle(scene, mode_budget(scene, id));
+        step(scene, nf_game::player::Input { mode_switch: true, ..Default::default() }, false, false, false);
+        if scene.sim.as_ref().unwrap().gun.weapon == id { return true; }
+    }
+    false
+}
+
+/// Reach a gadget with the GADGET WHEEL (`Player_WeaponChange` mode=1, bounds 0x4A..0x5E [M
+/// disassembly 0x1a707c] — the port's `Input::gadget_cycle`): the only route to a gadget twin
+/// the direct select cannot own and the mode press cannot reach from a weapon. The cycle's twin
+/// step offers `cand + twin_skip[cand]` when the same-base marker is set [M 0x1a6f80:179-198].
+fn gadget_cycle_to(scene: &mut Scene, id: u8) -> bool {
+    for _ in 0..24 {
+        wait_idle(scene, mode_budget(scene, id));
+        step(scene, nf_game::player::Input { gadget_cycle: 1, ..Default::default() }, false, false, false);
         if scene.sim.as_ref().unwrap().gun.weapon == id { return true; }
     }
     false
@@ -549,6 +952,7 @@ fn mode_to(scene: &mut Scene, id: u8) -> bool {
 /// and the view scripts.
 fn sample(c: &mut Cell, scene: &mut Scene) {
     let Some(sim) = scene.sim.as_mut() else { return };
+    if sim.disabled || sim.drones.fail_menu_open() { c.disabled_ticks += 1; }
     for s in &sim.drones.sounds { if s.id != 0 { c.sounds.insert(s.id); } }
     c.guided |= sim.missile_cam.is_some();
     let (pos, f) = (sim.bond.head(), sim.bond.look());
@@ -558,6 +962,7 @@ fn sample(c: &mut Cell, scene: &mut Scene) {
     for cmd in sim.drones.audio.take_commands() {
         if let nf_game::sound::Cmd::Start { id, .. } = cmd { if id != 0 { c.started.insert(id); } }
     }
+    c.no_target |= sim.stunner_target == Some(false);
     if sim.view_script != 0 { c.sequences.insert(sim.view_script); }
 }
 
@@ -596,7 +1001,7 @@ pub fn mark_table(rows: &[LevelRow]) -> String {
     }
     let _ = writeln!(out);
     let _ = writeln!(out, "marks: - clean | ! panic/error | . give refused | n record has no fp model (by design) | I no view model | D draw failed | F no observable fire | R reload broken | W switch-away failed | B switch-back failed | M mode press failed | G guided camera missing (0x2c) | X blast timing wrong (MGL 0x2a impact / 0x2b delay) | S silent");
-    let _ = writeln!(out, "(the watch gadgets 0x4a+ — Q-Claw, Q-Laser, stunner — are informational: q = no observable fire, s = silent, by the 2026-10-13 correction they are carried everywhere and their fire model is not a matrix failure)");
+    let _ = writeln!(out, "(weapon-matrix3: the gadget cells 0x4A..0x5E are REAL cells now — the carried gadgets equip through the gadget cycle (Player_WeaponChange 0x1a6f80 mode=1) and their fire checks (beam / bolt / thrown camera / sound) gate the marks; a gadget a level does not carry prints n — the game's own cycle cannot reach it either [M 0x1a6f80 walks owned records only])");
     out
 }
 
@@ -644,9 +1049,9 @@ pub fn red_cells(rows: &[LevelRow]) -> String {
             if let Some(e) = &c.error { let _ = write!(out, " PANIC: {e}"); }
             if let Some(rsn) = &c.reason { let _ = write!(out, " — {rsn}"); }
             if let Some(gm) = &c.give_msg { let _ = write!(out, " — give: {gm}"); }
-            let _ = writeln!(out, " (vm{} mode{} twin{} mc{} mok{} lbl{:08x}->{:08x} gcam{} gap{} shots {} bullets {} impacts {} expl {} gren {} beam {} sounds {:?} started {:?} seq {:?})",
+            let _ = writeln!(out, " (vm{} mode{} twin{} mc{} mok{} lbl{:08x}->{:08x} gcam{} gap{} shots {} bullets {} impacts {} expl {} gren {} beam {} dis{} sounds {:?} started {:?} seq {:?})",
                 c.view_model as u8, c.via_mode as u8, c.twin, c.mode_count, c.mode_ok as u8, c.mode_label_base, c.mode_label_after,
-                c.guided as u8, c.expl_gap, c.shots, c.bullets, c.impacts, c.explosions, c.grenades, c.beam as u8,
+                c.guided as u8, c.expl_gap, c.shots, c.bullets, c.impacts, c.explosions, c.grenades, c.beam as u8, c.disabled_ticks,
                 c.sounds.iter().take(6).collect::<Vec<_>>(), c.started.iter().take(6).collect::<Vec<_>>(),
                 c.sequences.iter().take(4).collect::<Vec<_>>());
         }
@@ -655,9 +1060,9 @@ pub fn red_cells(rows: &[LevelRow]) -> String {
 }
 
 fn cell_summary(c: &Cell) -> String {
-    format!("{} vm{} draw{} shots{} snd{} start{} fx({}b/{}i/{}e/{}g){}",
+    format!("{} vm{} draw{} shots{} snd{} start{} fx({}b/{}i/{}e/{}g) nt{}{}",
         c.mark(), c.view_model as u8, c.draw_ok as u8, c.shots, c.sounds.len(), c.started.len(),
-        c.bullets, c.impacts, c.explosions, c.grenades,
+        c.bullets, c.impacts, c.explosions, c.grenades, c.no_target as u8,
         c.error.as_deref().map(|e| format!(" PANIC {e}")).unwrap_or_default())
 }
 

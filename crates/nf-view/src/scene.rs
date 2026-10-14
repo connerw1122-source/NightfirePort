@@ -12,6 +12,28 @@ use nf_formats::character::{Skeleton, Skin};
 use nf_formats::drone::{self, DroneAnimData};
 use nf_formats::level::{Instance, Level};
 use nf_formats::placement::transform;
+
+/// weapon-matrix4: the clip view `Player_AmmoInGun` (0x1a9190) reads. [M decompile 001a9190]: a
+/// twin record (`weapon_data[w].+5 != 0`) whose ammo type matches its base (`+0x90`) reads the
+/// BASE's slot (`iVar2 = weapon_data[w].+2` unless the types differ) — one physical magazine per
+/// family, the same slot `Player_EquipWeapon` 0x1a8a58's give path fills and
+/// `Player_ReloadAmmoType` 0x1a1988:18-22 reloads (the twin clip-slot unification). The port's
+/// `Gun::has_ammo` read the twin's OWN slot — which no game write path ever fills — so a twin
+/// with a full shared magazine read as dry and every `Player_WeaponHasAmmo` (0x1a16c0) check
+/// refused it: the Shaver twins 0x5a/0x5c (ammo type 30's carried cap is 0 [D ammo_data], the
+/// shared clip[0x59] = 500 after the give) were unreachable by the mode press in the weapon
+/// matrix where the game reaches them. This is the read-side of the same unification; the
+/// runtime boundary sites are fix-reload-hang's (in flight on its own branch).
+fn clip_view(w: &nf_formats::weapon::WeaponData, clip: &[i16]) -> Vec<i16> {
+    let mut v = clip.to_vec();
+    for id in 0..v.len() {
+        let base = w.base(id) as usize;
+        if base < v.len() && base != id && w.shares_base_clip(id) && w.ammo_type(id) == w.ammo_type(base) {
+            v[id] = v[base];
+        }
+    }
+    v
+}
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Per-weapon op-1 sound id remap (docs/systems/sound.md §7 line 313): the first-person gun's animation script
@@ -307,6 +329,23 @@ pub struct Sim {
     /// The fire trigger's last-tick state — the press edge the watch pair 0x54/0x55's mode toggle ORs
     /// in (`Player_Weapon` 0x1a24c8's `Input_Action(slot, 9, 4)`) (fix-weapon-modes).
     pub prev_trigger: bool,
+    /// fix-weapon-anims: the idle-alert substate (`BLData+0x959`, value 1 while the +0xCC fidget
+    /// script plays) [M `Player_SetWeaponAnimObj` 0x1a2e38:79-136]. Set when the idle counter
+    /// (`drones.aims_idle`, `+0x93a`) crosses the game's 0x14*FRAME_RATE_INT threshold and the
+    /// record's idle-alert script (+0xCC) queues; cleared when the fidget stops (back to +0xA0) or
+    /// when anything else displaces it (the game resets +0x959 in every non-idle state [M :40-58]).
+    pub view_alert: bool,
+    /// fix-weapon-anims: last tick's aiming input — the aim raise/lower edge (`Player_Weapon`
+    /// 0x1a24c8:117-152 queues +0xB8 at 1.25 on the aim-on edge and +0xBC at 1.25 (or +0xB8 played
+    /// REVERSE — the port plays it forward, deviation documented) on the aim-off edge, from the
+    /// fully idle machine).
+    pub prev_aiming: bool,
+    /// fix-weapon-anims: the aim raise/lower script currently playing (`Player_Weapon` 0x1a24c8:117-152
+    /// — the raise +0xB8 @1.25 is the game's state 0xF, the lower +0xBC @1.25 (or +0xB8 reversed) is
+    /// state 0x10). Some(hash): the hash this anim plays; cleared when it stops (back to idle) or when
+    /// another script displaces it. Only records with +0xB8 (the snipers, the AIMS-20 pair, the
+    /// micro-camera pair [D census]) raise/lower through scripts.
+    pub view_aim_anim: Option<u32>,
     /// fix-weapon-fire-modes: the guided-missile camera (`Bullet_init` 0x12c5a0:234-254 for a weapon
     /// record with `+0x6C & 4` — only the AT-420 Sentinel 'Guided' 0x2C [L ee_start_05.bin]). While
     /// `Some`, the view rides the projectile: position/direction = the bullet's [M
@@ -1645,12 +1684,21 @@ impl Sim {
         // failed throw: the game plays the 26-frame throw script and blocks switching until it ends).
         // The refused set is {1, 3, 5, 6, 7, 8, 9, 0xb, 0xd, 0xe, 0xf, 0x10} — the reload states 5/6/7 are in
         // it: a reload always completes before a switch can start [M 0x1a6f80:33-47; fix-player3].
-        let fire_busy = self.weapons.records.get(self.gun.weapon as usize).is_some_and(|w| {
+        let fire_busy = self.gun.fire_state && self.weapons.records.get(self.gun.weapon as usize).is_some_and(|w| {
             let rd = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
             let len = |h: u32| self.scripts.get(&h).map_or(0.0, |s| s.length as f32);
             let (fs, fl) = (rd(0xb0), rd(0xb4));
             (self.view_script == fs || (fl != 0 && self.view_script == fl)) && self.view_time < len(self.view_script) - 1.0
         });
+        // weapon-matrix4: the gate now ANDs the machine's own state-9 flag (`gun.fire_state`,
+        // set by the fired path exactly when `Player_SetFiringAnim` 0x1a3c70:50-54 enters view
+        // state 9, cleared at the script end [M 0x1a2e38 case 9:449-456]). The hash predicate
+        // alone OVER-REFUSED when a record's idle script IS its fire script — the Shaver/mine
+        // family 0x5a: +0xA0 == +0xB0 == 0x060004ea (len 2) [L probe dump weapon_data] — so the
+        // machine read fire-busy while merely idle and every switch/reload/regen gate starved
+        // forever (the matrix's stuck-machine wedges before 0x38/0x39/0x5b/0x62 on 07000002).
+        // The game gates on `anim+0xF4 == 9` [M Player_WeaponChange 0x1a6f80:33-47], a MACHINE
+        // state: the idle loop playing the same hash is state 0, and switching works there.
         // The per-tick clip regen [M Player_Update 0x193600 disasm 0x193eb8-0x19405c]: while the view-anim
         // state is not 9 (the port's `fire_busy` gate), six clip slots refill +FRAME_RATE_MUL toward their
         // weapon's `weapon_data[w].clip_size` (+0x92): clip[0x4A] (+0x530) and clip[0x4E] (+0x560) and
@@ -1691,7 +1739,7 @@ impl Sim {
                     let mode_count = w[0x2e];
                     let mode = self.drones.inventory.fire_mode.get(self.gun.weapon as usize).copied().unwrap_or(0);
                     let carried = self.drones.inventory.carried.clone();
-                    let clip = self.drones.inventory.clip.clone();
+                    let clip = clip_view(&self.weapons, &self.drones.inventory.clip);
                     let weapons = &self.weapons;
                     let has_ammo = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
                     let sw = nf_game::gun::fire_mode_switch(self.gun.weapon, twin, mode_count, mode, has_ammo);
@@ -1701,6 +1749,13 @@ impl Sim {
                         if cur >= 1 && cur <= 0x47 { self.gun.prev_weapon = cur; }
                         if cur >= 0x4a && cur <= 0x5e { self.gun.prev_gadget = if cur == 0x55 { 0x54 } else { cur }; }
                         self.gun.switch_request = new;
+                        // fix-fire-modes3 [M 0x1a24c8:213-228]: a LANDED twin switch resets the zoom —
+                        // `BLData+0x8D4 = 1.0` unconditionally, then `+0x8D8 = weapon_data[twin]+0x88`
+                        // (the twin's own zoom cap) with `+0x8D4` clamped to it. The port's cap follows
+                        // the equipped record per tick already (the zoom block reads +0x88 of the held
+                        // weapon), so the reset is `zoom`/`zoom_target` = 1.0.
+                        self.zoom = 1.0;
+                        self.zoom_target = 1.0;
                     }
                     if let Some(m) = sw.new_mode {
                         if let Some(fm) = self.drones.inventory.fire_mode.get_mut(self.gun.weapon as usize) { *fm = m; }
@@ -1733,7 +1788,7 @@ impl Sim {
         if self.gun.switch_state == 0 && self.gun.reload_state == 0 && !fire_busy {
             let owned = self.drones.inventory.owned.clone();
             let carried = self.drones.inventory.carried.clone();
-            let clip = self.drones.inventory.clip.clone();
+            let clip = clip_view(&self.weapons, &self.drones.inventory.clip);
             let weapons = &self.weapons;
             let ammo_type_of = |w: u8| weapons.ammo_type(w as usize);
             let flags_of = |w: u8| weapons.flags(w as usize);
@@ -2140,7 +2195,21 @@ impl Sim {
         Some(([m[3][0], m[3][1], m[3][2]], f[0].atan2(f[2]), (f[1] / l).clamp(-1.0, 1.0).asin(), fov))
     }
 
+    /// The clip slot the held weapon reads and writes: the BASE's when the record is a twin (+0x05
+    /// set) sharing the base's ammo type, else its own [M `Player_ReloadAmmoType` 0x1a1988:18-22 —
+    /// `iVar4 = base` routes `clip[0x1B8 + slot·0xC]` to the base for such twins; the give path's
+    /// `pickup.rs clip_slot` is the same unification]. One physical magazine per twin family.
+    fn clip_slot(&self, id: usize) -> usize {
+        let base = self.weapons.base(id) as usize;
+        if self.weapons.shares_base_clip(id) && self.weapons.ammo_type(id) == self.weapons.ammo_type(base) { base } else { id }
+    }
+
     fn run(&mut self, pos: [f32; 3], sph: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool, reload: bool, use_key: bool) {
+        // fix-weapon-anims: the aim raise/lower edges — computed from run's own aiming param before
+        // the level is overwritten (the raise arm deep in the view chain reads the EDGE).
+        let aim_on_edge = aiming && !self.prev_aiming;
+        let aim_off_edge = !aiming && self.prev_aiming;
+        self.prev_aiming = aiming;
         // The drones aim at and look for Bond's chest (`Drone_View_Bones`; one point here, 0.45 under the eye).
         let hanging = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
         // The game's collision capsule off `pos` (= Bond's obj+0x30): standing (case 0/6) ends
@@ -2159,7 +2228,12 @@ impl Sim {
         // `Player_WeaponFiring` → `Player_WeaponInitBullet` from the eye along the view (*deviation*: no auto-aim and
         // no aim-point ray yet); the first-person fire script's sound 0x403 feeds the drones' hearing.
         // The gun's clip and spare rounds live in Bond's inventory (BLData `+0x1B8`, `+0x170`), which pickups fill.
-        let (wi, t) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
+        // The clip slot is the game's SHARED one [M Player_ReloadAmmoType 0x1a1988:18-22: a twin record
+        // (+0x05 set) whose ammo type matches its base reloads `clip[base]` — one physical magazine per
+        // family; pickup.rs `clip_slot` (the give path) already equips into it]. The port read/wrote the
+        // twin's own slot here, so every 0x02↔0x03 mode hop read the never-filled clip[0x03] (= 0) — the
+        // magazine zeroed and the next tick auto-reloaded, spending carried rounds the game never spends.
+        let (wi, t) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
         if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(wi), self.drones.inventory.carried.get(t)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
 
         // Weapon switch state machine (`Player_SetWeaponAnimObj` 0x1a2e38 + `Player_WeaponSelect` 0x1a2cc0):
@@ -2171,6 +2245,16 @@ impl Sim {
         // While switching, the trigger and reload are blocked (the game's state 1/3 checks `AnimScriptIsStopped`).
         let log_switch = std::env::var_os("NF_SOUNDLOG").is_some();
         let mut switching = self.gun.switch_state != 0;
+        // fix-weapon-anims2: the script-frame watermark the op-1 sound dispatch below measures its
+        // [prev_frame+1, new_frame] window against — captured BEFORE the switch machine advances the
+        // draw/holster/variant scripts (its tail advance at the end of the `if switching` block), so
+        // the window covers the whole tick's advance. Captured after it (where fix-weapon-anims had
+        // left it), the switch's advance had already moved view_time before the watermark, the window
+        // came up empty (from = to) and NO op-1 fired while a switch played — the Samurai's draw whoosh
+        // (0x5c7 at frame 90 of its 107-frame draw script) went silent on every switch [M
+        // AnimProcessScriptCmds runs per AnimObjectUpdate on the PLAYING script — holster/draw included,
+        // 0x1c1b38; the game's window is (prev frame, new frame] of the same tick].
+        let (prev_script, prev_time) = (self.view_script, self.view_time);
         // State 0 → 1/3/8: a switch request starts the holster (`Player_WeaponSelect` 0x1a2cc0).
         // The reload states block it here too (the game's refused view-state set {1,3,5,6,7,8,9,0xb,
         // 0xd..0x10} covers 5/6/7): a pending request simply waits for the reload to finish [M 0x1a6f80:33-47].
@@ -2179,6 +2263,16 @@ impl Sim {
             let req_id = self.gun.switch_request;
             let cur_base = self.weapons.base(cur_id as usize);
             let req_base = self.weapons.base(req_id as usize);
+            // fix-weapon-anims2: the switch DISPLACES a playing fire script — `Player_WeaponSelect`
+            // 0x1a2cc0 writes the view state +0xF4 = 8/3/1 directly, discarding the fire state 9 (and
+            // the +0x95C spawn latch with it — the game's case-9 tail can never run once the state is
+            // gone). The port kept gun.fire_state/latch set across the switch: the next weapon's first
+            // pull then hit the state-9 suppress (`was_fire_state && flags & 0x100400 && +0x44 != 0`)
+            // and queued NO fire script — the sweep's 0x41/0x42/0x43 cells never fired after a cell
+            // whose fire script was still playing at its section end. (The fire script's loop sounds
+            // already die at the holster arm below [M 0x1a2cc0:33-38].)
+            self.gun.fire_state = false;
+            self.gun.latch = false;
             // `Player_WeaponSelect` variant-swap path: same base weapon AND same first-person model → play +0xC8
             // at 1.3x, state 8 (a fast swap without holster/draw) [M 0x1a2cc0 lines 13-29].
             // fix-silencer-modes: the twin-variant cycle marker [M Player_WeaponSelect 0x1a2cc0:15-16]
@@ -2247,9 +2341,16 @@ impl Sim {
                     if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
                     if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
-                    let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
+                    let (nwi, nt) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
                     if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
-                    let draw = self.weapons.draw_script(nwi);
+                    // fix-reload-hang2: the script lookups use the weapon's OWN record — the game reads
+                    // `weapon_data[cur*0x10c + 0xc0]` for the draw [M Player_SetWeaponAnimObj 0x1a2e38
+                    // case 3: iVar15 = the current weapon's own id · 0x10c] — only the clip array is
+                    // routed to the base slot [M Player_ReloadAmmoType 0x1a1988:18-22]. Feeding
+                    // `nwi` (the unified slot) here started the BASE's draw for twin 0x38 while the
+                    // state-3 wait measured 0x38's own script — the wait never finished and the switch
+                    // machine wedged (fix_weapon_sounds_live lost every later draw sound).
+                    let draw = self.weapons.draw_script(self.gun.weapon as usize);
                     if draw != 0 {
                         if log_switch { eprintln!("[weapon-switch] tick {}: state 0→3 draw {:08x} (weapon {:#x})", self.drones.frame, draw, req_id); }
                         self.view_script = draw;
@@ -2259,7 +2360,8 @@ impl Sim {
                         let s = if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { 0x281 } else { 0x282 };  // gadgets 0x281, weapons 0x282 [M disasm 0x1a385c]
                         self.drones.audio.play(s);
                     } else {
-                        self.view_script = self.weapons.idle_script(nwi);
+                        // The game's no-draw path plays the own record's idle (+0xa0) [M 0x1a2e38 case 3].
+                        self.view_script = self.weapons.idle_script(self.gun.weapon as usize);
                         (self.view_time, self.view_speed) = (0.0, 1.0);
                     }
                 }
@@ -2279,10 +2381,12 @@ impl Sim {
                         if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
                         if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                         self.gun.weapon = self.gun.switch_request;
-                        let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
+                        let (nwi, nt) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
                         if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
-                        // Start the draw script (+0xC0) at 1.25x [M case 2 → case 3].
-                        let draw = self.weapons.draw_script(nwi);
+                        // Start the draw script (+0xC0) at 1.25x [M case 2 → case 3]. The script lookup
+                        // is the weapon's OWN record (0x1a2e38 case 3), not the clip slot — see the
+                        // instant-swap arm above.
+                        let draw = self.weapons.draw_script(self.gun.weapon as usize);
                         if draw != 0 {
                             if log_switch { eprintln!("[weapon-switch] tick {}: state 1→3 draw {:08x} (weapon {:#x})", self.drones.frame, draw, self.gun.weapon); }
                             self.view_script = draw;
@@ -2290,7 +2394,8 @@ impl Sim {
                             self.gun.switch_state = 3;
                         } else {
                             if log_switch { eprintln!("[weapon-switch] tick {}: state 1→0 idle (no draw script) {:#x}", self.drones.frame, self.gun.weapon); }
-                            self.view_script = self.weapons.idle_script(nwi);
+                            // The own record's idle [M 0x1a2e38 case 3], not the clip slot's.
+                            self.view_script = self.weapons.idle_script(self.gun.weapon as usize);
                             (self.view_time, self.view_speed) = (0.0, 1.0);
                             self.gun.switch_state = 0;
                         }
@@ -2358,6 +2463,7 @@ impl Sim {
                 aim
             };
             let was_reloading = self.gun.reload_state;
+            // (fix-weapon-anims2: the prev-script watermark moved above the switch machine — see there.)
             // The pre-shot fire-script state (`anim+0xF4 == 9`): the game SKIPS `Player_SetFiringAnim`
             // — the running fire script is NOT restarted — when the view state is already 9 and
             // `weapon_data+0x68 & 0x100400` [M 0x1a5460:664-672: `if ((*(short *)(...+0xf4) == 9) &&
@@ -2393,19 +2499,63 @@ impl Sim {
             // and spawns on the press tick (+0x44 == 0 [M 0x1a5460:688-693]) — the camera gadget
             // 0x54 (idle 0x060005A6, no fire scripts [D probe]) photographs through this path.
             let hands = self.gun.weapon == 0x47;
+            // fix-fire-modes3 — the Phoenix Samurai's charge (the base-0x33 records: the overcharge
+            // 0x32 and the beam 0x33 both carry base id 0x33 [L ee_start_05.bin @ 0x2bf150]) while the
+            // view anim is in the fire state (`anim+0xF4 == 9`) [M Player_WeaponFiring 0x1a5460:186-202]:
+            // - the charge drain [M 0x1a5460:197-201]: `clip[0x33] (BLData+0x41C) = clip_size −
+            //   clip_size·frame/falen` while the frame is under the held record's fire-anim length
+            //   (+0x44). Only the OVERCHARGE 0x32 has a length (280 — the charge script 0x060007c2
+            //   [L]); the beam 0x33's +0x44 is 0 so its arm never runs. The drain is what makes the
+            //   ammo pane's ammo-type-31 percentage (`HUD_UpdateAmmoPane` 0x19a7f0:
+            //   `(min(100−clip, 88)·100)/88`, spent %) climb 0→100 across the charge — the PCSX2
+            //   pass's "the HUD number climbs 0 → 100".
+            // - the charge glow [M 0x1a5460:193-196]: `Light_Create(radius 5.0, intensity
+            //   2·(frame/falen)·0.75, the view model's bone 0, rgb (0,0xff,0xff) — cyan, channel 0,
+            //   life 0, kind 1, flicker 0)`, brightening across the charge ("the gun's glow
+            //   brightens"). The sim approximates the bone-0 origin with the camera (the muzzle
+            //   light's standing deviation). The game's unconditional `Rand_Rand(0)` flicker draw
+            //   (Light_Create 0x1cc3d8) lands here — before `update_with`'s spread draws — matching
+            //   its position inside `Player_WeaponFiring`, ahead of the trigger read.
+            if self.gun.fire_state && u16::from_le_bytes([w[2], w[3]]) == 0x33 {
+                let falen = u16::from_le_bytes([w[0x44], w[0x45]]);
+                let fire_h = u32::from_le_bytes(w[0xb0..0xb4].try_into().unwrap());
+                // The port's script frames are time+1 (the same convention `release_frame_reached`
+                // uses): the game reads AnimListBuild's +0x90 after the tick's advance.
+                let frame = self.view_time + 1.0;
+                if falen > 0 && self.view_script == fire_h && frame < falen as f32 {
+                    let clip_size = i32::from(u16::from_le_bytes([w[0x92], w[0x93]]));
+                    // The game stores a plain C float→s16 conversion (truncation) [M 0x1a5460:197-201].
+                    let v = (clip_size as f32 - clip_size as f32 * frame / falen as f32) as i16;
+                    if let Some(c) = self.drones.inventory.clip.get_mut(0x33) { *c = v; }
+                    if matches!(self.gun.weapon, 0x32 | 0x33) { self.gun.clip = v.max(0) as u32; }
+                    let pos = [camera[0], camera[1], camera[2]];
+                    self.drones.lights.create(5.0, 1.5 * frame / falen as f32, pos, [0, 0xff, 0xff], 0, 0, 1, 0, &mut self.drones.rng);
+                }
+            }
             let (trigger, reload) = if can_fire && (has_fire_script || !hands) { (trigger, reload) } else { (false, reload) };
             let fired = self.gun.update_with(trigger, reload, busy, params);
             // fix-gadgets-live: the AIMS-20's idle timer (`BLData+0x93a`): the game increments it while
             // the view anim is idle and resets on any fire/reload/switch anim [M Player_SetWeaponAnimObj
             // 0x1a2e38:41-57]; it gates the view model's side lights (0x1a5460:264/348).
-            self.drones.aims_idle = if self.gun.reload_state == 0 && self.gun.switch_state == 0 && !fired {
+            // fix-weapon-anims: the game increments +0x93a ONLY while the view state is 0 — a fire
+            // script playing (state 9) resets it every tick [M `Player_SetWeaponAnimObj` 0x1a2e38:40-58:
+            // "if (+0xf4 == 0 && byte[@DAT_002a3a1c + slot*0x158] == 0) { +0x93a++ } else { +0x959=0;
+            // +0x93a=0; +0x93e=0x14*FRAME_RATE_INT }"]. The port counted through the fire script (only
+            // the fired tick cleared it), so the AIMS lights and the idle-alert threshold saw a counter
+            // that had already crossed 20 when the gun went quiet — the lights snapped on the tick a
+            // fire script ended instead of 20 ticks later. fire_state covers states 9/0xb/0xc.
+            // fix-weapon-anims: the aim raise/lower is the game's view state 0xF/0x10 — a non-idle
+            // state for the +0x93a counter [M 0x1a2e38:40-58]; the port's anim-only raise marks it
+            // with view_aim_anim so the counter resets while the scope raises/lowers (else the
+            // +0xCC fidget fires mid-raise: the sniper test caught the alert playing at tick ~20
+            // of an aim hold).
+            self.drones.aims_idle = if self.gun.reload_state == 0 && self.gun.switch_state == 0 && !self.gun.fire_state && self.view_aim_anim.is_none() {
                 self.drones.aims_idle.saturating_add(1)
             } else {
                 0
             };
             // Advance the reload state machine [M Player_SetWeaponAnimObj cases 5/6/7].
             let new_reload_state = self.gun.reload_tick(trigger, params);
-            let (prev_script, prev_time) = (self.view_script, self.view_time);
             let rd = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
             let flags = rd(0x68);
             let fire_anim_len = rd(0x44);
@@ -2456,7 +2606,14 @@ impl Sim {
                 (self.view_script, self.view_time, self.view_speed) = (rd(0xa0), 0.0, 1.0);
             } else {
                 let len = self.scripts.get(&self.view_script).map_or(0.0, |s| s.length as f32);
-                self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0));
+                // fix-weapon-anims: the switch machine above owns the advance while the holster/draw/
+                // variant-swap cycle runs (its shared advance at its tail). This branch advanced too,
+                // so every holster/draw/variant script played ~2x its rate — the Frinesi holster
+                // measured 11-12 ticks instead of the game's ceil((30-1)/1.25) = 24 [D census len 30;
+                // M 0x1a2e38 case 1 waits AnimScriptIsStopped at the script's own 1.25 rate].
+                if self.gun.switch_state == 0 {
+                    self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0));
+                }
                 // Gate the idle-loop reset on switch_state == 0 — fists has draw_script == idle_script
                 // (both 0x6000485), so without this gate the reset fires during state 3 (drawing), zeroing
                 // view_time before the state-3→0 check can succeed, leaving switch_state stuck at 3 forever.
@@ -2478,6 +2635,81 @@ impl Sim {
                     } else {
                         if flags & 0x1000 == 0 { self.view_script = rd(0xa0); (self.view_time, self.view_speed) = (0.0, 1.0); }
                         self.gun.end_fire_state();
+                    }
+                }
+                // fix-weapon-anims: the idle-alert fidget (`Player_SetWeaponAnimObj` 0x1a2e38:79-136).
+                // In view state 0 with substate +0x959 == 0, once the idle counter (+0x93a) reaches
+                // 0x14*FRAME_RATE_INT = 1200 idle ticks [M 0x1a2e38:83; L bldata.md +0x93E = 1200], a record
+                // with an idle-alert script (+0xCC) queues it at 1.0 ONCE and sets substate 1 [M :79-136];
+                // when the fidget stops the idle script re-queues, substate clears and the counter
+                // resets [M :63-73] — so the fidget repeats every (1200 + alert length) idle ticks. Any
+                // non-idle state resets substate + counter [M :40-58]; here that is the displaced-script
+                // arm (a fire/reload/switch script replaced the fidget mid-play).
+                let idle_hash = rd(0xa0);
+                let alert_hash = rd(0xcc);
+                if alert_hash != 0 {
+                    if self.view_alert && self.view_script != alert_hash {
+                        // Displaced (fire/reload/switch queued over the fidget): substate + counter
+                        // reset [M 0x1a2e38:40-58].
+                        self.view_alert = false;
+                        self.drones.aims_idle = 0;
+                    } else if self.view_alert && self.view_script == alert_hash && self.view_time >= len - 1.0 {
+                        // The fidget stopped: idle re-queues, substate 0, counter reset [M :63-73].
+                        self.view_script = idle_hash;
+                        (self.view_time, self.view_speed) = (0.0, 1.0);
+                        self.view_alert = false;
+                        self.drones.aims_idle = 0;
+                    } else if !self.view_alert && self.view_script == idle_hash
+                        && self.gun.switch_state == 0 && self.gun.reload_state == 0 && !self.gun.fire_state
+                        && self.drones.aims_idle >= 1200 {
+                        // The threshold: 0x14·FRAME_RATE_INT = 1200 idle ticks [M 0x1a2e38:83
+                        // `(short)FRAME_RATE_INT * 0x14 <= +0x93a`; FRAME_RATE_INT = 60 [L
+                        // docs/fields/bldata.md +0x93E "= n_INT·0x14 = 1200" (the EE snapshot's own
+                        // default) and +0x95E "= (char)n (60)"; door.md's n·6 = 360-tick auto-close
+                        // corroborates]. fix-weapon-anims guessed 20 [S] — 100x early: the fidget kept
+                        // restarting every ~20 idle ticks and the idle script never reached its later
+                        // frames (the Samurai's idle loop was choked before its own op-1s).
+                        self.view_script = alert_hash;
+                        (self.view_time, self.view_speed) = (0.0, 1.0);
+                        self.view_alert = true;
+                    }
+                }
+                // fix-weapon-anims: the aim raise/lower scripts (`Player_Weapon` 0x1a24c8:117-152).
+                // The aim toggle's edge from the fully idle machine queues the raise +0xB8 at 1.25
+                // (the game's state 0xF — on its stop the aim bit sets [M 0x1a2e38:554-561]; the port
+                // keeps the aim camera instant — deviation in the report) or the lower +0xBC at 1.25
+                // (state 0x10); a record without +0xBC plays +0xB8 REVERSE via AnimScriptAddReverse
+                // [M 0x1a24c8:138-152] — the port runs the raise backwards with a negative script
+                // speed. Another script displacing it clears the marker [M AnimScriptAdd deletes the
+                // playing scripts 0x1c6d40].
+                let raise_hash = rd(0xb8);
+                let lower_hash = rd(0xbc);
+                if let Some(cur) = self.view_aim_anim {
+                    if self.view_script != cur {
+                        self.view_aim_anim = None;
+                    } else if (self.view_speed < 0.0 && self.view_time <= 0.0)
+                        || (self.view_speed > 0.0 && self.view_time >= len - 1.0) {
+                        self.view_script = idle_hash;
+                        (self.view_time, self.view_speed) = (0.0, 1.0);
+                        self.view_aim_anim = None;
+                    }
+                } else if raise_hash != 0 && self.view_script == idle_hash
+                    && self.gun.switch_state == 0 && self.gun.reload_state == 0 && !self.gun.fire_state {
+                    if aim_on_edge {
+                        self.view_script = raise_hash;
+                        (self.view_time, self.view_speed) = (0.0, 1.25);
+                        self.view_aim_anim = Some(raise_hash);
+                    } else if aim_off_edge {
+                        if lower_hash != 0 {
+                            self.view_script = lower_hash;
+                            (self.view_time, self.view_speed) = (0.0, 1.25);
+                            self.view_aim_anim = Some(lower_hash);
+                        } else {
+                            // AnimScriptAddReverse: the raise script played backwards [M 0x1a24c8:138-152].
+                            self.view_script = raise_hash;
+                            (self.view_time, self.view_speed) = ((len - 1.0).max(0.0), -1.25);
+                            self.view_aim_anim = Some(raise_hash);
+                        }
                     }
                 }
             }
@@ -2525,6 +2757,52 @@ impl Sim {
                 }
             }
             if release {
+                'shot: {
+                // `Player_WeaponInitBullet` 0x1a4bf0's FIRST branch [M disasm 0x1a4c30-0x1a4cd4]: a record
+                // whose +0x68 carries 0x20000 — the Remote Mine's detonator 0x38 (+0x68 = 0x00020010
+                // [L ee_start_05.bin]; the mine 0x37 = 0x00014090 lacks the bit; 0x39 is the inert
+                // sibling) — never shoots: it walks the objects, marks every player-owned bullet of
+                // this base with the 10-tick detonate fuse (BD+0xFC = 10.0, `swc1 f0,252(a1)`;
+                // `Bullet_DoTrails` 0x12d890:268-281 counts it down and blasts at < 0 with
+                // `Explode_Create(record+0x08, record+0x08, record+0x0C, …)` — radius 8 / damage 100
+                // [L record 0x37]), then `Player_WeaponHasAmmo(base)` arms the switch back to the
+                // mine (BL+0x63 = base, `sb v0,99(v1)` [M 0x1a4cb8]) — or, dry, clears the base's
+                // owned byte (+0x1BA lane [M bldata.md], `sb zero,442(v0)` [M 0x1a4cd0]) and lets
+                // `Player_GetBestWeapon` 0x1a9680 write the request [M 0x1a4ccc]. No bullet, no
+                // muzzle latch (+0x95b never sets in this arm), no casing.
+                if flags & 0x20000 != 0 {
+                    let base = self.weapons.base(self.gun.weapon as usize);
+                    for g in self.drones.grenades.iter_mut() {
+                        // The game's walk matches type-5 objects whose weapon record's +0x02 equals
+                        // the fired record's +0x02 and whose BD+0x30 is the firing player [M
+                        // 0x1a4c5c-0x1a4c88]; the port's grenade list is exactly those bullets, the
+                        // owner usize::MAX is the player. In-flight or resting — the walk has no
+                        // stuck filter.
+                        if g.state < 2 && self.weapons.base(g.weapon_type as usize) == base && g.owner == usize::MAX {
+                            g.range = g.travelled + 10.0; // the absolute BU+0xFC = 10.0 at the mark tick
+                        }
+                    }
+                    let base_u8 = base as u8;
+                    let carried = self.drones.inventory.carried.clone();
+                    let clip = self.drones.inventory.clip.clone();
+                    let weapons = &self.weapons;
+                    let has = nf_game::gun::Gun::has_ammo(base_u8, &carried, &clip, |t| weapons.ammo_type(t as usize), |t| weapons.flags(t as usize));
+                    if has {
+                        self.gun.switch_request = base_u8; // BL+0x63 = the mine [M 0x1a4cb8]
+                    } else {
+                        // Dry: the mine's clip and owned byte go, and GetBestWeapon takes the hand [M 0x1a4cbc-0x1a4cd4].
+                        if let Some(c) = self.drones.inventory.clip.get_mut(base_u8 as usize) { *c = 0; }
+                        if let Some(o) = self.drones.inventory.owned.get_mut(base_u8 as usize) { *o = false; }
+                        const BEST_WEAPON: [u16; 18] = [0x42, 0x32, 0x1a, 0x18, 0x1c, 0x16, 0x15, 0x08, 0x10, 0x0e, 0x0d, 0x0c, 0x12, 0x06, 0x04, 0x02, 0x0a, 0x01];
+                        let owned = self.drones.inventory.owned.clone();
+                        let base_of = |b: u8| weapons.base(b as usize) as u8;
+                        let has_ammo_fn = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
+                        if let Some(id) = self.gun.get_best_weapon(&BEST_WEAPON, base_of, &owned, has_ammo_fn) {
+                            self.gun.switch_request = id; // Player_GetBestWeapon writes BL+0x63 [M 0x1a9680 tail]
+                        }
+                    }
+                    break 'shot;
+                }
                 // fix-gadgets-live: the laser/stunner's shot-tick state, computed HERE where the
                 // refire that spent the round is known (the game's order: Player_RoundToFire 0x1a18e0
                 // spends, then Player_WeaponInitBullet 0x1a4bf0 runs on the same tick; its +0x95b
@@ -2603,7 +2881,11 @@ impl Sim {
                     let fuse = if flags70 & 0x200 == 0 {
                         (f32_at(0x1c) / speed).max(1.0)
                     } else if flags70 & 0x10000 != 0 { 300.0 } else { 210.0 };
-                    let fuse = if wt == 0x37 { 420.0 } else { fuse };
+                    // The mine 0x37 thrown by the PLAYER: BU+0xFC = 7777.0 — it waits for the
+                    // detonator and never self-detonates [M Bullet_init 0x12c5a0:196-223 — the
+                    // owner obj+0xff == 3 arm; guard-thrown mines keep 420]. The detonator's fire
+                    // re-arms the placed mines to 10.0 [M Player_WeaponInitBullet 0x1a4bf0].
+                    let fuse = if wt == 0x37 { 7777.0 } else { fuse };
                     // The blast damage: `weapon_data+0x0C` [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` →
                     // Explode_Create's f14 → EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15);
                     // radius = $f12/$f13 = weapon_data+0x08]. The `addiu $t2, $zero, 0x64` (100) is the
@@ -2626,6 +2908,8 @@ impl Sim {
                         weapon_type: self.gun.weapon as u16,
                         mesh: self.weapons.projectile_mesh(self.gun.weapon as usize),
                         owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: false,
+                        // fix-oddjob-hat: the stick latch + the homing target (BU+0x40) start clear.
+                        stuck: false, seek_target: None,
                     });
                 } else {
                     // The muzzle light runs on every shot tick for the light-gated records — the
@@ -2683,13 +2967,15 @@ impl Sim {
                         }
                     }
                 }
+                }
             }
         }
         // Write the gun's clip/spare back to the inventory. Recompute wi/t from the CURRENT weapon (not the
         // stale ones from line 410) — the switch state machine may have swapped the weapon mid-tick, and the
         // swap paths already wrote the OLD weapon's values back. Using stale wi/t here corrupts the old
-        // weapon's ammo with the new weapon's values [bug fix C-10].
-        let (cur_wi, cur_t) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
+        // weapon's ammo with the new weapon's values [bug fix C-10]. The slot is the shared base clip for
+        // twins [M 0x1a1988:18-22, `clip_slot`].
+        let (cur_wi, cur_t) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
         if let Some(c) = self.drones.inventory.clip.get_mut(cur_wi) { *c = self.gun.clip as i16; }
         if let Some(n) = self.drones.inventory.carried.get_mut(cur_t) { *n = self.gun.spare as i16; }
         self.aiming = aiming;
@@ -4252,6 +4538,10 @@ impl Scene {
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 if let Some((map, object)) = target {
                     // `NF_HIDE` applies here too (the 0xFC skip above leaves these out of the loop's check).
+                    // fix-striped-boxes: `Corona_Create` 0x18da40-48 copies `*(glist+0x44)` to obj+0xF0, so
+                    // `View_AddObjects` 0x1e62d8:33's `(obj+0xF0 & 0x8010) == 0` gate applies — a 0x10-flagged
+                    // corona glist never draws (none on the disc today; the census pins it).
+                    if level.maps[map].objects[object].flags & 0x10 != 0 { continue; }
                     if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
                     let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                     add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
@@ -4266,6 +4556,11 @@ impl Scene {
                 let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 if let Some((map, object)) = target {
+                    // fix-striped-boxes: `Wire_Create` 0x198254-5c copies `*(glist+0x44)` to obj+0xF0, so
+                    // `View_AddObjects` 0x1e62d8:33's `(obj+0xF0 & 0x8010) == 0` gate applies — a 0x10-flagged
+                    // wire glist never draws (none on the disc today; the census pins it). Ladders stay
+                    // ungated: `Ladder_Create` 0x1966c0 stores only obj+0xD8 (0x19671c), never obj+0xF0.
+                    if level.maps[map].objects[object].flags & 0x10 != 0 { continue; }
                     let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                     add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                 }
@@ -4354,13 +4649,20 @@ impl Scene {
         // mirror viewer here. The 0x3A placements never carry 0x8000 CREATE_CEL [D placements], so
         // the static instance loop skips them and this sweep is the only draw — in --all the generic
         // instance loop covers them (debug view), hence the cels_only gate.
+        // fix-striped-boxes: also the game's no-draw bit — `View_AddObjects`
+        // 0x1e62d8:33 submits a dynamic object to the viewer draw lists only when
+        // `(obj+0xF0 & 0x8010) == 0` (obj+0xF0 is `Control_SetGList` 0x134960's copy of
+        // `celglist+0x44`, i.e. MapObject.flags; disasm 0x1e6344-4c), so a 0x10-flagged glist never
+        // draws even when attached — bit 0x10 marks collision-only brushes (the striped editor
+        // markers) which `Collide_Pick` keeps solid. The pulley's glist carries 0x4000 [L
+        // ee_start_05.bin 0x16d80a0/0x16d81c0] and passes.
         if let Some(m) = level.main_map() {
             for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x3a) {
                 let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 let Some((map, object)) = target else { continue };
                 let obj = &level.maps[map].objects[object];
-                if !obj.gfx.leaves.iter().any(|l| !l.batches.is_empty()) || obj.flags & 0x400 != 0 { continue; }
+                if !obj.gfx.leaves.iter().any(|l| !l.batches.is_empty()) || obj.flags & 0x400 != 0 || obj.flags & 0x10 != 0 { continue; }
                 if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && obj.name.contains(n)) { continue; } }
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                 add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
@@ -4380,6 +4682,49 @@ impl Scene {
                 let obj = &level.maps[map].objects[object];
                 // Empty glists draw nothing (`View_DrawObjectGlist`'s psiDrawObjectMatrix no-ops), and a
                 // mirror-only object (glist flags 0x400, View_AddObjects 0x1e62d8:38-47) has no mirror viewer here.
+                // fix-striped-boxes: the game's no-draw bit 0x10 — `View_AddObjects` 0x1e62d8:33 submits a
+                // dynamic object to the viewer draw lists only when `(obj+0xF0 & 0x8010) == 0` (obj+0xF0 is
+                // the creators' copy of `celglist+0x44`, i.e. MapObject.flags) — but only where a creator
+                // actually makes the copy. fix-striped-boxes2 verified the copy for EVERY kind in the list
+                // (address + the store): 0x30 `Monitor_Create` 0x1b08b0:26 → `Control_SetGList` 0x134960:12-14
+                // (`obj+0xF0 = *(glist+0x44) | obj+0xF0 & 0x30008000`); 0x34 `GunImp_Create` 0x131f20:68 →
+                // `Control_CreateObjEx` 0x1343c8:29-36 (`obj+0xF0 = *(glist+0x44) | param_10`, then |= 0x1000
+                // at 0x131f20:75/87); 0x35 `PCQWorm_Create` 0x1b07a8:12 → `Control_CreateObjEx` (same copy);
+                // 0x3b `DynamicObject_Create` 0x18dbf8:21-23 (direct `obj+0xF0 = *(glist+0x44)`); 0x71
+                // `rotor_init` 0x18f4b8:25 (direct); 0xe1 `Destroy_Create` 0x12c318:23 → `Control_SetGList`
+                // — and the creator itself honours the bit, zeroing the smash target when set (0x12c318:57-59
+                // `if (obj+0xF0 & 0x10) *tag = 0`); 0xe3 `Flicker_Create` 0x1acb00:52 (direct); 0xfa
+                // `ThirdIcon_Create` 0x197070:34-37 (`obj+0xF0 = *(glist+0x44) | 0x1000`); 0xfd
+                // `CamSubject_Create` 0x1bc5d8:20 (direct); 0x4a `Apocalypse_Create` 0x18dcc0:24 (direct);
+                // 0xda `Car_Create` 0x1305b0:24 → `Control_CreateObjEx` with OR-mask 0x44 (then |= 0x40 at
+                // :57; latent only — no 0x10-flagged mesh-ful car glist on the disc, the census pins it).
+                // Nothing clears bit 0x10 later for these kinds: none of their Update/Activate functions
+                // write obj+0xF0 (checked Monitor_Update/Activate/ApplyDamage 0x1afcc8/0x1b0058/0x1b0968,
+                // PCQWorm_Update/Activate 0x1aee20/0x1b0840, Destroy_Update/Smash/CollisionHandler
+                // 0x12c4f8/0x12bb60/0x12bd48, ThirdIcon_Update 0x196e80, Flicker_Update 0x1ab960,
+                // Apocalypse_Update 0x18d4f0, rotor_update 0x18f568, CamSubject_Update 0x1bc668); the only
+                // +0xF0 rewriters elsewhere are 0x3b's own channel restore (`DynamicObject_Update` 0x18d3b8:16/
+                // 34/39 stores back the word `DynamicObject_Create` 0x18dbf8:27 captured from *(glist+0x44)
+                // — a set bit survives), `Drone_PauseNoDraw` 0x13a710 (drone objects only), `SP_HideObj`
+                // 0x1dcbf0 → `Script_HideObj` 0x1db808 (a script's own stream entities only), and the
+                // bullet/player/pickup/car-child paths (other kinds). So the game never draws a
+                // FLAGS_COPYING-kind object whose glist carries 0x10 — the probed instances (05's
+                // "WallHug_Blocker*" 0x3b + "TouchPlate_GrappleLedge"/"Valley grapple_touchplate" 0xfa,
+                // 08's SmallExplosionBox/0d's WallHug_Blocker1_Long, 11/12/14's 3RD_Person_Icon 0xfa, 12's
+                // "Computer to hack" 0x35 (an invisible use volume — the laptop is baked geometry), 14's 12
+                // SWITCH_Consoles_Evilbase 0x30 + 19 DESTROY_BoxSatellite 0xe1, 15's 3 DESTROY_BoxSatellite,
+                // 1b's 8 Apocalypse 0x4a + the DESTROY_Box* 0xe1) are all invisible gameplay/collision
+                // volumes in the real game too; the visible consoles/laptops are baked world geometry.
+                // NON-copying kinds (the game draws their 0x10-flagged meshes — no gate): `Lock_Create`
+                // 0x1ae1f8 (0x2e), `OneSided_Create` 0x1e7ce8 (0xd5), `RB_Create` 0x1d6bf0 (0xd8) — plain
+                // `control_create_object` + a direct obj+0xD8 store, no obj+0xF0 write — and now also
+                // `Mine_Create` 0x17ce28 (0xfe, verified the same way; `Mine_Update` 0x17c930:142's 0x30
+                // store is the mine hiding ITSELF when armed, not a glist copy). Bit 0x10 marks
+                // collision-only brushes which `Collide_Pick` (no 0x10 test) keeps solid while nothing
+                // ever draws them. The sweep drew the striped ones because it lacked the gate — the
+                // user's red/yellow striped box on 07000005's trench.
+                const FLAGS_COPYING: [u8; 11] = [0x30, 0x34, 0x35, 0x3b, 0x71, 0xda, 0xe1, 0xe3, 0xfa, 0xfd, 0x4a];
+                if obj.flags & 0x10 != 0 && FLAGS_COPYING.contains(&kind) { continue; }
                 if !obj.gfx.leaves.iter().any(|l| !l.batches.is_empty()) || obj.flags & 0x400 != 0 { continue; }
                 if let Some(h) = &nf_hide { if h.split(',').any(|n| !n.is_empty() && obj.name.contains(n)) { continue; } }
                 // The 0x800 dim, the same rule the main static loop applies (View_SetupRenderModes_Tweak 0x1e5888).
@@ -4482,6 +4827,13 @@ impl Scene {
                 let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 let Some((map, object)) = target else { continue };
+                // fix-striped-boxes AUDIT CORRECTION: LOAD_LEVEL triggers DO draw whatever their glist
+                // flags. `Trigger_LoadLevelCreate` 0x1b2950 forces the type to 10 (0x1b2998/a0 store 10
+                // to placement+0x2c) and `Trigger_Create` 0x1b1720 clears the no-draw bit for exactly
+                // that type — 0x1b18c8-d4 `obj+0xF0 &= 0xffffffef` [M] — so the game draws these meshes
+                // even when `glist+0x44` carries 0x10 (the four "Load Point"-family meshes on
+                // 01/03/12/13, and 07000005's Door_Gate8). An earlier revision of this fix gated them
+                // and hid four game-drawn meshes; reverted.
                 if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                 add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
@@ -4747,6 +5099,9 @@ impl Scene {
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, missile_cam: None,
                 hints, hint_cels, hint_fired, icon_msg_timers,
+                view_alert: false,
+                prev_aiming: false,
+                view_aim_anim: None,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));

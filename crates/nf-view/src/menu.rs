@@ -437,6 +437,32 @@ pub enum Outcome { Complete, Failed }
 #[derive(Clone, Debug, Default)]
 pub struct Stats { pub shots_fired: u32, pub shots_hit: u32, pub accuracy_pct: u32, pub time_s: u32 }
 
+/// The results page's fields, built on page enter from the live progress layer — P_NFRESULTS
+/// 0x208e78 case 0x4c: `PlrStat_GetScore(0)` (the commit), the medal compare of the last score
+/// (ScoringTable+0x34) against the thresholds (+0x4 bronze .. +0x10 platinum), `SeparateNumber`
+/// for the two numbers, and `Menu_SetLevelBonus(GameState+0x72, medal, 0)` [M :77-169].
+#[derive(Clone, Debug, Default)]
+pub struct ResultsFields {
+    /// The score line's number: ScoringTable+0x34 (the last score) [M :96].
+    pub score: u32,
+    /// The target line's number: the threshold ABOVE the score — the medal just missed's own
+    /// threshold, platinum shows its own [M :104-136].
+    pub target: u32,
+    /// The target line's label [M :108/115/123/131/139 — 0x2cc platinum .. 0x2cf bronze].
+    pub target_label: u32,
+    /// The medal name label [M :138/130/122/114 — 0x2c7 platinum, 0x2c8 gold, 0x2c9 silver,
+    /// 0x2ca bronze]; 0x10001fd composes the no-medal line [M :144-154].
+    pub medal_label: u32,
+    /// The medal plate's final text: the bound medal name, or the composed no-medal line.
+    pub medal_text: String,
+    /// The emblem texture the photo control shows [M :109/116/124/132/139 — msg 0x24 into
+    /// 0x10000166: 0x300013d bronze, 0x300013e gold, 0x300013f platinum, 0x300019a none].
+    pub emblem: u32,
+    /// The awarded medal counter (1 bronze .. 4 platinum, 5 none) — Menu_SetLevelBonus's medal
+    /// [M :169].
+    pub medal: u32,
+}
+
 /// The front end: which page is up, the cursor, and the flow machine it drives.
 pub struct FrontEnd {
     pub flow: GameFlow,
@@ -512,6 +538,17 @@ pub struct FrontEnd {
     /// level's best at ScoringTable+0x30 [M C_RBDSRECORDS 0x20bf00:26]); the host syncs the
     /// sim's tally in with `sync_profile_progress` before the results save.
     pub profile: Option<nf_game::profile::Profile>,
+    /// The results page's fields, built by `results_enter` (P_NFRESULTS case 0x4c). None until
+    /// the page enter runs against the live progress layer.
+    pub results: Option<ResultsFields>,
+    /// `just_completed` 0x30d344 — Menu_SetLevelBonus's return: the FINAL mission (0x0700001b)
+    /// just finished and the results page routes to the win page [M 0x208e78:40-52, 0x1ffa10
+    /// tail]. Not ported past the flag (the win page is reported).
+    pub just_completed: bool,
+    /// `DAT_002e1c2c` — a new reward unlocked at this results page [M 0x208e78:169 → 0x1ffa10
+    /// :74-79]: the page's Confirm routes to the bonus page 0x40000038 while it stands (not
+    /// ported — reported).
+    pub new_reward: bool,
 }
 
 impl FrontEnd {
@@ -536,7 +573,11 @@ impl FrontEnd {
             profile_dir: None,
             profiles: Vec::new(),
             active_profile: None,
-            profile: None }
+            profile: None,
+            // front-end-chain (each new field on its own line [WORKLOG lesson 4]).
+            results: None,
+            just_completed: false,
+            new_reward: false }
     }
 
     pub fn rows(&self) -> usize {
@@ -561,7 +602,10 @@ impl FrontEnd {
             // The MISSION tab's rows [L page 0x4000004b's d1=6 list (153,183,334×120) binds labels
             // 0x16a CONTINUE / 0x16b RESTART / 0x16c QUIT via its m0x11 messages].
             Page::Pause => 3,
-            Page::Results => 3,                    // restart level / restart mission / quit [M 0x216618:19-27]
+            // The FAILED results page is P_ENDMISSION's three rows [M 0x216618:19-27]; the
+            // COMPLETED results page (P_NFRESULTS 0x208e78) has NO row list — the page's own
+            // action is the hint's ~A Continue (Confirm anywhere).
+            Page::Results => if self.outcome == Outcome::Complete { 1 } else { 3 },
         }
     }
 
@@ -589,12 +633,16 @@ impl FrontEnd {
             // RESTART confirm then ResetMap_LevelToLoad(BaseMap, 0, 1), case 2 → the QUIT confirm
             // (state_quit_166) then 0x7000048].
             Page::Pause => bind([0x16a, 0x16b, 0x16c][row.min(2)]),
-            // The results page's three rows in the game's arm order [M P_ENDMISSION_Handler
+            // The FAILED page's three rows in the game's arm order [M P_ENDMISSION_Handler
             // 0x216618:19-27 — `__Menu_Send`'s return IS the row index, so row 0 is the arm-0
             // behaviour]: row 0 = Restart level (the CURRENT level, warm, on the entry checkpoint —
             // fix-restart-target); row 1 = Restart mission (Mission_BaseMapHCode(), cold); row 2 =
             // Quit (0x7000048). The labels are [S — the disc page data holds the originals.]
-            Page::Results => ["Restart level", "Restart mission", "Quit to menu"][row.min(2)].into(),
+            Page::Results if self.outcome == Outcome::Failed =>
+                ["Restart level", "Restart mission", "Quit to menu"][row.min(2)].into(),
+            // The COMPLETED page draws no rows (P_NFRESULTS has none [L page 0x40000036's
+            // controls]); rows() is 1 for the wheel arithmetic only.
+            Page::Results => String::new(),
         }
     }
 
@@ -644,20 +692,13 @@ impl FrontEnd {
     }
 
     /// A mission ended; the game records the results page and pushes the 60-frame fade [M 0x182c60:74
-    /// sets +0x28 = 0x40000036, `GameFlow_PushState(60.0, 7, …)`]. Completing mission *i* unlocks *i+1*
-    /// [M Menu_SetLevelBonus 0x1ffa10:63-65].
+    /// sets +0x28 = 0x40000036, `GameFlow_PushState(60.0, 7, …)`]. The unlock itself is NOT here:
+    /// Mission_Update's case 4 does no award — the results page's enter runs
+    /// `Menu_SetLevelBonus(GameState+0x72, medal, 0)` [M 0x208e78:169], which the port drives
+    /// through [`FrontEnd::results_enter`].
     pub fn mission_ended(&mut self, outcome: Outcome, stats: Stats) {
         self.outcome = outcome;
         self.stats = stats;
-        if outcome == Outcome::Complete && self.mission + 1 < self.unlocked.len() {
-            self.unlocked[self.mission + 1] = true;
-        }
-        // fix-save-profile: the results flow's save — the game awards the level then the save
-        // prompt writes the chain under the codename [M P_NFRESULTS 0x208e78 →
-        // Menu_UpdateMessageBox 0x1f7de8 case 1]; the fail menu has no save arm [M 0x216618].
-        if outcome == Outcome::Complete && self.active_profile.is_some() {
-            self.save_profile();
-        }
         self.flow.page = PAGE_RESULTS;
         // Mission_Update 0x182c60 case 6 sets `LevelToEndTo` from the finished level: the outro
         // code 0x073000xx for the levels with an outro (compiled lui/ori switch at 0x182e60-0x182eb4
@@ -674,6 +715,78 @@ impl FrontEnd {
         self.flow.push_state(ST_FADE_HOLD);
         self.page = Page::Results;
         self.cursor = 0;
+    }
+
+    /// P_NFRESULTS 0x208e78 case 0x4c against the LIVE progress layer — the results page's enter:
+    /// `PlrStat_GetScore(0)` (the commit — the game's param 0 [M :77]) builds the page's fields,
+    /// then `Menu_SetLevelBonus(GameState+0x72, medal, 0)` writes the award — the level's
+    /// `sp_level+0x10` flag AND the next level's [M :169 → 0x1ffa10:62-66], which
+    /// `Menu_GetNightfireStatus` 0x202360 packs for the save. `base_map` = GameState+0x72
+    /// (`Mission_BaseMapHCode`), `status` = `Mission_Status()` (6 on this path), `difficulty` =
+    /// GameState+0x40. The no-medal line composes Txt 0x10001fd with the codename (len > 1) or
+    /// Txt 0x10001fe [M :144-154]. Returns whether the fields were built (the game's
+    /// score_table != 0 arm — always true for the SP hashes).
+    pub fn results_enter(&mut self, progress: &mut nf_game::progress::Progress, base_map: u32, status: u32, difficulty: u32, lang: Option<&Lang>) -> bool {
+        let scored = progress.get_score(base_map, status, difficulty, true); // [M :77 — GetScore(0)]
+        let bind = |id: u32| -> String {
+            lang.and_then(|l| l.bind(id)).map(str::to_string).unwrap_or_else(|| format!("<{id:#x}>"))
+        };
+        let fields = scored.map(|s| {
+            let idx = progress.table.iter().position(|e| e.hash == base_map).unwrap();
+            let th = progress.table[idx].thresholds;
+            // The medal compare on the last score, with the target it shows — the NEXT threshold,
+            // labelled by the medal just missed [M :98-142]:
+            // platinum (≥ +0x10): target +0x10, name 0x2c7, label 0x2cc, emblem 0x300013f [M :135-141];
+            // gold (≥ +0xc): target +0x10, name 0x2c8, label 0x2cc, emblem 0x300013e [M :127-133];
+            // silver (≥ +8): target +0xc, name 0x2c9, label 0x2cd, emblem 0x3000140 [M :119-125];
+            // bronze (≥ +4): target +8, name 0x2ca, label 0x2ce, emblem 0x300013d [M :111-117];
+            // none: target +4, name 0x10001fd (composed), label 0x2cf, emblem 0x300019a [M :104-110].
+            let (medal_label, target, target_label, emblem, medal) = if s.last >= th[3] {
+                (0x2c7u32, th[3], 0x2ccu32, 0x0300_013fu32, 4u32)
+            } else if s.last >= th[2] {
+                (0x2c8, th[3], 0x2cc, 0x0300_013e, 3)
+            } else if s.last >= th[1] {
+                (0x2c9, th[2], 0x2cd, 0x0300_0140, 2)
+            } else if s.last >= th[0] {
+                (0x2ca, th[1], 0x2ce, 0x0300_013d, 1)
+            } else {
+                (0x100_01fd, th[0], 0x2cf, 0x0300_019a, 5)
+            };
+            // The medal plate's text [M :144-158]: a real medal binds its name; the no-medal line
+            // is a FORMAT string (Txt 0x10001fd, "%s") filled with the codename when the buffer
+            // holds one (DAT_002e1ae0 > 1 [M :145/151]) or with Txt 0x10001fe ("the next agent").
+            let codename = self.active_profile.clone().or_else(|| self.profile.as_ref().map(|p| p.name.clone()));
+            let medal_text = if medal_label == 0x100_01fd {
+                let fmt = bind(0x100_01fd);
+                let sub = match codename.filter(|c| c.chars().count() > 1) {
+                    Some(c) => c,
+                    None => bind(0x100_01fe),
+                };
+                fmt.replacen("%s", &sub, 1)
+            } else {
+                bind(medal_label)
+            };
+            ResultsFields { score: s.last, target, target_label, medal_label, medal_text, emblem, medal }
+        });
+        self.results = fields;
+        // [M :169 — runs outside the score_table != 0 arm.] The return value (just_completed) is
+        // Menu_SetLevelBonus's own: level == 0x0700001b [M 0x1ffa10 tail].
+        let medal = self.results.as_ref().map_or(5, |r| r.medal);
+        self.just_completed = base_map == 0x0700_001b;
+        progress.set_level_bonus(base_map, medal, 0);
+        self.new_reward = progress.new_reward;
+        // sp_level[i]+0x10 is the packed nightfire status's bits [M 0x202360's OR loop] — mirror
+        // the award into the front end's wheel flags (the game reads the same bytes).
+        let bits = progress.nightfire_status();
+        for (i, u) in self.unlocked.iter_mut().enumerate() {
+            *u = bits & (1 << i) != 0;
+        }
+        // The results flow's save [M the save prompt after the award — Menu_UpdateMessageBox
+        // 0x1f7de8 case 1 writes the chain under the codename; the fail menu has no save arm].
+        if self.active_profile.is_some() {
+            self.save_profile();
+        }
+        self.results.is_some()
     }
 
     // ── fix-save-profile: the codename profiles (the port's memory card) ──────────────────────
@@ -1008,6 +1121,24 @@ impl FrontEnd {
                             _ => {}
                         }
                     }
+                }
+            },
+            Page::Results if self.outcome == Outcome::Complete => match a {
+                Action::Side => {}
+                // P_NFRESULTS has no row list [L page 0x40000036's controls] — the wheel keys idle.
+                Action::Up | Action::Down | Action::Back => return false,
+                Action::Confirm => {
+                    // Case 0x4b [M 0x208e78:28-52]: a NEW reward routes to the bonus page
+                    // 0x40000038, whose own Confirm lands on the mission list [M 0x209670:50-53];
+                    // just_completed routes to the win page 0x40000053 — not ported (reported).
+                    // The port elides the bonus page's stop and takes the same landing.
+                    if self.just_completed { return false; }
+                    // P_NFMAP 0x20b608 case 0x4c's cursor rule: scan sp_level+0x10 from row 11 down
+                    // — the list opens on the HIGHEST unlocked row [M :57-64].
+                    self.cursor = (0..CAMPAIGN.len()).rev().find(|&i| self.unlocked_row(i)).unwrap_or(0);
+                    self.page = Page::MissionSelect;
+                    self.flow.page = PAGE_MISSION_SELECT;
+                    return true;
                 }
             },
             Page::Results => match a {
@@ -1596,28 +1727,57 @@ fn results_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: 
             // The results page's layout [L page 0x40000036's controls: header 0x10000001 (50,40,376×17)
             // LBL 0x2c5 "Results"; the photo 0x10000166 (135,80,370×186) TEX 0x03000140; the medal
             // plate 0x100001d1 (49,264,541×37); "Total Score:" 0x10000001 (48,336,264×16) LBL 0x2cb;
-            // "Gold Medal Target:" 0x1000002b (47,360,266×16) LBL 0x2cd; the score numbers 0x10000167/
-            // 0x10000168 (320,336/360,248×16) [M P_NFRESULTS 0x208e78:97/165 fills them]; the stamp
-            // 0x10000224 TEX 0x0300014c; the logo (434,38,156×43) TEX 0x0300016d].
+            // the target line 0x1000002b (47,360,266×16) — its static LBL 0x2cd is REPLACED at enter
+            // [M P_NFRESULTS 0x208e78:163-164 sends the medal's own target label 0x2cc..0x2cf]; the
+            // score numbers 0x10000167/0x10000168 (320,336/360,248×16) [M :97/:165 fills them]; the
+            // stamp 0x10000224 TEX 0x0300014c; the logo (434,38,156×43) TEX 0x0300016d].
             h.text(Anchor::Centre, font, -2, &lbl(0x2c5, "RESULTS"), mx(50.0 + 188.0), my(40.0 + 8.0), false, bright, true);
-            tex_quad_or_plate(h, textures, 0x0300_0140, 135.0, 80.0, 370.0, 186.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
-            plate(h, 49.0, 264.0, 541.0, 37.0, gs(0x1e1210, 0x60));
-            h.text(Anchor::Centre, font, -2, &lbl(0x2cb, "Total Score:"), mx(48.0 + 132.0), my(336.0 + 8.0), false, cream, false);
-            h.text(Anchor::Centre, font, -2, "—", mx(320.0 + 124.0), my(336.0 + 8.0), false, bright, false);
-            h.text(Anchor::Centre, font, -2, &lbl(0x2cd, "Gold Medal Target:"), mx(47.0 + 133.0), my(360.0 + 8.0), false, cream, false);
-            h.text(Anchor::Centre, font, -2, "—", mx(320.0 + 124.0), my(360.0 + 8.0), false, bright, false);
             if textures.iter().any(|(hash, _)| *hash == 0x0300_014c) { quad640(h, 0x0300_014c, 539.0, 393.0, 255.0, 255.0, [0.0, 0.0, 256.0, 256.0], gs(0x7f7f7f, 0xff)); }
             if textures.iter().any(|(hash, _)| *hash == 0x0300_016d) { quad640(h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff)); }
-            // The port's restart rows [M 0x216618's three arms — kept: the port's complete flow
-            // offers them; the disc page's own action is the hint's ~A Continue (0x2d0), reported].
-            let rows = [("Restart level",), ("Restart mission",), ("Quit to menu",)];
-            for (i, (s,)) in rows.iter().enumerate() {
-                let c = if i == fe.cursor { bright } else { dim };
-                h.text(Anchor::Centre, font, -2, s, mx(48.0 + 133.0), my(120.0 + 10.0 + i as f32 * 26.0), false, c, false);
+            // The fields [M 0x208e78:96-167]. The photo control's texture is the MEDAL EMBLEM at
+            // runtime [M :166-167 msg 0x24 — 0x300013d/e/f, 0x300019a]; the page's static photo
+            // 0x03000140 stands in until the enter built the fields.
+            match &fe.results {
+                Some(rf) => {
+                    tex_quad_or_plate(h, textures, rf.emblem, 135.0, 80.0, 370.0, 186.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+                    // The medal plate 0x100001d1 [M :159-161]: the medal name / no-medal line.
+                    plate(h, 49.0, 264.0, 541.0, 37.0, gs(0x1e1210, 0x60));
+                    h.text(Anchor::Centre, font, -2, &rf.medal_text, mx(49.0 + 270.0), my(264.0 + 18.0), false, bright, false);
+                    // "Total Score:" is the page's own static label [L]; the number 0x10000167 is
+                    // SeparateNumber(+0x34) [M :96-97].
+                    h.text(Anchor::Centre, font, -2, &lbl(0x2cb, "Total Score:"), mx(48.0 + 132.0), my(336.0 + 8.0), false, cream, false);
+                    h.text(Anchor::Centre, font, -2, &separate_number(rf.score), mx(320.0 + 124.0), my(336.0 + 8.0), false, bright, false);
+                    // The target line [M :163-165]: Txt(target_label) + SeparateNumber(threshold).
+                    h.text(Anchor::Centre, font, -2, &lbl(rf.target_label, match rf.target_label {
+                        0x2cc => "Platinum Medal Target:", 0x2cd => "Gold Medal Target:",
+                        0x2ce => "Silver Medal Target:", _ => "Bronze Medal Target:" }),
+                        mx(47.0 + 133.0), my(360.0 + 8.0), false, cream, false);
+                    h.text(Anchor::Centre, font, -2, &separate_number(rf.target), mx(320.0 + 124.0), my(360.0 + 8.0), false, bright, false);
+                }
+                None => {
+                    tex_quad_or_plate(h, textures, 0x0300_0140, 135.0, 80.0, 370.0, 186.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+                    h.text(Anchor::Centre, font, -2, &lbl(0x2cb, "Total Score:"), mx(48.0 + 132.0), my(336.0 + 8.0), false, cream, false);
+                    h.text(Anchor::Centre, font, -2, "—", mx(320.0 + 124.0), my(336.0 + 8.0), false, bright, false);
+                    h.text(Anchor::Centre, font, -2, &lbl(0x2cd, "Gold Medal Target:"), mx(47.0 + 133.0), my(360.0 + 8.0), false, cream, false);
+                    h.text(Anchor::Centre, font, -2, "—", mx(320.0 + 124.0), my(360.0 + 8.0), false, bright, false);
+                }
             }
-            // The hint (50,419,540×21) LBL 0x2d0 [L the page's control #2].
+            // The hint (50,419,540×21) LBL 0x2d0 [L the page's control #2] — the page's own action.
             hint_bar(h, font, &hint_wrap(lang, 0x2d0, "~A Continue  ~X Stats  ~Y Dossier"), 50.0, 419.0, cream);
         }
+    }
+}
+
+/// `SeparateNumber` 0x1dec78 — the score texts' comma grouping: "%d" under 1000, "%d,%.3d" under
+/// a million, "%d,%.3d,%.3d" above [M the sprintf formats at 0x30d098/0x30d090; the third arm's
+/// dropped args are the decompiler's — the groups are thousands/hundreds-of-thousands/millions].
+pub fn separate_number(v: u32) -> String {
+    let thousands = (v / 1000) % 1000;
+    if v / 1_000_000 == 0 {
+        if thousands == 0 { format!("{}", v % 1000) }
+        else { format!("{},{}", thousands, v % 1000) }
+    } else {
+        format!("{},{:03},{:03}", v / 1_000_000, thousands, v % 1000)
     }
 }
 

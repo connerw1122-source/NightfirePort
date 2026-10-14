@@ -38,6 +38,19 @@ fn expected_misc(level: &nf_formats::level::Level, kinds: &[u8]) -> BTreeMap<u8,
             else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
         let Some((om, oi)) = target else { continue };
         let o = &level.maps[om].objects[oi];
+        // fix-striped-boxes2: the game's no-draw bit — `View_AddObjects` 0x1e62d8:33 submits a dynamic
+        // object only when `(obj+0xF0 & 0x8010) == 0`, and obj+0xF0 is the creator's copy of
+        // `celglist+0x44` for exactly the FLAGS_COPYING kinds (every creator verified in scene.rs's
+        // gate comment: Monitor_Create 0x1b08b0:26, GunImp_Create 0x131f20:68, PCQWorm_Create
+        // 0x1b07a8:12, DynamicObject_Create 0x18dbf8:21-23, rotor_init 0x18f4b8:25, Car_Create
+        // 0x1305b0:24, Destroy_Create 0x12c318:23 — which also zeroes the smash target when the bit is
+        // set (0x12c318:57-59) —, Flicker_Create 0x1acb00:52, ThirdIcon_Create 0x197070:34-37,
+        // CamSubject_Create 0x1bc5d8:20, Apocalypse_Create 0x18dcc0:24). Nothing clears the bit later
+        // for these kinds (no Update/Activate writes obj+0xF0; 0x3b's channel restore stores back the
+        // captured glist word). Non-copying kinds (0x2e Lock, 0xd5 OneSided, 0xd8 RB, 0xfe Mine — no
+        // obj+0xF0 write at create) draw their flagged meshes in the game and stay ungated.
+        const FLAGS_COPYING: [u8; 11] = [0x30, 0x34, 0x35, 0x3b, 0x71, 0xda, 0xe1, 0xe3, 0xfa, 0xfd, 0x4a];
+        if o.flags & 0x10 != 0 && FLAGS_COPYING.contains(&kind) { continue; }
         if !o.gfx.leaves.iter().any(|l| !l.batches.is_empty()) || o.flags & 0x400 != 0 { continue; }
         *out.entry(kind).or_default() += 1;
     }
@@ -88,18 +101,24 @@ fn misc_static_entities_match_the_census_on_every_level() {
             assert_eq!(scene.misc_drawn.get(&0x3a), None, "the grapple points draw via grapple_hooks_drawn, not the misc sweep [M fix-grapple-hook]");
         }
         if name == "0700000d.bin" {
-            // One of the five hides until its channel (param 0 = 43 [D placements dump]) — 4 draw.
-            assert_eq!(scene.misc_drawn.get(&0x3b), Some(&4));
+            // One of the five hides until its channel (param 0 = 43 [D placements dump]) and
+            // WallHug_Blocker1_Long carries the no-draw bit 0x10 [D placements; gate above] — 3 draw.
+            assert_eq!(scene.misc_drawn.get(&0x3b), Some(&3));
             assert_eq!(scene.misc_drawn.get(&0x3a), None, "the grapple points draw via grapple_hooks_drawn, not the misc sweep [M fix-grapple-hook]");
             assert_eq!(scene.misc_drawn.get(&0x34), Some(&1));
             assert_eq!(scene.misc_drawn.get(&0xe1), Some(&9));
         }
         // 07000014 carries 45 dynamic objects, 23 of them hidden until their switch channel (param 0 ≠ 0
-        // [D placements; M DynamicObject_Create 0x18dbf8:31]) — 22 draw; 12 monitors. Its 11 Apocalypse
-        // placements resolve to collision-only glists, which the game draws as nothing [M 0x18dcc0:20].
+        // [D placements; M DynamicObject_Create 0x18dbf8:31]) — 22 draw; its 12 monitors are SWITCH_
+        // Consoles_Evilbase placements whose glist flags are 0x50 (bit 0x10 set — the game's no-draw
+        // gate, View_AddObjects 0x1e62d8:33, hides them all; the visible consoles are baked geometry),
+        // and 19 of its 48 destroyables are 0x10-flagged DESTROY_BoxSatellite brushes the game never
+        // draws (Destroy_Create 0x12c318:57-59 zeroes their smash target). Its 11 Apocalypse placements
+        // resolve to collision-only glists, which the game draws as nothing [M 0x18dcc0:20].
         if name == "07000014.bin" {
             assert_eq!(scene.misc_drawn.get(&0x3b), Some(&22));
-            assert_eq!(scene.misc_drawn.get(&0x30), Some(&12));
+            assert_eq!(scene.misc_drawn.get(&0x30), None, "all 12 monitors carry the no-draw bit");
+            assert_eq!(scene.misc_drawn.get(&0xe1), Some(&29), "48 destroyables − 19 no-draw-bit brushes");
             assert_eq!(scene.misc_drawn.get(&0x4a), None);
         }
     }
@@ -221,9 +240,15 @@ fn misc_census_golden() {
         eprintln!("{}", lines.last().unwrap());
     }
     let h = sha1_lines(&lines);
-    // Re-pinned for fix-gadgets2: 0x3A grapple points and 0x3F creep walls left the sweep (their
-    // creators attach no gfx [M 0x198298, 0x196fc8] — the user's red/yellow marker boxes).
-    let expected = "bb66b783b7500c3912098cd57daa1449d725b60b";
+    // Re-pinned for fix-striped-boxes2: the misc sweep applies the game's no-draw-bit gate
+    // (View_AddObjects 0x1e62d8:33, obj+0xF0 = the creators' copy of celglist+0x44) — the census now
+    // excludes the FLAGS_COPYING-kind objects whose glist carries 0x10. Per-level diff vs the
+    // previous pin (bb66b783b7500c3912098cd57daa1449d725b60b): 05 `0x3b:2 0xfa:2` → (empty, both
+    // WallHug blockers + both third icons hidden); 08 `0xe1:4`→`0xe1:3`; 0d `0x3b:4`→`0x3b:3`;
+    // 11 `0xfa:2` dropped; 12 `0x35:1 0xe1:1 0xfa:1` dropped (the 0x30:1 stays — no bit); 14
+    // `0x30:12 0xe1:48 0xfa:3`→`0xe1:29`; 15 `0xe1:11`→`0xe1:8`; 1b `0x4a:8 0xe1:6`→`0xe1:3`;
+    // 41's 0xfa:2 and 0a's 0x35:3 keep drawing (their glists carry no 0x10 — the gate is per-object).
+    let expected = "c2dc182372e5d06d1eada9041c439489e2da3cb7";
     assert_eq!(h, expected, "misc census golden — if a count legitimately changed, re-pin");
 }
 
@@ -371,6 +396,7 @@ fn a_grenade_blast_plays_the_explosion_script_entities() {
     sim.drones.grenades.push(nf_game::grenade::Grenade {
         pos: at, velocity: [0.05, 0.0, 0.0], speed: 0.05, travelled: 0.0, range: 10.0,
         damage: 100.0, radius: 5.0, weapon_type: 0x34, owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: false, mesh,
+        stuck: false, seek_target: None,
     });
     let mut blasted = false;
     for _ in 0..40 { sim.step_bond(Input::default(), false, false, false); if !sim.drones.explosions.is_empty() { blasted = true; break; } }

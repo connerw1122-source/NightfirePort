@@ -239,7 +239,14 @@ fn the_beam_end_equals_the_crosshair_rays_hit() {
     for _ in 0..40 { sim.step_bond(draw, false, false, false); }
     assert_eq!(sim.gun.weapon, 0x4e, "the Laser equips");
     let target = [162.2365f32, 43.875843, -117.14455];
-    for _ in 0..30 {
+    // fix-weapon-anims2: the hold now covers the Laser's correct-rate equip+draw+first-shot chain.
+    // The Laser's draw script 0x060004ee is 76 frames and the switch machine plays it at the game's
+    // 1.25 [M 0x1a2e38 case 3:287-288] after the start weapon's holster (case 1:220-223) — measured
+    // (wa2 probe): the draw settles at hold-tick 48 and the first beam parks at hold-tick 49 (the
+    // fire gate `can_fire = !switching` matches the game's state-3/4 fire block). The old 30-tick
+    // window was tuned to the double-advance bug's 2x-fast draw (~24 ticks). The assertion is
+    // unchanged: the beam, once parked, must equal the crosshair ray's hit.
+    for _ in 0..120 {
         let (turn, look) = {
             let sim = scene.sim.as_ref().unwrap();
             let bp = sim.bond.pos;
