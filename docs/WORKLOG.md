@@ -11375,3 +11375,4 @@ Task: characters lit by the room they stand in — find which cel ambient a char
 
 Work Log:
 - 19:45 UTC: branch s/fix-character-room-light created from origin/master (509ec984). work/ + ISO already present, setup skipped.
+- 20:45: repro on 07000007: the 0x800 multiplier reaches every drone-backed guest (per-cel ambients 36-64, 9 distinct; 104 active kind-0 lights picked up with skin flags 0x8a0). The 49 sentinel-0xff characters are exactly the invisible set: 33 dev-pool copies parked at -1e6 and 16 origin script actors (the game leaves those unlinked too — no cel at the origin, ambient stays the 0xff init of control_init_object 0x134630). G-042: the civilian's "white" texture (map 32 tex 4, 32x32) is a sheen map — 1024/1024 white rgb but 98/1024 opaque alpha; the base skin textures are not white.
