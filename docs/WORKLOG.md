@@ -10727,3 +10727,10 @@ Stage Summary:
   menu_movies.rs (compile fixes)}. No shared files beyond lib.rs (a task-named file here).
 - Open: the cpal .play() audio bug (pre-existing, fix-menu-movies2 flagged it, still silent);
   pss_movies_live's full-22-movie sweep wants the full retail image.
+
+## fix-armour-ring
+- Started: the orange 007 ring bottom-left in PCSX2 captures may be the health pane's armour state (the captures' god-cheat wrote armour 50 BLData+0x8B0 every frame); check HUD_UpdateHealthPane 0x19b9c8's armour branch, port it, test armour 0 vs 50.
+
+## fix-armour-ring (outcome)
+- The armour branch was already ported and is game-faithful [M HUD_UpdateHealthPane 0x19b9c8:139-158]: armour 0 → HealthSprInfo[0..8] hidden (+0x38 = 0xFF); armour > 0 → the 8 bronze-tinted (0x7d6d59) orange-art segments with alpha 1.0 (k=0) / 0.75 (k < armour·0.16) / 0.35. No separate 007-logo sprite: HealthSprInfo[15] is the 87×86 hollow circle outline tinted by the health colour; the captures' "orange 007 ring" = this pane at the god-cheat's armour 50 (cheats.py writes health 100 + armour 50 every frame). All BLData+0x8b0 readers agree (Pickup_Handler 0x18e650:221-224 take, Player_HandlePain 0x1902c8:100-104 absorb, RamSave/Load, the pane).
+- Tests (fix_armour_ring_live): hide-at-0 + the green ring unchanged; the real take path (kind-3 pickup → step_bond → armour 50) lights exactly 8 segments with alphas {255, 191×7} and segment 0 at (48,367); value tracking 25 → {255, 191×3, 89×4}, 0 → hidden. Green on the final merged tree (1496b80). Shared file: lib.rs gained the 4-line `--armour <n>` shot hook (reported).
