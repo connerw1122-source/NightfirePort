@@ -111,3 +111,37 @@ fn test_weapon_row_runs_the_sequence() {
     assert!(msg.contains("3 shot ticks"), "the P2K must fire 3 shots: {msg}");
     assert!(msg.contains("reload ok"), "the reload must run: {msg}");
 }
+
+/// weapon-matrix2 (103b): the upgraded runner's own checks on one level — the real give path
+/// (`nf_view::load_weapons`, 100a's merge) dresses the view models, the mode press lands the twin
+/// with a label, the MGL impact twin blasts on contact and the Sentinel's guided camera rides.
+/// Sister (the numbers the marks gate on): the old runner's `I`/`.` cells for these ids were the
+/// stale give path, and the 0x2a/0x2c behaviours were unmeasured — this asserts the new runner's
+/// fields on the same real sequence (`matrix::run_level`, NF_ISO).
+#[test]
+fn upgraded_runner_checks_the_new_behaviours_on_07000005() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut line = String::new();
+    let mut log = |s: &str| { line.push_str(s); line.push('\n'); };
+    let row = matrix::run_level(&iso, "07000005", &mut log).expect("level loads");
+    eprint!("{line}");
+    let cell = |id: u8| row.cells.iter().find(|c| c.weapon == id).expect("catalog cell");
+    // The real give path: the merge dresses the previously-`I` launcher cells.
+    for id in [0x2au8, 0x2cu8, 0x34u8] {
+        let c = cell(id);
+        assert!(c.give_ok, "{id:#04x}: the give must equip (real give path)");
+        assert!(c.view_model, "{id:#04x}: the merged tables must build the view model");
+    }
+    // The MGL impact twin 0x2a blasts on first contact (the +0x70 & 0x200 records tick the fuse
+    // instead [M Bullet_DoTrails 0x12d890:262-281]) — the gap is flight ticks, not the 210 fuse.
+    let a = cell(0x2a);
+    assert!(a.grenades > 0 && a.explosions > 0, "0x2a must spawn and blast its grenade");
+    assert!(a.expl_gap > 0 && a.expl_gap <= 90, "0x2a blasts on contact, gap {} ticks", a.expl_gap);
+    // The Sentinel 'Guided' 0x2c rides the missile camera (weapon +0x6C & 4 [L ee_start_05.bin]).
+    assert!(cell(0x2c).guided, "0x2c: the guided camera must ride a live missile");
+    // The mode press: a twin-linked record lands its twin (or cycles the mode byte) and both
+    // labels resolve [M Player_Weapon 0x1a24c8:204-260; HUD_UpdateAmmoPane 0x19a7f0].
+    let two = cell(0x02);
+    assert!(two.mode_tried && two.mode_ok, "the P2K's mode press must land its twin");
+    assert!(two.mode_label_base != 0, "the base mode label must resolve");
+}
