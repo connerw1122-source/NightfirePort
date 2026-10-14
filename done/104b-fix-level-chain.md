@@ -32,3 +32,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox3 at 2026-10-14T15:48Z
+
+---
+## Report (done, 2026-10-14T16:50Z)
+
+Closed by the driver: the report is on `s/fix-level-chain` (docs/reports/fix-level-chain.md); the worker didn't run finish.sh.
