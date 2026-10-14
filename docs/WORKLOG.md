@@ -10061,3 +10061,5 @@ measured per-quad from the frame, plates excluded), the main-row colours, the co
 previews, the dossier wheel + Records page, the prompt colour, and the pre-existing flows (the
 codename navigation gained a Down — row 0 is now New Codename). Suite on the final tree: see the
 report. Files: crates/nf-view/src/menu.rs, crates/nf-view/tests/menus_flow.rs (no shared files).
+fix-menus-real2 (101q, 2026-10-14): the front end's second pass — the main panel art, the title
+font, the footer button glyphs, the Dossier row list, the backdrop. Started from a4164b9.
