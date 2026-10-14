@@ -121,7 +121,10 @@ impl SsList {
             if s.keys.len() < 2 { continue; }
             let last = (s.keys.len() - 1) as f32;
             let step = last / s.rate as f32;
-            let target = if s.channel != 0 && ch.on(s.channel as u32) { last } else { 0.0 };
+            // The channel INDEX is not special: `SS_Update` 0x1a9948:20-23 reads AND writes
+            // `switch_channels[ch]` for any channel word including 0 (the 0c pulley winches
+            // #351/#364/#377 listen on ch 0 [D]); only the channel VALUE gates the sweep.
+            let target = if ch.on(s.channel as u32) { last } else { 0.0 };
             if s.t < target { s.t = (s.t + step).min(target); }
             else if s.t > target { s.t = (s.t - step).max(target); }
             if let Some(m) = interp(&s.keys, 0, (s.keys.len() - 1) as u16, s.t, s.spline) { s.matrix = m; }

@@ -183,6 +183,7 @@ fn grenade_events_match_the_records() {
         weapon_type: if impact { 0x2a } else { 0x2b }, mesh: 0x0200_0860, owner: usize::MAX,
         state: 0, bounces: 0, smoke_popped: false,
         resting: false, // fix-grenade-throw's slow-bounce latch (merged alongside)
+        stuck: false, seek_target: None, // fix-oddjob-hat
     };
     let mut rng = nf_game::drone::Rng::new(0);
     // 0x2A: the first contact is ONE Bounce event (the Sim's Bounce arm blasts on it)…
@@ -282,7 +283,9 @@ fn the_sentinel_guided_mode_rides_the_missile_and_the_unguided_twin_does_not() {
     // down and the normal view returns.
     let mut blasts = Vec::new();
     let mut restored_at = None;
-    for _ in 0..300 {
+    // fix-fire-modes3: the game's +0x6C & 0x200 quarter speed [M 0x12c5a0:188-190] makes the
+    // guided flight 4× longer than the pre-fix port modelled — the window grows with it.
+    for _ in 0..1500 {
         let sim = scene.sim.as_mut().unwrap();
         let ex0 = sim.drones.explosions.len();
         sim.step_bond(Default::default(), false, false, false);

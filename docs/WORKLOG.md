@@ -10486,6 +10486,43 @@ Work Log:
 - Shared hooks: drone.rs (aims_idle on its own line + the hat pass), scene.rs (the restructure + the new slots; nothing removed but the replaced stale comment). grenade.rs/player.rs/lib.rs/gun.rs/gadget.rs/bullet.rs untouched.
 - Left: the taser's msg-7 stun state machine; the laser's battery-station recharge (0x1a5460:575-598); the AIMS bone-9/10/11 gates (+0x93e/+0x2f0/+0x2fc); the hat's return/clang; the pause-menu stop hook. All in the report with the live checks.
 
+## fix-casings-16 (s/fix-casings-16) — 2026-10-14
+
+Started (09:30 UTC): branch from origin/master (6cbe522). Task: the 07000016 playtest symptoms —
+(1) "I see bullet casings flying when I walk backwards" (casings spawn without firing: probably a
+footstep/anim event the port reads as the eject event, or the eject offset riding the walk); (2) "I
+saw a mission complete thing pop up for some reason in this mission, but I still couldn't continue".
+Reproduce both headlessly (walk backwards 3 s with no fire: 0 casings; play 16 from its start to
+that point: which objective/mission message fires and why), fix from the game's code, test, sister
+assertions. Files: crates/nf-game/src/{casing,gun,mission}.rs as needed. Work log continues below.
+
+### fix-casings-16 — outcome (11:05 UTC)
+
+- **The casings rule holds; the naive repro is clean**: 07000016 and 07000005, backwards/forward/idle
+  240-900 ticks, no fire → 0 casings, 0 bullets, 0 lights (probe). `Bullet_init_casing` 0x12fde0 runs
+  only from `Player_WeaponInitBullet` 0x1a4bf0:306 (the shot's release) and `DroneWeap_FireWeapon`
+  0x178f68:264 (a guard's shot) — both fire-gated in the port. The user's "casings flying when I walk
+  backwards" is consistent with the pool's own 240-tick life [M 0x12faa0] (their earlier burst's
+  shells still airborne) — no spawn-without-fire found; test `walking_backwards_never_ejects` pins it
+  incl. the fire-then-backpedal sister.
+- **The "mission complete thing" is the game's own arrival pair**: at 16's load the port queues
+  "OBJECTIVE COMPLETE" (the carried 07000015 objective — spawn plate #252 writes ch 0x8e as Bond
+  arrives [D docs/levels/07000016.md §2]) + the enabled "Reach Drake's launch silo" announce — the
+  game's own texts [M 0x1827d8 case 3 = 0x2000053]. No spurious ch 100 in 900 ticks (probe).
+- **The real bug — "I still couldn't continue"**: the arrival walkway's first door (glist 0x803f00a0,
+  kind 2 slide, straddle, ch_open 0, ch_lock 0, flags 0x3 → closed at create [M Door_Create 0x136100])
+  blocked the only path. `Door_Update` never opens a ch_open==0 door [M 0x1363c8], `Door_ReactToHit`
+  0x135980 only reverses moving leaves, and the port's straddle walk-in ran ONLY on the E path with a
+  1.4² radius. Fix: door.rs `straddle_walkin` — the same activation per tick over `Door_Update`'s
+  actor list with the game's own proximity metric `Vec_SqDist3D(door+0x80, actor+0x80) <
+  (door+0x8C+actor+0x8C)²·2` [M 0x1363c8 @0x136678-84]; drone.rs one additive call (once per tick,
+  sounds merged). The leaf rises (y −0.10 → 2.18, keys [D]) and the door reaches OPEN with no E.
+- **Left**: after the leaf clears (world box y 2.18..4.43, capsule_push free at Bond's pose) Bond's
+  forward move still collapses (~0.0002/tick vs 0.096) at the threshold z −73.58 — a movement-path
+  bug of its own (input alive, local [0,0.1], vel 0, no push) — not root-caused in the window; the
+  passage completion is the next session's first item. Files touched beyond the named three (the bug
+  lives there): crates/nf-game/src/door.rs (+ the straddle_walkin fn), crates/nf-game/src/drone.rs
+  (one additive call block). Report: docs/reports/fix-casings-16.md.
 ## fix-cutscene-brightness (s/fix-cutscene-brightness) — 2026-10-14
 
 Task 102g, the 07000002 intro playtest (results 1013-1825): "the models in the game during the
@@ -11193,6 +11230,32 @@ draws added; no wall-clock in Sim.
 ## fix-save-profile
 - The game's profile save ported: the six-block chain PLRS/MSSN/MPSG/GSET/CHET/BNUS [M SaveIFFBlocks 0x2c74d8 static init; L the table + the game's own 1022-byte chain in ee_snapshot InBufData 0x3416e0] with every field cited (PLRS = PlayerSetting[slot] 0x2a38c8 stride 0x158, 12 fields in LS_MakePlrSettings 0x1cd418's push order, the decode matches Input_Init 0x17edd8's defaults; GSET 905 B incl. the 219 zero dwords + the version tag 4; MPSG radar/health; CHET 3 bits; the file name IS the codename [M Menu_UpdateMessageBox 0x1f7de8]). crates/nf-game/src/profile.rs (new) + the menu hooks: the card rows after the two defaults, create/load codename, the mission_ended(Complete) save, the Records page reading the active profile. Tests: 5 module (the game's own chain decodes field-for-field) + 4 NF_ISO flow (create, the chain through the page, unlock-after-mission via nf_view::load + step_bond + mission_ended, the corrupt-file refusal); 4/4 + 5/5 on the merged tree (c606b5f). Difficulty is NOT in the save [M none of the six make fns reads GameState+0x40] — the brief's "difficulty per mission" resolves to the MSSN best scores. progress.rs: 4 fns pub(crate) + Clone (additive). Report: docs/reports/fix-save-profile.md (Live checks inside: the save chain in gdbwatch, the Records third value, the style-7 template question).
 
+## fix-fire-modes3
+- Started: branch s/fix-fire-modes3 from origin/master (8295049, weapon-matrix2 merged). Task:
+  every fire mode of the 32 MP weapons against the PCSX2 table (docs/live/2026-10-13-weapon-modes-pcsx2.md);
+  weapon x mode game-vs-port table in the report; tests per family (pistol silencer, burst rifle,
+  grenade attachment, launcher guided/unguided, MGL impact/delay, Samurai charge/beam, crossbow, sniper zoom).
+- Key prior work read: docs/systems/weapons.md (the mode table with [L] record bytes), fix-fire-modes2.md
+  (blast path, guided cam), weapon-matrix2.md (M/G/X runner marks, the reload-hang finding).
+- Research in progress.
+- fix-fire-modes3 done in-window: four fixes landed with [M]/[L] citations — (1) the Samurai bolt's
+  small impact blast arms (+0x70 & 0x100000/0x200000 → Explode_Create r/d from +0x08/+0x0C, script
+  0x60007c4) [M Bullet_CollisionHandler 0x12ce80:207-245] in drone.rs's world-hit gate; (2) the
+  quarter-speed spawn (+0x6C & 0x200 → speed × 0.25) [M Bullet_init 0x12c5a0:188-190] in
+  fire_player — the torpedo 0x30, the K5 dart 0x43 and the SENTINEL rockets 0x2C/0x2D all carry the
+  bit (the guided flight is 4× slower than the port modelled; the fire_modes2 window grew with it);
+  (3) the mode-press zoom reset [M 0x1a24c8:213-228] in scene.rs's mode block ("zoom steps"
+  resolved: Player_Zoom 0x1a1a70 is continuous — the reset is the only missing observable); (4) the
+  Samurai charge [M 0x1a5460:186-202]: the clip[0x33] drain (clip_size − clip_size·frame/280) +
+  the cyan glow light (rgb 0,255,255, intensity 1.5·frame/280) while the 280-frame charge script
+  plays — the HUD number climb decoded as the spent% display of the drain [M 0x19a7f0 ammo-type-31
+  percentage]. The full weapon×mode game-vs-port table is in docs/reports/fix-fire-modes3.md.
+  Tests: fire_modes3_live 5 passed / 4 ignored (drive-order harness notes in the report); the
+  sister weapon binaries re-ran green (fire_modes_live 5/5 after the window extension,
+  silencer 2/2, weapon_modes 6/6, matrix upgraded-runner 1/1, nf-game lib 150/150). The full suite
+  re-started on the final tree late — read suite.out before merging. Remaining: the 4 ignored
+  drives, the Samurai beam view layer (swoosh + cels), the crossbow quiver + satchel digits
+  (evidence cited in the report), the suite completion.
 > fix-hud-radar DONE (14:55 UTC): the SP HUD has no radar — panes 13/14 absent in the SP snapshots
 > [L], PaneList 13/14 NULL [L], MPSettings+0x384 = 0 [L]; the bottom-left ring is the health pane's
 > sprite 15 and the port already matched it. The MP radar (pane 14) is now ported + number-pinned:
@@ -11367,6 +11430,134 @@ Stage Summary:
   to the same gunfire, the protected-actor ch 0x60 rises on his death). Suite on the merged tree:
   see docs/reports/fix-06-driver.md. Report: docs/reports/fix-06-driver.md (live checks: the PCSX2
   no-draw confirmation, the death anim, the 700-880 step-out window; the headless render gap).
+## fix-oddjob-hat — s/fix-oddjob-hat (task 104e, 17:36-18:5x UTC)
+- The hat = weapon 0x45 [L ee_start_05.bin @0x2c398c]: damage 100.0, speed 0.6667, +0x6C = 0x20C08
+  (gravity + no-flesh-pass 0x800 + the HOMING bit 0x20000 — the only carrier among the thrown
+  projectiles), +0x70 = 0x100 (the stick flag; no 0x4/0x200 — it never explodes). Evidence: the
+  homing is `Bullet_homing` 0x12f358 (from `Bullet_update` 0x12e7b0:476-478; the nearest
+  heat-seekable target in the 0.66 cone with LOS, the steer `dir += clamp((to−dir)·0.0333, ±0.01)`);
+  the world contact STICKS (`Bullet_CollisionHandler` 0x12ce80:255 state 3, the hat-only 1500.0
+  lifetime + the 0x4a7 clang :315-317; the bounce block needs +0x80 or a character hit :398-407);
+  the stuck hat's handler never runs again (:102) and `Bullet_update` case 3 counts 1500 down
+  (0x45-only :363-371) to a silent delete. **No return-to-thrower exists** — fix-gadgets-live's
+  "unmeasured" item resolves to the homing + the stick.
+- Fixes: grenade.rs (the `stuck`/`seek_target` fields, `GrenadeEvent::Stick`, HAT_STICK_LIFE,
+  the stick branch + the silent stuck countdown); drone.rs (the homing pass in the grenade loop —
+  the flag-driven gate, the same shape as the bullets' homing; the hat_out exclusions; the Stick
+  arm's clang); scene.rs (the spawn fields). The mine/satchel +0x100 stick branches left to their
+  task (documented on the `stuck` field). Master's projectile-trails block kept beside the homing
+  in the merge.
+- Tests: crates/nf-view/tests/oddjob_hat_live.rs — the stick test SHOWN FAILING pre-fix (the hat
+  bounced like a grenade), green post-fix: the frozen position, one 0x4a7, zero 0x51c, no blast,
+  the stuck hat kills nobody, the silent 1500-tick expiry, the frag's 0x51c sister; the aimed
+  throw kills in one hit with no 0x51c and no explosion (its pre-fix pass via the dig-edge kill is
+  documented honestly in the report).
+- Suite on the merged tree: nf-game+nf-formats+nf-audio --no-fail-fast 362 passed / 3 failed (the
+  ALLOWED disc_golden trio) / 46 binaries; the 16 nf-view neighbour binaries 65 passed / 0 failed.
+  suite.py's background process cannot survive this sandbox (the 102c/100f precedent) — the same
+  binaries ran in foreground --test-threads=1 chunks.
+- Report: docs/reports/fix-oddjob-hat.md (the evidence chain, the live checks: the PCSX2 curve/
+  stick/clang/expiry, the gdbwatch obj+0xF4=3 and BU+0xFC=1500 countdown, the nf-view render spots).
+---
+Task ID: 103c-fix-0c-vent2
+Agent: 0c-vent2 worker
+Task: fix-0c-vent2 — 0700000c: get Bond through the display vent (from the inner ledge down to the display case floor; the user "can't crouch through"). Finish the two remaining legs of the traversal mapped by 101g-fix-0c-hatch, with a test reaching the display floor at (5.4, 7.3, -113) from --bond 5.8,15.8,-107.5,3.14,0 with the four latches burned.
+
+Work Log:
+- (10:46 UTC) Branch s/fix-0c-vent2 created from origin/master b65d6f7 and pushed. Setup: ISO re-downloaded (the /tmp symlink target was a 39-byte stub; fresh download verified 369823203 B, extracted 1061754880 B; repo-root hardlink not allowed across devices, copied; `ln -s` blocked in this sandbox).
+- Reading fix-0c-hatch.md's traversal map + decompile next.
+- Route mapped (probes kept in crates/nf-view/tests/probe_vent.rs): the balcony 14.61-14.81 spans x −2..14, z −112.5..−121.5, no holes/ceilings; the lower walkway 11.27 under its north half; ground 6.27 with a south-east ramp; NO wall at x 3.0..4.4 on the vent wall plane. ROOT CAUSE FOUND + FIXED: the winch SSs (#351/#364/#377 — the doc's "way down") listen on ch 0 and the port's Channels::set/on + SsList::tick skipped ch 0 entirely, so a ch-0 SS could never run [M SS_Update 0x1a9948:20-23 indexes switch_channels[ch] for any ch]. Fail-first tests green post-fix (fix_0c_vent2_live: ch-0 roundtrip, winch sweep, hole-drop regression); neighbours + nf-game lib 143 green. Left: the SS_Operate self-latch (the game's ch-0 driver), the ascent jump, the crouched wedge at the south wall, the full suite (ISO re-download ate the window). Report: docs/reports/fix-0c-vent2.md.
+
+## fix-handcannon — s/fix-handcannon (task 105b, started 18:58 UTC)
+- Task: weapon 0x38 fires on 22 of 27 levels with sounds recorded but no shot tick and no observable event (no bullet, no blast, no muzzle flash). Find what 0x38 is (label through the language bank, +0x6C/+0x70 flags, ammo, Player_WeaponFiring 0x1a5460's path for its fire type) and what the game does when it fires; port the missing part. Repro test through the real input path first. Files: crates/nf-game/src/{gun,drone}.rs or scene.rs's fire path.
+- Status: branch cut from origin/master b9ed8b8 (pulled), WORKLOG started. Next: decompile research (what 0x38 is, its fire type's path in Player_WeaponFiring), reproduce, fix.
+
+## fix-handcannon — s/fix-handcannon (task 105b, finished 19:40 UTC)
+- Task: weapon 0x38 (the F family, 22/27 levels) fires with sounds but no shot tick and no observable
+  event. Find what it is and port the missing part. Files: gun.rs / grenade.rs + scene.rs's fire path.
+- What 0x38 is [L ee_start_05.bin + USATxt.dat]: the Remote Mine family — 0x37 the thrower ("Grenade"),
+  0x38 the DETONATOR (label 0x0500004d "Detonate", +4 = 0, base 0x37, +0x91 = 0, fire script == idle
+  0x060004ea, +0x68 = 0x00020010). The game's fire [M Player_WeaponInitBullet 0x1a4bf0 disasm
+  0x1a4c30-0x1a4cd4]: the +0x68 & 0x20000 arm FIRST — mark every type-5 mine of this base owned by the
+  player BD+0xFC = 10.0 (DoTrails 0x12d890:268-281 counts it down → Explode_Create(record+8 radius 8,
+  record+0xC damage 100) [M 0x12d890:388-393]); then has-ammo(base) → BL+0x63 = 0x37 (switch back) or
+  dry → owned cleared + GetBestWeapon [M 0x1a4cd0/0x1a4ccc]; no bullet, no muzzle latch.
+- Fixes: (1) GunParams ammo_per_shot = the RAW +0x91 (RoundToFire 0x1a18e0 spends the raw byte; the old
+  .max(1) turned the detonator's zero-spend into a needs-1-round gate and refused the fire — the F
+  family's "sounds, no shot tick"); (2) the +0x20000 detonate arm ported in scene.rs's shot block
+  ('shot: labeled block — the existing lines untouched); (3) the player's mine fuse 7777.0 [M
+  0x12c5a0:214-223] + the DoTrails 7777 tick skip in Grenade::update [M 0x12d890:268-273] — the old
+  420 self-destruct blew the user's mine up 7 s after the throw.
+- Tests: crates/nf-view/tests/fix_handcannon_live.rs 3/3 — the detonate+switch-back (radius 8 / damage
+  100 / ≤ 11 ticks), the armed mine never self-detonates (600 ticks), the no-bullet fire still switches
+  back. Fail-first: 54afd3d (all three failing for the diagnosed reasons) before 30e69fa (the fix).
+  Neighbours green: grenade_throw 4/4, weapons_all 4/4, weapon_sounds 6/6, explode 2/2,
+  weapon_effects 3/3, gadgets 4/4. Shared file: scene.rs only (2 brace lines + the arm + the fuse line).
+- Report: docs/reports/fix-handcannon.md (live checks: the PCSX2 detonate + the auto switch-back, the
+  7777 gdbwatch, the dry arm; nf-view spot list). Follow-up filed: the game STICKS the mine on first
+  contact, the port bounces it to rest.
+
+## 102j2-fix-casings-16b (s/102j2-fix-casings-16b) — 2026-10-14
+
+Started (18:35 UTC): base s/fix-casings-16 (97632680) merged with origin/master. Task: the merge HELD
+fix-casings-16 — with the branch, two tests that pass on master fail
+(level_end_live::door_e_opens_then_e_closes_on_07000001 and
+walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact). Suspect: the per-tick
+straddle_walkin in door.rs (and its drone.rs hook) — on 01 it opens/holds/closes doors the game
+doesn't, or changes the escort's path through a door. Plan: find the game's actual gate for the
+straddle walk-in (Door_Update's proximity math, which doors and which states it applies to —
+0x136678 metric, 0x1363c8 ch_open gate per the fix-casings-16 evidence), narrow the port to it, keep
+16's arrival door working, restore 01's door E / escort walk to master behaviour.
+
+## 102j2-fix-casings-16b (s/102j2-fix-casings-16b) — 2026-10-14
+
+The merge-HELD fix-casings-16 root-caused and the primary symptom fixed. The per-tick straddle
+walk-in's `state & 0xc` gate let a CLOSING (0x10) leaf through and re-activated it every tick —
+the slide activate turns 0x10 into OPENING [M Door_Activate 0x135be0] — so 01's door E test read
+state 0x4 after the second E. Door_Update's scan is auto-close only, behind OPEN-door tests
+[M 0x1363c8 @0x136678/@0x136610], and never touches a moving leaf. Narrowed: closed-idle only,
+ch_open doors to the channel arm, silent lock pre-skip; hook scoped to the evidenced contact-open
+site (07000016's arrival door) — the "straddle" param is a portal-culling flag [M 0x136788 →
+0x1c8ac8], not an open trigger, and the decompile has no per-tick open for a closed idle door.
+Tests: level_end_live 6/6 (door_e restored + the new 16 closing-door test, shown failing first),
+casings16_live 2/2, nf-game --lib 150/0. OPEN: walkreal_07000001 still fails — it passes with the
+broad walk-in and fails without it on today's master (the bisect premise is stale; s/104a2-fix-
+escort-01b is another worker on it); the resolver is the U-041 per-leaf contact, not a sphere.
+Suite: the sandbox kills background jobs (nohup+setsid both died); synchronous chunks only — the
+full suite did not fit the window. Report: docs/reports/102j2-fix-casings-16b.md (live checks:
+16's no-E contact open, 01's shoji doors E-only vs contact, the escort's own door opens).
+## 103l2-fix-fire-modes3b — s/103l2-fix-fire-modes3b (started 16:45 UTC 2026-10-14)
+- Base: s/fix-fire-modes3 (aca97652) merged with origin/master (7785582a); WORKLOG conflict resolved by keeping
+  both the fix-fire-modes3 and the fix-hud-radar entries.
+- Task: the weapon-sound sweep (fix_weapon_sounds_live::every_weapon_on_07000005_draws_fires_and_reloads_with_sounds)
+  fails only on this merge (1087 pass / 1 fail): weapons 0x37 (missing sound 1112) and 0x59 (missing sounds
+  1096, 1112) never play their missing sounds within the 25-tick fire window. Find which of the four fix-fire-modes3
+  changes moves the sounds, decide from the game's code whether the new behaviour is right, then extend the test
+  window citing flight time or fix the code. Suite total on the final tree required.
+- Work in progress: reproduce first.
+- Reproduced (11 s sweep): the merge tree fails exactly 0x37 [1112 = 0x458] and 0x59 [1096 = 0x448,
+  1112]; isolation probes (fresh scene per weapon) show 0x37→0x458, 0x3b→0x448, 0x59→0x458 all play —
+  the loss is sweep-context only.
+- Cause (instrumented sweep, NF_GUNTRACE + per-weapon clip/bullet/cam log): firing the AT-420 Sentinel's
+  guided rocket (0x2c, the only `+0x6C & 4` camera-bit carrier) hands the view to the projectile —
+  substate 10 zeroes the input and the trigger stays gated until the missile dies + a 15-tick restore
+  [M Bullet_init 0x12c5a0:248-253; Bullet_update 0x12e660:28 `+0x944 = 0xf`; Player_Update 0x193600:242-256].
+  The quarter-speed fix [M 0x12c5a0:188-190, `+0x6C & 0x200` → ×0.25] made that rocket fly its true
+  0.0625 u/tick (record +0x20 = 0.25 [L]) over its 200-unit range [L +0x1C] ≈ 3200 ticks — the camera
+  ride now covers the fire windows of 0x2e–0x37 (8 segments; per-weapon log: `fired=false` throughout,
+  cam true), so the mine 0x37 never fires and its detonation sound 0x458 never starts a voice anywhere
+  in the sweep; 0x59's row (ids 0x448/0x458) passes on 0x458 via the accumulated `seen` and fails with it.
+  Verdict: GAME-CORRECT — the game's player cannot fire during the ride either. On origin/master the same
+  sweep passes because the old 4×-speed modelled rocket impacts within its own segment. 0x448 never played
+  on ANY tree: the satchel charge spawns at its fire script's release frame (+0x44 = 76 [L] > 25) which
+  the next weapon's holster cuts — the master pass was the `any` semantics via 0x447/0x458 (documented in
+  the test; holding the sweep to the release would land the 8/2000 charge ~5 units from Bond — a
+  game-faithful `Player_Hurt` self-kill that voids the rest of the sweep).
+- Fix (test-only, crates/nf-view/tests/fix_weapon_sounds_live.rs): the sweep waits out the missile camera
+  before each weapon's fire window (bounded 3400 ticks = the flight time + restore + margin; the range
+  death is silent state 4 [M 0x12e848], so the wait adds no blast), with the evidence chain in the comment.
+  fix_weapon_sounds_live 3 passed / 2 ignored (pre-existing, documented); fire_modes3_live 5 passed /
+  4 ignored (pre-existing); fix_weapon_fire_modes_live 5 passed.
 
 ---
 Task: fix-character-room-light
