@@ -10575,3 +10575,6 @@ fix-08-collision2 (100m, 2026-10-14): the scoped collision's 01 escort breakage 
   crates/nf-view/src/scene.rs (the two shared-file hooks), crates/nf-view/tests/common/walker.rs
   (the env-gated trace), crates/nf-view/tests/fix_08_collision2_live.rs (new);
   crates/nf-game/src/player.rs ended unchanged.
+
+## fix-armour-ring
+- Started: the orange 007 ring bottom-left in PCSX2 captures may be the health pane's armour state (the captures' god-cheat wrote armour 50 BLData+0x8B0 every frame); check HUD_UpdateHealthPane 0x19b9c8's armour branch, port it, test armour 0 vs 50.
