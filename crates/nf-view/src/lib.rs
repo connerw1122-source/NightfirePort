@@ -28,6 +28,8 @@ pub mod movie;
 pub mod scene;
 pub mod replay;
 pub mod panel;
+/// The weapon matrix (task 100d): every on-foot level × every weapon, measured headless.
+pub mod matrix;
 
 use anyhow::{bail, Context, Result};
 use glam::{Mat4, Vec3};
@@ -2052,6 +2054,16 @@ impl ApplicationHandler for App {
                                 };
                                 (input, self.trigger, self.just.remove(&KeyCode::KeyR), self.just.remove(&KeyCode::KeyE))
                             };
+                            // weapon-matrix: the dev menu's "Test weapon" run (dev.rs) merges its
+                            // inputs into this tick — the same lanes the keyboard uses
+                            // (`switch_to`, the trigger, the R edge), never during a replay
+                            // (the recording drives the sim alone).
+                            let (tw_switch, tw_fire, tw_reload) = if self.replay.is_none() {
+                                self.dev.as_deref_mut().map_or((None, false, false), |d| d.test_inputs())
+                            } else { (None, false, false) };
+                            input.switch_to = input.switch_to.or(tw_switch);
+                            let trigger = trigger || tw_fire;
+                            let reload = reload || tw_reload;
                             // The gamepad (fix-input, `gamepad` feature): the pad's path through the
                             // game's own mapping/curves/ramps merges into the keyboard's Input; no pad,
                             // no change. Mouse look is untouched (its deltas are in input.turn/look; the
@@ -2066,6 +2078,9 @@ impl ApplicationHandler for App {
                             // B-5 record: capture the exact input passed to step_bond, before the call.
                             if let Some(r) = &mut self.recorder { r.push(replay::TickInput::from_parts(&input, trigger, reload, use_key)); }
                             sim.step_bond(input, trigger, reload, use_key);
+                            // weapon-matrix: the "Test weapon" run watches the tick's result (the
+                            // phase machine in dev.rs; `sim` and `self.dev` are disjoint fields).
+                            if let Some(d) = self.dev.as_deref_mut() { d.test_observe(&*sim); }
                             // The lock's rising edge auto-draws the handgun (`Upgrade_Weapon(6)` = 2 [L])
                             // [M 0x1a24c8:247-250]. `prev` = last tick's channel (the game's
                             // `switch_channels_prev` semantics).
