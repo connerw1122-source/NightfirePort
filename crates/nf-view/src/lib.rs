@@ -2486,6 +2486,13 @@ pub fn run() -> Result<()> {
                 eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);
             }
         }
+        // fix-armour-ring: `--armour <n>` writes BLData+0x8b0 after the ticks (the pane's armour — the
+        // same write the dev panel's armour row and cheats.py's god make every frame), so the health
+        // pane's armour state renders headless.
+        if let Some(i) = args.iter().position(|a| a == "--armour") {
+            let n: f32 = args.get(i + 1).context("--armour needs a value (0..=50)")?.parse()?;
+            if let Some(sim) = scene.sim.as_mut() { sim.drones.health.armour = n; }
+        }
         let (mut menu_frame, movie_frame) = front_end_menu(&args, &scene, front_end);
         // fix-ingame-dev-menu: `--dev-page <name>` draws the F2 menu's page (menu/weapons/gadgets/
         // grenades/ammo/npcs/teleport/level/toggles/screenshot) over the game HUD, so the main agent
