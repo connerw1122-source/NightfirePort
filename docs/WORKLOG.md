@@ -9748,3 +9748,15 @@ the wrap/line-height helpers). Report: docs/reports/fix-objective-messages.md.
 Full suite on the final tree (origin/master 7be3272 merged): **886 passed, 3 failed, 27 ignored
 (20 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH. Also green post-fix:
 death/restart 8, mission 4, level_carry 3, progress 8, nf-formats 74 (+ the 3 allowed).
+
+### fix-weapon-assets — result (2026-10-14)
+
+- Disc-wide weapon asset index + loader shipped: `weapon_assets.rs` (index cached in temp keyed by
+  ISO size + FILES.BIN SHA-1; the surgical `Wanted::Ids`/`--dev` `Wanted::All` merge with the
+  gameplay-skeleton sequence guard), `load_weapons`/`load_with_carry_weapons`, the `--give` hook in
+  `run()`, and the lazy dev-menu give via a warm same-level reload. scene.rs needed no changes.
+- 5 NF_ISO tests in `tests/weapon_assets_live.rs` — all green: index+cache, all 53 cross-level
+  weapons' assets resolve on 07000005 (meshes/skeletons/sequences/scripts/flash/3rd-person/
+  projectile, by_hash unchanged), draw→fire→reload through step_bond, native-carry identical
+  numbers, the 18 no-model ids listed. Suite: 752 passed, 3 failed (the allowed disc_golden
+  slim-ISO set), 27 ignored. Report: docs/reports/fix-weapon-assets.md.
