@@ -10033,3 +10033,10 @@ measured per-quad from the frame, plates excluded), the main-row colours, the co
 previews, the dossier wheel + Records page, the prompt colour, and the pre-existing flows (the
 codename navigation gained a Down — row 0 is now New Codename). Suite on the final tree: see the
 report. Files: crates/nf-view/src/menu.rs, crates/nf-view/tests/menus_flow.rs (no shared files).
+---
+Task ID: 102d-fix-searchlights-guards
+Agent: searchlights-guards worker
+Task: 06 searchlights + guards — alarm on the walked beam entry, beam/pool draw orientation+brightness, guards' first shot gated on the aim-raise.
+
+Work Log:
+- (started 05:11 UTC) branch from origin/master; reproducing first.
