@@ -47,7 +47,19 @@ None. Only `crates/nf-view/tests/menu_movies.rs` (task file), `docs/tools/test-s
 `docs/WORKLOG.md` (append-only) and this report.
 
 ## Suite
-(see the final numbers pushed with this report — filled below)
+- Movies-feature build+run (the task's ask): 203/203 nf-view+nf-formats test binaries built with
+  `--features nf-view/movies`; 202 executed in one automated pass — **201 ok, 1 FAILED = disc_golden carrying
+  exactly the 3 allowed slim-ISO failures; 0 timeouts** (weapon_matrix_live exceeded its 600 s slot; see below).
+- Official runner on the final merged tree (origin/master 6691ef9 merged, commit 9f94aa9):
+  `build ok: 240 test binaries in 266 s`, then the run phase was still in progress at push time (sandbox expiry):
+  **111/240 binaries done, 0 unexpected failures** (only disc_golden's 3 allowed slim-ISO failures so far), 0
+  timeouts. The sandbox deadline (12:07 UTC) cut the run; no unexpected failure had appeared. The pre-merge full
+  movies pass + these 111 binaries on the identical test code are the regression evidence; the main agent's
+  pre-merge suite run is the authority for the merge itself.
+- `weapon_matrix_live` (master since s/weapon-matrix, not movies-gated) needs >600 s with AND without the movies
+  feature (22/28 tests at 600 s with movies, 18/28 without — same code), so every future suite run will report
+  `TIMEOUT weapon_matrix_live` and count it failed. Flagged for the main agent (shared file, out of scope): raise
+  the limit, special-case the binary, or have the suite set `NF_MATRIX` to a subset for it.
 
 ## Remaining / for the next session
 - A full PSS pass needs a retail-movie image in the sandbox (`NF_MOVIE_ISO`); on the slim ISO the 4 movie-data
