@@ -1,17 +1,25 @@
 //! fix-window-view (101i): the view out of the Mayhew ballroom window on 07000007.
 //!
 //! The PCSX2 comparison [L docs/live/2026-10-13-portal-ground-truth.md, the ballroom-window row]:
-//! the real game shows only the snowy mountain through the window — no lit building — and the port's
-//! walk matches; with `NF_NOPORTAL=1` the building draws. The port also shows the snow smeared /
-//! stretched with no haze, while the game shows a blue haze over the slope.
+//! the real game shows only the snowy mountain through the window — no lit building — and the
+//! port's portal walk matches; with `NF_NOPORTAL=1` the building draws. The user's playtest
+//! (with the launcher's `NF_NOPORTAL=1`) saw a lit stone block floating in front of the slope,
+//! the snow smeared/stretched and no haze. This file pins, through the real input path:
 //!
-//! Evidence base:
-//! - `psiPreGameRun` (0x11e2e8): 07000007 falls into `default` — `FogOn = 0`, `Ps2Far1 = 4194240`
-//!   [M]. `psiDrawFogPass` (0x10b960) gates the screen fog on `FogOn != 0` [M], so the game's blue
-//!   haze on 07000007 cannot be the screen pass; whatever paints it must ride the drawn content.
-//! - The walk: `eye_cell` (Camera_CheckLocation 0x1bae90 state) → `Vision_Portal_Recurse` 0x1e86e8
-//!   [M]; the renderer's World cull (gpu.rs render) gates `node`-attached draws on the cell game
-//!   mask and the rest on their room cel under the strict mask.
+//! 1. **The block** — with the game's cel walk (`Vision_Portal_Recurse` 0x1e86e8, the renderer's
+//!    per-frame mask) the block's room (Gallery_K_2: graph cell 26, room cel 20, world centre
+//!    (49.1, 45.6, −51.1)) is NOT in the drawn set at the window spot, and IS in it with the walk
+//!    forced off (`NF_NOPORTAL`). The game hides the room the same way — the port matches.
+//! 2. **The fog** — `psiPreGameRun` (0x11e2e8) puts 07000007 in its `default` arm: `FogOn = 0`,
+//!    `Ps2Far1 = 4194240` [M]; `psiDrawFogPass` (0x10b960) runs only `if (FogOn != 0)` [M]. So the
+//!    game applies NO screen fog on 07000007 and the port's `fog_for` returns None for it — the
+//!    blue haze over the slope is the skybox dome's own dusk-haze textures (map47 tex 177/180/181
+//!    horizon bands), not level fog.
+//! 3. **The snow's UVs** — the sky-dome materials' UVs in the port's scene equal the disc's glist
+//!    UV stream bit for bit (`add_instance` copies `v.uv` verbatim; the cross-check against
+//!    nightfire-re's own VIF reader covers every unique object — docs/formats/ps2gfx.md §Results).
+//!    The "tiny" UV patches on the dome (tex 178's u[0.48..0.51] v[0.48..0.52] haze band) are the
+//!    disc's own data, not a port parse bug.
 //!
 //! Opt-in via `NF_ISO`.
 
@@ -55,36 +63,10 @@ fn depth0_game(vp: [[f32; 4]; 4], eye: [f32; 3]) -> [[f32; 4]; 5] {
 /// π/2.
 const WINDOW: ([f32; 3], f32, f32) = ([61.32, 44.11 + 0.7, -52.58], 3.749, -0.056 * std::f32::consts::FRAC_PI_2);
 
-#[derive(Clone, Copy)]
-struct Drawn {
-    mi: usize,
-    centre: [f32; 3],
-    radius: f32,
-    dist2: f32,
-    node: u32,
-    cel: Option<u16>,
-    key: Option<(usize, u32)>,
-    pass: u8,
-    uv: ([f32; 2], [f32; 2]),
-    nverts: usize,
-}
-
-fn uv_range(sc: &scene::Scene, mi: usize) -> (([f32; 2], [f32; 2]), usize) {
-    let m = &sc.materials[mi];
-    let mut lo = [f32::MAX; 2];
-    let mut hi = [f32::MIN; 2];
-    let mut n = 0usize;
-    for t in sc.indices[m.first_index as usize..(m.first_index + m.index_count) as usize].chunks(3) {
-        for &k in t {
-            let uv = sc.vertices[k as usize].uv;
-            for a in 0..2 { lo[a] = lo[a].min(uv[a]); hi[a] = hi[a].max(uv[a]); }
-            n += 1;
-        }
-    }
-    ((lo, hi), n)
-}
-
-fn collect(sc: &scene::Scene, walk: bool) -> Vec<Drawn> {
+/// The renderer's World-draw cull (gpu.rs render) replicated headlessly: a `node`-attached draw is
+/// hidden when the cell game mask hides its cell; the rest hide on their room cel under the strict
+/// mask mapped over `room_to_cell`.
+fn drawn_world_mis(sc: &scene::Scene, walk: bool) -> (Vec<usize>, Vec<bool>) {
     let (eye, yaw, pitch) = WINDOW;
     let vp = view_proj(eye, yaw, pitch, 16.0 / 9.0);
     let planes = nf_view::gpu::extract_frustum(vp);
@@ -101,117 +83,155 @@ fn collect(sc: &scene::Scene, walk: bool) -> Vec<Drawn> {
     } else { (None, None) };
     let mut out = Vec::new();
     for (mi, m) in sc.materials.iter().enumerate() {
-        if m.layer != scene::Layer::World && m.draw.pass != 0 && m.draw.pass != 4 { continue; }
-        let d2 = (m.centre[0] - eye[0]).powi(2) + (m.centre[1] - eye[1]).powi(2) + (m.centre[2] - eye[2]).powi(2);
+        if m.layer != scene::Layer::World { continue; }
         if nf_view::gpu::sphere_outside(&planes, m.centre, m.radius) { continue; }
-        if m.layer != scene::Layer::World { // sky passes are never cel-culled
-            let (uv, n) = uv_range(sc, mi);
-            out.push(Drawn { mi, centre: m.centre, radius: m.radius, dist2: d2, node: m.node, cel: m.cel, key: m.key, pass: m.draw.pass, uv, nverts: n });
-            continue;
-        }
         let hidden = match (&cell_vis, m.node) {
             (Some(cv), n) if n != u32::MAX => !cv[n as usize],
             _ => m.cel.is_some_and(|c| room_vis.as_ref().map(|r| !r[c as usize]).unwrap_or(false)),
         };
-        if hidden { continue; }
-        let (uv, n) = uv_range(sc, mi);
-        out.push(Drawn { mi, centre: m.centre, radius: m.radius, dist2: d2, node: m.node, cel: m.cel, key: m.key, pass: m.draw.pass, uv, nverts: n });
+        if !hidden { out.push(mi); }
     }
-    out.sort_by(|a, b| a.dist2.total_cmp(&b.dist2));
-    out
+    (out, room_vis.unwrap_or_default())
 }
 
-fn name_at(sc: &scene::Scene, c: [f32; 3]) -> String {
-    let mut best: Option<(&String, f32)> = None;
-    for (name, lo, hi) in &sc.colliders {
-        if (0..3).all(|k| c[k] >= lo[k] - 0.5 && c[k] <= hi[k] + 0.5) {
-            let mid = [0.0; 3];
-            let d = (0..3).map(|k| (c[k] - mid[k]).powi(2)).sum::<f32>();
-            let d = (0..3).map(|k| (c[k] - (lo[k] + hi[k]) / 2.0).powi(2)).sum::<f32>().sqrt();
-            let _ = d;
-            if best.map(|(_, bd)| d < bd).unwrap_or(true) { best = Some((name, d)); }
+fn load() -> scene::Scene {
+    let iso = iso().expect("NF_ISO");
+    nf_view::load(&iso, "07000007.bin", false).expect("07000007 loads")
+}
+
+/// The block's instance is not in the drawn set at the window spot with the game's walk, and is
+/// drawn with `NF_NOPORTAL` (the sister assertion) — the playtest's floating block is the launcher
+/// flag, not a port bug. Gallery_K_2's world centre is (49.1, 45.6, −51.1), graph cell 26, room
+/// cel 20 (the diagnostic run on this tree).
+#[test]
+fn block_hidden_by_the_walk() {
+    let sc = load();
+    let (on, _) = drawn_world_mis(&sc, true);
+    let (off, _) = drawn_world_mis(&sc, false);
+    let is_block = |mi: usize| {
+        let m = &sc.materials[mi];
+        m.centre.iter().zip([49.1f32, 45.6, -51.1]).all(|(a, b)| (a - b).abs() < 0.5)
+    };
+    let block_on: Vec<usize> = on.iter().copied().filter(|mi| is_block(*mi) as usize & 1 == 1).collect();
+    let block_off: Vec<usize> = off.iter().copied().filter(|mi| is_block(*mi)).collect();
+    assert!(!block_off.is_empty(), "the block draws with NF_NOPORTAL (the reported symptom)");
+    assert!(block_on.is_empty(), "the block's {} draws must be hidden by the walk (the game hides the room)", block_on.len());
+    // The walk also hides the rest of the cross-building rooms: the whole drawn set shrinks hard.
+    assert!(on.len() < off.len() / 2, "the walk-on drawn set ({}) is much smaller than the walk-off one ({})", on.len(), off.len());
+}
+
+/// The window view's drawn set with the walk ON contains the two sky domes (the snowy mountain
+/// backdrop) — the game shows "only the snowy mountain" [L ground truth] — and their GS state is
+/// the plain opaque sky pass (no fog on 07000007).
+#[test]
+fn window_view_is_the_sky_domes() {
+    let sc = load();
+    let (eye, yaw, pitch) = WINDOW;
+    let vp = view_proj(eye, yaw, pitch, 16.0 / 9.0);
+    let planes = nf_view::gpu::extract_frustum(vp);
+    let sky: Vec<(usize, f32)> = sc.materials.iter().enumerate()
+        .filter(|(_, m)| matches!(m.layer, scene::Layer::SkyCamera | scene::Layer::SkyFixed))
+        .filter(|(_, m)| !nf_view::gpu::sphere_outside(&planes, m.centre, m.radius))
+        .map(|(mi, m)| (mi, ((m.centre[0] - eye[0]).powi(2) + (m.centre[1] - eye[1]).powi(2) + (m.centre[2] - eye[2]).powi(2)).sqrt()))
+        .collect();
+    assert!(sky.len() >= 10, "both domes sit in the window frustum (got {} sky draws)", sky.len());
+    // The Mountains_skybox dome (the snowy mountain): r ≈ 244.6, near the eye inside the dome.
+    let mountains = sky.iter().filter(|(mi, _)| sc.materials[*mi].radius > 200.0 && sc.materials[*mi].radius < 300.0).count();
+    let skybox = sky.iter().filter(|(mi, _)| sc.materials[*mi].radius > 1000.0).count();
+    assert!(mountains >= 4, "Mountains_skybox materials in the frustum (got {mountains})");
+    assert!(skybox >= 6, "skybox dome materials in the frustum (got {skybox})");
+    for (mi, _) in &sky {
+        let d = &sc.materials[*mi].draw;
+        assert_eq!(d.pass, 4, "the sky draws after the fog pass (param 4 ≠ 1 on 07000007)");
+        assert_eq!(d.fog, 0, "no fog flag on the 07000007 sky (FogOn = 0 [M 0x11e2e8])");
+    }
+}
+
+/// `psiPreGameRun` (0x11e2e8): 07000007 is in the `default` arm — `FogOn = 0`, `Ps2Far1 = 4194240`
+/// — so `fog_for` returns None; the sister level 07000008 keeps its fog ([0x3b 0x50 0x69],
+/// 13191350.0). `psiDrawFogPass` (0x10b960) gates on `FogOn != 0` [M].
+#[test]
+fn fog_params_for_07000007() {
+    assert_eq!(scene::fog_for(0x0700_0007), None, "FogOn = 0 on 07000007 [M 0x11e2e8 default arm]");
+    assert_eq!(scene::fog_for(0x0700_0008), Some(([0x3b, 0x50, 0x69], 13_191_350.0)), "the sister: 07000008's fog [M 0x11e2e8 case 0x7000008]");
+    assert_eq!(scene::fog_for(0x0700_0005), Some(([0x3a, 0x4d, 0x68], 19_118_528.0)), "the sister: 07000005's fog [M 0x11e2e8 case 0x7000005]");
+    // The dome batches agree: the sky materials carry fog = 0 (checked in window_view_is_the_sky_domes).
+}
+
+/// The frame order [M `Game_Draw` 0x1e6f50:114-139]: `psiPostSolid` (the fog pass) →
+/// `View_DrawSky(.., 0)` (the after-fog sky, the port's pass 4, line 123) → `View_DrawObjList(.., 1)`
+/// (the alpha list, the port's pass 3, line 139). The port drew pass 3 before pass 4 (`dc.pass * 2`
+/// ascending), so the far-pinned sky overpainted the window glass — the lost blue haze over the
+/// slope on 07000007.
+#[test]
+fn sky_draws_before_the_alpha_list() {
+    assert!(nf_view::gpu::pass_rank(4) < nf_view::gpu::pass_rank(3), "the after-fog sky (pass 4) draws before the alpha list (pass 3) [M Game_Draw 0x1e6f50:123,139]");
+    assert!(nf_view::gpu::pass_rank(0) < nf_view::gpu::pass_rank(1), "the pre-world sky (pass 0) draws before the world [M Game_Draw 0x1e6f50:93,108]");
+    assert!(nf_view::gpu::pass_rank(1) < nf_view::gpu::pass_rank(4), "the world (pass 1) draws before the after-fog sky [M Game_Draw 0x1e6f50:108,123]");
+    assert!(nf_view::gpu::pass_rank(3) < nf_view::gpu::pass_rank(5), "the effect pools draw after the alpha list");
+    // Under the pre-fix ranking (pass * 2) the sky ranked 8 vs the alpha list's 6 — the assertion
+    // above fails against it, which is the reported symptom's order.
+}
+
+/// The snow's UVs match the disc's: for both sky-dome objects (map47's `skybox` 279 and
+/// `Mountains_skybox` 280), the multiset of (u, v) bit patterns in the port's scene equals the
+/// multiset in the level's parsed glist vertex stream (`add_instance` copies `v.uv` verbatim; the
+/// disc stream was cross-checked against nightfire-re's own VIF reader — docs/formats/ps2gfx.md).
+/// The disc's own tiny UV patches (the haze band on tex 178) are asserted too: the "smeared"
+/// patches are the game's data, not a port parse bug.
+#[test]
+fn snow_uvs_match_the_disc() {
+    use std::collections::BTreeMap;
+    let sc = load();
+    // The port's side: the sky materials grouped by dome (the two centres from the diagnostic run).
+    let domes: [([f32; 3], usize); 2] = [([-179.3, 26.8, 234.4], 0), ([91.8, 30.8, -51.4], 1)];
+    let mut port: Vec<BTreeMap<(u32, u32), usize>> = vec![BTreeMap::new(), BTreeMap::new()];
+    for (mi, m) in sc.materials.iter().enumerate() {
+        if !matches!(m.layer, scene::Layer::SkyCamera | scene::Layer::SkyFixed) { continue; }
+        let Some(di) = domes.iter().position(|(c, _)| m.centre.iter().zip(c).all(|(a, b)| (a - b).abs() < 2.0)) else { continue };
+        for t in sc.indices[m.first_index as usize..(m.first_index + m.index_count) as usize].chunks(3) {
+            for &k in t {
+                let uv = sc.vertices[k as usize].uv;
+                *port[di].entry((uv[0].to_bits(), uv[1].to_bits())).or_default() += 1;
+            }
         }
     }
-    best.map(|(n, _)| n.clone()).unwrap_or_else(|| "?".into())
-}
-
-fn dump(sc: &scene::Scene, tag: &str, list: &[Drawn], limit: usize) {
-    println!("== {tag}: {} draws (first {limit} by distance)", list.len());
-    for d in list.iter().take(limit) {
-        let tex = d.key.map(|(mapi, t)| {
-            sc.textures.iter().find(|x| x.key == (mapi, t)).map(|t2| format!("tex {t} {}x{} frames {}", t2.width, t2.height, 1 + t2.more.len()))
-                .unwrap_or_else(|| format!("tex {t} (no image)"))
-        }).unwrap_or_else(|| "untextured".into());
-        println!("  mi={mi} pass={p} c=({x:.1},{y:.1},{z:.1}) r={r:.1} d={d:.1} node={n} cel={cel:?} {tex} uv=u[{u0:.2}..{u1:.2}] v[{v0:.2}..{v1:.2}] nv={nv} name={name}",
-            mi = d.mi, p = d.pass, x = d.centre[0], y = d.centre[1], z = d.centre[2], r = d.radius, d = d.dist2.sqrt(),
-            n = d.node, cel = d.cel, u0 = d.uv.0[0], u1 = d.uv.1[0], v0 = d.uv.0[1], v1 = d.uv.1[1], nv = d.nverts,
-            name = name_at(sc, d.centre));
-    }
-}
-
-#[test]
-fn level_named_objects() {
+    // The disc's side: parse the archive and collect the two objects' glist UV streams.
     use nf_formats::disc;
     use nf_formats::iso9660::IsoImage;
     use nf_formats::level::Level;
-    let Some(iso) = iso() else { eprintln!("NF_ISO not set; skip"); return };
-    let img = IsoImage::open(&iso).expect("iso");
+    let img = IsoImage::open(&iso().expect("NF_ISO")).expect("iso");
     let (entries, bin) = disc::files_bin_entries(&img).expect("FILES.BIN");
     let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case("07000007.bin")).unwrap();
     let data = img.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).expect("archive");
     let lv = Level::parse(&data).expect("level parse");
-    for (mi, m) in lv.maps.iter().enumerate() {
-        for (oi, o) in m.objects.iter().enumerate() {
-            let n = o.name.to_lowercase();
-            if n.contains("sky") || n.contains("mount") || n.contains("haze") || n.contains("cloud") || n.contains("snow") {
-                println!("obj map{mi}[{oi}] {:?} centre={:?} r={} flags={:#x}", o.name, o.centre, o.radius, o.flags);
+    let map = &lv.maps[47];
+    for (oi, di) in [(279usize, 0usize), (280, 1)] {
+        let obj = &map.objects[oi];
+        let mut disc_uv: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+        for leaf in &obj.gfx.leaves {
+            for b in &leaf.batches {
+                // Count the way the port's index buffer counts: per triangle corner (the same
+                // strip triangulation the port's exporter uses).
+                for t in b.triangles() {
+                    for k in t {
+                        let uv = b.verts[k as usize].uv;
+                        *disc_uv.entry((uv[0].to_bits(), uv[1].to_bits())).or_default() += 1;
+                    }
+                }
             }
         }
-        for (pi, p) in m.placements.iter().enumerate() {
-            let (om, oi) = match lv.by_hash.get(&p.hashcode) { Some(x) => *x, None => continue };
-            let o = &lv.maps[om].objects[oi];
-            let n = o.name.to_lowercase();
-            if n.contains("sky") || n.contains("mount") || n.contains("haze") || n.contains("cloud") {
-                println!("plc map{mi}[{pi}] {:?} t=({:.1},{:.1},{:.1}) flags={:#x} params={:?}", o.name, p.translation[0], p.translation[1], p.translation[2], p.flags, p.params);
-            }
-        }
+        assert_eq!(port[di], disc_uv, "obj {oi} ({:?}): the port's dome UVs differ from the disc's glist stream", obj.name);
     }
-    // World placements near the window in the view direction (the slope candidates).
-    let eye = [61.32f32, 44.81, -52.58];
-    let (yaw, pitch) = (3.749f32, -0.056f32 * std::f32::consts::FRAC_PI_2);
-    let fw = [yaw.cos() * yaw.sin(), pitch.sin(), yaw.cos() * yaw.cos()];
-    for (mi, m) in lv.maps.iter().enumerate() {
-        for (pi, p) in m.placements.iter().enumerate() {
-            let Some((om, oi)) = lv.by_hash.get(&p.hashcode).copied() else { continue };
-            let o = &lv.maps[om].objects[oi];
-            if o.gfx.leaves.is_empty() { continue; }
-            let t = p.translation;
-            let d = [t[0] - eye[0], t[1] - eye[1], t[2] - eye[2]];
-            let dist = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-            if dist < 6.0 || dist > 120.0 { continue; }
-            let dot = d[0] * fw[0] + d[1] * fw[1] + d[2] * fw[2];
-            if dot < 0.86 * dist { continue; }
-            println!("slope? map{mi}[{pi}] plc{:#x} {:?} t=({:.1},{:.1},{:.1}) d={:.1} flags={:#x}", p.hashcode, o.name, t[0], t[1], t[2], dist, p.flags);
-        }
-    }
-}
-
-#[test]
-fn window_view_drawn_set() {
-    let Some(iso) = iso() else { eprintln!("NF_ISO not set; skip"); return };
-    let sc = match nf_view::load(&iso, "07000007.bin", false) { Ok(s) => s, Err(e) => { eprintln!("07000007: {e}"); return } };
-    println!("fog_for(07000007) = {:?}", scene::fog_for(0x0700_0007));
-    let on = collect(&sc, true);
-    let off = collect(&sc, false);
-    // Totals by pass, and the far half of the walk-ON set (the view through the window).
-    let mut by_pass: std::collections::BTreeMap<u8, usize> = Default::default();
-    for d in &on { *by_pass.entry(d.pass).or_default() += 1; }
-    println!("== walk ON totals by pass: {by_pass:?}");
-    let sky: Vec<_> = on.iter().filter(|d| d.pass != 1 && d.pass != 3).copied().collect();
-    dump(&sc, "walk ON sky/glass (non-world)", &sky, 20);
-    let far: Vec<_> = on.iter().filter(|d| d.dist2 > 3600.0).copied().collect();
-    dump(&sc, "walk ON beyond 60 units", &far, 40);
-    let on_mi: std::collections::HashSet<usize> = on.iter().map(|d| d.mi).collect();
-    let only_off: Vec<_> = off.iter().filter(|d| !on_mi.contains(&d.mi)).copied().collect();
-    dump(&sc, "NF_NOPORTAL-ONLY (the floating block candidates)", &only_off, 15);
+    // The disc's own tiny haze patches: some skybox batch samples a small centre patch of its
+    // texture (the diagnostic's tex-178 batch: u[0.48..0.51] v[0.48..0.52]).
+    let obj = &map.objects[279];
+    let tiny = obj.gfx.leaves.iter().flat_map(|l| &l.batches)
+        .filter(|b| b.verts.len() > 20)
+        .any(|b| {
+            let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for v in &b.verts { for a in 0..2 { lo[a] = lo[a].min(v.uv[a]); hi[a] = hi[a].max(v.uv[a]); } }
+            lo[0] > 0.35 && hi[0] < 0.65 && lo[1] > 0.35 && hi[1] < 0.65 && hi[0] - lo[0] < 0.06 && hi[1] - lo[1] < 0.06
+        });
+    assert!(tiny, "the disc itself samples the dome haze from a small centre patch of its texture");
 }

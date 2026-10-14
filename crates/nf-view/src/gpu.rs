@@ -209,6 +209,18 @@ pub fn alpha_shaped(rgba: &[u8]) -> bool {
     peak > 0 && rgba.chunks_exact(4).filter(|p| (p[3] as u32) * 2 < peak).count() * 4 > n
 }
 
+/// The frame's pass order, the game's [M `Game_Draw` 0x1e6f50:93-151]: sky group 1 (pass 0) before
+/// the world (line 93), list 0 (pass 1) at line 108, `psiPostSolid` (the fog pass) at 114, sky
+/// group 0 (pass 4) at line 123 — **before** the alpha list (pass 3, `View_DrawObjList(1)` at
+/// line 139) — then shards/drops/list 2. The port drew the alpha list before the sky
+/// (`dc.pass * 2` ascending), so the far-pinned sky overpainted every alpha surface written over
+/// it — the ballroom window's glass tint (the blue haze over the slope) vanished on 07000007
+/// (fix-window-view). The ranks keep each pass's own ordering rules untouched (the second sort key).
+pub fn pass_rank(pass: u8) -> u32 {
+    const PASS_RANK: [u32; 6] = [0, 1, 2, 4, 3, 5];
+    PASS_RANK.get(pass as usize).copied().unwrap_or(u32::MAX)
+}
+
 /// One indexed draw: its layer, pass, pipeline, texture bind group, index range and the object's world centre + radius.
 #[derive(Clone, Copy)]
 struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16>, chain: u32, node: u32, lflags: u16 }
@@ -700,7 +712,7 @@ impl Renderer {
                     3 => -d2(dc.centre),
                     _ => 0.0,
                 };
-                (dc.pass * 2, key, k)
+                (pass_rank(dc.pass) as u8, key, k)
             }));
             self.order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
             // fix-render2: the World draws' bounding spheres are exact — static geometry through the
