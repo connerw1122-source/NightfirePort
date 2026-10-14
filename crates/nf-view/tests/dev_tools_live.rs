@@ -260,14 +260,16 @@ fn hud_ammo_strip_clamped() {
 fn dev_level_select_rows_and_load() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     assert!(!dev::LEVELS.is_empty(), "the level-select list is empty");
-    let items = dev::menu_items(&dev::Dev::default());
+    // fix-ingame-dev-menu paged the menu: the level rows live on the Level page now.
+    let level_page = dev::page_index("level").expect("the Level page");
+    let items = dev::menu_items(&dev::Dev { page: level_page, ..Default::default() }, None);
     for &id in dev::LEVELS {
         assert!(items.iter().any(|(_, _, a)| matches!(a, dev::MenuAction::Level(x) if *x == id)),
             "no level-select row for {id:08x}");
     }
     // The rows are navigable: activating a level row yields its MenuAction.
     let idx = items.iter().position(|(_, _, a)| matches!(a, dev::MenuAction::Level(x) if *x == dev::LEVELS[0])).unwrap();
-    let mut d = dev::Dev::default();
+    let mut d = dev::Dev { page: level_page, ..Default::default() };
     d.menu_sel = idx;
     assert!(matches!(dev::menu_key(&mut d, dev::MenuKey::Activate), Some(dev::MenuAction::Level(_))));
     // The first three archives load headless (the rest exist per the manifest; 34 loads would be slow).

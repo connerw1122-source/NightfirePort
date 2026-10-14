@@ -112,7 +112,7 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
 "#;
 
 /// The overlay (crosshair, HUD): screen-space triangles in normalised device coordinates, alpha-blended, no depth.
-const HUD_SHADER: &str = r#"
+pub(crate) const HUD_SHADER: &str = r#"
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 struct HO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @location(1) c: vec4<f32> };
@@ -219,6 +219,11 @@ pub struct Renderer {
     hud_sub_pipeline: wgpu::RenderPipeline,
     hud_vbuf: wgpu::Buffer,
     hud_bgs: Vec<wgpu::BindGroup>,
+    /// fix-menu-movies2: the hud bind-group layout + sampler. The ONE movie plane (fix-movie-playback's
+    /// `movie_tex`/`movie_bg`) builds its bind group from them in render(); the menu's looping backdrop
+    /// and the intro draw through the same plane.
+    hud_tbgl: wgpu::BindGroupLayout,
+    hud_sampler: wgpu::Sampler,
     pipelines: Vec<(Draw, wgpu::RenderPipeline)>,
     /// Snow: the particle pipeline (additive, depth test, no write), a per-frame vertex buffer and the flake texture.
     snow_pipeline: wgpu::RenderPipeline,
@@ -272,13 +277,12 @@ pub struct Renderer {
     /// fix-portal2.
     pub last_cell_vis: Option<Vec<bool>>,
     // fix-movie-playback: the lazy full-screen movie plane (fields only touched while a movie
-    // plays; everything else is additive, nothing existing changed shape).
+    // plays; everything else is additive, nothing existing changed shape). The hud layout/sampler
+    // it reuses are the Renderer's `hud_tbgl`/`hud_sampler` fields (fix-menu-movies2).
     movie_tex: Option<wgpu::Texture>,
     movie_bg: Option<wgpu::BindGroup>,
     movie_size: Option<(u32, u32)>,
     movie_vbuf: wgpu::Buffer,
-    hud_tbgl: wgpu::BindGroupLayout,
-    hud_sampler: wgpu::Sampler,
 }
 
 impl Renderer {
@@ -494,6 +498,13 @@ impl Renderer {
             HudVertex { p: [-1.0, 1.0], uv: [0.0, 0.0], c: [1.0; 4] }, HudVertex { p: [1.0, 1.0], uv: [1.0, 0.0], c: [1.0; 4] }, HudVertex { p: [1.0, -1.0], uv: [1.0, 1.0], c: [1.0; 4] },
             HudVertex { p: [-1.0, 1.0], uv: [0.0, 0.0], c: [1.0; 4] }, HudVertex { p: [1.0, -1.0], uv: [1.0, 1.0], c: [1.0; 4] }, HudVertex { p: [-1.0, -1.0], uv: [0.0, 1.0], c: [1.0; 4] },
         ]));
+        // fix-menu-movies2: ONE movie plane serves every movie — the mission-flow briefing/outro
+        // (fix-movie-playback) and the front end's looping page backdrop + the P_INTRO pair
+        // (fix-menu-movies, now routed through this same plane). The game uploads the decoded
+        // frame to VRAM as the page's own background texture [M PS2UploadBGMImage 0x108740;
+        // movies.md §Presentation], so the quad draws BEFORE the HUD runs (under the page
+        // controls); state 6 suppresses the overlay while its movie plays, so the draw position
+        // is equivalent there.
         Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None, movie_tex: None, movie_bg: None, movie_size: None, movie_vbuf, hud_tbgl: tbgl, hud_sampler: sampler }
     }
 
@@ -528,10 +539,20 @@ impl Renderer {
             let depth0 = Self::depth0_game(&planes, eye);
             let sides = [planes[0], planes[1], planes[2], planes[3]];
             match crate::scene::eye_cell(&self.cel_graph, &mut self.viewer_cel, eye, world) {
-                Some(cell) => (
-                    crate::scene::portal_visible_cels_game_from_cell(&self.cel_graph, cell, eye, &depth0, &sides),
-                    crate::scene::portal_visible_cels_from_cell(&self.cel_graph, cell, eye, &depth0),
-                ),
+                Some(cell) => {
+                    let mut game = crate::scene::portal_visible_cels_game_from_cell(&self.cel_graph, cell, eye, &depth0, &sides);
+                    // fix-portal-sweep: the near-LOS rescue (scene::near_los_rescue) — the game-mask
+                    // pass restores the near unoccluded generics the walk drops where the port's
+                    // per-cel attribution approximation (the FindCel 0x1c8cb0 tie-break input)
+                    // disagrees with the game's. No-op without a collision world.
+                    if let (Some(m), Some(w)) = (game.as_mut(), world) {
+                        let rescued = crate::scene::near_los_rescue(&self.cel_graph, m, eye, &sides, w, 30.0);
+                        if rescued > 0 && std::env::var_os("NF_PORTAL_DEBUG").is_some() {
+                            eprintln!("[rescue] eye cell {cell}: {rescued} near cels restored");
+                        }
+                    }
+                    (game, crate::scene::portal_visible_cels_from_cell(&self.cel_graph, cell, eye, &depth0))
+                }
                 None => (None, None),
             }
         } else { (None, None) };
@@ -775,19 +796,12 @@ impl Renderer {
                 pass.set_vertex_buffer(1, self.snow_skin.slice(..));
                 pass.draw(0..ns as u32, 0..1);
             }
-            if n > 0 {
-                pass.set_vertex_buffer(0, self.hud_vbuf.slice(..));
-                for &(tex, blend, first, count) in &hud.runs {
-                    let end = (first + count).min(n as u32);
-                    if first >= end { continue; }
-                    pass.set_pipeline(match blend { 1 => &self.hud_add_pipeline, 2 => &self.hud_sub_pipeline, _ => &self.hud_pipeline });
-                    pass.set_bind_group(0, &self.hud_bgs[tex.min(self.hud_bgs.len() - 1)], &[]);
-                    pass.draw(first..end, 0..1);
-                }
-            }
-            // fix-movie-playback: the full-screen movie plane, drawn last (the game DMA-blits the
-            // decoded frame straight into the frame buffer, DecodeBGFMVFrame 0x108550 →
-            // PS2UploadBGMImage 0x108740 — nothing shows above it).
+            // fix-menu-movies2: the ONE movie plane draws BEFORE the HUD runs. The game uploads
+            // the decoded frame to VRAM and the page draws it as its own background texture
+            // [M PS2UploadBGMImage 0x108740; movies.md §Presentation — "a full-screen background
+            // texture, not an IPU overlay"], i.e. UNDER the menu controls; the GameFlow state-6
+            // briefing draws over the empty backdrop with the overlay suppressed, so drawing
+            // before the (empty) HUD runs is the same picture there.
             if let Some((w, h, rgba)) = movie {
                 if self.movie_size != Some((w, h)) || self.movie_bg.is_none() {
                     let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
@@ -814,11 +828,20 @@ impl Renderer {
                     pass.draw(0..6, 0..1);
                 }
             }
+            if n > 0 {
+                pass.set_vertex_buffer(0, self.hud_vbuf.slice(..));
+                for &(tex, blend, first, count) in &hud.runs {
+                    let end = (first + count).min(n as u32);
+                    if first >= end { continue; }
+                    pass.set_pipeline(match blend { 1 => &self.hud_add_pipeline, 2 => &self.hud_sub_pipeline, _ => &self.hud_pipeline });
+                    pass.set_bind_group(0, &self.hud_bgs[tex.min(self.hud_bgs.len() - 1)], &[]);
+                    pass.draw(first..end, 0..1);
+                }
+            }
         }
         enc
     }
 }
-
 pub fn depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
     device.create_texture(&wgpu::TextureDescriptor {
         label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,

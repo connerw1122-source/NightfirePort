@@ -106,7 +106,101 @@ impl Reverb {
 }
 
 #[derive(Default)]
-struct Shared { cmds: Vec<Cmd>, ended: Vec<u32>, playing: Vec<u32>, music_played: u64 }
+struct Shared {
+    cmds: Vec<Cmd>,
+    ended: Vec<u32>,
+    playing: Vec<u32>,
+    music_played: u64,
+    /// The stream hold (`SFXPauseAllStreams` op 0x16 — `MenuManager_Create`/`Delete` with
+    /// `pause_sound`): the music playhead freezes while set [M music.md §3.7 `GamePausedMe`].
+    paused: bool,
+}
+
+/// The mix state the cpal callback owns — the SPU voices, the music queue and the reverb — extracted
+/// verbatim from `Output::open`'s closure (fix-pause-audio) so the pause hold is testable headless.
+struct Mixer { voices: Vec<Voice>, music: MusicVoice, reverb: Reverb, rate: u32, channels: usize, music_step: f64, step_scale: f64 }
+
+impl Mixer {
+    fn mix(&mut self, s: &mut Shared, out: &mut [f32]) {
+        for c in s.cmds.drain(..) {
+            match c {
+                Cmd::Play { voice, pcm, pitch, left, right, delay, reverb } => {
+                    self.voices.retain(|v| v.id != voice);
+                    self.voices.push(Voice { id: voice, pcm, pos: 0.0, pitch, left, right, wait: (delay * self.rate as f32).round() as usize,
+                        env: 1.0, releasing: false, rel_pos: 0.0, reverb });
+                }
+                Cmd::Set { voice, pitch, left, right } => if let Some(v) = self.voices.iter_mut().find(|v| v.id == voice) { (v.pitch, v.left, v.right) = (pitch, left, right); },
+                // Key-off: begin the ADSR release (the voice stays until `env` reaches 0) [M ADSR2 RR].
+                Cmd::Stop { voice } => if let Some(v) = self.voices.iter_mut().find(|v| v.id == voice) { v.releasing = true; },
+                Cmd::StopAll => { for v in &mut self.voices { v.releasing = true; } }
+                Cmd::MusicAppend(pcm) => self.music.queue.extend(pcm),
+                Cmd::MusicTruncate(at) => { let keep = at.saturating_sub(self.music.front) as usize; self.music.queue.truncate(keep); }
+                Cmd::MusicGain(g) => self.music.gain = g,
+                Cmd::MusicStop => self.music = MusicVoice { gain: self.music.gain, ..Default::default() },
+                Cmd::Reverb { depth } => self.reverb.depth = depth,
+            }
+        }
+        out.iter_mut().for_each(|x| *x = 0.0);
+        let channels = self.channels;
+        let frames = out.len() / channels;
+        let mut ended = Vec::new();
+        // The per-frame dry signal of every reverb-routed voice (fed to the reverb delay line after the mix).
+        let mut rev_buf: Vec<[f32; 2]> = vec![[0.0; 2]; frames];
+        for v in &mut self.voices {
+            let n = v.pcm.data.len();
+            let step = v.pitch as f64 * self.step_scale;
+            let mut fi = 0usize;
+            while fi < frames {
+                if v.wait > 0 { v.wait -= 1; fi += 1; continue; }
+                let i = v.pos as usize;
+                if i >= n {
+                    if let Some(l) = v.pcm.loop_start { if l < n { v.pos = l as f64 + (v.pos - n as f64); continue; } }
+                    if !v.releasing { ended.push(v.id); break; }
+                }
+                if v.releasing && v.env <= 0.0 { ended.push(v.id); break; }
+                // The SPU's 4-point Gaussian interpolation (G-032d): i = the pitch counter's bit 4–11 [M nocash].
+                let smp = resample_gauss(&v.pcm.data, v.pos) as f32 / 32768.0;
+                let g = smp * v.env;
+                let (li, ri) = (fi * channels, fi * channels + 1);
+                match channels { 1 => out[li] += g * (v.left + v.right) * 0.5, _ => { out[li] += g * v.left; out[ri] += g * v.right; } }
+                if v.reverb { rev_buf[fi][0] += g * v.left; rev_buf[fi][1] += g * v.right; }
+                // Advance the envelope: linear release over RELEASE_SAMPLES [M ADSR2 RR].
+                if v.releasing { v.rel_pos += 1.0; v.env = ((1.0 - v.rel_pos / RELEASE_SAMPLES).max(0.0)) as f32; }
+                v.pos += step;
+                fi += 1;
+            }
+        }
+        self.voices.retain(|v| !ended.contains(&v.id));
+        // The SPU reverb: each reverb-routed voice's dry signal feeds the delay line at `EVOL`; the wet output is
+        // mixed back in. A single comb per channel (the exact `PS2_SetupReverb` preset is deferred, GAPS G-032d) [S].
+        if self.reverb.depth > 0.0 && channels > 1 {
+            for fi in 0..frames {
+                let wet = self.reverb.process(rev_buf[fi]);
+                let (li, ri) = (fi * channels, fi * channels + 1);
+                out[li] += wet[0];
+                out[ri] += wet[1];
+            }
+        }
+        // Music: linear resampling 32 kHz → device rate; silence when the queue runs dry. The stream
+        // hold (op 0x16) freezes the drain — the playhead waits and the resume continues exactly
+        // (`GamePausedMe`; `SFXUpdateStreams` 0xa1a0 won't auto-resume while it is set) [M music.md §3.7].
+        if !s.paused {
+            for frame in out.chunks_mut(channels) {
+                let (Some(a), b) = (self.music.queue.front().copied(), self.music.queue.get(1).copied()) else { break };
+                let b = b.unwrap_or(a);
+                let f = self.music.frac as f32;
+                let smp = [0, 1].map(|c| (a[c] as f32 + (b[c] as f32 - a[c] as f32) * f) / 32768.0 * self.music.gain);
+                match channels { 1 => frame[0] += (smp[0] + smp[1]) * 0.5, _ => { frame[0] += smp[0]; frame[1] += smp[1]; } }
+                self.music.frac += self.music_step;
+                while self.music.frac >= 1.0 && !self.music.queue.is_empty() { self.music.frac -= 1.0; self.music.queue.pop_front(); self.music.front += 1; }
+            }
+        }
+        for x in out.iter_mut() { *x = x.clamp(-1.0, 1.0); }
+        s.ended.extend(ended);
+        s.playing = self.voices.iter().map(|v| v.id).collect();
+        s.music_played = self.music.front;
+    }
+}
 
 /// The music voices: queued stereo samples, the absolute index of the queue's front, the fractional read position.
 #[derive(Default)]
@@ -214,9 +308,15 @@ pub fn resample_gauss(data: &[i16], pos: f64) -> i16 {
     out.clamp(i16::MIN as i32, i16::MAX as i32) as i16
 }
 
+/// `NF_SILENT` is set (any value): open no audio device. The test runner (tools/test/suite.py) sets it.
+pub fn silent() -> bool { std::env::var_os("NF_SILENT").is_some() }
+
 impl Output {
-    /// Opens the default output device. `None` when there is none (the game runs silent).
+    /// Opens the default output device. `None` when there is none (the game runs silent), or when
+    /// `NF_SILENT` is set: the test runner sets it so no test ever plays through the user's speakers
+    /// (the weapon-sound tests once fired bursts of shots at full volume through them).
     pub fn open() -> Option<Output> {
+        if silent() { return None; }
         let host = cpal::default_host();
         let device = host.default_output_device()?;
         let config = device.default_output_config().ok()?;
@@ -224,89 +324,12 @@ impl Output {
         let cfg: cpal::StreamConfig = config.into();
         let (rate, channels) = (cfg.sample_rate, cfg.channels as usize);
         let shared = Arc::new(Mutex::new(Shared::default()));
-        let mut voices: Vec<Voice> = Vec::new();
-        let mut music = MusicVoice::default();
-        let mut reverb = Reverb::new(rate);
-        let music_step = MUSIC_RATE / rate as f64;
         let sh = shared.clone();
-        let step_scale = SPU_RATE / rate as f64 / 4096.0;
+        let mut mixer = Mixer { voices: Vec::new(), music: MusicVoice::default(), reverb: Reverb::new(rate), rate, channels,
+            music_step: MUSIC_RATE / rate as f64, step_scale: SPU_RATE / rate as f64 / 4096.0 };
         let mut mix = move |out: &mut [f32]| {
-            {
-                let mut s = sh.lock().unwrap();
-                for c in s.cmds.drain(..) {
-                    match c {
-                        Cmd::Play { voice, pcm, pitch, left, right, delay, reverb } => {
-                            voices.retain(|v| v.id != voice);
-                            voices.push(Voice { id: voice, pcm, pos: 0.0, pitch, left, right, wait: (delay * rate as f32).round() as usize,
-                                env: 1.0, releasing: false, rel_pos: 0.0, reverb });
-                        }
-                        Cmd::Set { voice, pitch, left, right } => if let Some(v) = voices.iter_mut().find(|v| v.id == voice) { (v.pitch, v.left, v.right) = (pitch, left, right); },
-                        // Key-off: begin the ADSR release (the voice stays until `env` reaches 0) [M ADSR2 RR].
-                        Cmd::Stop { voice } => if let Some(v) = voices.iter_mut().find(|v| v.id == voice) { v.releasing = true; },
-                        Cmd::StopAll => { for v in &mut voices { v.releasing = true; } }
-                        Cmd::MusicAppend(pcm) => music.queue.extend(pcm),
-                        Cmd::MusicTruncate(at) => { let keep = at.saturating_sub(music.front) as usize; music.queue.truncate(keep); }
-                        Cmd::MusicGain(g) => music.gain = g,
-                        Cmd::MusicStop => music = MusicVoice { gain: music.gain, ..Default::default() },
-                        Cmd::Reverb { depth } => reverb.depth = depth,
-                    }
-                }
-            }
-            out.iter_mut().for_each(|x| *x = 0.0);
-            let frames = out.len() / channels;
-            let mut ended = Vec::new();
-            // The per-frame dry signal of every reverb-routed voice (fed to the reverb delay line after the mix).
-            let mut rev_buf: Vec<[f32; 2]> = vec![[0.0; 2]; frames];
-            for v in &mut voices {
-                let n = v.pcm.data.len();
-                let step = v.pitch as f64 * step_scale;
-                let mut fi = 0usize;
-                while fi < frames {
-                    if v.wait > 0 { v.wait -= 1; fi += 1; continue; }
-                    let i = v.pos as usize;
-                    if i >= n {
-                        if let Some(l) = v.pcm.loop_start { if l < n { v.pos = l as f64 + (v.pos - n as f64); continue; } }
-                        if !v.releasing { ended.push(v.id); break; }
-                    }
-                    if v.releasing && v.env <= 0.0 { ended.push(v.id); break; }
-                    // The SPU's 4-point Gaussian interpolation (G-032d): i = the pitch counter's bit 4–11 [M nocash].
-                    let s = resample_gauss(&v.pcm.data, v.pos) as f32 / 32768.0;
-                    let g = s * v.env;
-                    let (li, ri) = (fi * channels, fi * channels + 1);
-                    match channels { 1 => out[li] += g * (v.left + v.right) * 0.5, _ => { out[li] += g * v.left; out[ri] += g * v.right; } }
-                    if v.reverb { rev_buf[fi][0] += g * v.left; rev_buf[fi][1] += g * v.right; }
-                    // Advance the envelope: linear release over RELEASE_SAMPLES [M ADSR2 RR].
-                    if v.releasing { v.rel_pos += 1.0; v.env = ((1.0 - v.rel_pos / RELEASE_SAMPLES).max(0.0)) as f32; }
-                    v.pos += step;
-                    fi += 1;
-                }
-            }
-            voices.retain(|v| !ended.contains(&v.id));
-            // The SPU reverb: each reverb-routed voice's dry signal feeds the delay line at `EVOL`; the wet output is
-            // mixed back in. A single comb per channel (the exact `PS2_SetupReverb` preset is deferred, GAPS G-032d) [S].
-            if reverb.depth > 0.0 && channels > 1 {
-                for fi in 0..frames {
-                    let wet = reverb.process(rev_buf[fi]);
-                    let (li, ri) = (fi * channels, fi * channels + 1);
-                    out[li] += wet[0];
-                    out[ri] += wet[1];
-                }
-            }
-            // Music: linear resampling 32 kHz → device rate; silence when the queue runs dry.
-            for frame in out.chunks_mut(channels) {
-                let (Some(a), b) = (music.queue.front().copied(), music.queue.get(1).copied()) else { break };
-                let b = b.unwrap_or(a);
-                let f = music.frac as f32;
-                let s = [0, 1].map(|c| (a[c] as f32 + (b[c] as f32 - a[c] as f32) * f) / 32768.0 * music.gain);
-                match channels { 1 => frame[0] += (s[0] + s[1]) * 0.5, _ => { frame[0] += s[0]; frame[1] += s[1]; } }
-                music.frac += music_step;
-                while music.frac >= 1.0 && !music.queue.is_empty() { music.frac -= 1.0; music.queue.pop_front(); music.front += 1; }
-            }
-            for x in out.iter_mut() { *x = x.clamp(-1.0, 1.0); }
             let mut s = sh.lock().unwrap();
-            s.ended.extend(ended);
-            s.playing = voices.iter().map(|v| v.id).collect();
-            s.music_played = music.front;
+            mixer.mix(&mut s, out);
         };
         let err = |e: cpal::Error| eprintln!("audio: {e}");
         let stream = match format {
@@ -335,6 +358,15 @@ impl Output {
 
     /// Voices playing at the last mix.
     pub fn playing(&self) -> Vec<u32> { self.shared.lock().unwrap().playing.clone() }
+
+    /// The stream hold (`SFXPauseAllStreams` op 0x16 / unpause op 0x17): while set, the music
+    /// playhead freezes — the queue's front stops draining, so the resume continues the stream
+    /// exactly where it held [M music.md §3.7 `GamePausedMe`]. Voices are NOT held here — a voice
+    /// keyed on while the pause is up (the menu's own sounds) still sounds [M §3.2].
+    pub fn set_paused(&self, on: bool) { self.shared.lock().unwrap().paused = on; }
+
+    /// The hold state (live checks).
+    pub fn paused(&self) -> bool { self.shared.lock().unwrap().paused }
 }
 
 #[cfg(test)]
@@ -373,5 +405,53 @@ mod tests {
         // interpolation would start at x[0] exactly, so the kernel is not a disguised linear one.
         assert_eq!(resample_gauss(&x, 0.0), -1);
         assert_ne!(resample_gauss(&x, 1.5), (x[1] + x[2]) / 2, "not linear midpoint");
+    }
+
+    /// The pause at the output (`SFXPauseAllStreams` op 0x16 / `SFXUnPauseAllStreams` op 0x17 —
+    /// `MenuManager_Create`/`Delete` with `pause_sound` [M 0x21b908:121-124, 0x21c2b0:11-22]): the
+    /// music queue's playhead (`front`) freezes and resumes exactly; a voice pitched to 0 by the
+    /// driver's pause edge (`psiSamplePause` 0xf46c: saved pitch, pitch 0) holds its sample position
+    /// and resumes when the recompute restores the pitch [M sound.md §8]. A voice NOT pitched to 0
+    /// keeps advancing while the pause is up — the menu's own sounds key on under the pause [M §3.2].
+    #[test]
+    fn the_pause_holds_the_music_playhead_and_the_pitch0_voice_resumes() {
+        let mut s = Shared::default();
+        let mut m = Mixer { voices: Vec::new(), music: MusicVoice::default(), reverb: Reverb::new(48_000), rate: 48_000, channels: 2, music_step: MUSIC_RATE / 48_000.0, step_scale: SPU_RATE / 48_000.0 / 4096.0 };
+        // A looping voice at pitch 0x1000 (one source sample per output) — the ambient loop.
+        s.cmds.push(Cmd::Play { voice: 1, pcm: std::sync::Arc::new(Pcm { data: (0..1000).map(|i| (i * 7) as i16).collect(), loop_start: Some(0) }), pitch: 0x1000, left: 1.0, right: 1.0, delay: 0.0, reverb: false });
+        // Music: half a second queued (the port's buffered stream).
+        s.cmds.push(Cmd::MusicAppend(vec![[100i16, -100]; 16_000]));
+        let mut buf = vec![0.0f32; 480]; // 240 stereo frames per mix
+        m.mix(&mut s, &mut buf);
+        let (p1, m1) = (m.voices[0].pos, s.music_played);
+        m.mix(&mut s, &mut buf);
+        let (p2, m2) = (m.voices[0].pos, s.music_played);
+        assert!(p2 > p1, "unpaused the voice advances (sister): {p1} {p2}");
+        assert!(m2 > m1, "unpaused the music playhead advances (sister): {m1} {m2}");
+        // The pause: the driver's pitch-0 edge + the stream hold reach the output.
+        s.cmds.push(Cmd::Set { voice: 1, pitch: 0, left: 0.0, right: 0.0 });
+        s.paused = true;
+        m.mix(&mut s, &mut buf);
+        let (p3, m3) = (m.voices[0].pos, s.music_played);
+        m.mix(&mut s, &mut buf);
+        let (p4, m4) = (m.voices[0].pos, s.music_played);
+        assert_eq!(p3, p4, "paused the pitch-0 voice's sample position holds");
+        assert_eq!(m3, m4, "paused the music playhead holds");
+        // The unpause: the driver's recompute restores the pitch; both resume.
+        s.cmds.push(Cmd::Set { voice: 1, pitch: 0x1000, left: 1.0, right: 1.0 });
+        s.paused = false;
+        m.mix(&mut s, &mut buf);
+        let (p5, m5) = (m.voices[0].pos, s.music_played);
+        m.mix(&mut s, &mut buf);
+        assert!(m.voices[0].pos > p5, "unpaused the voice resumes");
+        assert!(s.music_played > m5, "unpaused the music resumes");
+        // Sister: a voice started while the pause is up (the menu click) still advances.
+        s.paused = true;
+        s.cmds.push(Cmd::Play { voice: 2, pcm: std::sync::Arc::new(Pcm { data: (0..1000).map(|i| (i * 11) as i16).collect(), loop_start: Some(0) }), pitch: 0x1000, left: 1.0, right: 1.0, delay: 0.0, reverb: false });
+        m.mix(&mut s, &mut buf);
+        let q1 = m.voices.iter().find(|v| v.id == 2).unwrap().pos;
+        m.mix(&mut s, &mut buf);
+        let q2 = m.voices.iter().find(|v| v.id == 2).unwrap().pos;
+        assert!(q2 > q1, "a while-paused start still advances (the menu click): {q1} {q2}");
     }
 }
