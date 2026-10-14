@@ -7770,8 +7770,12 @@ Started 14:40 UTC 2026-10-13, sandbox expires ~16:38 UTC.
 Work Log:
 - Branch s/fix-swim-vent3 = s/fix-swim-vent2 (8b6374a) merged with origin/master (7fb019b); WORKLOG conflict resolved keeping both sides' entries (append-only). First checkpoint pushed.
 
+Work Log (continued):
+- 22:35-22:50: the deltas pinned from the decompile + disasm (0x1937a4-d8 the x0.9 decay, 0x193ccc-cf0 the move-Y add; 0x194458:229-256 the 0x412/0x171/push; 0x1902c8:110-119 the 1-in-4 grunt; ReadTuningVars 0x1d3a80 the 5 missing level groups) and ported (bullet.rs PlayerHealth.hit_push + the grunt roll in apply + damage_factor groups; drone.rs the Player-arm hooks; scene.rs the decay+apply + grunt plays).
+- 22:55: fix_bond_damage_live 6/6 green on the merged tree; the touched suites (death/restart/guest/hud/fields) all green. Report: docs/reports/fix-bond-damage.md.
+
 Stage Summary:
-- (in progress)
+- Ported: the 0x412 bullet-hit hurt sound (record +0x70 & 0x180 gate), the 1-in-4 0x88 pain grunt on the shared RNG, the melee hit-push BL+0x910 (+0x171 sound, x0.9/tick decay, move-vec-Y lane), the five missing ReadTuningVars damage-factor groups + difficulty 0 = Normal. Already present (unchanged): the armour absorb, the flash+fade, the dir sprites, the pane bands, the death/fail flow. Not modelled: rumble, the MP arms.
 
 ---
 Task: fix-portal3
@@ -8600,8 +8604,12 @@ Work Log:
   morph index) into docs/formats/character.md, port AnimFacialUpdate/AnimFacialBlend, drive from
   the cut-scene scripts' 22-channel face tracks + speech. WORKLOG first, branch pushed.
 
+Work Log (continued):
+- 22:35-22:50: the deltas pinned from the decompile + disasm (0x1937a4-d8 the x0.9 decay, 0x193ccc-cf0 the move-Y add; 0x194458:229-256 the 0x412/0x171/push; 0x1902c8:110-119 the 1-in-4 grunt; ReadTuningVars 0x1d3a80 the 5 missing level groups) and ported (bullet.rs PlayerHealth.hit_push + the grunt roll in apply + damage_factor groups; drone.rs the Player-arm hooks; scene.rs the decay+apply + grunt plays).
+- 22:55: fix_bond_damage_live 6/6 green on the merged tree; the touched suites (death/restart/guest/hud/fields) all green. Report: docs/reports/fix-bond-damage.md.
+
 Stage Summary:
-- (in progress)
+- Ported: the 0x412 bullet-hit hurt sound (record +0x70 & 0x180 gate), the 1-in-4 0x88 pain grunt on the shared RNG, the melee hit-push BL+0x910 (+0x171 sound, x0.9/tick decay, move-vec-Y lane), the five missing ReadTuningVars damage-factor groups + difficulty 0 = Normal. Already present (unchanged): the armour absorb, the flash+fade, the dir sprites, the pane bands, the death/fail flow. Not modelled: rumble, the MP arms.
 
 ---
 Task: fix-facial
@@ -9092,8 +9100,12 @@ Work Log:
   SetGoalToDroneWithLosToOpponent), then the rest (+0x31C drone-ahead flags/state 0x5E,
   obstacle avoidance, EnemyMission kind-8 paths, PatrolTalk RNG, boundary push-out).
 
+Work Log (continued):
+- 22:35-22:50: the deltas pinned from the decompile + disasm (0x1937a4-d8 the x0.9 decay, 0x193ccc-cf0 the move-Y add; 0x194458:229-256 the 0x412/0x171/push; 0x1902c8:110-119 the 1-in-4 grunt; ReadTuningVars 0x1d3a80 the 5 missing level groups) and ported (bullet.rs PlayerHealth.hit_push + the grunt roll in apply + damage_factor groups; drone.rs the Player-arm hooks; scene.rs the decay+apply + grunt plays).
+- 22:55: fix_bond_damage_live 6/6 green on the merged tree; the touched suites (death/restart/guest/hud/fields) all green. Report: docs/reports/fix-bond-damage.md.
+
 Stage Summary:
-- (in progress)
+- Ported: the 0x412 bullet-hit hurt sound (record +0x70 & 0x180 gate), the 1-in-4 0x88 pain grunt on the shared RNG, the melee hit-push BL+0x910 (+0x171 sound, x0.9/tick decay, move-vec-Y lane), the five missing ReadTuningVars damage-factor groups + difficulty 0 = Normal. Already present (unchanged): the armour absorb, the flash+fade, the dir sprites, the pane bands, the death/fail flow. Not modelled: rumble, the MP arms.
 
 ---
 Task: fix-nav-remainder
@@ -11906,6 +11918,20 @@ Work Log:
 - 21:15: the game's model pinned end-to-end (linked cel obj+0x20: create-link+snap 0x1346b8/0x1343c8, keep/portal/relink 0x133288+0x1e0d58+0x1c9500, ramp 0x1cb178 moved-only; the same Tweak+light pair on the character path 0x1e69a0:96->0x1e78b0; bCharacterLight/AnimColRad have NO EE reader — scanned all gp-relative accesses). Port matches on every headless point; 3 NF_ISO tests green (own-cel ambient per guest, party lights reach the draws, G-042 sheen map resolved). No production code changed. Report: docs/reports/fix-character-room-light.md.
 - 21:32: merged origin/master (1c376216, WORKLOG conflict resolved keeping both), lighting suites re-ran green on the final tree (new 3/3, character_lighting_live 4/4); baseline full suite on the identical production code: 1065 passed / 7 failed (3 disc_golden allowed + weapon_matrix_live TIMEOUT + 3 pre-existing pylon) / 35 ignored.
 
+---
+Task: fix-bond-damage
+Agent: worker (sandbox web-8fb9d45a)
+Task: Bond taking damage — armour absorbing first (Player_HandlePain 0x1902c8:100-104), the difficulty factor, the red screen flash and its fade, the hit-direction indicator, the health pane's colour bands, the pain sounds, the knockback/view kick, death (death camera, fail flow). Branch s/fix-bond-damage from origin/master.
+
+Work Log:
+- 22:12 UTC: branch s/fix-bond-damage created from origin/master (eb52fb56); work/ + ISO already present (1061754880 bytes); fast suite started in background; this checkpoint pushed.
+
+Work Log (continued):
+- 22:35-22:50: the deltas pinned from the decompile + disasm (0x1937a4-d8 the x0.9 decay, 0x193ccc-cf0 the move-Y add; 0x194458:229-256 the 0x412/0x171/push; 0x1902c8:110-119 the 1-in-4 grunt; ReadTuningVars 0x1d3a80 the 5 missing level groups) and ported (bullet.rs PlayerHealth.hit_push + the grunt roll in apply + damage_factor groups; drone.rs the Player-arm hooks; scene.rs the decay+apply + grunt plays).
+- 22:55: fix_bond_damage_live 6/6 green on the merged tree; the touched suites (death/restart/guest/hud/fields) all green. Report: docs/reports/fix-bond-damage.md.
+
+Stage Summary:
+- Ported: the 0x412 bullet-hit hurt sound (record +0x70 & 0x180 gate), the 1-in-4 0x88 pain grunt on the shared RNG, the melee hit-push BL+0x910 (+0x171 sound, x0.9/tick decay, move-vec-Y lane), the five missing ReadTuningVars damage-factor groups + difficulty 0 = Normal. Already present (unchanged): the armour absorb, the flash+fade, the dir sprites, the pane bands, the death/fail flow. Not modelled: rumble, the MP arms.
 ## fix-front-end-chain (outcome, 19:47-21:40 UTC)
 
 The front-end leg (campaign-flow blocker 7): `FrontEnd::results_enter` ports P_NFRESULTS 0x208e78

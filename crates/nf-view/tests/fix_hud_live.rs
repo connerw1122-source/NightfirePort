@@ -143,20 +143,21 @@ fn damage_direction_glow_lights_the_attacker_side() {
     // view-space x<0 → bit 4 (sprite 22, tex 0x0300018E), x>0 → bit 8 (sprite 23, flipped U),
     // y<0 → bit 1 (sprite 20, tex 0x0300018D), y>0 → bit 2 (sprite 21, flipped V).
     let mut h = nf_game::bullet::PlayerHealth::default();
+    let mut rng = nf_game::drone::Rng::new(0);
     let eye = [0.0, 1.5, 0.0];
     // The port's object frame has +X = screen-left (`Sim::crosshair`), so an attacker on the +X side of a
     // yaw-0 Bond (facing +Z) is on the screen's LEFT → bit 4 (sprite 22); −X = screen right → bit 8.
-    h.pain_from(5.0, 1, 0x0700_0005, [4.0, 1.5, 0.0], eye, 0.0);
+    h.pain_from(&mut rng, 5.0, 1, 0x0700_0005, [4.0, 1.5, 0.0], eye, 0.0);
     assert_eq!(h.dir_bits, 0x4, "an attacker on the screen's LEFT sets bit 4");
-    h.pain_from(5.0, 1, 0x0700_0005, [-4.0, 1.5, 0.0], eye, 0.0);
+    h.pain_from(&mut rng, 5.0, 1, 0x0700_0005, [-4.0, 1.5, 0.0], eye, 0.0);
     assert_eq!(h.dir_bits, 0x8, "an attacker on the screen's RIGHT sets bit 8");
-    h.pain_from(5.0, 1, 0x0700_0005, [0.0, 4.0, 0.0], eye, 0.0);
+    h.pain_from(&mut rng, 5.0, 1, 0x0700_0005, [0.0, 4.0, 0.0], eye, 0.0);
     assert_eq!(h.dir_bits, 0x2, "an attacker ABOVE sets bit 2");
-    h.pain_from(5.0, 1, 0x0700_0005, [0.0, -1.0, 0.0], eye, 0.0);
+    h.pain_from(&mut rng, 5.0, 1, 0x0700_0005, [0.0, -1.0, 0.0], eye, 0.0);
     assert_eq!(h.dir_bits, 0x1, "an attacker BELOW sets bit 1");
     // The generic pain path writes 0xC (both sides) [M Player_HandlePain 0x1902c8:124-130].
     let mut g = nf_game::bullet::PlayerHealth::default();
-    g.pain_generic(5.0, 1, 0x0700_0005, 0);
+    g.pain_generic(&mut rng, 5.0, 1, 0x0700_0005, 0);
     assert_eq!(g.dir_bits, 0xC);
     // The HUD: bit 4 lights sprite 22 (tex 0x0300018E, unflipped) and nothing else.
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };

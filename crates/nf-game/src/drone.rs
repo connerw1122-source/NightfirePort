@@ -5719,8 +5719,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         if let Some(ph) = hits.player {
             let before = self.health.health;
             // `Explode_Propagate` → `Player_Hurt` → `Player_HandlePain` (type 0): BL+0x967 = 0xC
-            // (both sides) [M 0x1902c8:124-130].
-            self.health.pain_generic(ph, self.difficulty, d.level, 0);
+            // (both sides) [M 0x1902c8:124-130]. The pain grunt rides the 1-in-4 roll [M 0x1902c8:110-119].
+            if self.health.pain_generic(&mut self.rng, ph, self.difficulty, d.level, 0) {
+                self.play_pain_grunt(player_pos);
+            }
             self.player_hits.push((frame, owner, before - self.health.health));
         }
         // Drones: `Drone_ExplosiveHit` → msg 9 (the port routes through `on_bullet` as an impact).
@@ -6125,6 +6127,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
 
     /// `Sound_Play3D(id, pos, …)`: heard (the sound pool) and, unless looped, entered in the drones' hearing list.
     pub fn play_sound(&mut self, pos: V3, h: nf_formats::sfx::SfxHearing) { self.play_sound_handle(pos, h); }
+
+    /// The pain grunt `Sound_Play3D(100, −1, −1, 0x88, BL+0x30)` — `Player_HandlePain`
+    /// 0x1902c8:110-119 plays it on the 1-in-4 `Rand_Rand(4)` roll (the draw happens in
+    /// `PlayerHealth::apply`; this is only the sound). The 0x600 arm is the MP assassin special.
+    pub fn play_pain_grunt(&mut self, pos: V3) {
+        self.audio.play3d(0x88, pos, None);
+    }
 
     /// `play_sound`, returning the sound's handle.
     pub fn play_sound_handle(&mut self, pos: V3, h: nf_formats::sfx::SfxHearing) -> crate::sound::Handle {
@@ -6881,7 +6890,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         // wire's; the port's hurt has no radius falloff, docs/fields/fusebox.md #6).
                         let at = Self::script_obj_pos(&self.scripts, d, obj).unwrap_or(self.fuseboxes[fi].pos);
                         let before = self.health.health;
-                        self.health.pain_generic(crate::fusebox::LIVE_WIRE_HURT, self.difficulty, d.level, 0);
+                        if self.health.pain_generic(&mut self.rng, crate::fusebox::LIVE_WIRE_HURT, self.difficulty, d.level, 0) {
+                            self.play_pain_grunt(player.pos);
+                        }
                         self.player_hits.push((frame, usize::MAX, before - self.health.health));
                         let _ = at;
                     }
@@ -7630,7 +7641,30 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         // (HITDATA+0x30 = the shooter) in the viewer's frame.
                         let attacker = self.list.get(b.owner).filter(|d| d.present).map_or(at, |d| d.pos);
                         let yaw = player.aim[2].atan2(player.aim[0]);
-                        self.health.pain_from(damage, self.difficulty, d.level, attacker, player.eye, yaw);
+                        if self.health.pain_from(&mut self.rng, damage, self.difficulty, d.level, attacker, player.eye, yaw) {
+                            // The grunt (the loop borrows `self.bullets`, so the helper's `&mut self`
+                            // is unavailable): `Sound_Play3D(100, −1, −1, 0x88, BL+0x30)`
+                            // [M 0x1902c8:110-119].
+                            self.audio.play3d(0x88, player.pos, None);
+                        }
+                        // 0x194458:229-236: `Sound_Play(100, 0x412)` — every bullet hit on Bond whose
+                        // weapon record's `+0x70 & 0x180 == 0` (the 0x600 arm is the MP assassin special).
+                        if let Some(w) = d.weapons.records.get(b.weapon as usize) {
+                            let flags70 = u32::from_le_bytes(w[0x70..0x74].try_into().unwrap());
+                            if flags70 & 0x180 == 0 { self.audio.play(0x412); }
+                            // 0x194458:237-256: the melee records (record u16 `+0x10 & 1`) play
+                            // `Sound_Play3D(100, −1, −1, 0x171, Bond)` and write the hit-push
+                            // `BL+0x910` (the record id at +2: 0x65 → −0.1, 0x66 → +0.1, 99 → +0.1).
+                            if u16::from_le_bytes([w[0x10], w[0x11]]) & 1 != 0 {
+                                let id = u16::from_le_bytes([w[2], w[3]]);
+                                match id {
+                                    0x65 => self.health.hit_push = -0.1,
+                                    0x66 | 99 => self.health.hit_push = 0.1,
+                                    _ => {}
+                                }
+                                self.audio.play3d(0x171, player.pos, None);
+                            }
+                        }
                         self.player_hits.push((frame, b.owner, before - self.health.health));
                     }
                     // `Bullet_DoTrails` fly-by: `Sound_Play3D(0x1dc, closest_point, 100, -1, -1, …, custom 0)` [M].
