@@ -21,6 +21,7 @@ pub mod gpu;
 #[cfg(feature = "gamepad")]
 pub mod gamepad;
 pub mod dev;
+pub mod devwin;
 pub mod hud;
 pub mod menu;
 pub mod movie;
@@ -1199,6 +1200,8 @@ struct Gfx {
     config: wgpu::SurfaceConfiguration,
     depth: wgpu::TextureView,
     renderer: gpu::Renderer,
+    /// The adapter (the dev window configures its own surface against it).
+    adapter: wgpu::Adapter,
 }
 
 struct App {
@@ -1294,6 +1297,14 @@ struct App {
     /// decides which one the game would be playing and `present()` feeds the ONE plane in
     /// gpu.rs. Cleared by the skip, the end of a non-looping stream, or a code change.
     movie: Option<movie::Player>,
+    /// `--dev`: the dev menu in its own native window beside the game (devwin.rs; the user: "outside of the game, but
+    /// not in a browser"). None without `--dev`, or when the window couldn't open (the F2 overlay is the fallback).
+    devwin: Option<devwin::DevWindow>,
+    /// The sound hold's mirror (fix-pause-audio): true while a menu page is up or the viewer pause
+    /// holds the sim. The diff in `RedrawRequested` applies it to `sound` on the edge — the game's
+    /// pause page runs `SFXPause`+`SFXPauseAllStreams` on open and the unpause pair on close
+    /// [M 0x21b908:121-124, 0x21c2b0:11-22].
+    audio_paused: bool,
 }
 
 impl App {
@@ -1549,6 +1560,37 @@ impl App {
         if let Some(d) = self.dev.as_deref_mut() { d.result_msg = Some(msg); d.result_timer = 180; }
     }
 
+    /// One dev-window event (devwin.rs): navigation/filter in the window, actions through the shared path.
+    fn dev_window_event(&mut self, event: WindowEvent) {
+        let Some(dpi) = self.devwin.as_ref().map(|w| w.window.scale_factor() as f32) else { return };
+        match &event {
+            WindowEvent::Resized(s) => {
+                if let (Some(w), Some(g)) = (self.devwin.as_mut(), self.gfx.as_ref()) { w.resize(&g.device, s.width, s.height); }
+                return;
+            }
+            WindowEvent::ScaleFactorChanged { .. } => { if let Some(w) = self.devwin.as_ref() { w.window.request_redraw(); } return; }
+            WindowEvent::RedrawRequested => {
+                if let (Some(w), Some(g), Some(d)) = (self.devwin.as_mut(), self.gfx.as_ref(), self.dev.as_deref()) { w.render(&g.device, &g.queue, &self.scene, d); }
+                return;
+            }
+            _ => {}
+        }
+        let (Some(w), Some(d)) = (self.devwin.as_mut(), self.dev.as_deref_mut()) else { return };
+        let size = w.window.inner_size();
+        let rows = dev::menu_items(d, Some(&self.scene));
+        let req = devwin::handle(&event, d, &mut w.ui, &rows, (size.width as f32, size.height as f32), dpi);
+        match req {
+            devwin::Request::None => {}
+            devwin::Request::Redraw => w.window.request_redraw(),
+            devwin::Request::Hide => w.window.set_visible(false),
+            devwin::Request::Apply(a) => {
+                w.window.request_redraw();
+                self.apply_menu_action(a);
+                if let Some(m) = self.dev.as_deref().and_then(|d| d.result_msg.clone()) { eprintln!("[dev] {m}"); }
+            }
+        }
+    }
+
     /// The N key's noclip toggle, shared with the Toggles page row (fix-ingame-dev-menu).
     fn set_noclip(&mut self, on: bool) {
         self.noclip = on;
@@ -1584,7 +1626,16 @@ impl ApplicationHandler for App {
         surface.configure(&device, &config);
         let depth = gpu::depth_view(&device, config.width, config.height);
         let renderer = gpu::Renderer::new(&device, &queue, config.format, &self.scene, self.notex, self.nofog);
-        self.gfx = Some(Gfx { window, instance, minimized: size.width == 0 || size.height == 0, surface, device, queue, config, depth, renderer });
+        // `--dev`: open the dev window beside the game (devwin.rs).
+        if self.dev.is_some() && self.devwin.is_none() {
+            self.devwin = devwin::DevWindow::new(el, &window, &instance, &adapter, &device, &queue, &self.scene);
+            if self.devwin.is_some() {
+                // The window's tabs are the index: open on Weapons.
+                if let Some(d) = self.dev.as_deref_mut() { if d.page == 0 { d.page = devwin::TAB_PAGES[0]; } }
+                eprintln!("dev window open beside the game (F2 raises it)");
+            }
+        }
+        self.gfx = Some(Gfx { window, instance, minimized: size.width == 0 || size.height == 0, surface, device, queue, config, depth, renderer, adapter });
     }
 
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
@@ -1621,7 +1672,13 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // The dev window's events never reach the game (devwin.rs): its clicks/keys drive the dev menu only, and the
+        // game keeps running.
+        if self.devwin.as_ref().is_some_and(|w| w.id() == id) {
+            self.dev_window_event(event);
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(s) => if let Some(g) = &mut self.gfx {
@@ -1702,9 +1759,17 @@ impl ApplicationHandler for App {
                             return;
                         }
                         fe.action(a);
+                        let closed = fe.closed;
                         if let Some(code) = fe.requested_level.take() {
                             // The menu picked a level: through the same reload path a LOAD_LEVEL uses.
                             self.pending_level = Some(code);
+                        }
+                        // The pause page's Resume row (cursor 0) closes the menu [M C_GCPAUSE_Handler
+                        // 0x204408 — the game's resume is its own row]: the host consumes the flag and
+                        // leaves the menu (the sound hold lifts through the diff below).
+                        if closed {
+                            self.fe = None;
+                            if self.scene.sim.is_some() { self.grab(true); }
                         }
                     }
                     return;
@@ -1770,7 +1835,7 @@ impl ApplicationHandler for App {
                     (KeyCode::KeyP, ElementState::Pressed) => self.paused = !self.paused,
                     // Dev mode keys (WORKLOG 0081): F1 = AI overlay, F2 = dev menu, F11 = step one tick (when paused).
                     (KeyCode::F1, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { d.overlay = !d.overlay; },
-                    (KeyCode::F2, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { d.menu = !d.menu; if d.menu { self.grab(false); } else if self.scene.sim.is_some() { self.grab(true); } },
+                    (KeyCode::F2, ElementState::Pressed) => if self.devwin.is_some() { self.grab(false); if let Some(w) = self.devwin.as_ref() { w.show(); } } else if let Some(d) = self.dev.as_deref_mut() { d.menu = !d.menu; if d.menu { self.grab(false); } else if self.scene.sim.is_some() { self.grab(true); } },
                     (KeyCode::F11, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.time_scale <= 0.0 { d.step = true; } },
                     (KeyCode::F3, ElementState::Pressed) => self.opts.reinforcements = !self.opts.reinforcements,
                     (KeyCode::KeyF, ElementState::Pressed) => self.opts.firing = !self.opts.firing,
@@ -1858,6 +1923,15 @@ impl ApplicationHandler for App {
                             z
                         });
                         s.health = s.health.max(50.0); // [L ee_start_05.bin 0x30cc34-3c, all three 50.0]
+                        // fix-objective-messages: the mission record states ride the game's `.data`
+                        // and the restart resets only the player (`P_ENDMISSION_Handler` 0x216618:19-21
+                        // = `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` + `Player_RamLoad(Bond, 1)`;
+                        // no mission reinit) — the port's restart used to reload with NO mission carry,
+                        // so the reloaded level's fresh `Mission` re-announced the earlier parts'
+                        // objectives at the first monitor tick (the playtest's "NEW OBJECTIVE / Find a
+                        // way inside to the party" on 07000007 during the Cover Lost fail). Carry the
+                        // LIVE mission states (the `.data` as of the restart).
+                        if let Some(sim) = self.scene.sim.as_ref() { s = s.with_mission(&sim.drones.mission); }
                         Some(s)
                     } else {
                         self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
@@ -1872,6 +1946,9 @@ impl ApplicationHandler for App {
                     match load(&self.iso, &name, self.all, save.as_ref()) {
                         Ok(mut scene) => {
                             self.sound = build_sound(&mut scene);
+                            // The fresh sound stack is unpaused: reset the mirror so the per-frame diff
+                            // re-applies the current hold (a menu can still be up over the reload).
+                            self.audio_paused = false;
                             if let Some(start) = scene.start { self.cam = Camera { pos: Vec3::new(start.0[0], start.0[1] + 1.6, start.0[2]), yaw: start.1, pitch: 0.0, fov: GAME_FOV }; }
                             self.scene = scene;
                             self.anim_time = 0.0;
@@ -1909,6 +1986,20 @@ impl ApplicationHandler for App {
                 // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
                 self.ticked = false;
                 self.poll_panel();
+                // fix-pause-audio: the pause page holds the sound. `MenuManager_Create` with
+                // `pause_sound` runs `SFXPause` (batch op 9) + `SFXPauseAllStreams` (op 0x16) and
+                // `MenuManager_Delete` runs the unpause pair [M 0x21b908:121-124, 0x21c2b0:11-22];
+                // GameState+0x50 is read by NO sound code — the pause rides these ops. The port's
+                // hook is the menu page being up (any page: the sim is not ticking) or the viewer's
+                // P pause. `set_paused` reaches the output at once because `sound_tick` (and the
+                // batch) only run inside the tick gate below. The fail/results page opens with
+                // `pause_sound` = 0 in the game (sound keeps playing [M Mission_Update 0x182c60:78])
+                // — the port's demo results hook rides the same gate [S, remaining host glue].
+                let menu_hold = self.fe.is_some() || self.paused;
+                if menu_hold != self.audio_paused {
+                    self.audio_paused = menu_hold;
+                    if let Some(s) = self.sound.as_mut() { s.set_paused(menu_hold); }
+                }
                 if !self.paused && self.fe.is_none() {
                     // Game logic at its fixed 60 Hz, decoupled from the render rate: one AI tick per whole tick of time.
                     // Dev mode's time scale changes the number of ticks run (WORKLOG 0081), not the tick rate.
@@ -2146,6 +2237,7 @@ impl ApplicationHandler for App {
                 let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud, movie_frame);
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
+                if let Some(w) = self.devwin.as_mut() { w.tick(); }
                 if let Some(fps) = self.fps_cap.filter(|f| *f > 0.0) {
                     let target = std::time::Duration::from_secs_f32(1.0 / fps);
                     let el = self.frame_start.elapsed();
@@ -2316,7 +2408,8 @@ pub fn run() -> Result<()> {
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
     let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
-        movie: None, };
+        movie: None, devwin: None,
+        audio_paused: false, };
     if dev {
         // fix-ingame-dev-menu: the browser panel is no longer part of `--dev` — the in-window F2
         // menu carries ALL of its functions now (through the same `panel::apply` command layer).
