@@ -922,6 +922,23 @@ pub fn cutscene_skip_key(k: winit::keyboard::KeyCode) -> bool {
     matches!(k, winit::keyboard::KeyCode::ArrowDown | winit::keyboard::KeyCode::KeyR)
 }
 
+/// The dev menu's type-to-filter lane: a physical key → the ASCII char it types into the filter
+/// (lowercase; the HUD font has only ASCII glyphs anyway, `dev::fit`).
+fn dev_filter_char(k: winit::keyboard::KeyCode) -> Option<char> {
+    use winit::keyboard::KeyCode as K;
+    Some(match k {
+        K::KeyA => 'a', K::KeyB => 'b', K::KeyC => 'c', K::KeyD => 'd', K::KeyE => 'e', K::KeyF => 'f',
+        K::KeyG => 'g', K::KeyH => 'h', K::KeyI => 'i', K::KeyJ => 'j', K::KeyK => 'k', K::KeyL => 'l',
+        K::KeyM => 'm', K::KeyN => 'n', K::KeyO => 'o', K::KeyP => 'p', K::KeyQ => 'q', K::KeyR => 'r',
+        K::KeyS => 's', K::KeyT => 't', K::KeyU => 'u', K::KeyV => 'v', K::KeyW => 'w', K::KeyX => 'x',
+        K::KeyY => 'y', K::KeyZ => 'z',
+        K::Digit1 => '1', K::Digit2 => '2', K::Digit3 => '3', K::Digit4 => '4', K::Digit5 => '5',
+        K::Digit6 => '6', K::Digit7 => '7', K::Digit8 => '8', K::Digit9 => '9', K::Digit0 => '0',
+        K::Space => ' ', K::Minus => '-', K::Period => '.', K::Comma => ',',
+        _ => return None,
+    })
+}
+
 /// The Character-layer vertices posed after `time` 60 Hz ticks: start animations (`None`) or sequence `choice`.
 /// (`Scene::posed_vertices` also applies the per-character ambient multiplier — the 0x800 TWEAK dim.)
 fn posed_vertices(scene: &scene::Scene, choice: Option<usize>, time: f32, opts: scene::ViewOpts) -> Vec<scene::Vertex> {
@@ -1434,18 +1451,18 @@ impl App {
     /// zero-length stubs].
     fn movie_iso_path(&self) -> String { std::env::var("NF_MOVIE_ISO").unwrap_or_else(|_| self.iso.clone()) }
 
-    /// A click on the dev menu (F2 open): hit-test the mouse against the menu items and apply the action (WORKLOG 0081).
+    /// A click on the dev menu (F2 open): hit-test the mouse against the menu rows and apply the action (WORKLOG 0081,
+    /// pages in fix-ingame-dev-menu). The hit-test shares the draw fn's layout (`dev::layout_rows`).
     fn dev_menu_click(&mut self) {
         let aspect = self.gfx.as_ref().map_or(1.0, |g| g.config.width as f32 / g.config.height as f32);
-        let (mouse, spawn_pick) = match self.dev.as_deref_mut() {
+        let mouse = match self.dev.as_deref_mut() {
             None => return,
-            Some(d) => (d.mouse, d.spawn),
+            Some(d) => d.mouse,
         };
-        let Some(idx) = dev::menu_hit(self.dev.as_deref().unwrap(), mouse.0, mouse.1, aspect) else { return };
+        let Some(idx) = dev::menu_hit(self.dev.as_deref().unwrap(), Some(&self.scene), mouse.0, mouse.1, aspect) else { return };
         // B-9: a click also moves the keyboard selection to the clicked row.
         if let Some(d) = self.dev.as_deref_mut() { d.menu_sel = idx; }
-        let Some(action) = dev::menu_action(self.dev.as_deref().unwrap(), idx) else { return };
-        let _ = spawn_pick;
+        let Some(action) = dev::menu_action(self.dev.as_deref().unwrap(), Some(&self.scene), idx) else { return };
         self.apply_menu_action(action);
     }
 
@@ -1503,59 +1520,47 @@ impl App {
         if changed { let c = panel::catalog(&self.scene); if let Ok(mut g) = h.lock() { g.catalog = c; } }
     }
 
+    /// B-9: apply a dev-menu action and set the on-screen result message. Shared by mouse-click and keyboard
+    /// (Enter) so both produce the same feedback. The result stays ~3 s (180 ticks).
+    ///
+    /// fix-ingame-dev-menu: the whole action match moved into `dev::apply_menu_action_to_scene` — the REAL path,
+    /// shared with the headless menu-flow tests (`tests/dev_menu_flow.rs`). This shell only applies what needs the
+    /// windowed App: the weapon switch request, the pending level, the viewer cel reset, the noclip state and the
+    /// screenshot. Every give/spawn/clear command still routes through `panel::apply` (the shared command layer).
     fn apply_menu_action(&mut self, action: dev::MenuAction) {
-        let result = match action {
-            dev::MenuAction::Close => { if let Some(d) = self.dev.as_deref_mut() { d.menu = false; } "menu closed".to_string() }
-            dev::MenuAction::Spawn(pick) => {
-                let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
-                let dir = self.cam.dir().to_array();
-                let hit = self.scene.sim.as_ref().and_then(|s| s.world.segment(eye, [eye[0] + dir[0] * 30.0, eye[1] + dir[1] * 30.0, eye[2] + dir[2] * 30.0]));
-                let pos = hit.map_or([eye[0] + dir[0] * 5.0, eye[1], eye[2] + dir[2] * 5.0], |t| [eye[0] + (dir[0] * 30.0) * t, eye[1] + (dir[1] * 30.0) * t, eye[2] + (dir[2] * 30.0) * t]);
-                if let Some(d) = self.dev.as_deref_mut() { d.spawn = pick; }
-                let gi = self.dev.as_deref().and_then(|d| d.spawn_guard(&mut self.scene, pos, self.cam.yaw));
-                let kind = match pick { dev::SpawnPick::Normal => "normal", dev::SpawnPick::Sniper => "sniper", dev::SpawnPick::Ambush => "ambush" };
-                match gi { Some(gi) => format!("guard #{gi}: spawned ({kind}) at ({:.1},{:.1},{:.1})", pos[0], pos[1], pos[2]), None => format!("spawn failed ({kind}) — no free slot or no sim") }
+        let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
+        let (out, msg) = match self.dev.as_deref_mut() {
+            None => return,
+            Some(d) => {
+                let out = dev::apply_menu_action_to_scene(d, &mut self.scene, action, eye, self.cam.yaw, self.noclip);
+                let msg = out.status.clone();
+                (out, msg)
             }
-            dev::MenuAction::ForceGrenade => {
-                let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos);
-                let gi = self.dev.as_deref_mut().and_then(|d| { d.force_grenade(&mut self.scene, bond); d.forced.last().copied() });
-                match gi { Some(gi) => format!("guard #{gi}: forced grenade throw — watch the lob"), None => "no guard within 30 m to force".to_string() }
-            }
-            dev::MenuAction::Impulse => {
-                let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos);
-                let gi = self.dev.as_deref_mut().and_then(|d| { d.impulse_guard(&mut self.scene, bond); d.forced.last().copied() });
-                match gi { Some(gi) => format!("guard #{gi}: impulse applied — watch the hop"), None => "no guard within 30 m to impulse".to_string() }
-            }
-            dev::MenuAction::SpecialDeath => {
-                let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos);
-                let gi = self.dev.as_deref_mut().and_then(|d| { d.special_death(&mut self.scene, bond); d.forced.last().copied() });
-                match gi { Some(gi) => format!("guard #{gi}: SpecialDeath triggered — watch the fall"), None => "no guard within 30 m".to_string() }
-            }
-            dev::MenuAction::ToggleGod => { let on = self.dev.as_deref_mut().map_or(false, |d| { d.god_mode = !d.god_mode; d.god_mode }); format!("god mode: {}", if on { "ON" } else { "OFF" }) }
-            dev::MenuAction::ToggleAmmo => { let on = self.dev.as_deref_mut().map_or(false, |d| { d.infinite_ammo = !d.infinite_ammo; d.infinite_ammo }); format!("infinite ammo: {}", if on { "ON" } else { "OFF" }) }
-            dev::MenuAction::ToggleNoReload => { let on = self.dev.as_deref_mut().map_or(false, |d| { d.no_reload = !d.no_reload; d.no_reload }); format!("no reload: {}", if on { "ON" } else { "OFF" }) }
-            dev::MenuAction::SaveSpot => { let p = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos); if let Some(d) = self.dev.as_deref_mut() { d.saved_spot = Some(p); } format!("spot saved at ({:.1},{:.1},{:.1})", p[0], p[1], p[2]) }
-            dev::MenuAction::RestoreSpot => {
-                let spot = self.dev.as_deref().and_then(|d| d.saved_spot);
-                match spot {
-                    Some(p) => {
-                        if let Some(d) = self.dev.as_deref() { d.teleport(&mut self.scene, p, self.cam.yaw); }
-                        // The game's own placement clears the viewer's cel so the next
-                        // `Camera_CheckLocation` re-finds it at the placed position
-                        // [M 0x1b9920 `Camera_Enable` with a matrix: `viewer+4 = 0`; the same
-                        // clear in `Player_Init` 0x1910f8 and `Camera_Reset` 0x1b9af0].
-                        if let Some(g) = self.gfx.as_mut() { g.renderer.viewer_cel = crate::scene::ViewerCel::default(); }
-                        format!("restored to ({:.1},{:.1},{:.1})", p[0], p[1], p[2])
-                    }
-                    None => "no saved spot — use 'save spot' first".to_string(),
-                }
-            }
-            dev::MenuAction::TimeScale(s) => { if let Some(d) = self.dev.as_deref_mut() { d.time_scale = s; } format!("time scale: {}", if s == 0.0 { "paused (F11=step)" } else if s == 1.0 { "1×" } else { "0.25×" }) }
-            // The level-select jump (fix-dev T5): the same path a level exit takes — a warm load with the
-            // carry-over (`pending_level` consumed at the top of RedrawRequested, lib.rs).
-            dev::MenuAction::Level(id) => { self.pending_level = Some(id); format!("loading {} ..", level_archive_name(id)) }
         };
-        if let Some(d) = self.dev.as_deref_mut() { d.result_msg = Some(result); d.result_timer = 180; }
+        if let Some(w) = out.switch_to { self.weapon_switch_to = Some(w); }
+        if let Some(id) = out.pending_level { self.pending_level = Some(id); }
+        if let Some(on) = out.noclip_to { self.set_noclip(on); }
+        if out.shot { let m = self.spot_shot(); eprintln!("[spot] {m}"); }
+        if out.viewer_cel_reset {
+            // The game's own placement clears the viewer's cel [M 0x1b9920] — the next
+            // `Camera_CheckLocation` re-finds it at Bond's position.
+            if let Some(g) = self.gfx.as_mut() { g.renderer.viewer_cel = crate::scene::ViewerCel::default(); }
+        }
+        if let Some(d) = self.dev.as_deref_mut() { d.result_msg = Some(msg); d.result_timer = 180; }
+    }
+
+    /// The N key's noclip toggle, shared with the Toggles page row (fix-ingame-dev-menu).
+    fn set_noclip(&mut self, on: bool) {
+        self.noclip = on;
+        // Back on foot: Bond where the free camera is.
+        if !self.noclip {
+            if let Some(sim) = self.scene.sim.as_mut() {
+                sim.bond = nf_game::player::Bond::stand_at(&sim.world, [self.cam.pos.x, self.cam.pos.y - 0.7, self.cam.pos.z], self.cam.yaw);
+            }
+            // The game's own placement clears the viewer's cel [M 0x1b9920] — the
+            // next frame re-finds at Bond's position.
+            if let Some(g) = self.gfx.as_mut() { g.renderer.viewer_cel = crate::scene::ViewerCel::default(); }
+        }
     }
 }
 
@@ -1598,9 +1603,18 @@ impl ApplicationHandler for App {
                 }
             }
         }
-        // Mouse wheel: weapon switching (next/prev). Up = next (+1), down = prev (−1).
+        // Mouse wheel: with the dev menu open it moves the menu's selection; otherwise weapon
+        // switching (next/prev). Up = previous row / next weapon (−1 direction, matching the old
+        // weapon-cycle mapping: wheel up = next).
         if let DeviceEvent::MouseWheel { delta: MouseScrollDelta::LineDelta(_x, y) } = event {
-            if self.grabbed && !self.noclip {
+            if self.dev.as_deref().is_some_and(|d| d.menu) {
+                if let Some(d) = self.dev.as_deref_mut() {
+                    let n = dev::menu_items(d, Some(&self.scene)).len();
+                    if n > 0 {
+                        if y > 0.0 { d.menu_sel = d.menu_sel.saturating_sub(1); } else { d.menu_sel = (d.menu_sel + 1).min(n - 1); }
+                    }
+                }
+            } else if self.grabbed && !self.noclip {
                 if y > 0.0 { self.weapon_cycle = 1; }
                 else if y < 0.0 { self.weapon_cycle = -1; }
             }
@@ -1695,6 +1709,38 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
+                // fix-ingame-dev-menu: while the dev menu is open, the keys drive the menu and never the game
+                // (the same rule the front-end pages follow). The sim is paused under the open menu
+                // (`paused_tick_count`), so nothing can race the menu's actions. F1/F11/F12 keep their viewer
+                // functions; Esc/F2 close and re-grab the mouse.
+                if self.dev.as_deref().is_some_and(|d| d.menu) {
+                    if event.state != ElementState::Pressed { return; }
+                    match k {
+                        KeyCode::F1 => if let Some(d) = self.dev.as_deref_mut() { d.overlay = !d.overlay; },
+                        KeyCode::F2 => {
+                            if let Some(d) = self.dev.as_deref_mut() { d.menu = false; }
+                            if self.scene.sim.is_some() { self.grab(true); }
+                        }
+                        KeyCode::F11 => if let Some(d) = self.dev.as_deref_mut() { d.step = true; },
+                        KeyCode::F12 => { let m = self.spot_shot(); eprintln!("[spot] {m}"); }
+                        KeyCode::Escape => {
+                            if let Some(d) = self.dev.as_deref_mut() { d.menu = false; }
+                            if self.scene.sim.is_some() { self.grab(true); }
+                        }
+                        KeyCode::PageUp => if let Some(d) = self.dev.as_deref_mut() { dev::menu_key(d, dev::MenuKey::PageUp); },
+                        KeyCode::PageDown => if let Some(d) = self.dev.as_deref_mut() { dev::menu_key(d, dev::MenuKey::PageDown); },
+                        KeyCode::ArrowUp => if let Some(d) = self.dev.as_deref_mut() { dev::menu_key(d, dev::MenuKey::Up); },
+                        KeyCode::ArrowDown => if let Some(d) = self.dev.as_deref_mut() { dev::menu_key(d, dev::MenuKey::Down); },
+                        KeyCode::Backspace => if let Some(d) = self.dev.as_deref_mut() { dev::menu_key(d, dev::MenuKey::Backspace); },
+                        KeyCode::Enter => {
+                            // Compute the action while holding the dev borrow, drop it, then apply.
+                            let action = self.dev.as_deref_mut().and_then(|d| dev::menu_activate(d, Some(&self.scene)));
+                            if let Some(a) = action { self.apply_menu_action(a); }
+                        }
+                        _ => { if let Some(c) = dev_filter_char(k) { if let Some(d) = self.dev.as_deref_mut() { dev::menu_type(d, c); } } }
+                    }
+                    return;
+                }
                 match (k, event.state) {
                     (KeyCode::Escape, ElementState::Pressed) => {
                         if self.grabbed {
@@ -1724,32 +1770,11 @@ impl ApplicationHandler for App {
                     (KeyCode::KeyP, ElementState::Pressed) => self.paused = !self.paused,
                     // Dev mode keys (WORKLOG 0081): F1 = AI overlay, F2 = dev menu, F11 = step one tick (when paused).
                     (KeyCode::F1, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { d.overlay = !d.overlay; },
-                    (KeyCode::F2, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { d.menu = !d.menu; if d.menu { self.grab(false); } },
-                    // B-9: keyboard nav for the dev menu. ↑/↓ move, Enter activates the selected row.
-                    (KeyCode::ArrowUp, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.menu { dev::menu_key(d, dev::MenuKey::Up); } },
-                    (KeyCode::ArrowDown, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.menu { dev::menu_key(d, dev::MenuKey::Down); } },
-                    (KeyCode::Enter, ElementState::Pressed) => {
-                        // B-9: keyboard nav. Compute the action while holding the dev borrow, drop it, then apply.
-                        let action = self.dev.as_deref_mut().and_then(|d| {
-                            if d.menu { dev::menu_key(d, dev::MenuKey::Activate) } else { None }
-                        });
-                        if let Some(a) = action { self.apply_menu_action(a); }
-                    }
+                    (KeyCode::F2, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { d.menu = !d.menu; if d.menu { self.grab(false); } else if self.scene.sim.is_some() { self.grab(true); } },
                     (KeyCode::F11, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.time_scale <= 0.0 { d.step = true; } },
                     (KeyCode::F3, ElementState::Pressed) => self.opts.reinforcements = !self.opts.reinforcements,
                     (KeyCode::KeyF, ElementState::Pressed) => self.opts.firing = !self.opts.firing,
-                    (KeyCode::KeyN, ElementState::Pressed) => {
-                        self.noclip = !self.noclip;
-                        // Back on foot: Bond where the free camera is.
-                        if !self.noclip {
-                            if let Some(sim) = self.scene.sim.as_mut() {
-                                sim.bond = nf_game::player::Bond::stand_at(&sim.world, [self.cam.pos.x, self.cam.pos.y - 0.7, self.cam.pos.z], self.cam.yaw);
-                            }
-                            // The game's own placement clears the viewer's cel [M 0x1b9920] — the
-                            // next frame re-finds at Bond's position.
-                            if let Some(g) = self.gfx.as_mut() { g.renderer.viewer_cel = crate::scene::ViewerCel::default(); }
-                        }
-                    }
+                    (KeyCode::KeyN, ElementState::Pressed) => { let on = !self.noclip; self.set_noclip(on); }
                     (KeyCode::KeyT, ElementState::Pressed) => if let Some(sim) = self.scene.sim.as_mut() { sim.auto_aim = !sim.auto_aim },
                     // Weapon switching: number keys 1–9 select directly, Q = prev, E (when not use) = next.
                     // The mapping: 1 = P2K (weapon 2), 2 = SG5 Commando (0x16), 3 = sniper (0x24), etc. The exact
@@ -1869,6 +1894,10 @@ impl ApplicationHandler for App {
                 }
                 let dt = self.last.elapsed().as_secs_f32().min(0.1);
                 self.last = std::time::Instant::now();
+                // The Toggles page's fps display (wall-clock; a dev readout, never in the Sim).
+                if let Some(d) = self.dev.as_deref_mut() {
+                    if dt > 0.0 { d.fps = if d.fps <= 0.0 { 1.0 / dt } else { d.fps * 0.9 + (1.0 / dt) * 0.1 }; }
+                }
                 let speed = if self.keys.contains(&KeyCode::ShiftLeft) { 40.0 } else { 8.0 } * dt;
                 let fwd = self.cam.dir();
                 let right = fwd.cross(Vec3::Y).normalize_or_zero();
@@ -1895,7 +1924,13 @@ impl ApplicationHandler for App {
                     // G-043: the loop's tick scheduling, extracted verbatim into `ticks_for_frame`
                     // (the fps-determinism test drives the same arithmetic headless).
                     let elapsed = ticks_for_frame(&mut self.anim_time, dt, max_ticks);
-                    let n_ticks = self.dev.as_deref_mut().map_or(elapsed, |d| d.tick_count(elapsed));
+                    // fix-ingame-dev-menu: the open menu pauses the sim — 0 ticks unless F11's
+                    // one-shot step was pressed (`paused_tick_count`).
+                    let n_ticks = match self.dev.as_deref_mut() {
+                        Some(d) if d.menu => d.paused_tick_count(),
+                        Some(d) => d.tick_count(elapsed),
+                        None => elapsed,
+                    };
                     self.ticked = n_ticks > 0;
                     let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
                     let look = self.cam.dir().to_array();
@@ -2006,7 +2041,8 @@ impl ApplicationHandler for App {
                 let (r, u) = cam_axes(&self.cam);
                 self.opts.right = r;
                 self.opts.up = u;
-                let interp0 = !self.noclip && !self.paused && self.scene.sim.is_some() && std::env::var_os("NF_NOINTERP").is_none();
+                let interp0 = !self.noclip && !self.paused && self.scene.sim.is_some() && std::env::var_os("NF_NOINTERP").is_none()
+                    && self.dev.as_deref().map_or(true, |d| d.interp);
                 let alpha0 = if interp0 { self.anim_time.fract() } else { 1.0 };
                 let draw_cam = match (self.cam_prev, self.cam_cur) { (Some(a), Some(b)) if interp0 => lerp_cam(&a, &b, alpha0), _ => self.cam };
                 let aspect0 = g.config.width as f32 / g.config.height as f32;
@@ -2014,7 +2050,10 @@ impl ApplicationHandler for App {
                 // One visibility walk per frame, shared by the palette's object cull and render's
                 // World cull (fix-portal): the eye's cel from `Camera_CheckLocation` 0x1bae90's
                 // persistent state, the walk from it [M 0x1e86e8].
-                let vis = g.renderer.cel_visibility(draw_cam.pos.to_array(), vp0, self.scene.sim.as_ref().map(|s| &s.world));
+                // The Toggles page's portal-culling row: off passes no world, so the walk returns
+                // everything (the whole level draws — the isolation view).
+                let portal = self.dev.as_deref().map_or(true, |d| d.portal_cull);
+                let vis = g.renderer.cel_visibility(draw_cam.pos.to_array(), vp0, if portal { self.scene.sim.as_ref().map(|s| &s.world) } else { None });
                 // G-043: build the palette only when a tick ran, then draw between the last two ticks.
                 if self.ticked || self.pal_cur.is_none() {
                     let new = self.scene.skin_palette(&g.renderer.skin_layout, self.choice, self.anim_time, self.opts, vis.as_deref());
@@ -2130,7 +2169,7 @@ pub fn run() -> Result<()> {
         default_hook(info);
     }));
     let args: Vec<String> = std::env::args().skip(1).collect();
-    const USAGE: &str = "usage: nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--fire] [--reinforcements] [--dev --scenario <name>] [--record <file>] [--replay <file>] [--no-fog] [--no-tex] [--shot out.png [--cam x y z yaw pitch]]\n\
+    const USAGE: &str = "usage: nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--fire] [--reinforcements] [--dev [--panel]] [--scenario <name>] [--record <file>] [--replay <file>] [--no-fog] [--no-tex] [--shot out.png [--cam x y z yaw pitch] [--dev-page <name>]]\n\
         <level> is a FILES.BIN name such as 07000005 (\".bin\" optional); without <iso> the image path comes from NF_ISO\n\
         --dev --scenario <name>: place Bond for a feature test (weapon-switch, sg5-pickup, wire-music, autoaim)\n\
         --record <file>: record every logic tick's input to <file> (B-5). --replay <file>: replay a recording.\n\
@@ -2255,7 +2294,17 @@ pub fn run() -> Result<()> {
                 eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);
             }
         }
-        let (menu_frame, movie_frame) = front_end_menu(&args, &scene, front_end);
+        let (mut menu_frame, movie_frame) = front_end_menu(&args, &scene, front_end);
+        // fix-ingame-dev-menu: `--dev-page <name>` draws the F2 menu's page (menu/weapons/gadgets/
+        // grenades/ammo/npcs/teleport/level/toggles/screenshot) over the game HUD, so the main agent
+        // can render and check each page headless.
+        if let Some(pg) = args.iter().position(|a| a == "--dev-page") {
+            let name = args.get(pg + 1).context("--dev-page needs a page name")?;
+            let page = dev::page_index(name).with_context(|| format!("--dev-page: unknown page {name:?} (one of: {})", dev::PAGES.join(", ")))?;
+            let d = dev::Dev { menu: true, page, ..Default::default() };
+            let f = dev::hud(&d, &scene, 1280.0 / 720.0, [[0.0; 4]; 4]);
+            menu_frame.get_or_insert_with(|| overlay_for(&scene, 1280.0 / 720.0)).append(&f);
+        }
         return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts, notex, nofog, menu_frame.as_ref(), movie_frame.as_ref());
     }
     let event_loop = EventLoop::new()?;
@@ -2269,10 +2318,14 @@ pub fn run() -> Result<()> {
     let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, };
     if dev {
-        app.panel = panel::start();
+        // fix-ingame-dev-menu: the browser panel is no longer part of `--dev` — the in-window F2
+        // menu carries ALL of its functions now (through the same `panel::apply` command layer).
+        // `--panel` puts the HTTP page back for anyone who wants a second screen.
+        app.panel = if args.iter().any(|a| a == "--panel") { panel::start() } else { None };
         match &app.panel {
             Some(_) => eprintln!("dev panel: open http://127.0.0.1:{} in a browser (beside the game window)", panel::PORT),
-            None => eprintln!("dev panel: port {} busy (another nf-view?) — panel not started", panel::PORT),
+            None if args.iter().any(|a| a == "--panel") => eprintln!("dev panel: port {} busy (another nf-view?) — panel not started", panel::PORT),
+            None => {}
         }
         if args.iter().any(|a| a == "--arena") {
             let (status, _) = panel::apply(&mut app.scene, &[("do".to_string(), "arena".to_string())]);

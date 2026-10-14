@@ -9559,3 +9559,73 @@ Stage Summary:
   green, my diff doesn't touch their path).
 - Shared files touched (additive): nf-view lib.rs (the --page arms + the F12 arm). Report:
   docs/reports/fix-pause-menu.md.
+
+
+Task ID: fix-ingame-dev-menu
+Agent: worker (fix-ingame-dev-menu session)
+Task: 101a: move ALL of the HTTP dev panel's functions (crates/nf-view/src/panel.rs, 127.0.0.1:7007) into the
+in-window F2 dev menu (dev.rs, WORKLOG 0081) and stop starting the HTTP server by default (keep panel::apply as
+the shared command layer; drop the server or put it behind --panel). Pages: Weapons, Gadgets, Grenades/explosives,
+Ammo/health/armour, NPCs (spawn by skin and mode, clear), Teleport (named spots), Level, Toggles, Screenshot.
+Keyboard (arrows/Enter/Backspace, PageUp/PageDown, type-to-filter) + mouse (click, wheel). Pauses the sim while
+open. HUD font + dark translucent box, readable 720p and 4K. Spawning while paused must be safe (the 07000015
+panel grenade crash). Tests: headless menu flow through the real key path (dev_menu_flow.rs); --dev-page <name>
+for --shot renders of each page. Branch s/fix-ingame-dev-menu.
+
+Work Log:
+- Session started 00:50 UTC 2026-10-14 (deadline ~02:44 UTC; stop new work 02:24). Branch created from
+  origin/master (3c77a9d), pushed with this entry. Repo/work/ISO already present from the prior session
+  (fix-anim-events, finished and pushed on its own branch). Fast suite baseline from that tree: 871 passed,
+  3 failed (the allowed disc_golden set), 27 ignored, 23 min.
+- (next: read panel.rs/dev.rs/hud.rs/lib.rs, plan the menu, reproduce-first)
+
+Task ID: fix-ingame-dev-menu
+Agent: worker (fix-ingame-dev-menu session)
+Task: 101a: move ALL of the HTTP dev panel's functions into the in-window F2 dev menu and stop
+starting the HTTP server by default (panel::apply stays the shared command layer; the server is
+behind --panel). Pages: Weapons, Gadgets, Grenades/explosives, Ammo/health/armour, NPCs, Teleport,
+Level, Toggles, Screenshot. Keyboard + mouse + wheel, type-to-filter, pauses the sim while open,
+HUD font + dark translucent box. Spawning while paused safe + tested. --dev-page <name> for
+--shot renders of each page.
+
+Work Log:
+- Session 00:50-02:xx UTC 2026-10-14 (deadline ~02:44). Branch s/fix-ingame-dev-menu from
+  origin/master (3c77a9d), pushed with the start entry; checkpoint cae8c18 (the pages); merged
+  origin/master c3b989b mid-session (WORKLOG conflict resolved keeping both sides).
+- dev.rs: the flat menu became a paged menu. PAGES[0..9] = menu/weapons/gadgets/grenades/ammo/npcs/
+  teleport/level/toggles/screenshot; menu_items(dev, scene) builds the rows per page (catalog pages
+  read panel::catalog_entries — the game's own names); type-to-filter (menu_type + passes_filter)
+  gates every row; PageUp/PageDown (MenuKey::PageUp/PageDown), Backspace pops the filter then
+  returns to the index; draw + click hit-test share layout_rows (no drift); panel widened
+  150 -> 190 HUD-px so "0x2c AT-420 Sentinel" fits (~28% of a real 16:9 window).
+- dev::apply_menu_action_to_scene: the shared action router — every give/spawn/clear/health command
+  routes through panel::apply (the shared command layer); App::apply_menu_action is a shell applying
+  the window-only side effects (weapon_switch_to, pending_level, viewer-cel reset [M 0x1b9920],
+  noclip, screenshot). The headless tests drive the SAME router.
+- The menu pauses the sim: Dev::paused_tick_count() = 0 ticks while open (1 with F11's step); the
+  key interceptor (lib.rs) feeds the menu and returns — game keys never fire while open; the wheel
+  scrolls the selection; Esc/F2 close and re-grab.
+- TELEPORT_SPOTS: the task's seven named spots, teleports via Bond::stand_at (grounds on the floor
+  under the spot's stand height).
+- Toggles plumbing: portal-cull off passes no world to Renderer::cel_visibility (the [M 0x1e86e8]
+  walk); interp off forces alpha 1.0 (the NF_NOINTERP behaviour); fps display is a wall-clock
+  readout in dev::hud. No RNG draws added; Sim untouched.
+- panel.rs: doc header only — the server is behind --panel now; apply/catalog unchanged.
+- --dev-page <name> renders any page over the game HUD in the headless --shot path.
+- Tests (dev_menu_flow.rs, all through the real key path + the shared router): frag give+draw
+  (0x34 owned, clip filled, gun.weapon == 0x34 after the real step_bond path; sister: 0x35
+  untouched), laser filter (0x3a Laser Tripbomb — the bank's own laser name [D USATxt]; the old
+  "Q-Laser" name was the hardcoded table's mistake), teleport + grounded after 60 ticks (0700000c
+  display vent), the 07000015 paused-spawn flow (the user's crash: give frag x5 + spawn an NPC with
+  the menu open, resume 120 ticks — no panic), and every panel command reachable from a menu row.
+  menu_live.rs/dev_tools_live.rs updated for the new signatures (level rows moved to the Level
+  page; the B-11 width cap -> 40% with the reason).
+- Suite: the sandbox kills detached processes between tool calls, so suite.py's nohup form cannot
+  survive here; the suite ran as 211 fresh binaries (cargo --no-run --message-format=json
+  discovery, the same set suite.py builds) serially over bounded foreground batches — all green
+  except disc_golden with exactly the 3 allowed slim-ISO failures. (A summary-regex bug in my
+  batch runner lost the numeric total; see the report/worklog addendum for the re-tallied total.)
+- Report: docs/reports/fix-ingame-dev-menu.md (--shot commands per page + live checks inside).
+  Files: dev.rs, panel.rs (doc), lib.rs (hooks), tests/dev_menu_flow.rs (new),
+  tests/menu_live.rs, tests/dev_tools_live.rs (signature/width updates). No shared-file surprises:
+  drone.rs/scene.rs/player.rs untouched.
