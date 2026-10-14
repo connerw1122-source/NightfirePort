@@ -36,3 +36,7 @@ claimed-by: sandbox7 at 2026-10-14T19:40Z
 ## Report (done, 2026-10-14T20:33Z)
 
 Closed by the driver: the report is on `s/fix-character-room-light` (docs/reports/fix-character-room-light.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-14T20:35Z)
+
