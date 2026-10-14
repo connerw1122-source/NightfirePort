@@ -35,3 +35,7 @@ claimed-by: sandbox6 at 2026-10-14T12:04Z
 ## Report (done, 2026-10-14T13:23Z)
 
 Closed by the driver: the report is on `s/fix-save-profile` (docs/reports/fix-save-profile.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-14T13:55Z)
+
