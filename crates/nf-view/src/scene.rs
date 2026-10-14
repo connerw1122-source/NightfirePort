@@ -2219,7 +2219,12 @@ impl Sim {
                         pos: camera,
                         velocity: [sdir[0] * speed, sdir[1] * speed, sdir[2] * speed],
                         speed, travelled: 0.0, range: fuse, damage: f32_at(0x0c), radius: f32_at(0x08),
-                        weapon_type: wt,
+                        // The FIRED weapon's id, not the record's +0x02 base: the MGL's 'Delay' twin
+                        // 0x2b bases to 0x2a, and the death branches (the impact explode [M
+                        // 0x12d068-0x12d0bc], the flash/smoke routing [M 0x12dd60]) read the BULLET'S own
+                        // record. The grenade family bases to itself [L ee_start_05.bin +0x02 sweep], so
+                        // this only re-points the twins.
+                        weapon_type: self.gun.weapon as u16,
                         mesh: self.weapons.projectile_mesh(self.gun.weapon as usize),
                         owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false,
                     });
@@ -2863,6 +2868,10 @@ pub struct Scene {
     pub music_tables: Option<(Vec<nf_formats::music::MapMusic>, Vec<nf_formats::music::MusicVars>)>,
     /// The level's sound bank (`Sound_Ready` → `SFXLoadSoundBank`): slot, bank, ADPCM (set by the loader).
     pub sound_bank: Option<(usize, nf_formats::soundbank::Bank, Vec<u8>)>,
+    /// Spare banks (fix-weapon-sounds): the other SBINFO slots' `SB_<slot>.{SHF,SFX,SBF}`, loaded so a
+    /// weapon given on a level whose own bank lacks its sounds still plays them from a bank that holds
+    /// them (`load_spare_bank`). The level's own bank stays the primary lookup [M `Sound_Ready`].
+    pub sound_spares: Vec<(usize, nf_formats::soundbank::Bank, Vec<u8>)>,
     /// The level's fog (`psiPreGameRun` 0x11e2e8: colour, `Ps2Far1`; `None` = `FogOn` 0).
     pub fog: Option<([u8; 3], f32)>,
     /// The HUD's textures by hash (docs/systems/hud.md), from any map of the archive, and its tables from ACTION.ELF.
@@ -4159,7 +4168,7 @@ impl Scene {
         // fix-portal4: sim-less loads never built a world — the chains fall back to the
         // bbox-face FindCel approximation (documented deviation; every live load path builds sim).
         if sim.is_none() { build_chains(&mut cel_graph, None); }
-        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn, misc_drawn }
+        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, sound_spares: Vec::new(), snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn, misc_drawn }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the

@@ -9684,6 +9684,17 @@ Work Log:
   tests/menu_live.rs, tests/dev_tools_live.rs (signature/width updates). No shared-file surprises:
   drone.rs/scene.rs/player.rs untouched.
 
+## fix-weapon-assets (2026-10-14, s/fix-weapon-assets)
+
+- Task 100a: a disc-wide weapon asset index + loader so `--give` / the dev menu hands Bond ANY
+  weapon on ANY level with its own skin, sleeve, parts, view-model sequences, muzzle flash,
+  casing, projectile and third-person model, pulled from the owning archive and rebased into the
+  scene (the way scene.rs already does for drone skins).
+- Setup reused the surviving sandbox: repo at /home/z/nf, onfoot ISO + work/ already extracted;
+  branch created from origin/master (7be3272); no s/weapon-assets branch existed to merge.
+- Plan: index builder over all FILES.BIN archives (cached, keyed by ISO size + archive-table
+  SHA-1) -> lazy load hooks in scene.rs/lib.rs -> NF_ISO tests on 07000005 (give, draw, fire,
+  reload) with sister assertions on levels that carry the weapon.
 ## dev-window (main agent, branch devwin) — 2026-10-13
 
 The user: "the dev menu should manifest outside of the game, but not in a browser", then "you work on it". `--dev`
@@ -9753,6 +9764,28 @@ HUD font (texture 0x03000003). No new crates.
   (the hinges burn through the crosshair ray), nf-game lib 139/139, the full nf-view non-walk set
   479 passed 0 failed, nf-game/formats/audio 349 passed + the 3 allowed disc_golden, the walk
   samples green.
+## fix-weapon-assets (2026-10-14, s/fix-weapon-assets)
+
+- Task 100a: a disc-wide weapon asset index + loader so `--give` / the dev menu hands Bond ANY
+  weapon on ANY level with its own skin, sleeve, parts, view-model sequences, muzzle flash,
+  casing, projectile and third-person model, pulled from the owning archive and rebased into the
+  scene (the way scene.rs already does for drone skins).
+- Setup reused the surviving sandbox: repo at /home/z/nf, onfoot ISO + work/ already extracted;
+  branch created from origin/master (7be3272); no s/weapon-assets branch existed to merge.
+- Plan: index builder over all FILES.BIN archives (cached, keyed by ISO size + archive-table
+  SHA-1) -> lazy load hooks in scene.rs/lib.rs -> NF_ISO tests on 07000005 (give, draw, fire,
+  reload) with sister assertions on levels that carry the weapon.
+
+## fix-weapon-effects (s/fix-weapon-effects) — 2026-10-14
+
+Task 100c: what each weapon DOES when fired, matched to the game per weapon class on any level —
+muzzle flash, tracers, casings (ejected only when firing: the user saw casings fly when walking
+backwards on 16), per-material bullet impacts, fire rate/spread, shotgun pellets, rockets ("the
+explosion is very small"), grenades, mines, the crossbow bolt, the laser/stunner's rapid
+bullet-impact sounds (do they actually spawn bullets?), the Q-Claw hook, alt fires and twins.
+100a (s/fix-weapon-assets) was merged for its branch-start entry but carried no code yet — built
+on origin/master 12a6b07. Reproduce-first per class on 07000005 through the real input path;
+work starting.
 ## fix-objective-messages (s/fix-objective-messages) — 2026-10-14
 
 Task 101d: the playtest (results 1013-1758 / 1013-1825) found (1) two stacked OBJECTIVE
@@ -9792,6 +9825,36 @@ the wrap/line-height helpers). Report: docs/reports/fix-objective-messages.md.
 Full suite on the final tree (origin/master 7be3272 merged): **886 passed, 3 failed, 27 ignored
 (20 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH. Also green post-fix:
 death/restart 8, mission 4, level_carry 3, progress 8, nf-formats 74 (+ the 3 allowed).
+## fix-weapon-sounds (s/fix-weapon-sounds) — 2026-10-14
+
+Task 100b: weapon sounds on every level — map every weapon's sound ids (fire, silenced,
+dry fire, reload stages, draw 0x281/0x282, holster 0x280/0x283, zoom, alt fire, laser and
+stunner loops, grapple fire/reel, grenade pin/throw/bounce, rocket launch/flight loop,
+explosions, casings and impacts per surface) to the bank(s) that hold them; when a weapon
+is given on a level whose bank lacks a sample, load it (VAG + effect record) from a bank
+that has it and register it under the same id without disturbing the level's own effects
+or the voice limits. Files: crates/nf-audio/src/{sfx,lib}.rs, crates/nf-view/src/lib.rs,
+tests. Reproduce-first; work starting.
+
+Task 100b outcome (same session): REPRODUCED then FIXED. The repro (fix_weapon_sounds_live,
+07000005 dev load, equip 0x1a via the real inventory path, fire through step_bond) failed
+pre-fix with "the AR's fire sound 0x40d never started a voice on 07000005" — the level bank
+(slot 4) has no row for the foreign weapon's ids. Fix: the driver's first load_bank is the
+primary slot (bit-identical one-bank lookups for the level's own set); the other 22 SBINFO
+banks load as spares (load_spare_bank, 42 MB SBF [D disc]); start() searches primary first,
+then spares ascending (slot 2, the MP bank, is the weapons superset holding every missing id).
+The owning bank's effect record (radii/MaxVoices/priority) and VAG data ride along, so the
+voice limits are the owning bank's. Green: the AR's fire 0x40d + reload 0x406/0x407/0x40a
+from slot 2 with the owning bank's sample FNVs; the sister pins the native P2K's
+0x403/0x40e/0x40f/0x411 to slot 4; the 69-weapon draw/fire/reload sweep (each requested id
+starts a voice with the owning bank's sample; gadget-context ids at driver level). 2 tests
+ignored with observations (the Laser 0x4e has no FP model in the dev merge — 100a; the AR
+draws but never fires on 07000001 — 100a/100c; both documented in the report). Files:
+sfx.rs, lib.rs (spares load + pub build_sound), scene.rs (one additive field sound_spares),
+tests/fix_weapon_sounds_live.rs (new). Report: docs/reports/fix-weapon-sounds.md (the
+weapon → bank mapping table + live checks). The full 211-binary suite still needs a run on
+the final tree (background jobs are killed between tool calls here; the window closed) —
+listed in the report for the next message.
 ---
 
 ## fix-qclaw (s/fix-qclaw) — started 2026-10-14 02:28 UTC
@@ -9837,3 +9900,69 @@ collision/object list the way the game's loader attributes polys and objects to 
 so the eye cel resolves to 15 like the game's; remove the rescue if it dies; prove on the RENDERED
 path (a --shot draw-list test at the trench spot failing on master), keep the 27-level sweep and
 the 4 PCSX2 ground-truth spots green. Branch s/fix-portal-eyecel off master 5f13369.
+Task 100c outcome (same session): REPRODUCED then FIXED. The impact explode —
+`Bullet_CollisionHandler` 0x12d068-0x12d0bc (disassembled): after the impact effects, a weapon
+whose `weapon_data+0x70` carries bit 2 (0x4) destroys its bullet with `Explode_Create(radius =
++0x08, damage = +0x0C, script 0x6000052, attacker = BU+0x30)` at the hit point, skipped for a
+ricochet re-entry (`bnel $s4` 0x12d07c). The disc records [L ee_start_05.bin @ 0x2bf150]: the
+AT-420 Sentinel 0x2c/0x2d (8.0/100) and the MGL 'Grenade' twin 0x2a (6.0/75) carry the bit; the
+plain guns (0x12) don't. The port never exploded a player bullet on impact — the Sentinel's
+missile ricocheted like a rifle round; and a directly-pushed blast was wiped by the grenade
+section's per-tick `explosions.clear()` (which runs AFTER `update_player_bullets`) — the blast now
+queues in `Drones::pending_blasts` and drains after that clear. The MGL 'Delay' twin 0x2b also
+contact-detonated: `Grenade.weapon_type` carried the record's +0x02 BASE (0x2a) instead of the
+fired id — the death branches read the bullet's own record [M 0x12dd60]; the grenade family bases
+to itself [L +0x02 sweep] so only the twins re-point. Tests (fix_weapon_effects_live, 5, all
+failing pre-fix): the Sentinel missile explodes on the floor with radius 8/damage 100 + the
+shake; a plain gun never explodes; the MGL Grenade twin detonates on contact (6/75); the Delay
+twin (the ○ mode button [M 0x1a24c8:246-260] — the direct select lands on the base) bounces and
+waits for the fuse; walking backwards 240 ticks spawns no bullet/casing/blast/light [M
+Bullet_init_casing 0x12fde0 runs from Player_WeaponInitBullet 0x1a4bf0:306 only]. Green on the
+merged tree; explode/weapon-modes/death-restart suites green. The laser/stunner rapid-impact
+sound: the port's watch laser (0x4e/0x4f) fires class-5 bullet contacts that burn the locks
+[Lock_Update 0x1ae3d8 reads BU+0x44 = 0x4e/0x4f — the game's own laser bullets are class-5
+contacts] and the stunner (0x4a) a taser bolt [NDrone2_DealWithObjHit case 5 0x13fff0:269-306 →
+msg 7] — the impacts are the standard per-material path, so the sounds are real bullet impacts;
+whether the console's laser beam is silent is a live check (in the report). Files: drone.rs,
+scene.rs (the weapon_type line), tests. Report: docs/reports/fix-weapon-effects.md.
+Full suite on the final tree (origin/master 810c109 merged): **909 passed, 3 failed, 27 ignored
+(19 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH.
+
+### fix-weapon-assets — result (2026-10-14)
+
+- Disc-wide weapon asset index + loader shipped: `weapon_assets.rs` (index cached in temp keyed by
+  ISO size + FILES.BIN SHA-1; the surgical `Wanted::Ids`/`--dev` `Wanted::All` merge with the
+  gameplay-skeleton sequence guard), `load_weapons`/`load_with_carry_weapons`, the `--give` hook in
+  `run()`, and the lazy dev-menu give via a warm same-level reload. scene.rs needed no changes.
+- 5 NF_ISO tests in `tests/weapon_assets_live.rs` — all green: index+cache, all 53 cross-level
+  weapons' assets resolve on 07000005 (meshes/skeletons/sequences/scripts/flash/3rd-person/
+  projectile, by_hash unchanged), draw→fire→reload through step_bond, native-carry identical
+  numbers, the 18 no-model ids listed. Suite: 752 passed, 3 failed (the allowed disc_golden
+  slim-ISO set), 27 ignored. Report: docs/reports/fix-weapon-assets.md.
+## weapon-matrix (worker, branch s/weapon-matrix) — 2026-10-14
+
+Task 100d: the all-weapons × all-levels matrix. A headless test (`crates/nf-view/tests/weapon_matrix_live.rs`)
+and an `nf-extract weapon-matrix <iso>` table command that, per on-foot level × weapon id: load, `--give` the
+weapon, draw, fire ×3 (hold for hold-to-use gadgets), reload, switch away/back — recording view-model presence,
+sequences played, muzzle flash, sound ids requested/started, effects spawned, errors/panics. Baseline run on
+master, final run with 100a–c merged. Plus a "Test weapon" row on the dev menu Weapons page (dev.rs). Work started
+03:09 UTC; report lands in docs/reports/weapon-matrix.md.
+
+---
+Task ID: 100d-weapon-matrix
+Agent: weapon-matrix worker
+Task: the all-weapons × all-levels matrix — the tool, the run, the fixes it turns up, the dev row.
+
+Work Log:
+- Built the runner (crates/nf-view/src/matrix.rs): per on-foot level × weapon id — load, give (the --give path via panel::apply), draw (real input path; the mode button's twin chain for the variant records), fire ×3 (hold-to-use gadgets hold), reload, switch away (P2K 0x02) and back; records view model, muzzle-flash attachment, view scripts, shot ticks, sound ids requested (Drones::sounds) and started (the driver's Cmd::Start batch, built the way lib.rs's sound_tick builds it), effects (bullets/impacts/explosions/grenades/beam), panics (caught per cell, the level reloaded after one).
+- `nf-extract weapon-matrix <iso> [levels]` prints the mark table + per-weapon aggregates + red cells with reasons.
+- 27 per-level headless tests (crates/nf-view/tests/weapon_matrix_live.rs, one #[test] per level) + the sister test for the dev row.
+- The dev menu's Weapons page got the "test weapon (in hand)" row (dev.rs TestRun + test_inputs/test_observe; lib.rs merges its inputs into the real tick, never during replay). Headless-verified: draw ok, 3 shot ticks, reload ok on the P2K / 07000005.
+- Full sweep: 27 levels × 99 ids, 5m27s, ZERO panics. Red cells: 274 give refusals (the game's own: fp-less variant records + the at-cap owned-branch refusal — both named in the reasons), 235 no-view-model cells (the cross-level asset gap, 100a's headline — the reason names the missing fp skin hash), 94 draw fails (the manor/vault intro input lock + variant chains), 6 R, 6 B, 0 W.
+- 100a-c were worklog-only at task start; nothing to merge (stated in the report). Baseline == final tree.
+- Fast suite on the final tree --only weapon_matrix_live,fix_weapons_all_live,fix_weapon_modes_live,models_weapons_live,dev_menu_flow,devwin_flow: 51 passed, 0 failed (8 min).
+
+Stage Summary:
+- Files: matrix.rs (new), tests/weapon_matrix_live.rs (new), nf-extract main.rs + Cargo.toml (the command), dev.rs (the row), lib.rs (pub mod matrix + the 2-line test-weapon hook). drone.rs/scene.rs/player.rs untouched.
+- Report: docs/reports/weapon-matrix.md (the mark table, the numbers, the live checks for the main agent).
+- Open: re-run with 100a-c merged; the intro input-lock F/D cells; the variant back-chain B cells (100c).
