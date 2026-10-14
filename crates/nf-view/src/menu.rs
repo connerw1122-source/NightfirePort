@@ -94,7 +94,16 @@ pub const PAGE_DOSSIER: u32 = 0x4000_002b;
 /// The title layout the boot page leads to [M menu-def page 0x40000009: the art + Press START].
 pub const PAGE_TITLE_LAYOUT: u32 = 0x4000_0009;
 pub const PAGE_OPTIONS: u32 = 0x4000_0068;
-pub const PAGE_PAUSE: u32 = 0x4000_000c;
+/// The IN-GAME pause page [M Player_Update 0x193600:73 — pressing Start in a mission runs
+/// `MenuManager_Create(0x80000002, 0x4000004b, …, 0x1e, 1, 3)` + `GS_PauseGame(1)`; the page lives in
+/// the MISSION archives' own kind-8 menu def (entry 08000001 of each level archive, e.g. 07000001.bin
+/// [L parsed 2026-10-14]), NOT the front-end 07000048 stream — the old 0x4000000c id was the NIS page
+/// (the handler table maps 0x4000000c → P_NIS_Handler [M Handler_HandleMessage 0x2029e0])]. Its main
+/// control is 0x10000028, handled by C_GCPAUSE_Handler 0x204408.
+pub const PAGE_PAUSE: u32 = 0x4000_004b;
+/// The fail/death menu [M Mission_Update 0x182c60:78 — `MenuManager_Create(0x80000004, 0x40000042, …)`;
+/// handler P_ENDMISSION_Handler 0x216618; same mission menu def, PAGE record fh=0x80000004 [L]].
+pub const PAGE_FAIL_MENU: u32 = 0x4000_0042;
 pub const PAGE_RESULTS: u32 = 0x4000_0036;
 pub const PAGE_RESULTS_QUIT_TARGET: u32 = 0x4000_001c;
 
@@ -322,6 +331,25 @@ pub const CAMPAIGN: [(u32, u32, u32, u32); 12] = [
 /// `Menu_UpdateWheel` binds +0x08 when unlocked, +0x14 when not].
 pub const LOCKED_DESC: u32 = 0x0100_0009;
 
+/// A front-end page's aux background-movie code [M the menu-def PAGE record's third dword, stored at
+/// M_PAGE+0xC4 by `MenuManager_Create` 0x21b908:169-183 and played as a LOOPING background movie on
+/// page change by `Manager_SendMessage` 0x21c858:338 (`Menu_PlayMovie(aux, 0, 1, 0, 0, 0)` — loop = 1;
+/// `psiStopBackgroundMovie` when the new page's aux is 0)]. 0 = no movie. Parsed from the disc's
+/// menu-def (08000002 in 07000048.bin) 2026-10-13: the main menu carries 0x07330048; the boot page
+/// 0x40000034, every list page (codename 0x40000025, difficulty 0x40000023, missions 0x4000001c,
+/// dossier 0x4000002b) and the results page 0x40000036 carry 0x07350048; P_INTRO 0x40000032, the
+/// title layout 0x40000009 and attract 0x40000035 carry 0 (P_INTRO plays 0x7370048/0x7380048 from
+/// its handler [M 0x209e88]). The test
+/// `menu_movies::the_page_aux_movie_map_comes_from_the_page_data` re-parses the disc's PAGE records
+/// and pins this mapping to them.
+pub fn aux_movie_for(page_id: u32) -> u32 {
+    match page_id {
+        PAGE_MAIN => 0x0733_0048,
+        PAGE_START | PAGE_CODENAME | PAGE_DIFFICULTY | PAGE_MISSION_SELECT | PAGE_DOSSIER | PAGE_RESULTS => 0x0735_0048,
+        _ => 0,
+    }
+}
+
 /// Mission_Update 0x182c60 case 6's level → outro-code switch [M; snapshot bytes 0x182e60-0x182eb4
 /// are lui/ori pairs, no table [L ee_snapshot]]: 0x7000004/08/0b/0d/0f/13/1b map to their own 0x73
 /// codes, 0x7000016 → 0x7300017 (the one non-identity entry), everything else → the front-end map
@@ -349,6 +377,19 @@ pub const DIFFICULTY_DESCS: [u32; 3] = [0x100_0006, 0x100_0007, 0x100_0008];
 /// The main menu's item labels and one-line descriptions [M menu-def page 0x40000002 rows + Txt].
 pub const MAIN_ITEMS: [u32; 3] = [0x28, 0x149, 0x14b];
 pub const MAIN_DESCS: [u32; 3] = [0x100_0000, 0x100_0001, 0x100_0002];
+
+/// The intro movies the P_INTRO page plays between the title and the front end, in order
+/// [M `P_INTRO_Handler` 0x209e88:38-62: `psiStartBackgroundMovie(0x7370048, 0, vol)` then
+/// `psiStartBackgroundMovie(0x7380048, 0, vol)` (loop = 0), each waited on with
+/// `psiMovieFinished` 0x001082e8; the page change to the next page only after the second ends].
+pub const INTRO_MOVIES: [u32; 2] = [0x0737_0048, 0x0738_0048];
+
+/// The headless intro budget: the two movies at 30 fps, one frame per two 60 Hz ticks [M the game
+/// decodes one MPEG frame per game tick and skips to even vblanks — 30 fps NTSC, main 0x00109080].
+/// Measured on the retail image 2026-10-13: 0x07370048 = 96 pictures (3.2 s, the EON logo),
+/// 0x07380048 = 329 pictures (11 s) — 425 × 2 = 850 ticks. The test
+/// `menu_movies::the_intro_movie_counts_pin_the_tick_budget` re-measures the disc's files against it.
+pub const INTRO_TICKS: u32 = 850;
 
 /// Which front-end page is up. The ids are the game's own (the constants above); the enum is the
 /// dispatcher the port drives.
@@ -407,8 +448,18 @@ pub struct FrontEnd {
     /// The level the front end wants the host to load next (set together with a MAPLOAD push).
     pub requested_level: Option<u32>,
     /// The pause page's quit confirm: the game swaps the row text and only quits on the second
-    /// choose (`state_quit_166` [M C_GCPAUSE_Handler 0x204408:210-220]).
+    /// choose (`state_quit_166` [M C_GCPAUSE_Handler 0x204408:210-220]). RESTART confirms the same
+    /// way (the same YES/NO list, text 0x1ff [M 0x204408's msg-0x4b d1=6 cases bind 0x1ff/0x200 and
+    /// `state_quit_166` picks the arm]).
     pub confirming_quit: bool,
+    /// The pause page's RESTART confirm (the same YES/NO box; text 0x1ff "RESTART: ARE YOU SURE?"
+    /// [M 0x204408 msg 0x4b case 1]).
+    pub confirming_restart: bool,
+    /// The YES/NO list's row: starts on NO (the page data's initial selection m0x1d:1 [L page
+    /// 0x4000004b control d1=0xd; the game re-sends msg 0x1d=1 on every open [M 0x204408:181/204]).
+    pub confirm_sel: usize,
+    /// The pause page's tab: 0 MISSION / 1 OBJECTIVES / 2 CONTROLS / 3 SCORE [L page 0x4000004b's
+    /// four type-1 controls LBL 0x167/0x176/0x168/0x169].
     /// The codename page's "Play without saving" confirm box [M the page's plate control
     /// 0x100001f2 (50,301,540×113) and the CANCEL/CONFIRM pattern of the other pages' boxes].
     pub confirming_default_profile: bool,
@@ -420,6 +471,21 @@ pub struct FrontEnd {
     pub unlocked: [bool; 12],
     /// The pause page's resume choice: the host closes the menu when this is set.
     pub closed: bool,
+    /// The P_INTRO movie run started by the title's Start: true from the confirm until the last
+    /// intro movie finishes (or the skip action pops it) [M 0x209e88]. While it is up the overlay
+    /// draws the intro movie fullscreen (the intro page has no controls) and Confirm skips.
+    pub intro_playing: bool,
+    /// Which of [`INTRO_MOVIES`] is up [M 0x209e88's `movie_283` counter: 1 → 0x07370048,
+    /// 2 → 0x07380048, then the page change].
+    pub intro_index: usize,
+    /// fix-menu-movies2: the page's aux backdrop movie has a live frame on the ONE movie plane
+    /// (fix-movie-playback's `movie_tex`) this frame — the overlay then draws no dark plate (the
+    /// plane IS the backdrop, under these quads); without it the plate stands in (the pre-movies
+    /// look, and every image without movie data). The host sets it per frame.
+    pub backdrop_live: bool,
+    /// The pause page's tab: 0 MISSION / 1 OBJECTIVES / 2 CONTROLS / 3 SCORE [L page 0x4000004b's
+    /// four type-1 controls LBL 0x167/0x176/0x168/0x169].
+    pub pause_tab: usize,
 }
 
 impl FrontEnd {
@@ -432,7 +498,12 @@ impl FrontEnd {
         // post-unlock session and read 1 everywhere].
         unlocked[0] = true;
         unlocked[1] = true;
-        FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false }
+        FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false, intro_playing: false, intro_index: 0,
+            backdrop_live: false,
+            // fix-pause-menu: the pause page's own state (each on its line [WORKLOG lesson 4]).
+            confirming_restart: false,
+            confirm_sel: 1,
+            pause_tab: 0 }
     }
 
     pub fn rows(&self) -> usize {
@@ -444,7 +515,9 @@ impl FrontEnd {
             Page::MissionSelect => CAMPAIGN.len(),
             Page::Dossier => 1,
             Page::Options => 3,                    // the options page stubs three rows [S]
-            Page::Pause => 4,                      // resume / restart / options / quit [S rows; actions M 0x204408]
+            // The MISSION tab's rows [L page 0x4000004b's d1=6 list (153,183,334×120) binds labels
+            // 0x16a CONTINUE / 0x16b RESTART / 0x16c QUIT via its m0x11 messages].
+            Page::Pause => 3,
             Page::Results => 3,                    // restart level / restart mission / quit [M 0x216618:19-27]
         }
     }
@@ -460,10 +533,12 @@ impl FrontEnd {
             Page::MissionSelect => bind(CAMPAIGN.get(row).map_or(0, |c| c.1)),   // +0x04 name [M 0x1f8388]
             Page::Dossier => bind(0x27f),          // "Dossier"
             Page::Options => ["Screen adjust", "Controls", "Back"][row.min(2)].into(),
-            // The single-player pause rows [S labels — the disc page data holds the originals; the
-            // ACTIONS are the game's: restart = ResetMap_LevelToLoad(BaseMap, 0, 1) and the quit
-            // confirm two-step [M C_GCPAUSE_Handler 0x204408:139-152/210-220].]
-            Page::Pause => ["Resume", "Restart mission", "Options", "Quit to menu"][row.min(3)].into(),
+            // The pause rows are the page data's own labels [L page 0x4000004b's d1=6 list m0x11:
+            // 0x16a/0x16b/0x16c — the game's letter-spaced strings]. The ACTIONS are the handler's
+            // [M C_GCPAUSE_Handler 0x204408: d1=6 case 0 → MenuManager_Delete (resume), case 1 → the
+            // RESTART confirm then ResetMap_LevelToLoad(BaseMap, 0, 1), case 2 → the QUIT confirm
+            // (state_quit_166) then 0x7000048].
+            Page::Pause => bind([0x16a, 0x16b, 0x16c][row.min(2)]),
             // The results page's three rows in the game's arm order [M P_ENDMISSION_Handler
             // 0x216618:19-27 — `__Menu_Send`'s return IS the row index, so row 0 is the arm-0
             // behaviour]: row 0 = Restart level (the CURRENT level, warm, on the entry checkpoint —
@@ -488,6 +563,12 @@ impl FrontEnd {
     pub fn tick(&mut self) {
         self.flow.main_tick();
         if !self.flow.load_tick() { return; }
+        // The intro run ends when the movie state pops (its frames ran out or the host ended it
+        // after the second intro movie) [M 0x209e88: the page change follows the movies].
+        if self.intro_playing && self.flow.get_state() != ST_MOVIE {
+            self.intro_playing = false;
+            self.intro_index = 0;
+        }
         // The title/main 240-frame flash [M 0x20a408's delayed 0x100000fa toggle at 0xf0 frames].
         if matches!(self.page, Page::Start | Page::Main) {
             self.press_start_on = self.flow.ticks % 240 < 120;
@@ -496,11 +577,18 @@ impl FrontEnd {
     }
 
     /// The pause page opens over a running mission (the game's GS_PauseGame [M 0x17d178 pauses the
-    /// sim]; the port only tracks the page — the caller pauses its own loop).
+    /// sim; Player_Update 0x193600:73 opens page 0x4000004b]; the port only tracks the page — the
+    /// caller pauses its own loop, and the sound hold:
+    /// `MenuManager_Create` with `pause_sound` runs `SFXPause`+`SFXPauseAllStreams` [M 0x21b908:121-124],
+    /// which the host applies through `Sound::set_paused` when this page comes up).
     pub fn open_pause(&mut self) -> bool {
         if self.page != Page::Pause && self.flow.current_level != FRONTEND_LEVEL && self.flow.current_level != 0 {
             self.page = Page::Pause;
             self.cursor = 0;
+            self.pause_tab = 0;
+            self.confirming_restart = false;
+            self.confirming_quit = false;
+            self.confirm_sel = 1;   // the YES/NO list opens on NO [L m0x1d:1; M 0x204408:181/204]
             true
         } else { false }
     }
@@ -532,15 +620,34 @@ impl FrontEnd {
         self.cursor = 0;
     }
 
+    /// The intro movie the P_INTRO run currently shows [M 0x209e88's movie_283 counter].
+    pub fn intro_movie_code(&self) -> u32 { INTRO_MOVIES[self.intro_index.min(INTRO_MOVIES.len() - 1)] }
+
     /// One menu action. Returns true when the action changed the state.
     pub fn action(&mut self, a: Action) -> bool {
         self.no_input_frames = 0; // [M Menu_ResetNoInputCount on every handled input]
+        // The intro movie is up: action 0x19 (X/Start — Enter here) skips it [M GameFlow_Main
+        // 0x1c98c8 case 6 pops the movie state on `Input_Action(-1, 0x19)`]; other input does
+        // nothing while the movie owns the screen (the intro page has no controls).
+        if self.intro_playing && self.flow.get_state() == ST_MOVIE {
+            if a == Action::Confirm {
+                self.flow.pop_state();
+                self.intro_playing = false;
+                self.intro_index = 0;
+                return true;
+            }
+            return false;
+        }
         match self.page {
             Page::Start => {
                 if a == Action::Confirm {
-                    // → the intro movie, then the main menu [M P_INTRO 0x209e88 plays the background
-                    // FMVs then opens the next page; the driver's observed order Title → movie → Main].
-                    self.flow.play_movie(450);
+                    // → the intro movie, then the main menu [M P_INTRO 0x209e88 plays 0x07370048
+                    // then 0x07380048 (non-looping) and only then opens the next page; the driver's
+                    // observed order Title → movie → Main]. The page flips at once (menus_flow's
+                    // contract); the overlay shows the movie fullscreen until the state pops.
+                    self.flow.play_movie(INTRO_TICKS);
+                    self.intro_playing = true;
+                    self.intro_index = 0;
                     self.page = Page::Main;
                     self.cursor = 0;
                     return true;
@@ -619,37 +726,74 @@ impl FrontEnd {
                 Action::Back | Action::Confirm if self.cursor == 2 => { self.page = Page::Main; self.cursor = 2; return true; }
                 _ => {}
             },
-            Page::Pause => match a {
-                Action::Side => {}
-                Action::Up => { self.cursor = (self.cursor + 3) % 4; return true; }
-                Action::Down => { self.cursor = (self.cursor + 1) % 4; return true; }
-                Action::Back => { self.confirming_quit = false; self.closed = true; return true; }   // resume [S]
-                Action::Confirm => {
-                    match self.cursor {
-                        0 => { self.confirming_quit = false; self.closed = true; return true; }   // resume — the host closes the menu
-                        1 => {                                                               // restart [M 0x204408:139-141:
-                            // ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1) — the mission's FIRST map]
-                            self.confirming_quit = false;
-                            let level = CAMPAIGN[self.mission].3;
-                            self.requested_level = Some(level);
-                            self.flow.reset_map_level_to_load(level, false, true);
-                            self.page = Page::Main;
-                            return true;
-                        }
-                        2 => { self.page = Page::Options; self.cursor = 0; return true; }    // options
-                        3 => {                                                               // quit, two-step [M 0x204408:210-220]
-                            if !self.confirming_quit {
-                                self.confirming_quit = true;   // the game swaps the row text to 0x200
+            Page::Pause => {
+                // The YES/NO confirm list runs while either confirm is armed [M 0x204408's msg-0x4b
+                // d1=0xd case reads the list's row (msg 0x34) and 0 = YES executes].
+                if self.confirming_restart || self.confirming_quit {
+                    match a {
+                        Action::Up | Action::Down => { self.confirm_sel = 1 - self.confirm_sel; return true; }
+                        Action::Confirm => {
+                            if self.confirm_sel == 1 {
+                                // NO: back to the MISSION rows [M the case's cVar4==1 arm re-binds the
+                                // 0x201 hint, re-enables d1=6 and sets state_ignore_167].
+                                self.confirming_restart = false;
+                                self.confirming_quit = false;
+                                self.confirm_sel = 1;
                                 return true;
                             }
-                            self.flow.page = PAGE_RESULTS_QUIT_TARGET;                          // +0x28 = 0x4000001c [M :143-148]
+                            let restart = self.confirming_restart;
+                            self.confirming_restart = false;
+                            self.confirming_quit = false;
+                            self.confirm_sel = 1;
+                            if restart {
+                                // YES on RESTART [M 0x204408:138-141 — state_quit_166 == 0:
+                                // ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)].
+                                let level = CAMPAIGN[self.mission].3;
+                                self.requested_level = Some(level);
+                                self.flow.reset_map_level_to_load(level, false, true);
+                                self.page = Page::Main;
+                                return true;
+                            }
+                            // YES on QUIT [M 0x204408:142-152 — +0x28 = 0x4000001c (the SP quit page),
+                            // ResetMap_LevelToLoad(0x7000048, 0, 0), the fade push and the delete].
+                            self.flow.page = PAGE_RESULTS_QUIT_TARGET;
                             self.requested_level = Some(FRONTEND_LEVEL);
                             self.flow.reset_map_level_to_load(FRONTEND_LEVEL, false, true);
                             self.page = Page::Main;
                             self.cursor = 0;
                             return true;
                         }
-                        _ => {}
+                        Action::Back => {
+                            self.confirming_restart = false;
+                            self.confirming_quit = false;
+                            self.confirm_sel = 1;
+                            return true;
+                        }
+                        Action::Side => return false,
+                    }
+                }
+                match a {
+                    // ~H Next: the tab cycle [L the page hint 0x201 "~A Select ~V Scroll ~H Next";
+                    // the four tabs are the page's type-1 controls].
+                    Action::Side => { self.pause_tab = (self.pause_tab + 1) % 4; return true; }
+                    Action::Up => { self.cursor = (self.cursor + 2) % 3; return true; }
+                    Action::Down => { self.cursor = (self.cursor + 1) % 3; return true; }
+                    Action::Back => { self.closed = true; return true; }   // resume [M the d1=6 case-0 arm → MenuManager_Delete]
+                    Action::Confirm => {
+                        match self.cursor {
+                            0 => { self.closed = true; return true; }   // continue/resume — the host closes the menu
+                            1 => {                                       // restart → its confirm [M 0x204408 case 1 binds 0x1ff]
+                                self.confirming_restart = true;
+                                self.confirm_sel = 1;
+                                return true;
+                            }
+                            2 => {                                       // quit → its confirm [M 0x204408 case 2 binds 0x200]
+                                self.confirming_quit = true;
+                                self.confirm_sel = 1;
+                                return true;
+                            }
+                            _ => {}
+                        }
                     }
                 }
             },
@@ -729,12 +873,17 @@ impl FrontEnd {
 /// sizes from the archive: 0x03000074 512×512 title art, 0x030000b3 512×256 panel, 0x030000bf 128×128
 /// ring emblem, 0x03000084/b6/c4/a5 the ring-masked previews, 0x0300016d 256×128 logo,
 /// 0x0300014c 256×256 stamp, 0x03000042 64×64 button/arrow atlas].
-pub const MENU_TEXTURES: [u32; 22] = [0x0300_0042, 0x0300_0074, 0x0300_00b3, 0x0300_00bf, 0x0300_0084, 0x0300_00b6, 0x0300_00c4, 0x0300_00a5, 0x0300_016d, 0x0300_014c,
+pub const MENU_TEXTURES: [u32; 25] = [0x0300_0042, 0x0300_0074, 0x0300_00b3, 0x0300_00bf, 0x0300_0084, 0x0300_00b6, 0x0300_00c4, 0x0300_00a5, 0x0300_016d, 0x0300_014c,
     // The hint-bar icon font `specialchar` [M 0x2dd8d8: every entry's texture is 0x03000075].
     0x0300_0075,
     // The 12 per-mission ring previews = sp_level[i]+0x00 [L ee_snapshot 0x2df2e0; all 12 live in the
     // 07000048.bin menu archive's texture entry 5 [L nf-extract tex-list]].
-    0x0300_0085, 0x0300_00b0, 0x0300_00b2, 0x0300_008c, 0x0300_008e, 0x0300_008d, 0x0300_008f, 0x0300_00ae, 0x0300_00af, 0x0300_0151, 0x0300_0142];
+    0x0300_0085, 0x0300_00b0, 0x0300_00b2, 0x0300_008c, 0x0300_008e, 0x0300_008d, 0x0300_008f, 0x0300_00ae, 0x0300_00af, 0x0300_0151, 0x0300_0142,
+    // fix-pause-menu: the in-game pages' art [L the mission menu-def's msg-0x24 controls; sizes from
+    // the archives' tex lists — 0x03000070 512×256 backdrop plate and 0x030000db 128×128 Bond image
+    // live in every mission archive (07000029/0700004b/07000043/…), 0x03000140 256×128 results photo
+    // in the front-end 07000048.bin].
+    0x0300_0070, 0x0300_00db, 0x0300_0140];
 
 /// The menu text renderer's special-character table `specialchar` (0x2dd8d8, 17 × 0x18 bytes: the token
 /// char, the texture hash 0x03000075, u0, v0, w, h, advance, height) [M ACTION.ELF symtab + the table's
@@ -779,12 +928,32 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
     let bright = gs(BRIGHT, 0xff);
     let dim = gs(CREAM, 0x80);
     let dimmest = gs(CREAM, 0x40);
-    // The backdrop: the pages' aux FMVs are the real background — the main menu's PAGE record names
-    // 0x07330048, every list page 0x07350048 [L menu-def PAGE records, M_PAGE+0xC4 — the game plays
-    // them as looping background movies, see docs/systems/movies.md]. The trimmed ISO stubs every
-    // movie (0-byte PSS files [L]), so the port draws the dark plate the pages fade from [M the
-    // pages' 0x1b/0x1c fade colours]; a still from the retail image is the follow-up.
-    plate(&mut h, 0.0, 0.0, MW, MH, gs(0x180c08, 0xff));
+    // The intro movie owns the screen: P_INTRO's page has no controls, the two FMVs are the whole
+    // picture (the fog pass is suppressed while a movie plays [M psiDrawFogPass 0x0010b960:
+    // BGFMVPlaying == 0]), and the frame fills the 512×448 screen [M DecodeBGFMVFrame 0x00108550:
+    // every movie is exactly 512×448, centred]. fix-menu-movies2: the frame draws on the ONE movie
+    // plane (gpu.rs), so the host suppresses this overlay entirely while a real frame is up; what
+    // is drawn here is only the plate stand-in for the headless countdown (no `movies` feature, or
+    // the stubbed slim ISO — the pre-movies look).
+    if fe.intro_playing {
+        plate(&mut h, 0.0, 0.0, MW, MH, gs(0x180c08, 0xff));
+        return h.finish();
+    }
+    // The backdrop: the pages' aux FMVs are the real background — parsed from the menu-def's PAGE
+    // records (aux_movie_for: the main menu's 0x07330048, the boot/list/results pages' 0x07350048;
+    // `Manager_SendMessage` 0x21c858:338 plays the page's aux code as a LOOPING background movie
+    // under the page controls on every page change). fix-menu-movies2: the decoded frame draws on
+    // the ONE movie plane (gpu.rs), BEFORE this overlay's quads — the game's backdrop is the page's
+    // own background texture, not an overlay [M movies.md §Presentation; PS2UploadBGMImage 0x108740].
+    // When the plane has no live frame (no `movies` feature, or the slim ISO's zeroed PSS files [L])
+    // the port keeps the dark plate the pages fade from [M the pages' 0x1b/0x1c fade colours].
+    let aux = aux_movie_for(fe.page.id());
+    // fix-pause-menu: the IN-GAME pages (pause 0x4000004b, fail menu 0x40000042) draw OVER THE PAUSED
+    // FRAME — the game dims nothing full-screen; their own backdrop plate (45,107,550×266, TEX 0x03000070
+    // [L the pages' 0x10000001 control]) carries the menu.
+    if !(aux != 0 && fe.backdrop_live) && !matches!(fe.page, Page::Pause | Page::Results) {
+        plate(&mut h, 0.0, 0.0, MW, MH, gs(0x180c08, 0xff));
+    }
     match fe.page {
         Page::Start => {
             // The title [M menu-def page 0x40000009: the art control 0x10000196 (0,0,640,480) TEX
@@ -897,17 +1066,169 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             logo_stamp(&mut h);
         }
         Page::Options => { page_rows(&mut h, fe, font, "OPTIONS", dim, bright); }
-        Page::Pause => { page_rows(&mut h, fe, font, "PAUSE", dim, bright); }
-        Page::Results => {
-            let head = match fe.outcome { Outcome::Complete => "MISSION COMPLETE", Outcome::Failed => "MISSION FAILED" };
-            h.text(Anchor::Centre, font, -4, head, SW / 2.0, my(96.0), false, bright, true);
-            let st = &fe.stats;
-            let line = format!("TIME {:02}:{:02}:{:02}   SHOTS {}   HITS {}   ACCURACY {}%", st.time_s / 60, st.time_s % 60, 0, st.shots_fired, st.shots_hit, st.accuracy_pct);
-            h.text(Anchor::Centre, font, -3, &line, SW / 2.0, my(140.0), false, dim, true);
-            page_rows_no_head(&mut h, fe, font, my(200.0), dim, bright);
-        }
+        Page::Pause => pause_page(&mut h, fe, font, lang, textures, cream, bright, dim),
+        Page::Results => results_page(&mut h, fe, font, lang, textures, cream, bright, dim),
     }
     h.finish()
+}
+
+/// A textured 640-space quad; when the texture isn't loaded draws the dim plate the pages fade from
+/// instead. The in-game pages' art (0x03000070/0x030000db) lives in the mission archives, so a
+/// front-end `--page pause` shot (the front-end archive loaded) falls back to the plate.
+fn tex_quad_or_plate(h: &mut Hud, textures: &[(u32, crate::scene::TextureImage)], tex: u32, x: f32, y: f32, w: f32, hh: f32, uv: [f32; 4], c: [f32; 4]) {
+    if textures.iter().any(|(hash, _)| *hash == tex) {
+        quad640(h, tex, x, y, w, hh, uv, c);
+    } else {
+        plate(h, x, y, w, hh, gs(0x1e1210, 0xd0));
+    }
+}
+
+/// The in-game pause page — menu-def page 0x4000004b, the mission archives' kind-8 entry 08000001
+/// [L parsed 2026-10-14; MenuManager_Create(0x80000002, 0x4000004b) on Start [M Player_Update
+/// 0x193600:73], handler C_GCPAUSE_Handler 0x204408]. Drawn over the paused frame.
+fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&Lang>, textures: &[(u32, crate::scene::TextureImage)], cream: [f32; 4], bright: [f32; 4], dim: [f32; 4]) {
+    let bind = |id: u32| -> String { lang.and_then(|l| l.bind(id)).unwrap_or("").to_string() };
+    let lbl = |id: u32, fb: &str| -> String { let s = bind(id); if s.is_empty() { fb.into() } else { s } };
+    // The backdrop plate (45,107,550×266) TEX 0x03000070 and the Bond image (385,121,202×218) TEX
+    // 0x030000db [L the page's controls 0x10000001 / 0x10000184 (msg 0x24, colour-key 0x7f007f)].
+    tex_quad_or_plate(h, textures, 0x0300_0070, 45.0, 107.0, 550.0, 266.0, [0.0, 0.0, 512.0, 256.0], gs(0x7f7f7f, 0xff));
+    tex_quad_or_plate(h, textures, 0x0300_00db, 385.0, 121.0, 202.0, 218.0, [0.0, 0.0, 128.0, 128.0], gs(0x7f7f7f, 0xff));
+    // The four tabs [L the page's four type-1 controls 0x10000028 at (84/199/339/465,120,107/132/118/90×16),
+    // LBL 0x167 MISSION / 0x176 OBJECTIVES / 0x168 CONTROLS / 0x169 SCORE; base colour 0x7d6d59ff →
+    // 0x645a49ff [M 0x21b908:238-243], the selected tab's 0x1c colour 0x201707ff].
+    let tabs = [(0x167u32, 84.0, 107.0, "MISSION"), (0x176, 199.0, 132.0, "OBJECTIVES"), (0x168, 339.0, 118.0, "CONTROLS"), (0x169, 465.0, 90.0, "SCORE")];
+    let tab = fe.pause_tab.min(3);
+    for (i, &(id, x, w, fb)) in tabs.iter().enumerate() {
+        let c = if i == tab { gs(0x201707, 0xff) } else { cream };
+        h.text(Anchor::Centre, font, -2, &lbl(id, fb), mx(x + w / 2.0), my(120.0 + 8.0), false, c, false);
+    }
+    match tab {
+        // The CONTROLS tab: "Y-Axis" (400,160,61×16) LBL 0x492 and the toggle's value (463,160,93×16)
+        // LBL 0x206 "Inverted" / 0x3bd "Normal" [L the page's d1=0x10/0xe controls; the toggle is the
+        // game's msg-0x5e arm flipping PlayerSetting [M 0x204408 case 0x5e]; the port renders the
+        // game's labels, the setting itself is the host's]. The controller-style list box (94,185,465×153)
+        // [L the d1=0xa control Menu_DisplayControllerStyleList fills].
+        2 => {
+            h.text(Anchor::Centre, font, -2, &lbl(0x492, "Y-Axis"), mx(400.0 + 30.0), my(160.0 + 8.0), false, cream, false);
+            h.text(Anchor::Centre, font, -2, &lbl(0x206, "Inverted"), mx(463.0 + 46.0), my(160.0 + 8.0), false, bright, false);
+            plate(h, 94.0, 185.0, 465.0, 153.0, gs(0x1e1210, 0x60));
+        }
+        // The SCORE tab: the stats list box (98,147,445×190) [L the d1=8 control the game's msg-0x4e
+        // case-3 arm fills with the PlrStat rows (Category/Current/Target headers 0x1000204/0x10001e1/
+        // 0x10001e2, then Opponents 0x15a … 007 Bonus 0x161 [M 0x204408 case 3])]. The port has only
+        // the mission Stats, so it renders those under the game's own Time/Accuracy labels.
+        3 => {
+            plate(h, 98.0, 147.0, 445.0, 190.0, gs(0x1e1210, 0x60));
+            let st = &fe.stats;
+            let rows = [(0x160u32, "Time", format!("{:02}:{:02}", st.time_s / 60, st.time_s % 60)),
+                       (0x15eu32, "Accuracy Rating", format!("{}%", st.accuracy_pct)),
+                       (0x15au32, "Shots fired", format!("{}", st.shots_fired)),
+                       (0x15bu32, "Shots hit", format!("{}", st.shots_hit))];
+            for (i, (id, fb, val)) in rows.iter().enumerate() {
+                let y = 160.0 + i as f32 * 28.0;
+                h.text(Anchor::Centre, font, -2, &lbl(*id, fb), mx(98.0 + 140.0), my(y + 8.0), false, cream, false);
+                h.text(Anchor::Centre, font, -2, val, mx(98.0 + 340.0), my(y + 8.0), false, bright, false);
+            }
+        }
+        // The OBJECTIVES tab: the game fills the list at open (C_GCPAUSE_Handler's msg-0x4b d1=1 arm:
+        // one row per objective, a ~J done / ~I pending marker [L ACTION.ELF .data 0x30d2e0/0x30d2e8]
+        // and the objective's name). The port's FrontEnd carries no per-objective state yet — the box
+        // and the hint render; the rows are the reported gap.
+        1 => {
+            plate(h, 153.0, 183.0, 334.0, 120.0, gs(0x1e1210, 0x60));
+        }
+        // The MISSION tab (default [L the page's initial state — the d1=6 list is the enabled one]).
+        _ => {
+            // The rows [L the d1=6 list (153,183,334×120) m0x11 labels 0x16a CONTINUE / 0x16b RESTART /
+            // 0x16c QUIT; the row colour 0x7d6d5980 — the selected row at full alpha [S, the wheel's
+            // pattern]].
+            let rows = [0x16au32, 0x16b, 0x16c];
+            let fallback = ["CONTINUE", "RESTART", "QUIT"];
+            for (i, (&id, fb)) in rows.iter().zip(fallback).enumerate() {
+                let c = if i == fe.cursor { bright } else { dim };
+                h.text(Anchor::Centre, font, -2, &lbl(id, fb), mx(153.0 + 167.0), my(183.0 + 20.0 + i as f32 * 40.0), false, c, false);
+            }
+        }
+    }
+    // The YES/NO confirm box over the rows [L the d1=0xc text (187,188,266×16) and the d1=0xd list
+    // (238,210,165×86) m0x11 rows 0x5df YES / 0x5e0 NO; the text is 0x1ff "RESTART: ARE YOU SURE?" or
+    // 0x200 "QUIT: ARE YOU SURE?" [M 0x204408's msg-0x4b d1=6 cases]; the selection opens on NO
+    // [L m0x1d:1; M :181/204 re-sends msg 0x1d=1].]
+    if fe.confirming_restart || fe.confirming_quit {
+        let text = if fe.confirming_quit { lbl(0x200, "QUIT: ARE YOU SURE?") } else { lbl(0x1ff, "RESTART: ARE YOU SURE?") };
+        h.text(Anchor::Centre, font, -2, &text, mx(187.0 + 133.0), my(188.0 + 8.0), false, bright, false);
+        let yn = [0x5dfu32, 0x5e0];
+        for (i, &id) in yn.iter().enumerate() {
+            let c = if i == fe.confirm_sel { bright } else { dim };
+            h.text(Anchor::Centre, font, -2, &lbl(id, if i == 0 { "YES" } else { "NO" }), mx(238.0 + 82.0), my(210.0 + 12.0 + i as f32 * 36.0), false, c, false);
+        }
+    }
+    // The hint bar (45,341,550×18) LBL 0x201 [L the 0x1000006f control; the confirm swaps it to
+    // 0x1000323 "~A Select ~B Back ~V Scroll" [M 0x204408:160/175/198]].
+    let hint_id = if fe.confirming_restart || fe.confirming_quit { 0x100_0323 } else { 0x201 };
+    hint_bar(h, font, &hint_wrap(lang, hint_id, if hint_id == 0x201 { "~A Select  ~V Scroll  ~H Next" } else { "~A Select  ~B Back  ~V Scroll" }), 45.0, 341.0, cream);
+}
+
+/// The mission-end pages. Outcome::Failed = the fail/death menu, menu-def page 0x40000042 [M
+/// Mission_Update 0x182c60:78 creates it on death; handler P_ENDMISSION_Handler 0x216618].
+/// Outcome::Complete = the results page 0x40000036 [M Mission_Update 0x182c60:74 sets +0x28;
+/// P_NFRESULTS 0x208e78 fills it].
+fn results_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&Lang>, textures: &[(u32, crate::scene::TextureImage)], cream: [f32; 4], bright: [f32; 4], dim: [f32; 4]) {
+    let bind = |id: u32| -> String { lang.and_then(|l| l.bind(id)).unwrap_or("").to_string() };
+    let lbl = |id: u32, fb: &str| -> String { let s = bind(id); if s.is_empty() { fb.into() } else { s } };
+    match fe.outcome {
+        Outcome::Failed => {
+            // The fail menu's art [L page 0x40000042's controls: the plate 0x10000001 (45,107,550×266)
+            // TEX 0x03000070, the Bond image 0x10000184 (385,121,202×218) TEX 0x030000db].
+            tex_quad_or_plate(h, textures, 0x0300_0070, 45.0, 107.0, 550.0, 266.0, [0.0, 0.0, 512.0, 256.0], gs(0x7f7f7f, 0xff));
+            tex_quad_or_plate(h, textures, 0x0300_00db, 385.0, 121.0, 202.0, 218.0, [0.0, 0.0, 128.0, 128.0], gs(0x7f7f7f, 0xff));
+            // The header (105,120,431×16) LBL 0x2fd "Mission Failed" [L the page's 0x10000001 m0x18].
+            h.text(Anchor::Centre, font, -2, &lbl(0x2fd, "MISSION FAILED"), mx(105.0 + 215.0), my(120.0 + 8.0), false, bright, true);
+            // The rows [L the 0x100001a4 list (197,186,246×115) m0x11 rows 0x5bc "R E P L A Y" /
+            // 0x16c "Q U I T"; row 1 = 0x16b "R E S T A R T" [S — the pause page's own label; the
+            // game fills the middle row at runtime]. The ACTIONS are the handler's arms [M
+            // 0x216618:19-27].]
+            let rows = [(0x5bcu32, "REPLAY"), (0x16b, "RESTART"), (0x16c, "QUIT")];
+            for (i, (id, fb)) in rows.iter().enumerate() {
+                let c = if i == fe.cursor { bright } else { dim };
+                h.text(Anchor::Centre, font, -2, &lbl(*id, fb), mx(197.0 + 123.0), my(186.0 + 12.0 + i as f32 * 36.0), false, c, false);
+            }
+            // The hint (97,341,446×18) LBL 0x5c8 [L the page's 0x1000006f].
+            hint_bar(h, font, &hint_wrap(lang, 0x5c8, "~A Select  ~V Scroll"), 97.0, 341.0, cream);
+        }
+        Outcome::Complete => {
+            // The results page's layout [L page 0x40000036's controls: header 0x10000001 (50,40,376×17)
+            // LBL 0x2c5 "Results"; the photo 0x10000166 (135,80,370×186) TEX 0x03000140; the medal
+            // plate 0x100001d1 (49,264,541×37); "Total Score:" 0x10000001 (48,336,264×16) LBL 0x2cb;
+            // "Gold Medal Target:" 0x1000002b (47,360,266×16) LBL 0x2cd; the score numbers 0x10000167/
+            // 0x10000168 (320,336/360,248×16) [M P_NFRESULTS 0x208e78:97/165 fills them]; the stamp
+            // 0x10000224 TEX 0x0300014c; the logo (434,38,156×43) TEX 0x0300016d].
+            h.text(Anchor::Centre, font, -2, &lbl(0x2c5, "RESULTS"), mx(50.0 + 188.0), my(40.0 + 8.0), false, bright, true);
+            tex_quad_or_plate(h, textures, 0x0300_0140, 135.0, 80.0, 370.0, 186.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+            plate(h, 49.0, 264.0, 541.0, 37.0, gs(0x1e1210, 0x60));
+            h.text(Anchor::Centre, font, -2, &lbl(0x2cb, "Total Score:"), mx(48.0 + 132.0), my(336.0 + 8.0), false, cream, false);
+            h.text(Anchor::Centre, font, -2, "—", mx(320.0 + 124.0), my(336.0 + 8.0), false, bright, false);
+            h.text(Anchor::Centre, font, -2, &lbl(0x2cd, "Gold Medal Target:"), mx(47.0 + 133.0), my(360.0 + 8.0), false, cream, false);
+            h.text(Anchor::Centre, font, -2, "—", mx(320.0 + 124.0), my(360.0 + 8.0), false, bright, false);
+            if textures.iter().any(|(hash, _)| *hash == 0x0300_014c) { quad640(h, 0x0300_014c, 539.0, 393.0, 255.0, 255.0, [0.0, 0.0, 256.0, 256.0], gs(0x7f7f7f, 0xff)); }
+            if textures.iter().any(|(hash, _)| *hash == 0x0300_016d) { quad640(h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff)); }
+            // The port's restart rows [M 0x216618's three arms — kept: the port's complete flow
+            // offers them; the disc page's own action is the hint's ~A Continue (0x2d0), reported].
+            let rows = [("Restart level",), ("Restart mission",), ("Quit to menu",)];
+            for (i, (s,)) in rows.iter().enumerate() {
+                let c = if i == fe.cursor { bright } else { dim };
+                h.text(Anchor::Centre, font, -2, s, mx(48.0 + 133.0), my(120.0 + 10.0 + i as f32 * 26.0), false, c, false);
+            }
+            // The hint (50,419,540×21) LBL 0x2d0 [L the page's control #2].
+            hint_bar(h, font, &hint_wrap(lang, 0x2d0, "~A Continue  ~X Stats  ~Y Dossier"), 50.0, 419.0, cream);
+        }
+    }
+}
+
+/// `hint`-style fallback for the menu_overlay-external drawers (a bound hint or the literal).
+fn hint_wrap(lang: Option<&Lang>, id: u32, fallback: &str) -> String {
+    let s = lang.and_then(|l| l.bind(id)).unwrap_or("").to_string();
+    if s.is_empty() { fallback.into() } else { s }
 }
 
 /// The five-slot wheel the list pages draw [M the rows at y = 123/152/182/211/241 with the selected row

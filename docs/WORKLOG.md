@@ -9243,6 +9243,7 @@ Stage Summary:
   the smoke consumes the game's RNG with the real 2.13 s linger; the coronas fade by obj+0x106;
   the flicker machine is faithful; the placement census settled late-spot-creation as a
   non-mechanism. Live checks for the main agent: the 6 items in the report.
+## fix-menu-movies
 
 ## fix-spawner-remainder (s/fix-spawner-remainder) — 2026-10-13
 
@@ -9325,6 +9326,58 @@ Work Log:
   drone.rs comment; the 61fa5ce OFF is now evidence-backed.
 - Report: docs/reports/fix-nav-remainder2.md. Files: drone.rs, nav_kick_live.rs (the drive test's
   ignore attribute), WORKLOG, the report. No test loosened.
+
+## fix-pause-menu (s/fix-pause-menu) — 2026-10-14
+Task: rebuild the in-game pause menu (page 0x10000028, C_GCPAUSE_Handler 0x204408) from the disc's
+page data like the front end (fix-menus2/3): controls, layout, strings, sprites, hint icons, 4:3
+centred over the paused frame, same rows/actions (resume / restart = BaseMap cold / options / quit
+two-step confirm); also the fail/death menu 0x40000042 (P_ENDMISSION_Handler 0x216618) and the
+results page if still plain; F12 screenshots must capture the menu overlay. Files:
+crates/nf-view/src/{menu,lib}.rs, crates/nf-view/tests/menus_flow.rs.
+- Branch created from origin/master 3c77a9d. Work started.
+
+## fix-pause-audio (s/fix-pause-audio) — 2026-10-14
+
+Work Log:
+- Session started 00:26 UTC (sandbox deadline ~02:23 UTC). Branch s/fix-pause-audio created from origin/master (3c77a9d), pushed.
+- Task: pausing the game pauses the sound. Playtest 2026-10-13: with the pause menu open, ambient
+  keeps playing (truck loop on 07000005). Port stops ticking the sim under a menu but nothing pauses
+  the audio output. Plan: read GS_PauseGame 0x17d178 (sets GameState[0x50] + MP pause words), find
+  the sound-side readers of GameState+0x50 (Sound_Update*, the EE->IOP batch, SFXPause/SFXUnPause
+  RPCs; docs/systems/sound.md section 8), check what streamed music does while paused; port the
+  global pause in nf-audio (voices hold position and resume, no new key-ons while paused), driven
+  from the pause page open/close in nf-view, with the menu's own sounds still playing.
+- Tests planned: a looping ambient voice's sample position does not advance while paused and
+  resumes after; the menu click still plays; sister: unpaused it advances.
+- Evidence read end to end [M]: GS_PauseGame 0x17d178 writes ONLY GameState[0x50] + the 8 MPGame
+  pause words + the PlarStat timer pause — it calls no sound function, and NO Sound_*/SFX* code reads
+  GameState+0x50 (grep over all of ACTION.ELF; the only sound-adjacent reader is View_DrawSky's
+  thunder gate). The real sound pause is menu-driven: MenuManager_Create 0x21b908:121-124 (the
+  `pause_sound` flag → SFXPause op 9 + SFXPauseAllStreams op 0x16), MenuManager_Delete 0x21c2b0:11-22
+  (SFXUnPause 0xa + SFXUnPauseAllStreams 0x17); Player_Update 0x193600:71-77 passes pause_sound=1 for
+  the pause page, Mission_Update 0x182c60:78-79 passes 0 for the fail menu (sound keeps playing).
+  IOP side: ES_PauseSfx 0x1648 sets item+0x290 and pitch-0s the live voices (psiSamplePause 0xf46c
+  saves the pitch); SFXUpdate 0x4ee4 skips Paused items; sounds started while paused record
+  StartedWhenPaused (SFXStart3D 0x3aac) and still key on — the menu's own sounds.
+- Ported (nf-audio): Driver::set_paused (+ Item.gpaused, the held state next to the NIS pause's
+  per-frame flag) pitch-0+vol-0s every live item at the pause and skips them in update; the unpause
+  emits nothing — the next full update's recompute restores (the NIS-pause restore). Sound::set_paused
+  flushes the edge to the output immediately (the host stops ticking under a menu, so the next batch
+  would come only after the menu closes). Output: Shared.paused freezes the MUSIC queue drain only
+  (op 0x16's stream hold / GamePausedMe); voices are NOT held at the output — while-paused starts
+  still sound. The mix closure is extracted verbatim into `Mixer` (nf-audio/lib.rs) so the hold is
+  testable headless. nf-view: one per-frame diff in RedrawRequested (`fe.is_some() || paused` →
+  Sound::set_paused), re-armed after build_sound swaps the sound on level reload; plus the missing
+  host consumption of `fe.closed` (the pause page's Resume row set it, nothing read it — Enter-on-
+  Resume left the menu up forever, which would have stuck the sound hold too).
+- Tests: nf-audio unit (the pause edge/skip/menu-start/restore + the Mixer playhead/position hold,
+  both with sister asserts) and NF_ISO crates/nf-view/tests/fix_pause_audio_live.rs through
+  nf_view::load + sound_tick on 07000005 (the playtest level): the ambient keys on through the real
+  path, the pause holds it (no recompute, no key-ons), a 0x1da menu-click start while paused keys on,
+  the unpause restores. All green; full suite per-crate in the foreground (the sandbox kills
+  background jobs between tool calls — suite.py cannot survive; runs documented in the report).
+- Files: crates/nf-audio/src/{sfx,lib}.rs, crates/nf-view/src/{lib,menu}.rs,
+  crates/nf-view/tests/fix_pause_audio_live.rs, docs/systems/sound.md (§8 port note), WORKLOG, report.
 ### fix-spawner-remainder — outcome
 
 - G-025: the "+0x1F wave-delay byte" was a misread (it is the initial-fill/no-stealth-checks flag,
@@ -9432,3 +9485,224 @@ the beam draw, the loop sound handle (start on press, stop on release/switch/pau
 locks without bullet impacts, the stunner's effect. Files:
 crates/nf-game/src/{gadget,gun}.rs, crates/nf-view/src/scene.rs (the beam draw).
 - Branch created from origin/master 9db3fda. Work started.
+Branch: s/fix-menu-movies (from origin/master 7a614ba)
+
+Work Log:
+- (started) branch created; reading docs/systems/movies.md, docs/reports/fix-menus3.md and the
+  menu/movie code next. Goal: main-menu + list-page looping background movies under the page
+  controls, title->Start intro movie (skippable), movie audio via cpal.
+- The page→movie mapping parsed from the menu-def's PAGE records (0x21b908's own tag walk, all 13
+  record kinds): main 0x40000002 → 0x07330048; boot 0x40000034, every list page (0x40000025/23/1c/2b)
+  and results 0x40000036 → 0x07350048; P_INTRO 0x40000032, title layout 0x40000009 and attract → 0.
+  menu::aux_movie_for pins it; the test re-parses the disc data (NF_ISO, no movie data needed).
+- Playback: MovieStream (movie.rs) decodes closed-GOP chunks of the demuxed ES on a worker thread
+  (sequence header prepended; open GOPs ride their predecessor's chunk) — ~2× realtime vs 31 s for
+  a whole-ES decode; the menu loop 0x07330048 = 1800 pictures (60 s), 90 advance() calls yield 90
+  distinct frames. Audio = the PSS PCM as two aligned mono SPU voices (L/R, pitch 0x1000) through
+  the existing cpal Output; looped movies set the voices' loop point; stop keys them off.
+- Host wiring (lib.rs): movie_menu_tick mirrors the game's decisions [M 0x21c858:338 plays/stops the
+  page's aux on change; 0x209e88 advances the intro on psiMovieFinished]; frames stream into a
+  menu_textures slot (hash = the movie code) and gpu::Renderer::update_hud_texture (small additive
+  hook: hud tbgl/sampler kept + slot updater). Intro: FrontEnd{intro_playing, intro_index} — Start
+  arms it (INTRO_TICKS = 850 = the measured 96+329 pictures × 2), the overlay draws it fullscreen,
+  Confirm (= action 0x19) skips [M case 6]; menus_flow's two blind-Confirm tests updated to the
+  skip contract. --shot gains the movie still (first closed-GOP chunk, --movie-frame N).
+- Tests menu_movies (6, green with --features movies + NF_MOVIE_ISO at a retail image): the disc's
+  PAGE map, the decoded-frame SHA-1 pin (frame 12 = 1f1fe7b0…), the stream-ahead test, the intro
+  budget re-measure, the intro flow, the overlay layering (movie run first = under the controls;
+  the plate stands in without the frame). Note: the sandbox has only the slim ISO (every PSS
+  stubbed) — the four task movies were range-fetched from the retail image on the file host into a
+  70 MB mini ISO (scripts/, never committed); tests skip without NF_MOVIE_ISO data.
+- Suite (chunked foreground, slim ISO): nf-game 232/0; nf-formats + nf-audio 94/3 (the 3 permitted
+  disc_golden BIGF stubs); nf-view 481/0. movies-feature run: menu_movies 6/6 with the retail-image
+  movies. Report: docs/reports/fix-menu-movies.md.
+
+---
+2026-10-13 fix-menu-movies2 (branch s/fix-menu-movies2, from s/fix-menu-movies 9ee385d)
+
+Task: land the menu movies on top of the movie-playback plane. Start from s/fix-menu-movies, merge
+origin/master (movie-playback merged first), and resolve by making the menu movies USE the
+movie-playback plane and decoder plumbing (one movie plane in the Renderer, one player/decoder
+path) instead of a second copy. Keep both features' tests green.
+
+Work Log:
+- (started) branch created from 9ee385d; both reports read (docs/reports/fix-menu-movies.md and
+  fix-movie-playback.md). Next: merge origin/master, reconcile gpu.rs/lib.rs/menu.rs/movie.rs
+  conflicts so the menu backdrop + intro route through the movie-playback plane.
+
+- Merge resolution (ae1ab...) committed and pushed: one Renderer ctor (master's movie plane +
+  hud_tbgl/hud_sampler, the dup pair dropped); the movie quad now draws BEFORE the HUD runs (the
+  game's page background is a texture under the controls [M movies.md §Presentation,
+  PS2UploadBGMImage 0x108740], state 6's overlay is suppressed so the position is equivalent
+  there); update_hud_texture/hud_bg (the second-copy slot plumbing) deleted.
+- movie.rs: Player now wraps MovieStream's closed-GOP worker (ONE decoder path; the whole-ES
+  decode cost ~23-31 s to first frame) + Player::start_looping for the page aux [M 0x21c858:338
+  loop = 1] + is_looping; audio slices paced per frame at present() [M audioDecSendToIOP
+  0x107100], looping restarts the walk with the video [M 0x00108060].
+- lib.rs: ONE movie_tick with the game's three start sites (P_INTRO 0x209e88 / state 6
+  0x1c98c8 case 6 / the page aux 0x21c858:338) over the single self.movie player; the redraw
+  presents intro/flow/aux through ONE plane argument and sets fe.backdrop_live; menu_textures/
+  movie_bg/intro_stream/movie_open/movie_audio_stop/movie_show_frame/movie_menu_tick deleted;
+  --shot routes the still through the plane (front_end_menu returns (hud, movie), shot() renders
+  the movie arg; --intro shows the FMV fullscreen with no overlay).
+- menu.rs: overlay drops the layer-1 movie-quad branch; the dark plate only when
+  fe.backdrop_live is false (the plane owns the backdrop); FrontEnd.backdrop_live added (own
+  line); aux_movie_for + outro_for both kept.
+- Tests: menu_movies' overlay contract rewritten to the plane (plate yields to backdrop_live;
+  sister: plate stands in; intro plate) + the_menu_loop_plays_through_the_one_player_path
+  (Player::start_looping pins 07330048 frame 12 = 1f1fe7b0…, the MovieStream pin's decoder);
+  movie_playback_flow's two mission_ended tests updated to 568a6e8's fade-on-top contract (they
+  were red on master — the fade push landed without updating them) — green again (9/9).
+- Suite (all 208 test binaries, chunked foreground — the sandbox kills background jobs):
+  everything green except the 3 permitted disc_golden (slim-ISO BIGF stubs) and
+  pss_movies_live::every_movie_on_the_disc_demuxes_to_the_golden_numbers (needs the 22-movie
+  retail image; the sandbox's 5-movie mini ISO runs its other 2 tests green). 473+ passed /
+  4 failed / 17+ ignored across the final two passes; no TIMEOUT/CRASH.
+- Mini ISO: no retail image in this sandbox — range-fetched the 5 task movies (07100001, 07330048,
+  07350048, 07370048, 07380048; ~100 MB) from the retail image on the file host into
+  /home/z/nf-mini.iso (never committed); NF_MOVIE_ISO at it runs the movies-feature tests.
+
+Stage Summary:
+- ONE movie plane (gpu.rs's movie_tex/movie_bg/movie_vbuf), ONE player/decoder path (movie::Player
+  over MovieStream's closed-GOP worker), ONE host tick (App::movie_tick) — the menu looping
+  backdrop and the intro ride the movie-playback plane exactly like the briefings/outros; both
+  features' tests green; the merge conflicts in {gpu,lib,menu}.rs resolved by adoption, not
+  duplication.
+
+### fix-pause-menu — outcome
+
+- The in-game pause menu was still fix-menus' plain "PAUSE" text overlay, and its page id was WRONG:
+  the port's PAGE_PAUSE 0x4000000c is the NIS page (the handler table maps 0x4000000c →
+  P_NIS_Handler [M Handler_HandleMessage 0x2029e0]). The real pause page is **0x4000004b** [M
+  Player_Update 0x193600:73 — Start in a mission runs `MenuManager_Create(0x80000002, 0x4000004b,
+  …, 0x1e, 1, 3)` + `GS_PauseGame(1)`], and it lives in the MISSION ARCHIVES' own kind-8 menu def
+  (entry 08000001 of each level archive — the front-end 07000048 stream has only 56 pages of fh
+  0x80000002 and no 0x4000004b/0x40000042 [L parsed the 08000002 + 08000001 tag streams 2026-10-14;
+  walk format: the pre-loop BIN_GetDWord eats a header dword, COMPONENT is 14 B, CONTROL's first
+  byte after the name is the type — SendEx(mgr, name, d1, msg) matches M_CONTROL+0x18/+0x20 = name/d1]).
+- Page 0x4000004b rebuilt in menu.rs: the backdrop plate (45,107,550×266) TEX 0x03000070 + Bond
+  image (385,121,202×218) TEX 0x030000db [L the page's 0x10000001/0x10000184 controls], the four
+  tabs MISSION/OBJECTIVES/CONTROLS/SCORE LBL 0x167/0x176/0x168/0x169 (the selected tab's 0x1c colour
+  0x201707ff), the MISSION rows CONTINUE/RESTART/QUIT (0x16a/0x16b/0x16c, the d1=6 list), the
+  YES/NO confirm box (0x5df/0x5e0) with "RESTART: ARE YOU SURE?" 0x1ff / "QUIT: ARE YOU SURE?" 0x200
+  and the selection opening on NO [L m0x1d:1; M 0x204408:181/204], the hint bar 0x201 (the confirm
+  swaps it to 0x1000323 [M 0x204408:160/175/198]). RESTART confirms too — the game's msg-0x4b d1=6
+  cases arm the same YES/NO list for rows 1 and 2 (state_quit_166 picks the arm) [M 0x204408].
+  The old 4-row guess (resume/restart/options/quit) is gone: options are the game's CONTROLS tab
+  (Y-Axis 0x492 + Inverted 0x206/Normal 0x3bd, the style list box). The in-game pages draw over the
+  paused frame (no full-screen dim plate; the page's own backdrop carries them).
+- The fail/death menu 0x40000042 [M Mission_Update 0x182c60:78, P_ENDMISSION_Handler 0x216618] and
+  the complete results 0x40000036 rebuilt as the results_page drawer: Failed = the 0x40000042 layout
+  (header 0x2fd "Mission Failed", rows REPLAY 0x5bc / RESTART 0x16b [S row 1] / QUIT 0x16c, hint
+  0x5c8); Complete = the 0x40000036 layout (header 0x2c5 "Results", photo 0x03000140, Total Score
+  0x2cb / Gold Medal Target 0x2cd, the stamp 0x0300014c + logo 0x0300016d, hint 0x2d0).
+- F12 could not capture the menu: the menu key branch returned early for every key while a page was
+  up (key_action(F12) is None), so the screenshot arm never ran. F12 is now handled before the menu
+  branch [fix-pause-menu, lib.rs].
+- `--page pause|results|complete` + `--pause-tab N` + `--confirm` render the in-game pages headless.
+- MENU_TEXTURES += 0x03000070/0x030000db/0x03000140 (25) [L nf-extract tex-list: the plate+image in
+  every mission archive, the photo in 07000048.bin].
+- Tests: menus_flow 18/18 (the pause flow rewritten to the disc rows + both confirms; the page-data
+  label pins 0x167/0x176/0x168/0x169/0x16a-c/0x1ff/0x5df/0x5e0/0x2fd/0x5bc/0x5c8/0x2c5/0x2cb/0x2cd;
+  the sprite-hash pins; the per-tab draw). Suite: 476 passed 0 failed across the nf-view/nf-audio/
+  nf-formats binaries + the 3 allowed disc_golden failures; the walk* live tests untouched (master
+  green, my diff doesn't touch their path).
+- Shared files touched (additive): nf-view lib.rs (the --page arms + the F12 arm). Report:
+  docs/reports/fix-pause-menu.md.
+
+
+Task ID: fix-ingame-dev-menu
+Agent: worker (fix-ingame-dev-menu session)
+Task: 101a: move ALL of the HTTP dev panel's functions (crates/nf-view/src/panel.rs, 127.0.0.1:7007) into the
+in-window F2 dev menu (dev.rs, WORKLOG 0081) and stop starting the HTTP server by default (keep panel::apply as
+the shared command layer; drop the server or put it behind --panel). Pages: Weapons, Gadgets, Grenades/explosives,
+Ammo/health/armour, NPCs (spawn by skin and mode, clear), Teleport (named spots), Level, Toggles, Screenshot.
+Keyboard (arrows/Enter/Backspace, PageUp/PageDown, type-to-filter) + mouse (click, wheel). Pauses the sim while
+open. HUD font + dark translucent box, readable 720p and 4K. Spawning while paused must be safe (the 07000015
+panel grenade crash). Tests: headless menu flow through the real key path (dev_menu_flow.rs); --dev-page <name>
+for --shot renders of each page. Branch s/fix-ingame-dev-menu.
+
+Work Log:
+- Session started 00:50 UTC 2026-10-14 (deadline ~02:44 UTC; stop new work 02:24). Branch created from
+  origin/master (3c77a9d), pushed with this entry. Repo/work/ISO already present from the prior session
+  (fix-anim-events, finished and pushed on its own branch). Fast suite baseline from that tree: 871 passed,
+  3 failed (the allowed disc_golden set), 27 ignored, 23 min.
+- (next: read panel.rs/dev.rs/hud.rs/lib.rs, plan the menu, reproduce-first)
+
+Task ID: fix-ingame-dev-menu
+Agent: worker (fix-ingame-dev-menu session)
+Task: 101a: move ALL of the HTTP dev panel's functions into the in-window F2 dev menu and stop
+starting the HTTP server by default (panel::apply stays the shared command layer; the server is
+behind --panel). Pages: Weapons, Gadgets, Grenades/explosives, Ammo/health/armour, NPCs, Teleport,
+Level, Toggles, Screenshot. Keyboard + mouse + wheel, type-to-filter, pauses the sim while open,
+HUD font + dark translucent box. Spawning while paused safe + tested. --dev-page <name> for
+--shot renders of each page.
+
+Work Log:
+- Session 00:50-02:xx UTC 2026-10-14 (deadline ~02:44). Branch s/fix-ingame-dev-menu from
+  origin/master (3c77a9d), pushed with the start entry; checkpoint cae8c18 (the pages); merged
+  origin/master c3b989b mid-session (WORKLOG conflict resolved keeping both sides).
+- dev.rs: the flat menu became a paged menu. PAGES[0..9] = menu/weapons/gadgets/grenades/ammo/npcs/
+  teleport/level/toggles/screenshot; menu_items(dev, scene) builds the rows per page (catalog pages
+  read panel::catalog_entries — the game's own names); type-to-filter (menu_type + passes_filter)
+  gates every row; PageUp/PageDown (MenuKey::PageUp/PageDown), Backspace pops the filter then
+  returns to the index; draw + click hit-test share layout_rows (no drift); panel widened
+  150 -> 190 HUD-px so "0x2c AT-420 Sentinel" fits (~28% of a real 16:9 window).
+- dev::apply_menu_action_to_scene: the shared action router — every give/spawn/clear/health command
+  routes through panel::apply (the shared command layer); App::apply_menu_action is a shell applying
+  the window-only side effects (weapon_switch_to, pending_level, viewer-cel reset [M 0x1b9920],
+  noclip, screenshot). The headless tests drive the SAME router.
+- The menu pauses the sim: Dev::paused_tick_count() = 0 ticks while open (1 with F11's step); the
+  key interceptor (lib.rs) feeds the menu and returns — game keys never fire while open; the wheel
+  scrolls the selection; Esc/F2 close and re-grab.
+- TELEPORT_SPOTS: the task's seven named spots, teleports via Bond::stand_at (grounds on the floor
+  under the spot's stand height).
+- Toggles plumbing: portal-cull off passes no world to Renderer::cel_visibility (the [M 0x1e86e8]
+  walk); interp off forces alpha 1.0 (the NF_NOINTERP behaviour); fps display is a wall-clock
+  readout in dev::hud. No RNG draws added; Sim untouched.
+- panel.rs: doc header only — the server is behind --panel now; apply/catalog unchanged.
+- --dev-page <name> renders any page over the game HUD in the headless --shot path.
+- Tests (dev_menu_flow.rs, all through the real key path + the shared router): frag give+draw
+  (0x34 owned, clip filled, gun.weapon == 0x34 after the real step_bond path; sister: 0x35
+  untouched), laser filter (0x3a Laser Tripbomb — the bank's own laser name [D USATxt]; the old
+  "Q-Laser" name was the hardcoded table's mistake), teleport + grounded after 60 ticks (0700000c
+  display vent), the 07000015 paused-spawn flow (the user's crash: give frag x5 + spawn an NPC with
+  the menu open, resume 120 ticks — no panic), and every panel command reachable from a menu row.
+  menu_live.rs/dev_tools_live.rs updated for the new signatures (level rows moved to the Level
+  page; the B-11 width cap -> 40% with the reason).
+- Suite: the sandbox kills detached processes between tool calls, so suite.py's nohup form cannot
+  survive here; the suite ran as 211 fresh binaries (cargo --no-run --message-format=json
+  discovery, the same set suite.py builds) serially over bounded foreground batches — all green
+  except disc_golden with exactly the 3 allowed slim-ISO failures. (A summary-regex bug in my
+  batch runner lost the numeric total; see the report/worklog addendum for the re-tallied total.)
+- Suite re-tallied with a per-binary result log: **884 passed, 3 failed, 27 ignored** over all 211
+  test binaries; the only failing binary is disc_golden (11 passed, 3 failed — exactly the allowed
+  slim-ISO set). Every binary green otherwise, including the merged portal-sweep/spawner/anim-events
+  suites on this tree.
+- Report: docs/reports/fix-ingame-dev-menu.md (--shot commands per page + live checks inside).
+  Files: dev.rs, panel.rs (doc), lib.rs (hooks), tests/dev_menu_flow.rs (new),
+  tests/menu_live.rs, tests/dev_tools_live.rs (signature/width updates). No shared-file surprises:
+  drone.rs/scene.rs/player.rs untouched.
+
+## dev-window (main agent, branch devwin) — 2026-10-13
+
+The user: "the dev menu should manifest outside of the game, but not in a browser", then "you work on it". `--dev`
+now opens a second native window, **"Nightfire dev"**, beside the game window (`crates/nf-view/src/devwin.rs`): a
+second `winit` window on the same event loop with its own `wgpu` surface on the game's device, drawn with the game's
+HUD font (texture 0x03000003). No new crates.
+
+- Tabs (Weapons, Gadgets, Grenades, Ammo/health, NPCs, Teleport, Level, Toggles, Screenshot) on the left; the page's
+  rows on the right with type-to-filter, a scrollbar and the mouse wheel; the selected row's description wrapped
+  under the list; the last action's result as a status line; a header with the level, Bond's spot and health.
+- Enter or a double-click applies the row through the same `dev::apply_menu_action_to_scene` → `panel::apply` path as
+  the F2 overlay (`App::apply_menu_action`). The window never sets `Dev::menu`, so **the game keeps running** while it
+  is used. Its events never reach the game (routed by `WindowId` first thing in `window_event`).
+- F2 in the game window raises it; closing it hides it (F2 brings it back). Without the window (it failed to open)
+  F2 falls back to the in-game overlay. It refreshes ~6 times a second from the game's frame loop.
+- The Teleport page lists only the loaded level's spots (a spot from another level dropped Bond into empty space).
+- Tests: `tests/devwin_flow.rs` — the layout fits at 640x760, the 420x360 minimum, 200% scaling and 4K (20+ rows at
+  760 px; the overlay showed 7); scroll-to-selection and wrap; through `devwin::input` (what the event handler calls):
+  type "frag" + Enter → GiveWeapon 0x34 → the inventory has it, `Dev::menu` stays off; clicking a tab switches page,
+  one click selects, a second applies, Close hides. Checked live: the window opens beside the game with the full
+  weapon list (screenshots in the session). A live keyboard check by synthetic keys failed: Windows wouldn't give the
+  dev window focus from a background process, so the user tries it by hand.

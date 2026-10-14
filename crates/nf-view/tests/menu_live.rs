@@ -57,9 +57,12 @@ fn menu_font_metrics_measured() {
     assert!(dev::MENU_ROW_H >= max_h + 1.0,
         "MENU_ROW_H ({}) is shorter than the font's max glyph h ({max_h}) + 1 — rows will overlap",
         dev::MENU_ROW_H);
-    // Assert the panel width is under 25% of the HUD width (the user's "at most about a quarter of the screen").
-    assert!(dev::MENU_PANEL_W < 512.0 * 0.30,
-        "MENU_PANEL_W ({}) is over 30% of the 512-px HUD width", dev::MENU_PANEL_W);
+    // Assert the panel stays a side panel, not a screen takeover. fix-ingame-dev-menu widened it
+    // 150 -> 190 HUD-px so the game's own weapon names fit ("0x2c AT-420 Sentinel" = 20 glyphs) —
+    // at a real 16:9 window the aspect correction (menu_hit's s) puts 190 px at ~28% of the screen,
+    // still under a third.
+    assert!(dev::MENU_PANEL_W < 512.0 * 0.40,
+        "MENU_PANEL_W ({}) is over 40% of the 512-px HUD width", dev::MENU_PANEL_W);
     eprintln!("[font] layout OK: ROW_H={} (glyph {max_h}+2), PANEL_W={} ({:.0}% of 512)",
         dev::MENU_ROW_H, dev::MENU_PANEL_W, dev::MENU_PANEL_W / 512.0 * 100.0);
 }
@@ -72,7 +75,7 @@ fn menu_font_metrics_measured() {
 fn menu_layout_no_row_overlap_and_fits_panel() {
     let Some((scene, mut dev)) = loaded() else { eprintln!("NF_ISO not set — skipping"); return };
     let font = &scene.hud.as_ref().expect("hud").font;
-    let items = dev::menu_items(&dev);
+    let items = dev::menu_items(&dev, Some(&scene));
     let n = items.len();
     let row_h = dev::MENU_ROW_H;
     let glyph_h = dev::MENU_GLYPH_H;

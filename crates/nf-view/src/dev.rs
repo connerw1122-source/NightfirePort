@@ -4,9 +4,13 @@
 //!
 //! - **F1**: the AI overlay — each guard within 30 m shows its state name, alertness, health and active timers; a line
 //!   to its target or cover point; live grenades' arcs and explosion radii.
-//! - **F2**: the dev menu — spawn a guard at the crosshair (by type/mode), force the nearest guard's next decision
-//!   (e.g. "throw grenade now"), give the nearest guard an impulse or a SpecialDeath, god mode, infinite ammo,
-//!   teleport, and the time scale (1× / 0.25× / pause / step one tick).
+//! - **F2**: the dev menu — the WHOLE external panel (panel.rs) moved into the window (fix-ingame-dev-menu):
+//!   pages for Weapons / Gadgets / Grenades / Ammo-health-armour / NPCs / Teleport / Level / Toggles /
+//!   Screenshot, plus the original tools (spawn a guard at the crosshair by type/mode, force the nearest guard's
+//!   next decision, impulse, SpecialDeath, god mode, infinite ammo, teleport save/restore, time scale). Opens
+//!   over the frame and PAUSES the sim; arrows/Enter navigate, PageUp/PageDown switch pages, typing filters,
+//!   Backspace deletes (or returns to the index), Esc/F2 closes; mouse click + wheel work too. Every give/spawn/
+//!   clear command routes through `panel::apply` — the shared command layer.
 //! - **`--scenario <name>`**: places Bond and the guards for one of the named test scenarios and prints what to look
 //!   for. See `docs/tools/dev-mode.md`.
 
@@ -55,15 +59,42 @@ pub struct Dev {
     pub result_msg: Option<String>,
     /// B-9: ticks remaining to show `result_msg` (cleared after ~3 s at 60 Hz).
     pub result_timer: u32,
+    /// The menu's current page (an index into `PAGES`; 0 = the category index).
+    pub page: usize,
+    /// Type-to-filter text (lowercase; typed while the menu is open, Backspace deletes).
+    pub filter: String,
+    /// FPS display (Toggles page): App updates `fps` each frame, `dev::hud` draws it when on.
+    pub show_fps: bool,
+    /// The last measured render fps (wall-clock, dev display only — never read by the Sim).
+    pub fps: f32,
+    /// Portal culling on/off (Toggles page): off passes no world to `Renderer::cel_visibility`
+    /// (lib.rs's one visibility walk), so every cel draws — the port's stand-in for the game's
+    /// portal walk [M 0x1e86e8]. On by default.
+    pub portal_cull: bool,
+    /// Animation interpolation on/off (Toggles page): off renders whole ticks only (alpha 1.0,
+    /// the port's `NF_NOINTERP` behaviour). On by default.
+    pub interp: bool,
 }
 
-/// The spawn-guard picker: a drone type and AI mode.
-#[derive(Clone, Copy, PartialEq)]
+/// The spawn-guard picker: a drone type and AI mode (also the NPCs page's mode selector).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SpawnPick { Normal, Sniper, Ambush }
 
 impl Default for Dev {
     fn default() -> Self {
-        Dev { overlay: false, menu: false, time_scale: 1.0, step: false, god_mode: false, infinite_ammo: false, best_level: None, best_clip: Vec::new(), best_spare: Vec::new(), no_reload: false, spawn: SpawnPick::Normal, forced: Vec::new(), saved_spot: None, mouse: (0.0, 0.0), scenario: None, menu_sel: 0, result_msg: None, result_timer: 0 }
+        Dev {
+            overlay: false, menu: false, time_scale: 1.0, step: false, god_mode: false, infinite_ammo: false,
+            best_level: None, best_clip: Vec::new(), best_spare: Vec::new(), no_reload: false, spawn: SpawnPick::Normal,
+            forced: Vec::new(), saved_spot: None, mouse: (0.0, 0.0), scenario: None, menu_sel: 0, result_msg: None, result_timer: 0,
+            // New fields on their own lines (the merge rule): the menu opens on the category index,
+            // no filter, all rendering aids in their normal play state.
+            page: 0,
+            filter: String::new(),
+            show_fps: false,
+            fps: 0.0,
+            portal_cull: true,
+            interp: true,
+        }
     }
 }
 
@@ -74,6 +105,14 @@ impl Dev {
         let mut n = if self.time_scale <= 0.0 { 0 } else { (elapsed_ticks as f32 * self.time_scale) as u32 };
         if self.step { n = n.saturating_add(1).max(1); self.step = false; }
         n.min(8)
+    }
+
+    /// The ticks to run while the F2 menu is open: the menu pauses the sim (the task's "opens over
+    /// the frame and pauses the sim") — 0 ticks unless F11's one-shot `step` was pressed, which
+    /// advances exactly one tick for frame-by-frame inspection. (The old menu left the sim running
+    /// under the open panel, so a spawn's weapon switch and the AI raced the open menu.)
+    pub fn paused_tick_count(&mut self) -> u32 {
+        if self.step { self.step = false; 1 } else { 0 }
     }
 
     /// Apply god mode / infinite ammo / no reload after a tick (the game's own state, set the way the game
@@ -273,6 +312,12 @@ pub fn hud(dev: &Dev, scene: &Scene, aspect: f32, view_proj: [[f32; 4]; 4]) -> H
     let mut h = Hud { quads: Vec::new(), aspect, textures: &scene.hud_textures };
     if dev.overlay { ai_overlay(&mut h, scene, view_proj); }
     if dev.menu { menu(&mut h, dev, scene); }
+    // The Toggles page's fps display (top right; wall-clock — a dev readout, never in the Sim).
+    if dev.show_fps && dev.fps > 0.0 {
+        if let Some(t) = scene.hud.as_ref() {
+            h.text(Anchor::Right, &t.font, 69, &format!("{:.0} fps", dev.fps), 508.0, 4.0, true, [0.9, 0.9, 0.7, 1.0], true);
+        }
+    }
     h.finish()
 }
 
@@ -332,7 +377,7 @@ fn ai_overlay(h: &mut Hud, scene: &Scene, view_proj: [[f32; 4]; 4]) {
 pub const MENU_GLYPH_H: f32 = 17.0;
 pub const MENU_ROW_H: f32 = MENU_GLYPH_H + 2.0; // 19 HUD-px — label + gap, no overlap
 pub const MENU_PANEL_X: f32 = 4.0;
-pub const MENU_PANEL_W: f32 = 150.0;           // ~29% of 512 HUD-px -> ~21% of a 2000px window
+pub const MENU_PANEL_W: f32 = 190.0;           // ~37% of 512 HUD-px: the panel now carries the game's own weapon names (fix-ingame-dev-menu)
 pub const MENU_VISIBLE_ROWS: usize = 7;
 pub const MENU_HEADER_H: f32 = MENU_GLYPH_H + 2.0;
 pub const MENU_DESC_H: f32 = MENU_GLYPH_H + 2.0;
@@ -340,24 +385,17 @@ pub const MENU_DESC_H: f32 = MENU_GLYPH_H + 2.0;
 fn menu(h: &mut Hud, dev: &Dev, scene: &Scene) {
     let Some(t) = scene.hud.as_ref() else { return };
     let font = &t.font;
-    let items = menu_items(dev);
+    let items = menu_items(dev, Some(scene));
     // B-11: layout from the REAL font metrics (17 HUD-px glyphs — measured by `menu_font_metrics_measured`).
     // The old ROW_H=12 caused rows to overlap at ~40 window-px each (the user's screenshot).
-    const GLYPH_H: f32 = MENU_GLYPH_H;
     const ROW_H: f32 = MENU_ROW_H;
     const PANEL_X: f32 = MENU_PANEL_X;
     const PANEL_W: f32 = MENU_PANEL_W;
-    const VISIBLE_ROWS: usize = MENU_VISIBLE_ROWS;
     const HEADER_H: f32 = MENU_HEADER_H;
     const DESC_H: f32 = MENU_DESC_H;
     let n = items.len();
-    // The scroll window: keep `menu_sel` within [top, top + VISIBLE_ROWS).
-    let top = if n <= VISIBLE_ROWS { 0 } else {
-        if dev.menu_sel < VISIBLE_ROWS / 2 { 0 }
-        else if dev.menu_sel >= n - VISIBLE_ROWS / 2 { n - VISIBLE_ROWS }
-        else { dev.menu_sel - VISIBLE_ROWS / 2 }
-    };
-    let visible_end = (top + VISIBLE_ROWS).min(n);
+    // The scroll window: shared with the click hit-test (`layout_rows`).
+    let (_row_y0, top, visible_end) = layout_rows(dev, n); // the draw fn re-walks the same header steps into `y`
     let mut y = 4.0;
     // The scenario banner (1 line, above the list).
     if let Some(s) = dev.scenario {
@@ -368,6 +406,20 @@ fn menu(h: &mut Hud, dev: &Dev, scene: &Scene) {
         y += HEADER_H + 1.0;
     } else {
         y += 2.0;
+    }
+    // The page header: which page, how many, and the PgUp/PgDn hint (the dark translucent box the
+    // rest of the HUD uses — tex 0x0300_0003 at 0.85 alpha, the HUD font on top).
+    let page_name = PAGES.get(dev.page).copied().unwrap_or("?");
+    h.quad(Anchor::Left, 70, 0x0300_0003, 0, PANEL_X, y, PANEL_W, HEADER_H, [0.0; 4], (false, false), [0.0, 0.0, 0.2, 0.85]);
+    let hdr = fit(&format!("[{}/{}] {} pgup/dn", dev.page, PAGES.len() - 1, page_name), 22);
+    h.text(Anchor::Left, font, 69, &hdr, PANEL_X + 2.0, y + 1.0, false, [1.0, 1.0, 0.4, 1.0], true);
+    y += HEADER_H + 1.0;
+    // The filter line (only when a filter is typed — layout_rows matches).
+    if !dev.filter.is_empty() {
+        h.quad(Anchor::Left, 70, 0x0300_0003, 0, PANEL_X, y, PANEL_W, ROW_H, [0.0; 4], (false, false), [0.1, 0.1, 0.1, 0.9]);
+        let f = fit(&format!("find: {}", dev.filter), 22);
+        h.text(Anchor::Left, font, 69, &f, PANEL_X + 4.0, y + 1.0, false, [0.6, 1.0, 0.6, 1.0], true);
+        y += ROW_H;
     }
     // The list background (one panel for all visible rows).
     let list_h = (visible_end - top) as f32 * ROW_H;
@@ -381,7 +433,7 @@ fn menu(h: &mut Hud, dev: &Dev, scene: &Scene) {
             h.quad(Anchor::Left, 71, 0x0300_0003, 0, PANEL_X, row_y, PANEL_W, ROW_H, [0.0; 4], (false, false), [0.0, 0.25, 0.0, 0.9]);
             h.quad(Anchor::Left, 72, 0x0300_0003, 0, PANEL_X, row_y, 2.0, ROW_H, [0.0; 4], (false, false), [1.0, 1.0, 0.0, 0.9]);
         }
-        let lbl = fit(label, 16);
+        let lbl = fit(label, 20);
         h.text(Anchor::Left, font, 69, &lbl, PANEL_X + 4.0, row_y + 1.0, false, if sel { [1.0, 1.0, 0.4, 1.0] } else { [0.95, 0.95, 0.95, 1.0] }, sel);
     }
     y += list_h + 1.0;
@@ -393,7 +445,7 @@ fn menu(h: &mut Hud, dev: &Dev, scene: &Scene) {
         y += DESC_H + 1.0;
     }
     // Scroll indicator if there are more rows than visible.
-    if n > VISIBLE_ROWS {
+    if n > MENU_VISIBLE_ROWS {
         let more_above = top > 0;
         let more_below = visible_end < n;
         let ind = format!("{} {}/{} {}", if more_above { "^" } else { " " }, dev.menu_sel + 1, n, if more_below { "v" } else { "" });
@@ -411,32 +463,191 @@ fn menu(h: &mut Hud, dev: &Dev, scene: &Scene) {
     }
     // Footer hint (compact, ASCII). The fire-mode key (the user chose B): B = the game's ○
     // (`Player_Weapon` 0x1a24c8's action 12) — the twin/mode switch (fix-weapon-modes).
-    h.text(Anchor::Left, font, 69, "up/dn ent click F2  B=weapon mode", PANEL_X, y, false, [0.55, 0.55, 0.55, 1.0], false);
+    h.text(Anchor::Left, font, 69, "arrows/enter pgup/dn type=bksp F2", PANEL_X, y, false, [0.55, 0.55, 0.55, 1.0], false);
 }
 
-/// The menu items: (label, one-line description of what to watch for, action). B-9: descriptions added so each
-/// action is self-explanatory — the user no longer has to guess what "force: impulse" does.
-pub fn menu_items(dev: &Dev) -> Vec<(&'static str, &'static str, MenuAction)> {
-    let mut v: Vec<(&'static str, &'static str, MenuAction)> = vec![
-        ("F2: close", "close this menu and return to play", MenuAction::Close),
-        ("spawn: Normal", "a mode-0 guard appears at the crosshair - it should see you and shoot", MenuAction::Spawn(SpawnPick::Normal)),
-        ("spawn: Sniper", "a sniper (anim 0x13) - pop up, fire, duck (state 0x97)", MenuAction::Spawn(SpawnPick::Sniper)),
-        ("spawn: Ambush", "an ambush guard (mode 0x10) - crouches, attacks when close", MenuAction::Spawn(SpawnPick::Ambush)),
-        ("force: grenade", "nearest guard lobs a grenade - watch the arc + explosion (F1)", MenuAction::ForceGrenade),
-        ("force: impulse", "nearest guard hops forward - tests the collision handler", MenuAction::Impulse),
-        ("force: death", "nearest guard plays a death anim + falls", MenuAction::SpecialDeath),
-    ];
-    v.push(if dev.god_mode { ("god: ON", "Bond takes no damage - toggle off to test death", MenuAction::ToggleGod) } else { ("god: OFF", "Bond takes no damage when ON - toggle to test death", MenuAction::ToggleGod) });
-    v.push(if dev.infinite_ammo { ("ammo: ON", "clip refills each tick - toggle off to test reloads", MenuAction::ToggleAmmo) } else { ("ammo: OFF", "clip refills each tick when ON - toggle to test reloads", MenuAction::ToggleAmmo) });
-    v.push(if dev.no_reload { ("reload: OFF", "the clip never empties (no reload needed) - toggle to test reloads", MenuAction::ToggleNoReload) } else { ("reload: ON", "the clip never empties while OFF is shown - toggle to test reloads", MenuAction::ToggleNoReload) });
-    v.push(("teleport: save", "save Bond's current spot - restore later", MenuAction::SaveSpot));
-    v.push(("teleport: load", "return Bond to the saved spot", MenuAction::RestoreSpot));
-    v.push(("time: 1x", "normal speed (60 Hz)", MenuAction::TimeScale(1.0)));
-    v.push(("time: 0.25x", "quarter speed - watch AI frame-by-frame", MenuAction::TimeScale(0.25)));
-    v.push(("time: pause", "freeze the sim; F11 advances one tick", MenuAction::TimeScale(0.0)));
-    // The level-select list (fix-dev T5): one row per level archive on the disc, in archive order. Activating
-    // one jumps there through the level-transition path (warm load with the carry-over).
-    for (i, &id) in LEVELS.iter().enumerate() { v.push((LEVEL_LABELS[i], "jump to this level (carries health/weapons)", MenuAction::Level(id))); }
+// ---- the menu pages (fix-ingame-dev-menu) --------------------------------------------------------------------
+
+/// The menu's pages, in order. Page 0 is the category index; 1-9 are the panel's sections
+/// (crates/nf-view/src/panel.rs's page) moved into the window. `--dev-page <name>` renders a page
+/// headless through `--shot`.
+pub const PAGES: &[&str] = &[
+    "menu", "weapons", "gadgets", "grenades", "ammo", "npcs", "teleport", "level", "toggles", "screenshot",
+];
+
+/// A `--dev-page`/debug name → page index.
+pub fn page_index(name: &str) -> Option<usize> {
+    let n = name.to_ascii_lowercase();
+    PAGES.iter().position(|p| *p == n)
+}
+
+/// Named teleport spots, from the port's own test spots (level id prefix: the mission the spot
+/// belongs to). `dist`-independent: fixed world positions, teleported to with `Bond::stand_at`
+/// (the game's own placement path), not a relative offset.
+pub const TELEPORT_SPOTS: &[(&str, [f32; 3])] = &[
+    ("05 Q-Claw point", [16.5, 29.6, 58.6]),
+    ("05 cable", [-23.58, 34.0, 2.65]),
+    ("08 safe", [155.19, 43.12, -113.38]),
+    ("07 Kimiko trigger", [94.2, 44.6, -45.9]),
+    ("16 door", [5.0, 0.9, -70.0]),
+    ("02 pond bank", [-82.3, 5.3, 32.05]),
+    ("0c display vent", [5.8, 15.8, -108.5]),
+];
+
+/// A menu row: label, one-line description of what to watch for, action. (B-9's description
+/// column; labels are owned Strings now — catalog rows carry the game's own names.)
+pub type MenuRow = (String, &'static str, MenuAction);
+
+/// The grenade record ids (the game's own: 0x34 Fragmentation, 0x35 Stun, 0x36 Smoke, 0x37 Remote
+/// Mine [L USATxt.dat via Txt_BindLabel(+0x38); panel.rs's consumables]).
+const GRENADES: [u8; 4] = [0x34, 0x35, 0x36, 0x37];
+
+/// Is the label row visible under the page's filter? (Case-insensitive substring on the lowercase
+/// label; an empty filter shows everything.)
+fn passes_filter(dev: &Dev, label: &str) -> bool {
+    dev.filter.is_empty() || label.to_ascii_lowercase().contains(&dev.filter)
+}
+
+/// The menu rows for the current page. `scene` may be None (headless calls before a level loads):
+/// catalog-backed pages then show a single placeholder row.
+pub fn menu_items(dev: &Dev, scene: Option<&Scene>) -> Vec<MenuRow> {
+    let mut v: Vec<MenuRow> = Vec::new();
+    match dev.page {
+        // The category index: every panel section one Enter away.
+        0 => {
+            v.push(("Weapons".into(), "give Bond any weapon by its game name (Enter = equip + draw)", MenuAction::Page(1)));
+            v.push(("Gadgets".into(), "gadget inventory: giving one only puts it in the inventory", MenuAction::Page(2)));
+            v.push(("Grenades/explosives".into(), "frag/stun/smoke/mine x5 (the game's own ids 0x34-0x37)", MenuAction::Page(3)));
+            v.push(("Ammo/health/armour".into(), "full health, full armour, +3 clips per owned weapon", MenuAction::Page(4)));
+            v.push(("NPCs".into(), "spawn by skin and mode, clear NPCs, arena mode", MenuAction::Page(5)));
+            v.push(("Teleport".into(), "named spots + save/restore Bond's place", MenuAction::Page(6)));
+            v.push(("Level".into(), "jump to any level (carries health/weapons)", MenuAction::Page(7)));
+            v.push(("Toggles".into(), "god, infinite ammo, noclip, AI overlay, portal cull, interp, fps", MenuAction::Page(8)));
+            v.push(("Screenshot".into(), "numbered PNG + the --bond spot to re-render it", MenuAction::Page(9)));
+        }
+        // Weapons: every non-gadget record (grenades included — the panel's Weapons section), the
+        // game's own name per row, Enter gives + equips + draws (the --give path).
+        1 => {
+            if let Some(sc) = scene {
+                if passes_filter(dev, "level kit") {
+                    v.push(("level kit".into(), "the game's own loadout for this level (Player_InitWeapon 0x1a7ef8)", MenuAction::LevelKit));
+                }
+                for e in crate::panel::catalog_entries(sc) {
+                    if e.gadget { continue; }
+                    let label = format!("0x{:02x} {}{}", e.id, e.name, if e.fp { "" } else { " (no fp model)" });
+                    if !passes_filter(dev, &label) { continue; }
+                    v.push((label, "Enter: equip + draw (full clip). Ammo in the Ammo page.", MenuAction::GiveWeapon { id: e.id, rounds: None }));
+                }
+            } else {
+                v.push(("(no level loaded)".into(), "load a level first", MenuAction::Back));
+            }
+        }
+        // Gadgets: ids 0x4A and up (Player_WeaponChange's gadget cycle bounds [M 0x1a6f80]).
+        2 => {
+            if let Some(sc) = scene {
+                for e in crate::panel::catalog_entries(sc) {
+                    if !e.gadget { continue; }
+                    let label = format!("0x{:02x} {}", e.id, e.name);
+                    if !passes_filter(dev, &label) { continue; }
+                    v.push((label, "Enter: into the inventory (gadget fire-side is per gadget)", MenuAction::GiveWeapon { id: e.id, rounds: None }));
+                }
+            } else {
+                v.push(("(no level loaded)".into(), "load a level first", MenuAction::Back));
+            }
+        }
+        // Grenades/explosives: the four grenade records at x5 rounds (the panel's consumables).
+        3 => {
+            if let Some(sc) = scene {
+                for e in crate::panel::catalog_entries(sc) {
+                    if !GRENADES.contains(&e.id) { continue; }
+                    let label = format!("0x{:02x} {} x5", e.id, e.name);
+                    if !passes_filter(dev, &label) { continue; }
+                    v.push((label, "Enter: five into the inventory (frag = 0x34, the game's own id)", MenuAction::GiveWeapon { id: e.id, rounds: Some(5) }));
+                }
+            } else {
+                v.push(("(no level loaded)".into(), "load a level first", MenuAction::Back));
+            }
+        }
+        // Ammo/health/armour: the consumables + per-owned-weapon top-ups.
+        4 => {
+            v.push(("full health".into(), "health 100 (the recorder cheat's ceiling)", MenuAction::Health));
+            v.push(("full armour".into(), "armour 50 (the armour-take refuse threshold)", MenuAction::Armour));
+            v.push(("ammo for every owned weapon".into(), "+3 clips into each owned weapon's spare", MenuAction::GiveAmmoAll));
+            if let Some(sim) = scene.and_then(|s| s.sim.as_ref()) {
+                let sc = scene.unwrap();
+                for e in crate::panel::catalog_entries(sc) {
+                    if !sim.drones.inventory.owned.get(e.id as usize).copied().unwrap_or(false) { continue; }
+                    let label = format!("+ammo 0x{:02x} {}", e.id, e.name);
+                    if !passes_filter(dev, &label) { continue; }
+                    v.push((label, "Enter: +3 clips of this weapon's ammo", MenuAction::GiveAmmoFor(e.id)));
+                }
+            }
+        }
+        // NPCs: mode select + one row per skin (the panel's NPC section: spawn in front of Bond).
+        5 => {
+            let mode_label = match dev.spawn { SpawnPick::Normal => "normal", SpawnPick::Sniper => "sniper", SpawnPick::Ambush => "ambush" };
+            v.push((format!("mode: {mode_label} (Enter cycles)"), "the spawned guard's AI mode (0 normal / 2 sniper / 0x10 ambush)", MenuAction::CycleNpcMode));
+            v.push(("spawn at crosshair".into(), "a guard of the level's first active skin, at the crosshair", MenuAction::Spawn(dev.spawn)));
+            if let Some(sc) = scene {
+                let free = |s: &crate::scene::NpcSlot| -> usize {
+                    let Some(sim) = sc.sim.as_ref() else { return 0 };
+                    s.chars.iter().filter(|&&c| sim.char_drone.get(c).copied().flatten().is_none()).count()
+                };
+                let mut seen: Vec<u32> = Vec::new();
+                for s in &sc.npc_pool {
+                    if seen.contains(&s.skin) { continue; }
+                    seen.push(s.skin);
+                    let total = sc.npc_pool.iter().filter(|x| x.skin == s.skin).count();
+                    let label = format!("skin {:08x} ({}/{})", s.skin, free(s), total);
+                    if !passes_filter(dev, &label) { continue; }
+                    v.push((label, "Enter: spawn in front of Bond, facing him (a free pool slot)", MenuAction::SpawnNpcSkin(s.skin)));
+                }
+            }
+            v.push(("remove spawned NPCs".into(), "despawn every NPC spawned from the pool", MenuAction::ClearNpcs));
+            v.push(("arena mode (clear level)".into(), "remove NPCs, pickups, triggers, spawner templates", MenuAction::Arena));
+        }
+        // Teleport: the named spots + the old save/restore pair.
+        6 => {
+            v.push(("teleport: save spot".into(), "save Bond's current spot - restore later", MenuAction::SaveSpot));
+            v.push(("teleport: load spot".into(), "return Bond to the saved spot", MenuAction::RestoreSpot));
+            // Only the loaded level's spots (each name starts with its level's last two hex digits): a spot from
+            // another level would drop Bond into empty space (the dev window shows this page as a tab).
+            let level = scene.and_then(|s| s.sim.as_ref()).map(|s| format!("{:02x}", s.level & 0xff));
+            for (i, (name, pos)) in TELEPORT_SPOTS.iter().enumerate() {
+                if level.as_ref().is_some_and(|l| !name.starts_with(l.as_str())) { continue; }
+                let label = format!("{} ({:.2}, {:.2}, {:.2})", name, pos[0], pos[1], pos[2]);
+                if !passes_filter(dev, &label) { continue; }
+                v.push((label, "Enter: Bond stands there (Player_StandAtNewPosition), grounded on the next ticks", MenuAction::TeleportTo(i)));
+            }
+        }
+        // Level: the disc's level archives (the old level-select rows).
+        7 => {
+            for (i, &id) in LEVELS.iter().enumerate() {
+                let label = LEVEL_LABELS[i].to_string();
+                if !passes_filter(dev, &label) { continue; }
+                v.push((label, "jump to this level (carries health/weapons)", MenuAction::Level(id)));
+            }
+        }
+        // Toggles: the cheats + the rendering aids, current state in the label.
+        8 => {
+            v.push(if dev.god_mode { ("god: ON".into(), "Bond takes no damage - toggle off to test death", MenuAction::ToggleGod) } else { ("god: OFF".into(), "Bond takes no damage when ON - toggle to test death", MenuAction::ToggleGod) });
+            v.push(if dev.infinite_ammo { ("ammo: ON".into(), "clip refills each tick - toggle off to test reloads", MenuAction::ToggleAmmo) } else { ("ammo: OFF".into(), "clip refills each tick when ON - toggle to test reloads", MenuAction::ToggleAmmo) });
+            v.push(if dev.no_reload { ("reload: OFF".into(), "the clip never empties (no reload needed) - toggle to test reloads", MenuAction::ToggleNoReload) } else { ("reload: ON".into(), "the clip never empties while OFF is shown - toggle to test reloads", MenuAction::ToggleNoReload) });
+            v.push(("noclip (N key)".into(), "walk through walls - N toggles, like this row", MenuAction::ToggleNoclip));
+            v.push(if dev.overlay { ("AI overlay: ON (F1)".into(), "state/alert/health over each guard - toggle or F1", MenuAction::ToggleOverlay) } else { ("AI overlay: OFF (F1)".into(), "state/alert/health over each guard - toggle or F1", MenuAction::ToggleOverlay) });
+            v.push(if dev.portal_cull { ("portal culling: ON".into(), "the game's visibility walk (0x1e86e8) - off draws every cel", MenuAction::TogglePortal) } else { ("portal culling: OFF".into(), "the game's visibility walk (0x1e86e8) - off draws every cel", MenuAction::TogglePortal) });
+            v.push(if dev.interp { ("interpolation: ON".into(), "render between ticks - off renders whole ticks (NF_NOINTERP)", MenuAction::ToggleInterp) } else { ("interpolation: OFF".into(), "render between ticks - off renders whole ticks (NF_NOINTERP)", MenuAction::ToggleInterp) });
+            v.push(if dev.show_fps { ("fps display: ON".into(), "render fps top right - wall-clock display only", MenuAction::ToggleFps) } else { ("fps display: OFF".into(), "render fps top right - wall-clock display only", MenuAction::ToggleFps) });
+            v.push(("time: 1x".into(), "normal speed (60 Hz)", MenuAction::TimeScale(1.0)));
+            v.push(("time: 0.25x".into(), "quarter speed - watch AI frame-by-frame", MenuAction::TimeScale(0.25)));
+            v.push(("time: pause".into(), "freeze the sim; F11 advances one tick", MenuAction::TimeScale(0.0)));
+        }
+        // Screenshot: the F12 path (a numbered PNG + the --bond spot txt).
+        9 => {
+            v.push(("screenshot + log spot".into(), "nf-shots/NNN-<level>.png + a .txt with the --bond spot (F12)", MenuAction::Screenshot));
+        }
+        _ => v.push(("(empty page)".into(), "back to the index", MenuAction::Back)),
+    }
     v
 }
 
@@ -461,34 +672,179 @@ pub const LEVEL_LABELS: &[&str] = &[
     "level: 07000048", "level: 07000049", "level: 0700004a", "level: 0700004b",
 ];
 
-/// A menu item's action.
-#[derive(Clone, Copy)]
+/// A menu item's action. The give/spawn/arena/health actions route through `panel::apply`
+/// (panel.rs is the shared command layer — nothing here re-implements a panel command).
+#[derive(Clone, Copy, Debug)]
 pub enum MenuAction {
-    Close, Spawn(SpawnPick), ForceGrenade, Impulse, SpecialDeath, ToggleGod, ToggleAmmo, ToggleNoReload, SaveSpot, RestoreSpot, TimeScale(f32), Level(u32),
+    Close,
+    /// Open a page (the index rows; PageUp/PageDown step `Dev::page` directly).
+    Page(usize),
+    /// Back to the category index (Backspace with an empty filter).
+    Back,
+    /// Give a weapon/gadget/grenade: `rounds` None = a full clip (the panel's Give button).
+    GiveWeapon { id: u8, rounds: Option<i16> },
+    GiveAmmoFor(u8), GiveAmmoAll, LevelKit, Health, Armour,
+    /// Spawn a pool NPC of `skin` (hex) with the mode picked on the page.
+    SpawnNpcSkin(u32), CycleNpcMode, ClearNpcs, Arena,
+    /// Teleport Bond to `TELEPORT_SPOTS[idx]`.
+    TeleportTo(usize),
+    // The original F2 tools (WORKLOG 0081), kept.
+    Spawn(SpawnPick), ForceGrenade, Impulse, SpecialDeath, ToggleGod, ToggleAmmo, ToggleNoReload,
+    SaveSpot, RestoreSpot, TimeScale(f32), Level(u32),
+    // The Toggles/Screenshot pages.
+    ToggleNoclip, ToggleOverlay, TogglePortal, ToggleInterp, ToggleFps, Screenshot,
 }
 
-/// The click hit-test: which menu item is under the mouse (NDC −1..1, y up)? Returns the row index. B-10:
-/// updated for the compact panel (150 px wide, 12 px rows, top-left at y=4, ~8 visible rows with scrolling).
-pub fn menu_hit(dev: &Dev, mouse_x: f32, mouse_y: f32, aspect: f32) -> Option<usize> {
+/// The side effects a menu action needs the windowed App for (headless tests ignore them).
+#[derive(Default)]
+pub struct ActionOut {
+    /// The result line for the menu's message bar.
+    pub status: String,
+    /// The weapon to draw (`App.weapon_switch_to` — the panel's switch return).
+    pub switch_to: Option<u8>,
+    /// The level to load (`App.pending_level`).
+    pub pending_level: Option<u32>,
+    /// Reset the renderer's viewer cel (a teleport moved Bond — the game's own placement clears
+    /// it, `Camera_Enable` 0x1b9920).
+    pub viewer_cel_reset: bool,
+    /// Take a screenshot (the Screenshot page — App runs its `spot_shot`).
+    pub shot: bool,
+    /// The new noclip state (the App owns `noclip`; the menu row toggles it like the N key).
+    pub noclip_to: Option<bool>,
+}
+
+/// Apply a menu action to the scene the way the windowed App does — the REAL path, shared by
+/// `App::apply_menu_action` and the headless menu-flow tests. Every give/spawn/clear command goes
+/// through `panel::apply` (the shared command layer), so the menu and (with `--panel`) the HTTP
+/// page cannot drift apart.
+pub fn apply_menu_action_to_scene(dev: &mut Dev, scene: &mut Scene, action: MenuAction, eye: [f32; 3], yaw: f32, noclip: bool) -> ActionOut {
+    let mut out = ActionOut::default();
+    match action {
+        MenuAction::Close => { dev.menu = false; out.status = "menu closed".into(); }
+        MenuAction::Page(p) => {
+            dev.page = p.min(PAGES.len() - 1);
+            dev.menu_sel = 0;
+            dev.filter.clear();
+            out.status = format!("page: {}", PAGES[dev.page]);
+        }
+        MenuAction::Back => { dev.page = 0; dev.menu_sel = 0; dev.filter.clear(); out.status = "page: menu".into(); }
+        MenuAction::GiveWeapon { id, rounds } => {
+            let mut q: Vec<(String, String)> = vec![("do".into(), "weapon".into()), ("id".into(), format!("0x{id:02x}"))];
+            if let Some(r) = rounds { q.push(("rounds".into(), format!("{r}"))); }
+            let (status, switch) = crate::panel::apply(scene, &q);
+            out.status = status;
+            out.switch_to = switch;
+        }
+        MenuAction::GiveAmmoFor(id) => {
+            let (status, _) = crate::panel::apply(scene, &[("do".into(), "ammo_for".into()), ("id".into(), format!("0x{id:02x}"))]);
+            out.status = status;
+        }
+        MenuAction::GiveAmmoAll => {
+            let (status, _) = crate::panel::apply(scene, &[("do".into(), "ammo_all".into())]);
+            out.status = status;
+        }
+        MenuAction::LevelKit => {
+            let (status, _) = crate::panel::apply(scene, &[("do".into(), "levelkit".into())]);
+            out.status = status;
+        }
+        MenuAction::Health => {
+            let (status, _) = crate::panel::apply(scene, &[("do".into(), "health".into())]);
+            out.status = status;
+        }
+        MenuAction::Armour => {
+            let (status, _) = crate::panel::apply(scene, &[("do".into(), "armour".into())]);
+            out.status = status;
+        }
+        MenuAction::SpawnNpcSkin(skin) => {
+            let mode = match dev.spawn { SpawnPick::Normal => "0", SpawnPick::Sniper => "2", SpawnPick::Ambush => "16" };
+            let (status, _) = crate::panel::apply(scene, &[("do".into(), "npc".into()), ("skin".into(), format!("{skin:08x}")), ("mode".into(), mode.into())]);
+            out.status = status;
+        }
+        MenuAction::CycleNpcMode => {
+            dev.spawn = match dev.spawn { SpawnPick::Normal => SpawnPick::Sniper, SpawnPick::Sniper => SpawnPick::Ambush, SpawnPick::Ambush => SpawnPick::Normal };
+            out.status = format!("NPC mode: {}", match dev.spawn { SpawnPick::Normal => "normal", SpawnPick::Sniper => "sniper", SpawnPick::Ambush => "ambush" });
+        }
+        MenuAction::ClearNpcs => {
+            let (status, _) = crate::panel::apply(scene, &[("do".into(), "clear_npcs".into())]);
+            out.status = status;
+        }
+        MenuAction::Arena => {
+            let (status, _) = crate::panel::apply(scene, &[("do".into(), "arena".into())]);
+            out.status = status;
+        }
+        MenuAction::TeleportTo(i) => {
+            let Some((name, pos)) = TELEPORT_SPOTS.get(i) else { out.status = "bad spot".into(); return out; };
+            dev.teleport(scene, *pos, yaw);
+            // The game's own placement clears the viewer's cel so the next `Camera_CheckLocation`
+            // re-finds it at the placed position [M 0x1b9920].
+            out.viewer_cel_reset = true;
+            out.status = format!("teleported: {name} ({:.2},{:.2},{:.2})", pos[0], pos[1], pos[2]);
+        }
+        // ---- the original F2 tools (WORKLOG 0081) ----
+        MenuAction::Spawn(pick) => {
+            let look = { let s = scene.sim.as_ref(); match s { Some(sim) => sim.bond.look(), None => [0.0, 0.0, 1.0] } };
+            let hit = scene.sim.as_ref().and_then(|s| s.world.segment(eye, [eye[0] + look[0] * 30.0, eye[1] + look[1] * 30.0, eye[2] + look[2] * 30.0]));
+            let pos = hit.map_or([eye[0] + look[0] * 5.0, eye[1], eye[2] + look[2] * 5.0], |t| [eye[0] + (look[0] * 30.0) * t, eye[1] + (look[1] * 30.0) * t, eye[2] + (look[2] * 30.0) * t]);
+            dev.spawn = pick;
+            let gi = dev.spawn_guard(scene, pos, yaw);
+            let kind = match pick { SpawnPick::Normal => "normal", SpawnPick::Sniper => "sniper", SpawnPick::Ambush => "ambush" };
+            out.status = match gi { Some(gi) => format!("guard #{gi}: spawned ({kind}) at ({:.1},{:.1},{:.1})", pos[0], pos[1], pos[2]), None => format!("spawn failed ({kind}) — no free slot or no sim") };
+        }
+        MenuAction::ForceGrenade => {
+            let bond = scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos);
+            let gi = dev.force_grenade(scene, bond).or(dev.forced.last().copied());
+            out.status = match gi { Some(gi) => format!("guard #{gi}: forced grenade throw — watch the lob"), None => "no guard within 30 m to force".to_string() };
+        }
+        MenuAction::Impulse => {
+            let bond = scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos);
+            let gi = dev.impulse_guard(scene, bond).or(dev.forced.last().copied());
+            out.status = match gi { Some(gi) => format!("guard #{gi}: impulse applied — watch the hop"), None => "no guard within 30 m to impulse".to_string() };
+        }
+        MenuAction::SpecialDeath => {
+            let bond = scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos);
+            let gi = dev.special_death(scene, bond).or(dev.forced.last().copied());
+            out.status = match gi { Some(gi) => format!("guard #{gi}: SpecialDeath triggered — watch the fall"), None => "no guard within 30 m".to_string() };
+        }
+        MenuAction::ToggleGod => { dev.god_mode = !dev.god_mode; out.status = format!("god mode: {}", if dev.god_mode { "ON" } else { "OFF" }); }
+        MenuAction::ToggleAmmo => { dev.infinite_ammo = !dev.infinite_ammo; out.status = format!("infinite ammo: {}", if dev.infinite_ammo { "ON" } else { "OFF" }); }
+        MenuAction::ToggleNoReload => { dev.no_reload = !dev.no_reload; out.status = format!("no reload: {}", if dev.no_reload { "ON" } else { "OFF" }); }
+        MenuAction::SaveSpot => {
+            let p = scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos);
+            dev.saved_spot = Some(p);
+            out.status = format!("spot saved at ({:.1},{:.1},{:.1})", p[0], p[1], p[2]);
+        }
+        MenuAction::RestoreSpot => {
+            match dev.saved_spot {
+                Some(p) => { dev.teleport(scene, p, yaw); out.viewer_cel_reset = true; out.status = format!("restored to ({:.1},{:.1},{:.1})", p[0], p[1], p[2]); }
+                None => out.status = "no saved spot — use 'save spot' first".to_string(),
+            }
+        }
+        MenuAction::TimeScale(s) => { dev.time_scale = s; out.status = format!("time scale: {}", if s == 0.0 { "paused (F11=step)" } else if s == 1.0 { "1×" } else { "0.25×" }); }
+        MenuAction::Level(id) => { out.pending_level = Some(id); out.status = format!("loading {} ..", crate::level_archive_name(id)); }
+        // ---- Toggles / Screenshot ----
+        MenuAction::ToggleNoclip => { out.noclip_to = Some(!noclip); out.status = format!("noclip: {}", if !noclip { "ON — walk through walls" } else { "OFF" }); }
+        MenuAction::ToggleOverlay => { dev.overlay = !dev.overlay; out.status = format!("AI overlay: {}", if dev.overlay { "ON" } else { "OFF" }); }
+        MenuAction::TogglePortal => { dev.portal_cull = !dev.portal_cull; out.status = format!("portal culling: {}", if dev.portal_cull { "ON" } else { "OFF" }); }
+        MenuAction::ToggleInterp => { dev.interp = !dev.interp; out.status = format!("interpolation: {}", if dev.interp { "ON" } else { "OFF" }); }
+        MenuAction::ToggleFps => { dev.show_fps = !dev.show_fps; out.status = format!("fps display: {}", if dev.show_fps { "ON" } else { "OFF" }); }
+        MenuAction::Screenshot => { out.shot = true; out.status = "screenshot".into(); }
+    }
+    out
+}
+
+/// The click hit-test: which menu item is under the mouse (NDC −1..1, y up)? Returns the row index.
+/// Shares `layout_rows` with the draw fn, so click and paint can never drift.
+pub fn menu_hit(dev: &Dev, scene: Option<&Scene>, mouse_x: f32, mouse_y: f32, aspect: f32) -> Option<usize> {
     let s = 2.0 / 512.0 * (4.0 / 3.0) / aspect.max(1e-3);
     let x0 = -1.0 + 4.0 * s;
     let x1 = -1.0 + (4.0 + 150.0) * s;
     if mouse_x < x0 || mouse_x > x1 { return None; }
-    let n = menu_items(dev).len();
-    // B-11: match the menu fn's layout (ROW_H=19, VISIBLE_ROWS=7, HEADER_H=19).
-    const ROW_H: f32 = 19.0;
-    const VISIBLE_ROWS: usize = 7;
-    const HEADER_H: f32 = 19.0;
-    let top = if n <= VISIBLE_ROWS { 0 } else {
-        if dev.menu_sel < VISIBLE_ROWS / 2 { 0 }
-        else if dev.menu_sel >= n - VISIBLE_ROWS / 2 { n - VISIBLE_ROWS }
-        else { dev.menu_sel - VISIBLE_ROWS / 2 }
-    };
-    let visible_end = (top + VISIBLE_ROWS).min(n);
-    let banner = if dev.scenario.is_some() { HEADER_H + 1.0 } else { 2.0 };
+    let n = menu_items(dev, scene).len();
+    if n == 0 { return None; }
+    let (y0, top, visible_end) = layout_rows(dev, n);
     for vi in top..visible_end {
-        let y_top = 4.0 + banner + (vi - top) as f32 * ROW_H;
-        let y_bot = y_top + ROW_H;
+        let y_top = y0 + (vi - top) as f32 * MENU_ROW_H;
+        let y_bot = y_top + MENU_ROW_H;
         let ndc_top = 1.0 - y_top / 224.0;
         let ndc_bot = 1.0 - y_bot / 224.0;
         if mouse_y >= ndc_bot && mouse_y <= ndc_top { return Some(vi); }
@@ -496,29 +852,78 @@ pub fn menu_hit(dev: &Dev, mouse_x: f32, mouse_y: f32, aspect: f32) -> Option<us
     None
 }
 
-/// Apply a menu click: returns the action chosen (the caller applies it).
-pub fn menu_action(dev: &Dev, idx: usize) -> Option<MenuAction> {
-    menu_items(dev).get(idx).map(|(_, _, a)| *a)
+/// The menu's row layout, shared by the draw fn and the click hit-test: (the y where the first row
+/// starts in HUD px, the first visible row, one past the last). Header = the page tabs line, plus
+/// the filter line when a filter is set; the scenario banner sits above both.
+fn layout_rows(dev: &Dev, n: usize) -> (f32, usize, usize) {
+    const VISIBLE_ROWS: usize = MENU_VISIBLE_ROWS;
+    let top = if n <= VISIBLE_ROWS { 0 } else {
+        if dev.menu_sel < VISIBLE_ROWS / 2 { 0 }
+        else if dev.menu_sel >= n - VISIBLE_ROWS / 2 { n - VISIBLE_ROWS }
+        else { dev.menu_sel - VISIBLE_ROWS / 2 }
+    };
+    let visible_end = (top + VISIBLE_ROWS).min(n);
+    // Scenario banner (1 line when a scenario ran) + the page header + the filter line.
+    let banner = if dev.scenario.is_some() { MENU_HEADER_H + 1.0 } else { 2.0 };
+    let mut y = 4.0 + banner + MENU_HEADER_H + 1.0;
+    if !dev.filter.is_empty() { y += MENU_ROW_H; }
+    (y, top, visible_end)
 }
 
-/// B-9: keyboard navigation for the menu. ↑/↓ move the selection, Enter activates the selected row. Returns the
-/// action to apply (if Enter was pressed). The caller also sets the result message.
+/// Apply a menu click: returns the action chosen (the caller applies it).
+pub fn menu_action(dev: &Dev, scene: Option<&Scene>, idx: usize) -> Option<MenuAction> {
+    menu_items(dev, scene).get(idx).map(|(_, _, a)| *a)
+}
+
+/// B-9: keyboard navigation for the menu, extended for the paged menu (fix-ingame-dev-menu):
+/// ↑/↓ move the selection, Enter activates, PageUp/PageDown switch pages, Backspace deletes a
+/// filter char (or returns to the index). Returns the action to apply (if Enter was pressed).
 pub fn menu_key(dev: &mut Dev, key: MenuKey) -> Option<MenuAction> {
-    let n = menu_items(dev).len();
-    if n == 0 { return None; }
+    let n = menu_items(dev, None).len();
     match key {
-        MenuKey::Up => { if dev.menu_sel == 0 { dev.menu_sel = n - 1; } else { dev.menu_sel -= 1; } None }
-        MenuKey::Down => { dev.menu_sel = (dev.menu_sel + 1) % n; None }
+        MenuKey::Up => {
+            if n == 0 { return None; }
+            if dev.menu_sel == 0 { dev.menu_sel = n - 1; } else { dev.menu_sel -= 1; }
+            None
+        }
+        MenuKey::Down => {
+            if n == 0 { return None; }
+            dev.menu_sel = (dev.menu_sel + 1) % n;
+            None
+        }
+        MenuKey::PageUp => { dev.page = dev.page.saturating_sub(1); dev.menu_sel = 0; dev.filter.clear(); None }
+        MenuKey::PageDown => { dev.page = (dev.page + 1).min(PAGES.len() - 1); dev.menu_sel = 0; dev.filter.clear(); None }
+        MenuKey::Backspace => {
+            if !dev.filter.is_empty() { dev.filter.pop(); }
+            else if dev.page != 0 { dev.page = 0; dev.menu_sel = 0; }
+            None
+        }
         MenuKey::Activate => {
-            let i = dev.menu_sel.min(n - 1);
-            menu_items(dev).get(i).map(|(_, _, a)| *a)
+            // No scene here: the static rows (index, toggles, levels) activate fine; the App's
+            // Enter uses `menu_activate(d, Some(&scene))` so catalog rows resolve too.
+            menu_activate(dev, None)
         }
     }
 }
 
-/// A keyboard input to the menu (B-9).
+/// Enter on the selected row, with the scene so catalog rows resolve. (Split from `menu_key` so
+/// the navigation keys keep their old one-arg shape.)
+pub fn menu_activate(dev: &Dev, scene: Option<&Scene>) -> Option<MenuAction> {
+    let n = menu_items(dev, scene).len();
+    if n == 0 { return None; }
+    let i = dev.menu_sel.min(n - 1);
+    menu_items(dev, scene).get(i).map(|(_, _, a)| *a)
+}
+
+/// A keyboard input to the menu (B-9, extended for pages).
 #[derive(Clone, Copy, PartialEq)]
-pub enum MenuKey { Up, Down, Activate }
+pub enum MenuKey { Up, Down, Activate, PageUp, PageDown, Backspace }
+
+/// Type one character into the filter (the type-to-filter lane; lowercase ASCII).
+pub fn menu_type(dev: &mut Dev, c: char) {
+    if dev.filter.len() < 24 { dev.filter.push(c.to_ascii_lowercase()); }
+    dev.menu_sel = 0;
+}
 
 /// Draw a world-space line as a thin NDC quad between the two projected points.
 fn draw_line(h: &mut Hud, a: [f32; 3], b: [f32; 3], c: [f32; 4], view_proj: [[f32; 4]; 4]) {
