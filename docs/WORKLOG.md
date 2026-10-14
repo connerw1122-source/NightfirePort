@@ -11727,3 +11727,11 @@ Work Log:
 - 20:45: repro on 07000007: the 0x800 multiplier reaches every drone-backed guest (per-cel ambients 36-64, 9 distinct; 104 active kind-0 lights picked up with skin flags 0x8a0). The 49 sentinel-0xff characters are exactly the invisible set: 33 dev-pool copies parked at -1e6 and 16 origin script actors (the game leaves those unlinked too — no cel at the origin, ambient stays the 0xff init of control_init_object 0x134630). G-042: the civilian's "white" texture (map 32 tex 4, 32x32) is a sheen map — 1024/1024 white rgb but 98/1024 opaque alpha; the base skin textures are not white.
 - 21:15: the game's model pinned end-to-end (linked cel obj+0x20: create-link+snap 0x1346b8/0x1343c8, keep/portal/relink 0x133288+0x1e0d58+0x1c9500, ramp 0x1cb178 moved-only; the same Tweak+light pair on the character path 0x1e69a0:96->0x1e78b0; bCharacterLight/AnimColRad have NO EE reader — scanned all gp-relative accesses). Port matches on every headless point; 3 NF_ISO tests green (own-cel ambient per guest, party lights reach the draws, G-042 sheen map resolved). No production code changed. Report: docs/reports/fix-character-room-light.md.
 - 21:32: merged origin/master (1c376216, WORKLOG conflict resolved keeping both), lighting suites re-ran green on the final tree (new 3/3, character_lighting_live 4/4); baseline full suite on the identical production code: 1065 passed / 7 failed (3 disc_golden allowed + weapon_matrix_live TIMEOUT + 3 pre-existing pylon) / 35 ignored.
+
+---
+Task: fix-hit-locations
+Agent: worker (sandbox web-89a10775)
+Task: guard hit locations — hitbox set per skeleton, per-zone damage multiplier (head shots), armour/helmets, reaction anim per zone (head snap, leg stagger, arm drop), death anim choice by zone+direction, blood/impact effects per zone (NDrone2_DealWithObjHit 0x13fff0 case 5, DroneFunc_SendHurtMessage, hitbox data). Port what differs. Test: P2K head vs body shot on a 05 guard — damage + reaction/death anim ids.
+
+Work Log:
+- 21:47 UTC: branch s/fix-hit-locations created from origin/master (eb52fb56). work/ + ISO present, setup skipped. Research starting.
