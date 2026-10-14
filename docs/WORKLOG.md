@@ -9890,6 +9890,16 @@ nf-game units, the full 214-binary suite green except the allowed disc_golden 3.
 docs/reports/fix-qclaw.md (rope rendering + the 0x02100717 mesh gap listed as what's left, with
 the PCSX2/nf-view live checks).
 
+Task 101j fix-portal-eyecel STARTED (04:12 UTC): the 05 trench walls still vanish with portal
+culling on. 130g's scene::near_los_rescue restores 0 cels in the real draw path ([pwalk] prints,
+no [rescue]) because the root cause is upstream: build_FindCel 0x1c8cb0's up/down tie-break rays
+cast against each CANDIDATE's own object list, and the port's stand-in scopes the shared collision
+world, so candidates 14/15 tie and the giant outdoor room 14 wins. Plan: give each cel its own
+collision/object list the way the game's loader attributes polys and objects to cels
+(build_link_objects_to_rooms 0x1c9150 is ported for the render chains; find the collision side),
+so the eye cel resolves to 15 like the game's; remove the rescue if it dies; prove on the RENDERED
+path (a --shot draw-list test at the trench spot failing on master), keep the 27-level sweep and
+the 4 PCSX2 ground-truth spots green. Branch s/fix-portal-eyecel off master 5f13369.
 Task 100c outcome (same session): REPRODUCED then FIXED. The impact explode —
 `Bullet_CollisionHandler` 0x12d068-0x12d0bc (disassembled): after the impact effects, a weapon
 whose `weapon_data+0x70` carries bit 2 (0x4) destroys its bullet with `Explode_Create(radius =
@@ -9956,3 +9966,22 @@ Stage Summary:
 - Files: matrix.rs (new), tests/weapon_matrix_live.rs (new), nf-extract main.rs + Cargo.toml (the command), dev.rs (the row), lib.rs (pub mod matrix + the 2-line test-weapon hook). drone.rs/scene.rs/player.rs untouched.
 - Report: docs/reports/weapon-matrix.md (the mark table, the numbers, the live checks for the main agent).
 - Open: re-run with 100a-c merged; the intro input-lock F/D cells; the variant back-chain B cells (100c).
+
+fix-portal-eyecel DONE (05:3x UTC): the trench eye cel now resolves like the game's. Root cause
+pinned: build_FindCel 0x1c8cb0's tie-break rays are owner-filtered to the CANDIDATE's own chain
+geometry (Collide_RayIntersect 0x1ec690's flags-arg-1 post-pass compares HITDATA+0x54 — the
+static-geometry cel [M hitdata doc:41, the chain-node store sw $s3,0x54] — against HITTEST+0x80 =
+the cel argument); the port's shared-world scoped stand-in left the trench floor outside BOTH
+candidates' buckets so both rays missed and the first candidate (the outdoor room 14) stood
+[L ee_start_05.bin: the trench room's chain holds all 58 trench generics, the outdoor room's 41
+none near the eye]. Fix: world::attribute_scope re-keys the scope buckets by the chain owners
+build_chains computes (the collision side of build_link_objects_to_rooms 0x1c9150) and
+world::segment_hit_cell reads a candidate's own bucket for the tie-break. Failing-first proof:
+portal_eyecel_live::trench_eye_cel_is_15_and_the_near_walls_draw panicked "got 14" pre-fix,
+passes post-fix (eye cell 15, 0 near visited-chain walls hidden). The rescue STAYS: raw sweep
+failures on 05 dropped 1382 -> 31 but remain elsewhere (02: 850, 07: 759, ...) — other causes it
+covers. Ground truths unchanged (06 courtyard 33, 07 window rescue 0, clock hall 33 + the pinned
+set). Suites on the merged tree: nf-game 256/0 (33 binaries, twice), nf-view 318/0 (87 binaries),
+portal tests 12/0; the suite.py wrapper can't run here (background jobs die between tool calls,
+the single run exceeds the 10-min tool limit after the 05:08 UTC sandbox reset — per-binary runs
+executed directly instead). Report: docs/reports/fix-portal-eyecel.md.

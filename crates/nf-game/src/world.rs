@@ -305,6 +305,32 @@ impl CollisionWorld {
         CollisionWorld { stat, missile, dynamic: Default::default(), shapes, shape_mats, scope }
     }
 
+    /// Re-keys the cel-scope buckets by an explicit per-instance attribution — the collision side
+    /// of the game's per-cel attribution (`build_link_objects_to_rooms` 0x1c9150 hangs every
+    /// generic's collision on the room whose chain holds it; the rooms' own geometry stays with
+    /// the room). `instance_cell[i]` = the cell for the i-th pushed object (the `stat.owners`
+    /// source index — instances that pushed static geometry, in push order); `None` leaves the
+    /// runs in the `always` bucket (the actor queries' safety net). fix-portal-eyecel: the
+    /// `build_FindCel` 0x1c8cb0 tie-break reads these buckets per candidate, so the buckets must
+    /// carry the game's chain owners, not the smallest-volume centre rule `build_scoped` stands
+    /// in with.
+    pub fn attribute_scope(&mut self, instance_cell: &[Option<u32>]) {
+        let Some(sc) = &mut self.scope else { return };
+        let mut cells = vec![Vec::new(); sc.graph.cells.len()];
+        let mut always = Vec::new();
+        for (run, src) in self.stat.owners.iter().enumerate() {
+            match instance_cell.get(*src as usize).copied().flatten() {
+                Some(c) if (c as usize) < cells.len() => cells[c as usize].push(run as u32),
+                _ => always.push(run as u32),
+            }
+        }
+        sc.cells = cells;
+        sc.always = always;
+    }
+
+    /// Whether the world carries a cel scope (`build_scoped` with a graph).
+    pub fn has_scope(&self) -> bool { self.scope.is_some() }
+
     pub fn triangle_count(&self) -> usize { self.stat.tris.len() }
 
     /// Every static triangle whose object's box meets `lo`..`hi`, in stored winding order (the [D]
@@ -563,6 +589,52 @@ impl CollisionWorld {
         for o in overlapping(&dynamic.geo, blo, bhi) {
             for k in o.tris.clone() {
                 let t = &dynamic.geo.tris[k];
+                let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                if dot(cross(e1, e2), d) >= 0.0 { continue; } // back face [M 0x10a8c8:168]
+                let p = cross(d, e2);
+                let det = dot(e1, p);
+                if det.abs() < 1e-12 { continue; }
+                let inv = 1.0 / det;
+                let s = sub(from, t[0]);
+                let u = dot(s, p) * inv;
+                if !(0.0..=1.0).contains(&u) { continue; }
+                let q = cross(s, e1);
+                let v = dot(d, q) * inv;
+                if v < 0.0 || u + v > 1.0 { continue; }
+                let tt = dot(e2, q) * inv;
+                if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b.0) {
+                    let n = cross(e1, e2);
+                    let l = dot(n, n).sqrt().max(1e-12);
+                    best = Some((tt, [n[0] / l, n[1] / l, n[2] / l]));
+                }
+            }
+        }
+        best
+    }
+
+    /// The first static hit of `from → to` in `cell`'s OWN scope bucket — the port's reading of
+    /// `Collide_RayIntersect` (0x1ec690)'s owner filter: the query is handed the candidate cel
+    /// (`build_FindCel` 0x1c8cb0's tie-break passes each candidate as the cel argument with obj
+    /// lists 0 and flags 1 [M disasm 0x1c900c: a3 = 0, stack0 = 0, t2 = 1, t3 = 0x90]), and the
+    /// post-pass exact-tests a static hit only when `HITDATA+0x54` (the static-geometry cel
+    /// [M docs/fields/hitdata-spawner-ally.md:41, writer `Collide_Pick` 0x1eb320: `sw $s3, 0x54`
+    /// = the walked chain node]) equals the passed cel [M disasm 0x1ec784-0x1ec794: hit+0x54 vs
+    /// HITTEST+0x80]. So the ray sees the candidate's OWN chain geometry — the straddle collects
+    /// neighbour cels' nodes but the filter rejects every one of them. No `always` runs: the game
+    /// leaves unlinked objects untested. Static only: the dynamic-object hits carry +0x54 = 0 and
+    /// pass the game's filter, but the port's dynamic set is not cel-keyed (Bond's own parts
+    /// would tie both candidates) — a documented deviation [S].
+    /// `None` = no scope, the cell is unmapped, or nothing in the cel's own set is hit.
+    pub fn segment_hit_cell(&self, cell: usize, from: V3, to: V3) -> Option<(f32, V3)> {
+        let sc = self.scope.as_ref()?;
+        let runs = sc.cells.get(cell)?;
+        let d = sub(to, from);
+        let mut best = None::<(f32, V3)>;
+        let stat = &self.stat;
+        for r in runs {
+            let o = &stat.objects[*r as usize];
+            for k in o.tris.clone() {
+                let t = &stat.tris[k];
                 let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
                 if dot(cross(e1, e2), d) >= 0.0 { continue; } // back face [M 0x10a8c8:168]
                 let p = cross(d, e2);
