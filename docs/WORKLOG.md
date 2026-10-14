@@ -9633,3 +9633,14 @@ Work Log:
   Files: dev.rs, panel.rs (doc), lib.rs (hooks), tests/dev_menu_flow.rs (new),
   tests/menu_live.rs, tests/dev_tools_live.rs (signature/width updates). No shared-file surprises:
   drone.rs/scene.rs/player.rs untouched.
+
+## fix-weapon-sounds (s/fix-weapon-sounds) — 2026-10-14
+
+Task 100b: weapon sounds on every level — map every weapon's sound ids (fire, silenced,
+dry fire, reload stages, draw 0x281/0x282, holster 0x280/0x283, zoom, alt fire, laser and
+stunner loops, grapple fire/reel, grenade pin/throw/bounce, rocket launch/flight loop,
+explosions, casings and impacts per surface) to the bank(s) that hold them; when a weapon
+is given on a level whose bank lacks a sample, load it (VAG + effect record) from a bank
+that has it and register it under the same id without disturbing the level's own effects
+or the voice limits. Files: crates/nf-audio/src/{sfx,lib}.rs, crates/nf-view/src/lib.rs,
+tests. Reproduce-first; work starting.
