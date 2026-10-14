@@ -10603,3 +10603,6 @@ Work Log:
 ## fix-movies-tests (outcome)
 - menu_movies.rs:282 E0614 fixed (present returns (u32,u32,&[u8]) by value [M movie.rs:226]); all 203 nf-view+nf-formats test binaries build with --features nf-view/movies; 202 run: 201 ok + disc_golden's 3 allowed slim-ISO fails; PSS-data tests skip on the slim stub image by contract; docs/tools/test-suite.md gained the movies-feature note; weapon_matrix_live (>600 s with or without movies — pre-existing) flagged for the suite gate. No shared source files touched.
 - Post-merge (origin/master 6691ef9 = fix-menus-real2, whose menu_movies copy still carried the (*w,*h) bug): merged, rebuilt menu_movies/menus_flow/movie_playback_flow with movies on the final tree — 7/7, 34/34, 10/10 ok; suite restarted on the merged tree (see report).
+
+## fix-save-profile
+- Started 12:32 UTC. Branch s/fix-save-profile from origin/master 1496b80. Task: port the game's memory-card profile save (unlocked missions, difficulty per mission, high scores/medals = Dossier Records, Bond moves, options, controller style) to one file per codename next to the port's config; hooks in nf-view menu.rs; tests: round trip, unlock after completing a mission, sister assertions. Layout must come from the game's save code in the decompile.
