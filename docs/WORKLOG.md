@@ -10502,3 +10502,19 @@ Task: fix-context-hints2 — hint bar position (y~100/448, not top edge), the or
 Work Log:
 - (started 09:55 UTC) Branch s/fix-context-hints2 created from origin/master b65d6f7; sandbox was reset, setup in progress (work/, ISO).
 
+
+---
+Task ID: 100n-fix-context-hints2
+Agent: context-hints2 worker
+Task: fix-context-hints2 — the hint bar's position (y≈100/448, not the top edge), the orange 007 ring swap (both spots), and no "Press Action" prompt at the 05 grapple point.
+
+Work Log:
+- (10:52 UTC fetch) Sandbox was reset; setup from scratch. Found 100h-fix-context-hints NOT in origin/master (only s/fix-context-hints) — merged it into s/fix-context-hints2 to have the hint bar at all.
+- Item 1: the INFO pane's CREATE tag MsgInfoStatusPane 0x319810 is x=128 y=113 [L ee_start_05.bin]; HUD_CreateDefault 0x199b70:45-52 adds the pane x/y to every sprite at create; HUD_UpdateStatusPane 0x19c310 rewrites only the bar's X (templateX + (templateW−w)/2, caps following, :105-109/:331-336/:342-347) — the Y is never written, so the bar rides template y 0 + pane y 113 = 113 (text 129). Port drew 0/16. Fixed in hud.rs.
+- Item 3: the grapple spot (16.5,29.6,58.6) sits in ctx-6 icon[3]'s port cel 15, 8.17 away (its own sphere r 2.276 [D probe]); the game shows NO prompt there [L PCSX2 2026-10-14] while the vent crawl still reads 6 at 3.9 [L 2026-10-13]. The [S] arm window 12.0 → 6.0 (scene.rs), the grapple test flipped to the no-prompt pin with a positive sister beside the icon.
+- Item 2 (OPEN, not guessed): the only 007 path in the ELF is health-pane sprite 16, texture 0x0300005b (the gold 007 logo, dumped from 07000005 map 4), driven by BL+0x948 ← PlrStat_DoneBondMoment 0x199448 ← Trigger_Calc — a Bond-Moment zoom at (256,80) CENTRED, top-centre, not the bottom-left ring. The bottom-left ring is HealthSprInfo[15] (sheet uv 102,113,85,86, health-tinted [M 0x19b9c8:205-207]); nothing in the ELF retextures it; the ctx table's textures are the tan badges (0x64/65/68/69 not on the archives [D probe]). Probes kept: ctx2_probe.rs / ctx2_probe2.rs (the EE-table dump ran from an untracked scratch script); live checks in the report settle sprite 16 vs a script sprite.
+- Tests: fix_context_hints_live 6/6 (the new bar-rect test fails on the pre-fix tree), swim-vent5/08-walls/grapple/qclaw/gadgets green, the HUD-adjacent chunk 9/9 binaries; the full no-fail-fast run covered 142 binaries + the allowed disc_golden trio before the 570 s wall (the nohup runner dies in this sandbox, foreground chunks).
+- Report: docs/reports/fix-context-hints2.md. Files: hud.rs (task), scene.rs (shared, the window constant + comment), fix_context_hints_live.rs; player.rs untouched.
+
+Stage Summary:
+- The hint bar now draws at the pane rect y 113..139; the grapple spot shows no prompt/ctx/icon; the 007 ring item is evidenced to the Bond-Moment zoom sprite 16 + live checks, awaiting the main agent's gdbwatch/screenshot.
