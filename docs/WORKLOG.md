@@ -9320,3 +9320,20 @@ Work Log:
   drone.rs comment; the 61fa5ce OFF is now evidence-backed.
 - Report: docs/reports/fix-nav-remainder2.md. Files: drone.rs, nav_kick_live.rs (the drive test's
   ignore attribute), WORKLOG, the report. No test loosened.
+
+Task ID: fix-portal-sweep
+Agent: worker (portal-sweep session)
+Task: Portal culling must never hide what the player can see, on every level. Playtest found
+07000005 --bond 16.67,30.04,58.60,1.755,-0.001 (snow trench between stone walls near grapple
+point #282) culling the near trench walls with the walk ON (NF_NOPORTAL=1 draws them). (1)
+Reproduce headlessly: eye cel / visited rooms / chain nodes / World draw counts on vs off, find
+the cels holding the trench walls and why the walk drops them. (2) A sweep test
+(portal_sweep_live.rs): every on-foot level, eye at each start point + grid along nav nodes,
+4 directions; every frustum-kept World cel within ~30 units with clear LOS must be kept by the
+walk; pin counts. (3) Keep the four ground-truth spots green. (4) Per-level frustum-only
+fallback with the failing reason documented where a level can't be made correct.
+
+Work Log:
+- Session started 00:23 UTC (deadline ~02:22 UTC). Branch s/fix-portal-sweep created from
+  origin/master (3c77a9d), pushed with this entry.
+- (next: read the portal docs + fix_portal*_live tests, reproduce the trench spot)
