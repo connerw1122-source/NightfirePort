@@ -241,19 +241,19 @@ fn the_menu_backdrop_plate_yields_to_the_movie_plane() {
     let mut fe = FrontEnd::new();
     fe.page = Page::Main;
     fe.backdrop_live = true;
-    let f = nf_view::menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let f = nf_view::menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     assert!(!f.runs.is_empty(), "the page controls still draw over the movie plane");
     assert!(!has_plate(&f), "no dark plate while the movie plane carries the backdrop");
     // Sister: without a live frame the plate stands in (the pre-movies look).
     let mut fe = FrontEnd::new();
     fe.page = Page::Main;
-    let f2 = nf_view::menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let f2 = nf_view::menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     assert!(has_plate(&f2), "the dark plate stands in without a live backdrop frame");
     // The intro page: the headless plate stands in there too (the host suppresses the whole
     // overlay while a real intro frame is up — the game shows no controls during P_INTRO [M 0x209e88]).
     let mut fe = FrontEnd::new();
     fe.intro_playing = true;
-    let f3 = nf_view::menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let f3 = nf_view::menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     assert!(has_plate(&f3), "the intro's plate stands in without a live intro frame");
 }
 
