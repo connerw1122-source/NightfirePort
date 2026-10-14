@@ -11135,3 +11135,9 @@ draws added; no wall-clock in Sim.
   73 tests, 0 failures. The four-crate sweep did not fit the window (background jobs die between tool calls
   in this sandbox — sessions 4 and 5). Report: docs/reports/fix-hud-radar.md (live checks inside: the SP
   no-blip confirmation, the MP ring position/size/blip reading, the pending 100n 007 item).
+
+## fix-escort-01 — s/fix-escort-01 (task 104a, started 15:52 UTC)
+- Goal: 07000001's contact (skin 0x4F) must reach the extraction plate via the AllyLead root motion
+  (NDrone2_DSTATE_AllyLead 0x15e698), the ch16 TOUCH gate holds both and 01 chains to 07000002; plus the
+  meshless exit trigger (lo/hi = inf) ported via the game's touch filter / Trigger_Calc so 0a's exit (ch74
+  -> 0700000b) fires too. Report: docs/reports/fix-escort-01.md. Work in progress.
