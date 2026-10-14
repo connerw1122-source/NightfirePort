@@ -11367,3 +11367,11 @@ Stage Summary:
   to the same gunfire, the protected-actor ch 0x60 rises on his death). Suite on the merged tree:
   see docs/reports/fix-06-driver.md. Report: docs/reports/fix-06-driver.md (live checks: the PCSX2
   no-draw confirmation, the death anim, the 700-880 step-out window; the headless render gap).
+
+---
+Task: fix-character-room-light
+Agent: worker (sandbox web-2cf47bf2)
+Task: characters lit by the room they stand in — find which cel ambient a character uses in the game (anim object's cel, obj+0x20, control_link_object_to_cel 0x1346b8) vs the port's lookup; whether dynamic lights add to characters; the per-character ambient multiplier. Spots 07000007 ballroom guests, 07000002 bathhouse.
+
+Work Log:
+- 19:45 UTC: branch s/fix-character-room-light created from origin/master (509ec984). work/ + ISO already present, setup skipped.
