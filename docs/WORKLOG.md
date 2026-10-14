@@ -9907,3 +9907,33 @@ Full suite on the final tree (origin/master 810c109 merged): **909 passed, 3 fai
   projectile, by_hash unchanged), draw→fire→reload through step_bond, native-carry identical
   numbers, the 18 no-model ids listed. Suite: 752 passed, 3 failed (the allowed disc_golden
   slim-ISO set), 27 ignored. Report: docs/reports/fix-weapon-assets.md.
+
+## fix-08-walls (s/fix-08-walls) — 2026-10-14
+
+Task 101h, both symptoms from the 1013-1758 playtest at 07000008's safe area (~(155, 43, −113)).
+- **(1) the wall threw Bond onto the zip line — reproduced, fixed.** The jump-grab's arm context
+  (`BLData+0x95F == 3`, `Player_HandleJump` 0x1916b0:118-147; the scan itself is wall-blind in the
+  game too — class-0x2C nearest within 1000, `Vec_Dist3D` only) was armed by a flat 12.0-unit
+  radius around each third icon. The game's arm region is the icon's STRADDLE-CEL set:
+  `Controls_StraddleTest` 0x134778 builds the icon's world sphere (`Control_BuildWorldSph`
+  0x133070 via `build_LinkToRoom` 0x1c9680:40 — r 1.164 on 08's "Hand_Over_Hand" [D probe]),
+  `Collide_StraddleCels` 0x1eac98 BFS-walks portals the sphere intersects (`Intersect_Portal`
+  0x1ea7b8 v0x101), and `Collide_Update` 0x1ea398:160-233 leaves a node on every occupant. The
+  port now resolves each icon's set at load (`icon_straddle_cels` over the cel graph; the Sim
+  carries the graph + `icon_cels`) and arms on the player's FindCel cel [M `build_FindCel`
+  0x1c8cb0 via `find_cell_raycast`] INTERSECTED with the measured 12.0 window [S deviation — the
+  port's cel buckets are coarser than the game's cels; pure occupancy broke the [L] 05 gate-door
+  0xFF pins]. Fail-first: east balcony (144, 45, −104, cell 43, 11.1 from the icon across the
+  wall) jumped → substate 15 across the wall pre-fix; post-fix plain jump, ctx 0xff; the west
+  ledge still grabs. Tests: fix_08_walls_live 4/4, fix_swim_vent5_live 2/2, fix_wire2_live 3/3.
+- **(2) the big wall in the missile room — root cause named, master already hides it, pinned.**
+  The wall = `Room_Outside_3` (cell 15)'s exterior slabs, tris across the whole
+  `Room_Guardhouse_F2` interior [D probe; fix-safe08 measured the protrusion]. The playtest build
+  predates the portal-lineage merges (fix-portal5/6/sweep landed 2026-10-14 01:10 UTC); at master
+  the game-mask never marks cell 15 from the missile room (24 yaws × 2 aspects, the port's exact
+  camera math) and every node-15 material culls while the furniture draws. Pinned by
+  `the_missile_room_visible_set_excludes_the_exterior_wall`; live checks in the report.
+- Suite: baseline on master 906 passed / 3 failed (the allowed disc_golden) / 27 ignored;
+  targeted post-fix suites green on the merged tree (origin/master merged 174804b). The full
+  re-run on the branch tip was still executing at the sandbox deadline — the next session must
+  re-run tools/test/suite.py before merging. Report: docs/reports/fix-08-walls.md.
