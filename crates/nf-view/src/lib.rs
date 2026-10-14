@@ -1026,10 +1026,11 @@ fn cam_axes(cam: &Camera) -> ([f32; 3], [f32; 3]) {
 /// drawn with the game's font (ACTION.ELF's FONTSerpLight) and the USATxt.dat strings.
 /// fix-menu-movies2: returns `(hud, movie)` — with the `movies` feature and an image that has movie
 /// data, the page's backdrop is its own looping FMV instead of the dark plate, decoded as a still
-/// (the first closed-GOP chunk only — fast; `--movie-frame N` picks the frame) and drawn on the ONE
+/// (closed-GOP chunks in order until the frame is covered — fast; `--movie-frame N` picks the
+/// frame) and drawn on the ONE
 /// movie plane (gpu.rs), exactly like the live loop. `--intro [N]` renders the P_INTRO movie the
 /// same way, fullscreen with no overlay (the intro page has no controls [M 0x209e88]).
-fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> (Option<gpu::HudFrame>, Option<(u32, u32, Vec<u8>)>) {
+fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_path: &str) -> (Option<gpu::HudFrame>, Option<(u32, u32, Vec<u8>)>) {
     let page_arg = args.iter().position(|a| a == "--page");
     if !front_end && page_arg.is_none() { return (None, None); }
     let Some(tables) = scene.hud.as_ref() else { eprintln!("[front end] no HUD tables (the game font) — the menu overlay needs ACTION.ELF"); return (None, None); };
@@ -1090,7 +1091,10 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> (Op
             (aux != 0).then_some(aux)
         };
         if let Some(code) = want {
-            match movie::movie_still(&scene_iso_name(), code, frame_n) {
+            // The image the movies are on: NF_MOVIE_ISO over the ISO argument (the live loop's
+            // App::movie_iso_path precedence) — not the bare NF_ISO env, which may point at the
+            // slim on-foot image whose PSS files are 0-byte stubs [L probe_iso_movies].
+            match movie::movie_still(&movie_iso_name(iso_path), code, frame_n) {
                 Ok(img) => movie = Some((img.width, img.height, img.rgba)),
                 Err(e) => eprintln!("[front end] movie {code:08X}: {e} — the dark plate stands in"),
             }
@@ -1110,6 +1114,15 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> (Op
 /// The ISO path for `read_files_bin` (the NF_ISO env or the default sandbox path).
 fn scene_iso_name() -> String {
     std::env::var("NF_ISO").unwrap_or_else(|_| "Nightfire-onfoot.iso".to_string())
+}
+
+/// The image the headless movie stills read: NF_MOVIE_ISO (a full retail image) over the ISO
+/// argument the binary was given — the live loop's `App::movie_iso_path` precedence. The old
+/// still path read the bare `NF_ISO` env instead of the ISO argument, so
+/// `nf-view <retail.iso> 07000048 --page main` reported the slim image's 0-byte PSS stubs and
+/// never saw the retail bytes [fix-menu-backdrop].
+pub fn movie_iso_name(iso_path: &str) -> String {
+    std::env::var("NF_MOVIE_ISO").unwrap_or_else(|_| iso_path.to_string())
 }
 
 /// Renders one frame offscreen and writes it as a PNG. `menu` = a front-end overlay frame (fix-menus2:
@@ -2479,7 +2492,7 @@ pub fn run() -> Result<()> {
                 eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);
             }
         }
-        let (mut menu_frame, movie_frame) = front_end_menu(&args, &scene, front_end);
+        let (mut menu_frame, movie_frame) = front_end_menu(&args, &scene, front_end, &iso);
         // fix-ingame-dev-menu: `--dev-page <name>` draws the F2 menu's page (menu/weapons/gadgets/
         // grenades/ammo/npcs/teleport/level/toggles/screenshot) over the game HUD, so the main agent
         // can render and check each page headless.
