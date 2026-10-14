@@ -97,6 +97,11 @@ pub struct ScopePortal {
     pub tris: [[V3; 3]; 2],
     pub a: usize,
     pub b: usize,
+    /// The portal's reference point: the 4 corners' average, stored at portal+0x70 by
+    /// `build_alloc_portal` 0x1c8928 (`puVar2[0x1c..0x1e] = (c0+c1+c2+c3)·0.25`) — the point
+    /// `Intersect_Portal` 0x1ea7b8's 0x800 path projects the query segment against (fix-08-collision2;
+    /// the port used corner 0, which missed crossings on long doorways).
+    pub centre: V3,
 }
 
 /// The cel graph the game scopes collision queries with: one bbox per runtime cel (the parse-wide
@@ -348,6 +353,14 @@ impl CollisionWorld {
         out
     }
 
+    /// Debug introspection (fix-08-collision2): the straddle set a capsule query at `a..b` with
+    /// radius `r` keeps from `cell` — the `Collide_StraddleCels` result the scoped passes test —
+    /// so a missing portal crossing is probeable from a test.
+    pub fn debug_straddle(&self, cell: usize, a: V3, b: V3, r: f32) -> Vec<usize> {
+        let mut hit = Self::capsule_portal_hit(a, b, r);
+        self.straddle(cell, &mut hit)
+    }
+
     pub fn triangle_count(&self) -> usize { self.stat.tris.len() }
 
     /// Every static triangle whose object's box meets `lo`..`hi`, in stored winding order (the [D]
@@ -487,14 +500,18 @@ impl CollisionWorld {
     }
 
     /// The actor-capsule portal test (`Intersect_Portal`'s 0x800 path [M 0x1ea7b8]: the point on the
-    /// capsule's segment closest to the portal's reference point, then that point's distance to the
-    /// portal's two triangles against radius × 1.5).
+    /// capsule's segment closest to the portal's +0x70 reference point, then that point's distance to
+    /// the portal's two triangles against radius × 1.5). The reference point is the portal's CENTRE —
+    /// the 4 corners' average `build_alloc_portal` 0x1c8928 stores at +0x70 — not a corner
+    /// (fix-08-collision2: corner 0 sat a doorway's height away from the capsule's band and missed the
+    /// crossing, dropping the neighbouring cel's walls out of the straddle set — the 01 escort wedge).
     fn capsule_portal_hit(a: V3, b: V3, r: f32) -> impl FnMut(&ScopePortal) -> bool {
         move |p: &ScopePortal| {
             let mut hit = false;
             for t in &p.tris {
-                // The portal's reference point: corner 0 (the game's portal+0x70 stored point).
-                let q = closest_on_segment(a, b, t[0]);
+                // The closest point on the capsule's segment (HITTEST+0x20..+0x30) to portal+0x70
+                // [M 0x1ea7b8's 0x800 branch: the clamped projection against the stored centre].
+                let q = closest_on_segment(a, b, p.centre);
                 let (cp, _) = closest_on_triangle(q, t);
                 let d = sub(q, cp);
                 if dot(d, d) < (r * 1.5) * (r * 1.5) { hit = true; break; }
@@ -1055,7 +1072,7 @@ mod tests {
         assert!(w.segment_hit([1.5, 1.0, 0.0], [2.5, 1.0, 0.0]).is_some(), "flat segment_hit still sees the wall");
         assert!(w.segment_hit_scoped(Some(0), [1.5, 1.0, 0.0], [2.5, 1.0, 0.0]).is_none(), "the scoped floor ray skips the unreachable wall");
         // Sister: with a portal the capsule straddles (a quad across its path), the wall is back.
-        graph.portals.push(ScopePortal { tris: [[[1.8, 0.0, -4.0], [1.8, 4.0, -4.0], [1.8, 4.0, 4.0]], [[1.8, 0.0, -4.0], [1.8, 4.0, 4.0], [1.8, 0.0, 4.0]]], a: 0, b: 1 });
+        graph.portals.push(ScopePortal { tris: [[[1.8, 0.0, -4.0], [1.8, 4.0, -4.0], [1.8, 4.0, 4.0]], [[1.8, 0.0, -4.0], [1.8, 4.0, 4.0], [1.8, 0.0, 4.0]]], a: 0, b: 1, centre: [1.8, 2.0, 0.0] });
         scope_cells[1].push(0);
         let w2 = mk(graph, scope_cells);
         let (scoped2, _) = w2.capsule_push_scoped(Some(0), [1.6, 1.0, 0.0], [1.6, 1.2, 0.0], 0.55);
