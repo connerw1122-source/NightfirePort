@@ -11922,3 +11922,8 @@ list's unlock states, the F8 render points).
   it fine, probe-backed). Sisters: the AND-mux before/after pairs + 4a's mid-ride OFF check.
 - 21:05: merged origin/master (9c55eace — the fix-character-room-light landing, docs/tests only, no production code). The matrix binary first-hand: 341 s in-suite (6 passed / 24 ignored), one sweep level (NF_MATRIX=07000001 --ignored) 161 s -> 27 levels ~4300 s, the held timeout's cause. Full suite running for the final total.
 - 21:29: DONE. The suite total on the final tree: 1096 passed / 6 failed (3 disc_golden allowed + 3 pre-existing pylon) / 63 ignored (the 24 #[ignore]d sweep levels included) / 32 min / ZERO timeouts — the held weapon_matrix_live timeout is gone (the binary: 341 s, 6 passed / 24 ignored). Report: docs/reports/weapon-matrix4b.md.
+## fix-pickups-ammo — s/fix-pickups-ammo (task 107e, started 22:37 UTC 2026-10-14)
+- Started from origin/master 4ea550b7 (the 2026-10-14 daytime merges). Scope: pickup layer vs game —
+  per-ammo-type caps, already-owned weapon pickup (ammo only), dropped guard guns (ammo count, despawn,
+  radius), ammo boxes, pickup sound + on-screen message, auto-switch (Player_IsBetterWeapon 0x1a6eb0,
+  already live). Files: crates/nf-game/src/{pickup,drone}.rs, the message in crates/nf-view/src/hud.rs.
