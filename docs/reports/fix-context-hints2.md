@@ -87,9 +87,13 @@ What the decompile + disc say:
 - Suite (foreground chunks; the nohup'd runner dies between tool calls in this sandbox — same as the last three
   sessions): `cargo test --offline --release -j2 --no-fail-fast -p nf-game -p nf-formats -p nf-audio -p nf-view
   -- --test-threads=1` — 142 binaries ok + the allowed disc_golden trio (3 failed, slim ISO) before the 570 s
-  wall; a second nf-view chunk (hud_playtest, fix_hud, objective banner/messages, menus_flow, devwin_flow,
-  pickups_trace, party_mission, pause_audio) 9/9 binaries ok. Not re-run to completion: nf-view's long tail
-  (levels_sweep, weapon_matrix) — untouched paths.
+  wall; then two more nf-view chunks on the same tree: the HUD-adjacent set (hud_playtest, fix_hud, objective
+  banner/messages, menus_flow, devwin_flow, pickups_trace, party_mission, pause_audio) 9/9 binaries and the
+  portal/scene set (portal chain, room_sound, script_commands, viewmodel_zoom, weapon_effects, frustum_cull,
+  lighting, impacts) 14/14 binaries, 48 tests — 0 unexpected failures across 165 binaries. nf-view's long tail
+  (levels_sweep, weapon_matrix) did not fit the window; those paths are untouched by this task.
+- Final tree = origin/master b65d6f7 (unchanged since the clone; re-fetched and verified an ancestor before the
+  push) + the 100h merge + this task's commits.
 
 ## Files
 
