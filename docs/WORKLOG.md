@@ -9334,3 +9334,32 @@ Work Log:
   from the pause page open/close in nf-view, with the menu's own sounds still playing.
 - Tests planned: a looping ambient voice's sample position does not advance while paused and
   resumes after; the menu click still plays; sister: unpaused it advances.
+- Evidence read end to end [M]: GS_PauseGame 0x17d178 writes ONLY GameState[0x50] + the 8 MPGame
+  pause words + the PlarStat timer pause — it calls no sound function, and NO Sound_*/SFX* code reads
+  GameState+0x50 (grep over all of ACTION.ELF; the only sound-adjacent reader is View_DrawSky's
+  thunder gate). The real sound pause is menu-driven: MenuManager_Create 0x21b908:121-124 (the
+  `pause_sound` flag → SFXPause op 9 + SFXPauseAllStreams op 0x16), MenuManager_Delete 0x21c2b0:11-22
+  (SFXUnPause 0xa + SFXUnPauseAllStreams 0x17); Player_Update 0x193600:71-77 passes pause_sound=1 for
+  the pause page, Mission_Update 0x182c60:78-79 passes 0 for the fail menu (sound keeps playing).
+  IOP side: ES_PauseSfx 0x1648 sets item+0x290 and pitch-0s the live voices (psiSamplePause 0xf46c
+  saves the pitch); SFXUpdate 0x4ee4 skips Paused items; sounds started while paused record
+  StartedWhenPaused (SFXStart3D 0x3aac) and still key on — the menu's own sounds.
+- Ported (nf-audio): Driver::set_paused (+ Item.gpaused, the held state next to the NIS pause's
+  per-frame flag) pitch-0+vol-0s every live item at the pause and skips them in update; the unpause
+  emits nothing — the next full update's recompute restores (the NIS-pause restore). Sound::set_paused
+  flushes the edge to the output immediately (the host stops ticking under a menu, so the next batch
+  would come only after the menu closes). Output: Shared.paused freezes the MUSIC queue drain only
+  (op 0x16's stream hold / GamePausedMe); voices are NOT held at the output — while-paused starts
+  still sound. The mix closure is extracted verbatim into `Mixer` (nf-audio/lib.rs) so the hold is
+  testable headless. nf-view: one per-frame diff in RedrawRequested (`fe.is_some() || paused` →
+  Sound::set_paused), re-armed after build_sound swaps the sound on level reload; plus the missing
+  host consumption of `fe.closed` (the pause page's Resume row set it, nothing read it — Enter-on-
+  Resume left the menu up forever, which would have stuck the sound hold too).
+- Tests: nf-audio unit (the pause edge/skip/menu-start/restore + the Mixer playhead/position hold,
+  both with sister asserts) and NF_ISO crates/nf-view/tests/fix_pause_audio_live.rs through
+  nf_view::load + sound_tick on 07000005 (the playtest level): the ambient keys on through the real
+  path, the pause holds it (no recompute, no key-ons), a 0x1da menu-click start while paused keys on,
+  the unpause restores. All green; full suite per-crate in the foreground (the sandbox kills
+  background jobs between tool calls — suite.py cannot survive; runs documented in the report).
+- Files: crates/nf-audio/src/{sfx,lib}.rs, crates/nf-view/src/{lib,menu}.rs,
+  crates/nf-view/tests/fix_pause_audio_live.rs, docs/systems/sound.md (§8 port note), WORKLOG, report.

@@ -496,7 +496,9 @@ impl FrontEnd {
     }
 
     /// The pause page opens over a running mission (the game's GS_PauseGame [M 0x17d178 pauses the
-    /// sim]; the port only tracks the page — the caller pauses its own loop).
+    /// sim]; the port only tracks the page — the caller pauses its own loop, and the sound hold:
+    /// `MenuManager_Create` with `pause_sound` runs `SFXPause`+`SFXPauseAllStreams` [M 0x21b908:121-124],
+    /// which the host applies through `Sound::set_paused` when this page comes up).
     pub fn open_pause(&mut self) -> bool {
         if self.page != Page::Pause && self.flow.current_level != FRONTEND_LEVEL && self.flow.current_level != 0 {
             self.page = Page::Pause;
