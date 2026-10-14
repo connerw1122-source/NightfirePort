@@ -11995,3 +11995,10 @@ Work Log:
 - 22:10-22:45: the implementation (grenade.rs: the `StuckGadget` phase box, the generalized stuck tick, the tail; drone.rs: the consumer arms 0x446/0x27c/0x447, the beam pass + the char-crossing trigger + the 6-cap, the throw fuse arm; scene.rs: the family fuse formula, the stuck draw alignment, the beam slots TRACER_SLOTS+3/+4, the digit pools kinds 4/5). Tests: 3 unit (the stick+300 fuse+beeps/digits, the non-210 fuse, the tripbomb arm 121) + 4 live through step_bond (the stick+blast+0x6000052, the countdown+beeps, the arm/beam/trigger + the off-beam sister, the 6-cap).
 - 22:47: checkpoint pushed. 22:52: the pre-fix probe (git checkout HEAD~1 -- crates): stuck=false, boom_at=300 (bounced, never stuck) — the live tests fail on the pre-fix tree as required; restored.
 - 22:56: the full suite started on the final tree (tools/test/suite.py); the report + the finish steps follow.
+---
+Task: fix-shading-parity
+Agent: worker (sandbox web-461a08d8)
+Task: shading and lighting parity — find the game's lighting model in the decompile (per-character directional lights, ambient, PS2 0x80=1.0 colour scale, rim/spec, baked vertex colours + x2 scale, texture filtering/mips from GS TEX1, edges/AA) and port it exactly in crates/nf-view/src/{gpu,scene}.rs + shaders. The user's compare on 07000007 Kimiko: the port looks flat, greyer, harsher; walls brighter with harder falloff; aliased edges.
+
+Work Log:
+- 00:00 UTC: branch s/fix-shading-parity created from origin/master (c9ada8c8). work/, ISO, queue worktree, cargo+ALSA from the previous sandbox still present; setup skipped except remote+fetch. Suite started in background.
