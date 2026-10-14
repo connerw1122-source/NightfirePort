@@ -150,6 +150,9 @@ fn a_completed_mission_plays_the_outro_and_returns_to_the_map() {
     assert_eq!(fe.requested_level, Some(0x0730_0004), "LevelToEndTo = the level's outro code [M 0x182c60 case 6]");
     assert_eq!(fe.flow.level_to_load, 0x0730_0004, "ResetMap_LevelToLoad(LevelToEndTo, 0, 0) [M case 4]");
     assert!(fe.flow.movie_pending);
+    // Mission_Update case 4's order [M; 568a6e8]: the load pushes first, THEN the 8-frame fade
+    // holds on top — run it out so the load machine is on top again.
+    for _ in 0..8 { fe.flow.main_tick(); }
     assert!(!fe.flow.load_tick(), "phase 0: the outro wrap");
     assert_eq!(fe.flow.movie_code, 0x0730_0004);
     assert_eq!(fe.flow.get_state(), ST_MOVIE);
@@ -172,6 +175,8 @@ fn a_failed_mission_returns_to_the_map_without_a_movie() {
     while fe.flow.get_state() == menu::ST_FADE_HOLD { fe.flow.main_tick(); }
     assert_eq!(fe.requested_level, Some(menu::FRONTEND_LEVEL), "failures skip the outro [M cases 2/3]");
     assert!(!fe.flow.movie_pending, "a plain load, no wrap");
+    // The 8-frame fade holds on top of the load [M 0x182c60 case 4's order; 568a6e8] — run it out.
+    for _ in 0..8 { fe.flow.main_tick(); }
     assert_eq!(fe.flow.get_state(), ST_MAPLOAD, "the load is on its way");
     assert!(fe.flow.load_tick(), "no movie phase — one tick loads");
 }
