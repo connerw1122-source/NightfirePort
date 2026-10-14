@@ -11186,3 +11186,11 @@ Work Log:
 
 Stage Summary:
 - Pushed 56d9bff + the report commit to s/fix-weapon-fx-levels; docs/reports/fix-weapon-fx-levels.md (the mechanism, the three fixes with addresses, the table, the live checks incl. the Swoosh reference render, what's left). 0 unexplained missing effect cells; the +0x80 held-model residual and the headless foreign-fire block are the known leftovers.
+
+---
+Task ID: 103f2-fix-guard-weapons2
+Agent: guard-weapons2 worker
+Task: fix-guard-weapons2 — the branch fails on current master: merge origin/master into s/fix-guard-weapons first; six tests fail on the merge (fix_guard_weapons_live x3: 3x3 matrix 90/100 shots, fire-rate 4/40 shots, TooClose 2.5 vs 5; master-passing: fix_progress difficulty-scale, render2 dropped-guns-dim, fix_objects death-drop; walkreal_07000001_live in batch). Find what the merge changes in the guard fire path / damage scale, fix it, keep the rest green, full suite. Files: crates/nf-game/src/{drone,bullet}.rs (+ shared-file additive hooks listed in the report).
+
+Work Log:
+- (18:20 UTC) Branch s/fix-guard-weapons2 created from origin/s/fix-guard-weapons (60b5b8e); origin/master merged (ed718f8, fix-weapon-fx-levels) — WORKLOG conflict resolved append-only (both sides kept), merge commit 5186f76. Setup reused (repo, work/, ISO, nf-queue). Reproduction next.
