@@ -10489,3 +10489,14 @@ report; the FMV stills need a retail image (none in this sandbox).
 Suite on the final tree (origin/master 6cbe522 merged): see docs/reports/fix-menus-real2.md.
 Files: crates/nf-view/src/{menu,hud}.rs, crates/nf-view/tests/{menus_flow,menu_movies}.rs, plus
 the shared-file hooks listed in the report (nf-formats/src/hud.rs font_header, lib.rs call sites).
+
+## fix-swim-entry (started)
+
+Branch `s/fix-swim-entry` (from origin/master 6691ef9). Task 103d: the swim ENTRY depth off the 07000002 bank
+(`--bond -82.3,5.3,32.05,1.57`) — the port enters the swim only when Bond's feet are 0.62 under (pos 3.747 vs
+surface 3.7675) because the stateless smallest-bbox `find_cel` keeps the bank's land cel until he's deep. Reading
+the game's cel pick: `Player_InWater` 0x195e50 reads the player's RUNTIME cel (`*(obj+0x20)+0x90`), and obj+0x20
+is maintained per tick by `control_handle_cel_change` 0x133288 (move segment portal-cross `Cel_ObjectLeftCel`
+0x1e0d58 → `build_point_in_bounding_box` 0x1c9500 keep → `build_LinkToRoom` 0x1c9680 → `build_FindCel` 0x1c8cb0
+at the world-sphere centre obj+0x80 with the raycast tie-break) — stateful, unlike the port's per-tick
+smallest-bbox lookup. Probing the pond cels next, then porting the relink.
