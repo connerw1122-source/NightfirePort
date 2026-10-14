@@ -241,6 +241,9 @@ pub fn merge_weapon_assets<R: std::io::Read + std::io::Seek>(
     wanted: &Wanted,
     index: &DiscIndex,
     dev: bool,
+    // fix-weapon-fx-levels: the `ammo_data` casing meshes (`Bullet_init_casing` 0x12fde0's mesh
+    // argument [M]) — wanted so a foreign-level give can draw the ejected casings.
+    casing_meshes: &[u32],
 ) -> Result<MergeStats> {
     let _ = iso;
     let mut stats = MergeStats::default();
@@ -269,7 +272,7 @@ pub fn merge_weapon_assets<R: std::io::Read + std::io::Seek>(
         }
         // The foreign maps that hold the merged skins' meshes and the sleeves; the +0x80/+0x4C/
         // +0x5C hashes the level still misses ride along (`take_maps_holding` is first-wins).
-        let mut hashes = crate::wanted_weapon_models(level, wd);
+        let mut hashes = crate::wanted_weapon_models(level, wd, casing_meshes);
         for h in &new_skins {
             if let Some(sk) = level.skins.get(h) {
                 for mh in sk.main.iter().flatten() { hashes.push(*mh); }

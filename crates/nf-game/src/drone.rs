@@ -7602,6 +7602,25 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             out
         } else { Vec::new() };
         for g in &mut self.grenades {
+            // The projectile trails (`Bullet_DoTrails` 0x12d890, from `Bullet_update` 0x12e7b0:375/475
+            // — every flying bullet's tick): the smoke trail behind the AR-GL / stun rounds (weapon
+            // `+0x6C` bit 0x2 → `Bullet_trail_effect_smoke` 0x12cba8, every 4th tick) and the MGL
+            // rounds' exhaust puffs (bit 0x20, every 3rd tick, decomp :152-166). The records [L
+            // ee_start_05.bin @ 0x2bf150 sweep]: 0x1b/0x36/0x69 carry 0x2, 0x2a/0x2b carry 0x20 —
+            // all gravity bullets (+0x6C & 8), so the port's Grenade path covers them. The
+            // MPSettings trail-detail gate (word 384) is 0 on this build [L .bss]. The bit-0x10000
+            // Swoosh ribbon (the Sentinel/Scorpion rocket flame) is NOT ported — `Swoosh_Create`
+            // 0x1a4e40 is a new system (the report documents it).
+            if let Some(r) = d.weapons.records.get(g.weapon_type as usize) {
+                let f6c = u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap());
+                let rng = &mut self.rng;
+                if f6c & 0x2 != 0 && self.frame & 3 == 0 {
+                    self.gas.init_trail_smoke(rng, g.pos);
+                }
+                if f6c & 0x20 != 0 && self.frame % 3 == 0 {
+                    self.gas.init_exhaust_puff(rng, g.pos);
+                }
+            }
             while let Some(ev) = g.update(d.world, &mut self.rng) {
                 match ev {
                     crate::grenade::GrenadeEvent::Bounce(p) => {
