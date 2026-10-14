@@ -11395,3 +11395,9 @@ Stage Summary:
   binaries ran in foreground --test-threads=1 chunks.
 - Report: docs/reports/fix-oddjob-hat.md (the evidence chain, the live checks: the PCSX2 curve/
   stick/clang/expiry, the gdbwatch obj+0xF4=3 and BU+0xFC=1500 countdown, the nf-view render spots).
+fix-blast-scripts: started. Task: explosions — each blast plays its own effect script (the port's
+spawn_blast currently renders the generic one-shot 0x06000052 for every explosion, while the game passes
+a per-source effect script to Explode_Create 0x17cbd0). Plan: census every Explode_Create call site and
+the script id it passes from the decompile, carry the script id through the port's blast request, play
+that script; NF_ISO tests for the Samurai bolt, a frag, a rocket and a destroyable. Branch
+s/fix-blast-scripts cut from origin/master 509ec984.
