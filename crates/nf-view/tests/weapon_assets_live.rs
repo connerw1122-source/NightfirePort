@@ -158,7 +158,7 @@ fn merge_resolves_every_asset_on_07000005() {
     let wanted = nf_view::weapon_assets::Wanted::Ids(give.iter().map(|&w| w as u8).collect());
     let t = Instant::now();
     let st = nf_view::weapon_assets::merge_weapon_assets(&d.img, &read, &mut level, &mut skeletons,
-        &mut sequences, &mut scripts_merged, &have_scripts, &guard, &wd, &wanted, &index, false)
+        &mut sequences, &mut scripts_merged, &have_scripts, &guard, &wd, &wanted, &index, false, &[])
         .expect("merge");
     eprintln!("[weapon-assets] merged {} archive(s), {} skin(s), {} map(s), {} skeleton(s), {} sequence(s), {} script(s) in {:.2}s",
         st.archives, st.skins, st.maps, st.skeletons, st.sequences, st.scripts, t.elapsed().as_secs_f32());
