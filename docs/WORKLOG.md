@@ -10416,3 +10416,11 @@ Work Log:
 - Tests (crates/nf-view/tests/gadgets_live.rs, 4/4, failing-first via the deleted scratch probes: the clip never drained and no beam parked pre-fix): the laser's drain/light/stop-at-0; the stunner's spend-on-target + free aimed-off hold; the AIMS lights attach + the idle timer; the hat's contact kill + no explosion. Neighbours green: gadget_laser_live 7, fix_level_0c_live 4, fix_fusebox_cut, qclaw_live, gadget_grapple_live, explode_live, fix_weapon_effects_live, fix_weapon_sounds_live.
 - Shared hooks: drone.rs (aims_idle on its own line + the hat pass), scene.rs (the restructure + the new slots; nothing removed but the replaced stale comment). grenade.rs/player.rs/lib.rs/gun.rs/gadget.rs/bullet.rs untouched.
 - Left: the taser's msg-7 stun state machine; the laser's battery-station recharge (0x1a5460:575-598); the AIMS bone-9/10/11 gates (+0x93e/+0x2f0/+0x2fc); the hat's return/clang; the pause-menu stop hook. All in the report with the live checks.
+
+---
+Task ID: 102i-fix-guard-misc
+Agent: guard-misc worker
+Task: fix-guard-misc — the 0c sniper takes no damage; 06 guards can't open doors (NDrone2_ReachedDestNode door case); 06 first-frame crazy models (drones unposed at tick 0). Files: crates/nf-game/src/{drone,door,damage}.rs.
+
+Work Log:
+- (started 09:16 UTC) Branch s/fix-guard-misc created from origin/master 6cbe522; setup reused (repo, work/, ISO, nf-queue). Repro tests next; fast suite to follow.
