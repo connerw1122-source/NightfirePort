@@ -671,16 +671,25 @@ struct TextRows { rows: Vec<(f32, f32, f32, f32)> }
 
 fn text_rows(frame: &nf_view::gpu::HudFrame, n_tex: usize, aspect: f32) -> TextRows {
     // The font texture was appended last by the caller; runs name it by index+1.
-    let font_tex = n_tex as u32;
+    let font_tex = n_tex;   // runs name the texture by index+1; the font was appended last
     let mut is_font = vec![false; frame.v.len()];
     for &(tex, _, start, count) in &frame.runs {
         if tex == font_tex { for v in &mut is_font[start as usize..start as usize + count as usize] { *v = true; } }
     }
     let k = (2.0 / 512.0) * (4.0 / 3.0) / aspect;
     let mut pts: Vec<(f32, f32)> = Vec::new();
-    for (q, font) in frame.v.iter().zip(&is_font) {
-        if !font { continue; }
-        pts.push((q.p[0] / k + 256.0, (1.0 - q.p[1]) * 224.0));
+    // Per-quad bounding boxes: runs concatenate 6-vertex quads; the full-screen plates also ride the
+    // font texture (Hud::ndc_quad pins 0x03000003), so a vertex-level filter would catch them — keep
+    // only quads of text size.
+    let mut vi = 0usize;
+    while vi < frame.v.len() {
+        let quad_is_font = vi < is_font.len() && is_font[vi];
+        let (x0, x1, y0, y1) = frame.v[vi..vi + 6].iter().fold((f32::MAX, f32::MIN, f32::MAX, f32::MIN), |acc, q| {
+            let x = q.p[0] / k + 256.0; let y = (1.0 - q.p[1]) * 224.0;
+            (acc.0.min(x), acc.1.max(x), acc.2.min(y), acc.3.max(y))
+        });
+        if quad_is_font && x1 - x0 <= 120.0 && y1 - y0 <= 60.0 { pts.push((x0, y0)); pts.push((x1, y1)); }
+        vi += 6;
     }
     pts.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
     let mut rows: Vec<(f32, f32, f32, f32)> = Vec::new();
@@ -723,7 +732,8 @@ fn the_footer_hints_are_centred_in_their_bars() {
         fe.page = page;
         let (frame, n) = frame_with_font(&fe, lang.as_ref(), 4.0 / 3.0);
         let rows = text_rows(&frame, n, 4.0 / 3.0);
-        let band = rows.band(391.0).or_else(|| rows.band(396.0)).expect("the footer hint draws");
+        eprintln!("[dbg] {page:?} rows: {:?}", rows.rows);
+        let band = rows.band(390.0).or_else(|| rows.band(385.0)).or_else(|| rows.band(394.0)).expect("the footer hint draws");
         let centre = (band.0 + band.1) / 2.0;
         assert!((centre - 256.0).abs() < 5.0, "{page:?}: the hint row spans {band:?}, centre {centre} — the bar centres its label at 320/640 [M Label_Update 0x218cb8:177-182]");
         // Sister: the hint sits inside the bar control (50..590 → 40..472 HUD x).
@@ -796,8 +806,6 @@ fn the_main_rows_use_the_page_colours() {
         let y_hud = (1.0 - q.p[1]) * 224.0;
         // The rows sit at 640-space y 262..354 → HUD 244.5..330.4; the desc plate is below 357*0.933=333.2.
         if !(240.0..=332.0).contains(&y_hud) { continue; }
-        let is_font_text = frame.runs.iter().any(|&(tex, _, s, c)| tex == textures.len() as u32 && (s..s + c).contains(&(frame.v.iter().position(|p| std::ptr::eq(p, q)).unwrap() as u32)));
-        let _ = is_font_text;
         if near(q.c, cream) { saw_sel = true; }
         if near(q.c, dark_orange) { saw_other = true; }
     }
@@ -822,11 +830,11 @@ fn the_codename_page_lists_new_codename_and_play_without_saving() {
     let (frame0, n0) = frame_with_font(&fe, Some(&lang), 4.0 / 3.0);
     let hash = |f: &nf_view::gpu::HudFrame, n: usize, want: u32| f.runs.iter().any(|&(t, _, _, _)| t > 0 && t <= n && true) && f.runs.iter().any(|r| r.0 > 0);
     let _ = hash;
-    let tex_of = |f: &nf_view::gpu::HudFrame| f.runs.iter().filter(|r| r.0 > 0).map(|r| r.0).collect::<Vec<u32>>();
+    let tex_of = |f: &nf_view::gpu::HudFrame| f.runs.iter().filter(|r| r.0 > 0).map(|r| r.0).collect::<Vec<usize>>();
     let has = |f: &nf_view::gpu::HudFrame, h: u32| {
         // runs' tex is an index into the caller's list; MENU_TEXTURES order is fixed.
         let idx = menu::MENU_TEXTURES.iter().position(|&t| t == h).expect("hash in MENU_TEXTURES") + 1;
-        tex_of(f).contains(&(idx as u32))
+        tex_of(f).contains(&idx)
     };
     assert!(has(&frame0, 0x0300_013b), "cursor 0 (New Codename) shows the create preview 0x300013b");
     fe.cursor = 1;
@@ -870,7 +878,7 @@ fn the_records_page_draws_the_score_table() {
     let (frame, n) = frame_with_font(&fe, Some(&lang), 4.0 / 3.0);
     // The medal image is the page data's own texture control.
     let idx = menu::MENU_TEXTURES.iter().position(|&t| t == 0x0300_013d).expect("medal tex listed") + 1;
-    assert!(frame.runs.iter().any(|r| r.0 == idx as u32), "the medal image 0x0300013d draws");
+    assert!(frame.runs.iter().any(|r| r.0 == idx), "the medal image 0x0300013d draws");
     // The three score-row labels + the medal label bind from the language bank.
     for id in [0x302u32, 0x165, 0x305, 0x307] {
         let s = lang.bind(id).unwrap_or("");

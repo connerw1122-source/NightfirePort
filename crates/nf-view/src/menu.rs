@@ -1008,7 +1008,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             // [M 0x20a408] and 0x375 to the plate, flashing on the 240-frame cycle.]
             quad640(&mut h, 0x0300_0074, 0.0, 0.0, MW, MH, [0.0, 0.0, 512.0, 512.0], gs(0x7f7f7f, 0xff));
             if fe.press_start_on {
-                h.text(Anchor::Centre, font, -2, &bind(0x100_01eb), mx(320.0), my(309.0), false, gs(YELLOW, 0xff), true);
+                centred(&mut h, font, -2, &bind(0x100_01eb), mx(320.5), my(317.0), gs(YELLOW, 0xff), true, 1.0);
             }
             let legal = bind(0x375);
             if !legal.is_empty() {
@@ -1016,7 +1016,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
                 // [L the main agent's PCSX2 captures 2026-10-13; the port's raw 92-column run went off
                 // the right edge]. Wrap to the plate's pixel width, centre at the plate's centre x=320.
                 for (i, line) in wrap_px(&legal, font, 500.0).iter().take(6).enumerate() {
-                    h.text(Anchor::Centre, font, -3, line, mx(320.0), my(334.0 + i as f32 * 18.0), false, gs(CREAM, 0xc0), false);
+                    centred(&mut h, font, -3, line, mx(320.0), my(334.0 + i as f32 * 18.0), gs(CREAM, 0xc0), false, 1.0);
                 }
             }
         }
@@ -1031,9 +1031,9 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             for (i, &lbl) in MAIN_ITEMS.iter().enumerate() {
                 let y = 262.0 + i as f32 * 32.0;
                 let (c, scale) = if i == fe.cursor { (cream, 1.35) } else { (gs(0x73330f, 0x80), 1.2) };
-                h.text_scaled(Anchor::Centre, font, -2, &bind(lbl), mx(167.0 + 153.0), my(y + 6.0), true, c, true, scale);
+                centred(&mut h, font, -2, &bind(lbl), mx(167.0 + 153.0), my(y + 6.0), c, true, scale);
             }
-            h.text(Anchor::Centre, font, -2, &bind(MAIN_DESCS[fe.cursor.min(2)]), mx(103.0 + 217.0), my(357.0 + 14.0), false, cream, true);
+            centred(&mut h, font, -2, &bind(MAIN_DESCS[fe.cursor.min(2)]), mx(103.0 + 217.0), my(357.0 + 14.0), cream, true, 1.0);
             hint_bar(&mut h, font, &hint(0x54e, "~V Scroll  ~A Select"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
@@ -1054,7 +1054,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             // The row's description under the wheel [M 0x1f89f0's desc binds].
             let desc = if fe.cursor == 0 { bind(0x100_0004) } else { bind(0x100_0003) };
             for (i, line) in wrap_px(&desc, font, 500.0).iter().take(4).enumerate() {
-                h.text(Anchor::Centre, font, -2, line, mx(320.0), my(301.0 + 28.0 + i as f32 * 18.0), false, bright, true);
+                centred(&mut h, font, -2, line, mx(320.0), my(301.0 + 28.0 + i as f32 * 18.0), bright, true, 1.0);
             }
             // The confirm box: the game pops it for "Play without saving" [M C_SBNFCN 0x20b390:19-21
             // Menu_CreateOptionBox(0x10000bb, 9, 1, 1); the plate 0x100001f2].
@@ -1077,7 +1077,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             // The description wraps inside its plate (50,301,540×113) [L the main agent's captures:
             // the port's single line ran off the right edge].
             for (i, line) in wrap_px(&bind(DIFFICULTY_DESCS[fe.cursor.min(2)]), font, 500.0).iter().take(4).enumerate() {
-                h.text(Anchor::Centre, font, -2, line, mx(320.0), my(301.0 + 28.0 + i as f32 * 18.0), false, bright, true);
+                centred(&mut h, font, -2, line, mx(320.0), my(301.0 + 28.0 + i as f32 * 18.0), bright, true, 1.0);
             }
             hint_bar(&mut h, font, &hint(0x218, "~A Select  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
@@ -1099,7 +1099,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             // inside the plate.
             let desc = if fe.unlocked_row(row) { bind(CAMPAIGN[row].2) } else { bind(LOCKED_DESC) };
             for (i, line) in wrap_px(&desc, font, 500.0).iter().take(4).enumerate() {
-                h.text(Anchor::Centre, font, -2, line, mx(320.0), my(301.0 + 28.0 + i as f32 * 18.0), false, bright, true);
+                centred(&mut h, font, -2, line, mx(320.0), my(301.0 + 28.0 + i as f32 * 18.0), bright, true, 1.0);
             }
             hint_bar(&mut h, font, &hint(0x208, "~A Select  ~Y Dossier  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
@@ -1121,7 +1121,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             emblem(&mut h, DOSSIER_ROWS[row].0, 0x0300_00bf);
             wheel(&mut h, fe, font, lang, |_fe, r| bind(DOSSIER_ROWS[r.min(3)].1), cream);
             for (i, line) in wrap_px(&bind(DOSSIER_ROWS[row].2), font, 500.0).iter().take(4).enumerate() {
-                h.text(Anchor::Centre, font, -2, line, mx(320.0), my(301.0 + 28.0 + i as f32 * 18.0), false, bright, true);
+                centred(&mut h, font, -2, line, mx(320.0), my(301.0 + 28.0 + i as f32 * 18.0), bright, true, 1.0);
             }
             hint_bar(&mut h, font, &hint(0x218, "~A Select  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
@@ -1142,17 +1142,17 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
             let m = fe.cursor.min(CAMPAIGN.len() - 1);
             // The selected mission's name in the list control [M P_DSRECORDS 0x217248:11-13 fills
             // 0x10000174 from sp_level — the name labels are CAMPAIGN's +0x04].]
-            h.text(Anchor::Centre, font, -2, &bind(CAMPAIGN[m].1), mx(132.0 + 188.0), my(124.0 + 8.0), false, bright, true);
+            centred(&mut h, font, -2, &bind(CAMPAIGN[m].1), mx(132.0 + 188.0), my(124.0 + 8.0), bright, true, 1.0);
             const RECORD_ROWS: [(u32, f32, f32, f32); 3] = [(0x302, 83.0, 169.0, 248.0), (0x165, 83.0, 202.0, 352.0), (0x305, 83.0, 235.0, 352.0)];
             for (lbl, x, y, w) in RECORD_ROWS {
-                h.text(Anchor::Centre, font, -2, &bind(lbl), mx(x + w / 2.0), my(y + 8.0), false, cream, true);
+                centred(&mut h, font, -2, &bind(lbl), mx(x + w / 2.0), my(y + 8.0), cream, true, 1.0);
             }
             // The value controls (375,169/202/235,185×16) [L parsed; Label_Update centres them].
             for y in [169.0f32, 202.0, 235.0] {
-                h.text(Anchor::Centre, font, -2, "0", mx(375.0 + 92.5), my(y + 8.0), false, cream, true);
+                centred(&mut h, font, -2, "0", mx(375.0 + 92.5), my(y + 8.0), cream, true, 1.0);
             }
             quad640(&mut h, 0x0300_013d, 435.0, 282.0, 128.0, 64.0, [0.0, 0.0, 255.0, 127.0], gs(0x7f7f7f, 0xff));
-            h.text(Anchor::Centre, font, -2, &bind(0x307), mx(76.0 + 120.0), my(306.0 + 8.0), false, cream, true);
+            centred(&mut h, font, -2, &bind(0x307), mx(76.0 + 120.0), my(306.0 + 8.0), cream, true, 1.0);
             hint_bar(&mut h, font, &hint(0x49e, "~V Change  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
@@ -1349,18 +1349,26 @@ fn wheel_dim(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, _lang: Op
         let s = label(fe, row);
         // The label sprite centres in its control: x = ctrl.x + ctrl.w/2, y = ctrl.y + ctrl.h/2
         // [M Label_Update 0x218cb8:177-182 (x), :202-206 (y); the default format's fe 03].
-        h.text_scaled(Anchor::Centre, font, -2, &s, mx(WHEEL_X[slot] + WHEEL_W[slot] / 2.0), my(WHEEL_Y[slot] + 8.5), false, c, true, scale);
+        centred(h, font, -2, &s, mx(WHEEL_X[slot] + WHEEL_W[slot] / 2.0), my(WHEEL_Y[slot] + 8.5), c, true, scale);
     }
 }
 
 fn dimmed(mut c: [f32; 4], a: u32) -> [f32; 4] { c[3] = gs(0, a)[3]; c }
+
+/// Centre one text row at 640-space x `xc` [M `__Font_DrawText` 0x1eee48:69-71 — the format's fe 03
+/// flag 2 applies `x -= width * 0.5`; every menu label carries fe 03 (Label_Init 0x218638:53's
+/// DAT_003096c0). The port's `text_scaled` pen starts at x, so the half-width shift lands here.]
+fn centred(h: &mut Hud, font: &nf_formats::hud::Font, layer: i32, s: &str, xc: f32, y: f32, c: [f32; 4], shadow: bool, scale: f32) {
+    let w = font.layout(s, 0.0, 0.0).1 * scale;
+    h.text_scaled(Anchor::Centre, font, layer, s, xc - w / 2.0, y, false, c, shadow, scale);
+}
 
 /// The page header: the header control's own band (50,40,376×17) with the label centred in it
 /// [M every list page's header control (parsed 2026-10-14); Label_Update 0x218cb8:177-182 centres at
 /// ctrl.x + ctrl.w/2 = 238, :202-206 vertically at 48.5; the label colour is the control's own
 /// msg-0x1b 0x7d6d59ff → 0x645a49ff (MenuManager_Create 0x21b908:238-243's rewrite)].
 fn page_header(h: &mut Hud, font: &nf_formats::hud::Font, s: &str) {
-    h.text_scaled(Anchor::Centre, font, -1, s, mx(238.0), my(48.5), false, gs(CREAM, 0xff), true, 1.2);
+    centred(h, font, -1, s, mx(238.0), my(48.5), gs(CREAM, 0xff), true, 1.2);
 }
 
 /// The panel behind the rows [M pages 0x40000025/0x40000023/0x4000001c/0x4000002b control (50,53,590×295)
@@ -1419,7 +1427,7 @@ fn logo_stamp(h: &mut Hud) {
 fn confirm_box(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, c: [f32; 4]) {
     plate(h, mx(50.0), my(301.0), mx(540.0), my(113.0), gs(0x201008, 0xe0));
     for (i, line) in wrap_px(text, font, 500.0).iter().take(4).enumerate() {
-        h.text(Anchor::Centre, font, -1, line, mx(320.0), my(306.0 + i as f32 * 22.0), false, c, true);
+        centred(h, font, -1, line, mx(320.0), my(306.0 + i as f32 * 22.0), c, true, 1.0);
     }
 }
 
