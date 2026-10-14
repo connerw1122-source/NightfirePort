@@ -54,7 +54,13 @@ Branch `s/fix-06-alarm` (from master 7785582). Session 16:02– UTC 2026-10-14.
   `sound.rs` unit tests), `fix_drone3_live` 5/5, `fix_searchlight_alarm_live` 2/2 (045l's tests
   unchanged), `spawner_kill_live` 5 passed + 1 pre-existing ignore (its own note: test setup, the
   fix's assertions pass), `fix_npcs_live` 4/4.
-- Full suite (`tools/test/suite.py`, slim ISO) re-run on the final tree: see the result line below.
+- Full suite (`tools/test/suite.py`, slim ISO, the final tree — master was already current) on
+  2026-10-14 16:41–17:16 UTC: **1053 passed, 4 failed, 33 ignored (35 min)**. The 4: the three
+  allowed `disc_golden` tests, plus `TIMEOUT weapon_matrix_live after 600 s (last started:
+  matrix_07000015)` — the weapon-matrix2 runner's all-27-level sweep exceeds the suite's 600 s
+  per-binary cap on this sandbox. It is pre-existing, not this task's: the same binary timed out
+  the same way on today's pre-fix baseline run (16:37, `matrix_07000014` — the same progress
+  point), and this task adds only a 4-entry list ticked once per frame.
 - NF_SILENT stays respected: the tests read the EE-side node pool (`Sounds::active_ids`) and the
   music command board — never the driver's output; no new draws were added anywhere.
 
@@ -70,8 +76,11 @@ Branch `s/fix-06-alarm` (from master 7785582). Session 16:02– UTC 2026-10-14.
 
 1. **Hear it in PCSX2** (no GPU/audio here). Walk into a courtyard beam on 06 and confirm: the
    klaxon loops while the beam holds you, the music leaves stealth ~a second in, and the klaxon
-   stops when the alarm ends (the game raises OFF ch 177 somewhere — the port honours it; if the
-   game's klaxon instead stops *with the beam*, ch 177's source is the next thing to pin).
+   stops when the alarm ends. The siren's OFF channel 177 has exactly one disc writer: **touch
+   trigger placement 765**, box (32.47, 42.22, −59.18)–(38.30, 46.79, −48.99) — the ground past the
+   courtyard [D 07000006 trigger 765, `nf-extract triggers`]. So the game's klaxon should stop as
+   Bond climbs out of the courtyard into that volume; if it instead stops with the beam, the
+   177-beat divergence is the thing to re-record.
 2. **The other three triggers** should be audible at their own beats: the searchlight light-up
    clunk (ch 57 → sound 241, 3-D at 28.66, 40.41, −18.80 — once per level load), ch 47 → 219, and
    ch 103 → 331 (2-D). If any never plays in-game, its ON channel's writer is the next port item —
