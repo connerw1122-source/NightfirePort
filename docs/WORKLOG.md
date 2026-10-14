@@ -9908,3 +9908,27 @@ Full suite on the final tree (origin/master 810c109 merged): **909 passed, 3 fai
   projectile, by_hash unchanged), draw→fire→reload through step_bond, native-carry identical
   numbers, the 18 no-model ids listed. Suite: 752 passed, 3 failed (the allowed disc_golden
   slim-ISO set), 27 ignored. Report: docs/reports/fix-weapon-assets.md.
+
+Task 101i outcome (same session): all three symptoms root-caused on 07000007's ballroom window
+(--bond 61.32,44.11,-52.58,3.749,-0.056). (1) The "lit stone block in front of the slope" is the
+launcher's NF_NOPORTAL=1: with the walk off the view gains 543 draws led by Room_Gallery_K_2
+(world centre (49.1,45.6,-51.1), cell 26, cel 20); with the game's walk (0x1e86e8/0x1e6ba0) the
+drawn set is 280 draws — interiors + glass + the two sky domes, matching the ground-truth doc's
+[L] row. (2) NO level fog on 07: psiPreGameRun 0x11e2e8 default arm = FogOn 0, Ps2Far1 4194240
+[M]; psiDrawFogPass 0x10b960 gates on FogOn [M]; fog_for(07)=None is correct. The blue haze is the
+skybox dome's own dusk textures (map47 skybox 279: tex 177/179/180/181 pink-blue horizon bands;
+Mountains_skybox 280: tex 178 snow + 182/183/184 rock — dumped and inspected). (3) The dome UVs
+equal the disc's glist stream bit for bit (multiset over the index buffer vs the stream; the
+"smear" tiny centre patch u[0.48..0.51] v[0.48..0.52] on tex 178 is the disc's own data).
+FIXED one real port bug: the pass order — Game_Draw 0x1e6f50 draws the after-fog sky
+(View_DrawSky(0), line 123) BEFORE the alpha list (View_DrawObjList(1), line 139); the port drew
+pass 3 (the glass) before pass 4 (the far-pinned sky), so the dome overpainted the window glass
+(tex 11 sheen lost — the "no haze" contributor). gpu::pass_rank [0,1,2,4,3,5] now orders the
+render. Sky draw path verified against 0x1e5ad0/0x1e79a0 (identity 0x2d6230 ⊗ slot rotation,
+slot translation, flags 0x8/0x2, obj+0xf0|=0x10) — no change needed. Tests:
+crates/nf-view/tests/fix_window_view_live.rs — 5 NF_ISO tests green (block hidden by the walk +
+NOPORTAL sister, the domes in the frustum with pass 4/fog 0, the pass ranks, fog params + sisters,
+UV multisets == the disc). Suite on the final tree (origin/master 6a118b8 merged): nf-game 256 +
+nf-formats 74 + nf-audio 13 + nf-view 575 = **918 passed, 0 failed** (suite.py can't survive the
+sandbox's 10-min tool cap; the rule-5 command was run in package chunks, --test-threads=1). Files:
+gpu.rs (the fix), tests/fix_window_view_{live,dump}.rs. Report: docs/reports/fix-window-view.md.
