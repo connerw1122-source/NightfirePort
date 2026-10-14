@@ -11222,3 +11222,15 @@ Stage Summary:
   to the same gunfire, the protected-actor ch 0x60 rises on his death). Suite on the merged tree:
   see docs/reports/fix-06-driver.md. Report: docs/reports/fix-06-driver.md (live checks: the PCSX2
   no-draw confirmation, the death anim, the 700-880 step-out window; the headless render gap).
+
+## 102j2-fix-casings-16b (s/102j2-fix-casings-16b) — 2026-10-14
+
+Started (18:35 UTC): base s/fix-casings-16 (97632680) merged with origin/master. Task: the merge HELD
+fix-casings-16 — with the branch, two tests that pass on master fail
+(level_end_live::door_e_opens_then_e_closes_on_07000001 and
+walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact). Suspect: the per-tick
+straddle_walkin in door.rs (and its drone.rs hook) — on 01 it opens/holds/closes doors the game
+doesn't, or changes the escort's path through a door. Plan: find the game's actual gate for the
+straddle walk-in (Door_Update's proximity math, which doors and which states it applies to —
+0x136678 metric, 0x1363c8 ch_open gate per the fix-casings-16 evidence), narrow the port to it, keep
+16's arrival door working, restore 01's door E / escort walk to master behaviour.
