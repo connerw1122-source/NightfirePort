@@ -31,3 +31,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox4 at 2026-10-14T11:22Z
+
+---
+## Report (done, 2026-10-14T12:50Z)
+
+Closed by the driver: the report is on `s/campaign-flow` (docs/reports/campaign-flow.md); the worker didn't run finish.sh.
