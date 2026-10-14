@@ -32,3 +32,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox4 at 2026-10-14T05:36Z
+
+---
+## Report (done, 2026-10-14T06:24Z)
+
+Closed by the driver: the report is on `s/fix-grapple-hook` (docs/reports/fix-grapple-hook.md); the worker didn't run finish.sh.
