@@ -122,7 +122,8 @@ the wave-exhaustion paragraphs.
 3. nf-view (after merge): `nf-view 07000001` — after the intro (~35 s of sim ticks), the gate
    guards leave their wait poses.
 
-## ntfy failed
+## ntfy
 
-All three fallbacks got HTTP 429 "limit reached: daily message quota reached" (2026-10-13T23:08Z
-for the 221 notification; the same quota applies here) — the notification could not be sent.
+Sent 2026-10-14T00:19Z via curl (id q4wiot6Kbjfu) — the daily quota that 429'd the previous
+sessions' notifications reset at UTC midnight. The report's earlier draft predicted the failure;
+the send actually succeeded.
