@@ -10350,3 +10350,11 @@ Stage Summary:
 - Files: grenade.rs (resting + SmokeCloud), drone.rs (the scale, the gate, the cloud push/tick + the field), nis.rs (keys() translation), scene.rs (the cloud pool + draw arm), tests/fix_grenade_throw_live.rs (new), the Grenade constructors' resting:false in the hand-built tests.
 - Report: docs/reports/fix-grenade-throw.md (the evidence, the numbers, the live checks).
 - Open: nothing for this task; the satchel/sticky bounce branches and the mine's detonator are other systems' scope.
+
+---
+Task ID: 102e-fix-missing-objects
+Agent: missing-objects worker
+Task: fix-missing-objects — furniture, the fountain and the 0c pylon aren't drawn; census every on-foot level for placements whose mesh the port doesn't draw, with the skip reason per class; draw what the game draws.
+
+Work Log:
+- (started 08:08 UTC) Branch s/fix-missing-objects created from origin/master c9e1582; setup reused from the previous session (repo, work/, ISO, nf-queue). Spots given: 07000006 courtyard fountain (21.12,39.04,-0.48,8.683), guard room (33.50,41.13,-17.90,9.158) and lockers/fusebox (31.94,41.13,-17.36,10.756); 0700000c pylon (14.22,16.28,-139.54,0.986). Repro tests + decompile evidence next.
