@@ -10403,3 +10403,15 @@ Stage Summary:
 - Files: grenade.rs (resting + SmokeCloud), drone.rs (the scale, the gate, the cloud push/tick + the field), nis.rs (keys() translation), scene.rs (the cloud pool + draw arm), tests/fix_grenade_throw_live.rs (new), the Grenade constructors' resting:false in the hand-built tests.
 - Report: docs/reports/fix-grenade-throw.md (the evidence, the numbers, the live checks).
 - Open: nothing for this task; the satchel/sticky bounce branches and the mine's detonator are other systems' scope.
+
+## fix-cutscene-brightness (s/fix-cutscene-brightness) — 2026-10-14
+
+Task 102g, the 07000002 intro playtest (results 1013-1825): "the models in the game during the
+cutscene are extremely bright" — the port's cut-scene actors are near-white at
+`--bond -82.30,5.30,32.05` frame 170 while PCSX2's 02 intro lights Bond and the man at the
+computer darkly to match the room. Plan: find what the game lights cut-scene actors with (the
+character room light / the scene's own light set; the in-game character room light is
+290-fix-character-room-light's pending work — check whether cut-scene actors take a different
+path in the port: no cel light, or a default full-bright ambient). Reproduce first, then fix in
+scene.rs / nis.rs with numbers from the decompile.
+Status: branch created, reproduction + fix in progress.
