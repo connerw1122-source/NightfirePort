@@ -276,6 +276,7 @@ fn open_pcm_out(pcm: &[i16], rate: f64) -> (std::sync::Arc<std::sync::Mutex<std:
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     let ring: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(pcm.iter().take(24_000).copied().collect()));
+    if nf_audio::silent() { return (ring, None); }
     let Some(device) = cpal::default_host().default_output_device() else { eprintln!("movie: no output device; running silent"); return (ring, None) };
     let Ok(cfg) = device.default_output_config() else { eprintln!("movie: no output config; running silent"); return (ring, None) };
     let dr = ring.clone();

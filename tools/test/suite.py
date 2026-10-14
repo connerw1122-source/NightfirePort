@@ -26,6 +26,9 @@ LOG = args[args.index("--log") + 1] if "--log" in args else os.path.join(repo, "
 
 env = dict(os.environ)
 env["CARGO_TARGET_DIR"] = target
+# No test may play through the speakers: nf_audio::Output::open() and the movie audio return None
+# under NF_SILENT (the weapon-sound tests once fired bursts of shots at full volume on the user's PC).
+env["NF_SILENT"] = "1"
 if not env.get("NF_ISO"):
     print("warning: NF_ISO is not set; the ISO-reading tests will skip", flush=True)
 

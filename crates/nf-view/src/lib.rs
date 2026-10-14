@@ -273,11 +273,15 @@ fn start_camera(scene: &scene::Scene) -> Camera {
 }
 
 /// Builds the sound driver + output from the scene's bank/music, and wires the music logic. The scene's bank,
-/// music and tables are consumed (taken out) — the same path `main` uses at startup [M].
-fn build_sound(scene: &mut scene::Scene) -> Option<nf_audio::sfx::Sound> {
+/// music and tables are consumed (taken out) — the same path `main` uses at startup [M]. Public so the live
+/// tests drive the exact runtime driver (fix-weapon-sounds).
+pub fn build_sound(scene: &mut scene::Scene) -> Option<nf_audio::sfx::Sound> {
     let sound = scene.sound_bank.take().map(|(slot, bank, sbf)| {
         let mut driver = nf_audio::sfx::Driver::new();
         driver.load_bank(slot, bank, sbf);
+        // The spare banks: every other SBINFO slot (fix-weapon-sounds). The level's own stays primary, so
+        // ids it carries resolve exactly as the one-bank driver did [M `Sound_Ready` 0x1dceb8].
+        for (slot, bank, sbf) in std::mem::take(&mut scene.sound_spares) { driver.load_spare_bank(slot, bank, sbf); }
         if let Some((lut, bin)) = scene.streams.take() { driver.load_streams(lut, std::sync::Arc::new(bin)); }
         let output = nf_audio::Output::open();
         if output.is_none() { eprintln!("audio: no output device; running silent"); }
@@ -694,6 +698,28 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         let f = |ext: &str| get(&nf_formats::soundbank::bank_path("ENGLISH", slot, ext));
         let bank = nf_formats::soundbank::Bank::parse(&f("SHF")?, &f("SFX")?).map_err(|e| eprintln!("sound bank: {e}")).ok()?;
         Some((slot, bank, f("SBF")?))
+    })();
+    // fix-weapon-sounds: the spare banks — every other SBINFO slot with files on the disc, so a weapon
+    // given on a level whose own bank lacks a sound still plays it from a bank that holds it. Only ids
+    // the level's own bank lacks ever resolve to a spare (the driver's primary-first lookup), so every
+    // level-carried sound is bit-identical to the one-bank behaviour [M `Sound_Ready` 0x1dceb8; S the
+    // extension — the real game loads one bank per level].
+    scene.sound_spares = (|| -> Vec<(usize, nf_formats::soundbank::Bank, Vec<u8>)> {
+        let get = |p: &str| iso.find(p).and_then(|e| iso.read_file(e).ok());
+        let Some(sbi) = get("PS2/SBINFO.SBI") else { return Vec::new() };
+        let Some(slots) = nf_formats::soundbank::bank_slots(&sbi).ok() else { return Vec::new() };
+        let own = scene.sound_bank.as_ref().map(|(s, _, _)| *s);
+        let mut spares = Vec::new();
+        for (slot, &hash) in slots.iter().enumerate() {
+            if hash == u32::MAX || Some(slot) == own { continue; }
+            let f = |ext: &str| get(&nf_formats::soundbank::bank_path("ENGLISH", slot, ext));
+            let (Some(shf), Some(sfx), Some(sbf)) = (f("SHF"), f("SFX"), f("SBF")) else { continue };
+            match nf_formats::soundbank::Bank::parse(&shf, &sfx) {
+                Ok(bank) => spares.push((slot, bank, sbf)),
+                Err(e) => eprintln!("sound bank slot {slot}: {e}"),
+            }
+        }
+        spares
     })();
     // Streamed effects (guards' speech): STREAMS.LUT / STREAMS.BIN.
     scene.streams = (|| {
