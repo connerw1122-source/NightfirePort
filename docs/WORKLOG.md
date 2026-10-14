@@ -11003,3 +11003,48 @@ Work Log:
 - Blockers mapped (the report has the live checks): 01's escort-extraction exit (the ch16 TOUCH filter needs the Mayhew drone; the walkreal-a stall); 06/11/4a have NO exit trigger in the data (06's 0xE9s are Drone_AIPoint [M 0x1d04f0 case 0xe9]) — forced completes land the front end; 09/0a's exit triggers self-loop (next = own hash [D]); 0a's real exit needs the trigger-volume work; the gameplay-driven objective channels ride the per-mission walkthrough tasks.
 - Non-story records 0700000e/f/10: no FILES.BIN archive [D] — cut MissionData records.
 - Report: docs/reports/campaign-flow.md. Files: crates/nf-view/tests/campaign_flow_live.rs (new), crates/nf-game/src/mission.rs (the restore fix), crates/nf-view/tests/probe_campaign06.rs (kept probe). Shared files untouched.
+---
+Task ID: 102i-fix-guard-misc
+Agent: guard-misc worker
+Task: fix-guard-misc — the 0c sniper takes no damage; 06 guards can't open doors (NDrone2_ReachedDestNode door case); 06 first-frame crazy models (drones unposed at tick 0). Files: crates/nf-game/src/{drone,door,damage}.rs.
+
+Work Log:
+- (started 09:16 UTC) Branch s/fix-guard-misc created from origin/master 6cbe522; setup reused (repo, work/, ISO, nf-queue). Repro tests next; fast suite to follow.
+- Harnesses for all three symptoms in crates/nf-view/tests/fix_guard_misc_live.rs (new, real input path): doors + sniper FAIL (reproduced), pose PASSES (no repro headlessly).
+- Census facts: 06 guards all route-less posts (state 1) with door-flagged node pairs on paths 3 (n11-n14 → door #4) and 7 (n0-n1 → door #1) — the user's door bug must live in the chase path (GoToGoalPosition/LinkCreep dispatch); the rooftop sniper is drone #17 (weapon 0x1E, y 21.43, WAIT_SWITCH ch 1), has 73-matrix palette + 16 hit boxes, is enabled by set_channel(1), and takes no damage from a scanned clear-LOS vantage with the clip draining (repro, cause narrowed to the ray/hit path, aim drift documented).
+- Report: docs/reports/fix-guard-misc.md. Blocked at the sandbox deadline before the fixes; next session continues from the branch.
+
+Stage Summary:
+- Files: crates/nf-view/tests/fix_guard_misc_live.rs (new), docs/reports/fix-guard-misc.md, docs/WORKLOG.md. No production code touched.
+- nf-game lib 143/0 on the final tree; the full suite left for the next session (backgrounds die in this sandbox).
+- Addendum: probe_sniper_direct_bullet pushed the exact bullet through player_bullets — at the crossing tick the 16 live boxes are placed on the body (torso part 4 at (44.02,21.82,−205.04) half [0.2,0.25,0.15]), first_box_hit = None is geometrically RIGHT (the drone shifted 0.2 after the settle probe; the stale aim centre passes 0.04 outside the torso slab); row- AND column-axis variants miss identically (not a convention bug). Next step: aim at part 4's live m[3] at fire time, then the msg-8 damage path is exercised end to end.
+- VERDICT: the sniper damage path is SOUND end to end — with the live part-4 box centre as the aim, the deterministic bullet lands (health 10.0→4.75 = the P2K 3.5 × Agent 1.5; the state machine's hit state 0x58); probe pinned as a regression assert. The user's symptom is upstream: the aim-mode pitch drift (the sim pulls bond.pitch to ≈0.187 normalised while AIM is held) and/or the missing L1 vertical aim-assist (the port auto-aims only while NOT aiming, scene.rs:2155; the game's Check_Target 0x1a7810 family snaps vertically). Next session: Check_Target's vertical snap vs the port + the aim-pitch hold.
+## fix-guard-misc2 (s/fix-guard-misc2) — 2026-10-14
+
+Task 102n, session started 11:24 UTC. Continuing 102i-fix-guard-misc (branch origin/s/fix-guard-misc,
+report docs/reports/fix-guard-misc.md): three guard bugs — 0c rooftop sniper takes no damage (aim/pitch),
+06 guards never open doors, 06 start "crazy models" needs renders. Plan: merge origin/s/fix-guard-misc
+for its harnesses, repro each through nf_view::load + Sim::step_bond, fix with decompile evidence.
+(Entry appended at branch creation; will be updated as work lands.)
+Continued (fix-guard-misc2, same session, ~2h): the 0c sniper repro was the HARNESS's setup pitch
+(computed from `v[1]+1.5` while stand_at puts the eye at floor+1.1+1.5 = 1.0 higher — aimed 0.4 over the
+head box; the "aim-mode pitch drift" theory is dead, pitch only moves via input.look and the harness sent
+0). Port fix for the aim: while AIMING the port dropped the auto-aim lock/offsets; the game's Player_AutoAim
+0x1a7c98 keeps the lock and eases the offsets toward the manual offsets (0.5/tick) and the bullet consumes
+them through Player_GetAimingPoint 0x1a4a98 (InitBullet 0x1a4bf0:152-164) — scene.rs's aim-mode dir now
+eases aim_offset toward the cursor projection (x flipped, object-frame angles) and builds the ray from it.
+Doors: NDrone_InitDoorNodes 0x139a70 binds the nearest class-0x1C door to flag-0x2 nodes; LinkCreep_Handler
+0x15a2c8 dispatches ReachedDestNode 0x153358 for EVERY followed route including the chase (MoveToObject
+0x151618:65 → FollowRoute 0x155be0 → AINetwork_FollowRoute 0x15b110). The port's move_to_object dropped the
+reached node (dispatch never ran on the chase) and Drones::tick resolved door_node via dr.route only (a
+croute door resolved None → OPEN_DOOR's UPDATE insta-restored without opening). Both fixed (+ the
+door_return ≠0x81 guard [M 0x153358:157-160]); test the_06_guard_driven_through_a_door_pair_opens_it_and_
+crosses fails-first (stash-verified), now OPEN_DOOR +30, door #1 open +38, crossed; the passive 06 test
+flipped to the game-true idle contract (post guards open nothing idle). Suite: build OK 241 binaries; the
+chunked run hit the sandbox wall (backgrounds die here) — everything that ran green; weapon_matrix_live
+just exceeds any per-binary limit here (26 level loads; its 0c/06 matrices pass directly, 80.9s).
+Neighbours: ai_traces 4, doors_live 2, doors_01 2, drone_portcheck 5, fix_drone3 5, fix_drone4 2,
+fix_searchlights_guards 2, fix_npcs 4, fix_ai_remainder 1, weapon_effects 6, fire_modes 5, weapons_all 4,
+gadgets 4, fix_level_0c 4, fix_0c_hatch 2. Renders for "crazy models" need the main agent (no GPU here);
+commands + watch list in docs/reports/fix-guard-misc2.md. Files: drone.rs, scene.rs (aim branch — the
+shared-file hook), tests/fix_guard_misc_live.rs.

@@ -1264,7 +1264,10 @@ impl Drone {
         if flags & 2 != 0 {
             if next_door {
                 self.door_node = Some(node);
-                self.door_return = self.state;
+                // +0x5A6 (the return state) is saved only when the current state is not already
+                // 0x81 — re-entering through the pair's second node must not clobber the saved
+                // state with 0x81 [M 0x153358:157-160].
+                if self.state != state::OPEN_DOOR { self.door_return = self.state; }
                 self.set_state(state::OPEN_DOOR);
                 return true;
             }
@@ -4576,10 +4579,22 @@ impl Drone {
         route.remaining = route.distance(d.nav, feet);
         if route.remaining < 2.0 { return 3; }
         if !follow { return 0; }
-        let (mut code, _) = route.follow(d.nav, feet);
-        if route.nodes.is_empty() && code == 0 { code = 2 }
-        if let Some(used) = self.links_used.get_mut(route.path) { route.mark_used(used) }
-        let t = route.target;
+        let (mut code, reached) = route.follow(d.nav, feet);
+        // `LinkCreep_Handler` (0x15a2c8) dispatches `NDrone2_ReachedDestNode` for the combat route
+        // too: `NDrone2_MoveToObject` 0x151618:65 → `NDrone2_FollowRoute` 0x155be0:43 →
+        // `AINetwork_FollowRoute` 0x15b110:21 → `LinkCreep_Handler` — a chasing guard reaching a
+        // door-flagged node pair enters DSTATE_OpenDoor (0x81) as the call's side effect (the
+        // game's return mapping sends 10 → 0, "moving"; the state change carries the door).
+        // fix-guard-misc2: the port dropped `reached` here, so a pursuing guard could never open a
+        // door on the chase path (only the 0x63/patrol/mission routes dispatched).
+        let rpath = route.path;
+        let next = reached.and_then(|n| route.nodes.iter().position(|&x| x == n)).and_then(|i| route.nodes.get(i + 1)).copied();
+        drop(route);
+        self.route_reached_special(d, rpath, reached, next);
+        let (is_empty, rpath2) = (self.croute.as_ref().unwrap().nodes.is_empty(), self.croute.as_ref().unwrap().path);
+        if is_empty && code == 0 { code = 2 }
+        if let Some(used) = self.links_used.get_mut(rpath2) { self.croute.as_mut().unwrap().mark_used(used) }
+        let t = self.croute.as_ref().unwrap().target;
         self.desired_yaw = atan2_approx(t[0] - self.pos[0], t[2] - self.pos[2]);
         match code { 0 | 1 => 0, 2 | 3 | 0xc => code, _ => 0 }
     }
@@ -7129,7 +7144,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // binding now (`Drones` owns the doors; the state machine cannot) — `ReachedDestNode`
             // stood the door in +0xBA8 before `DSTATE_OpenDoor`'s ENTER ran [M 0x153358].
             if let Some(node) = dr.door_node.take() {
-                if let Some(path) = dr.route.as_ref().map(|r| r.path) {
+                // The route may be the patrol/mission one (`route`) or the combat/repositioning one
+                // (`croute` — GoToGoalPosition 0x63 and the MoveToObject chase, both served by
+                // `LinkCreep_Handler`) — the kick resolution below makes the same split
+                // [M 0x15a2c8 serves every followed route; fix-guard-misc2: the door binding on the
+                // `croute` used to resolve to None, so OPEN_DOOR's UPDATE immediately restored the
+                // return state without ever activating the door].
+                if let Some(path) = dr.route.as_ref().map(|r| r.path).or_else(|| dr.croute.as_ref().map(|r| r.path)) {
                     dr.hit_door = self.node_doors.as_ref().and_then(|m| m.get(&(path, node))).copied();
                     if let Some(i) = dr.hit_door { dr.hit_door_open = self.doors.list[i].state == crate::door::OPEN; }
                 }
