@@ -34,3 +34,7 @@ claimed-by: sandbox4 at 2026-10-13T22:59Z
 ## Report (done, 2026-10-13T23:49Z)
 
 Closed by the driver: the report is on `s/fix-spawner-remainder` (docs/reports/fix-spawner-remainder.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-14T00:19Z)
+
