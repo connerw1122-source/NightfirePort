@@ -10405,6 +10405,14 @@ Stage Summary:
 - Open: nothing for this task; the satchel/sticky bounce branches and the mine's detonator are other systems' scope.
 
 ---
+Task ID: 102h-fix-swim
+Agent: swim worker
+Task: fix-swim — swimming barely works (02 garden pond: entering water by walking in, swim speed, crouch dive / jump surface, no footsteps while swimming — swim stroke sounds instead) and the water ladder under the hut (grab + climb from the water).
+
+Work Log:
+- (started 08:37 UTC) Branch s/fix-swim created from origin/master ccaea18. Setup in progress (downloads next). Research in work/decomp after.
+
+---
 Task ID: 100k-fix-gadgets-live
 Agent: fix-gadgets-live worker
 Task: the laser/stunner/AIMS-20/Oddjob findings on 2026-10-13's master — (1) the laser 0x4e's beam, wall light and HUD charge bar + regen are missing (PCSX2 shows a short red beam, a red glow light, a vertical charge bar 31..0 at ~1/tick, regen after); (2) the stunner 0x4a "doesn't work" — the class-2/3 ray, Draw_TaserBeam 0x1a46a8 and the stunned reaction; (3) the AIMS-20 0x1a's side lights unlit (emissive/anim material); (4) Oddjob's hat 0x45 should be a one-shot kill, not a grenade.
@@ -10606,3 +10614,126 @@ Work Log:
 
 ## fix-save-profile
 - Started 12:32 UTC. Branch s/fix-save-profile from origin/master 1496b80. Task: port the game's memory-card profile save (unlocked missions, difficulty per mission, high scores/medals = Dossier Records, Bond moves, options, controller style) to one file per codename next to the port's config; hooks in nf-view menu.rs; tests: round trip, unlock after completing a mission, sister assertions. Layout must come from the game's save code in the decompile.
+## fix-swim-entry (started)
+
+Branch `s/fix-swim-entry` (from origin/master 6691ef9). Task 103d: the swim ENTRY depth off the 07000002 bank
+(`--bond -82.3,5.3,32.05,1.57`) — the port enters the swim only when Bond's feet are 0.62 under (pos 3.747 vs
+surface 3.7675) because the stateless smallest-bbox `find_cel` keeps the bank's land cel until he's deep. Reading
+the game's cel pick: `Player_InWater` 0x195e50 reads the player's RUNTIME cel (`*(obj+0x20)+0x90`), and obj+0x20
+is maintained per tick by `control_handle_cel_change` 0x133288 (move segment portal-cross `Cel_ObjectLeftCel`
+0x1e0d58 → `build_point_in_bounding_box` 0x1c9500 keep → `build_LinkToRoom` 0x1c9680 → `build_FindCel` 0x1c8cb0
+at the world-sphere centre obj+0x80 with the raycast tie-break) — stateful, unlike the port's per-tick
+smallest-bbox lookup. Probing the pond cels next, then porting the relink.
+
+## fix-swim-entry (outcome)
+
+Files: crates/nf-game/src/{world,player}.rs; shared hooks: crates/nf-view/src/scene.rs (3 small, additive).
+Tests: crates/nf-view/tests/fix_swim_entry_live.rs (NF_ISO, 2/2); probe kept: examples/probe_swim_entry.rs.
+
+The game's player cel (obj+0x20) is STATEFUL, maintained per tick by the movement handler's moved pass
+(`control_handle_cel_change` 0x133288, run AFTER `Player_Update` [M 0x1336f8:147-236, so the cel
+`Player_InWater` 0x195e50 reads this tick was linked from the previous tick's move segment], then
+`obj+0x40 ← obj+0x30` 0x1336f8:212): the move segment's portal cross (`Cel_ObjectLeftCel` 0x1e0d58: two
+`Collide_RayTriangle` per portal quad of the CURRENT cel, crossing wins even inside the old bbox) → the
+bbox keep (`build_point_in_bounding_box` 0x1c9500 at obj+0x30) → `build_LinkToRoom` 0x1c9680 →
+`build_FindCel` 0x1c8cb0 AT THE WORLD-SPHERE CENTRE (obj+0x80, `Control_BuildWorldSph` 0x133070; local
+centre (−0.1347, −0.1267, 0.2402) [L ee_start_05 M_CONTROL+0x80]) with the raycast tie-break (up ray len
+256→best-so-far, down ray min(up,len), both scoped to the candidate's own geometry, nearest hit wins, no
+hits → the first candidate [M 0x1c8cb0:163-232]), room-cel candidates only (cel+0x3c & 0x40000, cap 0x40),
+a miss leaves the object unlinked. The port had a stateless smallest-containing-bbox lookup at pos every
+tick (`cel_at`), which is none of those rules.
+
+Ported (nf-game/world.rs): `ScopeGraph.room` (new field, own line), `cel_portal_dest`, `cel_contains`,
+`find_cel` (the tie-break), `player_cel_relink`. (player.rs): `Bond::prev_pos` (obj+0x40, own line). Hooks
+(scene.rs): scope_graph fills `room`; Sim::run replaces the two `cel_at` reads with one relink before
+tick_ctx (water = the relinked cel's room cel's +0x90; bond.cel = the relink) and copies prev_pos after.
+
+VERIFICATION — and an honest negative: the reported symptom numbers reproduce (the bank walk enters SS_SWIM
+at tick 1621, pos.y 3.725 vs surface 3.7675 — the root well under), but on every path I could construct the
+OLD rule and the game's rule COINCIDE: (1) the bank fall — the move segment crosses the pond-top portal
+(91↔184, the plane y 3.7649 [D probe]) and the position leaves the land cel's bbox in the SAME tick, so the
+entry tick is 1621 both ways; (2) the wade band (pos between the water cel's bbox top 3.7675 and the land
+cel's box bottom) — the position lookup also reads the land cel there (the water bbox top excludes the
+POSITION while the centre sits inside it), so the spawns agree; (3) the sphere-centre spawn band — the
+game's tie-break hands the {land, water} candidate pair to the LAND cel (the water cel's mat-14 surface
+plane is up-facing, an up-ray cannot hit it one-sided [M 0x10a8c8], and its scope has no plane under the
+slope column), and the position lookup reads the land cel too. The fail-first run on a stashed pre-fix
+tree: both new tests PASS there — no behavioral divergence found. The fix stays because it IS the game's
+mechanism (every rule above is cited), it removes the divergence class wholesale (stateful keep vs stateless
+snap, portal crossings, the sphere-centre FindCel, the tie-break), and the driver's next measurement rides
+on it. Suite on the final tree: nf-game 143/143; the swim/ladder/walkreal families 47/47 (fix_ladder2_live
+4/4 incl. the 1621/3.725 repro, fix_swim_entry_live 2/2, fix_swim_vent_live 2/2, fix_swim_vent5_live 2/2,
+walkreal_probe3_live 2/2 + the nf-view bucket 35/35). The full four-crate run did not fit the window
+(suite.py cannot survive the background in this sandbox — third session running); the remaining families
+are listed in the report. NO RNG draws added; no wall-clock in Sim.
+
+---
+Task ID: 102h-fix-swim
+Agent: swim worker
+Task: fix-swim — the 07000002 pond swim (look-directed dive/surface, swim speed, no footsteps while swimming) and the water ladder under the hut (grab from the swim + climb out).
+Work Log:
+- (08:37-09:53 UTC) Branch s/fix-swim from origin/master ccaea18, merged master b65d6f7 mid-task (WORKLOG both-entries resolution). Setup: work/ + slim ISO, NF_ISO, nf-queue, LIBRARY_PATH for the user-prefix ALSA link.
+- Evidence: Player_InWater 0x195e50 (cel+0x90 > pos.y−0.3 → substate 3), the swim case 3 inline in Player_Update 0x193600:181-222 (Player_Move(1.0) + the surface−0.3 rise clamp + the grounded exit), Player_Move 0x191dd0:149-165 (the swim branch rides RotMatrixX(obj+0x50 − BL+0x8a8·π/2) — dive = look down + forward; NO crouch/jump input in case 3; Player_HandleJump only from SSWalk), Player_CollLadder 0x196118:16-17 (the grab gate excludes ONLY substates 1/2), Collide_PickObj 0x1eae80:152-168 (the capsule-segment vs sphere×1.5+0.55 pick) + the y-snap lift 0x196118:23-31, Effect_Create 0x1ce688:63 (no ground hit in swim → no footstep), Player_MonitorAir 0x191a70:101-143 (the 0x27 dive loop / 0x60c gasp / 0x60b drown).
+- Fixes: player.rs (the look-directed swim wish + k=1.0 always + the ±2.4 [S] block deleted + the strafe-smoother clear on entry + the grab gate), ladder.rs (capsule_hits = the game's pick shape), sound.rs (Sounds.swim_prev_under), scene.rs (the swim footstep gate + the MonitorAir sound hooks).
+- Tests failing-first: the two nf-game unit tests replayed against a HEAD player.rs (both FAILED there, PASS after); fix_swim_live 4/4 (entry+speed pin, dive/surface/clamp, no 129/0x27/0x60c in a surface swim, the hut ladder grabs FROM THE SWIM at +52 and climbs out to 7.118 over top 7.102). Sisters: fix_ladder2 4/4, fix_ladder 3/3+1, fix_swim_vent 2/2, walkreal_probe3 2/2, nf-game lib 145/145.
+- Report: docs/reports/fix-swim.md (the entry-depth live check, the sink-through-bed gap, the unported mesh refine + sound-group scrub).
+Stage Summary:
+- Files: player.rs, ladder.rs, sound.rs, scene.rs (shared, 2 hooks), tests/fix_swim_live.rs (new), the report. LadderCtx.sink now unread (field kept).
+- Open: the full suite did not fit the window (the sisters + libs above are the verified set); the pond-bed sink-through and the build_FindCel entry depth are the main agent's live checks.
+
+---
+Task ID: 102m-fix-swim2
+Agent: swim2 worker
+Task: fix-swim2 — the swim branch's ladder-top exit regression on land ladders (102h-fix-swim dc59866 breaks walkreal_0700000c_live::walk_start_to_the_st1_plate_and_the_photograph: Bond leaves the ladder top CROUCHED and ungrounded and the walk to the walkway's south end sticks at bond=(9.03,11.74,-189.99)). Fix the exit so land ladders behave as on master (the game's ladder-top dismount, Player_CollLadder 0x196118 / the climb substate's exit) while the pond ladder still grabs from the water; keep the swim fixes; full suite green on the merged tree.
+
+Work Log:
+- (11:58 UTC) Branch s/fix-swim2 from origin/s/fix-swim dc59866, merged origin/master (WORKLOG both-entries resolution). Setup reused (work/, slim ISO, nf-queue).
+- (11:58-13:26 UTC) Repro first: walkreal_0700000c_live fails on the merged tree exactly as driven (STUCK crouched/ungrounded at (9.03,11.74,-189.99), segment_to_target 0.029). A per-tick probe replay showed the top exit itself fine (lunge at 12.148, land 11.736) but a RE-GRAB at regrab expiry 43 ticks later (substate 1, snapped back to the axis) — a climb/walk limit cycle.
+- Root cause: 102h's bare ×1.5 pick sphere [M 0x1eae80:152-168] is not the whole filter — the game narrows past the sphere (straddled-cel scoping Collide_Pick 0x1eb320:125-134/318-328 + the glist mesh refine Collide_Intersect 0x1ebaa8, both unported); a tall ladder's bounds sphere is its half-height (0c yard ladder r 5.75), reach ~9.2 sideways, so the dismounted walker 2.9 off-axis at walkway height still "picked". Player_CollLadder 0x196118 read in full — no extra gate there; the y window passes at 11.736 < top 12.15.
+- Fix (ladder.rs only; every 102h swim change kept): capsule_hits = stage 1 the game's ×1.5 sphere vs the capsule segment (the pond deep-water grab) AND stage 2 the master axis-column horizontal bound min(r,1)+capsule [S, the stand-in for the unported cel/mesh filter]. Doc comment cites both stages.
+- Fail-first shown: walkreal_0700000c (the driven STUCK dump + the +1912-tick ladder-base leg). Post-fix: walked out 2691 ticks, stuck 0, falls 0. Sisters: ladder unit test rewritten (2-side flips to no-hit, pond-deep keeps hit, the exact 0c yard geometry pins both), nf-game lib 145/145, fix_swim_live 4/4 (the pond grab survives), fix_ladder 3/3+1, fix_ladder2 4/4, fix_swim_vent5 2/2, walkreal 01/02/09/0b/0c/0d/12 green, nf-game+nf-formats+nf-audio green except the 3 allowed disc_golden. walkreal 05/0a ignored-gated on the slim ISO.
+- Not run (window): the remaining walkreal levels + the portal/scene suites — next session runs tools/test/suite.py on this tree. The stuck dump's crouched=true is NOT the regression (the test's single crouch press toggles on when Bond lands un-crouched; identical code on master — no diff touches crouch).
+- Report: docs/reports/fix-swim2.md (the live checks: the 0c ladder top dismount, the walk-back-into re-grab, the 02 pond deep-water grab; nf-view spots for all three).
+---
+Task ID: 101r-fix-menu-backdrop
+Agent: fix-menu-backdrop worker
+Task: fix-menu-backdrop — the front-end pages' aux FMV (07330048 main page, 07350048 list pages) never decodes a frame ("no frame N in the first chunk"), so every page draws the dark plate; also the headless still path reads NF_ISO instead of the ISO argument.
+
+Work Log:
+- (started 10:54 UTC) Branch s/fix-menu-backdrop created from origin/master b65d6f7; fresh sandbox: repo cloned, ISO already present from an earlier session, work/ to download next.
+- Root cause: gop_chunks' leading-open-GOP guard also fired when the FIRST GOP is CLOSED (it is on
+  every Nightfire movie: first GOP right after the 145-byte sequence header), so chunk 0 was (0,145)
+  — the sequence header alone, zero decoded frames [L probe: whole-ES decode gives 1280/1800/1800
+  pictures matching golden] — and movie_still read chunks.first(): "no frame N in the first chunk"
+  at every N, every page the dark plate. The live loop was NOT broken (the worker skips the empty
+  chunk; the pre-fix windowed-loop test already passed). Second bug: the still read the bare NF_ISO
+  env, not the ISO argument — fixed via movie_iso_name (NF_MOVIE_ISO over the ISO argument, the
+  live loop's precedence); fix-menus-real2 landed the env half independently mid-task, the merge
+  kept the argument fallback.
+- Fixes: movie.rs gop_chunks (prepend 0 only when open GOPs precede the first closed one) +
+  movie_still walks whole closed-GOP chunks until n is covered (frame 12 rides chunk 1; 10-picture
+  GOPs); lib.rs movie_iso_name + front_end_menu takes the resolved ISO path. menu_movies.rs test
+  compile fixes (present()'s owned w/h; the 7-digit "0x7100001" name form never resolved).
+- Retail bytes: range-fetched 07100001/07330048/07350048/07370048/07380048 from the file host's
+  retail image into a mini ISO (not committed); demux counts match golden exactly (bytes exact).
+- Tests (fail-first): the three backdrop-still tests printed the user's exact symptom pre-fix, then
+  5/5 green post-fix; frame 12's SHA-1 = the 1f1fe7b0… whole-ES pin (one decoder truth). Neighbours
+  green on the merged tree: menu_movies 7/7, movie_playback_flow 10/10, menus_flow 34/34, lib 10/10.
+- Suite on the final tree (origin/master 6691ef9 merged, chunked foreground — background jobs die
+  between tool calls): 874 passed / 3 failed / 27+ ignored; the 3 are the permitted disc_golden set.
+  weapon_matrix_live TIMEOUT'd at my 180/240 s chunk limits (slow asset sweep, progresses level by
+  level, unrelated files) — needs the driver's default-limit pass to re-classify.
+- Report: docs/reports/fix-menu-backdrop.md (live checks: the --page main/missions --movie-frame
+  renders against PCSX2, the windowed-loop restart rule).
+Stage Summary:
+- Files: crates/nf-view/src/{movie,lib}.rs, crates/nf-view/tests/{menu_backdrop_still.rs (new),
+  menu_movies.rs (compile fixes)}. No shared files beyond lib.rs (a task-named file here).
+- Open: the cpal .play() audio bug (pre-existing, fix-menu-movies2 flagged it, still silent);
+  pss_movies_live's full-22-movie sweep wants the full retail image.
+
+## fix-armour-ring
+- Started: the orange 007 ring bottom-left in PCSX2 captures may be the health pane's armour state (the captures' god-cheat wrote armour 50 BLData+0x8B0 every frame); check HUD_UpdateHealthPane 0x19b9c8's armour branch, port it, test armour 0 vs 50.
+
+## fix-armour-ring (outcome)
+- The armour branch was already ported and is game-faithful [M HUD_UpdateHealthPane 0x19b9c8:139-158]: armour 0 → HealthSprInfo[0..8] hidden (+0x38 = 0xFF); armour > 0 → the 8 bronze-tinted (0x7d6d59) orange-art segments with alpha 1.0 (k=0) / 0.75 (k < armour·0.16) / 0.35. No separate 007-logo sprite: HealthSprInfo[15] is the 87×86 hollow circle outline tinted by the health colour; the captures' "orange 007 ring" = this pane at the god-cheat's armour 50 (cheats.py writes health 100 + armour 50 every frame). All BLData+0x8b0 readers agree (Pickup_Handler 0x18e650:221-224 take, Player_HandlePain 0x1902c8:100-104 absorb, RamSave/Load, the pane).
+- Tests (fix_armour_ring_live): hide-at-0 + the green ring unchanged; the real take path (kind-3 pickup → step_bond → armour 50) lights exactly 8 segments with alphas {255, 191×7} and segment 0 at (48,367); value tracking 25 → {255, 191×3, 89×4}, 0 → hidden. Green on the final merged tree (1496b80). Shared file: lib.rs gained the 4-line `--armour <n>` shot hook (reported).

@@ -785,6 +785,7 @@ pub fn scope_graph(g: &CelGraph) -> nf_game::world::ScopeGraph {
                 (p.corners[0][2] + p.corners[1][2] + p.corners[2][2] + p.corners[3][2]) * 0.25,
             ],
         }).collect(),
+        room: g.cells.iter().map(|c| c.flags & 0x40000 != 0).collect(),
     }
 }
 
@@ -1735,6 +1736,10 @@ impl Sim {
         // script cut-scene). So riding does NOT run while Bond is disabled — the cut-scene's `Script_Free` →
         // `Player_Enable` places Bond directly. The A-5 change (running riding unconditionally) caused Bond to bounce
         // against the truck during the cut-scene. Fix: gate on `!self.disabled` [M 0x1949a8:24].
+        // The relink segment's start: the pos at the END of the previous tick — the game's `obj+0x40`
+        // the moved pass copies after `control_handle_cel_change` 0x1336f8:212 (the ride below and the
+        // tick's own move both belong to the next relink's segment). fix-swim-entry.
+        let prev_tick_pos = self.bond.pos;
         if !self.disabled {
             let p = self.bond.pos;
             if let Some(g) = self.world.ground_motion(p, [p[0], p[1] - 1.6347, p[2]]) {
@@ -1772,7 +1777,28 @@ impl Sim {
                     trigger = false;
                 }
             }
-            let water = self.cel_at(self.bond.pos).map(|i| self.cels[i].water).filter(|w| *w > -400.0);
+            // The player's runtime cel (obj+0x20) — `control_handle_cel_change` 0x133288's stateful
+            // relink on the LAST tick's move segment (the moved pass runs after `Player_Update`
+            // [M 0x1336f8:147-236], so the cel `Player_InWater` 0x195e50 reads this tick was linked
+            // from `prev→pos` of the tick before): the portal cross (`Cel_ObjectLeftCel` 0x1e0d58)
+            // wins over the bbox keep (`build_point_in_bounding_box` 0x1c9500), and the fresh-link
+            // fallback is `build_FindCel` 0x1c8cb0 at the world-sphere centre with the raycast
+            // tie-break (`build_LinkToRoom` 0x1c9680). fix-swim-entry (was: the stateless
+            // smallest-bbox `cel_at(pos)`).
+            let bond_cel = if (0..3).any(|k| (self.bond.pos[k] - self.bond.prev_pos[k]).abs() > 3.0) {
+                // A placement/teleport: the game's `Player_StandAtNewPosition` 0x190d88 resets
+                // `obj+0x40` to the new position (line 46) and relinks directly with one
+                // `build_FindCel` (lines 108-117) — no portal walk over the jump. The port's direct
+                // `bond.pos` writes (the tests' placements) get the same treatment [S: the 3.0 bound
+                // sits above any per-tick move the sim produces — the walk ~0.1, the accelerated fall
+                // ~0.3 even seconds in — and below every placement jump].
+                self.bond.prev_pos = self.bond.pos;
+                self.world.find_cel(self.bond.pos)
+            } else {
+                self.world.player_cel_relink(self.bond.cel, self.bond.prev_pos, self.bond.pos, self.bond.pos)
+            };
+            let water = bond_cel.and_then(|cell| self.room_cell.iter().position(|&c| c == Some(cell)))
+                .map(|r| self.cels[r].water).filter(|w| *w > -400.0);
             let sink = input.crouch;
             let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink, creepwalls: &self.creepwalls };
             // The third-icon context [M ThirdIcon_Update 0x196e80 + Player_CollisionHandler 0x1949a8:22]:
@@ -1822,18 +1848,18 @@ impl Sim {
             let was_on_wire = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
             let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
             input.fire = trigger;
-            // The queries' start cel (obj+0x20 — fix-safe08b): the game's per-tick relink is
-            // `build_LinkToRoom` 0x1c9680:35-40 → `build_FindCel` 0x1c8cb0 — the room cels' two-ray
-            // tie-break (the up ray, then the down ray capped at min(up hit, len); the nearest hit
-            // wins; no hits → the first candidate), so the actor's cel always carries the geometry
-            // under him and the straddle BFS roots at the floor's cel. fix-08-collision2: the coarse
-            // room-bbox stand-in rooted the 01 escort's straddle at the wrong cel at the room seams
-            // (the pass's triangle order differs from the flat pass's — a 3 cm path shift at the
-            // first seam compounds into the escort fight), and with the portal-centre crossings
-            // ([M 0x1c8928's +0x70] — the other half of this task) the FindCel root keeps the 08
-            // missile-room wall blocked through the doorway portals.
-            self.bond.cel = find_cell_raycast(&self.cel_graph, self.bond.pos, Some(&self.world));
+            // The queries' start cel (obj+0x20 — fix-safe08b): the game's per-tick relink is the STATEFUL
+            // `control_handle_cel_change` 0x133288 (supersedes fix-08-collision2's FindCel-at-pos root —
+            // the same `build_FindCel` 0x1c8cb0 two-ray tie-break that fix kept, but as
+            // `build_LinkToRoom` 0x1c9680:35-40 runs it: AT THE WORLD-SPHERE CENTRE obj+0x80 [M], behind
+            // the move segment's portal cross (`Cel_ObjectLeftCel` 0x1e0d58) and the bbox keep
+            // (`build_point_in_bounding_box` 0x1c9500), so the actor's cel always carries the geometry
+            // under him and the straddle BFS roots at the floor's cel — the 08 escort's straddle root and
+            // the portal-centre crossings ([M 0x1c8928's +0x70]) both ride the same stateful cel).
+            self.bond.cel = bond_cel;
             self.bond.tick_ctx(&self.world, &ctx, &input);
+            // `obj+0x40 ← obj+0x30` — the moved pass's copy AFTER the cel change [M 0x1336f8:212].
+            self.bond.prev_pos = prev_tick_pos;
             // `Player_WeaponNone` 0x1a9858 runs in `Player_CollLadder` on the grab [M 0x196118]: the
             // current weapon id is SAVED to `anim+0x64` (the port's `saved_weapon`), the class becomes
             // 'G' (0x47) immediately (no holster cycle — `anim+0xF4 = 0`), the aim bit clears.
@@ -1887,6 +1913,23 @@ impl Sim {
             // flash +0x968 and the both-sides bits +0x967 = 0xC), not a bare subtraction.
             if let Some(dmg) = self.bond.drown_damage {
                 self.drones.health.pain_generic(dmg, self.drones.difficulty, self.level, 7);
+                // The drown tick's sound rides the same 30-tick cadence [M Player_MonitorAir
+                // 0x191a70:135-143: every FRAME_RATE·0.5 ticks, Sound_Play(100, 0x60b) + HandlePain].
+                self.drones.audio.play(0x60b);
+            }
+            // `Player_MonitorAir` 0x191a70:101-124 [M]: the head crossing cel+0x90 starts the dive
+            // loop (`Sound_Stop()` of the old handle, then `Sound_Play3D(100, −1, −1, 0x27, objPos)`
+            // saved at BL+0x89C) and, on surfacing, stops it and plays the gasp `Sound_Play(100,
+            // 0x60c)`. The port's stop is by id (one voice per id at the alloc).
+            {
+                let under = self.bond.underwater;
+                if under && !self.drones.audio.swim_prev_under {
+                    self.drones.audio.play3d(0x27, self.bond.pos, None);
+                } else if !under && self.drones.audio.swim_prev_under {
+                    self.drones.audio.stop_all_with_id(0x27);
+                    self.drones.audio.play(0x60c);
+                }
+                self.drones.audio.swim_prev_under = under;
             }
         }
         // Footsteps (`AnimObjectUpdate` 0x1befd8:163-198 [M], player): `BL+0x924` gathers the distance
@@ -1903,7 +1946,12 @@ impl Sim {
         let moved_h = (dx * dx + dz * dz).sqrt();
         let climbing = self.bond.substate == nf_game::player::SS_CLIMB;
         let moved = if climbing { (moved_h * moved_h + dy * dy).sqrt() } else { moved_h };
-        if self.bond.grounded && !self.disabled {
+        if self.bond.grounded && !self.disabled && self.bond.substate != nf_game::player::SS_SWIM {
+            // The swim gate [M]: the game's step is `Effect_Create` off the CACHED ground hit
+            // (0x1ce688:63 early-outs unless `(hit+0x50 & 0x3f) != 0`); the swim capsule (0x194df0
+            // case 3) hangs under the surface and never touches the pond bed, so swimming plays NO
+            // footstep (the user's "I could hear my footsteps too"). The port's floor ray still
+            // finds the bed mid-pond, so the substate is the gate here.
             self.step_dist += moved;
             let stride = if climbing { 0.4125 } else { 1.65 };
             if self.step_dist > stride {
