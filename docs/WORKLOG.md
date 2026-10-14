@@ -11464,6 +11464,14 @@ Stage Summary:
   to the same gunfire, the protected-actor ch 0x60 rises on his death). Suite on the merged tree:
   see docs/reports/fix-06-driver.md. Report: docs/reports/fix-06-driver.md (live checks: the PCSX2
   no-draw confirmation, the death anim, the 700-880 step-out window; the headless render gap).
+
+## fix-front-end-chain — s/fix-front-end-chain (task 105e, started 19:47 UTC)
+
+Task: port the front-end leg after a mission ends — the results/medal screen (Mission_Update
+0x182c60 case 6 onward, the outro movie, the results page), the unlock write into the progress
+layer (nightfire_status 0x202360, the codename profile), and mission select offering the next
+mission. Drive the campaign runner from 01's end to 05's start. Files: menu.rs, mission.rs,
+progress.rs, profile.rs. Status: setting up.
 ## fix-oddjob-hat — s/fix-oddjob-hat (task 104e, 17:36-18:5x UTC)
 - The hat = weapon 0x45 [L ee_start_05.bin @0x2c398c]: damage 100.0, speed 0.6667, +0x6C = 0x20C08
   (gravity + no-flesh-pass 0x800 + the HOMING bit 0x20000 — the only carrier among the thrown
@@ -11727,3 +11735,23 @@ Work Log:
 - 20:45: repro on 07000007: the 0x800 multiplier reaches every drone-backed guest (per-cel ambients 36-64, 9 distinct; 104 active kind-0 lights picked up with skin flags 0x8a0). The 49 sentinel-0xff characters are exactly the invisible set: 33 dev-pool copies parked at -1e6 and 16 origin script actors (the game leaves those unlinked too — no cel at the origin, ambient stays the 0xff init of control_init_object 0x134630). G-042: the civilian's "white" texture (map 32 tex 4, 32x32) is a sheen map — 1024/1024 white rgb but 98/1024 opaque alpha; the base skin textures are not white.
 - 21:15: the game's model pinned end-to-end (linked cel obj+0x20: create-link+snap 0x1346b8/0x1343c8, keep/portal/relink 0x133288+0x1e0d58+0x1c9500, ramp 0x1cb178 moved-only; the same Tweak+light pair on the character path 0x1e69a0:96->0x1e78b0; bCharacterLight/AnimColRad have NO EE reader — scanned all gp-relative accesses). Port matches on every headless point; 3 NF_ISO tests green (own-cel ambient per guest, party lights reach the draws, G-042 sheen map resolved). No production code changed. Report: docs/reports/fix-character-room-light.md.
 - 21:32: merged origin/master (1c376216, WORKLOG conflict resolved keeping both), lighting suites re-ran green on the final tree (new 3/3, character_lighting_live 4/4); baseline full suite on the identical production code: 1065 passed / 7 failed (3 disc_golden allowed + weapon_matrix_live TIMEOUT + 3 pre-existing pylon) / 35 ignored.
+
+## fix-front-end-chain (outcome, 19:47-21:40 UTC)
+
+The front-end leg (campaign-flow blocker 7): `FrontEnd::results_enter` ports P_NFRESULTS 0x208e78
+case 0x4c — GetScore(0)'s fields (the medal compare on last +0x34, the next-threshold target with
+its 0x2cc-0x2cf label, SeparateNumber 0x1dec78's numbers, the 0x2c7-0x2ca/0x10001fd medal text,
+the 0x300013d/e/f/0x300019a emblems) + Menu_SetLevelBonus 0x1ffa10's award; Confirm routes to the
+mission list (0x4b; new-reward takes P_NFBONUS 0x209670:50-53's landing; P_NFMAP 0x4c opens on the
+highest unlocked row). Three progress bugs fixed failing-first [M 0x1984b0:38-84/301-333,
+0x1ffa10:70]: GetScore's row source was inverted (0x07 maps = PlrMissionStats, 0x09 = NewScoresRef
+— the port aborted every on-foot map), the commit param was inverted (best/DoneBetter updated on
+every call), and set_level_bonus awarded all four medal bits on a no-medal run. The campaign
+runner's `front_end_chain_01_to_05` drives 01's end → outro wrap → results fields → award →
+mission list → the next mission confirmed, ×4, then 05 (07000011) unlocked on the page AND in the
+codename profile's MSSN (0b1111_0111 exact) and its start requested. Tests: front_end_chain_live
+2/2, progress units 152/152, menus_flow 34/34, movie_playback_flow 9/9, fix_save_profile_live 5/5,
+campaign_flow_live 4/4 — all on the merged tree (89e153e9). Left: the bonus/win pages' bodies, the
+0700000b blocker-4 race, the final-tree suite total (window closed; see the report). Report:
+docs/reports/fix-front-end-chain.md (live checks: the PCSX2 results page after 01, the mission
+list's unlock states, the F8 render points).

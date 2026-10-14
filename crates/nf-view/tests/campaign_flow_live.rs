@@ -304,3 +304,147 @@ fn the_mission_layer_re_arms_on_a_warm_transition() {
     assert_eq!(sim2.drones.mission.states[i5][0], 4, "the past part's record survives the warm load");
     assert_eq!(sim2.drones.mission.states[i6][0], 4, "06's own objective folds again on the re-armed layer");
 }
+
+// ── front-end-chain: the front-end leg (campaign-flow blocker 7) ──────────────────────────────
+// After each mission's final level completes the chain drives the front end the way the game
+// does: Mission_Update case 4 (mission_ended) → the outro movie wrap (the loader's phase 0/2) →
+// the results page 0x40000036 on the map [M 0x1d6360:160-163] → P_NFRESULTS case 0x4c (the
+// fields + Menu_SetLevelBonus 0x1ffa10) → Confirm → the mission list 0x4000001c [M 0x208e78:43]
+// → the next mission's row confirmed [M C_SBNFMAP 0x20b8d8:18-41]. From 01's end to 05's start.
+
+use nf_view::menu::{self, Action, CAMPAIGN, FrontEnd, Outcome, Page, Stats};
+
+/// The game's strings [M Txt_LoadLanguage 0x1caad0 loads USATxt.dat out of FILES.BIN].
+fn chain_iso_lang(iso_path: &str) -> Option<nf_formats::hud::Lang> {
+    let iso = nf_formats::iso9660::IsoImage::open(iso_path).ok()?;
+    let (entries, bin) = nf_formats::disc::files_bin_entries(&iso).ok()?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case("USATxt.dat"))?;
+    let bytes = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).ok()?;
+    nf_formats::hud::Lang::parse(&bytes).ok()
+}
+
+/// Completing 01-04 unlocks 05: the results fields are the game's own numbers, the unlock rides
+/// `nightfire_status` into the codename profile's MSSN, and the mission page offers 05's start.
+#[test]
+fn front_end_chain_01_to_05() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let lang = chain_iso_lang(&iso);
+    // The live progress layer + the front end, both fresh [D sp_level boot: rows 0,1 unlocked].
+    let mut progress = nf_game::progress::Progress::default();
+    progress.set_nightfire_status(0x3);
+    let mut fe = FrontEnd::new();
+    // A codename card: the unlock rides the profile's MSSN [M LS_MakeMission 0x1cd720:49-50].
+    let dir = std::env::temp_dir().join(format!("nf-front-end-chain-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    fe.set_profile_dir(dir.clone());
+    fe.create_codename("CHAIN01", &[]).expect("create the codename");
+
+    // 01-04 in story order (the campaign-flow table's missions 1-4). 01 starts OUTSIDE the front
+    // end — the chain begins at 01's END (its row sits behind the driving missions in the wheel).
+    const CHAIN: [u32; 4] = [0x0700_0001, 0x0700_0005, 0x0700_0009, 0x0700_000c];
+    for (mi, &m) in CHAIN.iter().enumerate() {
+        if mi > 0 {
+            // The mission list offers the next mission: its row unlocked, confirmed, and the
+            // game's mission start riding the request [M C_SBNFMAP 0x20b8d8:18-41].
+            let rowi = CAMPAIGN.iter().position(|c| c.3 == m).unwrap();
+            assert!(fe.unlocked_row(rowi), "the mission page lists 0x{m:08x} (unlocked by the previous award)");
+            fe.cursor = rowi;
+            assert!(fe.action(Action::Confirm), "the unlocked row confirms");
+            assert_eq!(fe.requested_level.take(), Some(m), "the mission start rides the request [M 0x20b8d8:21-24]");
+        }
+        // Play the mission's parts (warm carries between them), as the runner always has.
+        let (_, levels, _) = missions().into_iter().find(|(mm, _, _)| *mm == m).unwrap();
+        let mut save: Option<RamSave> = None;
+        let mut last_level = 0u32;
+        let mut complete = false;
+        for &(level, _) in &levels {
+            let (row, carry) = play_level(&iso, level, 600, save.as_ref());
+            eprintln!("m0x{m:08x} 0x{level:08x}: {}", row.cells());
+            assert!(row.parsed, "0x{level:08x} parses");
+            assert!(row.spawned, "Bond spawns in 0x{level:08x}");
+            save = carry;
+            last_level = level;
+            complete = row.complete;
+        }
+        // 0700000b's leg races the forced complete against its own self-loop exit trigger
+        // (blocker 4 [M the trigger's next_level is the level's own hash]) — either end drives
+        // the same front-end leg; the mission layer's forced verdict stands in for the AND.
+        assert!(complete || last_level == 0x0700_000b,
+            "mission 0x{m:08x} ends headless (complete={complete})");
+
+        // ── the front-end leg ──
+        // The flow rides the runner state while the level played (the game: state 2 under
+        // Mission_Update); mission_ended's ResetMap_LevelToLoad needs that state [M 0x1d3800].
+        fe.flow.stack = vec![menu::ST_RUNNER];
+        fe.flow.current_level = last_level;
+        let rowi = CAMPAIGN.iter().position(|c| c.3 == m).unwrap();
+        fe.mission = rowi;
+        fe.mission_ended(Outcome::Complete, Stats::default());
+        // Case 6 routes the mission-final level to its outro code [M 0x182c60:89-116].
+        assert_eq!(fe.requested_level.take(), Some(menu::outro_for(last_level)),
+            "the outro code rode the load request");
+        // The wrap: the fade holds, the loader's phase 0 plays the movie, phase 2 resolves to the
+        // front-end map with the results page [M 0x1d6360:160-163 + 0x1d3560]. The resolve is
+        // consumed per leg (the host's own pattern — `requested_level.take()`).
+        let mut resolved = None;
+        for _ in 0..64 {
+            fe.tick();
+            if let Some(r) = fe.flow.phase2_resolved.take() { resolved = Some(r); break; }
+        }
+        assert_eq!(resolved, Some(menu::FRONTEND_LEVEL), "the outro routes to the front end");
+        assert_eq!(fe.flow.page, menu::PAGE_RESULTS, "phase 2 sets +0x28 = 0x40000036 [M 0x1d6360]");
+        fe.tick();
+        assert_eq!(fe.flow.current_level, menu::FRONTEND_LEVEL, "the front-end map loads [M 0x1d6360 phase 3]");
+        // P_NFRESULTS case 0x4c against the live layer: the fields + the award.
+        let difficulty = progress.difficulty;
+        assert!(fe.results_enter(&mut progress, m, 6, difficulty, lang.as_ref()),
+            "the results fields are built [M 0x208e78:77]");
+        let rf = fe.results.as_ref().expect("the fields");
+        let idx = nf_game::progress::SCORING_TABLE.iter().position(|e| e.hash == m).unwrap();
+        let th = nf_game::progress::SCORING_TABLE[idx].thresholds;
+        assert_eq!(rf.score, progress.table[idx].last, "the score line is the entry's last [M :96]");
+        // The medal/target pairing [M :98-142]: the target is the threshold ABOVE the score.
+        let (want_medal, want_target, want_label) = if rf.score >= th[3] { (4u32, th[3], 0x2ccu32) }
+            else if rf.score >= th[2] { (3, th[3], 0x2cc) }
+            else if rf.score >= th[1] { (2, th[2], 0x2cd) }
+            else if rf.score >= th[0] { (1, th[1], 0x2ce) }
+            else { (5, th[0], 0x2cf) };
+        assert_eq!(rf.medal, want_medal, "the medal counter matches the compare");
+        assert_eq!(rf.target, want_target, "the target is the next threshold");
+        assert_eq!(rf.target_label, want_label, "the target label pairs the medal");
+        assert_eq!(rf.emblem, match want_medal {
+            1 => 0x0300_013d, 2 => 0x0300_0140, 3 => 0x0300_013e, 4 => 0x0300_013f, _ => 0x0300_019a,
+        }, "the emblem texture pairs the medal [M :109-139]");
+        // The award [M 0x1ffa10:62-66]: the row complete + the next row unlocked, in the packed
+        // nightfire_status the save carries [M Menu_GetNightfireStatus 0x202360].
+        assert_eq!(progress.nightfire_status() & (1 << rowi), 1 << rowi, "the completed row stamps");
+        assert!(fe.unlocked_row((rowi + 1).min(11)), "the next campaign row unlocks");
+        // Confirm → the mission list [M 0x208e78:43; the new-reward hop lands there too, 0x209670
+        // :50-53]; it opens on the highest unlocked row [M P_NFMAP 0x20b608 case 0x4c scans
+        // sp_level+0x10 from row 11 down].
+        assert!(fe.action(Action::Confirm));
+        assert_eq!(fe.page, menu::Page::MissionSelect);
+        assert_eq!(fe.flow.page, menu::PAGE_MISSION_SELECT);
+        let want_cursor = (0..CAMPAIGN.len()).rev().find(|&i| fe.unlocked_row(i)).unwrap();
+        assert_eq!(fe.cursor, want_cursor, "the list opens on the highest unlocked row");
+    }
+
+    // 05 (07000011) is unlocked and listed after 01-04.
+    let row5 = CAMPAIGN.iter().position(|c| c.3 == 0x0700_0011).unwrap();
+    assert!(fe.unlocked_row(row5), "completing 01-04 unlocks 05 in the front end");
+    assert_eq!(CAMPAIGN[row5].1, 0x0300_0009, "05's row label id [L sp_level]");
+    // The profile: 05's bit rode the MSSN nightfire_status [M LS_MakeMission 0x1cd720:49-50].
+    let profile = nf_game::profile::Profile::load_file(&nf_game::profile::Profile::path_in(&dir, "CHAIN01"))
+        .expect("the card's file loads");
+    let status = profile.progress.nightfire_status();
+    assert_eq!(status & (1 << row5), 1 << row5, "05's bit is in the profile's MSSN");
+    // The exact set the chain writes: boot rows 0-1, 02's award (row 1 + unlock 2), 01's (4+5),
+    // 03's (5+6), 04's (6+7) — row 3 (09000006, a driving mission the chain never plays) stays clear.
+    assert_eq!(status, 0b1111_0111, "01-04's awards + the boot rows rode the saves");
+    // The mission page offers 05: confirming its row starts the mission.
+    fe.cursor = row5;
+    assert!(fe.action(Action::Confirm), "05's unlocked row confirms [M C_SBNFMAP 0x20b8d8:18-41]");
+    assert_eq!(fe.requested_level, Some(0x0700_0011), "05's start is requested");
+    let _ = std::fs::remove_dir_all(&dir);
+}
