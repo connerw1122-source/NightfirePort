@@ -36,3 +36,7 @@ claimed-by: sandbox4 at 2026-10-14T15:49Z
 ## Report (done, 2026-10-14T16:47Z)
 
 Closed by the driver: the report is on `s/fix-06-alarm` (docs/reports/fix-06-alarm.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-14T17:21Z)
+
