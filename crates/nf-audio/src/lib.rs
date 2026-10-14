@@ -308,9 +308,15 @@ pub fn resample_gauss(data: &[i16], pos: f64) -> i16 {
     out.clamp(i16::MIN as i32, i16::MAX as i32) as i16
 }
 
+/// `NF_SILENT` is set (any value): open no audio device. The test runner (tools/test/suite.py) sets it.
+pub fn silent() -> bool { std::env::var_os("NF_SILENT").is_some() }
+
 impl Output {
-    /// Opens the default output device. `None` when there is none (the game runs silent).
+    /// Opens the default output device. `None` when there is none (the game runs silent), or when
+    /// `NF_SILENT` is set: the test runner sets it so no test ever plays through the user's speakers
+    /// (the weapon-sound tests once fired bursts of shots at full volume through them).
     pub fn open() -> Option<Output> {
+        if silent() { return None; }
         let host = cpal::default_host();
         let device = host.default_output_device()?;
         let config = device.default_output_config().ok()?;

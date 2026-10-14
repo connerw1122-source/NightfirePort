@@ -9825,6 +9825,36 @@ the wrap/line-height helpers). Report: docs/reports/fix-objective-messages.md.
 Full suite on the final tree (origin/master 7be3272 merged): **886 passed, 3 failed, 27 ignored
 (20 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH. Also green post-fix:
 death/restart 8, mission 4, level_carry 3, progress 8, nf-formats 74 (+ the 3 allowed).
+## fix-weapon-sounds (s/fix-weapon-sounds) — 2026-10-14
+
+Task 100b: weapon sounds on every level — map every weapon's sound ids (fire, silenced,
+dry fire, reload stages, draw 0x281/0x282, holster 0x280/0x283, zoom, alt fire, laser and
+stunner loops, grapple fire/reel, grenade pin/throw/bounce, rocket launch/flight loop,
+explosions, casings and impacts per surface) to the bank(s) that hold them; when a weapon
+is given on a level whose bank lacks a sample, load it (VAG + effect record) from a bank
+that has it and register it under the same id without disturbing the level's own effects
+or the voice limits. Files: crates/nf-audio/src/{sfx,lib}.rs, crates/nf-view/src/lib.rs,
+tests. Reproduce-first; work starting.
+
+Task 100b outcome (same session): REPRODUCED then FIXED. The repro (fix_weapon_sounds_live,
+07000005 dev load, equip 0x1a via the real inventory path, fire through step_bond) failed
+pre-fix with "the AR's fire sound 0x40d never started a voice on 07000005" — the level bank
+(slot 4) has no row for the foreign weapon's ids. Fix: the driver's first load_bank is the
+primary slot (bit-identical one-bank lookups for the level's own set); the other 22 SBINFO
+banks load as spares (load_spare_bank, 42 MB SBF [D disc]); start() searches primary first,
+then spares ascending (slot 2, the MP bank, is the weapons superset holding every missing id).
+The owning bank's effect record (radii/MaxVoices/priority) and VAG data ride along, so the
+voice limits are the owning bank's. Green: the AR's fire 0x40d + reload 0x406/0x407/0x40a
+from slot 2 with the owning bank's sample FNVs; the sister pins the native P2K's
+0x403/0x40e/0x40f/0x411 to slot 4; the 69-weapon draw/fire/reload sweep (each requested id
+starts a voice with the owning bank's sample; gadget-context ids at driver level). 2 tests
+ignored with observations (the Laser 0x4e has no FP model in the dev merge — 100a; the AR
+draws but never fires on 07000001 — 100a/100c; both documented in the report). Files:
+sfx.rs, lib.rs (spares load + pub build_sound), scene.rs (one additive field sound_spares),
+tests/fix_weapon_sounds_live.rs (new). Report: docs/reports/fix-weapon-sounds.md (the
+weapon → bank mapping table + live checks). The full 211-binary suite still needs a run on
+the final tree (background jobs are killed between tool calls here; the window closed) —
+listed in the report for the next message.
 ---
 
 ## fix-qclaw (s/fix-qclaw) — started 2026-10-14 02:28 UTC
@@ -9907,3 +9937,31 @@ Branch s/fix-pause-menu2 from origin/master 6a118b8. Task: the pause page fixes 
 tab (button glyphs), the SCORE table (Category/Current/Target from the medal data), the HUD
 under the pause page, the footer glyphs. Files: crates/nf-view/src/{menu,hud}.rs,
 crates/nf-view/tests/menus_flow.rs. Report: docs/reports/fix-pause-menu2.md.
+
+## weapon-matrix (worker, branch s/weapon-matrix) — 2026-10-14
+
+Task 100d: the all-weapons × all-levels matrix. A headless test (`crates/nf-view/tests/weapon_matrix_live.rs`)
+and an `nf-extract weapon-matrix <iso>` table command that, per on-foot level × weapon id: load, `--give` the
+weapon, draw, fire ×3 (hold for hold-to-use gadgets), reload, switch away/back — recording view-model presence,
+sequences played, muzzle flash, sound ids requested/started, effects spawned, errors/panics. Baseline run on
+master, final run with 100a–c merged. Plus a "Test weapon" row on the dev menu Weapons page (dev.rs). Work started
+03:09 UTC; report lands in docs/reports/weapon-matrix.md.
+
+---
+Task ID: 100d-weapon-matrix
+Agent: weapon-matrix worker
+Task: the all-weapons × all-levels matrix — the tool, the run, the fixes it turns up, the dev row.
+
+Work Log:
+- Built the runner (crates/nf-view/src/matrix.rs): per on-foot level × weapon id — load, give (the --give path via panel::apply), draw (real input path; the mode button's twin chain for the variant records), fire ×3 (hold-to-use gadgets hold), reload, switch away (P2K 0x02) and back; records view model, muzzle-flash attachment, view scripts, shot ticks, sound ids requested (Drones::sounds) and started (the driver's Cmd::Start batch, built the way lib.rs's sound_tick builds it), effects (bullets/impacts/explosions/grenades/beam), panics (caught per cell, the level reloaded after one).
+- `nf-extract weapon-matrix <iso> [levels]` prints the mark table + per-weapon aggregates + red cells with reasons.
+- 27 per-level headless tests (crates/nf-view/tests/weapon_matrix_live.rs, one #[test] per level) + the sister test for the dev row.
+- The dev menu's Weapons page got the "test weapon (in hand)" row (dev.rs TestRun + test_inputs/test_observe; lib.rs merges its inputs into the real tick, never during replay). Headless-verified: draw ok, 3 shot ticks, reload ok on the P2K / 07000005.
+- Full sweep: 27 levels × 99 ids, 5m27s, ZERO panics. Red cells: 274 give refusals (the game's own: fp-less variant records + the at-cap owned-branch refusal — both named in the reasons), 235 no-view-model cells (the cross-level asset gap, 100a's headline — the reason names the missing fp skin hash), 94 draw fails (the manor/vault intro input lock + variant chains), 6 R, 6 B, 0 W.
+- 100a-c were worklog-only at task start; nothing to merge (stated in the report). Baseline == final tree.
+- Fast suite on the final tree --only weapon_matrix_live,fix_weapons_all_live,fix_weapon_modes_live,models_weapons_live,dev_menu_flow,devwin_flow: 51 passed, 0 failed (8 min).
+
+Stage Summary:
+- Files: matrix.rs (new), tests/weapon_matrix_live.rs (new), nf-extract main.rs + Cargo.toml (the command), dev.rs (the row), lib.rs (pub mod matrix + the 2-line test-weapon hook). drone.rs/scene.rs/player.rs untouched.
+- Report: docs/reports/weapon-matrix.md (the mark table, the numbers, the live checks for the main agent).
+- Open: re-run with 100a-c merged; the intro input-lock F/D cells; the variant back-chain B cells (100c).

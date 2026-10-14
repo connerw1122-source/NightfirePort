@@ -29,6 +29,8 @@ pub mod scene;
 pub mod replay;
 pub mod panel;
 pub mod weapon_assets;
+/// The weapon matrix (task 100d): every on-foot level × every weapon, measured headless.
+pub mod matrix;
 
 use anyhow::{bail, Context, Result};
 use glam::{Mat4, Vec3};
@@ -271,11 +273,15 @@ fn start_camera(scene: &scene::Scene) -> Camera {
 }
 
 /// Builds the sound driver + output from the scene's bank/music, and wires the music logic. The scene's bank,
-/// music and tables are consumed (taken out) — the same path `main` uses at startup [M].
-fn build_sound(scene: &mut scene::Scene) -> Option<nf_audio::sfx::Sound> {
+/// music and tables are consumed (taken out) — the same path `main` uses at startup [M]. Public so the live
+/// tests drive the exact runtime driver (fix-weapon-sounds).
+pub fn build_sound(scene: &mut scene::Scene) -> Option<nf_audio::sfx::Sound> {
     let sound = scene.sound_bank.take().map(|(slot, bank, sbf)| {
         let mut driver = nf_audio::sfx::Driver::new();
         driver.load_bank(slot, bank, sbf);
+        // The spare banks: every other SBINFO slot (fix-weapon-sounds). The level's own stays primary, so
+        // ids it carries resolve exactly as the one-bank driver did [M `Sound_Ready` 0x1dceb8].
+        for (slot, bank, sbf) in std::mem::take(&mut scene.sound_spares) { driver.load_spare_bank(slot, bank, sbf); }
         if let Some((lut, bin)) = scene.streams.take() { driver.load_streams(lut, std::sync::Arc::new(bin)); }
         let output = nf_audio::Output::open();
         if output.is_none() { eprintln!("audio: no output device; running silent"); }
@@ -692,6 +698,28 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         let f = |ext: &str| get(&nf_formats::soundbank::bank_path("ENGLISH", slot, ext));
         let bank = nf_formats::soundbank::Bank::parse(&f("SHF")?, &f("SFX")?).map_err(|e| eprintln!("sound bank: {e}")).ok()?;
         Some((slot, bank, f("SBF")?))
+    })();
+    // fix-weapon-sounds: the spare banks — every other SBINFO slot with files on the disc, so a weapon
+    // given on a level whose own bank lacks a sound still plays it from a bank that holds it. Only ids
+    // the level's own bank lacks ever resolve to a spare (the driver's primary-first lookup), so every
+    // level-carried sound is bit-identical to the one-bank behaviour [M `Sound_Ready` 0x1dceb8; S the
+    // extension — the real game loads one bank per level].
+    scene.sound_spares = (|| -> Vec<(usize, nf_formats::soundbank::Bank, Vec<u8>)> {
+        let get = |p: &str| iso.find(p).and_then(|e| iso.read_file(e).ok());
+        let Some(sbi) = get("PS2/SBINFO.SBI") else { return Vec::new() };
+        let Some(slots) = nf_formats::soundbank::bank_slots(&sbi).ok() else { return Vec::new() };
+        let own = scene.sound_bank.as_ref().map(|(s, _, _)| *s);
+        let mut spares = Vec::new();
+        for (slot, &hash) in slots.iter().enumerate() {
+            if hash == u32::MAX || Some(slot) == own { continue; }
+            let f = |ext: &str| get(&nf_formats::soundbank::bank_path("ENGLISH", slot, ext));
+            let (Some(shf), Some(sfx), Some(sbf)) = (f("SHF"), f("SFX"), f("SBF")) else { continue };
+            match nf_formats::soundbank::Bank::parse(&shf, &sfx) {
+                Ok(bank) => spares.push((slot, bank, sbf)),
+                Err(e) => eprintln!("sound bank slot {slot}: {e}"),
+            }
+        }
+        spares
     })();
     // Streamed effects (guards' speech): STREAMS.LUT / STREAMS.BIN.
     scene.streams = (|| {
@@ -2070,6 +2098,16 @@ impl ApplicationHandler for App {
                                 };
                                 (input, self.trigger, self.just.remove(&KeyCode::KeyR), self.just.remove(&KeyCode::KeyE))
                             };
+                            // weapon-matrix: the dev menu's "Test weapon" run (dev.rs) merges its
+                            // inputs into this tick — the same lanes the keyboard uses
+                            // (`switch_to`, the trigger, the R edge), never during a replay
+                            // (the recording drives the sim alone).
+                            let (tw_switch, tw_fire, tw_reload) = if self.replay.is_none() {
+                                self.dev.as_deref_mut().map_or((None, false, false), |d| d.test_inputs())
+                            } else { (None, false, false) };
+                            input.switch_to = input.switch_to.or(tw_switch);
+                            let trigger = trigger || tw_fire;
+                            let reload = reload || tw_reload;
                             // The gamepad (fix-input, `gamepad` feature): the pad's path through the
                             // game's own mapping/curves/ramps merges into the keyboard's Input; no pad,
                             // no change. Mouse look is untouched (its deltas are in input.turn/look; the
@@ -2084,6 +2122,9 @@ impl ApplicationHandler for App {
                             // B-5 record: capture the exact input passed to step_bond, before the call.
                             if let Some(r) = &mut self.recorder { r.push(replay::TickInput::from_parts(&input, trigger, reload, use_key)); }
                             sim.step_bond(input, trigger, reload, use_key);
+                            // weapon-matrix: the "Test weapon" run watches the tick's result (the
+                            // phase machine in dev.rs; `sim` and `self.dev` are disjoint fields).
+                            if let Some(d) = self.dev.as_deref_mut() { d.test_observe(&*sim); }
                             // The lock's rising edge auto-draws the handgun (`Upgrade_Weapon(6)` = 2 [L])
                             // [M 0x1a24c8:247-250]. `prev` = last tick's channel (the game's
                             // `switch_channels_prev` semantics).
