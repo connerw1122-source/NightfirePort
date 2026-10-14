@@ -11145,3 +11145,19 @@ Task: fix-weapon-fx-levels — audit the weapon EFFECTS across all 27 levels x t
 Work Log:
 - (14:29 UTC) Branch s/fix-weapon-fx-levels created from origin/master 088bdf4 (s/weapon-matrix2 already merged: ad50a3c). Setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; effect-resolution research next.
 
+
+---
+Task ID: 103j-fix-weapon-fx-levels
+Agent: weapon-fx-levels worker
+Task: fix-weapon-fx-levels — audit the weapon EFFECTS across all 27 levels x the carried set (fire sound, reload/draw/mode-switch sounds, muzzle flash, shell eject, tracer, impact puff/spark/decal per surface, projectile model+trail, explosion); record resolve vs missing as a table; fix every missing cell (or give game evidence the game lacks it too); watch gadgets' laser/stunner beam/impact; tests + 3 named spot checks; report docs/reports/fix-weapon-fx-levels.md.
+
+Work Log:
+- (14:29 UTC) Branch s/fix-weapon-fx-levels created from origin/master 088bdf4 (s/weapon-matrix2 already merged: ad50a3c). Setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; effect-resolution research next.
+- (15:36) Resumed in a fresh sandbox: master merged (2caa27f, the WORKLOG conflict resolved append-only). Background jobs confirmed dead between tool calls here — testing went through foreground chunks.
+- (15:45-16:35) Research (subagent + own disasm): the game's FX set is per-level redundant (EffectInfo decals/debris/gas, the tracer 0x02000123, the blast script 0x06000052 — kind-7 NIS — all in every story archive [D census]); 100a's wanted list missed the fp muzzle mesh +0x48 (0x02000ac7 only in 14/15/16/1b) and the ammo-9 casing 0x02000548; Bullet_DoTrails 0x12d890's smoke/exhaust trails were never ported (bit 0x2: 0x1b/0x36/0x69 every 4th tick, Bullet_trail_effect_smoke 0x12cba8; bit 0x20: 0x2a/0x2b every 3rd tick — args read off the disasm incl. the dropped life args 0x78/0x40; the bit-0x10000 Swoosh 0x1a4e40 documented, not ported).
+- (16:36-16:50) Fixes: +0x48 + casing_meshes into wanted_weapon_models (lib.rs, weapon_assets.rs param); init_trail_smoke + init_exhaust_puff (gas.rs, 3 shared RNG draws each, searchlight precedent); the two gates in the grenade tick (drone.rs).
+- (16:50-17:27) weapon_fx_levels_live.rs: the static sweep (20 levels x 114 records modelling the give path's pool: own ∪ earlier-story ∪ skin-owner; per-level own bank ∪ all-bank spares for the op-1 ids — args[1], not args[0]) + 3 spot checks. The rifle check is green (draw 0x282 from the own bank, the flash attachment, fire 0x40d, a live casing, the floor decal/debris); the launcher/gadget checks are #[ignore]d with the exact headless fire-path repro attempts written down; the sweep's only residual is two records' +0x80 held model in non-story archives (documented).
+- (17:30) Neighbours green: fix_weapon_effects 6/6, explode 2/2, fix_weapons_all 4/4, fix_weapon_sounds 3/3 (+2 pre-existing ignores). The full suite did NOT fit the window (no background jobs here) — next session runs it on the merged tree.
+
+Stage Summary:
+- Pushed 56d9bff + the report commit to s/fix-weapon-fx-levels; docs/reports/fix-weapon-fx-levels.md (the mechanism, the three fixes with addresses, the table, the live checks incl. the Swoosh reference render, what's left). 0 unexplained missing effect cells; the +0x80 held-model residual and the headless foreign-fire block are the known leftovers.
