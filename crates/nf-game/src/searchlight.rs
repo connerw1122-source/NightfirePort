@@ -59,6 +59,14 @@ pub struct Part {
     pub alpha: u8, pub scale: f32,
     /// Heads and mounts: the object's gfx box (bullet stand-in; the game's child-list path is U-041).
     pub box_min: V3, pub box_max: V3,
+    /// The placement translation BEFORE the kind-2 −10000 move — the psiLight node's static +0x10,
+    /// the light's upload position for the part's whole life [M 0x1cb4f8:154-167 writes the node
+    /// from obj+0x30 before the move; psiLight_SetLights 0x10e588 uploads node+0x10].
+    pub spawn_pos: V3,
+    /// The create tick in the sim's own timeline — the game's obj+0xEC stores GameState+52 at
+    /// create (control_init_object 0x134630:15), the state-2 smoke's phase term
+    /// `(GameState+52 + obj+0xEC) % 7 == 0` [M 0x1cb900:375]. The port creates at frame 0.
+    pub created: u32,
 }
 
 /// All searchlight parts of a level, in placement (creation) order.
@@ -154,6 +162,8 @@ impl Searchlights {
                 state: if param(1) != 0 { 3 } else { 0 },
                 pitch: 0.0, yaw: p.rotation[1], links: [None; 5], killed: false,
                 light: None, alpha: 0xff, scale: 1.0, box_min, box_max,
+                spawn_pos: p.translation,
+                created: 0,
             };
             let (half, mid) = half_mid(param(4), param(5));
             part.half = half;

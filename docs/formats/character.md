@@ -63,12 +63,18 @@ skinned objects; 627 are sleeve substitutes.
   (weight, index) selection sort (first min(count, 8) descending by weight, then the index order restored). Per
   vertex, the skinning word's upper half-word (the short at +0x1E, −1 = none) is the morph index; `SkinIt` fetches
   `target_base + (vertex_index + Morph_Index[m]) × 12` for each morph m and adds the weight-scaled VECTOR3. The
-  target base is the runtime gfx record's +0x14 (`psiDrawSkinObjectMatrix` reads it after `psiCreateEntityGfx`
-  0x1171b0 resolved the skin-info words: +0 source buffer, +4 size, +8 the −1-terminated REF index list, +0xC the
-  0xFF-terminated slot-bone list measured 0x30 bytes before the skin info). The morph targets' own disc region is
-  NOT yet located — the block carries a large float region beyond the REF list (a 0x04000048 mesh: 356 morph
-  vertices, indices up to 5272, so the target array spans ≳ 63 KB inside the block), and gfx-runtime+0x14's writer
-  is still unread (the decomp drops the store). Open: the base's exact offset + the sort's final order.
+  target base is the runtime gfx record's +0x14 — **pinned (fix-facial2)**: the record is the 0x28-byte block
+  `parsemap_block_morph_data` 0x1d23e8 / `parsemap_block_PS2_GFX` 0x1d2450 allocate per cel-list entry, and
+  0x1d23e8 stores `FileNextBlock + 4` — the raw payload of a **MORPH_DATA map block (dispatch 0x1d1020 case
+  0x2b)** — into `gfx+0x14` (psiCreateEntityGfx 0x1171b0 has no +0x14 store; its disassembly resolves only the
+  object array and skin-info words). The block pairs with the entity whose params follow (the cel cursor advances
+  only in `parsemap_block_entity_params` 0x1d1508). Disc proof [D 07000005]: 'generic_head_grunt' 0200040d
+  carries 63,528 bytes = 5,294 targets and its vertices' max morph index is 5272 — the array is exactly
+  `(max_morph_index + 1 + facial_count) × 12` (5227 = 5205 + 22 on 020002da), the `(morph + channel)` addressing
+  SkinIt uses. Ported: `MapObject.morph_targets` (level.rs's `pending` pairing), `Character.morph_targets`,
+  `CharVertex.morph` (the skinning word's upper half-word), and the morph term in the CPU skinning
+  (`Scene::animate`, `morph_vertex` — `pos += Σ_m w[m] × target[morph + m]`), the weights sampled from the
+  started face-track window (`Scene::facial_weights_now`). The GPU skin path (G-043) is not morphed yet.
 - The face tracks ride the cut-scene scripts as the second opcode-0 window (docs/formats/animation.md "Scripts"):
   07000005's ledge pair 06000996/97 → face sequence 040007fa (frames 1..0x5dc), whose first weight crosses 0.01 at
   frame 767 [D, `facial_live`]. The port currently poses BONES from those channels

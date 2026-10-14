@@ -126,6 +126,19 @@ pub struct GameFlow {
     pub wait_frames: u32,
     /// The state-6 movie countdown (the port can't decode the zeroed PSS files; headless model).
     pub movie_frames: u32,
+    /// `BGFMVPlaying` [L 0x30c69c]: the host sets this while a real movie decodes; state 6 holds
+    /// while it is set and pops when it clears — `psiMovieFinished` is `BGFMVPlaying == 0`
+    /// [M 0x1082e8, GameFlow_Main 0x1c98c8 case 6]. Never set by the countdown model.
+    pub movie_playing: bool,
+    /// A movie-wrapped load is on its way to state 6: `reset_map_level_to_load` set it when the
+    /// level wrapped to a 0x71/0x73 code [M 0x1d3800's switch], `load_tick` phase 2 clears it.
+    /// The host defers the level load while it stands (the game loads the backdrop, the movie, and
+    /// only then the real level — 0x1d6360 phases 0/3).
+    pub movie_pending: bool,
+    /// The level phase 2 resolved the movie code to [M 0x1d6360 LoadState 2,
+    /// `GetLevelToLoadFromMovieCode` 0x1d3560]. The host reads and clears it to schedule the real
+    /// level load after the movie (and to drop the front end when it is a mission).
+    pub phase2_resolved: Option<u32>,
 }
 
 impl GameFlow {
@@ -171,8 +184,17 @@ impl GameFlow {
             ST_BOOT => { self.push_state(ST_RUNNER); self.reset_map_level_to_load(self.level_to_load, false, false); }
             // Runner: when a load was requested (GameState+0x24 [M case 2]), push the loader.
             ST_RUNNER if self.load_pending != 0 => { self.load_pending = 0; self.push_state(ST_MAPLOAD); }
-            // Movie: pops when the movie finishes or the skip action fires [M case 6, Input_Action(-1, 0x19)].
-            ST_MOVIE => { self.movie_frames = self.movie_frames.saturating_sub(1); if self.movie_frames == 0 { self.pop_state(); } }
+            // Movie: pops when the movie finishes or the skip action fires [M case 6,
+            // Input_Action(-1, 0x19, 1)]. With a real movie playing (BGFMVPlaying != 0) the state
+            // holds — psiMovieFinished is BGFMVPlaying == 0 [M 0x1082e8], and the host clears
+            // movie_playing when the decoder ends; the skip goes through skip_movie. The frame
+            // countdown only runs when no real movie ever started (the slim ISO's zeroed PSS
+            // files, fix-menus' headless model).
+            ST_MOVIE => {
+                if self.movie_playing { return; }
+                self.movie_frames = self.movie_frames.saturating_sub(1);
+                if self.movie_frames == 0 { self.pop_state(); }
+            }
             // Fade holds pop when the fade finishes [M cases 8/0xe; headless countdown].
             ST_FADE_HOLD | ST_FADE_IN => { if self.fade_frames > 0 { self.fade_frames -= 1; } else { self.pop_state(); } }
             ST_WAIT => { if self.wait_frames > 0 { self.wait_frames -= 1; } else { self.pop_state(); } }
@@ -186,10 +208,26 @@ impl GameFlow {
         if self.get_state() != ST_MAPLOAD { return true; }
         if self.movie_code != 0 {
             // Phase 2 [M LoadState 2: `GetLevelToLoadFromMovieCode(GameState+0x10)` maps the 0x71/0x73
-            // movie codes back to level codes; 0x07100018 → 0x0700001b is the one special case].
+            // movie codes back to level codes; 0x07100018 → 0x0700001b is the one special case, and
+            // every 0x73 outro code routes to the front-end map 0x7000048 — 0x1d3560's switch].
             let mc = self.movie_code;
             self.movie_code = 0;
-            self.level_to_load = if mc == 0x0710_0018 { 0x0700_001b } else { 0x0700_0000 | (mc & 0xffff) };
+            self.movie_pending = false;
+            let resolved = match mc {
+                // [M 0x1d3560's switch] 0x07100018 → 0x0700001b is the one 0x71 special case, and the
+                // enumerated 0x73 codes route to the front-end map 0x7000048 (0x730000f/10 are in the
+                // routing list even though 0x730000f is not whitelisted); everything else strips the
+                // 0x71/0x73 middle byte (the default arm: `GameState._8_4_ & 0xff00ffff`).
+                0x0710_0018 => 0x0700_001b,
+                0x0730_0004 | 0x0730_0008 | 0x0730_000b | 0x0730_000d | 0x0730_000f | 0x0730_0010 | 0x0730_0013 | 0x0730_0017 | 0x0730_001b => FRONTEND_LEVEL,
+                _ => 0x0700_0000 | (mc & 0xffff),
+            };
+            self.level_to_load = resolved;
+            self.phase2_resolved = Some(resolved);
+            // Phase 2 sets +0x28 = 0x40000036 when the resolve lands on the map [M 0x1d6360:
+            // `if (uVar4 == 0x7000048) { GameState._28_4_ = 0x40000036; }`] — the results page the
+            // outro returns to (Mission_Update 0x182c60 case 4 set it too).
+            if resolved == FRONTEND_LEVEL { self.page = PAGE_RESULTS; }
             return false;
         }
         let level = self.level_to_load;
@@ -216,13 +254,30 @@ impl GameFlow {
         if !matches!(self.get_state(), ST_RUNNER | 7 | ST_FADE_HOLD | 0xd | ST_FADE_IN) { return; }
         self.skip_draw = true; // [M: GameState[0x40] = 1 in the menu states]
         // [M 0x1d3800's switch wraps exactly these story codes when param_3 == 0; 0x7000048 and the
-        // other wrapper/multiplayer codes are not in the switch and pass through.]
+        // other wrapper/multiplayer codes are not in the switch and pass through. The switch is
+        // compiled code — 22 `lui rt,0x710` words at 0x1d392c-0x1d3a40, no jump table [L] — with
+        // identity on the low byte for 0x7000001..0x7000016 and two special cases:
+        // 0x700001b → 0x7100018 (the Equinox briefing is movie 18; 0x0710001b is not on the disc
+        // [D /MOVIES/30_FPS]) and 0x700004a → 0x710004a.]
         let plain = level & 0xff00_ffff;
         let code = if !no_intro && level & 0xff0000 == 0 && ((0x0700_0001..=0x0700_0016).contains(&plain) || plain == 0x0700_001b || plain == 0x0700_004a) {
-            level + 0x0010_0000
+            if plain == 0x0700_001b { 0x0710_0018 } else { level + 0x0010_0000 }
         } else { level };
         self.level_to_load = code;
+        // A wrapped load plays its movie first: the host defers the real load until phase 2
+        // resolves [M 0x1d6360 phase 0 → state 6 → phase 2]. (The 0x71/0x73 prefix is the
+        // (code >> 20) & 0xff byte — 0x07300004 >> 20 = 0x73 — the same test load_tick phase 0
+        // makes.)
+        self.movie_pending = matches!((code >> 20) & 0xff, 0x71 | 0x73);
         self.push_state(ST_MAPLOAD);
+    }
+
+    /// GameFlow_Main case 6's skip arm: the skip action (0x19, newly pressed) ends the movie
+    /// [M 0x1c98c8 case 6 — `Input_Action(-1, 0x19, 1)` → `psiStopBackgroundMovie` → pop]. The
+    /// host feeds it from the Confirm keys (the port's stand-ins for the pad's X/Start [S,
+    /// docs/systems/input.md §3]) and stops the decoder with it.
+    pub fn skip_movie(&mut self) -> bool {
+        if self.get_state() == ST_MOVIE { self.pop_state(); true } else { false }
     }
 
     /// The title→main-menu intro movie. The game plays it as background FMVs (`P_INTRO` 0x209e88
@@ -283,6 +338,25 @@ pub fn aux_movie_for(page_id: u32) -> u32 {
         PAGE_MAIN => 0x0733_0048,
         PAGE_START | PAGE_CODENAME | PAGE_DIFFICULTY | PAGE_MISSION_SELECT | PAGE_DOSSIER | PAGE_RESULTS => 0x0735_0048,
         _ => 0,
+    }
+}
+
+/// Mission_Update 0x182c60 case 6's level → outro-code switch [M; snapshot bytes 0x182e60-0x182eb4
+/// are lui/ori pairs, no table [L ee_snapshot]]: 0x7000004/08/0b/0d/0f/13/1b map to their own 0x73
+/// codes, 0x7000016 → 0x7300017 (the one non-identity entry), everything else → the front-end map
+/// (no outro). 0x730000f is not in the `UsingMovie` whitelist [M 0x107eb8], so level 0x700000f's
+/// "outro" exits state 6 on frame 1 — its explicit routing entry exists for exactly that.
+pub fn outro_for(level: u32) -> u32 {
+    match level & 0xff00_ffff {
+        0x0700_0004 => 0x0730_0004,
+        0x0700_0008 => 0x0730_0008,
+        0x0700_000b => 0x0730_000b,
+        0x0700_000d => 0x0730_000d,
+        0x0700_000f => 0x0730_000f,
+        0x0700_0013 => 0x0730_0013,
+        0x0700_0016 => 0x0730_0017,
+        0x0700_001b => 0x0730_001b,
+        _ => FRONTEND_LEVEL,
     }
 }
 
@@ -385,6 +459,11 @@ pub struct FrontEnd {
     /// Which of [`INTRO_MOVIES`] is up [M 0x209e88's `movie_283` counter: 1 → 0x07370048,
     /// 2 → 0x07380048, then the page change].
     pub intro_index: usize,
+    /// fix-menu-movies2: the page's aux backdrop movie has a live frame on the ONE movie plane
+    /// (fix-movie-playback's `movie_tex`) this frame — the overlay then draws no dark plate (the
+    /// plane IS the backdrop, under these quads); without it the plate stands in (the pre-movies
+    /// look, and every image without movie data). The host sets it per frame.
+    pub backdrop_live: bool,
 }
 
 impl FrontEnd {
@@ -397,7 +476,8 @@ impl FrontEnd {
         // post-unlock session and read 1 everywhere].
         unlocked[0] = true;
         unlocked[1] = true;
-        FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false, intro_playing: false, intro_index: 0 }
+        FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false, intro_playing: false, intro_index: 0,
+            backdrop_live: false }
     }
 
     pub fn rows(&self) -> usize {
@@ -486,7 +566,19 @@ impl FrontEnd {
             self.unlocked[self.mission + 1] = true;
         }
         self.flow.page = PAGE_RESULTS;
-        self.flow.push_state(ST_FADE_HOLD); // [M 0x182c60:74 pushes a fade]
+        // Mission_Update 0x182c60 case 6 sets `LevelToEndTo` from the finished level: the outro
+        // code 0x073000xx for the levels with an outro (compiled lui/ori switch at 0x182e60-0x182eb4
+        // [L ee_snapshot]; 0x7000016 → 0x7300017 is the one non-identity entry), the front-end map
+        // for the rest (no outro); failures go straight to the map [M cases 2/3]. Case 4 then runs
+        // `ResetMap_LevelToLoad(LevelToEndTo, 0, 0)` — the outro rides the briefing machinery, so
+        // the movie wrap plays it and phase 2 returns to the map with the results page
+        // [M 0x1d6360/0x1d3560; P_NFRESULTS 0x208e78 reopens 0x40000036 on it].
+        let end_to = if outcome == Outcome::Complete { outro_for(self.flow.current_level) } else { FRONTEND_LEVEL };
+        self.requested_level = Some(end_to);
+        self.flow.reset_map_level_to_load(end_to, false, false);
+        // The game's order [M 0x182c60 case 4]: `ResetMap_LevelToLoad(LevelToEndTo, 0, 0)` pushes the load
+        // first, THEN `GameFlow_PushState(60.0, 7, …)` puts the fade on top, so the fade plays before the load.
+        self.flow.push_state(ST_FADE_HOLD);
         self.page = Page::Results;
         self.cursor = 0;
     }
@@ -760,30 +852,24 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
     // The intro movie owns the screen: P_INTRO's page has no controls, the two FMVs are the whole
     // picture (the fog pass is suppressed while a movie plays [M psiDrawFogPass 0x0010b960:
     // BGFMVPlaying == 0]), and the frame fills the 512×448 screen [M DecodeBGFMVFrame 0x00108550:
-    // every movie is exactly 512×448, centred]. The host registers the decoded frame under the
-    // movie's own hashcode; without the `movies` feature (or on the stubbed slim ISO) nothing is
-    // registered and the dark plate stays — the pre-movies look.
+    // every movie is exactly 512×448, centred]. fix-menu-movies2: the frame draws on the ONE movie
+    // plane (gpu.rs), so the host suppresses this overlay entirely while a real frame is up; what
+    // is drawn here is only the plate stand-in for the headless countdown (no `movies` feature, or
+    // the stubbed slim ISO — the pre-movies look).
     if fe.intro_playing {
-        let code = fe.intro_movie_code();
-        if textures.iter().any(|(h, _)| *h == code) {
-            h.quad(Anchor::Centre, 1, code, 0, mx(0.0), my(0.0), mx(MW), my(MH), [0.0, 0.0, 512.0, 448.0], (false, false), gs(0x7f7f7f, 0xff));
-        } else {
-            plate(&mut h, 0.0, 0.0, MW, MH, gs(0x180c08, 0xff));
-        }
+        plate(&mut h, 0.0, 0.0, MW, MH, gs(0x180c08, 0xff));
         return h.finish();
     }
     // The backdrop: the pages' aux FMVs are the real background — parsed from the menu-def's PAGE
     // records (aux_movie_for: the main menu's 0x07330048, the boot/list/results pages' 0x07350048;
     // `Manager_SendMessage` 0x21c858:338 plays the page's aux code as a LOOPING background movie
-    // under the page controls on every page change). The host registers the decoded frame under
-    // the movie's own hashcode; without it (no `movies` feature, or the slim ISO's zeroed PSS
-    // files [L]) the port keeps the dark plate the pages fade from [M the pages' 0x1b/0x1c fade
-    // colours]. The movie quad carries layer 1 — the quads sort descending and draw in order, so
-    // layer 1 is the FIRST painted, i.e. under every page control (hud.rs `finish`).
+    // under the page controls on every page change). fix-menu-movies2: the decoded frame draws on
+    // the ONE movie plane (gpu.rs), BEFORE this overlay's quads — the game's backdrop is the page's
+    // own background texture, not an overlay [M movies.md §Presentation; PS2UploadBGMImage 0x108740].
+    // When the plane has no live frame (no `movies` feature, or the slim ISO's zeroed PSS files [L])
+    // the port keeps the dark plate the pages fade from [M the pages' 0x1b/0x1c fade colours].
     let aux = aux_movie_for(fe.page.id());
-    if aux != 0 && textures.iter().any(|(h, _)| *h == aux) {
-        h.quad(Anchor::Centre, 1, aux, 0, mx(0.0), my(0.0), mx(MW), my(MH), [0.0, 0.0, 512.0, 448.0], (false, false), gs(0x7f7f7f, 0xff));
-    } else {
+    if !(aux != 0 && fe.backdrop_live) {
         plate(&mut h, 0.0, 0.0, MW, MH, gs(0x180c08, 0xff));
     }
     match fe.page {
