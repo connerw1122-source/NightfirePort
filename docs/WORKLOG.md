@@ -11742,3 +11742,4 @@ Work Log:
 
 Stage Summary:
 - The Phoenix Samurai fires: the mode press reaches the Overcharge twin (the AmmoInGun shared-slot read), the charged bolt flies and blasts on any non-ricochet contact, the beam draws its cyan trail. All named tests green failing-first; the suite totals in the report.
+- (21:54-22:02) origin/master merged (27e483ea, auto — 103i2's clip_slot write-side + fix-striped-boxes2 et al; complementary to the read-side ammo_in_gun_slot); re-verified on the merged tree: 344 passed / 0 failed (the libs, the Samurai trio, fix_reload_hang, the weapon suites, the neighbours). Report updated.

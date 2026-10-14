@@ -66,6 +66,14 @@ creation, the documented environmental pair). Excluded for the window: the walk_
 bulk (60-560 s each), `weapon_matrix_live` (the 600 s per-binary cap, documented),
 `gpu_skin_live`/`sky_gs_live` (GPU).
 
+## The final tree (origin/master merged: 27e483ea, with 103i2's twin clip-slot unification + fix-striped-boxes2 et al)
+
+The merge auto-resolved (no conflicts — master's `Inventory::clip_slot` write-side unification and
+this task's `ammo_in_gun_slot` read-side are complementary). Re-verified on the merged tree:
+**344 passed, 0 failed** (the libs + fix_samurai_fire + fix_reload_hang + the weapon/mode/sound
+suites + weapon_switch + ai/grenade/doors/oddjob/handcannon/casings/vent + fix_aim_raise +
+weapon_anims + fix_guard_misc).
+
 ## Visual check
 
 This sandbox has no GPU — the wgpu adapter is unavailable (`adapter: NotFound`, the same
