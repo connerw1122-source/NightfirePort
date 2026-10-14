@@ -328,6 +328,10 @@ pub enum CodenameError {
     /// The file for this codename already exists (the game asks MemCard_ASK_OVERWRITE 0x10ee38
     /// [M]; the port refuses — the host decides).
     Exists,
+    /// No profiles dir is set (no memory card in the port).
+    NoCard,
+    /// The write failed.
+    Io,
 }
 
 /// A codename profile: the options blocks around the progress layer's data. The MC file name is

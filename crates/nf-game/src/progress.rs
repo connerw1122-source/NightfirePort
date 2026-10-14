@@ -294,6 +294,7 @@ pub struct Scored {
 /// The whole progress layer: the port's `PlrMissionStats` + `BondMoments` + `ScoringTable`
 /// runtime + `bonus` + `sp_level` flags + the game-complete flag. Lives on `Drones` (the Sim);
 /// the menus (180-fix-menus) read it through `Drones::progress`.
+#[derive(Clone)]
 pub struct Progress {
     /// `PlrMissionStats` 0x2bcc20 — SP uses slot 0 only.
     pub stats: [PlrMissionStats; 8],
