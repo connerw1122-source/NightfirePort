@@ -11594,3 +11594,8 @@ Task: fix-aim-raise2 — rebuild the aim gate on top of master's fix-weapon-anim
 
 Work Log:
 - (19:55 UTC) Branch s/fix-aim-raise2 created from origin/s/fix-aim-raise (72509145) and pushed. Setup reused (repo, work/, ISO, nf-queue). Merge of origin/master next.
+- (20:00-20:42 UTC) The merge resolved: master's fields/counter/advance kept, the queue unified on the view chain's raw-edge arm, the advance+finish hoisted in aim_gate (the raise's finish sets the bit); run takes the RAW button (the gated rise would re-fire the queue); the auto-aim/bond_aiming gates read the bit. The branch's release test exposed master's reverse-lower starting at the idle's length — fixed to the raise's own last frame. Second merge (fire-modes3b/casings-16b/handcannon/0c-vent2/character-room-light): scene.rs auto-merged, WORKLOG append-only; fire_modes3's no-aim zoom shortcut corrected to the bit-gated input [M 0x1a24c8:168-187] (failed first, assertions unchanged).
+- (20:45-20:55) Final tree 4041d239: fix_aim_raise 5/5, weapon_anims 7/7, fix_guard_misc 6/6, fire_modes3 5/5, weapons sounds/modes/casings/handcannon/vent all green; suite chunks 894/6/23 (3 disc_golden + 3 GPU-adapter documented) on 8d096810, the master-touched surface re-ran 236/0 on 4041d239. Report: docs/reports/fix-aim-raise2.md (live checks inside).
+
+Stage Summary:
+- The aim gate rebuilt on master's single raise/lower: one queue (the view chain's raw-edge arm), one advance+finish (aim_gate, before the consumers — the raise's finish sets the aim bit; no +0xB8 aims at once). Two real bugs fixed with game citations (the reverse-lower length, the fire_modes3 no-aim zoom). All named suites green on the final tree; the suite totals + the leftover walk sweep are in the report.
