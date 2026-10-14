@@ -11558,3 +11558,11 @@ full suite did not fit the window. Report: docs/reports/102j2-fix-casings-16b.md
   death is silent state 4 [M 0x12e848], so the wait adds no blast), with the evidence chain in the comment.
   fix_weapon_sounds_live 3 passed / 2 ignored (pre-existing, documented); fire_modes3_live 5 passed /
   4 ignored (pre-existing); fix_weapon_fire_modes_live 5 passed.
+
+## fix-objective-drives — s/fix-objective-drives (task 105d, started 20:32 UTC 2026-10-14)
+- Task: campaign-flow blocker 6 — drive the four gameplay-driven objectives through the runner's real
+  input path: 09's ch71 (2/3), 08's ch75 gondola escape (1/2), 4a's ch74, 0a's objective inputs 0x48/0x49
+  (Q-Worm install script player's out 72 + the security-centre zone). Find the live writer per objective
+  (script players, touch zones, gadget use), fix any port bug that stops the writer, and make each of the
+  four levels complete its objectives and chain through crates/nf-view/tests/campaign_flow_live.rs.
+- Work in progress: reproducing each of the four headless first.
