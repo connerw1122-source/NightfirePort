@@ -9812,3 +9812,8 @@ gating. docs/systems/weapons.md: the full modes table. cargo check clean; the NF
 still compiling at the deadline (fresh-sandbox rebuild) — the next session runs the suite first.
 Report: docs/reports/fix-weapon-fire-modes.md. Files: grenade.rs, drone.rs, scene.rs, the new
 weapons.md + the test file (+ the mechanical explode_on_impact:false in the older tests).
+
+Task 100f addendum: the build finished — fix_weapon_fire_modes_live 4/4 (the MGL impact/delay
+pair through the real B press and fire path; the Sentinel cam ride/steer/restore vs the unguided
+sister), nf-game 34/34 binaries, and 33 tests across 9 neighbour weapon/grenade binaries green.
+The full suite.py sweep is the next session's first job.

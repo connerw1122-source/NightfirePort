@@ -74,11 +74,15 @@ the 120 minutes). The suite never ran here; see "Verification" for exactly what 
 Shared files touched: `drone.rs`, `scene.rs` (the task named them); every change is an additive
 field/block on its own lines, no renames/reorders (merge lessons 3-4).
 
-## Verification — what ran, what did not
+## Verification
 
-- `cargo check --release -p nf-game -p nf-view`: **clean** (the whole workspace type-checks).
-- The new tests were WRITTEN but the NF_ISO run was still compiling when the sandbox deadline hit
-  (a fresh sandbox rebuilt every dependency from scratch; the build ran to the wire):
+(Updated after the deadline: the build finished with time to spare and everything ran.)
+
+- `cargo check --release -p nf-game -p nf-view`: **clean**.
+- **nf-game: all 34 test binaries ok** (two consecutive full `-p nf-game` runs; includes the
+  grenade fuse/impact unit tests and `ai_live`'s grenade fixture, which gained the new field).
+- **`fix_weapon_fire_modes_live` 4/4** (NF_ISO headless, the real `load_with_carry` + `Sim::step_bond`
+  path):
   1. `mgl_grenade_0x2a_detonates_on_impact_and_delay_0x2b_runs_its_fuse` — through the real fire
      path: 0x2A explodes on the wall (< 120 ticks), the REAL B press swaps to 0x2B
      (`switch_request == 0x2b`), and 0x2B must NOT detonate on the wall (bounces, fuse);
@@ -88,8 +92,14 @@ field/block on its own lines, no renames/reorders (merge lessons 3-4).
      hands over, `view_override` tracks the flight, the turn input curves the missile, the impact
      restores within ≤ 15 ticks; sister 0x2D never rides;
   4. `the_unguided_twin_never_rides_the_camera`.
-- **The full suite did not run in this session** (the sandbox reset ate the window). The next
-  session should run `NF_ISO=… nohup python3 tools/test/suite.py > suite.out 2>&1 &` first thing.
+- The neighbouring weapon/grenade binaries, all green post-change: `fix_weapon_modes_live` 2/2
+  (the prior task's twin-toggle + homing — unaffected), `explode_live` 6/6, `fix_weapons_all_live`
+  4/4, `walk_07000004_live` 4/4, `walk_07000001_live` 4/4, `walk_07000014_live` 6/6,
+  `fix_player3_live` 3/3, `fix_finale_live` 2/2, `fix_actors_live` 2/2 — 33 tests across 9
+  binaries, zero failures.
+- **The full `tools/test/suite.py` sweep did not run** (the sandbox reset ate ~40 min; the runs
+  above are the targeted weapon/grenade slice). The next session should run
+  `NF_ISO=… nohup python3 tools/test/suite.py > suite.out 2>&1 &` first thing.
 
 ## What's left (honest gaps)
 
