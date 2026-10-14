@@ -9855,6 +9855,14 @@ tests/fix_weapon_sounds_live.rs (new). Report: docs/reports/fix-weapon-sounds.md
 weapon → bank mapping table + live checks). The full 211-binary suite still needs a run on
 the final tree (background jobs are killed between tool calls here; the window closed) —
 listed in the report for the next message.
+
+## fix-08-walls (s/fix-08-walls) — 2026-10-14
+
+Task 101h: two user symptoms on 07000008 near the safe/briefcase room (~(155, 43, -113)):
+(1) walking into a wall threw Bond onto a zip line on the far side of the wall (wire grab
+through geometry — grab test needs the game's LOS/facing gate); (2) the big wall still clips
+into the missile room (a world instance / forced object drawn that the game hides — compare
+docs/live/2026-10-13-portal-ground-truth.md). Work in progress; details to follow.
 ---
 
 ## fix-qclaw (s/fix-qclaw) — started 2026-10-14 02:28 UTC
@@ -9890,6 +9898,16 @@ nf-game units, the full 214-binary suite green except the allowed disc_golden 3.
 docs/reports/fix-qclaw.md (rope rendering + the 0x02100717 mesh gap listed as what's left, with
 the PCSX2/nf-view live checks).
 
+Task 101j fix-portal-eyecel STARTED (04:12 UTC): the 05 trench walls still vanish with portal
+culling on. 130g's scene::near_los_rescue restores 0 cels in the real draw path ([pwalk] prints,
+no [rescue]) because the root cause is upstream: build_FindCel 0x1c8cb0's up/down tie-break rays
+cast against each CANDIDATE's own object list, and the port's stand-in scopes the shared collision
+world, so candidates 14/15 tie and the giant outdoor room 14 wins. Plan: give each cel its own
+collision/object list the way the game's loader attributes polys and objects to cels
+(build_link_objects_to_rooms 0x1c9150 is ported for the render chains; find the collision side),
+so the eye cel resolves to 15 like the game's; remove the rescue if it dies; prove on the RENDERED
+path (a --shot draw-list test at the trench spot failing on master), keep the 27-level sweep and
+the 4 PCSX2 ground-truth spots green. Branch s/fix-portal-eyecel off master 5f13369.
 Task 100c outcome (same session): REPRODUCED then FIXED. The impact explode —
 `Bullet_CollisionHandler` 0x12d068-0x12d0bc (disassembled): after the impact effects, a weapon
 whose `weapon_data+0x70` carries bit 2 (0x4) destroys its bullet with `Explode_Create(radius =
@@ -9957,6 +9975,164 @@ Stage Summary:
 - Report: docs/reports/weapon-matrix.md (the mark table, the numbers, the live checks for the main agent).
 - Open: re-run with 100a-c merged; the intro input-lock F/D cells; the variant back-chain B cells (100c).
 
+fix-portal-eyecel DONE (05:3x UTC): the trench eye cel now resolves like the game's. Root cause
+pinned: build_FindCel 0x1c8cb0's tie-break rays are owner-filtered to the CANDIDATE's own chain
+geometry (Collide_RayIntersect 0x1ec690's flags-arg-1 post-pass compares HITDATA+0x54 — the
+static-geometry cel [M hitdata doc:41, the chain-node store sw $s3,0x54] — against HITTEST+0x80 =
+the cel argument); the port's shared-world scoped stand-in left the trench floor outside BOTH
+candidates' buckets so both rays missed and the first candidate (the outdoor room 14) stood
+[L ee_start_05.bin: the trench room's chain holds all 58 trench generics, the outdoor room's 41
+none near the eye]. Fix: world::attribute_scope re-keys the scope buckets by the chain owners
+build_chains computes (the collision side of build_link_objects_to_rooms 0x1c9150) and
+world::segment_hit_cell reads a candidate's own bucket for the tie-break. Failing-first proof:
+portal_eyecel_live::trench_eye_cel_is_15_and_the_near_walls_draw panicked "got 14" pre-fix,
+passes post-fix (eye cell 15, 0 near visited-chain walls hidden). The rescue STAYS: raw sweep
+failures on 05 dropped 1382 -> 31 but remain elsewhere (02: 850, 07: 759, ...) — other causes it
+covers. Ground truths unchanged (06 courtyard 33, 07 window rescue 0, clock hall 33 + the pinned
+set). Suites on the merged tree: nf-game 256/0 (33 binaries, twice), nf-view 318/0 (87 binaries),
+portal tests 12/0; the suite.py wrapper can't run here (background jobs die between tool calls,
+the single run exceeds the 10-min tool limit after the 05:08 UTC sandbox reset — per-binary runs
+executed directly instead). Report: docs/reports/fix-portal-eyecel.md.
+---
+Task ID: 100g-fix-grapple-hook
+Agent: fix-grapple-hook worker
+Task: the grapple point's hook/pulley mesh isn't drawn (PCSX2 shows a pulley with a hook hanging from the T-bracket on 07000005 at --bond 16.5,29.6,58.6,-2.01,0.24; the port draws the bracket only). Find the 0x51 'Q' object's model/attached part and draw it on every level with grapple points.
+
+Work Log:
+- Setup: branch s/fix-grapple-hook created from origin/master (69c0104); work-slim extracted; suite started in background.
+- Started 05:40 UTC.
+
+Stage Summary:
+- Work in progress.
+- Root cause: fix-gadgets2's "the game discards the referenced object" was right for 0x3F creep walls and wrong for 0x3A grapple points. The dynamic-block parser hands each placement's RESOLVED object to the creator as the glist argument [M parsemap_block_map_data_dynamic 0x1d1b68: hashtable_getitem(hashcode) / pCelList+index*0x50 on hashcode −1; case 0x3a 0x1d04f0:237-239], Grapple_Create 0x198298:24-30 keeps it at obj+0xD8 (obj+0xF0 = *(u32*)(glist+0x44)), and View_DrawObjList 0x1e69a0 → View_DrawObjectGlist 0x1e6780 → psiDrawObjectMatrix 0x124708 draws it at the placement transform. Live [L ee_start_05.bin]: both class-0x51 objects (0x16d80a0 = #282, 0x16d81c0 = #281) hold glist 0x170d6a0 (graple_pulley), +0xF0 0x4000, +0xF8 0x1f, psiDraw chain boxes 0x9b3260 DRAWABLE; the creep walls' 0x2B chains are boxes 0x0 (those stay undrawn).
+- Fix: an additive World-layer sweep over the 0x3A placements in scene.rs's cels_only block (the same shape as the wire 0x3E / ladder 0x22 sweeps), instancing the resolved object when its gfx has batches; a grapple_hooks_drawn counter next to ladders_drawn; stale fix-gadgets2 comments corrected (scene.rs, models_misc_live.rs — comment-only there).
+- Tests (crates/nf-view/tests/grapple_hook_live.rs, all through nf_view::load): the pulley draws at both 05 points (level-data resolution + grapple_hooks_drawn == 2 + the pulley's exact 212 gfx verts inside its world box at #282 AND #281 — pre-fix probe: 0 verts); one hook per grapple point on all 16 levels with 0x3A placements [D: 05/0a/0c/0d/11/12/14/23/24/25/26/27/28/29/41/4b = 54 points]; sister: creep walls stay undrawn (their objects parse 0 batches, matching the live empty glists). Failing-first: scratch probe on the pre-fix tree failed at "only 0 verts in the pulley box" (deleted).
+- No latch animation to model: class 0x51 has no control_funcs row [L 0x26fa94..0x26fc5c zero] and no grapple-path writer touches the object's gfx — static at the placement transform, latched or not.
+- Baseline suite on the pre-fix tree: 952 passed, 3 failed (the allowed disc_golden set), 29 ignored. No GPU in the sandbox (wgpu: no adapter) — the --shot renders are the main agent's (spots listed in the report).
+## fix-08-walls (s/fix-08-walls) — 2026-10-14
+
+Task 101h, both symptoms from the 1013-1758 playtest at 07000008's safe area (~(155, 43, −113)).
+- **(1) the wall threw Bond onto the zip line — reproduced, fixed.** The jump-grab's arm context
+  (`BLData+0x95F == 3`, `Player_HandleJump` 0x1916b0:118-147; the scan itself is wall-blind in the
+  game too — class-0x2C nearest within 1000, `Vec_Dist3D` only) was armed by a flat 12.0-unit
+  radius around each third icon. The game's arm region is the icon's STRADDLE-CEL set:
+  `Controls_StraddleTest` 0x134778 builds the icon's world sphere (`Control_BuildWorldSph`
+  0x133070 via `build_LinkToRoom` 0x1c9680:40 — r 1.164 on 08's "Hand_Over_Hand" [D probe]),
+  `Collide_StraddleCels` 0x1eac98 BFS-walks portals the sphere intersects (`Intersect_Portal`
+  0x1ea7b8 v0x101), and `Collide_Update` 0x1ea398:160-233 leaves a node on every occupant. The
+  port now resolves each icon's set at load (`icon_straddle_cels` over the cel graph; the Sim
+  carries the graph + `icon_cels`) and arms on the player's FindCel cel [M `build_FindCel`
+  0x1c8cb0 via `find_cell_raycast`] INTERSECTED with the measured 12.0 window [S deviation — the
+  port's cel buckets are coarser than the game's cels; pure occupancy broke the [L] 05 gate-door
+  0xFF pins]. Fail-first: east balcony (144, 45, −104, cell 43, 11.1 from the icon across the
+  wall) jumped → substate 15 across the wall pre-fix; post-fix plain jump, ctx 0xff; the west
+  ledge still grabs. Tests: fix_08_walls_live 4/4, fix_swim_vent5_live 2/2, fix_wire2_live 3/3.
+- **(2) the big wall in the missile room — root cause named, master already hides it, pinned.**
+  The wall = `Room_Outside_3` (cell 15)'s exterior slabs, tris across the whole
+  `Room_Guardhouse_F2` interior [D probe; fix-safe08 measured the protrusion]. The playtest build
+  predates the portal-lineage merges (fix-portal5/6/sweep landed 2026-10-14 01:10 UTC); at master
+  the game-mask never marks cell 15 from the missile room (24 yaws × 2 aspects, the port's exact
+  camera math) and every node-15 material culls while the furniture draws. Pinned by
+  `the_missile_room_visible_set_excludes_the_exterior_wall`; live checks in the report.
+- Suite on the final merged tree (origin/master merged 174804b): **932 passed, 3 failed (the
+  allowed disc_golden trio), 27 ignored (19 min)**, no TIMEOUT/CRASH; baseline on master 906/3/27;
+  the targeted post-fix suites (the 08 four, vent5 2, wire2 3) green on the same tree.
+  Report: docs/reports/fix-08-walls.md.
+
+fix-menus-real (101k, started 2026-10-14): the front end must match the real pages
+(1013-1825 playtest + the main agent's 2026-10-13 PCSX2 drive). Every page is missing its
+backdrop, the header font, the footer PS2 glyphs, the centred description and the rolling
+list style; per-page gaps are in the report. Plan: read MenuManager_Create 0x21b908's tag
+stream + entry 08000002 in 07000048.bin + the sprite/texture/font tables, then draw each
+element from the page data. Files: crates/nf-view/src/{menu,hud}.rs,
+crates/nf-view/tests/menus_flow.rs. Work log continues below.
+
+fix-menus-real (101k, 2026-10-14): the front end rebuilt against the re-parsed menu-def (the tag
+stream dump of pages 0x40000002/09/1c/23/25/2b/3a via MenuManager_Create 0x21b908's own walk).
+(1) THE CENTRING BUG: the overlay's text was LEFT-ALIGNED from its anchor — `text_scaled`'s pen
+starts at x and `quad()` maps both corners (the anchor is only an origin shift, glyphs draw
+left-edged at their pen x), so every "centred" string ran right. The game centres menu labels by
+default: Label_Init 0x218638:53 stamps DAT_003096c0 = ff 02 fe 03 (SerpLight + centre) on EVERY
+menu label, and __Font_DrawText 0x1eee48:69-71 applies flag 2 as x -= width*0.5. menu.rs now
+centres each row by its measured INK ([p0.x, plast.x + gwlast]); the footer hint bar lays the row
+out as ink items (text segments + specialchar icons, texture 0x03000075) and centres at the bar's
+ctrl.x + ctrl.w/2 = 320 [M Label_Update 0x218cb8:177-182]. (2) The headers centre in their own
+(50,40,376×17) bands at (238,48.5) — the old draw centred AT x=50, half off-screen. (3) The wheel
+rows centre at ctrl.x + ctrl.w/2 with the parsed widths [L rows (323,123,317) (333,152,307)
+(304,182,336) (333,211,307) (323,241,317)] and locked rows go grey 0x484848xx [M 0x1f8388:210-234].
+(4) The main rows carry the page's own colours: selected = msg-0x1b 0x7d6d59ff → 0x645a49ff
+[MenuManager_Create 0x21b908:238-243's rewrite], others = msg-0x1c 0x73330f80 (the port had them
+inverted). (5) The codename page lists "New Codename" (0x29b [M Menu_EnumSaves 0x1f7b78:58-66]) +
+"Play without saving" (0x10002ff [M Menu_PutCodenamesIntoControl 0x1f79c0:15-23]) with the
+per-cursor ring previews 0x300013b/0x3000135 and descriptions 0x1000004/0x1000003 [M
+Menu_UpdateCodenameWheel 0x1f89f0:80-99]. (6) The Dossier is the game's wheel menu — Records /
+Rewards / Gadgets / Weapons [L table 0x2dfcd0; C_SBDOSSIER 0x216eb0:48-49] with per-row previews
+0x300019b/0x300019c/0x30000c4/0x30000ee and descs 0x100000a-d — and Records (page 0x4000003a)
+draws the disc's own score table (header 0x280, hint 0x49e, the mission list, rows 0x302/0x165/0x305
+with their value controls, the medal image 0x0300013d + label 0x307 [L PAGE 0x4000003a parsed;
+M P_DSRECORDS 0x217248:11-13, C_RBDSRECORDS 0x20bf00:79-92]). (7) The title prompt uses the page's
+own gold 0x7f621f (the old 0xfec43e contradicted its own citation) and centres at the prompt
+control's (320.5, 317). Tests: menus_flow 26/26 — the footer/header/wheel centring (ink rows
+measured per-quad from the frame, plates excluded), the main-row colours, the codename rows +
+previews, the dossier wheel + Records page, the prompt colour, and the pre-existing flows (the
+codename navigation gained a Down — row 0 is now New Codename). Suite on the final tree: see the
+report. Files: crates/nf-view/src/menu.rs, crates/nf-view/tests/menus_flow.rs (no shared files).
+
+## fix-0c-hatch (s/fix-0c-hatch) — 2026-10-14
+
+Task 101g, 0700000c display vent hatch: after burning the four display-vent latches (locks 14-17 at
+(7.09/4.54, 15.70/16.87, -112.35)) the playtest (results 1013-1758) reports the hatch opens very
+slowly, and Bond still can't get through — he can't crouch through the gap. Plan: find the game's
+hatch open-anim/rotation rate and how the real game gets Bond through (auto-crouch, creep/vent
+volume, or walkable gap) in the decompile; reproduce headless through the real input path from
+--bond 5.8,15.8,-108.5; fix in nf-game (lock/props/player.rs) citing game addresses. Branch created
+from origin/master c4028c8. Work in progress.
+
+### fix-0c-hatch — outcome
+
+- **The hatch speed (symptom 1) FIXED**: the port's SS playhead ran `1/rate` key-units/tick (the
+  rate paragraph was `[S]`); the game sets the step ONCE at create to `(keys−1)/rate` [M
+  SS_Create 0x1a9c58:51] and adds it ×`FRAME_RATE_MUL` per tick [M SS_Update 0x1a9948:103-108;
+  GS_SetRefreshRate 0x17d2b8:15 — MUL = 60/FRAME_RATE = 1.0 at 60 Hz]. The rate word is the whole
+  sweep's duration: #138 `ventmesh-front` (6 keys, rate 50 [D extra[7] = 0x00320006]) opens in 50
+  ticks, not 250; #180 warehouse likewise. `SsList::tick` fixed in crates/nf-game/src/ss.rs (the
+  only code change); 2-key SSs (#179, the 07000012 screens) are unchanged by the last==1 case.
+- Tests: crates/nf-view/tests/fix_0c_hatch_live.rs — the two sweep tests (250/251 → 51 ticks, the
+  blocker ~10 and the playheads stay) shown failing first; fix_level_0c_live.rs still green.
+- **The traversal (symptom 2) mapped, 2 of 4 legs verified**: no creepwall exists in 0700000c [D
+  kind-census] and the game's climb is ladder-only [M Player_CollLadder 0x196118] with no ladder at
+  the vent [D #164/#495 are at z −177..−187] — the open hole's clear band (~15.2..17.4) takes the
+  crouched capsule (1.20 [M 0x194df0]) and the headless real-input drop from the duct top lands
+  Bond on the inner ledge 14.72 ✓. Open: the ascent to the duct ramp (walkway 14.01 → 17.2-17.5
+  over a wall face) and the ledge→display-case descent (~7.3 at (5.4, −113) under the 11.27 mid
+  floor) — the two traversal tests are #[ignore]d with reasons, live checks filed in the report.
+  No player.rs change (nothing guessed).
+- Suite on the final tree (merged origin/master 810c109): 905 passed, 3 failed (the allowed
+  disc_golden trio), 29 ignored (incl. my 2 traversal tests), 0 TIMEOUT (18 min).
+- Shared files: none. Report: docs/reports/fix-0c-hatch.md.
+---
+Task ID: 102d-fix-searchlights-guards
+Agent: searchlights-guards worker
+Task: 06 searchlights + guards — alarm on the walked beam entry, beam/pool draw orientation+brightness, guards' first shot gated on the aim-raise.
+
+Work Log:
+- (started 05:11 UTC) branch from origin/master; reproducing first.
+- Walked the 06 truck start → courtyard beam with real input (the spawn pocket opens east only; the
+  D→C nav gap at x 52-56 is open ground): alarm ch 55 rises +109 ticks after reaching the beam spot
+  — the walk does NOT fail on this tree (fix-searchlight-alarm's channel chain holds; the test is
+  now permanent in fix_searchlights_guards_live.rs).
+- Spot-disc orientation fixed [M 0x1cb900 hit branch 0x1cbe78-0x1cbea8 + 0x134210/0x1e5168]: the
+  game's spot angles are pitch = π/2 − atan2(n.y, |n.xz|), yaw = atan2(n.x, n.z), roll = 0, rebuilt
+  by View_RotTransMatrix (aivolume::matrix). The old reading (atan2(n.z,|n.xz|) in the placement-
+  Euler pitch slot, yaw in the roll slot) folded the disc onto its edge on wall/slope/Bond-sphere
+  normals — the user's "flip on its side". Unit test + sister.
+- Guards' first shot: the entry-fire machinery is the game's own [M 0x166328:59-61 / 0x167060 —
+  AimStandFire/AimCrouchFire fire on entry when unseen < 16]; added the game's impact-danim
+  deferral [M 0x166328:48-52: danim 0x13 → timer C 60] — a guard shot mid-approach held the first
+  bullet; test staged via next_state.
+- Final suite on the master-merged tree (origin/master 966671a fix-08-walls merged; 223 binaries, tools/test/suite.py): 959 passed, 3 failed, 29 ignored — the 3 are exactly the allowed disc_golden slim-ISO set. Neighbours re-run green on the merged tree: grapple_hook_live 3, models_misc_live 10, fix_ladder2_live 4, fix_objects_live 6, fix_08_walls_live 4, qclaw_live, gadget_grapple_live, gadget_grapple_user_spot, gadget_select_live.
+- Independent audit (subagent): PASS — decompile/[L] claims re-verified, add_instance RNG-free and deterministic, the scene.rs diff removes only the stale comment, no other test asserts total counts; strengthened: every 0x3A placement on all 16 levels lacks 0x8000/0x2000 and glist 0x8/0x4 bits (the static draw is exact everywhere); citation fix: control_funcs row 0x51 is [L 0x26fa94..0x26fc68] (wire-grapple.md:7's shorter range is one row short).
+- Report: docs/reports/fix-grapple-hook.md. Files: crates/nf-view/src/scene.rs (additive sweep + counter + corrected comments), crates/nf-view/tests/grapple_hook_live.rs (new), crates/nf-view/tests/models_misc_live.rs (comment/message text only).
 ---
 Task ID: 102a-fix-zoom-overlays
 Agent: zoom-overlays worker
