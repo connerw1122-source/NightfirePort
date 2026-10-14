@@ -144,6 +144,9 @@ fn a_completed_mission_plays_the_outro_and_returns_to_the_map() {
     fe.flow.stack = vec![ST_RUNNER]; // Mission_Update fires in state 2 [M]
     fe.flow.current_level = 0x0700_0004;
     fe.mission_ended(Outcome::Complete, Stats::default());
+    // Mission_Update 0x182c60 case 4 pushes the load and THEN the 60-frame fade on top [M]: the fade plays out
+    // first (GameFlow_Main state 8 pops when its frames run out), then the load runs.
+    while fe.flow.get_state() == menu::ST_FADE_HOLD { fe.flow.main_tick(); }
     assert_eq!(fe.requested_level, Some(0x0730_0004), "LevelToEndTo = the level's outro code [M 0x182c60 case 6]");
     assert_eq!(fe.flow.level_to_load, 0x0730_0004, "ResetMap_LevelToLoad(LevelToEndTo, 0, 0) [M case 4]");
     assert!(fe.flow.movie_pending);
@@ -164,6 +167,9 @@ fn a_failed_mission_returns_to_the_map_without_a_movie() {
     fe.flow.stack = vec![ST_RUNNER];
     fe.flow.current_level = 0x0700_0004;
     fe.mission_ended(Outcome::Failed, Stats::default());
+    // Mission_Update 0x182c60 case 4 pushes the load and THEN the 60-frame fade on top [M]: the fade plays out
+    // first (GameFlow_Main state 8 pops when its frames run out), then the load runs.
+    while fe.flow.get_state() == menu::ST_FADE_HOLD { fe.flow.main_tick(); }
     assert_eq!(fe.requested_level, Some(menu::FRONTEND_LEVEL), "failures skip the outro [M cases 2/3]");
     assert!(!fe.flow.movie_pending, "a plain load, no wrap");
     assert_eq!(fe.flow.get_state(), ST_MAPLOAD, "the load is on its way");

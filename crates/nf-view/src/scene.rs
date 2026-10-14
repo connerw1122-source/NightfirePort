@@ -1399,24 +1399,24 @@ impl Sim {
             }
         }
         self.prev_trigger = input.fire;
-        // The pickup auto-switch [M Player_EquipWeapon 0x1a8a58's tail]: `anim+0x63` is written
-        // directly (no Player_WeaponChange gate) — the draw machine holsters and draws it when it
-        // can; a later weapon-cycle request overwrites it, as in the game.
-        // GATED OFF (fix-pickups-remainder): the request is computed and unit-tested
-        // (Inventory::is_better_weapon), but applying it regresses walkreal_07000001's
-        // walk_from_the_spawn_to_the_exit_with_the_contact (green on master, stuck in the contact
-        // follow with the switch live: after the first Raptor drop take the draw machine swaps to
-        // the Raptor and the follow wedges at d=3.89 standing 1.13 above the floor). The
-        // interaction (the switch's view-model/anim side effects vs the contact's script) needs the
-        // main agent's live check before the drain re-opens. See docs/reports/fix-pickups-remainder.md.
-        if false {
-            if let Some(id) = self.drones.weapon_switch_request.take() {
-                if id != self.gun.weapon as u16 {
-                    let cur = self.gun.weapon;
-                    if cur >= 1 && cur <= 0x47 { self.gun.prev_weapon = cur; }
-                    if cur >= 0x4a && cur <= 0x5e { self.gun.prev_gadget = if cur == 0x55 { 0x54 } else { cur }; }
-                    self.gun.switch_request = id as u8;
-                }
+        // The pickup auto-switch, LIVE (fix-auto-switch re-opens the fix-pickups-remainder gate)
+        // [M Player_EquipWeapon 0x1a8a58's tail]: the take path writes ONLY the request byte
+        // `anim+0x63 = id` (per-player flag DAT_002a38d2 ∧ Player_IsBetterWeapon 0x1a6eb0) — no
+        // Player_WeaponChange gate, no prev-weapon memory (+0x930/+0x932 are the cycle path's
+        // bookkeeping, written by Player_WeaponChange 0x1a6f80 only), no anim, no view state. The
+        // draw machine picks it up on the next idle tick (Player_SetWeaponAnimObj 0x1a2e38 default
+        // tail: `if (anim+0x63 != anim+0x62) { anim+0x64 = anim+0x62; Player_WeaponSelect
+        // 0x1a2cc0 }`); a later weapon-cycle request overwrites it, as in the game.
+        // The 07000001 escort-walk wedge that gated this off does not reproduce on master with the
+        // drain live (walkreal_07000001 twice-green this session; the decompile shows why: the full
+        // view-state census — Player_WeaponFiring 0x1a5460, Player_Weapon 0x1a24c8, Player_Move
+        // 0x191dd0, Player_Update 0x193600 — gates only the fire pipeline on the switch states;
+        // walking, walk speed, the capsule and the walk anim are NEVER gated on them, and the
+        // holster/draw scripts touch only the first-person view model at BLData+0x7e8, never
+        // Bond's body/position). The draw machine below is that default-tail behaviour.
+        if let Some(id) = self.drones.weapon_switch_request.take() {
+            if id != self.gun.weapon as u16 {
+                self.gun.switch_request = id as u8;
             }
         }
         self.drones.weapon_switch_request = None;
@@ -2665,7 +2665,7 @@ pub struct CharVertex {
 pub struct SkinAttr { pub a: u32, pub b: u32, pub w: f32, pub col: u32 }
 
 /// The palette / colour-table layout of `Scene::skin_layout`.
-pub struct SkinLayout { pub char_base: Vec<u32>, pub attach_base: u32, pub sl_base: u32, pub door_base: u32, pub pick_base: u32, pub n_mats: u32, pub col_att: u32, pub col_pick: u32, pub col_one: u32 }
+pub struct SkinLayout { pub char_base: Vec<u32>, pub attach_base: u32, pub sl_base: u32, pub door_base: u32, pub pick_base: u32, pub n_mats: u32, pub col_att: u32, pub col_pick: u32, pub col_sl: u32, pub col_one: u32 }
 
 /// One frame's pose state (`Scene::frame_state`).
 pub struct FrameState {
@@ -4338,10 +4338,15 @@ impl Scene {
         let n_mats = pick_base + n_pick;
         let nc = self.characters.len() as u32;
         let (col_att, col_pick) = (nc, nc + n_att);
-        let col_one = col_pick + n_pick;
+        // fix-searchlight-remainder: one colour slot per searchlight part, so the corona's alpha byte
+        // (obj+0x106, `(dot−0.2)·4·255` low byte [M 0x1cb900:334-336]) reaches the shader — the game's
+        // draw reads obj+0x106 as the quad's alpha. All other parts keep alpha 1.0; the slots sit
+        // before the shared 1.0 entry (`col_one`).
+        let col_sl = col_pick + n_pick;
+        let col_one = col_sl + n_sl;
         let attrs = self.char_verts.iter().map(|v| {
             let one = |m: u32, col: u32| SkinAttr { a: m, b: m, w: 1.0, col };
-            if let Some(sl) = v.searchlight { return one(sl_base + sl as u32, col_one); }
+            if let Some(sl) = v.searchlight { return one(sl_base + sl as u32, col_sl + sl as u32); }
             if let Some(pk) = v.pickup { return one(pick_base + pk as u32, col_pick + pk as u32); }
             if let Some(dr) = v.door { return one(door_base + dr as u32, col_one); }
             if let Some(a) = v.attachment { return one(attach_base + a, col_att + a); }
@@ -4354,7 +4359,7 @@ impl Scene {
                 _ => one(base, v.character),
             }
         }).collect();
-        (SkinLayout { char_base, attach_base, sl_base, door_base, pick_base, n_mats, col_att, col_pick, col_one }, attrs)
+        (SkinLayout { char_base, attach_base, sl_base, door_base, pick_base, n_mats, col_att, col_pick, col_sl, col_one }, attrs)
     }
 
     /// The frame's resolved lights for the renderer: the sim's `LightList` with the kind-2
@@ -4437,6 +4442,16 @@ impl Scene {
         let mut cols = vec![[1.0f32; 4]; l.col_one as usize + 1];
         let has = !mults.is_empty();
         let rgb = |m: [f32; 3]| [m[0], m[1], m[2], 1.0];
+        // fix-searchlight-remainder: the per-part alpha slot — kind-4 coronas carry obj+0x106/255 in
+        // .a (the shader's ×255/128 rescale makes byte 0x2e → 0.36 exactly like the GS); the other
+        // parts stay 1.0. The byte is the sim's (`Searchlight_Update` 0x1cb900:334-336).
+        if let Some(s) = self.sim.as_ref() {
+            for (k, sp) in s.drones.searchlights.parts.iter().enumerate() {
+                if let Some(c) = cols.get_mut(l.col_sl as usize + k) {
+                    c[3] = if sp.kind == 4 { sp.alpha as f32 / 255.0 } else { 1.0 };
+                }
+            }
+        }
         if has {
             for (ci, m) in mults.iter().enumerate() { cols[ci] = rgb(*m); }
             for (a, m) in &attach_mult { if let Some(c) = cols.get_mut((l.col_att + a) as usize) { *c = rgb(*m); } }

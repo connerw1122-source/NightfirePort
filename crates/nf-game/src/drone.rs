@@ -5264,12 +5264,15 @@ impl Drones {
             obj.map_or(([0.0; 3], [0.0; 3]), |o| (o.min, o.max))
         });
         // `Searchlight_Create`'s kind-2 light record (0x1cb4f8:150-172): white, radius 500, intensity 1.0,
-        // kind 2, permanent, position tracked to the part (below the world until the first ray hit). The
-        // record's only RNG draw is the `Rand_Rand(0)` flicker seed already taken in the create above.
+        // kind 2, permanent. The node's position (+0x10) is the PLACEMENT position written before the
+        // −10000 move and never changed [M 0x1cb4f8:154-167]; `psiLight_SetLights` 0x10e588 uploads it
+        // for the light's whole life — the port carries it as `spawn_pos` and resolves the live spot
+        // separately (light.rs `ResolvedLight::track_pos`). The record's only RNG draw is the
+        // `Rand_Rand(0)` flicker seed already taken in the create above.
         for (k, part) in self.searchlights.parts.iter().enumerate() {
             if part.kind != 2 { continue; }
             self.lights.lights.push(crate::light::Light {
-                pos: part.pos, life: 0, channel: 0, flicker_period: 0, flicker_base: 0,
+                pos: part.spawn_pos, life: 0, channel: 0, flicker_period: 0, flicker_base: 0,
                 flicker_count: part.light.unwrap_or(0) as u16, flicker_mask: 0, sound: 0,
                 track: Some(k as u32), radius: 500.0, intensity: 1.0, falloff: 0.0,
                 rgb: [255, 255, 255], kind: 2, active: true,
@@ -6625,17 +6628,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         None => { self.audio.play3d(id, pos, None); }
                     }
                 }
-                // The broken light's smoke [M 0x1cb900:373-385: state 2, every 7th frame
-                // `(GameState[52] + obj+0xEC) % 7 == 0`, at obj+0x30; `Gas_Init(0.05, 0.25, …, 0x2000039,
-                // 7, 0x48403080, 1)`]. The per-object phase byte (obj+0xEC, a create-time Rand draw) is
-                // not ported — the part index stands in for it [S]; the game's RNG draws stay un-consumed
-                // (G-033; see gas.rs). Life [S]: the decomp drops the call's 11th arg; 24 ticks matches
-                // the visual scale of the game's lingering break smoke.
-                for (pi, part) in self.searchlights.parts.iter().enumerate() {
-                    if part.kind == 1 && part.state == 2 && (frame + pi as u32) % 7 == 0 {
-                        self.gas.init(part.pos, 0.0, [0.0; 3], 0.05, 0.25, 7, [0x48, 0x40, 0x30, 0x80], 24.0);
-                    }
-                }
+                // The broken light's smoke [M 0x1cb900:373-385: state 2, while drawn (obj+0xFC != 0),
+                // every 7th frame `(GameState[52] + obj+0xEC) % 7 == 0` — obj+0xEC is GameState[52]
+                // AT CREATE (control_init_object 0x134630:15), so the port's phase is
+                // `(frame + created) % 7` with created = 0 (the port creates at frame 0);
+                // `Gas_Init(0.05, 0.25, …, 0x2000039, 7, 0x48403080, 1, [stack] 128)` — the
+                // decompile drops the 11th arg; the disassembly passes life = 0x80 = 128
+                // [M 0x1cbce0/0x1cbcb0]. The puff's 6 shared-RNG draws are consumed by
+                // `init_searchlight_smoke` (gas.rs — the game's formulas, bit-exact).
+                let smoke: Vec<[f32; 3]> = self.searchlights.parts.iter()
+                    .filter(|p| p.kind == 1 && p.state == 2 && p.drawn && (frame + p.created) % 7 == 0)
+                    .map(|p| p.pos).collect();
+                for pos in smoke { self.gas.init_searchlight_smoke(&mut self.rng, pos); }
                 // The kill path clears a kind-2 part's light (`Searchlight_Update`'s off-channel branch
                 // removes the `light_tag` record): mirror it onto the light list.
                 for (k, p) in self.searchlights.parts.iter().enumerate() {
