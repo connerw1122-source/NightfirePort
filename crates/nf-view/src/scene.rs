@@ -2263,7 +2263,14 @@ impl Sim {
                     self.gun.weapon = self.gun.switch_request;
                     let (nwi, nt) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
                     if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
-                    let draw = self.weapons.draw_script(nwi);
+                    // fix-reload-hang2: the script lookups use the weapon's OWN record — the game reads
+                    // `weapon_data[cur*0x10c + 0xc0]` for the draw [M Player_SetWeaponAnimObj 0x1a2e38
+                    // case 3: iVar15 = the current weapon's own id · 0x10c] — only the clip array is
+                    // routed to the base slot [M Player_ReloadAmmoType 0x1a1988:18-22]. Feeding
+                    // `nwi` (the unified slot) here started the BASE's draw for twin 0x38 while the
+                    // state-3 wait measured 0x38's own script — the wait never finished and the switch
+                    // machine wedged (fix_weapon_sounds_live lost every later draw sound).
+                    let draw = self.weapons.draw_script(self.gun.weapon as usize);
                     if draw != 0 {
                         if log_switch { eprintln!("[weapon-switch] tick {}: state 0→3 draw {:08x} (weapon {:#x})", self.drones.frame, draw, req_id); }
                         self.view_script = draw;
@@ -2273,7 +2280,8 @@ impl Sim {
                         let s = if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { 0x281 } else { 0x282 };  // gadgets 0x281, weapons 0x282 [M disasm 0x1a385c]
                         self.drones.audio.play(s);
                     } else {
-                        self.view_script = self.weapons.idle_script(nwi);
+                        // The game's no-draw path plays the own record's idle (+0xa0) [M 0x1a2e38 case 3].
+                        self.view_script = self.weapons.idle_script(self.gun.weapon as usize);
                         (self.view_time, self.view_speed) = (0.0, 1.0);
                     }
                 }
@@ -2295,8 +2303,10 @@ impl Sim {
                         self.gun.weapon = self.gun.switch_request;
                         let (nwi, nt) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
                         if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
-                        // Start the draw script (+0xC0) at 1.25x [M case 2 → case 3].
-                        let draw = self.weapons.draw_script(nwi);
+                        // Start the draw script (+0xC0) at 1.25x [M case 2 → case 3]. The script lookup
+                        // is the weapon's OWN record (0x1a2e38 case 3), not the clip slot — see the
+                        // instant-swap arm above.
+                        let draw = self.weapons.draw_script(self.gun.weapon as usize);
                         if draw != 0 {
                             if log_switch { eprintln!("[weapon-switch] tick {}: state 1→3 draw {:08x} (weapon {:#x})", self.drones.frame, draw, self.gun.weapon); }
                             self.view_script = draw;
@@ -2304,7 +2314,8 @@ impl Sim {
                             self.gun.switch_state = 3;
                         } else {
                             if log_switch { eprintln!("[weapon-switch] tick {}: state 1→0 idle (no draw script) {:#x}", self.drones.frame, self.gun.weapon); }
-                            self.view_script = self.weapons.idle_script(nwi);
+                            // The own record's idle [M 0x1a2e38 case 3], not the clip slot's.
+                            self.view_script = self.weapons.idle_script(self.gun.weapon as usize);
                             (self.view_time, self.view_speed) = (0.0, 1.0);
                             self.gun.switch_state = 0;
                         }
