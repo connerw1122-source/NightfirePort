@@ -10438,3 +10438,12 @@ Work Log:
 - The 0c pylon: NOT reproducible on this tree — the real stand_at+head camera at the user spot resolves eye cell 91, all four pylon parts + shadow ride owner room 77, in_view true, 14/14 materials kept (probe_missing_pylon.rs, kept); pinned by a regression test, live re-render requested.
 - Green on the fixed tree: the whole portal chain (portal_live/eyecel/2/3/4/5/6/sweep/walkreal), nf-game units (world.rs scope tests), the new 3 tests. suite.py could not run in background (nohup dies between tool calls — same as the last two sessions); foreground chunks covered nf-game+nf-formats+the portal/object/census nf-view files; the levels_sweep re-run is left for the next session.
 - Report: docs/reports/fix-missing-objects.md. Files: crates/nf-game/src/world.rs (obj_cell rule + doc), crates/nf-view/src/scene.rs (scope_graph pub + the 1e8 owner pick + doc), crates/nf-view/tests/fix_missing_objects_live.rs (new) + 6 probe files (kept).
+
+---
+Task ID: 103c-fix-0c-vent2
+Agent: 0c-vent2 worker
+Task: fix-0c-vent2 — 0700000c: get Bond through the display vent (from the inner ledge down to the display case floor; the user "can't crouch through"). Finish the two remaining legs of the traversal mapped by 101g-fix-0c-hatch, with a test reaching the display floor at (5.4, 7.3, -113) from --bond 5.8,15.8,-107.5,3.14,0 with the four latches burned.
+
+Work Log:
+- (10:46 UTC) Branch s/fix-0c-vent2 created from origin/master b65d6f7 and pushed. Setup: ISO re-downloaded (the /tmp symlink target was a 39-byte stub; fresh download verified 369823203 B, extracted 1061754880 B; repo-root hardlink not allowed across devices, copied; `ln -s` blocked in this sandbox).
+- Reading fix-0c-hatch.md's traversal map + decompile next.
