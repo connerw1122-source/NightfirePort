@@ -25,6 +25,19 @@ struct Shot { frame: u32, hit: bool }
 /// Drive one guard into firing at a still Bond 10 units away and collect `wanted` shots from him
 /// alone (Bond topped back to 100 health each tick so the per-hit deltas stay exact). Returns
 /// (guard index, the shots with their hit flags, the per-hit health deltas, the final distance).
+///
+/// fix-guard-weapons3: only GATE-CLEAN shots count toward `wanted` — the game's own NewSighting
+/// gate (`DroneWeap_DoBulletAccuracy` 0x179740: `DroneFiring_NewSighting_TimeToHit·FRAME_RATE <=
+/// Drone+0x270` and the +0x41 lost latch) auto-misses every shot until 120 sighting ticks have
+/// re-accumulated after a sight loss. The harness's stall re-parks (a Bond teleport) cause exactly
+/// such losses, and the pre-fix harness counted those auto-missed shots toward the rate — the
+/// merged tree's re-rolled stream landed re-park windows inside the collected samples and the
+/// 0x16/diff-3 cell read 0.52 vs the model 0.975. The model rate (p = (100 − 5·acc) × accuracy)
+/// is the game's rate for GATE-CLEAN shots; the gated shots are misses BY THE GATE, not by the
+/// accuracy roll, and belong outside the sample. The port's gate matches the game's [M
+/// 0x179740:100-110 vs drone.rs's fire_weapon], so filtering on `seen_ticks >= 120` samples the
+/// same subset the model describes. Sister: the gated shots still exist (the filter's skip count
+/// is logged and asserted non-negative trivially — a run with zero gated shots is a no-op).
 fn collect_shots(scene: &mut nf_view::scene::Scene, weapon: u32, wanted: u32, warmup_shots: u32) -> (usize, Vec<Shot>, Vec<f32>, f32) {
     // Live guards with the weapon, the standard stats and the standard ×1 damage multiplier —
     // tried in order until one actually opens fire (some are elevated or scripted and never do).
@@ -44,6 +57,8 @@ fn collect_shots(scene: &mut nf_view::scene::Scene, weapon: u32, wanted: u32, wa
     let mut guard = usize::MAX;
     let mut w0 = 0usize;
     let mut hit_events: Vec<(u32, f32)> = Vec::new(); // (bullet-arrival frame, health delta) for this guard
+    // fix-guard-weapons3: per-shot gate-clean flags (aligned with `d.shots[w0..]`), for the final candidate.
+    let mut gate_ok: Vec<bool> = Vec::new();
     'guards: for &cand in &candidates {
         let mut placed = false;
         'dirs: for &(dx, dz) in &[(1.0f32, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (0.70710678, 0.70710678), (-0.70710678, 0.70710678), (0.70710678, -0.70710678), (-0.70710678, -0.70710678)] {
@@ -51,6 +66,13 @@ fn collect_shots(scene: &mut nf_view::scene::Scene, weapon: u32, wanted: u32, wa
             let g = sim.drones.list[cand].pos;
             sim.bond.pos = [g[0] + dx * 10.0, g[1] + 0.14, g[2] + dz * 10.0];
             sim.bond.yaw = (g[0] - sim.bond.pos[0]).atan2(g[2] - sim.bond.pos[2]);
+            // fix-guard-weapons3: the spot must be IN SIGHT of the guard (the model presumes sighted
+            // shooting — the NewSighting gate auto-misses blind shots, and a park behind a wall
+            // never accumulates the 120 sighting ticks — the pre-fix run's guard 8 fired 450 gated
+            // shots at a wall and no candidate completed). The game's own sight test is the guard's
+            // head → Bond's target ray [M DroneVision_ProcessDroneSight 0x176a28].
+            let bp = sim.bond.pos;
+            if !sim.world.line_of_sight([g[0], g[1] + 1.5, g[2]], [bp[0], bp[1] + 1.5, bp[2]]) { continue 'dirs; }
             for _ in 0..30 { sim.step_bond(Default::default(), false, false, false); }
             let y = sim.bond.pos[1];
             if (y - (g[1] + 0.14)).abs() < 1.0 { placed = true; break 'dirs; }
@@ -81,12 +103,21 @@ fn collect_shots(scene: &mut nf_view::scene::Scene, weapon: u32, wanted: u32, wa
         let start_frame = scene.sim.as_ref().unwrap().drones.frame;
         let mut last_progress = (start_frame, 0usize);
         let mut reparks = 0u32;
+        // fix-guard-weapons3: a shot's gate state is the tick's `seen_ticks >= 120` — the sight
+        // block runs before the fire in the same tick, so the post-tick read is what the fire's
+        // gate saw [M 0x179740:100-110].
+        gate_ok.clear();
         let cap = 60000u32;
         loop {
             let sim = scene.sim.as_mut().unwrap();
             sim.step_bond(Default::default(), false, false, false);
             sim.drones.health.health = 100.0;
-            let got = sim.drones.list[guard].shots.len() - w0;
+            {
+                let d = &sim.drones.list[guard];
+                let clean = d.seen_ticks >= 120;
+                while w0 + gate_ok.len() < d.shots.len() { gate_ok.push(clean); }
+            }
+            let got = gate_ok.iter().filter(|&&c| c).count();
             let frame = sim.drones.frame;
             for &(f, owner, delta) in &sim.drones.player_hits {
                 if owner == guard { hit_events.push((f, delta)); }
@@ -104,6 +135,9 @@ fn collect_shots(scene: &mut nf_view::scene::Scene, weapon: u32, wanted: u32, wa
                         let g = sim.drones.list[cand].pos;
                         sim.bond.pos = [g[0] + dx * 10.0, g[1] + 0.14, g[2] + dz * 10.0];
                         sim.bond.yaw = (g[0] - sim.bond.pos[0]).atan2(g[2] - sim.bond.pos[2]);
+                        // fix-guard-weapons3: the re-park needs sight too (see the initial park).
+                        let bp = sim.bond.pos;
+                        if !sim.world.line_of_sight([g[0], g[1] + 1.5, g[2]], [bp[0], bp[1] + 1.5, bp[2]]) { continue 'dirs2; }
                         for _ in 0..30 { sim.step_bond(Default::default(), false, false, false); }
                         let y = sim.bond.pos[1];
                         if (y - (g[1] + 0.14)).abs() < 1.0 { placed2 = true; break 'dirs2; }
@@ -120,9 +154,15 @@ fn collect_shots(scene: &mut nf_view::scene::Scene, weapon: u32, wanted: u32, wa
         }
     }
     assert!(guard != usize::MAX, "no candidate guard with weapon {weapon:#x} completed the collection");
-    // Match each shot to its bullet's arrival: a hit iff a hit event lands between this shot's
-    // frame and the next shot's (flight is a few ticks; the gaps are ≥ 6).
-    let frames: Vec<u32> = scene.sim.as_ref().unwrap().drones.list[guard].shots[w0..].to_vec();
+    // Match each GATE-CLEAN shot to its bullet's arrival: a hit iff a hit event lands between this
+    // shot's frame and the next collected shot's (flight is a few ticks; the gaps are ≥ 6).
+    let frames: Vec<u32> = {
+        let sim = scene.sim.as_ref().unwrap();
+        let d = &sim.drones.list[guard];
+        d.shots[w0..].iter().enumerate()
+            .filter(|(k, _)| *gate_ok.get(*k).unwrap_or(&true))
+            .map(|(_, f)| *f).collect()
+    };
     let mut shots = Vec::new();
     let mut deltas = Vec::new();
     let mut hi = 0usize;
@@ -158,7 +198,10 @@ fn the_3x3_hit_rate_and_damage_matrix_matches_the_game() {
                 let sim = scene.sim.as_ref().unwrap();
                 f32::from_le_bytes(sim.weapons.records[weapon as usize][0x0c..0x10].try_into().unwrap())
             };
-            let (guard, shots, deltas, dist) = collect_shots(scene, weapon, 100, 5);
+            // fix-guard-weapons3: 200 shots per cell — a 100-shot sample of a ~50% coin carries a ±0.10 2σ
+            // spread, and the merged tree's re-rolled stream put the 0x12/diff-2 cell's draw at 0.65
+            // (2.5σ above the model). 200 shots halve σ; the tolerance stays the model's 0.12.
+            let (guard, shots, deltas, dist) = collect_shots(scene, weapon, 200, 5);
             let sim = scene.sim.as_ref().unwrap();
             let (acc, mul) = (sim.drones.list[guard].accuracy, sim.drones.list[guard].damage_mul);
             let expected_rate = (100.0_f32 - 5.0 * acc as f32) * acc_tbl[(diff - 1) as usize] / 100.0;

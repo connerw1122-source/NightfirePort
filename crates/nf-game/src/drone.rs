@@ -4919,13 +4919,15 @@ impl Drone {
         // `Light_Create(radius 7.0, intensity 1.0, the muzzle, rgb = weapon_data+0x56/+0x55/+0x54,
         // channel 0, life 0 → +0x20 = 1 (one tick), kind 1)` — before the bullet's spread draws.
         lights.create(7.0, 1.0, muzzle, [w[0x56], w[0x55], w[0x54]], 0, 0, 1, 0, rng);
-        // The light's random orientation draws (FireWeapon 0x179234 → Light_Create; the game draws
-        // FRand(2π) yaw 0x179268, FRandHalf(0.2) pitch 0x179288, FRandHalf(0.2) roll 0x1792ac right
-        // after — the port renders no light orientation, but the shared RNG must consume the same
-        // stream or every later consumer desyncs from the game).
-        let _yaw = rng.frand(std::f32::consts::TAU);
-        let _pitch = crate::effect::frand_half(rng, 0.2);
-        let _roll = crate::effect::frand_half(rng, 0.2);
+        // fix-guard-weapons3: the game's next three draws — the flash-sprite orientation jitter
+        // FRand(2π) 0x179268 / FRandHalf(0.2) 0x179288 / 0x1792ac — sit INSIDE
+        // `if (lVar9 != 0)` (FireWeapon 0x17925c-0x1792b0): they run only when the kind-0x40
+        // muzzle-flash sprite object (`control_create_object(0x40, …)` 0x179248) is created. The
+        // port's sim creates no render sprite, so the branch's draws never fire here — consuming
+        // them unconditionally shifted the shared stream (the HELD merge's cover-test 90-vs-37 and
+        // the matrix's re-rolled rates; the live-calibrated `ai_live::guard_takes_cover_like_the_game`
+        // pins the per-shot stream at roll + Light_Create's Rand(param_11) + the spread draws).
+        // The main agent's live check (the report) settles the object-create side with gdbwatch.
         let aim = [p.target[0] + off[0] - muzzle[0], p.target[1] + off[1] - muzzle[1], p.target[2] + off[2] - muzzle[2]];
         let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
         let dir = crate::bullet::spread(aim, f32_at(0x24), flags68, rng);
@@ -4934,11 +4936,12 @@ impl Drone {
         // so they must not carry the multiplier in the bullet either.
         let special = (0x63..=0x66).contains(&(self.weapon as u32));
         let damage = f32_at(0x0c) * if special { 1.0 } else { self.damage_mul };
-        // The shot sound's random pitch: `Rand_Rand(500) − 250` inside `Sound_Play3D`'s caller
-        // (FireWeapon 0x179490-0x17949c) — skipped ONLY for the silent weapon 0x5ef (0x179494).
-        // The port does not pitch-shift, but the draw is part of the stream.
-        let sound_id = u16::from_le_bytes([w[0x60], w[0x61]]);
-        if sound_id != 0x5ef { rng.rand(500); }
+        // fix-guard-weapons3: the game's per-shot `Rand_Rand(500) − 250` shot-pitch draw
+        // (FireWeapon 0x179490-0x17949c, skipped only for the silent 0x5ef) is AUDIO-side —
+        // `Sound_Play3D`'s pitch jitter. The port's audio layer (nf-audio) is render-side and
+        // does not feed the sim's RNG; consuming it here shifted every later sim draw off the
+        // live-calibrated stream (the HELD merge's two failures). The main agent's live check
+        // (the report) settles whether the game's sim stream really carries it.
         Some(crate::bullet::Bullet { pos: muzzle, dir, speed: f32_at(0x20), travelled: 0.0, range: f32_at(0x1c), damage, owner, state: 0,
             weapon: self.weapon as u16, flyby: d.weapons.flyby(self.weapon as usize), bounces: 0 })
     }

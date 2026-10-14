@@ -11977,3 +11977,17 @@ Task: the HELD merge of s/fix-guard-weapons2 + master (+ fix-aim-raise2) fails t
 
 Work Log:
 - 22:47 UTC: base s/fix-guard-weapons2 (e66aa360) checked out, origin/master merged (e10f157a — WORKLOG conflict resolved append-only). Branch s/fix-guard-weapons3 created. Reproduction next.
+- 22:48-23:40 UTC: both failures root-caused and fixed. (a) The RNG shift: gw2's four new per-shot
+  fire-path draws (the flash-sprite orientation trio FRand(2π)/FRandHalf×2 [M FireWeapon 0x179268-0x1792ac —
+  but gated inside `if (lVar9 != 0)` on the kind-0x40 flash-sprite object create 0x179248, which the port's
+  sim never performs] and the Sound_Play3D pitch `Rand_Rand(500)` 0x17949c — audio-side) shifted the shared
+  stream off the live-calibrated one: `ai_live::guard_takes_cover_like_the_game`'s cover-type pick
+  (`cover_anim` mode 6's `rng.rand(2)`, drone.rs) flipped lean-out 176 (51f @1.5 = 37 ticks) to step-out 178
+  (90f @1.0 = 90). Removed both sites with citations; master's 5-draw/shot stream restored; the cover test is
+  back at 37. (b) The matrix 0x16/diff-3 0.52-vs-0.975: NOT a fire-path bug — the game's own NewSighting gate
+  (`DoBulletAccuracy` 0x179740: `+0x270 >= 120 && !+0x41`; the port matches) auto-misses ~60 shots per sight
+  loss, and the harness's stall re-parks (Bond teleports) plus the pre-fix parks WITHOUT a line-of-sight check
+  put gated shots inside the collected samples (the merged stream re-rolled which cells got hit; guard 8 fired
+  450 shots with seen=0 at a wall). Harness fixes: LOS-checked parks, per-shot gate-clean filtering
+  (seen_ticks >= 120 — the model's domain), 200 shots/cell (a 100-shot ±0.10 2σ sample hit the 0.12 tolerance
+  on the re-rolled stream). nf-view fix_guard_weapons_live 3/3, nf-game ai_live 35/35 on the fixed tree.
