@@ -11220,3 +11220,12 @@ draws added; no wall-clock in Sim.
   73 tests, 0 failures. The four-crate sweep did not fit the window (background jobs die between tool calls
   in this sandbox — sessions 4 and 5). Report: docs/reports/fix-hud-radar.md (live checks inside: the SP
   no-blip confirmation, the MP ring position/size/blip reading, the pending 100n 007 item).
+
+## fix-exact-math-swap3 (started)
+- Started: base s/fix-exact-math-swap2, origin/master merged (ecf408b). Task: the NIS camera on the
+  exact-math branch sits consistently further right/closer at every frame of the 07000002 intro vs master
+  (and the 07000007 hall guard is out of frame with --skip-cutscenes at frame 170) — dump the frame-170
+  NIS camera matrix (and one actor's) on both sides element by element, find the first function whose
+  output diverges > 1e-5, and settle master vs branch from the decompile (RotMatrix 0x1e2368,
+  Quat_QuatTransToMat 0x1e3fa8, psiBuildMatrixPalette 0x111498). Keep the grenade-bounce 0.04 fix
+  (Bullet_CollisionHandler 0x12ce80). Report: docs/reports/fix-exact-math-swap3.md.
