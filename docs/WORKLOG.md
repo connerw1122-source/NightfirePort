@@ -9629,3 +9629,26 @@ Work Log:
   Files: dev.rs, panel.rs (doc), lib.rs (hooks), tests/dev_menu_flow.rs (new),
   tests/menu_live.rs, tests/dev_tools_live.rs (signature/width updates). No shared-file surprises:
   drone.rs/scene.rs/player.rs untouched.
+
+## dev-window (main agent, branch devwin) — 2026-10-13
+
+The user: "the dev menu should manifest outside of the game, but not in a browser", then "you work on it". `--dev`
+now opens a second native window, **"Nightfire dev"**, beside the game window (`crates/nf-view/src/devwin.rs`): a
+second `winit` window on the same event loop with its own `wgpu` surface on the game's device, drawn with the game's
+HUD font (texture 0x03000003). No new crates.
+
+- Tabs (Weapons, Gadgets, Grenades, Ammo/health, NPCs, Teleport, Level, Toggles, Screenshot) on the left; the page's
+  rows on the right with type-to-filter, a scrollbar and the mouse wheel; the selected row's description wrapped
+  under the list; the last action's result as a status line; a header with the level, Bond's spot and health.
+- Enter or a double-click applies the row through the same `dev::apply_menu_action_to_scene` → `panel::apply` path as
+  the F2 overlay (`App::apply_menu_action`). The window never sets `Dev::menu`, so **the game keeps running** while it
+  is used. Its events never reach the game (routed by `WindowId` first thing in `window_event`).
+- F2 in the game window raises it; closing it hides it (F2 brings it back). Without the window (it failed to open)
+  F2 falls back to the in-game overlay. It refreshes ~6 times a second from the game's frame loop.
+- The Teleport page lists only the loaded level's spots (a spot from another level dropped Bond into empty space).
+- Tests: `tests/devwin_flow.rs` — the layout fits at 640x760, the 420x360 minimum, 200% scaling and 4K (20+ rows at
+  760 px; the overlay showed 7); scroll-to-selection and wrap; through `devwin::input` (what the event handler calls):
+  type "frag" + Enter → GiveWeapon 0x34 → the inventory has it, `Dev::menu` stays off; clicking a tab switches page,
+  one click selects, a second applies, Close hides. Checked live: the window opens beside the game with the full
+  weapon list (screenshots in the session). A live keyboard check by synthetic keys failed: Windows wouldn't give the
+  dev window focus from a background process, so the user tries it by hand.

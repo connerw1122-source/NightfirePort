@@ -610,7 +610,11 @@ pub fn menu_items(dev: &Dev, scene: Option<&Scene>) -> Vec<MenuRow> {
         6 => {
             v.push(("teleport: save spot".into(), "save Bond's current spot - restore later", MenuAction::SaveSpot));
             v.push(("teleport: load spot".into(), "return Bond to the saved spot", MenuAction::RestoreSpot));
+            // Only the loaded level's spots (each name starts with its level's last two hex digits): a spot from
+            // another level would drop Bond into empty space (the dev window shows this page as a tab).
+            let level = scene.and_then(|s| s.sim.as_ref()).map(|s| format!("{:02x}", s.level & 0xff));
             for (i, (name, pos)) in TELEPORT_SPOTS.iter().enumerate() {
+                if level.as_ref().is_some_and(|l| !name.starts_with(l.as_str())) { continue; }
                 let label = format!("{} ({:.2}, {:.2}, {:.2})", name, pos[0], pos[1], pos[2]);
                 if !passes_filter(dev, &label) { continue; }
                 v.push((label, "Enter: Bond stands there (Player_StandAtNewPosition), grounded on the next ticks", MenuAction::TeleportTo(i)));
