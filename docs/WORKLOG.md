@@ -9792,3 +9792,11 @@ the wrap/line-height helpers). Report: docs/reports/fix-objective-messages.md.
 Full suite on the final tree (origin/master 7be3272 merged): **886 passed, 3 failed, 27 ignored
 (20 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH. Also green post-fix:
 death/restart 8, mission 4, level_carry 3, progress 8, nf-formats 74 (+ the 3 allowed).
+
+## fix-08-walls (s/fix-08-walls) — 2026-10-14
+
+Task 101h: two user symptoms on 07000008 near the safe/briefcase room (~(155, 43, -113)):
+(1) walking into a wall threw Bond onto a zip line on the far side of the wall (wire grab
+through geometry — grab test needs the game's LOS/facing gate); (2) the big wall still clips
+into the missile room (a world instance / forced object drawn that the game hides — compare
+docs/live/2026-10-13-portal-ground-truth.md). Work in progress; details to follow.
