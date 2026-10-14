@@ -165,18 +165,20 @@ pub fn on_foot_levels(img: &IsoImage) -> Vec<String> {
 /// is recorded (`Cell::error`) and the level is reloaded before the next cell (the sim's state
 /// after a panic is not trusted).
 pub fn run_level(iso: &str, level: &str, log: &mut dyn FnMut(&str)) -> anyhow::Result<LevelRow> {
-    let mut row = LevelRow { level: level.to_string(), cells: Vec::new() };
+    // The tests pass the bare code ("07000005"); the archive name is 07000005.bin.
+    let level = if level.contains('.') { level.to_string() } else { format!("{level}.bin") };
+    let mut row = LevelRow { level: level.clone(), cells: Vec::new() };
     // The level archive's own hash set — the red-cell reasons read it (the view-model build's four
     // conditions all resolve against `level.skins` / `level.by_hash`, scene.rs "The first-person
     // gun models").
     let img = IsoImage::open(iso)?;
     let (entries, bin) = nf_formats::disc::files_bin_entries(&img)?;
-    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level))
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(&level))
         .ok_or_else(|| anyhow::anyhow!("no {level} in FILES.BIN"))?;
     let data = img.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
     let lvl = Level::parse(&data)?;
 
-    let mut scene = crate::load(iso, level, false)?;
+    let mut scene = crate::load(iso, &level, false)?;
     anyhow::ensure!(scene.sim.is_some(), "level {level} loaded without a sim");
     // Wait out the level's intro cut-scene: `Player_Disable` by a script blocks every input until
     // `Player_Enable` (scene.rs's `Sim::disabled` — the F cells on 07000001/02/04 were the manor's
@@ -192,7 +194,7 @@ pub fn run_level(iso: &str, level: &str, log: &mut dyn FnMut(&str)) -> anyhow::R
         cell.name = name;
         if cell.error.is_some() {
             log(&format!("[matrix] {level} weapon {id:#04x} PANICKED — reloading the level"));
-            scene = crate::load(iso, level, false)?;
+            scene = crate::load(iso, &level, false)?;
             give_via_panel(&mut scene, AWAY, None);
         }
         annotate(&lvl, &mut cell);

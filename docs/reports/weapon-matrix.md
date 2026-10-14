@@ -135,7 +135,12 @@ from the F2 overlay after closing the menu; the result lands in the overlay's st
 - `nf-extract weapon-matrix <iso>` — the full sweep, 5m27s, 0 panics (the numbers above).
 - `cargo test -p nf-view --test weapon_matrix_live test_weapon_row_runs_the_sequence` — passes
   (draw ok, 3 shot ticks, reload ok on the P2K / 07000005).
-- Fast suite (per-binary `--only` passes on the final tree): see the suite section below.
+- Fast suite on the final tree (`tools/test/suite.py --only
+  weapon_matrix_live,fix_weapons_all_live,fix_weapon_modes_live,models_weapons_live,dev_menu_flow,devwin_flow`):
+  **51 passed, 0 failed, 0 ignored (8 min)** — the full matrix binary (27 levels, panic-free) plus
+  the weapon suites and the dev-menu/devwin suites the lib.rs/dev.rs hooks touch. A second pass (dev_tools_live, fix_viewmodel_zoom_live, gadget_select_live, replay_live, panel_live, scenario_live): **22 passed, 0 failed** — 73 green in total across the two passes. The remaining
+  210 binaries were not re-run before the deadline (the same runner, `tools/test/suite.py`, with
+  no `--only`, is the full pass); the hooks are additive and the touched suites are green.
 
 ## Live checks for the main agent (PCSX2)
 
