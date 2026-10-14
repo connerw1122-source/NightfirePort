@@ -10500,3 +10500,16 @@ Task: fix-0c-pylon — the 0c pylon is in the drawn set (per 102e's pin) but not
 Work Log:
 - (10:35 UTC) Branch s/fix-0c-pylon created from origin/master b65d6f7; setup reused (repo, work/, ISO, nf-queue). Repro render + decompile evidence next.
 
+
+---
+Task ID: 102l-fix-0c-pylon
+Agent: 0c-pylon worker
+Task: fix-0c-pylon — the 0c pylon is in the drawn set but not on screen; replace 102e's drawn-set pin with a rendered-frame test.
+
+Work Log:
+- (10:35-11:58 UTC) Branch s/fix-0c-pylon from origin/master b65d6f7; setup reused. The symptom reproduced byte-exact at the user spot; NF_NOCELCULL (2113 extra draws) changed nothing.
+- The pylon's draws were never the problem (probe_pylon_draws): 12 materials, pass 3 / blend 0 / zwrite off / atest 1 / fog 2, textures resolve with a real alpha-tested lattice (45:93: 1017/4096 opaque), vert alpha 128, on-screen NDC, depth 0.999. In-process subset renders (probe_pylon_render, the exact shot() path + framebuffer readback): pylon-only RENDERS, pylon+list0 RENDERS, pylon+pass3 RENDERS, pylon+sky/chars/effects GONE, full GONE — the killer is the pass-4 sky.
+- Root cause [M]: the port sorted the frame by dc.pass*2, drawing the post-fog sky (pass 4) AFTER the alpha list (pass 3). Game_Draw 0x1e6f50 draws sky group 0 (View_DrawSky v,0 0x1e5ad0, GfxList+0x4a == 0) between psiPostSolid 0x121630 (= psiDrawFogPass 0x10b960) and View_DrawObjList(v,1) — the alpha list comes AFTER the sky. The sky pipeline is far-plane-pinned + LessEqual + no depth write, so over pixels where only no-depth-write alpha draws landed (the pylon: ZBUF_1 zwrite off) the depth is still the cleared 1.0 and the sky repainted it. The shadow (zwrite on) wrote depth and survived — the exact observed split. docs/systems/render.md §Sky remainder already pinned group 0 = "after psiPostSolid / before the alpha list"; the code contradicted it.
+- Fix: gpu.rs slot map `match dc.pass { 4 => 3, p => p * 2 }` — sky group 0 now draws after list 0, before the alpha list; nothing else moved. scene.rs: #[derive(Clone)] on Material (test support).
+- Tests (fix_0c_pylon_live, fail-first on the stashed fix): user-spot lattice band 1628 → FAIL pre-fix, 5180 → PASS post-fix; close-up 75 → FAIL, 4229 → PASS; sisters: sky stays bright (75000), the shadow still draws (40113). Rendered before/after PNGs at the user spot and pitch 0.
+- origin/master 6691ef9 merged (WORKLOG conflict: both entries kept). Report: docs/reports/fix-0c-pylon.md. Files: crates/nf-view/src/{gpu,scene}.rs, tests/fix_0c_pylon_live.rs + 2 probes.
