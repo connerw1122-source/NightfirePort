@@ -11229,3 +11229,31 @@ draws added; no wall-clock in Sim.
   output diverges > 1e-5, and settle master vs branch from the decompile (RotMatrix 0x1e2368,
   Quat_QuatTransToMat 0x1e3fa8, psiBuildMatrixPalette 0x111498). Keep the grenade-bounce 0.04 fix
   (Bullet_CollisionHandler 0x12ce80). Report: docs/reports/fix-exact-math-swap3.md.
+
+## fix-exact-math-swap3 (outcome)
+- The hold does not reproduce on the current trees: at the hold's exact spots the branch (swap2 +
+  master @ 7785582) and the same tree with master's host math in anim.rs/placement.rs render
+  PIXEL-IDENTICAL images (4 pairs, 0 of 3686400 bytes differ — 07000002 --bond
+  -82.30,5.30,32.05,1.570,-0.100 at frames 140/170/200, and 07000007 --bond
+  42.59,44.10,-71.71,-1.228,0 --skip-cutscenes at 170, lavapipe 1280x720).
+- The frame-170 NIS camera matrices differ by a few ulps: max 5.1e-6 (translation row
+  −27.251987 vs −27.251982), yaw bits identical (0x403baa18), fov identical; actor positions
+  identical. No function on the path exceeds 1e-5; the per-function host-vs-exact probe gives
+  mul 7.2e-7, object_matrix 1.1e-6, quat_trans_to_mat 4.8e-7 over wide domains.
+- The decompile settles WHICH math is the game's: RotMatrix 0x1e2368 (decomp :28-40, the caller adds
+  π/2 for the cosines, the nine products/sums row-vector with translation row 3), Quat_QuatTransToMat
+  0x1e3fa8 (decomp :16-35, y2/z2/xx2/xw2 exactly as the branch computes them), psiBuildMatrixPalette
+  0x111498 (the VU quat chain + row-vector t·M translations — the port's mul(local, base) operand
+  order matches). The branch's arithmetic (chop products, no-guard FPU adds, PS2Sinf — proven on the
+  interpreter samples and the 40 recorded calls) IS the game's; master's host math is the stand-in.
+- fix_camera_exact_math.rs pins it: the tick-170 camera matrix recomputed from the stream's key
+  inputs through INLINED decompile arithmetic equals the sim's camera BIT-FOR-BIT on the branch and
+  FAILS on master's host math (bf7a694a... vs bf7a6946...); the sister ≤2e-6 assertion passes on
+  both. Failing-first demonstrated by running the test on both trees.
+- The grenade-bounce 0.04 fix (Bullet_CollisionHandler 0x12ce80) kept; grenade_live/ai_live green.
+- Suite (final tree, targeted batches via the fast runner, foreground — this sandbox kills background
+  jobs between tool calls): placement,anim,probe,camera tests,grenade_live,ai_live,walkreal → 45
+  passed, 0 failed; doors,pickup,searchlight,trig,models_misc,worldobj,copter → 19 passed, 0 failed,
+  1 ignored. Full four-crate suite run left for the merge gate.
+- Shared files: nis.rs gained the additive Scripts::camera_stream_inputs() accessor (12 lines,
+  no behaviour change). Report: docs/reports/fix-exact-math-swap3.md.
