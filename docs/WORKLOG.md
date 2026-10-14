@@ -10780,3 +10780,9 @@ weapon-matrix2 addendum (11:59): the upgraded runner's full sweep ran (3 chunks,
 the red mass (D 1278 / M 152 / R 226) is the silenced-twin reload hang reaching the draw now that the
 give path works; 0x2a impact 19/27 clean, 0x2c's guided camera rode its clean cells, no X marks. The
 table + analysis are appended to docs/reports/weapon-matrix2.md.
+
+fix-weapon-anims (103k, 2026-10-14): per-weapon view-model animations — the game's anim ids, lengths,
+rates, events and blends for draw/holster/idle(+fidgets)/fire per mode/dry fire/reload per kind/mode
+switch/bob/zoom, compared against the port, mismatches fixed, with NF_ISO tests on 6 weapons covering
+each reload kind (P2K, Frinesi, AT-420, MGL, sniper, Samurai). Branch starts from master b27fb1e with
+s/weapon-matrix2 merged in (not on master yet) per the task brief. Work continues below.
