@@ -11114,3 +11114,9 @@ Task: reload-hang — the reload state machine hangs (state 6, clip 0): empty si
 Work Log:
 - (14:04 UTC) Branch s/fix-reload-hang created from origin/master 088bdf4 (weapon-matrix2 already merged). Setup reused (repo, work/, ISO, nf-queue). Pushing the checkpoint, then: suite baseline in background, reproduce first.
 
+
+## weapon-matrix3 (in progress) — s/weapon-matrix3
+Task 103m: the watch gadgets (0x4A-0x55) get real matrix cells (equip via Player_WeaponChange mode=1,
+bounds 0x4A..0x5E; fire; the beam/dart/camera-view + sound checks), then the full 27-level sweep again —
+fix or explain every remaining red cell with game evidence; panics are bugs. Base: master 8295049 +
+the merge of s/fix-reload-hang (not yet on master — 103i's reload fixes under the sweep). Started 14:59 UTC.
