@@ -36,3 +36,7 @@ claimed-by: sandbox6 at 2026-10-14T07:48Z
 ## Report (done, 2026-10-14T08:59Z)
 
 Closed by the driver: the report is on `s/fix-cutscene-brightness` (docs/reports/fix-cutscene-brightness.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-14T09:36Z)
+
