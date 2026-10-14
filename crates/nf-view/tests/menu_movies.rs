@@ -221,31 +221,76 @@ fn the_intro_plays_then_the_main_menu_and_skips_on_confirm() {
     assert_eq!(fe.page, Page::Main);
 }
 
-/// The overlay: the movie quad draws FIRST (under every control) when the page's aux frame is
-/// registered, and the dark plate stands in when it is not — the exact contract of the movies
-/// feature vs the slim ISO.
+/// The ONE movie plane (fix-movie-playback's, gpu.rs) draws the backdrop BEFORE the overlay's
+/// quads, so with a live backdrop frame the overlay draws NO dark plate — the plane IS the page's
+/// background [M movies.md §Presentation; PS2UploadBGMImage 0x108740]; without a live frame (no
+/// `movies` feature, or the slim ISO's zeroed PSS files [L]) the plate stands in — the pre-movies
+/// look. fix-menu-movies2: the old hud-texture-slot contract (the movie quad as the first run) is
+/// replaced by `FrontEnd::backdrop_live`.
 #[test]
-fn the_menu_backdrop_is_the_aux_movie_under_the_controls() {
+fn the_menu_backdrop_plate_yields_to_the_movie_plane() {
     use nf_view::menu::{FrontEnd, Page};
     let font = crate_font();
-    let tex = |w: u32, h: u32, v: u8| nf_view::scene::TextureImage { key: (usize::MAX, 1), width: w, height: h, rgba: vec![v; (w * h * 4) as usize], more: Vec::new(), rate: 1 };
-    // With the frame registered: its run comes FIRST in the HudFrame (drawn first = under all).
+    // plate(&mut h, …, gs(0x180c08, 0xff)): the dark plate's exact vertex colour (menu.rs).
+    let plate = [(0x18u32 as f32) / 128.0, (0x0cu32 as f32) / 128.0, (0x08u32 as f32) / 128.0, 0.9921875];
+    let has_plate = |f: &nf_view::gpu::HudFrame| f.v.iter().any(|q| q.c == plate);
+    // The font texture, so the pages' text quads exist (the plate itself is an ndc_quad on the
+    // same plain texture).
+    let textures = vec![(0x0300_0003u32, nf_view::scene::TextureImage { key: (usize::MAX, 0x0300_0003), width: 4, height: 4, rgba: vec![255; 64], more: Vec::new(), rate: 1 })];
+    // With the plane live: no plate quad — and the page's controls still draw.
     let mut fe = FrontEnd::new();
     fe.page = Page::Main;
-    let textures = vec![(0x0733_0048u32, tex(4, 4, 200)), (0x0300_0074u32, tex(4, 4, 100))];
+    fe.backdrop_live = true;
     let f = nf_view::menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
-    let (first_tex, _, _, _) = f.runs.first().expect("the overlay has runs");
-    assert_eq!(*first_tex, 1 + textures.iter().position(|(h, _)| *h == 0x0733_0048).unwrap(),
-        "the movie quad is the first run — under the page controls");
-    let movie_v = f.v[(f.runs[0].2 as usize)].c[0];
-    assert!((movie_v - 127.0 / 128.0).abs() < 0.01, "the movie quad carries the 0x7f7f7f modulate colour, got {movie_v}");
-    // Sister: a page whose aux is 0 (the title layout 0x40000009's Page::Start uses the boot page's
-    // own aux through PAGE_START; the intro page 0x40000032 is not a port Page) draws no movie.
-    let fe2 = FrontEnd::new();   // Page::Start, aux 0x07350048 — but no texture registered
-    let f2 = nf_view::menu::menu_overlay(&fe2, &font, None, &textures, 4.0 / 3.0);
-    assert!(f2.runs.iter().all(|r| r.0 != 1), "no movie run without the frame registered");
-    // The plate is the first run then (the pre-movies look).
-    let _ = &f2;
+    assert!(!f.runs.is_empty(), "the page controls still draw over the movie plane");
+    assert!(!has_plate(&f), "no dark plate while the movie plane carries the backdrop");
+    // Sister: without a live frame the plate stands in (the pre-movies look).
+    let mut fe = FrontEnd::new();
+    fe.page = Page::Main;
+    let f2 = nf_view::menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    assert!(has_plate(&f2), "the dark plate stands in without a live backdrop frame");
+    // The intro page: the headless plate stands in there too (the host suppresses the whole
+    // overlay while a real intro frame is up — the game shows no controls during P_INTRO [M 0x209e88]).
+    let mut fe = FrontEnd::new();
+    fe.intro_playing = true;
+    let f3 = nf_view::menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    assert!(has_plate(&f3), "the intro's plate stands in without a live intro frame");
+}
+
+/// The menu loop plays through the ONE player path (`Player::start_looping` — the same
+/// `MovieStream` closed-GOP decoder the streaming test pins, wrapped in the movie-playback
+/// player): the backdrop frames reach `present()` as 512×448 RGBA and pin to the same decode the
+/// MovieStream test measures. Needs an image with movie data; skips without one.
+#[cfg(feature = "movies")]
+#[test]
+fn the_menu_loop_plays_through_the_one_player_path() {
+    let path = std::env::var_os("NF_MOVIE_ISO").or_else(|| std::env::var_os("NF_ISO")).unwrap_or_default();
+    let mut p = match nf_view::movie::Player::start_looping(path.to_string_lossy().as_ref(), 0x0733_0048) {
+        Ok(p) => p,
+        Err(e) => { eprintln!("skip: {e:?}"); return }
+    };
+    assert!(p.is_looping(), "the page backdrop loops [M 0x21c858:338 loop = 1]");
+    assert!(!p.finished(), "a looping backdrop never reports finished [M 0x00108060 restarts]");
+    // present() paces one frame per second call; collect the first 13 distinct frames and pin
+    // frame 12 to the measured decode (the same SHA-1 the MovieStream test pins — the ONE decoder
+    // path produces the same pixels through the player).
+    let mut hashes: Vec<[u8; 20]> = Vec::new();
+    let mut prev: Option<Vec<u8>> = None;
+    for _ in 0..3000 {
+        match p.present() {
+            Some((w, h, rgba)) => {
+                assert_eq!((*w, *h), (512, 448), "the game's movie geometry [M movies.md]");
+                let v = rgba.to_vec();
+                if prev.as_deref() != Some(v.as_slice()) { hashes.push(nf_formats::sha1::sha1(&v)); prev = Some(v); }
+                if hashes.len() >= 13 { break; }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(10)),
+        }
+    }
+    assert!(hashes.len() >= 13, "the looping player produced only {} frames", hashes.len());
+    assert_eq!(&hashes[12][..4], &[0x1f, 0x1f, 0xe7, 0xb0], "frame 12 of 07330048 through the ONE player path decodes exactly like the measured pin");
+    p.stop();
 }
 
 fn crate_font() -> nf_formats::hud::Font {
