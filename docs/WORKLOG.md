@@ -11951,3 +11951,11 @@ Work Log:
 
 Stage Summary:
 - The aim gate rebuilt on master's single raise/lower: one queue (the view chain's raw-edge arm), one advance+finish (aim_gate, before the consumers — the raise's finish sets the aim bit; no +0xB8 aims at once). Two real bugs fixed with game citations (the reverse-lower length, the fire_modes3 no-aim zoom). All named suites green on the final tree; the suite totals + the leftover walk sweep are in the report.
+
+---
+Task ID: 108a-fix-cutscene-letterbox
+Agent: fix-cutscene-letterbox worker
+Task: fix-cutscene-letterbox — cut-scenes must show what the game shows: the black letterbox bars (Script_CameraStart 0x1d9140's SpriteInfo 0x2c9468 bars, ported by 277-fix-script-commands) are missing in the port's 07000007 Kimiko scene, and the port's widescreen shows more at the sides than the game's 4:3 frame (frame 400: Dominique in the left doorway visible in the port, outside the game's frame).
+
+Work Log:
+- (23:23 UTC) Setup reused (repo, work/, ISO, nf-queue worktree). Branch s/fix-cutscene-letterbox created from origin/master (d1e8f6a7) and pushed with this entry.
