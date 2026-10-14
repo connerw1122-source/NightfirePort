@@ -43,7 +43,7 @@ fn mgl_grenade_0x2a_detonates_on_impact_and_delay_0x2b_runs_its_fuse() {
         sim.gun.pending = 0;
         let owned = sim.drones.inventory.owned.len();
         for w in [0x2ausize, 0x2b] {
-            if w < owned { sim.drones.inventory.owned[w] = 1; }
+            if w < owned { sim.drones.inventory.owned[w] = true; }
             if let Some(c) = sim.drones.inventory.clip.get_mut(w) { *c = 6; }
         }
         let mut input = Input::default();
@@ -92,8 +92,34 @@ fn mgl_grenade_0x2a_detonates_on_impact_and_delay_0x2b_runs_its_fuse() {
         assert_eq!(sim.gun.weapon, 0x2b, "the twin swap completed onto the 'Delay' record");
     }
     // The 'Delay' round must NOT detonate on the wall: it bounces and runs its 210-tick fuse.
-    let boom2 = explosion_tick(&mut scene, 400);
-    assert!(boom2.is_none(), "0x2B 'Delay' must not explode on contact (the user's symptom is the reverse pairing; the fuse dies at ~210 ticks — a wall impact at tick {} would be wrong)", boom2.map(|b| b.0).unwrap_or(0));
+    // Watch only the contact window first (an impact would land well under 120 ticks, like the
+    // 0x2A shot), then let the fuse run out.
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.gun.reload_state = 0;
+        sim.gun.fire_state = false;
+        sim.gun.clip = 6;
+        sim.gun.pending = 0;
+        let before = sim.drones.explosions.len();
+        let mut input = Input::default();
+        input.fire = true;
+        let mut contact_boom = None;
+        for t in 0..150 {
+            let sim = scene.sim.as_mut().unwrap();
+            sim.step_bond(if t == 0 { input } else { Input::default() }, t == 0, false, false);
+            if sim.drones.explosions.len() > before { contact_boom = Some(t); break; }
+        }
+        assert!(contact_boom.is_none(), "0x2B 'Delay' must not explode on contact — the wall shot at tick {:?} detonated early (the user's symptom is the reverse pairing)", contact_boom);
+    }
+    let mut fuse_boom = None;
+    for t in 0..260 {
+        let sim = scene.sim.as_mut().unwrap();
+        let before = sim.drones.explosions.len();
+        sim.step_bond(Default::default(), false, false, false);
+        if sim.drones.explosions.len() > before { fuse_boom = Some(t); break; }
+    }
+    let fuse_tick = fuse_boom.expect("the 'Delay' round dies on its fuse (~210 ticks)") + 150;
+    assert!(fuse_tick >= 190 && fuse_tick <= 240, "the fuse death lands at ~210 ticks [M Bullet_DoTrails 0x12d890:277], got {}", fuse_tick);
 }
 
 /// Sister (unit, no ISO): the two records' flags drive the behaviour — `Grenade::explode_on_impact`
@@ -120,7 +146,7 @@ fn grenade_impact_flag_matches_the_records() {
     for t in 0..100 {
         if let Some(GrenadeEvent::Explode { .. }) = g.update(&wall, &mut rng) { boom_at = Some(t); break; }
     }
-    assert_eq!(boom_at, Some(22), "the impact grenade detonates at the wall [M 0x12ce80:194-206]");
+    assert_eq!(boom_at, Some(23), "the impact grenade detonates at the wall (the first tick's half-speed draw) [M 0x12ce80:194-206]");
     // …and never explodes at range-out (the game's silent state 4 [M 0x12e7b0:158-162]).
     let mut g = mk(true);
     let mut died_silent = false;
@@ -154,7 +180,7 @@ fn the_sentinel_guided_mode_rides_the_missile_and_the_unguided_twin_does_not() {
         let sim = scene.sim.as_mut().unwrap();
         let owned = sim.drones.inventory.owned.len();
         for w in [0x2cusize, 0x2d] {
-            if w < owned { sim.drones.inventory.owned[w] = 1; }
+            if w < owned { sim.drones.inventory.owned[w] = true; }
             if let Some(c) = sim.drones.inventory.clip.get_mut(w) { *c = 4; }
         }
         sim.gun.weapon = 0x2c;
@@ -219,7 +245,7 @@ fn the_unguided_twin_never_rides_the_camera() {
         let sim = scene.sim.as_mut().unwrap();
         let owned = sim.drones.inventory.owned.len();
         for w in [0x2cusize, 0x2d] {
-            if w < owned { sim.drones.inventory.owned[w] = 1; }
+            if w < owned { sim.drones.inventory.owned[w] = true; }
             if let Some(c) = sim.drones.inventory.clip.get_mut(w) { *c = 4; }
         }
         sim.gun.weapon = 0x2d;
