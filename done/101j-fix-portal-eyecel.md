@@ -47,3 +47,7 @@ claimed-by: sandbox4 at 2026-10-14T04:07Z
 ## Report (done, 2026-10-14T05:31Z)
 
 Closed by the driver: the report is on `s/fix-portal-eyecel` (docs/reports/fix-portal-eyecel.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-14T05:32Z)
+
