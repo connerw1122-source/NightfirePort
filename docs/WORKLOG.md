@@ -10061,3 +10061,11 @@ measured per-quad from the frame, plates excluded), the main-row colours, the co
 previews, the dossier wheel + Records page, the prompt colour, and the pre-existing flows (the
 codename navigation gained a Down — row 0 is now New Codename). Suite on the final tree: see the
 report. Files: crates/nf-view/src/menu.rs, crates/nf-view/tests/menus_flow.rs (no shared files).
+
+---
+Task ID: 100k-fix-gadgets-live
+Agent: fix-gadgets-live worker
+Task: the laser/stunner/AIMS-20/Oddjob findings on 2026-10-13's master — (1) the laser 0x4e's beam, wall light and HUD charge bar + regen are missing (PCSX2 shows a short red beam, a red glow light, a vertical charge bar 31..0 at ~1/tick, regen after); (2) the stunner 0x4a "doesn't work" — the class-2/3 ray, Draw_TaserBeam 0x1a46a8 and the stunned reaction; (3) the AIMS-20 0x1a's side lights unlit (emissive/anim material); (4) Oddjob's hat 0x45 should be a one-shot kill, not a grenade.
+
+Work Log:
+- 06:53 UTC: branch s/fix-gadgets-live from origin/master (a4164b9); suite starting in background.
