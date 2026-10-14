@@ -9698,3 +9698,12 @@ HUD font (texture 0x03000003). No new crates.
   one click selects, a second applies, Close hides. Checked live: the window opens beside the game with the full
   weapon list (screenshots in the session). A live keyboard check by synthetic keys failed: Windows wouldn't give the
   dev window focus from a background process, so the user tries it by hand.
+
+## weapon-matrix (worker, branch s/weapon-matrix) — 2026-10-14
+
+Task 100d: the all-weapons × all-levels matrix. A headless test (`crates/nf-view/tests/weapon_matrix_live.rs`)
+and an `nf-extract weapon-matrix <iso>` table command that, per on-foot level × weapon id: load, `--give` the
+weapon, draw, fire ×3 (hold for hold-to-use gadgets), reload, switch away/back — recording view-model presence,
+sequences played, muzzle flash, sound ids requested/started, effects spawned, errors/panics. Baseline run on
+master, final run with 100a–c merged. Plus a "Test weapon" row on the dev menu Weapons page (dev.rs). Work started
+03:09 UTC; report lands in docs/reports/weapon-matrix.md.
