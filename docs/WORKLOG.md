@@ -9759,3 +9759,29 @@ the wrap/line-height helpers). Report: docs/reports/fix-objective-messages.md.
 Full suite on the final tree (origin/master 7be3272 merged): **886 passed, 3 failed, 27 ignored
 (20 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH. Also green post-fix:
 death/restart 8, mission 4, level_carry 3, progress 8, nf-formats 74 (+ the 3 allowed).
+
+Task 100c outcome (same session): REPRODUCED then FIXED. The impact explode —
+`Bullet_CollisionHandler` 0x12d068-0x12d0bc (disassembled): after the impact effects, a weapon
+whose `weapon_data+0x70` carries bit 2 (0x4) destroys its bullet with `Explode_Create(radius =
++0x08, damage = +0x0C, script 0x6000052, attacker = BU+0x30)` at the hit point, skipped for a
+ricochet re-entry (`bnel $s4` 0x12d07c). The disc records [L ee_start_05.bin @ 0x2bf150]: the
+AT-420 Sentinel 0x2c/0x2d (8.0/100) and the MGL 'Grenade' twin 0x2a (6.0/75) carry the bit; the
+plain guns (0x12) don't. The port never exploded a player bullet on impact — the Sentinel's
+missile ricocheted like a rifle round; and a directly-pushed blast was wiped by the grenade
+section's per-tick `explosions.clear()` (which runs AFTER `update_player_bullets`) — the blast now
+queues in `Drones::pending_blasts` and drains after that clear. The MGL 'Delay' twin 0x2b also
+contact-detonated: `Grenade.weapon_type` carried the record's +0x02 BASE (0x2a) instead of the
+fired id — the death branches read the bullet's own record [M 0x12dd60]; the grenade family bases
+to itself [L +0x02 sweep] so only the twins re-point. Tests (fix_weapon_effects_live, 5, all
+failing pre-fix): the Sentinel missile explodes on the floor with radius 8/damage 100 + the
+shake; a plain gun never explodes; the MGL Grenade twin detonates on contact (6/75); the Delay
+twin (the ○ mode button [M 0x1a24c8:246-260] — the direct select lands on the base) bounces and
+waits for the fuse; walking backwards 240 ticks spawns no bullet/casing/blast/light [M
+Bullet_init_casing 0x12fde0 runs from Player_WeaponInitBullet 0x1a4bf0:306 only]. Green on the
+merged tree; explode/weapon-modes/death-restart suites green. The laser/stunner rapid-impact
+sound: the port's watch laser (0x4e/0x4f) fires class-5 bullet contacts that burn the locks
+[Lock_Update 0x1ae3d8 reads BU+0x44 = 0x4e/0x4f — the game's own laser bullets are class-5
+contacts] and the stunner (0x4a) a taser bolt [NDrone2_DealWithObjHit case 5 0x13fff0:269-306 →
+msg 7] — the impacts are the standard per-material path, so the sounds are real bullet impacts;
+whether the console's laser beam is silent is a live check (in the report). Files: drone.rs,
+scene.rs (the weapon_type line), tests. Report: docs/reports/fix-weapon-effects.md.
