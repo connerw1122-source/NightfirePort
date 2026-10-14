@@ -11553,7 +11553,13 @@ Task: fix-weapon-fx-levels — audit the weapon EFFECTS across all 27 levels x t
 
 Work Log:
 - (14:29 UTC) Branch s/fix-weapon-fx-levels created from origin/master 088bdf4 (s/weapon-matrix2 already merged: ad50a3c). Setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; effect-resolution research next.
+## fix-aim-raise (in progress)
 
+Branch `s/fix-aim-raise`. Porting the aim gate: view state 0xF (Player_SetWeaponAnimObj 0x1a2e38)
+sets the aiming bit only when the aim-raise script (+0xB8 @1.25) finishes and Player_AutoAim
+0x1a7c98 keeps scanning until then; the port currently turns the aim camera, the free-aim window
+and the auto-aim lock on the instant the button goes down. Tests (NF_ISO) for sniper / AIMS-20
+(zoom + free-aim on the raise's last tick), the P2K (immediate), the 0c sniper regression.
 
 ---
 Task ID: 103j-fix-weapon-fx-levels
@@ -11562,14 +11568,24 @@ Task: fix-weapon-fx-levels — audit the weapon EFFECTS across all 27 levels x t
 
 Work Log:
 - (14:29 UTC) Branch s/fix-weapon-fx-levels created from origin/master 088bdf4 (s/weapon-matrix2 already merged: ad50a3c). Setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; effect-resolution research next.
-- (15:36) Resumed in a fresh sandbox: master merged (2caa27f, the WORKLOG conflict resolved append-only). Background jobs confirmed dead between tool calls here — testing went through foreground chunks.
-- (15:45-16:35) Research (subagent + own disasm): the game's FX set is per-level redundant (EffectInfo decals/debris/gas, the tracer 0x02000123, the blast script 0x06000052 — kind-7 NIS — all in every story archive [D census]); 100a's wanted list missed the fp muzzle mesh +0x48 (0x02000ac7 only in 14/15/16/1b) and the ammo-9 casing 0x02000548; Bullet_DoTrails 0x12d890's smoke/exhaust trails were never ported (bit 0x2: 0x1b/0x36/0x69 every 4th tick, Bullet_trail_effect_smoke 0x12cba8; bit 0x20: 0x2a/0x2b every 3rd tick — args read off the disasm incl. the dropped life args 0x78/0x40; the bit-0x10000 Swoosh 0x1a4e40 documented, not ported).
-- (16:36-16:50) Fixes: +0x48 + casing_meshes into wanted_weapon_models (lib.rs, weapon_assets.rs param); init_trail_smoke + init_exhaust_puff (gas.rs, 3 shared RNG draws each, searchlight precedent); the two gates in the grenade tick (drone.rs).
-- (16:50-17:27) weapon_fx_levels_live.rs: the static sweep (20 levels x 114 records modelling the give path's pool: own ∪ earlier-story ∪ skin-owner; per-level own bank ∪ all-bank spares for the op-1 ids — args[1], not args[0]) + 3 spot checks. The rifle check is green (draw 0x282 from the own bank, the flash attachment, fire 0x40d, a live casing, the floor decal/debris); the launcher/gadget checks are #[ignore]d with the exact headless fire-path repro attempts written down; the sweep's only residual is two records' +0x80 held model in non-story archives (documented).
-- (17:30) Neighbours green: fix_weapon_effects 6/6, explode 2/2, fix_weapons_all 4/4, fix_weapon_sounds 3/3 (+2 pre-existing ignores). The full suite did NOT fit the window (no background jobs here) — next session runs it on the merged tree.
+
+
+
+---
+Task ID: 104f-fix-aim-raise
+Agent: fix-aim-raise worker
+Task: fix-aim-raise — port the aim gate: the aim bit, the zoom start and the auto-aim lock wait for the aim-raise script's last tick (view state 0xF, Player_SetWeaponAnimObj 0x1a2e38:554-561; Player_Weapon 0x1a24c8:117-152); weapons without +0xB8 aim at once. NF_ISO tests: sniper + AIMS-20 numbers, the P2K immediate, the 0c sniper regression, sisters.
+
+Work Log:
+- (17:35-17:50) Setup reused (repo, work/, ISO, nf-queue); branch s/fix-aim-raise from origin/master 7785582 pushed with the WORKLOG started.
+- (17:50-18:05) Decompile round: Player_SetWeaponAnimObj case 0xf (the bit sets when the raise stops), Player_Weapon 0x1a24c8 (the press defers the bit iff +0xB8; the zoom target +0x8D4 on the bit's rise; the lower = +0xBC @1.25 or +0xB8 reversed), Player_Aiming 0x1a1d28 (the free-aim window is bit-gated), Player_AutoAim 0x1a7c98 (the scan runs while the bit is clear, the ease while set), Player_InitAmmoWeapons 0x1a17f8 (the aim-zoom table = SQRT(+0x88)), Player_Update 0x193600's tick order.
+- (18:05-18:12) Record census via the port's own loads [L]: sniper 0x24 raise 0x060007b9/24 (19 advance ticks, no +0xBC), AIMS-20 0x1a raise 0x060007bf/20 (16 ticks), watch 0x54/0x55 raise/lower, P2K 0x02 none. fix-weapon-anims' machine is held unmerged (s/103k2-fix-weapon-anims2) — this branch carries the raise anims inside the gate, keeping its field names.
+- (18:12-18:20) 5 failing-first tests written (the sniper bit set on tick 1 pre-fix), then the gate implemented: Sim::aim_gate (start/advance/finish + the bit dynamics), the bit consumers (free-aim, auto-aim, bond_aiming, crosshair, mode gate), the zoom gate, the aims_idle reset while raising, the chain's skip-advance + displaced-marker cleanup; +0xB8/+0xBC accessors in nf-formats.
+- (18:20-18:30) All 5 green; regression sweeps green: fix_guard_misc 6/6 (the 0c sniper), fix_viewmodel_zoom 3/3, fix_zoom_overlays 6/6, gadgets_live 4/4, gadget_laser 7/7, fix_auto_switch 2/2, walkreal 0a/0c/0d, fix_progress 3/3. Checkpoint ac3a303 pushed; origin/master merged (fix-weapon-fx-levels et al; the WORKLOG conflict resolved append-only), tests re-green on the merge c3086d6.
 
 Stage Summary:
-- Pushed 56d9bff + the report commit to s/fix-weapon-fx-levels; docs/reports/fix-weapon-fx-levels.md (the mechanism, the three fixes with addresses, the table, the live checks incl. the Swoosh reference render, what's left). 0 unexplained missing effect cells; the +0x80 held-model residual and the headless foreign-fire block are the known leftovers.
+- The aim gate ported with the raise/lower anims; the game addresses cited per fix in docs/reports/fix-aim-raise.md (live checks inside). 5 NF_ISO tests failing-first then green; the suite total recorded in the report. Left: unify with fix-weapon-anims' machine when it lands; the 0x55 lower quirk; the raise arm's conservative from-idle condition.
+
 
 ---
 Task ID: 103k2-fix-weapon-anims2
@@ -11643,6 +11659,7 @@ progress.rs, profile.rs. Status: setting up.
   ALLOWED disc_golden trio) / 46 binaries; the 16 nf-view neighbour binaries 65 passed / 0 failed.
   suite.py's background process cannot survive this sandbox (the 102c/100f precedent) — the same
   binaries ran in foreground --test-threads=1 chunks.
+- Pushed 56d9bff + the report commit to s/fix-weapon-fx-levels; docs/reports/fix-weapon-fx-levels.md (the mechanism, the three fixes with addresses, the table, the live checks incl. the Swoosh reference render, what's left). 0 unexplained missing effect cells; the +0x80 held-model residual and the headless foreign-fire block are the known leftovers.
 - Report: docs/reports/fix-oddjob-hat.md (the evidence chain, the live checks: the PCSX2 curve/
   stick/clang/expiry, the gdbwatch obj+0xF4=3 and BU+0xFC=1500 countdown, the nf-view render spots).
 ---
@@ -11922,11 +11939,18 @@ list's unlock states, the F8 render points).
   it fine, probe-backed). Sisters: the AND-mux before/after pairs + 4a's mid-ride OFF check.
 - 21:05: merged origin/master (9c55eace — the fix-character-room-light landing, docs/tests only, no production code). The matrix binary first-hand: 341 s in-suite (6 passed / 24 ignored), one sweep level (NF_MATRIX=07000001 --ignored) 161 s -> 27 levels ~4300 s, the held timeout's cause. Full suite running for the final total.
 - 21:29: DONE. The suite total on the final tree: 1096 passed / 6 failed (3 disc_golden allowed + 3 pre-existing pylon) / 63 ignored (the 24 #[ignore]d sweep levels included) / 32 min / ZERO timeouts — the held weapon_matrix_live timeout is gone (the binary: 341 s, 6 passed / 24 ignored). Report: docs/reports/weapon-matrix4b.md.
-## fix-pickups-ammo — s/fix-pickups-ammo (task 107e, started 22:37 UTC 2026-10-14)
-- Started from origin/master 4ea550b7 (the 2026-10-14 daytime merges). Scope: pickup layer vs game —
-  per-ammo-type caps, already-owned weapon pickup (ammo only), dropped guard guns (ammo count, despawn,
-  radius), ammo boxes, pickup sound + on-screen message, auto-switch (Player_IsBetterWeapon 0x1a6eb0,
-  already live). Files: crates/nf-game/src/{pickup,drone}.rs, the message in crates/nf-view/src/hud.rs.
+---
+Task ID: 104f2-fix-aim-raise2
+Agent: fix-aim-raise2 worker
+Task: fix-aim-raise2 — rebuild the aim gate on top of master's fix-weapon-anims raise/lower (merge origin/master into s/fix-aim-raise first; one queue point, one advance; master's raise finish sets the aim bit; records without +0xB8 aim at once).
+
+Work Log:
+- (19:55 UTC) Branch s/fix-aim-raise2 created from origin/s/fix-aim-raise (72509145) and pushed. Setup reused (repo, work/, ISO, nf-queue). Merge of origin/master next.
+- (20:00-20:42 UTC) The merge resolved: master's fields/counter/advance kept, the queue unified on the view chain's raw-edge arm, the advance+finish hoisted in aim_gate (the raise's finish sets the bit); run takes the RAW button (the gated rise would re-fire the queue); the auto-aim/bond_aiming gates read the bit. The branch's release test exposed master's reverse-lower starting at the idle's length — fixed to the raise's own last frame. Second merge (fire-modes3b/casings-16b/handcannon/0c-vent2/character-room-light): scene.rs auto-merged, WORKLOG append-only; fire_modes3's no-aim zoom shortcut corrected to the bit-gated input [M 0x1a24c8:168-187] (failed first, assertions unchanged).
+- (20:45-20:55) Final tree 4041d239: fix_aim_raise 5/5, weapon_anims 7/7, fix_guard_misc 6/6, fire_modes3 5/5, weapons sounds/modes/casings/handcannon/vent all green; suite chunks 894/6/23 (3 disc_golden + 3 GPU-adapter documented) on 8d096810, the master-touched surface re-ran 236/0 on 4041d239. Report: docs/reports/fix-aim-raise2.md (live checks inside).
+
+Stage Summary:
+- The aim gate rebuilt on master's single raise/lower: one queue (the view chain's raw-edge arm), one advance+finish (aim_gate, before the consumers — the raise's finish sets the aim bit; no +0xB8 aims at once). Two real bugs fixed with game citations (the reverse-lower length, the fire_modes3 no-aim zoom). All named suites green on the final tree; the suite totals + the leftover walk sweep are in the report.
 ## fix-pickups-ammo — s/fix-pickups-ammo (task 107e, started 22:37 UTC 2026-10-14)
 - Started from origin/master 4ea550b7. Scope: the pickup layer vs the game — caps, owned-weapon
   takes, dropped guns, ammo boxes, the take sound + message, auto-switch.
@@ -11952,3 +11976,4 @@ list's unlock states, the F8 render points).
   (fix_pickups_remainder_live) green over the levels with the override + the composed-id
   refusal model, fix_pickups_trace_live 2/2, fix_auto_switch_live 6/6, fix_hud_live 6/6,
   fix_objects_live 2/2.
+

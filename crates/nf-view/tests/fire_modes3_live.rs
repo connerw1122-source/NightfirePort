@@ -445,8 +445,12 @@ fn sniper_mode_press_resets_zoom_and_swaps_damage() {
         f32::from_le_bytes(sim.weapons.records[0x1f][0x0c..0x10].try_into().unwrap()) };
     assert_eq!((dmg1e, dmg1f), (40.0, 60.0), "the mode's damage jump [L 0x1E/0x1F +0x0C]");
     // Zoom in (the real zoom input), then the REAL mode press: the twin lands and the zoom RESETS.
+    // fix-aim-raise2: the game writes the zoom target (+0x8D4) only on the AIM BIT's rise
+    // [M Player_Weapon 0x1a24c8:168-187 — the max-zoom write is gated on `+0x60 & 1`], and a
+    // raise-script sniper sets that bit only when its aim-raise stops — so the ramp holds the
+    // aim button like the game's pad scheme (the zoom alone never zooms a raise-script sniper).
     for _ in 0..130 {
-        scene.sim.as_mut().unwrap().step_bond(Input { zoom: true, ..Default::default() }, false, false, false);
+        scene.sim.as_mut().unwrap().step_bond(Input { aiming: true, zoom: true, ..Default::default() }, false, false, false);
     }
     let zoomed = { let sim = scene.sim.as_ref().unwrap(); sim.zoom };
     assert!(zoomed > 5.0, "the scope zoomed in (zoom {zoomed})");
