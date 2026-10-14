@@ -45,8 +45,10 @@ const MOUSE_SENSITIVITY: f32 = 0.0025;
 /// The game's vertical field of view in play (60°, docs/systems/player.md).
 const GAME_FOV: f32 = std::f32::consts::FRAC_PI_3;
 
+/// The viewer at one tick (pos = the eye, yaw/pitch the look angles, fov half-angle radians). Pub for
+/// the headless interpolation tests (fix-interp-ghosting) to build tick cameras the way the loop does.
 #[derive(Clone, Copy)]
-struct Camera { pos: Vec3, yaw: f32, pitch: f32, fov: f32 }
+pub struct Camera { pub pos: Vec3, pub yaw: f32, pub pitch: f32, pub fov: f32 }
 
 /// Render interpolation (G-043): logic runs at a fixed 60 Hz; frames between two ticks draw `t` of the way from
 /// the previous tick's camera and palette to the latest one (one tick behind, the standard fixed-step scheme).
@@ -76,7 +78,11 @@ pub fn ticks_for_frame(anim_time: &mut f32, dt: f32, max_ticks: u32) -> u32 {
     *anim_time += dt * 60.0;
     (*anim_time as u32).saturating_sub(before).min(max_ticks)
 }
-fn lerp_palette(a: &[nf_formats::anim::Mat4], b: &[nf_formats::anim::Mat4], t: f32) -> Vec<nf_formats::anim::Mat4> {
+/// The palette half of the G-043 interpolation: the draw loop blends the previous tick's skin
+/// palette into the latest one while `lerp_cam` blends the camera by angle. Pub for the headless
+/// interpolation tests (fix-interp-ghosting) to drive the exact path the `RedrawRequested` handler
+/// runs.
+pub fn lerp_palette(a: &[nf_formats::anim::Mat4], b: &[nf_formats::anim::Mat4], t: f32) -> Vec<nf_formats::anim::Mat4> {
     if a.len() != b.len() { return b.to_vec(); }
     a.iter().zip(b).map(|(x, y)| {
         let d = (0..3).map(|k| (x[3][k] - y[3][k]).powi(2)).sum::<f32>().sqrt();
@@ -85,6 +91,22 @@ fn lerp_palette(a: &[nf_formats::anim::Mat4], b: &[nf_formats::anim::Mat4], t: f
         for r in 0..4 { for c in 0..4 { m[r][c] = x[r][c] + (y[r][c] - x[r][c]) * t; } }
         m
     }).collect()
+}
+
+/// fix-interp-ghosting: re-attach the first-person view model's palette entries (the hands and gun,
+/// posed in world space from each tick's camera [M `Player_PositionGun` 0x1a3b40]) to the
+/// interpolated draw camera, blending them in CAMERA space: for each entry in `vm_entries`, convert
+/// both ticks' world matrices camera-relative with that tick's camera (`cam_prev` / `cam_cur`),
+/// blend the relative poses at `alpha`, and re-attach the result to `draw_cam` — the same scheme
+/// `lerp_cam` uses for the view itself, so mid-turn the gun cannot swim against the view. Entries
+/// whose relative pose jumps more than `SNAP` snap to the newer tick (draw/holster switches), like
+/// `lerp_palette`'s world-space snap. `out` is the blended palette (from `lerp_palette`), `prev` /
+/// `cur` the two ticks' palettes. Pub for the headless interpolation tests to drive the exact path
+/// the `RedrawRequested` handler runs.
+pub fn reattach_view_model(_out: &mut [nf_formats::anim::Mat4], _prev: &[nf_formats::anim::Mat4], _cur: &[nf_formats::anim::Mat4], _alpha: f32,
+                           _cam_prev: &Camera, _cam_cur: &Camera, _draw_cam: &Camera, _vm_entries: &[usize]) {
+    // Wired with the fix (the pre-fix behaviour this test reproduces is the plain world-space
+    // blend: the view model swims against the interpolated camera mid-turn).
 }
 
 impl Camera {
