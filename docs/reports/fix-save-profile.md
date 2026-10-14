@@ -110,8 +110,17 @@ codename page and the Dossier Records reading it.
   and the file survives a fresh session's load; sisters: the FAILED path writes nothing and
   unlocks nothing, a corrupt file is refused and leaves no active profile. 4/4 pass
   (13:17 UTC, on the merged tree).
-- **Suite**: `tools/test/suite.py` on the final tree (origin/master c606b5f merged) — see the
-  Suite line at the bottom.
+- **Suite**: the rule-5 command on the final tree (origin/master c606b5f merged, --test-threads=1,
+  run in foreground chunks — the background runner was killed between tool calls three times in
+  this sandbox even under setsid/nohup, so `suite.py` could not survive; the same per-binary
+  coverage was reproduced by hand): **1003 passed, 3 failed** — the failures are exactly the 3
+  allowed `disc_golden` tests on the slim ISO; `weapon_matrix_live` (the pre-existing >600 s
+  case the WORKLOG already flags) was skipped by name — the suite records it TIMEOUT as before.
+  Environment note for the next worker: this sandbox ships no Vulkan ICD, so every render test
+  panics with `wgpu adapter NotFound`; `apt-get download mesa-vulkan-drivers` + extracting it
+  into a user prefix and pointing `VK_DRIVER_FILES` at a path-patched `lvp_icd.json` (the
+  alsa-prefix pattern, kept at `../vk-prefix/`) fixes all of them — fix_0c_pylon_live then
+  passes 2/2.
 
 ## What's left (honest list)
 
