@@ -495,13 +495,35 @@ impl Sim {
         let src = self.char_script.get(ci).copied().flatten()?;
         let skin_hash = (*self.char_script_skin.get(ci)?)?;
         let (script, frame) = self.script_anim(src, skin_hash)?;
-        let (q, f) = nf_game::anim::script_frame(self.scripts.get(&script)?, frame)?;
-        let seq = self.seqs.get(&q)?;
         let skin = self.skins.get(&skin_hash)?;
         let skeleton = self.skeletons.get(&skin.skeleton)?;
-        if !anim::fits(seq, skeleton) { return None; }
-        let world = anim::world_pose(&anim::local_pose(seq, skeleton, skin, f as u32), skin);
-        Some([world[0][3][0], world[0][3][1], world[0][3][2]])
+        // fix-cutscene-brightness: the relaxed sequence filter `script_pose` already uses — the
+        // skeleton-id match is the historical strictness, and the 07000002 intro's actors play
+        // shared human tracks whose record byte is skeleton 0 on skeleton-N skins: the strict
+        // `nf_formats::anim::fits` rejected their sequences, `characters_script_pos` returned
+        // None, and the ramp left the actors' obj+0x100..0x102 at the 0xff,ff,ff full-bright
+        // sentinel (the playtest's "the models in the game during the cutscene are extremely
+        // bright"). The channel-count guard still keeps a face track off a body need.
+        let local = nf_game::anim::script_pose(&self.scripts, &self.seqs, skeleton, skin, script, frame)?;
+        let world = anim::world_pose(&local, skin);
+        let mut p = [world[0][3][0], world[0][3][1], world[0][3][2]];
+        // The game's anim object rides the script's scratch matrix: `Script_AnimStart` 0x1d8f40
+        // creates it at `control_create_object(0, 0x2d6200, 0x2d6200, 0)` and `AnimGetFirstTrans`
+        // composes the root — the sequence's root offsets are LOCAL to the NIS placement, so the
+        // cel link lands in the cut-scene set. Without the base the position was the raw root
+        // (near the origin, in no cel — `ambient_at` None) and the ramp never snapped.
+        if let Some(base) = self.script_base_matrix(src.0) {
+            p = nf_formats::placement::transform(&base, p);
+        }
+        Some(p)
+    }
+
+    /// The scratch matrix (the game's VECTOR 0x2d6200) of the NIS player running `nis`: the
+    /// placement's `View_RotTransMatrix` composed with the live stream pose (`Player::live_matrix`,
+    /// `live_matrix = mul(stream_pose, script.matrix)` [M nis.rs, `Script_AnimStart` 0x1d8f40's
+    /// `control_create_object(0, 0x2d6200, 0x2d6200, 0)`]). `None` = no placed player runs it.
+    fn script_base_matrix(&self, nis: u32) -> Option<Mat4> {
+        self.drones.scripts.players.iter().find(|p| p.scripts.contains(&nis)).map(|p| p.live_matrix)
     }
 }
 
@@ -4501,7 +4523,11 @@ impl Scene {
                 // played the body only, so the mouths never moved).
                 let local = nf_game::anim::script_pose_together(&s.scripts, &s.seqs, &c.skeleton, &c.skin, script, frame)?;
                 let world = anim::world_pose(&local, &c.skin);
-                return Some((anim::skin_matrices(&world, &c.skin), world, c.matrix));
+                // fix-cutscene-brightness: the object matrix is the script's scratch base (0x2d6200 —
+                // `Script_AnimStart` 0x1d8f40 creates the object at it) — the root offsets are local
+                // to the NIS placement, so the actor draws inside the cut-scene set like the game's.
+                let m = s.script_base_matrix(src.0).unwrap_or(c.matrix);
+                return Some((anim::skin_matrices(&world, &c.skin), world, m));
             }
             let view = self.sim.as_ref().and_then(|s| self.view_models.get(&s.gun.weapon).filter(|&&v| v == ci)).and(self.sim.as_ref());
             let (i, frame) = match (view, drone_of(ci)) {
