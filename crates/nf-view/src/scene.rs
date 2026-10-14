@@ -1747,16 +1747,25 @@ impl Sim {
             // walls — the 07000008 playtest: walking into the guardhouse wall and jumping threw Bond onto
             // the zipline across it (the icon sits 1.9 from the wall on the far side); the r-1.164 sphere
             // crosses no portal there, so the wall keeps the contexts apart exactly as the cel graph lays
-            // them. [L PCSX2 2026-10-13 pins, enforced by fix_swim_vent5_live: 07000005's gate door
-            // (24.1 from the nearest ctx-6 icon) reads 0xFF, the vent crawl spot reads 6, the
-            // south-ledge wire spot reads 3.]
+            // them. **Deviation [S]**: the port's cel buckets are coarser than the game's cels — the
+            //   fix-swim-vent5 probe put 07000005's gate door and the second vent's ctx-6 icons in one
+            //   port cel — so pure cel occupancy would arm the gate door against the [L PCSX2 2026-10-13
+            //   pin (0xFF there; enforced by fix_swim_vent5_live)]. The arm region is therefore the
+            //   INTERSECTION: the straddle set AND the live-measured 12.0 window (the same measured
+            //   middle the pre-fix radius used: the vent crawl spot must read 6 at 3.9, the gate door
+            //   must not at 24.1). The intersection keeps the wall gate this task fixes (the 07000008
+            //   east balcony reads ctx 3 pre-fix at 11.1 through the wall — its cel is not the icon's;
+            //   the wall is the difference) and every measured pin. When the port's FindCel resolves
+            //   cels exactly like the game's, the distance factor can drop.
             self.bond.icon_ctx = 0xff;
             let bond_cell = find_cell_raycast(&self.cel_graph, self.bond.pos, Some(&self.world));
             for (ii, icon) in self.icons.iter().enumerate() {
                 if icon.on_channel != 0 && !self.drones.channels.on(u32::from(icon.on_channel)) { continue; }
                 let Some(cells) = self.icon_cels.get(ii) else { continue };
                 if cells.is_empty() { continue; }
-                if bond_cell.is_some_and(|bc| cells.contains(&bc)) { self.bond.icon_ctx = icon.ctx; }
+                if !bond_cell.is_some_and(|bc| cells.contains(&bc)) { continue; }
+                let near = (icon.centre[0] - self.bond.pos[0]).powi(2) + (icon.centre[1] - self.bond.pos[1]).powi(2) + (icon.centre[2] - self.bond.pos[2]).powi(2) < 144.0;
+                if near { self.bond.icon_ctx = icon.ctx; }
             }
             // No walk-in or use-key wire grab (main agent at the fix-wire2 × walkreal-b2 merge): the game's
             // grab that is certain is the JUMP grab [M Player_HandleJump 0x1916b0:107-147 — action 7 is the
