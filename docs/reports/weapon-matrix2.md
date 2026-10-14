@@ -129,9 +129,11 @@ task; all three check green through the real input path.
   camera rides, the 0x02 mode press lands with a label.
 - `nf-extract weapon-matrix` full sweep: 0 panics across 2646 cells (27 × 98).
 - The upgraded-runner row on 07000005: 0x02/0x03 clean, 0x2a `-` gap 2-4, 0x2c `-` gcam1, 0x34 vm1.
-- The full fast suite did **not** fit the 2-hour window after the sweep + the root-cause probe
-  rounds; the changed file's blast radius is the matrix binary + `weapon_matrix_live` (no shared
-  files), both green. The next window runs `tools/test/suite.py` on the final tree first.
+- The changed file's blast radius is the matrix binary + `weapon_matrix_live` (no shared files):
+  **weapon_matrix_live on the final tree: 29 passed / 0 failed** (213 s — the two-level sample
+  07000005+0700000c via NF_MATRIX, the test-weapon-row test and the upgraded-runner sister test).
+  The full fast suite (all 233 binaries) did not fit the window after the sweep + the probe rounds;
+  the next window runs `tools/test/suite.py` on the final tree first.
 
 ## Live checks for the main agent (PCSX2)
 
