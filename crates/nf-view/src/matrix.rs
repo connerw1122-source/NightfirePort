@@ -178,10 +178,15 @@ pub fn run_level(iso: &str, level: &str, log: &mut dyn FnMut(&str)) -> anyhow::R
 
     let mut scene = crate::load(iso, level, false)?;
     anyhow::ensure!(scene.sim.is_some(), "level {level} loaded without a sim");
+    // Wait out the level's intro cut-scene: `Player_Disable` by a script blocks every input until
+    // `Player_Enable` (scene.rs's `Sim::disabled` — the F cells on 07000001/02/04 were the manor's
+    // intro, not the weapon). The matrix gives no input while it holds.
+    wait_enabled(&mut scene, 7200);
     // The away weapon: give the P2K up front so the switch-away step is always possible.
     give_via_panel(&mut scene, AWAY, None);
     let weapons: Vec<(u8, String)> = panel::catalog_entries(&scene).into_iter().map(|e| (e.id, e.name)).collect();
     for (id, name) in weapons {
+        wait_enabled(&mut scene, 600);
         let mut cell = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_cell(&mut scene, id)))
             .unwrap_or_else(|p| Cell { weapon: id, error: Some(panic_text(p)), ..Default::default() });
         cell.name = name;
@@ -210,7 +215,11 @@ fn run_cell(scene: &mut Scene, id: u8) -> Cell {
     c.fp_hash = (fp != 0).then_some(fp);
 
     // 1. Give (the `--give` path: panel::apply's "weapon" command — equip + 3 clips; a partial
-    //    first clip so the reload has work).
+    //    first clip so the reload has work). The game refuses an already-owned weapon when the
+    //    shared ammo bank is at cap (`equip_weapon`'s owned branch — `Player_EquipWeapon`
+    //    0x1a8a58); the cell records the refusal (the reason names it) and stops: proceeding
+    //    without fresh ammo turns the cell into an NPC-interference magnet (the guards reach the
+    //    start spot mid-run on some levels — see the report's caveats).
     let rounds = if clip >= 4 { clip.min(8) } else { clip.max(1) };
     let (ok, msg) = {
         let mut q = vec![("do".to_string(), "weapon".to_string()), ("id".to_string(), format!("0x{id:02x}")), ("rounds".to_string(), rounds.to_string())];
@@ -321,6 +330,15 @@ fn give_via_panel(scene: &mut Scene, id: u8, rounds: Option<i16>) -> bool {
     if let Some(r) = rounds { q.push(("rounds".to_string(), r.to_string())); }
     let (_, sw) = panel::apply(scene, &q);
     sw == Some(id)
+}
+
+/// Step with no input until the script releases the player (`Sim::disabled` clears), or `cap`.
+fn wait_enabled(scene: &mut Scene, cap: u32) -> bool {
+    for _ in 0..cap {
+        if scene.sim.as_ref().map_or(true, |s| !s.disabled) { return true; }
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+    }
+    scene.sim.as_ref().map_or(false, |s| !s.disabled)
 }
 
 /// Switch away and back through the real input path (direct `switch_to`, then the mode button's
