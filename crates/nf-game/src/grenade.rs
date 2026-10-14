@@ -166,6 +166,16 @@ impl Grenade {
                 let reflected = [v[0] - 2.0 * dot * normal[0], v[1] - 2.0 * dot * normal[1], v[2] - 2.0 * dot * normal[2]];
                 let c = bounce_coefficient(mat);
                 self.velocity = [reflected[0] * c, reflected[1] * c, reflected[2] * c];
+                // `Bullet_CollisionHandler` (0x12ce80, the store at LAB_0012d478): the bounce writes
+                // `BU+0x30 = *(HITDATA+0x40) + *(HITDATA+0x10) · uVar13` — the hit point offset ALONG the
+                // hit normal by uVar13 = uVar12 = 0x3d23d70a = 0.04 (set at 0x12ce80:257-258 for the
+                // generic bounce arms; the contact-detonation arm's 0x3b03126f = 0.002 differs only on
+                // the MGL's Explode position, folded here — 0.038 on a ≥ 4.0 blast radius). Without it
+                // the grenade rests exactly ON the collision triangle and every later sight/LOS ray to
+                // it grazes the surface at the ray's end (the port's Collide_Intersect analogue accepts
+                // tt ∈ [0,1] inclusive) — the ai_live grenade-scare guard never saw the bounced frag.
+                let off = 0.04f32;
+                let hit = [hit[0] + normal[0] * off, hit[1] + normal[1] * off, hit[2] + normal[2] * off];
                 self.pos = hit;
                 self.bounces = self.bounces.saturating_add(1);
                 // Slow bounce or the bounce max: the speed zeroes and the grenade sits — NO explosion

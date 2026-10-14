@@ -10782,3 +10782,22 @@ Stage Summary:
   master — bisect which merged change brings it back, find the first exact-vs-host divergence at the failing
   tick), and ai_live grenade_bounce_scares_the_guard_into_the_flee_family (guard never enters RunAwayFromObject
   0x86 with exact matrices — find which value moves). Report: docs/reports/fix-exact-math-swap2.md.
+## fix-exact-math-swap2 (progress: the grenade scare root-caused and fixed)
+- The ai_live grenade scare reproduced exactly (log [(1, 4), (1, 4)]). Instrumented the broadcast: the
+  grenade bounced 3.2 units from the guard, fear props set, but `line_of_sight` = false — the port's
+  segment test reported the hit AT t=1.0, the ray's ENDPOINT: the bounce had snapped the grenade exactly
+  ON the floor triangle (`self.pos = hit`), so every sight ray to it grazes the surface at its end.
+- Game evidence: `Bullet_CollisionHandler` (0x12ce80) stores the bounce position as
+  `BU+0x30 = *(HITDATA+0x40) + *(HITDATA+0x10)·uVar13` — the hit point offset ALONG the hit normal,
+  uVar13 = uVar12 = 0x3d23d70a = 0.04 (0x12ce80:257-258; the contact-detonation arm uses 0x3b03126f =
+  0.002, folded — 0.038 on a ≥ 4.0 blast radius). The game's grenade never rests on the triangle.
+- Fix: grenade.rs applies the 0.04 normal offset to the bounce position (and the Bounce event payload,
+  which feeds the explosive_queue broadcast, the bounce sound and the fuse Explode position). The
+  HandleExplosives broadcast then sees the object the game's Collide_LineOfSight sees.
+- Verified: the scare test passes (0x86 → 0x87/0x88 → back to attack, the 20+-unit sister silent);
+  ai_live 35/35, grenade_live 2/2, stun_grenade_live 1/1, fix_grenade_throw_live 4/4,
+  fix_weapon_effects_live 6/6, fix_weapon_fire_modes_live 5/5, explode_live 2/2. Shared files: grenade.rs
+  (the 7-line offset), noted per the task rules.
+- walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact does NOT fail on this tree
+  (2/2 green, run twice): the driver's master snapshot predates fix-08-collision2, whose FindCel relink
+  own commit message records "the 01 escort walk passes again" — that merge is the repair.
