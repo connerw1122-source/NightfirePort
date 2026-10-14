@@ -10497,3 +10497,32 @@ Task: fix-menu-backdrop — the front-end pages' aux FMV (07330048 main page, 07
 
 Work Log:
 - (started 10:54 UTC) Branch s/fix-menu-backdrop created from origin/master b65d6f7; fresh sandbox: repo cloned, ISO already present from an earlier session, work/ to download next.
+- Root cause: gop_chunks' leading-open-GOP guard also fired when the FIRST GOP is CLOSED (it is on
+  every Nightfire movie: first GOP right after the 145-byte sequence header), so chunk 0 was (0,145)
+  — the sequence header alone, zero decoded frames [L probe: whole-ES decode gives 1280/1800/1800
+  pictures matching golden] — and movie_still read chunks.first(): "no frame N in the first chunk"
+  at every N, every page the dark plate. The live loop was NOT broken (the worker skips the empty
+  chunk; the pre-fix windowed-loop test already passed). Second bug: the still read the bare NF_ISO
+  env, not the ISO argument — fixed via movie_iso_name (NF_MOVIE_ISO over the ISO argument, the
+  live loop's precedence); fix-menus-real2 landed the env half independently mid-task, the merge
+  kept the argument fallback.
+- Fixes: movie.rs gop_chunks (prepend 0 only when open GOPs precede the first closed one) +
+  movie_still walks whole closed-GOP chunks until n is covered (frame 12 rides chunk 1; 10-picture
+  GOPs); lib.rs movie_iso_name + front_end_menu takes the resolved ISO path. menu_movies.rs test
+  compile fixes (present()'s owned w/h; the 7-digit "0x7100001" name form never resolved).
+- Retail bytes: range-fetched 07100001/07330048/07350048/07370048/07380048 from the file host's
+  retail image into a mini ISO (not committed); demux counts match golden exactly (bytes exact).
+- Tests (fail-first): the three backdrop-still tests printed the user's exact symptom pre-fix, then
+  5/5 green post-fix; frame 12's SHA-1 = the 1f1fe7b0… whole-ES pin (one decoder truth). Neighbours
+  green on the merged tree: menu_movies 7/7, movie_playback_flow 10/10, menus_flow 34/34, lib 10/10.
+- Suite on the final tree (origin/master 6691ef9 merged, chunked foreground — background jobs die
+  between tool calls): 874 passed / 3 failed / 27+ ignored; the 3 are the permitted disc_golden set.
+  weapon_matrix_live TIMEOUT'd at my 180/240 s chunk limits (slow asset sweep, progresses level by
+  level, unrelated files) — needs the driver's default-limit pass to re-classify.
+- Report: docs/reports/fix-menu-backdrop.md (live checks: the --page main/missions --movie-frame
+  renders against PCSX2, the windowed-loop restart rule).
+Stage Summary:
+- Files: crates/nf-view/src/{movie,lib}.rs, crates/nf-view/tests/{menu_backdrop_still.rs (new),
+  menu_movies.rs (compile fixes)}. No shared files beyond lib.rs (a task-named file here).
+- Open: the cpal .play() audio bug (pre-existing, fix-menu-movies2 flagged it, still silent);
+  pss_movies_live's full-22-movie sweep wants the full retail image.
