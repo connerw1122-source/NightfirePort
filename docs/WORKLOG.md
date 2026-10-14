@@ -10073,3 +10073,37 @@ his own cel's object lists (build_FindCel 0x1c8cb0 finding from fix-portal-sweep
 Plan: give the port's movement collision the game's per-cel attribution (building on
 fix-portal-eyecel's attribute_scope chain buckets), so walls from other rooms don't block.
 Status: branch created, reproduction + fix in progress.
+
+fix-08-collision DONE (08:0x UTC): the missile room's invisible wall is out of Bond's collision.
+Root cause pinned: the port's movement pass tested the ONE SHARED WORLD (flat `capsule_push` +
+`segment_hit` in `physics_tick`/`physics_tick_climb`), while the game scopes the whole pass to the
+actor's own cel — [M] `Player_Collision` 0x194df0's first store `*(BLData+0x7c0) = *(obj+0x20)`
+(the relinked cel pointer into the BLData+0x740 HITTEST's start-cel field; the capsule points are
+the same HITTEST's +0x760/+0x770), [M] `Collide_Pick` 0x1eb320 walks `Collide_StraddleCels`
+0x1eac98's result and tests each straddled cel's OWN list (`*(cel + 0x18)`), [M]
+`Player_CollisionHandler` 0x1949a8 runs the floor test (`Player_FeetOnPoint`) off the same
+HITTEST. The port already had the per-cel machinery (the straddle walk + fix-portal-eyecel's
+`attribute_scope` chain-owner buckets) — the player now uses it: `capsule_push_scoped(self.cel)`
++ `segment_hit_scoped(self.cel)` in both passes, `self.cel` = obj+0x20 (the Sim's per-tick
+`cel_at`→`room_cell` relink). The exterior slabs (cell 15, `Room_Outside_3`, the z −118.0 west
+face 64 tris inside the guardhouse box [D probe]) stop blocking the missile room; the room's own
+walls stay in cell 48's bucket and still block (`debug_bucket_owners` introspection added to
+world.rs: the north-wall band runs live in cells 15/40/48, the room floor in 15/48). Deviation
+[S]: a flat redo when the scoped pass finds neither push nor floor — the game's
+`build_FindCel` 0x1c8cb0 relink always carries the geometry under the actor, the port's buckets
+are coarser (07000002's ladder head: the garden-floor rim sits in a bucket the straddle doesn't
+keep — fix_ladder_live caught Bond falling down the shaft he had just climbed); on the ground the
+room's own floor is always in the bucket, so the redo never fires there and the slab band keeps
+its wall out. A try at porting the FindCel relink for bond.cel (find_cell_raycast at feet height)
+resolved the user's spot to cell 45 (the floor below's chain holds the room floor) whose straddle
+set doesn't keep cell 48's north wall — reverted; bond.cel keeps the `cel_at`+`room_cell` mapping,
+the deeper FindCel port is a follow-up. Fail-first: the_missile_room_walk_across_the_slab_band_
+meets_no_wall panicked at the crossing tick on master (z −117.70, y 44.03 — the flat pass stopped
+Bond at the face and squeezed him UP it); post-fix the crossing rides the level floor (z −118.16,
+max y 43.748) and the real north wall still stops the walk (z −121.78). Sisters: the room's
+west/east walls still block; the scoped-vs-flat mechanism pin at the slab face. Regression set
+green on the fixed tree: 08-collision 4, 08-walls 4, safe08 4 (the fusebox floor holds), ladder
+3+1 ign, ladder2 5, swim-vent5 2, wire2 3. Suite on the final tree: see
+docs/reports/fix-08-collision.md. Files: crates/nf-game/src/player.rs, crates/nf-game/src/world.rs,
+crates/nf-view/tests/fix_08_collision_live.rs (new); crates/nf-view/src/scene.rs SHARED — comments
+only (the bond.cel note), no behaviour change.
