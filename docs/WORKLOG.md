@@ -11727,3 +11727,11 @@ Work Log:
 - 20:45: repro on 07000007: the 0x800 multiplier reaches every drone-backed guest (per-cel ambients 36-64, 9 distinct; 104 active kind-0 lights picked up with skin flags 0x8a0). The 49 sentinel-0xff characters are exactly the invisible set: 33 dev-pool copies parked at -1e6 and 16 origin script actors (the game leaves those unlinked too — no cel at the origin, ambient stays the 0xff init of control_init_object 0x134630). G-042: the civilian's "white" texture (map 32 tex 4, 32x32) is a sheen map — 1024/1024 white rgb but 98/1024 opaque alpha; the base skin textures are not white.
 - 21:15: the game's model pinned end-to-end (linked cel obj+0x20: create-link+snap 0x1346b8/0x1343c8, keep/portal/relink 0x133288+0x1e0d58+0x1c9500, ramp 0x1cb178 moved-only; the same Tweak+light pair on the character path 0x1e69a0:96->0x1e78b0; bCharacterLight/AnimColRad have NO EE reader — scanned all gp-relative accesses). Port matches on every headless point; 3 NF_ISO tests green (own-cel ambient per guest, party lights reach the draws, G-042 sheen map resolved). No production code changed. Report: docs/reports/fix-character-room-light.md.
 - 21:32: merged origin/master (1c376216, WORKLOG conflict resolved keeping both), lighting suites re-ran green on the final tree (new 3/3, character_lighting_live 4/4); baseline full suite on the identical production code: 1065 passed / 7 failed (3 disc_golden allowed + weapon_matrix_live TIMEOUT + 3 pre-existing pylon) / 35 ignored.
+
+---
+Task ID: 107a-fix-grenade-types
+Agent: grenade-types worker
+Task: fix-grenade-types — every thrown grenade record vs the game: frag 0x34, stun 0x35, smoke 0x36, flash/gas thrown records; fuse, blast/cloud (Occlude_Create 0x17ea80/0x17eba0), stun effects on guards and Bond, cloud size/lifetime, guard reactions, sounds/particles. Symptom: "smoke grenade didn't work" (playtest 1013-1825).
+
+Work Log:
+- (started 21:57 UTC) branch s/fix-grenade-types created from origin/master (eb52fb56); this entry. Reading the port's grenade path and the decompile next.
