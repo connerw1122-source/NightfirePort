@@ -9994,3 +9994,42 @@ Task 101h, both symptoms from the 1013-1758 playtest at 07000008's safe area (~(
   allowed disc_golden trio), 27 ignored (19 min)**, no TIMEOUT/CRASH; baseline on master 906/3/27;
   the targeted post-fix suites (the 08 four, vent5 2, wire2 3) green on the same tree.
   Report: docs/reports/fix-08-walls.md.
+
+fix-menus-real (101k, started 2026-10-14): the front end must match the real pages
+(1013-1825 playtest + the main agent's 2026-10-13 PCSX2 drive). Every page is missing its
+backdrop, the header font, the footer PS2 glyphs, the centred description and the rolling
+list style; per-page gaps are in the report. Plan: read MenuManager_Create 0x21b908's tag
+stream + entry 08000002 in 07000048.bin + the sprite/texture/font tables, then draw each
+element from the page data. Files: crates/nf-view/src/{menu,hud}.rs,
+crates/nf-view/tests/menus_flow.rs. Work log continues below.
+
+fix-menus-real (101k, 2026-10-14): the front end rebuilt against the re-parsed menu-def (the tag
+stream dump of pages 0x40000002/09/1c/23/25/2b/3a via MenuManager_Create 0x21b908's own walk).
+(1) THE CENTRING BUG: the overlay's text was LEFT-ALIGNED from its anchor — `text_scaled`'s pen
+starts at x and `quad()` maps both corners (the anchor is only an origin shift, glyphs draw
+left-edged at their pen x), so every "centred" string ran right. The game centres menu labels by
+default: Label_Init 0x218638:53 stamps DAT_003096c0 = ff 02 fe 03 (SerpLight + centre) on EVERY
+menu label, and __Font_DrawText 0x1eee48:69-71 applies flag 2 as x -= width*0.5. menu.rs now
+centres each row by its measured INK ([p0.x, plast.x + gwlast]); the footer hint bar lays the row
+out as ink items (text segments + specialchar icons, texture 0x03000075) and centres at the bar's
+ctrl.x + ctrl.w/2 = 320 [M Label_Update 0x218cb8:177-182]. (2) The headers centre in their own
+(50,40,376×17) bands at (238,48.5) — the old draw centred AT x=50, half off-screen. (3) The wheel
+rows centre at ctrl.x + ctrl.w/2 with the parsed widths [L rows (323,123,317) (333,152,307)
+(304,182,336) (333,211,307) (323,241,317)] and locked rows go grey 0x484848xx [M 0x1f8388:210-234].
+(4) The main rows carry the page's own colours: selected = msg-0x1b 0x7d6d59ff → 0x645a49ff
+[MenuManager_Create 0x21b908:238-243's rewrite], others = msg-0x1c 0x73330f80 (the port had them
+inverted). (5) The codename page lists "New Codename" (0x29b [M Menu_EnumSaves 0x1f7b78:58-66]) +
+"Play without saving" (0x10002ff [M Menu_PutCodenamesIntoControl 0x1f79c0:15-23]) with the
+per-cursor ring previews 0x300013b/0x3000135 and descriptions 0x1000004/0x1000003 [M
+Menu_UpdateCodenameWheel 0x1f89f0:80-99]. (6) The Dossier is the game's wheel menu — Records /
+Rewards / Gadgets / Weapons [L table 0x2dfcd0; C_SBDOSSIER 0x216eb0:48-49] with per-row previews
+0x300019b/0x300019c/0x30000c4/0x30000ee and descs 0x100000a-d — and Records (page 0x4000003a)
+draws the disc's own score table (header 0x280, hint 0x49e, the mission list, rows 0x302/0x165/0x305
+with their value controls, the medal image 0x0300013d + label 0x307 [L PAGE 0x4000003a parsed;
+M P_DSRECORDS 0x217248:11-13, C_RBDSRECORDS 0x20bf00:79-92]). (7) The title prompt uses the page's
+own gold 0x7f621f (the old 0xfec43e contradicted its own citation) and centres at the prompt
+control's (320.5, 317). Tests: menus_flow 26/26 — the footer/header/wheel centring (ink rows
+measured per-quad from the frame, plates excluded), the main-row colours, the codename rows +
+previews, the dossier wheel + Records page, the prompt colour, and the pre-existing flows (the
+codename navigation gained a Down — row 0 is now New Codename). Suite on the final tree: see the
+report. Files: crates/nf-view/src/menu.rs, crates/nf-view/tests/menus_flow.rs (no shared files).
