@@ -1,7 +1,10 @@
-//! The external dev panel: `nf-view --dev` serves a small web page on http://127.0.0.1:7007 that runs beside the game
-//! window (any browser). It lists what the loaded level can spawn and sends commands back; the game applies them
-//! between frames (`App::apply_panel`). Standard library only: one listener thread, a shared catalog string and a
-//! command queue. Dev tool: never changes game logic when unused, and adds no RNG draws to the game's stream.
+//! The dev panel's shared command layer. Since fix-ingame-dev-menu the in-window F2 menu (dev.rs)
+//! carries ALL of the panel's functions — every give/spawn/clear command goes through `apply` below,
+//! so the menu and the HTTP page cannot drift apart. The HTTP server itself (the small web page on
+//! http://127.0.0.1:7007 that runs beside the game window) is now opt-in behind `--panel` for anyone
+//! who still wants a second screen. Standard library only: one listener thread, a shared catalog
+//! string and a command queue. Dev tool: never changes game logic when unused, and adds no RNG draws
+//! to the game's stream.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
