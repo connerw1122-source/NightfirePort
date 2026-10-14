@@ -581,24 +581,41 @@ impl Route {
             self.creep.special = None;
             reached = Some(node);
         }
-        // Blocked toward the target: step back (`LinkCreep_Decrement`).
-        if net.bounds && (feet[0] - self.target[0]).powi(2) + (feet[1] - self.target[1]).powi(2) + (feet[2] - self.target[2]).powi(2) >= 1.0
+        // `LinkCreep_Handler` 0x15a2c8:74-77: the bounds test toward the target runs only past 1.0 —
+        // `Vec_SqDist2D(feet, target) < 1.0` passes the check (2D, the game's own measure).
+        if net.bounds && dist2d(feet, self.target) * dist2d(feet, self.target) >= 1.0
             && !net.bounds_node_test(0.2, feet, self.target) {
-            if self.creep.step >= 1 && net.bounds_node_test(0.1, feet, self.creep.point(self.creep.step - 1)) {
+            // `LinkCreep_Decrement` 0x15a148:39-44: step 0 steps back a whole node (`AINetwork_SetupNextNode(-1)`),
+            // blocked only when the route index is already past the start.
+            if self.creep.step < 1 {
+                if self.index < 0 { return (follow::BLOCKED, reached); }
+                self.next_node(net, -1);
+                return (follow::MOVING, reached);
+            }
+            let prev = self.creep.point(self.creep.step - 1);
+            // 0x15a148:56-63: the step-back candidate passes when `SqDist2D(feet, cand) < 1.0` (NO bounds test)
+            // or the 0.1 (`0x3dcccccd`) node test.
+            if dist2d(feet, prev) * dist2d(feet, prev) < 1.0 || net.bounds_node_test(0.1, feet, prev) {
                 self.creep.step -= 1;
                 self.target = self.creep.point(self.creep.step);
                 return (follow::MOVING, reached);
             }
-            return (follow::BLOCKED, reached);
+            // 0x15a148:64-66: the step-back refused → the game still returns "moved" (target unchanged): the
+            // drone keeps pushing at the target and the Increment's SqDist < 1.0 override slips the creep
+            // through the pessimistic wall post. Returning BLOCKED here wedged 07000001's escort lead at the
+            // first boundary post the stand-in graph rejects (the walkreal-a stall).
+            return (follow::MOVING, reached);
         }
-        // `LinkCreep_Increment`.
+        // `LinkCreep_Increment` 0x159f28:79-92: advance only inside the lookahead (0x90; 2.0), and the candidate
+        // passes when within 0.4, when `SqDist2D(feet, cand) < 1.0` (0x159f28:68-69 — NO bounds test), or the
+        // 0.35 (`0x3ecccccd`) node test.
         if self.creep.step >= self.creep.steps {
             self.next_node(net, 1);
             return (follow::MOVING, reached);
         }
         let q = self.creep.point(self.creep.step + 1);
         let d = dist2d(feet, q);
-        if d < self.lookahead && (d < 0.4 || net.bounds_node_test(0.4, feet, q)) {
+        if d < self.lookahead && (d < 0.4 || dist2d(feet, q) * dist2d(feet, q) < 1.0 || net.bounds_node_test(0.35, feet, q)) {
             self.creep.step += 1;
             self.target = q;
         }

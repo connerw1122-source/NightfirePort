@@ -283,3 +283,134 @@ fn the_mission_layer_re_arms_on_a_warm_transition() {
     assert_eq!(sim2.drones.mission.states[i5][0], 4, "the past part's record survives the warm load");
     assert_eq!(sim2.drones.mission.states[i6][0], 4, "06's own objective folds again on the re-armed layer");
 }
+
+// ---- escort-01 (task 104a): the 01 extraction plate + the 0a meshless-gate exit --------------------------
+
+#[path = "common/walker.rs"]
+mod walker;
+
+use walker::{Act, Walker, Wp};
+
+/// 07000001 chains to 07000002 through the REAL trigger: the contact (skin 0x4F) leads Bond along
+/// the mission AI path (NDrone2_DSTATE_AllyLead 0x15e698) to the LoadPointActivator plate (the
+/// mask-0x18 TOUCH zone, out ch16, filter skin 0x4F [D 07000001 pl 180: params 0:16 1:24 2:14
+/// 3:0x0500004f]), and the ch16-gated LOAD_LEVEL exit (pl 18: params 0:0x07000002 2:16 — NO
+/// collision volume [D]) auto-fires on the gate channel alone [M Trigger_Update case 10
+/// 0x1b1a78:162-166 — no touch test]. The escort lead itself is driven by the game's LinkCreep
+/// rules (0x15a2c8/0x159f28/0x15a148), which the port now follows (the SqDist2D < 1.0 creep
+/// overrides — the walkreal-a stall).
+///
+/// The armed guards along the route are removed (the "enemies disabled for the walk" allowance —
+/// the real fire-path clear is walkreal_07000001_live, which passes on the same tree); without it
+/// the escort hides (LeadHide, [M 0x15ec08]) for the whole walk, which is the game's own behaviour.
+#[test]
+fn escort_01_the_contact_leads_to_the_plate_and_01_loads_02() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut w = Walker::new(nf_view::load(&iso, "07000001.bin", false).expect("load 07000001"));
+    // The intro cut-scene writes ch 0xB (the contact's enable) at ~tick 2119 [D 07000001 stream 8].
+    for _ in 0..4000u32 {
+        w.tick(Default::default(), false);
+        if w.scene.sim.as_ref().unwrap().drones.channels.on(0xb) { break; }
+    }
+    w.wait_enabled(6000, "the intro tail re-places Bond");
+    w.wait(300);
+    // Clear the route: every armed started guard goes far away (the allowance above).
+    {
+        let sim = w.scene.sim.as_mut().unwrap();
+        for (i, d) in sim.drones.list.iter_mut().enumerate() {
+            if d.skin != 0x0500_004f && d.team == 1 && d.started && !d.corpse {
+                d.pos = [500.0 + i as f32, 50.0, 500.0];
+            }
+        }
+    }
+    let ci = w.scene.sim.as_ref().unwrap().drones.list.iter().position(|d| d.skin == 0x0500_004f).expect("the contact");
+    let plate = walker::trigger_centre(w.scene.sim.as_ref().unwrap(), walker::trigger_kind::TOUCH, 0x10).expect("the plate");
+    // SISTER (the AND filter [M Trigger_Hit 0x1b1fc8]): with Bond far from the plate the touch
+    // channel must stay off even once the contact stands in the zone.
+    let mut contact_on_plate = false;
+    for round in 0..30 {
+        let cpos = w.scene.sim.as_ref().unwrap().drones.list[ci].pos;
+        contact_on_plate = (cpos[0] - plate[0]).abs() < 1.2 && (cpos[2] - plate[2]).abs() < 3.4 && cpos[1] < 4.4;
+        if contact_on_plate { break; }
+        // Bond follows the lead (real input): walk to just behind him, then give the lead room.
+        let target = [cpos[0] * 0.9 + plate[0] * 0.1, cpos[1], cpos[2] * 0.9 + plate[2] * 0.1];
+        let bpos = w.scene.sim.as_ref().unwrap().bond.pos;
+        if walker::dxz(bpos, cpos) > 7.0 {
+            w.walk_nav_to(cpos, &format!("follow the lead r{round}"), 3.0);
+        } else {
+            w.walk_nav_to(target, &format!("trail the lead r{round}"), 3.0);
+        }
+    }
+    let sim = w.scene.sim.as_ref().unwrap();
+    let d = &sim.drones.list[ci];
+    eprintln!("[escort-01] contact at ({:.1},{:.1},{:.1}) state {:#x} route {:?} plate ({:.1},{:.1},{:.1}) ch16 {}",
+        d.pos[0], d.pos[1], d.pos[2], d.state, d.route.as_ref().map(|r| r.index), plate[0], plate[1], plate[2],
+        sim.drones.channels.on(0x10));
+    assert!(contact_on_plate, "the contact must walk his lead route onto the extraction plate (got {:?})", d.pos);
+    assert!(!sim.drones.channels.on(0x10) && sim.drones.level_exit.is_none(),
+        "the AND-touch must not fire while Bond is off the plate [M Trigger_Hit 0x1b1fc8 mask 0x18]");
+    drop(sim);
+    // Bond walks the player descent to the plate (the AI route's own stairwell lane, proven by the
+    // walkreal walk: the stairwell head anchor then the plate).
+    w.walk_nav_to([-30.8, 6.4, 13.1], "the stairwell head", 1.2);
+    w.walk_nav_to(plate, "the extraction plate", 1.2);
+    // Hold on the plate: the touch zone ORs ch16 every ProcessTouch tick, and the ch16-gated exit
+    // auto-fires [M 0x1b1a78:162-166].
+    for _ in 0..120 {
+        w.tick(Default::default(), false);
+        if w.scene.sim.as_ref().unwrap().drones.level_exit.is_some() { break; }
+    }
+    let sim = w.scene.sim.as_ref().unwrap();
+    assert!(sim.drones.channels.on(0x10), "both on the plate must fire the AND-touch ch16");
+    assert_eq!(sim.drones.level_exit, Some(0x0700_0002), "01 must chain to 07000002 through the real exit trigger");
+    eprintln!("[escort-01] level_exit 07000002 at tick {}", w.total_ticks);
+}
+
+/// The E-use spot for the 0a exit: the trigger is a thin wall panel (12 tris, x 21.0-22.45,
+/// y 0.0-2.25, z 19.76-19.81 [D probe]) at the gondola dock edge — no floor under its own centre,
+/// so Bond stands on the dock floor (y 0 [D probe]) one unit south, facing +z (the panel), exactly
+/// where the game's player activates it: the use sphere (head + 1 forward, r 1.0) meets the panel.
+fn at_the_panel(sim: &mut nf_view::scene::Sim, exit: &nf_game::triggers::Trigger) -> nf_game::player::Bond {
+    let c = exit.centre();
+    let spot = [c[0], c[1] + 0.9, c[2] - 1.0];
+    let b = nf_game::player::Bond::new(spot, 0.0); // yaw 0 → look +z, at the panel
+    let _ = sim;
+    b
+}
+
+/// 0700000a's exit (pl 59: params 0:0x0700000b 1:74 — key gate ch74, gate param 2 = 0 [D]) can
+/// NEVER auto-fire [M Trigger_Update case 10 0x1b1a78:163 needs a NON-ZERO gate channel]; the only
+/// game path is Bond's E-use sphere (head + 1 unit forward, r 1.0 [M Player_Activate 0x1a5170:106])
+/// meeting the trigger's volume (12 collision triangles [D]) → Trigger_Activate (0x1b2318) whose
+/// key gate (param 1 = ch74, [M 0x1b2318:76-90]) must be on.
+#[test]
+fn escort_0a_exit_fires_with_the_key_and_loads_0700000b() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    // SISTER first: the key gate blocks — no ch74, E at the trigger → no load [M 0x1b2318:76-90].
+    {
+        let mut sc: Scene = match nf_view::load(&iso, "0700000a.bin", false) { Ok(s) => s, Err(e) => panic!("0a: {e}") };
+        let sim = sc.sim.as_mut().unwrap();
+        let (start, yaw) = sc.start.unwrap_or(([0.0, 2.0, 0.0], 0.0));
+        sim.bond = nf_game::player::Bond::stand_at(&sim.world, start, yaw);
+        for _ in 0..30 { sim.step_bond(Default::default(), false, false, false); }
+        let exit = sim.drones.triggers.iter().find(|t| t.kind == nf_game::triggers::kind::LOAD_LEVEL && t.next_level == 0x0700_000b).expect("the 0a exit trigger").clone();
+        assert_eq!(exit.key_gate, 74, "the 0a exit's key gate is ch74 [D pl 59 param 1]");
+        assert_eq!(exit.gate, 0, "the 0a exit has NO auto-fire gate [D pl 59 param 2]");
+        assert!(!exit.tris.is_empty(), "the 0a exit's volume parses (12 triangles [D])");
+        sim.bond = at_the_panel(sim, &exit);
+        for _ in 0..240 { sim.step_bond(Default::default(), false, false, true); }
+        assert_eq!(sim.drones.level_exit, None, "without ch74 the key gate locks the exit [M 0x1b2318:76-90]");
+    }
+    // The real path: ch74 on (the key pickup's channel), E at the trigger → 0700000b.
+    let mut sc: Scene = match nf_view::load(&iso, "0700000a.bin", false) { Ok(s) => s, Err(e) => panic!("0a: {e}") };
+    let sim = sc.sim.as_mut().unwrap();
+    let (start, yaw) = sc.start.unwrap_or(([0.0, 2.0, 0.0], 0.0));
+    sim.bond = nf_game::player::Bond::stand_at(&sim.world, start, yaw);
+    for _ in 0..30 { sim.step_bond(Default::default(), false, false, false); }
+    let exit = sim.drones.triggers.iter().find(|t| t.kind == nf_game::triggers::kind::LOAD_LEVEL && t.next_level == 0x0700_000b).expect("the 0a exit trigger").clone();
+    sim.bond = at_the_panel(sim, &exit);
+    for _ in 0..30 { sim.step_bond(Default::default(), false, false, false); }
+    sim.drones.set_channel(74); // the key gate's channel [M Trigger_Activate 0x1b2318:76-90]
+    for _ in 0..240 { sim.step_bond(Default::default(), false, false, true); }
+    assert_eq!(sim.drones.level_exit, Some(0x0700_000b), "ch74 + E at the exit must load 0700000b");
+}
