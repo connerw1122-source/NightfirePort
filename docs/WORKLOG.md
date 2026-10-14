@@ -10455,3 +10455,41 @@ the view-model branch untouched. Regression set green: cutscenes 5+4, objects (t
 facial 2+3. Suite on the final tree: see docs/reports/fix-cutscene-brightness.md. Files:
 crates/nf-view/src/scene.rs, crates/nf-view/tests/fix_cutscene_brightness_live.rs (new);
 crates/nf-game/src/nis.rs read-only.
+
+## fix-cutscene-brightness2 (s/fix-cutscene-brightness2) — 2026-10-14
+
+Task: 102g's held fix (0cbfbf8) makes the 07000002 intro's cut-scene actors VANISH — the main
+agent's render at the user's spot (`--bond -82.30,5.30,32.05,1.570,-0.100 --frame 170`): master
+draws Bond and the man at the computer desk (too bright), master + the branch draws the same room
+with NO characters.
+
+fix-cutscene-brightness2 DONE (09:4x UTC). The live probe (tests/fix_cutscene_brightness2_live.rs,
+run on the held tree) pinned both halves:
+- The vanish: the held fix substituted `Player::live_matrix` for the script actors' render object
+  matrix — but `live_matrix` is stream 0's object ∘ the script matrix (`Script_Interp` 0x1d9a08
+  keys the SP object's obj+0x90 from stream 0 [M nis.rs]), and the intro's stream 0 is the CAMERA:
+  obj[0] Camera trans [-27.25, 1.41, 34.39] == player[1] live trans [L probe]. The actors were
+  drawn inside the camera. The premise was wrong too: VECTOR 0x2d6200 is the ORIGIN vector
+  [L ACTION.ELF, nis.rs's Light doc], so `Script_AnimStart` 0x1d8f40's
+  `control_create_object(0, 0x2d6200, 0x2d6200, 0)` creates the anim object AT THE ORIGIN — the
+  object matrix is identity and the pose's root carries the actor in world space [M Obj::Anim doc;
+  AnimSeqTick 0x1c28d0 takes the root motion as the object's movement]. Fix: frame_state's script
+  branch draws with `c.matrix` again (the render-verified model — master's own render places both
+  actors correctly).
+- The ramp sample: the held `script_pose` resolves `script_frame`'s LAST covering window — on the
+  intro that is the zero-root overlay track (char[79] windows (1,1541,0x04000296)/(1,1540,
+  0x04000224); the last one's root [0,0,0] at frame 170) — and its base composition multiplied
+  that by the camera matrix, so the ambient sampled the camera's cel (the right bytes by luck).
+  Fix: `characters_script_pos` resolves the position the renderer draws — `script_pose_together`'s
+  world root (char[79] [-25.51, 1.13, 30.14], char[80] [-27.18, 1.13, 30.99], both beside Bond
+  [-27.17, 1.05, 29.80] [L probe]) — no base. ambient_at(root) = the bunker cel [20,30,20]: the
+  same dark multiplier the held test pins, sampled where the actor stands.
+- Fail-first: both tests in tests/fix_cutscene_brightness2_live.rs panic on the held tree (the
+  object-matrix assert and the ramp-sample assert), green on the fix. Sisters kept green: the held
+  fix_cutscene_brightness_live 3, render2_live 8 (the 01 cut-scene's [L] (40,30,26) courtyard
+  pin), fix_objects_live 6 + fix_objects2_live 5 (the 05 truck's script characters),
+  fix_cutscenes_live 4, fix_cutscenes2_live 5, facial2_live 2, facial3_live 3.
+- Files: crates/nf-view/src/scene.rs (characters_script_pos; the render's script-branch object
+  matrix; script_base_matrix removed — it existed only for the wrong reading). No shared-file
+  hooks; nis.rs untouched.
+- Suite on the final tree: docs/reports/fix-cutscene-brightness2.md.
