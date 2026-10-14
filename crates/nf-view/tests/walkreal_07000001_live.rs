@@ -71,6 +71,13 @@ fn walk_from_the_spawn_to_the_exit_with_the_contact() {
     let plate = walker::trigger_centre(w.scene.sim.as_ref().unwrap(), walker::trigger_kind::TOUCH, 0x10).expect("the AND-touch plate");
     w.walk_to(Wp { at: cpos, act: Act::None, arrive: 2.5 }, "to the contact");
     let mut settled = cpos;
+    // The contact's park from the previous round: two rounds inside ~1 unit with no guard to
+    // clear means the lead machine wedged on geometry — Bond walks PAST him toward the plate
+    // (the real player's move): out of the PlayerInWay band the lead resumes and re-paths [M
+    // 0x15ea28 case 3 / 0x15e698 case 3], which unsticks him. The head-look merge's corrected
+    // head box (the game's own AnimGetCollData → psiBuildMatrixPalette → HeadTrack coupling)
+    // moves the fight timeline, so the lead can park in spots the old path never hit.
+    let mut prev_settled = cpos;
     let mut cleared = std::collections::HashSet::new();
     for round in 0..12 {
         settled = w.follow(ci, &format!("the contact r{round}"), 12000, plate);
@@ -106,8 +113,20 @@ fn walk_from_the_spawn_to_the_exit_with_the_contact() {
                 let sim = w.scene.sim.as_ref().unwrap();
                 panic!("[01] the contact stalled at ({:.1},{:.1},{:.1}) state {:#x} armed_peer {:.1} with no guard to clear (round {round})",
                     settled[0], settled[1], settled[2], sim.drones.list[ci].state, sim.drones.list[ci].armed_peer_dist);
+            } else if walker::dxz(settled, prev_settled) < 1.0 {
+                let sim = w.scene.sim.as_ref().unwrap();
+                let cp = sim.drones.list[ci].pos;
+                let (dx, dz) = (plate[0] - cp[0], plate[2] - cp[2]);
+                let l = (dx * dx + dz * dz).sqrt().max(1e-3);
+                let ahead = [cp[0] + dx / l * 4.0, cp[1], cp[2] + dz / l * 4.0];
+                drop(sim);
+                eprintln!("[01] round {round}: the lead is wedged at ({:.1},{:.1},{:.1}) state {cstate:#x} — Bond walks past him toward the plate (the lead resumes out of the way band and re-paths)",
+                    settled[0], settled[1], settled[2]);
+                prev_settled = settled;
+                w.walk_nav_to(ahead, "walk past the wedged lead", 3.0);
             } else {
                 eprintln!("[01] round {round}: no guards to clear (contact state {cstate:#x}) — closing on him");
+                prev_settled = settled;
                 w.walk_nav_to(settled, "close on the contact", 4.0);
             }
             continue;

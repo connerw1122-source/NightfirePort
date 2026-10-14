@@ -44,6 +44,14 @@ pub struct Gun {
     /// per shot for flag-0x40000 weapons and picks +0xB0 / +0xB4 by its parity (the game reuses the same byte
     /// for the flag-0x1000 reload's frame-6 toggle, which the port's reload math covers separately).
     pub alt_fire_toggle: u8,
+    /// `BLData+0x1BC + base·0xC`: the twin-variant cycle marker — (equipped twin id − base id), written by
+    /// `Player_WeaponSelect` 0x1a2cc0:15-16/27-28 on every same-base switch (0 when the base itself is
+    /// equipped). `Player_WeaponChange` 0x1a6f80:180-195 reads it during the cycle walk: from a selectable,
+    /// owned candidate `cand` the cursor first offers `cand + skip[cand]` (the twin) and lands there when
+    /// `Player_WeaponHasAmmo` passes for it; only when the twin is dry (and skip > 0) does it fall back to
+    /// `cand`, clearing the marker. So with the P2K silencer equipped (`BL+0x1BC[0x02] = 1`) cycling to the
+    /// pistol hands the SILENCED 0x03 twin while it has ammo [M]. Indexed by weapon id (base only).
+    pub twin_skip: Vec<i8>,
 }
 
 impl Gun {
@@ -52,8 +60,10 @@ impl Gun {
     /// for mode=1's high bound; 0x1a7120 for mode=0's bounds]. Steps through owned, selectable, has-ammo
     /// entries starting from `weapon + dir`, wrapping within the range. The game does NOT check the first-person
     /// model here (that's `Player_WeaponSelect`'s job); weapon 1 (fists) is a valid cycle target.
-    /// Returns the id to switch to, or `None`.
-    pub fn cycle(&self, dir: i8, mode: CycleMode, owned: &[bool], has_ammo: impl Fn(u8) -> bool, selectable: impl Fn(u8) -> bool) -> Option<u8> {
+    /// The twin step [M 0x1a6f80:179-198]: a selectable candidate `cand` first offers `cand + twin_skip[cand]`
+    /// (the equipped twin) and lands there when it has ammo; when the twin is dry the walk falls back to `cand`
+    /// and CLEARS the marker (the game's `BL+0x1BC[cand] = 0`). Returns the id to switch to, or `None`.
+    pub fn cycle(&mut self, dir: i8, mode: CycleMode, owned: &[bool], has_ammo: impl Fn(u8) -> bool, selectable: impl Fn(u8) -> bool) -> Option<u8> {
         let dir = dir.signum() as i32;
         if dir == 0 { return None; }
         let (lo, hi) = mode.bounds();
@@ -63,25 +73,39 @@ impl Gun {
             if w > hi { w = lo; }
             if w < lo { w = hi; }
             let wu = w as u8;
-            if !owned.get(w as usize).copied().unwrap_or(false) { continue; }
             if !selectable(wu) { continue; }
-            if !has_ammo(wu) { continue; }
-            return Some(wu);
+            if !owned.get(wu as usize).copied().unwrap_or(false) { continue; }
+            // The twin step [M 0x1a6f80:180-195]: the cursor first points at `cand + twin_skip[cand]`
+            // (the equipped twin) and lands there when it has ammo; when the twin is dry the walk
+            // falls back to the candidate, CLEARING the marker, and lands when the candidate has
+            // ammo; when both are dry the walk continues past (`cursor = cand`, advance).
+            let skip = *self.twin_skip.get(wu as usize).unwrap_or(&0);
+            let twin_step = skip != 0 && wu != 0x54;
+            let offer = if twin_step { (wu as i32 + skip as i32) as u8 } else { wu };
+            if has_ammo(offer) { return Some(offer); }
+            if twin_step && has_ammo(wu) {
+                self.twin_skip[wu as usize] = 0;
+                return Some(wu);
+            }
         }
         None
     }
 
     /// `Player_WeaponChange` toggle-back path [M 0x1a6f80 lines 66-121]. When cycling weapons (mode=0) from a
-    /// gadget, if `prev_weapon` (+0x930) is set and has ammo, switch directly to it. When cycling gadgets
-    /// (mode=1) from a weapon, if `prev_gadget` (+0x932) is set and has ammo, switch to it. Returns the toggle
-    /// target, or `None` if no toggle applies (fall through to the cycle).
-    pub fn toggle_back(&self, mode: CycleMode, owned: &[bool], has_ammo: impl Fn(u8) -> bool, selectable: impl Fn(u8) -> bool) -> Option<u8> {
+    /// gadget, if `prev_weapon` (+0x930) is set and has ammo, switch directly to it — the game gates on the
+    /// REMEMBERED ID's BASE (`weapon_data[+0x930].+2`): the base's selectable (+4) and the base's owned slot
+    /// (`BL+0x1BA + base·0xC` — the twins share it, `Player_EquipWeapon` 0x1a8a58:39-41), then
+    /// `Player_WeaponHasAmmo` for the remembered id itself, and restores +0x930 VERBATIM (line 113) — so the
+    /// SILENCED twin 0x03 remembered in +0x930 comes back silenced [M]. Mirrors for +0x932 (the 0x55→0x54 fixup).
+    /// Returns the toggle target, or `None` if no toggle applies (fall through to the cycle).
+    pub fn toggle_back(&self, mode: CycleMode, owned: &[bool], has_ammo: impl Fn(u8) -> bool, selectable: impl Fn(u8) -> bool, base_of: impl Fn(u8) -> u8) -> Option<u8> {
         let cur = self.weapon;
         match mode {
             CycleMode::Weapons => {
                 if cur >= 0x4a && cur <= 0x5e && self.prev_weapon != 0 {
                     let w = self.prev_weapon;
-                    if owned.get(w as usize).copied().unwrap_or(false) && selectable(w) && has_ammo(w) {
+                    let b = base_of(w) as usize;
+                    if selectable(b as u8) && owned.get(b).copied().unwrap_or(false) && has_ammo(w) {
                         return Some(w);
                     }
                 }
@@ -89,7 +113,8 @@ impl Gun {
             CycleMode::Gadgets => {
                 if cur >= 1 && cur <= 0x47 && self.prev_gadget != 0 {
                     let w = self.prev_gadget;
-                    if owned.get(w as usize).copied().unwrap_or(false) && selectable(w) && has_ammo(w) {
+                    let b = base_of(w) as usize;
+                    if selectable(b as u8) && owned.get(b).copied().unwrap_or(false) && has_ammo(w) {
                         return Some(w);
                     }
                 }
@@ -333,7 +358,7 @@ pub fn reload_ticks(start: u32, reload: u32, flags68: u32, script_len: &impl Fn(
 
 impl Gun {
     /// Bond's start on 07000005 (`Player_InitWeapon`): weapon 2 with 7 in the clip and 41 spare [L].
-    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reload_state: 0, reload_ticks: 0, reload_loop_restarted: false, switch_request: weapon, saved_weapon: weapon, prev_weapon: 0, prev_gadget: 0, switch_state: 0, fire_state: false, latch: false, alt_fire_toggle: 0 } }
+    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reload_state: 0, reload_ticks: 0, reload_loop_restarted: false, switch_request: weapon, saved_weapon: weapon, prev_weapon: 0, prev_gadget: 0, switch_state: 0, fire_state: false, latch: false, alt_fire_toggle: 0, twin_skip: vec![0i8; 0x72] } }
 
     /// One tick with the trigger (action 9) `pressed` (no reload key, gun idle).
     pub fn update(&mut self, pressed: bool, p: GunParams) -> bool { self.update_with(pressed, false, false, p) }
@@ -477,11 +502,11 @@ mod tests {
         owned[2] = true; owned[0x16] = true; owned[0x24] = true;
         let selectable = |w: u8| w == 2 || w == 0x16 || w == 0x24;
         let has_ammo = |w: u8| w == 2 || w == 0x16; // 0x24 has no ammo
-        let g = Gun::new(2, 7, 41);
+        let mut g = Gun::new(2, 7, 41);
         // Next from P2K → SG5 (0x16).
         assert_eq!(g.cycle(1, CycleMode::Weapons, &owned, has_ammo, selectable), Some(0x16));
         // Next from SG5 → wraps to P2K (0x24 skipped: no ammo).
-        let g2 = Gun::new(0x16, 30, 60);
+        let mut g2 = Gun::new(0x16, 30, 60);
         assert_eq!(g2.cycle(1, CycleMode::Weapons, &owned, has_ammo, selectable), Some(2));
         // Prev from P2K → wraps to SG5 (0x24 skipped).
         assert_eq!(g.cycle(-1, CycleMode::Weapons, &owned, has_ammo, selectable), Some(0x16));
@@ -498,13 +523,13 @@ mod tests {
         owned[2] = true; owned[0x4a] = true; owned[0x50] = true;
         let selectable = |w: u8| w == 2 || w == 0x4a || w == 0x50;
         let has_ammo = |_w: u8| true;
-        let g = Gun::new(2, 7, 41);
+        let mut g = Gun::new(2, 7, 41);
         // Weapon cycle from P2K (2) → wraps to 2 (only weapon).
         assert_eq!(g.cycle(1, CycleMode::Weapons, &owned, has_ammo, selectable), Some(2));
         // Gadget cycle from P2K (2, a weapon) → starts at 2, steps to 0x4A (first gadget).
         assert_eq!(g.cycle(1, CycleMode::Gadgets, &owned, has_ammo, selectable), Some(0x4a));
         // Gadget cycle from 0x4A → 0x50.
-        let g2 = Gun::new(0x4a, 1, 1);
+        let mut g2 = Gun::new(0x4a, 1, 1);
         assert_eq!(g2.cycle(1, CycleMode::Gadgets, &owned, has_ammo, selectable), Some(0x50));
         // Sister: weapon cycle from a gadget (0x4A) → wraps to 2 (first weapon).
         assert_eq!(g2.cycle(1, CycleMode::Weapons, &owned, has_ammo, selectable), Some(2));
@@ -576,12 +601,12 @@ mod tests {
         let mut g = Gun::new(0x4a, 1, 1); // a gadget
         g.prev_weapon = 2; // last weapon was the P2K
         // Cycling weapons from a gadget → toggle to the P2K (not the cycle).
-        assert_eq!(g.toggle_back(CycleMode::Weapons, &owned, has_ammo, selectable), Some(2));
+        assert_eq!(g.toggle_back(CycleMode::Weapons, &owned, has_ammo, selectable, |w| w), Some(2));
         // Sister: cycling gadgets from a gadget → no toggle (None).
-        assert_eq!(g.toggle_back(CycleMode::Gadgets, &owned, has_ammo, selectable), None);
+        assert_eq!(g.toggle_back(CycleMode::Gadgets, &owned, has_ammo, selectable, |w| w), None);
         // Sister: prev_weapon = 0 → no toggle.
         g.prev_weapon = 0;
-        assert_eq!(g.toggle_back(CycleMode::Weapons, &owned, has_ammo, selectable), None);
+        assert_eq!(g.toggle_back(CycleMode::Weapons, &owned, has_ammo, selectable, |w| w), None);
     }
 
     /// Weapon 0x45's has-ammo is the game's literal comparison `weapon_data[0x45].clip_size (100) <=
