@@ -9792,3 +9792,11 @@ the wrap/line-height helpers). Report: docs/reports/fix-objective-messages.md.
 Full suite on the final tree (origin/master 7be3272 merged): **886 passed, 3 failed, 27 ignored
 (20 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH. Also green post-fix:
 death/restart 8, mission 4, level_carry 3, progress 8, nf-formats 74 (+ the 3 allowed).
+
+fix-menus-real (101k, started 2026-10-14): the front end must match the real pages
+(1013-1825 playtest + the main agent's 2026-10-13 PCSX2 drive). Every page is missing its
+backdrop, the header font, the footer PS2 glyphs, the centred description and the rolling
+list style; per-page gaps are in the report. Plan: read MenuManager_Create 0x21b908's tag
+stream + entry 08000002 in 07000048.bin + the sprite/texture/font tables, then draw each
+element from the page data. Files: crates/nf-view/src/{menu,hud}.rs,
+crates/nf-view/tests/menus_flow.rs. Work log continues below.
