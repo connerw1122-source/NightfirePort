@@ -211,6 +211,20 @@ fn upgraded_runner_checks_the_new_behaviours_on_07000005() {
     assert!(a.expl_gap > 0 && a.expl_gap <= 90, "0x2a blasts on contact, gap {} ticks", a.expl_gap);
     // The Sentinel 'Guided' 0x2c rides the missile camera (weapon +0x6C & 4 [L ee_start_05.bin]).
     assert!(cell(0x2c).guided, "0x2c: the guided camera must ride a live missile");
+    // weapon-matrix5 (the missile-cam ride-out, [M Bullet_Delete 0x12e660:27-29 sets the owner's
+    // +0x944 = 0xf; Player_Update 0x193600 case 10 counts it down before the substate restores]):
+    // the cell survives its own guided camera — the reload/mode/away phases run after the ride-out,
+    // so the away switch and the back land. Fail-first: the pre-fix runner's 0x2c cell here was W
+    // (the away switch eaten under the substate-10 player) with the mode-press M hidden under it.
+    let sentinel = cell(0x2c);
+    assert!(sentinel.away_ok && sentinel.back_ok, "0x2c: away {}/back {} — the cell must ride out the guided camera",
+        sentinel.away_ok, sentinel.back_ok);
+    // weapon-matrix5 (the watch OR, [M Player_Weapon 0x1a24c8: the mode block reads action 12 |
+    // action 9 for 0x54/0x55]): the Micro-Camera's twin chain operates — the plain mode press or
+    // the OR'd fire presses land the swap. The OR arm's own fail-first is examples/probe_watch.rs
+    // (style b: "no swap" pre-fix, "SWAP landed 0x54→0x55" post-fix — the fire press IS a mode
+    // press on this pair now).
+    assert!(cell(0x54).mode_ok, "0x54: the watch's twin chain must operate (action 12, or the OR'd fire press)");
     // The mode press: a twin-linked record lands its twin (or cycles the mode byte) and both
     // labels resolve [M Player_Weapon 0x1a24c8:204-260; HUD_UpdateAmmoPane 0x19a7f0].
     let two = cell(0x02);
