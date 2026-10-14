@@ -9855,6 +9855,14 @@ tests/fix_weapon_sounds_live.rs (new). Report: docs/reports/fix-weapon-sounds.md
 weapon → bank mapping table + live checks). The full 211-binary suite still needs a run on
 the final tree (background jobs are killed between tool calls here; the window closed) —
 listed in the report for the next message.
+
+## fix-08-walls (s/fix-08-walls) — 2026-10-14
+
+Task 101h: two user symptoms on 07000008 near the safe/briefcase room (~(155, 43, -113)):
+(1) walking into a wall threw Bond onto a zip line on the far side of the wall (wire grab
+through geometry — grab test needs the game's LOS/facing gate); (2) the big wall still clips
+into the missile room (a world instance / forced object drawn that the game hides — compare
+docs/live/2026-10-13-portal-ground-truth.md). Work in progress; details to follow.
 ---
 
 ## fix-qclaw (s/fix-qclaw) — started 2026-10-14 02:28 UTC
@@ -9963,3 +9971,32 @@ Task 102b, playtest 1013-1825 (07000006/07000005): the P2K silencer (twin 0x02 '
 'Silenced') — the attach anim plays but the silencer vanishes from the view model while bullets
 stay silenced; equip → swap away → swap back loses the silenced variant; dev infinite ammo fills
 the reserves but not the magazine; the SSG's semi-auto refires too slowly. Work in progress.
+## fix-08-walls (s/fix-08-walls) — 2026-10-14
+
+Task 101h, both symptoms from the 1013-1758 playtest at 07000008's safe area (~(155, 43, −113)).
+- **(1) the wall threw Bond onto the zip line — reproduced, fixed.** The jump-grab's arm context
+  (`BLData+0x95F == 3`, `Player_HandleJump` 0x1916b0:118-147; the scan itself is wall-blind in the
+  game too — class-0x2C nearest within 1000, `Vec_Dist3D` only) was armed by a flat 12.0-unit
+  radius around each third icon. The game's arm region is the icon's STRADDLE-CEL set:
+  `Controls_StraddleTest` 0x134778 builds the icon's world sphere (`Control_BuildWorldSph`
+  0x133070 via `build_LinkToRoom` 0x1c9680:40 — r 1.164 on 08's "Hand_Over_Hand" [D probe]),
+  `Collide_StraddleCels` 0x1eac98 BFS-walks portals the sphere intersects (`Intersect_Portal`
+  0x1ea7b8 v0x101), and `Collide_Update` 0x1ea398:160-233 leaves a node on every occupant. The
+  port now resolves each icon's set at load (`icon_straddle_cels` over the cel graph; the Sim
+  carries the graph + `icon_cels`) and arms on the player's FindCel cel [M `build_FindCel`
+  0x1c8cb0 via `find_cell_raycast`] INTERSECTED with the measured 12.0 window [S deviation — the
+  port's cel buckets are coarser than the game's cels; pure occupancy broke the [L] 05 gate-door
+  0xFF pins]. Fail-first: east balcony (144, 45, −104, cell 43, 11.1 from the icon across the
+  wall) jumped → substate 15 across the wall pre-fix; post-fix plain jump, ctx 0xff; the west
+  ledge still grabs. Tests: fix_08_walls_live 4/4, fix_swim_vent5_live 2/2, fix_wire2_live 3/3.
+- **(2) the big wall in the missile room — root cause named, master already hides it, pinned.**
+  The wall = `Room_Outside_3` (cell 15)'s exterior slabs, tris across the whole
+  `Room_Guardhouse_F2` interior [D probe; fix-safe08 measured the protrusion]. The playtest build
+  predates the portal-lineage merges (fix-portal5/6/sweep landed 2026-10-14 01:10 UTC); at master
+  the game-mask never marks cell 15 from the missile room (24 yaws × 2 aspects, the port's exact
+  camera math) and every node-15 material culls while the furniture draws. Pinned by
+  `the_missile_room_visible_set_excludes_the_exterior_wall`; live checks in the report.
+- Suite on the final merged tree (origin/master merged 174804b): **932 passed, 3 failed (the
+  allowed disc_golden trio), 27 ignored (19 min)**, no TIMEOUT/CRASH; baseline on master 906/3/27;
+  the targeted post-fix suites (the 08 four, vent5 2, wire2 3) green on the same tree.
+  Report: docs/reports/fix-08-walls.md.
