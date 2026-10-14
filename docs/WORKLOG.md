@@ -11343,3 +11343,27 @@ Work Log:
 
 Stage Summary:
 - The three merge-held tests green on the merged tree; three real port bugs fixed with game citations (op-1 switch window, fidget threshold 1200, stale fire-state across switches); the test windows re-tuned to the correct-rate switches without loosening any assertion. Pushed through f44e141 + the report commit.
+## fix-06-driver — s/fix-06-driver (task 104d, started 16:46 UTC)
+- Task: playtest 1011-1535 (06) — the friendly truck driver (07000006) cowers on top of the boxes he stands next to, and shooting him knocks him back like a guard with the guard death sound. Check against the game: (1) the cower state's position/anim + floor snap for a civilian ally by props; (2) whether the driver is damageable at all in the game (invulnerable/ally flag on the drone, the team check in the bullet hit) and, if he is, his own death reaction/sound. Port the differences. Files: crates/nf-game/src/drone.rs (small, local).
+- Status: branch cut from origin/master 7785582 (pulled), WORKLOG started. Next: decompile research (cower state, damage team check), reproduce, fix.
+- DONE (17:50 UTC): the driver states dropped the game's absent msg-0x14 (SOUND) arms. The game's
+  TruckDriverInit 0x160bd0 routes msgs 0x11/0x12/0x13/0x16/0x1e → 0x33 and has NO 0x14 case, InitAlert
+  0x160d98 handles no sound msg at all, TruckDriverIdle 0x160ed0 routes 0x11/0x12/0x15/0x16/0x1e to
+  EnemyAlerts with NO 0x14 case [M all three, decompile read whole]; the port's extra SOUND halves ran
+  the guard heard-noise chain (0xa2-0xa5) on the friendly truck driver the moment gunfire sounded, and
+  that chain's attack path DREW HIM A WEAPON (DRAW_WEAPON 0x66 EXIT: weapon 6, anim set 12 → 4 — the
+  guard set) — the playtest's "shoot the driver and he flies back like a guard with the same guard
+  death sound": the fly-back was the guard set's death anim, reached through the weapon draw. Shooting
+  him is game-accurate (DealWithObjHit case 5: the player's shot has no team gate [M 0x13fff0:181-235]);
+  his death line is DeathTalk's default line 1 for voice type 0xf [M 0x13eff8 default arm] — this
+  level's bank shares its sfx (139) with the guards' line 4 [L d.voices], so the "same guard death
+  sound" is the game's own sharing; the anim set was the deviation. The scare/cower half: the game's
+  CivilianScared at alt mode 0 (the driver's) goes straight to CivilianHiding's cower 0x19 — IN PLACE
+  [M 0x15d3a0:31-43, 0x15d520; D seq 04000048's constant x/z root], and the current build's gravity
+  floor snap keeps his feet on the courtyard floor (the user's build predated fix-drone3's gravity
+  fix — his "crouches on top of the boxes" was the old no-gravity drift onto the crate stack by the
+  gate truck's grille). Tests: crates/nf-view/tests/fix_06_driver_live.rs 2/2 (the shot test fails on
+  the pre-fix tree at the heard-noise assert — shown; the cower pin + sisters: the guards still react
+  to the same gunfire, the protected-actor ch 0x60 rises on his death). Suite on the merged tree:
+  see docs/reports/fix-06-driver.md. Report: docs/reports/fix-06-driver.md (live checks: the PCSX2
+  no-draw confirmation, the death anim, the 700-880 step-out window; the headless render gap).

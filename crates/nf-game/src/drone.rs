@@ -3875,12 +3875,18 @@ impl Drone {
             // leaving on a mission path in the traces) → 0x34; only a running mission path would take
             // 0x35. The driver steps into TruckDriverIdle ("hands behind back", the user's C1).
             (TRUCK_DRIVER_INIT, msg::ANIM_DONE) => { self.set_state(TRUCK_DRIVER_IDLE); true }
-            (TRUCK_DRIVER_INIT, msg::SOUND | msg::ALARM) => { self.set_state(TRUCK_DRIVER_INIT_ALERT); true } // 0x11/0x12/0x13/0x16/0x1e → 0x33
+            // fix-06-driver: the game's arm is msgs 0x11/0x12/0x13/0x16/0x1e → 0x33 [M 0x160bd0:97-105] —
+            // msg 0x14 (SOUND, DroneFunc_HandleSoundAlerts' dispatch) has NO arm (default → unhandled):
+            // the driver never reacts to heard gunfire. The port's SOUND half sent him into the guard
+            // heard-noise chain (0xa2-0xa5) whose ATTACK arm drew him a weapon (+0x66 → weapon 6, anim set 4)
+            // — the playtest's "shoot the driver, he flies back like a guard with the guard death sound".
+            (TRUCK_DRIVER_INIT, msg::ALARM) => { self.set_state(TRUCK_DRIVER_INIT_ALERT); true } // 0x11/0x12/0x13/0x16/0x1e → 0x33
             (TRUCK_DRIVER_INIT, msg::BULLET) => self.on_bullet_resume(d, rng, frame, TRUCK_DRIVER_INIT_ALERT, false), // HandleImpact(0x33, 0)
             // TruckDriverInitAlert (0x160d98): anim done → CivilianScared (0x12); bullets/noise HandleImpact(0, …).
             (TRUCK_DRIVER_INIT_ALERT, msg::ANIM_DONE) => { self.set_state(CIVILIAN_SCARED); true }
             (TRUCK_DRIVER_INIT_ALERT, msg::BULLET) => self.on_bullet_resume(d, rng, frame, 0, false),
-            (TRUCK_DRIVER_INIT_ALERT, msg::SOUND) => self.on_bullet_resume(d, rng, frame, 0, true),
+            // fix-06-driver: InitAlert 0x160d98 handles NO sound messages (its cases: 0/1/2/5/6/7/9/0x17/
+            // 0x18/0x19/8 → HandleImpact, 0x21 → ConsiderExplosive) — the port's SOUND arm is dropped.
             // TruckDriverIdle (0x160ed0): stand idle; NearArmedPerson (0x1787c8 — the 8.0 arg is dead)
             // → CivilianScared (`|= 0x8000000`).
             (TRUCK_DRIVER_IDLE, msg::ENTER) => { self.vision_on = true; self.set_stand_idle(d, rng, frame, true); true }
@@ -3889,7 +3895,11 @@ impl Drone {
                 true
             }
             (TRUCK_DRIVER_IDLE, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
-            (TRUCK_DRIVER_IDLE, msg::SOUND | msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
+            // fix-06-driver: TruckDriverIdle 0x160ed0 routes msgs 0x11/0x12/0x15/0x16/0x1e to EnemyAlerts
+            // [M 0x160ed0:95-103] — msg 0x14 (SOUND) has no arm (default → 0, unhandled): gunfire sounds
+            // never move him. The port's SOUND half ran the guard heard-noise chain (0xa3 → DrawWeapon 0x66,
+            // anim set 12 → 4) — the playtest's guard-death symptom. The scare path is NearArmedBond (case 3).
+            (TRUCK_DRIVER_IDLE, msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
             (TRUCK_DRIVER_IDLE, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
             // PartyGirlInit (0x1728c0) ENTER: prop 0x1d → AssignAIPath(8) — with a route → CivilianMission
             // (0x16, the walkers); else the prop clears and PartyGirl (0x2f) [M 0x1728c0:17-25]. The game's NIS
