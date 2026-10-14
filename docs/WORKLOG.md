@@ -9477,6 +9477,14 @@ Work Log:
   generics on 19 levels (counts in the report; 0700000a worst at 4706, the trench's 05: 1382);
   the shipped mask (walk + rescue) is clean on all 27 — no level needs the frustum-only
   fallback this session.
+
+## fix-laser-beam (s/fix-laser-beam) — 2026-10-14
+Task: the Q-Laser and stunner fire bullets in the port (impact decal + impact sound each tick, no
+beam, the loop sound sticks after release, the 0c display-vent aim off). Find the game's laser fire:
+the beam draw, the loop sound handle (start on press, stop on release/switch/pause), the burn on
+locks without bullet impacts, the stunner's effect. Files:
+crates/nf-game/src/{gadget,gun}.rs, crates/nf-view/src/scene.rs (the beam draw).
+- Branch created from origin/master 9db3fda. Work started.
 Branch: s/fix-menu-movies (from origin/master 7a614ba)
 
 Work Log:
@@ -9698,6 +9706,53 @@ HUD font (texture 0x03000003). No new crates.
   one click selects, a second applies, Close hides. Checked live: the window opens beside the game with the full
   weapon list (screenshots in the session). A live keyboard check by synthetic keys failed: Windows wouldn't give the
   dev window focus from a background process, so the user tries it by hand.
+
+### fix-laser-beam — outcome
+
+- The gadget ids were shifted one pair down: the disc records name **0x4E/0x4F the Laser**
+  (name label 0x05000043 [L USATxt.dat], +0x6C = 0x900 — the Draw_LaserBeam bit 0x100) and
+  **0x4A/0x4C the Stunner** (0x05000042 "Stunner", +0x6C = 0x880 — the Draw_TaserBeam bit 0x80),
+  while 0x50/0x51 are the Grapple and 0x54/0x55 the Micro-Camera [L weapon_data + USATxt]. The
+  port's gadget.rs/scene.rs comments and `is_laser_weapon`/`runs_beam` sets had the Grapple and the
+  Micro-Camera where the lasers are.
+- The user's symptoms root-caused and fixed:
+  - **"rapid fire of bullet impacts"**: the laser's per-shot bullets took the normal bullet world
+    death — impact_sound + Effect_Bullet decal every held tick. The game routes a +0x6C & 0x100
+    bullet's wall death to effect kind 0x10 → `Effect_Laser` 0x1cef38 (a burn puff; its sound arm
+    needs effect flags 0x40, set only by weapon_data+0x70 & 2 — clear on the Laser's 0x800 [L]) [M
+    Bullet_CollisionHandler 0x12ce80:186-192]. The port skips impact_sound and the decal/ricochet
+    for those bullets and spawns the burn puff.
+  - **no beam**: `Sim::laser_beam` was parked but the renderer never drew it, and the ray was
+    bond.look() from the head. The beam now draws from the CROSSHAIR ray (look + the cross offsets,
+    the same ray the bullets take [M Player_WeaponInitBullet 0x1a4bf0:152-159]) to its world hit
+    [M Player_MuzzleFlash 0x1a4298:107-132], as one stretched trail slot (the mesh is the port's
+    0x02000123 trail stand-in — the game's 0x2000131/0x20006c1 sprites are global-gfx [S; live
+    check filed]).
+  - **the loop sound stuck**: three stacked causes, all fixed — (1) the fire script restart gate
+    from fix-gadgets2 suppressed the restart for the +0x68 & 0x100400 family, but the Laser/
+    Stunner (+0x44 = 0 [L]) spawn in the FIRE branch and re-queue the script every tick via
+    AnimScriptAdd, which DELETES and recreates it [M 0x1c6d40] — the gate now applies only to the
+    release-frame family (+0x44 != 0); (2) the re-played loop start allocated a new voice per tick —
+    `Sounds::play_loop` keeps one voice per looped id; (3) the release never queued +0xB4 (the
+    release script whose op-4.3 frame 1 stops the loop [L 0x060004e8/0x06000488]) — the port now
+    runs the game's state-0xb transition [M 0x1a2e38 case 0xb:499-507, speed 1.5 M 0x1a5460:677-679]
+    and stops the looped op-1 ids on weapon switch too.
+  - **the 0c display-vent accuracy**: the burn ray is the crosshair ray (fix_level_0c_live's hinge
+    burn now runs on the Laser 0x4E through it).
+  - **the stunner**: no target (a live guard within weapon_data+0x1c [M 0x1a4bf0:169-200]) → NO
+    bullet and NO beam (+0x95d gates Draw_TaserBeam [M 0x1a4298:134]); `Sim::stunner_target` carries
+    the per-tick test; the shot block is gated on it.
+- Shared-file hooks (additive): drone.rs (the laser world-death branch), sound.rs (`play_loop`,
+  `active_ids` test hook), lib.rs untouched this task. `--give 0x4e,0x4a` verified equipping both.
+- Found on the way (NOT fixed, next task): the grapple is 0x50/0x51, not 0x4A/0x4C — the claw bolt
+  latches on a class-0x51 point's sphere at Bullet_Delete [M 0x12e660:36-60], not the press-ray
+  pick; the port's grapple gate + tests still use 0x4A/0x4C. The taser msg 7 state is unported
+  (the stunner's drone hit still routes msg 8).
+- Tests: gadget_laser_live 7/7 (the safe burn through 0x4E, the hold = 0 decals + one loop voice +
+  the ring-out, the beam end == the crosshair hit, the targetless stunner), fix_level_0c_live 4/4
+  (the hinges burn through the crosshair ray), nf-game lib 139/139, the full nf-view non-walk set
+  479 passed 0 failed, nf-game/formats/audio 349 passed + the 3 allowed disc_golden, the walk
+  samples green.
 ## fix-objective-messages (s/fix-objective-messages) — 2026-10-14
 
 Task 101d: the playtest (results 1013-1758 / 1013-1825) found (1) two stacked OBJECTIVE
@@ -9767,3 +9822,37 @@ tests/fix_weapon_sounds_live.rs (new). Report: docs/reports/fix-weapon-sounds.md
 weapon → bank mapping table + live checks). The full 211-binary suite still needs a run on
 the final tree (background jobs are killed between tool calls here; the window closed) —
 listed in the report for the next message.
+---
+
+## fix-qclaw (s/fix-qclaw) — started 2026-10-14 02:28 UTC
+
+Task 101f: the Q-Claw (grapple gadget) draws no hook model and firing within range of a grapple
+point makes a bullet impact instead of the grapple (playtest 1013-1758, level 07000005 at
+`--bond 16.5,29.6,58.6,0,0.25 --give 0x50`, beside grapple point #282 (13.75, 32.29, 57.3)).
+Plan: settle the real weapon id (the panel/`--give` used 0x50; another note says 0x4a) from the
+weapon table + the game's equip code in the decompile; find the first-person model; wire the
+grapple fire path (latch on a grapple point within range, reel in, hang while held; no bullet);
+fix so `--give <qclaw id>` draws the claw and firing at #282 from that spot latches and reels.
+Tests through the real input path at that spot: fire held -> Bond travels to the point and hangs;
+0 bullet decals; the view model is the claw's mesh; sister assertions.
+
+The ids are settled and the fix is in (mid-session checkpoint): the Q-Claw = **0x50/0x51** [L
+ee_start_05.bin @ weapon_data 0x2bf150 — the bank's own name "Grapple" (+0x38 = 0x05000044),
+`+0x70 & 0x40` = the grapple-bolt flag `Bullet_Delete` 0x12e660:33 latches on, range +0x1C =
+50.0/100.0, clip 0, damage 0; `Bullet_CollisionHandler` 0x12ce80's `+0x02 - 0x50 < 2` band;
+`Player_GrappleSetRope` 0x192728's `+0x62 - 0x50 < 2` rope gate; `Inventory::level_start` owns
+0x50]; 0x4A/0x4C are the **Stunner**, 0x4E/0x4F the **Laser**, 0x54/0x55 the **Micro-Camera**.
+The playtest's `--give 0x50` was refused (the claw is owned at the 05 start and the game's equip
+declines the re-equip — ammo type 0's cap 0 [M 0x1a8a58 owned branch]) so Bond stayed on the P2K:
+a real bullet impact; and `is_laser_weapon(0x50)` drew the beam over it. Fixed: gadget.rs (the id
+sets + `is_grapple` + `grapple_range` reads +0x1C off the record), scene.rs (the fire gate 0x50/
+0x51), lib.rs (--give draws already-owned ids the equip declines). Tests: qclaw_live.rs (3) +
+the two gadget_grapple test files re-pointed at 0x50 — all green; probe_qclaw_symptom.rs showed
+the equip refusal failing-first and was deleted. Scratch probes (wd_probe example) deleted.
+
+fix-qclaw DONE (03:52 UTC): the Q-Claw is 0x50/0x51 (settled from the table + 5 decompile readers,
+see the report's table); the laser set back to the Laser/watch; grapple_range reads +0x1c; --give
+draws owned ids the equip declines (the actual playtest refusal). 6/6 grapple tests, 140/140
+nf-game units, the full 214-binary suite green except the allowed disc_golden 3. Report:
+docs/reports/fix-qclaw.md (rope rendering + the 0x02100717 mesh gap listed as what's left, with
+the PCSX2/nf-view live checks).
