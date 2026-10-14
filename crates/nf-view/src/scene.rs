@@ -1785,7 +1785,10 @@ impl Sim {
             let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
             input.fire = trigger;
             // The queries' start cel (obj+0x20 — fix-safe08b): the movement pass's relink, read fresh
-            // off the position the same way `build_LinkToRoom` 0x1c9680 re-links.
+            // off the position the same way `build_LinkToRoom` 0x1c9680 re-links. (The raw
+            // `find_cell_raycast` at feet height resolved 07000008's missile-room spot to the F1
+            // cel 45 — whose straddle set doesn't keep the room's own north wall — so the walk pass
+            // lost the wall; the per-cel pass (fix-08-collision) rides the room-cell mapping.)
             self.bond.cel = self.cel_at(self.bond.pos).and_then(|room| self.room_cell.get(room).copied().flatten());
             self.bond.tick_ctx(&self.world, &ctx, &input);
             // `Player_WeaponNone` 0x1a9858 runs in `Player_CollLadder` on the grab [M 0x196118]: the

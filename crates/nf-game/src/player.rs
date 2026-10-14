@@ -507,11 +507,20 @@ impl Bond {
         // the collision pass).
         for k in 0..3 { self.pos[k] += self.vel[k] / 60.0; }
         let (a, b) = self.capsule();
-        let (push, walkable) = world.capsule_push(a, b, RADIUS);
+        // The pass is the actor's own cel's object lists (fix-08-collision): `Player_Collision`
+        // 0x194df0 stores obj+0x20 (the relinked cel) into the BLData+0x740 HITTEST's start-cel
+        // field (`*(BLData+0x7c0) = *(obj+0x20)`, the function's first store), and `Collide_Pick`
+        // 0x1eb320 walks `Collide_StraddleCels` 0x1eac98's result, testing each straddled cel's
+        // OWN list (`*(cel + 0x18)`) — walls hanging on other rooms' cels never block. `self.cel`
+        // is that relink (obj+0x20; the Sim refreshes it off the position each tick, the
+        // `build_LinkToRoom` 0x1c9680 order); `None` falls back to the flat world.
+        let (push, walkable) = world.capsule_push_scoped(self.cel, a, b, RADIUS);
         self.head_bump = push[1] < -1e-4;
         for k in 0..3 { self.pos[k] += push[k]; }
         let ray = self.cc + 0.6;
-        let floor = world.segment_hit(self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
+        // The floor test reads the same HITTEST (`Player_CollisionHandler` 0x1949a8 →
+        // `Player_FeetOnPoint(param_1, BLData+0x740, …)`), so it shares the per-cel scope.
+        let floor = world.segment_hit_scoped(self.cel, self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
         self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
         if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
     }
@@ -992,11 +1001,32 @@ impl Bond {
         }
         self.vel[1] = self.vel[1].clamp(-45.0, 45.0);
         for k in 0..3 { if !(swimming && k == 1) { self.pos[k] += self.vel[k] / 60.0; } }
-        // `Player_CollisionHandler`: the floor ray first, then the capsule's push.
+        // `Player_CollisionHandler`: the floor ray first, then the capsule's push. Both read the
+        // one BLData+0x740 HITTEST, whose start cel is the actor's own obj+0x20 [M
+        // `Player_Collision` 0x194df0's first store `*(BLData+0x7c0) = *(obj+0x20)`;
+        // `Collide_Pick` 0x1eb320 tests each `Collide_StraddleCels` cel's own +0x18 list] — the
+        // per-cel attribution (fix-08-collision): walls hanging on other rooms' cels never block.
+        // `self.cel` is the Sim's per-tick relink (obj+0x20); `None` falls back to the flat world.
         let (a, b) = self.capsule();
-        let (push, walkable) = world.capsule_push(a, b, RADIUS);
+        let (mut push, mut walkable) = world.capsule_push_scoped(self.cel, a, b, RADIUS);
         let ray = self.cc + 0.6;
-        let floor = world.segment_hit(self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
+        let mut floor = world.segment_hit_scoped(self.cel, self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
+        // The game's pass never lands over a void: `build_FindCel` 0x1c8cb0 relinks obj+0x20 by
+        // tie-break rays against each candidate's own chain geometry, so the actor's cel always
+        // carries the geometry under him. The port's buckets are coarser than the game's cels [S]:
+        // over 07000002's ladder head the scoped pass sees nothing (the garden-floor rim sits in a
+        // bucket the straddle walk doesn't keep) and Bond fell down the shaft he had just climbed
+        // (fix_ladder_live). When the scoped pass finds neither a push nor a floor — the actor is
+        // over a void in his own cel's world — redo the tick against the flat world, the stand-in
+        // for that relink. On the ground the scoped pass always finds the room's own floor, so the
+        // redo never fires there: across the fix-08-collision slab band the floor stays in the
+        // room's bucket while the exterior wall stays out of it.
+        if push == [0.0; 3] && !walkable && floor.is_none() {
+            let (fp, fw) = world.capsule_push(a, b, RADIUS);
+            push = fp;
+            walkable = fw;
+            floor = world.segment_hit(self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
+        }
         self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
         if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
         self.head_bump = push[1] < -1e-4;
