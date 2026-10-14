@@ -134,9 +134,17 @@ pub dir_bits: u8,
 /// Bullet_DoTrails 0x12d890:349] — set per blast by the dist (5→90 u) × facing × LOS falloff [M
 /// 0x12e014-0x12e0b8], decayed 1/60·10·f per tick (the BL amount [*suggested*: the game's exact fade
 /// is the view's `Camera_SetFade`, not modelled]). fix-explosions.
-pub flashbang: f32 }
+pub flashbang: f32,
+/// fix-grenade-types: `BL+0x91C` — the flash's TOTAL time in ticks (`FRAME_RATE·f·10` = 600·f at the
+/// 60 Hz FRAME_RATE [D docs/systems/input.md:126]), fixed at the blast. `Player_Update`'s fade gate
+/// compares the remaining time's half against it [M 0x193600:340-352].
+pub flash_total: f32,
+/// fix-grenade-types: the flash's peak alpha as f/255 of `BL+0x963` (the byte `Player_SetFlashBang`
+/// stores [M 0x196040]). The renderer paints the whiteout at this alpha until the half point, then
+/// fades it with the remaining time [M 0x193600:328-352; GlobalBlur rides the same byte].
+pub flash_alpha: f32 }
 
-impl Default for PlayerHealth { fn default() -> Self { PlayerHealth { health: 100.0, armour: 0.0, flash: 0.0, dir_bits: 0, flashbang: 0.0 } } }
+impl Default for PlayerHealth { fn default() -> Self { PlayerHealth { health: 100.0, armour: 0.0, flash: 0.0, dir_bits: 0, flashbang: 0.0, flash_total: 0.0, flash_alpha: 0.0 } } }
 
 impl PlayerHealth {
     /// `Player_HandlePain` (single player, damage type 0): × the level's damage factor for the difficulty
@@ -220,7 +228,7 @@ mod tests {
     #[test]
     fn armour_bypass_by_pain_type() {
         // 07000005 at difficulty 1: damage_factor 0.6, so 30.0 -> 18.0 effective.
-        let mut h = PlayerHealth { health: 100.0, armour: 50.0, flash: 0.0, dir_bits: 0, flashbang: 0.0 };
+        let mut h = PlayerHealth { health: 100.0, armour: 50.0, flash: 0.0, dir_bits: 0, flashbang: 0.0, flash_total: 0.0, flash_alpha: 0.0 };
         h.pain_generic(30.0, 1, 0x0700_0005, 6); // fall damage
         assert_eq!(h.armour, 50.0, "a fall must not drain armour [M 0x1902c8:84-104]");
         assert!((h.health - 82.0).abs() < 1e-4, "the fall still costs the full 18 health");
