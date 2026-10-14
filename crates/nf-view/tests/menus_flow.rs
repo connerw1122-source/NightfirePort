@@ -971,8 +971,9 @@ fn the_pause_objectives_tab_draws_the_objective_rows_with_their_markers() {
     fe.pause_objectives = vec![(0x0400_0000, false), (0x0400_0001, true)];
     let f = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     assert!(f.v.len() > empty, "the objectives rows add quads ({} -> {})", empty, f.v.len());
-    // The 'J' marker's glyph quad: uv x = 176/256 of the specialchar atlas.
-    let j = f.v.iter().filter(|v| (v.uv[0] - 176.0 / 256.0).abs() < 0.01 && (v.uv[1] - 57.0 / 256.0).abs() < 0.02).count();
+    // The 'J' marker's glyph quad: uv = (176,57) texels of the specialchar atlas, normalised by its
+    // real 256×128 pitch [L tex-list 07000048.bin; the runtime table's v is in texels].
+    let j = f.v.iter().filter(|v| (v.uv[0] - 176.0 / 256.0).abs() < 0.01 && (v.uv[1] - 57.0 / 128.0).abs() < 0.02).count();
     assert!(j >= 2, "the done row draws the ~J marker glyph (found {j} verts)");
 }
 
