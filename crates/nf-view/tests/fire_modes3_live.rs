@@ -53,7 +53,15 @@ fn draw(scene: &mut nf_view::scene::Scene, id: u8) -> bool {
         if scene.sim.as_ref().unwrap().gun.weapon == id { break; }
     }
     let ok = scene.sim.as_ref().unwrap().gun.weapon == id;
-    tick(scene, 25);
+    // Settle until the draw finishes: the weapon byte flips at holster-done and the draw then plays
+    // at 1.25 [M `Player_SetWeaponAnimObj` 0x1a2e38 case 2:262-263, case 3:287-288] (~55-70 ticks
+    // since fix-weapon-anims removed the 2x double advance), so a fixed 25-tick settle is too short.
+    for _ in 0..200 {
+        let sim = scene.sim.as_ref().unwrap();
+        if sim.gun.switch_state == 0 && sim.gun.reload_state == 0 && !sim.gun.fire_state { break; }
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+    }
+    tick(scene, 5);
     ok
 }
 
@@ -67,7 +75,13 @@ fn mode_press(scene: &mut nf_view::scene::Scene) -> u8 {
             scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
         }
         scene.sim.as_mut().unwrap().step_bond(Input { mode_switch: true, ..Default::default() }, false, false, false);
-        for _ in 0..40 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
+        // Wait out the variant swap (the requested record's +0xC8 at 1.3 [M `Player_WeaponSelect`
+        // 0x1a2cc0]) before judging it: a re-press while it still plays would toggle straight back.
+        for _ in 0..200 {
+            scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+            let sim = scene.sim.as_ref().unwrap();
+            if sim.gun.switch_state == 0 && !sim.gun.fire_state { break; }
+        }
         let w = scene.sim.as_ref().unwrap().gun.weapon;
         let idle = { let sim = scene.sim.as_ref().unwrap(); sim.gun.switch_state == 0 && !sim.gun.fire_state };
         if idle { return w; }
