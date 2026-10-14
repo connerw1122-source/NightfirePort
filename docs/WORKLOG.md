@@ -9320,3 +9320,21 @@ Work Log:
   drone.rs comment; the 61fa5ce OFF is now evidence-backed.
 - Report: docs/reports/fix-nav-remainder2.md. Files: drone.rs, nav_kick_live.rs (the drive test's
   ignore attribute), WORKLOG, the report. No test loosened.
+
+Task ID: fix-ingame-dev-menu
+Agent: worker (fix-ingame-dev-menu session)
+Task: 101a: move ALL of the HTTP dev panel's functions (crates/nf-view/src/panel.rs, 127.0.0.1:7007) into the
+in-window F2 dev menu (dev.rs, WORKLOG 0081) and stop starting the HTTP server by default (keep panel::apply as
+the shared command layer; drop the server or put it behind --panel). Pages: Weapons, Gadgets, Grenades/explosives,
+Ammo/health/armour, NPCs (spawn by skin and mode, clear), Teleport (named spots), Level, Toggles, Screenshot.
+Keyboard (arrows/Enter/Backspace, PageUp/PageDown, type-to-filter) + mouse (click, wheel). Pauses the sim while
+open. HUD font + dark translucent box, readable 720p and 4K. Spawning while paused must be safe (the 07000015
+panel grenade crash). Tests: headless menu flow through the real key path (dev_menu_flow.rs); --dev-page <name>
+for --shot renders of each page. Branch s/fix-ingame-dev-menu.
+
+Work Log:
+- Session started 00:50 UTC 2026-10-14 (deadline ~02:44 UTC; stop new work 02:24). Branch created from
+  origin/master (3c77a9d), pushed with this entry. Repo/work/ISO already present from the prior session
+  (fix-anim-events, finished and pushed on its own branch). Fast suite baseline from that tree: 871 passed,
+  3 failed (the allowed disc_golden set), 27 ignored, 23 min.
+- (next: read panel.rs/dev.rs/hud.rs/lib.rs, plan the menu, reproduce-first)
