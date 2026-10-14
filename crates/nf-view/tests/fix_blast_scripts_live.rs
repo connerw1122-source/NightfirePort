@@ -133,7 +133,7 @@ fn the_frag_and_the_rocket_keep_the_generic_blast_script() {
         let mesh = sim.weapons.model(0x34);
         sim.drones.grenades.push(nf_game::grenade::Grenade {
             pos: at, velocity: [0.05, 0.0, 0.0], speed: 0.05, travelled: 0.0, range: 10.0,
-            damage: 100.0, radius: 8.0, weapon_type: 0x34, owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: false, mesh,
+            damage: 100.0, radius: 8.0, weapon_type: 0x34, owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: false, stuck: false, seek_target: None, mesh,
         });
     }
     let mut frag_exploded = false;
