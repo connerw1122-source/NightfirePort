@@ -39,9 +39,11 @@ the Sim's per-tick relink (`cel_at(pos)` → `room_cell`, the `build_LinkToRoom`
 **The void-redo deviation [S].** The port's cel buckets are coarser than the game's cels, and the
 game never lands over a void: `build_FindCel` 0x1c8cb0 relinks obj+0x20 by tie-break rays against
 each candidate's own chain geometry, so the actor's cel always carries the geometry under him.
-Over 07000002's ladder head the scoped pass sees neither a push nor a floor (the garden-floor rim
-sits in a bucket the straddle walk doesn't keep) and Bond fell down the shaft he had just climbed
-(fix_ladder_live caught it). When the scoped pass finds neither push nor floor, the tick is redone
+Over 07000002's ladder head the scoped pass sees no floor at all (the garden-floor rim sits in a
+bucket the straddle walk doesn't keep) and Bond fell down the shaft he had just climbed
+(fix_ladder_live caught it); on 07000009 the car-park stairwell steps hung outside the straddle
+set too (walkreal_07000009_live — a wall push IN the set does not put a floor under Bond), so the
+redo fires on the missing floor alone: when the scoped floor ray misses, the tick is redone
 against the flat world — the stand-in for that relink. On the ground the scoped pass always finds
 the room's own floor, so the redo never fires there: across the missile-room slab band the floor
 stays in cell 48's bucket while the exterior wall stays out of it (`debug_bucket_owners` probe:
@@ -75,7 +77,9 @@ reaching into the private `ScopeData`.
 
 Regression set on the fixed tree, all green: fix_08_collision_live 4, fix_08_walls_live 4,
 fix_safe08_live 4 (the GuardRoom fusebox floor holds), fix_ladder_live 3+1 ignored (the bunker
-exit climb works again), fix_ladder2_live 5, fix_swim_vent5_live 2, fix_wire2_live 3.
+exit climb works again), fix_ladder2_live 5, fix_swim_vent5_live 2, fix_wire2_live 3,
+walkreal_07000009_live (the car-park → lift walk, the stairwell-floor case above). The 08 + 09
+sets re-ran green on the final merged tree.
 
 ## Suite
 
