@@ -10513,3 +10513,25 @@ report docs/reports/fix-guard-misc.md): three guard bugs — 0c rooftop sniper t
 06 guards never open doors, 06 start "crazy models" needs renders. Plan: merge origin/s/fix-guard-misc
 for its harnesses, repro each through nf_view::load + Sim::step_bond, fix with decompile evidence.
 (Entry appended at branch creation; will be updated as work lands.)
+Continued (fix-guard-misc2, same session, ~2h): the 0c sniper repro was the HARNESS's setup pitch
+(computed from `v[1]+1.5` while stand_at puts the eye at floor+1.1+1.5 = 1.0 higher — aimed 0.4 over the
+head box; the "aim-mode pitch drift" theory is dead, pitch only moves via input.look and the harness sent
+0). Port fix for the aim: while AIMING the port dropped the auto-aim lock/offsets; the game's Player_AutoAim
+0x1a7c98 keeps the lock and eases the offsets toward the manual offsets (0.5/tick) and the bullet consumes
+them through Player_GetAimingPoint 0x1a4a98 (InitBullet 0x1a4bf0:152-164) — scene.rs's aim-mode dir now
+eases aim_offset toward the cursor projection (x flipped, object-frame angles) and builds the ray from it.
+Doors: NDrone_InitDoorNodes 0x139a70 binds the nearest class-0x1C door to flag-0x2 nodes; LinkCreep_Handler
+0x15a2c8 dispatches ReachedDestNode 0x153358 for EVERY followed route including the chase (MoveToObject
+0x151618:65 → FollowRoute 0x155be0 → AINetwork_FollowRoute 0x15b110). The port's move_to_object dropped the
+reached node (dispatch never ran on the chase) and Drones::tick resolved door_node via dr.route only (a
+croute door resolved None → OPEN_DOOR's UPDATE insta-restored without opening). Both fixed (+ the
+door_return ≠0x81 guard [M 0x153358:157-160]); test the_06_guard_driven_through_a_door_pair_opens_it_and_
+crosses fails-first (stash-verified), now OPEN_DOOR +30, door #1 open +38, crossed; the passive 06 test
+flipped to the game-true idle contract (post guards open nothing idle). Suite: build OK 241 binaries; the
+chunked run hit the sandbox wall (backgrounds die here) — everything that ran green; weapon_matrix_live
+just exceeds any per-binary limit here (26 level loads; its 0c/06 matrices pass directly, 80.9s).
+Neighbours: ai_traces 4, doors_live 2, doors_01 2, drone_portcheck 5, fix_drone3 5, fix_drone4 2,
+fix_searchlights_guards 2, fix_npcs 4, fix_ai_remainder 1, weapon_effects 6, fire_modes 5, weapons_all 4,
+gadgets 4, fix_level_0c 4, fix_0c_hatch 2. Renders for "crazy models" need the main agent (no GPU here);
+commands + watch list in docs/reports/fix-guard-misc2.md. Files: drone.rs, scene.rs (aim branch — the
+shared-file hook), tests/fix_guard_misc_live.rs.
