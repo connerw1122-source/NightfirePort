@@ -9292,6 +9292,56 @@ Stage Summary:
   not. This is why the old wedge scenario vanished; it also makes Bond auto-switch mid-intro.
 - Shared files touched: scene.rs only (the drain block + its comment; request-only now).
 - Report: docs/reports/fix-auto-switch.md (live checks inside).
+Task ID: fix-nav-remainder2
+Agent: worker (nav-remainder2 session)
+Task: GAPS G-017-followup: re-enable the two parts fix-nav-remainder switched OFF at 61fa5ce — (1) the ally-wait state entry (0x21, from the 0x20 "Mayhew Route" nodes), which gates on switch_channels[0x99] and needs 0x99's writer found in the game (trigger/touch volume/script event, Trigger_Calc, level placements) or the state's own exit; (2) the NoBunching tick scan (the 0x5E "drone ahead" flags +0x31C), which regressed 07000001's death-drop tests — root-cause the regression (the scan moving the guard out of the test's line, or the scan firing where the game's wouldn't) before re-enabling.
+
+Work Log:
+- Session started 22:58 UTC (deadline ~00:57 UTC). Branch s/fix-nav-remainder2 created from origin/master (5017f15), pushed.
+- Evidence base: 61fa5ce's diff read — the ally-wait entry (`dr.ally_wait_node` → LEAD_MISSION_WAIT 0x21 when node flag 0x20 && !channels.on(0x99) && state != 0x21) and the NoBunching scan (nearest peer/player within 3.0 → +0x31C bits 0x8/0x10/0x2/0x4 by angle vs facing) are both currently stubbed to no-ops.
+- (next: reproduce both regressions on this branch, then decompile work)
+- The NoBunching scan ROOT-CAUSED [M]: the game's +0x314 obstacle is drone-only — EvaluateObstacle
+  0x14e6f0:58-65 writes it only for param_2 != 0, the player call passes 0 (0x14eba8:98-99), the
+  0xb/speed-0 fallback (0x14eba8:180-214) loops drones — so Bond never feeds the +0x31C flags. The
+  61fa5ce scan's player term alone flagged the death-drop guard (bit 2, dist 2.3-2.9), parked him
+  in 0x5E, and the drop was taken at the corpse. Scan rewritten drone-only with the full citation.
+- The scan verified green with the player term removed: a_death_draws_its_drop, dropped_guns_dim,
+  the un-ignored nav_kick drive test, ai_traces_live 4/4 (01-doors/01-raptor hold). HELD inert
+  behind NB_SCAN_LIVE=false anyway: enabling it reshuffles 07000001's RNG-chained escort walk and
+  walkreal_07000001's west mezzanine guard (drone 2, ch 0x26) outlives the test's fixed 12-round
+  budget (10 hp, Bond can't close on the mezzanine) → the contact parks in LEAD_HIDE 0x1f → the
+  settled-vs-plate assert. That fight needs its own re-pin (walkreal is not this task's file).
+- The ally-wait chain pinned end to end on disc data + the real recording: the game parks the
+  contact in 0x21 at node 33 (2.94, 7.22) for 1262 frames (01-doors.trace 44664→45926); the
+  release = the courtyard guards' death channels 0x11/0x12/0x13 → the AND mux pl 318 → ch 0x99
+  (every link ported); the guards' enable 0x0e = script 0x06000086 (SP #276, out 0x21, state 0);
+  ch 0x21's writer is in NO placement/script/door/mux/pickup the port parses — live check filed
+  (gdbwatch switch_channels+0x21 and +0x0e). The entry stays off with the full chain as the
+  drone.rs comment; the 61fa5ce OFF is now evidence-backed.
+- Report: docs/reports/fix-nav-remainder2.md. Files: drone.rs, nav_kick_live.rs (the drive test's
+  ignore attribute), WORKLOG, the report. No test loosened.
+## fix-anim-events (s/fix-anim-events) — 2026-10-13
+
+Task 288, G-030: the animation scripts' events with effects. Census first (all 99 FILES.BIN
+archives, 18,231 scripts, 50,279 commands, 0 parse failures): only opcodes 0/1/4 exist on the
+disc; op-4 kinds 0/4/5 footsteps, 1 player toggle (52), 2 EventFunc (12,947 — args 0-16, 18, with
+the fire flags 0xF/0x10/0x12 at 86%), 3 stop-sfx (53), 6 effect (1,294), 7 fire bullet (4, one
+script). Ported this session (drone.rs): EventFunc cases 2 (DroneWeap_ChangeWeapon by the DRONE's
++0x45 byte — disasm 0x13b7dc `a1 = lb 0x45(a2)` — not the event arg; entries 1/6 of the 0x2fb740
+jump table), 5/10/0xB (DroneWeap_CloseCombatImpact 0x1789c0: Bullet_init records 99/100/0x65/0x66,
+range 2.0 kick / 1.75 punch + the 60° facing gate, no accuracy roll), 9 (PlaceTertiary 0x17a848 =
+a ThrowGrenade tail call), the 0.0 < +0xAC health gates on 1/5/6/9/0xB/0xE (the script==+0x530
+gate holds structurally — the port only runs the current script's commands); PlayFiringAnim
+(0x13da48) inside handle_firing: the 0x1C/0x1D recoil weapons (DefaultInit 0x14b300:801-811,
++0x3E) fire only on the 0x12 event's +0x21 and play the 0x5C recoil, zeroing +0x596/0x598 and
+setting +0x57B — the guards' 0x16/1/6 weapons are unaffected. Tests: anim_events_live.rs, one per
+ported kind on real disc scripts (melee 07000005/060002ba — the punch connects in range and never
+out of 1.75; weapon change 07000001/06000330; the 0x12 flags via 07000005/0600029f; tertiary
+07000012/060007ac), 4 passed + the PlayFiringAnim shot scenario ignored (the harness's neutral
+state never lets the shot come due — needs a state whose UPDATE leaves firing/class alone).
+Left (censused + decompile-cited in docs/systems/anim-engine.md): op-4 kinds 1/6/7, EventFunc 0xE
+(partner messaging), the other 53 ChangeWeapon entries, footprint decals, the +0x45 setup read.
+Shared files: drone.rs only (fields on their own lines, merge lesson 4).
 
 ## fix-interp-ghosting (s/fix-interp-ghosting) — 2026-10-14
 

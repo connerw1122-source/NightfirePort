@@ -116,3 +116,43 @@ writer sets +0xB4 in the port — the game's mode-1/2 pairs come from `AnimSetUp
 building the player's walk sets (master +0xB4=1, slave +0xB4=2, `sAnimSet` +0x24 = 0.37 idle
 accumulator, +0x28 = 0.5 stride factor [L docs/fields/animobject.md]), which is the remaining
 work; the guards play mode-0 scripts at `Drone_AnimInfo +0x14`, as in the game.
+
+**fix-anim-events (2026-10-13, branch s/fix-anim-events, G-030):** the disc-wide census (all 99
+FILES.BIN archives, 18,231 scripts, 50,279 commands, 0 parse failures) shows only opcodes 0 / 1 /
+4 exist; op-4 carries kinds 0 (34) / 1 (52, player toggle) / 2 (12,947 — `DroneAnim_EventFunc`) /
+3 (53, stop sfx 18 / 61 / 1479) / 4 (6,925) / 5 (6,976, footsteps) / 6 (1,294, `Effect_Create`)
+/ 7 (4, fire bullet — one script, 07000016/06000858), and kind-2's args are 0–16 and 18 with the
+fire flags 0xF/0x10/0x12 (args 15/16/18) at 86% of the traffic. The port's `Drone::event_func`
+now carries the missing `DroneAnim_EventFunc` (0x13b750) cases, all gated on `0.0 < drone+0xAC`
+as the game does (the port's `script_commands` only runs the current script, so the game's
+`script == drone+0x530` gate holds structurally): 2 → `DroneWeap_ChangeWeapon(drone+0x45)`
+(disasm 0x13b7dc: `a1 = lb 0x45(a2)` in the dispatch's shared delay slot — the drone's setup byte,
+NOT the event arg; `DroneWeap_ChangeWeapon` 0x17a6e0 is a 55-entry per-weapon jump table at
+0x2fb740, of which the port carries the two SP-verified entries 1 and 6), 5 / 10 / 0xB →
+`DroneWeap_CloseCombatImpact` (0x1789c0: `Bullet_init(-1, obj, obj, record, obj+0x30, facing,
+0xffff)` — record 99 at 2.0 for the weapon-class-7 kick, else 100 / 0x65 / 0x66 at 1.75 with the
+`|+0x1D4| ≤ 60°` facing gate; no accuracy roll, no muzzle light), 9 → `DroneWeap_PlaceTertiary`
+(0x17a848 is a tail call to `DroneWeap_ThrowGrenade`), and the health gates on 1 / 6. The
+`+0x45` swap byte (`weapon_swap`) and the melee/swap outboxes (`pending_melee`,
+`pending_weapon_swap`) drain in `Drones::tick`. `DroneAnim_PlayFiringAnim` (0x13da48) is ported
+inside `handle_firing`: for the recoil weapons — `+0x3E`, set by `DefaultInit` (0x14b300:801-811)
+when the anim datum's weapon byte is 0x1C / 0x1D; the port keys it on the drone's weapon id — a
+due shot fires only when the anim's 0x12 event set `+0x21` (with the game's `+0x558 == 0` /
+`+0x538 == 0` gates), then plays the 0x5C recoil danim, zeroes the pending call's completion
+(+0x596 / +0x598) and sets +0x57B; non-recoil weapons fire unchanged. Tests per ported kind on
+real disc scripts (crates/nf-game/tests/anim_events_live.rs): melee 10 via 07000005/060002ba
+(the punch connects in range, nothing out of 1.75), weapon change 2 via 07000001/06000330 (entry
+6 = weapon 6 / set 4 / 16 rounds; an unported entry changes nothing), the 0x12 fire flag via
+07000005/0600029f sets both +0x20/+0x21 through the real script, tertiary 9 via
+07000012/060007ac spawns the grenade and spends one. Still unported (censused, with the
+decompile evidence): op-4 kind 1 (the player's SMI +0x964 toggle — `Player_SetWeaponAnim`
+0x1a9338 sets it from weapon_data+0x68 & 8; the port's player anim objects don't run script
+commands yet), kind 6 (`Effect_Create(1.0, *(obj+0xdc), obj, 0xc0)` 0x1c1b38:406-410 — the port
+has no general effect system, only the bullet impacts), kind 7 (the anim-driven bullet + muzzle
+`AnimDatumSetEntity` flash + `Light_Create` + `Gas_Init` smoke, 0x1c1b38:411-457 — 4 commands on
+the whole disc), `DroneAnim_EventFunc` 0xE (`Drone_SM_SendMsg(0xB, 10, …)` to the +0x2B0
+partner's SMI +0x108 — the port has no partner messaging), the other 53 `ChangeWeapon` table
+entries, the footprint decals (`ScriptFootstepFoot`/`ScriptFootstepType` → `AnimObjectUpdate`'s
+`Effect_Create(floor hit, 0x42 | foot)`; the footstep SOUNDS are ported), the setup-word read of
+`+0x45` (0x14b300:266 `[0x17]`), and `DroneWeap_PlaceTertiary`'s second argument's effect (the
+decomp shows the ThrowGrenade tail call only).
