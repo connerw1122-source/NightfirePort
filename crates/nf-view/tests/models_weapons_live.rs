@@ -327,7 +327,11 @@ fn tower_2_guards_get_their_muzzle_flashes_from_the_session() {
     // Sister: the local resolutions are untouched — the first map/object indices still resolve to the
     // same objects (the merge only appends maps and fills by_hash gaps).
     let stats = scene.stats.clone();
-    assert!(!stats.contains("0 weapons held"), "the scene still holds its weapons: {stats}");
+    // The held-weapon count (the number before " weapons held"): a plain `contains("0 weapons held")` also
+    // matched counts ending in 0 (3470 after fix-gadgets-live's AIMS-20 light attachments).
+    let held: usize = stats.split(" weapons held").next().and_then(|h| h.rsplit(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|n| n.parse().ok()).unwrap_or(0);
+    assert!(held > 0, "the scene still holds its weapons ({held}): {stats}");
 }
 
 /// Folded 190-fix-dev2: with `--dev`, EVERY selectable weapon has a first-person view model on

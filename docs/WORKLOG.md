@@ -10404,6 +10404,19 @@ Stage Summary:
 - Report: docs/reports/fix-grenade-throw.md (the evidence, the numbers, the live checks).
 - Open: nothing for this task; the satchel/sticky bounce branches and the mine's detonator are other systems' scope.
 
+---
+Task ID: 100k-fix-gadgets-live
+Agent: fix-gadgets-live worker
+Task: the laser/stunner/AIMS-20/Oddjob findings on 2026-10-13's master — (1) the laser 0x4e's beam, wall light and HUD charge bar + regen are missing (PCSX2 shows a short red beam, a red glow light, a vertical charge bar 31..0 at ~1/tick, regen after); (2) the stunner 0x4a "doesn't work" — the class-2/3 ray, Draw_TaserBeam 0x1a46a8 and the stunned reaction; (3) the AIMS-20 0x1a's side lights unlit (emissive/anim material); (4) Oddjob's hat 0x45 should be a one-shot kill, not a grenade.
+
+Work Log:
+- 06:53 UTC: branch s/fix-gadgets-live from origin/master (a4164b9); suite starting in background.
+- Root causes: (1) the gadget burn/beam ran on the RAW trigger at the top of the tick, not the shot tick — so it beamed through the draw/switch cycle, never stopped at clip 0, and the HUD charge sat still while firing was gated elsewhere; the game's whole visible shot rides the refire that spent a round (RoundToFire 0x1a18e0 → InitBullet 0x1a4bf0 → the +0x95b latch → MuzzleFlash 0x1a4298). (2) The stunner's miss arm REGENS +0x91 [M 0x1a4bf0:193-199] — the aimed-off hold is free; the port spent unconditionally. (3) The AIMS-20's lights are AnimDatumSetEntity(0x2000132, bones 8..0xB) per tick [M 0x1a5460:256-360] — never attached. (4) The hat 0x45 kills on contact (damage 100 through the standard bullet hit [M 0x12ce80:311-316 → msg 8]) and never explodes (the fuse arm only sets the post-hit lifetime [M 0x12e7b0:368-373]) — the port's grenade path fuse-blasted it.
+- Fixes: scene.rs — the beam/burn/target block moved into the release branch (the clip gate = RoundToFire's; the beam stops at 0), the light on every gadget shot tick, the beam draws the game's own sprites (lazer 0x2000131 / taser 0x200026d / uv_lazer 0x20006c1 — all resolve in every archive [D probe]; the old "unresolvable" [S] claim was wrong) anchored at the view-model root, the AIMS-20's four 0x2000132 light attachments (bones 8..0xB) with the blink/off arms off a new Drones::aims_idle (BLData+0x93a's stand-in); drone.rs — the hat's contact-kill pass + the silent fuse death for 0x45.
+- Tests (crates/nf-view/tests/gadgets_live.rs, 4/4, failing-first via the deleted scratch probes: the clip never drained and no beam parked pre-fix): the laser's drain/light/stop-at-0; the stunner's spend-on-target + free aimed-off hold; the AIMS lights attach + the idle timer; the hat's contact kill + no explosion. Neighbours green: gadget_laser_live 7, fix_level_0c_live 4, fix_fusebox_cut, qclaw_live, gadget_grapple_live, explode_live, fix_weapon_effects_live, fix_weapon_sounds_live.
+- Shared hooks: drone.rs (aims_idle on its own line + the hat pass), scene.rs (the restructure + the new slots; nothing removed but the replaced stale comment). grenade.rs/player.rs/lib.rs/gun.rs/gadget.rs/bullet.rs untouched.
+- Left: the taser's msg-7 stun state machine; the laser's battery-station recharge (0x1a5460:575-598); the AIMS bone-9/10/11 gates (+0x93e/+0x2f0/+0x2fc); the hat's return/clang; the pause-menu stop hook. All in the report with the live checks.
+
 ## fix-cutscene-brightness (s/fix-cutscene-brightness) — 2026-10-14
 
 Task 102g, the 07000002 intro playtest (results 1013-1825): "the models in the game during the
