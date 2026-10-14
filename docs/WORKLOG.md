@@ -10265,3 +10265,11 @@ Work Log:
 - Final suite on the master-merged tree (origin/master 966671a fix-08-walls merged; 223 binaries, tools/test/suite.py): 959 passed, 3 failed, 29 ignored — the 3 are exactly the allowed disc_golden slim-ISO set. Neighbours re-run green on the merged tree: grapple_hook_live 3, models_misc_live 10, fix_ladder2_live 4, fix_objects_live 6, fix_08_walls_live 4, qclaw_live, gadget_grapple_live, gadget_grapple_user_spot, gadget_select_live.
 - Independent audit (subagent): PASS — decompile/[L] claims re-verified, add_instance RNG-free and deterministic, the scene.rs diff removes only the stale comment, no other test asserts total counts; strengthened: every 0x3A placement on all 16 levels lacks 0x8000/0x2000 and glist 0x8/0x4 bits (the static draw is exact everywhere); citation fix: control_funcs row 0x51 is [L 0x26fa94..0x26fc68] (wire-grapple.md:7's shorter range is one row short).
 - Report: docs/reports/fix-grapple-hook.md. Files: crates/nf-view/src/scene.rs (additive sweep + counter + corrected comments), crates/nf-view/tests/grapple_hook_live.rs (new), crates/nf-view/tests/models_misc_live.rs (comment/message text only).
+
+---
+Task ID: 100i2-fix-cutscene-faces2
+Agent: cutscene-faces2 worker
+Task: fix-cutscene-faces2 — merge origin/master into s/fix-cutscene-faces, settle the facial-vs-body window rule on the game's own flags bit 0x8 (AnimProcessScriptCmds 0x1c1b38) everywhere master used the channel count, keep master's exact-math paths, verify the 07000007/02 renders, full suite.
+
+Work Log:
+- (started 20:13 UTC) branch s/fix-cutscene-faces2 created from origin/s/fix-cutscene-faces (316c759a); this entry. Merge of origin/master (62c17571) in progress.
