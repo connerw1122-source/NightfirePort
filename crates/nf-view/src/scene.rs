@@ -12,6 +12,28 @@ use nf_formats::character::{Skeleton, Skin};
 use nf_formats::drone::{self, DroneAnimData};
 use nf_formats::level::{Instance, Level};
 use nf_formats::placement::transform;
+
+/// weapon-matrix4: the clip view `Player_AmmoInGun` (0x1a9190) reads. [M decompile 001a9190]: a
+/// twin record (`weapon_data[w].+5 != 0`) whose ammo type matches its base (`+0x90`) reads the
+/// BASE's slot (`iVar2 = weapon_data[w].+2` unless the types differ) — one physical magazine per
+/// family, the same slot `Player_EquipWeapon` 0x1a8a58's give path fills and
+/// `Player_ReloadAmmoType` 0x1a1988:18-22 reloads (the twin clip-slot unification). The port's
+/// `Gun::has_ammo` read the twin's OWN slot — which no game write path ever fills — so a twin
+/// with a full shared magazine read as dry and every `Player_WeaponHasAmmo` (0x1a16c0) check
+/// refused it: the Shaver twins 0x5a/0x5c (ammo type 30's carried cap is 0 [D ammo_data], the
+/// shared clip[0x59] = 500 after the give) were unreachable by the mode press in the weapon
+/// matrix where the game reaches them. This is the read-side of the same unification; the
+/// runtime boundary sites are fix-reload-hang's (in flight on its own branch).
+fn clip_view(w: &nf_formats::weapon::WeaponData, clip: &[i16]) -> Vec<i16> {
+    let mut v = clip.to_vec();
+    for id in 0..v.len() {
+        let base = w.base(id) as usize;
+        if base < v.len() && base != id && w.shares_base_clip(id) && w.ammo_type(id) == w.ammo_type(base) {
+            v[id] = v[base];
+        }
+    }
+    v
+}
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Per-weapon op-1 sound id remap (docs/systems/sound.md §7 line 313): the first-person gun's animation script
@@ -1645,12 +1667,21 @@ impl Sim {
         // failed throw: the game plays the 26-frame throw script and blocks switching until it ends).
         // The refused set is {1, 3, 5, 6, 7, 8, 9, 0xb, 0xd, 0xe, 0xf, 0x10} — the reload states 5/6/7 are in
         // it: a reload always completes before a switch can start [M 0x1a6f80:33-47; fix-player3].
-        let fire_busy = self.weapons.records.get(self.gun.weapon as usize).is_some_and(|w| {
+        let fire_busy = self.gun.fire_state && self.weapons.records.get(self.gun.weapon as usize).is_some_and(|w| {
             let rd = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
             let len = |h: u32| self.scripts.get(&h).map_or(0.0, |s| s.length as f32);
             let (fs, fl) = (rd(0xb0), rd(0xb4));
             (self.view_script == fs || (fl != 0 && self.view_script == fl)) && self.view_time < len(self.view_script) - 1.0
         });
+        // weapon-matrix4: the gate now ANDs the machine's own state-9 flag (`gun.fire_state`,
+        // set by the fired path exactly when `Player_SetFiringAnim` 0x1a3c70:50-54 enters view
+        // state 9, cleared at the script end [M 0x1a2e38 case 9:449-456]). The hash predicate
+        // alone OVER-REFUSED when a record's idle script IS its fire script — the Shaver/mine
+        // family 0x5a: +0xA0 == +0xB0 == 0x060004ea (len 2) [L probe dump weapon_data] — so the
+        // machine read fire-busy while merely idle and every switch/reload/regen gate starved
+        // forever (the matrix's stuck-machine wedges before 0x38/0x39/0x5b/0x62 on 07000002).
+        // The game gates on `anim+0xF4 == 9` [M Player_WeaponChange 0x1a6f80:33-47], a MACHINE
+        // state: the idle loop playing the same hash is state 0, and switching works there.
         // The per-tick clip regen [M Player_Update 0x193600 disasm 0x193eb8-0x19405c]: while the view-anim
         // state is not 9 (the port's `fire_busy` gate), six clip slots refill +FRAME_RATE_MUL toward their
         // weapon's `weapon_data[w].clip_size` (+0x92): clip[0x4A] (+0x530) and clip[0x4E] (+0x560) and
@@ -1691,7 +1722,7 @@ impl Sim {
                     let mode_count = w[0x2e];
                     let mode = self.drones.inventory.fire_mode.get(self.gun.weapon as usize).copied().unwrap_or(0);
                     let carried = self.drones.inventory.carried.clone();
-                    let clip = self.drones.inventory.clip.clone();
+                    let clip = clip_view(&self.weapons, &self.drones.inventory.clip);
                     let weapons = &self.weapons;
                     let has_ammo = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
                     let sw = nf_game::gun::fire_mode_switch(self.gun.weapon, twin, mode_count, mode, has_ammo);
@@ -1733,7 +1764,7 @@ impl Sim {
         if self.gun.switch_state == 0 && self.gun.reload_state == 0 && !fire_busy {
             let owned = self.drones.inventory.owned.clone();
             let carried = self.drones.inventory.carried.clone();
-            let clip = self.drones.inventory.clip.clone();
+            let clip = clip_view(&self.weapons, &self.drones.inventory.clip);
             let weapons = &self.weapons;
             let ammo_type_of = |w: u8| weapons.ammo_type(w as usize);
             let flags_of = |w: u8| weapons.flags(w as usize);
