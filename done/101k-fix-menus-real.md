@@ -73,3 +73,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox1 at 2026-10-14T03:35Z
+
+---
+## Report (done, 2026-10-14T05:06Z)
+
+Closed by the driver: the report is on `s/fix-menus-real` (docs/reports/fix-menus-real.md); the worker didn't run finish.sh.
