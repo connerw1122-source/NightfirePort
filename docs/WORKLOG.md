@@ -10486,6 +10486,43 @@ Work Log:
 - Shared hooks: drone.rs (aims_idle on its own line + the hat pass), scene.rs (the restructure + the new slots; nothing removed but the replaced stale comment). grenade.rs/player.rs/lib.rs/gun.rs/gadget.rs/bullet.rs untouched.
 - Left: the taser's msg-7 stun state machine; the laser's battery-station recharge (0x1a5460:575-598); the AIMS bone-9/10/11 gates (+0x93e/+0x2f0/+0x2fc); the hat's return/clang; the pause-menu stop hook. All in the report with the live checks.
 
+## fix-casings-16 (s/fix-casings-16) — 2026-10-14
+
+Started (09:30 UTC): branch from origin/master (6cbe522). Task: the 07000016 playtest symptoms —
+(1) "I see bullet casings flying when I walk backwards" (casings spawn without firing: probably a
+footstep/anim event the port reads as the eject event, or the eject offset riding the walk); (2) "I
+saw a mission complete thing pop up for some reason in this mission, but I still couldn't continue".
+Reproduce both headlessly (walk backwards 3 s with no fire: 0 casings; play 16 from its start to
+that point: which objective/mission message fires and why), fix from the game's code, test, sister
+assertions. Files: crates/nf-game/src/{casing,gun,mission}.rs as needed. Work log continues below.
+
+### fix-casings-16 — outcome (11:05 UTC)
+
+- **The casings rule holds; the naive repro is clean**: 07000016 and 07000005, backwards/forward/idle
+  240-900 ticks, no fire → 0 casings, 0 bullets, 0 lights (probe). `Bullet_init_casing` 0x12fde0 runs
+  only from `Player_WeaponInitBullet` 0x1a4bf0:306 (the shot's release) and `DroneWeap_FireWeapon`
+  0x178f68:264 (a guard's shot) — both fire-gated in the port. The user's "casings flying when I walk
+  backwards" is consistent with the pool's own 240-tick life [M 0x12faa0] (their earlier burst's
+  shells still airborne) — no spawn-without-fire found; test `walking_backwards_never_ejects` pins it
+  incl. the fire-then-backpedal sister.
+- **The "mission complete thing" is the game's own arrival pair**: at 16's load the port queues
+  "OBJECTIVE COMPLETE" (the carried 07000015 objective — spawn plate #252 writes ch 0x8e as Bond
+  arrives [D docs/levels/07000016.md §2]) + the enabled "Reach Drake's launch silo" announce — the
+  game's own texts [M 0x1827d8 case 3 = 0x2000053]. No spurious ch 100 in 900 ticks (probe).
+- **The real bug — "I still couldn't continue"**: the arrival walkway's first door (glist 0x803f00a0,
+  kind 2 slide, straddle, ch_open 0, ch_lock 0, flags 0x3 → closed at create [M Door_Create 0x136100])
+  blocked the only path. `Door_Update` never opens a ch_open==0 door [M 0x1363c8], `Door_ReactToHit`
+  0x135980 only reverses moving leaves, and the port's straddle walk-in ran ONLY on the E path with a
+  1.4² radius. Fix: door.rs `straddle_walkin` — the same activation per tick over `Door_Update`'s
+  actor list with the game's own proximity metric `Vec_SqDist3D(door+0x80, actor+0x80) <
+  (door+0x8C+actor+0x8C)²·2` [M 0x1363c8 @0x136678-84]; drone.rs one additive call (once per tick,
+  sounds merged). The leaf rises (y −0.10 → 2.18, keys [D]) and the door reaches OPEN with no E.
+- **Left**: after the leaf clears (world box y 2.18..4.43, capsule_push free at Bond's pose) Bond's
+  forward move still collapses (~0.0002/tick vs 0.096) at the threshold z −73.58 — a movement-path
+  bug of its own (input alive, local [0,0.1], vel 0, no push) — not root-caused in the window; the
+  passage completion is the next session's first item. Files touched beyond the named three (the bug
+  lives there): crates/nf-game/src/door.rs (+ the straddle_walkin fn), crates/nf-game/src/drone.rs
+  (one additive call block). Report: docs/reports/fix-casings-16.md.
 ## fix-cutscene-brightness (s/fix-cutscene-brightness) — 2026-10-14
 
 Task 102g, the 07000002 intro playtest (results 1013-1825): "the models in the game during the
@@ -11433,3 +11470,33 @@ Work Log:
 - Report: docs/reports/fix-handcannon.md (live checks: the PCSX2 detonate + the auto switch-back, the
   7777 gdbwatch, the dry arm; nf-view spot list). Follow-up filed: the game STICKS the mine on first
   contact, the port bounces it to rest.
+
+## 102j2-fix-casings-16b (s/102j2-fix-casings-16b) — 2026-10-14
+
+Started (18:35 UTC): base s/fix-casings-16 (97632680) merged with origin/master. Task: the merge HELD
+fix-casings-16 — with the branch, two tests that pass on master fail
+(level_end_live::door_e_opens_then_e_closes_on_07000001 and
+walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact). Suspect: the per-tick
+straddle_walkin in door.rs (and its drone.rs hook) — on 01 it opens/holds/closes doors the game
+doesn't, or changes the escort's path through a door. Plan: find the game's actual gate for the
+straddle walk-in (Door_Update's proximity math, which doors and which states it applies to —
+0x136678 metric, 0x1363c8 ch_open gate per the fix-casings-16 evidence), narrow the port to it, keep
+16's arrival door working, restore 01's door E / escort walk to master behaviour.
+
+## 102j2-fix-casings-16b (s/102j2-fix-casings-16b) — 2026-10-14
+
+The merge-HELD fix-casings-16 root-caused and the primary symptom fixed. The per-tick straddle
+walk-in's `state & 0xc` gate let a CLOSING (0x10) leaf through and re-activated it every tick —
+the slide activate turns 0x10 into OPENING [M Door_Activate 0x135be0] — so 01's door E test read
+state 0x4 after the second E. Door_Update's scan is auto-close only, behind OPEN-door tests
+[M 0x1363c8 @0x136678/@0x136610], and never touches a moving leaf. Narrowed: closed-idle only,
+ch_open doors to the channel arm, silent lock pre-skip; hook scoped to the evidenced contact-open
+site (07000016's arrival door) — the "straddle" param is a portal-culling flag [M 0x136788 →
+0x1c8ac8], not an open trigger, and the decompile has no per-tick open for a closed idle door.
+Tests: level_end_live 6/6 (door_e restored + the new 16 closing-door test, shown failing first),
+casings16_live 2/2, nf-game --lib 150/0. OPEN: walkreal_07000001 still fails — it passes with the
+broad walk-in and fails without it on today's master (the bisect premise is stale; s/104a2-fix-
+escort-01b is another worker on it); the resolver is the U-041 per-leaf contact, not a sphere.
+Suite: the sandbox kills background jobs (nohup+setsid both died); synchronous chunks only — the
+full suite did not fit the window. Report: docs/reports/102j2-fix-casings-16b.md (live checks:
+16's no-E contact open, 01's shoji doors E-only vs contact, the escort's own door opens).

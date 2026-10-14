@@ -6870,6 +6870,30 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let actors: Vec<crate::door::DoorActor> = std::iter::once((player.pos, 0.4, false))
             .chain(self.list.iter().filter(|x| x.present && !x.corpse).map(|x| (x.pos, 0.4, false)))
             .collect();
+        // fix-casings-16: the straddle walk-in runs EVERY tick, once, on this actor list (the game's
+        // straddle doors open on contact with no E — the collide path the port has not rebuilt,
+        // U-041; door.rs `straddle_walkin` carries the citation and the metric). Additive hook:
+        // one call; its sounds ride the same door-sound dispatch as `Door_Update`'s below.
+        //
+        // 102j2-fix-casings-16b: the hook is scoped to the site the game evidences. The decompile
+        // has NO per-tick open for a closed idle door (Door_Update's scan is the auto-close only
+        // [M 0x1363c8 @0x136678/@0x136610]; the opens are E [M Player_Activate 0x1a5170], the
+        // channel arms, scripts and the drone AI [M NDrone2_OpenDoor 0x14aa38]) — the contact open
+        // is the unrebuilt U-041 collide path, and its only game-evidenced instance is 16's
+        // arrival walkway door (glist 0x803f00a0). Running the stand-in everywhere changed 01's
+        // guard/escort door dance (the walkreal_07000001 contact pinned at his spawn by a guard
+        // the cycling doors re-shuffled; master, with no stand-in at all, passes). Until U-041 is
+        // rebuilt the stand-in fires on 07000016 only [S — scope pinned by the evidence, not by
+        // the level for its own sake]; the report's live checks cover both levels' doors.
+        if d.level == 0x0700_0016 {
+            let evs = self.doors.straddle_walkin(&actors, &mut self.channels, frame);
+            for (id, pos) in evs {
+                match d.sfx {
+                    Some(t) => { let h = t.get(id as u32); self.play_sound_handle(pos, h); }
+                    None => { self.audio.play3d(id as u32, pos, None); }
+                }
+            }
+        }
         // Per drone: timers, alertness decay, update message, turning, aim, firing, animation.
         let mut talk_queue: Vec<(usize, Vec<(usize, bool)>)> = Vec::new();
         let mut door_sounds: Vec<(u32, V3)> = Vec::new();
