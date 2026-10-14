@@ -89,7 +89,14 @@ sample, fixed tick 30).
 ## Full suite
 
 `tools/test/suite.py` on the final tree (origin/master 6691ef9 merged; WORKLOG conflict resolved by
-keeping both entries): see the total line below when it completes.
+keeping both entries): **989 passed, 4 failed, 31 ignored (31 min)**. The 4:
+`disc_golden::bigf_header_fields_behave_as_documented`, `disc_golden::bigf_tables_match_the_golden_manifest`,
+`disc_golden::directory_tree_matches_the_golden_manifest` — the 3 disc_golden tests the slim ISO is
+allowed to fail — and `TIMEOUT weapon_matrix_live after 600 s (last started: matrix_0700001b)`: the
+weapon-matrix binary renders its whole matrix through the sandbox's software Vulkan (lavapipe) and
+hit the runner's 600 s wall-clock; it is a speed artefact of this sandbox, not a correctness failure
+(the change adds no per-draw cost — one integer comparison in the frame sort). `fix_0c_pylon_live`
+passed on the merged tree (2/2, ~1 s).
 
 ## Files touched
 
