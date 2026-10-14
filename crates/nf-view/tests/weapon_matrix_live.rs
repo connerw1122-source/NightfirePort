@@ -17,12 +17,40 @@ use nf_view::matrix;
 
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
-/// The matrix levels: `NF_MATRIX=07000005,07000011` selects; unset = all (the sweep's on-foot set).
+/// The matrix levels. fix-weapon-matrix3b: unset = the SUITE'S SAMPLE — 07000005 (the give/gadget
+/// harness level), 0700000c (mid-story) and 0700001b (the last story level) — because the gadget
+/// cells and the longer per-cell settles of weapon-matrix3 pushed the old 27-level default past
+/// the runner's per-binary limit (held at merge: >1200 s, `matrix_07000014` last started; this
+/// sandbox first-hand: 6 mid levels did not finish in 590 s, ~100 s/level). Every check on the
+/// sampled levels stays; the full 27-level sweep is `nf-extract weapon-matrix <iso>`'s job, and
+/// `NF_MATRIX=all` (or an explicit `NF_MATRIX=07000001,...` list) selects it here again.
 fn levels() -> Option<Vec<String>> {
-    std::env::var("NF_MATRIX").ok().map(|v| v.split(',').map(|s| {
-        let s = s.trim();
-        if s.contains('.') { s.to_string() } else { format!("{s}.bin") }
-    }).collect())
+    const SAMPLE: [&str; 3] = ["07000005", "0700000c", "0700001b"];
+    match std::env::var("NF_MATRIX") {
+        Ok(v) => {
+            if v.trim().eq_ignore_ascii_case("all") { return None; }
+            Some(v.split(',').map(|s| {
+                let s = s.trim();
+                if s.contains('.') { s.to_string() } else { format!("{s}.bin") }
+            }).collect())
+        }
+        Err(_) => Some(SAMPLE.iter().map(|s| format!("{s}.bin")).collect()),
+    }
+}
+
+/// The shared 07000005 row: three tests consume the same measurement (the level test, the
+/// upgraded-runner checks, the gadget cells) and a full 05 run costs ~100 s — compute it once
+/// per process (the suite runs `--test-threads=1`; the row is read-only afterwards).
+fn row05(iso: &str) -> &'static nf_view::matrix::LevelRow {
+    static ROW: std::sync::OnceLock<nf_view::matrix::LevelRow> = std::sync::OnceLock::new();
+    ROW.get_or_init(|| {
+        let mut line = String::new();
+        let mut log = |s: &str| { line.push_str(s); line.push('\n'); };
+        let row = nf_view::matrix::run_level(iso, "07000005", &mut log).expect("07000005 loads");
+        eprint!("{line}");
+        eprint!("{}", nf_view::matrix::mark_table(std::slice::from_ref(&row)));
+        row
+    })
 }
 
 macro_rules! matrix_level {
@@ -54,7 +82,20 @@ matrix_level!(matrix_07000001, "07000001");
 matrix_level!(matrix_07000002, "07000002");
 matrix_level!(matrix_07000003, "07000003");
 matrix_level!(matrix_07000004, "07000004");
-matrix_level!(matrix_07000005, "07000005");
+/// 07000005 via the shared row (the two checks below consume the same measurement).
+#[test]
+fn matrix_07000005() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let wanted = levels();
+    if let Some(w) = &wanted {
+        if !w.iter().any(|l| l.starts_with("07000005")) { return; }
+    }
+    let row = row05(&iso);
+    let panics: Vec<String> = row.cells.iter().filter(|c| c.error.is_some())
+        .map(|c| format!("{:#04x} {}", c.weapon, c.error.clone().unwrap_or_default())).collect();
+    assert!(panics.is_empty(), "weapon matrix: {} cells panicked on 07000005: {}",
+        panics.len(), panics.join("; "));
+}
 matrix_level!(matrix_07000006, "07000006");
 matrix_level!(matrix_07000007, "07000007");
 matrix_level!(matrix_07000008, "07000008");
@@ -121,10 +162,7 @@ fn test_weapon_row_runs_the_sequence() {
 #[test]
 fn upgraded_runner_checks_the_new_behaviours_on_07000005() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    let mut line = String::new();
-    let mut log = |s: &str| { line.push_str(s); line.push('\n'); };
-    let row = matrix::run_level(&iso, "07000005", &mut log).expect("level loads");
-    eprint!("{line}");
+    let row = row05(&iso);
     let cell = |id: u8| row.cells.iter().find(|c| c.weapon == id).expect("catalog cell");
     // The real give path: the merge dresses the previously-`I` launcher cells.
     for id in [0x2au8, 0x2cu8, 0x34u8] {
@@ -159,10 +197,7 @@ fn upgraded_runner_checks_the_new_behaviours_on_07000005() {
 #[test]
 fn gadget_cells_run_the_cycle_on_07000005() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    let mut line = String::new();
-    let mut log = |s: &str| { line.push_str(s); line.push('\n'); };
-    let row = matrix::run_level(&iso, "07000005", &mut log).expect("level loads");
-    eprint!("{line}");
+    let row = row05(&iso);
     let cell = |id: u8| row.cells.iter().find(|c| c.weapon == id).expect("catalog cell");
     for id in [0x4Au8, 0x4eu8, 0x50u8, 0x54u8] {
         let c = cell(id);
