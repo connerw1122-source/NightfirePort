@@ -82,11 +82,12 @@ An unhandled msg returns false from `handle()` (the port's existing default), wh
   courtyard floor (`pos.y − 1.0` = the down-ray floor ±0.05); sisters: alive and in the civilian set.
 
 Both pass on the fixed tree (2/2). The full suite ran twice: pre-fix tree **1048 passed / 7 failed /
-33 ignored (37 min)**, and again on the final merged tree — see below. The 7: the 3 `disc_golden`
-(allowed on the slim ISO), `fix_0c_pylon_live` ×2 and `probe_pylon_render` (the 0c-pylon render
-checks — another task's files, failing here on master too), `weapon_matrix_live` TIMEOUT (the
-weapon-matrix sweep exceeds the 600 s cap in this sandbox — pre-existing). None touch drone.rs or
-this task's test.
+33 ignored (37 min)**, and on the final merged tree (my fix + test + docs, master unchanged at
+7785582) **1050 passed / 7 failed / 33 ignored (38 min)** — the +2 are this task's tests. The 7
+ failures: the 3 `disc_golden` (allowed on the slim ISO), `fix_0c_pylon_live` ×2 and
+`probe_pylon_render` (the 0c-pylon render checks — another task's files, failing here on master too),
+`weapon_matrix_live` TIMEOUT (the weapon-matrix sweep exceeds the 600 s cap in this sandbox —
+pre-existing). None touch drone.rs or this task's test.
 
 ## Renders (and their gap)
 
