@@ -4481,6 +4481,10 @@ impl Scene {
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 if let Some((map, object)) = target {
                     // `NF_HIDE` applies here too (the 0xFC skip above leaves these out of the loop's check).
+                    // fix-striped-boxes: `Corona_Create` 0x18da40-48 copies `*(glist+0x44)` to obj+0xF0, so
+                    // `View_AddObjects` 0x1e62d8:33's `(obj+0xF0 & 0x8010) == 0` gate applies — a 0x10-flagged
+                    // corona glist never draws (none on the disc today; the census pins it).
+                    if level.maps[map].objects[object].flags & 0x10 != 0 { continue; }
                     if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
                     let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                     add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
@@ -4495,6 +4499,11 @@ impl Scene {
                 let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 if let Some((map, object)) = target {
+                    // fix-striped-boxes: `Wire_Create` 0x198254-5c copies `*(glist+0x44)` to obj+0xF0, so
+                    // `View_AddObjects` 0x1e62d8:33's `(obj+0xF0 & 0x8010) == 0` gate applies — a 0x10-flagged
+                    // wire glist never draws (none on the disc today; the census pins it). Ladders stay
+                    // ungated: `Ladder_Create` 0x1966c0 stores only obj+0xD8 (0x19671c), never obj+0xF0.
+                    if level.maps[map].objects[object].flags & 0x10 != 0 { continue; }
                     let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                     add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                 }
@@ -4583,13 +4592,20 @@ impl Scene {
         // mirror viewer here. The 0x3A placements never carry 0x8000 CREATE_CEL [D placements], so
         // the static instance loop skips them and this sweep is the only draw — in --all the generic
         // instance loop covers them (debug view), hence the cels_only gate.
+        // fix-striped-boxes: also the game's no-draw bit — `View_AddObjects`
+        // 0x1e62d8:33 submits a dynamic object to the viewer draw lists only when
+        // `(obj+0xF0 & 0x8010) == 0` (obj+0xF0 is `Control_SetGList` 0x134960's copy of
+        // `celglist+0x44`, i.e. MapObject.flags; disasm 0x1e6344-4c), so a 0x10-flagged glist never
+        // draws even when attached — bit 0x10 marks collision-only brushes (the striped editor
+        // markers) which `Collide_Pick` keeps solid. The pulley's glist carries 0x4000 [L
+        // ee_start_05.bin 0x16d80a0/0x16d81c0] and passes.
         if let Some(m) = level.main_map() {
             for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x3a) {
                 let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 let Some((map, object)) = target else { continue };
                 let obj = &level.maps[map].objects[object];
-                if !obj.gfx.leaves.iter().any(|l| !l.batches.is_empty()) || obj.flags & 0x400 != 0 { continue; }
+                if !obj.gfx.leaves.iter().any(|l| !l.batches.is_empty()) || obj.flags & 0x400 != 0 || obj.flags & 0x10 != 0 { continue; }
                 if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && obj.name.contains(n)) { continue; } }
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                 add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
@@ -4609,6 +4625,49 @@ impl Scene {
                 let obj = &level.maps[map].objects[object];
                 // Empty glists draw nothing (`View_DrawObjectGlist`'s psiDrawObjectMatrix no-ops), and a
                 // mirror-only object (glist flags 0x400, View_AddObjects 0x1e62d8:38-47) has no mirror viewer here.
+                // fix-striped-boxes: the game's no-draw bit 0x10 — `View_AddObjects` 0x1e62d8:33 submits a
+                // dynamic object to the viewer draw lists only when `(obj+0xF0 & 0x8010) == 0` (obj+0xF0 is
+                // the creators' copy of `celglist+0x44`, i.e. MapObject.flags) — but only where a creator
+                // actually makes the copy. fix-striped-boxes2 verified the copy for EVERY kind in the list
+                // (address + the store): 0x30 `Monitor_Create` 0x1b08b0:26 → `Control_SetGList` 0x134960:12-14
+                // (`obj+0xF0 = *(glist+0x44) | obj+0xF0 & 0x30008000`); 0x34 `GunImp_Create` 0x131f20:68 →
+                // `Control_CreateObjEx` 0x1343c8:29-36 (`obj+0xF0 = *(glist+0x44) | param_10`, then |= 0x1000
+                // at 0x131f20:75/87); 0x35 `PCQWorm_Create` 0x1b07a8:12 → `Control_CreateObjEx` (same copy);
+                // 0x3b `DynamicObject_Create` 0x18dbf8:21-23 (direct `obj+0xF0 = *(glist+0x44)`); 0x71
+                // `rotor_init` 0x18f4b8:25 (direct); 0xe1 `Destroy_Create` 0x12c318:23 → `Control_SetGList`
+                // — and the creator itself honours the bit, zeroing the smash target when set (0x12c318:57-59
+                // `if (obj+0xF0 & 0x10) *tag = 0`); 0xe3 `Flicker_Create` 0x1acb00:52 (direct); 0xfa
+                // `ThirdIcon_Create` 0x197070:34-37 (`obj+0xF0 = *(glist+0x44) | 0x1000`); 0xfd
+                // `CamSubject_Create` 0x1bc5d8:20 (direct); 0x4a `Apocalypse_Create` 0x18dcc0:24 (direct);
+                // 0xda `Car_Create` 0x1305b0:24 → `Control_CreateObjEx` with OR-mask 0x44 (then |= 0x40 at
+                // :57; latent only — no 0x10-flagged mesh-ful car glist on the disc, the census pins it).
+                // Nothing clears bit 0x10 later for these kinds: none of their Update/Activate functions
+                // write obj+0xF0 (checked Monitor_Update/Activate/ApplyDamage 0x1afcc8/0x1b0058/0x1b0968,
+                // PCQWorm_Update/Activate 0x1aee20/0x1b0840, Destroy_Update/Smash/CollisionHandler
+                // 0x12c4f8/0x12bb60/0x12bd48, ThirdIcon_Update 0x196e80, Flicker_Update 0x1ab960,
+                // Apocalypse_Update 0x18d4f0, rotor_update 0x18f568, CamSubject_Update 0x1bc668); the only
+                // +0xF0 rewriters elsewhere are 0x3b's own channel restore (`DynamicObject_Update` 0x18d3b8:16/
+                // 34/39 stores back the word `DynamicObject_Create` 0x18dbf8:27 captured from *(glist+0x44)
+                // — a set bit survives), `Drone_PauseNoDraw` 0x13a710 (drone objects only), `SP_HideObj`
+                // 0x1dcbf0 → `Script_HideObj` 0x1db808 (a script's own stream entities only), and the
+                // bullet/player/pickup/car-child paths (other kinds). So the game never draws a
+                // FLAGS_COPYING-kind object whose glist carries 0x10 — the probed instances (05's
+                // "WallHug_Blocker*" 0x3b + "TouchPlate_GrappleLedge"/"Valley grapple_touchplate" 0xfa,
+                // 08's SmallExplosionBox/0d's WallHug_Blocker1_Long, 11/12/14's 3RD_Person_Icon 0xfa, 12's
+                // "Computer to hack" 0x35 (an invisible use volume — the laptop is baked geometry), 14's 12
+                // SWITCH_Consoles_Evilbase 0x30 + 19 DESTROY_BoxSatellite 0xe1, 15's 3 DESTROY_BoxSatellite,
+                // 1b's 8 Apocalypse 0x4a + the DESTROY_Box* 0xe1) are all invisible gameplay/collision
+                // volumes in the real game too; the visible consoles/laptops are baked world geometry.
+                // NON-copying kinds (the game draws their 0x10-flagged meshes — no gate): `Lock_Create`
+                // 0x1ae1f8 (0x2e), `OneSided_Create` 0x1e7ce8 (0xd5), `RB_Create` 0x1d6bf0 (0xd8) — plain
+                // `control_create_object` + a direct obj+0xD8 store, no obj+0xF0 write — and now also
+                // `Mine_Create` 0x17ce28 (0xfe, verified the same way; `Mine_Update` 0x17c930:142's 0x30
+                // store is the mine hiding ITSELF when armed, not a glist copy). Bit 0x10 marks
+                // collision-only brushes which `Collide_Pick` (no 0x10 test) keeps solid while nothing
+                // ever draws them. The sweep drew the striped ones because it lacked the gate — the
+                // user's red/yellow striped box on 07000005's trench.
+                const FLAGS_COPYING: [u8; 11] = [0x30, 0x34, 0x35, 0x3b, 0x71, 0xda, 0xe1, 0xe3, 0xfa, 0xfd, 0x4a];
+                if obj.flags & 0x10 != 0 && FLAGS_COPYING.contains(&kind) { continue; }
                 if !obj.gfx.leaves.iter().any(|l| !l.batches.is_empty()) || obj.flags & 0x400 != 0 { continue; }
                 if let Some(h) = &nf_hide { if h.split(',').any(|n| !n.is_empty() && obj.name.contains(n)) { continue; } }
                 // The 0x800 dim, the same rule the main static loop applies (View_SetupRenderModes_Tweak 0x1e5888).
@@ -4711,6 +4770,13 @@ impl Scene {
                 let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 let Some((map, object)) = target else { continue };
+                // fix-striped-boxes AUDIT CORRECTION: LOAD_LEVEL triggers DO draw whatever their glist
+                // flags. `Trigger_LoadLevelCreate` 0x1b2950 forces the type to 10 (0x1b2998/a0 store 10
+                // to placement+0x2c) and `Trigger_Create` 0x1b1720 clears the no-draw bit for exactly
+                // that type — 0x1b18c8-d4 `obj+0xF0 &= 0xffffffef` [M] — so the game draws these meshes
+                // even when `glist+0x44` carries 0x10 (the four "Load Point"-family meshes on
+                // 01/03/12/13, and 07000005's Door_Gate8). An earlier revision of this fix gated them
+                // and hid four game-drawn meshes; reverted.
                 if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                 add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);

@@ -10675,6 +10675,40 @@ Files: crates/nf-view/src/{menu,hud}.rs, crates/nf-view/tests/{menus_flow,menu_m
 the shared-file hooks listed in the report (nf-formats/src/hud.rs font_header, lib.rs call sites).
 
 
+---
+Task ID: 102k-fix-striped-boxes
+Agent: striped-boxes worker
+Task: fix-striped-boxes — a red/yellow diagonal-striped box draws on 07000005 (trench right, against the castle wall) with NF_NOPORTAL=1; such stripes are usually an editor/marker texture the game never draws. Identify the instance (placement index, class, mesh hash, texture name/hash), find the game's rule that keeps it hidden, apply to every level; census test: 0 drawn; check 0c's roof boxes too (an earlier fix removed those; the user's 0c check couldn't find them).
+
+Work Log:
+- (started 10:06 UTC) Branch s/fix-striped-boxes created from origin/master b65d6f7; setup reused from the previous session (repo, work/, ISO, nf-queue). Repro + decompile evidence next.
+
+---
+Task ID: 102k-fix-striped-boxes
+Agent: striped-boxes worker
+Task: fix-striped-boxes — the red/yellow diagonal-striped box on 07000005 (trench right, against the castle wall; NF_NOPORTAL=1 shot) is an editor/marker brush the game never draws; identify instance+rule, apply to every level, census: 0 drawn; check 0c's roof boxes too.
+
+Work Log:
+- Repro first (probe_striped_box.rs, kept): decoded every 07000005/0700000c map texture and found THE marker texture — 32×32, red 63.9%/yellow 33.7%, diagonal R/Y bands (05 map 50 idx 15; 0c carries it unused at map 9 idx 0 + map 45 idx 31, which is why the user's 0c check found nothing after fix-gadgets2 removed the roof markers). Every 05 object referencing it carries glist flags 0x10: the kind-0x19 "blocker1"/"BlockingPoly_*" cel placements (12), "WallHug_Blocker1_Short"+"WallHug_Blocker2_Windows" (0x3b), "TouchPlate_GrappleLedge" (0xfa), plus Hurt/Snow/EnvMarker families.
+- Fail-first census (fix_striped_box_census.rs): nf_view::load on 07000005 showed 4 World materials with the no-draw bit, 3 keyed on the marker texture — "WallHug_Blocker1_Short" at (25.40, 32.70, 65.60) = the user's box (camera 16.67,30.04,58.60 yaw 1.755 looks right at it), "TouchPlate_GrappleLedge" at its world-baked (−18.46, 37.49, −72.49), "WallHug_Blocker2_Windows" at (−35.04, 37.16, −31.65), plus one untextured 0x50 batch. The static loop already skips 0x10 via skipped_by_cel_pass (18 skipped on 05); the models-misc sweep drew them because it lacked the gate.
+- Rule evidence (two parallel decompile agents, their work log in the repo-root worklog scratch): a world object is drawable only when its glist-flags copy passes `(flags & 0x8010) == 0` — View_AddObjects 0x1e62d8:33 (disasm 0x1e6344-4c; obj+0xF0 = Control_SetGList 0x134960's copy of celglist+0x44) — and the cel pass refuses the same bit straight off the glist (View_AddCels 0x1e6ba0 L29/L46). Bit 0x10 = collision-only: Collide_Pick skips only 0x30000000, so the brush stays solid but never draws. Kind facts: 0xfa = ThirdIcon_Create 0x197070 (+0xF0 = *(glist+0x44)|0x1000 = 0x1050 live [L ee_start_05 0x016d43e0], the grapple-ledge gadget grantor — never drawable); 0xeb = Trigger_Touch 0x1b2aa8 → Trigger_Create 0x1b1720 (+0xF0 = 0x50 — never drawable); 0x3b = DynamicObject_Create 0x18dbf8:21-23 (+0xF0 = *(glist+0x44)); 0x3f creep walls look "no-gfx" only because their 0x50 glist fails the same gate (correction to fix-gadgets2's no-attach read).
+- Fix (scene.rs, three additive gates): the models-misc sweep, the 0x3a grapple sweep and the 0xE8 LOAD_LEVEL-trigger draw now skip objects with glist flags 0x10, each citing the gate. The 0xE8 site surfaced via the census's 4 leftover no-draw-bit draws on 01/03/12/13 (flags-0x50 "Load Point"-family meshes; Trigger_Create 0x1b1720:95 copies glist+0x44 to obj+0xF0, so View_AddObjects refuses them too). Ladders/wires/coronas were NOT gated: their creators never copy glist+0x44 into obj+0xF0 (copiers list: Control_SetGList/rotor_init/RainBox/Flicker), so the game's gate reads obj+0xF0 (clear) and even a 0x10-flagged ladder glist draws — the port matches.
+- Green post-fix: 3/3 (05: 0 no-draw-bit + 0 striped + grapple_hooks_drawn == 2, the pulleys keep drawing [L ee_start_05 0x16d80a0/0x16d81c0]; 0c: 0/0 + "laptops" — a flags-0 hazard-textured object that looks striped — still resolves and draws; census: 33 on-foot levels fully checked, 0 no-draw-bit draws and 0 marker-texture draws disc-wide, 2 archives skipped because they carry neither). Full suite on the merged final tree in suite.out (fast runner), see the report for the total line.
+- Report: docs/reports/fix-striped-boxes.md. Files: crates/nf-view/src/scene.rs (the three gates + doc), crates/nf-view/tests/fix_striped_box_census.rs (new), crates/nf-view/tests/probe_striped_box.rs (kept). No shared files touched beyond scene.rs (task-named).
+
+---
+Task ID: 102k-fix-striped-boxes (audit correction)
+Agent: striped-boxes worker
+Task: the independent audit (a second agent re-verified every claim against the decompile C + capstone disasm) caught one real regression and two citation errors in the first revision; this entry records the corrections.
+
+Work Log:
+- REFUTED → fixed: the first revision gated the 0xE8 LOAD_LEVEL-trigger draw — wrong. `Trigger_LoadLevelCreate` 0x1b2950 forces type 10 (0x1b2998/a0 store 10 to placement+0x2c) and `Trigger_Create` 0x1b1720 clears the no-draw bit for exactly type 10 (0x1b18c8-d4 `obj+0xF0 &= 0xffffffef`): the game DRAWS those meshes whatever their glist flags. The gate hid four game-drawn meshes ("Load Point" 01 map53#18, 03 map50#451, 12 map38#669, 13 map41#72). Reverted.
+- REFUTED → fixed: `Wire_Create` 0x198254-5c and `Corona_Create` 0x18da40-48 DO copy `*(glist+0x44)` to obj+0xF0 (the first research pass's copiers list was incomplete) — the corona and wire draws are now gated like the sweeps.
+- Over-strict → narrowed: the MISC gate now applies only to the flag-copying kinds (0x30/0x34/0x35/0x3b/0x71/0xe1/0xe3/0xfa/0xfd/0x4a); 0x2e `Lock_Create` 0x1ae1f8, 0xd5 `OneSided_Create` 0x1e7ce8, 0xd8 `RB_Create` 0x1d6bf0 never write obj+0xF0 (the game draws their 0x10-flagged meshes) and stay ungated; 0xda/0xfe unverified, ungated, listed in the report.
+- Census hardened per the audit's over-hide-blindness hole: the all-levels assertion is now the equality `no_draw_bit == game_drawn_0x10_exceptions(level)` (the count of 0xe8 placements on gfx-true 0x10-flagged objects) — it fails on over-draw AND over-hide — plus a Door_Gate8 World-material sister on 05. 3/3 green after the corrections; the equality read 1/1 on 01/03/12/13 (reverted tree) and 0/1 (wrong gate) during development, so both directions were observed failing at least once.
+- Report updated (docs/reports/fix-striped-boxes.md: the fix section rewritten, an "Independent audit" section added). Files: crates/nf-view/src/scene.rs, crates/nf-view/tests/fix_striped_box_census.rs.
+
+---
 ## fix-08-collision (s/fix-08-collision) — 2026-10-14
 
 Task 100j, 07000008: the invisible wall inside the safe room's missile room — the playtest's
@@ -11558,3 +11592,22 @@ full suite did not fit the window. Report: docs/reports/102j2-fix-casings-16b.md
   death is silent state 4 [M 0x12e848], so the wait adds no blast), with the evidence chain in the comment.
   fix_weapon_sounds_live 3 passed / 2 ignored (pre-existing, documented); fire_modes3_live 5 passed /
   4 ignored (pre-existing); fix_weapon_fire_modes_live 5 passed.
+---
+Task ID: 102o-fix-striped-boxes2
+Agent: striped-boxes2 worker
+Task: fix-striped-boxes2 — the merged gate HELD: the 0x10 no-draw gate in scene.rs's misc sweep (FLAGS_COPYING = 0x30 0x34 0x35 0x3b 0x71 0xe1 0xe3 0xfa 0xfd 0x4a) hides far more than the striped markers (the main agent's disc probe: SmallExplosionBox/ExplosionBox/DESTROY_Box* 0xe1, SWITCH_Consoles_Evilbase 0x30, "Computer to hack" 0x35, 3RD_Person_Icon 0xfa, Apocalypse 0x4a all hidden too), and models_misc_live's census doesn't apply the gate. Narrow the gate to only what the game hides: per-kind creator evidence of the glist+0x44 copy into obj+0xF0, nothing clears bit 0x10 later, and the object is not meant to be seen. State drawn/not-drawn per probed object, update expected_misc, re-pin misc_census_golden.
+
+Work Log:
+- (14:31 UTC) Branch s/fix-striped-boxes2 created from origin/s/fix-striped-boxes; origin/master (1f8e050) merged, WORKLOG conflict resolved keeping both sides' entries. Setup reused (repo, work/, ISO, nf-queue, alsa-prefix). Evidence pass next.
+
+---
+Task ID: 102o-fix-striped-boxes2
+Agent: striped-boxes2 worker
+Task: fix-striped-boxes2 — resolve the held merge: verify the 0x10 no-draw gate per kind (creator copy evidence of glist+0x44 → obj+0xF0 + nothing clears the bit + not meant to be seen), state drawn/not-drawn for every probed object, apply the rule to models_misc_live's census, re-pin misc_census_golden, render the probe spots.
+
+Work Log:
+- Evidence pass over the decompile: ALL ten FLAGS_COPYING kinds copy glist+0x44 into obj+0xF0 — 0x30 Monitor_Create 0x1b08b0:26 (via Control_SetGList 0x134960:12-14), 0x34 GunImp_Create 0x131f20:68+75/87 (Control_CreateObjEx 0x1343c8:29-36 + |=0x1000), 0x35 PCQWorm_Create 0x1b07a8:12 (Control_CreateObjEx), 0x3b DynamicObject_Create 0x18dbf8:21-23, 0x71 rotor_init 0x18f4b8:25, 0xe1 Destroy_Create 0x12c318:23 (+ the creator reads the bit itself at :57-59, zeroing the smash target), 0xe3 Flicker_Create 0x1acb00:52, 0xfa ThirdIcon_Create 0x197070:34-37, 0xfd CamSubject_Create 0x1bc5d8:20, 0x4a Apocalypse_Create 0x18dcc0:24; kind→creator routing re-checked in parsemap_create_dynamic_objects 0x1d04f0. Car_Create 0x1305b0:24 also copies (OR-mask 0x44) → 0xda joined FLAGS_COPYING (latent, no disc instance); Mine_Create 0x17ce28 verified NOT copying (0xfe stays ungated).
+- Nothing clears bit 0x10 post-create for these kinds: none of their Update/Activate fns write obj+0xF0; the only rewriters are 0x3b's own channel restore (stores back the captured glist word — a set bit survives), Drone_PauseNoDraw 0x13a710 (drones only), SP_HideObj 0x1dcbf0→Script_HideObj 0x1db808 (a script's own stream entities only), bullets/players/pickups. So every probed object is NOT DRAWN by the game — invisible gameplay volumes; the visible consoles/laptop are baked geometry (12's "Computer to hack" mesh even coincides with the baked laptop: 22 camera spots incl. inside the mesh render pixel-identical pre-gate).
+- Fix: scene.rs gate comment rewritten with the per-kind citations + 0xda added; models_misc_live's expected_misc applies the rule, spot checks updated (0d 0x3b:3, 14 0x30 None / 0xe1:29), misc_census_golden re-pinned bb66b783→c2dc1823 (per-level diff in the report); new fix_striped_box_census::probe_gate_verdicts_per_kind (drawn == unflagged per probed pair + same-kind unflagged sisters keep drawing). Fail-first shown twice: the merged pre-task tree failed models_misc_live (suite.out), and the new test FAILED with the gate sed-disabled (07000008 drew 4 vs 3).
+- Renders (lavapipe in the sandbox, before = master 1f8e050 vs after = branch): 05 trench 16.67,30.04,58.60,1.755,-0.001 — the striped box (70k red/yellow px) gone, pulley kept; 14 console 35.5,1.84,21.75,4.712,-0.12 — the console mesh (4629 px) gone; 12 computer — pixel-identical by construction (baked-geometry coincidence), the census pins the draw-list change instead.
+- Report: docs/reports/fix-striped-boxes2.md (per-object verdicts, live checks, --bond spots per kind). Files: crates/nf-view/src/scene.rs, crates/nf-view/tests/{models_misc_live,fix_striped_box_census}.rs. No shared-file hooks beyond scene.rs (task-named).
