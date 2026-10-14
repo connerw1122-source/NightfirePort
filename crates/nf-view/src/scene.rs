@@ -4348,10 +4348,14 @@ impl Scene {
             // The explosion scripts (`Explode_Create` 0x17cbd0 loads a per-source effect script —
             // its `Script_Load` arg a3): 0x6000052 from the fuse/contact call sites [M 0x12cd98/
             // 0x12ce80 disasm], 0x60007c4 from the Samurai bolt's 0x100000/0x200000 arms [M
-            // 0x12d0e8-0x12d188], 0x6000027/0x600004f/0x6000052 from `Destroy_Smash` by the tag's
-            // type byte [M 0x12bc50-0x12bd20]. All four ship in every story archive [D disc census];
-            // the sim spawns them per blast, so their entity streams need attachments exactly like
-            // a placed player's. (fix-blast-scripts: the port pre-registered only 0x06000052.)
+            // 0x12d0e8-0x12d188; fix-cutscene-actors's read of 0x12ce80:212-231 is the same arms —
+            // ONE path, the sim's per-blast spawn feeds this sweep], 0x6000027/0x600004f/0x6000052
+            // from `Destroy_Smash` by the tag's type byte [M 0x12bc50-0x12bd20]. All four ship in
+            // every story archive [D disc census]; 0x60007c4's entity streams (Laser_Blast_frame_1/2,
+            // Vertical_smoke, After_glow_test, cloud_1, smoke) resolve in every archive [D] but no
+            // placement references the script, so without this sweep the impact models could never
+            // draw. The sim spawns them per blast, so their entity streams need attachments exactly
+            // like a placed player's. (fix-blast-scripts: the port pre-registered only 0x06000052.)
             let hashes: Vec<u32> = players.iter().flat_map(|p| p.scripts).filter(|&h| h != 0)
                 .chain([0x0600_0052u32, 0x0600_0027, 0x0600_004f, 0x0600_07c4]).collect();
             for h in hashes {

@@ -5962,6 +5962,19 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                             b.first = false;
                         }
                     }
+                    // The impact-effect arms (fix-cutscene-actors): `Bullet_CollisionHandler`
+                    // 0x12ce80:212-231 — two further weapon `+0x70` flags Script_Load **0x60007c4**
+                    // through the same `Explode_Create`: `+0x70 & 0x100000` and `+0x70 & 0x200000`
+                    // (first float arg 0x3f800000 = 1.0, so the script's scale is 1 — no blast
+                    // propagation reach), each gated on the same not-a-re-entry test as the 0x4 arm.
+                    // The disc records carrying the bits: 0x32 and 0x6e (0x100000), 0x6b (0x200000)
+                    // [L weapon_data scan]; no record carries both, and none carries 0x4 with them.
+                    // Spawned here (not queued): no grenade-path clear touches `scripts`.
+                    if flags70 & 0x300000 != 0 && b.bounces == 0 {
+                        let mut bm = [[0.0f32; 4]; 4];
+                        bm[0][0] = 1.0; bm[1][1] = 1.0; bm[2][2] = 1.0; bm[3] = [hit[0], hit[1], hit[2], 1.0];
+                        self.scripts.spawn_once(usize::MAX, 0x0600_07c4, bm);
+                    }
                 }
                 _ => b.pos = [b.pos[0] + b.dir[0] * step, b.pos[1] + b.dir[1] * step, b.pos[2] + b.dir[2] * step],
             }
