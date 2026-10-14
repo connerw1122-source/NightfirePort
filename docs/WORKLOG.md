@@ -10801,3 +10801,22 @@ Stage Summary:
 - walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact does NOT fail on this tree
   (2/2 green, run twice): the driver's master snapshot predates fix-08-collision2, whose FindCel relink
   own commit message records "the 01 escort walk passes again" — that merge is the repair.
+
+## fix-exact-math-swap2 (outcome)
+- The exact path survives current master unchanged (placement.rs/anim.rs/ps2math.rs needed nothing); both
+  red tests resolved from the game. The grenade scare was a port bug: the port's bounce snapped the grenade
+  exactly ON the collision triangle, so every sight ray to it hit at the ray's endpoint (t = 1.0, inclusive
+  in the port's Collide_Intersect analogue) and the HandleExplosives visibility gate failed. The game rests
+  the bullet 0.04 above the surface: Bullet_CollisionHandler 0x12ce80 stores BU+0x30 = *(HITDATA+0x40) +
+  *(HITDATA+0x10)·uVar13 with uVar13 = 0x3d23d70a = 0.04 (0x12ce80:257-258; the contact-detonation arm's
+  0x3b03126f = 0.002 folded — 0.038 on ≥ 4.0 blast radii). Fix in grenade.rs (7 lines, shared-file hook):
+  bounce position + Bounce payload = hit + normal·0.04. The scare then runs the full flee family and the
+  weapon/grenade suites stay green.
+- walkreal_07000001_live's walk-with-contact does NOT fail on the final tree (3 green runs); the driver's
+  snapshot predates fix-08-collision2 (bf2f6bd), whose relink own commit message records the walk repaired
+  ("the 01 escort walk passes again"). The bisect had no live subject; documented in the report.
+- Suite (final tree, timed chunks, suite.py limits): 1004 passed, 6 failed, 31 ignored over the binaries
+  that ran — the 3 sanctioned disc_golden + the 3 pre-existing pylon failures fix-armour-ring.md already
+  reported for the main agent; weapon_matrix_live recorded incomplete (its documented >600 s condition
+  exceeds this sandbox's foreground window; pre-existing, not a test failure). Report:
+  docs/reports/fix-exact-math-swap2.md.
