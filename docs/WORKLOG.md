@@ -11401,3 +11401,21 @@ a per-source effect script to Explode_Create 0x17cbd0). Plan: census every Explo
 the script id it passes from the decompile, carry the script id through the port's blast request, play
 that script; NF_ISO tests for the Samurai bolt, a frag, a rocket and a destroyable. Branch
 s/fix-blast-scripts cut from origin/master 509ec984.
+
+fix-blast-scripts: done. The census (13 Explode_Create 0x17cbd0 call sites, each pinned by disasm):
+the fuse death and the bit-2 contact arm pass 0x6000052 (the port already matched those); the
+0x100000/0x200000 BOLT arms pass 0x60007c4 (the Phoenix Samurai's bolt 0x32 — radius 8, damage 256 —
+reached by ○ from the beam twin 0x33 — and the 0x6b/0x6e specials); Destroy_Smash 0x12bb60 routes by
+the tag's type byte (tag+0x16 = placement param 2): 1 → 0x6000027, 2 → 0x600004f, other non-zero →
+0x6000052, type 0 → NO blast; the rest (copter/drone-delete/car/MP/GT/monitor) have no object lists
+in the port yet (pre-existing, documented). Fixes: drone.rs (pending_blasts + spawn_blast carry the
+script; NEW bolt arms on world AND drone hits with the same non-ricochet gate; the destroy smashes
+queue the type script), props.rs (additive: Destroy.kind/blast_damage parsed from params 2/5,
+bullet_hit returns the blast-carrying smashes), scene.rs (the blast pre-registration chains all four
+script hashes), explode.rs (the +0x34 doc). Tests: crates/nf-view/tests/fix_blast_scripts_live.rs —
+the Samurai bolt's cyan blast (radius 8/damage 256, one 0x06007c4 player, no 0x06000052), the
+destroyable type-1 smash plays 0x0600027 + the type-0 sister plays NOTHING, the frag/rocket sister
+pins 0x06000052 — shown failing on the pre-fix tree (the fix stashed), green post-fix.
+Suite on the merged tree: see docs/reports/fix-blast-scripts.md ("Suite"). Report:
+docs/reports/fix-blast-scripts.md (live checks: the PCSX2 bolt-blast confirmation + meter share,
+the bottle smash's script id/radius/position, the type-0 no-blast; the nf-view render spots).
