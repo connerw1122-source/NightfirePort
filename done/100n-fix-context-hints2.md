@@ -37,3 +37,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox6 at 2026-10-14T08:59Z
+
+---
+## Report (done, 2026-10-14T10:50Z)
+
+Closed by the driver: the report is on `s/fix-context-hints2` (docs/reports/fix-context-hints2.md); the worker didn't run finish.sh.
