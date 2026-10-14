@@ -307,6 +307,15 @@ pub struct Sim {
     /// The fire trigger's last-tick state — the press edge the watch pair 0x54/0x55's mode toggle ORs
     /// in (`Player_Weapon` 0x1a24c8's `Input_Action(slot, 9, 4)`) (fix-weapon-modes).
     pub prev_trigger: bool,
+    /// fix-aim-raise: the aim raise/lower script playing (`Player_Weapon` 0x1a24c8:117-152 — the
+    /// raise +0xB8 @1.25 is the game's view state 0xF, the lower +0xBC @1.25 (or +0xB8 played
+    /// REVERSED, no +0xBC on the record) state 0x10). Some(hash): the script this anim plays;
+    /// cleared when it stops or when another script displaces it [M AnimScriptAdd 0x1c6d40].
+    pub view_aim_anim: Option<u32>,
+    /// fix-aim-raise: true while `view_aim_anim` plays the raise — its finish sets the aim bit
+    /// [M `Player_SetWeaponAnimObj` case 0xf 0x1a2e38:554-561]; false for the lower — its finish
+    /// leaves the bit clear (case 0x10, [M 0x1a2e38:562-567]).
+    pub view_aim_raising: bool,
     /// fix-weapon-fire-modes: the guided-missile camera (`Bullet_init` 0x12c5a0:234-254 for a weapon
     /// record with `+0x6C & 4` — only the AT-420 Sentinel 'Guided' 0x2C [L ee_start_05.bin]). While
     /// `Some`, the view rides the projectile: position/direction = the bullet's [M
@@ -319,7 +328,10 @@ pub struct Sim {
     pub view_time: f32,
     pub view_speed: f32,
     pub bob: [f32; 2],
-    /// Aim mode (action 0x13, a pad's L1; not with the mouse, D-002) this tick.
+    /// The aim bit (`BLData+0x60 & 1`, action 0x13 — a pad's L1; not with the mouse, D-002):
+    /// for a weapon with an aim-raise script (+0xB8) it sets only on the raise's last tick
+    /// [M `Player_SetWeaponAnimObj` case 0xf 0x1a2e38:554-561]; without one it follows the button
+    /// at once [M `Player_Weapon` 0x1a24c8:117-119]. fix-aim-raise (was: the raw button).
     pub aiming: bool,
     /// The crosshair state (BLData+0x133): 2 normal, 3 = the red "no" mark on a non-enemy target.
     /// Set by the `Check_Target` block in `run` every 6th frame, read by the HUD [M 0x1a7810, 0x19e6d0].
@@ -1547,6 +1559,89 @@ impl Sim {
 }
 
 impl Sim {
+    /// fix-aim-raise: the aim-bit gate — `Player_Weapon` 0x1a24c8's aim block plus the raise/lower
+    /// finish of `Player_SetWeaponAnimObj` 0x1a2e38 cases 0xf/0x10, hoisted to the top of the tick
+    /// (the game ticks `AnimObjectUpdate` → `Player_WeaponRecoil` inside `Player_Update` 0x193600
+    /// :318/:411, and the finish must land before this tick's free-aim/zoom/auto-aim consumers).
+    /// Returns the aim bit for this tick. Hold-aim weapons only (the port models no toggle option).
+    ///
+    /// A weapon with an aim-raise script (+0xB8) defers the aim bit: the press clears it again and
+    /// plays the raise at 1.25× [M 0x1a24c8:145-152]; the bit sets when the raise stops
+    /// [M 0x1a2e38:554-561]. The zoom target (+0x8D4) leaves 1.0 on the bit's rise and
+    /// `Player_AutoAim` 0x1a7c98 keeps scanning until then — both read the bit this returns.
+    fn aim_gate(&mut self, button: bool) -> bool {
+        // The advance + finish half (`AnimObjectUpdate`, then case 0xf/0x10: the script stopped →
+        // the raise sets the aim bit and returns to state 0 [M 0x1a2e38:554-561], the lower just
+        // returns to state 0 [M 0x1a2e38:562-567], idle re-queued [M :63-73]).
+        if let Some(cur) = self.view_aim_anim {
+            let len = self.scripts.get(&cur).map_or(0.0, |s| s.length as f32);
+            if self.view_aim_raising {
+                self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0));
+                if len <= 1.0 || self.view_time >= len - 1.0 {
+                    self.aiming = true;
+                    self.view_script = self.weapons.idle_script(self.gun.weapon as usize);
+                    (self.view_time, self.view_speed) = (0.0, 1.0);
+                    self.view_aim_anim = None;
+                }
+            } else {
+                if self.view_speed < 0.0 {
+                    self.view_time = (self.view_time + self.view_speed).max(0.0);
+                } else {
+                    self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0));
+                }
+                if len <= 1.0 || self.view_time <= 0.0 || self.view_time >= len - 1.0 {
+                    self.view_script = self.weapons.idle_script(self.gun.weapon as usize);
+                    (self.view_time, self.view_speed) = (0.0, 1.0);
+                    self.view_aim_anim = None;
+                }
+            }
+        }
+        let raise = self.weapons.raise_script(self.gun.weapon as usize);
+        if raise == 0 {
+            // No raise script: the aim bit follows the button at once [M 0x1a24c8:117-119].
+            self.aiming = button;
+            return button;
+        }
+        // The hold-aim bit dynamics with the raise gate (the game's hold branch 0x1a24c8:45-52:
+        // the bit clears with the button up and sets while it is held; the state machine defers
+        // the rise). The raise/lower start only from the fully idle machine (fix-weapon-anims'
+        // condition — the game's lower arm checks view state 0 [M 0x1a24c8:121], the raise arm
+        // none [S: kept conservative so a fire/reload/switch anim is never displaced on the press]).
+        let was = self.aiming;
+        let machine_idle = self.gun.switch_state == 0 && self.gun.reload_state == 0 && !self.gun.fire_state
+            && self.view_script == self.weapons.idle_script(self.gun.weapon as usize);
+        if button && !was {
+            self.aiming = false; // the rise is deferred until the raise stops [M 0x1a24c8:146]
+            if self.view_aim_anim.is_none() && machine_idle {
+                // View state 0xF: the raise +0xB8 at 1.25× [M 0x1a24c8:148-150].
+                self.view_script = raise;
+                (self.view_time, self.view_speed) = (0.0, 1.25);
+                self.view_aim_anim = Some(raise);
+                self.view_aim_raising = true;
+            }
+        } else if !button && was {
+            // The fall: the lower from the idle view only [M 0x1a24c8:120-138].
+            self.aiming = false;
+            if self.view_aim_anim.is_none() && machine_idle {
+                let lower = self.weapons.lower_script(self.gun.weapon as usize);
+                let len = self.scripts.get(&raise).map_or(0.0, |s| s.length as f32);
+                if lower != 0 {
+                    self.view_script = lower;
+                    (self.view_time, self.view_speed) = (0.0, 1.25);
+                } else {
+                    // AnimScriptAddReverse: the raise script backwards [M 0x1a24c8:128-138].
+                    self.view_script = raise;
+                    (self.view_time, self.view_speed) = ((len - 1.0).max(0.0), -1.25);
+                }
+                self.view_aim_anim = Some(self.view_script);
+                self.view_aim_raising = false;
+            }
+        } else if !button {
+            self.aiming = false; // hold-aim: the bit follows the button down [M 0x1a24c8:46]
+        }
+        self.aiming
+    }
+
     /// One game tick with Bond at `camera` (eye): his object position on the collision floor below, aimed at chest
     /// height (stand-in for the game's player object and `Drone_View_Bones`).
     /// `trigger`: the fire button (action 9) held; `aiming`: aim mode (L1).
@@ -1554,6 +1649,8 @@ impl Sim {
         let floor = self.world.floor_below(camera, 4.0).unwrap_or(camera[1] - 1.6);
         self.first_person = false;
         let ground = [camera[0], floor + 0.4, camera[2]];
+        // fix-aim-raise: the harness path goes through the same aim-bit gate as the real input.
+        let aiming = self.aim_gate(aiming);
         self.run(ground, ground, camera, look, look, trigger, aiming, false, false);
     }
 
@@ -1630,7 +1727,9 @@ impl Sim {
         let (mut input, trigger, reload, use_key) = if self.drones.death.active || menu_pause {
             (Default::default(), false, false, false)
         } else { (input, trigger, reload, use_key) };
-        let aiming = input.aiming;
+        // fix-aim-raise: the aim BIT, not the raw button — a raise-script weapon defers it to the
+        // raise's last tick (the gate below also runs the raise/lower view anims; see aim_gate).
+        let aiming = self.aim_gate(input.aiming);
         // Weapon switching (`Player_WeaponChange` 0x1a6f80): only when idle (not firing/reloading/holstering). The
         // switch request (`anim+0x63`) is set here; the holster/draw cycle runs in `run` (`Player_SetWeaponAnimObj`).
         // The weapon/gadget split: mouse wheel / Q cycles weapons (mode=0, 1..0x47); G cycles gadgets (mode=1,
@@ -2100,7 +2199,11 @@ impl Sim {
         let scoped = self.weapons.records.get(self.gun.weapon as usize).is_some_and(|w| u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap()) & 0x40 != 0);
         let max_zoom = self.weapons.zoom(self.gun.weapon as usize);
         if scoped {
-            if input.zoom { self.zoom_target = max_zoom; } else { self.zoom_target = 1.0; }
+            // fix-aim-raise: the zoom starts only when the aim BIT is set — the game writes +0x8D4
+            // from the per-weapon table on the bit's rise [M Player_Weapon 0x1a24c8:156-187] and
+            // `Player_Zoom` 0x1a1a70:18 reads the zoom button only while the bit is set. During
+            // the raise the bit is clear, so the target stays 1.0 until the raise's last tick.
+            if input.zoom && self.aiming { self.zoom_target = max_zoom; } else { self.zoom_target = 1.0; }
         } else {
             self.zoom_target = 1.0;
         }
@@ -2398,7 +2501,9 @@ impl Sim {
             // fix-gadgets-live: the AIMS-20's idle timer (`BLData+0x93a`): the game increments it while
             // the view anim is idle and resets on any fire/reload/switch anim [M Player_SetWeaponAnimObj
             // 0x1a2e38:41-57]; it gates the view model's side lights (0x1a5460:264/348).
-            self.drones.aims_idle = if self.gun.reload_state == 0 && self.gun.switch_state == 0 && !fired {
+            // fix-aim-raise: the raise/lower are the game's non-idle view states 0xF/0x10 — the
+            // counter resets while they play [M 0x1a2e38:40-58].
+            self.drones.aims_idle = if self.gun.reload_state == 0 && self.gun.switch_state == 0 && !fired && self.view_aim_anim.is_none() {
                 self.drones.aims_idle.saturating_add(1)
             } else {
                 0
@@ -2456,7 +2561,12 @@ impl Sim {
                 (self.view_script, self.view_time, self.view_speed) = (rd(0xa0), 0.0, 1.0);
             } else {
                 let len = self.scripts.get(&self.view_script).map_or(0.0, |s| s.length as f32);
-                self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0));
+                // fix-aim-raise: the aim raise/lower script advances (and finishes) in `aim_gate` —
+                // the game ticks it on the same anim object once per tick (AnimObjectUpdate
+                // 0x193600:318), and the finish must land before the free-aim/zoom consumers.
+                if self.view_aim_anim.is_none() {
+                    self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0));
+                }
                 // Gate the idle-loop reset on switch_state == 0 — fists has draw_script == idle_script
                 // (both 0x6000485), so without this gate the reset fires during state 3 (drawing), zeroing
                 // view_time before the state-3→0 check can succeed, leaving switch_state stuck at 3 forever.
@@ -2480,6 +2590,12 @@ impl Sim {
                         self.gun.end_fire_state();
                     }
                 }
+            }
+            // fix-aim-raise: another script displacing the aim raise/lower (a fire/reload/switch
+            // queued over it) clears the marker — the raise never finished, so the aim bit stays
+            // clear until the next press [M AnimScriptAdd 0x1c6d40 deletes the playing script].
+            if let Some(cur) = self.view_aim_anim {
+                if self.view_script != cur { self.view_aim_anim = None; }
             }
             // The release frame: the round spawns when the fire script's frame reaches `fire_anim_len` (+0x44)
             // and the +0x95C latch is clear [M Player_SetWeaponAnimObj case 9 0x1a2e38:416-420]; weapons with
@@ -4747,6 +4863,8 @@ impl Scene {
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, missile_cam: None,
                 hints, hint_cels, hint_fired, icon_msg_timers,
+                view_aim_anim: None,
+                view_aim_raising: false,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
