@@ -1300,6 +1300,11 @@ struct App {
     /// `--dev`: the dev menu in its own native window beside the game (devwin.rs; the user: "outside of the game, but
     /// not in a browser"). None without `--dev`, or when the window couldn't open (the F2 overlay is the fallback).
     devwin: Option<devwin::DevWindow>,
+    /// The sound hold's mirror (fix-pause-audio): true while a menu page is up or the viewer pause
+    /// holds the sim. The diff in `RedrawRequested` applies it to `sound` on the edge — the game's
+    /// pause page runs `SFXPause`+`SFXPauseAllStreams` on open and the unpause pair on close
+    /// [M 0x21b908:121-124, 0x21c2b0:11-22].
+    audio_paused: bool,
 }
 
 impl App {
@@ -1754,9 +1759,17 @@ impl ApplicationHandler for App {
                             return;
                         }
                         fe.action(a);
+                        let closed = fe.closed;
                         if let Some(code) = fe.requested_level.take() {
                             // The menu picked a level: through the same reload path a LOAD_LEVEL uses.
                             self.pending_level = Some(code);
+                        }
+                        // The pause page's Resume row (cursor 0) closes the menu [M C_GCPAUSE_Handler
+                        // 0x204408 — the game's resume is its own row]: the host consumes the flag and
+                        // leaves the menu (the sound hold lifts through the diff below).
+                        if closed {
+                            self.fe = None;
+                            if self.scene.sim.is_some() { self.grab(true); }
                         }
                     }
                     return;
@@ -1924,6 +1937,9 @@ impl ApplicationHandler for App {
                     match load(&self.iso, &name, self.all, save.as_ref()) {
                         Ok(mut scene) => {
                             self.sound = build_sound(&mut scene);
+                            // The fresh sound stack is unpaused: reset the mirror so the per-frame diff
+                            // re-applies the current hold (a menu can still be up over the reload).
+                            self.audio_paused = false;
                             if let Some(start) = scene.start { self.cam = Camera { pos: Vec3::new(start.0[0], start.0[1] + 1.6, start.0[2]), yaw: start.1, pitch: 0.0, fov: GAME_FOV }; }
                             self.scene = scene;
                             self.anim_time = 0.0;
@@ -1961,6 +1977,20 @@ impl ApplicationHandler for App {
                 // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
                 self.ticked = false;
                 self.poll_panel();
+                // fix-pause-audio: the pause page holds the sound. `MenuManager_Create` with
+                // `pause_sound` runs `SFXPause` (batch op 9) + `SFXPauseAllStreams` (op 0x16) and
+                // `MenuManager_Delete` runs the unpause pair [M 0x21b908:121-124, 0x21c2b0:11-22];
+                // GameState+0x50 is read by NO sound code — the pause rides these ops. The port's
+                // hook is the menu page being up (any page: the sim is not ticking) or the viewer's
+                // P pause. `set_paused` reaches the output at once because `sound_tick` (and the
+                // batch) only run inside the tick gate below. The fail/results page opens with
+                // `pause_sound` = 0 in the game (sound keeps playing [M Mission_Update 0x182c60:78])
+                // — the port's demo results hook rides the same gate [S, remaining host glue].
+                let menu_hold = self.fe.is_some() || self.paused;
+                if menu_hold != self.audio_paused {
+                    self.audio_paused = menu_hold;
+                    if let Some(s) = self.sound.as_mut() { s.set_paused(menu_hold); }
+                }
                 if !self.paused && self.fe.is_none() {
                     // Game logic at its fixed 60 Hz, decoupled from the render rate: one AI tick per whole tick of time.
                     // Dev mode's time scale changes the number of ticks run (WORKLOG 0081), not the tick rate.
@@ -2369,7 +2399,8 @@ pub fn run() -> Result<()> {
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
     let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
-        movie: None, devwin: None, };
+        movie: None, devwin: None,
+        audio_paused: false, };
     if dev {
         // fix-ingame-dev-menu: the browser panel is no longer part of `--dev` — the in-window F2
         // menu carries ALL of its functions now (through the same `panel::apply` command layer).
