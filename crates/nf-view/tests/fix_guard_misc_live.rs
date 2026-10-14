@@ -129,6 +129,93 @@ fn probe_sniper_boxes_and_los() {
     }
 }
 
+/// Deterministic-fire probe: push the exact bullet (vantage eye → the sniper's torso box) through
+/// `player_bullets` and watch the real bullet tick. Discriminates "the ray never reaches the boxes"
+/// from "the hit is dropped after `first_box_hit`".
+#[test]
+fn probe_sniper_direct_bullet() {
+    let mut scene = nf_view::load(&iso(), "0700000c.bin", false).expect("load 0700000c");
+    settle(&mut scene, 60);
+    let si = 17usize;
+    let ch = scene.sim.as_ref().unwrap().drones.list[si].switch_channel;
+    scene.sim.as_mut().unwrap().drones.set_channel(ch);
+    for _ in 0..60 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
+    let (from, chest) = ([46.0f32, 15.7, -182.0], [43.77f32, 21.84, -205.13]);
+    let d = [chest[0]-from[0], chest[1]-from[1], chest[2]-from[2]];
+    let l = (d[0]*d[0] + d[1]*d[1] + d[2]*d[2]).sqrt();
+    let dir = [d[0]/l, d[1]/l, d[2]/l];
+    {
+        let seg = scene.sim.as_ref().unwrap().world.segment(from, chest);
+        eprintln!("[direct] world segment eye→torso: {seg:?} (None = clear), dist {l:.1}");
+        scene.sim.as_mut().unwrap().drones.player_bullets.push(nf_game::drone::PlayerBullet {
+            pos: from, dir, speed: 4.0, travelled: 0.0, range: 80.0, damage: 3.5, weapon: 2,
+            first: true, dead: false, bounces: 0, homing: false, target: None, guided_cam: false,
+        });
+    }
+    for t in 0..40u32 {
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        let sim = scene.sim.as_ref().unwrap();
+        let hp = sim.drones.list[si].health;
+        let dr = &sim.drones.list[si];
+        let data = nf_game::drone::Data {
+            tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons,
+            world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins,
+            skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
+            hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
+            surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: sim.drones.difficulty,
+        };
+        let nboxes = dr.hit_boxes(&data);
+        eprintln!("[direct] t{t}: sniper hp {hp:.2} state {:#x} danim {} script {:?} boxes {} enabled {} npc_enabled {}",
+            dr.state, dr.anim.danim, dr.anim.script, nboxes.len(), dr.enabled, sim.drones.npc_enabled);
+        if t == 6 {
+            // The crossing segment (the one through the torso): run the real first_box_hit on the
+            // real boxes and print every box's t.
+            let (paths, _) = sim.drones.bullet_paths();
+            let (a, b) = paths.last().copied().unwrap();
+            let ray = [b[0]-a[0], b[1]-a[1], b[2]-a[2]];
+            eprintln!("[direct]    crossing seg ({:.2},{:.2},{:.2})→ray ({:.2},{:.2},{:.2})", a[0], a[1], a[2], ray[0], ray[1], ray[2]);
+            eprintln!("[direct]    drone pos ({:.2},{:.2},{:.2})", dr.pos[0], dr.pos[1], dr.pos[2]);
+            for bx in &nboxes { eprintln!("[direct]    box part {} centre ({:.2},{:.2},{:.2}) half {:?}", bx.part, bx.m[3][0], bx.m[3][1], bx.m[3][2], bx.half); }
+            for bx in &nboxes {
+                if let Some(tv) = nf_game::damage::ray_box(a, ray, bx) { eprintln!("[direct]    box part {} HIT t {:.3} centre ({:.2},{:.2},{:.2}) half {:?}",
+                    bx.part, tv, bx.m[3][0], bx.m[3][1], bx.m[3][2], bx.half); }
+            }
+            let first = nf_game::damage::first_box_hit(a, ray, &nboxes);
+            eprintln!("[direct]    first_box_hit = {first:?}");
+            // The convention check: the same slab test with the box axes taken from the COLUMNS.
+            let ray_box_cols = |a: [f32;3], ray: [f32;3], b: &nf_game::damage::HitBox| -> Option<f32> {
+                let c = [b.m[3][0], b.m[3][1], b.m[3][2]];
+                let (mut t0, mut t1) = (0f32, 1f32);
+                for k in 0..3 {
+                    let axis = [b.m[0][k], b.m[1][k], b.m[2][k]];
+                    let l = (axis[0]*axis[0] + axis[1]*axis[1] + axis[2]*axis[2]).sqrt();
+                    if l <= 0.0 { return None; }
+                    let p = ((a[0]-c[0])*axis[0] + (a[1]-c[1])*axis[1] + (a[2]-c[2])*axis[2]) / l;
+                    let d = (ray[0]*axis[0] + ray[1]*axis[1] + ray[2]*axis[2]) / l;
+                    let h = b.half[k];
+                    if d.abs() < 1e-12 { if p < -h || p > h { return None; } }
+                    else {
+                        let (x, y) = ((-h - p)/d, (h - p)/d);
+                        let (lo, hi) = if x < y { (x, y) } else { (y, x) };
+                        t0 = t0.max(lo); t1 = t1.min(hi);
+                        if t0 > t1 { return None; }
+                    }
+                }
+                Some(t0)
+            };
+            for bx in &nboxes {
+                if let Some(tv) = ray_box_cols(a, ray, bx) { eprintln!("[direct]    COLS box part {} HIT t {:.3}", bx.part, tv); }
+            }
+        }
+        if t < 8 {
+            let (paths, _) = sim.drones.bullet_paths();
+            let last = paths.last().map(|(a, b)| format!("({:.1},{:.1},{:.1})→({:.1},{:.1},{:.1})", a[0], a[1], a[2], b[0], b[1], b[2]));
+            eprintln!("[direct]    last seg {last:?} impacts {:?}", sim.drones.player_impacts);
+        }
+        if hp < 10.0 { eprintln!("[direct] t{t}: DAMAGE LANDED (hp {hp})"); break; }
+    }
+}
+
 /// 0700000c: the rooftop sniper shoots Bond (the user "heard sniper shots") but Bond's shots do
 /// nothing to him. Find the sniper (the Winter sniper 0x1E drone on the highest perch), then shoot
 /// him through the REAL fire path (the walker's aim + trigger + flanks) and require damage.

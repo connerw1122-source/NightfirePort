@@ -105,3 +105,28 @@ to the headless checks I ran. I did not guess a fix.
 ## ntfy failed
 
 (none — the notification step ran; see the queue record.)
+
+## Addendum (10:50 UTC, same session): the deterministic bullet and the miss margin
+
+`probe_sniper_direct_bullet` (new in the test file) pushed the exact bullet — vantage eye
+(46.0, 15.7, −182.0) → the settle-time torso centre — through `player_bullets` and ticked the real
+`update_player_bullets`. Facts captured at the crossing tick:
+
+- The bullet's step-5→6 segment runs (43.84, 21.65, −204.43) → (+ray (−0.37, 1.02, −3.85)); its
+  crossing of the torso plane is (43.78, 21.81, −205.04).
+- The live boxes at that tick are sane and where expected: torso part 4 at (44.02, 21.82, −205.04)
+  half [0.2, 0.25, 0.15], head part 5 at (44.05, 22.17, −205.05), 16 boxes total; the sniper's
+  `anim.script` is Some, `enabled`/`npc_enabled` true.
+- `first_box_hit` = **None** on the real boxes — and the geometry says it is RIGHT: the drone
+  shifted 0.2 between the settle probe (pos 43.77) and the crossing tick (pos 43.98), so the aim
+  point (the stale settle-time centre) passes 0.24 world-x from the live torso centre — 0.04
+  outside the 0.2 half-extent. Both the row-axis and column-axis slab variants miss the same way
+  (both printed in the probe), so this is not a row/column convention bug.
+
+Conclusion of the session's evidence chain: boxes exist, are placed on the body, the ray test is
+sound, the broadphase/gates (`npc_enabled`, `enabled`, `present`) all pass — **the deterministic
+shot missed by 0.04 of a unit because it aimed at a stale centre**. The next session's one-line
+step: read part 4's live `m[3]` at fire time and aim exactly there (`first_box_hit` then must
+return Some, and the health must drop through the real msg-8 path). The full-input-path test
+(`the_0c_sniper_takes_damage_when_shot`) still fails for the same reason plus the documented
+aim-mode pitch drift; both harnesses are on the branch ready for that step.
