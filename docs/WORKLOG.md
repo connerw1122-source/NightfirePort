@@ -9798,3 +9798,17 @@ death/restart 8, mission 4, level_carry 3, progress 8, nf-formats 74 (+ the 3 al
 Task 100f: every weapon's fire modes — the guided-missile camera (0x2C), the MGL impact/delay
 pair (0x2A/0x2B), the full modes table (docs/systems/weapons.md), the rest the table turns up.
 Ground truth: docs/live/2026-10-13-weapon-modes-pcsx2.md. Work starting.
+
+Task 100f outcome (same session): the sandbox was WIPED ~04:20 UTC (rebuilt: clone, work-slim,
+the ISO, rustup, cargo fetch — ~40 min lost). Found and ported: the MGL's impact/delay pair is
+the records' +0x70 flags (0x2A = 0x4 impact explode [L], 0x2B = 0x280 bounce+fuse 210 [L],
+the fuse lives in Bullet_DoTrails 0x12d890:262-281 [M]); the guided missile camera is +0x6C & 4
+(Bullet_init 0x12c5a0:234-254 ChangeSubState(10)+BLData+0x878+SetCamMode(0xc) [M], the view =
+the missile's matrix [M PositionCamera case 0xc], the look steers via Bullet_update 0x12e7b0:177-244
+[M], the 15-tick static restore via Bullet_Delete +0x944=0xf + Player_Update case 10 [M]) — only
+the Sentinel 0x2C carries the bit [L]. Grenade.explode_on_impact + PlayerBullet.guided_cam +
+steer_missile + blast_at (the rockets' impact blast) + Sim.missile_cam/view_override + the fuse
+gating. docs/systems/weapons.md: the full modes table. cargo check clean; the NF_ISO test run was
+still compiling at the deadline (fresh-sandbox rebuild) — the next session runs the suite first.
+Report: docs/reports/fix-weapon-fire-modes.md. Files: grenade.rs, drone.rs, scene.rs, the new
+weapons.md + the test file (+ the mechanical explode_on_impact:false in the older tests).
