@@ -9417,6 +9417,89 @@ state never lets the shot come due — needs a state whose UPDATE leaves firing/
 Left (censused + decompile-cited in docs/systems/anim-engine.md): op-4 kinds 1/6/7, EventFunc 0xE
 (partner messaging), the other 53 ChangeWeapon entries, footprint decals, the +0x45 setup read.
 Shared files: drone.rs only (fields on their own lines, merge lesson 4).
+## fix-facial3 (s/fix-facial3) — 2026-10-14
+Task: the facial remainder after fix-facial2 (the morph buffer + the CPU vertex half are merged) —
+(1) the idle/blink driver AnimFacialUpdate 0x1be310 (state byte +0x99, timer +0x92, the male/female
+state tables already banked in anim.rs, its Rand_Rand draws in order) wired into the drones' anim
+loop; the draws move seed-pinned tests (re-pick by WORKLOG 0072). (2) The face tracks' consumer:
+script_pose_drone poses BONES from the 22-channel tracks today; the decode says they're morph
+weights — re-point to the weights, keeping the 07000006 truck driver's immobility and ai_traces
+green (the immobility must then come from the body track's root: check the data first). (3) The GPU
+skinning path: apply the morphs in the vertex shader or upload the morphed positions for faces;
+keep the GPU vs CPU palette oracle green. Tests: eyelids close/reopen on the blink cycle; a
+dialogue mouth moves at frame 767 of the 07000005 ledge track; sister assertions. Files:
+crates/nf-game/src/{anim,drone}.rs, crates/nf-view/src/{scene,gpu}.rs.
+Started 22:56 UTC, sandbox expires ~00:54 UTC (stop new work 00:34 UTC). Branch cut from
+origin/master (5017f15 — facial2 + viewmodel-zoom merged). Setup all in place from the prior
+session (repo, work/, ISO, nf-queue, rustup, user-prefix ALSA).
+
+**fix-facial3 outcome (00:05 UTC)**: item 2 landed — the face tracks re-pointed to the morph
+weights: the disc refutes the all-zero-face-root premise (04000065's channels 0..2 reach ~1.0; the
+body 04000064's root runs 0.57 un-zeroed on all 880 frames; the game holds the seated driver to
+x 0.024/z 0.063 with the hip on the BODY ch1 — the suppression is the sit state, not a zeroed
+track). script_pose_drone/together + the drone root-motion window pickers exclude facial-count
+windows; facial_weights_at gives drone-backed characters the weights source (pre-fix None) and
+blends the facial slots via facial_blend. facial3_live 3/3 (the driver bones failing-first, the
+weights source, the ledge mouth at frame 767 [D]); the Kimiko test updated to the corrected
+semantics; ai_traces/fix_drone3/fix_truck green. Item 1 banked unwired: facial_update (0x1be310's
+pure state machine + the unit test, 135/0) — the wiring moved ai_05_truck's pins EARLIER (4-10:
+2168→885) because AnimObjectIsClose's LOD-byte gate has no port counterpart (over-drawing); wiring
++ the gate + the 0072 re-pin is the next session's first item. Item 3 (the GPU morphs) designed
+and scoped in the report (SkinAttr morph/wslot, the 248 KB static targets buffer + the per-frame
+weights, the shader term before the palette skinning), nothing partial committed. No Rand_* draws
+landed; seed-pinned tests unaffected on the pushed tree. Report: docs/reports/fix-facial3.md.
+
+## fix-head-look (s/fix-head-look) — 2026-10-14
+Task: the playtest 1013-1758 head-look bugs (07000007): the guard's head ROLLS sideways toward the
+camera (real game: upright, yaw only), the guest's head tips UP well past the camera, the left
+guest looks over Bond's head; cut-scene heads (Kimiko) turn oddly. Find the game's head-look (the
+drone head-track used by fix-heads / guest reactions): the axis order, the yaw/pitch clamps, the
+bone, the target point (the player's eye), and the script/cut-scene gating (must NOT override a
+scene's own animation). Plus take over s/fix-facial3 (101c): merge it, make
+fix_cutscenes2_live::the_kimiko_scene_characters_play_their_face_tracks and
+gpu_skin_live::gpu_palette_matches_the_cpu_pose_on_07000005_06_07 pass for the right reason, keep
+the face work. Files: crates/nf-game/src/{anim,drone}.rs, crates/nf-view/src/scene.rs.
+Started 01:17 UTC, sandbox expires ~03:16 UTC (stop new work 02:56 UTC). Setup all in place from
+the prior session (repo, work/, ISO, nf-queue, cargo, ALSA prefix re-extracted to /home/z/alsa).
+Branch cut from origin/master 8144bd6; origin/s/fix-facial3 (9947360) merged at 16606c1 (drone.rs
++ WORKLOG additive conflicts resolved: both sides kept). Full suite started 01:21 UTC on the
+merged tree (baseline).
+
+**fix-head-look outcome (02:25 UTC)**: the head-look system re-derived from the decompile and the
+port fixed — AnimObjectHeadTrack 0x1bf618 (called from psiBuildMatrixPalette 0x111498 on bone 5
+under the +0xC8 0x30 flags; sAnimObject = *(obj+0xDC)+0x70, which resolves every offset: range² 9.0
+at +0xE8 [L], the tracked bone 5 at +0x104 [L], the stored angles at +0xF0/+0xF8, speed 0.07/0.14 at
++0xE0). Fixes in drone.rs: (1) the composition is now the game's WORLD-frame premultiply
+q_yaw ⊗ q_pitch ⊗ q_world_head — yaw about the neck axis normalize(head−bone2), pitch about
+cross(neck,row2), row-vector transposes axis_angle(side,hp)·axis_angle(neck,−hy) — the port used to
+post-multiply model axes in the head bone's animated local frame (the playtest's roll);
+(2) the ease targets are now the game's geometric plane-acos wants measured from the FRESH anim pose
+(head_track_want, object_pose_inner(d,false)) instead of body-relative atan over a fixed +1.55
+stand-in (the double-counted anim head pitch — the "tips up past the camera"); (3) the 3.0
+head-track range gate from SetHeadTracking's 0x40400000 (want = 0 beyond, draw structure unchanged —
+no RNG shift). Tests: head_look_live 2/2 (upright 0.9978 + on-target 0.215 rad at 2.4 units; no
+swivel at 6 units), fix_ai_remainder_live re-pinned to the game semantics 2/2 (the delta check pins
+the premultiply), nf-game 256/0, formats+audio 85/3 (the 3 disc_golden, the slim-ISO allowance),
+nf-view targeted seed-sensitive 16/16 + kimiko 5/5 + gpu oracle 3/3 — the facial3 takeover green on
+the merged branch (16606c1, additive conflicts both-kept). The headless roll repro did NOT
+reproduce (the first enabled drones' anims hold the head frame near identity — documented in the
+report with the exact sampling attempted); the visible symptom is the main agent's live-check list
+(the playtest --bond spots + the +0x110..113 gate-byte trace). Open: the ScriptCam==0 gate bytes,
+the +0x106 snap-delay draw (omitted — would shift the RNG stream), suite.py full-run deferred to
+the next session (background jobs die between tool calls here). Report:
+docs/reports/fix-head-look.md. Branch s/fix-head-look.
+
+## fix-head-look2 (s/fix-head-look2) — 2026-10-14
+
+Started (05:07 UTC): takeover of s/fix-head-look (6c6cf74). Symptom: the head-look merge with master
+fails two 07000001 runs — walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact and
+fix_pickups_trace_live::with_dev_god_and_infinite_ammo_every_raptor_drop_is_taken_and_the_spare_matches_the_trace —
+both pass on master 4aaadac. Plan: confirm the failures on my master-merged tree, bisect the branch's
+commits against the two tests, make the head look a pure presentation change where the game's is one
+(decompile: does the game's head turn read RNG or feed the AI?); if the game really changes AI timing,
+re-pin per WORKLOG 0072's seed procedure with evidence. Prime suspects from the branch diffs: the
+drone.rs head-track wiring (bd8d2c5/35e6ded) and facial3's root-motion window picker change (51a8d8e,
+"the drone root-motion window pickers exclude facial-count windows").
 
 ## fix-interp-ghosting (s/fix-interp-ghosting) — 2026-10-14
 
@@ -10105,3 +10188,38 @@ The pause page's seven reported gaps fixed from the page data + the game's draw 
   disc_golden on the slim ISO), 20 ignored; zero failures outside the allowed set. Files: menu.rs,
   lib.rs (2 additive hooks), scene.rs (comment-only), tests/menus_flow.rs. Report:
   docs/reports/fix-pause-menu2.md.
+### fix-head-look2 — outcome (06:35 UTC)
+
+**The two 07000001 failures were NOT the head look's RNG or AI wiring — they were (1) the game's own
+hit-box coupling plus (2) a real port bug in the stun-loop gate.** Bisect: both tests pass on
+facial3+master (bisect branch 53f1b1b), so the mover is the head-look code commit bd8d2c5 — the only
+code commit between them. The mechanism chain, all decompile-checked:
+
+- The game's head turn is presentation-only: `AnimObjectHeadTrack` 0x1bf618 has **no Rand calls** and
+  its only caller is `psiBuildMatrixPalette` 0x111498 (draw palette). The game's head look does not
+  read RNG and does not feed the AI — the port's matches (head_yaw/head_pitch have no sim readers).
+- BUT the game's **collision boxes include the head rotation**: `AnimGetCollData` 0x1c4ac8 itself
+  calls `psiBuildMatrixPalette` and reads its palette; the HeadTrack call inside is gated on the
+  +0xC8 0x30 flags only, not on the caller's mode arg. So the corrected head box (world premultiply +
+  geometric wants + the 3.0 gate) legitimately changes which part absorbs a bullet — the raptor/walk
+  fights diverge onto the game-correct timeline. On my tree a raptor died in a pose whose gun drop
+  landed inside Bond's touch bounds: the game's own `Pickup_Handler` touch took it (ledger-recorded)
+  and the test's walked-up take loop never saw it. Test re-pins: the raptor loop drains the take
+  ledger for the kill window before walking to the rest (fix_pickups_trace_live); the walker's
+  `follow` returns at its cap instead of panicking and the walk's round loop walks past a wedged lead
+  (the real player's move) — walkreal_07000001_live + tests/common/walker.rs.
+- The divergence then exposed a **real port bug** [M]: `NDrone2_DSTATE_StunGrenadeLoop` 0x1631c0 case
+  0xc calls `DroneFunc_AnyoneNear` 0x14a718 with radius **2.0** (0x40000000); AnyoneNear's
+  glb_players loop tests SqDist3D < (2·r)² = 16 — the player keeps the stunned drone down within
+  **4.0** (|dy| <= 3.0 arm left; the port's 3D `dist` bounds it) — and falls to
+  `NDrone2_DroneNearPos` 2.0 over the drones (left: the port's only near-peer is the player). The
+  port held the drone down while Bond was within **8.0** — twice the game's radius — so the escort
+  followed at the walker's 4-5 band sat in STUN_GRENADE_LOOP (0x4e) forever; a guard's stun grenade
+  (the diverged fight) parked the contact permanently. Fixed in drone.rs `handle_stun` (gate
+  `stun_kept_down` = `dist < 4.0`, re-arm 300 = 5·FRAME_RATE_INT kept); unit test
+  `stun_loop_recovers_when_the_player_is_beyond_the_games_4_band` pins the 3.9/4.0/4.1 boundary.
+
+Result: walkreal_07000001_live 2/2 and fix_pickups_trace_live 2/2 on the merged tree (d6575e4), the
+head-look and facial fixes and their tests kept. Shared-file touches (all minimal, listed):
+drone.rs (the stun gate + the unit test), tests/common/walker.rs (follow cap returns),
+the two test files. Live checks and the full account: docs/reports/fix-head-look2.md.

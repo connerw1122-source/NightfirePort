@@ -4565,17 +4565,55 @@ impl Scene {
     /// the same window `script_pose_together` poses bones from) sampled at the object's frame via
     /// `AnimFacialBlend`'s source arithmetic [M `facial_weights`, `AnimFacialBlend` 0x1be648].
     pub fn facial_weights_now(&self, c: &Character) -> Option<Vec<f32>> {
-        let src = c.script?;
+        self.facial_weights_at(self.characters.iter().position(|cc| std::ptr::eq(cc, c))?, c)
+    }
+
+    /// `facial_weights_now` with the character's index known (the drone link is `Sim::char_drone[ci]`).
+    pub fn facial_weights_at(&self, ci: usize, c: &Character) -> Option<Vec<f32>> {
         let s = self.sim.as_ref()?;
         let count = c.skin.facial as usize;
         if count == 0 { return None; }
-        let (script_h, frame) = s.script_anim(src, c.skin.hashcode)?;
+        // fix-facial3: drone-backed characters sample their own playing script's face window — the
+        // same source the root-motion path reads (`Drone::script_frame`, the drone's live
+        // `anim.script`/`ftime`); the script-object path keeps its live `Obj::Anim` frame.
+        let (script_h, frame) = match c.script {
+            Some(src) => s.script_anim(src, c.skin.hashcode)?,
+            None => {
+                let di = (*s.char_drone.get(ci)?)?;
+                let dr = &s.drones.list[di];
+                (dr.anim.script?, 1.0 + dr.anim.ftime)
+            }
+        };
         let script = s.scripts.get(&script_h)?;
         let win = script.sequences().filter(|(a, _, _)| (*a as f32) <= frame)
             .filter_map(|(a, _, q)| s.seqs.get(&q).filter(|sq| sq.channels.len() == count).map(|sq| (a, q)))
             .last()?;
         let seq = s.seqs.get(&win.1)?;
-        nf_game::anim::facial_weights(seq, (frame - win.0 as f32 + 1.0).max(1.0), count)
+        let mut out = nf_game::anim::facial_weights(seq, (frame - win.0 as f32 + 1.0).max(1.0), count)?;
+        // fix-facial3: `AnimFacialBlend` (0x1be648) — the drone's facial script slots over the track
+        // weights: slot 0 (the idle face) copies straight, slot 1 (the blink) overrides |w| > 0.01.
+        // The drone's script-object sibling has no slots (the game's script objects get theirs from
+        // the same driver — the difference is [S], the tracks dominate there).
+        if c.script.is_none() {
+            if let Some(di) = s.char_drone.get(ci).copied().flatten() {
+                let dr = &s.drones.list[di];
+                let now = dr.last_tick;
+                let slot_w = |slot: Option<(u32, u32)>| -> Option<Vec<f32>> {
+                    let (h, start) = slot?;
+                    if (now as i64) < start as i64 { return None; }
+                    let fscript = s.scripts.get(&h)?;
+                    let (first, _, q) = fscript.sequences().next()?;
+                    let fseq = s.seqs.get(&q)?;
+                    nf_game::anim::facial_weights(fseq, (now - start) as f32 - first as f32 + 1.0, count)
+                };
+                let idle = slot_w(dr.facial_idle);
+                let blink = slot_w(dr.facial_blink);
+                if idle.is_some() || blink.is_some() {
+                    nf_game::anim::facial_blend(&mut out, idle.as_deref(), blink.as_deref(), None, [0, 0], false);
+                }
+            }
+        }
+        Some(out)
     }
 
     pub fn animate(&self, choice: Option<usize>, ticks: f32, opts: ViewOpts) -> Vec<[f32; 3]> {
@@ -4583,8 +4621,13 @@ impl Scene {
         let hidden = |_: &Character, ci: usize| hidden[ci];
         // fix-facial2: the morph weights per morph-bearing script character (the ledge dialogue's
         // face track), computed once per frame — `SkinIt` 0x10bf30 consumes them per vertex.
-        let facial: Vec<Option<Vec<f32>>> = self.characters.iter().map(|c| {
-            if c.morph_targets.is_some() { self.facial_weights_now(c) } else { None }
+        // fix-facial3: drone-backed characters are gated OUT until the GPU half (the report's item
+        // 3) lands — the driver's face window is live from tick 0 and the weights-as-morph term on
+        // the CPU path alone broke the gpu_palette oracle (0.0033 > 1e-3 on 07000006, exactly the
+        // morph delta the shader does not apply yet). The weights source itself stays live and
+        // tested (facial3_live's driver test reads facial_weights_at directly).
+        let facial: Vec<Option<Vec<f32>>> = self.characters.iter().enumerate().map(|(ci, c)| {
+            if c.morph_targets.is_some() && c.script.is_some() { self.facial_weights_at(ci, c) } else { None }
         }).collect();
         self.char_verts.iter().map(|v| {
             // Searchlight parts: the simulation's matrices (`Searchlight_Update`), coronas as camera billboards
