@@ -187,7 +187,21 @@ impl Mission {
             // The game's modes: part < current → 1 (cold) / 4 (warm), part == current → 2, part >
             // current → 0 [M 0x182270:73-84]. Modes 1 and 4 both skip the reset (previous parts keep
             // their state); only modes 0 and 2 run the body below.
-            if l.part < self.order { continue; }
+            if l.part < self.order {
+                // fix-objective-messages: the game's record states live in `.data` and NO load path
+                // reinitialises them (`ResetMap_GameInit` 0x1d5080 only calls `Mission_Init`, which
+                // touches current + future parts [M 0x182270:68-129]) — at any real arrival the prior
+                // parts sit ANNOUNCED: [L work/ee_start_0700000a.bin @ 0x2a3f78 — mission 07000009's
+                // rec1 (condition 0x46, still unfired) is state 3 at 0700000a's start]. The port's
+                // fresh `Mission::new()` fabricates 0 there, and case 0 then announces every prior
+                // record whose `level <= current` at the new level (07000007 stacked 07000005/06's
+                // banners; the restart re-announced them). Mark those fabricated 0s announced — the
+                // monitor's own 0→2/3 transition [M 0x1827d8:47-51], without queueing a message.
+                for (j, o) in l.objectives.iter().enumerate() {
+                    if self.states[i][j] == 0 { self.states[i][j] = if o.flags & 2 != 0 { 2 } else { 3 }; }
+                }
+                continue;
+            }
             for (j, o) in l.objectives.iter().enumerate() {
                 self.states[i][j] = if o.enable != 0 { 1 } else { 0 }; // [M 0x182270:98-105]
                 if o.channel != 0 {

@@ -9336,6 +9336,48 @@ results page if still plain; F12 screenshots must capture the menu overlay. File
 crates/nf-view/src/{menu,lib}.rs, crates/nf-view/tests/menus_flow.rs.
 - Branch created from origin/master 3c77a9d. Work started.
 
+## fix-pause-audio (s/fix-pause-audio) — 2026-10-14
+
+Work Log:
+- Session started 00:26 UTC (sandbox deadline ~02:23 UTC). Branch s/fix-pause-audio created from origin/master (3c77a9d), pushed.
+- Task: pausing the game pauses the sound. Playtest 2026-10-13: with the pause menu open, ambient
+  keeps playing (truck loop on 07000005). Port stops ticking the sim under a menu but nothing pauses
+  the audio output. Plan: read GS_PauseGame 0x17d178 (sets GameState[0x50] + MP pause words), find
+  the sound-side readers of GameState+0x50 (Sound_Update*, the EE->IOP batch, SFXPause/SFXUnPause
+  RPCs; docs/systems/sound.md section 8), check what streamed music does while paused; port the
+  global pause in nf-audio (voices hold position and resume, no new key-ons while paused), driven
+  from the pause page open/close in nf-view, with the menu's own sounds still playing.
+- Tests planned: a looping ambient voice's sample position does not advance while paused and
+  resumes after; the menu click still plays; sister: unpaused it advances.
+- Evidence read end to end [M]: GS_PauseGame 0x17d178 writes ONLY GameState[0x50] + the 8 MPGame
+  pause words + the PlarStat timer pause — it calls no sound function, and NO Sound_*/SFX* code reads
+  GameState+0x50 (grep over all of ACTION.ELF; the only sound-adjacent reader is View_DrawSky's
+  thunder gate). The real sound pause is menu-driven: MenuManager_Create 0x21b908:121-124 (the
+  `pause_sound` flag → SFXPause op 9 + SFXPauseAllStreams op 0x16), MenuManager_Delete 0x21c2b0:11-22
+  (SFXUnPause 0xa + SFXUnPauseAllStreams 0x17); Player_Update 0x193600:71-77 passes pause_sound=1 for
+  the pause page, Mission_Update 0x182c60:78-79 passes 0 for the fail menu (sound keeps playing).
+  IOP side: ES_PauseSfx 0x1648 sets item+0x290 and pitch-0s the live voices (psiSamplePause 0xf46c
+  saves the pitch); SFXUpdate 0x4ee4 skips Paused items; sounds started while paused record
+  StartedWhenPaused (SFXStart3D 0x3aac) and still key on — the menu's own sounds.
+- Ported (nf-audio): Driver::set_paused (+ Item.gpaused, the held state next to the NIS pause's
+  per-frame flag) pitch-0+vol-0s every live item at the pause and skips them in update; the unpause
+  emits nothing — the next full update's recompute restores (the NIS-pause restore). Sound::set_paused
+  flushes the edge to the output immediately (the host stops ticking under a menu, so the next batch
+  would come only after the menu closes). Output: Shared.paused freezes the MUSIC queue drain only
+  (op 0x16's stream hold / GamePausedMe); voices are NOT held at the output — while-paused starts
+  still sound. The mix closure is extracted verbatim into `Mixer` (nf-audio/lib.rs) so the hold is
+  testable headless. nf-view: one per-frame diff in RedrawRequested (`fe.is_some() || paused` →
+  Sound::set_paused), re-armed after build_sound swaps the sound on level reload; plus the missing
+  host consumption of `fe.closed` (the pause page's Resume row set it, nothing read it — Enter-on-
+  Resume left the menu up forever, which would have stuck the sound hold too).
+- Tests: nf-audio unit (the pause edge/skip/menu-start/restore + the Mixer playhead/position hold,
+  both with sister asserts) and NF_ISO crates/nf-view/tests/fix_pause_audio_live.rs through
+  nf_view::load + sound_tick on 07000005 (the playtest level): the ambient keys on through the real
+  path, the pause holds it (no recompute, no key-ons), a 0x1da menu-click start while paused keys on,
+  the unpause restores. All green; full suite per-crate in the foreground (the sandbox kills
+  background jobs between tool calls — suite.py cannot survive; runs documented in the report).
+- Files: crates/nf-audio/src/{sfx,lib}.rs, crates/nf-view/src/{lib,menu}.rs,
+  crates/nf-view/tests/fix_pause_audio_live.rs, docs/systems/sound.md (§8 port note), WORKLOG, report.
 ### fix-spawner-remainder — outcome
 
 - G-025: the "+0x1F wave-delay byte" was a misread (it is the initial-fill/no-stealth-checks flag,
@@ -9645,3 +9687,64 @@ Work Log:
 - Plan: index builder over all FILES.BIN archives (cached, keyed by ISO size + archive-table
   SHA-1) -> lazy load hooks in scene.rs/lib.rs -> NF_ISO tests on 07000005 (give, draw, fire,
   reload) with sister assertions on levels that carry the weapon.
+## dev-window (main agent, branch devwin) — 2026-10-13
+
+The user: "the dev menu should manifest outside of the game, but not in a browser", then "you work on it". `--dev`
+now opens a second native window, **"Nightfire dev"**, beside the game window (`crates/nf-view/src/devwin.rs`): a
+second `winit` window on the same event loop with its own `wgpu` surface on the game's device, drawn with the game's
+HUD font (texture 0x03000003). No new crates.
+
+- Tabs (Weapons, Gadgets, Grenades, Ammo/health, NPCs, Teleport, Level, Toggles, Screenshot) on the left; the page's
+  rows on the right with type-to-filter, a scrollbar and the mouse wheel; the selected row's description wrapped
+  under the list; the last action's result as a status line; a header with the level, Bond's spot and health.
+- Enter or a double-click applies the row through the same `dev::apply_menu_action_to_scene` → `panel::apply` path as
+  the F2 overlay (`App::apply_menu_action`). The window never sets `Dev::menu`, so **the game keeps running** while it
+  is used. Its events never reach the game (routed by `WindowId` first thing in `window_event`).
+- F2 in the game window raises it; closing it hides it (F2 brings it back). Without the window (it failed to open)
+  F2 falls back to the in-game overlay. It refreshes ~6 times a second from the game's frame loop.
+- The Teleport page lists only the loaded level's spots (a spot from another level dropped Bond into empty space).
+- Tests: `tests/devwin_flow.rs` — the layout fits at 640x760, the 420x360 minimum, 200% scaling and 4K (20+ rows at
+  760 px; the overlay showed 7); scroll-to-selection and wrap; through `devwin::input` (what the event handler calls):
+  type "frag" + Enter → GiveWeapon 0x34 → the inventory has it, `Dev::menu` stays off; clicking a tab switches page,
+  one click selects, a second applies, Close hides. Checked live: the window opens beside the game with the full
+  weapon list (screenshots in the session). A live keyboard check by synthetic keys failed: Windows wouldn't give the
+  dev window focus from a background process, so the user tries it by hand.
+## fix-objective-messages (s/fix-objective-messages) — 2026-10-14
+
+Task 101d: the playtest (results 1013-1758 / 1013-1825) found (1) two stacked OBJECTIVE
+COMPLETE banners on 07000007 at the library table (armour pickup), (2) the 07000007 start
+announces 07000006's "Breach the castle walls" before 07's own objective (cold or warm), and
+on the fail path "Find a way inside to the party" (05's objective) shows on 07, (3) the banner
+text overlaps its grey box (one- and two-line banners, long texts, 1280x720 and 4:3), (4) the
+"Mission Fail / Cover Lost" text sits left of its box's centre. Files: mission.rs (+mission/),
+hud.rs. Reproduce-first through the real input path; work starting.
+
+Task 101d outcome (same session): REPRODUCED then FIXED, all four symptoms. (1) The two stacked
+OBJECTIVE COMPLETE banners: `HUD_UpdateStatusPane` case 2 strcmps the message text against
+Txt_BindLabel(0x2000053) and case 3 forces the body sprite's colour to 0 in both phases [M
+0x19c310] — the game shows ONLY the status label for a completion; the port drew the body row too.
+Fixed in hud.rs (+ the status label's steady gold 0x785a14 [M case 3's else branch]). (2) The
+level-start announces of 07000005/06's objectives on 07000007: the port's fresh `Mission::new()`
+fabricates state 0 for prior mission parts and case 0 announces every prior record with
+`level <= current` [M 0x1827d8:41-54]; the game never reaches that state — the record states are
+`.data` and no load path reinits them, and at a real arrival the prior parts sit ANNOUNCED ([L
+work/ee_start_0700000a.bin @ 0x2a3f78: mission 09's rec1 (ch 0x46 unfired) = state 3 at 0700000a's
+start]). `Mission::init` now marks the fabricated 0s 2 (fail-objectives) / 3 [M 0x1827d8:47-51's
+own transition]. The restart re-announce: the restart save carried no mission — the game's restart
+resets only the player (P_ENDMISSION_Handler 0x216618:19-21) — lib.rs now attaches the live
+mission snapshot to the restart RamSave. (3) The banner box: Text_AddMsg wraps the message at
+TextMsgFormats[2]'s 480 [L 0x2bf108+0x14] — the box's own width [L ObjectiveStatusSprInfo[2] x16
+w480]; the port wraps at draw (Font::word_wrap, line advance = glyph0.h + gap + 1.0 [M 0x1ee598:
+65-71], lines left-aligned from the widest-line-centred block [M 0x1eee48 justify 2]). (4) The
+"Mission Fail / Cover Lost" left-of-centre: the mission banner's styles 0x30cdb8/0x30cce0 are
+`fe 03` = CENTRE [L; M Font_ParseFormat 0x1ee3e0 case 4 byte 3 → flag 2, Font_DrawText 0x1eee48
+flags&2 → x −= width/2] — the port passed its right-justify flag (measured centre 209.4 vs 256).
+Tests: crates/nf-view/tests/fix_objective_messages_live.rs — 5 tests, all failing pre-fix
+(the 08 cold-load announced "Breach the castle walls"; the long objective's status band spanned
+2.1..510.4; the fail row centred 209.4), all green post-fix and on the merged tree. The banner
+tests + hud/party-mission suites green post-fix (nf-game 255 passed). Suite re-run on the final
+tree: see the report. Files: mission.rs, hud.rs (nf-view), scene.rs, lib.rs, hud.rs (nf-formats,
+the wrap/line-height helpers). Report: docs/reports/fix-objective-messages.md.
+Full suite on the final tree (origin/master 7be3272 merged): **886 passed, 3 failed, 27 ignored
+(20 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH. Also green post-fix:
+death/restart 8, mission 4, level_carry 3, progress 8, nf-formats 74 (+ the 3 allowed).

@@ -2398,6 +2398,11 @@ impl Sim {
                         text = format!("{fail}: {text}");
                     }
                     let status = if complete { 0x0200_0053 } else { 0x0200_0051 };
+                    // (fix-objective-messages: `Text_AddMsg` 0x1b0c30 also wraps the stored string
+                    // with `Font_WordWrapString` at TextMsgFormats[2]'s 480 [L 0x2bf108+0x14] and
+                    // scales the life by the wrapped/orig length [M 0x1b0c30's +0x18 store]. The
+                    // port wraps at draw time — the font lives in the scene's HudTables, which the
+                    // Sim-side drain doesn't hold; the life scaling is not ported, see the report.)
                     self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed, life: ticks as f32, opened: false, second: false });
                 }
                 nf_game::mission::Event::FailLabel(l) => {

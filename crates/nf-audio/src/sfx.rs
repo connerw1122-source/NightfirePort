@@ -70,6 +70,11 @@ struct Item {
     paused: bool,
     /// `KeyOnFrameDelay` (SFXItem+0x2B4): the precache countdown; `HasSampleEnded` reports false while ≥ 1 [M §3.2].
     key_on_delay: i32,
+    /// The global pause (`SFXPause` op 9 — the second user of SFXItem+0x290): set on every item live
+    /// at the pause (`ES_PauseSfx` 0x1648), skipped by `SFXUpdate`, cleared by the unpause [M §8].
+    /// Its own flag next to `paused` (the NIS pause): the port recomputes that one every update,
+    /// while the global pause is a held state.
+    gpaused: bool,
 }
 
 /// Bank slot data: the parsed bank, its decoded samples (lazily) and the raw ADPCM.
@@ -134,6 +139,10 @@ pub struct Driver {
     /// Streamed effects: `STREAMS.LUT` and `STREAMS.BIN`, decoded entries.
     streams: Option<(Vec<[u32; 4]>, Arc<Vec<u8>>)>,
     stream_pcm: HashMap<usize, Arc<Pcm>>,
+    /// The global pause (`SFXPaused` on the IOP — the batch's op 9/0xa state): the items live at the
+    /// pause are held [M sound.md §8]. The EE keeps the batch flowing while paused; the port's host
+    /// stops ticking under a menu, so the pause reaches the output through `set_paused` at once.
+    paused: bool,
 }
 
 /// `Streams[1..2]`: at most two streamed effects at once (slot 0 is the music) [M `SFXInitialiseStream`].
@@ -162,7 +171,7 @@ impl Driver {
             music_master: 70, mute_sfx: 1, indoors: 100, indoors_target: 100, reverb: 0, reverb_target: 0, underwater: false,
             fade: 10000, fade_music_volume: 10000, fade_status: 0, fade_rate: 30, fade_music: 1, fade_start: 0,
             ducker_current: 100, ducker_volume: 100, ducker_duration: 1, ducker_start: 0, timer_ms: 0, nis_quitten: false, nis_playing: false,
-            key_on_frame_delay: 0,
+            key_on_frame_delay: 0, paused: false,
             listener_pos: [0; 3], listener_dir: [0, 1000, 0], listener_norm: [-1000, 0, 0], active: Vec::new(), streams: None, stream_pcm: HashMap::new() }
     }
 
@@ -222,6 +231,7 @@ impl Driver {
             inner: if inner == -1 { fx.inner } else { inner }, outer: if outer == -1 { fx.outer } else { outer }, fx: Arc::new(fx), slot,
             updated: 0, real_pos: p, pos: p, handle, delete: false, fade_kill: false, fade_kill_vol: 100, streamed: false,
             paused: false, key_on_delay: kd,
+            gpaused: false,
         };
         self.items.insert(0, item);
         if self.setup(out, 0) { 0 } else { 1 }
@@ -578,14 +588,15 @@ impl Driver {
             let fx = self.items[i].fx.clone();
             {
                 let it = &mut self.items[i];
+                // The global pause skips the item entirely — no counter, no 3-D update, no end test,
+                // no recompute (`SFXUpdate`'s Paused check, item+0x290) [M sound.md §8].
+                if it.gpaused { i += 1; continue; }
                 // `ES_HandleNisPauseSfx` (§8): a `PauseInNis` sound pauses while an NIS plays — the live voices get
                 // pitch 0 and the item is skipped (no counter, no 3-D update, no end test); unpausing restores the
-                // pitch on the next full update (the port has no global `SFXPause`) [M].
+                // pitch on the next full update [M].
                 let want = self.nis_playing && fx.pause_in_nis != 0;
                 if want && !it.paused {
-                    for ch in 0..10 {
-                        if let Some(v) = it.vh[ch] { if let Some(vx) = self.voices[v].as_ref() { out.push(Cmd::Set { voice: vx.front, pitch: 0, left: 0.0, right: 0.0 }); if let Some(r) = vx.rear { out.push(Cmd::Set { voice: r, pitch: 0, left: 0.0, right: 0.0 }); } } }
-                    }
+                    Self::pause_item_voices(&self.voices, it, out);
                 }
                 it.paused = want;
                 // The precache countdown (`KeyOnFrameDelay`): counts down once per frame [M §3.2]. (*Deviation*: the
@@ -668,6 +679,35 @@ impl Driver {
 
     /// Live items (tests).
     pub fn items(&self) -> usize { self.items.len() }
+
+    /// The pitch-0 pause of one item's live voices (front + rear): the NIS pause's edge and the
+    /// global pause's edge [M sound.md §8]. The port adds volume 0 — the SPU's pitch 0 alone would
+    /// hold one sample audible — the NIS-pause precedent [S].
+    fn pause_item_voices(voices: &[Option<Voice>], it: &Item, out: &mut Vec<Cmd>) {
+        for ch in 0..10 {
+            if let Some(v) = it.vh[ch] { if let Some(vx) = voices[v].as_ref() { out.push(Cmd::Set { voice: vx.front, pitch: 0, left: 0.0, right: 0.0 }); if let Some(r) = vx.rear { out.push(Cmd::Set { voice: r, pitch: 0, left: 0.0, right: 0.0 }); } } }
+        }
+    }
+
+    /// The global pause: `SFXPause` (batch op 9) / `SFXUnPause` (op 0xa) [M sound.md §0 table, §8].
+    /// Pausing pitch-0s every item live NOW (`ES_PauseSfx` 0x1648 walks the active list); items
+    /// started while paused are left alone — the menu's own sounds play under the pause [M §3.2
+    /// `StartedWhenPaused`]. The unpause emits nothing: the next full update's per-channel recompute
+    /// restores pitch and volumes (the NIS pause's restore) [M]. `out` takes the edge commands — the
+    /// host stops ticking the sim while a menu is up, so the pause must reach the output at once.
+    pub fn set_paused(&mut self, on: bool, out: &mut Vec<Cmd>) {
+        if self.paused == on { return; }
+        self.paused = on;
+        if on {
+            // `ES_PauseSfx`: every item on the active list gets Paused (+0x290) and pitch-0 voices [M §8].
+            for it in &mut self.items { it.gpaused = true; Self::pause_item_voices(&self.voices, it, out); }
+        } else {
+            for it in &mut self.items { it.gpaused = false; }
+        }
+    }
+
+    /// The pause state (tests; the host's re-apply after a level reload swaps the driver).
+    pub fn paused(&self) -> bool { self.paused }
 }
 
 /// The driver plus the sound output, fed by the EE layer's commands once per game tick.
@@ -704,6 +744,16 @@ impl Sound {
             out.push(Cmd::MusicGain(p.gain(self.driver.music_master, self.driver.ducker_current, self.driver.fade_music_volume)));
         }
         if let Some(o) = &self.output { o.send(out); }
+    }
+
+    /// The pause page's sound hold: `MenuManager_Create` with `pause_sound` runs `SFXPause` (op 9) +
+    /// `SFXPauseAllStreams` (op 0x16); `MenuManager_Delete` runs the unpause pair (0xa / 0x17)
+    /// [M 0x21b908:121-124, 0x21c2b0:11-22]. The host stops ticking the sim while a menu is up, so
+    /// the commands go to the output here and now — the next `batch` only runs after the menu closes.
+    pub fn set_paused(&mut self, paused: bool) {
+        let mut out = Vec::new();
+        self.driver.set_paused(paused, &mut out);
+        if let Some(o) = &self.output { o.set_paused(paused); o.send(out); }
     }
 }
 
@@ -787,6 +837,56 @@ mod tests {
         for _ in 0..200 { d.update(&mut Vec::new(), &[]); }
         assert_eq!(d.fade, 10000);
         assert_eq!(d.fade_music_volume, 0, "music not touched when fade_music is off");
+    }
+
+    /// The global pause (`SFXPause` batch op 9 / `SFXUnPause` op 0xa — what `MenuManager_Create`
+    /// with `pause_sound` runs [M 0x21b908:121-124]): every item live at the pause gets pitch 0 and
+    /// is skipped by `SFXUpdate` (no recompute, no counter, no end test); a start *while* paused
+    /// still keys on (the menu's own sounds); the unpause restores on the next full update
+    /// [M sound.md §8, `ES_PauseSfx` 0x1648, `psiSamplePause` 0xf46c].
+    #[test]
+    fn the_global_pause_holds_items_and_a_start_while_paused_still_keys_on() {
+        let mut d = Driver::new();
+        let (b, sbf) = one_sound_bank();
+        d.load_bank(4, b, sbf);
+        d.set_listener([0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+        let mut out = Vec::new();
+        d.start(&mut out, 7, Some([5.0, 0.0, 0.0]), 1, None);
+        d.update(&mut out, &[]);
+        assert!(out.iter().any(|c| matches!(c, Cmd::Play { .. })), "the ambient keyed on: {out:?}");
+        // Sister (unpaused): each update recomputes the live channels at the item's pitch.
+        let mut out = Vec::new();
+        d.update(&mut out, &[]);
+        assert!(out.iter().any(|c| matches!(c, Cmd::Set { pitch: p, .. } if *p != 0)), "unpaused the recompute runs: {out:?}");
+        // The pause edge: the live voices get pitch 0 (the NIS-pause shape, + volume 0).
+        let mut edge = Vec::new();
+        d.set_paused(true, &mut edge);
+        assert!(edge.iter().any(|c| matches!(c, Cmd::Set { pitch: 0, left: 0.0, right: 0.0, .. })), "the pause pitches the live voices to 0: {edge:?}");
+        // While paused the item is skipped: no recompute, no key-ons.
+        let mut out = Vec::new();
+        d.update(&mut out, &[]);
+        assert!(!out.iter().any(|c| matches!(c, Cmd::Set { pitch: p, .. } if *p != 0)), "paused the item is skipped: {out:?}");
+        assert!(!out.iter().any(|c| matches!(c, Cmd::Play { .. })), "paused no key-ons: {out:?}");
+        // A start while the pause is up still keys on — the menu's own sounds.
+        let mut out = Vec::new();
+        d.start(&mut out, 7, None, 2, None);
+        assert!(out.iter().any(|c| matches!(c, Cmd::Play { .. })), "a start while paused keys on: {out:?}");
+        let mut out = Vec::new();
+        d.update(&mut out, &[]);
+        assert!(out.iter().any(|c| matches!(c, Cmd::Set { pitch: p, .. } if *p != 0)), "the while-paused start plays: {out:?}");
+        // The unpause: the next full update restores the pitch/volume recompute.
+        let mut edge = Vec::new();
+        d.set_paused(false, &mut edge);
+        let mut out = Vec::new();
+        d.update(&mut out, &[]);
+        assert!(out.iter().any(|c| matches!(c, Cmd::Set { pitch: p, .. } if *p != 0)), "unpaused the recompute returns: {out:?}");
+        // Sister: the pause is a state, not a level — a second set emits no edge.
+        let mut e1 = Vec::new();
+        d.set_paused(true, &mut e1);
+        assert!(!e1.is_empty(), "the re-pause re-pitches the live voices: {e1:?}");
+        let mut e2 = Vec::new();
+        d.set_paused(true, &mut e2);
+        assert!(e2.is_empty(), "the second pause edge is empty: {e2:?}");
     }
 
     /// `ES_StartDucker` / `ES_UpdateDucker` (0x83c8/0x8438): `DuckerCurrentVolume` creeps toward the target while
