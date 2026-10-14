@@ -9670,3 +9670,6 @@ Tests: crates/nf-view/tests/fix_objective_messages_live.rs — 5 tests, all fail
 tests + hud/party-mission suites green post-fix (nf-game 255 passed). Suite re-run on the final
 tree: see the report. Files: mission.rs, hud.rs (nf-view), scene.rs, lib.rs, hud.rs (nf-formats,
 the wrap/line-height helpers). Report: docs/reports/fix-objective-messages.md.
+Full suite on the final tree (origin/master 7be3272 merged): **886 passed, 3 failed, 27 ignored
+(20 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH. Also green post-fix:
+death/restart 8, mission 4, level_carry 3, progress 8, nf-formats 74 (+ the 3 allowed).

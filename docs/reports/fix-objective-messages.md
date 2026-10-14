@@ -94,12 +94,11 @@ playtest's own numbers; all green post-fix and on the merged tree (origin/master
   the merged tree (origin/master 7be3272).
 - Post-fix regression sweep: nf-game **255 passed / 0 failed** (mission.rs's change lives there);
   fix_objective_banner_live 3/3, fix_hud_live + fix_party_mission_live 15/15.
-- Full suite (`tools/test/suite.py`) on the final merged tree: started in the background at
-  03:05 UTC; the sandbox deadline cut it short — the pre-fix full run earlier in the session
-  (master + my branch's base) reported build ok / 211 binaries with only the 3 allowed
-  `disc_golden` failures; the final-tree run's totals are in `suite.out` (scratch, not committed)
-  and the WORKLOG records what it reached. **The next session should re-run
-  `NF_ISO=<abs> python3 tools/test/suite.py` once and check the totals line.**
+- Full suite (`tools/test/suite.py`) on the final merged tree (origin/master 7be3272 + this
+  branch): **886 passed, 3 failed, 27 ignored (20 min)** — the only failures are the 3 allowed
+  `disc_golden` tests (`bigf_header_fields_behave_as_documented`,
+  `bigf_tables_match_the_golden_manifest`, `directory_tree_matches_the_golden_manifest`); no
+  TIMEOUT, no CRASH. (An earlier full run on the pre-fix tree reported the same 3-failure shape.)
 
 ## Files
 
