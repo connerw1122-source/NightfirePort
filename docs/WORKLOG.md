@@ -11185,3 +11185,7 @@ Stage Summary:
   to the same gunfire, the protected-actor ch 0x60 rises on his death). Suite on the merged tree:
   see docs/reports/fix-06-driver.md. Report: docs/reports/fix-06-driver.md (live checks: the PCSX2
   no-draw confirmation, the death anim, the 700-880 step-out window; the headless render gap).
+
+## fix-handcannon — s/fix-handcannon (task 105b, started 18:58 UTC)
+- Task: weapon 0x38 fires on 22 of 27 levels with sounds recorded but no shot tick and no observable event (no bullet, no blast, no muzzle flash). Find what 0x38 is (label through the language bank, +0x6C/+0x70 flags, ammo, Player_WeaponFiring 0x1a5460's path for its fire type) and what the game does when it fires; port the missing part. Repro test through the real input path first. Files: crates/nf-game/src/{gun,drone}.rs or scene.rs's fire path.
+- Status: branch cut from origin/master b9ed8b8 (pulled), WORKLOG started. Next: decompile research (what 0x38 is, its fire type's path in Player_WeaponFiring), reproduce, fix.
