@@ -10000,3 +10000,29 @@ Task 101h, both symptoms from the 1013-1758 playtest at 07000008's safe area (~(
   allowed disc_golden trio), 27 ignored (19 min)**, no TIMEOUT/CRASH; baseline on master 906/3/27;
   the targeted post-fix suites (the 08 four, vent5 2, wire2 3) green on the same tree.
   Report: docs/reports/fix-08-walls.md.
+
+## fix-silencer-modes (s/fix-silencer-modes) — 2026-10-14
+
+Task 102b, playtest 1013-1825. **(1) the swap memory**: the game keeps the equipped twin in
+`BLData+0x1BC + base·0xC` (`Player_WeaponSelect` 0x1a2cc0:15-16/27-28) and `Player_WeaponChange`
+0x1a6f80:179-198 hands the TWIN back on the next cycle to the family (the toggle-back +0x930
+gates on the BASE's selectable/owned — the twins share the slot per EquipWeapon 0x1a8a58:39-41 —
+and restores the remembered id verbatim, line 113). The port landed on the bare 0x02 every time.
+Fixed: Gun::twin_skip + the cycle's twin step (with the dry-twin fallback + the marker clear) +
+the toggle-back re-gated through base_of; scene.rs writes the marker on every same-base request.
+Test: fix_silencer_modes_live (attach → cycle away → cycle back = 0x03, the marker 1; the
+fire-mode toggle back clears it). **(2) the silencer's FP visual**: the twins share the FP skin
+0x05000088/idle 0x06000825/fire 0x06000823 and differ in the +0xC8 pair (0x06000828 attach /
+0x06000829 detach) + the muzzle-flash/world-model records [L ee_start_05 @ 0x2bf150]; the part
+bones' poses: bone 43 (the suppressor) runs (0.29, 0.33, −1.60) stowed in the shared idle vs
+(0.00, 0.09, 0.14) mounted at the attach's hold [L port pose code] — the game keeps it mounted
+through the idle (case 8 re-queues +0xA0, 0x1a2e38:389-403), so the persistent visibility is a
+draw-side gate not decoded this session; live checks in the report (gdbwatch on the view
+AnimObject's part/fade bytes across an attach/detach). **(3)+(4) the dev clip + the SSG's pace =
+one bug**: the 30-frame inventory top left the live magazine drained and the 5-round sniper
+(0x24: clip 5, refire +0x40 = 120 [L]) kept tripping the auto-reload. Fixed: dev infinite ammo
+pins the current weapon's clip to weapon_data+0x92 every tick (dev only). Test: the sniper's
+min clip 5, zero reload ticks, the tapped gaps 118-135 over 900 ticks. Suite: baseline 959/3/29
+(the allowed disc_golden); nf-game lib 140/140, the silencer + vent5 suites green on the merged
+tree (origin/master merged 89fbf2d with the fix-08-walls lineage). Report:
+docs/reports/fix-silencer-modes.md.
