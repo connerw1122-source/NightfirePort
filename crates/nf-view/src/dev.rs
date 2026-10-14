@@ -59,6 +59,9 @@ pub struct Dev {
     pub result_msg: Option<String>,
     /// B-9: ticks remaining to show `result_msg` (cleared after ~3 s at 60 Hz).
     pub result_timer: u32,
+    /// The "Test weapon" row's live run (weapon-matrix): `None` = idle. Phases feed the real input
+    /// path through `test_inputs` (App's tick loop) and watch the result through `test_observe`.
+    pub test_run: Option<TestRun>,
     /// The menu's current page (an index into `PAGES`; 0 = the category index).
     pub page: usize,
     /// Type-to-filter text (lowercase; typed while the menu is open, Backspace deletes).
@@ -86,6 +89,7 @@ impl Default for Dev {
             overlay: false, menu: false, time_scale: 1.0, step: false, god_mode: false, infinite_ammo: false,
             best_level: None, best_clip: Vec::new(), best_spare: Vec::new(), no_reload: false, spawn: SpawnPick::Normal,
             forced: Vec::new(), saved_spot: None, mouse: (0.0, 0.0), scenario: None, menu_sel: 0, result_msg: None, result_timer: 0,
+            test_run: None,
             // New fields on their own lines (the merge rule): the menu opens on the category index,
             // no filter, all rendering aids in their normal play state.
             page: 0,
@@ -498,6 +502,94 @@ pub const TELEPORT_SPOTS: &[(&str, [f32; 3])] = &[
 /// column; labels are owned Strings now — catalog rows carry the game's own names.)
 pub type MenuRow = (String, &'static str, MenuAction);
 
+/// The Weapons page's "Test weapon" run (task 100d): draw the held weapon, fire it 3 times,
+/// reload — the same per-cell sequence the headless matrix measures
+/// (`crates/nf-view/src/matrix.rs`), live so the user can watch it. The phases feed the real
+/// input path: App's tick loop asks `Dev::test_inputs` what this tick wants (the same lanes the
+/// keyboard uses — `switch_to`, the trigger, the R edge) and calls `Dev::test_observe` after
+/// `step_bond` to advance the phase machine.
+#[derive(Clone, Debug)]
+pub struct TestRun {
+    /// The weapon under test (the one in hand when the row was applied).
+    pub id: u8,
+    /// 0 = draw (hold `switch_to`), 1 = fire ×3 (hold the trigger), 2 = reload (R edge, then wait).
+    pub phase: u8,
+    /// Ticks in the current phase.
+    pub ticks: u32,
+    /// Shot ticks seen in phase 1 (`Sim::shot_tick`).
+    pub shots: u32,
+    /// Whether the reload machine left idle (state 5/6/7 seen).
+    pub reload_started: bool,
+    /// Phase 2: the machine is idle — pulse the R edge this tick (the fire script refuses/swallows
+    /// the edge while it plays, so the pulse waits for idle, the way a player's R lands).
+    pub settled_pulse: bool,
+}
+
+impl TestRun {
+    const DRAW_CAP: u32 = 120;
+    const FIRE_CAP: u32 = 240;
+    const RELOAD_CAP: u32 = 300;
+}
+
+impl Dev {
+    /// The inputs the Test weapon run wants this tick, merged into the App's real input (lib.rs).
+    /// Only lanes the keyboard itself uses — no direct state writes.
+    pub fn test_inputs(&mut self) -> (Option<u8>, bool, bool) {
+        let Some(r) = &self.test_run else { return (None, false, false) };
+        match r.phase {
+            0 => (Some(r.id), false, false),
+            // Fire in pulls: a held trigger fires a semi-auto once (the state-9 gate wants a
+            // release+press for the next shot) — 30-tick pull, 10-tick release, like the matrix.
+            1 => (None, r.ticks % 40 < 30, false),
+            2 => (None, false, r.settled_pulse), // the R edge once the machine is idle
+            _ => (None, false, false),
+        }
+    }
+
+    /// Advance the run one tick from the sim's post-`step_bond` state. Finishes into
+    /// `result_msg` (the overlay's status line) and clears itself.
+    pub fn test_observe(&mut self, sim: &crate::scene::Sim) {
+        let phase_msg;
+        {
+            let Some(r) = &mut self.test_run else { return };
+            r.ticks += 1;
+            let done = |msg: String, dev: &mut Dev| { dev.result_msg = Some(msg); dev.result_timer = 540; dev.test_run = None; };
+            let finish = |dev: &mut Dev, r: &TestRun, note: &str| {
+                let id = r.id;
+                let (shots, rs) = (r.shots, r.reload_started);
+                done(format!("test weapon {id:#04x}: draw ok, {shots} shot ticks, reload {}{note}", if rs { "ok" } else { "did not start (clip full or gadget?)" }), dev);
+            };
+            match r.phase {
+                0 => {
+                    if sim.gun.weapon == r.id && r.ticks > 1 { r.phase = 1; r.ticks = 0; }
+                    else if r.ticks > TestRun::DRAW_CAP { let (id, _) = (r.id, ()); done(format!("test weapon {id:#04x}: the draw never completed in {} ticks", TestRun::DRAW_CAP), self); return; }
+                }
+                1 => {
+                    if sim.shot_tick { r.shots += 1; }
+                    if r.shots >= 3 { r.phase = 2; r.ticks = 0; }
+                    else if r.ticks > TestRun::FIRE_CAP { r.phase = 2; r.ticks = 0; }
+                }
+                2 => {
+                    if sim.gun.reload_state != 0 { r.reload_started = true; r.settled_pulse = false; }
+                    else {
+                        // Pulse only when the machine is idle — the fire script swallows the edge.
+                        r.settled_pulse = sim.gun.switch_state == 0 && sim.gun.reload_state == 0 && !sim.gun.fire_state;
+                    }
+                    if r.reload_started && sim.gun.reload_state == 0 { let snapshot = r.clone(); finish(self, &snapshot, ""); return; }
+                    if r.ticks > TestRun::RELOAD_CAP { let snapshot = r.clone(); finish(self, &snapshot, " (timed out)"); return; }
+                }
+                _ => { self.test_run = None; }
+            }
+            phase_msg = self.test_run.as_ref().map(|r| match r.phase {
+                0 => format!("testing {:#04x}: drawing…", r.id),
+                1 => format!("testing {:#04x}: firing ({}/3 shot ticks)…", r.id, r.shots),
+                _ => format!("testing {:#04x}: reloading…", r.id),
+            });
+        }
+        if let Some(m) = phase_msg { self.result_msg = Some(m); self.result_timer = 120; }
+    }
+}
+
 /// The grenade record ids (the game's own: 0x34 Fragmentation, 0x35 Stun, 0x36 Smoke, 0x37 Remote
 /// Mine [L USATxt.dat via Txt_BindLabel(+0x38); panel.rs's consumables]).
 const GRENADES: [u8; 4] = [0x34, 0x35, 0x36, 0x37];
@@ -529,6 +621,12 @@ pub fn menu_items(dev: &Dev, scene: Option<&Scene>) -> Vec<MenuRow> {
         // game's own name per row, Enter gives + equips + draws (the --give path).
         1 => {
             if let Some(sc) = scene {
+                // The matrix row (weapon-matrix): the live run of the same sequence the headless
+                // matrix measures. Works from the dev window too (the game keeps running there;
+                // from the F2 overlay, close the menu and watch the game window's status line).
+                if passes_filter(dev, "test weapon") {
+                    v.push(("test weapon (in hand)".into(), "Enter: draw the held weapon, fire it 3 times, reload — watch the game window", MenuAction::TestWeapon));
+                }
                 if passes_filter(dev, "level kit") {
                     v.push(("level kit".into(), "the game's own loadout for this level (Player_InitWeapon 0x1a7ef8)", MenuAction::LevelKit));
                 }
@@ -683,6 +781,9 @@ pub enum MenuAction {
     Back,
     /// Give a weapon/gadget/grenade: `rounds` None = a full clip (the panel's Give button).
     GiveWeapon { id: u8, rounds: Option<i16> },
+    /// The Weapons page's "Test weapon" row (task 100d): draw the held weapon, fire it 3 times,
+    /// reload — the headless matrix's per-cell sequence, live so the user can watch it.
+    TestWeapon,
     GiveAmmoFor(u8), GiveAmmoAll, LevelKit, Health, Armour,
     /// Spawn a pool NPC of `skin` (hex) with the mode picked on the page.
     SpawnNpcSkin(u32), CycleNpcMode, ClearNpcs, Arena,
@@ -734,6 +835,13 @@ pub fn apply_menu_action_to_scene(dev: &mut Dev, scene: &mut Scene, action: Menu
             let (status, switch) = crate::panel::apply(scene, &q);
             out.status = status;
             out.switch_to = switch;
+        }
+        MenuAction::TestWeapon => {
+            let Some(sim) = scene.sim.as_ref() else { out.status = "no game".into(); return out };
+            let id = sim.gun.weapon;
+            if id == 0 { out.status = "no weapon in hand — give one first (its row on this page)".into(); return out; }
+            dev.test_run = Some(TestRun { id, phase: 0, ticks: 0, shots: 0, reload_started: false, settled_pulse: false });
+            out.status = format!("testing weapon {id:#04x}: draw → 3 shots → reload (close the menu, or use the dev window, and watch the game window)");
         }
         MenuAction::GiveAmmoFor(id) => {
             let (status, _) = crate::panel::apply(scene, &[("do".into(), "ammo_for".into()), ("id".into(), format!("0x{id:02x}"))]);

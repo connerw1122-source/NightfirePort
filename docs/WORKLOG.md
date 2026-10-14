@@ -9899,3 +9899,11 @@ Full suite on the final tree (origin/master 810c109 merged): **909 passed, 3 fai
   projectile, by_hash unchanged), draw→fire→reload through step_bond, native-carry identical
   numbers, the 18 no-model ids listed. Suite: 752 passed, 3 failed (the allowed disc_golden
   slim-ISO set), 27 ignored. Report: docs/reports/fix-weapon-assets.md.
+## weapon-matrix (worker, branch s/weapon-matrix) — 2026-10-14
+
+Task 100d: the all-weapons × all-levels matrix. A headless test (`crates/nf-view/tests/weapon_matrix_live.rs`)
+and an `nf-extract weapon-matrix <iso>` table command that, per on-foot level × weapon id: load, `--give` the
+weapon, draw, fire ×3 (hold for hold-to-use gadgets), reload, switch away/back — recording view-model presence,
+sequences played, muzzle flash, sound ids requested/started, effects spawned, errors/panics. Baseline run on
+master, final run with 100a–c merged. Plus a "Test weapon" row on the dev menu Weapons page (dev.rs). Work started
+03:09 UTC; report lands in docs/reports/weapon-matrix.md.
