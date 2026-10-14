@@ -9737,3 +9737,13 @@ the wrap/line-height helpers). Report: docs/reports/fix-objective-messages.md.
 Full suite on the final tree (origin/master 7be3272 merged): **886 passed, 3 failed, 27 ignored
 (20 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH. Also green post-fix:
 death/restart 8, mission 4, level_carry 3, progress 8, nf-formats 74 (+ the 3 allowed).
+
+## fix-cutscene-draw (s/fix-cutscene-draw) — 2026-10-14
+Task: cut-scene actors exist in the sim but are not drawn in rendered frames (headless repro
+confirmed by 101b-fix-cutscene-models: actors live, poses finite, room gate passes — but the
+`--shot` frames of the Kimiko library scene 0x06000007/0x06000073 show no characters).
+Plan: merge origin/s/fix-cutscene-models, reproduce with nf-view --shot, bisect the suspect
+merges (gpu-skinning 942e2ca, anim-blend2 e679d6e, facial 366ceff/bc231e8, script-commands
+0a7268d, interp-ghosting) in a worktree, find the drop point between skin_palette and the GPU
+draw list, fix with a decompile citation, add a rendering test that fails on master.
+Status: started 03:35 UTC, sandbox expires ~05:31 UTC.
