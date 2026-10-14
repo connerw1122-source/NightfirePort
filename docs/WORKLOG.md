@@ -9424,3 +9424,13 @@ Work Log:
   generics on 19 levels (counts in the report; 0700000a worst at 4706, the trench's 05: 1382);
   the shipped mask (walk + rescue) is clean on all 27 — no level needs the frustum-only
   fallback this session.
+
+## fix-objective-messages (s/fix-objective-messages) — 2026-10-14
+
+Task 101d: the playtest (results 1013-1758 / 1013-1825) found (1) two stacked OBJECTIVE
+COMPLETE banners on 07000007 at the library table (armour pickup), (2) the 07000007 start
+announces 07000006's "Breach the castle walls" before 07's own objective (cold or warm), and
+on the fail path "Find a way inside to the party" (05's objective) shows on 07, (3) the banner
+text overlaps its grey box (one- and two-line banners, long texts, 1280x720 and 4:3), (4) the
+"Mission Fail / Cover Lost" text sits left of its box's centre. Files: mission.rs (+mission/),
+hud.rs. Reproduce-first through the real input path; work starting.
