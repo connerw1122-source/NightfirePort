@@ -9644,3 +9644,23 @@ is given on a level whose bank lacks a sample, load it (VAG + effect record) fro
 that has it and register it under the same id without disturbing the level's own effects
 or the voice limits. Files: crates/nf-audio/src/{sfx,lib}.rs, crates/nf-view/src/lib.rs,
 tests. Reproduce-first; work starting.
+
+Task 100b outcome (same session): REPRODUCED then FIXED. The repro (fix_weapon_sounds_live,
+07000005 dev load, equip 0x1a via the real inventory path, fire through step_bond) failed
+pre-fix with "the AR's fire sound 0x40d never started a voice on 07000005" — the level bank
+(slot 4) has no row for the foreign weapon's ids. Fix: the driver's first load_bank is the
+primary slot (bit-identical one-bank lookups for the level's own set); the other 22 SBINFO
+banks load as spares (load_spare_bank, 42 MB SBF [D disc]); start() searches primary first,
+then spares ascending (slot 2, the MP bank, is the weapons superset holding every missing id).
+The owning bank's effect record (radii/MaxVoices/priority) and VAG data ride along, so the
+voice limits are the owning bank's. Green: the AR's fire 0x40d + reload 0x406/0x407/0x40a
+from slot 2 with the owning bank's sample FNVs; the sister pins the native P2K's
+0x403/0x40e/0x40f/0x411 to slot 4; the 69-weapon draw/fire/reload sweep (each requested id
+starts a voice with the owning bank's sample; gadget-context ids at driver level). 2 tests
+ignored with observations (the Laser 0x4e has no FP model in the dev merge — 100a; the AR
+draws but never fires on 07000001 — 100a/100c; both documented in the report). Files:
+sfx.rs, lib.rs (spares load + pub build_sound), scene.rs (one additive field sound_spares),
+tests/fix_weapon_sounds_live.rs (new). Report: docs/reports/fix-weapon-sounds.md (the
+weapon → bank mapping table + live checks). The full 211-binary suite still needs a run on
+the final tree (background jobs are killed between tool calls here; the window closed) —
+listed in the report for the next message.
