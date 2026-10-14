@@ -9956,3 +9956,14 @@ Stage Summary:
 - Files: matrix.rs (new), tests/weapon_matrix_live.rs (new), nf-extract main.rs + Cargo.toml (the command), dev.rs (the row), lib.rs (pub mod matrix + the 2-line test-weapon hook). drone.rs/scene.rs/player.rs untouched.
 - Report: docs/reports/weapon-matrix.md (the mark table, the numbers, the live checks for the main agent).
 - Open: re-run with 100a-c merged; the intro input-lock F/D cells; the variant back-chain B cells (100c).
+
+---
+Task ID: 102a-fix-zoom-overlays
+Agent: zoom-overlays worker
+Task: zoom overlays (Micro-Camera 0x54, AMES 20, crossbow 0x11, sniper 0x1e, ...) draw as a 2x2 grid instead of one frame; draw each overlay the way the game does (quadrant mirroring, sprite size/placement).
+
+Work Log:
+- (started 05:40 UTC 2026-10-14) Branch s/fix-zoom-overlays created from origin/master 69c0104. Reading the decompile (Player_Zoom 0x1a1a70), fix-viewmodel-zoom report, and hud.rs overlay draw next.
+
+Stage Summary:
+- In progress.
