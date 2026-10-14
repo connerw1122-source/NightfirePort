@@ -225,6 +225,12 @@ fn upgraded_runner_checks_the_new_behaviours_on_07000005() {
     // (style b: "no swap" pre-fix, "SWAP landed 0x54→0x55" post-fix — the fire press IS a mode
     // press on this pair now).
     assert!(cell(0x54).mode_ok, "0x54: the watch's twin chain must operate (action 12, or the OR'd fire press)");
+    // weapon-matrix5b sister ([M Player_SetFiringAnim 0x1a3c70 tail — the `+0xf4 = 9` store sits
+    // inside the `hash != 0` branch; a script-less record never enters state 9]): after the fire
+    // settle the machine must be IDLE. The unconditional `fire_state = true` latch wedged the
+    // proxy at 9 forever for the watch pair (no fire script ever plays, the clear needs
+    // `view_script == +0xB0`) and shut the mode block [M 0x1a24c8:199-201].
+    assert!(cell(0x54).machine_idle, "0x54: the state-9 proxy must be honest after the fire settle (a script-less record never enters state 9)");
     // The mode press: a twin-linked record lands its twin (or cycles the mode byte) and both
     // labels resolve [M Player_Weapon 0x1a24c8:204-260; HUD_UpdateAmmoPane 0x19a7f0].
     let two = cell(0x02);

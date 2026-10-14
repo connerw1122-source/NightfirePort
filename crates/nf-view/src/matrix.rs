@@ -129,6 +129,13 @@ pub struct Cell {
     pub mode_label_after: u32,
     /// The guided-missile camera rode a live missile this cell (`Sim::missile_cam` is Some).
     pub guided: bool,
+    /// weapon-matrix5b: the state-9 proxy was HONEST after the fire settle — `gun.fire_state`
+    /// clear with the switch/reload machines at 0. The game's view state returns to 0 when the
+    /// fire anim stops [M Player_SetWeaponAnimObj case 9 0x1a2e38:449-456] and a script-less
+    /// record never enters state 9 at all [M Player_SetFiringAnim 0x1a3c70 tail: the `+0xf4 = 9`
+    /// store is inside the `hash != 0` branch]. The old unconditional latch (gun.rs) wedged this
+    /// false forever for the watch pair and shut the mode block [M 0x1a24c8:199-201].
+    pub machine_idle: bool,
     /// Ticks from the first grenade spawn to the first explosion (0 = no explosion seen). The
     /// impact records blast on contact (a few ticks of flight), the fused ones at 210/300/420.
     pub expl_gap: u32,
@@ -678,6 +685,15 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
     // held record's own fire scripts (`fire_settle_ticks`); `wait_idle` also repairs the stale
     // finished script on the way. This re-syncs the reload check to the idle view.
     wait_idle(scene, fire_settle_ticks(scene) + 20);
+
+    // weapon-matrix5b: the honest state-9 check (the sister of the mode press below) — after the
+    // settle the machine must be IDLE. The game's view state returns to 0 when the fire anim
+    // stops [M 0x1a2e38 case 9:449-456]; a script-less record (the watch pair 0x54/0x55,
+    // +0xB0/+0xB4 = 0 [D probe dump]) never enters state 9 at all [M 0x1a3c70 tail]. The old
+    // unconditional `fire_state = true` latch (gun.rs's round) kept the proxy stuck at 9 here —
+    // the mode block's `anim+0xf4 == 0` gate [M 0x1a24c8:199-201] then refused every press.
+    c.machine_idle = { let sim = scene.sim.as_ref().unwrap();
+        !sim.gun.fire_state && sim.gun.switch_state == 0 && sim.gun.reload_state == 0 };
 
     // weapon-matrix5: ride out the GUIDED-MISSILE CAMERA before the reload/mode/away phases —
     // after the Sentinel's missile dies the game sets the owner's +0x944 = 0xf [M `Bullet_Delete`

@@ -195,4 +195,48 @@ fn main() {
     let sim = scene.sim.as_ref().unwrap();
     eprintln!("=== final: {} ===", inv(sim, 0x54));
     eprintln!("=== final 0x55: {} ===", inv(sim, 0x55));
+
+    // weapon-matrix5b: the CELL-shaped fire phase — run_cell holds the trigger 45 ticks per press
+    // (gadgets) with the trigger ARG true (and, since the matrix5 step() invariant, input.fire
+    // true too), 3 attempts, 6 up ticks between. Trace the machine per 5 ticks to find where the
+    // state-9 flag (gun.fire_state) wedges. Then dump the fire/idle script hashes the state-9
+    // clear compares against [M 0x1a2e38 case 9].
+    for _ in 0..400 {
+        let sim = scene.sim.as_ref().unwrap();
+        let idle = sim.gun.switch_state == 0 && sim.gun.reload_state == 0 && !sim.gun.fire_state;
+        if idle { break; }
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+    }
+    for _ in 0..40 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
+    for attempt in 0..3 {
+        for t in 0..45 {
+            scene.sim.as_mut().unwrap().step_bond(nf_game::player::Input { fire: true, ..Default::default() }, true, false, false);
+            if t % 5 == 0 || t == 44 {
+                let sim = scene.sim.as_ref().unwrap();
+                eprintln!("[hold a{attempt} t{t:02}] held={:02x} sw={} rel={} fire={} vs={:#x}/{:.1} clip={} req={:02x}",
+                    sim.gun.weapon, sim.gun.switch_state, sim.gun.reload_state, sim.gun.fire_state as u8,
+                    sim.view_script, sim.view_time, sim.gun.clip, sim.gun.switch_request);
+            }
+        }
+        for _ in 0..6 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
+    }
+    for t in 0..120 {
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        if t % 10 == 0 {
+            let sim = scene.sim.as_ref().unwrap();
+            eprintln!("[settle t{t:03}] held={:02x} fire={} vs={:#x}/{:.1}", sim.gun.weapon, sim.gun.fire_state as u8, sim.view_script, sim.view_time);
+        }
+    }
+    {
+        let sim = scene.sim.as_ref().unwrap();
+        for id in [0x54usize, 0x55] {
+            if let Some(w) = sim.weapons.records.get(id) {
+                let u32_at = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
+                eprintln!("[rec {id:#04x}] idle(+0xa0)={:08x} fire(+0xb0)={:08x} firelast(+0xb4)={:08x} reload(+0xa8)={:08x}",
+                    u32_at(0xa0), u32_at(0xb0), u32_at(0xb4), u32_at(0xa8));
+            }
+        }
+        eprintln!("[cell-end] held={:02x} sw={} rel={} fire={} vs={:#x}/{:.1} clip={}",
+            sim.gun.weapon, sim.gun.switch_state, sim.gun.reload_state, sim.gun.fire_state as u8, sim.view_script, sim.view_time, sim.gun.clip);
+    }
 }
