@@ -10416,3 +10416,25 @@ Work Log:
 - Tests (crates/nf-view/tests/gadgets_live.rs, 4/4, failing-first via the deleted scratch probes: the clip never drained and no beam parked pre-fix): the laser's drain/light/stop-at-0; the stunner's spend-on-target + free aimed-off hold; the AIMS lights attach + the idle timer; the hat's contact kill + no explosion. Neighbours green: gadget_laser_live 7, fix_level_0c_live 4, fix_fusebox_cut, qclaw_live, gadget_grapple_live, explode_live, fix_weapon_effects_live, fix_weapon_sounds_live.
 - Shared hooks: drone.rs (aims_idle on its own line + the hat pass), scene.rs (the restructure + the new slots; nothing removed but the replaced stale comment). grenade.rs/player.rs/lib.rs/gun.rs/gadget.rs/bullet.rs untouched.
 - Left: the taser's msg-7 stun state machine; the laser's battery-station recharge (0x1a5460:575-598); the AIMS bone-9/10/11 gates (+0x93e/+0x2f0/+0x2fc); the hat's return/clang; the pause-menu stop hook. All in the report with the live checks.
+Task ID: 102e-fix-missing-objects
+Agent: missing-objects worker
+Task: fix-missing-objects — furniture, the fountain and the 0c pylon aren't drawn; census every on-foot level for placements whose mesh the port doesn't draw, with the skip reason per class; draw what the game draws.
+
+Work Log:
+- (started 08:08 UTC) Branch s/fix-missing-objects created from origin/master c9e1582; setup reused from the previous session (repo, work/, ISO, nf-queue). Spots given: 07000006 courtyard fountain (21.12,39.04,-0.48,8.683), guard room (33.50,41.13,-17.90,9.158) and lockers/fusebox (31.94,41.13,-17.36,10.756); 0700000c pylon (14.22,16.28,-139.54,0.986). Repro tests + decompile evidence next.
+
+---
+Task ID: 102e-fix-missing-objects
+Agent: missing-objects worker
+Task: fix-missing-objects — the fountain, the guard-room furniture, the lockers and the 0c pylon aren't drawn; census every on-foot level.
+
+Work Log:
+- Branch s/fix-missing-objects from origin/master c9e1582 (08:08 UTC); setup reused.
+- Repro first (probes kept): the named objects are kind-0x19 world-baked cel placements at translation (0,0,0); the fountain/bench/locker nodes were UNCHAINED generics — owner None at the user's spots, node_vis false, 0/N materials kept by the game mask (the renderer's World cull drops unchained 0x8019 nodes; View_AddCels draws generics only from their owner room's +0x18 chain, fix-portal5 §1).
+- Root cause 1: build_scoped's smallest-volume-containing-bbox attribution put the guard-room floor under the table's bbox and the courtyard floor under the fountain's — every candidate room's scoped bucket read empty at build_chains time. The game's HITDATA+0x54 carries the object's own placement cel (parsemap_block_map_data_static 0x1d1998: one runtime cel per placement, glist = the placement's object); the k-th pushed instance IS the k-th cell. Fix: build_scoped keys obj_cell by the pushed ordinal [M 0x1d1998 + fix-portal5 §4].
+- Root cause 2: link_owner_room dropped candidates with an empty bucket, but the game's read is "everything else reads 1e8" — the candidate stays and strict < keeps the first in parse order. Fix: unwrap_or(1e8) [M fix-portal5 §4's 0x1c9150 reading].
+- Fixes verified fail-first: pre-fix probes show owner None/node_vis false/0 materials; post-fix the fountain (room 27, 96/96 batches), the guard-room furniture (room 7) and the locker (15/15) draw at the user's spots. Disc-wide effect: the 0700000a office furniture, 07 books, 09 lights were the same orphans.
+- Census (fix_missing_objects_live): Scene::build's exact sequence per on-foot archive — 0 unchained meshed generics, 0 no-draw-path placements on all 21 (06: 322 generics, 0c: 273, 12: 438, …); explained skips = glist bits 0x10/0x1000 + the documented no-draw classes. FOUND GAP: 0xea/0xeb trigger meshes the game draws (0a lasers, 12 lift switches; Trigger_Create 0x1b1720:95 sets obj+0xF0 = glist+0x44) — no port draw path yet.
+- The 0c pylon: NOT reproducible on this tree — the real stand_at+head camera at the user spot resolves eye cell 91, all four pylon parts + shadow ride owner room 77, in_view true, 14/14 materials kept (probe_missing_pylon.rs, kept); pinned by a regression test, live re-render requested.
+- Green on the fixed tree: the whole portal chain (portal_live/eyecel/2/3/4/5/6/sweep/walkreal), nf-game units (world.rs scope tests), the new 3 tests. suite.py could not run in background (nohup dies between tool calls — same as the last two sessions); foreground chunks covered nf-game+nf-formats+the portal/object/census nf-view files; the levels_sweep re-run is left for the next session.
+- Report: docs/reports/fix-missing-objects.md. Files: crates/nf-game/src/world.rs (obj_cell rule + doc), crates/nf-view/src/scene.rs (scope_graph pub + the 1e8 owner pick + doc), crates/nf-view/tests/fix_missing_objects_live.rs (new) + 6 probe files (kept).
