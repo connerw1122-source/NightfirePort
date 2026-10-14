@@ -11137,3 +11137,4 @@ the merge of s/fix-reload-hang (not yet on master — 103i's reload fixes under 
   holds + 0x38's quiet fire (live check). Report: docs/reports/weapon-matrix3.md. Shared files:
   none touched.
 - 20:46: merged origin/s/weapon-matrix3 (6171f2a8) — matrix.rs resolved to matrix4's harness evolution + matrix3's `no_target`/stunner field (the gadget test's escape hatch, Player_WeaponInitBullet 0x1a4bf0:169-200); WORKLOG append-only.
+- 20:55: weapon_matrix_live.rs restructured — the in-suite sample (05/0c/1b) + 24 sweep levels #[ignore]d with the reason (NF_MATRIX=all or a list re-selects with -- --ignored; nf-extract weapon-matrix covers the sweep), the three 07000005 consumers share one row via OnceLock; matrix3's gadget-cell test kept, every check intact. Builds clean.
