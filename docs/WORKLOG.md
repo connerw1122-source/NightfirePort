@@ -11185,8 +11185,31 @@ Stage Summary:
   to the same gunfire, the protected-actor ch 0x60 rises on his death). Suite on the merged tree:
   see docs/reports/fix-06-driver.md. Report: docs/reports/fix-06-driver.md (live checks: the PCSX2
   no-draw confirmation, the death anim, the 700-880 step-out window; the headless render gap).
-## fix-oddjob-hat — s/fix-oddjob-hat (task 104e, started 17:36 UTC)
-- Symptom (playtest 1013-2313): Oddjob's hat should be a one-shot kill but acts like a grenade.
-- Plan: find the hat's weapon record (id, +0x6C/+0x70 flags, damage, speed, return-to-thrower) and the
-  projectile path (Bullet_init, Bullet_CollisionHandler 0x12ce80, hat-specific update); port thrown/flies/
-  one-shot-kill/no-blast; NF_ISO failing-first test + sister assertions. Evidence + report to follow.
+## fix-oddjob-hat — s/fix-oddjob-hat (task 104e, 17:36-18:5x UTC)
+- The hat = weapon 0x45 [L ee_start_05.bin @0x2c398c]: damage 100.0, speed 0.6667, +0x6C = 0x20C08
+  (gravity + no-flesh-pass 0x800 + the HOMING bit 0x20000 — the only carrier among the thrown
+  projectiles), +0x70 = 0x100 (the stick flag; no 0x4/0x200 — it never explodes). Evidence: the
+  homing is `Bullet_homing` 0x12f358 (from `Bullet_update` 0x12e7b0:476-478; the nearest
+  heat-seekable target in the 0.66 cone with LOS, the steer `dir += clamp((to−dir)·0.0333, ±0.01)`);
+  the world contact STICKS (`Bullet_CollisionHandler` 0x12ce80:255 state 3, the hat-only 1500.0
+  lifetime + the 0x4a7 clang :315-317; the bounce block needs +0x80 or a character hit :398-407);
+  the stuck hat's handler never runs again (:102) and `Bullet_update` case 3 counts 1500 down
+  (0x45-only :363-371) to a silent delete. **No return-to-thrower exists** — fix-gadgets-live's
+  "unmeasured" item resolves to the homing + the stick.
+- Fixes: grenade.rs (the `stuck`/`seek_target` fields, `GrenadeEvent::Stick`, HAT_STICK_LIFE,
+  the stick branch + the silent stuck countdown); drone.rs (the homing pass in the grenade loop —
+  the flag-driven gate, the same shape as the bullets' homing; the hat_out exclusions; the Stick
+  arm's clang); scene.rs (the spawn fields). The mine/satchel +0x100 stick branches left to their
+  task (documented on the `stuck` field). Master's projectile-trails block kept beside the homing
+  in the merge.
+- Tests: crates/nf-view/tests/oddjob_hat_live.rs — the stick test SHOWN FAILING pre-fix (the hat
+  bounced like a grenade), green post-fix: the frozen position, one 0x4a7, zero 0x51c, no blast,
+  the stuck hat kills nobody, the silent 1500-tick expiry, the frag's 0x51c sister; the aimed
+  throw kills in one hit with no 0x51c and no explosion (its pre-fix pass via the dig-edge kill is
+  documented honestly in the report).
+- Suite on the merged tree: nf-game+nf-formats+nf-audio --no-fail-fast 362 passed / 3 failed (the
+  ALLOWED disc_golden trio) / 46 binaries; the 16 nf-view neighbour binaries 65 passed / 0 failed.
+  suite.py's background process cannot survive this sandbox (the 102c/100f precedent) — the same
+  binaries ran in foreground --test-threads=1 chunks.
+- Report: docs/reports/fix-oddjob-hat.md (the evidence chain, the live checks: the PCSX2 curve/
+  stick/clang/expiry, the gdbwatch obj+0xF4=3 and BU+0xFC=1500 countdown, the nf-view render spots).
