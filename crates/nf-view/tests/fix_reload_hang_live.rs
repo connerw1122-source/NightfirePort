@@ -353,3 +353,56 @@ fn shotgun_per_shell_loop_moves_one_per_pass_and_fire_interrupts_it() {
     assert!(settled, "the shotgun never returned to idle after the fire interrupt");
     assert!(interrupted, "the fire press never pushed the shell loop to state 7 (+0xAC) [M 0x1a2e38 case 6]");
 }
+
+/// fix-reload-hang2 (the merge HELD at fix_weapon_sounds_live): the clip-slot unification leaked
+/// into the DRAW script lookup. Twin 0x38 (+0x05 set, ammo 0x16 == base 0x37's) started the BASE's
+/// draw script (0x0600072c) while the state-3 wait measured the twin's own (0x060004ee) — the wait
+/// never finished, the switch machine wedged in state 3, and every later weapon in the
+/// fix_weapon_sounds_live sweep lost its draw sound (the gadgets' 0x281 "never played"). The game
+/// reads the draw script from the weapon's OWN record [M Player_SetWeaponAnimObj 0x1a2e38 case 3:
+/// `weapon_data[cur·0x10c + 0xc0]`, cur = the held weapon's own id]; only the clip array is routed
+/// to the base slot [M Player_ReloadAmmoType 0x1a1988:18-22].
+#[test]
+fn the_twins_draw_completes_and_the_machine_stays_alive() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load_weapons(&iso, "07000005.bin", false, &[0x37, 0x38]).expect("load 07000005");
+    wait_enabled(&mut scene, 7200);
+    // The sweep's give: the real inventory equip + a switch request (fix_weapon_sounds_live::equip).
+    let mut give = |scene: &mut Scene, id: usize| {
+        let sim = scene.sim.as_mut().unwrap();
+        let wd = sim.weapons.clone();
+        let rounds = wd.clip_size(id).max(1);
+        assert!(sim.drones.inventory.equip_weapon(&wd, id, rounds, true), "the give of {id:#04x} was refused");
+        sim.drones.inventory.equip_ammo(&wd, id, (rounds * 3).max(rounds));
+        sim.gun.switch_request = id as u8;
+    };
+    // Draw the base 0x37, then the twin 0x38: the twin's draw must COMPLETE (pre-fix the machine
+    // wedged in switch state 3 here — the wrong draw script played, the wait never finished).
+    give(&mut scene, 0x37);
+    let mut drew = false;
+    for _ in 0..400 {
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        let s = scene.sim.as_ref().unwrap();
+        if s.gun.weapon == 0x37 && idle(&scene) { drew = true; break; }
+    }
+    assert!(drew, "0x37 never drew");
+    give(&mut scene, 0x38);
+    let mut drew_twin = false;
+    for _ in 0..400 {
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        let s = scene.sim.as_ref().unwrap();
+        if s.gun.weapon == 0x38 && idle(&scene) { drew_twin = true; break; }
+    }
+    assert!(drew_twin, "the twin 0x38 never finished its draw — the switch machine wedged (the base's draw script played for the twin)");
+    assert_eq!(scene.sim.as_ref().unwrap().gun.weapon, 0x38, "the twin is not the held weapon after its draw");
+    // Sister: the machine is still alive — a fresh request back to the base lands too. Pre-fix the
+    // wedge refused every later switch (the sweep's missing draw sounds downstream of 0x38).
+    give(&mut scene, 0x37);
+    let mut landed = false;
+    for _ in 0..400 {
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        let s = scene.sim.as_ref().unwrap();
+        if s.gun.weapon == 0x37 && idle(&scene) { landed = true; break; }
+    }
+    assert!(landed, "the switch back to the base 0x37 never landed — the machine did not recover after the twin's draw");
+}
