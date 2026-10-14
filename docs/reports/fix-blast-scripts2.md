@@ -143,3 +143,22 @@ spawn's floor, the test's own shape):
   green, the suite is green (mod the allowed/pre-existing failures), the renders and live checks are
   listed above for the main agent.
 - The destroy-path scale nuance (live check 3) is the only open evidence gap, cosmetic at worst.
+
+## ntfy failed
+
+All three notification fallbacks failed with the ntfy.sh daily publish quota (the topic feed shows
+the message never landed — polled `https://ntfy.sh/nightfire-yoda-8k3x/json?poll=1` after each
+attempt):
+
+1. `curl -sS -m 20 -H "Title: NightfirePort" -d "fix-blast-scripts2: done …" https://ntfy.sh/nightfire-yoda-8k3x`
+   → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your
+   limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. `python3 urllib.request` (same body/headers) → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. `wget -q -O- --post-data "fix-blast-scripts2: done" https://ntfy.sh/nightfire-yoda-8k3x` → exit 0
+   but silent; the topic feed poll shows no message from this task (only the other workers' entries),
+   so the POST did not publish.
+4. (extra) a second `curl` after a 30 s wait → the same 429 body.
+
+The task state itself is complete: branch pushed (`s/fix-blast-scripts2`, tip `210ebdd5`), the report
+committed on the branch, and `finish.sh 105c2-fix-blast-scripts2 done` succeeded (the report is
+attached to `done/105c2-fix-blast-scripts2.md` on `origin/queue`). Only the ntfy ping is missing.
