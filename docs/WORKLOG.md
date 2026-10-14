@@ -11986,3 +11986,12 @@ Stage Summary:
   binaries green: fix_cutscenes_live 5, fix_cutscenes2_live 4, models_characters_live 6,
   fix_weapon_effects_live 4, impacts_live 6. The full suite did not fit the window (the 21:51
   stop-new-work rule) — the next session should run it on the merged tree.
+
+## fix-blast-scripts2 — s/fix-blast-scripts2 (task 105c2, started 22:39 UTC 2026-10-14)
+- Task: blast scripts + cut-scene actors — ONE 0x060007c4 path. Base s/fix-blast-scripts, merged
+  origin/master, then origin/s/fix-samurai-fire (not on master), then origin/s/fix-cutscene-actors
+  (291). HELD at merge: fix_blast_scripts_live::the_samurai_bolt_plays_the_cyan_blast_script fails
+  "exactly one 0x060007c4 one-shot player (the bolt's cyan blast) — left 0, right 1". Make ONE path:
+  the bolt's contact (world and flesh) creates the explosion with script 0x060007c4 and its entities
+  draw. Keep fix_blast_scripts_live, fix_cutscene_actors_live, fix_samurai_fire_live green.
+- Work log:
