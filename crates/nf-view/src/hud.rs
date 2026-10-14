@@ -147,6 +147,14 @@ impl Hud<'_> {
     /// space rows to fit the taller glyphs. The shadow offset scales too.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn text_scaled(&mut self, anchor: Anchor, font: &nf_formats::hud::Font, layer: i32, s: &str, x: f32, y: f32, right: bool, c: [f32; 4], shadow: bool, scale: f32) {
+        self.text_scaled_tex(anchor, font, layer, FONT_TEX, s, x, y, right, c, shadow, scale);
+    }
+
+    /// `text_scaled` with the font's own texture — the header font is a second face with its own
+    /// atlas (`FontTable` 0x2dd8b0[0] = {tex 0x03000005, FONTNFont2 0x305a58}; `Font_ParseFormat`
+    /// 0x1ee3e0 case 5 loads the selected font's texture per `\xff` code) [M].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn text_scaled_tex(&mut self, anchor: Anchor, font: &nf_formats::hud::Font, layer: i32, tex: u32, s: &str, x: f32, y: f32, right: bool, c: [f32; 4], shadow: bool, scale: f32) {
         if scale <= 0.0 || c[3] <= 0.0 { return; }
         let (placed, native_w) = font.layout(s, 0.0, y);
         let width = native_w * scale;
@@ -162,7 +170,7 @@ impl Hud<'_> {
                 let gx = x0 + p.x * scale + dx;
                 let gw = g.w as f32 * scale;
                 let gh = g.h as f32 * scale;
-                self.quad(anchor, layer, FONT_TEX, 0, gx, p.y + dx, gw, gh, [g.u as f32, g.v as f32, g.w as f32, g.h as f32], (false, false), col);
+                self.quad(anchor, layer, tex, 0, gx, p.y + dx, gw, gh, [g.u as f32, g.v as f32, g.w as f32, g.h as f32], (false, false), col);
             }
         }
     }
