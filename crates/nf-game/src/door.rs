@@ -639,6 +639,62 @@ impl Doors {
         (sounds, hits)
     }
 
+    /// The straddle walk-in, EVERY tick (fix-casings-16). The E-path arm above only runs while the
+    /// use key is held, but the game's straddle doors open with no E at all — on 07000016 the
+    /// arrival walkway's first door (glist 0x803f00a0, kind 2, straddle, ch_open 0,
+    /// ch_lock 0, flags 0x3 → closed at create [M Door_Create 0x136100: state 4 only when
+    /// doorinfo+0x4c|+0x50 bit 2]) blocks the only path, and neither `Door_Update` (a ch_open==0
+    /// door skips every channel arm [M 0x1363c8: `(state & 6) == 0` / `uVar2 == 0 → LAB_00136550`])
+    /// nor `Door_ReactToHit` (0x135980 reverses only MOVING leaves: kind 0 needs `state & 0x18`,
+    /// kind 2 needs `state & 0x10`) ever opens a closed idle one. The game opens it through the
+    /// collide-contact path the port has not rebuilt (U-041); until then the stand-in drives the
+    /// SAME activation from `Door_Update`'s per-tick actor list, with the game's own proximity
+    /// metric — `Vec_SqDist3D(door+0x80, actor+0x80) < (door+0x8C + actor+0x8C)² · 2`
+    /// [M 0x1363c8 @0x136678-0x136684, the scan `Door_Update` itself runs for the auto-close] —
+    /// so the open lands where the game's contact would. The lock guards hold: `activate`
+    /// (from_player) rejects a locked door (the 320 thud) and the `state & 0xc` skip keeps a
+    /// moving leaf alone. Swing doors (kind 0) stay E/ReactToHit-only, as in the E arm.
+    ///
+    /// 102j2-fix-casings-16b — the gate narrowed to the game's scan domain. `Door_Update`'s
+    /// proximity scan exists ONLY as the auto-close: both of its arms sit behind an OPEN-door
+    /// test — `(state & 2) == 0` inside the `(state & 6) != 0` branch [M 0x1363c8 @0x136678,
+    /// the ch_open-went-off arm] and `uVar7 & 4` [M 0x1363c8 @0x136610, the open_timer arm] —
+    /// and its only action is one `Door_Activate` to close. The scan never touches a moving
+    /// leaf: a CLOSING (0x10) door is left to finish. The old `state & 0xc != 0` skip read only
+    /// bits 2–3 (OPEN|OPENING), so a CLOSING straddle door passed the gate and the walk-in
+    /// re-`activate`d it every tick — the port's slide `activate` turns 0x10 into OPENING
+    /// [M Door_Activate 0x135be0: `state & 0x12` → SetState(8)], and a leaf barely off its open
+    /// end snaps straight back to OPEN. That broke 07000001's
+    /// `door_e_opens_then_e_closes_on_07000001` (after the second E the state read 0x4, not
+    /// 0x10). The stand-in is the scan's open-side complement: it acts on a CLOSED IDLE door
+    /// only (`state == CLOSED`), never on a moving one. Two more narrowing arms, same
+    /// principle: a ch_open door is `Door_Update`'s own channel arm's job [M 0x1363c8: channel
+    /// on → `Door_Activate`], so the stand-in covers only the channel-less doors (16's arrival
+    /// door, ch_open 0 [M 0x136100 + glist 0x803f00a0]); and the lock pre-check is silent —
+    /// the game's per-tick scan plays no lock sound (the ch_lock thud is `Door_Activate`'s
+    /// E-path arm [M 0x135be0]), so the walk-in skips before `activate` instead of thudding
+    /// every tick.
+    pub fn straddle_walkin(&mut self, actors: &[DoorActor], channels: &mut Channels, frame: u32) -> Vec<SoundEvent> {
+        let mut sounds = Vec::new();
+        for i in 0..self.list.len() {
+            let (straddle, kind, state) = { let d = &self.list[i]; (d.straddle, d.kind, d.state) };
+            if !straddle || kind == 0 || state != CLOSED { continue; }
+            let (ch_open, ch_lock, locked) =
+                { let d = &self.list[i]; (d.ch_open, d.ch_lock, d.locked_flag) };
+            if ch_open != 0 { continue; }
+            if locked != 0 || (ch_lock != 0 && !channels.on(ch_lock as u32)) { continue; }
+            let (sc, sr) = self.list[i].sph;
+            let near = actors.iter().filter(|a| !a.2).any(|a| {
+                let dx = sc[0] - a.0[0]; let dy = sc[1] - a.0[1]; let dz = sc[2] - a.0[2];
+                let th = (sr + a.1) * (sr + a.1) * 2.0;
+                dx * dx + dy * dy + dz * dz < th
+            });
+            if !near { continue; }
+            self.activate(i, actors, true, channels, frame, &mut sounds);
+        }
+        sounds
+    }
+
     /// Snapshot the channels for this tick's lock-edge test (`switch_channels_prev`). The game
     /// copies BOTH latches right after `Trigger_Calc`, BEFORE the object walk — two amemcpys at
     /// the head of `control_movement_object_handler` [M 0x1336f8: `amemcpy(0x26fd90, 0x26fe90,
