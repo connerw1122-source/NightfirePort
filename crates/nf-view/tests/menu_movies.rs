@@ -279,7 +279,7 @@ fn the_menu_loop_plays_through_the_one_player_path() {
     for _ in 0..3000 {
         match p.present() {
             Some((w, h, rgba)) => {
-                assert_eq!((*w, *h), (512, 448), "the game's movie geometry [M movies.md]");
+                assert_eq!((w, h), (512, 448), "the game's movie geometry [M movies.md]");
                 let v = rgba.to_vec();
                 if prev.as_deref() != Some(v.as_slice()) { hashes.push(nf_formats::sha1::sha1(&v)); prev = Some(v); }
                 if hashes.len() >= 13 { break; }

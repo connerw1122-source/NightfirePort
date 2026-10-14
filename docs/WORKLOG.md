@@ -10597,3 +10597,9 @@ Work Log:
 - Fix: gpu.rs slot map `match dc.pass { 4 => 3, p => p * 2 }` — sky group 0 now draws after list 0, before the alpha list; nothing else moved. scene.rs: #[derive(Clone)] on Material (test support).
 - Tests (fix_0c_pylon_live, fail-first on the stashed fix): user-spot lattice band 1628 → FAIL pre-fix, 5180 → PASS post-fix; close-up 75 → FAIL, 4229 → PASS; sisters: sky stays bright (75000), the shadow still draws (40113). Rendered before/after PNGs at the user spot and pitch 0.
 - origin/master 6691ef9 merged (WORKLOG conflict: both entries kept). Report: docs/reports/fix-0c-pylon.md. Files: crates/nf-view/src/{gpu,scene}.rs, tests/fix_0c_pylon_live.rs + 2 probes.
+## fix-movies-tests
+- Started: fix movies-feature test build (menu_movies.rs:282 E0614 u32 deref), run all movies-gated tests with --features movies, fix failures, note in docs/tools/test-suite.md.
+
+## fix-movies-tests (outcome)
+- menu_movies.rs:282 E0614 fixed (present returns (u32,u32,&[u8]) by value [M movie.rs:226]); all 203 nf-view+nf-formats test binaries build with --features nf-view/movies; 202 run: 201 ok + disc_golden's 3 allowed slim-ISO fails; PSS-data tests skip on the slim stub image by contract; docs/tools/test-suite.md gained the movies-feature note; weapon_matrix_live (>600 s with or without movies — pre-existing) flagged for the suite gate. No shared source files touched.
+- Post-merge (origin/master 6691ef9 = fix-menus-real2, whose menu_movies copy still carried the (*w,*h) bug): merged, rebuilt menu_movies/menus_flow/movie_playback_flow with movies on the final tree — 7/7, 34/34, 10/10 ok; suite restarted on the merged tree (see report).
