@@ -80,6 +80,58 @@ fn empty_the_clip(scene: &mut Scene, max_presses: u32) -> (u32, u32) {
     (presses, s.gun.spare)
 }
 
+/// The twin family shares ONE physical magazine [M Player_ReloadAmmoType 0x1a1988:18-22: a twin
+/// record (+0x05 set) with its base's ammo type reloads `clip[base]`; pickup.rs `clip_slot` (the
+/// give) equips into the same slot]. The port's runtime boundary wrote the twin's reload into the
+/// twin's OWN slot, so hopping back to the base read the STALE base slot (still 0) — a second
+/// auto-reload fired and the carried rounds were spent twice for one magazine.
+#[test]
+fn twin_hop_keeps_the_magazine_shared_with_the_base() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load_weapons(&iso, "07000005.bin", false, &[0x02, 0x03]).expect("load 07000005");
+    wait_enabled(&mut scene, 7200);
+
+    give_and_draw(&mut scene, 0x02);
+    let clip0 = scene.sim.as_ref().unwrap().gun.clip;
+    assert_eq!(clip0, 7, "the give filled the P2K's clip [L 07000005 loadout]");
+
+    // Hop to the silenced twin (the magazine follows — one physical gun).
+    scene.sim.as_mut().unwrap().step_bond(Input { mode_switch: true, ..Default::default() }, false, false, false);
+    assert!(wait_idle(&mut scene, 200), "the 0x03 draw never settled");
+    assert_eq!(scene.sim.as_ref().unwrap().gun.weapon, 0x03, "the mode press landed the silenced twin");
+    assert_eq!(scene.sim.as_ref().unwrap().gun.clip, clip0, "the magazine did not survive the twin hop");
+
+    // Empty the TWIN's clip and let its auto-reload fill it back (spare spent exactly once).
+    let (presses, spare0) = empty_the_clip(&mut scene, 40);
+    let mut started = false;
+    for _ in 0..300 {
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        if scene.sim.as_ref().unwrap().gun.reload_state != 0 { started = true; }
+        if started && scene.sim.as_ref().unwrap().gun.reload_state == 0 { break; }
+    }
+    let s = scene.sim.as_ref().unwrap();
+    eprintln!("[twin reload] held={:02x} clip={} spare={} rel={} (spare0={spare0}, presses={presses})", s.gun.weapon, s.gun.clip, s.gun.spare, s.gun.reload_state);
+    assert!(started, "the twin's auto-reload never started after {presses} presses (spare0={spare0})");
+    assert_eq!(s.gun.reload_state, 0, "the twin's reload never returned");
+    assert_eq!(s.gun.clip, clip0, "the reloaded magazine is not visible on the twin");
+    assert_eq!(s.gun.spare, spare0 - clip0, "the reload spent carried rounds more than once");
+
+    // Hop back: the base reads the SAME reloaded magazine — no second reload, no second spend.
+    scene.sim.as_mut().unwrap().step_bond(Input { mode_switch: true, ..Default::default() }, false, false, false);
+    let mut second = false;
+    for _ in 0..300 {
+        scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+        if scene.sim.as_ref().unwrap().gun.reload_state != 0 { second = true; }
+        if second && scene.sim.as_ref().unwrap().gun.reload_state == 0 { break; }
+    }
+    let s = scene.sim.as_ref().unwrap();
+    eprintln!("[hop back] held={:02x} clip={} spare={} rel={} second_reload={second}", s.gun.weapon, s.gun.clip, s.gun.spare, s.gun.reload_state);
+    assert_eq!(s.gun.weapon, 0x02, "the mode press landed the base");
+    assert_eq!(s.gun.clip, clip0, "the base read the STALE slot — the shared magazine was lost");
+    assert!(!second, "a second auto-reload fired after hopping back (the carried rounds were spent twice)");
+    assert_eq!(s.gun.spare, spare0 - clip0, "the carried pool was spent twice for one magazine");
+}
+
 /// THE HEADLINE REPRO (would fail on master): empty the silenced twin 0x03, let the auto-reload
 /// start, and ride it — it must RETURN to idle with the clip refilled [M 0x1a2e38 case 6:
 /// LAB_001a3678; 0x1a1988: the rounds move]. On master the machine sticks in rel=6 with clip 0
