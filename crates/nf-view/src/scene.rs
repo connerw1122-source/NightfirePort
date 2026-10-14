@@ -2130,7 +2130,12 @@ impl Sim {
                         pos: camera,
                         velocity: [sdir[0] * speed, sdir[1] * speed, sdir[2] * speed],
                         speed, travelled: 0.0, range: fuse, damage: f32_at(0x0c), radius: f32_at(0x08),
-                        weapon_type: wt,
+                        // The FIRED weapon's id, not the record's +0x02 base: the MGL's 'Delay' twin
+                        // 0x2b bases to 0x2a, and the death branches (the impact explode [M
+                        // 0x12d068-0x12d0bc], the flash/smoke routing [M 0x12dd60]) read the BULLET'S own
+                        // record. The grenade family bases to itself [L ee_start_05.bin +0x02 sweep], so
+                        // this only re-points the twins.
+                        weapon_type: self.gun.weapon as u16,
                         mesh: self.weapons.projectile_mesh(self.gun.weapon as usize),
                         owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false,
                     });
