@@ -9767,4 +9767,6 @@ from origin/master c4028c8. Work in progress.
   over a wall face) and the ledge→display-case descent (~7.3 at (5.4, −113) under the 11.27 mid
   floor) — the two traversal tests are #[ignore]d with reasons, live checks filed in the report.
   No player.rs change (nothing guessed).
+- Suite on the final tree (merged origin/master 810c109): 905 passed, 3 failed (the allowed
+  disc_golden trio), 29 ignored (incl. my 2 traversal tests), 0 TIMEOUT (18 min).
 - Shared files: none. Report: docs/reports/fix-0c-hatch.md.

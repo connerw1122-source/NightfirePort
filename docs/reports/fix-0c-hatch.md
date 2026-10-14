@@ -86,9 +86,11 @@ is the one-line SS rate fix.
 
 ## Suite
 
-Run on the final tree (merged with origin/master 810c109): see the WORKLOG outcome line for the
-total. The baseline run before the fix (master + tests) was 885 passed / 3 failed (the allowed
-`disc_golden`) / 27 ignored in 17 min.
+Run on the final tree (merged with origin/master 810c109): **905 passed, 3 failed, 29 ignored
+(18 min)** — the 3 failures are exactly the allowed `disc_golden` trio (bigf_header_fields,
+bigf_tables, directory_tree); no TIMEOUT lines; the 29 ignored include this task's 2
+traversal tests. The baseline run before the fix (master + tests) was 885 passed / 3 failed / 27
+ignored in 17 min.
 
 ## Live checks for the main agent
 
