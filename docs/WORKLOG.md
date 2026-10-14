@@ -9707,3 +9707,22 @@ weapon, draw, fire ×3 (hold for hold-to-use gadgets), reload, switch away/back 
 sequences played, muzzle flash, sound ids requested/started, effects spawned, errors/panics. Baseline run on
 master, final run with 100a–c merged. Plus a "Test weapon" row on the dev menu Weapons page (dev.rs). Work started
 03:09 UTC; report lands in docs/reports/weapon-matrix.md.
+
+---
+Task ID: 100d-weapon-matrix
+Agent: weapon-matrix worker
+Task: the all-weapons × all-levels matrix — the tool, the run, the fixes it turns up, the dev row.
+
+Work Log:
+- Built the runner (crates/nf-view/src/matrix.rs): per on-foot level × weapon id — load, give (the --give path via panel::apply), draw (real input path; the mode button's twin chain for the variant records), fire ×3 (hold-to-use gadgets hold), reload, switch away (P2K 0x02) and back; records view model, muzzle-flash attachment, view scripts, shot ticks, sound ids requested (Drones::sounds) and started (the driver's Cmd::Start batch, built the way lib.rs's sound_tick builds it), effects (bullets/impacts/explosions/grenades/beam), panics (caught per cell, the level reloaded after one).
+- `nf-extract weapon-matrix <iso> [levels]` prints the mark table + per-weapon aggregates + red cells with reasons.
+- 27 per-level headless tests (crates/nf-view/tests/weapon_matrix_live.rs, one #[test] per level) + the sister test for the dev row.
+- The dev menu's Weapons page got the "test weapon (in hand)" row (dev.rs TestRun + test_inputs/test_observe; lib.rs merges its inputs into the real tick, never during replay). Headless-verified: draw ok, 3 shot ticks, reload ok on the P2K / 07000005.
+- Full sweep: 27 levels × 99 ids, 5m27s, ZERO panics. Red cells: 274 give refusals (the game's own: fp-less variant records + the at-cap owned-branch refusal — both named in the reasons), 235 no-view-model cells (the cross-level asset gap, 100a's headline — the reason names the missing fp skin hash), 94 draw fails (the manor/vault intro input lock + variant chains), 6 R, 6 B, 0 W.
+- 100a-c were worklog-only at task start; nothing to merge (stated in the report). Baseline == final tree.
+- Fast suite on the final tree --only weapon_matrix_live,fix_weapons_all_live,fix_weapon_modes_live,models_weapons_live,dev_menu_flow,devwin_flow: 51 passed, 0 failed (8 min).
+
+Stage Summary:
+- Files: matrix.rs (new), tests/weapon_matrix_live.rs (new), nf-extract main.rs + Cargo.toml (the command), dev.rs (the row), lib.rs (pub mod matrix + the 2-line test-weapon hook). drone.rs/scene.rs/player.rs untouched.
+- Report: docs/reports/weapon-matrix.md (the mark table, the numbers, the live checks for the main agent).
+- Open: re-run with 100a-c merged; the intro input-lock F/D cells; the variant back-chain B cells (100c).
