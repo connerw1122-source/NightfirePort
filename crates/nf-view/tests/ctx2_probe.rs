@@ -75,6 +75,7 @@ fn zlib_store(raw: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+#[ignore = "probe: dumps disc textures to crates/ctx2-dump (gitignored); run by hand"]
 fn probe_context_hints2() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     std::fs::create_dir_all("../ctx2-dump").unwrap();

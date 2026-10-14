@@ -1,6 +1,7 @@
 //! probe2: dump arbitrary level textures by hash (beyond hud_textures' fixed list).
 use nf_game::player::Input;
 #[test]
+#[ignore = "probe: dumps disc textures to crates/ctx2-dump (gitignored); run by hand"]
 fn probe2() {
     let Ok(iso) = std::env::var("NF_ISO") else { return };
     let mut scene = nf_view::load(&iso, "07000005.bin", false).unwrap();
