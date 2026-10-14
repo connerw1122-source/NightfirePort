@@ -77,7 +77,15 @@ fn mode_press_to_detonator(scene: &mut nf_view::scene::Scene) {
         if scene.sim.as_ref().unwrap().gun.weapon == 0x38 { break; }
     }
     assert_eq!(scene.sim.as_ref().unwrap().gun.weapon, 0x38, "the mode press reaches the detonator 0x38");
-    for _ in 0..8 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    // The weapon byte swaps mid-draw; wait for the draw to finish so the fire gate is open.
+    for _ in 0..300 {
+        let sim = scene.sim.as_ref().unwrap();
+        if sim.gun.switch_state == 0 && sim.gun.reload_state == 0 && !sim.gun.fire_state { break; }
+        scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+    }
+    let sim = scene.sim.as_ref().unwrap();
+    assert!(sim.gun.switch_state == 0 && !sim.gun.fire_state, "the detonator is drawn and idle");
+    for _ in 0..4 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
 }
 
 /// ── The detonator's fire detonates the placed mine and hands the mine back ───────────────────────
