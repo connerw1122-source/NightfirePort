@@ -5346,6 +5346,11 @@ pub fn voice_type(skin: u32) -> u16 {
 impl crate::nis::World for Data<'_> {
     fn anim_length(&self, script: u32) -> Option<u16> { self.scripts.get(&script).map(|s| s.length) }
     fn level(&self) -> u32 { self.level }
+    /// fix-script-objects: the glist's local bounding sphere from the level's model table (the
+    /// map object's centre and radius — `Control_BuildWorldSph` 0x133070's inputs).
+    fn glist_sphere(&self, hash: u32) -> Option<([f32; 3], f32)> {
+        self.models.get(&hash).map(|m| (m.centre, m.radius))
+    }
     fn discrete0(&self, skin: u32, script: u32, frame: f32) -> Option<nf_formats::anim::Mat4> {
         self.discrete_parts(skin, script, frame).into_iter().next().map(|p| p.1)
     }
@@ -7041,6 +7046,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     health_ok: self.health.health > 0.0, // BLData+0x894 > 0 [D; the port's health tracker]
                     mission: self.mission.status(),
                     music2: self.prev_event2,
+                    // fix-script-objects (`SP_Hit` 0x1dc470): the blasts of the last tick's end are
+                    // still in `explosions` here (the per-tick clear runs later, in the grenade
+                    // section) — the game's SP_Hit reads the chains those explosions filled.
+                    blasts: self.explosions.iter().map(|(p, r, ..)| (*p, *r)).collect(),
                 };
                 self.scripts.update_player(index, &mut self.channels, d, frame, script_skip, sp_gate);
                 self.drain_script_requests(d);
