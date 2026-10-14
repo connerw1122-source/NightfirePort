@@ -77,31 +77,35 @@ the test (one test per level, a level fails on any panicked cell).
 - The stuck-machine wedges (a cold reload before 0x38/0x39/0x5b/0x62 on every level) are gone
   after the fire_busy fix; the sweep's cold-reload log lines went to zero.
 
-## The sweep — 0 panics; 14 of 27 levels measured in this window
+## The sweep — 0 panics; 18 of 27 levels measured
 
 `weapon_matrix_live` (NF_ISO, --test-threads=1): **0 panics**; every completed level's test green.
-Levels measured: 07000001-0d, 11, 1b, 48, 4a (14). The window ended before 12/13/14/15/16/41/43/
-46/49/4b — their rows are the next window's first item (the runner is now ~4× faster than
-matrix3's: ~60-90 s per story level, no cold reloads; the full sweep fits one window).
+Levels measured: 07000001-0d, 11, 12, 13, 16, 1b, 48, 4a (18). The window ended before
+14/15/41/43/46/49/4b — their rows are the next window's first item (the runner is now ~4× faster
+than matrix3's: ~60-90 s per story level, no cold reloads; the full sweep fits one window).
 
-**Reds across the 14 levels: 20 cells total** (matrix3's same 12 story levels carried several
-hundred). Per mark: F 14, M 3, W 3, X 1. Every red with its reason:
+**Reds across the 18 levels: 24 cells total** (matrix3's story levels carried several hundred).
+Per mark: F 16, M 3, W 4, X 1. Every red with its reason:
 
-1. **0x32 Phoenix Samurai — F on all 14 levels** (fire, no observable event). The cell draws,
-   holds the trigger 3×, and nothing spawns: no shot tick, no bullet, no impact, no explosion,
-   no grenade, no beam. The record's fire script plays (sequences recorded) and sounds start, so
-   the machine runs — the fire itself produces nothing at an empty spawn spot. This looks like the
-   stunner's no-target arm (weapon-matrix3: the shot spawns only when the aim ray meets a live
-   target [M Player_WeaponInitBullet 0x1a4bf0:169-200]) — **the task's numbered follow-up #1**:
-   weapon 0x32 (the Phoenix Samurai katana), every level, what's wrong: the fire's observable
+1. **0x32 Phoenix Samurai — F on 16 of 18 levels** (fire, no observable event; CLEAN on 01, 09,
+   0c, 0d — the four levels where something observable did spawn). The cell draws, holds the
+   trigger 3×, and nothing spawns: no shot tick, no bullet, no impact, no explosion, no grenade,
+   no beam. The record's fire script plays (sequences recorded) and sounds start, so the machine
+   runs — the fire itself produces nothing at an empty spawn spot. This looks like the stunner's
+   no-target arm (weapon-matrix3: the shot spawns only when the aim ray meets a live target
+   [M Player_WeaponInitBullet 0x1a4bf0:169-200]) — **the task's numbered follow-up #1**: weapon
+   0x32 (the Phoenix Samurai katana), nearly every level, what's wrong: the fire's observable
    event needs a target or the sword's swipe effect is not ported; the game evidence to collect:
-   the live check below (does the real game show the swipe spark at the spawn?).
-2. **0x54 Micro-Camera — M on 07000009/0a/0b** (the mode press failed). The watch pair 0x54/0x55:
+   the live check below (does the real game show the swipe spark at the spawn?). The four clean
+   levels are the discriminator: something DID spawn there (a guard within reach on 09/0c/0d?),
+   which supports the target-gated reading.
+2. **0x54 Micro-Camera — M on 07000009/0a/0b** (the mode press failed; clean on the other 15
+   levels). The watch pair 0x54/0x55:
    the game reads the mode press OR'd with the fire edge there (action 9 mask 4 [M Player_Weapon
    0x1a24c8; scene.rs's `watch` arm]) — the harness pressed the mode button without the fire edge
    and the press did nothing on those levels. Harness gap, not a weapon bug; the fix is one line
    (OR the fire edge for 0x54/0x55 in the 4.5 check) — next window.
-3. **0x2c AT-420 Sentinel — W on 0700000b/48** (the switch away failed). The guided-missile
+3. **0x2c AT-420 Sentinel — W on 0700000b/48/4a** (the switch away failed). The guided-missile
    camera rides after the fire (the cell fired; `gcam` recorded) and the camera's 15-tick static
    period eats the away switch's window. Harness timing vs the camera, not the weapon — the away
    wait should ride out `missile_cam` first. Next window.
@@ -148,8 +152,8 @@ panic rule holds).
 
 ## What's left (next window)
 
-1. The remaining 10 levels of the sweep (12/13/14/15/16/41/43/46/49/4b) on this runner; the red
-   list above then covers all 27.
+1. The remaining 9 levels of the sweep (14/15/41/43/46/49/4b — 14 timed out once at 240 s, the
+   wrappers are fast) on this runner; the red list above then covers all 27.
 2. The two one-line harness gaps: the 0x54/0x55 mode press OR'd with the fire edge; the away wait
    riding out `missile_cam`.
 3. The full suite (tools/test/suite.py) on the merged tree; the FAILED lines vs the allowances.
