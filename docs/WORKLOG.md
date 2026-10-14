@@ -10438,6 +10438,7 @@ Work Log:
 - The 0c pylon: NOT reproducible on this tree — the real stand_at+head camera at the user spot resolves eye cell 91, all four pylon parts + shadow ride owner room 77, in_view true, 14/14 materials kept (probe_missing_pylon.rs, kept); pinned by a regression test, live re-render requested.
 - Green on the fixed tree: the whole portal chain (portal_live/eyecel/2/3/4/5/6/sweep/walkreal), nf-game units (world.rs scope tests), the new 3 tests. suite.py could not run in background (nohup dies between tool calls — same as the last two sessions); foreground chunks covered nf-game+nf-formats+the portal/object/census nf-view files; the levels_sweep re-run is left for the next session.
 - Report: docs/reports/fix-missing-objects.md. Files: crates/nf-game/src/world.rs (obj_cell rule + doc), crates/nf-view/src/scene.rs (scope_graph pub + the 1e8 owner pick + doc), crates/nf-view/tests/fix_missing_objects_live.rs (new) + 6 probe files (kept).
+
 fix-menus-real2 (101q, 2026-10-14): the front end's second pass — the main panel art, the title
 font, the footer button glyphs, the Dossier row list, the backdrop. Started from a4164b9.
 
@@ -10575,6 +10576,33 @@ fix-08-collision2 (100m, 2026-10-14): the scoped collision's 01 escort breakage 
   crates/nf-view/src/scene.rs (the two shared-file hooks), crates/nf-view/tests/common/walker.rs
   (the env-gated trace), crates/nf-view/tests/fix_08_collision2_live.rs (new);
   crates/nf-game/src/player.rs ended unchanged.
+---
+Task ID: 102l-fix-0c-pylon
+Agent: 0c-pylon worker
+Task: fix-0c-pylon — the 0c pylon is in the drawn set (per 102e's pin) but not on screen: nf-view at --bond 14.22,16.28,-139.54,0.986,-0.269 shows roof/crates/its baked shadow, empty sky/sea where PCSX2 shows the steel lattice pylon (parts pylon/pylon_back/pylon_left/pylon_right, placements 160-163). Follow the draws: alpha test/blend on the material, texel alpha, depth/near-far, world-baked transform (double transform?), cel visibility on the frame. Replace the drawn-set pin with a rendered-frame/draw-list test; sister assertions; render before/after.
+
+Work Log:
+- (10:35 UTC) Branch s/fix-0c-pylon created from origin/master b65d6f7; setup reused (repo, work/, ISO, nf-queue). Repro render + decompile evidence next.
+
+
+---
+Task ID: 102l-fix-0c-pylon
+Agent: 0c-pylon worker
+Task: fix-0c-pylon — the 0c pylon is in the drawn set but not on screen; replace 102e's drawn-set pin with a rendered-frame test.
+
+Work Log:
+- (10:35-11:58 UTC) Branch s/fix-0c-pylon from origin/master b65d6f7; setup reused. The symptom reproduced byte-exact at the user spot; NF_NOCELCULL (2113 extra draws) changed nothing.
+- The pylon's draws were never the problem (probe_pylon_draws): 12 materials, pass 3 / blend 0 / zwrite off / atest 1 / fog 2, textures resolve with a real alpha-tested lattice (45:93: 1017/4096 opaque), vert alpha 128, on-screen NDC, depth 0.999. In-process subset renders (probe_pylon_render, the exact shot() path + framebuffer readback): pylon-only RENDERS, pylon+list0 RENDERS, pylon+pass3 RENDERS, pylon+sky/chars/effects GONE, full GONE — the killer is the pass-4 sky.
+- Root cause [M]: the port sorted the frame by dc.pass*2, drawing the post-fog sky (pass 4) AFTER the alpha list (pass 3). Game_Draw 0x1e6f50 draws sky group 0 (View_DrawSky v,0 0x1e5ad0, GfxList+0x4a == 0) between psiPostSolid 0x121630 (= psiDrawFogPass 0x10b960) and View_DrawObjList(v,1) — the alpha list comes AFTER the sky. The sky pipeline is far-plane-pinned + LessEqual + no depth write, so over pixels where only no-depth-write alpha draws landed (the pylon: ZBUF_1 zwrite off) the depth is still the cleared 1.0 and the sky repainted it. The shadow (zwrite on) wrote depth and survived — the exact observed split. docs/systems/render.md §Sky remainder already pinned group 0 = "after psiPostSolid / before the alpha list"; the code contradicted it.
+- Fix: gpu.rs slot map `match dc.pass { 4 => 3, p => p * 2 }` — sky group 0 now draws after list 0, before the alpha list; nothing else moved. scene.rs: #[derive(Clone)] on Material (test support).
+- Tests (fix_0c_pylon_live, fail-first on the stashed fix): user-spot lattice band 1628 → FAIL pre-fix, 5180 → PASS post-fix; close-up 75 → FAIL, 4229 → PASS; sisters: sky stays bright (75000), the shadow still draws (40113). Rendered before/after PNGs at the user spot and pitch 0.
+- origin/master 6691ef9 merged (WORKLOG conflict: both entries kept). Report: docs/reports/fix-0c-pylon.md. Files: crates/nf-view/src/{gpu,scene}.rs, tests/fix_0c_pylon_live.rs + 2 probes.
+## fix-movies-tests
+- Started: fix movies-feature test build (menu_movies.rs:282 E0614 u32 deref), run all movies-gated tests with --features movies, fix failures, note in docs/tools/test-suite.md.
+
+## fix-movies-tests (outcome)
+- menu_movies.rs:282 E0614 fixed (present returns (u32,u32,&[u8]) by value [M movie.rs:226]); all 203 nf-view+nf-formats test binaries build with --features nf-view/movies; 202 run: 201 ok + disc_golden's 3 allowed slim-ISO fails; PSS-data tests skip on the slim stub image by contract; docs/tools/test-suite.md gained the movies-feature note; weapon_matrix_live (>600 s with or without movies — pre-existing) flagged for the suite gate. No shared source files touched.
+- Post-merge (origin/master 6691ef9 = fix-menus-real2, whose menu_movies copy still carried the (*w,*h) bug): merged, rebuilt menu_movies/menus_flow/movie_playback_flow with movies on the final tree — 7/7, 34/34, 10/10 ok; suite restarted on the merged tree (see report).
 
 ## fix-armour-ring
 - Started: the orange 007 ring bottom-left in PCSX2 captures may be the health pane's armour state (the captures' god-cheat wrote armour 50 BLData+0x8B0 every frame); check HUD_UpdateHealthPane 0x19b9c8's armour branch, port it, test armour 0 vs 50.

@@ -112,6 +112,9 @@ impl Draw {
     }
 }
 
+/// fix-0c-pylon probe: `Clone` so headless render tests can stage material subsets per render
+/// (the pylon-only isolation render); nothing else changes.
+#[derive(Clone)]
 pub struct Material {
     pub layer: Layer,
     pub draw: Draw,
