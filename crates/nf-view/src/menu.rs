@@ -1359,8 +1359,19 @@ fn dimmed(mut c: [f32; 4], a: u32) -> [f32; 4] { c[3] = gs(0, a)[3]; c }
 /// flag 2 applies `x -= width * 0.5`; every menu label carries fe 03 (Label_Init 0x218638:53's
 /// DAT_003096c0). The port's `text_scaled` pen starts at x, so the half-width shift lands here.]
 fn centred(h: &mut Hud, font: &nf_formats::hud::Font, layer: i32, s: &str, xc: f32, y: f32, c: [f32; 4], shadow: bool, scale: f32) {
-    let w = font.layout(s, 0.0, 0.0).1 * scale;
-    h.text_scaled(Anchor::Centre, font, layer, s, xc - w / 2.0, y, false, c, shadow, scale);
+    // The drawn ink of one row: the glyph quads span [gx, gx + gw] (quad() maps both corners, so
+    // the anchor is only an origin shift — the glyphs are left-edged at their pen x), giving
+    // [p0.x, plast.x + gwlast] · scale. Its centre goes to `xc` — the game's fe 03 centring
+    // [M 0x1eee48:69-71 applies x -= width*0.5 to the same measure the draw uses].
+    let ink_centre = || -> f32 {
+        let (placed, _) = font.layout(s, 0.0, 0.0);
+        match (placed.first(), placed.last()) {
+            (Some(p0), Some(pl)) => ((p0.x + pl.x + font.glyphs[pl.glyph].w as f32) / 2.0) * scale,
+            _ => 0.0,
+        }
+    };
+    let mid = ink_centre();
+    h.text_scaled(Anchor::Centre, font, layer, s, xc - mid, y, false, c, shadow, scale);
 }
 
 /// The page header: the header control's own band (50,40,376×17) with the label centred in it
@@ -1440,45 +1451,87 @@ fn confirm_box(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, c: [f32; 4
 /// format's fe 03) — the PCSX2 captures show the footer hints centred; the port's old left edge at
 /// x=50 was the control's x, not the text's anchor].]
 fn hint_bar(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y640: f32, c: [f32; 4]) {
-    // Measure pass: the same walk without drawing, so the line's left edge = centre − width/2.
-    let mut w = 0.0f32;
-    let mut rest = text;
-    while let Some(t) = rest.find('~') {
-        let (before, after) = rest.split_at(t);
-        if !before.is_empty() { w += font.layout(before, 0.0, 0.0).1; }
-        match after.chars().nth(1).and_then(|t| SPECIALCHAR.iter().find(|s| s.0 == t)) {
-            Some(&(_, _, _, _, _, adv, _)) => { w += adv + 2.0; }
-            _ => { w += 16.0; }
-        }
-        rest = &after[2.min(after.len())..];
-        if rest.starts_with(' ') { rest = &rest[1..]; w += 4.0; }
-    }
-    if !rest.is_empty() { w += font.layout(rest, 0.0, 0.0).1; }
-    let bar_w = 540.0;                        // the bar control's own width (50..590) [L parsed]
-    let mut pen = mx(x640 + (bar_w - w.min(bar_w * 1.5)) / 2.0);
-    let y = my(y640);
+    // One pass collects each item's ink span relative to the row's pen origin (text glyphs sit at
+    // [p0.x − gw0/2, plast.x + gwlast/2] — the per-glyph quads centre at their pen x — and an icon's
+    // quad centres at its pen x, so [−iw/2, +iw/2]); the row's ink centre then goes to the bar's
+    // centre [M Label_Update 0x218cb8:177-182 puts the label sprite at ctrl.x + ctrl.w/2].
+    enum Item { Text { x: f32, ink: (f32, f32) }, Icon { tex: u32, uv: [f32; 4], w: f32, hh: f32, ink: (f32, f32) } }
+    let mut items: Vec<Item> = Vec::new();
+    let mut adv_sum = 0.0f32;
     let mut rest = text;
     while let Some(t) = rest.find('~') {
         let (before, after) = rest.split_at(t);
         if !before.is_empty() {
-            h.text(Anchor::Centre, font, -2, before, pen, y, false, c, true);
-            pen += font.layout(before, 0.0, y).1;
+            let (placed, nat) = font.layout(before, 0.0, 0.0);
+            let (a, b) = match (placed.first(), placed.last()) {
+                (Some(p0), Some(pl)) => (p0.x, pl.x + font.glyphs[pl.glyph].w as f32),
+                _ => (0.0, nat),
+            };
+            items.push(Item::Text { x: adv_sum, ink: (adv_sum + a, adv_sum + b) });
+            adv_sum += nat;
         }
-        let token = after.chars().nth(1);
-        match token.and_then(|t| SPECIALCHAR.iter().find(|s| s.0 == t)) {
+        match after.chars().nth(1).and_then(|t| SPECIALCHAR.iter().find(|s| s.0 == t)) {
             Some(&(_, tex, u, v, w, hh, adv)) => {
-                let icon = mx(adv);
-                let iw = mx(w);
-                let ih = my(hh);
-                h.quad(Anchor::Centre, -2, tex, 0, pen, y - ih + my(12.0), iw, ih, [u, v, w, hh], (false, false), c);
-                pen += icon + 2.0;
+                let (iw, ih) = (mx(w), my(hh));
+                items.push(Item::Icon { tex, uv: [u, v, w, hh], w: iw, hh: ih, ink: (adv_sum - iw / 2.0, adv_sum + iw / 2.0) });
+                adv_sum += mx(adv) + 2.0;
             }
-            _ => { pen += mx(16.0); }
+            _ => { adv_sum += mx(16.0); }
         }
         rest = &after[2.min(after.len())..];
-        if rest.starts_with(' ') { rest = &rest[1..]; pen += 4.0; }
+        if rest.starts_with(' ') { rest = &rest[1..]; adv_sum += 4.0; }
     }
-    if !rest.is_empty() { h.text(Anchor::Centre, font, -2, rest, pen, y, false, c, true); }
+    if !rest.is_empty() {
+        let (placed, nat) = font.layout(rest, 0.0, 0.0);
+        let (a, b) = match (placed.first(), placed.last()) {
+            (Some(p0), Some(pl)) => (p0.x, pl.x + font.glyphs[pl.glyph].w as f32),
+            _ => (0.0, nat),
+        };
+        items.push(Item::Text { x: adv_sum, ink: (adv_sum + a, adv_sum + b) });
+    }
+    let ink_lo = items.iter().map(|i| match i { Item::Text { ink, .. } | Item::Icon { ink, .. } => ink.0 }).fold(f32::MAX, f32::min);
+    let ink_hi = items.iter().map(|i| match i { Item::Text { ink, .. } | Item::Icon { ink, .. } => ink.1 }).fold(f32::MIN, f32::max);
+    // The bar's centre: ctrl.x + ctrl.w/2 = 50 + 540/2 = 320 in 640-space [L the parsed bars].
+    let bar_c = mx(x640 + 270.0);
+    let pen0 = bar_c - (ink_lo + ink_hi) / 2.0;
+    if std::env::var_os("NF_DEBUG_HINT").is_some() { eprintln!("[hint] text={text:?} items={} ink=({ink_lo},{ink_hi}) bar_c={bar_c} pen0={pen0}", items.len()); }
+    let y = my(y640);
+    // Draw from the collected items: each text segment re-lays-out at its absolute pen (the ink
+    // spans land where the measure put them), the icons at theirs.
+    let mut rest = text;
+    let mut ti = 0usize;
+    let mut pen_at = |items: &Vec<Item>, i: usize| match &items[i] { Item::Text { x, .. } => *x, Item::Icon { .. } => 0.0 };
+    let _ = &mut pen_at;
+    let mut seg_pen = 0.0f32;
+    while let Some(t) = rest.find('~') {
+        let (before, after) = rest.split_at(t);
+        if !before.is_empty() {
+            let x = pen0 + seg_pen;
+            h.text(Anchor::Centre, font, -2, before, x, y, false, c, true);
+            seg_pen += font.layout(before, 0.0, 0.0).1;
+            ti += 1;
+        }
+        match after.chars().nth(1).and_then(|t| SPECIALCHAR.iter().find(|s| s.0 == t)) {
+            Some(&(_, tex, u, v, w, hh, adv)) => {
+                if let Item::Icon { ink, .. } = &items[ti.min(items.len() - 1)] {
+                    let (lo, hi) = (ink.0, ink.1);
+                    let _ = (lo, hi);
+                }
+                let iw = mx(w);
+                let ih = my(hh);
+                // The icon's ink [pen − iw/2, pen + iw/2] — same anchor as the measure pass.
+                h.quad(Anchor::Centre, -2, tex, 0, pen0 + seg_pen, y - ih + my(12.0), iw, ih, [u, v, w, hh], (false, false), c);
+                seg_pen += mx(adv) + 2.0;
+                ti += 1;
+            }
+            _ => { seg_pen += mx(16.0); }
+        }
+        rest = &after[2.min(after.len())..];
+        if rest.starts_with(' ') { rest = &rest[1..]; seg_pen += 4.0; }
+    }
+    if !rest.is_empty() {
+        h.text(Anchor::Centre, font, -2, rest, pen0 + seg_pen, y, false, c, true);
+    }
 }
 
 /// A textured quad in the menu's 640 × 480 space. Anchor::Centre keeps every quad inside the centred

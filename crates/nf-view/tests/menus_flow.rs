@@ -60,7 +60,9 @@ fn the_page_sequence_matches_the_real_game() {
     assert_eq!(fe.page, Page::Codename);
     assert_eq!(fe.page.id(), 0x4000_0025, "Select Codename [M menu-def page 0x40000025 header Txt 0x1f2]");
     // "Play without saving" → the game's confirm box pops, ✕ continues → Select Difficulty
-    // [M the page's plate control 0x100001f2; the driver's PCSX2 transcript].
+    // [M the page's plate control 0x100001f2; the driver's PCSX2 transcript]. Row 0 is now
+    // "New Codename" [M Menu_EnumSaves 0x1f7b78:58-66]; Down reaches row 1.
+    assert!(fe.action(Action::Down), "Down moves to Play without saving");
     assert!(fe.action(Action::Confirm));
     assert!(fe.confirming_default_profile, "the first confirm arms the box");
     assert!(fe.action(Action::Back), "△ cancels the box");
@@ -103,8 +105,9 @@ fn locked_missions_cannot_be_scrolled_to_or_picked() {
     fe.action(Action::Confirm); // Start → the intro movie [M P_INTRO 0x209e88]
     fe.action(Action::Confirm); // Confirm = action 0x19: the skip [M GameFlow_Main 0x1c98c8 case 6]
     fe.action(Action::Confirm); // NightFire
-    fe.action(Action::Confirm); // play without saving
-    fe.action(Action::Confirm); // confirm box
+    fe.action(Action::Down);    // row 1 = Play without saving [M 0x1f79c0:15-23]
+    fe.action(Action::Confirm); // arm the confirm box
+    fe.action(Action::Confirm); // through it → difficulty
     fe.action(Action::Confirm); // difficulty → missions
     assert_eq!(fe.page, Page::MissionSelect);
     // A fresh profile has rows 0 AND 1 unlocked [D sp_level's boot state in ACTION.ELF .data (file
@@ -246,6 +249,7 @@ fn cursors_wrap_and_back_walks_up_the_pages() {
     assert!(fe.action(Action::Back));
     assert_eq!(fe.page, Page::Main);
     fe.action(Action::Confirm);
+    fe.action(Action::Down);    // row 1 = Play without saving [M 0x1f79c0:15-23]
     fe.action(Action::Confirm); // the confirm box
     fe.action(Action::Confirm); // through it → difficulty
     assert_eq!(fe.page, Page::Difficulty);
@@ -304,7 +308,9 @@ fn the_menu_overlay_draws_the_game_pages_with_their_own_sprites() {
     assert!(has(0x4000_0034, 0x0300_0074), "the title draws the full-screen art [M page 0x40000009 control 0x10000196]");
     assert!(has(0x4000_0025, 0x0300_00b3), "the codename page draws the panel [M page 0x40000025 control (50,53) TEX 0x030000b3]");
     assert!(has(0x4000_0025, 0x0300_00bf), "the codename page draws the ring emblem [M control 0x10000103]");
-    assert!(has(0x4000_0025, 0x0300_00b6), "the codename page draws its preview [M control 0x100001cc TEX 0x030000b6]");
+    // The codename preview follows the cursor [M Menu_UpdateCodenameWheel 0x1f89f0:80-99 — the
+    // create row 0x300013b, the default row 0x3000135; the page's static 0x030000b6 is the boot look].
+    assert!(has(0x4000_0025, 0x0300_013b), "the codename page draws the create row's preview [M 0x1f89f0:80-99]");
     assert!(has(0x4000_0023, 0x0300_00a5), "the difficulty page draws its emblem [M control 0x100000be TEX 0x030000a5]");
     // The mission list's ring preview is PER ROW: row 0 (Paris Prelude) must draw Paris Prelude's own
     // preview 0x03000085 = sp_level[0]+0x00 [L ee_snapshot 0x2df2e0; M 0x1f8388's msg 0x24] — the port
@@ -312,7 +318,9 @@ fn the_menu_overlay_draws_the_game_pages_with_their_own_sprites() {
     // symptom the driver reported.
     assert!(has(0x4000_001c, 0x0300_0085), "Paris Prelude's own ring preview [M sp_level[0]+0x00]");
     assert!(!has(0x4000_001c, 0x0300_0084), "row 0 must NOT show The Exchange's preview 0x03000084 (the reported symptom)");
-    assert!(has(0x4000_002b, 0x0300_00c4), "the dossier draws its emblem [M control 0x1000010a TEX 0x030000c4]");
+    // The dossier's emblem is the wheel table's per-row preview [L 0x2dfcd0 row 0 = 0x300019b Records;
+    // the page's static 0x030000c4 is the Gadgets row].]
+    assert!(has(0x4000_002b, 0x0300_019b), "the dossier draws its Records row's preview [L table 0x2dfcd0]");
     assert!(has(0x4000_001c, 0x0300_016d), "the list pages draw the logo [M control (434,38,156×43) TEX 0x0300016d]");
     assert!(has(0x4000_0023, 0x0300_014c), "the list pages draw the stamp [M control 0x10000224 TEX 0x0300014c]");
     // The hint bars draw the game's own specialchar icon font [M specialchar 0x2dd8d8: every entry's
@@ -670,35 +678,39 @@ fn the_descriptions_wrap_inside_their_plates() {
 struct TextRows { rows: Vec<(f32, f32, f32, f32)> }
 
 fn text_rows(frame: &nf_view::gpu::HudFrame, n_tex: usize, aspect: f32) -> TextRows {
-    // The font texture was appended last by the caller; runs name it by index+1.
-    let font_tex = n_tex;   // runs name the texture by index+1; the font was appended last
-    let mut is_font = vec![false; frame.v.len()];
+    // The font texture and the specialchar icon texture both carry text-row ink; runs name them by
+    // index+1 (the font was appended last; 0x03000075 is MENU_TEXTURES[10]).
+    let font_tex = n_tex;
+    let icon_tex = menu::MENU_TEXTURES.iter().position(|&t| t == 0x0300_0075).expect("icon tex listed") + 1;
+    let mut is_text = vec![false; frame.v.len()];
     for &(tex, _, start, count) in &frame.runs {
-        if tex == font_tex { for v in &mut is_font[start as usize..start as usize + count as usize] { *v = true; } }
+        if tex == font_tex || tex == icon_tex { for v in &mut is_text[start as usize..start as usize + count as usize] { *v = true; } }
     }
     let k = (2.0 / 512.0) * (4.0 / 3.0) / aspect;
-    let mut pts: Vec<(f32, f32)> = Vec::new();
-    // Per-quad bounding boxes: runs concatenate 6-vertex quads; the full-screen plates also ride the
-    // font texture (Hud::ndc_quad pins 0x03000003), so a vertex-level filter would catch them — keep
-    // only quads of text size.
+    // Per-quad bboxes (runs concatenate 6-vertex quads; the full-screen plates also ride the font
+    // texture — Hud::ndc_quad pins 0x03000003 — so keep only quads of text size).
+    let mut quads: Vec<(f32, f32, f32, f32)> = Vec::new();
     let mut vi = 0usize;
-    while vi < frame.v.len() {
-        let quad_is_font = vi < is_font.len() && is_font[vi];
-        let (x0, x1, y0, y1) = frame.v[vi..vi + 6].iter().fold((f32::MAX, f32::MIN, f32::MAX, f32::MIN), |acc, q| {
-            let x = q.p[0] / k + 256.0; let y = (1.0 - q.p[1]) * 224.0;
-            (acc.0.min(x), acc.1.max(x), acc.2.min(y), acc.3.max(y))
-        });
-        if quad_is_font && x1 - x0 <= 120.0 && y1 - y0 <= 60.0 { pts.push((x0, y0)); pts.push((x1, y1)); }
+    while vi + 6 <= frame.v.len() {
+        if is_text[vi] {
+            let (x0, x1, y0, y1) = frame.v[vi..vi + 6].iter().fold((f32::MAX, f32::MIN, f32::MAX, f32::MIN), |acc, q| {
+                let x = q.p[0] / k + 256.0; let y = (1.0 - q.p[1]) * 224.0;
+                (acc.0.min(x), acc.1.max(x), acc.2.min(y), acc.3.max(y))
+            });
+            if x1 - x0 <= 130.0 && y1 - y0 <= 60.0 { quads.push((x0, x1, y0, y1)); }
+        }
         vi += 6;
     }
-    pts.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    // Group quads into rows by vertical overlap (glyph tops and bottoms share the row's band).
+    quads.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
     let mut rows: Vec<(f32, f32, f32, f32)> = Vec::new();
-    for (x, y) in pts {
-        match rows.last_mut() {
-            Some(r) if y - r.3 <= 3.0 => { r.0 = r.0.min(x); r.1 = r.1.max(x); r.3 = y; }
-            _ => rows.push((x, x, y, y)),
+    for (x0, x1, y0, y1) in quads {
+        match rows.iter_mut().find(|r| y0 <= r.3 && y1 >= r.2) {
+            Some(r) => { r.0 = r.0.min(x0); r.1 = r.1.max(x1); r.2 = r.2.min(y0); r.3 = r.3.max(y1); }
+            None => rows.push((x0, x1, y0, y1)),
         }
     }
+    rows.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
     TextRows { rows }
 }
 
@@ -752,7 +764,10 @@ fn the_page_headers_are_centred_in_their_bands() {
         fe.page = page;
         let (frame, n) = frame_with_font(&fe, lang.as_ref(), 4.0 / 3.0);
         let rows = text_rows(&frame, n, 4.0 / 3.0);
-        let band = rows.band(46.0).expect("the header draws");
+        let band = rows.rows.iter().filter(|r| r.3 >= 40.0 && r.2 <= 56.0).map(|r| (r.0, r.1)).fold(None, |acc: Option<(f32, f32)>, (a, b)| {
+            Some(match acc { Some((x0, x1)) => (x0.min(a), x1.max(b)), None => (a, b) })
+        }).expect("the header draws");
+        eprintln!("[hdr] {page:?} band {band:?} rows {:?}", rows.rows);
         let centre = (band.0 + band.1) / 2.0;
         let want = (50.0 + 376.0 / 2.0) * 512.0 / 640.0;   // 190.9 HUD
         assert!((centre - want).abs() < 5.0, "{page:?}: header centre {centre}, want {want} (ctrl.x + ctrl.w/2 [M Label_Update])");
@@ -791,12 +806,14 @@ fn the_wheel_rows_center_in_their_controls() {
 /// draw had them swapped (orange selected, cream others).
 #[test]
 fn the_main_rows_use_the_page_colours() {
-    let font = test_font();
+    let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
+    let lang = iso_lang(&iso);
+    let font = iso_font(&iso);
     let mut textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).collect();
     textures.push((0x0300_0003, crate_texture(0x0300_0003)));
     let mut fe = FrontEnd::new();
     fe.page = Page::Main;
-    let frame = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let frame = menu::menu_overlay(&fe, &font, lang.as_ref(), &textures, 4.0 / 3.0);
     let k = (2.0 / 512.0) * (4.0 / 3.0) / (4.0 / 3.0);
     let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.02);
     let cream = [0x64 as f32 / 128.0, 0x5a as f32 / 128.0, 0x49 as f32 / 128.0, 0.996];
@@ -894,13 +911,15 @@ fn the_records_page_draws_the_score_table() {
 /// own citation.
 #[test]
 fn the_title_prompt_uses_the_page_colour() {
-    let font = test_font();
+    let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
+    let lang = iso_lang(&iso);
+    let font = iso_font(&iso);
     let mut textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).collect();
     textures.push((0x0300_0003, crate_texture(0x0300_0003)));
     let mut fe = FrontEnd::new();
     fe.page = Page::Start;
     fe.press_start_on = true;
-    let frame = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let frame = menu::menu_overlay(&fe, &font, lang.as_ref(), &textures, 4.0 / 3.0);
     let want = [0x7f as f32 / 128.0, 0x62 as f32 / 128.0, 0x1f as f32 / 128.0, 0.996];
     let hit = frame.v.iter().any(|q| q.c.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.02));
     assert!(hit, "the prompt draws in 0x7f621f gold (gs scale)");
