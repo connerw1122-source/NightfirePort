@@ -9747,3 +9747,24 @@ hatch open-anim/rotation rate and how the real game gets Bond through (auto-crou
 volume, or walkable gap) in the decompile; reproduce headless through the real input path from
 --bond 5.8,15.8,-108.5; fix in nf-game (lock/props/player.rs) citing game addresses. Branch created
 from origin/master c4028c8. Work in progress.
+
+### fix-0c-hatch — outcome
+
+- **The hatch speed (symptom 1) FIXED**: the port's SS playhead ran `1/rate` key-units/tick (the
+  rate paragraph was `[S]`); the game sets the step ONCE at create to `(keys−1)/rate` [M
+  SS_Create 0x1a9c58:51] and adds it ×`FRAME_RATE_MUL` per tick [M SS_Update 0x1a9948:103-108;
+  GS_SetRefreshRate 0x17d2b8:15 — MUL = 60/FRAME_RATE = 1.0 at 60 Hz]. The rate word is the whole
+  sweep's duration: #138 `ventmesh-front` (6 keys, rate 50 [D extra[7] = 0x00320006]) opens in 50
+  ticks, not 250; #180 warehouse likewise. `SsList::tick` fixed in crates/nf-game/src/ss.rs (the
+  only code change); 2-key SSs (#179, the 07000012 screens) are unchanged by the last==1 case.
+- Tests: crates/nf-view/tests/fix_0c_hatch_live.rs — the two sweep tests (250/251 → 51 ticks, the
+  blocker ~10 and the playheads stay) shown failing first; fix_level_0c_live.rs still green.
+- **The traversal (symptom 2) mapped, 2 of 4 legs verified**: no creepwall exists in 0700000c [D
+  kind-census] and the game's climb is ladder-only [M Player_CollLadder 0x196118] with no ladder at
+  the vent [D #164/#495 are at z −177..−187] — the open hole's clear band (~15.2..17.4) takes the
+  crouched capsule (1.20 [M 0x194df0]) and the headless real-input drop from the duct top lands
+  Bond on the inner ledge 14.72 ✓. Open: the ascent to the duct ramp (walkway 14.01 → 17.2-17.5
+  over a wall face) and the ledge→display-case descent (~7.3 at (5.4, −113) under the 11.27 mid
+  floor) — the two traversal tests are #[ignore]d with reasons, live checks filed in the report.
+  No player.rs change (nothing guessed).
+- Shared files: none. Report: docs/reports/fix-0c-hatch.md.
