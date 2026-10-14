@@ -9987,6 +9987,53 @@ Task 101h: two user symptoms on 07000008 near the safe/briefcase room (~(155, 43
 through geometry — grab test needs the game's LOS/facing gate); (2) the big wall still clips
 into the missile room (a world instance / forced object drawn that the game hides — compare
 docs/live/2026-10-13-portal-ground-truth.md). Work in progress; details to follow.
+
+## fix-cutscene-draw (s/fix-cutscene-draw) — 2026-10-14
+Task: cut-scene actors exist in the sim but are not drawn in rendered frames (headless repro
+confirmed by 101b-fix-cutscene-models: actors live, poses finite, room gate passes — but the
+`--shot` frames of the Kimiko library scene 0x06000007/0x06000073 show no characters).
+Plan: merge origin/s/fix-cutscene-models, reproduce with nf-view --shot, bisect the suspect
+merges (gpu-skinning 942e2ca, anim-blend2 e679d6e, facial 366ceff/bc231e8, script-commands
+0a7268d, interp-ghosting) in a worktree, find the drop point between skin_palette and the GPU
+draw list, fix with a decompile citation, add a rendering test that fails on master.
+Status: started 03:35 UTC, sandbox expires ~05:31 UTC.
+Task ID: fix-cutscene-models
+Agent: worker (cutscene-models session)
+Task: REGRESSION — cut-scene character models missing (the 1013-1758 playtest: on 07000008 only
+Kiko shows in the briefcase/safe scene; on 07000007 only Bond shows). Bisect the last-two-days
+merges (fix-script-commands 0a7268d, fix-facial/facial2 366ceff/bc231e8, fix-anim-blend2 e679d6e,
+fix-gpu-skinning 942e2ca, fix-portal6 8ee0791, fix-spawners/-remainder, fix-cover/nav-remainder)
+with a headless test that runs each cut-scene on 07000005/06/07/08 and counts the characters
+actually DRAWN vs the actors the script creates; fix the cause with the game address; note in the
+report what's left for 291-fix-cutscene-actors (positions/skins in general).
+
+Work Log:
+- Session started 01:17 UTC (deadline ~03:15 UTC). Branch s/fix-cutscene-models created from
+  origin/master (8144bd6), pushed with this entry.
+- (next: the cutscene_models_live test through the real script path; the bisect worktrees)
+- The census net (crates/nf-view/tests/cutscene_models_live.rs): (1) the sim census through the
+  real triggers (07 TouchOnce #412 Kimiko 0x06000073, #356 fly-through 0x06000072): every
+  pre-built script character's Obj::Anim live and its script_pose_together finite mid-scene;
+  (2) the render-path census (script camera -> eye_cell -> the portal walk's strict room mask ->
+  skin_palette): no actor lands FAR or collapsed (Kimiko: real 3 / far 0; fly-through: real 13 /
+  far 0); (3) the live app's persistent ViewerCel emulation across the scene (per-tick eye_cell
+  from the script camera): eye cell stable, no FAR; (4) the 10 scene hashes across
+  05/06/07/08 (05: 060008c8/0952/0994/0a22; 06: 06000071; 07: 072/073; 08: 06000077/078/0991)
+  driven through the SPs' own out-channel + activation (SP_Update 0x1dbda8 state 0), censused at
+  three checkpoints.
+- Result: every scene's actors DRAW on master (8144bd6) AND on the playtest build (3c77a9d,
+  run in a worktree at the pre-anim-events master). The candidate diffs read: fix-gpu-skinning's
+  merged diff (942e2ca) is behavior-preserving (the tick-scheduler extraction, no shader/palette
+  change); fix-anim-events (dd1cd7b, post-playtest) is drone weapon events, not actor creation;
+  fix-script-commands/facial2/anim-blend2 all predate the playtest and the paths they touch are
+  covered green by the census.
+- NOT reproduced headlessly; the un-coverable remainder: the GPU skinning draw (the palette
+  upload + shader — no Vulkan ICD in the sandbox) and the playtest launcher's exact build. The
+  report files the live checks (re-run the playtest on current master first; --shot a mid-scene
+  frame; gdbwatch the palette upload if the GPU path is the culprit).
+- The tests stay as the regression net: any future break of actor liveness, pose finiteness,
+  room-mask FAR or the frame_state collapse fails them. What's left for 291-fix-cutscene-actors:
+  actor positions/skins in general (untouched here).
 ---
 
 ## fix-qclaw (s/fix-qclaw) — started 2026-10-14 02:28 UTC
@@ -10177,6 +10224,92 @@ Task 101h, both symptoms from the 1013-1758 playtest at 07000008's safe area (~(
   allowed disc_golden trio), 27 ignored (19 min)**, no TIMEOUT/CRASH; baseline on master 906/3/27;
   the targeted post-fix suites (the 08 four, vent5 2, wire2 3) green on the same tree.
   Report: docs/reports/fix-08-walls.md.
+
+### fix-cutscene-draw — outcome
+The cut-scene cast did not draw because `script_pose_together`'s window composition gave the
+scene's narrow 22-channel face track the body track's bones 0..5 (first-writer-wins per bone,
+fix-cutscenes2 d907aba): the 222-channel body track's root — which carries the actor's absolute
+world position (the value AnimGetFirstTrans 0x1c7348 initialises the game's anim object position
+obj+0x30 from, and AnimFrameResolve 0x1c35f8 advances per frame through the skin's channel map,
+which reaches only the face bones for the face track) — collapsed to the face track's leading
+zeros, posing every script actor as an identity mannequin at the world origin. The palette read
+"real" (the census's gate), the sim was live, and the render showed nothing: the mannequin is
+under the world at (0,0,0) in every cut-scene shot. Probes (headless lavapipe renders + palette
+dumps through the real trigger path) pinned the drop between skin_palette and the GPU draw: the
+actors' skinned verts projected at the party-hall marks only AFTER the pose fix; pre-fix the
+closeup render at the actor's root showed an empty library, post-fix it shows Kimiko (red dress,
+mid-stride, next to the pool table). Fix: the base (widest, fits) track owns the bones it
+covers; narrow windows fill only what it leaves (nf-game/src/anim.rs, one hunk + citation
+comment). Tests: crates/nf-view/tests/cutscene_draw_live.rs — 2 tests through the real input
+path (nf_view::load + step_bond from TouchOnce #412): the pose gate (root = the body track's
+non-zero library position, finite) and the render gate (the uploaded palette's bone 0 at the
+library root, not FAR/collapsed) — both failing on the pre-fix tree (root [0,0,0]), green
+post-fix. The census tests of 101b stay green (live Obj::Anim, finite poses, room gate).
+Files: crates/nf-game/src/anim.rs (the fix; NOT in this task's listed files — the cause lives
+there), crates/nf-view/tests/cutscene_draw_live.rs. Shared files touched: none (the merge
+commit absorbed other workers' master merge).
+Left: the body track's per-bone channel→bone mapping is still the port's sequential walk (the
+game maps channels through the skin's table — bone 72's slots read far-from-root values, the
+mesh may still pose imperfectly inside the fix); a lavapipe GPU-render assertion (the exact
+pixels) instead of the palette-level gate; the live PCSX2 checks below.
+Live checks for the main agent (PCSX2, nf-view --bond 94.2,44.6,-45.9,0,0 on 07000007):
+(1) spot 94.2,44.6,-45.9 (TouchOnce #412): frames 150/300/600/900/1200/1500 — Kimiko (red
+dress), a male guest and a second guest must appear in the library pan near the pool table at
+the marks (86.8,43.7,-33.3) / (92.0,43.7,-30.8) / (92.2,43.9,-31.1); pre-fix none of them drew.
+(2) 07000008's briefcase/safe scene: Kiko plus the other actors besides Bond.
+(3) gdbwatch (action): watch obj+0x30 of a 060004f1 anim object during the scene — the game
+advances it per frame from the seq's first root; the port's pose root now follows the same
+channel. nf-view spot for the render: --bond 86.8,44.0,-25.0,pi,0 (closeup at Kimiko's mark).
+
+## fix-cutscene-faces (s/fix-cutscene-faces) — 2026-10-14
+
+Started (06:20 UTC): master 966671a + origin/s/fix-cutscene-draw (d1b5e08) merged at 61d2d8e. Task:
+the cutscene-draw fix (the widest track owns every bone it covers) unfroze the cast but froze the
+mouths — `fix_cutscenes2_live::the_kimiko_scene_characters_play_their_face_tracks` fails on the
+merged tree ("the face track must move its bones (frames 399): the mouth animation"). Fix the game's
+way: channels map to bones through the SKIN's table (AnimFrameCopy receives the sAnimSkin;
+psiBuildMatrixPalette 0x111498 reads sAnimObject+0x94), so the 22-channel face track reaches only
+the face bones and the 222-channel body track the body — port the mapping instead of first-writer /
+widest-wins. Tests: the Kimiko cast at scripted world positions AND the face bones moving over the
+face track's frames, with sister assertions.
+
+### fix-cutscene-faces — outcome (07:30 UTC)
+
+**The face track never was a bone track — its channels are the skin's facial MORPH weights, and the
+game says so three ways.** The failing premise ("the face track must move its bones") was the
+weights-as-bones misread; the fix keeps the cast AND unfreezes the mouths, the game's way:
+
+- **The window classifier is the sequence's flags bit 0x8** [M AnimProcessScriptCmds 0x1c1b38:
+  `uVar5 = *(int *)(lVar6 + 0xc) >> 3 & 1` on the raw seq record — a facial window sets the script
+  node's 0x40000 flag and plays in the +0x54 facial slot, docs/systems/anim-engine.md
+  "+0x50 / +0x54 (body; facial)"]. [D measured] face seq 0x04000467 flags 0x08, body 0x04000332
+  flags 0x00; on 07000001/05/06/07 the flags bit and the old channel-count==facial heuristic agree
+  on EVERY sequence (26/26, 26/26, 28/28, 82/82 — zero disagreements), so the swap is
+  behavior-neutral where pinned and is the game's mechanism.
+- **The facial channels are morph weights, not bones** [M AnimFacialBlend 0x1be648 reads the playing
+  sequence's frame buffer as the weight array; SkinIt 0x10bf30's (morph + channel) addressing]:
+  [D measured] the face track's 22 channels == skin 0x0500003b's facial count 22, values in
+  [0, 1] (max 1.001, 312/433 sampled frames active), while the body track carries
+  222 = 3·73 + 3·1 channels (the skeleton's per-bone walk) whose root holds the actor's world
+  position (83..91, 43.7, −35..−31). Read as bones, the face track's leading weights zero the root
+  — the missing-cast bug that started this chain.
+- **anim.rs `script_pose_together`**: facial-flagged windows are excluded from the base and the
+  narrow fill — they own no bones; the weights path (`Scene::facial_weights_now`, fix-facial2) is
+  what consumes them. The body track (the widest non-facial window) owns the pose; the cutscene-draw
+  owned-mask fill for narrow non-facial pairs is kept.
+- **The Kimiko test re-pinned** (fix_cutscenes2_live): the face track carries the facial flag; its
+  channel count == the skin's facial count; the guest carries morph targets; the weights OPEN (max
+  > 0.5) and MOVE across the track's frames (the mouth animation, the game's lip-sync); the scene's
+  live weights equal the track's weights at the object's frame; and the sister pair — the joined
+  pose equals the body-only pose on EVERY bone (the facial window leaves the bones untouched) with
+  the root at the library position (> 10 units from the origin — the cast stands).
+- **Rendered** (lavapipe): `nf-view 07000007 --bond 94.2,44.6,-45.9,0,0 --frame 399` and
+  `--frame 1200` — the full cast (Kimiko, Bond, Dominique) at their scripted positions, the kiss
+  plays. Note: the mouth MORPHS ride the CPU skinning (fix-facial2's morph_vertex); the GPU skin
+  path (G-043) is not morphed yet (facial3's open item) — a GPU-path render would still-face.
+- Green: fix_cutscenes2_live 5/5, cutscene_draw_live 2/2, cutscene_models_live 4/4, facial2_live
+  2/2, nf-game lib 140/0. `script_pose_drone` (the drone path, seed-pinned) untouched — the flag
+  agrees with its channel-count pickers everywhere measured.
 
 ## fix-context-hints (s/fix-context-hints) — 2026-10-14
 
@@ -10387,6 +10520,18 @@ Work Log:
 - Final suite on the master-merged tree (origin/master 966671a fix-08-walls merged; 223 binaries, tools/test/suite.py): 959 passed, 3 failed, 29 ignored — the 3 are exactly the allowed disc_golden slim-ISO set. Neighbours re-run green on the merged tree: grapple_hook_live 3, models_misc_live 10, fix_ladder2_live 4, fix_objects_live 6, fix_08_walls_live 4, qclaw_live, gadget_grapple_live, gadget_grapple_user_spot, gadget_select_live.
 - Independent audit (subagent): PASS — decompile/[L] claims re-verified, add_instance RNG-free and deterministic, the scene.rs diff removes only the stale comment, no other test asserts total counts; strengthened: every 0x3A placement on all 16 levels lacks 0x8000/0x2000 and glist 0x8/0x4 bits (the static draw is exact everywhere); citation fix: control_funcs row 0x51 is [L 0x26fa94..0x26fc68] (wire-grapple.md:7's shorter range is one row short).
 - Report: docs/reports/fix-grapple-hook.md. Files: crates/nf-view/src/scene.rs (additive sweep + counter + corrected comments), crates/nf-view/tests/grapple_hook_live.rs (new), crates/nf-view/tests/models_misc_live.rs (comment/message text only).
+
+---
+Task ID: 100i2-fix-cutscene-faces2
+Agent: cutscene-faces2 worker
+Task: fix-cutscene-faces2 — merge origin/master into s/fix-cutscene-faces, settle the facial-vs-body window rule on the game's own flags bit 0x8 (AnimProcessScriptCmds 0x1c1b38) everywhere master used the channel count, keep master's exact-math paths, verify the 07000007/02 renders, full suite.
+
+Work Log:
+- (started 20:13 UTC) branch s/fix-cutscene-faces2 created from origin/s/fix-cutscene-faces (316c759a). Merged origin/master (62c17571): 3 conflicts — anim.rs script_pose_together (2 hunks: kept the flags & 0x8 classifier, dropped master's channel-count probes; the per-bone loop is carried by the kept body_only == together assert), fix_cutscenes2_live.rs (kept the flags+count+morph+weights+root block, master's weaker duplicate dropped), WORKLOG union. Master's exact-math kept whole (facial_update 0x1be310 state machine, FacialCmd, facial3_tests). Third count site swapped: script_pose_drone's is_face now reads s.flags & 0x8 [M 0x1c1b38] — facial3_live 3/3 proves 04000065 carries bit 0x8 (the driver holds his seat, the face track stays a morph source).
+- Suite on the merged tree (270 binaries, tools/test/suite.py in foreground chunks — the nohup background run dies between tool calls here, the 102c/100f precedent): 1074 passed, 3 failed (the allowed disc_golden trio), 35 ignored, 1 TIMEOUT (weapon_matrix_live at 600 s — the base branch's own final-run open item; zero facial/pose references in that binary, the weapon-matrix workers are still landing on it).
+- Renders on the final tree: 07000007 --bond 94.2,44.6,-45.9,0,0 --frame 399 (the kiss, cast in place) and --frame 1200 (full cast, faces present), 07000002 --bond -82.30,5.30,32.05,1.570,-0.100 --frame 170 (both actors, lit dark). renders/faces2_*.png.
+- Re-pulled master before the push (eb52fb56, merge 0e7042c0, clean; targeted tests re-run 20/20 on the final tree). Report: docs/reports/fix-cutscene-faces2.md. Files: crates/nf-game/src/anim.rs, crates/nf-view/tests/fix_cutscenes2_live.rs, docs/WORKLOG.md. Shared files: none touched.
+
 ## fix-weapon-fire-modes (s/fix-weapon-fire-modes) — 2026-10-14
 
 Task 100f: every weapon's fire modes — the guided-missile camera (0x2C), the MGL impact/delay
@@ -11464,6 +11609,14 @@ Stage Summary:
   to the same gunfire, the protected-actor ch 0x60 rises on his death). Suite on the merged tree:
   see docs/reports/fix-06-driver.md. Report: docs/reports/fix-06-driver.md (live checks: the PCSX2
   no-draw confirmation, the death anim, the 700-880 step-out window; the headless render gap).
+
+## fix-front-end-chain — s/fix-front-end-chain (task 105e, started 19:47 UTC)
+
+Task: port the front-end leg after a mission ends — the results/medal screen (Mission_Update
+0x182c60 case 6 onward, the outro movie, the results page), the unlock write into the progress
+layer (nightfire_status 0x202360, the codename profile), and mission select offering the next
+mission. Drive the campaign runner from 01's end to 05's start. Files: menu.rs, mission.rs,
+progress.rs, profile.rs. Status: setting up.
 ## fix-oddjob-hat — s/fix-oddjob-hat (task 104e, 17:36-18:5x UTC)
 - The hat = weapon 0x45 [L ee_start_05.bin @0x2c398c]: damage 100.0, speed 0.6667, +0x6C = 0x20C08
   (gravity + no-flesh-pass 0x800 + the HOMING bit 0x20000 — the only carrier among the thrown
@@ -11592,6 +11745,14 @@ full suite did not fit the window. Report: docs/reports/102j2-fix-casings-16b.md
   death is silent state 4 [M 0x12e848], so the wait adds no blast), with the evidence chain in the comment.
   fix_weapon_sounds_live 3 passed / 2 ignored (pre-existing, documented); fire_modes3_live 5 passed /
   4 ignored (pre-existing); fix_weapon_fire_modes_live 5 passed.
+
+## fix-objective-drives — s/fix-objective-drives (task 105d, started 20:32 UTC 2026-10-14)
+- Task: campaign-flow blocker 6 — drive the four gameplay-driven objectives through the runner's real
+  input path: 09's ch71 (2/3), 08's ch75 gondola escape (1/2), 4a's ch74, 0a's objective inputs 0x48/0x49
+  (Q-Worm install script player's out 72 + the security-centre zone). Find the live writer per objective
+  (script players, touch zones, gadget use), fix any port bug that stops the writer, and make each of the
+  four levels complete its objectives and chain through crates/nf-view/tests/campaign_flow_live.rs.
+- Work in progress: reproducing each of the four headless first.
 ---
 Task ID: 102o-fix-striped-boxes2
 Agent: striped-boxes2 worker
@@ -11738,3 +11899,36 @@ Work Log:
 
 Stage Summary:
 - (in progress)
+## fix-front-end-chain (outcome, 19:47-21:40 UTC)
+
+The front-end leg (campaign-flow blocker 7): `FrontEnd::results_enter` ports P_NFRESULTS 0x208e78
+case 0x4c — GetScore(0)'s fields (the medal compare on last +0x34, the next-threshold target with
+its 0x2cc-0x2cf label, SeparateNumber 0x1dec78's numbers, the 0x2c7-0x2ca/0x10001fd medal text,
+the 0x300013d/e/f/0x300019a emblems) + Menu_SetLevelBonus 0x1ffa10's award; Confirm routes to the
+mission list (0x4b; new-reward takes P_NFBONUS 0x209670:50-53's landing; P_NFMAP 0x4c opens on the
+highest unlocked row). Three progress bugs fixed failing-first [M 0x1984b0:38-84/301-333,
+0x1ffa10:70]: GetScore's row source was inverted (0x07 maps = PlrMissionStats, 0x09 = NewScoresRef
+— the port aborted every on-foot map), the commit param was inverted (best/DoneBetter updated on
+every call), and set_level_bonus awarded all four medal bits on a no-medal run. The campaign
+runner's `front_end_chain_01_to_05` drives 01's end → outro wrap → results fields → award →
+mission list → the next mission confirmed, ×4, then 05 (07000011) unlocked on the page AND in the
+codename profile's MSSN (0b1111_0111 exact) and its start requested. Tests: front_end_chain_live
+2/2, progress units 152/152, menus_flow 34/34, movie_playback_flow 9/9, fix_save_profile_live 5/5,
+campaign_flow_live 4/4 — all on the merged tree (89e153e9). Left: the bonus/win pages' bodies, the
+0700000b blocker-4 race, the final-tree suite total (window closed; see the report). Report:
+docs/reports/fix-front-end-chain.md (live checks: the PCSX2 results page after 01, the mission
+list's unlock states, the F8 render points).
+## fix-objective-drives — s/fix-objective-drives (task 105d, finished 22:15 UTC 2026-10-14)
+- Done: the four gameplay-driven legs are driven through their levels' own writers in the campaign
+  runner (crates/nf-view/tests/campaign_flow_live.rs) — 4 campaign tests pass. 09: 3/3 via the real
+  cab exit (fix-level-chain's 0xE8 + Trigger_Activate's success write IS ch71's writer) and the real
+  exit to 0a; 0a: the arrival plate folds 09's rec, the real gadget shot at the PC (or the documented
+  cubicle-collision stand-in), the muxes real, the hatch E → 0b; 08: the real floor touch → mux ch 1
+  → the real carriage ride (Bond rides the key line) → ch 83 → ch 5 at the found warm-load
+  pack-cinematic gap → the copter's real ch 0x4B → complete → 0x0730008; 4a: the real ride (no
+  re-seat) → the documented script-end stand-in → complete. NO production code changed; shared files
+  untouched. Report: docs/reports/fix-objective-drives.md (six documented stand-ins with live checks;
+  the new one: SP #296's lazy load misses the loaded 07900008 pack script on warm loads — cold runs
+  it fine, probe-backed). Sisters: the AND-mux before/after pairs + 4a's mid-ride OFF check.
+- 21:05: merged origin/master (9c55eace — the fix-character-room-light landing, docs/tests only, no production code). The matrix binary first-hand: 341 s in-suite (6 passed / 24 ignored), one sweep level (NF_MATRIX=07000001 --ignored) 161 s -> 27 levels ~4300 s, the held timeout's cause. Full suite running for the final total.
+- 21:29: DONE. The suite total on the final tree: 1096 passed / 6 failed (3 disc_golden allowed + 3 pre-existing pylon) / 63 ignored (the 24 #[ignore]d sweep levels included) / 32 min / ZERO timeouts — the held weapon_matrix_live timeout is gone (the binary: 341 s, 6 passed / 24 ignored). Report: docs/reports/weapon-matrix4b.md.
