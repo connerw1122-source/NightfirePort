@@ -21,6 +21,7 @@ pub mod gpu;
 #[cfg(feature = "gamepad")]
 pub mod gamepad;
 pub mod dev;
+pub mod devwin;
 pub mod hud;
 pub mod menu;
 pub mod movie;
@@ -1199,6 +1200,8 @@ struct Gfx {
     config: wgpu::SurfaceConfiguration,
     depth: wgpu::TextureView,
     renderer: gpu::Renderer,
+    /// The adapter (the dev window configures its own surface against it).
+    adapter: wgpu::Adapter,
 }
 
 struct App {
@@ -1294,6 +1297,9 @@ struct App {
     /// decides which one the game would be playing and `present()` feeds the ONE plane in
     /// gpu.rs. Cleared by the skip, the end of a non-looping stream, or a code change.
     movie: Option<movie::Player>,
+    /// `--dev`: the dev menu in its own native window beside the game (devwin.rs; the user: "outside of the game, but
+    /// not in a browser"). None without `--dev`, or when the window couldn't open (the F2 overlay is the fallback).
+    devwin: Option<devwin::DevWindow>,
 }
 
 impl App {
@@ -1549,6 +1555,37 @@ impl App {
         if let Some(d) = self.dev.as_deref_mut() { d.result_msg = Some(msg); d.result_timer = 180; }
     }
 
+    /// One dev-window event (devwin.rs): navigation/filter in the window, actions through the shared path.
+    fn dev_window_event(&mut self, event: WindowEvent) {
+        let Some(dpi) = self.devwin.as_ref().map(|w| w.window.scale_factor() as f32) else { return };
+        match &event {
+            WindowEvent::Resized(s) => {
+                if let (Some(w), Some(g)) = (self.devwin.as_mut(), self.gfx.as_ref()) { w.resize(&g.device, s.width, s.height); }
+                return;
+            }
+            WindowEvent::ScaleFactorChanged { .. } => { if let Some(w) = self.devwin.as_ref() { w.window.request_redraw(); } return; }
+            WindowEvent::RedrawRequested => {
+                if let (Some(w), Some(g), Some(d)) = (self.devwin.as_mut(), self.gfx.as_ref(), self.dev.as_deref()) { w.render(&g.device, &g.queue, &self.scene, d); }
+                return;
+            }
+            _ => {}
+        }
+        let (Some(w), Some(d)) = (self.devwin.as_mut(), self.dev.as_deref_mut()) else { return };
+        let size = w.window.inner_size();
+        let rows = dev::menu_items(d, Some(&self.scene));
+        let req = devwin::handle(&event, d, &mut w.ui, &rows, (size.width as f32, size.height as f32), dpi);
+        match req {
+            devwin::Request::None => {}
+            devwin::Request::Redraw => w.window.request_redraw(),
+            devwin::Request::Hide => w.window.set_visible(false),
+            devwin::Request::Apply(a) => {
+                w.window.request_redraw();
+                self.apply_menu_action(a);
+                if let Some(m) = self.dev.as_deref().and_then(|d| d.result_msg.clone()) { eprintln!("[dev] {m}"); }
+            }
+        }
+    }
+
     /// The N key's noclip toggle, shared with the Toggles page row (fix-ingame-dev-menu).
     fn set_noclip(&mut self, on: bool) {
         self.noclip = on;
@@ -1584,7 +1621,16 @@ impl ApplicationHandler for App {
         surface.configure(&device, &config);
         let depth = gpu::depth_view(&device, config.width, config.height);
         let renderer = gpu::Renderer::new(&device, &queue, config.format, &self.scene, self.notex, self.nofog);
-        self.gfx = Some(Gfx { window, instance, minimized: size.width == 0 || size.height == 0, surface, device, queue, config, depth, renderer });
+        // `--dev`: open the dev window beside the game (devwin.rs).
+        if self.dev.is_some() && self.devwin.is_none() {
+            self.devwin = devwin::DevWindow::new(el, &window, &instance, &adapter, &device, &queue, &self.scene);
+            if self.devwin.is_some() {
+                // The window's tabs are the index: open on Weapons.
+                if let Some(d) = self.dev.as_deref_mut() { if d.page == 0 { d.page = devwin::TAB_PAGES[0]; } }
+                eprintln!("dev window open beside the game (F2 raises it)");
+            }
+        }
+        self.gfx = Some(Gfx { window, instance, minimized: size.width == 0 || size.height == 0, surface, device, queue, config, depth, renderer, adapter });
     }
 
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
@@ -1621,7 +1667,13 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // The dev window's events never reach the game (devwin.rs): its clicks/keys drive the dev menu only, and the
+        // game keeps running.
+        if self.devwin.as_ref().is_some_and(|w| w.id() == id) {
+            self.dev_window_event(event);
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(s) => if let Some(g) = &mut self.gfx {
@@ -1770,7 +1822,7 @@ impl ApplicationHandler for App {
                     (KeyCode::KeyP, ElementState::Pressed) => self.paused = !self.paused,
                     // Dev mode keys (WORKLOG 0081): F1 = AI overlay, F2 = dev menu, F11 = step one tick (when paused).
                     (KeyCode::F1, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { d.overlay = !d.overlay; },
-                    (KeyCode::F2, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { d.menu = !d.menu; if d.menu { self.grab(false); } else if self.scene.sim.is_some() { self.grab(true); } },
+                    (KeyCode::F2, ElementState::Pressed) => if self.devwin.is_some() { self.grab(false); if let Some(w) = self.devwin.as_ref() { w.show(); } } else if let Some(d) = self.dev.as_deref_mut() { d.menu = !d.menu; if d.menu { self.grab(false); } else if self.scene.sim.is_some() { self.grab(true); } },
                     (KeyCode::F11, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.time_scale <= 0.0 { d.step = true; } },
                     (KeyCode::F3, ElementState::Pressed) => self.opts.reinforcements = !self.opts.reinforcements,
                     (KeyCode::KeyF, ElementState::Pressed) => self.opts.firing = !self.opts.firing,
@@ -2146,6 +2198,7 @@ impl ApplicationHandler for App {
                 let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud, movie_frame);
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
+                if let Some(w) = self.devwin.as_mut() { w.tick(); }
                 if let Some(fps) = self.fps_cap.filter(|f| *f > 0.0) {
                     let target = std::time::Duration::from_secs_f32(1.0 / fps);
                     let el = self.frame_start.elapsed();
@@ -2316,7 +2369,7 @@ pub fn run() -> Result<()> {
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
     let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
-        movie: None, };
+        movie: None, devwin: None, };
     if dev {
         // fix-ingame-dev-menu: the browser panel is no longer part of `--dev` — the in-window F2
         // menu carries ALL of its functions now (through the same `panel::apply` command layer).

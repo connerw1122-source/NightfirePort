@@ -112,7 +112,7 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
 "#;
 
 /// The overlay (crosshair, HUD): screen-space triangles in normalised device coordinates, alpha-blended, no depth.
-const HUD_SHADER: &str = r#"
+pub(crate) const HUD_SHADER: &str = r#"
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 struct HO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @location(1) c: vec4<f32> };
