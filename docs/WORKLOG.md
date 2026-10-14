@@ -11116,3 +11116,18 @@ Bond. Port what differs, citing DroneWeap_*/Drone_Fire*/Player_Hurt. Tests:
 3 weapons x 3 difficulties, hit rate over 100 shots at 10 units and damage per
 hit equal the game's model. Files: crates/nf-game/src/{drone,damage}.rs.
 
+- (15:19-17:00 UTC) Resumed on the merged master (3019d54; the prior session's uncommitted WIP
+  committed first as a7b0999). Disassembled the whole fire chain with mipsdis (DoBulletAccuracy
+  0x179740, NextBulletTime 0x179d40, BurstDelay 0x179ba8, Drone_ModBulletDamage 0x139f50,
+  Player_HandlePain 0x1902c8), read the tuning statics from ACTION.ELF + the three ee_start
+  snapshots ([L]: per-level accuracy 0x30caf0-8, Plr_DMod 0x30cc50-8, TooClose 0x30cb14=3.0 live,
+  difficulty at GameState+0x28 = 1). Fixed: the interval 60-clamp (weapons 6/10/0x0e-0x10), the
+  burst sizing draws, the BOT_getAggressionMul burst cut (12→3), the 4 missing per-shot RNG draws
+  (light orientation ×3 + sound pitch), the backshot ×2 (weapon 0x12, mode ∉ {2,0x19}, level
+  ≠ 0x700001b, |angle| < 90°, 0x30cb20), the voice-set-0xC zero-damage gate, the 0x63-0x66
+  no-modifier gate, the damage_factor difficulty-0 arm, and the 0x30cb0c→0x30cb1c citation.
+  Verified numbers: 0x0e 40/100 vs model 37.5 with every hit exactly 2.5; 0x12 43/100 vs 37.5 with
+  exactly 0.75. Test: crates/nf-view/tests/fix_guard_weapons_live.rs (3×3 matrix + TooClose sister
+  + the interval/burst fail-first). Remaining: the matrix's later phases trip the harness
+  engagement budget (some guards never engage a parked Bond); the suite restart couldn't fit the
+  window. Report: docs/reports/fix-guard-weapons.md.

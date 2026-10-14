@@ -70,7 +70,7 @@ fn collect_shots(scene: &mut nf_view::scene::Scene, weapon: u32, wanted: u32, wa
     let _ = warmup_shots;
     let mut hit_events: Vec<(u32, f32)> = Vec::new(); // (bullet-arrival frame, health delta) for this guard
     let start_frame = scene.sim.as_ref().unwrap().drones.frame;
-    let cap = 90000u32;
+    let cap = 160000u32;
     loop {
         let sim = scene.sim.as_mut().unwrap();
         sim.step_bond(Default::default(), false, false, false);
