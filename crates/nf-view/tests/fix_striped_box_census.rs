@@ -96,6 +96,28 @@ fn marker_draws(sc: &Scene, level: &Level) -> (usize, usize, Vec<String>) {
     (no_draw_bit, striped, spots)
 }
 
+/// The game-drawn exception the census must allow for: LOAD_LEVEL triggers (kind 0xe8).
+/// `Trigger_LoadLevelCreate` 0x1b2950 forces type 10 and `Trigger_Create` 0x1b1720 clears the
+/// no-draw bit for exactly type 10 (0x1b18c8-d4 `obj+0xF0 &= 0xffffffef`) — the game draws these
+/// meshes whatever their glist flags. Count of 0xe8 placements resolving to gfx-true 0x10-flagged
+/// objects = the only no-draw-bit draws a faithful port may carry.
+fn game_drawn_0x10_exceptions(level: &Level) -> usize {
+    let mm = level.main_map();
+    let mut n = 0;
+    for (mi, m) in level.maps.iter().enumerate() {
+        for p in m.placements.iter() {
+            if (p.flags & 0xff) != 0xe8 { continue; }
+            let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                else if (p.index as usize) < m.objects.len() { Some((mi, p.index as usize)) } else { None };
+            let Some((tmap, tobj)) = target else { continue };
+            let o = &level.maps[tmap].objects[tobj];
+            if o.flags & 0x10 != 0 && o.gfx.leaves.iter().any(|l| !l.batches.is_empty()) { n += 1; }
+        }
+    }
+    let _ = mm;
+    n
+}
+
 /// The user's symptom: on 07000005 the port draws the striped marker brushes (the trench-right box
 /// is "WallHug_Blocker1_Short", kind 0x3b, at the placement (24.75, 32.17, 65.60) right of the
 /// camera axis; "TouchPlate_GrappleLedge", kind 0xfa, world-baked at (−18.46, 37.43, −72.49)).
@@ -109,6 +131,28 @@ fn striped_marker_brushes_not_drawn_on_07000005() {
     for s in spots.iter().take(12) { println!("marker draw: {s}"); }
     assert_eq!(no_draw_bit, 0, "07000005 draws World objects whose glist flags carry the game's no-draw bit 0x10 (View_AddObjects 0x1e62d8's 0x8010 gate)");
     assert_eq!(striped, 0, "07000005 draws World objects textured with the red/yellow diagonal marker texture");
+    // Sister (over-hide): the 07000005 castle gate door (Door_Gate8, an 0xE8 LOAD_LEVEL placement
+    // whose object carries no 0x10) must still draw — a World material within its extent.
+    let mm = level.main_map().expect("main map");
+    let gate = level.maps[mm].placements.iter().enumerate()
+        .filter(|(_, p)| (p.flags & 0xff) == 0xe8)
+        .find_map(|(_, p)| {
+            let t = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                else if (p.index as usize) < level.maps[mm].objects.len() { Some((mm, p.index as usize)) } else { None };
+            t.map(|(tm, to)| (p, tm, to)).filter(|(_, tm, to)| level.maps[*tm].objects[*to].name == "Door_Gate8")
+        });
+    if let Some((p, tm, to)) = gate {
+        let o = &level.maps[tm].objects[to];
+        assert_eq!(o.flags & 0x10, 0, "Door_Gate8 must not carry the no-draw bit");
+        let approx = [p.translation[0] + o.centre[0], p.translation[1] + o.centre[1], p.translation[2] + o.centre[2]];
+        let near = sc.materials.iter().any(|m| m.layer == Layer::World
+            && (m.centre[0] - approx[0]).abs() < o.radius + 2.0
+            && (m.centre[1] - approx[1]).abs() < o.radius + 2.0
+            && (m.centre[2] - approx[2]).abs() < o.radius + 2.0);
+        assert!(near, "the castle gate Door_Gate8 must still draw post-fix (centre ~{approx:?})");
+    } else {
+        panic!("07000005 must carry the Door_Gate8 LOAD_LEVEL placement (the castle gate)");
+    }
     // Sister: the grapple-point pulleys are REAL draws (class-0x51 objects hold the graple_pulley
     // glist, +0xF0 = 0x4000, +0xF8 = 0x1f [L ee_start_05.bin 0x16d80a0/0x16d81c0]; the user's
     // playtest sees them). The new gate must not eat them.
@@ -185,8 +229,12 @@ fn census_no_marker_brush_drawn_on_any_level() {
         checked += 1;
         let sc = match nf_view::load(&iso, a, false) { Ok(sc) => sc, Err(e) => { failures.push(format!("{a}: load failed: {e}")); continue; } };
         let (no_draw_bit, striped, spots) = marker_draws(&sc, &level);
-        if no_draw_bit != 0 || striped != 0 {
-            failures.push(format!("{a}: {no_draw_bit} no-draw-bit draws, {striped} striped-texture draws (first: {:?})", spots.first()));
+        // The equality pins BOTH directions: no 0x10 object draws except the game-drawn LOAD_LEVEL
+        // meshes, and every one of THOSE still draws (an over-hide gate would drop the count below
+        // the expectation — the audit's Hole A).
+        let expect_0x10 = game_drawn_0x10_exceptions(&level);
+        if no_draw_bit != expect_0x10 || striped != 0 {
+            failures.push(format!("{a}: {no_draw_bit} no-draw-bit draws (expect {expect_0x10} = the game-drawn 0xe8 LOAD_LEVEL meshes), {striped} striped-texture draws (first: {:?})", spots.first()));
         }
         if has_marker_texture {
             println!("{a}: marker texture present, {no_draw_bit} no-draw-bit draws, {striped} striped draws post-fix");
