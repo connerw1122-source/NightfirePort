@@ -5030,6 +5030,10 @@ pub struct Drones {
     /// fix-death-restart: this tick's action 25 (✕ / Start, player 0 [L input.md style 0]) —
     /// `Sim::step_bond`'s fire button, the death sequence's skip gate [M 0x190bb0:30].
     pub bond_fire: bool,
+    /// fix-gadgets-live: the AIMS-20's idle ticks — the game's `BLData+0x93a` (`Player_SetWeaponAnimObj`
+    /// 0x1a2e38:41-57 increments it while the view state is idle and resets on any anim/fire). Gates the
+    /// view model's side lights (blink > 15, off > 45 [M Player_WeaponFiring 0x1a5460:264, 348]).
+    pub aims_idle: u16,
     /// fix-death-restart: the pre-menu auto-restart. While 180-fix-menus has no drawing, the port
     /// answers the 0x40000042 menu with Restart immediately (`fail_choose_restart`); the flag turns
     /// that off so the view can answer instead.
@@ -5212,7 +5216,7 @@ impl Drones {
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
             // — the shared-constructor collisions, merge lesson 4).
             letterbox: false, view_fade: None, script_msgs: Vec::new(),
-            death: Default::default(), bond_fire: false, auto_restart: true, level_exit_cold: false,
+            death: Default::default(), bond_fire: false, aims_idle: 0, auto_restart: true, level_exit_cold: false,
             // fix-restart-target: the fail-menu Restart's warm arm + the current level (GameState+0xC).
             level_exit_restart: false,
             pending_blasts: Vec::new(),
