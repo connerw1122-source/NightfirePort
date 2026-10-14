@@ -2157,10 +2157,25 @@ impl Sim {
         if let Some(w) = self.weapons.records.get(self.gun.weapon as usize) {
             let scripts = &self.scripts;
             let params = nf_game::gun::GunParams::from_record(w, self.drones.inventory.fire_mode.get(self.gun.weapon as usize).copied().unwrap_or(0) as usize, |h| scripts.get(&h).map(|s| s.length as u32));
-            // Auto-aim (on by default in the game's options) only outside aim mode; in aim mode the offset eases back.
-            // Auto-aim off (or aim mode): no target; the offsets still halve every tick (`Player_AutoAim` 0x1a7c98), so
-            // the crosshair returns to the centre instead of staying where the last lock left it.
-            let dir = if self.auto_aim && !aiming { self.drones.auto_aim(&d, camera, look, self.gun.weapon) } else {
+            // Auto-aim (on by default in the game's options) scans only outside aim mode
+            // (`Player_AutoAim` 0x1a7c98 gates the `Check_AutoAim` scan on the aiming bit, which the
+            // game sets only after the aim-raise anim finishes — `Player_SetWeaponAnimObj` case 0xf).
+            // While aiming (0x1a7c98's aim branch): no new scan, the lock pointer SURVIVES, and the
+            // assist offsets ease toward the manual offsets (the cursor) at 0.5/tick — and the fired
+            // bullet still consumes them through `Player_GetAimingPoint` (0x1a4a98), so the residual
+            // assist of a target locked before the raise carries into the first aim-mode shots.
+            // fix-guard-misc2: the port dropped the lock and the offsets entirely on entering aim
+            // mode, so an assist acquired while hip-firing never reached an aim-mode bullet.
+            let dir = if self.auto_aim && !aiming { self.drones.auto_aim(&d, camera, look, self.gun.weapon) } else if aiming {
+                // The cursor is screen-space (cross units); the offsets are object-frame angles
+                // (a larger yaw turns LEFT, so x flips — the same flip `crosshair()` documents).
+                let (ox, oy) = (-self.cursor[0] * 0.76966, self.cursor[1] * 0.57724);
+                let off = self.drones.aim_offset;
+                self.drones.aim_offset = [off[0] + (ox - off[0]) * 0.5, off[1] + (oy - off[1]) * 0.5];
+                let (y0, p0) = (look[0].atan2(look[2]), look[1].clamp(-1.0, 1.0).asin());
+                let (y2, p2) = (y0 + self.drones.aim_offset[0], p0 + self.drones.aim_offset[1]);
+                [p2.cos() * y2.sin(), p2.sin(), p2.cos() * y2.cos()]
+            } else {
                 self.drones.aim_target = None;
                 self.drones.aim_offset = self.drones.aim_offset.map(|v| v * 0.5);
                 aim

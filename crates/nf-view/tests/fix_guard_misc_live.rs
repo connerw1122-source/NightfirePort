@@ -84,7 +84,14 @@ fn the_06_guards_open_the_doors_on_their_routes() {
         }
     }
     eprintln!("[door] doors that opened by themselves: {opened:?}");
-    assert!(!opened.is_empty(), "no door opened without Bond's use key — the guards never open their route's doors");
+    // fix-guard-misc2: the game-true 06 idle contract. The level's guards all stand at POSTS —
+    // `route: None`, state 1/WaitSwitch (the census above) — and no route means no followed-route
+    // dispatch, so idle 06 never opens a door (in the game either; door-flagged pairs exist on
+    // paths 3 and 7 but only a DISPATCHED guard walks them — see
+    // `the_06_guard_driven_through_a_door_pair_opens_it_and_crosses`, which drives the 0x63 path
+    // through the pair and now opens + crosses). What idle must NOT do is drift: no guard may
+    // wander into DSTATE_OpenDoor (0x81) and no door may open with nobody driving it.
+    assert!(opened.is_empty(), "doors opened with nobody driving them (idle 06 must hold its posts): {opened:?}");
 }
 
 /// Diagnostic probe: the rooftop sniper's hit boxes, palette and world LOS from a few spots.
@@ -296,11 +303,17 @@ fn the_0c_sniper_takes_damage_when_shot() {
     {
         let sim = scene.sim.as_mut().unwrap();
         sim.bond = nf_game::player::Bond::stand_at(&sim.world, v, (chest[2] - v[2]).atan2(chest[0] - v[0]));
-        // The chest pitch, set once (the stand_at setup) — the look loop only holds it.
+        // The chest pitch from the REAL eye (`pos + eye − crouch_drop` — fix-guard-misc2: the old
+        // setup used `v[1] + 1.5`, which is NOT where `stand_at` puts the eye: floor_below drops to
+        // 13.1 + 1.1 → pos 14.2, eye +1.5 → 15.7, 1.0 ABOVE the assumed 14.7 — the setup pitch
+        // aimed 0.187 instead of 0.162, i.e. 0.4 ABOVE the head box, and every tap sailed over him).
         // bond.pitch is NORMALISED ±1 (the walker divides atan by FRAC_PI_2).
-        let dy = chest[1] - (v[1] + 1.5);
+        let eye_y = sim.bond.pos[1] + sim.bond.eye - sim.bond.crouch_drop;
+        let dy = chest[1] - eye_y;
         let dxz = ((chest[0] - v[0]).powi(2) + (chest[2] - v[2]).powi(2)).sqrt();
         sim.bond.pitch = (dy / dxz).atan() / std::f32::consts::FRAC_PI_2;
+        // The game's shipped option default (the options menu's auto-aim ON; T toggles in nf-view).
+        sim.auto_aim = true;
     }
     for _ in 0..60 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
     // Aim at the sniper's chest (AIM held) and fire in taps through the real trigger.
@@ -317,8 +330,28 @@ fn the_0c_sniper_takes_damage_when_shot() {
         let dxz = ((s[0]-bp[0]).powi(2) + (s[2]-bp[2]).powi(2)).sqrt().max(0.5);
         let err = walker::wrap_pi(desired - sim.bond.yaw);
         let perr = (dy / dxz).atan() / std::f32::consts::FRAC_PI_2 - sim.bond.pitch;
-        let input = nf_game::player::Input { turn: err.clamp(-0.05, 0.05), aiming: true, ..Default::default() };
-        let on = err.abs() < 0.03 && perr.abs() < 0.02; // pitch is setup-fixed; ±0.02 ≈ ±0.03 rad
+        // The player's stick drives the RAY, not the body: the shot ray's yaw is `yaw − tx`
+        // (d = forward + tx·right rotates the ray by −tx horizontally) and its pitch is
+        // `pitch + ty` — so the turn stick feeds (err + tx) and the look stick feeds (perr − ty).
+        // The aim-mode window (±0.296/±0.4) carries the correction into the free-aim cursor and
+        // only the overflow moves the body ([M Player_Aiming 0x1a1d28]).
+        let (tx0, ty0) = (0.76966 * sim.cross[0], 0.57724 * sim.cross[1]);
+        let input = nf_game::player::Input { turn: (err + tx0).clamp(-0.05, 0.05), look: (perr - ty0).clamp(-0.05, 0.05), aiming: true, ..Default::default() };
+        // Fire when the SHOT RAY (the crosshair ray the fire path uses — forward + 0.76966·cx·right
+        // + 0.57724·cy·up, the port's `aim` at scene.rs) sits on the live chest: the torso box is
+        // ±0.25 y at ≥23 units ⇒ the window is ±0.011 rad.
+        let (yaw, pit) = (sim.bond.yaw, sim.bond.pitch * std::f32::consts::FRAC_PI_2);
+        let (sy, cy, sp, cp) = (yaw.sin(), yaw.cos(), pit.sin(), pit.cos());
+        let (tx, ty) = (0.76966 * sim.cross[0], 0.57724 * sim.cross[1]);
+        let d = [cp * sy + tx * (-cy) + ty * (-sp * sy), sp + ty * cp, cp * cy + tx * sy + ty * (-sp * cy)];
+        let dl = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        let eye = [bp[0], bp[1] + sim.bond.eye - sim.bond.crouch_drop, bp[2]];
+        let to = [s[0] - eye[0], (s[1] + 0.3) - eye[1], s[2] - eye[2]];
+        let tl = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt().max(0.5);
+        let cosang = (d[0] * to[0] + d[1] * to[1] + d[2] * to[2]) / (dl * tl);
+        let on = cosang > 0.012f32.cos(); // 0.012 rad ≈ the torso box's half-height at 23 units — the
+        // body yaw may sit up to a window (±0.296) short of the target while the free-aim cursor
+        // carries the correction: the RAY is what the fire path uses, so the RAY is the gate.
         let trigger = on && t % 20 == 0;
         let reload = sim.gun.clip == 0;
         drop(sim);
@@ -331,4 +364,103 @@ fn the_0c_sniper_takes_damage_when_shot() {
     }
     eprintln!("[sniper] final: sniper #{si} health {hp} hits_taken {}", scene.sim.as_ref().unwrap().drones.list[si].hits_taken);
     assert!(hp < 10.0, "the 0c rooftop sniper took no damage (health {hp}, {hits} damage ticks from the clear-LOS vantage)");
+    // Sister: the damage rode the real msg-8 bullet path (`Drone_BulletHit` 0x13a9f8 →
+    // `NDrone2_HitDamage` 0x145558) — the hit counter +0x1D8 ticked, not an environment kill.
+    assert!(scene.sim.as_ref().unwrap().drones.list[si].hits_taken >= 1, "health dropped without a bullet-hit counter tick");
+}
+
+/// fix-guard-misc2: a 06 guard DRIVEN along his route through a door-flagged nav-node pair must
+/// open the door himself and cross, without Bond's use key. The game's chain: the followed route
+/// reaches the pair (`LinkCreep_Handler` 0x15a2c8 → `NDrone2_ReachedDestNode` 0x153358's flag-0x2
+/// case) → DSTATE_OpenDoor 0x81 → `NDrone2_OpenDoor` 0x14aa38 → `Door_Activate` 0x135be0 → wait
+/// for state 4 → the saved return state resumes. Drives the game's GoToGoalPosition (0x63) input
+/// path — the port's route for a dispatched route-less guard — at the pair whose nav path carries
+/// a live guard (the census found path 7 n0–n1 → door #1 and path 3 n11–n14 → door #4).
+#[test]
+fn the_06_guard_driven_through_a_door_pair_opens_it_and_crosses() {
+    let mut scene = nf_view::load(&iso(), "07000006.bin", false).expect("load 07000006");
+    settle(&mut scene, 300);
+    // The door-flagged pairs that sit at a real door (nearest door within 4.0 of the pair's middle).
+    let mut sim = scene.sim.as_mut().unwrap();
+    let mut pairs: Vec<(usize, usize, usize, [f32; 3], usize)> = Vec::new(); // (path, a, b, mid, door)
+    for (pi, p) in sim.nav.paths.iter().enumerate() {
+        for (a, na) in p.nodes.iter().enumerate() {
+            if na.flags & 2 == 0 { continue; }
+            for (b, nb) in p.nodes.iter().enumerate().skip(a + 1) {
+                if nb.flags & 2 == 0 { continue; }
+                let mid = [(na.pos[0] + nb.pos[0]) * 0.5, na.pos[1], (na.pos[2] + nb.pos[2]) * 0.5];
+                if let Some((di, _)) = sim.drones.doors.list.iter().enumerate()
+                    .map(|(i, d)| (i, ((d.pos[0] - mid[0]).powi(2) + (d.pos[2] - mid[2]).powi(2)).sqrt()))
+                    .filter(|(_, dist)| *dist < 4.0).min_by(|x, y| x.1.total_cmp(&y.1)) {
+                    pairs.push((pi, a, b, mid, di));
+                }
+            }
+        }
+    }
+    assert!(!pairs.is_empty(), "07000006 lost its door-flagged nav node pairs (the census had path 7 n0–n1 and path 3 n11–n14)");
+    for (pi, a, b, mid, di) in &pairs {
+        eprintln!("[drive] pair path {pi} n{a}-n{b} mid ({:.1},{:.1},{:.1}) → door #{di} ({:.1},{:.1},{:.1})",
+            mid[0], mid[1], mid[2], sim.drones.doors.list[*di].pos[0], sim.drones.doors.list[*di].pos[1], sim.drones.doors.list[*di].pos[2]);
+    }
+    // A live guard whose nav path region contains one of the pairs, closest to it.
+    let mut pick: Option<(usize, usize, [f32; 3], f32)> = None; // (guard, pair idx, beyond pos, dist)
+    for (gi, dr) in sim.drones.list.iter().enumerate() {
+        if !dr.present || dr.corpse || dr.health <= 0.0 { continue; }
+        let Some(path) = sim.nav.nav_path_for(dr.pos) else { continue };
+        for (k, (pi, a, b, _, _)) in pairs.iter().enumerate() {
+            if path != *pi { continue; }
+            let (na, nb) = (&sim.nav.paths[*pi].nodes[*a].pos, &sim.nav.paths[*pi].nodes[*b].pos);
+            // The goal sits 2.5 beyond the pair node FARTHER from the guard — i.e. on the far side
+            // of the doorway from wherever the guard stands, so the route must cross the pair.
+            let da = (dr.pos[0] - na[0]).powi(2) + (dr.pos[2] - na[2]).powi(2);
+            let db = (dr.pos[0] - nb[0]).powi(2) + (dr.pos[2] - nb[2]).powi(2);
+            let (near, far) = if da <= db { (na, nb) } else { (nb, na) };
+            let dir = [far[0] - near[0], far[1] - near[1], far[2] - near[2]];
+            let l = (dir[0] * dir[0] + dir[2] * dir[2]).sqrt().max(1e-4);
+            let beyond = [far[0] + dir[0] / l * 2.5, far[1], far[2] + dir[2] / l * 2.5];
+            let dist = da.sqrt().min(db.sqrt());
+            if pick.map_or(true, |(_, _, _, d0)| dist < d0) { pick = Some((gi, k, beyond, dist)); }
+        }
+    }
+    let (gi, k, beyond, gdist) = pick.unwrap_or_else(|| panic!("no live guard shares a nav path with a door-flagged pair: {:?}",
+        sim.drones.list.iter().filter(|d| d.present && !d.corpse).map(|d| (d.pos[0], d.pos[2])).collect::<Vec<_>>()));
+    let (pi, a, b, _, di) = pairs[k];
+    eprintln!("[drive] driving guard #{gi} (nav path {pi}, {:.1} from n{a}) to ({:.1},{:.1},{:.1}) beyond door #{di}",
+        gdist, beyond[0], beyond[1], beyond[2]);
+    // The drive: goal beyond the door, GoToGoalPosition (0x63) entered through the real dispatch.
+    {
+        let drones = &mut sim.drones;
+        let d = nf_game::drone::Data {
+            tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons,
+            world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins,
+            skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
+            hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
+            surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: drones.difficulty,
+        };
+        let dr = &mut drones.list[gi];
+        dr.goal = Some(beyond);
+        dr.next_state = Some(nf_game::drone::state::GO_TO_GOAL);
+        dr.send(&d, &mut drones.rng, drones.frame, 0);
+        assert_eq!(drones.list[gi].state, nf_game::drone::state::GO_TO_GOAL, "the 0x63 entry did not happen");
+    }
+    // Tick: the guard must enter OPEN_DOOR (0x81), the door must reach OPEN (4), and the guard
+    // must cross to the beyond point — all with Bond passive (no use key anywhere in this test).
+    let (mut saw_open_door, mut saw_door_open, mut crossed) = (None, None, false);
+    for t in 0..3600u32 {
+        sim.step_bond(Default::default(), false, false, false);
+        let (st, hp) = (sim.drones.list[gi].state, sim.drones.list[gi].pos);
+        if saw_open_door.is_none() && st == 0x81 { saw_open_door = Some(t); eprintln!("[drive] +{t}: guard entered OPEN_DOOR (0x81), hit_door {:?}", sim.drones.list[gi].hit_door); }
+        if saw_door_open.is_none() && sim.drones.doors.list[di].state == nf_game::door::OPEN {
+            saw_door_open = Some(t);
+            eprintln!("[drive] +{t}: door #{di} OPENED by the guard (bond never pressed use)");
+        }
+        if (hp[0] - beyond[0]).powi(2) + (hp[2] - beyond[2]).powi(2) < 2.0_f32.powi(2) { crossed = true; }
+        if crossed && saw_door_open.is_some() { break; }
+        if t % 600 == 0 { eprintln!("[drive] +{t}: guard state {st:#x} at ({:.1},{:.1},{:.1}) door {} state {:#x}",
+            hp[0], hp[1], hp[2], di, sim.drones.doors.list[di].state); }
+    }
+    eprintln!("[drive] result: OPEN_DOOR at {saw_open_door:?}, door opened at {saw_door_open:?}, crossed {crossed}");
+    assert!(saw_open_door.is_some(), "the driven guard never entered DSTATE_OpenDoor (0x81) — the dispatch never fired");
+    assert!(saw_door_open.is_some(), "the driven guard entered OPEN_DOOR but the door never opened");
+    assert!(crossed, "the door opened but the driven guard never crossed to the far side");
 }
