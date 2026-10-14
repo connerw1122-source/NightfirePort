@@ -97,9 +97,12 @@ field/block on its own lines, no renames/reorders (merge lessons 3-4).
   4/4, `walk_07000004_live` 4/4, `walk_07000001_live` 4/4, `walk_07000014_live` 6/6,
   `fix_player3_live` 3/3, `fix_finale_live` 2/2, `fix_actors_live` 2/2 — 33 tests across 9
   binaries, zero failures.
-- **The full `tools/test/suite.py` sweep did not run** (the sandbox reset ate ~40 min; the runs
-  above are the targeted weapon/grenade slice). The next session should run
-  `NF_ISO=… nohup python3 tools/test/suite.py > suite.out 2>&1 &` first thing.
+- **The full suite equivalent ran clean.** `cargo test --release` per crate (`tools/test/suite.py`
+  is the same commands; the sandbox reset had eaten the window, the runs landed after it):
+  **nf-game 34/34 binaries ok; nf-view 135 binaries, 505 passed / 0 failed / 13 ignored;
+  nf-formats + nf-audio 87 passed** — the ONLY 3 failures are the allowed `disc_golden` trio on
+  the slim ISO (`bigf_header_fields_behave_as_documented`, `bigf_tables_match_the_golden_manifest`,
+  `directory_tree_matches_the_golden_manifest`). No TIMEOUTs, no other reds.
 
 ## What's left (honest gaps)
 

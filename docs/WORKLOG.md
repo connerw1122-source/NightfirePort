@@ -9817,3 +9817,7 @@ Task 100f addendum: the build finished — fix_weapon_fire_modes_live 4/4 (the M
 pair through the real B press and fire path; the Sentinel cam ride/steer/restore vs the unguided
 sister), nf-game 34/34 binaries, and 33 tests across 9 neighbour weapon/grenade binaries green.
 The full suite.py sweep is the next session's first job.
+
+Task 100f final: the FULL suite equivalent is green — nf-game 34/34 binaries, nf-view 135 binaries
+505 passed / 0 failed / 13 ignored, nf-formats+nf-audio 87 passed; the only 3 failures are the
+allowed disc_golden trio on the slim ISO. Done.
