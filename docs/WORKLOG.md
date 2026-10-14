@@ -11135,3 +11135,9 @@ draws added; no wall-clock in Sim.
   73 tests, 0 failures. The four-crate sweep did not fit the window (background jobs die between tool calls
   in this sandbox — sessions 4 and 5). Report: docs/reports/fix-hud-radar.md (live checks inside: the SP
   no-blip confirmation, the MP ring position/size/blip reading, the pending 100n 007 item).
+
+## fix-oddjob-hat — s/fix-oddjob-hat (task 104e, started 17:36 UTC)
+- Symptom (playtest 1013-2313): Oddjob's hat should be a one-shot kill but acts like a grenade.
+- Plan: find the hat's weapon record (id, +0x6C/+0x70 flags, damage, speed, return-to-thrower) and the
+  projectile path (Bullet_init, Bullet_CollisionHandler 0x12ce80, hat-specific update); port thrown/flies/
+  one-shot-kill/no-blast; NF_ISO failing-first test + sister assertions. Evidence + report to follow.
