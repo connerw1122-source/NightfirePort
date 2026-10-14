@@ -47,7 +47,7 @@ The admission gates all pass for the pulley, live [L ee_start_05.bin, file offse
   object flags 0x4000 == the live obj+0xF0.
 
 **Latch state**: nothing to model. Class 0x51 has no `control_funcs` row (all zero [L
-0x26fa94..0x26fc5c, docs/atlas/wire-grapple.md]) and no grapple-path writer touches the object's
+0x26fa94..0x26fc68: rows 0x2b..0x50 span 0x26fa94..0x26fc5c; row 0x51 is 0x26fc5c..0x26fc68, docs/atlas/wire-grapple.md]) and no grapple-path writer touches the object's
 gfx — `Player_SSGrapple` 0x192860 / `Player_SetGrapplePoint` 0x195da0 / `Bullet_Delete` 0x12e660
 only read obj+0x30/+0x80 and store BLData hooks. The pulley is a static mesh at the placement
 transform, latched or not.
@@ -94,11 +94,26 @@ Failing-first: a scratch probe (`probe_grapple_symptom.rs`, deleted) on the pre-
   `models_misc_live` 10/10, `fix_ladder2_live` 4/4, `fix_objects_live` 6/6 (the neighbours that
   assert scene counts/misc census).
 - Baseline full suite on the pre-fix tree: **952 passed, 3 failed (the allowed disc_golden
-  slim-ISO set), 29 ignored**. Final suite on the master-merged tree: see the WORKLOG tail line
-  (run in the background; result recorded before the finish push).
+  slim-ISO set), 29 ignored**. Final suite on the master-merged tree (origin/master 966671a,
+  223 binaries): **959 passed, 3 failed, 29 ignored** — the 3 FAILED lines are exactly the
+  allowed disc_golden trio.
 - No GPU in this sandbox (wgpu: "No suitable graphics adapter found") — the `--shot` renders are
   the main agent's, commands below. The headless drawn-set proof is the 212-vertex box assertion
   plus the instance counter.
+- Independent audit (subagent, 2026-10-14): PASS. It re-verified the decompile claims and the [L]
+  walk (both 0x51 objects, glist 0x170d6a0, boxes 0x9b3260 vs the creep walls' 0x0), confirmed
+  `add_instance` is RNG-free and order-deterministic, that the scene.rs diff removes only the stale
+  comment, and that no other test asserts total instance/vertex counts. It strengthened the
+  per-level claim: **every 0x3A placement on all 16 levels** carries neither 0x8000/0x2000 (the
+  dynamic/static skip bits) nor glist bits 0x8/0x4 (the anim/jitter matrix paths), so the
+  static-at-placement draw is the game's draw everywhere; and every grapple object's flags lack the
+  0x800 dim bit (0700000a's SkyBridge point carries 0x84000 — bit 0x80000 is only the
+  viewer-proximity tweak gate in `View_SetupRenderModes_Tweak` 0x1e5888, active within 4 units
+  behind a global gate, which the port's other drawn objects treat the same way).
+- Citation fix from the audit: the control_funcs zero-row proof for class 0x51 is
+  [L 0x26fa94..0x26fc68] — rows 0x2b..0x50 span 0x26fa94..0x26fc5c and row 0x51 is
+  0x26fc5c..0x26fc68 (the shorter range, inherited from docs/atlas/wire-grapple.md:7, was one row
+  short; that doc still carries the old range).
 
 ## Shared-file hooks (the driver's list: drone.rs, scene.rs, player.rs, lib.rs)
 
@@ -124,7 +139,7 @@ PCSX2 (07000005):
    pulley (~0.34 × 1.18 × 0.37 units) at (13.75, 32.29, 57.30), drawn once, no double mesh.
 2. Poke/verify no hidden state: fire the Q-Claw (`--give 0x50` draws it; 05 owns it at start) at
    #282 and latch — the pulley must NOT move or change mesh (class 0x51 has no update function
-   [L 0x26fa94..0x26fc5c]); the rope is the known fix-qclaw open item, out of scope here.
+   [L 0x26fa94..0x26fc68: rows 0x2b..0x50 span 0x26fa94..0x26fc5c; row 0x51 is 0x26fc5c..0x26fc68]); the rope is the known fix-qclaw open item, out of scope here.
 3. Second point on 05 at `--bond -3.4,41.5,-69.0,-2.6,-0.3` (near placement #281 at
    (−3.40, 42.94, −71.77), yaw π): the same pulley visible on its wall bracket.
 4. The creep walls must still be invisible at the wall-shimmy spots (fix-gadgets2's behaviour
