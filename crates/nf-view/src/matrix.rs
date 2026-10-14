@@ -132,6 +132,11 @@ pub struct Cell {
     /// Ticks from the first grenade spawn to the first explosion (0 = no explosion seen). The
     /// impact records blast on contact (a few ticks of flight), the fused ones at 210/300/420.
     pub expl_gap: u32,
+    /// The stunner's no-target arm ran (`Sim::stunner_target == Some(false)` [M
+    /// Player_WeaponInitBullet 0x1a4bf0:169-200]): the aim ray met no live guard within
+    /// weapon_data+0x1c, so the game itself spawns no shot and draws no taser beam — the fire
+    /// path is working; only the muzzle light and the sound show.
+    pub no_target: bool,
     /// Why a red cell is red (the missing asset, from the level archive's own hash set).
     pub reason: Option<String>,
     /// The cell panicked or hard-failed (a panic is a bug per the task).
@@ -156,12 +161,27 @@ pub struct Cell {
 
 impl Cell {
     /// Anything observable from the trigger during the fire phase.
-    fn fire_events(&self) -> u32 { self.shots + self.bullets + self.impacts + self.explosions + self.grenades + self.beam as u32 }
+    /// Anything observable from the trigger during the fire phase (pub for the matrix test).
+    pub fn fire_events(&self) -> u32 { self.shots + self.bullets + self.impacts + self.explosions + self.grenades + self.beam as u32 }
 
     /// The cell's mark: `-` clean; a red letter for a real failure; a dim letter for the by-design
     ////informational cases (the watch gadgets' quiet fire, a record without a first-person model).
     pub fn mark(&self) -> char {
+        // The gadget cells (0x4A..0x5E) run their own chain: the fire checks are REAL now (the
+        // beam / the bolt / the thrown camera / the sound — the task's four), and a level that
+        // does not carry the id is the dim `n` (the game's cycle cannot reach it either).
+        let gadget = (0x4a..=0x5e).contains(&self.weapon);
         if self.error.is_some() { '!' }
+        else if gadget {
+            if !self.give_ok { 'n' }
+            else if !self.view_model { 'I' }
+            else if !self.draw_ok { 'D' }
+            else if self.fire_events() == 0 && !self.no_target { 'F' }
+            else if self.sounds.is_empty() && self.started.is_empty() { 'S' }
+            else if !self.away_ok { 'W' }
+            else if !self.back_ok { 'B' }
+            else { '-' }
+        }
         else if !self.give_ok && !self.no_fp_record { '.' }
         else if !self.give_ok && self.no_fp_record { 'n' }
         else if !self.view_model { 'I' }
@@ -477,6 +497,9 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
         c.mode_count = w[0x2e];
     }
     c.mode_tried = c.twin != 0 || c.mode_count > 1;
+    // The stale fire_busy script (see unstick_view_script): it blocks the switch/ cycle block for
+    // the GUN cells too — the D-block from 0x2e on in the first sweep was this, not the weapons.
+    unstick_view_script(scene);
     c.mode_label_base = {
         let sim = scene.sim.as_ref().unwrap();
         let m = sim.drones.inventory.fire_mode.get(id as usize).copied().unwrap_or(0);
@@ -496,21 +519,39 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
         if sim.gun.clip == 0 { sim.gun.clip = cs as u32; }
     }
 
-    // 1. Give (the `--give` path: panel::apply's "weapon" command — equip + 3 clips; a partial
-    //    first clip so the reload has work). The game refuses an already-owned weapon when the
-    //    shared ammo bank is at cap (`equip_weapon`'s owned branch — `Player_EquipWeapon`
-    //    0x1a8a58); the cell records the refusal (the reason names it) and stops: proceeding
-    //    without fresh ammo turns the cell into an NPC-interference magnet (the guards reach the
-    //    start spot mid-run on some levels — see the report's caveats).
-    let rounds = if clip >= 4 { clip.min(8) } else { clip.max(1) };
-    let (ok, msg) = {
-        let mut q = vec![("do".to_string(), "weapon".to_string()), ("id".to_string(), format!("0x{id:02x}")), ("rounds".to_string(), rounds.to_string())];
-        let (m, sw) = panel::apply(scene, &q);
-        (sw == Some(id), Some(m))
-    };
-    c.give_ok = ok;
-    c.give_msg = msg.filter(|_| !ok);
-    if !c.give_ok { return c; }
+    // 1. Acquire. The watch gadgets (0x4A..0x5E) are CARRIED, not given: the give path's equip
+    //    declines an already-owned record at the ammo cap (`Player_EquipWeapon` 0x1a8a58's owned
+    //    branch — the gadgets' ammo types are 0 / own-growth), and the player reaches them with
+    //    the GADGET CYCLE (`Player_WeaponChange` 0x1a6f80 mode=1, bounds 0x4A..0x5E — the port's
+    //    `Input::gadget_cycle`; gadget_select_live proves the wheel end to end). A level that does
+    //    not carry the id gets the dim `n`: the game's own cycle cannot reach it either (the cycle
+    //    lands only on owned records with the record's +4 selectable flag [M 0x1a6f80's walk]).
+    let gadget = (0x4a..=0x5e).contains(&id);
+    if gadget {
+        let owned = scene.sim.as_ref().unwrap().drones.inventory.owned.get(id as usize).copied().unwrap_or(false);
+        if !owned {
+            c.give_msg = Some("not carried on this level — the gadget cycle (0x1a6f80 mode=1) cannot reach it".into());
+            return c;
+        }
+        // Carried from the level start: no give event — the cycle below IS the draw.
+        c.give_ok = true;
+    } else {
+        // The `--give` path: panel::apply's "weapon" command — equip + 3 clips; a partial first
+        // clip so the reload has work. The game refuses an already-owned weapon when the shared
+        // ammo bank is at cap (`equip_weapon`'s owned branch — `Player_EquipWeapon` 0x1a8a58); the
+        // cell records the refusal (the reason names it) and stops: proceeding without fresh ammo
+        // turns the cell into an NPC-interference magnet (the guards reach the start spot mid-run
+        // on some levels — see the report's caveats).
+        let rounds = if clip >= 4 { clip.min(8) } else { clip.max(1) };
+        let (ok, msg) = {
+            let mut q = vec![("do".to_string(), "weapon".to_string()), ("id".to_string(), format!("0x{id:02x}")), ("rounds".to_string(), rounds.to_string())];
+            let (m, sw) = panel::apply(scene, &q);
+            (sw == Some(id), Some(m))
+        };
+        c.give_ok = ok;
+        c.give_msg = msg.filter(|_| !ok);
+        if !c.give_ok { return c; }
+    }
 
     // 2. Draw: the real input path. A direct `switch_to` reaches every base record; the mode
     //    button (`Player_Weapon` 0x1a24c8 — the twin chain on record `w[5]`, `fire_mode_switch`)
@@ -765,6 +806,63 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
     c
 }
 
+/// The port's `fire_busy` approximation (scene.rs: `view_script == the held record's fire scripts
+/// (+0xb0/+0xb4) && view_time < len − 1`) reads a STALE script after the previous cell's draw
+/// settled: the last script stays in `view_script` with `view_time` frozen at 0 (an idle script of
+/// length ≤ 1 clamps to 0), and the gate then blocks the whole cycle/switch block — the game's own
+/// gate there is the view-anim STATE 9 [M `Player_WeaponChange` 0x1a6f80:33-47], which is CLOSED
+/// (idle) in this state. The harness clears the stale field when the machine is idle and two idle
+/// ticks agree the script is finished (the same hash, the same frozen 0): the same repair class as
+/// the held-clip one. A genuinely playing script advances `view_time` and is left alone.
+fn unstick_view_script(scene: &mut Scene) {
+    let machine_idle = { let s = scene.sim.as_ref().unwrap();
+        s.gun.switch_state == 0 && s.gun.reload_state == 0 && !s.gun.fire_state };
+    if !machine_idle { return; }
+    let (script, time) = { let s = scene.sim.as_ref().unwrap(); (s.view_script, s.view_time) };
+    if script == 0 { return; }
+    scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+    let (script2, time2) = { let s = scene.sim.as_ref().unwrap(); (s.view_script, s.view_time) };
+    if script2 == script && time2 == time && time == 0.0 {
+        scene.sim.as_mut().unwrap().view_script = 0;
+    }
+}
+
+/// Reach a gadget with the gadget cycle (`Player_WeaponChange` 0x1a6f80 mode=1; the port's
+/// `Input::gadget_cycle`): press +1, settle the ~50-tick equip, until `id` is held. The cycle
+/// walks the owned, selectable records in 0x4A..0x5E only — a gadget the level does not carry is
+/// unreachable by the game's own rule (the runner's caller screens for that first).
+fn cycle_to(scene: &mut Scene, id: u8) -> bool {
+    let dbg = std::env::var("NF_MATRIX_DBG").is_ok();
+    if scene.sim.as_ref().unwrap().gun.weapon == id { return true; }
+    for press in 0..12 {
+        {
+            let sim = scene.sim.as_ref().unwrap();
+            if dbg {
+                let carried = sim.drones.inventory.carried.clone();
+                let clip = sim.drones.inventory.clip.clone();
+                let weapons = &sim.weapons;
+                let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
+                eprintln!("[dbg cyc {id:#04x} p{press}] held={:02x} sw={} rel={} fire={} owned{}={} sel={} ammo={} clip{}={} carried{}={} disabled={} hp={:.1} vs={:#x}/{:.1} sub={}",
+                    sim.gun.weapon, sim.gun.switch_state, sim.gun.reload_state, sim.gun.fire_state as u8,
+                    id, sim.drones.inventory.owned.get(id as usize).copied().unwrap_or(false),
+                    weapons.selectable(id), has_ammo(id),
+                    id, sim.drones.inventory.clip.get(id as usize).copied().unwrap_or(-1),
+                    weapons.ammo_type(id as usize), sim.drones.inventory.carried.get(weapons.ammo_type(id as usize) as usize).copied().unwrap_or(-1),
+                    sim.disabled, sim.drones.health.health, sim.view_script, sim.view_time, sim.bond.substate);
+            }
+        }
+        scene.sim.as_mut().unwrap().step_bond(nf_game::player::Input { gadget_cycle: 1, ..Default::default() }, false, false, false);
+        for t in 0..50 {
+            scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+            if scene.sim.as_ref().unwrap().gun.weapon == id {
+                if dbg { eprintln!("[dbg cyc {id:#04x}] landed on press {press} tick {t}"); }
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// The `--give` path: `panel::apply`'s "weapon" command (the dev menu's Give button and lib.rs's
 /// `--give` flag both land here — `Player_EquipWeapon` 0x1a8a58 + three clips). `rounds` None = a
 /// full clip. Returns whether the equip happened (the switch request came back).
@@ -864,6 +962,7 @@ fn sample(c: &mut Cell, scene: &mut Scene) {
     for cmd in sim.drones.audio.take_commands() {
         if let nf_game::sound::Cmd::Start { id, .. } = cmd { if id != 0 { c.started.insert(id); } }
     }
+    c.no_target |= sim.stunner_target == Some(false);
     if sim.view_script != 0 { c.sequences.insert(sim.view_script); }
 }
 
@@ -902,7 +1001,7 @@ pub fn mark_table(rows: &[LevelRow]) -> String {
     }
     let _ = writeln!(out);
     let _ = writeln!(out, "marks: - clean | ! panic/error | . give refused | n record has no fp model (by design) | I no view model | D draw failed | F no observable fire | R reload broken | W switch-away failed | B switch-back failed | M mode press failed | G guided camera missing (0x2c) | X blast timing wrong (MGL 0x2a impact / 0x2b delay) | S silent");
-    let _ = writeln!(out, "(the watch gadgets 0x4a+ — Q-Claw, Q-Laser, stunner — are informational: q = no observable fire, s = silent, by the 2026-10-13 correction they are carried everywhere and their fire model is not a matrix failure)");
+    let _ = writeln!(out, "(weapon-matrix3: the gadget cells 0x4A..0x5E are REAL cells now — the carried gadgets equip through the gadget cycle (Player_WeaponChange 0x1a6f80 mode=1) and their fire checks (beam / bolt / thrown camera / sound) gate the marks; a gadget a level does not carry prints n — the game's own cycle cannot reach it either [M 0x1a6f80 walks owned records only])");
     out
 }
 
@@ -961,9 +1060,9 @@ pub fn red_cells(rows: &[LevelRow]) -> String {
 }
 
 fn cell_summary(c: &Cell) -> String {
-    format!("{} vm{} draw{} shots{} snd{} start{} fx({}b/{}i/{}e/{}g){}",
+    format!("{} vm{} draw{} shots{} snd{} start{} fx({}b/{}i/{}e/{}g) nt{}{}",
         c.mark(), c.view_model as u8, c.draw_ok as u8, c.shots, c.sounds.len(), c.started.len(),
-        c.bullets, c.impacts, c.explosions, c.grenades,
+        c.bullets, c.impacts, c.explosions, c.grenades, c.no_target as u8,
         c.error.as_deref().map(|e| format!(" PANIC {e}")).unwrap_or_default())
 }
 

@@ -145,3 +145,37 @@ fn upgraded_runner_checks_the_new_behaviours_on_07000005() {
     assert!(two.mode_tried && two.mode_ok, "the P2K's mode press must land its twin");
     assert!(two.mode_label_base != 0, "the base mode label must resolve");
 }
+
+/// weapon-matrix3 (103m): the gadget cells are real now. The carried gadgets (0x4A Stunner,
+/// 0x4E Laser, 0x50 Q-Claw, 0x54 Micro-Camera — owned at the 07000005 level start [L
+/// ee_start_05.bin, the level-start inventory; gadget_select_live pins the same set]) must equip
+/// through the gadget cycle (`Player_WeaponChange` 0x1a6f80 mode=1, the port's
+/// `Input::gadget_cycle`), fire with observable events (the stunner's taser beam / the laser's
+/// parked pointer beam / the claw's bolt / the camera's throw) and sound, and survive the switch
+/// away and back. Fail-first: on the pre-change runner these cells were `.` — the give declined
+/// an already-owned gadget (`Player_EquipWeapon` 0x1a8a58's owned branch) and the fire checks
+/// never ran. Sister: 0x4C (not carried on 07000005) stays dim `n` — the game's own cycle cannot
+/// reach it either [M 0x1a6f80 walks owned records only].
+#[test]
+fn gadget_cells_run_the_cycle_on_07000005() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut line = String::new();
+    let mut log = |s: &str| { line.push_str(s); line.push('\n'); };
+    let row = matrix::run_level(&iso, "07000005", &mut log).expect("level loads");
+    eprint!("{line}");
+    let cell = |id: u8| row.cells.iter().find(|c| c.weapon == id).expect("catalog cell");
+    for id in [0x4Au8, 0x4eu8, 0x50u8, 0x54u8] {
+        let c = cell(id);
+        assert!(c.give_ok, "{id:#04x}: carried at the level start [L] — the cell must run");
+        assert!(c.draw_ok, "{id:#04x}: the gadget cycle must equip it");
+        // The stunner with no guard in the aim ray spawns nothing by the game's own rule
+        // ([M 0x1a4bf0:169-200] — the no-target arm); the rest must show their event.
+        assert!(c.fire_events() > 0 || c.no_target, "{id:#04x}: the fire must show (beam/bolt/camera/shot)");
+        assert!(!(c.sounds.is_empty() && c.started.is_empty()), "{id:#04x}: the equip/fire must sound");
+        assert!(c.away_ok && c.back_ok, "{id:#04x}: away {}/back {}", c.away_ok, c.back_ok);
+    }
+    // The not-carried id: dim, with the cycle-reach reason.
+    let nc = cell(0x4c);
+    assert!(!nc.give_ok && nc.mark() == 'n', "0x4C is not carried on 07000005 — dim n, got {}", nc.mark());
+    assert!(nc.give_msg.as_deref().unwrap_or("").contains("not carried"), "the reason names the cycle's reach");
+}
