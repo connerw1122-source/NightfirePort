@@ -41,7 +41,8 @@ fn the_camera_pickup_equips_through_the_gadget_cycle() {
     assert!(!saw_gadget, "the weapon cycle must stay in 1..0x47");
 }
 
-/// 07000005: Bond starts owning the Q-Claw (0x4A), the Q-Decryptor (0x4E) and the Q-Laser (0x50)
+/// 07000005: Bond starts owning the Stunner (0x4A), the Laser (0x4E), the Q-Claw/Grapple (0x50)
+/// and the Micro-Camera watch (0x54) [L USATxt bank names — fix-qclaw]
 /// [L ee_start_05.bin: the level-start inventory, Player_InitWeapon's table] — the gadget cycle
 /// must reach each of them from the level's first weapon.
 #[test]

@@ -9684,6 +9684,17 @@ Work Log:
   tests/menu_live.rs, tests/dev_tools_live.rs (signature/width updates). No shared-file surprises:
   drone.rs/scene.rs/player.rs untouched.
 
+## fix-weapon-assets (2026-10-14, s/fix-weapon-assets)
+
+- Task 100a: a disc-wide weapon asset index + loader so `--give` / the dev menu hands Bond ANY
+  weapon on ANY level with its own skin, sleeve, parts, view-model sequences, muzzle flash,
+  casing, projectile and third-person model, pulled from the owning archive and rebased into the
+  scene (the way scene.rs already does for drone skins).
+- Setup reused the surviving sandbox: repo at /home/z/nf, onfoot ISO + work/ already extracted;
+  branch created from origin/master (7be3272); no s/weapon-assets branch existed to merge.
+- Plan: index builder over all FILES.BIN archives (cached, keyed by ISO size + archive-table
+  SHA-1) -> lazy load hooks in scene.rs/lib.rs -> NF_ISO tests on 07000005 (give, draw, fire,
+  reload) with sister assertions on levels that carry the weapon.
 ## dev-window (main agent, branch devwin) — 2026-10-13
 
 The user: "the dev menu should manifest outside of the game, but not in a browser", then "you work on it". `--dev`
@@ -9753,6 +9764,28 @@ HUD font (texture 0x03000003). No new crates.
   (the hinges burn through the crosshair ray), nf-game lib 139/139, the full nf-view non-walk set
   479 passed 0 failed, nf-game/formats/audio 349 passed + the 3 allowed disc_golden, the walk
   samples green.
+## fix-weapon-assets (2026-10-14, s/fix-weapon-assets)
+
+- Task 100a: a disc-wide weapon asset index + loader so `--give` / the dev menu hands Bond ANY
+  weapon on ANY level with its own skin, sleeve, parts, view-model sequences, muzzle flash,
+  casing, projectile and third-person model, pulled from the owning archive and rebased into the
+  scene (the way scene.rs already does for drone skins).
+- Setup reused the surviving sandbox: repo at /home/z/nf, onfoot ISO + work/ already extracted;
+  branch created from origin/master (7be3272); no s/weapon-assets branch existed to merge.
+- Plan: index builder over all FILES.BIN archives (cached, keyed by ISO size + archive-table
+  SHA-1) -> lazy load hooks in scene.rs/lib.rs -> NF_ISO tests on 07000005 (give, draw, fire,
+  reload) with sister assertions on levels that carry the weapon.
+
+## fix-weapon-effects (s/fix-weapon-effects) — 2026-10-14
+
+Task 100c: what each weapon DOES when fired, matched to the game per weapon class on any level —
+muzzle flash, tracers, casings (ejected only when firing: the user saw casings fly when walking
+backwards on 16), per-material bullet impacts, fire rate/spread, shotgun pellets, rockets ("the
+explosion is very small"), grenades, mines, the crossbow bolt, the laser/stunner's rapid
+bullet-impact sounds (do they actually spawn bullets?), the Q-Claw hook, alt fires and twins.
+100a (s/fix-weapon-assets) was merged for its branch-start entry but carried no code yet — built
+on origin/master 12a6b07. Reproduce-first per class on 07000005 through the real input path;
+work starting.
 ## fix-objective-messages (s/fix-objective-messages) — 2026-10-14
 
 Task 101d: the playtest (results 1013-1758 / 1013-1825) found (1) two stacked OBJECTIVE
@@ -9792,6 +9825,242 @@ the wrap/line-height helpers). Report: docs/reports/fix-objective-messages.md.
 Full suite on the final tree (origin/master 7be3272 merged): **886 passed, 3 failed, 27 ignored
 (20 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH. Also green post-fix:
 death/restart 8, mission 4, level_carry 3, progress 8, nf-formats 74 (+ the 3 allowed).
+## fix-weapon-sounds (s/fix-weapon-sounds) — 2026-10-14
+
+Task 100b: weapon sounds on every level — map every weapon's sound ids (fire, silenced,
+dry fire, reload stages, draw 0x281/0x282, holster 0x280/0x283, zoom, alt fire, laser and
+stunner loops, grapple fire/reel, grenade pin/throw/bounce, rocket launch/flight loop,
+explosions, casings and impacts per surface) to the bank(s) that hold them; when a weapon
+is given on a level whose bank lacks a sample, load it (VAG + effect record) from a bank
+that has it and register it under the same id without disturbing the level's own effects
+or the voice limits. Files: crates/nf-audio/src/{sfx,lib}.rs, crates/nf-view/src/lib.rs,
+tests. Reproduce-first; work starting.
+
+Task 100b outcome (same session): REPRODUCED then FIXED. The repro (fix_weapon_sounds_live,
+07000005 dev load, equip 0x1a via the real inventory path, fire through step_bond) failed
+pre-fix with "the AR's fire sound 0x40d never started a voice on 07000005" — the level bank
+(slot 4) has no row for the foreign weapon's ids. Fix: the driver's first load_bank is the
+primary slot (bit-identical one-bank lookups for the level's own set); the other 22 SBINFO
+banks load as spares (load_spare_bank, 42 MB SBF [D disc]); start() searches primary first,
+then spares ascending (slot 2, the MP bank, is the weapons superset holding every missing id).
+The owning bank's effect record (radii/MaxVoices/priority) and VAG data ride along, so the
+voice limits are the owning bank's. Green: the AR's fire 0x40d + reload 0x406/0x407/0x40a
+from slot 2 with the owning bank's sample FNVs; the sister pins the native P2K's
+0x403/0x40e/0x40f/0x411 to slot 4; the 69-weapon draw/fire/reload sweep (each requested id
+starts a voice with the owning bank's sample; gadget-context ids at driver level). 2 tests
+ignored with observations (the Laser 0x4e has no FP model in the dev merge — 100a; the AR
+draws but never fires on 07000001 — 100a/100c; both documented in the report). Files:
+sfx.rs, lib.rs (spares load + pub build_sound), scene.rs (one additive field sound_spares),
+tests/fix_weapon_sounds_live.rs (new). Report: docs/reports/fix-weapon-sounds.md (the
+weapon → bank mapping table + live checks). The full 211-binary suite still needs a run on
+the final tree (background jobs are killed between tool calls here; the window closed) —
+listed in the report for the next message.
+
+## fix-08-walls (s/fix-08-walls) — 2026-10-14
+
+Task 101h: two user symptoms on 07000008 near the safe/briefcase room (~(155, 43, -113)):
+(1) walking into a wall threw Bond onto a zip line on the far side of the wall (wire grab
+through geometry — grab test needs the game's LOS/facing gate); (2) the big wall still clips
+into the missile room (a world instance / forced object drawn that the game hides — compare
+docs/live/2026-10-13-portal-ground-truth.md). Work in progress; details to follow.
+---
+
+## fix-qclaw (s/fix-qclaw) — started 2026-10-14 02:28 UTC
+
+Task 101f: the Q-Claw (grapple gadget) draws no hook model and firing within range of a grapple
+point makes a bullet impact instead of the grapple (playtest 1013-1758, level 07000005 at
+`--bond 16.5,29.6,58.6,0,0.25 --give 0x50`, beside grapple point #282 (13.75, 32.29, 57.3)).
+Plan: settle the real weapon id (the panel/`--give` used 0x50; another note says 0x4a) from the
+weapon table + the game's equip code in the decompile; find the first-person model; wire the
+grapple fire path (latch on a grapple point within range, reel in, hang while held; no bullet);
+fix so `--give <qclaw id>` draws the claw and firing at #282 from that spot latches and reels.
+Tests through the real input path at that spot: fire held -> Bond travels to the point and hangs;
+0 bullet decals; the view model is the claw's mesh; sister assertions.
+
+The ids are settled and the fix is in (mid-session checkpoint): the Q-Claw = **0x50/0x51** [L
+ee_start_05.bin @ weapon_data 0x2bf150 — the bank's own name "Grapple" (+0x38 = 0x05000044),
+`+0x70 & 0x40` = the grapple-bolt flag `Bullet_Delete` 0x12e660:33 latches on, range +0x1C =
+50.0/100.0, clip 0, damage 0; `Bullet_CollisionHandler` 0x12ce80's `+0x02 - 0x50 < 2` band;
+`Player_GrappleSetRope` 0x192728's `+0x62 - 0x50 < 2` rope gate; `Inventory::level_start` owns
+0x50]; 0x4A/0x4C are the **Stunner**, 0x4E/0x4F the **Laser**, 0x54/0x55 the **Micro-Camera**.
+The playtest's `--give 0x50` was refused (the claw is owned at the 05 start and the game's equip
+declines the re-equip — ammo type 0's cap 0 [M 0x1a8a58 owned branch]) so Bond stayed on the P2K:
+a real bullet impact; and `is_laser_weapon(0x50)` drew the beam over it. Fixed: gadget.rs (the id
+sets + `is_grapple` + `grapple_range` reads +0x1C off the record), scene.rs (the fire gate 0x50/
+0x51), lib.rs (--give draws already-owned ids the equip declines). Tests: qclaw_live.rs (3) +
+the two gadget_grapple test files re-pointed at 0x50 — all green; probe_qclaw_symptom.rs showed
+the equip refusal failing-first and was deleted. Scratch probes (wd_probe example) deleted.
+
+fix-qclaw DONE (03:52 UTC): the Q-Claw is 0x50/0x51 (settled from the table + 5 decompile readers,
+see the report's table); the laser set back to the Laser/watch; grapple_range reads +0x1c; --give
+draws owned ids the equip declines (the actual playtest refusal). 6/6 grapple tests, 140/140
+nf-game units, the full 214-binary suite green except the allowed disc_golden 3. Report:
+docs/reports/fix-qclaw.md (rope rendering + the 0x02100717 mesh gap listed as what's left, with
+the PCSX2/nf-view live checks).
+
+Task 101j fix-portal-eyecel STARTED (04:12 UTC): the 05 trench walls still vanish with portal
+culling on. 130g's scene::near_los_rescue restores 0 cels in the real draw path ([pwalk] prints,
+no [rescue]) because the root cause is upstream: build_FindCel 0x1c8cb0's up/down tie-break rays
+cast against each CANDIDATE's own object list, and the port's stand-in scopes the shared collision
+world, so candidates 14/15 tie and the giant outdoor room 14 wins. Plan: give each cel its own
+collision/object list the way the game's loader attributes polys and objects to cels
+(build_link_objects_to_rooms 0x1c9150 is ported for the render chains; find the collision side),
+so the eye cel resolves to 15 like the game's; remove the rescue if it dies; prove on the RENDERED
+path (a --shot draw-list test at the trench spot failing on master), keep the 27-level sweep and
+the 4 PCSX2 ground-truth spots green. Branch s/fix-portal-eyecel off master 5f13369.
+Task 100c outcome (same session): REPRODUCED then FIXED. The impact explode —
+`Bullet_CollisionHandler` 0x12d068-0x12d0bc (disassembled): after the impact effects, a weapon
+whose `weapon_data+0x70` carries bit 2 (0x4) destroys its bullet with `Explode_Create(radius =
++0x08, damage = +0x0C, script 0x6000052, attacker = BU+0x30)` at the hit point, skipped for a
+ricochet re-entry (`bnel $s4` 0x12d07c). The disc records [L ee_start_05.bin @ 0x2bf150]: the
+AT-420 Sentinel 0x2c/0x2d (8.0/100) and the MGL 'Grenade' twin 0x2a (6.0/75) carry the bit; the
+plain guns (0x12) don't. The port never exploded a player bullet on impact — the Sentinel's
+missile ricocheted like a rifle round; and a directly-pushed blast was wiped by the grenade
+section's per-tick `explosions.clear()` (which runs AFTER `update_player_bullets`) — the blast now
+queues in `Drones::pending_blasts` and drains after that clear. The MGL 'Delay' twin 0x2b also
+contact-detonated: `Grenade.weapon_type` carried the record's +0x02 BASE (0x2a) instead of the
+fired id — the death branches read the bullet's own record [M 0x12dd60]; the grenade family bases
+to itself [L +0x02 sweep] so only the twins re-point. Tests (fix_weapon_effects_live, 5, all
+failing pre-fix): the Sentinel missile explodes on the floor with radius 8/damage 100 + the
+shake; a plain gun never explodes; the MGL Grenade twin detonates on contact (6/75); the Delay
+twin (the ○ mode button [M 0x1a24c8:246-260] — the direct select lands on the base) bounces and
+waits for the fuse; walking backwards 240 ticks spawns no bullet/casing/blast/light [M
+Bullet_init_casing 0x12fde0 runs from Player_WeaponInitBullet 0x1a4bf0:306 only]. Green on the
+merged tree; explode/weapon-modes/death-restart suites green. The laser/stunner rapid-impact
+sound: the port's watch laser (0x4e/0x4f) fires class-5 bullet contacts that burn the locks
+[Lock_Update 0x1ae3d8 reads BU+0x44 = 0x4e/0x4f — the game's own laser bullets are class-5
+contacts] and the stunner (0x4a) a taser bolt [NDrone2_DealWithObjHit case 5 0x13fff0:269-306 →
+msg 7] — the impacts are the standard per-material path, so the sounds are real bullet impacts;
+whether the console's laser beam is silent is a live check (in the report). Files: drone.rs,
+scene.rs (the weapon_type line), tests. Report: docs/reports/fix-weapon-effects.md.
+Full suite on the final tree (origin/master 810c109 merged): **909 passed, 3 failed, 27 ignored
+(19 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH.
+
+### fix-weapon-assets — result (2026-10-14)
+
+- Disc-wide weapon asset index + loader shipped: `weapon_assets.rs` (index cached in temp keyed by
+  ISO size + FILES.BIN SHA-1; the surgical `Wanted::Ids`/`--dev` `Wanted::All` merge with the
+  gameplay-skeleton sequence guard), `load_weapons`/`load_with_carry_weapons`, the `--give` hook in
+  `run()`, and the lazy dev-menu give via a warm same-level reload. scene.rs needed no changes.
+- 5 NF_ISO tests in `tests/weapon_assets_live.rs` — all green: index+cache, all 53 cross-level
+  weapons' assets resolve on 07000005 (meshes/skeletons/sequences/scripts/flash/3rd-person/
+  projectile, by_hash unchanged), draw→fire→reload through step_bond, native-carry identical
+  numbers, the 18 no-model ids listed. Suite: 752 passed, 3 failed (the allowed disc_golden
+  slim-ISO set), 27 ignored. Report: docs/reports/fix-weapon-assets.md.
+## weapon-matrix (worker, branch s/weapon-matrix) — 2026-10-14
+
+Task 100d: the all-weapons × all-levels matrix. A headless test (`crates/nf-view/tests/weapon_matrix_live.rs`)
+and an `nf-extract weapon-matrix <iso>` table command that, per on-foot level × weapon id: load, `--give` the
+weapon, draw, fire ×3 (hold for hold-to-use gadgets), reload, switch away/back — recording view-model presence,
+sequences played, muzzle flash, sound ids requested/started, effects spawned, errors/panics. Baseline run on
+master, final run with 100a–c merged. Plus a "Test weapon" row on the dev menu Weapons page (dev.rs). Work started
+03:09 UTC; report lands in docs/reports/weapon-matrix.md.
+
+---
+Task ID: 100d-weapon-matrix
+Agent: weapon-matrix worker
+Task: the all-weapons × all-levels matrix — the tool, the run, the fixes it turns up, the dev row.
+
+Work Log:
+- Built the runner (crates/nf-view/src/matrix.rs): per on-foot level × weapon id — load, give (the --give path via panel::apply), draw (real input path; the mode button's twin chain for the variant records), fire ×3 (hold-to-use gadgets hold), reload, switch away (P2K 0x02) and back; records view model, muzzle-flash attachment, view scripts, shot ticks, sound ids requested (Drones::sounds) and started (the driver's Cmd::Start batch, built the way lib.rs's sound_tick builds it), effects (bullets/impacts/explosions/grenades/beam), panics (caught per cell, the level reloaded after one).
+- `nf-extract weapon-matrix <iso> [levels]` prints the mark table + per-weapon aggregates + red cells with reasons.
+- 27 per-level headless tests (crates/nf-view/tests/weapon_matrix_live.rs, one #[test] per level) + the sister test for the dev row.
+- The dev menu's Weapons page got the "test weapon (in hand)" row (dev.rs TestRun + test_inputs/test_observe; lib.rs merges its inputs into the real tick, never during replay). Headless-verified: draw ok, 3 shot ticks, reload ok on the P2K / 07000005.
+- Full sweep: 27 levels × 99 ids, 5m27s, ZERO panics. Red cells: 274 give refusals (the game's own: fp-less variant records + the at-cap owned-branch refusal — both named in the reasons), 235 no-view-model cells (the cross-level asset gap, 100a's headline — the reason names the missing fp skin hash), 94 draw fails (the manor/vault intro input lock + variant chains), 6 R, 6 B, 0 W.
+- 100a-c were worklog-only at task start; nothing to merge (stated in the report). Baseline == final tree.
+- Fast suite on the final tree --only weapon_matrix_live,fix_weapons_all_live,fix_weapon_modes_live,models_weapons_live,dev_menu_flow,devwin_flow: 51 passed, 0 failed (8 min).
+
+Stage Summary:
+- Files: matrix.rs (new), tests/weapon_matrix_live.rs (new), nf-extract main.rs + Cargo.toml (the command), dev.rs (the row), lib.rs (pub mod matrix + the 2-line test-weapon hook). drone.rs/scene.rs/player.rs untouched.
+- Report: docs/reports/weapon-matrix.md (the mark table, the numbers, the live checks for the main agent).
+- Open: re-run with 100a-c merged; the intro input-lock F/D cells; the variant back-chain B cells (100c).
+
+fix-portal-eyecel DONE (05:3x UTC): the trench eye cel now resolves like the game's. Root cause
+pinned: build_FindCel 0x1c8cb0's tie-break rays are owner-filtered to the CANDIDATE's own chain
+geometry (Collide_RayIntersect 0x1ec690's flags-arg-1 post-pass compares HITDATA+0x54 — the
+static-geometry cel [M hitdata doc:41, the chain-node store sw $s3,0x54] — against HITTEST+0x80 =
+the cel argument); the port's shared-world scoped stand-in left the trench floor outside BOTH
+candidates' buckets so both rays missed and the first candidate (the outdoor room 14) stood
+[L ee_start_05.bin: the trench room's chain holds all 58 trench generics, the outdoor room's 41
+none near the eye]. Fix: world::attribute_scope re-keys the scope buckets by the chain owners
+build_chains computes (the collision side of build_link_objects_to_rooms 0x1c9150) and
+world::segment_hit_cell reads a candidate's own bucket for the tie-break. Failing-first proof:
+portal_eyecel_live::trench_eye_cel_is_15_and_the_near_walls_draw panicked "got 14" pre-fix,
+passes post-fix (eye cell 15, 0 near visited-chain walls hidden). The rescue STAYS: raw sweep
+failures on 05 dropped 1382 -> 31 but remain elsewhere (02: 850, 07: 759, ...) — other causes it
+covers. Ground truths unchanged (06 courtyard 33, 07 window rescue 0, clock hall 33 + the pinned
+set). Suites on the merged tree: nf-game 256/0 (33 binaries, twice), nf-view 318/0 (87 binaries),
+portal tests 12/0; the suite.py wrapper can't run here (background jobs die between tool calls,
+the single run exceeds the 10-min tool limit after the 05:08 UTC sandbox reset — per-binary runs
+executed directly instead). Report: docs/reports/fix-portal-eyecel.md.
+## fix-08-walls (s/fix-08-walls) — 2026-10-14
+
+Task 101h, both symptoms from the 1013-1758 playtest at 07000008's safe area (~(155, 43, −113)).
+- **(1) the wall threw Bond onto the zip line — reproduced, fixed.** The jump-grab's arm context
+  (`BLData+0x95F == 3`, `Player_HandleJump` 0x1916b0:118-147; the scan itself is wall-blind in the
+  game too — class-0x2C nearest within 1000, `Vec_Dist3D` only) was armed by a flat 12.0-unit
+  radius around each third icon. The game's arm region is the icon's STRADDLE-CEL set:
+  `Controls_StraddleTest` 0x134778 builds the icon's world sphere (`Control_BuildWorldSph`
+  0x133070 via `build_LinkToRoom` 0x1c9680:40 — r 1.164 on 08's "Hand_Over_Hand" [D probe]),
+  `Collide_StraddleCels` 0x1eac98 BFS-walks portals the sphere intersects (`Intersect_Portal`
+  0x1ea7b8 v0x101), and `Collide_Update` 0x1ea398:160-233 leaves a node on every occupant. The
+  port now resolves each icon's set at load (`icon_straddle_cels` over the cel graph; the Sim
+  carries the graph + `icon_cels`) and arms on the player's FindCel cel [M `build_FindCel`
+  0x1c8cb0 via `find_cell_raycast`] INTERSECTED with the measured 12.0 window [S deviation — the
+  port's cel buckets are coarser than the game's cels; pure occupancy broke the [L] 05 gate-door
+  0xFF pins]. Fail-first: east balcony (144, 45, −104, cell 43, 11.1 from the icon across the
+  wall) jumped → substate 15 across the wall pre-fix; post-fix plain jump, ctx 0xff; the west
+  ledge still grabs. Tests: fix_08_walls_live 4/4, fix_swim_vent5_live 2/2, fix_wire2_live 3/3.
+- **(2) the big wall in the missile room — root cause named, master already hides it, pinned.**
+  The wall = `Room_Outside_3` (cell 15)'s exterior slabs, tris across the whole
+  `Room_Guardhouse_F2` interior [D probe; fix-safe08 measured the protrusion]. The playtest build
+  predates the portal-lineage merges (fix-portal5/6/sweep landed 2026-10-14 01:10 UTC); at master
+  the game-mask never marks cell 15 from the missile room (24 yaws × 2 aspects, the port's exact
+  camera math) and every node-15 material culls while the furniture draws. Pinned by
+  `the_missile_room_visible_set_excludes_the_exterior_wall`; live checks in the report.
+- Suite on the final merged tree (origin/master merged 174804b): **932 passed, 3 failed (the
+  allowed disc_golden trio), 27 ignored (19 min)**, no TIMEOUT/CRASH; baseline on master 906/3/27;
+  the targeted post-fix suites (the 08 four, vent5 2, wire2 3) green on the same tree.
+  Report: docs/reports/fix-08-walls.md.
+
+fix-menus-real (101k, started 2026-10-14): the front end must match the real pages
+(1013-1825 playtest + the main agent's 2026-10-13 PCSX2 drive). Every page is missing its
+backdrop, the header font, the footer PS2 glyphs, the centred description and the rolling
+list style; per-page gaps are in the report. Plan: read MenuManager_Create 0x21b908's tag
+stream + entry 08000002 in 07000048.bin + the sprite/texture/font tables, then draw each
+element from the page data. Files: crates/nf-view/src/{menu,hud}.rs,
+crates/nf-view/tests/menus_flow.rs. Work log continues below.
+
+fix-menus-real (101k, 2026-10-14): the front end rebuilt against the re-parsed menu-def (the tag
+stream dump of pages 0x40000002/09/1c/23/25/2b/3a via MenuManager_Create 0x21b908's own walk).
+(1) THE CENTRING BUG: the overlay's text was LEFT-ALIGNED from its anchor — `text_scaled`'s pen
+starts at x and `quad()` maps both corners (the anchor is only an origin shift, glyphs draw
+left-edged at their pen x), so every "centred" string ran right. The game centres menu labels by
+default: Label_Init 0x218638:53 stamps DAT_003096c0 = ff 02 fe 03 (SerpLight + centre) on EVERY
+menu label, and __Font_DrawText 0x1eee48:69-71 applies flag 2 as x -= width*0.5. menu.rs now
+centres each row by its measured INK ([p0.x, plast.x + gwlast]); the footer hint bar lays the row
+out as ink items (text segments + specialchar icons, texture 0x03000075) and centres at the bar's
+ctrl.x + ctrl.w/2 = 320 [M Label_Update 0x218cb8:177-182]. (2) The headers centre in their own
+(50,40,376×17) bands at (238,48.5) — the old draw centred AT x=50, half off-screen. (3) The wheel
+rows centre at ctrl.x + ctrl.w/2 with the parsed widths [L rows (323,123,317) (333,152,307)
+(304,182,336) (333,211,307) (323,241,317)] and locked rows go grey 0x484848xx [M 0x1f8388:210-234].
+(4) The main rows carry the page's own colours: selected = msg-0x1b 0x7d6d59ff → 0x645a49ff
+[MenuManager_Create 0x21b908:238-243's rewrite], others = msg-0x1c 0x73330f80 (the port had them
+inverted). (5) The codename page lists "New Codename" (0x29b [M Menu_EnumSaves 0x1f7b78:58-66]) +
+"Play without saving" (0x10002ff [M Menu_PutCodenamesIntoControl 0x1f79c0:15-23]) with the
+per-cursor ring previews 0x300013b/0x3000135 and descriptions 0x1000004/0x1000003 [M
+Menu_UpdateCodenameWheel 0x1f89f0:80-99]. (6) The Dossier is the game's wheel menu — Records /
+Rewards / Gadgets / Weapons [L table 0x2dfcd0; C_SBDOSSIER 0x216eb0:48-49] with per-row previews
+0x300019b/0x300019c/0x30000c4/0x30000ee and descs 0x100000a-d — and Records (page 0x4000003a)
+draws the disc's own score table (header 0x280, hint 0x49e, the mission list, rows 0x302/0x165/0x305
+with their value controls, the medal image 0x0300013d + label 0x307 [L PAGE 0x4000003a parsed;
+M P_DSRECORDS 0x217248:11-13, C_RBDSRECORDS 0x20bf00:79-92]). (7) The title prompt uses the page's
+own gold 0x7f621f (the old 0xfec43e contradicted its own citation) and centres at the prompt
+control's (320.5, 317). Tests: menus_flow 26/26 — the footer/header/wheel centring (ink rows
+measured per-quad from the frame, plates excluded), the main-row colours, the codename rows +
+previews, the dossier wheel + Records page, the prompt colour, and the pre-existing flows (the
+codename navigation gained a Down — row 0 is now New Codename). Suite on the final tree: see the
+report. Files: crates/nf-view/src/menu.rs, crates/nf-view/tests/menus_flow.rs (no shared files).
 
 ## fix-weapon-fire-modes (s/fix-weapon-fire-modes) — 2026-10-14
 

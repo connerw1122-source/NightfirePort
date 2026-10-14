@@ -1316,7 +1316,7 @@ fn grenade_bounce_scares_the_guard_into_the_flee_family() {
     d.props.set(0x3b, &mut sim.list[gi].props, 1);
     sim.grenades.push(nf_game::grenade::Grenade {
         pos: drop, velocity: [0.0, -5.0, 0.0], speed: 5.0, travelled: 0.0, range: 100000.0,
-        damage: 1.0, radius: 1.0, weapon_type: 0x34, mesh: 0, owner: usize::MAX, state: 1, bounces: 0, smoke_popped: false, explode_on_impact: false,
+        damage: 1.0, radius: 1.0, weapon_type: 0x34, mesh: 0, owner: usize::MAX, state: 1, bounces: 0, smoke_popped: false,
     });
     let mut saw_87 = false; let mut dist_at_87 = 0.0f32;
     for k in 0..400 {

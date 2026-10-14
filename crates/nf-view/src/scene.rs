@@ -355,6 +355,15 @@ pub struct Sim {
     /// sphere r 11.5 at (−63.1, 8.1, −34.5)) swallows Bond the moment he enters the secret bunker
     /// (a different cel), making the bunker's touch plates unreachable.
     pub wire_cels: Vec<Option<usize>>,
+    /// The runtime cel graph (a build clone) — `find_cell_raycast`'s per-tick input for the third
+    /// icons' arm test (fix-08-walls: the arm region is the game's straddle-cel set, `Collide_StraddleCels`
+    /// 0x1eac98, resolved over this graph at load into `icon_cels`).
+    pub cel_graph: CelGraph,
+    /// Per third icon, the straddled `cells` indices — the game's obj+0xd0 chain occupancy set
+    /// [M `Collide_Update` 0x1ea398; computed by `icon_straddle_cels` at load]. Empty = the icon
+    /// never arms (its `build_FindCel` cel did not resolve — the game's unlinked icon gets no
+    /// occupants either [M 0x1c9680:47]).
+    pub icon_cels: Vec<Vec<usize>>,
     /// Whether Bond is currently on a wire (substate 6/0xF) — the music event 0xD source.
     pub creeping: bool,
     /// The wire anims' root tracks, resolved from the level archive's kind-5 scripts + the anim
@@ -517,6 +526,91 @@ pub fn find_cel(cels: &[Cel], p: [f32; 3]) -> Option<usize> {
             if matches >= 0x40 { break; }
         }
         best
+}
+
+/// `vecutil_Dist2Tri` (the distance the game's `Intersect_Portal` 0x1ea7b8 version-0x101 path
+/// thresholds against the straddle sphere's radius): the Euclidean distance from `p` to the
+/// triangle (a, b, c) — the standard closest-point-on-triangle construction.
+fn dist_point_tri(p: [f32; 3], a: [f32; 3], b: [f32; 3], c: [f32; 3]) -> f32 {
+    let sub = |u: [f32; 3], v: [f32; 3]| [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+    let dot = |u: [f32; 3], v: [f32; 3]| u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+    let ab = sub(b, a);
+    let ac = sub(c, a);
+    let ap = sub(p, a);
+    let d1 = dot(ab, ap);
+    let d2 = dot(ac, ap);
+    if d1 <= 0.0 && d2 <= 0.0 { return dot(ap, ap).sqrt(); }
+    let bp = sub(p, b);
+    let d3 = dot(ab, bp);
+    let d4 = dot(ac, bp);
+    if d3 >= 0.0 && d4 <= d3 { return dot(bp, bp).sqrt(); }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 { let v = d1 / (d1 - d3); return dot(ap, [ab[0] * v, ab[1] * v, ab[2] * v]).sqrt(); }
+    let cp = sub(p, c);
+    let d5 = dot(ab, cp);
+    let d6 = dot(ac, cp);
+    if d6 >= 0.0 && d5 <= d6 { return dot(cp, cp).sqrt(); }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 { let w = d2 / (d2 - d6); return dot(ap, [ac[0] * w, ac[1] * w, ac[2] * w]).sqrt(); }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        let bc = sub(c, b);
+        return dot(bp, [bc[0] * w, bc[1] * w, bc[2] * w]).sqrt();
+    }
+    let denom = 1.0 / (va + vb + vc);
+    let v = vb * denom;
+    let w = vc * denom;
+    let closest = [a[0] + ab[0] * v + ac[0] * w, a[1] + ab[1] * v + ac[1] * w, a[2] + ab[2] * v + ac[2] * w];
+    dot(sub(p, closest), sub(p, closest)).sqrt()
+}
+
+/// The icon's straddle-cel set — the port of `Collide_StraddleCels` (0x1eac98) as
+/// `Controls_StraddleTest` (0x134778) drives it for the third icons: starting at the object's own
+/// cel (the room `build_FindCel` 0x1c8cb0 links at load, via `room_to_cell`), a BFS over the
+/// cel graph's portals adds each neighbour whose portal quad the object's world sphere
+/// intersects (`Intersect_Portal` 0x1ea7b8, HITTEST version 0x101: the portal AABB first, then
+/// `vecutil_Dist2Tri` from the sphere centre to the portal's two triangles < the radius), up to
+/// the game's 0x7e-cel cap. `Collide_Update` (0x1ea398) leaves a hitdata node on every object
+/// occupying a straddled cel, and `ThirdIcon_Update` (0x196e80) writes the icon's context into
+/// the player's +0x95F off that node — so this set IS the icon's arm region. A wall between the
+/// icon and the player keeps them in different cels with no portal for the small sphere to walk
+/// through (07000008's guardhouse wall: the icon's r-1.164 sphere crosses no portal), which the
+/// old flat 12.0-unit arm radius ignored.
+///
+/// Returns the straddled `cells` indices (always containing the start cell when it resolves).
+pub fn icon_straddle_cels(graph: &CelGraph, start_cell: usize, centre: [f32; 3], radius: f32) -> Vec<usize> {
+    let mut seen = vec![false; graph.cells.len()];
+    let mut out = Vec::new();
+    let mut queue = std::collections::VecDeque::new();
+    seen[start_cell] = true;
+    out.push(start_cell);
+    queue.push_back(start_cell);
+    while let Some(c) = queue.pop_front() {
+        if out.len() >= 0x7e { break; }
+        for p in &graph.portals {
+            let other = if p.cel_a == c { Some(p.cel_b) } else if p.cel_b == c { Some(p.cel_a) } else { None };
+            let Some(other) = other else { continue };
+            if seen[other] { continue; }
+            // Intersect_Portal 0x101, step 1: the portal quad's AABB against the sphere's AABB.
+            let (mut mn, mut mx) = (p.corners[0], p.corners[0]);
+            for corner in &p.corners[1..] {
+                for k in 0..3 { mn[k] = mn[k].min(corner[k]); mx[k] = mx[k].max(corner[k]); }
+            }
+            if centre[0] + radius < mn[0] || centre[0] - radius > mx[0]
+                || centre[1] + radius < mn[1] || centre[1] - radius > mx[1]
+                || centre[2] + radius < mn[2] || centre[2] - radius > mx[2] { continue; }
+            // Step 2: Dist2Tri from the sphere centre to the quad's two triangles < radius.
+            let (a, b, c2, d) = (p.corners[0], p.corners[1], p.corners[2], p.corners[3]);
+            let hit = dist_point_tri(centre, a, b, c2) < radius || dist_point_tri(centre, a, c2, d) < radius;
+            if hit {
+                seen[other] = true;
+                out.push(other);
+                queue.push_back(other);
+            }
+        }
+    }
+    out
 }
 
 /// The `(tint × ambient) >> 8` bytes of `View_SetupRenderModes_Tweak` (0x1e5888) as floats — the VU1
@@ -1053,10 +1147,12 @@ fn point_in_cell(graph: &CelGraph, cell: usize, p: [f32; 3]) -> bool {
 /// then the mirrored down ray — the down ray's length is the up ray's min(hit, len), len starts
 /// 256 and shrinks to the best-so-far distance], the candidate with the nearest hit distance
 /// wins, and with no hit at all the FIRST candidate stands (0x1c8cb0's tail:
-/// `iVar6 = CelList_153; ... return iVar6`). `world` (the sim's scoped `CollisionWorld`) supplies
-/// the per-candidate rays through `segment_hit_scoped(Some(cell), …)` — the port's stand-in for
-/// `Collide_RayIntersect`'s per-cel object list; without a world the port's bbox-face
-/// approximation stands (documented).
+/// `iVar6 = CelList_153; ... return iVar6`). The per-candidate ray is scoped to the CANDIDATE'S
+/// OWN chain geometry — `Collide_RayIntersect`'s owner filter (flags arg = 1) exact-tests only
+/// hits whose static-geometry cel equals the passed cel — so the port reads the candidate's own
+/// scope bucket through `segment_hit_cell` (fix-portal-eyecel; the shared-world scoped query the
+/// port stood in with let both candidates see the same floor and the first candidate stand).
+/// Without a world the port's bbox-face approximation stands (documented).
 pub fn find_cell_raycast(graph: &CelGraph, eye: [f32; 3], world: Option<&nf_game::world::CollisionWorld>) -> Option<usize> {
     let mut cands: Vec<usize> = Vec::new();
     for (i, c) in graph.cells.iter().enumerate() {
@@ -1073,9 +1169,9 @@ pub fn find_cell_raycast(graph: &CelGraph, eye: [f32; 3], world: Option<&nf_game
         let mut best: Option<(usize, f32)> = None;
         for &i in &cands {
             let len = best.map_or(256.0, |(_, d)| d);
-            let up = world.segment_hit_scoped(Some(i), eye, [eye[0], eye[1] + len, eye[2]]).map(|(t, _)| t * len);
+            let up = world.segment_hit_cell(i, eye, [eye[0], eye[1] + len, eye[2]]).map(|(t, _)| t * len);
             let dlen = up.map_or(len, |ud| ud.min(len));
-            let down = world.segment_hit_scoped(Some(i), eye, [eye[0], eye[1] - dlen, eye[2]]).map(|(t, _)| t * dlen);
+            let down = world.segment_hit_cell(i, eye, [eye[0], eye[1] - dlen, eye[2]]).map(|(t, _)| t * dlen);
             match (up, down) {
                 (None, None) => continue,
                 (a, b) => {
@@ -1676,19 +1772,22 @@ impl Sim {
         // whose top is far below Bond is no water either). The sink control is unused in play (the
         // viewer's input has no bind; the crouch key sinks in the Sim path below).
         if !self.disabled {
-            // The Q-Claw grapple's fire [M Player_SetGrapplePoint 0x195da0]: with the claw (0x4A/0x4C)
-            // out and the fire pressed on foot, the aim ray's grapple point (placement 0x3A) latches
-            // and Bond enters the substate 2 (the reel). The enter tick swallows the fire — it runs
+            // The Q-Claw grapple's fire [M Player_SetGrapplePoint 0x195da0]: with the claw (0x50/0x51 —
+            // the bank's "Grapple" records, `weapon_data+0x70 & 0x40` [L ee_start_05.bin]; the OLD gate
+            // 0x4A/0x4C was the Stunner's — the hardcoded table's shift) out and the fire pressed on
+            // foot, the aim ray's grapple point (placement 0x3A) latches and Bond enters the substate 2
+            // (the reel). The reach is the claw bolt's own `weapon_data+0x1c` death cap [M Bullet_update
+            // 0x12e7b0:158; L: 50.0 for 0x50, 100.0 for 0x51]. The enter tick swallows the fire — it runs
             // BEFORE the bond tick so a release tick's fire cannot re-latch in the same tick.
             let mut trigger = trigger;
             if trigger
                 && self.bond.substate == nf_game::player::SS_WALK
                 && self.bond.grapple.is_none()
-                && matches!(self.gun.weapon, 0x4a | 0x4c)
+                && nf_game::gadget::is_grapple(self.gun.weapon)
             {
                 let head = self.bond.head();
                 let dir = self.bond.look();
-                if let Some(point) = nf_game::gadget::pick_grapple_point(&self.drones.grapple_points, head, dir, nf_game::gadget::grapple_range(self.gun.weapon)) {
+                if let Some(point) = nf_game::gadget::pick_grapple_point(&self.drones.grapple_points, head, dir, nf_game::gadget::grapple_range(&self.weapons, self.gun.weapon)) {
                     self.bond.grapple = Some(nf_game::gadget::GrappleState { point, phase: 1, pull: 0.0 });
                     self.bond.substate = nf_game::player::SS_GRAPPLE;
                     self.bond.vel = [0.0; 3];
@@ -1700,25 +1799,37 @@ impl Sim {
             let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink, creepwalls: &self.creepwalls };
             // The third-icon context [M ThirdIcon_Update 0x196e80 + Player_CollisionHandler 0x1949a8:22]:
             // the tick starts with +0x95F = 0xFF (none), then every ENABLED icon (its param-1 channel on,
-            // or param 1 == 0 = always [M ThirdIcon_Create 0x197070:27-32]) that "sees" the player writes
-            // its type. The game's sees = the icon's obj+0xd0 chain: an object whose collision volume
-            // straddles a cel leaves a hitdata node on every occupant of that cel, node+0x58 = the
-            // straddler [M Collide_Update 0x1ea398:160-233], and the icon writes when a node's +0x58 is
-            // the class-3 player [M 0x196e80:36-52] — the straddle volume is the icon's own world sphere
-            // [M Controls_StraddleTest 0x134778:30-38, Control_BuildWorldSph 0x133070]. The port cannot
-            // resolve that chain: its 19 room-cel bboxes put the 07000005 gate door and the second vent's
-            // ctx-6 icons in the same cel 1, and the scoped buckets hold no courtyard-floor geometry
-            // (fix-swim-vent5 probe), so the straddle volume stands in as a sphere at the icon's
-            // placement. The radius is the live-measured scope [L PCSX2 2026-10-13: +0x95F reads 0xFF at
-            // the gate door (30.0, 38.84, 37.70 — 24.1 from the nearest ctx-6 icon) and the level start
-            // (104.95, 25.12, 108.83 — ~94), while the vent crawl spot (3.9 from icon[0]) reads 6 and the
-            // south-ledge wire spot (1.8 from icon[5]) reads 3] — 12.0, the middle of the measured window
-            // (the crawl spot must read 6, the gate door must not). The last enabled icon wins (the game
-            // re-writes per icon on its 4-tick refresh [M 0x196e80:15-17, 53]).
+            // or param 1 == 0 = always [M ThirdIcon_Create 0x197070:27-32]) whose straddle-cel set holds
+            // the player's cel writes its type. The game's set is the icon's obj+0xd0 chain: the icon's
+            // world sphere straddles cels through the portals it intersects [M Controls_StraddleTest
+            // 0x134778 → Collide_StraddleCels 0x1eac98 → Intersect_Portal 0x1ea7b8 v0x101], every object
+            // occupying a straddled cel gets a hitdata node [M Collide_Update 0x1ea398:160-233], and the
+            // icon writes when a node's +0x58 is the class-3 player [M 0x196e80:36-52]. The port resolves
+            // each icon's set once at load (`icon_cels` — `icon_straddle_cels` over `cel_graph` with the
+            // icon's own world-sphere radius, e.g. 07000008's "Hand_Over_Hand" r 1.164 [D probe]) and
+            // tests the player's FindCel cel [M build_FindCel 0x1c8cb0: room cels + the collision
+            // tie-break, `find_cell_raycast`] against it. The old flat 12.0-unit radius armed through
+            // walls — the 07000008 playtest: walking into the guardhouse wall and jumping threw Bond onto
+            // the zipline across it (the icon sits 1.9 from the wall on the far side); the r-1.164 sphere
+            // crosses no portal there, so the wall keeps the contexts apart exactly as the cel graph lays
+            // them. **Deviation [S]**: the port's cel buckets are coarser than the game's cels — the
+            //   fix-swim-vent5 probe put 07000005's gate door and the second vent's ctx-6 icons in one
+            //   port cel — so pure cel occupancy would arm the gate door against the [L PCSX2 2026-10-13
+            //   pin (0xFF there; enforced by fix_swim_vent5_live)]. The arm region is therefore the
+            //   INTERSECTION: the straddle set AND the live-measured 12.0 window (the same measured
+            //   middle the pre-fix radius used: the vent crawl spot must read 6 at 3.9, the gate door
+            //   must not at 24.1). The intersection keeps the wall gate this task fixes (the 07000008
+            //   east balcony reads ctx 3 pre-fix at 11.1 through the wall — its cel is not the icon's;
+            //   the wall is the difference) and every measured pin. When the port's FindCel resolves
+            //   cels exactly like the game's, the distance factor can drop.
             self.bond.icon_ctx = 0xff;
-            for icon in &self.icons {
+            let bond_cell = find_cell_raycast(&self.cel_graph, self.bond.pos, Some(&self.world));
+            for (ii, icon) in self.icons.iter().enumerate() {
                 if icon.on_channel != 0 && !self.drones.channels.on(u32::from(icon.on_channel)) { continue; }
-                let near = (icon.pos[0] - self.bond.pos[0]).powi(2) + (icon.pos[1] - self.bond.pos[1]).powi(2) + (icon.pos[2] - self.bond.pos[2]).powi(2) < 144.0;
+                let Some(cells) = self.icon_cels.get(ii) else { continue };
+                if cells.is_empty() { continue; }
+                if !bond_cell.is_some_and(|bc| cells.contains(&bc)) { continue; }
+                let near = (icon.centre[0] - self.bond.pos[0]).powi(2) + (icon.centre[1] - self.bond.pos[1]).powi(2) + (icon.centre[2] - self.bond.pos[2]).powi(2) < 144.0;
                 if near { self.bond.icon_ctx = icon.ctx; }
             }
             // No walk-in or use-key wire grab (main agent at the fix-wire2 × walkreal-b2 merge): the game's
@@ -2264,7 +2375,8 @@ impl Sim {
                     // with +0x70 & 0x10000, the mine 0x37 → 420. The impact records 0x2A/0x1B carry
                     // NO fuse bit: they range out SILENTLY at +0x1C units [M Bullet_update
                     // 0x12e7b0:158-162 state 4] — the port models that as the tick-equivalent
-                    // (+0x1C / speed) with `explode_on_impact` killing them at the first contact.
+                    // (+0x1C / speed), and the Sim's Explode arm (the +0x200 gate) removes them
+                    // quietly; their first contact blasts through the Sim's Bounce arm.
                     let fuse = if flags70 & 0x200 == 0 {
                         (f32_at(0x1c) / speed).max(1.0)
                     } else if flags70 & 0x10000 != 0 { 300.0 } else { 210.0 };
@@ -2283,14 +2395,14 @@ impl Sim {
                         pos: camera,
                         velocity: [sdir[0] * speed, sdir[1] * speed, sdir[2] * speed],
                         speed, travelled: 0.0, range: fuse, damage: f32_at(0x0c), radius: f32_at(0x08),
-                        weapon_type: wt,
+                        // The FIRED weapon's id, not the record's +0x02 base: the MGL's 'Delay' twin
+                        // 0x2b bases to 0x2a, and the death branches (the impact explode [M
+                        // 0x12d068-0x12d0bc], the flash/smoke routing [M 0x12dd60]) read the BULLET'S own
+                        // record. The grenade family bases to itself [L ee_start_05.bin +0x02 sweep], so
+                        // this only re-points the twins.
+                        weapon_type: self.gun.weapon as u16,
                         mesh: self.weapons.projectile_mesh(self.gun.weapon as usize),
                         owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false,
-                        // fix-weapon-fire-modes [M Bullet_CollisionHandler 0x12ce80:194-206]:
-                        // `+0x70 & 0x4` — the MGL's 'Grenade' 0x2A and the AIMS-20's underbarrel
-                        // 0x1B explode on the first contact; their 'Delay'/gun twins (0x2B +0x70
-                        // = 0x280) carry the 0x100 bounce instead [L ee_start_05.bin].
-                        explode_on_impact: u32::from_le_bytes(w[0x70..0x74].try_into().unwrap()) & 0x4 != 0,
                     });
                 } else if spawn_shot {
                     self.last_shot = Some(self.drones.frame);
@@ -2940,6 +3052,10 @@ pub struct Scene {
     pub music_tables: Option<(Vec<nf_formats::music::MapMusic>, Vec<nf_formats::music::MusicVars>)>,
     /// The level's sound bank (`Sound_Ready` → `SFXLoadSoundBank`): slot, bank, ADPCM (set by the loader).
     pub sound_bank: Option<(usize, nf_formats::soundbank::Bank, Vec<u8>)>,
+    /// Spare banks (fix-weapon-sounds): the other SBINFO slots' `SB_<slot>.{SHF,SFX,SBF}`, loaded so a
+    /// weapon given on a level whose own bank lacks its sounds still plays them from a bank that holds
+    /// them (`load_spare_bank`). The level's own bank stays the primary lookup [M `Sound_Ready`].
+    pub sound_spares: Vec<(usize, nf_formats::soundbank::Bank, Vec<u8>)>,
     /// The level's fog (`psiPreGameRun` 0x11e2e8: colour, `Ps2Far1`; `None` = `FogOn` 0).
     pub fog: Option<([u8; 3], f32)>,
     /// The HUD's textures by hash (docs/systems/hud.md), from any map of the archive, and its tables from ACTION.ELF.
@@ -4052,10 +4168,56 @@ impl Scene {
             // capsule's straddle walk from cell 40 never keeps; the game's `build_LinkToRoom` 0x1c9680
             // links by `build_FindCel` 0x1c8cb0's RAYCAST tie-break among all containing cels, which
             // the port has not ported (the next session's item, with the live check).
-            let world = nf_game::world::CollisionWorld::build_scoped(level, &level.instances(true).0, Some(scope_graph(&cel_graph)));
+            let instances = level.instances(true).0;
+            let mut world = nf_game::world::CollisionWorld::build_scoped(level, &instances, Some(scope_graph(&cel_graph)));
             // fix-portal4: the +0x18 chains hang by the game's build_FindCel (0x1c8cb0) owner pick
             // over each generic's sphere centre — needs the scoped world for the tie-break rays.
             build_chains(&mut cel_graph, Some(&world));
+            // fix-portal-eyecel: the collision side of the game's per-cel attribution. The game's
+            // `build_FindCel` (0x1c8cb0) tie-break rays are owner-filtered to the CANDIDATE's own
+            // chain geometry (`Collide_RayIntersect` 0x1ec690, flags arg 1: only hits whose
+            // `HITDATA+0x54` static-geometry cel equals the passed cel are exact-tested — the
+            // disassembly compares hit+0x54 against HITTEST+0x80), and the loader hangs every
+            // generic's collision on the room `build_link_objects_to_rooms` (0x1c9150) picks — the
+            // same owners `build_chains` just computed. So the scope buckets re-key by the chain
+            // owners: a room cell keeps its own runs, a generic's runs join its chain owner's
+            // bucket, unchained/unresolvable cells fall to the `always` bucket. The smallest-volume
+            // centre rule `build_scoped` stands in with left the trench floor outside BOTH
+            // eye-room candidates' buckets, so both tie-break rays missed and the first candidate
+            // (the outdoor room) stood [L ee_start_05.bin: the trench room's chain holds all 58
+            // trench generics; the outdoor room's 41 hold none near it].
+            {
+                let main = level.main_map();
+                let mut node_owner: Vec<Option<u32>> = vec![None; cel_graph.cells.len()];
+                for (o, ch) in cel_graph.chains.iter().enumerate() {
+                    for &n in ch { if (n as usize) < node_owner.len() { node_owner[n as usize] = Some(o as u32); } }
+                }
+                // The parse-wide cell counter replay of `parse_cel_graph` (sub-maps first, main
+                // last), paired with the `instances(true)` resolution so the pushed-object index
+                // (`stat.owners`' source) maps to its placement's cell — replicating
+                // `build_scoped`'s push filter (collision present, not the 0x1000 missile flag).
+                let mut instance_cell: Vec<Option<u32>> = Vec::new();
+                let mut cell_counter = 0usize;
+                for (mi, map) in level.maps.iter().enumerate() {
+                    for p in &map.placements {
+                        if !p.creates_cel() { continue; }
+                        if Some(mi) == main {
+                            let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() } else if (p.index as usize) < map.objects.len() { Some((mi, p.index as usize)) } else { None };
+                            if let Some((om, oi)) = target {
+                                let obj = &level.maps[om].objects[oi];
+                                if obj.collision.is_some() && obj.flags & 0x1000 == 0 {
+                                    let c = cell_counter;
+                                    let f16 = cel_graph.cells.get(c).map(|n| n.flags & 0xffff).unwrap_or(0);
+                                    let owner = if matches!(f16, 0xc023 | 0xc047) { Some(c as u32) } else { node_owner.get(c).copied().flatten() };
+                                    instance_cell.push(owner);
+                                }
+                            }
+                        }
+                        cell_counter += 1;
+                    }
+                }
+                world.attribute_scope(&instance_cell);
+            }
             let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, d.level_id);
             let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
             let hitboxes = d.hitboxes.clone()?;
@@ -4099,8 +4261,17 @@ impl Scene {
             let wire_cels = wires.iter().map(|w| find_cel(&sim_cels, w.centre)).collect::<Vec<_>>();
             // The third icons (placement kind 0xFA, `ThirdIcon_Create` 0x197070): the interaction
             // contexts written to `BLData+0x95F` each tick (fix-wire2 — the cable's type-3 icons gate
-            // the jump-grab). Position-only: the icon object has no gameplay geometry.
+            // the jump-grab). fix-08-walls: each icon carries its object-resolved world sphere
+            // (`Icon::centre`/`radius`, `Control_BuildWorldSph` 0x133070 via `build_LinkToRoom`
+            // 0x1c9680:40) and its straddle-cel set — the arm region the game's obj+0xd0 chain
+            // implements [M Collide_StraddleCels 0x1eac98 + Intersect_Portal 0x1ea7b8 v0x101 +
+            // Collide_Update 0x1ea398:160-233], resolved once here over the final cel graph (the
+            // icon's own cel via the faithful `build_FindCel` 0x1c8cb0 port, `find_cell_raycast`).
             let icons = nf_game::wire::icons(level);
+            let icon_cels = icons.iter().map(|ic| match find_cell_raycast(&cel_graph, ic.centre, Some(&world)) {
+                Some(c) => icon_straddle_cels(&cel_graph, c, ic.centre, ic.radius),
+                None => Vec::new(),
+            }).collect::<Vec<_>>();
             // The wire anims' root tracks: the level archive's kind-5 scripts (the player body anims)
             // resolved to their sequences [D 07000005: 0x060005e5 101 frames → 0x04000536, the move pair
             // 0x060000b4/b5 → 0x04000034/35 travelling 0.7637/0.7106 per cycle].
@@ -4162,8 +4333,8 @@ impl Scene {
             // 0x1c7e78:25] and the front-end boot keeps it until 180-fix-menus wires the page's
             // write (C_SBNFDFCTY 0x216ca8) into `set_difficulty`.
             drones.difficulty = 1;
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false, missile_cam: None,
-                wire_cels, laser_beam: None, stunner_target: None,
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
+                wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, missile_cam: None,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
@@ -4190,7 +4361,7 @@ impl Scene {
         // fix-portal4: sim-less loads never built a world — the chains fall back to the
         // bbox-face FindCel approximation (documented deviation; every live load path builds sim).
         if sim.is_none() { build_chains(&mut cel_graph, None); }
-        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn, misc_drawn }
+        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, sound_spares: Vec::new(), snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn, misc_drawn }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the

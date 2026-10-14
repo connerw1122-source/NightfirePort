@@ -4617,7 +4617,7 @@ impl Drone {
         Some(crate::grenade::Grenade {
             pos: origin, velocity: [dir[0] * speed, dir[1] * speed, dir[2] * speed], speed,
             travelled: 0.0, range, damage, radius, weapon_type, mesh: d.weapons.projectile_mesh(self.weapon as usize),
-            owner, state: 0, bounces: 0, smoke_popped: false, explode_on_impact: false,
+            owner, state: 0, bounces: 0, smoke_popped: false,
         })
     }
 
@@ -4933,6 +4933,10 @@ pub struct Drones {
     pub explosive_queue: Vec<(V3, u16)>,
     /// Explosions this tick: (pos, radius, damage, owner, weapon_type) for the sound + camera shake.
     pub explosions: Vec<(V3, f32, f32, usize, u16)>,
+    /// fix-weapon-effects: blasts queued this tick (`Explode_Create` 0x17cbd0's call sites inside the
+    /// grenade/bullet loops — the impact explode `Bullet_CollisionHandler` 0x12d068-0x12d0bc and the
+    /// grenade path's bit-4 contact) — processed after the loop, where `&mut self` is free.
+    pub pending_blasts: Vec<(V3, f32, f32, usize, u16)>,
     /// The camera-shake amount: `Explode_Create` 0x17cbd0 calls `Camera_Shake(pos, radius)` when the
     /// radius reaches 0.5 [M 0x17cc28-0x17cc44]; the port decays it 10%/tick − 0.05 [*suggested*: the
     /// game's `Camera_Shake` curve is view-side, not modelled]. The view reads it for the offset. fix-explosions.
@@ -5246,6 +5250,7 @@ impl Drones {
             death: Default::default(), bond_fire: false, auto_restart: true, level_exit_cold: false,
             // fix-restart-target: the fail-menu Restart's warm arm + the current level (GameState+0xC).
             level_exit_restart: false,
+            pending_blasts: Vec::new(),
             level_current: 0,
             // fix-safe08: (script hash, stream) → the reserved pickup slot the renderer built for the
             // script's obj_type-0xF0 Entity (`Script_CreateEntity` 0x1d8968's Pickup_Create arm);
@@ -5499,26 +5504,31 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         if !sound.looped { self.sounds.push(Sound { id: sound.id, pos: from, inner: sound.inner, outer: sound.outer, weight: sound.weight }); }
     }
 
-    /// fix-weapon-fire-modes: the impact blast of a `+0x70 & 0x4` bullet (`Bullet_CollisionHandler`
-    /// 0x12ce80:194-206 → `Explode_Create(wd+8, wd+8, wd+0xC, …, 0x6000052, 0xff, 0xff, 100, owner)`
-    /// [M]) applied through the port's `Explode_Propagate` stand-in — the same application the
-    /// grenade fuse death runs in `Drones::tick` (drones msg 9, Bond `Player_Hurt`, the effect
-    /// script 0x6000052, the camera shake from radius 0.5 [M 0x17cc28]).
-    fn blast_at(&mut self, d: &Data, player: &Player, pos: V3, radius: f32, damage: f32, owner: usize, weapon: u16) {
-        if radius < 0.0002 && damage < 0.0002 { return; }
-        let frame = self.frame;
+    /// `Explode_Create` 0x17cbd0's blast, shared by the fuse death (`Bullet_handle_object_destruction`
+    /// 0x12e1c0), the impact explode (`Bullet_CollisionHandler` 0x12d068-0x12d0bc [M, disassembled])
+    /// and the grenade contact. `Explode_Propagate` 0x17c518 through `explode::propagate`: the full
+    /// 12-case dispatch (drones msg 9, Bond `Player_Hurt`, breakables, destroyables; the port has no
+    /// copter/vehicle/MP/GT/sensor/monitor/sub lists yet). The effect script 0x6000052 plays at the
+    /// blast, scale = radius·0.06666667 [M 0x17cbd0:84-106]; its own Sound(0x3E) is the blast sound
+    /// [D script stream 36].
+    fn spawn_blast(&mut self, d: &Data, pos: V3, radius: f32, damage: f32, owner: usize, weapon_type: u16, player_pos: V3, frame: u32) {
         let drones: Vec<(usize, V3, f32)> = self.list.iter().enumerate()
             .filter(|(_, x)| x.present && !x.corpse).map(|(i, x)| (i, x.pos, 0.4)).collect();
         let hits = crate::explode::propagate(pos, radius, damage, owner,
-            &crate::explode::Targets { drones: &drones, player: player.pos, breaks: &[], destroys: &[] });
+            &crate::explode::Targets { drones: &drones, player: player_pos, breaks: &[], destroys: &[] });
+        // Bond: `Player_Hurt` (the difficulty factor is applied in `explode_propagate`).
         if let Some(ph) = hits.player {
             let before = self.health.health;
+            // `Explode_Propagate` → `Player_Hurt` → `Player_HandlePain` (type 0): BL+0x967 = 0xC
+            // (both sides) [M 0x1902c8:124-130].
             self.health.pain_generic(ph, self.difficulty, d.level, 0);
             self.player_hits.push((frame, owner, before - self.health.health));
         }
+        // Drones: `Drone_ExplosiveHit` → msg 9 (the port routes through `on_bullet` as an impact).
         for (di, ddmg) in hits.drones {
             if let Some(dr) = self.list.get_mut(di) {
                 dr.last_damage = ddmg;
+                // The owner's grenade: usize::MAX = the player's throw [M +0x2B4 = the thrower; fix-actors].
                 if owner == usize::MAX { dr.hit_by_player = true; }
                 dr.health -= ddmg * dr.damage_taken;
                 if dr.health <= 0.0 { dr.health = 0.0; dr.set_state(state::DEATH_ANIM); }
@@ -5528,14 +5538,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let mut bm = [[0.0f32; 4]; 4];
         bm[0][0] = 1.0; bm[1][1] = 1.0; bm[2][2] = 1.0; bm[3] = [pos[0], pos[1], pos[2], 1.0];
         self.scripts.spawn_once_scaled(usize::MAX, 0x0600_0052, bm, radius * 0.0666_6667);
+        // `Camera_Shake(pos, radius)` only from radius 0.5 [M 0x17cc28].
         if radius >= 0.5 { self.shake = self.shake.max(radius); }
-        self.explosions.push((pos, radius, damage, owner, weapon));
+        self.explosions.push((pos, radius, damage, owner, weapon_type));
     }
 
     /// Bond's bullets for one tick (`Bullet_update`, `Collide_Update`): the segment of max(step, 1) units against the
     /// world and every live drone's boxes (`Collide_PickObj` sphere r 1.05 around the hips, then `Collide_Jointy`); the
     /// nearest wins. A drone hit sends msg 8 (`Drone_BulletHit`).
-    fn update_player_bullets(&mut self, d: &Data, player: &Player) {
+    fn update_player_bullets(&mut self, d: &Data, player_pos: V3) {
         self.player_impacts.clear();
         self.bullet_paths.clear();
         self.bullet_path_weapons.clear();
@@ -5633,18 +5644,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 (_, Some(w)) => {
                     b.dead = true;
                     let hit = at(w);
+
                     self.player_impacts.push(PlayerImpact::World(hit));
-                    // fix-weapon-fire-modes [M Bullet_CollisionHandler 0x12ce80:194-206]: `+0x70 & 4`
-                    // explodes at the contact — `Explode_Create(record+0x8, record+0x8, record+0xC,
-                    // …)` — the rocket records' impact blast (the Sentinel 0x2C/0x2D, the Scorpion
-                    // 0x2E/0x2F, +0x70 = 0x4 [L ee_start_05.bin]; the MGL 'Grenade' 0x2A and the
-                    // AIMS-20 0x1B take the grenade path's copy of the same branch).
-                    let flags70 = u32::from_le_bytes(d.weapons.records.get(b.weapon as usize).map_or([0; 4], |r| r[0x70..0x74].try_into().unwrap()).try_into().unwrap_or([0; 4]));
-                    if flags70 & 0x4 != 0 {
-                        let (radius, damage) = d.weapons.records.get(b.weapon as usize).map_or((0.0, 0.0), |r|
-                            (f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()), f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap())));
-                        self.blast_at(d, player, hit, radius, damage, usize::MAX, b.weapon);
-                    }
                     // `PlrStat_LogShotHitScenery(0)` 0x198408 (SP_Update 0x1dbda8:261; Destroy_Smash
                     // 0x12bb60:55 — the port folds the breakables into this world-hit path): the
                     // accuracy denominator nets to the enemy hits only (fix-progress).
@@ -5668,6 +5669,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // bullet alive on the reflected direction [M 0x12d704].
                     let flags70 = d.weapons.records.get(b.weapon as usize)
                         .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
+                    let mut ricochet: Option<(V3, V3)> = None;
                     if let Some((_, n, m)) = d.world.segment_surface(b.pos, end, false) {
                         if laser_beam {
                             // The `Effect_Laser` stand-in: Gas_Init(2.0, 3.0, …, kind 5, 0x7f7f64ff,
@@ -5676,13 +5678,35 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                             // main agent's render check owns the look).
                             self.gas.init(hit, 0.0, [0.0; 3], 2.0, 3.0, 5, [0x7f, 0x7f, 0x64, 0xff], 8.0);
                         } else if let Some(dir) = self.effects.bullet_impact(&mut self.rng, d.surfaces, &mut self.gas, hit, n, m, b.dir, flags70, b.bounces, true) {
-                            if b.bounces < 3 {
-                                b.dead = false;
-                                b.pos = hit;
-                                b.dir = dir;
-                                b.bounces += 1;
-                                b.first = false;
-                            }
+                            ricochet = Some((hit, dir));
+                        }
+                    }
+                    // fix-weapon-effects: the impact explode — `Bullet_CollisionHandler` 0x12d068-0x12d0bc
+                    // [M, disassembled]: after the effects, when the weapon's `+0x70` carries bit 2 (0x4)
+                    // and this contact is not a ricochet re-entry (`bnel $s4` at 0x12d07c), the bullet is
+                    // destroyed with `Explode_Create(radius = weapon_data+0x08, damage = +0x0C, script
+                    // 0x6000052, attacker = BU+0x30)` at the hit point. The disc records: the AT-420
+                    // Sentinel 0x2c/0x2d (radius 8 / damage 100), the MGL's 'Grenade' twin 0x2a (6/75)
+                    // and the Scorpion 0x2e/0x2f carry the bit [L ee_start_05.bin @ 0x2bf150]; the
+                    // plain guns (0x70 = 0x12) do not.
+                    // The exploding round does NOT continue as a ricochet — the handler runs the effects
+                    // first (Effect_Create at 0x12d060), then the explode gate.
+                    if flags70 & 4 != 0 && b.bounces == 0 {
+                        let radius = d.weapons.records.get(b.weapon as usize)
+                            .map_or(0.0, |r| f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()));
+                        let damage = d.weapons.records.get(b.weapon as usize)
+                            .map_or(0.0, |r| f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap()));
+                        // Queued, not spawned: the grenade section's per-tick `explosions.clear()` runs
+                        // AFTER `update_player_bullets`, so a blast pushed here directly would be wiped
+                        // before the view sees it — the queue drains after that clear.
+                        self.pending_blasts.push((hit, radius, damage, usize::MAX, b.weapon));
+                    } else if let Some((p, dir)) = ricochet {
+                        if b.bounces < 3 {
+                            b.dead = false;
+                            b.pos = p;
+                            b.dir = dir;
+                            b.bounces += 1;
+                            b.first = false;
                         }
                     }
                 }
@@ -6287,7 +6311,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             let armed = (2..0x47).contains(&self.bond_weapon) || (0x6a..=0x71).contains(&self.bond_weapon);
             for dr in self.list.iter_mut().filter(|x| x.present) { dr.light = light; dr.opponent_info(player); dr.seen = false; dr.bond_armed = armed; }
         }
-        self.update_player_bullets(d, player);
+        self.update_player_bullets(d, player.pos);
         // The use objects' per-tick halves (`PCQWorm_Update` 0x1aee20's bullet install +
         // `Switch_Update` 0x1adea8's value/auto-return; map-tower, crate::useobj). The bullet
         // segments are this tick's paths — the game reads the class-5 contact list the same pass.
@@ -7376,6 +7400,27 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             while let Some(ev) = g.update(d.world, &mut self.rng) {
                 match ev {
                     crate::grenade::GrenadeEvent::Bounce(p) => {
+                        // fix-weapon-effects: the impact explode — `Bullet_CollisionHandler` 0x12d068-0x12d0bc
+                        // [M, disassembled]: when the weapon's `+0x70` carries bit 2 (0x4) and the contact is
+                        // not a ricochet re-entry, the bullet's object is destroyed with
+                        // `Explode_Create(radius = weapon_data+0x08, damage = +0x0C, script 0x6000052)` at the
+                        // hit point. The disc records: the MGL's 'Grenade' twin 0x2a carries it (radius 6 /
+                        // damage 75 [L ee_start_05.bin]), the 'Delay' twin 0x2b (0x280) does not — the PCSX2
+                        // session measured exactly that pair (docs/live/2026-10-13-weapon-modes-pcsx2.md:
+                        // 0x2A exploded on contact, 0x2B bounced and fuse-exploded). The frag 0x34 (0x280)
+                        // keeps the bounce-never-explodes rule.
+                        let flags70 = d.weapons.records.get(g.weapon_type as usize)
+                            .map(|r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()))
+                            .unwrap_or(0);
+                        if flags70 & 4 != 0 {
+                            let radius = d.weapons.records.get(g.weapon_type as usize)
+                                .map_or(0.0, |r| f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()));
+                            let damage = d.weapons.records.get(g.weapon_type as usize)
+                                .map_or(0.0, |r| f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap()));
+                            self.pending_blasts.push((p, radius, damage, g.owner, g.weapon_type));
+                            g.state = 2; // the object is destroyed by the blast
+                            break;
+                        }
                         if let Some(t) = d.sfx { let h = t.get(0x51c); self.audio.play3d(h.id, p, None); }
                         // `DroneFunc_HandleExplosives` (0x1435f0): the kind-2 explosive entries — a guard with the
                         // fear props within the entry's radius that sees the object sends itself msg 0x21
@@ -7388,6 +7433,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         let flags70 = d.weapons.records.get(weapon_type as usize)
                             .map(|r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()))
                             .unwrap_or(0);
+                        // fix-weapon-fire-modes (folded from s/fix-weapon-fire-modes): only `+0x70 &
+                        // 0x200` records tick a fuse at all (`Bullet_DoTrails` 0x12d890:262-281 — the
+                        // fuse gate), so a no-fuse record's expiry here is the RANGE-OUT arm, and that
+                        // is a SILENT state-4 death — no `Explode_Create` [M Bullet_update
+                        // 0x12e7b0:158-162]. The MGL 'Grenade' 0x2A / AIMS-20 0x1B (+0x70 = 0x4 [L
+                        // ee_start_05.bin]) never fuse-explode: their deaths are the contact blast
+                        // (the Bounce arm above) or this quiet removal.
+                        if flags70 & 0x200 == 0 {
+                            break;
+                        }
                         if flags70 & 0x2000 != 0 {
                         // The FLASH branch (the stun grenade 0x35): `Bullet_DoTrails` 0x12d890 [M
                         // 0x12df58-0x12e130] — `Gas_Init(0.5, 1.68, …, fx 0x200001f, 0xB)`, `Camera_Shake(2.0)`,
@@ -7432,50 +7487,20 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                             }
                             break;
                         }
-                        // `Explode_Propagate` 0x17c518 through `explode::propagate`: the full 12-case
-                        // dispatch (drones msg 9, Bond `Player_Hurt`, breakables, destroyables; the
-                        // port has no copter/vehicle/MP/GT/sensor/monitor/sub lists yet). The frag
-                        // 0x34 lands here with radius 8 / damage 100 [L record] — the real kill.
-                        let drones: Vec<(usize, V3, f32)> = self.list.iter().enumerate()
-                            .filter(|(_, x)| x.present && !x.corpse).map(|(i, x)| (i, x.pos, 0.4)).collect();
-                        let hits = crate::explode::propagate(pos, radius, damage, owner,
-                            &crate::explode::Targets { drones: &drones, player: player.pos, breaks: &[], destroys: &[] });
-                        // Bond: `Player_Hurt` (the difficulty factor is applied in `explode_propagate`).
-                        if let Some(ph) = hits.player {
-                            let before = self.health.health;
-                            // `Explode_Propagate` → `Player_Hurt` → `Player_HandlePain` (type 0): BL+0x967 = 0xC
-                            // (both sides) [M 0x1902c8:124-130].
-                            self.health.pain_generic(ph, self.difficulty, d.level, 0);
-                            self.player_hits.push((frame, owner, before - self.health.health));
-                        }
-                        // Drones: `Drone_ExplosiveHit` → msg 9 (the port routes through `on_bullet` as an impact).
-                        for (di, ddmg) in hits.drones {
-                            if let Some(dr) = self.list.get_mut(di) {
-                                dr.last_damage = ddmg;
-                                // The owner's grenade: usize::MAX = the player's throw [M +0x2B4 = the
-                                // thrower; fix-actors].
-                                if owner == usize::MAX { dr.hit_by_player = true; }
-                                dr.health -= ddmg * dr.damage_taken;
-                                if dr.health <= 0.0 { dr.health = 0.0; dr.set_state(state::DEATH_ANIM); }
-                                else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
-                            }
-                        }
-                        // The explosion visual: `Explode_Create` 0x17cbd0 Script_Loads the effect script
-                        // (0x6000052 for every disc caller of the bullet path [M 0x12cd98]) at the blast,
-                        // aligned to it, scale = radius·0.06666667 [M 0x17cbd0:84-106]. The port plays it as a
-                        // one-shot script player; its entity streams draw through the scene's
-                        // script-entity attachments. Missing from the level's lib → the player no-ops.
-                        // The blast sound itself rides the script's own Sound(0x3E) request [D].
-                        let mut bm = [[0.0f32; 4]; 4];
-                        bm[0][0] = 1.0; bm[1][1] = 1.0; bm[2][2] = 1.0; bm[3] = [pos[0], pos[1], pos[2], 1.0];
-                        self.scripts.spawn_once_scaled(usize::MAX, 0x0600_0052, bm, radius * 0.0666_6667);
-                        // `Camera_Shake(pos, radius)` only from radius 0.5 [M 0x17cc28].
-                        if radius >= 0.5 { self.shake = self.shake.max(radius); }
-                        self.explosions.push((pos, radius, damage, owner, weapon_type));
+                        // fix-weapon-effects: the blast body moved to `spawn_blast` (shared with the bullet
+                        // impact explode [M 0x12d0bc]); the loop borrows `self.grenades`, so the blast runs
+                        // from the queue after the loop.
+                        self.pending_blasts.push((pos, radius, damage, owner, weapon_type));
                         break;
                     }
                 }
             }
+        }
+        // The queued blasts (`Explode_Create` 0x17cbd0): the full blast — propagate, the 0x6000052
+        // visual at scale radius·0.0667 [M 0x17cbd0:84-106], the camera shake [M 0x17cc28].
+        let blasts = std::mem::take(&mut self.pending_blasts);
+        for (pos, radius, damage, owner, weapon_type) in blasts {
+            self.spawn_blast(d, pos, radius, damage, owner, weapon_type, player.pos, frame);
         }
         self.grenades.retain(|g| g.state < 2);
         // The HandleExplosives broadcast for the bounced explosives [M 0x1435f0 + 0x138b10]: classification by

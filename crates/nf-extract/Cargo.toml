@@ -8,6 +8,7 @@ description = "Reads the user's own 007: Nightfire disc image"
 [dependencies]
 nf-formats = { path = "../nf-formats" }
 nf-game = { path = "../nf-game" }
+nf-view = { path = "../nf-view" }
 anyhow.workspace = true
 
 [[bin]]

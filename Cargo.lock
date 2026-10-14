@@ -1004,6 +1004,7 @@ dependencies = [
  "anyhow",
  "nf-formats",
  "nf-game",
+ "nf-view",
 ]
 
 [[package]]

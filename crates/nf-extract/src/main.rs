@@ -15,6 +15,11 @@
 //! nf-extract bigf-extract <iso> <archive> <out-dir>   unpack one BIGF archive (e.g. /DRIVING/MISC.VIV)
 //! nf-extract symtab <elf>                  an ELF's .symtab as TSV (stdout)
 //! nf-extract drivingsym <iso>              DRIVING/DRIVING.SYM as TSV (stdout)
+//! nf-extract weapon-matrix <iso> [levels]  the weapon matrix (task 100d): every on-foot level ×
+//!                                          every weapon — load, give, draw, fire ×3, reload,
+//!                                          switch away/back; the mark table + aggregates + red
+//!                                          cells. `levels` = comma list (e.g. 07000005,07000011)
+//!                                          to run a subset. Needs no NF_ISO (the iso argument).
 //! ```
 
 use anyhow::{bail, Context, Result};
@@ -62,6 +67,19 @@ fn main() -> Result<()> {
         "scripts" => scripts(&IsoImage::open(a(1)?)?),
         "pose-check" => pose_check(&IsoImage::open(a(1)?)?, a(2)?, a(3)?),
         "weapons" => weapons(&IsoImage::open(a(1)?)?, args.get(2).map(String::as_str)),
+        "weapon-matrix" => {
+            let levels: Option<Vec<String>> = args.get(2).map(|l| l.split(',').map(|s| {
+                let s = s.trim();
+                if s.contains('.') { s.to_string() } else { format!("{s}.bin") }
+            }).collect());
+            let mut quiet = |s: &str| eprintln!("{s}");
+            let rows = nf_view::matrix::run(a(1)?, levels.as_deref(), &mut quiet)?;
+            print!("{}", nf_view::matrix::mark_table(&rows));
+            print!("\n{}", nf_view::matrix::aggregate_table(&rows));
+            let red = nf_view::matrix::red_cells(&rows);
+            if !red.is_empty() { print!("\nred cells (mark level weapon reason, the numbers behind them):\n{red}"); }
+            Ok(())
+        }
         "script-digest" => { print!("{}", disc::script_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "ai-path-digest" => { print!("{}", disc::ai_path_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
         "drone-digest" => { print!("{}", disc::drone_start_digest(&IsoImage::open(a(1)?)?)?); Ok(()) }
