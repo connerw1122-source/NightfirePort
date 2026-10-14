@@ -9395,3 +9395,19 @@ pure state machine + the unit test, 135/0) — the wiring moved ai_05_truck's pi
 and scoped in the report (SkinAttr morph/wslot, the 248 KB static targets buffer + the per-frame
 weights, the shader term before the palette skinning), nothing partial committed. No Rand_* draws
 landed; seed-pinned tests unaffected on the pushed tree. Report: docs/reports/fix-facial3.md.
+
+## fix-head-look (s/fix-head-look) — 2026-10-14
+Task: the playtest 1013-1758 head-look bugs (07000007): the guard's head ROLLS sideways toward the
+camera (real game: upright, yaw only), the guest's head tips UP well past the camera, the left
+guest looks over Bond's head; cut-scene heads (Kimiko) turn oddly. Find the game's head-look (the
+drone head-track used by fix-heads / guest reactions): the axis order, the yaw/pitch clamps, the
+bone, the target point (the player's eye), and the script/cut-scene gating (must NOT override a
+scene's own animation). Plus take over s/fix-facial3 (101c): merge it, make
+fix_cutscenes2_live::the_kimiko_scene_characters_play_their_face_tracks and
+gpu_skin_live::gpu_palette_matches_the_cpu_pose_on_07000005_06_07 pass for the right reason, keep
+the face work. Files: crates/nf-game/src/{anim,drone}.rs, crates/nf-view/src/scene.rs.
+Started 01:17 UTC, sandbox expires ~03:16 UTC (stop new work 02:56 UTC). Setup all in place from
+the prior session (repo, work/, ISO, nf-queue, cargo, ALSA prefix re-extracted to /home/z/alsa).
+Branch cut from origin/master 8144bd6; origin/s/fix-facial3 (9947360) merged at 16606c1 (drone.rs
++ WORKLOG additive conflicts resolved: both sides kept). Full suite started 01:21 UTC on the
+merged tree (baseline).
