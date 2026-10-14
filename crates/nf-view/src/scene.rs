@@ -1795,6 +1795,13 @@ impl Sim {
                         if cur >= 1 && cur <= 0x47 { self.gun.prev_weapon = cur; }
                         if cur >= 0x4a && cur <= 0x5e { self.gun.prev_gadget = if cur == 0x55 { 0x54 } else { cur }; }
                         self.gun.switch_request = new;
+                        // fix-fire-modes3 [M 0x1a24c8:213-228]: a LANDED twin switch resets the zoom —
+                        // `BLData+0x8D4 = 1.0` unconditionally, then `+0x8D8 = weapon_data[twin]+0x88`
+                        // (the twin's own zoom cap) with `+0x8D4` clamped to it. The port's cap follows
+                        // the equipped record per tick already (the zoom block reads +0x88 of the held
+                        // weapon), so the reset is `zoom`/`zoom_target` = 1.0.
+                        self.zoom = 1.0;
+                        self.zoom_target = 1.0;
                     }
                     if let Some(m) = sw.new_mode {
                         if let Some(fm) = self.drones.inventory.fire_mode.get_mut(self.gun.weapon as usize) { *fm = m; }
@@ -2524,6 +2531,39 @@ impl Sim {
             // and spawns on the press tick (+0x44 == 0 [M 0x1a5460:688-693]) — the camera gadget
             // 0x54 (idle 0x060005A6, no fire scripts [D probe]) photographs through this path.
             let hands = self.gun.weapon == 0x47;
+            // fix-fire-modes3 — the Phoenix Samurai's charge (the base-0x33 records: the overcharge
+            // 0x32 and the beam 0x33 both carry base id 0x33 [L ee_start_05.bin @ 0x2bf150]) while the
+            // view anim is in the fire state (`anim+0xF4 == 9`) [M Player_WeaponFiring 0x1a5460:186-202]:
+            // - the charge drain [M 0x1a5460:197-201]: `clip[0x33] (BLData+0x41C) = clip_size −
+            //   clip_size·frame/falen` while the frame is under the held record's fire-anim length
+            //   (+0x44). Only the OVERCHARGE 0x32 has a length (280 — the charge script 0x060007c2
+            //   [L]); the beam 0x33's +0x44 is 0 so its arm never runs. The drain is what makes the
+            //   ammo pane's ammo-type-31 percentage (`HUD_UpdateAmmoPane` 0x19a7f0:
+            //   `(min(100−clip, 88)·100)/88`, spent %) climb 0→100 across the charge — the PCSX2
+            //   pass's "the HUD number climbs 0 → 100".
+            // - the charge glow [M 0x1a5460:193-196]: `Light_Create(radius 5.0, intensity
+            //   2·(frame/falen)·0.75, the view model's bone 0, rgb (0,0xff,0xff) — cyan, channel 0,
+            //   life 0, kind 1, flicker 0)`, brightening across the charge ("the gun's glow
+            //   brightens"). The sim approximates the bone-0 origin with the camera (the muzzle
+            //   light's standing deviation). The game's unconditional `Rand_Rand(0)` flicker draw
+            //   (Light_Create 0x1cc3d8) lands here — before `update_with`'s spread draws — matching
+            //   its position inside `Player_WeaponFiring`, ahead of the trigger read.
+            if self.gun.fire_state && u16::from_le_bytes([w[2], w[3]]) == 0x33 {
+                let falen = u16::from_le_bytes([w[0x44], w[0x45]]);
+                let fire_h = u32::from_le_bytes(w[0xb0..0xb4].try_into().unwrap());
+                // The port's script frames are time+1 (the same convention `release_frame_reached`
+                // uses): the game reads AnimListBuild's +0x90 after the tick's advance.
+                let frame = self.view_time + 1.0;
+                if falen > 0 && self.view_script == fire_h && frame < falen as f32 {
+                    let clip_size = i32::from(u16::from_le_bytes([w[0x92], w[0x93]]));
+                    // The game stores a plain C float→s16 conversion (truncation) [M 0x1a5460:197-201].
+                    let v = (clip_size as f32 - clip_size as f32 * frame / falen as f32) as i16;
+                    if let Some(c) = self.drones.inventory.clip.get_mut(0x33) { *c = v; }
+                    if matches!(self.gun.weapon, 0x32 | 0x33) { self.gun.clip = v.max(0) as u32; }
+                    let pos = [camera[0], camera[1], camera[2]];
+                    self.drones.lights.create(5.0, 1.5 * frame / falen as f32, pos, [0, 0xff, 0xff], 0, 0, 1, 0, &mut self.drones.rng);
+                }
+            }
             let (trigger, reload) = if can_fire && (has_fire_script || !hands) { (trigger, reload) } else { (false, reload) };
             let fired = self.gun.update_with(trigger, reload, busy, params);
             // fix-gadgets-live: the AIMS-20's idle timer (`BLData+0x93a`): the game increments it while
@@ -2758,6 +2798,52 @@ impl Sim {
                 }
             }
             if release {
+                'shot: {
+                // `Player_WeaponInitBullet` 0x1a4bf0's FIRST branch [M disasm 0x1a4c30-0x1a4cd4]: a record
+                // whose +0x68 carries 0x20000 — the Remote Mine's detonator 0x38 (+0x68 = 0x00020010
+                // [L ee_start_05.bin]; the mine 0x37 = 0x00014090 lacks the bit; 0x39 is the inert
+                // sibling) — never shoots: it walks the objects, marks every player-owned bullet of
+                // this base with the 10-tick detonate fuse (BD+0xFC = 10.0, `swc1 f0,252(a1)`;
+                // `Bullet_DoTrails` 0x12d890:268-281 counts it down and blasts at < 0 with
+                // `Explode_Create(record+0x08, record+0x08, record+0x0C, …)` — radius 8 / damage 100
+                // [L record 0x37]), then `Player_WeaponHasAmmo(base)` arms the switch back to the
+                // mine (BL+0x63 = base, `sb v0,99(v1)` [M 0x1a4cb8]) — or, dry, clears the base's
+                // owned byte (+0x1BA lane [M bldata.md], `sb zero,442(v0)` [M 0x1a4cd0]) and lets
+                // `Player_GetBestWeapon` 0x1a9680 write the request [M 0x1a4ccc]. No bullet, no
+                // muzzle latch (+0x95b never sets in this arm), no casing.
+                if flags & 0x20000 != 0 {
+                    let base = self.weapons.base(self.gun.weapon as usize);
+                    for g in self.drones.grenades.iter_mut() {
+                        // The game's walk matches type-5 objects whose weapon record's +0x02 equals
+                        // the fired record's +0x02 and whose BD+0x30 is the firing player [M
+                        // 0x1a4c5c-0x1a4c88]; the port's grenade list is exactly those bullets, the
+                        // owner usize::MAX is the player. In-flight or resting — the walk has no
+                        // stuck filter.
+                        if g.state < 2 && self.weapons.base(g.weapon_type as usize) == base && g.owner == usize::MAX {
+                            g.range = g.travelled + 10.0; // the absolute BU+0xFC = 10.0 at the mark tick
+                        }
+                    }
+                    let base_u8 = base as u8;
+                    let carried = self.drones.inventory.carried.clone();
+                    let clip = self.drones.inventory.clip.clone();
+                    let weapons = &self.weapons;
+                    let has = nf_game::gun::Gun::has_ammo(base_u8, &carried, &clip, |t| weapons.ammo_type(t as usize), |t| weapons.flags(t as usize));
+                    if has {
+                        self.gun.switch_request = base_u8; // BL+0x63 = the mine [M 0x1a4cb8]
+                    } else {
+                        // Dry: the mine's clip and owned byte go, and GetBestWeapon takes the hand [M 0x1a4cbc-0x1a4cd4].
+                        if let Some(c) = self.drones.inventory.clip.get_mut(base_u8 as usize) { *c = 0; }
+                        if let Some(o) = self.drones.inventory.owned.get_mut(base_u8 as usize) { *o = false; }
+                        const BEST_WEAPON: [u16; 18] = [0x42, 0x32, 0x1a, 0x18, 0x1c, 0x16, 0x15, 0x08, 0x10, 0x0e, 0x0d, 0x0c, 0x12, 0x06, 0x04, 0x02, 0x0a, 0x01];
+                        let owned = self.drones.inventory.owned.clone();
+                        let base_of = |b: u8| weapons.base(b as usize) as u8;
+                        let has_ammo_fn = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
+                        if let Some(id) = self.gun.get_best_weapon(&BEST_WEAPON, base_of, &owned, has_ammo_fn) {
+                            self.gun.switch_request = id; // Player_GetBestWeapon writes BL+0x63 [M 0x1a9680 tail]
+                        }
+                    }
+                    break 'shot;
+                }
                 // fix-gadgets-live: the laser/stunner's shot-tick state, computed HERE where the
                 // refire that spent the round is known (the game's order: Player_RoundToFire 0x1a18e0
                 // spends, then Player_WeaponInitBullet 0x1a4bf0 runs on the same tick; its +0x95b
@@ -2836,7 +2922,11 @@ impl Sim {
                     let fuse = if flags70 & 0x200 == 0 {
                         (f32_at(0x1c) / speed).max(1.0)
                     } else if flags70 & 0x10000 != 0 { 300.0 } else { 210.0 };
-                    let fuse = if wt == 0x37 { 420.0 } else { fuse };
+                    // The mine 0x37 thrown by the PLAYER: BU+0xFC = 7777.0 — it waits for the
+                    // detonator and never self-detonates [M Bullet_init 0x12c5a0:196-223 — the
+                    // owner obj+0xff == 3 arm; guard-thrown mines keep 420]. The detonator's fire
+                    // re-arms the placed mines to 10.0 [M Player_WeaponInitBullet 0x1a4bf0].
+                    let fuse = if wt == 0x37 { 7777.0 } else { fuse };
                     // The blast damage: `weapon_data+0x0C` [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` →
                     // Explode_Create's f14 → EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15);
                     // radius = $f12/$f13 = weapon_data+0x08]. The `addiu $t2, $zero, 0x64` (100) is the
@@ -2917,6 +3007,7 @@ impl Sim {
                             }
                         }
                     }
+                }
                 }
             }
         }

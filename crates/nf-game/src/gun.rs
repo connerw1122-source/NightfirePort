@@ -331,7 +331,13 @@ impl GunParams {
             shots_per_pull: u16::from_le_bytes([w[0x28 + 2 * mode.min(3)], w[0x29 + 2 * mode.min(3)]]) as i32,
             interval: u32_at(0x40) as f32,
             clip: u16::from_le_bytes([w[0x92], w[0x93]]) as u32,
-            ammo_per_shot: (w[0x91] as u32).max(1),
+            // `Player_RoundToFire` 0x1a18e0 checks and spends the RAW +0x91 byte
+            // (`(short)(param_2 & 0xff)` against the clip, `-(param_3 & 0xff)` on the spend): a 0
+            // clip-add is always fireable and spends nothing — the Remote Mine's detonator 0x38/0x39,
+            // the Stunner twins 0x4b/0x4d and the Shaver twins 0x5a/0x5c all carry +0x91 = 0
+            // [L ee_start_05.bin]. The old `.max(1)` turned the zero-spend into a needs-1-round gate
+            // and refused the detonator's fire outright (the F family: sounds, no shot tick).
+            ammo_per_shot: w[0x91] as u32,
             reload_ticks: reload_ticks(start_h, reload_h, flags68, &script_len),
             one_at_a_time: flags68 & 0x100 != 0,
             reload_start_ticks: len_of(start_h),
