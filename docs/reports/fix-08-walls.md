@@ -104,22 +104,21 @@ node-15 materials cull while the room's furniture draws (anti-tautology sister).
   27 ignored (18 min)**, the 3 = the allowed `disc_golden` trio, no TIMEOUT/CRASH.
 - Targeted post-fix: `fix_08_walls_live` 4/4, `fix_swim_vent5_live` 2/2, `fix_wire2_live` 3/3 on
   the merged tree (origin/master merged at `174804b`, WORKLOG both sides kept).
-- Full suite on the final merged tree: started in the background at ~05:40 UTC (suite_final.out);
-  the sandbox deadline (05:50) hits before it completes. **The next session must re-run
-  `tools/test/suite.py` on this branch tip before merging** — the only game-code changes vs the
-  green baseline are the two files above (`wire.rs`, `scene.rs`), and the directly-affected
-  suites are green.
+- **Full suite on the final merged tree (origin/master merged at `174804b`, branch tip
+  `4e9ad15`): 932 passed, 3 failed, 27 ignored (19 min)** — the 3 = the allowed `disc_golden`
+  trio, no TIMEOUT/CRASH. The only game-code changes vs the green baseline are the two files
+  above (`wire.rs`, `scene.rs`); the directly-affected suites (the 08 four, vent5, wire2) are
+  green on the same tree.
 
 ## What's left
 
-1. Re-run the full suite on the branch tip (see above).
-2. The 05 FindCel tie-break: when the port's scoped buckets resolve the courtyard-floor geometry,
+1. The 05 FindCel tie-break: when the port's scoped buckets resolve the courtyard-floor geometry,
    drop the 12.0 distance factor from the arm region (the deviation note in scene.rs) and let the
    straddle set stand alone [M 0x1eac98].
-3. The east-balcony jump initially did not tick under `Bond::stand_at` placement (all guards
+2. The east-balcony jump initially did not tick under `Bond::stand_at` placement (all guards
    satisfied, no jump) — `Bond::new` placement ticks fine; unexplained, harness-only, no game
    impact found. Worth a look if another test lands there.
-4. The stale-viewer-cell edge (`eye_cell` keeps a cell whose bbox contains the eye even across
+3. The stale-viewer-cell edge (`eye_cell` keeps a cell whose bbox contains the eye even across
    rooms; cell 15's bbox covers the whole east side) — not observed leaking in any sampled view,
    listed for the sweep's next pass.
 

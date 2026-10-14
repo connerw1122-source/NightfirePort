@@ -9933,7 +9933,7 @@ Task 101h, both symptoms from the 1013-1758 playtest at 07000008's safe area (~(
   the game-mask never marks cell 15 from the missile room (24 yaws × 2 aspects, the port's exact
   camera math) and every node-15 material culls while the furniture draws. Pinned by
   `the_missile_room_visible_set_excludes_the_exterior_wall`; live checks in the report.
-- Suite: baseline on master 906 passed / 3 failed (the allowed disc_golden) / 27 ignored;
-  targeted post-fix suites green on the merged tree (origin/master merged 174804b). The full
-  re-run on the branch tip was still executing at the sandbox deadline — the next session must
-  re-run tools/test/suite.py before merging. Report: docs/reports/fix-08-walls.md.
+- Suite on the final merged tree (origin/master merged 174804b): **932 passed, 3 failed (the
+  allowed disc_golden trio), 27 ignored (19 min)**, no TIMEOUT/CRASH; baseline on master 906/3/27;
+  the targeted post-fix suites (the 08 four, vent5 2, wire2 3) green on the same tree.
+  Report: docs/reports/fix-08-walls.md.
