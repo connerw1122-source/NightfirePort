@@ -240,14 +240,25 @@ impl CollisionWorld {
         Self::build_scoped(level, instances, None)
     }
 
-    /// `build` with the cel scope: each instance joins the cell containing its world sphere centre
-    /// (`Control_BuildWorldSph` 0x133070 → `build_FindCel` 0x1c8cb0 over the runtime cels, smallest
-    /// volume on ties — the port's `find_cel` tie-break; `build_LinkToRoom` 0x1c9680 links the game's
-    /// objects the same way). Instances whose centre maps to no cell stay in the `always` bucket.
+    /// `build` with the cel scope. Each instance's runs join **its own runtime cel's bucket**: the
+    /// instances are the cel placements in parse order (`Level::instances(true)`) and the scope
+    /// graph's cells are `parse_cel_graph`'s one-cell-per-placement list in the same order, so the
+    /// k-th pushed instance IS the k-th cell — `parsemap_block_map_data_static` 0x1d1998 creates
+    /// one runtime cel per placement whose glist IS the placement's object, and the game's
+    /// per-hit cel word (`HITDATA+0x54`, the input of `Collide_SphereIntersect` 0x1ec940's
+    /// candidate-scoped queries and of the chain-owner pick `build_link_objects_to_rooms`
+    /// 0x1c9150 makes at load) carries that cel. (The old smallest-volume-containing-bbox rule
+    /// put a room's floor in whatever tiny generic bbox held the floor's centre — the 07000006
+    /// guard-room floor under the table's bbox, the courtyard floor under the fountain's — so
+    /// every candidate room's bucket read empty at `build_chains` time and the generics were
+    /// left unchained: the fountain, the guard-room furniture and the lockers never drew.)
+    /// fix-missing-objects. `attribute_scope` re-keys the generics' runs to their chain owners
+    /// after `build_chains` (the game's final attribution); instances whose own cell is out of
+    /// range stay in the `always` bucket.
     pub fn build_scoped(level: &Level, instances: &[Instance], graph: Option<ScopeGraph>) -> CollisionWorld {
         let mut stat = Geo::default();
         let mut missile = Geo::default();
-        // Per pushed object: the cell its world sphere centre lands in.
+        // Per pushed object: its own runtime cel (the pushed ordinal — see the doc above).
         let mut obj_cell: Vec<Option<u32>> = Vec::new();
         for inst in instances {
             let Some(c) = &level.maps[inst.map].objects[inst.object].collision else { continue };
@@ -257,15 +268,8 @@ impl CollisionWorld {
                 missile.push(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)));
                 continue;
             }
-            if let Some(g) = &graph {
-                let centre = transform(&inst.matrix, level.maps[inst.map].objects[inst.object].centre);
-                obj_cell.push(g.cells.iter().enumerate()
-                    .filter(|(_, (lo, hi))| (0..3).all(|k| lo[k] <= centre[k] && centre[k] <= hi[k]))
-                    .min_by_key(|(_, (lo, hi))| {
-                        let v: f32 = (0..3).map(|k| hi[k] - lo[k]).product();
-                        (v * 1e6) as i64
-                    })
-                    .map(|(i, _)| i as u32));
+            if graph.is_some() {
+                obj_cell.push(Some(obj_cell.len() as u32));
             }
             stat.push(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)));
         }
