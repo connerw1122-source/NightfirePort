@@ -4743,7 +4743,7 @@ impl Drone {
         Some(crate::grenade::Grenade {
             pos: origin, velocity: [dir[0] * speed, dir[1] * speed, dir[2] * speed], speed,
             travelled: 0.0, range, damage, radius, weapon_type, mesh: d.weapons.projectile_mesh(self.weapon as usize),
-            owner, state: 0, bounces: 0, smoke_popped: false,
+            owner, state: 0, bounces: 0, smoke_popped: false, resting: false,
         })
     }
 
@@ -5094,6 +5094,10 @@ pub struct Drones {
     /// writes it each frame; the music update at the tick's end consumes it (fix-party-mission item 4 —
     /// the game's `UpdateMusicalEvents` runs every frame whether or not an output device exists).
     pub iop_section: i32,
+    /// fix-grenade-throw: the smoke grenade's occluder clouds (`Occlude_Create(pos, 1200, 1)` 0x17ea80,
+    /// mesh 0x2000273, `Occlude_Update` 0x17eba0's 1200-tick countdown). Fields on their own lines
+    /// (merge lesson 4).
+    pub smoke_clouds: Vec<crate::grenade::SmokeCloud>,
     /// `DAT_0029aa86` — the interrogate latch: 0 while the party is calm, 1 once an interrogation began
     /// (`DroneVision_BeginInterogate` 0x1782a8; `EndInterogate` 0x1782c8 never clears it on 07000007).
     /// Gates `DroneFunc_DoForcedAttack` 0x148c60's forced attacks on 07000007 (playtest item 3: one punch
@@ -5361,6 +5365,8 @@ impl Drones {
             difficulty: 2, // [M bootup 0x1c7e78:25 GameState._40_4_ = 2]
             // fix-cover-remainder: the HandleExplosives queue (own line — merge lesson 4).
             explosive_queue: Vec::new(),
+            // fix-grenade-throw: the smoke grenade's occluder clouds (`Occlude_Create` 0x17ea80).
+            smoke_clouds: Vec::new(),
     };
         drones
     }
@@ -5626,7 +5632,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         let mut bm = [[0.0f32; 4]; 4];
         bm[0][0] = 1.0; bm[1][1] = 1.0; bm[2][2] = 1.0; bm[3] = [pos[0], pos[1], pos[2], 1.0];
-        self.scripts.spawn_once_scaled(usize::MAX, 0x0600_0052, bm, radius * 0.0666_6667);
+        // The blast script plays at scale = SCRIPTINFO+0x94 = param_1 = f12 = the radius [M disasm
+        // 0x12ce1c-0x12ce2c f12 = weapon_data+0x08; 0x17cbd0 stores param_1 into SCRIPTINFO+0x94;
+        // Script_GetInterp 0x1da158:117 multiplies the key scales by it]. fix-grenade-throw: the
+        // port used radius·0.0667 (obj+0xE8 — a collision-sphere field, read by nothing visual) —
+        // 15× too small: the user's "The explosion is very small and not accurate to the game."
+        self.scripts.spawn_once_scaled(usize::MAX, 0x0600_0052, bm, radius);
         // `Camera_Shake(pos, radius)` only from radius 0.5 [M 0x17cc28].
         if radius >= 0.5 { self.shake = self.shake.max(radius); }
         self.explosions.push((pos, radius, damage, owner, weapon_type));
@@ -6308,6 +6319,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         // The gas puffs (`gases_smoke` 0x1ab2d0 runs in the object handler every frame).
         self.gas.update();
+        // fix-grenade-throw: the smoke clouds' lifetime countdown (`Occlude_Update` 0x17eba0:
+        // obj+0xF4 − 1 per tick, 0 → dead).
+        for c in &mut self.smoke_clouds { c.ticks -= 1; }
+        self.smoke_clouds.retain(|c| c.ticks > 0);
         // fix-impacts: `Debris_Update` 0x1aac00 — debris physics (gravity, spin, fade, life).
         self.effects.update();
         // fix-impacts: `Bullet_casing_update` 0x12faa0 — casings fly, land (the material sound via
@@ -7516,7 +7531,26 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                             g.state = 2; // the object is destroyed by the blast
                             break;
                         }
-                        if let Some(t) = d.sfx { let h = t.get(0x51c); self.audio.play3d(h.id, p, None); }
+                        if let Some(t) = d.sfx {
+                            // The bounce sound's gate [M Bullet_CollisionHandler 0x12ce80 — the block at
+                            // LAB_0012d4bc]: the flash (`+0x70 & 0x2000`) plays 0x15 and the smoke
+                            // (`& 0x20000`) plays 0x13 on the FIRST bounce only (counter == 0); every
+                            // other weapon plays 0x51c when the bounce counter is EVEN and < 0xF —
+                            // counters 0,2,4,…,14, 8 sounds max. The game reads the counter BEFORE its
+                            // own increment; the port's `bounces` is already post-increment here, so
+                            // the gate reads bounces − 1. fix-grenade-throw: the port played a sound
+                            // on EVERY impact — the rested grenade's per-tick micro-collisions made it
+                            // rapid (the user's playtest).
+                            let flags70b = d.weapons.records.get(g.weapon_type as usize)
+                                .map(|r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()))
+                                .unwrap_or(0);
+                            let n = g.bounces.wrapping_sub(1); // the game's pre-increment counter
+                            let id = if flags70b & 0x2000 != 0 { (n == 0).then_some(0x15) }
+                                else if flags70b & 0x20000 != 0 { (n == 0).then_some(0x13) }
+                                else if n & 1 == 0 && n < 0xf { Some(0x51c) }
+                                else { None };
+                            if let Some(sid) = id { let h = t.get(sid); self.audio.play3d(h.id, p, None); }
+                        }
                         // `DroneFunc_HandleExplosives` (0x1435f0): the kind-2 explosive entries — a guard with the
                         // fear props within the entry's radius that sees the object sends itself msg 0x21
                         // [M 0x1435f0:30-52]. The port triggers once at the bounce (the game rescans every frame
@@ -7562,13 +7596,17 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         // re-arms to 1200 ticks (0x44960000; 3600 for the 0x69 family), `Occlude_Create(pos,
                         // 1200, 1)` is the cloud and `Sound_Play3D(0x14)` pops it [M 0x12e114-0x12e1b4]; the
                         // second expiry falls through to the death [M 0x12e118 `bnel +0xF6, 0 → 0x12e1fc`].
-                        // No damage, no whiteout, no script. The port has no occluder system — the cloud
-                        // visual is missing (live-check item); the pop and the re-arm are the Sim half.
+                        // No damage, no whiteout, no script.
                             if !g.smoke_popped {
                                 g.smoke_popped = true;
                                 g.state = 1;
                                 g.range += 1200.0;
                                 if let Some(t) = d.sfx { let h = t.get(0x14); self.audio.play3d(h.id, pos, None); }
+                                // `Occlude_Create(pos, 1200, 1)` [M 0x12e114-0x12e1b4]: the cloud
+                                // visual — mesh 0x2000273, a 1200-tick countdown (Occlude_Update
+                                // 0x17eba0). fix-grenade-throw: the port played the pop but spawned
+                                // no cloud — the user's "Smoke grenade didn't work."
+                                self.smoke_clouds.push(crate::grenade::SmokeCloud { pos, mesh: 0x0200_0273, ticks: 1200 });
                             }
                             break;
                         }

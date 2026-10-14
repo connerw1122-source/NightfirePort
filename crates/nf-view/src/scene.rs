@@ -2346,7 +2346,7 @@ impl Sim {
                         // this only re-points the twins.
                         weapon_type: self.gun.weapon as u16,
                         mesh: self.weapons.projectile_mesh(self.gun.weapon as usize),
-                        owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false,
+                        owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: false,
                     });
                 } else if spawn_shot {
                     self.last_shot = Some(self.drones.frame);
@@ -3834,6 +3834,21 @@ impl Scene {
                 }
             }
         }
+        // fix-grenade-throw: the smoke grenade's occluder cloud (`Occlude_Create(pos, 1200, 1)`
+        // 0x17ea80 — mesh 0x2000273, kind 1): a static class-0x2A object whose only update is the
+        // 1200-tick countdown (0x17eba0), drawn at `obj+0x30` with no rotation. One Effect pool per
+        // level archive that resolves the mesh, 4 slots (the game caps nothing; clouds are rare).
+        if drones.is_some() {
+            if let Some(&(m, o)) = level.by_hash.get(&0x0200_0273) {
+                let ident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
+                let cplacement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
+                for slot in 0..4 {
+                    let cinst = Instance { map: m, object: o, matrix: ident, placement: cplacement.clone() };
+                    add_instance(level, &cinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                    attachments.push(Attachment { character: 0, bone: 0, local: cinst.matrix, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None, effect: Some((3, slot, 0x0200_0273)) });
+                }
+            }
+        }
         // Level coronas (`Corona_Create` 0x18da00, placement type 0xFC): class-1 objects with NO update
         // function — static glow quads at their placement transforms, in every view mode. The glist's +0x44
         // flags word (bit 0x1: `View_AddObjects` draw list 1, mirrored sort key) is the object's own flags
@@ -4560,6 +4575,18 @@ impl Scene {
                             let eul = [d.spin[0] * age, d.spin[1] * age, d.spin[2] * age];
                             let mut m = nf_formats::placement::object_matrix(eul, d.pos);
                             for r in 0..3 { for k in 0..3 { m[r][k] *= d.scale; } }
+                            m
+                        }
+                        _ => far,
+                    },
+                    // fix-grenade-throw: the smoke grenade's cloud (`Occlude_Create` 0x17ea80) — a
+                    // static object at `obj+0x30`, no rotation (`Occlude_Update` 0x17eba0 only counts
+                    // down; `Control_GetObjMatrix` 0x134210 has no euler write on this class).
+                    3 => match s.drones.smoke_clouds.get(slot) {
+                        Some(c) => {
+                            let mut m = [[0.0f32; 4]; 4];
+                            m[0][0] = 1.0; m[1][1] = 1.0; m[2][2] = 1.0;
+                            m[3] = [c.pos[0], c.pos[1], c.pos[2], 1.0];
                             m
                         }
                         _ => far,
