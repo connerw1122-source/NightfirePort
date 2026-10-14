@@ -45,3 +45,6 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 - **Live checks:** list what the main agent should check in PCSX2 (spot, action, expected result) and in nf-view (`--bond` spots).
 
 **Branch:** `s/ingame-dev-menu`.
+
+---
+claimed-by: sandbox3 at 2026-10-14T00:29Z
