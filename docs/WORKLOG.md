@@ -9244,6 +9244,11 @@ Stage Summary:
   the flicker machine is faithful; the placement census settled late-spot-creation as a
   non-mechanism. Live checks for the main agent: the 6 items in the report.
 
+## fix-spawner-remainder (s/fix-spawner-remainder) — 2026-10-13
+
+Task 286: GAPS G-025 (the spawner mode-3 wave-delay byte +0x1F and the power-station spawn SFX
+branch, DroneSpawner Control 0x137e68) and G-040 (07000001's second gate guard, placement 277,
+script 0x0600007f not in the kind-7 NIS archive). Work starting.
 
 ---
 Task: fix-auto-switch
@@ -9320,6 +9325,86 @@ Work Log:
   drone.rs comment; the 61fa5ce OFF is now evidence-backed.
 - Report: docs/reports/fix-nav-remainder2.md. Files: drone.rs, nav_kick_live.rs (the drive test's
   ignore attribute), WORKLOG, the report. No test loosened.
+### fix-spawner-remainder — outcome
+
+- G-025: the "+0x1F wave-delay byte" was a misread (it is the initial-fill/no-stealth-checks flag,
+  already modelled as `immediate`; no delay value exists anywhere in the spawner family). The
+  power-station stinger (0x137e68:191-200, Drone_SfxInfo[0xD6/0xD7], 600-frame throttle,
+  Rand_Rand(2) between the alive scan and the selection) is ported via `Spawner::sfx_request`;
+  the disc census shows NO mode-3 spawner on 0c/0d, so the branch is unreachable on retail.
+- Two real divergences fixed in the same path: the min-distance screen is a PRE-selection
+  usability test (the draw counts only usable templates — an RNG-order fix), and wave exhaustion
+  is the pure counter compare (the used-all short-circuit killed single-template multi-wave
+  spawners, e.g. 07000012 placement 647).
+- G-040: closed as a misdiagnosis — the hash is 0x06000087 (pack 07800001.bin, ported since
+  fix-cutscenes); placement 277 is the intro cut-scene script player; no global script archive
+  exists. `walk_07000001_live::the_second_gate_guard_wakes_on_the_intro_scripts_channel` proves
+  the gate guards wake.
+- Suite: 156 binaries — nf-game 33/0, nf-formats+nf-audio 12 (3 allowed disc_golden), nf-view
+  111/0. Report: docs/reports/fix-spawner-remainder.md. ntfy 429-quota failure recorded.
+## fix-anim-events (s/fix-anim-events) — 2026-10-13
+
+Task 288, G-030: the animation scripts' events with effects. Census first (all 99 FILES.BIN
+archives, 18,231 scripts, 50,279 commands, 0 parse failures): only opcodes 0/1/4 exist on the
+disc; op-4 kinds 0/4/5 footsteps, 1 player toggle (52), 2 EventFunc (12,947 — args 0-16, 18, with
+the fire flags 0xF/0x10/0x12 at 86%), 3 stop-sfx (53), 6 effect (1,294), 7 fire bullet (4, one
+script). Ported this session (drone.rs): EventFunc cases 2 (DroneWeap_ChangeWeapon by the DRONE's
++0x45 byte — disasm 0x13b7dc `a1 = lb 0x45(a2)` — not the event arg; entries 1/6 of the 0x2fb740
+jump table), 5/10/0xB (DroneWeap_CloseCombatImpact 0x1789c0: Bullet_init records 99/100/0x65/0x66,
+range 2.0 kick / 1.75 punch + the 60° facing gate, no accuracy roll), 9 (PlaceTertiary 0x17a848 =
+a ThrowGrenade tail call), the 0.0 < +0xAC health gates on 1/5/6/9/0xB/0xE (the script==+0x530
+gate holds structurally — the port only runs the current script's commands); PlayFiringAnim
+(0x13da48) inside handle_firing: the 0x1C/0x1D recoil weapons (DefaultInit 0x14b300:801-811,
++0x3E) fire only on the 0x12 event's +0x21 and play the 0x5C recoil, zeroing +0x596/0x598 and
+setting +0x57B — the guards' 0x16/1/6 weapons are unaffected. Tests: anim_events_live.rs, one per
+ported kind on real disc scripts (melee 07000005/060002ba — the punch connects in range and never
+out of 1.75; weapon change 07000001/06000330; the 0x12 flags via 07000005/0600029f; tertiary
+07000012/060007ac), 4 passed + the PlayFiringAnim shot scenario ignored (the harness's neutral
+state never lets the shot come due — needs a state whose UPDATE leaves firing/class alone).
+Left (censused + decompile-cited in docs/systems/anim-engine.md): op-4 kinds 1/6/7, EventFunc 0xE
+(partner messaging), the other 53 ChangeWeapon entries, footprint decals, the +0x45 setup read.
+Shared files: drone.rs only (fields on their own lines, merge lesson 4).
+
+Task ID: fix-portal-sweep
+Agent: worker (portal-sweep session)
+Task: Portal culling must never hide what the player can see, on every level. Playtest found
+07000005 --bond 16.67,30.04,58.60,1.755,-0.001 (snow trench between stone walls near grapple
+point #282) culling the near trench walls with the walk ON (NF_NOPORTAL=1 draws them). (1)
+Reproduce headlessly: eye cel / visited rooms / chain nodes / World draw counts on vs off, find
+the cels holding the trench walls and why the walk drops them. (2) A sweep test
+(portal_sweep_live.rs): every on-foot level, eye at each start point + grid along nav nodes,
+4 directions; every frustum-kept World cel within ~30 units with clear LOS must be kept by the
+walk; pin counts. (3) Keep the four ground-truth spots green. (4) Per-level frustum-only
+fallback with the failing reason documented where a level can't be made correct.
+
+Work Log:
+- Session started 00:23 UTC (deadline ~02:22 UTC). Branch s/fix-portal-sweep created from
+  origin/master (3c77a9d), pushed with this entry.
+- Reproduced the trench headlessly (portal_sweep_live.rs probe_trench_spot_07000005): the eye
+  resolves to cell 14 (the giant outdoor box, bbox = the whole map); the walk visits only
+  [14, 136, 31, 30, 16]; the trench-wall generics ride the chains of the overlapping rooms
+  15/24 (per build_link_objects_to_rooms 0x1c9150's closest-hit owner pick — the metric is
+  Intersect_PointGeom's point-to-geometry distance [M 0x1ec940->0x1ebaa8 type 0x101], so the
+  owners are what the game's own rule computes); View_AddCels 0x1e6ba0 only walks the chains of
+  VisCelList rooms, so with the eye in 14 the near walls cull (walk keeps 719 World draws vs
+  frustum-only 1809; 806 draws within 45 units all hidden). The game draws them because ITS eye
+  cel resolves to 15 there — build_FindCel 0x1c8cb0's per-cel up/down ray tie-break, whose
+  per-cel object lists the port only approximates (live check filed).
+- The fix: scene::near_los_rescue — the game mask is unioned with the generic cels (0x8017-8019,
+  build_link_objects_to_rooms's linked classes) that Vision_InView keeps, whose closest bbox
+  point is within 30 units of the eye and whose static LOS ray (world::segment_hit_static, a new
+  minimal nf-game hook; the global ray was blocked by Bond's own dynamic collision) is clear,
+  stopped 0.5 units short (the collision meshes run up to ~0.3 in front of the render bboxes [D
+  trench probe: node 40's face at 0.27]). Additive only: room cels and objects stay on the
+  strict VisCelList mask, so the 07 ballroom-window building stays hidden (ground_truth test:
+  rescue 0 at the window, the courtyard, the 06 start; the clock hall gains one prop, cells
+  50/45/46/269/270 stay).
+- The sweep (sweep_every_level_near_los_never_culled): 3020 spots / 12080 spot-directions over
+  27 on-foot levels (the spawn + the nav-node grid, 4 yaws). The RAW walk drops near unoccluded
+  generics on 19 levels (counts in the report; 0700000a worst at 4706, the trench's 05: 1382);
+  the shipped mask (walk + rescue) is clean on all 27 — no level needs the frustum-only
+  fallback this session.
+
 
 Task ID: fix-ingame-dev-menu
 Agent: worker (fix-ingame-dev-menu session)

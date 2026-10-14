@@ -840,6 +840,64 @@ pub fn portal_visible_cels_game_from_cell(graph: &CelGraph, start: usize, eye: [
     Some(vis)
 }
 
+/// The sweep's LOS ray (fix-portal-sweep): the segment from `eye` to `target` (the closest point
+/// of a cel's bbox) against the STATIC collision world, stopped 0.5 units short of the target —
+/// the closest bbox point sits on the cel's own collision surface and the collision meshes run up
+/// to ~0.3 units in front of the render glist bboxes [D the 07000005 trench probe: node 40's face
+/// at 0.27 units], so a full-length ray always "hits" the very cel it is trying to clear. An
+/// occluder still blocks whenever its surface is farther than the margin from the target.
+/// `d` = the eye→target distance (0 = the eye inside the bbox).
+pub fn los_ray_clear(world: &nf_game::world::CollisionWorld, eye: [f32; 3], target: [f32; 3], d: f32) -> bool {
+    const LOS_SHORT: f32 = 0.5;
+    let dir = [target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]];
+    let shrink = if d > LOS_SHORT { (d - LOS_SHORT) / d } else { 1.0 };
+    let to = [eye[0] + dir[0] * shrink, eye[1] + dir[1] * shrink, eye[2] + dir[2] * shrink];
+    world.segment_hit_static(eye, to).is_none()
+}
+
+/// The near-LOS rescue (fix-portal-sweep): the playtest found 07000005
+/// `--bond 16.67,30.04,58.60,1.755,-0.001` (the snow trench between stone walls) culling the near
+/// trench walls with the walk ON. The chain there is sound per the game's own rules — the trench
+/// generics sit (per `build_link_objects_to_rooms` 0x1c9150's closest-hit owner pick, the metric
+/// being `Intersect_PointGeom`'s point-to-geometry distance [M 0x1ec940→0x1ebaa8 type 0x101]) on
+/// the chains of the overlapping rooms 15/24, and `View_AddCels` (0x1e6ba0) only walks the chains
+/// of VisCelList rooms, so the game itself draws them only because its eye cel resolves to 15
+/// there — `build_FindCel` (0x1c8cb0)'s per-candidate up/down ray tie-break, whose outcome depends
+/// on the per-cel object lists the port only approximates (`world.closest_point_scoped`
+/// attribution). Where that approximation disagrees, the walk drops geometry the player is
+/// touching. This pass restores the game's own floor: a cel the port's walk drops still draws when
+/// (1) `Vision_InView` (0x1e89e0, the signed-distance form fix-portal6 ships) keeps its sphere,
+/// (2) the closest point of its bbox is within `max_dist` of the eye, and (3) the segment from the
+/// eye to that point crosses no collision (the sweep's ray). Only the generic classes
+/// `build_link_objects_to_rooms` links ride it (0x8017..0x8019 — the chain nodes; room cels and
+/// their objects stay on the strict `VisCelList` mask, so intentionally hidden rooms — the
+/// 07000007 ballroom-window building the game hides [L ground-truth doc] — stay hidden).
+/// Returns the number of rescued cels.
+pub fn near_los_rescue(
+    graph: &CelGraph, mask: &mut [bool], eye: [f32; 3], sides: &[[f32; 4]; 4],
+    world: &nf_game::world::CollisionWorld, max_dist: f32,
+) -> usize {
+    let mut rescued = 0usize;
+    for (i, c) in graph.cells.iter().enumerate() {
+        if mask[i] { continue; }
+        if !matches!(c.flags & 0xffff, 0x8017 | 0x8018 | 0x8019) { continue; }
+        // The port's unresolvable-object cells stand for placements the parse could not resolve
+        // (build_chains skips them the same way); a non-finite or reversed bbox would panic the
+        // clamp below and can never pass the game's own tests — skip both.
+        if c.min == [0.0; 3] && c.max == [0.0; 3] && c.sphere.1 == 0.0 { continue; }
+        if (0..3).any(|k| !c.min[k].is_finite() || !c.max[k].is_finite() || c.min[k] > c.max[k]) { continue; }
+        if !vision_in_view(c.sphere.0, c.sphere.1, sides) { continue; }
+        let mut tp = [0f32; 3];
+        for k in 0..3 { tp[k] = eye[k].clamp(c.min[k], c.max[k]); }
+        let d = ((tp[0] - eye[0]).powi(2) + (tp[1] - eye[1]).powi(2) + (tp[2] - eye[2]).powi(2)).sqrt();
+        if d > max_dist { continue; }
+        if !los_ray_clear(world, eye, tp, d) { continue; }
+        mask[i] = true;
+        rescued += 1;
+    }
+    rescued
+}
+
 /// One `ClipPortalWithPlane` (0x1e7fa0) pass: Sutherland–Hodgman keeping `value >= 0`, with the game's
 /// compaction (a vertex is kept only when its successor is farther than √1e-7). `None` = every vertex
 /// inside (the game's return 0 — the polygon passes through unchanged), `Some(v)` = the clipped
