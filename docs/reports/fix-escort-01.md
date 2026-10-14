@@ -117,6 +117,12 @@ the sister). The comment in ai_live.rs records why.
   also recorded by fix-hud-radar). The foreground chunk list above is what fits the window; the
   slim-ISO `disc_golden`/`pss_movies_live` exceptions were not reached this session.
 - Determinism untouched: no RNG draws added, no wall-clock, fixed 60 Hz.
+- **Post-report sweep** (the same tree, foreground): 12 nf-view binaries — campaign_flow_live 6,
+  walkreal 01/02/03/04/09/0b/12, fix_truck_live, fix_death_restart_live, fix_restart_target_live,
+  fix_objective_messages_live, fix_objective_banner_live — **34 passed, 0 failed**. Session total
+  across the four crates: **387 passed, 0 failed** (nf-game 266 + nf-formats/nf-audio 87 + nf-view
+  34); the un-run remainder is the long tail of nf-view's slow binaries and the 3 slim-ISO
+  `disc_golden` exceptions.
 
 ## Files touched
 
