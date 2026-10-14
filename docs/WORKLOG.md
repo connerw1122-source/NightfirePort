@@ -11969,3 +11969,11 @@ list's unlock states, the F8 render points).
   it fine, probe-backed). Sisters: the AND-mux before/after pairs + 4a's mid-ride OFF check.
 - 21:05: merged origin/master (9c55eace — the fix-character-room-light landing, docs/tests only, no production code). The matrix binary first-hand: 341 s in-suite (6 passed / 24 ignored), one sweep level (NF_MATRIX=07000001 --ignored) 161 s -> 27 levels ~4300 s, the held timeout's cause. Full suite running for the final total.
 - 21:29: DONE. The suite total on the final tree: 1096 passed / 6 failed (3 disc_golden allowed + 3 pre-existing pylon) / 63 ignored (the 24 #[ignore]d sweep levels included) / 32 min / ZERO timeouts — the held weapon_matrix_live timeout is gone (the binary: 341 s, 6 passed / 24 ignored). Report: docs/reports/weapon-matrix4b.md.
+
+---
+Task: fix-guard-weapons3
+Agent: worker (sandbox web-2cf47bf2)
+Task: the HELD merge of s/fix-guard-weapons2 + master (+ fix-aim-raise2) fails two master-passing tests: fix_guard_weapons_live::the_3x3_hit_rate_and_damage_matrix_matches_the_game ("07000005.bin diff 3 weapon 0x16: hit rate 0.520 vs model 0.975") and nf-game ai_live::guard_takes_cover_like_the_game ("UnderCoverAim lasted 90 (live 37)" — the known RNG-stream-shift symptom). Find the difficulty-3/0x16 hit-rate gap (the TooClose, first-moved, sighting-time gates vs master's Bond/drone state) and the moved Rand_* draw; match the game's draw order exactly. Files: crates/nf-game/src/{drone,bullet}.rs.
+
+Work Log:
+- 22:47 UTC: base s/fix-guard-weapons2 (e66aa360) checked out, origin/master merged (e10f157a — WORKLOG conflict resolved append-only). Branch s/fix-guard-weapons3 created. Reproduction next.
