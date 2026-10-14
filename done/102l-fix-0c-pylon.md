@@ -37,3 +37,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox4 at 2026-10-14T09:59Z
+
+---
+## Report (done, 2026-10-14T11:22Z)
+
+Closed by the driver: the report is on `s/fix-0c-pylon` (docs/reports/fix-0c-pylon.md); the worker didn't run finish.sh.
