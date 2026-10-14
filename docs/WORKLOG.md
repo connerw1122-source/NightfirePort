@@ -10089,3 +10089,41 @@ psiBuildMatrixPalette 0x111498 reads sAnimObject+0x94), so the 22-channel face t
 the face bones and the 222-channel body track the body — port the mapping instead of first-writer /
 widest-wins. Tests: the Kimiko cast at scripted world positions AND the face bones moving over the
 face track's frames, with sister assertions.
+
+### fix-cutscene-faces — outcome (07:30 UTC)
+
+**The face track never was a bone track — its channels are the skin's facial MORPH weights, and the
+game says so three ways.** The failing premise ("the face track must move its bones") was the
+weights-as-bones misread; the fix keeps the cast AND unfreezes the mouths, the game's way:
+
+- **The window classifier is the sequence's flags bit 0x8** [M AnimProcessScriptCmds 0x1c1b38:
+  `uVar5 = *(int *)(lVar6 + 0xc) >> 3 & 1` on the raw seq record — a facial window sets the script
+  node's 0x40000 flag and plays in the +0x54 facial slot, docs/systems/anim-engine.md
+  "+0x50 / +0x54 (body; facial)"]. [D measured] face seq 0x04000467 flags 0x08, body 0x04000332
+  flags 0x00; on 07000001/05/06/07 the flags bit and the old channel-count==facial heuristic agree
+  on EVERY sequence (26/26, 26/26, 28/28, 82/82 — zero disagreements), so the swap is
+  behavior-neutral where pinned and is the game's mechanism.
+- **The facial channels are morph weights, not bones** [M AnimFacialBlend 0x1be648 reads the playing
+  sequence's frame buffer as the weight array; SkinIt 0x10bf30's (morph + channel) addressing]:
+  [D measured] the face track's 22 channels == skin 0x0500003b's facial count 22, values in
+  [0, 1] (max 1.001, 312/433 sampled frames active), while the body track carries
+  222 = 3·73 + 3·1 channels (the skeleton's per-bone walk) whose root holds the actor's world
+  position (83..91, 43.7, −35..−31). Read as bones, the face track's leading weights zero the root
+  — the missing-cast bug that started this chain.
+- **anim.rs `script_pose_together`**: facial-flagged windows are excluded from the base and the
+  narrow fill — they own no bones; the weights path (`Scene::facial_weights_now`, fix-facial2) is
+  what consumes them. The body track (the widest non-facial window) owns the pose; the cutscene-draw
+  owned-mask fill for narrow non-facial pairs is kept.
+- **The Kimiko test re-pinned** (fix_cutscenes2_live): the face track carries the facial flag; its
+  channel count == the skin's facial count; the guest carries morph targets; the weights OPEN (max
+  > 0.5) and MOVE across the track's frames (the mouth animation, the game's lip-sync); the scene's
+  live weights equal the track's weights at the object's frame; and the sister pair — the joined
+  pose equals the body-only pose on EVERY bone (the facial window leaves the bones untouched) with
+  the root at the library position (> 10 units from the origin — the cast stands).
+- **Rendered** (lavapipe): `nf-view 07000007 --bond 94.2,44.6,-45.9,0,0 --frame 399` and
+  `--frame 1200` — the full cast (Kimiko, Bond, Dominique) at their scripted positions, the kiss
+  plays. Note: the mouth MORPHS ride the CPU skinning (fix-facial2's morph_vertex); the GPU skin
+  path (G-043) is not morphed yet (facial3's open item) — a GPU-path render would still-face.
+- Green: fix_cutscenes2_live 5/5, cutscene_draw_live 2/2, cutscene_models_live 4/4, facial2_live
+  2/2, nf-game lib 140/0. `script_pose_drone` (the drone path, seed-pinned) untouched — the flag
+  agrees with its channel-count pickers everywhere measured.
