@@ -74,7 +74,11 @@ fix_objects_live 5 (the truck's script characters — the same base composition)
 Full `tools/test/suite.py` on the final merged tree (commit 03e9048): see the total line below
 (slim ISO — the 3 `disc_golden` tests and `pss_movies_live` are the allowed failures).
 
-- This tree: **(filled from suite_cb.out)**.
+- This tree (commit 03e9048): **975 passed, 4 failed, 31 ignored (32 min)**. The 4: the 3
+  allowed `disc_golden` tests (slim ISO) and `weapon_matrix_live`'s 600 s timeout on
+  `matrix_07000015` — the regression the fix-08-collision report already lists as its what's-left
+  (that task's per-cel movement pass hangs that level's matrix walk; this task touches only the
+  ambient ramp and the script-character pose/position — no movement code). No new failures.
 
 ## Files
 
