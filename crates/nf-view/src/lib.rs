@@ -414,6 +414,14 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         hud: nf_formats::hud::HudTables::from_action_elf(&elf).map_err(|e| eprintln!("HUD tables: {e}")).ok(),
     };
     let mut scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));
+    // The door labels' GameState gates (`fix-doors-remainder`): `Door_Update` shows the unlock note
+    // 0x2000003 on every GameState except 0x7000014 / 0x700004a [M 0x1363c8:101], `Check_Target` the
+    // aim hint 0x200000b on every one except 0x700004a [M 0x1a7810:107]; in level the GameState is
+    // the level code (0x0700004a is the frontend — it loads no in-level doors).
+    if let Some(sim) = scene.sim.as_mut() {
+        sim.drones.doors.no_unlock_label = sim.level == 0x0700_0014 || sim.level == 0x0700_004a;
+        sim.drones.doors.no_aim_label = sim.level == 0x0700_004a;
+    }
     // The HUD's language strings (`fix-hud`): `Txt_LoadLanguage` 0x1caad0 loads `FNames[SelLang]` — the
     // NTSC-U default is `USATxt.dat` [D FILES.BIN; FNames 0x244680]. Parsed per its on-disc layout.
     if let Some(s) = scene.sim.as_mut() {

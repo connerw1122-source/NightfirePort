@@ -4,6 +4,7 @@ use nf_formats::iso9660::IsoImage;
 use nf_formats::{disc, level::Level};
 use nf_game::door::Doors;
 use nf_game::triggers::Channels;
+use nf_game::world::CollisionWorld;
 
 fn load(code: u32) -> Option<Level> {
     let path = std::env::var_os("NF_ISO")?;
@@ -51,7 +52,7 @@ fn doors_on_07000001_now_match_their_placements() {
     for (i, sph) in sphs.iter().enumerate() {
         let head = [sph.0[0], sph.0[1], sph.0[2] - 1.0];
         let look = [0.0, 0.0, 1.0];
-        let (_, hits) = doors.player_use(head, look, &mut ch, 0);
+        let (_, hits) = doors.player_use(head, look, &mut ch, 0, &CollisionWorld::empty());
         assert!(hits >= 1, "door {i} should be hit by the use sphere at its correct position");
         total_hits += hits;
     }

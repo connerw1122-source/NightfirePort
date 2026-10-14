@@ -5730,7 +5730,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
     /// exit). The port's `player_use_doors` handled only doors; this adds the trigger path so pressing E on a
     /// LOAD_LEVEL or TouchOnce trigger fires it immediately [M 0x1a5170:100-108,128, 0x1b2318:34-111].
     pub fn player_use_doors(&mut self, d: &Data, head: V3, look: V3, frame: u32) {
-        let (evs, _hits) = self.doors.player_use(head, look, &mut self.channels, frame);
+        let (evs, _hits) = self.doors.player_use(head, look, &mut self.channels, frame, d.world);
         for (id, pos) in evs {
             match d.sfx {
                 Some(t) => { let h = t.get(id as u32); self.play_sound_handle(pos, h); }
@@ -7020,6 +7020,20 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             });
         }
         { let _p = crate::prof::scope("drones: set_dynamic"); d.world.set_dynamic(&script_parts(self, d)); }
+        // The proxy path (U-041): `Collide_Update` (0x1ea398) is POST-walk — every mover's collider
+        // is picked against the objects and each victim's COLLIDE function runs from the dispatch
+        // table the same frame (`control_funcs[0x1c]+4` = `Door_ReactToHit` 0x135980). The doors'
+        // records are the moving leaf meshes they carry (`set_dynamic` just published this tick's
+        // poses); the anti-crush/bump-open fires here, never from `Door_Update` (A-11b).
+        {
+            let evs = self.doors.collide_update(d.world, &actors, &mut self.channels, frame);
+            for (id, pos) in evs {
+                match d.sfx {
+                    Some(t) => { let h = t.get(id as u32); self.play_sound_handle(pos, h); }
+                    None => { self.audio.play3d(id as u32, pos, None); }
+                }
+            }
+        }
         // The drones' speech requests, in update order (no random draws in `SpeechSFX` / `PlaySFX`).
         for (index, talks) in talk_queue { self.speech(d, index, talks, frame); }
         // The drones' door-open sounds (`NDrone2_OpenDoor`'s `Door_Activate` events).

@@ -11,6 +11,7 @@
 
 use crate::triggers::Channels;
 use crate::trig::sinf;
+use crate::world::CollisionWorld;
 use nf_formats::placement::{object_matrix, Placement};
 
 pub type V3 = [f32; 3];
@@ -58,6 +59,70 @@ fn transform(m: &Mat4, v: V3) -> V3 {
     let mut o = [m[3][0], m[3][1], m[3][2]];
     for k in 0..3 { for c in 0..3 { o[c] += v[k] * m[k][c]; } }
     o
+}
+
+/// Squared distance from `p` to a triangle — the sphere-vs-leaf contact test of the use pick and
+/// the proxy scan (the port's `Collide_Intersect` narrow phase; Ericson, Real-Time Collision
+/// Detection §5.1.5, on the row-vector meshes the port already transforms).
+fn sphere_tri_dist2(p: V3, tri: &[V3; 3]) -> f32 {
+    let (a, b, c) = (tri[0], tri[1], tri[2]);
+    let ab = sub(b, a);
+    let ac = sub(c, a);
+    let ap = sub(p, a);
+    let d1 = dot3(ab, ap);
+    let d2 = dot3(ac, ap);
+    if d1 <= 0.0 && d2 <= 0.0 { return dot3(ap, ap); }
+    let bp = sub(p, b);
+    let d3 = dot3(ab, bp);
+    let d4 = dot3(ac, bp);
+    if d3 >= 0.0 && d4 <= d3 { return dot3(bp, bp); }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        let v = d1 / (d1 - d3);
+        let q = [a[0] + ab[0] * v, a[1] + ab[1] * v, a[2] + ab[2] * v];
+        return dot3(sub(p, q), sub(p, q));
+    }
+    let cp = sub(p, c);
+    let d5 = dot3(ab, cp);
+    let d6 = dot3(ac, cp);
+    if d6 >= 0.0 && d5 <= d6 { return dot3(cp, cp); }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        let w = d2 / (d2 - d6);
+        let q = [a[0] + ac[0] * w, a[1] + ac[1] * w, a[2] + ac[2] * w];
+        return dot3(sub(p, q), sub(p, q));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        let q = [b[0] + (c[0] - b[0]) * w, b[1] + (c[1] - b[1]) * w, b[2] + (c[2] - b[2]) * w];
+        return dot3(sub(p, q), sub(p, q));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    let v = vb * denom;
+    let w = vc * denom;
+    let q = [a[0] + ab[0] * v + ac[0] * w, a[1] + ab[1] * v + ac[1] * w, a[2] + ab[2] * v + ac[2] * w];
+    dot3(sub(p, q), sub(p, q))
+}
+
+/// The ray parameter where `o + t·d` (d unit) meets the triangle, if it does — the head-ray of
+/// `Check_Target` (`Collide_RayIntersect`, Möller–Trumbore; no backface culling, like the game's
+/// two-sided pick).
+fn ray_tri_t(o: V3, d: V3, tri: &[V3; 3]) -> Option<f32> {
+    let e1 = sub(tri[1], tri[0]);
+    let e2 = sub(tri[2], tri[0]);
+    let h = [d[1] * e2[2] - d[2] * e2[1], d[2] * e2[0] - d[0] * e2[2], d[0] * e2[1] - d[1] * e2[0]];
+    let det = e1[0] * h[0] + e1[1] * h[1] + e1[2] * h[2];
+    if det.abs() < 1e-8 { return None; }
+    let inv = 1.0 / det;
+    let s = sub(o, tri[0]);
+    let u = (s[0] * h[0] + s[1] * h[1] + s[2] * h[2]) * inv;
+    if !(0.0..=1.0).contains(&u) { return None; }
+    let q = [s[1] * e1[2] - s[2] * e1[1], s[2] * e1[0] - s[0] * e1[2], s[0] * e1[1] - s[1] * e1[0]];
+    let v = (d[0] * q[0] + d[1] * q[1] + d[2] * q[2]) * inv;
+    if v < 0.0 || u + v > 1.0 { return None; }
+    let t = (e2[0] * q[0] + e2[1] * q[1] + e2[2] * q[2]) * inv;
+    (t > 0.0).then_some(t)
 }
 
 /// Inverse of a rigid matrix (transposed rotation, `−t·Rᵀ`) — what `Mat_Inverse` computes for the position +
@@ -208,10 +273,23 @@ pub struct Doors {
     /// The previous tick's `switch_channels` (`switch_channels_prev`) for the lock channel's rising edge.
     prev_channels: [u8; 256],
     hold_channels: [u8; 256],
+    /// `DoorMsg` (0x30cd04): `Check_Target`'s aim-hint budget — the label fires while it is under 3
+    /// [M 0x1a7810:108 `DoorMsg < 3`]. Reset per level by the port's per-level `Doors::create`.
+    pub door_msg_count: u8,
+    /// This tick's door label events: (text id, frames) — `Text_AddMsg(…, Txt_BindLabel(id), 0,
+    /// 0xb4)` [M 0x1363c8:101-105, 0x1a7810:109-110; 0xb4 = 180 frames]. nf-view drains them into
+    /// the HUD message pane the way `script_msgs` drain (the port's `Text_AddMsg` half).
+    pub label_msgs: Vec<(u32, u16)>,
+    /// The GameState gates: `Door_Update` shows the unlock note 0x2000003 on every state except
+    /// 0x7000014 / 0x700004a [M 0x1363c8:101], `Check_Target` the aim hint 0x200000b on every one
+    /// except 0x700004a [M 0x1a7810:107]. In level the GameState is the level code, so nf-view's
+    /// load sets these from the loaded archive (0x0700004a is the frontend — no in-level doors).
+    pub no_unlock_label: bool,
+    pub no_aim_label: bool,
 }
 
 impl Default for Doors {
-    fn default() -> Doors { Doors { list: Vec::new(), group_states: [0; 101], prev_channels: [0; 256], hold_channels: [0; 256] } }
+    fn default() -> Doors { Doors { list: Vec::new(), group_states: [0; 101], prev_channels: [0; 256], hold_channels: [0; 256], door_msg_count: 0, label_msgs: Vec::new(), no_unlock_label: false, no_aim_label: false } }
 }
 
 /// The main map's door placements in creation order (create and nf-view).
@@ -304,7 +382,7 @@ impl Doors {
             }
             list.push(d);
         }
-        Doors { list, group_states: [0; 101], prev_channels: [0; 256], hold_channels: [0; 256] }
+        Doors { list, group_states: [0; 101], prev_channels: [0; 256], hold_channels: [0; 256], door_msg_count: 0, label_msgs: Vec::new(), no_unlock_label: false, no_aim_label: false }
     }
 
     /// A door that starts open sets its open channel at create (`Door_Create`'s tail).
@@ -414,6 +492,11 @@ impl Doors {
                 let d = &mut self.list[i];
                 d.ch_lock = 0;
                 d.flags |= 0x10;
+                // `Door_Update` (0x1363c8:101-107): right after the self-activation the unlock shows
+                // text label 0x2000003 (`Text_AddMsg(0, 0, 1, Txt_BindLabel(0x2000003), 0, 0xb4)`),
+                // unless the GameState is one of the label-less states (0x7000014 / 0x700004a —
+                // `no_unlock_label`, set from the level code at load).
+                if !self.no_unlock_label { self.label_msgs.push((0x2000_0003, 180)); }
             }
         }
         // The auto-close: an open door without the keep-open flag, after `FRAME_RATE_INT·6` quiet ticks
@@ -526,14 +609,88 @@ impl Doors {
         self.set_state(i, OPENING, channels, frame, sounds);
     }
 
-    /// `Door_ReactToHit` [M 0x135980], the proxy scan stood in for by the sphere test: a moving door that meets
-    /// an actor reverses (the anti-crush). Waits the 2-tick activation timer out; kind 1 doors ignore it.
-    /// NOT called from `Door_Update` (A-11b) — the game calls this from `Collide_Update` via the proxy list
-    /// (obj+0xD0). Kept for the future proxy-list port (U-041); currently unused.
-    #[allow(dead_code)]
+    /// `Check_Target`'s door arm (0x1a7810:106-111) + `Door_DoMsg` (0x135f18): the viewer's head ray
+    /// — head + `Mat_GetDir`·50 units, `Collide_RayIntersect` [M 0x1a7810:29-43, 0x42480000 = 50.0]
+    /// — that first meets a door (type 0x1c) within 5.0 shows the door's hint label once per door
+    /// (`DI+0x74`), at most while `DoorMsg < 3`, and only when the door is not locked and its
+    /// effective state (the group's `DoorGroupsStates` entry when grouped, else its own `+0xF4`)
+    /// is not 4 [M 0x135f18:16-34]. Runs every tick for the viewer, use key or not.
+    pub fn aim_msg(&mut self, head: V3, look: V3, world: &CollisionWorld, channels: &Channels) {
+        if self.no_aim_label || self.door_msg_count >= 3 { return; }
+        let far = [head[0] + look[0] * 50.0, head[1] + look[1] * 50.0, head[2] + look[2] * 50.0];
+        let mut best: Option<(f32, usize)> = None;
+        for i in 0..self.list.len() {
+            let d = &self.list[i];
+            if d.glist == 0 { continue; }
+            let Some(tris) = world.shape(d.glist) else { continue };
+            let mut t: Option<f32> = None;
+            for tri in tris {
+                let tri = [transform(&d.matrix, tri[0]), transform(&d.matrix, tri[1]), transform(&d.matrix, tri[2])];
+                if let Some(ht) = ray_tri_t(head, look, &tri) {
+                    if ht <= 50.0 && t.map_or(true, |ot| ht < ot) { t = Some(ht); }
+                }
+            }
+            if let Some(ht) = t {
+                if ht < 5.0 && best.map_or(true, |(bt, _)| ht < bt) { best = Some((ht, i)); }
+            }
+        }
+        let Some((t, i)) = best else { return };
+        // The ray's first hit decides: a wall closer than the door means the game never sees the
+        // door type. 0.01 keeps the door's own dynamic geometry (in the same set) from blocking it.
+        if world.segment(head, far).is_some_and(|tw| tw < t - 0.01) { return; }
+        // `Door_DoMsg` (0x135f18:16-34): latch `DI+0x74` first, then the label only when the lock
+        // channel is not blocking and the effective state is not 4.
+        if self.list[i].msg_shown { return; }
+        self.list[i].msg_shown = true;
+        let d = &self.list[i];
+        let locked = d.ch_lock != 0 && !channels.on(d.ch_lock as u32);
+        let effective = if d.group != 0 && (d.group as usize) < self.group_states.len() { self.group_states[d.group as usize] } else { d.state };
+        if !locked && effective != 4 {
+            self.label_msgs.push((0x2000_000b, 180));
+            self.door_msg_count += 1;
+        }
+    }
+
+    /// `Collide_Update`'s door half [M 0x1ea398:84-214, dispatch 0x26f890 slot +4]: post-walk, every
+    /// mover's collider is picked against the objects, the hits land on the VICTIM's `obj+0xD0`
+    /// list (`+0x58` = the mover) and `control_funcs[0x1c*0xc+4]` — `Door_ReactToHit` 0x135980 —
+    /// consumes them the same frame, for every type-0x1c object; `Door_Update` never calls it.
+    /// The port's equivalent: each door whose live leaf mesh meets a mover's sphere gets that mover
+    /// as its proxy record, then `react_to_hit` runs right here — the anti-crush / bump-open path
+    /// (U-041). Only doors `Door_ReactToHit` can act on are scanned (the 2-tick timer, state 8/0x10).
+    pub fn collide_update(
+        &mut self, world: &CollisionWorld, actors: &[DoorActor], channels: &mut Channels, frame: u32,
+    ) -> Vec<SoundEvent> {
+        let mut sounds = Vec::new();
+        if actors.is_empty() { return sounds; }
+        for i in 0..self.list.len() {
+            if self.list[i].timer != 0 || self.list[i].state & 0x18 == 0 { continue; }
+            let d = &self.list[i];
+            if d.glist == 0 { continue; }
+            let Some(tris) = world.shape(d.glist) else { continue };
+            let mut records: Vec<DoorActor> = Vec::new();
+            for a in visible_actors(actors) {
+                if tris.iter().any(|t| {
+                    let tri = [transform(&d.matrix, t[0]), transform(&d.matrix, t[1]), transform(&d.matrix, t[2])];
+                    sphere_tri_dist2(a.0, &tri) < a.1 * a.1
+                }) {
+                    records.push((a.0, a.1, false));
+                }
+            }
+            if !records.is_empty() { self.react_to_hit(i, &records, channels, frame, &mut sounds); }
+        }
+        sounds
+    }
+
+    /// `Door_ReactToHit` [M 0x135980:42-111]: consumes this tick's proxy records — `Collide_Update`
+    /// fills `obj+0xD0` and this runs from the dispatch table's COLLIDE slot (see `collide_update`);
+    /// the old bounding-sphere re-scan is gone, the records ARE the proxy list. A moving door that
+    /// met an actor reverses (the anti-crush): kind 0 swings away per the collider's door-space z
+    /// (negated past half travel), kind 2 auto-slides open, kind 1 ignores it. Waits the 2-tick
+    /// activation timer out.
     fn react_to_hit(&mut self, i: usize, actors: &[DoorActor], channels: &mut Channels, frame: u32, sounds: &mut Vec<SoundEvent>) {
         if self.list[i].timer != 0 || self.list[i].state & 0x18 == 0 { return; }
-        let Some(act) = visible_actors(actors).find(|a| blocked((self.list[i].pos, self.list[i].sph.1), *a)).map(|a| a.0) else { return };
+        let Some(act) = actors.first().map(|a| a.0) else { return };
         let (kind, state, swing, pos01, dir) = {
             let d = &self.list[i];
             (d.kind, d.state, d.swing, d.pos01, d.dir)
@@ -598,21 +755,36 @@ impl Doors {
     /// `Player_Activate`'s door part (0x1a5310): the use sphere — radius 1 at one unit ahead of the head —
     /// activates every door it meets (the game walks the whole hit list; walls do not stop it). `head` is also
     /// the activator's position for the side tests.
-    pub fn player_use(&mut self, head: V3, look: V3, channels: &mut Channels, frame: u32) -> (Vec<SoundEvent>, usize) {
-        // `Player_Activate` (0x1a5170): Bond's head + forward × 1.0, tested as a `Collide_SphereIntersect(1.0, ...)`
-        // against every cel-linked object. Doors (type 0x1C) call `Door_Activate(obj, player, 1)`. The port uses the
-        // door's placement position + a generous distance check (the door's bounding sphere may be 0 if the glist
-        // sphere wasn't read) [M 0x1a5170:100-108,128].
+    pub fn player_use(&mut self, head: V3, look: V3, channels: &mut Channels, frame: u32, world: &CollisionWorld) -> (Vec<SoundEvent>, usize) {
+        // `Player_Activate` (0x1a5170:100-133): the pick is `Collide_SphereIntersect(1.0, head +
+        // Mat_GetDir(viewer)·1.0, player cel, player, body obj, …)` — a real mesh pick against the
+        // cel-linked objects' collision, results distance-sorted into the HITDATA list, and every
+        // type-0x1c entry calls `Door_Activate(obj, player, 1)`. The port sphere-tests the same
+        // sphere against each door's live leaf mesh (`shape(glist)` × the door's `obj+0x90`
+        // matrix — the leaf the collide pass sees, via `set_dynamic`); doors whose glist hash the
+        // world never loaded keep the placement-distance stand-in (they have no mesh to test).
         let mut sounds = Vec::new();
         let use_point = [head[0] + look[0], head[1] + look[1], head[2] + look[2]];
         let mut hits = 0;
         for i in 0..self.list.len() {
-            let pos = self.list[i].pos;
-            let d = [use_point[0] - pos[0], use_point[1] - pos[1], use_point[2] - pos[2]];
-            // The game uses a 1.0-radius sphere at the use point against the door's collision mesh.
-            // Stand-in: distance to the door's placement position < 2.5 (covers the door's extent + use radius).
-            let d2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-            if d2 < 6.25 { // 2.5² = generous reach
+            let d = &self.list[i];
+            let dx = use_point[0] - d.pos[0];
+            let dy = use_point[1] - d.pos[1];
+            let dz = use_point[2] - d.pos[2];
+            // Broad phase: the placement's bounding sphere can hardly exceed ~3 — 6 clears the
+            // mesh scan for far doors (the game's `Collide_Pick` does the same by cel proximity).
+            if dx * dx + dy * dy + dz * dz > 36.0 { continue; }
+            let tris = if d.glist != 0 { world.shape(d.glist) } else { None };
+            let contact = match tris {
+                Some(tris) => tris.iter().any(|t| {
+                    let tri = [transform(&d.matrix, t[0]), transform(&d.matrix, t[1]), transform(&d.matrix, t[2])];
+                    sphere_tri_dist2(use_point, &tri) < 1.0
+                }),
+                // No mesh loaded: the pre-mesh stand-in — distance to the door's placement position
+                // < 2.5 (covers the door's extent + use radius) [M 0x1a5170:100-108,128].
+                None => dx * dx + dy * dy + dz * dz < 6.25,
+            };
+            if contact {
                 self.activate(i, &[(head, 0.0, false)], true, channels, frame, &mut sounds);
                 hits += 1;
             }

@@ -2162,6 +2162,10 @@ impl Sim {
                 }
             }
         }
+        // `Check_Target`'s door arm (0x1a7810:106-111): the head-ray aim hint — every tick, use key
+        // or not; `Door_DoMsg` (0x135f18) latches per door and `DoorMsg` caps at 3 a level. The
+        // label events drain in `hud_tick` like the script texts.
+        self.drones.doors.aim_msg(camera, look, d.world, &self.drones.channels);
         if use_key && !crept {
             self.drones.player_use_doors(&d, camera, look, self.drones.frame);
             // `Player_Activate` 0x1a5170 case '%': the pick's class-0x25 SS objects activate
@@ -2279,6 +2283,13 @@ impl Sim {
         let mut new_msgs: std::collections::VecDeque<Msg> = Default::default();
         if let Some(lang) = lang.as_ref() {
             for (label, time) in self.drones.script_msgs.drain(..) {
+                let text = lang.bind(label).unwrap_or("").trim().to_string();
+                if !text.is_empty() { new_msgs.push_back(Msg::new(text, time as f32)); }
+            }
+            // The door labels (`fix-doors-remainder`): `Door_Update`'s unlock note 0x2000003 and
+            // `Check_Target`/`Door_DoMsg`'s aim hint 0x200000b — the same `Text_AddMsg` drain as
+            // the script texts [M 0x1363c8:101-107, 0x135f18:16-34].
+            for (label, time) in self.drones.doors.label_msgs.drain(..) {
                 let text = lang.bind(label).unwrap_or("").trim().to_string();
                 if !text.is_empty() { new_msgs.push_back(Msg::new(text, time as f32)); }
             }
