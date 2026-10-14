@@ -9993,6 +9993,22 @@ set). Suites on the merged tree: nf-game 256/0 (33 binaries, twice), nf-view 318
 portal tests 12/0; the suite.py wrapper can't run here (background jobs die between tool calls,
 the single run exceeds the 10-min tool limit after the 05:08 UTC sandbox reset — per-binary runs
 executed directly instead). Report: docs/reports/fix-portal-eyecel.md.
+---
+Task ID: 100g-fix-grapple-hook
+Agent: fix-grapple-hook worker
+Task: the grapple point's hook/pulley mesh isn't drawn (PCSX2 shows a pulley with a hook hanging from the T-bracket on 07000005 at --bond 16.5,29.6,58.6,-2.01,0.24; the port draws the bracket only). Find the 0x51 'Q' object's model/attached part and draw it on every level with grapple points.
+
+Work Log:
+- Setup: branch s/fix-grapple-hook created from origin/master (69c0104); work-slim extracted; suite started in background.
+- Started 05:40 UTC.
+
+Stage Summary:
+- Work in progress.
+- Root cause: fix-gadgets2's "the game discards the referenced object" was right for 0x3F creep walls and wrong for 0x3A grapple points. The dynamic-block parser hands each placement's RESOLVED object to the creator as the glist argument [M parsemap_block_map_data_dynamic 0x1d1b68: hashtable_getitem(hashcode) / pCelList+index*0x50 on hashcode −1; case 0x3a 0x1d04f0:237-239], Grapple_Create 0x198298:24-30 keeps it at obj+0xD8 (obj+0xF0 = *(u32*)(glist+0x44)), and View_DrawObjList 0x1e69a0 → View_DrawObjectGlist 0x1e6780 → psiDrawObjectMatrix 0x124708 draws it at the placement transform. Live [L ee_start_05.bin]: both class-0x51 objects (0x16d80a0 = #282, 0x16d81c0 = #281) hold glist 0x170d6a0 (graple_pulley), +0xF0 0x4000, +0xF8 0x1f, psiDraw chain boxes 0x9b3260 DRAWABLE; the creep walls' 0x2B chains are boxes 0x0 (those stay undrawn).
+- Fix: an additive World-layer sweep over the 0x3A placements in scene.rs's cels_only block (the same shape as the wire 0x3E / ladder 0x22 sweeps), instancing the resolved object when its gfx has batches; a grapple_hooks_drawn counter next to ladders_drawn; stale fix-gadgets2 comments corrected (scene.rs, models_misc_live.rs — comment-only there).
+- Tests (crates/nf-view/tests/grapple_hook_live.rs, all through nf_view::load): the pulley draws at both 05 points (level-data resolution + grapple_hooks_drawn == 2 + the pulley's exact 212 gfx verts inside its world box at #282 AND #281 — pre-fix probe: 0 verts); one hook per grapple point on all 16 levels with 0x3A placements [D: 05/0a/0c/0d/11/12/14/23/24/25/26/27/28/29/41/4b = 54 points]; sister: creep walls stay undrawn (their objects parse 0 batches, matching the live empty glists). Failing-first: scratch probe on the pre-fix tree failed at "only 0 verts in the pulley box" (deleted).
+- No latch animation to model: class 0x51 has no control_funcs row [L 0x26fa94..0x26fc5c zero] and no grapple-path writer touches the object's gfx — static at the placement transform, latched or not.
+- Baseline suite on the pre-fix tree: 952 passed, 3 failed (the allowed disc_golden set), 29 ignored. No GPU in the sandbox (wgpu: no adapter) — the --shot renders are the main agent's (spots listed in the report).
 ## fix-08-walls (s/fix-08-walls) — 2026-10-14
 
 Task 101h, both symptoms from the 1013-1758 playtest at 07000008's safe area (~(155, 43, −113)).
