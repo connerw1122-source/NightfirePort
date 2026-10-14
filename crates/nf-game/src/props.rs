@@ -46,6 +46,16 @@ pub struct Destroy {
     /// `tag+0x04` — the bullet-damage pool [M 0x12c318:36, 0x12bd48:44-48].
     pub health: f32,
     pub dead: bool,
+    /// `tag+0x16` — the smash type byte (placement param 2's low byte [M 0x12c3c8 disasm
+    /// `lbu v1,52(s0)` → `sb v1,22(a0)`]): `Destroy_Smash` 0x12bc50-0x12bd20 routes the blast
+    /// script on it — 1 → 0x6000027 (radius ×4), 2 → 0x600004f (×2), other non-zero → 0x6000052
+    /// (×3); a type-0 tag plays NO script (`if (cVar4 != 0)` [M 0x12bc50]).
+    pub kind: u8,
+    /// `tag+0x08` — the smash blast's damage float (placement param 5 [M 0x12c424 disasm
+    /// `lw v0,64(s0)` → decoded → tag+8]; `Destroy_Smash` passes it as `Explode_Create`'s f13-slot
+    /// damage [M 0x12bd04 `lwc1 f13,8(s1)`]). The disc's destroyables all carry small positive
+    /// ints here (10…3000 [D census]), the only branch the port decodes.
+    pub blast_damage: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -93,8 +103,9 @@ impl Props {
                 // `CamSubject_Create` 0x1bc5d8: class 0x48, obj+0xF6 = placement +0x2C (param 0).
                 0xfd => props.subjects.push(CamSubject { placement: i, lo, hi, channel: param(0) as u8, hit: false }),
                 // `Destroy_Create` 0x12c318: tag+0x12 = param 0, tag+0x04 (health) = param 3
-                // (as f32; the tag holds a float the handler subtracts into).
-                0xe1 => props.destroy.push(Destroy { placement: i, lo, hi, channel: param(0) as u8, health: param(3) as f32, dead: false }),
+                // (as f32; the tag holds a float the handler subtracts into), tag+0x16 (kind) =
+                // param 2's low byte, tag+0x08 (smash blast damage) = param 5 [M disasm].
+                0xe1 => props.destroy.push(Destroy { placement: i, lo, hi, channel: param(0) as u8, health: param(3) as f32, dead: false, kind: (param(2) & 0xff) as u8, blast_damage: param(5) as f32 }),
                 _ => {}
             }
         }
@@ -116,8 +127,12 @@ impl Props {
 
     /// The bullet's flight this tick against the props ([M CamSubject_Update 0x1bc668 — class-5
     /// contacts with weapon 0x54 write the channel; Destroy_CollisionHandler 0x12bd48 — every
-    /// class-5 contact subtracts its damage, death writes the channel]).
-    pub fn bullet_hit(&mut self, a: V3, b: V3, weapon: u16, damage: f32, ch: &mut Channels, frame: u32) {
+    /// class-5 contact subtracts its damage, death writes the channel]). Returns the tick's
+    /// destroyable smashes that carry a blast (`Destroy_Smash` 0x12bb60's `Explode_Create` for a
+    /// non-zero type byte): `(smash position, radius, damage, kind)` — the caller queues the blast
+    /// (the game's blast runs inside the smash, on the bullet's owner as the attacker).
+    pub fn bullet_hit(&mut self, a: V3, b: V3, weapon: u16, damage: f32, ch: &mut Channels, frame: u32) -> Vec<(V3, f32, f32, u8)> {
+        let mut smashes = Vec::new();
         for s in self.subjects.iter_mut().filter(|s| !s.hit) {
             if weapon == 0x54 && Self::seg_box(a, b, s.lo, s.hi) {
                 s.hit = true;
@@ -130,9 +145,23 @@ impl Props {
                 if d.health < 0.0 {
                     d.dead = true;
                     ch.set(d.channel as u32, 1, frame);
+                    // `Destroy_Smash` 0x12bb60: the blast only for a non-zero type byte [M
+                    // 0x12bc50]. Radius [M 0x12bcdc `lwc1 f12,140(s0)` × the type mult 4/2/3
+                    // (0x12bc74/0x12bc84/0x12bc94)] reads the placed obj's +0x8C sphere — a field
+                    // the port doesn't parse; the bounds' half-diagonal stands in [*suggested*],
+                    // live check in the report. Position: the obj's own `+0x80` [M 0x12bd08 a1 =
+                    // s3 = obj+0x80]; the port uses the bounds centre.
+                    if d.kind != 0 {
+                        let c = [(d.lo[0] + d.hi[0]) / 2.0, (d.lo[1] + d.hi[1]) / 2.0, (d.lo[2] + d.hi[2]) / 2.0];
+                        let ext = [(d.hi[0] - d.lo[0]) / 2.0, (d.hi[1] - d.lo[1]) / 2.0, (d.hi[2] - d.lo[2]) / 2.0];
+                        let sphere = (ext[0] * ext[0] + ext[1] * ext[1] + ext[2] * ext[2]).sqrt();
+                        let mult = match d.kind { 1 => 4.0f32, 2 => 2.0, _ => 3.0 };
+                        smashes.push((c, sphere * mult, d.blast_damage, d.kind));
+                    }
                 }
             }
         }
+        smashes
     }
 }
 

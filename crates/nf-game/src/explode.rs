@@ -8,7 +8,10 @@
 //! - `+0x28` damage (float, `Explode_Propagate`'s amount),
 //! - `+0x2C` radius (float, the falloff divisor and the camera-shake amount),
 //! - `+0x30` lifetime ticks (script? `*(u16*)(SCRIPTINFO+0xAB0)` : 15),
-//! - `+0x34` SCRIPTINFO (the effect script 0x6000052 for every disc bullet caller),
+//! - `+0x34` SCRIPTINFO (the per-source effect script: 0x6000052 from the fuse/contact callers,
+//!   0x60007c4 from the Samurai bolt's 0x100000/0x200000 arms, the destroyable's type script
+//!   0x6000027/0x600004f/0x6000052 from `Destroy_Smash` — fix-blast-scripts census, each site's
+//!   disasm in docs/reports/fix-blast-scripts.md),
 //! - `+0x38` u16 debris kind (`Explode_Update`'s switch: 5/6 metal, 8/10/0xB stone on 0x7000008 only),
 //! - `+0x3A` u8 "propagate ran" latch (`Explode_CollisionHandler` fires `Explode_Propagate` once).
 //!
