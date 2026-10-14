@@ -9320,3 +9320,17 @@ Work Log:
   drone.rs comment; the 61fa5ce OFF is now evidence-backed.
 - Report: docs/reports/fix-nav-remainder2.md. Files: drone.rs, nav_kick_live.rs (the drive test's
   ignore attribute), WORKLOG, the report. No test loosened.
+
+## fix-pause-audio (s/fix-pause-audio) — 2026-10-14
+
+Work Log:
+- Session started 00:26 UTC (sandbox deadline ~02:23 UTC). Branch s/fix-pause-audio created from origin/master (3c77a9d), pushed.
+- Task: pausing the game pauses the sound. Playtest 2026-10-13: with the pause menu open, ambient
+  keeps playing (truck loop on 07000005). Port stops ticking the sim under a menu but nothing pauses
+  the audio output. Plan: read GS_PauseGame 0x17d178 (sets GameState[0x50] + MP pause words), find
+  the sound-side readers of GameState+0x50 (Sound_Update*, the EE->IOP batch, SFXPause/SFXUnPause
+  RPCs; docs/systems/sound.md section 8), check what streamed music does while paused; port the
+  global pause in nf-audio (voices hold position and resume, no new key-ons while paused), driven
+  from the pause page open/close in nf-view, with the menu's own sounds still playing.
+- Tests planned: a looping ambient voice's sample position does not advance while paused and
+  resumes after; the menu click still plays; sister: unpaused it advances.
