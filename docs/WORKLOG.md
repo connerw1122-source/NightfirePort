@@ -10061,3 +10061,15 @@ measured per-quad from the frame, plates excluded), the main-row colours, the co
 previews, the dossier wheel + Records page, the prompt colour, and the pre-existing flows (the
 codename navigation gained a Down — row 0 is now New Codename). Suite on the final tree: see the
 report. Files: crates/nf-view/src/menu.rs, crates/nf-view/tests/menus_flow.rs (no shared files).
+
+## fix-08-collision (s/fix-08-collision) — 2026-10-14
+
+Task 100j, 07000008: the invisible wall inside the safe room's missile room — the playtest's
+"the wall is still there but invisible" at `--bond 155.19,43.12,-113.38,1.57,0` with culling ON.
+The exterior `Room_Outside_3` (cell 15) slabs (fix-08-walls named them: tris across the whole
+`Room_Guardhouse_F2` interior) cull visually at master but their COLLISION still blocks Bond:
+the port collides movement against a shared world, while the game collides Bond only against
+his own cel's object lists (build_FindCel 0x1c8cb0 finding from fix-portal-sweep: per-cel lists).
+Plan: give the port's movement collision the game's per-cel attribution (building on
+fix-portal-eyecel's attribute_scope chain buckets), so walls from other rooms don't block.
+Status: branch created, reproduction + fix in progress.
