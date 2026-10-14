@@ -114,6 +114,7 @@ fn the_aims20_zoom_circle_is_one_frame() {
     let mut scene = nf_view::load(&iso, "07000016.bin", false).expect("load");
     let sim = scene.sim.as_mut().unwrap();
     sim.gun.weapon = 0x1a;
+    sim.aiming = true; // fix-scope-zoom: the pane gate is aim+scoped [M 0x19e6d0:106-153]
     sim.zoom_target = sim.weapons.zoom(0x1a as usize).max(2.0);
     sim.zoom = sim.zoom_target;
     drop(sim);
@@ -138,6 +139,7 @@ fn the_sniper_scope_stays_one_frame() {
     for w in [0x1eu8, 0x11, 0x24] {
         let sim = scene.sim.as_mut().unwrap();
         sim.gun.weapon = w;
+        sim.aiming = true; // fix-scope-zoom: the pane gate is aim+scoped [M 0x19e6d0:106-153]
         sim.zoom_target = sim.weapons.zoom(w as usize).max(2.0);
         sim.zoom = sim.zoom_target;
         drop(sim);
@@ -158,6 +160,7 @@ fn the_laser_frame_strips_stay_whole() {
     let mut scene = nf_view::load(&iso, "07000016.bin", false).expect("load");
     let sim = scene.sim.as_mut().unwrap();
     sim.gun.weapon = 0x32;
+    sim.aiming = true; // fix-scope-zoom: the pane gate is aim+scoped [M 0x19e6d0:106-153]
     sim.zoom_target = sim.weapons.zoom(0x32 as usize).max(2.0);
     sim.zoom = sim.zoom_target;
     drop(sim);
@@ -181,6 +184,7 @@ fn the_zoomed_frame_centres_with_black_side_bars_on_wide_windows() {
     let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
     let sim = scene.sim.as_mut().unwrap();
     sim.gun.weapon = 0x54;
+    sim.aiming = true; // fix-scope-zoom: the pane gate is aim+scoped [M 0x19e6d0:106-153]
     sim.zoom_target = sim.weapons.zoom(0x54 as usize).max(2.0);
     sim.zoom = sim.zoom_target;
     drop(sim);

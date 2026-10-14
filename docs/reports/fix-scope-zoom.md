@@ -93,9 +93,10 @@ verified per weapon through the pane selection census (test below).
 4. `the_zoomable_census_selection` — the pane enum for all 21 zoomable ids incl. the MP twin 0x6f
    (default) and 0x52/0x53 (default, per 102a).
 
-`crates/nf-view/tests/fix_viewmodel_zoom_live.rs` (3/3 green): the draw test's harness now sets
-`sim.aiming = true` (the game's pane enable rides the aim bit); the not-aiming sister updated to
-match. The gun-tilt and pure-selection tests unchanged and green.
+`crates/nf-view/tests/fix_viewmodel_zoom_live.rs` (3/3 green) and `crates/nf-view/tests/fix_zoom_overlays_live.rs`
+(6/6 green): the draw tests' harnesses now set `sim.aiming = true` (the game's pane enable rides the
+aim bit — the same harness update 102a's own gate change would have needed); the not-aiming sister
+updated to match. The gun-tilt and pure-selection tests unchanged and green.
 
 ## Suite
 
