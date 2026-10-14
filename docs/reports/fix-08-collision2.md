@@ -97,6 +97,9 @@ loop resuming from suite.log):
   the collision-affected set (every walkreal/walk/fix-collision/ladder/wire/swim/grapple binary)
   ran green in the sweeps above.
 - `fix_08_collision2_live` 2/2 in the logged run.
+- A final `origin/master` merge (8e4c4d6, b65d6f7's 10 commits) landed after the chunked run;
+  the collision set re-ran green on it (`fix_08_collision2_live` 2, `fix_08_collision_live` 4,
+  `walkreal_07000009_live` 2).
 
 ## Live checks for the main agent
 
