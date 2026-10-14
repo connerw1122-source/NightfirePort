@@ -9434,3 +9434,44 @@ Work Log:
   generics on 19 levels (counts in the report; 0700000a worst at 4706, the trench's 05: 1382);
   the shipped mask (walk + rescue) is clean on all 27 — no level needs the frustum-only
   fallback this session.
+
+### fix-pause-menu — outcome
+
+- The in-game pause menu was still fix-menus' plain "PAUSE" text overlay, and its page id was WRONG:
+  the port's PAGE_PAUSE 0x4000000c is the NIS page (the handler table maps 0x4000000c →
+  P_NIS_Handler [M Handler_HandleMessage 0x2029e0]). The real pause page is **0x4000004b** [M
+  Player_Update 0x193600:73 — Start in a mission runs `MenuManager_Create(0x80000002, 0x4000004b,
+  …, 0x1e, 1, 3)` + `GS_PauseGame(1)`], and it lives in the MISSION ARCHIVES' own kind-8 menu def
+  (entry 08000001 of each level archive — the front-end 07000048 stream has only 56 pages of fh
+  0x80000002 and no 0x4000004b/0x40000042 [L parsed the 08000002 + 08000001 tag streams 2026-10-14;
+  walk format: the pre-loop BIN_GetDWord eats a header dword, COMPONENT is 14 B, CONTROL's first
+  byte after the name is the type — SendEx(mgr, name, d1, msg) matches M_CONTROL+0x18/+0x20 = name/d1]).
+- Page 0x4000004b rebuilt in menu.rs: the backdrop plate (45,107,550×266) TEX 0x03000070 + Bond
+  image (385,121,202×218) TEX 0x030000db [L the page's 0x10000001/0x10000184 controls], the four
+  tabs MISSION/OBJECTIVES/CONTROLS/SCORE LBL 0x167/0x176/0x168/0x169 (the selected tab's 0x1c colour
+  0x201707ff), the MISSION rows CONTINUE/RESTART/QUIT (0x16a/0x16b/0x16c, the d1=6 list), the
+  YES/NO confirm box (0x5df/0x5e0) with "RESTART: ARE YOU SURE?" 0x1ff / "QUIT: ARE YOU SURE?" 0x200
+  and the selection opening on NO [L m0x1d:1; M 0x204408:181/204], the hint bar 0x201 (the confirm
+  swaps it to 0x1000323 [M 0x204408:160/175/198]). RESTART confirms too — the game's msg-0x4b d1=6
+  cases arm the same YES/NO list for rows 1 and 2 (state_quit_166 picks the arm) [M 0x204408].
+  The old 4-row guess (resume/restart/options/quit) is gone: options are the game's CONTROLS tab
+  (Y-Axis 0x492 + Inverted 0x206/Normal 0x3bd, the style list box). The in-game pages draw over the
+  paused frame (no full-screen dim plate; the page's own backdrop carries them).
+- The fail/death menu 0x40000042 [M Mission_Update 0x182c60:78, P_ENDMISSION_Handler 0x216618] and
+  the complete results 0x40000036 rebuilt as the results_page drawer: Failed = the 0x40000042 layout
+  (header 0x2fd "Mission Failed", rows REPLAY 0x5bc / RESTART 0x16b [S row 1] / QUIT 0x16c, hint
+  0x5c8); Complete = the 0x40000036 layout (header 0x2c5 "Results", photo 0x03000140, Total Score
+  0x2cb / Gold Medal Target 0x2cd, the stamp 0x0300014c + logo 0x0300016d, hint 0x2d0).
+- F12 could not capture the menu: the menu key branch returned early for every key while a page was
+  up (key_action(F12) is None), so the screenshot arm never ran. F12 is now handled before the menu
+  branch [fix-pause-menu, lib.rs].
+- `--page pause|results|complete` + `--pause-tab N` + `--confirm` render the in-game pages headless.
+- MENU_TEXTURES += 0x03000070/0x030000db/0x03000140 (25) [L nf-extract tex-list: the plate+image in
+  every mission archive, the photo in 07000048.bin].
+- Tests: menus_flow 18/18 (the pause flow rewritten to the disc rows + both confirms; the page-data
+  label pins 0x167/0x176/0x168/0x169/0x16a-c/0x1ff/0x5df/0x5e0/0x2fd/0x5bc/0x5c8/0x2c5/0x2cb/0x2cd;
+  the sprite-hash pins; the per-tab draw). Suite: 476 passed 0 failed across the nf-view/nf-audio/
+  nf-formats binaries + the 3 allowed disc_golden failures; the walk* live tests untouched (master
+  green, my diff doesn't touch their path).
+- Shared files touched (additive): nf-view lib.rs (the --page arms + the F12 arm). Report:
+  docs/reports/fix-pause-menu.md.
