@@ -11367,3 +11367,11 @@ Stage Summary:
   to the same gunfire, the protected-actor ch 0x60 rises on his death). Suite on the merged tree:
   see docs/reports/fix-06-driver.md. Report: docs/reports/fix-06-driver.md (live checks: the PCSX2
   no-draw confirmation, the death anim, the 700-880 step-out window; the headless render gap).
+
+## fix-front-end-chain — s/fix-front-end-chain (task 105e, started 19:47 UTC)
+
+Task: port the front-end leg after a mission ends — the results/medal screen (Mission_Update
+0x182c60 case 6 onward, the outro movie, the results page), the unlock write into the progress
+layer (nightfire_status 0x202360, the codename profile), and mission select offering the next
+mission. Drive the campaign runner from 01's end to 05's start. Files: menu.rs, mission.rs,
+progress.rs, profile.rs. Status: setting up.
