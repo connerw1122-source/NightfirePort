@@ -3783,9 +3783,10 @@ impl Scene {
             // 0x4E record; the 0x4F upgrade takes 0x20006c1 "uv_lazer") and `Draw_TaserBeam` 0x1a46a8
             // to 0x200026d "taser" [M], all via hashtable_set_object_to_entity_gfx; the objects resolve
             // in every level archive [D probe]. Two beam slots after the bullet pool:
-            // TRACER_SLOTS = the laser sprite, TRACER_SLOTS+1 = the taser sprite; `frame_state` shows
-            // the one for the active weapon (both stretch muzzle→hit off sim.laser_beam).
-            for (slot, hash) in [(TRACER_SLOTS, 0x0200_0131u32), (TRACER_SLOTS + 1, 0x0200_026d)] {
+            // TRACER_SLOTS = "lazer" (0x4E), +1 = "taser" (0x4A/0x4C), +2 = "uv_lazer" (the 0x4F
+            // upgrade [M 0x1a4560's class-'N' pick]); `frame_state` shows the one for the active
+            // weapon (all stretch muzzle→hit off sim.laser_beam).
+            for (slot, hash) in [(TRACER_SLOTS, 0x0200_0131u32), (TRACER_SLOTS + 1, 0x0200_026d), (TRACER_SLOTS + 2, 0x0200_06c1)] {
                 if drones.is_some() {
                     if let Some(&(bmap, bobj)) = level.by_hash.get(&hash) {
                         let binst = Instance { map: bmap, object: bobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
@@ -4470,10 +4471,14 @@ impl Scene {
                 if slot as usize >= TRACER_SLOTS {
                     let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
                     let Some(s) = self.sim.as_ref() else { return far };
-                    // The sprite follows the active weapon: lazer for the Laser 0x4E/0x4F, taser for
-                    // the Stunner 0x4A/0x4C; the other slot collapses.
-                    let is_stunner = matches!(s.gun.weapon, 0x4a | 0x4c);
-                    if (slot as usize == TRACER_SLOTS) == is_stunner { return far; }
+                    // The sprite follows the active weapon [M 0x1a4560: lazer for class 'N' (0x4E),
+                    // uv_lazer otherwise; 0x1a46a8: taser]; the other slots collapse.
+                    let want = match s.gun.weapon {
+                        0x4a | 0x4c => TRACER_SLOTS + 1,
+                        0x4f => TRACER_SLOTS + 2,
+                        _ => TRACER_SLOTS,
+                    };
+                    if slot as usize != want { return far; }
                     let Some((mut a, b)) = s.laser_beam else { return far };
                     // The beam leaves the view model's bone 0 (AnimGetBoneWorldTrans(BLData+0x7e8, 0, 0)
                     // [M 0x1a4560:20]) — the posed view model's root, which is where the watch sits.
