@@ -47,6 +47,10 @@ pub struct Grenade {
     /// 0x20280]) popped its `Occlude_Create` cloud on the first fuse expiry — the second expiry kills it
     /// [M Bullet_DoTrails 0x12e104-0x12e118: `lh +0xF6; bnel → the death end`].
     pub smoke_popped: bool,
+    /// fix-grenade-throw: the slow-bounce latch — the game's zero-speed bullet never moves again
+    /// [M 0x12ce80 tail zeroes the speed; `Bullet_update`'s `Vec_NormaliseLen` re-normalise (disasm
+    /// 0x12f020-0x12f030) keeps the velocity at zero], so it never re-collides and never sounds again.
+    pub resting: bool,
 }
 
 /// What a grenade did this tick.
@@ -56,6 +60,21 @@ pub enum GrenadeEvent {
     Bounce(V3),
     /// Exploded at `pos` — the caller applies the explosion (radius, damage, owner) to drones and Bond.
     Explode { pos: V3, radius: f32, damage: f32, owner: usize, weapon_type: u16 },
+}
+
+/// The smoke grenade's cloud (`Occlude_Create(pos, 1200, kind)` 0x17ea80): a static class-0x2A object
+/// whose glist is one mesh by kind — 0 = 0x200026b, 1 = 0x2000273, 2 = 0x2000274, 3 = 0x2000275 — and
+/// whose only update is the lifetime countdown (`Occlude_Update` 0x17eba0: obj+0xF4 − 1 per tick; 0 →
+/// obj+0xFE |= 1, dead). The smoke grenade 0x36 pops one with lifetime 1200, kind 1 at its first fuse
+/// expiry [M Bullet_DoTrails 0x12e114-0x12e1b4 calls Occlude_Create(pos, 1200, 1)].
+#[derive(Clone, Debug)]
+pub struct SmokeCloud {
+    /// `obj+0x30`: the cloud's position.
+    pub pos: V3,
+    /// The mesh the kind selects (`hashtable_set_object_to_entity_gfx` 0x17ea80).
+    pub mesh: u32,
+    /// `obj+0xF4`: the lifetime countdown (ticks; `Occlude_Update` 0x17eba0).
+    pub ticks: i16,
 }
 
 /// `WldGravity` (VECTOR at 0x2d8890): `(0, −9.8, 0)`. [L] docs/systems/pickups.md, player.md.
@@ -93,6 +112,17 @@ impl Grenade {
     /// Ranged-out grenades die (the fuse).
     pub fn update(&mut self, world: &CollisionWorld, rng: &mut Rng) -> Option<GrenadeEvent> {
         if self.state >= 2 { return None; }
+        // A rested grenade skips everything but the fuse — the game's zero-speed bullet never moves
+        // (the re-normalise pins the move at zero, disasm 0x12f020-0x12f030) so it never collides and
+        // never sounds again [M 0x12ce80 tail + 0x12f040].
+        if self.resting {
+            self.travelled += 1.0;
+            if self.travelled > self.range {
+                self.state = 2;
+                return Some(GrenadeEvent::Explode { pos: self.pos, radius: self.radius, damage: self.damage, owner: self.owner, weapon_type: self.weapon_type });
+            }
+            return None;
+        }
         // The fuse: BU+0xFC (`Bullet_init` 0x12c5a0): 210 default, 300 with `+0x70 & 0x10000`, the satchel
         // family (base 0x3b) ((id−0x3b)·5+5)·60 (0x6c → 900), 0x69 → 5, and the mine 0x37 → 420
         // (7777.0 when the owner is the player — trigger-detonated [M 0x12c5a0:214-223]; the port has no
@@ -102,6 +132,10 @@ impl Grenade {
         self.travelled += 1.0;
         if self.travelled > self.range {
             self.state = 2;
+            // fix-weapon-fire-modes [M Bullet_update 0x12e7b0:158-162]: for a no-fuse record this
+            // expiry is the RANGE-OUT arm — a SILENT state-4 death. The Sim's Explode arm gates on
+            // `+0x70 & 0x200` (the `Bullet_DoTrails` fuse gate 0x12d890:262-281) and removes the
+            // grenade quietly; a fuse grenade (0x2B, 0x34…) explodes here as before.
             return Some(GrenadeEvent::Explode { pos: self.pos, radius: self.radius, damage: self.damage, owner: self.owner, weapon_type: self.weapon_type });
         }
         // First tick: half-speed (the game's `Rand_FRand(0.5) + 0.5` step [M 0x12e7c0]).
@@ -122,6 +156,10 @@ impl Grenade {
         if speed2 > 1e-12 {
             if let Some((t, normal, mat)) = world.segment_surface(self.pos, end, false) {
                 let hit = [self.pos[0] + (end[0] - self.pos[0]) * t, self.pos[1] + (end[1] - self.pos[1]) * t, self.pos[2] + (end[2] - self.pos[2]) * t];
+                // fix-weapon-fire-modes [M Bullet_CollisionHandler 0x12ce80:194-206]: a `+0x70 & 0x4`
+                // record's round detonates at the contact — the Bounce event carries it to the Sim's
+                // Bounce arm, which reads the record's flags and blasts instead of bouncing (the MGL's
+                // 'Grenade' 0x2A [L ee_start_05.bin]; its 'Delay' twin 0x2B bounces to the fuse).
                 // Bounce: reflect the velocity by the surface normal, × the material coefficient [L 0x3037dc].
                 let v = self.velocity;
                 let dot = v[0] * normal[0] + v[1] * normal[1] + v[2] * normal[2];
@@ -135,7 +173,14 @@ impl Grenade {
                 // which blew the frag up the moment it touched the ground].
                 let speed = (self.velocity[0] * self.velocity[0] + self.velocity[1] * self.velocity[1] + self.velocity[2] * self.velocity[2]).sqrt();
                 if self.bounces >= BOUNCE_MAX || speed < BOUNCE_MIN_SPEED {
+                    // The game's rest: the slow-bounce tail zeroes the speed [M 0x12ce80 tail] and
+                    // `Bullet_update`'s re-normalise (`Vec_NormaliseLen` stores the length back, disasm
+                    // 0x12f020-0x12f030) keeps a zero-speed bullet's move at zero — a rested grenade
+                    // never re-collides. fix-grenade-throw: the port's velocity kept re-accumulating
+                    // gravity at rest, so the grenade re-collided EVERY tick (the user's "rapid sound
+                    // as if it's rapidly contacting the ground").
                     self.velocity = [0.0; 3];
+                    self.resting = true;
                 }
                 return Some(GrenadeEvent::Bounce(hit));
             }
@@ -212,7 +257,7 @@ mod tests {
         // fuse expires.
         let mut g = Grenade {
             pos: [0.0, 2.0, 0.0], velocity: [5.0, -5.0, 0.0], speed: 7.0, travelled: 0.0, range: 210.0,
-            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: 0, smoke_popped: false,
+            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: 0, smoke_popped: false, resting: false,
         };
         let mut rng = Rng::new(0);
         let mut bounced = false;
@@ -233,7 +278,7 @@ mod tests {
         // "it blows up immediately as soon as it hits the ground".)
         let mut g = Grenade {
             pos: [0.0, 0.5, 0.0], velocity: [0.0, -30.0, 0.0], speed: 30.0, travelled: 190.0, range: 200.0,
-            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: BOUNCE_MAX, smoke_popped: false,
+            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: BOUNCE_MAX, smoke_popped: false, resting: false,
         };
         let mut rng = Rng::new(0);
         let mut bounced = false;
@@ -255,7 +300,7 @@ mod tests {
         // Sister: one bounce short (19) with a fast reflection it keeps flying.
         let mut g = Grenade {
             pos: [0.0, 10.0, 0.0], velocity: [0.0, -30.0, 0.0], speed: 30.0, travelled: 0.0, range: 200.0,
-            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: BOUNCE_MAX - 1, smoke_popped: false,
+            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: BOUNCE_MAX - 1, smoke_popped: false, resting: false,
         };
         if let Some(ev) = g.update(&w, &mut rng) { assert!(matches!(ev, GrenadeEvent::Bounce(_)), "one short: a bounce, got {ev:?}"); }
         else { assert!(g.bounces == BOUNCE_MAX, "the bounce counted"); }
@@ -268,7 +313,7 @@ mod tests {
         let w = floor_world();
         let mut g = Grenade {
             pos: [0.0, 0.05, 0.0], velocity: [0.01, -0.05, 0.0], speed: 0.05, travelled: 0.0, range: 300.0,
-            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 1, bounces: 0, smoke_popped: false,
+            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 1, bounces: 0, smoke_popped: false, resting: false,
         };
         let mut rng = Rng::new(0);
         let mut events = Vec::new();

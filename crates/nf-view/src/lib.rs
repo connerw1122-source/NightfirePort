@@ -2284,10 +2284,40 @@ impl ApplicationHandler for App {
                         // quad itself is drawn inside render(), before the (empty) HUD runs.
                         gpu::HudFrame::default()
                     } else {
-                        match &self.scene.hud {
+                        // fix-pause-menu2: the OBJECTIVES tab's rows come from the sim's mission
+                        // states (Mission_ObjectiveState's data [M 0x204408:251-271]; state 4 =
+                        // the done marker), refreshed while the pause page is up.
+                        if fe.page == menu::Page::Pause {
+                            if let Some(sim) = self.scene.sim.as_ref() {
+                                fe.pause_objectives = nf_game::mission::LEVELS.iter().enumerate()
+                                    .find(|(_, l)| l.level == sim.level)
+                                    .map(|(li, l)| l.objectives.iter().enumerate().map(|(oi, o)| {
+                                        let done = sim.drones.mission.states.get(li).and_then(|s| s.get(oi)).map(|&s| s == 4).unwrap_or(false);
+                                        (o.text, done)
+                                    }).collect()).unwrap_or_default();
+                            }
+                        }
+                        let mut f = match &self.scene.hud {
                             Some(tables) => menu::menu_overlay(fe, &tables.font, &tables.font_header, lang, &self.scene.hud_textures, aspect),
                             None => overlay_for(&self.scene, aspect),
+                        };
+                        // fix-pause-menu2: the in-game HUD stays visible under the pause page —
+                        // the game's pause menu draws OVER the paused frame and its HUD (radar
+                        // ring, ammo pane) [L the main agent's PCSX2 captures 2026-10-13; the
+                        // port replaced the HUD with the overlay]. The HUD's quads go FIRST so
+                        // the menu draws over them (frame order = draw order).
+                        if fe.page == menu::Page::Pause && !matches!(fe.flow.get_state(), menu::ST_MOVIE) {
+                            let hud_frame = overlay_for(&self.scene, aspect);
+                            let base = f.v.len() as u32;
+                            let mut runs = std::mem::take(&mut f.runs);
+                            let mut v = hud_frame.v;
+                            v.extend(f.v.drain(..));
+                            for (tex, blend, start, count) in runs.drain(..) {
+                                f.runs.push((tex, blend, start + base, count));
+                            }
+                            f.v = v;
                         }
+                        f
                     }
                 } else { overlay_for(&self.scene, aspect) };
                 if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }

@@ -77,16 +77,20 @@ fn misc_static_entities_match_the_census_on_every_level() {
         assert_eq!(got, expect, "{name}: misc draw census mismatch");
         // Spot checks against the disc census (docs/models/misc.md): 0700000c carries 5 locks and 5 dynamic
         // objects; 0700000d carries 5 dynamic objects, 1 gun imp and 9 draw-able destroyables. The grapple
-        // points (0c: 5, 0d: 3 [D placements]) draw NOTHING since fix-gadgets2 [M 0x198298: no gfx attach].
+        // points (0c: 5, 0d: 3 [D placements]) stay out of THIS census: fix-grapple-hook corrected
+        // fix-gadgets2's "never draw" — the game does draw their pulley (`Grapple_Create` 0x198298 keeps
+        // the placement's glist argument at obj+0xD8; `View_DrawObjectGlist` renders it), and the port's
+        // grapple sweep draws it under `grapple_hooks_drawn`, not the misc sweep — so 0x3a stays absent
+        // from `misc_drawn` here.
         if name == "0700000c.bin" {
             assert_eq!(scene.misc_drawn.get(&0x2e), Some(&5));
             assert_eq!(scene.misc_drawn.get(&0x3b), Some(&5));
-            assert_eq!(scene.misc_drawn.get(&0x3a), None, "the grapple points' marker meshes never draw [M 0x198298]");
+            assert_eq!(scene.misc_drawn.get(&0x3a), None, "the grapple points draw via grapple_hooks_drawn, not the misc sweep [M fix-grapple-hook]");
         }
         if name == "0700000d.bin" {
             // One of the five hides until its channel (param 0 = 43 [D placements dump]) — 4 draw.
             assert_eq!(scene.misc_drawn.get(&0x3b), Some(&4));
-            assert_eq!(scene.misc_drawn.get(&0x3a), None, "the grapple points never draw [M 0x198298]");
+            assert_eq!(scene.misc_drawn.get(&0x3a), None, "the grapple points draw via grapple_hooks_drawn, not the misc sweep [M fix-grapple-hook]");
             assert_eq!(scene.misc_drawn.get(&0x34), Some(&1));
             assert_eq!(scene.misc_drawn.get(&0xe1), Some(&9));
         }
@@ -113,8 +117,9 @@ fn meshless_kinds_never_draw() {
     // sweep is wrong, not merely silent.
     for name in ["0700001b.bin", "0700000b.bin", "07000009.bin", "0700000c.bin"] {
         let scene = nf_view::load(&iso, name, false).unwrap_or_else(|e| panic!("load {name}: {e}"));
-        // fix-gadgets2 adds 0x3a (grapple points, 5 on 0c [D]) and 0x3f (creep walls) — the creators
-        // attach no gfx [M 0x198298, 0x196fc8], the user's red/yellow marker boxes.
+        // fix-gadgets2 adds 0x3f (creep walls) to this list — the creator attaches no gfx [M 0x196fc8],
+        // the user's red marker boxes. 0x3a stays: the grapple points draw via `grapple_hooks_drawn`
+        // (fix-grapple-hook), never through this misc sweep.
         for bad in [0x29u8, 0x31, 0x32, 0x27, 0x38, 0x39, 0xf2, 0xd4, 0x3a, 0x3f] {
             assert_eq!(scene.misc_drawn.get(&bad), None, "{name}: kind {bad:#x} must not draw");
         }
@@ -365,7 +370,7 @@ fn a_grenade_blast_plays_the_explosion_script_entities() {
     let mesh = sim.weapons.model(0x35);
     sim.drones.grenades.push(nf_game::grenade::Grenade {
         pos: at, velocity: [0.05, 0.0, 0.0], speed: 0.05, travelled: 0.0, range: 10.0,
-        damage: 100.0, radius: 5.0, weapon_type: 0x34, owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, mesh,
+        damage: 100.0, radius: 5.0, weapon_type: 0x34, owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: false, mesh,
     });
     let mut blasted = false;
     for _ in 0..40 { sim.step_bond(Input::default(), false, false, false); if !sim.drones.explosions.is_empty() { blasted = true; break; } }

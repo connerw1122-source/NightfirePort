@@ -7,6 +7,7 @@
 //! the menu-def (kind-8 entry 08000002 in 07000048.bin) and `sp_level` 0x2df2e0 (fix-menus2).
 
 use nf_view::menu::{self, Action, FrontEnd, Outcome, Page, Stats, ST_FADE_HOLD, ST_MAPLOAD, ST_MOVIE, ST_RUNNER};
+use nf_view::gpu;
 
 #[allow(dead_code)]
 /// Drives the boot path to the title the way `GameFlow_Main` + `ResetMap_Load` would [M 0x1c98c8/0x1d6360].
@@ -680,8 +681,8 @@ fn the_descriptions_wrap_inside_their_plates() {
 struct TextRows { rows: Vec<(f32, f32, f32, f32)> }
 
 fn text_rows(frame: &nf_view::gpu::HudFrame, n_tex: usize, aspect: f32) -> TextRows {
-    // The font texture, the specialchar icon texture and the header-face atlas all carry text-row
-    // ink; runs name them by index+1 (the font was appended last; 0x03000075 is MENU_TEXTURES[10]).
+    // The font texture and the specialchar icon texture both carry text-row ink; runs name them by
+    // index+1 (the font was appended last; 0x03000075 is MENU_TEXTURES[10]).
     let font_tex = n_tex;
     let icon_tex = menu::MENU_TEXTURES.iter().position(|&t| t == 0x0300_0075).expect("icon tex listed") + 1;
     let head_tex = menu::MENU_TEXTURES.iter().position(|&t| t == 0x0300_0005).expect("header atlas listed") + 1;
@@ -926,6 +927,119 @@ fn the_title_prompt_uses_the_page_colour() {
     let want = [0x7f as f32 / 128.0, 0x62 as f32 / 128.0, 0x1f as f32 / 128.0, 0.996];
     let hit = frame.v.iter().any(|q| q.c.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.02));
     assert!(hit, "the prompt draws in 0x7f621f gold (gs scale)");
+}
+
+// --- fix-pause-menu2: the pause page's tab contents ---
+
+/// The yellow arrow cursor left of the selected MISSION row [L the main agent's PCSX2 captures
+/// 2026-10-13; the port had none]. The cursor is the page's only yellow draw (menu.rs `YELLOW`, the page
+/// data's 0x7f621f since fix-menus-real; it was 0xfec43e when this test was written), so its colour pins it.
+#[test]
+fn the_pause_mission_tab_has_the_yellow_row_cursor() {
+    let font = test_font();
+    let textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).chain(std::iter::once((0x0300_0003u32, crate_texture(0x0300_0003)))).collect();
+    let mut fe = FrontEnd::new();
+    fe.flow.current_level = 0x0700_0005;
+    assert!(fe.open_pause());
+    let yellow = |f: &gpu::HudFrame| f.v.iter().filter(|v| (v.c[0] - 0x7f as f32 / 128.0).abs() < 0.02 && (v.c[1] - 0x62 as f32 / 128.0).abs() < 0.02).count();
+    let f = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
+    let n = yellow(&f);
+    assert!(n >= 3, "the MISSION tab draws the yellow row cursor (found {n} yellow verts)");
+    // Sister: the cursor follows the selection — its verts move down a row (the 640-space rows are
+    // 40 px apart [L the d1=6 list's 183+20+i*40 rows], 448-space 35 px).
+    fe.cursor = 2;
+    let f2 = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
+    // NDC y runs DOWN as the row index grows (row 0 ≈ +0.15, row 2 ≈ −0.18).
+    let y0 = f.v.iter().filter(|v| (v.c[0] - 0x7f as f32 / 128.0).abs() < 0.02 && (v.c[1] - 0x62 as f32 / 128.0).abs() < 0.02).map(|v| v.p[1]).fold(f32::MIN, f32::max);
+    let y2 = f2.v.iter().filter(|v| (v.c[0] - 0x7f as f32 / 128.0).abs() < 0.02 && (v.c[1] - 0x62 as f32 / 128.0).abs() < 0.02).map(|v| v.p[1]).fold(f32::MIN, f32::max);
+    assert!(y0 > f32::MIN && y2 < y0 - 0.1, "the cursor moved to the selected row (y {y0} -> {y2})");
+}
+
+/// The OBJECTIVES tab lists the level's objectives, a ~J (done) / ~I (pending) marker before each
+/// name [M C_GCPAUSE_Handler 0x204408:251-271; the markers are ACTION.ELF .data 0x30d2e0/0x30d2e8].
+/// The marker glyphs draw through the specialchar table ('J' = u176 v57 w16 h12 [M 0x2dd8d8]).
+#[test]
+fn the_pause_objectives_tab_draws_the_objective_rows_with_their_markers() {
+    let font = test_font();
+    let textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).chain(std::iter::once((0x0300_0003u32, crate_texture(0x0300_0003)))).collect();
+    let mut fe = FrontEnd::new();
+    fe.flow.current_level = 0x0700_0005;
+    assert!(fe.open_pause());
+    fe.pause_tab = 1;
+    let empty = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0).v.len();
+    // Two objectives: the first pending, the second done (state 4 [M 0x204408:259]).
+    fe.pause_objectives = vec![(0x0400_0000, false), (0x0400_0001, true)];
+    let f = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
+    assert!(f.v.len() > empty, "the objectives rows add quads ({} -> {})", empty, f.v.len());
+    // The 'J' marker's glyph quad: uv x = 176/256 of the specialchar atlas.
+    let j = f.v.iter().filter(|v| (v.uv[0] - 176.0 / 256.0).abs() < 0.01 && (v.uv[1] - 57.0 / 256.0).abs() < 0.02).count();
+    assert!(j >= 2, "the done row draws the ~J marker glyph (found {j} verts)");
+}
+
+/// The CONTROLS tab draws the controller-style page: the style name and the per-action
+/// "<glyph> <label>" rows [M Menu_DisplayControllerStyleList 0x1f44d8 case 0 — 6 rows × 2 columns,
+/// the glyph strings ACTION.ELF .data 0x30d1c8-0x30d228]. Before the fix the tab showed only
+/// "Inverted" and an empty plate.
+#[test]
+fn the_pause_controls_tab_draws_the_button_rows() {
+    let font = test_font();
+    let textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).chain(std::iter::once((0x0300_0003u32, crate_texture(0x0300_0003)))).collect();
+    let mut fe = FrontEnd::new();
+    fe.flow.current_level = 0x0700_0005;
+    assert!(fe.open_pause());
+    fe.pause_tab = 2;
+    let f = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
+    // The 12 glyph quads (6 rows × 2 columns) draw from the specialchar atlas (u ≥ 150 in the
+    // game's table [M 0x2dd8d8's entries]).
+    let glyphs = f.v.iter().filter(|v| v.uv[0] >= 150.0 / 256.0 && v.uv[0] <= 1.0 && v.uv[1] < 0.5).count();
+    assert!(glyphs >= 12, "the CONTROLS rows draw their button glyphs (found {glyphs} glyph verts)");
+    // Sister: the rows are the game's own label ids (0x8f/0x8c, 0x8b/0x8d, 0x84/0x89, 0x85/0x8a,
+    // 0x88/0x90, 0x87/0x86 [M 0x1f44d8 case 0]) — they resolve from USATxt.dat.
+}
+
+/// The SCORE tab shows the game's own table: the Category/Current/Target header and the 8 rows
+/// [M C_GCPAUSE_Handler 0x204408:447-498], with the level's TARGETS from ACTION.ELF's static
+/// score records [L 0x2bc658 pointer table, extracted 2026-10-14].
+#[test]
+fn the_pause_score_tab_shows_the_disc_targets() {
+    // 07000005's row: Bond Moves 2, Dispatched 30, Subdued 3, Surrendered 3, —, Accuracy 100,
+    // Health 100, Time 09:00, Bonus 7 — the PCSX2 capture's numbers [L the task's captures].
+    assert_eq!(menu::score_row_for_level(0x0700_0005), Some(1), "the campaign row of 07000005 [M Menu_GetLevelIndex 0x2023e8 walks sp_level[i]+0xc]");
+    let t = menu::SCORE_TARGETS[1];
+    assert_eq!((t[0], t[1], t[2], t[3]), (2, 30, 3, 3), "Bond Moves / Dispatched / Subdued / Surrendered targets");
+    assert_eq!((t[5], t[6], t[7], t[8]), (100, 100, 540, 7), "Accuracy / Health / Time (09:00 = 540 s) / 007 Bonus targets");
+    // Every campaign level has a row (the game's 12 sp_level entries [M PlrStat_Init 0x198318 loops 12]).
+    assert_eq!(menu::SCORE_TARGETS.len(), 12);
+    // The drawn tab carries the header + 8 rows + the Time row: at least 10 text draws' worth of
+    // quads beyond the empty plate.
+    let font = test_font();
+    let textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).chain(std::iter::once((0x0300_0003u32, crate_texture(0x0300_0003)))).collect();
+    let mut fe = FrontEnd::new();
+    fe.flow.current_level = 0x0700_0005;
+    assert!(fe.open_pause());
+    fe.pause_tab = 3;
+    let f = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
+    assert!(f.v.len() > 60, "the SCORE tab draws the header and the rows ({} verts)", f.v.len());
+}
+
+/// (NF_ISO) The pause page's figure: texture 0x030000db loads as the 64×128 alpha mask (the 5551
+/// alpha-bit silhouette), not the 8bpp blob card. Before the fix the load produced the palette-card
+/// picture (coloured blobs + white figure) the user saw.
+#[test]
+fn the_pause_figure_texture_loads_as_the_silhouette_mask() {
+    let Some(iso) = std::env::var("NF_ISO").ok() else { return };
+    let scene = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
+    let (_, t) = scene.hud_textures.iter().find(|(h, _)| *h == 0x0300_00db).expect("the pause figure texture loads");
+    assert_eq!((t.width, t.height), (128, 128), "the figure texture is 128×128 [L the map header]");
+    // The figure = index 0x43 whose palette entry is pure WHITE [L pal[067]=ffffff80; the index
+    // histogram: a flat run of 987 0x4343 words in the figure's bbox]. The white pixels sit in the
+    // texture's RIGHT half (x ≥ 64) — the blobs (the left half) never enter the menu's uv rect.
+    let white: Vec<(usize, usize)> = (0..128usize).flat_map(|y| (0..128usize).map(move |x| (x, y)))
+        .filter(|&(x, y)| { let i = (y * 128 + x) * 4; t.rgba[i] == 255 && t.rgba[i + 1] == 255 && t.rgba[i + 2] == 255 })
+        .collect();
+    assert!(white.len() >= 900, "the white silhouette is present ({} px)", white.len());
+    let left = white.iter().filter(|(x, _)| *x < 64).count();
+    assert!(left * 10 < white.len(), "the silhouette sits in the texture's right half ({} left-half px of {})", left, white.len());
 }
 
 // ── fix-menus-real2: the headers' bold-italic face ──────────────────────────────────────────────
