@@ -11154,3 +11154,18 @@ Work Log:
 - (14:29 UTC) Branch s/fix-weapon-fx-levels created from origin/master 088bdf4 (s/weapon-matrix2 already merged: ad50a3c). Setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; effect-resolution research next.
 
 
+
+---
+Task ID: 104f-fix-aim-raise
+Agent: fix-aim-raise worker
+Task: fix-aim-raise — port the aim gate: the aim bit, the zoom start and the auto-aim lock wait for the aim-raise script's last tick (view state 0xF, Player_SetWeaponAnimObj 0x1a2e38:554-561; Player_Weapon 0x1a24c8:117-152); weapons without +0xB8 aim at once. NF_ISO tests: sniper + AIMS-20 numbers, the P2K immediate, the 0c sniper regression, sisters.
+
+Work Log:
+- (17:35-17:50) Setup reused (repo, work/, ISO, nf-queue); branch s/fix-aim-raise from origin/master 7785582 pushed with the WORKLOG started.
+- (17:50-18:05) Decompile round: Player_SetWeaponAnimObj case 0xf (the bit sets when the raise stops), Player_Weapon 0x1a24c8 (the press defers the bit iff +0xB8; the zoom target +0x8D4 on the bit's rise; the lower = +0xBC @1.25 or +0xB8 reversed), Player_Aiming 0x1a1d28 (the free-aim window is bit-gated), Player_AutoAim 0x1a7c98 (the scan runs while the bit is clear, the ease while set), Player_InitAmmoWeapons 0x1a17f8 (the aim-zoom table = SQRT(+0x88)), Player_Update 0x193600's tick order.
+- (18:05-18:12) Record census via the port's own loads [L]: sniper 0x24 raise 0x060007b9/24 (19 advance ticks, no +0xBC), AIMS-20 0x1a raise 0x060007bf/20 (16 ticks), watch 0x54/0x55 raise/lower, P2K 0x02 none. fix-weapon-anims' machine is held unmerged (s/103k2-fix-weapon-anims2) — this branch carries the raise anims inside the gate, keeping its field names.
+- (18:12-18:20) 5 failing-first tests written (the sniper bit set on tick 1 pre-fix), then the gate implemented: Sim::aim_gate (start/advance/finish + the bit dynamics), the bit consumers (free-aim, auto-aim, bond_aiming, crosshair, mode gate), the zoom gate, the aims_idle reset while raising, the chain's skip-advance + displaced-marker cleanup; +0xB8/+0xBC accessors in nf-formats.
+- (18:20-18:30) All 5 green; regression sweeps green: fix_guard_misc 6/6 (the 0c sniper), fix_viewmodel_zoom 3/3, fix_zoom_overlays 6/6, gadgets_live 4/4, gadget_laser 7/7, fix_auto_switch 2/2, walkreal 0a/0c/0d, fix_progress 3/3. Checkpoint ac3a303 pushed; origin/master merged (fix-weapon-fx-levels et al; the WORKLOG conflict resolved append-only), tests re-green on the merge c3086d6.
+
+Stage Summary:
+- The aim gate ported with the raise/lower anims; the game addresses cited per fix in docs/reports/fix-aim-raise.md (live checks inside). 5 NF_ISO tests failing-first then green; the suite total recorded in the report. Left: unify with fix-weapon-anims' machine when it lands; the 0x55 lower quirk; the raise arm's conservative from-idle condition.
