@@ -123,8 +123,9 @@ append-only, both entries kept).
     gadget_grapple_live 1/1, gadgets_live 4/4.
   - fix_pickups_remainder_live 1/1, fix_pickups_trace_live 2/2, weapon_assets_live 5/5,
     weapon_fx_levels_live 2/2 (+2 ignores).
+  - gadget_grapple_user_spot 2/2, qclaw_live 3/3, nf-view lib 8/8.
   - nf-game lib 150/150.
-  - **Total this session: 211 passed, 0 failed, 6 ignored (pre-documented ones).**
+  - **Total this session: 224 passed, 0 failed, 6 ignored (pre-documented ones).**
 - The full four-crate sweep (`tools/test/suite.py` / the cargo four-crate command) did NOT fit the
   window again: the background suite died within one tool call (this sandbox kills background
   jobs — the same failure the fix-hud-radar session logged), and the foreground window closes at
