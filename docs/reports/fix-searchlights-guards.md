@@ -132,6 +132,6 @@ same quads — whether the beam/pool quads take their own light is check 2 below
 
 ## Suite count
 
-Full suite on the final tree (this branch, merged with origin/master), slim ISO, fast runner
-(`tools/test/suite.py`): see the total line below (the 3 `disc_golden` tests and `pss_movies_live`
-are the only allowed failures on the slim ISO).
+Full suite on the final tree (this branch rebased onto origin/master e169958), slim ISO, fast
+runner (`tools/test/suite.py`): **955 passed, 3 failed, 29 ignored (22 min)** — the 3 failures are
+the allowed `disc_golden` trio, no TIMEOUT/CRASH, zero failures outside the permitted set.
