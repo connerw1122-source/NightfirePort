@@ -10431,3 +10431,4 @@ Work Log:
 Stage Summary:
 - Files: crates/nf-view/tests/fix_guard_misc_live.rs (new), docs/reports/fix-guard-misc.md, docs/WORKLOG.md. No production code touched.
 - nf-game lib 143/0 on the final tree; the full suite left for the next session (backgrounds die in this sandbox).
+- Addendum: probe_sniper_direct_bullet pushed the exact bullet through player_bullets — at the crossing tick the 16 live boxes are placed on the body (torso part 4 at (44.02,21.82,−205.04) half [0.2,0.25,0.15]), first_box_hit = None is geometrically RIGHT (the drone shifted 0.2 after the settle probe; the stale aim centre passes 0.04 outside the torso slab); row- AND column-axis variants miss identically (not a convention bug). Next step: aim at part 4's live m[3] at fire time, then the msg-8 damage path is exercised end to end.
