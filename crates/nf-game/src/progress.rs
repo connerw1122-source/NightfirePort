@@ -557,7 +557,7 @@ impl Progress {
     /// `LS_MakeMission` 0x1cd720's MSSN payload, bit-exact: 32 b nightfire status, 8 b count,
     /// per entry 32 b best + 4 b rows[0]+8 (the moments value), 1 b game complete — 473 bits for
     /// the full table → 68-byte block [L the dossier's parse of the snapshot's save].
-    fn make_mssn(&self) -> Vec<u8> {
+    pub(crate) fn make_mssn(&self) -> Vec<u8> {
         let payload_bits = 32 + 8 + self.table.len() * 36 + 1;
         let size = (64 + payload_bits + 7) / 8;
         let mut buf = vec![0u8; size];
@@ -578,7 +578,7 @@ impl Progress {
     /// the moments values and the nightfire status / game-complete flag. The runtime row fields
     /// (+0x1C..+0x30's scratch) stay as the static defaults — the game restores only what the
     /// block carries.
-    fn load_mssn(&mut self, payload: &[u8], pos: &mut usize) {
+    pub(crate) fn load_mssn(&mut self, payload: &[u8], pos: &mut usize) {
         let status = Self::pull_bits(payload, pos, 32) as u32;
         let count = Self::pull_bits(payload, pos, 8) as usize;
         self.nightfire_status = if status == 0 { 0x3 } else { status }; // [M 0x2023a0's default]
@@ -593,7 +593,7 @@ impl Progress {
 
     /// `LS_MakeBonus` 0x1ce3b0's BUNS payload: 64 bits = `bonus[0]` (the high dword pushed first
     /// — the bit packer's LSB-first order reproduces it: the u64's bit 0 goes to stream bit 0).
-    fn make_buns(&self) -> Vec<u8> {
+    pub(crate) fn make_buns(&self) -> Vec<u8> {
         let size = (64 + 64 + 7) / 8;
         let mut buf = vec![0u8; size];
         let mut pos = 64usize;
@@ -603,7 +603,7 @@ impl Progress {
         buf
     }
 
-    fn load_buns(&mut self, payload: &[u8], pos: &mut usize) {
+    pub(crate) fn load_buns(&mut self, payload: &[u8], pos: &mut usize) {
         self.bonus[0] = Self::pull_bits(payload, pos, 64);
     }
 
