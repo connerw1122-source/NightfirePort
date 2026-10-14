@@ -347,6 +347,20 @@ pub struct Sim {
     /// The level's third icons (placement kind 0xFA, `ThirdIcon_Create` 0x197070). Each tick the Sim
     /// writes the enabled icon's context into `bond.icon_ctx` (`BLData+0x95F`) — fix-wire2.
     pub icons: Vec<nf_game::wire::Icon>,
+    /// The level's hint markers (placement kind 0x33, `Hint_Create` 0x1b3248, class 0x43 —
+    /// fix-context-hints). One-shot type-1 (INFO pane) messages with an optional sound, fired when
+    /// the player enters the marker's straddle-cel set with its channels satisfied.
+    pub hints: Vec<nf_game::player::Hint>,
+    /// Per hint marker, the straddled `cells` indices (the game's obj+0xD0 chain occupancy — the
+    /// same resolution as `icon_cels`, over the marker's world sphere).
+    pub hint_cels: Vec<Vec<usize>>,
+    /// Per hint marker: fired once per level load (obj+0xFE bit 0 deletes the game's object
+    /// [M Hint_Update 0x1b3380:41-42]).
+    pub hint_fired: Vec<bool>,
+    /// Per third icon, its instance message timer (data+8 [M ThirdIcon_Update 0x196e80:15-17]):
+    /// −1 per tick, reset to 4 while the player is in range; the type-6 "Press Action" hint posts
+    /// only when the timer has ticked down to 0.
+    pub icon_msg_timers: Vec<u8>,
     /// Each wire's owning cel (the smallest-volume `cels` bbox containing the wire's world-sphere
     /// centre — `build_FindCel` 0x1c8cb0's test). The game's pick pass is CEL-CULLED:
     /// `Collide_Pick` 0x1eb320 tests only the cels the query segment straddles
@@ -416,10 +430,24 @@ pub struct Sim {
 /// `second` track the pane's per-display SFX (`ObjectiveSFXTriggered1/2` 0x30ccb4/0x30ccb8 —
 /// reset by case 2 each time the message becomes the displayed head [M 0x19c310:148-164]).
 #[derive(Clone, Debug)]
-pub struct Msg { pub text: String, pub time: f32, pub status: u32, pub failed: bool, pub life: f32, pub opened: bool, pub second: bool }
+pub struct Msg {
+    pub text: String,
+    pub time: f32,
+    pub status: u32,
+    pub failed: bool,
+    pub life: f32,
+    pub opened: bool,
+    pub second: bool,
+    /// The posting `Txt_BindLabel` id (0 for the queues that post pre-bound text — the INFO
+    /// pane's tests pin it) [M Text_AddMsg 0x1b0c30 stores the bound string; the id is the
+    /// port's provenance for the game-label assertions].
+    pub label: u32,
+}
 
 impl Msg {
-    pub fn new(text: String, time: f32) -> Msg { Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false } }
+    pub fn new(text: String, time: f32) -> Msg {
+        Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false, label: 0 }
+    }
 }
 
 /// The HUD state the port keeps in Sim (the game keeps it in BLData / the TXTMSG list / pane structs).
@@ -452,6 +480,22 @@ pub struct HudState {
     /// The banners' close animations (16 px per tick, the panes' slide field).
     pub objective_close: f32,
     pub mission_close: f32,
+    /// The type-1 INFO message queue (pane 4, `MsgInfoStatusPane` 0x319810 — the TOP hint bar):
+    /// the Hint markers (placement 0x33) and `ThirdIcon_Update`'s type-6 "Press Action" post
+    /// `Text_AddMsg(…, 1, …, 0xb4)` into it [M 0x1b3380:33, 0x196e80:41-42]. One TXTMSG list per
+    /// type, like the pickup/objective/mission queues.
+    pub info_msgs: std::collections::VecDeque<Msg>,
+    /// The INFO bar's close animation (16 px per tick — the pane's slide 0x10 [L 0x319810+0x14]).
+    pub info_close: f32,
+    /// The raw label ids still awaiting the language bind (drained into `info_msgs` in `hud_tick`;
+    /// the tests pin these game label ids directly).
+    pub info_labels: std::collections::VecDeque<(u32, f32)>,
+    /// The health pane's `ThirdIconTimer` (0x30CCE8): 30 while a context id is set, fading the
+    /// context icon out over it on 0xFF [M HUD_UpdateHealthPane 0x19b9c8:273-303].
+    pub context_icon_timer: i32,
+    /// The last non-0xFF context id the icon showed (the runtime sprite keeps its texture through
+    /// the fade — the port re-derives it since the fade path runs after the id is gone).
+    pub last_icon_ctx: u8,
 }
 
 impl HudState {
@@ -461,6 +505,9 @@ impl HudState {
     /// the mission banner's open height (103, `MissionStatusSprInfo[2].h` [L 0x319580+0x2c·2]).
     const OBJECTIVE_W: f32 = 480.0;
     const MISSION_H: f32 = 103.0;
+    /// The INFO bar's open width (480, `InfoStatusSprInfo[2].w` [L 0x319730+0x58+0x10] — the same
+    /// 480 the CREATE's w carries before `HUD_CalcWidthHeight`).
+    const INFO_W: f32 = 480.0;
 }
 
 impl Sim {
@@ -1847,7 +1894,46 @@ impl Sim {
                 if cells.is_empty() { continue; }
                 if !bond_cell.is_some_and(|bc| cells.contains(&bc)) { continue; }
                 let near = (icon.centre[0] - self.bond.pos[0]).powi(2) + (icon.centre[1] - self.bond.pos[1]).powi(2) + (icon.centre[2] - self.bond.pos[2]).powi(2) < 144.0;
-                if near { self.bond.icon_ctx = icon.ctx; }
+                if near {
+                    self.bond.icon_ctx = icon.ctx;
+                    // `ThirdIcon_Update` 0x196e80:38-53: the type-6 icon posts the generic hint
+                    // "Press Action" (label 0x1000291 [D USATxt.dat entry fixups[1]+0x291]) as a
+                    // type-1 INFO message, life 0xB4, while the player is in range AND not
+                    // creeping (substate 7) AND the icon's instance timer (data+8) has ticked
+                    // down to 0; every in-range write resets it to 4 [M 0x196e80:15-17,52-53].
+                    let timer = self.icon_msg_timers.get(ii).copied().unwrap_or(0);
+                    if icon.ctx == 6 && timer == 0 && self.bond.substate != nf_game::player::SS_CREEP {
+                        self.hud.info_labels.push_back((0x100_0291, 180.0));
+                    }
+                    if let Some(t) = self.icon_msg_timers.get_mut(ii) { *t = 4; }
+                }
+            }
+            // The icon timers tick every frame regardless of range [M 0x196e80:15-17 — the
+            // instance timer decrements at the top of the icon's own update].
+            for t in self.icon_msg_timers.iter_mut() { if *t > 0 { *t -= 1; } }
+            // The hint markers (fix-context-hints): `Hint_Update` 0x1b3380 fires once per load
+            // when the player's cel is in the marker's chain with the channels satisfied — the
+            // sound, then the type-1 message with the marker's label, then obj+0xFE bit 0 deletes
+            // the marker [M 0x1b3380:24-42]. The chain fill is the player's pick through the
+            // marker's SPHERE (r + the player's 1.0576 world sphere [L M_CONTROL+0x8C]) — the
+            // cel-set test alone is coarser than the game's cels (fix-08-walls's finding), so
+            // the arm region is the intersection: the straddle set AND the sphere volume (the
+            // safe's control-panel marker sits 6.7 from the safe spot with r 3.889 — the game
+            // leaves it silent there [S the measured pin]).
+            for (hi, h) in self.hints.iter().enumerate() {
+                if self.hint_fired.get(hi).copied().unwrap_or(true) { continue; }
+                if h.on_channel != 0 && !self.drones.channels.on(h.on_channel) { continue; }
+                if h.off_channel != 0 && self.drones.channels.on(h.off_channel) { continue; }
+                let Some(cells) = self.hint_cels.get(hi) else { continue; };
+                if cells.is_empty() { continue; }
+                if !bond_cell.is_some_and(|bc| cells.contains(&bc)) { continue; }
+                let c = self.bond.sphere_centre();
+                let reach = h.radius + 1.0576;
+                let near = (h.centre[0] - c[0]).powi(2) + (h.centre[1] - c[1]).powi(2) + (h.centre[2] - c[2]).powi(2) < reach * reach;
+                if !near { continue; }
+                self.hint_fired[hi] = true;
+                self.hud.info_labels.push_back((h.label, 180.0));
+                if h.sound != 0 { self.drones.audio.play3d(h.sound, self.bond.head(), None); }
             }
             // No walk-in or use-key wire grab (main agent at the fix-wire2 × walkreal-b2 merge): the game's
             // grab that is certain is the JUMP grab [M Player_HandleJump 0x1916b0:107-147 — action 7 is the
@@ -2730,6 +2816,13 @@ impl Sim {
         // [M 0x19b9c8:305-328].
         if self.bond.crouched { self.hud.crouch_icon_timer = 60; }
         else if self.hud.crouch_icon_timer > 0 { self.hud.crouch_icon_timer -= 1; }
+        // The context icon's ThirdIconTimer (0x30CCE8): held at 30 while a context id is set
+        // (the game rewrites it on every shown frame [M 0x19b9c8:298]), counting down on 0xFF
+        // for the 30-tick fade-out [M 0x19b9c8:275-282]. Runs with the health pane's update —
+        // outside the cut-scene message freeze (that gate is Text_UpdateMsg's, the panes still
+        // step [M 0x1b11d8]).
+        if self.bond.icon_ctx != 0xff { self.hud.context_icon_timer = 30; self.hud.last_icon_ctx = self.bond.icon_ctx; }
+        else if self.hud.context_icon_timer > 0 { self.hud.context_icon_timer -= 1; }
         // Script op-0x1e text commands (`Script_TextStart` 0x1db2b8 → `Text_AddMsg(-1, 0, 4,
         // Txt_BindLabel(label), 0, time)` [M]): the raw labels drain to HUD messages with the same
         // bank binding as the pickup texts (fix-script-commands).
@@ -2739,6 +2832,18 @@ impl Sim {
             for (label, time) in self.drones.script_msgs.drain(..) {
                 let text = lang.bind(label).unwrap_or("").trim().to_string();
                 if !text.is_empty() { new_msgs.push_back(Msg::new(text, time as f32)); }
+            }
+        }
+        // The INFO pane's label drain (fix-context-hints): the game binds at POST time
+        // (`Txt_BindLabel` runs inside ThirdIcon_Update 0x196e80:41 / Hint_Update 0x1b3380:31),
+        // before the pane could ever draw, so this sits before the cut-scene freeze like the
+        // script-op drain above; the pane display waits on the viewer gate (below).
+        for (label, time) in self.hud.info_labels.drain(..) {
+            let text = lang.as_ref().and_then(|l| l.bind(label)).unwrap_or("").trim().to_string();
+            if !text.is_empty() {
+                let mut m = Msg::new(text, time);
+                m.label = label;
+                self.hud.info_msgs.push_back(m);
             }
         }
         for (_, t) in self.drones.taken.iter().skip(self.hud.taken_seen) {
@@ -2800,7 +2905,7 @@ impl Sim {
                     // scales the life by the wrapped/orig length [M 0x1b0c30's +0x18 store]. The
                     // port wraps at draw time — the font lives in the scene's HudTables, which the
                     // Sim-side drain doesn't hold; the life scaling is not ported, see the report.)
-                    self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed, life: ticks as f32, opened: false, second: false });
+                    self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed, life: ticks as f32, opened: false, second: false, label: 0 });
                 }
                 nf_game::mission::Event::FailLabel(l) => {
                     self.hud.fail_label = l;
@@ -2848,6 +2953,18 @@ impl Sim {
             if self.hud.bar_close > 0.0 { self.hud.bar_close = (self.hud.bar_close - 16.0).max(0.0); }
         } else {
             self.hud.bar_close = HudState::BAR_W;
+        }
+        // The INFO pane (pane 4): the head ticks alone, the close shrinks 16 px/tick — the same
+        // `HUD_UpdateStatusPane` 0x19c310 machine as the pickup bar (the CREATE's slide is 0x10
+        // [L MsgInfoStatusPane 0x319810+0x14]).
+        if let Some(m) = self.hud.info_msgs.front_mut() {
+            m.time -= 1.0;
+            if m.time <= 0.0 { self.hud.info_msgs.pop_front(); }
+        }
+        if self.hud.info_msgs.is_empty() {
+            if self.hud.info_close > 0.0 { self.hud.info_close = (self.hud.info_close - 16.0).max(0.0); }
+        } else {
+            self.hud.info_close = HudState::INFO_W;
         }
         // `Text_UpdateMsg` ticks only the displayed head [M 0x1b11d8:48-73 — the out-param
         // `*param_3` is the head node; the queue behind waits]; when it expires the next message
@@ -4495,6 +4612,18 @@ impl Scene {
                 Some(c) => icon_straddle_cels(&cel_graph, c, ic.centre, ic.radius),
                 None => Vec::new(),
             }).collect::<Vec<_>>();
+            // The hint markers (placement kind 0x33, `Hint_Create` 0x1b3248 — fix-context-hints):
+            // the same world-sphere + straddle-cel resolution as the third icons (the marker's
+            // obj+0xD0 chain is filled by the player's pick through it [M Collide_Update
+            // 0x1ea398:160-233 + the reciprocal node append]). `Hint_Update` fires once when the
+            // player's cel is in the set with the marker's channels satisfied.
+            let hints = nf_game::player::hints(level);
+            let hint_cels = hints.iter().map(|h| match find_cell_raycast(&cel_graph, h.centre, Some(&world)) {
+                Some(c) => icon_straddle_cels(&cel_graph, c, h.centre, h.radius),
+                None => Vec::new(),
+            }).collect::<Vec<_>>();
+            let hint_fired = vec![false; hints.len()];
+            let icon_msg_timers = vec![0u8; icons.len()];
             // The wire anims' root tracks: the level archive's kind-5 scripts (the player body anims)
             // resolved to their sequences [D 07000005: 0x060005e5 101 frames → 0x04000536, the move pair
             // 0x060000b4/b5 → 0x04000034/35 travelling 0.7637/0.7106 per cycle].
@@ -4558,6 +4687,7 @@ impl Scene {
             drones.difficulty = 1;
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, missile_cam: None,
+                hints, hint_cels, hint_fired, icon_msg_timers,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));

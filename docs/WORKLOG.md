@@ -10137,6 +10137,26 @@ Task 101h, both symptoms from the 1013-1758 playtest at 07000008's safe area (~(
   the targeted post-fix suites (the 08 four, vent5 2, wire2 3) green on the same tree.
   Report: docs/reports/fix-08-walls.md.
 
+## fix-context-hints (s/fix-context-hints) — 2026-10-14
+
+Task 100h, branch start. The two PCSX2 symptoms from the main agent (2026-10-13): standing at a
+usable thing, (1) the hint bar at the top ("Hint: Use Watch Laser" at the 07000008 safe,
+--bond 155.19,43.12,-113.38,1.57,0) and (2) the context indicator icon (the port shows neither).
+Work log:
+- Traced the context system in the decompile: `ThirdIcon_Update` 0x196e80 writes the icon's
+  context type into the player's `BLData+0x95F` (already ported by fix-wire2/fix-08-walls in
+  scene.rs) and posts the type-6 generic hint "Press Action" (label 0x1000291) through
+  `Text_AddMsg(0,0,1,…,0,0xb4)` on a 4-tick per-icon cooldown while the player is not creeping;
+  `Hint_Create` 0x1b3248 / `Hint_Update` 0x1b3380 (placement kind 0x33, class 0x43) are the
+  one-shot hint markers: param 0 = the label (0x1000336 = "Hint: Use Watch Laser" [D USATxt.dat]),
+  param 1 = the sound, param 3/4 = the on/off channels; firing = the player in the marker's
+  obj+0xD0 chain, once (obj+0xFE bit 0 deletes it). `HUD_UpdateHealthPane` 0x19b9c8:273-303 is the
+  context icon (health-pane sprite 18): texture table 0x2FC168[ctx] = 0x03000064+ctx (only
+  0x66/0x67/0x6A exist on the disc [D tex-list] — winch/hanging-man/figure), screen (400,48),
+  layer 29, colour 0x7f7f7fff, fade-out over ThirdIconTimer 30; the type-1 TXTMSG draws on the
+  INFO pane 4 (MsgInfoStatusPane 0x319810 [L], InfoStatusSprInfo 0x319730: bar 480×26 at (16,0),
+  text centred (256,16), the 0x19c310 state machine the pickup pane already ports).
+
 fix-menus-real (101k, started 2026-10-14): the front end must match the real pages
 (1013-1825 playtest + the main agent's 2026-10-13 PCSX2 drive). Every page is missing its
 backdrop, the header font, the footer PS2 glyphs, the centred description and the rolling
@@ -10811,3 +10831,37 @@ Stage Summary:
 ## fix-armour-ring (outcome)
 - The armour branch was already ported and is game-faithful [M HUD_UpdateHealthPane 0x19b9c8:139-158]: armour 0 → HealthSprInfo[0..8] hidden (+0x38 = 0xFF); armour > 0 → the 8 bronze-tinted (0x7d6d59) orange-art segments with alpha 1.0 (k=0) / 0.75 (k < armour·0.16) / 0.35. No separate 007-logo sprite: HealthSprInfo[15] is the 87×86 hollow circle outline tinted by the health colour; the captures' "orange 007 ring" = this pane at the god-cheat's armour 50 (cheats.py writes health 100 + armour 50 every frame). All BLData+0x8b0 readers agree (Pickup_Handler 0x18e650:221-224 take, Player_HandlePain 0x1902c8:100-104 absorb, RamSave/Load, the pane).
 - Tests (fix_armour_ring_live): hide-at-0 + the green ring unchanged; the real take path (kind-3 pickup → step_bond → armour 50) lights exactly 8 segments with alphas {255, 191×7} and segment 0 at (48,367); value tracking 25 → {255, 191×3, 89×4}, 0 → hidden. Green on the final merged tree (1496b80). Shared file: lib.rs gained the 4-line `--armour <n>` shot hook (reported).
+
+fix-context-hints (100k, 2026-10-14): the two symptoms implemented, verified and reported.
+- Implementation (commit 5247021): the Hint markers (placement 0x33, Hint_Create 0x1b3248 /
+  Hint_Update 0x1b3380 — one-shot type-1 INFO messages with the marker's label, sound and
+  on/off channels, resolved through the map object's world sphere like wire::icons), the
+  type-6 "Press Action" post (label 0x1000291) on ThirdIcon_Update's 4-tick instance timer
+  while not creeping, the INFO pane 4 draw (MsgInfoStatusPane 0x319810: the 480x26 top bar +
+  caps, centred text, the fade + 16 px/tick close), and the context icon (health-pane sprite
+  18, table 0x2FC168[ctx], runtime (400,48), layer 29, the 30-tick fade) — full citations in
+  docs/systems/hud.md and the report.
+- Merged origin/master twice (the second merge needed the WORKLOG append resolution and two
+  one-line `label: 0` fixes in the master-side Msg literals — fix_objective_banner_live,
+  fix_objective_messages_live).
+- Tests: crates/nf-view/tests/fix_context_hints_live.rs 5/5 — the safe fires 0x0200000A once
+  (life 0xB4) with no icon (07000008's only icon is the zipline's ctx-3 in cell 12); the
+  control-panel marker (0x010001E9) stays silent from the safe spot; the 05 grapple spot reads
+  ctx 6, posts 0x1000291, draws 0x0300006A, and clears to 0xFF with the fade within 30 ticks
+  on leaving; away from everything nothing shows. Numbers/label ids only, never the strings.
+- Suite on the final tree (e511da5): the sandbox kills background jobs (the nohup'd runner
+  died twice), so it ran in foreground chunks (tools/test/suite_chunk.py, the suite.py loop
+  resuming from suite.log): 226 binaries, 948 passed / 3 failed / 31 ignored logged — the 3
+  are exactly the allowed disc_golden trio; weapon_matrix_live hit the 300 s per-binary cap
+  (not a failure) and passed 28/28 re-run separately. Grand total 976 passed / 3 allowed
+  failed / 31 ignored.
+- OPEN (in the report + live checks): the driver's "orange 007 at the bottom-left ring" is
+  NOT the 0x95F system — the ctx sprite draws at (400,48) (the x/y order pinned by the
+  disasm 0x19c148/0x19c14c, the ammo bullet column and HUD_FixMP's x-clamp) and the three
+  disc ctx textures are tan badges (winch/hanging man/figure — dumped from the ISO and
+  inspected). The live checks (gdbwatch the sprite x/y + 0x95F writes at both spots, poke
+  0x95F at the safe) settle whether a second, script-driven indicator exists.
+- Report: docs/reports/fix-context-hints.md. Files: crates/nf-view/src/hud.rs,
+  crates/nf-view/src/scene.rs (additive), crates/nf-game/src/player.rs (additive: Hint +
+  hints()), crates/nf-view/tests/fix_context_hints_live.rs (new), the two Msg-literal
+  one-liners, docs/systems/hud.md.
