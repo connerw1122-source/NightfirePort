@@ -9647,3 +9647,17 @@ grapple fire path (latch on a grapple point within range, reel in, hang while he
 fix so `--give <qclaw id>` draws the claw and firing at #282 from that spot latches and reels.
 Tests through the real input path at that spot: fire held -> Bond travels to the point and hangs;
 0 bullet decals; the view model is the claw's mesh; sister assertions.
+
+The ids are settled and the fix is in (mid-session checkpoint): the Q-Claw = **0x50/0x51** [L
+ee_start_05.bin @ weapon_data 0x2bf150 — the bank's own name "Grapple" (+0x38 = 0x05000044),
+`+0x70 & 0x40` = the grapple-bolt flag `Bullet_Delete` 0x12e660:33 latches on, range +0x1C =
+50.0/100.0, clip 0, damage 0; `Bullet_CollisionHandler` 0x12ce80's `+0x02 - 0x50 < 2` band;
+`Player_GrappleSetRope` 0x192728's `+0x62 - 0x50 < 2` rope gate; `Inventory::level_start` owns
+0x50]; 0x4A/0x4C are the **Stunner**, 0x4E/0x4F the **Laser**, 0x54/0x55 the **Micro-Camera**.
+The playtest's `--give 0x50` was refused (the claw is owned at the 05 start and the game's equip
+declines the re-equip — ammo type 0's cap 0 [M 0x1a8a58 owned branch]) so Bond stayed on the P2K:
+a real bullet impact; and `is_laser_weapon(0x50)` drew the beam over it. Fixed: gadget.rs (the id
+sets + `is_grapple` + `grapple_range` reads +0x1C off the record), scene.rs (the fire gate 0x50/
+0x51), lib.rs (--give draws already-owned ids the equip declines). Tests: qclaw_live.rs (3) +
+the two gadget_grapple test files re-pointed at 0x50 — all green; probe_qclaw_symptom.rs showed
+the equip refusal failing-first and was deleted. Scratch probes (wd_probe example) deleted.
