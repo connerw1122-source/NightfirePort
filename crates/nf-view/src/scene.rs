@@ -2164,6 +2164,15 @@ impl Sim {
         Some(([m[3][0], m[3][1], m[3][2]], f[0].atan2(f[2]), (f[1] / l).clamp(-1.0, 1.0).asin(), fov))
     }
 
+    /// The clip slot the held weapon reads and writes: the BASE's when the record is a twin (+0x05
+    /// set) sharing the base's ammo type, else its own [M `Player_ReloadAmmoType` 0x1a1988:18-22 —
+    /// `iVar4 = base` routes `clip[0x1B8 + slot·0xC]` to the base for such twins; the give path's
+    /// `pickup.rs clip_slot` is the same unification]. One physical magazine per twin family.
+    fn clip_slot(&self, id: usize) -> usize {
+        let base = self.weapons.base(id) as usize;
+        if self.weapons.shares_base_clip(id) && self.weapons.ammo_type(id) == self.weapons.ammo_type(base) { base } else { id }
+    }
+
     fn run(&mut self, pos: [f32; 3], sph: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool, reload: bool, use_key: bool) {
         // fix-weapon-anims: the aim raise/lower edges — computed from run's own aiming param before
         // the level is overwritten (the raise arm deep in the view chain reads the EDGE).
@@ -2188,7 +2197,12 @@ impl Sim {
         // `Player_WeaponFiring` → `Player_WeaponInitBullet` from the eye along the view (*deviation*: no auto-aim and
         // no aim-point ray yet); the first-person fire script's sound 0x403 feeds the drones' hearing.
         // The gun's clip and spare rounds live in Bond's inventory (BLData `+0x1B8`, `+0x170`), which pickups fill.
-        let (wi, t) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
+        // The clip slot is the game's SHARED one [M Player_ReloadAmmoType 0x1a1988:18-22: a twin record
+        // (+0x05 set) whose ammo type matches its base reloads `clip[base]` — one physical magazine per
+        // family; pickup.rs `clip_slot` (the give path) already equips into it]. The port read/wrote the
+        // twin's own slot here, so every 0x02↔0x03 mode hop read the never-filled clip[0x03] (= 0) — the
+        // magazine zeroed and the next tick auto-reloaded, spending carried rounds the game never spends.
+        let (wi, t) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
         if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(wi), self.drones.inventory.carried.get(t)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
 
         // Weapon switch state machine (`Player_SetWeaponAnimObj` 0x1a2e38 + `Player_WeaponSelect` 0x1a2cc0):
@@ -2296,9 +2310,16 @@ impl Sim {
                     if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
                     if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
-                    let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
+                    let (nwi, nt) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
                     if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
-                    let draw = self.weapons.draw_script(nwi);
+                    // fix-reload-hang2: the script lookups use the weapon's OWN record — the game reads
+                    // `weapon_data[cur*0x10c + 0xc0]` for the draw [M Player_SetWeaponAnimObj 0x1a2e38
+                    // case 3: iVar15 = the current weapon's own id · 0x10c] — only the clip array is
+                    // routed to the base slot [M Player_ReloadAmmoType 0x1a1988:18-22]. Feeding
+                    // `nwi` (the unified slot) here started the BASE's draw for twin 0x38 while the
+                    // state-3 wait measured 0x38's own script — the wait never finished and the switch
+                    // machine wedged (fix_weapon_sounds_live lost every later draw sound).
+                    let draw = self.weapons.draw_script(self.gun.weapon as usize);
                     if draw != 0 {
                         if log_switch { eprintln!("[weapon-switch] tick {}: state 0→3 draw {:08x} (weapon {:#x})", self.drones.frame, draw, req_id); }
                         self.view_script = draw;
@@ -2308,7 +2329,8 @@ impl Sim {
                         let s = if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { 0x281 } else { 0x282 };  // gadgets 0x281, weapons 0x282 [M disasm 0x1a385c]
                         self.drones.audio.play(s);
                     } else {
-                        self.view_script = self.weapons.idle_script(nwi);
+                        // The game's no-draw path plays the own record's idle (+0xa0) [M 0x1a2e38 case 3].
+                        self.view_script = self.weapons.idle_script(self.gun.weapon as usize);
                         (self.view_time, self.view_speed) = (0.0, 1.0);
                     }
                 }
@@ -2328,10 +2350,12 @@ impl Sim {
                         if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
                         if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                         self.gun.weapon = self.gun.switch_request;
-                        let (nwi, nt) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
+                        let (nwi, nt) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
                         if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
-                        // Start the draw script (+0xC0) at 1.25x [M case 2 → case 3].
-                        let draw = self.weapons.draw_script(nwi);
+                        // Start the draw script (+0xC0) at 1.25x [M case 2 → case 3]. The script lookup
+                        // is the weapon's OWN record (0x1a2e38 case 3), not the clip slot — see the
+                        // instant-swap arm above.
+                        let draw = self.weapons.draw_script(self.gun.weapon as usize);
                         if draw != 0 {
                             if log_switch { eprintln!("[weapon-switch] tick {}: state 1→3 draw {:08x} (weapon {:#x})", self.drones.frame, draw, self.gun.weapon); }
                             self.view_script = draw;
@@ -2339,7 +2363,8 @@ impl Sim {
                             self.gun.switch_state = 3;
                         } else {
                             if log_switch { eprintln!("[weapon-switch] tick {}: state 1→0 idle (no draw script) {:#x}", self.drones.frame, self.gun.weapon); }
-                            self.view_script = self.weapons.idle_script(nwi);
+                            // The own record's idle [M 0x1a2e38 case 3], not the clip slot's.
+                            self.view_script = self.weapons.idle_script(self.gun.weapon as usize);
                             (self.view_time, self.view_speed) = (0.0, 1.0);
                             self.gun.switch_state = 0;
                         }
@@ -2917,8 +2942,9 @@ impl Sim {
         // Write the gun's clip/spare back to the inventory. Recompute wi/t from the CURRENT weapon (not the
         // stale ones from line 410) — the switch state machine may have swapped the weapon mid-tick, and the
         // swap paths already wrote the OLD weapon's values back. Using stale wi/t here corrupts the old
-        // weapon's ammo with the new weapon's values [bug fix C-10].
-        let (cur_wi, cur_t) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
+        // weapon's ammo with the new weapon's values [bug fix C-10]. The slot is the shared base clip for
+        // twins [M 0x1a1988:18-22, `clip_slot`].
+        let (cur_wi, cur_t) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
         if let Some(c) = self.drones.inventory.clip.get_mut(cur_wi) { *c = self.gun.clip as i16; }
         if let Some(n) = self.drones.inventory.carried.get_mut(cur_t) { *n = self.gun.spare as i16; }
         self.aiming = aiming;
@@ -4481,6 +4507,10 @@ impl Scene {
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 if let Some((map, object)) = target {
                     // `NF_HIDE` applies here too (the 0xFC skip above leaves these out of the loop's check).
+                    // fix-striped-boxes: `Corona_Create` 0x18da40-48 copies `*(glist+0x44)` to obj+0xF0, so
+                    // `View_AddObjects` 0x1e62d8:33's `(obj+0xF0 & 0x8010) == 0` gate applies — a 0x10-flagged
+                    // corona glist never draws (none on the disc today; the census pins it).
+                    if level.maps[map].objects[object].flags & 0x10 != 0 { continue; }
                     if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
                     let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                     add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
@@ -4495,6 +4525,11 @@ impl Scene {
                 let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 if let Some((map, object)) = target {
+                    // fix-striped-boxes: `Wire_Create` 0x198254-5c copies `*(glist+0x44)` to obj+0xF0, so
+                    // `View_AddObjects` 0x1e62d8:33's `(obj+0xF0 & 0x8010) == 0` gate applies — a 0x10-flagged
+                    // wire glist never draws (none on the disc today; the census pins it). Ladders stay
+                    // ungated: `Ladder_Create` 0x1966c0 stores only obj+0xD8 (0x19671c), never obj+0xF0.
+                    if level.maps[map].objects[object].flags & 0x10 != 0 { continue; }
                     let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                     add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                 }
@@ -4583,13 +4618,20 @@ impl Scene {
         // mirror viewer here. The 0x3A placements never carry 0x8000 CREATE_CEL [D placements], so
         // the static instance loop skips them and this sweep is the only draw — in --all the generic
         // instance loop covers them (debug view), hence the cels_only gate.
+        // fix-striped-boxes: also the game's no-draw bit — `View_AddObjects`
+        // 0x1e62d8:33 submits a dynamic object to the viewer draw lists only when
+        // `(obj+0xF0 & 0x8010) == 0` (obj+0xF0 is `Control_SetGList` 0x134960's copy of
+        // `celglist+0x44`, i.e. MapObject.flags; disasm 0x1e6344-4c), so a 0x10-flagged glist never
+        // draws even when attached — bit 0x10 marks collision-only brushes (the striped editor
+        // markers) which `Collide_Pick` keeps solid. The pulley's glist carries 0x4000 [L
+        // ee_start_05.bin 0x16d80a0/0x16d81c0] and passes.
         if let Some(m) = level.main_map() {
             for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x3a) {
                 let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 let Some((map, object)) = target else { continue };
                 let obj = &level.maps[map].objects[object];
-                if !obj.gfx.leaves.iter().any(|l| !l.batches.is_empty()) || obj.flags & 0x400 != 0 { continue; }
+                if !obj.gfx.leaves.iter().any(|l| !l.batches.is_empty()) || obj.flags & 0x400 != 0 || obj.flags & 0x10 != 0 { continue; }
                 if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && obj.name.contains(n)) { continue; } }
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                 add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
@@ -4609,6 +4651,49 @@ impl Scene {
                 let obj = &level.maps[map].objects[object];
                 // Empty glists draw nothing (`View_DrawObjectGlist`'s psiDrawObjectMatrix no-ops), and a
                 // mirror-only object (glist flags 0x400, View_AddObjects 0x1e62d8:38-47) has no mirror viewer here.
+                // fix-striped-boxes: the game's no-draw bit 0x10 — `View_AddObjects` 0x1e62d8:33 submits a
+                // dynamic object to the viewer draw lists only when `(obj+0xF0 & 0x8010) == 0` (obj+0xF0 is
+                // the creators' copy of `celglist+0x44`, i.e. MapObject.flags) — but only where a creator
+                // actually makes the copy. fix-striped-boxes2 verified the copy for EVERY kind in the list
+                // (address + the store): 0x30 `Monitor_Create` 0x1b08b0:26 → `Control_SetGList` 0x134960:12-14
+                // (`obj+0xF0 = *(glist+0x44) | obj+0xF0 & 0x30008000`); 0x34 `GunImp_Create` 0x131f20:68 →
+                // `Control_CreateObjEx` 0x1343c8:29-36 (`obj+0xF0 = *(glist+0x44) | param_10`, then |= 0x1000
+                // at 0x131f20:75/87); 0x35 `PCQWorm_Create` 0x1b07a8:12 → `Control_CreateObjEx` (same copy);
+                // 0x3b `DynamicObject_Create` 0x18dbf8:21-23 (direct `obj+0xF0 = *(glist+0x44)`); 0x71
+                // `rotor_init` 0x18f4b8:25 (direct); 0xe1 `Destroy_Create` 0x12c318:23 → `Control_SetGList`
+                // — and the creator itself honours the bit, zeroing the smash target when set (0x12c318:57-59
+                // `if (obj+0xF0 & 0x10) *tag = 0`); 0xe3 `Flicker_Create` 0x1acb00:52 (direct); 0xfa
+                // `ThirdIcon_Create` 0x197070:34-37 (`obj+0xF0 = *(glist+0x44) | 0x1000`); 0xfd
+                // `CamSubject_Create` 0x1bc5d8:20 (direct); 0x4a `Apocalypse_Create` 0x18dcc0:24 (direct);
+                // 0xda `Car_Create` 0x1305b0:24 → `Control_CreateObjEx` with OR-mask 0x44 (then |= 0x40 at
+                // :57; latent only — no 0x10-flagged mesh-ful car glist on the disc, the census pins it).
+                // Nothing clears bit 0x10 later for these kinds: none of their Update/Activate functions
+                // write obj+0xF0 (checked Monitor_Update/Activate/ApplyDamage 0x1afcc8/0x1b0058/0x1b0968,
+                // PCQWorm_Update/Activate 0x1aee20/0x1b0840, Destroy_Update/Smash/CollisionHandler
+                // 0x12c4f8/0x12bb60/0x12bd48, ThirdIcon_Update 0x196e80, Flicker_Update 0x1ab960,
+                // Apocalypse_Update 0x18d4f0, rotor_update 0x18f568, CamSubject_Update 0x1bc668); the only
+                // +0xF0 rewriters elsewhere are 0x3b's own channel restore (`DynamicObject_Update` 0x18d3b8:16/
+                // 34/39 stores back the word `DynamicObject_Create` 0x18dbf8:27 captured from *(glist+0x44)
+                // — a set bit survives), `Drone_PauseNoDraw` 0x13a710 (drone objects only), `SP_HideObj`
+                // 0x1dcbf0 → `Script_HideObj` 0x1db808 (a script's own stream entities only), and the
+                // bullet/player/pickup/car-child paths (other kinds). So the game never draws a
+                // FLAGS_COPYING-kind object whose glist carries 0x10 — the probed instances (05's
+                // "WallHug_Blocker*" 0x3b + "TouchPlate_GrappleLedge"/"Valley grapple_touchplate" 0xfa,
+                // 08's SmallExplosionBox/0d's WallHug_Blocker1_Long, 11/12/14's 3RD_Person_Icon 0xfa, 12's
+                // "Computer to hack" 0x35 (an invisible use volume — the laptop is baked geometry), 14's 12
+                // SWITCH_Consoles_Evilbase 0x30 + 19 DESTROY_BoxSatellite 0xe1, 15's 3 DESTROY_BoxSatellite,
+                // 1b's 8 Apocalypse 0x4a + the DESTROY_Box* 0xe1) are all invisible gameplay/collision
+                // volumes in the real game too; the visible consoles/laptops are baked world geometry.
+                // NON-copying kinds (the game draws their 0x10-flagged meshes — no gate): `Lock_Create`
+                // 0x1ae1f8 (0x2e), `OneSided_Create` 0x1e7ce8 (0xd5), `RB_Create` 0x1d6bf0 (0xd8) — plain
+                // `control_create_object` + a direct obj+0xD8 store, no obj+0xF0 write — and now also
+                // `Mine_Create` 0x17ce28 (0xfe, verified the same way; `Mine_Update` 0x17c930:142's 0x30
+                // store is the mine hiding ITSELF when armed, not a glist copy). Bit 0x10 marks
+                // collision-only brushes which `Collide_Pick` (no 0x10 test) keeps solid while nothing
+                // ever draws them. The sweep drew the striped ones because it lacked the gate — the
+                // user's red/yellow striped box on 07000005's trench.
+                const FLAGS_COPYING: [u8; 11] = [0x30, 0x34, 0x35, 0x3b, 0x71, 0xda, 0xe1, 0xe3, 0xfa, 0xfd, 0x4a];
+                if obj.flags & 0x10 != 0 && FLAGS_COPYING.contains(&kind) { continue; }
                 if !obj.gfx.leaves.iter().any(|l| !l.batches.is_empty()) || obj.flags & 0x400 != 0 { continue; }
                 if let Some(h) = &nf_hide { if h.split(',').any(|n| !n.is_empty() && obj.name.contains(n)) { continue; } }
                 // The 0x800 dim, the same rule the main static loop applies (View_SetupRenderModes_Tweak 0x1e5888).
@@ -4711,6 +4796,13 @@ impl Scene {
                 let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
                     else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
                 let Some((map, object)) = target else { continue };
+                // fix-striped-boxes AUDIT CORRECTION: LOAD_LEVEL triggers DO draw whatever their glist
+                // flags. `Trigger_LoadLevelCreate` 0x1b2950 forces the type to 10 (0x1b2998/a0 store 10
+                // to placement+0x2c) and `Trigger_Create` 0x1b1720 clears the no-draw bit for exactly
+                // that type — 0x1b18c8-d4 `obj+0xF0 &= 0xffffffef` [M] — so the game draws these meshes
+                // even when `glist+0x44` carries 0x10 (the four "Load Point"-family meshes on
+                // 01/03/12/13, and 07000005's Door_Gate8). An earlier revision of this fix gated them
+                // and hid four game-drawn meshes; reverted.
                 if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                 add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);

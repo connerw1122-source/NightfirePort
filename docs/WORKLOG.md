@@ -10675,6 +10675,40 @@ Files: crates/nf-view/src/{menu,hud}.rs, crates/nf-view/tests/{menus_flow,menu_m
 the shared-file hooks listed in the report (nf-formats/src/hud.rs font_header, lib.rs call sites).
 
 
+---
+Task ID: 102k-fix-striped-boxes
+Agent: striped-boxes worker
+Task: fix-striped-boxes — a red/yellow diagonal-striped box draws on 07000005 (trench right, against the castle wall) with NF_NOPORTAL=1; such stripes are usually an editor/marker texture the game never draws. Identify the instance (placement index, class, mesh hash, texture name/hash), find the game's rule that keeps it hidden, apply to every level; census test: 0 drawn; check 0c's roof boxes too (an earlier fix removed those; the user's 0c check couldn't find them).
+
+Work Log:
+- (started 10:06 UTC) Branch s/fix-striped-boxes created from origin/master b65d6f7; setup reused from the previous session (repo, work/, ISO, nf-queue). Repro + decompile evidence next.
+
+---
+Task ID: 102k-fix-striped-boxes
+Agent: striped-boxes worker
+Task: fix-striped-boxes — the red/yellow diagonal-striped box on 07000005 (trench right, against the castle wall; NF_NOPORTAL=1 shot) is an editor/marker brush the game never draws; identify instance+rule, apply to every level, census: 0 drawn; check 0c's roof boxes too.
+
+Work Log:
+- Repro first (probe_striped_box.rs, kept): decoded every 07000005/0700000c map texture and found THE marker texture — 32×32, red 63.9%/yellow 33.7%, diagonal R/Y bands (05 map 50 idx 15; 0c carries it unused at map 9 idx 0 + map 45 idx 31, which is why the user's 0c check found nothing after fix-gadgets2 removed the roof markers). Every 05 object referencing it carries glist flags 0x10: the kind-0x19 "blocker1"/"BlockingPoly_*" cel placements (12), "WallHug_Blocker1_Short"+"WallHug_Blocker2_Windows" (0x3b), "TouchPlate_GrappleLedge" (0xfa), plus Hurt/Snow/EnvMarker families.
+- Fail-first census (fix_striped_box_census.rs): nf_view::load on 07000005 showed 4 World materials with the no-draw bit, 3 keyed on the marker texture — "WallHug_Blocker1_Short" at (25.40, 32.70, 65.60) = the user's box (camera 16.67,30.04,58.60 yaw 1.755 looks right at it), "TouchPlate_GrappleLedge" at its world-baked (−18.46, 37.49, −72.49), "WallHug_Blocker2_Windows" at (−35.04, 37.16, −31.65), plus one untextured 0x50 batch. The static loop already skips 0x10 via skipped_by_cel_pass (18 skipped on 05); the models-misc sweep drew them because it lacked the gate.
+- Rule evidence (two parallel decompile agents, their work log in the repo-root worklog scratch): a world object is drawable only when its glist-flags copy passes `(flags & 0x8010) == 0` — View_AddObjects 0x1e62d8:33 (disasm 0x1e6344-4c; obj+0xF0 = Control_SetGList 0x134960's copy of celglist+0x44) — and the cel pass refuses the same bit straight off the glist (View_AddCels 0x1e6ba0 L29/L46). Bit 0x10 = collision-only: Collide_Pick skips only 0x30000000, so the brush stays solid but never draws. Kind facts: 0xfa = ThirdIcon_Create 0x197070 (+0xF0 = *(glist+0x44)|0x1000 = 0x1050 live [L ee_start_05 0x016d43e0], the grapple-ledge gadget grantor — never drawable); 0xeb = Trigger_Touch 0x1b2aa8 → Trigger_Create 0x1b1720 (+0xF0 = 0x50 — never drawable); 0x3b = DynamicObject_Create 0x18dbf8:21-23 (+0xF0 = *(glist+0x44)); 0x3f creep walls look "no-gfx" only because their 0x50 glist fails the same gate (correction to fix-gadgets2's no-attach read).
+- Fix (scene.rs, three additive gates): the models-misc sweep, the 0x3a grapple sweep and the 0xE8 LOAD_LEVEL-trigger draw now skip objects with glist flags 0x10, each citing the gate. The 0xE8 site surfaced via the census's 4 leftover no-draw-bit draws on 01/03/12/13 (flags-0x50 "Load Point"-family meshes; Trigger_Create 0x1b1720:95 copies glist+0x44 to obj+0xF0, so View_AddObjects refuses them too). Ladders/wires/coronas were NOT gated: their creators never copy glist+0x44 into obj+0xF0 (copiers list: Control_SetGList/rotor_init/RainBox/Flicker), so the game's gate reads obj+0xF0 (clear) and even a 0x10-flagged ladder glist draws — the port matches.
+- Green post-fix: 3/3 (05: 0 no-draw-bit + 0 striped + grapple_hooks_drawn == 2, the pulleys keep drawing [L ee_start_05 0x16d80a0/0x16d81c0]; 0c: 0/0 + "laptops" — a flags-0 hazard-textured object that looks striped — still resolves and draws; census: 33 on-foot levels fully checked, 0 no-draw-bit draws and 0 marker-texture draws disc-wide, 2 archives skipped because they carry neither). Full suite on the merged final tree in suite.out (fast runner), see the report for the total line.
+- Report: docs/reports/fix-striped-boxes.md. Files: crates/nf-view/src/scene.rs (the three gates + doc), crates/nf-view/tests/fix_striped_box_census.rs (new), crates/nf-view/tests/probe_striped_box.rs (kept). No shared files touched beyond scene.rs (task-named).
+
+---
+Task ID: 102k-fix-striped-boxes (audit correction)
+Agent: striped-boxes worker
+Task: the independent audit (a second agent re-verified every claim against the decompile C + capstone disasm) caught one real regression and two citation errors in the first revision; this entry records the corrections.
+
+Work Log:
+- REFUTED → fixed: the first revision gated the 0xE8 LOAD_LEVEL-trigger draw — wrong. `Trigger_LoadLevelCreate` 0x1b2950 forces type 10 (0x1b2998/a0 store 10 to placement+0x2c) and `Trigger_Create` 0x1b1720 clears the no-draw bit for exactly type 10 (0x1b18c8-d4 `obj+0xF0 &= 0xffffffef`): the game DRAWS those meshes whatever their glist flags. The gate hid four game-drawn meshes ("Load Point" 01 map53#18, 03 map50#451, 12 map38#669, 13 map41#72). Reverted.
+- REFUTED → fixed: `Wire_Create` 0x198254-5c and `Corona_Create` 0x18da40-48 DO copy `*(glist+0x44)` to obj+0xF0 (the first research pass's copiers list was incomplete) — the corona and wire draws are now gated like the sweeps.
+- Over-strict → narrowed: the MISC gate now applies only to the flag-copying kinds (0x30/0x34/0x35/0x3b/0x71/0xe1/0xe3/0xfa/0xfd/0x4a); 0x2e `Lock_Create` 0x1ae1f8, 0xd5 `OneSided_Create` 0x1e7ce8, 0xd8 `RB_Create` 0x1d6bf0 never write obj+0xF0 (the game draws their 0x10-flagged meshes) and stay ungated; 0xda/0xfe unverified, ungated, listed in the report.
+- Census hardened per the audit's over-hide-blindness hole: the all-levels assertion is now the equality `no_draw_bit == game_drawn_0x10_exceptions(level)` (the count of 0xe8 placements on gfx-true 0x10-flagged objects) — it fails on over-draw AND over-hide — plus a Door_Gate8 World-material sister on 05. 3/3 green after the corrections; the equality read 1/1 on 01/03/12/13 (reverted tree) and 0/1 (wrong gate) during development, so both directions were observed failing at least once.
+- Report updated (docs/reports/fix-striped-boxes.md: the fix section rewritten, an "Independent audit" section added). Files: crates/nf-view/src/scene.rs, crates/nf-view/tests/fix_striped_box_census.rs.
+
+---
 ## fix-08-collision (s/fix-08-collision) — 2026-10-14
 
 Task 100j, 07000008: the invisible wall inside the safe room's missile room — the playtest's
@@ -11566,3 +11600,138 @@ full suite did not fit the window. Report: docs/reports/102j2-fix-casings-16b.md
   (script players, touch zones, gadget use), fix any port bug that stops the writer, and make each of the
   four levels complete its objectives and chain through crates/nf-view/tests/campaign_flow_live.rs.
 - Work in progress: reproducing each of the four headless first.
+---
+Task ID: 102o-fix-striped-boxes2
+Agent: striped-boxes2 worker
+Task: fix-striped-boxes2 — the merged gate HELD: the 0x10 no-draw gate in scene.rs's misc sweep (FLAGS_COPYING = 0x30 0x34 0x35 0x3b 0x71 0xe1 0xe3 0xfa 0xfd 0x4a) hides far more than the striped markers (the main agent's disc probe: SmallExplosionBox/ExplosionBox/DESTROY_Box* 0xe1, SWITCH_Consoles_Evilbase 0x30, "Computer to hack" 0x35, 3RD_Person_Icon 0xfa, Apocalypse 0x4a all hidden too), and models_misc_live's census doesn't apply the gate. Narrow the gate to only what the game hides: per-kind creator evidence of the glist+0x44 copy into obj+0xF0, nothing clears bit 0x10 later, and the object is not meant to be seen. State drawn/not-drawn per probed object, update expected_misc, re-pin misc_census_golden.
+
+Work Log:
+- (14:31 UTC) Branch s/fix-striped-boxes2 created from origin/s/fix-striped-boxes; origin/master (1f8e050) merged, WORKLOG conflict resolved keeping both sides' entries. Setup reused (repo, work/, ISO, nf-queue, alsa-prefix). Evidence pass next.
+
+---
+Task ID: 102o-fix-striped-boxes2
+Agent: striped-boxes2 worker
+Task: fix-striped-boxes2 — resolve the held merge: verify the 0x10 no-draw gate per kind (creator copy evidence of glist+0x44 → obj+0xF0 + nothing clears the bit + not meant to be seen), state drawn/not-drawn for every probed object, apply the rule to models_misc_live's census, re-pin misc_census_golden, render the probe spots.
+
+Work Log:
+- Evidence pass over the decompile: ALL ten FLAGS_COPYING kinds copy glist+0x44 into obj+0xF0 — 0x30 Monitor_Create 0x1b08b0:26 (via Control_SetGList 0x134960:12-14), 0x34 GunImp_Create 0x131f20:68+75/87 (Control_CreateObjEx 0x1343c8:29-36 + |=0x1000), 0x35 PCQWorm_Create 0x1b07a8:12 (Control_CreateObjEx), 0x3b DynamicObject_Create 0x18dbf8:21-23, 0x71 rotor_init 0x18f4b8:25, 0xe1 Destroy_Create 0x12c318:23 (+ the creator reads the bit itself at :57-59, zeroing the smash target), 0xe3 Flicker_Create 0x1acb00:52, 0xfa ThirdIcon_Create 0x197070:34-37, 0xfd CamSubject_Create 0x1bc5d8:20, 0x4a Apocalypse_Create 0x18dcc0:24; kind→creator routing re-checked in parsemap_create_dynamic_objects 0x1d04f0. Car_Create 0x1305b0:24 also copies (OR-mask 0x44) → 0xda joined FLAGS_COPYING (latent, no disc instance); Mine_Create 0x17ce28 verified NOT copying (0xfe stays ungated).
+- Nothing clears bit 0x10 post-create for these kinds: none of their Update/Activate fns write obj+0xF0; the only rewriters are 0x3b's own channel restore (stores back the captured glist word — a set bit survives), Drone_PauseNoDraw 0x13a710 (drones only), SP_HideObj 0x1dcbf0→Script_HideObj 0x1db808 (a script's own stream entities only), bullets/players/pickups. So every probed object is NOT DRAWN by the game — invisible gameplay volumes; the visible consoles/laptop are baked geometry (12's "Computer to hack" mesh even coincides with the baked laptop: 22 camera spots incl. inside the mesh render pixel-identical pre-gate).
+- Fix: scene.rs gate comment rewritten with the per-kind citations + 0xda added; models_misc_live's expected_misc applies the rule, spot checks updated (0d 0x3b:3, 14 0x30 None / 0xe1:29), misc_census_golden re-pinned bb66b783→c2dc1823 (per-level diff in the report); new fix_striped_box_census::probe_gate_verdicts_per_kind (drawn == unflagged per probed pair + same-kind unflagged sisters keep drawing). Fail-first shown twice: the merged pre-task tree failed models_misc_live (suite.out), and the new test FAILED with the gate sed-disabled (07000008 drew 4 vs 3).
+- Renders (lavapipe in the sandbox, before = master 1f8e050 vs after = branch): 05 trench 16.67,30.04,58.60,1.755,-0.001 — the striped box (70k red/yellow px) gone, pulley kept; 14 console 35.5,1.84,21.75,4.712,-0.12 — the console mesh (4629 px) gone; 12 computer — pixel-identical by construction (baked-geometry coincidence), the census pins the draw-list change instead.
+- Report: docs/reports/fix-striped-boxes2.md (per-object verdicts, live checks, --bond spots per kind). Files: crates/nf-view/src/scene.rs, crates/nf-view/tests/{models_misc_live,fix_striped_box_census}.rs. No shared-file hooks beyond scene.rs (task-named).
+
+## fix-level-chain (in progress) — s/fix-level-chain (task 104b, 15:57 UTC)
+Task: the no-exit-trigger levels must chain like the game does — 06→07, 11→12, 09→0a→0b, 4a→mission end
+(docs/reports/campaign-flow.md blockers 2-4). Research started: Mission_Update 0x182c60 case 6, ResetMap_LevelToLoad
+0x1d3800, GetLevelToLoadFromMovieCode 0x1d3560, scripted ch-100 writes, trigger kinds the port's parser may skip.
+
+## fix-level-chain DONE (16:49 UTC) — s/fix-level-chain (task 104b)
+- The no-exit levels chain the way the game does — the old campaign-flow blockers 2-4 were a stale
+  parse: **09's 0xE8 (map39 #60) really reads next = 0x0700000a gate ch 0x32** [D probe on the current
+  parser; the writer is the adjacent TouchOnce out 0x32], **0a's 0xE8 (map37 #2) reads next =
+  0x0700000b key ch 0x4a** where 0x4a is AND mux #568's output over 0a's own objective channels
+  {0x48,0x49} [D probe], **11 has two 0xE8s → 0x07000012** (#118 key ch 0x1e, #124 gate ch 0x1f; the
+  gate's writer is runtime gameplay — live check filed), **06's chain is the party TOUCH (out ch 0x83)
+  → ScriptPlayer #220 → script 0x06000071 stream9 event 0x12 [07000007]** [D probe; M 0x1d94c0:194-199],
+  and **4a's chain is TouchOnce #62 (out 0x84) → pack 0790004a script 0x060006d3 stream9 event 0x12
+  [0x0720004a]** — a MOVIE code, resolved by GetLevelToLoadFromMovieCode 0x1d3560 → 0x07100013 →
+  masked 0x07000013 [M 0x1d3560 + 0x1d6360 phase 2].
+- Ported: `triggers.rs` `movie_code_next_level` (the decomp's full 0x1d3560 tree + the masked
+  fallback) and `resolve_exit_code` (0x1d3800 + 0x1d6360's two-phase cycle compressed; the code
+  family nibble is bits 20-23); `lib.rs`'s exit consumption resolves through it (one call site —
+  the pre-fix tree tried to load the nonexistent 0720004a.bin). Runner fixes in campaign_flow_live:
+  the FAIL-flag skip is record+0x10 **bit 1 (0x02)** [M 0x1827d8], not `& 1` (the runner used to
+  raise 09's alarm itself and record the fail-restart as the exit), the E-path skips NaN boxes and
+  sweeps the four facings [M 0x1a5170:100-137 head+dir sphere] holding the key channel per tick.
+- Tests: nf-game unit 10/10 (every 0x1d3560 arm + the resolve sisters); nf-view
+  fix_level_chain_live 5/5 (06→07000007, 09→0700000a, 0a→0700000b with the locked sister, 11→07000012,
+  4a→0x0720004a→07000013 — all through the real load + real trigger volumes); campaign_flow_live 4/4
+  with mission 07000009 chaining 09→0a→0b headless (3/3, 3/3, 5/5 objectives, real exits). Report:
+  docs/reports/fix-level-chain.md (live checks: 11's ch 0x1f/0x1e writer, 06's 0x83, 4a's 0x84).
+- drone.rs/scene.rs/player.rs untouched; lib.rs carries the one resolve call.
+
+## fix-06-alarm — s/fix-06-alarm (task 104c, started 16:03 UTC 2026-10-14)
+- Task: level 06 searchlights alert the guards (045l's ch-55 work, merged) but the ALARM never
+  sounds — no siren, no 'combat/alarm' music event, no flashing lights, no extra guards. Hunting the
+  game's alarm path from the searchlight spot: Searchlight_* (0x1cb900), the alarm channel,
+  Alarm_*/siren emitter, music event 2. Report will be docs/reports/fix-06-alarm.md. Work starts.
+
+## fix-06-alarm — s/fix-06-alarm (task 104c, 16:02-17:xx UTC 2026-10-14)
+- The 06 searchlight alarm's SOUND half was missing: the guards' half worked (045l's ch-55 write +
+  second switch) but the game's SoundTrigger objects (`SoundTrigger_Create` 0x1b2628 /
+  `SoundTrigger_Update` 0x1b2790, placement 0xF9 `oSoundTrigger`) had never been ported — the
+  courtyard's klaxon (placement 702: ON ch 55, sound 329 = 0x149 LOOPED 2-D, OFF ch 177, one-shot
+  [D 07000006 placement 702; D SfxTable 0x149]) never existed in the port. The placement's params
+  read sequentially (param k at record +0x2c+4k — pinned by the searchlights' own placements [D
+  placements 2/4/6]); the keep-when-ON-clears byte is +0x48's low byte = the param count; the
+  +0x44 word is the difficulty gate [M 0x1b2628:24-40]. Update ported op-for-op: the single
+  GlobalVoiceHandle slot, the self-kill when a global voice is busy, the one-shot deaths, the
+  +0xfe-bit-0 kills → control_delete_object [M 0x1336f8:72-89]. The other three 06 triggers (ch 47
+  → 219, ch 57 → 241, ch 103 → 331) ride the same type.
+- The alarm MUSIC half was already ported (the CheckAlarmRaised block's Music_Event(2,1) stream →
+  music.rs's CastleB hysteresis) — the new live test now verifies that chain on the real command
+  board (the combat Jump within ~12 ticks of ch 55).
+- Tests: crates/nf-view/tests/fix_06_alarm_live.rs 2/2 (fail-first: the siren probe failed on
+  pre-fix master; the sister run stays silent). Neighbours: nf-game lib 150/150, fix_drone3_live
+  5/5, fix_searchlight_alarm_live 2/2, spawner_kill_live 5+1 pre-existing ignore, fix_npcs_live
+  4/4. Shared files additive only (sound.rs new type; drone.rs field-on-own-line + two hooks).
+  Report: docs/reports/fix-06-alarm.md.
+Task ID: 103i-fix-reload-hang
+Agent: reload-hang worker
+Task: reload-hang — the reload state machine hangs (state 6, clip 0): empty silenced twin 0x03's auto-reload sticks in rel=6 forever and every later switch is refused [M Player_WeaponChange 0x1a6f80:33-47]; the AT-420 0x2D's 5/6/7 machine never returns either. Find the game's reload loop and its exits (Player_WeaponFiring 0x1a5460, the reload restart gate, the view-script queue +0xA4/+0xA8/+0xAC), port the exits for every reload kind (magazine, per-shell, rockets), test through the real input path, re-run nf-extract weapon-matrix on 27 levels, put the new red counts next to weapon-matrix2's.
+
+Work Log:
+- (14:04 UTC) Branch s/fix-reload-hang created from origin/master 088bdf4 (weapon-matrix2 already merged). Setup reused (repo, work/, ISO, nf-queue). Pushing the checkpoint, then: suite baseline in background, reproduce first.
+
+- (14:04-15:05 UTC) Reproduce round: 4 NF_ISO tests (fix_reload_hang_live.rs) through the real input
+  path on 07000005. The direct empty-0x03 auto-reload PASSES on master (reload → idle, clip refilled)
+  — the rel=6 hang does not reproduce headlessly. The matrix re-run on 07000005 (nf-extract
+  weapon-matrix) shows the SAME red row as weapon-matrix2's; instrumented runs (NF_MATRIX_DBG +
+  dbg2 mc/dis/death/menu) pin the D-block (0x2d+): **death=true** — Bond died during the 0x2c
+  guided-Sentinel cell and `step_bond` zeroes every input while the death is active (scene.rs 1625),
+  so every later cell's draws/switches are silently eaten. A harness artifact, not the reload
+  machine. The R cells = the reload pulse lost to the fire script (the 100d window artifact). The
+  twin-refusal D (0x18/0x2d): switch_to cannot select a twin record (the game's own refusal — the
+  player reaches twins with the mode button) and mode_to bounces 0x02↔0x03.
+- REAL port bug found [M Player_ReloadAmmoType 0x1a1988:18-22]: twins (+0x05 set, same ammo type)
+  read/write the BASE's clip slot; the port's runtime boundary (scene.rs 2158 read, 2674 write-back,
+  the swap paths) uses the twin's own per-weapon slot — so every 0x02↔0x03 mode hop zeroes the
+  magazine (clip[0x03] is a never-filled slot) and fires a spurious auto-reload. The give path
+  (pickup.rs clip_slot) already models the base unification; the runtime does not. Fix next.
+- (15:05-15:45 UTC) FIX: `Sim::clip_slot` in scene.rs — the twin families' runtime clip boundary
+  now uses the game's shared base slot [M 0x1a1988:18-22] at the per-tick read, both swap reads and
+  the write-back. The reload exits needed no change (Gun::reload_tick already matches case 5/6/7).
+  5 tests in fix_reload_hang_live.rs all green (magazine 0x02/0x03, rockets 0x2d, per-shell 0x1c +
+  the fire interrupt, the mid-reload switch refusal-then-land, the twin shared magazine). The
+  matrix's D/M/R mass decomposed: Bond's death mid-sweep eats every input below the killing cell
+  (dbg2 death=true), the guided-missile camera eats the reload/switch phases (07000002's rocket R
+  cells), the reload pulse is lost to the fire script, and twins are unreachable via switch_to by
+  the game's own model (mode_to bounces). rocket_hit_applies_the_blast_exactly_once needed its
+  clip poke moved to the game's base slot (clip[0x2c]) — the fixed boundary reads the shared
+  magazine; binary 5/5 green after. Suite on this tree: build ok 258; disc_golden x3 (allowance),
+  weapon_matrix_live 600 s TIMEOUT (the suite runs the full 16-min matrix against the cap —
+  pre-existing), pylon render flakes under the concurrent matrix run (green in isolation).
+  Report: docs/reports/fix-reload-hang.md. Files: scene.rs (clip_slot + 4 sites), matrix.rs (dbg
+  vs/vt), fix_reload_hang_live.rs (new), fix_weapon_fire_modes_live.rs (the poke, noted), two
+  probe examples. Next window: the runner's death/menu + twin-reach + pulse-window fixes, then the
+  full 27-level sweep for the new red counts.
+
+---
+Task ID: 103i2-fix-reload-hang2
+Agent: reload-hang2 worker
+Task: fix-reload-hang2 — the merge of s/fix-reload-hang with master HELDs: fix_weapon_sounds_live::every_weapon_on_07000005_draws_fires_and_reloads_with_sounds fails ("0x4c/0x4f/0x51/0x52/0x53/0x56/0x57/0x58/0x59: draw sound 0x281 never played"). The change is Sim::clip_slot (the base-unification predicate [M Player_ReloadAmmoType 0x1a1988:18-22]) in scene.rs. Narrow it to what the game unifies; keep twin_hop green.
+
+Work Log:
+- (18:11-18:15) Branch s/103i2-fix-reload-hang2 created from origin/s/fix-reload-hang, origin/master merged (WORKLOG conflict resolved keeping both).
+- (18:11-20:03) Branch from origin/s/fix-reload-hang + origin/master merged. Repro: the sweep's full failure list is 16 "draw sound 0x281 never played" (the gadgets) + 5 "none of its missing sounds" — the driver quoted the first 9. NF_SOUNDLOG: the switch machine's log STOPS at 0x38's draw ("1→3 draw 0600072c (weapon 0x38)") — state 3 never completes, every later switch refused, and the gadgets were pure downstream (0x4a/0x4b/0x4d... equips were refused by the 100a asset gap, so the first EQUIPPED gadget 0x4c was the first checked). Minimal repro (0x37 drained → equip 0x38): sw=3 forever. Root cause [M]: clip_slot(0x38) = base 0x37 (share set, ammo equal — the legit unification), and the switch sites fed the CLIP SLOT into draw_script/idle_script — the game reads the draw script from the weapon's OWN record [M Player_SetWeaponAnimObj 0x1a2e38 case 3: weapon_data[cur·0x10c+0xc0]; only the clip array routes to the base, Player_ReloadAmmoType 0x1a1988:18-22]. The base's draw (0x0600072c) played for 0x38 while the state-3 wait measured 0x38's own (0x060004ee) — the wait never finished. Fix: the 4 script lookups use the weapon's own id; clip/spare keeps the unified slot. Post-fix: the wedge repro draws at t=42 (was forever), fix_weapon_sounds sweep's 16 draw-sound failures all gone, twin_hop + the whole fix_reload_hang_live file green. New regression test the_twins_draw_completes_and_the_machine_stays_alive (fails pre-fix, 6/6 post-fix). Residual (documented, not solved): the sweep still fails on 4 "none of its missing sounds ever played" (0x3a [1093,1094], 0x41 [639], 0x42 [1051,1481], 0x43 [1486-8]) — post-fix those records DRAW (log) but never FIRE: a focused probe (0x3a alone AND after 0x37→0x38) shows clip stays 1, timer=-1 through 25 fire ticks; the same probe under master's scene.rs was inconclusive (output not captured). Next window: why the fire gate never opens for 0x3a/0x41/0x42/0x43.
+
+---
+Task: fix-character-room-light
+Agent: worker (sandbox web-2cf47bf2)
+Task: characters lit by the room they stand in — find which cel ambient a character uses in the game (anim object's cel, obj+0x20, control_link_object_to_cel 0x1346b8) vs the port's lookup; whether dynamic lights add to characters; the per-character ambient multiplier. Spots 07000007 ballroom guests, 07000002 bathhouse.
+
+Work Log:
+- 19:45 UTC: branch s/fix-character-room-light created from origin/master (509ec984). work/ + ISO already present, setup skipped.
+- 20:45: repro on 07000007: the 0x800 multiplier reaches every drone-backed guest (per-cel ambients 36-64, 9 distinct; 104 active kind-0 lights picked up with skin flags 0x8a0). The 49 sentinel-0xff characters are exactly the invisible set: 33 dev-pool copies parked at -1e6 and 16 origin script actors (the game leaves those unlinked too — no cel at the origin, ambient stays the 0xff init of control_init_object 0x134630). G-042: the civilian's "white" texture (map 32 tex 4, 32x32) is a sheen map — 1024/1024 white rgb but 98/1024 opaque alpha; the base skin textures are not white.
+- 21:15: the game's model pinned end-to-end (linked cel obj+0x20: create-link+snap 0x1346b8/0x1343c8, keep/portal/relink 0x133288+0x1e0d58+0x1c9500, ramp 0x1cb178 moved-only; the same Tweak+light pair on the character path 0x1e69a0:96->0x1e78b0; bCharacterLight/AnimColRad have NO EE reader — scanned all gp-relative accesses). Port matches on every headless point; 3 NF_ISO tests green (own-cel ambient per guest, party lights reach the draws, G-042 sheen map resolved). No production code changed. Report: docs/reports/fix-character-room-light.md.
+- 21:32: merged origin/master (1c376216, WORKLOG conflict resolved keeping both), lighting suites re-ran green on the final tree (new 3/3, character_lighting_live 4/4); baseline full suite on the identical production code: 1065 passed / 7 failed (3 disc_golden allowed + weapon_matrix_live TIMEOUT + 3 pre-existing pylon) / 35 ignored.
