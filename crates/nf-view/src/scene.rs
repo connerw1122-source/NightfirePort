@@ -1616,19 +1616,22 @@ impl Sim {
         // whose top is far below Bond is no water either). The sink control is unused in play (the
         // viewer's input has no bind; the crouch key sinks in the Sim path below).
         if !self.disabled {
-            // The Q-Claw grapple's fire [M Player_SetGrapplePoint 0x195da0]: with the claw (0x4A/0x4C)
-            // out and the fire pressed on foot, the aim ray's grapple point (placement 0x3A) latches
-            // and Bond enters the substate 2 (the reel). The enter tick swallows the fire — it runs
+            // The Q-Claw grapple's fire [M Player_SetGrapplePoint 0x195da0]: with the claw (0x50/0x51 —
+            // the bank's "Grapple" records, `weapon_data+0x70 & 0x40` [L ee_start_05.bin]; the OLD gate
+            // 0x4A/0x4C was the Stunner's — the hardcoded table's shift) out and the fire pressed on
+            // foot, the aim ray's grapple point (placement 0x3A) latches and Bond enters the substate 2
+            // (the reel). The reach is the claw bolt's own `weapon_data+0x1c` death cap [M Bullet_update
+            // 0x12e7b0:158; L: 50.0 for 0x50, 100.0 for 0x51]. The enter tick swallows the fire — it runs
             // BEFORE the bond tick so a release tick's fire cannot re-latch in the same tick.
             let mut trigger = trigger;
             if trigger
                 && self.bond.substate == nf_game::player::SS_WALK
                 && self.bond.grapple.is_none()
-                && matches!(self.gun.weapon, 0x4a | 0x4c)
+                && nf_game::gadget::is_grapple(self.gun.weapon)
             {
                 let head = self.bond.head();
                 let dir = self.bond.look();
-                if let Some(point) = nf_game::gadget::pick_grapple_point(&self.drones.grapple_points, head, dir, nf_game::gadget::grapple_range(self.gun.weapon)) {
+                if let Some(point) = nf_game::gadget::pick_grapple_point(&self.drones.grapple_points, head, dir, nf_game::gadget::grapple_range(&self.weapons, self.gun.weapon)) {
                     self.bond.grapple = Some(nf_game::gadget::GrappleState { point, phase: 1, pull: 0.0 });
                     self.bond.substate = nf_game::player::SS_GRAPPLE;
                     self.bond.vel = [0.0; 3];

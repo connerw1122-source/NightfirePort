@@ -2471,6 +2471,16 @@ pub fn run() -> Result<()> {
                     sim.drones.inventory.equip_ammo(&wd, id, (rounds * 3).max(rounds));
                     first.get_or_insert(id as u8);
                     eprintln!("--give: equipped {id:#04x}");
+                } else if sim.drones.inventory.owned.get(id).copied().unwrap_or(false) {
+                    // Already owned and the game's own equip refuses it (the ammo-type cap — the Q-Claw
+                    // 0x50 on 07000005 is owned at the start [L Inventory::level_start] with ammo type 0's
+                    // cap 0 [L +0x90/+0x92], so `Player_EquipWeapon` 0x1a8a58's owned branch declines it
+                    // [M]). The give's contract is to DRAW the thing: the switch request is the game's own
+                    // `Player_WeaponSelect` path for an owned weapon. Without this the playtest's
+                    // `--give 0x50` printed "refused" and Bond stayed on the P2K — firing gave the real
+                    // bullet impact instead of the grapple.
+                    first.get_or_insert(id as u8);
+                    eprintln!("--give: {id:#04x} already owned — drawing it");
                 } else {
                     eprintln!("--give: {id:#04x} refused (no first-person model)");
                 }

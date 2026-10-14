@@ -9,9 +9,11 @@
 //!   reads no fire input at all (:79-121). The pre-fix port did the opposite (the reel jumped to the
 //!   hang on fire; the hang released on fire), so a human click — press, hold a few ticks, let go —
 //!   latched and detached within ~3 ticks: invisible, "doesn't work at all".
-//! - The reach: the claw's bolt dies at `weapon_data+0x1c` travelled [M Bullet_update 0x12e7b0:158;
-//!   0x4a's +0x1c = 5.0, 0x4c's = 10.0 [D weapon_data_live.bin]] — the user's spot is 15.4 units
-//!   from the nearest point, out of range for the real game too.
+//! - The reach (fix-qclaw correction): the claw bolt dies at the claw's OWN `weapon_data+0x1c`
+//!   [M Bullet_update 0x12e7b0:158] — **50.0 for 0x50, 100.0 for 0x51 [L ee_start_05.bin]**, not the
+//!   5.0/10.0 the old port read off the STUNNER records 0x4A/0x4C (the hardcoded table's shift).
+//!   The user's spot is 15.4 units from the nearest point — inside the claw's real range, so the
+//!   held fire latches there too.
 
 use nf_game::player::Input;
 
@@ -22,41 +24,39 @@ const SPOT: [f32; 3] = [-18.28, 38.19, -71.83];
 const YAW: f32 = -4.717;
 const PITCH: f32 = 0.151;
 
-/// From the user's spot the nearest point is 15.4 units out [D the parsed placement]: the claw bolt
-/// dies at 5.0 [M 0x12e7b0:158 + weapon_data[0x4a]+0x1c], so — as in the real game — no latch.
+/// From the user's spot the nearest point is 15.4 units out [D the parsed placement]: INSIDE the
+/// claw's real 50.0 bolt range [L weapon_data[0x50]+0x1c; the old 5.0 was the Stunner's], so the
+/// held fire LATCHES from the user's own report spot.
 #[test]
-fn the_users_spot_is_out_of_the_claws_bolt_range() {
+fn the_users_spot_latches_within_the_claws_real_range() {
     let iso = iso();
     let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
     let sim = scene.sim.as_mut().unwrap();
     assert!(!sim.drones.grapple_points.is_empty(), "07000005 carries grapple points [D #281/#282]");
-    sim.bond.pos = SPOT;
-    sim.bond.yaw = YAW;
-    sim.bond.pitch = PITCH;
-    let mut equipped = false;
-    for _ in 0..12 {
-        sim.step_bond(Input { gadget_cycle: 1, ..Default::default() }, false, false, false);
-        for _ in 0..60 { sim.step_bond(Input::default(), false, false, false); }
-        if sim.gun.weapon == 0x4a { equipped = true; break; }
-    }
-    assert!(equipped, "the claw must equip through the gadget cycle; weapon {:#x}", sim.gun.weapon);
+    // Draw the claw like --give 0x50 (owned at the level start [L]; the re-equip may decline).
+    let wd = sim.weapons.clone();
+    let rounds = wd.clip_size(0x50).max(1);
+    let _ = sim.drones.inventory.equip_weapon(&wd, 0x50, rounds, true);
+    sim.gun.switch_request = 0x50;
+    for _ in 0..120 { sim.step_bond(Input::default(), false, false, false); }
+    assert_eq!(sim.gun.weapon, 0x50, "the claw must draw; weapon {:#x}", sim.gun.weapon);
     sim.bond.pos = SPOT;
     sim.bond.yaw = YAW;
     sim.bond.pitch = PITCH;
     for _ in 0..30 { sim.step_bond(Input::default(), false, false, false); }
     sim.bond.yaw = YAW;
     sim.bond.pitch = PITCH;
-    // A held click: no latch — the spot is out of the bolt's range (the game behaves the same).
-    for _ in 0..5 { sim.step_bond(Input::default(), true, false, false); }
-    for _ in 0..10 { sim.step_bond(Input::default(), false, false, false); }
+    // The held click latches: the spot is within the claw's real bolt range.
+    let mut latched = false;
+    for _ in 0..60 { sim.step_bond(Input::default(), true, false, false); if sim.bond.grapple.is_some() { latched = true; break; } }
+    assert!(latched, "the held fire from the user's spot must latch (the nearest point is 15.4 out, the claw's range 50.0)");
     let sim = scene.sim.as_ref().unwrap();
-    assert_ne!(sim.bond.substate, nf_game::player::SS_GRAPPLE,
-        "the claw bolt dies at 5.0 [M 0x12e7b0:158] — the user's spot is 15.4 out, no latch");
+    assert_eq!(sim.bond.substate, nf_game::player::SS_GRAPPLE, "the grapple substate runs");
 }
 
-/// Close-up (within the 5.0 bolt range): the held fire latches, the reel runs while held (no fire
-/// test in phase 1 [M 0x192860:79-121]), Bond hangs and STAYS while the fire is held, and the
-/// RELEASE detaches — the game's polarity, the user's fix.
+/// Close-up (within the claw's real 50.0 bolt range): the held fire latches, the reel runs while
+/// held (no fire test in phase 1 [M 0x192860:79-121]), Bond hangs and STAYS while the fire is held,
+/// and the RELEASE detaches — the game's polarity, the user's fix.
 #[test]
 fn the_q_claw_holds_while_held_and_releases_on_the_button_up() {
     let iso = iso();
@@ -65,13 +65,16 @@ fn the_q_claw_holds_while_held_and_releases_on_the_button_up() {
     // 4.05 units from point #282 (13.7525, 32.2919, 57.3034 [L ee_start_05.bin obj+0x30]).
     let spot = [16.5f32, 29.6, 58.6];
     sim.bond.pos = spot;
+    let wd = sim.weapons.clone();
+    let rounds = wd.clip_size(0x50).max(1);
+    let _ = sim.drones.inventory.equip_weapon(&wd, 0x50, rounds, true);
+    sim.gun.switch_request = 0x50;
     let mut equipped = false;
-    for _ in 0..12 {
-        sim.step_bond(Input { gadget_cycle: 1, ..Default::default() }, false, false, false);
-        for _ in 0..60 { sim.step_bond(Input::default(), false, false, false); }
-        if sim.gun.weapon == 0x4a { equipped = true; break; }
+    for _ in 0..120 {
+        sim.step_bond(Input::default(), false, false, false);
+        if sim.gun.weapon == 0x50 { equipped = true; break; }
     }
-    assert!(equipped, "the claw must equip; weapon {:#x}", sim.gun.weapon);
+    assert!(equipped, "the claw (0x50) must draw; weapon {:#x}", sim.gun.weapon);
     sim.bond.pos = spot;
     let target = [13.752469f32, 32.291878, 57.303413];
     // Aim through the real look input.
