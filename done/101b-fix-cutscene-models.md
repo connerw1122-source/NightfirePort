@@ -39,3 +39,7 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox4 at 2026-10-14T01:09Z
+
+---
+## Report (done, 2026-10-14T02:26Z)
+
