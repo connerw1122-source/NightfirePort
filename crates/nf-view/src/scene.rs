@@ -3118,6 +3118,11 @@ pub struct Scene {
     /// The game draws each ladder exactly once through the dynamic-object path [M View_DrawObjList
     /// 0x1e69a0 → View_DrawObjectGlist 0x1e6780]; 0 means the ladders are invisible.
     pub ladders_drawn: usize,
+    /// How many grapple-point (0x3A) placements got a World-layer instance (fix-grapple-hook's
+    /// draw sweep). The game draws each point's pulley mesh exactly once through the dynamic-object
+    /// path [M View_DrawObjList 0x1e69a0 → View_DrawObjectGlist 0x1e6780]; 0 on a level with 0x3A
+    /// placements means the hooks are invisible (the user's symptom).
+    pub grapple_hooks_drawn: usize,
     /// Models-misc: how many static dynamic entities got a World-layer instance, per placement kind
     /// (`misc_static_sweep` in `build`). Zero for a kind the census says the level carries means the
     /// model is missing (see docs/models/misc.md for the per-kind creator evidence).
@@ -3535,6 +3540,7 @@ impl Scene {
             .map(|i| (i.placement.translation, i.placement.rotation[1]));
         let mut hidden = 0;
         let mut ladders_drawn = 0usize; // the sweep below counts the drawn ladder instances (fix-ladder2)
+        let mut grapple_hooks_drawn = 0usize; // the sweep below counts the drawn grapple-point meshes (fix-grapple-hook)
         let mut misc_drawn: BTreeMap<u8, usize> = BTreeMap::new(); // models-misc static dynamic entities
         // The level's room cels (see `Cel`): parsed before the draw so the static 0x800 world objects can snap
         // to their cel's ambient exactly as the game's link does at level start (`build_LinkToRoom` 0x1c9680 →
@@ -4012,13 +4018,51 @@ impl Scene {
         // via scripts); 0xF2 emitter (no glist ever [M 0017ae00:100-101]); 0xD4 cloud (sky pipeline, drawn by
         // sky_instances); 0xF3 tree (anim-object path, like characters).
         // fix-gadgets2, the user's "red and yellow boxes ... for the wall shimmy and one for the grapple":
-        // 0x3A grapple points and 0x3F creep walls are the same shape of invisible: both creators build a
-        // bare control object and attach NO gfx hash — `Grapple_Create` 0x198298 has zero
-        // `hashtable_set_object_to_entity_gfx` calls (instance size 0, no placement params read; only +0xD8,
-        // +0xF0, class 0x51, LinkToRoom, StraddleTest) and `CreepWall_Create` 0x196fc8 likewise sets class 0x2B
-        // with no gfx attach — so `View_DrawObjList`'s empty-glist no-op never draws them. The marker meshes
-        // the sweep used to draw are the placements' referenced objects, which the game discards.
+        // 0x3F creep walls are invisible: the creator builds a bare control object and attaches NO gfx
+        // hash — `CreepWall_Create` 0x196fc8 sets class 0x2B with no gfx attach — so `View_DrawObjList`'s
+        // empty-glist no-op never draws them; live, the 0x2B glists chain to boxes 0 [L ee_start_05.bin:
+        // obj 0x16d69a0/0x16e8d90, psiDraw chain boxes 0x0]. The marker meshes the sweep used to draw are
+        // the placements' referenced objects, which the game discards.
+        // fix-grapple-hook CORRECTION for 0x3A: the grapple points ARE drawn. The dynamic-block parser
+        // resolves the placement's object and hands it to the creator as the glist argument
+        // [M parsemap_block_map_data_dynamic 0x1d1b68: hashtable_getitem(hashcode), or pCelList +
+        // index*0x50 when the hashcode is −1; case 0x3a passes it through 0x1d04f0:237-239],
+        // `Grapple_Create` 0x198298:24-30 stores it at obj+0xD8 with obj+0xF0 = *(u32*)(glist+0x44),
+        // and the generic dynamic-object draw `View_DrawObjList` 0x1e69a0 → `View_DrawObjectGlist`
+        // 0x1e6780 renders obj+0xD8 at obj+0x90 (the placement transform `control_create_object`
+        // 0x1344e0 built) via `psiDrawObjectMatrix` 0x124708. Live proof [L ee_start_05.bin]: both
+        // class-0x51 objects (0x16d80a0 at 13.75,32.29,57.30 = placement #282; 0x16d81c0 at
+        // −3.40,42.94,−71.77 = #281) hold glist 0x170d6a0 (the `graple_pulley` entity), +0xF0 = 0x4000
+        // (no 0x10 hide bit, no 0x8000 forced bit — the point did not straddle), +0xF8 = 0x1f (display
+        // bit 0 passes `View_CaptureScene` 0x1e6df0's `object_display_mask = 1 << viewer_LOD`, 0x30d87c),
+        // and the psiDraw chain glist+4 → +8 → +4 lands on box tree 0x9b3260 — DRAWABLE. The zero
+        // `hashtable_set_object_to_entity_gfx` calls fix-gadgets2 cited are irrelevant: the glist comes
+        // in as an argument, not from a hash attach. The user's PCSX2 playtest shows the pulley at the
+        // spot; the port drew only the bracket. obj+0xF0 & 0x800 is clear, so no ambient dim (the
+        // `View_SetupRenderModes_Tweak` 0x1e5888 white-tweak branch, like the ladders).
         if cels_only {
+        // Grapple-point visuals (`Grapple_Create` 0x198298, placement type 0x3A, class 0x51): the
+        // pulley-with-hook the Q-Claw latches onto (fix-grapple-hook). The mesh is the placement's
+        // resolved object (the `graple_pulley` entity, handed over as the glist argument — the chain
+        // documented at the fix-gadgets2 correction above), drawn once at the placement transform.
+        // Gate: `psiDrawObjectMatrix` 0x124708 no-ops when the glist's box chain is empty, so objects
+        // with no batches stay undrawn (the creep walls' case); a 0x400 mirror-only object has no
+        // mirror viewer here. The 0x3A placements never carry 0x8000 CREATE_CEL [D placements], so
+        // the static instance loop skips them and this sweep is the only draw — in --all the generic
+        // instance loop covers them (debug view), hence the cels_only gate.
+        if let Some(m) = level.main_map() {
+            for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x3a) {
+                let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                    else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
+                let Some((map, object)) = target else { continue };
+                let obj = &level.maps[map].objects[object];
+                if !obj.gfx.leaves.iter().any(|l| !l.batches.is_empty()) || obj.flags & 0x400 != 0 { continue; }
+                if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && obj.name.contains(n)) { continue; } }
+                let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
+                add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                grapple_hooks_drawn += 1;
+            }
+        }
         if let Some(m) = level.main_map() {
             const MISC_KINDS: [u8; 15] = [0x2e, 0x30, 0x34, 0x35, 0x3b, 0x71, 0xd5, 0xd8, 0xe1, 0xe3, 0xda, 0xfa, 0xfd, 0xfe, 0x4a];
             let nf_hide = std::env::var("NF_HIDE").ok();
@@ -4413,7 +4457,7 @@ impl Scene {
         // fix-portal4: sim-less loads never built a world — the chains fall back to the
         // bbox-face FindCel approximation (documented deviation; every live load path builds sim).
         if sim.is_none() { build_chains(&mut cel_graph, None); }
-        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, sound_spares: Vec::new(), snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn, misc_drawn }
+        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, sound_spares: Vec::new(), snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn, grapple_hooks_drawn, misc_drawn }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the
