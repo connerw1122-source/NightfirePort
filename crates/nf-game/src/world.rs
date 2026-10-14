@@ -814,6 +814,12 @@ impl CollisionWorld {
     /// model's local sphere centre through the object matrix, `Bond::sphere_centre`) with the
     /// raycast tie-break; a FindCel miss leaves the object unlinked (`build_LinkToRoom` returns 0
     /// without linking — `Player_InWater` 0x195e50 reads `*(obj+0x20) == 0` → no water).
+    /// Deviation [S], cited: the game's `build_LinkToRoom` 0x1c9680:41-45 passes obj+0x80..0x8c (the
+    /// world-sphere centre, 0.1267 below the player position [L ee_start_05 M_CONTROL+0x80]); the port
+    /// passes POS — the caller's `centre` argument — because the port's per-cell bucket attribution
+    /// (`build_scoped`) is coarser than the game's per-cel chains, and at the 07000001 seam the
+    /// 0.1267-shorter down-ray flips the tie-break to a root whose bucket misses the floor under Bond
+    /// (fix-08-collision2's traced 01 pin, kept green). `find_cel` itself is the game's.
     pub fn player_cel_relink(&self, cur: Option<usize>, prev: V3, pos: V3, centre: V3) -> Option<usize> {
         if let Some(cell) = cur {
             if let Some(dest) = self.cel_portal_dest(cell, prev, pos) { return Some(dest); }

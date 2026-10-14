@@ -1782,7 +1782,18 @@ impl Sim {
             // fallback is `build_FindCel` 0x1c8cb0 at the world-sphere centre with the raycast
             // tie-break (`build_LinkToRoom` 0x1c9680). fix-swim-entry (was: the stateless
             // smallest-bbox `cel_at(pos)`).
-            let bond_cel = self.world.player_cel_relink(self.bond.cel, self.bond.prev_pos, self.bond.pos, self.bond.sphere_centre());
+            let bond_cel = if (0..3).any(|k| (self.bond.pos[k] - self.bond.prev_pos[k]).abs() > 3.0) {
+                // A placement/teleport: the game's `Player_StandAtNewPosition` 0x190d88 resets
+                // `obj+0x40` to the new position (line 46) and relinks directly with one
+                // `build_FindCel` (lines 108-117) — no portal walk over the jump. The port's direct
+                // `bond.pos` writes (the tests' placements) get the same treatment [S: the 3.0 bound
+                // sits above any per-tick move the sim produces — the walk ~0.1, the accelerated fall
+                // ~0.3 even seconds in — and below every placement jump].
+                self.bond.prev_pos = self.bond.pos;
+                self.world.find_cel(self.bond.pos)
+            } else {
+                self.world.player_cel_relink(self.bond.cel, self.bond.prev_pos, self.bond.pos, self.bond.pos)
+            };
             let water = bond_cel.and_then(|cell| self.room_cell.iter().position(|&c| c == Some(cell)))
                 .map(|r| self.cels[r].water).filter(|w| *w > -400.0);
             let sink = input.crouch;
