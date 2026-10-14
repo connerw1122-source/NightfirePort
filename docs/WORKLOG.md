@@ -9899,3 +9899,11 @@ Full suite on the final tree (origin/master 810c109 merged): **909 passed, 3 fai
   projectile, by_hash unchanged), draw→fire→reload through step_bond, native-carry identical
   numbers, the 18 no-model ids listed. Suite: 752 passed, 3 failed (the allowed disc_golden
   slim-ISO set), 27 ignored. Report: docs/reports/fix-weapon-assets.md.
+
+### fix-pause-menu2 — start (2026-10-14)
+
+Branch s/fix-pause-menu2 from origin/master 6a118b8. Task: the pause page fixes — the figure
+(the orange silhouette CLUT/blend), the MISSION cursor, the OBJECTIVES tab contents, the CONTROLS
+tab (button glyphs), the SCORE table (Category/Current/Target from the medal data), the HUD
+under the pause page, the footer glyphs. Files: crates/nf-view/src/{menu,hud}.rs,
+crates/nf-view/tests/menus_flow.rs. Report: docs/reports/fix-pause-menu2.md.
