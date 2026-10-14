@@ -1318,6 +1318,7 @@ fn grenade_bounce_scares_the_guard_into_the_flee_family() {
         pos: drop, velocity: [0.0, -5.0, 0.0], speed: 5.0, travelled: 0.0, range: 100000.0,
         damage: 1.0, radius: 1.0, weapon_type: 0x34, mesh: 0, owner: usize::MAX, state: 1, bounces: 0, smoke_popped: false, resting: false,
         stuck: false, seek_target: None,
+        phase: None,
     });
     let mut saw_87 = false; let mut dist_at_87 = 0.0f32;
     for k in 0..400 {
