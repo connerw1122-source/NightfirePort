@@ -359,12 +359,11 @@ impl Bond {
             self.ladder = None;
             return;
         }
-        // Vertical swim [S — the game's vertical swim input is not resolved in this pass; enter/leave,
-        // the surface clamp and drowning are [M]]. Jump rises, crouch sinks. This is the ONLY vertical
-        // integration this tick (the physics pass skipped the y velocity for swimming).
-        self.vel[1] = if input.jump { 2.4 } else if input.crouch || ctx.sink { -2.4 } else { 0.0 };
-        // The surface clamp [M]: `pos.y < surface − 0.3` → `vel.y = min(vel.y, surface − 0.3 − pos.y)`
-        // (world-up); else any upward velocity is zeroed.
+        // The vertical comes from the look-directed forward (physics_tick's swim branch [M
+        // 0x191dd0:149-165]) — NOT from crouch/jump: the game's case 3 reads no such input (the old
+        // `±2.4` on jump/crouch was [S] fiction; dive = look down + forward, surface = look up +
+        // forward). The surface clamp [M 0x193600:201-220]: `pos.y < surface − 0.3` → the world-Y
+        // move is clamped so Bond rises AT MOST to `surface − 0.3`; else any upward move is zeroed.
         if self.pos[1] < w - 0.3 {
             self.vel[1] = self.vel[1].min((w - 0.3 - self.pos[1]) * 60.0);
         } else if self.vel[1] > 0.0 {
@@ -385,7 +384,11 @@ impl Bond {
     /// velocity (`obj+0x50/+0x58 = 0`), mode `+0x94D = 1`, `+0x130 = 2`, `ChangeSubState(1)`,
     /// `Player_WeaponNone` (the Sim holsters to fists), `BLData+0x884 = ladder`.
     fn ladder_grab(&mut self, ctx: &LadderCtx) {
-        if self.substate != SS_WALK || self.regrab != 0 { return; }
+        // The game's guards [M 0x196118:16-17]: substate must not be 1 (climb) or 2 (grapple) — swim
+        // (3), crouch (4) and walk (0) all grab; plus the regrab lockout (+0x951) and health. The old
+        // `!= SS_WALK` gate silently killed the swim-grab call swim_tick already made (the user's "I
+        // can't latch onto it and climb it" at the 02 pond hut ladder).
+        if matches!(self.substate, SS_CLIMB | SS_GRAPPLE) || self.regrab != 0 { return; }
         for (i, lad) in ctx.ladders.iter().enumerate() {
             if !lad.capsule_hits(self.pos, RADIUS) { continue; }
             let diff = wrap_pi(lad.yaw - self.yaw); // Vec_AngleDifference(player, ladder) [M 0x1e2b78]
@@ -896,6 +899,7 @@ impl Bond {
             self.regrab = 5;      // (u8)(FRAME_RATE_DIV·5) [M]
             self.vel[0] = 0.0;    // obj+0x50 = 0 [M]
             self.vel[2] = 0.0;    // obj+0x58 = 0 [M]
+            self.local[0] = 0.0;  // Vec_Zero(BL+0x20): the strafe smoother clears too [M 0x195e50 disasm]
             self.mode = 0;
             self.ladder = None;
         }
@@ -939,7 +943,9 @@ impl Bond {
         // `Player_SSWalk` / `Player_SSCrouch`: the lockout runs down (*deviation*: the transition animation that may
         // end it early is not played).
         self.lockout = self.lockout.saturating_sub(1);
-        let k = if self.crouched { 0.75 } else { 1.0 };
+        // Case 3 calls `Player_Move(1.0, …)` [M 0x193600:181-182] — the swim multiplier is ALWAYS 1.0
+        // (the 0.75 is `Player_SSCrouch`'s own call argument 0x1924c0:58, not a crouched flag read).
+        let k = if swimming { 1.0 } else if self.crouched { 0.75 } else { 1.0 };
         // `Player_Move`: aim mode zeroes forward (and the pad's turn action, which the caller leaves out of `turn`:
         // with a mouse the view turns past the aim box's edge, D-002).
         let (fwd, turn) = if input.aiming { (0.0, input.turn) } else { (input.forward.clamp(-1.0, 1.0), input.turn) };
@@ -992,8 +998,24 @@ impl Bond {
         self.yaw += turn;
         self.pitch = (self.pitch + input.look).clamp(-1.0, 1.0);
         let (s, c) = (self.yaw.sin(), self.yaw.cos());
-        self.pos[0] += c * vs + s * vf;
-        self.pos[2] += -s * vs + c * vf;
+        if swimming {
+            // `Player_Move` 0x191dd0:149-165 [M]: in swim the forward speed rides the LOOK direction
+            // (`RotMatrixX(obj+0x50 − BL+0x8a8·π/2)` + `Mat_GetDir`, obj+0x50 zeroed on entry — the
+            // view pitch IS BL+0x8a8), so looking down + forward DIVES and looking up + forward
+            // SURFACES; strafe stays on the horizontal local X (the game overwrites the X lane with
+            // the strafe speed after the dir add). `Bond::look` is the same convention (pitch +1 = up
+            // = the game's dir.y = sin(0x8a8·π/2)). No crouch/jump input exists in swim [M case 3 of
+            // 0x193600 reads none; Player_HandleJump 0x1916b0 is only called from SSWalk].
+            let ld = self.look();
+            self.pos[0] += c * vs + ld[0] * vf;
+            self.pos[2] += -s * vs + ld[2] * vf;
+            // The world-Y component rides as this tick's vertical velocity; the swim tail clamps it
+            // against `surface − 0.3` before integrating (case 3 tail [M 0x193600:201-220]).
+            self.vel[1] = ld[1] * vf * 60.0;
+        } else {
+            self.pos[0] += c * vs + s * vf;
+            self.pos[2] += -s * vs + c * vf;
+        }
         self.local = [vs / k, vf / k];
         // `Player_Collision`: gravity unless standing on a gentle floor (jumping keeps the velocity).
         // The water path skips `WldGravity` entirely [M 0x194df0 default case]. The vertical velocity
@@ -1375,6 +1397,61 @@ pub fn weapon_lock_auto_draw(level: u32, on: bool, prev: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// fix-swim: the grab gate [M `Player_CollLadder` 0x196118:16-17] excludes ONLY substates 1
+    /// (climb) and 2 (grapple) — swim (3) and crouch (4) grab. Pre-fix the port's `substate !=
+    /// SS_WALK` gate made swim_tick's grab call dead code (the user's "I can't latch onto it and
+    /// climb it" at the 02 pond hut ladder). No NF_ISO needed: a hand-built ladder context.
+    #[test]
+    fn the_ladder_grab_gate_excludes_only_climb_and_grapple() {
+        let world = CollisionWorld::from_triangles(Vec::new());
+        let lad = Ladder { centre: [10.0, 3.0, 20.0], radius: 2.0, yaw: 0.0, channel: 0 };
+        let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: Some(2.0), sink: false, creepwalls: &[] };
+        // SWIM grabs: one tick in the water context attaches (pre-fix it stayed SS_SWIM).
+        let mut b = Bond::new([10.0, 3.0, 20.5], lad.yaw + std::f32::consts::PI);
+        b.substate = SS_SWIM;
+        b.tick_ctx(&world, &ctx, &Input { forward: 1.0, ..Default::default() });
+        assert_eq!(b.substate, SS_CLIMB, "the swim grab never attached (substate {})", b.substate);
+        assert_eq!(b.ladder, Some(0), "the grab did not latch the ladder");
+        assert!((b.pos[2] - (lad.centre[2] + 0.5)).abs() < 1e-3, "the grab snap left the axis: {:?}", b.pos);
+        // Sister: the crouch stance (4) grabs too — the game's gate passes it.
+        let mut b4 = Bond::new([10.0, 3.0, 20.5], lad.yaw + std::f32::consts::PI);
+        b4.substate = 4; // SS_CROUCH (no named const in this port; the dispatch default arm)
+        b4.tick_ctx(&world, &ctx, &Input { forward: 1.0, ..Default::default() });
+        assert_eq!(b4.substate, SS_CLIMB, "the crouch grab never attached (substate {})", b4.substate);
+        // Sister: the water grab's y-snap holds the swimmer at the rungs (never BELOW bottom+0.02).
+        assert!(b.pos[1] >= lad.bottom() + 0.02 - 1e-4, "the grab dropped the swimmer below the rungs: {}", b.pos[1]);
+    }
+
+    /// fix-swim: the swim stroke rides the LOOK direction [M `Player_Move` 0x191dd0:149-165 —
+    /// `RotMatrixX(obj+0x50 − BL+0x8a8·π/2)` + `Mat_GetDir`] and the case-3 tail clamps the rise at
+    /// `surface − 0.3` [M 0x193600:201-220]. No crouch/jump input exists in swim [M case 3 reads
+    /// none]. Pre-fix the port moved planar-only and sank/rose ±2.4/tick on crouch/jump ([S] fiction).
+    #[test]
+    fn swim_moves_along_the_look_direction_and_the_surface_clamps() {
+        let world = CollisionWorld::from_triangles(Vec::new());
+        let ctx = LadderCtx { ladders: &[], wires: &[], wire_anims: None, water: Some(3.0), sink: false, creepwalls: &[] };
+        let mut b = Bond::new([0.0, 2.7, 0.0], 0.0); // below surface − 0.3? 2.7 < 2.7 is false — at the ceiling
+        b.substate = SS_SWIM;
+        // Look down-ish (pitch −0.5: dir = (0, −sin π/4, cos π/4)), swim forward: the position must
+        // DROP and move along the look dir (the dive).
+        b.pitch = -0.5;
+        let y0 = b.pos[1];
+        for _ in 0..60 { b.tick_ctx(&world, &ctx, &Input { forward: 1.0, ..Default::default() }); }
+        assert!(b.pos[1] < y0 - 0.5, "looking down + forward did not dive (y {} -> {})", y0, b.pos[1]);
+        assert!(b.pos[2] > 0.5, "the dive did not move forward along the look dir (z {})", b.pos[2]);
+        // Look up hard, swim forward: the rise stops AT surface − 0.3 (the clamp), never past it.
+        b.pitch = 1.0;
+        for _ in 0..240 { b.tick_ctx(&world, &ctx, &Input { forward: 1.0, ..Default::default() }); }
+        assert!(b.pos[1] <= 3.0 - 0.3 + 1e-3, "the swim rose past surface − 0.3: {}", b.pos[1]);
+        assert!(b.pos[1] > y0 - 0.5, "looking up + forward did not surface (y {})", b.pos[1]);
+        // Sister: crouch/jump do NOTHING in swim (the game reads no such input in case 3). Neutral
+        // look so the look-dir vertical is out of the picture.
+        b.pitch = 0.0;
+        let y_at = b.pos[1];
+        for _ in 0..30 { b.tick_ctx(&world, &ctx, &Input { jump: true, crouch: true, ..Default::default() }); }
+        assert!((b.pos[1] - y_at).abs() < 1e-3, "crouch/jump moved the swimmer (y {} -> {})", y_at, b.pos[1]);
+    }
 
     /// fix-ladder2: the climb look [M Player_Climb 0x196310 + Player_Update 0x193600 + ViewClamping
     /// 0x1a92e8]. The turn input moves the yaw inside the eased ±90° window around `ladder.yaw + π`,

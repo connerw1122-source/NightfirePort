@@ -10405,6 +10405,14 @@ Stage Summary:
 - Open: nothing for this task; the satchel/sticky bounce branches and the mine's detonator are other systems' scope.
 
 ---
+Task ID: 102h-fix-swim
+Agent: swim worker
+Task: fix-swim — swimming barely works (02 garden pond: entering water by walking in, swim speed, crouch dive / jump surface, no footsteps while swimming — swim stroke sounds instead) and the water ladder under the hut (grab + climb from the water).
+
+Work Log:
+- (started 08:37 UTC) Branch s/fix-swim created from origin/master ccaea18. Setup in progress (downloads next). Research in work/decomp after.
+
+---
 Task ID: 100k-fix-gadgets-live
 Agent: fix-gadgets-live worker
 Task: the laser/stunner/AIMS-20/Oddjob findings on 2026-10-13's master — (1) the laser 0x4e's beam, wall light and HUD charge bar + regen are missing (PCSX2 shows a short red beam, a red glow light, a vertical charge bar 31..0 at ~1/tick, regen after); (2) the stunner 0x4a "doesn't work" — the class-2/3 ray, Draw_TaserBeam 0x1a46a8 and the stunned reaction; (3) the AIMS-20 0x1a's side lights unlit (emissive/anim material); (4) Oddjob's hat 0x45 should be a one-shot kill, not a grenade.
@@ -10655,3 +10663,31 @@ on it. Suite on the final tree: nf-game 143/143; the swim/ladder/walkreal famili
 walkreal_probe3_live 2/2 + the nf-view bucket 35/35). The full four-crate run did not fit the window
 (suite.py cannot survive the background in this sandbox — third session running); the remaining families
 are listed in the report. NO RNG draws added; no wall-clock in Sim.
+
+---
+Task ID: 102h-fix-swim
+Agent: swim worker
+Task: fix-swim — the 07000002 pond swim (look-directed dive/surface, swim speed, no footsteps while swimming) and the water ladder under the hut (grab from the swim + climb out).
+Work Log:
+- (08:37-09:53 UTC) Branch s/fix-swim from origin/master ccaea18, merged master b65d6f7 mid-task (WORKLOG both-entries resolution). Setup: work/ + slim ISO, NF_ISO, nf-queue, LIBRARY_PATH for the user-prefix ALSA link.
+- Evidence: Player_InWater 0x195e50 (cel+0x90 > pos.y−0.3 → substate 3), the swim case 3 inline in Player_Update 0x193600:181-222 (Player_Move(1.0) + the surface−0.3 rise clamp + the grounded exit), Player_Move 0x191dd0:149-165 (the swim branch rides RotMatrixX(obj+0x50 − BL+0x8a8·π/2) — dive = look down + forward; NO crouch/jump input in case 3; Player_HandleJump only from SSWalk), Player_CollLadder 0x196118:16-17 (the grab gate excludes ONLY substates 1/2), Collide_PickObj 0x1eae80:152-168 (the capsule-segment vs sphere×1.5+0.55 pick) + the y-snap lift 0x196118:23-31, Effect_Create 0x1ce688:63 (no ground hit in swim → no footstep), Player_MonitorAir 0x191a70:101-143 (the 0x27 dive loop / 0x60c gasp / 0x60b drown).
+- Fixes: player.rs (the look-directed swim wish + k=1.0 always + the ±2.4 [S] block deleted + the strafe-smoother clear on entry + the grab gate), ladder.rs (capsule_hits = the game's pick shape), sound.rs (Sounds.swim_prev_under), scene.rs (the swim footstep gate + the MonitorAir sound hooks).
+- Tests failing-first: the two nf-game unit tests replayed against a HEAD player.rs (both FAILED there, PASS after); fix_swim_live 4/4 (entry+speed pin, dive/surface/clamp, no 129/0x27/0x60c in a surface swim, the hut ladder grabs FROM THE SWIM at +52 and climbs out to 7.118 over top 7.102). Sisters: fix_ladder2 4/4, fix_ladder 3/3+1, fix_swim_vent 2/2, walkreal_probe3 2/2, nf-game lib 145/145.
+- Report: docs/reports/fix-swim.md (the entry-depth live check, the sink-through-bed gap, the unported mesh refine + sound-group scrub).
+Stage Summary:
+- Files: player.rs, ladder.rs, sound.rs, scene.rs (shared, 2 hooks), tests/fix_swim_live.rs (new), the report. LadderCtx.sink now unread (field kept).
+- Open: the full suite did not fit the window (the sisters + libs above are the verified set); the pond-bed sink-through and the build_FindCel entry depth are the main agent's live checks.
+
+---
+Task ID: 102m-fix-swim2
+Agent: swim2 worker
+Task: fix-swim2 — the swim branch's ladder-top exit regression on land ladders (102h-fix-swim dc59866 breaks walkreal_0700000c_live::walk_start_to_the_st1_plate_and_the_photograph: Bond leaves the ladder top CROUCHED and ungrounded and the walk to the walkway's south end sticks at bond=(9.03,11.74,-189.99)). Fix the exit so land ladders behave as on master (the game's ladder-top dismount, Player_CollLadder 0x196118 / the climb substate's exit) while the pond ladder still grabs from the water; keep the swim fixes; full suite green on the merged tree.
+
+Work Log:
+- (11:58 UTC) Branch s/fix-swim2 from origin/s/fix-swim dc59866, merged origin/master (WORKLOG both-entries resolution). Setup reused (work/, slim ISO, nf-queue).
+- (11:58-13:26 UTC) Repro first: walkreal_0700000c_live fails on the merged tree exactly as driven (STUCK crouched/ungrounded at (9.03,11.74,-189.99), segment_to_target 0.029). A per-tick probe replay showed the top exit itself fine (lunge at 12.148, land 11.736) but a RE-GRAB at regrab expiry 43 ticks later (substate 1, snapped back to the axis) — a climb/walk limit cycle.
+- Root cause: 102h's bare ×1.5 pick sphere [M 0x1eae80:152-168] is not the whole filter — the game narrows past the sphere (straddled-cel scoping Collide_Pick 0x1eb320:125-134/318-328 + the glist mesh refine Collide_Intersect 0x1ebaa8, both unported); a tall ladder's bounds sphere is its half-height (0c yard ladder r 5.75), reach ~9.2 sideways, so the dismounted walker 2.9 off-axis at walkway height still "picked". Player_CollLadder 0x196118 read in full — no extra gate there; the y window passes at 11.736 < top 12.15.
+- Fix (ladder.rs only; every 102h swim change kept): capsule_hits = stage 1 the game's ×1.5 sphere vs the capsule segment (the pond deep-water grab) AND stage 2 the master axis-column horizontal bound min(r,1)+capsule [S, the stand-in for the unported cel/mesh filter]. Doc comment cites both stages.
+- Fail-first shown: walkreal_0700000c (the driven STUCK dump + the +1912-tick ladder-base leg). Post-fix: walked out 2691 ticks, stuck 0, falls 0. Sisters: ladder unit test rewritten (2-side flips to no-hit, pond-deep keeps hit, the exact 0c yard geometry pins both), nf-game lib 145/145, fix_swim_live 4/4 (the pond grab survives), fix_ladder 3/3+1, fix_ladder2 4/4, fix_swim_vent5 2/2, walkreal 01/02/09/0b/0c/0d/12 green, nf-game+nf-formats+nf-audio green except the 3 allowed disc_golden. walkreal 05/0a ignored-gated on the slim ISO.
+- Not run (window): the remaining walkreal levels + the portal/scene suites — next session runs tools/test/suite.py on this tree. The stuck dump's crouched=true is NOT the regression (the test's single crouch press toggles on when Bond lands un-crouched; identical code on master — no diff touches crouch).
+- Report: docs/reports/fix-swim2.md (the live checks: the 0c ladder top dismount, the walk-back-into re-grab, the 02 pond deep-water grab; nf-view spots for all three).
