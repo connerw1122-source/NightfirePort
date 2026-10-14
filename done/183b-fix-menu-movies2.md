@@ -25,3 +25,7 @@ Files: `crates/nf-view/src/{gpu,lib,menu,movie}.rs`, the two features' tests.
 
 ---
 claimed-by: sandbox1 at 2026-10-13T23:37Z
+
+---
+## Report (done, 2026-10-14T01:35Z)
+
