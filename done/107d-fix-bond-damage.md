@@ -32,3 +32,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox2 at 2026-10-14T21:54Z
+
+---
+## Report (done, 2026-10-14T22:49Z)
+
+Closed by the driver: the report is on `s/fix-bond-damage` (docs/reports/fix-bond-damage.md); the worker didn't run finish.sh.
