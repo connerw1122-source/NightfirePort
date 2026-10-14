@@ -10040,3 +10040,20 @@ Task: fix-grenade-throw — grenade throw timing (release on the anim event, ref
 
 Work Log:
 - (started 05:31 UTC) Branch s/fix-grenade-throw created from origin/master 69c0104; setup reused from the previous session (repo, work/, ISO, nf-queue). Research + NF_ISO repro tests next.
+
+---
+Task ID: 102c-fix-grenade-throw
+Agent: grenade-throw worker
+Task: fix-grenade-throw — grenade throw timing (release frame, refire), the explosion size/scale, the settle bounce-sound rule, smoke grenade 0x36.
+
+Work Log:
+- Branch s/fix-grenade-throw from origin/master 69c0104 (05:31 UTC); setup reused.
+- Evidence: the release frame +0x44 = 26 with the obj+0x95C latch [M 0x1a2e38:416-420], the pin sound 0x1e4 at the fire script's frame 16 [D 07000026.bin], no op-4.7 in the grenade view scripts, refire +0x40 = 63 + the state-9 0x8000 block [M 0x1a5460]; the blast scale SCRIPTINFO+0x94 = f12 = weapon+0x08 [M 0x12ce1c-0x12ce2c + 0x17cbd0 + 0x1da158:117] with Mat_Scale3f keeping the translation [M 0x1e35f0]; the bounce gate (even counters < 0xF, first-bounce flash 0x15 / smoke 0x13) [M 0x12ce80 LAB_0012d4bc]; the rest (zero speed → no re-collision) [M 0x12ce80 tail + 0x12f020-0x12f030]; the smoke cloud Occlude_Create(pos,1200,1) mesh 0x2000273 [M 0x17ea80/0x17eba0].
+- Fixes: spawn_blast scale = radius; nis.rs keys() stops scaling translations; the bounce gate (pre-increment counter); the rest latch (Grenade.resting); the smoke cloud (SmokeCloud + drone.rs push/tick + the scene.rs Effect pool, kind 3, mesh 0x2000273).
+- Repro first: 4 headless tests (fix_grenade_throw_live) failed pre-fix — on 07000005 the panel-given frag NEVER spawned (the view scripts absent from the archive; 07000015 carries them), the blast scale was 0.533, 9+ bounce sounds across the settle, no cloud. Post-fix: pin 15 → spawn 25, held gap 71, bounce sounds [35,141,166] then silence, blast 8.0/100 at scale 8.0, the cloud at 1200 ticks, no smoke damage.
+- Final tree (merged origin/master e169958): nf-game+nf-formats+nf-audio 352 passed / 3 failed (the allowed disc_golden trio) / 2 ignored; nf-view 326 passed / 0 failed / 7 ignored (levels_sweep 3/3, weapon_matrix 28/28 re-run). suite.py's nohup could not survive this sandbox (backgrounds die between tool calls) — the same binaries ran in foreground --test-threads=1 chunks.
+
+Stage Summary:
+- Files: grenade.rs (resting + SmokeCloud), drone.rs (the scale, the gate, the cloud push/tick + the field), nis.rs (keys() translation), scene.rs (the cloud pool + draw arm), tests/fix_grenade_throw_live.rs (new), the Grenade constructors' resting:false in the hand-built tests.
+- Report: docs/reports/fix-grenade-throw.md (the evidence, the numbers, the live checks).
+- Open: nothing for this task; the satchel/sticky bounce branches and the mine's detonator are other systems' scope.
