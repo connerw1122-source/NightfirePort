@@ -9559,3 +9559,13 @@ Stage Summary:
   green, my diff doesn't touch their path).
 - Shared files touched (additive): nf-view lib.rs (the --page arms + the F12 arm). Report:
   docs/reports/fix-pause-menu.md.
+
+## fix-0c-hatch (s/fix-0c-hatch) — 2026-10-14
+
+Task 101g, 0700000c display vent hatch: after burning the four display-vent latches (locks 14-17 at
+(7.09/4.54, 15.70/16.87, -112.35)) the playtest (results 1013-1758) reports the hatch opens very
+slowly, and Bond still can't get through — he can't crouch through the gap. Plan: find the game's
+hatch open-anim/rotation rate and how the real game gets Bond through (auto-crouch, creep/vent
+volume, or walkable gap) in the decompile; reproduce headless through the real input path from
+--bond 5.8,15.8,-108.5; fix in nf-game (lock/props/player.rs) citing game addresses. Branch created
+from origin/master c4028c8. Work in progress.
