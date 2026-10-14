@@ -11027,3 +11027,20 @@ Work Log:
   the swap paths) uses the twin's own per-weapon slot — so every 0x02↔0x03 mode hop zeroes the
   magazine (clip[0x03] is a never-filled slot) and fires a spurious auto-reload. The give path
   (pickup.rs clip_slot) already models the base unification; the runtime does not. Fix next.
+- (15:05-15:45 UTC) FIX: `Sim::clip_slot` in scene.rs — the twin families' runtime clip boundary
+  now uses the game's shared base slot [M 0x1a1988:18-22] at the per-tick read, both swap reads and
+  the write-back. The reload exits needed no change (Gun::reload_tick already matches case 5/6/7).
+  5 tests in fix_reload_hang_live.rs all green (magazine 0x02/0x03, rockets 0x2d, per-shell 0x1c +
+  the fire interrupt, the mid-reload switch refusal-then-land, the twin shared magazine). The
+  matrix's D/M/R mass decomposed: Bond's death mid-sweep eats every input below the killing cell
+  (dbg2 death=true), the guided-missile camera eats the reload/switch phases (07000002's rocket R
+  cells), the reload pulse is lost to the fire script, and twins are unreachable via switch_to by
+  the game's own model (mode_to bounces). rocket_hit_applies_the_blast_exactly_once needed its
+  clip poke moved to the game's base slot (clip[0x2c]) — the fixed boundary reads the shared
+  magazine; binary 5/5 green after. Suite on this tree: build ok 258; disc_golden x3 (allowance),
+  weapon_matrix_live 600 s TIMEOUT (the suite runs the full 16-min matrix against the cap —
+  pre-existing), pylon render flakes under the concurrent matrix run (green in isolation).
+  Report: docs/reports/fix-reload-hang.md. Files: scene.rs (clip_slot + 4 sites), matrix.rs (dbg
+  vs/vt), fix_reload_hang_live.rs (new), fix_weapon_fire_modes_live.rs (the poke, noted), two
+  probe examples. Next window: the runner's death/menu + twin-reach + pulse-window fixes, then the
+  full 27-level sweep for the new red counts.
