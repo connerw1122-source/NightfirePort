@@ -97,6 +97,11 @@ pub struct ScopePortal {
     pub tris: [[V3; 3]; 2],
     pub a: usize,
     pub b: usize,
+    /// The portal's reference point: the 4 corners' average, stored at portal+0x70 by
+    /// `build_alloc_portal` 0x1c8928 (`puVar2[0x1c..0x1e] = (c0+c1+c2+c3)·0.25`) — the point
+    /// `Intersect_Portal` 0x1ea7b8's 0x800 path projects the query segment against (fix-08-collision2;
+    /// the port used corner 0, which missed crossings on long doorways).
+    pub centre: V3,
 }
 
 /// The cel graph the game scopes collision queries with: one bbox per runtime cel (the parse-wide
@@ -106,6 +111,10 @@ pub struct ScopePortal {
 pub struct ScopeGraph {
     pub cells: Vec<([f32; 3], [f32; 3])>,
     pub portals: Vec<ScopePortal>,
+    /// The runtime cel's room-cel bit (`cel+0x3c & 0x40000`): `build_FindCel` 0x1c8cb0's candidate
+    /// walk collects ONLY room cels (both the `glb_world` `gbl_room_cels` branch and the per-world
+    /// chain branch filter the flag), so the relink's FindCel fallback must too. fix-swim-entry.
+    pub room: Vec<bool>,
 }
 
 /// The per-cell static buckets + the graph, built once (`build_scoped`).
@@ -335,6 +344,31 @@ impl CollisionWorld {
     /// Whether the world carries a cel scope (`build_scoped` with a graph).
     pub fn has_scope(&self) -> bool { self.scope.is_some() }
 
+    /// Debug introspection (fix-08-collision): for every cell's scope bucket plus the `always`
+    /// remainder, how many chunked runs whose bounds meet `lo..hi` it holds. Probes the per-cel
+    /// attribution without reaching into the private `ScopeData`.
+    pub fn debug_bucket_owners(&self, lo: V3, hi: V3) -> Vec<(i32, usize)> {
+        let meets = |r: u32| {
+            let o = &self.stat.objects[r as usize];
+            !(0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k])
+        };
+        let Some(sc) = &self.scope else { return Vec::new() };
+        let mut out: Vec<(i32, usize)> = sc.cells.iter().enumerate()
+            .map(|(c, runs)| (c as i32, runs.iter().copied().filter(|&r| meets(r)).count()))
+            .collect();
+        out.push((-1, sc.always.iter().copied().filter(|&r| meets(r)).count()));
+        out.retain(|(_, n)| *n > 0);
+        out
+    }
+
+    /// Debug introspection (fix-08-collision2): the straddle set a capsule query at `a..b` with
+    /// radius `r` keeps from `cell` — the `Collide_StraddleCels` result the scoped passes test —
+    /// so a missing portal crossing is probeable from a test.
+    pub fn debug_straddle(&self, cell: usize, a: V3, b: V3, r: f32) -> Vec<usize> {
+        let mut hit = Self::capsule_portal_hit(a, b, r);
+        self.straddle(cell, &mut hit)
+    }
+
     pub fn triangle_count(&self) -> usize { self.stat.tris.len() }
 
     /// Every static triangle whose object's box meets `lo`..`hi`, in stored winding order (the [D]
@@ -474,14 +508,18 @@ impl CollisionWorld {
     }
 
     /// The actor-capsule portal test (`Intersect_Portal`'s 0x800 path [M 0x1ea7b8]: the point on the
-    /// capsule's segment closest to the portal's reference point, then that point's distance to the
-    /// portal's two triangles against radius × 1.5).
+    /// capsule's segment closest to the portal's +0x70 reference point, then that point's distance to
+    /// the portal's two triangles against radius × 1.5). The reference point is the portal's CENTRE —
+    /// the 4 corners' average `build_alloc_portal` 0x1c8928 stores at +0x70 — not a corner
+    /// (fix-08-collision2: corner 0 sat a doorway's height away from the capsule's band and missed the
+    /// crossing, dropping the neighbouring cel's walls out of the straddle set — the 01 escort wedge).
     fn capsule_portal_hit(a: V3, b: V3, r: f32) -> impl FnMut(&ScopePortal) -> bool {
         move |p: &ScopePortal| {
             let mut hit = false;
             for t in &p.tris {
-                // The portal's reference point: corner 0 (the game's portal+0x70 stored point).
-                let q = closest_on_segment(a, b, t[0]);
+                // The closest point on the capsule's segment (HITTEST+0x20..+0x30) to portal+0x70
+                // [M 0x1ea7b8's 0x800 branch: the clamped projection against the stored centre].
+                let q = closest_on_segment(a, b, p.centre);
                 let (cp, _) = closest_on_triangle(q, t);
                 let d = sub(q, cp);
                 if dot(d, d) < (r * 1.5) * (r * 1.5) { hit = true; break; }
@@ -687,6 +725,107 @@ impl CollisionWorld {
             }
         }
         best
+    }
+
+    /// The move segment against one cell's portals — `Cel_ObjectLeftCel` 0x1e0d58 [M]: the segment
+    /// `from→to` against each portal quad the cell participates in (the portal chain at `cel+0x28`),
+    /// two `Collide_RayTriangle` tests per quad (the 0,1,2 / 0,2,3 split, `Index_189`), a hit within
+    /// the segment returns the portal's OTHER cell. The caller relinks to it BEFORE the bbox keep
+    /// runs, so a crossing wins even while the new position is still inside the old cell's box.
+    pub fn cel_portal_dest(&self, cell: usize, from: V3, to: V3) -> Option<usize> {
+        let sc = self.scope.as_ref()?;
+        let dir = sub(to, from);
+        let hit = |tri: [V3; 3]| -> bool {
+            // Möller–Trumbore over the move segment [0, 1], both sides (the game's RayTriangle has
+            // no back-face skip here — `Cel_ObjectLeftCel` 0x1e0d58:95-108 tests the quad twice).
+            let e1 = sub(tri[1], tri[0]);
+            let e2 = sub(tri[2], tri[0]);
+            let pv = [dir[1] * e2[2] - dir[2] * e2[1], dir[2] * e2[0] - dir[0] * e2[2], dir[0] * e2[1] - dir[1] * e2[0]];
+            let det = dot(e1, pv);
+            if det.abs() < 1e-12 { return false; }
+            let inv = 1.0 / det;
+            let tv = sub(from, tri[0]);
+            let u = dot(tv, pv) * inv;
+            if !(-1e-9..=1.0 + 1e-9).contains(&u) { return false; }
+            let qv = [tv[1] * e1[2] - tv[2] * e1[1], tv[2] * e1[0] - tv[0] * e1[2], tv[0] * e1[1] - tv[1] * e1[0]];
+            let v = dot(dir, qv) * inv;
+            if !(-1e-9..=1.0 + 1e-9).contains(&v) || u + v > 1.0 + 2e-9 { return false; }
+            let t = dot(e2, qv) * inv;
+            (0.0..=1.0).contains(&t)
+        };
+        for p in &sc.graph.portals {
+            let dest = if p.a == cell { p.b } else if p.b == cell { p.a } else { continue };
+            let c = &p.tris;
+            if hit(c[0]) || hit(c[1]) { return Some(dest); }
+        }
+        None
+    }
+
+    /// `build_point_in_bounding_box` 0x1c9500 [M]: the inclusive bbox test over one runtime cel
+    /// (`cel+0x40..0x58`). `None` cell → false.
+    pub fn cel_contains(&self, cell: Option<usize>, p: V3) -> bool {
+        let Some(cell) = cell else { return false };
+        self.scope.as_ref().and_then(|sc| sc.graph.cells.get(cell))
+            .is_some_and(|(lo, hi)| (0..3).all(|k| lo[k] <= p[k] && p[k] <= hi[k]))
+    }
+
+    /// `build_FindCel` 0x1c8cb0 [M] over the scope graph: the containing ROOM cels (`cel+0x3c &
+    /// 0x40000`, cap 0x40 — `CelListCount_154`), then the game's tie-break when several contain the
+    /// point: per candidate a collision raycast up (length `len`, 256 first, then the best-so-far
+    /// distance) and down (length `min(up hit, len)`), both scoped to the CANDIDATE'S OWN geometry
+    /// (`Collide_RayIntersect`'s cel argument + owner filter 1 — `segment_hit_cell`); the nearest
+    /// hit distance wins (`if hit->0xc < fVar11`), and with no hit at all the FIRST candidate
+    /// stands (0x1c8cb0's tail `return CelList_153`). One candidate returns directly [M
+    /// `if (CelListCount_154 != 1)` guards the tie-break]; none returns NULL.
+    pub fn find_cel(&self, p: V3) -> Option<usize> {
+        let sc = self.scope.as_ref()?;
+        let mut cands: Vec<usize> = Vec::new();
+        for (i, (lo, hi)) in sc.graph.cells.iter().enumerate() {
+            if !sc.graph.room.get(i).copied().unwrap_or(false) { continue; }
+            if (0..3).all(|k| lo[k] <= p[k] && p[k] <= hi[k]) {
+                cands.push(i);
+                if cands.len() >= 0x40 { break; }
+            }
+        }
+        if cands.len() <= 1 { return cands.first().copied(); }
+        let mut best: Option<(usize, f32)> = None;
+        for &i in &cands {
+            let len = best.map_or(256.0, |(_, d)| d);
+            let up = self.segment_hit_cell(i, p, [p[0], p[1] + len, p[2]]).map(|(t, _)| t * len);
+            let dlen = up.map_or(len, |ud| ud.min(len));
+            let down = self.segment_hit_cell(i, p, [p[0], p[1] - dlen, p[2]]).map(|(t, _)| t * dlen);
+            match (up, down) {
+                (None, None) => continue,
+                (a, b) => {
+                    let d = a.iter().chain(b.iter()).copied().fold(f32::MAX, f32::min);
+                    if best.map_or(true, |(_, bd)| d < bd) { best = Some((i, d)); }
+                }
+            }
+        }
+        Some(best.map_or(cands[0], |(i, _)| i))
+    }
+
+    /// The player object's per-tick cel relink — `control_handle_cel_change` 0x133288 [M] as the
+    /// movement handler's moved pass runs it (`Control_BuildWorldSph` then the change): the move
+    /// segment `prev→pos` crossed a portal of the current cel → that portal's other cell
+    /// (`Cel_ObjectLeftCel` 0x1e0d58); else `pos` still inside the current cel's box → keep
+    /// (`build_point_in_bounding_box` 0x1c9500); else `build_LinkToRoom` 0x1c9680 → `build_FindCel`
+    /// 0x1c8cb0 AT THE WORLD-SPHERE CENTRE (`obj+0x80`, `Control_BuildWorldSph` 0x133070 — the
+    /// model's local sphere centre through the object matrix, `Bond::sphere_centre`) with the
+    /// raycast tie-break; a FindCel miss leaves the object unlinked (`build_LinkToRoom` returns 0
+    /// without linking — `Player_InWater` 0x195e50 reads `*(obj+0x20) == 0` → no water).
+    /// Deviation [S], cited: the game's `build_LinkToRoom` 0x1c9680:41-45 passes obj+0x80..0x8c (the
+    /// world-sphere centre, 0.1267 below the player position [L ee_start_05 M_CONTROL+0x80]); the port
+    /// passes POS — the caller's `centre` argument — because the port's per-cell bucket attribution
+    /// (`build_scoped`) is coarser than the game's per-cel chains, and at the 07000001 seam the
+    /// 0.1267-shorter down-ray flips the tie-break to a root whose bucket misses the floor under Bond
+    /// (fix-08-collision2's traced 01 pin, kept green). `find_cel` itself is the game's.
+    pub fn player_cel_relink(&self, cur: Option<usize>, prev: V3, pos: V3, centre: V3) -> Option<usize> {
+        if let Some(cell) = cur {
+            if let Some(dest) = self.cel_portal_dest(cell, prev, pos) { return Some(dest); }
+            if self.cel_contains(Some(cell), pos) { return Some(cell); }
+        }
+        self.find_cel(centre)
     }
 
     /// The take's LOS ray: the straddle cells' static geometry, the 0x1000 missile cage excluded
@@ -1014,6 +1153,7 @@ mod tests {
         let mut graph = ScopeGraph {
             cells: vec![([-8.0, -8.0, -8.0], [1.9, 8.0, 8.0]), ([1.95, -8.0, -8.0], [8.0, 8.0, 8.0])],
             portals: Vec::new(),
+            room: vec![true, true],
         };
         // The wall's centre (2, 1, 0) → cell 1. Bucket by the same rule build_scoped uses.
         let mut scope_cells = vec![Vec::new(); graph.cells.len()];
@@ -1042,7 +1182,7 @@ mod tests {
         assert!(w.segment_hit([1.5, 1.0, 0.0], [2.5, 1.0, 0.0]).is_some(), "flat segment_hit still sees the wall");
         assert!(w.segment_hit_scoped(Some(0), [1.5, 1.0, 0.0], [2.5, 1.0, 0.0]).is_none(), "the scoped floor ray skips the unreachable wall");
         // Sister: with a portal the capsule straddles (a quad across its path), the wall is back.
-        graph.portals.push(ScopePortal { tris: [[[1.8, 0.0, -4.0], [1.8, 4.0, -4.0], [1.8, 4.0, 4.0]], [[1.8, 0.0, -4.0], [1.8, 4.0, 4.0], [1.8, 0.0, 4.0]]], a: 0, b: 1 });
+        graph.portals.push(ScopePortal { tris: [[[1.8, 0.0, -4.0], [1.8, 4.0, -4.0], [1.8, 4.0, 4.0]], [[1.8, 0.0, -4.0], [1.8, 4.0, 4.0], [1.8, 0.0, 4.0]]], a: 0, b: 1, centre: [1.8, 2.0, 0.0] });
         scope_cells[1].push(0);
         let w2 = mk(graph, scope_cells);
         let (scoped2, _) = w2.capsule_push_scoped(Some(0), [1.6, 1.0, 0.0], [1.6, 1.2, 0.0], 0.55);
@@ -1055,7 +1195,7 @@ mod tests {
         stat2.chunk(16);
         let w3 = CollisionWorld {
             stat: stat2, missile: Geo::default(), dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default(),
-            scope: Some(ScopeData { graph: ScopeGraph { cells: vec![([-8.0; 3], [8.0; 3])], portals: Vec::new() }, cells: vec![vec![0]], always: Vec::new() }),
+            scope: Some(ScopeData { graph: ScopeGraph { cells: vec![([-8.0; 3], [8.0; 3])], portals: Vec::new(), room: vec![true] }, cells: vec![vec![0]], always: Vec::new() }),
         };
         assert!(w3.segment_actor([0.0, 0.5, 0.0], [0.0, 0.5, 4.0]).is_some(), "flat: the mat-0xd tri blocks");
         assert!(w3.segment_take_scoped(Some(0), [0.0, 0.5, 0.0], [0.0, 0.5, 4.0]).is_none(), "the take's 0x721 filter skips the mat-0xd tri");

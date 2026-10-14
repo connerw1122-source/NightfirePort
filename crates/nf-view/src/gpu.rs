@@ -700,7 +700,18 @@ impl Renderer {
                     3 => -d2(dc.centre),
                     _ => 0.0,
                 };
-                (dc.pass * 2, key, k)
+                // fix-0c-pylon: the frame slot order is Game_Draw's (0x1e6f50, decompiled): sky group 1
+                // (View_DrawSky v,1 → GfxList+0x4a == 1), list 0 (View_DrawObjList v,0), then
+                // psiPostSolid 0x121630 = psiDrawFogPass 0x10b960 and sky group 0 (View_DrawSky v,0 →
+                // GfxList+0x4a == 0) — and ONLY THEN list 1 (View_DrawObjList v,1), the alpha list the
+                // pylon rides. The port drew its post-fog sky (pass 4) after the alpha list; that sky is
+                // pinned to the far plane with a LessEqual test, so it repainted every pixel where only
+                // no-depth-write alpha-list draws happened (the 0700000c pylon: zwrite off, against
+                // sky/sea — erased; its baked shadow survived because it writes depth). Slot map:
+                // pass 0 (pre-world sky) → 0, pass 1 (list 0) → 2, pass 4 (post-fog sky) → 3,
+                // pass 2 (characters) → 4, pass 3 (alpha list) → 6, pass 5 (effects) → 10.
+                let slot = match dc.pass { 4 => 3, p => p * 2 };
+                (slot, key, k)
             }));
             self.order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
             // fix-render2: the World draws' bounding spheres are exact — static geometry through the
