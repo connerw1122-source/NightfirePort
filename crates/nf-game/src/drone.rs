@@ -701,6 +701,20 @@ pub struct Drone {
     pub event_20: bool,
     pub event_21: bool,
     pub holstered: bool,
+    /// `+0x45`: the weapon-swap id from the placement's setup word 0x17 (`DefaultInit` 0x14b300:266);
+    /// `DroneAnim_EventFunc` datum 2 passes it to `DroneWeap_ChangeWeapon` (0x17a6e0's per-weapon jump
+    /// table, disasm 0x13b7dc: `a1 = lb 0x45(a2)` — the drone's byte, not the event's arg). The setup
+    /// word itself is not parsed yet; tests and future setup wiring set it directly.
+    pub weapon_swap: u8,
+    /// `DroneAnim_EventFunc` 5 / 10 / 0xB: a `DroneWeap_CloseCombatImpact` (0x1789c0) is due (the type
+    /// argument: 1 → record 0x65, 2 → 0x66); drained in `Drones::tick` (needs `Data` for the record).
+    pub pending_melee: Option<u8>,
+    /// `DroneAnim_EventFunc` datum 2: a `DroneWeap_ChangeWeapon(drone+0x45)` is due.
+    pub pending_weapon_swap: bool,
+    /// `+0x3E`: the anim datum's weapon byte is 0x1C / 0x1D (`DefaultInit` 0x14b300:801-811) — the
+    /// weapons whose `DroneAnim_PlayFiringAnim` (0x13da48) fires only on the anim's `+0x21` event and
+    /// plays the 0x5C recoil danim. Guards here carry 0x16 / 1 / 6, so this changes nothing for them.
+    pub recoil_weapon: bool,
     /// Sounds the animation played this tick (`AnimProcessScriptCmds` op 1 → `Sound_Play3D`), for the hearing list.
     pub anim_sounds: Vec<u32>,
     /// Speech (docs/systems/speech.md): the voice set (`+0xD8`), the current line's handle and id (`+0x4D0`), whether
@@ -941,6 +955,11 @@ impl Drone {
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
             // fix-cover-remainder: the scary-object flee family (fields on their own lines — merge lesson 4).
             scared: false, flee_return: 0, flee_deadline: None, explosive_msg: None,
+            // fix-anim-events: `+0x45` (the setup's swap id — not parsed from the setup word yet), the
+            // EventFunc outboxes, and `+0x3E` (the anim datum's weapon byte 0x1C / 0x1D, DefaultInit
+            // 0x14b300:801-811; the port keys it on the drone's weapon id — the datum byte's id space).
+            weapon_swap: 0, pending_melee: None, pending_weapon_swap: false,
+            recoil_weapon: weapon == 0x1c || weapon == 0x1d,
         };
         dr.init_properties(d, &param);
         dr.type_setup(d);
@@ -1560,24 +1579,61 @@ impl Drone {
 
     /// `DroneAnim_EventFunc` (0x13b750): 3 / 4 holster swap, 7 `+0x579` = 0, 0xF `+0x20`, 0x12 `+0x20` and `+0x21`, 0x10
     /// clears both, 1 the grenade-throw release (sets `pending_grenade` → `Drones::tick` calls `throw_grenade`), 7 the
-    /// early end of a one-shot (`+0x579`). Not ported: 2 weapon change, 5 / 10 / 11 close-combat hits, 6 / 0xE
-    /// messages, 9 tertiary placement (G-026).
+    /// early end of a one-shot (`+0x579`), 5 / 10 / 0xB the close-combat impacts (`DroneWeap_CloseCombatImpact` 0x1789c0
+    /// with the type argument), 9 the tertiary placement — `DroneWeap_PlaceTertiary` 0x17a848 is a tail call to
+    /// `DroneWeap_ThrowGrenade` — and 2 the weapon swap (`DroneWeap_ChangeWeapon` 0x17a6e0 by the drone's `+0x45` byte,
+    /// disasm 0x13b7dc: `a1 = lb 0x45(a2)` in the dispatch's shared delay slot — the drone's byte, not the event arg).
+    /// The game gates 1 / 5 / 6 / 9 / 0xB / 0xE on `0.0 < drone+0xAC` and `script == *(drone+0x530)`; the port's
+    /// `script_commands` only ever runs the current script, so the script gate holds structurally and the health gate is
+    /// explicit here. Not ported: 0xE (`Drone_SM_SendMsg(0xB, 10, …)` to the `+0x2B0` partner's SMI +0x108 — the port has
+    /// no partner messaging) and the datum-entity swap behind 3 / 4 (the port's `holstered` bool stands in).
     fn event_func(&mut self, e: u16) {
+        let alive = self.health > 0.0;
         match e {
             3 => self.holstered = true,
             7 => self.anim.early_end = true,
             4 => self.holstered = false,
             // `DroneAnim_EventFunc` datum 1: the grenade-throw anim's release frame → `DroneWeap_ThrowGrenade`
             // (the actual throw is deferred to `Drones::tick` so it can borrow `Data` and the RNG).
-            1 => self.pending_grenade = true,
+            1 if alive => self.pending_grenade = true,
             // `DroneAnim_EventFunc` event 6: "open that door" — msg 0x20 to self (the DSTATE_OpenDoor
             // handler re-activates +0xBA8; elsewhere the GLOBAL fallback drops it) [M 0x13b750:60-64].
-            6 => self.pending_door_msg = true,
+            6 if alive => self.pending_door_msg = true,
+            // Datum 2 → `DroneWeap_ChangeWeapon(drone+0x45)`; no health / script gate in the game
+            // (disasm 0x13b7dc follows the jump table directly).
+            2 => self.pending_weapon_swap = true,
+            // 5 / 10 → `DroneWeap_CloseCombatImpact(dcv, 1)`, 0xB → (dcv, 2) [disasm 0x13b900/0x13b93c].
+            5 | 10 if alive => self.pending_melee = Some(1),
+            0xb if alive => self.pending_melee = Some(2),
+            // Datum 9 → `DroneWeap_PlaceTertiary` 0x17a848 = `DroneWeap_ThrowGrenade` [M decomp].
+            9 if alive => self.pending_grenade = true,
             0xf => self.event_20 = true,
             0x12 => { self.event_20 = true; self.event_21 = true; }
             0x10 => { self.event_20 = false; self.event_21 = false; }
             _ => {}
         }
+    }
+
+    /// `DroneWeap_CloseCombatImpact` (0x1789c0): the melee `Bullet_init(-1, obj, obj, record, pos, dir, 0xffff)` —
+    /// record 99 with the 2.0 range when the weapon class short `+0xDA` is 7 (the kick), else the type's record (100,
+    /// or 0x65 for type 1 / 0x66 for type 2) with the 1.75 range and the `|drone+0x1D4| ≤ 1.0471976` (60°) facing gate.
+    /// No accuracy roll, no muzzle light, no sound — `Bullet_init` straight from the record. The position is obj+0x30
+    /// (the drone's position — the game plays the anim sounds at the same vector), the direction the facing.
+    fn close_combat_impact(&self, d: &Data, kind: u8, owner: usize) -> Option<crate::bullet::Bullet> {
+        // [S] `drone+0xDA` short = the drone's weapon id: the port's `self.weapon` indexes the same records.
+        let kick = self.weapon == 7;
+        let record = if kick { 99usize } else { match kind { 1 => 0x65, 2 => 0x66, _ => 100 } };
+        let range = if kick { 2.0f32 } else { 1.75 };
+        if self.dist > range { return None; }
+        if !kick && angle_difference(self.yaw, self.yaw_to_opp).abs() > 1.047_197_6 { return None; }
+        let w = d.weapons.records.get(record)?;
+        let f32_at = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
+        let (s, c) = (crate::trig::sinf(self.yaw), crate::trig::cosf(self.yaw));
+        Some(crate::bullet::Bullet {
+            pos: self.pos, dir: [s, 0.0, c], speed: f32_at(0x20), travelled: 0.0, range: f32_at(0x1c),
+            damage: f32_at(0x0c), owner, state: 0, weapon: record as u16,
+            flyby: d.weapons.flyby(record), bounces: 0,
+        })
     }
 
     /// The sequence and frame the playing script shows. The LAST-started opcode-0 window covering the
@@ -4600,7 +4656,21 @@ impl Drone {
         if self.burst == 0 { self.next_bullet_time(d, rng, frame, true); }
         if self.unseen_ticks < 0x10 || self.prop(d, 0x17) {
             more = true;
-            if self.next_shot <= frame && self.ready_to_fire() {
+            // `DroneAnim_PlayFiringAnim` (0x13da48): for the recoil weapons (`+0x3E`, set by `DefaultInit`
+            // 0x14b300:801-811 for the anim datum's weapon byte 0x1C / 0x1D) the due shot fires only when
+            // the anim's fire event says so (`+0x21`, set by `DroneAnim_EventFunc` 0x12 — the census: the
+            // fire anims carry the 0x12/0x10/0xF events at 86% of all kind-2 traffic), with the game's
+            // `+0x558 == 0` (no pending call) / `+0x538 == 0` (no blend-out) gates; the shot then plays the
+            // 0x5C recoil danim, zeroes the pending call's completion action (+0x596 / +0x598), sets +0x57B
+            // and clears +0x40. Non-recoil weapons fire as before (the game's `+0x3E == 0` early-out).
+            let fire_now = !self.recoil_weapon
+                || (self.event_21 && self.anim.call.is_none() && self.anim.outgoing.is_empty());
+            if self.next_shot <= frame && self.ready_to_fire() && fire_now {
+                if self.recoil_weapon {
+                    self.anim.call.as_mut().into_iter().for_each(|c| { c.1 = 0; c.2 = 0; });
+                    self.set_danim(d, 0x5c, 0);
+                    self.anim.reached = true;
+                }
                 bullet = self.fire_weapon(d, rng, frame, p, motion, owner, lights);
                 // `DroneWeap_FireWeapon`: `Sound_Play3D(weapon_data[w] +0x60, drone)`, skipped for 0x5EF.
                 if let Some(r) = d.weapons.records.get(self.weapon as usize) {
@@ -6977,6 +7047,22 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     self.grenades.push(g);
                 }
             }
+            // `DroneAnim_EventFunc` 5 / 10 / 0xB (fired in `update_anim` just above) → the melee
+            // `Bullet_init` (`DroneWeap_CloseCombatImpact` 0x1789c0), straight into the bullet list.
+            if let Some(kind) = dr.pending_melee.take() {
+                if let Some(b) = dr.close_combat_impact(d, kind, index) { self.bullets.push(b); }
+            }
+            // `DroneAnim_EventFunc` datum 2 → `DroneWeap_ChangeWeapon(drone+0x45)` (0x17a6e0's per-weapon
+            // jump table, 0x2fb740, 55 entries). The port carries the two entries the SP states verify:
+            // 1 (Surrender_Anim 0x1626a0: weapon 1, anim set 0xC, empty) and 6 (DrawWeapon 0x166000's
+            // EXIT: weapon 6, anim set 4, 16 rounds); the rest of the table is not ported yet.
+            if std::mem::take(&mut dr.pending_weapon_swap) {
+                match dr.weapon_swap {
+                    1 => { dr.weapon = 1; dr.anim_set = 0xc; dr.clip = 0; }
+                    6 => { dr.weapon = 6; dr.anim_set = 4; dr.clip = 16; }
+                    _ => {}
+                }
+            }
             // The anim impact event 6 (fired in `update_anim` just above): msg 0x20 to self —
             // `DSTATE_OpenDoor` and `DSTATE_KickObject` handle it (the GLOBAL fallback drops it
             // elsewhere); the case picks its own `Drone_SfxInfo` line (0x27 door / 0x28 kick).
@@ -7391,6 +7477,8 @@ mod tests {
             kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false, no_bunching: 0,
             // fix-room-sound: the foley one-shot outbox + the pain-grunt handle (own lines — merge lesson 4).
             foley_reqs: Vec::new(), pain_grunt: None,
+            // fix-anim-events: the EventFunc outboxes (own lines — merge lesson 4).
+            weapon_swap: 0, pending_melee: None, pending_weapon_swap: false, recoil_weapon: false,
             head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
             // fix-cover-remainder: the scary-object flee family (own line — merge lesson 4).
             scared: false, flee_return: 0, flee_deadline: None, explosive_msg: None,
