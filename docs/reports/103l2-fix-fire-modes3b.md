@@ -104,3 +104,17 @@ PCSX2 (07000005, give the Sentinel 0x2c via the dev menu, fire once into the cou
   real hardware the level bank would miss it too — this is the dev-give scenario the sweep models).
 
 nf-view renders (nothing visual changed; no --bond spots required by this task).
+
+## Addendum (the two slow binaries, re-run at the 600 s limit)
+
+- `weapon_matrix_live`: needs MORE than the canonical 600 s limit on this merged tree (killed at 600 s
+  twice, no test-result line) — not counted in the total. It passed at the merge-hold baseline; the
+  fx-levels merge's per-tick trail work (gas.rs, the grenade tick) is the plausible cost. Next window:
+  run it with a raised limit (e.g. 1200 s) and, if it still crawls, profile the trail gates.
+- `walkreal_07000001_live`: completed in ~9 min — `walk_from_the_spawn_to_the_exit_with_the_contact`
+  **FAILED** (its sister passed). Not attributable to this branch (the branch's diff is one test file,
+  `fix_weapon_sounds_live.rs`); it passed at the merge-hold baseline and the tree has since gained the
+  fx-levels merge. Next window: bisect against `origin/master` (a 9-minute binary — run it directly).
+- With walkreal counted: **1064 passed, 7 failed, 39 ignored over 268 binaries** — the 7 = 3 allowed
+  `disc_golden` + probe_pylon_render + 2 × fix_0c_pylon_live (all pre-existing on master) + the walkreal
+  walk (see above). `weapon_matrix_live` remains the one binary without a run.
