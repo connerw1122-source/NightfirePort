@@ -22,20 +22,32 @@ fn the_camera_pickup_equips_through_the_gadget_cycle() {
         "the camera pickup (weapon 0x52) must enter the inventory");
     assert_ne!(sim.gun.weapon, 0x52, "the camera starts unequipped");
     // The G cycle: walk the gadget wheel until the camera comes up (the game's d-pad Up/Down;
-    // the port's PC bind is G) [M Player_WeaponChange 0x1a6f80 mode 1].
+    // the port's PC bind is G) [M Player_WeaponChange 0x1a6f80 mode 1]. fix-weapon-anims2: the
+    // wait must cover the whole switch at the game's own rates — the holster +0xC4 at 1.25
+    // [M 0x1a2e38 case 1:220-223] and the draw +0xC0 at 1.25 [M case 3:287-288], with the weapon
+    // byte swapping at holster-done [M case 2:262-263 `if (+0x63 != +0x62) +0x62 = +0x63`] — so
+    // `weapon == 0x52` alone is MID-DRAW (the camera's 107-frame draw script runs ~86 ticks at
+    // 1.25 after the ~24-tick grapple holster). fix-weapon-anims's 60-tick settle was tuned to
+    // the double-advance bug's 2x-fast draws and broke out mid-draw, making the weapon-cycle
+    // sweep below read the still-equipping camera as a "selected" gadget.
     let mut equipped = false;
     for _ in 0..12 {
         sim.step_bond(Input { gadget_cycle: 1, ..Default::default() }, false, false, false);
-        for _ in 0..60 { sim.step_bond(Input::default(), false, false, false); }
-        if sim.gun.weapon == 0x52 { equipped = true; break; }
+        for _ in 0..120 {
+            sim.step_bond(Input::default(), false, false, false);
+            if sim.gun.weapon == 0x52 && sim.gun.switch_state == 0 { break; }
+        }
+        if sim.gun.weapon == 0x52 && sim.gun.switch_state == 0 { equipped = true; break; }
     }
     assert!(equipped, "the gadget cycle must equip the camera (0x52); weapon now {:#x}", sim.gun.weapon);
-    // The weapon cycle never selects a gadget (bounds 1..0x47 [M 0x1a7120]). The 70-tick settle
-    // lets each switch finish (the draw anim ~60 ticks) before the next read.
+    // The weapon cycle never selects a gadget (bounds 1..0x47 [M 0x1a7120]). fix-weapon-anims2:
+    // the settle now covers a full correct-rate switch — holster ceil((len−1)/1.25) + draw
+    // ceil((len−1)/1.25) + the two stop-wait ticks; the P2K family's 30-frame holster (24 ticks)
+    // plus a ~50-frame draw (40 ticks) fits well inside 120.
     let mut saw_gadget = false;
     for _ in 0..0x40 {
         sim.step_bond(Input { weapon_cycle: 1, ..Default::default() }, false, false, false);
-        for _ in 0..70 { sim.step_bond(Input::default(), false, false, false); }
+        for _ in 0..120 { sim.step_bond(Input::default(), false, false, false); }
         if (0x4a..=0x5e).contains(&sim.gun.weapon) { saw_gadget = true; }
     }
     assert!(!saw_gadget, "the weapon cycle must stay in 1..0x47");

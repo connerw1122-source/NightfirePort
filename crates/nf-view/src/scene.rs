@@ -307,12 +307,26 @@ pub struct Sim {
     /// The fire trigger's last-tick state — the press edge the watch pair 0x54/0x55's mode toggle ORs
     /// in (`Player_Weapon` 0x1a24c8's `Input_Action(slot, 9, 4)`) (fix-weapon-modes).
     pub prev_trigger: bool,
-    /// fix-aim-raise: the aim raise/lower script playing (`Player_Weapon` 0x1a24c8:117-152 — the
-    /// raise +0xB8 @1.25 is the game's view state 0xF, the lower +0xBC @1.25 (or +0xB8 played
-    /// REVERSED, no +0xBC on the record) state 0x10). Some(hash): the script this anim plays;
-    /// cleared when it stops or when another script displaces it [M AnimScriptAdd 0x1c6d40].
+    /// fix-weapon-anims: the idle-alert substate (`BLData+0x959`, value 1 while the +0xCC fidget
+    /// script plays) [M `Player_SetWeaponAnimObj` 0x1a2e38:79-136]. Set when the idle counter
+    /// (`drones.aims_idle`, `+0x93a`) crosses the game's 0x14*FRAME_RATE_INT threshold and the
+    /// record's idle-alert script (+0xCC) queues; cleared when the fidget stops (back to +0xA0) or
+    /// when anything else displaces it (the game resets +0x959 in every non-idle state [M :40-58]).
+    pub view_alert: bool,
+    /// fix-weapon-anims: last tick's aiming input — the aim raise/lower edge (`Player_Weapon`
+    /// 0x1a24c8:117-152 queues +0xB8 at 1.25 on the aim-on edge and +0xBC at 1.25 (or +0xB8 played
+    /// REVERSE — the port plays it forward, deviation documented) on the aim-off edge, from the
+    /// fully idle machine).
+    pub prev_aiming: bool,
+    /// fix-weapon-anims + fix-aim-raise2: the aim raise/lower script currently playing
+    /// (`Player_Weapon` 0x1a24c8:121-152 — the raise +0xB8 @1.25 is the game's state 0xF, the
+    /// lower +0xBC @1.25 (or +0xB8 reversed) is state 0x10). Some(hash): the hash this anim plays;
+    /// queued by the view chain's edge arm (the SINGLE queue point), advanced and finished by
+    /// `aim_gate` (the SINGLE advance — the raise's finish sets the aim bit [M 0x1a2e38:554-561]);
+    /// cleared when it stops or when another script displaces it. Only records with +0xB8 (the
+    /// snipers, the AIMS-20 pair, the micro-camera pair [D census]) raise/lower through scripts.
     pub view_aim_anim: Option<u32>,
-    /// fix-aim-raise: true while `view_aim_anim` plays the raise — its finish sets the aim bit
+    /// fix-aim-raise2: true while `view_aim_anim` plays the RAISE — its finish sets the aim bit
     /// [M `Player_SetWeaponAnimObj` case 0xf 0x1a2e38:554-561]; false for the lower — its finish
     /// leaves the bit clear (case 0x10, [M 0x1a2e38:562-567]).
     pub view_aim_raising: bool,
@@ -1559,16 +1573,19 @@ impl Sim {
 }
 
 impl Sim {
-    /// fix-aim-raise: the aim-bit gate — `Player_Weapon` 0x1a24c8's aim block plus the raise/lower
-    /// finish of `Player_SetWeaponAnimObj` 0x1a2e38 cases 0xf/0x10, hoisted to the top of the tick
-    /// (the game ticks `AnimObjectUpdate` → `Player_WeaponRecoil` inside `Player_Update` 0x193600
-    /// :318/:411, and the finish must land before this tick's free-aim/zoom/auto-aim consumers).
-    /// Returns the aim bit for this tick. Hold-aim weapons only (the port models no toggle option).
+    /// fix-aim-raise2: the aim-bit gate rebuilt on master's single raise/lower — ONE queue point
+    /// (the view chain's edge arm in `run`, fix-weapon-anims') and ONE advance+finish (here).
+    /// `Player_Weapon` 0x1a24c8's aim block plus the raise/lower finish of
+    /// `Player_SetWeaponAnimObj` 0x1a2e38 cases 0xf/0x10, hoisted to the top of the tick (the game
+    /// ticks `AnimObjectUpdate` → `Player_WeaponRecoil` inside `Player_Update` 0x193600:318/:411,
+    /// and the finish must land before this tick's free-aim/zoom/auto-aim consumers). Returns the
+    /// aim bit for this tick. Hold-aim weapons only (the port models no toggle option).
     ///
     /// A weapon with an aim-raise script (+0xB8) defers the aim bit: the press clears it again and
-    /// plays the raise at 1.25× [M 0x1a24c8:145-152]; the bit sets when the raise stops
-    /// [M 0x1a2e38:554-561]. The zoom target (+0x8D4) leaves 1.0 on the bit's rise and
-    /// `Player_AutoAim` 0x1a7c98 keeps scanning until then — both read the bit this returns.
+    /// the view chain plays the raise at 1.25× [M 0x1a24c8:145-152]; the bit sets when the raise
+    /// stops [M 0x1a2e38:554-561]. The zoom target (+0x8D4) leaves 1.0 on the bit's rise and
+    /// `Player_AutoAim` 0x1a7c98 keeps scanning until then — both read the bit this returns. A
+    /// weapon without +0xB8 aims at once [M 0x1a24c8:36-64].
     fn aim_gate(&mut self, button: bool) -> bool {
         // The advance + finish half (`AnimObjectUpdate`, then case 0xf/0x10: the script stopped →
         // the raise sets the aim bit and returns to state 0 [M 0x1a2e38:554-561], the lower just
@@ -1598,44 +1615,18 @@ impl Sim {
         }
         let raise = self.weapons.raise_script(self.gun.weapon as usize);
         if raise == 0 {
-            // No raise script: the aim bit follows the button at once [M 0x1a24c8:117-119].
+            // No raise script: the aim bit follows the button at once [M 0x1a24c8:36-64].
             self.aiming = button;
             return button;
         }
-        // The hold-aim bit dynamics with the raise gate (the game's hold branch 0x1a24c8:45-52:
-        // the bit clears with the button up and sets while it is held; the state machine defers
-        // the rise). The raise/lower start only from the fully idle machine (fix-weapon-anims'
-        // condition — the game's lower arm checks view state 0 [M 0x1a24c8:121], the raise arm
-        // none [S: kept conservative so a fire/reload/switch anim is never displaced on the press]).
+        // The hold-aim bit dynamics with the raise gate (the game's hold branch 0x1a24c8:36-47:
+        // the bit clears with the button up and sets while it is held; case D :145-152 re-clears
+        // the input-set bit and queues state 0xF, so the rise waits for the finish above). The
+        // queue itself is the view chain's edge arm — one queue point (the raise cannot re-fire
+        // mid-play: state 0xF is in the game's own refused set [M 0x1a24c8:66-99]).
         let was = self.aiming;
-        let machine_idle = self.gun.switch_state == 0 && self.gun.reload_state == 0 && !self.gun.fire_state
-            && self.view_script == self.weapons.idle_script(self.gun.weapon as usize);
         if button && !was {
             self.aiming = false; // the rise is deferred until the raise stops [M 0x1a24c8:146]
-            if self.view_aim_anim.is_none() && machine_idle {
-                // View state 0xF: the raise +0xB8 at 1.25× [M 0x1a24c8:148-150].
-                self.view_script = raise;
-                (self.view_time, self.view_speed) = (0.0, 1.25);
-                self.view_aim_anim = Some(raise);
-                self.view_aim_raising = true;
-            }
-        } else if !button && was {
-            // The fall: the lower from the idle view only [M 0x1a24c8:120-138].
-            self.aiming = false;
-            if self.view_aim_anim.is_none() && machine_idle {
-                let lower = self.weapons.lower_script(self.gun.weapon as usize);
-                let len = self.scripts.get(&raise).map_or(0.0, |s| s.length as f32);
-                if lower != 0 {
-                    self.view_script = lower;
-                    (self.view_time, self.view_speed) = (0.0, 1.25);
-                } else {
-                    // AnimScriptAddReverse: the raise script backwards [M 0x1a24c8:128-138].
-                    self.view_script = raise;
-                    (self.view_time, self.view_speed) = ((len - 1.0).max(0.0), -1.25);
-                }
-                self.view_aim_anim = Some(self.view_script);
-                self.view_aim_raising = false;
-            }
         } else if !button {
             self.aiming = false; // hold-aim: the bit follows the button down [M 0x1a24c8:46]
         }
@@ -1650,7 +1641,9 @@ impl Sim {
         self.first_person = false;
         let ground = [camera[0], floor + 0.4, camera[2]];
         // fix-aim-raise: the harness path goes through the same aim-bit gate as the real input.
-        let aiming = self.aim_gate(aiming);
+        // fix-aim-raise2: run gets the RAW button (the view chain's queue arm reads its edge from
+        // it); the gated BIT is `self.aiming`, which the consumers read.
+        self.aim_gate(aiming);
         self.run(ground, ground, camera, look, look, trigger, aiming, false, false);
     }
 
@@ -1728,7 +1721,9 @@ impl Sim {
             (Default::default(), false, false, false)
         } else { (input, trigger, reload, use_key) };
         // fix-aim-raise: the aim BIT, not the raw button — a raise-script weapon defers it to the
-        // raise's last tick (the gate below also runs the raise/lower view anims; see aim_gate).
+        // raise's last tick. fix-aim-raise2: aim_gate owns the bit and the raise/lower advance+
+        // finish (one advance); the QUEUE is the view chain's edge arm, which reads the RAW button
+        // (run's aiming param) — the gated bit is `self.aiming` for the consumers below.
         let aiming = self.aim_gate(input.aiming);
         // Weapon switching (`Player_WeaponChange` 0x1a6f80): only when idle (not firing/reloading/holstering). The
         // switch request (`anim+0x63`) is set here; the holster/draw cycle runs in `run` (`Player_SetWeaponAnimObj`).
@@ -2192,7 +2187,10 @@ impl Sim {
         self.first_person = !self.disabled;
         // The pickup take test's LOS origin: the player's world-sphere centre (`obj+0x80`), not his position
         // [M 0x18e148:212-214] — `Bond::sphere_centre` ports `Control_BuildWorldSph`'s player branch.
-        self.run(self.bond.pos, self.bond.sphere_centre(), head, look, aim, trigger, aiming, reload, use_key);
+        // fix-aim-raise2: the RAW button — run's edges (and the view chain's queue arm) must see
+        // the ungated input, or the gated bit's rise at the raise's finish would re-fire the
+        // aim-on edge and queue the raise twice.
+        self.run(self.bond.pos, self.bond.sphere_centre(), head, look, aim, trigger, input.aiming, reload, use_key);
         // `Player_Zoom` (0x1a1a70): the scope zoom. Right mouse (mouse-first) zooms in; releasing returns to 1.0.
         // The zoom interpolates toward the target at the game's rate (1.025× per tick zooming in, 1.15× out).
         // The FOV is divided by the zoom factor. Scoped weapons only (`weapon_data+0x68 & 0x40`).
@@ -2244,6 +2242,13 @@ impl Sim {
     }
 
     fn run(&mut self, pos: [f32; 3], sph: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool, reload: bool, use_key: bool) {
+        // fix-weapon-anims + fix-aim-raise2: the aim raise/lower edges — the RAW button (the
+        // param; the gated BIT is `self.aiming`, which `aim_gate` maintained before run) — before
+        // the level is overwritten (the queue arm deep in the view chain reads the EDGE)
+        // [M Player_Weapon 0x1a24c8:117-152: the arm fires on the tick the input flips the bit].
+        let aim_on_edge = aiming && !self.prev_aiming;
+        let aim_off_edge = !aiming && self.prev_aiming;
+        self.prev_aiming = aiming;
         // The drones aim at and look for Bond's chest (`Drone_View_Bones`; one point here, 0.45 under the eye).
         let hanging = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
         // The game's collision capsule off `pos` (= Bond's obj+0x30): standing (case 0/6) ends
@@ -2274,6 +2279,16 @@ impl Sim {
         // While switching, the trigger and reload are blocked (the game's state 1/3 checks `AnimScriptIsStopped`).
         let log_switch = std::env::var_os("NF_SOUNDLOG").is_some();
         let mut switching = self.gun.switch_state != 0;
+        // fix-weapon-anims2: the script-frame watermark the op-1 sound dispatch below measures its
+        // [prev_frame+1, new_frame] window against — captured BEFORE the switch machine advances the
+        // draw/holster/variant scripts (its tail advance at the end of the `if switching` block), so
+        // the window covers the whole tick's advance. Captured after it (where fix-weapon-anims had
+        // left it), the switch's advance had already moved view_time before the watermark, the window
+        // came up empty (from = to) and NO op-1 fired while a switch played — the Samurai's draw whoosh
+        // (0x5c7 at frame 90 of its 107-frame draw script) went silent on every switch [M
+        // AnimProcessScriptCmds runs per AnimObjectUpdate on the PLAYING script — holster/draw included,
+        // 0x1c1b38; the game's window is (prev frame, new frame] of the same tick].
+        let (prev_script, prev_time) = (self.view_script, self.view_time);
         // State 0 → 1/3/8: a switch request starts the holster (`Player_WeaponSelect` 0x1a2cc0).
         // The reload states block it here too (the game's refused view-state set {1,3,5,6,7,8,9,0xb,
         // 0xd..0x10} covers 5/6/7): a pending request simply waits for the reload to finish [M 0x1a6f80:33-47].
@@ -2282,6 +2297,16 @@ impl Sim {
             let req_id = self.gun.switch_request;
             let cur_base = self.weapons.base(cur_id as usize);
             let req_base = self.weapons.base(req_id as usize);
+            // fix-weapon-anims2: the switch DISPLACES a playing fire script — `Player_WeaponSelect`
+            // 0x1a2cc0 writes the view state +0xF4 = 8/3/1 directly, discarding the fire state 9 (and
+            // the +0x95C spawn latch with it — the game's case-9 tail can never run once the state is
+            // gone). The port kept gun.fire_state/latch set across the switch: the next weapon's first
+            // pull then hit the state-9 suppress (`was_fire_state && flags & 0x100400 && +0x44 != 0`)
+            // and queued NO fire script — the sweep's 0x41/0x42/0x43 cells never fired after a cell
+            // whose fire script was still playing at its section end. (The fire script's loop sounds
+            // already die at the holster arm below [M 0x1a2cc0:33-38].)
+            self.gun.fire_state = false;
+            self.gun.latch = false;
             // `Player_WeaponSelect` variant-swap path: same base weapon AND same first-person model → play +0xC8
             // at 1.3x, state 8 (a fast swap without holster/draw) [M 0x1a2cc0 lines 13-29].
             // fix-silencer-modes: the twin-variant cycle marker [M Player_WeaponSelect 0x1a2cc0:15-16]
@@ -2446,7 +2471,9 @@ impl Sim {
             // assist of a target locked before the raise carries into the first aim-mode shots.
             // fix-guard-misc2: the port dropped the lock and the offsets entirely on entering aim
             // mode, so an assist acquired while hip-firing never reached an aim-mode bullet.
-            let dir = if self.auto_aim && !aiming { self.drones.auto_aim(&d, camera, look, self.gun.weapon) } else if aiming {
+            // fix-aim-raise2: the gated BIT (`self.aiming`, maintained by `aim_gate` before run),
+            // not the raw button — the scan runs while a raise-script weapon is still raising.
+            let dir = if self.auto_aim && !self.aiming { self.drones.auto_aim(&d, camera, look, self.gun.weapon) } else if self.aiming {
                 // The cursor is screen-space (cross units); the offsets are object-frame angles
                 // (a larger yaw turns LEFT, so x flips — the same flip `crosshair()` documents).
                 let (ox, oy) = (-self.cursor[0] * 0.76966, self.cursor[1] * 0.57724);
@@ -2461,6 +2488,7 @@ impl Sim {
                 aim
             };
             let was_reloading = self.gun.reload_state;
+            // (fix-weapon-anims2: the prev-script watermark moved above the switch machine — see there.)
             // The pre-shot fire-script state (`anim+0xF4 == 9`): the game SKIPS `Player_SetFiringAnim`
             // — the running fire script is NOT restarted — when the view state is already 9 and
             // `weapon_data+0x68 & 0x100400` [M 0x1a5460:664-672: `if ((*(short *)(...+0xf4) == 9) &&
@@ -2501,16 +2529,25 @@ impl Sim {
             // fix-gadgets-live: the AIMS-20's idle timer (`BLData+0x93a`): the game increments it while
             // the view anim is idle and resets on any fire/reload/switch anim [M Player_SetWeaponAnimObj
             // 0x1a2e38:41-57]; it gates the view model's side lights (0x1a5460:264/348).
-            // fix-aim-raise: the raise/lower are the game's non-idle view states 0xF/0x10 — the
-            // counter resets while they play [M 0x1a2e38:40-58].
-            self.drones.aims_idle = if self.gun.reload_state == 0 && self.gun.switch_state == 0 && !fired && self.view_aim_anim.is_none() {
+            // fix-weapon-anims: the game increments +0x93a ONLY while the view state is 0 — a fire
+            // script playing (state 9) resets it every tick [M `Player_SetWeaponAnimObj` 0x1a2e38:40-58:
+            // "if (+0xf4 == 0 && byte[@DAT_002a3a1c + slot*0x158] == 0) { +0x93a++ } else { +0x959=0;
+            // +0x93a=0; +0x93e=0x14*FRAME_RATE_INT }"]. The port counted through the fire script (only
+            // the fired tick cleared it), so the AIMS lights and the idle-alert threshold saw a counter
+            // that had already crossed 20 when the gun went quiet — the lights snapped on the tick a
+            // fire script ended instead of 20 ticks later. fire_state covers states 9/0xb/0xc.
+            // fix-weapon-anims: the aim raise/lower is the game's view state 0xF/0x10 — a non-idle
+            // state for the +0x93a counter [M 0x1a2e38:40-58]; the port's anim-only raise marks it
+            // with view_aim_anim so the counter resets while the scope raises/lowers (else the
+            // +0xCC fidget fires mid-raise: the sniper test caught the alert playing at tick ~20
+            // of an aim hold).
+            self.drones.aims_idle = if self.gun.reload_state == 0 && self.gun.switch_state == 0 && !self.gun.fire_state && self.view_aim_anim.is_none() {
                 self.drones.aims_idle.saturating_add(1)
             } else {
                 0
             };
             // Advance the reload state machine [M Player_SetWeaponAnimObj cases 5/6/7].
             let new_reload_state = self.gun.reload_tick(trigger, params);
-            let (prev_script, prev_time) = (self.view_script, self.view_time);
             let rd = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
             let flags = rd(0x68);
             let fire_anim_len = rd(0x44);
@@ -2561,10 +2598,16 @@ impl Sim {
                 (self.view_script, self.view_time, self.view_speed) = (rd(0xa0), 0.0, 1.0);
             } else {
                 let len = self.scripts.get(&self.view_script).map_or(0.0, |s| s.length as f32);
-                // fix-aim-raise: the aim raise/lower script advances (and finishes) in `aim_gate` —
-                // the game ticks it on the same anim object once per tick (AnimObjectUpdate
-                // 0x193600:318), and the finish must land before the free-aim/zoom consumers.
-                if self.view_aim_anim.is_none() {
+                // fix-weapon-anims: the switch machine above owns the advance while the holster/draw/
+                // variant-swap cycle runs (its shared advance at its tail); advancing here too made
+                // every holster/draw/variant script play ~2x its rate — the Frinesi holster measured
+                // 11-12 ticks instead of the game's ceil((30-1)/1.25) = 24 [D census len 30;
+                // M 0x1a2e38 case 1 waits AnimScriptIsStopped at the script's own 1.25 rate].
+                // fix-aim-raise2: the aim raise/lower is advanced (and finished) by `aim_gate` — the
+                // game ticks it on the same anim object once per tick (AnimObjectUpdate 0x193600:318)
+                // and the finish must land before this tick's free-aim/zoom/auto-aim consumers — so
+                // the shared advance skips while the aim anim plays (one advance, not two).
+                if self.gun.switch_state == 0 && self.view_aim_anim.is_none() {
                     self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0));
                 }
                 // Gate the idle-loop reset on switch_state == 0 — fists has draw_script == idle_script
@@ -2588,6 +2631,80 @@ impl Sim {
                     } else {
                         if flags & 0x1000 == 0 { self.view_script = rd(0xa0); (self.view_time, self.view_speed) = (0.0, 1.0); }
                         self.gun.end_fire_state();
+                    }
+                }
+                // fix-weapon-anims: the idle-alert fidget (`Player_SetWeaponAnimObj` 0x1a2e38:79-136).
+                // In view state 0 with substate +0x959 == 0, once the idle counter (+0x93a) reaches
+                // 0x14*FRAME_RATE_INT = 1200 idle ticks [M 0x1a2e38:83; L bldata.md +0x93E = 1200], a record
+                // with an idle-alert script (+0xCC) queues it at 1.0 ONCE and sets substate 1 [M :79-136];
+                // when the fidget stops the idle script re-queues, substate clears and the counter
+                // resets [M :63-73] — so the fidget repeats every (1200 + alert length) idle ticks. Any
+                // non-idle state resets substate + counter [M :40-58]; here that is the displaced-script
+                // arm (a fire/reload/switch script replaced the fidget mid-play).
+                let idle_hash = rd(0xa0);
+                let alert_hash = rd(0xcc);
+                if alert_hash != 0 {
+                    if self.view_alert && self.view_script != alert_hash {
+                        // Displaced (fire/reload/switch queued over the fidget): substate + counter
+                        // reset [M 0x1a2e38:40-58].
+                        self.view_alert = false;
+                        self.drones.aims_idle = 0;
+                    } else if self.view_alert && self.view_script == alert_hash && self.view_time >= len - 1.0 {
+                        // The fidget stopped: idle re-queues, substate 0, counter reset [M :63-73].
+                        self.view_script = idle_hash;
+                        (self.view_time, self.view_speed) = (0.0, 1.0);
+                        self.view_alert = false;
+                        self.drones.aims_idle = 0;
+                    } else if !self.view_alert && self.view_script == idle_hash
+                        && self.gun.switch_state == 0 && self.gun.reload_state == 0 && !self.gun.fire_state
+                        && self.drones.aims_idle >= 1200 {
+                        // The threshold: 0x14·FRAME_RATE_INT = 1200 idle ticks [M 0x1a2e38:83
+                        // `(short)FRAME_RATE_INT * 0x14 <= +0x93a`; FRAME_RATE_INT = 60 [L
+                        // docs/fields/bldata.md +0x93E "= n_INT·0x14 = 1200" (the EE snapshot's own
+                        // default) and +0x95E "= (char)n (60)"; door.md's n·6 = 360-tick auto-close
+                        // corroborates]. fix-weapon-anims guessed 20 [S] — 100x early: the fidget kept
+                        // restarting every ~20 idle ticks and the idle script never reached its later
+                        // frames (the Samurai's idle loop was choked before its own op-1s).
+                        self.view_script = alert_hash;
+                        (self.view_time, self.view_speed) = (0.0, 1.0);
+                        self.view_alert = true;
+                    }
+                }
+                // fix-weapon-anims + fix-aim-raise2: the aim raise/lower QUEUE — the single queue
+                // point (`Player_Weapon` 0x1a24c8:121-152: the aim edge from the fully idle machine
+                // queues the raise +0xB8 at 1.25 — the game's state 0xF, whose stop sets the aim bit
+                // [M 0x1a2e38:554-561] — or the lower +0xBC at 1.25 (state 0x10, its stop leaves the
+                // bit clear [M :562-567]); a record without +0xBC plays +0xB8 REVERSE via
+                // AnimScriptAddReverse [M 0x1a24c8:138-152] — the port runs the raise backwards with
+                // a negative script speed). The ADVANCE + finish live in `aim_gate` (hoisted before
+                // this tick's free-aim/zoom/auto-aim consumers read the bit); this arm only queues
+                // and marks. Another script displacing it clears the marker below [M AnimScriptAdd
+                // deletes the playing scripts 0x1c6d40].
+                let raise_hash = rd(0xb8);
+                let lower_hash = rd(0xbc);
+                if self.view_aim_anim.is_none() && raise_hash != 0 && self.view_script == idle_hash
+                    && self.gun.switch_state == 0 && self.gun.reload_state == 0 && !self.gun.fire_state {
+                    if aim_on_edge {
+                        self.view_script = raise_hash;
+                        (self.view_time, self.view_speed) = (0.0, 1.25);
+                        self.view_aim_anim = Some(raise_hash);
+                        self.view_aim_raising = true;
+                    } else if aim_off_edge {
+                        if lower_hash != 0 {
+                            self.view_script = lower_hash;
+                            (self.view_time, self.view_speed) = (0.0, 1.25);
+                            self.view_aim_anim = Some(lower_hash);
+                        } else {
+                            // AnimScriptAddReverse: the raise script played backwards [M 0x1a24c8:138-152].
+                            // The start frame is the RAISE script's last frame — `len` here is the
+                            // idle's (view_script at the queue moment), which made the reverse
+                            // finish instantly (fix_aim_raise's release test caught it).
+                            let rlen = self.scripts.get(&raise_hash).map_or(0.0, |s| s.length as f32);
+                            self.view_script = raise_hash;
+                            (self.view_time, self.view_speed) = ((rlen - 1.0).max(0.0), -1.25);
+                            self.view_aim_anim = Some(raise_hash);
+                        }
+                        self.view_aim_raising = false;
                     }
                 }
             }
@@ -2742,6 +2859,8 @@ impl Sim {
                         weapon_type: self.gun.weapon as u16,
                         mesh: self.weapons.projectile_mesh(self.gun.weapon as usize),
                         owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: false,
+                        // fix-oddjob-hat: the stick latch + the homing target (BU+0x40) start clear.
+                        stuck: false, seek_target: None,
                     });
                 } else {
                     // The muzzle light runs on every shot tick for the light-gated records — the
@@ -2808,8 +2927,10 @@ impl Sim {
         let (cur_wi, cur_t) = (self.gun.weapon as usize, self.weapons.ammo_type(self.gun.weapon as usize));
         if let Some(c) = self.drones.inventory.clip.get_mut(cur_wi) { *c = self.gun.clip as i16; }
         if let Some(n) = self.drones.inventory.carried.get_mut(cur_t) { *n = self.gun.spare as i16; }
-        self.aiming = aiming;
-        self.drones.bond_aiming = aiming;
+        // fix-aim-raise2: the aim BIT is `aim_gate`'s (set before run from the raw button; the
+        // param is the ungated input the view chain's queue arm reads its edges from) — run must
+        // not clobber it with the raw button.
+        self.drones.bond_aiming = self.aiming;
         // The class byte the AI's `ObjectIsArmed` 0x178768 reads: Bond obj+0xdc+0x62. `Player_WeaponSelect`
         // 0x1a2cc0 copies the request (+0x63) into it at the switch's START (the `weapon_data[+0x64].+0xc4
         // == 0` arm — +0x64 is 0x47 from InitWeapon 0x1a7ef8:137-139), so mid-holster the AI already reads
@@ -4863,6 +4984,8 @@ impl Scene {
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, missile_cam: None,
                 hints, hint_cels, hint_fired, icon_msg_timers,
+                view_alert: false,
+                prev_aiming: false,
                 view_aim_anim: None,
                 view_aim_raising: false,
             })

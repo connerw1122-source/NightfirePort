@@ -391,6 +391,7 @@ fn thrown_grenade_flies_and_explodes_with_sound_and_damage() {
             damage: f32::from_le_bytes(sim.weapons.records[0x35][0x0c..0x10].try_into().unwrap()),
             radius: f32::from_le_bytes(sim.weapons.records[0x35][0x08..0x0c].try_into().unwrap()),
             weapon_type: 0x35, mesh: 0, owner: usize::MAX, state: 1, bounces: 0, smoke_popped: false, resting: false,
+        stuck: false, seek_target: None,
         });
         let mut hurt = false;
         for _ in 0..30 { sim.step_bond(Default::default(), false, false, false); if sim.drones.list[gi2].health < hp0 { hurt = true; break; } }
