@@ -10786,3 +10786,18 @@ rates, events and blends for draw/holster/idle(+fidgets)/fire per mode/dry fire/
 switch/bob/zoom, compared against the port, mismatches fixed, with NF_ISO tests on 6 weapons covering
 each reload kind (P2K, Frinesi, AT-420, MGL, sniper, Samurai). Branch starts from master b27fb1e with
 s/weapon-matrix2 merged in (not on master yet) per the task brief. Work continues below.
+
+fix-weapon-anims (103k, 2026-10-14): the per-weapon view-model animations — the census (all 115
+records' 15 script fields with lengths, off 07000029.bin via a probe example), the decompile round
+(SetWeaponAnimObj's case table; +0xB8/+0xBC are the AIM raise/lower, not "draw-at-1.25x"; the +0xCC
+fidget's 20-tick cycle; the +0xD0/D4/D8 PP7-family path), and four fixes: the idle fidget +0xCC
+(67 records), the aim raise/lower +0xB8/+0xBC with the reverse lower, the +0x93a idle-counter reset
+semantics (the game resets it in every non-idle state), and a real port bug the test exposed — the
+switching double-advance made every holster/draw/var-swap play ~2x fast. Report:
+docs/reports/fix-weapon-anims.md. Tests: crates/nf-view/tests/weapon_anims_live.rs 7/7 green on
+NF_ISO (six weapons x draw/fire/reload/mode-switch/holster numbers + the fidget + the raise; the
+fidget/raise tests demonstrated failing on the pre-fix tree). Suite on the mid-task tree: 1009
+passed / 7 failed (the 3 allowed disc_golden, the 0c-pylon family, the weapon_matrix TIMEOUT — all
+pre-documented); the FINAL tree's suite re-run is the next session's first item. Left: the PP7-family
++0xD0/+0xD4/+0xD8 path (needs the threat-scan stand-in), the 0x32 Samurai reachability, the +0xEC
+MP-grip doc correction. No shared files touched.
