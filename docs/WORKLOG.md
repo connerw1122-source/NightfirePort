@@ -9684,6 +9684,17 @@ Work Log:
   tests/menu_live.rs, tests/dev_tools_live.rs (signature/width updates). No shared-file surprises:
   drone.rs/scene.rs/player.rs untouched.
 
+## fix-weapon-assets (2026-10-14, s/fix-weapon-assets)
+
+- Task 100a: a disc-wide weapon asset index + loader so `--give` / the dev menu hands Bond ANY
+  weapon on ANY level with its own skin, sleeve, parts, view-model sequences, muzzle flash,
+  casing, projectile and third-person model, pulled from the owning archive and rebased into the
+  scene (the way scene.rs already does for drone skins).
+- Setup reused the surviving sandbox: repo at /home/z/nf, onfoot ISO + work/ already extracted;
+  branch created from origin/master (7be3272); no s/weapon-assets branch existed to merge.
+- Plan: index builder over all FILES.BIN archives (cached, keyed by ISO size + archive-table
+  SHA-1) -> lazy load hooks in scene.rs/lib.rs -> NF_ISO tests on 07000005 (give, draw, fire,
+  reload) with sister assertions on levels that carry the weapon.
 ## dev-window (main agent, branch devwin) — 2026-10-13
 
 The user: "the dev menu should manifest outside of the game, but not in a browser", then "you work on it". `--dev`
@@ -9753,6 +9764,28 @@ HUD font (texture 0x03000003). No new crates.
   (the hinges burn through the crosshair ray), nf-game lib 139/139, the full nf-view non-walk set
   479 passed 0 failed, nf-game/formats/audio 349 passed + the 3 allowed disc_golden, the walk
   samples green.
+## fix-weapon-assets (2026-10-14, s/fix-weapon-assets)
+
+- Task 100a: a disc-wide weapon asset index + loader so `--give` / the dev menu hands Bond ANY
+  weapon on ANY level with its own skin, sleeve, parts, view-model sequences, muzzle flash,
+  casing, projectile and third-person model, pulled from the owning archive and rebased into the
+  scene (the way scene.rs already does for drone skins).
+- Setup reused the surviving sandbox: repo at /home/z/nf, onfoot ISO + work/ already extracted;
+  branch created from origin/master (7be3272); no s/weapon-assets branch existed to merge.
+- Plan: index builder over all FILES.BIN archives (cached, keyed by ISO size + archive-table
+  SHA-1) -> lazy load hooks in scene.rs/lib.rs -> NF_ISO tests on 07000005 (give, draw, fire,
+  reload) with sister assertions on levels that carry the weapon.
+
+## fix-weapon-effects (s/fix-weapon-effects) — 2026-10-14
+
+Task 100c: what each weapon DOES when fired, matched to the game per weapon class on any level —
+muzzle flash, tracers, casings (ejected only when firing: the user saw casings fly when walking
+backwards on 16), per-material bullet impacts, fire rate/spread, shotgun pellets, rockets ("the
+explosion is very small"), grenades, mines, the crossbow bolt, the laser/stunner's rapid
+bullet-impact sounds (do they actually spawn bullets?), the Q-Claw hook, alt fires and twins.
+100a (s/fix-weapon-assets) was merged for its branch-start entry but carried no code yet — built
+on origin/master 12a6b07. Reproduce-first per class on 07000005 through the real input path;
+work starting.
 ## fix-objective-messages (s/fix-objective-messages) — 2026-10-14
 
 Task 101d: the playtest (results 1013-1758 / 1013-1825) found (1) two stacked OBJECTIVE
@@ -9801,3 +9834,77 @@ find what the block is (instance/cel) and why the game doesn't draw it from insi
 outdoor fog the game applies (fog colour/range per cel or per level); (d) the snow's UVs
 (texture matrix/scroll or wrap mode). Files: crates/nf-view/src/{scene,gpu}.rs. Branch from
 origin/master eed9a87.
+---
+
+## fix-qclaw (s/fix-qclaw) — started 2026-10-14 02:28 UTC
+
+Task 101f: the Q-Claw (grapple gadget) draws no hook model and firing within range of a grapple
+point makes a bullet impact instead of the grapple (playtest 1013-1758, level 07000005 at
+`--bond 16.5,29.6,58.6,0,0.25 --give 0x50`, beside grapple point #282 (13.75, 32.29, 57.3)).
+Plan: settle the real weapon id (the panel/`--give` used 0x50; another note says 0x4a) from the
+weapon table + the game's equip code in the decompile; find the first-person model; wire the
+grapple fire path (latch on a grapple point within range, reel in, hang while held; no bullet);
+fix so `--give <qclaw id>` draws the claw and firing at #282 from that spot latches and reels.
+Tests through the real input path at that spot: fire held -> Bond travels to the point and hangs;
+0 bullet decals; the view model is the claw's mesh; sister assertions.
+
+The ids are settled and the fix is in (mid-session checkpoint): the Q-Claw = **0x50/0x51** [L
+ee_start_05.bin @ weapon_data 0x2bf150 — the bank's own name "Grapple" (+0x38 = 0x05000044),
+`+0x70 & 0x40` = the grapple-bolt flag `Bullet_Delete` 0x12e660:33 latches on, range +0x1C =
+50.0/100.0, clip 0, damage 0; `Bullet_CollisionHandler` 0x12ce80's `+0x02 - 0x50 < 2` band;
+`Player_GrappleSetRope` 0x192728's `+0x62 - 0x50 < 2` rope gate; `Inventory::level_start` owns
+0x50]; 0x4A/0x4C are the **Stunner**, 0x4E/0x4F the **Laser**, 0x54/0x55 the **Micro-Camera**.
+The playtest's `--give 0x50` was refused (the claw is owned at the 05 start and the game's equip
+declines the re-equip — ammo type 0's cap 0 [M 0x1a8a58 owned branch]) so Bond stayed on the P2K:
+a real bullet impact; and `is_laser_weapon(0x50)` drew the beam over it. Fixed: gadget.rs (the id
+sets + `is_grapple` + `grapple_range` reads +0x1C off the record), scene.rs (the fire gate 0x50/
+0x51), lib.rs (--give draws already-owned ids the equip declines). Tests: qclaw_live.rs (3) +
+the two gadget_grapple test files re-pointed at 0x50 — all green; probe_qclaw_symptom.rs showed
+the equip refusal failing-first and was deleted. Scratch probes (wd_probe example) deleted.
+
+fix-qclaw DONE (03:52 UTC): the Q-Claw is 0x50/0x51 (settled from the table + 5 decompile readers,
+see the report's table); the laser set back to the Laser/watch; grapple_range reads +0x1c; --give
+draws owned ids the equip declines (the actual playtest refusal). 6/6 grapple tests, 140/140
+nf-game units, the full 214-binary suite green except the allowed disc_golden 3. Report:
+docs/reports/fix-qclaw.md (rope rendering + the 0x02100717 mesh gap listed as what's left, with
+the PCSX2/nf-view live checks).
+
+Task 100c outcome (same session): REPRODUCED then FIXED. The impact explode —
+`Bullet_CollisionHandler` 0x12d068-0x12d0bc (disassembled): after the impact effects, a weapon
+whose `weapon_data+0x70` carries bit 2 (0x4) destroys its bullet with `Explode_Create(radius =
++0x08, damage = +0x0C, script 0x6000052, attacker = BU+0x30)` at the hit point, skipped for a
+ricochet re-entry (`bnel $s4` 0x12d07c). The disc records [L ee_start_05.bin @ 0x2bf150]: the
+AT-420 Sentinel 0x2c/0x2d (8.0/100) and the MGL 'Grenade' twin 0x2a (6.0/75) carry the bit; the
+plain guns (0x12) don't. The port never exploded a player bullet on impact — the Sentinel's
+missile ricocheted like a rifle round; and a directly-pushed blast was wiped by the grenade
+section's per-tick `explosions.clear()` (which runs AFTER `update_player_bullets`) — the blast now
+queues in `Drones::pending_blasts` and drains after that clear. The MGL 'Delay' twin 0x2b also
+contact-detonated: `Grenade.weapon_type` carried the record's +0x02 BASE (0x2a) instead of the
+fired id — the death branches read the bullet's own record [M 0x12dd60]; the grenade family bases
+to itself [L +0x02 sweep] so only the twins re-point. Tests (fix_weapon_effects_live, 5, all
+failing pre-fix): the Sentinel missile explodes on the floor with radius 8/damage 100 + the
+shake; a plain gun never explodes; the MGL Grenade twin detonates on contact (6/75); the Delay
+twin (the ○ mode button [M 0x1a24c8:246-260] — the direct select lands on the base) bounces and
+waits for the fuse; walking backwards 240 ticks spawns no bullet/casing/blast/light [M
+Bullet_init_casing 0x12fde0 runs from Player_WeaponInitBullet 0x1a4bf0:306 only]. Green on the
+merged tree; explode/weapon-modes/death-restart suites green. The laser/stunner rapid-impact
+sound: the port's watch laser (0x4e/0x4f) fires class-5 bullet contacts that burn the locks
+[Lock_Update 0x1ae3d8 reads BU+0x44 = 0x4e/0x4f — the game's own laser bullets are class-5
+contacts] and the stunner (0x4a) a taser bolt [NDrone2_DealWithObjHit case 5 0x13fff0:269-306 →
+msg 7] — the impacts are the standard per-material path, so the sounds are real bullet impacts;
+whether the console's laser beam is silent is a live check (in the report). Files: drone.rs,
+scene.rs (the weapon_type line), tests. Report: docs/reports/fix-weapon-effects.md.
+Full suite on the final tree (origin/master 810c109 merged): **909 passed, 3 failed, 27 ignored
+(19 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH.
+
+### fix-weapon-assets — result (2026-10-14)
+
+- Disc-wide weapon asset index + loader shipped: `weapon_assets.rs` (index cached in temp keyed by
+  ISO size + FILES.BIN SHA-1; the surgical `Wanted::Ids`/`--dev` `Wanted::All` merge with the
+  gameplay-skeleton sequence guard), `load_weapons`/`load_with_carry_weapons`, the `--give` hook in
+  `run()`, and the lazy dev-menu give via a warm same-level reload. scene.rs needed no changes.
+- 5 NF_ISO tests in `tests/weapon_assets_live.rs` — all green: index+cache, all 53 cross-level
+  weapons' assets resolve on 07000005 (meshes/skeletons/sequences/scripts/flash/3rd-person/
+  projectile, by_hash unchanged), draw→fire→reload through step_bond, native-carry identical
+  numbers, the 18 no-model ids listed. Suite: 752 passed, 3 failed (the allowed disc_golden
+  slim-ISO set), 27 ignored. Report: docs/reports/fix-weapon-assets.md.
