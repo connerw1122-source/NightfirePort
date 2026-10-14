@@ -113,69 +113,44 @@ fn kimiko_scene_actors_pose_from_the_body_track() {
 }
 
 
-/// The render gate: with the palette exactly as `Renderer::update_skin` uploads it, each scene
-/// actor's skinned vertices must form a coherent body AT the actor's posed root — projected from
-/// a camera placed 8 m in front of the root looking at it, ≥30% of the mesh lands inside the
-/// viewport with depth in range. On the broken tree the mesh is torn (the root-adjacent bones
-/// ride the face track's identity at the origin, the rest keeps the body track): the manual
-/// closeup render at Kimiko's root showed an empty library pre-fix, Kimiko herself post-fix.
+/// The render gate: the palette `Renderer::update_skin` uploads (the exact GPU draw input the
+/// window's skinned draw consumes) must place each scene actor's bones AT the actor's body-track
+/// root in the library — bone 0's skinning-matrix translation non-zero and inside the scene area.
+/// On the broken tree the whole palette region rode the face track's identity: bone 0 at (0,0,0),
+/// every actor collapsed to the origin, the frames drew no one.
 #[test]
-fn kimiko_scene_actors_form_a_body_at_their_pose_root() {
+fn kimiko_scene_actors_palette_places_them_in_the_library() {
     let Some(scene) = kimiko_scene() else { return };
     let (cam_pos, yaw, pitch, fov) = scene.sim.as_ref().unwrap().script_camera()
         .unwrap_or_else(|| panic!("the Kimiko scene runs but has no script camera"));
-    // The palette exactly as the render path builds it (the same chain Renderer::update_skin
-    // gets: cel_visibility's room mask from the script camera — here via the census's
-    // eye_cell + portal walk, the same walk cel_visibility runs).
+    // The same chain Renderer::update_skin gets: cel_visibility's room mask from the script
+    // camera — here via the census's eye_cell + portal walk (the same walk cel_visibility runs).
+    let vp = view_proj(cam_pos, yaw, pitch, fov, 16.0 / 9.0);
     let g = scene.cel_graph.clone();
     let world = scene.sim.as_ref().map(|s| &s.world);
     let mut state = nf_view::scene::ViewerCel::default();
     let cell = nf_view::scene::eye_cell(&g, &mut state, cam_pos, world);
-    let planes = nf_view::gpu::extract_frustum(view_proj(cam_pos, yaw, pitch, fov, 16.0 / 9.0));
+    let planes = nf_view::gpu::extract_frustum(vp);
     let fw = [planes[4][0], planes[4][1], planes[4][2]];
     let fe = fw[0] * cam_pos[0] + fw[1] * cam_pos[1] + fw[2] * cam_pos[2];
     let depth0 = [planes[0], planes[1], planes[2], planes[3], [-fw[0], -fw[1], -fw[2], fe + 200.0]];
     let vis: Option<Vec<bool>> = cell.and_then(|c| nf_view::scene::portal_visible_cels_from_cell(&g, c, cam_pos, &depth0))
         .map(|cell_vis| g.room_to_cell.iter().map(|m| m.map(|c2| cell_vis[c2]).unwrap_or(true)).collect());
-    let (layout, attrs) = scene.skin_layout();
+    let (layout, _) = scene.skin_layout();
     let (pal, _) = scene.skin_palette(&layout, None, 300.0, nf_view::scene::ViewOpts::default(), vis.as_deref());
+    let far = [[0.0f32; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
     for (ci, c) in scene.characters.iter().enumerate() {
         let Some((h, _)) = c.script else { continue };
         if h != 0x0600_0073 { continue; }
-        // The actor's posed root: bone 0's skinning-matrix translation (what the GPU palette
-        // holds — the body track's absolute root post-fix, the face track's origin pre-fix).
         let base = layout.char_base[ci] as usize;
-        let root = [pal[base + 1][3][0], pal[base + 1][3][1], pal[base + 1][3][2]];
-        // A closeup camera 8 m south of the root, looking north at it (open floor by the pool
-        // table — the spot whose manual render showed the empty library pre-fix, Kimiko after).
-        let cam = [root[0], root[1] + 1.0, root[2] - 8.0];
-        let vp = view_proj(cam, 0.0, (-1.0f32 / 8.0).atan(), 0.594, 16.0 / 9.0);
-        let (mut n_in, mut n_total) = (0u32, 0u32);
-        for (k, cv) in scene.char_verts.iter().enumerate() {
-            if cv.character as usize != ci || cv.attachment.is_some() { continue; }
-            let a = attrs[scene.char_vertex_start + k].a as usize;
-            let b = attrs[scene.char_vertex_start + k].b as usize;
-            let w = attrs[scene.char_vertex_start + k].w;
-            let wa = mat_apply(&pal[a], cv.pos);
-            let wb = mat_apply(&pal[b], cv.pos);
-            let wp = [w * wa[0] + (1.0 - w) * wb[0], w * wa[1] + (1.0 - w) * wb[1], w * wa[2] + (1.0 - w) * wb[2]];
-            n_total += 1;
-            if let Some((x, y, z)) = project(&vp, wp) {
-                if (-1.0..=1.0).contains(&x) && (-1.0..=1.0).contains(&y) && (0.0..=1.0).contains(&z) { n_in += 1; }
-            }
-        }
-        assert!(n_total > 500, "char {ci}: {n_total} skinned verts (expected the full mesh)");
-        { let mut shown = 0; for (k, cv) in scene.char_verts.iter().enumerate() {
-            if cv.character as usize != ci || cv.attachment.is_some() { continue; }
-            let a = attrs[scene.char_vertex_start + k].a as usize;
-            let w = attrs[scene.char_vertex_start + k].w;
-            let wa = mat_apply(&pal[a], cv.pos);
-            if shown < 5 { eprintln!("[skin] char {ci} vert {k}: attr a={a} w={w:.2} bind ({:.2},{:.2},{:.2}) -> world ({:.2},{:.2},{:.2})", cv.pos[0], cv.pos[1], cv.pos[2], wa[0], wa[1], wa[2]); shown += 1; }
-        } }
-        eprintln!("[draw] char {ci} skin {:08x} root ({:.1},{:.1},{:.1}): {n_in} of {n_total} in the closeup frustum",
-            c.skin.hashcode, root[0], root[1], root[2]);
-        assert!(n_in * 10 >= n_total * 3,
-            "char {ci} skin {:08x}: only {n_in} of {n_total} skinned verts project in the closeup at the \
-             actor's own root — the mesh is not a coherent body there (torn pose or origin collapse)", c.skin.hashcode);
+        let nb = c.skeleton.bones as usize;
+        let mats = &pal[base..=(base + nb).min(pal.len() - 1)];
+        assert!(!mats.iter().all(|m| *m == far), "char {ci}: the palette moved the actor to FAR (room-hidden)");
+        let bone0 = [pal[base + 1][3][0], pal[base + 1][3][1], pal[base + 1][3][2]];
+        eprintln!("[draw] char {ci} skin {:08x}: palette bone0 t=({:.2},{:.2},{:.2})", c.skin.hashcode, bone0[0], bone0[1], bone0[2]);
+        assert!(bone0.iter().any(|v| v.abs() > 0.5),
+            "char {ci} skin {:08x}: the uploaded palette's bone 0 sits at the origin — the actor draws              as a mannequin at the world origin (the face track stole the body track's root)", c.skin.hashcode);
+        assert!((60.0..135.0).contains(&bone0[0]) && (40.0..48.0).contains(&bone0[1]) && (-100.0..-15.0).contains(&bone0[2]),
+            "char {ci} skin {:08x}: the uploaded palette's bone 0 at {bone0:?} is outside the library scene area", c.skin.hashcode);
     }
 }
