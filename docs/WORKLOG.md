@@ -10743,3 +10743,47 @@ Stage Summary:
 ## fix-armour-ring (outcome)
 - The armour branch was already ported and is game-faithful [M HUD_UpdateHealthPane 0x19b9c8:139-158]: armour 0 → HealthSprInfo[0..8] hidden (+0x38 = 0xFF); armour > 0 → the 8 bronze-tinted (0x7d6d59) orange-art segments with alpha 1.0 (k=0) / 0.75 (k < armour·0.16) / 0.35. No separate 007-logo sprite: HealthSprInfo[15] is the 87×86 hollow circle outline tinted by the health colour; the captures' "orange 007 ring" = this pane at the god-cheat's armour 50 (cheats.py writes health 100 + armour 50 every frame). All BLData+0x8b0 readers agree (Pickup_Handler 0x18e650:221-224 take, Player_HandlePain 0x1902c8:100-104 absorb, RamSave/Load, the pane).
 - Tests (fix_armour_ring_live): hide-at-0 + the green ring unchanged; the real take path (kind-3 pickup → step_bond → armour 50) lights exactly 8 segments with alphas {255, 191×7} and segment 0 at (48,367); value tracking 25 → {255, 191×3, 89×4}, 0 → hidden. Green on the final merged tree (1496b80). Shared file: lib.rs gained the 4-line `--armour <n>` shot hook (reported).
+## fix-script-objects (outcome)
+
+Files: crates/nf-game/src/{nis,drone,aivolume}.rs; shared hooks: crates/nf-view/src/scene.rs
+(3 additive: the Sim `glist_bounds` field + the pending-volume drain/matrix refresh after
+`drones.tick`, both additive blocks). Tests: crates/nf-view/tests/fix_script_objects_live.rs
+(NF_ISO, 3/3); probes kept: examples/census_script_entities.rs (the disc census),
+probe_urn_sp.rs, probe_script_objects.rs.
+
+CENSUS first (the driver's "census which scripts create which kinds"): 4,985 op-7 Entity commands
+across every FILES.BIN archive — generic (the `Script_CreateEntity` 0x1d8968 default arm)
+4,907 in **all 31 levels**; destroy (0xE1) 26 in 3 levels; break (0x20) 34 in 2; pickup (0xF0)
+9 in 2 (already ported by fix-safe08's `pending_pickups`); trigger (0xEB) 4 in 2 +
+trigger_once (0xEA) 4 in 3; AI volume (0xF5) **1** in 1. No ladder (0x22), switch (0x29) or
+emitter (0xF2) command exists anywhere on the disc. Corona_2's glow is two generic-arm commands
+(raw type 0x31, glist 0x02000426) on 07000005's truck script 0x06000A22 streams 4/5 — already
+drawn by fix-render2's script-entity attachments.
+
+PORTED (in census order, one test per port):
+1. **SP_Hit 0x1dc470's bit 0x2** (the mask-2 flag; the port modelled only bits 1/4): the flag
+   byte now ORs 0x2 when an alive blast reaches one of the CURRENT script's stream objects'
+   glist spheres (obj+0x80 = `Control_BuildWorldSph` 0x133070 of the glist local centre +0x10,
+   obj+0x8C the radius [M]; the sphere shape `Explode_Propagate` 0x17c518 sweeps [M 0x17c620]),
+   while the countdown byte is 0 [M 0x1dbda8:66]. The blasts travel in `SpStart.blasts` from
+   `Drones::explosions` (drone.rs, 1 additive line) — the game's +0xD0 HITDATA chains do not
+   exist port-side, and the mask==2 `Collide_FilterBullets(obj+0xD0, 0x106)` arming
+   (0x1dc524-0x1dc534) therefore has nothing to arm: a listed deviation. Disc case:
+   07000007's urn SP #312 (0x0600007A, mode 64, mask 2) — the mode-64 prime leaves it in state
+   1 with the Wait(0) streams' shard entities created; the blast replays the shatter (state 2,
+   playing, 10 shards, the tick-1 Sound(1523)).
+2. **Script-created AI volumes** (the 0xF5 arm → `Drone_AIVolume_Create` 0x1376c0): the
+   create-path entity pushes `Objects::pending_volumes` (the pending_pickups pattern); the sim
+   drains them into `Sim::volumes` with half-extents |max−min|/2 from the glist bounds
+   [M 0x1376c0:84-92], factor param0×0.01, kind param1 (0→0/1→2/2→1/4→3 [M 0x1376c0:100-116]),
+   and the matrix refreshes from the live stream entity every tick (the game keys obj+0x90 per
+   `Script_Interp`). The create-time z-negate/+1.5y lift is NOT applied: the script arm's
+   object matrix is overwritten by the same tick's interp [S, documented]. Disc case:
+   07000005's truck script stream 2 (glist 0x0200040C, params [0]) — the disc's only instance.
+
+VERIFICATION: fail-first = the pre-fix tree does not compile the test file (no
+`Scripts::entity_matrix`, no `AiVolume.src`, no `SpStart.blasts`) — the passes above cannot
+happen there. Suite on the merged tree (origin/master c606b5f): fix_script_objects_live 3/3,
+fix_script_commands_live 4/4, fix_truck_live 2/2, nf-game lib 145/145. The four-crate sweep did
+not fit the window (14:43 deadline); the remaining families are listed in the report. NO RNG
+draws added; no wall-clock in Sim.
