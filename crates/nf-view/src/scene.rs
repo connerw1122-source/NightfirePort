@@ -498,12 +498,25 @@ impl Sim {
         let src = self.char_script.get(ci).copied().flatten()?;
         let skin_hash = (*self.char_script_skin.get(ci)?)?;
         let (script, frame) = self.script_anim(src, skin_hash)?;
-        let (q, f) = nf_game::anim::script_frame(self.scripts.get(&script)?, frame)?;
-        let seq = self.seqs.get(&q)?;
         let skin = self.skins.get(&skin_hash)?;
         let skeleton = self.skeletons.get(&skin.skeleton)?;
-        if !anim::fits(seq, skeleton) { return None; }
-        let world = anim::world_pose(&anim::local_pose(seq, skeleton, skin, f as u32), skin);
+        // fix-cutscene-brightness2: the ramp must sample the ambient where the actor is DRAWN, so
+        // the position resolution here is the render path's own — `script_pose_together` (the
+        // widest started body window; frame_state's script branch poses with it). The held
+        // fix-cutscene-brightness used `script_pose`, whose `script_frame` takes the LAST covering
+        // window — on the 07000002 intro that is the zero-root overlay track (char[79]: windows
+        // (1,1541,0x04000296)/(1,1540,0x04000224); the last one's root reads [0,0,0] at frame 170
+        // while the body track carries [-25.51, 1.13, 30.14] — beside Bond [-27.17, 1.05, 29.80]),
+        // a point in no cel. Its scratch-base composition then multiplied the near-origin root by
+        // `Player::live_matrix` — which is stream 0's object ∘ the script matrix, i.e. the intro's
+        // CAMERA (obj[0] Camera trans == player[1] live trans [-27.25, 1.41, 34.39], live probe) —
+        // so the ambient sampled the camera's cel. The premise was wrong too: VECTOR 0x2d6200 is
+        // the ORIGIN vector [L ACTION.ELF, nis.rs's Light doc], so `Script_AnimStart` 0x1d8f40's
+        // `control_create_object(0, 0x2d6200, 0x2d6200, 0)` creates the anim object AT THE ORIGIN —
+        // the object matrix is identity and the sequence's root carries it in world space
+        // [M Obj::Anim doc; AnimSeqTick 0x1c28d0 takes the root motion as the object's movement].
+        let local = nf_game::anim::script_pose_together(&self.scripts, &self.seqs, skeleton, skin, script, frame)?;
+        let world = anim::world_pose(&local, skin);
         Some([world[0][3][0], world[0][3][1], world[0][3][2]])
     }
 }
@@ -4631,6 +4644,14 @@ impl Scene {
                 // played the body only, so the mouths never moved).
                 let local = nf_game::anim::script_pose_together(&s.scripts, &s.seqs, &c.skeleton, &c.skin, script, frame)?;
                 let world = anim::world_pose(&local, &c.skin);
+                // fix-cutscene-brightness2: the object matrix stays the character's own (`c.matrix`,
+                // identity for script actors — the object sits at the origin and the pose's root
+                // carries it in world space [M Obj::Anim doc; 0x2d6200 is the origin vector
+                // [L ACTION.ELF], so `Script_AnimStart` 0x1d8f40 creates the object at the origin]).
+                // The held fix substituted `Player::live_matrix` — stream 0's object ∘ the script
+                // matrix, for the 07000002 intro the CAMERA (obj[0] trans == player[1] live trans
+                // [-27.25, 1.41, 34.39]) — which drew the actors inside the camera: the main agent's
+                // render showed the intro room with NO characters at all.
                 return Some((anim::skin_matrices(&world, &c.skin), world, c.matrix));
             }
             let view = self.sim.as_ref().and_then(|s| self.view_models.get(&s.gun.weapon).filter(|&&v| v == ci)).and(self.sim.as_ref());

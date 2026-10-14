@@ -10424,6 +10424,83 @@ Work Log:
 - Tests (crates/nf-view/tests/gadgets_live.rs, 4/4, failing-first via the deleted scratch probes: the clip never drained and no beam parked pre-fix): the laser's drain/light/stop-at-0; the stunner's spend-on-target + free aimed-off hold; the AIMS lights attach + the idle timer; the hat's contact kill + no explosion. Neighbours green: gadget_laser_live 7, fix_level_0c_live 4, fix_fusebox_cut, qclaw_live, gadget_grapple_live, explode_live, fix_weapon_effects_live, fix_weapon_sounds_live.
 - Shared hooks: drone.rs (aims_idle on its own line + the hat pass), scene.rs (the restructure + the new slots; nothing removed but the replaced stale comment). grenade.rs/player.rs/lib.rs/gun.rs/gadget.rs/bullet.rs untouched.
 - Left: the taser's msg-7 stun state machine; the laser's battery-station recharge (0x1a5460:575-598); the AIMS bone-9/10/11 gates (+0x93e/+0x2f0/+0x2fc); the hat's return/clang; the pause-menu stop hook. All in the report with the live checks.
+
+## fix-cutscene-brightness (s/fix-cutscene-brightness) — 2026-10-14
+
+Task 102g, the 07000002 intro playtest (results 1013-1825): "the models in the game during the
+cutscene are extremely bright" — the port's cut-scene actors are near-white at
+`--bond -82.30,5.30,32.05` frame 170 while PCSX2's 02 intro lights Bond and the man at the
+computer darkly to match the room. Plan: find what the game lights cut-scene actors with (the
+character room light / the scene's own light set; the in-game character room light is
+290-fix-character-room-light's pending work — check whether cut-scene actors take a different
+path in the port: no cel light, or a default full-bright ambient). Reproduce first, then fix in
+scene.rs / nis.rs with numbers from the decompile.
+Status: branch created, reproduction + fix in progress.
+
+fix-cutscene-brightness DONE (09:3x UTC): the 02 intro's cut-scene actors take the room's ambient
+instead of the full-bright sentinel. Two broken links in `Sim::characters_script_pos` (the ramp's
+position source for script characters): (1) the strict `nf_formats::anim::fits` sequence filter —
+the intro's actors play shared human tracks (record skeleton 0) on skeleton-N skins, every
+candidate was rejected, the position was None and the ramp's target None, so obj+0x100..0x102
+stayed the 0xff,ff,ff sentinel of `control_init_object` 0x134630 — the playtest's "the models in
+the game during the cutscene are extremely bright"; the relaxed filter (the skeleton-id match
+dropped, the channel-count guard kept) already exists in `nf_game::anim::script_pose` (the same
+strictness bug recorded there for 07000004's seated target) — `characters_script_pos` now calls
+it. (2) the raw root translation resolved near the world origin ([0.0, 0.038, 0.958] at frame
+200) where no cel exists (`ambient_at` None): [M] `Script_AnimStart` 0x1d8f40 creates the anim
+object at `control_create_object(0, 0x2d6200, 0x2d6200, 0)` — the script's scratch base matrix
+(the port's `Player::live_matrix = mul(stream_pose, script.matrix)`) — and composes the root via
+`AnimGetFirstTrans`, ending with the position cel link (`build_LinkToRoom`). The sequence roots
+are LOCAL offsets (char[79]'s seq root@1 [0,0,0] … root@200 [0, 0.04, 0.96]); the fix composes
+`Sim::script_base_matrix(src.0)` (new — the placed NIS player's live_matrix) with the root in
+`characters_script_pos` AND in the render's script-branch object matrix (the actors drew at the
+origin before). Result: char[79] obj+0x100..0x102 = [20, 30, 20] — the bunker cel's ambient, the
+draw multiplier dark; the actor stands in the set beside Bond ([-27.06, 1.45, 33.46] vs Bond
+[-27.17, 1.05, 29.80]). Fail-first: fix_cutscene_brightness_live's
+the_02_intro_actors_take_the_rooms_ambient_not_full_bright panicked `got [255, 255, 255]` on the
+unfixed tree (after the strict-filter `pos None` panic). Sisters: the drone characters' ramp and
+the view-model branch untouched. Regression set green: cutscenes 5+4, objects (the truck) 5+6,
+facial 2+3. Suite on the final tree: see docs/reports/fix-cutscene-brightness.md. Files:
+crates/nf-view/src/scene.rs, crates/nf-view/tests/fix_cutscene_brightness_live.rs (new);
+crates/nf-game/src/nis.rs read-only.
+
+## fix-cutscene-brightness2 (s/fix-cutscene-brightness2) — 2026-10-14
+
+Task: 102g's held fix (0cbfbf8) makes the 07000002 intro's cut-scene actors VANISH — the main
+agent's render at the user's spot (`--bond -82.30,5.30,32.05,1.570,-0.100 --frame 170`): master
+draws Bond and the man at the computer desk (too bright), master + the branch draws the same room
+with NO characters.
+
+fix-cutscene-brightness2 DONE (09:4x UTC). The live probe (tests/fix_cutscene_brightness2_live.rs,
+run on the held tree) pinned both halves:
+- The vanish: the held fix substituted `Player::live_matrix` for the script actors' render object
+  matrix — but `live_matrix` is stream 0's object ∘ the script matrix (`Script_Interp` 0x1d9a08
+  keys the SP object's obj+0x90 from stream 0 [M nis.rs]), and the intro's stream 0 is the CAMERA:
+  obj[0] Camera trans [-27.25, 1.41, 34.39] == player[1] live trans [L probe]. The actors were
+  drawn inside the camera. The premise was wrong too: VECTOR 0x2d6200 is the ORIGIN vector
+  [L ACTION.ELF, nis.rs's Light doc], so `Script_AnimStart` 0x1d8f40's
+  `control_create_object(0, 0x2d6200, 0x2d6200, 0)` creates the anim object AT THE ORIGIN — the
+  object matrix is identity and the pose's root carries the actor in world space [M Obj::Anim doc;
+  AnimSeqTick 0x1c28d0 takes the root motion as the object's movement]. Fix: frame_state's script
+  branch draws with `c.matrix` again (the render-verified model — master's own render places both
+  actors correctly).
+- The ramp sample: the held `script_pose` resolves `script_frame`'s LAST covering window — on the
+  intro that is the zero-root overlay track (char[79] windows (1,1541,0x04000296)/(1,1540,
+  0x04000224); the last one's root [0,0,0] at frame 170) — and its base composition multiplied
+  that by the camera matrix, so the ambient sampled the camera's cel (the right bytes by luck).
+  Fix: `characters_script_pos` resolves the position the renderer draws — `script_pose_together`'s
+  world root (char[79] [-25.51, 1.13, 30.14], char[80] [-27.18, 1.13, 30.99], both beside Bond
+  [-27.17, 1.05, 29.80] [L probe]) — no base. ambient_at(root) = the bunker cel [20,30,20]: the
+  same dark multiplier the held test pins, sampled where the actor stands.
+- Fail-first: both tests in tests/fix_cutscene_brightness2_live.rs panic on the held tree (the
+  object-matrix assert and the ramp-sample assert), green on the fix. Sisters kept green: the held
+  fix_cutscene_brightness_live 3, render2_live 8 (the 01 cut-scene's [L] (40,30,26) courtyard
+  pin), fix_objects_live 6 + fix_objects2_live 5 (the 05 truck's script characters),
+  fix_cutscenes_live 4, fix_cutscenes2_live 5, facial2_live 2, facial3_live 3.
+- Files: crates/nf-view/src/scene.rs (characters_script_pos; the render's script-branch object
+  matrix; script_base_matrix removed — it existed only for the wrong reading). No shared-file
+  hooks; nis.rs untouched.
+- Suite on the final tree: docs/reports/fix-cutscene-brightness2.md.
 Task ID: 102e-fix-missing-objects
 Agent: missing-objects worker
 Task: fix-missing-objects — furniture, the fountain and the 0c pylon aren't drawn; census every on-foot level for placements whose mesh the port doesn't draw, with the skip reason per class; draw what the game draws.
