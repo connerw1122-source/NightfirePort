@@ -19,7 +19,7 @@
 //!   `View_CaptureScene` 0x1e6df0's `object_display_mask = 1 << viewer_LOD`), and the psiDraw chain
 //!   glist+4 → +8 → +4 lands on box tree 0x9b3260 — DRAWABLE. (The creep walls' 0x2B glists chain
 //!   to boxes 0 — those stay undrawn, exactly as fix-gadgets2 concluded.)
-//! - The pulley never animates: class 0x51 has no control_funcs row [L 0x26fa94..0x26fc5c, all
+//! - The pulley never animates: class 0x51 has no control_funcs row [L 0x26fa94..0x26fc68: rows 0x2b..0x50 span 0x26fa94..0x26fc5c; row 0x51 is 0x26fc5c..0x26fc68, all
 //!   zero] and no grapple-path writer touches the object's gfx (Player_SSGrapple 0x192860,
 //!   Player_SetGrapplePoint 0x195da0 and Bullet_Delete 0x12e660 only read obj+0x30/+0x80 and store
 //!   the BLData hooks) — a static mesh at the placement transform is the game's draw, at rest and
