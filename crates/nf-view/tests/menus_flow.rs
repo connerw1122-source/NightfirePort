@@ -296,7 +296,7 @@ fn the_menu_overlay_draws_the_game_pages_with_their_own_sprites() {
     let mut saw: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
     for page in [Page::Start, Page::Main, Page::Codename, Page::Difficulty, Page::MissionSelect, Page::Dossier] {
         fe.page = page;
-        let frame = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+        let frame = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
         assert!(!frame.v.is_empty(), "{page:?}: the overlay drew nothing");
         assert!(!frame.runs.is_empty(), "{page:?}: no draw runs");
         // Which textures the page referenced (run.tex is hud_textures index + 1).
@@ -395,7 +395,7 @@ fn the_menu_overlay_produces_font_quads_for_every_page() {
     let textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).chain(std::iter::once((0x0300_0003u32, crate_texture(0x0300_0003)))).collect();
     for page in [Page::Start, Page::Main, Page::Codename, Page::Difficulty, Page::MissionSelect, Page::Dossier, Page::Options, Page::Pause, Page::Results] {
         fe.page = page;
-        let frame = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+        let frame = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
         assert!(!frame.v.is_empty(), "{page:?}: the overlay drew nothing");
         assert!(!frame.runs.is_empty(), "{page:?}: no draw runs");
     }
@@ -403,16 +403,18 @@ fn the_menu_overlay_produces_font_quads_for_every_page() {
     fe.page = Page::Results;
     fe.outcome = Outcome::Complete;
     fe.stats = Stats { shots_fired: 10, shots_hit: 5, accuracy_pct: 50, time_s: 61 };
-    let before = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0).v.len();
+    let before = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0).v.len();
     fe.outcome = Outcome::Failed;
-    let after = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0).v.len();
+    let after = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0).v.len();
     assert!(before > 0 && after > 0, "both outcomes draw");
 }
 
 /// A stand-in font texture (the tests only check geometry, not pixels). The specialchar font gets its
 /// real 256-wide pitch so the icon uvs normalize to the table's own values.
 fn crate_texture(hash: u32) -> nf_view::scene::TextureImage {
-    let (w, h) = if hash == 0x0300_0075 { (256, 256) } else { (8, 8) };
+    // Real dims [L nf-extract tex-list 07000048.bin]: 0x03000075 256×128, the header face
+    // 0x03000005 512×128 — the tests normalise the icon/header uvs by the real pitch.
+    let (w, h) = if hash == 0x0300_0075 { (256, 128) } else if hash == 0x0300_0005 { (512, 128) } else { (8, 8) };
     nf_view::scene::TextureImage { key: (0, hash), width: w as u32, height: h as u32, rgba: vec![255; (w * h * 4) as usize], more: vec![], rate: 1 }
 }
 
@@ -432,27 +434,27 @@ fn the_pause_page_draws_the_mission_menu_defs_data() {
     let mut fe = FrontEnd::new();
     fe.flow.current_level = 0x0700_0005;
     assert!(fe.open_pause());
-    let base = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0).v.len();
+    let base = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0).v.len();
     assert!(base > 0, "the pause page draws");
     // The RESTART confirm draws the YES/NO box over the rows [L page 0x4000004b's d1=0xc text +
     // d1=0xd list; M 0x204408 case 1].
     fe.cursor = 1;
     fe.action(Action::Confirm);
-    let with_confirm = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0).v.len();
+    let with_confirm = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0).v.len();
     assert!(with_confirm > base, "the confirm box adds quads");
     // Each pause tab draws [L the four tabs 0x167/0x176/0x168/0x169].
     for tab in 0..4 {
         fe.pause_tab = tab;
         fe.confirming_restart = false;
-        let f = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+        let f = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
         assert!(!f.v.is_empty(), "pause tab {tab} draws");
     }
     // The fail menu (page 0x40000042) and the complete results (0x40000036) both draw.
     fe.page = Page::Results;
     fe.outcome = Outcome::Failed;
-    assert!(!menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0).v.is_empty(), "the fail menu draws");
+    assert!(!menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0).v.is_empty(), "the fail menu draws");
     fe.outcome = Outcome::Complete;
-    assert!(!menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0).v.is_empty(), "the complete results draw");
+    assert!(!menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0).v.is_empty(), "the complete results draw");
 }
 
 /// A minimal font the draw tests can lay out with (the real one comes from ACTION.ELF).
@@ -554,14 +556,14 @@ fn the_menus_draw_inside_a_centred_4_3_band() {
     fe.unlock_all = true;
     for page in [Page::Start, Page::Main, Page::Codename, Page::Difficulty, Page::MissionSelect] {
         fe.page = page;
-        let frame = menu::menu_overlay(&fe, &font, None, &textures, 16.0 / 9.0);
+        let frame = menu::menu_overlay(&fe, &font, &font, None, &textures, 16.0 / 9.0);
         let band = (4.0 / 3.0) / (16.0 / 9.0); // 0.75
         let worst = frame.v.iter().fold(0.0f32, |m, vtx| m.max(vtx.p[0].abs()));
         assert!(worst <= band + 1e-3, "{page:?}: a quad vertex reaches NDC x {worst}, past the 4:3 band {band} (the 16:9 stretch symptom)");
     }
     // Sister (4:3 unchanged): the title art still spans the whole window at aspect 4/3.
     fe.page = Page::Start;
-    let frame = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let frame = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     let worst = frame.v.iter().fold(0.0f32, |m, vtx| m.max(vtx.p[0].abs()));
     assert!(worst >= 0.999, "at 4:3 the full-screen art reaches the window edges (worst x {worst})");
 }
@@ -576,7 +578,7 @@ fn the_ring_preview_is_clipped_to_the_ring_circle() {
     let mut fe = FrontEnd::new();
     fe.unlock_all = true;
     fe.page = Page::MissionSelect;
-    let frame = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let frame = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     // The preview's texture index in the frame's runs (1-based into the textures slice).
     let preview_hash = menu::CAMPAIGN[0].0;
     let ti = textures.iter().position(|(h, _)| *h == preview_hash).unwrap() + 1;
@@ -608,15 +610,15 @@ fn the_hint_icons_come_from_the_specialchar_table() {
     // The codename page's hint 0x216 = "~A Select  ~Y Create  ~V Scroll  ~B Back" [L USATxt.dat].
     let mut fe = FrontEnd::new();
     fe.page = Page::Codename;
-    let frame = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let frame = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     let ti = textures.iter().position(|(h, _)| *h == 0x0300_0075).unwrap() + 1;
     let mut cross = false;
     let mut triangle = false;
     for run in &frame.runs {
         if run.0 != ti { continue; }
         for vtx in &frame.v[run.2 as usize..(run.2 + run.3) as usize] {
-            // The uv rect is normalized by the test texture's 256 pitch.
-            let (u, v) = (vtx.uv[0] * 256.0, vtx.uv[1] * 256.0);
+            // The uv rect is normalized by the test texture's real pitch (256×128).
+            let (u, v) = (vtx.uv[0] * 256.0, vtx.uv[1] * 128.0);
             if (u - 235.0).abs() < 0.6 && (v - 1.0).abs() < 0.6 { cross = true; }
             if (u - 235.0).abs() < 0.6 && (v - 61.0).abs() < 0.6 { triangle = true; }
         }
@@ -683,9 +685,10 @@ fn text_rows(frame: &nf_view::gpu::HudFrame, n_tex: usize, aspect: f32) -> TextR
     // index+1 (the font was appended last; 0x03000075 is MENU_TEXTURES[10]).
     let font_tex = n_tex;
     let icon_tex = menu::MENU_TEXTURES.iter().position(|&t| t == 0x0300_0075).expect("icon tex listed") + 1;
+    let head_tex = menu::MENU_TEXTURES.iter().position(|&t| t == 0x0300_0005).expect("header atlas listed") + 1;
     let mut is_text = vec![false; frame.v.len()];
     for &(tex, _, start, count) in &frame.runs {
-        if tex == font_tex || tex == icon_tex { for v in &mut is_text[start as usize..start as usize + count as usize] { *v = true; } }
+        if tex == font_tex || tex == icon_tex || tex == head_tex { for v in &mut is_text[start as usize..start as usize + count as usize] { *v = true; } }
     }
     let k = (2.0 / 512.0) * (4.0 / 3.0) / aspect;
     // Per-quad bboxes (runs concatenate 6-vertex quads; the full-screen plates also ride the font
@@ -731,7 +734,7 @@ fn frame_with_font(fe: &FrontEnd, lang: Option<&nf_formats::hud::Lang>, aspect: 
     let font = iso_font(&std::env::var("NF_ISO").unwrap_or_default());
     let mut textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).collect();
     textures.push((0x0300_0003, crate_texture(0x0300_0003)));   // FONT_TEX so the text quads land
-    (menu::menu_overlay(fe, &font, lang, &textures, aspect), textures.len())
+    (menu::menu_overlay(fe, &font, &font, lang, &textures, aspect), textures.len())
 }
 
 /// The footer hint bar centres its label: Label_Update 0x218cb8:177-182 puts the sprite at
@@ -814,7 +817,7 @@ fn the_main_rows_use_the_page_colours() {
     textures.push((0x0300_0003, crate_texture(0x0300_0003)));
     let mut fe = FrontEnd::new();
     fe.page = Page::Main;
-    let frame = menu::menu_overlay(&fe, &font, lang.as_ref(), &textures, 4.0 / 3.0);
+    let frame = menu::menu_overlay(&fe, &font, &font, lang.as_ref(), &textures, 4.0 / 3.0);
     let k = (2.0 / 512.0) * (4.0 / 3.0) / (4.0 / 3.0);
     let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.02);
     let cream = [0x64 as f32 / 128.0, 0x5a as f32 / 128.0, 0x49 as f32 / 128.0, 0.996];
@@ -920,7 +923,7 @@ fn the_title_prompt_uses_the_page_colour() {
     let mut fe = FrontEnd::new();
     fe.page = Page::Start;
     fe.press_start_on = true;
-    let frame = menu::menu_overlay(&fe, &font, lang.as_ref(), &textures, 4.0 / 3.0);
+    let frame = menu::menu_overlay(&fe, &font, &font, lang.as_ref(), &textures, 4.0 / 3.0);
     let want = [0x7f as f32 / 128.0, 0x62 as f32 / 128.0, 0x1f as f32 / 128.0, 0.996];
     let hit = frame.v.iter().any(|q| q.c.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.02));
     assert!(hit, "the prompt draws in 0x7f621f gold (gs scale)");
@@ -939,13 +942,13 @@ fn the_pause_mission_tab_has_the_yellow_row_cursor() {
     fe.flow.current_level = 0x0700_0005;
     assert!(fe.open_pause());
     let yellow = |f: &gpu::HudFrame| f.v.iter().filter(|v| (v.c[0] - 0x7f as f32 / 128.0).abs() < 0.02 && (v.c[1] - 0x62 as f32 / 128.0).abs() < 0.02).count();
-    let f = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let f = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     let n = yellow(&f);
     assert!(n >= 3, "the MISSION tab draws the yellow row cursor (found {n} yellow verts)");
     // Sister: the cursor follows the selection — its verts move down a row (the 640-space rows are
     // 40 px apart [L the d1=6 list's 183+20+i*40 rows], 448-space 35 px).
     fe.cursor = 2;
-    let f2 = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let f2 = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     // NDC y runs DOWN as the row index grows (row 0 ≈ +0.15, row 2 ≈ −0.18).
     let y0 = f.v.iter().filter(|v| (v.c[0] - 0x7f as f32 / 128.0).abs() < 0.02 && (v.c[1] - 0x62 as f32 / 128.0).abs() < 0.02).map(|v| v.p[1]).fold(f32::MIN, f32::max);
     let y2 = f2.v.iter().filter(|v| (v.c[0] - 0x7f as f32 / 128.0).abs() < 0.02 && (v.c[1] - 0x62 as f32 / 128.0).abs() < 0.02).map(|v| v.p[1]).fold(f32::MIN, f32::max);
@@ -963,13 +966,14 @@ fn the_pause_objectives_tab_draws_the_objective_rows_with_their_markers() {
     fe.flow.current_level = 0x0700_0005;
     assert!(fe.open_pause());
     fe.pause_tab = 1;
-    let empty = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0).v.len();
+    let empty = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0).v.len();
     // Two objectives: the first pending, the second done (state 4 [M 0x204408:259]).
     fe.pause_objectives = vec![(0x0400_0000, false), (0x0400_0001, true)];
-    let f = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let f = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     assert!(f.v.len() > empty, "the objectives rows add quads ({} -> {})", empty, f.v.len());
-    // The 'J' marker's glyph quad: uv x = 176/256 of the specialchar atlas.
-    let j = f.v.iter().filter(|v| (v.uv[0] - 176.0 / 256.0).abs() < 0.01 && (v.uv[1] - 57.0 / 256.0).abs() < 0.02).count();
+    // The 'J' marker's glyph quad: uv = (176,57) texels of the specialchar atlas, normalised by its
+    // real 256×128 pitch [L tex-list 07000048.bin; the runtime table's v is in texels].
+    let j = f.v.iter().filter(|v| (v.uv[0] - 176.0 / 256.0).abs() < 0.01 && (v.uv[1] - 57.0 / 128.0).abs() < 0.02).count();
     assert!(j >= 2, "the done row draws the ~J marker glyph (found {j} verts)");
 }
 
@@ -985,7 +989,7 @@ fn the_pause_controls_tab_draws_the_button_rows() {
     fe.flow.current_level = 0x0700_0005;
     assert!(fe.open_pause());
     fe.pause_tab = 2;
-    let f = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let f = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     // The 12 glyph quads (6 rows × 2 columns) draw from the specialchar atlas (u ≥ 150 in the
     // game's table [M 0x2dd8d8's entries]).
     let glyphs = f.v.iter().filter(|v| v.uv[0] >= 150.0 / 256.0 && v.uv[0] <= 1.0 && v.uv[1] < 0.5).count();
@@ -1015,7 +1019,7 @@ fn the_pause_score_tab_shows_the_disc_targets() {
     fe.flow.current_level = 0x0700_0005;
     assert!(fe.open_pause());
     fe.pause_tab = 3;
-    let f = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let f = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     assert!(f.v.len() > 60, "the SCORE tab draws the header and the rows ({} verts)", f.v.len());
 }
 
@@ -1037,4 +1041,94 @@ fn the_pause_figure_texture_loads_as_the_silhouette_mask() {
     assert!(white.len() >= 900, "the white silhouette is present ({} px)", white.len());
     let left = white.iter().filter(|(x, _)| *x < 64).count();
     assert!(left * 10 < white.len(), "the silhouette sits in the texture's right half ({} left-half px of {})", left, white.len());
+}
+
+// ── fix-menus-real2: the headers' bold-italic face ──────────────────────────────────────────────
+// Evidence: the header controls' page-def NAME (−8) format strings are "\xff\x01" = font select 1
+// [L the menu-def tag-stream dump 2026-10-14 — header CTRL (50,40,376×17) name 0x10000001 followed
+// by NAME bytes ff 00 01 00 … (UTF-16, compacted by MenuManager_Create 0x21b908:255-274's walk);
+// M Label_SendMessage 0x218890:100-104 applies the string over Label_Init's stamped default;
+// Font_ParseFormat 0x1ee3e0 stops at the first NUL]. FontTable[0] = {tex 0x03000005, FONTNFont2
+// 0x305a58} [L ee_snapshot 0x2dd8b0], and 0x03000005's atlas is the bold-italic face [D tex-export
+// 07000048.bin entry 3 sub 2].
+
+/// The header font parses from ACTION.ELF's FONTNFont2 and is a DIFFERENT face from the body font.
+#[test]
+fn the_header_font_is_the_games_second_face() {
+    let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
+    let image = nf_formats::iso9660::IsoImage::open(&iso).expect("iso");
+    let entry = image.find("/ACTION.ELF").expect("ACTION.ELF");
+    let elf = image.read_file(entry).expect("read");
+    let t = nf_formats::hud::HudTables::from_action_elf(&elf).expect("HUD tables");
+    // Both faces parse with the same char range (149 glyphs, '!'–0xff [L FontTable header +8/+10]).
+    assert_eq!(t.font_header.first, t.font.first, "the header face covers the same chars");
+    assert_eq!(t.font_header.glyphs.len(), t.font.glyphs.len());
+    assert!(t.font_header.glyphs.len() > 100, "the header face parses its glyph table");
+    // …and it is a different cut: the glyph metrics differ (the italic face is a condensed heavy
+    // weight [D texture 0x03000005]).
+    let differs = t.font_header.glyphs.iter().zip(t.font.glyphs.iter()).filter(|(a, b)| a.w != b.w || a.h != b.h || (a.u, a.v) != (b.u, b.v)).count();
+    assert!(differs > 100, "the header face's glyphs differ from SerpLight's ({differs} of {})", t.font.glyphs.len());
+}
+
+/// The page headers draw through the header face's own atlas 0x03000005, not the body font texture.
+#[test]
+fn the_page_headers_draw_the_header_font_atlas() {
+    // The header text is the page data's LBL (0x1f8 etc.) — without the language file the label is
+    // empty and draws nothing, so this needs the disc's USATxt.dat.
+    let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
+    let lang = iso_lang(&iso);
+    let font = test_font();
+    let hfont = test_font();
+    let textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).collect();
+    let mut fe = FrontEnd::new();
+    for page in [Page::Difficulty, Page::MissionSelect, Page::Dossier] {
+        fe.page = page;
+        let frame = menu::menu_overlay(&fe, &font, &hfont, lang.as_ref(), &textures, 4.0 / 3.0);
+        let ti = textures.iter().position(|(h, _)| *h == 0x0300_0005).expect("header atlas listed in MENU_TEXTURES") + 1;
+        let mut header_quads = 0;
+        for run in &frame.runs {
+            if run.0 != ti { continue; }
+            header_quads += run.3 as usize / 6;
+        }
+        assert!(header_quads > 0, "{page:?}: the header draws glyph quads from the 0x03000005 atlas [L FontTable[0]]");
+    }
+}
+
+/// The Dossier wheel opens at row 0 and CLAMPS — the playtest's "the port adds Weapons" was the
+/// stale missions cursor riding into the wheel (with the wrap, Up at Records teleported to
+/// Weapons). Evidence [M P_DOSSIER_Handler 0x216de0:9-16 resets the wheel (msg 0x2e param 0) when
+/// the page opens from missions/results/stats; Scroll_SendMessage 0x222810:98-106 rejects
+/// out-of-range indices; Scroll_Update 0x2221b20:186-210 wraps only under the msg-0x69 flag, which
+/// nothing sets on the dossier scroll 0x1000010c — C_SBDOSSIER 0x216eb0:40-43 always sets the
+/// range [0,3], the four rows of table 0x2dfcd0 whose unlock flags are all 1 [L ee_snapshot]].
+/// At cursor 0 the 5-slot centred window shows only rows 0..2 (Records/Rewards/Gadgets).
+#[test]
+fn the_dossier_wheel_opens_at_records_and_clamps() {
+    let font = test_font();
+    let hfont = test_font();
+    let textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).collect();
+    let mut fe = FrontEnd::new();
+    fe.unlock_all = true;
+    fe.page = Page::MissionSelect;
+    fe.cursor = 3;
+    assert!(fe.action(Action::Side), "□ opens the Dossier");
+    assert_eq!(fe.page, Page::Dossier);
+    assert_eq!(fe.cursor, 0, "the wheel resets to row 0 on open [M 0x216de0:9-16]");
+    let rows: Vec<usize> = fe.wheel().iter().map(|(r, _)| *r).collect();
+    assert_eq!(rows, vec![0, 1, 2], "the window shows Records/Rewards/Gadgets only [M Menu_UpdateWheel 0x1f8388:148-168]");
+    let frame = menu::menu_overlay(&fe, &font, &hfont, None, &textures, 4.0 / 3.0);
+    let row_labels: Vec<String> = frame.v.is_empty().then(Vec::new).unwrap_or_default();
+    let _ = (frame, row_labels);
+    // Sister: no wrap — Up at row 0 and Down at the last row are no-ops (the game rejects them).
+    assert!(!fe.action(Action::Up), "Up at Records is a no-op [M 0x2221b20:202-210]");
+    assert_eq!(fe.cursor, 0);
+    assert!(fe.action(Action::Down), "Down moves to Rewards");
+    assert_eq!(fe.cursor, 1);
+    fe.cursor = fe.rows() - 1;
+    assert!(!fe.action(Action::Down), "Down at Weapons is a no-op [M 0x2221b20:186-194]");
+    assert_eq!(fe.cursor, fe.rows() - 1);
+    // Down once from row 0 does NOT land past row 1 — the old wrap teleported 0 → 3 on Up.
+    fe.cursor = 0;
+    assert!(fe.action(Action::Down));
+    assert_eq!(fe.cursor, 1, "Down steps to Rewards, never wraps");
 }
