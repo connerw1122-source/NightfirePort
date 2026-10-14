@@ -59,23 +59,32 @@ A world object reaches the draw lists only through its glist-flags copy:
 
 ## The fix
 
-Three additive gates in `crates/nf-view/src/scene.rs` — skip when `obj.flags & 0x10 != 0`, each
-with the citation in place:
+Additive gates in `crates/nf-view/src/scene.rs` — skip when the object's glist flags carry 0x10,
+but only where the kind's creator actually copies `glist+0x44` into `obj+0xF0` (otherwise the
+game's gate reads a clear word and the mesh draws):
 
 1. the **models-misc sweep** (`MISC_KINDS`) — drew `WallHug_Blocker*` (0x3b, param 0 == 0) and
-   `TouchPlate_GrappleLedge` (0xfa): the user's box;
-2. the **0x3a grapple sweep** — same gate for uniformity; the pulley's glist carries 0x4000 [L
-   ee_start_05.bin 0x16d80a0/0x16d81c0] and passes;
-3. the **0xE8 LOAD_LEVEL-trigger draw** (`Trigger_LoadLevelCreate` 0x1b2950) — surfaced by the
-   census: one flags-0x50 "Load Point"-family mesh each was drawn on 07000001/03/12/13. The
-   castle gate (`Door_Gate8`, no 0x10) keeps drawing.
+   `TouchPlate_GrappleLedge` (0xfa): the user's box. The gate applies to the flag-copying kinds
+   (0x30, 0x34 via `Control_CreateObjEx` 0x1343c8:36, 0x35, 0x3b via `DynamicObject_Create`
+   0x18dbf8:21-23, 0x71, 0xe1, 0xe3, 0xfa via `ThirdIcon_Create` 0x197070, 0xfd, 0x4a). NOT to
+   0x2e `Lock_Create` 0x1ae1f8, 0xd5 `OneSided_Create` 0x1e7ce8, 0xd8 `RB_Create` 0x1d6bf0 (plain
+   `control_create_object` + direct obj+0xD8 store, no obj+0xF0 write — the game draws even their
+   0x10-flagged meshes); 0xda/0xfe unverified, left ungated;
+2. the **0x3a grapple sweep** — `Grapple_Create` 0x198298:24-30 copies the flags; the pulley's
+   glist carries 0x4000 [L ee_start_05.bin 0x16d80a0/0x16d81c0] and passes;
+3. the **corona (0xfc) and wire (0x3e) draws** — `Corona_Create` 0x18da40-48 and `Wire_Create`
+   0x198254-5c copy `*(glist+0x44)` to obj+0xF0, so `View_AddObjects`' gate applies (no 0x10 hits
+   on the disc today; the census pins it).
 
-**Ladders (0x22), wires (0x3e) and coronas (0xfc) were deliberately NOT gated**: their creators
-(`Ladder_Create` 0x1966c0 direct store 0x19671c, `Wire_Create` 0x1981d8, `Corona_Create` 0x18da00)
-never copy `glist+0x44` into `obj+0xF0` (the copiers list: `Control_SetGList`, `rotor_init`
-0x18f4b8, `RainBox` 0x18d840, `Flicker` 0x1acb00), so the game's gate reads a clear `obj+0xF0` and
-even a 0x10-flagged ladder glist draws. The port's material `lflags` (obj.flags) would have
-over-hidden them.
+**Ladders (0x22) stay ungated**: `Ladder_Create` 0x1966c0 stores only obj+0xD8 (0x19671c), never
+obj+0xF0 — the game draws even a 0x10-flagged ladder glist. The port matches.
+
+**LOAD_LEVEL triggers (0xe8) are the game-drawn exception — an earlier revision of this fix gated
+them and was WRONG**: `Trigger_LoadLevelCreate` 0x1b2950 forces the trigger type to 10
+(0x1b2998/a0 store 10 to placement+0x2c) and `Trigger_Create` 0x1b1720 clears the no-draw bit for
+exactly that type (0x1b18c8-d4 `obj+0xF0 &= 0xffffffef`) — the game draws these meshes whatever
+their glist flags (the four "Load Point"-family meshes on 01/03/12/13, and 07000005's castle gate
+`Door_Gate8`). The gate was reverted after the audit caught it.
 
 ## Verification
 
@@ -85,19 +94,46 @@ over-hidden them.
   FAILED exactly there before the fix, passes after.
 - **Post-fix**: 3/3 green —
   05: 0 no-draw-bit draws, 0 marker-texture draws, `grapple_hooks_drawn == 2` (the pulleys keep
-  drawing — the user's playtest saw them); 0c: 0/0 and `laptops` — a flags-0 object with a
+  drawing — the user's playtest saw them), and the castle gate `Door_Gate8` still has a World
+  material at its extent (the over-hide sister); 0c: 0/0 and `laptops` — a flags-0 object with a
   16×16 hazard texture that merely looks striped — still resolves through the static cel path and
   draws; **census**: all 33 on-foot FILES.BIN archives (driving missions 07000023-29 and the
-  shared packs excluded, per docs/systems/levels.md §7) fully loaded through `nf_view::load` —
-  **0 no-draw-bit draws and 0 marker-texture draws disc-wide** (2 archives skipped: they carry
-  neither the texture nor a 0x10-flagged meshed object). Marker-texture identity is per-level and
-  rule-based (32×32 red+yellow AND every referencing object carries 0x10), so legit red/yellow
-  world textures (07000015's club decor) are not flagged.
+  shared packs excluded, per docs/systems/levels.md §7) fully loaded through `nf_view::load`, and
+  every level's no-draw-bit draw count EQUALS its game-drawn 0xe8 LOAD_LEVEL exception count — an
+  equality that fails both on over-draw (extra 0x10 draws) and on over-hide (a gate eating the
+  game-drawn meshes; it read 1/1 on 01/03/12/13 with the reverted tree, 0/1 with the wrong 0xe8
+  gate) — and **0 marker-texture draws disc-wide** (2 archives skipped: they carry neither the
+  texture nor a 0x10-flagged meshed object). Marker-texture identity is per-level and rule-based
+  (32×32 red+yellow AND every referencing object carries 0x10), so legit red/yellow world textures
+  (07000015's club decor) are not flagged.
 - Full suite on the final merged tree: see `suite.out` (fast runner, `tools/test/suite.py`);
   total line at push time: **(see below — updated at finish)**.
 - No GPU here: the census observes the built draw list (`Material.lflags` = `obj.flags & 0xffff`,
   `Material.key` = the batch's `(map, texture)`), which is the exact render input; the pixel-level
   confirmation is the main agent's render (spots below).
+
+## Independent audit
+
+A second agent re-verified every claim against the decompile C + capstone disasm of
+`work/elf/ACTION.ELF` and caught one real regression in the first revision, which this branch
+fixes:
+
+- **REFUTED → fixed**: the 0xE8 gate over-hid four game-drawn meshes ("Load Point"
+  07000001 map53#18, 07000003 map50#451, "New LevelLoadTrigger" 07000012 map38#669,
+  "oTrigger Load level" 07000013 map41#72 — all gfx-true) because the type-10 bit-clear
+  (0x1b18c8-d4) makes the game draw them. Reverted; the census equality now pins it both ways.
+- **REFUTED → fixed**: my first fix cited an incomplete copiers list — `Wire_Create` 0x198254-5c
+  and `Corona_Create` 0x18da40-48 DO copy `glist+0x44` to obj+0xF0, so those two sites are now
+  gated (latent only: no 0x10-flagged wire/corona on the disc; the census pins 0).
+- **Over-strict → narrowed**: the MISC gate excluded the non-copying kinds (0x2e/0xd5/0xd8 —
+  `Lock_Create`/`OneSided_Create`/`RB_Create` never write obj+0xF0).
+- **Confirmed**: `View_AddObjects` 0x1e62d8:33's `andi 0x8010` (0x1e6344-4c), `View_AddCels`
+  0x1e6ba0 L29/L46's two `glist+0x44 & 0x10` refusals, `Control_SetGList` 0x134960:12-14's copy
+  (`| obj+0xf0 & 0x30008000`), the pulley's 0x4000 passing, `Ladder_Create`'s no-copy, the
+  fail-first arithmetic (exactly four flags-0x10 gfx-true sweep-reachable objects on 05), and the
+  05/0c test runs green.
+- Census hole noted by the audit (over-hide blindness) is closed by the equality assertion + the
+  `Door_Gate8` material sister.
 
 ## Live checks for the main agent
 
@@ -130,7 +166,9 @@ nf-view renders (before/after on the fixed branch):
 
 ## What's left
 
-- Nothing blocking. The 0x20/0xe2 static additions and the ladders/wires/coronas sites stay
-  ungated on purpose (game-true: no glist copy → clear obj+0xF0); the census would have flagged
-  any 0x10 draw through them and found none.
+- Nothing blocking. The audit's findings are all resolved in the final tree (see the audit
+  section); the census equality keeps both directions pinned for future edits.
+- 0xda/0xfe creators were not disassembled (no 0x10-flagged meshed objects of those kinds on the
+  disc — the census would flag a wrong draw either way); a later task can verify their copier
+  status and widen the FLAGS_COPYING list if one copies.
 - The full-suite total line is appended below once the fast runner finishes on the final tree.
