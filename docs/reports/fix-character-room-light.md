@@ -66,10 +66,12 @@ and the per-character ambient multiplier.
 3. `bathhouse_civilian_skin_texels_are_not_white` — the G-042 assertion (alpha-weighted): no
    civilian texture has >50 % opaque-white texels; the sheen map is counted and reported.
 
-Baseline suite on master+0 (`suite.out`): 3 disc_golden (allowed on the slim ISO), TIMEOUT
-`weapon_matrix_live` (a 600 s-limit collection test), `probe_pylon_render` +
-`fix_0c_pylon_live` ×2 — all present before this branch; this task touched no production code.
-Final tree re-run: same 3+3 failures, everything else passes (see the total line in the WORKLOG).
+Baseline suite on master+0 (`suite.out`, the same production code as the final tree — this task
+changed only tests and docs): **1065 passed, 7 failed, 35 ignored (37 min)**. The 7: the 3 allowed
+`disc_golden` (slim ISO), a 600 s TIMEOUT in `weapon_matrix_live`, and `probe_pylon_render` +
+`fix_0c_pylon_live` ×2 — all present before this branch. On the final tree (merged with
+origin/master 1c376216) the lighting suites re-ran green: the new
+`character_room_light_live` 3/3 and the pre-existing `character_lighting_live` 4/4.
 
 ## What is left / live checks for the main agent
 
