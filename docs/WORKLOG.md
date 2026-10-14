@@ -9411,3 +9411,27 @@ the prior session (repo, work/, ISO, nf-queue, cargo, ALSA prefix re-extracted t
 Branch cut from origin/master 8144bd6; origin/s/fix-facial3 (9947360) merged at 16606c1 (drone.rs
 + WORKLOG additive conflicts resolved: both sides kept). Full suite started 01:21 UTC on the
 merged tree (baseline).
+
+**fix-head-look outcome (02:25 UTC)**: the head-look system re-derived from the decompile and the
+port fixed — AnimObjectHeadTrack 0x1bf618 (called from psiBuildMatrixPalette 0x111498 on bone 5
+under the +0xC8 0x30 flags; sAnimObject = *(obj+0xDC)+0x70, which resolves every offset: range² 9.0
+at +0xE8 [L], the tracked bone 5 at +0x104 [L], the stored angles at +0xF0/+0xF8, speed 0.07/0.14 at
++0xE0). Fixes in drone.rs: (1) the composition is now the game's WORLD-frame premultiply
+q_yaw ⊗ q_pitch ⊗ q_world_head — yaw about the neck axis normalize(head−bone2), pitch about
+cross(neck,row2), row-vector transposes axis_angle(side,hp)·axis_angle(neck,−hy) — the port used to
+post-multiply model axes in the head bone's animated local frame (the playtest's roll);
+(2) the ease targets are now the game's geometric plane-acos wants measured from the FRESH anim pose
+(head_track_want, object_pose_inner(d,false)) instead of body-relative atan over a fixed +1.55
+stand-in (the double-counted anim head pitch — the "tips up past the camera"); (3) the 3.0
+head-track range gate from SetHeadTracking's 0x40400000 (want = 0 beyond, draw structure unchanged —
+no RNG shift). Tests: head_look_live 2/2 (upright 0.9978 + on-target 0.215 rad at 2.4 units; no
+swivel at 6 units), fix_ai_remainder_live re-pinned to the game semantics 2/2 (the delta check pins
+the premultiply), nf-game 256/0, formats+audio 85/3 (the 3 disc_golden, the slim-ISO allowance),
+nf-view targeted seed-sensitive 16/16 + kimiko 5/5 + gpu oracle 3/3 — the facial3 takeover green on
+the merged branch (16606c1, additive conflicts both-kept). The headless roll repro did NOT
+reproduce (the first enabled drones' anims hold the head frame near identity — documented in the
+report with the exact sampling attempted); the visible symptom is the main agent's live-check list
+(the playtest --bond spots + the +0x110..113 gate-byte trace). Open: the ScriptCam==0 gate bytes,
+the +0x106 snap-delay draw (omitted — would shift the RNG stream), suite.py full-run deferred to
+the next session (background jobs die between tool calls here). Report:
+docs/reports/fix-head-look.md. Branch s/fix-head-look.
