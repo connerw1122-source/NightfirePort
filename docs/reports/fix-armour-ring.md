@@ -56,6 +56,16 @@ digits share 0x7d6d59 (AmmoSprInfo[0]) bottom-right, and a pickup message draws 
 
 The neighbours on the merged tree: `fix_hud_live` 6/6, `hud_playtest_live` 5/5.
 
+## Found on the way (not this task's files — for the merge gate)
+
+`s/fix-0c-pylon`'s tests fail on the combined master: `fix_0c_pylon_live` (both user-spot tests) and
+`probe_pylon_render::probe_render_pylon_only` FAIL on my final tree (1496b80 merged), standalone too (run
+directly, not a suite-order effect). The pylon worker's own worklog says it merged origin/master **6691ef9**;
+fix-08-collision2 landed as **bf2f6bd** (world.rs/scene.rs/walker.rs) either side of the pylon merge, so the
+regression is the 6691ef9+pylon ⇄ bf2f6bd combination, not my diff (lib.rs `--armour` + a test file + docs).
+The suite's TIMEOUT on `weapon_matrix_live` (>600 s, documented in the fix-movies-tests report) also
+reproduced. Both need the main agent's attention; I did not touch those files.
+
 ## Suite
 
 Started in the background on the final merged tree at 12:35 UTC (build + 240-binary run; the sandbox
