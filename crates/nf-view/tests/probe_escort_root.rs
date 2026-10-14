@@ -19,7 +19,12 @@ fn probe_root_block() {
     // The floor below the spot and the target.
     eprintln!("[root] floor at p: {:?}, at q: {:?}", sim.world.floor_below(p, 3.0), sim.world.floor_below(q, 3.0));
     // The run script's root per frame (danim 220 script 0x06002056).
-    let script = sim.scripts.get(&0x0600_2056).expect("run script");
+    // A probe must not fail the suite: skip cleanly when its input is absent (the slim ISO's
+    // 07000001 does not carry script 0x06002056 — probe_escort_root.rs:22 panicked here before).
+    let Some(script) = sim.scripts.get(&0x0600_2056) else {
+        eprintln!("[root] script 0x06002056 absent from this scene — skipping the root probe");
+        return;
+    };
     eprintln!("[root] script 0x06002056 length {}", script.length);
     let mut prev: Option<[f32;3]> = None;
     for f in 1..=40u32 {
