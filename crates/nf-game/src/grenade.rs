@@ -64,6 +64,39 @@ pub struct Grenade {
     /// acquired object there; the collision handler's stick path reuses the slot for the object it
     /// stuck to [M 0x12ce80:244]). An index into `Drones::list`, `None` until acquired.
     pub seek_target: Option<usize>,
+    /// fix-satchel-tripbomb: the stuck gadget's surface state (the satchel 0x3b / the tripbomb 0x3a;
+    /// the hat keeps its normal-free path). `Bullet_CollisionHandler` 0x12ce80:256-266 aligns the
+    /// bullet's matrix to the NEGATED hit normal and parks it `hit + normal·offset` along it (the
+    /// offset: 0.04 generic / 0x3b [:257-258, 323], 0.002 for the 0x80000 tripbomb [:334, 369-381]).
+    /// The renderer aligns the stuck model to `-normal` and the tripbomb's laser fires along `+normal`
+    /// (the stick matrix Z = −normal [M :266]; the beam end = pos − 200·Z [M 0x12efb8-0x12efc8]).
+    pub phase: Option<Box<StuckGadget>>,
+}
+
+/// fix-satchel-tripbomb: the stuck state of a +0x100 satchel/tripbomb (`Grenade.phase` — one box, the
+/// shared-constructor merge lesson 4; only the satchel 0x3b and the tripbomb 0x3a carry it).
+#[derive(Clone, Debug)]
+pub struct StuckGadget {
+    /// The surface normal the stick aligned to (HITDATA+0x10 [M 0x12ce80:256-266]).
+    pub normal: V3,
+    /// The tripbomb's post-stick arm countdown (`BU+0xFC` overwritten with 120.0 at the stick
+    /// [M 0x12ce80:330]; `Bullet_update` case 3 counts it down 1/tick and runs the laser block at
+    /// ≤ 0 [M 0x12e7b0 disasm 0x12efa4-0x12efc8 — the `+0x70 & 0x80000` arm]). The satchel never
+    /// sets it (its fuse is `Grenade.travelled`, ticked by `Bullet_DoTrails`' +0x200 arm, which runs
+    /// in state 3 too [M 0x12d890:262-285 — the decompile's `param_1 == 0` early-out tests the OBJ
+    /// pointer (a0), not the 4th float arg: disasm 0x12efe8 `mov.s $f12, $f21` with $f21 = 0.0]).
+    pub arm: f32,
+    /// The laser armed (`Bullet_update` case 3: the beam object created once + Sound 0x27c
+    /// [M 0x12ee30-0x12ee50]; `PositionBeam` 0x1a9400 stretches it every tick after).
+    pub armed: bool,
+    /// BU+0x100 — the displayed quarter-second latch (the 0x3b tail beeps only when it CHANGES
+    /// [M `Bullet_DoTrails` 0x12d890:435-444]).
+    pub last_qs: i16,
+    /// The countdown display the 0x3b tail spawns every tick: two kind-0x40 objects gfx
+    /// `SatchelDigits[sec/10]` / `SatchelDigits[sec%10]`, sec = `BU+0xFC`/60 [M 0x12d890:418-422,
+    /// 485-553; L SatchelDigits @0x2bed90 = 0x2000791..0x200079a]. (tens, units), `None` before the
+    /// first tail tick.
+    pub digits: Option<(u8, u8)>,
 }
 
 /// What a grenade did this tick.
@@ -77,6 +110,14 @@ pub enum GrenadeEvent {
     Stick(V3),
     /// Exploded at `pos` — the caller applies the explosion (radius, damage, owner) to drones and Bond.
     Explode { pos: V3, radius: f32, damage: f32, owner: usize, weapon_type: u16 },
+    /// fix-satchel-tripbomb: the tripbomb's laser armed — the beam object was created and Sound 0x27c
+    /// plays once [M `Bullet_update` case 3 0x12ee30-0x12ee50; the 0x27c sits inside the beam-create
+    /// `if (*(int *)(pauVar1[3] + 8) == 0)` block at 0x12ee48].
+    Arm(V3),
+    /// fix-satchel-tripbomb: the satchel's countdown beep (`Bullet_DoTrails` 0x12d890:441-443 — Sound
+    /// 0x447 when the quarter-second count CHANGES and `((qs & 3) == 0) || ((qs & 1) == 0 && sec < 10)
+    /// || (sec < 5)`; the 300-tick satchel sits at sec ≤ 5, so every quarter-second beeps).
+    Beep(V3),
 }
 
 /// The smoke grenade's cloud (`Occlude_Create(pos, 1200, kind)` 0x17ea80): a static class-0x2A object
@@ -141,9 +182,33 @@ impl Grenade {
         // to 0 at the stick (the game writes 1500.0 over the fuse slot, 0x12ce80:315) and counts
         // to `HAT_STICK_LIFE`.
         if self.stuck {
-            self.travelled += 1.0;
-            if self.travelled >= HAT_STICK_LIFE { self.state = 2; }
-            return None;
+            match self.weapon_type {
+                // The hat's silent post-stick lifetime (unchanged — fix-oddjob-hat).
+                0x45 => {
+                    self.travelled += 1.0;
+                    if self.travelled >= HAT_STICK_LIFE { self.state = 2; }
+                    return None;
+                }
+                // fix-satchel-tripbomb: the tripbomb's arm delay [M `Bullet_update` case 3, the
+                // `+0x70 & 0x80000` arm 0x12efa4-0x12efc8 — `BU+0xFC` −= FRAME_RATE_MUL per stuck
+                // tick, the laser block runs at ≤ 0]. 120.0 written at the stick [M 0x12ce80:330].
+                0x3a => {
+                    let Some(p) = self.phase.as_mut() else { return None };
+                    if p.arm > 0.0 { p.arm -= 1.0; return None; }
+                    if !p.armed {
+                        p.armed = true;
+                        return Some(GrenadeEvent::Arm(self.pos));
+                    }
+                    return None; // armed: the beam + the char trigger run in Drones::step (the drone list + Bond)
+                }
+                // fix-satchel-tripbomb: the satchel's fuse KEEPS TICKING while stuck —
+                // `Bullet_DoTrails` runs in state 3 (Bullet_update 0x12efd8's call passes the step
+                // 0.0, but its first gate tests the OBJ pointer a0 [M disasm 0x12d890-0x12d8c8], so
+                // the +0x200 fuse arm [M 0x12d890:262-285] still counts BU+0xFC down) — fall through
+                // to the shared fuse arm below with the movement skipped.
+                0x3b => {}
+                _ => return None,
+            }
         }
         // `Bullet_DoTrails` 0x12d890:268-273 [M]: weapon 0x37's fuse does NOT tick while it is the
         // player-armed 7777.0 — the mine waits for the detonator (`Player_WeaponInitBullet`'s
@@ -169,6 +234,9 @@ impl Grenade {
         // detonator, so it keeps the guard-thrown 420). Count ticks, not distance —
         // `weapon_data+0x1C` (5000) is the max-travelled range, a SILENT state-4 death, not the fuse
         // [M Bullet_update case 1: travelled > +0x1C → state 4, no explosion].
+        // fix-satchel-tripbomb: the fuse arm runs BEFORE the 0x3b tail (the game's `Bullet_DoTrails`
+        // order: the +0x200 decrement 0x12d890:262-285, then the family tail :418+ reads the
+        // DECREMENTED `BU+0xFC`).
         if !armed_mine {
             self.travelled += 1.0;
             if self.travelled > self.range {
@@ -180,6 +248,31 @@ impl Grenade {
                 return Some(GrenadeEvent::Explode { pos: self.pos, radius: self.radius, damage: self.damage, owner: self.owner, weapon_type: self.weapon_type });
             }
         }
+        // fix-satchel-tripbomb: the satchel's countdown tail (`Bullet_DoTrails` 0x12d890:418-553) —
+        // it runs for family 0x3b in EVERY state (the check sits behind the fuse block's merge label
+        // 0x12e1f8, before the function tail), so the beeps start in flight. The quarter-second count
+        // is `BU+0xFC · 0.06666667` (= /15), the seconds `· 0.016666668` (= /60) [M :421-422]; a beep
+        // only when the quarter-second CHANGES from BU+0x100 and `((qs & 3) == 0) || (((qs & 1) == 0
+        // && sec < 10)) || (sec < 5)` [M :441]; the two digit meshes re-spawn every tick [M :485-553].
+        if self.weapon_type == 0x3b && self.state < 2 {
+            let fuse = self.range - self.travelled;
+            let qs = (fuse * 0.066_666_67) as i16;
+            let sec = (fuse * 0.016_666_668) as i32;
+            if let Some(p) = self.phase.as_mut() {
+                if qs != p.last_qs {
+                    p.last_qs = qs;
+                    if (qs & 3) == 0 || ((qs & 1) == 0 && sec < 10) || sec < 5 {
+                        return Some(GrenadeEvent::Beep(self.pos));
+                    }
+                }
+                let sec = sec.max(0) as u8;
+                p.digits = Some((sec / 10, sec % 10));
+            }
+        }
+        // The stuck satchel stops here: `Bullet_update` case 3 zeroes the speed and the velocity
+        // [M 0x12e7b0 case 3 — `*(pauVar1[0xf] + 8) = 0; Vec_Zero(pauVar1)`] and only the fuse tail
+        // above runs (no movement, no collision).
+        if self.stuck { return None; }
         // First tick: half-speed (the game's `Rand_FRand(0.5) + 0.5` step [M 0x12e7c0]).
         let step = if self.state == 0 { rng.frand(0.5) + 0.5 } else { 1.0 };
         self.state = 1;
@@ -213,6 +306,30 @@ impl Grenade {
                     self.stuck = true;
                     self.travelled = 0.0;
                     return Some(GrenadeEvent::Stick(hit));
+                }
+                // fix-satchel-tripbomb: the +0x100 stick for the satchel 0x3b and the tripbomb 0x3a
+                // [M `Bullet_CollisionHandler` 0x12ce80 — the sticky arm :232-394 runs on a world hit
+                // (bVar7 == 0; a char hit bounces :239-249), sets `obj+0xF4 = 3` :255, aligns the
+                // matrix to the NEGATED hit normal :256-266 and parks at `hit + normal·offset`:
+                // the 0x3b arm offset uVar12 = 0.04 + Sound 0x4a7 [:257-258, 319-323]; the 0x80000
+                // tripbomb arm offset 0.002 + Sound 0x446 + `BU+0xFC = 120.0` [:325-334]]. The tripbomb's
+                // 6-placed cap walk [:335-370] runs in the Sim's Stick consumer. (The mine 0x37's own
+                // stick branch [:326-370] is the mine task's scope — the port keeps its bounce.)
+                if matches!(self.weapon_type, 0x3a | 0x3b) {
+                    let off = if self.weapon_type == 0x3a { 0.002f32 } else { 0.04 };
+                    let stuck_at = [hit[0] + normal[0] * off, hit[1] + normal[1] * off, hit[2] + normal[2] * off];
+                    self.pos = stuck_at;
+                    self.velocity = [0.0; 3];
+                    self.stuck = true;
+                    self.resting = false;
+                    self.phase = Some(Box::new(StuckGadget {
+                        normal,
+                        arm: if self.weapon_type == 0x3a { 120.0 } else { 0.0 },
+                        armed: false,
+                        last_qs: 0,
+                        digits: None,
+                    }));
+                    return Some(GrenadeEvent::Stick(stuck_at));
                 }
                 // fix-weapon-fire-modes [M Bullet_CollisionHandler 0x12ce80:194-206]: a `+0x70 & 0x4`
                 // record's round detonates at the contact — the Bounce event carries it to the Sim's
@@ -327,6 +444,7 @@ mod tests {
             pos: [0.0, 2.0, 0.0], velocity: [5.0, -5.0, 0.0], speed: 7.0, travelled: 0.0, range: 210.0,
             damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: 0, smoke_popped: false, resting: false,
             stuck: false, seek_target: None,
+            phase: None,
         };
         let mut rng = Rng::new(0);
         let mut bounced = false;
@@ -349,6 +467,7 @@ mod tests {
             pos: [0.0, 0.5, 0.0], velocity: [0.0, -30.0, 0.0], speed: 30.0, travelled: 190.0, range: 200.0,
             damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: BOUNCE_MAX, smoke_popped: false, resting: false,
             stuck: false, seek_target: None,
+            phase: None,
         };
         let mut rng = Rng::new(0);
         let mut bounced = false;
@@ -372,6 +491,7 @@ mod tests {
             pos: [0.0, 10.0, 0.0], velocity: [0.0, -30.0, 0.0], speed: 30.0, travelled: 0.0, range: 200.0,
             damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: BOUNCE_MAX - 1, smoke_popped: false, resting: false,
             stuck: false, seek_target: None,
+            phase: None,
         };
         if let Some(ev) = g.update(&w, &mut rng) { assert!(matches!(ev, GrenadeEvent::Bounce(_)), "one short: a bounce, got {ev:?}"); }
         else { assert!(g.bounces == BOUNCE_MAX, "the bounce counted"); }
@@ -386,6 +506,7 @@ mod tests {
             pos: [0.0, 0.05, 0.0], velocity: [0.01, -0.05, 0.0], speed: 0.05, travelled: 0.0, range: 300.0,
             damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 1, bounces: 0, smoke_popped: false, resting: false,
             stuck: false, seek_target: None,
+            phase: None,
         };
         let mut rng = Rng::new(0);
         let mut events = Vec::new();
@@ -409,5 +530,126 @@ mod tests {
         let hits2 = explode_propagate([0.0, 1.0, 0.0], 4.0, 100.0, &[(0, [10.0, 1.0, 0.0])], [10.0, 1.0, 0.0], 1.8, 1);
         assert!(hits2.drones.is_empty(), "drone beyond radius: no damage");
         assert!((hits2.player - 0.0).abs() < 1e-6, "player beyond radius: no damage");
+    }
+
+    /// A wall quad at z = 0 facing +z (the floor of `floor_world` keeps the grenade from falling out).
+    fn wall_world() -> CollisionWorld {
+        CollisionWorld::from_triangles(vec![
+            [[-100.0, 0.0, -100.0], [100.0, 0.0, 100.0], [100.0, 0.0, -100.0]],
+            [[-100.0, 0.0, -100.0], [-100.0, 0.0, 100.0], [100.0, 0.0, 100.0]],
+            // The wall: z = 0 plane, y from 0 to 4 (two triangles).
+            [[-100.0, 0.0, 0.0], [-100.0, 4.0, 0.0], [100.0, 4.0, 0.0]],
+            [[-100.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 4.0, 0.0]],
+        ])
+    }
+
+    fn satchel() -> Grenade {
+        Grenade {
+            pos: [0.0, 1.0, 2.0], velocity: [0.0, 0.0, -1.0], speed: 1.0, travelled: 0.0, range: 300.0,
+            damage: 2000.0, radius: 8.0, weapon_type: 0x3b, mesh: 0x0200_07b3, owner: usize::MAX, state: 0,
+            bounces: 0, smoke_popped: false, resting: false, stuck: false, seek_target: None, phase: None,
+        }
+    }
+
+    /// fix-satchel-tripbomb [M `Bullet_CollisionHandler` 0x12ce80:232-394 + `Bullet_DoTrails`
+    /// 0x12d890:262-285]: the satchel (0x3b, `+0x70 & 0x100` sticky [L record] + the 300-tick family
+    /// fuse [M 0x12c5a0:199-208]) STICKS at its first world contact — state 3, the phase carries the
+    /// hit normal and the 0.04 offset parks it just off the surface — and blows on the 301st tick
+    /// FROM THE THROW (the fuse ticks through the flight too). Sister: the fuse total is 300, not
+    /// the port's old default 210 (`Bullet_init`'s family arm, ((0x3b − 0x3b)·5 + 5)·60).
+    #[test]
+    fn satchel_sticks_at_the_wall_and_blows_at_tick_301() {
+        let w = wall_world();
+        let mut g = satchel();
+        let mut rng = Rng::new(0);
+        let mut stuck_at = None;
+        for t in 0..40 {
+            if let Some(ev) = g.update(&w, &mut rng) {
+                if matches!(ev, GrenadeEvent::Stick(_)) { stuck_at = Some(t); break; }
+                panic!("the satchel should stick first, got {ev:?}");
+            }
+        }
+        let stuck_tick = stuck_at.expect("the satchel sticks at the wall");
+        assert!(g.stuck, "the stick latch");
+        let p = g.phase.as_ref().expect("the phase box");
+        assert!((p.normal[2] - 1.0).abs() < 1e-4, "the normal faces +z (out of the wall): {:?}", p.normal);
+        assert!((g.pos[2] - 0.04).abs() < 1e-3, "parked 0.04 off the wall [M 0x12ce80:323]: {}", g.pos[2]);
+        assert_eq!(g.velocity, [0.0, 0.0, 0.0], "the stick zeroes the velocity [M case 3]");
+        // The beeps: every quarter-second change beeps at sec < 5 [M 0x12d890:441] — the first tail
+        // tick (fuse 299 → qs 19 ≠ the 0 latch, sec 4 < 5) beeps on the throw's FIRST tick.
+        let mut beeps = Vec::new();
+        let mut exploded = None;
+        for t in stuck_tick + 1..400 {
+            match g.update(&w, &mut rng) {
+                Some(GrenadeEvent::Beep(_)) => beeps.push(t),
+                Some(GrenadeEvent::Explode { radius, damage, .. }) => {
+                    exploded = Some(t);
+                    assert!((radius - 8.0).abs() < 1e-4 && (damage - 2000.0).abs() < 1e-3,
+                        "the satchel blast is the record's 8/2000 [L], got {radius}/{damage}");
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let boom = exploded.expect("the stuck satchel explodes at its fuse");
+        assert_eq!(boom, 300, "the fuse is 300 ticks FROM THE THROW (the 301st update, 0-indexed t=300), got {boom}");
+        assert!(!beeps.is_empty(), "the countdown beeps while stuck");
+        assert!((beeps[0] as i32 - stuck_tick as i32 - 1).abs() <= 1, "the first beep is the first stuck tail tick");
+        // The digits: sec = fuse/60 — just after the stick (fuse ~296) the display reads 04, and it
+        // has reached 00 by the blast [M 0x12d890:421-422, 485-553].
+        let p = g.phase.as_ref().unwrap();
+        assert_eq!(p.digits, Some((0, 0)), "the display counts down to 00");
+    }
+
+    /// Sister: a 210-tick fuse would have blown 91 ticks early — the pre-fix port's default. The
+    /// satchel still alive at tick 300 (pre-fix it exploded at 301 with fuse 210 → gone) proves the
+    /// family arm [M 0x12c5a0:199-208].
+    #[test]
+    fn satchel_fuse_is_not_the_default_210() {
+        let w = wall_world();
+        let mut g = satchel();
+        let mut rng = Rng::new(0);
+        for _ in 0..40 { if g.update(&w, &mut rng).is_some() { break; } }
+        assert_eq!(g.range, 300.0, "the satchel's fuse is the family arm's 300, not 210");
+        for _ in 0..250 { g.update(&w, &mut rng); }
+        assert!(g.state < 2, "alive past the old 210-tick mark (the family fuse)");
+    }
+
+    /// fix-satchel-tripbomb [M `Bullet_CollisionHandler` 0x12ce80:325-334 + `Bullet_update` case 3
+    /// 0x12efa4-0x12efc8]: the tripbomb (0x3a, sticky + the 0x80000 laser bit [L record 0x80100])
+    /// sticks flush (0.002), the stick overwrites the fuse slot with 120.0, and the laser arms on
+    /// the 120th stuck tick. Sister: it does NOT fuse-explode (the record carries no +0x200).
+    #[test]
+    fn tripbomb_arms_120_ticks_after_the_stick_and_never_fuse_explodes() {
+        let w = wall_world();
+        let mut g = Grenade {
+            pos: [0.0, 1.0, 2.0], velocity: [0.0, 0.0, -1.0], speed: 1.0, travelled: 0.0, range: 42857.0,
+            damage: 100.0, radius: 8.0, weapon_type: 0x3a, mesh: 0x0200_074f, owner: usize::MAX, state: 0,
+            bounces: 0, smoke_popped: false, resting: false, stuck: false, seek_target: None, phase: None,
+        };
+        let mut rng = Rng::new(0);
+        let mut stuck_tick = None;
+        for t in 0..40 {
+            if matches!(g.update(&w, &mut rng), Some(GrenadeEvent::Stick(_))) { stuck_tick = Some(t); break; }
+        }
+        let stuck_tick = stuck_tick.expect("the tripbomb sticks");
+        {
+            let p = g.phase.as_ref().unwrap();
+            assert!((p.arm - 120.0).abs() < 1e-4, "the stick writes the 120-tick arm [M 0x12ce80:330]");
+            assert!((g.pos[2] - 0.002).abs() < 1e-4, "parked 0.002 off the wall [M 0x12ce80:381]");
+        }
+        let mut armed_at = None;
+        for t in stuck_tick + 1..stuck_tick + 200 {
+            match g.update(&w, &mut rng) {
+                Some(GrenadeEvent::Arm(_)) => { armed_at = Some(t); break; }
+                Some(ev) => panic!("no event before the arm, got {ev:?}"),
+                None => {}
+            }
+        }
+        assert_eq!(armed_at, Some(stuck_tick + 121), "the laser arms the tick after the 120th decrement [M case 3]");
+        assert!(g.phase.as_ref().unwrap().armed, "the armed latch");
+        // Sister: no fuse explosion — 2000 more ticks stay silent (the record has no +0x200 [L]).
+        for _ in 0..2000 { assert!(g.update(&w, &mut rng).is_none(), "the tripbomb never fuse-explodes"); }
+        assert!(g.state < 2, "still alive");
     }
 }
