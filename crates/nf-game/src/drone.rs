@@ -4617,7 +4617,7 @@ impl Drone {
         Some(crate::grenade::Grenade {
             pos: origin, velocity: [dir[0] * speed, dir[1] * speed, dir[2] * speed], speed,
             travelled: 0.0, range, damage, radius, weapon_type, mesh: d.weapons.projectile_mesh(self.weapon as usize),
-            owner, state: 0, bounces: 0, smoke_popped: false,
+            owner, state: 0, bounces: 0, smoke_popped: false, explode_on_impact: false,
         })
     }
 
@@ -4818,7 +4818,42 @@ pub struct PlayerBullet { pub pos: V3, pub dir: V3, pub speed: f32, pub travelle
     /// `BU+0x40`: the current heat-seek target — an index into `Drones::list` (`Bullet_homing`'s
     /// `*(int*)(BU+0x40)` object pointer; none = re-scan, and the scan re-runs when the target
     /// dies [M 0x12f3b4: the `+0xfe & 1` clear-and-rescan]).
-    pub target: Option<usize> }
+    pub target: Option<usize>,
+    /// fix-weapon-fire-modes: the weapon record's `+0x6C` carries the 0x4 GUIDED-CAMERA bit —
+    /// `Bullet_init` 0x12c5a0:234-254 hands the view to the projectile: `Player_ChangeSubState
+    /// (owner, 10)`, `BLData+0x878 = the bullet obj`, `Player_SetCamMode(BLData, 0xc)`,
+    /// `BLData+0x944 = 0`. Only the AT-420 Sentinel 'Guided' record 0x2C (+0x6C = 0x12204 [L
+    /// ee_start_05.bin]) sets it — the 'Unguided' 0x2D (0x1a200) and the Torpedo 'Guided' 0x30
+    /// (0x20200, homing only) do not [L], matching the PCSX2 pass (only 0x2C puts the view on the
+    /// rocket).
+    pub guided_cam: bool }
+
+/// fix-weapon-fire-modes: the guided missile's look-input steering (`Bullet_update` 0x12e7b0:177-244,
+/// run while the owner rides the camera in substate 10): the look analog floats (the game's
+/// `Input_Actionf(slot, 0, 1)` yaw and `(slot, 5, 1)` pitch — the port's `Input.turn` / `Input.look`)
+/// scale by 0.024543693 (π/128) radians per input unit per tick [M :185-189], the yaw rotates about
+/// the world up and the pitch about the missile's right, and the pole clamp keeps the direction
+/// inside ±0.995 of vertical [M :191-202's `±0.995` spherical gates — a steering input that would
+/// push past the pole is dropped]. The game also banks a roll value (`BU+0x58`, decayed ×0.965 per
+/// tick [M :210-216]) that only feeds the HUD ring's rotation — the port's flight needs no roll.
+/// No RNG draws (determinism).
+pub fn steer_missile(dir: &mut V3, yaw_in: f32, pitch_in: f32) {
+    const K: f32 = 0.024_543_693; // π/128 [M 0x12e7b0:185]
+    const POLE: f32 = 0.995;      // [M 0x12e7b0:191-202]
+    let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-9);
+    let (x, y, z) = (dir[0] / len, dir[1] / len, dir[2] / len);
+    let pole_lim = POLE.asin(); // 1.4706 rad
+    let pitch = (y.clamp(-POLE, POLE)).asin();
+    // The pole gate: an input that would drive past ±0.995 of vertical is dropped [M :191-202].
+    let dp = (-pitch_in * K).clamp(-pole_lim - pitch, pole_lim - pitch);
+    let p2 = pitch + dp;
+    let yaw = x.atan2(z) - yaw_in * K;
+    let (sp, cp) = p2.sin_cos();
+    let (sy, cy) = yaw.sin_cos();
+    *dir = [cp * sy, sp, cp * cy];
+    let nl = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-9);
+    *dir = [dir[0] / nl, dir[1] / nl, dir[2] / nl];
+}
 
 /// What one of Bond's bullets hit: a drone (index, part) or the world, and where.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -5448,6 +5483,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 pos: from, dir, speed: f(0x20), travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0,
                 homing: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x2_0000 != 0,
                 target: None,
+                // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:234-254]: `+0x6C & 4` rides the camera.
+                guided_cam: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x4 != 0,
             });
         }
         // `Bullet_init_casing` 0x12fde0 (Player_WeaponInitBullet 0x1a4bf0:306, right after the
@@ -5462,10 +5499,43 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         if !sound.looped { self.sounds.push(Sound { id: sound.id, pos: from, inner: sound.inner, outer: sound.outer, weight: sound.weight }); }
     }
 
+    /// fix-weapon-fire-modes: the impact blast of a `+0x70 & 0x4` bullet (`Bullet_CollisionHandler`
+    /// 0x12ce80:194-206 → `Explode_Create(wd+8, wd+8, wd+0xC, …, 0x6000052, 0xff, 0xff, 100, owner)`
+    /// [M]) applied through the port's `Explode_Propagate` stand-in — the same application the
+    /// grenade fuse death runs in `Drones::tick` (drones msg 9, Bond `Player_Hurt`, the effect
+    /// script 0x6000052, the camera shake from radius 0.5 [M 0x17cc28]).
+    fn blast_at(&mut self, d: &Data, player: &Player, pos: V3, radius: f32, damage: f32, owner: usize, weapon: u16) {
+        if radius < 0.0002 && damage < 0.0002 { return; }
+        let frame = self.frame;
+        let drones: Vec<(usize, V3, f32)> = self.list.iter().enumerate()
+            .filter(|(_, x)| x.present && !x.corpse).map(|(i, x)| (i, x.pos, 0.4)).collect();
+        let hits = crate::explode::propagate(pos, radius, damage, owner,
+            &crate::explode::Targets { drones: &drones, player: player.pos, breaks: &[], destroys: &[] });
+        if let Some(ph) = hits.player {
+            let before = self.health.health;
+            self.health.pain_generic(ph, self.difficulty, d.level, 0);
+            self.player_hits.push((frame, owner, before - self.health.health));
+        }
+        for (di, ddmg) in hits.drones {
+            if let Some(dr) = self.list.get_mut(di) {
+                dr.last_damage = ddmg;
+                if owner == usize::MAX { dr.hit_by_player = true; }
+                dr.health -= ddmg * dr.damage_taken;
+                if dr.health <= 0.0 { dr.health = 0.0; dr.set_state(state::DEATH_ANIM); }
+                else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
+            }
+        }
+        let mut bm = [[0.0f32; 4]; 4];
+        bm[0][0] = 1.0; bm[1][1] = 1.0; bm[2][2] = 1.0; bm[3] = [pos[0], pos[1], pos[2], 1.0];
+        self.scripts.spawn_once_scaled(usize::MAX, 0x0600_0052, bm, radius * 0.0666_6667);
+        if radius >= 0.5 { self.shake = self.shake.max(radius); }
+        self.explosions.push((pos, radius, damage, owner, weapon));
+    }
+
     /// Bond's bullets for one tick (`Bullet_update`, `Collide_Update`): the segment of max(step, 1) units against the
     /// world and every live drone's boxes (`Collide_PickObj` sphere r 1.05 around the hips, then `Collide_Jointy`); the
     /// nearest wins. A drone hit sends msg 8 (`Drone_BulletHit`).
-    fn update_player_bullets(&mut self, d: &Data) {
+    fn update_player_bullets(&mut self, d: &Data, player: &Player) {
         self.player_impacts.clear();
         self.bullet_paths.clear();
         self.bullet_path_weapons.clear();
@@ -5564,6 +5634,17 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     b.dead = true;
                     let hit = at(w);
                     self.player_impacts.push(PlayerImpact::World(hit));
+                    // fix-weapon-fire-modes [M Bullet_CollisionHandler 0x12ce80:194-206]: `+0x70 & 4`
+                    // explodes at the contact — `Explode_Create(record+0x8, record+0x8, record+0xC,
+                    // …)` — the rocket records' impact blast (the Sentinel 0x2C/0x2D, the Scorpion
+                    // 0x2E/0x2F, +0x70 = 0x4 [L ee_start_05.bin]; the MGL 'Grenade' 0x2A and the
+                    // AIMS-20 0x1B take the grenade path's copy of the same branch).
+                    let flags70 = u32::from_le_bytes(d.weapons.records.get(b.weapon as usize).map_or([0; 4], |r| r[0x70..0x74].try_into().unwrap()).try_into().unwrap_or([0; 4]));
+                    if flags70 & 0x4 != 0 {
+                        let (radius, damage) = d.weapons.records.get(b.weapon as usize).map_or((0.0, 0.0), |r|
+                            (f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()), f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap())));
+                        self.blast_at(d, player, hit, radius, damage, usize::MAX, b.weapon);
+                    }
                     // `PlrStat_LogShotHitScenery(0)` 0x198408 (SP_Update 0x1dbda8:261; Destroy_Smash
                     // 0x12bb60:55 — the port folds the breakables into this world-hit path): the
                     // accuracy denominator nets to the enemy hits only (fix-progress).
@@ -6206,7 +6287,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             let armed = (2..0x47).contains(&self.bond_weapon) || (0x6a..=0x71).contains(&self.bond_weapon);
             for dr in self.list.iter_mut().filter(|x| x.present) { dr.light = light; dr.opponent_info(player); dr.seen = false; dr.bond_armed = armed; }
         }
-        self.update_player_bullets(d);
+        self.update_player_bullets(d, player);
         // The use objects' per-tick halves (`PCQWorm_Update` 0x1aee20's bullet install +
         // `Switch_Update` 0x1adea8's value/auto-return; map-tower, crate::useobj). The bullet
         // segments are this tick's paths — the game reads the class-5 contact list the same pass.

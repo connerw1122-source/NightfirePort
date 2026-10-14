@@ -235,6 +235,22 @@ pub struct DroneContext {
 
 /// The running game simulation (nf-game): drones plus the data they consult, and which character mesh shows which
 /// drone. Stepped at the game's fixed 60 Hz by the app; `animate` reads it.
+/// fix-weapon-fire-modes: the guided-missile camera ride (`Player_PositionCamera` case 0xc's view
+/// state + `Player_Update` substate 10's restore countdown, on the port's Sim). `pos`/`dir` track
+/// the live missile (`BLData+0x878`'s object); on its death `restore` counts the 15 ticks of
+/// `BLData+0x944` down with the view frozen (the red-static period) [M 0x12e660:26-30, 0x193600:242-256].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MissileCam {
+    /// The missile's last position (the camera sits at it [M 0x18f5d8 case 0xc]).
+    pub pos: [f32; 3],
+    /// The missile's facing (the view matrix = the missile's [M 0x18f5d8 case 0xc]).
+    pub dir: [f32; 3],
+    /// `BLData+0x944`: the post-impact static countdown [M `Bullet_Delete` 0x12e660:28 = 0xf].
+    pub restore: u16,
+    /// A live guided bullet still exists (`BLData+0x878 != 0`).
+    pub riding: bool,
+}
+
 pub struct Sim {
     pub drones: nf_game::drone::Drones,
     pub tables: DroneAnimData,
@@ -283,6 +299,15 @@ pub struct Sim {
     /// The fire trigger's last-tick state — the press edge the watch pair 0x54/0x55's mode toggle ORs
     /// in (`Player_Weapon` 0x1a24c8's `Input_Action(slot, 9, 4)`) (fix-weapon-modes).
     pub prev_trigger: bool,
+    /// fix-weapon-fire-modes: the guided-missile camera (`Bullet_init` 0x12c5a0:234-254 for a weapon
+    /// record with `+0x6C & 4` — only the AT-420 Sentinel 'Guided' 0x2C [L ee_start_05.bin]). While
+    /// `Some`, the view rides the projectile: position/direction = the bullet's [M
+    /// `Player_PositionCamera` 0x18f5d8 case 0xc — the view matrix IS the missile's], the look input
+    /// steers it [M `Bullet_update` 0x12e7b0:177-244], Bond's own arms are skipped (the game's player
+    /// substate 10 [M `Player_Update` 0x193600:242-256 — only the countdown runs]) and on the
+    /// missile's death the view freezes for the 15 ticks of `BLData+0x944` (the static period) before
+    /// the normal view returns [M `Bullet_Delete` 0x12e660:26-30 + `Player_Update` case 10].
+    pub missile_cam: Option<super::scene::MissileCam>,
     pub view_time: f32,
     pub view_speed: f32,
     pub bob: [f32; 2],
@@ -1356,6 +1381,14 @@ impl Sim {
     /// mode the mouse turn and look (`input.turn` radians, `input.look` units of π/2) first move the cursor within the
     /// aim box (±0.296 across, ±0.4 up) and turn the view only past its edge (pad aim mode; the mouse has none, D-002); the shot goes through the smoothed
     /// cursor (`Player_GetAimingPoint`).
+    /// fix-weapon-fire-modes: the renderer's view override while the guided camera rides the
+    /// missile — `Some((pos, dir))` [M `Player_PositionCamera` 0x18f5d8 case 0xc: the view matrix IS
+    /// the missile's `obj+0x90`; `View_SetDrawInOtherViewsOnly(BLData+0x878)` keeps the rocket body
+    /// out of its own view]. `None` = Bond's own view.
+    pub fn view_override(&self) -> Option<([f32; 3], [f32; 3])> {
+        self.missile_cam.map(|c| (c.pos, c.dir))
+    }
+
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
         nf_game::prof::tick();
         let _prof = nf_game::prof::scope("step_bond (total)");
@@ -1369,6 +1402,33 @@ impl Sim {
             self.drones.lights.update(&|c| channels.on(c as u32), frame, rng);
         }
         self.shot_tick = false;
+        // fix-weapon-fire-modes: the guided-missile camera ride. While it is up, Bond's own arms do
+        // not run — the game's player substate 10 arm is ONLY the restore countdown [M
+        // `Player_Update` 0x193600:242-256; `Player_ChangeSubState(10)` cleared the anim set] — and
+        // the look input steers the missile instead [M `Bullet_update` 0x12e7b0:177-244, gated on
+        // `owner+0xF6 == 10`]. The steering runs here, before the drones' tick moves the bullet
+        // along its (now steered) direction.
+        if let Some(cam) = self.missile_cam.as_mut() {
+            let live = self.drones.player_bullets.iter_mut().find(|b| b.guided_cam && !b.dead);
+            if let Some(b) = live {
+                nf_game::drone::steer_missile(&mut b.dir, input.turn, input.look);
+                cam.pos = b.pos;
+                cam.dir = b.dir;
+                cam.riding = true;
+            } else {
+                if cam.riding { cam.restore = 15; cam.riding = false; } // [M 0x12e660:28 `+0x944 = 0xf`]
+                if cam.restore == 0 {
+                    // [M 0x193600:252-254: `Player_SetCamMode(BLData, 0)`, the saved substate back]
+                    self.missile_cam = None;
+                } else {
+                    cam.restore -= 1;
+                }
+            }
+            // The substate-10 player runs no weapon/movement arms: the port zeroes the input and
+            // holds the trigger [M 0x193600 case 10 — nothing else runs].
+            input = nf_game::player::Input::default();
+        }
+        let trigger = trigger && self.missile_cam.is_none();
         // The smoke puffs (`gases_smoke` 0x1ab2d0 [S] simplified) tick with the sim.
         for s in self.smoke.iter_mut() { s.update(); }
         // The laser/stunner fire model [M Player_WeaponFiring 0x1a5460's held-fire branch →
@@ -2198,7 +2258,16 @@ impl Sim {
                     // weapon_data+0x1C (0x34's +0x1C is 5000.0 [L ee_start_07000001.bin, audit
                     // fix-player2 claim 8]). The port's `Grenade.range` doubles as the tick fuse.
                     let wt = u16::from_le_bytes([w[2], w[3]]);
-                    let fuse = if u32::from_le_bytes(w[0x70..0x74].try_into().unwrap()) & 0x10000 != 0 { 300.0 } else { 210.0 };
+                    let flags70 = u32::from_le_bytes(w[0x70..0x74].try_into().unwrap());
+                    // fix-weapon-fire-modes [M Bullet_DoTrails 0x12d890:262-281]: only `+0x70 & 0x200`
+                    // records tick a fuse (BU+0xFC −= 1 per tick, exploded at < 0) — 210 ticks, 300
+                    // with +0x70 & 0x10000, the mine 0x37 → 420. The impact records 0x2A/0x1B carry
+                    // NO fuse bit: they range out SILENTLY at +0x1C units [M Bullet_update
+                    // 0x12e7b0:158-162 state 4] — the port models that as the tick-equivalent
+                    // (+0x1C / speed) with `explode_on_impact` killing them at the first contact.
+                    let fuse = if flags70 & 0x200 == 0 {
+                        (f32_at(0x1c) / speed).max(1.0)
+                    } else if flags70 & 0x10000 != 0 { 300.0 } else { 210.0 };
                     let fuse = if wt == 0x37 { 420.0 } else { fuse };
                     // The blast damage: `weapon_data+0x0C` [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` →
                     // Explode_Create's f14 → EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15);
@@ -2217,6 +2286,11 @@ impl Sim {
                         weapon_type: wt,
                         mesh: self.weapons.projectile_mesh(self.gun.weapon as usize),
                         owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false,
+                        // fix-weapon-fire-modes [M Bullet_CollisionHandler 0x12ce80:194-206]:
+                        // `+0x70 & 0x4` — the MGL's 'Grenade' 0x2A and the AIMS-20's underbarrel
+                        // 0x1B explode on the first contact; their 'Delay'/gun twins (0x2B +0x70
+                        // = 0x280) carry the 0x100 bounce instead [L ee_start_05.bin].
+                        explode_on_impact: u32::from_le_bytes(w[0x70..0x74].try_into().unwrap()) & 0x4 != 0,
                     });
                 } else if spawn_shot {
                     self.last_shot = Some(self.drones.frame);
@@ -2256,6 +2330,14 @@ impl Sim {
                     };
                     let sound = self.sfx.as_ref().map(|t| t.get(hearing_id)).unwrap_or(nf_formats::sfx::SfxHearing { id: hearing_id, inner: 0.0, outer: 0.0, weight: 0.0, looped: false, cull: false });
                     self.drones.fire_player(&d, camera, dir, self.gun.weapon, sound);
+                    // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:248-253]: a `+0x6C & 4` shot hands
+                    // the view to the projectile — `Player_ChangeSubState(owner, 10)`, `BLData+0x878 =
+                    // the bullet`, `Player_SetCamMode(BLData, 0xc)`, `BLData+0x944 = 0`.
+                    if flags6c & 0x4 != 0 {
+                        if let Some(b) = self.drones.player_bullets.last() {
+                            self.missile_cam = Some(MissileCam { pos: b.pos, dir: b.dir, restore: 0, riding: true });
+                        }
+                    }
                 }
             }
         }
@@ -4080,7 +4162,7 @@ impl Scene {
             // 0x1c7e78:25] and the front-end boot keeps it until 180-fix-menus wires the page's
             // write (C_SBNFDFCTY 0x216ca8) into `set_difficulty`.
             drones.difficulty = 1;
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false, missile_cam: None,
                 wire_cels, laser_beam: None, stunner_target: None,
             })
         });

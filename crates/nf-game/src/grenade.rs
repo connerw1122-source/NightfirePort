@@ -47,6 +47,15 @@ pub struct Grenade {
     /// 0x20280]) popped its `Occlude_Create` cloud on the first fuse expiry — the second expiry kills it
     /// [M Bullet_DoTrails 0x12e104-0x12e118: `lh +0xF6; bnel → the death end`].
     pub smoke_popped: bool,
+    /// fix-weapon-fire-modes: `weapon_data+0x70 & 0x4` — the bullet EXPLODES on its first world
+    /// contact instead of bouncing: `Bullet_CollisionHandler` 0x12ce80:194-206 runs `Explode_Create
+    /// (record+0x8 radius, record+0x8, record+0xC damage, …)` at the hit point when the flag is set
+    /// and the hit is not an object bounce. The Militek MGL's 'Grenade' record 0x2A (+0x70 = 0x4 [L
+    /// ee_start_05.bin]) is the user's missing impact mode; the 'Delay' twin 0x2B (+0x70 = 0x280 —
+    /// 0x100 bounce + 0x200 fuse, NO 0x4) bounces to its 210-tick fuse like the frag 0x34.
+    /// These records carry NO fuse bit (`+0x70 & 0x200`), so a ranged-out impact grenade dies
+    /// SILENTLY (the game's state-4 arm has no `Explode_Create` [M Bullet_update 0x12e7b0:158-162]).
+    pub explode_on_impact: bool,
 }
 
 /// What a grenade did this tick.
@@ -102,6 +111,12 @@ impl Grenade {
         self.travelled += 1.0;
         if self.travelled > self.range {
             self.state = 2;
+            // fix-weapon-fire-modes [M Bullet_update 0x12e7b0:158-162]: the range-out arm is a
+            // SILENT state-4 death — no `Explode_Create` here. The fuse explosion lives in
+            // `Bullet_DoTrails` (+0x70 & 0x200 records only). An impact grenade (0x2A, no fuse
+            // bit) therefore dies quietly if it never touches anything; a fuse grenade (0x2B,
+            // 0x34…) explodes — the port fused the two into one Explode before.
+            if self.explode_on_impact { return None; }
             return Some(GrenadeEvent::Explode { pos: self.pos, radius: self.radius, damage: self.damage, owner: self.owner, weapon_type: self.weapon_type });
         }
         // First tick: half-speed (the game's `Rand_FRand(0.5) + 0.5` step [M 0x12e7c0]).
@@ -122,6 +137,13 @@ impl Grenade {
         if speed2 > 1e-12 {
             if let Some((t, normal, mat)) = world.segment_surface(self.pos, end, false) {
                 let hit = [self.pos[0] + (end[0] - self.pos[0]) * t, self.pos[1] + (end[1] - self.pos[1]) * t, self.pos[2] + (end[2] - self.pos[2]) * t];
+                // fix-weapon-fire-modes [M Bullet_CollisionHandler 0x12ce80:194-206]: `+0x70 & 0x4`
+                // explodes at the contact with the record's radius/damage — the MGL's 'Grenade'
+                // mode 0x2A (+0x70 = 0x4 [L]) detonates on the wall, no bounce, no fuse wait.
+                if self.explode_on_impact {
+                    self.state = 2;
+                    return Some(GrenadeEvent::Explode { pos: hit, radius: self.radius, damage: self.damage, owner: self.owner, weapon_type: self.weapon_type });
+                }
                 // Bounce: reflect the velocity by the surface normal, × the material coefficient [L 0x3037dc].
                 let v = self.velocity;
                 let dot = v[0] * normal[0] + v[1] * normal[1] + v[2] * normal[2];
@@ -212,7 +234,7 @@ mod tests {
         // fuse expires.
         let mut g = Grenade {
             pos: [0.0, 2.0, 0.0], velocity: [5.0, -5.0, 0.0], speed: 7.0, travelled: 0.0, range: 210.0,
-            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: 0, smoke_popped: false,
+            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: 0, smoke_popped: false, explode_on_impact: false,
         };
         let mut rng = Rng::new(0);
         let mut bounced = false;
@@ -233,7 +255,7 @@ mod tests {
         // "it blows up immediately as soon as it hits the ground".)
         let mut g = Grenade {
             pos: [0.0, 0.5, 0.0], velocity: [0.0, -30.0, 0.0], speed: 30.0, travelled: 190.0, range: 200.0,
-            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: BOUNCE_MAX, smoke_popped: false,
+            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: BOUNCE_MAX, smoke_popped: false, explode_on_impact: false,
         };
         let mut rng = Rng::new(0);
         let mut bounced = false;
@@ -255,7 +277,7 @@ mod tests {
         // Sister: one bounce short (19) with a fast reflection it keeps flying.
         let mut g = Grenade {
             pos: [0.0, 10.0, 0.0], velocity: [0.0, -30.0, 0.0], speed: 30.0, travelled: 0.0, range: 200.0,
-            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: BOUNCE_MAX - 1, smoke_popped: false,
+            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: BOUNCE_MAX - 1, smoke_popped: false, explode_on_impact: false,
         };
         if let Some(ev) = g.update(&w, &mut rng) { assert!(matches!(ev, GrenadeEvent::Bounce(_)), "one short: a bounce, got {ev:?}"); }
         else { assert!(g.bounces == BOUNCE_MAX, "the bounce counted"); }
@@ -268,7 +290,7 @@ mod tests {
         let w = floor_world();
         let mut g = Grenade {
             pos: [0.0, 0.05, 0.0], velocity: [0.01, -0.05, 0.0], speed: 0.05, travelled: 0.0, range: 300.0,
-            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 1, bounces: 0, smoke_popped: false,
+            damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 1, bounces: 0, smoke_popped: false, explode_on_impact: false,
         };
         let mut rng = Rng::new(0);
         let mut events = Vec::new();
