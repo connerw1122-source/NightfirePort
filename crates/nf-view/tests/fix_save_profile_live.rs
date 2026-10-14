@@ -153,11 +153,12 @@ fn completing_a_mission_unlocks_and_saves() {
     }
     // The host's merge: the sim's tally becomes the profile's progress before the save
     // [M the game writes its MSSN/BNUS from the live state the results page reads].
-    fe.mission = 0;
+    fe.mission = 1; // 07000005 is the campaign's row 1
     fe.sync_profile_progress(&sim.drones.progress);
-
-    fe.mission_ended(Outcome::Complete, Stats { shots_fired: 0, shots_hit: 0, accuracy_pct: 0, time_s: 1 });
-    assert!(fe.unlocked[1], "completing row 0 unlocks row 1 [M 0x1ffa10:63-65]");
+    // The results page's enter runs against the LIVE layer [M P_NFRESULTS 0x208e78:77
+    // GetScore(0) + :169 Menu_SetLevelBonus]; the save follows the award [M the save prompt].
+    fe.results_enter(&mut sim.drones.progress, 0x0700_0005, 6, 2, None);
+    assert!(fe.unlocked[1], "completing row 1 (07000005) unlocks row 2 [M 0x1ffa10:63-65]");
     assert!(fe.save_profile(), "the results save wrote the file");
 
     // A new session loads it back on the codename page and the unlock survives.
