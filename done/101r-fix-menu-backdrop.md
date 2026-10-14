@@ -40,3 +40,8 @@ claimed-by: sandbox5 at 2026-10-14T10:30Z
 ---
 ## Report (done, 2026-10-14T12:22Z)
 
+
+---
+## Report from the worker (done, 2026-10-14T12:22Z)
+
+Closed by the driver: the report is on `s/fix-menu-backdrop` (docs/reports/fix-menu-backdrop.md); the worker didn't run finish.sh.
