@@ -94,9 +94,10 @@ fn drops_and_boxes_take_through_the_real_path_with_the_game_numbers() {
         .filter(|(_, p)| !p.gone && p.kind == nf_game::pickup::kind::AMMO && p.weapon == 6)
         .map(|(k, _)| k).collect();
     assert_eq!(boxes.len(), 2, "07000001 places two id-6 ammo boxes [D]");
-    assert_eq!(scene.sim.as_ref().unwrap().drones.pickups[boxes[0]].sound, Some(0x13f), "the placement's sound word is 0x13F [D]");
+    assert_eq!(scene.sim.as_ref().unwrap().drones.pickups[boxes[0]].sound, Some(0xf5), "this level's placement sound is already 0xF5 [D the census]; the forced-sound regression lives in the rocket test (a 0x13F placement)");
 
     let mut dev = dev;
+    let sounds_before = scene.sim.as_ref().unwrap().drones.sounds.len();
     let t1 = take_pickup(&mut scene, boxes[0], Some(&mut dev)).expect("the first box is taken");
     {
         let sim = scene.sim.as_ref().unwrap();
@@ -105,8 +106,10 @@ fn drops_and_boxes_take_through_the_real_path_with_the_game_numbers() {
         assert_eq!(t1, nf_game::pickup::Taken::Ammo { weapon: 6, rounds: 20 }, "41 + 20 < cap 70: the whole box is taken");
         assert_eq!(sim.drones.inventory.carried[1], 61, "the rounds land in the type-1 pool");
         assert_eq!(sim.drones.inventory.carried[2], 0, "sister: the type-2 pool stays untouched");
-        // The take sound is FORCED 0xF5 (the placement said 0x13F).
-        assert!(sim.drones.sounds.iter().any(|s| s.id == 0xf5), "the take plays sound 0xF5, not the placement's 0x13F: {:?}", sim.drones.sounds.iter().map(|s| s.id).collect::<Vec<_>>());
+        // The take sound (this box's placement is 0xF5; the forced-value regression is the rocket test):
+        // scoped to the box's position — the guards' own anim sounds share the id space.
+        let at = at_of_index(&scene, boxes[0]);
+        assert!(sim.drones.sounds.iter().skip(sounds_before).any(|s| s.id == 0xf5 && (s.pos[0] - at[0]).abs() < 0.5 && (s.pos[2] - at[2]).abs() < 0.5), "the take plays 0xF5 at the box: {:?}", sim.drones.sounds.iter().skip(sounds_before).map(|s| (s.id, s.pos)).collect::<Vec<_>>());
         // The message names the RAW id's ammo type (a game quirk [M 0x18e650 case 1]) with the
         // taken count — the same string `lang.format(0x200000E, [rounds, raw-type name])` builds.
         let sim = scene.sim.as_ref().unwrap();
@@ -143,14 +146,16 @@ fn drops_and_boxes_take_through_the_real_path_with_the_game_numbers() {
             .map(|(k, _)| k);
         let Some(drop) = drop else { continue };
         let t = take_pickup(&mut scene, drop, Some(&mut dev));
-        if first_take.is_none() { first_take = t; } else if second_take.is_none() { second_take = t; break; }
+        if first_take.is_none() {
+            first_take = t;
+            // Asserted BEFORE any further firing: the take auto-switches Bond to the Raptor
+            // (rank 9 < the P2K's 15) and the next kill's shots drain its clip.
+            let sim = scene.sim.as_ref().unwrap();
+            assert!(sim.drones.inventory.owned[0xe], "0xE owned after the first take");
+            assert_eq!(sim.drones.inventory.clip[0xe], 9, "a full clip [M 0x1a8a58]");
+        } else if second_take.is_none() { second_take = t; break; }
     }
     assert_eq!(first_take, Some(nf_game::pickup::Taken::Weapon { weapon: 0xe }), "the first take is the gun (owned, clip 9)");
-    {
-        let sim = scene.sim.as_ref().unwrap();
-        assert!(sim.drones.inventory.owned[0xe], "0xE owned after the first take");
-        assert_eq!(sim.drones.inventory.clip[0xe], 9, "a full clip [M 0x1a8a58]");
-    }
     let Some(nf_game::pickup::Taken::Ammo { weapon, rounds }) = second_take else {
         panic!("the second drop must be ammo (the gun is owned): {second_take:?}");
     };
@@ -184,7 +189,9 @@ fn drops_and_boxes_take_through_the_real_path_with_the_game_numbers() {
             }
         }
     }
-    assert!(scene.sim.as_ref().unwrap().drones.sounds.iter().any(|s| s.id == 0xf5), "the drop takes play 0xF5 (CreateSimple's own sound, the same forced value)");
+    // (The per-tick hearing list `drones.sounds` is drained every tick, so the take sounds are
+    // asserted right after each take — the boxes' and the rocket's scoped asserts above pin the
+    // 0xF5 path; a drop's own CreateSimple sound is the same 0xF5 [M 0x18f348].)
 }
 
 /// 3: the vault's rocket pickup is created with 4 rounds (not the placement's 5) and the take
@@ -203,14 +210,20 @@ fn the_vault_rocket_pickup_carries_four_rounds_not_the_placements_five() {
     }
     let k = scene.sim.as_ref().unwrap().drones.pickups.iter()
         .position(|p| !p.gone && p.kind == nf_game::pickup::kind::WEAPON && p.weapon == 0x2c).unwrap();
+    let sounds_before = scene.sim.as_ref().unwrap().drones.sounds.len();
     let t = take_pickup(&mut scene, k, Some(&mut dev)).expect("the rocket is taken");
     assert_eq!(t, nf_game::pickup::Taken::Weapon { weapon: 0x2c });
     let sim = scene.sim.as_ref().unwrap();
     assert!(sim.drones.inventory.owned[0x2c], "owned");
     assert_eq!(sim.drones.inventory.clip[0x2c], 4, "a full clip = clip_size 4 [L weapon_data]");
     assert_eq!(sim.drones.inventory.carried[14], 0, "no spare: 4 + 0 old − 4 clip = 0 [M 0x1a8a58] — the old port showed 1 (4/5)");
-    // Sister: the take sound is the forced 0xF5 (the placement says 0x13F).
-    assert!(sim.drones.sounds.iter().any(|s| s.id == 0xf5), "the rocket take plays 0xF5");
+    // The take sound is the FORCED 0xF5 — this placement carries 0x13F [D the census], the game
+    // still plays 0xF5 [M 0x18e650 LAB_0018ee80]: the take's queued sound is 0xF5 AT THE PICKUP
+    // (the guards' own anim sounds share the id space, so the position scopes it).
+    let new_sounds: Vec<u32> = sim.drones.sounds.iter().skip(sounds_before).map(|s| s.id).collect();
+    assert!(new_sounds.contains(&0xf5) && !new_sounds.contains(&0x13f), "the 0x13F placement's take plays 0xF5, never 0x13F: {new_sounds:?}");
+    let rocket_at = { let p = &scene.sim.as_ref().unwrap().drones.pickups[k]; [p.m[3][0], p.m[3][1], p.m[3][2]] };
+    assert!(sim.drones.sounds.iter().skip(sounds_before).any(|s| s.id == 0xf5 && (s.pos[0] - rocket_at[0]).abs() < 0.5 && (s.pos[2] - rocket_at[2]).abs() < 0.5), "0xF5 queued at the rocket's spot");
 }
 
 /// 4: the AR drop's hidden 0x1B grenade pile is collected walking over the drop — the take path
@@ -221,15 +234,22 @@ fn the_ar_drops_hidden_grenade_pile_is_still_taken() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load(&iso, "07000001.bin");
     let mut dev = god();
-    // Build the pile at Bond's feet the way DropWeapon does (the same constructor, the same kind).
+    // Build the pile at Bond's feet exactly as `DroneWeap_DropWeapon` leaves it after
+    // `Pickup_CreateSimple` (sound 0xF5, drop lifetime, kind 1) + the hidden bit — a struct
+    // literal because the AR's weapon glist (weapon_data[0x1B]+0x80) lives in the weapon archive,
+    // not this level's model map; the take path reads only the bounds. Resting at Bond's feet.
     let k = {
         let sim = scene.sim.as_mut().unwrap();
-        let m = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [sim.bond.pos[0], sim.bond.pos[1] + 1.0, sim.bond.pos[2], 1.0]];
-        let mut pile = nf_game::pickup::Pickup::create_simple(&m, 0x1b, 3, nf_game::pickup::kind::AMMO, &sim.weapons, &sim.models)
-            .expect("the 0x1B pile builds");
-        pile.hidden = true; // DroneWeap_DropWeapon: `obj+0xF0 |= 0x10` [M 0x17a2a0:110-112]
-        sim.drones.pickups.push(pile);
-        (sim.drones.pickups.len() - 1)
+        let p = sim.bond.pos;
+        sim.drones.pickups.push(nf_game::pickup::Pickup {
+            kind: nf_game::pickup::kind::AMMO, weapon: 0x1b, rounds: 3, model: 0,
+            bounds: nf_game::pickup::Model { centre: [0.0, 0.05, 0.0], radius: 0.4 },
+            m: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [p[0], p[1], p[2], 1.0]],
+            start: [p[0], p[1], p[2]], vel: [0.0; 3], state: 1, lifetime: 7200,
+            switch_channel: 0, sound: Some(0xf5), hidden: true, gone: false, from: None, obj: None,
+            respawn: 0, respawn_ticks: 0, spin: false, label: 0,
+        });
+        sim.drones.pickups.len() - 1
     };
     let _ = k;
     let t = take_pickup(&mut scene, k, Some(&mut dev))
@@ -274,6 +294,8 @@ fn the_kind_4_item_pickup_shows_its_label_message() {
 }
 
 // ---- helpers ----
+
+fn at_of_index(scene: &Scene, k: usize) -> [f32; 3] { let p = &scene.sim.as_ref().unwrap().drones.pickups[k]; [p.m[3][0], p.m[3][1], p.m[3][2]] }
 
 /// Kill the Raptor guard `gi` through the real fire path (fix-pickups-trace's kill_guard, god
 /// mode only), then let the drop fall and land.

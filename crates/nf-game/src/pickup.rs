@@ -758,9 +758,10 @@ mod tests {
     fn the_id_6_ammo_boxes_credit_the_p2k_pool_through_upgrade_weapon() {
         let w = table();
         let mut inv = Inventory::level_start(0x73, 34);
-        // weapon 6 record: ammo type 2 (L) — the old port path credited type 2's cap-90 pool.
-        assert_eq!(w.ammo_type(6), 2, "weapon 6 is ammo type 2 [L]");
-        assert_eq!(w.ammo_type(2), 1, "weapon 2 (the P2K) is ammo type 1 [L]");
+        // The composition targets record 2's pool (the disc: weapon 6 is ammo type 2 [L],
+        // weapon 2 type 1 — the live NF_ISO test pins those; here the synthetic table's
+        // record 2 is type 1 and the cap-70 pool).
+        assert_eq!(Inventory::upgrade_ammo_id(Inventory::upgrade_weapon(6, 0, 1), 0, 1), 2, "Upgrade_Weapon(6) = 2 [L UpgradedHandguns[0]], EquipAmmo's remap is the identity on 2");
         let p = Pickup::create(&[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0; 4]], 6, 20, kind::AMMO, 0, Model { centre: [0.0; 3], radius: 0.5 });
         let mut armour = 0.0;
         let taken = inv.take(&w, &p, true, &mut armour, 1).expect("the box is taken");
@@ -772,7 +773,7 @@ mod tests {
         assert_eq!(inv.take(&w, &p, true, &mut armour, 1), None, "at the type-1 cap the box is refused");
         // The composition is the identity for ids outside the tables.
         assert_eq!(Inventory::upgrade_ammo_id(Inventory::upgrade_weapon(0x18, 0, 1), 0, 1), 0x18);
-        assert_eq!(Inventory::upgrade_ammo_id(Inventory::upgrade_weapon(0x1f, 0, 1), 0, 1), 0x25, "0x1f still remaps through the sniper upgrade");
+        assert_eq!(Inventory::upgrade_ammo_id(Inventory::upgrade_weapon(0x1f, 0, 1), 0, 1), 0x1f, "0x1f: Upgrade_Weapon(0x1e) = SNIPERS[0] = 0x1e, +1 = 0x1f — the identity at slot 0 (it bites only with the shop upgrade [L 0x2bee28])");
     }
 
     /// `Pickup_Create`'s rounds override [M 0x18dda0: `GameState+0x12 == 0x7000008 && id == 0x2c →
