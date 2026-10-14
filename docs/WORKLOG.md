@@ -9379,3 +9379,26 @@ Work Log:
 - Session started 01:17 UTC (deadline ~03:15 UTC). Branch s/fix-cutscene-models created from
   origin/master (8144bd6), pushed with this entry.
 - (next: the cutscene_models_live test through the real script path; the bisect worktrees)
+- The census net (crates/nf-view/tests/cutscene_models_live.rs): (1) the sim census through the
+  real triggers (07 TouchOnce #412 Kimiko 0x06000073, #356 fly-through 0x06000072): every
+  pre-built script character's Obj::Anim live and its script_pose_together finite mid-scene;
+  (2) the render-path census (script camera -> eye_cell -> the portal walk's strict room mask ->
+  skin_palette): no actor lands FAR or collapsed (Kimiko: real 3 / far 0; fly-through: real 13 /
+  far 0); (3) the live app's persistent ViewerCel emulation across the scene (per-tick eye_cell
+  from the script camera): eye cell stable, no FAR; (4) the 10 scene hashes across
+  05/06/07/08 (05: 060008c8/0952/0994/0a22; 06: 06000071; 07: 072/073; 08: 06000077/078/0991)
+  driven through the SPs' own out-channel + activation (SP_Update 0x1dbda8 state 0), censused at
+  three checkpoints.
+- Result: every scene's actors DRAW on master (8144bd6) AND on the playtest build (3c77a9d,
+  run in a worktree at the pre-anim-events master). The candidate diffs read: fix-gpu-skinning's
+  merged diff (942e2ca) is behavior-preserving (the tick-scheduler extraction, no shader/palette
+  change); fix-anim-events (dd1cd7b, post-playtest) is drone weapon events, not actor creation;
+  fix-script-commands/facial2/anim-blend2 all predate the playtest and the paths they touch are
+  covered green by the census.
+- NOT reproduced headlessly; the un-coverable remainder: the GPU skinning draw (the palette
+  upload + shader — no Vulkan ICD in the sandbox) and the playtest launcher's exact build. The
+  report files the live checks (re-run the playtest on current master first; --shot a mid-scene
+  frame; gdbwatch the palette upload if the GPU path is the culprit).
+- The tests stay as the regression net: any future break of actor liveness, pose finiteness,
+  room-mask FAR or the frame_state collapse fails them. What's left for 291-fix-cutscene-actors:
+  actor positions/skins in general (untouched here).
