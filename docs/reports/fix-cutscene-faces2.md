@@ -47,6 +47,9 @@ count (fix-facial3's stand-in probe), and keep master's exact-math code paths.
   `the_face_track_no_longer_poses_the_driver_bones` and
   `the_truck_driver_is_a_morph_source_and_holds_his_seat`) proves the flags swap is
   behaviour-identical where the count probe was verified: 04000065 carries bit 0x8.
+- **nf-game lib on the final tree** (merged with eb52fb56): 152 passed / 0 failed — master's
+  facial3_tests (the `AnimFacialUpdate` 0x1be310 state machine) and every anim unit test green
+  with the flags classifier in place.
 - **Targeted tests, final tree** (merged with eb52fb56): fix_cutscenes2_live 5/5,
   fix_cutscenes_live 4/4, facial3_live 3/3, facial2_live 2/2, cutscene_draw_live 2/2,
   cutscene_models_live 4/4 — 20 passed, 0 failed.
