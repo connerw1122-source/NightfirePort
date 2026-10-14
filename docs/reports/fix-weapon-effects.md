@@ -49,7 +49,7 @@ differ], so carrying the fired id re-points exactly the twins.
 
 ## Verification (all through the real input path)
 
-`crates/nf-view/tests/fix_weapon_effects_live.rs` — 5 tests, all failing pre-fix, all green
+`crates/nf-view/tests/fix_weapon_effects_live.rs` — 6 tests, all failing pre-fix, all green
 post-fix and on the merged tree (origin/master 810c109):
 
 1. `the_sentinel_missile_explodes_on_impact` — the missile (given through the dev panel, the fire
@@ -72,9 +72,14 @@ post-fix and on the merged tree (origin/master 810c109):
    in place any regression is caught; if the console-side symptom persists, the live check below
    covers it.)
 
+6. `one_p2k_shot_spawns_exactly_the_game_effect_set` — one pull: the muzzle light with the
+   record's radius 7.0 / rgb (255,138,0) [+0x58/+0x56/55/54, L; M Player_MuzzleFlash 0x1a4298], the
+   smoke puff inside its ~8-tick life (the +0x68 = 0x1004 record clears the 0x2000 no-smoke bit),
+   the shot's casing ejected, exactly one bullet resolved, no blast (+0x70 = 0x12).
+
 Regression on the merged tree: `fix_weapons_all_live` 4/4 (the frag fuse / stun flash tests ride
 the reworked grenade Explode path unchanged), `explode_live` 2/2, `fix_weapon_modes_live` 8/8,
-`fix_death_restart_live` 6/6, `fix_weapon_effects_live` 5/5.
+`fix_death_restart_live` 6/6, `fix_weapon_effects_live` 6/6.
 
 ## The laser / stunner question (the task's explicit investigation)
 
@@ -124,10 +129,10 @@ constructor line, one private fn, the queue block).
 
 ## What's left (the next 100c session)
 
-1. **The one-shot effects set** per weapon class as a single counted test (the muzzle light's
-   radius/colour/life from +0x58/+0x56/55/54 — the gate and reads already ported in scene.rs's
-   fire block — plus exactly `+0x18` bullets, one casing at the +0x78 delay, the op-1 shot sound):
-   partially covered by the existing suites, not yet one per-class assertion.
+1. **The one-shot effects set for the OTHER classes** (the P2K's is test 6): the shotgun's
+   8-pellet loop (+0x18 = 8 [L 0x1c/0x1d] — the port's `fire_player` loop reads a u32 at +0x18
+   where the game reads a u8 [M 0x1a4ce8 `lbu`], equal on every shipped record but fragile), the
+   sniper's zoom-shot path, the twins' per-mode effects.
 2. **The laser/stunner fire rate**: +0x40 reads 0.0 for the whole gadget family [L] — the actual
    refire interval must come from the class defaults in `Player_WeaponFiring` 0x1a5460; whether the
    port's held-trigger cadence matches the console is unverified (needs the live checks above).

@@ -167,3 +167,41 @@ fn the_mgl_delay_mode_bounces_and_waits_for_the_fuse() {
     }
     assert!(contact_seen, "the 'Delay' round stayed alive past the contact (it bounces)");
 }
+
+/// ── One P2K shot spawns exactly the game's set ─────────────────────────────────────────────────
+/// `Player_MuzzleFlash` 0x1a4298: `Light_Create(radius = weapon_data+0x58, intensity 2.0,
+/// rgb = +0x56/+0x55/+0x54, life 0 → +0x20 = 1, kind 1)` gated on `+0xDC != 0 && +0x48 != 0`
+/// [M 0x1a42e8]; the smoke `Gas_Init` unless +0x68 & 0x2000; `Player_WeaponInitBullet` 0x1a4bf0
+/// spawns `+0x18` bullets and one casing [M 0x12fde0]. The P2K's record [L ee_start_05.bin]:
+/// +0x58 = 7.0, rgb = (255,138,0), +0x18 = 1, +0x68 = 0x1004 (smoke on), +0x70 = 0x12 (no blast).
+#[test]
+fn one_p2k_shot_spawns_exactly_the_game_effect_set() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        for _ in 0..4 { sim.step_bond(Input::default(), false, false, false); }
+        sim.bond.pitch = -1.0;
+    }
+    // One pull: hold for 3 ticks, then release (fire_anim_len 0 → the round spawns on the press).
+    let mut saw_light = false;
+    let mut saw_smoke = false;
+    for t in 0..30u32 {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.step_bond(Input::default(), t < 3, false, false);
+        let sim = scene.sim.as_ref().unwrap();
+        for l in &sim.drones.lights.lights {
+            if (l.radius - 7.0).abs() < 1e-3 && l.rgb == [255, 138, 0] { saw_light = true; }
+        }
+        // The puff's life is ~8 ticks [*suggested*]; assert inside the window.
+        if !sim.drones.gas.puffs.is_empty() { saw_smoke = true; }
+    }
+    let sim = scene.sim.as_ref().unwrap();
+    assert!(saw_light, "the muzzle light: radius weapon_data+0x58 = 7.0, rgb +0x56/+0x55/+0x54 = (255,138,0) [L 0x02; M Player_MuzzleFlash 0x1a4298]");
+    assert!(sim.drones.player_bullets.is_empty(), "the shot's bullet resolved (it does not linger)");
+    assert!(alive_casings(&scene) >= 1, "exactly the shot's casing ejected [M Bullet_init_casing 0x12fde0]");
+    assert!(sim.drones.explosions.is_empty(), "no blast: +0x70 = 0x12 has no bit 2 [L]");
+    // Sister: the smoke puff (the P2K's +0x68 = 0x1004 clears the 0x2000 no-smoke bit) — the gas
+    // system held a live puff in the shot's window (its ~8-tick life [*suggested*] expires after).
+    assert!(saw_smoke, "the muzzle smoke puff spawned (Gas_Init, the 0x2000 bit clear) [M 0x1a4298]");
+}
