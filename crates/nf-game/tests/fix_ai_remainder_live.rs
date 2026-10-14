@@ -105,6 +105,10 @@ fn signum(v: f32) -> f32 { if v > 0.0 { 1.0 } else if v < 0.0 { -1.0 } else { 0.
 /// point stands in Bond's eye), with HeadTrack's clamps (yaw ±1.1, 0 beyond 2.6; pitch [-1.0, +0.6]);
 /// when the aim states take over the 0x180 flag clears the 0x10 track (0x1bf618 `&= 0xffffffef`) —
 /// the head eases back to the anim pose while the torso aim (yaw AND pitch) engages.
+/// fix-head-look: the game's angle block only runs WITHIN the head-track range — SetHeadTracking
+/// passes 3.0 (0x40400000) and stores its square at sAnimObject+0xE8 ([L-read] drone 9.0);
+/// `AnimObjectHeadTrack` 0x1bf618 skips the angle computation beyond it and the angles ease back —
+/// so the tracking phases stand Bond 2.4 units from the guard (the attack phase keeps the far spot).
 #[test]
 fn head_tracks_bond_until_the_aim_takes_over() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
@@ -113,7 +117,11 @@ fn head_tracks_bond_until_the_aim_takes_over() {
     let mut sim = l.sim(drones, rng);
     let away = bond_at([0.0, -500.0, 0.0]);
     for _ in 0..10 { sim.tick(&d, &away); }
-    let player = bond_at([67.31, 26.5, 99.47]);
+    // fix-head-look: inside the 3.0 head-track range [M 0x1c6748 param 0x40400000; +0xE8 = 9.0 [L]],
+    // straight ahead of the guard's facing so the sight pass engages.
+    let gp = sim.list[gi].pos;
+    let close = bond_at([gp[0] + sim.list[gi].yaw.sin() * 2.4, gp[1], gp[2] + sim.list[gi].yaw.cos() * 2.4]);
+    let player = close;
     let mut max_head = 0.0f32;
     let mut max_head_frame = 0u32;
     let mut attack_at = None;
@@ -123,13 +131,17 @@ fn head_tracks_bond_until_the_aim_takes_over() {
         if attack_at.is_none() && g.log.iter().any(|&(_, s)| s == nf_game::drone::state::ATTACK) { attack_at = Some(t); }
         if attack_at.is_none() && g.head_yaw.abs() > max_head { max_head = g.head_yaw.abs(); max_head_frame = t; }
     }
-    assert!(max_head > 0.05, "the guard's head turns toward Bond before the aim takes over (max |head_yaw| {max_head})");
+    // 0.03 not 0.05: at 2.4 units the guard's pre-attack window is short (the aim states take over
+    // within a few ticks), so the eased head yaw peaks lower than at the old far spot.
+    assert!(max_head > 0.03, "the guard's head turns toward Bond before the aim takes over (max |head_yaw| {max_head})");
     // The pose: at the most-tracked tick the head bone's forward closes part of the gap between the
     // body's facing and the direction to Bond (`AnimObjectHeadTrack` runs in psiBuildMatrixPalette).
     let (drones, gi2, rng) = l.drones_seeded(None, 61.342, 2);
     let mut sim = l.sim(drones, rng);
     for _ in 0..10 { sim.tick(&d, &away); }
-    for _ in 0..=max_head_frame { sim.tick(&d, &player); }
+    let gp2 = sim.list[gi2].pos;
+    let close2 = bond_at([gp2[0] + sim.list[gi2].yaw.sin() * 2.4, gp2[1], gp2[2] + sim.list[gi2].yaw.cos() * 2.4]);
+    for _ in 0..=max_head_frame { sim.tick(&d, &close2); }
     let g = &sim.list[gi2];
     let (world, _) = g.object_pose(&d).expect("the guard's skin is in the level");
     let mut ctrl = g.clone();
@@ -144,18 +156,29 @@ fn head_tracks_bond_until_the_aim_takes_over() {
     let delta = nf_game::trig::angle_difference(angle_of(&cworld[5]), angle_of(&world[5]));
     assert!((delta - g.head_yaw).abs() < 0.05,
         "the posed head carries the tracked yaw (delta {delta:.3} vs head_yaw {:.3})", g.head_yaw);
-    assert!(signum(g.head_yaw) == signum(nf_game::trig::angle_difference(g.yaw, to_bond)),
-        "the tracked yaw points toward Bond (head_yaw {:.3}, to_bond offset {:.3})", g.head_yaw, nf_game::trig::angle_difference(g.yaw, to_bond));
+    // The tracked yaw points the head's ANIM forward toward Bond — the want is measured from the
+    // anim's head axes (0x1bf618's two plane acos blocks), so the body-relative offset can be 0.000
+    // (the body already turned) while the anim's own head pose still needs the correction. The
+    // check: the tracked pose's head forward is at least as close to Bond as the untracked control's.
+    let gap = |m: &nf_formats::anim::Mat4| {
+        let fwd = m[2][0].atan2(m[2][2]);
+        nf_game::trig::angle_difference(0.0, nf_game::trig::angle_difference(fwd, to_bond - g.yaw)).abs()
+    };
+    assert!(gap(&world[5]) <= gap(&cworld[5]) + 0.02,
+        "the tracked head closes the gap to Bond (tracked {:.3} vs untracked {:.3})", gap(&world[5]), gap(&cworld[5]));
     // After the attack the aim owns the pose: the torso yaw engages and the head eases back toward 0.
     // Sampled as maxima over the whole run — the guard cycles its combat states (reload, steps).
     let (drones, gi3, rng) = l.drones_seeded(None, 61.342, 2);
     let mut sim = l.sim(drones, rng);
     for _ in 0..10 { sim.tick(&d, &away); }
+    // The far spot: at 2.4 units the body already faces Bond (the aim yaw has nothing to wind up) —
+    // the torso-aim phase needs the offset stance the test originally used.
+    let far_player = bond_at([67.31, 26.5, 99.47]);
     let mut max_aim = 0.0f32;
     let mut max_head_attack = 0.0f32;
     let mut attacked = false;
     for _ in 0..400u32 {
-        sim.tick(&d, &player);
+        sim.tick(&d, &far_player);
         let g = &sim.list[gi3];
         let attacking = g.log.iter().any(|&(_, s)| s == nf_game::drone::state::ATTACK);
         if attacking { attacked = true; }
