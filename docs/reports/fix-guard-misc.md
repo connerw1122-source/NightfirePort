@@ -1,5 +1,8 @@
 # fix-guard-misc — report
 
+(Verdict update below: the sniper damage path is SOUND; the bug is the aim. Status remains blocked
+for the three fixes, but the sniper root cause is now narrowed to the aim-assist/pitch handling.)
+
 Branch `s/fix-guard-misc` (from origin/master 6cbe522). The task: the 0700000c rooftop sniper
 takes no damage, the 07000006 guards can't open doors, the 07000006 guards render "crazy models"
 on their first frames. Status: **blocked — the sandbox deadline hit before the fixes landed**; the
