@@ -9435,3 +9435,15 @@ report with the exact sampling attempted); the visible symptom is the main agent
 the +0x106 snap-delay draw (omitted — would shift the RNG stream), suite.py full-run deferred to
 the next session (background jobs die between tool calls here). Report:
 docs/reports/fix-head-look.md. Branch s/fix-head-look.
+
+## fix-head-look2 (s/fix-head-look2) — 2026-10-14
+
+Started (05:07 UTC): takeover of s/fix-head-look (6c6cf74). Symptom: the head-look merge with master
+fails two 07000001 runs — walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact and
+fix_pickups_trace_live::with_dev_god_and_infinite_ammo_every_raptor_drop_is_taken_and_the_spare_matches_the_trace —
+both pass on master 4aaadac. Plan: confirm the failures on my master-merged tree, bisect the branch's
+commits against the two tests, make the head look a pure presentation change where the game's is one
+(decompile: does the game's head turn read RNG or feed the AI?); if the game really changes AI timing,
+re-pin per WORKLOG 0072's seed procedure with evidence. Prime suspects from the branch diffs: the
+drone.rs head-track wiring (bd8d2c5/35e6ded) and facial3's root-motion window picker change (51a8d8e,
+"the drone root-motion window pickers exclude facial-count windows").
