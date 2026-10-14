@@ -10403,3 +10403,11 @@ Stage Summary:
 - Files: grenade.rs (resting + SmokeCloud), drone.rs (the scale, the gate, the cloud push/tick + the field), nis.rs (keys() translation), scene.rs (the cloud pool + draw arm), tests/fix_grenade_throw_live.rs (new), the Grenade constructors' resting:false in the hand-built tests.
 - Report: docs/reports/fix-grenade-throw.md (the evidence, the numbers, the live checks).
 - Open: nothing for this task; the satchel/sticky bounce branches and the mine's detonator are other systems' scope.
+
+---
+Task ID: 102h-fix-swim
+Agent: swim worker
+Task: fix-swim — swimming barely works (02 garden pond: entering water by walking in, swim speed, crouch dive / jump surface, no footsteps while swimming — swim stroke sounds instead) and the water ladder under the hut (grab + climb from the water).
+
+Work Log:
+- (started 08:37 UTC) Branch s/fix-swim created from origin/master ccaea18. Setup in progress (downloads next). Research in work/decomp after.
