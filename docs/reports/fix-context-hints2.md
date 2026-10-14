@@ -61,7 +61,12 @@ What the decompile + disc say:
   in `BondMoments`), whose only caller is `Trigger_Calc` 0x1b1900 [M decompile grep]. No other code references
   0x0300005b or writes the ring sprite's uv [M grep: `0x300005b` — zero hits in code; only the template].
 - So the evidenced mechanism is a **trigger-driven Bond-Moment 007 zoom at (256, 80) top-centre**, not a
-  bottom-left ring swap. The two observations disagree on position, and the ctx table 0x2FC168's textures are the
+  bottom-left ring swap — pinned in the disassembly, not just the decompiler: `addiu $v0, $zero, 0x100` /
+  `addiu $v1, $zero, 0x50` → `sh $v0, 0x24($s1)` / `sh $v1, 0x26($s1)` [M 0x19bf10-0x19bf1c], and the trigger
+  side is channels: `Trigger_Calc` 0x1b1900:8-15 scans **switch_channels 0x65..0x6e** every frame and calls
+  `PlrStat_DoneBondMoment(0, k)` for each one that is on — Bond Moments ARE switch channels 0x65..0x6e, fired by
+  the levels' trigger volumes (a teleport into such a volume would fire it).
+- The two observations disagree on position, and the ctx table 0x2FC168's textures are the
   tan badges (0x66 winch / 0x67 hanging man / 0x6A figure — all dumped and inspected; 0x64/65/68/69 are not in the
   archives [D probe]), so the ctx system is not the orange 007 either. Per the no-guess rule I did not wire a
   mechanism to the bottom-left position; the probe tests `ctx2_probe.rs`/`ctx2_probe2.rs` (kept, `--nocapture`)
@@ -98,10 +103,10 @@ What the decompile + disc say:
 
 ## Live checks for the main agent
 
-1. **The 007 mechanism** (decides item 2): in PCSX2 on 07000005, `gdbwatch 0x016c8998+0x948 2 write --seconds 20`
-   (the BLData base — confirm via `BL+0x7e0` — while standing at the grapple spot and again at the safe on
-   07000008): if 0x948 jumps to 200, a Bond-Moment trigger fired and sprite 16 is the 007 — then
-   `gdbwatch 0x016c8998+0x948 2 readwrite` plus the sprite-16 fields (the pane's sprite array +0x40: x/y at
+1. **The 007 mechanism** (decides item 2): in PCSX2 on 07000005, `watch switch_channels+0x65 10 write` (the
+   Bond-Moment channel block 0x65..0x6e [M 0x1b1900:8-15]) while standing at the grapple spot, then again at the
+   safe on 07000008 — if a channel turns on, a Bond-Moment trigger fired and sprite 16 is the 007. Then
+   `gdbwatch <BL>+0x948 2 readwrite` plus the sprite-16 fields (the health pane's sprite array +0x40: x/y
    +0x24/+0x26, w/h +0x2c/+0x2e, layer +0x38) settles the position. Expected if my reading holds: x=256, y=80,
    centred — a top-centre zoom, NOT the bottom-left ring.
 2. **A screenshot request**: the driver's bottom-left 007 frame at full res — if the logo there is the 128×64
