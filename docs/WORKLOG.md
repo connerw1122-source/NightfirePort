@@ -11735,3 +11735,16 @@ Work Log:
 - 20:45: repro on 07000007: the 0x800 multiplier reaches every drone-backed guest (per-cel ambients 36-64, 9 distinct; 104 active kind-0 lights picked up with skin flags 0x8a0). The 49 sentinel-0xff characters are exactly the invisible set: 33 dev-pool copies parked at -1e6 and 16 origin script actors (the game leaves those unlinked too — no cel at the origin, ambient stays the 0xff init of control_init_object 0x134630). G-042: the civilian's "white" texture (map 32 tex 4, 32x32) is a sheen map — 1024/1024 white rgb but 98/1024 opaque alpha; the base skin textures are not white.
 - 21:15: the game's model pinned end-to-end (linked cel obj+0x20: create-link+snap 0x1346b8/0x1343c8, keep/portal/relink 0x133288+0x1e0d58+0x1c9500, ramp 0x1cb178 moved-only; the same Tweak+light pair on the character path 0x1e69a0:96->0x1e78b0; bCharacterLight/AnimColRad have NO EE reader — scanned all gp-relative accesses). Port matches on every headless point; 3 NF_ISO tests green (own-cel ambient per guest, party lights reach the draws, G-042 sheen map resolved). No production code changed. Report: docs/reports/fix-character-room-light.md.
 - 21:32: merged origin/master (1c376216, WORKLOG conflict resolved keeping both), lighting suites re-ran green on the final tree (new 3/3, character_lighting_live 4/4); baseline full suite on the identical production code: 1065 passed / 7 failed (3 disc_golden allowed + weapon_matrix_live TIMEOUT + 3 pre-existing pylon) / 35 ignored.
+
+## fix-objective-drives — s/fix-objective-drives (task 105d, finished 22:15 UTC 2026-10-14)
+- Done: the four gameplay-driven legs are driven through their levels' own writers in the campaign
+  runner (crates/nf-view/tests/campaign_flow_live.rs) — 4 campaign tests pass. 09: 3/3 via the real
+  cab exit (fix-level-chain's 0xE8 + Trigger_Activate's success write IS ch71's writer) and the real
+  exit to 0a; 0a: the arrival plate folds 09's rec, the real gadget shot at the PC (or the documented
+  cubicle-collision stand-in), the muxes real, the hatch E → 0b; 08: the real floor touch → mux ch 1
+  → the real carriage ride (Bond rides the key line) → ch 83 → ch 5 at the found warm-load
+  pack-cinematic gap → the copter's real ch 0x4B → complete → 0x0730008; 4a: the real ride (no
+  re-seat) → the documented script-end stand-in → complete. NO production code changed; shared files
+  untouched. Report: docs/reports/fix-objective-drives.md (six documented stand-ins with live checks;
+  the new one: SP #296's lazy load misses the loaded 07900008 pack script on warm loads — cold runs
+  it fine, probe-backed). Sisters: the AND-mux before/after pairs + 4a's mid-ride OFF check.
