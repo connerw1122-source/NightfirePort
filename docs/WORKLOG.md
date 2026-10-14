@@ -9294,9 +9294,23 @@ Stage Summary:
 - Report: docs/reports/fix-auto-switch.md (live checks inside).
 ## fix-anim-events (s/fix-anim-events) — 2026-10-13
 
-Task 288, G-030: the animation scripts' events with effects are partly unported — grenades thrown
-by an anim event, close combat, weapon changes (DroneAnim_EventFunc datum 0x28/100), messages,
-footprints; PlayFiringAnim's +0x20/+0x21 flags. Plan: census the event opcodes every anim script on
-the disc uses (nf-extract's script dump), list which the port handles, port the rest from
-AnimProcessScriptCmds 0x1c1b38 and DroneAnim_EventFunc, with a test per event kind on a real script.
-Files: crates/nf-game/src/{anim,drone}.rs, docs/systems/anim-engine.md. Work starting.
+Task 288, G-030: the animation scripts' events with effects. Census first (all 99 FILES.BIN
+archives, 18,231 scripts, 50,279 commands, 0 parse failures): only opcodes 0/1/4 exist on the
+disc; op-4 kinds 0/4/5 footsteps, 1 player toggle (52), 2 EventFunc (12,947 — args 0-16, 18, with
+the fire flags 0xF/0x10/0x12 at 86%), 3 stop-sfx (53), 6 effect (1,294), 7 fire bullet (4, one
+script). Ported this session (drone.rs): EventFunc cases 2 (DroneWeap_ChangeWeapon by the DRONE's
++0x45 byte — disasm 0x13b7dc `a1 = lb 0x45(a2)` — not the event arg; entries 1/6 of the 0x2fb740
+jump table), 5/10/0xB (DroneWeap_CloseCombatImpact 0x1789c0: Bullet_init records 99/100/0x65/0x66,
+range 2.0 kick / 1.75 punch + the 60° facing gate, no accuracy roll), 9 (PlaceTertiary 0x17a848 =
+a ThrowGrenade tail call), the 0.0 < +0xAC health gates on 1/5/6/9/0xB/0xE (the script==+0x530
+gate holds structurally — the port only runs the current script's commands); PlayFiringAnim
+(0x13da48) inside handle_firing: the 0x1C/0x1D recoil weapons (DefaultInit 0x14b300:801-811,
++0x3E) fire only on the 0x12 event's +0x21 and play the 0x5C recoil, zeroing +0x596/0x598 and
+setting +0x57B — the guards' 0x16/1/6 weapons are unaffected. Tests: anim_events_live.rs, one per
+ported kind on real disc scripts (melee 07000005/060002ba — the punch connects in range and never
+out of 1.75; weapon change 07000001/06000330; the 0x12 flags via 07000005/0600029f; tertiary
+07000012/060007ac), 4 passed + the PlayFiringAnim shot scenario ignored (the harness's neutral
+state never lets the shot come due — needs a state whose UPDATE leaves firing/class alone).
+Left (censused + decompile-cited in docs/systems/anim-engine.md): op-4 kinds 1/6/7, EventFunc 0xE
+(partner messaging), the other 53 ChangeWeapon entries, footprint decals, the +0x45 setup read.
+Shared files: drone.rs only (fields on their own lines, merge lesson 4).
