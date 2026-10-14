@@ -29,3 +29,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox1 at 2026-10-14T10:03Z
+
+---
+## Report (done, 2026-10-14T11:29Z)
+
+Closed by the driver: the report is on `s/fix-movies-tests` (docs/reports/fix-movies-tests.md); the worker didn't run finish.sh.
