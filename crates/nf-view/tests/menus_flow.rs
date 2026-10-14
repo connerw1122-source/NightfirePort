@@ -659,3 +659,241 @@ fn the_descriptions_wrap_inside_their_plates() {
     assert_eq!(total, words(d), "wrapping keeps every word");
 }
 
+
+// ── fix-menus-real: the pages match the real game's data ────────────────────────────────────────
+// Evidence: the menu-def tag stream parsed 2026-10-14 (MenuManager_Create 0x21b908's walk — the
+// CONTROL records quoted per test) + Label_Update 0x218cb8:177-182/:202-206 (labels centre in their
+// control; the default label format DAT_003096c0 = ff 02 fe 03 [M Label_Init 0x218638:53]).
+
+/// The font-text quads of an overlay frame, clustered into text rows in the 512×448 HUD space:
+/// (x0, x1, y0, y1) per row.
+struct TextRows { rows: Vec<(f32, f32, f32, f32)> }
+
+fn text_rows(frame: &nf_view::gpu::HudFrame, n_tex: usize, aspect: f32) -> TextRows {
+    // The font texture was appended last by the caller; runs name it by index+1.
+    let font_tex = n_tex as u32;
+    let mut is_font = vec![false; frame.v.len()];
+    for &(tex, _, start, count) in &frame.runs {
+        if tex == font_tex { for v in &mut is_font[start as usize..start as usize + count as usize] { *v = true; } }
+    }
+    let k = (2.0 / 512.0) * (4.0 / 3.0) / aspect;
+    let mut pts: Vec<(f32, f32)> = Vec::new();
+    for (q, font) in frame.v.iter().zip(&is_font) {
+        if !font { continue; }
+        pts.push((q.p[0] / k + 256.0, (1.0 - q.p[1]) * 224.0));
+    }
+    pts.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    let mut rows: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for (x, y) in pts {
+        match rows.last_mut() {
+            Some(r) if y - r.3 <= 3.0 => { r.0 = r.0.min(x); r.1 = r.1.max(x); r.3 = y; }
+            _ => rows.push((x, x, y, y)),
+        }
+    }
+    TextRows { rows }
+}
+
+impl TextRows {
+    /// The row whose band covers `y`, as (x0, x1) — None when no text sits there.
+    fn band(&self, y: f32) -> Option<(f32, f32)> {
+        self.rows.iter().filter(|r| r.2 <= y && y <= r.3 + 0.5).map(|r| (r.0, r.1)).fold(None, |acc, (a, b)| {
+            Some(match acc { Some((x0, x1)) => (x0.min(a), x1.max(b)), None => (a, b) })
+        })
+    }
+    fn all_inside_the_screen(&self) -> bool {
+        self.rows.iter().all(|r| r.0 >= -1.0 && r.1 <= 513.0 && r.2 >= -1.0 && r.3 <= 449.0)
+    }
+}
+
+fn frame_with_font(fe: &FrontEnd, lang: Option<&nf_formats::hud::Lang>, aspect: f32) -> (nf_view::gpu::HudFrame, usize) {
+    let font = iso_font(&std::env::var("NF_ISO").unwrap_or_default());
+    let mut textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).collect();
+    textures.push((0x0300_0003, crate_texture(0x0300_0003)));   // FONT_TEX so the text quads land
+    (menu::menu_overlay(fe, &font, lang, &textures, aspect), textures.len())
+}
+
+/// The footer hint bar centres its label: Label_Update 0x218cb8:177-182 puts the sprite at
+/// ctrl.x + ctrl.w/2 = 320 (640-space) = 256 HUD — the port's old draw ran left from x=50.
+#[test]
+fn the_footer_hints_are_centred_in_their_bars() {
+    let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
+    let lang = iso_lang(&iso);
+    for page in [Page::Main, Page::Codename, Page::Difficulty, Page::MissionSelect] {
+        let mut fe = FrontEnd::new();
+        fe.page = page;
+        let (frame, n) = frame_with_font(&fe, lang.as_ref(), 4.0 / 3.0);
+        let rows = text_rows(&frame, n, 4.0 / 3.0);
+        let band = rows.band(391.0).or_else(|| rows.band(396.0)).expect("the footer hint draws");
+        let centre = (band.0 + band.1) / 2.0;
+        assert!((centre - 256.0).abs() < 5.0, "{page:?}: the hint row spans {band:?}, centre {centre} — the bar centres its label at 320/640 [M Label_Update 0x218cb8:177-182]");
+        // Sister: the hint sits inside the bar control (50..590 → 40..472 HUD x).
+        assert!(band.0 >= 39.0 && band.1 <= 473.0, "{page:?}: the hint {band:?} leaves its bar");
+    }
+}
+
+/// The header label centres in its (50,40,376×17) band [M the pages' header CONTROL records;
+/// Label_Update 0x218cb8:177-182/:202-206] — the old draw centred the text AT x=50, half off-screen.
+#[test]
+fn the_page_headers_are_centred_in_their_bands() {
+    let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
+    let lang = iso_lang(&iso);
+    for (page, header) in [(Page::Codename, 0x1f2), (Page::Difficulty, 0x1f8), (Page::MissionSelect, 0x14c), (Page::Dossier, 0x27f)] {
+        let mut fe = FrontEnd::new();
+        fe.page = page;
+        let (frame, n) = frame_with_font(&fe, lang.as_ref(), 4.0 / 3.0);
+        let rows = text_rows(&frame, n, 4.0 / 3.0);
+        let band = rows.band(46.0).expect("the header draws");
+        let centre = (band.0 + band.1) / 2.0;
+        let want = (50.0 + 376.0 / 2.0) * 512.0 / 640.0;   // 190.9 HUD
+        assert!((centre - want).abs() < 5.0, "{page:?}: header centre {centre}, want {want} (ctrl.x + ctrl.w/2 [M Label_Update])");
+        // Sister: the header text is the page data's own LBL.
+        let s = lang.as_ref().and_then(|l| l.bind(header)).unwrap_or("");
+        assert!(!s.is_empty(), "{page:?}: header LBL {header:#x} binds");
+    }
+}
+
+/// The wheel rows centre in their controls: slot centres = ctrl.x + ctrl.w/2 [L the parsed rows:
+/// (323,123,317) (333,152,307) (304,182,336) (333,211,307) (323,241,317)].
+#[test]
+fn the_wheel_rows_center_in_their_controls() {
+    let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
+    let lang = iso_lang(&iso);
+    let mut fe = FrontEnd::new();
+    fe.page = Page::MissionSelect;
+    let (frame, n) = frame_with_font(&fe, lang.as_ref(), 4.0 / 3.0);
+    let rows = text_rows(&frame, n, 4.0 / 3.0);
+    let wheel_y = [123.0f32, 152.0, 182.0, 211.0, 241.0];
+    let wheel_cx = [(323.0 + 317.0 / 2.0) * 512.0 / 640.0, (333.0 + 307.0 / 2.0) * 512.0 / 640.0, (304.0 + 336.0 / 2.0) * 512.0 / 640.0, (333.0 + 307.0 / 2.0) * 512.0 / 640.0, (323.0 + 317.0 / 2.0) * 512.0 / 640.0];
+    for (slot, y) in wheel_y.iter().enumerate() {
+        let hy = y * 448.0 / 480.0 + 8.0;
+        if let Some(band) = rows.band(hy) {
+            let centre = (band.0 + band.1) / 2.0;
+            assert!((centre - wheel_cx[slot]).abs() < 5.0, "slot {slot}: row centre {centre}, want {}", wheel_cx[slot]);
+        }
+    }
+    // Sister: every text row on the page lies inside the screen.
+    assert!(rows.all_inside_the_screen(), "a text row left the 512×448 screen");
+}
+
+/// The main menu's rows carry the page data's own colours: the selected row the msg-0x1b cream
+/// (0x7d6d59ff rewritten 0x645a49ff [M MenuManager_Create 0x21b908:238-243]), the others the
+/// msg-0x1c dark orange 0x73330f80 [L page 0x40000002's row controls, parsed 2026-10-14]. The old
+/// draw had them swapped (orange selected, cream others).
+#[test]
+fn the_main_rows_use_the_page_colours() {
+    let font = test_font();
+    let mut textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).collect();
+    textures.push((0x0300_0003, crate_texture(0x0300_0003)));
+    let mut fe = FrontEnd::new();
+    fe.page = Page::Main;
+    let frame = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let k = (2.0 / 512.0) * (4.0 / 3.0) / (4.0 / 3.0);
+    let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 0.02);
+    let cream = [0x64 as f32 / 128.0, 0x5a as f32 / 128.0, 0x49 as f32 / 128.0, 0.996];
+    let dark_orange = [0x73 as f32 / 128.0, 0x33 as f32 / 128.0, 0x0f as f32 / 128.0, 0.502];
+    let mut saw_sel = false; let mut saw_other = false;
+    for q in &frame.v {
+        let y_hud = (1.0 - q.p[1]) * 224.0;
+        // The rows sit at 640-space y 262..354 → HUD 244.5..330.4; the desc plate is below 357*0.933=333.2.
+        if !(240.0..=332.0).contains(&y_hud) { continue; }
+        let is_font_text = frame.runs.iter().any(|&(tex, _, s, c)| tex == textures.len() as u32 && (s..s + c).contains(&(frame.v.iter().position(|p| std::ptr::eq(p, q)).unwrap() as u32)));
+        let _ = is_font_text;
+        if near(q.c, cream) { saw_sel = true; }
+        if near(q.c, dark_orange) { saw_other = true; }
+    }
+    assert!(saw_sel, "the selected row draws the msg-0x1b cream 0x645a49ff");
+    assert!(saw_other, "the other rows draw the msg-0x1c dark orange 0x73330f80");
+    let _ = k;
+}
+
+/// The codename page lists the game's own rows — "New Codename" (Txt 0x29b [M Menu_EnumSaves
+/// 0x1f7b78:58-66]) and "Play without saving" (Txt 0x10002ff [M Menu_PutCodenamesIntoControl
+/// 0x1f79c0:15-23]) — and swaps the ring preview per cursor [M Menu_UpdateCodenameWheel 0x1f89f0:80-99].
+#[test]
+fn the_codename_page_lists_new_codename_and_play_without_saving() {
+    let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
+    let lang = iso_lang(&iso).expect("USATxt.dat parses");
+    let mut fe = FrontEnd::new();
+    fe.page = Page::Codename;
+    assert_eq!(fe.rows(), 2, "New Codename + Play without saving (profiles need a memory card)");
+    assert_eq!(fe.row_label(Some(&lang), 0), lang.bind(0x29b).unwrap(), "row 0 is New Codename");
+    assert_eq!(fe.row_label(Some(&lang), 1), lang.bind(0x100_02ff).unwrap(), "row 1 is Play without saving");
+    // The ring preview follows the cursor: 0x300013b (create) / 0x3000135 (default) [M 0x1f89f0:80-99].
+    let (frame0, n0) = frame_with_font(&fe, Some(&lang), 4.0 / 3.0);
+    let hash = |f: &nf_view::gpu::HudFrame, n: usize, want: u32| f.runs.iter().any(|&(t, _, _, _)| t > 0 && t <= n && true) && f.runs.iter().any(|r| r.0 > 0);
+    let _ = hash;
+    let tex_of = |f: &nf_view::gpu::HudFrame| f.runs.iter().filter(|r| r.0 > 0).map(|r| r.0).collect::<Vec<u32>>();
+    let has = |f: &nf_view::gpu::HudFrame, h: u32| {
+        // runs' tex is an index into the caller's list; MENU_TEXTURES order is fixed.
+        let idx = menu::MENU_TEXTURES.iter().position(|&t| t == h).expect("hash in MENU_TEXTURES") + 1;
+        tex_of(f).contains(&(idx as u32))
+    };
+    assert!(has(&frame0, 0x0300_013b), "cursor 0 (New Codename) shows the create preview 0x300013b");
+    fe.cursor = 1;
+    let (frame1, _) = frame_with_font(&fe, Some(&lang), 4.0 / 3.0);
+    assert!(has(&frame1, 0x0300_0135), "cursor 1 (Play without saving) shows the default preview 0x3000135");
+    assert!(!has(&frame1, 0x0300_013b), "sister: the create preview is gone");
+    let _ = n0;
+}
+
+/// The Dossier is the game's own wheel menu — Records / Rewards / Gadgets / Weapons [L table
+/// 0x2dfcd0; M C_SBDOSSIER 0x216eb0:48-49] with the per-row preview textures, not the mission
+/// briefing the port drew before.
+#[test]
+fn the_dossier_lists_records_rewards_gadgets_weapons() {
+    let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
+    let lang = iso_lang(&iso).expect("USATxt.dat parses");
+    let mut fe = FrontEnd::new();
+    fe.page = Page::Dossier;
+    assert_eq!(fe.rows(), 4, "the wheel table's four rows");
+    let names = [0x280u32, 0x281, 0x282, 0x19c];
+    let descs = [0x100_000au32, 0x100_000b, 0x100_000c, 0x100_000d];
+    for (i, (&n, &d)) in names.iter().zip(descs.iter()).enumerate() {
+        assert_eq!(fe.row_label(Some(&lang), i), lang.bind(n).unwrap(), "row {i} is the table's name label");
+        assert!(lang.bind(d).is_some(), "row {i}'s description label binds");
+    }
+    // Confirming row 0 opens the Records table [M C_SBDOSSIER 0x216eb0:12-31 index 0 → 0x4000003a].
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.page, Page::Records);
+    assert_eq!(fe.page.id(), 0x4000_003a);
+}
+
+/// The Records page draws the disc's own table [L PAGE 0x4000003a parsed 2026-10-14]: header 0x280,
+/// hint 0x49e, the mission list, the three score rows (0x302/0x165/0x305) with their value controls,
+/// the medal image 0x0300013d + label 0x307.
+#[test]
+fn the_records_page_draws_the_score_table() {
+    let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
+    let lang = iso_lang(&iso).expect("USATxt.dat parses");
+    let mut fe = FrontEnd::new();
+    fe.page = Page::Records;
+    let (frame, n) = frame_with_font(&fe, Some(&lang), 4.0 / 3.0);
+    // The medal image is the page data's own texture control.
+    let idx = menu::MENU_TEXTURES.iter().position(|&t| t == 0x0300_013d).expect("medal tex listed") + 1;
+    assert!(frame.runs.iter().any(|r| r.0 == idx as u32), "the medal image 0x0300013d draws");
+    // The three score-row labels + the medal label bind from the language bank.
+    for id in [0x302u32, 0x165, 0x305, 0x307] {
+        let s = lang.bind(id).unwrap_or("");
+        assert!(!s.is_empty(), "records label {id:#x} binds (got empty)");
+    }
+    // Sister: every text row lies inside the screen.
+    let rows = text_rows(&frame, n, 4.0 / 3.0);
+    assert!(rows.all_inside_the_screen(), "a records text row left the screen");
+}
+
+/// The title prompt flashes in the page data's own gold 0x7f621fff [L page 0x40000009 control
+/// 0x100000fa's msg-0x1b payload, parsed 2026-10-14] — the old constant 0xfec43e didn't match its
+/// own citation.
+#[test]
+fn the_title_prompt_uses_the_page_colour() {
+    let font = test_font();
+    let mut textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).collect();
+    textures.push((0x0300_0003, crate_texture(0x0300_0003)));
+    let mut fe = FrontEnd::new();
+    fe.page = Page::Start;
+    fe.press_start_on = true;
+    let frame = menu::menu_overlay(&fe, &font, None, &textures, 4.0 / 3.0);
+    let want = [0x7f as f32 / 128.0, 0x62 as f32 / 128.0, 0x1f as f32 / 128.0, 0.996];
+    let hit = frame.v.iter().any(|q| q.c.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.02));
+    assert!(hit, "the prompt draws in 0x7f621f gold (gs scale)");
+}
