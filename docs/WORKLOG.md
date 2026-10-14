@@ -9292,3 +9292,10 @@ Stage Summary:
   not. This is why the old wedge scenario vanished; it also makes Bond auto-switch mid-intro.
 - Shared files touched: scene.rs only (the drain block + its comment; request-only now).
 - Report: docs/reports/fix-auto-switch.md (live checks inside).
+
+## fix-interp-ghosting (s/fix-interp-ghosting) — 2026-10-14
+
+Task 265: the playtest gun/arm smear while moving — interpolate the view model in camera
+space and blend world matrices as rotation(slerp)+translation(lerp) with the existing
+4-unit snap, replacing the component-wise palette lerp that came with fix-gpu-skinning's
+120 fps interpolation (G-043). Reproduce-first; work starting.
