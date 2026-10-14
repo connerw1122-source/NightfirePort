@@ -1,19 +1,20 @@
 ## Your task: `zoom-overlays`, the Micro-Camera and AMES 20 overlays drawn as a 2x2 grid
 
-The user's playtest (results 1013-1825): zoomed with the Micro-Camera (0x54) on 07000005 and with the AMES 20 (weapon 0x11,
-07000016's starting rifle) the port draws the overlay as a 2x2 GRID: four copies of the frame, each with its own rounded
+The user's playtest (results 1013-1825): zoomed with the Micro-Camera (0x54) on 07000005 and with the AMES 20 (the user's 07000016 rifle, HUD 'Burst';
+find its id from the name table) the port draws the overlay as a 2x2 GRID: four copies of the frame, each with its own rounded
 corners, so a black cross runs through the middle of the view. PCSX2 at the same spots (main agent, 2026-10-13):
 - the Micro-Camera's viewfinder is ONE full-screen frame: rounded corners only at the four screen corners, the scale marks
   down the left and right, the two brackets at mid-height, a small centre circle, "Micro-Camera" bottom right. It is
   plainly one quarter sprite mirrored into the four quadrants (U flipped on the right half, V flipped on the bottom half);
   the port draws the quarter sprite unmirrored four times;
-- the AMES 20 scope (0x11) and the sniper rifle (0x1e, 0700000c) show ONE centred oval: black outside, a thin dark
-  rim, the four thick posts, a thin circle and a thin cross with two ticks. The port's sniper overlay on 0c matches; the
-  AMES 20 does not (it draws the grid).
+- the sniper rifle (0x1e, 0700000c) and the crossbow (0x11, 07000016) scopes show ONE centred oval: black outside, a
+  thin dark rim, the four thick posts, a thin circle and a thin cross with two ticks. The port's sniper overlay on 0c
+  matches. The AMES 20's real overlay wasn't captured yet: find which overlay the game gives it (its weapon record) and
+  draw that one, whole.
 Find the game's overlay draw (fix-viewmodel-zoom found each zoomable weapon's own overlay; the HUD sprite draw with
 its flip flags / UV order, `Player_Zoom` 0x1a1a70 and the zoom HUD call) and draw each overlay the way the game does
 (quadrant mirroring, sprite size and placement at 4:3, centred on wide windows with black side bars). Tests: for 0x54,
-0x11, 0x1e and every other weapon with a zoom overlay, the drawn quads (positions, UVs and flips) form one frame: no
+the AMES 20, 0x11, 0x1e and every other weapon with a zoom overlay, the drawn quads (positions, UVs and flips) form one frame: no
 seam in the screen centre; sister assertions. List `--shot` commands for each zoomed overlay.
 
 Files: `crates/nf-view/src/hud.rs` (the overlay draw), `crates/nf-game/src/gun.rs` only if the overlay choice is wrong.
