@@ -9477,6 +9477,14 @@ Work Log:
   generics on 19 levels (counts in the report; 0700000a worst at 4706, the trench's 05: 1382);
   the shipped mask (walk + rescue) is clean on all 27 — no level needs the frustum-only
   fallback this session.
+
+## fix-laser-beam (s/fix-laser-beam) — 2026-10-14
+Task: the Q-Laser and stunner fire bullets in the port (impact decal + impact sound each tick, no
+beam, the loop sound sticks after release, the 0c display-vent aim off). Find the game's laser fire:
+the beam draw, the loop sound handle (start on press, stop on release/switch/pause), the burn on
+locks without bullet impacts, the stunner's effect. Files:
+crates/nf-game/src/{gadget,gun}.rs, crates/nf-view/src/scene.rs (the beam draw).
+- Branch created from origin/master 9db3fda. Work started.
 Branch: s/fix-menu-movies (from origin/master 7a614ba)
 
 Work Log:
@@ -9698,6 +9706,53 @@ HUD font (texture 0x03000003). No new crates.
   one click selects, a second applies, Close hides. Checked live: the window opens beside the game with the full
   weapon list (screenshots in the session). A live keyboard check by synthetic keys failed: Windows wouldn't give the
   dev window focus from a background process, so the user tries it by hand.
+
+### fix-laser-beam — outcome
+
+- The gadget ids were shifted one pair down: the disc records name **0x4E/0x4F the Laser**
+  (name label 0x05000043 [L USATxt.dat], +0x6C = 0x900 — the Draw_LaserBeam bit 0x100) and
+  **0x4A/0x4C the Stunner** (0x05000042 "Stunner", +0x6C = 0x880 — the Draw_TaserBeam bit 0x80),
+  while 0x50/0x51 are the Grapple and 0x54/0x55 the Micro-Camera [L weapon_data + USATxt]. The
+  port's gadget.rs/scene.rs comments and `is_laser_weapon`/`runs_beam` sets had the Grapple and the
+  Micro-Camera where the lasers are.
+- The user's symptoms root-caused and fixed:
+  - **"rapid fire of bullet impacts"**: the laser's per-shot bullets took the normal bullet world
+    death — impact_sound + Effect_Bullet decal every held tick. The game routes a +0x6C & 0x100
+    bullet's wall death to effect kind 0x10 → `Effect_Laser` 0x1cef38 (a burn puff; its sound arm
+    needs effect flags 0x40, set only by weapon_data+0x70 & 2 — clear on the Laser's 0x800 [L]) [M
+    Bullet_CollisionHandler 0x12ce80:186-192]. The port skips impact_sound and the decal/ricochet
+    for those bullets and spawns the burn puff.
+  - **no beam**: `Sim::laser_beam` was parked but the renderer never drew it, and the ray was
+    bond.look() from the head. The beam now draws from the CROSSHAIR ray (look + the cross offsets,
+    the same ray the bullets take [M Player_WeaponInitBullet 0x1a4bf0:152-159]) to its world hit
+    [M Player_MuzzleFlash 0x1a4298:107-132], as one stretched trail slot (the mesh is the port's
+    0x02000123 trail stand-in — the game's 0x2000131/0x20006c1 sprites are global-gfx [S; live
+    check filed]).
+  - **the loop sound stuck**: three stacked causes, all fixed — (1) the fire script restart gate
+    from fix-gadgets2 suppressed the restart for the +0x68 & 0x100400 family, but the Laser/
+    Stunner (+0x44 = 0 [L]) spawn in the FIRE branch and re-queue the script every tick via
+    AnimScriptAdd, which DELETES and recreates it [M 0x1c6d40] — the gate now applies only to the
+    release-frame family (+0x44 != 0); (2) the re-played loop start allocated a new voice per tick —
+    `Sounds::play_loop` keeps one voice per looped id; (3) the release never queued +0xB4 (the
+    release script whose op-4.3 frame 1 stops the loop [L 0x060004e8/0x06000488]) — the port now
+    runs the game's state-0xb transition [M 0x1a2e38 case 0xb:499-507, speed 1.5 M 0x1a5460:677-679]
+    and stops the looped op-1 ids on weapon switch too.
+  - **the 0c display-vent accuracy**: the burn ray is the crosshair ray (fix_level_0c_live's hinge
+    burn now runs on the Laser 0x4E through it).
+  - **the stunner**: no target (a live guard within weapon_data+0x1c [M 0x1a4bf0:169-200]) → NO
+    bullet and NO beam (+0x95d gates Draw_TaserBeam [M 0x1a4298:134]); `Sim::stunner_target` carries
+    the per-tick test; the shot block is gated on it.
+- Shared-file hooks (additive): drone.rs (the laser world-death branch), sound.rs (`play_loop`,
+  `active_ids` test hook), lib.rs untouched this task. `--give 0x4e,0x4a` verified equipping both.
+- Found on the way (NOT fixed, next task): the grapple is 0x50/0x51, not 0x4A/0x4C — the claw bolt
+  latches on a class-0x51 point's sphere at Bullet_Delete [M 0x12e660:36-60], not the press-ray
+  pick; the port's grapple gate + tests still use 0x4A/0x4C. The taser msg 7 state is unported
+  (the stunner's drone hit still routes msg 8).
+- Tests: gadget_laser_live 7/7 (the safe burn through 0x4E, the hold = 0 decals + one loop voice +
+  the ring-out, the beam end == the crosshair hit, the targetless stunner), fix_level_0c_live 4/4
+  (the hinges burn through the crosshair ray), nf-game lib 139/139, the full nf-view non-walk set
+  479 passed 0 failed, nf-game/formats/audio 349 passed + the 3 allowed disc_golden, the walk
+  samples green.
 ## fix-objective-messages (s/fix-objective-messages) — 2026-10-14
 
 Task 101d: the playtest (results 1013-1758 / 1013-1825) found (1) two stacked OBJECTIVE
