@@ -148,6 +148,19 @@ fn param(p: &Placement, k: u32) -> u32 { p.params.iter().find(|(i, _)| *i == k).
 /// additionally shows a text message [M 0x196e80:36–54]. The player's +0x95F is reset to 0xFF every
 /// tick by `Player_CollisionHandler` 0x1949a8:22 [M].
 ///
+/// **The room list is the straddle-cel set** [M `Collide_Update` 0x1ea398 → `Controls_StraddleTest`
+/// 0x134778 → `Collide_StraddleCels` 0x1eac98]: `build_LinkToRoom` (0x1c9680:40-49) builds the icon's
+/// world sphere (`Control_BuildWorldSph` 0x133070 over the object's glist bounds — the same centre +
+/// radius computation the wires use) and links the object to `build_FindCel` (0x1c8cb0, room cels
+/// only) at the sphere's centre; the straddle pass then BFS-walks cels from the object's own cel
+/// through **portals the sphere intersects** (`Intersect_Portal` 0x1ea7b8 version 0x101: the portal's
+/// AABB, then `vecutil_Dist2Tri` from the sphere centre to the portal's two triangles < the radius)
+/// up to 0x7e cels, and every object occupying a straddled cel gets a hitdata node on the icon's
+/// +0xd0 chain. So the icon writes its type **only while the player occupies a cel of that set** — a
+/// wall between the icon and the player keeps the contexts apart (no portal to walk through), which
+/// is what keeps 07000008's jump-grab from yanking Bond onto the zipline from the far side of the
+/// guardhouse wall. The port resolves the set once per level load (see `scene.rs`'s `icon_cels`).
+///
 /// Consumers: `Player_HandleJump` 0x1916b0:118–147 grabs the NEAREST wire (class 0x2C within 1000
 /// units) when the jump is pressed while +0x95F == 3 — the cable-crossing grab; `Player_Activate`
 /// 0x1a5170:67 grabs a creep wall when +0x95F == 6 (E, not this task).
@@ -160,20 +173,48 @@ fn param(p: &Placement, k: u32) -> u32 { p.params.iter().find(|(i, _)| *i == k).
 pub struct Icon {
     /// The placement translation (the icon object's position).
     pub pos: V3,
+    /// `obj+0x80..0x8C`: the world-sphere centre (`Control_BuildWorldSph` 0x133070 through the
+    /// placement's yaw matrix, the same computation as `Wire::create`) — `build_LinkToRoom`
+    /// 0x1c9680:40 builds it and `build_FindCel`s the object at it [M].
+    pub centre: V3,
+    /// `obj+0x8C`: the world-sphere radius — the straddle volume `Collide_StraddleCels` 0x1eac98
+    /// walks portals with (`Intersect_Portal` 0x1ea7b8 version 0x101) [M]. 07000008's type-3 icon
+    /// "Hand_Over_Hand" measures r 1.164 [D probe] — the flat 12.0 arm radius this struct's
+    /// consumers used before fix-08-walls was 10× too wide and armed through the guardhouse wall.
+    pub radius: f32,
     /// Param 0: the context type written to `BLData+0x95F` (3 = the wire-grab context here).
     pub ctx: u8,
     /// Param 1: the on-channel (0 = always enabled).
     pub on_channel: u16,
 }
 
-/// Every third-icon placement of a level (flags & 0xff == 0xFA), in placement order.
+/// Every third-icon placement of a level (flags & 0xff == 0xFA), in placement order, resolved
+/// against its map object for the world sphere (`Wire::all`'s resolution; an unresolved placement
+/// never creates an object, so it is skipped like the wires' unresolved ones).
 pub fn icons(level: &Level) -> Vec<Icon> {
     let mut out = Vec::new();
-    for m in &level.maps {
+    for (mi, m) in level.maps.iter().enumerate() {
         for p in &m.placements {
             if p.flags & 0xff != 0xfa { continue; }
+            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                else if (p.index as usize) < m.objects.len() { Some((mi, p.index as usize)) } else { None };
+            let obj = obj.and_then(|(om, oi)| level.maps.get(om).and_then(|map| map.objects.get(oi)));
+            let Some(o) = obj else { continue };
+            // The world sphere through the yaw-only object matrix + translation (the same
+            // computation as `Wire::create`) [M Control_BuildWorldSph 0x133070, via 0x1c9680:40].
+            let yaw = p.rotation[1];
+            let (s, c) = yaw.sin_cos();
+            let centre = [
+                p.translation[0] + o.centre[0] * c + o.centre[2] * s,
+                p.translation[1] + o.centre[1],
+                p.translation[2] - o.centre[0] * s + o.centre[2] * c,
+            ];
+            let scale = p.scale();
+            let s_max = scale.iter().fold(1.0f32, |a, &v| a * v.max(1e-6).abs());
             out.push(Icon {
                 pos: p.translation,
+                centre,
+                radius: o.radius * s_max,
                 ctx: param(p, 0) as u8,
                 on_channel: param(p, 1) as u16,
             });
