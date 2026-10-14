@@ -10462,3 +10462,30 @@ merged tree, log both trees' Bond positions per 60 ticks to find the divergence,
 way (the straddle set's cels: a missing portal crossing, a floor attribution), keep the 08 safe
 room (no invisible wall) and the 09 stairwell. Files: crates/nf-game/src/{player,world}.rs,
 crates/nf-view/src/scene.rs. Work log continues below.
+
+fix-08-collision2 (100m, 2026-10-14): the scoped collision's 01 escort breakage fixed the game's way.
+- Reproduce: walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact failed on
+  the 4023ba9+ccae18 merge (the contact stuck at (-5.2,6.3,14.1), the plate at (-33.1,2.3,15.4));
+  the trace showed west-room guard 16 unkillable (no-damage shots at dist 1.2-10, then Bond out
+  of ammo) -> AllyLeadHide forever.
+- Divergence (the driver's method): env-gated NF_WALK_TRACE per-60-tick positions on the merged
+  tree and a master worktree — the walks agree to t2460, then a 3 cm path shift at the spawn
+  corridor's seam (cel 60, owners [(6,7),(60,5)]); the scoped vs flat push differs by the
+  straddle ROOT's test order.
+- Fix (both halves [M]): (1) bond.cel's per-tick relink is build_FindCel 0x1c8cb0's two-ray
+  tie-break through build_LinkToRoom 0x1c9680:35-40 (the port had the raycast — find_cell_raycast
+  — the movement pass just never used it); (2) the capsule portal test projects the segment
+  against the portal's STORED CENTRE (build_alloc_portal 0x1c8928's +0x70 = the 4 corners'
+  average), not corner 0 [M Intersect_Portal 0x1ea7b8's 0x800 path]. ScopePortal gained centre;
+  debug_straddle added. The void-redo fallback stays.
+- Verified: the 01 walk passes (failed pre-fix and with the portal half alone — the root is
+  operative); fix_08_collision2_live 2/2 (the seam equality + the floor-carries sister);
+  the collision-adjacent set green (08 collision 4, 09 stairwell 2, ladders 8, wire 1, swim 2,
+  walls 3, safe08 6, qclaw/grapple 6, the walkreal sweeps 01-4a); suite on the final tree in
+  foreground chunks (background jobs die here): 233 binaries 975 passed / 3 failed / 31 ignored
+  — the 3 exactly the allowed disc_golden trio; weapon_matrix_live hit the 240 s cap (spot
+  check 4/4 green; the full 28 left for the next window with the ~40-binary tail).
+- Report: docs/reports/fix-08-collision2.md. Files: crates/nf-game/src/world.rs,
+  crates/nf-view/src/scene.rs (the two shared-file hooks), crates/nf-view/tests/common/walker.rs
+  (the env-gated trace), crates/nf-view/tests/fix_08_collision2_live.rs (new);
+  crates/nf-game/src/player.rs ended unchanged.
