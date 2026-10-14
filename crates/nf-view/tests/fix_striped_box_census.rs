@@ -245,6 +245,79 @@ fn census_no_marker_brush_drawn_on_any_level() {
     assert!(checked >= 2, "the census must have checked the archives carrying the markers (05 and 0c), got {checked}");
 }
 
+/// fix-striped-boxes2 — the gate's per-kind verdicts. Every FLAGS_COPYING-kind object the main
+/// agent's disc probe listed carries the no-draw bit (its creator copies `celglist+0x44` into
+/// obj+0xF0 — every creator verified at the scene.rs gate comment — and nothing clears the bit), so
+/// the game never draws it: drawn must equal the UNFLAGGED count for each listed pair. The sisters
+/// pin the same kinds on objects whose glist lacks the bit (0a's monitor + 3 PCQ worms, 41's two
+/// third icons, 12's monitor, 0b/46's PCQ worms) — they must keep drawing, so an over-broad
+/// kind-level hide fails here too. Fail-first: with the gate disabled the flagged objects draw and
+/// every pair with a flagged object fails.
+#[test]
+fn probe_gate_verdicts_per_kind() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    // (level, kind, the probe's flagged-object count) — name / kind / flags from the driver's probe.
+    const PROBE: &[(&str, u8, usize)] = &[
+        ("07000008.bin", 0xe1, 1),   // SmallExplosionBox (flags 0x30)
+        ("0700000d.bin", 0x3b, 1),   // WallHug_Blocker1_Long (flags 0x10, 0/1 striped — hidden regardless of texture)
+        ("07000011.bin", 0xfa, 2),   // 2x 3RD_Person_Icon (0x50)
+        ("07000012.bin", 0x35, 1),   // "Computer to hack" (0x50) — the invisible use volume; the laptop is baked geometry
+        ("07000012.bin", 0xe1, 1),   // ExplosionBox (0x30)
+        ("07000012.bin", 0xfa, 1),   // 3RD_Person_Icon
+        ("07000014.bin", 0x30, 12),  // 12x SWITCH_Consoles_Evilbase (0x50) — the visible consoles are baked geometry
+        ("07000014.bin", 0xe1, 19),  // 19x DESTROY_BoxSatellite (0x30) — Destroy_Create 0x12c318:57-59 zeroes their smash target
+        ("07000014.bin", 0xfa, 3),   // 3x 3RD_Person_Icon
+        ("07000015.bin", 0xe1, 3),   // 3x DESTROY_BoxSatellite
+        ("0700001b.bin", 0x4a, 8),   // 8x Apocalypse (0x30)
+        ("0700001b.bin", 0xe1, 3),   // DESTROY_BoxMissile/BoxSatellite/BoxSmall
+    ];
+    for (name, kind, probe_bit) in PROBE {
+        let sc = nf_view::load(&iso, name, false).unwrap_or_else(|e| panic!("load {name}: {e}"));
+        let level = Level::parse(&read_archive(&iso, name)).unwrap_or_else(|e| panic!("parse {name}: {e}"));
+        let (bit, nobit) = kind_flag_counts(&level, *kind);
+        assert_eq!(bit, *probe_bit, "{name} kind {kind:#x}: the probe's flagged count changed — re-check the gate scope");
+        let drawn = sc.misc_drawn.get(kind).copied().unwrap_or(0);
+        assert_eq!(drawn, nobit, "{name} kind {kind:#x}: drawn must equal the unflagged count (the probe's {bit} flagged objects must not draw)");
+    }
+    // Sisters: same-kind objects WITHOUT the bit keep drawing — the gate is per-object flags.
+    const SISTERS: &[(&str, u8, usize)] = &[
+        ("0700000a.bin", 0x30, 1),   // the 0a monitor draws (no bit) while 14's 12 do not
+        ("0700000a.bin", 0x35, 3),   // the 0a PCQ worms draw while 12's "Computer to hack" does not
+        ("07000041.bin", 0xfa, 2),   // 41's two third icons draw while 05/11/12/14's do not
+        ("07000012.bin", 0x30, 1),   // 12's own monitor draws
+        ("0700000b.bin", 0x35, 1),   // 0b's PCQ worm draws
+        ("07000046.bin", 0x35, 1),   // 46's PCQ worm draws
+    ];
+    for (name, kind, expect) in SISTERS {
+        let sc = nf_view::load(&iso, name, false).unwrap_or_else(|e| panic!("load {name}: {e}"));
+        let level = Level::parse(&read_archive(&iso, name)).unwrap_or_else(|e| panic!("parse {name}: {e}"));
+        let (bit, nobit) = kind_flag_counts(&level, *kind);
+        assert_eq!(bit, 0, "{name} kind {kind:#x}: the sister level must carry no flagged object");
+        assert_eq!(nobit, *expect, "{name} kind {kind:#x}: expectation must match the placements");
+        assert_eq!(sc.misc_drawn.get(kind).copied().unwrap_or(0), *expect, "{name} kind {kind:#x}: the unflagged peers must keep drawing");
+    }
+}
+
+/// Placements of `kind` resolving to a mesh-ful, non-mirror object, split by the no-draw bit 0x10.
+/// Applies the sweep's own 0x3b hidden-until-channel rule (param 0 ≠ 0 [M DynamicObject_Create
+/// 0x18dbf8:31]) so the channel-hidden objects count in neither bucket.
+fn kind_flag_counts(level: &Level, kind: u8) -> (usize, usize) {
+    let Some(m) = level.main_map() else { return (0, 0) };
+    let mut bit = 0;
+    let mut nobit = 0;
+    for p in &level.maps[m].placements {
+        if (p.flags & 0xff) as u8 != kind { continue; }
+        if kind == 0x3b && p.params.iter().find(|(i, _)| *i == 0).is_some_and(|(_, v)| *v != 0) { continue; }
+        let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+            else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
+        let Some((om, oi)) = target else { continue };
+        let o = &level.maps[om].objects[oi];
+        if !o.gfx.leaves.iter().any(|l| !l.batches.is_empty()) || o.flags & 0x400 != 0 { continue; }
+        if o.flags & 0x10 != 0 { bit += 1 } else { nobit += 1 }
+    }
+    (bit, nobit)
+}
+
 fn stripe_frac_by(indices: &[u8], px: &[[u8; 4]]) -> (f32, f32) {
     let n = indices.len() as f32;
     let (mut r, mut y) = (0usize, 0usize);
