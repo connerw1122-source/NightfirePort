@@ -40,3 +40,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox5 at 2026-10-14T06:24Z
+
+---
+## Report (done, 2026-10-14T07:28Z)
+
+Closed by the driver: the report is on `s/fix-fire-modes2` (docs/reports/fix-fire-modes2.md); the worker didn't run finish.sh.
