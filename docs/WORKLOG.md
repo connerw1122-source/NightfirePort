@@ -9792,3 +9792,9 @@ the wrap/line-height helpers). Report: docs/reports/fix-objective-messages.md.
 Full suite on the final tree (origin/master 7be3272 merged): **886 passed, 3 failed, 27 ignored
 (20 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH. Also green post-fix:
 death/restart 8, mission 4, level_carry 3, progress 8, nf-formats 74 (+ the 3 allowed).
+
+## fix-weapon-fire-modes (s/fix-weapon-fire-modes) — 2026-10-14
+
+Task 100f: every weapon's fire modes — the guided-missile camera (0x2C), the MGL impact/delay
+pair (0x2A/0x2B), the full modes table (docs/systems/weapons.md), the rest the table turns up.
+Ground truth: docs/live/2026-10-13-weapon-modes-pcsx2.md. Work starting.
