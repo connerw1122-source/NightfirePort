@@ -10446,3 +10446,19 @@ Work Log:
 - The 0c pylon: NOT reproducible on this tree — the real stand_at+head camera at the user spot resolves eye cell 91, all four pylon parts + shadow ride owner room 77, in_view true, 14/14 materials kept (probe_missing_pylon.rs, kept); pinned by a regression test, live re-render requested.
 - Green on the fixed tree: the whole portal chain (portal_live/eyecel/2/3/4/5/6/sweep/walkreal), nf-game units (world.rs scope tests), the new 3 tests. suite.py could not run in background (nohup dies between tool calls — same as the last two sessions); foreground chunks covered nf-game+nf-formats+the portal/object/census nf-view files; the levels_sweep re-run is left for the next session.
 - Report: docs/reports/fix-missing-objects.md. Files: crates/nf-game/src/world.rs (obj_cell rule + doc), crates/nf-view/src/scene.rs (scope_graph pub + the 1e8 owner pick + doc), crates/nf-view/tests/fix_missing_objects_live.rs (new) + 6 probe files (kept).
+
+---
+Task ID: 102h-fix-swim
+Agent: swim worker
+Task: fix-swim — the 07000002 pond swim (look-directed dive/surface, swim speed, no footsteps while swimming) and the water ladder under the hut (grab from the swim + climb out).
+
+Work Log:
+- (08:37-09:53 UTC) Branch s/fix-swim from origin/master ccaea18, merged master b65d6f7 mid-task (WORKLOG both-entries resolution). Setup: work/ + slim ISO, NF_ISO, nf-queue, LIBRARY_PATH for the user-prefix ALSA link.
+- Evidence: Player_InWater 0x195e50 (cel+0x90 > pos.y−0.3 → substate 3), the swim case 3 inline in Player_Update 0x193600:181-222 (Player_Move(1.0) + the surface−0.3 rise clamp + the grounded exit), Player_Move 0x191dd0:149-165 (the swim branch rides RotMatrixX(obj+0x50 − BL+0x8a8·π/2) — dive = look down + forward; NO crouch/jump input in case 3; Player_HandleJump only from SSWalk), Player_CollLadder 0x196118:16-17 (the grab gate excludes ONLY substates 1/2), Collide_PickObj 0x1eae80:152-168 (the capsule-segment vs sphere×1.5+0.55 pick) + the y-snap lift 0x196118:23-31, Effect_Create 0x1ce688:63 (no ground hit in swim → no footstep), Player_MonitorAir 0x191a70:101-143 (the 0x27 dive loop / 0x60c gasp / 0x60b drown).
+- Fixes: player.rs (the look-directed swim wish + k=1.0 always + the ±2.4 [S] block deleted + the strafe-smoother clear on entry + the grab gate), ladder.rs (capsule_hits = the game's pick shape), sound.rs (Sounds.swim_prev_under), scene.rs (the swim footstep gate + the MonitorAir sound hooks).
+- Tests failing-first: the two nf-game unit tests replayed against a HEAD player.rs (both FAILED there, PASS after); fix_swim_live 4/4 (entry+speed pin, dive/surface/clamp, no 129/0x27/0x60c in a surface swim, the hut ladder grabs FROM THE SWIM at +52 and climbs out to 7.118 over top 7.102). Sisters: fix_ladder2 4/4, fix_ladder 3/3+1, fix_swim_vent 2/2, walkreal_probe3 2/2, nf-game lib 145/145.
+- Report: docs/reports/fix-swim.md (the entry-depth live check, the sink-through-bed gap, the unported mesh refine + sound-group scrub).
+
+Stage Summary:
+- Files: player.rs, ladder.rs, sound.rs, scene.rs (shared, 2 hooks), tests/fix_swim_live.rs (new), the report. LadderCtx.sink now unread (field kept).
+- Open: the full suite did not fit the window (the sisters + libs above are the verified set); the pond-bed sink-through and the build_FindCel entry depth are the main agent's live checks.
