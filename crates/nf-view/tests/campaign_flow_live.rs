@@ -98,7 +98,10 @@ fn play_level(iso_path: &str, level: u32, budget: u32, save: Option<&RamSave>) -
         total = d.objectives.len();
         let mut unfired: Vec<u16> = Vec::new();
         for o in d.objectives {
-            if o.flags & 1 != 0 { continue; } // channel ON = FAIL — leave it off
+            // fix-level-chain: the FAIL flag is record+0x10 bit 1 (0x02) [M 0x1827d8:32-38] — the old
+            // `& 1` never skipped, so on 07000009 the runner raised the alarm itself and the
+            // fail-restart (level_exit = the level) masked the real 0xE8 exit.
+            if o.flags & 2 != 0 { continue; } // channel ON = FAIL — leave it off
             if o.enable != 0 { sim.drones.set_channel(o.enable); }
             if o.channel != 0 { sim.drones.set_channel(o.channel); }
             for _ in 0..10 { sim.step_bond(Default::default(), false, false, false); }
@@ -155,11 +158,29 @@ fn play_level(iso_path: &str, level: u32, budget: u32, save: Option<&RamSave>) -
         if let Some((lo, hi, gate, key_gate, next)) = exit {
             row.note.push_str(&format!("exit trigger→0x{next:08x} gate ch{gate} key{key_gate}; E at the exit; "));
             if key_gate != 0 { sim.drones.set_channel(key_gate); } // the key pickup's channel [M 0x1b2318:76-90]
+            // fix-level-chain: a trigger with no collision mesh has lo = inf / hi = -inf; the old
+            // centre formula produced NaN and Bond never stood anywhere. Aim at the finite box only.
+            if lo.iter().any(|v| !v.is_finite()) {
+                row.note.push_str("no exit mesh (unbounded bbox) — E-aim skipped; ");
+                let carry = sim.drones.level_exit.is_some().then(|| RamSave::capture(&sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels).with_mission(&sim.drones.mission));
+                row.exit_next = sim.drones.level_exit.take();
+                if row.exit_next.is_none() && row.complete { row.note.push_str(&format!("mission end → LevelToEndTo 0x{:08x}", sim.drones.mission.to_end)); }
+                return (row, carry);
+            }
             let c = [(lo[0] + hi[0]) * 0.5, lo[1] + 0.1, (lo[2] + hi[2]) * 0.5];
-            sim.bond = nf_game::player::Bond::new(c, 0.0);
-            for _ in 0..240 {
-                sim.step_bond(Default::default(), false, false, true); // the use key held
-                if sim.drones.level_exit.is_some() { break; }
+            // fix-level-chain: the 0xE8's mesh is the door slab it sits on — the collision push-out
+            // lands Bond beside it, so the use sphere reaches it only from the right FACING
+            // [M 0x1a5170:100-137 head + dir sphere]. Sweep the four facings like a player would.
+            'facing: for k in 0..4u32 {
+                sim.bond = nf_game::player::Bond::new(c, k as f32 * std::f32::consts::FRAC_PI_2);
+                for _ in 0..60 {
+                    // fix-level-chain: hold the key channel across the sweep — on 0700000a the "key"
+                    // (ch 0x4a) is an AND mux's output the mux recomputes every tick, so a one-shot
+                    // write is reclaimed before the E-path reads it.
+                    if key_gate != 0 { sim.drones.set_channel(key_gate); }
+                    sim.step_bond(Default::default(), false, false, true); // the use key held
+                    if sim.drones.level_exit.is_some() { break 'facing; }
+                }
             }
         } else if !row.complete {
             row.note.push_str("no LOAD_LEVEL trigger and no mission complete; ");
@@ -257,7 +278,7 @@ fn the_mission_layer_re_arms_on_a_warm_transition() {
     sim.bond = nf_game::player::Bond::stand_at(&sim.world, start, yaw);
     for _ in 0..30 { sim.step_bond(Default::default(), false, false, false); }
     let i5 = mission::LEVELS.iter().position(|l| l.level == 0x07000005).unwrap();
-    for o in mission::LEVELS[i5].objectives { if o.flags & 1 == 0 { if o.enable != 0 { sim.drones.set_channel(o.enable); } if o.channel != 0 { sim.drones.set_channel(o.channel); } } }
+    for o in mission::LEVELS[i5].objectives { if o.flags & 2 == 0 { if o.enable != 0 { sim.drones.set_channel(o.enable); } if o.channel != 0 { sim.drones.set_channel(o.channel); } } } // FAIL bit is 0x02 [M 0x1827d8]
     for _ in 0..10 { sim.step_bond(Default::default(), false, false, false); }
     sim.drones.set_channel(100); // the mission-complete verdict [M 0x1827d8:119-123]
     for _ in 0..500 { sim.step_bond(Default::default(), false, false, false); }
@@ -278,7 +299,7 @@ fn the_mission_layer_re_arms_on_a_warm_transition() {
     for _ in 0..30 { sim2.step_bond(Default::default(), false, false, false); }
     assert_eq!(sim2.drones.mission.internal, 1, "the warm load re-arms the layer (Mission_Init 0x182270)");
     let i6 = mission::LEVELS.iter().position(|l| l.level == 0x07000006).unwrap();
-    for o in mission::LEVELS[i6].objectives { if o.flags & 1 == 0 { if o.enable != 0 { sim2.drones.set_channel(o.enable); } if o.channel != 0 { sim2.drones.set_channel(o.channel); } } }
+    for o in mission::LEVELS[i6].objectives { if o.flags & 2 == 0 { if o.enable != 0 { sim2.drones.set_channel(o.enable); } if o.channel != 0 { sim2.drones.set_channel(o.channel); } } } // FAIL bit is 0x02 [M 0x1827d8]
     for _ in 0..30 { sim2.step_bond(Default::default(), false, false, false); }
     assert_eq!(sim2.drones.mission.states[i5][0], 4, "the past part's record survives the warm load");
     assert_eq!(sim2.drones.mission.states[i6][0], 4, "06's own objective folds again on the re-armed layer");
