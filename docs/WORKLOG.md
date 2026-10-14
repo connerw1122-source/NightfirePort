@@ -10424,3 +10424,10 @@ Task: fix-guard-misc — the 0c sniper takes no damage; 06 guards can't open doo
 
 Work Log:
 - (started 09:16 UTC) Branch s/fix-guard-misc created from origin/master 6cbe522; setup reused (repo, work/, ISO, nf-queue). Repro tests next; fast suite to follow.
+- Harnesses for all three symptoms in crates/nf-view/tests/fix_guard_misc_live.rs (new, real input path): doors + sniper FAIL (reproduced), pose PASSES (no repro headlessly).
+- Census facts: 06 guards all route-less posts (state 1) with door-flagged node pairs on paths 3 (n11-n14 → door #4) and 7 (n0-n1 → door #1) — the user's door bug must live in the chase path (GoToGoalPosition/LinkCreep dispatch); the rooftop sniper is drone #17 (weapon 0x1E, y 21.43, WAIT_SWITCH ch 1), has 73-matrix palette + 16 hit boxes, is enabled by set_channel(1), and takes no damage from a scanned clear-LOS vantage with the clip draining (repro, cause narrowed to the ray/hit path, aim drift documented).
+- Report: docs/reports/fix-guard-misc.md. Blocked at the sandbox deadline before the fixes; next session continues from the branch.
+
+Stage Summary:
+- Files: crates/nf-view/tests/fix_guard_misc_live.rs (new), docs/reports/fix-guard-misc.md, docs/WORKLOG.md. No production code touched.
+- nf-game lib 143/0 on the final tree; the full suite left for the next session (backgrounds die in this sandbox).
