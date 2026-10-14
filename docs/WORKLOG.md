@@ -9821,3 +9821,11 @@ The full suite.py sweep is the next session's first job.
 Task 100f final: the FULL suite equivalent is green — nf-game 34/34 binaries, nf-view 135 binaries
 505 passed / 0 failed / 13 ignored, nf-formats+nf-audio 87 passed; the only 3 failures are the
 allowed disc_golden trio on the slim ISO. Done.
+
+## fix-fire-modes2 (s/fix-fire-modes2) — 2026-10-14
+
+Task 100l: land 100f's fire modes on master's explosion path — no double blasts. Taking over
+s/fix-weapon-fire-modes (guided camera, steering, HUD overlay, modes table, weapons.md all stay),
+merging origin/master, deleting `blast_at` and `Grenade.explode_on_impact` and using master's
+`pending_blasts`/`spawn_blast` plus the `GrenadeEvent::Bounce` arm for every impact blast.
+Work starting.
