@@ -183,6 +183,7 @@ fn grenade_events_match_the_records() {
         weapon_type: if impact { 0x2a } else { 0x2b }, mesh: 0x0200_0860, owner: usize::MAX,
         state: 0, bounces: 0, smoke_popped: false,
         resting: false, // fix-grenade-throw's slow-bounce latch (merged alongside)
+        stuck: false, seek_target: None, // fix-oddjob-hat
     };
     let mut rng = nf_game::drone::Rng::new(0);
     // 0x2A: the first contact is ONE Bounce event (the Sim's Bounce arm blasts on it)…

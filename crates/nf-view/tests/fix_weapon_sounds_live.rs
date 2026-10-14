@@ -111,7 +111,14 @@ fn until_drawn(scene: &mut nf_view::scene::Scene, sound: &mut nf_audio::sfx::Sou
         scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
         tick(sound, scene, seen);
         let gun = &scene.sim.as_ref().unwrap().gun;
-        if t >= 2 && gun.weapon as usize == want && gun.switch_state == 0 { break; }
+        // fix-weapon-anims2: also require the reload states clear. The draw-done clip (0 for the
+        // clip-slot twins — the equip fills the base's slot, the switch reads the id's) starts the
+        // auto-reload on the first idle tick, whose states 5/6/7 are VIEW states (+0xF4, [M
+        // Player_SetWeaponAnimObj cases 5/6/7]) — "drawn" in the game means +0xF4 == 0, not merely
+        // switch_state == 0. Breaking mid-reload made the fire window's held trigger ride the reload
+        // branch (which consumes the press edge — the game's held trigger does not fire across a
+        // reload [M 0x1a5460:442-445's new-press edge test]) and the cells never fired.
+        if t >= 2 && gun.weapon as usize == want && gun.switch_state == 0 && gun.reload_state == 0 { break; }
     }
 }
 
@@ -226,7 +233,14 @@ fn every_weapon_on_07000005_draws_fires_and_reloads_with_sounds() {
         // first-person model, so `Player_WeaponSelect` variant-swaps through state 8 — no draw sound
         // there either [M 0x1a2cc0 lines 13-29].
         let start_weapon_or_variant = w == 0x02 || w == 0x03;
-        until_drawn(&mut scene, &mut sound, &mut seen, w, 240);
+        // fix-weapon-anims2: the wait must cover the CHAINED correct-rate switch — the previous
+        // cell's reload tail (its +0xA4 script at 1.35 [M 0x1a6250-0x1a631c]) + its holster (+0xC4 at
+        // 1.25 [M 0x1a2e38 case 1:220-223]) + this draw (+0xC0 at 1.25 [M case 3:287-288]). Measured:
+        // the Q-Worm 0x41 draws ~180 frames (drawn_at 190 from the P2K start), the MGL 0x42 ~150 —
+        // fix-weapon-anims's 240 cap was tuned to the double-advance bug's 2x-fast draws and timed out
+        // mid-draw, so the fire window below ran while still switching (the game's fire block) and the
+        // fire-script op-1s (0x27f/0x41b/0x5ce at frame 2) never played. 600 covers the longest chain.
+        until_drawn(&mut scene, &mut sound, &mut seen, w, 600);
         // The draw sound (weapon 0x282, gadget 0x281 [M 0x1a2e38]) must have started with the owning
         // bank's sample.
         let draw = if w >= 0x4a { 0x281u32 } else { 0x282 };
