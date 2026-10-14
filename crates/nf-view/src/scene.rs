@@ -2193,6 +2193,16 @@ impl Sim {
         // While switching, the trigger and reload are blocked (the game's state 1/3 checks `AnimScriptIsStopped`).
         let log_switch = std::env::var_os("NF_SOUNDLOG").is_some();
         let mut switching = self.gun.switch_state != 0;
+        // fix-weapon-anims2: the script-frame watermark the op-1 sound dispatch below measures its
+        // [prev_frame+1, new_frame] window against — captured BEFORE the switch machine advances the
+        // draw/holster/variant scripts (its tail advance at the end of the `if switching` block), so
+        // the window covers the whole tick's advance. Captured after it (where fix-weapon-anims had
+        // left it), the switch's advance had already moved view_time before the watermark, the window
+        // came up empty (from = to) and NO op-1 fired while a switch played — the Samurai's draw whoosh
+        // (0x5c7 at frame 90 of its 107-frame draw script) went silent on every switch [M
+        // AnimProcessScriptCmds runs per AnimObjectUpdate on the PLAYING script — holster/draw included,
+        // 0x1c1b38; the game's window is (prev frame, new frame] of the same tick].
+        let (prev_script, prev_time) = (self.view_script, self.view_time);
         // State 0 → 1/3/8: a switch request starts the holster (`Player_WeaponSelect` 0x1a2cc0).
         // The reload states block it here too (the game's refused view-state set {1,3,5,6,7,8,9,0xb,
         // 0xd..0x10} covers 5/6/7): a pending request simply waits for the reload to finish [M 0x1a6f80:33-47].
@@ -2201,6 +2211,16 @@ impl Sim {
             let req_id = self.gun.switch_request;
             let cur_base = self.weapons.base(cur_id as usize);
             let req_base = self.weapons.base(req_id as usize);
+            // fix-weapon-anims2: the switch DISPLACES a playing fire script — `Player_WeaponSelect`
+            // 0x1a2cc0 writes the view state +0xF4 = 8/3/1 directly, discarding the fire state 9 (and
+            // the +0x95C spawn latch with it — the game's case-9 tail can never run once the state is
+            // gone). The port kept gun.fire_state/latch set across the switch: the next weapon's first
+            // pull then hit the state-9 suppress (`was_fire_state && flags & 0x100400 && +0x44 != 0`)
+            // and queued NO fire script — the sweep's 0x41/0x42/0x43 cells never fired after a cell
+            // whose fire script was still playing at its section end. (The fire script's loop sounds
+            // already die at the holster arm below [M 0x1a2cc0:33-38].)
+            self.gun.fire_state = false;
+            self.gun.latch = false;
             // `Player_WeaponSelect` variant-swap path: same base weapon AND same first-person model → play +0xC8
             // at 1.3x, state 8 (a fast swap without holster/draw) [M 0x1a2cc0 lines 13-29].
             // fix-silencer-modes: the twin-variant cycle marker [M Player_WeaponSelect 0x1a2cc0:15-16]
@@ -2380,6 +2400,7 @@ impl Sim {
                 aim
             };
             let was_reloading = self.gun.reload_state;
+            // (fix-weapon-anims2: the prev-script watermark moved above the switch machine — see there.)
             // The pre-shot fire-script state (`anim+0xF4 == 9`): the game SKIPS `Player_SetFiringAnim`
             // — the running fire script is NOT restarted — when the view state is already 9 and
             // `weapon_data+0x68 & 0x100400` [M 0x1a5460:664-672: `if ((*(short *)(...+0xf4) == 9) &&
@@ -2439,7 +2460,6 @@ impl Sim {
             };
             // Advance the reload state machine [M Player_SetWeaponAnimObj cases 5/6/7].
             let new_reload_state = self.gun.reload_tick(trigger, params);
-            let (prev_script, prev_time) = (self.view_script, self.view_time);
             let rd = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
             let flags = rd(0x68);
             let fire_anim_len = rd(0x44);
@@ -2523,10 +2543,10 @@ impl Sim {
                 }
                 // fix-weapon-anims: the idle-alert fidget (`Player_SetWeaponAnimObj` 0x1a2e38:79-136).
                 // In view state 0 with substate +0x959 == 0, once the idle counter (+0x93a) reaches
-                // 0x14*FRAME_RATE_INT (20 ticks at FRAME_RATE_INT 1 [S] — live check filed), a record
+                // 0x14*FRAME_RATE_INT = 1200 idle ticks [M 0x1a2e38:83; L bldata.md +0x93E = 1200], a record
                 // with an idle-alert script (+0xCC) queues it at 1.0 ONCE and sets substate 1 [M :79-136];
                 // when the fidget stops the idle script re-queues, substate clears and the counter
-                // resets [M :63-73] — so the fidget repeats every (20 + alert length) idle ticks. Any
+                // resets [M :63-73] — so the fidget repeats every (1200 + alert length) idle ticks. Any
                 // non-idle state resets substate + counter [M :40-58]; here that is the displaced-script
                 // arm (a fire/reload/switch script replaced the fidget mid-play).
                 let idle_hash = rd(0xa0);
@@ -2545,11 +2565,14 @@ impl Sim {
                         self.drones.aims_idle = 0;
                     } else if !self.view_alert && self.view_script == idle_hash
                         && self.gun.switch_state == 0 && self.gun.reload_state == 0 && !self.gun.fire_state
-                        && self.drones.aims_idle >= 20 {
-                        // The threshold: 0x14*FRAME_RATE_INT idle ticks [M :79-136; FRAME_RATE_INT 1 [S]].
-                        // No frame gate on the idle script: the game queues from the idle state itself
-                        // (AnimScriptAdd displaces whatever plays [M 0x1c6d40]), and the port's 2-frame
-                        // idle loop wraps view_time to 0 before this arm reads it.
+                        && self.drones.aims_idle >= 1200 {
+                        // The threshold: 0x14·FRAME_RATE_INT = 1200 idle ticks [M 0x1a2e38:83
+                        // `(short)FRAME_RATE_INT * 0x14 <= +0x93a`; FRAME_RATE_INT = 60 [L
+                        // docs/fields/bldata.md +0x93E "= n_INT·0x14 = 1200" (the EE snapshot's own
+                        // default) and +0x95E "= (char)n (60)"; door.md's n·6 = 360-tick auto-close
+                        // corroborates]. fix-weapon-anims guessed 20 [S] — 100x early: the fidget kept
+                        // restarting every ~20 idle ticks and the idle script never reached its later
+                        // frames (the Samurai's idle loop was choked before its own op-1s).
                         self.view_script = alert_hash;
                         (self.view_time, self.view_speed) = (0.0, 1.0);
                         self.view_alert = true;

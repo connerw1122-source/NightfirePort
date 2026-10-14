@@ -205,17 +205,21 @@ fn p2k_draw_fire_reload_modeswitch_holster_numbers() {
 
 // ------------------------------------------------------------------- the idle fidget (+0xCC)
 
-/// The idle fidget: 20 idle ticks after the machine settles, the P2K's +0xCC (06000826/185) plays
-/// at 1.0 once, then the idle re-queues [M 0x1a2e38:79-136 (queue), :63-73 (back to idle)].
+/// The idle fidget: 0x14·FRAME_RATE_INT = 1200 idle ticks after the machine settles, the P2K's
+/// +0xCC (06000826/185) plays at 1.0 once, then the idle re-queues [M 0x1a2e38:83
+/// `(short)FRAME_RATE_INT * 0x14 <= +0x93a` (queue), :63-73 (back to idle); FRAME_RATE_INT = 60
+/// [L docs/fields/bldata.md +0x93E "= n_INT·0x14 = 1200" (the snapshot default) and +0x95E
+/// "= (char)n (60)"]]. fix-weapon-anims2: this test originally pinned the 20-tick guess [S] —
+/// corrected to the game's 1200 with the rest of the threshold fix.
 /// FAILED BEFORE THE FIX: the port never queued +0xCC.
 #[test]
-fn p2k_idle_fidget_plays_after_20_idle_ticks() {
+fn p2k_idle_fidget_plays_after_1200_idle_ticks() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load(&iso);
     let _ = give_and_draw(&mut scene, 0x02, 3);
-    // Idle past the threshold.
+    // Idle past the threshold (1200 ticks).
     let mut rec = Rec::new(&scene);
-    run_until(&mut scene, &mut rec, Input::default(), false, false, 600, |sc| {
+    run_until(&mut scene, &mut rec, Input::default(), false, false, 1400, |sc| {
         sc.sim.as_ref().unwrap().view_script == 0x0600_0826
     });
     let plays = rec.finish();
@@ -231,6 +235,8 @@ fn p2k_idle_fidget_plays_after_20_idle_ticks() {
     let plays = rec.finish();
     let alert = play_of(&plays, 0x0600_0826);
     assert_eq!(alert.ticks, 183, "fidget ticks (the game rule ceil(184/1.0) = 184 incl. the queue tick)");
+    // The counter reset when the fidget stopped: without the [M :63-73] reset it would carry the
+    // 1200+ it crossed to queue the fidget, plus the fidget's own 183 ticks.
     assert!(scene.sim.as_ref().unwrap().drones.aims_idle <= 21, "the counter reset when the fidget stopped [M 0x1a2e38:63-73]");
 }
 
