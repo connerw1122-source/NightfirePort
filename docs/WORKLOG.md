@@ -11927,3 +11927,28 @@ list's unlock states, the F8 render points).
   per-ammo-type caps, already-owned weapon pickup (ammo only), dropped guard guns (ammo count, despawn,
   radius), ammo boxes, pickup sound + on-screen message, auto-switch (Player_IsBetterWeapon 0x1a6eb0,
   already live). Files: crates/nf-game/src/{pickup,drone}.rs, the message in crates/nf-view/src/hud.rs.
+## fix-pickups-ammo — s/fix-pickups-ammo (task 107e, started 22:37 UTC 2026-10-14)
+- Started from origin/master 4ea550b7. Scope: the pickup layer vs the game — caps, owned-weapon
+  takes, dropped guns, ammo boxes, the take sound + message, auto-switch.
+- Audit: read Pickup_Handler 0x18e650, Pickup_Update 0x18e148, Pickup_Create 0x18dda0,
+  Player_EquipWeapon 0x1a8a58, Player_EquipAmmo 0x1a8d18, DroneWeap_DropWeapon 0x17a2a0,
+  Script_HideObj 0x1db808 + a disc-wide placement census (a scratch example, not committed).
+  Five divergences found, all fixed failing-first:
+  1. The take sound for kinds 0/1 must be FORCED 0xF5 [M 0x18e650 LAB_0018ee80] — the disc
+     places them with 0x13F (the 07000002 sniper, the 07000008 rockets, the 07000005 id-6
+     boxes) and 0xFFFF (the 0700000c/d 0x1f boxes); the port played the placement's word.
+  2. The ammo path's id is the COMPOSITION upgrade_ammo_id(upgrade_weapon(raw)) [M
+     0x18e650:142-144 + 0x1a8d18:11-19] — the id-6 boxes (07000001/05) credit the P2K's
+     type-1 pool (cap 70 [L weapon_data: record 6 is type 2]), not type 2 (cap 90).
+  3. Pickup_Create's 07000008 && id 0x2c → rounds = 4 override [M 0x18dda0] — the vault's
+     rocket placement says 5 [D]; the old port granted 4 loaded + 1 spare (4/5 vs 4/4).
+  4. A hidden pickup is still takeable — Pickup_Update's take path never reads obj+0xF0 [M];
+     the AR drop's invisible 0x1B grenade pile [M 0x17a2a0:110-112] was never collected.
+  5. The kind-4 label (the placement's param 6 → +0x34) rides the take and is the message when
+     non-zero [M 0x18e650 case 4] — 0700000b's id-0x47 item carries 0x2000036 [D].
+- Tests: nf-game pickup units 12/12 (3 new), nf-view fix_pickups_ammo_live 4/4 (new, NF_ISO:
+  the boxes' type-1 pool + the raw-type message, the drop taken twice to the cap, the vault
+  rocket 4/4 + the forced sound, the hidden pile take, the 0700000b label message), the census
+  (fix_pickups_remainder_live) green over the levels with the override + the composed-id
+  refusal model, fix_pickups_trace_live 2/2, fix_auto_switch_live 6/6, fix_hud_live 6/6,
+  fix_objects_live 2/2.
