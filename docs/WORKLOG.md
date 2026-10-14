@@ -11234,3 +11234,21 @@ doesn't, or changes the escort's path through a door. Plan: find the game's actu
 straddle walk-in (Door_Update's proximity math, which doors and which states it applies to —
 0x136678 metric, 0x1363c8 ch_open gate per the fix-casings-16 evidence), narrow the port to it, keep
 16's arrival door working, restore 01's door E / escort walk to master behaviour.
+
+## 102j2-fix-casings-16b (s/102j2-fix-casings-16b) — 2026-10-14
+
+The merge-HELD fix-casings-16 root-caused and the primary symptom fixed. The per-tick straddle
+walk-in's `state & 0xc` gate let a CLOSING (0x10) leaf through and re-activated it every tick —
+the slide activate turns 0x10 into OPENING [M Door_Activate 0x135be0] — so 01's door E test read
+state 0x4 after the second E. Door_Update's scan is auto-close only, behind OPEN-door tests
+[M 0x1363c8 @0x136678/@0x136610], and never touches a moving leaf. Narrowed: closed-idle only,
+ch_open doors to the channel arm, silent lock pre-skip; hook scoped to the evidenced contact-open
+site (07000016's arrival door) — the "straddle" param is a portal-culling flag [M 0x136788 →
+0x1c8ac8], not an open trigger, and the decompile has no per-tick open for a closed idle door.
+Tests: level_end_live 6/6 (door_e restored + the new 16 closing-door test, shown failing first),
+casings16_live 2/2, nf-game --lib 150/0. OPEN: walkreal_07000001 still fails — it passes with the
+broad walk-in and fails without it on today's master (the bisect premise is stale; s/104a2-fix-
+escort-01b is another worker on it); the resolver is the U-041 per-leaf contact, not a sphere.
+Suite: the sandbox kills background jobs (nohup+setsid both died); synchronous chunks only — the
+full suite did not fit the window. Report: docs/reports/102j2-fix-casings-16b.md (live checks:
+16's no-E contact open, 01's shoji doors E-only vs contact, the escort's own door opens).
