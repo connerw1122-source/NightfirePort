@@ -9243,6 +9243,7 @@ Stage Summary:
   the smoke consumes the game's RNG with the real 2.13 s linger; the coronas fade by obj+0x106;
   the flicker machine is faithful; the placement census settled late-spot-creation as a
   non-mechanism. Live checks for the main agent: the 6 items in the report.
+## fix-menu-movies
 
 ## fix-spawner-remainder (s/fix-spawner-remainder) — 2026-10-13
 
@@ -9424,3 +9425,86 @@ Work Log:
   generics on 19 levels (counts in the report; 0700000a worst at 4706, the trench's 05: 1382);
   the shipped mask (walk + rescue) is clean on all 27 — no level needs the frustum-only
   fallback this session.
+Branch: s/fix-menu-movies (from origin/master 7a614ba)
+
+Work Log:
+- (started) branch created; reading docs/systems/movies.md, docs/reports/fix-menus3.md and the
+  menu/movie code next. Goal: main-menu + list-page looping background movies under the page
+  controls, title->Start intro movie (skippable), movie audio via cpal.
+- The page→movie mapping parsed from the menu-def's PAGE records (0x21b908's own tag walk, all 13
+  record kinds): main 0x40000002 → 0x07330048; boot 0x40000034, every list page (0x40000025/23/1c/2b)
+  and results 0x40000036 → 0x07350048; P_INTRO 0x40000032, title layout 0x40000009 and attract → 0.
+  menu::aux_movie_for pins it; the test re-parses the disc data (NF_ISO, no movie data needed).
+- Playback: MovieStream (movie.rs) decodes closed-GOP chunks of the demuxed ES on a worker thread
+  (sequence header prepended; open GOPs ride their predecessor's chunk) — ~2× realtime vs 31 s for
+  a whole-ES decode; the menu loop 0x07330048 = 1800 pictures (60 s), 90 advance() calls yield 90
+  distinct frames. Audio = the PSS PCM as two aligned mono SPU voices (L/R, pitch 0x1000) through
+  the existing cpal Output; looped movies set the voices' loop point; stop keys them off.
+- Host wiring (lib.rs): movie_menu_tick mirrors the game's decisions [M 0x21c858:338 plays/stops the
+  page's aux on change; 0x209e88 advances the intro on psiMovieFinished]; frames stream into a
+  menu_textures slot (hash = the movie code) and gpu::Renderer::update_hud_texture (small additive
+  hook: hud tbgl/sampler kept + slot updater). Intro: FrontEnd{intro_playing, intro_index} — Start
+  arms it (INTRO_TICKS = 850 = the measured 96+329 pictures × 2), the overlay draws it fullscreen,
+  Confirm (= action 0x19) skips [M case 6]; menus_flow's two blind-Confirm tests updated to the
+  skip contract. --shot gains the movie still (first closed-GOP chunk, --movie-frame N).
+- Tests menu_movies (6, green with --features movies + NF_MOVIE_ISO at a retail image): the disc's
+  PAGE map, the decoded-frame SHA-1 pin (frame 12 = 1f1fe7b0…), the stream-ahead test, the intro
+  budget re-measure, the intro flow, the overlay layering (movie run first = under the controls;
+  the plate stands in without the frame). Note: the sandbox has only the slim ISO (every PSS
+  stubbed) — the four task movies were range-fetched from the retail image on the file host into a
+  70 MB mini ISO (scripts/, never committed); tests skip without NF_MOVIE_ISO data.
+- Suite (chunked foreground, slim ISO): nf-game 232/0; nf-formats + nf-audio 94/3 (the 3 permitted
+  disc_golden BIGF stubs); nf-view 481/0. movies-feature run: menu_movies 6/6 with the retail-image
+  movies. Report: docs/reports/fix-menu-movies.md.
+
+---
+2026-10-13 fix-menu-movies2 (branch s/fix-menu-movies2, from s/fix-menu-movies 9ee385d)
+
+Task: land the menu movies on top of the movie-playback plane. Start from s/fix-menu-movies, merge
+origin/master (movie-playback merged first), and resolve by making the menu movies USE the
+movie-playback plane and decoder plumbing (one movie plane in the Renderer, one player/decoder
+path) instead of a second copy. Keep both features' tests green.
+
+Work Log:
+- (started) branch created from 9ee385d; both reports read (docs/reports/fix-menu-movies.md and
+  fix-movie-playback.md). Next: merge origin/master, reconcile gpu.rs/lib.rs/menu.rs/movie.rs
+  conflicts so the menu backdrop + intro route through the movie-playback plane.
+
+- Merge resolution (ae1ab...) committed and pushed: one Renderer ctor (master's movie plane +
+  hud_tbgl/hud_sampler, the dup pair dropped); the movie quad now draws BEFORE the HUD runs (the
+  game's page background is a texture under the controls [M movies.md §Presentation,
+  PS2UploadBGMImage 0x108740], state 6's overlay is suppressed so the position is equivalent
+  there); update_hud_texture/hud_bg (the second-copy slot plumbing) deleted.
+- movie.rs: Player now wraps MovieStream's closed-GOP worker (ONE decoder path; the whole-ES
+  decode cost ~23-31 s to first frame) + Player::start_looping for the page aux [M 0x21c858:338
+  loop = 1] + is_looping; audio slices paced per frame at present() [M audioDecSendToIOP
+  0x107100], looping restarts the walk with the video [M 0x00108060].
+- lib.rs: ONE movie_tick with the game's three start sites (P_INTRO 0x209e88 / state 6
+  0x1c98c8 case 6 / the page aux 0x21c858:338) over the single self.movie player; the redraw
+  presents intro/flow/aux through ONE plane argument and sets fe.backdrop_live; menu_textures/
+  movie_bg/intro_stream/movie_open/movie_audio_stop/movie_show_frame/movie_menu_tick deleted;
+  --shot routes the still through the plane (front_end_menu returns (hud, movie), shot() renders
+  the movie arg; --intro shows the FMV fullscreen with no overlay).
+- menu.rs: overlay drops the layer-1 movie-quad branch; the dark plate only when
+  fe.backdrop_live is false (the plane owns the backdrop); FrontEnd.backdrop_live added (own
+  line); aux_movie_for + outro_for both kept.
+- Tests: menu_movies' overlay contract rewritten to the plane (plate yields to backdrop_live;
+  sister: plate stands in; intro plate) + the_menu_loop_plays_through_the_one_player_path
+  (Player::start_looping pins 07330048 frame 12 = 1f1fe7b0…, the MovieStream pin's decoder);
+  movie_playback_flow's two mission_ended tests updated to 568a6e8's fade-on-top contract (they
+  were red on master — the fade push landed without updating them) — green again (9/9).
+- Suite (all 208 test binaries, chunked foreground — the sandbox kills background jobs):
+  everything green except the 3 permitted disc_golden (slim-ISO BIGF stubs) and
+  pss_movies_live::every_movie_on_the_disc_demuxes_to_the_golden_numbers (needs the 22-movie
+  retail image; the sandbox's 5-movie mini ISO runs its other 2 tests green). 473+ passed /
+  4 failed / 17+ ignored across the final two passes; no TIMEOUT/CRASH.
+- Mini ISO: no retail image in this sandbox — range-fetched the 5 task movies (07100001, 07330048,
+  07350048, 07370048, 07380048; ~100 MB) from the retail image on the file host into
+  /home/z/nf-mini.iso (never committed); NF_MOVIE_ISO at it runs the movies-feature tests.
+
+Stage Summary:
+- ONE movie plane (gpu.rs's movie_tex/movie_bg/movie_vbuf), ONE player/decoder path (movie::Player
+  over MovieStream's closed-GOP worker), ONE host tick (App::movie_tick) — the menu looping
+  backdrop and the intro ride the movie-playback plane exactly like the briefings/outros; both
+  features' tests green; the merge conflicts in {gpu,lib,menu}.rs resolved by adoption, not
+  duplication.

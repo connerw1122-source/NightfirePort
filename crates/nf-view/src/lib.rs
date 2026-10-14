@@ -1023,10 +1023,15 @@ fn cam_axes(cam: &Camera) -> ([f32; 3], [f32; 3]) {
 /// difficulty|missions|dossier>` jumps to a page for the per-page renders, `--cursor N` picks the row,
 /// `--unlock-all` is the `menu_unlock_everything` dev global [M 0x30d2a7, 0x20b8d8:18]. The page is
 /// drawn with the game's font (ACTION.ELF's FONTSerpLight) and the USATxt.dat strings.
-fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> Option<gpu::HudFrame> {
+/// fix-menu-movies2: returns `(hud, movie)` — with the `movies` feature and an image that has movie
+/// data, the page's backdrop is its own looping FMV instead of the dark plate, decoded as a still
+/// (the first closed-GOP chunk only — fast; `--movie-frame N` picks the frame) and drawn on the ONE
+/// movie plane (gpu.rs), exactly like the live loop. `--intro [N]` renders the P_INTRO movie the
+/// same way, fullscreen with no overlay (the intro page has no controls [M 0x209e88]).
+fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> (Option<gpu::HudFrame>, Option<(u32, u32, Vec<u8>)>) {
     let page_arg = args.iter().position(|a| a == "--page");
-    if !front_end && page_arg.is_none() { return None; }
-    let Some(tables) = scene.hud.as_ref() else { eprintln!("[front end] no HUD tables (the game font) — the menu overlay needs ACTION.ELF"); return None; };
+    if !front_end && page_arg.is_none() { return (None, None); }
+    let Some(tables) = scene.hud.as_ref() else { eprintln!("[front end] no HUD tables (the game font) — the menu overlay needs ACTION.ELF"); return (None, None); };
     let mut fe = menu::FrontEnd::new();
     if args.iter().any(|a| a == "--unlock-all") { fe.unlock_all = true; }
     if let Some(i) = args.iter().position(|a| a == "--cursor") {
@@ -1041,7 +1046,7 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> Opt
             "difficulty" => menu::Page::Difficulty,
             "missions" | "single" => menu::Page::MissionSelect,
             "dossier" => menu::Page::Dossier,
-            other => { eprintln!("unknown --page '{other}' (start|main|codename|difficulty|missions|dossier)"); return None; }
+            other => { eprintln!("unknown --page '{other}' (start|main|codename|difficulty|missions|dossier)"); return (None, None); }
         };
     }
     // Tick through the boot load and let the page's timers run (the flash cycle etc.).
@@ -1049,7 +1054,34 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> Opt
     fe.press_start_on = true;
     let lang = read_files_bin(&scene_iso_name(), "USATxt.dat").and_then(|b| nf_formats::hud::Lang::parse(&b).ok())
         .or_else(|| scene.sim.as_ref().and_then(|s| s.lang.clone()));
-    Some(menu::menu_overlay(&fe, &tables.font, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0))
+    let intro = args.iter().any(|a| a == "--intro");
+    #[allow(unused_mut)] // the movies feature assigns it
+    let mut movie = None;
+    #[cfg(feature = "movies")]
+    {
+        let frame_n: usize = args.iter().position(|a| a == "--movie-frame").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0);
+        let want = if intro {
+            Some(menu::INTRO_MOVIES[args.iter().position(|a| a == "--intro").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(menu::INTRO_MOVIES.len() - 1)])
+        } else {
+            let aux = menu::aux_movie_for(fe.page.id());
+            (aux != 0).then_some(aux)
+        };
+        if let Some(code) = want {
+            match movie::movie_still(&scene_iso_name(), code, frame_n) {
+                Ok(img) => movie = Some((img.width, img.height, img.rgba)),
+                Err(e) => eprintln!("[front end] movie {code:08X}: {e} — the dark plate stands in"),
+            }
+        }
+    }
+    if intro {
+        // The intro FMV owns the screen — no controls, no plate [M 0x209e88]; the movie plane is
+        // the whole picture. Without movie data the headless plate stands in.
+        let hud = if movie.is_some() { None }
+            else { Some(menu::menu_overlay(&fe, &tables.font, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0)) };
+        return (hud, movie);
+    }
+    fe.backdrop_live = movie.is_some();
+    (Some(menu::menu_overlay(&fe, &tables.font, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0)), movie)
 }
 
 /// The ISO path for `read_files_bin` (the NF_ISO env or the default sandbox path).
@@ -1059,7 +1091,7 @@ fn scene_iso_name() -> String {
 
 /// Renders one frame offscreen and writes it as a PNG. `menu` = a front-end overlay frame (fix-menus2:
 /// `--shot` on the front-end boot draws the menu pages too, so the main agent can compare with PCSX2).
-fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, mut opts: scene::ViewOpts, notex: bool, nofog: bool, menu: Option<&gpu::HudFrame>) -> Result<()> {
+fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, mut opts: scene::ViewOpts, notex: bool, nofog: bool, menu: Option<&gpu::HudFrame>, movie: Option<&(u32, u32, Vec<u8>)>) -> Result<()> {
     let (w, h) = (1280u32, 720u32);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let (_adapter, device, queue) = pollster::block_on(device(&instance, None))?;
@@ -1100,7 +1132,8 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let snow = snow_for(scene, cam);
     let overlay_owned = menu.map_or_else(|| overlay_for(scene, w as f32 / h as f32), |m| m.clone());
     let hud = &overlay_owned;
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, hud, None);
+    let movie_arg = movie.map(|(w, h, rgba)| (*w, *h, rgba.as_slice()));
+    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, hud, movie_arg);
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -1218,8 +1251,11 @@ struct App {
     /// curves and ramps — docs/systems/input.md §8).
     #[cfg(feature = "gamepad")]
     pad: Option<gamepad::Backend>,
-    /// The playing mission-flow movie, the port's `psiStartBackgroundMovie` [M 0x1081a8]. Set while
-    /// GameFlow state 6 holds a real briefing/outro; cleared by the skip or the end of stream.
+    /// fix-menu-movies2: the ONE playing movie, the port's `psiStartBackgroundMovie` [M 0x1081a8].
+    /// Every movie rides it — the GameFlow state-6 briefing/outro (fix-movie-playback), the
+    /// P_INTRO pair and the page's looping backdrop (fix-menu-movies); the host's `movie_tick`
+    /// decides which one the game would be playing and `present()` feeds the ONE plane in
+    /// gpu.rs. Cleared by the skip, the end of a non-looping stream, or a code change.
     movie: Option<movie::Player>,
 }
 
@@ -1240,15 +1276,39 @@ impl App {
         self.grab(false);
     }
 
-    /// The mission-flow movie glue, one call per redraw: `psiStartBackgroundMovie` on state-6
-    /// entry [M 0x1081a8], the `psiMovieFinished` poll [M 0x1082e8 + GameFlow_Main 0x1c98c8 case 6],
-    /// `psiStopBackgroundMovie` when state 6 leaves [M 0x108328], and the phase-2 resolve routing
-    /// the host's level load [M ResetMap_Load 0x1d6360 LoadState 2].
+    /// The ONE movie glue, one call per redraw. Every movie the game plays routes through the one
+    /// `self.movie` player, by the game's own start sites: the P_INTRO pair while the run is up
+    /// [M `P_INTRO_Handler` 0x209e88], the GameFlow state-6 briefing/outro [M 0x1c98c8 case 6 +
+    /// `psiStartBackgroundMovie` 0x1081a8], and the page's LOOPING aux backdrop on every page
+    /// change [M `Manager_SendMessage` 0x21c858:338 — stop when the new page's aux is 0, restart
+    /// when it differs from the playing one]. Plus the `psiMovieFinished` poll [M 0x1082e8] and
+    /// the phase-2 resolve routing the host's level load [M ResetMap_Load 0x1d6360 LoadState 2].
     fn movie_tick(&mut self) {
+        let movie_iso = self.movie_iso_path();
         let Some(fe) = self.fe.as_mut() else { return };
         // A pending end_to request from mission_ended rides the same path a menu pick does.
         if let Some(code) = fe.requested_level.take() { self.pending_level = Some(code); }
-        if fe.flow.get_state() == menu::ST_MOVIE {
+        let intro_up = fe.intro_playing && fe.flow.get_state() == menu::ST_MOVIE;
+        if intro_up {
+            // The intro owns the screen; the game stops any playing movie before starting the
+            // next [M psiStartBackgroundMovie 0x001081a8 restarts the single BGFMV slot].
+            let code = fe.intro_movie_code();
+            let wrong = match &self.movie { Some(p) => p.code() != code || p.is_looping(), None => true };
+            if wrong {
+                if let Some(p) = self.movie.take() { p.stop(); }
+                match movie::Player::start(&movie_iso, code) {
+                    Ok(p) => { self.movie = Some(p); eprintln!("movie: playing {code:08x} (intro)"); }
+                    Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown carries the intro"),
+                }
+            }
+            // psiMovieFinished [M 0x1082e8 polled at 0x209e88]: the pair advances; after the
+            // second movie the host shortens the headless countdown so the state pops at the real
+            // end (the slim ISO's zeroed PSS files [L] leave the countdown alone to carry it).
+            if self.movie.as_ref().is_some_and(|p| p.code() == code && p.finished()) {
+                fe.intro_index += 1;
+                if fe.intro_index >= menu::INTRO_MOVIES.len() { fe.flow.movie_frames = fe.flow.movie_frames.min(1); }
+            }
+        } else if fe.flow.get_state() == menu::ST_MOVIE {
             match &mut self.movie {
                 Some(p) => {
                     // BGFMVPlaying follows the player: 1 while it decodes, 0 at the end of file —
@@ -1259,7 +1319,7 @@ impl App {
                 None => {
                     let code = fe.flow.movie_code;
                     if code != 0 {
-                        match movie::Player::start(&self.iso, code) {
+                        match movie::Player::start(&movie_iso, code) {
                             Ok(p) => {
                                 eprintln!("movie: playing {code:08x} (state 6)");
                                 fe.flow.movie_playing = true; // BGFMVPlaying = 1 [M 0x1081a8]
@@ -1270,24 +1330,47 @@ impl App {
                     }
                 }
             }
-        } else if self.movie.is_some() && !fe.flow.movie_pending {
-            // State 6 left (the skip, or the flow moved on) and no wrap is on its way:
-            // psiStopBackgroundMovie [M 0x108328].
-            let code = self.movie.as_ref().map_or(0, |p| p.code());
-            if let Some(p) = self.movie.take() { p.stop(); }
-            fe.flow.movie_playing = false;
-            eprintln!("movie: stopped {code:08x}");
-        } else if self.movie.is_none() && fe.flow.movie_pending {
-            // Early start: the decoder works through the fade and the rest of the menu so state 6
-            // opens on the first frame instead of a black screen (the game's hardware IPU starts
-            // streaming instantly [M 0x1081a8]; the port's decode is a whole-stream pass, ~23 s on
-            // 07100001 — the head start hides it). The player finishes starting (movie_playing)
-            // when state 6 actually arrives.
-            let code = fe.flow.level_to_load;
-            if fe.flow.get_state() == menu::ST_MAPLOAD && matches!((code >> 20) & 0xff, 0x71 | 0x73) {
-                match movie::Player::start(&self.iso, code) {
-                    Ok(p) => { self.movie = Some(p); eprintln!("movie: decoding {code:08x} ahead of state 6"); }
-                    Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in"),
+        } else if fe.flow.movie_pending {
+            // A movie-wrapped load is on its way: the looping page backdrop yields the single
+            // player slot to it [M psiStartBackgroundMovie replaces the playing movie].
+            if let Some(p) = self.movie.as_ref() {
+                if p.is_looping() {
+                    let code = p.code();
+                    if let Some(p) = self.movie.take() { p.stop(); }
+                    eprintln!("movie: stopped {code:08x} (a briefing is pending)");
+                }
+            }
+            if self.movie.is_none() && fe.flow.get_state() == menu::ST_MAPLOAD {
+                // Early start: the decoder works through the fade and the rest of the menu so
+                // state 6 opens on the first frame instead of a black screen (the game's IPU
+                // starts streaming instantly [M 0x1081a8]).
+                let code = fe.flow.level_to_load;
+                if matches!((code >> 20) & 0xff, 0x71 | 0x73) {
+                    match movie::Player::start(&movie_iso, code) {
+                        Ok(p) => { self.movie = Some(p); eprintln!("movie: decoding {code:08x} ahead of state 6"); }
+                        Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in"),
+                    }
+                }
+            }
+        } else {
+            // The page's aux loop [M 0x21c858:338]: stop when the page has no aux, (re)start when
+            // the playing code differs from the page's.
+            let aux = menu::aux_movie_for(fe.page.id());
+            let wrong = match &self.movie {
+                Some(p) => aux == 0 || p.code() != aux || !p.is_looping(),
+                None => aux != 0,
+            };
+            if wrong {
+                if let Some(p) = self.movie.take() {
+                    let code = p.code();
+                    p.stop();
+                    eprintln!("movie: stopped {code:08x}");
+                }
+                if aux != 0 {
+                    match movie::Player::start_looping(&movie_iso, aux) {
+                        Ok(p) => { self.movie = Some(p); eprintln!("movie: looping {aux:08x} (page backdrop)"); }
+                        Err(e) => eprintln!("movie: {aux:08x} not started: {e:?} — the dark plate stands in"),
+                    }
                 }
             }
         }
@@ -1317,6 +1400,19 @@ impl App {
             self.grabbed = false;
         }
     }
+
+    // -------------------------------------------------------------------------
+    // fix-menu-movies2: the front end's background movies ride the ONE player/decoder path
+    // (movie::Player over MovieStream's closed-GOP worker) and the ONE full-screen plane in
+    // gpu.rs — the game plays them all through psiStartBackgroundMovie 0x001081a8 /
+    // psiStopBackgroundMovie 0x00108328 (the page switch plays/stops the page's aux loop
+    // [M Manager_SendMessage 0x21c858:338]; P_INTRO runs the intro pair [M 0x209e88]).
+    // -------------------------------------------------------------------------
+
+    /// The image the movies load from: NF_MOVIE_ISO (a full retail image) over the running one —
+    /// the same precedence movie.rs's tests use [L the on-foot ISO's /MOVIES/30_FPS files are
+    /// zero-length stubs].
+    fn movie_iso_path(&self) -> String { std::env::var("NF_MOVIE_ISO").unwrap_or_else(|_| self.iso.clone()) }
 
     /// A click on the dev menu (F2 open): hit-test the mouse against the menu items and apply the action (WORKLOG 0081).
     fn dev_menu_click(&mut self) {
@@ -1352,7 +1448,7 @@ impl App {
             let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
             menu::menu_overlay(fe, &t.font, lang, &self.scene.hud_textures, 1280.0 / 720.0)
         }));
-        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref()) {
+        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref(), None) {
             Ok(()) => format!("saved {} ({line})", png.display()),
             Err(e) => format!("screenshot failed: {e} ({line})"),
         }
@@ -1942,23 +2038,33 @@ impl ApplicationHandler for App {
                 let (_, vp_rot) = draw_cam.view_proj(aspect);
                 let vp = vp0;
                 let snow = snow_for(&self.scene, &draw_cam);
-                // fix-menus: a menu page up → the menu overlay replaces the HUD. The movie plane
-                // replaces everything while state 6 is on top — but fe.tick() still runs (it is
-                // what pops state 6 when the movie ends [M 0x1c98c8 case 6]).
-                // The borrow rules: read `is_some` first, then pull the frame — `movie_frame`
+                // fix-menus: a menu page up → the menu overlay replaces the HUD. fix-menu-movies2:
+                // the ONE movie plane (gpu.rs) serves every movie — the state-6 briefing/outro
+                // (fix-movie-playback), the P_INTRO pair and the page's looping backdrop
+                // (fix-menu-movies) — and draws BEFORE the HUD runs, so the menu pages' controls
+                // paint over their backdrop exactly like the game's page background
+                // [M PS2UploadBGMImage 0x108740 + movies.md §Presentation].
+                // The borrow rules: read the state first, then pull the frame — `movie_frame`
                 // holds a borrow into `self.movie` until render() consumes it.
-                let movie_up = self.movie.is_some()
-                    && self.fe.as_ref().is_some_and(|fe| fe.flow.get_state() == menu::ST_MOVIE);
+                let state6 = self.fe.as_ref().is_some_and(|fe| fe.flow.get_state() == menu::ST_MOVIE);
+                let intro_up = self.fe.as_ref().is_some_and(|fe| fe.intro_playing) && state6;
+                let flow_up = state6 && !intro_up && self.movie.is_some();
+                // The looping page player is the backdrop under the overlay; the early-started
+                // briefing player (non-looping, held through ST_MAPLOAD) is not.
+                let aux_up = self.movie.as_ref().is_some_and(|p| p.is_looping())
+                    && !self.fe.as_ref().is_some_and(|fe| fe.flow.movie_pending);
+                let movie_up = intro_up || flow_up || aux_up;
                 let movie_frame = if movie_up { self.movie.as_mut().and_then(|p| p.present()) } else { None };
                 let mut hud = if let Some(fe) = self.fe.as_mut() {
                     let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
                     fe.tick();
-                    if movie_up {
-                        // The movie plane replaces the overlay: the game blits the decoded frame
-                        // straight into the frame buffer over the backdrop level [M
-                        // DecodeBGFMVFrame 0x108550 + PS2UploadBGMImage 0x108740] and suppresses
-                        // the fog pass while it plays [M psiDrawFogPass 0x10b960]. The quad itself
-                        // is drawn inside render().
+                    fe.backdrop_live = aux_up && movie_frame.is_some();
+                    if flow_up || (intro_up && movie_frame.is_some()) {
+                        // The movie plane replaces the overlay: the state-6 briefing blits over the
+                        // empty backdrop and the fog pass is suppressed while a movie plays [M
+                        // DecodeBGFMVFrame 0x108550 + PS2UploadBGMImage 0x108740, psiDrawFogPass
+                        // 0x10b960]; the intro FMV owns the screen the same way [M 0x209e88]. The
+                        // quad itself is drawn inside render(), before the (empty) HUD runs.
                         gpu::HudFrame::default()
                     } else {
                         match &self.scene.hud {
@@ -2121,8 +2227,8 @@ pub fn run() -> Result<()> {
                 eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);
             }
         }
-        let menu_frame = front_end_menu(&args, &scene, front_end);
-        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts, notex, nofog, menu_frame.as_ref());
+        let (menu_frame, movie_frame) = front_end_menu(&args, &scene, front_end);
+        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts, notex, nofog, menu_frame.as_ref(), movie_frame.as_ref());
     }
     let event_loop = EventLoop::new()?;
     // Sound: the level's bank in the driver, the default output device (silent without one).

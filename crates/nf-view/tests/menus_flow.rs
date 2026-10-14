@@ -100,7 +100,8 @@ fn the_page_sequence_matches_the_real_game() {
 fn locked_missions_cannot_be_scrolled_to_or_picked() {
     let mut fe = FrontEnd::new();
     tick_to_title(&mut fe);
-    fe.action(Action::Confirm); // movie
+    fe.action(Action::Confirm); // Start → the intro movie [M P_INTRO 0x209e88]
+    fe.action(Action::Confirm); // Confirm = action 0x19: the skip [M GameFlow_Main 0x1c98c8 case 6]
     fe.action(Action::Confirm); // NightFire
     fe.action(Action::Confirm); // play without saving
     fe.action(Action::Confirm); // confirm box
@@ -208,9 +209,9 @@ fn the_results_screen_offers_restart_continue_and_quit() {
 fn cursors_wrap_and_back_walks_up_the_pages() {
     let mut fe = FrontEnd::new();
     fe.unlock_all = true; // the walk visits the mission list freely
-    fe.action(Action::Confirm); // Start → (movie) Main
+    fe.action(Action::Confirm); // Start → the intro movie [M P_INTRO 0x209e88]
     assert_eq!(fe.page, Page::Main);
-    fe.flow.main_tick(); // pop the movie state so the page is interactive again
+    fe.action(Action::Confirm); // Confirm = action 0x19: the skip [M GameFlow_Main 0x1c98c8 case 6]
     fe.action(Action::Up);
     assert_eq!(fe.cursor, 2, "up wraps from row 0 to the last row");
     fe.action(Action::Down);
@@ -219,7 +220,7 @@ fn cursors_wrap_and_back_walks_up_the_pages() {
     assert!(fe.action(Action::Back));
     assert_eq!(fe.page, Page::Start);
     fe.action(Action::Confirm);
-    fe.flow.main_tick();
+    fe.action(Action::Confirm); // the skip — the intro replays after Back to the title
     fe.action(Action::Confirm);
     assert_eq!(fe.page, Page::Codename);
     assert!(fe.action(Action::Back));

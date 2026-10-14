@@ -322,6 +322,25 @@ pub const CAMPAIGN: [(u32, u32, u32, u32); 12] = [
 /// `Menu_UpdateWheel` binds +0x08 when unlocked, +0x14 when not].
 pub const LOCKED_DESC: u32 = 0x0100_0009;
 
+/// A front-end page's aux background-movie code [M the menu-def PAGE record's third dword, stored at
+/// M_PAGE+0xC4 by `MenuManager_Create` 0x21b908:169-183 and played as a LOOPING background movie on
+/// page change by `Manager_SendMessage` 0x21c858:338 (`Menu_PlayMovie(aux, 0, 1, 0, 0, 0)` — loop = 1;
+/// `psiStopBackgroundMovie` when the new page's aux is 0)]. 0 = no movie. Parsed from the disc's
+/// menu-def (08000002 in 07000048.bin) 2026-10-13: the main menu carries 0x07330048; the boot page
+/// 0x40000034, every list page (codename 0x40000025, difficulty 0x40000023, missions 0x4000001c,
+/// dossier 0x4000002b) and the results page 0x40000036 carry 0x07350048; P_INTRO 0x40000032, the
+/// title layout 0x40000009 and attract 0x40000035 carry 0 (P_INTRO plays 0x7370048/0x7380048 from
+/// its handler [M 0x209e88]). The test
+/// `menu_movies::the_page_aux_movie_map_comes_from_the_page_data` re-parses the disc's PAGE records
+/// and pins this mapping to them.
+pub fn aux_movie_for(page_id: u32) -> u32 {
+    match page_id {
+        PAGE_MAIN => 0x0733_0048,
+        PAGE_START | PAGE_CODENAME | PAGE_DIFFICULTY | PAGE_MISSION_SELECT | PAGE_DOSSIER | PAGE_RESULTS => 0x0735_0048,
+        _ => 0,
+    }
+}
+
 /// Mission_Update 0x182c60 case 6's level → outro-code switch [M; snapshot bytes 0x182e60-0x182eb4
 /// are lui/ori pairs, no table [L ee_snapshot]]: 0x7000004/08/0b/0d/0f/13/1b map to their own 0x73
 /// codes, 0x7000016 → 0x7300017 (the one non-identity entry), everything else → the front-end map
@@ -349,6 +368,19 @@ pub const DIFFICULTY_DESCS: [u32; 3] = [0x100_0006, 0x100_0007, 0x100_0008];
 /// The main menu's item labels and one-line descriptions [M menu-def page 0x40000002 rows + Txt].
 pub const MAIN_ITEMS: [u32; 3] = [0x28, 0x149, 0x14b];
 pub const MAIN_DESCS: [u32; 3] = [0x100_0000, 0x100_0001, 0x100_0002];
+
+/// The intro movies the P_INTRO page plays between the title and the front end, in order
+/// [M `P_INTRO_Handler` 0x209e88:38-62: `psiStartBackgroundMovie(0x7370048, 0, vol)` then
+/// `psiStartBackgroundMovie(0x7380048, 0, vol)` (loop = 0), each waited on with
+/// `psiMovieFinished` 0x001082e8; the page change to the next page only after the second ends].
+pub const INTRO_MOVIES: [u32; 2] = [0x0737_0048, 0x0738_0048];
+
+/// The headless intro budget: the two movies at 30 fps, one frame per two 60 Hz ticks [M the game
+/// decodes one MPEG frame per game tick and skips to even vblanks — 30 fps NTSC, main 0x00109080].
+/// Measured on the retail image 2026-10-13: 0x07370048 = 96 pictures (3.2 s, the EON logo),
+/// 0x07380048 = 329 pictures (11 s) — 425 × 2 = 850 ticks. The test
+/// `menu_movies::the_intro_movie_counts_pin_the_tick_budget` re-measures the disc's files against it.
+pub const INTRO_TICKS: u32 = 850;
 
 /// Which front-end page is up. The ids are the game's own (the constants above); the enum is the
 /// dispatcher the port drives.
@@ -420,6 +452,18 @@ pub struct FrontEnd {
     pub unlocked: [bool; 12],
     /// The pause page's resume choice: the host closes the menu when this is set.
     pub closed: bool,
+    /// The P_INTRO movie run started by the title's Start: true from the confirm until the last
+    /// intro movie finishes (or the skip action pops it) [M 0x209e88]. While it is up the overlay
+    /// draws the intro movie fullscreen (the intro page has no controls) and Confirm skips.
+    pub intro_playing: bool,
+    /// Which of [`INTRO_MOVIES`] is up [M 0x209e88's `movie_283` counter: 1 → 0x07370048,
+    /// 2 → 0x07380048, then the page change].
+    pub intro_index: usize,
+    /// fix-menu-movies2: the page's aux backdrop movie has a live frame on the ONE movie plane
+    /// (fix-movie-playback's `movie_tex`) this frame — the overlay then draws no dark plate (the
+    /// plane IS the backdrop, under these quads); without it the plate stands in (the pre-movies
+    /// look, and every image without movie data). The host sets it per frame.
+    pub backdrop_live: bool,
 }
 
 impl FrontEnd {
@@ -432,7 +476,8 @@ impl FrontEnd {
         // post-unlock session and read 1 everywhere].
         unlocked[0] = true;
         unlocked[1] = true;
-        FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false }
+        FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false, intro_playing: false, intro_index: 0,
+            backdrop_live: false }
     }
 
     pub fn rows(&self) -> usize {
@@ -488,6 +533,12 @@ impl FrontEnd {
     pub fn tick(&mut self) {
         self.flow.main_tick();
         if !self.flow.load_tick() { return; }
+        // The intro run ends when the movie state pops (its frames ran out or the host ended it
+        // after the second intro movie) [M 0x209e88: the page change follows the movies].
+        if self.intro_playing && self.flow.get_state() != ST_MOVIE {
+            self.intro_playing = false;
+            self.intro_index = 0;
+        }
         // The title/main 240-frame flash [M 0x20a408's delayed 0x100000fa toggle at 0xf0 frames].
         if matches!(self.page, Page::Start | Page::Main) {
             self.press_start_on = self.flow.ticks % 240 < 120;
@@ -532,15 +583,34 @@ impl FrontEnd {
         self.cursor = 0;
     }
 
+    /// The intro movie the P_INTRO run currently shows [M 0x209e88's movie_283 counter].
+    pub fn intro_movie_code(&self) -> u32 { INTRO_MOVIES[self.intro_index.min(INTRO_MOVIES.len() - 1)] }
+
     /// One menu action. Returns true when the action changed the state.
     pub fn action(&mut self, a: Action) -> bool {
         self.no_input_frames = 0; // [M Menu_ResetNoInputCount on every handled input]
+        // The intro movie is up: action 0x19 (X/Start — Enter here) skips it [M GameFlow_Main
+        // 0x1c98c8 case 6 pops the movie state on `Input_Action(-1, 0x19)`]; other input does
+        // nothing while the movie owns the screen (the intro page has no controls).
+        if self.intro_playing && self.flow.get_state() == ST_MOVIE {
+            if a == Action::Confirm {
+                self.flow.pop_state();
+                self.intro_playing = false;
+                self.intro_index = 0;
+                return true;
+            }
+            return false;
+        }
         match self.page {
             Page::Start => {
                 if a == Action::Confirm {
-                    // → the intro movie, then the main menu [M P_INTRO 0x209e88 plays the background
-                    // FMVs then opens the next page; the driver's observed order Title → movie → Main].
-                    self.flow.play_movie(450);
+                    // → the intro movie, then the main menu [M P_INTRO 0x209e88 plays 0x07370048
+                    // then 0x07380048 (non-looping) and only then opens the next page; the driver's
+                    // observed order Title → movie → Main]. The page flips at once (menus_flow's
+                    // contract); the overlay shows the movie fullscreen until the state pops.
+                    self.flow.play_movie(INTRO_TICKS);
+                    self.intro_playing = true;
+                    self.intro_index = 0;
                     self.page = Page::Main;
                     self.cursor = 0;
                     return true;
@@ -779,12 +849,29 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&L
     let bright = gs(BRIGHT, 0xff);
     let dim = gs(CREAM, 0x80);
     let dimmest = gs(CREAM, 0x40);
-    // The backdrop: the pages' aux FMVs are the real background — the main menu's PAGE record names
-    // 0x07330048, every list page 0x07350048 [L menu-def PAGE records, M_PAGE+0xC4 — the game plays
-    // them as looping background movies, see docs/systems/movies.md]. The trimmed ISO stubs every
-    // movie (0-byte PSS files [L]), so the port draws the dark plate the pages fade from [M the
-    // pages' 0x1b/0x1c fade colours]; a still from the retail image is the follow-up.
-    plate(&mut h, 0.0, 0.0, MW, MH, gs(0x180c08, 0xff));
+    // The intro movie owns the screen: P_INTRO's page has no controls, the two FMVs are the whole
+    // picture (the fog pass is suppressed while a movie plays [M psiDrawFogPass 0x0010b960:
+    // BGFMVPlaying == 0]), and the frame fills the 512×448 screen [M DecodeBGFMVFrame 0x00108550:
+    // every movie is exactly 512×448, centred]. fix-menu-movies2: the frame draws on the ONE movie
+    // plane (gpu.rs), so the host suppresses this overlay entirely while a real frame is up; what
+    // is drawn here is only the plate stand-in for the headless countdown (no `movies` feature, or
+    // the stubbed slim ISO — the pre-movies look).
+    if fe.intro_playing {
+        plate(&mut h, 0.0, 0.0, MW, MH, gs(0x180c08, 0xff));
+        return h.finish();
+    }
+    // The backdrop: the pages' aux FMVs are the real background — parsed from the menu-def's PAGE
+    // records (aux_movie_for: the main menu's 0x07330048, the boot/list/results pages' 0x07350048;
+    // `Manager_SendMessage` 0x21c858:338 plays the page's aux code as a LOOPING background movie
+    // under the page controls on every page change). fix-menu-movies2: the decoded frame draws on
+    // the ONE movie plane (gpu.rs), BEFORE this overlay's quads — the game's backdrop is the page's
+    // own background texture, not an overlay [M movies.md §Presentation; PS2UploadBGMImage 0x108740].
+    // When the plane has no live frame (no `movies` feature, or the slim ISO's zeroed PSS files [L])
+    // the port keeps the dark plate the pages fade from [M the pages' 0x1b/0x1c fade colours].
+    let aux = aux_movie_for(fe.page.id());
+    if !(aux != 0 && fe.backdrop_live) {
+        plate(&mut h, 0.0, 0.0, MW, MH, gs(0x180c08, 0xff));
+    }
     match fe.page {
         Page::Start => {
             // The title [M menu-def page 0x40000009: the art control 0x10000196 (0,0,640,480) TEX
