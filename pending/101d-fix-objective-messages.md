@@ -14,6 +14,11 @@ carry from 05/06), and the banner box size/text placement (the HUD element's own
 one objective queues exactly one message; loading 07000007 cold or warm announces only 07's objective; the banner text
 rect lies inside its box for the longest objective string in every level; sister assertions.
 
+More from the next playtest (results 1013-1825): the "Mission Fail / Cover Lost" box on 07000007: its text sits left of the
+box's centre (the user's F12 `dist`-side screenshot at `--bond 42.42,44.10,-77.44`); and at that moment the top banner
+showed "NEW OBJECTIVE / Find a way inside to the party", 07000005's objective, on 07000007. Centre the fail text the way
+the game does (its text alignment flag / the box's own rect) and add both to the tests.
+
 Files: `crates/nf-game/src/mission.rs` (or `mission/`), `crates/nf-view/src/hud.rs`.
 
 **Shared files** (`drone.rs`, `scene.rs`, `player.rs`, `lib.rs`): small, additive hooks only, listed in your report.
