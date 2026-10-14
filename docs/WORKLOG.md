@@ -11120,3 +11120,19 @@ Task 103m: the watch gadgets (0x4A-0x55) get real matrix cells (equip via Player
 bounds 0x4A..0x5E; fire; the beam/dart/camera-view + sound checks), then the full 27-level sweep again —
 fix or explain every remaining red cell with game evidence; panics are bugs. Base: master 8295049 +
 the merge of s/fix-reload-hang (not yet on master — 103i's reload fixes under the sweep). Started 14:59 UTC.
+
+## weapon-matrix3 — s/weapon-matrix3 (task 103m, 14:57-16:35 UTC)
+- The gadget cells are REAL: 0x4A..0x5E equip via the gadget cycle (Player_WeaponChange 0x1a6f80
+  mode=1, Input::gadget_cycle) and run the beam/bolt/camera/sound checks; uncarried ids print n
+  (the game's cycle cannot reach them either). 07000005: 0x4a nt1 (the stunner's no-target arm
+  [M 0x1a4bf0:169-200]), 0x4e/-, 0x50/-, 0x54/-; the twins 0x4c/0x4f/0x55 n.
+- Two harness repairs the cells exposed: the dead-Bond cold reload (the warm restart's RamLoad
+  carry keeps hp 0 — measured) and the stale fire_busy script clear (the port keeps view_script
+  set with view_time frozen 0 after a script ends; the game's gate is the state-9 check
+  [M 0x1a6f80:33-47]). Proof on 07000003: D 17 → 9, clean 27 → 34.
+- The sweep: 2646 cells (27 × 98), 0 panics; red B 287 / D 487 / F 53 / M 197 / R 310 / W 47
+  (matrix2: D 1278 / B 234 / R 226 / M 152 / F 22 / W 9) — measured with the 103i hang unfixed
+  (its branch is a claim stub; the fix is in flight). Groups: the twins' B wall = the mode_to
+  press budget; the D-block = the stale-script family (fixed) + 103i's hang; F = the manor-intro
+  holds + 0x38's quiet fire (live check). Report: docs/reports/weapon-matrix3.md. Shared files:
+  none touched.

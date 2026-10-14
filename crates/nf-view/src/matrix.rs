@@ -329,6 +329,9 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
         c.mode_count = w[0x2e];
     }
     c.mode_tried = c.twin != 0 || c.mode_count > 1;
+    // The stale fire_busy script (see unstick_view_script): it blocks the switch/ cycle block for
+    // the GUN cells too — the D-block from 0x2e on in the first sweep was this, not the weapons.
+    unstick_view_script(scene);
     c.mode_label_base = {
         let sim = scene.sim.as_ref().unwrap();
         let m = sim.drones.inventory.fire_mode.get(id as usize).copied().unwrap_or(0);
@@ -392,7 +395,6 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
     let mut drew = false;
     let dbg = std::env::var("NF_MATRIX_DBG").is_ok();
     if gadget {
-        unstick_view_script(scene);
         drew = cycle_to(scene, id);
     } else {
         for tick in 0..60 {
