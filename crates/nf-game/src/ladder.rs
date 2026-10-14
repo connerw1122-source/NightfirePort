@@ -59,26 +59,27 @@ impl Ladder {
     /// `BLData+0x8A4` = `centre.y − radius + 1.0` — the bottom dismount threshold [M same functions].
     pub fn bottom(&self) -> f32 { self.centre[1] - self.radius + 1.0 }
 
-    /// The grab hit: Bond's capsule near the ladder's body. The game's hit comes from
-    /// `Collide_Update` 0x1ea398 (`Collide_Pick`/`Collide_Intersect` per-object HITTEST shapes against the
-    /// player capsule; `Player_CollisionHandler` 0x1949a8 walks the resulting HITDATA and
-    /// `Player_DealWithObjHit` 0x194458 dispatches class 0x2D → `Player_CollLadder`). The ladder object's
-    /// HITTEST shape is not recoverable from the decompile in this pass, so the port uses the world sphere
-    /// against Bond's capsule column [S]: horizontal distance to the ladder axis within
-    /// `radius` *of the sphere's mid band* is too generous for a tall thin ladder, so the test is the
-    /// capsule (radius 0.55) against the ladder's vertical **axis segment** [bottom−0.5, top] expanded by
-    /// the ladder's own bounds radius in the horizontal plane — narrow enough that the yaw window in
-    /// `Player_CollLadder` stays the real gate, wide enough that walking into the ladder attaches.
+    /// The grab hit: the game's pick shape. `Collide_PickObj` 0x1eae80:152-168 [M] tests the player's
+    /// HITTEST capsule segment against the object's world sphere inflated ×1.5 plus the capsule
+    /// radius (mode word +0x7D4 = 0x800, the sphere test), refined against the ladder's glist mesh by
+    /// `Collide_Intersect` 0x1ebaa8 (not ported — the mesh refine needs the glist triangles). The
+    /// player capsule segment is `Player_Collision` 0x194df0:313-337's default arm [M]: A = pos + up·0.55,
+    /// B = pos + up·(0.55 − AnimObj+0xCC), root height 1.0347. This is what lets a DEEP swimmer
+    /// (the pond bed at the hut ladder sits low) trigger the grab — `Player_CollLadder` 0x196118:23-31
+    /// then lifts pos.y to `bottom + 0.02`, the climb-out assist. (The old [S] axis-column band with
+    /// its ±0.5 y slack rejected deep swimmers the game picks up.)
     pub fn capsule_hits(&self, pos: V3, capsule_radius: f32) -> bool {
-        let dx = pos[0] - self.centre[0];
-        let dz = pos[2] - self.centre[2];
-        let horiz = (dx * dx + dz * dz).sqrt();
-        // The ladder's own half-depth across the climb plane: the model bounds radius, clamped to a
-        // handhold-scale width (a tall ladder's bounding-sphere radius is its half-height, not its width).
-        let half_width = self.radius.clamp(0.0, 1.0).max(0.35);
-        if horiz > half_width + capsule_radius { return false; }
-        // Vertical: from just under the bottom rung to the top of the sphere.
-        pos[1] > self.centre[1] - self.radius - 0.5 && pos[1] < self.centre[1] + self.radius + 0.5
+        let a = [pos[0], pos[1] + 0.55, pos[2]];
+        let b = [pos[0], pos[1] + 0.55 - 1.0347, pos[2]];
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ap = [self.centre[0] - a[0], self.centre[1] - a[1], self.centre[2] - a[2]];
+        let ab2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+        let t = if ab2 < 1e-9 { 0.0 } else { (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / ab2 };
+        let t = t.clamp(0.0, 1.0);
+        let cx = a[0] + ab[0] * t - self.centre[0];
+        let cy = a[1] + ab[1] * t - self.centre[1];
+        let cz = a[2] + ab[2] * t - self.centre[2];
+        (cx * cx + cy * cy + cz * cz).sqrt() <= self.radius * 1.5 + capsule_radius
     }
 }
 
@@ -125,15 +126,19 @@ mod tests {
     }
 
     #[test]
-    fn grab_zone_is_the_axis_column() {
+    fn grab_zone_is_the_game_pick_shape() {
         let l = ladder(0.0);
-        // On the axis at mid height: hit.
+        // On the axis at mid height: hit (dist 0.4 ≤ 2.0·1.5 + 0.55).
         assert!(l.capsule_hits([10.0, 3.0, 20.4], 0.55));
-        // 2 units to the side (beyond half_width + capsule): no hit.
-        assert!(!l.capsule_hits([12.0, 3.0, 20.0], 0.55));
-        // Below the sphere bottom − 0.5: no hit.
-        assert!(!l.capsule_hits([10.0, 0.9, 20.0], 0.55));
-        // Sister: at the very top of the sphere band: hit (the dismount threshold is above it).
-        assert!(l.capsule_hits([10.0, 4.4, 20.0], 0.55));
+        // 2 units to the side: the game's inflated-sphere pick still reaches (2.0 ≤ 3.55) [M 0x1eae80:152-168].
+        assert!(l.capsule_hits([12.0, 3.0, 20.0], 0.55));
+        // 4 units to the side: beyond the inflated sphere + capsule: no hit.
+        assert!(!l.capsule_hits([14.0, 3.0, 20.0], 0.55));
+        // DEEP below the sphere bottom (the pond-bed swimmer): the capsule segment (down to pos − 0.48)
+        // against the ×1.5 sphere reaches — the grab y-snap then lifts him to bottom + 0.02 [M 0x196118:23-31].
+        assert!(l.capsule_hits([10.0, 0.9, 20.0], 0.55));
+        // Sister: a shallow radius ladder stops reaching deep (the pick tracks the sphere).
+        let thin = Ladder { radius: 0.6, ..ladder(0.0) };
+        assert!(!thin.capsule_hits([10.0, 0.9, 20.0], 0.55), "the inflated pick reached a thin ladder's bed depth");
     }
 }
