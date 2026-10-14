@@ -34,3 +34,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox7 at 2026-10-14T22:38Z
+
+---
+## Report (done, 2026-10-14T23:45Z)
+
+Closed by the driver: the report is on `s/fix-guard-weapons3` (docs/reports/fix-guard-weapons3.md); the worker didn't run finish.sh.
