@@ -101,8 +101,11 @@ width with the reason in the test — 190 px ≈ 28% of a real 16:9 window). All
 ## Verified
 
 - 5/5 `dev_menu_flow` tests green on this branch (07000005 / 0700000c / 07000015 loads).
-- Full suite (fast runner, merged with origin/master c3b989b): see the WORKLOG entry for the total
-  line (the allowed failures are the 3 `disc_golden` tests on the slim ISO).
+- Full suite, merged with origin/master c3b989b: **884 passed, 3 failed, 27 ignored** over all 211
+  test binaries (the fast runner's exact binary set, run serially per binary with
+  `--test-threads=1` in bounded foreground batches — see the WORKLOG note on why suite.py's nohup
+  form cannot survive this sandbox). The 3 failures are exactly the allowed `disc_golden` set on
+  the slim ISO (`disc_golden: 11 passed, 3 failed`); every other binary green.
 
 ## What's left / notes
 

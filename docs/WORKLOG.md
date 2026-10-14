@@ -9625,6 +9625,10 @@ Work Log:
   discovery, the same set suite.py builds) serially over bounded foreground batches — all green
   except disc_golden with exactly the 3 allowed slim-ISO failures. (A summary-regex bug in my
   batch runner lost the numeric total; see the report/worklog addendum for the re-tallied total.)
+- Suite re-tallied with a per-binary result log: **884 passed, 3 failed, 27 ignored** over all 211
+  test binaries; the only failing binary is disc_golden (11 passed, 3 failed — exactly the allowed
+  slim-ISO set). Every binary green otherwise, including the merged portal-sweep/spawner/anim-events
+  suites on this tree.
 - Report: docs/reports/fix-ingame-dev-menu.md (--shot commands per page + live checks inside).
   Files: dev.rs, panel.rs (doc), lib.rs (hooks), tests/dev_menu_flow.rs (new),
   tests/menu_live.rs, tests/dev_tools_live.rs (signature/width updates). No shared-file surprises:
