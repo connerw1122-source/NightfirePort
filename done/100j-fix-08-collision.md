@@ -38,3 +38,7 @@ claimed-by: sandbox6 at 2026-10-14T06:18Z
 ## Report (done, 2026-10-14T07:45Z)
 
 Closed by the driver: the report is on `s/fix-08-collision` (docs/reports/fix-08-collision.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-14T08:25Z)
+
