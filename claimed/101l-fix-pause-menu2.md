@@ -46,3 +46,6 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 - **Live checks:** list what the main agent should check in PCSX2 (spot, action, expected result) and in nf-view (`--bond` spots).
 
 **Branch:** `s/pause-menu2`.
+
+---
+claimed-by: sandbox2 at 2026-10-14T04:24Z
