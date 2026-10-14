@@ -295,8 +295,22 @@ pub fn script_pose_together(scripts: &HashMap<u32, Script>, seqs: &HashMap<u32, 
         // Pad to the full bone count with the base's last bone pose (never read: the body covers all).
         while acc.len() < skel.bones as usize { acc.push(*acc.last().unwrap()); }
     }
-    let mut owned = vec![false; base_n];
+    // fix-cutscene-draw: the base (widest, `fits`) track OWNS the bones it covers. The game maps
+    // each window's channels to bones through the skin's channel table (`AnimFrameCopy` is passed
+    // the sAnimSkin [M AnimFrameResolve 0x1c35f8 → AnimFrameCopy; psiBuildMatrixPalette 0x111498
+    // reads sAnimObject+0x94 = the skin]), so a pack cut-scene's narrow 22-channel face track
+    // reaches only the face bones and never the body's root — the 222-channel body track (whose
+    // root channel carries the actor's absolute world position, `AnimGetFirstTrans` 0x1c7348
+    // initialises obj+0x30 from its frame-0 root) covers every bone and wins them. The port's
+    // sequential channel walk cannot express that sparse map: letting the face window fill first
+    // ("first-writer-wins", fix-cutscenes2) handed bones 0..5 of the body track to the face
+    // track's leading channels — the root collapsed to identity-at-the-origin and every script
+    // actor drew as a mannequin at the world origin, off-camera (the missing cut-scene cast).
+    // Narrow windows now fill only the bones the base does not reach (none when a full body
+    // track runs; the ledge's narrow pairs without a full track keep the first-writer fill).
+    let mut owned = vec![true; base_n];
     for (first, q) in &wins {
+        if *q == base_q { continue; }
         let Some(seq) = seqs.get(q) else { continue };
         if seq.skeleton != skin.skeleton { continue; }
         let n = nf_formats::anim::bones_covered(seq, skel).min(base_n);
