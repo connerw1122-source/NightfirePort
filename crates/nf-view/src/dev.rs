@@ -76,8 +76,8 @@ pub struct Dev {
     pub interp: bool,
 }
 
-/// The spawn-guard picker: a drone type and AI mode.
-#[derive(Clone, Copy, PartialEq)]
+/// The spawn-guard picker: a drone type and AI mode (also the NPCs page's mode selector).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SpawnPick { Normal, Sniper, Ambush }
 
 impl Default for Dev {
@@ -529,7 +529,9 @@ pub fn menu_items(dev: &Dev, scene: Option<&Scene>) -> Vec<MenuRow> {
         // game's own name per row, Enter gives + equips + draws (the --give path).
         1 => {
             if let Some(sc) = scene {
-                v.push(("level kit".into(), "the game's own loadout for this level (Player_InitWeapon 0x1a7ef8)", MenuAction::LevelKit));
+                if passes_filter(dev, "level kit") {
+                    v.push(("level kit".into(), "the game's own loadout for this level (Player_InitWeapon 0x1a7ef8)", MenuAction::LevelKit));
+                }
                 for e in crate::panel::catalog_entries(sc) {
                     if e.gadget { continue; }
                     let label = format!("0x{:02x} {}{}", e.id, e.name, if e.fp { "" } else { " (no fp model)" });
@@ -668,7 +670,7 @@ pub const LEVEL_LABELS: &[&str] = &[
 
 /// A menu item's action. The give/spawn/arena/health actions route through `panel::apply`
 /// (panel.rs is the shared command layer — nothing here re-implements a panel command).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum MenuAction {
     Close,
     /// Open a page (the index rows; PageUp/PageDown step `Dev::page` directly).
