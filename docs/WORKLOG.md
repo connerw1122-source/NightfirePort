@@ -10459,3 +10459,8 @@ weapon-matrix2 (103b, 2026-10-14): re-ran the weapon matrix on today's master (b
   docs/reports/weapon-matrix.md). Files: crates/nf-view/src/matrix.rs,
   crates/nf-view/tests/weapon_matrix_live.rs, crates/nf-view/examples/probe_matrix_draw.rs. No
   shared files touched. Work log continues below.
+
+weapon-matrix2 addendum (11:59): the upgraded runner's full sweep ran (3 chunks, 27 × 98, 0 panics) —
+the red mass (D 1278 / M 152 / R 226) is the silenced-twin reload hang reaching the draw now that the
+give path works; 0x2a impact 19/27 clean, 0x2c's guided camera rode its clean cells, no X marks. The
+table + analysis are appended to docs/reports/weapon-matrix2.md.
