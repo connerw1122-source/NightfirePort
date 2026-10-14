@@ -47,6 +47,10 @@ flags and the 'Delay' round contact-detonated too. The grenade family bases to i
 sweep: 0x34→0x34, 0x35→0x35, 0x36→0x36, 0x37→0x37, 0x3b→0x3b; only 0x2b→0x2a and 0x40→0x3b
 differ], so carrying the fired id re-points exactly the twins.
 
+**Full suite** (`tools/test/suite.py`) on the final merged tree (origin/master 810c109 + this
+branch): **909 passed, 3 failed, 27 ignored (19 min)** — the only failures are the 3 allowed
+`disc_golden` tests; no TIMEOUT, no CRASH.
+
 ## Verification (all through the real input path)
 
 `crates/nf-view/tests/fix_weapon_effects_live.rs` — 6 tests, all failing pre-fix, all green

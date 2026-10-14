@@ -9785,3 +9785,5 @@ contacts] and the stunner (0x4a) a taser bolt [NDrone2_DealWithObjHit case 5 0x1
 msg 7] — the impacts are the standard per-material path, so the sounds are real bullet impacts;
 whether the console's laser beam is silent is a live check (in the report). Files: drone.rs,
 scene.rs (the weapon_type line), tests. Report: docs/reports/fix-weapon-effects.md.
+Full suite on the final tree (origin/master 810c109 merged): **909 passed, 3 failed, 27 ignored
+(19 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH.
