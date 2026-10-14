@@ -68,8 +68,9 @@ Branch `s/fix-pause-menu`. Facts tagged [M] code (function + address), [D] disc,
   tabs draw; both results outcomes draw.
 - Suite: `NF_ISO=$NF_ISO cargo test --offline --release -j2 --no-fail-fast … -- --test-threads=1` —
   **476 passed, 0 failed** across the nf-view / nf-audio / nf-formats test binaries, with exactly
-  the 3 allowed `disc_golden` failures on the slim ISO. The `walk*` live tests did not get a slot in
-  the window; they are untouched by this branch (they exercise the sim, never `menu_overlay`).
+  the 3 allowed `disc_golden` failures on the slim ISO. Every `walk*`/`walkreal*` live test binary
+  then ran green on the merged tree as well (60 binaries, 0 failed, 7 [S]-ignored as on master) —
+  the full nf-view set is 0 failures besides the allowed disc_golden three.
 - The sandbox has no GPU (lesson 6), so the pixel renders are the main agent's — commands below.
 
 ## Render commands for the main agent (side-by-side with PCSX2)
