@@ -10865,6 +10865,7 @@ fix-context-hints (100k, 2026-10-14): the two symptoms implemented, verified and
   crates/nf-view/src/scene.rs (additive), crates/nf-game/src/player.rs (additive: Hint +
   hints()), crates/nf-view/tests/fix_context_hints_live.rs (new), the two Msg-literal
   one-liners, docs/systems/hud.md.
+
 ---
 Task ID: 102a-fix-zoom-overlays
 Agent: zoom-overlays worker
@@ -10880,3 +10881,80 @@ Stage Summary:
 - Suite on the merged tree (227 binaries, --test-threads=1 per binary): 923 passed, 3 failed, 31 ignored — the 3 are exactly the allowed slim-ISO disc_golden set; pss_movies_live 3/0. weapon_matrix_live's single-binary wall clock (~710 s here, two NF_MATRIX halves of 355 s) exceeds the runner's 600 s cap on this sandbox → a strict run flags TIMEOUT; all 28 of its tests pass split through its own NF_MATRIX selector (zero panics; the test only fails on panics) — slowdown from the sandbox resets/merged scene work, not this branch (the overlay adds 9 quads on zoomed cells). My tests on the merged tree: fix_zoom_overlays_live 6/0, fix_viewmodel_zoom_live 3/0.
 - Shared-file hook (additive): lib.rs --zoom-hold for the headless --shot renders (holds aim+zoom every tick; without the flag nothing changes). drone.rs/scene.rs/player.rs untouched.
 - Report: docs/reports/fix-zoom-overlays.md (evidence, suite line, the live checks and the --zoom-hold --shot spots for the main agent).
+Work Log:
+- (started 08:08 UTC) Branch s/fix-missing-objects created from origin/master c9e1582; setup reused from the previous session (repo, work/, ISO, nf-queue). Spots given: 07000006 courtyard fountain (21.12,39.04,-0.48,8.683), guard room (33.50,41.13,-17.90,9.158) and lockers/fusebox (31.94,41.13,-17.36,10.756); 0700000c pylon (14.22,16.28,-139.54,0.986). Repro tests + decompile evidence next.
+
+---
+Task ID: 102e-fix-missing-objects
+Agent: missing-objects worker
+Task: fix-missing-objects — the fountain, the guard-room furniture, the lockers and the 0c pylon aren't drawn; census every on-foot level.
+
+Work Log:
+- Branch s/fix-missing-objects from origin/master c9e1582 (08:08 UTC); setup reused.
+- Repro first (probes kept): the named objects are kind-0x19 world-baked cel placements at translation (0,0,0); the fountain/bench/locker nodes were UNCHAINED generics — owner None at the user's spots, node_vis false, 0/N materials kept by the game mask (the renderer's World cull drops unchained 0x8019 nodes; View_AddCels draws generics only from their owner room's +0x18 chain, fix-portal5 §1).
+- Root cause 1: build_scoped's smallest-volume-containing-bbox attribution put the guard-room floor under the table's bbox and the courtyard floor under the fountain's — every candidate room's scoped bucket read empty at build_chains time. The game's HITDATA+0x54 carries the object's own placement cel (parsemap_block_map_data_static 0x1d1998: one runtime cel per placement, glist = the placement's object); the k-th pushed instance IS the k-th cell. Fix: build_scoped keys obj_cell by the pushed ordinal [M 0x1d1998 + fix-portal5 §4].
+- Root cause 2: link_owner_room dropped candidates with an empty bucket, but the game's read is "everything else reads 1e8" — the candidate stays and strict < keeps the first in parse order. Fix: unwrap_or(1e8) [M fix-portal5 §4's 0x1c9150 reading].
+- Fixes verified fail-first: pre-fix probes show owner None/node_vis false/0 materials; post-fix the fountain (room 27, 96/96 batches), the guard-room furniture (room 7) and the locker (15/15) draw at the user's spots. Disc-wide effect: the 0700000a office furniture, 07 books, 09 lights were the same orphans.
+- Census (fix_missing_objects_live): Scene::build's exact sequence per on-foot archive — 0 unchained meshed generics, 0 no-draw-path placements on all 21 (06: 322 generics, 0c: 273, 12: 438, …); explained skips = glist bits 0x10/0x1000 + the documented no-draw classes. FOUND GAP: 0xea/0xeb trigger meshes the game draws (0a lasers, 12 lift switches; Trigger_Create 0x1b1720:95 sets obj+0xF0 = glist+0x44) — no port draw path yet.
+- The 0c pylon: NOT reproducible on this tree — the real stand_at+head camera at the user spot resolves eye cell 91, all four pylon parts + shadow ride owner room 77, in_view true, 14/14 materials kept (probe_missing_pylon.rs, kept); pinned by a regression test, live re-render requested.
+- Green on the fixed tree: the whole portal chain (portal_live/eyecel/2/3/4/5/6/sweep/walkreal), nf-game units (world.rs scope tests), the new 3 tests. suite.py could not run in background (nohup dies between tool calls — same as the last two sessions); foreground chunks covered nf-game+nf-formats+the portal/object/census nf-view files; the levels_sweep re-run is left for the next session.
+- Report: docs/reports/fix-missing-objects.md. Files: crates/nf-game/src/world.rs (obj_cell rule + doc), crates/nf-view/src/scene.rs (scope_graph pub + the 1e8 owner pick + doc), crates/nf-view/tests/fix_missing_objects_live.rs (new) + 6 probe files (kept).
+
+fix-context-hints (100k, 2026-10-14): the two symptoms implemented, verified and reported.
+- Implementation (commit 5247021): the Hint markers (placement 0x33, Hint_Create 0x1b3248 /
+  Hint_Update 0x1b3380 — one-shot type-1 INFO messages with the marker's label, sound and
+  on/off channels, resolved through the map object's world sphere like wire::icons), the
+  type-6 "Press Action" post (label 0x1000291) on ThirdIcon_Update's 4-tick instance timer
+  while not creeping, the INFO pane 4 draw (MsgInfoStatusPane 0x319810: the 480x26 top bar +
+  caps, centred text, the fade + 16 px/tick close), and the context icon (health-pane sprite
+  18, table 0x2FC168[ctx], runtime (400,48), layer 29, the 30-tick fade) — full citations in
+  docs/systems/hud.md and the report.
+- Merged origin/master twice (the second merge needed the WORKLOG append resolution and two
+  one-line `label: 0` fixes in the master-side Msg literals — fix_objective_banner_live,
+  fix_objective_messages_live).
+- Tests: crates/nf-view/tests/fix_context_hints_live.rs 5/5 — the safe fires 0x0200000A once
+  (life 0xB4) with no icon (07000008's only icon is the zipline's ctx-3 in cell 12); the
+  control-panel marker (0x010001E9) stays silent from the safe spot; the 05 grapple spot reads
+  ctx 6, posts 0x1000291, draws 0x0300006A, and clears to 0xFF with the fade within 30 ticks
+  on leaving; away from everything nothing shows. Numbers/label ids only, never the strings.
+- Suite on the final tree (e511da5): the sandbox kills background jobs (the nohup'd runner
+  died twice), so it ran in foreground chunks (tools/test/suite_chunk.py, the suite.py loop
+  resuming from suite.log): 226 binaries, 948 passed / 3 failed / 31 ignored logged — the 3
+  are exactly the allowed disc_golden trio; weapon_matrix_live hit the 300 s per-binary cap
+  (not a failure) and passed 28/28 re-run separately. Grand total 976 passed / 3 allowed
+  failed / 31 ignored.
+- OPEN (in the report + live checks): the driver's "orange 007 at the bottom-left ring" is
+  NOT the 0x95F system — the ctx sprite draws at (400,48) (the x/y order pinned by the
+  disasm 0x19c148/0x19c14c, the ammo bullet column and HUD_FixMP's x-clamp) and the three
+  disc ctx textures are tan badges (winch/hanging man/figure — dumped from the ISO and
+  inspected). The live checks (gdbwatch the sprite x/y + 0x95F writes at both spots, poke
+  0x95F at the safe) settle whether a second, script-driven indicator exists.
+- Report: docs/reports/fix-context-hints.md. Files: crates/nf-view/src/hud.rs,
+  crates/nf-view/src/scene.rs (additive), crates/nf-game/src/player.rs (additive: Hint +
+  hints()), crates/nf-view/tests/fix_context_hints_live.rs (new), the two Msg-literal
+  one-liners, docs/systems/hud.md.
+
+---
+Task ID: 100n-fix-context-hints2
+Agent: context-hints2 worker
+Task: fix-context-hints2 — hint bar position (y~100/448, not top edge), the orange 007 ring swap (both spots), and no "Press Action" prompt at the 05 grapple point.
+
+Work Log:
+- (started 09:55 UTC) Branch s/fix-context-hints2 created from origin/master b65d6f7; sandbox was reset, setup in progress (work/, ISO).
+
+
+---
+Task ID: 100n-fix-context-hints2
+Agent: context-hints2 worker
+Task: fix-context-hints2 — the hint bar's position (y≈100/448, not the top edge), the orange 007 ring swap (both spots), and no "Press Action" prompt at the 05 grapple point.
+
+Work Log:
+- (10:52 UTC fetch) Sandbox was reset; setup from scratch. Found 100h-fix-context-hints NOT in origin/master (only s/fix-context-hints) — merged it into s/fix-context-hints2 to have the hint bar at all.
+- Item 1: the INFO pane's CREATE tag MsgInfoStatusPane 0x319810 is x=128 y=113 [L ee_start_05.bin]; HUD_CreateDefault 0x199b70:45-52 adds the pane x/y to every sprite at create; HUD_UpdateStatusPane 0x19c310 rewrites only the bar's X (templateX + (templateW−w)/2, caps following, :105-109/:331-336/:342-347) — the Y is never written, so the bar rides template y 0 + pane y 113 = 113 (text 129). Port drew 0/16. Fixed in hud.rs.
+- Item 3: the grapple spot (16.5,29.6,58.6) sits in ctx-6 icon[3]'s port cel 15, 8.17 away (its own sphere r 2.276 [D probe]); the game shows NO prompt there [L PCSX2 2026-10-14] while the vent crawl still reads 6 at 3.9 [L 2026-10-13]. The [S] arm window 12.0 → 6.0 (scene.rs), the grapple test flipped to the no-prompt pin with a positive sister beside the icon.
+- Item 2 (OPEN, not guessed): the only 007 path in the ELF is health-pane sprite 16, texture 0x0300005b (the gold 007 logo, dumped from 07000005 map 4), driven by BL+0x948 ← PlrStat_DoneBondMoment 0x199448 ← Trigger_Calc — a Bond-Moment zoom at (256,80) CENTRED, top-centre, not the bottom-left ring. The bottom-left ring is HealthSprInfo[15] (sheet uv 102,113,85,86, health-tinted [M 0x19b9c8:205-207]); nothing in the ELF retextures it; the ctx table's textures are the tan badges (0x64/65/68/69 not on the archives [D probe]). Probes kept: ctx2_probe.rs / ctx2_probe2.rs (the EE-table dump ran from an untracked scratch script); live checks in the report settle sprite 16 vs a script sprite.
+- Tests: fix_context_hints_live 6/6 (the new bar-rect test fails on the pre-fix tree), swim-vent5/08-walls/grapple/qclaw/gadgets green, the HUD-adjacent chunk 9/9 binaries; the full no-fail-fast run covered 142 binaries + the allowed disc_golden trio before the 570 s wall (the nohup runner dies in this sandbox, foreground chunks).
+- Report: docs/reports/fix-context-hints2.md. Files: hud.rs (task), scene.rs (shared, the window constant + comment), fix_context_hints_live.rs; player.rs untouched.
+
+Stage Summary:
+- The hint bar now draws at the pane rect y 113..139; the grapple spot shows no prompt/ctx/icon; the 007 ring item is evidenced to the Bond-Moment zoom sprite 16 + live checks, awaiting the main agent's gdbwatch/screenshot.
