@@ -11230,6 +11230,32 @@ draws added; no wall-clock in Sim.
 ## fix-save-profile
 - The game's profile save ported: the six-block chain PLRS/MSSN/MPSG/GSET/CHET/BNUS [M SaveIFFBlocks 0x2c74d8 static init; L the table + the game's own 1022-byte chain in ee_snapshot InBufData 0x3416e0] with every field cited (PLRS = PlayerSetting[slot] 0x2a38c8 stride 0x158, 12 fields in LS_MakePlrSettings 0x1cd418's push order, the decode matches Input_Init 0x17edd8's defaults; GSET 905 B incl. the 219 zero dwords + the version tag 4; MPSG radar/health; CHET 3 bits; the file name IS the codename [M Menu_UpdateMessageBox 0x1f7de8]). crates/nf-game/src/profile.rs (new) + the menu hooks: the card rows after the two defaults, create/load codename, the mission_ended(Complete) save, the Records page reading the active profile. Tests: 5 module (the game's own chain decodes field-for-field) + 4 NF_ISO flow (create, the chain through the page, unlock-after-mission via nf_view::load + step_bond + mission_ended, the corrupt-file refusal); 4/4 + 5/5 on the merged tree (c606b5f). Difficulty is NOT in the save [M none of the six make fns reads GameState+0x40] — the brief's "difficulty per mission" resolves to the MSSN best scores. progress.rs: 4 fns pub(crate) + Clone (additive). Report: docs/reports/fix-save-profile.md (Live checks inside: the save chain in gdbwatch, the Records third value, the style-7 template question).
 
+## fix-fire-modes3
+- Started: branch s/fix-fire-modes3 from origin/master (8295049, weapon-matrix2 merged). Task:
+  every fire mode of the 32 MP weapons against the PCSX2 table (docs/live/2026-10-13-weapon-modes-pcsx2.md);
+  weapon x mode game-vs-port table in the report; tests per family (pistol silencer, burst rifle,
+  grenade attachment, launcher guided/unguided, MGL impact/delay, Samurai charge/beam, crossbow, sniper zoom).
+- Key prior work read: docs/systems/weapons.md (the mode table with [L] record bytes), fix-fire-modes2.md
+  (blast path, guided cam), weapon-matrix2.md (M/G/X runner marks, the reload-hang finding).
+- Research in progress.
+- fix-fire-modes3 done in-window: four fixes landed with [M]/[L] citations — (1) the Samurai bolt's
+  small impact blast arms (+0x70 & 0x100000/0x200000 → Explode_Create r/d from +0x08/+0x0C, script
+  0x60007c4) [M Bullet_CollisionHandler 0x12ce80:207-245] in drone.rs's world-hit gate; (2) the
+  quarter-speed spawn (+0x6C & 0x200 → speed × 0.25) [M Bullet_init 0x12c5a0:188-190] in
+  fire_player — the torpedo 0x30, the K5 dart 0x43 and the SENTINEL rockets 0x2C/0x2D all carry the
+  bit (the guided flight is 4× slower than the port modelled; the fire_modes2 window grew with it);
+  (3) the mode-press zoom reset [M 0x1a24c8:213-228] in scene.rs's mode block ("zoom steps"
+  resolved: Player_Zoom 0x1a1a70 is continuous — the reset is the only missing observable); (4) the
+  Samurai charge [M 0x1a5460:186-202]: the clip[0x33] drain (clip_size − clip_size·frame/280) +
+  the cyan glow light (rgb 0,255,255, intensity 1.5·frame/280) while the 280-frame charge script
+  plays — the HUD number climb decoded as the spent% display of the drain [M 0x19a7f0 ammo-type-31
+  percentage]. The full weapon×mode game-vs-port table is in docs/reports/fix-fire-modes3.md.
+  Tests: fire_modes3_live 5 passed / 4 ignored (drive-order harness notes in the report); the
+  sister weapon binaries re-ran green (fire_modes_live 5/5 after the window extension,
+  silencer 2/2, weapon_modes 6/6, matrix upgraded-runner 1/1, nf-game lib 150/150). The full suite
+  re-started on the final tree late — read suite.out before merging. Remaining: the 4 ignored
+  drives, the Samurai beam view layer (swoosh + cels), the crossbow quiver + satchel digits
+  (evidence cited in the report), the suite completion.
 > fix-hud-radar DONE (14:55 UTC): the SP HUD has no radar — panes 13/14 absent in the SP snapshots
 > [L], PaneList 13/14 NULL [L], MPSettings+0x384 = 0 [L]; the bottom-left ring is the health pane's
 > sprite 15 and the port already matched it. The MP radar (pane 14) is now ported + number-pinned:
@@ -11500,3 +11526,35 @@ escort-01b is another worker on it); the resolver is the U-041 per-leaf contact,
 Suite: the sandbox kills background jobs (nohup+setsid both died); synchronous chunks only — the
 full suite did not fit the window. Report: docs/reports/102j2-fix-casings-16b.md (live checks:
 16's no-E contact open, 01's shoji doors E-only vs contact, the escort's own door opens).
+## 103l2-fix-fire-modes3b — s/103l2-fix-fire-modes3b (started 16:45 UTC 2026-10-14)
+- Base: s/fix-fire-modes3 (aca97652) merged with origin/master (7785582a); WORKLOG conflict resolved by keeping
+  both the fix-fire-modes3 and the fix-hud-radar entries.
+- Task: the weapon-sound sweep (fix_weapon_sounds_live::every_weapon_on_07000005_draws_fires_and_reloads_with_sounds)
+  fails only on this merge (1087 pass / 1 fail): weapons 0x37 (missing sound 1112) and 0x59 (missing sounds
+  1096, 1112) never play their missing sounds within the 25-tick fire window. Find which of the four fix-fire-modes3
+  changes moves the sounds, decide from the game's code whether the new behaviour is right, then extend the test
+  window citing flight time or fix the code. Suite total on the final tree required.
+- Work in progress: reproduce first.
+- Reproduced (11 s sweep): the merge tree fails exactly 0x37 [1112 = 0x458] and 0x59 [1096 = 0x448,
+  1112]; isolation probes (fresh scene per weapon) show 0x37→0x458, 0x3b→0x448, 0x59→0x458 all play —
+  the loss is sweep-context only.
+- Cause (instrumented sweep, NF_GUNTRACE + per-weapon clip/bullet/cam log): firing the AT-420 Sentinel's
+  guided rocket (0x2c, the only `+0x6C & 4` camera-bit carrier) hands the view to the projectile —
+  substate 10 zeroes the input and the trigger stays gated until the missile dies + a 15-tick restore
+  [M Bullet_init 0x12c5a0:248-253; Bullet_update 0x12e660:28 `+0x944 = 0xf`; Player_Update 0x193600:242-256].
+  The quarter-speed fix [M 0x12c5a0:188-190, `+0x6C & 0x200` → ×0.25] made that rocket fly its true
+  0.0625 u/tick (record +0x20 = 0.25 [L]) over its 200-unit range [L +0x1C] ≈ 3200 ticks — the camera
+  ride now covers the fire windows of 0x2e–0x37 (8 segments; per-weapon log: `fired=false` throughout,
+  cam true), so the mine 0x37 never fires and its detonation sound 0x458 never starts a voice anywhere
+  in the sweep; 0x59's row (ids 0x448/0x458) passes on 0x458 via the accumulated `seen` and fails with it.
+  Verdict: GAME-CORRECT — the game's player cannot fire during the ride either. On origin/master the same
+  sweep passes because the old 4×-speed modelled rocket impacts within its own segment. 0x448 never played
+  on ANY tree: the satchel charge spawns at its fire script's release frame (+0x44 = 76 [L] > 25) which
+  the next weapon's holster cuts — the master pass was the `any` semantics via 0x447/0x458 (documented in
+  the test; holding the sweep to the release would land the 8/2000 charge ~5 units from Bond — a
+  game-faithful `Player_Hurt` self-kill that voids the rest of the sweep).
+- Fix (test-only, crates/nf-view/tests/fix_weapon_sounds_live.rs): the sweep waits out the missile camera
+  before each weapon's fire window (bounded 3400 ticks = the flight time + restore + margin; the range
+  death is silent state 4 [M 0x12e848], so the wait adds no blast), with the evidence chain in the comment.
+  fix_weapon_sounds_live 3 passed / 2 ignored (pre-existing, documented); fire_modes3_live 5 passed /
+  4 ignored (pre-existing); fix_weapon_fire_modes_live 5 passed.

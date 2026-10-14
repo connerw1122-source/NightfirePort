@@ -124,6 +124,16 @@ fn until_drawn(scene: &mut nf_view::scene::Scene, sound: &mut nf_audio::sfx::Sou
 
 /// (weapon, the fire/reload sound ids its scripts request that 07000005's bank lacks, from the op-1
 /// events of the merged scripts — the report's mapping, asserted as spare-bank starts below.)
+///
+/// 0x448 (the satchel family 0x3b–0x40's detonation sound) is listed but never observed by this
+/// sweep, on any tree: the charge's projectile spawns at its fire script's RELEASE frame
+/// (+0x44 = 76 [L record]; `Player_SetWeaponAnimObj` case 9 0x1a2e38:416-420), 51 ticks past the
+/// 25-tick fire window, and the next weapon's holster cuts the script before it — while holding the
+/// sweep on the satchel until the release would land its 8-radius/2000-damage charge (`Player_Hurt`
+/// [M 0x17c518 → explode::propagate's player target]) ~5 units from Bond, a game-faithful
+/// self-kill that would void the rest of the sweep. 0x3b's row passes on 0x447 (the plant sound);
+/// 0x59's row passes on 0x458, the mine 0x37's detonation sound, which fires earlier in the sweep
+/// and stays in the accumulated `seen`.
 const MISSING_ON_05: &[(usize, &[u32])] = &[
     (0x0e, &[0x1e1, 0x1e2, 0x1e3]), (0x11, &[0x449, 0x44a, 0x44b, 0x44c]), (0x12, &[3, 0x54, 0x55, 0x56, 0x57]),
     (0x1a, &[0x406, 0x407, 0x40a, 0x40d]), (0x1b, &[0x405, 0x408, 0x409, 0x40c]), (0x1c, &[0x1dd, 0x1de, 0x1e0]),
@@ -251,6 +261,25 @@ fn every_weapon_on_07000005_draws_fires_and_reloads_with_sounds() {
                 if slot != want_slot || !want.contains(&h) { failures.push(format!("{w:#04x} draw {draw:#x}: slot {slot} hash {h}, want slot {want_slot}")); }
             }
             None => failures.push(format!("{w:#04x}: draw sound {draw:#x} never played")),
+        }
+        // The guided-missile camera wait. A `+0x6C & 4` shot hands the view to the projectile — the
+        // player substate 10 runs no weapon arms, so the trigger is dead until the missile dies and a
+        // 15-tick restore elapses [M Bullet_init 0x12c5a0:248-253; Bullet_update 0x12e660:28
+        // (`+0x944 = 0xf`); Player_Update 0x193600:242-256]. The AT-420 Sentinel's guided rocket
+        // (0x2c — the only camera-bit carrier [L ee_start_05.bin @ 0x2bf150], the sweep's segment a
+        // dozen weapons earlier) fires it, and since the quarter-speed spawn fix [M 0x12c5a0:188-190:
+        // `+0x6C & 0x200` → speed × 0.25] that rocket flies at its true 0.0625 u/tick (0.25 [L
+        // record +0x20] × 0.25) over its 200-unit range [L +0x1C] — ≈3200 ticks of camera ride that
+        // swallows the fire windows of every later weapon up to the mine 0x37 (the merge-hold's
+        // "0x37/0x59: none of its missing sounds ever played": no mine fired, so its detonation
+        // sound 0x458 never started a voice anywhere in the sweep). The game's player could not fire
+        // during the ride either — wait the cam out, then fire. The bound is the flight time plus the
+        // restore plus margin; the range death is SILENT (state 4 [M Bullet_update 0x12e848]), so the
+        // wait adds no blast near Bond.
+        for _ in 0..3400 {
+            if scene.sim.as_ref().unwrap().missile_cam.is_none() { break; }
+            scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+            tick(&mut sound, &mut scene, &mut seen);
         }
         // Fire.
         for _ in 0..25 {

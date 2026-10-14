@@ -1718,6 +1718,13 @@ impl Sim {
                         if cur >= 1 && cur <= 0x47 { self.gun.prev_weapon = cur; }
                         if cur >= 0x4a && cur <= 0x5e { self.gun.prev_gadget = if cur == 0x55 { 0x54 } else { cur }; }
                         self.gun.switch_request = new;
+                        // fix-fire-modes3 [M 0x1a24c8:213-228]: a LANDED twin switch resets the zoom —
+                        // `BLData+0x8D4 = 1.0` unconditionally, then `+0x8D8 = weapon_data[twin]+0x88`
+                        // (the twin's own zoom cap) with `+0x8D4` clamped to it. The port's cap follows
+                        // the equipped record per tick already (the zoom block reads +0x88 of the held
+                        // weapon), so the reset is `zoom`/`zoom_target` = 1.0.
+                        self.zoom = 1.0;
+                        self.zoom_target = 1.0;
                     }
                     if let Some(m) = sw.new_mode {
                         if let Some(fm) = self.drones.inventory.fire_mode.get_mut(self.gun.weapon as usize) { *fm = m; }
@@ -2436,6 +2443,39 @@ impl Sim {
             // and spawns on the press tick (+0x44 == 0 [M 0x1a5460:688-693]) — the camera gadget
             // 0x54 (idle 0x060005A6, no fire scripts [D probe]) photographs through this path.
             let hands = self.gun.weapon == 0x47;
+            // fix-fire-modes3 — the Phoenix Samurai's charge (the base-0x33 records: the overcharge
+            // 0x32 and the beam 0x33 both carry base id 0x33 [L ee_start_05.bin @ 0x2bf150]) while the
+            // view anim is in the fire state (`anim+0xF4 == 9`) [M Player_WeaponFiring 0x1a5460:186-202]:
+            // - the charge drain [M 0x1a5460:197-201]: `clip[0x33] (BLData+0x41C) = clip_size −
+            //   clip_size·frame/falen` while the frame is under the held record's fire-anim length
+            //   (+0x44). Only the OVERCHARGE 0x32 has a length (280 — the charge script 0x060007c2
+            //   [L]); the beam 0x33's +0x44 is 0 so its arm never runs. The drain is what makes the
+            //   ammo pane's ammo-type-31 percentage (`HUD_UpdateAmmoPane` 0x19a7f0:
+            //   `(min(100−clip, 88)·100)/88`, spent %) climb 0→100 across the charge — the PCSX2
+            //   pass's "the HUD number climbs 0 → 100".
+            // - the charge glow [M 0x1a5460:193-196]: `Light_Create(radius 5.0, intensity
+            //   2·(frame/falen)·0.75, the view model's bone 0, rgb (0,0xff,0xff) — cyan, channel 0,
+            //   life 0, kind 1, flicker 0)`, brightening across the charge ("the gun's glow
+            //   brightens"). The sim approximates the bone-0 origin with the camera (the muzzle
+            //   light's standing deviation). The game's unconditional `Rand_Rand(0)` flicker draw
+            //   (Light_Create 0x1cc3d8) lands here — before `update_with`'s spread draws — matching
+            //   its position inside `Player_WeaponFiring`, ahead of the trigger read.
+            if self.gun.fire_state && u16::from_le_bytes([w[2], w[3]]) == 0x33 {
+                let falen = u16::from_le_bytes([w[0x44], w[0x45]]);
+                let fire_h = u32::from_le_bytes(w[0xb0..0xb4].try_into().unwrap());
+                // The port's script frames are time+1 (the same convention `release_frame_reached`
+                // uses): the game reads AnimListBuild's +0x90 after the tick's advance.
+                let frame = self.view_time + 1.0;
+                if falen > 0 && self.view_script == fire_h && frame < falen as f32 {
+                    let clip_size = i32::from(u16::from_le_bytes([w[0x92], w[0x93]]));
+                    // The game stores a plain C float→s16 conversion (truncation) [M 0x1a5460:197-201].
+                    let v = (clip_size as f32 - clip_size as f32 * frame / falen as f32) as i16;
+                    if let Some(c) = self.drones.inventory.clip.get_mut(0x33) { *c = v; }
+                    if matches!(self.gun.weapon, 0x32 | 0x33) { self.gun.clip = v.max(0) as u32; }
+                    let pos = [camera[0], camera[1], camera[2]];
+                    self.drones.lights.create(5.0, 1.5 * frame / falen as f32, pos, [0, 0xff, 0xff], 0, 0, 1, 0, &mut self.drones.rng);
+                }
+            }
             let (trigger, reload) = if can_fire && (has_fire_script || !hands) { (trigger, reload) } else { (false, reload) };
             let fired = self.gun.update_with(trigger, reload, busy, params);
             // fix-gadgets-live: the AIMS-20's idle timer (`BLData+0x93a`): the game increments it while
