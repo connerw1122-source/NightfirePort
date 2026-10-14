@@ -10489,3 +10489,11 @@ report; the FMV stills need a retail image (none in this sandbox).
 Suite on the final tree (origin/master 6cbe522 merged): see docs/reports/fix-menus-real2.md.
 Files: crates/nf-view/src/{menu,hud}.rs, crates/nf-view/tests/{menus_flow,menu_movies}.rs, plus
 the shared-file hooks listed in the report (nf-formats/src/hud.rs font_header, lib.rs call sites).
+
+## fix-guard-misc2 (s/fix-guard-misc2) — 2026-10-14
+
+Task 102n, session started 11:24 UTC. Continuing 102i-fix-guard-misc (branch origin/s/fix-guard-misc,
+report docs/reports/fix-guard-misc.md): three guard bugs — 0c rooftop sniper takes no damage (aim/pitch),
+06 guards never open doors, 06 start "crazy models" needs renders. Plan: merge origin/s/fix-guard-misc
+for its harnesses, repro each through nf_view::load + Sim::step_bond, fix with decompile evidence.
+(Entry appended at branch creation; will be updated as work lands.)
