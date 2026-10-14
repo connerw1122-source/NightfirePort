@@ -11106,3 +11106,12 @@ not fit the window (14:43 deadline); the remaining families are listed in the re
 draws added; no wall-clock in Sim.
 ## fix-save-profile
 - The game's profile save ported: the six-block chain PLRS/MSSN/MPSG/GSET/CHET/BNUS [M SaveIFFBlocks 0x2c74d8 static init; L the table + the game's own 1022-byte chain in ee_snapshot InBufData 0x3416e0] with every field cited (PLRS = PlayerSetting[slot] 0x2a38c8 stride 0x158, 12 fields in LS_MakePlrSettings 0x1cd418's push order, the decode matches Input_Init 0x17edd8's defaults; GSET 905 B incl. the 219 zero dwords + the version tag 4; MPSG radar/health; CHET 3 bits; the file name IS the codename [M Menu_UpdateMessageBox 0x1f7de8]). crates/nf-game/src/profile.rs (new) + the menu hooks: the card rows after the two defaults, create/load codename, the mission_ended(Complete) save, the Records page reading the active profile. Tests: 5 module (the game's own chain decodes field-for-field) + 4 NF_ISO flow (create, the chain through the page, unlock-after-mission via nf_view::load + step_bond + mission_ended, the corrupt-file refusal); 4/4 + 5/5 on the merged tree (c606b5f). Difficulty is NOT in the save [M none of the six make fns reads GameState+0x40] — the brief's "difficulty per mission" resolves to the MSSN best scores. progress.rs: 4 fns pub(crate) + Clone (additive). Report: docs/reports/fix-save-profile.md (Live checks inside: the save chain in gdbwatch, the Records third value, the style-7 template question).
+
+## fix-fire-modes3
+- Started: branch s/fix-fire-modes3 from origin/master (8295049, weapon-matrix2 merged). Task:
+  every fire mode of the 32 MP weapons against the PCSX2 table (docs/live/2026-10-13-weapon-modes-pcsx2.md);
+  weapon x mode game-vs-port table in the report; tests per family (pistol silencer, burst rifle,
+  grenade attachment, launcher guided/unguided, MGL impact/delay, Samurai charge/beam, crossbow, sniper zoom).
+- Key prior work read: docs/systems/weapons.md (the mode table with [L] record bytes), fix-fire-modes2.md
+  (blast path, guided cam), weapon-matrix2.md (M/G/X runner marks, the reload-hang finding).
+- Research in progress.
