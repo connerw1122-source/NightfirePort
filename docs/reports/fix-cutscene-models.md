@@ -102,4 +102,7 @@ sandbox's reach:
 
 ## ntfy
 
-(filled below after the finish step)
+Delivered via curl at 02:28 UTC (id dwcfoKId8Nyd): "done — the cut-scene actor draw census
+(10 scenes, 4 levels) does not reproduce the regression on master or the playtest build; draw
+guarantees pinned by tests; live checks filed". finish.sh attached this report to the already-
+closed queue entry ("OK already closed in done/, report attached").
