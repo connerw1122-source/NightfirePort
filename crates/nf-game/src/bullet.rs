@@ -135,6 +135,14 @@ pub dir_bits: u8,
 /// 0x12e014-0x12e0b8], decayed 1/60·10·f per tick (the BL amount [*suggested*: the game's exact fade
 /// is the view's `Camera_SetFade`, not modelled]). fix-explosions.
 pub flashbang: f32,
+/// fix-grenade-types: `BL+0x91C` — the flash's TOTAL time in ticks (`FRAME_RATE·f·10` = 600·f at the
+/// 60 Hz FRAME_RATE [D docs/systems/input.md:126]), fixed at the blast. `Player_Update`'s fade gate
+/// compares the remaining time's half against it [M 0x193600:340-352].
+pub flash_total: f32,
+/// fix-grenade-types: the flash's peak alpha as f/255 of `BL+0x963` (the byte `Player_SetFlashBang`
+/// stores [M 0x196040]). The renderer paints the whiteout at this alpha until the half point, then
+/// fades it with the remaining time [M 0x193600:328-352; GlobalBlur rides the same byte].
+pub flash_alpha: f32,
 /// `BL+0x910`: the melee hit-push — `Player_DealWithObjHit` 0x194458:239-253 writes ±0.1 per
 /// melee hit (weapon 0x65 → −0.1, 0x66/99 → +0.1, gated on the record's u16 `+0x10 & 1`),
 /// `Player_Update` decays it ×0.9/tick [M disasm 0x1937a4-0x1937d8] and adds it to the move vec's
@@ -150,6 +158,8 @@ impl Default for PlayerHealth {
             dir_bits: 0,
             flashbang: 0.0,
             hit_push: 0.0,
+            flash_total: 0.0,
+            flash_alpha: 0.0,
         }
     }
 }
@@ -254,7 +264,7 @@ mod tests {
     #[test]
     fn armour_bypass_by_pain_type() {
         // 07000005 at difficulty 1: damage_factor 0.6, so 30.0 -> 18.0 effective.
-        let mut h = PlayerHealth { health: 100.0, armour: 50.0, flash: 0.0, dir_bits: 0, flashbang: 0.0, hit_push: 0.0 };
+        let mut h = PlayerHealth { health: 100.0, armour: 50.0, flash: 0.0, dir_bits: 0, flashbang: 0.0, hit_push: 0.0, flash_total: 0.0, flash_alpha: 0.0 };
         let mut rng = crate::drone::Rng::new(0);
         h.pain_generic(&mut rng, 30.0, 1, 0x0700_0005, 6); // fall damage
         assert_eq!(h.armour, 50.0, "a fall must not drain armour [M 0x1902c8:84-104]");

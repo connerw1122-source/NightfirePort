@@ -3018,6 +3018,10 @@ impl Sim {
                     // owner obj+0xff == 3 arm; guard-thrown mines keep 420]. The detonator's fire
                     // re-arms the placed mines to 10.0 [M Player_WeaponInitBullet 0x1a4bf0].
                     let fuse = if wt == 0x37 { 7777.0 } else { fuse };
+                    // fix-grenade-types: the 0x69 smoke canister's fuse is 5.0 [M Bullet_init
+                    // 0x12c5a0:212-215] — it pops almost at once into its long 3600-tick cloud
+                    // (the Sim's smoke arm re-arms by type).
+                    let fuse = if wt == 0x69 { 5.0 } else { fuse };
                     // The blast damage: `weapon_data+0x0C` [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` →
                     // Explode_Create's f14 → EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15);
                     // radius = $f12/$f13 = weapon_data+0x08]. The `addiu $t2, $zero, 0x64` (100) is the
@@ -4115,13 +4119,19 @@ fn drone_height(hip: f32) -> f32 {
 impl Scene {
     /// The script player's overlay (fix-script-commands): the fade, the letterbox borders and the
     /// op-0x14 sprites — see `hud::script_overlay`. Appended to the HUD frame OUTSIDE the cut-scene
-    /// gate (the game draws these over the blanked HUD).
+    /// gate (the game draws these over the blanked HUD). fix-grenade-types: the flashbang whiteout
+    /// rides the same overlay — `Player_Update`'s fade is full alpha while the remaining time sits
+    /// above its half, then fades with it [M 0x193600:328-352], at `BL+0x963`'s alpha [M 0x196040].
     pub fn script_overlay_hud(&self, aspect: f32) -> crate::gpu::HudFrame {
         let Some(sim) = self.sim.as_ref() else { return Default::default() };
         let sprites: Vec<(u32, [f32; 4])> = sim.drones.scripts.objects.list.iter()
             .filter_map(|o| match o { Some(nf_game::nis::Obj::Sprite { hash, rect, .. }) => Some((*hash, *rect)), _ => None })
             .collect();
-        crate::hud::script_overlay(sim.drones.view_fade, sim.drones.letterbox, &sprites, &self.hud_textures, aspect)
+        let h = &sim.drones.health;
+        let flash = if h.flashbang <= 0.0 || h.flash_total <= 0.0 { 0.0 }
+            else if h.flashbang > h.flash_total * 0.5 { h.flash_alpha }
+            else { h.flash_alpha * (h.flashbang / (h.flash_total * 0.5)) };
+        crate::hud::script_overlay(sim.drones.view_fade, sim.drones.letterbox, &sprites, &self.hud_textures, aspect, flash)
     }
 
     /// `skeletons`: every skeleton on the disc by id; `sequences`: the level's animation archive, grouped by skeleton.
