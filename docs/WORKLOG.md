@@ -105,3 +105,11 @@ the merge of s/fix-reload-hang (not yet on master — 103i's reload fixes under 
   press budget; the D-block = the stale-script family (fixed) + 103i's hang; F = the manor-intro
   holds + 0x38's quiet fire (live check). Report: docs/reports/weapon-matrix3.md. Shared files:
   none touched.
+
+---
+Task ID: 103m2-weapon-matrix3b
+Agent: weapon-matrix3b worker
+Task: weapon-matrix3b — the suite's matrix tests time out (s/weapon-matrix3 held at merge: weapon_matrix_live exceeds the suite's per-binary limit). Keep every check but make the in-suite matrix tests fit well under the limit: sample fewer levels/ids in the per-level tests (keep 05, 0c, one late level), keep the gadget-cell test, leave the full 27-level sweep to nf-extract weapon-matrix. Report the binary's runtime on the final tree and the full suite total.
+
+Work Log:
+- (19:05) Branch s/weapon-matrix3b = origin/s/weapon-matrix3 6171f2a8 + origin/master b9ed8b8a merged (the WORKLOG conflict resolved append-only, both sides' entries kept; no source conflicts). weapon-matrix4 not on master yet — nothing to fold in.
