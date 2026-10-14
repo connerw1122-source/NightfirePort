@@ -162,9 +162,10 @@ fn play_level(iso_path: &str, level: u32, budget: u32, save: Option<&RamSave>) -
             // centre formula produced NaN and Bond never stood anywhere. Aim at the finite box only.
             if lo.iter().any(|v| !v.is_finite()) {
                 row.note.push_str("no exit mesh (unbounded bbox) — E-aim skipped; ");
+                let carry = sim.drones.level_exit.is_some().then(|| RamSave::capture(&sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels).with_mission(&sim.drones.mission));
                 row.exit_next = sim.drones.level_exit.take();
                 if row.exit_next.is_none() && row.complete { row.note.push_str(&format!("mission end → LevelToEndTo 0x{:08x}", sim.drones.mission.to_end)); }
-                return (row, row.exit_next.map(|_| RamSave::capture(&sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels).with_mission(&sim.drones.mission)));
+                return (row, carry);
             }
             let c = [(lo[0] + hi[0]) * 0.5, lo[1] + 0.1, (lo[2] + hi[2]) * 0.5];
             // fix-level-chain: the 0xE8's mesh is the door slab it sits on — the collision push-out
@@ -173,6 +174,10 @@ fn play_level(iso_path: &str, level: u32, budget: u32, save: Option<&RamSave>) -
             'facing: for k in 0..4u32 {
                 sim.bond = nf_game::player::Bond::new(c, k as f32 * std::f32::consts::FRAC_PI_2);
                 for _ in 0..60 {
+                    // fix-level-chain: hold the key channel across the sweep — on 0700000a the "key"
+                    // (ch 0x4a) is an AND mux's output the mux recomputes every tick, so a one-shot
+                    // write is reclaimed before the E-path reads it.
+                    if key_gate != 0 { sim.drones.set_channel(key_gate); }
                     sim.step_bond(Default::default(), false, false, true); // the use key held
                     if sim.drones.level_exit.is_some() { break 'facing; }
                 }
