@@ -9965,3 +9965,39 @@ Stage Summary:
 - Files: matrix.rs (new), tests/weapon_matrix_live.rs (new), nf-extract main.rs + Cargo.toml (the command), dev.rs (the row), lib.rs (pub mod matrix + the 2-line test-weapon hook). drone.rs/scene.rs/player.rs untouched.
 - Report: docs/reports/weapon-matrix.md (the mark table, the numbers, the live checks for the main agent).
 - Open: re-run with 100a-c merged; the intro input-lock F/D cells; the variant back-chain B cells (100c).
+
+### fix-pause-menu2 — result (2026-10-14)
+
+The pause page's seven reported gaps fixed from the page data + the game's draw code
+(crates/nf-view/src/menu.rs; lib.rs hooks listed in the report):
+- The FIGURE: 0x030000db's figure texels are ALL index 0x43 whose palette entry is pure white
+  [L pal[067]=ffffff80 + a flat run of 987 0x4343 words in the figure's bbox]; the blob card is the
+  texture's LEFT half, the control's uv samples the right half only, and the control's msg-0x6c=0x100
+  flags [M P_PAUSE_Handler 0x203c28:91 → Label_Update 0x218cb8:173] select psiDrawSprites' ALPHA_1=0x48
+  additive (Cs·As + Cd) [M 0x120e68:56-68] — the black background adds nothing, the white figure takes
+  the orange. The port draws uv 64..128 × 0..128, blend 1, orange [S tint, live check].
+- The MISSION tab's yellow row cursor (a triangle stand-in [S], moves with the selection).
+- The OBJECTIVES tab: one row per objective with the ~J (done, state 4) / ~I markers [M 0x204408:251-271;
+  L .data 0x30d2e0/0x30d2e8]; the host fills fe.pause_objectives from Mission.states (lib.rs hook).
+- The CONTROLS tab: the style name + the 6×2 "<glyph> <label>" rows [M Menu_DisplayControllerStyleList
+  0x1f44d8 case 0; the glyph strings ~A..~V are ACTION.ELF .data 0x30d1c8-0x30d228 [L]]; labels bind
+  from USATxt (0x84-0x90); the Y-Axis line shows the boot value "Normal" [M 0x204408:512-517].
+- The SCORE tab: the Category/Current/Target header + the game's 8 rows [M 0x204408:447-498] with the
+  per-level TARGETS from ACTION.ELF's static score records (0x2bc658 pointer table → 9×0x14 slots
+  [M PlrStats_SetupScoreTable 0x1990e0]), cross-checked: campaign row 1 = 07000005 = [2,30,3,3,…,540,7]
+  = the capture's numbers [L]. Current shows the port's tracked stats (time/accuracy); the counters the
+  Sim does not track yet render 0 (reported).
+- The HUD (radar ring, ammo, fire mode) stays visible under the pause page: the host appends the HUD
+  frame under the menu overlay instead of replacing it (lib.rs).
+- The footers: the per-tab hint ids are the game's own (0x201/0x202/0x204/0x205 [M 0x204408]). The
+  "tiny dots" finding: the glyph atlas 0x03000075 was NEVER missing (already in MENU_TEXTURES; identical
+  SHA-1 in every mission archive [L]) — not reproduced headlessly (no GPU); the live check lists the
+  next probe.
+- 5 new headless tests in menus_flow.rs (23 in the file, all green): the cursor + its movement, the
+  objectives' ~J glyph uv, the CONTROLS' 12 glyph quads, the SCORE targets + row mapping, (NF_ISO) the
+  figure's white silhouette in the texture's right half.
+- Full suite on the final tree (origin/master 69c0104 merged), run in foreground chunks (background
+  processes do not survive between tool calls in this sandbox): 885 passed, 3 failed (the 3 allowed
+  disc_golden on the slim ISO), 20 ignored; zero failures outside the allowed set. Files: menu.rs,
+  lib.rs (2 additive hooks), scene.rs (comment-only), tests/menus_flow.rs. Report:
+  docs/reports/fix-pause-menu2.md.
