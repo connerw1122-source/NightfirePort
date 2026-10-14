@@ -33,16 +33,16 @@ fn wrap_pi(a: f32) -> f32 {
 
 /// The camera basis the first-person gun is posed from: `gun_matrix` reads the viewer's yaw/pitch
 /// and eye (`bond.head()`) — the same values the tick `Camera` holds — and its axes are
-/// right = f×Y, up = right×f, fwd = f (the `cam_axes` basis; `Player_PositionGun` 0x1a3b40).
-/// Returned as rows (right, up, fwd) with the eye as translation: the port's row-vector matrices
-/// (`anim::transform` = v·M).
+/// gl = up×gf = the viewer LEFT, gu = gf×gl = up, fwd = f ([M `Player_PositionGun` 0x1a3b40];
+/// det +1, at yaw 0 the identity). Returned as rows (left, up, fwd) with the eye as translation:
+/// the port's row-vector matrices (`anim::transform` = v·M).
 fn cam_rows(pos: [f32; 3], yaw: f32, pitch: f32) -> Mat4 {
     let f = [pitch.cos() * yaw.sin(), pitch.sin(), pitch.cos() * yaw.cos()];
-    let r = [-f[2], 0.0, f[0]]; // f × Y, then normalized
-    let rl = (r[0] * r[0] + r[2] * r[2]).sqrt();
-    let r = [r[0] / rl, 0.0, r[2] / rl];
-    let u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]];
-    [[r[0], r[1], r[2], 0.0], [u[0], u[1], u[2], 0.0], [f[0], f[1], f[2], 0.0], [pos[0], pos[1], pos[2], 1.0]]
+    let l = [f[2], 0.0, -f[0]]; // Y × f = the viewer's left
+    let ll = (l[0] * l[0] + l[2] * l[2]).sqrt();
+    let l = [l[0] / ll, 0.0, l[2] / ll];
+    let u = [f[1] * l[2], f[2] * l[0] - f[0] * l[2], -f[1] * l[0]]; // f × l = the game's gu
+    [[l[0], l[1], l[2], 0.0], [u[0], u[1], u[2], 0.0], [f[0], f[1], f[2], 0.0], [pos[0], pos[1], pos[2], 1.0]]
 }
 
 fn trans(t: [f32; 3]) -> Mat4 {
@@ -178,7 +178,23 @@ fn view_model_stays_glued_in_camera_space_across_a_turn() {
     let mut drawn = nf_view::lerp_palette(&pa, &pb, 0.5);
     nf_view::reattach_view_model(&mut drawn, &pa, &pb, 0.5, &cam_a, &cam_b, &cam_mid, &vm);
 
+    // Entries whose either tick is not a proper rotation (the collapsed muzzle-flash slot —
+    // rotation zeroed until 3 ticks after a shot — or a FAR/collapse hide) draw nothing: their
+    // degenerate matrix keeps the pre-existing world blend, and the camera-space contract is
+    // about the VISIBLE view model. The same gate the production reattach applies.
+    let is_rotation = |m: &Mat4| {
+        let rows_ok = (0..3).all(|i| ((m[i][0] * m[i][0] + m[i][1] * m[i][1] + m[i][2] * m[i][2]).sqrt() - 1.0).abs() < 1e-3)
+            && (0..3).all(|i| (0..3).all(|j| i == j || (m[i][0] * m[j][0] + m[i][1] * m[j][1] + m[i][2] * m[j][2]).abs() < 1e-3));
+        rows_ok && (m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            + m[0][1] * (m[1][2] * m[2][0] - m[1][0] * m[2][2])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])) > 0.5
+    };
+
     for &k in &vm {
+        if !is_rotation(&pa[k]) || !is_rotation(&pb[k]) {
+            eprintln!("[interp-ghost] entry {k}: collapsed/hidden at a tick (not a proper rotation) — nothing is drawn, world blend kept");
+            continue;
+        }
         let rel_a = mat_mul(&pa[k], &c_a);
         let rel_b = mat_mul(&pb[k], &c_b);
         // The contract: the camera-space pose at ½ is the average of the two ticks' camera-space
