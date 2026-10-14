@@ -380,14 +380,42 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
         } else if let Some(msg) = s.hud.objective_msgs.front() {
             let a = (msg.time * 17.0).min(255.0) as u32;
             bar(&mut h, bw);
+            // The status label rebinds per display [M 0x19c310 case 2: the message text strcmp'd
+            // against Txt_BindLabel(0x2000053) — the port's `status` field is 0x0200_0053 exactly
+            // then]: "OBJECTIVE COMPLETE" for a completion, "NEW OBJECTIVE" otherwise. Its steady
+            // colour is the gold 0x785a14ff (case 3's else branch stores it unconditionally), the
+            // body's 0x7d6d59ff.
+            let complete = msg.status == 0x0200_0053;
             if let Some(lang) = s.lang.as_ref() {
                 if let Some(st) = lang.bind(msg.status) {
                     let (_, sw) = t.font.layout(st, 0.0, 0.0);
-                    h.text(Anchor::Centre, &t.font, 29, st, SW / 2.0 - sw / 2.0, 20.0, false, gs(0x7d6d59, a), true);
+                    h.text(Anchor::Centre, &t.font, 29, st, SW / 2.0 - sw / 2.0, 20.0, false, gs(0x785a14, a), true);
                 }
             }
-            let (_, tw) = t.font.layout(&msg.text, 0.0, 0.0);
-            h.text(Anchor::Centre, &t.font, 29, &msg.text, SW / 2.0 - tw / 2.0, 40.0, false, gs(0x7d6d59, a), true);
+            // The body row: the wrapped message text. For a COMPLETE message the game shows NO body
+            // row — case 2 forces the body sprite's colour to 0 after binding the status label and
+            // case 3 keeps it 0 in both its phases [M 0x19c310 case 2 + case 3's `*(iVar8+0x10)=0`
+            // stores] — the status label alone carries "OBJECTIVE COMPLETE" (the port used to draw
+            // the body row too: the user's two stacked OBJECTIVE COMPLETE banners).
+            if !complete {
+                // `Text_AddMsg` 0x1b0c30 wraps the message text with `Font_WordWrapString` at
+                // TextMsgFormats[2]'s maxWidth = 480 [L 0x2bf108+0x14 = 0x1e0] — the box's own width
+                // (ObjectiveStatusSprInfo[2] x 16 w 480 [L 0x319608+0x58]); the port wraps at draw
+                // time (the font lives in the scene tables, the queue stores the raw bind).
+                // __Font_DrawText 0x1ee598:65-71: each '\n' line draws from the same block start x
+                // and the next line sits `glyph0.h + gap + 1.0` lower; Font_DrawText 0x1eee48's
+                // justify-2 centre shifts the block start x -= width/2 by the WIDEST line, so the
+                // block centres on 256 with its lines left-aligned from there.
+                let wrapped = t.font.word_wrap(&msg.text, 480.0);
+                let lines: Vec<&str> = wrapped.split('\n').collect();
+                let mut maxw = 0.0f32;
+                for l in &lines { maxw = maxw.max(t.font.layout(l, 0.0, 0.0).1); }
+                let x0 = SW / 2.0 - maxw / 2.0;
+                let lh = t.font.line_height();
+                for (k, l) in lines.iter().enumerate() {
+                    h.text(Anchor::Centre, &t.font, 29, l, x0, 40.0 + k as f32 * lh, false, gs(0x7d6d59, a), true);
+                }
+            }
         } else if s.hud.objective_close > 0.0 {
             bar(&mut h, s.hud.objective_close);
         }
@@ -410,13 +438,21 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
         } else if let Some(msg) = s.hud.mission_msgs.front() {
             let a = (msg.time * 17.0).min(255.0) as u32;
             bar(&mut h, bh);
-            h.text(Anchor::Centre, &t.font, 29, &msg.text, SW / 2.0, 42.0 + by, true, gs(0x7d6d59, a), true);
+            // Both rows centre on the box: the styles 0x30cdb8 (main) and 0x30cce0 (fail label) are
+            // `fe 03` = justify flag 2 = CENTRE [L 0x30cdb8/0x30cce0; M Font_ParseFormat 0x1ee3e0
+            // case 4 byte 3 → flag 2, Font_DrawText 0x1eee48 `flags & 2 → x -= width·0.5`] — the
+            // port passed its right-justify flag instead, which shifted both rows left by half
+            // their width (the user's "Mission Fail / Cover Lost" text sitting left of the box's
+            // centre).
+            let (_, tw) = t.font.layout(&msg.text, 0.0, 0.0);
+            h.text(Anchor::Centre, &t.font, 29, &msg.text, SW / 2.0 - tw / 2.0, 42.0 + by, false, gs(0x7d6d59, a), true);
             if let (Some(lang), true) = (s.lang.as_ref(), s.hud.fail_label != 0) {
                 if let Some(fl) = lang.bind(s.hud.fail_label) {
                     // The flash while an objective notice is up [M 0x19c310:209 0x785a14ff].
                     let flash = !s.hud.objective_msgs.is_empty() && frame % 30 < 15;
                     let (c, al) = if flash { (0x785a14, a) } else { (0x7d6d59, a) };
-                    h.text(Anchor::Centre, &t.font, 29, fl, SW / 2.0, 64.0 + by, true, gs(c, al), true);
+                    let (_, fw) = t.font.layout(fl, 0.0, 0.0);
+                    h.text(Anchor::Centre, &t.font, 29, fl, SW / 2.0 - fw / 2.0, 64.0 + by, false, gs(c, al), true);
                 }
             }
         } else if s.hud.mission_close > 0.0 {
