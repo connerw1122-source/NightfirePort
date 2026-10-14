@@ -9898,6 +9898,16 @@ nf-game units, the full 214-binary suite green except the allowed disc_golden 3.
 docs/reports/fix-qclaw.md (rope rendering + the 0x02100717 mesh gap listed as what's left, with
 the PCSX2/nf-view live checks).
 
+Task 101j fix-portal-eyecel STARTED (04:12 UTC): the 05 trench walls still vanish with portal
+culling on. 130g's scene::near_los_rescue restores 0 cels in the real draw path ([pwalk] prints,
+no [rescue]) because the root cause is upstream: build_FindCel 0x1c8cb0's up/down tie-break rays
+cast against each CANDIDATE's own object list, and the port's stand-in scopes the shared collision
+world, so candidates 14/15 tie and the giant outdoor room 14 wins. Plan: give each cel its own
+collision/object list the way the game's loader attributes polys and objects to cels
+(build_link_objects_to_rooms 0x1c9150 is ported for the render chains; find the collision side),
+so the eye cel resolves to 15 like the game's; remove the rescue if it dies; prove on the RENDERED
+path (a --shot draw-list test at the trench spot failing on master), keep the 27-level sweep and
+the 4 PCSX2 ground-truth spots green. Branch s/fix-portal-eyecel off master 5f13369.
 Task 100c outcome (same session): REPRODUCED then FIXED. The impact explode —
 `Bullet_CollisionHandler` 0x12d068-0x12d0bc (disassembled): after the impact effects, a weapon
 whose `weapon_data+0x70` carries bit 2 (0x4) destroys its bullet with `Explode_Create(radius =
@@ -9965,6 +9975,24 @@ Stage Summary:
 - Report: docs/reports/weapon-matrix.md (the mark table, the numbers, the live checks for the main agent).
 - Open: re-run with 100a-c merged; the intro input-lock F/D cells; the variant back-chain B cells (100c).
 
+fix-portal-eyecel DONE (05:3x UTC): the trench eye cel now resolves like the game's. Root cause
+pinned: build_FindCel 0x1c8cb0's tie-break rays are owner-filtered to the CANDIDATE's own chain
+geometry (Collide_RayIntersect 0x1ec690's flags-arg-1 post-pass compares HITDATA+0x54 — the
+static-geometry cel [M hitdata doc:41, the chain-node store sw $s3,0x54] — against HITTEST+0x80 =
+the cel argument); the port's shared-world scoped stand-in left the trench floor outside BOTH
+candidates' buckets so both rays missed and the first candidate (the outdoor room 14) stood
+[L ee_start_05.bin: the trench room's chain holds all 58 trench generics, the outdoor room's 41
+none near the eye]. Fix: world::attribute_scope re-keys the scope buckets by the chain owners
+build_chains computes (the collision side of build_link_objects_to_rooms 0x1c9150) and
+world::segment_hit_cell reads a candidate's own bucket for the tie-break. Failing-first proof:
+portal_eyecel_live::trench_eye_cel_is_15_and_the_near_walls_draw panicked "got 14" pre-fix,
+passes post-fix (eye cell 15, 0 near visited-chain walls hidden). The rescue STAYS: raw sweep
+failures on 05 dropped 1382 -> 31 but remain elsewhere (02: 850, 07: 759, ...) — other causes it
+covers. Ground truths unchanged (06 courtyard 33, 07 window rescue 0, clock hall 33 + the pinned
+set). Suites on the merged tree: nf-game 256/0 (33 binaries, twice), nf-view 318/0 (87 binaries),
+portal tests 12/0; the suite.py wrapper can't run here (background jobs die between tool calls,
+the single run exceeds the 10-min tool limit after the 05:08 UTC sandbox reset — per-binary runs
+executed directly instead). Report: docs/reports/fix-portal-eyecel.md.
 ## fix-08-walls (s/fix-08-walls) — 2026-10-14
 
 Task 101h, both symptoms from the 1013-1758 playtest at 07000008's safe area (~(155, 43, −113)).
@@ -10014,3 +10042,42 @@ Work log:
   layer 29, colour 0x7f7f7fff, fade-out over ThirdIconTimer 30; the type-1 TXTMSG draws on the
   INFO pane 4 (MsgInfoStatusPane 0x319810 [L], InfoStatusSprInfo 0x319730: bar 480×26 at (16,0),
   text centred (256,16), the 0x19c310 state machine the pickup pane already ports).
+
+fix-menus-real (101k, started 2026-10-14): the front end must match the real pages
+(1013-1825 playtest + the main agent's 2026-10-13 PCSX2 drive). Every page is missing its
+backdrop, the header font, the footer PS2 glyphs, the centred description and the rolling
+list style; per-page gaps are in the report. Plan: read MenuManager_Create 0x21b908's tag
+stream + entry 08000002 in 07000048.bin + the sprite/texture/font tables, then draw each
+element from the page data. Files: crates/nf-view/src/{menu,hud}.rs,
+crates/nf-view/tests/menus_flow.rs. Work log continues below.
+
+fix-menus-real (101k, 2026-10-14): the front end rebuilt against the re-parsed menu-def (the tag
+stream dump of pages 0x40000002/09/1c/23/25/2b/3a via MenuManager_Create 0x21b908's own walk).
+(1) THE CENTRING BUG: the overlay's text was LEFT-ALIGNED from its anchor — `text_scaled`'s pen
+starts at x and `quad()` maps both corners (the anchor is only an origin shift, glyphs draw
+left-edged at their pen x), so every "centred" string ran right. The game centres menu labels by
+default: Label_Init 0x218638:53 stamps DAT_003096c0 = ff 02 fe 03 (SerpLight + centre) on EVERY
+menu label, and __Font_DrawText 0x1eee48:69-71 applies flag 2 as x -= width*0.5. menu.rs now
+centres each row by its measured INK ([p0.x, plast.x + gwlast]); the footer hint bar lays the row
+out as ink items (text segments + specialchar icons, texture 0x03000075) and centres at the bar's
+ctrl.x + ctrl.w/2 = 320 [M Label_Update 0x218cb8:177-182]. (2) The headers centre in their own
+(50,40,376×17) bands at (238,48.5) — the old draw centred AT x=50, half off-screen. (3) The wheel
+rows centre at ctrl.x + ctrl.w/2 with the parsed widths [L rows (323,123,317) (333,152,307)
+(304,182,336) (333,211,307) (323,241,317)] and locked rows go grey 0x484848xx [M 0x1f8388:210-234].
+(4) The main rows carry the page's own colours: selected = msg-0x1b 0x7d6d59ff → 0x645a49ff
+[MenuManager_Create 0x21b908:238-243's rewrite], others = msg-0x1c 0x73330f80 (the port had them
+inverted). (5) The codename page lists "New Codename" (0x29b [M Menu_EnumSaves 0x1f7b78:58-66]) +
+"Play without saving" (0x10002ff [M Menu_PutCodenamesIntoControl 0x1f79c0:15-23]) with the
+per-cursor ring previews 0x300013b/0x3000135 and descriptions 0x1000004/0x1000003 [M
+Menu_UpdateCodenameWheel 0x1f89f0:80-99]. (6) The Dossier is the game's wheel menu — Records /
+Rewards / Gadgets / Weapons [L table 0x2dfcd0; C_SBDOSSIER 0x216eb0:48-49] with per-row previews
+0x300019b/0x300019c/0x30000c4/0x30000ee and descs 0x100000a-d — and Records (page 0x4000003a)
+draws the disc's own score table (header 0x280, hint 0x49e, the mission list, rows 0x302/0x165/0x305
+with their value controls, the medal image 0x0300013d + label 0x307 [L PAGE 0x4000003a parsed;
+M P_DSRECORDS 0x217248:11-13, C_RBDSRECORDS 0x20bf00:79-92]). (7) The title prompt uses the page's
+own gold 0x7f621f (the old 0xfec43e contradicted its own citation) and centres at the prompt
+control's (320.5, 317). Tests: menus_flow 26/26 — the footer/header/wheel centring (ink rows
+measured per-quad from the frame, plates excluded), the main-row colours, the codename rows +
+previews, the dossier wheel + Records page, the prompt colour, and the pre-existing flows (the
+codename navigation gained a Down — row 0 is now New Codename). Suite on the final tree: see the
+report. Files: crates/nf-view/src/menu.rs, crates/nf-view/tests/menus_flow.rs (no shared files).
