@@ -217,8 +217,23 @@ fn with_dev_god_and_infinite_ammo_every_raptor_drop_is_taken_and_the_spare_match
     let mut killed = 0;
     for &gi in &guards {
         ensure_enabled(&mut scene, gi, Some(&mut dev));
+        let taken0 = scene.sim.as_ref().unwrap().drones.taken.len();
         if !kill_guard(&mut scene, gi, Some(&mut dev)) { continue; }
         killed += 1;
+        // The game's own touch takes first: a drop landing at Bond's feet is taken by
+        // `Pickup_Handler`'s touch (`update_pickups` → `p.touches` → `inventory.take`) and the
+        // ledger records it. The head-look merge's corrected head box (the game's own
+        // AnimGetCollData 0x1c4ac8 → psiBuildMatrixPalette 0x111498 → HeadTrack 0x1bf618 coupling)
+        // changes which death pose drops where, so a drop can land inside Bond's touch bounds
+        // during the kill — account for those ledger takes before walking to the rest.
+        for (_, t) in &scene.sim.as_ref().unwrap().drones.taken[taken0..] {
+            eprintln!("[raptor] take {}: {:?} (the game's touch take)", takes.len() + 1, t);
+            takes.push(*t);
+            if takes.len() == 1 {
+                let sim = scene.sim.as_ref().unwrap();
+                first_take_state = Some((sim.drones.inventory.owned[0xe], sim.drones.inventory.clip[0xe], sim.drones.inventory.carried[3]));
+            }
+        }
         // Take every drop this guard made (the gun; a captain would add grenades).
         loop {
             let Some(k) = scene.sim.as_ref().unwrap().drones.pickups.iter()

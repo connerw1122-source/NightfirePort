@@ -1643,15 +1643,19 @@ impl Sim {
             // (the fists skin). With the override applied in main.rs, the fists skin (0x050000ab) is found
             // in the level archive, the view model is built, and the cycle can land on fists — matching the
             // game. The `has_view_model` filter is no longer needed.
+            // fix-silencer-modes: the toggle-back gates on the remembered id's BASE (0x1a6f80:97-111)
+            // and restores the remembered TWIN verbatim (line 113); the cycle walk carries the twin
+            // step (0x1a6f80:179-198) — `cycle` takes &mut self for the marker clear.
+            let base_of = |w: u8| weapons.base(w as usize) as u8;
             let target = if let Some(id) = input.switch_to {
                 if id != self.gun.weapon && owned.get(id as usize).copied().unwrap_or(false)
                     && weapons.first_person(id as usize) != 0 { Some(id) } else { None }
             } else if input.weapon_cycle != 0 {
-                self.gun.toggle_back(nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable)
-                    .or_else(|| self.gun.cycle(input.weapon_cycle, nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable))
+                let t = self.gun.toggle_back(nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable, base_of);
+                t.or_else(|| self.gun.cycle(input.weapon_cycle, nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable))
             } else if input.gadget_cycle != 0 {
-                self.gun.toggle_back(nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable)
-                    .or_else(|| self.gun.cycle(input.gadget_cycle, nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable))
+                let t = self.gun.toggle_back(nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable, base_of);
+                t.or_else(|| self.gun.cycle(input.gadget_cycle, nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable))
             } else { None };
             if let Some(id) = target {
                 // Update prev_weapon/prev_gadget [M 0x1a6f80 lines 134-141]: if current is a weapon, save to
@@ -1979,6 +1983,16 @@ impl Sim {
             let req_base = self.weapons.base(req_id as usize);
             // `Player_WeaponSelect` variant-swap path: same base weapon AND same first-person model → play +0xC8
             // at 1.3x, state 8 (a fast swap without holster/draw) [M 0x1a2cc0 lines 13-29].
+            // fix-silencer-modes: the twin-variant cycle marker [M Player_WeaponSelect 0x1a2cc0:15-16]
+            // is written for EVERY same-base request, before the FP-model gate — (requested id − base
+            // id), 0 when the base itself is equipped. `Player_WeaponChange`'s walk (0x1a6f80:180-195)
+            // reads it to hand the equipped twin back on the next cycle to this family.
+            if cur_base == req_base {
+                let slot = cur_base as usize;
+                if slot < self.gun.twin_skip.len() {
+                    self.gun.twin_skip[slot] = req_id as i8 - self.weapons.base(req_id as usize) as i8;
+                }
+            }
             if cur_base == req_base && self.weapons.first_person(cur_id as usize) == self.weapons.first_person(req_id as usize) {
                 let variant = self.weapons.variant_swap_script(req_id as usize);
                 if variant != 0 {
@@ -2335,7 +2349,7 @@ impl Sim {
                         // this only re-points the twins.
                         weapon_type: self.gun.weapon as u16,
                         mesh: self.weapons.projectile_mesh(self.gun.weapon as usize),
-                        owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false,
+                        owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: false,
                     });
                 } else if spawn_shot {
                     self.last_shot = Some(self.drones.frame);
@@ -3004,6 +3018,11 @@ pub struct Scene {
     /// The game draws each ladder exactly once through the dynamic-object path [M View_DrawObjList
     /// 0x1e69a0 → View_DrawObjectGlist 0x1e6780]; 0 means the ladders are invisible.
     pub ladders_drawn: usize,
+    /// How many grapple-point (0x3A) placements got a World-layer instance (fix-grapple-hook's
+    /// draw sweep). The game draws each point's pulley mesh exactly once through the dynamic-object
+    /// path [M View_DrawObjList 0x1e69a0 → View_DrawObjectGlist 0x1e6780]; 0 on a level with 0x3A
+    /// placements means the hooks are invisible (the user's symptom).
+    pub grapple_hooks_drawn: usize,
     /// Models-misc: how many static dynamic entities got a World-layer instance, per placement kind
     /// (`misc_static_sweep` in `build`). Zero for a kind the census says the level carries means the
     /// model is missing (see docs/models/misc.md for the per-kind creator evidence).
@@ -3421,6 +3440,7 @@ impl Scene {
             .map(|i| (i.placement.translation, i.placement.rotation[1]));
         let mut hidden = 0;
         let mut ladders_drawn = 0usize; // the sweep below counts the drawn ladder instances (fix-ladder2)
+        let mut grapple_hooks_drawn = 0usize; // the sweep below counts the drawn grapple-point meshes (fix-grapple-hook)
         let mut misc_drawn: BTreeMap<u8, usize> = BTreeMap::new(); // models-misc static dynamic entities
         // The level's room cels (see `Cel`): parsed before the draw so the static 0x800 world objects can snap
         // to their cel's ambient exactly as the game's link does at level start (`build_LinkToRoom` 0x1c9680 →
@@ -3817,6 +3837,21 @@ impl Scene {
                 }
             }
         }
+        // fix-grenade-throw: the smoke grenade's occluder cloud (`Occlude_Create(pos, 1200, 1)`
+        // 0x17ea80 — mesh 0x2000273, kind 1): a static class-0x2A object whose only update is the
+        // 1200-tick countdown (0x17eba0), drawn at `obj+0x30` with no rotation. One Effect pool per
+        // level archive that resolves the mesh, 4 slots (the game caps nothing; clouds are rare).
+        if drones.is_some() {
+            if let Some(&(m, o)) = level.by_hash.get(&0x0200_0273) {
+                let ident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
+                let cplacement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
+                for slot in 0..4 {
+                    let cinst = Instance { map: m, object: o, matrix: ident, placement: cplacement.clone() };
+                    add_instance(level, &cinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                    attachments.push(Attachment { character: 0, bone: 0, local: cinst.matrix, flash: None, tracer: None, dropped: false, projectile: None, script: None, gas: None, effect: Some((3, slot, 0x0200_0273)) });
+                }
+            }
+        }
         // Level coronas (`Corona_Create` 0x18da00, placement type 0xFC): class-1 objects with NO update
         // function — static glow quads at their placement transforms, in every view mode. The glist's +0x44
         // flags word (bit 0x1: `View_AddObjects` draw list 1, mirrored sort key) is the object's own flags
@@ -3898,13 +3933,51 @@ impl Scene {
         // via scripts); 0xF2 emitter (no glist ever [M 0017ae00:100-101]); 0xD4 cloud (sky pipeline, drawn by
         // sky_instances); 0xF3 tree (anim-object path, like characters).
         // fix-gadgets2, the user's "red and yellow boxes ... for the wall shimmy and one for the grapple":
-        // 0x3A grapple points and 0x3F creep walls are the same shape of invisible: both creators build a
-        // bare control object and attach NO gfx hash — `Grapple_Create` 0x198298 has zero
-        // `hashtable_set_object_to_entity_gfx` calls (instance size 0, no placement params read; only +0xD8,
-        // +0xF0, class 0x51, LinkToRoom, StraddleTest) and `CreepWall_Create` 0x196fc8 likewise sets class 0x2B
-        // with no gfx attach — so `View_DrawObjList`'s empty-glist no-op never draws them. The marker meshes
-        // the sweep used to draw are the placements' referenced objects, which the game discards.
+        // 0x3F creep walls are invisible: the creator builds a bare control object and attaches NO gfx
+        // hash — `CreepWall_Create` 0x196fc8 sets class 0x2B with no gfx attach — so `View_DrawObjList`'s
+        // empty-glist no-op never draws them; live, the 0x2B glists chain to boxes 0 [L ee_start_05.bin:
+        // obj 0x16d69a0/0x16e8d90, psiDraw chain boxes 0x0]. The marker meshes the sweep used to draw are
+        // the placements' referenced objects, which the game discards.
+        // fix-grapple-hook CORRECTION for 0x3A: the grapple points ARE drawn. The dynamic-block parser
+        // resolves the placement's object and hands it to the creator as the glist argument
+        // [M parsemap_block_map_data_dynamic 0x1d1b68: hashtable_getitem(hashcode), or pCelList +
+        // index*0x50 when the hashcode is −1; case 0x3a passes it through 0x1d04f0:237-239],
+        // `Grapple_Create` 0x198298:24-30 stores it at obj+0xD8 with obj+0xF0 = *(u32*)(glist+0x44),
+        // and the generic dynamic-object draw `View_DrawObjList` 0x1e69a0 → `View_DrawObjectGlist`
+        // 0x1e6780 renders obj+0xD8 at obj+0x90 (the placement transform `control_create_object`
+        // 0x1344e0 built) via `psiDrawObjectMatrix` 0x124708. Live proof [L ee_start_05.bin]: both
+        // class-0x51 objects (0x16d80a0 at 13.75,32.29,57.30 = placement #282; 0x16d81c0 at
+        // −3.40,42.94,−71.77 = #281) hold glist 0x170d6a0 (the `graple_pulley` entity), +0xF0 = 0x4000
+        // (no 0x10 hide bit, no 0x8000 forced bit — the point did not straddle), +0xF8 = 0x1f (display
+        // bit 0 passes `View_CaptureScene` 0x1e6df0's `object_display_mask = 1 << viewer_LOD`, 0x30d87c),
+        // and the psiDraw chain glist+4 → +8 → +4 lands on box tree 0x9b3260 — DRAWABLE. The zero
+        // `hashtable_set_object_to_entity_gfx` calls fix-gadgets2 cited are irrelevant: the glist comes
+        // in as an argument, not from a hash attach. The user's PCSX2 playtest shows the pulley at the
+        // spot; the port drew only the bracket. obj+0xF0 & 0x800 is clear, so no ambient dim (the
+        // `View_SetupRenderModes_Tweak` 0x1e5888 white-tweak branch, like the ladders).
         if cels_only {
+        // Grapple-point visuals (`Grapple_Create` 0x198298, placement type 0x3A, class 0x51): the
+        // pulley-with-hook the Q-Claw latches onto (fix-grapple-hook). The mesh is the placement's
+        // resolved object (the `graple_pulley` entity, handed over as the glist argument — the chain
+        // documented at the fix-gadgets2 correction above), drawn once at the placement transform.
+        // Gate: `psiDrawObjectMatrix` 0x124708 no-ops when the glist's box chain is empty, so objects
+        // with no batches stay undrawn (the creep walls' case); a 0x400 mirror-only object has no
+        // mirror viewer here. The 0x3A placements never carry 0x8000 CREATE_CEL [D placements], so
+        // the static instance loop skips them and this sweep is the only draw — in --all the generic
+        // instance loop covers them (debug view), hence the cels_only gate.
+        if let Some(m) = level.main_map() {
+            for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x3a) {
+                let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                    else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
+                let Some((map, object)) = target else { continue };
+                let obj = &level.maps[map].objects[object];
+                if !obj.gfx.leaves.iter().any(|l| !l.batches.is_empty()) || obj.flags & 0x400 != 0 { continue; }
+                if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && obj.name.contains(n)) { continue; } }
+                let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
+                add_instance(level, &inst, Layer::World, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                grapple_hooks_drawn += 1;
+            }
+        }
         if let Some(m) = level.main_map() {
             const MISC_KINDS: [u8; 15] = [0x2e, 0x30, 0x34, 0x35, 0x3b, 0x71, 0xd5, 0xd8, 0xe1, 0xe3, 0xda, 0xfa, 0xfd, 0xfe, 0x4a];
             let nf_hide = std::env::var("NF_HIDE").ok();
@@ -4057,9 +4130,16 @@ impl Scene {
         let textures = keys.into_iter().map(|key| {
             TextureImage::from_texture(key.0, &level.maps[key.0].textures[key.1 as usize])
         }).collect();
-        let hud_textures = crate::hud::TEXTURES.iter().chain(crate::menu::MENU_TEXTURES.iter()).filter_map(|&h| level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == h).map(|t| {
+        let mut hud_textures: Vec<(u32, TextureImage)> = crate::hud::TEXTURES.iter().chain(crate::menu::MENU_TEXTURES.iter()).filter_map(|&h| level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == h).map(|t| {
             (h, TextureImage::from_texture(mi, t))
         }))).collect();
+        // fix-pause-menu2: the pause page's figure (0x030000db) keeps the standard 8bpp decode —
+        // the disc palette's entry 0x43 is pure WHITE and the figure's texels are ALL index 0x43
+        // [L the retail palette (pal[067]=ffffff80) + the index histogram: a flat run of 987
+        // 0x4343 words in the figure's bbox]. The blobs live in the texture's LEFT half and the
+        // control's draw never samples them (the menu's uv rect covers the right half only); the
+        // flags-0x100 blend (ALPHA_1 0x48 = Cs·As + Cd, additive in the port [M 0x120e68:56-68])
+        // drops the black background (it adds 0). The menu draws the right half tinted orange.
         let hud = drones.and_then(|d| d.hud.clone());
         let n_seq: usize = sequences.values().map(Vec::len).sum();
         let stats = format!("{} world instances ({hidden} skipped by the cel pass: flag 0x10), {} animated character meshes, {chars_missing} drones with a skin from another archive, {} sky objects, {missing} unresolved, {} triangles, {} materials, {n_seq} sequences",
@@ -4286,7 +4366,7 @@ impl Scene {
         // fix-portal4: sim-less loads never built a world — the chains fall back to the
         // bbox-face FindCel approximation (documented deviation; every live load path builds sim).
         if sim.is_none() { build_chains(&mut cel_graph, None); }
-        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, sound_spares: Vec::new(), snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn, misc_drawn }
+        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, sound_spares: Vec::new(), snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn, grapple_hooks_drawn, misc_drawn }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the
@@ -4502,6 +4582,18 @@ impl Scene {
                         }
                         _ => far,
                     },
+                    // fix-grenade-throw: the smoke grenade's cloud (`Occlude_Create` 0x17ea80) — a
+                    // static object at `obj+0x30`, no rotation (`Occlude_Update` 0x17eba0 only counts
+                    // down; `Control_GetObjMatrix` 0x134210 has no euler write on this class).
+                    3 => match s.drones.smoke_clouds.get(slot) {
+                        Some(c) => {
+                            let mut m = [[0.0f32; 4]; 4];
+                            m[0][0] = 1.0; m[1][1] = 1.0; m[2][2] = 1.0;
+                            m[3] = [c.pos[0], c.pos[1], c.pos[2], 1.0];
+                            m
+                        }
+                        _ => far,
+                    },
                     _ => far,
                 };
             }
@@ -4561,17 +4653,55 @@ impl Scene {
     /// the same window `script_pose_together` poses bones from) sampled at the object's frame via
     /// `AnimFacialBlend`'s source arithmetic [M `facial_weights`, `AnimFacialBlend` 0x1be648].
     pub fn facial_weights_now(&self, c: &Character) -> Option<Vec<f32>> {
-        let src = c.script?;
+        self.facial_weights_at(self.characters.iter().position(|cc| std::ptr::eq(cc, c))?, c)
+    }
+
+    /// `facial_weights_now` with the character's index known (the drone link is `Sim::char_drone[ci]`).
+    pub fn facial_weights_at(&self, ci: usize, c: &Character) -> Option<Vec<f32>> {
         let s = self.sim.as_ref()?;
         let count = c.skin.facial as usize;
         if count == 0 { return None; }
-        let (script_h, frame) = s.script_anim(src, c.skin.hashcode)?;
+        // fix-facial3: drone-backed characters sample their own playing script's face window — the
+        // same source the root-motion path reads (`Drone::script_frame`, the drone's live
+        // `anim.script`/`ftime`); the script-object path keeps its live `Obj::Anim` frame.
+        let (script_h, frame) = match c.script {
+            Some(src) => s.script_anim(src, c.skin.hashcode)?,
+            None => {
+                let di = (*s.char_drone.get(ci)?)?;
+                let dr = &s.drones.list[di];
+                (dr.anim.script?, 1.0 + dr.anim.ftime)
+            }
+        };
         let script = s.scripts.get(&script_h)?;
         let win = script.sequences().filter(|(a, _, _)| (*a as f32) <= frame)
             .filter_map(|(a, _, q)| s.seqs.get(&q).filter(|sq| sq.channels.len() == count).map(|sq| (a, q)))
             .last()?;
         let seq = s.seqs.get(&win.1)?;
-        nf_game::anim::facial_weights(seq, (frame - win.0 as f32 + 1.0).max(1.0), count)
+        let mut out = nf_game::anim::facial_weights(seq, (frame - win.0 as f32 + 1.0).max(1.0), count)?;
+        // fix-facial3: `AnimFacialBlend` (0x1be648) — the drone's facial script slots over the track
+        // weights: slot 0 (the idle face) copies straight, slot 1 (the blink) overrides |w| > 0.01.
+        // The drone's script-object sibling has no slots (the game's script objects get theirs from
+        // the same driver — the difference is [S], the tracks dominate there).
+        if c.script.is_none() {
+            if let Some(di) = s.char_drone.get(ci).copied().flatten() {
+                let dr = &s.drones.list[di];
+                let now = dr.last_tick;
+                let slot_w = |slot: Option<(u32, u32)>| -> Option<Vec<f32>> {
+                    let (h, start) = slot?;
+                    if (now as i64) < start as i64 { return None; }
+                    let fscript = s.scripts.get(&h)?;
+                    let (first, _, q) = fscript.sequences().next()?;
+                    let fseq = s.seqs.get(&q)?;
+                    nf_game::anim::facial_weights(fseq, (now - start) as f32 - first as f32 + 1.0, count)
+                };
+                let idle = slot_w(dr.facial_idle);
+                let blink = slot_w(dr.facial_blink);
+                if idle.is_some() || blink.is_some() {
+                    nf_game::anim::facial_blend(&mut out, idle.as_deref(), blink.as_deref(), None, [0, 0], false);
+                }
+            }
+        }
+        Some(out)
     }
 
     pub fn animate(&self, choice: Option<usize>, ticks: f32, opts: ViewOpts) -> Vec<[f32; 3]> {
@@ -4579,8 +4709,13 @@ impl Scene {
         let hidden = |_: &Character, ci: usize| hidden[ci];
         // fix-facial2: the morph weights per morph-bearing script character (the ledge dialogue's
         // face track), computed once per frame — `SkinIt` 0x10bf30 consumes them per vertex.
-        let facial: Vec<Option<Vec<f32>>> = self.characters.iter().map(|c| {
-            if c.morph_targets.is_some() { self.facial_weights_now(c) } else { None }
+        // fix-facial3: drone-backed characters are gated OUT until the GPU half (the report's item
+        // 3) lands — the driver's face window is live from tick 0 and the weights-as-morph term on
+        // the CPU path alone broke the gpu_palette oracle (0.0033 > 1e-3 on 07000006, exactly the
+        // morph delta the shader does not apply yet). The weights source itself stays live and
+        // tested (facial3_live's driver test reads facial_weights_at directly).
+        let facial: Vec<Option<Vec<f32>>> = self.characters.iter().enumerate().map(|(ci, c)| {
+            if c.morph_targets.is_some() && c.script.is_some() { self.facial_weights_at(ci, c) } else { None }
         }).collect();
         self.char_verts.iter().map(|v| {
             // Searchlight parts: the simulation's matrices (`Searchlight_Update`), coronas as camera billboards

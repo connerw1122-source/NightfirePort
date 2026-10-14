@@ -860,7 +860,11 @@ impl Script {
             (p, crate::anim::slerp(k[ix[1]].quat, k[ix[2]].quat, t), sum(&|x| x.scale), sum(&|x| x.f24()))
         };
         let mut m = quat_trans_to_mat(q, pos);
-        if self.scale != 1.0 { for v in m[3].iter_mut().take(3) { *v *= self.scale; } }
+        // fix-grenade-throw: the game's SCRIPTINFO+0x94 scale multiplies only the SCALE output
+        // (`*param_7 = key_scale * *(float *)(SCRIPTINFO + 0x94)` [M Script_GetInterp 0x1da158:117])
+        // and the entity matrix's 3×3 (`Mat_Scale3f` 0x1e35f0 copies the translation unscaled) — the
+        // key TRANSLATION is never scaled. The port scaled m[3] too, which flung the blast script's
+        // sub-effects (radius 8 → ×8 offsets) once the blast scale became the radius.
         Some((m, scale * self.scale, f24))
     }
 }

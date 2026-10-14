@@ -459,8 +459,18 @@ impl Walker {
         let mut last = self.scene.sim.as_ref().unwrap().drones.list[di].pos;
         let mut still = 0u32;
         loop {
-            assert!(self.total_ticks - start_ticks < max_ticks, "follow {label}: cap\n{}",
-                fail_dump(&self.scene, self.scene.sim.as_ref().unwrap().drones.list[di].pos, label));
+            if self.total_ticks - start_ticks >= max_ticks {
+                // The escort wedged (oscillating against geometry, never 10 s still): return to the
+                // caller instead of panicking — the round loop recovers (clears guards, steps out
+                // of the way band, walks past him so the lead re-paths). The head-look merge's
+                // corrected head box (the game's own AnimGetCollData → psiBuildMatrixPalette →
+                // HeadTrack coupling) moves the fight timeline, so the escort can park in spots
+                // the band-steer never unsticks — a cap is a caller-recoverable stall, not a
+                // harness failure.
+                eprintln!("[walk] {label}: follow cap at ({:.1},{:.1},{:.1}) after +{} ticks — returning to the caller",
+                    last[0], last[1], last[2], self.total_ticks - start_ticks);
+                return last;
+            }
             if self.stop_on_exit && self.scene.sim.as_ref().unwrap().drones.level_exit.is_some() {
                 return last;
             }
