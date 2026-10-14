@@ -11135,3 +11135,11 @@ draws added; no wall-clock in Sim.
   73 tests, 0 failures. The four-crate sweep did not fit the window (background jobs die between tool calls
   in this sandbox — sessions 4 and 5). Report: docs/reports/fix-hud-radar.md (live checks inside: the SP
   no-blip confirmation, the MP ring position/size/blip reading, the pending 100n 007 item).
+
+## fix-aim-raise (in progress)
+
+Branch `s/fix-aim-raise`. Porting the aim gate: view state 0xF (Player_SetWeaponAnimObj 0x1a2e38)
+sets the aiming bit only when the aim-raise script (+0xB8 @1.25) finishes and Player_AutoAim
+0x1a7c98 keeps scanning until then; the port currently turns the aim camera, the free-aim window
+and the auto-aim lock on the instant the button goes down. Tests (NF_ISO) for sniper / AIMS-20
+(zoom + free-aim on the raise's last tick), the P2K (immediate), the 0c sniper regression.
