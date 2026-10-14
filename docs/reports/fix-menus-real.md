@@ -1,8 +1,10 @@
 # fix-menus-real — the front end rebuilt against the re-parsed menu-def (2026-10-14)
 
 Branch `s/fix-menus-real`. Files: `crates/nf-view/src/menu.rs`,
-`crates/nf-view/tests/menus_flow.rs`, this report, `docs/WORKLOG.md`. **No shared files touched**
-(`drone.rs`/`scene.rs`/`player.rs`/`lib.rs`/`hud.rs` are byte-identical to master).
+`crates/nf-view/tests/menus_flow.rs`, this report, `docs/WORKLOG.md`. **Shared-file hooks (1)**:
+`crates/nf-view/src/lib.rs` — one additive line in the `--page` name table
+(`"records" => menu::Page::Records,`) so the new page renders headless; nothing else in that file
+changed.
 
 The evidence base is a fresh walk of the menu-def tag stream (kind-8 entry `08000002` in
 `07000048.bin`, walked exactly like `MenuManager_Create` 0x21b908) over the pages the driver named,
