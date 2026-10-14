@@ -9709,3 +9709,14 @@ HUD font (texture 0x03000003). No new crates.
 - Plan: index builder over all FILES.BIN archives (cached, keyed by ISO size + archive-table
   SHA-1) -> lazy load hooks in scene.rs/lib.rs -> NF_ISO tests on 07000005 (give, draw, fire,
   reload) with sister assertions on levels that carry the weapon.
+
+## fix-weapon-effects (s/fix-weapon-effects) — 2026-10-14
+
+Task 100c: what each weapon DOES when fired, matched to the game per weapon class on any level —
+muzzle flash, tracers, casings (ejected only when firing: the user saw casings fly when walking
+backwards on 16), per-material bullet impacts, fire rate/spread, shotgun pellets, rockets ("the
+explosion is very small"), grenades, mines, the crossbow bolt, the laser/stunner's rapid
+bullet-impact sounds (do they actually spawn bullets?), the Q-Claw hook, alt fires and twins.
+100a (s/fix-weapon-assets) was merged for its branch-start entry but carried no code yet — built
+on origin/master 12a6b07. Reproduce-first per class on 07000005 through the real input path;
+work starting.
