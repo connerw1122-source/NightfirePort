@@ -9764,3 +9764,10 @@ sets + `is_grapple` + `grapple_range` reads +0x1C off the record), scene.rs (the
 0x51), lib.rs (--give draws already-owned ids the equip declines). Tests: qclaw_live.rs (3) +
 the two gadget_grapple test files re-pointed at 0x50 — all green; probe_qclaw_symptom.rs showed
 the equip refusal failing-first and was deleted. Scratch probes (wd_probe example) deleted.
+
+fix-qclaw DONE (03:52 UTC): the Q-Claw is 0x50/0x51 (settled from the table + 5 decompile readers,
+see the report's table); the laser set back to the Laser/watch; grapple_range reads +0x1c; --give
+draws owned ids the equip declines (the actual playtest refusal). 6/6 grapple tests, 140/140
+nf-game units, the full 214-binary suite green except the allowed disc_golden 3. Report:
+docs/reports/fix-qclaw.md (rope rendering + the 0x02100717 mesh gap listed as what's left, with
+the PCSX2/nf-view live checks).
