@@ -78,3 +78,7 @@ claimed-by: sandbox1 at 2026-10-14T03:35Z
 ## Report (done, 2026-10-14T05:06Z)
 
 Closed by the driver: the report is on `s/fix-menus-real` (docs/reports/fix-menus-real.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-14T05:24Z)
+
