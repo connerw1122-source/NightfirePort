@@ -107,8 +107,11 @@ the sister). The comment in ai_live.rs records why.
   - `cargo test -p nf-formats -p nf-audio`: **87 passed, 0 failed**.
   - `campaign_flow_live`: **6/6** (the 3 story-mission flows, the re-arm sister, the 2 escort
     tests).
-  - `walkreal_07000001_live` 2/2 (the exit fires), `walkreal_07000002_live` 1/1, `fix_truck_live`
-    2/2.
+  - The route-sensitive walkreal/neighbour set: `walkreal_07000001_live` 2/2 (the exit fires),
+    `walkreal_07000002_live` 1/1, `walkreal_07000003_live` 1/1, `walkreal_07000004_live` 1/1,
+    `walkreal_07000009_live` 2/2, `walkreal_0700000b_live` 1/1, `walkreal_07000012_live` 1/1,
+    `fix_truck_live` 2/2 (05/0a/13 carry pre-existing `#[ignore]` scaffolds — 0 ignored, 0 failed).
+    `escort_01` re-run: pass (deterministic, 2.5 s).
 - **The full four-crate suite did NOT run**: the background `tools/test/suite.py` run died with an
   empty suite.out (the sandbox kills background jobs between tool calls — the known limitation,
   also recorded by fix-hud-radar). The foreground chunk list above is what fits the window; the
