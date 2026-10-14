@@ -332,24 +332,43 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     let ammo_type = rec[0x90] as usize;
     let clip_size = u16::from_le_bytes([rec[0x92], rec[0x93]]) as f32;
     let flags68 = u32::from_le_bytes(rec[0x68..0x6c].try_into().unwrap());
-    // `BL+0x95E` running (a weapon switch): the game clears the ammo text (sprite +0x20 = 0) and takes the rounds
-    // strip off-screen (layer +0x38 = 0xFF); only the weapon name shows [M HUD_UpdateAmmoPane 0x19a7f0:176-189,
-    // :248-273, :276-300]. The user's PCSX2 play agrees: name alone on a switch, then ammo + fire mode.
+    // `BL+0x95E` running (a weapon switch): the game clears the ammo text (sprite +0x20 = 0 — the
+    // `sh $zero,0x20(s6)` DELAY-SLOT store at 0x19aa9c that the decompiler drops) and takes the rounds
+    // strip off-screen (layer +0x38 = 0xFF); only the weapon name shows [M HUD_UpdateAmmoPane 0x19a7f0:
+    // 176-189, :248-273, :276-300]. The user's PCSX2 play agrees: name alone on a switch, then ammo + fire mode.
     let switching = s.hud.weapon_label_timer > 0;
+    // fix-ammo-pane [M 0x19a7f0:283-299]: the name sprite's label id reads weapon_data[drone+0x63]+0x38 —
+    // the REQUESTED weapon — so the pending draw announces the weapon being drawn to, not the old one.
+    let shown = if switching && s.gun.switch_request != 0 && s.gun.switch_request as usize != wi { s.gun.switch_request as usize } else { wi };
     if flags68 & 0x20 == 0 && !switching {
         let sp = &t.ammo[0];
-        let txt = if matches!(ammo_type, 0x14 | 0x1a | 0x1f) { format!("{}", (s.gun.clip as f32 * 100.0 / clip_size.max(1.0)) as i32) } else { format!("{}-{}", s.gun.clip, s.gun.spare) };
+        // The count text (0x19aad4 percent / 0x19ab18 "%d-%d"): kinds 0x14/0x1a → clip·100/max; kind 0x1f →
+        // first transformed to the DEPLETED count clip' = min(max−clip, max−12) of max' = max−12
+        // [M 0x19a7f0:129-136] — the Samurai pair's overcharge display; the rest → clip-spare.
+        let cap = clip_size as u32;
+        let txt = match ammo_type as u8 {
+            0x14 | 0x1a => format!("{}", s.gun.clip * 100 / cap.max(1)),
+            0x1f => { let mx = cap.saturating_sub(12); format!("{}", mx.min(cap.saturating_sub(s.gun.clip)) * 100 / mx.max(1)) }
+            _ => format!("{}-{}", s.gun.clip, s.gun.spare),
+        };
         h.text(Anchor::Right, &t.font, sp.layer as i32, &txt, AMMO_AT.0 + sp.x as f32, AMMO_AT.1 + sp.y as f32, true, gs(sp.colour >> 8, sp.colour & 0xff), sp.flags & 0x20 != 0);
     }
     if let (false, Some(&[bu, bv, bw, hpr])) = (switching, t.bullets.get(ammo_type)) {
-        let k = if clip_size > 87.0 { 16.0 } else { 1.0 };
+        // The strips draw the same transformed clip'/max' for kind 0x1f [M 0x19a7f0:129-136 flows into
+        // :254-269]: the filled height = clip'·px/round of the full max'·px/round column, and the filled
+        // strip's v starts (max'−clip')·px/round down the bullet texture.
+        let (clip_n, max_n) = if ammo_type as u8 == 0x1f {
+            let mx = (clip_size as u32).saturating_sub(12);
+            (mx.min((clip_size as u32).saturating_sub(s.gun.clip)) as f32, mx as f32)
+        } else { (s.gun.clip as f32, clip_size) };
+        let k = if max_n > 87.0 { 16.0 } else { 1.0 };
         let (x, bottom) = (AMMO_AT.0 - bw * k, AMMO_AT.1);
         // fix-dev T3: the dev tools can push the clip past its size (infinite ammo / no reload) — the strip
         // must draw at most the clip size, or it overflows the pane (the user's stacked/garbled icons).
-        let clip = strip_clip(s.gun.clip as f32, clip_size);
+        let clip = strip_clip(clip_n, max_n);
         let (rounds, empty) = (&t.ammo[5], &t.ammo[6]);
-        h.quad(Anchor::Right, rounds.layer as i32, 0x0300_0128, 0, x, bottom - clip * hpr, bw * k, clip * hpr, [bu, (clip_size - clip) * hpr + bv, bw, clip * hpr], (false, false), gs(rounds.colour >> 8, rounds.colour & 0xff));
-        h.quad(Anchor::Right, empty.layer as i32, 0x0300_0128, 0, x, bottom - clip_size * hpr, bw * k, clip_size * hpr, [bu, bv, bw, clip_size * hpr], (false, false), gs(empty.colour >> 8, empty.colour & 0xff));
+        h.quad(Anchor::Right, rounds.layer as i32, 0x0300_0128, 0, x, bottom - clip * hpr, bw * k, clip * hpr, [bu, (max_n - clip) * hpr + bv, bw, clip * hpr], (false, false), gs(rounds.colour >> 8, rounds.colour & 0xff));
+        h.quad(Anchor::Right, empty.layer as i32, 0x0300_0128, 0, x, bottom - max_n * hpr, bw * k, max_n * hpr, [bu, bv, bw, max_n * hpr], (false, false), gs(empty.colour >> 8, empty.colour & 0xff));
     }
     // The fire-mode / weapon-name labels (sprites 1 / 2, both at pane (0,38) → (496, 432), colour 0x7D6D59 with
     // the black shadow). Sprite +0x38 is the draw LAYER, not alpha: 0x1C = layer 28 (drawn), 0xFF = not drawn.
@@ -361,7 +380,7 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
         // The fire-mode label reads the mode byte the fire path writes (`HUD_UpdateAmmoPane` 0x19a7f0
         // reads `BL + w*0xC + 0x1BB` and picks `weapon_data[w]+0x30 + mode*4`) (fix-weapon-modes).
         let mode = s.drones.inventory.fire_mode.get(wi).copied().unwrap_or(0) as usize;
-        let (idx, id) = if switching { (2, s.weapons.name_label(wi)) } else { (1, s.weapons.fire_mode_label(wi, mode)) };
+        let (idx, id) = if switching { (2, s.weapons.name_label(shown)) } else { (1, s.weapons.fire_mode_label(wi, mode)) };
         if let (Some(sp), true) = (t.ammo.get(idx), id != u32::MAX && id != 0) {
             if let Some(txt) = lang.bind(id).filter(|t| !t.is_empty()) {
                 h.text(Anchor::Right, &t.font, sp.layer as i32, txt, AMMO_AT.0 + sp.x as f32, AMMO_AT.1 + sp.y as f32, true, gs(sp.colour >> 8, 0xff), true);
