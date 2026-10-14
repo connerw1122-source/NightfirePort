@@ -39,3 +39,7 @@ claimed-by: sandbox3 at 2026-10-14T21:09Z
 ## Report (done, 2026-10-14T22:12Z)
 
 Closed by the driver: the report is on `s/fix-scope-zoom` (docs/reports/fix-scope-zoom.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-14T22:12Z)
+
