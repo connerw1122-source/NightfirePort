@@ -2160,9 +2160,15 @@ impl ApplicationHandler for App {
                         // (Moved below the sim borrow — see the end of this block.)
                         // Bug 5: level transition. When a `LOAD_LEVEL` (0xE8) trigger fires, the sim sets
                         // `drones.level_exit` to the next level's hashcode. Reload the scene with that archive.
+                        // Script event 0x12 requests ride the same field (07000006's cut-scene → 07000007;
+                        // 0700004a's pack cut-scene → the 0x0720004a movie code) — resolve the movie/wrapper
+                        // codes the way the game's load pipeline does [M 0x1d3800 + 0x1d6360 phase 2 +
+                        // 0x1d3560; nf_game::triggers::resolve_exit_code].
                         if let Some(next) = sim.drones.level_exit.take() {
-                            eprintln!("level: exit trigger fired → loading {next:08x}");
-                            self.pending_level = Some(next);
+                            let resolved = nf_game::triggers::resolve_exit_code(next);
+                            if resolved != next { eprintln!("level: exit {next:08x} resolves to {resolved:08x} [M 0x1d3560]"); }
+                            eprintln!("level: exit trigger fired → loading {resolved:08x}");
+                            self.pending_level = Some(resolved);
                         }
                         if !self.noclip {
                             let h = sim.bond.head();
