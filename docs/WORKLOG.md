@@ -9424,3 +9424,11 @@ Work Log:
   generics on 19 levels (counts in the report; 0700000a worst at 4706, the trench's 05: 1382);
   the shipped mask (walk + rescue) is clean on all 27 — no level needs the frustum-only
   fallback this session.
+
+## fix-laser-beam (s/fix-laser-beam) — 2026-10-14
+Task: the Q-Laser and stunner fire bullets in the port (impact decal + impact sound each tick, no
+beam, the loop sound sticks after release, the 0c display-vent aim off). Find the game's laser fire:
+the beam draw, the loop sound handle (start on press, stop on release/switch/pause), the burn on
+locks without bullet impacts, the stunner's effect. Files:
+crates/nf-game/src/{gadget,gun}.rs, crates/nf-view/src/scene.rs (the beam draw).
+- Branch created from origin/master 9db3fda. Work started.
