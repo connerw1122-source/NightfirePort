@@ -283,7 +283,9 @@ fn the_sentinel_guided_mode_rides_the_missile_and_the_unguided_twin_does_not() {
     // down and the normal view returns.
     let mut blasts = Vec::new();
     let mut restored_at = None;
-    for _ in 0..300 {
+    // fix-fire-modes3: the game's +0x6C & 0x200 quarter speed [M 0x12c5a0:188-190] makes the
+    // guided flight 4× longer than the pre-fix port modelled — the window grows with it.
+    for _ in 0..1500 {
         let sim = scene.sim.as_mut().unwrap();
         let ex0 = sim.drones.explosions.len();
         sim.step_bond(Default::default(), false, false, false);
@@ -317,6 +319,10 @@ fn rocket_hit_applies_the_blast_exactly_once() {
         let sim = scene.sim.as_mut().unwrap();
         let owned = sim.drones.inventory.owned.len();
         if 0x2d < owned { sim.drones.inventory.owned[0x2d] = true; }
+        // 0x2d is base 0x2c's twin [L probe dump +0x05 = 0xff]: the live magazine IS clip[0x2c]
+        // [M Player_ReloadAmmoType 0x1a1988:18-22; fix-reload-hang's Sim::clip_slot reads the base
+        // slot at the runtime boundary] — poking clip[0x2d] no longer reaches the magazine.
+        if let Some(c) = sim.drones.inventory.clip.get_mut(0x2c) { *c = 4; }
         if let Some(c) = sim.drones.inventory.clip.get_mut(0x2d) { *c = 4; }
         sim.gun.weapon = 0x2d;
         sim.gun.switch_request = 0x2d;

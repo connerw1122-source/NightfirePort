@@ -5293,6 +5293,10 @@ pub struct Drones {
     /// The animated SimpleScripts (`SS_Create` 0x1a9c58 / `SS_Update` 0x1a9948; map-tower2): the
     /// 07000012 lift screens, shutters and lift doors swap on their switch channels.
     pub sss: crate::ss::SsList,
+    /// The sound triggers (placement 0xF9, `SoundTrigger_Create` 0x1b2628 / `SoundTrigger_Update`
+    /// 0x1b2790; fix-06-alarm): the level's channel-gated emitters — 07000006's courtyard alarm
+    /// siren (placement 702: ch 55 → the looped 2-D klaxon 329) lives here.
+    pub sound_triggers: crate::sound::SoundTriggers,
     /// Bond's bullet segments of this tick (`from`, `to`): the searchlights' break check (U-041 stand-in).
     bullet_paths: Vec<([f32; 3], [f32; 3])>,
     /// The mission layer (`Mission_Update` 0x182c60, docs/systems/mission.md). `inited` latches the
@@ -5404,6 +5408,8 @@ impl Drones {
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true,
             npc_system_disabled: false,
             spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
+            // fix-06-alarm (fields on their own lines — merge lesson 4).
+            sound_triggers: Default::default(),
             node_doors: None,
             // fix-nav-remainder (fields on their own lines — merge lesson 4).
             node_kicks: None,
@@ -5545,6 +5551,9 @@ impl Drones {
         // Weather: `Env_Create` (placement 0xDF, parameter 0 = drop type) and the `RainBox_Create` volumes (0x32: the
         // glist bounds at the placement translation).
         self.map_sounds = crate::sound::MapSounds::new(level.maps[m].sounds.clone());
+        // The sound triggers (`SoundTrigger_Create` 0x1b2628, placement 0xF9; fix-06-alarm) —
+        // 07000006's four oSoundTrigger cubes, the alarm siren among them. No RNG at create [M].
+        self.sound_triggers = crate::sound::SoundTriggers::create(&level.maps[m].placements, self.difficulty);
         let ps = &level.maps[m].placements;
         let lib = level.nis.iter().map(|(&h, n)| (h, std::sync::Arc::new(n.clone()))).collect();
         self.scripts = crate::nis::Scripts::new(lib, ps);
@@ -5651,8 +5660,14 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // 0x1a4bf0:258 runs inside the per-pellet loop) — fix-progress.
             self.progress.log_shot_fired(self.mission.status());
             let dir = crate::bullet::spread(dir, f(0x24), flags68, &mut self.rng);
+            // fix-fire-modes3 [M Bullet_init 0x12c5a0:188-190]: `+0x6C & 0x200` spawns the round at
+            // QUARTER speed (`fVar17 = +0x20; if (+0x6C & 0x200) fVar17 *= 0.25`) — the Torpedo
+            // Launcher 0x30's slow glowing ball (speed 0.1 → 0.025 u/tick) and the Korsakov K5 dart
+            // 0x43 (1.5 → 0.375) [L ee_start_05.bin @ 0x2bf150].
+            let flags6c = u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap());
+            let speed = f(0x20) * if flags6c & 0x200 != 0 { 0.25 } else { 1.0 };
             self.player_bullets.push(PlayerBullet {
-                pos: from, dir, speed: f(0x20), travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0,
+                pos: from, dir, speed, travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0,
                 homing: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x2_0000 != 0,
                 target: None,
                 // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:234-254]: `+0x6C & 4` rides the camera.
@@ -5891,7 +5906,17 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // plain guns (0x70 = 0x12) do not.
                     // The exploding round does NOT continue as a ricochet — the handler runs the effects
                     // first (Effect_Create at 0x12d060), then the explode gate.
-                    if flags70 & 4 != 0 && b.bounces == 0 {
+                    // fix-fire-modes3: the two SMALL-BLAST arms of the same handler [M 0x12ce80:207-216
+                    // (`+0x70 & 0x100000`) and 0x12ce80:226-245 (`+0x70 & 0x200000`)]: on a non-ricochet
+                    // contact they run `Explode_Create(1.0, weapon_data+0x08, +0x0C, …, script
+                    // 0x60007c4, …)` — the Phoenix Samurai bolt's cyan blast (only 0x32 carries
+                    // 0x100000 [L ee_start_05.bin @ 0x2bf150]; radius/damage from the same +0x08/+0x0C
+                    // fields as the 0x4 arm). The effect script differs (0x60007c4, the cyan blast
+                    // stream) from the generic 0x6000052 this port's `spawn_blast` renders — a
+                    // documented effect-visual deviation; the blast's radius/damage/propagate are the
+                    // game's fields.
+                    if (flags70 & 4 != 0 || flags70 & 0x10_0000 != 0 || flags70 & 0x20_0000 != 0)
+                        && b.bounces == 0 {
                         let radius = d.weapons.records.get(b.weapon as usize)
                             .map_or(0.0, |r| f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()));
                         let damage = d.weapons.records.get(b.weapon as usize)
@@ -6909,6 +6934,30 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let actors: Vec<crate::door::DoorActor> = std::iter::once((player.pos, 0.4, false))
             .chain(self.list.iter().filter(|x| x.present && !x.corpse).map(|x| (x.pos, 0.4, false)))
             .collect();
+        // fix-casings-16: the straddle walk-in runs EVERY tick, once, on this actor list (the game's
+        // straddle doors open on contact with no E — the collide path the port has not rebuilt,
+        // U-041; door.rs `straddle_walkin` carries the citation and the metric). Additive hook:
+        // one call; its sounds ride the same door-sound dispatch as `Door_Update`'s below.
+        //
+        // 102j2-fix-casings-16b: the hook is scoped to the site the game evidences. The decompile
+        // has NO per-tick open for a closed idle door (Door_Update's scan is the auto-close only
+        // [M 0x1363c8 @0x136678/@0x136610]; the opens are E [M Player_Activate 0x1a5170], the
+        // channel arms, scripts and the drone AI [M NDrone2_OpenDoor 0x14aa38]) — the contact open
+        // is the unrebuilt U-041 collide path, and its only game-evidenced instance is 16's
+        // arrival walkway door (glist 0x803f00a0). Running the stand-in everywhere changed 01's
+        // guard/escort door dance (the walkreal_07000001 contact pinned at his spawn by a guard
+        // the cycling doors re-shuffled; master, with no stand-in at all, passes). Until U-041 is
+        // rebuilt the stand-in fires on 07000016 only [S — scope pinned by the evidence, not by
+        // the level for its own sake]; the report's live checks cover both levels' doors.
+        if d.level == 0x0700_0016 {
+            let evs = self.doors.straddle_walkin(&actors, &mut self.channels, frame);
+            for (id, pos) in evs {
+                match d.sfx {
+                    Some(t) => { let h = t.get(id as u32); self.play_sound_handle(pos, h); }
+                    None => { self.audio.play3d(id as u32, pos, None); }
+                }
+            }
+        }
         // Per drone: timers, alertness decay, update message, turning, aim, firing, animation.
         let mut talk_queue: Vec<(usize, Vec<(usize, bool)>)> = Vec::new();
         let mut door_sounds: Vec<(u32, V3)> = Vec::new();
@@ -7927,6 +7976,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         self.shake = (self.shake * 0.9 - 0.05).max(0.0);
         // The SimpleScripts' playheads (`SS_Update` 0x1a9948 — channel on → the last key, off → key 0).
         self.sss.tick(&self.channels);
+        // The sound triggers (`SoundTrigger_Update` 0x1b2790 — the object walk's per-frame pass;
+        // fix-06-alarm): the alarm siren starts the same frame its ON channel is up.
+        self.sound_triggers.tick(&mut self.audio, &self.channels);
         // `Mission_Update` moved to the top of the tick (fix-objective-banner): the game's Game_Run
         // order — see the block before `fx.tick` above.
         // fix-progress: the tally folds — the per-drone `PlrStat_Log*` outboxes, `Trigger_Calc`'s

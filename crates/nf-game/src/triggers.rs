@@ -17,6 +17,58 @@ pub mod kind {
     pub const OR: u8 = 0xc;
 }
 
+/// `GetLevelToLoadFromMovieCode` (0x1d3560), disasm-checked against the decomp: the movie-code →
+/// next-level table the load pipeline's phase 2 consults (`ResetMap_Load` 0x1d6360:173). The 0x72xxxx
+/// codes are the story cut-scene movies that play BETWEEN levels (a level's script event 0x12 requests
+/// them: 0700004a's pack script 0x060006d3 stream 9 fires `0x12 [0x0720004a]` — its own archive holds
+/// no 0xE8 and no other chain); the 0x73xxxx codes are the DRIVING.ELF interludes, and the table sends
+/// every one of them to the front-end map 0x07000048. Any other code (including the 0x71xxxx briefing
+/// wrappers and plain 0x0700xxxx levels) falls through to `GameState+8 & 0xff00ffff` — the pending
+/// load with its stream byte (bits 16-23) masked off [M 0x1d3560:97-98]; the caller passes it.
+pub fn movie_code_next_level(code: u32, fallback: u32) -> u32 {
+    match code {
+        // The story cut-scenes [M 0x1d3560:52-96 — every arm of the binary search tree].
+        0x0720_0001 => 0x0710_0002,
+        0x0720_0002 => 0x0710_0003,
+        0x0720_0003 => 0x0710_0004,
+        0x0720_0005 => 0x0710_0006,
+        0x0720_0006 => 0x0710_0007,
+        0x0720_0007 => 0x0710_0008,
+        0x0720_0009 => 0x0710_000a,
+        0x0720_000a => 0x0710_000b,
+        0x0720_000c => 0x0710_000d,
+        0x0720_000e => 0x0710_000f,
+        0x0720_0011 => 0x0710_0012,
+        0x0720_0012 => 0x0710_004a,
+        0x0720_0014 => 0x0710_0015,
+        0x0720_0015 => 0x0710_0016,
+        0x0720_004a => 0x0710_0013,
+        // The driving interludes → the front end [M 0x1d3560:24-50].
+        0x0730_0004 | 0x0730_0008 | 0x0730_000b | 0x0730_000d | 0x0730_000f | 0x0730_0010
+        | 0x0730_0013 | 0x0730_0017 | 0x0730_001b => 0x0700_0048,
+        _ => fallback,
+    }
+}
+
+/// The level-exit request's resolve: the port's stand-in for `ResetMap_LevelToLoad` (0x1d3800) +
+/// `ResetMap_Load`'s phase-0/phase-2 cycle compressed to the archive the port finally loads [M
+/// 0x1d6360:29-36, 173-182]. A plain 0x0700xxxx code loads as-is. A 0x0720xxxx cut-scene code runs
+/// phase 2 (`GetLevelToLoadFromMovieCode` → a 0x0710xxxx briefing code) and then the second cycle's
+/// phase-2 fallback masks it to the playable level (0x1d3560:97-98: `GameState+8 & 0xff00ffff`).
+/// A 0x0730xxxx driving code resolves straight to its front-end landing (the table has every driving
+/// code → 0x07000048; the port cannot run DRIVING.ELF, so the interlude is skipped — the game's own
+/// X-skip shortens it to nothing observable too [M docs/systems/movies.md §Skipping]). A 0x0710xxxx
+/// briefing wrapper masks directly.
+pub fn resolve_exit_code(code: u32) -> u32 {
+    let masked = code & 0xff00_ffff;
+    match (code >> 20) & 0xf {
+        1 => masked, // 0x0710xxxx briefing wrapper → its level
+        2 => movie_code_next_level(code, masked) & 0xff00_ffff, // 0x0720xxxx cut-scene movie
+        3 => movie_code_next_level(code, masked),               // 0x0730xxxx driving interlude
+        _ => code,   // a plain 0x0700xxxx hashcode loads as-is
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Trigger {
     /// Position in the main map's placement list (objects update in reverse placement order).
@@ -77,9 +129,14 @@ pub struct Channels { pub v: Vec<u8>, pub time: Vec<u32> }
 impl Default for Channels { fn default() -> Channels { Channels { v: vec![0; 256], time: vec![0; 256] } } }
 
 impl Channels {
-    pub fn on(&self, c: u32) -> bool { c != 0 && self.v.get(c as usize).is_some_and(|&x| x != 0) }
+    /// Channel 0 is a real channel: the game's readers index `switch_channels[ch]` directly —
+    /// `SS_Update` 0x1a9948:20-23 reads AND writes `switch_channels[ss.ch]` for any channel word
+    /// including 0 (the 0c pulley winches #351/#364/#377 listen on ch 0 [D]), and the trigger/AND
+    /// writers copy Out into the array unconditionally [M 0x1b1a78]. The old port skipped ch 0 in
+    /// both `set` and `on`, so a ch-0 SS could never run.
+    pub fn on(&self, c: u32) -> bool { self.v.get(c as usize).is_some_and(|&x| x != 0) }
     pub fn set(&mut self, c: u32, value: u8, frame: u32) {
-        if c == 0 || c > 255 { return; }
+        if c > 255 { return; }
         // The game stamps `switch_channels_time` on EVERY nonzero write in its trigger and script paths
         // [M 0x1b1a78:87,107,188-189 — the type-2 OR, the AND write, the Out copy; Script_EventHandler 0xD],
         // not only on the rising edge (trigger-port-check #4): a re-set channel refreshes its SEQ_AND window.
@@ -603,5 +660,45 @@ mod tests {
         let mut keep = Trigger { glist_0x10: false, ..plate(kind::TOUCH_ONCE, 0x50, 8, vec![]) };
         keep.update(&mut ch2, &away, 2);
         assert!(!keep.gone, "no glist 0x10: the trigger survives");
+    }
+
+    /// `GetLevelToLoadFromMovieCode` (0x1d3560): the story cut-scene codes map to the NEXT level's
+    /// briefing code, the driving interludes map to the front end, and everything else falls back to
+    /// `GameState+8 & 0xff00ffff` [M the decomp's every arm]. The numbers are the task's chain table:
+    /// 06→07, 09→0a, 0a→0b, 11→12, 12→4a, 4a→13 ride exactly these pairs.
+    #[test]
+    fn movie_code_table_matches_the_decomp() {
+        // The story cut-scene pairs (the movie AFTER level N loads level N+1) [M 0x1d3560:52-96].
+        for (code, want) in [
+            (0x0720_0001u32, 0x0710_0002), (0x0720_0002, 0x0710_0003), (0x0720_0003, 0x0710_0004),
+            (0x0720_0005, 0x0710_0006), (0x0720_0006, 0x0710_0007), (0x0720_0007, 0x0710_0008),
+            (0x0720_0009, 0x0710_000a), (0x0720_000a, 0x0710_000b), (0x0720_000c, 0x0710_000d),
+            (0x0720_000e, 0x0710_000f), (0x0720_0011, 0x0710_0012), (0x0720_0012, 0x0710_004a),
+            (0x0720_0014, 0x0710_0015), (0x0720_0015, 0x0710_0016), (0x0720_004a, 0x0710_0013),
+        ] {
+            assert_eq!(movie_code_next_level(code, 0x0bad_f00d), want, "movie {code:08x}");
+        }
+        // The driving interludes all land on the front end [M 0x1d3560:24-50].
+        for code in [0x0730_0004u32, 0x0730_0008, 0x0730_000b, 0x0730_000d, 0x0730_000f, 0x0730_0010, 0x0730_0013, 0x0730_0017, 0x0730_001b] {
+            assert_eq!(movie_code_next_level(code, 0x0bad_f00d), 0x0700_0048, "driving {code:08x}");
+        }
+        // Sisters: an unknown code and a plain level code fall back to the masked pending load.
+        assert_eq!(movie_code_next_level(0x0720_0099, 0x0700_0004), 0x0700_0004, "unknown 0x72 → the masked fallback");
+        assert_eq!(movie_code_next_level(0x0710_0006, 0), 0, "0x71 codes have no arm — the caller's fallback");
+    }
+
+    /// `resolve_exit_code`: the port's compression of `ResetMap_LevelToLoad` + `ResetMap_Load`'s
+    /// phase-0/phase-2 cycle [M 0x1d3800/0x1d6360/0x1d3560]. The numbers are the task's chains:
+    /// 4a's cut-scene request lands on 13, a driving exit lands on the front end, and a plain
+    /// 0xE8 hashcode passes through untouched.
+    #[test]
+    fn resolve_exit_code_walks_the_game_pipeline() {
+        assert_eq!(resolve_exit_code(0x0720_004a), 0x0700_0013, "4a's cut-scene movie → 13 (0x720004a → 0x7100013 → masked)");
+        assert_eq!(resolve_exit_code(0x0720_0006), 0x0700_0007, "06's cut-scene movie would land on 07");
+        assert_eq!(resolve_exit_code(0x0730_0013), 0x0700_0048, "13's driving interlude → the front end");
+        assert_eq!(resolve_exit_code(0x0710_0006), 0x0700_0006, "a briefing wrapper masks to its level");
+        assert_eq!(resolve_exit_code(0x0700_0007), 0x0700_0007, "a plain exit hashcode passes through");
+        // Sister: the 0x720004a request the 4a SP actually fires is resolvable end to end.
+        assert_eq!(resolve_exit_code(0x0720_004a), 0x0700_0013);
     }
 }
