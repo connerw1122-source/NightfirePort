@@ -4769,6 +4769,7 @@ impl Drone {
             pos: origin, velocity: [dir[0] * speed, dir[1] * speed, dir[2] * speed], speed,
             travelled: 0.0, range, damage, radius, weapon_type, mesh: d.weapons.projectile_mesh(self.weapon as usize),
             owner, state: 0, bounces: 0, smoke_popped: false, resting: false,
+            stuck: false, seek_target: None,
         })
     }
 
@@ -7598,11 +7599,14 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // keeps the per-tick displacement under the 1.05 contact sphere, so a point test doesn't
         // tunnel); the hat keeps flying after a kill (the game's post-hit lifetime) and the fuse
         // death is silent (the arm above).
-        let hat_out = self.grenades.iter().any(|g| g.weapon_type == 0x45 && g.state < 2);
+        // fix-oddjob-hat: the stuck hat kills nobody — the game's stuck bullet (obj+0xF4 = 3)
+        // skips the collision handler entirely [M 0x12ce80:102] so its contact pass never runs;
+        // only the flying hat (state 1, not stuck) takes the 1.05-sphere touch.
+        let hat_out = self.grenades.iter().any(|g| g.weapon_type == 0x45 && g.state < 2 && !g.stuck);
         let hat_kills: Vec<(usize, f32)> = if hat_out {
             let dp: Vec<(V3, bool)> = self.list.iter().map(|x| (x.pos, x.present && !x.corpse && x.enabled)).collect();
             let mut out = Vec::new();
-            for g in self.grenades.iter().filter(|g| g.weapon_type == 0x45 && g.state < 2) {
+            for g in self.grenades.iter().filter(|g| g.weapon_type == 0x45 && g.state < 2 && !g.stuck) {
                 for (i, (p, live)) in dp.iter().enumerate() {
                     if !live { continue; }
                     let dx = p[0] - g.pos[0]; let dy = p[1] - g.pos[1]; let dz = p[2] - g.pos[2];
@@ -7612,6 +7616,67 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             out
         } else { Vec::new() };
         for g in &mut self.grenades {
+            // fix-oddjob-hat: the hat's homing — `Bullet_update` 0x12e7b0:476-478 runs
+            // `Bullet_homing` 0x12f358 after every flying tick for bullets whose `+0x6C` carries
+            // 0x20000. The hat's record does — +0x6C = 0x20C08, the only 0x20000 carrier among the
+            // thrown projectiles [L ee_start_05.bin @0x2c398c + the record sweep]. The port's
+            // grenade path had no homing: the hat flew dead straight and the thrown hat missed
+            // every guard the aim ray didn't already cover — the user's "should be a one-shot
+            // kill but it acts like a grenade". Same shape as the port's bullet homing (drone.rs
+            // `Bullet_homing` block): keep the target while it stays seekable, else acquire the
+            // nearest seekable guard within 1000 units inside the 0.66-dot cone of the velocity
+            // direction with a clear line of sight [M 0x12f358:64-104 — `Bullet_heatseekable`
+            // 0x12f248 gates the candidates; the owner obj is skipped :72 and the port's hats are
+            // always player-thrown, so the drones-only scan is the owner-safe subset], then steer
+            // the unit direction by `clamp((to_target − dir)·0.0333, ±0.01)` per axis and
+            // re-normalise, the speed preserved [M 0x12f358:126-166]. No RNG draws (determinism).
+            // A stuck hat does nothing (the game's state-3 gate, 0x12ce80:102).
+            if g.weapon_type == 0x45 && !g.stuck
+                && d.weapons.records.get(g.weapon_type as usize)
+                    .map_or(false, |r| u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap()) & 0x2_0000 != 0) {
+                let speed = (g.velocity[0] * g.velocity[0] + g.velocity[1] * g.velocity[1] + g.velocity[2] * g.velocity[2]).sqrt();
+                if speed > 1e-6 {
+                    let seekable = |dr: &Drone| dr.drawn && dr.health > 0.0 && dr.state != state::WAIT_SWITCH;
+                    let mut target = g.seek_target;
+                    if let Some(ti) = target {
+                        if !seekable(&self.list[ti]) { target = None; }
+                    }
+                    if target.is_none() {
+                        let dir = [g.velocity[0] / speed, g.velocity[1] / speed, g.velocity[2] / speed];
+                        let mut best: Option<(usize, f32)> = None;
+                        for (i, dr) in self.list.iter().enumerate() {
+                            if !seekable(dr) { continue; }
+                            let to = [dr.pos[0] - g.pos[0], dr.pos[1] - g.pos[1], dr.pos[2] - g.pos[2]];
+                            let dist = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+                            if dist <= 0.0 || dist > 1000.0 { continue; }
+                            if best.is_some_and(|(_, bd)| dist >= bd) { continue; }
+                            let n = [to[0] / dist, to[1] / dist, to[2] / dist];
+                            let dot = n[0] * dir[0] + n[1] * dir[1] + n[2] * dir[2];
+                            if dot <= 0.66 { continue; }
+                            if d.world.segment(g.pos, dr.pos).is_some() { continue; }
+                            best = Some((i, dist));
+                        }
+                        target = best.map(|(i, _)| i);
+                    }
+                    g.seek_target = target;
+                    if let Some(ti) = target {
+                        let tp = self.list[ti].pos;
+                        let to = [tp[0] - g.pos[0], tp[1] - g.pos[1], tp[2] - g.pos[2]];
+                        let l = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+                        if l > 0.0 {
+                            let dir = [g.velocity[0] / speed, g.velocity[1] / speed, g.velocity[2] / speed];
+                            let steer = |c: f32, dirc: f32| ((c - dirc) * 0.0333).clamp(-0.01, 0.01);
+                            let dx = dir[0] + steer(to[0] / l, dir[0]);
+                            let dy = dir[1] + steer(to[1] / l, dir[1]);
+                            let dz = dir[2] + steer(to[2] / l, dir[2]);
+                            let m = (dx * dx + dy * dy + dz * dz).sqrt();
+                            if m > 0.0 {
+                                g.velocity = [dx / m * speed, dy / m * speed, dz / m * speed];
+                            }
+                        }
+                    }
+                }
+            }
             // The projectile trails (`Bullet_DoTrails` 0x12d890, from `Bullet_update` 0x12e7b0:375/475
             // — every flying bullet's tick): the smoke trail behind the AR-GL / stun rounds (weapon
             // `+0x6C` bit 0x2 → `Bullet_trail_effect_smoke` 0x12cba8, every 4th tick) and the MGL
@@ -7633,6 +7698,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
             while let Some(ev) = g.update(d.world, &mut self.rng) {
                 match ev {
+                    crate::grenade::GrenadeEvent::Stick(p) => {
+                        // fix-oddjob-hat: the +0x100 arm's contact clang — `Sound_Play3D(0x4a7)`
+                        // with the shared (96.0, −1.0, −1.0) volume pair [M 0x12ce80:316-317; the
+                        // same call shape as the 0x51c bounce]. The hat keeps existing: no bounce
+                        // sound (the 0x51c gate never runs for a world stick), no explosive
+                        // broadcast (HandleExplosives classifies grenades by id and has no 0x45
+                        // arm [M 0x138b10 — the port's cls match]), no blast.
+                        if let Some(t) = d.sfx { let h = t.get(0x4a7); self.audio.play3d(h.id, p, None); }
+                        break;
+                    }
                     crate::grenade::GrenadeEvent::Bounce(p) => {
                         // fix-weapon-effects: the impact explode — `Bullet_CollisionHandler` 0x12d068-0x12d0bc
                         // [M, disassembled]: when the weapon's `+0x70` carries bit 2 (0x4) and the contact is
