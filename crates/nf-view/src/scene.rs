@@ -1837,6 +1837,13 @@ impl Sim {
             //   east balcony reads ctx 3 pre-fix at 11.1 through the wall — its cel is not the icon's;
             //   the wall is the difference) and every measured pin. When the port's FindCel resolves
             //   cels exactly like the game's, the distance factor can drop.
+            //   Window 12.0 → 6.0 (fix-context-hints2): the driver's 2026-10-14 PCSX2 side-by-side
+            //   pins 07000005's grapple spot (16.5, 29.6, 58.6) — 8.17 from the ctx-6 icon[3]
+            //   (24.20, 31.93, 60.01), same port cel 15 — at NO context and NO "Press Action" [L
+            //   PCSX2 2026-10-14], while the vent crawl spot still reads 6 at 3.9 [L PCSX2
+            //   2026-10-13]. The middle must sit between them: 6.0 (both icons' own world spheres
+            //   are r 2.276 [D probe], so the game's cel-chain arm at 3.9 is pure cel occupancy;
+            //   the port's coarse buckets need the [S] distance factor until FindCel matches).
             self.bond.icon_ctx = 0xff;
             let bond_cell = find_cell_raycast(&self.cel_graph, self.bond.pos, Some(&self.world));
             for (ii, icon) in self.icons.iter().enumerate() {
@@ -1844,7 +1851,7 @@ impl Sim {
                 let Some(cells) = self.icon_cels.get(ii) else { continue };
                 if cells.is_empty() { continue; }
                 if !bond_cell.is_some_and(|bc| cells.contains(&bc)) { continue; }
-                let near = (icon.centre[0] - self.bond.pos[0]).powi(2) + (icon.centre[1] - self.bond.pos[1]).powi(2) + (icon.centre[2] - self.bond.pos[2]).powi(2) < 144.0;
+                let near = (icon.centre[0] - self.bond.pos[0]).powi(2) + (icon.centre[1] - self.bond.pos[1]).powi(2) + (icon.centre[2] - self.bond.pos[2]).powi(2) < 36.0;
                 if near {
                     self.bond.icon_ctx = icon.ctx;
                     // `ThirdIcon_Update` 0x196e80:38-53: the type-6 icon posts the generic hint

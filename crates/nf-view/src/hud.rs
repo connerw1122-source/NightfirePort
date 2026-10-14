@@ -354,18 +354,28 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
         }
     }
     // The info / hint bar (pane 4, `MsgInfoStatusPane` 0x319810 + `InfoStatusSprInfo` 0x319730
-    // [L ee_start_05.bin] — fix-context-hints): the TOP bar the Hint markers (placement 0x33) and
+    // [L ee_start_05.bin] — fix-context-hints): the bar the Hint markers (placement 0x33) and
     // `ThirdIcon_Update`'s type-6 "Press Action" fill through TXTMSG type 1. The same
     // `HUD_UpdateStatusPane` 0x19c310 machine as the pickup bar: the middle is a 1-texel column
-    // of 0x0300007A (u 190, v 0..56) stretched to 480×26 at (16, 0) — the screen's top edge —
-    // the caps 5-texel columns (u 185 / 191) riding its ends [M 0x19c310:342-347]; all colour
-    // 0x7F7F7F alpha 0x8D, layer 30. The text is the centre-justify style 0x30cdb0 sprite
-    // (template (128, 16) + the pane x 128 = 256 [L], so centred) in font 2, colour 0x7D6D59,
-    // black shadow, layer 29, wrapping at TextMsgFormats[1]'s maxWidth 480 [L 0x2BF110+4],
-    // fading over the last 15 ticks (alpha = time·17); the bar closes 16 px per tick around its
-    // centre (the CREATE's slide 0x10 [L 0x319810+0x14]).
+    // of 0x0300007A (u 190, v 0..56) stretched to 480×26, the caps 5-texel columns (u 185 / 191)
+    // riding its ends [M 0x19c310:342-347]; all colour 0x7F7F7F alpha 0x8D, layer 30. The text is
+    // the centre-justify style 0x30cdb0 sprite (template (128, 16) + the pane x 128 = 256 [L], so
+    // centred) in font 2, colour 0x7D6D59, black shadow, layer 29, wrapping at
+    // TextMsgFormats[1]'s maxWidth 480 [L 0x2BF110+4], fading over the last 15 ticks (alpha =
+    // time·17); the bar closes 16 px per tick around its centre (the CREATE's slide 0x10 [L
+    // 0x319810+0x14]).
+    //
+    // The bar's Y (fix-context-hints2, the user's y≈100/448 playtest): the CREATE tag's own rect is
+    // x=128, y=113 [L ee_start_05.bin 0x319810], and `HUD_CreateDefault` adds the pane x/y to every
+    // sprite's runtime position at create [M 0x199b70:45-52 — `sh … 0x24(spr)` with the pane x].
+    // The status update rewrites only the bar sprites' X (case 1/4 re-pin x = templateX +
+    // (templateW − w)/2 from the TEMPLATE x 16 [M 0x19c310:105-109,331-336] — so the bar's x span
+    // stays 16..496 like the objective's) and the caps' x [M 0x19c310:342-347]; the Y is NEVER
+    // written — the bar keeps its created template y 0 + pane y 113 = **113** (the caps too), and
+    // the text (never repositioned) keeps 16 + 113 = **129**. The port used to draw y 0/16 — the
+    // top edge.
     {
-        let (bw, bh, bx, by) = (480.0f32, 26.0f32, 16.0f32, 0.0f32);
+        let (bw, bh, bx, by) = (480.0f32, 26.0f32, 16.0f32, 113.0f32);
         let bar = |h: &mut Hud, w: f32| {
             let x = bx + (bw - w) / 2.0;
             let c = gs(0x7f7f7f, 0x8d);
@@ -385,7 +395,7 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
             let x0 = SW / 2.0 - maxw / 2.0;
             let lh = t.font.line_height();
             for (k, l) in lines.iter().enumerate() {
-                h.text(Anchor::Centre, &t.font, 29, l, x0, 16.0 + k as f32 * lh, false, gs(0x7d6d59, a), true);
+                h.text(Anchor::Centre, &t.font, 29, l, x0, 129.0 + k as f32 * lh, false, gs(0x7d6d59, a), true);
             }
         } else if s.hud.info_close > 0.0 {
             bar(&mut h, s.hud.info_close);

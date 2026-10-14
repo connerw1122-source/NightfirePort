@@ -170,8 +170,14 @@ fn the_control_panel_hint_stays_silent_from_the_safe_spot() {
 /// (cel 14) arms 8.1 units away — `BLData+0x95F` reads 6, the HUD shows the table's ctx-6
 /// texture 0x0300006A (the standing figure [D 07000008.bin entry 53 tex 3]), and the type-6
 /// icon posts the generic "Press Action" hint (0x1000291) once.
+/// fix-context-hints2 [L PCSX2 2026-10-14 side-by-side]: at the driver's grapple spot the real
+/// game shows NO "Press Action" and NO context icon — only the orange 007 ring (a different
+/// system, see the report). The spot is 8.17 from the ctx-6 icon[3] (24.20, 31.93, 60.01) and in
+/// the same port cel 15, so the old cel-set gate (and the old flat 12.0 window) armed it; the
+/// game's chain does not. The arm window is now 6.0 [S] between the two live pins (this 8.17-out,
+/// the vent crawl 3.9-in).
 #[test]
-fn the_grapple_spot_reads_context_6_and_shows_the_figure_icon() {
+fn the_grapple_spot_shows_no_press_action_prompt() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load(&iso, "07000005.bin");
     {
@@ -180,24 +186,63 @@ fn the_grapple_spot_reads_context_6_and_shows_the_figure_icon() {
         for _ in 0..40 { sim.step_bond(Input::default(), false, false, false); }
     }
     let sim = scene.sim.as_ref().unwrap();
-    assert_eq!(sim.bond.icon_ctx, 6,
-        "the grapple spot reads the ctx-6 icon [D the level's icons; M ThirdIcon_Update writes the type] (got {})", sim.bond.icon_ctx);
-    assert_eq!(first_info_label(&scene), Some(0x100_0291),
-        "the type-6 icon posts the generic Press Action hint [M 0x196e80:39-44] (got {:?})", first_info_label(&scene));
-    // The HUD draws the ctx-6 texture while the context is set.
+    assert_eq!(sim.bond.icon_ctx, 0xff,
+        "the grapple spot is 8.17 from the ctx-6 icon — the game reads no context there [L PCSX2 2026-10-14] (got {})", sim.bond.icon_ctx);
+    assert_eq!(first_info_label(&scene), None,
+        "no Press Action post at the grapple spot [L PCSX2 2026-10-14] (got {:?})", first_info_label(&scene));
     let f = nf_view::hud::overlay(&scene, 16.0 / 9.0);
-    assert!(run_for(&scene, &f, 0x0300_006a), "the context icon draws texture 0x0300006A [M 0x2FC168[6]]");
-    // Sister: walking away clears the context and the icon fades out within ThirdIconTimer's
-    // 30 ticks [M 0x19b9c8:275-282].
+    assert!(!run_for(&scene, &f, 0x0300_006a), "no context icon draws at the grapple spot");
+    // Sister (positive): beside the icon itself (~1.7 from icon[3]) the ctx-6 arm still reads and
+    // the figure icon draws [M 0x196e80 writes the type from the chain; the 6.0 window [S]].
+    let mut scene = load(&iso, "07000005.bin");
     {
         let sim = scene.sim.as_mut().unwrap();
-        sim.bond = Bond::new([104.95, 24.96, 108.82], 0.0);
-        for _ in 0..35 { sim.step_bond(Input::default(), false, false, false); }
+        sim.bond = Bond::new([23.0, 30.6, 59.8], -2.01);
+        for _ in 0..40 { sim.step_bond(Input::default(), false, false, false); }
     }
     let sim = scene.sim.as_ref().unwrap();
-    assert_eq!(sim.bond.icon_ctx, 0xff, "away from the icon the context clears [M 0x1949a8:22 resets it]");
+    assert_eq!(sim.bond.icon_ctx, 6,
+        "beside the icon (~1.7) the ctx-6 arm still reads [M 0x196e80] (got {})", sim.bond.icon_ctx);
     let f = nf_view::hud::overlay(&scene, 16.0 / 9.0);
-    assert!(!run_for(&scene, &f, 0x0300_006a), "the icon faded out within the 30-tick timer");
+    assert!(run_for(&scene, &f, 0x0300_006a), "the context icon draws texture 0x0300006A beside the icon [M 0x2FC168[6]]");
+}
+
+/// fix-context-hints2 [L ee_start_05.bin 0x319810 + M 0x199b70:45-52 + M 0x19c310]: the hint
+/// bar's rect. The INFO pane's CREATE tag carries the pane's own x/y (128, 113); every sprite's
+/// runtime position gets the pane offset at create, the status update rewrites only the bar
+/// sprites' X, so the bar's y = template 0 + pane 113 = **113** (the driver's PCSX2 render: about
+/// a quarter of the way down, not the top edge) and the text row sits at 16 + 113 = 129.
+#[test]
+fn the_hint_bar_draws_at_the_pane_rect_y113() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso, "07000008.bin");
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond = Bond::new([155.19, 43.12, -113.38], 1.57);
+        for _ in 0..40 { sim.step_bond(Input::default(), false, false, false); }
+    }
+    // The safe's hint marker fired (the prior test pins the label); the INFO bar quads ride the
+    // HUD sheet 0x0300007A at y 113 (bar 26 tall, y 113..139), the caps riding its ends.
+    let f = nf_view::hud::overlay(&scene, 16.0 / 9.0);
+    // The sheet's tex index (+1 in runs).
+    let ti = scene.hud_textures.iter().position(|(h, _)| *h == 0x0300_007a).expect("the HUD sheet resolves") + 1;
+    // The bar + caps quads: the sheet-column sprites draw uv u 185..196 (caps + the 1-texel
+    // middle u 190) v 0..56; the vertex uv is normalized (/256) and the position is NDC —
+    // pixel y = (1 − ndc_y) · SH/2 [M hud.rs ndc()].
+    let pix = |ndc_y: f32| (1.0 - ndc_y) * (448.0 / 2.0);
+    let ys: Vec<f32> = f.v.iter()
+        .filter(|v| v.uv[0] >= 184.0 / 256.0 && v.uv[0] <= 196.0 / 256.0 && v.uv[1] <= 56.0 / 256.0)
+        .map(|v| pix(v.p[1])).collect();
+    assert!(ys.len() >= 4, "the info bar draws (found {} sheet-column vertices)", ys.len());
+    let ymin = ys.iter().cloned().fold(f32::INFINITY, f32::min);
+    let ymax = ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    assert!((ymin - 113.0).abs() < 0.5 && (ymax - 139.0).abs() < 0.5,
+        "the info bar spans y 113..139 (the pane rect 0x319810 y=113 [L]) — got {ymin}..{ymax}");
+    // Sister: the text row rides the same offset — the info text's first line sits at y 129 (the
+    // template (128, 16) + the pane y), not the port's old 16.
+    let text_y: Vec<f32> = f.v.iter().filter(|v| v.c[3] > 0.0).map(|v| pix(v.p[1]))
+        .filter(|y| *y > 100.0 && *y < 160.0).collect();
+    assert!(!text_y.is_empty(), "the info text draws inside the bar's band");
 }
 
 // ---------------------------------------------------------------------------
