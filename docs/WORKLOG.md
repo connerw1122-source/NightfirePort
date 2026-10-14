@@ -10428,3 +10428,30 @@ character room light / the scene's own light set; the in-game character room lig
 path in the port: no cel light, or a default full-bright ambient). Reproduce first, then fix in
 scene.rs / nis.rs with numbers from the decompile.
 Status: branch created, reproduction + fix in progress.
+
+fix-cutscene-brightness DONE (09:3x UTC): the 02 intro's cut-scene actors take the room's ambient
+instead of the full-bright sentinel. Two broken links in `Sim::characters_script_pos` (the ramp's
+position source for script characters): (1) the strict `nf_formats::anim::fits` sequence filter —
+the intro's actors play shared human tracks (record skeleton 0) on skeleton-N skins, every
+candidate was rejected, the position was None and the ramp's target None, so obj+0x100..0x102
+stayed the 0xff,ff,ff sentinel of `control_init_object` 0x134630 — the playtest's "the models in
+the game during the cutscene are extremely bright"; the relaxed filter (the skeleton-id match
+dropped, the channel-count guard kept) already exists in `nf_game::anim::script_pose` (the same
+strictness bug recorded there for 07000004's seated target) — `characters_script_pos` now calls
+it. (2) the raw root translation resolved near the world origin ([0.0, 0.038, 0.958] at frame
+200) where no cel exists (`ambient_at` None): [M] `Script_AnimStart` 0x1d8f40 creates the anim
+object at `control_create_object(0, 0x2d6200, 0x2d6200, 0)` — the script's scratch base matrix
+(the port's `Player::live_matrix = mul(stream_pose, script.matrix)`) — and composes the root via
+`AnimGetFirstTrans`, ending with the position cel link (`build_LinkToRoom`). The sequence roots
+are LOCAL offsets (char[79]'s seq root@1 [0,0,0] … root@200 [0, 0.04, 0.96]); the fix composes
+`Sim::script_base_matrix(src.0)` (new — the placed NIS player's live_matrix) with the root in
+`characters_script_pos` AND in the render's script-branch object matrix (the actors drew at the
+origin before). Result: char[79] obj+0x100..0x102 = [20, 30, 20] — the bunker cel's ambient, the
+draw multiplier dark; the actor stands in the set beside Bond ([-27.06, 1.45, 33.46] vs Bond
+[-27.17, 1.05, 29.80]). Fail-first: fix_cutscene_brightness_live's
+the_02_intro_actors_take_the_rooms_ambient_not_full_bright panicked `got [255, 255, 255]` on the
+unfixed tree (after the strict-filter `pos None` panic). Sisters: the drone characters' ramp and
+the view-model branch untouched. Regression set green: cutscenes 5+4, objects (the truck) 5+6,
+facial 2+3. Suite on the final tree: see docs/reports/fix-cutscene-brightness.md. Files:
+crates/nf-view/src/scene.rs, crates/nf-view/tests/fix_cutscene_brightness_live.rs (new);
+crates/nf-game/src/nis.rs read-only.
