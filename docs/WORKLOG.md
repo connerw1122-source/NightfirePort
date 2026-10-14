@@ -10426,3 +10426,31 @@ saw a mission complete thing pop up for some reason in this mission, but I still
 Reproduce both headlessly (walk backwards 3 s with no fire: 0 casings; play 16 from its start to
 that point: which objective/mission message fires and why), fix from the game's code, test, sister
 assertions. Files: crates/nf-game/src/{casing,gun,mission}.rs as needed. Work log continues below.
+
+### fix-casings-16 — outcome (11:05 UTC)
+
+- **The casings rule holds; the naive repro is clean**: 07000016 and 07000005, backwards/forward/idle
+  240-900 ticks, no fire → 0 casings, 0 bullets, 0 lights (probe). `Bullet_init_casing` 0x12fde0 runs
+  only from `Player_WeaponInitBullet` 0x1a4bf0:306 (the shot's release) and `DroneWeap_FireWeapon`
+  0x178f68:264 (a guard's shot) — both fire-gated in the port. The user's "casings flying when I walk
+  backwards" is consistent with the pool's own 240-tick life [M 0x12faa0] (their earlier burst's
+  shells still airborne) — no spawn-without-fire found; test `walking_backwards_never_ejects` pins it
+  incl. the fire-then-backpedal sister.
+- **The "mission complete thing" is the game's own arrival pair**: at 16's load the port queues
+  "OBJECTIVE COMPLETE" (the carried 07000015 objective — spawn plate #252 writes ch 0x8e as Bond
+  arrives [D docs/levels/07000016.md §2]) + the enabled "Reach Drake's launch silo" announce — the
+  game's own texts [M 0x1827d8 case 3 = 0x2000053]. No spurious ch 100 in 900 ticks (probe).
+- **The real bug — "I still couldn't continue"**: the arrival walkway's first door (glist 0x803f00a0,
+  kind 2 slide, straddle, ch_open 0, ch_lock 0, flags 0x3 → closed at create [M Door_Create 0x136100])
+  blocked the only path. `Door_Update` never opens a ch_open==0 door [M 0x1363c8], `Door_ReactToHit`
+  0x135980 only reverses moving leaves, and the port's straddle walk-in ran ONLY on the E path with a
+  1.4² radius. Fix: door.rs `straddle_walkin` — the same activation per tick over `Door_Update`'s
+  actor list with the game's own proximity metric `Vec_SqDist3D(door+0x80, actor+0x80) <
+  (door+0x8C+actor+0x8C)²·2` [M 0x1363c8 @0x136678-84]; drone.rs one additive call (once per tick,
+  sounds merged). The leaf rises (y −0.10 → 2.18, keys [D]) and the door reaches OPEN with no E.
+- **Left**: after the leaf clears (world box y 2.18..4.43, capsule_push free at Bond's pose) Bond's
+  forward move still collapses (~0.0002/tick vs 0.096) at the threshold z −73.58 — a movement-path
+  bug of its own (input alive, local [0,0.1], vel 0, no push) — not root-caused in the window; the
+  passage completion is the next session's first item. Files touched beyond the named three (the bug
+  lives there): crates/nf-game/src/door.rs (+ the straddle_walkin fn), crates/nf-game/src/drone.rs
+  (one additive call block). Report: docs/reports/fix-casings-16.md.

@@ -6839,6 +6839,19 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let actors: Vec<crate::door::DoorActor> = std::iter::once((player.pos, 0.4, false))
             .chain(self.list.iter().filter(|x| x.present && !x.corpse).map(|x| (x.pos, 0.4, false)))
             .collect();
+        // fix-casings-16: the straddle walk-in runs EVERY tick, once, on this actor list (the game's
+        // straddle doors open on contact with no E — the collide path the port has not rebuilt,
+        // U-041; door.rs `straddle_walkin` carries the citation and the metric). Additive hook:
+        // one call; its sounds ride the same door-sound dispatch as `Door_Update`'s below.
+        {
+            let evs = self.doors.straddle_walkin(&actors, &mut self.channels, frame);
+            for (id, pos) in evs {
+                match d.sfx {
+                    Some(t) => { let h = t.get(id as u32); self.play_sound_handle(pos, h); }
+                    None => { self.audio.play3d(id as u32, pos, None); }
+                }
+            }
+        }
         // Per drone: timers, alertness decay, update message, turning, aim, firing, animation.
         let mut talk_queue: Vec<(usize, Vec<(usize, bool)>)> = Vec::new();
         let mut door_sounds: Vec<(u32, V3)> = Vec::new();
