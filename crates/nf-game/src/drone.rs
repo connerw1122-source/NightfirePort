@@ -3735,7 +3735,14 @@ impl Drone {
                 if !self.stationary { self.attack_talk(d, rng); }
                 self.call_anim(d, anim_state::AIM_STAND, 0, 0);
                 self.vision_on = true;
-                if self.unseen_ticks < 16 { self.fire(d, rng, frame, true) } else { self.set_state(COMBAT_NO_SIGHT) }
+                // [M 0x166328:48-52] the impact-danim deferral: a guard still playing danim 0x13 (the
+                // hit reaction; Drone_AnimInfo[0x13] +8 = anim state 0x4c) when AimStandFire enters
+                // clears `+0x3b` (firing) and arms timer C for FRAME_RATE_INT ticks — the first
+                // bullet rides the TIMER_C fire below instead of the entry fire.
+                if self.anim.danim == 0x13 {
+                    self.firing = false;
+                    self.timer_c = Some(frame + 60);
+                } else if self.unseen_ticks < 16 { self.fire(d, rng, frame, true) } else { self.set_state(COMBAT_NO_SIGHT) }
                 true
             }
             (AIM_STAND_FIRE, msg::UPDATE) => {
