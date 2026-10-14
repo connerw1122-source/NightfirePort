@@ -11946,3 +11946,18 @@ list's unlock states, the F8 render points).
   it fine, probe-backed). Sisters: the AND-mux before/after pairs + 4a's mid-ride OFF check.
 - 21:05: merged origin/master (9c55eace — the fix-character-room-light landing, docs/tests only, no production code). The matrix binary first-hand: 341 s in-suite (6 passed / 24 ignored), one sweep level (NF_MATRIX=07000001 --ignored) 161 s -> 27 levels ~4300 s, the held timeout's cause. Full suite running for the final total.
 - 21:29: DONE. The suite total on the final tree: 1096 passed / 6 failed (3 disc_golden allowed + 3 pre-existing pylon) / 63 ignored (the 24 #[ignore]d sweep levels included) / 32 min / ZERO timeouts — the held weapon_matrix_live timeout is gone (the binary: 341 s, 6 passed / 24 ignored). Report: docs/reports/weapon-matrix4b.md.
+
+---
+Task ID: 106a-fix-samurai-fire
+Agent: samurai-fire worker
+Task: fix-samurai-fire — the Phoenix Samurai (0x32/0x33, the laser rifle's Overcharge/Beam modes) draws, plays its fire script and sounds, but nothing spawns on 16 of 18 levels [weapon-matrix4 red #1]. Find the game's fire path (Player_WeaponFiring 0x1a5460, Player_WeaponInitBullet 0x1a4bf0, the charge for Overcharge, the beam for Beam, any target gate) and port what's missing: the charged bolt flies and hits walls (fix-fire-modes3 ported its impact blast), the beam draws. Tests at 07000005's spawn: Overcharge at a wall spawns the bolt + blast; Beam draws to the wall.
+
+Work Log:
+- (20:58 UTC) Branch s/fix-samurai-fire created from origin/master 9c55eace and pushed. Setup reused (repo, work/, ISO, nf-queue). Docs + decompile round next.
+- (21:00-21:25 UTC) Decompile round: the Samurai 0x32/0x33 records [L ee_start_05.bin @ 0x2bf150] (both base 0x33, +0x90 = 0x1f, the give fills clip[0x33]); Player_AmmoInGun 0x1a9190's shared-slot read (the twin reads the base's slot — the mode press's dry check was reading the twin's own empty slot: the reach bug, weapon-matrix4 red #1); the fire path 0x1a5460:640-698 (+0x44 = 280 → the case-9 spawn [M 0x1a2e38:404-421]) and the collision handler's shared blast tail 0x12ce80:186-231 (the flesh contact reaches the 0x100000 blast too); the swoosh 0x12c5a0:116-133. Probe traces: the overcharge bolt DOES spawn on a full 280-tick hold (the port's release-frame machinery works) but the reach was broken and the flesh blast was missing.
+- (21:25-21:30) Fixes: Gun::ammo_in_gun_slot (0x1a9190) wired into the four has_ammo call sites (the mode press, the switch/cycle block, the detonator's re-arm ×2); the drone-hit arm gained the small-blast gate (the shared tail); the +0x6C & 0x10000 swoosh stand-in (a cyan gas puff per flying tick, no RNG draws).
+- (21:30-21:50) 3 NF_ISO tests SHOWN FAILING pre-fix (git stash; the reach inert / no trail), green post-fix; the neighbours green (weapon_switch 35, fire_modes3 5, weapon suites); suite chunks 998/5/19 (the 3 disc_golden + the 2 GPU-adapter documented). Report: docs/reports/fix-samurai-fire.md (the live checks + the render spots inside).
+
+Stage Summary:
+- The Phoenix Samurai fires: the mode press reaches the Overcharge twin (the AmmoInGun shared-slot read), the charged bolt flies and blasts on any non-ricochet contact, the beam draws its cyan trail. All named tests green failing-first; the suite totals in the report.
+- (21:54-22:02) origin/master merged (27e483ea, auto — 103i2's clip_slot write-side + fix-striped-boxes2 et al; complementary to the read-side ammo_in_gun_slot); re-verified on the merged tree: 344 passed / 0 failed (the libs, the Samurai trio, fix_reload_hang, the weapon suites, the neighbours). Report updated.

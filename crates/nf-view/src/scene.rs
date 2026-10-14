@@ -1741,7 +1741,11 @@ impl Sim {
                     let carried = self.drones.inventory.carried.clone();
                     let clip = clip_view(&self.weapons, &self.drones.inventory.clip);
                     let weapons = &self.weapons;
-                    let has_ammo = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
+                    // fix-samurai-fire: the clip half is `Player_AmmoInGun` 0x1a9190's shared-slot
+                    // pick — the Overcharge twin 0x32's dry check reads the base's clip[0x33] (the
+                    // give fills the base's slot), else the mode press is forever inert.
+                    let slot = |x: u8| nf_game::gun::Gun::ammo_in_gun_slot(x, |y| weapons.base(y as usize) as u8, |y| weapons.ammo_type(y as usize) as u8);
+                    let has_ammo = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize), slot);
                     let sw = nf_game::gun::fire_mode_switch(self.gun.weapon, twin, mode_count, mode, has_ammo);
                     if let Some(new) = sw.new_weapon {
                         // The twin switch writes `obj+0x63` (the switch request) [M 0x1a24c8:246-260].
@@ -1792,7 +1796,9 @@ impl Sim {
             let weapons = &self.weapons;
             let ammo_type_of = |w: u8| weapons.ammo_type(w as usize);
             let flags_of = |w: u8| weapons.flags(w as usize);
-            let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, ammo_type_of, flags_of);
+            // fix-samurai-fire: `Player_AmmoInGun` 0x1a9190's shared-slot pick for the clip half.
+            let slot = |x: u8| nf_game::gun::Gun::ammo_in_gun_slot(x, |y| weapons.base(y as usize) as u8, |y| ammo_type_of(y) as u8);
+            let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, ammo_type_of, flags_of, slot);
             let selectable = |w: u8| weapons.selectable(w);
             // D-003 REMOVED: the root cause was the missing `Player_Init` override of weapon_data[1]+0xDC
             // (the fists skin). With the override applied in main.rs, the fists skin (0x050000ab) is found
@@ -2786,7 +2792,8 @@ impl Sim {
                     let carried = self.drones.inventory.carried.clone();
                     let clip = self.drones.inventory.clip.clone();
                     let weapons = &self.weapons;
-                    let has = nf_game::gun::Gun::has_ammo(base_u8, &carried, &clip, |t| weapons.ammo_type(t as usize), |t| weapons.flags(t as usize));
+                    let has = nf_game::gun::Gun::has_ammo(base_u8, &carried, &clip, |t| weapons.ammo_type(t as usize), |t| weapons.flags(t as usize),
+                        |x| nf_game::gun::Gun::ammo_in_gun_slot(x, |y| weapons.base(y as usize) as u8, |y| weapons.ammo_type(y as usize) as u8));
                     if has {
                         self.gun.switch_request = base_u8; // BL+0x63 = the mine [M 0x1a4cb8]
                     } else {
@@ -2796,7 +2803,8 @@ impl Sim {
                         const BEST_WEAPON: [u16; 18] = [0x42, 0x32, 0x1a, 0x18, 0x1c, 0x16, 0x15, 0x08, 0x10, 0x0e, 0x0d, 0x0c, 0x12, 0x06, 0x04, 0x02, 0x0a, 0x01];
                         let owned = self.drones.inventory.owned.clone();
                         let base_of = |b: u8| weapons.base(b as usize) as u8;
-                        let has_ammo_fn = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
+                        let has_ammo_fn = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize),
+                            |x| nf_game::gun::Gun::ammo_in_gun_slot(x, |y| weapons.base(y as usize) as u8, |y| weapons.ammo_type(y as usize) as u8));
                         if let Some(id) = self.gun.get_best_weapon(&BEST_WEAPON, base_of, &owned, has_ammo_fn) {
                             self.gun.switch_request = id; // Player_GetBestWeapon writes BL+0x63 [M 0x1a9680 tail]
                         }

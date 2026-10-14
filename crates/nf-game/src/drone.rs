@@ -5755,6 +5755,20 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             let ray = [b.dir[0] * l, b.dir[1] * l, b.dir[2] * l];
             let end = [b.pos[0] + ray[0], b.pos[1] + ray[1], b.pos[2] + ray[2]];
             self.bullet_paths.push((b.pos, end));
+            // fix-samurai-fire: the `+0x6C` bit 0x10000 Swoosh ribbon [M `Bullet_init` 0x12c5a0:116-133:
+            // for such records `Swoosh_Create(spawn, spawn, weapon_data+0x76, 0x20005cd, 0)` when the
+            // base (+0x02) is 0x33/0x6a/0x6e — else 0x2000918, kind 1 — stored at BU+0xe; `Bullet_update`
+            // feeds the round's position every tick, so the ribbon reads as a beam from the muzzle to
+            // the round]. The port has no swoosh system (the grenade-path trail comment documents the
+            // same gap for the rockets): one cyan gas puff per flying tick at the round's tail — the
+            // Phoenix Samurai's bolt/beam trail (the live capture's "a short cyan beam", 0x32/0x33 both
+            // carry 0x10000 and size +0x76 = 15 [L ee_start_05.bin @ 0x2bf150]). No RNG draws (the
+            // game's swoosh path consumes none of the shared generator; determinism). Colour/size [S]
+            // — the main agent's render check owns the look.
+            let flags6c_b = d.weapons.records.get(b.weapon as usize).map_or(0u32, |r| u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap()));
+            if flags6c_b & 0x1_0000 != 0 {
+                self.gas.init(b.pos, 0.0, [0.0; 3], 0.3, 0.6, 5, [0x30, 0xd0, 0xff, 0x90], 6.0);
+            }
             // The photograph targets and breakable doors see the bullet this tick (the game's
             // collision pass registers the contact; the prop's update walks it — crate::props).
             // fix-blast-scripts: the destroyable smashes queue their blast (`Destroy_Smash`
@@ -5844,7 +5858,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // point with radius = weapon_data+0x08, damage = +0x0C [M disasm 0x12d0ac-0c0,
                     // 0x12d0f0-24, 0x12d154-88], unless the contact is a ricochet re-entry (the
                     // port's `b.bounces == 0` gate, the same one the world path uses). Direct damage
-                    // (the msg above) AND the blast both apply, as in the game.
+                    // (the msg above) AND the blast both apply, as in the game. fix-samurai-fire's
+                    // flesh-arm finding (0x12ce80:186-231, the shared tail) is the same statement —
+                    // ONE path: the script-carrying push below is the single source of the bolt's
+                    // blast on a drone hit.
                     let flags70h = d.weapons.records.get(b.weapon as usize)
                         .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
                     if b.bounces == 0 && flags70h & (0x4 | 0x100000 | 0x200000) != 0 {
