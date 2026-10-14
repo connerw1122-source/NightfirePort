@@ -165,12 +165,25 @@ fn the_kimiko_scene_characters_play_their_face_tracks() {
     let together = nf_game::anim::script_pose_together(&sim.scripts, &sim.seqs, &char.skeleton, &char.skin, script, frame)
         .expect("the joined pose must resolve");
     assert_eq!(body_only.len(), together.len(), "both poses cover the skeleton");
-    // The face track is the FIRST op-0 window's sequence.
+    // The face track is the FIRST op-0 window's sequence. fix-facial3: its 22 channels are the
+    // MORPH WEIGHTS (`AnimFacialBlend` 0x1be648 samples them into the weight array; docs/formats/
+    // character.md "Facial morphs") — it no longer owns any bone (the old read turned weight values
+    // into root/face-bone translations), so the joined pose is the body pose on every bone, and the
+    // face motion flows through the weights path instead.
     let fq = sim.scripts.get(&script).unwrap().sequences().next().unwrap().2;
-    let face_bones = nf_formats::anim::bones_covered(&sim.seqs[&fq], &char.skeleton);
-    assert!(face_bones > 0 && face_bones < char.skeleton.bones as usize, "the face track must cover a strict prefix of the bones, got {face_bones}");
-    let differing: Vec<usize> = (0..face_bones).filter(|&b| body_only[b] != together[b]).collect();
-    let same_after: bool = (face_bones..body_only.len()).all(|b| body_only[b] == together[b]);
-    assert!(!differing.is_empty(), "the face track must move its bones (frames {frame}) — the mouth animation");
-    assert!(same_after, "the face track must not touch the bones past its channels");
+    let face_seq = &sim.seqs[&fq];
+    assert_eq!(face_seq.channels.len(), char.skin.facial as usize, "the face window's channel count is the skin's facial count");
+    for b in 0..body_only.len() {
+        assert_eq!(body_only[b], together[b], "the face track must not pose bone {b} (it is a morph-weight source)");
+    }
+    // The weights source: the same window sampled as weights over its frames carries live values
+    // (the dialogue has quiet stretches, so scan — the track's own maximum is the pin).
+    let mut max_w = 0.0f32;
+    let step = (face_seq.frames / 64).max(1);
+    for f in (1..=face_seq.frames).step_by(step as usize) {
+        if let Some(w) = nf_game::anim::facial_weights(face_seq, f as f32, char.skin.facial as usize) {
+            max_w = max_w.max(w.iter().fold(0.0f32, |m, v| m.max(v.abs())));
+        }
+    }
+    assert!(max_w > 0.01, "the face track carries live morph weights over its frames (max {max_w})");
 }
