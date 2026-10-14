@@ -48,7 +48,10 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
     if (sa.x != 0xffffffffu) {
         let q = vec4<f32>(p0, 1.0);
         p = sw * (pal[sa.x] * q).xyz + (1.0 - sw) * (pal[sa.y] * q).xyz;
-        c = vec4<f32>(c0.rgb * cols[sc].rgb, c0.a);
+        // fix-searchlight-remainder: the colour table's .a now carries the searchlight corona's alpha
+        // byte (obj+0x106 / 255) — every other slot keeps 1.0, so this multiply changes only the
+        // corona quads (the GS reads the byte as alpha/0x80; the ×255/128 rescale below reproduces it).
+        c = vec4<f32>(c0.rgb * cols[sc].rgb, c0.a * cols[sc].a);
     }
     // The point lights (`Light_Create` + `Lights_CalcClosestLights` 0x1cb2e0 + `psiLight_SetLights`
     // 0x10e588; fix-lighting). The VU1 microcode's formula (.vutext 0x241c80, the point-light
@@ -109,7 +112,7 @@ struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @locati
 "#;
 
 /// The overlay (crosshair, HUD): screen-space triangles in normalised device coordinates, alpha-blended, no depth.
-const HUD_SHADER: &str = r#"
+pub(crate) const HUD_SHADER: &str = r#"
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 struct HO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @location(1) c: vec4<f32> };
@@ -216,6 +219,11 @@ pub struct Renderer {
     hud_sub_pipeline: wgpu::RenderPipeline,
     hud_vbuf: wgpu::Buffer,
     hud_bgs: Vec<wgpu::BindGroup>,
+    /// fix-menu-movies2: the hud bind-group layout + sampler. The ONE movie plane (fix-movie-playback's
+    /// `movie_tex`/`movie_bg`) builds its bind group from them in render(); the menu's looping backdrop
+    /// and the intro draw through the same plane.
+    hud_tbgl: wgpu::BindGroupLayout,
+    hud_sampler: wgpu::Sampler,
     pipelines: Vec<(Draw, wgpu::RenderPipeline)>,
     /// Snow: the particle pipeline (additive, depth test, no write), a per-frame vertex buffer and the flake texture.
     snow_pipeline: wgpu::RenderPipeline,
@@ -254,11 +262,27 @@ pub struct Renderer {
     /// (0x1e6ba0) frustum-tests each cel's bbox per viewer; fix-render3 skips a static World draw
     /// whose cel fails the same test. `NF_NOCELCULL` disables.
     cel_boxes: Vec<([f32; 3], [f32; 3])>,
-    /// The runtime cel graph + portals (fix-perf-level): `portal_visible_cels` runs per frame from the
-    /// eye's room cel, and the walk's per-full-cel set gates static World draws (the `View_AddCels`
-    /// GfxList set — only portal-visited cels are added). Graphs without portals fall back to the
-    /// fix-render3 box test.
+    /// The runtime cel graph + portals (fix-perf-level): the walk's per-full-cel set gates static
+    /// World draws (the `View_AddCels` GfxList set — only portal-visited cels are added). Graphs
+    /// without portals fall back to the fix-render3 box test.
     cel_graph: crate::scene::CelGraph,
+    /// The viewer's persistent cel (`viewer+4`, `Camera_CheckLocation` 0x1bae90) — carried across
+    /// frames, updated by the move raycast / bbox keep / `build_FindCel` chain. fix-portal.
+    pub viewer_cel: crate::scene::ViewerCel,
+    /// This frame's room-level visibility mask, computed once per frame by `cel_visibility` (the
+    /// skin palette's object cull and `render`'s World cull share it — one walk per frame).
+    pub last_vis: Option<Vec<bool>>,
+    /// This frame's CELL-level game mask (`View_AddCels` 0x1e6ba0: the VisCelList plus the `+0x18`
+    /// chain pass) — `None` when the walk cannot run (the room box fallback gates everything).
+    /// fix-portal2.
+    pub last_cell_vis: Option<Vec<bool>>,
+    // fix-movie-playback: the lazy full-screen movie plane (fields only touched while a movie
+    // plays; everything else is additive, nothing existing changed shape). The hud layout/sampler
+    // it reuses are the Renderer's `hud_tbgl`/`hud_sampler` fields (fix-menu-movies2).
+    movie_tex: Option<wgpu::Texture>,
+    movie_bg: Option<wgpu::BindGroup>,
+    movie_size: Option<(u32, u32)>,
+    movie_vbuf: wgpu::Buffer,
 }
 
 impl Renderer {
@@ -462,26 +486,87 @@ impl Renderer {
         let order_cap = draws.len();
         let cel_boxes = scene.cels.iter().map(|c| (c.min, c.max)).collect();
         let cel_graph = scene.cel_graph.clone();
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph }
+        // fix-movie-playback: the full-screen movie plane. The game blits each decoded 512×448 frame
+        // straight into the frame buffer (DecodeBGFMVFrame 0x108550 → PS2UploadBGMImage 0x108740);
+        // the port draws it as a textured quad through the HUD pipeline after everything else. The
+        // texture + bind group are (re)built lazily in render() at the frame's size, so only the
+        // static quad buffer and the shared layout/sampler are made here.
+        let movie_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: 6 * std::mem::size_of::<HudVertex>() as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        queue.write_buffer(&movie_vbuf, 0, bytemuck::cast_slice(&[
+            // Row 0 of the frame at the top of the screen (NDC y up, uv v down — the HUD quad
+            // convention, hud.rs quad()).
+            HudVertex { p: [-1.0, 1.0], uv: [0.0, 0.0], c: [1.0; 4] }, HudVertex { p: [1.0, 1.0], uv: [1.0, 0.0], c: [1.0; 4] }, HudVertex { p: [1.0, -1.0], uv: [1.0, 1.0], c: [1.0; 4] },
+            HudVertex { p: [-1.0, 1.0], uv: [0.0, 0.0], c: [1.0; 4] }, HudVertex { p: [1.0, -1.0], uv: [1.0, 1.0], c: [1.0; 4] }, HudVertex { p: [-1.0, -1.0], uv: [0.0, 1.0], c: [1.0; 4] },
+        ]));
+        // fix-menu-movies2: ONE movie plane serves every movie — the mission-flow briefing/outro
+        // (fix-movie-playback) and the front end's looping page backdrop + the P_INTRO pair
+        // (fix-menu-movies, now routed through this same plane). The game uploads the decoded
+        // frame to VRAM as the page's own background texture [M PS2UploadBGMImage 0x108740;
+        // movies.md §Presentation], so the quad draws BEFORE the HUD runs (under the page
+        // controls); state 6 suppresses the overlay while its movie plays, so the draw position
+        // is equivalent there.
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None, movie_tex: None, movie_bg: None, movie_size: None, movie_vbuf, hud_tbgl: tbgl, hud_sampler: sampler }
     }
 
-    /// `build_FindCel` (0x1c8cb0) over the room cels' boxes for the walk's start cell: the inclusive
-    /// bbox test with the port's smallest-volume tie-break (the same rule `scene::find_cel` uses).
-    fn eye_room_cel(boxes: &[([f32; 3], [f32; 3])], eye: [f32; 3]) -> Option<usize> {
-        let mut best = None;
-        let mut vol = f32::INFINITY;
-        for (i, &(min, max)) in boxes.iter().enumerate() {
-            let inside = min[0] <= eye[0] && eye[0] <= max[0] && min[1] <= eye[1] && eye[1] <= max[1] && min[2] <= eye[2] && eye[2] <= max[2];
-            if !inside { continue; }
-            let v = (max[0] - min[0]) * (max[1] - min[1]) * (max[2] - min[2]);
-            if v < vol { vol = v; best = Some(i); }
-        }
-        best
+    /// The game's depth-0 pyramid for the walk [M `Vision_Calculate_View_Fustrum` 0x1e7df8,
+    /// disassembled]: the four fov side planes through the eye (the Gribb-Hartmann extraction's
+    /// first four are the same half-spaces for this fov/aspect) plus the near plane through the
+    /// 200-unit quad corners (c1,c3,c2) whose normal points BACK at the eye — it keeps
+    /// `fw·p <= fw·eye + 200` (beyond 200 units is fog; the game clips those portal polygons away).
+    /// `fw` = the GH near plane's normalized normal (it points forward, away from the eye).
+    fn depth0_game(planes: &[[f32; 4]; 6], eye: [f32; 3]) -> [[f32; 4]; 5] {
+        let fw = [planes[4][0], planes[4][1], planes[4][2]];
+        let fe = fw[0] * eye[0] + fw[1] * eye[1] + fw[2] * eye[2];
+        [planes[0], planes[1], planes[2], planes[3], [-fw[0], -fw[1], -fw[2], fe + 200.0]]
+    }
+
+    /// This frame's room-level visibility mask — one walk per frame, shared by the skin palette's
+    /// object cull (`View_AddObjects` 0x1e62d8 draws only the visible cels' objects) and `render`'s
+    /// World cull. The eye's cel comes from the persistent `Camera_CheckLocation` (0x1bae90) state
+    /// via `scene::eye_cell`; the walk from that cell is `Vision_Portal_Recurse` 0x1e86e8 with the
+    /// game's depth-0 planes. `world` (the sim's scoped collision) feeds `build_FindCel` 0x1c8cb0's
+    /// collision tie-break when the placement re-finds. `None` (the walk cannot run: no portals /
+    /// no cel) = the fix-render3 box test everywhere, and `NF_NOPORTAL` forces it (the walk is the
+    /// default again, fix-portal).
+    pub fn cel_visibility(&mut self, eye: [f32; 3], view_proj: [[f32; 4]; 4], world: Option<&nf_game::world::CollisionWorld>) -> Option<Vec<bool>> {
+        let planes = extract_frustum(view_proj);
+        let portal_enabled = std::env::var_os("NF_NOPORTAL").is_none();
+        // The cell-level game mask (`View_AddCels` 0x1e6ba0: the VisCelList plus the +0x18 chain
+        // pass under `Vision_InView`) gates the World draws; the strict VisCelList mask gates the
+        // rooms/objects (`View_DrawObjList` 0x1e69a0 walks the VisCelList cels' object lists —
+        // chain nodes never enter the VisCelList). fix-portal2.
+        let (cell_vis, strict_vis) = if portal_enabled && !self.cel_graph.portals.is_empty() {
+            let depth0 = Self::depth0_game(&planes, eye);
+            let sides = [planes[0], planes[1], planes[2], planes[3]];
+            match crate::scene::eye_cell(&self.cel_graph, &mut self.viewer_cel, eye, world) {
+                Some(cell) => {
+                    let mut game = crate::scene::portal_visible_cels_game_from_cell(&self.cel_graph, cell, eye, &depth0, &sides);
+                    // fix-portal-sweep: the near-LOS rescue (scene::near_los_rescue) — the game-mask
+                    // pass restores the near unoccluded generics the walk drops where the port's
+                    // per-cel attribution approximation (the FindCel 0x1c8cb0 tie-break input)
+                    // disagrees with the game's. No-op without a collision world.
+                    if let (Some(m), Some(w)) = (game.as_mut(), world) {
+                        let rescued = crate::scene::near_los_rescue(&self.cel_graph, m, eye, &sides, w, 30.0);
+                        if rescued > 0 && std::env::var_os("NF_PORTAL_DEBUG").is_some() {
+                            eprintln!("[rescue] eye cell {cell}: {rescued} near cels restored");
+                        }
+                    }
+                    (game, crate::scene::portal_visible_cels_from_cell(&self.cel_graph, cell, eye, &depth0))
+                }
+                None => (None, None),
+            }
+        } else { (None, None) };
+        self.last_cell_vis = cell_vis;
+        let vis = strict_vis.map(|cell_vis| self.cel_graph.room_to_cell.iter().map(|m| m.map(|c| cell_vis[c]).unwrap_or(true)).collect::<Vec<bool>>());
+        let vis = vis.unwrap_or_else(|| self.cel_boxes.iter().map(|&(min, max)| !box_outside(&planes, min, max)).collect());
+        self.last_vis = Some(vis.clone());
+        Some(vis)
     }
 
     /// G-043: upload one frame's skinning palette and colour table (replaces re-uploading every posed vertex).
-    pub fn update_skin(&self, queue: &wgpu::Queue, scene: &Scene, choice: Option<usize>, time: f32, opts: crate::scene::ViewOpts) {
-        let (pal, cols) = scene.skin_palette(&self.skin_layout, choice, time, opts);
+    /// `vis`: the frame's room visibility mask (see `Scene::skin_palette`).
+    pub fn update_skin(&self, queue: &wgpu::Queue, scene: &Scene, choice: Option<usize>, time: f32, opts: crate::scene::ViewOpts, vis: Option<&[bool]>) {
+        let (pal, cols) = scene.skin_palette(&self.skin_layout, choice, time, opts, vis);
         if !pal.is_empty() { queue.write_buffer(&self.pal_buf, 0, bytemuck::cast_slice(&pal)); }
         queue.write_buffer(&self.col_buf, 0, bytemuck::cast_slice(&cols));
     }
@@ -509,7 +594,7 @@ impl Renderer {
     /// the fog pass with the rotation-only uniform) follow the viewer and are never culled. The per-frame `order` Vec
     /// is `clear`ed + refilled (not reallocated); `set_pipeline`/`set_bind_group(0)` are skipped when the value is
     /// unchanged from the previous draw.
-    pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], eye: [f32; 3], ticks: u32, snow: &[crate::scene::Vertex], hud: &HudFrame) -> wgpu::CommandEncoder {
+    pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], eye: [f32; 3], ticks: u32, snow: &[crate::scene::Vertex], hud: &HudFrame, movie: Option<(u32, u32, &[u8])>) -> wgpu::CommandEncoder {
         let ns = snow.len().min(SNOW_MAX);
         if ns > 0 { queue.write_buffer(&self.snow_vbuf, 0, bytemuck::cast_slice(&snow[..ns])); }
         let n = hud.v.len().min(HUD_MAX) / 3 * 3;
@@ -586,8 +671,10 @@ impl Renderer {
             // unmapped) the build-time parse-rank fallback (`Material::chain`) stands in. Ordering
             // only — the cull below is untouched (NF_PORTAL still gates the cull walk).
             let chain_ord: Option<Vec<Option<u32>>> = if !self.cel_graph.portals.is_empty() {
-                let depth0: [[f32; 4]; 5] = [planes[0], planes[1], planes[2], planes[3], planes[4]];
-                Self::eye_room_cel(&self.cel_boxes, eye).and_then(|room| crate::scene::portal_cel_chain(&self.cel_graph, room, eye, &depth0))
+                // The same resolved viewer cel + the game's depth-0 planes the walk used (the
+                // chain order is the VisCelList the game threaded from ITS walk [M 0x1e86e8]).
+                let depth0 = Self::depth0_game(&planes, eye);
+                self.viewer_cel.cell.and_then(|cell| crate::scene::portal_cel_chain_from_cell(&self.cel_graph, cell, eye, &depth0))
                     .map(|chain| {
                         let mut ord: Vec<Option<u32>> = vec![None; self.cel_graph.cells.len()];
                         for (k, c) in chain.into_iter().enumerate() { if c < ord.len() { ord[c] = Some(k as u32); } }
@@ -613,7 +700,18 @@ impl Renderer {
                     3 => -d2(dc.centre),
                     _ => 0.0,
                 };
-                (dc.pass * 2, key, k)
+                // fix-0c-pylon: the frame slot order is Game_Draw's (0x1e6f50, decompiled): sky group 1
+                // (View_DrawSky v,1 → GfxList+0x4a == 1), list 0 (View_DrawObjList v,0), then
+                // psiPostSolid 0x121630 = psiDrawFogPass 0x10b960 and sky group 0 (View_DrawSky v,0 →
+                // GfxList+0x4a == 0) — and ONLY THEN list 1 (View_DrawObjList v,1), the alpha list the
+                // pylon rides. The port drew its post-fog sky (pass 4) after the alpha list; that sky is
+                // pinned to the far plane with a LessEqual test, so it repainted every pixel where only
+                // no-depth-write alpha-list draws happened (the 0700000c pylon: zwrite off, against
+                // sky/sea — erased; its baked shadow survived because it writes depth). Slot map:
+                // pass 0 (pre-world sky) → 0, pass 1 (list 0) → 2, pass 4 (post-fog sky) → 3,
+                // pass 2 (characters) → 4, pass 3 (alpha list) → 6, pass 5 (effects) → 10.
+                let slot = match dc.pass { 4 => 3, p => p * 2 };
+                (slot, key, k)
             }));
             self.order.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
             // fix-render2: the World draws' bounding spheres are exact — static geometry through the
@@ -640,20 +738,21 @@ impl Renderer {
             // eye's room cel, with the depth-0 pyramid = the frustum's four side planes + near (the
             // game's five `Vision_Calculate_View_Fustrum` 0x1e7df8 planes). Cels the walk cannot run
             // for (no graph / no portals / eye outside every cel) keep the fix-render3 box test.
+            // fix-portal: the walk is the default again (the collapse is fixed: the viewer cel is
+            // `Camera_CheckLocation` 0x1bae90's persistent state and the depth-0 pyramid is the
+            // game's [M 0x1e7df8]); `NF_NOPORTAL` disables it. The mask is computed once per frame
+            // by `cel_visibility` (the skin palette shares it) — reuse it when fresh.
             let cel_visible: Vec<bool> = if cel_cull {
-                let depth0: [[f32; 4]; 5] = [planes[0], planes[1], planes[2], planes[3], planes[4]];
-                let eye_room = Self::eye_room_cel(&self.cel_boxes, eye);
-                // Opt-in (NF_PORTAL=1): on 07000006, between the truck and the courtyard, the walk from the eye's cel
-                // hid the whole level (user screenshot), and it gave no frame-rate gain in play.
-                match eye_room.filter(|_| !self.cel_graph.portals.is_empty() && std::env::var_os("NF_PORTAL").is_some()) {
-                    Some(room) => match crate::scene::portal_visible_cels(&self.cel_graph, room, eye, &depth0) {
-                        Some(cell_vis) => self.cel_graph.room_to_cell.iter()
-                            .map(|m| m.map(|c| cell_vis[c]).unwrap_or(true)).collect(),
-                        None => self.cel_boxes.iter().map(|&(min, max)| !box_outside(&planes, min, max)).collect(),
-                    },
-                    None => self.cel_boxes.iter().map(|&(min, max)| !box_outside(&planes, min, max)).collect(),
-                }
+                // The lazy fallback never fires in the live paths (cel_visibility runs first — lib.rs 1496 / shot());
+                // it has no `world` here, so the FindCel tie-break degrades to the approximation.
+                self.last_vis.clone().unwrap_or_else(|| self.cel_visibility(eye, view_proj, None).unwrap())
             } else { Vec::new() };
+            // fix-portal2: the cell-level game mask. A cel placement's glist draws when ITS cel is
+            // visible (`View_AddCels` 0x1e6ba0 — the VisCelList cel itself or a `+0x18` chain node
+            // under `Vision_InView`); `Material::node` = the placement's own cell for every
+            // creates_cel placement (u32::MAX = the distance-keyed objects, gated by their
+            // containing room as before).
+            let cell_visible: Option<&Vec<bool>> = self.last_cell_vis.as_ref();
             let mut cel_culled = 0usize;
             // Skip redundant `set_pipeline` calls (A-11e). The group-0 bind now carries a per-draw
             // dynamic offset (fix-lighting: each draw's own light pair), so it is issued every draw.
@@ -669,9 +768,15 @@ impl Renderer {
                     if trace { culled += 1; }
                     continue;
                 }
-                if cel_cull && dc.layer == Layer::World && dc.cel.is_some_and(|c| !cel_visible[c as usize]) {
-                    if trace { cel_culled += 1; }
-                    continue;
+                if cel_cull && dc.layer == Layer::World {
+                    let hidden = match (cell_visible, dc.node) {
+                        (Some(cv), n) if n != u32::MAX => !cv[n as usize],
+                        _ => dc.cel.is_some_and(|c| !cel_visible[c as usize]),
+                    };
+                    if hidden {
+                        if trace { cel_culled += 1; }
+                        continue;
+                    }
                 }
                 if trace { submitted += 1; }
                 let (layer, first, count) = (dc.layer, dc.first, dc.count);
@@ -702,6 +807,38 @@ impl Renderer {
                 pass.set_vertex_buffer(1, self.snow_skin.slice(..));
                 pass.draw(0..ns as u32, 0..1);
             }
+            // fix-menu-movies2: the ONE movie plane draws BEFORE the HUD runs. The game uploads
+            // the decoded frame to VRAM and the page draws it as its own background texture
+            // [M PS2UploadBGMImage 0x108740; movies.md §Presentation — "a full-screen background
+            // texture, not an IPU overlay"], i.e. UNDER the menu controls; the GameFlow state-6
+            // briefing draws over the empty backdrop with the overlay suppressed, so drawing
+            // before the (empty) HUD runs is the same picture there.
+            if let Some((w, h, rgba)) = movie {
+                if self.movie_size != Some((w, h)) || self.movie_bg.is_none() {
+                    let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+                    let t = device.create_texture(&wgpu::TextureDescriptor {
+                        label: None, size, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+                    });
+                    let view = t.create_view(&Default::default());
+                    self.movie_bg = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: None, layout: &self.hud_tbgl,
+                        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.hud_sampler) }],
+                    }));
+                    self.movie_tex = Some(t);
+                    self.movie_size = Some((w, h));
+                }
+                if let Some(tex) = &self.movie_tex {
+                    queue.write_texture(
+                        wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                        rgba, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+                        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 });
+                    pass.set_pipeline(&self.hud_pipeline);
+                    pass.set_bind_group(0, self.movie_bg.as_ref().unwrap(), &[]);
+                    pass.set_vertex_buffer(0, self.movie_vbuf.slice(..));
+                    pass.draw(0..6, 0..1);
+                }
+            }
             if n > 0 {
                 pass.set_vertex_buffer(0, self.hud_vbuf.slice(..));
                 for &(tex, blend, first, count) in &hud.runs {
@@ -716,7 +853,6 @@ impl Renderer {
         enc
     }
 }
-
 pub fn depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
     device.create_texture(&wgpu::TextureDescriptor {
         label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,

@@ -1004,6 +1004,7 @@ dependencies = [
  "anyhow",
  "nf-formats",
  "nf-game",
+ "nf-view",
 ]
 
 [[package]]
@@ -1029,6 +1030,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "cpal",
  "gilrs",
  "glam",
  "naga",

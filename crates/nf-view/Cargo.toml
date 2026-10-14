@@ -16,6 +16,7 @@ wgpu = "30.0.1"
 pollster = "1.0.1"
 glam = "0.34.1"
 gilrs = { version = "0.11.2", optional = true }
+cpal = "=0.18.2"  # fix-movie-playback: the movie PCM stream (the game plays it through the SPU2; the port mixes through cpal)
 
 [dev-dependencies]
 naga = { version = "30.0.1", features = ["wgsl-in"] }

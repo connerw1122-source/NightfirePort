@@ -95,7 +95,7 @@ fn killing_the_contact_raises_the_mission_fail_channel() {
     // C2/015-fix-npcs gap, noted in the report.)
     sim.drones.grenades.push(nf_game::grenade::Grenade {
         pos: [npc_pos[0], npc_pos[1] + 0.5, npc_pos[2]], velocity: [0.0, 0.0, 0.0], speed: 0.0,
-        travelled: 0.0, range: 60.0, damage: 100.0, radius: 3.0, weapon_type: 0x34, mesh: 0x0200_0726, owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false,
+        travelled: 0.0, range: 60.0, damage: 100.0, radius: 3.0, weapon_type: 0x34, mesh: 0x0200_0726, owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: false,
     });
     let mut dead = false;
     for _ in 0..300u32 {
@@ -116,4 +116,54 @@ fn killing_the_contact_raises_the_mission_fail_channel() {
     // state via switch_channels[0x63]; assert nothing cleared it.
     for _ in 0..30 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
     assert!(scene.sim.as_ref().unwrap().drones.channels.on(0x60));
+}
+
+/// G-040 (fix-spawner-remainder): the second gate guard is NOT missing — the intro cut-scene
+/// script 0x06000087 (type-0xC loadable pack 07800001.bin, streamed since fix-cutscenes) writes
+/// ch 0xB at its tick-847 event, and EVERY ch-0xB gate entity wakes on it: the six 0xF drones whose
+/// `switch_channel` is 0xB [D 07000001.bin placement census: #161/168/169/261/298/299] and the
+/// mode-2 spawner whose start channel is 0xB [D record #0x87ec]. The old GAPS text named script
+/// 0x0600007f, "absent from the kind-7 NIS archive" — a misread hash (the disc has no 0x0600007f
+/// anywhere on 07000001; the pack script is 0x06000087) and a stale archive theory.
+#[test]
+fn the_second_gate_guard_wakes_on_the_intro_scripts_channel() {
+    let iso_v = iso();
+    let mut scene = nf_view::load(&iso_v, "07000001.bin", false).expect("load 07000001");
+    let sim = scene.sim.as_mut().unwrap();
+    // The gate entities before the intro: every ch-0xB drone waits (not started); the spawner waits.
+    let gate: Vec<usize> = sim.drones.list.iter().enumerate().filter(|(_, d)| d.switch_channel == 0xb).map(|(i, _)| i).collect();
+    assert!(gate.len() >= 2, "the level's ch-0xB gate drones exist [D the placement census]");
+    assert!(gate.iter().all(|&i| !sim.drones.list[i].started), "all of them wait on ch 0xB at spawn");
+    let spawners_before = sim.drones.spawners.iter().filter(|s| s.start == 0xb).count();
+    assert_eq!(spawners_before, 1, "the mode-2 gate spawner's start channel is 0xB [D record #0x87ec]");
+    assert!(!sim.drones.spawners.iter().filter(|s| s.start == 0xb).all(|s| s.active), "the spawner has not triggered yet");
+    // Watch the intro cut-scene to its ch 0xB event.
+    let mut enabled_at = None;
+    for t in 0..3000u32 {
+        sim.step_bond(Default::default(), false, false, false);
+        if sim.drones.channels.on(0xb) { enabled_at = Some(t); break; }
+    }
+    let enabled_at = enabled_at.expect("script 0x06000087 (pack 07800001.bin) must write ch 0xB");
+    eprintln!("[01] ch 0xB on at tick {enabled_at}; {} gate drones + 1 spawner wake", gate.len());
+    // Every gate drone leaves WAIT_SWITCH — the PRESENT ones (guards standing in the level).
+    // The ABSENT ones are the gate spawner's templates (group 1): they only appear when the
+    // spawner spawns them, through its own screens [M DroneSpawner_Init 0x137aa0:52-66].
+    for _ in 0..10 { sim.step_bond(Default::default(), false, false, false); }
+    let guards: Vec<usize> = gate.iter().copied().filter(|&i| sim.drones.list[i].present).collect();
+    assert!(!guards.is_empty(), "at least one gate guard stands in the level");
+    for &i in &guards {
+        assert!(sim.drones.list[i].started, "gate guard #{i} must start once ch 0xB is on");
+    }
+    // The spawner triggered on the same channel — give its screens a window to spawn a template
+    // guard (its spots are screened for distance/visibility from Bond's start spot [M
+    // DroneSpawner_SpawnDrone 0x137cb0]).
+    let templates: Vec<usize> = gate.iter().copied().filter(|&i| !sim.drones.list[i].present).collect();
+    let mut spawned_any = false;
+    for _ in 0..600 {
+        sim.step_bond(Default::default(), false, false, false);
+        if templates.iter().any(|&i| sim.drones.list[i].present) { spawned_any = true; break; }
+    }
+    eprintln!("[01] gate spawner spawned a template guard within the window: {spawned_any}");
+    assert!(sim.drones.spawners.iter().filter(|s| s.start == 0xb).all(|s| s.active),
+        "the gate spawner arms on ch 0xB [M DroneSpawner_Control 0x137e68:53-64]");
 }

@@ -14,10 +14,11 @@
 //! complementary member rests parked (its key 0 is the away position). Triggering the channel swaps
 //! them: each member glides to its other key.
 //!
-//! Playhead rate [S, the endpoints are what matters]: `SS_Create` divides the key count by the
-//! record's rate word (`extra[7] >> 16`, default 0x4B = 75 when zero) — the port moves the playhead
-//! 1/(rate or 75) key-units per tick, so the lift leaves (rate 0) take 75 ticks and the screens
-//! (rate 1) swap at once, matching the disc data.
+//! Playhead rate [M, fix-0c-hatch]: `SS_Create` sets ext+0x04 = `(key count − 1) / rate` (the rate
+//! word `extra[7] >> 16`, default 0x4B = 75 when zero) and `SS_Update` adds that step (×
+//! `FRAME_RATE_MUL` = 1.0 at 60 Hz [M GS_SetRefreshRate 0x17d2b8:15]) per tick — the rate word is
+//! the sweep's whole duration in ticks, so the lift leaves (rate 0 → 75) take 75 ticks and the
+//! screens (rate 1) swap at once, matching the disc data.
 
 use crate::door::{interp, parse_keys};
 
@@ -107,11 +108,19 @@ impl SsList {
 
     /// `SS_Update`'s playhead: toward the last key while the channel is on, back to key 0 while off,
     /// then the `KeyFrame_Interp` pose [M 0x1a9948 + 0x1e1140].
+    ///
+    /// The per-tick step is `SS_Create`'s ext+0x04 = **`(key count − 1) / rate`**, computed once at
+    /// create [M 0x1a9c58:51 `puVar2[1] = (float)last / (float)rate`], and the update adds
+    /// `step * FRAME_RATE_MUL` (the 2-key special case adds `step` alone, [M 0x1a9948:103-108]).
+    /// `GS_SetRefreshRate` 0x17d2b8:15 sets `FRAME_RATE_MUL = 60.0 / FRAME_RATE` — 1.0 at the game's
+    /// 60 Hz, which is the port's fixed tick — so the rate word is the whole sweep's duration in
+    /// ticks: 0700000c's `ventmesh-front` #138 (6 keys, rate 50 [D]) opens in 50 ticks, not 250
+    /// (fix-0c-hatch; the old 1/rate model was five times slow).
     pub fn tick(&mut self, ch: &Channels) {
         for s in &mut self.list {
             if s.keys.len() < 2 { continue; }
             let last = (s.keys.len() - 1) as f32;
-            let step = 1.0 / s.rate as f32;
+            let step = last / s.rate as f32;
             let target = if s.channel != 0 && ch.on(s.channel as u32) { last } else { 0.0 };
             if s.t < target { s.t = (s.t + step).min(target); }
             else if s.t > target { s.t = (s.t - step).max(target); }

@@ -97,6 +97,11 @@ pub struct ScopePortal {
     pub tris: [[V3; 3]; 2],
     pub a: usize,
     pub b: usize,
+    /// The portal's reference point: the 4 corners' average, stored at portal+0x70 by
+    /// `build_alloc_portal` 0x1c8928 (`puVar2[0x1c..0x1e] = (c0+c1+c2+c3)·0.25`) — the point
+    /// `Intersect_Portal` 0x1ea7b8's 0x800 path projects the query segment against (fix-08-collision2;
+    /// the port used corner 0, which missed crossings on long doorways).
+    pub centre: V3,
 }
 
 /// The cel graph the game scopes collision queries with: one bbox per runtime cel (the parse-wide
@@ -106,6 +111,10 @@ pub struct ScopePortal {
 pub struct ScopeGraph {
     pub cells: Vec<([f32; 3], [f32; 3])>,
     pub portals: Vec<ScopePortal>,
+    /// The runtime cel's room-cel bit (`cel+0x3c & 0x40000`): `build_FindCel` 0x1c8cb0's candidate
+    /// walk collects ONLY room cels (both the `glb_world` `gbl_room_cels` branch and the per-world
+    /// chain branch filter the flag), so the relink's FindCel fallback must too. fix-swim-entry.
+    pub room: Vec<bool>,
 }
 
 /// The per-cell static buckets + the graph, built once (`build_scoped`).
@@ -235,14 +244,25 @@ impl CollisionWorld {
         Self::build_scoped(level, instances, None)
     }
 
-    /// `build` with the cel scope: each instance joins the cell containing its world sphere centre
-    /// (`Control_BuildWorldSph` 0x133070 → `build_FindCel` 0x1c8cb0 over the runtime cels, smallest
-    /// volume on ties — the port's `find_cel` tie-break; `build_LinkToRoom` 0x1c9680 links the game's
-    /// objects the same way). Instances whose centre maps to no cell stay in the `always` bucket.
+    /// `build` with the cel scope. Each instance's runs join **its own runtime cel's bucket**: the
+    /// instances are the cel placements in parse order (`Level::instances(true)`) and the scope
+    /// graph's cells are `parse_cel_graph`'s one-cell-per-placement list in the same order, so the
+    /// k-th pushed instance IS the k-th cell — `parsemap_block_map_data_static` 0x1d1998 creates
+    /// one runtime cel per placement whose glist IS the placement's object, and the game's
+    /// per-hit cel word (`HITDATA+0x54`, the input of `Collide_SphereIntersect` 0x1ec940's
+    /// candidate-scoped queries and of the chain-owner pick `build_link_objects_to_rooms`
+    /// 0x1c9150 makes at load) carries that cel. (The old smallest-volume-containing-bbox rule
+    /// put a room's floor in whatever tiny generic bbox held the floor's centre — the 07000006
+    /// guard-room floor under the table's bbox, the courtyard floor under the fountain's — so
+    /// every candidate room's bucket read empty at `build_chains` time and the generics were
+    /// left unchained: the fountain, the guard-room furniture and the lockers never drew.)
+    /// fix-missing-objects. `attribute_scope` re-keys the generics' runs to their chain owners
+    /// after `build_chains` (the game's final attribution); instances whose own cell is out of
+    /// range stay in the `always` bucket.
     pub fn build_scoped(level: &Level, instances: &[Instance], graph: Option<ScopeGraph>) -> CollisionWorld {
         let mut stat = Geo::default();
         let mut missile = Geo::default();
-        // Per pushed object: the cell its world sphere centre lands in.
+        // Per pushed object: its own runtime cel (the pushed ordinal — see the doc above).
         let mut obj_cell: Vec<Option<u32>> = Vec::new();
         for inst in instances {
             let Some(c) = &level.maps[inst.map].objects[inst.object].collision else { continue };
@@ -252,15 +272,8 @@ impl CollisionWorld {
                 missile.push(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)));
                 continue;
             }
-            if let Some(g) = &graph {
-                let centre = transform(&inst.matrix, level.maps[inst.map].objects[inst.object].centre);
-                obj_cell.push(g.cells.iter().enumerate()
-                    .filter(|(_, (lo, hi))| (0..3).all(|k| lo[k] <= centre[k] && centre[k] <= hi[k]))
-                    .min_by_key(|(_, (lo, hi))| {
-                        let v: f32 = (0..3).map(|k| hi[k] - lo[k]).product();
-                        (v * 1e6) as i64
-                    })
-                    .map(|(i, _)| i as u32));
+            if graph.is_some() {
+                obj_cell.push(Some(obj_cell.len() as u32));
             }
             stat.push(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)));
         }
@@ -303,6 +316,57 @@ impl CollisionWorld {
             ScopeData { graph, cells, always }
         });
         CollisionWorld { stat, missile, dynamic: Default::default(), shapes, shape_mats, scope }
+    }
+
+    /// Re-keys the cel-scope buckets by an explicit per-instance attribution — the collision side
+    /// of the game's per-cel attribution (`build_link_objects_to_rooms` 0x1c9150 hangs every
+    /// generic's collision on the room whose chain holds it; the rooms' own geometry stays with
+    /// the room). `instance_cell[i]` = the cell for the i-th pushed object (the `stat.owners`
+    /// source index — instances that pushed static geometry, in push order); `None` leaves the
+    /// runs in the `always` bucket (the actor queries' safety net). fix-portal-eyecel: the
+    /// `build_FindCel` 0x1c8cb0 tie-break reads these buckets per candidate, so the buckets must
+    /// carry the game's chain owners, not the smallest-volume centre rule `build_scoped` stands
+    /// in with.
+    pub fn attribute_scope(&mut self, instance_cell: &[Option<u32>]) {
+        let Some(sc) = &mut self.scope else { return };
+        let mut cells = vec![Vec::new(); sc.graph.cells.len()];
+        let mut always = Vec::new();
+        for (run, src) in self.stat.owners.iter().enumerate() {
+            match instance_cell.get(*src as usize).copied().flatten() {
+                Some(c) if (c as usize) < cells.len() => cells[c as usize].push(run as u32),
+                _ => always.push(run as u32),
+            }
+        }
+        sc.cells = cells;
+        sc.always = always;
+    }
+
+    /// Whether the world carries a cel scope (`build_scoped` with a graph).
+    pub fn has_scope(&self) -> bool { self.scope.is_some() }
+
+    /// Debug introspection (fix-08-collision): for every cell's scope bucket plus the `always`
+    /// remainder, how many chunked runs whose bounds meet `lo..hi` it holds. Probes the per-cel
+    /// attribution without reaching into the private `ScopeData`.
+    pub fn debug_bucket_owners(&self, lo: V3, hi: V3) -> Vec<(i32, usize)> {
+        let meets = |r: u32| {
+            let o = &self.stat.objects[r as usize];
+            !(0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k])
+        };
+        let Some(sc) = &self.scope else { return Vec::new() };
+        let mut out: Vec<(i32, usize)> = sc.cells.iter().enumerate()
+            .map(|(c, runs)| (c as i32, runs.iter().copied().filter(|&r| meets(r)).count()))
+            .collect();
+        out.push((-1, sc.always.iter().copied().filter(|&r| meets(r)).count()));
+        out.retain(|(_, n)| *n > 0);
+        out
+    }
+
+    /// Debug introspection (fix-08-collision2): the straddle set a capsule query at `a..b` with
+    /// radius `r` keeps from `cell` — the `Collide_StraddleCels` result the scoped passes test —
+    /// so a missing portal crossing is probeable from a test.
+    pub fn debug_straddle(&self, cell: usize, a: V3, b: V3, r: f32) -> Vec<usize> {
+        let mut hit = Self::capsule_portal_hit(a, b, r);
+        self.straddle(cell, &mut hit)
     }
 
     pub fn triangle_count(&self) -> usize { self.stat.tris.len() }
@@ -444,14 +508,18 @@ impl CollisionWorld {
     }
 
     /// The actor-capsule portal test (`Intersect_Portal`'s 0x800 path [M 0x1ea7b8]: the point on the
-    /// capsule's segment closest to the portal's reference point, then that point's distance to the
-    /// portal's two triangles against radius × 1.5).
+    /// capsule's segment closest to the portal's +0x70 reference point, then that point's distance to
+    /// the portal's two triangles against radius × 1.5). The reference point is the portal's CENTRE —
+    /// the 4 corners' average `build_alloc_portal` 0x1c8928 stores at +0x70 — not a corner
+    /// (fix-08-collision2: corner 0 sat a doorway's height away from the capsule's band and missed the
+    /// crossing, dropping the neighbouring cel's walls out of the straddle set — the 01 escort wedge).
     fn capsule_portal_hit(a: V3, b: V3, r: f32) -> impl FnMut(&ScopePortal) -> bool {
         move |p: &ScopePortal| {
             let mut hit = false;
             for t in &p.tris {
-                // The portal's reference point: corner 0 (the game's portal+0x70 stored point).
-                let q = closest_on_segment(a, b, t[0]);
+                // The closest point on the capsule's segment (HITTEST+0x20..+0x30) to portal+0x70
+                // [M 0x1ea7b8's 0x800 branch: the clamped projection against the stored centre].
+                let q = closest_on_segment(a, b, p.centre);
                 let (cp, _) = closest_on_triangle(q, t);
                 let d = sub(q, cp);
                 if dot(d, d) < (r * 1.5) * (r * 1.5) { hit = true; break; }
@@ -586,6 +654,180 @@ impl CollisionWorld {
         best
     }
 
+    /// The first static hit of `from → to` in `cell`'s OWN scope bucket — the port's reading of
+    /// `Collide_RayIntersect` (0x1ec690)'s owner filter: the query is handed the candidate cel
+    /// (`build_FindCel` 0x1c8cb0's tie-break passes each candidate as the cel argument with obj
+    /// lists 0 and flags 1 [M disasm 0x1c900c: a3 = 0, stack0 = 0, t2 = 1, t3 = 0x90]), and the
+    /// post-pass exact-tests a static hit only when `HITDATA+0x54` (the static-geometry cel
+    /// [M docs/fields/hitdata-spawner-ally.md:41, writer `Collide_Pick` 0x1eb320: `sw $s3, 0x54`
+    /// = the walked chain node]) equals the passed cel [M disasm 0x1ec784-0x1ec794: hit+0x54 vs
+    /// HITTEST+0x80]. So the ray sees the candidate's OWN chain geometry — the straddle collects
+    /// neighbour cels' nodes but the filter rejects every one of them. No `always` runs: the game
+    /// leaves unlinked objects untested. Static only: the dynamic-object hits carry +0x54 = 0 and
+    /// pass the game's filter, but the port's dynamic set is not cel-keyed (Bond's own parts
+    /// would tie both candidates) — a documented deviation [S].
+    /// `None` = no scope, the cell is unmapped, or nothing in the cel's own set is hit.
+    pub fn segment_hit_cell(&self, cell: usize, from: V3, to: V3) -> Option<(f32, V3)> {
+        let sc = self.scope.as_ref()?;
+        let runs = sc.cells.get(cell)?;
+        let d = sub(to, from);
+        let mut best = None::<(f32, V3)>;
+        let stat = &self.stat;
+        for r in runs {
+            let o = &stat.objects[*r as usize];
+            for k in o.tris.clone() {
+                let t = &stat.tris[k];
+                let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                if dot(cross(e1, e2), d) >= 0.0 { continue; } // back face [M 0x10a8c8:168]
+                let p = cross(d, e2);
+                let det = dot(e1, p);
+                if det.abs() < 1e-12 { continue; }
+                let inv = 1.0 / det;
+                let s = sub(from, t[0]);
+                let u = dot(s, p) * inv;
+                if !(0.0..=1.0).contains(&u) { continue; }
+                let q = cross(s, e1);
+                let v = dot(d, q) * inv;
+                if v < 0.0 || u + v > 1.0 { continue; }
+                let tt = dot(e2, q) * inv;
+                if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b.0) {
+                    let n = cross(e1, e2);
+                    let l = dot(n, n).sqrt().max(1e-12);
+                    best = Some((tt, [n[0] / l, n[1] / l, n[2] / l]));
+                }
+            }
+        }
+        best
+    }
+
+    /// The closest distance from `p` to `cell`'s OWN scoped static triangles plus the unmapped
+    /// `always` runs — `Collide_SphereIntersect` (0x1ec940)'s per-cel closest hit the way the chain
+    /// builder `build_link_objects_to_rooms` (0x1c9150) uses it: a sphere at `p` with a containing
+    /// radius (4001), the query scoped so hits outside the queried cel read 1e8 while hits whose
+    /// cel is 0 (unmapped instances — the port's `always` runs) still intersect. fix-portal5: this
+    /// orders the candidate rooms of a generic's chain hang by their nearest collision point.
+    /// `None` = no scope or the cell is unmapped.
+    pub fn closest_point_scoped(&self, cell: usize, p: V3) -> Option<f32> {
+        let sc = self.scope.as_ref()?;
+        let runs = sc.cells.get(cell)?;
+        let stat = &self.stat;
+        let mut best: Option<f32> = None;
+        for r in runs.iter().chain(sc.always.iter()) {
+            let o = &stat.objects[*r as usize];
+            // Bounding reject: the run's box against the best distance so far.
+            let slack = best.unwrap_or(f32::MAX);
+            if (0..3).any(|k| p[k] < o.lo[k] - slack || p[k] > o.hi[k] + slack) { continue; }
+            for k in o.tris.clone() {
+                let (cp, _) = closest_on_triangle(p, &stat.tris[k]);
+                let d = sub(cp, p);
+                let dist = dot(d, d).sqrt();
+                if best.is_none_or(|b| dist < b) { best = Some(dist); }
+            }
+        }
+        best
+    }
+
+    /// The move segment against one cell's portals — `Cel_ObjectLeftCel` 0x1e0d58 [M]: the segment
+    /// `from→to` against each portal quad the cell participates in (the portal chain at `cel+0x28`),
+    /// two `Collide_RayTriangle` tests per quad (the 0,1,2 / 0,2,3 split, `Index_189`), a hit within
+    /// the segment returns the portal's OTHER cell. The caller relinks to it BEFORE the bbox keep
+    /// runs, so a crossing wins even while the new position is still inside the old cell's box.
+    pub fn cel_portal_dest(&self, cell: usize, from: V3, to: V3) -> Option<usize> {
+        let sc = self.scope.as_ref()?;
+        let dir = sub(to, from);
+        let hit = |tri: [V3; 3]| -> bool {
+            // Möller–Trumbore over the move segment [0, 1], both sides (the game's RayTriangle has
+            // no back-face skip here — `Cel_ObjectLeftCel` 0x1e0d58:95-108 tests the quad twice).
+            let e1 = sub(tri[1], tri[0]);
+            let e2 = sub(tri[2], tri[0]);
+            let pv = [dir[1] * e2[2] - dir[2] * e2[1], dir[2] * e2[0] - dir[0] * e2[2], dir[0] * e2[1] - dir[1] * e2[0]];
+            let det = dot(e1, pv);
+            if det.abs() < 1e-12 { return false; }
+            let inv = 1.0 / det;
+            let tv = sub(from, tri[0]);
+            let u = dot(tv, pv) * inv;
+            if !(-1e-9..=1.0 + 1e-9).contains(&u) { return false; }
+            let qv = [tv[1] * e1[2] - tv[2] * e1[1], tv[2] * e1[0] - tv[0] * e1[2], tv[0] * e1[1] - tv[1] * e1[0]];
+            let v = dot(dir, qv) * inv;
+            if !(-1e-9..=1.0 + 1e-9).contains(&v) || u + v > 1.0 + 2e-9 { return false; }
+            let t = dot(e2, qv) * inv;
+            (0.0..=1.0).contains(&t)
+        };
+        for p in &sc.graph.portals {
+            let dest = if p.a == cell { p.b } else if p.b == cell { p.a } else { continue };
+            let c = &p.tris;
+            if hit(c[0]) || hit(c[1]) { return Some(dest); }
+        }
+        None
+    }
+
+    /// `build_point_in_bounding_box` 0x1c9500 [M]: the inclusive bbox test over one runtime cel
+    /// (`cel+0x40..0x58`). `None` cell → false.
+    pub fn cel_contains(&self, cell: Option<usize>, p: V3) -> bool {
+        let Some(cell) = cell else { return false };
+        self.scope.as_ref().and_then(|sc| sc.graph.cells.get(cell))
+            .is_some_and(|(lo, hi)| (0..3).all(|k| lo[k] <= p[k] && p[k] <= hi[k]))
+    }
+
+    /// `build_FindCel` 0x1c8cb0 [M] over the scope graph: the containing ROOM cels (`cel+0x3c &
+    /// 0x40000`, cap 0x40 — `CelListCount_154`), then the game's tie-break when several contain the
+    /// point: per candidate a collision raycast up (length `len`, 256 first, then the best-so-far
+    /// distance) and down (length `min(up hit, len)`), both scoped to the CANDIDATE'S OWN geometry
+    /// (`Collide_RayIntersect`'s cel argument + owner filter 1 — `segment_hit_cell`); the nearest
+    /// hit distance wins (`if hit->0xc < fVar11`), and with no hit at all the FIRST candidate
+    /// stands (0x1c8cb0's tail `return CelList_153`). One candidate returns directly [M
+    /// `if (CelListCount_154 != 1)` guards the tie-break]; none returns NULL.
+    pub fn find_cel(&self, p: V3) -> Option<usize> {
+        let sc = self.scope.as_ref()?;
+        let mut cands: Vec<usize> = Vec::new();
+        for (i, (lo, hi)) in sc.graph.cells.iter().enumerate() {
+            if !sc.graph.room.get(i).copied().unwrap_or(false) { continue; }
+            if (0..3).all(|k| lo[k] <= p[k] && p[k] <= hi[k]) {
+                cands.push(i);
+                if cands.len() >= 0x40 { break; }
+            }
+        }
+        if cands.len() <= 1 { return cands.first().copied(); }
+        let mut best: Option<(usize, f32)> = None;
+        for &i in &cands {
+            let len = best.map_or(256.0, |(_, d)| d);
+            let up = self.segment_hit_cell(i, p, [p[0], p[1] + len, p[2]]).map(|(t, _)| t * len);
+            let dlen = up.map_or(len, |ud| ud.min(len));
+            let down = self.segment_hit_cell(i, p, [p[0], p[1] - dlen, p[2]]).map(|(t, _)| t * dlen);
+            match (up, down) {
+                (None, None) => continue,
+                (a, b) => {
+                    let d = a.iter().chain(b.iter()).copied().fold(f32::MAX, f32::min);
+                    if best.map_or(true, |(_, bd)| d < bd) { best = Some((i, d)); }
+                }
+            }
+        }
+        Some(best.map_or(cands[0], |(i, _)| i))
+    }
+
+    /// The player object's per-tick cel relink — `control_handle_cel_change` 0x133288 [M] as the
+    /// movement handler's moved pass runs it (`Control_BuildWorldSph` then the change): the move
+    /// segment `prev→pos` crossed a portal of the current cel → that portal's other cell
+    /// (`Cel_ObjectLeftCel` 0x1e0d58); else `pos` still inside the current cel's box → keep
+    /// (`build_point_in_bounding_box` 0x1c9500); else `build_LinkToRoom` 0x1c9680 → `build_FindCel`
+    /// 0x1c8cb0 AT THE WORLD-SPHERE CENTRE (`obj+0x80`, `Control_BuildWorldSph` 0x133070 — the
+    /// model's local sphere centre through the object matrix, `Bond::sphere_centre`) with the
+    /// raycast tie-break; a FindCel miss leaves the object unlinked (`build_LinkToRoom` returns 0
+    /// without linking — `Player_InWater` 0x195e50 reads `*(obj+0x20) == 0` → no water).
+    /// Deviation [S], cited: the game's `build_LinkToRoom` 0x1c9680:41-45 passes obj+0x80..0x8c (the
+    /// world-sphere centre, 0.1267 below the player position [L ee_start_05 M_CONTROL+0x80]); the port
+    /// passes POS — the caller's `centre` argument — because the port's per-cell bucket attribution
+    /// (`build_scoped`) is coarser than the game's per-cel chains, and at the 07000001 seam the
+    /// 0.1267-shorter down-ray flips the tie-break to a root whose bucket misses the floor under Bond
+    /// (fix-08-collision2's traced 01 pin, kept green). `find_cel` itself is the game's.
+    pub fn player_cel_relink(&self, cur: Option<usize>, prev: V3, pos: V3, centre: V3) -> Option<usize> {
+        if let Some(cell) = cur {
+            if let Some(dest) = self.cel_portal_dest(cell, prev, pos) { return Some(dest); }
+            if self.cel_contains(Some(cell), pos) { return Some(cell); }
+        }
+        self.find_cel(centre)
+    }
+
     /// The take's LOS ray: the straddle cells' static geometry, the 0x1000 missile cage excluded
     /// (`Collide_Pick`'s bit-0x20 skip, flags 0x721 [M 0x1eb480-0x1eb49c + 0x18e148:213-214]) and the
     /// surface classes the take's query-type filter skips — `Collide_Intersect` 0x1ebaa8's tail: the
@@ -697,6 +939,41 @@ impl CollisionWorld {
     /// `capsule_push` for the full note. The flat `segment_hit` keeps water for bullets/LOS/AI.
     pub fn segment_hit(&self, from: V3, to: V3) -> Option<(f32, V3)> {
         self.segment_surface(from, to, true).map(|h| (h.0, h.1))
+    }
+
+    /// The static-only first hit along `from → to` (fix-portal-sweep): `segment_hit` minus the
+    /// missile cage and the dynamic objects. The near-LOS rescue's ray must not be blocked by the
+    /// player's own collision or the script-animated parts standing next to him — the game's
+    /// `Vision_InView` (0x1e89e0) consults no collision at all (a pure frustum test); this ray is
+    /// the port-side unocclusion guard only, so it reads the static world like the level's own
+    /// glists do.
+    pub fn segment_hit_static(&self, from: V3, to: V3) -> Option<(f32, V3)> {
+        let d = sub(to, from);
+        let mut best: Option<(f32, V3)> = None;
+        for o in along(&self.stat, from, to) {
+            for k in o.tris.clone() {
+                let t = &self.stat.tris[k];
+                let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                if dot(cross(e1, e2), d) >= 0.0 { continue; } // back face [M 0x10a8c8:168]
+                let p = cross(d, e2);
+                let det = dot(e1, p);
+                if det.abs() < 1e-12 { continue; }
+                let inv = 1.0 / det;
+                let s = sub(from, t[0]);
+                let u = dot(s, p) * inv;
+                if !(0.0..=1.0).contains(&u) { continue; }
+                let q = cross(s, e1);
+                let v = dot(d, q) * inv;
+                if v < 0.0 || u + v > 1.0 { continue; }
+                let tt = dot(e2, q) * inv;
+                if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b.0) {
+                    let n = cross(e1, e2);
+                    let l = dot(n, n).sqrt().max(1e-12);
+                    best = Some((tt, [n[0] / l, n[1] / l, n[2] / l]));
+                }
+            }
+        }
+        best
     }
 
     /// `segment_hit` with the surface byte of the triangle hit (`Intersect_RayGeom` → `HITDATA+0x50`).
@@ -876,6 +1153,7 @@ mod tests {
         let mut graph = ScopeGraph {
             cells: vec![([-8.0, -8.0, -8.0], [1.9, 8.0, 8.0]), ([1.95, -8.0, -8.0], [8.0, 8.0, 8.0])],
             portals: Vec::new(),
+            room: vec![true, true],
         };
         // The wall's centre (2, 1, 0) → cell 1. Bucket by the same rule build_scoped uses.
         let mut scope_cells = vec![Vec::new(); graph.cells.len()];
@@ -904,7 +1182,7 @@ mod tests {
         assert!(w.segment_hit([1.5, 1.0, 0.0], [2.5, 1.0, 0.0]).is_some(), "flat segment_hit still sees the wall");
         assert!(w.segment_hit_scoped(Some(0), [1.5, 1.0, 0.0], [2.5, 1.0, 0.0]).is_none(), "the scoped floor ray skips the unreachable wall");
         // Sister: with a portal the capsule straddles (a quad across its path), the wall is back.
-        graph.portals.push(ScopePortal { tris: [[[1.8, 0.0, -4.0], [1.8, 4.0, -4.0], [1.8, 4.0, 4.0]], [[1.8, 0.0, -4.0], [1.8, 4.0, 4.0], [1.8, 0.0, 4.0]]], a: 0, b: 1 });
+        graph.portals.push(ScopePortal { tris: [[[1.8, 0.0, -4.0], [1.8, 4.0, -4.0], [1.8, 4.0, 4.0]], [[1.8, 0.0, -4.0], [1.8, 4.0, 4.0], [1.8, 0.0, 4.0]]], a: 0, b: 1, centre: [1.8, 2.0, 0.0] });
         scope_cells[1].push(0);
         let w2 = mk(graph, scope_cells);
         let (scoped2, _) = w2.capsule_push_scoped(Some(0), [1.6, 1.0, 0.0], [1.6, 1.2, 0.0], 0.55);
@@ -917,7 +1195,7 @@ mod tests {
         stat2.chunk(16);
         let w3 = CollisionWorld {
             stat: stat2, missile: Geo::default(), dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default(),
-            scope: Some(ScopeData { graph: ScopeGraph { cells: vec![([-8.0; 3], [8.0; 3])], portals: Vec::new() }, cells: vec![vec![0]], always: Vec::new() }),
+            scope: Some(ScopeData { graph: ScopeGraph { cells: vec![([-8.0; 3], [8.0; 3])], portals: Vec::new(), room: vec![true] }, cells: vec![vec![0]], always: Vec::new() }),
         };
         assert!(w3.segment_actor([0.0, 0.5, 0.0], [0.0, 0.5, 4.0]).is_some(), "flat: the mat-0xd tri blocks");
         assert!(w3.segment_take_scoped(Some(0), [0.0, 0.5, 0.0], [0.0, 0.5, 4.0]).is_none(), "the take's 0x721 filter skips the mat-0xd tri");

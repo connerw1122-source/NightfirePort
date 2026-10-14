@@ -21,12 +21,16 @@ pub mod gpu;
 #[cfg(feature = "gamepad")]
 pub mod gamepad;
 pub mod dev;
+pub mod devwin;
 pub mod hud;
 pub mod menu;
 pub mod movie;
 pub mod scene;
 pub mod replay;
 pub mod panel;
+pub mod weapon_assets;
+/// The weapon matrix (task 100d): every on-foot level × every weapon, measured headless.
+pub mod matrix;
 
 use anyhow::{bail, Context, Result};
 use glam::{Mat4, Vec3};
@@ -45,8 +49,10 @@ const MOUSE_SENSITIVITY: f32 = 0.0025;
 /// The game's vertical field of view in play (60°, docs/systems/player.md).
 const GAME_FOV: f32 = std::f32::consts::FRAC_PI_3;
 
+/// The viewer at one tick (pos = the eye, yaw/pitch the look angles, fov half-angle radians). Pub for
+/// the headless interpolation tests (fix-interp-ghosting) to build tick cameras the way the loop does.
 #[derive(Clone, Copy)]
-struct Camera { pos: Vec3, yaw: f32, pitch: f32, fov: f32 }
+pub struct Camera { pub pos: Vec3, pub yaw: f32, pub pitch: f32, pub fov: f32 }
 
 /// Render interpolation (G-043): logic runs at a fixed 60 Hz; frames between two ticks draw `t` of the way from
 /// the previous tick's camera and palette to the latest one (one tick behind, the standard fixed-step scheme).
@@ -54,20 +60,191 @@ struct Camera { pos: Vec3, yaw: f32, pitch: f32, fov: f32 }
 const SNAP: f32 = 4.0;
 fn lerp_cam(a: &Camera, b: &Camera, t: f32) -> Camera {
     if a.pos.distance(b.pos) > SNAP || (a.fov - b.fov).abs() > 0.2 { return *b; }
-    let mut dy = b.yaw - a.yaw;
+    Camera { pos: a.pos.lerp(b.pos, t), yaw: lerp_yaw(a.yaw, b.yaw, t), pitch: a.pitch + (b.pitch - a.pitch) * t, fov: a.fov + (b.fov - a.fov) * t }
+}
+
+/// The yaw half of `lerp_cam`: the short way round the ±π wrap (07000002's corridor turns must not
+/// sweep the long way). Extracted with the tick scheduler so the fps-determinism test pins it.
+pub fn lerp_yaw(a: f32, b: f32, t: f32) -> f32 {
+    let mut dy = b - a;
     while dy > std::f32::consts::PI { dy -= std::f32::consts::TAU; }
     while dy < -std::f32::consts::PI { dy += std::f32::consts::TAU; }
-    Camera { pos: a.pos.lerp(b.pos, t), yaw: a.yaw + dy * t, pitch: a.pitch + (b.pitch - a.pitch) * t, fov: a.fov + (b.fov - a.fov) * t }
+    a + dy * t
 }
-fn lerp_palette(a: &[nf_formats::anim::Mat4], b: &[nf_formats::anim::Mat4], t: f32) -> Vec<nf_formats::anim::Mat4> {
+
+/// The render loop's tick scheduler (`RedrawRequested`, the `anim_time += dt * 60` block), extracted
+/// verbatim so the headless fps-determinism test drives the same arithmetic the winit loop runs:
+/// a render frame advances the 60 Hz clock by `dt * 60` and runs the whole ticks that appeared,
+/// capped at `max_ticks` (fix-perf-level's drop cap — capped ticks are dropped, not deferred).
+/// Logic stays fixed-60 Hz at any frame rate: faster frames just run 0 ticks more often.
+pub fn ticks_for_frame(anim_time: &mut f32, dt: f32, max_ticks: u32) -> u32 {
+    let before = *anim_time as u32;
+    *anim_time += dt * 60.0;
+    (*anim_time as u32).saturating_sub(before).min(max_ticks)
+}
+/// The palette half of the G-043 interpolation: the draw loop blends the previous tick's skin
+/// palette into the latest one while `lerp_cam` blends the camera by angle. fix-interp-ghosting:
+/// world matrices blend as ROTATION (slerp of the rotation part [M `Quat_Slerp_Acc` 0x1e4188] — a
+/// component-wise lerp of a rotation is not a rotation, it shears and shrinks mid-way, the
+/// playtest's arm/gun smear) + component lerp of the translation. Matrices whose 3×3 is not a
+/// rotation (the collapse/FAR hides, the camera-facing billboards) keep the component lerp, where
+/// slerp has no defined meaning. Pub for the headless interpolation tests (fix-interp-ghosting) to
+/// drive the exact path the `RedrawRequested` handler runs.
+pub fn lerp_palette(a: &[nf_formats::anim::Mat4], b: &[nf_formats::anim::Mat4], t: f32) -> Vec<nf_formats::anim::Mat4> {
     if a.len() != b.len() { return b.to_vec(); }
     a.iter().zip(b).map(|(x, y)| {
         let d = (0..3).map(|k| (x[3][k] - y[3][k]).powi(2)).sum::<f32>().sqrt();
         if d > SNAP { return *y; }
-        let mut m = *y;
-        for r in 0..4 { for c in 0..4 { m[r][c] = x[r][c] + (y[r][c] - x[r][c]) * t; } }
-        m
+        blend_pose(x, y, t)
     }).collect()
+}
+
+/// The rotation blend of one palette entry: slerp of the rotation part ([M `Quat_Slerp_Acc`
+/// 0x1e4188], the game's own skin-pose blend) + lerp of the translation; entries whose 3×3 is not
+/// orthonormal (collapse/FAR hides, scaled billboards) fall back to the component lerp.
+fn blend_pose(x: &nf_formats::anim::Mat4, y: &nf_formats::anim::Mat4, t: f32) -> nf_formats::anim::Mat4 {
+    match (rot_quat(x), rot_quat(y)) {
+        (Some(qx), Some(qy)) => {
+            let qt = nf_game::anim::slerp(qx, qy, t);
+            let mut m = quat_rows(qt);
+            for k in 0..4 { m[3][k] = x[3][k] + (y[3][k] - x[3][k]) * t; }
+            m
+        }
+        _ => {
+            let mut m = *y;
+            for r in 0..4 { for c in 0..4 { m[r][c] = x[r][c] + (y[r][c] - x[r][c]) * t; } }
+            m
+        }
+    }
+}
+
+/// The quaternion of a palette entry's 3×3 when it is a rotation (rows orthonormal within 1e-3 —
+/// collapse/FAR hides and the scaled billboard coronas fail the gate): Shepperd's method on the
+/// port's row-vector matrices (stored rows = the images of the local axes, i.e. the transposed
+/// column-convention form the textbook formulas assume).
+fn rot_quat(m: &nf_formats::anim::Mat4) -> Option<[f32; 4]> {
+    for i in 0..3 {
+        let n = (m[i][0] * m[i][0] + m[i][1] * m[i][1] + m[i][2] * m[i][2]).sqrt();
+        if (n - 1.0).abs() > 1e-3 { return None; }
+    }
+    for i in 0..3 { for j in (i + 1)..3 {
+        let d = m[i][0] * m[j][0] + m[i][1] * m[j][1] + m[i][2] * m[j][2];
+        if d.abs() > 1e-3 { return None; }
+    } }
+    // Proper rotations only: a reflection (det −1) has no quaternion — Shepperd on one would
+    // silently return an unrelated rotation. Scaled billboards with scale 1 can be improper.
+    let det = m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+            + m[0][1] * (m[1][2] * m[2][0] - m[1][0] * m[2][2])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    if det < 0.5 { return None; }
+    let tr = m[0][0] + m[1][1] + m[2][2];
+    let (x, y, z, w);
+    if tr > 0.0 {
+        let s = (tr + 1.0).sqrt() * 2.0;
+        w = 0.25 * s;
+        x = (m[1][2] - m[2][1]) / s; y = (m[2][0] - m[0][2]) / s; z = (m[0][1] - m[1][0]) / s;
+    } else if m[0][0] > m[1][1] && m[0][0] > m[2][2] {
+        let s = (1.0 + m[0][0] - m[1][1] - m[2][2]).sqrt() * 2.0;
+        w = (m[1][2] - m[2][1]) / s; x = 0.25 * s;
+        y = (m[0][1] + m[1][0]) / s; z = (m[0][2] + m[2][0]) / s;
+    } else if m[1][1] > m[2][2] {
+        let s = (1.0 + m[1][1] - m[0][0] - m[2][2]).sqrt() * 2.0;
+        w = (m[2][0] - m[0][2]) / s; x = (m[0][1] + m[1][0]) / s; y = 0.25 * s;
+        z = (m[1][2] + m[2][1]) / s;
+    } else {
+        let s = (1.0 + m[2][2] - m[0][0] - m[1][1]).sqrt() * 2.0;
+        w = (m[0][1] - m[1][0]) / s; x = (m[0][2] + m[2][0]) / s; y = (m[1][2] + m[2][1]) / s;
+        z = 0.25 * s;
+    }
+    Some([x, y, z, w])
+}
+
+/// The palette-entry matrix of a quaternion: stored rows = the images of the local axes (the
+/// row-vector convention's transposed form; round-trips `rot_quat` exactly).
+fn quat_rows(q: [f32; 4]) -> nf_formats::anim::Mat4 {
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    [
+        [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y + z * w), 2.0 * (x * z - y * w), 0.0],
+        [2.0 * (x * y - z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + x * w), 0.0],
+        [2.0 * (x * z + y * w), 2.0 * (y * z - x * w), 1.0 - 2.0 * (x * x + y * y), 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
+/// The tick camera as a view → world matrix (C⁻¹ = R·T(eye)): rows (left, up, fwd) + the eye —
+/// the exact basis the first-person gun is posed from (`Player_PositionGun` 0x1a3b40 builds the
+/// gun's axes as gl = up×gf = the viewer LEFT, gu = gf×gl = up, gf = the turned forward — det +1,
+/// a proper rotation, and at yaw 0 it is the identity). So the gun's world matrix decomposes as
+/// local pose · C⁻¹ and the camera factor cancels in camera space. (cam_axes' `right = f×Y` rows
+/// would be det −1 — a reflection — which no quaternion represents.)
+fn cam_view_to_world(cam: &Camera) -> nf_formats::anim::Mat4 {
+    let f = cam.dir();
+    let l = Vec3::Y.cross(f).normalize_or_zero(); // the viewer's left = −(f×Y) [M 0x1a3b40's gl]
+    let u = f.cross(l); // the game's gu = gf×gl [M 0x1a3b40] (cam_axes' up = right×f, same vector)
+    [[l.x, l.y, l.z, 0.0], [u.x, u.y, u.z, 0.0], [f.x, f.y, f.z, 0.0], [cam.pos.x, cam.pos.y, cam.pos.z, 1.0]]
+}
+
+/// world → view: C = T(−eye)·Rᵀ (v_view = (v_world − eye)·Rᵀ, rows of the result = right/up/fwd
+/// dots). `cam_view_to_world` is its exact inverse for orthonormal rows.
+fn cam_world_to_view(cam: &Camera) -> nf_formats::anim::Mat4 {
+    let mut m = cam_view_to_world(cam);
+    // transpose the rotation, negate the translation: T(−p)·Rᵀ
+    let (p, r) = ([m[3][0], m[3][1], m[3][2]], rot_transpose3(&m));
+    let mut c = r;
+    let dot = |row: usize| -(p[0] * c[0][row] + p[1] * c[1][row] + p[2] * c[2][row]);
+    c[3] = [dot(0), dot(1), dot(2), 1.0];
+    c
+}
+
+/// Transpose the 3×3 block, zeroing the translation row.
+fn rot_transpose3(m: &nf_formats::anim::Mat4) -> nf_formats::anim::Mat4 {
+    let mut r = *m;
+    for i in 0..3 { for j in 0..3 { r[i][j] = m[j][i]; } }
+    r[3] = [0.0; 4];
+    r
+}
+
+/// The palette entries of the ACTIVE first-person view model (the object matrix, its bones and the
+/// attachment slots hung on the view model character — the rigid gun parts, the muzzle flash).
+fn view_model_entries(scene: &scene::Scene, l: &scene::SkinLayout) -> Option<Vec<usize>> {
+    let s = scene.sim.as_ref()?;
+    let ci = *scene.view_models.get(&s.gun.weapon)?;
+    let base = *l.char_base.get(ci)? as usize;
+    let nb = scene.characters.get(ci)?.skeleton.bones as usize;
+    let mut v: Vec<usize> = (base..=base + nb).collect();
+    let att = l.attach_base as usize;
+    for (k, a) in scene.attachments.iter().enumerate() {
+        if a.character as usize == ci { v.push(att + k); }
+    }
+    Some(v)
+}
+
+/// fix-interp-ghosting: re-attach the first-person view model's palette entries (the hands and gun,
+/// posed in world space from each tick's camera [M `Player_PositionGun` 0x1a3b40]) to the
+/// interpolated draw camera, blending them in CAMERA space: for each entry in `vm_entries`, convert
+/// both ticks' world matrices camera-relative with that tick's camera (`cam_prev` / `cam_cur`),
+/// blend the relative poses at `alpha`, and re-attach the result to `draw_cam` — the same scheme
+/// `lerp_cam` uses for the view itself, so mid-turn the gun cannot swim against the view. Entries
+/// whose relative pose jumps more than `SNAP` snap to the newer tick (draw/holster switches), like
+/// `lerp_palette`'s world-space snap. `out` is the blended palette (from `lerp_palette`), `prev` /
+/// `cur` the two ticks' palettes. Pub for the headless interpolation tests to drive the exact path
+/// the `RedrawRequested` handler runs.
+pub fn reattach_view_model(out: &mut [nf_formats::anim::Mat4], prev: &[nf_formats::anim::Mat4], cur: &[nf_formats::anim::Mat4], alpha: f32,
+                           cam_prev: &Camera, cam_cur: &Camera, draw_cam: &Camera, vm_entries: &[usize]) {
+    let (vp, vc, vd) = (cam_world_to_view(cam_prev), cam_world_to_view(cam_cur), cam_view_to_world(draw_cam));
+    for &k in vm_entries {
+        let (Some(mp), Some(mc)) = (prev.get(k), cur.get(k)) else { continue };
+        let Some(op) = out.get_mut(k) else { continue };
+        let rel_p = nf_formats::anim::mul(mp, &vp);
+        let rel_c = nf_formats::anim::mul(mc, &vc);
+        // The camera-space snap mirrors `lerp_palette`'s world-space one: a relative-pose jump
+        // (draw/holster switches, scoped hide) snaps to the newer tick instead of sweeping.
+        let d = (0..3).map(|k2| (rel_p[3][k2] - rel_c[3][k2]).powi(2)).sum::<f32>().sqrt();
+        if d > SNAP { *op = *mc; continue; }
+        // Non-rotation entries (the collapse/FAR hides) keep the world blend `lerp_palette` wrote.
+        if rot_quat(&rel_p).is_none() || rot_quat(&rel_c).is_none() { continue; }
+        *op = nf_formats::anim::mul(&blend_pose(&rel_p, &rel_c, alpha), &vd);
+    }
 }
 
 impl Camera {
@@ -96,11 +273,15 @@ fn start_camera(scene: &scene::Scene) -> Camera {
 }
 
 /// Builds the sound driver + output from the scene's bank/music, and wires the music logic. The scene's bank,
-/// music and tables are consumed (taken out) — the same path `main` uses at startup [M].
-fn build_sound(scene: &mut scene::Scene) -> Option<nf_audio::sfx::Sound> {
+/// music and tables are consumed (taken out) — the same path `main` uses at startup [M]. Public so the live
+/// tests drive the exact runtime driver (fix-weapon-sounds).
+pub fn build_sound(scene: &mut scene::Scene) -> Option<nf_audio::sfx::Sound> {
     let sound = scene.sound_bank.take().map(|(slot, bank, sbf)| {
         let mut driver = nf_audio::sfx::Driver::new();
         driver.load_bank(slot, bank, sbf);
+        // The spare banks: every other SBINFO slot (fix-weapon-sounds). The level's own stays primary, so
+        // ids it carries resolve exactly as the one-bank driver did [M `Sound_Ready` 0x1dceb8].
+        for (slot, bank, sbf) in std::mem::take(&mut scene.sound_spares) { driver.load_spare_bank(slot, bank, sbf); }
         if let Some((lut, bin)) = scene.streams.take() { driver.load_streams(lut, std::sync::Arc::new(bin)); }
         let output = nf_audio::Output::open();
         if output.is_none() { eprintln!("audio: no output device; running silent"); }
@@ -128,13 +309,21 @@ fn wire_music(sim: &mut scene::Sim, mm: Vec<nf_formats::music::MapMusic>, vars: 
 }
 
 pub fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, None, false)
+    load_impl(iso, archive, all, None, false, &[])
 }
 
 /// `--dev`: the same load with the dev view-model merge (folded 190-fix-dev2). Normal play never
 /// passes `dev = true`, so no extra archive is opened without the flag.
 pub fn load_dev(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, None, true)
+    load_impl(iso, archive, all, None, true, &[])
+}
+
+/// `load` pre-merged for the given weapon ids (`--give` at startup, the dev menu's lazy give):
+/// each id's first-person skin (+0xDC), meshes, skeleton, `07F` sequences and view scripts merge
+/// from their owning archive before the scene builds, so the weapon draws exactly as it does on a
+/// level that carries it (`weapon_assets::merge_weapon_assets`).
+pub fn load_weapons(iso: &str, archive: &str, all: bool, wids: &[u8]) -> Result<scene::Scene> {
+    load_impl(iso, archive, all, None, false, wids)
 }
 
 /// The sim catch-up cap (`NF_MAXTICKS`, default 4) — see the frame loop.
@@ -145,15 +334,21 @@ static MAX_TICKS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 /// wrote, and `Player_InitWeapon` (0x1a7ef8) runs the per-level loadout switch over `Player_RamLoad`
 /// (0x1957a8). `None` = a cold load (the game's boot path; `Player_RamLoad`'s whole body is skipped).
 pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, false)
+    load_impl(iso, archive, all, save, false, &[])
+}
+
+/// The carry-over load pre-merged for the given weapon ids (the dev menu's lazy give: the same
+/// warm reload the level transition runs, plus the given weapons' assets).
+pub fn load_with_carry_weapons(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, wids: &[u8]) -> Result<scene::Scene> {
+    load_impl(iso, archive, all, save, false, wids)
 }
 
 /// `--dev` level transition: the carry-over load with the dev view-model merge.
 pub fn load_with_carry_dev(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, true)
+    load_impl(iso, archive, all, save, true, &[])
 }
 
-fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool) -> Result<scene::Scene> {
+fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool, give: &[u8]) -> Result<scene::Scene> {
     use nf_formats::{anim::Sequence, character, levelbin::LevelBin};
     use std::collections::HashMap;
     let iso = IsoImage::open(iso_path)?;
@@ -200,10 +395,58 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     // anim scripts) merge from their holding archives — the same session-table mechanism the
     // weapon-model merge mirrors — and `Scene::build` then gives every weapon a view model. Dev
     // mode only: normal play loads no extra archive for skins.
-    let mut level_scripts: HashMap<u32, nf_formats::anim::Script> = HashMap::new();
-    if dev {
-        merge_dev_view_models(&iso, &read, &archive[..8], &mut level, &mut skeletons, &mut sequences, &mut level_scripts)?;
+    // The level's own kind-5 anim scripts, parsed once and shared with the DroneContext below.
+    let mut level_scripts: HashMap<u32, nf_formats::anim::Script> = lb.entries.iter().filter(|e| e.kind == 5)
+        .filter_map(|e| nf_formats::anim::Script::parse(lb.data(&data, e)).ok()).map(|x| (x.hashcode, x)).collect();
+    // The weapon-asset merge (fix-weapon-assets): `--dev` pulls every missing fp skin as before
+    // (folded 190-fix-dev2); a normal load pulls exactly the `--give` / dev-menu weapons it is
+    // asked for. The gameplay-skeleton guard keeps the appended 07F sequences off every skeleton
+    // a drone or character placement animates (the per-skeleton lists are order-sensitive gameplay
+    // data — the loadable-pack sentinel rule); the fp hands/gun skeletons never carry those.
+    let gameplay_skeletons: std::collections::HashSet<u8> = if dev || !give.is_empty() {
+        let mut gs = std::collections::HashSet::new();
+        if let Some(m) = level.main_map() {
+            for p in level.maps[m].placements.iter() {
+                let Some(&(_, skin)) = p.params.iter().find(|(i, _)| *i == 0) else { continue };
+                if skin >> 24 != 5 { continue; }
+                if let Some(sk) = level.skins.get(&skin) { gs.insert(sk.skeleton); }
+            }
+        }
+        gs
+    } else { Default::default() };
+    let weapon_wanted = if dev { weapon_assets::Wanted::All }
+        else if !give.is_empty() { weapon_assets::Wanted::Ids(give.to_vec()) }
+        else { weapon_assets::Wanted::None };
+    let mut weapons_table: Option<nf_formats::weapon::WeaponData> = None;
+    if weapon_wanted != weapon_assets::Wanted::None {
+        // weapon_data once for the whole load (the EE initialiser run the merge needs is the same
+        // one the DroneContext consumes below; `--dev` used to run it twice).
+        let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
+        weapons_table = match nf_formats::weapon::WeaponData::from_action_elf(&elf) {
+            Ok(mut w) => { w.apply_player_init_override(u32::from_str_radix(&archive[..8], 16).unwrap_or(0)); Some(w) }
+            Err(e) => { eprintln!("weapon_data: {e} — drones drawn unarmed"); None }
+        };
+        if let Some(wd) = weapons_table.as_ref() {
+            let index = weapon_assets::DiscIndex::for_iso(&iso, iso_path);
+            let t = std::time::Instant::now();
+            let have_scripts: std::collections::HashSet<u32> = level_scripts.keys().copied().collect();
+            let st = weapon_assets::merge_weapon_assets(&iso, &read, &mut level, &mut skeletons, &mut sequences,
+                &mut level_scripts, &have_scripts, &gameplay_skeletons, wd, &weapon_wanted, &index, dev)?;
+            eprintln!("weapon assets: merged {} archive(s), {} skin(s), {} map(s), {} sequence(s), {} script(s) in {:.2}s",
+                st.archives, st.skins, st.maps, st.sequences, st.scripts, t.elapsed().as_secs_f32());
+        }
     }
+    // The weapon_data the DroneContext consumes: the hoisted build when the merge ran, else built
+    // here (a normal load without --give never opens another archive).
+    let weapons_table = match weapons_table {
+        Some(w) => Some(w),
+        None => match nf_formats::weapon::WeaponData::from_action_elf(&{
+            iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?
+        }) {
+            Ok(mut w) => { w.apply_player_init_override(u32::from_str_radix(&archive[..8], 16).unwrap_or(0)); Some(w) }
+            Err(e) => { eprintln!("weapon_data: {e} — drones drawn unarmed"); None }
+        },
+    };
 
 
     // G-021 (models-characters): drone placements whose skin (placement param 0) is not in their
@@ -364,27 +607,16 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
     let drones = scene::DroneContext {
         tables: nf_formats::drone::DroneAnimData::from_action_elf(&elf)?,
-        scripts: {
-            let mut sc: HashMap<u32, nf_formats::anim::Script> = lb.entries.iter().filter(|e| e.kind == 5)
-                .filter_map(|e| nf_formats::anim::Script::parse(lb.data(&data, e)).ok()).map(|x| (x.hashcode, x)).collect();
-            // The dev view-model merge's foreign anim scripts (the merged FP skins' idle/fire/reload)
-            // join the level's own; a hash the level has stays local.
-            for (h, x) in level_scripts { sc.entry(h).or_insert(x); }
-            sc
-        },
+        // The level's own kind-5 scripts plus the weapon-asset merge's foreign view scripts (the
+        // merged FP skins' idle/fire/reload) — the merge inserts missing hashes only, so a hash
+        // the level has stayed local.
+        scripts: level_scripts,
         level_id: u32::from_str_radix(&archive[..8], 16).unwrap_or(0),
         // weapon_data is built at boot by its static initialiser; run it over the user's ELF (docs/formats/weapon-data.md).
         props: nf_formats::drone::PropertyTables::from_action_elf(&elf).ok(),
-        weapons: match nf_formats::weapon::WeaponData::from_action_elf(&elf) {
-            Ok(mut w) => {
-                // `Player_Init` (0x1910f8): overrides weapon_data[1]+0xDC (the fists skin) with a level-specific
-                // value from PunchSkin.204 [M]. Without this, the port looks up the static value (0x0500003d)
-                // instead of the level-specific one (0x050000ab on 07000005), and the fists view model is missing.
-                w.apply_player_init_override(u32::from_str_radix(&archive[..8], 16).unwrap_or(0));
-                Some(w)
-            }
-            Err(e) => { eprintln!("weapon_data: {e} — drones drawn unarmed"); None }
-        },
+        // Built once above (the merge consumes the same table); `Player_Init` (0x1910f8)'s override
+        // of weapon_data[1]+0xDC (the fists skin) is already applied.
+        weapons: weapons_table,
         tuning: {
             let mut t = nf_formats::tuning::Tuning::from_action_elf(&elf).unwrap_or_default();
             nf_game::tuning::read_tuning_vars(&mut t, u32::from_str_radix(&archive[..8], 16).unwrap_or(0));
@@ -466,6 +698,28 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         let f = |ext: &str| get(&nf_formats::soundbank::bank_path("ENGLISH", slot, ext));
         let bank = nf_formats::soundbank::Bank::parse(&f("SHF")?, &f("SFX")?).map_err(|e| eprintln!("sound bank: {e}")).ok()?;
         Some((slot, bank, f("SBF")?))
+    })();
+    // fix-weapon-sounds: the spare banks — every other SBINFO slot with files on the disc, so a weapon
+    // given on a level whose own bank lacks a sound still plays it from a bank that holds it. Only ids
+    // the level's own bank lacks ever resolve to a spare (the driver's primary-first lookup), so every
+    // level-carried sound is bit-identical to the one-bank behaviour [M `Sound_Ready` 0x1dceb8; S the
+    // extension — the real game loads one bank per level].
+    scene.sound_spares = (|| -> Vec<(usize, nf_formats::soundbank::Bank, Vec<u8>)> {
+        let get = |p: &str| iso.find(p).and_then(|e| iso.read_file(e).ok());
+        let Some(sbi) = get("PS2/SBINFO.SBI") else { return Vec::new() };
+        let Some(slots) = nf_formats::soundbank::bank_slots(&sbi).ok() else { return Vec::new() };
+        let own = scene.sound_bank.as_ref().map(|(s, _, _)| *s);
+        let mut spares = Vec::new();
+        for (slot, &hash) in slots.iter().enumerate() {
+            if hash == u32::MAX || Some(slot) == own { continue; }
+            let f = |ext: &str| get(&nf_formats::soundbank::bank_path("ENGLISH", slot, ext));
+            let (Some(shf), Some(sfx), Some(sbf)) = (f("SHF"), f("SFX"), f("SBF")) else { continue };
+            match nf_formats::soundbank::Bank::parse(&shf, &sfx) {
+                Ok(bank) => spares.push((slot, bank, sbf)),
+                Err(e) => eprintln!("sound bank slot {slot}: {e}"),
+            }
+        }
+        spares
     })();
     // Streamed effects (guards' speech): STREAMS.LUT / STREAMS.BIN.
     scene.streams = (|| {
@@ -612,103 +866,6 @@ fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
     Ok(())
 }
 
-/// The dev view models (folded 190-fix-dev2): index every archive's type-3 skins (skin hash → archive),
-/// then merge every selectable weapon's first-person skin (+0xDC) that the level archive lacks — its
-/// meshes (the skin's `extra` rigid parts and the level's sleeve), its skeleton, its 07F sequences and
-/// the weapons' kind-5 anim scripts. `Scene::build` then gives every weapon a view model. Dev only.
-fn merge_dev_view_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
-    read: &impl Fn(&str) -> Result<Option<Vec<u8>>>, _prefix: &str, level: &mut Level,
-    skeletons: &mut std::collections::HashMap<u8, nf_formats::character::Skeleton>,
-    sequences: &mut std::collections::HashMap<u8, Vec<nf_formats::anim::Sequence>>,
-    scripts: &mut std::collections::HashMap<u32, nf_formats::anim::Script>) -> Result<()> {
-    let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
-    let Ok(wd) = nf_formats::weapon::WeaponData::from_action_elf(&elf) else { return Ok(()) };
-    // skin hash → archive (the first archive on the disc that holds it).
-    static SKIN_ARCHIVES: std::sync::OnceLock<std::collections::HashMap<u32, String>> = std::sync::OnceLock::new();
-    let index = SKIN_ARCHIVES.get_or_init(|| {
-        let mut map = std::collections::HashMap::new();
-        let Ok((entries, bin)) = disc::files_bin_entries(iso) else { return map };
-        for e in entries.iter().filter(|e| e.name.len() == 12 && e.name.ends_with(".bin")) {
-            let Ok(d) = iso.read_bytes(bin.lba as u64 * 2048 + e.offset as u64, e.size as u64) else { continue };
-            let Ok(l) = nf_formats::levelbin::LevelBin::parse(&d) else { continue };
-            for pe in l.entries.iter().filter(|pe| pe.kind == 3) {
-                let raw = l.data(&d, pe);
-                if raw.len() < 4 { continue; }
-                let h = u32::from_le_bytes(raw[0..4].try_into().unwrap());
-                if (h & 0xff00_0000) == 0x0500_0000 { map.entry(h).or_insert_with(|| e.name.clone()); }
-            }
-        }
-        map
-    });
-    // The weapons' FP skins the level lacks + the four fists skins (`Player_Init` overrides record 1
-    // per level; the merged set covers whichever the level asks for).
-    const PUNCH_SKINS: [u32; 4] = [0x0500_00ab, 0x0500_0099, 0x0500_003d, 0x0500_00a1];
-    let mut wanted: Vec<u32> = Vec::new();
-    for w in 1..0x73usize {
-        let fp = wd.first_person(w);
-        if fp != 0 && !level.skins.contains_key(&fp) && !wanted.contains(&fp) { wanted.push(fp); }
-    }
-    for &p in &PUNCH_SKINS { if !level.skins.contains_key(&p) && !wanted.contains(&p) { wanted.push(p); } }
-    let mut merged: Vec<String> = Vec::new();
-    for skin in wanted.iter() {
-        let Some(archive_name) = index.get(skin) else {
-            eprintln!("dev view models: skin {skin:08x} is on no archive of the disc"); continue;
-        };
-        if merged.contains(archive_name) { continue; }
-        merged.push(archive_name.clone());
-        let fd = match read(archive_name) { Ok(Some(d)) => d, _ => continue };
-        let Ok(mut foreign) = Level::parse(&fd) else { continue };
-        // The skins the level lacks join the session table (the game's skin table accumulates the
-        // same way [M AnimLoadFile 0x1d8248]); first-wins keeps the level's own.
-        let mut new_skins = 0usize;
-        for (h, sk) in foreign.skins.clone() {
-            if level.skins.contains_key(&h) { continue; }
-            level.skins.insert(h, sk);
-            new_skins += 1;
-        }
-        // The foreign maps that hold the merged skins' meshes and the sleeves.
-        let mut hashes = wanted_weapon_models(level, &wd);
-        for (h, sk) in foreign.skins.iter() {
-            if !level.skins.contains_key(h) { continue; }
-            for mh in sk.main.iter().flatten() { hashes.push(*mh); }
-            for (_, ph) in sk.extra.iter() { if let Some(x) = ph { hashes.push(*x); } }
-        }
-        // The foreign skeletons the level lacks; the merged skins' skeletons mark the sequence
-        // buckets the view models will look up.
-        let flb = nf_formats::levelbin::LevelBin::parse(&fd)?;
-        let mut fp_skeletons: std::collections::HashSet<u8> = Default::default();
-        for e in flb.entries.iter().filter(|e| e.kind == 6) {
-            let sk = nf_formats::character::parse_skeleton(flb.data(&fd, e))?;
-            if skeletons.contains_key(&(sk.id as u8)) { continue; }
-            skeletons.insert(sk.id as u8, sk);
-        }
-        for h in wanted.iter() { if let Some(sk) = level.skins.get(h) { fp_skeletons.insert(sk.skeleton); } }
-        // The foreign 07F sequences: a NEW skeleton gets its own bucket (no gameplay data touched);
-        // a skeleton the view models use appends — dev only (the port's per-skeleton lists are
-        // order-sensitive gameplay data for DRONES, which the FP hands skeleton never carries).
-        let anim_name = format!("{}F{}", &archive_name[..2], &archive_name[3..]);
-        if let Some(anim) = read(&anim_name)? {
-            let alb = nf_formats::levelbin::LevelBin::parse(&anim)?;
-            let mut appended = 0usize;
-            for pe in alb.entries.iter().filter(|pe| pe.kind == 4 && pe.length >= 0x40) {
-                let s = nf_formats::anim::Sequence::parse(alb.data(&anim, pe))?;
-                if fp_skeletons.contains(&s.skeleton) { sequences.entry(s.skeleton).or_default().push(s); appended += 1; }
-            }
-            if appended > 0 { eprintln!("dev view models: {appended} sequences from {anim_name}"); }
-        }
-        // The foreign kind-5 anim scripts (the weapons' idle/fire/reload hashes) — missing hashes only.
-        let mut new_scripts = 0usize;
-        for e in flb.entries.iter().filter(|e| e.kind == 5) {
-            if let Ok(sc) = nf_formats::anim::Script::parse(flb.data(&fd, e)) { if scripts.insert(sc.hashcode, sc).is_none() { new_scripts += 1; } }
-        }
-        let moved = take_maps_holding(level, foreign, &hashes);
-        eprintln!("dev view models: merged {archive_name} for skin {skin:08x} ({new_skins} skins, {new_scripts} scripts, {moved} maps)");
-    }
-    Ok(())
-}
-
-/// The level's player starts: the main map's type-0x24 placements in placement order, with the gate
-/// (parameter 0) [M `parsemap_create_dynamic_objects` 0x1d04f0 case 0x24 → `Player_AddNewStartPos`
 /// 0x195c00 → `Player_Start` 0x190fd0]. Yaw = the placement's rotation[1], the same convention the
 /// "Player1" stand-in uses (scene.rs).
 fn level_starts(level: &Level) -> Vec<nf_game::player::LevelStart> {
@@ -749,6 +906,23 @@ pub fn cutscene_skip_key(k: winit::keyboard::KeyCode) -> bool {
     matches!(k, winit::keyboard::KeyCode::ArrowDown | winit::keyboard::KeyCode::KeyR)
 }
 
+/// The dev menu's type-to-filter lane: a physical key → the ASCII char it types into the filter
+/// (lowercase; the HUD font has only ASCII glyphs anyway, `dev::fit`).
+fn dev_filter_char(k: winit::keyboard::KeyCode) -> Option<char> {
+    use winit::keyboard::KeyCode as K;
+    Some(match k {
+        K::KeyA => 'a', K::KeyB => 'b', K::KeyC => 'c', K::KeyD => 'd', K::KeyE => 'e', K::KeyF => 'f',
+        K::KeyG => 'g', K::KeyH => 'h', K::KeyI => 'i', K::KeyJ => 'j', K::KeyK => 'k', K::KeyL => 'l',
+        K::KeyM => 'm', K::KeyN => 'n', K::KeyO => 'o', K::KeyP => 'p', K::KeyQ => 'q', K::KeyR => 'r',
+        K::KeyS => 's', K::KeyT => 't', K::KeyU => 'u', K::KeyV => 'v', K::KeyW => 'w', K::KeyX => 'x',
+        K::KeyY => 'y', K::KeyZ => 'z',
+        K::Digit1 => '1', K::Digit2 => '2', K::Digit3 => '3', K::Digit4 => '4', K::Digit5 => '5',
+        K::Digit6 => '6', K::Digit7 => '7', K::Digit8 => '8', K::Digit9 => '9', K::Digit0 => '0',
+        K::Space => ' ', K::Minus => '-', K::Period => '.', K::Comma => ',',
+        _ => return None,
+    })
+}
+
 /// The Character-layer vertices posed after `time` 60 Hz ticks: start animations (`None`) or sequence `choice`.
 /// (`Scene::posed_vertices` also applies the per-character ambient multiplier — the 0x800 TWEAK dim.)
 fn posed_vertices(scene: &scene::Scene, choice: Option<usize>, time: f32, opts: scene::ViewOpts) -> Vec<scene::Vertex> {
@@ -769,7 +943,8 @@ fn snow_for(scene: &scene::Scene, cam: &Camera) -> Vec<scene::Vertex> {
 
 /// One frame of sound (`Sound_UpdateListeners` → `Sound_UpdateSounds` → the batch → `SFXUpdate`): the listener is
 /// Bond's eye and view (glb_viewer[0]; the cut-scene camera's listener call is dropped by the EE batcher [M]).
-fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
+/// `pub` so the headless tests drive the exact function the winit loop runs (the fix-gpu-skinning precedent).
+pub fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
     let (pos, f) = (sim.bond.head(), sim.bond.look());
     // Row 0 of the view matrix: up × forward, the screen-left axis (snapshot: dir (−0.839, 0, −0.545) → (−0.545, 0, 0.839)).
     let norm = { let l = (f[0] * f[0] + f[2] * f[2]).sqrt().max(1e-6); [f[2] / l, 0.0, -f[0] / l] };
@@ -793,10 +968,18 @@ fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
     let driver = &s.driver;
     sim.drones.audio.update(sim.sfx.as_ref(), (pos, norm, [0.0, 1.0, 0.0], f), &|h| driver.is_playing(h));
     let cmds = sim.drones.audio.take_commands();
+    // `Sound_UpdateListeners` 0x1dd278 (fix-room-sound): every frame, from the active viewer's cel —
+    // `SFXSetEnvironment(cel s16 +0x98, underwater = (cel+0x3c & 0x10000000) || env >= 20)` [M disasm
+    // 0x1dd4b0-0x1dd4fc]; a viewer with no cel sends nothing and the IOP keeps its previous targets.
+    // The port's single viewer is Bond's eye (as below); the glb_viewer[4] script-camera override is
+    // not modelled — the script-camera listener call is dropped by the EE batcher.
+    let env_send = sim.cel_at(pos).map(|i| {
+        let c = &sim.cels[i];
+        (c.env as i32, (c.underwater || c.env >= 20) as i32)
+    });
     s.batch(|drv, out| {
-        // `Sound_UpdateListeners`→`SFXSetEnvironment(room env, underwater)` [M sound.md §0]. The cel/room system that
-        // supplies `room env` is not yet ported (G-016); default to no reverb / no underwater until it is.
-        drv.set_environment(0, 0);
+        // `Sound_UpdateListeners`→`SFXSetEnvironment(room env, underwater)` [M sound.md §0, 0x1dd278].
+        if let Some((reverb, underwater)) = env_send { drv.set_environment(reverb, underwater); }
         for c in cmds {
             match c {
                 nf_game::sound::Cmd::Listener { pos, norm, dir, .. } => { drv.set_listener(pos, dir, norm); }
@@ -841,10 +1024,16 @@ fn cam_axes(cam: &Camera) -> ([f32; 3], [f32; 3]) {
 /// difficulty|missions|dossier>` jumps to a page for the per-page renders, `--cursor N` picks the row,
 /// `--unlock-all` is the `menu_unlock_everything` dev global [M 0x30d2a7, 0x20b8d8:18]. The page is
 /// drawn with the game's font (ACTION.ELF's FONTSerpLight) and the USATxt.dat strings.
-fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> Option<gpu::HudFrame> {
+/// fix-menu-movies2: returns `(hud, movie)` — with the `movies` feature and an image that has movie
+/// data, the page's backdrop is its own looping FMV instead of the dark plate, decoded as a still
+/// (closed-GOP chunks in order until the frame is covered — fast; `--movie-frame N` picks the
+/// frame) and drawn on the ONE
+/// movie plane (gpu.rs), exactly like the live loop. `--intro [N]` renders the P_INTRO movie the
+/// same way, fullscreen with no overlay (the intro page has no controls [M 0x209e88]).
+fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_path: &str) -> (Option<gpu::HudFrame>, Option<(u32, u32, Vec<u8>)>) {
     let page_arg = args.iter().position(|a| a == "--page");
-    if !front_end && page_arg.is_none() { return None; }
-    let Some(tables) = scene.hud.as_ref() else { eprintln!("[front end] no HUD tables (the game font) — the menu overlay needs ACTION.ELF"); return None; };
+    if !front_end && page_arg.is_none() { return (None, None); }
+    let Some(tables) = scene.hud.as_ref() else { eprintln!("[front end] no HUD tables (the game font) — the menu overlay needs ACTION.ELF"); return (None, None); };
     let mut fe = menu::FrontEnd::new();
     if args.iter().any(|a| a == "--unlock-all") { fe.unlock_all = true; }
     if let Some(i) = args.iter().position(|a| a == "--cursor") {
@@ -859,15 +1048,72 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> Opt
             "difficulty" => menu::Page::Difficulty,
             "missions" | "single" => menu::Page::MissionSelect,
             "dossier" => menu::Page::Dossier,
-            other => { eprintln!("unknown --page '{other}' (start|main|codename|difficulty|missions|dossier)"); return None; }
+            // fix-menus-real (additive hook): the dossier's Records table renders headless too.
+            "records" => menu::Page::Records,
+            // fix-pause-menu: the in-game pages render headless too (the pause page over the
+            // paused frame, the results per outcome). `--cursor N` picks the row, `--pause-tab N`
+            // picks the pause tab, `--confirm` arms the pause confirm.
+            "pause" => menu::Page::Pause,
+            "results" | "failed" => { fe.outcome = menu::Outcome::Failed; menu::Page::Results }
+            "complete" => { fe.outcome = menu::Outcome::Complete; menu::Page::Results }
+            other => { eprintln!("unknown --page '{other}' (start|main|codename|difficulty|missions|dossier|pause|results|complete)"); return (None, None); }
         };
+    }
+    if let Some(i) = args.iter().position(|a| a == "--pause-tab") {
+        fe.pause_tab = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(0);
+    }
+    if args.iter().any(|a| a == "--confirm") {
+        fe.confirming_quit = fe.cursor == 2;
+        fe.confirming_restart = fe.cursor == 1;
+    }
+    // The pause page is a MISSION page: give the flow a mission level so open_pause's guard matches
+    // (the game opens it over a running mission [M Player_Update 0x193600:73]).
+    if fe.page == menu::Page::Pause && fe.flow.current_level == 0 {
+        fe.flow.current_level = 0x0700_0005;
+        fe.mission = 1;
+        fe.open_pause();
     }
     // Tick through the boot load and let the page's timers run (the flash cycle etc.).
     for _ in 0..3 { fe.flow.main_tick(); let _ = fe.flow.load_tick(); }
     fe.press_start_on = true;
     let lang = read_files_bin(&scene_iso_name(), "USATxt.dat").and_then(|b| nf_formats::hud::Lang::parse(&b).ok())
         .or_else(|| scene.sim.as_ref().and_then(|s| s.lang.clone()));
-    Some(menu::menu_overlay(&fe, &tables.font, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0))
+    let intro = args.iter().any(|a| a == "--intro");
+    #[allow(unused_mut)] // the movies feature assigns it
+    let mut movie = None;
+    #[cfg(feature = "movies")]
+    {
+        // --movie-frame defaults past the first GOP: frame 0 of the aux FMVs is the fade-in from
+        // black (fix-menus-real's live check; the movie reports pin decodes on frame 12), so a bare
+        // --page main --shot must not show it.
+        let frame_n: usize = args.iter().position(|a| a == "--movie-frame").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(12);
+        let want = if intro {
+            Some(menu::INTRO_MOVIES[args.iter().position(|a| a == "--intro").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(menu::INTRO_MOVIES.len() - 1)])
+        } else {
+            let aux = menu::aux_movie_for(fe.page.id());
+            (aux != 0).then_some(aux)
+        };
+        if let Some(code) = want {
+            // The image the movies are on: NF_MOVIE_ISO over the ISO argument (the live loop's
+            // App::movie_iso_path precedence) — not the bare NF_ISO env, which may point at the
+            // slim on-foot image whose PSS files are 0-byte stubs [L probe_iso_movies]. (Both
+            // sides of the fix-menus-real2 merge landed this precedence; movie_iso_name keeps the
+            // ISO argument as the no-NF_MOVIE_ISO fallback, which the env-only form dropped.)
+            match movie::movie_still(&movie_iso_name(iso_path), code, frame_n) {
+                Ok(img) => movie = Some((img.width, img.height, img.rgba)),
+                Err(e) => eprintln!("[front end] movie {code:08X}: {e} — the dark plate stands in"),
+            }
+        }
+    }
+    if intro {
+        // The intro FMV owns the screen — no controls, no plate [M 0x209e88]; the movie plane is
+        // the whole picture. Without movie data the headless plate stands in.
+        let hud = if movie.is_some() { None }
+            else { Some(menu::menu_overlay(&fe, &tables.font, &tables.font_header, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0)) };
+        return (hud, movie);
+    }
+    fe.backdrop_live = movie.is_some();
+    (Some(menu::menu_overlay(&fe, &tables.font, &tables.font_header, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0)), movie)
 }
 
 /// The ISO path for `read_files_bin` (the NF_ISO env or the default sandbox path).
@@ -875,9 +1121,18 @@ fn scene_iso_name() -> String {
     std::env::var("NF_ISO").unwrap_or_else(|_| "Nightfire-onfoot.iso".to_string())
 }
 
+/// The image the headless movie stills read: NF_MOVIE_ISO (a full retail image) over the ISO
+/// argument the binary was given — the live loop's `App::movie_iso_path` precedence. The old
+/// still path read the bare `NF_ISO` env instead of the ISO argument, so
+/// `nf-view <retail.iso> 07000048 --page main` reported the slim image's 0-byte PSS stubs and
+/// never saw the retail bytes [fix-menu-backdrop].
+pub fn movie_iso_name(iso_path: &str) -> String {
+    std::env::var("NF_MOVIE_ISO").unwrap_or_else(|_| iso_path.to_string())
+}
+
 /// Renders one frame offscreen and writes it as a PNG. `menu` = a front-end overlay frame (fix-menus2:
 /// `--shot` on the front-end boot draws the menu pages too, so the main agent can compare with PCSX2).
-fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, mut opts: scene::ViewOpts, notex: bool, nofog: bool, menu: Option<&gpu::HudFrame>) -> Result<()> {
+fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, mut opts: scene::ViewOpts, notex: bool, nofog: bool, menu: Option<&gpu::HudFrame>, movie: Option<&(u32, u32, Vec<u8>)>) -> Result<()> {
     let (w, h) = (1280u32, 720u32);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let (_adapter, device, queue) = pollster::block_on(device(&instance, None))?;
@@ -886,7 +1141,9 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     opts.right = opts_right;
     opts.up = opts_up;
     let mut r = gpu::Renderer::new(&device, &queue, format, scene, notex, nofog);
-    r.update_skin(&queue, scene, choice, time, opts);
+    let (vp_shot, _) = cam.view_proj(w as f32 / h as f32);
+    let vis_shot = r.cel_visibility(cam.pos.to_array(), vp_shot, scene.sim.as_ref().map(|s| &s.world));
+    r.update_skin(&queue, scene, choice, time, opts, vis_shot.as_deref());
     r.lights = scene.frame_lights();
     // `NF_BENCH=N`: time the per-frame CPU side N times (posing + vertex build, and the upload) for profiling.
     if let Some(n) = std::env::var("NF_BENCH").ok().and_then(|v| v.parse::<u32>().ok()) {
@@ -902,7 +1159,7 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
         let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f64() * 1000.0 / n as f64;
         eprintln!("[bench] {} char vertices: animate {:.2} ms, posed_vertices (incl. animate) {:.2} ms, upload {:.2} ms", v.len(), ms(t0, t1), ms(t1, t2), ms(t2, t3));
         let t4 = std::time::Instant::now();
-        for _ in 0..n { r.update_skin(&queue, scene, choice, time, opts); }
+        for _ in 0..n { r.update_skin(&queue, scene, choice, time, opts, vis_shot.as_deref()); }
         queue.submit([]); let _ = device.poll(wgpu::PollType::wait_indefinitely());
         eprintln!("[bench] GPU path: palette build + upload {:.2} ms", ms(t4, std::time::Instant::now()));
     }
@@ -916,7 +1173,8 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let snow = snow_for(scene, cam);
     let overlay_owned = menu.map_or_else(|| overlay_for(scene, w as f32 / h as f32), |m| m.clone());
     let hud = &overlay_owned;
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, hud);
+    let movie_arg = movie.map(|(w, h, rgba)| (*w, *h, rgba.as_slice()));
+    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, hud, movie_arg);
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -945,6 +1203,8 @@ struct Gfx {
     config: wgpu::SurfaceConfiguration,
     depth: wgpu::TextureView,
     renderer: gpu::Renderer,
+    /// The adapter (the dev window configures its own surface against it).
+    adapter: wgpu::Adapter,
 }
 
 struct App {
@@ -992,6 +1252,10 @@ struct App {
     iso: String,
     /// A pending level transition: the next level's hashcode, set by `LOAD_LEVEL`; consumed by the main loop.
     pending_level: Option<u32>,
+    /// fix-weapon-assets: a dev-menu/panel give of a weapon whose assets the level archive lacks —
+    /// the tick loop answers it with a warm same-level reload (`load_with_carry_weapons`) that
+    /// merges the weapon's assets, then re-places Bond and re-issues the switch request.
+    pending_weapon_assets: Option<u8>,
     /// fix-restart-target: the ENTRY checkpoint — the RamSave the current level was LOADED with
     /// (`Player_RamSave` 0x195670's buffer 0x2b9440, which the game keeps across level changes).
     /// The fail/death menu's Restart re-serves it (`P_ENDMISSION_Handler` 0x216618:21's
@@ -1034,6 +1298,20 @@ struct App {
     /// curves and ramps — docs/systems/input.md §8).
     #[cfg(feature = "gamepad")]
     pad: Option<gamepad::Backend>,
+    /// fix-menu-movies2: the ONE playing movie, the port's `psiStartBackgroundMovie` [M 0x1081a8].
+    /// Every movie rides it — the GameFlow state-6 briefing/outro (fix-movie-playback), the
+    /// P_INTRO pair and the page's looping backdrop (fix-menu-movies); the host's `movie_tick`
+    /// decides which one the game would be playing and `present()` feeds the ONE plane in
+    /// gpu.rs. Cleared by the skip, the end of a non-looping stream, or a code change.
+    movie: Option<movie::Player>,
+    /// `--dev`: the dev menu in its own native window beside the game (devwin.rs; the user: "outside of the game, but
+    /// not in a browser"). None without `--dev`, or when the window couldn't open (the F2 overlay is the fallback).
+    devwin: Option<devwin::DevWindow>,
+    /// The sound hold's mirror (fix-pause-audio): true while a menu page is up or the viewer pause
+    /// holds the sim. The diff in `RedrawRequested` applies it to `sound` on the edge — the game's
+    /// pause page runs `SFXPause`+`SFXPauseAllStreams` on open and the unpause pair on close
+    /// [M 0x21b908:121-124, 0x21c2b0:11-22].
+    audio_paused: bool,
 }
 
 impl App {
@@ -1043,10 +1321,126 @@ impl App {
     fn demo_results(&mut self, complete: bool) {
         if self.level_code == 0 || self.level_code == menu::FRONTEND_LEVEL { return; }
         let mut fe = menu::FrontEnd::new();
+        // The demo hook stands in for Mission_Update 0x182c60, which fires in state 2 — the flow
+        // must be in a state reset_map_level_to_load accepts (its gate [M 0x1d3800]) for the outro
+        // request to wrap into the movie state.
+        fe.flow.stack = vec![menu::ST_RUNNER];
         fe.flow.current_level = self.level_code;
         fe.mission_ended(if complete { menu::Outcome::Complete } else { menu::Outcome::Failed }, menu::Stats::default());
         self.fe = Some(fe);
         self.grab(false);
+    }
+
+    /// The ONE movie glue, one call per redraw. Every movie the game plays routes through the one
+    /// `self.movie` player, by the game's own start sites: the P_INTRO pair while the run is up
+    /// [M `P_INTRO_Handler` 0x209e88], the GameFlow state-6 briefing/outro [M 0x1c98c8 case 6 +
+    /// `psiStartBackgroundMovie` 0x1081a8], and the page's LOOPING aux backdrop on every page
+    /// change [M `Manager_SendMessage` 0x21c858:338 — stop when the new page's aux is 0, restart
+    /// when it differs from the playing one]. Plus the `psiMovieFinished` poll [M 0x1082e8] and
+    /// the phase-2 resolve routing the host's level load [M ResetMap_Load 0x1d6360 LoadState 2].
+    fn movie_tick(&mut self) {
+        let movie_iso = self.movie_iso_path();
+        let Some(fe) = self.fe.as_mut() else { return };
+        // A pending end_to request from mission_ended rides the same path a menu pick does.
+        if let Some(code) = fe.requested_level.take() { self.pending_level = Some(code); }
+        let intro_up = fe.intro_playing && fe.flow.get_state() == menu::ST_MOVIE;
+        if intro_up {
+            // The intro owns the screen; the game stops any playing movie before starting the
+            // next [M psiStartBackgroundMovie 0x001081a8 restarts the single BGFMV slot].
+            let code = fe.intro_movie_code();
+            let wrong = match &self.movie { Some(p) => p.code() != code || p.is_looping(), None => true };
+            if wrong {
+                if let Some(p) = self.movie.take() { p.stop(); }
+                match movie::Player::start(&movie_iso, code) {
+                    Ok(p) => { self.movie = Some(p); eprintln!("movie: playing {code:08x} (intro)"); }
+                    Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown carries the intro"),
+                }
+            }
+            // psiMovieFinished [M 0x1082e8 polled at 0x209e88]: the pair advances; after the
+            // second movie the host shortens the headless countdown so the state pops at the real
+            // end (the slim ISO's zeroed PSS files [L] leave the countdown alone to carry it).
+            if self.movie.as_ref().is_some_and(|p| p.code() == code && p.finished()) {
+                fe.intro_index += 1;
+                if fe.intro_index >= menu::INTRO_MOVIES.len() { fe.flow.movie_frames = fe.flow.movie_frames.min(1); }
+            }
+        } else if fe.flow.get_state() == menu::ST_MOVIE {
+            match &mut self.movie {
+                Some(p) => {
+                    // BGFMVPlaying follows the player: 1 while it decodes, 0 at the end of file —
+                    // state 6 pops through the psiMovieFinished arm on the next main_tick
+                    // [M 0x1082e8 + 0x1c98c8 case 6].
+                    fe.flow.movie_playing = !p.finished();
+                }
+                None => {
+                    let code = fe.flow.movie_code;
+                    if code != 0 {
+                        match movie::Player::start(&movie_iso, code) {
+                            Ok(p) => {
+                                eprintln!("movie: playing {code:08x} (state 6)");
+                                fe.flow.movie_playing = true; // BGFMVPlaying = 1 [M 0x1081a8]
+                                self.movie = Some(p);
+                            }
+                            Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in"),
+                        }
+                    }
+                }
+            }
+        } else if fe.flow.movie_pending {
+            // A movie-wrapped load is on its way: the looping page backdrop yields the single
+            // player slot to it [M psiStartBackgroundMovie replaces the playing movie].
+            if let Some(p) = self.movie.as_ref() {
+                if p.is_looping() {
+                    let code = p.code();
+                    if let Some(p) = self.movie.take() { p.stop(); }
+                    eprintln!("movie: stopped {code:08x} (a briefing is pending)");
+                }
+            }
+            if self.movie.is_none() && fe.flow.get_state() == menu::ST_MAPLOAD {
+                // Early start: the decoder works through the fade and the rest of the menu so
+                // state 6 opens on the first frame instead of a black screen (the game's IPU
+                // starts streaming instantly [M 0x1081a8]).
+                let code = fe.flow.level_to_load;
+                if matches!((code >> 20) & 0xff, 0x71 | 0x73) {
+                    match movie::Player::start(&movie_iso, code) {
+                        Ok(p) => { self.movie = Some(p); eprintln!("movie: decoding {code:08x} ahead of state 6"); }
+                        Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in"),
+                    }
+                }
+            }
+        } else {
+            // The page's aux loop [M 0x21c858:338]: stop when the page has no aux, (re)start when
+            // the playing code differs from the page's.
+            let aux = menu::aux_movie_for(fe.page.id());
+            let wrong = match &self.movie {
+                Some(p) => aux == 0 || p.code() != aux || !p.is_looping(),
+                None => aux != 0,
+            };
+            if wrong {
+                if let Some(p) = self.movie.take() {
+                    let code = p.code();
+                    p.stop();
+                    eprintln!("movie: stopped {code:08x}");
+                }
+                if aux != 0 {
+                    match movie::Player::start_looping(&movie_iso, aux) {
+                        Ok(p) => { self.movie = Some(p); eprintln!("movie: looping {aux:08x} (page backdrop)"); }
+                        Err(e) => eprintln!("movie: {aux:08x} not started: {e:?} — the dark plate stands in"),
+                    }
+                }
+            }
+        }
+        // The phase-2 resolve: the movie code became the level to load [M 0x1d6360 LoadState 2].
+        if let Some(resolved) = fe.flow.phase2_resolved.take() {
+            self.pending_level = Some(resolved);
+            if resolved != menu::FRONTEND_LEVEL {
+                // The briefing's return: the real level loads and the front end closes — the game
+                // leaves the menu system and Game_Draw takes over.
+                self.fe = None;
+                if self.scene.sim.is_some() { self.grab(true); }
+            }
+            // The outro's return: the front end stays and the results page reopens on the map
+            // (phase 2 set flow.page = 0x40000036 [M]; fe.page follows below in the hud build).
+        }
     }
 
     fn grab(&mut self, on: bool) {
@@ -1062,18 +1456,31 @@ impl App {
         }
     }
 
-    /// A click on the dev menu (F2 open): hit-test the mouse against the menu items and apply the action (WORKLOG 0081).
+    // -------------------------------------------------------------------------
+    // fix-menu-movies2: the front end's background movies ride the ONE player/decoder path
+    // (movie::Player over MovieStream's closed-GOP worker) and the ONE full-screen plane in
+    // gpu.rs — the game plays them all through psiStartBackgroundMovie 0x001081a8 /
+    // psiStopBackgroundMovie 0x00108328 (the page switch plays/stops the page's aux loop
+    // [M Manager_SendMessage 0x21c858:338]; P_INTRO runs the intro pair [M 0x209e88]).
+    // -------------------------------------------------------------------------
+
+    /// The image the movies load from: NF_MOVIE_ISO (a full retail image) over the running one —
+    /// the same precedence movie.rs's tests use [L the on-foot ISO's /MOVIES/30_FPS files are
+    /// zero-length stubs].
+    fn movie_iso_path(&self) -> String { std::env::var("NF_MOVIE_ISO").unwrap_or_else(|_| self.iso.clone()) }
+
+    /// A click on the dev menu (F2 open): hit-test the mouse against the menu rows and apply the action (WORKLOG 0081,
+    /// pages in fix-ingame-dev-menu). The hit-test shares the draw fn's layout (`dev::layout_rows`).
     fn dev_menu_click(&mut self) {
         let aspect = self.gfx.as_ref().map_or(1.0, |g| g.config.width as f32 / g.config.height as f32);
-        let (mouse, spawn_pick) = match self.dev.as_deref_mut() {
+        let mouse = match self.dev.as_deref_mut() {
             None => return,
-            Some(d) => (d.mouse, d.spawn),
+            Some(d) => d.mouse,
         };
-        let Some(idx) = dev::menu_hit(self.dev.as_deref().unwrap(), mouse.0, mouse.1, aspect) else { return };
+        let Some(idx) = dev::menu_hit(self.dev.as_deref().unwrap(), Some(&self.scene), mouse.0, mouse.1, aspect) else { return };
         // B-9: a click also moves the keyboard selection to the clicked row.
         if let Some(d) = self.dev.as_deref_mut() { d.menu_sel = idx; }
-        let Some(action) = dev::menu_action(self.dev.as_deref().unwrap(), idx) else { return };
-        let _ = spawn_pick;
+        let Some(action) = dev::menu_action(self.dev.as_deref().unwrap(), Some(&self.scene), idx) else { return };
         self.apply_menu_action(action);
     }
 
@@ -1094,12 +1501,22 @@ impl App {
         let _ = std::fs::write(png.with_extension("txt"), format!("{line}\n"));
         let fe_menu = self.fe.as_ref().and_then(|fe| self.scene.hud.as_ref().map(|t| {
             let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
-            menu::menu_overlay(fe, &t.font, lang, &self.scene.hud_textures, 1280.0 / 720.0)
+            menu::menu_overlay(fe, &t.font, &t.font_header, lang, &self.scene.hud_textures, 1280.0 / 720.0)
         }));
-        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref()) {
+        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref(), None) {
             Ok(()) => format!("saved {} ({line})", png.display()),
             Err(e) => format!("screenshot failed: {e} ({line})"),
         }
+    }
+
+    /// fix-weapon-assets: true when the weapon's first-person assets are absent (its `+0xDC` skin
+    /// is in no merged archive) — the view model would not build and the view scripts would not
+    /// resolve, exactly the user's symptom on any weapon the level doesn't carry.
+    fn weapon_needs_assets(&self, w: u8) -> bool {
+        self.scene.sim.as_ref().is_some_and(|sim| {
+            let fp = sim.weapons.first_person(w as usize);
+            fp != 0 && !sim.skins.contains_key(&fp)
+        })
     }
 
     fn poll_panel(&mut self) {
@@ -1115,7 +1532,12 @@ impl App {
                 "ammo" => match self.dev.as_deref_mut() { Some(d) => { d.infinite_ammo = !d.infinite_ammo; format!("infinite ammo {}", if d.infinite_ammo { "on" } else { "off" }) } None => "no dev mode".into() },
                 _ => {
                     let (status, switch) = panel::apply(&mut self.scene, &q);
-                    if let Some(w) = switch { self.weapon_switch_to = Some(w); }
+                    if let Some(w) = switch {
+                        self.weapon_switch_to = Some(w);
+                        // fix-weapon-assets: the level archive lacks the weapon — answer the give
+                        // with the warm asset reload (the tick loop's pending_weapon_assets arm).
+                        if self.weapon_needs_assets(w) { self.pending_weapon_assets = Some(w); }
+                    }
                     status
                 }
             };
@@ -1131,48 +1553,82 @@ impl App {
         if changed { let c = panel::catalog(&self.scene); if let Ok(mut g) = h.lock() { g.catalog = c; } }
     }
 
+    /// B-9: apply a dev-menu action and set the on-screen result message. Shared by mouse-click and keyboard
+    /// (Enter) so both produce the same feedback. The result stays ~3 s (180 ticks).
+    ///
+    /// fix-ingame-dev-menu: the whole action match moved into `dev::apply_menu_action_to_scene` — the REAL path,
+    /// shared with the headless menu-flow tests (`tests/dev_menu_flow.rs`). This shell only applies what needs the
+    /// windowed App: the weapon switch request, the pending level, the viewer cel reset, the noclip state and the
+    /// screenshot. Every give/spawn/clear command still routes through `panel::apply` (the shared command layer).
     fn apply_menu_action(&mut self, action: dev::MenuAction) {
-        let result = match action {
-            dev::MenuAction::Close => { if let Some(d) = self.dev.as_deref_mut() { d.menu = false; } "menu closed".to_string() }
-            dev::MenuAction::Spawn(pick) => {
-                let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
-                let dir = self.cam.dir().to_array();
-                let hit = self.scene.sim.as_ref().and_then(|s| s.world.segment(eye, [eye[0] + dir[0] * 30.0, eye[1] + dir[1] * 30.0, eye[2] + dir[2] * 30.0]));
-                let pos = hit.map_or([eye[0] + dir[0] * 5.0, eye[1], eye[2] + dir[2] * 5.0], |t| [eye[0] + (dir[0] * 30.0) * t, eye[1] + (dir[1] * 30.0) * t, eye[2] + (dir[2] * 30.0) * t]);
-                if let Some(d) = self.dev.as_deref_mut() { d.spawn = pick; }
-                let gi = self.dev.as_deref().and_then(|d| d.spawn_guard(&mut self.scene, pos, self.cam.yaw));
-                let kind = match pick { dev::SpawnPick::Normal => "normal", dev::SpawnPick::Sniper => "sniper", dev::SpawnPick::Ambush => "ambush" };
-                match gi { Some(gi) => format!("guard #{gi}: spawned ({kind}) at ({:.1},{:.1},{:.1})", pos[0], pos[1], pos[2]), None => format!("spawn failed ({kind}) — no free slot or no sim") }
+        let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
+        let (out, msg) = match self.dev.as_deref_mut() {
+            None => return,
+            Some(d) => {
+                let out = dev::apply_menu_action_to_scene(d, &mut self.scene, action, eye, self.cam.yaw, self.noclip);
+                let msg = out.status.clone();
+                (out, msg)
             }
-            dev::MenuAction::ForceGrenade => {
-                let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos);
-                let gi = self.dev.as_deref_mut().and_then(|d| { d.force_grenade(&mut self.scene, bond); d.forced.last().copied() });
-                match gi { Some(gi) => format!("guard #{gi}: forced grenade throw — watch the lob"), None => "no guard within 30 m to force".to_string() }
-            }
-            dev::MenuAction::Impulse => {
-                let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos);
-                let gi = self.dev.as_deref_mut().and_then(|d| { d.impulse_guard(&mut self.scene, bond); d.forced.last().copied() });
-                match gi { Some(gi) => format!("guard #{gi}: impulse applied — watch the hop"), None => "no guard within 30 m to impulse".to_string() }
-            }
-            dev::MenuAction::SpecialDeath => {
-                let bond = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos);
-                let gi = self.dev.as_deref_mut().and_then(|d| { d.special_death(&mut self.scene, bond); d.forced.last().copied() });
-                match gi { Some(gi) => format!("guard #{gi}: SpecialDeath triggered — watch the fall"), None => "no guard within 30 m".to_string() }
-            }
-            dev::MenuAction::ToggleGod => { let on = self.dev.as_deref_mut().map_or(false, |d| { d.god_mode = !d.god_mode; d.god_mode }); format!("god mode: {}", if on { "ON" } else { "OFF" }) }
-            dev::MenuAction::ToggleAmmo => { let on = self.dev.as_deref_mut().map_or(false, |d| { d.infinite_ammo = !d.infinite_ammo; d.infinite_ammo }); format!("infinite ammo: {}", if on { "ON" } else { "OFF" }) }
-            dev::MenuAction::ToggleNoReload => { let on = self.dev.as_deref_mut().map_or(false, |d| { d.no_reload = !d.no_reload; d.no_reload }); format!("no reload: {}", if on { "ON" } else { "OFF" }) }
-            dev::MenuAction::SaveSpot => { let p = self.scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos); if let Some(d) = self.dev.as_deref_mut() { d.saved_spot = Some(p); } format!("spot saved at ({:.1},{:.1},{:.1})", p[0], p[1], p[2]) }
-            dev::MenuAction::RestoreSpot => {
-                let spot = self.dev.as_deref().and_then(|d| d.saved_spot);
-                match spot { Some(p) => { if let Some(d) = self.dev.as_deref() { d.teleport(&mut self.scene, p, self.cam.yaw); } format!("restored to ({:.1},{:.1},{:.1})", p[0], p[1], p[2]) }, None => "no saved spot — use 'save spot' first".to_string() }
-            }
-            dev::MenuAction::TimeScale(s) => { if let Some(d) = self.dev.as_deref_mut() { d.time_scale = s; } format!("time scale: {}", if s == 0.0 { "paused (F11=step)" } else if s == 1.0 { "1×" } else { "0.25×" }) }
-            // The level-select jump (fix-dev T5): the same path a level exit takes — a warm load with the
-            // carry-over (`pending_level` consumed at the top of RedrawRequested, lib.rs).
-            dev::MenuAction::Level(id) => { self.pending_level = Some(id); format!("loading {} ..", level_archive_name(id)) }
         };
-        if let Some(d) = self.dev.as_deref_mut() { d.result_msg = Some(result); d.result_timer = 180; }
+        if let Some(w) = out.switch_to {
+            self.weapon_switch_to = Some(w);
+            // fix-weapon-assets: same as poll_panel — a give the level archive can't dress yet.
+            if self.weapon_needs_assets(w) { self.pending_weapon_assets = Some(w); }
+        }
+        if let Some(id) = out.pending_level { self.pending_level = Some(id); }
+        if let Some(on) = out.noclip_to { self.set_noclip(on); }
+        if out.shot { let m = self.spot_shot(); eprintln!("[spot] {m}"); }
+        if out.viewer_cel_reset {
+            // The game's own placement clears the viewer's cel [M 0x1b9920] — the next
+            // `Camera_CheckLocation` re-finds it at Bond's position.
+            if let Some(g) = self.gfx.as_mut() { g.renderer.viewer_cel = crate::scene::ViewerCel::default(); }
+        }
+        if let Some(d) = self.dev.as_deref_mut() { d.result_msg = Some(msg); d.result_timer = 180; }
+    }
+
+    /// One dev-window event (devwin.rs): navigation/filter in the window, actions through the shared path.
+    fn dev_window_event(&mut self, event: WindowEvent) {
+        let Some(dpi) = self.devwin.as_ref().map(|w| w.window.scale_factor() as f32) else { return };
+        match &event {
+            WindowEvent::Resized(s) => {
+                if let (Some(w), Some(g)) = (self.devwin.as_mut(), self.gfx.as_ref()) { w.resize(&g.device, s.width, s.height); }
+                return;
+            }
+            WindowEvent::ScaleFactorChanged { .. } => { if let Some(w) = self.devwin.as_ref() { w.window.request_redraw(); } return; }
+            WindowEvent::RedrawRequested => {
+                if let (Some(w), Some(g), Some(d)) = (self.devwin.as_mut(), self.gfx.as_ref(), self.dev.as_deref()) { w.render(&g.device, &g.queue, &self.scene, d); }
+                return;
+            }
+            _ => {}
+        }
+        let (Some(w), Some(d)) = (self.devwin.as_mut(), self.dev.as_deref_mut()) else { return };
+        let size = w.window.inner_size();
+        let rows = dev::menu_items(d, Some(&self.scene));
+        let req = devwin::handle(&event, d, &mut w.ui, &rows, (size.width as f32, size.height as f32), dpi);
+        match req {
+            devwin::Request::None => {}
+            devwin::Request::Redraw => w.window.request_redraw(),
+            devwin::Request::Hide => w.window.set_visible(false),
+            devwin::Request::Apply(a) => {
+                w.window.request_redraw();
+                self.apply_menu_action(a);
+                if let Some(m) = self.dev.as_deref().and_then(|d| d.result_msg.clone()) { eprintln!("[dev] {m}"); }
+            }
+        }
+    }
+
+    /// The N key's noclip toggle, shared with the Toggles page row (fix-ingame-dev-menu).
+    fn set_noclip(&mut self, on: bool) {
+        self.noclip = on;
+        // Back on foot: Bond where the free camera is.
+        if !self.noclip {
+            if let Some(sim) = self.scene.sim.as_mut() {
+                sim.bond = nf_game::player::Bond::stand_at(&sim.world, [self.cam.pos.x, self.cam.pos.y - 0.7, self.cam.pos.z], self.cam.yaw);
+            }
+            // The game's own placement clears the viewer's cel [M 0x1b9920] — the
+            // next frame re-finds at Bond's position.
+            if let Some(g) = self.gfx.as_mut() { g.renderer.viewer_cel = crate::scene::ViewerCel::default(); }
+        }
     }
 }
 
@@ -1196,7 +1652,16 @@ impl ApplicationHandler for App {
         surface.configure(&device, &config);
         let depth = gpu::depth_view(&device, config.width, config.height);
         let renderer = gpu::Renderer::new(&device, &queue, config.format, &self.scene, self.notex, self.nofog);
-        self.gfx = Some(Gfx { window, instance, minimized: size.width == 0 || size.height == 0, surface, device, queue, config, depth, renderer });
+        // `--dev`: open the dev window beside the game (devwin.rs).
+        if self.dev.is_some() && self.devwin.is_none() {
+            self.devwin = devwin::DevWindow::new(el, &window, &instance, &adapter, &device, &queue, &self.scene);
+            if self.devwin.is_some() {
+                // The window's tabs are the index: open on Weapons.
+                if let Some(d) = self.dev.as_deref_mut() { if d.page == 0 { d.page = devwin::TAB_PAGES[0]; } }
+                eprintln!("dev window open beside the game (F2 raises it)");
+            }
+        }
+        self.gfx = Some(Gfx { window, instance, minimized: size.width == 0 || size.height == 0, surface, device, queue, config, depth, renderer, adapter });
     }
 
     fn device_event(&mut self, _el: &ActiveEventLoop, _id: winit::event::DeviceId, event: DeviceEvent) {
@@ -1215,16 +1680,31 @@ impl ApplicationHandler for App {
                 }
             }
         }
-        // Mouse wheel: weapon switching (next/prev). Up = next (+1), down = prev (−1).
+        // Mouse wheel: with the dev menu open it moves the menu's selection; otherwise weapon
+        // switching (next/prev). Up = previous row / next weapon (−1 direction, matching the old
+        // weapon-cycle mapping: wheel up = next).
         if let DeviceEvent::MouseWheel { delta: MouseScrollDelta::LineDelta(_x, y) } = event {
-            if self.grabbed && !self.noclip {
+            if self.dev.as_deref().is_some_and(|d| d.menu) {
+                if let Some(d) = self.dev.as_deref_mut() {
+                    let n = dev::menu_items(d, Some(&self.scene)).len();
+                    if n > 0 {
+                        if y > 0.0 { d.menu_sel = d.menu_sel.saturating_sub(1); } else { d.menu_sel = (d.menu_sel + 1).min(n - 1); }
+                    }
+                }
+            } else if self.grabbed && !self.noclip {
                 if y > 0.0 { self.weapon_cycle = 1; }
                 else if y < 0.0 { self.weapon_cycle = -1; }
             }
         }
     }
 
-    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // The dev window's events never reach the game (devwin.rs): its clicks/keys drive the dev menu only, and the
+        // game keeps running.
+        if self.devwin.as_ref().is_some_and(|w| w.id() == id) {
+            self.dev_window_event(event);
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(s) => if let Some(g) = &mut self.gfx {
@@ -1279,20 +1759,76 @@ impl ApplicationHandler for App {
                     if let Some(sim) = self.scene.sim.as_mut() { sim.drones.scripts.skip_request = true; }
                 }
                 // fix-menus: while a menu page is up, the keys drive the menu and never the game.
+                // F12 stays the viewer's screenshot — fix-pause-menu: it previously fell through to
+                // the menu branch (key_action(F12) is None → early return), so the user could not
+                // capture the pause menu (the task's report request).
+                if event.state == ElementState::Pressed && k == KeyCode::F12 {
+                    let m = self.spot_shot();
+                    eprintln!("[spot] {m}");
+                    return;
+                }
                 if event.state == ElementState::Pressed && self.fe.is_some() {
                     if let Some(a) = menu::key_action(k) {
                         use menu::Action as MA;
                         let fe = self.fe.as_mut().unwrap();
+                        // State 6: only the skip action matters [M GameFlow_Main 0x1c98c8 case 6
+                        // reads Input_Action(-1, 0x19, 1) and nothing else — the menu pages are not
+                        // up during a movie]. The port's Confirm keys (Enter/Space) stand in for
+                        // the pad's X/Start [S docs/systems/input.md §3].
+                        if fe.flow.get_state() == menu::ST_MOVIE {
+                            if a == MA::Confirm { fe.flow.skip_movie(); }
+                            return;
+                        }
                         if fe.page == menu::Page::Pause && a == MA::Back {
                             self.fe = None; // resume [S: the game's resume is its own row; Back resumes too]
                             if self.scene.sim.is_some() { self.grab(true); }
                             return;
                         }
                         fe.action(a);
+                        let closed = fe.closed;
                         if let Some(code) = fe.requested_level.take() {
                             // The menu picked a level: through the same reload path a LOAD_LEVEL uses.
                             self.pending_level = Some(code);
                         }
+                        // The pause page's Resume row (cursor 0) closes the menu [M C_GCPAUSE_Handler
+                        // 0x204408 — the game's resume is its own row]: the host consumes the flag and
+                        // leaves the menu (the sound hold lifts through the diff below).
+                        if closed {
+                            self.fe = None;
+                            if self.scene.sim.is_some() { self.grab(true); }
+                        }
+                    }
+                    return;
+                }
+                // fix-ingame-dev-menu: while the dev menu is open, the keys drive the menu and never the game
+                // (the same rule the front-end pages follow). The sim is paused under the open menu
+                // (`paused_tick_count`), so nothing can race the menu's actions. F1/F11/F12 keep their viewer
+                // functions; Esc/F2 close and re-grab the mouse.
+                if self.dev.as_deref().is_some_and(|d| d.menu) {
+                    if event.state != ElementState::Pressed { return; }
+                    match k {
+                        KeyCode::F1 => if let Some(d) = self.dev.as_deref_mut() { d.overlay = !d.overlay; },
+                        KeyCode::F2 => {
+                            if let Some(d) = self.dev.as_deref_mut() { d.menu = false; }
+                            if self.scene.sim.is_some() { self.grab(true); }
+                        }
+                        KeyCode::F11 => if let Some(d) = self.dev.as_deref_mut() { d.step = true; },
+                        KeyCode::F12 => { let m = self.spot_shot(); eprintln!("[spot] {m}"); }
+                        KeyCode::Escape => {
+                            if let Some(d) = self.dev.as_deref_mut() { d.menu = false; }
+                            if self.scene.sim.is_some() { self.grab(true); }
+                        }
+                        KeyCode::PageUp => if let Some(d) = self.dev.as_deref_mut() { dev::menu_key(d, dev::MenuKey::PageUp); },
+                        KeyCode::PageDown => if let Some(d) = self.dev.as_deref_mut() { dev::menu_key(d, dev::MenuKey::PageDown); },
+                        KeyCode::ArrowUp => if let Some(d) = self.dev.as_deref_mut() { dev::menu_key(d, dev::MenuKey::Up); },
+                        KeyCode::ArrowDown => if let Some(d) = self.dev.as_deref_mut() { dev::menu_key(d, dev::MenuKey::Down); },
+                        KeyCode::Backspace => if let Some(d) = self.dev.as_deref_mut() { dev::menu_key(d, dev::MenuKey::Backspace); },
+                        KeyCode::Enter => {
+                            // Compute the action while holding the dev borrow, drop it, then apply.
+                            let action = self.dev.as_deref_mut().and_then(|d| dev::menu_activate(d, Some(&self.scene)));
+                            if let Some(a) = action { self.apply_menu_action(a); }
+                        }
+                        _ => { if let Some(c) = dev_filter_char(k) { if let Some(d) = self.dev.as_deref_mut() { dev::menu_type(d, c); } } }
                     }
                     return;
                 }
@@ -1325,27 +1861,11 @@ impl ApplicationHandler for App {
                     (KeyCode::KeyP, ElementState::Pressed) => self.paused = !self.paused,
                     // Dev mode keys (WORKLOG 0081): F1 = AI overlay, F2 = dev menu, F11 = step one tick (when paused).
                     (KeyCode::F1, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { d.overlay = !d.overlay; },
-                    (KeyCode::F2, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { d.menu = !d.menu; if d.menu { self.grab(false); } },
-                    // B-9: keyboard nav for the dev menu. ↑/↓ move, Enter activates the selected row.
-                    (KeyCode::ArrowUp, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.menu { dev::menu_key(d, dev::MenuKey::Up); } },
-                    (KeyCode::ArrowDown, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.menu { dev::menu_key(d, dev::MenuKey::Down); } },
-                    (KeyCode::Enter, ElementState::Pressed) => {
-                        // B-9: keyboard nav. Compute the action while holding the dev borrow, drop it, then apply.
-                        let action = self.dev.as_deref_mut().and_then(|d| {
-                            if d.menu { dev::menu_key(d, dev::MenuKey::Activate) } else { None }
-                        });
-                        if let Some(a) = action { self.apply_menu_action(a); }
-                    }
+                    (KeyCode::F2, ElementState::Pressed) => if self.devwin.is_some() { self.grab(false); if let Some(w) = self.devwin.as_ref() { w.show(); } } else if let Some(d) = self.dev.as_deref_mut() { d.menu = !d.menu; if d.menu { self.grab(false); } else if self.scene.sim.is_some() { self.grab(true); } },
                     (KeyCode::F11, ElementState::Pressed) => if let Some(d) = self.dev.as_deref_mut() { if d.time_scale <= 0.0 { d.step = true; } },
                     (KeyCode::F3, ElementState::Pressed) => self.opts.reinforcements = !self.opts.reinforcements,
                     (KeyCode::KeyF, ElementState::Pressed) => self.opts.firing = !self.opts.firing,
-                    (KeyCode::KeyN, ElementState::Pressed) => {
-                        self.noclip = !self.noclip;
-                        // Back on foot: Bond where the free camera is.
-                        if !self.noclip { if let Some(sim) = self.scene.sim.as_mut() {
-                            sim.bond = nf_game::player::Bond::stand_at(&sim.world, [self.cam.pos.x, self.cam.pos.y - 0.7, self.cam.pos.z], self.cam.yaw);
-                        } }
-                    }
+                    (KeyCode::KeyN, ElementState::Pressed) => { let on = !self.noclip; self.set_noclip(on); }
                     (KeyCode::KeyT, ElementState::Pressed) => if let Some(sim) = self.scene.sim.as_mut() { sim.auto_aim = !sim.auto_aim },
                     // Weapon switching: number keys 1–9 select directly, Q = prev, E (when not use) = next.
                     // The mapping: 1 = P2K (weapon 2), 2 = SG5 Commando (0x16), 3 = sniper (0x24), etc. The exact
@@ -1382,9 +1902,50 @@ impl ApplicationHandler for App {
                 }
             },
             WindowEvent::RedrawRequested => {
+                // fix-movie-playback: the movie glue runs before the load path so a phase-2
+                // resolve lands in the same frame the state 6 popped.
+                self.movie_tick();
+                // fix-weapon-assets: a dev-menu/panel give of a weapon the level archive lacks.
+                // The game never gives cross-level weapons, so there is no game path to mirror —
+                // the port answers the give with a warm reload of the SAME level with the weapon's
+                // assets merged (`LoaderLoad` of the same archive + the merge), re-places Bond
+                // where he stood and re-issues the switch. One hitch per newly-given weapon.
+                if let Some(w) = self.pending_weapon_assets.take() {
+                    if self.weapon_needs_assets(w) {
+                        let (pos, yaw) = self.scene.sim.as_ref().map(|s| (s.bond.pos, s.bond.yaw)).unwrap_or(([0.0; 3], 0.0));
+                        let save = self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
+                            &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
+                            .with_mission(&sim.drones.mission));
+                        self.entry_save = save.clone();
+                        let name = level_archive_name(self.scene.sim.as_ref().map_or(0, |s| s.level));
+                        eprintln!("weapon assets: {w:#04x} is not on this level — warm reload with its assets");
+                        match load_with_carry_weapons(&self.iso, &name, self.all, save.as_ref(), &[w]) {
+                            Ok(mut scene) => {
+                                self.sound = build_sound(&mut scene);
+                                if let Some(sim) = scene.sim.as_mut() {
+                                    sim.bond = nf_game::player::Bond::stand_at(&sim.world, pos, yaw);
+                                    sim.gun.switch_request = w;
+                                }
+                                self.scene = scene;
+                                if let Some(g) = &mut self.gfx {
+                                    g.renderer = gpu::Renderer::new(&g.device, &g.queue, g.config.format, &self.scene, self.notex, self.nofog);
+                                }
+                                self.weapon_switch_to = Some(w);
+                            }
+                            Err(e) => eprintln!("weapon assets: reload failed: {e}"),
+                        }
+                    }
+                }
                 // Bug 5: level transition. A `LOAD_LEVEL` (0xE8) trigger set `pending_level`; reload the scene
                 // with the next archive (`ResetMap_LevelToLoad` 0x1d3800 → `LoaderLoad` 0x1d4a00).
                 if let Some(next) = self.pending_level.take() {
+                    // A movie-wrapped load plays its movie FIRST: the game loads the empty backdrop
+                    // 0x7000500, the briefing/outro runs over it, and only phase 3 loads the real
+                    // level [M 0x1d6360 phases 0/3]. Hold the request while the flow is heading to
+                    // state 6; the phase-2 resolve re-issues it (movie_tick).
+                    if self.fe.as_ref().is_some_and(|fe| fe.flow.movie_pending) {
+                        self.pending_level = Some(next);
+                    } else {
                     // `Trigger_Activate`'s exit order: the success/fallback channel write (already applied in
                     // the sim), then `Player_RamSave` [M 0x1b2318:97-116] — capture the old sim now, before
                     // the scene swap drops it (fix-level2 F2).
@@ -1419,6 +1980,15 @@ impl ApplicationHandler for App {
                             z
                         });
                         s.health = s.health.max(50.0); // [L ee_start_05.bin 0x30cc34-3c, all three 50.0]
+                        // fix-objective-messages: the mission record states ride the game's `.data`
+                        // and the restart resets only the player (`P_ENDMISSION_Handler` 0x216618:19-21
+                        // = `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` + `Player_RamLoad(Bond, 1)`;
+                        // no mission reinit) — the port's restart used to reload with NO mission carry,
+                        // so the reloaded level's fresh `Mission` re-announced the earlier parts'
+                        // objectives at the first monitor tick (the playtest's "NEW OBJECTIVE / Find a
+                        // way inside to the party" on 07000007 during the Cover Lost fail). Carry the
+                        // LIVE mission states (the `.data` as of the restart).
+                        if let Some(sim) = self.scene.sim.as_ref() { s = s.with_mission(&sim.drones.mission); }
                         Some(s)
                     } else {
                         self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
@@ -1433,6 +2003,9 @@ impl ApplicationHandler for App {
                     match load(&self.iso, &name, self.all, save.as_ref()) {
                         Ok(mut scene) => {
                             self.sound = build_sound(&mut scene);
+                            // The fresh sound stack is unpaused: reset the mirror so the per-frame diff
+                            // re-applies the current hold (a menu can still be up over the reload).
+                            self.audio_paused = false;
                             if let Some(start) = scene.start { self.cam = Camera { pos: Vec3::new(start.0[0], start.0[1] + 1.6, start.0[2]), yaw: start.1, pitch: 0.0, fov: GAME_FOV }; }
                             self.scene = scene;
                             self.anim_time = 0.0;
@@ -1451,9 +2024,14 @@ impl ApplicationHandler for App {
                     // The lock channel's edge memory starts clean on the new level (the game's `_prev`
                     // comes back from the RamSave; 0x48 has no writer before the party).
                     self.prev_lock_ch = false;
+                    }
                 }
                 let dt = self.last.elapsed().as_secs_f32().min(0.1);
                 self.last = std::time::Instant::now();
+                // The Toggles page's fps display (wall-clock; a dev readout, never in the Sim).
+                if let Some(d) = self.dev.as_deref_mut() {
+                    if dt > 0.0 { d.fps = if d.fps <= 0.0 { 1.0 / dt } else { d.fps * 0.9 + (1.0 / dt) * 0.1 }; }
+                }
                 let speed = if self.keys.contains(&KeyCode::ShiftLeft) { 40.0 } else { 8.0 } * dt;
                 let fwd = self.cam.dir();
                 let right = fwd.cross(Vec3::Y).normalize_or_zero();
@@ -1465,11 +2043,24 @@ impl ApplicationHandler for App {
                 // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
                 self.ticked = false;
                 self.poll_panel();
+                // fix-pause-audio: the pause page holds the sound. `MenuManager_Create` with
+                // `pause_sound` runs `SFXPause` (batch op 9) + `SFXPauseAllStreams` (op 0x16) and
+                // `MenuManager_Delete` runs the unpause pair [M 0x21b908:121-124, 0x21c2b0:11-22];
+                // GameState+0x50 is read by NO sound code — the pause rides these ops. The port's
+                // hook is the menu page being up (any page: the sim is not ticking) or the viewer's
+                // P pause. `set_paused` reaches the output at once because `sound_tick` (and the
+                // batch) only run inside the tick gate below. The fail/results page opens with
+                // `pause_sound` = 0 in the game (sound keeps playing [M Mission_Update 0x182c60:78])
+                // — the port's demo results hook rides the same gate [S, remaining host glue].
+                let menu_hold = self.fe.is_some() || self.paused;
+                if menu_hold != self.audio_paused {
+                    self.audio_paused = menu_hold;
+                    if let Some(s) = self.sound.as_mut() { s.set_paused(menu_hold); }
+                }
                 if !self.paused && self.fe.is_none() {
                     // Game logic at its fixed 60 Hz, decoupled from the render rate: one AI tick per whole tick of time.
                     // Dev mode's time scale changes the number of ticks run (WORKLOG 0081), not the tick rate.
                     let before = self.anim_time as u32;
-                    self.anim_time += dt * 60.0;
                     // fix-perf-level: the catch-up cap. A slow render frame must not burst a spiral of
                     // ticks — on 07000006 a tick costs ~4.1 ms, so the old 8-tick cap let the sim
                     // burst 33 ms behind one frame (the jitter fix-render3 measured). The game itself
@@ -1478,8 +2069,16 @@ impl ApplicationHandler for App {
                     // only on frame times, never on their content). `NF_MAXTICKS` retunes it.
                     let max_ticks = *MAX_TICKS.get_or_init(|| std::env::var("NF_MAXTICKS").ok()
                         .and_then(|v| v.parse::<u32>().ok()).filter(|v| *v > 0).unwrap_or(4));
-                    let elapsed = (self.anim_time as u32).saturating_sub(before).min(max_ticks);
-                    let n_ticks = self.dev.as_deref_mut().map_or(elapsed, |d| d.tick_count(elapsed));
+                    // G-043: the loop's tick scheduling, extracted verbatim into `ticks_for_frame`
+                    // (the fps-determinism test drives the same arithmetic headless).
+                    let elapsed = ticks_for_frame(&mut self.anim_time, dt, max_ticks);
+                    // fix-ingame-dev-menu: the open menu pauses the sim — 0 ticks unless F11's
+                    // one-shot step was pressed (`paused_tick_count`).
+                    let n_ticks = match self.dev.as_deref_mut() {
+                        Some(d) if d.menu => d.paused_tick_count(),
+                        Some(d) => d.tick_count(elapsed),
+                        None => elapsed,
+                    };
                     self.ticked = n_ticks > 0;
                     let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
                     let look = self.cam.dir().to_array();
@@ -1519,6 +2118,16 @@ impl ApplicationHandler for App {
                                 };
                                 (input, self.trigger, self.just.remove(&KeyCode::KeyR), self.just.remove(&KeyCode::KeyE))
                             };
+                            // weapon-matrix: the dev menu's "Test weapon" run (dev.rs) merges its
+                            // inputs into this tick — the same lanes the keyboard uses
+                            // (`switch_to`, the trigger, the R edge), never during a replay
+                            // (the recording drives the sim alone).
+                            let (tw_switch, tw_fire, tw_reload) = if self.replay.is_none() {
+                                self.dev.as_deref_mut().map_or((None, false, false), |d| d.test_inputs())
+                            } else { (None, false, false) };
+                            input.switch_to = input.switch_to.or(tw_switch);
+                            let trigger = trigger || tw_fire;
+                            let reload = reload || tw_reload;
                             // The gamepad (fix-input, `gamepad` feature): the pad's path through the
                             // game's own mapping/curves/ramps merges into the keyboard's Input; no pad,
                             // no change. Mouse look is untouched (its deltas are in input.turn/look; the
@@ -1533,6 +2142,9 @@ impl ApplicationHandler for App {
                             // B-5 record: capture the exact input passed to step_bond, before the call.
                             if let Some(r) = &mut self.recorder { r.push(replay::TickInput::from_parts(&input, trigger, reload, use_key)); }
                             sim.step_bond(input, trigger, reload, use_key);
+                            // weapon-matrix: the "Test weapon" run watches the tick's result (the
+                            // phase machine in dev.rs; `sim` and `self.dev` are disjoint fields).
+                            if let Some(d) = self.dev.as_deref_mut() { d.test_observe(&*sim); }
                             // The lock's rising edge auto-draws the handgun (`Upgrade_Weapon(6)` = 2 [L])
                             // [M 0x1a24c8:247-250]. `prev` = last tick's channel (the game's
                             // `switch_channels_prev` semantics).
@@ -1590,20 +2202,47 @@ impl ApplicationHandler for App {
                 let (r, u) = cam_axes(&self.cam);
                 self.opts.right = r;
                 self.opts.up = u;
+                let interp0 = !self.noclip && !self.paused && self.scene.sim.is_some() && std::env::var_os("NF_NOINTERP").is_none()
+                    && self.dev.as_deref().map_or(true, |d| d.interp);
+                let alpha0 = if interp0 { self.anim_time.fract() } else { 1.0 };
+                let draw_cam = match (self.cam_prev, self.cam_cur) { (Some(a), Some(b)) if interp0 => lerp_cam(&a, &b, alpha0), _ => self.cam };
+                let aspect0 = g.config.width as f32 / g.config.height as f32;
+                let (vp0, _) = draw_cam.view_proj(aspect0);
+                // One visibility walk per frame, shared by the palette's object cull and render's
+                // World cull (fix-portal): the eye's cel from `Camera_CheckLocation` 0x1bae90's
+                // persistent state, the walk from it [M 0x1e86e8].
+                // The Toggles page's portal-culling row: off passes no world, so the walk returns
+                // everything (the whole level draws — the isolation view).
+                let portal = self.dev.as_deref().map_or(true, |d| d.portal_cull);
+                let vis = g.renderer.cel_visibility(draw_cam.pos.to_array(), vp0, if portal { self.scene.sim.as_ref().map(|s| &s.world) } else { None });
                 // G-043: build the palette only when a tick ran, then draw between the last two ticks.
                 if self.ticked || self.pal_cur.is_none() {
-                    let new = self.scene.skin_palette(&g.renderer.skin_layout, self.choice, self.anim_time, self.opts);
+                    let new = self.scene.skin_palette(&g.renderer.skin_layout, self.choice, self.anim_time, self.opts, vis.as_deref());
                     self.pal_prev = self.pal_cur.take();
                     self.pal_cur = Some(new);
                     self.cam_prev = self.cam_cur;
                     self.cam_cur = Some(self.cam);
                 }
-                let interp = !self.noclip && !self.paused && self.scene.sim.is_some() && std::env::var_os("NF_NOINTERP").is_none();
-                let alpha = if interp { self.anim_time.fract() } else { 1.0 };
-                let draw_cam = match (self.cam_prev, self.cam_cur) { (Some(a), Some(b)) if interp => lerp_cam(&a, &b, alpha), _ => self.cam };
+                let interp = interp0;
+                let alpha = alpha0;
                 if let Some((pal, cols)) = &self.pal_cur {
                     match &self.pal_prev {
-                        Some((pp, _)) if interp => g.renderer.upload_skin(&g.queue, &lerp_palette(pp, pal, alpha), cols),
+                        Some((pp, _)) if interp => {
+                            let mut blended = lerp_palette(pp, pal, alpha);
+                            // fix-interp-ghosting: the view model (posed in world space from each
+                            // tick's camera [M Player_PositionGun 0x1a3b40]) re-attaches to the
+                            // interpolated draw camera — the same camera-space scheme lerp_cam
+                            // uses for the view — so mid-turn the gun cannot swim against the
+                            // view. With a live script camera the tick cams are not Bond's: the
+                            // gun keeps the plain world blend there.
+                            if self.scene.sim.as_ref().map_or(true, |s| s.script_camera().is_none()) {
+                                if let (Some(entries), Some(cp), Some(cc)) =
+                                    (view_model_entries(&self.scene, &g.renderer.skin_layout), self.cam_prev, self.cam_cur) {
+                                    reattach_view_model(&mut blended, pp, pal, alpha, &cp, &cc, &draw_cam, &entries);
+                                }
+                            }
+                            g.renderer.upload_skin(&g.queue, &blended, cols);
+                        }
                         _ => g.renderer.upload_skin(&g.queue, pal, cols),
                     }
                 }
@@ -1623,24 +2262,82 @@ impl ApplicationHandler for App {
                     _ => { g.window.request_redraw(); return; }
                 };
                 let view = frame.texture.create_view(&Default::default());
-                let aspect = g.config.width as f32 / g.config.height as f32;
-                let (vp, vp_rot) = draw_cam.view_proj(aspect);
+                let aspect = aspect0;
+                let (_, vp_rot) = draw_cam.view_proj(aspect);
+                let vp = vp0;
                 let snow = snow_for(&self.scene, &draw_cam);
-                // fix-menus: a menu page up → the menu overlay replaces the HUD.
+                // fix-menus: a menu page up → the menu overlay replaces the HUD. fix-menu-movies2:
+                // the ONE movie plane (gpu.rs) serves every movie — the state-6 briefing/outro
+                // (fix-movie-playback), the P_INTRO pair and the page's looping backdrop
+                // (fix-menu-movies) — and draws BEFORE the HUD runs, so the menu pages' controls
+                // paint over their backdrop exactly like the game's page background
+                // [M PS2UploadBGMImage 0x108740 + movies.md §Presentation].
+                // The borrow rules: read the state first, then pull the frame — `movie_frame`
+                // holds a borrow into `self.movie` until render() consumes it.
+                let state6 = self.fe.as_ref().is_some_and(|fe| fe.flow.get_state() == menu::ST_MOVIE);
+                let intro_up = self.fe.as_ref().is_some_and(|fe| fe.intro_playing) && state6;
+                let flow_up = state6 && !intro_up && self.movie.is_some();
+                // The looping page player is the backdrop under the overlay; the early-started
+                // briefing player (non-looping, held through ST_MAPLOAD) is not.
+                let aux_up = self.movie.as_ref().is_some_and(|p| p.is_looping())
+                    && !self.fe.as_ref().is_some_and(|fe| fe.flow.movie_pending);
+                let movie_up = intro_up || flow_up || aux_up;
+                let movie_frame = if movie_up { self.movie.as_mut().and_then(|p| p.present()) } else { None };
                 let mut hud = if let Some(fe) = self.fe.as_mut() {
                     let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
                     fe.tick();
-                    match &self.scene.hud {
-                        Some(tables) => menu::menu_overlay(fe, &tables.font, lang, &self.scene.hud_textures, aspect),
-                        None => overlay_for(&self.scene, aspect),
+                    fe.backdrop_live = aux_up && movie_frame.is_some();
+                    if flow_up || (intro_up && movie_frame.is_some()) {
+                        // The movie plane replaces the overlay: the state-6 briefing blits over the
+                        // empty backdrop and the fog pass is suppressed while a movie plays [M
+                        // DecodeBGFMVFrame 0x108550 + PS2UploadBGMImage 0x108740, psiDrawFogPass
+                        // 0x10b960]; the intro FMV owns the screen the same way [M 0x209e88]. The
+                        // quad itself is drawn inside render(), before the (empty) HUD runs.
+                        gpu::HudFrame::default()
+                    } else {
+                        // fix-pause-menu2: the OBJECTIVES tab's rows come from the sim's mission
+                        // states (Mission_ObjectiveState's data [M 0x204408:251-271]; state 4 =
+                        // the done marker), refreshed while the pause page is up.
+                        if fe.page == menu::Page::Pause {
+                            if let Some(sim) = self.scene.sim.as_ref() {
+                                fe.pause_objectives = nf_game::mission::LEVELS.iter().enumerate()
+                                    .find(|(_, l)| l.level == sim.level)
+                                    .map(|(li, l)| l.objectives.iter().enumerate().map(|(oi, o)| {
+                                        let done = sim.drones.mission.states.get(li).and_then(|s| s.get(oi)).map(|&s| s == 4).unwrap_or(false);
+                                        (o.text, done)
+                                    }).collect()).unwrap_or_default();
+                            }
+                        }
+                        let mut f = match &self.scene.hud {
+                            Some(tables) => menu::menu_overlay(fe, &tables.font, &tables.font_header, lang, &self.scene.hud_textures, aspect),
+                            None => overlay_for(&self.scene, aspect),
+                        };
+                        // fix-pause-menu2: the in-game HUD stays visible under the pause page —
+                        // the game's pause menu draws OVER the paused frame and its HUD (radar
+                        // ring, ammo pane) [L the main agent's PCSX2 captures 2026-10-13; the
+                        // port replaced the HUD with the overlay]. The HUD's quads go FIRST so
+                        // the menu draws over them (frame order = draw order).
+                        if fe.page == menu::Page::Pause && !matches!(fe.flow.get_state(), menu::ST_MOVIE) {
+                            let hud_frame = overlay_for(&self.scene, aspect);
+                            let base = f.v.len() as u32;
+                            let mut runs = std::mem::take(&mut f.runs);
+                            let mut v = hud_frame.v;
+                            v.extend(f.v.drain(..));
+                            for (tex, blend, start, count) in runs.drain(..) {
+                                f.runs.push((tex, blend, start + base, count));
+                            }
+                            f.v = v;
+                        }
+                        f
                     }
                 } else { overlay_for(&self.scene, aspect) };
                 if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }
                 hud.append(&self.scene.script_overlay_hud(aspect));
                 g.renderer.lights = self.scene.frame_lights();
-                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud);
+                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud, movie_frame);
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
+                if let Some(w) = self.devwin.as_mut() { w.tick(); }
                 if let Some(fps) = self.fps_cap.filter(|f| *f > 0.0) {
                     let target = std::time::Duration::from_secs_f32(1.0 / fps);
                     let el = self.frame_start.elapsed();
@@ -1664,7 +2361,7 @@ pub fn run() -> Result<()> {
         default_hook(info);
     }));
     let args: Vec<String> = std::env::args().skip(1).collect();
-    const USAGE: &str = "usage: nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--fire] [--reinforcements] [--dev --scenario <name>] [--record <file>] [--replay <file>] [--no-fog] [--no-tex] [--shot out.png [--cam x y z yaw pitch]]\n\
+    const USAGE: &str = "usage: nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--fire] [--reinforcements] [--dev [--panel]] [--scenario <name>] [--record <file>] [--replay <file>] [--no-fog] [--no-tex] [--shot out.png [--cam x y z yaw pitch] [--dev-page <name>]]\n\
         <level> is a FILES.BIN name such as 07000005 (\".bin\" optional); without <iso> the image path comes from NF_ISO\n\
         --dev --scenario <name>: place Bond for a feature test (weapon-switch, sg5-pickup, wire-music, autoaim)\n\
         --record <file>: record every logic tick's input to <file> (B-5). --replay <file>: replay a recording.\n\
@@ -1717,7 +2414,18 @@ pub fn run() -> Result<()> {
         }
         None => (level.clone(), level.clone()),
     };
-    let scene = if dev { load_dev(&iso, &level, all)? } else { load(&iso, &level, all)? };
+    // fix-weapon-assets: the `--give` ids must reach the load — each given weapon's assets merge
+    // from its owning archive BEFORE the scene builds, so the weapon draws with its skin,
+    // sequences, muzzle flash and sounds on any level (`nf_view::load_weapons`).
+    let give_ids: Vec<u8> = args.iter().position(|a| a == "--give").and_then(|i| args.get(i + 1))
+        .map(|list| list.split(',').filter_map(|t| {
+            let t = t.trim();
+            let id = t.strip_prefix("0x").and_then(|h| usize::from_str_radix(h, 16).ok()).or_else(|| t.parse().ok());
+            id.filter(|&i| i < 0x72).map(|i| i as u8)
+        }).collect()).unwrap_or_default();
+    let scene = if dev { load_dev(&iso, &level, all)? }
+        else if !give_ids.is_empty() { load_weapons(&iso, &level, all, &give_ids)? }
+        else { load(&iso, &level, all)? };
     let mut cam = start_camera(&scene);
     if let Some(i) = args.iter().position(|a| a == "--cam") {
         let v: Vec<f32> = args[i + 1..i + 6].iter().map(|s| s.parse()).collect::<Result<_, _>>()?;
@@ -1789,8 +2497,25 @@ pub fn run() -> Result<()> {
                 eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);
             }
         }
-        let menu_frame = front_end_menu(&args, &scene, front_end);
-        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts, notex, nofog, menu_frame.as_ref());
+        // fix-armour-ring: `--armour <n>` writes BLData+0x8b0 after the ticks (the pane's armour — the
+        // same write the dev panel's armour row and cheats.py's god make every frame), so the health
+        // pane's armour state renders headless.
+        if let Some(i) = args.iter().position(|a| a == "--armour") {
+            let n: f32 = args.get(i + 1).context("--armour needs a value (0..=50)")?.parse()?;
+            if let Some(sim) = scene.sim.as_mut() { sim.drones.health.armour = n; }
+        }
+        let (mut menu_frame, movie_frame) = front_end_menu(&args, &scene, front_end, &iso);
+        // fix-ingame-dev-menu: `--dev-page <name>` draws the F2 menu's page (menu/weapons/gadgets/
+        // grenades/ammo/npcs/teleport/level/toggles/screenshot) over the game HUD, so the main agent
+        // can render and check each page headless.
+        if let Some(pg) = args.iter().position(|a| a == "--dev-page") {
+            let name = args.get(pg + 1).context("--dev-page needs a page name")?;
+            let page = dev::page_index(name).with_context(|| format!("--dev-page: unknown page {name:?} (one of: {})", dev::PAGES.join(", ")))?;
+            let d = dev::Dev { menu: true, page, ..Default::default() };
+            let f = dev::hud(&d, &scene, 1280.0 / 720.0, [[0.0; 4]; 4]);
+            menu_frame.get_or_insert_with(|| overlay_for(&scene, 1280.0 / 720.0)).append(&f);
+        }
+        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts, notex, nofog, menu_frame.as_ref(), movie_frame.as_ref());
     }
     let event_loop = EventLoop::new()?;
     // Sound: the level's bank in the driver, the default output device (silent without one).
@@ -1800,12 +2525,18 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+        movie: None, devwin: None,
+        audio_paused: false, };
     if dev {
-        app.panel = panel::start();
+        // fix-ingame-dev-menu: the browser panel is no longer part of `--dev` — the in-window F2
+        // menu carries ALL of its functions now (through the same `panel::apply` command layer).
+        // `--panel` puts the HTTP page back for anyone who wants a second screen.
+        app.panel = if args.iter().any(|a| a == "--panel") { panel::start() } else { None };
         match &app.panel {
             Some(_) => eprintln!("dev panel: open http://127.0.0.1:{} in a browser (beside the game window)", panel::PORT),
-            None => eprintln!("dev panel: port {} busy (another nf-view?) — panel not started", panel::PORT),
+            None if args.iter().any(|a| a == "--panel") => eprintln!("dev panel: port {} busy (another nf-view?) — panel not started", panel::PORT),
+            None => {}
         }
         if args.iter().any(|a| a == "--arena") {
             let (status, _) = panel::apply(&mut app.scene, &[("do".to_string(), "arena".to_string())]);
@@ -1840,6 +2571,39 @@ pub fn run() -> Result<()> {
         if let (Some(v), Some(sim)) = (args.get(i + 1), app.scene.sim.as_mut()) {
             let v: Vec<f32> = v.split(',').filter_map(|t| t.parse().ok()).collect();
             if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); if let Some(&pt) = v.get(4) { sim.bond.pitch = pt; } }
+        }
+    }
+    // `--give id[,id...]` (hex like 0x50 or decimal): equip those weapons/gadgets at the start, the way the dev panel's
+    // weapon button does (`Player_EquipWeapon` 0x1a8a58 + three clips of ammo), and draw the first one. For playtest
+    // checks that need a gadget the level hasn't handed out yet.
+    if let Some(i) = args.iter().position(|a| a == "--give") {
+        if let (Some(list), Some(sim)) = (args.get(i + 1), app.scene.sim.as_mut()) {
+            let wd = sim.weapons.clone();
+            let mut first = None;
+            for t in list.split(',') {
+                let t = t.trim();
+                let id = if let Some(h) = t.strip_prefix("0x") { usize::from_str_radix(h, 16).ok() } else { t.parse().ok() };
+                let Some(id) = id.filter(|&i| i < 0x72) else { eprintln!("--give: bad id {t:?}"); continue };
+                let rounds = wd.clip_size(id).max(1);
+                if sim.drones.inventory.equip_weapon(&wd, id, rounds, true) {
+                    sim.drones.inventory.equip_ammo(&wd, id, (rounds * 3).max(rounds));
+                    first.get_or_insert(id as u8);
+                    eprintln!("--give: equipped {id:#04x}");
+                } else if sim.drones.inventory.owned.get(id).copied().unwrap_or(false) {
+                    // Already owned and the game's own equip refuses it (the ammo-type cap — the Q-Claw
+                    // 0x50 on 07000005 is owned at the start [L Inventory::level_start] with ammo type 0's
+                    // cap 0 [L +0x90/+0x92], so `Player_EquipWeapon` 0x1a8a58's owned branch declines it
+                    // [M]). The give's contract is to DRAW the thing: the switch request is the game's own
+                    // `Player_WeaponSelect` path for an owned weapon. Without this the playtest's
+                    // `--give 0x50` printed "refused" and Bond stayed on the P2K — firing gave the real
+                    // bullet impact instead of the grapple.
+                    first.get_or_insert(id as u8);
+                    eprintln!("--give: {id:#04x} already owned — drawing it");
+                } else {
+                    eprintln!("--give: {id:#04x} refused (no first-person model)");
+                }
+            }
+            if let Some(id) = first { sim.gun.switch_request = id; }
         }
     }
     // B-5: start the recorder AFTER the scenario is applied (so the header captures the post-scenario starting state:
