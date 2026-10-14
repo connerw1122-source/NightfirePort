@@ -100,6 +100,11 @@ pub struct HudTables {
     pub bullets: Vec<[f32; 4]>,
     /// Font 2 (`FONTSerpLight`, the HUD's).
     pub font: Font,
+    /// Font 1 (`FONTNFont2`, the menu page headers' bold-italic face) [L FontTable 0x2dd8b0[0] =
+    /// {tex 0x03000005, ptr 0x305a58}; the front-end header controls' page-def format strings are
+    /// "\xff\x01" (font select 1) [L the page dump 2026-10-14; M MenuManager_Create 0x21b908:255-274
+    /// sends the NAME tag as msg 0x23, Label_SendMessage 0x218890:100-104 applies it].
+    pub font_header: Font,
 }
 
 impl HudTables {
@@ -129,24 +134,28 @@ impl HudTables {
         let bb = Buf(at(ba)?);
         let bullets = (0..bsize as usize / 16).map(|k| Ok([bb.f32(k * 16)?, bb.f32(k * 16 + 4)?, bb.f32(k * 16 + 8)?, bb.f32(k * 16 + 12)?])).collect::<Result<_>>()?;
         // Font header: +8 first / last char, +0xC glyph count, +0x10 glyph table, +0x14 line gap, +0x18 space advance.
-        let (fa, _) = sym("FONTSerpLight")?;
-        let fh = Buf(at(fa)?);
-        let (first, last, count, table) = (fh.u16(8)?, fh.u16(10)?, fh.u32(0xc)? as usize, fh.u32(0x10)?);
-        let gb = Buf(at(table)?);
-        let glyphs = (0..count).map(|k| {
-            let o = k * 0x18;
-            let s = |d: usize| gb.u16(o + d).map(|v| v as i16);
-            let (nk, kp) = (gb.u16(o + 0xe)? as usize, gb.u32(o + 0x10)?);
-            // `Font_GetKernAdjust`: 6-byte pairs, the next character at +2, the adjustment (signed byte) at +4.
-            let kerns = if nk == 0 || kp == 0 { Vec::new() } else {
-                let kb = Buf(at(kp)?);
-                (0..nk).map(|j| Ok((kb.u16(j * 6 + 2)?, kb.u8(j * 6 + 4)? as i8))).collect::<Result<_>>()?
-            };
-            Ok(Glyph { u: s(0)?, v: s(2)?, w: s(4)?, h: s(6)?, yoff: s(8)?, pre: s(0xa)?, post: s(0xc)?, code: gb.u16(o + 0x14)?, kerns })
-        }).collect::<Result<_>>()?;
-        let font = Font { first, last, gap: fh.f32(0x14)?, space: fh.f32(0x18)?, glyphs };
+        let parse_font = |name: &str| -> Result<Font> {
+            let (fa, _) = sym(name)?;
+            let fh = Buf(at(fa)?);
+            let (first, last, count, table) = (fh.u16(8)?, fh.u16(10)?, fh.u32(0xc)? as usize, fh.u32(0x10)?);
+            let gb = Buf(at(table)?);
+            let glyphs = (0..count).map(|k| {
+                let o = k * 0x18;
+                let s = |d: usize| gb.u16(o + d).map(|v| v as i16);
+                let (nk, kp) = (gb.u16(o + 0xe)? as usize, gb.u32(o + 0x10)?);
+                // `Font_GetKernAdjust`: 6-byte pairs, the next character at +2, the adjustment (signed byte) at +4.
+                let kerns = if nk == 0 || kp == 0 { Vec::new() } else {
+                    let kb = Buf(at(kp)?);
+                    (0..nk).map(|j| Ok((kb.u16(j * 6 + 2)?, kb.u8(j * 6 + 4)? as i8))).collect::<Result<_>>()?
+                };
+                Ok(Glyph { u: s(0)?, v: s(2)?, w: s(4)?, h: s(6)?, yoff: s(8)?, pre: s(0xa)?, post: s(0xc)?, code: gb.u16(o + 0x14)?, kerns })
+            }).collect::<Result<_>>()?;
+            Ok(Font { first, last, gap: fh.f32(0x14)?, space: fh.f32(0x18)?, glyphs })
+        };
+        let font = parse_font("FONTSerpLight")?;
+        let font_header = parse_font("FONTNFont2")?;
         let air = sprites("AirSprInfo")?;
-        Ok(HudTables { health: sprites("HealthSprInfo")?, ammo: sprites("AmmoSprInfo")?, air, bullets, font })
+        Ok(HudTables { health: sprites("HealthSprInfo")?, ammo: sprites("AmmoSprInfo")?, air, bullets, font, font_header })
     }
 }
 
