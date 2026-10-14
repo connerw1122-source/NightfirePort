@@ -2301,7 +2301,12 @@ impl Sim {
             // the fired tick cleared it), so the AIMS lights and the idle-alert threshold saw a counter
             // that had already crossed 20 when the gun went quiet — the lights snapped on the tick a
             // fire script ended instead of 20 ticks later. fire_state covers states 9/0xb/0xc.
-            self.drones.aims_idle = if self.gun.reload_state == 0 && self.gun.switch_state == 0 && !self.gun.fire_state {
+            // fix-weapon-anims: the aim raise/lower is the game's view state 0xF/0x10 — a non-idle
+            // state for the +0x93a counter [M 0x1a2e38:40-58]; the port's anim-only raise marks it
+            // with view_aim_anim so the counter resets while the scope raises/lowers (else the
+            // +0xCC fidget fires mid-raise: the sniper test caught the alert playing at tick ~20
+            // of an aim hold).
+            self.drones.aims_idle = if self.gun.reload_state == 0 && self.gun.switch_state == 0 && !self.gun.fire_state && self.view_aim_anim.is_none() {
                 self.drones.aims_idle.saturating_add(1)
             } else {
                 0

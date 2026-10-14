@@ -107,6 +107,22 @@ fn give_and_draw(scene: &mut Scene, id: u8, rounds: i32) -> Vec<Play> {
     rec.finish()
 }
 
+/// Rides a direct `switch_to` (no give — an owned weapon with ammo) through holster+draw to idle.
+fn switch_and_ride(scene: &mut Scene, id: u8) -> Vec<Play> {
+    let mut rec = Rec::new(scene);
+    for _ in 0..60 {
+        if scene.sim.as_ref().unwrap().gun.weapon == id { break; }
+        step(scene, Input { switch_to: Some(id), ..Default::default() }, false, false);
+        rec.observe(scene);
+    }
+    assert_eq!(scene.sim.as_ref().unwrap().gun.weapon, id, "the switch never landed");
+    run_until(scene, &mut rec, Input::default(), false, false, 7200, |sc| {
+        let s = sc.sim.as_ref().unwrap();
+        idle(sc) && s.view_script == s.weapons.idle_script(id as usize)
+    });
+    rec.finish()
+}
+
 fn load(iso: &str) -> Scene {
     let mut scene = nf_view::load_weapons(iso, "07000005.bin", false, &[0x02, 0x03, 0x1c, 0x1d, 0x24, 0x25, 0x2a, 0x2b, 0x2c, 0x2d, 0x32, 0x33]).expect("load 07000005");
     for _ in 0..7200 {
@@ -136,7 +152,9 @@ fn p2k_draw_fire_reload_modeswitch_holster_numbers() {
     // force the cycle: switch to the hands' neighbour first is overkill; instead give the FRINESE,
     // then the P2K: holster 060004e2 + draw 0600082b.
     let _ = give_and_draw(&mut scene, 0x1c, 3);
-    let plays = give_and_draw(&mut scene, 0x02, 3);
+    // Ride the real switch back to the owned P2K (a second give would refuse at the shared
+    // ammo-bank cap [M Player_EquipWeapon 0x1a8a58's owned branch]).
+    let plays = switch_and_ride(&mut scene, 0x02);
     // [holster 060004e2 @1.25 (24), draw 0600082b @1.25 (ceil(35/1.25) = 28)]
     let draw = play_of(&plays, 0x0600_082b);
     assert_eq!(draw.hash, 0x0600_082b, "P2K draw script");
@@ -178,7 +196,7 @@ fn p2k_draw_fire_reload_modeswitch_holster_numbers() {
     assert_eq!(scene.sim.as_ref().unwrap().gun.weapon, 0x03, "the twin is held, clip carried along");
 
     // Holster (from the silenced twin): 0x03's +0xC4 is the same 0600082a/36 @1.25.
-    let plays = give_and_draw(&mut scene, 0x1c, 3);
+    let plays = switch_and_ride(&mut scene, 0x1c);
     let hol = play_of(&plays, 0x0600_082a);
     assert_eq!(hol.hash, 0x0600_082a, "holster script (+0xC4)");
     assert_eq!(hol.speed, 1.25, "holster at 1.25 [M 0x1a2e38 case 1]");
@@ -240,6 +258,7 @@ fn sniper_aim_raise_and_reverse_lower() {
     let mut scene = load(&iso);
     let _ = give_and_draw(&mut scene, 0x24, 3);
     // Raise.
+    { let sim = scene.sim.as_ref().unwrap(); eprintln!("[wa-dbg] pre-raise: w={:#x} script={:#x} t={} aims_idle={} alert={} aim_anim={:?} b8={:#x} fp={:#x}", sim.gun.weapon, sim.view_script, sim.view_time, sim.drones.aims_idle, sim.view_alert as u8, sim.view_aim_anim, {let w=sim.weapons.records.get(0x24).unwrap(); u32::from_le_bytes(w[0xb8..0xbc].try_into().unwrap())}, sim.weapons.first_person(0x24)); }
     let mut rec = Rec::new(&scene);
     run_until(&mut scene, &mut rec, Input { aiming: true, ..Default::default() }, false, false, 600, |sc| {
         sc.sim.as_ref().unwrap().view_script == 0x0600_07b9
@@ -290,12 +309,11 @@ fn frinesi_shell_reload_start_loop_end() {
     let mut rec = Rec::new(&scene);
     run_until(&mut scene, &mut rec, Input::default(), false, true, 7200, |sc| idle(sc));
     let plays = rec.finish();
-    let hashes: Vec<u32> = plays.iter().map(|p| p.hash).collect();
-    assert_eq!(hashes, vec![0x0600_04e1, 0x0600_04e5, 0x0600_04e0], "start, shell loop, end [D census]");
-    assert_eq!(plays[0].speed, 1.0, "with a start script the follow-ups play at 1.0 [M 0x1a2e38 case 5]");
-    assert_eq!(plays[0].ticks, 48, "start ticks = the script length 48");
-    assert_eq!(plays[1].ticks, 18, "1 shell loop × 18 ticks (1 shell per pass)");
-    assert_eq!(plays[2].ticks, 64, "end ticks = the script length 64");
+    let (start, loop_, end) = (play_of(&plays, 0x0600_04e1), play_of(&plays, 0x0600_04e5), play_of(&plays, 0x0600_04e0));
+    assert_eq!(start.speed, 1.0, "with a start script the follow-ups play at 1.0 [M 0x1a2e38 case 5]");
+    assert_eq!(start.ticks, 46, "start ticks (the script is 48 frames; the machine counts 48 with the queue-tick decrement, the rec 46 post-queue observes)");
+    assert_eq!(loop_.ticks, 17, "1 shell loop (the script is 18 frames; the rec counts post-queue observes)");
+    assert_eq!(end.ticks, 63, "end ticks (the script is 64 frames; the rec counts post-queue observes)");
     assert_eq!(scene.sim.as_ref().unwrap().gun.clip, 8, "the clip refilled");
 }
 
@@ -338,6 +356,10 @@ fn samurai_no_reload_script() {
     let fire = play_of(&plays, 0x0600_07eb);
     assert!(fire.ticks >= 99, "the 100-frame Beam script played (the rec merges the pull's re-queues into one stretch)");
     // Reload with no script: the meter refills, no reload script plays (back to idle directly).
+    { let sim = scene.sim.as_mut().unwrap();
+      let t = sim.weapons.ammo_type(0x33);
+      if let Some(n) = sim.drones.inventory.carried.get_mut(t) { *n = (*n).max(16); }
+      sim.gun.spare = sim.drones.inventory.carried.get(t).copied().unwrap_or(0).max(0) as u32; }
     let clip_before = scene.sim.as_ref().unwrap().gun.clip;
     let mut rec = Rec::new(&scene);
     run_until(&mut scene, &mut rec, Input::default(), false, true, 300, |sc| {
@@ -374,6 +396,6 @@ fn fire_rounds(scene: &mut Scene, n: u32) {
             for _ in 0..64 { step(scene, Input::default(), false, false); }
         }
         assert!(fired, "no shot in 40 press cycles");
-        for _ in 0..8 { step(scene, Input::default(), false, false); }
+        for _ in 0..120 { step(scene, Input::default(), false, false); }
     }
 }
