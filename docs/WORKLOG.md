@@ -9956,3 +9956,10 @@ Stage Summary:
 - Files: matrix.rs (new), tests/weapon_matrix_live.rs (new), nf-extract main.rs + Cargo.toml (the command), dev.rs (the row), lib.rs (pub mod matrix + the 2-line test-weapon hook). drone.rs/scene.rs/player.rs untouched.
 - Report: docs/reports/weapon-matrix.md (the mark table, the numbers, the live checks for the main agent).
 - Open: re-run with 100a-c merged; the intro input-lock F/D cells; the variant back-chain B cells (100c).
+
+## fix-silencer-modes (s/fix-silencer-modes) — 2026-10-14
+
+Task 102b, playtest 1013-1825 (07000006/07000005): the P2K silencer (twin 0x02 'Semi' <-> 0x03
+'Silenced') — the attach anim plays but the silencer vanishes from the view model while bullets
+stay silenced; equip → swap away → swap back loses the silenced variant; dev infinite ammo fills
+the reserves but not the magazine; the SSG's semi-auto refires too slowly. Work in progress.
