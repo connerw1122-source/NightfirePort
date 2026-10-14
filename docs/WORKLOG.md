@@ -10040,3 +10040,16 @@ Task: 06 searchlights + guards — alarm on the walked beam entry, beam/pool dra
 
 Work Log:
 - (started 05:11 UTC) branch from origin/master; reproducing first.
+- Walked the 06 truck start → courtyard beam with real input (the spawn pocket opens east only; the
+  D→C nav gap at x 52-56 is open ground): alarm ch 55 rises +109 ticks after reaching the beam spot
+  — the walk does NOT fail on this tree (fix-searchlight-alarm's channel chain holds; the test is
+  now permanent in fix_searchlights_guards_live.rs).
+- Spot-disc orientation fixed [M 0x1cb900 hit branch 0x1cbe78-0x1cbea8 + 0x134210/0x1e5168]: the
+  game's spot angles are pitch = π/2 − atan2(n.y, |n.xz|), yaw = atan2(n.x, n.z), roll = 0, rebuilt
+  by View_RotTransMatrix (aivolume::matrix). The old reading (atan2(n.z,|n.xz|) in the placement-
+  Euler pitch slot, yaw in the roll slot) folded the disc onto its edge on wall/slope/Bond-sphere
+  normals — the user's "flip on its side". Unit test + sister.
+- Guards' first shot: the entry-fire machinery is the game's own [M 0x166328:59-61 / 0x167060 —
+  AimStandFire/AimCrouchFire fire on entry when unseen < 16]; added the game's impact-danim
+  deferral [M 0x166328:48-52: danim 0x13 → timer C 60] — a guard shot mid-approach held the first
+  bullet; test staged via next_state.
