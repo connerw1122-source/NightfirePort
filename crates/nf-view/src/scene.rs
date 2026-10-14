@@ -112,6 +112,9 @@ impl Draw {
     }
 }
 
+/// fix-0c-pylon probe: `Clone` so headless render tests can stage material subsets per render
+/// (the pylon-only isolation render); nothing else changes.
+#[derive(Clone)]
 pub struct Material {
     pub layer: Layer,
     pub draw: Draw,
@@ -277,6 +280,11 @@ pub struct Sim {
     pub hitboxes: nf_formats::hitbox::CollisionBones,
     pub sfx: Option<nf_formats::sfx::SfxTable>,
     pub volumes: Vec<nf_game::aivolume::AiVolume>,
+    /// fix-script-objects: the glist bounds (min, max) by hashcode — the script-created AI
+    /// volumes' half-extents resolve here (`Drone_AIVolume_Create` 0x1376c0:84-92: |max − min|/2
+    /// from the glist's min +0x20 / max +0x30, × the scale triple — the script arm's scales are
+    /// {1,1,1} [M 0x1d8a58]).
+    pub glist_bounds: HashMap<u32, ([f32; 3], [f32; 3])>,
     pub models: HashMap<u32, nf_game::pickup::Model>,
     /// Bond's gun (07000005's start: P2K, 7 + 41 rounds) and the auto-aim option (`PlayerSetting+1` = 1 in the game
     /// [L]; off by default with a mouse, D-001).
@@ -344,6 +352,20 @@ pub struct Sim {
     /// The level's third icons (placement kind 0xFA, `ThirdIcon_Create` 0x197070). Each tick the Sim
     /// writes the enabled icon's context into `bond.icon_ctx` (`BLData+0x95F`) — fix-wire2.
     pub icons: Vec<nf_game::wire::Icon>,
+    /// The level's hint markers (placement kind 0x33, `Hint_Create` 0x1b3248, class 0x43 —
+    /// fix-context-hints). One-shot type-1 (INFO pane) messages with an optional sound, fired when
+    /// the player enters the marker's straddle-cel set with its channels satisfied.
+    pub hints: Vec<nf_game::player::Hint>,
+    /// Per hint marker, the straddled `cells` indices (the game's obj+0xD0 chain occupancy — the
+    /// same resolution as `icon_cels`, over the marker's world sphere).
+    pub hint_cels: Vec<Vec<usize>>,
+    /// Per hint marker: fired once per level load (obj+0xFE bit 0 deletes the game's object
+    /// [M Hint_Update 0x1b3380:41-42]).
+    pub hint_fired: Vec<bool>,
+    /// Per third icon, its instance message timer (data+8 [M ThirdIcon_Update 0x196e80:15-17]):
+    /// −1 per tick, reset to 4 while the player is in range; the type-6 "Press Action" hint posts
+    /// only when the timer has ticked down to 0.
+    pub icon_msg_timers: Vec<u8>,
     /// Each wire's owning cel (the smallest-volume `cels` bbox containing the wire's world-sphere
     /// centre — `build_FindCel` 0x1c8cb0's test). The game's pick pass is CEL-CULLED:
     /// `Collide_Pick` 0x1eb320 tests only the cels the query segment straddles
@@ -413,10 +435,24 @@ pub struct Sim {
 /// `second` track the pane's per-display SFX (`ObjectiveSFXTriggered1/2` 0x30ccb4/0x30ccb8 —
 /// reset by case 2 each time the message becomes the displayed head [M 0x19c310:148-164]).
 #[derive(Clone, Debug)]
-pub struct Msg { pub text: String, pub time: f32, pub status: u32, pub failed: bool, pub life: f32, pub opened: bool, pub second: bool }
+pub struct Msg {
+    pub text: String,
+    pub time: f32,
+    pub status: u32,
+    pub failed: bool,
+    pub life: f32,
+    pub opened: bool,
+    pub second: bool,
+    /// The posting `Txt_BindLabel` id (0 for the queues that post pre-bound text — the INFO
+    /// pane's tests pin it) [M Text_AddMsg 0x1b0c30 stores the bound string; the id is the
+    /// port's provenance for the game-label assertions].
+    pub label: u32,
+}
 
 impl Msg {
-    pub fn new(text: String, time: f32) -> Msg { Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false } }
+    pub fn new(text: String, time: f32) -> Msg {
+        Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false, label: 0 }
+    }
 }
 
 /// The HUD state the port keeps in Sim (the game keeps it in BLData / the TXTMSG list / pane structs).
@@ -449,6 +485,22 @@ pub struct HudState {
     /// The banners' close animations (16 px per tick, the panes' slide field).
     pub objective_close: f32,
     pub mission_close: f32,
+    /// The type-1 INFO message queue (pane 4, `MsgInfoStatusPane` 0x319810 — the TOP hint bar):
+    /// the Hint markers (placement 0x33) and `ThirdIcon_Update`'s type-6 "Press Action" post
+    /// `Text_AddMsg(…, 1, …, 0xb4)` into it [M 0x1b3380:33, 0x196e80:41-42]. One TXTMSG list per
+    /// type, like the pickup/objective/mission queues.
+    pub info_msgs: std::collections::VecDeque<Msg>,
+    /// The INFO bar's close animation (16 px per tick — the pane's slide 0x10 [L 0x319810+0x14]).
+    pub info_close: f32,
+    /// The raw label ids still awaiting the language bind (drained into `info_msgs` in `hud_tick`;
+    /// the tests pin these game label ids directly).
+    pub info_labels: std::collections::VecDeque<(u32, f32)>,
+    /// The health pane's `ThirdIconTimer` (0x30CCE8): 30 while a context id is set, fading the
+    /// context icon out over it on 0xFF [M HUD_UpdateHealthPane 0x19b9c8:273-303].
+    pub context_icon_timer: i32,
+    /// The last non-0xFF context id the icon showed (the runtime sprite keeps its texture through
+    /// the fade — the port re-derives it since the fade path runs after the id is gone).
+    pub last_icon_ctx: u8,
 }
 
 impl HudState {
@@ -458,6 +510,9 @@ impl HudState {
     /// the mission banner's open height (103, `MissionStatusSprInfo[2].h` [L 0x319580+0x2c·2]).
     const OBJECTIVE_W: f32 = 480.0;
     const MISSION_H: f32 = 103.0;
+    /// The INFO bar's open width (480, `InfoStatusSprInfo[2].w` [L 0x319730+0x58+0x10] — the same
+    /// 480 the CREATE's w carries before `HUD_CalcWidthHeight`).
+    const INFO_W: f32 = 480.0;
 }
 
 impl Sim {
@@ -495,12 +550,25 @@ impl Sim {
         let src = self.char_script.get(ci).copied().flatten()?;
         let skin_hash = (*self.char_script_skin.get(ci)?)?;
         let (script, frame) = self.script_anim(src, skin_hash)?;
-        let (q, f) = nf_game::anim::script_frame(self.scripts.get(&script)?, frame)?;
-        let seq = self.seqs.get(&q)?;
         let skin = self.skins.get(&skin_hash)?;
         let skeleton = self.skeletons.get(&skin.skeleton)?;
-        if !anim::fits(seq, skeleton) { return None; }
-        let world = anim::world_pose(&anim::local_pose(seq, skeleton, skin, f as u32), skin);
+        // fix-cutscene-brightness2: the ramp must sample the ambient where the actor is DRAWN, so
+        // the position resolution here is the render path's own — `script_pose_together` (the
+        // widest started body window; frame_state's script branch poses with it). The held
+        // fix-cutscene-brightness used `script_pose`, whose `script_frame` takes the LAST covering
+        // window — on the 07000002 intro that is the zero-root overlay track (char[79]: windows
+        // (1,1541,0x04000296)/(1,1540,0x04000224); the last one's root reads [0,0,0] at frame 170
+        // while the body track carries [-25.51, 1.13, 30.14] — beside Bond [-27.17, 1.05, 29.80]),
+        // a point in no cel. Its scratch-base composition then multiplied the near-origin root by
+        // `Player::live_matrix` — which is stream 0's object ∘ the script matrix, i.e. the intro's
+        // CAMERA (obj[0] Camera trans == player[1] live trans [-27.25, 1.41, 34.39], live probe) —
+        // so the ambient sampled the camera's cel. The premise was wrong too: VECTOR 0x2d6200 is
+        // the ORIGIN vector [L ACTION.ELF, nis.rs's Light doc], so `Script_AnimStart` 0x1d8f40's
+        // `control_create_object(0, 0x2d6200, 0x2d6200, 0)` creates the anim object AT THE ORIGIN —
+        // the object matrix is identity and the sequence's root carries it in world space
+        // [M Obj::Anim doc; AnimSeqTick 0x1c28d0 takes the root motion as the object's movement].
+        let local = nf_game::anim::script_pose_together(&self.scripts, &self.seqs, skeleton, skin, script, frame)?;
+        let world = anim::world_pose(&local, skin);
         Some([world[0][3][0], world[0][3][1], world[0][3][2]])
     }
 }
@@ -766,13 +834,23 @@ pub fn plane_eq(r: [f32; 3], v1: [f32; 3], v2: [f32; 3]) -> [f32; 4] {
 /// game's array; only the named ones exist as nodes.
 /// The collision scope graph from the parsed cel graph (fix-safe08b): plain bboxes + the portals as
 /// the two triangles `Intersect_Portal` (0x1ea7b8) tests, for `CollisionWorld::build_scoped`.
-fn scope_graph(g: &CelGraph) -> nf_game::world::ScopeGraph {
+/// Pub for the census tests to drive the exact build path (`Scene::build`'s sequence) headlessly
+/// (fix-missing-objects).
+pub fn scope_graph(g: &CelGraph) -> nf_game::world::ScopeGraph {
     nf_game::world::ScopeGraph {
         cells: g.cells.iter().map(|c| (c.min, c.max)).collect(),
         portals: g.portals.iter().map(|p| nf_game::world::ScopePortal {
             tris: [[p.corners[0], p.corners[1], p.corners[2]], [p.corners[0], p.corners[2], p.corners[3]]],
             a: p.cel_a, b: p.cel_b,
+            // The game's portal+0x70: the 4 corners' average [M build_alloc_portal 0x1c8928]
+            // (fix-08-collision2 — Intersect_Portal's 0x800 path projects against it).
+            centre: [
+                (p.corners[0][0] + p.corners[1][0] + p.corners[2][0] + p.corners[3][0]) * 0.25,
+                (p.corners[0][1] + p.corners[1][1] + p.corners[2][1] + p.corners[3][1]) * 0.25,
+                (p.corners[0][2] + p.corners[1][2] + p.corners[2][2] + p.corners[3][2]) * 0.25,
+            ],
         }).collect(),
+        room: g.cells.iter().map(|c| c.flags & 0x40000 != 0).collect(),
     }
 }
 
@@ -924,8 +1002,14 @@ pub fn build_chains(graph: &mut CelGraph, world: Option<&nf_game::world::Collisi
 /// `generic.radius <= room.radius` and the generic's sphere centre inside the room's world bbox,
 /// ranked by the room's closest collision point to the centre (`Collide_SphereIntersect` 0x1ec940's
 /// scoped closest hit with a containing sphere — `world.closest_point_scoped`); strict `<` keeps
-/// the first candidate in parse order [M 0x1c9150 walk]. `None` = no candidate hits (the game
-/// leaves the generic unchained).
+/// the first candidate in parse order [M 0x1c9150 walk]. fix-missing-objects: a candidate whose
+/// cel holds no collision reads the game's miss distance 1e8 and STILL participates ("hits whose
+/// +0x54 cel is the candidate, or 0/unmapped, intersect; everything else reads 1e8" — fix-portal5
+/// §4's disassembly reading), so when no candidate hits, strict `<` keeps the FIRST candidate in
+/// parse order — the game leaves a generic unchained only when NO room passes the radius+bbox
+/// gates. (The old `continue` on an empty bucket dropped the candidate entirely: with every
+/// candidate's bucket empty — the 0700000a office furniture's case — the generic went unchained
+/// and `View_AddCels` never drew it.)
 fn link_owner_room(graph: &CelGraph, generic: usize, world: &nf_game::world::CollisionWorld) -> Option<usize> {
     let g = &graph.cells[generic];
     let mut best: Option<(usize, f32)> = None;
@@ -933,7 +1017,7 @@ fn link_owner_room(graph: &CelGraph, generic: usize, world: &nf_game::world::Col
         if !matches!(r.flags & 0xffff, 0xc023 | 0xc047) { continue; }
         if g.sphere.1 > r.sphere.1 { continue; }
         if !(0..3).all(|k| r.min[k] <= g.sphere.0[k] && g.sphere.0[k] <= r.max[k]) { continue; }
-        let Some(d) = world.closest_point_scoped(ri, g.sphere.0) else { continue };
+        let d = world.closest_point_scoped(ri, g.sphere.0).unwrap_or(1.0e8);
         if best.map_or(true, |(_, bd)| d < bd) { best = Some((ri, d)); }
     }
     best.map(|(i, _)| i)
@@ -1717,6 +1801,10 @@ impl Sim {
         // script cut-scene). So riding does NOT run while Bond is disabled — the cut-scene's `Script_Free` →
         // `Player_Enable` places Bond directly. The A-5 change (running riding unconditionally) caused Bond to bounce
         // against the truck during the cut-scene. Fix: gate on `!self.disabled` [M 0x1949a8:24].
+        // The relink segment's start: the pos at the END of the previous tick — the game's `obj+0x40`
+        // the moved pass copies after `control_handle_cel_change` 0x1336f8:212 (the ride below and the
+        // tick's own move both belong to the next relink's segment). fix-swim-entry.
+        let prev_tick_pos = self.bond.pos;
         if !self.disabled {
             let p = self.bond.pos;
             if let Some(g) = self.world.ground_motion(p, [p[0], p[1] - 1.6347, p[2]]) {
@@ -1754,7 +1842,28 @@ impl Sim {
                     trigger = false;
                 }
             }
-            let water = self.cel_at(self.bond.pos).map(|i| self.cels[i].water).filter(|w| *w > -400.0);
+            // The player's runtime cel (obj+0x20) — `control_handle_cel_change` 0x133288's stateful
+            // relink on the LAST tick's move segment (the moved pass runs after `Player_Update`
+            // [M 0x1336f8:147-236], so the cel `Player_InWater` 0x195e50 reads this tick was linked
+            // from `prev→pos` of the tick before): the portal cross (`Cel_ObjectLeftCel` 0x1e0d58)
+            // wins over the bbox keep (`build_point_in_bounding_box` 0x1c9500), and the fresh-link
+            // fallback is `build_FindCel` 0x1c8cb0 at the world-sphere centre with the raycast
+            // tie-break (`build_LinkToRoom` 0x1c9680). fix-swim-entry (was: the stateless
+            // smallest-bbox `cel_at(pos)`).
+            let bond_cel = if (0..3).any(|k| (self.bond.pos[k] - self.bond.prev_pos[k]).abs() > 3.0) {
+                // A placement/teleport: the game's `Player_StandAtNewPosition` 0x190d88 resets
+                // `obj+0x40` to the new position (line 46) and relinks directly with one
+                // `build_FindCel` (lines 108-117) — no portal walk over the jump. The port's direct
+                // `bond.pos` writes (the tests' placements) get the same treatment [S: the 3.0 bound
+                // sits above any per-tick move the sim produces — the walk ~0.1, the accelerated fall
+                // ~0.3 even seconds in — and below every placement jump].
+                self.bond.prev_pos = self.bond.pos;
+                self.world.find_cel(self.bond.pos)
+            } else {
+                self.world.player_cel_relink(self.bond.cel, self.bond.prev_pos, self.bond.pos, self.bond.pos)
+            };
+            let water = bond_cel.and_then(|cell| self.room_cell.iter().position(|&c| c == Some(cell)))
+                .map(|r| self.cels[r].water).filter(|w| *w > -400.0);
             let sink = input.crouch;
             let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink, creepwalls: &self.creepwalls };
             // The third-icon context [M ThirdIcon_Update 0x196e80 + Player_CollisionHandler 0x1949a8:22]:
@@ -1782,6 +1891,13 @@ impl Sim {
             //   east balcony reads ctx 3 pre-fix at 11.1 through the wall — its cel is not the icon's;
             //   the wall is the difference) and every measured pin. When the port's FindCel resolves
             //   cels exactly like the game's, the distance factor can drop.
+            //   Window 12.0 → 6.0 (fix-context-hints2): the driver's 2026-10-14 PCSX2 side-by-side
+            //   pins 07000005's grapple spot (16.5, 29.6, 58.6) — 8.17 from the ctx-6 icon[3]
+            //   (24.20, 31.93, 60.01), same port cel 15 — at NO context and NO "Press Action" [L
+            //   PCSX2 2026-10-14], while the vent crawl spot still reads 6 at 3.9 [L PCSX2
+            //   2026-10-13]. The middle must sit between them: 6.0 (both icons' own world spheres
+            //   are r 2.276 [D probe], so the game's cel-chain arm at 3.9 is pure cel occupancy;
+            //   the port's coarse buckets need the [S] distance factor until FindCel matches).
             self.bond.icon_ctx = 0xff;
             let bond_cell = find_cell_raycast(&self.cel_graph, self.bond.pos, Some(&self.world));
             for (ii, icon) in self.icons.iter().enumerate() {
@@ -1789,8 +1905,47 @@ impl Sim {
                 let Some(cells) = self.icon_cels.get(ii) else { continue };
                 if cells.is_empty() { continue; }
                 if !bond_cell.is_some_and(|bc| cells.contains(&bc)) { continue; }
-                let near = (icon.centre[0] - self.bond.pos[0]).powi(2) + (icon.centre[1] - self.bond.pos[1]).powi(2) + (icon.centre[2] - self.bond.pos[2]).powi(2) < 144.0;
-                if near { self.bond.icon_ctx = icon.ctx; }
+                let near = (icon.centre[0] - self.bond.pos[0]).powi(2) + (icon.centre[1] - self.bond.pos[1]).powi(2) + (icon.centre[2] - self.bond.pos[2]).powi(2) < 36.0;
+                if near {
+                    self.bond.icon_ctx = icon.ctx;
+                    // `ThirdIcon_Update` 0x196e80:38-53: the type-6 icon posts the generic hint
+                    // "Press Action" (label 0x1000291 [D USATxt.dat entry fixups[1]+0x291]) as a
+                    // type-1 INFO message, life 0xB4, while the player is in range AND not
+                    // creeping (substate 7) AND the icon's instance timer (data+8) has ticked
+                    // down to 0; every in-range write resets it to 4 [M 0x196e80:15-17,52-53].
+                    let timer = self.icon_msg_timers.get(ii).copied().unwrap_or(0);
+                    if icon.ctx == 6 && timer == 0 && self.bond.substate != nf_game::player::SS_CREEP {
+                        self.hud.info_labels.push_back((0x100_0291, 180.0));
+                    }
+                    if let Some(t) = self.icon_msg_timers.get_mut(ii) { *t = 4; }
+                }
+            }
+            // The icon timers tick every frame regardless of range [M 0x196e80:15-17 — the
+            // instance timer decrements at the top of the icon's own update].
+            for t in self.icon_msg_timers.iter_mut() { if *t > 0 { *t -= 1; } }
+            // The hint markers (fix-context-hints): `Hint_Update` 0x1b3380 fires once per load
+            // when the player's cel is in the marker's chain with the channels satisfied — the
+            // sound, then the type-1 message with the marker's label, then obj+0xFE bit 0 deletes
+            // the marker [M 0x1b3380:24-42]. The chain fill is the player's pick through the
+            // marker's SPHERE (r + the player's 1.0576 world sphere [L M_CONTROL+0x8C]) — the
+            // cel-set test alone is coarser than the game's cels (fix-08-walls's finding), so
+            // the arm region is the intersection: the straddle set AND the sphere volume (the
+            // safe's control-panel marker sits 6.7 from the safe spot with r 3.889 — the game
+            // leaves it silent there [S the measured pin]).
+            for (hi, h) in self.hints.iter().enumerate() {
+                if self.hint_fired.get(hi).copied().unwrap_or(true) { continue; }
+                if h.on_channel != 0 && !self.drones.channels.on(h.on_channel) { continue; }
+                if h.off_channel != 0 && self.drones.channels.on(h.off_channel) { continue; }
+                let Some(cells) = self.hint_cels.get(hi) else { continue; };
+                if cells.is_empty() { continue; }
+                if !bond_cell.is_some_and(|bc| cells.contains(&bc)) { continue; }
+                let c = self.bond.sphere_centre();
+                let reach = h.radius + 1.0576;
+                let near = (h.centre[0] - c[0]).powi(2) + (h.centre[1] - c[1]).powi(2) + (h.centre[2] - c[2]).powi(2) < reach * reach;
+                if !near { continue; }
+                self.hint_fired[hi] = true;
+                self.hud.info_labels.push_back((h.label, 180.0));
+                if h.sound != 0 { self.drones.audio.play3d(h.sound, self.bond.head(), None); }
             }
             // No walk-in or use-key wire grab (main agent at the fix-wire2 × walkreal-b2 merge): the game's
             // grab that is certain is the JUMP grab [M Player_HandleJump 0x1916b0:107-147 — action 7 is the
@@ -1804,10 +1959,18 @@ impl Sim {
             let was_on_wire = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
             let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
             input.fire = trigger;
-            // The queries' start cel (obj+0x20 — fix-safe08b): the movement pass's relink, read fresh
-            // off the position the same way `build_LinkToRoom` 0x1c9680 re-links.
-            self.bond.cel = self.cel_at(self.bond.pos).and_then(|room| self.room_cell.get(room).copied().flatten());
+            // The queries' start cel (obj+0x20 — fix-safe08b): the game's per-tick relink is the STATEFUL
+            // `control_handle_cel_change` 0x133288 (supersedes fix-08-collision2's FindCel-at-pos root —
+            // the same `build_FindCel` 0x1c8cb0 two-ray tie-break that fix kept, but as
+            // `build_LinkToRoom` 0x1c9680:35-40 runs it: AT THE WORLD-SPHERE CENTRE obj+0x80 [M], behind
+            // the move segment's portal cross (`Cel_ObjectLeftCel` 0x1e0d58) and the bbox keep
+            // (`build_point_in_bounding_box` 0x1c9500), so the actor's cel always carries the geometry
+            // under him and the straddle BFS roots at the floor's cel — the 08 escort's straddle root and
+            // the portal-centre crossings ([M 0x1c8928's +0x70]) both ride the same stateful cel).
+            self.bond.cel = bond_cel;
             self.bond.tick_ctx(&self.world, &ctx, &input);
+            // `obj+0x40 ← obj+0x30` — the moved pass's copy AFTER the cel change [M 0x1336f8:212].
+            self.bond.prev_pos = prev_tick_pos;
             // `Player_WeaponNone` 0x1a9858 runs in `Player_CollLadder` on the grab [M 0x196118]: the
             // current weapon id is SAVED to `anim+0x64` (the port's `saved_weapon`), the class becomes
             // 'G' (0x47) immediately (no holster cycle — `anim+0xF4 = 0`), the aim bit clears.
@@ -1861,6 +2024,23 @@ impl Sim {
             // flash +0x968 and the both-sides bits +0x967 = 0xC), not a bare subtraction.
             if let Some(dmg) = self.bond.drown_damage {
                 self.drones.health.pain_generic(dmg, self.drones.difficulty, self.level, 7);
+                // The drown tick's sound rides the same 30-tick cadence [M Player_MonitorAir
+                // 0x191a70:135-143: every FRAME_RATE·0.5 ticks, Sound_Play(100, 0x60b) + HandlePain].
+                self.drones.audio.play(0x60b);
+            }
+            // `Player_MonitorAir` 0x191a70:101-124 [M]: the head crossing cel+0x90 starts the dive
+            // loop (`Sound_Stop()` of the old handle, then `Sound_Play3D(100, −1, −1, 0x27, objPos)`
+            // saved at BL+0x89C) and, on surfacing, stops it and plays the gasp `Sound_Play(100,
+            // 0x60c)`. The port's stop is by id (one voice per id at the alloc).
+            {
+                let under = self.bond.underwater;
+                if under && !self.drones.audio.swim_prev_under {
+                    self.drones.audio.play3d(0x27, self.bond.pos, None);
+                } else if !under && self.drones.audio.swim_prev_under {
+                    self.drones.audio.stop_all_with_id(0x27);
+                    self.drones.audio.play(0x60c);
+                }
+                self.drones.audio.swim_prev_under = under;
             }
         }
         // Footsteps (`AnimObjectUpdate` 0x1befd8:163-198 [M], player): `BL+0x924` gathers the distance
@@ -1877,7 +2057,12 @@ impl Sim {
         let moved_h = (dx * dx + dz * dz).sqrt();
         let climbing = self.bond.substate == nf_game::player::SS_CLIMB;
         let moved = if climbing { (moved_h * moved_h + dy * dy).sqrt() } else { moved_h };
-        if self.bond.grounded && !self.disabled {
+        if self.bond.grounded && !self.disabled && self.bond.substate != nf_game::player::SS_SWIM {
+            // The swim gate [M]: the game's step is `Effect_Create` off the CACHED ground hit
+            // (0x1ce688:63 early-outs unless `(hit+0x50 & 0x3f) != 0`); the swim capsule (0x194df0
+            // case 3) hangs under the surface and never touches the pond bed, so swimming plays NO
+            // footstep (the user's "I could hear my footsteps too"). The port's floor ray still
+            // finds the bed mid-pond, so the substate is the gate here.
             self.step_dist += moved;
             let stride = if climbing { 0.4125 } else { 1.65 };
             if self.step_dist > stride {
@@ -2149,10 +2334,25 @@ impl Sim {
         if let Some(w) = self.weapons.records.get(self.gun.weapon as usize) {
             let scripts = &self.scripts;
             let params = nf_game::gun::GunParams::from_record(w, self.drones.inventory.fire_mode.get(self.gun.weapon as usize).copied().unwrap_or(0) as usize, |h| scripts.get(&h).map(|s| s.length as u32));
-            // Auto-aim (on by default in the game's options) only outside aim mode; in aim mode the offset eases back.
-            // Auto-aim off (or aim mode): no target; the offsets still halve every tick (`Player_AutoAim` 0x1a7c98), so
-            // the crosshair returns to the centre instead of staying where the last lock left it.
-            let dir = if self.auto_aim && !aiming { self.drones.auto_aim(&d, camera, look, self.gun.weapon) } else {
+            // Auto-aim (on by default in the game's options) scans only outside aim mode
+            // (`Player_AutoAim` 0x1a7c98 gates the `Check_AutoAim` scan on the aiming bit, which the
+            // game sets only after the aim-raise anim finishes — `Player_SetWeaponAnimObj` case 0xf).
+            // While aiming (0x1a7c98's aim branch): no new scan, the lock pointer SURVIVES, and the
+            // assist offsets ease toward the manual offsets (the cursor) at 0.5/tick — and the fired
+            // bullet still consumes them through `Player_GetAimingPoint` (0x1a4a98), so the residual
+            // assist of a target locked before the raise carries into the first aim-mode shots.
+            // fix-guard-misc2: the port dropped the lock and the offsets entirely on entering aim
+            // mode, so an assist acquired while hip-firing never reached an aim-mode bullet.
+            let dir = if self.auto_aim && !aiming { self.drones.auto_aim(&d, camera, look, self.gun.weapon) } else if aiming {
+                // The cursor is screen-space (cross units); the offsets are object-frame angles
+                // (a larger yaw turns LEFT, so x flips — the same flip `crosshair()` documents).
+                let (ox, oy) = (-self.cursor[0] * 0.76966, self.cursor[1] * 0.57724);
+                let off = self.drones.aim_offset;
+                self.drones.aim_offset = [off[0] + (ox - off[0]) * 0.5, off[1] + (oy - off[1]) * 0.5];
+                let (y0, p0) = (look[0].atan2(look[2]), look[1].clamp(-1.0, 1.0).asin());
+                let (y2, p2) = (y0 + self.drones.aim_offset[0], p0 + self.drones.aim_offset[1]);
+                [p2.cos() * y2.sin(), p2.sin(), p2.cos() * y2.cos()]
+            } else {
                 self.drones.aim_target = None;
                 self.drones.aim_offset = self.drones.aim_offset.map(|v| v * 0.5);
                 aim
@@ -2610,6 +2810,33 @@ impl Sim {
         // (The B-10 symptom was the opposite gating bug: freezing the whole tick stopped Trigger_Calc +
         // SP_Update, so PlayerEnable never arrived.)
         self.drones.tick(&d, &player);
+        // fix-script-objects: the script-created AI volumes (`Drone_AIVolume_Create` 0x1376c0 via
+        // `Script_CreateEntity` 0x1d8968's 0xF5 arm) join the level's volume list the tick their
+        // script creates them (the game's `LList_Add` 0x2706c8 registration), and their matrix
+        // refreshes from the live entity every tick (the game keys obj+0x90 per tick [M
+        // Script_Interp 0x1d9a08:106-133]). The 07000005 create-time z-negate/+1.5-y lift is NOT
+        // applied here: the script arm's object matrix is overwritten by the same tick's interp
+        // (Script_EntityStart's `Script_Interp` tail), so the lift never reaches the box [S — the
+        // placement path's lift is a create-time matrix write the script stream has no key for].
+        if !self.drones.scripts.objects.pending_volumes.is_empty() {
+            for v in std::mem::take(&mut self.drones.scripts.objects.pending_volumes) {
+                let half = self.glist_bounds.get(&v.hash)
+                    .map(|(lo, hi)| [0, 1, 2].map(|k| ((hi[k] - lo[k]) * 0.5).abs()))
+                    .unwrap_or([0.0; 3]);
+                let kind = match v.params.get(1).copied().unwrap_or(0) { 1 => 2, 2 => 1, 4 => 3, _ => 0 };
+                let factor = nf_formats::ps2float::mul(v.params.first().copied().unwrap_or(0) as f32, 0.01);
+                self.volumes.push(nf_game::aivolume::AiVolume { m: v.matrix, half, factor, kind, placement: usize::MAX, src: Some((v.script, v.stream)) });
+            }
+        }
+        if self.volumes.iter().any(|v| v.src.is_some()) {
+            let mut upd: Vec<(usize, nf_formats::anim::Mat4)> = Vec::new();
+            for (i, v) in self.volumes.iter().enumerate() {
+                if let Some(src) = v.src {
+                    if let Some(m) = self.drones.scripts.entity_matrix(src) { upd.push((i, m)); }
+                }
+            }
+            for (i, m) in upd { self.volumes[i].m = m; }
+        }
         // `PlarStat_LogUpdateElapsedTime(0)` 0x1995a0 — `Player_Update` 0x193600:132 calls it once per
         // tick; `now` is the port's frame-derived 1/100 s clock (deterministic; fix-progress).
         self.drones.progress.log_update_elapsed(nf_game::progress::PlrMissionStats::now_100ths(self.drones.frame));
@@ -2643,6 +2870,13 @@ impl Sim {
         // [M 0x19b9c8:305-328].
         if self.bond.crouched { self.hud.crouch_icon_timer = 60; }
         else if self.hud.crouch_icon_timer > 0 { self.hud.crouch_icon_timer -= 1; }
+        // The context icon's ThirdIconTimer (0x30CCE8): held at 30 while a context id is set
+        // (the game rewrites it on every shown frame [M 0x19b9c8:298]), counting down on 0xFF
+        // for the 30-tick fade-out [M 0x19b9c8:275-282]. Runs with the health pane's update —
+        // outside the cut-scene message freeze (that gate is Text_UpdateMsg's, the panes still
+        // step [M 0x1b11d8]).
+        if self.bond.icon_ctx != 0xff { self.hud.context_icon_timer = 30; self.hud.last_icon_ctx = self.bond.icon_ctx; }
+        else if self.hud.context_icon_timer > 0 { self.hud.context_icon_timer -= 1; }
         // Script op-0x1e text commands (`Script_TextStart` 0x1db2b8 → `Text_AddMsg(-1, 0, 4,
         // Txt_BindLabel(label), 0, time)` [M]): the raw labels drain to HUD messages with the same
         // bank binding as the pickup texts (fix-script-commands).
@@ -2652,6 +2886,18 @@ impl Sim {
             for (label, time) in self.drones.script_msgs.drain(..) {
                 let text = lang.bind(label).unwrap_or("").trim().to_string();
                 if !text.is_empty() { new_msgs.push_back(Msg::new(text, time as f32)); }
+            }
+        }
+        // The INFO pane's label drain (fix-context-hints): the game binds at POST time
+        // (`Txt_BindLabel` runs inside ThirdIcon_Update 0x196e80:41 / Hint_Update 0x1b3380:31),
+        // before the pane could ever draw, so this sits before the cut-scene freeze like the
+        // script-op drain above; the pane display waits on the viewer gate (below).
+        for (label, time) in self.hud.info_labels.drain(..) {
+            let text = lang.as_ref().and_then(|l| l.bind(label)).unwrap_or("").trim().to_string();
+            if !text.is_empty() {
+                let mut m = Msg::new(text, time);
+                m.label = label;
+                self.hud.info_msgs.push_back(m);
             }
         }
         for (_, t) in self.drones.taken.iter().skip(self.hud.taken_seen) {
@@ -2713,7 +2959,7 @@ impl Sim {
                     // scales the life by the wrapped/orig length [M 0x1b0c30's +0x18 store]. The
                     // port wraps at draw time — the font lives in the scene's HudTables, which the
                     // Sim-side drain doesn't hold; the life scaling is not ported, see the report.)
-                    self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed, life: ticks as f32, opened: false, second: false });
+                    self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed, life: ticks as f32, opened: false, second: false, label: 0 });
                 }
                 nf_game::mission::Event::FailLabel(l) => {
                     self.hud.fail_label = l;
@@ -2761,6 +3007,18 @@ impl Sim {
             if self.hud.bar_close > 0.0 { self.hud.bar_close = (self.hud.bar_close - 16.0).max(0.0); }
         } else {
             self.hud.bar_close = HudState::BAR_W;
+        }
+        // The INFO pane (pane 4): the head ticks alone, the close shrinks 16 px/tick — the same
+        // `HUD_UpdateStatusPane` 0x19c310 machine as the pickup bar (the CREATE's slide is 0x10
+        // [L MsgInfoStatusPane 0x319810+0x14]).
+        if let Some(m) = self.hud.info_msgs.front_mut() {
+            m.time -= 1.0;
+            if m.time <= 0.0 { self.hud.info_msgs.pop_front(); }
+        }
+        if self.hud.info_msgs.is_empty() {
+            if self.hud.info_close > 0.0 { self.hud.info_close = (self.hud.info_close - 16.0).max(0.0); }
+        } else {
+            self.hud.info_close = HudState::INFO_W;
         }
         // `Text_UpdateMsg` ticks only the displayed head [M 0x1b11d8:48-73 — the out-param
         // `*param_3` is the head node; the queue behind waits]; when it expires the next message
@@ -4359,6 +4617,11 @@ impl Scene {
             let hitboxes = d.hitboxes.clone()?;
             let volumes = nf_game::aivolume::build(level, d.level_id);
             let models = nf_game::pickup::models(level);
+            // fix-script-objects: every glist's bounds (min, max) by hashcode — the script-created
+            // AI volumes' half-extents resolve here (`Drone_AIVolume_Create` 0x1376c0:84-92).
+            let glist_bounds: HashMap<u32, ([f32; 3], [f32; 3])> = level.maps.iter()
+                .flat_map(|m| m.objects.iter())
+                .map(|o| (o.hashcode, (o.min, o.max))).collect();
             let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: d.sfx.as_ref(), models: &models, surfaces: d.surfaces.as_ref(), voices: d.voices.as_deref(), difficulty: 1 };
             let mut rng = nf_game::drone::Rng::new(0x1234_5678);
             // The drones' creates (and the interleaved type-0x4E light creates) draw from the shared
@@ -4408,6 +4671,18 @@ impl Scene {
                 Some(c) => icon_straddle_cels(&cel_graph, c, ic.centre, ic.radius),
                 None => Vec::new(),
             }).collect::<Vec<_>>();
+            // The hint markers (placement kind 0x33, `Hint_Create` 0x1b3248 — fix-context-hints):
+            // the same world-sphere + straddle-cel resolution as the third icons (the marker's
+            // obj+0xD0 chain is filled by the player's pick through it [M Collide_Update
+            // 0x1ea398:160-233 + the reciprocal node append]). `Hint_Update` fires once when the
+            // player's cel is in the set with the marker's channels satisfied.
+            let hints = nf_game::player::hints(level);
+            let hint_cels = hints.iter().map(|h| match find_cell_raycast(&cel_graph, h.centre, Some(&world)) {
+                Some(c) => icon_straddle_cels(&cel_graph, c, h.centre, h.radius),
+                None => Vec::new(),
+            }).collect::<Vec<_>>();
+            let hint_fired = vec![false; hints.len()];
+            let icon_msg_timers = vec![0u8; icons.len()];
             // The wire anims' root tracks: the level archive's kind-5 scripts (the player body anims)
             // resolved to their sequences [D 07000005: 0x060005e5 101 frames → 0x04000536, the move pair
             // 0x060000b4/b5 → 0x04000034/35 travelling 0.7637/0.7106 per cycle].
@@ -4469,8 +4744,9 @@ impl Scene {
             // 0x1c7e78:25] and the front-end boot keeps it until 180-fix-menus wires the page's
             // write (C_SBNFDFCTY 0x216ca8) into `set_difficulty`.
             drones.difficulty = 1;
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, missile_cam: None,
+                hints, hint_cels, hint_fired, icon_msg_timers,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
@@ -4557,6 +4833,14 @@ impl Scene {
                 // played the body only, so the mouths never moved).
                 let local = nf_game::anim::script_pose_together(&s.scripts, &s.seqs, &c.skeleton, &c.skin, script, frame)?;
                 let world = anim::world_pose(&local, &c.skin);
+                // fix-cutscene-brightness2: the object matrix stays the character's own (`c.matrix`,
+                // identity for script actors — the object sits at the origin and the pose's root
+                // carries it in world space [M Obj::Anim doc; 0x2d6200 is the origin vector
+                // [L ACTION.ELF], so `Script_AnimStart` 0x1d8f40 creates the object at the origin]).
+                // The held fix substituted `Player::live_matrix` — stream 0's object ∘ the script
+                // matrix, for the 07000002 intro the CAMERA (obj[0] trans == player[1] live trans
+                // [-27.25, 1.41, 34.39]) — which drew the actors inside the camera: the main agent's
+                // render showed the intro room with NO characters at all.
                 return Some((anim::skin_matrices(&world, &c.skin), world, c.matrix));
             }
             let view = self.sim.as_ref().and_then(|s| self.view_models.get(&s.gun.weapon).filter(|&&v| v == ci)).and(self.sim.as_ref());

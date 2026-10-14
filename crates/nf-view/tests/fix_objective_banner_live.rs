@@ -235,6 +235,7 @@ fn the_fail_message_is_centred_on_the_banner() {
         sim.hud.objective_msgs.clear();
         sim.hud.objective_msgs.push_back(nf_view::scene::Msg {
             text: format!("{fail}: {line}"), time: 180.0, status: 0x0200_0051, failed: true, life: 180.0, opened: true, second: true,
+            label: 0, // fix-context-hints added the provenance id (0 = pre-bound text)
         });
     }
     let frame = nf_view::hud::overlay(&scene, 4.0 / 3.0);

@@ -220,6 +220,13 @@ impl Walker {
         self.scene.sim.as_mut().unwrap().step_bond(input, fire, false, use_key);
         let sim = self.scene.sim.as_ref().unwrap();
         self.total_ticks += 1;
+        // fix-08-collision2's divergence trace (env-gated, additive): Bond's position every 60
+        // ticks so two trees' walks can be diffed line by line.
+        if std::env::var_os("NF_WALK_TRACE").is_some() && self.total_ticks % 60 == 0 {
+            eprintln!("[trace] t{} bond=({:.2},{:.2},{:.2}) grounded={} substate={:#x} crouched={}",
+                self.total_ticks, sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2],
+                sim.bond.grounded, sim.bond.substate, sim.bond.crouched);
+        }
         if sim.bond.pos[1] < y_before - 0.4 && !sim.bond.grounded {
             // falling: record the drop
             let drop = self.max_y - sim.bond.pos[1];

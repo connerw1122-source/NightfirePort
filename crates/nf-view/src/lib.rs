@@ -431,7 +431,8 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
             let t = std::time::Instant::now();
             let have_scripts: std::collections::HashSet<u32> = level_scripts.keys().copied().collect();
             let st = weapon_assets::merge_weapon_assets(&iso, &read, &mut level, &mut skeletons, &mut sequences,
-                &mut level_scripts, &have_scripts, &gameplay_skeletons, wd, &weapon_wanted, &index, dev)?;
+                &mut level_scripts, &have_scripts, &gameplay_skeletons, wd, &weapon_wanted, &index, dev,
+                &casing_meshes(&elf))?;
             eprintln!("weapon assets: merged {} archive(s), {} skin(s), {} map(s), {} sequence(s), {} script(s) in {:.2}s",
                 st.archives, st.skins, st.maps, st.sequences, st.scripts, t.elapsed().as_secs_f32());
         }
@@ -806,18 +807,37 @@ const STORY_ORDER: [u32; 20] = [0x0700_0001, 0x0700_0002, 0x0700_0003, 0x0700_00
 const SLEEVES: [u32; 8] = [0x0200_09d0, 0x0200_0900, 0x0200_01f7, 0x0200_0929, 0x0200_09e6, 0x0200_09ff, 0x0200_0a14, 0x0200_0a13];
 
 /// The weapon-model hashes the level archive misses and the session can supply (`merge_weapon_models`).
-fn wanted_weapon_models(level: &Level, wd: &nf_formats::weapon::WeaponData) -> Vec<u32> {
+/// fix-weapon-fx-levels adds two FX sets to the list:
+/// - the first-person muzzle-flash mesh `+0x48` (`Player_MuzzleFlash` 0x1a4298 gates on `+0x48 != 0`,
+///   `Draw_MuzzleFlash` 0x1a3fe0 attaches it to the view model [M]; `Scene::build` looks it up in
+///   `by_hash`, scene.rs) — the disc census [D]: every record's `+0x48` resolves in every story
+///   archive EXCEPT 0x02000ac7 (records 0x32/0x33/0x6f), which lives only in 07000014/15/16/1b;
+/// - the shell-casing meshes (`ammo_data` entry +4, `Bullet_init_casing` 0x12fde0 attaches
+///   `ammo_data[weapon+0x90]+4` [M]; `Casings::eject` reads the parsed table) — ammo 9's default
+///   shell 0x02000548 is absent from 07000005-0d/14-16/1b [D census], so the shotgun's casings
+///   simulated there were never drawn.
+/// The game never hits either gap (a level only offers its own weapons — 0x32/0x33 ride
+/// 07000014-16/1b, the shotgun rides 07000011-13/MP, whose archives hold their meshes); the dev
+/// give path did, the same way 100a's skins did.
+fn wanted_weapon_models(level: &Level, wd: &nf_formats::weapon::WeaponData, casing_meshes: &[u32]) -> Vec<u32> {
     let mut needed: Vec<u32> = Vec::new();
     let mut want = |h: u32, needed: &mut Vec<u32>| {
         if h != 0 && h != u32::MAX && !level.by_hash.contains_key(&h) && !needed.contains(&h) { needed.push(h); }
     };
     for r in &wd.records {
-        for off in [0x80usize, 0x4c, 0x5c] {
+        for off in [0x80usize, 0x4c, 0x48, 0x5c] {
             want(u32::from_le_bytes(r[off..off + 4].try_into().unwrap()), &mut needed);
         }
     }
     for h in SLEEVES { want(h, &mut needed); }
+    for &h in casing_meshes { want(h, &mut needed); }
     needed
+}
+
+/// The shell-casing meshes (`AmmoData.casing_mesh`, ACTION.ELF `ammo_data`+4 per 0xc-byte record;
+/// `Bullet_init_casing` 0x12fde0's mesh argument [M]). Empty when the ELF lacks the symbol.
+fn casing_meshes(elf: &[u8]) -> Vec<u32> {
+    nf_formats::sfx::AmmoData::from_action_elf(elf).map(|a| a.casing_mesh).unwrap_or_default()
 }
 
 /// Moves the foreign maps that hold any of `hashes` into `level` (appended; `by_hash` first-wins, so a
@@ -850,7 +870,7 @@ fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
     let Ok(wd) = nf_formats::weapon::WeaponData::from_action_elf(&elf) else { return Ok(()) };
     let level_id = u32::from_str_radix(prefix, 16).unwrap_or(0);
-    let mut needed = wanted_weapon_models(level, &wd);
+    let mut needed = wanted_weapon_models(level, &wd, &casing_meshes(&elf));
     if needed.is_empty() { return Ok(()); }
     for code in STORY_ORDER.iter().rev().filter(|&&c| c < level_id) {
         if needed.is_empty() { break; }
@@ -1026,10 +1046,11 @@ fn cam_axes(cam: &Camera) -> ([f32; 3], [f32; 3]) {
 /// drawn with the game's font (ACTION.ELF's FONTSerpLight) and the USATxt.dat strings.
 /// fix-menu-movies2: returns `(hud, movie)` — with the `movies` feature and an image that has movie
 /// data, the page's backdrop is its own looping FMV instead of the dark plate, decoded as a still
-/// (the first closed-GOP chunk only — fast; `--movie-frame N` picks the frame) and drawn on the ONE
+/// (closed-GOP chunks in order until the frame is covered — fast; `--movie-frame N` picks the
+/// frame) and drawn on the ONE
 /// movie plane (gpu.rs), exactly like the live loop. `--intro [N]` renders the P_INTRO movie the
 /// same way, fullscreen with no overlay (the intro page has no controls [M 0x209e88]).
-fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> (Option<gpu::HudFrame>, Option<(u32, u32, Vec<u8>)>) {
+fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_path: &str) -> (Option<gpu::HudFrame>, Option<(u32, u32, Vec<u8>)>) {
     let page_arg = args.iter().position(|a| a == "--page");
     if !front_end && page_arg.is_none() { return (None, None); }
     let Some(tables) = scene.hud.as_ref() else { eprintln!("[front end] no HUD tables (the game font) — the menu overlay needs ACTION.ELF"); return (None, None); };
@@ -1082,7 +1103,10 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> (Op
     let mut movie = None;
     #[cfg(feature = "movies")]
     {
-        let frame_n: usize = args.iter().position(|a| a == "--movie-frame").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0);
+        // --movie-frame defaults past the first GOP: frame 0 of the aux FMVs is the fade-in from
+        // black (fix-menus-real's live check; the movie reports pin decodes on frame 12), so a bare
+        // --page main --shot must not show it.
+        let frame_n: usize = args.iter().position(|a| a == "--movie-frame").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(12);
         let want = if intro {
             Some(menu::INTRO_MOVIES[args.iter().position(|a| a == "--intro").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(menu::INTRO_MOVIES.len() - 1)])
         } else {
@@ -1090,7 +1114,12 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> (Op
             (aux != 0).then_some(aux)
         };
         if let Some(code) = want {
-            match movie::movie_still(&scene_iso_name(), code, frame_n) {
+            // The image the movies are on: NF_MOVIE_ISO over the ISO argument (the live loop's
+            // App::movie_iso_path precedence) — not the bare NF_ISO env, which may point at the
+            // slim on-foot image whose PSS files are 0-byte stubs [L probe_iso_movies]. (Both
+            // sides of the fix-menus-real2 merge landed this precedence; movie_iso_name keeps the
+            // ISO argument as the no-NF_MOVIE_ISO fallback, which the env-only form dropped.)
+            match movie::movie_still(&movie_iso_name(iso_path), code, frame_n) {
                 Ok(img) => movie = Some((img.width, img.height, img.rgba)),
                 Err(e) => eprintln!("[front end] movie {code:08X}: {e} — the dark plate stands in"),
             }
@@ -1100,16 +1129,25 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> (Op
         // The intro FMV owns the screen — no controls, no plate [M 0x209e88]; the movie plane is
         // the whole picture. Without movie data the headless plate stands in.
         let hud = if movie.is_some() { None }
-            else { Some(menu::menu_overlay(&fe, &tables.font, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0)) };
+            else { Some(menu::menu_overlay(&fe, &tables.font, &tables.font_header, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0)) };
         return (hud, movie);
     }
     fe.backdrop_live = movie.is_some();
-    (Some(menu::menu_overlay(&fe, &tables.font, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0)), movie)
+    (Some(menu::menu_overlay(&fe, &tables.font, &tables.font_header, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0)), movie)
 }
 
 /// The ISO path for `read_files_bin` (the NF_ISO env or the default sandbox path).
 fn scene_iso_name() -> String {
     std::env::var("NF_ISO").unwrap_or_else(|_| "Nightfire-onfoot.iso".to_string())
+}
+
+/// The image the headless movie stills read: NF_MOVIE_ISO (a full retail image) over the ISO
+/// argument the binary was given — the live loop's `App::movie_iso_path` precedence. The old
+/// still path read the bare `NF_ISO` env instead of the ISO argument, so
+/// `nf-view <retail.iso> 07000048 --page main` reported the slim image's 0-byte PSS stubs and
+/// never saw the retail bytes [fix-menu-backdrop].
+pub fn movie_iso_name(iso_path: &str) -> String {
+    std::env::var("NF_MOVIE_ISO").unwrap_or_else(|_| iso_path.to_string())
 }
 
 /// Renders one frame offscreen and writes it as a PNG. `menu` = a front-end overlay frame (fix-menus2:
@@ -1483,7 +1521,7 @@ impl App {
         let _ = std::fs::write(png.with_extension("txt"), format!("{line}\n"));
         let fe_menu = self.fe.as_ref().and_then(|fe| self.scene.hud.as_ref().map(|t| {
             let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
-            menu::menu_overlay(fe, &t.font, lang, &self.scene.hud_textures, 1280.0 / 720.0)
+            menu::menu_overlay(fe, &t.font, &t.font_header, lang, &self.scene.hud_textures, 1280.0 / 720.0)
         }));
         match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref(), None) {
             Ok(()) => format!("saved {} ({line})", png.display()),
@@ -2291,7 +2329,7 @@ impl ApplicationHandler for App {
                             }
                         }
                         let mut f = match &self.scene.hud {
-                            Some(tables) => menu::menu_overlay(fe, &tables.font, lang, &self.scene.hud_textures, aspect),
+                            Some(tables) => menu::menu_overlay(fe, &tables.font, &tables.font_header, lang, &self.scene.hud_textures, aspect),
                             None => overlay_for(&self.scene, aspect),
                         };
                         // fix-pause-menu2: the in-game HUD stays visible under the pause page —
@@ -2449,6 +2487,11 @@ pub fn run() -> Result<()> {
             };
             // Without `--cam`, Bond stands at the start and the camera is his eye (the first-person gun shows).
             let walk = !args.iter().any(|a| a == "--cam");
+            // `--zoom-hold`: hold aim + the zoom key every tick, so the headless --shot renders can show the
+            // zoom overlays (the overlay draws only while the key is held; `Player_Zoom` 0x1a1a70 raises the
+            // zoom on the held input — the same path the fix-zoom-overlays tests drive).
+            let zoom_hold = args.iter().any(|a| a == "--zoom-hold");
+            let shot_input = nf_game::player::Input { aiming: zoom_hold, zoom: zoom_hold, ..Default::default() };
             // `--channels`: every switch channel on first (as K).
             if args.iter().any(|a| a == "--channels") { for c in 1..=255 { sim.drones.set_channel(c) } }
             // `--bond x,y,z`: Bond starts exactly there (in the air he falls), instead of the level start.
@@ -2460,14 +2503,14 @@ pub fn run() -> Result<()> {
             let skip_cuts = args.iter().any(|a| a == "--skip-cutscenes");
             for t in 1..=time as u32 {
                 if skip_cuts && sim.disabled { sim.drones.scripts.skip_request = true; }
-                if walk { sim.step_bond(Default::default(), pulls.contains(&t), false, false); } else { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
+                if walk { sim.step_bond(shot_input, pulls.contains(&t), false, false); } else { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
             }
             // With `--skip-cutscenes`, a skipped cut-scene's hand-back moves Bond: put him back on the `--bond` spot (and
             // let one tick settle) so the image pair matches the real game's placement.
             if skip_cuts {
                 if let Some(i) = args.iter().position(|a| a == "--bond") {
                     let v: Vec<f32> = args.get(i + 1).map(|s| s.split(',').filter_map(|t| t.parse().ok()).collect()).unwrap_or_default();
-                    if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); if let Some(&pt) = v.get(4) { sim.bond.pitch = pt; } sim.step_bond(Default::default(), false, false, false); }
+                    if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); if let Some(&pt) = v.get(4) { sim.bond.pitch = pt; } sim.step_bond(shot_input, false, false, false); }
                 }
             }
             if walk { let h = sim.bond.head(); cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV }; }
@@ -2479,7 +2522,14 @@ pub fn run() -> Result<()> {
                 eprintln!("AI: a drone in state {:#x}, {} shots, clip {}", dr.state, dr.shots.len(), dr.clip);
             }
         }
-        let (mut menu_frame, movie_frame) = front_end_menu(&args, &scene, front_end);
+        // fix-armour-ring: `--armour <n>` writes BLData+0x8b0 after the ticks (the pane's armour — the
+        // same write the dev panel's armour row and cheats.py's god make every frame), so the health
+        // pane's armour state renders headless.
+        if let Some(i) = args.iter().position(|a| a == "--armour") {
+            let n: f32 = args.get(i + 1).context("--armour needs a value (0..=50)")?.parse()?;
+            if let Some(sim) = scene.sim.as_mut() { sim.drones.health.armour = n; }
+        }
+        let (mut menu_frame, movie_frame) = front_end_menu(&args, &scene, front_end, &iso);
         // fix-ingame-dev-menu: `--dev-page <name>` draws the F2 menu's page (menu/weapons/gadgets/
         // grenades/ammo/npcs/teleport/level/toggles/screenshot) over the game HUD, so the main agent
         // can render and check each page headless.
