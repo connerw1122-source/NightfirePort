@@ -3875,12 +3875,18 @@ impl Drone {
             // leaving on a mission path in the traces) → 0x34; only a running mission path would take
             // 0x35. The driver steps into TruckDriverIdle ("hands behind back", the user's C1).
             (TRUCK_DRIVER_INIT, msg::ANIM_DONE) => { self.set_state(TRUCK_DRIVER_IDLE); true }
-            (TRUCK_DRIVER_INIT, msg::SOUND | msg::ALARM) => { self.set_state(TRUCK_DRIVER_INIT_ALERT); true } // 0x11/0x12/0x13/0x16/0x1e → 0x33
+            // fix-06-driver: the game's arm is msgs 0x11/0x12/0x13/0x16/0x1e → 0x33 [M 0x160bd0:97-105] —
+            // msg 0x14 (SOUND, DroneFunc_HandleSoundAlerts' dispatch) has NO arm (default → unhandled):
+            // the driver never reacts to heard gunfire. The port's SOUND half sent him into the guard
+            // heard-noise chain (0xa2-0xa5) whose ATTACK arm drew him a weapon (+0x66 → weapon 6, anim set 4)
+            // — the playtest's "shoot the driver, he flies back like a guard with the guard death sound".
+            (TRUCK_DRIVER_INIT, msg::ALARM) => { self.set_state(TRUCK_DRIVER_INIT_ALERT); true } // 0x11/0x12/0x13/0x16/0x1e → 0x33
             (TRUCK_DRIVER_INIT, msg::BULLET) => self.on_bullet_resume(d, rng, frame, TRUCK_DRIVER_INIT_ALERT, false), // HandleImpact(0x33, 0)
             // TruckDriverInitAlert (0x160d98): anim done → CivilianScared (0x12); bullets/noise HandleImpact(0, …).
             (TRUCK_DRIVER_INIT_ALERT, msg::ANIM_DONE) => { self.set_state(CIVILIAN_SCARED); true }
             (TRUCK_DRIVER_INIT_ALERT, msg::BULLET) => self.on_bullet_resume(d, rng, frame, 0, false),
-            (TRUCK_DRIVER_INIT_ALERT, msg::SOUND) => self.on_bullet_resume(d, rng, frame, 0, true),
+            // fix-06-driver: InitAlert 0x160d98 handles NO sound messages (its cases: 0/1/2/5/6/7/9/0x17/
+            // 0x18/0x19/8 → HandleImpact, 0x21 → ConsiderExplosive) — the port's SOUND arm is dropped.
             // TruckDriverIdle (0x160ed0): stand idle; NearArmedPerson (0x1787c8 — the 8.0 arg is dead)
             // → CivilianScared (`|= 0x8000000`).
             (TRUCK_DRIVER_IDLE, msg::ENTER) => { self.vision_on = true; self.set_stand_idle(d, rng, frame, true); true }
@@ -3889,7 +3895,11 @@ impl Drone {
                 true
             }
             (TRUCK_DRIVER_IDLE, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
-            (TRUCK_DRIVER_IDLE, msg::SOUND | msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
+            // fix-06-driver: TruckDriverIdle 0x160ed0 routes msgs 0x11/0x12/0x15/0x16/0x1e to EnemyAlerts
+            // [M 0x160ed0:95-103] — msg 0x14 (SOUND) has no arm (default → 0, unhandled): gunfire sounds
+            // never move him. The port's SOUND half ran the guard heard-noise chain (0xa3 → DrawWeapon 0x66,
+            // anim set 12 → 4) — the playtest's guard-death symptom. The scare path is NearArmedBond (case 3).
+            (TRUCK_DRIVER_IDLE, msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
             (TRUCK_DRIVER_IDLE, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
             // PartyGirlInit (0x1728c0) ENTER: prop 0x1d → AssignAIPath(8) — with a route → CivilianMission
             // (0x16, the walkers); else the prop clears and PartyGirl (0x2f) [M 0x1728c0:17-25]. The game's NIS
@@ -4759,6 +4769,7 @@ impl Drone {
             pos: origin, velocity: [dir[0] * speed, dir[1] * speed, dir[2] * speed], speed,
             travelled: 0.0, range, damage, radius, weapon_type, mesh: d.weapons.projectile_mesh(self.weapon as usize),
             owner, state: 0, bounces: 0, smoke_popped: false, resting: false,
+            stuck: false, seek_target: None,
         })
     }
 
@@ -5640,8 +5651,14 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // 0x1a4bf0:258 runs inside the per-pellet loop) — fix-progress.
             self.progress.log_shot_fired(self.mission.status());
             let dir = crate::bullet::spread(dir, f(0x24), flags68, &mut self.rng);
+            // fix-fire-modes3 [M Bullet_init 0x12c5a0:188-190]: `+0x6C & 0x200` spawns the round at
+            // QUARTER speed (`fVar17 = +0x20; if (+0x6C & 0x200) fVar17 *= 0.25`) — the Torpedo
+            // Launcher 0x30's slow glowing ball (speed 0.1 → 0.025 u/tick) and the Korsakov K5 dart
+            // 0x43 (1.5 → 0.375) [L ee_start_05.bin @ 0x2bf150].
+            let flags6c = u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap());
+            let speed = f(0x20) * if flags6c & 0x200 != 0 { 0.25 } else { 1.0 };
             self.player_bullets.push(PlayerBullet {
-                pos: from, dir, speed: f(0x20), travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0,
+                pos: from, dir, speed, travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0,
                 homing: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x2_0000 != 0,
                 target: None,
                 // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:234-254]: `+0x6C & 4` rides the camera.
@@ -5852,7 +5869,17 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // plain guns (0x70 = 0x12) do not.
                     // The exploding round does NOT continue as a ricochet — the handler runs the effects
                     // first (Effect_Create at 0x12d060), then the explode gate.
-                    if flags70 & 4 != 0 && b.bounces == 0 {
+                    // fix-fire-modes3: the two SMALL-BLAST arms of the same handler [M 0x12ce80:207-216
+                    // (`+0x70 & 0x100000`) and 0x12ce80:226-245 (`+0x70 & 0x200000`)]: on a non-ricochet
+                    // contact they run `Explode_Create(1.0, weapon_data+0x08, +0x0C, …, script
+                    // 0x60007c4, …)` — the Phoenix Samurai bolt's cyan blast (only 0x32 carries
+                    // 0x100000 [L ee_start_05.bin @ 0x2bf150]; radius/damage from the same +0x08/+0x0C
+                    // fields as the 0x4 arm). The effect script differs (0x60007c4, the cyan blast
+                    // stream) from the generic 0x6000052 this port's `spawn_blast` renders — a
+                    // documented effect-visual deviation; the blast's radius/damage/propagate are the
+                    // game's fields.
+                    if (flags70 & 4 != 0 || flags70 & 0x10_0000 != 0 || flags70 & 0x20_0000 != 0)
+                        && b.bounces == 0 {
                         let radius = d.weapons.records.get(b.weapon as usize)
                             .map_or(0.0, |r| f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()));
                         let damage = d.weapons.records.get(b.weapon as usize)
@@ -6859,6 +6886,30 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let actors: Vec<crate::door::DoorActor> = std::iter::once((player.pos, 0.4, false))
             .chain(self.list.iter().filter(|x| x.present && !x.corpse).map(|x| (x.pos, 0.4, false)))
             .collect();
+        // fix-casings-16: the straddle walk-in runs EVERY tick, once, on this actor list (the game's
+        // straddle doors open on contact with no E — the collide path the port has not rebuilt,
+        // U-041; door.rs `straddle_walkin` carries the citation and the metric). Additive hook:
+        // one call; its sounds ride the same door-sound dispatch as `Door_Update`'s below.
+        //
+        // 102j2-fix-casings-16b: the hook is scoped to the site the game evidences. The decompile
+        // has NO per-tick open for a closed idle door (Door_Update's scan is the auto-close only
+        // [M 0x1363c8 @0x136678/@0x136610]; the opens are E [M Player_Activate 0x1a5170], the
+        // channel arms, scripts and the drone AI [M NDrone2_OpenDoor 0x14aa38]) — the contact open
+        // is the unrebuilt U-041 collide path, and its only game-evidenced instance is 16's
+        // arrival walkway door (glist 0x803f00a0). Running the stand-in everywhere changed 01's
+        // guard/escort door dance (the walkreal_07000001 contact pinned at his spawn by a guard
+        // the cycling doors re-shuffled; master, with no stand-in at all, passes). Until U-041 is
+        // rebuilt the stand-in fires on 07000016 only [S — scope pinned by the evidence, not by
+        // the level for its own sake]; the report's live checks cover both levels' doors.
+        if d.level == 0x0700_0016 {
+            let evs = self.doors.straddle_walkin(&actors, &mut self.channels, frame);
+            for (id, pos) in evs {
+                match d.sfx {
+                    Some(t) => { let h = t.get(id as u32); self.play_sound_handle(pos, h); }
+                    None => { self.audio.play3d(id as u32, pos, None); }
+                }
+            }
+        }
         // Per drone: timers, alertness decay, update message, turning, aim, firing, animation.
         let mut talk_queue: Vec<(usize, Vec<(usize, bool)>)> = Vec::new();
         let mut door_sounds: Vec<(u32, V3)> = Vec::new();
@@ -7588,11 +7639,14 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // keeps the per-tick displacement under the 1.05 contact sphere, so a point test doesn't
         // tunnel); the hat keeps flying after a kill (the game's post-hit lifetime) and the fuse
         // death is silent (the arm above).
-        let hat_out = self.grenades.iter().any(|g| g.weapon_type == 0x45 && g.state < 2);
+        // fix-oddjob-hat: the stuck hat kills nobody — the game's stuck bullet (obj+0xF4 = 3)
+        // skips the collision handler entirely [M 0x12ce80:102] so its contact pass never runs;
+        // only the flying hat (state 1, not stuck) takes the 1.05-sphere touch.
+        let hat_out = self.grenades.iter().any(|g| g.weapon_type == 0x45 && g.state < 2 && !g.stuck);
         let hat_kills: Vec<(usize, f32)> = if hat_out {
             let dp: Vec<(V3, bool)> = self.list.iter().map(|x| (x.pos, x.present && !x.corpse && x.enabled)).collect();
             let mut out = Vec::new();
-            for g in self.grenades.iter().filter(|g| g.weapon_type == 0x45 && g.state < 2) {
+            for g in self.grenades.iter().filter(|g| g.weapon_type == 0x45 && g.state < 2 && !g.stuck) {
                 for (i, (p, live)) in dp.iter().enumerate() {
                     if !live { continue; }
                     let dx = p[0] - g.pos[0]; let dy = p[1] - g.pos[1]; let dz = p[2] - g.pos[2];
@@ -7602,8 +7656,98 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             out
         } else { Vec::new() };
         for g in &mut self.grenades {
+            // fix-oddjob-hat: the hat's homing — `Bullet_update` 0x12e7b0:476-478 runs
+            // `Bullet_homing` 0x12f358 after every flying tick for bullets whose `+0x6C` carries
+            // 0x20000. The hat's record does — +0x6C = 0x20C08, the only 0x20000 carrier among the
+            // thrown projectiles [L ee_start_05.bin @0x2c398c + the record sweep]. The port's
+            // grenade path had no homing: the hat flew dead straight and the thrown hat missed
+            // every guard the aim ray didn't already cover — the user's "should be a one-shot
+            // kill but it acts like a grenade". Same shape as the port's bullet homing (drone.rs
+            // `Bullet_homing` block): keep the target while it stays seekable, else acquire the
+            // nearest seekable guard within 1000 units inside the 0.66-dot cone of the velocity
+            // direction with a clear line of sight [M 0x12f358:64-104 — `Bullet_heatseekable`
+            // 0x12f248 gates the candidates; the owner obj is skipped :72 and the port's hats are
+            // always player-thrown, so the drones-only scan is the owner-safe subset], then steer
+            // the unit direction by `clamp((to_target − dir)·0.0333, ±0.01)` per axis and
+            // re-normalise, the speed preserved [M 0x12f358:126-166]. No RNG draws (determinism).
+            // A stuck hat does nothing (the game's state-3 gate, 0x12ce80:102).
+            if g.weapon_type == 0x45 && !g.stuck
+                && d.weapons.records.get(g.weapon_type as usize)
+                    .map_or(false, |r| u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap()) & 0x2_0000 != 0) {
+                let speed = (g.velocity[0] * g.velocity[0] + g.velocity[1] * g.velocity[1] + g.velocity[2] * g.velocity[2]).sqrt();
+                if speed > 1e-6 {
+                    let seekable = |dr: &Drone| dr.drawn && dr.health > 0.0 && dr.state != state::WAIT_SWITCH;
+                    let mut target = g.seek_target;
+                    if let Some(ti) = target {
+                        if !seekable(&self.list[ti]) { target = None; }
+                    }
+                    if target.is_none() {
+                        let dir = [g.velocity[0] / speed, g.velocity[1] / speed, g.velocity[2] / speed];
+                        let mut best: Option<(usize, f32)> = None;
+                        for (i, dr) in self.list.iter().enumerate() {
+                            if !seekable(dr) { continue; }
+                            let to = [dr.pos[0] - g.pos[0], dr.pos[1] - g.pos[1], dr.pos[2] - g.pos[2]];
+                            let dist = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+                            if dist <= 0.0 || dist > 1000.0 { continue; }
+                            if best.is_some_and(|(_, bd)| dist >= bd) { continue; }
+                            let n = [to[0] / dist, to[1] / dist, to[2] / dist];
+                            let dot = n[0] * dir[0] + n[1] * dir[1] + n[2] * dir[2];
+                            if dot <= 0.66 { continue; }
+                            if d.world.segment(g.pos, dr.pos).is_some() { continue; }
+                            best = Some((i, dist));
+                        }
+                        target = best.map(|(i, _)| i);
+                    }
+                    g.seek_target = target;
+                    if let Some(ti) = target {
+                        let tp = self.list[ti].pos;
+                        let to = [tp[0] - g.pos[0], tp[1] - g.pos[1], tp[2] - g.pos[2]];
+                        let l = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+                        if l > 0.0 {
+                            let dir = [g.velocity[0] / speed, g.velocity[1] / speed, g.velocity[2] / speed];
+                            let steer = |c: f32, dirc: f32| ((c - dirc) * 0.0333).clamp(-0.01, 0.01);
+                            let dx = dir[0] + steer(to[0] / l, dir[0]);
+                            let dy = dir[1] + steer(to[1] / l, dir[1]);
+                            let dz = dir[2] + steer(to[2] / l, dir[2]);
+                            let m = (dx * dx + dy * dy + dz * dz).sqrt();
+                            if m > 0.0 {
+                                g.velocity = [dx / m * speed, dy / m * speed, dz / m * speed];
+                            }
+                        }
+                    }
+                }
+            }
+            // The projectile trails (`Bullet_DoTrails` 0x12d890, from `Bullet_update` 0x12e7b0:375/475
+            // — every flying bullet's tick): the smoke trail behind the AR-GL / stun rounds (weapon
+            // `+0x6C` bit 0x2 → `Bullet_trail_effect_smoke` 0x12cba8, every 4th tick) and the MGL
+            // rounds' exhaust puffs (bit 0x20, every 3rd tick, decomp :152-166). The records [L
+            // ee_start_05.bin @ 0x2bf150 sweep]: 0x1b/0x36/0x69 carry 0x2, 0x2a/0x2b carry 0x20 —
+            // all gravity bullets (+0x6C & 8), so the port's Grenade path covers them. The
+            // MPSettings trail-detail gate (word 384) is 0 on this build [L .bss]. The bit-0x10000
+            // Swoosh ribbon (the Sentinel/Scorpion rocket flame) is NOT ported — `Swoosh_Create`
+            // 0x1a4e40 is a new system (the report documents it).
+            if let Some(r) = d.weapons.records.get(g.weapon_type as usize) {
+                let f6c = u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap());
+                let rng = &mut self.rng;
+                if f6c & 0x2 != 0 && self.frame & 3 == 0 {
+                    self.gas.init_trail_smoke(rng, g.pos);
+                }
+                if f6c & 0x20 != 0 && self.frame % 3 == 0 {
+                    self.gas.init_exhaust_puff(rng, g.pos);
+                }
+            }
             while let Some(ev) = g.update(d.world, &mut self.rng) {
                 match ev {
+                    crate::grenade::GrenadeEvent::Stick(p) => {
+                        // fix-oddjob-hat: the +0x100 arm's contact clang — `Sound_Play3D(0x4a7)`
+                        // with the shared (96.0, −1.0, −1.0) volume pair [M 0x12ce80:316-317; the
+                        // same call shape as the 0x51c bounce]. The hat keeps existing: no bounce
+                        // sound (the 0x51c gate never runs for a world stick), no explosive
+                        // broadcast (HandleExplosives classifies grenades by id and has no 0x45
+                        // arm [M 0x138b10 — the port's cls match]), no blast.
+                        if let Some(t) = d.sfx { let h = t.get(0x4a7); self.audio.play3d(h.id, p, None); }
+                        break;
+                    }
                     crate::grenade::GrenadeEvent::Bounce(p) => {
                         // fix-weapon-effects: the impact explode — `Bullet_CollisionHandler` 0x12d068-0x12d0bc
                         // [M, disassembled]: when the weapon's `+0x70` carries bit 2 (0x4) and the contact is

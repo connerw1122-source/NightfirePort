@@ -51,6 +51,19 @@ pub struct Grenade {
     /// [M 0x12ce80 tail zeroes the speed; `Bullet_update`'s `Vec_NormaliseLen` re-normalise (disasm
     /// 0x12f020-0x12f030) keeps the velocity at zero], so it never re-collides and never sounds again.
     pub resting: bool,
+    /// fix-oddjob-hat: the +0x100 stick latch — Oddjob's hat (0x45, `+0x70 & 0x100` [L record
+    /// 0x100]) STOPS at its first world contact: `Bullet_CollisionHandler` 0x12ce80:255 sets
+    /// `obj+0xF4 = 3` (stuck), aligns the matrix to the negated hit normal [:256-266] and the
+    /// handler's top skips every later tick (`if (obj+0xF4 != 3)` :102). The stuck countdown is
+    /// hat-only [M `Bullet_update` case 3 0x12e7b0:363-371 — `weapon+2 != 0x45` skips it]. The
+    /// mine 0x37 / tripbomb 0x3a / satchel 0x3b-0x40 records also carry +0x100 [L ee_start_05.bin
+    /// sweep] — their stick branches (no 1500 re-arm, no countdown, trigger-detonated) are the
+    /// satchel task's scope; the port sticks the hat only.
+    pub stuck: bool,
+    /// fix-oddjob-hat: `BU+0x40` — the hat's heat-seek target (`Bullet_homing` 0x12f358 stores the
+    /// acquired object there; the collision handler's stick path reuses the slot for the object it
+    /// stuck to [M 0x12ce80:244]). An index into `Drones::list`, `None` until acquired.
+    pub seek_target: Option<usize>,
 }
 
 /// What a grenade did this tick.
@@ -58,6 +71,10 @@ pub struct Grenade {
 pub enum GrenadeEvent {
     /// Bounced off the world at `pos` (sound 0x51C).
     Bounce(V3),
+    /// fix-oddjob-hat: the hat (0x45) STUCK to the world at `pos` — the +0x100 arm's state 3
+    /// [M 0x12ce80:255]; the caller plays the 0x4a7 contact clang [:317]. The object keeps
+    /// existing (no bounce sound, no explosive broadcast).
+    Stick(V3),
     /// Exploded at `pos` — the caller applies the explosion (radius, damage, owner) to drones and Bond.
     Explode { pos: V3, radius: f32, damage: f32, owner: usize, weapon_type: u16 },
 }
@@ -85,6 +102,10 @@ const REC_FRAME_RATE: f32 = 1.0 / 60.0;
 const BOUNCE_MAX: u8 = 20;
 /// `Bullet_CollisionHandler` min speed to keep bouncing: `FRAME_RATE_MUL · 0.01` = 0.01.
 const BOUNCE_MIN_SPEED: f32 = 0.01;
+/// fix-oddjob-hat: the hat's post-stick lifetime — the +0x100 arm writes 1500.0 (0x44160000) into
+/// the fuse slot at the stick [M `Bullet_CollisionHandler` 0x12ce80:315]; `Bullet_update` case 3
+/// counts it down for the 0x45 only and raises the delete flag at ≤ 0 [M 0x12e7b0:363-371].
+const HAT_STICK_LIFE: f32 = 1500.0;
 
 /// The per-material bounce coefficient table the bounce reads at `0x3037dc + material·0x88`
 /// [M Bullet_CollisionHandler 0x12ce80: `fVar23 = *(float *)(BU+0xF8) * *(float *)lVar10`], measured
@@ -112,10 +133,29 @@ impl Grenade {
     /// Ranged-out grenades die (the fuse).
     pub fn update(&mut self, world: &CollisionWorld, rng: &mut Rng) -> Option<GrenadeEvent> {
         if self.state >= 2 { return None; }
+        // fix-oddjob-hat: the stuck hat's tick [M `Bullet_update` case 3 0x12e7b0:285-371] — the
+        // speed and the velocity are zeroed at the stick, no collision runs (the handler's
+        // `obj+0xF4 != 3` gate 0x12ce80:102), the fuse slot counts down (hat-only :363) and the
+        // delete flag rises at ≤ 0 (:369-370) — a SILENT death (`Bullet_Delete`'s effect kind
+        // +0x70 & 7 = 0 spawns nothing [L the hat's +0x70 = 0x100]). The port re-arms `travelled`
+        // to 0 at the stick (the game writes 1500.0 over the fuse slot, 0x12ce80:315) and counts
+        // to `HAT_STICK_LIFE`.
+        if self.stuck {
+            self.travelled += 1.0;
+            if self.travelled >= HAT_STICK_LIFE { self.state = 2; }
+            return None;
+        }
+        // `Bullet_DoTrails` 0x12d890:268-273 [M]: weapon 0x37's fuse does NOT tick while it is the
+        // player-armed 7777.0 — the mine waits for the detonator (`Player_WeaponInitBullet`'s
+        // +0x68 & 0x20000 arm re-arms it to 10.0 [M 0x1a4bf0 disasm 0x1a4c88]); guard-thrown mines
+        // keep the 420 fuse [M 0x12c5a0:196-223]. Only the fuse count freezes — the movement below
+        // continues, exactly as the game's DoTrails skip sits beside the flight update.
+        let armed_mine = self.weapon_type == 0x37 && self.range >= 7777.0;
         // A rested grenade skips everything but the fuse — the game's zero-speed bullet never moves
         // (the re-normalise pins the move at zero, disasm 0x12f020-0x12f030) so it never collides and
         // never sounds again [M 0x12ce80 tail + 0x12f040].
         if self.resting {
+            if armed_mine { return None; }
             self.travelled += 1.0;
             if self.travelled > self.range {
                 self.state = 2;
@@ -129,14 +169,16 @@ impl Grenade {
         // detonator, so it keeps the guard-thrown 420). Count ticks, not distance —
         // `weapon_data+0x1C` (5000) is the max-travelled range, a SILENT state-4 death, not the fuse
         // [M Bullet_update case 1: travelled > +0x1C → state 4, no explosion].
-        self.travelled += 1.0;
-        if self.travelled > self.range {
-            self.state = 2;
-            // fix-weapon-fire-modes [M Bullet_update 0x12e7b0:158-162]: for a no-fuse record this
-            // expiry is the RANGE-OUT arm — a SILENT state-4 death. The Sim's Explode arm gates on
-            // `+0x70 & 0x200` (the `Bullet_DoTrails` fuse gate 0x12d890:262-281) and removes the
-            // grenade quietly; a fuse grenade (0x2B, 0x34…) explodes here as before.
-            return Some(GrenadeEvent::Explode { pos: self.pos, radius: self.radius, damage: self.damage, owner: self.owner, weapon_type: self.weapon_type });
+        if !armed_mine {
+            self.travelled += 1.0;
+            if self.travelled > self.range {
+                self.state = 2;
+                // fix-weapon-fire-modes [M Bullet_update 0x12e7b0:158-162]: for a no-fuse record this
+                // expiry is the RANGE-OUT arm — a SILENT state-4 death. The Sim's Explode arm gates on
+                // `+0x70 & 0x200` (the `Bullet_DoTrails` fuse gate 0x12d890:262-281) and removes the
+                // grenade quietly; a fuse grenade (0x2B, 0x34…) explodes here as before.
+                return Some(GrenadeEvent::Explode { pos: self.pos, radius: self.radius, damage: self.damage, owner: self.owner, weapon_type: self.weapon_type });
+            }
         }
         // First tick: half-speed (the game's `Rand_FRand(0.5) + 0.5` step [M 0x12e7c0]).
         let step = if self.state == 0 { rng.frand(0.5) + 0.5 } else { 1.0 };
@@ -156,6 +198,22 @@ impl Grenade {
         if speed2 > 1e-12 {
             if let Some((t, normal, mat)) = world.segment_surface(self.pos, end, false) {
                 let hit = [self.pos[0] + (end[0] - self.pos[0]) * t, self.pos[1] + (end[1] - self.pos[1]) * t, self.pos[2] + (end[2] - self.pos[2]) * t];
+                // fix-oddjob-hat: Oddjob's hat (0x45, `+0x70 & 0x100` [L record]) never bounces off
+                // the world — the +0x100 arm STICKS it: `obj+0xF4 = 3` [M 0x12ce80:255], the matrix
+                // aligns to the negated hit normal [:256-266] and the hat alone gets the 1500.0
+                // post-stick lifetime + the 0x4a7 clang [:315-317]. The bounce block (LAB_0012d4bc)
+                // is unreachable for a +0x100 record's world hit: its gate needs `+0x70 & 0x80` or
+                // the kind-2/3/0x15 hit flag (iStack_100) [:398-407] and the world path sets
+                // neither. The port freezes the velocity and reports Stick; the countdown runs in
+                // the stuck branch above. (The mine/satchel records also carry +0x100 — their
+                // branches are the satchel task's scope, see the `stuck` field.)
+                if self.weapon_type == 0x45 {
+                    self.pos = hit;
+                    self.velocity = [0.0; 3];
+                    self.stuck = true;
+                    self.travelled = 0.0;
+                    return Some(GrenadeEvent::Stick(hit));
+                }
                 // fix-weapon-fire-modes [M Bullet_CollisionHandler 0x12ce80:194-206]: a `+0x70 & 0x4`
                 // record's round detonates at the contact — the Bounce event carries it to the Sim's
                 // Bounce arm, which reads the record's flags and blasts instead of bouncing (the MGL's
@@ -166,6 +224,16 @@ impl Grenade {
                 let reflected = [v[0] - 2.0 * dot * normal[0], v[1] - 2.0 * dot * normal[1], v[2] - 2.0 * dot * normal[2]];
                 let c = bounce_coefficient(mat);
                 self.velocity = [reflected[0] * c, reflected[1] * c, reflected[2] * c];
+                // `Bullet_CollisionHandler` (0x12ce80, the store at LAB_0012d478): the bounce writes
+                // `BU+0x30 = *(HITDATA+0x40) + *(HITDATA+0x10) · uVar13` — the hit point offset ALONG the
+                // hit normal by uVar13 = uVar12 = 0x3d23d70a = 0.04 (set at 0x12ce80:257-258 for the
+                // generic bounce arms; the contact-detonation arm's 0x3b03126f = 0.002 differs only on
+                // the MGL's Explode position, folded here — 0.038 on a ≥ 4.0 blast radius). Without it
+                // the grenade rests exactly ON the collision triangle and every later sight/LOS ray to
+                // it grazes the surface at the ray's end (the port's Collide_Intersect analogue accepts
+                // tt ∈ [0,1] inclusive) — the ai_live grenade-scare guard never saw the bounced frag.
+                let off = 0.04f32;
+                let hit = [hit[0] + normal[0] * off, hit[1] + normal[1] * off, hit[2] + normal[2] * off];
                 self.pos = hit;
                 self.bounces = self.bounces.saturating_add(1);
                 // Slow bounce or the bounce max: the speed zeroes and the grenade sits — NO explosion
@@ -258,6 +326,7 @@ mod tests {
         let mut g = Grenade {
             pos: [0.0, 2.0, 0.0], velocity: [5.0, -5.0, 0.0], speed: 7.0, travelled: 0.0, range: 210.0,
             damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: 0, smoke_popped: false, resting: false,
+            stuck: false, seek_target: None,
         };
         let mut rng = Rng::new(0);
         let mut bounced = false;
@@ -279,6 +348,7 @@ mod tests {
         let mut g = Grenade {
             pos: [0.0, 0.5, 0.0], velocity: [0.0, -30.0, 0.0], speed: 30.0, travelled: 190.0, range: 200.0,
             damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: BOUNCE_MAX, smoke_popped: false, resting: false,
+            stuck: false, seek_target: None,
         };
         let mut rng = Rng::new(0);
         let mut bounced = false;
@@ -301,6 +371,7 @@ mod tests {
         let mut g = Grenade {
             pos: [0.0, 10.0, 0.0], velocity: [0.0, -30.0, 0.0], speed: 30.0, travelled: 0.0, range: 200.0,
             damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 0, bounces: BOUNCE_MAX - 1, smoke_popped: false, resting: false,
+            stuck: false, seek_target: None,
         };
         if let Some(ev) = g.update(&w, &mut rng) { assert!(matches!(ev, GrenadeEvent::Bounce(_)), "one short: a bounce, got {ev:?}"); }
         else { assert!(g.bounces == BOUNCE_MAX, "the bounce counted"); }
@@ -314,6 +385,7 @@ mod tests {
         let mut g = Grenade {
             pos: [0.0, 0.05, 0.0], velocity: [0.01, -0.05, 0.0], speed: 0.05, travelled: 0.0, range: 300.0,
             damage: 50.0, radius: 4.0, weapon_type: 0x34, mesh: 0x0200_02af, owner: 0, state: 1, bounces: 0, smoke_popped: false, resting: false,
+            stuck: false, seek_target: None,
         };
         let mut rng = Rng::new(0);
         let mut events = Vec::new();

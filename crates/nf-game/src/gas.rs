@@ -130,6 +130,74 @@ impl GasPool {
         let _ = yaw; // the rot-z euler: stored to obj+0x50/0x60 in the game; the port's billboard draw reads only the spin
     }
 
+    /// The projectile smoke-trail site (`Bullet_trail_effect_smoke` 0x12cba8 fast arm, called from
+    /// `Bullet_DoTrails` 0x12d890 when the weapon record's `+0x6C` carries bit 0x2 [M decomp
+    /// :144-146]), every 4th game tick (`(GameState tick + obj[0xec]) & 3 == 0` [M disasm
+    /// 0x12cbf4-0x12cc08 — obj+0xec is the creation tick, so the sum is the current tick]) and
+    /// behind the `MPSettings` trail-detail gate (word 384, 0 = trails on; .bss zero at boot [L
+    /// MPSettings 0x2a47a0+384, `LS_LoadMPSettings` never sets it on this build]).
+    /// Fixed args [M disasm 0x12cc10-0x12cc74]: scale 0.1 → 0.5, mesh 0x0200001f, kind 7,
+    /// rgba 0x404040ff → 0x40404001, life 120 ticks (the decomp-dropped 11th arg = 0x78 [M
+    /// 0x12cc60 `sw $v0, ($sp)` with v0 = 0x78]), velocity (0, 0, 0) — the game passes a non-NULL
+    /// zero vector so `Gas_Init`'s given-velocity branch stores it with NO wind draws [M 0x1aacc8
+    /// :106-111]. Draws [M]: the caller's `Rand_FRand(6.25)` (0x12cc18, 0x40c90fdb) + the 2 spin
+    /// draws inside `Gas_Init` (0x1aacc8:72-80) = 3 per puff, consumed before the pool-cap check
+    /// (the searchlight precedent). The kind-7 update is pure buoyancy — the puff hangs and fades.
+    /// Records with bit 0x2 [L ee_start_05.bin @ 0x2bf150 sweep]: 0x1b (the AR's GL), 0x36 (the
+    /// stun grenade), 0x69 — all gravity bullets (+0x6C & 8), so the port's Grenade path.
+    pub fn init_trail_smoke(&mut self, rng: &mut crate::drone::Rng, pos: V3) {
+        let yaw = rng.frand(6.25);
+        let spin_mag = rng.frand(std::f32::consts::FRAC_PI_2 * REC_FRAME_RATE);
+        let spin = if rng.rand(0x100) >= 0x80 { -spin_mag } else { spin_mag };
+        if self.puffs.len() >= Self::CAP { return; }
+        self.puffs.push(Gas {
+            pos,
+            vel: [0.0; 3],
+            mesh: 0x0200_001f,
+            scale: 0.1,
+            scale_rate: (0.5 - 0.1) / 120.0,
+            rgba: [0x40 as f32, 0x40 as f32, 0x40 as f32, 0xff as f32],
+            rgba_rate: [0.0, 0.0, 0.0, (1.0 - 255.0) / 120.0],
+            spin,
+            life: 120.0,
+            kind: 7,
+        });
+        let _ = yaw; // the rotation draw: stored to obj+0x50/0x60; the port's billboard reads only the spin
+    }
+
+    /// The rocket-exhaust site (`Bullet_DoTrails` 0x12d890 bit 0x20 arm, decomp :152-166), every 3rd
+    /// game tick (`% 3 == 0` [M disasm 0x12d9f4-0x12da14]) behind the same MPSettings gate.
+    /// Fixed args [M disasm 0x12da34-0x12da84]: scale 0.1 → 0.4, mesh SMOKE_QUAD 0x02000039, kind 0
+    /// (the damped-velocity drift), rgba 0x7f7f7f7f → 0x80808000, life 64 ticks (v0 = 0x40 at
+    /// 0x12da38), velocity (0, 0, `Rand_FRand(6.25)`) — the caller's draw is stored as the z of the
+    /// velocity vector [M 0x12da2c jal Rand_FRand; 0x12da28/0x12da30 zero stores; 0x12da6c
+    /// `swc1 $f0, 0x28($sp)`], so kind 0's `vel · REC_FRAME_RATE` gives a ≤0.104/tick drift.
+    /// Draws: the caller's 1 + the 2 spin draws = 3 per puff. Records with bit 0x20 [L sweep]:
+    /// 0x2a/0x2b (the Militek MGL twins).
+    pub fn init_exhaust_puff(&mut self, rng: &mut crate::drone::Rng, pos: V3) {
+        let vz = rng.frand(6.25);
+        let spin_mag = rng.frand(std::f32::consts::FRAC_PI_2 * REC_FRAME_RATE);
+        let spin = if rng.rand(0x100) >= 0x80 { -spin_mag } else { spin_mag };
+        if self.puffs.len() >= Self::CAP { return; }
+        self.puffs.push(Gas {
+            pos,
+            vel: [0.0, 0.0, vz * REC_FRAME_RATE],
+            mesh: SMOKE_QUAD,
+            scale: 0.1,
+            scale_rate: (0.4 - 0.1) / 64.0,
+            rgba: [0x7f as f32, 0x7f as f32, 0x7f as f32, 0x7f as f32],
+            rgba_rate: [
+                (0x80 as f32 - 0x7f as f32) / 64.0,
+                (0x80 as f32 - 0x7f as f32) / 64.0,
+                (0x80 as f32 - 0x7f as f32) / 64.0,
+                (0x00 as f32 - 0x7f as f32) / 64.0,
+            ],
+            spin,
+            life: 64.0,
+            kind: 0,
+        });
+    }
+
     /// The full form the `Effect_Bullet` gas entries need [M disasm 0x1ce964..0x1cea90]: the entry's own
     /// mesh hash (the callers' SMOKE_QUAD is only the common case) and the packed rgba END (the game
     /// fades start→end; `init`'s callers pass ~0). Fix-impacts hook, additive.

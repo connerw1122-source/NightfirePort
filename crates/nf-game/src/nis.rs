@@ -1273,6 +1273,19 @@ impl Scripts {
         self.objects.list.iter().rev().flatten().find_map(|o| match o { Obj::Camera { matrix, fov, .. } => Some((*matrix, *fov)), _ => None })
     }
 
+    /// The camera object's source stream's key inputs — fix-exact-math-swap3: lets a test recompute the
+    /// camera matrix from the NIS keys through its own copy of the game's arithmetic
+    /// (`Script_GetInterp` 0x1da158's inputs: the stream clock, the key range, the spline flag).
+    pub fn camera_stream_inputs(&self) -> Option<(u32, usize, f32, usize, usize, u16)> {
+        let (hash, i) = self.objects.list.iter().rev().flatten().find_map(|o| match o {
+            Obj::Camera { src, .. } => Some(*src),
+            _ => None,
+        })?;
+        let s = self.players.iter().find_map(|p| p.info.iter().flatten().find(|s| s.nis.hashcode == hash))?;
+        let st = s.streams.get(i as usize)?;
+        Some((hash, i as usize, st.clock, st.first_key as usize, st.last_key as usize, st.flags))
+    }
+
     /// The tick head: the requests reset, the game's `Input_Action(-1, 0x19, 1)` skip taken, and the
     /// create-time load beat (`prime`) on the first tick. The players themselves update from the
     /// control walk (`update_player`), in the game's list order — NOT all together here.
