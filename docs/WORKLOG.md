@@ -10775,3 +10775,10 @@ Stage Summary:
 ## fix-armour-ring (outcome)
 - The armour branch was already ported and is game-faithful [M HUD_UpdateHealthPane 0x19b9c8:139-158]: armour 0 → HealthSprInfo[0..8] hidden (+0x38 = 0xFF); armour > 0 → the 8 bronze-tinted (0x7d6d59) orange-art segments with alpha 1.0 (k=0) / 0.75 (k < armour·0.16) / 0.35. No separate 007-logo sprite: HealthSprInfo[15] is the 87×86 hollow circle outline tinted by the health colour; the captures' "orange 007 ring" = this pane at the god-cheat's armour 50 (cheats.py writes health 100 + armour 50 every frame). All BLData+0x8b0 readers agree (Pickup_Handler 0x18e650:221-224 take, Player_HandlePain 0x1902c8:100-104 absorb, RamSave/Load, the pane).
 - Tests (fix_armour_ring_live): hide-at-0 + the green ring unchanged; the real take path (kind-3 pickup → step_bond → armour 50) lights exactly 8 segments with alphas {255, 191×7} and segment 0 at (48,367); value tracking 25 → {255, 191×3, 89×4}, 0 → hidden. Green on the final merged tree (1496b80). Shared file: lib.rs gained the 4-line `--armour <n>` shot hook (reported).
+
+## fix-exact-math-swap2 (started)
+- Started: land/repair the exact sine/matrix path on current master. Two red suite tests to resolve from the
+  game's own math (the exact path is the game's): walkreal_07000001_live walk-with-contact (regressed again on
+  master — bisect which merged change brings it back, find the first exact-vs-host divergence at the failing
+  tick), and ai_live grenade_bounce_scares_the_guard_into_the_flee_family (guard never enters RunAwayFromObject
+  0x86 with exact matrices — find which value moves). Report: docs/reports/fix-exact-math-swap2.md.
