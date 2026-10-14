@@ -11343,3 +11343,11 @@ Work Log:
   reload/mode/away phases [M Bullet_Delete 0x12e660:27-29 +0x944=0xf; Player_Update 0x193600 case
   10] — 0x2c on 07000005: W (and the M under it, the 4.5 press eaten the same way) → clean.
   0.05 row: 3 reds (0x32 F target-gated, 0x38 F mine) 0 panics. Checkpoint push next.
+- 22:33 UTC: the sweep on this window's tree: 05 (98 cells, 3 reds, 0 panics), the 7 wrappers
+  (686/29/0), the story levels 01-08,0a,0c (768 cells, 0 panics; the reds are the 0x32 F / 0x38 F
+  pair + the dim no-fp give refusals 0x01/0x1e/0x43) and 0d (98/3/0 — the 0x2a X re-run: gap 97 =
+  the contact flight time at that spot, not the 210 fuse; the 0x04-on-4a re-run CLEAN). Root cause
+  of the 0x2e/0x30 D family: the never-dying guided missile on 0b/48/4a/4b rides into the next
+  cells (gcam1 in their cells) — the port needs the game's missile lifetime (Bullet_update
+  0x12e7b0), live check in the report. Remaining: story levels 11-16,1b. Report:
+  docs/reports/weapon-matrix5.md. finish.sh 106b done + ntfy sent.
