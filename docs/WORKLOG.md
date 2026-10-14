@@ -11141,3 +11141,20 @@ draws added; no wall-clock in Sim.
   (NDrone2_DSTATE_AllyLead 0x15e698), the ch16 TOUCH gate holds both and 01 chains to 07000002; plus the
   meshless exit trigger (lo/hi = inf) ported via the game's touch filter / Trigger_Calc so 0a's exit (ch74
   -> 0700000b) fires too. Report: docs/reports/fix-escort-01.md. Work in progress.
+
+> fix-escort-01 DONE (17:00 UTC): the 07000001 escort lead walkreal-a stall root-caused and fixed
+> (nav.rs Route::follow now ports LinkCreep_Handler 0x15a2c8 / LinkCreep_Decrement 0x15a148 /
+> LinkCreep_Increment 0x159f28 — the SqDist2D < 1.0 passes the port lacked; the old code returned
+> BLOCKED where the game pushes/dithers through, wedging the contact mid-lead with the run anim
+> playing). 01 now chains: the contact leads onto the extraction plate, ch16 AND-touch fires with
+> both on it, the ch16-gated meshless LOAD_LEVEL exit loads 07000002 (walkreal_07000001_live
+> level_exit at tick 954596; the new input-driven escort_01 does it in ~2.7k ticks with the
+> guards-removed allowance). 0a's exit: gate 0 [D pl 59] so it can only fire via Bond's E-use
+> sphere [M 0x1a5170] — the trigger is a thin 12-tri wall panel with no floor under its centre;
+> escort_0a (ch74 + E -> 0700000b, sister: the key gate locks). play_level's E-path placement
+> moved onto the floor beside the panel. nf-game ai_live guard_takes_cover re-seeded 1 -> 2
+> (documented; the creep dither changed the walk timeline; seed 2 reproduces the same live trace).
+> Totals on this tree: nf-game 266, nf-formats+nf-audio 87, campaign_flow_live 6, walkreal 01/02 +
+> fix_truck 5 — 0 failures. The four-crate suite runner could not run in the background (the
+> sandbox kills it between tool calls; suite.out stayed empty). Report:
+> docs/reports/fix-escort-01.md.

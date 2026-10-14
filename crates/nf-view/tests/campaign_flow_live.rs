@@ -155,7 +155,14 @@ fn play_level(iso_path: &str, level: u32, budget: u32, save: Option<&RamSave>) -
         if let Some((lo, hi, gate, key_gate, next)) = exit {
             row.note.push_str(&format!("exit trigger→0x{next:08x} gate ch{gate} key{key_gate}; E at the exit; "));
             if key_gate != 0 { sim.drones.set_channel(key_gate); } // the key pickup's channel [M 0x1b2318:76-90]
-            let c = [(lo[0] + hi[0]) * 0.5, lo[1] + 0.1, (lo[2] + hi[2]) * 0.5];
+            // The E-use spot: on the floor beside the trigger's bbox centre (a thin wall panel with
+            // no floor under its centre — 0700000a's exit — had Bond falling out of the world). The
+            // use sphere (head + 1 forward, r 1.0 [M 0x1a5170:106]) reaches the volume from there.
+            let c = {
+                let base = [(lo[0] + hi[0]) * 0.5, hi[1], (lo[2] + hi[2]) * 0.5];
+                let floor = sim.world.floor_below(base, 8.0).unwrap_or(lo[1] + 0.1);
+                [base[0], floor + 1.0, base[2] - 1.0]
+            };
             sim.bond = nf_game::player::Bond::new(c, 0.0);
             for _ in 0..240 {
                 sim.step_bond(Default::default(), false, false, true); // the use key held
