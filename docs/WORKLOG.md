@@ -9826,3 +9826,14 @@ draws owned ids the equip declines (the actual playtest refusal). 6/6 grapple te
 nf-game units, the full 214-binary suite green except the allowed disc_golden 3. Report:
 docs/reports/fix-qclaw.md (rope rendering + the 0x02100717 mesh gap listed as what's left, with
 the PCSX2/nf-view live checks).
+
+Task 101j fix-portal-eyecel STARTED (04:12 UTC): the 05 trench walls still vanish with portal
+culling on. 130g's scene::near_los_rescue restores 0 cels in the real draw path ([pwalk] prints,
+no [rescue]) because the root cause is upstream: build_FindCel 0x1c8cb0's up/down tie-break rays
+cast against each CANDIDATE's own object list, and the port's stand-in scopes the shared collision
+world, so candidates 14/15 tie and the giant outdoor room 14 wins. Plan: give each cel its own
+collision/object list the way the game's loader attributes polys and objects to cels
+(build_link_objects_to_rooms 0x1c9150 is ported for the render chains; find the collision side),
+so the eye cel resolves to 15 like the game's; remove the rescue if it dies; prove on the RENDERED
+path (a --shot draw-list test at the trench spot failing on master), keep the 27-level sweep and
+the 4 PCSX2 ground-truth spots green. Branch s/fix-portal-eyecel off master 5f13369.
