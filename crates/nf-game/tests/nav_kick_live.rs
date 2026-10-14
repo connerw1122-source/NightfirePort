@@ -262,7 +262,7 @@ const L05: u32 = 0x0700_0005;
 /// 07000005 guards on one line, Bond beyond them (both see him → Attack → the rear guard's combat
 /// move runs the anim choice with the front guard as the obstacle).
 #[test]
-#[ignore = "the +0x31C flag computation is suspended (fix-nav-remainder session end): the per-tick scan regressed 07000001's death-drop tests (a_death_draws_its_drop — green on master 0cda458 and at the kick commit, red with the scan). The 0x5E gates (0x13cfb0:35 in both choosers) stay in place and were verified with the scan live: the staged mover parked in 0x5E with the patroller dead ahead (run logged nb 0xa/0x12, entered 0x5E). Root-causing the scan's regression is the next session's first item"]
+#[ignore = "the +0x31C scan is root-caused and fixed (fix-nav-remainder2: the game's +0x314 obstacle is drone-only — EvaluateObstacle 0x14e6f0:58-65 writes it only for param_2 != 0, the player call passes 0 at 0x14eba8:98-99, the 0xb fallback 0x14eba8:180-214 loops drones; the old scan's player term was the death-drop regression) but HELD INERT behind NB_SCAN_LIVE=false in drone.rs: with the scan live every named regression is green (a_death_draws_its_drop, dropped_guns_dim, this drive test, ai_traces_live 4/4) EXCEPT walkreal_07000001_live — the west mezzanine guard outlives the test's fixed 12-round budget and the contact parks in LEAD_HIDE. Flip NB_SCAN_LIVE and un-ignore this together after that re-pin (run-verified green here on 2026-10-14)"]
 fn drone_directly_ahead_parks_the_mover_in_0x5e() {
     let Some(l) = LevelX::load(L05) else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data(L05);
