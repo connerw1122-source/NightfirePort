@@ -10575,3 +10575,11 @@ fix-08-collision2 (100m, 2026-10-14): the scoped collision's 01 escort breakage 
   crates/nf-view/src/scene.rs (the two shared-file hooks), crates/nf-view/tests/common/walker.rs
   (the env-gated trace), crates/nf-view/tests/fix_08_collision2_live.rs (new);
   crates/nf-game/src/player.rs ended unchanged.
+
+---
+Task ID: 103e-campaign-flow
+Agent: campaign-flow worker
+Task: campaign-flow — play every single-player mission's levels in order from the front end's mission start, headless: walkreal walkers / scripted routes where they exist, dev teleport + objective triggers where they don't; through the transitions and end-of-mission flow (outro, results, next mission unlocked). Per level: reached exit / which objective blocked / crashes / stuck script / missing trigger. docs/reports/campaign-flow.md table; fix the first pinnable blockers with tests; list the rest as follow-ups.
+
+Work Log:
+- (11:59 UTC) Branch s/campaign-flow created from origin/master bf2f6bd; setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; campaign-flow research next.
