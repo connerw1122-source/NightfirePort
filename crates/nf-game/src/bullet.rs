@@ -220,7 +220,9 @@ pub fn damage_factor(level: u32, difficulty: u32) -> f32 {
         0x1b => (0.6, 0.7, 1.0),
         _ => (0.75, 1.0, 1.25),
     };
-    match difficulty { 1 => e, 2 => n, 3 => h, 4 => 2.0, _ => 1.0 }
+    // Difficulty 0/other picks Normal, not a no-op [M Player_HandlePain 0x190404-0x190470:
+    // 1 → Easy, 2 and every unmatched value → Normal, 3 → Hard, 4 → the ×2 add.s f20,f20,f20].
+    match difficulty { 1 => e, 3 => h, 4 => 2.0, _ => n }
 }
 
 #[cfg(test)]

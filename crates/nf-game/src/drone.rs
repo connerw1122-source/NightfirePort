@@ -308,10 +308,11 @@ pub struct Data<'a> {
     pub surfaces: Option<&'a nf_formats::sfx::SurfaceSounds>,
     /// Drone voice lines (`Drone_SfxInfo`); `None`: the drones do not talk.
     pub voices: Option<&'a [nf_formats::sfx::VoiceLine]>,
-    /// `GameState+0x40` (0x2a37a8): the difficulty — the `Player_HandlePain` 0x1902c8 damage
-    /// factor, the `DroneWeap_DoBulletAccuracy` 0x179740 hit chance, the captain/lock/hint gates
-    /// and `PlrStat_GetScore` 0x1984b0's multiplier all read it (fix-progress; mirrored from
-    /// `Drones::difficulty` in the view's `data()`).
+    /// `GameState+0x28` (0x2a3790): the difficulty — the `Player_HandlePain` 0x1902c8 damage
+    /// factor (`lw a0,14224(v0)` 0x19040c) and the `DroneWeap_DoBulletAccuracy` 0x179740 hit
+    /// chance (`lw a0,40(v0)` 0x179848) both read +0x28, and the difficulty page writes it there
+    /// (`C_SBNFDFCTY_Handler` 0x216dc4); the scored member at +0x40 (0x2a37a8) stays 0 in play
+    /// [L ee_start_05.bin] (mirrored from `Drones::difficulty` in the view's `data()`).
     pub difficulty: u32,
 }
 
@@ -4770,12 +4771,37 @@ impl Drone {
         dly as u32
     }
 
-    /// `DroneWeap_NextBulletTime(new burst / start)`.
+    /// `BOT_getAggressionMul` 0x126468: the table off `Drone+0xB5` (0x12649c-0x1264ec) —
+    /// 0→0.3, 1→0.5, 2→0.7, 3→0.85, 4/default→1.0 (the MP close boost 0x1264f4+ is MP-only).
+    fn aggression_mul(&self) -> f32 {
+        match self.aggression { 0 => 0.3, 1 => 0.5, 2 => 0.7, 3 => 0.85, _ => 1.0 }
+    }
+
+    /// `DroneWeap_NextBulletTime` 0x179d40 (new burst / continuing burst).
     fn next_bullet_time(&mut self, d: &Data, rng: &mut Rng, frame: u32, new_burst: bool) {
+        // interval = signed short weapon_data+0x40 (0x179dc0 `lh v1,64(v1)`), min-clamped per weapon
+        // (0x179dc4-0x179e04): weapons 6, 10, 0x0e, 0x0f, 0x10 → min 60; every other weapon → min 0.
+        let w = self.weapon as u32;
         let interval = self.weapon_field_u16(d, 0x40) as i16 as i32;
-        let i = interval.max(0) as u32;
+        let i = if matches!(w, 6 | 10 | 0x0e | 0x0f | 0x10) { interval.max(60) } else { interval.max(0) } as u32;
         if new_burst {
-            self.burst = (self.weapon_field_u16(d, 0x2c) as i32).max(1);
+            // burst = unsigned short weapon_data+0x2c (0x179e74 `lhu v1,44(v1)`), resized per weapon
+            // (0x179ea8-0x179ef8) — the RNG draws the game makes, in its order: weapons 6/10 with a
+            // raw size < 2 draw `Rand(3)+2` (0x179eb8-0x179ed0); weapons 0x0e-0x10 draw `Rand(2)+1`
+            // (0x179ed4-0x179edc); the rest take the raw short sign-extended (0x179e90-0x179ee8).
+            // Then min 1 (0x179eec-0x179ef8).
+            let raw = self.weapon_field_u16(d, 0x2c);
+            self.burst = match w {
+                6 | 10 if raw < 2 => (rng.rand(3) + 2) as i32,
+                0x0e..=0x10 => (rng.rand(2) + 1) as i32,
+                _ => raw as i16 as i32,
+            }.max(1);
+            // SP aggression cut (0x179f80-0x17a01c): for weapons NOT in {6, 10, 0x0e-0x10}, a burst
+            // of 4+ is `trunc(max(burst × BOT_getAggressionMul, 3.0))` — weapon 0x12/0x13's record
+            // burst 12 with the common +0xB5=0 (0.3) fires 3-round bursts, not 12.
+            if !matches!(w, 6 | 10 | 0x0e | 0x0f | 0x10) && self.burst >= 4 {
+                self.burst = ((self.burst as f32 * self.aggression_mul()).max(3.0)) as i32;
+            }
             self.last_shot += self.burst_delay(rng);
         }
         self.next_shot = (self.last_shot + i).max(frame);
@@ -4882,14 +4908,26 @@ impl Drone {
         // `Light_Create(radius 7.0, intensity 1.0, the muzzle, rgb = weapon_data+0x56/+0x55/+0x54,
         // channel 0, life 0 → +0x20 = 1 (one tick), kind 1)` — before the bullet's spread draws.
         lights.create(7.0, 1.0, muzzle, [w[0x56], w[0x55], w[0x54]], 0, 0, 1, 0, rng);
+        // The light's random orientation draws (FireWeapon 0x179234 → Light_Create; the game draws
+        // FRand(2π) yaw 0x179268, FRandHalf(0.2) pitch 0x179288, FRandHalf(0.2) roll 0x1792ac right
+        // after — the port renders no light orientation, but the shared RNG must consume the same
+        // stream or every later consumer desyncs from the game).
+        let _yaw = rng.frand(std::f32::consts::TAU);
+        let _pitch = crate::effect::frand_half(rng, 0.2);
+        let _roll = crate::effect::frand_half(rng, 0.2);
         let aim = [p.target[0] + off[0] - muzzle[0], p.target[1] + off[1] - muzzle[1], p.target[2] + off[2] - muzzle[2]];
         let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
         let dir = crate::bullet::spread(aim, f32_at(0x24), flags68, rng);
-        // The raw damage: weapon_data+0x0C × the drone's `+0x100` multiplier. The ×2 under TooClose is
-        // NOT applied here — `Drone_ModPlayerHitDamage` 0x13a940 → `Drone_ModBulletDamage` 0x139f50
-        // applies it at HIT time from the shooter's tracked distance (Drone+0x1A0) against the level's
-        // `close_threshold` [0x30cb14]; the port does the same at the `BulletEvent::Player` site.
-        let damage = f32_at(0x0c) * self.damage_mul;
+        // The raw damage: weapon_data+0x0C. `Drone+0x100` (the ×mul) is applied at HIT time by
+        // `Drone_ModBulletDamage` — weapons 0x63-0x66 skip EVERY modifier there (0x139f98-0x139fa8),
+        // so they must not carry the multiplier in the bullet either.
+        let special = (0x63..=0x66).contains(&(self.weapon as u32));
+        let damage = f32_at(0x0c) * if special { 1.0 } else { self.damage_mul };
+        // The shot sound's random pitch: `Rand_Rand(500) − 250` inside `Sound_Play3D`'s caller
+        // (FireWeapon 0x179490-0x17949c) — skipped ONLY for the silent weapon 0x5ef (0x179494).
+        // The port does not pitch-shift, but the draw is part of the stream.
+        let sound_id = u16::from_le_bytes([w[0x60], w[0x61]]);
+        if sound_id != 0x5ef { rng.rand(500); }
         Some(crate::bullet::Bullet { pos: muzzle, dir, speed: f32_at(0x20), travelled: 0.0, range: f32_at(0x1c), damage, owner, state: 0,
             weapon: self.weapon as u16, flyby: d.weapons.flyby(self.weapon as usize), bounces: 0 })
     }
@@ -7571,13 +7609,33 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     crate::bullet::BulletEvent::Player { damage, at } => {
                         let before = self.health.health;
                         // `Drone_ModPlayerHitDamage` 0x13a940 → `Drone_ModBulletDamage` 0x139f50 runs at
-                        // HIT time: the raw `weapon_data+0x0C × Drone+0x100` (carried in the bullet) is
-                        // ×[0x30cb0c] (2.0) when the shooter's tracked distance (Drone+0x1A0) is under
-                        // the level's TooClose [0x30cb14] — `close_threshold`. No distance falloff
-                        // anywhere in the chain [M 0x19455c-0x194588: `HIT+8 + Hurt_GetDamage`].
+                        // HIT time on the raw `weapon_data+0x0C` (HITDATA+8, carried in the bullet):
+                        // 1. `Drone+0xD8 == 0xC` (the voice set of skins 0x500003b/0x500003c,
+                        //    `DefaultInit` 0x14b300:201-206) → 0 damage, always [M 0x139f84-0x139f88];
+                        // 2. weapons 0x63-0x66 return the raw damage untouched [M 0x139f98-0x139fa8];
+                        // 3. `Drone+0x1A0` (the shooter's tracked distance) < the level's TooClose
+                        //    [0x30cb14] → ×[0x30cb1c] `DroneFiring_TooClose_Damage` (2.0)
+                        //    [M 0x139fac-0x139fc8] — `close_threshold`;
+                        // 4. ×`Drone+0x100` [M 0x139fcc-0x139fdc] (the bullet already carries it);
+                        // 5. the BACKSHOT ×[0x30cb20] `DroneFiring_PlayerBackShot_Damage` (2.0)
+                        //    [M 0x139fd4-0x13a080]: the shooter's mode (+0xC5) is neither 2 nor 0x19,
+                        //    its weapon (+0xDA) is 0x12, the level is not 0x700001b, and the angle
+                        //    between the bullet's travel yaw (ATAN2 of HITDATA+0x30/+0x38) and Bond's
+                        //    facing (obj+0x54) is under 1.5707964 — the shot into his back.
+                        // No distance falloff anywhere in the chain [M 0x19455c-0x194588:
+                        // `HIT+8 + Hurt_GetDamage`; the only distance term is this binary TooClose ×2].
                         let mut damage = damage;
+                        let special_weapon = (0x63..=0x66).contains(&(b.weapon as u32));
                         if let Some(sh) = self.list.get(b.owner).filter(|x| x.present) {
-                            if sh.dist < close_threshold(d.level) { damage *= 2.0; }
+                            if sh.voice_type == 0xC { damage = 0.0; }
+                            else if !special_weapon {
+                                if sh.dist < close_threshold(d.level) { damage *= 2.0; }
+                                if b.weapon as u32 == 0x12 && sh.mode != 2 && sh.mode != 0x19 && d.level != 0x700001b {
+                                    let bullet_yaw = atan2_approx(b.dir[0], b.dir[2]);
+                                    let bond_yaw = atan2_approx(player.aim[0], player.aim[2]);
+                                    if angle_difference(bullet_yaw, bond_yaw).abs() < 1.5707964 { damage *= 2.0; }
+                                }
+                            }
                         }
                         // `Player_DealWithObjHit` 0x194458:201-226: the direction bits from the ATTACKER's position
                         // (HITDATA+0x30 = the shooter) in the viewer's frame.
