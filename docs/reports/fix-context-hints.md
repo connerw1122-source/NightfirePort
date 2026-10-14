@@ -169,6 +169,12 @@ across calls:
   17 (01..14) + 4 (15,16,1b,41) + 7 (43,46,48,49,4a,4b, the sequence) = **28/28 green**.
 - Grand total: **976 passed, 3 failed (allowed), 31 ignored**.
 - `fix_context_hints_live` 5/5 on the final tree.
+- A second `origin/master` merge (81e9436 — grenade/missile-cam, zoom overlays) landed after
+  the chunked run; the full 226-binary loop did not fit the window again, so the final tree
+  got the touched-path binaries: `fix_context_hints_live` 5, `fix_grenade_throw_live` 4,
+  `fix_08_walls_live` 4, `gadget_grapple_live` 1 — all green. The 976/3/31 total is the
+  e511da5 tree (same code for this task's systems; the merge touched grenade/zoom code and
+  the Sim constructor line, which those four re-runs exercise).
 
 ## What's left
 
