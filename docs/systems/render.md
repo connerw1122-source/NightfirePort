@@ -76,6 +76,50 @@ the earlier /128 over an Unorm8x4 colour was 2× the game's add). Tint (`obj+0x1
 ambient with flag 0x800); environment map on 31 objects (box flag +0x34 bit 0, e.g.
 `OBJECT_windows`): UV ≈ 0.5 + rot·n/256 [S].
 
+## Characters: the room they stand in (fix-character-room-light) [M, D]
+
+A character's ambient is its **linked cel's** triple. `Control_CreateObjEx` 0x1343c8:39 links at
+create (`build_LinkToRoom` 0x1c9680 → `build_FindCel` 0x1c8cb0 at the world sphere
+`Control_BuildWorldSph` 0x133070 — for characters `AnimObjectNew` 0x1be910 sets flags2 0x8 and
+leaves AnimObject+0x80 zero, so the sphere centre IS the object position), and
+`control_link_object_to_cel` 0x1346b8:27-31 **snaps** `obj+0x100..0x102` to
+`cel + switch_channels[cel+0xa2]`, bytes +0x9a/0x9c/0x9e, while the sentinel 0xff,ff,ff
+(`control_init_object` 0x134630:22-23) holds. Per tick the movement pass
+(`control_movement_object_handler` 0x1336f8:209-211) runs for each MOVED object (flags2 0x20):
+`control_handle_cel_change` 0x133288 → `Cel_ObjectLeftCel` 0x1e0d58 (walks the current cel's
+portals, returns the neighbour across the crossed one) → `build_point_in_bounding_box` 0x1c9500
+keeps the cel while the position is inside it → `build_LinkToRoom` re-finds otherwise, and a failed
+re-find re-links the OLD cel (the clamp case). `Lights_CalcAmbientLight` 0x1cb178 then ramps
+`obj+0x100..0x102` toward the linked cel's triple through `ClrStep(…, 0.1)` 0x1e8a48 — only for
+moved, cel-linked 0x800 objects; an idle character keeps its ambient even when a switch channel
+flips its room's triple. The 0x10000 night-vision doubling (glb_blokes+0x962) rides the same gate.
+
+The draw applies `tint × ambient >> 8` (`View_SetupRenderModes_Tweak` 0x1e5888:52-55) on the SAME
+path as world objects — characters go `View_DrawObjList` 0x1e69a0:96 → `AnimObjectDraw` (flags2 8)
+→ `View_SetupRenderModes` 0x1e78b0:20 → the same Tweak — and the same
+`Lights_CalcClosestLights(obj+0x80, obj+0xF0)` (0x1e69a0:73-81): dynamic lights (kind 0 radiators,
+kind 1 muzzle, kind 2 searchlight) ADD to characters; the skins carry 0x8a0/0x28a0 (flag 0x80, no
+0x100) [D fix-lighting2]. The tint bytes `obj+0x103..0x105` are script-set only
+(`Script_SetColour` 0x1db770 / `SP_SetColour` 0x1dca90), default 0xff. The
+`bCharacterLight`/`bShadowCharacter`/`AnimColRad` globals (0x30cdd8..0x30cddf) are WRITTEN
+(0x1e69a0:70-74 from obj+0xFE bits 2/3; cleared in AnimObjectDraw 0x1c4a8c) but have no reader in
+the EE code (every `lb/lh/lw/lwc1` base-`$gp` access scanned) — no per-character special lighting
+exists beyond the shared Tweak + light pair.
+
+Port: `Sim::ramp_char_ambient` (scene.rs) re-derives the cel per tick from the live position
+(`find_cel`'s smallest-volume stand-in for build_FindCel's raycast tie-break — the documented
+deviation, fix-render2), snaps on the first target and `ClrStep`s after; the sentinel stays only
+on characters whose position no cel contains — exactly the ones the game leaves unlinked (0x07000007:
+the origin script actors; the port's dev-pool copies are parked outside every cel too). Measured on
+07000007 [D]: all 58 placed guests sit in unique-containment cels and carry their own cel's ambient
+(9 distinct triples 36–64), the level's ~104 active kind-0 lights reach the character draws through
+the per-draw `pick2` with the skin flags, and the Tweak multiply reaches both the CPU and GPU
+colour paths. `Lights_CalcAmbientLight`'s zone shift is clamped to triples 0/1 (`cel.ambient[]`);
+the game would shift the base by ANY `switch_channels` byte (≥2 reads cross into params 1/2 and the
+unwritten +0xa0) — no level measured uses it. The portal fast-path of `Cel_ObjectLeftCel` is not
+ported: a mover crossing overlapping cels re-finds instead of taking the crossed portal (relevant
+only within one tick's motion).
+
 ## Snow (`Env_*`, `*Drops`) [M, L]
 
 - Placement 0xDF `SNOW_gen` → `Env_Create` 0x17b968 → `InitDrops(0)` 0x18bf68: 4096 flakes, texture 0x03000045
