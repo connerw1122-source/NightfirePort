@@ -9792,3 +9792,12 @@ the wrap/line-height helpers). Report: docs/reports/fix-objective-messages.md.
 Full suite on the final tree (origin/master 7be3272 merged): **886 passed, 3 failed, 27 ignored
 (20 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH. Also green post-fix:
 death/restart 8, mission 4, level_carry 3, progress 8, nf-formats 74 (+ the 3 allowed).
+
+Task 101i (fix-window-view): started. PCSX2 comparison at --bond 61.32,44.11,-52.58,3.749,-0.056
+on 07000007: real game shows the snowy slope with a blue haze (distance fog) and nothing else;
+the port draws a lit stone building block floating in front of the slope, and the snow texture is
+smeared/stretched with no haze. Plan: (a) render the spot with and without NF_NOPORTAL=1; (b)
+find what the block is (instance/cel) and why the game doesn't draw it from inside; (c) the
+outdoor fog the game applies (fog colour/range per cel or per level); (d) the snow's UVs
+(texture matrix/scroll or wrap mode). Files: crates/nf-view/src/{scene,gpu}.rs. Branch from
+origin/master eed9a87.
