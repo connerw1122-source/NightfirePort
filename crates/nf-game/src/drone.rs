@@ -6320,7 +6320,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // The distance test runs from the player's position (+0x30) but the LOS from his world-sphere
             // centre (+0x80) — two different points [M 0x18e148:203-214 + L]. Port-check §1: the old call
             // passed `player.pos` for both, so the take-ray origin differed from the game's by construction.
-            if alive && !p.hidden && p.touches(d.world, player.cel, player.pos, player.sph) {
+            // fix-pickups-ammo: NO `!p.hidden` gate — `Pickup_Update`'s take path never reads `obj+0xF0`
+            // [M 0x18e148: no +0xF0 read; Script_HideObj 0x1db808 only sets/clears the draw bit], so the
+            // game takes hidden pickups: the AR drop's invisible 0x1B grenade pile (`DroneWeap_DropWeapon`
+            // 0x17a2a0 creates it with obj+0xF0 |= 0x10) is collected walking over the drop. The state-2
+            // wait above still gates the respawn-hidden pickups (0x10 is set WITH state 2 there).
+            if alive && p.touches(d.world, player.cel, player.pos, player.sph) {
                 let loaded = d.skins.contains_key(&d.weapons.first_person(p.weapon as usize));
                 // `Pickup_Handler`: the armour case writes `BLData+0x8B0`; the clock is `GameState+0x52`
                 // (the 10 → 0xC remap gate) — the port's tick count stands in for it.
@@ -6356,10 +6361,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // `if (+0x28) switch_channels[+0x28] = 1` (+ time stamp) [M 0x18e650:330-333].
                     if p.switch_channel != 0 { self.channels.set(p.switch_channel as u32, 1, frame); }
                     // `Pickup_Handler` overwrites `+0x2A` with the per-kind sound at take time —
-                    // 0xF5 weapon/ammo, 0x141 armour, 0x14C Bond bonus (:290,300,319-321) — before
-                    // `Sound_Play3D` (:334-337). A placed bonus's create sound is 0xFFFF (none); the
-                    // take still plays 0x14C [M]. fix-objects: kind 6 was silent.
+                    // 0xF5 for kinds 0 AND 1 (the message switch's cases 0/1 both land on
+                    // LAB_0018ee80: `*(ushort*)(info+0x2a) = 0xf5`), 0x141 armour, 0x14C Bond bonus
+                    // [M 0x18e650:290-300, 319-321]. The placement's own sound word is NOT played for
+                    // weapon/ammo takes: the disc places them with 0x13F (the 07000002 sniper, the
+                    // 07000008 rockets, the 07000005/01 id-6 boxes) and 0xFFFF (the 0700000c/d 0x1f
+                    // boxes) — the game still plays 0xF5. fix-pickups-ammo: the port used to play
+                    // `p.sound` (0x13F, or nothing) for kinds 0/1.
                     let take_sound = match t {
+                        crate::pickup::Taken::Weapon { .. } | crate::pickup::Taken::Ammo { .. } => Some(0xF5),
                         crate::pickup::Taken::Bonus => Some(0x14C),
                         crate::pickup::Taken::Armour => Some(0x141),
                         _ => p.sound,
@@ -7551,6 +7561,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 sound: if sp.sound == 0 || sp.sound == 0xFFFF { None } else { Some(sp.sound) },
                 hidden: false, gone: false, from: None, obj: None,
                 respawn: 0, respawn_ticks: 0, spin: sp.kind == crate::pickup::kind::BOND_BONUS,
+                label: 0, // PendingPickup carries the entity's params 0-4 only; no script-spawned pickup on the disc labels non-zero
             });
         }
         { let _p = crate::prof::scope("drones: set_dynamic"); d.world.set_dynamic(&script_parts(self, d)); }

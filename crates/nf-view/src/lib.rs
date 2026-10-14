@@ -2220,7 +2220,7 @@ impl ApplicationHandler for App {
                                     nf_game::pickup::Taken::Key { id } => format!("  picked up key {id}"), // 0x2000010 [M 0x18e650:285-289]
                                     nf_game::pickup::Taken::Armour => "  picked up armour".to_string(),   // 0x200000F [M 0x18e650:290-294]
                                     nf_game::pickup::Taken::Bonus => "  picked up a 007 bonus".to_string(), // 0x200004A [M 0x18e650:315-321]
-                                    nf_game::pickup::Taken::Label => "  picked up the item".to_string(), // case 4, label 0 on 07000008 [M 0x18e650]
+                                    nf_game::pickup::Taken::Label { .. } => "  picked up the item".to_string(), // case 4 [M 0x18e650]; the real message binds the label (scene.rs)
                                     nf_game::pickup::Taken::Message => "  picked up a pickup".to_string(), // 0x2000013 [M 0x18e650 case 5]
                                 });
                                 g.window.set_title(&format!("nf-view — Bond health {:.0}{}  P2K {} / {}{hit}{msg}", h.health, if h.health <= 0.0 { " (dead)" } else { "" }, sim.gun.clip, sim.gun.spare));
