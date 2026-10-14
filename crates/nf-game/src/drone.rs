@@ -5568,7 +5568,19 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // 0x12bb60:55 — the port folds the breakables into this world-hit path): the
                     // accuracy denominator nets to the enemy hits only (fix-progress).
                     self.progress.log_shot_hit_scenery(self.mission.status());
-                    self.impact_sound(d, b.pos, end);
+                    // fix-laser-beam [M Bullet_CollisionHandler 0x12ce80:186-192]: weapon_data+0x6C &
+                    // 0x100 (the Laser 0x4E/0x4F, records +0x6C = 0x900 [L]) forces the effect kind
+                    // 0x10 → `Effect_Laser` 0x1cef38 — the burn puff, NO decal, NO impact sound (its
+                    // sound arm gates on effect flags 0x40, set only by weapon_data+0x70 & 2 — clear
+                    // on the Laser's +0x70 = 0x800 [L]) and NO ricochet (+0x70 & 0x10 clear). The old
+                    // path played the wall-impact sound + decal every held tick — the user's "rapid
+                    // fire of bullet impacts".
+                    let flags6c_w = d.weapons.records.get(b.weapon as usize)
+                        .map_or(0u32, |r| u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap()));
+                    let laser_beam = flags6c_w & 0x100 != 0;
+                    if !laser_beam {
+                        self.impact_sound(d, b.pos, end);
+                    }
                     // `Bullet_CollisionHandler` 0x12ce80 → `Effect_Create` 0x1ce688 / `Effect_Bullet`
                     // 0x1ce8a8 / `Effect_RicochetProb` 0x1cf290 (docs/atlas/effect.md). Bond is class 3,
                     // so `Effect_Bullet` skips its `Rand_Rand(2)` [M 0x1ce94c]. A ricochet keeps the
@@ -5576,7 +5588,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     let flags70 = d.weapons.records.get(b.weapon as usize)
                         .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
                     if let Some((_, n, m)) = d.world.segment_surface(b.pos, end, false) {
-                        if let Some(dir) = self.effects.bullet_impact(&mut self.rng, d.surfaces, &mut self.gas, hit, n, m, b.dir, flags70, b.bounces, true) {
+                        if laser_beam {
+                            // The `Effect_Laser` stand-in: Gas_Init(2.0, 3.0, …, kind 5, 0x7f7f64ff,
+                            // life) [M 0x1cef38:60-70] — the pool's puff without its per-surface mesh
+                            // (the EffectInfo+idx*0x88+0x10 field the port doesn't parse yet [S]; the
+                            // main agent's render check owns the look).
+                            self.gas.init(hit, 0.0, [0.0; 3], 2.0, 3.0, 5, [0x7f, 0x7f, 0x64, 0xff], 8.0);
+                        } else if let Some(dir) = self.effects.bullet_impact(&mut self.rng, d.surfaces, &mut self.gas, hit, n, m, b.dir, flags70, b.bounces, true) {
                             if b.bounces < 3 {
                                 b.dead = false;
                                 b.pos = hit;

@@ -20,26 +20,30 @@ use crate::lock::Lock;
 use crate::triggers::Channels;
 use crate::world::V3;
 
-/// The weapon ids whose equipped state runs the laser beam: the Q-Laser (0x50/0x51) and the laser
-/// watch (0x54; its taser variant 0x55 saves as 0x54 in the selection) [D weapon_data: the 0x54
-/// record's +0x68 has the scoped flag 0x40; the beam weapon ids the locks read are 0x56/0x57
-/// [M 0x1ae3d8:162]].
+/// The weapon ids whose shots carry the LASER BEAM bit `weapon_data+0x6C & 0x100` [M
+/// Player_MuzzleFlash 0x1a4298:131 → `Draw_LaserBeam`]: the Laser 0x4E and its upgrade 0x4F
+/// [D weapon_data records: 0x4E +0x6C = 0x900 (0x800|0x100), 0x4F = 0x900; the disc names them
+/// 0x05000043 "Laser" [L USATxt.dat]. The old set (0x50/0x51/0x54/0x55) was the Grapple and the
+/// Micro-Camera — their records carry 0x4000/0 in +0x6C, no beam bits].
 pub fn is_laser_weapon(w: u8) -> bool {
-    matches!(w, 0x50 | 0x51 | 0x54 | 0x55)
+    matches!(w, 0x4e | 0x4f)
 }
 
-/// The weapons whose equipped state runs the LOCK beam: the laser family plus the Q-Decryptor
-/// (0x4E/0x4F — `Lock_Update` 0x1ae3d8 case 0 reads them off the contact list at :57-63, the burn
-/// 3/tick vs the laser family's 10/tick; the port's `Lock::burn` completes in one tick either way
-/// [M 0x1ae1f8's zero create-time base]).
+/// The weapons whose SHOT draws a beam: the Laser family (the 0x100 bit → `Draw_LaserBeam`) and
+/// the Stunner 0x4A/0x4C (the `weapon_data+0x6C & 0x80` bit → `Draw_TaserBeam` [M 0x1a4298:134];
+/// their records: +0x6C = 0x880 [L], the disc name 0x05000042 "Stunner" [L USATxt.dat]).
 pub fn runs_beam(w: u8) -> bool {
-    is_laser_weapon(w) || matches!(w, 0x4e | 0x4f)
+    is_laser_weapon(w) || matches!(w, 0x4a | 0x4c)
 }
 
 /// One tick of the laser beam: the ray from `head` along `dir` (unit), 100.0 units [M 0x1a65d8],
 /// against the world segment and the locks' world spheres. A lock whose sphere the ray touches
 /// (the ray's closest point within its radius — the game's contact-list stand-in) burns; its out
 /// channel is written on completion [M 0x1ae3d8:194-195].
+/// `head`/`dir` are THE CROSSHAIR RAY the caller fires bullets down (the game's shot ray runs from
+/// `Player_GetHeadPos` through `Player_GetAimingPoint` [M Player_WeaponInitBullet 0x1a4bf0:152-159],
+/// and the beam draws from the muzzle to that ray's re-cast hit [M 0x1a4298:107-132]) — the old
+/// `bond.look()` ray was the user's "the laser isn't accurate" on the 0700000c display vent.
 /// Returns the beam's endpoints (the hand end is the caller's; here the head) and the hit point
 /// for the renderer.
 pub fn laser_tick(
@@ -115,14 +119,19 @@ mod tests {
 
     #[test]
     fn is_laser_weapon_matches_the_laser_family() {
-        for w in [0x50u8, 0x51, 0x54, 0x55] { assert!(is_laser_weapon(w), "{w:#x} is a laser weapon"); }
-        for w in [0x4Au8, 0x52, 0x02] { assert!(!is_laser_weapon(w), "{w:#x} is not"); }
+        // The disc records settle the ids: 0x4E/0x4F carry +0x6C & 0x100 (Draw_LaserBeam) and the
+        // name label 0x05000043 "Laser"; 0x50/0x51 are the Grapple (0x4000) and 0x54/0x55 the
+        // Micro-Camera (0) [L weapon_data + USATxt.dat].
+        for w in [0x4eu8, 0x4f] { assert!(is_laser_weapon(w), "{w:#x} is a laser weapon"); }
+        for w in [0x50u8, 0x51, 0x54, 0x55, 0x4a, 0x4c, 0x02] { assert!(!is_laser_weapon(w), "{w:#x} is not"); }
     }
 
     #[test]
-    fn runs_beam_adds_the_decryptor() {
-        for w in [0x4eu8, 0x4f] { assert!(runs_beam(w), "{w:#x} runs the lock beam [M 0x1ae3d8:57-63]"); }
-        assert!(!runs_beam(0x52), "the camera does not");
+    fn runs_beam_is_the_laser_and_the_stunner() {
+        // +0x6C & 0x180 routes the shot's beam draw: 0x4E/0x4F → 0x900 (the laser), 0x4A/0x4C →
+        // 0x880 (the taser) [L weapon_data; M 0x1a4298:131/134].
+        for w in [0x4eu8, 0x4f, 0x4a, 0x4c] { assert!(runs_beam(w), "{w:#x} runs the beam"); }
+        for w in [0x50u8, 0x54, 0x52] { assert!(!runs_beam(w), "{w:#x} does not"); }
     }
 }
 

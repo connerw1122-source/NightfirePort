@@ -307,6 +307,10 @@ pub struct Sim {
     /// `gadget::laser_tick` while a laser weapon is out [M Player_LaserPointer 0x1a65d8]. The
     /// renderer draws the beam mesh (0x2000131/0x2000133) between them.
     pub laser_beam: Option<(nf_game::world::V3, nf_game::world::V3)>,
+    /// The stunner's per-tick target test [M Player_WeaponInitBullet 0x1a4bf0:169-200 — BLData+0x95d]:
+    /// `Some(true)` = the aim ray met a live guard within weapon_data+0x1c (the shot spawns and the
+    /// taser beam draws), `Some(false)` = no target (no bullet, no beam), `None` = not holding fire.
+    pub stunner_target: Option<bool>,
     /// The level's zip wires (placement type 0x3E, `Wire_Create` 0x1981d8). Bond grabs one by walking
     /// into its world sphere (fix-wire: the real grab + crossing live in `nf_game::player`).
     pub wires: Vec<nf_game::wire::Wire>,
@@ -423,6 +427,28 @@ impl HudState {
 }
 
 impl Sim {
+
+    /// fix-laser-beam: stop every LOOPED op-1 sound of `weapon`'s fire + release scripts (the
+    /// Laser/Stunner's beam loops 0x12/0x3d [L 0x060004e9/0x0600048a op-1, +0x060004e8/0x06000488
+    /// op-4.3]). Called on the weapon switch (the held state 0xb never reaches the release script's
+    /// stop) and from the pause path — the game's `MenuManager_Create` runs `SFXPause` +
+    /// `SFXPauseAllStreams` [M 0x21b908:120-123], which silences the loop while the menu is up.
+    pub fn gadget_loop_ids(&self, weapon: u8) -> Vec<u32> {
+        let scripts = [self.weapons.records.get(weapon as usize).map_or(0, |r| u32::from_le_bytes(r[0xb0..0xb4].try_into().unwrap())),
+                       self.weapons.records.get(weapon as usize).map_or(0, |r| u32::from_le_bytes(r[0xb4..0xb8].try_into().unwrap()))];
+        let mut ids = Vec::new();
+        for h in scripts.into_iter().filter(|&h| h != 0) {
+            if let Some(sc) = self.scripts.get(&h) {
+                for c in &sc.commands {
+                    if c.op == 1 && c.args.len() >= 2 {
+                        let id = remap_op1_sound(c.args[1] as u32, weapon);
+                        if self.sfx.as_ref().map(|t| t.get(id)).is_some_and(|e| e.looped) { ids.push(id); }
+                    }
+                }
+            }
+        }
+        ids
+    }
     /// A script character's live position: the root-bone world translation of its animation. The
     /// script Anim object sits at the origin and the sequence's root carries it (nis.rs; the game's
     /// `AnimSeqTick` 0x1c28d0 takes the root motion as the object's movement) — so the root
@@ -1345,30 +1371,57 @@ impl Sim {
         self.shot_tick = false;
         // The smoke puffs (`gases_smoke` 0x1ab2d0 [S] simplified) tick with the sim.
         for s in self.smoke.iter_mut() { s.update(); }
-        // The laser-family beam [`Player_LaserPointer` 0x1a65d8 is the GUNS' laser-sight ray — the
-        // gadget beams draw from the per-shot `Player_MuzzleFlash` 0x1a4298 → `Draw_LaserBeam`
-        // 0x1a4560 / `Draw_TaserBeam` 0x1a46a8 path (weapdef+0x6c bits 0x100/0x80)]. The port parks
-        // the per-tick burn endpoints on `Sim::laser_beam` for the renderer while the fire is held.
+        // The laser/stunner fire model [M Player_WeaponFiring 0x1a5460's held-fire branch →
+        // Player_WeaponInitBullet 0x1a4bf0 → BLData+0x95b → Player_MuzzleFlash 0x1a4298 →
+        // Draw_LaserBeam/Draw_TaserBeam]: every refire tick (interval +0x40 = 1 for both [L
+        // weapon_data]) is a shot; the beam draws from the muzzle to the CROSSHAIR ray's re-cast hit
+        // [M 0x1a4bf0:152-159 Player_GetAimingPoint, 0x1a4298:107-132]. The port runs the burn ray
+        // and parks the beam endpoints here on the crosshair ray (head → aim), computed below with
+        // the shot direction (the old bond.look() ray was the user's "the laser isn't accurate").
+        // The STUNNER's beam shows only when the ray's target is a guard in range [M 0x1a4298:134
+        // reads BLData+0x95d, set at 0x1a4bf0:169-186 — a class-2/3 hit within weapon_data+0x1c].
         self.laser_beam = None;
-        // The burn is the fire's, not the equipment's: the game's laser burns come from the SHOTS the
-        // held fire spawns (each refire tick spawns the beam/bullet via `Player_WeaponInitBullet`
-        // 0x1a4bf0 → `+0x95b` → `Player_MuzzleFlash` 0x1a4298 → `Draw_LaserBeam` 0x1a4560 [M
-        // 0x1a5460:601-694's held-fire refire loop]); with the fire released no shot spawns and the burn
-        // stops the same tick. The watch laser/taser (0x54/0x55) additionally needs the AIM state
-        // (`Input_Action(9,1)` branch: `if ((uVar6 == 0x54) && ((obj+0x60 ^ 1) & 1)) return;` [M
-        // 0x1a5460:512-514]). The Q-Laser 0x50/0x51's single-player `+0x95f == 2` ThirdIcon zone gate
-        // (0x1a5460:523) is not modelled — listed in the report.
-        let watch = matches!(self.gun.weapon, 0x54 | 0x55);
-        if !self.disabled && trigger && (!watch || input.aiming) && nf_game::gadget::runs_beam(self.gun.weapon) {
+        self.stunner_target = None;
+        let laser_w = self.gun.weapon;
+        if !self.disabled && trigger && nf_game::gadget::runs_beam(laser_w) {
             let head = self.bond.head();
-            let dir = self.bond.look();
+            // The crosshair ray (the same construction run() fires bullets down: look + the crosshair
+            // offsets [M 0x1a4bf0:152-159's aim-point ray]; the port's cross/scoped offsets live in run).
+            let look = self.bond.look();
+            let (yaw, p) = (self.bond.yaw, self.bond.pitch * std::f32::consts::FRAC_PI_2);
+            let right = [-yaw.cos(), 0.0, yaw.sin()];
+            let up = [-p.sin() * yaw.sin(), p.cos(), -p.sin() * yaw.cos()];
+            let (tx, ty) = (0.76966 * self.cross[0], 0.57724 * self.cross[1]);
+            let d0 = [0, 1, 2].map(|k| look[k] + tx * right[k] + ty * up[k]);
+            let l = (d0[0] * d0[0] + d0[1] * d0[1] + d0[2] * d0[2]).sqrt().max(1e-6);
+            let dir = d0.map(|v| v / l);
             let frame = self.drones.frame + 1;
-            let (a, b) = nf_game::gadget::laser_tick(head, dir, &mut self.drones.locks, &self.world, &mut self.drones.channels, frame);
-            self.laser_beam = Some((a, b));
-            // The watch laser's per-shot sound [M 0x1a4bf0:261-263 — `Sound_Play(100.0, 0xec, 0, 0)` on
-            // every shot of weapon_data[+2] == 0x54; the watch fires every held tick (interval 0 →
-            // the 1.0 floor) so this is the burn tick].
-            if self.gun.weapon == 0x54 { self.drones.audio.play(0xec); }
+            // The stunner's target test [M 0x1a4bf0:169-200]: the ray must meet a live guard (class 2 —
+            // Bullet_heatseekable 0x12f248's class table) within weapon_data+0x1c; no target → no shot
+            // bullet (and Draw_TaserBeam's +0x95d gate keeps the beam off too).
+            let mut target_hit = true;
+            if matches!(laser_w, 0x4a | 0x4c) {
+                target_hit = false;
+                let range = self.weapons.records.get(laser_w as usize).map_or(5.0, |r| f32::from_le_bytes(r[0x1c..0x20].try_into().unwrap()));
+                let end = [head[0] + dir[0] * range, head[1] + dir[1] * range, head[2] + dir[2] * range];
+                for dr in self.drones.list.iter() {
+                    if !dr.present || !dr.enabled || dr.corpse || dr.health <= 0.0 { continue; }
+                    let c = [dr.pos[0], dr.pos[1], dr.pos[2]];
+                    // The ray-vs-sphere contact (the port's `Collide_PickObj` 1.05 sphere stand-in).
+                    let ab = [end[0] - head[0], end[1] - head[1], end[2] - head[2]];
+                    let ab2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+                    let ap = [c[0] - head[0], c[1] - head[1], c[2] - head[2]];
+                    let t = if ab2 > 1e-9 { (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / ab2 } else { 0.0 };
+                    let cl = [head[0] + ab[0] * t.clamp(0.0, 1.0), head[1] + ab[1] * t.clamp(0.0, 1.0), head[2] + ab[2] * t.clamp(0.0, 1.0)];
+                    let d2 = (cl[0] - c[0]).powi(2) + (cl[1] - c[1]).powi(2) + (cl[2] - c[2]).powi(2);
+                    if d2 <= 1.05 * 1.05 { target_hit = true; break; }
+                }
+            }
+            self.stunner_target = Some(target_hit);
+            if target_hit {
+                let (a, b) = nf_game::gadget::laser_tick(head, dir, &mut self.drones.locks, &self.world, &mut self.drones.channels, frame);
+                self.laser_beam = Some((a, b));
+            }
         }
         self.smoke.retain(|s| !s.dead());
         let (trigger, reload) = if self.disabled { input = Default::default(); (false, false) } else { (trigger, reload) };
@@ -1843,6 +1896,11 @@ impl Sim {
                 }
             } else {
                 // Different base: holster → draw. `Player_WeaponSelect` checks +0xC4 (holster) [M 0x1a2cc0 line 33].
+                // fix-laser-beam: a fire-script LOOP left playing (the Laser/Stunner's op-1 loop — the
+                // game's held state 0xb does not reach its op-4.3 stop before the switch) dies here:
+                // the fire + release scripts' looped op-1 ids all stop [S the game's own stop point is
+                // unmeasured — the loop must not outlive the weapon; live check filed].
+                for id in self.gadget_loop_ids(cur_id) { self.drones.audio.stop_all_with_id(id); }
                 let holster = self.weapons.holster_script(cur_id as usize);
                 if holster != 0 {
                     if log_switch { eprintln!("[weapon-switch] tick {}: state 0→1 holster {:08x} (weapon {:#x})", self.drones.frame, holster, cur_id); }
@@ -1856,6 +1914,8 @@ impl Sim {
                 } else {
                     // No holster script: swap instantly, go to draw (state 3) [M 0x1a2cc0 line 34-35].
                     if log_switch { eprintln!("[weapon-switch] tick {}: instant swap (no holster) {:#x}→{:#x}", self.drones.frame, cur_id, req_id); }
+                    // fix-laser-beam: the fire-script loop dies with the weapon (see the holster arm).
+                    for id in self.gadget_loop_ids(cur_id) { self.drones.audio.stop_all_with_id(id); }
                     if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
                     if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
                     if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
@@ -2006,9 +2066,14 @@ impl Sim {
                 // and the 0x40000 toggle. The game only queues when the fp model and the script exist
                 // (0x1a3c70:51-54); with no script the view stays as it was.
                 // fix-gadgets2: while the fire script is ALREADY playing (state 9) and +0x68 carries
-                // 0x100400, the game leaves it running — no restart [M 0x1a5460:664-672].
+                // 0x100400, the game leaves it running — no restart [M 0x1a5460:664-672]. fix-laser-beam:
+                // that hold applies only to the RELEASE-FRAME family (+0x44 != 0 — the spawn waits for
+                // the script's release frame, so a restart would starve it). The Laser/Stunner (+0x68
+                // & 0x400, +0x44 = 0 [L weapon_data]) spawn in the FIRE branch itself [M 0x1a5460:681-690]
+                // and every refire tick re-queues the script through AnimScriptAdd — which DELETES the
+                // playing script and starts fresh [M 0x1c6d40] — keeping the beam + loop alive while held.
                 let script = self.gun.firing_anim_script(flags, u16::from_le_bytes([w[2], w[3]]), self.gun.clip, rd(0xb0), rd(0xb4), &mut self.drones.rng);
-                if script != 0 && !(was_fire_state && flags & 0x100400 != 0) {
+                if script != 0 && !(was_fire_state && flags & 0x100400 != 0 && fire_anim_len != 0) {
                     self.view_script = script;
                     (self.view_time, self.view_speed) = (0.0, 1.0);
                 }
@@ -2049,11 +2114,22 @@ impl Sim {
                 if self.gun.switch_state == 0 && self.view_script == rd(0xa0) && self.view_time >= len - 1.0 { self.view_time = 0.0; }
                 // The fire script ended: state 9 → 0, the idle script re-queued (unless flags68 & 0x1000)
                 // [M Player_SetWeaponAnimObj case 9 0x1a2e38:449-456 via AnimScriptIsStopped].
+                // fix-laser-beam: the +0x68 & 0x400 family (the Laser 0x4E/0x4F, the Stunner 0x4A/0x4C
+                // [L weapon_data]) runs the game's state-0xb transition instead [M 0x1a2e38 case 0xb
+                // :499-507 — the fire script stopped → AnimScriptAdd(+0xB4), the RELEASE script whose
+                // op-4.3 frame 1 STOPS the loop sound (0x12/0x3d [L 0x060004e8/0x06000488]), at 1.5×
+                // [M 0x1a5460:677-679]. The port kept fire_state through the +0xB4 play so its own
+                // finish lands in the idle arm below (the game's case 0xc → 0 does the same).
                 let fire_last = rd(0xb4);
                 if self.gun.fire_state && (self.view_script == rd(0xb0) || (fire_last != 0 && self.view_script == fire_last))
                     && self.view_time >= len - 1.0 {
-                    if flags & 0x1000 == 0 { self.view_script = rd(0xa0); (self.view_time, self.view_speed) = (0.0, 1.0); }
-                    self.gun.end_fire_state();
+                    if flags & 0x400 != 0 && fire_last != 0 && self.view_script == rd(0xb0) {
+                        self.view_script = fire_last;
+                        (self.view_time, self.view_speed) = (0.0, 1.5);
+                    } else {
+                        if flags & 0x1000 == 0 { self.view_script = rd(0xa0); (self.view_time, self.view_speed) = (0.0, 1.0); }
+                        self.gun.end_fire_state();
+                    }
                 }
             }
             // The release frame: the round spawns when the fire script's frame reaches `fire_anim_len` (+0x44)
@@ -2076,8 +2152,12 @@ impl Sim {
                         let f = c.args[0] as f32;
                         if from < f && f <= to {
                             let id = remap_op1_sound(c.args[1] as u32, wid);
-                            self.drones.audio.play3d(id, camera, None);
-                            if std::env::var_os("NF_SOUNDLOG").is_some() { eprintln!("tick {}: gun script {:08x} frame {f}: sound {:#x} (remapped from {:#x} for weapon {:#x})", self.drones.frame, self.view_script, id, c.args[1], wid); }
+                            // fix-laser-beam: a LOOPED op-1 re-trigger keeps the single voice (the held
+                            // laser/stunner restarts its fire script every refire tick [M AnimScriptAdd
+                            // 0x1c6d40; L weapon_data +0x40 = 1], re-firing the op-1 60×/s).
+                            let looped = self.sfx.as_ref().map(|t| t.get(id)).is_some_and(|e| e.looped);
+                            if looped { self.drones.audio.play_loop(id, camera); } else { self.drones.audio.play3d(id, camera, None); }
+                            if std::env::var_os("NF_SOUNDLOG").is_some() { eprintln!("tick {}: gun script {:08x} frame {f}: sound {:#x} (remapped from {:#x} for weapon {:#x}, looped {looped})", self.drones.frame, self.view_script, id, c.args[1], wid); }
                         }
                     }
                     // fix-gadgets2, the user's "the sounds keep playing after you stop": `AnimProcessScriptCmds`
@@ -2096,6 +2176,10 @@ impl Sim {
                 }
             }
             if release {
+                // The stunner spawns NO bullet without a target [M Player_WeaponInitBullet
+                // 0x1a4bf0:187-200 — the 0x4A/0x4C ray test's miss arm returns before Bullet_init;
+                // the port's ray test ran at the top of step_bond into `stunner_target`].
+                let spawn_shot = !matches!(self.gun.weapon, 0x4a | 0x4c) || self.stunner_target == Some(true);
                 // Gravity weapons (`+0x6C & 0x8`) are grenades: `Bullet_init` with the weapon record
                 // [M 0x12c5a0] — the throw origin the game uses is the midpoint of the head and the view
                 // model's bone 0 (`flags68 & 0x10000` arm, `Player_WeaponInitBullet` 0x1a4bf0:230); the port
@@ -2134,7 +2218,7 @@ impl Sim {
                         mesh: self.weapons.projectile_mesh(self.gun.weapon as usize),
                         owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false,
                     });
-                } else {
+                } else if spawn_shot {
                     self.last_shot = Some(self.drones.frame);
                     self.shot_tick = true;
                     // `Player_MuzzleFlash` 0x1a4298 runs on the shot tick: `Light_Create(radius =
@@ -3523,8 +3607,9 @@ impl Scene {
         }
         // Bullet tracers: drone bullets draw `GUN_BULLET_TRAIL` (Bullet_update state 0), stretched along their
         // direction by the speed (Control_GetObjMatrix scale 1, 1, speed); a pool of slots, hidden when unused.
+        // Slot TRACER_SLOTS is the gadget beam (fix-laser-beam: the Laser/Stunner's per-shot beam draw).
         if let (Some(_), Some(&(tmap, tobj))) = (drones, level.by_hash.get(&0x0200_0123)) {
-            for slot in 0..TRACER_SLOTS {
+            for slot in 0..=TRACER_SLOTS {
                 let tinst = Instance { map: tmap, object: tobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
                 add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                 attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false, projectile: None, script: None, gas: None, effect: None });
@@ -3991,7 +4076,7 @@ impl Scene {
             // write (C_SBNFDFCTY 0x216ca8) into `set_difficulty`.
             drones.difficulty = 1;
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
-                wire_cels, laser_beam: None,
+                wire_cels, laser_beam: None, stunner_target: None,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
@@ -4140,6 +4225,25 @@ impl Scene {
                 ];
             }
             if let Some(slot) = a.tracer {
+                // fix-laser-beam: slot TRACER_SLOTS is the gadget BEAM (Draw_LaserBeam / Draw_TaserBeam
+                // via Player_MuzzleFlash 0x1a4298:107-137 — one stretched sprite from the muzzle to the
+                // crosshair-ray hit). The mesh is the port's trail stand-in [S: the game's 0x2000131/
+                // 0x20006c1 sprite objects live in the global gfx table, not the level archives; the
+                // main agent's render check owns the look].
+                if slot as usize == TRACER_SLOTS {
+                    let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
+                    let Some(s) = self.sim.as_ref() else { return far };
+                    let Some((a, b)) = s.laser_beam else { return far };
+                    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    if len < 1e-4 { return far; }
+                    let dir = [d[0] / len, d[1] / len, d[2] / len];
+                    let yaw = dir[0].atan2(dir[2]);
+                    let pitch = -dir[1].atan2((dir[0] * dir[0] + dir[2] * dir[2]).sqrt());
+                    let mut m = nf_formats::placement::object_matrix([pitch, yaw, 0.0], a);
+                    for k in 0..3 { m[2][k] *= len; }
+                    return m;
+                }
                 let b = self.sim.as_ref().and_then(|s| s.drones.bullets.get(slot)).filter(|b| b.state == 1);
                 return match b { Some(b) => tracer_matrix(b), None => [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]] };
             }

@@ -74,7 +74,8 @@ fn aim_at(sim: &mut nf_view::scene::Sim, target: [f32; 3]) {
 }
 
 /// The fix, through the REAL beam: Bond stands on the lower walkway before the display vent with
-/// the Q-Laser out (0x50, the loadout [M 0x1a7ef8 case 0x700000c]); `Player_LaserPointer`
+/// the Laser out (0x4E — the disc's beam weapon, name 0x05000043 "Laser" [L USATxt + weapon_data
+/// +0x6C = 0x900; the old 0x50 id was the Grapple]); `Player_LaserPointer`
 /// 0x1a65d8's beam (the sim's per-tick `gadget::laser_tick`) burns each hinge it is aimed at
 /// (`Lock_Update` 0x1ae3d8 case 0), the AND mux #505 raises ch 18, the SSs play to their last
 /// keys (the hatch slides away, the blocker rises out), and the opening is PASSABLE.
@@ -83,8 +84,8 @@ fn burning_the_four_hinges_opens_the_display_vent() {
     let Some(_) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load();
     let sim = scene.sim.as_mut().unwrap();
-    sim.gun.weapon = 0x50;
-    sim.gun.switch_request = 0x50;
+    sim.gun.weapon = 0x4e;
+    sim.gun.switch_request = 0x4e;
     sim.bond = nf_game::player::Bond::stand_at(&sim.world, [6.0, 13.8, -110.5], 0.0);
     let hinges: Vec<[f32; 3]> = sim.drones.locks.iter().filter(|l| (14..=17).contains(&l.out)).map(|l| l.pos).collect();
     assert_eq!(hinges.len(), 4, "the four hinge locks exist [D #139-142]");

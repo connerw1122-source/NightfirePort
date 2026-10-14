@@ -109,11 +109,29 @@ impl Sounds {
         self.alloc(Node { id, pos, is3d: true, custom: radii, state: 0, age: 0, since_start: 0 })
     }
 
+    /// A LOOPED id's re-trigger: one voice per id. The fire scripts' op-1 loop starts replay every held
+    /// refire tick (`AnimScriptAdd` 0x1c6d40 DELETES the playing script and creates a fresh one [M] —
+    /// the Laser/Stunner's +0x68 & 0x400 family refires at interval 1 [L weapon_data +0x40 = 1], so
+    /// the op-1 fires 60×/s); the game's re-trigger keeps the single loop audible instead of piling
+    /// attack transients. fix-laser-beam: without this the port allocated a node per tick (the pool
+    /// churned, the loop never held steady). [S: the PS2 bank's per-id behaviour; the port matches the
+    /// audible result.]
+    pub fn play_loop(&mut self, id: u32, pos: V3) -> Handle {
+        if id & 0xfffff == 0xffff { return 0; }
+        if let Some(i) = self.nodes.iter().position(|n| matches!(n, Some(x) if x.id == id && x.state == 0)) {
+            return i as Handle + 1;
+        }
+        self.play3d(id, pos, None)
+    }
+
     /// `Sound_Stop`: removed at the next update.
     pub fn stop(&mut self, h: Handle) { if let Some(Some(n)) = self.node(h) { n.state = 2; } }
 
     /// `Sound_StopAllWithId`.
     pub fn stop_all_with_id(&mut self, id: u32) { for n in self.nodes.iter_mut().flatten() { if n.id == id { n.state = 2; } } }
+
+    /// fix-laser-beam test hook: the ids of the ACTIVE (state 0 = playing) voices, pool order.
+    pub fn active_ids(&self) -> Vec<u32> { self.nodes.iter().flatten().filter(|n| n.state == 0).map(|n| n.id).collect() }
 
     /// `Sound_SetPosition`.
     pub fn set_position(&mut self, h: Handle, pos: V3) { if let Some(Some(n)) = self.node(h) { n.pos = pos; } }
