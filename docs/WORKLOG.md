@@ -11161,3 +11161,13 @@ draws added; no wall-clock in Sim.
   73 tests, 0 failures. The four-crate sweep did not fit the window (background jobs die between tool calls
   in this sandbox — sessions 4 and 5). Report: docs/reports/fix-hud-radar.md (live checks inside: the SP
   no-blip confirmation, the MP ring position/size/blip reading, the pending 100n 007 item).
+
+## 103l2-fix-fire-modes3b — s/103l2-fix-fire-modes3b (started 16:45 UTC 2026-10-14)
+- Base: s/fix-fire-modes3 (aca97652) merged with origin/master (7785582a); WORKLOG conflict resolved by keeping
+  both the fix-fire-modes3 and the fix-hud-radar entries.
+- Task: the weapon-sound sweep (fix_weapon_sounds_live::every_weapon_on_07000005_draws_fires_and_reloads_with_sounds)
+  fails only on this merge (1087 pass / 1 fail): weapons 0x37 (missing sound 1112) and 0x59 (missing sounds
+  1096, 1112) never play their missing sounds within the 25-tick fire window. Find which of the four fix-fire-modes3
+  changes moves the sounds, decide from the game's code whether the new behaviour is right, then extend the test
+  window citing flight time or fix the code. Suite total on the final tree required.
+- Work in progress: reproduce first.
