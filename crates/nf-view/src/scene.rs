@@ -1918,6 +1918,23 @@ impl Sim {
             // flash +0x968 and the both-sides bits +0x967 = 0xC), not a bare subtraction.
             if let Some(dmg) = self.bond.drown_damage {
                 self.drones.health.pain_generic(dmg, self.drones.difficulty, self.level, 7);
+                // The drown tick's sound rides the same 30-tick cadence [M Player_MonitorAir
+                // 0x191a70:135-143: every FRAME_RATE·0.5 ticks, Sound_Play(100, 0x60b) + HandlePain].
+                self.drones.audio.play(0x60b);
+            }
+            // `Player_MonitorAir` 0x191a70:101-124 [M]: the head crossing cel+0x90 starts the dive
+            // loop (`Sound_Stop()` of the old handle, then `Sound_Play3D(100, −1, −1, 0x27, objPos)`
+            // saved at BL+0x89C) and, on surfacing, stops it and plays the gasp `Sound_Play(100,
+            // 0x60c)`. The port's stop is by id (one voice per id at the alloc).
+            {
+                let under = self.bond.underwater;
+                if under && !self.drones.audio.swim_prev_under {
+                    self.drones.audio.play3d(0x27, self.bond.pos, None);
+                } else if !under && self.drones.audio.swim_prev_under {
+                    self.drones.audio.stop_all_with_id(0x27);
+                    self.drones.audio.play(0x60c);
+                }
+                self.drones.audio.swim_prev_under = under;
             }
         }
         // Footsteps (`AnimObjectUpdate` 0x1befd8:163-198 [M], player): `BL+0x924` gathers the distance
@@ -1934,7 +1951,12 @@ impl Sim {
         let moved_h = (dx * dx + dz * dz).sqrt();
         let climbing = self.bond.substate == nf_game::player::SS_CLIMB;
         let moved = if climbing { (moved_h * moved_h + dy * dy).sqrt() } else { moved_h };
-        if self.bond.grounded && !self.disabled {
+        if self.bond.grounded && !self.disabled && self.bond.substate != nf_game::player::SS_SWIM {
+            // The swim gate [M]: the game's step is `Effect_Create` off the CACHED ground hit
+            // (0x1ce688:63 early-outs unless `(hit+0x50 & 0x3f) != 0`); the swim capsule (0x194df0
+            // case 3) hangs under the surface and never touches the pond bed, so swimming plays NO
+            // footstep (the user's "I could hear my footsteps too"). The port's floor ray still
+            // finds the bed mid-pond, so the substate is the gate here.
             self.step_dist += moved;
             let stride = if climbing { 0.4125 } else { 1.65 };
             if self.step_dist > stride {
