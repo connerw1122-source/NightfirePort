@@ -39,6 +39,14 @@ impl Rnd {
 
 type P3 = [i32; 3];
 
+/// FNV-1a over a started voice's decoded PCM (LE i16 bytes) — the test probe's sample identity
+/// (fix-weapon-sounds, numbers only).
+pub fn pcm_hash(p: &Pcm) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for s in &p.data { for b in s.to_le_bytes() { h = (h ^ b as u64).wrapping_mul(0x100000001b3); } }
+    h
+}
+
 /// One hardware voice pair (`ES_VoiceHandleData` → SPU voices): front, and rear for 3-D sounds.
 #[derive(Clone, Debug)]
 struct Voice { front: u32, rear: Option<u32>, looping: bool, playing: bool, pitch: u32, stream: bool }
@@ -70,6 +78,9 @@ struct Item {
     paused: bool,
     /// `KeyOnFrameDelay` (SFXItem+0x2B4): the precache countdown; `HasSampleEnded` reports false while ≥ 1 [M §3.2].
     key_on_delay: i32,
+    /// FNV-1a over the started voice's decoded PCM bytes (the port's test probe, fix-weapon-sounds):
+    /// the sample the voice plays, checkable against the owning bank's decode (numbers only).
+    sample_hash: u64,
 }
 
 /// Bank slot data: the parsed bank, its decoded samples (lazily) and the raw ADPCM.
@@ -78,6 +89,11 @@ struct Slot { bank: Bank, sbf: Vec<u8>, pcm: HashMap<usize, Arc<Pcm>> }
 /// The driver state (`SFX.IRX` globals).
 pub struct Driver {
     slots: HashMap<usize, Slot>,
+    /// The level's own bank (`Sound_Ready` 0x1dceb8's single `SFXLoadSoundBank`): the first `load_bank`
+    /// call. Every id it carries resolves here first, so a level that natively has a sample keeps the
+    /// bit-identical one-bank behaviour; only ids it lacks fall through to the spare banks
+    /// (`load_spare_bank`, the port's extension for the dev tools' give-any-weapon path) [M + S].
+    primary: Option<usize>,
     /// Active list, head (index 0) = newest (`NewSFX` pushes at the head). At most 40.
     items: Vec<Item>,
     voices: Vec<Option<Voice>>,
@@ -158,7 +174,7 @@ impl Default for Driver { fn default() -> Driver { Driver::new() } }
 
 impl Driver {
     pub fn new() -> Driver {
-        Driver { slots: HashMap::new(), items: Vec::new(), voices: vec![None; HW_VOICES], rnd: Rnd::default(), started: 0, mode: 1, master: 100,
+        Driver { slots: HashMap::new(), primary: None, items: Vec::new(), voices: vec![None; HW_VOICES], rnd: Rnd::default(), started: 0, mode: 1, master: 100,
             music_master: 70, mute_sfx: 1, indoors: 100, indoors_target: 100, reverb: 0, reverb_target: 0, underwater: false,
             fade: 10000, fade_music_volume: 10000, fade_status: 0, fade_rate: 30, fade_music: 1, fade_start: 0,
             ducker_current: 100, ducker_volume: 100, ducker_duration: 1, ducker_start: 0, timer_ms: 0, nis_quitten: false, nis_playing: false,
@@ -178,8 +194,18 @@ impl Driver {
         Some(p)
     }
 
-    /// `SFXLoadSoundBank` into `slot` (the index of its hash in `SBINFO.SBI`).
-    pub fn load_bank(&mut self, slot: usize, bank: Bank, sbf: Vec<u8>) { self.slots.insert(slot, Slot { bank, sbf, pcm: HashMap::new() }); }
+    /// `SFXLoadSoundBank` into `slot` (the index of its hash in `SBINFO.SBI`). The first call names the
+    /// level's own bank — the primary lookup slot [M `Sound_Ready` 0x1dceb8].
+    pub fn load_bank(&mut self, slot: usize, bank: Bank, sbf: Vec<u8>) {
+        if self.primary.is_none() { self.primary = Some(slot); }
+        self.slots.insert(slot, Slot { bank, sbf, pcm: HashMap::new() });
+    }
+
+    /// A spare bank (`SB_<slot>` of another level set), loaded by the port so a weapon given on a level
+    /// whose own bank lacks its sounds still plays: only ids the primary lacks resolve here. The owning
+    /// bank's own effect record (radii, `MaxVoices`, priority) and VAG data ride with it, so the voice
+    /// limits are the owning bank's, never the level's [S — the game loads one bank; the port extends].
+    pub fn load_spare_bank(&mut self, slot: usize, bank: Bank, sbf: Vec<u8>) { self.slots.insert(slot, Slot { bank, sbf, pcm: HashMap::new() }); }
 
     /// `SFXSetupListener` (one listener): eye position and the camera's forward and left axes, all × 1000 as the EE
     /// packs them. `Norm` is the camera matrix's row 0, which points to the screen left.
@@ -202,8 +228,13 @@ impl Driver {
     pub fn start(&mut self, out: &mut Vec<Cmd>, id: u32, pos: Option<[f32; 3]>, handle: u32, radii: Option<(i32, i32)>) -> u32 {
         // `kd = SFXKeyOnFrameDelay; SFXKeyOnFrameDelay = 0` — read and cleared on every start [M §3.2 step 1].
         let kd = std::mem::replace(&mut self.key_on_frame_delay, 0);
-        let mut slots: Vec<usize> = self.slots.keys().copied().collect();
-        slots.sort();
+        // Slot lookup order: the level's own bank first (bit-identical one-bank behaviour for every id it
+        // carries — `Sound_Ready` loads exactly one), then the spares by ascending SBINFO slot (a stable,
+        // game-derived order; slot 2, the multiplayer bank, is the weapons superset) [S].
+        let mut slots: Vec<usize> = self.primary.into_iter().collect();
+        let mut rest: Vec<usize> = self.slots.keys().copied().filter(|s| Some(*s) != self.primary).collect();
+        rest.sort();
+        slots.extend(rest);
         let Some((slot, fx)) = slots.into_iter().find_map(|s| self.slots[&s].bank.effect(id).and_then(|b| Effect::parse(b).ok()).map(|e| (s, e))) else { return 1 };
         // Precache (§3.2 step 3): only 1-sample streams can be precached. A live countdown item with the same id
         // is taken over by a real start (kd == 0; the port's zero-latency stand-in keyed it on at once, so the
@@ -222,6 +253,7 @@ impl Driver {
             inner: if inner == -1 { fx.inner } else { inner }, outer: if outer == -1 { fx.outer } else { outer }, fx: Arc::new(fx), slot,
             updated: 0, real_pos: p, pos: p, handle, delete: false, fade_kill: false, fade_kill_vol: 100, streamed: false,
             paused: false, key_on_delay: kd,
+            sample_hash: 0,
         };
         self.items.insert(0, item);
         if self.setup(out, 0) { 0 } else { 1 }
@@ -349,6 +381,7 @@ impl Driver {
         let pan = (sub.pan + ((r3 * sub.pan_rnd) >> 10)).clamp(-100, 100);
         let it = &mut self.items[i];
         (it.base_volume[ch], it.pitch[ch], it.pan[ch]) = (vol, pitch, pan);
+        if ch == 0 { it.sample_hash = pcm_hash(&pcm); }
         let (front, rear) = (free[0] as u32, is3d.then(|| free[1] as u32));
         let v = Voice { front, rear, looping: looped, playing: true, pitch: pitch.max(0) as u32, stream: streamed };
         self.voices[front as usize] = Some(v);
@@ -668,6 +701,21 @@ impl Driver {
 
     /// Live items (tests).
     pub fn items(&self) -> usize { self.items.len() }
+
+    /// The bank slot each live item's effect resolved from (tests): the level's own slot for every id it
+    /// carries, a spare's slot only for ids it lacks.
+    pub fn item_slots(&self) -> Vec<usize> { self.items.iter().map(|it| it.slot).collect() }
+
+    /// The FNV-1a hash of channel 0's started sample for `id` (tests, fix-weapon-sounds): the played
+    /// VAG's decoded PCM, checkable against the owning bank's own decode (numbers only).
+    pub fn played_sample_hash(&self, id: u32) -> Option<u64> { self.items.iter().find(|it| it.id == id).map(|it| it.sample_hash).filter(|&h| h != 0) }
+
+    /// The bank slot `id`'s live item resolved from (tests): the level's own slot for ids it carries,
+    /// a spare's slot only for ids it lacks.
+    pub fn item_slot(&self, id: u32) -> Option<usize> { self.items.iter().find(|it| it.id == id).map(|it| it.slot) }
+
+    /// The ids of the live items (tests).
+    pub fn ids(&self) -> Vec<u32> { self.items.iter().map(|it| it.id).collect() }
 }
 
 /// The driver plus the sound output, fed by the EE layer's commands once per game tick.

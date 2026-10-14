@@ -2769,6 +2769,10 @@ pub struct Scene {
     pub music_tables: Option<(Vec<nf_formats::music::MapMusic>, Vec<nf_formats::music::MusicVars>)>,
     /// The level's sound bank (`Sound_Ready` → `SFXLoadSoundBank`): slot, bank, ADPCM (set by the loader).
     pub sound_bank: Option<(usize, nf_formats::soundbank::Bank, Vec<u8>)>,
+    /// Spare banks (fix-weapon-sounds): the other SBINFO slots' `SB_<slot>.{SHF,SFX,SBF}`, loaded so a
+    /// weapon given on a level whose own bank lacks its sounds still plays them from a bank that holds
+    /// them (`load_spare_bank`). The level's own bank stays the primary lookup [M `Sound_Ready`].
+    pub sound_spares: Vec<(usize, nf_formats::soundbank::Bank, Vec<u8>)>,
     /// The level's fog (`psiPreGameRun` 0x11e2e8: colour, `Ps2Far1`; `None` = `FogOn` 0).
     pub fog: Option<([u8; 3], f32)>,
     /// The HUD's textures by hash (docs/systems/hud.md), from any map of the archive, and its tables from ACTION.ELF.
@@ -4018,7 +4022,7 @@ impl Scene {
         // fix-portal4: sim-less loads never built a world — the chains fall back to the
         // bbox-face FindCel approximation (documented deviation; every live load path builds sim).
         if sim.is_none() { build_chains(&mut cel_graph, None); }
-        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn, misc_drawn }
+        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, sound_spares: Vec::new(), snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn, misc_drawn }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the
