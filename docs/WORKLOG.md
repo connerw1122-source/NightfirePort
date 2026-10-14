@@ -10527,7 +10527,10 @@ Agent: cutscene-faces2 worker
 Task: fix-cutscene-faces2 — merge origin/master into s/fix-cutscene-faces, settle the facial-vs-body window rule on the game's own flags bit 0x8 (AnimProcessScriptCmds 0x1c1b38) everywhere master used the channel count, keep master's exact-math paths, verify the 07000007/02 renders, full suite.
 
 Work Log:
-- (started 20:13 UTC) branch s/fix-cutscene-faces2 created from origin/s/fix-cutscene-faces (316c759a); this entry. Merge of origin/master (62c17571) in progress.
+- (started 20:13 UTC) branch s/fix-cutscene-faces2 created from origin/s/fix-cutscene-faces (316c759a). Merged origin/master (62c17571): 3 conflicts — anim.rs script_pose_together (2 hunks: kept the flags & 0x8 classifier, dropped master's channel-count probes; the per-bone loop is carried by the kept body_only == together assert), fix_cutscenes2_live.rs (kept the flags+count+morph+weights+root block, master's weaker duplicate dropped), WORKLOG union. Master's exact-math kept whole (facial_update 0x1be310 state machine, FacialCmd, facial3_tests). Third count site swapped: script_pose_drone's is_face now reads s.flags & 0x8 [M 0x1c1b38] — facial3_live 3/3 proves 04000065 carries bit 0x8 (the driver holds his seat, the face track stays a morph source).
+- Suite on the merged tree (270 binaries, tools/test/suite.py in foreground chunks — the nohup background run dies between tool calls here, the 102c/100f precedent): 1074 passed, 3 failed (the allowed disc_golden trio), 35 ignored, 1 TIMEOUT (weapon_matrix_live at 600 s — the base branch's own final-run open item; zero facial/pose references in that binary, the weapon-matrix workers are still landing on it).
+- Renders on the final tree: 07000007 --bond 94.2,44.6,-45.9,0,0 --frame 399 (the kiss, cast in place) and --frame 1200 (full cast, faces present), 07000002 --bond -82.30,5.30,32.05,1.570,-0.100 --frame 170 (both actors, lit dark). renders/faces2_*.png.
+- Re-pulled master before the push (eb52fb56, merge 0e7042c0, clean; targeted tests re-run 20/20 on the final tree). Report: docs/reports/fix-cutscene-faces2.md. Files: crates/nf-game/src/anim.rs, crates/nf-view/tests/fix_cutscenes2_live.rs, docs/WORKLOG.md. Shared files: none touched.
 
 ## fix-weapon-fire-modes (s/fix-weapon-fire-modes) — 2026-10-14
 
