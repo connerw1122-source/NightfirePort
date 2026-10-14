@@ -9364,3 +9364,43 @@ state never lets the shot come due — needs a state whose UPDATE leaves firing/
 Left (censused + decompile-cited in docs/systems/anim-engine.md): op-4 kinds 1/6/7, EventFunc 0xE
 (partner messaging), the other 53 ChangeWeapon entries, footprint decals, the +0x45 setup read.
 Shared files: drone.rs only (fields on their own lines, merge lesson 4).
+
+Task ID: fix-portal-sweep
+Agent: worker (portal-sweep session)
+Task: Portal culling must never hide what the player can see, on every level. Playtest found
+07000005 --bond 16.67,30.04,58.60,1.755,-0.001 (snow trench between stone walls near grapple
+point #282) culling the near trench walls with the walk ON (NF_NOPORTAL=1 draws them). (1)
+Reproduce headlessly: eye cel / visited rooms / chain nodes / World draw counts on vs off, find
+the cels holding the trench walls and why the walk drops them. (2) A sweep test
+(portal_sweep_live.rs): every on-foot level, eye at each start point + grid along nav nodes,
+4 directions; every frustum-kept World cel within ~30 units with clear LOS must be kept by the
+walk; pin counts. (3) Keep the four ground-truth spots green. (4) Per-level frustum-only
+fallback with the failing reason documented where a level can't be made correct.
+
+Work Log:
+- Session started 00:23 UTC (deadline ~02:22 UTC). Branch s/fix-portal-sweep created from
+  origin/master (3c77a9d), pushed with this entry.
+- Reproduced the trench headlessly (portal_sweep_live.rs probe_trench_spot_07000005): the eye
+  resolves to cell 14 (the giant outdoor box, bbox = the whole map); the walk visits only
+  [14, 136, 31, 30, 16]; the trench-wall generics ride the chains of the overlapping rooms
+  15/24 (per build_link_objects_to_rooms 0x1c9150's closest-hit owner pick — the metric is
+  Intersect_PointGeom's point-to-geometry distance [M 0x1ec940->0x1ebaa8 type 0x101], so the
+  owners are what the game's own rule computes); View_AddCels 0x1e6ba0 only walks the chains of
+  VisCelList rooms, so with the eye in 14 the near walls cull (walk keeps 719 World draws vs
+  frustum-only 1809; 806 draws within 45 units all hidden). The game draws them because ITS eye
+  cel resolves to 15 there — build_FindCel 0x1c8cb0's per-cel up/down ray tie-break, whose
+  per-cel object lists the port only approximates (live check filed).
+- The fix: scene::near_los_rescue — the game mask is unioned with the generic cels (0x8017-8019,
+  build_link_objects_to_rooms's linked classes) that Vision_InView keeps, whose closest bbox
+  point is within 30 units of the eye and whose static LOS ray (world::segment_hit_static, a new
+  minimal nf-game hook; the global ray was blocked by Bond's own dynamic collision) is clear,
+  stopped 0.5 units short (the collision meshes run up to ~0.3 in front of the render bboxes [D
+  trench probe: node 40's face at 0.27]). Additive only: room cels and objects stay on the
+  strict VisCelList mask, so the 07 ballroom-window building stays hidden (ground_truth test:
+  rescue 0 at the window, the courtyard, the 06 start; the clock hall gains one prop, cells
+  50/45/46/269/270 stay).
+- The sweep (sweep_every_level_near_los_never_culled): 3020 spots / 12080 spot-directions over
+  27 on-foot levels (the spawn + the nav-node grid, 4 yaws). The RAW walk drops near unoccluded
+  generics on 19 levels (counts in the report; 0700000a worst at 4706, the trench's 05: 1382);
+  the shipped mask (walk + rescue) is clean on all 27 — no level needs the frustum-only
+  fallback this session.
