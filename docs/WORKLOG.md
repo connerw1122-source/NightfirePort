@@ -11135,3 +11135,8 @@ draws added; no wall-clock in Sim.
   73 tests, 0 failures. The four-crate sweep did not fit the window (background jobs die between tool calls
   in this sandbox — sessions 4 and 5). Report: docs/reports/fix-hud-radar.md (live checks inside: the SP
   no-blip confirmation, the MP ring position/size/blip reading, the pending 100n 007 item).
+
+## fix-level-chain (in progress) — s/fix-level-chain (task 104b, 15:57 UTC)
+Task: the no-exit-trigger levels must chain like the game does — 06→07, 11→12, 09→0a→0b, 4a→mission end
+(docs/reports/campaign-flow.md blockers 2-4). Research started: Mission_Update 0x182c60 case 6, ResetMap_LevelToLoad
+0x1d3800, GetLevelToLoadFromMovieCode 0x1d3560, scripted ch-100 writes, trigger kinds the port's parser may skip.
