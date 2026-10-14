@@ -9633,3 +9633,15 @@ Work Log:
   Files: dev.rs, panel.rs (doc), lib.rs (hooks), tests/dev_menu_flow.rs (new),
   tests/menu_live.rs, tests/dev_tools_live.rs (signature/width updates). No shared-file surprises:
   drone.rs/scene.rs/player.rs untouched.
+
+## fix-weapon-assets (2026-10-14, s/fix-weapon-assets)
+
+- Task 100a: a disc-wide weapon asset index + loader so `--give` / the dev menu hands Bond ANY
+  weapon on ANY level with its own skin, sleeve, parts, view-model sequences, muzzle flash,
+  casing, projectile and third-person model, pulled from the owning archive and rebased into the
+  scene (the way scene.rs already does for drone skins).
+- Setup reused the surviving sandbox: repo at /home/z/nf, onfoot ISO + work/ already extracted;
+  branch created from origin/master (7be3272); no s/weapon-assets branch existed to merge.
+- Plan: index builder over all FILES.BIN archives (cached, keyed by ISO size + archive-table
+  SHA-1) -> lazy load hooks in scene.rs/lib.rs -> NF_ISO tests on 07000005 (give, draw, fire,
+  reload) with sister assertions on levels that carry the weapon.
