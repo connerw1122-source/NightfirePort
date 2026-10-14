@@ -10416,3 +10416,13 @@ Work Log:
 - Tests (crates/nf-view/tests/gadgets_live.rs, 4/4, failing-first via the deleted scratch probes: the clip never drained and no beam parked pre-fix): the laser's drain/light/stop-at-0; the stunner's spend-on-target + free aimed-off hold; the AIMS lights attach + the idle timer; the hat's contact kill + no explosion. Neighbours green: gadget_laser_live 7, fix_level_0c_live 4, fix_fusebox_cut, qclaw_live, gadget_grapple_live, explode_live, fix_weapon_effects_live, fix_weapon_sounds_live.
 - Shared hooks: drone.rs (aims_idle on its own line + the hat pass), scene.rs (the restructure + the new slots; nothing removed but the replaced stale comment). grenade.rs/player.rs/lib.rs/gun.rs/gadget.rs/bullet.rs untouched.
 - Left: the taser's msg-7 stun state machine; the laser's battery-station recharge (0x1a5460:575-598); the AIMS bone-9/10/11 gates (+0x93e/+0x2f0/+0x2fc); the hat's return/clang; the pause-menu stop hook. All in the report with the live checks.
+
+## fix-casings-16 (s/fix-casings-16) — 2026-10-14
+
+Started (09:30 UTC): branch from origin/master (6cbe522). Task: the 07000016 playtest symptoms —
+(1) "I see bullet casings flying when I walk backwards" (casings spawn without firing: probably a
+footstep/anim event the port reads as the eject event, or the eject offset riding the walk); (2) "I
+saw a mission complete thing pop up for some reason in this mission, but I still couldn't continue".
+Reproduce both headlessly (walk backwards 3 s with no fire: 0 casings; play 16 from its start to
+that point: which objective/mission message fires and why), fix from the game's code, test, sister
+assertions. Files: crates/nf-game/src/{casing,gun,mission}.rs as needed. Work log continues below.
