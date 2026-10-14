@@ -11012,3 +11012,18 @@ Task: reload-hang — the reload state machine hangs (state 6, clip 0): empty si
 Work Log:
 - (14:04 UTC) Branch s/fix-reload-hang created from origin/master 088bdf4 (weapon-matrix2 already merged). Setup reused (repo, work/, ISO, nf-queue). Pushing the checkpoint, then: suite baseline in background, reproduce first.
 
+- (14:04-15:05 UTC) Reproduce round: 4 NF_ISO tests (fix_reload_hang_live.rs) through the real input
+  path on 07000005. The direct empty-0x03 auto-reload PASSES on master (reload → idle, clip refilled)
+  — the rel=6 hang does not reproduce headlessly. The matrix re-run on 07000005 (nf-extract
+  weapon-matrix) shows the SAME red row as weapon-matrix2's; instrumented runs (NF_MATRIX_DBG +
+  dbg2 mc/dis/death/menu) pin the D-block (0x2d+): **death=true** — Bond died during the 0x2c
+  guided-Sentinel cell and `step_bond` zeroes every input while the death is active (scene.rs 1625),
+  so every later cell's draws/switches are silently eaten. A harness artifact, not the reload
+  machine. The R cells = the reload pulse lost to the fire script (the 100d window artifact). The
+  twin-refusal D (0x18/0x2d): switch_to cannot select a twin record (the game's own refusal — the
+  player reaches twins with the mode button) and mode_to bounces 0x02↔0x03.
+- REAL port bug found [M Player_ReloadAmmoType 0x1a1988:18-22]: twins (+0x05 set, same ammo type)
+  read/write the BASE's clip slot; the port's runtime boundary (scene.rs 2158 read, 2674 write-back,
+  the swap paths) uses the twin's own per-weapon slot — so every 0x02↔0x03 mode hop zeroes the
+  magazine (clip[0x03] is a never-filled slot) and fires a spurious auto-reload. The give path
+  (pickup.rs clip_slot) already models the base unification; the runtime does not. Fix next.
