@@ -67,3 +67,7 @@ claimed-by: sandbox1 at 2026-10-14T02:40Z
 ## Report (done, 2026-10-14T03:35Z)
 
 Closed by the driver: the report is on `s/fix-weapon-effects` (docs/reports/fix-weapon-effects.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-14T03:47Z)
+
