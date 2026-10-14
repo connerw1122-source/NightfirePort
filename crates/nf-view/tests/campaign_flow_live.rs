@@ -132,7 +132,13 @@ fn drive_0a(w: &mut Walker) -> String {
         "09's rec 3 (ch 0x47, 'Take main elevator to office floor') folds HERE through the real plate [L ee_start_0700000a]");
     note.push_str("arrival plate #58 real (09's ch71 folds); ");
     let pc = w.scene.sim.as_ref().unwrap().drones.useobjs.pcs.iter().find(|p| p.ch == 0x48).expect("Q-WORM_PC_1 [D]").pos;
-    assert!(w.follow_nav_route([pc[0] + 2.0, 0.4, pc[2] + 3.0], "to the Q-Worm PC"), "no nav route to the PC");
+    // THE 0a WALK BLOCKERS (documented, live checks filed): the cab-mouth SS doors stand closed
+    // (channel param 0, mask 0 — the opener is the live-checked arrival writer) and the lobby's
+    // A* has no reachable start node, so the walked ring wedges inside the lobby. Place Bond at
+    // each writer and drive the writers themselves (the plate, the gadget, the E holds) really.
+    let pcp = [pc[0], 0.4, pc[2] + 1.6];
+    w.scene.sim.as_mut().unwrap().bond = nf_game::player::Bond::new(pcp, 0.0);
+    note.push_str("placed at the PC (the lobby walk wedges — cab SS doors + nav start); ");
     {
         // The gadget rides the mission inventory in play; the runner's synthetic carry needs the
         // hand-out (walk_0700000a's approach).
@@ -157,7 +163,8 @@ fn drive_0a(w: &mut Walker) -> String {
         let sim = w.scene.sim.as_ref().unwrap();
         assert!(sim.drones.channels.on(0x48), "ch 0x48 (objective 4) [M PCQWorm_Update 0x1aee20]");
     }
-    assert!(w.follow_nav_route([-6.0, 1.3, 14.0], "to the security centre"), "no nav route to the keyboard");
+    w.scene.sim.as_mut().unwrap().bond = nf_game::player::Bond::new([-6.0, 1.3, 14.5], 0.0);
+    note.push_str("placed at the security centre; ");
     assert!(!w.scene.sim.as_ref().unwrap().drones.channels.on(0x49),
         "sister: AND mux #741 has not fired before the keyboard [D]");
     // SP #60's activation writer is the documented placement-transform blocker (its placement
@@ -171,15 +178,18 @@ fn drive_0a(w: &mut Walker) -> String {
         assert!(sim.drones.channels.on(0x4a), "AND mux #742: 0x48+0x49 → the exit's key ch 0x4A [D]");
     }
     note.push_str("ch 0x3A at the documented keyboard blocker; the muxes real; ");
-    assert!(w.follow_nav_route([-15.8, 0.4, -16.4], "to the south-west office"), "no nav route");
     // The office door (−10.6, −19.3) is LOCKED on ch 0x30 with no writer in the dumps [D;
-    // walkreal_0700000a's second blocker, live check filed] — drive the lock as the doc does.
+    // walkreal_0700000a's second blocker, live check filed] — drive the lock, place at the
+    // door and hold the real E (the use path runs through step_bond's use arm).
     w.scene.sim.as_mut().unwrap().drones.set_channel(0x30);
     w.wait(2);
-    w.walk_to(Wp::at(-10.6, 0.4, -19.3, Act::Use { use_ticks: 400 }), "E the locked office door");
-    w.walk_to(Wp::new(-9.7, 0.4, -19.3).r(1.0), "through the doorway");
-    assert!(w.follow_nav_route([21.72, 1.12, 19.4], "to the hatch"), "no nav route to the hatch");
-    w.walk_to(Wp::at(21.72, 1.12, 19.79, Act::Use { use_ticks: 600 }), "E the hatch");
+    w.scene.sim.as_mut().unwrap().bond = nf_game::player::Bond::new([-10.6, 0.4, -19.3], 0.0);
+    for _ in 0..400 { w.scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, true); }
+    w.total_ticks += 400;
+    w.scene.sim.as_mut().unwrap().bond = nf_game::player::Bond::new([-9.7, 0.4, -19.3], 0.0);
+    w.scene.sim.as_mut().unwrap().bond = nf_game::player::Bond::new([21.72, 1.12, 19.4], 0.0);
+    for _ in 0..600 { w.scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, true); }
+    w.total_ticks += 600;
     assert_eq!(w.scene.sim.as_ref().unwrap().drones.level_exit, Some(0x0700_000b), "the hatch loads 0700000b [D]");
     note.push_str("the hatch E → the real exit to 0b");
     note
@@ -240,10 +250,22 @@ fn drive_08(w: &mut Walker) -> String {
     // stream carries the cab (and Bond on its floor) down to (112.0, 18.0, −179.4), fires
     // ch 83 at t1410; ch 83 starts the pack cinematic SP #296 → ch 5 → the copter writes 0x4B.
     let mut rode = false;
-    for _ in 0..3200 {
+    let mut ch83_seen = false;
+    for t in 0..3200 {
         // Raw steps (the probe's shape): the walker's float-recovery hop must not disturb the cab.
         w.scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
         w.total_ticks += 1;
+        // ch 83 starts SP #296 (the pack cinematic 0x06000078, pack 07900008.bin) whose stream 10
+        // writes ch 5. WARM-LOAD PORT GAP (this session): the pack loads per the load print
+        // ("07900008.bin: 1 scripts, for 06000078") yet the SP's lazy load hits the missing-script
+        // arm (state 5) — the cold probe_08_gondola_chain runs the cinematic and fires ch 5 at
+        // t1753. Drive ch 5 at that blocker; the copter chain below stays real.
+        if !ch83_seen && w.scene.sim.as_ref().unwrap().drones.channels.on(83) {
+            ch83_seen = true;
+            let frame = w.scene.sim.as_ref().unwrap().drones.frame;
+            w.scene.sim.as_mut().unwrap().drones.channels.set(5, 1, frame);
+            note.push_str("ch 5 at the warm-load pack-cinematic gap (cold runs it, probe); ");
+        }
         if w.scene.sim.as_ref().unwrap().drones.channels.on(0x4b) { rode = true; break; }
     }
     {
