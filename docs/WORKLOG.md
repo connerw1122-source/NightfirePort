@@ -11015,6 +11015,7 @@ Work Log:
 - Blockers mapped (the report has the live checks): 01's escort-extraction exit (the ch16 TOUCH filter needs the Mayhew drone; the walkreal-a stall); 06/11/4a have NO exit trigger in the data (06's 0xE9s are Drone_AIPoint [M 0x1d04f0 case 0xe9]) — forced completes land the front end; 09/0a's exit triggers self-loop (next = own hash [D]); 0a's real exit needs the trigger-volume work; the gameplay-driven objective channels ride the per-mission walkthrough tasks.
 - Non-story records 0700000e/f/10: no FILES.BIN archive [D] — cut MissionData records.
 - Report: docs/reports/campaign-flow.md. Files: crates/nf-view/tests/campaign_flow_live.rs (new), crates/nf-game/src/mission.rs (the restore fix), crates/nf-view/tests/probe_campaign06.rs (kept probe). Shared files untouched.
+
 ---
 Task ID: 102i-fix-guard-misc
 Agent: guard-misc worker
@@ -11136,6 +11137,54 @@ draws added; no wall-clock in Sim.
   in this sandbox — sessions 4 and 5). Report: docs/reports/fix-hud-radar.md (live checks inside: the SP
   no-blip confirmation, the MP ring position/size/blip reading, the pending 100n 007 item).
 
+---
+Task ID: 103j-fix-weapon-fx-levels
+Agent: weapon-fx-levels worker
+Task: fix-weapon-fx-levels — audit the weapon EFFECTS across all 27 levels x the carried set (fire sound, reload/draw/mode-switch sounds, muzzle flash, shell eject, tracer, impact puff/spark/decal per surface, projectile model+trail, explosion); record resolve vs missing as a table; fix every missing cell (or give game evidence the game lacks it too); watch gadgets' laser/stunner beam/impact; tests + 3 named spot checks; report docs/reports/fix-weapon-fx-levels.md.
+
+Work Log:
+- (14:29 UTC) Branch s/fix-weapon-fx-levels created from origin/master 088bdf4 (s/weapon-matrix2 already merged: ad50a3c). Setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; effect-resolution research next.
+
+
+---
+Task ID: 103j-fix-weapon-fx-levels
+Agent: weapon-fx-levels worker
+Task: fix-weapon-fx-levels — audit the weapon EFFECTS across all 27 levels x the carried set (fire sound, reload/draw/mode-switch sounds, muzzle flash, shell eject, tracer, impact puff/spark/decal per surface, projectile model+trail, explosion); record resolve vs missing as a table; fix every missing cell (or give game evidence the game lacks it too); watch gadgets' laser/stunner beam/impact; tests + 3 named spot checks; report docs/reports/fix-weapon-fx-levels.md.
+
+Work Log:
+- (14:29 UTC) Branch s/fix-weapon-fx-levels created from origin/master 088bdf4 (s/weapon-matrix2 already merged: ad50a3c). Setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; effect-resolution research next.
+- (15:36) Resumed in a fresh sandbox: master merged (2caa27f, the WORKLOG conflict resolved append-only). Background jobs confirmed dead between tool calls here — testing went through foreground chunks.
+- (15:45-16:35) Research (subagent + own disasm): the game's FX set is per-level redundant (EffectInfo decals/debris/gas, the tracer 0x02000123, the blast script 0x06000052 — kind-7 NIS — all in every story archive [D census]); 100a's wanted list missed the fp muzzle mesh +0x48 (0x02000ac7 only in 14/15/16/1b) and the ammo-9 casing 0x02000548; Bullet_DoTrails 0x12d890's smoke/exhaust trails were never ported (bit 0x2: 0x1b/0x36/0x69 every 4th tick, Bullet_trail_effect_smoke 0x12cba8; bit 0x20: 0x2a/0x2b every 3rd tick — args read off the disasm incl. the dropped life args 0x78/0x40; the bit-0x10000 Swoosh 0x1a4e40 documented, not ported).
+- (16:36-16:50) Fixes: +0x48 + casing_meshes into wanted_weapon_models (lib.rs, weapon_assets.rs param); init_trail_smoke + init_exhaust_puff (gas.rs, 3 shared RNG draws each, searchlight precedent); the two gates in the grenade tick (drone.rs).
+- (16:50-17:27) weapon_fx_levels_live.rs: the static sweep (20 levels x 114 records modelling the give path's pool: own ∪ earlier-story ∪ skin-owner; per-level own bank ∪ all-bank spares for the op-1 ids — args[1], not args[0]) + 3 spot checks. The rifle check is green (draw 0x282 from the own bank, the flash attachment, fire 0x40d, a live casing, the floor decal/debris); the launcher/gadget checks are #[ignore]d with the exact headless fire-path repro attempts written down; the sweep's only residual is two records' +0x80 held model in non-story archives (documented).
+- (17:30) Neighbours green: fix_weapon_effects 6/6, explode 2/2, fix_weapons_all 4/4, fix_weapon_sounds 3/3 (+2 pre-existing ignores). The full suite did NOT fit the window (no background jobs here) — next session runs it on the merged tree.
+
+Stage Summary:
+- Pushed 56d9bff + the report commit to s/fix-weapon-fx-levels; docs/reports/fix-weapon-fx-levels.md (the mechanism, the three fixes with addresses, the table, the live checks incl. the Swoosh reference render, what's left). 0 unexplained missing effect cells; the +0x80 held-model residual and the headless foreign-fire block are the known leftovers.
+## fix-06-driver — s/fix-06-driver (task 104d, started 16:46 UTC)
+- Task: playtest 1011-1535 (06) — the friendly truck driver (07000006) cowers on top of the boxes he stands next to, and shooting him knocks him back like a guard with the guard death sound. Check against the game: (1) the cower state's position/anim + floor snap for a civilian ally by props; (2) whether the driver is damageable at all in the game (invulnerable/ally flag on the drone, the team check in the bullet hit) and, if he is, his own death reaction/sound. Port the differences. Files: crates/nf-game/src/drone.rs (small, local).
+- Status: branch cut from origin/master 7785582 (pulled), WORKLOG started. Next: decompile research (cower state, damage team check), reproduce, fix.
+- DONE (17:50 UTC): the driver states dropped the game's absent msg-0x14 (SOUND) arms. The game's
+  TruckDriverInit 0x160bd0 routes msgs 0x11/0x12/0x13/0x16/0x1e → 0x33 and has NO 0x14 case, InitAlert
+  0x160d98 handles no sound msg at all, TruckDriverIdle 0x160ed0 routes 0x11/0x12/0x15/0x16/0x1e to
+  EnemyAlerts with NO 0x14 case [M all three, decompile read whole]; the port's extra SOUND halves ran
+  the guard heard-noise chain (0xa2-0xa5) on the friendly truck driver the moment gunfire sounded, and
+  that chain's attack path DREW HIM A WEAPON (DRAW_WEAPON 0x66 EXIT: weapon 6, anim set 12 → 4 — the
+  guard set) — the playtest's "shoot the driver and he flies back like a guard with the same guard
+  death sound": the fly-back was the guard set's death anim, reached through the weapon draw. Shooting
+  him is game-accurate (DealWithObjHit case 5: the player's shot has no team gate [M 0x13fff0:181-235]);
+  his death line is DeathTalk's default line 1 for voice type 0xf [M 0x13eff8 default arm] — this
+  level's bank shares its sfx (139) with the guards' line 4 [L d.voices], so the "same guard death
+  sound" is the game's own sharing; the anim set was the deviation. The scare/cower half: the game's
+  CivilianScared at alt mode 0 (the driver's) goes straight to CivilianHiding's cower 0x19 — IN PLACE
+  [M 0x15d3a0:31-43, 0x15d520; D seq 04000048's constant x/z root], and the current build's gravity
+  floor snap keeps his feet on the courtyard floor (the user's build predated fix-drone3's gravity
+  fix — his "crouches on top of the boxes" was the old no-gravity drift onto the crate stack by the
+  gate truck's grille). Tests: crates/nf-view/tests/fix_06_driver_live.rs 2/2 (the shot test fails on
+  the pre-fix tree at the heard-noise assert — shown; the cower pin + sisters: the guards still react
+  to the same gunfire, the protected-actor ch 0x60 rises on his death). Suite on the merged tree:
+  see docs/reports/fix-06-driver.md. Report: docs/reports/fix-06-driver.md (live checks: the PCSX2
+  no-draw confirmation, the death anim, the 700-880 step-out window; the headless render gap).
 ## fix-oddjob-hat — s/fix-oddjob-hat (task 104e, started 17:36 UTC)
 - Symptom (playtest 1013-2313): Oddjob's hat should be a one-shot kill but acts like a grenade.
 - Plan: find the hat's weapon record (id, +0x6C/+0x70 flags, damage, speed, return-to-thrower) and the
