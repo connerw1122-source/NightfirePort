@@ -9320,3 +9320,12 @@ Work Log:
   drone.rs comment; the 61fa5ce OFF is now evidence-backed.
 - Report: docs/reports/fix-nav-remainder2.md. Files: drone.rs, nav_kick_live.rs (the drive test's
   ignore attribute), WORKLOG, the report. No test loosened.
+
+## fix-pause-menu (s/fix-pause-menu) — 2026-10-14
+Task: rebuild the in-game pause menu (page 0x10000028, C_GCPAUSE_Handler 0x204408) from the disc's
+page data like the front end (fix-menus2/3): controls, layout, strings, sprites, hint icons, 4:3
+centred over the paused frame, same rows/actions (resume / restart = BaseMap cold / options / quit
+two-step confirm); also the fail/death menu 0x40000042 (P_ENDMISSION_Handler 0x216618) and the
+results page if still plain; F12 screenshots must capture the menu overlay. Files:
+crates/nf-view/src/{menu,lib}.rs, crates/nf-view/tests/menus_flow.rs.
+- Branch created from origin/master 3c77a9d. Work started.
