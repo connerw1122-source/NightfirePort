@@ -78,6 +78,24 @@ altered):
 - `NF_MATRIX=all cargo test -p nf-view --test weapon_matrix_live -- --test-threads=1` (~45 min)
   must pass 30/30 on a machine with no wall-clock pressure — that is the full-check escape hatch.
 
-## The full-suite total (filled at close)
+## The full-suite total (the final tree, tools/test/suite.py)
 
-See the bottom of the file — appended when the background run finished.
+**1082 passed, 7 failed, 35 ignored — 38 min, 264 binaries, zero TIMEOUT/CRASH lines.**
+`weapon_matrix_live` ran INSIDE the suite at **270 s / 30 tests 0 failed** (the held merge's
+blocker — it previously TIMED OUT with `matrix_07000014` last started — is gone).
+
+The 7 failed, attributed:
+- 3 × `disc_golden` (`bigf_header_fields_behave_as_documented`, `bigf_tables_match_the_golden_manifest`,
+  `directory_tree_matches_the_golden_manifest`) — the slim ISO's allowed trio (the driver's rule).
+- `fix_0c_pylon_live` × 2 + `probe_pylon_render` — `wgpu adapter: NotFound`: this sandbox has no
+  GPU adapter; the same panic hits any render test here (documented sandbox artifact from earlier
+  sessions).
+- `walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact` — a guard-drone nav
+  stall ("the drone stopped short of the goal … after +1303 ticks") that is **pre-existing on
+  origin/master, not this branch**: this branch's crate sources are byte-identical to master's —
+  the merge-base diff (`8295049..origin/s/weapon-matrix3`) touches only `matrix.rs` +
+  `probe_gadget.rs` + `weapon_matrix_live.rs`, and my merge's only conflict was
+  `docs/WORKLOG.md` (no source file conflicted, so master's sim code carried over verbatim). A
+  live check for the main agent: run that walk on a master tree — if it stalls there too, the
+  regression came in with a master-side merge (fix-06-driver's guard-shot changes are the recent
+  neighbour); if it walks there, the sandbox's slower run is the variable to chase.
