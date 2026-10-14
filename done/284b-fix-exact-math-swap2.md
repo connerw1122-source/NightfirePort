@@ -32,3 +32,7 @@ Files: `crates/nf-formats/src/{placement,anim}.rs`, `crates/nf-game/src/ps2math.
 
 ---
 claimed-by: sandbox1 at 2026-10-14T12:38Z
+
+---
+## Report (done, 2026-10-14T14:34Z)
+
