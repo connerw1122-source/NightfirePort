@@ -11169,3 +11169,12 @@ Work Log:
 
 Stage Summary:
 - The aim gate ported with the raise/lower anims; the game addresses cited per fix in docs/reports/fix-aim-raise.md (live checks inside). 5 NF_ISO tests failing-first then green; the suite total recorded in the report. Left: unify with fix-weapon-anims' machine when it lands; the 0x55 lower quirk; the raise arm's conservative from-idle condition.
+
+
+---
+Task ID: 104f2-fix-aim-raise2
+Agent: fix-aim-raise2 worker
+Task: fix-aim-raise2 — rebuild the aim gate on top of master's fix-weapon-anims raise/lower (merge origin/master into s/fix-aim-raise first; one queue point, one advance; master's raise finish sets the aim bit; records without +0xB8 aim at once).
+
+Work Log:
+- (19:55 UTC) Branch s/fix-aim-raise2 created from origin/s/fix-aim-raise (72509145) and pushed. Setup reused (repo, work/, ISO, nf-queue). Merge of origin/master next.
