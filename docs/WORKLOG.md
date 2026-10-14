@@ -10153,3 +10153,37 @@ Work Log:
 - Final suite on the master-merged tree (origin/master 966671a fix-08-walls merged; 223 binaries, tools/test/suite.py): 959 passed, 3 failed, 29 ignored — the 3 are exactly the allowed disc_golden slim-ISO set. Neighbours re-run green on the merged tree: grapple_hook_live 3, models_misc_live 10, fix_ladder2_live 4, fix_objects_live 6, fix_08_walls_live 4, qclaw_live, gadget_grapple_live, gadget_grapple_user_spot, gadget_select_live.
 - Independent audit (subagent): PASS — decompile/[L] claims re-verified, add_instance RNG-free and deterministic, the scene.rs diff removes only the stale comment, no other test asserts total counts; strengthened: every 0x3A placement on all 16 levels lacks 0x8000/0x2000 and glist 0x8/0x4 bits (the static draw is exact everywhere); citation fix: control_funcs row 0x51 is [L 0x26fa94..0x26fc68] (wire-grapple.md:7's shorter range is one row short).
 - Report: docs/reports/fix-grapple-hook.md. Files: crates/nf-view/src/scene.rs (additive sweep + counter + corrected comments), crates/nf-view/tests/grapple_hook_live.rs (new), crates/nf-view/tests/models_misc_live.rs (comment/message text only).
+
+fix-context-hints (100k, 2026-10-14): the two symptoms implemented, verified and reported.
+- Implementation (commit 5247021): the Hint markers (placement 0x33, Hint_Create 0x1b3248 /
+  Hint_Update 0x1b3380 — one-shot type-1 INFO messages with the marker's label, sound and
+  on/off channels, resolved through the map object's world sphere like wire::icons), the
+  type-6 "Press Action" post (label 0x1000291) on ThirdIcon_Update's 4-tick instance timer
+  while not creeping, the INFO pane 4 draw (MsgInfoStatusPane 0x319810: the 480x26 top bar +
+  caps, centred text, the fade + 16 px/tick close), and the context icon (health-pane sprite
+  18, table 0x2FC168[ctx], runtime (400,48), layer 29, the 30-tick fade) — full citations in
+  docs/systems/hud.md and the report.
+- Merged origin/master twice (the second merge needed the WORKLOG append resolution and two
+  one-line `label: 0` fixes in the master-side Msg literals — fix_objective_banner_live,
+  fix_objective_messages_live).
+- Tests: crates/nf-view/tests/fix_context_hints_live.rs 5/5 — the safe fires 0x0200000A once
+  (life 0xB4) with no icon (07000008's only icon is the zipline's ctx-3 in cell 12); the
+  control-panel marker (0x010001E9) stays silent from the safe spot; the 05 grapple spot reads
+  ctx 6, posts 0x1000291, draws 0x0300006A, and clears to 0xFF with the fade within 30 ticks
+  on leaving; away from everything nothing shows. Numbers/label ids only, never the strings.
+- Suite on the final tree (e511da5): the sandbox kills background jobs (the nohup'd runner
+  died twice), so it ran in foreground chunks (tools/test/suite_chunk.py, the suite.py loop
+  resuming from suite.log): 226 binaries, 948 passed / 3 failed / 31 ignored logged — the 3
+  are exactly the allowed disc_golden trio; weapon_matrix_live hit the 300 s per-binary cap
+  (not a failure) and passed 28/28 re-run separately. Grand total 976 passed / 3 allowed
+  failed / 31 ignored.
+- OPEN (in the report + live checks): the driver's "orange 007 at the bottom-left ring" is
+  NOT the 0x95F system — the ctx sprite draws at (400,48) (the x/y order pinned by the
+  disasm 0x19c148/0x19c14c, the ammo bullet column and HUD_FixMP's x-clamp) and the three
+  disc ctx textures are tan badges (winch/hanging man/figure — dumped from the ISO and
+  inspected). The live checks (gdbwatch the sprite x/y + 0x95F writes at both spots, poke
+  0x95F at the safe) settle whether a second, script-driven indicator exists.
+- Report: docs/reports/fix-context-hints.md. Files: crates/nf-view/src/hud.rs,
+  crates/nf-view/src/scene.rs (additive), crates/nf-game/src/player.rs (additive: Hint +
+  hints()), crates/nf-view/tests/fix_context_hints_live.rs (new), the two Msg-literal
+  one-liners, docs/systems/hud.md.
