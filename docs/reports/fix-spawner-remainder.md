@@ -92,9 +92,11 @@ the wave-exhaustion paragraphs.
   usable template, the close spot never picked-and-failed), the post-selection visible abort (the
   draw consumed, the slot persists, the retry spawns).
 - `walk_07000001_live.rs` 3/3 on the slim ISO (the new G-040 test included).
-- Full suite: see the count below; the slim ISO allows the 3 `disc_golden` failures.
+- **Full suite** (slim ISO, release, `--test-threads=1`, foreground in three windows — the sandbox
+  kills background jobs between tool calls): **nf-game 33 binaries 0 failures; nf-formats +
+  nf-audio 12 binaries, only the 3 allowed `disc_golden` failures; nf-view 111 binaries 0
+  failures.** 156 binaries total, 3 failures = exactly the allowed set.
 - The census probe (`nf-formats/examples/spawner_census.rs`) is scratch — untracked, not committed.
-
 ## What's left
 
 - The stinger's sound POSITION: the game passes a NULL position (no DCVars, no drone) — the port
@@ -120,4 +122,7 @@ the wave-exhaustion paragraphs.
 3. nf-view (after merge): `nf-view 07000001` — after the intro (~35 s of sim ticks), the gate
    guards leave their wait poses.
 
-## ntfy
+## ntfy failed
+
+All three fallbacks got HTTP 429 "limit reached: daily message quota reached" (2026-10-13T23:08Z
+for the 221 notification; the same quota applies here) — the notification could not be sent.

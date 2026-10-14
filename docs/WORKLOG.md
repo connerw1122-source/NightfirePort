@@ -9108,3 +9108,21 @@ Stage Summary:
 Task 286: GAPS G-025 (the spawner mode-3 wave-delay byte +0x1F and the power-station spawn SFX
 branch, DroneSpawner Control 0x137e68) and G-040 (07000001's second gate guard, placement 277,
 script 0x0600007f not in the kind-7 NIS archive). Work starting.
+
+### fix-spawner-remainder — outcome
+
+- G-025: the "+0x1F wave-delay byte" was a misread (it is the initial-fill/no-stealth-checks flag,
+  already modelled as `immediate`; no delay value exists anywhere in the spawner family). The
+  power-station stinger (0x137e68:191-200, Drone_SfxInfo[0xD6/0xD7], 600-frame throttle,
+  Rand_Rand(2) between the alive scan and the selection) is ported via `Spawner::sfx_request`;
+  the disc census shows NO mode-3 spawner on 0c/0d, so the branch is unreachable on retail.
+- Two real divergences fixed in the same path: the min-distance screen is a PRE-selection
+  usability test (the draw counts only usable templates — an RNG-order fix), and wave exhaustion
+  is the pure counter compare (the used-all short-circuit killed single-template multi-wave
+  spawners, e.g. 07000012 placement 647).
+- G-040: closed as a misdiagnosis — the hash is 0x06000087 (pack 07800001.bin, ported since
+  fix-cutscenes); placement 277 is the intro cut-scene script player; no global script archive
+  exists. `walk_07000001_live::the_second_gate_guard_wakes_on_the_intro_scripts_channel` proves
+  the gate guards wake.
+- Suite: 156 binaries — nf-game 33/0, nf-formats+nf-audio 12 (3 allowed disc_golden), nf-view
+  111/0. Report: docs/reports/fix-spawner-remainder.md. ntfy 429-quota failure recorded.
