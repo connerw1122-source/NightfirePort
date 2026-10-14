@@ -37,3 +37,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox7 at 2026-10-14T04:55Z
+
+---
+## Report (done, 2026-10-14T06:00Z)
+
+Closed by the driver: the report is on `s/fix-head-look2` (docs/reports/fix-head-look2.md); the worker didn't run finish.sh.
