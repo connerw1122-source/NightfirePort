@@ -5282,6 +5282,10 @@ pub struct Drones {
     /// The animated SimpleScripts (`SS_Create` 0x1a9c58 / `SS_Update` 0x1a9948; map-tower2): the
     /// 07000012 lift screens, shutters and lift doors swap on their switch channels.
     pub sss: crate::ss::SsList,
+    /// The sound triggers (placement 0xF9, `SoundTrigger_Create` 0x1b2628 / `SoundTrigger_Update`
+    /// 0x1b2790; fix-06-alarm): the level's channel-gated emitters — 07000006's courtyard alarm
+    /// siren (placement 702: ch 55 → the looped 2-D klaxon 329) lives here.
+    pub sound_triggers: crate::sound::SoundTriggers,
     /// Bond's bullet segments of this tick (`from`, `to`): the searchlights' break check (U-041 stand-in).
     bullet_paths: Vec<([f32; 3], [f32; 3])>,
     /// The mission layer (`Mission_Update` 0x182c60, docs/systems/mission.md). `inited` latches the
@@ -5393,6 +5397,8 @@ impl Drones {
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true,
             npc_system_disabled: false,
             spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
+            // fix-06-alarm (fields on their own lines — merge lesson 4).
+            sound_triggers: Default::default(),
             node_doors: None,
             // fix-nav-remainder (fields on their own lines — merge lesson 4).
             node_kicks: None,
@@ -5534,6 +5540,9 @@ impl Drones {
         // Weather: `Env_Create` (placement 0xDF, parameter 0 = drop type) and the `RainBox_Create` volumes (0x32: the
         // glist bounds at the placement translation).
         self.map_sounds = crate::sound::MapSounds::new(level.maps[m].sounds.clone());
+        // The sound triggers (`SoundTrigger_Create` 0x1b2628, placement 0xF9; fix-06-alarm) —
+        // 07000006's four oSoundTrigger cubes, the alarm siren among them. No RNG at create [M].
+        self.sound_triggers = crate::sound::SoundTriggers::create(&level.maps[m].placements, self.difficulty);
         let ps = &level.maps[m].placements;
         let lib = level.nis.iter().map(|(&h, n)| (h, std::sync::Arc::new(n.clone()))).collect();
         self.scripts = crate::nis::Scripts::new(lib, ps);
@@ -7784,6 +7793,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         self.shake = (self.shake * 0.9 - 0.05).max(0.0);
         // The SimpleScripts' playheads (`SS_Update` 0x1a9948 — channel on → the last key, off → key 0).
         self.sss.tick(&self.channels);
+        // The sound triggers (`SoundTrigger_Update` 0x1b2790 — the object walk's per-frame pass;
+        // fix-06-alarm): the alarm siren starts the same frame its ON channel is up.
+        self.sound_triggers.tick(&mut self.audio, &self.channels);
         // `Mission_Update` moved to the top of the tick (fix-objective-banner): the game's Game_Run
         // order — see the block before `fx.tick` above.
         // fix-progress: the tally folds — the per-drone `PlrStat_Log*` outboxes, `Trigger_Calc`'s
