@@ -11207,3 +11207,18 @@ Work Log:
 
 Stage Summary:
 - Pushed 56d9bff + the report commit to s/fix-weapon-fx-levels; docs/reports/fix-weapon-fx-levels.md (the mechanism, the three fixes with addresses, the table, the live checks incl. the Swoosh reference render, what's left). 0 unexplained missing effect cells; the +0x80 held-model residual and the headless foreign-fire block are the known leftovers.
+
+---
+Task ID: 103k2-fix-weapon-anims2
+Agent: weapon-anims2 worker
+Task: fix-weapon-anims2 — the three suite failures the s/fix-weapon-anims merge held (gadget_select's weapon-cycle-on-a-gadget, gadget_laser's parked beam, fix_weapon_sounds' silent sweep cells); fix code or justify test windows from the game's code.
+
+Work Log:
+- (17:04) Resumed the claim (branch already at the merge 7440bd5, pushed). Reproduced all 3 failures + captured the full 5-cell sounds failure list (0x32/0x33/0x41 + 0x42/0x43).
+- (17:15-17:50) Diagnosis with a master throwaway worktree as baseline: (a) gadget_select — the port matches the game (weapon byte swaps at holster-done [M 0x1a2e38 case 2:262-263]; holster/draw at 1.25 [case 1:220-223/case 3:287-288]); the test broke out mid-draw (camera draw ~86 ticks). (b) gadget_laser — the Laser's 76-frame draw at 1.25 + the fire gate; the first beam measured at hold-tick 49 vs the 30-tick window. (c) sounds — THREE real port bugs: the op-1 frame window empty during a switch (the (prev_script,prev_time) watermark sat after the switch machine's advance), the idle fidget threshold 20 [S] vs the game's 0x14*FRAME_RATE_INT = 1200 [L bldata.md +0x93E = 1200, +0x95E n = 60], and the Gun's stale fire_state/latch surviving a switch (the game's Player_WeaponSelect 0x1a2cc0 writes +0xF4 = 8/3/1 directly) which suppressed the next weapon's fire-script queue; plus the sweep's until_drawn breaking inside the post-draw auto-reload (view states 5/6/7) so the held trigger never re-armed [M 0x1a5460:442-445 edge test].
+- (17:50-18:05) Fixes: scene.rs — the watermark moved above the switch machine, the threshold 1200, the fire-state/latch clear at switch start; the four test files' windows re-tuned with the game tick counts (assertions unchanged; the predecessor fidget test corrected 20→1200).
+- (18:05) All green: gadget_laser 7/7, gadget_select 2/2, fix_weapon_sounds 3/3, weapon_anims 7/7. master (ed718f8, fix-weapon-fx-levels) merged mid-task (WORKLOG conflict resolved append-only); the four binaries re-run green on the merged tree. Pushed.
+- (18:05-18:20) Neighbourhood chunks in foreground (the background suite dies between tool calls here): fix_audio2 4, fix_auto_switch 2, fix_weapon_effects 6, fix_weapon_fire_modes 5, fix_weapon_modes 6, fix_weapons_all 4, gadget_grapple 1, gadgets 4, fix_pickups_remainder 1, fix_pickups_trace 2, weapon_assets 5, weapon_fx_levels 2, nf-game lib 150 — 211 passed, 0 failed. The full four-crate sweep did not fit the window again; it is the next session's first item. Report: docs/reports/103k2-fix-weapon-anims2.md (live checks inside: the fidget threshold in gdbwatch, the Samurai draw whoosh, the pre-existing AIMS lights 900/2700-tick thresholds flagged for the main agent's render, the twins' clip-slot follow-up).
+
+Stage Summary:
+- The three merge-held tests green on the merged tree; three real port bugs fixed with game citations (op-1 switch window, fidget threshold 1200, stale fire-state across switches); the test windows re-tuned to the correct-rate switches without loosening any assertion. Pushed through f44e141 + the report commit.
