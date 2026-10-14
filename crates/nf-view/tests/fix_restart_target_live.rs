@@ -108,9 +108,9 @@ fn restart_restores_the_entry_checkpoint_with_the_health_floor() {
         let sim = scene.sim.as_mut().unwrap();
         tick(sim, 10);
         sim.drones.set_channel(0x45);
-        sim.drones.health.pain_generic(37.0, 1, 0x0700_0007, 0);
+        let (h, r) = (&mut sim.drones.health, &mut sim.drones.rng); h.pain_generic(r, 37.0, 1, 0x0700_0007, 0);
         tick(sim, 2);
-        sim.drones.health.pain_generic(500.0, 1, 0x0700_0007, 0);
+        let (h, r) = (&mut sim.drones.health, &mut sim.drones.rng); h.pain_generic(r, 500.0, 1, 0x0700_0007, 0);
         tick_fire(sim, 2);
         tick(sim, 4);
         exit(sim)

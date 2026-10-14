@@ -1992,6 +1992,14 @@ impl Sim {
             // under him and the straddle BFS roots at the floor's cel — the 08 escort's straddle root and
             // the portal-centre crossings ([M 0x1c8928's +0x70]) both ride the same stateful cel).
             self.bond.cel = bond_cel;
+            // The melee hit-push `BL+0x910` (fix-bond-damage): `Player_Update` 0x193600 decays it
+            // ×0.9 every tick [M disasm 0x1937a4-0x1937d8] and, while Bond is alive, adds it to the
+            // move vec's Y before `obj+0x50 += move` [M disasm 0x193ccc-0x193cf0] — a per-tick
+            // displacement the floor collision absorbs when it pushes down.
+            self.drones.health.hit_push *= 0.9;
+            if self.drones.health.health > 0.0 {
+                self.bond.pos[1] += self.drones.health.hit_push;
+            }
             self.bond.tick_ctx(&self.world, &ctx, &input);
             // `obj+0x40 ← obj+0x30` — the moved pass's copy AFTER the cel change [M 0x1336f8:212].
             self.bond.prev_pos = prev_tick_pos;
@@ -2047,7 +2055,10 @@ impl Sim {
             // — the FULL pipeline (difficulty factor, no armour for type 7 [M 0x1902c8:84-104], the pain
             // flash +0x968 and the both-sides bits +0x967 = 0xC), not a bare subtraction.
             if let Some(dmg) = self.bond.drown_damage {
-                self.drones.health.pain_generic(dmg, self.drones.difficulty, self.level, 7);
+                if self.drones.health.pain_generic(&mut self.drones.rng, dmg, self.drones.difficulty, self.level, 7) {
+                    let p = self.bond.pos;
+                    self.drones.play_pain_grunt(p);
+                }
                 // The drown tick's sound rides the same 30-tick cadence [M Player_MonitorAir
                 // 0x191a70:135-143: every FRAME_RATE·0.5 ticks, Sound_Play(100, 0x60b) + HandlePain].
                 self.drones.audio.play(0x60b);
@@ -2104,7 +2115,12 @@ impl Sim {
         // The landing damage: `Player_CollisionHandler` 0x1949a8:117-126 calls `Player_HandlePain(timer - 60,
         // type 6)` — the full pipeline: the difficulty factor, NO armour (types 1..7 bypass it [M
         // 0x1902c8:84-104]), the pain flash +0x968 and the vertical direction bits +0x967 = 2.
-        if let Some(dmg) = self.bond.fall_damage { self.drones.health.pain_generic(dmg, self.drones.difficulty, self.level, 6); }
+        if let Some(dmg) = self.bond.fall_damage {
+            if self.drones.health.pain_generic(&mut self.drones.rng, dmg, self.drones.difficulty, self.level, 6) {
+                let p = self.bond.pos;
+                self.drones.play_pain_grunt(p);
+            }
+        }
         let (head, look) = (self.bond.head(), self.bond.look());
         // The shot's direction through the crosshair: forward + 0.76966 cx · right + 0.57724 cy · up.
         let (yaw, p) = (self.bond.yaw, self.bond.pitch * std::f32::consts::FRAC_PI_2);

@@ -166,7 +166,7 @@ fn one_death_restarts_exactly_once() {
     let mut scene = nf_view::load(&iso, "07000007.bin", false).expect("load");
     let sim = scene.sim.as_mut().unwrap();
     for _ in 0..600 { sim.step_bond(Input::default(), false, false, false); }
-    sim.drones.health.pain_generic(1000.0, 1, 0x0700_0007, 0);
+    let (h, r) = (&mut sim.drones.health, &mut sim.drones.rng); h.pain_generic(r, 1000.0, 1, 0x0700_0007, 0);
     // The death sequence runs to the menu (the red fade); auto_restart answers it instantly in the
     // view, so the test drives the page itself (the 180-fix-menus flow).
     sim.drones.auto_restart = false;
