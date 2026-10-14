@@ -11221,6 +11221,52 @@ draws added; no wall-clock in Sim.
   73 tests, 0 failures. The four-crate sweep did not fit the window (background jobs die between tool calls
   in this sandbox — sessions 4 and 5). Report: docs/reports/fix-hud-radar.md (live checks inside: the SP
   no-blip confirmation, the MP ring position/size/blip reading, the pending 100n 007 item).
+weapon-matrix2 (103b, 2026-10-14): re-ran the weapon matrix on today's master (b65d6f7) and worked the red cells.
+- Re-ran the full matrix on master b65d6f7: 27 levels × 98 ids, 0 panics; both tables parsed with
+  the same rules (old .630/B126/D286/I1203/R43 vs new .617/B129/D292/I1207/R35, 46 cells moved).
+- The runner now runs the REAL give path: load_weapons (100a's merge) with the whole catalog +
+  per-cell inventory reset — the old `.` wall was the harness filling the shared ammo banks across
+  99 gives (Player_EquipWeapon 0x1a8a58's owned branch). New per-cell checks: the mode twin byte
+  (+0x05)/mode count (+0x2e) press with both labels (HUD_UpdateAmmoPane 0x19a7f0), the 0x2C guided
+  camera (Sim::missile_cam), the MGL impact-vs-delay blast gap (impact records blast on contact,
+  the fused ones at 210/300/420 [M Bullet_DoTrails 0x12d890]) — marks M/G/X.
+- Verified on 07000005 (sister test green): 0x2a/0x2c/0x34 vm1 where the old runner printed I/`-`,
+  0x2a gap 2-4 ticks, 0x2c gcam1, 0x02's mode press lands the 0x03 twin with a label.
+- The real bug the re-run found: the away switch lands on the silenced twin 0x03 (twin_skip first-
+  offer [M 0x1a6f80:179-198]); with its clip reset to 0 the next draw tick starts the auto-reload
+  and the 0x03 shell loop hangs in state 6 (clip stays 0, carried 4) — every later switch refused
+  [M 0x1a6f80:33-47] — the D-block from 0x2e. Probe: examples/probe_matrix_draw.rs. Fix + the
+  gadget-cycle fallback for the watch gadgets + the upgraded runner's full sweep = next window.
+- Report: docs/reports/weapon-matrix2.md (the re-run table + a pointer live in
+  docs/reports/weapon-matrix.md). Files: crates/nf-view/src/matrix.rs,
+  crates/nf-view/tests/weapon_matrix_live.rs, crates/nf-view/examples/probe_matrix_draw.rs. No
+  shared files touched. Work log continues below.
+
+weapon-matrix2 addendum (11:59): the upgraded runner's full sweep ran (3 chunks, 27 × 98, 0 panics) —
+the red mass (D 1278 / M 152 / R 226) is the silenced-twin reload hang reaching the draw now that the
+give path works; 0x2a impact 19/27 clean, 0x2c's guided camera rode its clean cells, no X marks. The
+table + analysis are appended to docs/reports/weapon-matrix2.md.
+
+fix-weapon-anims (103k, 2026-10-14): per-weapon view-model animations — the game's anim ids, lengths,
+rates, events and blends for draw/holster/idle(+fidgets)/fire per mode/dry fire/reload per kind/mode
+switch/bob/zoom, compared against the port, mismatches fixed, with NF_ISO tests on 6 weapons covering
+each reload kind (P2K, Frinesi, AT-420, MGL, sniper, Samurai). Branch starts from master b27fb1e with
+s/weapon-matrix2 merged in (not on master yet) per the task brief. Work continues below.
+
+fix-weapon-anims (103k, 2026-10-14): the per-weapon view-model animations — the census (all 115
+records' 15 script fields with lengths, off 07000029.bin via a probe example), the decompile round
+(SetWeaponAnimObj's case table; +0xB8/+0xBC are the AIM raise/lower, not "draw-at-1.25x"; the +0xCC
+fidget's 20-tick cycle; the +0xD0/D4/D8 PP7-family path), and four fixes: the idle fidget +0xCC
+(67 records), the aim raise/lower +0xB8/+0xBC with the reverse lower, the +0x93a idle-counter reset
+semantics (the game resets it in every non-idle state), and a real port bug the test exposed — the
+switching double-advance made every holster/draw/var-swap play ~2x fast. Report:
+docs/reports/fix-weapon-anims.md. Tests: crates/nf-view/tests/weapon_anims_live.rs 7/7 green on
+NF_ISO (six weapons x draw/fire/reload/mode-switch/holster numbers + the fidget + the raise; the
+fidget/raise tests demonstrated failing on the pre-fix tree). Suite on the mid-task tree: 1009
+passed / 7 failed (the 3 allowed disc_golden, the 0c-pylon family, the weapon_matrix TIMEOUT — all
+pre-documented); the FINAL tree's suite re-run is the next session's first item. Left: the PP7-family
++0xD0/+0xD4/+0xD8 path (needs the threat-scan stand-in), the 0x32 Samurai reachability, the +0xEC
+MP-grip doc correction. No shared files touched.
 
 ## fix-exact-math-swap3 (started)
 - Started: base s/fix-exact-math-swap2, origin/master merged (ecf408b). Task: the NIS camera on the
@@ -11282,3 +11328,18 @@ Work Log:
 
 Stage Summary:
 - Pushed 56d9bff + the report commit to s/fix-weapon-fx-levels; docs/reports/fix-weapon-fx-levels.md (the mechanism, the three fixes with addresses, the table, the live checks incl. the Swoosh reference render, what's left). 0 unexplained missing effect cells; the +0x80 held-model residual and the headless foreign-fire block are the known leftovers.
+
+---
+Task ID: 103k2-fix-weapon-anims2
+Agent: weapon-anims2 worker
+Task: fix-weapon-anims2 — the three suite failures the s/fix-weapon-anims merge held (gadget_select's weapon-cycle-on-a-gadget, gadget_laser's parked beam, fix_weapon_sounds' silent sweep cells); fix code or justify test windows from the game's code.
+
+Work Log:
+- (17:04) Resumed the claim (branch already at the merge 7440bd5, pushed). Reproduced all 3 failures + captured the full 5-cell sounds failure list (0x32/0x33/0x41 + 0x42/0x43).
+- (17:15-17:50) Diagnosis with a master throwaway worktree as baseline: (a) gadget_select — the port matches the game (weapon byte swaps at holster-done [M 0x1a2e38 case 2:262-263]; holster/draw at 1.25 [case 1:220-223/case 3:287-288]); the test broke out mid-draw (camera draw ~86 ticks). (b) gadget_laser — the Laser's 76-frame draw at 1.25 + the fire gate; the first beam measured at hold-tick 49 vs the 30-tick window. (c) sounds — THREE real port bugs: the op-1 frame window empty during a switch (the (prev_script,prev_time) watermark sat after the switch machine's advance), the idle fidget threshold 20 [S] vs the game's 0x14*FRAME_RATE_INT = 1200 [L bldata.md +0x93E = 1200, +0x95E n = 60], and the Gun's stale fire_state/latch surviving a switch (the game's Player_WeaponSelect 0x1a2cc0 writes +0xF4 = 8/3/1 directly) which suppressed the next weapon's fire-script queue; plus the sweep's until_drawn breaking inside the post-draw auto-reload (view states 5/6/7) so the held trigger never re-armed [M 0x1a5460:442-445 edge test].
+- (17:50-18:05) Fixes: scene.rs — the watermark moved above the switch machine, the threshold 1200, the fire-state/latch clear at switch start; the four test files' windows re-tuned with the game tick counts (assertions unchanged; the predecessor fidget test corrected 20→1200).
+- (18:05) All green: gadget_laser 7/7, gadget_select 2/2, fix_weapon_sounds 3/3, weapon_anims 7/7. master (ed718f8, fix-weapon-fx-levels) merged mid-task (WORKLOG conflict resolved append-only); the four binaries re-run green on the merged tree. Pushed.
+- (18:05-18:20) Neighbourhood chunks in foreground (the background suite dies between tool calls here): fix_audio2 4, fix_auto_switch 2, fix_weapon_effects 6, fix_weapon_fire_modes 5, fix_weapon_modes 6, fix_weapons_all 4, gadget_grapple 1, gadgets 4, fix_pickups_remainder 1, fix_pickups_trace 2, weapon_assets 5, weapon_fx_levels 2, nf-game lib 150 — 211 passed, 0 failed. The full four-crate sweep did not fit the window again; it is the next session's first item. Report: docs/reports/103k2-fix-weapon-anims2.md (live checks inside: the fidget threshold in gdbwatch, the Samurai draw whoosh, the pre-existing AIMS lights 900/2700-tick thresholds flagged for the main agent's render, the twins' clip-slot follow-up).
+
+Stage Summary:
+- The three merge-held tests green on the merged tree; three real port bugs fixed with game citations (op-1 switch window, fidget threshold 1200, stale fire-state across switches); the test windows re-tuned to the correct-rate switches without loosening any assertion. Pushed through f44e141 + the report commit.
