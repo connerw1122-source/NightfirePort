@@ -77,9 +77,14 @@ pub struct Channels { pub v: Vec<u8>, pub time: Vec<u32> }
 impl Default for Channels { fn default() -> Channels { Channels { v: vec![0; 256], time: vec![0; 256] } } }
 
 impl Channels {
-    pub fn on(&self, c: u32) -> bool { c != 0 && self.v.get(c as usize).is_some_and(|&x| x != 0) }
+    /// Channel 0 is a real channel: the game's readers index `switch_channels[ch]` directly —
+    /// `SS_Update` 0x1a9948:20-23 reads AND writes `switch_channels[ss.ch]` for any channel word
+    /// including 0 (the 0c pulley winches #351/#364/#377 listen on ch 0 [D]), and the trigger/AND
+    /// writers copy Out into the array unconditionally [M 0x1b1a78]. The old port skipped ch 0 in
+    /// both `set` and `on`, so a ch-0 SS could never run.
+    pub fn on(&self, c: u32) -> bool { self.v.get(c as usize).is_some_and(|&x| x != 0) }
     pub fn set(&mut self, c: u32, value: u8, frame: u32) {
-        if c == 0 || c > 255 { return; }
+        if c > 255 { return; }
         // The game stamps `switch_channels_time` on EVERY nonzero write in its trigger and script paths
         // [M 0x1b1a78:87,107,188-189 — the type-2 OR, the AND write, the Out copy; Script_EventHandler 0xD],
         // not only on the rising edge (trigger-port-check #4): a re-set channel refreshes its SEQ_AND window.
