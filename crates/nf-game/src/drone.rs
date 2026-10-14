@@ -7362,6 +7362,29 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // the mine 0x37 (8/100), the satchel family 0x3b-0x40 (8/2000). fix-explosions routed the flash on
         // id 0x36 — the disc labels name 0x35 'Stun Grenade' and 0x36 'Smoke Grenade' [L USATxt.dat].
         self.explosions.clear();
+        // fix-gadgets-live: Oddjob's hat (0x45) kills on CONTACT. The game's hat is a gravity bullet
+        // whose hit takes the standard bullet path: `Bullet_CollisionHandler` 0x12ce80's 0x45 arm sets
+        // the post-hit lifetime (BU+0xc = 1500.0) + the 0x4a7 clang [M 0x12ce80:311-316] and the hit
+        // flows to `Drone_BulletHit` → msg 8 → the record's damage 100.0 [L weapon_data[0x45]+0x0C] —
+        // a guard's health is below that, so one touch kills. The port threw the hat into the grenade
+        // path (`+0x6C & 0x8` gravity), whose only damage was the FUSE blast — "it acts like a
+        // grenade". The contact test runs per tick at the hat's position (its speed 0.7 [L +0x20]
+        // keeps the per-tick displacement under the 1.05 contact sphere, so a point test doesn't
+        // tunnel); the hat keeps flying after a kill (the game's post-hit lifetime) and the fuse
+        // death is silent (the arm above).
+        let hat_out = self.grenades.iter().any(|g| g.weapon_type == 0x45 && g.state < 2);
+        let hat_kills: Vec<(usize, f32)> = if hat_out {
+            let dp: Vec<(V3, bool)> = self.list.iter().map(|x| (x.pos, x.present && !x.corpse && x.enabled)).collect();
+            let mut out = Vec::new();
+            for g in self.grenades.iter().filter(|g| g.weapon_type == 0x45 && g.state < 2) {
+                for (i, (p, live)) in dp.iter().enumerate() {
+                    if !live { continue; }
+                    let dx = p[0] - g.pos[0]; let dy = p[1] - g.pos[1]; let dz = p[2] - g.pos[2];
+                    if dx * dx + dy * dy + dz * dz <= 1.05 * 1.05 { out.push((i, g.damage)); }
+                }
+            }
+            out
+        } else { Vec::new() };
         for g in &mut self.grenades {
             while let Some(ev) = g.update(d.world, &mut self.rng) {
                 match ev {
@@ -7446,7 +7469,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         // fix-weapon-effects: the blast body moved to `spawn_blast` (shared with the bullet
                         // impact explode [M 0x12d0bc]); the loop borrows `self.grenades`, so the blast runs
                         // from the queue after the loop.
-                        self.pending_blasts.push((pos, radius, damage, owner, weapon_type));
+                        // fix-gadgets-live: Oddjob's hat (0x45) NEVER explodes — its fuse arm only sets the
+                        // post-hit lifetime (BU+0xc counts down to the delete flag [M 0x12e7b0:368-373]) and
+                        // `Bullet_Delete`'s effect kind (+0x70 & 7 = 0 [L the hat's +0x70 = 0x100]) spawns
+                        // nothing; the kill is the CONTACT path below.
+                        if weapon_type != 0x45 {
+                            self.pending_blasts.push((pos, radius, damage, owner, weapon_type));
+                        }
                         break;
                     }
                 }
@@ -7454,6 +7483,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         // The queued blasts (`Explode_Create` 0x17cbd0): the full blast — propagate, the 0x6000052
         // visual at scale radius·0.0667 [M 0x17cbd0:84-106], the camera shake [M 0x17cc28].
+        // The hat's contact kills first: the standard bullet hit (msg 8's damage arm), NOT the
+        // explosive msg 9 — a guard below 100 health dies on the touch.
+        for (di, hdmg) in hat_kills {
+            if let Some(dr) = self.list.get_mut(di) {
+                if !dr.present || dr.corpse || dr.health <= 0.0 { continue; }
+                dr.last_damage = hdmg;
+                dr.hit_by_player = true; // the player's throw [M +0x2B4 = the thrower]
+                dr.health -= hdmg * dr.damage_taken;
+                if dr.health <= 0.0 { dr.health = 0.0; dr.set_state(state::DEATH_ANIM); }
+                else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
+            }
+        }
         let blasts = std::mem::take(&mut self.pending_blasts);
         for (pos, radius, damage, owner, weapon_type) in blasts {
             self.spawn_blast(d, pos, radius, damage, owner, weapon_type, player.pos, frame);

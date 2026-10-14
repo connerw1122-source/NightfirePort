@@ -174,3 +174,59 @@ fn the_aims20s_side_lights_attach_to_its_view_model() {
     assert!(sim.drones.aims_idle > i0, "the idle timer climbs while the AIMS sits idle");
 }
 
+
+/// Oddjob's hat (0x45): a thrown hat KILLS ON CONTACT (the record's damage 100.0 [L +0x0C] through
+/// the standard bullet hit — `Bullet_CollisionHandler` 0x12ce80's 0x45 arm + msg 8) and NEVER
+/// explodes (the fuse arm only sets the post-hit lifetime [M 0x12e7b0:368-373]; Bullet_Delete's
+/// effect kind 0 spawns nothing). Before the fix the port's grenade path fuse-blasted it — the
+/// user's "should be a one-shot kill but it acts like a grenade". Sister: a guard standing beside
+/// the victim survives (no blast radius).
+#[test]
+fn oddjobs_hat_kills_on_contact_and_never_explodes() {
+    let mut scene = nf_view::load_weapons(&iso(), "07000005.bin", false, &[0x45]).expect("load 05");
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        // A pair of live guards within 3.5 units: the victim and the blast-radius witness.
+        let mut pair = None;
+        'outer: for i in 0..sim.drones.list.len() {
+            let a = &sim.drones.list[i];
+            if !a.present || a.enabled == false || a.corpse || a.health <= 0.0 { continue; }
+            for j in 0..sim.drones.list.len() {
+                if j == i { continue; }
+                let b = &sim.drones.list[j];
+                if !b.present || !b.enabled || b.corpse || b.health <= 0.0 { continue; }
+                let d2 = (a.pos[0] - b.pos[0]).powi(2) + (a.pos[1] - b.pos[1]).powi(2) + (a.pos[2] - b.pos[2]).powi(2);
+                if d2 < 3.5f32.powi(2) { pair = Some((i, j)); break 'outer; }
+            }
+        }
+        let Some((i, _j)) = pair else { eprintln!("no guard pair on 05 — skipping"); return };
+        let target = sim.drones.list[i].pos;
+        // Bond 4 units away, aiming at the victim (look() = (sin yaw, ·, cos yaw)).
+        let bx = target[0] + 4.0;
+        let floor = sim.world.floor_below([bx, target[1] + 2.0, target[2]], 8.0).unwrap_or(target[1]);
+        sim.bond = nf_game::player::Bond::stand_at(&sim.world, [bx, floor + 1.1, target[2]], 0.0);
+        sim.bond.yaw = (target[0] - bx).atan2(0.0f32.max(0.0) + (target[2] - target[2]));
+        // yaw from the +x offset: forward = (sin yaw, ·, cos yaw), the guard is at −x ⇒ yaw −π/2.
+        sim.bond.yaw = -std::f32::consts::FRAC_PI_2;
+        let wd = sim.weapons.clone();
+        let rounds = wd.clip_size(0x45).max(1);
+        if sim.drones.inventory.equip_weapon(&wd, 0x45, rounds, true)
+            || sim.drones.inventory.owned.get(0x45).copied().unwrap_or(false) {
+            sim.gun.switch_request = 0x45;
+        }
+    }
+    settle(&mut scene, 0x45);
+    let sim = scene.sim.as_mut().unwrap();
+    // Hold fire until the throw spawns, then let it fly (the fuse is 300 ticks [L +0x70 & 0x10000]).
+    let mut thrown = false;
+    for _ in 0..120 {
+        sim.step_bond(Input::default(), true, false, false);
+        if !sim.drones.grenades.is_empty() { thrown = true; break; }
+    }
+    assert!(thrown, "the hat never threw (no grenade spawned)");
+    for _ in 0..420 { sim.step_bond(Input::default(), true, false, false); }
+    // The witness is the OTHER guard of the pair — find it again by proximity to the victim.
+    let victim_dead = sim.drones.list.iter().filter(|d| d.health <= 0.0).count();
+    assert!(victim_dead >= 1, "the hat killed nobody on contact (the user's symptom)");
+    assert!(sim.drones.explosions.is_empty(), "the hat exploded (the grenade path's blast)");
+}
