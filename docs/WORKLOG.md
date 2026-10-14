@@ -11140,3 +11140,28 @@ draws added; no wall-clock in Sim.
 Task: the no-exit-trigger levels must chain like the game does — 06→07, 11→12, 09→0a→0b, 4a→mission end
 (docs/reports/campaign-flow.md blockers 2-4). Research started: Mission_Update 0x182c60 case 6, ResetMap_LevelToLoad
 0x1d3800, GetLevelToLoadFromMovieCode 0x1d3560, scripted ch-100 writes, trigger kinds the port's parser may skip.
+
+## fix-level-chain DONE (16:49 UTC) — s/fix-level-chain (task 104b)
+- The no-exit levels chain the way the game does — the old campaign-flow blockers 2-4 were a stale
+  parse: **09's 0xE8 (map39 #60) really reads next = 0x0700000a gate ch 0x32** [D probe on the current
+  parser; the writer is the adjacent TouchOnce out 0x32], **0a's 0xE8 (map37 #2) reads next =
+  0x0700000b key ch 0x4a** where 0x4a is AND mux #568's output over 0a's own objective channels
+  {0x48,0x49} [D probe], **11 has two 0xE8s → 0x07000012** (#118 key ch 0x1e, #124 gate ch 0x1f; the
+  gate's writer is runtime gameplay — live check filed), **06's chain is the party TOUCH (out ch 0x83)
+  → ScriptPlayer #220 → script 0x06000071 stream9 event 0x12 [07000007]** [D probe; M 0x1d94c0:194-199],
+  and **4a's chain is TouchOnce #62 (out 0x84) → pack 0790004a script 0x060006d3 stream9 event 0x12
+  [0x0720004a]** — a MOVIE code, resolved by GetLevelToLoadFromMovieCode 0x1d3560 → 0x07100013 →
+  masked 0x07000013 [M 0x1d3560 + 0x1d6360 phase 2].
+- Ported: `triggers.rs` `movie_code_next_level` (the decomp's full 0x1d3560 tree + the masked
+  fallback) and `resolve_exit_code` (0x1d3800 + 0x1d6360's two-phase cycle compressed; the code
+  family nibble is bits 20-23); `lib.rs`'s exit consumption resolves through it (one call site —
+  the pre-fix tree tried to load the nonexistent 0720004a.bin). Runner fixes in campaign_flow_live:
+  the FAIL-flag skip is record+0x10 **bit 1 (0x02)** [M 0x1827d8], not `& 1` (the runner used to
+  raise 09's alarm itself and record the fail-restart as the exit), the E-path skips NaN boxes and
+  sweeps the four facings [M 0x1a5170:100-137 head+dir sphere] holding the key channel per tick.
+- Tests: nf-game unit 10/10 (every 0x1d3560 arm + the resolve sisters); nf-view
+  fix_level_chain_live 5/5 (06→07000007, 09→0700000a, 0a→0700000b with the locked sister, 11→07000012,
+  4a→0x0720004a→07000013 — all through the real load + real trigger volumes); campaign_flow_live 4/4
+  with mission 07000009 chaining 09→0a→0b headless (3/3, 3/3, 5/5 objectives, real exits). Report:
+  docs/reports/fix-level-chain.md (live checks: 11's ch 0x1f/0x1e writer, 06's 0x83, 4a's 0x84).
+- drone.rs/scene.rs/player.rs untouched; lib.rs carries the one resolve call.
