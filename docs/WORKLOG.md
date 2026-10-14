@@ -10438,6 +10438,58 @@ Work Log:
 - The 0c pylon: NOT reproducible on this tree — the real stand_at+head camera at the user spot resolves eye cell 91, all four pylon parts + shadow ride owner room 77, in_view true, 14/14 materials kept (probe_missing_pylon.rs, kept); pinned by a regression test, live re-render requested.
 - Green on the fixed tree: the whole portal chain (portal_live/eyecel/2/3/4/5/6/sweep/walkreal), nf-game units (world.rs scope tests), the new 3 tests. suite.py could not run in background (nohup dies between tool calls — same as the last two sessions); foreground chunks covered nf-game+nf-formats+the portal/object/census nf-view files; the levels_sweep re-run is left for the next session.
 - Report: docs/reports/fix-missing-objects.md. Files: crates/nf-game/src/world.rs (obj_cell rule + doc), crates/nf-view/src/scene.rs (scope_graph pub + the 1e8 owner pick + doc), crates/nf-view/tests/fix_missing_objects_live.rs (new) + 6 probe files (kept).
+fix-menus-real2 (101q, 2026-10-14): the front end's second pass — the main panel art, the title
+font, the footer button glyphs, the Dossier row list, the backdrop. Started from a4164b9.
+
+fix-menus-real2 (101q, 2026-10-14): the front end's second pass, against the playtest's five
+symptoms. (1) THE DOSSIER "adds Weapons" was not page data at all: the wheel's range is
+unconditionally [0,3] (C_SBDOSSIER 0x216eb0:40-43), the four rows of table 0x2dfcd0 with all four
+unlock flags = 1 [L ee_snapshot 0x2dfd18+0x10] and no code reads or writes the Weapons flag byte
+[L an ELF-wide lui/ADDU scan finds only 0x216f38 + the adjacent SBBOTS references]. The real game
+shows three rows because Menu_UpdateWheel 0x1f8388:148-168 centres a 5-slot window on the cursor —
+at cursor 0 slots 0/1 are blank and Weapons (row 3) is one Down away; P_DOSSIER_Handler 0x216de0:9-16
+resets the wheel to 0 (msg 0x2e param 0) whenever the page opens from missions/results/stats, and
+Scroll_Update 0x2221b20:186-210 clamps (the wrap needs the msg-0x69 flag nothing sends). The port
+entered the Dossier with the missions cursor (menu.rs MissionSelect Side) and wrapped Up/Down with %
+— fixed: cursor=0 on entry + saturating clamps that return false at the ends [M 0x222810:98-106].
+Test shown failing on the pre-fix code (cursor 3 rode in; Up teleported Records→Weapons), then
+passing; sister: the window at cursor 0 yields rows [0,1,2] only. (2) THE HEADERS' bold-italic
+face: the engine has no italic flag — __Font_DrawText 0x1ee598 draws axis-aligned quads; the look
+is a SECOND FONT. Every label defaults to SerpLight (Label_Init 0x218638 stamps DAT_003096c0 =
+ff 02 fe 03 … [L ee_snapshot 0x3096c0]), but the page-def NAME tag (−8) carries a per-control
+format string sent as msg 0x23 [M MenuManager_Create 0x21b908:255-274; Label_SendMessage
+0x218890:100-104 sprintf's it over the default], and the header controls' strings are
+"\xff\x01" = font select 1 [L the re-walked menu-def (tag stream from 08000002 @ 07000048.bin
++494208, 56 pages/891 NAME strings): header CTRL (50,40,376×17) name 0x10000001 → NAME bytes
+ff 00 01 00 … (UTF-16, compacted by 0x21b908's walk); Font_ParseFormat 0x1ee3e0 stops at the first
+NUL so the effective format is the font select]. FontTable[0] = {tex 0x03000005, FONTNFont2
+0x305a58} [L ee_snapshot 0x2dd8b0; the pristine-ELF bytes there are pre-init — runtime data only
+in the snapshots], and 0x03000005's atlas is the bold-italic face [D tex-export 07000048.bin entry
+3 sub 2]. nf-formats now parses FONTNFont2/FontDataNFont2 as HudTables.font_header (same layout as
+the SerpLight parse), hud.rs text_scaled grew a texture-aware sibling (text_scaled_tex; Font
+_ParseFormat 0x1ee3e0 case 5 loads the selected font's own texture), and page_header draws the
+headers through 0x03000005. Tests: the two faces parse and differ; the headers' quads ride the
+0x03000005 atlas. (3) THE FOOTER GLYPHS are already correct in the port — the pinned table matches
+the RUNTIME specialchar exactly [L ee_snapshot 0x2dd8d8, 17 entries, letter tokens 'A'-'Y', all
+texture 0x03000075; the pristine ELF bytes there are pre-init garbage — both research reads off
+the ELF were wrong], the atlas carries the glyphs at the table's uv rects [D crops: (235,1) blue ✕,
+(235,21) green △, (235,41) orange ○, (235,61) pink □], quad() normalises by the texture's real
+dims [M hud.rs quad]. The "tiny dots" symptom is the OLD 0x03000042 64×64 guess (uv 235 clamps to
+the corner pixel of a 64-wide texture — dots). Fixed the port's only wrong numbers: the test fake
+gave 0x03000075 a 256×256 pitch (real 256×128 [L tex-list]) so the icon uv normalised wrong in
+tests; real pitch now pinned, plus the pause-objectives ~J marker uv (57/128). (4) THE BACKDROP:
+the panel/Bond/007-ring art is IN the aux FMVs (0x07330048 main, 0x07350048 lists [L the PAGE
+records' aux field; Manager_SendMessage 0x21c858:331-341 plays them looping]) and the port's movie
+plane is correct; the near-black renders were (a) the shipped binary built without `movies`
+[nf-formats gates oxideav behind the opt-in feature], (b) frame 0 = the fade-in, (c) a real bug:
+the --shot still path read the movies off NF_ISO (the on-foot image's 22 PSS entries are 0-byte
+stubs [D ISO9660 parse]) instead of NF_MOVIE_ISO like the live loop — fixed (one line, lib.rs)
+and --movie-frame now defaults to 12 (past the first GOP). Render commands + live checks in the
+report; the FMV stills need a retail image (none in this sandbox).
+Suite on the final tree (origin/master 6cbe522 merged): see docs/reports/fix-menus-real2.md.
+Files: crates/nf-view/src/{menu,hud}.rs, crates/nf-view/tests/{menus_flow,menu_movies}.rs, plus
+the shared-file hooks listed in the report (nf-formats/src/hud.rs font_header, lib.rs call sites).
+
 
 ---
 Task ID: 102k-fix-striped-boxes

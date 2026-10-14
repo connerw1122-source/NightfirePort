@@ -1082,7 +1082,10 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> (Op
     let mut movie = None;
     #[cfg(feature = "movies")]
     {
-        let frame_n: usize = args.iter().position(|a| a == "--movie-frame").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(0);
+        // --movie-frame defaults past the first GOP: frame 0 of the aux FMVs is the fade-in from
+        // black (fix-menus-real's live check; the movie reports pin decodes on frame 12), so a bare
+        // --page main --shot must not show it.
+        let frame_n: usize = args.iter().position(|a| a == "--movie-frame").and_then(|i| args.get(i + 1)).and_then(|v| v.parse().ok()).unwrap_or(12);
         let want = if intro {
             Some(menu::INTRO_MOVIES[args.iter().position(|a| a == "--intro").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(menu::INTRO_MOVIES.len() - 1)])
         } else {
@@ -1090,7 +1093,11 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> (Op
             (aux != 0).then_some(aux)
         };
         if let Some(code) = want {
-            match movie::movie_still(&scene_iso_name(), code, frame_n) {
+            // The still comes from the movie image, not the map image: the on-foot ISO's PSS entries
+            // are 0-byte stubs [D ISO9660 parse], so honour NF_MOVIE_ISO like the live loop's
+            // App::movie_iso_path does (below) — the retail image carries the movies.
+            let iso = std::env::var("NF_MOVIE_ISO").unwrap_or_else(|_| scene_iso_name());
+            match movie::movie_still(&iso, code, frame_n) {
                 Ok(img) => movie = Some((img.width, img.height, img.rgba)),
                 Err(e) => eprintln!("[front end] movie {code:08X}: {e} — the dark plate stands in"),
             }
@@ -1100,11 +1107,11 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> (Op
         // The intro FMV owns the screen — no controls, no plate [M 0x209e88]; the movie plane is
         // the whole picture. Without movie data the headless plate stands in.
         let hud = if movie.is_some() { None }
-            else { Some(menu::menu_overlay(&fe, &tables.font, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0)) };
+            else { Some(menu::menu_overlay(&fe, &tables.font, &tables.font_header, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0)) };
         return (hud, movie);
     }
     fe.backdrop_live = movie.is_some();
-    (Some(menu::menu_overlay(&fe, &tables.font, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0)), movie)
+    (Some(menu::menu_overlay(&fe, &tables.font, &tables.font_header, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0)), movie)
 }
 
 /// The ISO path for `read_files_bin` (the NF_ISO env or the default sandbox path).
@@ -1483,7 +1490,7 @@ impl App {
         let _ = std::fs::write(png.with_extension("txt"), format!("{line}\n"));
         let fe_menu = self.fe.as_ref().and_then(|fe| self.scene.hud.as_ref().map(|t| {
             let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
-            menu::menu_overlay(fe, &t.font, lang, &self.scene.hud_textures, 1280.0 / 720.0)
+            menu::menu_overlay(fe, &t.font, &t.font_header, lang, &self.scene.hud_textures, 1280.0 / 720.0)
         }));
         match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref(), None) {
             Ok(()) => format!("saved {} ({line})", png.display()),
@@ -2291,7 +2298,7 @@ impl ApplicationHandler for App {
                             }
                         }
                         let mut f = match &self.scene.hud {
-                            Some(tables) => menu::menu_overlay(fe, &tables.font, lang, &self.scene.hud_textures, aspect),
+                            Some(tables) => menu::menu_overlay(fe, &tables.font, &tables.font_header, lang, &self.scene.hud_textures, aspect),
                             None => overlay_for(&self.scene, aspect),
                         };
                         // fix-pause-menu2: the in-game HUD stays visible under the pause page —
