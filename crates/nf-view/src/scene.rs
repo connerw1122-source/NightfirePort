@@ -1122,10 +1122,12 @@ fn point_in_cell(graph: &CelGraph, cell: usize, p: [f32; 3]) -> bool {
 /// then the mirrored down ray — the down ray's length is the up ray's min(hit, len), len starts
 /// 256 and shrinks to the best-so-far distance], the candidate with the nearest hit distance
 /// wins, and with no hit at all the FIRST candidate stands (0x1c8cb0's tail:
-/// `iVar6 = CelList_153; ... return iVar6`). `world` (the sim's scoped `CollisionWorld`) supplies
-/// the per-candidate rays through `segment_hit_scoped(Some(cell), …)` — the port's stand-in for
-/// `Collide_RayIntersect`'s per-cel object list; without a world the port's bbox-face
-/// approximation stands (documented).
+/// `iVar6 = CelList_153; ... return iVar6`). The per-candidate ray is scoped to the CANDIDATE'S
+/// OWN chain geometry — `Collide_RayIntersect`'s owner filter (flags arg = 1) exact-tests only
+/// hits whose static-geometry cel equals the passed cel — so the port reads the candidate's own
+/// scope bucket through `segment_hit_cell` (fix-portal-eyecel; the shared-world scoped query the
+/// port stood in with let both candidates see the same floor and the first candidate stand).
+/// Without a world the port's bbox-face approximation stands (documented).
 pub fn find_cell_raycast(graph: &CelGraph, eye: [f32; 3], world: Option<&nf_game::world::CollisionWorld>) -> Option<usize> {
     let mut cands: Vec<usize> = Vec::new();
     for (i, c) in graph.cells.iter().enumerate() {
@@ -1142,9 +1144,9 @@ pub fn find_cell_raycast(graph: &CelGraph, eye: [f32; 3], world: Option<&nf_game
         let mut best: Option<(usize, f32)> = None;
         for &i in &cands {
             let len = best.map_or(256.0, |(_, d)| d);
-            let up = world.segment_hit_scoped(Some(i), eye, [eye[0], eye[1] + len, eye[2]]).map(|(t, _)| t * len);
+            let up = world.segment_hit_cell(i, eye, [eye[0], eye[1] + len, eye[2]]).map(|(t, _)| t * len);
             let dlen = up.map_or(len, |ud| ud.min(len));
-            let down = world.segment_hit_scoped(Some(i), eye, [eye[0], eye[1] - dlen, eye[2]]).map(|(t, _)| t * dlen);
+            let down = world.segment_hit_cell(i, eye, [eye[0], eye[1] - dlen, eye[2]]).map(|(t, _)| t * dlen);
             match (up, down) {
                 (None, None) => continue,
                 (a, b) => {
@@ -4088,10 +4090,56 @@ impl Scene {
             // capsule's straddle walk from cell 40 never keeps; the game's `build_LinkToRoom` 0x1c9680
             // links by `build_FindCel` 0x1c8cb0's RAYCAST tie-break among all containing cels, which
             // the port has not ported (the next session's item, with the live check).
-            let world = nf_game::world::CollisionWorld::build_scoped(level, &level.instances(true).0, Some(scope_graph(&cel_graph)));
+            let instances = level.instances(true).0;
+            let mut world = nf_game::world::CollisionWorld::build_scoped(level, &instances, Some(scope_graph(&cel_graph)));
             // fix-portal4: the +0x18 chains hang by the game's build_FindCel (0x1c8cb0) owner pick
             // over each generic's sphere centre — needs the scoped world for the tie-break rays.
             build_chains(&mut cel_graph, Some(&world));
+            // fix-portal-eyecel: the collision side of the game's per-cel attribution. The game's
+            // `build_FindCel` (0x1c8cb0) tie-break rays are owner-filtered to the CANDIDATE's own
+            // chain geometry (`Collide_RayIntersect` 0x1ec690, flags arg 1: only hits whose
+            // `HITDATA+0x54` static-geometry cel equals the passed cel are exact-tested — the
+            // disassembly compares hit+0x54 against HITTEST+0x80), and the loader hangs every
+            // generic's collision on the room `build_link_objects_to_rooms` (0x1c9150) picks — the
+            // same owners `build_chains` just computed. So the scope buckets re-key by the chain
+            // owners: a room cell keeps its own runs, a generic's runs join its chain owner's
+            // bucket, unchained/unresolvable cells fall to the `always` bucket. The smallest-volume
+            // centre rule `build_scoped` stands in with left the trench floor outside BOTH
+            // eye-room candidates' buckets, so both tie-break rays missed and the first candidate
+            // (the outdoor room) stood [L ee_start_05.bin: the trench room's chain holds all 58
+            // trench generics; the outdoor room's 41 hold none near it].
+            {
+                let main = level.main_map();
+                let mut node_owner: Vec<Option<u32>> = vec![None; cel_graph.cells.len()];
+                for (o, ch) in cel_graph.chains.iter().enumerate() {
+                    for &n in ch { if (n as usize) < node_owner.len() { node_owner[n as usize] = Some(o as u32); } }
+                }
+                // The parse-wide cell counter replay of `parse_cel_graph` (sub-maps first, main
+                // last), paired with the `instances(true)` resolution so the pushed-object index
+                // (`stat.owners`' source) maps to its placement's cell — replicating
+                // `build_scoped`'s push filter (collision present, not the 0x1000 missile flag).
+                let mut instance_cell: Vec<Option<u32>> = Vec::new();
+                let mut cell_counter = 0usize;
+                for (mi, map) in level.maps.iter().enumerate() {
+                    for p in &map.placements {
+                        if !p.creates_cel() { continue; }
+                        if Some(mi) == main {
+                            let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() } else if (p.index as usize) < map.objects.len() { Some((mi, p.index as usize)) } else { None };
+                            if let Some((om, oi)) = target {
+                                let obj = &level.maps[om].objects[oi];
+                                if obj.collision.is_some() && obj.flags & 0x1000 == 0 {
+                                    let c = cell_counter;
+                                    let f16 = cel_graph.cells.get(c).map(|n| n.flags & 0xffff).unwrap_or(0);
+                                    let owner = if matches!(f16, 0xc023 | 0xc047) { Some(c as u32) } else { node_owner.get(c).copied().flatten() };
+                                    instance_cell.push(owner);
+                                }
+                            }
+                        }
+                        cell_counter += 1;
+                    }
+                }
+                world.attribute_scope(&instance_cell);
+            }
             let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, d.level_id);
             let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
             let hitboxes = d.hitboxes.clone()?;
