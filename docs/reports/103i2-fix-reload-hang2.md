@@ -107,5 +107,4 @@ above); `zz_reload2_*` scratch probes are untracked and not committed.
 
 ## ntfy
 
-(sent at the end of the session; if this line lacks a confirmation, the send failed — see the
-WORKLOG.)
+Sent OK (curl, first try): `{"id":"OqyMFakFMMdG",...}` — delivered to nightfire-yoda-8k3x.
