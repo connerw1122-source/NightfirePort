@@ -4194,8 +4194,14 @@ impl Scene {
             // (`Drones`' grenade explode), so its entity streams need attachments exactly like a placed
             // player's. 0x6000027/0x600004F (Destroy_Smash's types) stay unported — the port's destroyables
             // don't explode yet.
+            // The impact-effect script (fix-cutscene-actors): `Bullet_CollisionHandler` 0x12ce80:212-231
+            // Script_Loads **0x60007c4** through the same `Explode_Create` on the weapon `+0x70`
+            // 0x100000 / 0x200000 arms (the disc records 0x32/0x6e and 0x6b [L weapon_data scan]) — its
+            // entity streams (Laser_Blast_frame_1/2, Vertical_smoke, After_glow_test, cloud_1, smoke) resolve
+            // in every archive [D] but no placement references the script, so without this the impact
+            // models could never draw.
             let hashes: Vec<u32> = players.iter().flat_map(|p| p.scripts).filter(|&h| h != 0)
-                .chain(std::iter::once(0x0600_0052)).collect();
+                .chain(std::iter::once(0x0600_0052)).chain(std::iter::once(0x0600_07c4)).collect();
             for h in hashes {
                 let Some(nis) = level.nis.get(&h) else { continue };
                 for (si, st) in nis.streams.iter().enumerate() {
