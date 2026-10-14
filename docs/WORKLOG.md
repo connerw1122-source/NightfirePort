@@ -11735,3 +11735,14 @@ Task: the satchel family 0x3b-0x40 and the laser tripbomb 0x3a — stick on cont
 
 Work Log:
 - 21:38 UTC: branch s/fix-satchel-tripbomb created from origin/master (eb52fb56). work/ + ISO present, setup skipped. Exploring the decompile + port state next.
+
+---
+Task: fix-satchel-tripbomb (work continues)
+Agent: worker (sandbox web-2cf47bf2)
+Task: the satchel family 0x3b-0x40 and the laser tripbomb 0x3a — stick on contact, the satchel's timer fuse, the tripbomb's beam/trigger/arm delay, the blast scripts, sounds and models while stuck.
+
+Work Log:
+- 21:38-22:10: the decompile read. Key findings: (1) `Bullet_DoTrails` 0x12d890's decompile drops the 4th float arg — its `param_1 == 0` early-out tests the OBJ pointer (a0), NOT the step: disasm 0x12d890-0x12d8c8 + the call site 0x12efe8 `mov.s $f12, $f21` with case-3 $f21 = 0.0 — so DoTrails RUNS in stuck state 3 and the satchel's fuse/beeps/digits tick while stuck. (2) `Bullet_init` 0x12c5a0:199-208's family arm keys on base (weapdef+2) == 0x3b — the record dump of all 115 entries [L] shows every satchel bases to ITSELF and only 0x3b is selectable → the live fuse is 300; the tripbomb 0x3a bases to itself → the default 210, and its REAL arm delay is the stick's own overwrite `BU+0xFC = 120.0` [M 0x12ce80:330]. (3) The stick arm: 0x3b → 0.04 off the wall + 0x4a7; the 0x80000 tripbomb → 0.002 + 0x446 + the 6-placed walk; the satchel has NO detonator record (0x3b w68 = 0x10080, no 0x20000) — timer-only. (4) The tripbomb's laser: arm 120 ticks → the beam object (gfx 0x2000133) + Sound 0x27c once, then the ray out along +normal (Z = −normal at the stick, the beam end = pos − 200·Z), chars 2/3/0x28 → `Bullet_handle_object_destruction` 0x12cd98 → the 8/100 blast + the beam dies. (5) `SatchelDigits` @0x2bed90 = 0x2000791..0x200079a [L]; the 0x3b tail's beeps are 0x447 on the quarter-second change ((qs&3)==0 || ((qs&1)==0 && sec<10) || sec<5).
+- 22:10-22:45: the implementation (grenade.rs: the `StuckGadget` phase box, the generalized stuck tick, the tail; drone.rs: the consumer arms 0x446/0x27c/0x447, the beam pass + the char-crossing trigger + the 6-cap, the throw fuse arm; scene.rs: the family fuse formula, the stuck draw alignment, the beam slots TRACER_SLOTS+3/+4, the digit pools kinds 4/5). Tests: 3 unit (the stick+300 fuse+beeps/digits, the non-210 fuse, the tripbomb arm 121) + 4 live through step_bond (the stick+blast+0x6000052, the countdown+beeps, the arm/beam/trigger + the off-beam sister, the 6-cap).
+- 22:47: checkpoint pushed. 22:52: the pre-fix probe (git checkout HEAD~1 -- crates): stuck=false, boom_at=300 (bounced, never stuck) — the live tests fail on the pre-fix tree as required; restored.
+- 22:56: the full suite started on the final tree (tools/test/suite.py); the report + the finish steps follow.
