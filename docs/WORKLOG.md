@@ -11569,3 +11569,12 @@ Work Log:
 - 20:45: repro on 07000007: the 0x800 multiplier reaches every drone-backed guest (per-cel ambients 36-64, 9 distinct; 104 active kind-0 lights picked up with skin flags 0x8a0). The 49 sentinel-0xff characters are exactly the invisible set: 33 dev-pool copies parked at -1e6 and 16 origin script actors (the game leaves those unlinked too — no cel at the origin, ambient stays the 0xff init of control_init_object 0x134630). G-042: the civilian's "white" texture (map 32 tex 4, 32x32) is a sheen map — 1024/1024 white rgb but 98/1024 opaque alpha; the base skin textures are not white.
 - 21:15: the game's model pinned end-to-end (linked cel obj+0x20: create-link+snap 0x1346b8/0x1343c8, keep/portal/relink 0x133288+0x1e0d58+0x1c9500, ramp 0x1cb178 moved-only; the same Tweak+light pair on the character path 0x1e69a0:96->0x1e78b0; bCharacterLight/AnimColRad have NO EE reader — scanned all gp-relative accesses). Port matches on every headless point; 3 NF_ISO tests green (own-cel ambient per guest, party lights reach the draws, G-042 sheen map resolved). No production code changed. Report: docs/reports/fix-character-room-light.md.
 - 21:32: merged origin/master (1c376216, WORKLOG conflict resolved keeping both), lighting suites re-ran green on the final tree (new 3/3, character_lighting_live 4/4); baseline full suite on the identical production code: 1065 passed / 7 failed (3 disc_golden allowed + weapon_matrix_live TIMEOUT + 3 pre-existing pylon) / 35 ignored.
+
+
+---
+Task ID: 106a-fix-samurai-fire
+Agent: samurai-fire worker
+Task: fix-samurai-fire — the Phoenix Samurai (0x32/0x33, the laser rifle's Overcharge/Beam modes) draws, plays its fire script and sounds, but nothing spawns on 16 of 18 levels [weapon-matrix4 red #1]. Find the game's fire path (Player_WeaponFiring 0x1a5460, Player_WeaponInitBullet 0x1a4bf0, the charge for Overcharge, the beam for Beam, any target gate) and port what's missing: the charged bolt flies and hits walls (fix-fire-modes3 ported its impact blast), the beam draws. Tests at 07000005's spawn: Overcharge at a wall spawns the bolt + blast; Beam draws to the wall.
+
+Work Log:
+- (20:58 UTC) Branch s/fix-samurai-fire created from origin/master 9c55eace and pushed. Setup reused (repo, work/, ISO, nf-queue). Docs + decompile round next.
