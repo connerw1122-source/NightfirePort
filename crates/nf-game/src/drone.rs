@@ -4834,14 +4834,16 @@ impl Drone {
     }
 
     /// `DroneWeap_FireWeapon` + `DoBulletAccuracy`: hit roll, the miss wobble, the cone (`Bullet_init`), damage
-    /// (`Drone_ModBulletDamage`: ×2 under 4 units, × `+0x100`).
+    /// (`Drone_ModBulletDamage`: the ×2 under TooClose lands at the hit site, × `+0x100` here).
     fn fire_weapon(&mut self, d: &Data, rng: &mut Rng, frame: u32, p: &Player, (moving, first_moved): (bool, bool), owner: usize, lights: &mut crate::light::LightList) -> Option<crate::bullet::Bullet> {
         let w = d.weapons.records.get(self.weapon as usize)?;
         let f32_at = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
-        // Hit chance: p = 100 − 5·accuracy, ×2 under TooClose (3), ×0.25 first moved, ×0.75 moving, × level
-        // difficulty accuracy (07000005–08: 0.8 / 0.9 / 1.3; difficulty 1 as read live), ×2 again under TooClose.
+        // Hit chance: p = 100 − 5·accuracy, ×2 under TooClose ([0x30cb14] — `close_threshold`), ×0.25
+        // first moved, ×0.75 moving, × level difficulty accuracy (07000005–08: 0.8 / 0.9 / 1.3;
+        // difficulty 1 as read live), ×2 again under TooClose. The hard always-hit cut is a separate
+        // literal 3.0 [M 0x179914-0x17992c].
         let mut pct = 100.0 - 5.0 * self.accuracy as f32;
-        let close = self.dist < 3.0;
+        let close = self.dist < close_threshold(d.level);
         if close { pct *= 2.0 }
         if first_moved { pct *= 0.25 }
         if moving { pct *= 0.75 }
@@ -4868,8 +4870,11 @@ impl Drone {
         let aim = [p.target[0] + off[0] - muzzle[0], p.target[1] + off[1] - muzzle[1], p.target[2] + off[2] - muzzle[2]];
         let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
         let dir = crate::bullet::spread(aim, f32_at(0x24), flags68, rng);
-        let mut damage = f32_at(0x0c) * self.damage_mul;
-        if self.dist < 4.0 { damage *= 2.0 }
+        // The raw damage: weapon_data+0x0C × the drone's `+0x100` multiplier. The ×2 under TooClose is
+        // NOT applied here — `Drone_ModPlayerHitDamage` 0x13a940 → `Drone_ModBulletDamage` 0x139f50
+        // applies it at HIT time from the shooter's tracked distance (Drone+0x1A0) against the level's
+        // `close_threshold` [0x30cb14]; the port does the same at the `BulletEvent::Player` site.
+        let damage = f32_at(0x0c) * self.damage_mul;
         Some(crate::bullet::Bullet { pos: muzzle, dir, speed: f32_at(0x20), travelled: 0.0, range: f32_at(0x1c), damage, owner, state: 0,
             weapon: self.weapon as u16, flyby: d.weapons.flyby(self.weapon as usize), bounces: 0 })
     }
@@ -5029,7 +5034,10 @@ pub fn level_drones(d: &Data, level: &nf_formats::level::Level, rng: &mut Rng, l
 }
 
 /// Per-level accuracy factors by difficulty (`ReadTuningVars` 0x1d3a80). The difficulty itself is
-/// `Drones::difficulty` (`GameState+0x40`, 0x2a37a8 — NOT +0x28; fix-progress made it runtime).
+/// `Drones::difficulty` — `GameState+0x28` (0x2a3790): BOTH the accuracy switch (`DroneWeap_DoBulletAccuracy`
+/// 0x179848: `lw a0,40(v0)` off GameState 0x2a3768) and the pain switch (`Player_HandlePain` 0x19040c) read
+/// +0x28, and the difficulty page writes it there (`C_SBNFDFCTY_Handler` 0x216dc4: `sw v0,0x3790(t0)`);
+/// the snapshot has +0x28 = 1 at 07000005 start while the scored +0x40 (0x2a37a8) = 0 [L ee_start_05.bin].
 pub fn level_accuracy(level: u32, difficulty: u32) -> f32 {
     let (e, n, h) = match level & 0xff {
         0x01..=0x04 | 0x14..=0x16 => (0.5, 0.7, 1.0),
@@ -5041,6 +5049,18 @@ pub fn level_accuracy(level: u32, difficulty: u32) -> f32 {
         _ => (0.5, 1.0, 2.0),
     };
     match difficulty { 1 => e, 3 | 4 => h, _ => n }
+}
+
+/// The "too close" tuning variable `DroneAcc_TooClose` (0x30cb14, written per level group by
+/// `ReadTuningVars`): the threshold for the ×2 accuracy bonus and the ×2 hit damage
+/// (`Drone_ModBulletDamage` 0x139fb4: `c.4.s f1, [0x30cb14]`). The groups write 3.0 (01–1B campaign
+/// groups + 4A); 21–29+4B+4C write 4.0; every unlisted level keeps the ELF static 4.0. NOT the 4.0
+/// the port hardcoded before — on 07000005 the game's threshold is 3.0 [L ee_start_05.bin: 3.0].
+pub fn close_threshold(level: u32) -> f32 {
+    match level & 0xff {
+        0x01..=0x0d | 0x11..=0x16 | 0x1b | 0x4a => 3.0,
+        _ => 4.0,
+    }
 }
 
 /// All drones of a level plus the round-robin line-of-sight cursor.
@@ -5307,11 +5327,12 @@ pub struct Drones {
     /// bitmask, the `sp_level` flags and the save codec (fix-progress). The tally hooks fold the
     /// per-drone outboxes in `tick`; the menus (180-fix-menus) read it through here.
     pub progress: crate::progress::Progress,
-    /// `GameState+0x40` (0x2a37a8): the difficulty — 1 Agent / 2 Secret Agent (the boot default
-    /// [M bootup 0x1c7e78:25]) / 3 00 Agent / 4 the bonus double-damage mode [M Player_HandlePain
-    /// 0x1902c8:29-48]. The old `DIFFICULTY` const (hardcoded 1, commented as `GameState+0x28` —
-    /// the wrong offset; the scored member is +0x40 [M PlrStat_GetScore 0x1984b0:295]) stood in
-    /// for this. The difficulty page (180-fix-menus) writes it through `set_difficulty`.
+    /// `GameState+0x28` (0x2a37a8 is the SCORED member and stays 0 in play — the MODEL difficulty lives
+    /// at +0x28, 0x2a3790): 1 Agent / 2 Secret Agent / 3 00 Agent / 4 the bonus double-damage mode
+    /// [M Player_HandlePain 0x19040c and DroneWeap_DoBulletAccuracy 0x179848 both switch on +0x28;
+    /// the difficulty page writes it there, C_SBNFDFCTY_Handler 0x216dc4]. Boot/first-launch default
+    /// 1 [L ee_start_05.bin: +0x28 = 1 at 07000005 start, +0x40 = 0]. The difficulty page (180-fix-menus)
+    /// writes it through `set_difficulty`.
     pub difficulty: u32,
 }
 
@@ -5401,7 +5422,7 @@ impl Drones {
             // fix-progress: the tally/scoring layer and the runtime difficulty (fields on their
             // own lines — the shared-constructor collisions, merge lesson 4).
             progress: Default::default(),
-            difficulty: 2, // [M bootup 0x1c7e78:25 GameState._40_4_ = 2]
+            difficulty: 1, // [L ee_start_05.bin: GameState+0x28 = 1 (Agent) at level start; +0x40 = 0]
             // fix-cover-remainder: the HandleExplosives queue (own line — merge lesson 4).
             explosive_queue: Vec::new(),
             // fix-grenade-throw: the smoke grenade's occluder clouds (`Occlude_Create` 0x17ea80).
@@ -7519,6 +7540,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     }
                     crate::bullet::BulletEvent::Player { damage, at } => {
                         let before = self.health.health;
+                        // `Drone_ModPlayerHitDamage` 0x13a940 → `Drone_ModBulletDamage` 0x139f50 runs at
+                        // HIT time: the raw `weapon_data+0x0C × Drone+0x100` (carried in the bullet) is
+                        // ×[0x30cb0c] (2.0) when the shooter's tracked distance (Drone+0x1A0) is under
+                        // the level's TooClose [0x30cb14] — `close_threshold`. No distance falloff
+                        // anywhere in the chain [M 0x19455c-0x194588: `HIT+8 + Hurt_GetDamage`].
+                        let mut damage = damage;
+                        if let Some(sh) = self.list.get(b.owner).filter(|x| x.present) {
+                            if sh.dist < close_threshold(d.level) { damage *= 2.0; }
+                        }
                         // `Player_DealWithObjHit` 0x194458:201-226: the direction bits from the ATTACKER's position
                         // (HITDATA+0x30 = the shooter) in the viewer's frame.
                         let attacker = self.list.get(b.owner).filter(|d| d.present).map_or(at, |d| d.pos);
