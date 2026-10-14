@@ -261,3 +261,46 @@ fn the_seventh_tripbomb_removes_the_oldest() {
     let placed = sim.drones.grenades.iter().filter(|g| g.weapon_type == 0x3a && g.stuck && g.state < 2).count();
     assert_eq!(placed, 6, "the 6-placed cap [M 0x12ce80:335-370] — pre-fix the port kept all 7, got {placed}");
 }
+
+/// The real fire path (the dev panel's own give → the game's loadout grant, the same path the
+/// hat test throws through): Bond draws the satchel and fires — the grenade the fire pipeline
+/// spawns carries the FAMILY fuse `((0x3b − 0x3b)·5 + 5)·60 = 300` [M `Bullet_init`
+/// 0x12c5a0:199-208], not the pre-fix default 210. Sister: the tripbomb (0x3a, base 0x3a, no
+/// +0x200 fuse bit) gets the range-out fuse `+0x1C/speed` [M the same formula's else-arm].
+#[test]
+fn the_fire_pipeline_spawns_the_family_fuse() {
+    let Some(iso) = iso() else { eprintln!("skip: NF_ISO not set"); return };
+    for &id in [0x3bu8, 0x3a].iter() {
+        let mut scene = nf_view::load_weapons(&iso, "07000005.bin", false, &[id]).expect("load 05");
+        let (msg, switch_to) = nf_view::panel::apply(&mut scene, &[
+            ("do".to_string(), "weapon".to_string()), ("id".to_string(), id.to_string()), ("rounds".to_string(), "5".to_string())]);
+        let _ = msg;
+        assert_eq!(switch_to, Some(id), "the panel must switch to {id:#04x}");
+        let mut drawn = false;
+        for _ in 0..180 {
+            scene.sim.as_mut().unwrap().step_bond(Input { switch_to: Some(id), ..Default::default() }, false, false, false);
+            let gun = &scene.sim.as_ref().unwrap().gun;
+            if gun.weapon == id && gun.switch_state == 0 && gun.reload_state == 0 { drawn = true; break; }
+        }
+        assert!(drawn, "{id:#04x} drew");
+        // Hold fire until the release frame spawns the grenade (the fire-script pipeline).
+        let mut spawned = false;
+        for _ in 0..240 {
+            scene.sim.as_mut().unwrap().step_bond(Input { fire: true, ..Input::default() }, true, false, false);
+            if scene.sim.as_ref().unwrap().drones.grenades.iter().any(|g| g.weapon_type == id as u16) { spawned = true; break; }
+        }
+        let sim = scene.sim.as_ref().unwrap();
+        assert!(spawned, "firing {id:#04x} spawned its grenade (clip {})", sim.gun.clip);
+        let g = sim.drones.grenades.iter().find(|g| g.weapon_type == id as u16).unwrap();
+        if id == 0x3b {
+            assert!((g.range - 300.0).abs() < 1e-4,
+                "the satchel's spawned fuse is the family arm's 300 [M 0x12c5a0:204], got {}", g.range);
+        } else {
+            let r = &sim.weapons.records[0x3a];
+            let spd = f32::from_le_bytes(r[0x20..0x24].try_into().unwrap());
+            let want = (f32::from_le_bytes(r[0x1c..0x20].try_into().unwrap()) / spd).max(1.0);
+            assert!((g.range - want).abs() < 1.0,
+                "the tripbomb's spawned fuse is the range-out arm (+0x1C/speed = {want}), got {}", g.range);
+        }
+    }
+}
