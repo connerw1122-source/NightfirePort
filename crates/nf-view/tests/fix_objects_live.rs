@@ -242,6 +242,17 @@ fn a_death_draws_its_drop_and_nothing_else_moved() {
         if sim.drones.list[gi].health <= 0.0 { break; }
     }
     assert!(sim.drones.list[gi].health <= 0.0, "the guard died");
+    // fix-guard-weapons2: the guard fire path now consumes the game's per-shot RNG draws
+    // (FireWeapon 0x179234's light-orientation FRand x3 + the Rand(500) pitch, NextBulletTime
+    // 0x179d40's burst sizing), so the guard dies a few ticks differently and the corpse — the
+    // drop's spawn point — can land within `Pickup_Update`'s touch radius (bounds.radius + 1.1
+    // [M 0x18e...]) of where this harness parked Bond: the game then auto-takes the drop
+    // (walk-over pickup) and the assertion below would see `gone`. Step Bond clear of the corpse
+    // before the fall — the drop's existence/visibility is what's under test, not Bond's position.
+    {
+        let at = sim.drones.list[gi].pos;
+        sim.bond.pos = [at[0] + 10.0, at[1], at[2]];
+    }
     tick_idle(sim, 90);
     // The dump (kind, id, rounds, hidden, gone, from, position).
     let mut drawn_drops = 0;

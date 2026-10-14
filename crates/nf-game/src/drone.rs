@@ -5383,9 +5383,11 @@ pub struct Drones {
     /// `GameState+0x28` (0x2a37a8 is the SCORED member and stays 0 in play — the MODEL difficulty lives
     /// at +0x28, 0x2a3790): 1 Agent / 2 Secret Agent / 3 00 Agent / 4 the bonus double-damage mode
     /// [M Player_HandlePain 0x19040c and DroneWeap_DoBulletAccuracy 0x179848 both switch on +0x28;
-    /// the difficulty page writes it there, C_SBNFDFCTY_Handler 0x216dc4]. Boot/first-launch default
-    /// 1 [L ee_start_05.bin: +0x28 = 1 at 07000005 start, +0x40 = 0]. The difficulty page (180-fix-menus)
-    /// writes it through `set_difficulty`.
+    /// the difficulty page writes it there, C_SBNFDFCTY_Handler 0x216dc4]. Boot default 2 [M bootup
+    /// 0x1c7e78:25, `sw t0,40(s1)` @0x1c7f88 → 0x2a3790 = 2; Ghidra's `_40_4_` field name is DECIMAL].
+    /// The level-start snapshots' +0x28 = 1 is session state (PTP restore 0x1c8560:36 / the
+    /// mission-start force 1, `Menu_RunMiniMission` 0x1ffb90:22) [L ee_start_*.bin]. The difficulty
+    /// page (180-fix-menus) writes it through `set_difficulty`.
     pub difficulty: u32,
 }
 
@@ -5480,7 +5482,13 @@ impl Drones {
             // fix-progress: the tally/scoring layer and the runtime difficulty (fields on their
             // own lines — the shared-constructor collisions, merge lesson 4).
             progress: Default::default(),
-            difficulty: 1, // [L ee_start_05.bin: GameState+0x28 = 1 (Agent) at level start; +0x40 = 0]
+            // Boot default 2: `bootup` 0x1c7e78:25 stores 2 to 0x2a3790 (`sw t0,40(s1)` @0x1c7f88 —
+            // Ghidra's field name `GameState._40_4_` is DECIMAL 40 = +0x28, GameState base 0x2a3768).
+            // The level-start snapshots' +0x28 = 1 is session state, not boot: PTP restore
+            // (Boot_LoadPTPData 0x1c8560:36) and the mission-start force (`Menu_RunMiniMission`
+            // 0x1ffb90:22 writes 1) put 1 there [L ee_start_*.bin]; the direct-level load replays it
+            // (scene.rs `drones.difficulty = 1`).
+            difficulty: 2,
             // fix-cover-remainder: the HandleExplosives queue (own line — merge lesson 4).
             explosive_queue: Vec::new(),
             // fix-grenade-throw: the smoke grenade's occluder clouds (`Occlude_Create` 0x17ea80).
@@ -5489,8 +5497,9 @@ impl Drones {
         drones
     }
 
-    /// `GameState+0x40`'s setter (C_SBNFDFCTY_Handler 0x216ca8:10-17 writes the difficulty page's
-    /// selection; the boot default is 2 [M 0x1c7e78:25]). The menus (180-fix-menus) call this.
+    /// `GameState+0x28`'s setter (C_SBNFDFCTY_Handler 0x216ca8 stores the difficulty page's
+    /// selection to 0x2a3790, `sw v0,14224(t0)` @0x216dc4; the boot default is 2 [M bootup
+    /// 0x1c7e78:25 @0x1c7f88]). The menus (180-fix-menus) call this.
     pub fn set_difficulty(&mut self, d: u32) {
         self.difficulty = d.clamp(1, 4);
         self.progress.difficulty = self.difficulty;
