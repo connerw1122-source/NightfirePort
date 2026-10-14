@@ -9684,6 +9684,17 @@ Work Log:
   tests/menu_live.rs, tests/dev_tools_live.rs (signature/width updates). No shared-file surprises:
   drone.rs/scene.rs/player.rs untouched.
 
+## fix-weapon-assets (2026-10-14, s/fix-weapon-assets)
+
+- Task 100a: a disc-wide weapon asset index + loader so `--give` / the dev menu hands Bond ANY
+  weapon on ANY level with its own skin, sleeve, parts, view-model sequences, muzzle flash,
+  casing, projectile and third-person model, pulled from the owning archive and rebased into the
+  scene (the way scene.rs already does for drone skins).
+- Setup reused the surviving sandbox: repo at /home/z/nf, onfoot ISO + work/ already extracted;
+  branch created from origin/master (7be3272); no s/weapon-assets branch existed to merge.
+- Plan: index builder over all FILES.BIN archives (cached, keyed by ISO size + archive-table
+  SHA-1) -> lazy load hooks in scene.rs/lib.rs -> NF_ISO tests on 07000005 (give, draw, fire,
+  reload) with sister assertions on levels that carry the weapon.
 ## dev-window (main agent, branch devwin) — 2026-10-13
 
 The user: "the dev menu should manifest outside of the game, but not in a browser", then "you work on it". `--dev`
@@ -9876,3 +9887,15 @@ whether the console's laser beam is silent is a live check (in the report). File
 scene.rs (the weapon_type line), tests. Report: docs/reports/fix-weapon-effects.md.
 Full suite on the final tree (origin/master 810c109 merged): **909 passed, 3 failed, 27 ignored
 (19 min)** — the 3 allowed disc_golden only, no TIMEOUT/CRASH.
+
+### fix-weapon-assets — result (2026-10-14)
+
+- Disc-wide weapon asset index + loader shipped: `weapon_assets.rs` (index cached in temp keyed by
+  ISO size + FILES.BIN SHA-1; the surgical `Wanted::Ids`/`--dev` `Wanted::All` merge with the
+  gameplay-skeleton sequence guard), `load_weapons`/`load_with_carry_weapons`, the `--give` hook in
+  `run()`, and the lazy dev-menu give via a warm same-level reload. scene.rs needed no changes.
+- 5 NF_ISO tests in `tests/weapon_assets_live.rs` — all green: index+cache, all 53 cross-level
+  weapons' assets resolve on 07000005 (meshes/skeletons/sequences/scripts/flash/3rd-person/
+  projectile, by_hash unchanged), draw→fire→reload through step_bond, native-carry identical
+  numbers, the 18 no-model ids listed. Suite: 752 passed, 3 failed (the allowed disc_golden
+  slim-ISO set), 27 ignored. Report: docs/reports/fix-weapon-assets.md.

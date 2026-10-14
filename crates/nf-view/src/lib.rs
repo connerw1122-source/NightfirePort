@@ -28,6 +28,7 @@ pub mod movie;
 pub mod scene;
 pub mod replay;
 pub mod panel;
+pub mod weapon_assets;
 
 use anyhow::{bail, Context, Result};
 use glam::{Mat4, Vec3};
@@ -302,13 +303,21 @@ fn wire_music(sim: &mut scene::Sim, mm: Vec<nf_formats::music::MapMusic>, vars: 
 }
 
 pub fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, None, false)
+    load_impl(iso, archive, all, None, false, &[])
 }
 
 /// `--dev`: the same load with the dev view-model merge (folded 190-fix-dev2). Normal play never
 /// passes `dev = true`, so no extra archive is opened without the flag.
 pub fn load_dev(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, None, true)
+    load_impl(iso, archive, all, None, true, &[])
+}
+
+/// `load` pre-merged for the given weapon ids (`--give` at startup, the dev menu's lazy give):
+/// each id's first-person skin (+0xDC), meshes, skeleton, `07F` sequences and view scripts merge
+/// from their owning archive before the scene builds, so the weapon draws exactly as it does on a
+/// level that carries it (`weapon_assets::merge_weapon_assets`).
+pub fn load_weapons(iso: &str, archive: &str, all: bool, wids: &[u8]) -> Result<scene::Scene> {
+    load_impl(iso, archive, all, None, false, wids)
 }
 
 /// The sim catch-up cap (`NF_MAXTICKS`, default 4) — see the frame loop.
@@ -319,15 +328,21 @@ static MAX_TICKS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 /// wrote, and `Player_InitWeapon` (0x1a7ef8) runs the per-level loadout switch over `Player_RamLoad`
 /// (0x1957a8). `None` = a cold load (the game's boot path; `Player_RamLoad`'s whole body is skipped).
 pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, false)
+    load_impl(iso, archive, all, save, false, &[])
+}
+
+/// The carry-over load pre-merged for the given weapon ids (the dev menu's lazy give: the same
+/// warm reload the level transition runs, plus the given weapons' assets).
+pub fn load_with_carry_weapons(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, wids: &[u8]) -> Result<scene::Scene> {
+    load_impl(iso, archive, all, save, false, wids)
 }
 
 /// `--dev` level transition: the carry-over load with the dev view-model merge.
 pub fn load_with_carry_dev(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, true)
+    load_impl(iso, archive, all, save, true, &[])
 }
 
-fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool) -> Result<scene::Scene> {
+fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool, give: &[u8]) -> Result<scene::Scene> {
     use nf_formats::{anim::Sequence, character, levelbin::LevelBin};
     use std::collections::HashMap;
     let iso = IsoImage::open(iso_path)?;
@@ -374,10 +389,58 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     // anim scripts) merge from their holding archives — the same session-table mechanism the
     // weapon-model merge mirrors — and `Scene::build` then gives every weapon a view model. Dev
     // mode only: normal play loads no extra archive for skins.
-    let mut level_scripts: HashMap<u32, nf_formats::anim::Script> = HashMap::new();
-    if dev {
-        merge_dev_view_models(&iso, &read, &archive[..8], &mut level, &mut skeletons, &mut sequences, &mut level_scripts)?;
+    // The level's own kind-5 anim scripts, parsed once and shared with the DroneContext below.
+    let mut level_scripts: HashMap<u32, nf_formats::anim::Script> = lb.entries.iter().filter(|e| e.kind == 5)
+        .filter_map(|e| nf_formats::anim::Script::parse(lb.data(&data, e)).ok()).map(|x| (x.hashcode, x)).collect();
+    // The weapon-asset merge (fix-weapon-assets): `--dev` pulls every missing fp skin as before
+    // (folded 190-fix-dev2); a normal load pulls exactly the `--give` / dev-menu weapons it is
+    // asked for. The gameplay-skeleton guard keeps the appended 07F sequences off every skeleton
+    // a drone or character placement animates (the per-skeleton lists are order-sensitive gameplay
+    // data — the loadable-pack sentinel rule); the fp hands/gun skeletons never carry those.
+    let gameplay_skeletons: std::collections::HashSet<u8> = if dev || !give.is_empty() {
+        let mut gs = std::collections::HashSet::new();
+        if let Some(m) = level.main_map() {
+            for p in level.maps[m].placements.iter() {
+                let Some(&(_, skin)) = p.params.iter().find(|(i, _)| *i == 0) else { continue };
+                if skin >> 24 != 5 { continue; }
+                if let Some(sk) = level.skins.get(&skin) { gs.insert(sk.skeleton); }
+            }
+        }
+        gs
+    } else { Default::default() };
+    let weapon_wanted = if dev { weapon_assets::Wanted::All }
+        else if !give.is_empty() { weapon_assets::Wanted::Ids(give.to_vec()) }
+        else { weapon_assets::Wanted::None };
+    let mut weapons_table: Option<nf_formats::weapon::WeaponData> = None;
+    if weapon_wanted != weapon_assets::Wanted::None {
+        // weapon_data once for the whole load (the EE initialiser run the merge needs is the same
+        // one the DroneContext consumes below; `--dev` used to run it twice).
+        let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
+        weapons_table = match nf_formats::weapon::WeaponData::from_action_elf(&elf) {
+            Ok(mut w) => { w.apply_player_init_override(u32::from_str_radix(&archive[..8], 16).unwrap_or(0)); Some(w) }
+            Err(e) => { eprintln!("weapon_data: {e} — drones drawn unarmed"); None }
+        };
+        if let Some(wd) = weapons_table.as_ref() {
+            let index = weapon_assets::DiscIndex::for_iso(&iso, iso_path);
+            let t = std::time::Instant::now();
+            let have_scripts: std::collections::HashSet<u32> = level_scripts.keys().copied().collect();
+            let st = weapon_assets::merge_weapon_assets(&iso, &read, &mut level, &mut skeletons, &mut sequences,
+                &mut level_scripts, &have_scripts, &gameplay_skeletons, wd, &weapon_wanted, &index, dev)?;
+            eprintln!("weapon assets: merged {} archive(s), {} skin(s), {} map(s), {} sequence(s), {} script(s) in {:.2}s",
+                st.archives, st.skins, st.maps, st.sequences, st.scripts, t.elapsed().as_secs_f32());
+        }
     }
+    // The weapon_data the DroneContext consumes: the hoisted build when the merge ran, else built
+    // here (a normal load without --give never opens another archive).
+    let weapons_table = match weapons_table {
+        Some(w) => Some(w),
+        None => match nf_formats::weapon::WeaponData::from_action_elf(&{
+            iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?
+        }) {
+            Ok(mut w) => { w.apply_player_init_override(u32::from_str_radix(&archive[..8], 16).unwrap_or(0)); Some(w) }
+            Err(e) => { eprintln!("weapon_data: {e} — drones drawn unarmed"); None }
+        },
+    };
 
 
     // G-021 (models-characters): drone placements whose skin (placement param 0) is not in their
@@ -538,27 +601,16 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
     let drones = scene::DroneContext {
         tables: nf_formats::drone::DroneAnimData::from_action_elf(&elf)?,
-        scripts: {
-            let mut sc: HashMap<u32, nf_formats::anim::Script> = lb.entries.iter().filter(|e| e.kind == 5)
-                .filter_map(|e| nf_formats::anim::Script::parse(lb.data(&data, e)).ok()).map(|x| (x.hashcode, x)).collect();
-            // The dev view-model merge's foreign anim scripts (the merged FP skins' idle/fire/reload)
-            // join the level's own; a hash the level has stays local.
-            for (h, x) in level_scripts { sc.entry(h).or_insert(x); }
-            sc
-        },
+        // The level's own kind-5 scripts plus the weapon-asset merge's foreign view scripts (the
+        // merged FP skins' idle/fire/reload) — the merge inserts missing hashes only, so a hash
+        // the level has stayed local.
+        scripts: level_scripts,
         level_id: u32::from_str_radix(&archive[..8], 16).unwrap_or(0),
         // weapon_data is built at boot by its static initialiser; run it over the user's ELF (docs/formats/weapon-data.md).
         props: nf_formats::drone::PropertyTables::from_action_elf(&elf).ok(),
-        weapons: match nf_formats::weapon::WeaponData::from_action_elf(&elf) {
-            Ok(mut w) => {
-                // `Player_Init` (0x1910f8): overrides weapon_data[1]+0xDC (the fists skin) with a level-specific
-                // value from PunchSkin.204 [M]. Without this, the port looks up the static value (0x0500003d)
-                // instead of the level-specific one (0x050000ab on 07000005), and the fists view model is missing.
-                w.apply_player_init_override(u32::from_str_radix(&archive[..8], 16).unwrap_or(0));
-                Some(w)
-            }
-            Err(e) => { eprintln!("weapon_data: {e} — drones drawn unarmed"); None }
-        },
+        // Built once above (the merge consumes the same table); `Player_Init` (0x1910f8)'s override
+        // of weapon_data[1]+0xDC (the fists skin) is already applied.
+        weapons: weapons_table,
         tuning: {
             let mut t = nf_formats::tuning::Tuning::from_action_elf(&elf).unwrap_or_default();
             nf_game::tuning::read_tuning_vars(&mut t, u32::from_str_radix(&archive[..8], 16).unwrap_or(0));
@@ -786,103 +838,6 @@ fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
     Ok(())
 }
 
-/// The dev view models (folded 190-fix-dev2): index every archive's type-3 skins (skin hash → archive),
-/// then merge every selectable weapon's first-person skin (+0xDC) that the level archive lacks — its
-/// meshes (the skin's `extra` rigid parts and the level's sleeve), its skeleton, its 07F sequences and
-/// the weapons' kind-5 anim scripts. `Scene::build` then gives every weapon a view model. Dev only.
-fn merge_dev_view_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
-    read: &impl Fn(&str) -> Result<Option<Vec<u8>>>, _prefix: &str, level: &mut Level,
-    skeletons: &mut std::collections::HashMap<u8, nf_formats::character::Skeleton>,
-    sequences: &mut std::collections::HashMap<u8, Vec<nf_formats::anim::Sequence>>,
-    scripts: &mut std::collections::HashMap<u32, nf_formats::anim::Script>) -> Result<()> {
-    let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
-    let Ok(wd) = nf_formats::weapon::WeaponData::from_action_elf(&elf) else { return Ok(()) };
-    // skin hash → archive (the first archive on the disc that holds it).
-    static SKIN_ARCHIVES: std::sync::OnceLock<std::collections::HashMap<u32, String>> = std::sync::OnceLock::new();
-    let index = SKIN_ARCHIVES.get_or_init(|| {
-        let mut map = std::collections::HashMap::new();
-        let Ok((entries, bin)) = disc::files_bin_entries(iso) else { return map };
-        for e in entries.iter().filter(|e| e.name.len() == 12 && e.name.ends_with(".bin")) {
-            let Ok(d) = iso.read_bytes(bin.lba as u64 * 2048 + e.offset as u64, e.size as u64) else { continue };
-            let Ok(l) = nf_formats::levelbin::LevelBin::parse(&d) else { continue };
-            for pe in l.entries.iter().filter(|pe| pe.kind == 3) {
-                let raw = l.data(&d, pe);
-                if raw.len() < 4 { continue; }
-                let h = u32::from_le_bytes(raw[0..4].try_into().unwrap());
-                if (h & 0xff00_0000) == 0x0500_0000 { map.entry(h).or_insert_with(|| e.name.clone()); }
-            }
-        }
-        map
-    });
-    // The weapons' FP skins the level lacks + the four fists skins (`Player_Init` overrides record 1
-    // per level; the merged set covers whichever the level asks for).
-    const PUNCH_SKINS: [u32; 4] = [0x0500_00ab, 0x0500_0099, 0x0500_003d, 0x0500_00a1];
-    let mut wanted: Vec<u32> = Vec::new();
-    for w in 1..0x73usize {
-        let fp = wd.first_person(w);
-        if fp != 0 && !level.skins.contains_key(&fp) && !wanted.contains(&fp) { wanted.push(fp); }
-    }
-    for &p in &PUNCH_SKINS { if !level.skins.contains_key(&p) && !wanted.contains(&p) { wanted.push(p); } }
-    let mut merged: Vec<String> = Vec::new();
-    for skin in wanted.iter() {
-        let Some(archive_name) = index.get(skin) else {
-            eprintln!("dev view models: skin {skin:08x} is on no archive of the disc"); continue;
-        };
-        if merged.contains(archive_name) { continue; }
-        merged.push(archive_name.clone());
-        let fd = match read(archive_name) { Ok(Some(d)) => d, _ => continue };
-        let Ok(mut foreign) = Level::parse(&fd) else { continue };
-        // The skins the level lacks join the session table (the game's skin table accumulates the
-        // same way [M AnimLoadFile 0x1d8248]); first-wins keeps the level's own.
-        let mut new_skins = 0usize;
-        for (h, sk) in foreign.skins.clone() {
-            if level.skins.contains_key(&h) { continue; }
-            level.skins.insert(h, sk);
-            new_skins += 1;
-        }
-        // The foreign maps that hold the merged skins' meshes and the sleeves.
-        let mut hashes = wanted_weapon_models(level, &wd);
-        for (h, sk) in foreign.skins.iter() {
-            if !level.skins.contains_key(h) { continue; }
-            for mh in sk.main.iter().flatten() { hashes.push(*mh); }
-            for (_, ph) in sk.extra.iter() { if let Some(x) = ph { hashes.push(*x); } }
-        }
-        // The foreign skeletons the level lacks; the merged skins' skeletons mark the sequence
-        // buckets the view models will look up.
-        let flb = nf_formats::levelbin::LevelBin::parse(&fd)?;
-        let mut fp_skeletons: std::collections::HashSet<u8> = Default::default();
-        for e in flb.entries.iter().filter(|e| e.kind == 6) {
-            let sk = nf_formats::character::parse_skeleton(flb.data(&fd, e))?;
-            if skeletons.contains_key(&(sk.id as u8)) { continue; }
-            skeletons.insert(sk.id as u8, sk);
-        }
-        for h in wanted.iter() { if let Some(sk) = level.skins.get(h) { fp_skeletons.insert(sk.skeleton); } }
-        // The foreign 07F sequences: a NEW skeleton gets its own bucket (no gameplay data touched);
-        // a skeleton the view models use appends — dev only (the port's per-skeleton lists are
-        // order-sensitive gameplay data for DRONES, which the FP hands skeleton never carries).
-        let anim_name = format!("{}F{}", &archive_name[..2], &archive_name[3..]);
-        if let Some(anim) = read(&anim_name)? {
-            let alb = nf_formats::levelbin::LevelBin::parse(&anim)?;
-            let mut appended = 0usize;
-            for pe in alb.entries.iter().filter(|pe| pe.kind == 4 && pe.length >= 0x40) {
-                let s = nf_formats::anim::Sequence::parse(alb.data(&anim, pe))?;
-                if fp_skeletons.contains(&s.skeleton) { sequences.entry(s.skeleton).or_default().push(s); appended += 1; }
-            }
-            if appended > 0 { eprintln!("dev view models: {appended} sequences from {anim_name}"); }
-        }
-        // The foreign kind-5 anim scripts (the weapons' idle/fire/reload hashes) — missing hashes only.
-        let mut new_scripts = 0usize;
-        for e in flb.entries.iter().filter(|e| e.kind == 5) {
-            if let Ok(sc) = nf_formats::anim::Script::parse(flb.data(&fd, e)) { if scripts.insert(sc.hashcode, sc).is_none() { new_scripts += 1; } }
-        }
-        let moved = take_maps_holding(level, foreign, &hashes);
-        eprintln!("dev view models: merged {archive_name} for skin {skin:08x} ({new_skins} skins, {new_scripts} scripts, {moved} maps)");
-    }
-    Ok(())
-}
-
-/// The level's player starts: the main map's type-0x24 placements in placement order, with the gate
-/// (parameter 0) [M `parsemap_create_dynamic_objects` 0x1d04f0 case 0x24 → `Player_AddNewStartPos`
 /// 0x195c00 → `Player_Start` 0x190fd0]. Yaw = the placement's rotation[1], the same convention the
 /// "Player1" stand-in uses (scene.rs).
 fn level_starts(level: &Level) -> Vec<nf_game::player::LevelStart> {
@@ -1249,6 +1204,10 @@ struct App {
     iso: String,
     /// A pending level transition: the next level's hashcode, set by `LOAD_LEVEL`; consumed by the main loop.
     pending_level: Option<u32>,
+    /// fix-weapon-assets: a dev-menu/panel give of a weapon whose assets the level archive lacks —
+    /// the tick loop answers it with a warm same-level reload (`load_with_carry_weapons`) that
+    /// merges the weapon's assets, then re-places Bond and re-issues the switch request.
+    pending_weapon_assets: Option<u8>,
     /// fix-restart-target: the ENTRY checkpoint — the RamSave the current level was LOADED with
     /// (`Player_RamSave` 0x195670's buffer 0x2b9440, which the game keeps across level changes).
     /// The fail/death menu's Restart re-serves it (`P_ENDMISSION_Handler` 0x216618:21's
@@ -1502,6 +1461,16 @@ impl App {
         }
     }
 
+    /// fix-weapon-assets: true when the weapon's first-person assets are absent (its `+0xDC` skin
+    /// is in no merged archive) — the view model would not build and the view scripts would not
+    /// resolve, exactly the user's symptom on any weapon the level doesn't carry.
+    fn weapon_needs_assets(&self, w: u8) -> bool {
+        self.scene.sim.as_ref().is_some_and(|sim| {
+            let fp = sim.weapons.first_person(w as usize);
+            fp != 0 && !sim.skins.contains_key(&fp)
+        })
+    }
+
     fn poll_panel(&mut self) {
         let Some(h) = self.panel.clone() else { return };
         let queued: Vec<String> = h.lock().map(|mut g| std::mem::take(&mut g.queue)).unwrap_or_default();
@@ -1515,7 +1484,12 @@ impl App {
                 "ammo" => match self.dev.as_deref_mut() { Some(d) => { d.infinite_ammo = !d.infinite_ammo; format!("infinite ammo {}", if d.infinite_ammo { "on" } else { "off" }) } None => "no dev mode".into() },
                 _ => {
                     let (status, switch) = panel::apply(&mut self.scene, &q);
-                    if let Some(w) = switch { self.weapon_switch_to = Some(w); }
+                    if let Some(w) = switch {
+                        self.weapon_switch_to = Some(w);
+                        // fix-weapon-assets: the level archive lacks the weapon — answer the give
+                        // with the warm asset reload (the tick loop's pending_weapon_assets arm).
+                        if self.weapon_needs_assets(w) { self.pending_weapon_assets = Some(w); }
+                    }
                     status
                 }
             };
@@ -1548,7 +1522,11 @@ impl App {
                 (out, msg)
             }
         };
-        if let Some(w) = out.switch_to { self.weapon_switch_to = Some(w); }
+        if let Some(w) = out.switch_to {
+            self.weapon_switch_to = Some(w);
+            // fix-weapon-assets: same as poll_panel — a give the level archive can't dress yet.
+            if self.weapon_needs_assets(w) { self.pending_weapon_assets = Some(w); }
+        }
         if let Some(id) = out.pending_level { self.pending_level = Some(id); }
         if let Some(on) = out.noclip_to { self.set_noclip(on); }
         if out.shot { let m = self.spot_shot(); eprintln!("[spot] {m}"); }
@@ -1879,6 +1857,37 @@ impl ApplicationHandler for App {
                 // fix-movie-playback: the movie glue runs before the load path so a phase-2
                 // resolve lands in the same frame the state 6 popped.
                 self.movie_tick();
+                // fix-weapon-assets: a dev-menu/panel give of a weapon the level archive lacks.
+                // The game never gives cross-level weapons, so there is no game path to mirror —
+                // the port answers the give with a warm reload of the SAME level with the weapon's
+                // assets merged (`LoaderLoad` of the same archive + the merge), re-places Bond
+                // where he stood and re-issues the switch. One hitch per newly-given weapon.
+                if let Some(w) = self.pending_weapon_assets.take() {
+                    if self.weapon_needs_assets(w) {
+                        let (pos, yaw) = self.scene.sim.as_ref().map(|s| (s.bond.pos, s.bond.yaw)).unwrap_or(([0.0; 3], 0.0));
+                        let save = self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
+                            &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
+                            .with_mission(&sim.drones.mission));
+                        self.entry_save = save.clone();
+                        let name = level_archive_name(self.scene.sim.as_ref().map_or(0, |s| s.level));
+                        eprintln!("weapon assets: {w:#04x} is not on this level — warm reload with its assets");
+                        match load_with_carry_weapons(&self.iso, &name, self.all, save.as_ref(), &[w]) {
+                            Ok(mut scene) => {
+                                self.sound = build_sound(&mut scene);
+                                if let Some(sim) = scene.sim.as_mut() {
+                                    sim.bond = nf_game::player::Bond::stand_at(&sim.world, pos, yaw);
+                                    sim.gun.switch_request = w;
+                                }
+                                self.scene = scene;
+                                if let Some(g) = &mut self.gfx {
+                                    g.renderer = gpu::Renderer::new(&g.device, &g.queue, g.config.format, &self.scene, self.notex, self.nofog);
+                                }
+                                self.weapon_switch_to = Some(w);
+                            }
+                            Err(e) => eprintln!("weapon assets: reload failed: {e}"),
+                        }
+                    }
+                }
                 // Bug 5: level transition. A `LOAD_LEVEL` (0xE8) trigger set `pending_level`; reload the scene
                 // with the next archive (`ResetMap_LevelToLoad` 0x1d3800 → `LoaderLoad` 0x1d4a00).
                 if let Some(next) = self.pending_level.take() {
@@ -2314,7 +2323,18 @@ pub fn run() -> Result<()> {
         }
         None => (level.clone(), level.clone()),
     };
-    let scene = if dev { load_dev(&iso, &level, all)? } else { load(&iso, &level, all)? };
+    // fix-weapon-assets: the `--give` ids must reach the load — each given weapon's assets merge
+    // from its owning archive BEFORE the scene builds, so the weapon draws with its skin,
+    // sequences, muzzle flash and sounds on any level (`nf_view::load_weapons`).
+    let give_ids: Vec<u8> = args.iter().position(|a| a == "--give").and_then(|i| args.get(i + 1))
+        .map(|list| list.split(',').filter_map(|t| {
+            let t = t.trim();
+            let id = t.strip_prefix("0x").and_then(|h| usize::from_str_radix(h, 16).ok()).or_else(|| t.parse().ok());
+            id.filter(|&i| i < 0x72).map(|i| i as u8)
+        }).collect()).unwrap_or_default();
+    let scene = if dev { load_dev(&iso, &level, all)? }
+        else if !give_ids.is_empty() { load_weapons(&iso, &level, all, &give_ids)? }
+        else { load(&iso, &level, all)? };
     let mut cam = start_camera(&scene);
     if let Some(i) = args.iter().position(|a| a == "--cam") {
         let v: Vec<f32> = args[i + 1..i + 6].iter().map(|s| s.parse()).collect::<Result<_, _>>()?;
@@ -2407,7 +2427,7 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, };
     if dev {
