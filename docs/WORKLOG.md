@@ -10450,3 +10450,15 @@ green on the fixed tree: 08-collision 4, 08-walls 4, safe08 4 (the fusebox floor
 docs/reports/fix-08-collision.md. Files: crates/nf-game/src/player.rs, crates/nf-game/src/world.rs,
 crates/nf-view/tests/fix_08_collision_live.rs (new); crates/nf-view/src/scene.rs SHARED — comments
 only (the bond.cel note), no behaviour change.
+
+fix-08-collision2 (100m, started 2026-10-14): 100j's scoped collision (origin/s/fix-08-collision
+4023ba9 merged with master ccae18) breaks the 01 escort walk — walkreal_07000001_live::
+walk_from_the_spawn_to_the_exit_with_the_contact settles the contact at (-5.2, 6.3, 14.1) while
+the LoadPointActivator plate is at (-33.1, 2.3, 15.4); the log shows `world seg to (-1.0,+0.0):
+hip None hip+0.5 None feet None` around there. The contact waits for Bond (the escort logic), so
+the suspect is Bond's scoped collision: a spot on the 01 route where Bond is stopped, falls or
+snags (a floor or step outside the straddle set — the 09 stairwell class). Plan: reproduce on the
+merged tree, log both trees' Bond positions per 60 ticks to find the divergence, fix it the game's
+way (the straddle set's cels: a missing portal crossing, a floor attribution), keep the 08 safe
+room (no invisible wall) and the 09 stairwell. Files: crates/nf-game/src/{player,world}.rs,
+crates/nf-view/src/scene.rs. Work log continues below.
