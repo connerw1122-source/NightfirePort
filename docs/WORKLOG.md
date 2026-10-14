@@ -9643,3 +9643,30 @@ on the fail path "Find a way inside to the party" (05's objective) shows on 07, 
 text overlaps its grey box (one- and two-line banners, long texts, 1280x720 and 4:3), (4) the
 "Mission Fail / Cover Lost" text sits left of its box's centre. Files: mission.rs (+mission/),
 hud.rs. Reproduce-first through the real input path; work starting.
+
+Task 101d outcome (same session): REPRODUCED then FIXED, all four symptoms. (1) The two stacked
+OBJECTIVE COMPLETE banners: `HUD_UpdateStatusPane` case 2 strcmps the message text against
+Txt_BindLabel(0x2000053) and case 3 forces the body sprite's colour to 0 in both phases [M
+0x19c310] — the game shows ONLY the status label for a completion; the port drew the body row too.
+Fixed in hud.rs (+ the status label's steady gold 0x785a14 [M case 3's else branch]). (2) The
+level-start announces of 07000005/06's objectives on 07000007: the port's fresh `Mission::new()`
+fabricates state 0 for prior mission parts and case 0 announces every prior record with
+`level <= current` [M 0x1827d8:41-54]; the game never reaches that state — the record states are
+`.data` and no load path reinits them, and at a real arrival the prior parts sit ANNOUNCED ([L
+work/ee_start_0700000a.bin @ 0x2a3f78: mission 09's rec1 (ch 0x46 unfired) = state 3 at 0700000a's
+start]). `Mission::init` now marks the fabricated 0s 2 (fail-objectives) / 3 [M 0x1827d8:47-51's
+own transition]. The restart re-announce: the restart save carried no mission — the game's restart
+resets only the player (P_ENDMISSION_Handler 0x216618:19-21) — lib.rs now attaches the live
+mission snapshot to the restart RamSave. (3) The banner box: Text_AddMsg wraps the message at
+TextMsgFormats[2]'s 480 [L 0x2bf108+0x14] — the box's own width [L ObjectiveStatusSprInfo[2] x16
+w480]; the port wraps at draw (Font::word_wrap, line advance = glyph0.h + gap + 1.0 [M 0x1ee598:
+65-71], lines left-aligned from the widest-line-centred block [M 0x1eee48 justify 2]). (4) The
+"Mission Fail / Cover Lost" left-of-centre: the mission banner's styles 0x30cdb8/0x30cce0 are
+`fe 03` = CENTRE [L; M Font_ParseFormat 0x1ee3e0 case 4 byte 3 → flag 2, Font_DrawText 0x1eee48
+flags&2 → x −= width/2] — the port passed its right-justify flag (measured centre 209.4 vs 256).
+Tests: crates/nf-view/tests/fix_objective_messages_live.rs — 5 tests, all failing pre-fix
+(the 08 cold-load announced "Breach the castle walls"; the long objective's status band spanned
+2.1..510.4; the fail row centred 209.4), all green post-fix and on the merged tree. The banner
+tests + hud/party-mission suites green post-fix (nf-game 255 passed). Suite re-run on the final
+tree: see the report. Files: mission.rs, hud.rs (nf-view), scene.rs, lib.rs, hud.rs (nf-formats,
+the wrap/line-height helpers). Report: docs/reports/fix-objective-messages.md.
