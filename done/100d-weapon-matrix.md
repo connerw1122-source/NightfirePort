@@ -60,3 +60,7 @@ claimed-by: sandbox2 at 2026-10-14T03:06Z
 ## Report (done, 2026-10-14T04:24Z)
 
 Closed by the driver: the report is on `s/weapon-matrix` (docs/reports/weapon-matrix.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-14T04:37Z)
+
