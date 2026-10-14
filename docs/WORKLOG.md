@@ -10438,3 +10438,11 @@ Work Log:
 - The 0c pylon: NOT reproducible on this tree — the real stand_at+head camera at the user spot resolves eye cell 91, all four pylon parts + shadow ride owner room 77, in_view true, 14/14 materials kept (probe_missing_pylon.rs, kept); pinned by a regression test, live re-render requested.
 - Green on the fixed tree: the whole portal chain (portal_live/eyecel/2/3/4/5/6/sweep/walkreal), nf-game units (world.rs scope tests), the new 3 tests. suite.py could not run in background (nohup dies between tool calls — same as the last two sessions); foreground chunks covered nf-game+nf-formats+the portal/object/census nf-view files; the levels_sweep re-run is left for the next session.
 - Report: docs/reports/fix-missing-objects.md. Files: crates/nf-game/src/world.rs (obj_cell rule + doc), crates/nf-view/src/scene.rs (scope_graph pub + the 1e8 owner pick + doc), crates/nf-view/tests/fix_missing_objects_live.rs (new) + 6 probe files (kept).
+
+---
+Task ID: 102k-fix-striped-boxes
+Agent: striped-boxes worker
+Task: fix-striped-boxes — a red/yellow diagonal-striped box draws on 07000005 (trench right, against the castle wall) with NF_NOPORTAL=1; such stripes are usually an editor/marker texture the game never draws. Identify the instance (placement index, class, mesh hash, texture name/hash), find the game's rule that keeps it hidden, apply to every level; census test: 0 drawn; check 0c's roof boxes too (an earlier fix removed those; the user's 0c check couldn't find them).
+
+Work Log:
+- (started 10:06 UTC) Branch s/fix-striped-boxes created from origin/master b65d6f7; setup reused from the previous session (repo, work/, ISO, nf-queue). Repro + decompile evidence next.
