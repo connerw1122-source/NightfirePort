@@ -29,3 +29,6 @@ Files: `crates/nf-formats/src/{placement,anim}.rs`, `crates/nf-game/src/ps2math.
 - **Touch only the files your task names.** Other fix sessions run in parallel. If you have to touch a shared file, keep the change minimal and note it in the report.
 
 **Branch:** `s/exact-math-swap2` (start from `s/fix-exact-math-swap`, then merge `origin/master` into it).
+
+---
+claimed-by: sandbox1 at 2026-10-14T12:38Z
