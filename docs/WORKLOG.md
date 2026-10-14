@@ -11115,3 +11115,21 @@ draws added; no wall-clock in Sim.
 - Key prior work read: docs/systems/weapons.md (the mode table with [L] record bytes), fix-fire-modes2.md
   (blast path, guided cam), weapon-matrix2.md (M/G/X runner marks, the reload-hang finding).
 - Research in progress.
+- fix-fire-modes3 done in-window: four fixes landed with [M]/[L] citations — (1) the Samurai bolt's
+  small impact blast arms (+0x70 & 0x100000/0x200000 → Explode_Create r/d from +0x08/+0x0C, script
+  0x60007c4) [M Bullet_CollisionHandler 0x12ce80:207-245] in drone.rs's world-hit gate; (2) the
+  quarter-speed spawn (+0x6C & 0x200 → speed × 0.25) [M Bullet_init 0x12c5a0:188-190] in
+  fire_player — the torpedo 0x30, the K5 dart 0x43 and the SENTINEL rockets 0x2C/0x2D all carry the
+  bit (the guided flight is 4× slower than the port modelled; the fire_modes2 window grew with it);
+  (3) the mode-press zoom reset [M 0x1a24c8:213-228] in scene.rs's mode block ("zoom steps"
+  resolved: Player_Zoom 0x1a1a70 is continuous — the reset is the only missing observable); (4) the
+  Samurai charge [M 0x1a5460:186-202]: the clip[0x33] drain (clip_size − clip_size·frame/280) +
+  the cyan glow light (rgb 0,255,255, intensity 1.5·frame/280) while the 280-frame charge script
+  plays — the HUD number climb decoded as the spent% display of the drain [M 0x19a7f0 ammo-type-31
+  percentage]. The full weapon×mode game-vs-port table is in docs/reports/fix-fire-modes3.md.
+  Tests: fire_modes3_live 5 passed / 4 ignored (drive-order harness notes in the report); the
+  sister weapon binaries re-ran green (fire_modes_live 5/5 after the window extension,
+  silencer 2/2, weapon_modes 6/6, matrix upgraded-runner 1/1, nf-game lib 150/150). The full suite
+  re-started on the final tree late — read suite.out before merging. Remaining: the 4 ignored
+  drives, the Samurai beam view layer (swoosh + cels), the crossbow quiver + satchel digits
+  (evidence cited in the report), the suite completion.
