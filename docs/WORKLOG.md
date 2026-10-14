@@ -11135,3 +11135,49 @@ draws added; no wall-clock in Sim.
   73 tests, 0 failures. The four-crate sweep did not fit the window (background jobs die between tool calls
   in this sandbox — sessions 4 and 5). Report: docs/reports/fix-hud-radar.md (live checks inside: the SP
   no-blip confirmation, the MP ring position/size/blip reading, the pending 100n 007 item).
+weapon-matrix2 (103b, 2026-10-14): re-ran the weapon matrix on today's master (b65d6f7) and worked the red cells.
+- Re-ran the full matrix on master b65d6f7: 27 levels × 98 ids, 0 panics; both tables parsed with
+  the same rules (old .630/B126/D286/I1203/R43 vs new .617/B129/D292/I1207/R35, 46 cells moved).
+- The runner now runs the REAL give path: load_weapons (100a's merge) with the whole catalog +
+  per-cell inventory reset — the old `.` wall was the harness filling the shared ammo banks across
+  99 gives (Player_EquipWeapon 0x1a8a58's owned branch). New per-cell checks: the mode twin byte
+  (+0x05)/mode count (+0x2e) press with both labels (HUD_UpdateAmmoPane 0x19a7f0), the 0x2C guided
+  camera (Sim::missile_cam), the MGL impact-vs-delay blast gap (impact records blast on contact,
+  the fused ones at 210/300/420 [M Bullet_DoTrails 0x12d890]) — marks M/G/X.
+- Verified on 07000005 (sister test green): 0x2a/0x2c/0x34 vm1 where the old runner printed I/`-`,
+  0x2a gap 2-4 ticks, 0x2c gcam1, 0x02's mode press lands the 0x03 twin with a label.
+- The real bug the re-run found: the away switch lands on the silenced twin 0x03 (twin_skip first-
+  offer [M 0x1a6f80:179-198]); with its clip reset to 0 the next draw tick starts the auto-reload
+  and the 0x03 shell loop hangs in state 6 (clip stays 0, carried 4) — every later switch refused
+  [M 0x1a6f80:33-47] — the D-block from 0x2e. Probe: examples/probe_matrix_draw.rs. Fix + the
+  gadget-cycle fallback for the watch gadgets + the upgraded runner's full sweep = next window.
+- Report: docs/reports/weapon-matrix2.md (the re-run table + a pointer live in
+  docs/reports/weapon-matrix.md). Files: crates/nf-view/src/matrix.rs,
+  crates/nf-view/tests/weapon_matrix_live.rs, crates/nf-view/examples/probe_matrix_draw.rs. No
+  shared files touched. Work log continues below.
+
+weapon-matrix2 addendum (11:59): the upgraded runner's full sweep ran (3 chunks, 27 × 98, 0 panics) —
+the red mass (D 1278 / M 152 / R 226) is the silenced-twin reload hang reaching the draw now that the
+give path works; 0x2a impact 19/27 clean, 0x2c's guided camera rode its clean cells, no X marks. The
+table + analysis are appended to docs/reports/weapon-matrix2.md.
+
+fix-weapon-anims (103k, 2026-10-14): per-weapon view-model animations — the game's anim ids, lengths,
+rates, events and blends for draw/holster/idle(+fidgets)/fire per mode/dry fire/reload per kind/mode
+switch/bob/zoom, compared against the port, mismatches fixed, with NF_ISO tests on 6 weapons covering
+each reload kind (P2K, Frinesi, AT-420, MGL, sniper, Samurai). Branch starts from master b27fb1e with
+s/weapon-matrix2 merged in (not on master yet) per the task brief. Work continues below.
+
+fix-weapon-anims (103k, 2026-10-14): the per-weapon view-model animations — the census (all 115
+records' 15 script fields with lengths, off 07000029.bin via a probe example), the decompile round
+(SetWeaponAnimObj's case table; +0xB8/+0xBC are the AIM raise/lower, not "draw-at-1.25x"; the +0xCC
+fidget's 20-tick cycle; the +0xD0/D4/D8 PP7-family path), and four fixes: the idle fidget +0xCC
+(67 records), the aim raise/lower +0xB8/+0xBC with the reverse lower, the +0x93a idle-counter reset
+semantics (the game resets it in every non-idle state), and a real port bug the test exposed — the
+switching double-advance made every holster/draw/var-swap play ~2x fast. Report:
+docs/reports/fix-weapon-anims.md. Tests: crates/nf-view/tests/weapon_anims_live.rs 7/7 green on
+NF_ISO (six weapons x draw/fire/reload/mode-switch/holster numbers + the fidget + the raise; the
+fidget/raise tests demonstrated failing on the pre-fix tree). Suite on the mid-task tree: 1009
+passed / 7 failed (the 3 allowed disc_golden, the 0c-pylon family, the weapon_matrix TIMEOUT — all
+pre-documented); the FINAL tree's suite re-run is the next session's first item. Left: the PP7-family
++0xD0/+0xD4/+0xD8 path (needs the threat-scan stand-in), the 0x32 Samurai reachability, the +0xEC
+MP-grip doc correction. No shared files touched.
