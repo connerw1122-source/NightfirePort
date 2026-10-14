@@ -94,8 +94,9 @@ Failing-first: a scratch probe (`probe_grapple_symptom.rs`, deleted) on the pre-
   `models_misc_live` 10/10, `fix_ladder2_live` 4/4, `fix_objects_live` 6/6 (the neighbours that
   assert scene counts/misc census).
 - Baseline full suite on the pre-fix tree: **952 passed, 3 failed (the allowed disc_golden
-  slim-ISO set), 29 ignored**. Final suite on the master-merged tree: see the WORKLOG tail line
-  (run in the background; result recorded before the finish push).
+  slim-ISO set), 29 ignored**. Final suite on the master-merged tree (origin/master 966671a,
+  223 binaries): **959 passed, 3 failed, 29 ignored** — the 3 FAILED lines are exactly the
+  allowed disc_golden trio.
 - No GPU in this sandbox (wgpu: "No suitable graphics adapter found") — the `--shot` renders are
   the main agent's, commands below. The headless drawn-set proof is the 212-vertex box assertion
   plus the instance counter.
