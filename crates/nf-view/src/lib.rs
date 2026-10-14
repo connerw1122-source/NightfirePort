@@ -431,7 +431,8 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
             let t = std::time::Instant::now();
             let have_scripts: std::collections::HashSet<u32> = level_scripts.keys().copied().collect();
             let st = weapon_assets::merge_weapon_assets(&iso, &read, &mut level, &mut skeletons, &mut sequences,
-                &mut level_scripts, &have_scripts, &gameplay_skeletons, wd, &weapon_wanted, &index, dev)?;
+                &mut level_scripts, &have_scripts, &gameplay_skeletons, wd, &weapon_wanted, &index, dev,
+                &casing_meshes(&elf))?;
             eprintln!("weapon assets: merged {} archive(s), {} skin(s), {} map(s), {} sequence(s), {} script(s) in {:.2}s",
                 st.archives, st.skins, st.maps, st.sequences, st.scripts, t.elapsed().as_secs_f32());
         }
@@ -806,18 +807,37 @@ const STORY_ORDER: [u32; 20] = [0x0700_0001, 0x0700_0002, 0x0700_0003, 0x0700_00
 const SLEEVES: [u32; 8] = [0x0200_09d0, 0x0200_0900, 0x0200_01f7, 0x0200_0929, 0x0200_09e6, 0x0200_09ff, 0x0200_0a14, 0x0200_0a13];
 
 /// The weapon-model hashes the level archive misses and the session can supply (`merge_weapon_models`).
-fn wanted_weapon_models(level: &Level, wd: &nf_formats::weapon::WeaponData) -> Vec<u32> {
+/// fix-weapon-fx-levels adds two FX sets to the list:
+/// - the first-person muzzle-flash mesh `+0x48` (`Player_MuzzleFlash` 0x1a4298 gates on `+0x48 != 0`,
+///   `Draw_MuzzleFlash` 0x1a3fe0 attaches it to the view model [M]; `Scene::build` looks it up in
+///   `by_hash`, scene.rs) — the disc census [D]: every record's `+0x48` resolves in every story
+///   archive EXCEPT 0x02000ac7 (records 0x32/0x33/0x6f), which lives only in 07000014/15/16/1b;
+/// - the shell-casing meshes (`ammo_data` entry +4, `Bullet_init_casing` 0x12fde0 attaches
+///   `ammo_data[weapon+0x90]+4` [M]; `Casings::eject` reads the parsed table) — ammo 9's default
+///   shell 0x02000548 is absent from 07000005-0d/14-16/1b [D census], so the shotgun's casings
+///   simulated there were never drawn.
+/// The game never hits either gap (a level only offers its own weapons — 0x32/0x33 ride
+/// 07000014-16/1b, the shotgun rides 07000011-13/MP, whose archives hold their meshes); the dev
+/// give path did, the same way 100a's skins did.
+fn wanted_weapon_models(level: &Level, wd: &nf_formats::weapon::WeaponData, casing_meshes: &[u32]) -> Vec<u32> {
     let mut needed: Vec<u32> = Vec::new();
     let mut want = |h: u32, needed: &mut Vec<u32>| {
         if h != 0 && h != u32::MAX && !level.by_hash.contains_key(&h) && !needed.contains(&h) { needed.push(h); }
     };
     for r in &wd.records {
-        for off in [0x80usize, 0x4c, 0x5c] {
+        for off in [0x80usize, 0x4c, 0x48, 0x5c] {
             want(u32::from_le_bytes(r[off..off + 4].try_into().unwrap()), &mut needed);
         }
     }
     for h in SLEEVES { want(h, &mut needed); }
+    for &h in casing_meshes { want(h, &mut needed); }
     needed
+}
+
+/// The shell-casing meshes (`AmmoData.casing_mesh`, ACTION.ELF `ammo_data`+4 per 0xc-byte record;
+/// `Bullet_init_casing` 0x12fde0's mesh argument [M]). Empty when the ELF lacks the symbol.
+fn casing_meshes(elf: &[u8]) -> Vec<u32> {
+    nf_formats::sfx::AmmoData::from_action_elf(elf).map(|a| a.casing_mesh).unwrap_or_default()
 }
 
 /// Moves the foreign maps that hold any of `hashes` into `level` (appended; `by_hash` first-wins, so a
@@ -850,7 +870,7 @@ fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
     let Ok(wd) = nf_formats::weapon::WeaponData::from_action_elf(&elf) else { return Ok(()) };
     let level_id = u32::from_str_radix(prefix, 16).unwrap_or(0);
-    let mut needed = wanted_weapon_models(level, &wd);
+    let mut needed = wanted_weapon_models(level, &wd, &casing_meshes(&elf));
     if needed.is_empty() { return Ok(()); }
     for code in STORY_ORDER.iter().rev().filter(|&&c| c < level_id) {
         if needed.is_empty() { break; }

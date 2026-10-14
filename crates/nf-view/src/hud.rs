@@ -700,3 +700,152 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     }
     h.finish()
 }
+
+// ─── The multiplayer radar (MPPaneList slot 14) ─────────────────────────────────────────────
+// `HUD_CreateRadar` 0x19f4e8 / `HUD_RadarUpdate` 0x19f6e8 / `MP_GetRadarObjects` 0x189840. The
+// radar exists ONLY in the MP pane list (`MPPaneList[14]` = RadarPane, RadarSprInfo 1·24 [L
+// docs/fields/hud-panes.md]); the SP `PaneList` slots 13/14 are NULL and `HUD_Init` 0x199e88:32-37
+// walks PaneList whenever MPSettings+0x384 == 0 [L ee_start_05.bin @0x2a47a0+0x384 = 0], so a
+// single-player level never creates the pane — the bottom-left ring of the SP HUD is the health
+// pane's sprite 15 (drawn above), not a radar. The projection is ported here for the MP milestone;
+// the SP draw path never calls it (the Sim has no MPGame/MPSettings), so `overlay` is unchanged.
+
+/// One `RObj` record (@0x318e70, stride 0x20) [M 0x189840]: the blip's world position (from
+/// obj+0xc0..cc), its sprite ARGB (+0x10: 0x7f7f7fff in a no-team game, 0xd22d35ff vs 0x2d61d2ff
+/// per team [M 0x189840:54-63]) and the uv-table kind (+0x14: 0 = a player, 1 = a CTF flag,
+/// 2 = an uplink, 3 = demolition/protection, 4 = a GoldenEye star, 6/7 = the blueprint/espionage
+/// bases [M 0x189840:53,118,137,157,171,189,205,219]).
+pub struct RadarObj {
+    pub pos: [f32; 3],
+    pub argb: u32,
+    pub kind: u16,
+}
+
+/// The radar blip sheet 0x0300016f [M 0x19f4e8:52] and `TexUV.291` @0x2becf0 (stride 0x14), kind →
+/// {u, v, w, h} — the four u16s the update reads at +0/+4/+8/+0xc [M 0x19f6e8:137-150, disasm
+/// 0x19f9c0-0x19fa4c] [L ee_start_05.bin @0x2becf0]. Kind 0 (the players) is 4×4, the objectives 8×8.
+const RADAR_TEX: u32 = 0x0300_016f;
+const RADAR_BLIP_UV: [[f32; 4]; 8] = [
+    [0.0, 0.0, 4.0, 4.0],
+    [0.0, 0.0, 8.0, 8.0],
+    [0.0, 0.0, 8.0, 8.0],
+    [0.0, 0.0, 8.0, 8.0],
+    [0.0, 0.0, 8.0, 8.0],
+    [8.0, 0.0, 8.0, 8.0], // never written by 0x189840 (no kind 5)
+    [0.0, 0.0, 8.0, 8.0],
+    [0.0, 0.0, 8.0, 8.0],
+];
+
+/// One projected blip — the exact numbers the update writes into the blip sprite. x/y is the
+/// CENTRE: the blips carry flag 0x800 [M 0x19f4e8:58] and `View_DrawSprites` 0x1e5290:60-75
+/// centres a sprite on (+0x24, +0x26) when that flag is set.
+pub struct RadarBlip {
+    pub x: f32,
+    pub y: f32,
+    pub u: f32,
+    pub v: f32,
+    pub w: f32,
+    pub h: f32,
+    pub argb: u32,
+    pub layer: i32,
+}
+
+/// The radar projection, `HUD_RadarUpdate` 0x19f6e8:108-153 (checked against the disassembly
+/// 0x19f758-0x19fa60 — the decompiler's scratch-vec aliases are wrong there).
+///
+/// * `view_rot` / `cam`: the viewer's +0x120 matrix, rows and translation [L ee_start_05.bin
+///   viewer+0x120]. `Mat_Inverse` 0x1e3578 builds {Rᵀ, −t} and `RotPreTransVec` 0x1e49e8 forms
+///   R·(p − t) — the world→view rotation, view.x = row0·d, view.y = row1·d, view.z = row2·d.
+/// * The update negates the view x and z [M disasm 0x19f888-0x19f8b0: `neg.s` + `swc1` back to
+///   0x319570 / 0x319578].
+/// * The HEIGHT CUE — clamp((obj.y − bond_y)·0.125, ±1) [M disasm 0x19f88c-0x19f8d4 → 0x319574] —
+///   is a DEAD STORE: the position formulas read 0x319570 (x) and 0x319578 (z) only
+///   (0x19f904/0x19f974), and nothing in ACTION.ELF reads 0x319574. The retail radar puts no
+///   height cue on the ring; the cue is computed here and dropped, as the game does.
+/// * The range scale: len·0.02 clamped to 1 — the ring's edge at 50 units [M 0x19f6e8:122-125].
+/// * The blip cap: the pane CREATE+0x16 = 24 [M 0x19f6e8:108,153].
+pub fn radar_project(
+    view_rot: [[f32; 3]; 3],
+    cam: [f32; 3],
+    bond_y: f32,
+    ring: (f32, f32, f32, f32),
+    objs: &[RadarObj],
+) -> Vec<RadarBlip> {
+    let mut out = Vec::new();
+    for o in objs.iter().take(24) {
+        let d = [o.pos[0] - cam[0], o.pos[1] - cam[1], o.pos[2] - cam[2]];
+        let vx = view_rot[0][0] * d[0] + view_rot[0][1] * d[1] + view_rot[0][2] * d[2];
+        let vy = view_rot[1][0] * d[0] + view_rot[1][1] * d[1] + view_rot[1][2] * d[2];
+        let vz = view_rot[2][0] * d[0] + view_rot[2][1] * d[1] + view_rot[2][2] * d[2];
+        // `Vec_NormaliseLen` 0x1e2f88 normalises the vec IN PLACE and returns the pre-normalisation
+        // 3D length — the position formula multiplies the UNIT direction by min(len·0.02, 1)
+        // [M 0x19f6e8:113,130-136].
+        let len = (vx * vx + vy * vy + vz * vz).sqrt();
+        let inv = if len > 0.0 { 1.0 / len } else { 0.0 }; // the game divides unguarded; a blip at the exact player position cannot occur (0x189840 skips the player themself) [S]
+        let (ux, uz) = (vx * inv, vz * inv);
+        // The height cue: computed, clamped, stored to the scratch vec's y slot — never read.
+        let height_cue = ((o.pos[1] - bond_y) * 0.125).clamp(-1.0, 1.0);
+        let _ = height_cue;
+        let scale = (len * 0.02).min(1.0);
+        let uv = RADAR_BLIP_UV[(o.kind as usize).min(7)];
+        out.push(RadarBlip {
+            x: -ux * scale * (ring.2 * 0.45) + ring.0 + 0.5 + ring.2 * 0.5,
+            y: -uz * scale * (ring.3 * 0.45) + ring.1 + 0.5 + ring.3 * 0.5,
+            u: uv[0],
+            v: uv[1],
+            w: uv[2],
+            h: uv[3],
+            argb: o.argb,
+            layer: 0x1c, // the blip sprites' layer [M 0x19f6e8:152]
+        });
+    }
+    out
+}
+
+/// The ring sprite's layer each frame [M 0x19f6e8:102-105]: hidden (0xff) unless this player's
+/// radar flag (`MPSettings + player·0x30 + 0x28`, the same record the MP menus' "Radar" toggle
+/// writes) is set, then 0x1e (draw layer 30).
+pub fn radar_ring_layer(radar_on: bool) -> i32 {
+    if radar_on { 0x1e } else { 0xff }
+}
+
+/// The ring sprite's runtime rect: created at the template (512, 0) with the texture's own size
+/// [L RadarSprInfo[0] @0x2bdd60: x 512 y 0 w 0 h 0 — 0 → the texture's size], then `HUD_FixMP`
+/// 0x19b110:73-92 clamps it into the viewer's rect (viewer+0xf0/0xf4/0xf8/0xfc = left/right/top/
+/// bottom [L ee_start_05 viewer+0xf0..fc = 0, 512, 0, 448; the +0xf0/+0xf8 offsets are the
+/// viewer's screen x/y per `HUD_ValidateXY` 0x19a250's 0x80/0x100 arms]). For the full-screen
+/// viewer the ring lands at (512 − w, 0) — the TOP-RIGHT corner, not the bottom-left.
+pub fn radar_ring_rect(tex_w: f32, tex_h: f32, viewer: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+    let mut x = 512.0f32.max(viewer.0);
+    let mut y = 0.0f32.max(viewer.2);
+    if viewer.1 < x + tex_w { x = viewer.1 - tex_w; }
+    if viewer.3 < y + tex_h { y = viewer.3 - tex_h; }
+    (x, y, tex_w, tex_h)
+}
+
+/// The radar pane's quads for one frame (the `HUD_CreateRadar` + `HUD_RadarUpdate` pair): the ring
+/// sprite (tex 0x03000088 [L RadarSprInfo[0]], layer per `radar_ring_layer`) plus the projected
+/// blips (tex `RADAR_TEX`, layer 28, centred, flag 0x900 [M 0x19f4e8:51-58]). Not called by
+/// `overlay` — the Sim has no MP match state; this is the MP-milestone draw, unit-tested below.
+pub fn radar_frame(
+    view_rot: [[f32; 3]; 3],
+    cam: [f32; 3],
+    bond_y: f32,
+    ring_tex: (f32, f32),
+    viewer: (f32, f32, f32, f32),
+    radar_on: bool,
+    objs: &[RadarObj],
+) -> Vec<(i32, u32, [f32; 4], f32, f32, f32, f32, [f32; 4])> {
+    let mut quads = Vec::new();
+    let ring = radar_ring_rect(ring_tex.0, ring_tex.1, viewer);
+    let layer = radar_ring_layer(radar_on);
+    if layer != 0xff {
+        // The ring sprite: RadarSprInfo[0] colour 0x7f7f7fff, full texture [L 0x2bdd60].
+        let ring_col: [f32; 4] = [0x7f as f32, 0x7f as f32, 0x7f as f32, 0xff as f32];
+        quads.push((layer, 0x0300_0088, ring_col, ring.0, ring.1, ring.2, ring.3, [0.0, 0.0, 0.0, 0.0]));
+    }
+    for b in radar_project(view_rot, cam, bond_y, ring, objs) {
+        quads.push((b.layer, RADAR_TEX, gs(b.argb >> 8, b.argb & 0xff), b.x - b.w * 0.5, b.y - b.h * 0.5, b.w, b.h, [b.u, b.v, b.w, b.h]));
+    }
+    quads
+}
