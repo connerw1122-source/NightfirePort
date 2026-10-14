@@ -10500,3 +10500,45 @@ is maintained per tick by `control_handle_cel_change` 0x133288 (move segment por
 0x1e0d58 → `build_point_in_bounding_box` 0x1c9500 keep → `build_LinkToRoom` 0x1c9680 → `build_FindCel` 0x1c8cb0
 at the world-sphere centre obj+0x80 with the raycast tie-break) — stateful, unlike the port's per-tick
 smallest-bbox lookup. Probing the pond cels next, then porting the relink.
+
+## fix-swim-entry (outcome)
+
+Files: crates/nf-game/src/{world,player}.rs; shared hooks: crates/nf-view/src/scene.rs (3 small, additive).
+Tests: crates/nf-view/tests/fix_swim_entry_live.rs (NF_ISO, 2/2); probe kept: examples/probe_swim_entry.rs.
+
+The game's player cel (obj+0x20) is STATEFUL, maintained per tick by the movement handler's moved pass
+(`control_handle_cel_change` 0x133288, run AFTER `Player_Update` [M 0x1336f8:147-236, so the cel
+`Player_InWater` 0x195e50 reads this tick was linked from the previous tick's move segment], then
+`obj+0x40 ← obj+0x30` 0x1336f8:212): the move segment's portal cross (`Cel_ObjectLeftCel` 0x1e0d58: two
+`Collide_RayTriangle` per portal quad of the CURRENT cel, crossing wins even inside the old bbox) → the
+bbox keep (`build_point_in_bounding_box` 0x1c9500 at obj+0x30) → `build_LinkToRoom` 0x1c9680 →
+`build_FindCel` 0x1c8cb0 AT THE WORLD-SPHERE CENTRE (obj+0x80, `Control_BuildWorldSph` 0x133070; local
+centre (−0.1347, −0.1267, 0.2402) [L ee_start_05 M_CONTROL+0x80]) with the raycast tie-break (up ray len
+256→best-so-far, down ray min(up,len), both scoped to the candidate's own geometry, nearest hit wins, no
+hits → the first candidate [M 0x1c8cb0:163-232]), room-cel candidates only (cel+0x3c & 0x40000, cap 0x40),
+a miss leaves the object unlinked. The port had a stateless smallest-containing-bbox lookup at pos every
+tick (`cel_at`), which is none of those rules.
+
+Ported (nf-game/world.rs): `ScopeGraph.room` (new field, own line), `cel_portal_dest`, `cel_contains`,
+`find_cel` (the tie-break), `player_cel_relink`. (player.rs): `Bond::prev_pos` (obj+0x40, own line). Hooks
+(scene.rs): scope_graph fills `room`; Sim::run replaces the two `cel_at` reads with one relink before
+tick_ctx (water = the relinked cel's room cel's +0x90; bond.cel = the relink) and copies prev_pos after.
+
+VERIFICATION — and an honest negative: the reported symptom numbers reproduce (the bank walk enters SS_SWIM
+at tick 1621, pos.y 3.725 vs surface 3.7675 — the root well under), but on every path I could construct the
+OLD rule and the game's rule COINCIDE: (1) the bank fall — the move segment crosses the pond-top portal
+(91↔184, the plane y 3.7649 [D probe]) and the position leaves the land cel's bbox in the SAME tick, so the
+entry tick is 1621 both ways; (2) the wade band (pos between the water cel's bbox top 3.7675 and the land
+cel's box bottom) — the position lookup also reads the land cel there (the water bbox top excludes the
+POSITION while the centre sits inside it), so the spawns agree; (3) the sphere-centre spawn band — the
+game's tie-break hands the {land, water} candidate pair to the LAND cel (the water cel's mat-14 surface
+plane is up-facing, an up-ray cannot hit it one-sided [M 0x10a8c8], and its scope has no plane under the
+slope column), and the position lookup reads the land cel too. The fail-first run on a stashed pre-fix
+tree: both new tests PASS there — no behavioral divergence found. The fix stays because it IS the game's
+mechanism (every rule above is cited), it removes the divergence class wholesale (stateful keep vs stateless
+snap, portal crossings, the sphere-centre FindCel, the tie-break), and the driver's next measurement rides
+on it. Suite on the final tree: nf-game 143/143; the swim/ladder/walkreal families 47/47 (fix_ladder2_live
+4/4 incl. the 1621/3.725 repro, fix_swim_entry_live 2/2, fix_swim_vent_live 2/2, fix_swim_vent5_live 2/2,
+walkreal_probe3_live 2/2 + the nf-view bucket 35/35). The full four-crate run did not fit the window
+(suite.py cannot survive the background in this sandbox — third session running); the remaining families
+are listed in the report. NO RNG draws added; no wall-clock in Sim.

@@ -775,6 +775,7 @@ pub fn scope_graph(g: &CelGraph) -> nf_game::world::ScopeGraph {
             tris: [[p.corners[0], p.corners[1], p.corners[2]], [p.corners[0], p.corners[2], p.corners[3]]],
             a: p.cel_a, b: p.cel_b,
         }).collect(),
+        room: g.cells.iter().map(|c| c.flags & 0x40000 != 0).collect(),
     }
 }
 
@@ -1725,6 +1726,10 @@ impl Sim {
         // script cut-scene). So riding does NOT run while Bond is disabled — the cut-scene's `Script_Free` →
         // `Player_Enable` places Bond directly. The A-5 change (running riding unconditionally) caused Bond to bounce
         // against the truck during the cut-scene. Fix: gate on `!self.disabled` [M 0x1949a8:24].
+        // The relink segment's start: the pos at the END of the previous tick — the game's `obj+0x40`
+        // the moved pass copies after `control_handle_cel_change` 0x1336f8:212 (the ride below and the
+        // tick's own move both belong to the next relink's segment). fix-swim-entry.
+        let prev_tick_pos = self.bond.pos;
         if !self.disabled {
             let p = self.bond.pos;
             if let Some(g) = self.world.ground_motion(p, [p[0], p[1] - 1.6347, p[2]]) {
@@ -1762,7 +1767,17 @@ impl Sim {
                     trigger = false;
                 }
             }
-            let water = self.cel_at(self.bond.pos).map(|i| self.cels[i].water).filter(|w| *w > -400.0);
+            // The player's runtime cel (obj+0x20) — `control_handle_cel_change` 0x133288's stateful
+            // relink on the LAST tick's move segment (the moved pass runs after `Player_Update`
+            // [M 0x1336f8:147-236], so the cel `Player_InWater` 0x195e50 reads this tick was linked
+            // from `prev→pos` of the tick before): the portal cross (`Cel_ObjectLeftCel` 0x1e0d58)
+            // wins over the bbox keep (`build_point_in_bounding_box` 0x1c9500), and the fresh-link
+            // fallback is `build_FindCel` 0x1c8cb0 at the world-sphere centre with the raycast
+            // tie-break (`build_LinkToRoom` 0x1c9680). fix-swim-entry (was: the stateless
+            // smallest-bbox `cel_at(pos)`).
+            let bond_cel = self.world.player_cel_relink(self.bond.cel, self.bond.prev_pos, self.bond.pos, self.bond.sphere_centre());
+            let water = bond_cel.and_then(|cell| self.room_cell.iter().position(|&c| c == Some(cell)))
+                .map(|r| self.cels[r].water).filter(|w| *w > -400.0);
             let sink = input.crouch;
             let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink, creepwalls: &self.creepwalls };
             // The third-icon context [M ThirdIcon_Update 0x196e80 + Player_CollisionHandler 0x1949a8:22]:
@@ -1812,10 +1827,12 @@ impl Sim {
             let was_on_wire = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
             let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
             input.fire = trigger;
-            // The queries' start cel (obj+0x20 — fix-safe08b): the movement pass's relink, read fresh
-            // off the position the same way `build_LinkToRoom` 0x1c9680 re-links.
-            self.bond.cel = self.cel_at(self.bond.pos).and_then(|room| self.room_cell.get(room).copied().flatten());
+            // The queries' start cel (obj+0x20 — fix-safe08b): the stateful relink above (the game's
+            // `control_handle_cel_change` 0x133288), not a fresh position lookup.
+            self.bond.cel = bond_cel;
             self.bond.tick_ctx(&self.world, &ctx, &input);
+            // `obj+0x40 ← obj+0x30` — the moved pass's copy AFTER the cel change [M 0x1336f8:212].
+            self.bond.prev_pos = prev_tick_pos;
             // `Player_WeaponNone` 0x1a9858 runs in `Player_CollLadder` on the grab [M 0x196118]: the
             // current weapon id is SAVED to `anim+0x64` (the port's `saved_weapon`), the class becomes
             // 'G' (0x47) immediately (no holster cycle — `anim+0xF4 = 0`), the aim bit clears.

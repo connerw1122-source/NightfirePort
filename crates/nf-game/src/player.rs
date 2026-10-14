@@ -111,6 +111,10 @@ pub struct Input {
 pub struct Bond {
     /// `obj+0x30`.
     pub pos: V3,
+    /// `obj+0x40` — the previous position the movement pass copies after the cel change
+    /// (`control_movement_object_handler` 0x1336f8:212), so the next `control_handle_cel_change`
+    /// 0x133288 relinks on the last tick's move segment. fix-swim-entry.
+    pub prev_pos: V3,
     /// `obj+0x54` (0 faces +Z; a larger yaw turns left).
     pub yaw: f32,
     /// `BL+0x8A8`: units of π/2, ±1, + = up.
@@ -227,6 +231,7 @@ impl Bond {
             water_fade: 0.0, air_tick: 0, push_fwd: 0.0, wire: None, auto_drop: 0.0, wire_anim: 0, wire_anim_time: 0.0, wire_anim_rate: 1.0, cam_mode: 0, fall_speed: 0.0, grapple: None,
             icon_ctx: 0xff,
             cel: None,
+            prev_pos: pos,
             creep: None,
         }
     }
