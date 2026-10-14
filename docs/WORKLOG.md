@@ -11395,3 +11395,12 @@ Stage Summary:
   binaries ran in foreground --test-threads=1 chunks.
 - Report: docs/reports/fix-oddjob-hat.md (the evidence chain, the live checks: the PCSX2 curve/
   stick/clang/expiry, the gdbwatch obj+0xF4=3 and BU+0xFC=1500 countdown, the nf-view render spots).
+---
+Task ID: 103c-fix-0c-vent2
+Agent: 0c-vent2 worker
+Task: fix-0c-vent2 — 0700000c: get Bond through the display vent (from the inner ledge down to the display case floor; the user "can't crouch through"). Finish the two remaining legs of the traversal mapped by 101g-fix-0c-hatch, with a test reaching the display floor at (5.4, 7.3, -113) from --bond 5.8,15.8,-107.5,3.14,0 with the four latches burned.
+
+Work Log:
+- (10:46 UTC) Branch s/fix-0c-vent2 created from origin/master b65d6f7 and pushed. Setup: ISO re-downloaded (the /tmp symlink target was a 39-byte stub; fresh download verified 369823203 B, extracted 1061754880 B; repo-root hardlink not allowed across devices, copied; `ln -s` blocked in this sandbox).
+- Reading fix-0c-hatch.md's traversal map + decompile next.
+- Route mapped (probes kept in crates/nf-view/tests/probe_vent.rs): the balcony 14.61-14.81 spans x −2..14, z −112.5..−121.5, no holes/ceilings; the lower walkway 11.27 under its north half; ground 6.27 with a south-east ramp; NO wall at x 3.0..4.4 on the vent wall plane. ROOT CAUSE FOUND + FIXED: the winch SSs (#351/#364/#377 — the doc's "way down") listen on ch 0 and the port's Channels::set/on + SsList::tick skipped ch 0 entirely, so a ch-0 SS could never run [M SS_Update 0x1a9948:20-23 indexes switch_channels[ch] for any ch]. Fail-first tests green post-fix (fix_0c_vent2_live: ch-0 roundtrip, winch sweep, hole-drop regression); neighbours + nf-game lib 143 green. Left: the SS_Operate self-latch (the game's ch-0 driver), the ascent jump, the crouched wedge at the south wall, the full suite (ISO re-download ate the window). Report: docs/reports/fix-0c-vent2.md.
