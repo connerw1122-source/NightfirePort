@@ -33,3 +33,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox5 at 2026-10-14T18:50Z
+
+---
+## Report (done, 2026-10-14T19:39Z)
+
+Closed by the driver: the report is on `s/fix-handcannon` (docs/reports/fix-handcannon.md); the worker didn't run finish.sh.
