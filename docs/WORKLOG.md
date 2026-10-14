@@ -11171,3 +11171,26 @@ draws added; no wall-clock in Sim.
   changes moves the sounds, decide from the game's code whether the new behaviour is right, then extend the test
   window citing flight time or fix the code. Suite total on the final tree required.
 - Work in progress: reproduce first.
+- Reproduced (11 s sweep): the merge tree fails exactly 0x37 [1112 = 0x458] and 0x59 [1096 = 0x448,
+  1112]; isolation probes (fresh scene per weapon) show 0x37→0x458, 0x3b→0x448, 0x59→0x458 all play —
+  the loss is sweep-context only.
+- Cause (instrumented sweep, NF_GUNTRACE + per-weapon clip/bullet/cam log): firing the AT-420 Sentinel's
+  guided rocket (0x2c, the only `+0x6C & 4` camera-bit carrier) hands the view to the projectile —
+  substate 10 zeroes the input and the trigger stays gated until the missile dies + a 15-tick restore
+  [M Bullet_init 0x12c5a0:248-253; Bullet_update 0x12e660:28 `+0x944 = 0xf`; Player_Update 0x193600:242-256].
+  The quarter-speed fix [M 0x12c5a0:188-190, `+0x6C & 0x200` → ×0.25] made that rocket fly its true
+  0.0625 u/tick (record +0x20 = 0.25 [L]) over its 200-unit range [L +0x1C] ≈ 3200 ticks — the camera
+  ride now covers the fire windows of 0x2e–0x37 (8 segments; per-weapon log: `fired=false` throughout,
+  cam true), so the mine 0x37 never fires and its detonation sound 0x458 never starts a voice anywhere
+  in the sweep; 0x59's row (ids 0x448/0x458) passes on 0x458 via the accumulated `seen` and fails with it.
+  Verdict: GAME-CORRECT — the game's player cannot fire during the ride either. On origin/master the same
+  sweep passes because the old 4×-speed modelled rocket impacts within its own segment. 0x448 never played
+  on ANY tree: the satchel charge spawns at its fire script's release frame (+0x44 = 76 [L] > 25) which
+  the next weapon's holster cuts — the master pass was the `any` semantics via 0x447/0x458 (documented in
+  the test; holding the sweep to the release would land the 8/2000 charge ~5 units from Bond — a
+  game-faithful `Player_Hurt` self-kill that voids the rest of the sweep).
+- Fix (test-only, crates/nf-view/tests/fix_weapon_sounds_live.rs): the sweep waits out the missile camera
+  before each weapon's fire window (bounded 3400 ticks = the flight time + restore + margin; the range
+  death is silent state 4 [M 0x12e848], so the wait adds no blast), with the evidence chain in the comment.
+  fix_weapon_sounds_live 3 passed / 2 ignored (pre-existing, documented); fire_modes3_live 5 passed /
+  4 ignored (pre-existing); fix_weapon_fire_modes_live 5 passed.
