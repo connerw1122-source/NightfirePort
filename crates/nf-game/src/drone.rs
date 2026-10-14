@@ -2302,6 +2302,13 @@ impl Drone {
     /// the head's right axis, premultiplied `q_yaw ⊗ q_pitch ⊗ q_bone`; *approximation*: the port's axes are the
     /// model's), and the hip height. Drawing and hit boxes both use it.
     pub fn object_pose(&self, d: &Data) -> Option<(Vec<nf_formats::anim::Mat4>, f32)> {
+        self.object_pose_inner(d, true)
+    }
+
+    /// `track = false` gives the pose WITHOUT the head-track rotation — the palette the game's
+    /// `AnimObjectHeadTrack` 0x1bf618 itself receives (psiBuildMatrixPalette rebuilds it from the
+    /// anim every tick, so the stored rotation is never in the axes it measures from).
+    fn object_pose_inner(&self, d: &Data, track: bool) -> Option<(Vec<nf_formats::anim::Mat4>, f32)> {
         let skin = d.skins.get(&self.skin)?;
         let mut local = self.local_pose(d)?;
         let hip = local.first().map_or(0.0, |r| r.0[1]);
@@ -2330,21 +2337,88 @@ impl Drone {
             }
         }
         let (hy, hp) = (self.head_yaw, self.head_pitch);
-        if (hy.abs() > 1e-4 || hp.abs() > 1e-4) && world.len() > 5 {
-            // Bone 5 only (HeadTrack rewrites just that bone's quaternion; the head carries no children).
-            let pivot = world[5][3];
-            let (sn, cs) = (hy.sin(), hy.cos());
-            let rot_y: nf_formats::anim::Mat4 = [[cs, 0.0, -sn, 0.0], [0.0, 1.0, 0.0, 0.0], [sn, 0.0, cs, 0.0], [0.0, 0.0, 0.0, 1.0]];
-            let th = self.yaw + hy;
-            let rp = axis_angle_mat([th.cos(), 0.0, -th.sin()], -hp);
-            let rot = nf_formats::anim::mul(&rot_y, &rp);
-            let mut w = world[5];
-            for k in 0..3 { w[3][k] -= pivot[k]; }
-            let mut r = nf_formats::anim::mul(&w, &rot);
-            for k in 0..3 { r[3][k] += pivot[k]; }
-            world[5] = r;
+        if track && (hy.abs() > 1e-4 || hp.abs() > 1e-4) && world.len() > 5 {
+            // `AnimObjectHeadTrack` 0x1bf618 composes `q_yaw ⊗ q_pitch ⊗ q_world_head` in WORLD
+            // axes and premultiplies the head bone's world rotation (Quat_QuatToMat writes bone
+            // 5's palette rows; the head carries no children). The axes come from the palette
+            // itself: the yaw axis = the NECK axis (normalize(palette[5].pos − palette[2].pos),
+            // the +0x30 translation slots; bone 2 = the neck base), the pitch axis = the side
+            // normalize(cross(neck, row2)) (row2 = the head's world +z/forward row). The port's
+            // head_pitch is positive up; the game's computed pitch is positive DOWN about the side
+            // axis, so the applied pitch is −hp. Row-vector matrices (v·M applies Mᵀ to v), so
+            // the world-frame application is `world5 · R_pitch_row · R_yaw_row` with the row forms
+            // axis_angle(side, hp) and axis_angle(neck, −hy) — each the transpose of the
+            // column-form rotation the game's quaternion encodes; the product order matches
+            // M(q_yaw ⊗ q_pitch ⊗ q_bone) = M_bone · M_pitch · M_yaw.
+            let head = [world[5][3][0], world[5][3][1], world[5][3][2]];
+            let neckv = [head[0] - world[2][3][0], head[1] - world[2][3][1], head[2] - world[2][3][2]];
+            let fwd = [world[5][2][0], world[5][2][1], world[5][2][2]];
+            let side = [neckv[1] * fwd[2] - neckv[2] * fwd[1], neckv[2] * fwd[0] - neckv[0] * fwd[2], neckv[0] * fwd[1] - neckv[1] * fwd[0]];
+            let (nl, sl) = ((neckv[0] * neckv[0] + neckv[1] * neckv[1] + neckv[2] * neckv[2]).sqrt(),
+                            (side[0] * side[0] + side[1] * side[1] + side[2] * side[2]).sqrt());
+            if nl > 1e-6 && sl > 1e-6 {
+                let neck = [neckv[0] / nl, neckv[1] / nl, neckv[2] / nl];
+                let side = [side[0] / sl, side[1] / sl, side[2] / sl];
+                let mp = axis_angle_mat(side, hp);
+                let my = axis_angle_mat(neck, -hy);
+                let m = nf_formats::anim::mul(&world[5], &mp);
+                world[5] = nf_formats::anim::mul(&m, &my);
+            }
         }
         Some((world, hip))
+    }
+
+    /// `AnimObjectHeadTrack` 0x1bf618's geometric ease targets, measured the way the game measures
+    /// them: from the FRESH anim pose's head axes (the palette `psiBuildMatrixPalette` 0x111498
+    /// hands HeadTrack carries no stored rotation — it is rebuilt from the anim every tick), so
+    /// easing the stored angle toward these never double-counts the anim's own head pose (the
+    /// playtest's "head tips UP well past the camera"). Yaw: the angle from the head's forward to
+    /// the target in the (forward, side) plane, signed about the neck axis — positive right, the
+    /// port's stored convention. Pitch: the angle in the (forward, neck) plane, signed about the
+    /// side axis in the GAME's convention (positive down) — the clamps ±1.1 / 0-beyond-2.6 (yaw)
+    /// and [-1.0, +0.6] (pitch) apply in that convention (0x1bf618: the two acos blocks), then it
+    /// is negated into the port's positive-up. The target = the opponent's tracked bone world
+    /// position (sAnimObject+0x104 = 5 [docs/fields/animobject.md [L-read]]; the port stands in
+    /// the AI's player eye snapshot).
+    fn head_track_want(&self, d: &Data, target: [f32; 3]) -> Option<(f32, f32)> {
+        let (world, hip) = self.object_pose_inner(d, false)?;
+        if world.len() <= 5 { return None; }
+        // The port's pose is OBJECT-space (the game's palette is world; the port factors the
+        // placement into palette()'s object matrix) — take the tracked point into the same frame:
+        // bearing(object) = bearing(world − object origin) − yaw.
+        let rel = [target[0] - self.pos[0], target[1] - self.draw_y(hip), target[2] - self.pos[2]];
+        let (sn, cs) = (self.yaw.sin(), self.yaw.cos());
+        let target = [rel[0] * cs - rel[2] * sn, rel[1], rel[0] * sn + rel[2] * cs];
+        let head = [world[5][3][0], world[5][3][1], world[5][3][2]];
+        let tv = [target[0] - head[0], target[1] - head[1], target[2] - head[2]];
+        if tv[0] * tv[0] + tv[1] * tv[1] + tv[2] * tv[2] < 0.25 { return Some((0.0, 0.0)); } // the game's 0.5 plane-projection gate
+        let neckv = [head[0] - world[2][3][0], head[1] - world[2][3][1], head[2] - world[2][3][2]];
+        let nl = (neckv[0] * neckv[0] + neckv[1] * neckv[1] + neckv[2] * neckv[2]).sqrt();
+        if nl < 1e-6 { return None; }
+        let neck = [neckv[0] / nl, neckv[1] / nl, neckv[2] / nl];
+        let fwd = [world[5][2][0], world[5][2][1], world[5][2][2]];
+        let side = [neck[1] * fwd[2] - neck[2] * fwd[1], neck[2] * fwd[0] - neck[0] * fwd[2], neck[0] * fwd[1] - neck[1] * fwd[0]];
+        let sl = (side[0] * side[0] + side[1] * side[1] + side[2] * side[2]).sqrt();
+        if sl < 1e-6 { return None; }
+        let side = [side[0] / sl, side[1] / sl, side[2] / sl];
+        let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        let unit = |a: [f32; 3]| { let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt(); if l < 1e-9 { None } else { Some([a[0] / l, a[1] / l, a[2] / l]) } };
+        // Yaw: project the target onto the (side, forward) plane — remove the neck component.
+        let dn = tv[0] * neck[0] + tv[1] * neck[1] + tv[2] * neck[2];
+        let to_y = unit([tv[0] - neck[0] * dn, tv[1] - neck[1] * dn, tv[2] - neck[2] * dn])?;
+        let fu = unit(fwd)?;
+        let mut yaw = (fu[0] * to_y[0] + fu[1] * to_y[1] + fu[2] * to_y[2]).clamp(-1.0, 1.0).acos();
+        let cf = cross(fu, to_y);
+        if cf[0] * neck[0] + cf[1] * neck[1] + cf[2] * neck[2] < 0.0 { yaw = -yaw; }
+        // Pitch: remove the side component (the (neck, forward) plane); the game's sign: positive down.
+        let ds = tv[0] * side[0] + tv[1] * side[1] + tv[2] * side[2];
+        let to_p = unit([tv[0] - side[0] * ds, tv[1] - side[1] * ds, tv[2] - side[2] * ds])?;
+        let mut pitch = (fu[0] * to_p[0] + fu[1] * to_p[1] + fu[2] * to_p[2]).clamp(-1.0, 1.0).acos();
+        let cp = cross(fu, to_p);
+        if cp[0] * side[0] + cp[1] * side[1] + cp[2] * side[2] < 0.0 { pitch = -pitch; }
+        let yaw = if yaw.abs() > 2.6 { 0.0 } else { yaw.clamp(-1.1, 1.1) };
+        let pitch = pitch.clamp(-1.0, 0.6);
+        Some((yaw, -pitch))
     }
 
     /// `DroneWeap_DropWeapon` (0x17a2a0, docs/systems/pickups.md): once — the weapon byte (`anim+0x62`) is cleared. At
@@ -7039,10 +7113,17 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 } else if frame >= dr.track_recheck {
                     dr.track_recheck = frame + rng.rand(5) as u32 + 2;
                 }
-                let dy = player.eye[1] - (dr.pos[1] + 1.55);
-                let want_y = angle_difference(dr.yaw, dr.yaw_to_opp);
-                let want_y = if want_y.abs() > 2.6 { 0.0 } else { want_y.clamp(-1.1, 1.1) };
-                let want_p = (dy / dr.dist.max(0.001)).atan().clamp(-1.0, 0.6);
+                // The ease targets: `AnimObjectHeadTrack` 0x1bf618 measures the want angles
+                // geometrically from the fresh anim pose's head axes toward the tracked point
+                // (sAnimObject+0x104 = 5 [L-read]; the port stands in the AI's player eye), and
+                // only within the head-track range² (SetHeadTracking's 3.0², docs/fields/
+                // animobject.md +0xE8 = 9.0 [L-read]) — beyond it (or closer than 0.5) the angles
+                // ease back to 0, exactly as the game's skipped angle block leaves them.
+                let (want_y, want_p) = if dr.dist <= 3.0 {
+                    dr.head_track_want(d, player.eye).unwrap_or((0.0, 0.0))
+                } else {
+                    (0.0, 0.0)
+                };
                 let sp = if dr.alert > 0.66 { 0.14 } else { 0.07 };
                 dr.head_yaw = rotate_to_bearing(dr.head_yaw, want_y, sp, crate::trig::PI);
                 dr.head_pitch = rotate_to_bearing(dr.head_pitch, want_p, sp, crate::trig::PI);
