@@ -280,6 +280,11 @@ pub struct Sim {
     pub hitboxes: nf_formats::hitbox::CollisionBones,
     pub sfx: Option<nf_formats::sfx::SfxTable>,
     pub volumes: Vec<nf_game::aivolume::AiVolume>,
+    /// fix-script-objects: the glist bounds (min, max) by hashcode — the script-created AI
+    /// volumes' half-extents resolve here (`Drone_AIVolume_Create` 0x1376c0:84-92: |max − min|/2
+    /// from the glist's min +0x20 / max +0x30, × the scale triple — the script arm's scales are
+    /// {1,1,1} [M 0x1d8a58]).
+    pub glist_bounds: HashMap<u32, ([f32; 3], [f32; 3])>,
     pub models: HashMap<u32, nf_game::pickup::Model>,
     /// Bond's gun (07000005's start: P2K, 7 + 41 rounds) and the auto-aim option (`PlayerSetting+1` = 1 in the game
     /// [L]; off by default with a mouse, D-001).
@@ -2662,6 +2667,33 @@ impl Sim {
         // (The B-10 symptom was the opposite gating bug: freezing the whole tick stopped Trigger_Calc +
         // SP_Update, so PlayerEnable never arrived.)
         self.drones.tick(&d, &player);
+        // fix-script-objects: the script-created AI volumes (`Drone_AIVolume_Create` 0x1376c0 via
+        // `Script_CreateEntity` 0x1d8968's 0xF5 arm) join the level's volume list the tick their
+        // script creates them (the game's `LList_Add` 0x2706c8 registration), and their matrix
+        // refreshes from the live entity every tick (the game keys obj+0x90 per tick [M
+        // Script_Interp 0x1d9a08:106-133]). The 07000005 create-time z-negate/+1.5-y lift is NOT
+        // applied here: the script arm's object matrix is overwritten by the same tick's interp
+        // (Script_EntityStart's `Script_Interp` tail), so the lift never reaches the box [S — the
+        // placement path's lift is a create-time matrix write the script stream has no key for].
+        if !self.drones.scripts.objects.pending_volumes.is_empty() {
+            for v in std::mem::take(&mut self.drones.scripts.objects.pending_volumes) {
+                let half = self.glist_bounds.get(&v.hash)
+                    .map(|(lo, hi)| [0, 1, 2].map(|k| ((hi[k] - lo[k]) * 0.5).abs()))
+                    .unwrap_or([0.0; 3]);
+                let kind = match v.params.get(1).copied().unwrap_or(0) { 1 => 2, 2 => 1, 4 => 3, _ => 0 };
+                let factor = nf_formats::ps2float::mul(v.params.first().copied().unwrap_or(0) as f32, 0.01);
+                self.volumes.push(nf_game::aivolume::AiVolume { m: v.matrix, half, factor, kind, placement: usize::MAX, src: Some((v.script, v.stream)) });
+            }
+        }
+        if self.volumes.iter().any(|v| v.src.is_some()) {
+            let mut upd: Vec<(usize, nf_formats::anim::Mat4)> = Vec::new();
+            for (i, v) in self.volumes.iter().enumerate() {
+                if let Some(src) = v.src {
+                    if let Some(m) = self.drones.scripts.entity_matrix(src) { upd.push((i, m)); }
+                }
+            }
+            for (i, m) in upd { self.volumes[i].m = m; }
+        }
         // `PlarStat_LogUpdateElapsedTime(0)` 0x1995a0 — `Player_Update` 0x193600:132 calls it once per
         // tick; `now` is the port's frame-derived 1/100 s clock (deterministic; fix-progress).
         self.drones.progress.log_update_elapsed(nf_game::progress::PlrMissionStats::now_100ths(self.drones.frame));
@@ -4411,6 +4443,11 @@ impl Scene {
             let hitboxes = d.hitboxes.clone()?;
             let volumes = nf_game::aivolume::build(level, d.level_id);
             let models = nf_game::pickup::models(level);
+            // fix-script-objects: every glist's bounds (min, max) by hashcode — the script-created
+            // AI volumes' half-extents resolve here (`Drone_AIVolume_Create` 0x1376c0:84-92).
+            let glist_bounds: HashMap<u32, ([f32; 3], [f32; 3])> = level.maps.iter()
+                .flat_map(|m| m.objects.iter())
+                .map(|o| (o.hashcode, (o.min, o.max))).collect();
             let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: d.sfx.as_ref(), models: &models, surfaces: d.surfaces.as_ref(), voices: d.voices.as_deref(), difficulty: 1 };
             let mut rng = nf_game::drone::Rng::new(0x1234_5678);
             // The drones' creates (and the interleaved type-0x4E light creates) draw from the shared
@@ -4521,7 +4558,7 @@ impl Scene {
             // 0x1c7e78:25] and the front-end boot keeps it until 180-fix-menus wires the page's
             // write (C_SBNFDFCTY 0x216ca8) into `set_difficulty`.
             drones.difficulty = 1;
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, missile_cam: None,
             })
         });
