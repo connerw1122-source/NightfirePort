@@ -1923,6 +1923,15 @@ impl ApplicationHandler for App {
                             z
                         });
                         s.health = s.health.max(50.0); // [L ee_start_05.bin 0x30cc34-3c, all three 50.0]
+                        // fix-objective-messages: the mission record states ride the game's `.data`
+                        // and the restart resets only the player (`P_ENDMISSION_Handler` 0x216618:19-21
+                        // = `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` + `Player_RamLoad(Bond, 1)`;
+                        // no mission reinit) — the port's restart used to reload with NO mission carry,
+                        // so the reloaded level's fresh `Mission` re-announced the earlier parts'
+                        // objectives at the first monitor tick (the playtest's "NEW OBJECTIVE / Find a
+                        // way inside to the party" on 07000007 during the Cover Lost fail). Carry the
+                        // LIVE mission states (the `.data` as of the restart).
+                        if let Some(sim) = self.scene.sim.as_ref() { s = s.with_mission(&sim.drones.mission); }
                         Some(s)
                     } else {
                         self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
