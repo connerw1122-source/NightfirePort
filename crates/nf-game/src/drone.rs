@@ -4757,6 +4757,10 @@ impl Drone {
         // `f32_at(0x1c).max(210.0)` passed 5000, so guard grenades never fuse-exploded (they only died at rest).
         let range = if u32::from_le_bytes(wd[0x70..0x74].try_into().unwrap()) & 0x10000 != 0 { 300.0 } else { 210.0 };
         let range = if gw == 0x37 { 420.0 } else { range };
+        // fix-satchel-tripbomb: `Bullet_init` 0x12c5a0:199-208's family arm OVERWRITES the defaults —
+        // base (weapdef+2) 0x3b → `(id == 0x6c) ? 900 : ((id − base)·5 + 5)·60` and BU+0x102 = 100.
+        // [L dump of all 115 records: every satchel bases to ITSELF (0x3b→0x3b … 0x40→0x40) and only
+        // 0x3b is selectable, so the live formula is 300 for the fired 0x3b; ported literally.]
         // The blast damage is `weapon_data+0x0C` [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` → Explode_Create's
         // f14 → EXPLODEINFO+0x28 → Explode_Propagate's amount (Explode_CollisionHandler 0x17cde0:13-15);
         // radius = f12/f13 = weapon_data+0x08]. The `addiu $t2, $zero, 0x64` (100) is the 10th argument,
@@ -4770,6 +4774,11 @@ impl Drone {
             travelled: 0.0, range, damage, radius, weapon_type, mesh: d.weapons.projectile_mesh(self.weapon as usize),
             owner, state: 0, bounces: 0, smoke_popped: false, resting: false,
             stuck: false, seek_target: None,
+            // fix-satchel-tripbomb: the gadget phase box exists from the spawn for the 0x3a/0x3b ids
+            // (the DoTrails 0x3b tail's beep latch ticks from the throw [M 0x12d890:418+]).
+            phase: matches!(weapon_type, 0x3a | 0x3b).then(|| {
+                Box::new(crate::grenade::StuckGadget { normal: [0.0, 1.0, 0.0], arm: 0.0, armed: false, last_qs: 0, digits: None })
+            }),
         })
     }
 
@@ -5081,6 +5090,12 @@ pub struct Drones {
     pub bullets: Vec<crate::bullet::Bullet>,
     /// Grenades in flight (`Bullet_init` with a gravity-affected weapon; WORKLOG 0080).
     pub grenades: Vec<crate::grenade::Grenade>,
+    /// fix-satchel-tripbomb: the armed tripbombs' laser segments this tick, (start, end) per beam —
+    /// `Bullet_update` case 3's laser block [M 0x12efb8-0x12ef78: the ray from the stuck position
+    /// along +normal for 200 units, `PositionBeam` 0x1a9400 stretches the beam object] — the renderer
+    /// draws mesh 0x2000133 [M the beam create's `hashtable_set_object_to_entity_gfx(uVar9,0x2000133)`]
+    /// between them.
+    pub tripbomb_beams: Vec<(V3, V3)>,
     /// Bounced grenades awaiting the `DroneFunc_HandleExplosives` broadcast (position, weapon record id).
     pub explosive_queue: Vec<(V3, u16)>,
     /// Explosions this tick: (pos, radius, damage, owner, weapon_type) for the sound + camera shake.
@@ -5443,6 +5458,8 @@ impl Drones {
             explosive_queue: Vec::new(),
             // fix-grenade-throw: the smoke grenade's occluder clouds (`Occlude_Create` 0x17ea80).
             smoke_clouds: Vec::new(),
+            // fix-satchel-tripbomb: the tripbomb beams (own line — merge lesson 4).
+            tripbomb_beams: Vec::new(),
     };
         drones
     }
@@ -5702,8 +5719,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         if let Some(ph) = hits.player {
             let before = self.health.health;
             // `Explode_Propagate` → `Player_Hurt` → `Player_HandlePain` (type 0): BL+0x967 = 0xC
-            // (both sides) [M 0x1902c8:124-130].
-            self.health.pain_generic(ph, self.difficulty, d.level, 0);
+            // (both sides) [M 0x1902c8:124-130]. The pain grunt rides the 1-in-4 roll [M 0x1902c8:110-119].
+            if self.health.pain_generic(&mut self.rng, ph, self.difficulty, d.level, 0) {
+                self.play_pain_grunt(player_pos);
+            }
             self.player_hits.push((frame, owner, before - self.health.health));
         }
         // Drones: `Drone_ExplosiveHit` → msg 9 (the port routes through `on_bullet` as an impact).
@@ -6108,6 +6127,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
 
     /// `Sound_Play3D(id, pos, …)`: heard (the sound pool) and, unless looped, entered in the drones' hearing list.
     pub fn play_sound(&mut self, pos: V3, h: nf_formats::sfx::SfxHearing) { self.play_sound_handle(pos, h); }
+
+    /// The pain grunt `Sound_Play3D(100, −1, −1, 0x88, BL+0x30)` — `Player_HandlePain`
+    /// 0x1902c8:110-119 plays it on the 1-in-4 `Rand_Rand(4)` roll (the draw happens in
+    /// `PlayerHealth::apply`; this is only the sound). The 0x600 arm is the MP assassin special.
+    pub fn play_pain_grunt(&mut self, pos: V3) {
+        self.audio.play3d(0x88, pos, None);
+    }
 
     /// `play_sound`, returning the sound's handle.
     pub fn play_sound_handle(&mut self, pos: V3, h: nf_formats::sfx::SfxHearing) -> crate::sound::Handle {
@@ -6864,7 +6890,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         // wire's; the port's hurt has no radius falloff, docs/fields/fusebox.md #6).
                         let at = Self::script_obj_pos(&self.scripts, d, obj).unwrap_or(self.fuseboxes[fi].pos);
                         let before = self.health.health;
-                        self.health.pain_generic(crate::fusebox::LIVE_WIRE_HURT, self.difficulty, d.level, 0);
+                        if self.health.pain_generic(&mut self.rng, crate::fusebox::LIVE_WIRE_HURT, self.difficulty, d.level, 0) {
+                            self.play_pain_grunt(player.pos);
+                        }
                         self.player_hits.push((frame, usize::MAX, before - self.health.health));
                         let _ = at;
                     }
@@ -7613,7 +7641,30 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         // (HITDATA+0x30 = the shooter) in the viewer's frame.
                         let attacker = self.list.get(b.owner).filter(|d| d.present).map_or(at, |d| d.pos);
                         let yaw = player.aim[2].atan2(player.aim[0]);
-                        self.health.pain_from(damage, self.difficulty, d.level, attacker, player.eye, yaw);
+                        if self.health.pain_from(&mut self.rng, damage, self.difficulty, d.level, attacker, player.eye, yaw) {
+                            // The grunt (the loop borrows `self.bullets`, so the helper's `&mut self`
+                            // is unavailable): `Sound_Play3D(100, −1, −1, 0x88, BL+0x30)`
+                            // [M 0x1902c8:110-119].
+                            self.audio.play3d(0x88, player.pos, None);
+                        }
+                        // 0x194458:229-236: `Sound_Play(100, 0x412)` — every bullet hit on Bond whose
+                        // weapon record's `+0x70 & 0x180 == 0` (the 0x600 arm is the MP assassin special).
+                        if let Some(w) = d.weapons.records.get(b.weapon as usize) {
+                            let flags70 = u32::from_le_bytes(w[0x70..0x74].try_into().unwrap());
+                            if flags70 & 0x180 == 0 { self.audio.play(0x412); }
+                            // 0x194458:237-256: the melee records (record u16 `+0x10 & 1`) play
+                            // `Sound_Play3D(100, −1, −1, 0x171, Bond)` and write the hit-push
+                            // `BL+0x910` (the record id at +2: 0x65 → −0.1, 0x66 → +0.1, 99 → +0.1).
+                            if u16::from_le_bytes([w[0x10], w[0x11]]) & 1 != 0 {
+                                let id = u16::from_le_bytes([w[2], w[3]]);
+                                match id {
+                                    0x65 => self.health.hit_push = -0.1,
+                                    0x66 | 99 => self.health.hit_push = 0.1,
+                                    _ => {}
+                                }
+                                self.audio.play3d(0x171, player.pos, None);
+                            }
+                        }
                         self.player_hits.push((frame, b.owner, before - self.health.health));
                     }
                     // `Bullet_DoTrails` fly-by: `Sound_Play3D(0x1dc, closest_point, 100, -1, -1, …, custom 0)` [M].
@@ -7754,7 +7805,24 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         // sound (the 0x51c gate never runs for a world stick), no explosive
                         // broadcast (HandleExplosives classifies grenades by id and has no 0x45
                         // arm [M 0x138b10 — the port's cls match]), no blast.
-                        if let Some(t) = d.sfx { let h = t.get(0x4a7); self.audio.play3d(h.id, p, None); }
+                        // fix-satchel-tripbomb: the 0x80000 tripbomb arm plays the MINE's 0x446
+                        // instead [M 0x12ce80:326-328] and overwrites `BU+0xFC = 120.0` [:330] (the
+                        // phase box carries it); the 0x3b satchel shares the hat's 0x4a7 [:319-321].
+                        let stick_sound = if g.weapon_type == 0x3a { 0x446 } else { 0x4a7 };
+                        if let Some(t) = d.sfx { let h = t.get(stick_sound); self.audio.play3d(h.id, p, None); }
+                        break;
+                    }
+                    // fix-satchel-tripbomb: the tripbomb's laser armed — the beam object created once
+                    // and Sound 0x27c plays [M `Bullet_update` case 3 0x12ee30-0x12ee50].
+                    crate::grenade::GrenadeEvent::Arm(p) => {
+                        if let Some(t) = d.sfx { let h = t.get(0x27c); self.audio.play3d(h.id, p, None); }
+                        break;
+                    }
+                    // fix-satchel-tripbomb: the satchel's countdown beep [M `Bullet_DoTrails`
+                    // 0x12d890:441-443 — Sound 0x447 on the quarter-second change].
+                    crate::grenade::GrenadeEvent::Beep(p) => {
+                        if let Some(t) = d.sfx { let h = t.get(0x447); self.audio.play3d(h.id, p, None); }
+                        self.sounds.push(Sound { id: 0x447, pos: p, inner: 96.0, outer: -1.0, weight: 0.0 });
                         break;
                     }
                     crate::grenade::GrenadeEvent::Bounce(p) => {
@@ -7895,6 +7963,63 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 dr.health -= hdmg * dr.damage_taken;
                 if dr.health <= 0.0 { dr.health = 0.0; dr.set_state(state::DEATH_ANIM); }
                 else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
+            }
+        }
+        // fix-satchel-tripbomb: the tripbomb's 6-placed cap [M `Bullet_CollisionHandler` 0x12ce80:335-370
+        // — the 0x80000 stick arm walks the objects, counts the same-weapdef same-owner type-5 bullets
+        // and marks the oldest (obj+0xEC smallest [*suggested*: the port's spawn order]) `+0xFE |= 1`
+        // past 6]. Applied every tick over the placed set — the net effect matches.
+        let mut placed: Vec<usize> = self.grenades.iter().enumerate()
+            .filter(|(_, g)| g.weapon_type == 0x3a && g.stuck && g.state < 2)
+            .map(|(i, _)| i).collect();
+        while placed.len() > 6 { let i = placed.remove(0); self.grenades[i].state = 2; }
+        // fix-satchel-tripbomb: the tripbomb's laser [M `Bullet_update` case 3, the `+0x70 & 0x80000`
+        // arm 0x12efb8-0x12efc8 + `PositionBeam` 0x1a9400]: per ARMED stuck tripbomb, the ray from the
+        // stuck position along +normal (the stick matrix Z = −normal [M 0x12ce80:266]; the beam end =
+        // pos − 200·Z [M 0xc3480000 = −200.0 at 0x12efb8]), drawn to the first wall hit (the game
+        // passes the full 200 and lets the renderer depth-clip [*deviation*, the report documents it]);
+        // a live guard or Bond within 1.0 u of the ray BEFORE the wall → `Bullet_handle_object_destruction`
+        // [M 0x12ef40-0x12ef78 — the ray destructs on char types 2/3/0x28] → the 8/100 blast
+        // [L record 0x3a] and the beam dies with the tripbomb [M 0x12cd98's 0x80000 tail kills
+        // `BU+0x38`]. The 0x28-type breakables are not in the port's ray (chars only [*deviation*]).
+        self.tripbomb_beams.clear();
+        for gi in 0..self.grenades.len() {
+            let g = &self.grenades[gi];
+            if !(g.weapon_type == 0x3a && g.stuck && g.state < 2) { continue; }
+            let Some(p) = g.phase.as_ref().filter(|p| p.armed) else { continue };
+            let (pos, normal) = (g.pos, p.normal);
+            let end_full = [pos[0] + normal[0] * 200.0, pos[1] + normal[1] * 200.0, pos[2] + normal[2] * 200.0];
+            let wall_t = d.world.segment(pos, end_full).unwrap_or(1.0).min(1.0);
+            let end_trig = [pos[0] + (end_full[0] - pos[0]) * wall_t, pos[1] + (end_full[1] - pos[1]) * wall_t, pos[2] + (end_full[2] - pos[2]) * wall_t];
+            let seg_hit = |px: f32, py: f32, pz: f32, r: f32| -> bool {
+                let ab = [end_trig[0] - pos[0], end_trig[1] - pos[1], end_trig[2] - pos[2]];
+                let ab2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+                let t = if ab2 > 1e-9 { ((px - pos[0]) * ab[0] + (py - pos[1]) * ab[1] + (pz - pos[2]) * ab[2]) / ab2 } else { 0.0 };
+                let t = t.clamp(0.0, 1.0);
+                let cx = pos[0] + ab[0] * t - px;
+                let cy = pos[1] + ab[1] * t - py;
+                let cz = pos[2] + ab[2] * t - pz;
+                cx * cx + cy * cy + cz * cz < r * r
+            };
+            let mut trigger = seg_hit(player.pos[0], player.pos[1], player.pos[2], 1.0);
+            if !trigger {
+                for dr in self.list.iter() {
+                    if !dr.present || dr.corpse || !dr.enabled || dr.health <= 0.0 { continue; }
+                    if seg_hit(dr.pos[0], dr.pos[1], dr.pos[2], 1.0) { trigger = true; break; }
+                }
+            }
+            if trigger {
+                // The trigger blast straight into the pending queue — the 0x3a record carries NO
+                // +0x200 fuse bit, so the Explode event's gate would silence it [M the destruct
+                // path's own `Explode_Create(record+0x08, record+0x08, record+0x0C, …, 0x6000052)`
+                // 0x12cd98; L the record's 8/100].
+                let rec = d.weapons.records.get(0x3a);
+                let radius = rec.map_or(8.0, |r| f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()));
+                let damage = rec.map_or(100.0, |r| f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap()));
+                self.pending_blasts.push((pos, radius, damage, self.grenades[gi].owner, 0x3a));
+                self.grenades[gi].state = 2;
+            } else {
+                self.tripbomb_beams.push((pos, end_trig));
             }
         }
         let blasts = std::mem::take(&mut self.pending_blasts);

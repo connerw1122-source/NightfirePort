@@ -31,6 +31,7 @@ fn grenade_at(sim: &mut nf_view::scene::Sim, pos: [f32; 3]) {
         pos, velocity: [0.0, 0.0, 0.0], speed: 0.0,
         travelled: 0.0, range: 60.0, damage: 100.0, radius: 3.0, weapon_type: 0x34, mesh: 0x0200_0726, owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: false,
         stuck: false, seek_target: None,
+        phase: None,
     });
 }
 

@@ -130,13 +130,13 @@ fn death_sequence_stages_then_the_menu() {
     tick(sim, 10);
     // A near-fatal sister first: damage without the kill must trigger nothing.
     let before = sim.drones.health.health;
-    sim.drones.health.pain_generic(1.0, 1, 0x0700_0005, 0);
+    let (h, r) = (&mut sim.drones.health, &mut sim.drones.rng); h.pain_generic(r, 1.0, 1, 0x0700_0005, 0);
     tick(sim, 5);
     assert!(!sim.drones.death.active, "alive: no death sequence");
     assert!(!sim.drones.channels.on(0x62), "alive: no death channel");
     assert!(sim.drones.level_exit.is_none(), "alive: no restart");
     // The kill (500: the difficulty-scaled factor shrinks small numbers).
-    sim.drones.health.pain_generic(500.0, 1, 0x0700_0005, 0);
+    let (h, r) = (&mut sim.drones.health, &mut sim.drones.rng); h.pain_generic(r, 500.0, 1, 0x0700_0005, 0);
     tick(sim, 1);
     assert!(sim.drones.death.active, "the death sequence started [M 0x190810]");
     assert!(sim.drones.death.pane_on, "the blood pane enabled on the first dead tick [M 0x190bb0:24-25]");
@@ -169,7 +169,7 @@ fn death_menu_applies_by_itself_after_the_red_fade() {
     let mut scene = load(&iso, "07000005.bin");
     let sim = scene.sim.as_mut().unwrap();
     tick(sim, 5);
-    sim.drones.health.pain_generic(500.0, 1, 0x0700_0005, 0);
+    let (h, r) = (&mut sim.drones.health, &mut sim.drones.rng); h.pain_generic(r, 500.0, 1, 0x0700_0005, 0);
     tick(sim, 1);
     assert!(sim.drones.death.active && !sim.drones.death.ch62, "dying, no channel yet");
     tick(sim, nf_game::death::RED_FADE_TICKS + 2);
@@ -205,7 +205,7 @@ fn restart_of_a_cold_loaded_level_restores_the_zero_buffer_with_the_health_floor
         }
         // Damage + an objective channel (the enable channel 0x45, "Breach the castle walls").
         sim.drones.set_channel(0x45);
-        sim.drones.health.pain_generic(37.0, 1, 0x0700_0005, 0);
+        let (h, r) = (&mut sim.drones.health, &mut sim.drones.rng); h.pain_generic(r, 37.0, 1, 0x0700_0005, 0);
         tick(sim, 2);
         assert!(sim.drones.health.health < 100.0 || !sim.drones.taken.is_empty() || sim.drones.channels.on(0x45),
             "the run is dirty: damage, a pickup or a channel");
@@ -217,7 +217,7 @@ fn restart_of_a_cold_loaded_level_restores_the_zero_buffer_with_the_health_floor
     let (lv, cold) = {
         let sim = scene.sim.as_mut().unwrap();
         tick(sim, 5);
-        sim.drones.health.pain_generic(500.0, 1, 0x0700_0005, 0);
+        let (h, r) = (&mut sim.drones.health, &mut sim.drones.rng); h.pain_generic(r, 500.0, 1, 0x0700_0005, 0);
         tick_fire(sim, 2);
         tick(sim, 4);
         exit(sim)
@@ -338,7 +338,7 @@ fn near_fatal_hit_triggers_nothing() {
     let mut scene = load(&iso, "07000009.bin");
     let sim = scene.sim.as_mut().unwrap();
     tick(sim, 10);
-    sim.drones.health.pain_generic(1.0, 1, 0x0700_0009, 0);
+    let (h, r) = (&mut sim.drones.health, &mut sim.drones.rng); h.pain_generic(r, 1.0, 1, 0x0700_0009, 0);
     tick_fire(sim, 10);
     tick(sim, 400);
     assert!(!sim.drones.death.active && !sim.drones.channels.on(0x62), "alive: no death");

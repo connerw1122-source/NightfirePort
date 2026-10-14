@@ -211,6 +211,22 @@ impl WeaponData {
         self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xb4..0xb8].try_into().unwrap()))
     }
 
+    /// `+0xB8`: the aim-raise script hashcode (`Player_Weapon` 0x1a24c8:148-150 queues it at 1.25×
+    /// on the aim-on edge — the game's view state 0xF; `Player_SetWeaponAnimObj` case 0xf
+    /// 0x1a2e38:554-561 sets the aim bit only when it stops). 0 = the weapon aims with no raise
+    /// anim [M 0x1a24c8:117-119]. The Winter Covert Sniper 0x24 → 0x060007b9, the AIMS-20 0x1a →
+    /// 0x060007bf, the watch pair 0x54/0x55 → 0x060005a4/0x060005a8; the P2K 0x02 → 0 [L census].
+    pub fn raise_script(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xb8..0xbc].try_into().unwrap()))
+    }
+
+    /// `+0xBC`: the aim-lower script hashcode (queued at 1.25× on the aim-off edge — view state
+    /// 0x10 [M 0x1a24c8:121-138]). When 0 the raise script plays REVERSED
+    /// (`AnimScriptAddReverse`, disasm 0x1a26f0: `jal AnimScriptAddReverse`).
+    pub fn lower_script(&self, weapon: usize) -> u32 {
+        self.records.get(weapon).map_or(0, |r| u32::from_le_bytes(r[0xbc..0xc0].try_into().unwrap()))
+    }
+
     /// `+0xC4`: the holster (put-away) script hashcode (`Player_SetWeaponAnimObj` case 1, played at 1.25x)
     /// [M disassembly 0x1a36c0: `lw v1,196(s1)`; `Player_WeaponSelect` 0x1a2cc0 line 33 checks `+0xC4 == 0`].
     pub fn holster_script(&self, weapon: usize) -> u32 {
