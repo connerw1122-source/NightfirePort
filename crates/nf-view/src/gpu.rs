@@ -528,10 +528,20 @@ impl Renderer {
             let depth0 = Self::depth0_game(&planes, eye);
             let sides = [planes[0], planes[1], planes[2], planes[3]];
             match crate::scene::eye_cell(&self.cel_graph, &mut self.viewer_cel, eye, world) {
-                Some(cell) => (
-                    crate::scene::portal_visible_cels_game_from_cell(&self.cel_graph, cell, eye, &depth0, &sides),
-                    crate::scene::portal_visible_cels_from_cell(&self.cel_graph, cell, eye, &depth0),
-                ),
+                Some(cell) => {
+                    let mut game = crate::scene::portal_visible_cels_game_from_cell(&self.cel_graph, cell, eye, &depth0, &sides);
+                    // fix-portal-sweep: the near-LOS rescue (scene::near_los_rescue) — the game-mask
+                    // pass restores the near unoccluded generics the walk drops where the port's
+                    // per-cel attribution approximation (the FindCel 0x1c8cb0 tie-break input)
+                    // disagrees with the game's. No-op without a collision world.
+                    if let (Some(m), Some(w)) = (game.as_mut(), world) {
+                        let rescued = crate::scene::near_los_rescue(&self.cel_graph, m, eye, &sides, w, 30.0);
+                        if rescued > 0 && std::env::var_os("NF_PORTAL_DEBUG").is_some() {
+                            eprintln!("[rescue] eye cell {cell}: {rescued} near cels restored");
+                        }
+                    }
+                    (game, crate::scene::portal_visible_cels_from_cell(&self.cel_graph, cell, eye, &depth0))
+                }
                 None => (None, None),
             }
         } else { (None, None) };

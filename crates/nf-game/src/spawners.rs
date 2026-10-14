@@ -42,6 +42,12 @@ pub struct Spawner {
     pub wave: u32,
     pub this_wave: usize,
     pub gone: bool,
+    /// The mode-3 re-arm stinger request (the `Drone_SfxInfo` INDEX 0xD6/0xD7), drained by the
+    /// caller after `update` [M 0x137e68:191-200]. Set every tick the branch runs — the
+    /// `Rand_Rand(2)` draw is consumed even when the entry's repeat delay then suppresses the
+    /// sound — and it can fire on a tick whose spawn attempt is screened out, so it cannot ride
+    /// `Action`.
+    pub sfx_request: Option<u32>,
 }
 
 /// What a spawner asks of the drone list this frame.
@@ -58,7 +64,11 @@ impl Spawner {
         let max = param(2) as usize;
         let start = param(4);
         // +0x1F "no stealth checks": Init sets it when (p4 = 0 or on) and (p5 = 0 or off) [M 0x137aa0:33-45];
-        // cleared at wave rollover [M 0x137e68:148].
+        // cleared at wave rollover [M 0x137e68:148]. GAPS G-025's "mode-3 wave-delay byte" label is a
+        // misread — it is the initial-fill flag: while set it overrides mode 3's nobody-alive rule
+        // (0x137e68:184) and skips `SpawnDrone`'s min-distance + visibility screens (0x137cb0:30/:43).
+        // There is no delay value anywhere in the spawner family; the gap between mode-3 waves is
+        // purely the alive-scan == 0 wait.
         let immediate = (start == 0 || ch.on(start)) && !ch.on(param(5));
         let min = f32::from_bits(param(8));
         Some(Spawner {
@@ -67,16 +77,20 @@ impl Spawner {
             kill: param(7), kill_latch: false,
             min_dist: if min > 0.0 && min.is_finite() { min } else { 10.0 },
             used: vec![false; n], templates, spawned: Vec::new(), active: start == 0, immediate, wave: 0, this_wave: 0, gone: false,
+            sfx_request: None,
         })
     }
 
     /// One `DroneSpawner_Control` update. `level` is the current level id (the game's `GameState._12_4_`,
     /// read as DAT_002a3774 at 0x137fc4 [M disasm]); `alive(i)`: drone i is in a live slot; `drawn(i)`:
-    /// its `obj+0xFC` draw counter is non-zero (the port's per-tick visibility stand-in); `spot_ok(i)`:
-    /// template i's spot is at least `min_dist` from the player and not visible to him; `rand(n)`:
-    /// `Rand_Rand`.
+    /// its `obj+0xFC` draw counter is non-zero (the port's per-tick visibility stand-in); `dist_ok(i)`:
+    /// template i's spot is at least `min_dist` from the player (a PRE-selection usability test —
+    /// the candidate loop only decrements the draw for templates that pass it, 0x137cb0:30);
+    /// `visible(i)`: the spot is visible to Bond (a POST-selection abort, 0x137cb0:43 — the attempt
+    /// fails and retries next tick); `rand(n)`: `Rand_Rand`.
     pub fn update(&mut self, ch: &mut Channels, frame: u32, level: u32, alive: impl Fn(usize) -> bool,
-                  drawn: impl Fn(usize) -> bool, spot_ok: impl Fn(usize, f32) -> bool,
+                  drawn: impl Fn(usize) -> bool, dist_ok: impl Fn(usize, f32) -> bool,
+                  visible: impl Fn(usize) -> bool,
                   rand: &mut impl FnMut(u32) -> u32) -> Action {
         if self.gone { return Action::None; }
         // The p7 kill latch [M 0x137e68:50-52; L-verified 07000005: +0x20 → 1 once the ch-0x43 script
@@ -127,10 +141,14 @@ impl Spawner {
             return Action::Remove(removed);
         }
         let living = self.spawned.iter().filter(|&&i| alive(i)).count();
-        if self.wave >= self.waves || self.used.iter().all(|&u| u) {
-            // All waves spawned: the done write waits for the spawned drones to die when the done
-            // channel (p6) OR the kill channel (p7) is set — the game's `p6 == 0 && p7 == 0` immediate
-            // disable [M 0x137e68:126-143].
+        if self.wave >= self.waves {
+            // All waves spawned: `if ((ushort)puVar1[3] <= (ushort)puVar1[0xb])` — max waves (+0x0C)
+            // vs waves completed (+0x2C), a pure counter compare with NO template-exhaustion term
+            // [M 0x137e68:126-143; the port's old `|| used.all()` fired one tick before the game's
+            // rollover and killed single-template multi-wave spawners — 07000012 placement 647
+            // (mode 3, max 2, waves 5, 1 template) died after wave 1 instead of respawning]. The
+            // done write waits for the spawned drones to die when the done channel (p6) OR the kill
+            // channel (p7) is set — the game's `p6 == 0 && p7 == 0` immediate disable [M :126-143].
             if (self.done != 0 || self.kill != 0) && living > 0 { return Action::None; }
             if self.done != 0 { ch.set(self.done, 1, frame); }
             self.gone = true;
@@ -147,13 +165,37 @@ impl Spawner {
             for u in self.used.iter_mut() { *u = false; }
             return Action::None;
         }
+        // The mode-3 arm's re-arm stinger [M 0x137e68:191-200, INSIDE the mode arm — after the
+        // rollover and waves-exhausted early-outs, which return without it]: on the power-station
+        // pair only, while the last wave is entirely dead and at least one wave completed, the
+        // branch runs EVERY tick — `Rand_Rand(2)` picks Drone_SfxInfo[0xD6] or [0xD7] (sfx
+        // 0x549/0x526) and `NDrone2_PlaySFX(1.0, NULL, id, NULL, enforceDelay=1)` plays it through
+        // the entry's 600-frame repeat delay. The draw sits between the alive scan and the spawn
+        // attempt and is consumed even when the delay then suppresses the sound. The first-ever
+        // wave is silent (waves_completed == 0); the initial fill never reaches it (+0x1F clears at
+        // the first rollover, so waves_completed > 0 implies the fill is over).
+        if self.mode == 3 && living == 0 && self.wave > 0
+            && (level == 0x0700_000c || level == 0x0700_000d) {
+            self.sfx_request = Some(rand(2) + 0xd6);
+        }
         let may = if self.mode == 3 { living == 0 || self.immediate } else { living < self.max_alive };
         if !may { return Action::None; }
-        let unused: Vec<usize> = (0..self.templates.len()).filter(|&k| !self.used[k]).collect();
-        if unused.is_empty() { return Action::None; }
-        let k = unused[(rand(unused.len() as u32) as usize).min(unused.len() - 1)];
+        // Selection [M 0x137cb0:21-43]: one `Rand_Rand` over the group, walked down once per USABLE
+        // template — usable = unused this epoch AND, with screening on (+0x1F == 0), the spot at
+        // least `min_dist` (block+0x18) from the player. The distance is therefore a
+        // PRE-selection usability test: a too-close spot is skipped without consuming the draw, and
+        // the attempt never fails on distance — unlike the old port model, which drew over ALL
+        // unused templates and aborted the tick after the pick (a different RNG sequence whenever
+        // any spot was too close).
+        let usable: Vec<usize> = (0..self.templates.len())
+            .filter(|&k| !self.used[k] && (self.immediate || dist_ok(self.templates[k], self.min_dist)))
+            .collect();
+        if usable.is_empty() { return Action::None; }
+        let k = usable[(rand(usable.len() as u32) as usize).min(usable.len() - 1)];
         let i = self.templates[k];
-        if !self.immediate && !spot_ok(i, self.min_dist) { return Action::None; }
+        // The POST-selection abort [M 0x137cb0:43]: with screening on, a spot visible to Bond fails
+        // the attempt (returns 0) — the slot persists and the same spot can win the next draw.
+        if !self.immediate && visible(i) { return Action::None; }
         self.used[k] = true;
         self.spawned.push(i);
         self.this_wave += 1;
