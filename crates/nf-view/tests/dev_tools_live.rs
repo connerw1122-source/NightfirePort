@@ -260,7 +260,7 @@ fn hud_ammo_strip_clamped() {
 fn dev_level_select_rows_and_load() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     assert!(!dev::LEVELS.is_empty(), "the level-select list is empty");
-    let items = dev::menu_items(&dev::Dev::default());
+    let items = dev::menu_items(&dev::Dev::default(), None);
     for &id in dev::LEVELS {
         assert!(items.iter().any(|(_, _, a)| matches!(a, dev::MenuAction::Level(x) if *x == id)),
             "no level-select row for {id:08x}");
