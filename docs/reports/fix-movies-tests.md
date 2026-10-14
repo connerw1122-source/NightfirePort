@@ -32,6 +32,16 @@ command is green (203 nf-view + nf-formats test binaries build with the feature)
   test file's documented contract. The compile fix is proven by the build + the non-skipping tests
   (the_intro_*, the_menu_backdrop_plate_*, the_page_aux_movie_map_* all pass for real).
 
+## Post-merge re-verification (origin/master 6691ef9 = fix-menus-real2 merged into the branch)
+fix-menus-real2 changed `menu_overlay`'s signature (extra `&font` arg) and touched `nf-view`'s menu/hud/lib and
+`nf-formats`' hud — so the branch was merged and the movie-adjacent binaries were rebuilt WITH movies and re-run on
+the final tree: `menu_movies` 7/7 ok (the merge carries master's `menu_overlay` call updates AND my `(w, h)` fix —
+master's copy still had the `(*w, *h)` E0614 bug), `menus_flow` 34/34 ok, `movie_playback_flow` both variants ok
+(10/10 with movies incl. the cfg-gated briefing test, 9/9 without). The other binaries contain no menu/movie code
+and their pre-merge movies pass (201 ok + disc_golden's 3 allowed fails) stands; the suite re-runs them without
+movies on this same tree. `weapon_matrix_live`'s full movies run was interrupted twice by sandbox job-kills (see
+above for the 600 s evidence); the suite covers it without movies.
+
 ## Shared-file hooks
 None. Only `crates/nf-view/tests/menu_movies.rs` (task file), `docs/tools/test-suite.md` (task file),
 `docs/WORKLOG.md` (append-only) and this report.
