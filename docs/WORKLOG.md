@@ -11194,3 +11194,19 @@ Task: fix-guard-weapons2 — the branch fails on current master: merge origin/ma
 
 Work Log:
 - (18:20 UTC) Branch s/fix-guard-weapons2 created from origin/s/fix-guard-weapons (60b5b8e); origin/master merged (ed718f8, fix-weapon-fx-levels) — WORKLOG conflict resolved append-only (both sides kept), merge commit 5186f76. Setup reused (repo, work/, ISO, nf-queue). Reproduction next.
+- (18:16-20:00 UTC) fix-guard-weapons2 on the merged tree (5186f76). The six failures decompose: (a) the branch's
+  boot difficulty default 1 was wrong — bootup 0x1c7e78:25 stores 2 to 0x2a3790 (Ghidra `_40_4_` is DECIMAL 40;
+  `sw t0,40(s1)` @0x1c7f88), the snapshots' 1 is PTP-restore/mission-start session state [M+disasm]; reverted to 2
+  with corrected citations, fix_progress green. (b) The two drop tests: the branch's game-correct per-shot RNG
+  draws (FireWeapon 0x179268/88/ac light orientation + 0x17949c pitch) shift the death tick so the corpse lands in
+  Pickup_Update's touch radius of the parked Bond and the walk-over pickup consumes the drop (fix_objects dump:
+  drop `gone true` 0.5 units from Bond) — both tests now step Bond clear first; green. (c) The branch's own tests
+  were never finished: harness now re-parks around a stalling guard (3000-tick stall, up to 4 re-parks); TooClose
+  rewritten to the real two-band model (CombatTooClose 0x173338 backs the guard to ~8.2; the FireWeapon
+  min-range gate 0x178f68:97-102 + 0x12a960 is inert for 0x0e whose +0x08 = 0.0; deltas exactly record × DMod ×
+  (dist<3 ? 2 : 1)); fire-rate pins the tight 60 clamp with 2-round bursts (Rand(2)+1 0x179ed4 — min gap exactly
+  60, not ≥75); matrix pins health-pool round-trip deltas (1.65 double-rounds through the f32 pool). Result:
+  fire-rate + too-close green, matrix 8/9 phases (every completed per-hit delta exact; rates within tolerance);
+  the 07000005-diff3-0x16 collection remains the documented engagement-budget residual. Full suite did not fit
+  the window (background jobs die here); walkreal's walk phase exceeds one foreground chunk. Report:
+  docs/reports/103f2-fix-guard-weapons2.md (live checks inside: the point-blank ×2 arm, the boot default page).
