@@ -10137,6 +10137,26 @@ Task 101h, both symptoms from the 1013-1758 playtest at 07000008's safe area (~(
   the targeted post-fix suites (the 08 four, vent5 2, wire2 3) green on the same tree.
   Report: docs/reports/fix-08-walls.md.
 
+## fix-context-hints (s/fix-context-hints) — 2026-10-14
+
+Task 100h, branch start. The two PCSX2 symptoms from the main agent (2026-10-13): standing at a
+usable thing, (1) the hint bar at the top ("Hint: Use Watch Laser" at the 07000008 safe,
+--bond 155.19,43.12,-113.38,1.57,0) and (2) the context indicator icon (the port shows neither).
+Work log:
+- Traced the context system in the decompile: `ThirdIcon_Update` 0x196e80 writes the icon's
+  context type into the player's `BLData+0x95F` (already ported by fix-wire2/fix-08-walls in
+  scene.rs) and posts the type-6 generic hint "Press Action" (label 0x1000291) through
+  `Text_AddMsg(0,0,1,…,0,0xb4)` on a 4-tick per-icon cooldown while the player is not creeping;
+  `Hint_Create` 0x1b3248 / `Hint_Update` 0x1b3380 (placement kind 0x33, class 0x43) are the
+  one-shot hint markers: param 0 = the label (0x1000336 = "Hint: Use Watch Laser" [D USATxt.dat]),
+  param 1 = the sound, param 3/4 = the on/off channels; firing = the player in the marker's
+  obj+0xD0 chain, once (obj+0xFE bit 0 deletes it). `HUD_UpdateHealthPane` 0x19b9c8:273-303 is the
+  context icon (health-pane sprite 18): texture table 0x2FC168[ctx] = 0x03000064+ctx (only
+  0x66/0x67/0x6A exist on the disc [D tex-list] — winch/hanging-man/figure), screen (400,48),
+  layer 29, colour 0x7f7f7fff, fade-out over ThirdIconTimer 30; the type-1 TXTMSG draws on the
+  INFO pane 4 (MsgInfoStatusPane 0x319810 [L], InfoStatusSprInfo 0x319730: bar 480×26 at (16,0),
+  text centred (256,16), the 0x19c310 state machine the pickup pane already ports).
+
 fix-menus-real (101k, started 2026-10-14): the front end must match the real pages
 (1013-1825 playtest + the main agent's 2026-10-13 PCSX2 drive). Every page is missing its
 backdrop, the header font, the footer PS2 glyphs, the centred description and the rolling
@@ -10405,6 +10425,14 @@ Stage Summary:
 - Open: nothing for this task; the satchel/sticky bounce branches and the mine's detonator are other systems' scope.
 
 ---
+Task ID: 102h-fix-swim
+Agent: swim worker
+Task: fix-swim — swimming barely works (02 garden pond: entering water by walking in, swim speed, crouch dive / jump surface, no footsteps while swimming — swim stroke sounds instead) and the water ladder under the hut (grab + climb from the water).
+
+Work Log:
+- (started 08:37 UTC) Branch s/fix-swim created from origin/master ccaea18. Setup in progress (downloads next). Research in work/decomp after.
+
+---
 Task ID: 100k-fix-gadgets-live
 Agent: fix-gadgets-live worker
 Task: the laser/stunner/AIMS-20/Oddjob findings on 2026-10-13's master — (1) the laser 0x4e's beam, wall light and HUD charge bar + regen are missing (PCSX2 shows a short red beam, a red glow light, a vertical charge bar 31..0 at ~1/tick, regen after); (2) the stunner 0x4a "doesn't work" — the class-2/3 ray, Draw_TaserBeam 0x1a46a8 and the stunned reaction; (3) the AIMS-20 0x1a's side lights unlit (emissive/anim material); (4) Oddjob's hat 0x45 should be a one-shot kill, not a grenade.
@@ -10416,6 +10444,83 @@ Work Log:
 - Tests (crates/nf-view/tests/gadgets_live.rs, 4/4, failing-first via the deleted scratch probes: the clip never drained and no beam parked pre-fix): the laser's drain/light/stop-at-0; the stunner's spend-on-target + free aimed-off hold; the AIMS lights attach + the idle timer; the hat's contact kill + no explosion. Neighbours green: gadget_laser_live 7, fix_level_0c_live 4, fix_fusebox_cut, qclaw_live, gadget_grapple_live, explode_live, fix_weapon_effects_live, fix_weapon_sounds_live.
 - Shared hooks: drone.rs (aims_idle on its own line + the hat pass), scene.rs (the restructure + the new slots; nothing removed but the replaced stale comment). grenade.rs/player.rs/lib.rs/gun.rs/gadget.rs/bullet.rs untouched.
 - Left: the taser's msg-7 stun state machine; the laser's battery-station recharge (0x1a5460:575-598); the AIMS bone-9/10/11 gates (+0x93e/+0x2f0/+0x2fc); the hat's return/clang; the pause-menu stop hook. All in the report with the live checks.
+
+## fix-cutscene-brightness (s/fix-cutscene-brightness) — 2026-10-14
+
+Task 102g, the 07000002 intro playtest (results 1013-1825): "the models in the game during the
+cutscene are extremely bright" — the port's cut-scene actors are near-white at
+`--bond -82.30,5.30,32.05` frame 170 while PCSX2's 02 intro lights Bond and the man at the
+computer darkly to match the room. Plan: find what the game lights cut-scene actors with (the
+character room light / the scene's own light set; the in-game character room light is
+290-fix-character-room-light's pending work — check whether cut-scene actors take a different
+path in the port: no cel light, or a default full-bright ambient). Reproduce first, then fix in
+scene.rs / nis.rs with numbers from the decompile.
+Status: branch created, reproduction + fix in progress.
+
+fix-cutscene-brightness DONE (09:3x UTC): the 02 intro's cut-scene actors take the room's ambient
+instead of the full-bright sentinel. Two broken links in `Sim::characters_script_pos` (the ramp's
+position source for script characters): (1) the strict `nf_formats::anim::fits` sequence filter —
+the intro's actors play shared human tracks (record skeleton 0) on skeleton-N skins, every
+candidate was rejected, the position was None and the ramp's target None, so obj+0x100..0x102
+stayed the 0xff,ff,ff sentinel of `control_init_object` 0x134630 — the playtest's "the models in
+the game during the cutscene are extremely bright"; the relaxed filter (the skeleton-id match
+dropped, the channel-count guard kept) already exists in `nf_game::anim::script_pose` (the same
+strictness bug recorded there for 07000004's seated target) — `characters_script_pos` now calls
+it. (2) the raw root translation resolved near the world origin ([0.0, 0.038, 0.958] at frame
+200) where no cel exists (`ambient_at` None): [M] `Script_AnimStart` 0x1d8f40 creates the anim
+object at `control_create_object(0, 0x2d6200, 0x2d6200, 0)` — the script's scratch base matrix
+(the port's `Player::live_matrix = mul(stream_pose, script.matrix)`) — and composes the root via
+`AnimGetFirstTrans`, ending with the position cel link (`build_LinkToRoom`). The sequence roots
+are LOCAL offsets (char[79]'s seq root@1 [0,0,0] … root@200 [0, 0.04, 0.96]); the fix composes
+`Sim::script_base_matrix(src.0)` (new — the placed NIS player's live_matrix) with the root in
+`characters_script_pos` AND in the render's script-branch object matrix (the actors drew at the
+origin before). Result: char[79] obj+0x100..0x102 = [20, 30, 20] — the bunker cel's ambient, the
+draw multiplier dark; the actor stands in the set beside Bond ([-27.06, 1.45, 33.46] vs Bond
+[-27.17, 1.05, 29.80]). Fail-first: fix_cutscene_brightness_live's
+the_02_intro_actors_take_the_rooms_ambient_not_full_bright panicked `got [255, 255, 255]` on the
+unfixed tree (after the strict-filter `pos None` panic). Sisters: the drone characters' ramp and
+the view-model branch untouched. Regression set green: cutscenes 5+4, objects (the truck) 5+6,
+facial 2+3. Suite on the final tree: see docs/reports/fix-cutscene-brightness.md. Files:
+crates/nf-view/src/scene.rs, crates/nf-view/tests/fix_cutscene_brightness_live.rs (new);
+crates/nf-game/src/nis.rs read-only.
+
+## fix-cutscene-brightness2 (s/fix-cutscene-brightness2) — 2026-10-14
+
+Task: 102g's held fix (0cbfbf8) makes the 07000002 intro's cut-scene actors VANISH — the main
+agent's render at the user's spot (`--bond -82.30,5.30,32.05,1.570,-0.100 --frame 170`): master
+draws Bond and the man at the computer desk (too bright), master + the branch draws the same room
+with NO characters.
+
+fix-cutscene-brightness2 DONE (09:4x UTC). The live probe (tests/fix_cutscene_brightness2_live.rs,
+run on the held tree) pinned both halves:
+- The vanish: the held fix substituted `Player::live_matrix` for the script actors' render object
+  matrix — but `live_matrix` is stream 0's object ∘ the script matrix (`Script_Interp` 0x1d9a08
+  keys the SP object's obj+0x90 from stream 0 [M nis.rs]), and the intro's stream 0 is the CAMERA:
+  obj[0] Camera trans [-27.25, 1.41, 34.39] == player[1] live trans [L probe]. The actors were
+  drawn inside the camera. The premise was wrong too: VECTOR 0x2d6200 is the ORIGIN vector
+  [L ACTION.ELF, nis.rs's Light doc], so `Script_AnimStart` 0x1d8f40's
+  `control_create_object(0, 0x2d6200, 0x2d6200, 0)` creates the anim object AT THE ORIGIN — the
+  object matrix is identity and the pose's root carries the actor in world space [M Obj::Anim doc;
+  AnimSeqTick 0x1c28d0 takes the root motion as the object's movement]. Fix: frame_state's script
+  branch draws with `c.matrix` again (the render-verified model — master's own render places both
+  actors correctly).
+- The ramp sample: the held `script_pose` resolves `script_frame`'s LAST covering window — on the
+  intro that is the zero-root overlay track (char[79] windows (1,1541,0x04000296)/(1,1540,
+  0x04000224); the last one's root [0,0,0] at frame 170) — and its base composition multiplied
+  that by the camera matrix, so the ambient sampled the camera's cel (the right bytes by luck).
+  Fix: `characters_script_pos` resolves the position the renderer draws — `script_pose_together`'s
+  world root (char[79] [-25.51, 1.13, 30.14], char[80] [-27.18, 1.13, 30.99], both beside Bond
+  [-27.17, 1.05, 29.80] [L probe]) — no base. ambient_at(root) = the bunker cel [20,30,20]: the
+  same dark multiplier the held test pins, sampled where the actor stands.
+- Fail-first: both tests in tests/fix_cutscene_brightness2_live.rs panic on the held tree (the
+  object-matrix assert and the ramp-sample assert), green on the fix. Sisters kept green: the held
+  fix_cutscene_brightness_live 3, render2_live 8 (the 01 cut-scene's [L] (40,30,26) courtyard
+  pin), fix_objects_live 6 + fix_objects2_live 5 (the 05 truck's script characters),
+  fix_cutscenes_live 4, fix_cutscenes2_live 5, facial2_live 2, facial3_live 3.
+- Files: crates/nf-view/src/scene.rs (characters_script_pos; the render's script-branch object
+  matrix; script_base_matrix removed — it existed only for the wrong reading). No shared-file
+  hooks; nis.rs untouched.
+- Suite on the final tree: docs/reports/fix-cutscene-brightness2.md.
 Task ID: 102e-fix-missing-objects
 Agent: missing-objects worker
 Task: fix-missing-objects — furniture, the fountain and the 0c pylon aren't drawn; census every on-foot level for placements whose mesh the port doesn't draw, with the skip reason per class; draw what the game draws.
@@ -10604,6 +10709,404 @@ Work Log:
 - menu_movies.rs:282 E0614 fixed (present returns (u32,u32,&[u8]) by value [M movie.rs:226]); all 203 nf-view+nf-formats test binaries build with --features nf-view/movies; 202 run: 201 ok + disc_golden's 3 allowed slim-ISO fails; PSS-data tests skip on the slim stub image by contract; docs/tools/test-suite.md gained the movies-feature note; weapon_matrix_live (>600 s with or without movies — pre-existing) flagged for the suite gate. No shared source files touched.
 - Post-merge (origin/master 6691ef9 = fix-menus-real2, whose menu_movies copy still carried the (*w,*h) bug): merged, rebuilt menu_movies/menus_flow/movie_playback_flow with movies on the final tree — 7/7, 34/34, 10/10 ok; suite restarted on the merged tree (see report).
 
+
+## fix-save-profile
+- Started 12:32 UTC. Branch s/fix-save-profile from origin/master 1496b80. Task: port the game's memory-card profile save (unlocked missions, difficulty per mission, high scores/medals = Dossier Records, Bond moves, options, controller style) to one file per codename next to the port's config; hooks in nf-view menu.rs; tests: round trip, unlock after completing a mission, sister assertions. Layout must come from the game's save code in the decompile.
+## fix-swim-entry (started)
+
+Branch `s/fix-swim-entry` (from origin/master 6691ef9). Task 103d: the swim ENTRY depth off the 07000002 bank
+(`--bond -82.3,5.3,32.05,1.57`) — the port enters the swim only when Bond's feet are 0.62 under (pos 3.747 vs
+surface 3.7675) because the stateless smallest-bbox `find_cel` keeps the bank's land cel until he's deep. Reading
+the game's cel pick: `Player_InWater` 0x195e50 reads the player's RUNTIME cel (`*(obj+0x20)+0x90`), and obj+0x20
+is maintained per tick by `control_handle_cel_change` 0x133288 (move segment portal-cross `Cel_ObjectLeftCel`
+0x1e0d58 → `build_point_in_bounding_box` 0x1c9500 keep → `build_LinkToRoom` 0x1c9680 → `build_FindCel` 0x1c8cb0
+at the world-sphere centre obj+0x80 with the raycast tie-break) — stateful, unlike the port's per-tick
+smallest-bbox lookup. Probing the pond cels next, then porting the relink.
+
+## fix-swim-entry (outcome)
+
+Files: crates/nf-game/src/{world,player}.rs; shared hooks: crates/nf-view/src/scene.rs (3 small, additive).
+Tests: crates/nf-view/tests/fix_swim_entry_live.rs (NF_ISO, 2/2); probe kept: examples/probe_swim_entry.rs.
+
+The game's player cel (obj+0x20) is STATEFUL, maintained per tick by the movement handler's moved pass
+(`control_handle_cel_change` 0x133288, run AFTER `Player_Update` [M 0x1336f8:147-236, so the cel
+`Player_InWater` 0x195e50 reads this tick was linked from the previous tick's move segment], then
+`obj+0x40 ← obj+0x30` 0x1336f8:212): the move segment's portal cross (`Cel_ObjectLeftCel` 0x1e0d58: two
+`Collide_RayTriangle` per portal quad of the CURRENT cel, crossing wins even inside the old bbox) → the
+bbox keep (`build_point_in_bounding_box` 0x1c9500 at obj+0x30) → `build_LinkToRoom` 0x1c9680 →
+`build_FindCel` 0x1c8cb0 AT THE WORLD-SPHERE CENTRE (obj+0x80, `Control_BuildWorldSph` 0x133070; local
+centre (−0.1347, −0.1267, 0.2402) [L ee_start_05 M_CONTROL+0x80]) with the raycast tie-break (up ray len
+256→best-so-far, down ray min(up,len), both scoped to the candidate's own geometry, nearest hit wins, no
+hits → the first candidate [M 0x1c8cb0:163-232]), room-cel candidates only (cel+0x3c & 0x40000, cap 0x40),
+a miss leaves the object unlinked. The port had a stateless smallest-containing-bbox lookup at pos every
+tick (`cel_at`), which is none of those rules.
+
+Ported (nf-game/world.rs): `ScopeGraph.room` (new field, own line), `cel_portal_dest`, `cel_contains`,
+`find_cel` (the tie-break), `player_cel_relink`. (player.rs): `Bond::prev_pos` (obj+0x40, own line). Hooks
+(scene.rs): scope_graph fills `room`; Sim::run replaces the two `cel_at` reads with one relink before
+tick_ctx (water = the relinked cel's room cel's +0x90; bond.cel = the relink) and copies prev_pos after.
+
+VERIFICATION — and an honest negative: the reported symptom numbers reproduce (the bank walk enters SS_SWIM
+at tick 1621, pos.y 3.725 vs surface 3.7675 — the root well under), but on every path I could construct the
+OLD rule and the game's rule COINCIDE: (1) the bank fall — the move segment crosses the pond-top portal
+(91↔184, the plane y 3.7649 [D probe]) and the position leaves the land cel's bbox in the SAME tick, so the
+entry tick is 1621 both ways; (2) the wade band (pos between the water cel's bbox top 3.7675 and the land
+cel's box bottom) — the position lookup also reads the land cel there (the water bbox top excludes the
+POSITION while the centre sits inside it), so the spawns agree; (3) the sphere-centre spawn band — the
+game's tie-break hands the {land, water} candidate pair to the LAND cel (the water cel's mat-14 surface
+plane is up-facing, an up-ray cannot hit it one-sided [M 0x10a8c8], and its scope has no plane under the
+slope column), and the position lookup reads the land cel too. The fail-first run on a stashed pre-fix
+tree: both new tests PASS there — no behavioral divergence found. The fix stays because it IS the game's
+mechanism (every rule above is cited), it removes the divergence class wholesale (stateful keep vs stateless
+snap, portal crossings, the sphere-centre FindCel, the tie-break), and the driver's next measurement rides
+on it. Suite on the final tree: nf-game 143/143; the swim/ladder/walkreal families 47/47 (fix_ladder2_live
+4/4 incl. the 1621/3.725 repro, fix_swim_entry_live 2/2, fix_swim_vent_live 2/2, fix_swim_vent5_live 2/2,
+walkreal_probe3_live 2/2 + the nf-view bucket 35/35). The full four-crate run did not fit the window
+(suite.py cannot survive the background in this sandbox — third session running); the remaining families
+are listed in the report. NO RNG draws added; no wall-clock in Sim.
+## fix-script-objects (started)
+
+Branch `s/fix-script-objects` (from origin/master c5b17c0). Task 289: GAPS G-031's remainder after
+fix-script-commands — script-created objects: AI volumes / pickups / breakables from `Script_CreateEntity`
+0x1d8968's other arms, the `SP_Hit` bullet and object flags (07000007's urn break, mask 2), `Corona_2` glow
+drawing, drones riding moving objects, the players' place in the object list order. Plan: census the disc
+scripts by created kind, port in order of level usage, one NF_ISO test per arm. Files: nis.rs, drone.rs
+(riders), the draw hooks; shared files additive only.
+
+
+---
+Task ID: 102h-fix-swim
+Agent: swim worker
+Task: fix-swim — the 07000002 pond swim (look-directed dive/surface, swim speed, no footsteps while swimming) and the water ladder under the hut (grab from the swim + climb out).
+Work Log:
+- (08:37-09:53 UTC) Branch s/fix-swim from origin/master ccaea18, merged master b65d6f7 mid-task (WORKLOG both-entries resolution). Setup: work/ + slim ISO, NF_ISO, nf-queue, LIBRARY_PATH for the user-prefix ALSA link.
+- Evidence: Player_InWater 0x195e50 (cel+0x90 > pos.y−0.3 → substate 3), the swim case 3 inline in Player_Update 0x193600:181-222 (Player_Move(1.0) + the surface−0.3 rise clamp + the grounded exit), Player_Move 0x191dd0:149-165 (the swim branch rides RotMatrixX(obj+0x50 − BL+0x8a8·π/2) — dive = look down + forward; NO crouch/jump input in case 3; Player_HandleJump only from SSWalk), Player_CollLadder 0x196118:16-17 (the grab gate excludes ONLY substates 1/2), Collide_PickObj 0x1eae80:152-168 (the capsule-segment vs sphere×1.5+0.55 pick) + the y-snap lift 0x196118:23-31, Effect_Create 0x1ce688:63 (no ground hit in swim → no footstep), Player_MonitorAir 0x191a70:101-143 (the 0x27 dive loop / 0x60c gasp / 0x60b drown).
+- Fixes: player.rs (the look-directed swim wish + k=1.0 always + the ±2.4 [S] block deleted + the strafe-smoother clear on entry + the grab gate), ladder.rs (capsule_hits = the game's pick shape), sound.rs (Sounds.swim_prev_under), scene.rs (the swim footstep gate + the MonitorAir sound hooks).
+- Tests failing-first: the two nf-game unit tests replayed against a HEAD player.rs (both FAILED there, PASS after); fix_swim_live 4/4 (entry+speed pin, dive/surface/clamp, no 129/0x27/0x60c in a surface swim, the hut ladder grabs FROM THE SWIM at +52 and climbs out to 7.118 over top 7.102). Sisters: fix_ladder2 4/4, fix_ladder 3/3+1, fix_swim_vent 2/2, walkreal_probe3 2/2, nf-game lib 145/145.
+- Report: docs/reports/fix-swim.md (the entry-depth live check, the sink-through-bed gap, the unported mesh refine + sound-group scrub).
+Stage Summary:
+- Files: player.rs, ladder.rs, sound.rs, scene.rs (shared, 2 hooks), tests/fix_swim_live.rs (new), the report. LadderCtx.sink now unread (field kept).
+- Open: the full suite did not fit the window (the sisters + libs above are the verified set); the pond-bed sink-through and the build_FindCel entry depth are the main agent's live checks.
+
+---
+Task ID: 102m-fix-swim2
+Agent: swim2 worker
+Task: fix-swim2 — the swim branch's ladder-top exit regression on land ladders (102h-fix-swim dc59866 breaks walkreal_0700000c_live::walk_start_to_the_st1_plate_and_the_photograph: Bond leaves the ladder top CROUCHED and ungrounded and the walk to the walkway's south end sticks at bond=(9.03,11.74,-189.99)). Fix the exit so land ladders behave as on master (the game's ladder-top dismount, Player_CollLadder 0x196118 / the climb substate's exit) while the pond ladder still grabs from the water; keep the swim fixes; full suite green on the merged tree.
+
+Work Log:
+- (11:58 UTC) Branch s/fix-swim2 from origin/s/fix-swim dc59866, merged origin/master (WORKLOG both-entries resolution). Setup reused (work/, slim ISO, nf-queue).
+- (11:58-13:26 UTC) Repro first: walkreal_0700000c_live fails on the merged tree exactly as driven (STUCK crouched/ungrounded at (9.03,11.74,-189.99), segment_to_target 0.029). A per-tick probe replay showed the top exit itself fine (lunge at 12.148, land 11.736) but a RE-GRAB at regrab expiry 43 ticks later (substate 1, snapped back to the axis) — a climb/walk limit cycle.
+- Root cause: 102h's bare ×1.5 pick sphere [M 0x1eae80:152-168] is not the whole filter — the game narrows past the sphere (straddled-cel scoping Collide_Pick 0x1eb320:125-134/318-328 + the glist mesh refine Collide_Intersect 0x1ebaa8, both unported); a tall ladder's bounds sphere is its half-height (0c yard ladder r 5.75), reach ~9.2 sideways, so the dismounted walker 2.9 off-axis at walkway height still "picked". Player_CollLadder 0x196118 read in full — no extra gate there; the y window passes at 11.736 < top 12.15.
+- Fix (ladder.rs only; every 102h swim change kept): capsule_hits = stage 1 the game's ×1.5 sphere vs the capsule segment (the pond deep-water grab) AND stage 2 the master axis-column horizontal bound min(r,1)+capsule [S, the stand-in for the unported cel/mesh filter]. Doc comment cites both stages.
+- Fail-first shown: walkreal_0700000c (the driven STUCK dump + the +1912-tick ladder-base leg). Post-fix: walked out 2691 ticks, stuck 0, falls 0. Sisters: ladder unit test rewritten (2-side flips to no-hit, pond-deep keeps hit, the exact 0c yard geometry pins both), nf-game lib 145/145, fix_swim_live 4/4 (the pond grab survives), fix_ladder 3/3+1, fix_ladder2 4/4, fix_swim_vent5 2/2, walkreal 01/02/09/0b/0c/0d/12 green, nf-game+nf-formats+nf-audio green except the 3 allowed disc_golden. walkreal 05/0a ignored-gated on the slim ISO.
+- Not run (window): the remaining walkreal levels + the portal/scene suites — next session runs tools/test/suite.py on this tree. The stuck dump's crouched=true is NOT the regression (the test's single crouch press toggles on when Bond lands un-crouched; identical code on master — no diff touches crouch).
+- Report: docs/reports/fix-swim2.md (the live checks: the 0c ladder top dismount, the walk-back-into re-grab, the 02 pond deep-water grab; nf-view spots for all three).
+---
+Task ID: 101r-fix-menu-backdrop
+Agent: fix-menu-backdrop worker
+Task: fix-menu-backdrop — the front-end pages' aux FMV (07330048 main page, 07350048 list pages) never decodes a frame ("no frame N in the first chunk"), so every page draws the dark plate; also the headless still path reads NF_ISO instead of the ISO argument.
+
+Work Log:
+- (started 10:54 UTC) Branch s/fix-menu-backdrop created from origin/master b65d6f7; fresh sandbox: repo cloned, ISO already present from an earlier session, work/ to download next.
+- Root cause: gop_chunks' leading-open-GOP guard also fired when the FIRST GOP is CLOSED (it is on
+  every Nightfire movie: first GOP right after the 145-byte sequence header), so chunk 0 was (0,145)
+  — the sequence header alone, zero decoded frames [L probe: whole-ES decode gives 1280/1800/1800
+  pictures matching golden] — and movie_still read chunks.first(): "no frame N in the first chunk"
+  at every N, every page the dark plate. The live loop was NOT broken (the worker skips the empty
+  chunk; the pre-fix windowed-loop test already passed). Second bug: the still read the bare NF_ISO
+  env, not the ISO argument — fixed via movie_iso_name (NF_MOVIE_ISO over the ISO argument, the
+  live loop's precedence); fix-menus-real2 landed the env half independently mid-task, the merge
+  kept the argument fallback.
+- Fixes: movie.rs gop_chunks (prepend 0 only when open GOPs precede the first closed one) +
+  movie_still walks whole closed-GOP chunks until n is covered (frame 12 rides chunk 1; 10-picture
+  GOPs); lib.rs movie_iso_name + front_end_menu takes the resolved ISO path. menu_movies.rs test
+  compile fixes (present()'s owned w/h; the 7-digit "0x7100001" name form never resolved).
+- Retail bytes: range-fetched 07100001/07330048/07350048/07370048/07380048 from the file host's
+  retail image into a mini ISO (not committed); demux counts match golden exactly (bytes exact).
+- Tests (fail-first): the three backdrop-still tests printed the user's exact symptom pre-fix, then
+  5/5 green post-fix; frame 12's SHA-1 = the 1f1fe7b0… whole-ES pin (one decoder truth). Neighbours
+  green on the merged tree: menu_movies 7/7, movie_playback_flow 10/10, menus_flow 34/34, lib 10/10.
+- Suite on the final tree (origin/master 6691ef9 merged, chunked foreground — background jobs die
+  between tool calls): 874 passed / 3 failed / 27+ ignored; the 3 are the permitted disc_golden set.
+  weapon_matrix_live TIMEOUT'd at my 180/240 s chunk limits (slow asset sweep, progresses level by
+  level, unrelated files) — needs the driver's default-limit pass to re-classify.
+- Report: docs/reports/fix-menu-backdrop.md (live checks: the --page main/missions --movie-frame
+  renders against PCSX2, the windowed-loop restart rule).
+Stage Summary:
+- Files: crates/nf-view/src/{movie,lib}.rs, crates/nf-view/tests/{menu_backdrop_still.rs (new),
+  menu_movies.rs (compile fixes)}. No shared files beyond lib.rs (a task-named file here).
+- Open: the cpal .play() audio bug (pre-existing, fix-menu-movies2 flagged it, still silent);
+  pss_movies_live's full-22-movie sweep wants the full retail image.
+
+## fix-armour-ring
+- Started: the orange 007 ring bottom-left in PCSX2 captures may be the health pane's armour state (the captures' god-cheat wrote armour 50 BLData+0x8B0 every frame); check HUD_UpdateHealthPane 0x19b9c8's armour branch, port it, test armour 0 vs 50.
+
+## fix-armour-ring (outcome)
+- The armour branch was already ported and is game-faithful [M HUD_UpdateHealthPane 0x19b9c8:139-158]: armour 0 → HealthSprInfo[0..8] hidden (+0x38 = 0xFF); armour > 0 → the 8 bronze-tinted (0x7d6d59) orange-art segments with alpha 1.0 (k=0) / 0.75 (k < armour·0.16) / 0.35. No separate 007-logo sprite: HealthSprInfo[15] is the 87×86 hollow circle outline tinted by the health colour; the captures' "orange 007 ring" = this pane at the god-cheat's armour 50 (cheats.py writes health 100 + armour 50 every frame). All BLData+0x8b0 readers agree (Pickup_Handler 0x18e650:221-224 take, Player_HandlePain 0x1902c8:100-104 absorb, RamSave/Load, the pane).
+- Tests (fix_armour_ring_live): hide-at-0 + the green ring unchanged; the real take path (kind-3 pickup → step_bond → armour 50) lights exactly 8 segments with alphas {255, 191×7} and segment 0 at (48,367); value tracking 25 → {255, 191×3, 89×4}, 0 → hidden. Green on the final merged tree (1496b80). Shared file: lib.rs gained the 4-line `--armour <n>` shot hook (reported).
+
+fix-context-hints (100k, 2026-10-14): the two symptoms implemented, verified and reported.
+- Implementation (commit 5247021): the Hint markers (placement 0x33, Hint_Create 0x1b3248 /
+  Hint_Update 0x1b3380 — one-shot type-1 INFO messages with the marker's label, sound and
+  on/off channels, resolved through the map object's world sphere like wire::icons), the
+  type-6 "Press Action" post (label 0x1000291) on ThirdIcon_Update's 4-tick instance timer
+  while not creeping, the INFO pane 4 draw (MsgInfoStatusPane 0x319810: the 480x26 top bar +
+  caps, centred text, the fade + 16 px/tick close), and the context icon (health-pane sprite
+  18, table 0x2FC168[ctx], runtime (400,48), layer 29, the 30-tick fade) — full citations in
+  docs/systems/hud.md and the report.
+- Merged origin/master twice (the second merge needed the WORKLOG append resolution and two
+  one-line `label: 0` fixes in the master-side Msg literals — fix_objective_banner_live,
+  fix_objective_messages_live).
+- Tests: crates/nf-view/tests/fix_context_hints_live.rs 5/5 — the safe fires 0x0200000A once
+  (life 0xB4) with no icon (07000008's only icon is the zipline's ctx-3 in cell 12); the
+  control-panel marker (0x010001E9) stays silent from the safe spot; the 05 grapple spot reads
+  ctx 6, posts 0x1000291, draws 0x0300006A, and clears to 0xFF with the fade within 30 ticks
+  on leaving; away from everything nothing shows. Numbers/label ids only, never the strings.
+- Suite on the final tree (e511da5): the sandbox kills background jobs (the nohup'd runner
+  died twice), so it ran in foreground chunks (tools/test/suite_chunk.py, the suite.py loop
+  resuming from suite.log): 226 binaries, 948 passed / 3 failed / 31 ignored logged — the 3
+  are exactly the allowed disc_golden trio; weapon_matrix_live hit the 300 s per-binary cap
+  (not a failure) and passed 28/28 re-run separately. Grand total 976 passed / 3 allowed
+  failed / 31 ignored.
+- OPEN (in the report + live checks): the driver's "orange 007 at the bottom-left ring" is
+  NOT the 0x95F system — the ctx sprite draws at (400,48) (the x/y order pinned by the
+  disasm 0x19c148/0x19c14c, the ammo bullet column and HUD_FixMP's x-clamp) and the three
+  disc ctx textures are tan badges (winch/hanging man/figure — dumped from the ISO and
+  inspected). The live checks (gdbwatch the sprite x/y + 0x95F writes at both spots, poke
+  0x95F at the safe) settle whether a second, script-driven indicator exists.
+- Report: docs/reports/fix-context-hints.md. Files: crates/nf-view/src/hud.rs,
+  crates/nf-view/src/scene.rs (additive), crates/nf-game/src/player.rs (additive: Hint +
+  hints()), crates/nf-view/tests/fix_context_hints_live.rs (new), the two Msg-literal
+  one-liners, docs/systems/hud.md.
+
+---
+Task ID: 102a-fix-zoom-overlays
+Agent: zoom-overlays worker
+Task: zoom overlays (Micro-Camera 0x54, AMES 20, crossbow 0x11, sniper 0x1e, ...) draw as a 2x2 grid instead of one frame; draw each overlay the way the game does (quadrant mirroring, sprite size/placement).
+
+Work Log:
+- (started 05:40 UTC 2026-10-14) Branch s/fix-zoom-overlays created from origin/master 69c0104. Reading the decompile (Player_Zoom 0x1a1a70), fix-viewmodel-zoom report, and hud.rs overlay draw next.
+- (06:23 UTC) Fix pushed (a74b214): View_DrawSprites 0x1e5290's flag-0x400 mirror tiling ported as hud.rs::tiled_quad; the scope/viewfinder/AIMS-20 circle route through it; zoom_overlay: 0x52/0x53 fall to the default Sight pane (no case 0x38/0x39 in the 0x19e6d0 switch; name table [L ee_start_05 weapon_data+0x38 over Txt_BindLabel 0x1cad60]: 0x52/0x53 'Phoenix Ronin', 0x54/0x55 'Micro-Camera', 0x1a/0x1b 'AIMS-20'); wide-window black side bars; Anchor::Centre. Tests fix_zoom_overlays_live.rs (6; 4 failed pre-fix) + the fix-viewmodel-zoom selection test updated.
+- (07:40-08:50 UTC) Continued after the sandbox reset: merged origin/master 66651ba (WORKLOG conflict resolved append-only, both sides kept), rebuilt (ALSA headers re-extracted into ~/alsa-prefix after the reset — libasound2-dev + libasound2t64 1.2.14-1+deb13u1 from deb.debian.org, PKG_CONFIG_PATH + RUSTFLAGS -L pointed at it), ran the full suite in foreground per-binary batches (background jobs die between tool calls here; nohup suite.py died twice with empty output).
+
+Stage Summary:
+- DONE. Root causes: (1) the 0x400 mirror-tiling flag unported — the port drew each overlay sprite once with full UV extents, the renderer wrapped it into the user's unmirrored 2x2 grid; the game mirror-tiles quarter textures [M 0x1e5290:52-162; D 07000005.bin/07000016.bin texture sizes] into ONE frame. (2) 0x52/0x53 mapped to the Camera pane on a wrong id belief — the switch at 0x19e6d0:106-147 has only cases 0/1, 0x18/0x19, 0x3a/0x3b + default; [L] name resolution via the game's own Txt_BindLabel 0x1cad60 (FixupTable 0x1f9b200, Bank 0x1f9b230) settles 0x1a/0x1b 'AIMS-20', 0x52/0x53 'Phoenix Ronin', 0x54/0x55 'Micro-Camera'.
+- Suite on the merged tree (227 binaries, --test-threads=1 per binary): 923 passed, 3 failed, 31 ignored — the 3 are exactly the allowed slim-ISO disc_golden set; pss_movies_live 3/0. weapon_matrix_live's single-binary wall clock (~710 s here, two NF_MATRIX halves of 355 s) exceeds the runner's 600 s cap on this sandbox → a strict run flags TIMEOUT; all 28 of its tests pass split through its own NF_MATRIX selector (zero panics; the test only fails on panics) — slowdown from the sandbox resets/merged scene work, not this branch (the overlay adds 9 quads on zoomed cells). My tests on the merged tree: fix_zoom_overlays_live 6/0, fix_viewmodel_zoom_live 3/0.
+- Shared-file hook (additive): lib.rs --zoom-hold for the headless --shot renders (holds aim+zoom every tick; without the flag nothing changes). drone.rs/scene.rs/player.rs untouched.
+- Report: docs/reports/fix-zoom-overlays.md (evidence, suite line, the live checks and the --zoom-hold --shot spots for the main agent).
+Work Log:
+- (started 08:08 UTC) Branch s/fix-missing-objects created from origin/master c9e1582; setup reused from the previous session (repo, work/, ISO, nf-queue). Spots given: 07000006 courtyard fountain (21.12,39.04,-0.48,8.683), guard room (33.50,41.13,-17.90,9.158) and lockers/fusebox (31.94,41.13,-17.36,10.756); 0700000c pylon (14.22,16.28,-139.54,0.986). Repro tests + decompile evidence next.
+
+---
+Task ID: 102e-fix-missing-objects
+Agent: missing-objects worker
+Task: fix-missing-objects — the fountain, the guard-room furniture, the lockers and the 0c pylon aren't drawn; census every on-foot level.
+
+Work Log:
+- Branch s/fix-missing-objects from origin/master c9e1582 (08:08 UTC); setup reused.
+- Repro first (probes kept): the named objects are kind-0x19 world-baked cel placements at translation (0,0,0); the fountain/bench/locker nodes were UNCHAINED generics — owner None at the user's spots, node_vis false, 0/N materials kept by the game mask (the renderer's World cull drops unchained 0x8019 nodes; View_AddCels draws generics only from their owner room's +0x18 chain, fix-portal5 §1).
+- Root cause 1: build_scoped's smallest-volume-containing-bbox attribution put the guard-room floor under the table's bbox and the courtyard floor under the fountain's — every candidate room's scoped bucket read empty at build_chains time. The game's HITDATA+0x54 carries the object's own placement cel (parsemap_block_map_data_static 0x1d1998: one runtime cel per placement, glist = the placement's object); the k-th pushed instance IS the k-th cell. Fix: build_scoped keys obj_cell by the pushed ordinal [M 0x1d1998 + fix-portal5 §4].
+- Root cause 2: link_owner_room dropped candidates with an empty bucket, but the game's read is "everything else reads 1e8" — the candidate stays and strict < keeps the first in parse order. Fix: unwrap_or(1e8) [M fix-portal5 §4's 0x1c9150 reading].
+- Fixes verified fail-first: pre-fix probes show owner None/node_vis false/0 materials; post-fix the fountain (room 27, 96/96 batches), the guard-room furniture (room 7) and the locker (15/15) draw at the user's spots. Disc-wide effect: the 0700000a office furniture, 07 books, 09 lights were the same orphans.
+- Census (fix_missing_objects_live): Scene::build's exact sequence per on-foot archive — 0 unchained meshed generics, 0 no-draw-path placements on all 21 (06: 322 generics, 0c: 273, 12: 438, …); explained skips = glist bits 0x10/0x1000 + the documented no-draw classes. FOUND GAP: 0xea/0xeb trigger meshes the game draws (0a lasers, 12 lift switches; Trigger_Create 0x1b1720:95 sets obj+0xF0 = glist+0x44) — no port draw path yet.
+- The 0c pylon: NOT reproducible on this tree — the real stand_at+head camera at the user spot resolves eye cell 91, all four pylon parts + shadow ride owner room 77, in_view true, 14/14 materials kept (probe_missing_pylon.rs, kept); pinned by a regression test, live re-render requested.
+- Green on the fixed tree: the whole portal chain (portal_live/eyecel/2/3/4/5/6/sweep/walkreal), nf-game units (world.rs scope tests), the new 3 tests. suite.py could not run in background (nohup dies between tool calls — same as the last two sessions); foreground chunks covered nf-game+nf-formats+the portal/object/census nf-view files; the levels_sweep re-run is left for the next session.
+- Report: docs/reports/fix-missing-objects.md. Files: crates/nf-game/src/world.rs (obj_cell rule + doc), crates/nf-view/src/scene.rs (scope_graph pub + the 1e8 owner pick + doc), crates/nf-view/tests/fix_missing_objects_live.rs (new) + 6 probe files (kept).
+
+fix-context-hints (100k, 2026-10-14): the two symptoms implemented, verified and reported.
+- Implementation (commit 5247021): the Hint markers (placement 0x33, Hint_Create 0x1b3248 /
+  Hint_Update 0x1b3380 — one-shot type-1 INFO messages with the marker's label, sound and
+  on/off channels, resolved through the map object's world sphere like wire::icons), the
+  type-6 "Press Action" post (label 0x1000291) on ThirdIcon_Update's 4-tick instance timer
+  while not creeping, the INFO pane 4 draw (MsgInfoStatusPane 0x319810: the 480x26 top bar +
+  caps, centred text, the fade + 16 px/tick close), and the context icon (health-pane sprite
+  18, table 0x2FC168[ctx], runtime (400,48), layer 29, the 30-tick fade) — full citations in
+  docs/systems/hud.md and the report.
+- Merged origin/master twice (the second merge needed the WORKLOG append resolution and two
+  one-line `label: 0` fixes in the master-side Msg literals — fix_objective_banner_live,
+  fix_objective_messages_live).
+- Tests: crates/nf-view/tests/fix_context_hints_live.rs 5/5 — the safe fires 0x0200000A once
+  (life 0xB4) with no icon (07000008's only icon is the zipline's ctx-3 in cell 12); the
+  control-panel marker (0x010001E9) stays silent from the safe spot; the 05 grapple spot reads
+  ctx 6, posts 0x1000291, draws 0x0300006A, and clears to 0xFF with the fade within 30 ticks
+  on leaving; away from everything nothing shows. Numbers/label ids only, never the strings.
+- Suite on the final tree (e511da5): the sandbox kills background jobs (the nohup'd runner
+  died twice), so it ran in foreground chunks (tools/test/suite_chunk.py, the suite.py loop
+  resuming from suite.log): 226 binaries, 948 passed / 3 failed / 31 ignored logged — the 3
+  are exactly the allowed disc_golden trio; weapon_matrix_live hit the 300 s per-binary cap
+  (not a failure) and passed 28/28 re-run separately. Grand total 976 passed / 3 allowed
+  failed / 31 ignored.
+- OPEN (in the report + live checks): the driver's "orange 007 at the bottom-left ring" is
+  NOT the 0x95F system — the ctx sprite draws at (400,48) (the x/y order pinned by the
+  disasm 0x19c148/0x19c14c, the ammo bullet column and HUD_FixMP's x-clamp) and the three
+  disc ctx textures are tan badges (winch/hanging man/figure — dumped from the ISO and
+  inspected). The live checks (gdbwatch the sprite x/y + 0x95F writes at both spots, poke
+  0x95F at the safe) settle whether a second, script-driven indicator exists.
+- Report: docs/reports/fix-context-hints.md. Files: crates/nf-view/src/hud.rs,
+  crates/nf-view/src/scene.rs (additive), crates/nf-game/src/player.rs (additive: Hint +
+  hints()), crates/nf-view/tests/fix_context_hints_live.rs (new), the two Msg-literal
+  one-liners, docs/systems/hud.md.
+
+---
+Task ID: 100n-fix-context-hints2
+Agent: context-hints2 worker
+Task: fix-context-hints2 — hint bar position (y~100/448, not top edge), the orange 007 ring swap (both spots), and no "Press Action" prompt at the 05 grapple point.
+
+Work Log:
+- (started 09:55 UTC) Branch s/fix-context-hints2 created from origin/master b65d6f7; sandbox was reset, setup in progress (work/, ISO).
+
+
+---
+Task ID: 100n-fix-context-hints2
+Agent: context-hints2 worker
+Task: fix-context-hints2 — the hint bar's position (y≈100/448, not the top edge), the orange 007 ring swap (both spots), and no "Press Action" prompt at the 05 grapple point.
+
+Work Log:
+- (10:52 UTC fetch) Sandbox was reset; setup from scratch. Found 100h-fix-context-hints NOT in origin/master (only s/fix-context-hints) — merged it into s/fix-context-hints2 to have the hint bar at all.
+- Item 1: the INFO pane's CREATE tag MsgInfoStatusPane 0x319810 is x=128 y=113 [L ee_start_05.bin]; HUD_CreateDefault 0x199b70:45-52 adds the pane x/y to every sprite at create; HUD_UpdateStatusPane 0x19c310 rewrites only the bar's X (templateX + (templateW−w)/2, caps following, :105-109/:331-336/:342-347) — the Y is never written, so the bar rides template y 0 + pane y 113 = 113 (text 129). Port drew 0/16. Fixed in hud.rs.
+- Item 3: the grapple spot (16.5,29.6,58.6) sits in ctx-6 icon[3]'s port cel 15, 8.17 away (its own sphere r 2.276 [D probe]); the game shows NO prompt there [L PCSX2 2026-10-14] while the vent crawl still reads 6 at 3.9 [L 2026-10-13]. The [S] arm window 12.0 → 6.0 (scene.rs), the grapple test flipped to the no-prompt pin with a positive sister beside the icon.
+- Item 2 (OPEN, not guessed): the only 007 path in the ELF is health-pane sprite 16, texture 0x0300005b (the gold 007 logo, dumped from 07000005 map 4), driven by BL+0x948 ← PlrStat_DoneBondMoment 0x199448 ← Trigger_Calc — a Bond-Moment zoom at (256,80) CENTRED, top-centre, not the bottom-left ring. The bottom-left ring is HealthSprInfo[15] (sheet uv 102,113,85,86, health-tinted [M 0x19b9c8:205-207]); nothing in the ELF retextures it; the ctx table's textures are the tan badges (0x64/65/68/69 not on the archives [D probe]). Probes kept: ctx2_probe.rs / ctx2_probe2.rs (the EE-table dump ran from an untracked scratch script); live checks in the report settle sprite 16 vs a script sprite.
+- Tests: fix_context_hints_live 6/6 (the new bar-rect test fails on the pre-fix tree), swim-vent5/08-walls/grapple/qclaw/gadgets green, the HUD-adjacent chunk 9/9 binaries; the full no-fail-fast run covered 142 binaries + the allowed disc_golden trio before the 570 s wall (the nohup runner dies in this sandbox, foreground chunks).
+- Report: docs/reports/fix-context-hints2.md. Files: hud.rs (task), scene.rs (shared, the window constant + comment), fix_context_hints_live.rs; player.rs untouched.
+
+Stage Summary:
+- The hint bar now draws at the pane rect y 113..139; the grapple spot shows no prompt/ctx/icon; the 007 ring item is evidenced to the Bond-Moment zoom sprite 16 + live checks, awaiting the main agent's gdbwatch/screenshot.
+weapon-matrix2 (103b, 2026-10-14): re-ran the weapon matrix on today's master (b65d6f7) and worked the red cells.
+- Re-ran the full matrix on master b65d6f7: 27 levels × 98 ids, 0 panics; both tables parsed with
+  the same rules (old .630/B126/D286/I1203/R43 vs new .617/B129/D292/I1207/R35, 46 cells moved).
+- The runner now runs the REAL give path: load_weapons (100a's merge) with the whole catalog +
+  per-cell inventory reset — the old `.` wall was the harness filling the shared ammo banks across
+  99 gives (Player_EquipWeapon 0x1a8a58's owned branch). New per-cell checks: the mode twin byte
+  (+0x05)/mode count (+0x2e) press with both labels (HUD_UpdateAmmoPane 0x19a7f0), the 0x2C guided
+  camera (Sim::missile_cam), the MGL impact-vs-delay blast gap (impact records blast on contact,
+  the fused ones at 210/300/420 [M Bullet_DoTrails 0x12d890]) — marks M/G/X.
+- Verified on 07000005 (sister test green): 0x2a/0x2c/0x34 vm1 where the old runner printed I/`-`,
+  0x2a gap 2-4 ticks, 0x2c gcam1, 0x02's mode press lands the 0x03 twin with a label.
+- The real bug the re-run found: the away switch lands on the silenced twin 0x03 (twin_skip first-
+  offer [M 0x1a6f80:179-198]); with its clip reset to 0 the next draw tick starts the auto-reload
+  and the 0x03 shell loop hangs in state 6 (clip stays 0, carried 4) — every later switch refused
+  [M 0x1a6f80:33-47] — the D-block from 0x2e. Probe: examples/probe_matrix_draw.rs. Fix + the
+  gadget-cycle fallback for the watch gadgets + the upgraded runner's full sweep = next window.
+- Report: docs/reports/weapon-matrix2.md (the re-run table + a pointer live in
+  docs/reports/weapon-matrix.md). Files: crates/nf-view/src/matrix.rs,
+  crates/nf-view/tests/weapon_matrix_live.rs, crates/nf-view/examples/probe_matrix_draw.rs. No
+  shared files touched. Work log continues below.
+
+weapon-matrix2 addendum (11:59): the upgraded runner's full sweep ran (3 chunks, 27 × 98, 0 panics) —
+the red mass (D 1278 / M 152 / R 226) is the silenced-twin reload hang reaching the draw now that the
+give path works; 0x2a impact 19/27 clean, 0x2c's guided camera rode its clean cells, no X marks. The
+table + analysis are appended to docs/reports/weapon-matrix2.md.
+---
+Task ID: 103e-campaign-flow
+Agent: campaign-flow worker
+Task: campaign-flow — play every single-player mission's levels in order from the front end's mission start, headless: walkreal walkers / scripted routes where they exist, dev teleport + objective triggers where they don't; through the transitions and end-of-mission flow (outro, results, next mission unlocked). Per level: reached exit / which objective blocked / crashes / stuck script / missing trigger. docs/reports/campaign-flow.md table; fix the first pinnable blockers with tests; list the rest as follow-ups.
+
+Work Log:
+- (11:59 UTC) Branch s/campaign-flow created from origin/master bf2f6bd; setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; campaign-flow research next.
+
+---
+Task ID: 103e-campaign-flow
+Agent: campaign-flow worker
+Task: campaign-flow — play every mission end to end headless; the blockers map; fix the first pinnable blockers.
+
+Work Log:
+- (11:59-12:48 UTC) Branch s/campaign-flow from origin/master bf2f6bd. The runner (campaign_flow_live.rs): the story order = ResetMap_LevelCode2Img's cases [M 0x1d5258], the mission grouping = the MissionData `mission` field (BaseMap [M 0x182270]); the drive = the objectives' own condition/enable channels + the E-use exit path (Trigger_Activate 0x1b2318); the transitions = load_with_carry warm (the game's ResetMap_LevelToLoad(next,1,0) + RamSave [M 0x1b2318:111-116]); the mission end = case 6's LevelToEndTo (driving codes skipped, 0x07000048 = the front end [M 0x182c60:85-135]).
+- Every story level parses and spawns; the exit E-path chains 02→03→04, 05→06, 07→08, 0c→0d, 14→15→16 warm with the carry; the mission-final driving arms land (04/08/0b/0d/16/1b).
+- FIXED (failing-first): the warm-transition mission freeze — `Mission::restore` overwrote the re-armed globals with the carried internal 5 (the post-banner state [M 0x182c60:65-84]); the monitor (case 5 = a bare break) never ran again and the level could not end. The game re-arms via Mission_Init and keeps only the .data records (LS_LoadMission is the save path). Test: the_mission_layer_re_arms_on_a_warm_transition (left: 5 / right: 1 pre-fix).
+- Blockers mapped (the report has the live checks): 01's escort-extraction exit (the ch16 TOUCH filter needs the Mayhew drone; the walkreal-a stall); 06/11/4a have NO exit trigger in the data (06's 0xE9s are Drone_AIPoint [M 0x1d04f0 case 0xe9]) — forced completes land the front end; 09/0a's exit triggers self-loop (next = own hash [D]); 0a's real exit needs the trigger-volume work; the gameplay-driven objective channels ride the per-mission walkthrough tasks.
+- Non-story records 0700000e/f/10: no FILES.BIN archive [D] — cut MissionData records.
+- Report: docs/reports/campaign-flow.md. Files: crates/nf-view/tests/campaign_flow_live.rs (new), crates/nf-game/src/mission.rs (the restore fix), crates/nf-view/tests/probe_campaign06.rs (kept probe). Shared files untouched.
+---
+Task ID: 102i-fix-guard-misc
+Agent: guard-misc worker
+Task: fix-guard-misc — the 0c sniper takes no damage; 06 guards can't open doors (NDrone2_ReachedDestNode door case); 06 first-frame crazy models (drones unposed at tick 0). Files: crates/nf-game/src/{drone,door,damage}.rs.
+
+Work Log:
+- (started 09:16 UTC) Branch s/fix-guard-misc created from origin/master 6cbe522; setup reused (repo, work/, ISO, nf-queue). Repro tests next; fast suite to follow.
+- Harnesses for all three symptoms in crates/nf-view/tests/fix_guard_misc_live.rs (new, real input path): doors + sniper FAIL (reproduced), pose PASSES (no repro headlessly).
+- Census facts: 06 guards all route-less posts (state 1) with door-flagged node pairs on paths 3 (n11-n14 → door #4) and 7 (n0-n1 → door #1) — the user's door bug must live in the chase path (GoToGoalPosition/LinkCreep dispatch); the rooftop sniper is drone #17 (weapon 0x1E, y 21.43, WAIT_SWITCH ch 1), has 73-matrix palette + 16 hit boxes, is enabled by set_channel(1), and takes no damage from a scanned clear-LOS vantage with the clip draining (repro, cause narrowed to the ray/hit path, aim drift documented).
+- Report: docs/reports/fix-guard-misc.md. Blocked at the sandbox deadline before the fixes; next session continues from the branch.
+
+Stage Summary:
+- Files: crates/nf-view/tests/fix_guard_misc_live.rs (new), docs/reports/fix-guard-misc.md, docs/WORKLOG.md. No production code touched.
+- nf-game lib 143/0 on the final tree; the full suite left for the next session (backgrounds die in this sandbox).
+- Addendum: probe_sniper_direct_bullet pushed the exact bullet through player_bullets — at the crossing tick the 16 live boxes are placed on the body (torso part 4 at (44.02,21.82,−205.04) half [0.2,0.25,0.15]), first_box_hit = None is geometrically RIGHT (the drone shifted 0.2 after the settle probe; the stale aim centre passes 0.04 outside the torso slab); row- AND column-axis variants miss identically (not a convention bug). Next step: aim at part 4's live m[3] at fire time, then the msg-8 damage path is exercised end to end.
+- VERDICT: the sniper damage path is SOUND end to end — with the live part-4 box centre as the aim, the deterministic bullet lands (health 10.0→4.75 = the P2K 3.5 × Agent 1.5; the state machine's hit state 0x58); probe pinned as a regression assert. The user's symptom is upstream: the aim-mode pitch drift (the sim pulls bond.pitch to ≈0.187 normalised while AIM is held) and/or the missing L1 vertical aim-assist (the port auto-aims only while NOT aiming, scene.rs:2155; the game's Check_Target 0x1a7810 family snaps vertically). Next session: Check_Target's vertical snap vs the port + the aim-pitch hold.
+## fix-guard-misc2 (s/fix-guard-misc2) — 2026-10-14
+
+Task 102n, session started 11:24 UTC. Continuing 102i-fix-guard-misc (branch origin/s/fix-guard-misc,
+report docs/reports/fix-guard-misc.md): three guard bugs — 0c rooftop sniper takes no damage (aim/pitch),
+06 guards never open doors, 06 start "crazy models" needs renders. Plan: merge origin/s/fix-guard-misc
+for its harnesses, repro each through nf_view::load + Sim::step_bond, fix with decompile evidence.
+(Entry appended at branch creation; will be updated as work lands.)
+Continued (fix-guard-misc2, same session, ~2h): the 0c sniper repro was the HARNESS's setup pitch
+(computed from `v[1]+1.5` while stand_at puts the eye at floor+1.1+1.5 = 1.0 higher — aimed 0.4 over the
+head box; the "aim-mode pitch drift" theory is dead, pitch only moves via input.look and the harness sent
+0). Port fix for the aim: while AIMING the port dropped the auto-aim lock/offsets; the game's Player_AutoAim
+0x1a7c98 keeps the lock and eases the offsets toward the manual offsets (0.5/tick) and the bullet consumes
+them through Player_GetAimingPoint 0x1a4a98 (InitBullet 0x1a4bf0:152-164) — scene.rs's aim-mode dir now
+eases aim_offset toward the cursor projection (x flipped, object-frame angles) and builds the ray from it.
+Doors: NDrone_InitDoorNodes 0x139a70 binds the nearest class-0x1C door to flag-0x2 nodes; LinkCreep_Handler
+0x15a2c8 dispatches ReachedDestNode 0x153358 for EVERY followed route including the chase (MoveToObject
+0x151618:65 → FollowRoute 0x155be0 → AINetwork_FollowRoute 0x15b110). The port's move_to_object dropped the
+reached node (dispatch never ran on the chase) and Drones::tick resolved door_node via dr.route only (a
+croute door resolved None → OPEN_DOOR's UPDATE insta-restored without opening). Both fixed (+ the
+door_return ≠0x81 guard [M 0x153358:157-160]); test the_06_guard_driven_through_a_door_pair_opens_it_and_
+crosses fails-first (stash-verified), now OPEN_DOOR +30, door #1 open +38, crossed; the passive 06 test
+flipped to the game-true idle contract (post guards open nothing idle). Suite: build OK 241 binaries; the
+chunked run hit the sandbox wall (backgrounds die here) — everything that ran green; weapon_matrix_live
+just exceeds any per-binary limit here (26 level loads; its 0c/06 matrices pass directly, 80.9s).
+Neighbours: ai_traces 4, doors_live 2, doors_01 2, drone_portcheck 5, fix_drone3 5, fix_drone4 2,
+fix_searchlights_guards 2, fix_npcs 4, fix_ai_remainder 1, weapon_effects 6, fire_modes 5, weapons_all 4,
+gadgets 4, fix_level_0c 4, fix_0c_hatch 2. Renders for "crazy models" need the main agent (no GPU here);
+commands + watch list in docs/reports/fix-guard-misc2.md. Files: drone.rs, scene.rs (aim branch — the
+shared-file hook), tests/fix_guard_misc_live.rs.
+## fix-script-objects (outcome)
+
+Files: crates/nf-game/src/{nis,drone,aivolume}.rs; shared hooks: crates/nf-view/src/scene.rs
+(3 additive: the Sim `glist_bounds` field + the pending-volume drain/matrix refresh after
+`drones.tick`, both additive blocks). Tests: crates/nf-view/tests/fix_script_objects_live.rs
+(NF_ISO, 3/3); probes kept: examples/census_script_entities.rs (the disc census),
+probe_urn_sp.rs, probe_script_objects.rs.
+
+CENSUS first (the driver's "census which scripts create which kinds"): 4,985 op-7 Entity commands
+across every FILES.BIN archive — generic (the `Script_CreateEntity` 0x1d8968 default arm)
+4,907 in **all 31 levels**; destroy (0xE1) 26 in 3 levels; break (0x20) 34 in 2; pickup (0xF0)
+9 in 2 (already ported by fix-safe08's `pending_pickups`); trigger (0xEB) 4 in 2 +
+trigger_once (0xEA) 4 in 3; AI volume (0xF5) **1** in 1. No ladder (0x22), switch (0x29) or
+emitter (0xF2) command exists anywhere on the disc. Corona_2's glow is two generic-arm commands
+(raw type 0x31, glist 0x02000426) on 07000005's truck script 0x06000A22 streams 4/5 — already
+drawn by fix-render2's script-entity attachments.
+
+PORTED (in census order, one test per port):
+1. **SP_Hit 0x1dc470's bit 0x2** (the mask-2 flag; the port modelled only bits 1/4): the flag
+   byte now ORs 0x2 when an alive blast reaches one of the CURRENT script's stream objects'
+   glist spheres (obj+0x80 = `Control_BuildWorldSph` 0x133070 of the glist local centre +0x10,
+   obj+0x8C the radius [M]; the sphere shape `Explode_Propagate` 0x17c518 sweeps [M 0x17c620]),
+   while the countdown byte is 0 [M 0x1dbda8:66]. The blasts travel in `SpStart.blasts` from
+   `Drones::explosions` (drone.rs, 1 additive line) — the game's +0xD0 HITDATA chains do not
+   exist port-side, and the mask==2 `Collide_FilterBullets(obj+0xD0, 0x106)` arming
+   (0x1dc524-0x1dc534) therefore has nothing to arm: a listed deviation. Disc case:
+   07000007's urn SP #312 (0x0600007A, mode 64, mask 2) — the mode-64 prime leaves it in state
+   1 with the Wait(0) streams' shard entities created; the blast replays the shatter (state 2,
+   playing, 10 shards, the tick-1 Sound(1523)).
+2. **Script-created AI volumes** (the 0xF5 arm → `Drone_AIVolume_Create` 0x1376c0): the
+   create-path entity pushes `Objects::pending_volumes` (the pending_pickups pattern); the sim
+   drains them into `Sim::volumes` with half-extents |max−min|/2 from the glist bounds
+   [M 0x1376c0:84-92], factor param0×0.01, kind param1 (0→0/1→2/2→1/4→3 [M 0x1376c0:100-116]),
+   and the matrix refreshes from the live stream entity every tick (the game keys obj+0x90 per
+   `Script_Interp`). The create-time z-negate/+1.5y lift is NOT applied: the script arm's
+   object matrix is overwritten by the same tick's interp [S, documented]. Disc case:
+   07000005's truck script stream 2 (glist 0x0200040C, params [0]) — the disc's only instance.
+
+VERIFICATION: fail-first = the pre-fix tree does not compile the test file (no
+`Scripts::entity_matrix`, no `AiVolume.src`, no `SpStart.blasts`) — the passes above cannot
+happen there. Suite on the merged tree (origin/master c606b5f): fix_script_objects_live 3/3,
+fix_script_commands_live 4/4, fix_truck_live 2/2, nf-game lib 145/145. The four-crate sweep did
+not fit the window (14:43 deadline); the remaining families are listed in the report. NO RNG
+draws added; no wall-clock in Sim.
+## fix-save-profile
+- The game's profile save ported: the six-block chain PLRS/MSSN/MPSG/GSET/CHET/BNUS [M SaveIFFBlocks 0x2c74d8 static init; L the table + the game's own 1022-byte chain in ee_snapshot InBufData 0x3416e0] with every field cited (PLRS = PlayerSetting[slot] 0x2a38c8 stride 0x158, 12 fields in LS_MakePlrSettings 0x1cd418's push order, the decode matches Input_Init 0x17edd8's defaults; GSET 905 B incl. the 219 zero dwords + the version tag 4; MPSG radar/health; CHET 3 bits; the file name IS the codename [M Menu_UpdateMessageBox 0x1f7de8]). crates/nf-game/src/profile.rs (new) + the menu hooks: the card rows after the two defaults, create/load codename, the mission_ended(Complete) save, the Records page reading the active profile. Tests: 5 module (the game's own chain decodes field-for-field) + 4 NF_ISO flow (create, the chain through the page, unlock-after-mission via nf_view::load + step_bond + mission_ended, the corrupt-file refusal); 4/4 + 5/5 on the merged tree (c606b5f). Difficulty is NOT in the save [M none of the six make fns reads GameState+0x40] — the brief's "difficulty per mission" resolves to the MSSN best scores. progress.rs: 4 fns pub(crate) + Clone (additive). Report: docs/reports/fix-save-profile.md (Live checks inside: the save chain in gdbwatch, the Records third value, the style-7 template question).
 ## fix-guard-weapons (2026-10-14, branch s/fix-guard-weapons)
 
 Task 103f: check the rest of the guard fire model against the game for every
@@ -10612,3 +11115,4 @@ burst, accuracy/spread per difficulty, distance falloff, armour absorption on
 Bond. Port what differs, citing DroneWeap_*/Drone_Fire*/Player_Hurt. Tests:
 3 weapons x 3 difficulties, hit rate over 100 shots at 10 units and damage per
 hit equal the game's model. Files: crates/nf-game/src/{drone,damage}.rs.
+

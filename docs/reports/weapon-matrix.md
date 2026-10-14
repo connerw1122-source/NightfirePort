@@ -164,3 +164,10 @@ from the F2 overlay after closing the menu; the result lands in the overlay's st
 - The `D`/`F` cells on cut-scene-holding levels (the intro wait covers `Sim::disabled` only).
 - The `B` variant-chain cells (100c's mode system) and the 6 `R` window artifacts.
 - Re-run with 100a-c merged once they carry code; every red cell then gets a fix or a reason.
+
+## weapon-matrix2 (103b, 2026-10-14) — the re-run on master
+
+The full re-run on master @ b65d6f7 (27 levels × 98 ids, 0 panics) and the runner upgrade (the real
+give path via `nf_view::load_weapons` + the per-cell inventory reset + the mode-twin/label, guided-
+camera and MGL blast-gap checks) are in **docs/reports/weapon-matrix2.md** — its mark table, the
+old-vs-new same-parser counts and the silenced-twin reload-hang root cause live there.

@@ -323,9 +323,38 @@ mod tests {
         assert_eq!((a.header.kind, a.header.rate, a.header.channels), (1, 48000, 2));
         let png = m.shot(0).unwrap();
         assert!(png.len() > 50_000, "a real 512x448 frame is tens of KB, got {}", png.len());
-        // Sister: the movie code 0x7100001 and the file name resolve to the same movie.
-        let m2 = Movie::load(&iso, "0x7100001").unwrap();
+        // Sister: the movie code 0x7100001 and the file name resolve to the same movie. (The name
+        // form needs all 8 digits: load() only treats a stem as a code when it is 8 chars —
+        // "0x7100001" trimmed is 7 and looked up as the file 7100001.PSS, which no image has.)
+        let m2 = Movie::load(&iso, "0x07100001").unwrap();
         assert_eq!(m2.name, m.name);
+    }
+
+    /// fix-menu-backdrop: the FIRST chunk carries the first GOP, not the bare sequence header. The
+    /// old leading-open-GOP guard fired whenever the first GOP is CLOSED too (it is on every
+    /// Nightfire movie: first GOP right after the 145-byte sequence header [L probe]), so chunk 0
+    /// was (0, head_end) — zero GOPs, zero decoded frames — and `movie_still`'s chunks.first()
+    /// found no frame at any N ("no frame N in the first chunk", every page's dark plate).
+    #[test]
+    fn the_first_gop_chunk_starts_at_the_first_gop() {
+        let Some(iso) = iso() else { eprintln!("skip: NF_MOVIE_ISO/NF_ISO not set"); return };
+        let Ok(m) = Movie::load(&iso, "07330048") else { eprintln!("skip: no movie data on this image"); return };
+        let (chunks, head_end) = gop_chunks(&m.demuxed.video);
+        assert!(!chunks.is_empty());
+        assert_eq!(chunks[0].0, head_end, "chunk 0 starts at the first GOP — the sequence header is prepended per chunk, never a chunk of its own");
+        let mut part = m.demuxed.video[..head_end].to_vec();
+        part.extend_from_slice(&m.demuxed.video[chunks[0].0..chunks[0].1]);
+        let frames = nf_formats::mpeg2::decode_video(&part).expect("the first chunk decodes");
+        assert!(!frames.is_empty(), "the first chunk decodes pictures (07330048: closed GOPs of 10 P-only pictures [L golden])");
+        // Sister: the whole-ES picture count equals the chunks' frame sum (no pictures lost at the
+        // boundaries; the same frames the streaming worker plays).
+        let total: usize = chunks[1..].iter().map(|&(a, b)| {
+            let mut p2 = m.demuxed.video[..head_end].to_vec();
+            p2.extend_from_slice(&m.demuxed.video[a..b]);
+            nf_formats::mpeg2::decode_video(&p2).map(|f| f.len()).unwrap_or(0)
+        }).sum();
+        let (pics, ..) = nf_formats::mpeg2::picture_counts(&m.demuxed.video);
+        assert_eq!(frames.len() + total, pics, "the chunks cover every picture of the ES");
     }
 }
 
@@ -384,7 +413,15 @@ fn gop_chunks(es: &[u8]) -> (Vec<(usize, usize)>, usize) {
     // stream start; `decode_video` needs it to establish the geometry).
     let head_end = gops.first().map(|(at, _)| *at).unwrap_or(es.len());
     let mut bounds: Vec<usize> = gops.iter().filter(|(_, closed)| *closed).map(|(at, _)| *at).collect();
-    if bounds.first() != Some(&0) && head_end != 0 { bounds.insert(0, 0); } // a leading open GOP decodes alone from stream start
+    // A leading OPEN GOP (GOP bytes BEFORE the first closed one) decodes alone from stream start.
+    // The old `bounds.first() != Some(&0)` also fired when the first GOP is CLOSED — which it is
+    // on every Nightfire movie (first GOP right after the 145-byte sequence header [L probe:
+    // 07100001/07330048/07350048 all gop[0] = (145, closed)]) — prepending a (0, head_end) chunk
+    // that held only the sequence header and decoded to ZERO frames, so `movie_still`'s
+    // chunks.first() found no frame at any N: "no frame N in the first chunk — the dark plate
+    // stands in" [fix-menu-backdrop]. Prepend 0 only when open GOPs precede the first closed one
+    // (first_closed_at > head_end), or when there is no closed GOP at all.
+    if bounds.first().is_none_or(|&at| at > head_end) && head_end != 0 { bounds.insert(0, 0); }
     bounds.push(es.len());
     let chunks = bounds.windows(2).map(|w| (w[0], w[1])).filter(|(a, b)| b > a).collect();
     (chunks, head_end)
@@ -471,18 +508,31 @@ pub fn pcm_voices(movie: &Movie, looping: bool) -> Result<(std::sync::Arc<nf_aud
         std::sync::Arc::new(nf_audio::Pcm { data: r, loop_start })))
 }
 
-/// The movie's frame `n` of the FIRST closed-GOP chunk as an RGBA `TextureImage` — the fast path
-/// for stills (`--shot`): only that chunk decodes (≈ 10 pictures) instead of the whole ES.
+/// The movie's frame `n` as an RGBA `TextureImage` — the fast path for stills (`--shot`): whole
+/// closed-GOP chunks decode in order until `n` is covered (a chunk ≈ 10 pictures; frame 12 of the
+/// menu loops rides chunk 1 [L golden/pss_movies.tsv: 180 I pictures / 1800 total]) instead of the
+/// whole ES. Chunk boundaries sit at closed GOPs, so a chunk's frames equal the whole-ES decode's
+/// frames for the same pictures [ISO 13818-2 §6.4.3; the `1f1fe7b0…` frame-12 pin in
+/// menu_movies::the_menu_loop_movie_decodes].
 #[cfg(feature = "movies")]
 pub fn movie_still(iso_path: &str, code: u32, n: usize) -> Result<crate::scene::TextureImage> {
     let iso = IsoImage::open(iso_path)?;
     let m = Movie::load(&iso, &format!("{code:08X}"))?;
     let (chunks, head_end) = gop_chunks(&m.demuxed.video);
-    let &(a, b) = chunks.first().context("no closed-GOP chunk in the movie")?;
-    let mut part = m.demuxed.video[..head_end].to_vec();
-    part.extend_from_slice(&m.demuxed.video[a..b]);
-    let f = nf_formats::mpeg2::decode_video(&part)?.into_iter().nth(n)
-        .context(format!("no frame {n} in the first chunk"))?;
-    let rgba = nf_formats::mpeg2::yuv420_to_rgb8(&f);
-    Ok(crate::scene::TextureImage { key: (usize::MAX, code), width: f.width as u32, height: f.height as u32, rgba, more: Vec::new(), rate: 1 })
+    anyhow::ensure!(!chunks.is_empty(), "no closed-GOP chunk in the movie");
+    let head = &m.demuxed.video[..head_end];
+    let mut shown = 0usize;
+    for &(a, b) in &chunks {
+        let mut part = head.to_vec();
+        part.extend_from_slice(&m.demuxed.video[a..b]);
+        let frames = nf_formats::mpeg2::decode_video(&part)?;
+        if n < shown + frames.len() {
+            let f = &frames[n - shown];
+            let rgba = nf_formats::mpeg2::yuv420_to_rgb8(f);
+            return Ok(crate::scene::TextureImage { key: (usize::MAX, code), width: f.width as u32, height: f.height as u32, rgba, more: Vec::new(), rate: 1 });
+        }
+        shown += frames.len();
+    }
+    let (pics, ..) = nf_formats::mpeg2::picture_counts(&m.demuxed.video);
+    bail!("no frame {n} in the first {} chunks (the movie has {pics} pictures)", chunks.len())
 }

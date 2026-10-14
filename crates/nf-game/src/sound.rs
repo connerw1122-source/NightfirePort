@@ -45,6 +45,10 @@ pub struct Sounds {
     pub out: Vec<Cmd>,
     /// The listener position of the last update (`GlobalListenerPos`).
     pub listener: V3,
+    /// The head-under-water state of the previous tick (`Player_MonitorAir` 0x191a70:101-124's edge —
+    /// the dive loop 0x27 starts on under-entry and stops with the surface gasp 0x60c on under-exit).
+    /// Bookkeeping lives here so the scene-side hook needs no new Sim state.
+    pub swim_prev_under: bool,
 }
 
 pub const POOL: usize = 256;

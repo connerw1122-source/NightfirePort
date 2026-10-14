@@ -496,6 +496,22 @@ pub struct FrontEnd {
     /// by the host each frame from the sim's mission state [M C_GCPAUSE_Handler 0x204408:251-271
     /// fills the game's list from Mission_ObjectiveState; state 4 = the ~J done marker].
     pub pause_objectives: Vec<(u32, bool)>,
+    /// fix-save-profile: the port's memory card — the profiles dir next to the port's config,
+    /// one file per codename [M Menu_UpdateMessageBox 0x1f7de8:19/28 passes the codename buffer
+    /// 0x2e1ae8 to LS_Load/LS_Save as the file name]. The host points it at the dir; None keeps
+    /// the headless behaviour (no card).
+    pub profile_dir: Option<std::path::PathBuf>,
+    /// fix-save-profile: the saved codenames in the game's row order — the two defaults, then
+    /// the card's rows [M Menu_EnumSaves 0x1f7b78:24-38 copies each enumerated name after
+    /// def_codename's two rows and appends it to the control].
+    pub profiles: Vec<String>,
+    /// fix-save-profile: the codename in play — None for "Play without saving" (the game maps a
+    /// template onto the slot [M Menu_MapDefaultCodename 0x1f7fa8] but never writes a file).
+    pub active_profile: Option<String>,
+    /// fix-save-profile: the active profile's data. The Records page reads its progress (the
+    /// level's best at ScoringTable+0x30 [M C_RBDSRECORDS 0x20bf00:26]); the host syncs the
+    /// sim's tally in with `sync_profile_progress` before the results save.
+    pub profile: Option<nf_game::profile::Profile>,
 }
 
 impl FrontEnd {
@@ -515,7 +531,12 @@ impl FrontEnd {
             confirm_sel: 1,
             pause_tab: 0,
             // fix-pause-menu2 (each new field on its own line [WORKLOG lesson 4]).
-            pause_objectives: Vec::new() }
+            pause_objectives: Vec::new(),
+            // fix-save-profile (each new field on its own line [WORKLOG lesson 4]).
+            profile_dir: None,
+            profiles: Vec::new(),
+            active_profile: None,
+            profile: None }
     }
 
     pub fn rows(&self) -> usize {
@@ -525,8 +546,9 @@ impl FrontEnd {
             // fix-menus-real: the game's own rows — Menu_EnumSaves 0x1f7b78:58-66 fills slot 0 from
             // def_codename[0] = Txt 0x29b "New Codename" and slot 1 from def_codename[1], and
             // Menu_PutCodenamesIntoControl 0x1f79c0:15-23 overwrites slot 1 with Txt 0x10002ff "Play
-            // without saving" on this page; profiles follow from the memory card (none headless).
-            Page::Codename => 2,
+            // without saving" on this page; fix-save-profile: the card's rows follow (one per
+            // saved codename [M Menu_EnumSaves 0x1f7b78:24-38 appends each enumerated name]).
+            Page::Codename => 2 + self.profiles.len(),
             Page::Difficulty => DIFFICULTIES.len(),
             Page::MissionSelect => CAMPAIGN.len(),
             Page::Records => CAMPAIGN.len(),        // the Records list walks the campaign [M 0x217248:11-13]
@@ -551,6 +573,9 @@ impl FrontEnd {
             // (CAMPAIGN's name label is +0x04 [M Menu_UpdateWheel 0x1f8388 fills the wheel rows from it].)
             // Row 0 = "New Codename" (Txt 0x29b [M Menu_EnumSaves 0x1f7b78:58-66]), row 1 = "Play
             // without saving" (Txt 0x10002ff [M Menu_PutCodenamesIntoControl 0x1f79c0:15-23]).
+            // fix-save-profile: rows 2+ are the card's codenames themselves [M the enumerated
+            // rows ARE the names — Menu_EnumSaves copies them straight into the control].
+            Page::Codename if row >= 2 => self.profiles.get(row - 2).cloned().unwrap_or_default(),
             Page::Codename => bind([0x29b, 0x100_02ff][row.min(1)]),
             Page::Difficulty => bind(DIFFICULTIES[row.min(2)]),
             Page::MissionSelect => bind(CAMPAIGN.get(row).map_or(0, |c| c.1)),   // +0x04 name [M 0x1f8388]
@@ -627,6 +652,12 @@ impl FrontEnd {
         if outcome == Outcome::Complete && self.mission + 1 < self.unlocked.len() {
             self.unlocked[self.mission + 1] = true;
         }
+        // fix-save-profile: the results flow's save — the game awards the level then the save
+        // prompt writes the chain under the codename [M P_NFRESULTS 0x208e78 →
+        // Menu_UpdateMessageBox 0x1f7de8 case 1]; the fail menu has no save arm [M 0x216618].
+        if outcome == Outcome::Complete && self.active_profile.is_some() {
+            self.save_profile();
+        }
         self.flow.page = PAGE_RESULTS;
         // Mission_Update 0x182c60 case 6 sets `LevelToEndTo` from the finished level: the outro
         // code 0x073000xx for the levels with an outro (compiled lui/ori switch at 0x182e60-0x182eb4
@@ -643,6 +674,117 @@ impl FrontEnd {
         self.flow.push_state(ST_FADE_HOLD);
         self.page = Page::Results;
         self.cursor = 0;
+    }
+
+    // ── fix-save-profile: the codename profiles (the port's memory card) ──────────────────────
+
+    /// Point the front end at the profiles dir (the port's memory card) and enumerate the saved
+    /// codenames — Menu_EnumSaves 0x1f7b78's psiStartSaveEnum/psiGetNextSave walk.
+    pub fn set_profile_dir(&mut self, dir: std::path::PathBuf) {
+        self.profile_dir = Some(dir);
+        self.reload_profiles();
+    }
+
+    /// Re-enumerate the card [M 0x1f7b78's row order: the two defaults, then the card's names].
+    pub fn reload_profiles(&mut self) {
+        self.profiles = self
+            .profile_dir
+            .as_ref()
+            .map(|d| nf_game::profile::Profile::list_dir(d))
+            .unwrap_or_default();
+    }
+
+    /// The "New Codename" save [M the game's flow: the keyboard page validates through
+    /// Menu_IsValidCodename 0x1f9930, Menu_MapDefaultCodename 0x1f7fa8 maps the default
+    /// template (fresh unlocks via Menu_SetNightfireStatus 0x2023a0's 0x3, the option
+    /// defaults, the cheats reset), then Menu_UpdateMessageBox 0x1f7de8 case 1 writes the
+    /// chain under the codename]. `reserved` = the def_codename labels resolved through the
+    /// language bank (the game strstr's the name against them [M 0x1f9930's loop]).
+    pub fn create_codename(
+        &mut self,
+        name: &str,
+        reserved: &[&str],
+    ) -> Result<String, nf_game::profile::CodenameError> {
+        let name = nf_game::profile::Profile::check_codename(name, reserved)?;
+        let Some(dir) = self.profile_dir.clone() else {
+            return Err(nf_game::profile::CodenameError::NoCard);
+        };
+        let path = nf_game::profile::Profile::path_in(&dir, &name);
+        if path.exists() {
+            // [M MemCard_ASK_OVERWRITE 0x10ee38 — the port refuses; the host decides]
+            return Err(nf_game::profile::CodenameError::Exists);
+        }
+        let profile = nf_game::profile::Profile::default_codename(&name);
+        profile
+            .save_to_dir(&dir)
+            .map_err(|_| nf_game::profile::CodenameError::Io)?;
+        self.reload_profiles();
+        self.active_profile = Some(name.clone());
+        self.profile = Some(profile);
+        Ok(name)
+    }
+
+    /// The codename page's Confirm on a saved row: load it [M Menu_UpdateMessageBox 0x1f7de8
+    /// case 0 → LS_Load 0x1cdfc0 → LS_GetLoadStuff 0x1cd2b0 applies each found block] and move
+    /// on to the difficulty page (the same continuation the "Play without saving" confirm
+    /// uses [M C_SBNFCN 0x20b390:19-21]).
+    pub fn load_codename(&mut self, row: usize) -> bool {
+        let Some(name) = self.profiles.get(row.wrapping_sub(2)).cloned() else { return false };
+        let Some(dir) = self.profile_dir.clone() else { return false };
+        let path = nf_game::profile::Profile::path_in(&dir, &name);
+        let Ok(profile) = nf_game::profile::Profile::load_file(&path) else { return false };
+        // The MSSN nightfire status IS the unlock mask [M Menu_SetNightfireStatus 0x2023a0
+        // unpacks it into sp_level[i]+0x10; the MSSN load maps 0 → 0x3].
+        let status = profile.progress.nightfire_status();
+        for (i, u) in self.unlocked.iter_mut().enumerate() {
+            *u = status & (1 << i) != 0;
+        }
+        self.active_profile = Some(name);
+        self.profile = Some(profile);
+        self.page = Page::Difficulty;
+        self.cursor = 1; // Agent [M the wheel starts centred on the middle row]
+        true
+    }
+
+    /// The results save [M P_NFRESULTS 0x208e78 awards the level, then the save prompt's
+    /// Menu_UpdateMessageBox 0x1f7de8 case 1 writes the chain under the codename]: mirror the
+    /// front-end unlock bits into the profile's progress and write the file. The host syncs
+    /// the tally/medals in with `sync_profile_progress` first. No-op without a card/profile.
+    pub fn save_profile(&mut self) -> bool {
+        let (Some(dir), Some(name)) = (self.profile_dir.clone(), self.active_profile.clone()) else {
+            return false;
+        };
+        let Some(profile) = self.profile.as_mut() else { return false };
+        let mut status = 0u32;
+        for (i, &u) in self.unlocked.iter().enumerate() {
+            if u {
+                status |= 1 << i;
+            }
+        }
+        profile.progress.set_nightfire_status(status);
+        profile.name = name;
+        profile.save_to_dir(&dir).is_ok()
+    }
+
+    /// The host merges the sim's mission tally (best scores, moments, medal bits) into the
+    /// active profile before `save_profile` — the game writes its MSSN/BNUS blocks from the
+    /// same live state the results page reads [M PlrStat_GetScore's DoneBetter commit +
+    /// Menu_SetLevelBonus 0x1ffa10, then the save].
+    pub fn sync_profile_progress(&mut self, p: &nf_game::progress::Progress) {
+        if let Some(profile) = self.profile.as_mut() {
+            profile.progress = p.clone();
+        }
+    }
+
+    /// The Dossier Records' per-row values [M C_RBDSRECORDS 0x20bf00: the level's best score
+    /// at ScoringTable+0x30, the moments value, the bonus count] for the records cursor —
+    /// from the ACTIVE profile (zeros without one, the pre-task behaviour).
+    pub fn record_row(&self, row: usize) -> (u32, u32, u32) {
+        let Some(profile) = self.profile.as_ref() else { return (0, 0, 0) };
+        let Some(entry) = profile.progress.table.get(row) else { return (0, 0, 0) };
+        let hash = nf_game::progress::SP_LEVEL_HASHES.get(row).copied().unwrap_or(0);
+        let bonuses = (1..=4).filter(|&k| profile.progress.has_medal(hash, k, 0)).count() as u32;
+        (entry.best, entry.rows[0].value, bonuses)
     }
 
     /// The intro movie the P_INTRO run currently shows [M 0x209e88's movie_283 counter].
@@ -697,6 +839,13 @@ impl FrontEnd {
                     // Row 1 "Play without saving" pops the confirm box [M C_SBNFCN 0x20b390:19-21 —
                     // selecting index 1 pops Menu_CreateOptionBox(0x10000bb, 9, 1, 1)], ✕ continues,
                     // △ cancels.
+                    // fix-save-profile: rows 2+ are the card's codenames — Confirm loads the
+                    // profile [M the select handler's LS_Load through Menu_UpdateMessageBox
+                    // 0x1f7de8 case 0] and continues to the difficulty page.
+                    if self.cursor >= 2 {
+                        self.load_codename(self.cursor);
+                        return true;
+                    }
                     if self.cursor == 1 {
                         if !self.confirming_default_profile {
                             self.confirming_default_profile = true;
@@ -1175,8 +1324,12 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
                 centred(&mut h, font, -2, &bind(lbl), mx(x + w / 2.0), my(y + 8.0), cream, true, 1.0);
             }
             // The value controls (375,169/202/235,185×16) [L parsed; Label_Update centres them].
-            for y in [169.0f32, 202.0, 235.0] {
-                centred(&mut h, font, -2, "0", mx(375.0 + 92.5), my(y + 8.0), cream, true, 1.0);
+            // fix-save-profile: the values come from the ACTIVE profile's progress [M
+            // C_RBDSRECORDS 0x20bf00:26-28 sprintf's the level's best (ScoringTable+0x30), the
+            // moments value and the bonus count]; without one they stay 0 (headless).
+            let (best, moments, bonuses) = fe.record_row(m);
+            for (y, v) in [(169.0f32, best), (202.0, moments), (235.0, bonuses)] {
+                centred(&mut h, font, -2, &v.to_string(), mx(375.0 + 92.5), my(y + 8.0), cream, true, 1.0);
             }
             quad640(&mut h, 0x0300_013d, 435.0, 282.0, 128.0, 64.0, [0.0, 0.0, 255.0, 127.0], gs(0x7f7f7f, 0xff));
             centred(&mut h, font, -2, &bind(0x307), mx(76.0 + 120.0), my(306.0 + 8.0), cream, true, 1.0);
